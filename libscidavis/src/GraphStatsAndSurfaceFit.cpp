@@ -39,6 +39,7 @@
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -50,6 +51,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
@@ -104,6 +106,48 @@ QString shortColumnLabel(Table *t, const QString &colSpec)
     if (t && colSpec.startsWith(t->name() + "_"))
         return colSpec.mid(t->name().length() + 1);
     return colSpec;
+}
+
+bool readNumericColumnCell(const Column *col, int row, double &val)
+{
+    if (!col || row < 0 || row >= col->rowCount() || col->isInvalid(row) || col->isMasked(row))
+        return false;
+    if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+        const double v = col->valueAt(row);
+        if (!std::isfinite(v))
+            return false;
+        val = v;
+        return true;
+    }
+    if (col->asStringColumn()) {
+        const QString s = col->asStringColumn()->textAt(row).trimmed();
+        if (s.isEmpty())
+            return false;
+        bool ok = false;
+        double v = s.toDouble(&ok);
+        if (!ok)
+            v = QLocale::c().toDouble(s, &ok);
+        if (ok && std::isfinite(v)) {
+            val = v;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool columnHasNumericValues(const Column *col)
+{
+    if (!col)
+        return false;
+    if (col->columnMode() == SciDAVis::ColumnMode::Numeric)
+        return true;
+    double dummy = 0.0;
+    const int n = col->rowCount();
+    for (int r = 0; r < n; ++r) {
+        if (readNumericColumnCell(col, r, dummy))
+            return true;
+    }
+    return false;
 }
 
 QList<Table *> allProjectTables(ApplicationWindow *app)
@@ -244,9 +288,18 @@ void applyArialGraphFonts(Graph *g)
 {
     if (!g)
         return;
-    g->initFonts(QFont(QStringLiteral("Arial"), 11, QFont::Bold),
-                 QFont(QStringLiteral("Arial"), 10));
+    const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Bold);
+    const QFont tickFnt(QStringLiteral("Arial"), 10);
+    g->initFonts(titleFnt, tickFnt);
     g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    if (g->plotWidget()) {
+        for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
+            g->plotWidget()->setAxisFont(ax, tickFnt);
+            QwtText axTitle = g->plotWidget()->axisTitle(ax);
+            axTitle.setFont(titleFnt);
+            g->plotWidget()->setAxisTitle(ax, axTitle);
+        }
+    }
     if (g->legend())
         g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
     g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
@@ -1775,10 +1828,8 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
         GroupData gd;
         gd.label = col->name();
         for (int r = 0; r < col->rowCount(); ++r) {
-            if (col->isInvalid(r) || col->isMasked(r))
-                continue;
-            double v = col->valueAt(r);
-            if (std::isfinite(v))
+            double v = 0.0;
+            if (readNumericColumnCell(col, r, v))
                 gd.vals.push_back(v);
         }
         if (gd.vals.size() < 2)
@@ -2057,12 +2108,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
         std::vector<double> rawStates;
         std::vector<double> rawScores;
         for (int r = 0; r < nRows; ++r) {
-            if (cState->isInvalid(r) || cScore->isInvalid(r) || cState->isMasked(r)
-                || cScore->isMasked(r))
-                continue;
-            double st = cState->valueAt(r);
-            double sc = cScore->valueAt(r);
-            if (std::isfinite(st) && std::isfinite(sc)) {
+            double st = 0.0, sc = 0.0;
+            if (readNumericColumnCell(cState, r, st) && readNumericColumnCell(cScore, r, sc)) {
                 rawStates.push_back(st);
                 rawScores.push_back(sc);
             }
@@ -2078,12 +2125,13 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
             obs.push_back({ rawStates[i] > midSt ? 1 : 0, rawScores[i] });
     } else {
         for (int r = 0; r < nRows; ++r) {
-            if (cState->isInvalid(r) || cScore->isInvalid(r) || cState->isMasked(r)
-                || cScore->isMasked(r))
+            if (cState->isInvalid(r) || cState->isMasked(r))
+                continue;
+            double sc = 0.0;
+            if (!readNumericColumnCell(cScore, r, sc))
                 continue;
             QString st = cState->asStringColumn()->textAt(r).trimmed().toLower();
-            double sc = cScore->valueAt(r);
-            if (st.isEmpty() || !std::isfinite(sc))
+            if (st.isEmpty())
                 continue;
             int pos = (st == QStringLiteral("1") || st == QStringLiteral("true")
                        || st == QStringLiteral("pos") || st == QStringLiteral("positive")
@@ -2248,13 +2296,12 @@ MultiLayer *GraphStatsAndSurfaceFit::plotKaplanMeier(ApplicationWindow *app, Tab
     QStringList groupNames;
 
     for (int r = 0; r < nRows; ++r) {
-        if (cTime->isInvalid(r) || cEvent->isInvalid(r) || cTime->isMasked(r)
-            || cEvent->isMasked(r))
+        if (cEvent->isInvalid(r) || cEvent->isMasked(r))
             continue;
         if (cGroup && (cGroup->isInvalid(r) || cGroup->isMasked(r)))
             continue;
-        double tv = cTime->valueAt(r);
-        if (!std::isfinite(tv) || tv < 0.0)
+        double tv = 0.0;
+        if (!readNumericColumnCell(cTime, r, tv) || tv < 0.0)
             continue;
 
         int ev = 0;
@@ -2573,12 +2620,8 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
         std::vector<double> rowVals(static_cast<size_t>(P));
         for (int j = 0; j < P; ++j) {
             Column *c = cols[static_cast<size_t>(j)];
-            if (c->isInvalid(r) || c->isMasked(r)) {
-                ok = false;
-                break;
-            }
-            double v = c->valueAt(r);
-            if (!std::isfinite(v)) {
+            double v = 0.0;
+            if (!readNumericColumnCell(c, r, v)) {
                 ok = false;
                 break;
             }
@@ -3334,7 +3377,7 @@ void GraphStatsAndSurfaceFit::showPCADialog(ApplicationWindow *app)
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (columnHasNumericValues(t->column(c))) {
                 QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
                 it->setSelected(true);
             }
@@ -3382,18 +3425,8 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
     std::vector<double> vals;
     vals.reserve(static_cast<size_t>(col->rowCount()));
     for (int r = 0; r < col->rowCount(); ++r) {
-        if (col->isInvalid(r) || col->isMasked(r))
-            continue;
         double v = 0.0;
-        if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
-            v = col->valueAt(r);
-        } else {
-            bool ok = false;
-            v = col->asStringColumn()->textAt(r).trimmed().toDouble(&ok);
-            if (!ok)
-                continue;
-        }
-        if (std::isfinite(v))
+        if (readNumericColumnCell(col, r, v))
             vals.push_back(v);
     }
 
@@ -3596,11 +3629,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotBlandAltman(ApplicationWindow *app, Tab
     diffs.reserve(static_cast<size_t>(maxRows));
 
     for (int r = 0; r < maxRows; ++r) {
-        if (colA->isInvalid(r) || colB->isInvalid(r) || colA->isMasked(r) || colB->isMasked(r))
-            continue;
-        const double a = colA->valueAt(r);
-        const double b = colB->valueAt(r);
-        if (std::isfinite(a) && std::isfinite(b)) {
+        double a = 0.0, b = 0.0;
+        if (readNumericColumnCell(colA, r, a) && readNumericColumnCell(colB, r, b)) {
             means.push_back(0.5 * (a + b));
             diffs.push_back(a - b);
         }
@@ -3761,21 +3791,11 @@ GraphStatsAndSurfaceFit::runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
     rawTriples.reserve(static_cast<size_t>(maxRows));
 
     for (int r = 0; r < maxRows; ++r) {
-        if (colY->isInvalid(r) || colY->isMasked(r))
+        double yv = 0.0;
+        if (!readNumericColumnCell(colY, r, yv))
             continue;
         QString sA, sB;
         if (!readFactorLevel(colA, r, sA) || !readFactorLevel(colB, r, sB))
-            continue;
-        double yv = 0.0;
-        if (colY->columnMode() == SciDAVis::ColumnMode::Numeric) {
-            yv = colY->valueAt(r);
-        } else {
-            bool ok = false;
-            yv = colY->asStringColumn()->textAt(r).trimmed().toDouble(&ok);
-            if (!ok)
-                continue;
-        }
-        if (!std::isfinite(yv))
             continue;
         if (!levelsA.contains(sA))
             levelsA.append(sA);
@@ -4122,8 +4142,14 @@ void GraphStatsAndSurfaceFit::showNormalityDialog(ApplicationWindow *app, Graph 
         if (idx < 0 || idx >= tables.size())
             return;
         Table *t = tables[idx];
-        for (int c = 0; c < t->numCols(); ++c)
-            colCombo->addItem(t->column(c)->name());
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (columnHasNumericValues(t->column(c)))
+                colCombo->addItem(t->column(c)->name());
+        }
+        if (colCombo->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c)
+                colCombo->addItem(t->column(c)->name());
+        }
     };
     refreshCols();
     QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -4178,11 +4204,20 @@ void GraphStatsAndSurfaceFit::showBlandAltmanDialog(ApplicationWindow *app)
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
+            if (!columnHasNumericValues(t->column(c)))
+                continue;
             const QString cn = t->column(c)->name();
             colACombo->addItem(cn);
             colBCombo->addItem(cn);
         }
-        if (t->numCols() >= 2)
+        if (colACombo->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c) {
+                const QString cn = t->column(c)->name();
+                colACombo->addItem(cn);
+                colBCombo->addItem(cn);
+            }
+        }
+        if (colBCombo->count() >= 2)
             colBCombo->setCurrentIndex(1);
     };
     refreshCols();
@@ -4249,12 +4284,17 @@ void GraphStatsAndSurfaceFit::showTwoWayANOVADialog(ApplicationWindow *app)
             const QString cn = t->column(c)->name();
             factorACombo->addItem(cn);
             factorBCombo->addItem(cn);
-            respCombo->addItem(cn);
+            if (columnHasNumericValues(t->column(c)))
+                respCombo->addItem(cn);
         }
-        if (t->numCols() >= 2)
+        if (respCombo->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c)
+                respCombo->addItem(t->column(c)->name());
+        }
+        if (factorBCombo->count() >= 2)
             factorBCombo->setCurrentIndex(1);
-        if (t->numCols() >= 3)
-            respCombo->setCurrentIndex(2);
+        if (respCombo->count() >= 1)
+            respCombo->setCurrentIndex(respCombo->count() - 1);
     };
     refreshCols();
     QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -4307,7 +4347,16 @@ void registerPhase5StatsTranslationsOnce()
     reg("Strength / Lifetime Column:", "強度 / 寿命データ列:");
     reg("Right-Censoring Column (Optional):", "右側打ち切り列 (任意):");
     reg("(None — Complete Failures)", "(なし — 全数破壊データ)");
+    reg("Censoring Coding:", "打ち切り符号化方式:");
+    reg("1 = Failure/Event, 0 = Censored [Kaplan-Meier Standard]",
+        "1 = 破壊/イベント, 0 = 打ち切り [Kaplan-Meier標準]");
+    reg("0 = Failure, 1 = Censored (Suspension)",
+        "0 = 破壊, 1 = 打ち切り (サスペンション)");
+    reg("3-Parameter Weibull (Estimate Threshold γ)",
+        "3母数ワイブル解析 (閾値 γ を推定)");
     reg("ln(Strength / Life)", "ln(強度 / 寿命)");
+    reg("ln(Strength / Life - γ)", "ln(強度 / 寿命 - γ)");
+    reg("3-Parameter Weibull Probability Plot", "3母数ワイブル確率プロット");
     reg("Weibit ln(-ln(1 - F))", "ワイビット ln(-ln(1 - F))");
     reg("Weibull Report", "ワイブル解析レポート");
     reg("Outlier Detection Method:", "外れ値検出手法:");
@@ -4334,15 +4383,34 @@ void registerPhase5StatsTranslationsOnce()
     reg("Correlation Type:", "相関係数の種類:");
     reg("Pearson Linear Correlation (r)", "Pearson積率相関係数 (r)");
     reg("Spearman Rank Correlation (ρ)", "Spearman順位相関係数 (ρ)");
+    reg("Correlation Matrix Heatmap (Spearman ρ)", "相関行列ヒートマップ (Spearman ρ)");
+    reg("Correlation Matrix Heatmap (Pearson r)", "相関行列ヒートマップ (Pearson r)");
     reg("Number of Clusters (k):", "クラスタ数 (k):");
     reg("Create 2D Cluster Scatter Plot", "2Dクラスタ散布図を作成");
     reg("K-Means Clustering", "K-Meansクラスタリング");
+    reg("K-Means Clustering (k = %1, Silhouette = %2)",
+        "K-Meansクラスタリング (k = %1, シルエット係数 = %2)");
     reg("Hierarchical Dendrogram", "階層型デンドログラム");
+    reg("Hierarchical Dendrogram (%1 Linkage)", "階層型デンドログラム (%1法)");
     reg("Linkage Criterion:", "連結基準 (Linkage):");
     reg("Ward's Minimum Variance", "Ward法 (最小分散)");
     reg("Complete Linkage (Furthest Neighbor)", "完全連結法 (最遠隣)");
     reg("Average Linkage (UPGMA)", "群平均法 (UPGMA)");
     reg("Dissimilarity Height", "非類似度距離 (Height)");
+    reg("Ward", "Ward");
+    reg("Complete", "完全連結");
+    reg("Average", "群平均");
+    reg("Observation", "観測個体");
+    reg("Dendrogram", "デンドログラム");
+    reg("Passing-Bablok & Deming Regression", "Passing-Bablok / Deming回帰 (測定法比較)");
+    reg("Passing-Bablok & Deming Regression...", "Passing-Bablok / Deming回帰 (測定法比較)...");
+    reg("Passing-Bablok & Deming Method Comparison", "Passing-Bablok / Deming法による測定法比較");
+    reg("Reference Method X Column:", "基準法 X 列:");
+    reg("Test Method Y Column:", "評価法 Y 列:");
+    reg("Deming Error Variance Ratio λ (σx² / σy²):", "Deming誤差分散比 λ (σx² / σy²):");
+    reg("Create Method-Comparison Regression Plot", "測定法比較回帰プロットを作成");
+    reg("Passing-Bablok & Deming Regression (%1 vs %2)", "Passing-Bablok / Deming回帰 (%1 vs %2)");
+    reg("PB 95% CI", "PB 95%信頼帯");
 }
 
 void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double> &ranksOut,
@@ -4551,7 +4619,8 @@ void evalWilcoxonSignedRank(const std::vector<double> &diffs, double &wStatOut, 
 } // namespace
 
 GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullProbability(
-        ApplicationWindow *app, Table *srcTable, const QString &dataCol, const QString &censorCol)
+        ApplicationWindow *app, Table *srcTable, const QString &dataCol, const QString &censorCol,
+        int censorCoding, bool fitThreeParam)
 {
     registerPhase5StatsTranslationsOnce();
     WeibullPlotResult res;
@@ -4573,38 +4642,47 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     items.reserve(static_cast<size_t>(std::max(0, nRows)));
 
     for (int r = 0; r < nRows; ++r) {
-        if (cData->isInvalid(r) || cData->isMasked(r))
-            continue;
-        const double xv = cData->valueAt(r);
-        if (!std::isfinite(xv) || xv <= 0.0)
+        double xv = 0.0;
+        if (!readNumericColumnCell(cData, r, xv) || xv <= 0.0)
             continue;
         bool isCens = false;
         if (cCensor && r < cCensor->rowCount() && !cCensor->isInvalid(r) && !cCensor->isMasked(r)) {
-            if (cCensor->columnMode() == SciDAVis::ColumnMode::Numeric) {
-                isCens = (std::round(cCensor->valueAt(r)) != 0.0);
-            } else {
+            double cv = 0.0;
+            if (readNumericColumnCell(cCensor, r, cv)) {
+                if (censorCoding == 0) {
+                    // Kaplan-Meier standard: 1 = Failure/Event, 0 = Right-Censored
+                    isCens = (std::round(cv) == 0.0);
+                } else {
+                    // Suspension coding: 0 = Failure, 1 = Right-Censored
+                    isCens = (std::round(cv) != 0.0);
+                }
+            } else if (cCensor->asStringColumn()) {
                 const QString s = cCensor->asStringColumn()->textAt(r).trimmed().toLower();
-                isCens = (s == QLatin1String("1") || s == QLatin1String("c")
-                          || s.startsWith(QLatin1String("cens"))
-                          || s.startsWith(QLatin1String("susp"))
-                          || s == QLatin1String("true"));
+                if (s == QLatin1String("c") || s.startsWith(QLatin1String("cens"))
+                    || s.startsWith(QLatin1String("susp")) || s == QLatin1String("right")) {
+                    isCens = true;
+                } else if (s == QLatin1String("f") || s.startsWith(QLatin1String("fail"))
+                           || s.startsWith(QLatin1String("event"))
+                           || s == QLatin1String("dead")) {
+                    isCens = false;
+                } else if (censorCoding == 0) {
+                    isCens = (s == QLatin1String("0") || s == QLatin1String("false")
+                              || s == QLatin1String("no"));
+                } else {
+                    isCens = (s == QLatin1String("1") || s == QLatin1String("true")
+                              || s == QLatin1String("yes"));
+                }
             }
         }
         items.push_back({ xv, isCens });
     }
 
-    // Safeguard if a status column marked 1=failed for every row
-    bool anyUncensored = false;
+    int nCens = 0;
     for (const WeibItem &it : items) {
-        if (!it.censored) {
-            anyUncensored = true;
-            break;
-        }
+        if (it.censored)
+            ++nCens;
     }
-    if (!anyUncensored) {
-        for (WeibItem &it : items)
-            it.censored = false;
-    }
+    res.censoredCount = nCens;
 
     if (items.size() < 2)
         return res;
@@ -4644,40 +4722,172 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
         wWeibit.push_back(std::log(-std::log(1.0 - F)));
     }
 
-    const int mFail = static_cast<int>(uLnX.size());
+    const int mFail = static_cast<int>(failX.size());
     if (mFail < 2)
         return res;
 
-    const double meanU = std::accumulate(uLnX.begin(), uLnX.end(), 0.0) / static_cast<double>(mFail);
-    const double meanW = std::accumulate(wWeibit.begin(), wWeibit.end(), 0.0) / static_cast<double>(mFail);
-
-    double suu = 0.0, suw = 0.0, sww = 0.0;
+    const double meanW =
+            std::accumulate(wWeibit.begin(), wWeibit.end(), 0.0) / static_cast<double>(mFail);
+    double sww = 0.0;
     for (int i = 0; i < mFail; ++i) {
-        const double du = uLnX[static_cast<size_t>(i)] - meanU;
         const double dw = wWeibit[static_cast<size_t>(i)] - meanW;
-        suu += du * du;
-        suw += du * dw;
         sww += dw * dw;
     }
-    if (suu <= 1e-30 || suw <= 0.0)
-        return res;
 
-    const double betaM = suw / suu;
-    const double interceptA = meanW - betaM * meanU;
-    double rss = 0.0;
-    for (int i = 0; i < mFail; ++i) {
-        const double err = wWeibit[static_cast<size_t>(i)]
-                - (interceptA + betaM * uLnX[static_cast<size_t>(i)]);
-        rss += err * err;
+    auto evalGammaStats = [&](double gamma, double &betaOut, double &interceptOut, double &meanUOut,
+                              double &suuOut, double &rssOut) -> bool {
+        double sumU = 0.0;
+        for (int i = 0; i < mFail; ++i) {
+            const double shifted = failX[static_cast<size_t>(i)] - gamma;
+            if (!(shifted > 0.0))
+                return false;
+            sumU += std::log(shifted);
+        }
+        meanUOut = sumU / static_cast<double>(mFail);
+        suuOut = 0.0;
+        double suw = 0.0;
+        for (int i = 0; i < mFail; ++i) {
+            const double du = std::log(failX[static_cast<size_t>(i)] - gamma) - meanUOut;
+            const double dw = wWeibit[static_cast<size_t>(i)] - meanW;
+            suuOut += du * du;
+            suw += du * dw;
+        }
+        if (suuOut <= 1e-30 || suw <= 0.0)
+            return false;
+        betaOut = suw / suuOut;
+        interceptOut = meanW - betaOut * meanUOut;
+        rssOut = 0.0;
+        for (int i = 0; i < mFail; ++i) {
+            const double ui = std::log(failX[static_cast<size_t>(i)] - gamma);
+            const double err = wWeibit[static_cast<size_t>(i)] - (interceptOut + betaOut * ui);
+            rssOut += err * err;
+        }
+        return std::isfinite(rssOut);
+    };
+
+    double bestGamma = 0.0;
+    bool usedThreeParam = false;
+    if (fitThreeParam && mFail >= 3) {
+        const double gammaMax = 0.999 * failX.front();
+        if (gammaMax > 0.0) {
+            auto objectiveRss = [&](double gCand) -> double {
+                double bTmp = 0.0, aTmp = 0.0, muTmp = 0.0, suuTmp = 0.0, rssTmp = 0.0;
+                if (!evalGammaStats(gCand, bTmp, aTmp, muTmp, suuTmp, rssTmp))
+                    return std::numeric_limits<double>::infinity();
+                return rssTmp;
+            };
+
+            constexpr int kScan = 128;
+            int bestIdx = 0;
+            double bestObj = objectiveRss(0.0);
+            for (int s = 1; s <= kScan; ++s) {
+                const double gCand =
+                        gammaMax * static_cast<double>(s) / static_cast<double>(kScan);
+                const double fVal = objectiveRss(gCand);
+                if (fVal < bestObj) {
+                    bestObj = fVal;
+                    bestIdx = s;
+                }
+            }
+
+            const double stepG = gammaMax / static_cast<double>(kScan);
+            double aBrk = std::max(0.0, static_cast<double>(bestIdx - 1) * stepG);
+            double bBrk = std::min(gammaMax, static_cast<double>(bestIdx + 1) * stepG);
+
+            // Brent's parabolic + golden-section minimization on [aBrk, bBrk]
+            constexpr double kGold = 0.3819660112501051518;
+            double x = std::clamp(static_cast<double>(bestIdx) * stepG, aBrk, bBrk);
+            double w = x, v = x;
+            double fx = objectiveRss(x), fw = fx, fv = fx;
+            double dStep = 0.0, eStep = 0.0;
+            const double tol = std::max(1e-12, 1e-11 * gammaMax);
+
+            for (int iter = 0; iter < 64; ++iter) {
+                const double xm = 0.5 * (aBrk + bBrk);
+                const double tol1 = tol * std::fabs(x) + 1e-15;
+                const double tol2 = 2.0 * tol1;
+                if (std::fabs(x - xm) <= (tol2 - 0.5 * (bBrk - aBrk)))
+                    break;
+
+                bool usedParabolic = false;
+                if (std::fabs(eStep) > tol1) {
+                    const double r = (x - w) * (fx - fv);
+                    double q = (x - v) * (fx - fw);
+                    double p = (x - v) * q - (x - w) * r;
+                    q = 2.0 * (q - r);
+                    if (q > 0.0)
+                        p = -p;
+                    q = std::fabs(q);
+                    const double eTemp = eStep;
+                    eStep = dStep;
+                    if (std::fabs(p) < std::fabs(0.5 * q * eTemp) && p > q * (aBrk - x)
+                        && p < q * (bBrk - x)) {
+                        dStep = p / q;
+                        const double uTry = x + dStep;
+                        if ((uTry - aBrk) < tol2 || (bBrk - uTry) < tol2)
+                            dStep = (x < xm) ? tol1 : -tol1;
+                        usedParabolic = true;
+                    }
+                }
+                if (!usedParabolic) {
+                    eStep = (x >= xm) ? (aBrk - x) : (bBrk - x);
+                    dStep = kGold * eStep;
+                }
+                const double u = (std::fabs(dStep) >= tol1)
+                        ? (x + dStep)
+                        : (x + ((dStep > 0.0) ? tol1 : -tol1));
+                const double fu = objectiveRss(u);
+                if (fu <= fx) {
+                    if (u >= x)
+                        aBrk = x;
+                    else
+                        bBrk = x;
+                    v = w;
+                    fv = fw;
+                    w = x;
+                    fw = fx;
+                    x = u;
+                    fx = fu;
+                } else {
+                    if (u < x)
+                        aBrk = u;
+                    else
+                        bBrk = u;
+                    if (fu <= fw || w == x) {
+                        v = w;
+                        fv = fw;
+                        w = u;
+                        fw = fu;
+                    } else if (fu <= fv || v == x || v == w) {
+                        v = u;
+                        fv = fu;
+                    }
+                }
+            }
+            if (std::isfinite(fx)) {
+                bestGamma = std::clamp(x, 0.0, gammaMax);
+                usedThreeParam = true;
+            }
+        }
     }
+
+    double betaM = 0.0, interceptA = 0.0, meanU = 0.0, suu = 0.0, rss = 0.0;
+    if (!evalGammaStats(bestGamma, betaM, interceptA, meanU, suu, rss))
+        return res;
+    for (int i = 0; i < mFail; ++i)
+        uLnX[static_cast<size_t>(i)] = std::log(failX[static_cast<size_t>(i)] - bestGamma);
+
     const double r2 = (sww > 1e-30) ? std::clamp(1.0 - rss / sww, 0.0, 1.0) : 1.0;
-    const double sResid = (mFail > 2) ? std::sqrt(std::max(0.0, rss / static_cast<double>(mFail - 2)))
-                                      : 0.0;
-    const double betaSE = (mFail > 2) ? (sResid / std::sqrt(suu)) : 0.0;
+    const int residDf = usedThreeParam ? std::max(1, mFail - 3) : (mFail - 2);
+    const bool hasSe = usedThreeParam ? (mFail > 3) : (mFail > 2);
+    const double sResid = hasSe
+            ? std::sqrt(std::max(0.0, rss / static_cast<double>(residDf)))
+            : 0.0;
+    const double betaSE = hasSe ? (sResid / std::sqrt(suu)) : 0.0;
 
     const double lnSigma0 = -interceptA / betaM;
     const double sigma0 = std::exp(std::clamp(lnSigma0, -500.0, 500.0));
-    const double lnSigma0SE = (mFail > 2 && std::fabs(betaM) > 1e-30)
+    const double lnSigma0SE = (hasSe && std::fabs(betaM) > 1e-30)
             ? ((sResid / std::fabs(betaM))
                * std::sqrt(1.0 / static_cast<double>(mFail)
                            + ((lnSigma0 - meanU) * (lnSigma0 - meanU)) / suu))
@@ -4688,15 +4898,17 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     res.modulusMSE = betaSE;
     res.scaleSigma0 = sigma0;
     res.scaleSigma0SE = sigma0 * lnSigma0SE;
-    res.b10Life = sigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
-    res.b50Life = sigma0 * std::pow(std::log(2.0), 1.0 / betaM);
+    res.thresholdGamma = bestGamma;
+    res.threeParameter = usedThreeParam;
+    res.b10Life = bestGamma + sigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
+    res.b50Life = bestGamma + sigma0 * std::pow(std::log(2.0), 1.0 / betaM);
     res.rSquare = r2;
 
     if (!app)
         return res;
 
-    const double tCrit = (mFail > 2)
-            ? gsl_cdf_tdist_Pinv(0.975, static_cast<double>(mFail - 2))
+    const double tCrit = hasSe
+            ? gsl_cdf_tdist_Pinv(0.975, static_cast<double>(residDf))
             : 0.0;
 
     const QString tblName = app->generateUniqueName(
@@ -4721,7 +4933,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     for (int i = 0; i < mFail; ++i) {
         const double uv = uLnX[static_cast<size_t>(i)];
         const double wh = interceptA + betaM * uv;
-        const double hb = (mFail > 2)
+        const double hb = hasSe
                 ? (tCrit * sResid
                    * std::sqrt(1.0 / static_cast<double>(mFail) + ((uv - meanU) * (uv - meanU)) / suu))
                 : 0.0;
@@ -4751,7 +4963,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                                mFail - 1)) {
                 g->setCurvePen(g->curves() - 1, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
             }
-            if (mFail > 2 && sResid > 0.0) {
+            if (hasSe && sResid > 0.0) {
                 const QPen ciPen(QColor(205, 35, 45, 175), 1.3, Qt::DashLine);
                 if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(5), Graph::Line, 0,
                                    mFail - 1))
@@ -4761,28 +4973,51 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                     g->setCurvePen(g->curves() - 1, ciPen);
             }
 
-            g->setXAxisTitle(QObject::tr("ln(Strength / Life)"));
+            g->setXAxisTitle(usedThreeParam ? QObject::tr("ln(Strength / Life - γ)")
+                                            : QObject::tr("ln(Strength / Life)"));
             g->setYAxisTitle(QObject::tr("Weibit ln(-ln(1 - F))"));
-            g->setTitle(QObject::tr("Weibull Probability Plot"));
+            g->setTitle(usedThreeParam ? QObject::tr("3-Parameter Weibull Probability Plot")
+                                       : QObject::tr("Weibull Probability Plot"));
             if (g->legend())
                 g->legend()->setText(g->legendText());
             applyArialGraphFonts(g);
 
             const double uSpan = std::max(1e-6, uLnX.back() - uLnX.front());
             const double wSpan = std::max(1e-6, wWeibit.back() - wWeibit.front());
-            const QString summary = QStringLiteral(
-                    "Modulus m = %1 ± %2\n"
-                    "Scale σ0 = %3 ± %4\n"
-                    "B10 = %5,  B50 = %6\n"
-                    "R² = %7  (N = %8)")
-                    .arg(res.modulusM, 0, 'f', 3)
-                    .arg(res.modulusMSE, 0, 'f', 3)
-                    .arg(res.scaleSigma0, 0, 'g', 5)
-                    .arg(res.scaleSigma0SE, 0, 'g', 4)
-                    .arg(res.b10Life, 0, 'g', 5)
-                    .arg(res.b50Life, 0, 'g', 5)
-                    .arg(res.rSquare, 0, 'f', 5)
-                    .arg(mFail);
+            QString summary;
+            if (usedThreeParam) {
+                summary = QStringLiteral(
+                        "Modulus m = %1 ± %2\n"
+                        "Scale η (σ0) = %3 ± %4\n"
+                        "Threshold γ = %5\n"
+                        "B10 = %6,  B50 = %7\n"
+                        "R² = %8  (Fail = %9, Cens = %10)")
+                        .arg(res.modulusM, 0, 'f', 3)
+                        .arg(res.modulusMSE, 0, 'f', 3)
+                        .arg(res.scaleSigma0, 0, 'g', 5)
+                        .arg(res.scaleSigma0SE, 0, 'g', 4)
+                        .arg(res.thresholdGamma, 0, 'g', 5)
+                        .arg(res.b10Life, 0, 'g', 5)
+                        .arg(res.b50Life, 0, 'g', 5)
+                        .arg(res.rSquare, 0, 'f', 5)
+                        .arg(mFail)
+                        .arg(res.censoredCount);
+            } else {
+                summary = QStringLiteral(
+                        "Modulus m = %1 ± %2\n"
+                        "Scale σ0 = %3 ± %4\n"
+                        "B10 = %5,  B50 = %6\n"
+                        "R² = %7  (Fail = %8, Cens = %9)")
+                        .arg(res.modulusM, 0, 'f', 3)
+                        .arg(res.modulusMSE, 0, 'f', 3)
+                        .arg(res.scaleSigma0, 0, 'g', 5)
+                        .arg(res.scaleSigma0SE, 0, 'g', 4)
+                        .arg(res.b10Life, 0, 'g', 5)
+                        .arg(res.b50Life, 0, 'g', 5)
+                        .arg(res.rSquare, 0, 'f', 5)
+                        .arg(mFail)
+                        .arg(res.censoredCount);
+            }
             addFramedBoxOnGraph(g, uLnX.front() + 0.05 * uSpan, wWeibit.back() - 0.05 * wSpan,
                                 summary);
             g->setAutoScale();
@@ -4812,10 +5047,8 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
     std::vector<Obs> obs;
     obs.reserve(static_cast<size_t>(std::max(0, col->rowCount())));
     for (int r = 0; r < col->rowCount(); ++r) {
-        if (col->isInvalid(r) || col->isMasked(r))
-            continue;
-        const double v = col->valueAt(r);
-        if (std::isfinite(v))
+        double v = 0.0;
+        if (readNumericColumnCell(col, r, v))
             obs.push_back({ r, v });
     }
 
@@ -4842,6 +5075,9 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
             pVal = std::clamp(2.0 * dm * gsl_cdf_tdist_Q(tVal, dm - 2.0), 0.0, 1.0);
         }
     };
+
+    std::vector<double> outlierCritVals;
+    std::vector<double> outlierStepPs;
 
     QString methodLabel;
     if (effMethod == 0) {
@@ -4871,11 +5107,14 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
         grubbsCritAndP(n, gStat, sigAlpha, gCrit, pVal);
         res.valid = true;
         res.primaryStatistic = gStat;
+        res.testStatistic = gStat;
         res.criticalValue = gCrit;
         res.pValue = pVal;
         if (gStat > gCrit) {
             res.outlierRows.append(obs[static_cast<size_t>(bestIdx)].row);
             res.outlierValues.append(obs[static_cast<size_t>(bestIdx)].val);
+            outlierCritVals.push_back(gCrit);
+            outlierStepPs.push_back(pVal);
         }
     } else if (effMethod == 1) {
         methodLabel = QStringLiteral("Generalized ESD (Rosner) Test");
@@ -4921,11 +5160,6 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
         if (steps.empty())
             return res;
 
-        res.valid = true;
-        res.primaryStatistic = steps.front().rStat;
-        res.criticalValue = steps.front().lambdaCrit;
-        res.pValue = steps.front().stepP;
-
         int numOut = 0;
         for (int i = static_cast<int>(steps.size()) - 1; i >= 0; --i) {
             if (steps[static_cast<size_t>(i)].rStat > steps[static_cast<size_t>(i)].lambdaCrit) {
@@ -4933,9 +5167,20 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
                 break;
             }
         }
+
+        const size_t reportIdx = (numOut > 0) ? static_cast<size_t>(numOut - 1) : 0;
+        res.valid = true;
+        res.primaryStatistic = steps[reportIdx].rStat;
+        res.testStatistic = steps[reportIdx].rStat;
+        res.criticalValue = steps[reportIdx].lambdaCrit;
+        res.pValue = steps[reportIdx].stepP;
+
         for (int i = 0; i < numOut; ++i) {
-            res.outlierRows.append(steps[static_cast<size_t>(i)].removed.row);
-            res.outlierValues.append(steps[static_cast<size_t>(i)].removed.val);
+            const EsdStep &st = steps[static_cast<size_t>(i)];
+            res.outlierRows.append(st.removed.row);
+            res.outlierValues.append(st.removed.val);
+            outlierCritVals.push_back(st.lambdaCrit);
+            outlierStepPs.push_back(st.stepP);
         }
     } else {
         methodLabel = QStringLiteral("Dixon Q Test");
@@ -4957,11 +5202,14 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
         evalDixonQCritAndP(n, qStat, sigAlpha, qCrit, pVal);
         res.valid = true;
         res.primaryStatistic = qStat;
+        res.testStatistic = qStat;
         res.criticalValue = qCrit;
         res.pValue = pVal;
         if (qStat > qCrit) {
             res.outlierRows.append(cand.row);
             res.outlierValues.append(cand.val);
+            outlierCritVals.push_back(qCrit);
+            outlierStepPs.push_back(pVal);
         }
     }
 
@@ -4991,7 +5239,7 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
 
         repTbl->column(0)->setTextAt(0, methodLabel);
         repTbl->column(1)->setValueAt(0, static_cast<double>(n));
-        repTbl->column(2)->setValueAt(0, res.primaryStatistic);
+        repTbl->column(2)->setValueAt(0, res.testStatistic);
         repTbl->column(3)->setValueAt(0, res.criticalValue);
         repTbl->column(4)->setValueAt(0, res.pValue);
         repTbl->column(5)->setTextAt(0, res.outlierRows.isEmpty()
@@ -5001,11 +5249,17 @@ GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTe
 
         for (int k = 0; k < res.outlierRows.size(); ++k) {
             const int r = k + 1;
+            const double stepCrit = (static_cast<size_t>(k) < outlierCritVals.size())
+                    ? outlierCritVals[static_cast<size_t>(k)]
+                    : res.criticalValue;
+            const double stepPVal = (static_cast<size_t>(k) < outlierStepPs.size())
+                    ? outlierStepPs[static_cast<size_t>(k)]
+                    : res.pValue;
             repTbl->column(0)->setTextAt(r, QStringLiteral("Outlier #%1").arg(k + 1));
             repTbl->column(1)->setValueAt(r, static_cast<double>(res.outlierRows[k] + 1));
             repTbl->column(2)->setValueAt(r, res.outlierValues[k]);
-            repTbl->column(3)->setValueAt(r, res.criticalValue);
-            repTbl->column(4)->setValueAt(r, res.pValue);
+            repTbl->column(3)->setValueAt(r, stepCrit);
+            repTbl->column(4)->setValueAt(r, stepPVal);
             repTbl->column(5)->setTextAt(r, maskDetectedOutliers ? QStringLiteral("Masked")
                                                                  : QStringLiteral("Detected"));
         }
@@ -5032,11 +5286,8 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
         std::vector<double> allVals;
         const int nRows = std::min(cA->rowCount(), cB->rowCount());
         for (int r = 0; r < nRows; ++r) {
-            if (cA->isInvalid(r) || cB->isInvalid(r) || cA->isMasked(r) || cB->isMasked(r))
-                continue;
-            const double va = cA->valueAt(r);
-            const double vb = cB->valueAt(r);
-            if (std::isfinite(va) && std::isfinite(vb)) {
+            double va = 0.0, vb = 0.0;
+            if (readNumericColumnCell(cA, r, va) && readNumericColumnCell(cB, r, vb)) {
                 diffs.push_back(vb - va);
                 allVals.push_back(va);
                 allVals.push_back(vb);
@@ -5101,10 +5352,8 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
         GroupSample gs;
         gs.name = col->name();
         for (int r = 0; r < col->rowCount(); ++r) {
-            if (col->isInvalid(r) || col->isMasked(r))
-                continue;
-            const double v = col->valueAt(r);
-            if (std::isfinite(v))
+            double v = 0.0;
+            if (readNumericColumnCell(col, r, v))
                 gs.vals.push_back(v);
         }
         if (gs.vals.size() < 2)
@@ -5431,80 +5680,6 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
 
 namespace {
 
-class CorrelationRasterData : public QwtRasterData
-{
-public:
-    CorrelationRasterData(int p, const std::vector<double> &vals)
-        : QwtRasterData(QwtDoubleRect(0.5, 0.5, static_cast<double>(p), static_cast<double>(p))),
-          d_p(p),
-          d_vals(vals)
-    {
-    }
-
-    QwtRasterData *copy() const override { return new CorrelationRasterData(*this); }
-
-    QwtDoubleInterval range() const override { return QwtDoubleInterval(-1.0, 1.0); }
-
-    QSize rasterHint(const QwtDoubleRect &) const override
-    {
-        return QSize(std::max(1, d_p), std::max(1, d_p));
-    }
-
-    double value(double x, double y) const override
-    {
-        if (d_p <= 0 || static_cast<int>(d_vals.size()) < d_p * d_p)
-            return 0.0;
-        const int col = std::clamp(static_cast<int>(std::floor(x - 0.5)), 0, d_p - 1);
-        const int rowFromBottom = std::clamp(static_cast<int>(std::floor(y - 0.5)), 0, d_p - 1);
-        const int row = d_p - 1 - rowFromBottom;
-        return d_vals[static_cast<size_t>(row * d_p + col)];
-    }
-
-private:
-    int d_p = 0;
-    std::vector<double> d_vals;
-};
-
-class DendrogramCurve : public DataCurve
-{
-public:
-    DendrogramCurve(Table *t, const QString &xColName, const QString &yColName, int startRow,
-                    int endRow)
-        : DataCurve(t, xColName, yColName, startRow, endRow)
-    {
-        setType(Graph::Line);
-        setStyle(QwtPlotCurve::Lines);
-        setPen(QPen(QColor(25, 65, 130), 1.8, Qt::SolidLine));
-        setRenderHint(QwtPlotItem::RenderAntialiased, true);
-    }
-
-    using DataCurve::draw;
-    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,
-              int to) const override
-    {
-        if (!painter || dataSize() < 4)
-            return;
-        if (to < 0)
-            to = dataSize() - 1;
-        from = std::max(0, (from / 4) * 4);
-        to = std::min(dataSize() - 1, to);
-
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(pen());
-        for (int i = from; i + 3 <= to; i += 4) {
-            const QPointF p0(xMap.transform(x(i)), yMap.transform(y(i)));
-            const QPointF p1(xMap.transform(x(i + 1)), yMap.transform(y(i + 1)));
-            const QPointF p2(xMap.transform(x(i + 2)), yMap.transform(y(i + 2)));
-            const QPointF p3(xMap.transform(x(i + 3)), yMap.transform(y(i + 3)));
-            painter->drawLine(p0, p1);
-            painter->drawLine(p1, p2);
-            painter->drawLine(p2, p3);
-        }
-        painter->restore();
-    }
-};
-
 struct SplitMix64Rng {
     uint64_t state = 0x9E3779B97F4A7C15ULL;
     explicit SplitMix64Rng(uint64_t seed = 0x9E3779B97F4A7C15ULL) : state(seed) {}
@@ -5541,12 +5716,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotPairedComparison(
     std::vector<double> bef, aft, diffs;
     const int nRows = std::min(cBefore->rowCount(), cAfter->rowCount());
     for (int r = 0; r < nRows; ++r) {
-        if (cBefore->isInvalid(r) || cAfter->isInvalid(r)
-            || cBefore->isMasked(r) || cAfter->isMasked(r))
-            continue;
-        const double vb = cBefore->valueAt(r);
-        const double va = cAfter->valueAt(r);
-        if (std::isfinite(vb) && std::isfinite(va)) {
+        double vb = 0.0, va = 0.0;
+        if (readNumericColumnCell(cBefore, r, vb) && readNumericColumnCell(cAfter, r, va)) {
             bef.push_back(vb);
             aft.push_back(va);
             diffs.push_back(va - vb);
@@ -5633,6 +5804,12 @@ MultiLayer *GraphStatsAndSurfaceFit::plotPairedComparison(
     tbl->column(5)->setValueAt(1, meanA);
     tbl->column(6)->setValueAt(1, seA);
     tbl->column(7)->setTextAt(1, cAfter->name());
+    for (int r = 2; r < tbl->numRows(); ++r) {
+        tbl->column(4)->setInvalid(r, true);
+        tbl->column(5)->setInvalid(r, true);
+        tbl->column(6)->setInvalid(r, true);
+        tbl->column(7)->setInvalid(r, true);
+    }
 
     MultiLayer *ml = app->newGraph(
             app->generateUniqueName(QStringLiteral("PairedPlot_") + srcTable->name(), false));
@@ -5706,8 +5883,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
     QStringList namesToUse = colNames;
     if (namesToUse.isEmpty()) {
         for (int c = 0; c < srcTable->numCols(); ++c) {
-            if (srcTable->column(c)
-                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+            if (columnHasNumericValues(srcTable->column(c)))
                 namesToUse << srcTable->column(c)->name();
         }
     }
@@ -5733,11 +5909,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
             const int nRows = std::min(ci->rowCount(), cj->rowCount());
             std::vector<double> xi, xj;
             for (int r = 0; r < nRows; ++r) {
-                if (ci->isInvalid(r) || cj->isInvalid(r) || ci->isMasked(r) || cj->isMasked(r))
-                    continue;
-                const double vi = ci->valueAt(r);
-                const double vj = cj->valueAt(r);
-                if (std::isfinite(vi) && std::isfinite(vj)) {
+                double vi = 0.0, vj = 0.0;
+                if (readNumericColumnCell(ci, r, vi) && readNumericColumnCell(cj, r, vj)) {
                     xi.push_back(vi);
                     xj.push_back(vj);
                 }
@@ -5794,6 +5967,9 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
     if (!corrMat)
         return nullptr;
 
+    // Cell-aligned [0.5, P + 0.5] x [0.5, P + 0.5] bounds so standard Spectrogram / MatrixData
+    // places cell (i, j) on [j + 0.5, j + 1.5] x [i + 0.5, i + 1.5] centered at integer tick
+    // (j + 1, i + 1) identically both before and after .sciprj reload.
     corrMat->setCoordinates(0.5, static_cast<double>(P) + 0.5, 0.5, static_cast<double>(P) + 0.5);
     for (int i = 0; i < P; ++i) {
         for (int j = 0; j < P; ++j)
@@ -5807,13 +5983,34 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
         return nullptr;
 
     if (Graph *g = ml->activeGraph()) {
+        auto divergingColorForR = [](double rv) -> QColor {
+            const double c = std::clamp(rv, -1.0, 1.0);
+            const QColor negCol(33, 102, 172);
+            const QColor zeroCol(247, 247, 247);
+            const QColor posCol(178, 24, 43);
+            if (c <= 0.0) {
+                const double t = c + 1.0;
+                return QColor(qRound(negCol.red() + t * (zeroCol.red() - negCol.red())),
+                              qRound(negCol.green() + t * (zeroCol.green() - negCol.green())),
+                              qRound(negCol.blue() + t * (zeroCol.blue() - negCol.blue())));
+            }
+            const double t = c;
+            return QColor(qRound(zeroCol.red() + t * (posCol.red() - zeroCol.red())),
+                          qRound(zeroCol.green() + t * (posCol.green() - zeroCol.green())),
+                          qRound(zeroCol.blue() + t * (posCol.blue() - zeroCol.blue())));
+        };
+
         if (g->plotWidget()) {
             const QwtPlotItemList items = g->plotWidget()->itemList();
             for (QwtPlotItem *it : items) {
                 if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
-                    sp->setData(CorrelationRasterData(P, rMat));
-                    QwtLinearColorMap cmap(QColor(33, 102, 172), QColor(178, 24, 43));
-                    cmap.addColorStop(0.5, QColor(247, 247, 247));
+                    const QwtDoubleInterval zRange = sp->data().range();
+                    const double zMin = zRange.isValid() ? zRange.minValue() : -1.0;
+                    const double zMax = zRange.isValid() ? zRange.maxValue() : 1.0;
+                    QwtLinearColorMap cmap(divergingColorForR(zMin), divergingColorForR(zMax));
+                    if (zMin < -1e-9 && zMax > 1e-9) {
+                        cmap.addColorStop((0.0 - zMin) / (zMax - zMin), QColor(247, 247, 247));
+                    }
                     sp->setCustomColorMap(cmap);
                     sp->showColorScale(QwtPlot::yRight, true);
                     break;
@@ -5825,7 +6022,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
         Column *colLblY = new Column(QStringLiteral("VarY"), SciDAVis::ColumnMode::Text);
         for (int k = 0; k < P; ++k) {
             colLblX->setTextAt(k, cols[static_cast<size_t>(k)]->name());
-            colLblY->setTextAt(k, cols[static_cast<size_t>(P - 1 - k)]->name());
+            colLblY->setTextAt(k, cols[static_cast<size_t>(k)]->name());
         }
         const QString hidName = app->generateUniqueName(QStringLiteral("CorrAxisLabels"));
         Table *lblTbl = app->newHiddenTable(hidName, QStringLiteral("Correlation Labels"),
@@ -5852,7 +6049,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
                 const QColor txtCol = (std::fabs(rv) > 0.62) ? QColor(255, 255, 255)
                                                              : QColor(20, 25, 35);
                 addTextLabelOnGraph(g, static_cast<double>(j) + 1.0,
-                                    static_cast<double>(P - i), cellTxt, txtCol, true,
+                                    static_cast<double>(i) + 1.0, cellTxt, txtCol, true,
                                     (P > 6) ? -2 : -1);
             }
         }
@@ -5875,8 +6072,7 @@ GraphStatsAndSurfaceFit::KMeansResult GraphStatsAndSurfaceFit::runKMeansClusteri
     QStringList namesToUse = colNames;
     if (namesToUse.isEmpty()) {
         for (int c = 0; c < srcTable->numCols(); ++c) {
-            if (srcTable->column(c)
-                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+            if (columnHasNumericValues(srcTable->column(c)))
                 namesToUse << srcTable->column(c)->name();
         }
     }
@@ -5899,12 +6095,8 @@ GraphStatsAndSurfaceFit::KMeansResult GraphStatsAndSurfaceFit::runKMeansClusteri
         std::vector<double> pt(static_cast<size_t>(D), 0.0);
         for (int d = 0; d < D; ++d) {
             Column *cd = cols[static_cast<size_t>(d)];
-            if (cd->isInvalid(r) || cd->isMasked(r)) {
-                okRow = false;
-                break;
-            }
-            const double v = cd->valueAt(r);
-            if (!std::isfinite(v)) {
+            double v = 0.0;
+            if (!readNumericColumnCell(cd, r, v)) {
                 okRow = false;
                 break;
             }
@@ -6341,8 +6533,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
     QStringList namesToUse = colNames;
     if (namesToUse.isEmpty()) {
         for (int c = 0; c < srcTable->numCols(); ++c) {
-            if (srcTable->column(c)
-                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+            if (columnHasNumericValues(srcTable->column(c)))
                 namesToUse << srcTable->column(c)->name();
         }
     }
@@ -6365,12 +6556,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
         std::vector<double> pt(static_cast<size_t>(D), 0.0);
         for (int d = 0; d < D; ++d) {
             Column *cd = cols[static_cast<size_t>(d)];
-            if (cd->isInvalid(r) || cd->isMasked(r)) {
-                okRow = false;
-                break;
-            }
-            const double v = cd->valueAt(r);
-            if (!std::isfinite(v)) {
+            double v = 0.0;
+            if (!readNumericColumnCell(cd, r, v)) {
                 okRow = false;
                 break;
             }
@@ -6517,7 +6704,6 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
     };
     assignCoords(assignCoords, totalNodes - 1);
 
-    const int nSegPts = 4 * (N - 1);
     Column *colSegX = new Column(QStringLiteral("DendX"), SciDAVis::ColumnMode::Numeric);
     Column *colSegY = new Column(QStringLiteral("Dendrogram"), SciDAVis::ColumnMode::Numeric);
     Column *colLeafLbl = new Column(QStringLiteral("LeafLabel"), SciDAVis::ColumnMode::Text);
@@ -6525,11 +6711,12 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
     colSegY->setPlotDesignation(SciDAVis::Y);
 
     double maxHeight = 0.0;
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
     for (int step = 0; step < N - 1; ++step) {
         const DendNode &nd = nodes[static_cast<size_t>(N + step)];
         const DendNode &lc = nodes[static_cast<size_t>(nd.left)];
         const DendNode &rc = nodes[static_cast<size_t>(nd.right)];
-        const int base = 4 * step;
+        const int base = 5 * step;
         colSegX->setValueAt(base + 0, lc.xPos);
         colSegY->setValueAt(base + 0, lc.height);
         colSegX->setValueAt(base + 1, lc.xPos);
@@ -6538,6 +6725,11 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
         colSegY->setValueAt(base + 2, nd.height);
         colSegX->setValueAt(base + 3, rc.xPos);
         colSegY->setValueAt(base + 3, rc.height);
+        const int sepRow = base + 4;
+        colSegX->setValueAt(sepRow, nanVal);
+        colSegY->setValueAt(sepRow, nanVal);
+        colSegX->setInvalid(sepRow, true);
+        colSegY->setInvalid(sepRow, true);
         maxHeight = std::max(maxHeight, nd.height);
     }
 
@@ -6558,10 +6750,15 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
         return nullptr;
 
     if (Graph *g = ml->activeGraph()) {
-        auto *dendCurve = new DendrogramCurve(backing, backing->colName(0), backing->colName(1), 0,
-                                              nSegPts - 1);
-        dendCurve->loadData();
-        g->insertPlotItem(dendCurve, Graph::Line);
+        const QPen bracketPen(QColor(25, 65, 130), 1.8, Qt::SolidLine);
+        for (int step = 0; step < N - 1; ++step) {
+            const int base = 5 * step;
+            if (g->insertCurve(backing, backing->colName(0), backing->colName(1), Graph::Line, base,
+                               base + 3)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, bracketPen);
+            }
+        }
 
         if (N <= 40)
             g->setLabelsTextFormat(Graph::Bottom, colLeafLbl, 0, N - 1);
@@ -6569,17 +6766,512 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
         g->setScale(QwtPlot::yLeft, 0.0, std::max(1e-6, maxHeight * 1.12));
 
         const QString linkTitle = (effLinkage == 0)
-                ? QStringLiteral("Ward")
-                : ((effLinkage == 1) ? QStringLiteral("Complete") : QStringLiteral("Average"));
-        g->setXAxisTitle(QStringLiteral("Observation"));
+                ? QCoreApplication::translate("GraphStatsAndSurfaceFit", "Ward")
+                : ((effLinkage == 1)
+                           ? QCoreApplication::translate("GraphStatsAndSurfaceFit", "Complete")
+                           : QCoreApplication::translate("GraphStatsAndSurfaceFit", "Average"));
+        g->setXAxisTitle(QCoreApplication::translate("GraphStatsAndSurfaceFit", "Observation"));
         g->setYAxisTitle(QObject::tr("Dissimilarity Height"));
         g->setTitle(QObject::tr("Hierarchical Dendrogram (%1 Linkage)").arg(linkTitle));
-        if (g->legend())
-            g->legend()->setText(g->legendText());
+        if (g->legend()) {
+            g->legend()->setText(
+                    QStringLiteral("\\c{1}")
+                    + QCoreApplication::translate("GraphStatsAndSurfaceFit", "Dendrogram"));
+        }
         applyArialGraphFonts(g);
         g->replot();
     }
     return ml;
+}
+
+// ============================================================================
+// Passing-Bablok Nonparametric & Deming Method-Comparison Regression
+// ============================================================================
+
+GraphStatsAndSurfaceFit::PassingBablokDemingResult
+GraphStatsAndSurfaceFit::runPassingBablokDeming(
+        ApplicationWindow *app, Table *srcTable, const QString &colXName, const QString &colYName,
+        double errorVarianceRatioLambda, bool createPlot)
+{
+    registerPhase5StatsTranslationsOnce();
+    PassingBablokDemingResult res;
+    if (!srcTable)
+        return res;
+
+    Column *cX = resolveTableColumn(srcTable, colXName);
+    Column *cY = resolveTableColumn(srcTable, colYName);
+    if (!cX || !cY)
+        return res;
+
+    std::vector<std::pair<double, double>> pts;
+    const int maxRows = std::min(cX->rowCount(), cY->rowCount());
+    pts.reserve(static_cast<size_t>(std::max(0, maxRows)));
+    for (int r = 0; r < maxRows; ++r) {
+        double xv = 0.0, yv = 0.0;
+        if (readNumericColumnCell(cX, r, xv) && readNumericColumnCell(cY, r, yv))
+            pts.emplace_back(xv, yv);
+    }
+
+    const int n = static_cast<int>(pts.size());
+    if (n < 3)
+        return res;
+
+    std::stable_sort(pts.begin(), pts.end(),
+                     [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
+                         return a.first < b.first;
+                     });
+
+    auto medianOfVec = [](std::vector<double> v) -> double {
+        if (v.empty())
+            return 0.0;
+        std::sort(v.begin(), v.end());
+        const size_t sz = v.size();
+        return (sz % 2 == 1) ? v[sz / 2] : 0.5 * (v[sz / 2 - 1] + v[sz / 2]);
+    };
+
+    // 1. Passing-Bablok (1983) shifted median of pairwise slopes S_ij = (y_j - y_i) / (x_j - x_i)
+    std::vector<double> slopes;
+    slopes.reserve(static_cast<size_t>(n) * static_cast<size_t>(n - 1) / 2);
+    int kLessMinusOne = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            const double dx = pts[static_cast<size_t>(j)].first - pts[static_cast<size_t>(i)].first;
+            const double dy =
+                    pts[static_cast<size_t>(j)].second - pts[static_cast<size_t>(i)].second;
+            if (std::fabs(dx) <= 1e-15 && std::fabs(dy) <= 1e-15)
+                continue; // identical pair omitted per Passing & Bablok (1983)
+            double s = 0.0;
+            if (std::fabs(dx) <= 1e-15) {
+                s = (dy > 0.0) ? 1e300 : -1e300;
+            } else {
+                s = dy / dx;
+                if (std::fabs(s + 1.0) <= 1e-15)
+                    continue; // S_ij == -1 omitted per Passing & Bablok (1983)
+            }
+            if (s < -1.0)
+                ++kLessMinusOne;
+            slopes.push_back(s);
+        }
+    }
+
+    const int M = static_cast<int>(slopes.size());
+    if (M < 1)
+        return res;
+
+    std::sort(slopes.begin(), slopes.end());
+    auto clampedSlopeAt = [&](long long idx0) -> double {
+        const long long cIdx = std::clamp<long long>(idx0, 0, static_cast<long long>(M - 1));
+        return slopes[static_cast<size_t>(cIdx)];
+    };
+
+    double pbSlope = 1.0;
+    if (M % 2 == 1) {
+        pbSlope = clampedSlopeAt(static_cast<long long>((M - 1) / 2) + kLessMinusOne);
+    } else {
+        const double s1 = clampedSlopeAt(static_cast<long long>(M / 2 - 1) + kLessMinusOne);
+        const double s2 = clampedSlopeAt(static_cast<long long>(M / 2) + kLessMinusOne);
+        pbSlope = 0.5 * (s1 + s2);
+    }
+
+    const double dn = static_cast<double>(n);
+    const double cGamma = 1.959963984540054 * std::sqrt(dn * (dn - 1.0) * (2.0 * dn + 5.0) / 18.0);
+    const long long m1Rank = std::llround(0.5 * (static_cast<double>(M) - cGamma));
+    const long long m2Rank = static_cast<long long>(M) - m1Rank + 1;
+    const long long loSlopeIdx =
+            std::clamp<long long>(m1Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
+    const long long hiSlopeIdx =
+            std::clamp<long long>(m2Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
+    const double pbSlopeLo = slopes[static_cast<size_t>(loSlopeIdx)];
+    const double pbSlopeHi = slopes[static_cast<size_t>(hiSlopeIdx)];
+
+    auto interceptForSlope = [&](double b) -> double {
+        std::vector<double> aVec(static_cast<size_t>(n), 0.0);
+        for (int i = 0; i < n; ++i)
+            aVec[static_cast<size_t>(i)] =
+                    pts[static_cast<size_t>(i)].second - b * pts[static_cast<size_t>(i)].first;
+        return medianOfVec(std::move(aVec));
+    };
+
+    const double pbIntercept = interceptForSlope(pbSlope);
+    const double aAtHi = interceptForSlope(pbSlopeHi);
+    const double aAtLo = interceptForSlope(pbSlopeLo);
+    const double pbInterceptLo = std::min(aAtHi, aAtLo);
+    const double pbInterceptHi = std::max(aAtHi, aAtLo);
+
+    // 2. Passing-Bablok Cusum test for linearity
+    struct CusumItem {
+        double scoreD = 0.0;
+        double resid = 0.0;
+    };
+    std::vector<CusumItem> cusumItems(static_cast<size_t>(n));
+    int nPos = 0, nNeg = 0;
+    const double bFinite = (std::fabs(pbSlope) < 1e100) ? pbSlope : 1.0;
+    for (int i = 0; i < n; ++i) {
+        const double xi = pts[static_cast<size_t>(i)].first;
+        const double yi = pts[static_cast<size_t>(i)].second;
+        const double ri = yi - (pbIntercept + bFinite * xi);
+        const double di = (bFinite >= 0.0)
+                ? ((yi + xi / std::max(1e-12, bFinite) - pbIntercept) / 2.0)
+                : (xi + bFinite * (yi - pbIntercept));
+        cusumItems[static_cast<size_t>(i)] = { di, ri };
+        if (ri > 1e-14)
+            ++nPos;
+        else if (ri < -1e-14)
+            ++nNeg;
+    }
+    std::stable_sort(cusumItems.begin(), cusumItems.end(),
+                     [](const CusumItem &a, const CusumItem &b) { return a.scoreD < b.scoreD; });
+
+    double cusumH = 0.0;
+    double cusumP = 1.0;
+    if (nPos > 0 && nNeg > 0) {
+        const double wPos = std::sqrt(static_cast<double>(nNeg) / static_cast<double>(nPos));
+        const double wNeg = -std::sqrt(static_cast<double>(nPos) / static_cast<double>(nNeg));
+        double running = 0.0;
+        double maxAbsCum = 0.0;
+        for (const CusumItem &ci : cusumItems) {
+            if (ci.resid > 1e-14)
+                running += wPos;
+            else if (ci.resid < -1e-14)
+                running += wNeg;
+            maxAbsCum = std::max(maxAbsCum, std::fabs(running));
+        }
+        cusumH = maxAbsCum / std::sqrt(static_cast<double>(nPos + nNeg));
+        if (cusumH > 1e-12) {
+            double ksSum = 0.0;
+            for (int j = 1; j <= 100; ++j) {
+                const double dj = static_cast<double>(j);
+                const double term = std::exp(-2.0 * dj * dj * cusumH * cusumH);
+                ksSum += ((j % 2 == 1) ? 1.0 : -1.0) * term;
+                if (term < 1e-16)
+                    break;
+            }
+            cusumP = std::clamp(2.0 * ksSum, 0.0, 1.0);
+        }
+    }
+
+    // 3. Deming Regression (lambda = sigma_x^2 / sigma_y^2) + Leave-One-Out Jackknife SEs
+    const double lambda = std::max(0.0, std::isfinite(errorVarianceRatioLambda)
+                                                ? errorVarianceRatioLambda
+                                                : 1.0);
+    auto evalDemingPair = [&](int skipIdx, double &slopeOut, double &interceptOut) -> bool {
+        int cnt = 0;
+        double sx = 0.0, sy = 0.0;
+        for (int i = 0; i < n; ++i) {
+            if (i == skipIdx)
+                continue;
+            sx += pts[static_cast<size_t>(i)].first;
+            sy += pts[static_cast<size_t>(i)].second;
+            ++cnt;
+        }
+        if (cnt < 2)
+            return false;
+        const double mx = sx / static_cast<double>(cnt);
+        const double my = sy / static_cast<double>(cnt);
+        double sxx = 0.0, syy = 0.0, sxy = 0.0;
+        for (int i = 0; i < n; ++i) {
+            if (i == skipIdx)
+                continue;
+            const double dx = pts[static_cast<size_t>(i)].first - mx;
+            const double dy = pts[static_cast<size_t>(i)].second - my;
+            sxx += dx * dx;
+            syy += dy * dy;
+            sxy += dx * dy;
+        }
+        if (sxx <= 1e-30 && syy <= 1e-30)
+            return false;
+        // Numerically stable rationalized Deming root for lambda = sigma_x^2 / sigma_y^2
+        const double u = lambda * syy - sxx;
+        const double rad = std::sqrt(u * u + 4.0 * lambda * sxy * sxy);
+        double beta = 0.0;
+        if (u >= 0.0) {
+            const double denom = 2.0 * lambda * sxy;
+            if (std::fabs(denom) > 1e-30)
+                beta = (u + rad) / denom;
+            else if (sxx > 1e-30)
+                beta = sxy / sxx;
+        } else {
+            const double denom = rad - u;
+            beta = (denom > 1e-30) ? ((2.0 * sxy) / denom) : 0.0;
+        }
+        slopeOut = beta;
+        interceptOut = my - beta * mx;
+        return std::isfinite(slopeOut) && std::isfinite(interceptOut);
+    };
+
+    double demSlope = 1.0, demIntercept = 0.0;
+    if (!evalDemingPair(-1, demSlope, demIntercept))
+        return res;
+
+    std::vector<double> jkSlopes, jkIntercepts;
+    jkSlopes.reserve(static_cast<size_t>(n));
+    jkIntercepts.reserve(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+        double bs = 0.0, ba = 0.0;
+        if (evalDemingPair(k, bs, ba)) {
+            jkSlopes.push_back(bs);
+            jkIntercepts.push_back(ba);
+        }
+    }
+    double demSlopeSE = 0.0, demInterceptSE = 0.0;
+    if (jkSlopes.size() >= 2) {
+        const double mJk = static_cast<double>(jkSlopes.size());
+        const double meanBs =
+                std::accumulate(jkSlopes.begin(), jkSlopes.end(), 0.0) / mJk;
+        const double meanBa =
+                std::accumulate(jkIntercepts.begin(), jkIntercepts.end(), 0.0) / mJk;
+        double ssBs = 0.0, ssBa = 0.0;
+        for (size_t i = 0; i < jkSlopes.size(); ++i) {
+            const double dBs = jkSlopes[i] - meanBs;
+            const double dBa = jkIntercepts[i] - meanBa;
+            ssBs += dBs * dBs;
+            ssBa += dBa * dBa;
+        }
+        demSlopeSE = std::sqrt(((mJk - 1.0) / mJk) * ssBs);
+        demInterceptSE = std::sqrt(((mJk - 1.0) / mJk) * ssBa);
+    }
+
+    res.valid = true;
+    res.n = n;
+    res.pbSlope = pbSlope;
+    res.pbSlopeCILow = pbSlopeLo;
+    res.pbSlopeCIHigh = pbSlopeHi;
+    res.pbIntercept = pbIntercept;
+    res.pbInterceptCILow = pbInterceptLo;
+    res.pbInterceptCIHigh = pbInterceptHi;
+    res.cusumStat = cusumH;
+    res.cusumLinearityP = cusumP;
+    res.demingSlope = demSlope;
+    res.demingSlopeSE = demSlopeSE;
+    res.demingIntercept = demIntercept;
+    res.demingInterceptSE = demInterceptSE;
+
+    if (!app)
+        return res;
+
+    // 4. Summary Worksheet
+    const double dfDem = static_cast<double>(std::max(1, n - 2));
+    const double tCrit = gsl_cdf_tdist_Pinv(0.975, dfDem);
+    const QString sumName = app->generateUniqueName(
+            srcTable->name() + QStringLiteral("_PassingBablokDeming"), false);
+    Table *sumTbl = app->newTable(
+            6, 7, sumName, QObject::tr("Passing-Bablok & Deming Method Comparison"));
+    res.summaryTable = sumTbl;
+    if (sumTbl) {
+        sumTbl->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Method")
+                                        << QStringLiteral("Estimate") << QStringLiteral("SE")
+                                        << QStringLiteral("CI95_Low") << QStringLiteral("CI95_High")
+                                        << QStringLiteral("p_Value"));
+        sumTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        sumTbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 2; c < 7; ++c)
+            sumTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+
+        auto markInvalidCols = [&](int row, std::initializer_list<int> colsToMark) {
+            for (int c : colsToMark)
+                sumTbl->column(c)->setInvalid(row, true);
+        };
+
+        sumTbl->column(0)->setTextAt(0, QStringLiteral("N"));
+        sumTbl->column(1)->setTextAt(0, QStringLiteral("Paired Valid"));
+        sumTbl->column(2)->setValueAt(0, static_cast<double>(n));
+        markInvalidCols(0, { 3, 4, 5, 6 });
+
+        sumTbl->column(0)->setTextAt(1, QStringLiteral("Slope"));
+        sumTbl->column(1)->setTextAt(1, QStringLiteral("Passing-Bablok"));
+        sumTbl->column(2)->setValueAt(1, pbSlope);
+        sumTbl->column(4)->setValueAt(1, pbSlopeLo);
+        sumTbl->column(5)->setValueAt(1, pbSlopeHi);
+        markInvalidCols(1, { 3, 6 });
+
+        sumTbl->column(0)->setTextAt(2, QStringLiteral("Intercept"));
+        sumTbl->column(1)->setTextAt(2, QStringLiteral("Passing-Bablok"));
+        sumTbl->column(2)->setValueAt(2, pbIntercept);
+        sumTbl->column(4)->setValueAt(2, pbInterceptLo);
+        sumTbl->column(5)->setValueAt(2, pbInterceptHi);
+        markInvalidCols(2, { 3, 6 });
+
+        sumTbl->column(0)->setTextAt(3, QStringLiteral("Cusum_Linearity"));
+        sumTbl->column(1)->setTextAt(3, QStringLiteral("Passing-Bablok"));
+        sumTbl->column(2)->setValueAt(3, cusumH);
+        sumTbl->column(6)->setValueAt(3, cusumP);
+        markInvalidCols(3, { 3, 4, 5 });
+
+        sumTbl->column(0)->setTextAt(4, QStringLiteral("Slope"));
+        sumTbl->column(1)->setTextAt(4, QStringLiteral("Deming (λ=%1)").arg(lambda, 0, 'g', 4));
+        sumTbl->column(2)->setValueAt(4, demSlope);
+        sumTbl->column(3)->setValueAt(4, demSlopeSE);
+        sumTbl->column(4)->setValueAt(4, demSlope - tCrit * demSlopeSE);
+        sumTbl->column(5)->setValueAt(4, demSlope + tCrit * demSlopeSE);
+        markInvalidCols(4, { 6 });
+
+        sumTbl->column(0)->setTextAt(5, QStringLiteral("Intercept"));
+        sumTbl->column(1)->setTextAt(5, QStringLiteral("Deming (λ=%1)").arg(lambda, 0, 'g', 4));
+        sumTbl->column(2)->setValueAt(5, demIntercept);
+        sumTbl->column(3)->setValueAt(5, demInterceptSE);
+        sumTbl->column(4)->setValueAt(5, demIntercept - tCrit * demInterceptSE);
+        sumTbl->column(5)->setValueAt(5, demIntercept + tCrit * demInterceptSE);
+        markInvalidCols(5, { 6 });
+    }
+
+    // 5. Method-Comparison Plot (Y = X identity + Passing-Bablok + 95% CI band + Deming)
+    if (createPlot) {
+        double xMin = pts.front().first, xMax = pts.back().first;
+        double yMin = pts.front().second, yMax = pts.front().second;
+        for (const auto &pr : pts) {
+            yMin = std::min(yMin, pr.second);
+            yMax = std::max(yMax, pr.second);
+        }
+        const double xSpan = std::max(1e-6, xMax - xMin);
+        const double xLineMin = xMin - 0.04 * xSpan;
+        const double xLineMax = xMax + 0.04 * xSpan;
+
+        Column *colObsX = new Column(QStringLiteral("Ref_X"), SciDAVis::ColumnMode::Numeric);
+        Column *colObsY = new Column(QStringLiteral("Observed"), SciDAVis::ColumnMode::Numeric);
+        Column *colLineX = new Column(QStringLiteral("Fit_X"), SciDAVis::ColumnMode::Numeric);
+        Column *colIdY = new Column(QStringLiteral("Identity_Y_eq_X"),
+                                    SciDAVis::ColumnMode::Numeric);
+        Column *colPbY = new Column(QStringLiteral("Passing_Bablok"),
+                                    SciDAVis::ColumnMode::Numeric);
+        Column *colDemY = new Column(QStringLiteral("Deming"), SciDAVis::ColumnMode::Numeric);
+        colObsX->setPlotDesignation(SciDAVis::X);
+        colObsY->setPlotDesignation(SciDAVis::Y);
+        colLineX->setPlotDesignation(SciDAVis::X);
+        colIdY->setPlotDesignation(SciDAVis::Y);
+        colPbY->setPlotDesignation(SciDAVis::Y);
+        colDemY->setPlotDesignation(SciDAVis::Y);
+
+        for (int i = 0; i < n; ++i) {
+            colObsX->setValueAt(i, pts[static_cast<size_t>(i)].first);
+            colObsY->setValueAt(i, pts[static_cast<size_t>(i)].second);
+        }
+        colLineX->setValueAt(0, xLineMin);
+        colLineX->setValueAt(1, xLineMax);
+        colIdY->setValueAt(0, xLineMin);
+        colIdY->setValueAt(1, xLineMax);
+        colPbY->setValueAt(0, pbIntercept + bFinite * xLineMin);
+        colPbY->setValueAt(1, pbIntercept + bFinite * xLineMax);
+        colDemY->setValueAt(0, demIntercept + demSlope * xLineMin);
+        colDemY->setValueAt(1, demIntercept + demSlope * xLineMax);
+        for (int r = 2; r < n; ++r) {
+            colLineX->setInvalid(r, true);
+            colIdY->setInvalid(r, true);
+            colPbY->setInvalid(r, true);
+            colDemY->setInvalid(r, true);
+        }
+
+        const QString hidName = app->generateUniqueName(QStringLiteral("PBPlotData"));
+        Table *plotTbl = app->newHiddenTable(
+                hidName, QStringLiteral("Passing-Bablok & Deming Plot Data"),
+                QList<Column *>() << colObsX << colObsY << colLineX << colIdY << colPbY << colDemY);
+
+        MultiLayer *ml = app->newGraph(app->generateUniqueName(
+                QStringLiteral("PassingBablok_") + srcTable->name(), false));
+        res.comparisonPlot = ml;
+        if (ml && plotTbl) {
+            if (Graph *g = ml->activeGraph()) {
+                // Build exact rank-envelope 95% CI band over x in [xLineMin, xLineMax]
+                std::vector<std::pair<double, double>> ciLines;
+                if (std::fabs(pbSlopeLo) < 1e12)
+                    ciLines.emplace_back(pbSlopeLo, aAtLo);
+                if (std::fabs(pbSlopeHi) < 1e12)
+                    ciLines.emplace_back(pbSlopeHi, aAtHi);
+                if (std::fabs(bFinite) < 1e12)
+                    ciLines.emplace_back(bFinite, pbIntercept);
+                const long long idxSpan = std::max<long long>(1, hiSlopeIdx - loSlopeIdx);
+                const long long stepIdx = std::max<long long>(1, idxSpan / 24);
+                for (long long k = loSlopeIdx; k <= hiSlopeIdx; k += stepIdx) {
+                    const double bk = slopes[static_cast<size_t>(k)];
+                    if (std::fabs(bk) < 1e12)
+                        ciLines.emplace_back(bk, interceptForSlope(bk));
+                }
+
+                if (!ciLines.empty()) {
+                    constexpr int kGrid = 65;
+                    QVector<double> bx(kGrid), bLo(kGrid), bHi(kGrid);
+                    for (int gi = 0; gi < kGrid; ++gi) {
+                        const double xg = xLineMin
+                                + (xLineMax - xLineMin) * static_cast<double>(gi)
+                                        / static_cast<double>(kGrid - 1);
+                        double loY = std::numeric_limits<double>::max();
+                        double hiY = -std::numeric_limits<double>::max();
+                        for (const auto &ab : ciLines) {
+                            const double yg = ab.second + ab.first * xg;
+                            loY = std::min(loY, yg);
+                            hiY = std::max(hiY, yg);
+                        }
+                        bx[gi] = xg;
+                        bLo[gi] = loY;
+                        bHi[gi] = hiY;
+                    }
+                    g->addShadedBand(bx, bLo, bHi, QColor(195, 30, 45, 44),
+                                     QObject::tr("PB 95% CI"));
+                }
+
+                if (g->insertCurve(plotTbl, plotTbl->colName(0), plotTbl->colName(1),
+                                   Graph::Scatter, 0, n - 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurveSymbol(idx,
+                                      QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 95, 175)),
+                                                QPen(QColor(15, 45, 100), 1), QSize(7, 7)));
+                }
+                if (g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(3), Graph::Line,
+                                   0, 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurvePen(idx, QPen(QColor(115, 120, 130), 1.5, Qt::DashLine));
+                }
+                if (g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(4), Graph::Line,
+                                   0, 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurvePen(idx, QPen(QColor(195, 30, 45), 2.2, Qt::SolidLine));
+                }
+                if (g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(5), Graph::Line,
+                                   0, 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurvePen(idx, QPen(QColor(15, 135, 120), 2.0, Qt::DashDotLine));
+                }
+
+                const double allMinY = std::min({ yMin, xLineMin,
+                                                  pbIntercept + bFinite * xLineMin,
+                                                  pbIntercept + bFinite * xLineMax });
+                const double allMaxY = std::max({ yMax, xLineMax,
+                                                  pbIntercept + bFinite * xLineMin,
+                                                  pbIntercept + bFinite * xLineMax });
+                const double ySpan = std::max(1e-6, allMaxY - allMinY);
+                const QString boxText =
+                        QStringLiteral("Passing-Bablok (n = %1)\n"
+                                       "  Slope = %2 [%3, %4]\n"
+                                       "  Intercept = %5 [%6, %7]\n"
+                                       "  Cusum p = %8\n"
+                                       "Deming (λ = %9)\n"
+                                       "  Y = %10 + %11 X")
+                                .arg(n)
+                                .arg(pbSlope, 0, 'g', 4)
+                                .arg(pbSlopeLo, 0, 'g', 4)
+                                .arg(pbSlopeHi, 0, 'g', 4)
+                                .arg(pbIntercept, 0, 'g', 4)
+                                .arg(pbInterceptLo, 0, 'g', 4)
+                                .arg(pbInterceptHi, 0, 'g', 4)
+                                .arg(cusumP, 0, 'g', 3)
+                                .arg(lambda, 0, 'g', 4)
+                                .arg(demIntercept, 0, 'g', 4)
+                                .arg(demSlope, 0, 'g', 4);
+                addFramedBoxOnGraph(g, xLineMin + 0.03 * xSpan, allMaxY - 0.04 * ySpan, boxText);
+
+                g->setXAxisTitle(cX->name());
+                g->setYAxisTitle(cY->name());
+                g->setTitle(QObject::tr("Passing-Bablok & Deming Regression (%1 vs %2)")
+                                    .arg(cY->name(), cX->name()));
+                if (g->legend())
+                    g->legend()->setText(g->legendText());
+                applyArialGraphFonts(g);
+                g->setAutoScale();
+                g->replot();
+            }
+        }
+    }
+
+    return res;
 }
 
 // ============================================================================
@@ -6609,6 +7301,14 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     }
     QComboBox *cbData = new QComboBox(&dlg);
     QComboBox *cbCensor = new QComboBox(&dlg);
+    QComboBox *cbCensorCoding = new QComboBox(&dlg);
+    cbCensorCoding->addItem(
+            QObject::tr("1 = Failure/Event, 0 = Censored [Kaplan-Meier Standard]"), 0);
+    cbCensorCoding->addItem(QObject::tr("0 = Failure, 1 = Censored (Suspension)"), 1);
+    cbCensorCoding->setEnabled(false);
+
+    QCheckBox *chkThreeParam =
+            new QCheckBox(QObject::tr("3-Parameter Weibull (Estimate Threshold γ)"), &dlg);
 
     auto refreshCols = [&]() {
         cbData->clear();
@@ -6619,18 +7319,34 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            const QString cn = t->column(c)->name();
-            cbData->addItem(cn);
+            Column *col = t->column(c);
+            if (!col)
+                continue;
+            const QString cn = col->name();
+            if (columnHasNumericValues(col))
+                cbData->addItem(cn);
             cbCensor->addItem(cn, cn);
+        }
+        if (cbData->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (t->column(c))
+                    cbData->addItem(t->column(c)->name());
+            }
         }
     };
     refreshCols();
     QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { refreshCols(); });
+    QObject::connect(cbCensor, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int idx) {
+                         cbCensorCoding->setEnabled(!cbCensor->itemData(idx).toString().isEmpty());
+                     });
 
     form->addRow(QObject::tr("Source Table:"), cbTable);
     form->addRow(QObject::tr("Strength / Lifetime Column:"), cbData);
     form->addRow(QObject::tr("Right-Censoring Column (Optional):"), cbCensor);
+    form->addRow(QObject::tr("Censoring Coding:"), cbCensorCoding);
+    form->addRow(QString(), chkThreeParam);
     lay->addLayout(form);
 
     QDialogButtonBox *btns =
@@ -6641,7 +7357,91 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
 
     if (dlg.exec() == QDialog::Accepted) {
         plotWeibullProbability(app, tables[cbTable->currentIndex()], cbData->currentText(),
-                               cbCensor->currentData().toString());
+                               cbCensor->currentData().toString(),
+                               cbCensorCoding->currentData().toInt(), chkThreeParam->isChecked());
+    }
+}
+
+void GraphStatsAndSurfaceFit::showPassingBablokDemingDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Passing-Bablok & Deming Regression"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+
+    QComboBox *cbColX = new QComboBox(&dlg);
+    QComboBox *cbColY = new QComboBox(&dlg);
+    auto refreshCols = [&]() {
+        cbColX->clear();
+        cbColY->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (columnHasNumericValues(t->column(c))) {
+                const QString cn = t->column(c)->name();
+                cbColX->addItem(cn);
+                cbColY->addItem(cn);
+            }
+        }
+        if (cbColX->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (t->column(c)) {
+                    const QString cn = t->column(c)->name();
+                    cbColX->addItem(cn);
+                    cbColY->addItem(cn);
+                }
+            }
+        }
+        if (cbColY->count() >= 2)
+            cbColY->setCurrentIndex(1);
+    };
+    refreshCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshCols(); });
+
+    QDoubleSpinBox *sbLambda = new QDoubleSpinBox(&dlg);
+    sbLambda->setRange(0.0001, 10000.0);
+    sbLambda->setDecimals(4);
+    sbLambda->setSingleStep(0.1);
+    sbLambda->setValue(1.0);
+
+    QCheckBox *chkPlot =
+            new QCheckBox(QObject::tr("Create Method-Comparison Regression Plot"), &dlg);
+    chkPlot->setChecked(true);
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Reference Method X Column:"), cbColX);
+    form->addRow(QObject::tr("Test Method Y Column:"), cbColY);
+    form->addRow(QObject::tr("Deming Error Variance Ratio λ (σx² / σy²):"), sbLambda);
+    form->addRow(QString(), chkPlot);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        runPassingBablokDeming(app, tables[cbTable->currentIndex()], cbColX->currentText(),
+                               cbColY->currentText(), sbLambda->value(), chkPlot->isChecked());
     }
 }
 
@@ -6673,8 +7473,16 @@ void GraphStatsAndSurfaceFit::showOutlierTestDialog(ApplicationWindow *app)
         if (idx < 0 || idx >= tables.size())
             return;
         Table *t = tables[idx];
-        for (int c = 0; c < t->numCols(); ++c)
-            cbCol->addItem(t->column(c)->name());
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (columnHasNumericValues(t->column(c)))
+                cbCol->addItem(t->column(c)->name());
+        }
+        if (cbCol->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (t->column(c))
+                    cbCol->addItem(t->column(c)->name());
+            }
+        }
     };
     refreshCols();
     QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
@@ -6755,7 +7563,7 @@ void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Gr
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (columnHasNumericValues(t->column(c))) {
                 QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
                 it->setSelected(true);
             }
@@ -6839,11 +7647,22 @@ void GraphStatsAndSurfaceFit::showPairedComparisonDialog(ApplicationWindow *app)
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            const QString cn = t->column(c)->name();
-            cbBefore->addItem(cn);
-            cbAfter->addItem(cn);
+            if (columnHasNumericValues(t->column(c))) {
+                const QString cn = t->column(c)->name();
+                cbBefore->addItem(cn);
+                cbAfter->addItem(cn);
+            }
         }
-        if (t->numCols() >= 2)
+        if (cbBefore->count() == 0) {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (t->column(c)) {
+                    const QString cn = t->column(c)->name();
+                    cbBefore->addItem(cn);
+                    cbAfter->addItem(cn);
+                }
+            }
+        }
+        if (cbAfter->count() >= 2)
             cbAfter->setCurrentIndex(1);
     };
     refreshCols();
@@ -6902,7 +7721,7 @@ void GraphStatsAndSurfaceFit::showCorrelationMatrixDialog(ApplicationWindow *app
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (columnHasNumericValues(t->column(c))) {
                 QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
                 it->setSelected(true);
             }
@@ -6971,7 +7790,7 @@ void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
             return;
         Table *t = tables[idx];
         for (int c = 0; c < t->numCols(); ++c) {
-            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (columnHasNumericValues(t->column(c))) {
                 QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
                 it->setSelected(true);
             }

@@ -14,11 +14,13 @@
 #include "ApplicationWindow.h"
 #include "Graph.h"
 #include "I18nJapanese.h"
+#include "Legend.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
 #include "RecalcEngine.h"
+#include "Spectrogram.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
@@ -42,6 +44,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLocale>
+#include <QMdiSubWindow>
+#include <QMessageBox>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -87,6 +91,39 @@ void registerSignalProcTranslationsOnce()
     ToriGraphFullJapaneseTranslator::registerExtraTranslation(
             QStringLiteral("Signal Decimation / Resampling"),
             QStringLiteral("信号の間引き / リサンプリング"));
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+                QString::fromUtf8(en), QString::fromUtf8(ja));
+    };
+    reg("2D Spatial Filter & Plane Leveling", "2D空間フィルタ・平面傾斜補正");
+    reg("2D Spatial Filter & Plane Leveling...", "2D空間フィルタ・平面傾斜補正...");
+    reg("Source Matrix:", "入力マトリクス:");
+    reg("2D Filter Method:", "2Dフィルタ手法:");
+    reg("Gaussian Smoothing (2D)", "2Dガウシアン平滑化");
+    reg("Median Despike Filter (Cosmic-Ray Removal)",
+        "2Dメディアンフィルタ (スパイク・宇宙線ノイズ除去)");
+    reg("Laplacian Sharpening (2D)", "2Dラプラシアン先鋭化");
+    reg("Sobel Gradient Magnitude (|∇Z|)", "2Dソーベル勾配強度 (|∇Z|)");
+    reg("Subtract Least-Squares Planar Tilt (AFM/STM Leveling)",
+        "最小二乗平面傾斜減算 (AFM/STMレベリング)");
+    reg("Gaussian Sigma (pixels):", "ガウシアン標準偏差 σ (ピクセル):");
+    reg("Sharpening Strength:", "先鋭化強度:");
+    reg("Parameter:", "パラメータ:");
+    reg("Kernel Radius (pixels):", "カーネル半径 (ピクセル):");
+    reg("Modify Source Matrix In-Place (Undoable)", "元マトリクスを直接更新 (元に戻す対応)");
+    reg("Plot Filtered 2D Heatmap", "フィルタ後の2Dヒートマップを作成");
+    reg("Please open a Matrix window first.", "先にマトリクスウィンドウを開いてください。");
+    reg("2D Matrix Filter", "2Dマトリクスフィルタ");
+    reg("Fourier Self-Deconvolution (Peak Sharpening)", "フーリエ自己デコンボリューション (ピーク先鋭化)");
+    reg("Fourier Self-Deconvolution (Peak Sharpening)...",
+        "フーリエ自己デコンボリューション (ピーク先鋭化)...");
+    reg("Lorentzian FWHM γ (X units):", "ローレンツ半値全幅 γ (X軸単位):");
+    reg("Sharpening Factor K (t_max = K / γ):", "先鋭化係数 K (t_max = K / γ):");
+    reg("Apodization Function:", "アポダイゼーション関数:");
+    reg("Bessel / Kauppinen (1 - |t|/t_max)^2", "ベッセル / Kauppinen型 (1 - |t|/t_max)^2");
+    reg("Gaussian Apodization", "ガウシアン・アポダイゼーション");
+    reg("Please open a graph with at least one curve first.",
+        "1本以上の曲線を含むグラフを開いてください。");
 }
 
 class SignalPreviewGuard
@@ -2940,6 +2977,7 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -2973,5 +3011,726 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         decimateCurve(app, g, cbCurve->currentText(), sbFactor->value(), chkFir->isChecked());
+    }
+}
+
+namespace {
+
+bool computeFsdSpectrum(const std::vector<double> &xs, const std::vector<double> &ys,
+                        double lorentzFwhmGamma, double sharpeningFactorK, int apodization,
+                        std::vector<double> &yOut)
+{
+    yOut.clear();
+    const int n = static_cast<int>(xs.size());
+    if (n < 4 || static_cast<int>(ys.size()) != n || !(lorentzFwhmGamma > 0.0)
+        || !std::isfinite(lorentzFwhmGamma))
+        return false;
+
+    const double dx = (xs.back() - xs.front()) / static_cast<double>(n - 1);
+    if (!(dx > 0.0) || !std::isfinite(dx))
+        return false;
+
+    const double kClamped = std::clamp(std::isfinite(sharpeningFactorK) ? sharpeningFactorK : 1.8,
+                                       1.0, 4.0);
+    const double tNyq = 0.5 / dx;
+    const double tMax = std::min(kClamped / lorentzFwhmGamma, 0.98 * tNyq);
+    if (!(tMax > 0.0) || !std::isfinite(tMax))
+        return false;
+
+    // Linear endpoint baseline subtraction so periodic/padded FFT has zero step jump
+    const int nEdge = std::max(1, std::min(4, n / 8));
+    double yLeft = 0.0, xLeft = 0.0, yRight = 0.0, xRight = 0.0;
+    for (int i = 0; i < nEdge; ++i) {
+        xLeft += xs[static_cast<size_t>(i)];
+        yLeft += ys[static_cast<size_t>(i)];
+        xRight += xs[static_cast<size_t>(n - 1 - i)];
+        yRight += ys[static_cast<size_t>(n - 1 - i)];
+    }
+    xLeft /= static_cast<double>(nEdge);
+    yLeft /= static_cast<double>(nEdge);
+    xRight /= static_cast<double>(nEdge);
+    yRight /= static_cast<double>(nEdge);
+    const double baseSlope = (std::fabs(xRight - xLeft) > 1e-30)
+            ? ((yRight - yLeft) / (xRight - xLeft))
+            : 0.0;
+    auto evalBase = [&](double xv) { return yLeft + baseSlope * (xv - xLeft); };
+
+    std::vector<double> detrended(static_cast<size_t>(n), 0.0);
+    double origNetArea = 0.0;
+    for (int i = 0; i < n; ++i)
+        detrended[static_cast<size_t>(i)] = ys[static_cast<size_t>(i)] - evalBase(xs[static_cast<size_t>(i)]);
+    for (int i = 0; i + 1 < n; ++i) {
+        origNetArea += 0.5 * (detrended[static_cast<size_t>(i)] + detrended[static_cast<size_t>(i + 1)])
+                * (xs[static_cast<size_t>(i + 1)] - xs[static_cast<size_t>(i)]);
+    }
+
+    const int pad = std::max(32, n / 2);
+    size_t nFft = 64;
+    while (nFft < static_cast<size_t>(n + 2 * pad))
+        nFft <<= 1;
+
+    std::vector<double> buf(2 * nFft, 0.0);
+    for (int i = 0; i < n; ++i)
+        buf[2 * static_cast<size_t>(pad + i)] = detrended[static_cast<size_t>(i)];
+
+    // Smooth raised-cosine taper of boundary values over outer pad/2 samples
+    const int taperLen = std::max(4, std::min(pad, 24));
+    const double v0 = detrended.front();
+    const double vN = detrended.back();
+    for (int k = 1; k <= taperLen && pad - k >= 0; ++k) {
+        const double w = 0.5 * (1.0 + std::cos(M_PI * static_cast<double>(k) / taperLen));
+        buf[2 * static_cast<size_t>(pad - k)] = v0 * w;
+        if (static_cast<size_t>(pad + n - 1 + k) < nFft)
+            buf[2 * static_cast<size_t>(pad + n - 1 + k)] = vN * w;
+    }
+
+    gsl_fft_complex_radix2_forward(buf.data(), 1, nFft);
+
+    const double expFloorGauss = std::exp(-4.0);
+    const double invDenomGauss = 1.0 / (1.0 - expFloorGauss);
+
+    for (size_t k = 0; k < nFft; ++k) {
+        const size_t m = (k <= nFft / 2) ? k : (nFft - k);
+        const double absT = static_cast<double>(m) / (static_cast<double>(nFft) * dx);
+        double weight = 0.0;
+        if (absT < tMax) {
+            const double u = absT / tMax;
+            double apod = 1.0;
+            if (apodization == 1) {
+                apod = std::max(0.0, (std::exp(-4.0 * u * u) - expFloorGauss) * invDenomGauss);
+            } else {
+                const double oneMinusU = 1.0 - u;
+                apod = oneMinusU * oneMinusU;
+            }
+            const double exponent = std::min(M_PI * kClamped, M_PI * lorentzFwhmGamma * absT);
+            weight = std::exp(exponent) * apod;
+        }
+        buf[2 * k] *= weight;
+        buf[2 * k + 1] *= weight;
+    }
+
+    gsl_fft_complex_radix2_inverse(buf.data(), 1, nFft);
+
+    std::vector<double> fsdNet(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i)
+        fsdNet[static_cast<size_t>(i)] = buf[2 * static_cast<size_t>(pad + i)];
+
+    double fsdArea = 0.0;
+    for (int i = 0; i + 1 < n; ++i) {
+        fsdArea += 0.5 * (fsdNet[static_cast<size_t>(i)] + fsdNet[static_cast<size_t>(i + 1)])
+                * (xs[static_cast<size_t>(i + 1)] - xs[static_cast<size_t>(i)]);
+    }
+    if (std::fabs(origNetArea) > 1e-12 && std::fabs(fsdArea) > 1e-12
+        && (origNetArea * fsdArea > 0.0)) {
+        const double ratio = origNetArea / fsdArea;
+        if (ratio >= 0.80 && ratio <= 1.25) {
+            for (double &v : fsdNet)
+                v *= ratio;
+        }
+    }
+
+    yOut.resize(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i)
+        yOut[static_cast<size_t>(i)] = fsdNet[static_cast<size_t>(i)] + evalBase(xs[static_cast<size_t>(i)]);
+    return true;
+}
+
+QList<Matrix *> collectProjectMatrices(ApplicationWindow *app)
+{
+    QList<Matrix *> list;
+    if (!app)
+        return list;
+    for (MyWidget *w : app->windowsList()) {
+        if (w && w->inherits("Matrix"))
+            list.append(static_cast<Matrix *>(w));
+    }
+    return list;
+}
+
+Matrix *findActiveOrFirstMatrix(ApplicationWindow *app)
+{
+    if (!app)
+        return nullptr;
+    if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+        if (sub->inherits("Matrix"))
+            return static_cast<Matrix *>(sub);
+        if (QWidget *w = sub->widget()) {
+            if (w->inherits("Matrix"))
+                return static_cast<Matrix *>(w);
+        }
+    }
+    const QList<Matrix *> mats = collectProjectMatrices(app);
+    return mats.isEmpty() ? nullptr : mats.first();
+}
+
+Graph *findActiveOrFirstSignalGraph(ApplicationWindow *app, Graph *explicitGraph)
+{
+    if (explicitGraph)
+        return explicitGraph;
+    if (!app)
+        return nullptr;
+    if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+        if (sub->inherits("MultiLayer"))
+            return static_cast<MultiLayer *>(sub)->activeGraph();
+        if (QWidget *w = sub->widget()) {
+            if (w->inherits("MultiLayer"))
+                return static_cast<MultiLayer *>(w)->activeGraph();
+        }
+    }
+    for (MyWidget *w : app->windowsList()) {
+        if (w && w->inherits("MultiLayer")) {
+            if (Graph *g = static_cast<MultiLayer *>(w)->activeGraph())
+                return g;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+Matrix *AdvancedSignalProc::filterMatrix2D(ApplicationWindow *app, Matrix *srcMatrix,
+                                           MatrixFilter2DMethod method, double param,
+                                           int radius, bool inPlace, bool plotHeatmap)
+{
+    registerSignalProcTranslationsOnce();
+    if (!srcMatrix)
+        return nullptr;
+    if (!inPlace && !app)
+        return nullptr;
+
+    const int rows = srcMatrix->numRows();
+    const int cols = srcMatrix->numCols();
+    if (rows <= 0 || cols <= 0)
+        return nullptr;
+
+    std::vector<double> src(static_cast<size_t>(rows * cols), 0.0);
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c)
+            src[static_cast<size_t>(r * cols + c)] = srcMatrix->cell(r, c);
+    }
+
+    auto cellClamped = [&](const std::vector<double> &buf, int r, int c) -> double {
+        const int rr = std::clamp(r, 0, rows - 1);
+        const int cc = std::clamp(c, 0, cols - 1);
+        return buf[static_cast<size_t>(rr * cols + cc)];
+    };
+
+    std::vector<double> dst(src.size(), 0.0);
+    QString suffix = QStringLiteral("Filtered2D");
+
+    switch (method) {
+    case FilterGaussian2D: {
+        suffix = QStringLiteral("Gauss2D");
+        const double sigma = std::max(0.05, std::isfinite(param) ? param : 1.5);
+        const int autoRad = std::max(1, static_cast<int>(std::ceil(3.0 * sigma)));
+        const int rad = std::clamp((radius > 1) ? std::max(radius, autoRad) : autoRad, 1, 64);
+
+        std::vector<double> kw(static_cast<size_t>(2 * rad + 1), 0.0);
+        const double inv2s2 = 0.5 / (sigma * sigma);
+        for (int d = -rad; d <= rad; ++d)
+            kw[static_cast<size_t>(d + rad)] = std::exp(-static_cast<double>(d * d) * inv2s2);
+
+        std::vector<double> tmp(src.size(), 0.0);
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                double wSum = 0.0, vSum = 0.0;
+                for (int d = -rad; d <= rad; ++d) {
+                    const double v = cellClamped(src, r, c + d);
+                    if (std::isfinite(v)) {
+                        const double w = kw[static_cast<size_t>(d + rad)];
+                        wSum += w;
+                        vSum += w * v;
+                    }
+                }
+                tmp[static_cast<size_t>(r * cols + c)] =
+                        (wSum > 0.0) ? (vSum / wSum) : src[static_cast<size_t>(r * cols + c)];
+            }
+        }
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                double wSum = 0.0, vSum = 0.0;
+                for (int d = -rad; d <= rad; ++d) {
+                    const double v = cellClamped(tmp, r + d, c);
+                    if (std::isfinite(v)) {
+                        const double w = kw[static_cast<size_t>(d + rad)];
+                        wSum += w;
+                        vSum += w * v;
+                    }
+                }
+                dst[static_cast<size_t>(r * cols + c)] =
+                        (wSum > 0.0) ? (vSum / wSum) : tmp[static_cast<size_t>(r * cols + c)];
+            }
+        }
+        break;
+    }
+    case FilterMedian2D: {
+        suffix = QStringLiteral("Median2D");
+        const int rad = std::clamp(radius, 1, 32);
+        std::vector<double> win;
+        win.reserve(static_cast<size_t>((2 * rad + 1) * (2 * rad + 1)));
+        for (int r = 0; r < rows; ++r) {
+            const int r0 = std::max(0, r - rad);
+            const int r1 = std::min(rows - 1, r + rad);
+            for (int c = 0; c < cols; ++c) {
+                const int c0 = std::max(0, c - rad);
+                const int c1 = std::min(cols - 1, c + rad);
+                win.clear();
+                for (int rr = r0; rr <= r1; ++rr) {
+                    for (int cc = c0; cc <= c1; ++cc) {
+                        const double v = src[static_cast<size_t>(rr * cols + cc)];
+                        if (std::isfinite(v))
+                            win.push_back(v);
+                    }
+                }
+                if (win.empty()) {
+                    dst[static_cast<size_t>(r * cols + c)] = src[static_cast<size_t>(r * cols + c)];
+                } else {
+                    const size_t mid = win.size() / 2;
+                    std::nth_element(win.begin(), win.begin() + static_cast<ptrdiff_t>(mid),
+                                     win.end());
+                    double med = win[mid];
+                    if ((win.size() & 1U) == 0U) {
+                        const double lowerMax = *std::max_element(
+                                win.begin(), win.begin() + static_cast<ptrdiff_t>(mid));
+                        med = 0.5 * (lowerMax + med);
+                    }
+                    dst[static_cast<size_t>(r * cols + c)] = med;
+                }
+            }
+        }
+        break;
+    }
+    case FilterLaplacianSharpen2D: {
+        suffix = QStringLiteral("Sharpen2D");
+        const double alpha = std::max(0.0, std::isfinite(param) ? param : 1.0);
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                const double z0 = cellClamped(src, r, c);
+                if (!std::isfinite(z0)) {
+                    dst[static_cast<size_t>(r * cols + c)] = z0;
+                    continue;
+                }
+                double nSum = 0.0;
+                int nCnt = 0;
+                const double nb[4] = {
+                    cellClamped(src, r - 1, c), cellClamped(src, r + 1, c),
+                    cellClamped(src, r, c - 1), cellClamped(src, r, c + 1)
+                };
+                for (double v : nb) {
+                    if (std::isfinite(v)) {
+                        nSum += v;
+                        ++nCnt;
+                    }
+                }
+                const double nAvg = (nCnt > 0) ? (nSum / static_cast<double>(nCnt)) : z0;
+                dst[static_cast<size_t>(r * cols + c)] = z0 + alpha * (z0 - nAvg);
+            }
+        }
+        break;
+    }
+    case FilterSobelGradient2D: {
+        suffix = QStringLiteral("SobelGrad2D");
+        const double spanX = std::fabs(srcMatrix->xEnd() - srcMatrix->xStart());
+        const double spanY = std::fabs(srcMatrix->yEnd() - srcMatrix->yStart());
+        const double dx = (cols > 1 && spanX > 1e-15) ? (spanX / static_cast<double>(cols - 1)) : 1.0;
+        const double dy = (rows > 1 && spanY > 1e-15) ? (spanY / static_cast<double>(rows - 1)) : 1.0;
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                auto safeVal = [&](int rr, int cc, double fallback) {
+                    const double v = cellClamped(src, rr, cc);
+                    return std::isfinite(v) ? v : fallback;
+                };
+                const double cVal = std::isfinite(cellClamped(src, r, c)) ? cellClamped(src, r, c) : 0.0;
+                const double z00 = safeVal(r - 1, c - 1, cVal);
+                const double z01 = safeVal(r - 1, c, cVal);
+                const double z02 = safeVal(r - 1, c + 1, cVal);
+                const double z10 = safeVal(r, c - 1, cVal);
+                const double z12 = safeVal(r, c + 1, cVal);
+                const double z20 = safeVal(r + 1, c - 1, cVal);
+                const double z21 = safeVal(r + 1, c, cVal);
+                const double z22 = safeVal(r + 1, c + 1, cVal);
+                const double gx = ((z02 + 2.0 * z12 + z22) - (z00 + 2.0 * z10 + z20)) / (8.0 * dx);
+                const double gy = ((z20 + 2.0 * z21 + z22) - (z00 + 2.0 * z01 + z02)) / (8.0 * dy);
+                dst[static_cast<size_t>(r * cols + c)] = std::hypot(gx, gy);
+            }
+        }
+        break;
+    }
+    case FilterSubtractPlanarTilt2D: {
+        suffix = QStringLiteral("LevelPlane2D");
+        const double cMid = 0.5 * static_cast<double>(cols - 1);
+        const double rMid = 0.5 * static_cast<double>(rows - 1);
+        double A[3][4] = {};
+        int validCnt = 0;
+        for (int r = 0; r < rows; ++r) {
+            const double v = static_cast<double>(r) - rMid;
+            for (int c = 0; c < cols; ++c) {
+                const double z = src[static_cast<size_t>(r * cols + c)];
+                if (!std::isfinite(z))
+                    continue;
+                const double u = static_cast<double>(c) - cMid;
+                ++validCnt;
+                A[0][0] += u * u;
+                A[0][1] += u * v;
+                A[0][2] += u;
+                A[0][3] += u * z;
+                A[1][1] += v * v;
+                A[1][2] += v;
+                A[1][3] += v * z;
+                A[2][2] += 1.0;
+                A[2][3] += z;
+            }
+        }
+        A[1][0] = A[0][1];
+        A[2][0] = A[0][2];
+        A[2][1] = A[1][2];
+
+        double coef[3] = { 0.0, 0.0, 0.0 };
+        if (validCnt >= 3) {
+            // Solve 3x3 normal equations (with degenerate-dimension fallback)
+            bool solved = true;
+            for (int col = 0; col < 3; ++col) {
+                int piv = col;
+                for (int row = col + 1; row < 3; ++row) {
+                    if (std::fabs(A[row][col]) > std::fabs(A[piv][col]))
+                        piv = row;
+                }
+                if (std::fabs(A[piv][col]) <= 1e-24) {
+                    solved = false;
+                    break;
+                }
+                if (piv != col) {
+                    for (int k = col; k < 4; ++k)
+                        std::swap(A[col][k], A[piv][k]);
+                }
+                const double invD = 1.0 / A[col][col];
+                for (int k = col; k < 4; ++k)
+                    A[col][k] *= invD;
+                for (int row = 0; row < 3; ++row) {
+                    if (row == col)
+                        continue;
+                    const double f = A[row][col];
+                    for (int k = col; k < 4; ++k)
+                        A[row][k] -= f * A[col][k];
+                }
+            }
+            if (solved) {
+                coef[0] = A[0][3];
+                coef[1] = A[1][3];
+                coef[2] = A[2][3];
+            } else if (A[2][2] > 0.0) {
+                coef[2] = A[2][3] / A[2][2];
+            }
+        }
+
+        for (int r = 0; r < rows; ++r) {
+            const double v = static_cast<double>(r) - rMid;
+            for (int c = 0; c < cols; ++c) {
+                const double z = src[static_cast<size_t>(r * cols + c)];
+                if (!std::isfinite(z)) {
+                    dst[static_cast<size_t>(r * cols + c)] = z;
+                } else {
+                    const double u = static_cast<double>(c) - cMid;
+                    dst[static_cast<size_t>(r * cols + c)] = z - (coef[0] * u + coef[1] * v + coef[2]);
+                }
+            }
+        }
+        break;
+    }
+    }
+
+    Matrix *targetMat = srcMatrix;
+    if (!inPlace) {
+        targetMat = app->newMatrix(uniqueWinName(app, srcMatrix->name() + suffix), rows, cols);
+        if (!targetMat)
+            return nullptr;
+        targetMat->setCoordinates(srcMatrix->xStart(), srcMatrix->xEnd(),
+                                  srcMatrix->yStart(), srcMatrix->yEnd());
+    }
+
+    targetMat->d_future_matrix->beginMacro(QObject::tr("2D Matrix Filter"));
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c)
+            targetMat->setCell(r, c, dst[static_cast<size_t>(r * cols + c)]);
+    }
+    targetMat->d_future_matrix->endMacro();
+
+    if (inPlace && app) {
+        for (MyWidget *w : app->windowsList()) {
+            if (!w || !w->inherits("MultiLayer"))
+                continue;
+            MultiLayer *ml = static_cast<MultiLayer *>(w);
+            for (Graph *gr : ml->layersList()) {
+                if (!gr || !gr->plotWidget())
+                    continue;
+                for (QwtPlotItem *it : gr->plotWidget()->itemList()) {
+                    if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                        if (sp->matrix() == targetMat)
+                            sp->updateData(targetMat);
+                    }
+                }
+            }
+        }
+    }
+
+    if (plotHeatmap && app) {
+        if (MultiLayer *ml = app->plotSpectrogram(targetMat, Graph::ColorMap)) {
+            if (Graph *gr = ml->activeGraph()) {
+                const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Bold);
+                const QFont tickFnt(QStringLiteral("Arial"), 10);
+                gr->initFonts(titleFnt, tickFnt);
+                gr->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+                gr->setRightAxisTitleFont(titleFnt);
+                gr->setAxisFont(QwtPlot::yRight, tickFnt);
+                gr->replot();
+            }
+        }
+    }
+
+    return targetMat;
+}
+
+QwtPlotCurve *AdvancedSignalProc::fourierSelfDeconvolve(
+        ApplicationWindow *app, Graph *g, const QString &curveTitle,
+        double lorentzFwhmGamma, double sharpeningFactorK, int apodization)
+{
+    registerSignalProcTranslationsOnce();
+    if (!app || !g)
+        return nullptr;
+
+    QwtPlotCurve *srcCurve = resolveSignalCurve(g, curveTitle);
+    std::vector<double> xs, ys;
+    double fs = 1.0;
+    if (!extractUniformSignal(g, curveTitle, xs, ys, fs) || xs.size() < 4)
+        return nullptr;
+
+    std::vector<double> fsdY;
+    if (!computeFsdSpectrum(xs, ys, lorentzFwhmGamma, sharpeningFactorK, apodization, fsdY))
+        return nullptr;
+
+    const int n = static_cast<int>(xs.size());
+    Table *tbl = buildSignalTable(
+            app, QStringLiteral("FSDSharp"),
+            QStringList() << QStringLiteral("X") << QStringLiteral("FSDSharpened"),
+            QList<SciDAVis::PlotDesignation>() << SciDAVis::X << SciDAVis::Y,
+            { xs, fsdY });
+    if (!tbl)
+        return nullptr;
+
+    if (!g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::Line, 0, n - 1))
+        return nullptr;
+
+    QwtPlotCurve *resCurve = g->curve(g->curves() - 1);
+    if (resCurve) {
+        resCurve->setPen(QPen(QColor(195, 30, 65), 2.0, Qt::SolidLine));
+        if (srcCurve)
+            resCurve->setAxis(srcCurve->xAxis(), srcCurve->yAxis());
+    }
+    g->updatePlot();
+    return resCurve;
+}
+
+void AdvancedSignalProc::showMatrixFilter2DDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerSignalProcTranslationsOnce();
+    const QList<Matrix *> matrices = collectProjectMatrices(app);
+    if (matrices.isEmpty()) {
+        QMessageBox::information(app, QObject::tr("2D Spatial Filter & Plane Leveling"),
+                                 QObject::tr("Please open a Matrix window first."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("2D Spatial Filter & Plane Leveling"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbMatrix = new QComboBox(&dlg);
+    Matrix *activeMat = findActiveOrFirstMatrix(app);
+    int initIdx = 0;
+    for (int i = 0; i < matrices.size(); ++i) {
+        cbMatrix->addItem(matrices[i]->name());
+        if (matrices[i] == activeMat)
+            initIdx = i;
+    }
+    cbMatrix->setCurrentIndex(initIdx);
+
+    QComboBox *cbMethod = new QComboBox(&dlg);
+    cbMethod->addItem(QObject::tr("Gaussian Smoothing (2D)"),
+                      static_cast<int>(FilterGaussian2D));
+    cbMethod->addItem(QObject::tr("Median Despike Filter (Cosmic-Ray Removal)"),
+                      static_cast<int>(FilterMedian2D));
+    cbMethod->addItem(QObject::tr("Laplacian Sharpening (2D)"),
+                      static_cast<int>(FilterLaplacianSharpen2D));
+    cbMethod->addItem(QObject::tr("Sobel Gradient Magnitude (|∇Z|)"),
+                      static_cast<int>(FilterSobelGradient2D));
+    cbMethod->addItem(QObject::tr("Subtract Least-Squares Planar Tilt (AFM/STM Leveling)"),
+                      static_cast<int>(FilterSubtractPlanarTilt2D));
+
+    QLabel *lblParam = new QLabel(QObject::tr("Gaussian Sigma (pixels):"), &dlg);
+    QDoubleSpinBox *sbParam = new QDoubleSpinBox(&dlg);
+    sbParam->setRange(0.05, 100.0);
+    sbParam->setDecimals(3);
+    sbParam->setSingleStep(0.25);
+    sbParam->setValue(1.5);
+
+    QSpinBox *sbRadius = new QSpinBox(&dlg);
+    sbRadius->setRange(1, 32);
+    sbRadius->setValue(2);
+
+    QCheckBox *chkInPlace =
+            new QCheckBox(QObject::tr("Modify Source Matrix In-Place (Undoable)"), &dlg);
+    chkInPlace->setChecked(false);
+    QCheckBox *chkPlot = new QCheckBox(QObject::tr("Plot Filtered 2D Heatmap"), &dlg);
+    chkPlot->setChecked(true);
+
+    auto syncUi = [&](int idx) {
+        const int m = cbMethod->itemData(idx).toInt();
+        if (m == static_cast<int>(FilterGaussian2D)) {
+            lblParam->setText(QObject::tr("Gaussian Sigma (pixels):"));
+            sbParam->setEnabled(true);
+            sbRadius->setEnabled(true);
+        } else if (m == static_cast<int>(FilterMedian2D)) {
+            lblParam->setText(QObject::tr("Parameter:"));
+            sbParam->setEnabled(false);
+            sbRadius->setEnabled(true);
+        } else if (m == static_cast<int>(FilterLaplacianSharpen2D)) {
+            lblParam->setText(QObject::tr("Sharpening Strength:"));
+            sbParam->setEnabled(true);
+            sbRadius->setEnabled(false);
+        } else {
+            lblParam->setText(QObject::tr("Parameter:"));
+            sbParam->setEnabled(false);
+            sbRadius->setEnabled(false);
+        }
+    };
+    syncUi(0);
+    QObject::connect(cbMethod, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, syncUi);
+
+    form->addRow(QObject::tr("Source Matrix:"), cbMatrix);
+    form->addRow(QObject::tr("2D Filter Method:"), cbMethod);
+    form->addRow(lblParam, sbParam);
+    form->addRow(QObject::tr("Kernel Radius (pixels):"), sbRadius);
+    form->addRow(QString(), chkInPlace);
+    form->addRow(QString(), chkPlot);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int matIdx = cbMatrix->currentIndex();
+        if (matIdx >= 0 && matIdx < matrices.size()) {
+            filterMatrix2D(app, matrices[matIdx],
+                           static_cast<MatrixFilter2DMethod>(cbMethod->currentData().toInt()),
+                           sbParam->value(), sbRadius->value(),
+                           chkInPlace->isChecked(), chkPlot->isChecked());
+        }
+    }
+}
+
+void AdvancedSignalProc::showFourierSelfDeconvolveDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app)
+        return;
+    registerSignalProcTranslationsOnce();
+    Graph *targetGraph = findActiveOrFirstSignalGraph(app, g);
+    if (!targetGraph || targetGraph->analysableCurvesList().isEmpty()) {
+        QMessageBox::information(
+                app, QObject::tr("Fourier Self-Deconvolution (Peak Sharpening)"),
+                QObject::tr("Please open a graph with at least one curve first."));
+        return;
+    }
+
+    const QStringList curves = targetGraph->analysableCurvesList();
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Fourier Self-Deconvolution (Peak Sharpening)"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbCurve = new QComboBox(&dlg);
+    cbCurve->addItems(curves);
+
+    auto estimateDefaultGamma = [&](const QString &cname) {
+        std::vector<double> xs, ys;
+        double fs = 1.0;
+        if (!extractUniformSignal(targetGraph, cname, xs, ys, fs) || xs.size() < 4)
+            return 10.0;
+        const double span = std::fabs(xs.back() - xs.front());
+        const double dx = span / static_cast<double>(xs.size() - 1);
+        return std::max(4.0 * dx, 0.04 * span);
+    };
+
+    QDoubleSpinBox *sbGamma = new QDoubleSpinBox(&dlg);
+    sbGamma->setRange(1e-9, 1e12);
+    sbGamma->setDecimals(6);
+    sbGamma->setValue(estimateDefaultGamma(curves.first()));
+
+    QDoubleSpinBox *sbK = new QDoubleSpinBox(&dlg);
+    sbK->setRange(1.05, 3.50);
+    sbK->setDecimals(2);
+    sbK->setSingleStep(0.10);
+    sbK->setValue(1.80);
+
+    QComboBox *cbApod = new QComboBox(&dlg);
+    cbApod->addItem(QObject::tr("Bessel / Kauppinen (1 - |t|/t_max)^2"), 0);
+    cbApod->addItem(QObject::tr("Gaussian Apodization"), 1);
+
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(targetGraph);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> xs, ys, fsdY;
+        double fs = 1.0;
+        if (!extractUniformSignal(targetGraph, cbCurve->currentText(), xs, ys, fs)
+            || !computeFsdSpectrum(xs, ys, sbGamma->value(), sbK->value(),
+                                   cbApod->currentData().toInt(), fsdY)) {
+            previewGuard.clear();
+            return;
+        }
+        previewGuard.setSingle(xs, fsdY, QPen(QColor(195, 30, 65), 1.9, Qt::DashLine));
+    };
+
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg, [&](const QString &cn) {
+        sbGamma->setValue(estimateDefaultGamma(cn));
+        refreshPreview();
+    });
+    QObject::connect(sbGamma, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(sbK, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(cbApod, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+
+    form->addRow(QObject::tr("Curve:"), cbCurve);
+    form->addRow(QObject::tr("Lorentzian FWHM γ (X units):"), sbGamma);
+    form->addRow(QObject::tr("Sharpening Factor K (t_max = K / γ):"), sbK);
+    form->addRow(QObject::tr("Apodization Function:"), cbApod);
+    form->addRow(QString(), chkPreview);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    refreshPreview();
+
+    if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
+        fourierSelfDeconvolve(app, targetGraph, cbCurve->currentText(),
+                              sbGamma->value(), sbK->value(), cbApod->currentData().toInt());
     }
 }
