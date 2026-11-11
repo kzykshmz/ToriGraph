@@ -43,7 +43,7 @@ else()
 endif()
 
 # QwtPlot3D
-option( BUILD_QWTPLOT3D "Build QwtPlot3D using own code" OFF )
+option( BUILD_QWTPLOT3D "Build QwtPlot3D using own code" ON )
 
 if( NOT BUILD_QWTPLOT3D )
 find_library ( QWTPLOT3D_LIBRARY
