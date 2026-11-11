@@ -42,7 +42,7 @@
 
 FindDialog::FindDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
-    setWindowTitle(tr("SciDAVis") + " - " + tr("Find"));
+    setWindowTitle(tr("ToriGraph") + " - " + tr("Find"));
     setSizeGripEnabled(true);
 
     QGridLayout *topLayout = new QGridLayout();

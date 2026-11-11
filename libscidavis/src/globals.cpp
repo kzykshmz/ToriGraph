@@ -121,7 +121,7 @@ QString SciDAVis::schemaVersion()
 
 QString SciDAVis::versionString()
 {
-    return QString("SciDAVis ") + scidavis_version;
+    return QString("ToriGraph ") + scidavis_version;
 }
 
 QString SciDAVis::extraVersion()
@@ -155,7 +155,7 @@ void SciDAVis::about()
     Ui::SciDAVisAbout ui;
     ui.setupUi(dialog);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(QObject::tr("About SciDAVis"));
+    dialog->setWindowTitle(QObject::tr("About ToriGraph"));
     ui.version_label->setText(versionString() + extraVersion());
     ui.release_date_label->setText(QString("Qt: ") + QT_VERSION_STR + ". Qwt: "
                                    + QWT_VERSION_STR

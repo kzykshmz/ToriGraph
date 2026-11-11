@@ -96,7 +96,7 @@ bool Integration::isDataAcceptable()
     case Akima:
         break;
     default:
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Unknown interpolation method. Valid values are: 0 - Linear, 1 - "
                                  "Cubic, 2 - Akima."));
         d_init_err = true;
@@ -106,7 +106,7 @@ bool Integration::isDataAcceptable()
     for (unsigned i = 1; i < d_x.size(); i++)
         if (d_x[i - 1] == d_x[i]) {
             QMessageBox::critical((ApplicationWindow *)parent(),
-                                  tr("SciDAVis") + " - " + tr("Error"),
+                                  tr("ToriGraph") + " - " + tr("Error"),
                                   tr("Several data points have the same x value causing divisions "
                                      "by zero, operation aborted!"));
             return false;
@@ -137,7 +137,7 @@ QString Integration::logInfo()
     }
 
     if (d_x.size() < gsl_interp_type_min_size(method_t)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("You need at least %1 points in order to perform this operation!")
                                       .arg(gsl_interp_type_min_size(method_t)));
         d_init_err = true;

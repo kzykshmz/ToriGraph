@@ -1,3 +1,7 @@
+# ToriGraph
+
+**ToriGraph** is a Scientific Data Analysis and Visualization application based on SciDAVis, featuring native Windows OLE Server / Clipboard integration (`ToriGraph.Graph.1`) for vector EMF embedding and re-editing in Microsoft PowerPoint, and publication-ready default 2D graph styling (*ISIJ International* standard).
+
 # What is SciDAVis?
 
 SciDAVis is a free application for <i>Sci</i>entific <i>D</i>ata <i>A</i>nalysis and <i>Vis</i>ualization.

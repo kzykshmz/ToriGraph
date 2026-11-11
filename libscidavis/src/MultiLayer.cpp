@@ -300,7 +300,7 @@ void MultiLayer::confirmRemoveLayer()
     if (graphs > 1) {
         switch (QMessageBox::information(
                 this, tr("Guess best layout?"),
-                tr("Do you want SciDAVis to rearrange the remaining layers?"), tr("&Yes"),
+                tr("Do you want ToriGraph to rearrange the remaining layers?"), tr("&Yes"),
                 tr("&No"), tr("&Cancel"), 0, 2)) {
         case 0:
             removeLayer();

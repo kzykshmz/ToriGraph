@@ -1102,7 +1102,7 @@ void Table::customEvent(QEvent *e)
 void Table::closeEvent(QCloseEvent *e)
 {
     if (askOnClose) {
-        switch (QMessageBox::information(this, tr("SciDAVis"),
+        switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
                                          tr("Delete"), tr("Hide"), tr("Cancel"), 0, 2)) {

@@ -76,7 +76,7 @@ void Filter::init()
 void Filter::setInterval(double from, double to)
 {
     if (!d_curve) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Please assign a curve first!"));
         return;
     }
@@ -98,7 +98,7 @@ void Filter::setDataCurve(const int curve, double start, double end)
     for (const auto &type : axType)
         if (Graph::AxisType::Numeric != type) {
             auto ret = QMessageBox::warning((ApplicationWindow *)parent(),
-                                            tr("SciDAVis") + " - " + tr("Warning"),
+                                            tr("ToriGraph") + " - " + tr("Warning"),
                                             tr("At least one of the axis is not numerical!"),
                                             QMessageBox::Abort | QMessageBox::Ignore);
             if (QMessageBox::Abort == ret) {
@@ -120,7 +120,7 @@ void Filter::setDataCurve(const int curve, double start, double end)
         d_y.resize(d_indices.size());
     }
     catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Could not allocate memory, operation aborted!\n")
                                       + tr("Allocator returned: ") + e.what());
         d_init_err = true;
@@ -155,7 +155,7 @@ bool Filter::isDataAcceptable() const
 {
 
     if (d_x.size() < unsigned(d_min_points)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("You need at least %1 points in order to perform this operation!")
                                       .arg(d_min_points));
         return false;

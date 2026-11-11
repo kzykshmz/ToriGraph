@@ -46,7 +46,7 @@
     </font>
    </property>
    <property name="text" >
-    <string>SciDAVis XX.XX.XX-betaXX</string>
+    <string>ToriGraph XX.XX.XX-betaXX</string>
    </property>
   </widget>
   <widget class="QLabel" name="release_date_label" >

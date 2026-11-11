@@ -1,10 +1,10 @@
-﻿param(
+param(
     [ValidateSet("Inspect", "Install", "Uninstall")]
     [string]$Mode = "Inspect",
     [string]$ExePath = "",
     [string]$Clsid = "{8E6B9541-3C74-4D28-A915-7D84E5A12001}",
-    [string]$ProgId = "SciDAVis.Graph.1",
-    [string]$FriendlyName = "SciDAVis Graph"
+    [string]$ProgId = "ToriGraph.Graph.1",
+    [string]$FriendlyName = "ToriGraph Graph"
 )
 
 Set-StrictMode -Version Latest
@@ -17,7 +17,9 @@ function Resolve-DefaultExePath {
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $defaults = @(
+        (Join-Path $repoRoot "build\scidavis\ToriGraph.exe"),
         (Join-Path $repoRoot "build\scidavis\scidavis.exe"),
+        (Join-Path $repoRoot "dist\ToriGraph.exe"),
         (Join-Path $repoRoot "dist\scidavis.exe")
     )
     foreach ($item in $defaults) {
@@ -26,7 +28,7 @@ function Resolve-DefaultExePath {
         }
     }
     if ($Mode -eq "Install") {
-        throw "Could not locate scidavis.exe. Pass -ExePath explicitly or build the target first."
+        throw "Could not locate ToriGraph.exe. Pass -ExePath explicitly or build the target first."
     }
     return $defaults[0]
 }
@@ -88,7 +90,7 @@ switch ($Mode) {
         Set-DefaultValue -RegistryPath "$clsidBase\LocalServer32" -Value $localServerCommand
         Set-NamedValue -RegistryPath "$clsidBase\LocalServer32" -Name "ServerExecutable" -Value $resolvedExe
         Set-DefaultValue -RegistryPath "$clsidBase\ProgID" -Value $ProgId
-        Set-DefaultValue -RegistryPath "$clsidBase\VersionIndependentProgID" -Value "SciDAVis.Graph"
+        Set-DefaultValue -RegistryPath "$clsidBase\VersionIndependentProgID" -Value "ToriGraph.Graph"
         Set-DefaultValue -RegistryPath "$clsidBase\InprocHandler32" -Value "ole32.dll"
         Set-DefaultValue -RegistryPath "$clsidBase\DefaultIcon" -Value "$resolvedExe,0"
         Set-DefaultValue -RegistryPath "$clsidBase\Verb\0" -Value "編集(&E),0,2"

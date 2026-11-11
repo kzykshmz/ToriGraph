@@ -29,9 +29,13 @@ add_executable( scidavis
   "${RESOURCES}"
   "${QM_FILES}"
   )
+set_target_properties( scidavis PROPERTIES OUTPUT_NAME "ToriGraph" )
 
 # SciDAVis expects qm files to be in the translations directory. qt5_create_translation puts them somewhere else
 add_custom_command(TARGET scidavis POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/translations" COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QM_FILES} "${CMAKE_CURRENT_BINARY_DIR}/translations")
+if( WIN32 )
+  add_custom_command(TARGET scidavis POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:scidavis>" "${CMAKE_CURRENT_BINARY_DIR}/scidavis.exe")
+endif()
 
 if( WIN32 )
   target_compile_definitions( scidavis PUBLIC
@@ -104,7 +108,7 @@ endif()
           RESOLVED_DEPENDENCIES_VAR RESOLVED_DEPENDENCIES
           UNRESOLVED_DEPENDENCIES_VAR UNRESOLVED_DEPENDENCIES
           CONFLICTING_DEPENDENCIES_PREFIX CONFLICTING_DEPENDENCIES
-          EXECUTABLES \"\${CMAKE_INSTALL_PREFIX}/scidavis.exe\"
+          EXECUTABLES \"\${CMAKE_INSTALL_PREFIX}/ToriGraph.exe\"
           DIRECTORIES \"${RUNTIME_DIR}\"
           POST_EXCLUDE_REGEXES ${EXCLUDE_DLL}
           )

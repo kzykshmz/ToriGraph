@@ -218,7 +218,7 @@ ApplicationWindow::ApplicationWindow()
     setAttribute(Qt::WA_DeleteOnClose);
     QCoreApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
 
-    setWindowTitle(tr("SciDAVis - untitled"));
+    setWindowTitle(tr("ToriGraph - untitled"));
 
     // Icons
     IconLoader::init();
@@ -714,7 +714,7 @@ void ApplicationWindow::lockToolbar(const bool status)
 void ApplicationWindow::insertTranslatedStrings()
 {
     if (projectname == "untitled")
-        setWindowTitle(tr("SciDAVis - untitled"));
+        setWindowTitle(tr("ToriGraph - untitled"));
 
     lv.headerItem()->setText(0, tr("Name"));
     lv.headerItem()->setText(1, tr("Type"));
@@ -3573,7 +3573,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
 #else
     list = s.split(QRegExp("\\s"), QString::SkipEmptyParts);
 #endif
-    if (list.count() < 2 || (list[0] != "SciDAVis" && list[0] != "QtiPlot")) {
+    if (list.count() < 2 || (list[0] != "SciDAVis" && list[0] != "ToriGraph" && list[0] != "QtiPlot")) {
         if (QFile::exists(fn + "~")) {
             int choice = QMessageBox::question(
                     this, tr("File opening error"),
@@ -3618,7 +3618,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
         d_file_version = ((vl[0]).toInt() << 16) + ((vl[1]).toInt() << 8) + (vl[2]).toInt();
 
     projectname = fn;
-    setWindowTitle(tr("SciDAVis") + " - " + fn);
+    setWindowTitle(tr("ToriGraph") + " - " + fn);
 
     QFileInfo fi(fn);
     QString baseName = fi.fileName();
@@ -3897,7 +3897,7 @@ void ApplicationWindow::scriptError(const QString &message, const QString &scrip
 {
     Q_UNUSED(scriptName)
     Q_UNUSED(lineNumber)
-    QMessageBox::critical(this, tr("SciDAVis") + " - " + tr("Script Error"), message);
+    QMessageBox::critical(this, tr("ToriGraph") + " - " + tr("Script Error"), message);
 }
 
 void ApplicationWindow::scriptPrint(const QString &text)
@@ -3991,10 +3991,10 @@ void ApplicationWindow::openTemplate()
             QStringList l = t.readLine().split(QRegExp("\\s"), QString::SkipEmptyParts);
 #endif
             QString fileType = l[0];
-            if ((fileType != "SciDAVis") && (fileType != "QtiPlot")) {
+            if ((fileType != "SciDAVis") && (fileType != "ToriGraph") && (fileType != "QtiPlot")) {
                 QMessageBox::critical(
                         this, tr("File opening error"),
-                        tr("The file: <b> %1 </b> was not created using SciDAVis!").arg(fn));
+                        tr("The file: <b> %1 </b> was not created using ToriGraph!").arg(fn));
                 return;
             }
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
@@ -5010,7 +5010,7 @@ bool ApplicationWindow::saveProject()
     if (compress)
         file_compress(QFile::encodeName(fn).constData(), "wb9");
 
-    setWindowTitle("SciDAVis - " + projectname);
+    setWindowTitle("ToriGraph - " + projectname);
     savedProject();
     actionUndo->setEnabled(false);
     actionRedo->setEnabled(false);
@@ -5028,8 +5028,8 @@ bool ApplicationWindow::saveProject()
 
 void ApplicationWindow::saveProjectAs()
 {
-    QString filter = tr("SciDAVis project") + " (*.sciprj);;";
-    filter += tr("Compressed SciDAVis project") + " (*.sciprj.gz)";
+    QString filter = tr("ToriGraph project") + " (*.sciprj);;";
+    filter += tr("Compressed ToriGraph project") + " (*.sciprj.gz)";
 
     QString selectedFilter;
     QString fn = QFileDialog::getSaveFileName(this, tr("Save Project As"), workingDir, filter,
@@ -6097,7 +6097,7 @@ void ApplicationWindow::removePoints()
         btnPointer->setChecked(true);
         return;
     } else {
-        switch (QMessageBox::warning(this, tr("SciDAVis"),
+        switch (QMessageBox::warning(this, tr("ToriGraph"),
                                      tr("This will modify the data in the worksheets!\nAre you "
                                         "sure you want to continue?"),
                                      tr("Continue"), tr("Cancel"), 0, 1)) {
@@ -6140,7 +6140,7 @@ void ApplicationWindow::movePoints()
         btnPointer->setChecked(true);
         return;
     } else {
-        switch (QMessageBox::warning(this, tr("SciDAVis"),
+        switch (QMessageBox::warning(this, tr("ToriGraph"),
                                      tr("This will modify the data in the worksheets!\nAre you "
                                         "sure you want to continue?"),
                                      tr("Continue"), tr("Cancel"), 0, 1)) {
@@ -7459,7 +7459,7 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
 void ApplicationWindow::showMoreWindows()
 {
     if (explorerWindow.isVisible())
-        QMessageBox::information(this, "SciDAVis",
+        QMessageBox::information(this, "ToriGraph",
                                  tr("Please use the project explorer to select a window!"));
     else
         explorerWindow.show();
@@ -7594,7 +7594,7 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
 
     if (!saved) {
         QString s = tr("Save changes to project: <p><b> %1 </b> ?").arg(projectname);
-        switch (QMessageBox::information(this, tr("SciDAVis"), s, tr("Yes"), tr("No"), tr("Cancel"),
+        switch (QMessageBox::information(this, tr("ToriGraph"), s, tr("Yes"), tr("No"), tr("Cancel"),
                                          0, 2)) {
         case 0:
             if (!saveProject()) {
@@ -8158,9 +8158,9 @@ void ApplicationWindow::showHelp()
                         + "<p><a href = \"" MANUAL_URI "\">" MANUAL_URI "</a></p>");
         chooseHelpFolder();
 #ifdef Q_OS_MAC
-        QSettings settings(QSettings::IniFormat, QSettings::UserScope, "SciDAVis", "SciDAVis");
+        QSettings settings(QSettings::IniFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
 #else
-        QSettings settings(QSettings::NativeFormat, QSettings::UserScope, "SciDAVis", "SciDAVis");
+        QSettings settings(QSettings::NativeFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
 #endif
         settings.beginGroup("/Paths");
         settings.setValue("/HelpFile", helpFilePath);
@@ -10693,7 +10693,7 @@ void ApplicationWindow::createActions()
     actionShowTitleDialog = new QAction(tr("&Title ..."), this);
     connect(actionShowTitleDialog, SIGNAL(triggered()), this, SLOT(showTitleDialog()));
 
-    actionAbout = new QAction(tr("&About SciDAVis"), this);
+    actionAbout = new QAction(tr("&About ToriGraph"), this);
     actionAbout->setShortcut(tr("F1"));
     connect(actionAbout, SIGNAL(triggered()), this, SLOT(about()));
 
@@ -10839,10 +10839,10 @@ void ApplicationWindow::createActions()
     connect(actionCheckUpdates, SIGNAL(triggered()), this, SLOT(searchForUpdates()));
 #endif // defined SEARCH_FOR_UPDATES
 
-    actionHomePage = new QAction(tr("&SciDAVis Homepage"), this);
+    actionHomePage = new QAction(tr("&ToriGraph Homepage"), this);
     connect(actionHomePage, SIGNAL(triggered()), this, SLOT(showHomePage()));
 
-    actionHelpForums = new QAction(tr("SciDAVis &Forums"), this);
+    actionHelpForums = new QAction(tr("ToriGraph &Forums"), this);
     connect(actionHelpForums, SIGNAL(triggered()), this, SLOT(showForums()));
 
     actionHelpBugReports = new QAction(tr("Report a &Bug"), this);
@@ -11182,7 +11182,7 @@ void ApplicationWindow::translateActionsStrings()
     actionShowGridDialog->setText(tr("&Grid ..."));
     actionShowTitleDialog->setText(tr("&Title ..."));
 
-    actionAbout->setText(tr("&About SciDAVis"));
+    actionAbout->setText(tr("&About ToriGraph"));
     actionAbout->setShortcut(tr("F1"));
 
     actionShowHelp->setText(tr("&Help"));
@@ -11236,11 +11236,11 @@ void ApplicationWindow::translateActionsStrings()
 
     actionMultiPeakGauss->setText(tr("&Gaussian..."));
     actionMultiPeakLorentz->setText(tr("&Lorentzian..."));
-    actionHomePage->setText(tr("&SciDAVis Homepage"));
+    actionHomePage->setText(tr("&ToriGraph Homepage"));
 #ifdef SEARCH_FOR_UPDATES
     actionCheckUpdates->setText(tr("Search for &Updates"));
 #endif
-    actionHelpForums->setText(tr("Visit SciDAVis &Forums"));
+    actionHelpForums->setText(tr("Visit ToriGraph &Forums"));
     actionHelpBugReports->setText(tr("Report a &Bug"));
 #ifdef DOWNLOAD_LINKS
     actionDownloadManual->setText(tr("Download &Manual"));
@@ -11520,7 +11520,7 @@ ApplicationWindow *ApplicationWindow::importOPJ(const QString &filename [[maybe_
 
         ApplicationWindow *app = new ApplicationWindow();
         app->applyUserSettings();
-        app->setWindowTitle("SciDAVis - " + filename);
+        app->setWindowTitle("ToriGraph - " + filename);
         app->showMaximized();
         app->projectname = filename;
         app->recentProjects.removeAll(filename);
@@ -11770,22 +11770,22 @@ void ApplicationWindow::parseCommandLineArguments(const QStringList &args)
 
 #ifdef Q_OS_WIN
             hide();
-            QMessageBox::information(this, tr("SciDAVis") + " - " + tr("Version"), s);
+            QMessageBox::information(this, tr("ToriGraph") + " - " + tr("Version"), s);
 #else
             std::cout << s.toStdString();
 #endif
             ::exit(0);
         } else if (str == "-h" || str == "--help") {
             QString s = "\n" + tr("Usage") + ": ";
-            s += "scidavis [" + tr("options") + "] [" + tr("file") + "_" + tr("name") + "]\n\n";
+            s += "ToriGraph [" + tr("options") + "] [" + tr("file") + "_" + tr("name") + "]\n\n";
             s += tr("Valid options are") + ":\n";
             s += "-a " + tr("or") + " --about: " + tr("show about dialog and exit") + "\n";
             s += "-h " + tr("or") + " --help: " + tr("show command line options") + "\n";
-            s += "-l=XX " + tr("or") + " --lang=XX: " + tr("start SciDAVis in language")
+            s += "-l=XX " + tr("or") + " --lang=XX: " + tr("start ToriGraph in language")
                     + " XX ('en', 'fr', 'de', ...)\n";
             s += "-m " + tr("or")
-                    + " --manual: " + tr("show SciDAVis manual in a standalone window") + "\n";
-            s += "-v " + tr("or") + " --version: " + tr("print SciDAVis version and release date")
+                    + " --manual: " + tr("show ToriGraph manual in a standalone window") + "\n";
+            s += "-v " + tr("or") + " --version: " + tr("print ToriGraph version and release date")
                     + "\n";
             s += "-x " + tr("or") + " --execute: " + tr("execute the script file given as argument")
                     + "\n\n";
@@ -11800,7 +11800,7 @@ void ApplicationWindow::parseCommandLineArguments(const QStringList &args)
 #endif
 #ifdef Q_OS_WIN
             hide();
-            QMessageBox::information(this, tr("SciDAVis - Help"), s);
+            QMessageBox::information(this, tr("ToriGraph - Help"), s);
 #else
             std::cout << s.toStdString();
 #endif
@@ -12390,8 +12390,8 @@ void ApplicationWindow::saveAsProject()
 
 void ApplicationWindow::saveFolderAsProject(Folder *f)
 {
-    QString filter = tr("SciDAVis project") + " (*.sciprj);;";
-    filter += tr("Compressed SciDAVis project") + " (*.sciprj.gz)";
+    QString filter = tr("ToriGraph project") + " (*.sciprj);;";
+    filter += tr("Compressed ToriGraph project") + " (*.sciprj.gz)";
 
     QString selectedFilter;
     QString fn = QFileDialog::getSaveFileName(this, tr("Save project as"), workingDir, filter,
@@ -13168,7 +13168,7 @@ void ApplicationWindow::dropFolderItems(QTreeWidgetItem *dest)
                 return;
 
             if (subfolders.contains(f->name())) {
-                QMessageBox::critical(this, tr("SciDAVis") + " - " + tr("Skipped moving folder"),
+                QMessageBox::critical(this, tr("ToriGraph") + " - " + tr("Skipped moving folder"),
                                       tr("The destination folder already contains a folder called "
                                          "'%1'! Folder skipped!")
                                               .arg(f->name()));
@@ -13779,10 +13779,10 @@ QStringList ApplicationWindow::tableWindows()
 QSettings &ApplicationWindow::getSettings()
 {
 #ifdef Q_OS_MAC // Mac
-    static QSettings d_settings(QSettings::IniFormat, QSettings::UserScope, "SciDAVis", "SciDAVis");
+    static QSettings d_settings(QSettings::IniFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
 #else
-    static QSettings d_settings(QSettings::NativeFormat, QSettings::UserScope, "SciDAVis",
-                                "SciDAVis");
+    static QSettings d_settings(QSettings::NativeFormat, QSettings::UserScope, "ToriGraph",
+                                "ToriGraph");
 #endif
     return d_settings;
 }

@@ -55,12 +55,12 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
     int col2 = d_table->colIndex(colName2);
 
     if (col1 < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                              tr("The data set %1 does not exist!").arg(colName1));
         d_init_err = true;
         return;
     } else if (col2 < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                              tr("The data set %1 does not exist!").arg(colName2));
         d_init_err = true;
         return;
@@ -75,7 +75,7 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
         d_x.resize(td_n);
         d_y.resize(td_n);
     } catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Could not allocate memory, operation aborted!\n")
                                       + tr("Allocator returned: ") + e.what());
         d_init_err = true;
@@ -108,7 +108,7 @@ void Correlation::output()
             }
         }
     } else {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                              tr("Error in GSL forward FFT operation!"));
         return;
     }

@@ -42,8 +42,8 @@ OpenProjectDialog::OpenProjectDialog(QWidget *parent, bool extended, Qt::WindowF
     setWindowTitle(tr("Open Project"));
     setFileMode(ExistingFile);
     QStringList filters;
-    filters << tr("SciDAVis project") + " (*.sciprj)"
-            << tr("Compressed SciDAVis project") + " (*.sciprj.gz)"
+    filters << tr("ToriGraph project") + " (*.sciprj)"
+            << tr("Compressed ToriGraph project") + " (*.sciprj.gz)"
             << tr("QtiPlot project") + " (*.qti)"
             << tr("Compressed QtiPlot project") + " (*.qti.gz)"
 #ifdef ORIGIN_IMPORT

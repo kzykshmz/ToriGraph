@@ -126,7 +126,7 @@
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="217" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="713" />
-        <source>SciDAVis - untitled</source>
+        <source>ToriGraph - untitled</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -960,7 +960,7 @@
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="3423" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="12051" />
-        <source>SciDAVis currently does not support Origin import. If you are interested in reviving and maintaining an Origin import filter, contact the developers.</source>
+        <source>ToriGraph currently does not support Origin import. If you are interested in reviving and maintaining an Origin import filter, contact the developers.</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1010,7 +1010,7 @@
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="3602" />
-        <source>SciDAVis does not support QtiPlot project files from versions later than 0.9.0.</source>
+        <source>ToriGraph does not support QtiPlot project files from versions later than 0.9.0.</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1021,7 +1021,7 @@
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="7543" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11714" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="13112" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1071,12 +1071,12 @@ in file %2.</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="3987" />
-        <source>The file: &lt;b&gt; %1 &lt;/b&gt; was not created using SciDAVis!</source>
+        <source>The file: &lt;b&gt; %1 &lt;/b&gt; was not created using ToriGraph!</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="3999" />
-        <source>SciDAVis does not support QtiPlot template files from versions later than 0.9.0.</source>
+        <source>ToriGraph does not support QtiPlot template files from versions later than 0.9.0.</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1086,7 +1086,7 @@ in file %2.</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="4112" />
-        <source>The file: &lt;b&gt;%1&lt;/b&gt; is not a SciDAVis template file!</source>
+        <source>The file: &lt;b&gt;%1&lt;/b&gt; is not a ToriGraph template file!</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1185,13 +1185,13 @@ in file %2.</source>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="4988" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="12334" />
-        <source>SciDAVis project</source>
+        <source>ToriGraph project</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="4989" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="12335" />
-        <source>Compressed SciDAVis project</source>
+        <source>Compressed ToriGraph project</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1201,22 +1201,22 @@ in file %2.</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="5035" />
-        <source>SciDAVis/QtiPlot Matrix Template</source>
+        <source>ToriGraph/QtiPlot Matrix Template</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="5037" />
-        <source>SciDAVis/QtiPlot 2D Graph Template</source>
+        <source>ToriGraph/QtiPlot 2D Graph Template</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="5039" />
-        <source>SciDAVis/QtiPlot Table Template</source>
+        <source>ToriGraph/QtiPlot Table Template</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="5041" />
-        <source>SciDAVis/QtiPlot 3D Surface Template</source>
+        <source>ToriGraph/QtiPlot 3D Surface Template</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1717,7 +1717,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="8077" />
-        <source>Choose the location of the SciDAVis help folder!</source>
+        <source>Choose the location of the ToriGraph help folder!</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -1787,7 +1787,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="8896" />
-        <source>Do you want SciDAVis to guess the best position for the new layer?
+        <source>Do you want ToriGraph to guess the best position for the new layer?
  Warning: this will rearrange existing layers!</source>
         <translation type="unfinished" />
     </message>
@@ -2589,7 +2589,7 @@ Are you sure you want to continue?</source>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="10637" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11126" />
-        <source>&amp;About SciDAVis</source>
+        <source>&amp;About ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -2838,12 +2838,12 @@ Are you sure you want to continue?</source>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="10783" />
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11180" />
-        <source>&amp;SciDAVis Homepage</source>
+        <source>&amp;ToriGraph Homepage</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="10786" />
-        <source>SciDAVis &amp;Forums</source>
+        <source>ToriGraph &amp;Forums</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3261,7 +3261,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11184" />
-        <source>Visit SciDAVis &amp;Forums</source>
+        <source>Visit ToriGraph &amp;Forums</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3606,17 +3606,17 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11725" />
-        <source>start SciDAVis in language</source>
+        <source>start ToriGraph in language</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11728" />
-        <source>show SciDAVis manual in a standalone window</source>
+        <source>show ToriGraph manual in a standalone window</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11729" />
-        <source>print SciDAVis version and release date</source>
+        <source>print ToriGraph version and release date</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3636,7 +3636,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="11744" />
-        <source>SciDAVis - Help</source>
+        <source>ToriGraph - Help</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3666,7 +3666,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="12002" />
-        <source>The file: &lt;b&gt;%1&lt;/b&gt; is not a SciDAVis or Origin project file!</source>
+        <source>The file: &lt;b&gt;%1&lt;/b&gt; is not a ToriGraph or Origin project file!</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3885,7 +3885,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="13201" />
-        <source>SciDAVis will now try to determine whether a new version of SciDAVis is available. Please modify your firewall settings in order to allow SciDAVis to connect to the internet.</source>
+        <source>ToriGraph will now try to determine whether a new version of ToriGraph is available. Please modify your firewall settings in order to allow ToriGraph to connect to the internet.</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -3910,7 +3910,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/ApplicationWindow.cpp" line="13247" />
-        <source>There is a newer version of SciDAVis (%1) available for download. Would you like to download it now?</source>
+        <source>There is a newer version of ToriGraph (%1) available for download. Would you like to download it now?</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -5481,7 +5481,7 @@ p, li { white-space: pre-wrap; }
         <location filename="../../libscidavis/src/Convolution.cpp" line="76" />
         <location filename="../../libscidavis/src/Convolution.cpp" line="84" />
         <location filename="../../libscidavis/src/Convolution.cpp" line="99" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -5548,7 +5548,7 @@ p, li { white-space: pre-wrap; }
         <location filename="../../libscidavis/src/Correlation.cpp" line="63" />
         <location filename="../../libscidavis/src/Correlation.cpp" line="78" />
         <location filename="../../libscidavis/src/Correlation.cpp" line="111" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -6194,7 +6194,7 @@ p, li { white-space: pre-wrap; }
     <message>
         <location filename="../../libscidavis/src/FFT.cpp" line="85" />
         <location filename="../../libscidavis/src/FFT.cpp" line="207" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -6358,7 +6358,7 @@ p, li { white-space: pre-wrap; }
     <message>
         <location filename="../../libscidavis/src/FFTFilter.cpp" line="66" />
         <location filename="../../libscidavis/src/FFTFilter.cpp" line="88" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -6415,7 +6415,7 @@ p, li { white-space: pre-wrap; }
         <location filename="../../libscidavis/src/Filter.cpp" line="101" />
         <location filename="../../libscidavis/src/Filter.cpp" line="123" />
         <location filename="../../libscidavis/src/Filter.cpp" line="158" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -6582,7 +6582,7 @@ p, li { white-space: pre-wrap; }
     <name>FindDialog</name>
     <message>
         <location filename="../../libscidavis/src/FindDialog.cpp" line="45" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -6747,7 +6747,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../libscidavis/src/Fit.cpp" line="335" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -7518,7 +7518,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../libscidavis/src/Graph.cpp" line="774" />
-        <source>&lt;html&gt;Failed to set axis labels on Graph %1. Maybe you're trying to open a corrupted project file; or there's some problem within SciDAVis. Please report this as a bug (together with detailed instructions how to reproduce this message or the corrupted file).&lt;p&gt;&lt;a href="https://sourceforge.net/tracker/?group_id=199120&amp;atid=968214&gt;"&gt;bug tracker: https://sourceforge.net/tracker/?group_id=199120&amp;atid=968214&lt;/a&gt;&lt;/html&gt;</source>
+        <source>&lt;html&gt;Failed to set axis labels on Graph %1. Maybe you're trying to open a corrupted project file; or there's some problem within ToriGraph. Please report this as a bug (together with detailed instructions how to reproduce this message or the corrupted file).&lt;p&gt;&lt;a href="https://sourceforge.net/tracker/?group_id=199120&amp;atid=968214&gt;"&gt;bug tracker: https://sourceforge.net/tracker/?group_id=199120&amp;atid=968214&lt;/a&gt;&lt;/html&gt;</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -8297,7 +8297,7 @@ have the same number of rows.</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/IntDialog.cpp" line="101" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -8376,7 +8376,7 @@ The limits must be within the range of x; If you do not know the maximum (minimu
         <location filename="../../libscidavis/src/Integration.cpp" line="99" />
         <location filename="../../libscidavis/src/Integration.cpp" line="109" />
         <location filename="../../libscidavis/src/Integration.cpp" line="140" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -8468,7 +8468,7 @@ The limits must be within the range of x; If you do not know the maximum (minimu
         <location filename="../../libscidavis/src/Interpolation.cpp" line="55" />
         <location filename="../../libscidavis/src/Interpolation.cpp" line="91" />
         <location filename="../../libscidavis/src/Interpolation.cpp" line="136" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -9042,7 +9042,7 @@ The limits must be within the range of x; If you do not know the maximum (minimu
     </message>
     <message>
         <location filename="../../libscidavis/src/Matrix.cpp" line="536" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -9629,7 +9629,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../libscidavis/src/MultiLayer.cpp" line="289" />
-        <source>Do you want SciDAVis to rearrange the remaining layers?</source>
+        <source>Do you want ToriGraph to rearrange the remaining layers?</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -9828,7 +9828,7 @@ p, li { white-space: pre-wrap; }
     <name>MyWidget</name>
     <message>
         <location filename="../../libscidavis/src/MyWidget.cpp" line="78" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -9917,12 +9917,12 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../libscidavis/src/OpenProjectDialog.cpp" line="45" />
-        <source>SciDAVis project</source>
+        <source>ToriGraph project</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/OpenProjectDialog.cpp" line="46" />
-        <source>Compressed SciDAVis project</source>
+        <source>Compressed ToriGraph project</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -11523,7 +11523,7 @@ p, li { white-space: pre-wrap; }
         <location filename="../../libscidavis/src/PlotWizard.cpp" line="236" />
         <location filename="../../libscidavis/src/PlotWizard.cpp" line="255" />
         <location filename="../../libscidavis/src/PlotWizard.cpp" line="277" />
-        <source>This kind of curve is not handled by SciDAVis!</source>
+        <source>This kind of curve is not handled by ToriGraph!</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -11733,12 +11733,12 @@ p, li { white-space: pre-wrap; }
     <name>PythonScripting</name>
     <message>
         <location filename="../../libscidavis/src/PythonScripting.cpp" line="264" />
-        <source>Failed to export SciDAVis API</source>
+        <source>Failed to export ToriGraph API</source>
         <translation type="unfinished" />
     </message>
     <message>
         <location filename="../../libscidavis/src/PythonScripting.cpp" line="265" />
-        <source>Accessing SciDAVis functions or objects from Python code won't work.Probably your version of SIP differs from the one SciDAVis was compiled against;try updating SIP or recompiling SciDAVis.</source>
+        <source>Accessing ToriGraph functions or objects from Python code won't work.Probably your version of SIP differs from the one ToriGraph was compiled against;try updating SIP or recompiling ToriGraph.</source>
         <translation type="unfinished" />
     </message>
 </context>
@@ -12153,7 +12153,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../libscidavis/src/globals.cpp" line="158" />
-        <source>About SciDAVis</source>
+        <source>About ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -12242,24 +12242,24 @@ Released</source>
     </message>
 </context>
 <context>
-    <name>SciDAVisAbout</name>
+    <name>ToriGraphAbout</name>
     <message>
-        <location filename="../../libscidavis/src/SciDAVisAbout.ui" line="25" />
+        <location filename="../../libscidavis/src/ToriGraphAbout.ui" line="25" />
         <source>Dialog</source>
         <translation type="unfinished" />
     </message>
     <message>
-        <location filename="../../libscidavis/src/SciDAVisAbout.ui" line="49" />
-        <source>SciDAVis XX.XX.XX-betaXX</source>
+        <location filename="../../libscidavis/src/ToriGraphAbout.ui" line="49" />
+        <source>ToriGraph XX.XX.XX-betaXX</source>
         <translation type="unfinished" />
     </message>
     <message>
-        <location filename="../../libscidavis/src/SciDAVisAbout.ui" line="67" />
+        <location filename="../../libscidavis/src/ToriGraphAbout.ui" line="67" />
         <source>Released XXXX-XX-XX</source>
         <translation type="unfinished" />
     </message>
     <message>
-        <location filename="../../libscidavis/src/SciDAVisAbout.ui" line="130" />
+        <location filename="../../libscidavis/src/ToriGraphAbout.ui" line="130" />
         <source>Close</source>
         <translation type="unfinished" />
     </message>
@@ -12504,7 +12504,7 @@ Released</source>
         <location filename="../../libscidavis/src/SmoothFilter.cpp" line="406" />
         <location filename="../../libscidavis/src/SmoothFilter.cpp" line="420" />
         <location filename="../../libscidavis/src/SmoothFilter.cpp" line="427" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -12822,7 +12822,7 @@ Released</source>
     </message>
     <message>
         <location filename="../../libscidavis/src/Table.cpp" line="1105" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>
@@ -13805,7 +13805,7 @@ floating point values
     </message>
     <message>
         <location filename="../../libscidavis/src/future/matrix/future_Matrix.cpp" line="1560" />
-        <source>SciDAVis</source>
+        <source>ToriGraph</source>
         <translation type="unfinished" />
     </message>
     <message>

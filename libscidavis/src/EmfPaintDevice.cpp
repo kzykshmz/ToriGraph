@@ -630,7 +630,7 @@ OleRenderedGraph renderFromImage(const QImage &img)
     LONG targetH = std::max(1L, static_cast<LONG>(std::lround(double(heightHm) * devH / (100.0 * mmH))));
 
     RECT frame{ 0, 0, widthHm, heightHm };
-    HDC dc = CreateEnhMetaFileW(ref, nullptr, &frame, L"SciDAVis\0Graph\0\0");
+    HDC dc = CreateEnhMetaFileW(ref, nullptr, &frame, L"ToriGraph\0Graph\0\0");
     ReleaseDC(nullptr, ref);
     if (!dc)
         return out;
@@ -710,7 +710,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
     LONG targetH = std::max(1L, static_cast<LONG>(std::lround(double(heightHm) * devH / (100.0 * mmH))));
 
     RECT frame{ 0, 0, widthHm, heightHm };
-    HDC dc = CreateEnhMetaFileW(ref, nullptr, &frame, L"SciDAVis\0Graph\0\0");
+    HDC dc = CreateEnhMetaFileW(ref, nullptr, &frame, L"ToriGraph\0Graph\0\0");
     ReleaseDC(nullptr, ref);
     if (!dc)
         return out;

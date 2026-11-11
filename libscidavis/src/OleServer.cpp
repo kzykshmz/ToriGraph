@@ -522,7 +522,7 @@ public:
             }
 
             QString titleSuffix = m_payload.targetWindow.isEmpty() ? QStringLiteral("Embedded Graph") : m_payload.targetWindow;
-            mw->setWindowTitle(QStringLiteral("SciDAVis - %1 [PowerPoint OLE]").arg(titleSuffix));
+            mw->setWindowTitle(QStringLiteral("ToriGraph - %1 [PowerPoint OLE]").arg(titleSuffix));
             mw->setOleEmbeddedMode(true);
 
             mw->setOleEmbeddedCallbacks(
@@ -595,7 +595,7 @@ public:
     {
         if (!p)
             return E_POINTER;
-        const wchar_t text[] = L"SciDAVis Graph";
+        const wchar_t text[] = L"ToriGraph Graph";
         *p = static_cast<LPOLESTR>(CoTaskMemAlloc(sizeof(text)));
         if (!*p)
             return E_OUTOFMEMORY;
@@ -837,8 +837,8 @@ public:
                 return S_OK;
             }
             if (f->cfFormat == descriptorFormat()) {
-                const wchar_t userType[] = L"SciDAVis Graph";
-                const wchar_t srcName[] = L"SciDAVis";
+                const wchar_t userType[] = L"ToriGraph Graph";
+                const wchar_t srcName[] = L"ToriGraph";
                 const DWORD cbType = sizeof(userType);
                 const DWORD cbSrc = sizeof(srcName);
                 const DWORD totalSize = sizeof(OBJECTDESCRIPTOR) + cbType + cbSrc;
@@ -1096,7 +1096,7 @@ HRESULT savePayloadToStorage(IStorage *stg, const OleGraphPayload &payload)
     HRESULT hr = WriteClassStg(stg, graph_clsid);
     if (FAILED(hr))
         return hr;
-    hr = WriteFmtUserTypeStg(stg, embedFormat(), const_cast<LPOLESTR>(L"SciDAVis Graph"));
+    hr = WriteFmtUserTypeStg(stg, embedFormat(), const_cast<LPOLESTR>(L"ToriGraph Graph"));
     if (FAILED(hr))
         return hr;
 
@@ -1185,7 +1185,9 @@ HRESULT createGraphObject(const OleGraphPayload &payload, REFIID riid, void **pp
 
 bool ensureRegistryRegistered(QString *errMsg)
 {
-    QString candidateExe = QCoreApplication::applicationDirPath() + QStringLiteral("/scidavis.exe");
+    QString candidateExe = QCoreApplication::applicationDirPath() + QStringLiteral("/ToriGraph.exe");
+    if (!QFileInfo::exists(candidateExe))
+        candidateExe = QCoreApplication::applicationDirPath() + QStringLiteral("/scidavis.exe");
     if (!QFileInfo::exists(candidateExe))
         candidateExe = QCoreApplication::applicationFilePath();
     std::wstring exePath = QDir::toNativeSeparators(candidateExe).toStdWString();
@@ -1195,13 +1197,15 @@ bool ensureRegistryRegistered(QString *errMsg)
 
     const std::wstring clsidStr = L"{8E6B9541-3C74-4D28-A915-7D84E5A12001}";
     const std::wstring clsidBase = L"Software\\Classes\\CLSID\\" + clsidStr;
-    const std::wstring progBase = L"Software\\Classes\\SciDAVis.Graph.1";
+    const std::wstring progBase = L"Software\\Classes\\ToriGraph.Graph.1";
+    const std::wstring legacyProgBase = L"Software\\Classes\\SciDAVis.Graph.1";
 
     bool ok = true;
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase, L"SciDAVis Graph");
+    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase, L"ToriGraph Graph");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\LocalServer32", serverCmd);
     ok = ok && setRegNamedString(HKEY_CURRENT_USER, clsidBase + L"\\LocalServer32", L"ServerExecutable", exePath);
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\ProgID", L"SciDAVis.Graph.1");
+    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\ProgID", L"ToriGraph.Graph.1");
+    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\VersionIndependentProgID", L"ToriGraph.Graph");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\InprocHandler32", L"ole32.dll");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\DefaultIcon", iconVal);
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\Verb\\0", L"\u7de8\u96c6(&E),0,2");
@@ -1212,13 +1216,16 @@ bool ensureRegistryRegistered(QString *errMsg)
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\DataFormats\\GetSet\\3", L"14,1,64,1");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\MiscStatus", L"0");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\MiscStatus\\1", L"1");
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\AuxUserType\\2", L"SciDAVis Graph");
+    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\AuxUserType\\2", L"ToriGraph");
+    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\AuxUserType\\3", L"ToriGraph");
     ok = ok && setRegDefaultString(HKEY_CURRENT_USER, clsidBase + L"\\Insertable", L"");
 
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, progBase, L"SciDAVis Graph");
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, progBase + L"\\CLSID", clsidStr);
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, progBase + L"\\Insertable", L"");
-    ok = ok && setRegDefaultString(HKEY_CURRENT_USER, progBase + L"\\shell\\open\\command", openCmd);
+    for (const auto &pBase : { progBase, legacyProgBase }) {
+        ok = ok && setRegDefaultString(HKEY_CURRENT_USER, pBase, L"ToriGraph Graph");
+        ok = ok && setRegDefaultString(HKEY_CURRENT_USER, pBase + L"\\CLSID", clsidStr);
+        ok = ok && setRegDefaultString(HKEY_CURRENT_USER, pBase + L"\\Insertable", L"");
+        ok = ok && setRegDefaultString(HKEY_CURRENT_USER, pBase + L"\\shell\\open\\command", openCmd);
+    }
 
     if (!ok && errMsg)
         *errMsg = QStringLiteral("Failed to write HKCU OLE registration keys.");

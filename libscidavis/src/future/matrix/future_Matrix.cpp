@@ -1557,7 +1557,7 @@ Matrix *Matrix::fromImage(const QImage &image)
 
     QProgressDialog progress;
     progress.setRange(0, cols);
-    progress.setWindowTitle(tr("SciDAVis") + " - " + tr("Import image..."));
+    progress.setWindowTitle(tr("ToriGraph") + " - " + tr("Import image..."));
     progress.raise();
 
     Matrix *matrix = new Matrix(0, rows, cols, tr("Matrix %1").arg(1));

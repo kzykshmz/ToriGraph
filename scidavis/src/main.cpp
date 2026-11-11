@@ -163,8 +163,8 @@ int main(int argc, char **argv)
 {
 
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
-    QCoreApplication::setOrganizationName("SciDAVis");
-    QCoreApplication::setApplicationName("SciDAVis");
+    QCoreApplication::setOrganizationName("ToriGraph");
+    QCoreApplication::setApplicationName("ToriGraph");
 
     Application app(argc, argv);
 

@@ -82,7 +82,7 @@ QList<Column *> FFT::fftTable()
         if ((nullptr == wavetable) || (nullptr == workspace))
             throw std::bad_alloc();
     } catch (const std::bad_alloc &) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Could not allocate memory, operation aborted!"));
         if (nullptr != wavetable)
             gsl_fft_complex_wavetable_free(wavetable);
@@ -204,7 +204,7 @@ void FFT::setDataFromTable(Table *t, const QString &realColName, const QString &
         d_y.resize(n2);
         d_x.resize(rows);
     } catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Could not allocate memory, operation aborted!\n")
                                       + tr("Allocator returned: ") + e.what());
         d_init_err = true;

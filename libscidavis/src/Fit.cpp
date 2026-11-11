@@ -332,7 +332,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
     catch (const std::bad_alloc& e)
     {
         if (!fail_silently)
-         QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Error"),
+         QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("Could not allocate memory, operation aborted!\n")
                                       + tr("Allocator returned: ") + e.what());
         d_init_err = true;

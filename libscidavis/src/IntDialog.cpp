@@ -98,7 +98,7 @@ void IntDialog::accept()
     QwtPlotCurve *c = graph->curve(curveName);
     QStringList curvesList = graph->analysableCurvesList();
     if (!c || !curvesList.contains(curveName)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("SciDAVis") + " - " + tr("Warning"),
+        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Warning"),
                               tr("The curve <b> %1 </b> doesn't exist anymore! Operation aborted!")
                                       .arg(curveName));
         boxName->clear();

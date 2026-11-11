@@ -10,8 +10,8 @@ cmake_policy(SET CMP0091 NEW)
 
 project( scidavis
   VERSION 2.3.0
-  DESCRIPTION "SciDAVis is a free application for Scientific Data Analysis and Visualization."
-  HOMEPAGE_URL "https://scidavis.sourceforge.net"
+  DESCRIPTION "ToriGraph is a free application for Scientific Data Analysis and Visualization."
+  HOMEPAGE_URL "https://github.com/kzykshmz/ToriGraph"
   LANGUAGES CXX C)
 include(GNUInstallDirs)
 
@@ -159,12 +159,12 @@ if( MSVC )
   set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT "scidavis")
 endif()
 
-set( CPACK_PACKAGE_NAME "SciDAVis" )
-set( CPACK_PACKAGE_VENDOR "High Performance Coders" )
-set( CPACK_PACKAGE_DESCRIPTION "SciDAVis Installer" )
+set( CPACK_PACKAGE_NAME "ToriGraph" )
+set( CPACK_PACKAGE_VENDOR "ToriGraph" )
+set( CPACK_PACKAGE_DESCRIPTION "ToriGraph Installer" )
 set( CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/gpl.txt" )
-set( CPACK_PACKAGE_EXECUTABLES "scidavis;SciDAVis" )
-set( CPACK_CREATE_DESKTOP_LINKS "scidavis" )
+set( CPACK_PACKAGE_EXECUTABLES "ToriGraph;ToriGraph" )
+set( CPACK_CREATE_DESKTOP_LINKS "ToriGraph" )
 set( CPACK_STRIP_FILES ON )
 
 # Source packaging
