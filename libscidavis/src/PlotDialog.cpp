@@ -906,15 +906,37 @@ void PlotDialog::initSpectrogramPage()
     imageGroupBox->setCheckable(true);
 
     QVBoxLayout *vl = new QVBoxLayout();
+    vl->addWidget(new QLabel(tr("Palette Preset")));
+    boxColorMapPreset = new QComboBox();
+    boxColorMapPreset->addItem(tr("Default (Rainbow)"));
+    boxColorMapPreset->addItem(tr("Gray Scale"));
+    boxColorMapPreset->addItem(tr("Viridis"));
+    boxColorMapPreset->addItem(tr("Magma"));
+    boxColorMapPreset->addItem(tr("Inferno"));
+    boxColorMapPreset->addItem(tr("Plasma"));
+    boxColorMapPreset->addItem(tr("Cividis"));
+    boxColorMapPreset->addItem(tr("Jet"));
+    boxColorMapPreset->addItem(tr("Blue-White-Red"));
+    boxColorMapPreset->addItem(tr("Cool-Warm"));
+    boxColorMapPreset->addItem(tr("Custom Color Map"));
+    connect(boxColorMapPreset, SIGNAL(currentIndexChanged(int)), this,
+            SLOT(onColorMapPresetChanged(int)));
+    vl->addWidget(boxColorMapPreset);
+
+    boxReversePalette = new QCheckBox(tr("Reverse Palette"));
+    connect(boxReversePalette, SIGNAL(toggled(bool)), this, SLOT(onReversePaletteToggled(bool)));
+    vl->addWidget(boxReversePalette);
+
     grayScaleBox = new QRadioButton(tr("&Gray Scale"));
-    connect(grayScaleBox, SIGNAL(toggled(bool)), this, SLOT(showColorMapEditor(bool)));
+    connect(grayScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
     vl->addWidget(grayScaleBox);
     defaultScaleBox = new QRadioButton(tr("&Default Color Map"));
-    connect(defaultScaleBox, SIGNAL(toggled(bool)), this, SLOT(showColorMapEditor(bool)));
+    connect(defaultScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
     vl->addWidget(defaultScaleBox);
     customScaleBox = new QRadioButton(tr("&Custom Color Map"));
-    connect(customScaleBox, SIGNAL(toggled(bool)), this, SLOT(showColorMapEditor(bool)));
+    connect(customScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
     vl->addWidget(customScaleBox);
+    vl->addStretch();
 
     QHBoxLayout *hl = new QHBoxLayout(imageGroupBox);
     colorMapEditor = new ColorMapEditor();
@@ -985,6 +1007,28 @@ void PlotDialog::initSpectrogramPage()
     colorScaleWidthBox = new QSpinBox();
     colorScaleWidthBox->setRange(2, 10000);
     gl2->addWidget(colorScaleWidthBox, 1, 1);
+
+    gl2->addWidget(new QLabel(tr("Colorbar Title")), 2, 0);
+    editColorBarTitle = new QLineEdit();
+    gl2->addWidget(editColorBarTitle, 2, 1, 1, 3);
+
+    boxCustomZRange = new QCheckBox(tr("Custom Z Range"));
+    connect(boxCustomZRange, SIGNAL(toggled(bool)), this, SLOT(onCustomZRangeToggled(bool)));
+    gl2->addWidget(boxCustomZRange, 3, 0, 1, 4);
+
+    gl2->addWidget(new QLabel(tr("Z Min")), 4, 0);
+    boxZMin = new QDoubleSpinBox();
+    boxZMin->setRange(-1e300, 1e300);
+    boxZMin->setDecimals(6);
+    boxZMin->setEnabled(false);
+    gl2->addWidget(boxZMin, 4, 1);
+
+    gl2->addWidget(new QLabel(tr("Z Max")), 4, 2);
+    boxZMax = new QDoubleSpinBox();
+    boxZMax->setRange(-1e300, 1e300);
+    boxZMax->setDecimals(6);
+    boxZMax->setEnabled(false);
+    gl2->addWidget(boxZMax, 4, 3);
 
     QVBoxLayout *vl2 = new QVBoxLayout(spectrogramPage);
     vl2->addWidget(imageGroupBox);
@@ -1728,12 +1772,41 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         Spectrogram *sp = (Spectrogram *)i;
 
         imageGroupBox->setChecked(sp->testDisplayMode(QwtPlotSpectrogram::ImageMode));
-        grayScaleBox->setChecked(sp->colorMapPolicy() == Spectrogram::GrayScale);
-        defaultScaleBox->setChecked(sp->colorMapPolicy() == Spectrogram::Default);
-        customScaleBox->setChecked(sp->colorMapPolicy() == Spectrogram::Custom);
 
-        colorMapEditor->setRange(sp->data().range().minValue(), sp->data().range().maxValue());
-        colorMapEditor->setColorMap((const QwtLinearColorMap &)sp->colorMap());
+        boxColorMapPreset->blockSignals(true);
+        boxReversePalette->blockSignals(true);
+        boxCustomZRange->blockSignals(true);
+        boxColorMapPreset->setCurrentIndex(static_cast<int>(sp->colorMapPreset()));
+        boxReversePalette->setChecked(sp->reversePalette());
+
+        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
+            rb->setAutoExclusive(false);
+        grayScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetGrayScale);
+        defaultScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetLegacyDefault);
+        customScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetCustom);
+        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
+            rb->setAutoExclusive(true);
+
+        const QwtDoubleInterval rawR = sp->rawDataRange();
+        const QwtDoubleInterval effR = sp->effectiveValueRange();
+        boxCustomZRange->setChecked(sp->hasCustomValueRange());
+        boxZMin->setValue(sp->hasCustomValueRange() ? sp->customZMin() : rawR.minValue());
+        boxZMax->setValue(sp->hasCustomValueRange() ? sp->customZMax() : rawR.maxValue());
+        boxZMin->setEnabled(sp->hasCustomValueRange());
+        boxZMax->setEnabled(sp->hasCustomValueRange());
+
+        boxColorMapPreset->blockSignals(false);
+        boxReversePalette->blockSignals(false);
+        boxCustomZRange->blockSignals(false);
+
+        colorMapEditor->setRange(effR.minValue(), effR.maxValue());
+        if (sp->colorMapPreset() == Spectrogram::PresetCustom) {
+            colorMapEditor->setColorMap(sp->baseCustomColorMap());
+            colorMapEditor->show();
+        } else {
+            colorMapEditor->setColorMap((const QwtLinearColorMap &)sp->colorMap());
+            colorMapEditor->hide();
+        }
 
         levelsGroupBox->setChecked(sp->testDisplayMode(QwtPlotSpectrogram::ContourMode));
         levelsBox->setValue(sp->levels());
@@ -1751,6 +1824,7 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         axisScaleBox->setChecked(sp->hasColorScale());
         colorScaleBox->setCurrentIndex((int)sp->colorScaleAxis());
         colorScaleWidthBox->setValue(sp->colorBarWidth());
+        editColorBarTitle->setText(sp->colorBarTitle());
         return;
     }
 
@@ -2016,6 +2090,7 @@ bool PlotDialog::acceptParams()
         if (!sp || sp->rtti() != QwtPlotItem::Rtti_PlotSpectrogram)
             return false;
 
+        sp->setCustomValueRange(boxCustomZRange->isChecked(), boxZMin->value(), boxZMax->value());
         sp->setLevelsNumber(levelsBox->value());
         if (autoContourBox->isChecked())
             sp->setDefaultContourPen(Qt::NoPen);
@@ -2026,17 +2101,21 @@ bool PlotDialog::acceptParams()
         sp->setDisplayMode(QwtPlotSpectrogram::ContourMode, levelsGroupBox->isChecked());
         sp->setDisplayMode(QwtPlotSpectrogram::ImageMode, imageGroupBox->isChecked());
 
-        if (grayScaleBox->isChecked()) {
-            sp->setGrayScale();
-            colorMapEditor->setColorMap(QwtLinearColorMap(Qt::black, Qt::white));
-        } else if (defaultScaleBox->isChecked()) {
-            sp->setDefaultColorMap();
-            colorMapEditor->setColorMap(Spectrogram::defaultColorMap());
-        } else
+        const auto preset =
+                static_cast<Spectrogram::ColorMapPreset>(boxColorMapPreset->currentIndex());
+        const bool rev = boxReversePalette->isChecked();
+        if (preset == Spectrogram::PresetCustom) {
+            sp->setReversePalette(rev);
             sp->setCustomColorMap(colorMapEditor->colorMap());
+        } else {
+            sp->setColorMapPreset(preset, rev);
+            colorMapEditor->setColorMap((const QwtLinearColorMap &)sp->colorMap());
+        }
 
+        sp->setColorBarTitle(editColorBarTitle->text());
         sp->showColorScale((QwtPlot::Axis)colorScaleBox->currentIndex(), axisScaleBox->isChecked());
         sp->setColorBarWidth(colorScaleWidthBox->value());
+        sp->enforceColorBarArialFont();
 
         // Update axes page
         boxXAxis->setCurrentIndex(sp->xAxis() - 2);
@@ -2424,11 +2503,58 @@ void PlotDialog::customVectorsPage(bool angleMag)
 
 void PlotDialog::showColorMapEditor(bool)
 {
-    if (grayScaleBox->isChecked() || defaultScaleBox->isChecked())
-        colorMapEditor->hide();
-    else {
+    if (grayScaleBox->isChecked())
+        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetGrayScale));
+    else if (defaultScaleBox->isChecked())
+        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetLegacyDefault));
+    else if (customScaleBox->isChecked())
+        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetCustom));
+}
+
+void PlotDialog::onColorMapPresetChanged(int index)
+{
+    const auto preset = static_cast<Spectrogram::ColorMapPreset>(index);
+    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
+        rb->setAutoExclusive(false);
+    grayScaleBox->setChecked(preset == Spectrogram::PresetGrayScale);
+    defaultScaleBox->setChecked(preset == Spectrogram::PresetLegacyDefault);
+    customScaleBox->setChecked(preset == Spectrogram::PresetCustom);
+    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
+        rb->setAutoExclusive(true);
+
+    if (preset == Spectrogram::PresetCustom) {
         colorMapEditor->show();
         colorMapEditor->setFocus();
+    } else {
+        colorMapEditor->setColorMap(
+                Spectrogram::presetColorMap(preset, boxReversePalette->isChecked()));
+        colorMapEditor->hide();
+    }
+}
+
+void PlotDialog::onReversePaletteToggled(bool checked)
+{
+    const auto preset =
+            static_cast<Spectrogram::ColorMapPreset>(boxColorMapPreset->currentIndex());
+    if (preset != Spectrogram::PresetCustom)
+        colorMapEditor->setColorMap(Spectrogram::presetColorMap(preset, checked));
+}
+
+void PlotDialog::onCustomZRangeToggled(bool checked)
+{
+    boxZMin->setEnabled(checked);
+    boxZMax->setEnabled(checked);
+    if (checked) {
+        colorMapEditor->setRange(boxZMin->value(), boxZMax->value());
+    } else if (listBox->currentItem()
+               && listBox->currentItem()->type() == CurveTreeItem::PlotCurveTreeItem) {
+        const QwtPlotItem *pi = ((CurveTreeItem *)listBox->currentItem())->plotItem();
+        if (pi && pi->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+            const QwtDoubleInterval rawR = ((const Spectrogram *)pi)->rawDataRange();
+            boxZMin->setValue(rawR.minValue());
+            boxZMax->setValue(rawR.maxValue());
+            colorMapEditor->setRange(rawR.minValue(), rawR.maxValue());
+        }
     }
 }
 

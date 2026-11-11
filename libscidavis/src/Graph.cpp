@@ -728,7 +728,8 @@ void Graph::showAxis(int axis, AxisType type, const QString &formatInfo, Table *
     }
 
     sclDraw = (ScaleDraw *)d_plot->axisScaleDraw(axis);
-    sclDraw->enableComponent(QwtAbstractScaleDraw::Backbone, drawAxesBackbone);
+    const bool backboneOn = drawAxesBackbone && (axis >= 0 && axis < 4 ? d_axis_backbone[axis] : true);
+    sclDraw->enableComponent(QwtAbstractScaleDraw::Backbone, backboneOn);
 
     setAxisTicksLength(axis, majTicksType, minTicksType, d_plot->minorTickLength(),
                        d_plot->majorTickLength());
@@ -855,6 +856,7 @@ void Graph::setLabelsDateTimeFormat(int axis, AxisType type, const QString &form
         return;
     }
 
+    const bool backboneOn = drawAxesBackbone && (axis >= 0 && axis < 4 ? d_axis_backbone[axis] : true);
     switch (type) {
     case AxisType::Time : {
         TimeScaleDraw *sd = new TimeScaleDraw(
@@ -862,7 +864,7 @@ void Graph::setLabelsDateTimeFormat(int axis, AxisType type, const QString &form
                 list[0].isEmpty() ? QTime(12, 0, 0, 0) : QTime::fromString(list[0].right(8)),
                 list[1]);
         sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-        sd->enableComponent(QwtAbstractScaleDraw::Backbone, drawAxesBackbone);
+        sd->enableComponent(QwtAbstractScaleDraw::Backbone, backboneOn);
         d_plot->setAxisScaleDraw(axis, sd);
         break;
     }
@@ -871,7 +873,7 @@ void Graph::setLabelsDateTimeFormat(int axis, AxisType type, const QString &form
                 new DateScaleDraw(*static_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axis)),
                                   QDate::fromString(list[0].left(10), "yyyy-MM-dd"), list[1]);
         sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-        sd->enableComponent(QwtAbstractScaleDraw::Backbone, drawAxesBackbone);
+        sd->enableComponent(QwtAbstractScaleDraw::Backbone, backboneOn);
         d_plot->setAxisScaleDraw(axis, sd);
         break;
     }
@@ -880,7 +882,7 @@ void Graph::setLabelsDateTimeFormat(int axis, AxisType type, const QString &form
                 *static_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axis)),
                 QDateTime::fromString(list[0], "yyyy-MM-ddThh:mm:ss"), list[1]);
         sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-        sd->enableComponent(QwtAbstractScaleDraw::Backbone, drawAxesBackbone);
+        sd->enableComponent(QwtAbstractScaleDraw::Backbone, backboneOn);
         d_plot->setAxisScaleDraw(axis, sd);
         break;
     }
@@ -1180,14 +1182,295 @@ void Graph::setRightAxisTitleAlignment(int align)
     emit modifiedGraph();
 }
 
+QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
+{
+    if (axis < 0 || axis >= 4 || isPiePlot() || isTernaryPlot())
+        return QString();
+
+    QList<Column *> xBottomCols, xTopCols, yLeftCols, yRightCols;
+    int detectedStyle = -1;
+
+    for (int i = 0; i < n_curves; ++i) {
+        QwtPlotCurve *pc = curve(i);
+        if (!pc || pc->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+            continue;
+        const int cType = (i < c_type.size()) ? c_type[i] : -1;
+        if (cType == ErrorBars)
+            continue;
+        if (detectedStyle < 0)
+            detectedStyle = cType;
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        if (!dc || !dc->table())
+            continue;
+        Table *t = dc->table();
+        const int xIdx = t->colIndex(dc->xColumnName());
+        const int yIdx = t->colIndex(dc->yColumnName());
+        if (Column *xc = (xIdx >= 0 ? t->column(xIdx) : nullptr)) {
+            QList<Column *> &dst = (pc->xAxis() == QwtPlot::xTop) ? xTopCols : xBottomCols;
+            if (!dst.contains(xc))
+                dst << xc;
+        }
+        if (Column *yc = (yIdx >= 0 ? t->column(yIdx) : nullptr)) {
+            QList<Column *> &dst = (pc->yAxis() == QwtPlot::yRight) ? yRightCols : yLeftCols;
+            if (!dst.contains(yc))
+                dst << yc;
+        }
+    }
+
+    auto cleanColAxisTitle = [fmt](Column *col) -> QString {
+        if (!col)
+            return QString();
+        QString t = col->formattedAxisTitle(fmt).trimmed();
+        if (t.isEmpty())
+            t = col->name().trimmed();
+        return t;
+    };
+
+    auto resolveMultiCol = [&](const QList<Column *> &cols) -> QString {
+        if (cols.isEmpty())
+            return QString();
+        if (cols.size() == 1)
+            return cleanColAxisTitle(cols.first());
+        const QString firstFull = cleanColAxisTitle(cols.first());
+        bool allSameFull = !firstFull.isEmpty();
+        const QString firstUnits = cols.first()->units().trimmed();
+        bool allSameNonEmptyUnits = !firstUnits.isEmpty();
+        for (int i = 1; i < cols.size(); ++i) {
+            if (cleanColAxisTitle(cols[i]) != firstFull)
+                allSameFull = false;
+            if (cols[i]->units().trimmed() != firstUnits)
+                allSameNonEmptyUnits = false;
+        }
+        if (allSameFull || allSameNonEmptyUnits)
+            return firstFull;
+        return QString();
+    };
+
+    if (detectedStyle == Histogram) {
+        return (axis == QwtPlot::xBottom) ? resolveMultiCol(yLeftCols) : QString();
+    }
+    if (detectedStyle == Box) {
+        return (axis == QwtPlot::yLeft) ? resolveMultiCol(yLeftCols) : QString();
+    }
+    if (detectedStyle == HorizontalBars) {
+        if (axis == QwtPlot::xBottom)
+            return resolveMultiCol(yLeftCols);
+        if (axis == QwtPlot::yLeft)
+            return resolveMultiCol(xBottomCols);
+        return QString();
+    }
+
+    switch (axis) {
+    case QwtPlot::xBottom:
+        return resolveMultiCol(xBottomCols);
+    case QwtPlot::xTop:
+        return resolveMultiCol(xTopCols);
+    case QwtPlot::yLeft:
+        return resolveMultiCol(yLeftCols);
+    case QwtPlot::yRight:
+        return resolveMultiCol(yRightCols);
+    default:
+        return QString();
+    }
+}
+
+bool Graph::matchesAutoAxisTitleCandidate(int axis, const QString &text) const
+{
+    QString plain = text.trimmed();
+    if (plain.startsWith("<b>") && plain.endsWith("</b>") && plain.length() >= 7)
+        plain = plain.mid(3, plain.length() - 7).trimmed();
+
+    if (plain.isEmpty() || plain == QStringLiteral("X Axis Title")
+        || plain == QStringLiteral("Y Axis Title") || plain == tr("X Axis Title")
+        || plain == tr("Y Axis Title"))
+        return true;
+
+    const QString parenCandidate = resolvedAutoAxisTitle(axis, Column::UnitFormat::Paren);
+    if (!parenCandidate.isEmpty() && plain == parenCandidate)
+        return true;
+
+    const QString slashCandidate = resolvedAutoAxisTitle(axis, Column::UnitFormat::ISIJSlash);
+    if (!slashCandidate.isEmpty() && plain == slashCandidate)
+        return true;
+
+    for (int i = 0; i < n_curves; ++i) {
+        DataCurve *dc = dynamic_cast<DataCurve *>(curve(i));
+        if (!dc || !dc->table())
+            continue;
+        Table *t = dc->table();
+        const QString colName = (axis == QwtPlot::xBottom || axis == QwtPlot::xTop)
+                ? dc->xColumnName()
+                : dc->yColumnName();
+        const int idx = t->colIndex(colName);
+        if (Column *col = (idx >= 0 ? t->column(idx) : nullptr)) {
+            if (plain == col->name().trimmed() || plain == col->longName().trimmed())
+                return true;
+        }
+    }
+    return false;
+}
+
+void Graph::setAxisTitleAuto(int axis, bool autoSync)
+{
+    if (axis >= 0 && axis < 4)
+        d_axis_title_auto[axis] = autoSync;
+}
+
+bool Graph::isAxisTitleAuto(int axis) const
+{
+    return (axis >= 0 && axis < 4) ? d_axis_title_auto[axis] : false;
+}
+
+void Graph::setAxisUnitFormat(Column::UnitFormat fmt)
+{
+    if (d_axis_unit_format == fmt)
+        return;
+    d_axis_unit_format = fmt;
+    refreshAutoAxisTitlesFromColumns();
+}
+
+void Graph::refreshAutoAxisTitlesFromColumns()
+{
+    if (!d_plot || isPiePlot() || isTernaryPlot())
+        return;
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QFont af = axisTitleFont(a);
+        if (af.family().trimmed().isEmpty()) {
+            af.setFamily(QStringLiteral("Arial"));
+            setAxisTitleFont(a, af);
+        }
+    }
+
+    QSet<int> colorBarAxes;
+    const QwtPlotItemList &items = d_plot->itemList();
+    for (QwtPlotItem *it : items) {
+        if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+            Spectrogram *sp = static_cast<Spectrogram *>(it);
+            if (sp->hasColorScale())
+                colorBarAxes.insert(sp->colorScaleAxis());
+        }
+    }
+
+    const bool prevRefreshing = d_refreshing_auto_titles;
+    d_refreshing_auto_titles = true;
+    bool anyChanged = false;
+
+    for (int a = 0; a < 4; ++a) {
+        if (!d_axis_title_auto[a] || colorBarAxes.contains(a))
+            continue;
+        if ((a == QwtPlot::xTop || a == QwtPlot::yRight) && !d_plot->axisEnabled(a))
+            continue;
+
+        QString nextTitle = resolvedAutoAxisTitle(a, d_axis_unit_format);
+        if (nextTitle.isEmpty())
+            continue;
+
+        const QString curTitle = d_plot->axisTitle(a).text();
+        const QString trimmedCur = curTitle.trimmed();
+        if (trimmedCur.startsWith("<b>") && trimmedCur.endsWith("</b>"))
+            nextTitle = QStringLiteral("<b>") + nextTitle + QStringLiteral("</b>");
+
+        if (curTitle != nextTitle) {
+            QwtText t = d_plot->axisTitle(a);
+            QFont f = t.font();
+            if (f.family().trimmed().isEmpty())
+                f = QFont(QStringLiteral("Arial"), 14, QFont::Bold, false);
+            t.setFont(f);
+            t.setText(nextTitle);
+            d_plot->setAxisTitle(a, t);
+            anyChanged = true;
+        }
+    }
+
+    if (Legend *leg = legend()) {
+        QStringList lines = leg->text().split('\n');
+        bool legChanged = false;
+        for (int li = 0; li < lines.size(); ++li) {
+            const QString line = lines[li];
+            if (!line.startsWith("\\c{"))
+                continue;
+            const int closeBrace = line.indexOf('}');
+            if (closeBrace <= 3)
+                continue;
+            bool ok = false;
+            const int oneBased = line.mid(3, closeBrace - 3).toInt(&ok);
+            if (!ok || oneBased < 1 || oneBased > n_curves)
+                continue;
+            const int ci = oneBased - 1;
+            DataCurve *dc = dynamic_cast<DataCurve *>(curve(ci));
+            if (!dc || !dc->table())
+                continue;
+            Table *t = dc->table();
+            const int yIdx = t->colIndex(dc->yColumnName());
+            Column *yc = (yIdx >= 0) ? t->column(yIdx) : nullptr;
+            if (!yc)
+                continue;
+
+            const QString currentLabel = line.mid(closeBrace + 1);
+            const QString colShort = yc->name().trimmed();
+            const QString colLong = yc->longName().trimmed();
+            const QString desiredLabel = !colLong.isEmpty() ? colLong : colShort;
+            const QString prevAuto = d_last_auto_curve_labels.value(ci);
+
+            const QString strippedTitle = [&]() {
+                QString st = dc->yColumnName();
+                const QString pfx = QString(t->name()) + "_";
+                if (st.startsWith(pfx) && st.length() > pfx.length())
+                    st = st.mid(pfx.length());
+                return st;
+            }();
+
+            if (currentLabel == colShort || currentLabel == strippedTitle
+                || currentLabel == dc->yColumnName()
+                || (!prevAuto.isEmpty() && currentLabel == prevAuto)) {
+                d_last_auto_curve_labels[ci] = desiredLabel;
+                const QString updatedLine =
+                        QStringLiteral("\\c{%1}%2").arg(oneBased).arg(desiredLabel);
+                if (lines[li] != updatedLine) {
+                    lines[li] = updatedLine;
+                    legChanged = true;
+                }
+            } else if (currentLabel == desiredLabel) {
+                d_last_auto_curve_labels[ci] = desiredLabel;
+            }
+        }
+        if (legChanged) {
+            leg->setText(lines.join("\n"));
+            anyChanged = true;
+        }
+    }
+
+    d_refreshing_auto_titles = prevRefreshing;
+    if (anyChanged) {
+        d_plot->replot();
+        emit modifiedGraph();
+    }
+}
+
 void Graph::setAxisTitle(int axis, const QString &text)
 {
+    QString finalText = text;
+    if (axis >= 0 && axis < 4 && !d_refreshing_auto_titles) {
+        d_axis_title_auto[axis] = matchesAutoAxisTitleCandidate(axis, text);
+        if (d_axis_title_auto[axis] && d_axis_unit_format == Column::UnitFormat::ISIJSlash) {
+            const QString slashTitle = resolvedAutoAxisTitle(axis, Column::UnitFormat::ISIJSlash);
+            if (!slashTitle.isEmpty()) {
+                const QString trimmed = text.trimmed();
+                finalText = (trimmed.startsWith("<b>") && trimmed.endsWith("</b>"))
+                        ? (QStringLiteral("<b>") + slashTitle + QStringLiteral("</b>"))
+                        : slashTitle;
+            }
+        }
+    }
+
     QwtText t = d_plot->axisTitle(axis);
     QFont f = t.font();
     if (f.family().trimmed().isEmpty())
         f = QFont("Arial", 14, QFont::Bold, false);
     t.setFont(f);
-    t.setText(text);
+    t.setText(finalText);
     d_plot->setAxisTitle(axis, t);
     d_plot->replot();
     emit modifiedGraph();
@@ -1927,9 +2210,16 @@ QString Graph::legendText()
                 QString label = c->title().text();
                 DataCurve *dc = dynamic_cast<DataCurve *>(const_cast<QwtPlotCurve *>(c));
                 if (dc && dc->table()) {
-                    const QString prefix = QString(dc->table()->name()) + "_";
-                    if (label.startsWith(prefix) && label.length() > prefix.length())
-                        label = label.mid(prefix.length());
+                    const int yIdx = dc->table()->colIndex(dc->yColumnName());
+                    Column *yc = (yIdx >= 0) ? dc->table()->column(yIdx) : nullptr;
+                    if (yc && !yc->longName().trimmed().isEmpty()) {
+                        label = yc->longName().trimmed();
+                    } else {
+                        const QString prefix = QString(dc->table()->name()) + "_";
+                        if (label.startsWith(prefix) && label.length() > prefix.length())
+                            label = label.mid(prefix.length());
+                    }
+                    d_last_auto_curve_labels[i] = label;
                 }
                 text += label;
             }
@@ -4273,23 +4563,23 @@ QString Graph::saveToString(bool saveAsTemplate)
 
         QStringList alphaParts;
         QStringList stackParts;
-        if (!saveAsTemplate) {
-            for (int ci = 0; ci < n_curves; ++ci) {
-                QwtPlotCurve *cv = curve(ci);
-                if (!cv)
-                    continue;
-                const int la = cv->pen().color().alpha();
-                const int ba = cv->brush().color().alpha();
-                const int spa = cv->symbol().pen().color().alpha();
-                const int sba = cv->symbol().brush().color().alpha();
-                if (la < 255 || ba < 255 || spa < 255 || sba < 255) {
-                    alphaParts << QString("%1:%2,%3,%4,%5")
-                                          .arg(ci)
-                                          .arg(la)
-                                          .arg(ba)
-                                          .arg(spa)
-                                          .arg(sba);
-                }
+        for (int ci = 0; ci < n_curves; ++ci) {
+            QwtPlotCurve *cv = curve(ci);
+            if (!cv)
+                continue;
+            const int la = cv->pen().color().alpha();
+            const int ba = cv->brush().color().alpha();
+            const int spa = cv->symbol().pen().color().alpha();
+            const int sba = cv->symbol().brush().color().alpha();
+            if (la < 255 || ba < 255 || spa < 255 || sba < 255) {
+                alphaParts << QString("%1:%2,%3,%4,%5")
+                                      .arg(ci)
+                                      .arg(la)
+                                      .arg(ba)
+                                      .arg(spa)
+                                      .arg(sba);
+            }
+            if (!saveAsTemplate) {
                 PlotCurve *pc = dynamic_cast<PlotCurve *>(cv);
                 if (pc
                     && (qAbs(pc->stackOffsetX()) > 1e-15 || qAbs(pc->stackOffsetY()) > 1e-15
@@ -4314,6 +4604,15 @@ QString Graph::saveToString(bool saveAsTemplate)
                      .arg(textColsParts.join(";"))
                      .arg(alphaParts.join(";"))
                      .arg(stackParts.join(";"));
+
+        s += QString("<ToriAutoAxisTitles unitFormat=\"%1\" a0=\"%2\" a1=\"%3\" a2=\"%4\" a3=\"%5\"/>\n")
+                     .arg(d_axis_unit_format == Column::UnitFormat::ISIJSlash
+                                  ? QStringLiteral("ISIJSlash")
+                                  : QStringLiteral("Paren"))
+                     .arg(d_axis_title_auto[0] ? 1 : 0)
+                     .arg(d_axis_title_auto[1] ? 1 : 0)
+                     .arg(d_axis_title_auto[2] ? 1 : 0)
+                     .arg(d_axis_title_auto[3] ? 1 : 0);
 
         for (const ReferenceLineSpec &rl : d_ref_lines) {
             s += QString("<ToriRefLine orient=\"%1\" value=\"%2\" stat=\"%3\" color=\"%4\" "
@@ -5397,14 +5696,26 @@ void Graph::plotSpectrogram(Matrix *m, CurveType type)
 
     QwtScaleWidget *rightAxis = d_plot->axisWidget(QwtPlot::yRight);
     rightAxis->setColorBarEnabled(type != ContourMap);
-    rightAxis->setColorMap(d_spectrogram->data().range(), d_spectrogram->colorMap());
+    rightAxis->setColorMap(d_spectrogram->effectiveValueRange(), d_spectrogram->colorMap());
 
     d_plot->setAxisScale(QwtPlot::xBottom, m->xStart(), m->xEnd());
     d_plot->setAxisScale(QwtPlot::yLeft, m->yStart(), m->yEnd());
 
-    d_plot->setAxisScale(QwtPlot::yRight, d_spectrogram->data().range().minValue(),
-                         d_spectrogram->data().range().maxValue());
+    d_plot->setAxisScale(QwtPlot::yRight, d_spectrogram->effectiveValueRange().minValue(),
+                         d_spectrogram->effectiveValueRange().maxValue());
     d_plot->enableAxis(QwtPlot::yRight, type != ContourMap);
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QFont tf = d_plot->axisFont(a);
+        tf.setFamily(QStringLiteral("Arial"));
+        d_plot->setAxisFont(a, tf);
+        QwtText tt = d_plot->axisTitle(a);
+        QFont ttf = tt.font();
+        ttf.setFamily(QStringLiteral("Arial"));
+        tt.setFont(ttf);
+        d_plot->setAxisTitle(a, tt);
+    }
+    d_spectrogram->enforceColorBarArialFont();
 
     d_plot->replot();
 }
@@ -5424,6 +5735,17 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
     c_type[n_curves - 1] = Graph::ColorMap;
     c_keys.resize(n_curves);
     c_keys[n_curves - 1] = d_plot->insertCurve(sp);
+
+    bool hasPresetTag = false;
+    Spectrogram::ColorMapPreset loadedPreset = Spectrogram::PresetLegacyDefault;
+    bool revPalette = false;
+    bool hasCustomZ = false;
+    double zMin = 0.0, zMax = 1.0;
+    int pendingLevels = -1;
+    bool hasColorBar = false;
+    int colorBarAxis = QwtPlot::yRight;
+    int colorBarW = 16;
+    QString cbTitle;
 
     for (line++; line != lst.end(); line++) {
         QString s = *line;
@@ -5464,6 +5786,7 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
             if (contours) {
                 s = (*(++line)).trimmed();
                 int levels = s.remove("<Levels>").remove("</Levels>").toInt();
+                pendingLevels = levels;
                 sp->setLevelsNumber(levels);
 
                 s = (*(++line)).trimmed();
@@ -5482,21 +5805,67 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
             }
         } else if (s.contains("<ColorBar>")) {
             s = *(++line);
-            int color_axis = s.remove("<axis>").remove("</axis>").trimmed().toInt();
+            colorBarAxis = s.remove("<axis>").remove("</axis>").trimmed().toInt();
             s = *(++line);
-            int width = s.remove("<width>").remove("</width>").trimmed().toInt();
-
-            QwtScaleWidget *colorAxis = d_plot->axisWidget(color_axis);
-            if (colorAxis) {
-                colorAxis->setColorBarWidth(width);
-                colorAxis->setColorBarEnabled(true);
-            }
+            colorBarW = s.remove("<width>").remove("</width>").trimmed().toInt();
+            hasColorBar = true;
             line++;
+        } else if (s.contains("<ColorPreset>")) {
+            const int p = s.remove("<ColorPreset>").remove("</ColorPreset>").trimmed().toInt();
+            if (p >= static_cast<int>(Spectrogram::PresetLegacyDefault)
+                && p <= static_cast<int>(Spectrogram::PresetCustom)) {
+                loadedPreset = static_cast<Spectrogram::ColorMapPreset>(p);
+                hasPresetTag = true;
+            }
+        } else if (s.contains("<ReversePalette>")) {
+            revPalette =
+                    s.remove("<ReversePalette>").remove("</ReversePalette>").trimmed().toInt() != 0;
+        } else if (s.contains("<CustomZRange>")) {
+            const QStringList parts =
+                    s.remove("<CustomZRange>").remove("</CustomZRange>").trimmed().split("\t");
+            if (parts.size() >= 3 && parts[0].toInt() != 0) {
+                hasCustomZ = true;
+                zMin = parts[1].toDouble();
+                zMax = parts[2].toDouble();
+            }
+        } else if (s.contains("<ColorBarTitle>")) {
+            QString raw = s.trimmed();
+            if (raw.startsWith("<ColorBarTitle>"))
+                raw = raw.mid(15);
+            if (raw.endsWith("</ColorBarTitle>"))
+                raw.chop(16);
+            raw.replace("&#10;", "\n")
+                    .replace("&gt;", ">")
+                    .replace("&lt;", "<")
+                    .replace("&amp;", "&");
+            cbTitle = raw;
         } else if (s.contains("<Visible>")) {
             int on = s.remove("<Visible>").remove("</Visible>").trimmed().toInt();
             sp->setVisible(on);
         }
     }
+
+    if (hasCustomZ) {
+        sp->setCustomValueRange(true, zMin, zMax);
+        if (pendingLevels >= 2)
+            sp->setLevelsNumber(pendingLevels);
+    }
+    if (hasPresetTag)
+        sp->setColorMapPreset(loadedPreset, revPalette);
+    else if (revPalette)
+        sp->setReversePalette(true);
+
+    if (hasColorBar) {
+        sp->showColorScale(colorBarAxis, true);
+        sp->setColorBarWidth(colorBarW);
+    } else {
+        if (QwtScaleWidget *ca = d_plot->axisWidget(sp->colorScaleAxis()))
+            ca->setColorBarEnabled(false);
+    }
+    if (!cbTitle.isEmpty())
+        sp->setColorBarTitle(cbTitle);
+    sp->syncColorScale();
+    sp->enforceColorBarArialFont();
 }
 
 bool Graph::validCurvesDataSize() const
@@ -8004,7 +8373,26 @@ bool Graph::restorePhase5Tag(const QString &line)
                 }
             }
         }
+        for (QwtPlotItem *it : d_plot->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                Spectrogram *sp = static_cast<Spectrogram *>(it);
+                sp->syncColorScale();
+                sp->enforceColorBarArialFont();
+            }
+        }
         d_plot->replot();
+        return true;
+    }
+
+    if (s.startsWith("<ToriAutoAxisTitles")) {
+        const QString uf = attrs.value("unitFormat");
+        d_axis_unit_format = (uf == QStringLiteral("ISIJSlash")) ? Column::UnitFormat::ISIJSlash
+                                                                 : Column::UnitFormat::Paren;
+        for (int a = 0; a < 4; ++a) {
+            const QString key = QString("a%1").arg(a);
+            if (attrs.contains(key))
+                d_axis_title_auto[a] = (attrs.value(key).toInt() != 0);
+        }
         return true;
     }
 

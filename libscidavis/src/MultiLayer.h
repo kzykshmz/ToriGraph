@@ -40,6 +40,7 @@
 #include <QMap>
 #include <QPair>
 #include <QRectF>
+#include <QImage>
 #include "core/column/Column.h"
 
 class QWidget;
@@ -218,6 +219,7 @@ public slots:
                        QSize size = QSize());
 
     void copyAllLayers();
+    QImage copyPageAsImage(int dpi = 300);
     void print();
     void printAllLayers(QPainter *painter);
     void printActiveLayer();

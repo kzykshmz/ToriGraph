@@ -116,6 +116,9 @@ private slots:
     // spectrograms
     void showDefaultContourLinesBox(bool show);
     void showColorMapEditor(bool show);
+    void onColorMapPresetChanged(int index);
+    void onReversePaletteToggled(bool checked);
+    void onCustomZRangeToggled(bool checked);
 
 protected slots:
     void setActiveLayer(LayerItem *item);
@@ -227,6 +230,10 @@ private:
     QGroupBox *defaultPenBox;
     QRadioButton *defaultScaleBox, *grayScaleBox, *customScaleBox, *defaultContourBox,
             *autoContourBox;
+    QComboBox *boxColorMapPreset;
+    QCheckBox *boxReversePalette, *boxCustomZRange;
+    QDoubleSpinBox *boxZMin, *boxZMax;
+    QLineEdit *editColorBarTitle;
 
     SymbolBox *boxMaxStyle, *boxMinStyle, *boxMeanStyle, *box99Style, *box1Style;
     QDoubleSpinBox *whiskerCnt, *boxCnt;

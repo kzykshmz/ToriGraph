@@ -140,6 +140,8 @@ protected:
     QGroupBox *labelBox;
     QPushButton *buttonLabelFont;
     TextFormatButtons *formatButtons;
+    QCheckBox *boxAutoAxisTitle;
+    QComboBox *boxAxisUnitFormat;
     QCheckBox *boxAxisBackbone;
     QPushButton *btnPresetBoxInward, *btnPresetBoxPlain, *btnPresetOpenL, *btnPresetZeroCrossed;
     QWidget *refLinesPage;
@@ -218,6 +220,9 @@ public slots:
     void clearAllRefLines();
     void updateAxisBreakPage(int row = -1);
     void applyTickLabelTransformFromUi();
+    void onTitleTextEdited();
+    void onAutoAxisTitleToggled(bool checked);
+    void onAxisUnitFormatChanged(int index);
 
     //! Shows the dialog as a modal dialog
     /**

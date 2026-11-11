@@ -46,9 +46,23 @@ public:
     Spectrogram(Matrix *m);
 
     enum ColorMapPolicy { GrayScale, Default, Custom };
+    enum ColorMapPreset {
+        PresetLegacyDefault = 0,
+        PresetGrayScale,
+        PresetViridis,
+        PresetMagma,
+        PresetInferno,
+        PresetPlasma,
+        PresetCividis,
+        PresetJet,
+        PresetBlueWhiteRed,
+        PresetCoolWarm,
+        PresetCustom
+    };
 
     Spectrogram *copy();
     Matrix *matrix() { return d_matrix; };
+    const Matrix *matrix() const { return d_matrix; }
 
     int levels() { return (int)contourLevels().size() + 1; };
     void setLevelsNumber(int levels);
@@ -60,11 +74,32 @@ public:
     int colorBarWidth();
     void setColorBarWidth(int width);
 
+    void setColorBarTitle(const QString &title);
+    QString colorBarTitle() const { return d_colorbar_title; }
+    void enforceColorBarArialFont();
+    void syncColorScale();
+
     void setGrayScale();
     void setDefaultColorMap();
     static QwtLinearColorMap defaultColorMap();
+    static QwtLinearColorMap presetColorMap(ColorMapPreset preset, bool reverse = false);
+    static QwtLinearColorMap reversedColorMap(const QwtLinearColorMap &src);
+
+    void setColorMapPreset(ColorMapPreset preset, bool reverse = false);
+    ColorMapPreset colorMapPreset() const { return d_preset; }
+    void setReversePalette(bool reverse);
+    bool reversePalette() const { return d_reverse_palette; }
 
     void setCustomColorMap(const QwtLinearColorMap &map);
+    const QwtLinearColorMap &baseCustomColorMap() const { return d_base_custom_map; }
+    void setCustomValueRange(bool enabled, double zMin, double zMax);
+    bool hasCustomValueRange() const { return d_custom_z_range; }
+    double customZMin() const { return d_custom_z_min; }
+    double customZMax() const { return d_custom_z_max; }
+    QwtDoubleInterval rawDataRange() const;
+    QwtDoubleInterval effectiveValueRange() const;
+    QwtDoubleInterval boundingInterval(Qt::Axis axis = Qt::ZAxis) const;
+
     void updateData(Matrix *m);
 
     //! Used when saving a project file
@@ -81,17 +116,39 @@ protected:
 
     //! Flags
     ColorMapPolicy color_map_policy;
+    ColorMapPreset d_preset = PresetLegacyDefault;
+    bool d_reverse_palette = false;
+    bool d_custom_z_range = false;
+    double d_custom_z_min = 0.0;
+    double d_custom_z_max = 1.0;
+    QString d_colorbar_title;
 
     QwtLinearColorMap color_map;
+    QwtLinearColorMap d_base_custom_map;
 };
 
 class MatrixData : public QwtRasterData
 {
 public:
-    MatrixData(Matrix *m) : QwtRasterData(m->boundingRect()), d_matrix(m)
+    MatrixData(Matrix *m, bool useCustomRange = false, double customMin = 0.0,
+               double customMax = 1.0)
+        : QwtRasterData(m ? m->boundingRect() : QwtDoubleRect()),
+          d_matrix(m),
+          d_m(nullptr),
+          n_rows(m ? m->numRows() : 0),
+          n_cols(m ? m->numCols() : 0),
+          min_z(0.0),
+          max_z(1.0),
+          dx(1.0),
+          dy(1.0),
+          x_start(0.0),
+          y_start(0.0),
+          d_use_custom_range(useCustomRange),
+          d_custom_min(customMin),
+          d_custom_max(customMax)
     {
-        n_rows = d_matrix->numRows();
-        n_cols = d_matrix->numCols();
+        if (!d_matrix || n_rows <= 0 || n_cols <= 0)
+            return;
 
         d_m = new double *[n_rows];
         for (int l = 0; l < n_rows; ++l)
@@ -99,17 +156,20 @@ public:
 
         min_z = std::numeric_limits<double>::max();
         max_z = -std::numeric_limits<double>::max();
+        bool anyFinite = false;
         for (int i = 0; i < n_rows; i++)
             for (int j = 0; j < n_cols; j++) {
                 // replace NaNs and Infs with average of neighbours
-                if (std::isfinite(d_matrix->cell(i, j)))
+                if (std::isfinite(d_matrix->cell(i, j))) {
                     d_m[i][j] = d_matrix->cell(i, j);
-                else {
+                    anyFinite = true;
+                } else {
                     double av = 0;
                     unsigned cnt = 0;
                     for (int ii = -1; ii <= 1; ii += 2)
                         for (int jj = -1; jj <= 1; jj += 2)
-                            if (std::isfinite(d_matrix->cell(i + ii, j + jj))) {
+                            if (i + ii >= 0 && i + ii < n_rows && j + jj >= 0 && j + jj < n_cols
+                                && std::isfinite(d_matrix->cell(i + ii, j + jj))) {
                                 av += d_matrix->cell(i + ii, j + jj);
                                 cnt++;
                             }
@@ -120,8 +180,10 @@ public:
                 min_z = std::min(min_z, d_m[i][j]);
                 max_z = std::max(max_z, d_m[i][j]);
             }
-
-        // m->range(&min_z, &max_z);
+        if (!anyFinite && min_z > max_z) {
+            min_z = 0.0;
+            max_z = 1.0;
+        }
 
         x_start = d_matrix->xStart();
         dx = (d_matrix->xEnd() - x_start) / (double)n_cols;
@@ -132,15 +194,27 @@ public:
 
     ~MatrixData()
     {
-        for (int i = 0; i < n_rows; i++)
-            delete[] d_m[i];
-
-        delete[] d_m;
+        if (d_m) {
+            for (int i = 0; i < n_rows; i++)
+                delete[] d_m[i];
+            delete[] d_m;
+        }
     };
 
-    virtual QwtRasterData *copy() const { return new MatrixData(d_matrix); }
+    virtual QwtRasterData *copy() const
+    {
+        return new MatrixData(d_matrix, d_use_custom_range, d_custom_min, d_custom_max);
+    }
 
-    virtual QwtDoubleInterval range() const { return QwtDoubleInterval(min_z, max_z); }
+    virtual QwtDoubleInterval range() const
+    {
+        if (d_use_custom_range && std::isfinite(d_custom_min) && std::isfinite(d_custom_max)
+            && d_custom_min < d_custom_max)
+            return QwtDoubleInterval(d_custom_min, d_custom_max);
+        return QwtDoubleInterval(min_z, max_z);
+    }
+
+    QwtDoubleInterval rawRange() const { return QwtDoubleInterval(min_z, max_z); }
 
     virtual QSize rasterHint(const QwtDoubleRect &) const { return QSize(n_cols, n_rows); }
 
@@ -167,6 +241,10 @@ private:
 
     //! Y axis bottom value in the data matrix
     double y_start;
+
+    bool d_use_custom_range = false;
+    double d_custom_min = 0.0;
+    double d_custom_max = 1.0;
 };
 
 #endif

@@ -449,6 +449,25 @@ void AxesDialog::initAxesPage()
     boxTitle->setMaximumWidth(buttonLabelFont->width() + formatButtons->width());
     labelBoxLayout->addLayout(hl);
 
+    boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
+    boxAutoAxisTitle->setChecked(true);
+    labelBoxLayout->addWidget(boxAutoAxisTitle);
+
+    QHBoxLayout *ufLayout = new QHBoxLayout();
+    ufLayout->setMargin(0);
+    ufLayout->setSpacing(4);
+    ufLayout->addWidget(new QLabel(tr("Unit Format:")));
+    boxAxisUnitFormat = new QComboBox();
+    boxAxisUnitFormat->addItem(tr("Name (Unit)"));
+    boxAxisUnitFormat->addItem(tr("Name / Unit (ISIJ)"));
+    ufLayout->addWidget(boxAxisUnitFormat, 1);
+    labelBoxLayout->addLayout(ufLayout);
+
+    connect(boxTitle, SIGNAL(textChanged()), this, SLOT(onTitleTextEdited()));
+    connect(boxAutoAxisTitle, SIGNAL(toggled(bool)), this, SLOT(onAutoAxisTitleToggled(bool)));
+    connect(boxAxisUnitFormat, SIGNAL(currentIndexChanged(int)), this,
+            SLOT(onAxisUnitFormatChanged(int)));
+
     QHBoxLayout *bottomLayout = new QHBoxLayout();
 
     QGroupBox *leftBox = new QGroupBox(QString());
@@ -1629,8 +1648,20 @@ bool AxesDialog::updatePlot()
         else
             formatInfo[axis] = boxColName->currentText();
 
-        if (d_graph->axisTitle(axis) != boxTitle->toPlainText())
+        const Column::UnitFormat chosenFmt = (boxAxisUnitFormat->currentIndex() == 1)
+                ? Column::UnitFormat::ISIJSlash
+                : Column::UnitFormat::Paren;
+        d_graph->setAxisTitleAuto(axis, boxAutoAxisTitle->isChecked());
+        d_graph->setAxisUnitFormat(chosenFmt);
+        if (boxAutoAxisTitle->isChecked()) {
+            d_graph->refreshAutoAxisTitlesFromColumns();
+            boxTitle->blockSignals(true);
+            boxTitle->setText(d_graph->axisTitle(axis));
+            boxTitle->blockSignals(false);
+        } else if (d_graph->axisTitle(axis) != boxTitle->toPlainText()) {
             d_graph->setAxisTitle(axis, boxTitle->toPlainText());
+            d_graph->setAxisTitleAuto(axis, false);
+        }
 
         if (axis == QwtPlot::xBottom)
             xBottomLabelsRotation = boxAngle->value();
@@ -1807,6 +1838,7 @@ void AxesDialog::refreshGraphState()
     if (curAxisRow >= 0) {
         updateShowBox(curAxisRow);
         setTicksType(curAxisRow);
+        updateTitleBox(curAxisRow);
     }
     showGridOptions(axesGridList->currentRow());
     if (axisBreakAxesList)
@@ -1931,7 +1963,55 @@ void AxesDialog::updateScale()
 void AxesDialog::updateTitleBox(int axis)
 {
     int axisId = Graph::mapToQwtAxis(axis);
+    boxTitle->blockSignals(true);
+    boxAutoAxisTitle->blockSignals(true);
+    boxAxisUnitFormat->blockSignals(true);
     boxTitle->setText(d_graph->axisTitle(axisId));
+    boxAutoAxisTitle->setChecked(d_graph->isAxisTitleAuto(axisId));
+    boxAxisUnitFormat->setCurrentIndex(
+            d_graph->axisUnitFormat() == Column::UnitFormat::ISIJSlash ? 1 : 0);
+    boxTitle->blockSignals(false);
+    boxAutoAxisTitle->blockSignals(false);
+    boxAxisUnitFormat->blockSignals(false);
+}
+
+void AxesDialog::onTitleTextEdited()
+{
+    if (!d_graph)
+        return;
+    const int axisId = mapToQwtAxisId();
+    if (boxTitle->toPlainText() != d_graph->axisTitle(axisId) && boxAutoAxisTitle->isChecked()) {
+        boxAutoAxisTitle->blockSignals(true);
+        boxAutoAxisTitle->setChecked(false);
+        boxAutoAxisTitle->blockSignals(false);
+    }
+}
+
+void AxesDialog::onAutoAxisTitleToggled(bool checked)
+{
+    if (!d_graph)
+        return;
+    const int axisId = mapToQwtAxisId();
+    d_graph->setAxisTitleAuto(axisId, checked);
+    if (checked) {
+        d_graph->refreshAutoAxisTitlesFromColumns();
+        boxTitle->blockSignals(true);
+        boxTitle->setText(d_graph->axisTitle(axisId));
+        boxTitle->blockSignals(false);
+    }
+}
+
+void AxesDialog::onAxisUnitFormatChanged(int index)
+{
+    if (!d_graph)
+        return;
+    const Column::UnitFormat fmt =
+            (index == 1) ? Column::UnitFormat::ISIJSlash : Column::UnitFormat::Paren;
+    d_graph->setAxisUnitFormat(fmt);
+    const int axisId = mapToQwtAxisId();
+    boxTitle->blockSignals(true);
+    boxTitle->setText(d_graph->axisTitle(axisId));
+    boxTitle->blockSignals(false);
 }
 
 void AxesDialog::pickAxisColor()

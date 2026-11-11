@@ -64,6 +64,7 @@
 #include "PlotCurve.h"
 #include "ColorButton.h"
 #include "ScaleDraw.h"
+#include "Spectrogram.h"
 
 #include <qwt_symbol.h>
 #include <QFile>
@@ -810,6 +811,83 @@ void MultiLayer::exportToFile(const QString &fileName)
         }
         QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
     }
+}
+
+QImage MultiLayer::copyPageAsImage(int dpi)
+{
+    const int effectiveDpi = qBound(36, dpi > 0 ? dpi : 300, 4800);
+
+    QRect layersRect;
+    for (int i = 0; i < (int)graphsList.count(); i++) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget())
+            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+    }
+    if (!layersRect.isEmpty())
+        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+    else
+        layersRect = (canvas && !canvas->rect().isEmpty()) ? canvas->rect() : QRect(0, 0, 520, 520);
+
+    const bool hasPhysicalPage = (d_page_unit != UnitPx);
+    const QRect srcRect = (hasPhysicalPage || d_page_view_mode)
+            ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
+            : layersRect;
+
+    QSize targetSize;
+    if (hasPhysicalPage) {
+        auto toInches = [](double val, PageUnit u) -> double {
+            switch (u) {
+            case UnitMm:
+                return val / 25.4;
+            case UnitCm:
+                return val / 2.54;
+            case UnitInch:
+                return val;
+            case UnitPx:
+            default:
+                return val / 96.0;
+            }
+        };
+        const double wIn = toInches(d_page_width_val, d_page_unit);
+        const double hIn = toInches(d_page_height_val, d_page_unit);
+        targetSize = QSize(qMax(1, qRound(wIn * double(effectiveDpi))),
+                           qMax(1, qRound(hIn * double(effectiveDpi))));
+    } else {
+        const double scale = double(effectiveDpi) / 96.0;
+        targetSize = QSize(qMax(1, qRound(srcRect.width() * scale)),
+                           qMax(1, qRound(srcRect.height() * scale)));
+    }
+
+    QImage image(targetSize, QImage::Format_RGB32);
+    image.fill(Qt::white);
+
+    {
+        QPainter p(&image);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                         | QPainter::SmoothPixmapTransform);
+        p.scale(double(targetSize.width()) / double(qMax(1, srcRect.width())),
+                double(targetSize.height()) / double(qMax(1, srcRect.height())));
+        if (d_page_bg_color.isValid() && d_page_bg_color.alpha() > 0)
+            p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(d_page_bg_color));
+        for (int i = 0; i < (int)graphsList.count(); i++) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            if (!gr || !gr->plotWidget())
+                continue;
+            Plot *myPlot = (Plot *)gr->plotWidget();
+            const QPoint pos = gr->pos() - srcRect.topLeft();
+            gr->exportPainter(p, false, QRect(pos, myPlot->size()));
+        }
+        p.end();
+    }
+
+    const int dpm = qRound(double(effectiveDpi) / 0.0254);
+    image.setDotsPerMeterX(dpm);
+    image.setDotsPerMeterY(dpm);
+
+    if (QClipboard *cb = QApplication::clipboard())
+        cb->setImage(image);
+
+    return image;
 }
 
 void MultiLayer::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
@@ -2531,6 +2609,11 @@ void MultiLayer::applyStylePreset(StylePreset preset)
         pTitle.setFont(titleFnt);
         plot->setTitle(pTitle);
 
+        if (preset == StyleISIJJournal85mm) {
+            gr->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
+            gr->refreshAutoAxisTitlesFromColumns();
+        }
+
         for (int a = 0; a < QwtPlot::axisCnt; ++a) {
             const QFont useTick = isInset ? QFont("Arial", qMax(6, tickFnt.pointSize() - 2), QFont::Normal, false) : tickFnt;
             const QFont useTitle = isInset ? QFont("Arial", qMax(7, titleFnt.pointSize() - 2), QFont::Normal, false) : titleFnt;
@@ -2539,9 +2622,16 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             QString rawTitle = gr->axisTitle(a);
             if (rawTitle.startsWith("<b>", Qt::CaseInsensitive)
                 && rawTitle.endsWith("</b>", Qt::CaseInsensitive)) {
+                const bool wasAuto = gr->isAxisTitleAuto(a);
                 rawTitle = rawTitle.mid(3, rawTitle.length() - 7);
                 gr->setAxisTitle(a, rawTitle);
+                gr->setAxisTitleAuto(a, wasAuto);
             }
+        }
+
+        for (QwtPlotItem *it : plot->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+                static_cast<Spectrogram *>(it)->enforceColorBarArialFont();
         }
 
         gr->setTextMarkerDefaults(legFrame, legFnt, QColor(Qt::black), legBg);
@@ -2550,9 +2640,12 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             Legend *mrk = gr->textMarker(txtKeys[k]);
             if (!mrk)
                 continue;
+            const bool isCurveLegend = (mrk == gr->legend() || mrk->text().contains("\\c{")
+                                        || mrk->text().contains("\\p{"));
             mrk->setFont(legFnt);
-            mrk->setTextColor(QColor(Qt::black));
-            if (mrk == gr->legend() || mrk->text().contains("\\c{") || mrk->text().contains("\\p{")) {
+            if (isCurveLegend || mrk->textColor().lightness() <= 200)
+                mrk->setTextColor(QColor(Qt::black));
+            if (isCurveLegend) {
                 mrk->setFrameStyle(legFrame);
                 mrk->setBackgroundColor(legBg);
             }

@@ -485,6 +485,11 @@ public slots:
     void setTopAxisTitle(const QString &text);
     void setAxisTitle(int axis, const QString &text);
     QString axisTitle(int axis) { return d_plot->axisTitle(axis).text(); }
+    void refreshAutoAxisTitlesFromColumns();
+    void setAxisTitleAuto(int axis, bool autoSync);
+    bool isAxisTitleAuto(int axis) const;
+    void setAxisUnitFormat(Column::UnitFormat fmt);
+    Column::UnitFormat axisUnitFormat() const { return d_axis_unit_format; }
 
     QFont axisTitleFont(int axis);
     void setXAxisTitleFont(const QFont &fnt);
@@ -966,5 +971,11 @@ private:
     };
     QVector<ShadedBandSpec> d_shaded_bands;
     int d_pending_linked_parent_idx = -1;
+    bool d_axis_title_auto[4] = { true, true, true, true };
+    Column::UnitFormat d_axis_unit_format = Column::UnitFormat::Paren;
+    bool d_refreshing_auto_titles = false;
+    mutable QMap<int, QString> d_last_auto_curve_labels;
+    QString resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const;
+    bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
 };
 #endif // GRAPH_H
