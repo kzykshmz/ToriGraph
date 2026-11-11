@@ -317,6 +317,7 @@ protected slots:
     void updateFunctionDoc();
     void handleAspectDescriptionChange(const AbstractAspect *aspect);
     void handleAspectDescriptionAboutToChange(const AbstractAspect *aspect);
+    void syncAutoRecalcFromFuture(bool on);
 
 private:
     void autoRecalculateDependentColumns(int changedFirstCol, int changedCount);

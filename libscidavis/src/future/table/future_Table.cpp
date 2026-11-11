@@ -2531,6 +2531,14 @@ void Table::prepareAspectRemoval(AbstractAspect *aspect)
     exec(new TableRemoveColumnsCmd(d_table_private, first, 1, cols));
 }
 
+void Table::setAutoRecalcFormulas(bool on)
+{
+    if (d_auto_recalc_formulas == on)
+        return;
+    d_auto_recalc_formulas = on;
+    emit autoRecalcFormulasChanged(on);
+}
+
 void Table::save(QXmlStreamWriter *writer) const
 {
     int cols = columnCount();
@@ -2539,6 +2547,7 @@ void Table::save(QXmlStreamWriter *writer) const
     writeBasicAttributes(writer);
     writer->writeAttribute("columns", QString::number(cols));
     writer->writeAttribute("rows", QString::number(rows));
+    writer->writeAttribute("auto_recalc_formulas", QString::number(d_auto_recalc_formulas ? 1 : 0));
     writeCommentElement(writer);
 
     for (int col = 0; col < cols; col++)
@@ -2561,6 +2570,11 @@ bool Table::load(XmlStreamReader *reader)
 
         if (!readBasicAttributes(reader))
             return false;
+
+        const QString arAttr = reader->attributes().value("auto_recalc_formulas").toString();
+        const bool loadedAutoRecalc = arAttr.isEmpty() ? true : (arAttr.toInt() != 0);
+        d_auto_recalc_formulas = false;
+        emit autoRecalcFormulasChanged(false);
 
         // read dimensions
         bool ok1, ok2;
@@ -2606,6 +2620,9 @@ bool Table::load(XmlStreamReader *reader)
         }
         if (cols != columnCount())
             reader->raiseWarning(tr("columns attribute and number of read columns do not match"));
+
+        d_auto_recalc_formulas = loadedAutoRecalc;
+        emit autoRecalcFormulasChanged(loadedAutoRecalc);
     } else // no table element
         reader->raiseError(tr("no table element found"));
 

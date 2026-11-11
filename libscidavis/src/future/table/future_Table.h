@@ -352,6 +352,8 @@ public:
      * has to take care of reading and applying these values */
     void setColumnWidth(int col, int width);
     int columnWidth(int col) const;
+    void setAutoRecalcFormulas(bool on);
+    bool autoRecalcFormulas() const { return d_auto_recalc_formulas; }
 
 private:
     //! Internal function to connect all column signals
@@ -387,6 +389,7 @@ signals:
     void dataChanged(int top, int left, int bottom, int right);
     void headerDataChanged(Qt::Orientation orientation, int first, int last);
     void requestColumnPropertiesDialog(int col);
+    void autoRecalcFormulasChanged(bool on);
 #ifdef LEGACY_CODE_0_2_x
     void recalculate();
     void requestRowStatistics();
@@ -604,6 +607,7 @@ public:
 
 private:
     Private d_table_private;
+    bool d_auto_recalc_formulas = true;
 };
 
 } // namespace

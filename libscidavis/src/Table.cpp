@@ -157,6 +157,9 @@ void Table::init()
     connect(d_future_table, SIGNAL(recalculate()), this, SLOT(recalculate()));
     connect(d_future_table, SIGNAL(requestColumnPropertiesDialog(int)), this,
             SLOT(showColumnPropertiesDialog(int)));
+    connect(d_future_table, SIGNAL(autoRecalcFormulasChanged(bool)), this,
+            SLOT(syncAutoRecalcFromFuture(bool)));
+    d_auto_recalc_formulas = d_future_table->autoRecalcFormulas();
 
     connect(d_future_table, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
             SLOT(handleAspectDescriptionChange(const AbstractAspect *)));
@@ -710,6 +713,7 @@ QString Table::saveToString(const QString &geometry)
     QString s = "<table>\n";
     QString xml;
     if (d_future_table) {
+        d_future_table->setAutoRecalcFormulas(d_auto_recalc_formulas);
         QXmlStreamWriter writer(&xml);
         d_future_table->save(&writer);
     }
@@ -735,6 +739,7 @@ void Table::saveToDevice(QIODevice *device, const QString &geometry)
     QTemporaryFile tmp_file;
     QString tmp_string;
     if (d_future_table) {
+        d_future_table->setAutoRecalcFormulas(d_auto_recalc_formulas);
         QXmlStreamWriter xml(&tmp_string);
         if (tmp_file.open())
             xml.setDevice(&tmp_file);
@@ -1496,6 +1501,8 @@ void Table::copy(Table *m)
         return;
 
     d_future_table->copy(m->d_future_table);
+    d_auto_recalc_formulas = m->d_auto_recalc_formulas;
+    d_future_table->setAutoRecalcFormulas(d_auto_recalc_formulas);
 }
 
 QString Table::saveAsTemplate(const QString &geometryInfo)
@@ -1508,6 +1515,19 @@ QString Table::saveAsTemplate(const QString &geometryInfo)
     s += saveCommands();
     s += saveColumnTypes();
     s += saveComments();
+    QString lnLine = QStringLiteral("LongNames");
+    QString unLine = QStringLiteral("Units");
+    for (int i = 0; i < numCols(); ++i) {
+        QString ln = colLongName(i);
+        ln.replace('\t', ' ').replace('\n', ' ');
+        QString un = colUnits(i);
+        un.replace('\t', ' ').replace('\n', ' ');
+        lnLine += "\t" + ln;
+        unLine += "\t" + un;
+    }
+    s += lnLine + "\n";
+    s += unLine + "\n";
+    s += QStringLiteral("AutoRecalc\t%1\n").arg(d_auto_recalc_formulas ? 1 : 0);
     s += "</table>\n";
     return s;
 }
@@ -1560,7 +1580,39 @@ void Table::restore(const QStringList &list_in)
     temp_list.removeFirst();
     setColComments(temp_list);
 
-    d_auto_recalc_formulas = prevAutoRecalc;
+    bool restoredAutoRecalc = prevAutoRecalc;
+    bool anyMetadata = false;
+    for (; iterator != list_in.end(); ++iterator) {
+        const QString line = *iterator;
+        if (line.trimmed() == "</table>")
+            break;
+        if (line.startsWith("LongNames\t") || line == "LongNames") {
+            const QStringList parts = line.split("\t");
+            for (int i = 1; i < parts.size() && (i - 1) < numCols(); ++i) {
+                setColLongName(i - 1, parts[i]);
+                if (!parts[i].trimmed().isEmpty())
+                    anyMetadata = true;
+            }
+        } else if (line.startsWith("Units\t") || line == "Units") {
+            const QStringList parts = line.split("\t");
+            for (int i = 1; i < parts.size() && (i - 1) < numCols(); ++i) {
+                setColUnits(i - 1, parts[i]);
+                if (!parts[i].trimmed().isEmpty())
+                    anyMetadata = true;
+            }
+        } else if (line.startsWith("AutoRecalc\t")) {
+            const QStringList parts = line.split("\t");
+            if (parts.size() >= 2)
+                restoredAutoRecalc = (parts[1].trimmed().toInt() != 0);
+        }
+    }
+
+    if (anyMetadata)
+        showComments(true);
+
+    d_auto_recalc_formulas = restoredAutoRecalc;
+    if (d_future_table)
+        d_future_table->setAutoRecalcFormulas(restoredAutoRecalc);
 }
 
 void Table::clear()
@@ -1803,9 +1855,16 @@ void Table::setColUnits(int col, const QString &s)
         c->setUnits(s);
 }
 
+void Table::syncAutoRecalcFromFuture(bool on)
+{
+    d_auto_recalc_formulas = on;
+}
+
 void Table::setAutoRecalcFormulas(bool on)
 {
     d_auto_recalc_formulas = on;
+    if (d_future_table)
+        d_future_table->setAutoRecalcFormulas(on);
     if (d_auto_recalc_formulas && !d_in_auto_recalc)
         autoRecalculateDependentColumns(-1, 0);
 }
@@ -1974,6 +2033,8 @@ void Table::showColumnPropertiesDialog(int col)
             return false;
 
         d_auto_recalc_formulas = chkAutoRecalc->isChecked();
+        if (d_future_table)
+            d_future_table->setAutoRecalcFormulas(d_auto_recalc_formulas);
         const QString newShort = editShortName->text().trimmed();
         if (!newShort.isEmpty() && newShort != cp->name())
             cp->setName(newShort);

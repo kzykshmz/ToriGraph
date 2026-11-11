@@ -121,8 +121,10 @@ void GraphMiniToolbar::clearButtons()
         return;
     QLayoutItem *child = nullptr;
     while ((child = d_layout->takeAt(0)) != nullptr) {
-        if (QWidget *w = child->widget())
-            delete w;
+        if (QWidget *w = child->widget()) {
+            w->hide();
+            w->deleteLater();
+        }
         delete child;
     }
 }
@@ -372,9 +374,8 @@ void GraphMiniToolbar::popupForLegend(Graph *g, Legend *legend, const QPoint &gl
     addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onLegendFontDec()));
     addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onLegendFontInc()));
     addSeparatorLine();
-    const int nCols = legend->numColumns();
-    const QString colLabel = (nCols <= 1) ? tr("Horizontal Legend")
-                                          : QString("%1 (%2)").arg(tr("Legend Columns:")).arg(nCols);
+    const int nCols = qMax(1, legend->numColumns());
+    const QString colLabel = QStringLiteral("%1C").arg(nCols);
     addActionBtn(colLabel, tr("Horizontal Legend"), SLOT(onLegendCycleColumns()), true, nCols > 1);
     addActionBtn(tr("Reconstruct Legend"), tr("Reconstruct Legend"), SLOT(onLegendReconstruct()));
 
@@ -481,9 +482,19 @@ void GraphMiniToolbar::onCurvePickColor()
     }
     c->setSymbol(sym);
 
+    if (QToolButton *colorBtn = qobject_cast<QToolButton *>(sender())) {
+        QPixmap sw(12, 12);
+        sw.fill(chosen);
+        QPainter sp(&sw);
+        sp.setPen(QColor(90, 90, 90));
+        sp.drawRect(0, 0, 11, 11);
+        sp.end();
+        colorBtn->setIcon(QIcon(sw));
+        adjustSize();
+    }
+
     d_graph->replot();
     d_graph->notifyChanges();
-    popupForCurve(d_graph, d_curve_index, pos() - QPoint(10, -height() - 10));
 }
 
 void GraphMiniToolbar::onCurveLineWidthDec()
@@ -889,7 +900,11 @@ void GraphMiniToolbar::onLegendCycleColumns()
     else
         next = 1;
     d_legend->setNumColumns(next);
+    if (QToolButton *btn = qobject_cast<QToolButton *>(sender())) {
+        btn->setText(QStringLiteral("%1C").arg(next));
+        btn->setChecked(next > 1);
+    }
+    adjustSize();
     d_graph->replot();
     d_graph->notifyChanges();
-    popupForLegend(d_graph, d_legend, pos() - QPoint(10, -height() - 10));
 }
