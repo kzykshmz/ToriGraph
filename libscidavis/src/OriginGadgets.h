@@ -50,7 +50,10 @@ public:
         RiseTime = 7,
         Cluster = 8,
         MaskRegion = 9,
-        UnmaskRegion = 10
+        UnmaskRegion = 10,
+        Differentiate = 11,
+        Intersect = 12,
+        Integrate2D = 13
     };
     enum QuickFitModel {
         FitLinear = 0,
@@ -116,6 +119,20 @@ private:
         double area = 0.0;
     };
 
+    struct DiffRow {
+        double x = 0.0;
+        double y = 0.0;
+        double dydx = 0.0;
+        double d2ydx2 = 0.0;
+    };
+
+    struct IntersectionRow {
+        QString curveA;
+        QString curveB;
+        double x = 0.0;
+        double y = 0.0;
+    };
+
     QwtPlotCurve *resolveTargetCurve();
     DataCurve *resolveTargetDataCurve();
     void initDefaultRoi();
@@ -160,6 +177,18 @@ private:
     double d_ec50_x = 0.0;
     double d_ec50_y = 0.0;
     bool d_has_ec50_marker = false;
+    QVector<DiffRow> d_diff_rows;
+    QVector<QPointF> d_diff_preview_pts;
+    double d_diff_max_x = 0.0;
+    double d_diff_max_y = 0.0;
+    double d_diff_signed_slope = 0.0;
+    bool d_has_diff_marker = false;
+    QVector<IntersectionRow> d_intersections;
+    double d_centroid_x = 0.0;
+    double d_centroid_y = 0.0;
+    double d_peak2d_x = 0.0;
+    double d_peak2d_y = 0.0;
+    bool d_has_2d_markers = false;
 
     // Mouse drag state
     DragMode d_drag_mode;
