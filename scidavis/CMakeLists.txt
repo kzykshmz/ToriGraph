@@ -31,7 +31,7 @@ add_executable( scidavis
   )
 
 # SciDAVis expects qm files to be in the translations directory. qt5_create_translation puts them somewhere else
-add_custom_command(TARGET scidavis COMMAND mkdir -p translations || cp ${QM_FILES} translations)
+add_custom_command(TARGET scidavis POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/translations" COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QM_FILES} "${CMAKE_CURRENT_BINARY_DIR}/translations")
 
 if( WIN32 )
   target_compile_definitions( scidavis PUBLIC
@@ -159,4 +159,10 @@ endif()
       endif()
       install( FILES scidavisUtil.py DESTINATION share/scidavis )
     endif()
+endif()
+
+if( WIN32 )
+  add_executable( scidavis_ole_test "src/ole_test.cpp" "${RESOURCES}" )
+  target_link_libraries( scidavis_ole_test libscidavis )
+  target_include_directories( scidavis_ole_test PRIVATE "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include" "${CMAKE_SOURCE_DIR}/libscidavis/src" )
 endif()

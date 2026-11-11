@@ -9,3 +9,8 @@
 Makefile
 build/
 CMakeLists.txt.user*
+
+.deps/
+.tools/
+build/
+

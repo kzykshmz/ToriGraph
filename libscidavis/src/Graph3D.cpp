@@ -30,6 +30,10 @@
 #define NOMINMAX
 #endif
 #include "Graph3D.h"
+#include "ApplicationWindow.h"
+#ifdef Q_OS_WIN
+#include "OleServer.h"
+#endif
 #include "Bar.h"
 #include "Cone3D.h"
 #include "MyParser.h"
@@ -1945,8 +1949,15 @@ void Graph3D::print()
 
 void Graph3D::copyImage()
 {
-    QApplication::clipboard()->setPixmap(QPixmap::fromImage(sp->grabFramebuffer()),
-                                          QClipboard::Clipboard);
+    QImage fb = sp->grabFramebuffer();
+#ifdef Q_OS_WIN
+    if (SciDAVisOle::copyImageAsOle(qobject_cast<ApplicationWindow *>(window()), fb, name())) {
+        sp->updateData();
+        return;
+    }
+#endif
+    QApplication::clipboard()->setPixmap(QPixmap::fromImage(fb),
+                                         QClipboard::Clipboard);
     sp->updateData();
 }
 

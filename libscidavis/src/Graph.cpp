@@ -1,3 +1,5 @@
+#include "OleServer.h"
+#include "MultiLayer.h"
 /***************************************************************************
     File                 : Graph.cpp
     Project              : SciDAVis

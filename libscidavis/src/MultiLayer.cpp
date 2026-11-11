@@ -51,6 +51,10 @@
 #include <qwt_text_label.h>
 
 #include "MultiLayer.h"
+#include "ApplicationWindow.h"
+#ifdef Q_OS_WIN
+#include "OleServer.h"
+#endif
 #include "Plot.h"
 #include "Legend.h"
 #include "SelectionMoveResizer.h"
@@ -752,6 +756,10 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
 
 void MultiLayer::copyAllLayers()
 {
+#ifdef Q_OS_WIN
+    if (SciDAVisOle::copyGraphAsOle(qobject_cast<ApplicationWindow *>(window()), this, nullptr))
+        return;
+#endif
     QImage image(canvas->size(), QImage::Format_ARGB32);
     exportPainter(image);
     QApplication::clipboard()->setImage(image);

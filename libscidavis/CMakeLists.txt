@@ -1,6 +1,8 @@
 ###################### HEADERS ##############################################
 set( HEADERS
   "src/ApplicationWindow.h"
+  "src/EmfPaintDevice.h"
+  "src/OleServer.h"
   "src/IconLoader.h"
   "src/globals.h"
   "src/Graph.h"
@@ -163,6 +165,8 @@ set( HEADERS
 ###################### SOURCES ##############################################
 set( SRCS
   "src/ApplicationWindow.cpp"
+  "src/EmfPaintDevice.cpp"
+  "src/OleServer.cpp"
   "src/IconLoader.cpp"
   "src/Graph.cpp"
   "src/Graph3D.cpp"
@@ -366,7 +370,8 @@ target_link_libraries( libscidavis
   Qt5::PrintSupport
   Qt5::OpenGL
   Qt5::Svg
-  m
+  $<$<NOT:$<PLATFORM_ID:Windows>>:m>
+  $<$<PLATFORM_ID:Windows>:ole32 oleaut32 uuid gdi32 user32 advapi32 shell32>
   )
 
 target_include_directories( libscidavis PUBLIC ${MUPARSER_INCLUDE_DIR} )

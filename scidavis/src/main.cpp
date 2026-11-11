@@ -27,6 +27,9 @@
  *                                                                         *
  ***************************************************************************/
 #include "ApplicationWindow.h"
+#ifdef Q_OS_WIN
+#include "OleServer.h"
+#endif
 
 #include <QAction>
 #include <QApplication>
@@ -175,9 +178,27 @@ int main(int argc, char **argv)
     QStringList args = app.arguments();
     args.removeFirst(); // remove application name
 
+    bool oleEmbedded = false;
+#ifdef Q_OS_WIN
+    for (int i = args.count() - 1; i >= 0; --i) {
+        if (args[i].compare("-Embedding", Qt::CaseInsensitive) == 0
+            || args[i].compare("/Embedding", Qt::CaseInsensitive) == 0) {
+            oleEmbedded = true;
+            args.removeAt(i);
+        }
+    }
+    SciDAVisOle::ensureRegistryRegistered();
+    SciDAVisOle::initializeOleServer(oleEmbedded);
+#endif
+
     if ((args.count() == 1) && (args[0] == "-a" || args[0] == "--about")) {
         ApplicationWindow::about();
+#ifdef Q_OS_WIN
+        SciDAVisOle::shutdownOleServer();
+#endif
         exit(0);
+    } else if (oleEmbedded) {
+        app.setQuitOnLastWindowClosed(false);
     } else {
         ApplicationWindow *mw = new ApplicationWindow;
         mw->applyUserSettings();
@@ -191,7 +212,11 @@ int main(int argc, char **argv)
         }
 #endif
         mw->parseCommandLineArguments(args);
+        app.connect(&app, SIGNAL(lastWindowClosed()), &app, SLOT(quit()));
     }
-    app.connect(&app, SIGNAL(lastWindowClosed()), &app, SLOT(quit()));
-    return app.exec();
+    int rc = app.exec();
+#ifdef Q_OS_WIN
+    SciDAVisOle::shutdownOleServer();
+#endif
+    return rc;
 }

@@ -32,6 +32,7 @@
 #define APPLICATION_H
 
 #include <QMainWindow>
+#include <functional>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #ifdef SEARCH_FOR_UPDATES
@@ -881,6 +882,14 @@ public slots:
     void saveFolderAsProject(Folder *f);
     void saveFolder(Folder *folder, const QString &fn);
     void rawSaveFolder(Folder *folder, QIODevice *device);
+    QByteArray saveProjectToByteArray();
+    void setOleEmbeddedMode(bool embedded) { d_ole_embedded = embedded; }
+    bool isOleEmbeddedMode() const { return d_ole_embedded; }
+    void setOleEmbeddedCallbacks(std::function<void()> onUpdate, std::function<void()> onClose)
+    {
+        d_ole_on_update = std::move(onUpdate);
+        d_ole_on_close = std::move(onClose);
+    }
 
     //!  adds a folder list item to the list view "lv"
     void addFolderListViewItem(Folder *f);
@@ -1228,6 +1237,9 @@ private:
     QLabel *d_status_info;
 
     Project *d_project;
+    bool d_ole_embedded = false;
+    std::function<void()> d_ole_on_update;
+    std::function<void()> d_ole_on_close;
 
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);

@@ -1,9 +1,6 @@
 name: Packaging
 
-on:
-  push:
-    tags:
-      - "*"
+on: [workflow_dispatch]
 
 jobs:
 

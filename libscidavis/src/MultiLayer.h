@@ -161,6 +161,7 @@ public slots:
     void setAlignement(int ha, int va);
 
     int layers() { return graphs; };
+    QWidget *canvasWidget() const { return canvas; };
 
     //! \name Print and Export
     //@{

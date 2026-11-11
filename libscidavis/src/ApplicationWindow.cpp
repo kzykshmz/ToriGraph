@@ -155,6 +155,10 @@
 #include <QTextCodec>
 #include <QScrollBar>
 #include <QMimeData>
+#include <QBuffer>
+#ifdef Q_OS_WIN
+#include "OleServer.h"
+#endif
 #include <QElapsedTimer>
 
 #include <zlib.h>
@@ -4944,8 +4948,34 @@ Folder *ApplicationWindow::projectFolder()
     return ((FolderListItem *)folders.topLevelItem(0))->folder();
 }
 
+QByteArray ApplicationWindow::saveProjectToByteArray()
+{
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    if (!buf.open(QIODevice::WriteOnly))
+        return {};
+    QTextStream t(&buf);
+    t.setCodec(QTextCodec::codecForName("UTF-8"));
+    t << SciDAVis::schemaVersion() + " project file\n";
+    t << "<scripting-lang>\t" + QString(scriptEnv->objectName()) + "\n";
+    t << "<windows>\t" + QString::number(projectFolder()->windowCount(true)) + "\n";
+    t.flush();
+    rawSaveFolder(projectFolder(), &buf);
+    t << "<log>\n" + logInfo + "</log>";
+    t.flush();
+    buf.close();
+    return bytes;
+}
+
 bool ApplicationWindow::saveProject()
 {
+    if (d_ole_embedded) {
+        if (d_ole_on_update)
+            d_ole_on_update();
+        savedProject();
+        return true;
+    }
+
     if (projectname == "untitled" || projectname.endsWith(".opj", Qt::CaseInsensitive)
         || projectname.endsWith(".ogm", Qt::CaseInsensitive)
         || projectname.endsWith(".ogw", Qt::CaseInsensitive)
@@ -7538,6 +7568,17 @@ void ApplicationWindow::dragEnterEvent(QDragEnterEvent *e)
 
 void ApplicationWindow::closeEvent(QCloseEvent *ce)
 {
+    if (d_ole_embedded) {
+        if (d_ole_on_close) {
+            auto cb = std::move(d_ole_on_close);
+            d_ole_on_close = nullptr;
+            cb();
+        }
+        saveSettings();
+        ce->accept();
+        return;
+    }
+
     if (!saved) {
         QString s = tr("Save changes to project: <p><b> %1 </b> ?").arg(projectname);
         switch (QMessageBox::information(this, tr("SciDAVis"), s, tr("Yes"), tr("No"), tr("Cancel"),
@@ -10012,12 +10053,17 @@ void ApplicationWindow::copyActiveLayer()
 
     copiedLayer = true;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = (MultiLayer *)d_workspace.activeSubWindow();
+    Graph *g = ml->activeGraph();
     delete lastCopiedLayer;
     lastCopiedLayer = new Graph(0, 0, Qt::Widget);
     lastCopiedLayer->setAttribute(Qt::WA_DeleteOnClose);
     lastCopiedLayer->setGeometry(0, 0, g->width(), g->height());
     lastCopiedLayer->copy(this, g);
+#ifdef Q_OS_WIN
+    if (SciDAVisOle::copyGraphAsOle(this, ml, g))
+        return;
+#endif
     g->copyImage();
 }
 
@@ -13355,7 +13401,9 @@ ApplicationWindow::~ApplicationWindow()
     if (lastCopiedLayer)
         delete lastCopiedLayer;
 
+#ifndef Q_OS_WIN
     QApplication::clipboard()->clear(QClipboard::Clipboard);
+#endif
 }
 
 QString ApplicationWindow::versionString()
