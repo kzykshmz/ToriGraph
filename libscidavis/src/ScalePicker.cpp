@@ -36,6 +36,7 @@
 #include <qwt_text_label.h>
 
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QPen>
 
 ScalePicker::ScalePicker(QwtPlot *plot)
@@ -59,6 +60,65 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
     if (e->type() == QEvent::MouseButtonDblClick) {
         mouseDblClicked(scale, ((QMouseEvent *)e)->pos());
         return true;
+    }
+
+    if (e->type() == QEvent::Wheel) {
+        QWheelEvent *we = static_cast<QWheelEvent *>(e);
+        int delta = we->angleDelta().y();
+        if (delta == 0)
+            delta = we->angleDelta().x();
+        if (delta != 0) {
+            const double factor = (delta > 0) ? 0.85 : (1.0 / 0.85);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            const QPoint pos = we->position().toPoint();
+#else
+            const QPoint pos = we->pos();
+#endif
+            int axisId = -1;
+            int twinAxisId = -1;
+            int pixelCoord = 0;
+            switch (scale->alignment()) {
+            case QwtScaleDraw::LeftScale:
+                axisId = QwtPlot::yLeft;
+                twinAxisId = QwtPlot::yRight;
+                pixelCoord = pos.y();
+                break;
+            case QwtScaleDraw::RightScale:
+                axisId = QwtPlot::yRight;
+                twinAxisId = QwtPlot::yLeft;
+                pixelCoord = pos.y();
+                break;
+            case QwtScaleDraw::BottomScale:
+                axisId = QwtPlot::xBottom;
+                twinAxisId = QwtPlot::xTop;
+                pixelCoord = pos.x();
+                break;
+            case QwtScaleDraw::TopScale:
+                axisId = QwtPlot::xTop;
+                twinAxisId = QwtPlot::xBottom;
+                pixelCoord = pos.x();
+                break;
+            }
+            Plot *p = dynamic_cast<Plot *>(plot());
+            if (p && axisId >= 0) {
+                bool syncTwin = false;
+                const QwtScaleDiv *divMain = p->axisScaleDiv(axisId);
+                const QwtScaleDiv *divTwin = p->axisScaleDiv(twinAxisId);
+                if (divMain && divTwin
+                    && qAbs(divMain->lowerBound() - divTwin->lowerBound()) <= 1e-12
+                    && qAbs(divMain->upperBound() - divTwin->upperBound()) <= 1e-12) {
+                    syncTwin = true;
+                }
+                p->zoomAxisAroundPos(axisId, pixelCoord, factor);
+                if (syncTwin)
+                    p->zoomAxisAroundPos(twinAxisId, pixelCoord, factor);
+                p->replot();
+                if (graph())
+                    graph()->notifyChanges();
+                we->accept();
+                return true;
+            }
+        }
     }
 
     if (e->type() == QEvent::MouseButtonPress) {
@@ -86,7 +146,7 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
 
 void ScalePicker::mouseDblClicked(const QwtScaleWidget *scale, const QPoint &pos)
 {
-    if (scaleRect(scale).contains(pos))
+    if (!titleRect(scale).contains(pos))
         emit axisDblClicked(scale->alignment());
     else { // Click on the title
         switch (scale->alignment()) {
