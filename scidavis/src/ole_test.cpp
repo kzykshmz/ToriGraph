@@ -34,11 +34,14 @@
 #include "ImageExportDialog.h"
 #include "SelectionMoveResizer.h"
 #include "AssociationsDialog.h"
+#include "Spectrogram.h"
+#include "ImageMarker.h"
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -51,6 +54,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QTabWidget>
 #include <QTimer>
 #include <QTreeWidget>
@@ -2519,16 +2523,15 @@ int main(int argc, char **argv)
         }
         {
             bool auditedPeakDlg = false;
-            QTimer::singleShot(0, [&]() {
-                if (QWidget *w = QApplication::activeModalWidget()) {
-                    if (QDialog *d = qobject_cast<QDialog *>(w)) {
-                        auditDialogWidget(d, "PeakAnalyzerDialog");
-                        auditedPeakDlg = true;
-                        d->reject();
-                    }
-                }
-            });
             mw->showPeakAnalyzerDialog(0);
+            for (QDialog *d : mw->findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) {
+                if (d && d->isVisible()) {
+                    auditDialogWidget(d, "PeakAnalyzerDialog");
+                    auditedPeakDlg = true;
+                    d->close();
+                }
+            }
+            QApplication::processEvents();
             CHECK_COND(auditedPeakDlg, "PeakAnalyzerDialog was not opened/audited");
         }
         {
@@ -4278,8 +4281,967 @@ int main(int argc, char **argv)
                    "runKMeansClustering failed or silhouetteScore <= 0.7");
     }
 
+    // =========================================================================
+    // 31. Suite 31: Round 2 P0/P1 Regression Gate
+    //     (Cyclic expandUserFunctions, 6-Way Unweighted Fit SE Parity,
+    //      Linear/Poly Weighting + yErr==0 + Eliminated Dependent Bounds,
+    //      QuantileReg Sparsity SEs, DeltaCursor Stepping & Free Crosshair,
+    //      Generalized ESD Masking Pair, KM/3-Param Weibull & .sciprj Reload)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 31: Round 2 P0/P1 Regression Gate...\n";
+
+        // 1. FitDialog::expandUserFunctions cyclic f1 -> f2 -> f1 finite termination
+        QString cycExpanded = FitDialog::expandUserFunctions(
+                "A*f1(x) + B",
+                QStringList() << "f1" << "f2",
+                QStringList() << "2*f2(x)+1" << "3*f1(x)-1");
+        QString acycExpanded = FitDialog::expandUserFunctions(
+                "A*f1(x)",
+                QStringList() << "f1" << "f2",
+                QStringList() << "2*f2(x)" << "(x^2+1)");
+        std::cout << "[INFO] expandUserFunctions(cyclic) len=" << cycExpanded.length()
+                  << ", acyclic='" << acycExpanded.toStdString() << "'\n";
+        CHECK_COND(!cycExpanded.isEmpty() && cycExpanded.length() < 8192,
+                   "FitDialog::expandUserFunctions failed finite termination on f1->f2->f1 cycle");
+        CHECK_COND(acycExpanded.contains("f2=(x^2+1)") && acycExpanded.contains("f1=2*f2(x)")
+                           && acycExpanded.indexOf("f2=") < acycExpanded.indexOf("f1="),
+                   "FitDialog::expandUserFunctions failed valid nested acyclic topological expansion");
+
+        // 2. Unweighted nonlinear Fit SE 6-way exact match against OLS LinearFit (no double chi2/dof scaling)
+        Table *tSe = mw->newTable(10, 2, "Suite31SeParityTbl", "Unweighted SE Parity");
+        tSe->setColName(0, "X");
+        tSe->setColName(1, "Y");
+        const double epsSe[10] = { 1.8, -2.1, 2.4, -1.9, 1.5, -2.3, 2.0, -1.7, 2.2, -1.9 };
+        for (int r = 0; r < 10; ++r) {
+            const double xv = double(r + 1);
+            tSe->setCell(r, 0, xv);
+            tSe->setCell(r, 1, 2.0 + 3.5 * xv + epsSe[r]); // chi2/dof ~ 4.7 => sqrt(chi2/dof) ~ 2.17
+        }
+        MultiLayer *mlSeLin = mw->multilayerPlot(
+                tSe, QStringList() << (QString(tSe->name()) + "_Y"), Graph::Scatter);
+        MultiLayer *mlSeNlf = mw->multilayerPlot(
+                tSe, QStringList() << (QString(tSe->name()) + "_Y"), Graph::Scatter);
+        Graph *gSeLin = mlSeLin ? mlSeLin->activeGraph() : nullptr;
+        Graph *gSeNlf = mlSeNlf ? mlSeNlf->activeGraph() : nullptr;
+        CHECK_COND(gSeLin != nullptr && gSeNlf != nullptr, "Failed to create SE parity graphs");
+
+        LinearFit *lfRef = new LinearFit(mw, gSeLin);
+        lfRef->setDataCurve(0, 1.0, 10.0);
+        lfRef->scaleErrors(true);
+        lfRef->enableConfidenceBand(true, 0.95);
+        lfRef->fit();
+        const double seB_ols = lfRef->errors().at(0);
+        const double seA_ols = lfRef->errors().at(1);
+
+        mw->writeFitResultsToLog = true;
+        mw->clearLogInfo();
+        NonLinearFit *nlfTest = new NonLinearFit(mw, gSeNlf);
+        nlfTest->setDataCurve(0, 1.0, 10.0);
+        nlfTest->setParametersList(QStringList() << "B" << "A");
+        nlfTest->setFormula("B + A*x");
+        nlfTest->setInitialGuess(0, 1.5);
+        nlfTest->setInitialGuess(1, 3.0);
+        nlfTest->scaleErrors(true);
+        nlfTest->enableConfidenceBand(true, 0.95);
+        nlfTest->fit();
+        Table *parTblSe = nlfTest->parametersTable("Suite31NlfParTbl");
+        const QString legSeText = nlfTest->legendInfo();
+        const QString logSeText = mw->logInfo;
+        nlfTest->insertFitSummaryBoxOnGraph();
+        QString sumBoxSeText;
+        if (!gSeNlf->textMarkerKeys().isEmpty()) {
+            if (Legend *sb = gSeNlf->textMarker(gSeNlf->textMarkerKeys().last()))
+                sumBoxSeText = sb->text();
+        }
+
+        const double seB_nlf = nlfTest->errors().at(0);
+        const double seA_nlf = nlfTest->errors().at(1);
+        const double seB_tbl = parTblSe ? parTblSe->column(2)->valueAt(0) : -1.0;
+        const double seA_tbl = parTblSe ? parTblSe->column(2)->valueAt(1) : -1.0;
+
+        auto extractPlusMinusAfter = [](const QString &txt, const QString &paramName) -> double {
+            QRegularExpression re(QRegularExpression::escape(paramName)
+                                  + QStringLiteral("\\s*=\\s*[-+0-9.eE]+\\s*(?:\\+/-|\xC2\xB1)\\s*([-+0-9.eE]+)"));
+            QRegularExpressionMatch m = re.match(txt);
+            return m.hasMatch() ? m.captured(1).toDouble() : -1.0;
+        };
+        const double seB_log = extractPlusMinusAfter(logSeText, "B");
+        const double seA_log = extractPlusMinusAfter(logSeText, "A");
+        const double seB_leg = extractPlusMinusAfter(legSeText, "B");
+        const double seA_leg = extractPlusMinusAfter(legSeText, "A");
+        const double seB_box = extractPlusMinusAfter(sumBoxSeText, "B");
+        const double seA_box = extractPlusMinusAfter(sumBoxSeText, "A");
+
+        // Compare 95% CI upper band curves at midpoint between OLS LinearFit and NonLinearFit
+        auto maxCurveAtMid = [](Graph *g) -> double {
+            double best = -1e300;
+            for (int ci = 1; ci < g->curves(); ++ci) {
+                QwtPlotCurve *c = g->curve(ci);
+                if (c && c->dataSize() >= 5) {
+                    const double yMid = c->y(c->dataSize() / 2);
+                    if (yMid > best)
+                        best = yMid;
+                }
+            }
+            return best;
+        };
+        const double ciUpperMidLin = maxCurveAtMid(gSeLin);
+        const double ciUpperMidNlf = maxCurveAtMid(gSeNlf);
+
+        std::cout << "[INFO] SE(B): OLS=" << seB_ols << ", NLF=" << seB_nlf << ", tbl=" << seB_tbl
+                  << ", log=" << seB_log << ", leg=" << seB_leg << ", box=" << seB_box << "\n";
+        std::cout << "[INFO] SE(A): OLS=" << seA_ols << ", NLF=" << seA_nlf << ", tbl=" << seA_tbl
+                  << ", log=" << seA_log << ", leg=" << seA_leg << ", box=" << seA_box
+                  << ", CI_mid(Lin/Nlf)=" << ciUpperMidLin << "/" << ciUpperMidNlf << "\n";
+
+        CHECK_COND(std::fabs(seB_nlf - seB_ols) / seB_ols < 1e-3
+                           && std::fabs(seA_nlf - seA_ols) / seA_ols < 1e-3,
+                   "Unweighted NonLinearFit errors() diverged from OLS LinearFit (double chi2/dof scaling?)");
+        CHECK_COND(std::fabs(seB_tbl - seB_ols) / seB_ols < 1e-3
+                           && std::fabs(seA_tbl - seA_ols) / seA_ols < 1e-3,
+                   "parametersTable() SE diverged from OLS LinearFit");
+        CHECK_COND(seB_log > 0.0 && std::fabs(seB_log - seB_ols) / seB_ols < 0.02
+                           && seA_log > 0.0 && std::fabs(seA_log - seA_ols) / seA_ols < 0.02,
+                   "logFitInfo() SE diverged from OLS LinearFit");
+        CHECK_COND(seB_leg > 0.0 && std::fabs(seB_leg - seB_ols) / seB_ols < 0.02
+                           && seA_leg > 0.0 && std::fabs(seA_leg - seA_ols) / seA_ols < 0.02,
+                   "legendInfo() SE diverged from OLS LinearFit");
+        CHECK_COND(seB_box > 0.0 && std::fabs(seB_box - seB_ols) / seB_ols < 0.02
+                           && seA_box > 0.0 && std::fabs(seA_box - seA_ols) / seA_ols < 0.02,
+                   "Summary box SE diverged from OLS LinearFit");
+        CHECK_COND(std::isfinite(ciUpperMidLin) && std::isfinite(ciUpperMidNlf)
+                           && std::fabs(ciUpperMidNlf - ciUpperMidLin) < 0.02,
+                   "95% CI band on NonLinearFit diverged from OLS LinearFit");
+        delete lfRef;
+        delete nlfTest;
+
+        // 3. LinearFit / PolynomialFit WeightStatistical / WeightDirect + yErr==0 safety
+        //    + eliminated dependent-parameter box bounds
+        Table *tWt = mw->newTable(6, 4, "Suite31WeightTbl", "Weighting & Zero yErr");
+        tWt->setColName(0, "X");
+        tWt->setColName(1, "Y");
+        tWt->setColName(2, "DirectW");
+        tWt->setColName(3, "ZeroErr");
+        tWt->setColPlotDesignation(3, SciDAVis::yErr);
+        for (int r = 0; r < 6; ++r) {
+            const double xv = double(r + 1);
+            // Points 0..4 lie on y = 10 + 2*x; point 5 (x=6) has large positive outlier y = 120
+            const double yv = (r < 5) ? (10.0 + 2.0 * xv) : 120.0;
+            tWt->setCell(r, 0, xv);
+            tWt->setCell(r, 1, yv);
+            tWt->setCell(r, 2, (r < 5) ? 100.0 : 0.01); // Direct weight strongly downweights r=5
+            tWt->setCell(r, 3, (r == 2) ? 0.0 : 1.0);    // Contains exact yErr == 0.0!
+        }
+        MultiLayer *mlWt = mw->multilayerPlot(
+                tWt, QStringList() << (QString(tWt->name()) + "_Y"), Graph::Scatter);
+        Graph *gWt = mlWt ? mlWt->activeGraph() : nullptr;
+        CHECK_COND(gWt != nullptr, "Failed to create weighting test graph");
+        gWt->addErrorBars(QString(tWt->name()) + "_Y", tWt, QString(tWt->name()) + "_ZeroErr");
+
+        LinearFit *lfUnw = new LinearFit(mw, gWt);
+        lfUnw->setDataCurve(0, 1.0, 6.0);
+        lfUnw->setWeightingMethod(Fit::WeightNone);
+        lfUnw->fit();
+        const double slopeUnw = lfUnw->results().at(1);
+
+        LinearFit *lfStat = new LinearFit(mw, gWt);
+        lfStat->setDataCurve(0, 1.0, 6.0);
+        lfStat->setWeightingMethod(Fit::WeightStatistical);
+        lfStat->fit();
+        const double slopeStat = lfStat->results().at(1);
+
+        LinearFit *lfDir = new LinearFit(mw, gWt);
+        lfDir->setDataCurve(0, 1.0, 6.0);
+        lfDir->setWeightingMethod(Fit::WeightDirect, QString(tWt->name()) + "_DirectW");
+        lfDir->fit();
+        const double slopeDir = lfDir->results().at(1);
+
+        LinearFit *lfZeroErr = new LinearFit(mw, gWt);
+        lfZeroErr->setDataCurve(0, 1.0, 6.0);
+        lfZeroErr->setYErrorSource(Fit::AssociatedErrors, QString(tWt->name()) + "_ZeroErr", true);
+        lfZeroErr->fit();
+
+        PolynomialFit *pfDir = new PolynomialFit(mw, gWt, 2, false);
+        pfDir->setDataCurve(0, 1.0, 6.0);
+        pfDir->setWeightingMethod(Fit::WeightDirect, QString(tWt->name()) + "_DirectW");
+        pfDir->fit();
+
+        PolynomialFit *pfStat = new PolynomialFit(mw, gWt, 2, false);
+        pfStat->setDataCurve(0, 1.0, 6.0);
+        pfStat->setWeightingMethod(Fit::WeightStatistical);
+        pfStat->fit();
+
+        std::cout << "[INFO] LinearFit slopes: Unweighted=" << slopeUnw
+                  << ", Statistical(1/|y|)=" << slopeStat
+                  << ", DirectW=" << slopeDir << "\n";
+        // Because point 5 has huge y=120, WeightStatistical (w=1/|y|) and WeightDirect (w=0.01) pull slope down toward true 2.0!
+        CHECK_COND(slopeStat < slopeUnw - 1.5 && std::fabs(slopeDir - 2.0) < 0.15,
+                   "LinearFit WeightStatistical / WeightDirect did not apply weights properly");
+        CHECK_COND(std::isfinite(lfZeroErr->results().at(0)) && std::isfinite(lfZeroErr->results().at(1))
+                           && std::isfinite(lfZeroErr->errors().at(0)) && std::isfinite(lfZeroErr->errors().at(1)),
+                   "LinearFit with yErr==0 produced NaN/Inf");
+        CHECK_COND(pfDir->results().size() == 3 && std::isfinite(pfDir->results().at(2))
+                           && std::fabs(pfDir->results().at(2)) < 0.05
+                           && pfStat->results().size() == 3 && std::isfinite(pfStat->results().at(2)),
+                   "PolynomialFit WeightDirect / WeightStatistical failed");
+        delete lfUnw;
+        delete lfStat;
+        delete lfDir;
+        delete lfZeroErr;
+        delete pfDir;
+        delete pfStat;
+
+        // Eliminated dependent-parameter box bounds: y = A1*x + A2, data generated from A1=10, A2=40
+        // With constraint A2 = 4*A1 and box bound 0 <= A2 <= 20, A2 MUST be clamped to <= 20 (so A1 <= 5)!
+        Table *tDep = mw->newTable(8, 2, "Suite31DepBoundTbl", "Dependent Bound");
+        for (int r = 0; r < 8; ++r) {
+            const double xv = double(r);
+            tDep->setCell(r, 0, xv);
+            tDep->setCell(r, 1, 10.0 * xv + 40.0);
+        }
+        MultiLayer *mlDep = mw->multilayerPlot(
+                tDep, QStringList() << (QString(tDep->name()) + "_2"), Graph::Scatter);
+        NonLinearFit *nlfDep = new NonLinearFit(mw, mlDep->activeGraph());
+        nlfDep->setDataCurve(0, 0.0, 7.0);
+        nlfDep->setParametersList(QStringList() << "A1" << "A2");
+        nlfDep->setFormula("A1*x + A2");
+        nlfDep->setInitialGuess(0, 3.0);
+        nlfDep->setInitialGuess(1, 12.0);
+        CHECK_COND(nlfDep->setLinearConstraintExpr("A2 = 4.0*A1"),
+                   "setLinearConstraintExpr('A2 = 4.0*A1') failed");
+        nlfDep->setParameterBounds(1, 0.0, 20.0); // Box bound on eliminated dependent parameter A2!
+        nlfDep->fit();
+        const double depA1 = nlfDep->results().at(0);
+        const double depA2 = nlfDep->results().at(1);
+        std::cout << "[INFO] Eliminated dependent bound fit: A1=" << depA1 << ", A2=" << depA2 << "\n";
+        CHECK_COND(std::fabs(depA2 - 4.0 * depA1) < 1e-4 && depA2 <= 20.001 && depA2 > 18.0,
+                   "Fit failed to enforce box bounds on eliminated dependent parameter A2");
+        delete nlfDep;
+
+        // 4. QuantileReg sparsity SEs in realistic range
+        Table *tQr = mw->newTable(40, 2, "Suite31QrTbl", "Quantile Regression SE");
+        for (int r = 0; r < 40; ++r) {
+            const double xv = 0.25 * double(r);
+            const double noise = 0.55 * std::sin(1.7 * double(r + 1)) + 0.25 * std::cos(2.9 * double(r));
+            tQr->setCell(r, 0, xv);
+            tQr->setCell(r, 1, 3.0 + 2.5 * xv + noise);
+        }
+        MultiLayer *mlQr = mw->multilayerPlot(
+                tQr, QStringList() << (QString(tQr->name()) + "_2"), Graph::Scatter);
+        Graph *gQr = mlQr->activeGraph();
+        auto qrRes = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
+                mw, gQr, gQr->curve(0)->title().text(),
+                PiecewiseAndRobustFit::QuantileReg, 0.5, false);
+        std::cout << "[INFO] QuantileReg(tau=0.5): slope=" << qrRes.slope
+                  << " +/- " << qrRes.slopeSE
+                  << ", intercept=" << qrRes.intercept << " +/- " << qrRes.interceptSE << "\n";
+        CHECK_COND(qrRes.converged
+                           && std::fabs(qrRes.slope - 2.5) < 0.2
+                           && qrRes.slopeSE > 0.005 && qrRes.slopeSE < 0.35
+                           && qrRes.interceptSE > 0.02 && qrRes.interceptSE < 1.2,
+                   "QuantileReg sparsity SEs out of realistic statistical range");
+
+        // 5. DeltaCursorTool setActiveCursor single-cursor SnapNearestPoint stepping + FreeScreenCrosshair area==0
+        Table *tDc = mw->newTable(11, 2, "Suite31DeltaTbl", "Discrete Curve");
+        for (int r = 0; r <= 10; ++r) {
+            tDc->setCell(r, 0, double(r));
+            tDc->setCell(r, 1, 2.0 * double(r) + 1.0);
+        }
+        MultiLayer *mlDc = mw->multilayerPlot(
+                tDc, QStringList() << (QString(tDc->name()) + "_2"), Graph::LineSymbols);
+        Graph *gDc = mlDc->activeGraph();
+        DeltaCursorTool *dcTool = DeltaCursorTool::attach(mw, gDc, DeltaCursorTool::SnapNearestPoint);
+        CHECK_COND(dcTool != nullptr, "DeltaCursorTool::attach failed");
+        dcTool->setCursorPositions(2.0, 7.0);
+        dcTool->setActiveCursor(1);
+        {
+            QKeyEvent keRight(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            QApplication::sendEvent(gDc->plotWidget()->canvas(), &keRight);
+        }
+        const auto roStep1 = dcTool->currentReadout();
+        dcTool->setActiveCursor(2);
+        {
+            QKeyEvent keLeft(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+            QApplication::sendEvent(gDc->plotWidget()->canvas(), &keLeft);
+        }
+        const auto roStep2 = dcTool->currentReadout();
+        dcTool->setSnapMode(DeltaCursorTool::FreeScreenCrosshair);
+        dcTool->setCursorPoints2D(1.5, 4.0, 5.5, 12.0);
+        const auto roFree = dcTool->currentReadout();
+        std::cout << "[INFO] DeltaCursor SnapNearest step1=(" << roStep1.x1 << "," << roStep1.x2
+                  << "), step2=(" << roStep2.x1 << "," << roStep2.x2
+                  << "), FreeCrosshair area=" << roFree.area << ", rms=" << roFree.rms << "\n";
+        CHECK_COND(std::fabs(roStep1.x1 - 3.0) < 1e-6 && std::fabs(roStep1.x2 - 7.0) < 1e-6,
+                   "DeltaCursor activeCursor(1) Key_Right did not step C1 alone by 1 index");
+        CHECK_COND(std::fabs(roStep2.x1 - 3.0) < 1e-6 && std::fabs(roStep2.x2 - 6.0) < 1e-6,
+                   "DeltaCursor activeCursor(2) Key_Left did not step C2 alone by 1 index");
+        CHECK_COND(std::fabs(roFree.dx - 4.0) < 1e-6 && std::fabs(roFree.dy - 8.0) < 1e-6
+                           && roFree.area == 0.0 && roFree.rms == 0.0,
+                   "FreeScreenCrosshair failed dx/dy or leaked non-zero curve area/rms");
+        RoiGadgetTool::clearGadget(gDc);
+
+        // 6. runOutlierTest Generalized ESD with 2 masking outliers (p < 0.05 on each step)
+        Table *tEsd = mw->newTable(30, 1, "Suite31EsdTbl", "Masking Pair ESD");
+        tEsd->setColName(0, "Val");
+        for (int r = 0; r < 28; ++r)
+            tEsd->setCell(r, 0, 10.0 + 0.35 * std::sin(double(r + 1) * 1.3));
+        tEsd->setCell(28, 0, 52.0); // Masking outlier #1
+        tEsd->setCell(29, 0, 50.5); // Masking outlier #2
+        auto esdRes = GraphStatsAndSurfaceFit::runOutlierTest(
+                mw, tEsd, "Val", 1 /*GeneralizedESD*/, 0.05, 5, false);
+        std::cout << "[INFO] Generalized ESD: detected=" << esdRes.outlierRows.size()
+                  << ", maxStat=" << esdRes.testStatistic << ", p=" << esdRes.pValue << "\n";
+        CHECK_COND(esdRes.valid && esdRes.outlierRows.size() == 2
+                           && esdRes.outlierRows.contains(28) && esdRes.outlierRows.contains(29)
+                           && esdRes.pValue < 0.05 && esdRes.reportTable != nullptr,
+                   "Generalized ESD failed to detect both masking outliers with p < 0.05");
+
+        // 7. plotWeibullProbability KM censoring (1=Failure, 0=Censored) + 3-Parameter Weibull (gamma > 0)
+        Table *tWb = mw->newTable(32, 3, "Suite31WeibullTbl", "KM & 3-Param Weibull");
+        tWb->setColName(0, "Strength3P");
+        tWb->setColName(1, "KMCensor");
+        tWb->setColName(2, "StrengthKM");
+        int expectedCens = 0;
+        for (int r = 0; r < 32; ++r) {
+            const double p = (double(r + 1) - 0.3) / (32.0 + 0.4);
+            // Exact synthetic 3-parameter Weibull: gamma = 120.0, sigma0(scale) = 200.0, m = 3.5
+            const double x3p = 120.0 + 200.0 * std::pow(-std::log(1.0 - p), 1.0 / 3.5);
+            tWb->setCell(r, 0, x3p);
+            const bool isCens = (r % 5 == 4); // 1=Failure, 0=Censored
+            if (isCens)
+                ++expectedCens;
+            tWb->setCell(r, 1, isCens ? 0.0 : 1.0);
+            tWb->setCell(r, 2, 400.0 * std::pow(-std::log(1.0 - p), 1.0 / 6.0));
+        }
+        auto wbKm = GraphStatsAndSurfaceFit::plotWeibullProbability(
+                mw, tWb, "StrengthKM", "KMCensor", 0 /*1=Failure, 0=Censored*/, false);
+        auto wb3p = GraphStatsAndSurfaceFit::plotWeibullProbability(
+                mw, tWb, "Strength3P", QString(), 0, true /*fitThreeParam*/);
+        std::cout << "[INFO] Weibull KM: censored=" << wbKm.censoredCount << "/" << expectedCens
+                  << ", m=" << wbKm.modulusM << ", R2=" << wbKm.rSquare << "\n";
+        std::cout << "[INFO] Weibull 3P: gamma=" << wb3p.thresholdGamma
+                  << " (true 120), m=" << wb3p.modulusM
+                  << " (true 3.5), scale=" << wb3p.scaleSigma0 << ", R2=" << wb3p.rSquare << "\n";
+        CHECK_COND(wbKm.valid && wbKm.censoredCount == expectedCens && wbKm.rSquare > 0.92,
+                   "Weibull KM censoring (1=Failure, 0=Censored) failed");
+        CHECK_COND(wb3p.valid && wb3p.threeParameter
+                           && wb3p.thresholdGamma > 85.0 && wb3p.thresholdGamma < 150.0
+                           && wb3p.rSquare > 0.985,
+                   "3-Parameter Weibull failed to recover positive synthetic threshold gamma ~ 120");
+
+        // 8. .sciprj reload fidelity of fillBetweenCurves and plotHierarchicalDendrogram
+        ApplicationWindow *wR2 = new ApplicationWindow();
+        wR2->applyUserSettings();
+        Table *tFb = wR2->newTable(15, 3, "FillTbl", "Two Curves");
+        tFb->setColPlotDesignation(2, SciDAVis::Y);
+        for (int r = 0; r < 15; ++r) {
+            const double xv = double(r);
+            tFb->setCell(r, 0, xv);
+            tFb->setCell(r, 1, std::sin(0.3 * xv) + 2.0);
+            tFb->setCell(r, 2, 0.5 * std::cos(0.3 * xv) + 1.0);
+        }
+        MultiLayer *mlFb = wR2->multilayerPlot(
+                tFb, QStringList() << "FillTbl_2" << "FillTbl_3", Graph::Line);
+        mlFb->setName("Suite31FillGraph");
+        Graph *gFb = mlFb->activeGraph();
+        QwtPlotCurve *fbDiff = CurveMathTools::fillBetweenCurves(
+                wR2, gFb, gFb->curve(0)->title().text(), gFb->curve(1)->title().text());
+        const int preSaveDiffPts = fbDiff ? fbDiff->dataSize() : 0;
+        CHECK_COND(fbDiff != nullptr && gFb->curves() == 3 && preSaveDiffPts >= 100,
+                   "fillBetweenCurves failed pre-save");
+
+        Table *tHc = wR2->newTable(6, 2, "DendTbl", "6 Samples");
+        tHc->setColName(0, "F1");
+        tHc->setColName(1, "F2");
+        const double hcPts[6][2] = { { 0.0, 0.0 }, { 0.4, 0.2 }, { 5.0, 5.0 },
+                                     { 5.3, 4.8 }, { 12.0, 0.5 }, { 12.4, 0.9 } };
+        for (int r = 0; r < 6; ++r) {
+            tHc->setCell(r, 0, hcPts[r][0]);
+            tHc->setCell(r, 1, hcPts[r][1]);
+        }
+        MultiLayer *mlDend = GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
+                wR2, tHc, QStringList() << "F1" << "F2", 0 /*Ward*/);
+        CHECK_COND(mlDend != nullptr && mlDend->activeGraph() != nullptr
+                           && mlDend->activeGraph()->curves() == 5,
+                   "plotHierarchicalDendrogram failed pre-save");
+        const QString dendWinName = mlDend->name();
+
+        QByteArray r2ProjBytes = wR2->saveProjectToByteArray();
+        QString r2ProjPath = QDir::tempPath() + "/torigraph_suite31_r2_reload.sciprj";
+        {
+            QFile f(r2ProjPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "Failed to open Suite 31 temp .sciprj");
+            f.write(r2ProjBytes);
+            f.close();
+        }
+        wR2->savedProject();
+        wR2->setOleEmbeddedMode(true);
+        delete wR2;
+
+        ApplicationWindow *rR2 = new ApplicationWindow();
+        rR2->applyUserSettings();
+        bool r2Loaded = rR2->loadProject(r2ProjPath);
+        QFile::remove(r2ProjPath);
+        CHECK_COND(r2Loaded, "Suite 31 loadProject failed");
+
+        MultiLayer *mlFbRel = qobject_cast<MultiLayer *>(rR2->window("Suite31FillGraph"));
+        MultiLayer *mlDendRel = qobject_cast<MultiLayer *>(rR2->window(dendWinName));
+        CHECK_COND(mlFbRel != nullptr && mlFbRel->activeGraph() != nullptr,
+                   "Reloaded project missing Suite31FillGraph");
+        CHECK_COND(mlFbRel->activeGraph()->curves() == 3
+                           && mlFbRel->activeGraph()->curve(2)->dataSize() == preSaveDiffPts
+                           && mlFbRel->activeGraph()->saveToString().contains("kind=\"band\""),
+                   "fillBetweenCurves hidden table or ToriRefLine kind='band' lost across .sciprj reload");
+        CHECK_COND(mlDendRel != nullptr && mlDendRel->activeGraph() != nullptr
+                           && mlDendRel->activeGraph()->curves() == 5
+                           && mlDendRel->activeGraph()->curve(0)->dataSize() == 4,
+                   "plotHierarchicalDendrogram bracket curves lost across .sciprj reload");
+
+        rR2->savedProject();
+        rR2->setOleEmbeddedMode(true);
+        delete rR2;
+    }
+
+    // =========================================================================
+    // 32. Suite 32: 2D ImageProfileGadgetTool & filterMatrix2D
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 32: 2D ImageProfileGadgetTool & filterMatrix2D...\n";
+
+        // 1. ImageProfileGadgetTool on anisotropic 2D Gaussian Spectrogram
+        //    sigma_x = 2.0 (FWHM_x = 4.7096), sigma_y = 3.0 (FWHM_y = 7.0645)
+        Matrix *mGauss = mw->newMatrix(41, 41);
+        mGauss->setName("Suite32GaussMat");
+        mGauss->setCoordinates(-10.0, 10.0, -10.0, 10.0);
+        for (int r = 0; r < 41; ++r) {
+            const double yv = -10.0 + 0.5 * double(r);
+            for (int c = 0; c < 41; ++c) {
+                const double xv = -10.0 + 0.5 * double(c);
+                const double zv = 100.0 * std::exp(-(xv * xv / (2.0 * 4.0) + yv * yv / (2.0 * 9.0)));
+                mGauss->setCell(r, c, zv);
+            }
+        }
+        MultiLayer *mlImg = mw->plotColorMap(mGauss);
+        Graph *gImg = mlImg ? mlImg->activeGraph() : nullptr;
+        CHECK_COND(gImg != nullptr, "plotColorMap failed for Suite 32");
+
+        ImageProfileGadgetTool *ipg = ImageProfileGadgetTool::attach(gImg, mw);
+        CHECK_COND(ipg != nullptr, "ImageProfileGadgetTool::attach failed");
+        ipg->setCrosshairPosition(0.0, 0.0);
+        std::cout << "[INFO] ImageProfileGadget(0,0): Z=" << ipg->currentZ()
+                  << ", horizFWHM=" << ipg->horizontalFwhm()
+                  << ", vertFWHM=" << ipg->verticalFwhm() << "\n";
+        CHECK_COND(std::fabs(ipg->currentZ() - 100.0) < 0.5
+                           && std::fabs(ipg->horizontalFwhm() - 4.7096) < 0.35
+                           && std::fabs(ipg->verticalFwhm() - 7.0645) < 0.45
+                           && ipg->horizontalProfile().size() >= 41
+                           && ipg->verticalProfile().size() >= 41,
+                   "ImageProfileGadgetTool failed currentZ or 2D Gaussian horizontal/vertical FWHM");
+
+        const int winBeforeExtract = mw->windowsList().size();
+        Table *profTbl = ipg->extractProfilesToTableAndGraph(true);
+        CHECK_COND(profTbl != nullptr && profTbl->numRows() >= 41
+                           && mw->windowsList().size() > winBeforeExtract,
+                   "extractProfilesToTableAndGraph failed to create profile table and graph");
+        MultiLayer *mlProf = nullptr;
+        for (MyWidget *w : mw->windowsList()) {
+            if (auto *cand = qobject_cast<MultiLayer *>(w))
+                mlProf = cand;
+        }
+        CHECK_COND(mlProf != nullptr && mlProf->activeGraph() != nullptr,
+                   "Profile MultiLayer missing after extractProfilesToTableAndGraph");
+        Graph *gProf = mlProf->activeGraph();
+        CHECK_COND(gProf->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && gProf->axisTitleFont(QwtPlot::yLeft).family() == "Arial"
+                           && gProf->axisFont(QwtPlot::xBottom).family() == "Arial"
+                           && gProf->axisFont(QwtPlot::yLeft).family() == "Arial",
+                   "Extracted 2D profile graph violated Arial font invariant");
+        RoiGadgetTool::clearGadget(gImg);
+
+        // 2. AdvancedSignalProc::filterMatrix2D (Median2D despike, Gaussian2D, SubtractPlanarTilt2D)
+        Matrix *mSpike = mw->newMatrix(21, 21);
+        mSpike->setName("Suite32SpikeMat");
+        mSpike->setCoordinates(0.0, 20.0, 0.0, 20.0);
+        for (int r = 0; r < 21; ++r)
+            for (int c = 0; c < 21; ++c)
+                mSpike->setCell(r, c, 10.0);
+        mSpike->setCell(10, 10, 1010.0); // Cosmic-ray spike (+1000 above background 10)
+
+        Matrix *mMed = AdvancedSignalProc::filterMatrix2D(
+                mw, mSpike, AdvancedSignalProc::FilterMedian2D, 1.0, 1, false, false);
+        Matrix *mGau = AdvancedSignalProc::filterMatrix2D(
+                mw, mSpike, AdvancedSignalProc::FilterGaussian2D, 1.5, 2, false, false);
+        CHECK_COND(mMed != nullptr && std::fabs(mMed->cell(10, 10) - 10.0) < 1e-9,
+                   "FilterMedian2D failed to remove isolated cosmic-ray spike");
+        CHECK_COND(mGau != nullptr && mGau->cell(10, 10) > 40.0 && mGau->cell(10, 10) < 200.0
+                           && mGau->cell(10, 11) > mGau->cell(10, 12),
+                   "FilterGaussian2D failed radially symmetric smoothing");
+
+        Matrix *mTilt = mw->newMatrix(21, 21);
+        mTilt->setName("Suite32TiltMat");
+        mTilt->setCoordinates(-5.0, 5.0, -5.0, 5.0);
+        for (int r = 0; r < 21; ++r) {
+            const double yv = -5.0 + 0.5 * double(r);
+            for (int c = 0; c < 21; ++c) {
+                const double xv = -5.0 + 0.5 * double(c);
+                mTilt->setCell(r, c, 7.5 + 1.35 * xv - 0.85 * yv);
+            }
+        }
+        Matrix *mFlat = AdvancedSignalProc::filterMatrix2D(
+                mw, mTilt, AdvancedSignalProc::FilterSubtractPlanarTilt2D, 1.0, 1, false, false);
+        double maxTiltResid = 0.0;
+        if (mFlat) {
+            for (int r = 0; r < 21; ++r)
+                for (int c = 0; c < 21; ++c)
+                    maxTiltResid = std::max(maxTiltResid, std::fabs(mFlat->cell(r, c)));
+        }
+        std::cout << "[INFO] FilterSubtractPlanarTilt2D maxAbsResid=" << maxTiltResid << "\n";
+        CHECK_COND(mFlat != nullptr && maxTiltResid < 1e-9,
+                   "FilterSubtractPlanarTilt2D failed exact plane removal (< 1e-9)");
+    }
+
+    // =========================================================================
+    // 33. Suite 33: EIS Nyquist/Bode Randles-CPE, Fourier Self-Deconvolution
+    //               & Passing-Bablok / Deming Regression
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 33: EIS Randles-CPE, Fourier Self-Deconvolution & Passing-Bablok/Deming...\n";
+
+        // 1. CurveMathTools::analyzeEIS on synthetic Randles-CPE (Rs=25, Rct=180, Q=1.5e-5, n=0.92)
+        const int nEis = 36;
+        Table *tEis = mw->newTable(nEis, 3, "Suite33EisTbl", "Synthetic Randles-CPE");
+        tEis->setColName(0, "Freq_Hz");
+        tEis->setColName(1, "Z_re");
+        tEis->setColName(2, "Z_im");
+        const double trueRs = 25.0, trueRct = 180.0, trueQ = 1.5e-5, trueN = 0.92;
+        for (int i = 0; i < nEis; ++i) {
+            const double logF = -1.0 + 6.0 * double(i) / double(nEis - 1); // 0.1 Hz .. 1e5 Hz
+            const double f = std::pow(10.0, logF);
+            const double omega = 2.0 * M_PI * f;
+            const double alpha = trueRct * trueQ * std::pow(omega, trueN);
+            const double ang = 0.5 * M_PI * trueN;
+            const double denomRe = 1.0 + alpha * std::cos(ang);
+            const double denomIm = alpha * std::sin(ang);
+            const double denomSq = denomRe * denomRe + denomIm * denomIm;
+            const double zRe = trueRs + trueRct * denomRe / denomSq;
+            const double zIm = -trueRct * denomIm / denomSq; // Negative capacitive Z''
+            tEis->setCell(i, 0, f);
+            tEis->setCell(i, 1, zRe);
+            tEis->setCell(i, 2, zIm);
+        }
+        auto eis = CurveMathTools::analyzeEIS(
+                mw, tEis, "Freq_Hz", "Z_re", "Z_im", false, true);
+        std::cout << "[INFO] EIS Randles-CPE: Rs=" << eis.rs << " (true 25), Rct=" << eis.rct
+                  << " (true 180), n=" << eis.nCpe << " (true 0.92), rmse=" << eis.rmse << "\n";
+        CHECK_COND(eis.valid
+                           && std::fabs(eis.rs - trueRs) / trueRs < 0.03
+                           && std::fabs(eis.rct - trueRct) / trueRct < 0.03
+                           && std::fabs(eis.nCpe - trueN) < 0.04
+                           && eis.nyquistPlot != nullptr && eis.bodePlot != nullptr,
+                   "CurveMathTools::analyzeEIS failed 3% accuracy on Rs / Rct");
+        CHECK_COND(eis.nyquistPlot->activeGraph()->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && eis.bodePlot->activeGraph()->axisTitleFont(QwtPlot::xBottom).family() == "Arial",
+                   "EIS Nyquist/Bode graphs violated Arial font invariant");
+
+        // 2. AdvancedSignalProc::fourierSelfDeconvolve sharpening overlapping Lorentzian doublet
+        const int nFsd = 256;
+        Table *tFsd = mw->newTable(nFsd, 2, "Suite33FsdTbl", "Overlapping Lorentzian Doublet");
+        const double gammaFsd = 5.0;
+        const double hwhm = 0.5 * gammaFsd;
+        double rawArea = 0.0;
+        for (int i = 0; i < nFsd; ++i) {
+            const double xv = 50.0 * double(i) / double(nFsd - 1);
+            const double l1 = 10.0 * (hwhm * hwhm) / ((xv - 22.0) * (xv - 22.0) + hwhm * hwhm);
+            const double l2 = 10.0 * (hwhm * hwhm) / ((xv - 28.0) * (xv - 28.0) + hwhm * hwhm);
+            const double yv = l1 + l2;
+            tFsd->setCell(i, 0, xv);
+            tFsd->setCell(i, 1, yv);
+            if (i > 0)
+                rawArea += 0.5 * (tFsd->cell(i - 1, 1) + yv) * (xv - tFsd->cell(i - 1, 0));
+        }
+        MultiLayer *mlFsd = mw->multilayerPlot(
+                tFsd, QStringList() << (QString(tFsd->name()) + "_2"), Graph::Line);
+        Graph *gFsd = mlFsd->activeGraph();
+        const QString rawCurveName = gFsd->curve(0)->title().text();
+        const double rawPeakY = CurveMathTools::findYFromX(gFsd, rawCurveName, 22.0);
+        const double rawValleyY = CurveMathTools::findYFromX(gFsd, rawCurveName, 25.0);
+
+        QwtPlotCurve *fsdCurve = AdvancedSignalProc::fourierSelfDeconvolve(
+                mw, gFsd, rawCurveName, gammaFsd, 1.8, 0 /*Bessel*/);
+        CHECK_COND(fsdCurve != nullptr && fsdCurve->dataSize() == nFsd,
+                   "fourierSelfDeconvolve returned null or wrong point count");
+        double fsdArea = 0.0;
+        for (int i = 1; i < fsdCurve->dataSize(); ++i)
+            fsdArea += 0.5 * (fsdCurve->y(i - 1) + fsdCurve->y(i)) * (fsdCurve->x(i) - fsdCurve->x(i - 1));
+        const double fsdPeakY = CurveMathTools::findYFromX(gFsd, fsdCurve->title().text(), 22.0);
+        const double fsdValleyY = CurveMathTools::findYFromX(gFsd, fsdCurve->title().text(), 25.0);
+        std::cout << "[INFO] FSD Doublet: rawValley/Peak=" << (rawValleyY / rawPeakY)
+                  << " -> fsdValley/Peak=" << (fsdValleyY / fsdPeakY)
+                  << ", areaRatio=" << (fsdArea / rawArea) << "\n";
+        CHECK_COND(fsdPeakY > rawPeakY * 1.15
+                           && (fsdValleyY / fsdPeakY) < (rawValleyY / rawPeakY) * 0.75
+                           && std::fabs(fsdArea - rawArea) / rawArea < 0.06,
+                   "fourierSelfDeconvolve failed to sharpen Lorentzian doublet while conserving area");
+
+        // 3. GraphStatsAndSurfaceFit::runPassingBablokDeming with outlier resistance
+        Table *tPbd = mw->newTable(28, 2, "Suite33PbdTbl", "Method Comparison");
+        tPbd->setColName(0, "MethodA");
+        tPbd->setColName(1, "MethodB");
+        for (int r = 0; r < 26; ++r) {
+            const double xv = 2.0 + 1.5 * double(r);
+            const double jitter = 0.12 * std::sin(double(r + 1) * 1.9);
+            tPbd->setCell(r, 0, xv);
+            tPbd->setCell(r, 1, 4.0 + 1.25 * xv + jitter);
+        }
+        // Inject 2 gross outliers that heavily skew OLS/Deming but not Passing-Bablok median-of-slopes
+        tPbd->setCell(26, 0, 14.0);
+        tPbd->setCell(26, 1, 95.0);
+        tPbd->setCell(27, 0, 32.0);
+        tPbd->setCell(27, 1, -25.0);
+
+        auto pbd = GraphStatsAndSurfaceFit::runPassingBablokDeming(
+                mw, tPbd, "MethodA", "MethodB", 1.0, true);
+        std::cout << "[INFO] Passing-Bablok: slope=" << pbd.pbSlope
+                  << " [" << pbd.pbSlopeCILow << ", " << pbd.pbSlopeCIHigh << "]"
+                  << ", intercept=" << pbd.pbIntercept
+                  << " [" << pbd.pbInterceptCILow << ", " << pbd.pbInterceptCIHigh << "]"
+                  << ", Deming slope=" << pbd.demingSlope << " +/- " << pbd.demingSlopeSE << "\n";
+        CHECK_COND(pbd.valid
+                           && std::fabs(pbd.pbSlope - 1.25) < 0.04
+                           && std::fabs(pbd.pbIntercept - 4.0) < 0.6
+                           && std::isfinite(pbd.pbSlopeCILow) && std::isfinite(pbd.pbSlopeCIHigh)
+                           && pbd.pbSlopeCILow < 1.25 && pbd.pbSlopeCIHigh > 1.25
+                           && std::isfinite(pbd.demingSlope) && pbd.demingSlopeSE > 0.0
+                           && pbd.comparisonPlot != nullptr,
+                   "runPassingBablokDeming failed outlier-resistant recovery or finite 95% CIs");
+        CHECK_COND(pbd.comparisonPlot->activeGraph()->axisTitleFont(QwtPlot::xBottom).family() == "Arial",
+                   "Passing-Bablok/Deming plot violated Arial font invariant");
+    }
+
+    // =========================================================================
+    // 34. Suite 34: Colorbar Viridis & Arial, copyPageAsImage(300),
+    //               RGBA EmfPaintDevice Alpha & FrameOpenL Backbone Preservation
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 34: Colorbar Viridis/Arial, copyPageAsImage(300), RGBA EMF & FrameOpenL...\n";
+
+        // 1. Spectrogram PresetViridis + custom Z range + colorbar title .sciprj round-trip & Arial
+        ApplicationWindow *cbWriter = new ApplicationWindow();
+        cbWriter->applyUserSettings();
+        Matrix *mCb = cbWriter->newMatrix(20, 20);
+        mCb->setName("Suite34CbMat");
+        mCb->setCoordinates(0.0, 10.0, 0.0, 10.0);
+        for (int r = 0; r < 20; ++r)
+            for (int c = 0; c < 20; ++c)
+                mCb->setCell(r, c, double(r * 5 + c));
+        MultiLayer *mlCb = cbWriter->plotColorMap(mCb);
+        mlCb->setName("Suite34ColorbarGraph");
+        Graph *gCb = mlCb->activeGraph();
+        Spectrogram *spOrig = nullptr;
+        for (QwtPlotItem *it : gCb->plotWidget()->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                spOrig = dynamic_cast<Spectrogram *>(it);
+                if (spOrig)
+                    break;
+            }
+        }
+        CHECK_COND(spOrig != nullptr, "Spectrogram missing on plotColorMap graph");
+        spOrig->showColorScale(QwtPlot::yRight, true);
+        spOrig->setColorMapPreset(Spectrogram::PresetViridis, false);
+        spOrig->setCustomValueRange(true, 15.0, 85.0);
+        spOrig->setColorBarTitle("Intensity (arb. u.)");
+        gCb->replot();
+
+        QwtScaleWidget *rightSwOrig = gCb->plotWidget()->axisWidget(QwtPlot::yRight);
+        CHECK_COND(rightSwOrig != nullptr
+                           && rightSwOrig->font().family() == "Arial"
+                           && rightSwOrig->title().font().family() == "Arial",
+                   "Colorbar axis/title font on pre-save Spectrogram is not Arial");
+
+        // 2. MultiLayer::copyPageAsImage(300) DPI (~11811 dpm) & non-blank pixels
+        QImage pageClipImg = mlCb->copyPageAsImage(300);
+        const int expectedDpm300 = qRound(300.0 / 0.0254);
+        int nonWhiteClipPx = 0;
+        for (int py = 0; py < pageClipImg.height(); py += 2) {
+            for (int px = 0; px < pageClipImg.width(); px += 2) {
+                QRgb rgb = pageClipImg.pixel(px, py);
+                if (qRed(rgb) < 245 || qGreen(rgb) < 245 || qBlue(rgb) < 245)
+                    ++nonWhiteClipPx;
+            }
+        }
+        std::cout << "[INFO] copyPageAsImage(300): size=" << pageClipImg.width() << "x"
+                  << pageClipImg.height() << ", dpmX=" << pageClipImg.dotsPerMeterX()
+                  << " (expected " << expectedDpm300 << "), nonWhiteSampled=" << nonWhiteClipPx << "\n";
+        CHECK_COND(!pageClipImg.isNull()
+                           && std::abs(pageClipImg.dotsPerMeterX() - expectedDpm300) <= 2
+                           && std::abs(pageClipImg.dotsPerMeterY() - expectedDpm300) <= 2
+                           && nonWhiteClipPx > 200,
+                   "MultiLayer::copyPageAsImage(300) failed DPI metadata or rendered blank");
+
+        QByteArray cbBytes = cbWriter->saveProjectToByteArray();
+        QString cbPath = QDir::tempPath() + "/torigraph_suite34_colorbar.sciprj";
+        {
+            QFile f(cbPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "Failed to open Suite 34 temp .sciprj");
+            f.write(cbBytes);
+            f.close();
+        }
+        cbWriter->savedProject();
+        cbWriter->setOleEmbeddedMode(true);
+        delete cbWriter;
+
+        ApplicationWindow *cbReader = new ApplicationWindow();
+        cbReader->applyUserSettings();
+        bool cbLoaded = cbReader->loadProject(cbPath);
+        QFile::remove(cbPath);
+        CHECK_COND(cbLoaded, "Suite 34 loadProject failed");
+
+        MultiLayer *mlCbRel = qobject_cast<MultiLayer *>(cbReader->window("Suite34ColorbarGraph"));
+        CHECK_COND(mlCbRel != nullptr && mlCbRel->activeGraph() != nullptr,
+                   "Reloaded project missing Suite34ColorbarGraph");
+        Graph *gCbRel = mlCbRel->activeGraph();
+        Spectrogram *spRel = nullptr;
+        for (QwtPlotItem *it : gCbRel->plotWidget()->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                spRel = dynamic_cast<Spectrogram *>(it);
+                if (spRel)
+                    break;
+            }
+        }
+        QwtScaleWidget *rightSwRel = gCbRel->plotWidget()->axisWidget(QwtPlot::yRight);
+        CHECK_COND(spRel != nullptr
+                           && spRel->colorMapPreset() == Spectrogram::PresetViridis
+                           && spRel->hasCustomValueRange()
+                           && std::fabs(spRel->customZMin() - 15.0) < 1e-6
+                           && std::fabs(spRel->customZMax() - 85.0) < 1e-6
+                           && spRel->colorBarTitle() == "Intensity (arb. u.)"
+                           && rightSwRel != nullptr
+                           && rightSwRel->font().family() == "Arial"
+                           && rightSwRel->title().font().family() == "Arial",
+                   "Spectrogram Viridis preset, custom Z range, colorbar title, or Arial font lost across .sciprj reload");
+
+        cbReader->savedProject();
+        cbReader->setOleEmbeddedMode(true);
+        delete cbReader;
+
+        // 3. RGBA QImage alpha-blending over colored background in EmfPaintDevice
+        QString rgbaPngPath = QDir::tempPath() + "/torigraph_suite34_rgba_overlay.png";
+        {
+            QImage rgbaOverlay(120, 120, QImage::Format_ARGB32);
+            rgbaOverlay.fill(QColor(240, 0, 0, 128)); // 50% translucent pure red
+            CHECK_COND(rgbaOverlay.save(rgbaPngPath, "PNG"), "Failed to save temp RGBA PNG");
+        }
+        MultiLayer *mlRgba = mw->newGraph("Suite34RgbaEmfGraph");
+        mlRgba->resize(420, 360);
+        Graph *gRgba = mlRgba->activeGraph();
+        gRgba->setCanvasBackground(QColor(0, 60, 220)); // Royal blue background
+        gRgba->setScale(QwtPlot::xBottom, 0.0, 10.0);
+        gRgba->setScale(QwtPlot::yLeft, 0.0, 10.0);
+        ImageMarker *imRgba = gRgba->addImage(rgbaPngPath);
+        CHECK_COND(imRgba != nullptr, "Graph::addImage failed for RGBA PNG");
+        imRgba->setBoundingRect(1.0, 9.0, 9.0, 1.0);
+        gRgba->replot();
+
+        OleRenderedGraph emfRgba = SciDAVisEmf::renderMultiLayer(mlRgba);
+        HENHMETAFILE hEmf34 = SciDAVisEmf::createHemfFromBytes(emfRgba.emfBytes);
+        QFile::remove(rgbaPngPath);
+        CHECK_COND(hEmf34 != nullptr, "renderMultiLayer failed for RGBA ImageMarker graph");
+
+        QImage emfRgbaPlay(300, 300, QImage::Format_RGB32);
+        emfRgbaPlay.fill(Qt::white);
+        {
+            HDC screenDc = GetDC(nullptr);
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = 300;
+            bmi.bmiHeader.biHeight = -300;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void *dibBits = nullptr;
+            HBITMAP hDib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+            HDC memDc = CreateCompatibleDC(screenDc);
+            HGDIOBJ oldBmp = SelectObject(memDc, hDib);
+            RECT playRc = { 0, 0, 300, 300 };
+            HBRUSH whiteBr = CreateSolidBrush(RGB(255, 255, 255));
+            FillRect(memDc, &playRc, whiteBr);
+            DeleteObject(whiteBr);
+            PlayEnhMetaFile(memDc, hEmf34, &playRc);
+            GdiFlush();
+            if (dibBits)
+                std::memcpy(emfRgbaPlay.bits(), dibBits, 300 * 300 * 4);
+            SelectObject(memDc, oldBmp);
+            DeleteObject(hDib);
+            DeleteDC(memDc);
+            ReleaseDC(nullptr, screenDc);
+        }
+        DeleteEnhMetaFile(hEmf34);
+
+        int purpleBlendedPx = 0;
+        for (int py = 0; py < 300; ++py) {
+            for (int px = 0; px < 300; ++px) {
+                QRgb c = emfRgbaPlay.pixel(px, py);
+                const int r = qRed(c), g = qGreen(c), b = qBlue(c);
+                // 50% red (240,0,0) blended directly over royal blue (0,60,220) => ~(120, 30, 110) purple!
+                // (If flattened onto white first, green would be ~128 instead of ~30!)
+                if (r > 80 && r < 180 && b > 70 && b < 170 && g < 65)
+                    ++purpleBlendedPx;
+            }
+        }
+        std::cout << "[INFO] RGBA EmfPaintDevice playback: purpleBlendedPx=" << purpleBlendedPx << "\n";
+        CHECK_COND(purpleBlendedPx > 500,
+                   "EmfPaintDevice failed true per-pixel RGBA alpha-blending over colored background");
+
+        // 4. Graph::showAxis preserving FrameOpenL hidden top/right backbones
+        MultiLayer *mlOpenL = mw->newGraph("Suite34OpenLGraph");
+        Graph *gOpenL = mlOpenL->activeGraph();
+        gOpenL->applyFramePreset(Graph::FrameOpenL);
+        CHECK_COND(!gOpenL->isAxisBackboneVisible(QwtPlot::xTop)
+                           && !gOpenL->isAxisBackboneVisible(QwtPlot::yRight),
+                   "FrameOpenL initial top/right backbones were not hidden");
+        gOpenL->showAxis(QwtPlot::xTop, Graph::AxisType::Numeric, QString(), nullptr, true,
+                         0, 0, false, Qt::black, 0, 6, 0, 0,
+                         QString(), Qt::black);
+        gOpenL->showAxis(QwtPlot::yRight, Graph::AxisType::Numeric, QString(), nullptr, true,
+                         0, 0, false, Qt::black, 0, 6, 0, 0,
+                         QString(), Qt::black);
+        CHECK_COND(!gOpenL->isAxisBackboneVisible(QwtPlot::xTop)
+                           && !gOpenL->isAxisBackboneVisible(QwtPlot::yRight)
+                           && !gOpenL->plotWidget()->axisScaleDraw(QwtPlot::xTop)->hasComponent(
+                                      QwtAbstractScaleDraw::Backbone)
+                           && !gOpenL->plotWidget()->axisScaleDraw(QwtPlot::yRight)->hasComponent(
+                                      QwtAbstractScaleDraw::Backbone),
+                   "Graph::showAxis clobbered FrameOpenL hidden top/right backbones!");
+    }
+
+    // =========================================================================
+    // 35. Suite 35: Runtime ToriGraphFullJapaneseTranslator Zero-Miss & Arial Gate
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 35: Runtime Japanese Translator Zero-Miss & Arial Gate...\n";
+
+        mw->switchToLanguage("ja");
+
+        struct RuntimeCtxCheck {
+            const char *ctx;
+            const char *src;
+        };
+        const RuntimeCtxCheck r2Checks[] = {
+            // PlotDialog & Spectrogram Colorbar (Round 2)
+            { "PlotDialog", "Colorbar Title" },
+            { "PlotDialog", "Custom Z Range" },
+            { "PlotDialog", "Z Min" },
+            { "PlotDialog", "Z Max" },
+            // 2D ImageProfileGadgetTool & DeltaCursorTool (Round 2)
+            { "ImageProfileGadgetTool", "Close 2D Profile Gadget" },
+            { "DeltaCursorTool", "Nearest Point" },
+            // 2D Matrix Filter & Fourier Self-Deconvolution (Round 2)
+            { "QObject", "2D Filter Method:" },
+            { "QObject", "Kernel Radius (pixels):" },
+            { "QObject", "Modify Source Matrix In-Place (Undoable)" },
+            { "QObject", "Plot Filtered 2D Heatmap" },
+            { "QObject", "Median 2D Filter (Despike)" },
+            { "QObject", "Fourier Self-Deconvolution (Peak Sharpening)" },
+            { "QObject", "Bessel / Kauppinen (1 - |t|/t_max)^2" },
+            { "QObject", "Gaussian Apodization" },
+            // EIS Nyquist/Bode & CurveMathTools (Round 2)
+            { "QObject", "EIS Nyquist & Bode Analyzer (Randles-CPE)" },
+            { "QObject", "Fit Randles + CPE Equivalent Circuit (Rs + Rct || CPE)" },
+            { "QObject", "Imaginary column is already negated (-Z'' > 0)" },
+            { "CurveMathTools", "Normalize Curves" },
+            { "CurveMathTools", "Curve Intersections & X/Y Lookup" },
+            // Passing-Bablok/Deming, 3-Param Weibull, Generalized ESD & Clustering (Round 2)
+            { "QObject", "Weibull Probability Plot" },
+            { "QObject", "3-Parameter Weibull (Estimate Threshold \316\263)" },
+            { "QObject", "1 = Failure/Event, 0 = Censored [Kaplan-Meier Standard]" },
+            { "QObject", "Method-comparison regression with errors in both X and Y (Passing-Bablok & Deming)" },
+            { "QObject", "Cluster Analysis (K-Means & Hierarchical Dendrogram)" },
+            { "QObject", "Hierarchical Dendrogram" },
+            { "QObject", "Ward's Minimum Variance" },
+            { "QObject", "Max Outliers k (Generalized ESD):" },
+            // Phase 5 Iter 1 + Iter 2 ApplicationWindow / Fitting / Menus
+            { "ApplicationWindow", "Presentation Slide (28 pt Arial)" },
+            { "ApplicationWindow", "Duplicate (Batch Plotting)..." },
+            { "FitDialog", "Linear Constraints:" }
+        };
+
+        auto hasJapaneseChars = [](const QString &s) {
+            for (const QChar &ch : s) {
+                if (ch.unicode() >= 0x3000)
+                    return true;
+            }
+            return false;
+        };
+
+        int runtimeMisses = 0;
+        const int nChecks = int(sizeof(r2Checks) / sizeof(r2Checks[0]));
+        for (int i = 0; i < nChecks; ++i) {
+            const QString srcStr = QString::fromUtf8(r2Checks[i].src);
+            const QString jaStr = QCoreApplication::translate(r2Checks[i].ctx, r2Checks[i].src);
+            if (jaStr.isEmpty() || jaStr == srcStr || !hasJapaneseChars(jaStr)) {
+                ++runtimeMisses;
+                std::cerr << "[MISS] translate('" << r2Checks[i].ctx << "', '" << r2Checks[i].src
+                          << "') -> '" << jaStr.toUtf8().constData() << "'\n";
+            }
+        }
+        std::cout << "[INFO] Runtime QCoreApplication::translate('ja') checked=" << nChecks
+                  << ", misses=" << runtimeMisses << "\n";
+        CHECK_COND(runtimeMisses == 0,
+                   "Runtime ToriGraphFullJapaneseTranslator missed 1 or more Phase 5 Iter 1/2 strings!");
+
+        // Verify newly created 2D curve graph + Spectrogram colorbar in "ja" mode strictly keep "Arial"!
+        Table *tJa35 = mw->newTable(8, 2, "Suite35JaArialTbl", "JA Mode Arial Check");
+        tJa35->column(0)->setLongName("Frequency");
+        tJa35->column(0)->setUnits("Hz");
+        tJa35->column(1)->setLongName("Impedance");
+        tJa35->column(1)->setUnits("Ohm");
+        for (int r = 0; r < 8; ++r) {
+            tJa35->setCell(r, 0, double(r + 1));
+            tJa35->setCell(r, 1, double((r + 1) * 3));
+        }
+        MultiLayer *mlJaCurve = mw->multilayerPlot(
+                tJa35, QStringList() << (QString(tJa35->name()) + "_2"), Graph::LineSymbols);
+        Graph *gJaCurve = mlJaCurve->activeGraph();
+        if (!gJaCurve->legend())
+            gJaCurve->newLegend();
+
+        Matrix *mJaSpec = mw->newMatrix(12, 12);
+        mJaSpec->setName("Suite35JaSpecMat");
+        for (int r = 0; r < 12; ++r)
+            for (int c = 0; c < 12; ++c)
+                mJaSpec->setCell(r, c, double(r + c));
+        MultiLayer *mlJaSpec = mw->plotColorMap(mJaSpec);
+        Graph *gJaSpec = mlJaSpec->activeGraph();
+        for (QwtPlotItem *it : gJaSpec->plotWidget()->itemList()) {
+            if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                sp->showColorScale(QwtPlot::yRight, true);
+                sp->setColorMapPreset(Spectrogram::PresetViridis, false);
+                sp->setColorBarTitle("Counts");
+            }
+        }
+        gJaSpec->replot();
+        QwtScaleWidget *jaCbWidget = gJaSpec->plotWidget()->axisWidget(QwtPlot::yRight);
+
+        CHECK_COND(gJaCurve->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && gJaCurve->axisTitleFont(QwtPlot::yLeft).family() == "Arial"
+                           && gJaCurve->axisFont(QwtPlot::xBottom).family() == "Arial"
+                           && gJaCurve->axisFont(QwtPlot::yLeft).family() == "Arial"
+                           && gJaCurve->legend() != nullptr
+                           && gJaCurve->legend()->font().family() == "Arial",
+                   "2D curve graph created in Japanese mode violated Arial font invariant!");
+        CHECK_COND(gJaSpec->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && gJaSpec->axisFont(QwtPlot::xBottom).family() == "Arial"
+                           && jaCbWidget != nullptr
+                           && jaCbWidget->font().family() == "Arial"
+                           && jaCbWidget->title().font().family() == "Arial",
+                   "Spectrogram / Colorbar created in Japanese mode violated Arial font invariant!");
+
+        mw->switchToLanguage("en");
+    }
+
     mw->savedProject();
-    std::cout << "[PASS] All 30 ToriGraph OriginPro Parity, Japanese Localization, Arial Font, Page/Layer, Persistence, Gadgets, Fitting, Materials-Science, Nonparametric Stats, and OLE suites passed!\n";
+    std::cout << "[PASS] All 35 ToriGraph OriginPro Parity, Round 2 P0/P1 Regression Gate, 2D Image Profile & Matrix Filter, EIS/FSD/Passing-Bablok, Colorbar/RGBA-EMF/FrameOpenL, Japanese Zero-Miss Localization, Arial Font, and OLE suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
