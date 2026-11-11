@@ -5,6 +5,10 @@
 #include "Legend.h"
 #include "Table.h"
 #include "MultiPeakFit.h"
+#include "NonLinearFit.h"
+#include "fit_gsl.h"
+#include "BoxCurve.h"
+#include "PlotCurve.h"
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
 #include "core/column/Column.h"
@@ -454,10 +458,534 @@ int main(int argc, char **argv)
     CHECK_COND(pasteTbl->numRows() == 5,
                "Pressing Return on bottom row did not auto-append row 5");
 
+    // =========================================================================
+    // 5. Test All OriginPro Peak Functions (Voigt, BiGaussian, EMG, LogNormal, DoniachSunjic)
+    //    & Built-in Nonlinear Functions (Arrhenius, Boltzmann, Hollomon + guessBuiltInParameters)
+    // =========================================================================
+    Table *extPeakTable = mw->newTable("ExtPeakData", nPts, 6);
+    CHECK_COND(extPeakTable != nullptr, "Failed to create ExtPeakData table");
+    extPeakTable->setColName(0, "X");
+    extPeakTable->setColName(1, "Voigt1");
+    extPeakTable->setColName(2, "BiGauss1");
+    extPeakTable->setColName(3, "EMG1");
+    extPeakTable->setColName(4, "LogNorm1");
+    extPeakTable->setColName(5, "Doniach1");
+
+    const double v_y0 = 4.0, v_A = 350.0, v_xc = 45.0, v_w = 10.0, v_mu = 0.4;
+    const double bg_y0 = 3.0, bg_A = 80.0, bg_xc = 40.0, bg_w = 14.0, bg_alpha = 1.5;
+    const double emg_y0 = 2.5, emg_A = 400.0, emg_xc = 42.0, emg_w = 8.0, emg_tau = 1.2;
+    const double ln_y0 = 2.0, ln_A = 90.0, ln_xc = 50.0, ln_w = 12.0, ln_asym = 1.5;
+    const double ds_y0 = 3.0, ds_A = 75.0, ds_xc = 52.0, ds_w = 10.0, ds_alpha = 0.15;
+
+    for (int i = 0; i < nPts; ++i) {
+        double x = 0.5 * i; // 0.0 .. 100.0
+        extPeakTable->setCell(i, 0, x);
+        extPeakTable->setCell(i, 1,
+                              v_y0 + eval_origin_peak_profile(MultiPeakFit::Voigt, v_A, v_xc, v_w,
+                                                              x, v_mu, 2.0, 1.5, 1.2));
+        extPeakTable->setCell(i, 2,
+                              bg_y0 + eval_origin_peak_profile(MultiPeakFit::BiGaussian, bg_A, bg_xc,
+                                                               bg_w, x, 0.5, 2.0, bg_alpha, 1.2));
+        extPeakTable->setCell(i, 3,
+                              emg_y0 + eval_origin_peak_profile(MultiPeakFit::EMG, emg_A, emg_xc,
+                                                                emg_w, x, 0.5, 2.0, 1.5, emg_tau));
+        extPeakTable->setCell(i, 4,
+                              ln_y0 + eval_origin_peak_profile(MultiPeakFit::LogNormal, ln_A, ln_xc,
+                                                               ln_w, x, 0.5, 2.0, ln_asym, 1.2));
+        extPeakTable->setCell(i, 5,
+                              ds_y0 + eval_origin_peak_profile(MultiPeakFit::DoniachSunjic, ds_A,
+                                                               ds_xc, ds_w, x, 0.5, 2.0, ds_alpha,
+                                                               1.2));
+    }
+
+    QStringList extCols;
+    extCols << (extPeakTable->name() + "_Voigt1")
+            << (extPeakTable->name() + "_BiGauss1")
+            << (extPeakTable->name() + "_EMG1")
+            << (extPeakTable->name() + "_LogNorm1")
+            << (extPeakTable->name() + "_Doniach1");
+    MultiLayer *mlExtPeak = mw->multilayerPlot(extPeakTable, extCols, Graph::Scatter);
+    CHECK_COND(mlExtPeak != nullptr, "Failed to create ExtPeakData plot");
+    Graph *gExtPeak = mlExtPeak->activeGraph();
+
+    // 5a. Voigt Peak Fit
+    {
+        MultiPeakFit *fitV = new MultiPeakFit(mw, gExtPeak, MultiPeakFit::Voigt, 1);
+        fitV->setLorentzFraction(v_mu);
+        CHECK_COND(fitV->setDataFromCurve(extPeakTable->name() + "_Voigt1"), "Voigt setDataFromCurve failed");
+        fitV->fit();
+        const auto &res = fitV->results();
+        std::cout << "[INFO] Voigt Fit: R^2=" << fitV->rSquare()
+                  << ", A=" << res[0] << ", xc=" << res[1] << ", w=" << res[2] << ", y0=" << res[3] << "\n";
+        CHECK_COND(fitV->rSquare() > 0.999 && relErrWithin(res[0], v_A) && relErrWithin(res[1], v_xc)
+                           && relErrWithin(res[2], v_w) && relErrWithin(res[3], v_y0),
+                   "Voigt peak fit failed accuracy check");
+        delete fitV;
+    }
+
+    // 5b. BiGaussian Peak Fit
+    {
+        MultiPeakFit *fitBG = new MultiPeakFit(mw, gExtPeak, MultiPeakFit::BiGaussian, 1);
+        fitBG->setAsymmetryFactor(bg_alpha);
+        CHECK_COND(fitBG->setDataFromCurve(extPeakTable->name() + "_BiGauss1"), "BiGaussian setDataFromCurve failed");
+        fitBG->fit();
+        const auto &res = fitBG->results();
+        std::cout << "[INFO] BiGaussian Fit: R^2=" << fitBG->rSquare()
+                  << ", A=" << res[0] << ", xc=" << res[1] << ", w=" << res[2] << ", y0=" << res[3] << "\n";
+        CHECK_COND(fitBG->rSquare() > 0.999 && relErrWithin(res[0], bg_A) && relErrWithin(res[1], bg_xc)
+                           && relErrWithin(res[2], bg_w) && relErrWithin(res[3], bg_y0),
+                   "BiGaussian peak fit failed accuracy check");
+        delete fitBG;
+    }
+
+    // 5c. EMG Peak Fit
+    {
+        MultiPeakFit *fitEMG = new MultiPeakFit(mw, gExtPeak, MultiPeakFit::EMG, 1);
+        fitEMG->setTailFactor(emg_tau);
+        CHECK_COND(fitEMG->setDataFromCurve(extPeakTable->name() + "_EMG1"), "EMG setDataFromCurve failed");
+        fitEMG->fit();
+        const auto &res = fitEMG->results();
+        std::cout << "[INFO] EMG Fit: R^2=" << fitEMG->rSquare()
+                  << ", A=" << res[0] << ", xc=" << res[1] << ", w=" << res[2] << ", y0=" << res[3] << "\n";
+        CHECK_COND(fitEMG->rSquare() > 0.999 && relErrWithin(res[0], emg_A, 0.03)
+                           && relErrWithin(res[1], emg_xc, 0.03) && relErrWithin(res[2], emg_w, 0.03),
+                   "EMG peak fit failed accuracy check");
+        delete fitEMG;
+    }
+
+    // 5d. LogNormal Peak Fit
+    {
+        MultiPeakFit *fitLN = new MultiPeakFit(mw, gExtPeak, MultiPeakFit::LogNormal, 1);
+        fitLN->setAsymmetryFactor(ln_asym);
+        CHECK_COND(fitLN->setDataFromCurve(extPeakTable->name() + "_LogNorm1"), "LogNormal setDataFromCurve failed");
+        fitLN->fit();
+        const auto &res = fitLN->results();
+        std::cout << "[INFO] LogNormal Fit: R^2=" << fitLN->rSquare()
+                  << ", A=" << res[0] << ", xc=" << res[1] << ", w=" << res[2] << ", y0=" << res[3] << "\n";
+        CHECK_COND(fitLN->rSquare() > 0.999 && relErrWithin(res[0], ln_A, 0.03)
+                           && relErrWithin(res[1], ln_xc, 0.03) && relErrWithin(res[2], ln_w, 0.03),
+                   "LogNormal peak fit failed accuracy check");
+        delete fitLN;
+    }
+
+    // 5e. Doniach-Sunjic Peak Fit
+    {
+        MultiPeakFit *fitDS = new MultiPeakFit(mw, gExtPeak, MultiPeakFit::DoniachSunjic, 1);
+        fitDS->setAsymmetryFactor(ds_alpha);
+        CHECK_COND(fitDS->setDataFromCurve(extPeakTable->name() + "_Doniach1"), "DoniachSunjic setDataFromCurve failed");
+        fitDS->fit();
+        const auto &res = fitDS->results();
+        std::cout << "[INFO] DoniachSunjic Fit: R^2=" << fitDS->rSquare()
+                  << ", A=" << res[0] << ", xc=" << res[1] << ", w=" << res[2] << ", y0=" << res[3] << "\n";
+        CHECK_COND(fitDS->rSquare() > 0.999 && relErrWithin(res[0], ds_A, 0.03)
+                           && relErrWithin(res[1], ds_xc, 0.03) && relErrWithin(res[2], ds_w, 0.03),
+                   "DoniachSunjic peak fit failed accuracy check");
+        delete fitDS;
+    }
+
+    // 5f. Built-in Nonlinear Functions (Arrhenius, Boltzmann, Hollomon with guessBuiltInParameters)
+    QStringList builtInModels = NonLinearFit::builtInModelNames();
+    std::cout << "[INFO] Built-in Nonlinear Models count = " << builtInModels.size() << "\n";
+    CHECK_COND(builtInModels.size() >= 50, "Expected at least 50 built-in OriginPro nonlinear models");
+
+    const int nNlfPts = 31;
+    Table *nlfTable = mw->newTable("NlfData", nNlfPts, 6);
+    CHECK_COND(nlfTable != nullptr, "Failed to create NlfData table");
+    nlfTable->setColName(0, "T_K");
+    nlfTable->setColPlotDesignation(0, SciDAVis::X);
+    nlfTable->setColName(1, "ArrheniusY");
+    nlfTable->setColPlotDesignation(1, SciDAVis::Y);
+    nlfTable->setColName(2, "BoltzX");
+    nlfTable->setColPlotDesignation(2, SciDAVis::X);
+    nlfTable->setColName(3, "BoltzmannY");
+    nlfTable->setColPlotDesignation(3, SciDAVis::Y);
+    nlfTable->setColName(4, "Strain");
+    nlfTable->setColPlotDesignation(4, SciDAVis::X);
+    nlfTable->setColName(5, "HollomonY");
+    nlfTable->setColPlotDesignation(5, SciDAVis::Y);
+
+    const double arr_A = 1.5e6, arr_Ea = 42000.0;
+    const double blz_A1 = 10.0, blz_A2 = 95.0, blz_x0 = 48.0, blz_dx = 6.5;
+    const double hol_K = 680.0, hol_n = 0.24;
+
+    for (int i = 0; i < nNlfPts; ++i) {
+        double T = 350.0 + 15.0 * i; // 350 .. 800 K
+        double yArr = arr_A * std::exp(-arr_Ea / (8.3144626 * T));
+        double xb = (100.0 * i) / (nNlfPts - 1);
+        double yBlz = (blz_A1 - blz_A2) / (1.0 + std::exp((xb - blz_x0) / blz_dx)) + blz_A2;
+        double eps = 0.02 + 0.012 * i;
+        double yHol = hol_K * std::pow(eps, hol_n);
+
+        nlfTable->setCell(i, 0, T);
+        nlfTable->setCell(i, 1, yArr);
+        nlfTable->setCell(i, 2, xb);
+        nlfTable->setCell(i, 3, yBlz);
+        nlfTable->setCell(i, 4, eps);
+        nlfTable->setCell(i, 5, yHol);
+    }
+
+    MultiLayer *mlNlf = mw->multilayerPlot(nlfTable, QStringList() << (nlfTable->name() + "_ArrheniusY"), Graph::Scatter);
+    Graph *gNlf = mlNlf->activeGraph();
+    gNlf->insertCurve(nlfTable, nlfTable->name() + "_BoltzX", nlfTable->name() + "_BoltzmannY", Graph::Scatter);
+    gNlf->insertCurve(nlfTable, nlfTable->name() + "_Strain", nlfTable->name() + "_HollomonY", Graph::Scatter);
+
+    {
+        NonLinearFit *nlfArr = new NonLinearFit(mw, gNlf);
+        CHECK_COND(nlfArr->setBuiltInModel("Arrhenius"), "setBuiltInModel(Arrhenius) failed");
+        CHECK_COND(nlfArr->setDataFromCurve(nlfTable->name() + "_ArrheniusY"), "Arrhenius setDataFromCurve failed");
+        nlfArr->guessBuiltInParameters();
+        nlfArr->fit();
+        const auto &res = nlfArr->results();
+        std::cout << "[INFO] Arrhenius NLFit: R^2=" << nlfArr->rSquare()
+                  << ", A=" << res[0] << ", Ea=" << res[1] << "\n";
+        CHECK_COND(nlfArr->rSquare() > 0.999 && relErrWithin(res[0], arr_A, 0.02)
+                           && relErrWithin(res[1], arr_Ea, 0.02),
+                   "Arrhenius nonlinear fit failed accuracy check");
+        delete nlfArr;
+    }
+
+    {
+        NonLinearFit *nlfBlz = new NonLinearFit(mw, gNlf);
+        CHECK_COND(nlfBlz->setBuiltInModel("Boltzmann"), "setBuiltInModel(Boltzmann) failed");
+        CHECK_COND(nlfBlz->setDataFromCurve(nlfTable->name() + "_BoltzmannY"), "Boltzmann setDataFromCurve failed");
+        nlfBlz->guessBuiltInParameters();
+        nlfBlz->fit();
+        const auto &res = nlfBlz->results();
+        std::cout << "[INFO] Boltzmann NLFit: R^2=" << nlfBlz->rSquare()
+                  << ", A1=" << res[0] << ", A2=" << res[1] << ", x0=" << res[2] << ", dx=" << res[3] << "\n";
+        CHECK_COND(nlfBlz->rSquare() > 0.999 && relErrWithin(res[0], blz_A1, 0.02)
+                           && relErrWithin(res[1], blz_A2, 0.02) && relErrWithin(res[2], blz_x0, 0.02)
+                           && relErrWithin(res[3], blz_dx, 0.02),
+                   "Boltzmann nonlinear fit failed accuracy check");
+        delete nlfBlz;
+    }
+
+    {
+        NonLinearFit *nlfHol = new NonLinearFit(mw, gNlf);
+        CHECK_COND(nlfHol->setBuiltInModel("Hollomon"), "setBuiltInModel(Hollomon) failed");
+        CHECK_COND(nlfHol->setDataFromCurve(nlfTable->name() + "_HollomonY"), "Hollomon setDataFromCurve failed");
+        nlfHol->guessBuiltInParameters();
+        nlfHol->fit();
+        const auto &res = nlfHol->results();
+        std::cout << "[INFO] Hollomon NLFit: R^2=" << nlfHol->rSquare()
+                  << ", K=" << res[0] << ", n=" << res[1] << "\n";
+        CHECK_COND(nlfHol->rSquare() > 0.999 && relErrWithin(res[0], hol_K, 0.02)
+                           && relErrWithin(res[1], hol_n, 0.02),
+                   "Hollomon nonlinear fit failed accuracy check");
+        delete nlfHol;
+    }
+
+    // =========================================================================
+    // 6. Test Peak Analyzer (BaselineLinear + BaselineALS + Subtraction + Integration)
+    // =========================================================================
+    Table *baseTable = mw->newTable("BaselineData", nPts, 3);
+    CHECK_COND(baseTable != nullptr, "Failed to create BaselineData table");
+    baseTable->setColName(0, "X");
+    baseTable->setColName(1, "LinBaseSpec");
+    baseTable->setColName(2, "ALSBaseSpec");
+
+    const double bPeak_xc[2] = { 32.0, 68.0 };
+    const double bPeak_w[2] = { 5.0, 6.0 };
+    const double bPeak_A[2] = { 220.0, 340.0 };
+
+    for (int i = 0; i < nPts; ++i) {
+        double x = 0.5 * i; // 0..100
+        double peaksVal = 0.0;
+        for (int k = 0; k < 2; ++k) {
+            double z = (x - bPeak_xc[k]) / bPeak_w[k];
+            peaksVal += bPeak_A[k] * std::sqrt(2.0 / M_PI) / bPeak_w[k] * std::exp(-2.0 * z * z);
+        }
+        double linBase = 15.0 + 0.35 * x;
+        double alsBase = 12.0 + 16.0 * std::exp(-x / 40.0) + 0.08 * x;
+        baseTable->setCell(i, 0, x);
+        baseTable->setCell(i, 1, linBase + peaksVal);
+        baseTable->setCell(i, 2, alsBase + peaksVal);
+    }
+
+    MultiLayer *mlBase = mw->multilayerPlot(
+            baseTable,
+            QStringList() << (baseTable->name() + "_LinBaseSpec") << (baseTable->name() + "_ALSBaseSpec"),
+            Graph::Line);
+    Graph *gBase = mlBase->activeGraph();
+
+    // 6a. BaselineLinear + insertBaselineCurve + subtractBaselineFromData + integratePeaksToTable
+    {
+        MultiPeakFit *mpfLin = new MultiPeakFit(mw, gBase, MultiPeakFit::Gauss, 2);
+        mpfLin->setBaselineMode(MultiPeakFit::BaselineLinear);
+        CHECK_COND(mpfLin->baselineMode() == MultiPeakFit::BaselineLinear, "baselineMode() mismatch");
+        CHECK_COND(mpfLin->setDataFromCurve(baseTable->name() + "_LinBaseSpec"), "LinBaseSpec setDataFromCurve failed");
+
+        std::vector<double> compLin = mpfLin->computeBaseline();
+        CHECK_COND(compLin.size() == size_t(nPts), "computeBaseline size mismatch");
+        CHECK_COND(std::fabs(compLin[100] - (15.0 + 0.35 * 50.0)) < 1.0,
+                   "BaselineLinear midpoint deviated from ground-truth linear background");
+
+        PlotCurve *baseCurve = mpfLin->insertBaselineCurve();
+        CHECK_COND(baseCurve != nullptr, "insertBaselineCurve returned nullptr");
+
+        CHECK_COND(mpfLin->subtractBaselineFromData(), "subtractBaselineFromData failed");
+        mpfLin->fit();
+        const auto &res = mpfLin->results();
+        std::cout << "[INFO] BaselineLinear Subtracted 2-Peak Fit: R^2=" << mpfLin->rSquare()
+                  << ", A1=" << res[0] << ", xc1=" << res[1] << ", A2=" << res[3] << ", xc2=" << res[4]
+                  << ", y0=" << res[6] << "\n";
+        CHECK_COND(mpfLin->rSquare() > 0.998 && relErrWithin(res[0], bPeak_A[0], 0.03)
+                           && relErrWithin(res[3], bPeak_A[1], 0.03) && std::fabs(res[6]) < 1.0,
+                   "BaselineLinear subtracted fit failed accuracy check");
+
+        Table *intTbl = mpfLin->integratePeaksToTable("PeakIntLinear");
+        CHECK_COND(intTbl != nullptr && intTbl->numRows() == 2 && intTbl->numCols() == 7,
+                   "integratePeaksToTable failed");
+        std::cout << "[INFO] Integrated Peak 1 Area=" << intTbl->cell(0, 4)
+                  << ", Peak 2 Area=" << intTbl->cell(1, 4)
+                  << ", Sum%=" << (intTbl->cell(0, 5) + intTbl->cell(1, 5)) << "\n";
+        CHECK_COND(relErrWithin(intTbl->cell(0, 4), bPeak_A[0], 0.05)
+                           && relErrWithin(intTbl->cell(1, 4), bPeak_A[1], 0.05)
+                           && std::fabs((intTbl->cell(0, 5) + intTbl->cell(1, 5)) - 100.0) < 0.1,
+                   "integratePeaksToTable areas or percentages out of tolerance");
+        delete mpfLin;
+    }
+
+    // 6b. BaselineALS curved baseline subtraction & fit
+    {
+        MultiPeakFit *mpfALS = new MultiPeakFit(mw, gBase, MultiPeakFit::Gauss, 2);
+        mpfALS->setBaselineMode(MultiPeakFit::BaselineALS);
+        CHECK_COND(mpfALS->setDataFromCurve(baseTable->name() + "_ALSBaseSpec"), "ALSBaseSpec setDataFromCurve failed");
+        std::vector<double> compALS = mpfALS->computeBaseline();
+        std::cout << "[INFO] BaselineALS midpoint (x=50): computed=" << compALS[100]
+                  << ", expected=" << (12.0 + 16.0 * std::exp(-50.0 / 40.0) + 4.0) << "\n";
+        CHECK_COND(compALS.size() == size_t(nPts) && compALS[100] > 18.5 && compALS[100] < 23.5,
+                   "BaselineALS did not track curved background envelope");
+        CHECK_COND(mpfALS->subtractBaselineFromData(), "ALS subtractBaselineFromData failed");
+        mpfALS->fit();
+        std::cout << "[INFO] BaselineALS Subtracted 2-Peak Fit: R^2=" << mpfALS->rSquare() << "\n";
+        CHECK_COND(mpfALS->rSquare() > 0.99, "BaselineALS subtracted fit R^2 < 0.99");
+        delete mpfALS;
+    }
+
+    // =========================================================================
+    // 7. Test OriginPro Plot Types (Y-Offset Stack, Violin+Jitter, Ternary, Pareto, Double-Y)
+    // =========================================================================
+    // 7a. Waterfall / Y-Offset Stack
+    {
+        QwtPlotCurve *c0 = gBase->curve(0);
+        QwtPlotCurve *c1 = gBase->curve(1);
+        CHECK_COND(c0 && c1, "Missing curves on gBase before applyYOffsetStack");
+        double y1Before = c1->y(0);
+        gBase->applyYOffsetStack(50.0, false);
+        double y1After = c1->y(0);
+        std::cout << "[INFO] Y-Offset Stack: curve1 y(0) before=" << y1Before << ", after=" << y1After << "\n";
+        CHECK_COND(relErrWithin(y1After - y1Before, 50.0, 1e-4), "applyYOffsetStack did not offset curve 1 by 50.0");
+    }
+
+    // 7b. Violin + Jittered Data BoxCurve
+    {
+        MultiLayer *mlBox = mw->multilayerPlot(
+                peakTable, QStringList() << (peakTable->name() + "_Gauss2"), Graph::Box);
+        CHECK_COND(mlBox != nullptr && mlBox->activeGraph() != nullptr, "Failed to create Box plot");
+        Graph *gBox = mlBox->activeGraph();
+        BoxCurve *bc = dynamic_cast<BoxCurve *>(gBox->curve(0));
+        CHECK_COND(bc != nullptr, "Curve 0 on Box plot is not a BoxCurve");
+        bc->setViolinMode(true);
+        bc->setShowDataPoints(true);
+        CHECK_COND(bc->violinMode() && bc->showDataPoints(), "BoxCurve violinMode/showDataPoints getters failed");
+        gBox->replot();
+        QApplication::processEvents();
+    }
+
+    // 7c. Ternary Plot & ternaryToCartesian
+    {
+        QPointF pA = Graph::ternaryToCartesian(1.0, 0.0, 0.0);
+        QPointF pB = Graph::ternaryToCartesian(0.0, 1.0, 0.0);
+        QPointF pC = Graph::ternaryToCartesian(0.0, 0.0, 1.0);
+        QPointF pCenter = Graph::ternaryToCartesian(1.0, 1.0, 1.0);
+        CHECK_COND(std::fabs(pA.x() - 0.0) < 1e-6 && std::fabs(pA.y() - 0.0) < 1e-6, "ternaryToCartesian(A) mismatch");
+        CHECK_COND(std::fabs(pB.x() - 1.0) < 1e-6 && std::fabs(pB.y() - 0.0) < 1e-6, "ternaryToCartesian(B) mismatch");
+        CHECK_COND(std::fabs(pC.x() - 0.5) < 1e-6 && std::fabs(pC.y() - std::sqrt(3.0) * 0.5) < 1e-6,
+                   "ternaryToCartesian(C) mismatch");
+        CHECK_COND(std::fabs(pCenter.x() - 0.5) < 1e-6 && std::fabs(pCenter.y() - std::sqrt(3.0) / 6.0) < 1e-6,
+                   "ternaryToCartesian(center) mismatch");
+
+        Table *ternSrc = mw->newTable("TernaryInput", 4, 3);
+        ternSrc->setColName(0, "Fe");
+        ternSrc->setColName(1, "Cr");
+        ternSrc->setColName(2, "Ni");
+        const double ternRows[4][3] = {
+            { 70.0, 18.0, 12.0 }, { 50.0, 25.0, 25.0 }, { 20.0, 50.0, 30.0 }, { 10.0, 20.0, 70.0 }
+        };
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 3; ++c)
+                ternSrc->setCell(r, c, ternRows[r][c]);
+        mw->activateSubWindow(ternSrc);
+        mw->plotTernary();
+        MultiLayer *mlTern = qobject_cast<MultiLayer *>(mw->windowsList().last());
+        CHECK_COND(mlTern != nullptr && mlTern->activeGraph() != nullptr, "plotTernary did not create MultiLayer");
+        CHECK_COND(!mlTern->activeGraph()->plotWidget()->axisEnabled(QwtPlot::xBottom),
+                   "setupTernaryPlot did not hide rectangular xBottom axis");
+    }
+
+    // 7d. Pareto Chart (plotPareto)
+    {
+        Table *paretoSrc = mw->newTable("ParetoInput", 5, 2);
+        paretoSrc->setColName(0, "DefectId");
+        paretoSrc->setColName(1, "Count");
+        const double counts[5] = { 15.0, 80.0, 35.0, 50.0, 20.0 };
+        for (int r = 0; r < 5; ++r) {
+            paretoSrc->setCell(r, 0, r + 1);
+            paretoSrc->setCell(r, 1, counts[r]);
+        }
+        paretoSrc->deselectAll();
+        paretoSrc->setCellsSelected(0, 1, 4, 1, true);
+        mw->activateSubWindow(paretoSrc);
+        mw->plotPareto();
+        MultiLayer *mlPar = qobject_cast<MultiLayer *>(mw->windowsList().last());
+        CHECK_COND(mlPar != nullptr && mlPar->activeGraph() != nullptr, "plotPareto did not create MultiLayer");
+        Graph *gPar = mlPar->activeGraph();
+        CHECK_COND(gPar->curves() >= 2, "Expected 2 curves (bars + cumulative %) on Pareto chart");
+        CHECK_COND(gPar->curve(1)->yAxis() == QwtPlot::yRight
+                           && gPar->plotWidget()->axisEnabled(QwtPlot::yRight),
+                   "Pareto cumulative curve is not bound to enabled yRight axis");
+        CHECK_COND(relErrWithin(gPar->curve(1)->y(4), 100.0, 1e-4),
+                   "Pareto final cumulative percentage is not 100%");
+    }
+
+    // 7e. Double-Y Plot (plotDoubleY)
+    {
+        Table *dySrc = mw->newTable("DoubleYInput", 5, 3);
+        dySrc->setColName(0, "Time");
+        dySrc->setColPlotDesignation(0, SciDAVis::X);
+        dySrc->setColName(1, "Temperature");
+        dySrc->setColPlotDesignation(1, SciDAVis::Y);
+        dySrc->setColName(2, "Pressure");
+        dySrc->setColPlotDesignation(2, SciDAVis::Y);
+        for (int r = 0; r < 5; ++r) {
+            dySrc->setCell(r, 0, r * 10.0);
+            dySrc->setCell(r, 1, 300.0 + r * 50.0);
+            dySrc->setCell(r, 2, 1.0 + r * 2.5);
+        }
+        mw->activateSubWindow(dySrc);
+        mw->plotDoubleY();
+        MultiLayer *mlDY = qobject_cast<MultiLayer *>(mw->windowsList().last());
+        CHECK_COND(mlDY != nullptr && mlDY->activeGraph() != nullptr, "plotDoubleY did not create MultiLayer");
+        Graph *gDY = mlDY->activeGraph();
+        CHECK_COND(gDY->curves() >= 2 && gDY->curve(0)->yAxis() == QwtPlot::yLeft
+                           && gDY->curve(1)->yAxis() == QwtPlot::yRight,
+                   "plotDoubleY did not bind curve 0 to yLeft and curve 1 to yRight");
+    }
+
+    // =========================================================================
+    // 8. Test OriginPro Color Palettes (builtInPaletteNames, interpolatePalette, applyColorPaletteByName)
+    // =========================================================================
+    QStringList palNames = Graph::builtInPaletteNames();
+    std::cout << "[INFO] Built-in Color Palettes count = " << palNames.size() << "\n";
+    CHECK_COND(palNames.size() >= 10 && palNames.contains("Viridis")
+                       && palNames.contains("Origin Classic"),
+               "builtInPaletteNames missing required OriginPro presets");
+
+    QList<QColor> anchors;
+    anchors << QColor("#000000") << QColor("#ffffff");
+    QList<QColor> interp = Graph::interpolatePalette(anchors, 5);
+    CHECK_COND(interp.size() == 5 && interp.first() == QColor("#000000")
+                       && interp.last() == QColor("#ffffff"),
+               "Graph::interpolatePalette failed");
+
+    ag->applyColorPaletteByName("Viridis", false);
+    QList<QColor> viridisCols = Graph::paletteColors("Viridis");
+    CHECK_COND(!viridisCols.isEmpty() && ag->curve(0)->pen().color() == viridisCols[0],
+               "applyColorPaletteByName(Viridis) did not update curve 0 color");
+
+    ag->applyColorPaletteByName("Origin Classic", false);
+    QList<QColor> classicCols = Graph::paletteColors("Origin Classic");
+    CHECK_COND(!classicCols.isEmpty() && ag->curve(0)->pen().color() == classicCols[0],
+               "applyColorPaletteByName(Origin Classic) did not update curve 0 color");
+
+    // =========================================================================
+    // 9. Test Configurable Graph Aspect Ratio & X-Axis '1000' Label Clipping Fix
+    // =========================================================================
+    ml->resize(720, 540);
+    ml->canvasWidget()->resize(700, 480);
+    ml->applyAspectRatioPreset(4.0 / 3.0, true);
+    QApplication::processEvents();
+    QRect cRect43 = ag->plotWidget()->plotLayout()->canvasRect();
+    double ratio43 = double(cRect43.width()) / double(qMax(1, cRect43.height()));
+    std::cout << "[INFO] Aspect preset 4:3 -> canvasRect=" << cRect43.width() << "x"
+              << cRect43.height() << " (ratio=" << ratio43 << ")\n";
+    CHECK_COND(std::fabs(ratio43 - 4.0 / 3.0) < 0.05, "applyAspectRatioPreset(4:3) failed");
+
+    ml->applyAspectRatioPreset(16.0 / 9.0, true);
+    QApplication::processEvents();
+    QRect cRect169 = ag->plotWidget()->plotLayout()->canvasRect();
+    double ratio169 = double(cRect169.width()) / double(qMax(1, cRect169.height()));
+    std::cout << "[INFO] Aspect preset 16:9 -> canvasRect=" << cRect169.width() << "x"
+              << cRect169.height() << " (ratio=" << ratio169 << ")\n";
+    CHECK_COND(std::fabs(ratio169 - 16.0 / 9.0) < 0.06, "applyAspectRatioPreset(16:9) failed");
+
+    ml->setKeepAspectRatio(false);
+    CHECK_COND(!ml->keepAspectRatio(), "setKeepAspectRatio(false) failed");
+    ml->resize(820, 440);
+    ml->canvasWidget()->resize(800, 380);
+    ml->arrangeLayers(false, false);
+    QApplication::processEvents();
+    QRect cRectFree = ag->plotWidget()->plotLayout()->canvasRect();
+    std::cout << "[INFO] Unlocked free resize (800x380) -> canvasRect=" << cRectFree.width() << "x"
+              << cRectFree.height() << "\n";
+    CHECK_COND(cRectFree.width() > cRectFree.height() + 100,
+               "Unlocked keepAspectRatio(false) did not allow free wide canvas resize");
+
+    // Restore 1:1 square aspect ratio and verify X-axis 0..1000 right margin >= 28 px
+    ml->applyAspectRatioPreset(1.0, true);
+    ml->resize(520, 520);
+    ml->canvasWidget()->resize(500, 460);
+    ag->setScale(QwtPlot::xBottom, 0.0, 1000.0, 200.0, 5, 1, 0, false);
+    plotW->updateLayout();
+    ml->arrangeLayers(false, false);
+    QApplication::processEvents();
+    int rightMargin1000 = plotW->width() - plotW->plotLayout()->canvasRect().right();
+    std::cout << "[INFO] X-axis 0..1000 right margin (Plot::width - canvasRect.right) = "
+              << rightMargin1000 << " px\n";
+    CHECK_COND(rightMargin1000 >= 28,
+               "Right margin on 0..1000 X-axis is < 28 px; rightmost label '1000' would clip!");
+    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 1, 0, false);
+    plotW->replot();
+
+    // =========================================================================
+    // 10. Test Workspace Management (Project Explorer Filtering & TabbedView Toggle)
+    // =========================================================================
+    mw->setTabbedWorkspaceView(true);
+    CHECK_COND(mw->isTabbedWorkspaceView(), "setTabbedWorkspaceView(true) did not enable TabbedView");
+    mw->setTabbedWorkspaceView(false);
+    CHECK_COND(!mw->isTabbedWorkspaceView(), "setTabbedWorkspaceView(false) did not restore SubWindowView");
+
+    mw->setExplorerSearchText("PeakData");
+    mw->setExplorerTypeFilter(1); // Tables only
+    mw->setExplorerTypeFilter(0); // All windows
+    mw->setExplorerSearchText("");
+
+    // =========================================================================
+    // 11. Test Japanese / English GUI Language Switcher (日本語 / English)
+    // =========================================================================
+    mw->switchToLanguage("ja");
+    QString jaFileMenu = QApplication::translate("ApplicationWindow", "&File");
+    QString jaAnalysisMenu = QApplication::translate("ApplicationWindow", "&Analysis");
+    std::cout << "[INFO] Switched to 'ja': appLanguage=" << mw->appLanguage.toStdString()
+              << ", tr(&File)=" << jaFileMenu.toUtf8().constData()
+              << ", tr(&Analysis)=" << jaAnalysisMenu.toUtf8().constData() << "\n";
+    CHECK_COND(mw->appLanguage == "ja"
+                       && jaFileMenu == QString::fromUtf8("ファイル(&F)")
+                       && jaAnalysisMenu == QString::fromUtf8("解析(&A)"),
+               "Japanese GUI translation was not activated by switchToLanguage(\"ja\")");
+
+    mw->switchToLanguage("en");
+    QString enFileMenu = QApplication::translate("ApplicationWindow", "&File");
+    std::cout << "[INFO] Switched to 'en': appLanguage=" << mw->appLanguage.toStdString()
+              << ", tr(&File)=" << enFileMenu.toStdString() << "\n";
+    CHECK_COND(mw->appLanguage == "en" && enFileMenu == "&File",
+               "English GUI strings were not restored by switchToLanguage(\"en\")");
+
     mw->savedProject();
 
     // =========================================================================
-    // 5. Test EMF Vector Rendering & OLE Storage Round-Trip + Clipboard
+    // 12. Test EMF Vector Rendering & OLE Storage Round-Trip + Clipboard
     // =========================================================================
     OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, nullptr);
     CHECK_COND(!rg.emfBytes.isEmpty(), "EMF bytes are empty");

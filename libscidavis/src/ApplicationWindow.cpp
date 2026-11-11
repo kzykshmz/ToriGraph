@@ -204,13 +204,14 @@ class ToriGraphJapaneseTranslator : public QTranslator
 {
 public:
     explicit ToriGraphJapaneseTranslator(QObject *parent = nullptr)
-        : QTranslator(parent), m_enabled(false)
+        : QTranslator(parent), m_enabled(true)
     {
         initDictionary();
     }
 
     void setEnabled(bool on) { m_enabled = on; }
     bool isEnabled() const { return m_enabled; }
+    bool isEmpty() const override { return !m_enabled || m_dict.isEmpty(); }
 
     QString translate(const char * /*context*/, const char *sourceText,
                       const char * /*disambiguation*/ = nullptr, int /*n*/ = -1) const override
@@ -2046,9 +2047,11 @@ void ApplicationWindow::plotDoubleY()
     QString rightTitle;
     if (w->inherits("Table")) {
         Table *t = static_cast<Table *>(w);
-        if (!validFor2DPlot(t, Graph::LineSymbols))
+        if (t->noXColumn()) {
+            QMessageBox::critical(this, tr("Error"), tr("You need at least one X column for this operation!"));
             return;
-        QStringList cols = t->drawableColumnSelection();
+        }
+        QStringList cols = t->selectedYColumns();
         if (cols.count() < 2) {
             // Try all Y columns if fewer than 2 selected
             cols.clear();
@@ -2062,9 +2065,14 @@ void ApplicationWindow::plotDoubleY()
                                  tr("Please select at least two Y columns for a Double-Y plot!"));
             return;
         }
+        int startRow = t->firstSelectedRow();
+        int endRow = t->lastSelectedRow();
+        if (startRow < 0 || endRow < startRow) {
+            startRow = 0;
+            endRow = t->numRows() - 1;
+        }
         rightTitle = t->colLabel(t->colIndex(cols[1]));
-        ml = multilayerPlot(t, cols, Graph::LineSymbols, t->firstSelectedRow(),
-                            t->lastSelectedRow());
+        ml = multilayerPlot(t, cols, Graph::LineSymbols, startRow, endRow);
     } else if (w->inherits("MultiLayer")) {
         ml = static_cast<MultiLayer *>(w);
     }
@@ -2082,7 +2090,10 @@ void ApplicationWindow::plotDoubleY()
 
     rightCurve->setYAxis(QwtPlot::yRight);
     g->enableAxis(QwtPlot::yRight, true);
-    g->enableAxisLabels(QwtPlot::yRight, true);
+    if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight)) {
+        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+        sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+    }
     if (rightTitle.isEmpty())
         rightTitle = rightCurve->title().text();
     g->setRightAxisTitle(rightTitle);
@@ -2163,7 +2174,13 @@ void ApplicationWindow::plotViolin()
                                  tr("Please select at least one column for a Violin plot!"));
             return;
         }
-        ml = multilayerPlot(t, cols, Graph::Box, t->firstSelectedRow(), t->lastSelectedRow());
+        int startRow = t->firstSelectedRow();
+        int endRow = t->lastSelectedRow();
+        if (startRow < 0 || endRow < startRow) {
+            startRow = 0;
+            endRow = t->numRows() - 1;
+        }
+        ml = multilayerPlot(t, cols, Graph::Box, startRow, endRow);
     } else if (w->inherits("MultiLayer")) {
         ml = static_cast<MultiLayer *>(w);
     }
@@ -2244,7 +2261,7 @@ void ApplicationWindow::plotPareto()
     std::sort(items.begin(), items.end(),
               [](const ParetoItem &a, const ParetoItem &b) { return a.value > b.value; });
 
-    QString paretoTableName = generateUniqueName(srcTable->name() + "_Pareto_");
+    QString paretoTableName = generateUniqueName(srcTable->name() + "Pareto");
     Table *paretoTable = newTable(paretoTableName, items.size(), 3);
     paretoTable->setColName(0, "Rank");
     paretoTable->setColPlotDesignation(0, SciDAVis::X);
@@ -2252,7 +2269,6 @@ void ApplicationWindow::plotPareto()
     paretoTable->setColPlotDesignation(1, SciDAVis::Y);
     paretoTable->setColName(2, "Cumulative_Pct");
     paretoTable->setColPlotDesignation(2, SciDAVis::Y);
-    paretoTable->setHeaderColType();
 
     double runningSum = 0.0;
     for (int i = 0; i < items.size(); ++i) {
@@ -2282,7 +2298,10 @@ void ApplicationWindow::plotPareto()
             }
         }
         g->enableAxis(QwtPlot::yRight, true);
-        g->enableAxisLabels(QwtPlot::yRight, true);
+        if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight)) {
+            sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+        }
         g->setXAxisTitle(tr("Category Rank"));
         g->setYAxisTitle(srcTable->colLabel(yCol));
         g->setRightAxisTitle(tr("Cumulative Percentage (%)"));
@@ -2354,7 +2373,7 @@ void ApplicationWindow::plotQQ()
         varSum += (v - mean) * (v - mean);
     const double sd = (n > 1) ? std::sqrt(varSum / (n - 1)) : 1.0;
 
-    QString qqTableName = generateUniqueName(srcTable->name() + "_QQ_");
+    QString qqTableName = generateUniqueName(srcTable->name() + "QQ");
     Table *qqTable = newTable(qqTableName, n, 3);
     qqTable->setColName(0, "Theoretical_Quantile");
     qqTable->setColPlotDesignation(0, SciDAVis::X);
@@ -2362,7 +2381,6 @@ void ApplicationWindow::plotQQ()
     qqTable->setColPlotDesignation(1, SciDAVis::Y);
     qqTable->setColName(2, "Normal_Ref_Line");
     qqTable->setColPlotDesignation(2, SciDAVis::Y);
-    qqTable->setHeaderColType();
 
     for (int i = 0; i < n; ++i) {
         const double p = (i + 1.0 - 0.375) / (n + 0.25);
@@ -2455,13 +2473,12 @@ void ApplicationWindow::plotTernary()
         return;
     }
 
-    QString ternTableName = generateUniqueName(srcTable->name() + "_Ternary_");
+    QString ternTableName = generateUniqueName(srcTable->name() + "Ternary");
     Table *ternTable = newTable(ternTableName, ternaryPts.size(), 2);
     ternTable->setColName(0, "Ternary_X");
     ternTable->setColPlotDesignation(0, SciDAVis::X);
     ternTable->setColName(1, "Ternary_Y");
     ternTable->setColPlotDesignation(1, SciDAVis::Y);
-    ternTable->setHeaderColType();
 
     for (int i = 0; i < ternaryPts.size(); ++i) {
         ternTable->setCell(i, 0, ternaryPts[i].x());
@@ -2566,7 +2583,7 @@ void ApplicationWindow::filterExplorerWindows()
     const QString searchText =
             d_explorer_search ? d_explorer_search->text().trimmed() : QString();
     const int typeFilter =
-            d_explorer_type_filter ? d_explorer_type_filter->currentData().toInt() : 0;
+            d_explorer_type_filter ? d_explorer_type_filter->currentIndex() : 0;
     const bool includeSubfolders =
             d_explorer_subfolder_check && d_explorer_subfolder_check->isChecked();
 
@@ -2676,11 +2693,6 @@ void ApplicationWindow::setTabbedWorkspaceView(bool tabbed)
 void ApplicationWindow::toggleTabbedWorkspaceView()
 {
     setTabbedWorkspaceView(!isTabbedWorkspaceView());
-}
-
-bool ApplicationWindow::isTabbedWorkspaceView() const
-{
-    return d_workspace.viewMode() == QMdiArea::TabbedView;
 }
 
 void ApplicationWindow::renameListViewItem(const QString &oldName, const QString &newName)
@@ -13547,11 +13559,11 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                 previewFitter.autoDetectPeaks(est, prominenceSpin->value());
             }
             detectedLabel->setText(tr("(Detected: %1)").arg(est));
-            QVector<MultiPeakFit::PeakSummaryRow> rows = previewFitter.initialPeakSummary();
-            peakTable->setRowCount(rows.size());
-            for (int i = 0; i < rows.size(); ++i) {
+            const std::vector<MultiPeakFit::PeakSummaryRow> rows = previewFitter.initialPeakSummary();
+            peakTable->setRowCount(int(rows.size()));
+            for (int i = 0; i < int(rows.size()); ++i) {
                 QTableWidgetItem *idxItem =
-                        new QTableWidgetItem(QString::number(rows[i].peakIndex));
+                        new QTableWidgetItem(QString::number(rows[i].index));
                 idxItem->setFlags(idxItem->flags() & ~Qt::ItemIsEditable);
                 peakTable->setItem(i, 0, idxItem);
                 peakTable->setItem(i, 1,
@@ -13651,7 +13663,6 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                     int startR = dc->startRow();
                     for (int i = 0; i < bf.dataSize(); ++i)
                         t->setCell(startR + i, yCol, bf.y()[i]);
-                    t->notifyChanges();
                     g->replot();
                 }
                 refreshPeakTable();
@@ -13716,7 +13727,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     if (fitter->setDataFromCurve(targetCurve)) {
         if (!customCenters.isEmpty()) {
             fitter->setNumPeaks(customCenters.size());
-            fitter->seedPeaksFromCenters(customCenters, customWidths);
+            std::vector<double> stdCenters(customCenters.begin(), customCenters.end());
+            fitter->seedPeaksFromCenters(stdCenters, prominenceSpin->value());
         } else if (autoCountCheck->isChecked()) {
             fitter->autoDetectAndUpdateNumPeaks(20, prominenceSpin->value());
         } else {
@@ -13737,7 +13749,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                     int startR = dc->startRow();
                     for (int i = 0; i < fitter->dataSize(); ++i)
                         t->setCell(startR + i, yCol, fitter->y()[i]);
-                    t->notifyChanges();
+                    g->replot();
                 }
             }
         } else if (goal == 2) {
@@ -14028,9 +14040,6 @@ void ApplicationWindow::switchToLanguage(const QString &locale)
     appTranslator = new QTranslator(this);
     qtTranslator = new QTranslator(this);
 
-    if (appLanguage == "ja") {
-        qApp->installTranslator(d_builtin_ja_translator);
-    }
     if (appLanguage != "en") {
         if (!appTranslator->load("scidavis_" + appLanguage, qmPath))
             appTranslator->load("scidavis_" + appLanguage);
@@ -14039,6 +14048,9 @@ void ApplicationWindow::switchToLanguage(const QString &locale)
     }
     qApp->installTranslator(appTranslator);
     qApp->installTranslator(qtTranslator);
+    if (appLanguage == "ja") {
+        qApp->installTranslator(d_builtin_ja_translator);
+    }
 
     if (actionLangJapanese)
         actionLangJapanese->setChecked(appLanguage == "ja");

@@ -39,6 +39,7 @@
 #include <QPicture>
 #include <QClipboard>
 #include <QMouseEvent>
+#include <QAbstractEventDispatcher>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -149,6 +150,15 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     setMinimumSize(320, 320);
     setGeometry(QRect(0, 0, graph_width, graph_height));
     setFocusPolicy(Qt::StrongFocus);
+
+    if (QAbstractEventDispatcher *ed = QAbstractEventDispatcher::instance()) {
+        connect(ed, &QAbstractEventDispatcher::awake, this, [this]() {
+            if (graphs > 0 && canvas && canvas->size() != lastSize && canvas->width() >= 100
+                && canvas->height() >= 100) {
+                resizeLayers(canvas->size(), lastSize, false);
+            }
+        });
+    }
 }
 
 Graph *MultiLayer::layer(int num)
@@ -382,7 +392,7 @@ void MultiLayer::setGraphGeometry(int x, int y, int w, int h)
 
 QSize MultiLayer::arrangeLayers(bool userSize)
 {
-    if (widget() && widget()->layout())
+    if (isVisible() && widget() && widget()->layout())
         widget()->layout()->activate();
     QRect rect = canvas->geometry();
     if (rect.width() < 100 || rect.height() < 100) {
@@ -413,7 +423,7 @@ QSize MultiLayer::arrangeLayers(bool userSize)
         const int topHeight = qMax(0, cRect.top());
         const int bottomHeight = qMax(0, plot->height() - (cRect.top() + cRect.height()));
         const int leftWidth = qMax(0, cRect.left());
-        const int rightWidth = qMax(32, plot->width() - (cRect.left() + cRect.width()));
+        const int rightWidth = qMax(0, plot->width() - (cRect.left() + cRect.width()));
 
         topHeights[i] = topHeight;
         bottomHeights[i] = bottomHeight;

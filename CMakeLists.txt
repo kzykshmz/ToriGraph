@@ -62,9 +62,9 @@ if( MSVC )
   # /wd4127 Silent conditional expression is constant (Qt headers)
   # /wd4310 Silent cast truncates constant value (muParser headers)
   # /wd4996 strcpy is unsafe warnings, equiv to #define _SCL_SECURE_NO_WARNINGS
-  set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc /W4 /permissive- \
+  set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8 /EHsc /W4 /permissive- \
 	 /wd4456 /wd4457 /wd4458 /wd4251 /wd4127 /wd4310 /wd4996" )
-  set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W4 /permissive-" )
+  set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /utf-8 /W4 /permissive-" )
   if( CMAKE_CXX_COMPILER_ID STREQUAL "Clang" )
     set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nonportable-include-path" )
   else()

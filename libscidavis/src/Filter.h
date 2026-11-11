@@ -83,6 +83,8 @@ public:
 
     //! Returns the size of the fitted data set
     int dataSize() { return d_x.size(); };
+    const std::vector<double> &x() const { return d_x; }
+    const std::vector<double> &y() const { return d_y; }
 
     bool error() { return d_init_err; };
 

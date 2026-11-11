@@ -143,9 +143,13 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
     // TODO for 0.3.0: remove all name concatenation with _ in favor of Column * pointers
     int pos = name.indexOf("_", Qt::CaseInsensitive);
     QString label = name.right(name.length() - pos - 1);
+    QString prefixLabel = name.startsWith(this->name() + "_")
+            ? name.mid(this->name().length() + 1)
+            : label;
     for (int i = 0; i < columnCount(); i++) {
         Column *col = d_table_private.column(i);
-        if (col->name() == name || (legacy_kludge && col->name() == label))
+        if (col->name() == name
+            || (legacy_kludge && (col->name() == label || col->name() == prefixLabel)))
             return col;
     }
 

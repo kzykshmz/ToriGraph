@@ -1318,6 +1318,11 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     }
 
     d_plot->replot();
+    if (!ignoreResize && parent() && parent()->parent()) {
+        MultiLayer *ml = qobject_cast<MultiLayer *>(parent()->parent()->parent());
+        if (ml && ml->keepAspectRatio())
+            ml->arrangeLayers(false, false);
+    }
     // keep markers on canvas area
     updateMarkersBoundingRect();
     d_plot->replot();
