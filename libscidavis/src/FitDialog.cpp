@@ -60,6 +60,8 @@
 #include <QLibrary>
 #include <QLocale>
 #include <stdio.h>
+#include <cmath>
+#include <limits>
 
 #define CONFS(string) QString::number(QLocale().toDouble(string), 'g', boxPrecision->value())
 
@@ -112,21 +114,26 @@ void FitDialog::initFitPage()
     gl1->addWidget(new QLabel(tr("Initial guesses")), 3, 0);
 
     boxParams = new QTableWidget();
-    boxParams->setColumnCount(3);
+    boxParams->setColumnCount(5);
 #if QT_VERSION >= 0x050000
     boxParams->horizontalHeader()->setSectionsClickable(false);
     boxParams->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     boxParams->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     boxParams->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    boxParams->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    boxParams->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     boxParams->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
 #else
     boxParams->horizontalHeader()->setClickable(false);
     boxParams->horizontalHeader()->setResizeMode(0, QHeaderView::ResizeToContents);
     boxParams->horizontalHeader()->setResizeMode(1, QHeaderView::Stretch);
     boxParams->horizontalHeader()->setResizeMode(2, QHeaderView::ResizeToContents);
+    boxParams->horizontalHeader()->setResizeMode(3, QHeaderView::Stretch);
+    boxParams->horizontalHeader()->setResizeMode(4, QHeaderView::Stretch);
     boxParams->verticalHeader()->setResizeMode(QHeaderView::ResizeToContents);
 #endif
-    QStringList header = QStringList() << tr("Parameter") << tr("Value") << tr("Constant");
+    QStringList header = QStringList() << tr("Parameter") << tr("Value") << tr("Fixed")
+                                       << tr("Lower") << tr("Upper");
     boxParams->setHorizontalHeaderLabels(header);
     boxParams->verticalHeader()->hide();
     gl1->addWidget(boxParams, 3, 1);
@@ -205,10 +212,22 @@ void FitDialog::initFitPage()
     hbox3->addWidget(buttonAdvanced);
     hbox3->addStretch();
 
+    QHBoxLayout *hboxBands = new QHBoxLayout();
+    confBandBox = new QCheckBox(tr("95% Confidence Band"));
+    predBandBox = new QCheckBox(tr("95% Prediction Band"));
+    summaryOnGraphBox = new QCheckBox(tr("Summary Table on Graph"));
+    hboxBands->addWidget(confBandBox);
+    hboxBands->addWidget(predBandBox);
+    hboxBands->addWidget(summaryOnGraphBox);
+    hboxBands->addStretch();
+    QGroupBox *gbBands = new QGroupBox(tr("Bands & Diagnostics"));
+    gbBands->setLayout(hboxBands);
+
     QVBoxLayout *vbox1 = new QVBoxLayout();
     vbox1->addWidget(gb1);
     vbox1->addLayout(hbox1);
     vbox1->addWidget(gb4);
+    vbox1->addWidget(gbBands);
     vbox1->addLayout(hbox3);
 
     fitPage = new QWidget();
@@ -642,7 +661,9 @@ void FitDialog::showFitPage()
 #endif
     int parameters = paramList.count();
     boxParams->setRowCount(parameters);
-    boxParams->hideColumn(2);
+    boxParams->showColumn(2);
+    boxParams->showColumn(3);
+    boxParams->showColumn(4);
 
     if (parameters > 7)
         parameters = 7;
@@ -661,9 +682,43 @@ void FitDialog::showFitPage()
         it = new QTableWidgetItem(QLocale().toString(1.0, 'f', boxPrecision->value()));
         it->setTextAlignment(Qt::AlignRight);
         boxParams->setItem(i, 1, it);
+
+        QTableWidgetItem *itFix = new QTableWidgetItem();
+        itFix->setFlags(Qt::ItemFlags(Qt::NoItemFlags));
+        itFix->setBackground(QBrush(Qt::lightGray));
+        boxParams->setItem(i, 2, itFix);
+        boxParams->setCellWidget(i, 2, new QCheckBox());
+
+        QTableWidgetItem *itLo = new QTableWidgetItem(QString());
+        itLo->setTextAlignment(Qt::AlignRight);
+        itLo->setToolTip(tr("Optional lower bound (leave blank for -Inf)"));
+        boxParams->setItem(i, 3, itLo);
+
+        QTableWidgetItem *itHi = new QTableWidgetItem(QString());
+        itHi->setTextAlignment(Qt::AlignRight);
+        itHi->setToolTip(tr("Optional upper bound (leave blank for +Inf)"));
+        boxParams->setItem(i, 4, itHi);
     }
-    for (int i = 0; i < paramList.count(); i++)
+    for (int i = 0; i < paramList.count(); i++) {
         boxParams->item(i, 0)->setText(paramList[i]);
+        if (!boxParams->cellWidget(i, 2)) {
+            QTableWidgetItem *itFix = new QTableWidgetItem();
+            itFix->setFlags(Qt::ItemFlags(Qt::NoItemFlags));
+            itFix->setBackground(QBrush(Qt::lightGray));
+            boxParams->setItem(i, 2, itFix);
+            boxParams->setCellWidget(i, 2, new QCheckBox());
+        }
+        if (!boxParams->item(i, 3)) {
+            QTableWidgetItem *itLo = new QTableWidgetItem(QString());
+            itLo->setTextAlignment(Qt::AlignRight);
+            boxParams->setItem(i, 3, itLo);
+        }
+        if (!boxParams->item(i, 4)) {
+            QTableWidgetItem *itHi = new QTableWidgetItem(QString());
+            itHi->setTextAlignment(Qt::AlignRight);
+            boxParams->setItem(i, 4, itHi);
+        }
+    }
 
     // Auto-populate smart initial parameter guesses from the active curve
     if (d_graph && boxCurve && !boxCurve->currentText().isEmpty()) {
@@ -679,29 +734,15 @@ void FitDialog::showFitPage()
         if (tmpFit.setDataFromCurve(boxCurve->currentText())) {
             tmpFit.guessBuiltInParameters(fnName);
             for (int i = 0; i < paramList.count() && i < tmpFit.numParameters(); ++i) {
+                QCheckBox *cb = qobject_cast<QCheckBox *>(boxParams->cellWidget(i, 2));
+                if (cb && cb->isChecked())
+                    continue;
                 double val = tmpFit.initialGuess(i);
                 if (std::isfinite(val)) {
                     boxParams->item(i, 1)->setText(
                             QLocale().toString(val, 'g', boxPrecision->value()));
                 }
             }
-        }
-    }
-
-    // FIXME: this check is pretty ugly, should be changed to a more elegant way some time
-    if (!boxUseBuiltIn->isChecked()
-        || (boxUseBuiltIn->isChecked() && categoryBox->currentRow() != 3
-            && categoryBox->currentRow() != 1 && categoryBox->currentRow() < 4)) {
-        boxParams->showColumn(2);
-
-        for (int i = 0; i < boxParams->rowCount(); i++) {
-            QTableWidgetItem *it = new QTableWidgetItem();
-            it->setFlags(Qt::ItemFlags(Qt::NoItemFlags));
-            it->setBackground(QBrush(Qt::lightGray));
-            boxParams->setItem(i, 2, it);
-
-            QCheckBox *cb = new QCheckBox();
-            boxParams->setCellWidget(i, 2, cb);
         }
     }
 
@@ -1140,18 +1181,12 @@ void FitDialog::accept()
         return;
     }
 
-    int i, n = 0, rows = boxParams->rowCount();
-    if (!boxParams->isColumnHidden(2)) {
-        for (i = 0; i < rows; i++) { // count the non-constant parameters
-            QCheckBox *cb = (QCheckBox *)boxParams->cellWidget(i, 2);
-            if (!cb->isChecked())
-                n++;
-        }
-    } else
-        n = rows;
+    int i, rows = boxParams->rowCount();
+    if (rows <= 0)
+        return;
 
     QStringList parameters;
-    double *paramsInit = new double[n];
+    double *paramsInit = new double[rows];
     QString formula;
 
     // recursively define variables for user functions used in formula
@@ -1174,24 +1209,18 @@ void FitDialog::accept()
                                     .arg(d_built_in_function_names[i])
                                     .arg(d_built_in_functions[i]));
 
-    if (!boxParams->isColumnHidden(2)) {
-        int j = 0;
-        for (i = 0; i < rows; i++) {
-            QCheckBox *cb = (QCheckBox *)boxParams->cellWidget(i, 2);
-            if (!cb->isChecked()) {
-                paramsInit[j] = QLocale().toDouble(boxParams->item(i, 1)->text());
-                parameters << boxParams->item(i, 0)->text();
-                j++;
-            } else
-                formula.prepend(QString("%1=%2\n")
-                                        .arg(boxParams->item(i, 0)->text())
-                                        .arg(CONFS(boxParams->item(i, 1)->text())));
+    for (i = 0; i < rows; i++) {
+        bool okVal = false;
+        double v = QLocale().toDouble(boxParams->item(i, 1)->text(), &okVal);
+        if (!okVal)
+            v = boxParams->item(i, 1)->text().toDouble(&okVal);
+        if (!okVal) {
+            MyParser parser;
+            parser.SetExpr(CONFS(boxParams->item(i, 1)->text()));
+            v = parser.Eval();
         }
-    } else {
-        for (i = 0; i < n; i++) {
-            paramsInit[i] = QLocale().toDouble(boxParams->item(i, 1)->text());
-            parameters << boxParams->item(i, 0)->text();
-        }
+        paramsInit[i] = v;
+        parameters << boxParams->item(i, 0)->text();
     }
 
     ApplicationWindow *app = (ApplicationWindow *)this->parent();
@@ -1206,6 +1235,7 @@ void FitDialog::accept()
     else if (boxUseBuiltIn->isChecked() && categoryBox->currentRow() == 3) {
         d_fitter = new PluginFit(app, d_graph);
         if (!((PluginFit *)d_fitter)->load(d_plugin_files_list[funcBox->currentRow()])) {
+            delete[] paramsInit;
             d_fitter = 0;
             return;
         }
@@ -1215,6 +1245,36 @@ void FitDialog::accept()
         ((NonLinearFit *)d_fitter)->setParametersList(parameters);
         ((NonLinearFit *)d_fitter)->setFormula(formula);
         d_fitter->setInitialGuesses(paramsInit);
+    }
+
+    if (d_fitter) {
+        for (i = 0; i < rows && i < d_fitter->numParameters(); ++i) {
+            if (d_fitter->objectName() == tr("Polynomial") || d_fitter->objectName() == tr("Linear"))
+                d_fitter->setInitialGuess(i, paramsInit[i]);
+            QCheckBox *cb = qobject_cast<QCheckBox *>(boxParams->cellWidget(i, 2));
+            if (cb && cb->isChecked())
+                d_fitter->setParameterFixed(i, true);
+
+            QString loTxt = boxParams->item(i, 3) ? boxParams->item(i, 3)->text().trimmed() : QString();
+            QString hiTxt = boxParams->item(i, 4) ? boxParams->item(i, 4)->text().trimmed() : QString();
+            if (!loTxt.isEmpty() || !hiTxt.isEmpty()) {
+                double loVal = -std::numeric_limits<double>::infinity();
+                double hiVal = std::numeric_limits<double>::infinity();
+                if (!loTxt.isEmpty()) {
+                    bool okLo = false;
+                    loVal = QLocale().toDouble(loTxt, &okLo);
+                    if (!okLo)
+                        loVal = loTxt.toDouble(&okLo);
+                }
+                if (!hiTxt.isEmpty()) {
+                    bool okHi = false;
+                    hiVal = QLocale().toDouble(hiTxt, &okHi);
+                    if (!okHi)
+                        hiVal = hiTxt.toDouble(&okHi);
+                }
+                d_fitter->setParameterBounds(i, loVal, hiVal);
+            }
+        }
     }
     delete[] paramsInit;
 
@@ -1233,6 +1293,8 @@ void FitDialog::accept()
     d_fitter->generateFunction(generatePointsBtn->isChecked(), generatePointsBox->value());
     d_fitter->setMaximumIterations(boxPoints->value());
     d_fitter->scaleErrors(scaleErrorsBox->isChecked());
+    d_fitter->enableConfidenceBand(confBandBox && confBandBox->isChecked(), 0.95);
+    d_fitter->enablePredictionBand(predBandBox && predBandBox->isChecked(), 0.95);
 
     if (d_fitter->objectName() == tr("MultiPeak") && ((MultiPeakFit *)d_fitter)->peaks() > 1) {
         ((MultiPeakFit *)d_fitter)->enablePeakCurves(app->generatePeakCurves);
@@ -1240,19 +1302,12 @@ void FitDialog::accept()
     }
 
     d_fitter->fit();
+    if (summaryOnGraphBox && summaryOnGraphBox->isChecked())
+        d_fitter->insertFitSummaryBoxOnGraph();
+
     auto res = d_fitter->results();
-    if (!boxParams->isColumnHidden(2)) {
-        int j = 0;
-        for (i = 0; i < rows; i++) {
-            QCheckBox *cb = (QCheckBox *)boxParams->cellWidget(i, 2);
-            if (!cb->isChecked())
-                boxParams->item(i, 1)->setText(
-                        QLocale().toString(res[j++], 'g', boxPrecision->value()));
-        }
-    } else {
-        for (i = 0; i < rows; i++)
-            boxParams->item(i, 1)->setText(QLocale().toString(res[i], 'g', boxPrecision->value()));
-    }
+    for (i = 0; i < rows && size_t(i) < res.size(); i++)
+        boxParams->item(i, 1)->setText(QLocale().toString(res[size_t(i)], 'g', boxPrecision->value()));
 }
 
 void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)

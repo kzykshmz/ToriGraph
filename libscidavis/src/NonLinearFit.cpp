@@ -29,10 +29,35 @@
 #include "NonLinearFit.h"
 #include "MyParser.h"
 #include "fit_gsl.h"
+#include "FunctionCurve.h"
+#include "ColorButton.h"
+#include "Table.h"
+#include "future/core/column/Column.h"
 
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QLocale>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QTableWidget>
+#include <QVBoxLayout>
+
+#include <gsl/gsl_blas.h>
+#include <gsl/gsl_multifit_nlin.h>
+#include <gsl/gsl_version.h>
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 using namespace std;
 
@@ -372,6 +397,7 @@ void NonLinearFit::setParametersList(const QStringList &lst)
     covar = gsl_matrix_alloc(d_p, d_p);
     d_results.resize(d_p);
 
+    d_param_explain.clear();
     for (unsigned i = 0; i < d_p; i++)
         d_param_explain << "";
     d_initial_guesses_set = false;
@@ -908,4 +934,1260 @@ bool NonLinearFit::calculateFitCurveData(const vector<double> &par, std::vector<
             return false;
     }
     return true;
+}
+
+namespace {
+
+enum GlobalSlotBoundMode {
+    GBoundNone = 0,
+    GBoundBoth = 1,
+    GBoundLower = 2,
+    GBoundUpper = 3
+};
+
+struct GlobalFitSlot
+{
+    int paramIdx = 0;
+    int curveIdx = -1; // -1 means shared across all curves
+    GlobalSlotBoundMode mode = GBoundNone;
+    double lo = -std::numeric_limits<double>::infinity();
+    double hi = std::numeric_limits<double>::infinity();
+
+    double mapUtoP(double u) const
+    {
+        switch (mode) {
+        case GBoundNone:
+            return u;
+        case GBoundBoth: {
+            double uc = std::max(-16.0, std::min(16.0, u));
+            return lo + 0.5 * (hi - lo) * (std::tanh(uc) + 1.0);
+        }
+        case GBoundLower: {
+            double uc = std::max(-1e8, std::min(1e8, u));
+            return lo + uc * uc;
+        }
+        case GBoundUpper: {
+            double uc = std::max(-1e8, std::min(1e8, u));
+            return hi - uc * uc;
+        }
+        }
+        return u;
+    }
+
+    double dPdU(double u) const
+    {
+        switch (mode) {
+        case GBoundNone:
+            return 1.0;
+        case GBoundBoth: {
+            double uc = std::max(-16.0, std::min(16.0, u));
+            double ch = std::cosh(uc);
+            return 0.5 * (hi - lo) * std::max(1e-13, 1.0 / (ch * ch));
+        }
+        case GBoundLower: {
+            double d = 2.0 * u;
+            return (std::abs(d) < 1e-10) ? (u >= 0.0 ? 1e-10 : -1e-10) : d;
+        }
+        case GBoundUpper: {
+            double d = -2.0 * u;
+            return (std::abs(d) < 1e-10) ? (u >= 0.0 ? -1e-10 : 1e-10) : d;
+        }
+        }
+        return 1.0;
+    }
+};
+
+struct GlobalFitContext
+{
+    int M = 0;
+    int P = 0;
+    size_t n_total = 0;
+    std::vector<std::vector<double>> curvesX;
+    std::vector<std::vector<double>> curvesY;
+    std::vector<std::vector<double>> curvesSigma;
+    std::vector<size_t> rowOffsets;
+    std::vector<std::vector<double>> baseParams; // [M][P]
+    std::vector<GlobalFitSlot> freeSlots;
+    MyParser *parser = nullptr;
+    double *var_x = nullptr;
+    std::vector<double> *var_p = nullptr;
+
+    void unpack(const gsl_vector *u, std::vector<std::vector<double>> &outParams) const
+    {
+        outParams = baseParams;
+        for (size_t k = 0; k < freeSlots.size(); ++k) {
+            const auto &sl = freeSlots[k];
+            double pv = sl.mapUtoP(gsl_vector_get(u, k));
+            if (sl.curveIdx < 0) {
+                for (int m = 0; m < M; ++m)
+                    outParams[size_t(m)][size_t(sl.paramIdx)] = pv;
+            } else {
+                outParams[size_t(sl.curveIdx)][size_t(sl.paramIdx)] = pv;
+            }
+        }
+    }
+
+    bool evalCurveY(const std::vector<double> &pVec, const std::vector<double> &xv,
+                    std::vector<double> &yvOut) const
+    {
+        for (int j = 0; j < P; ++j)
+            (*var_p)[size_t(j)] = pVec[size_t(j)];
+        yvOut.resize(xv.size());
+        try {
+            for (size_t i = 0; i < xv.size(); ++i) {
+                *var_x = xv[i];
+                double val = parser->Eval();
+                if (!std::isfinite(val))
+                    val = 1e100;
+                yvOut[i] = val;
+            }
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    static int gsl_f(const gsl_vector *u, void *data, gsl_vector *f)
+    {
+        GlobalFitContext *ctx = static_cast<GlobalFitContext *>(data);
+        std::vector<std::vector<double>> params;
+        ctx->unpack(u, params);
+        std::vector<double> yhat;
+        for (int m = 0; m < ctx->M; ++m) {
+            if (!ctx->evalCurveY(params[size_t(m)], ctx->curvesX[size_t(m)], yhat))
+                return GSL_EINVAL;
+            size_t off = ctx->rowOffsets[size_t(m)];
+            for (size_t i = 0; i < yhat.size(); ++i) {
+                double s = ctx->curvesSigma[size_t(m)][i];
+                gsl_vector_set(f, off + i, (yhat[i] - ctx->curvesY[size_t(m)][i]) / s);
+            }
+        }
+        return GSL_SUCCESS;
+    }
+
+    static int gsl_df(const gsl_vector *u, void *data, gsl_matrix *J)
+    {
+        GlobalFitContext *ctx = static_cast<GlobalFitContext *>(data);
+        gsl_matrix_set_zero(J);
+        std::vector<std::vector<double>> params;
+        ctx->unpack(u, params);
+        std::vector<double> yPlus, yMinus;
+
+        for (size_t k = 0; k < ctx->freeSlots.size(); ++k) {
+            const auto &sl = ctx->freeSlots[k];
+            double uk = gsl_vector_get(u, k);
+            double pk = sl.mapUtoP(uk);
+            double dpdu = sl.dPdU(uk);
+            double h = std::max(1e-7, 1e-6 * std::abs(pk));
+
+            int mStart = (sl.curveIdx < 0) ? 0 : sl.curveIdx;
+            int mEnd = (sl.curveIdx < 0) ? (ctx->M - 1) : sl.curveIdx;
+            for (int m = mStart; m <= mEnd; ++m) {
+                std::vector<double> pPlus = params[size_t(m)];
+                std::vector<double> pMinus = params[size_t(m)];
+                pPlus[size_t(sl.paramIdx)] = pk + h;
+                pMinus[size_t(sl.paramIdx)] = pk - h;
+                if (!ctx->evalCurveY(pPlus, ctx->curvesX[size_t(m)], yPlus)
+                    || !ctx->evalCurveY(pMinus, ctx->curvesX[size_t(m)], yMinus))
+                    return GSL_EINVAL;
+                size_t off = ctx->rowOffsets[size_t(m)];
+                for (size_t i = 0; i < yPlus.size(); ++i) {
+                    double s = ctx->curvesSigma[size_t(m)][i];
+                    double dfdp = (yPlus[i] - yMinus[i]) / (2.0 * h * s);
+                    gsl_matrix_set(J, off + i, k, dfdp * dpdu);
+                }
+            }
+        }
+        return GSL_SUCCESS;
+    }
+
+    static int gsl_fdf(const gsl_vector *u, void *data, gsl_vector *f, gsl_matrix *J)
+    {
+        int st = gsl_f(u, data, f);
+        if (st != GSL_SUCCESS)
+            return st;
+        return gsl_df(u, data, J);
+    }
+};
+
+struct ImplicitODRContext
+{
+    size_t n = 0;
+    int P = 0;
+    const std::vector<double> *X = nullptr;
+    const std::vector<double> *Y = nullptr;
+    std::vector<double> baseP;
+    std::vector<GlobalFitSlot> freeSlots;
+    MyParser *parser = nullptr;
+    double *var_x = nullptr;
+    double *var_y = nullptr;
+    std::vector<double> *var_p = nullptr;
+
+    void unpack(const gsl_vector *u, std::vector<double> &pOut) const
+    {
+        pOut = baseP;
+        for (size_t k = 0; k < freeSlots.size(); ++k)
+            pOut[size_t(freeSlots[k].paramIdx)] = freeSlots[k].mapUtoP(gsl_vector_get(u, k));
+    }
+
+    double evalF(double xVal, double yVal, const std::vector<double> &pVec) const
+    {
+        for (int j = 0; j < P; ++j)
+            (*var_p)[size_t(j)] = pVec[size_t(j)];
+        *var_x = xVal;
+        *var_y = yVal;
+        try {
+            double v = parser->Eval();
+            return std::isfinite(v) ? v : 1e50;
+        } catch (...) {
+            return 1e50;
+        }
+    }
+
+    bool evalResiduals(const std::vector<double> &pVec, std::vector<double> &resOut) const
+    {
+        for (int j = 0; j < P; ++j)
+            (*var_p)[size_t(j)] = pVec[size_t(j)];
+        resOut.resize(n);
+        try {
+            for (size_t i = 0; i < n; ++i) {
+                double xi = (*X)[i];
+                double yi = (*Y)[i];
+                double hx = std::max(1e-7, 1e-6 * std::abs(xi));
+                double hy = std::max(1e-7, 1e-6 * std::abs(yi));
+
+                *var_x = xi;
+                *var_y = yi;
+                double F0 = parser->Eval();
+
+                *var_x = xi + hx;
+                double Fxp = parser->Eval();
+                *var_x = xi - hx;
+                double Fxm = parser->Eval();
+                double Fx = (Fxp - Fxm) / (2.0 * hx);
+
+                *var_x = xi;
+                *var_y = yi + hy;
+                double Fyp = parser->Eval();
+                *var_y = yi - hy;
+                double Fym = parser->Eval();
+                double Fy = (Fyp - Fym) / (2.0 * hy);
+
+                double gradNorm = std::sqrt(Fx * Fx + Fy * Fy + 1e-16);
+                double r = F0 / gradNorm;
+                resOut[i] = std::isfinite(r) ? r : 1e50;
+            }
+        } catch (...) {
+            return false;
+        }
+        return true;
+    }
+
+    static int gsl_f(const gsl_vector *u, void *data, gsl_vector *f)
+    {
+        ImplicitODRContext *ctx = static_cast<ImplicitODRContext *>(data);
+        std::vector<double> pVec;
+        ctx->unpack(u, pVec);
+        std::vector<double> r;
+        if (!ctx->evalResiduals(pVec, r))
+            return GSL_EINVAL;
+        for (size_t i = 0; i < ctx->n; ++i)
+            gsl_vector_set(f, i, r[i]);
+        return GSL_SUCCESS;
+    }
+
+    static int gsl_df(const gsl_vector *u, void *data, gsl_matrix *J)
+    {
+        ImplicitODRContext *ctx = static_cast<ImplicitODRContext *>(data);
+        std::vector<double> pVec;
+        ctx->unpack(u, pVec);
+        std::vector<double> rPlus, rMinus;
+        for (size_t k = 0; k < ctx->freeSlots.size(); ++k) {
+            const auto &sl = ctx->freeSlots[k];
+            double uk = gsl_vector_get(u, k);
+            double pk = sl.mapUtoP(uk);
+            double dpdu = sl.dPdU(uk);
+            double h = std::max(1e-7, 1e-5 * std::abs(pk));
+            std::vector<double> pPlus = pVec;
+            std::vector<double> pMinus = pVec;
+            pPlus[size_t(sl.paramIdx)] = pk + h;
+            pMinus[size_t(sl.paramIdx)] = pk - h;
+            if (!ctx->evalResiduals(pPlus, rPlus) || !ctx->evalResiduals(pMinus, rMinus))
+                return GSL_EINVAL;
+            for (size_t i = 0; i < ctx->n; ++i)
+                gsl_matrix_set(J, i, k, ((rPlus[i] - rMinus[i]) / (2.0 * h)) * dpdu);
+        }
+        return GSL_SUCCESS;
+    }
+
+    static int gsl_fdf(const gsl_vector *u, void *data, gsl_vector *f, gsl_matrix *J)
+    {
+        int st = gsl_f(u, data, f);
+        if (st != GSL_SUCCESS)
+            return st;
+        return gsl_df(u, data, J);
+    }
+};
+
+static QString normalizeImplicitExpr(const QString &expr)
+{
+    QString s = expr.trimmed();
+    int eqPos = -1;
+    for (int i = 0; i < s.length(); ++i) {
+        if (s[i] == QLatin1Char('=')) {
+            QChar prev = (i > 0) ? s[i - 1] : QChar();
+            QChar next = (i + 1 < s.length()) ? s[i + 1] : QChar();
+            if (prev != QLatin1Char('<') && prev != QLatin1Char('>') && prev != QLatin1Char('!')
+                && prev != QLatin1Char('=') && next != QLatin1Char('=')) {
+                eqPos = i;
+                break;
+            }
+        }
+    }
+    if (eqPos >= 0) {
+        QString lhs = s.left(eqPos).trimmed();
+        QString rhs = s.mid(eqPos + 1).trimmed();
+        if (!lhs.isEmpty() && !rhs.isEmpty())
+            return QString("(%1)-(%2)").arg(lhs, rhs);
+    }
+    return s;
+}
+
+} // namespace
+
+bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool> &sharedFlags,
+                             Table **summaryOut)
+{
+    if (summaryOut)
+        *summaryOut = nullptr;
+    ApplicationWindow *app = (ApplicationWindow *)parent();
+    if (!app || !d_graph || curveTitles.isEmpty() || d_p == 0 || d_formula.trimmed().isEmpty())
+        return false;
+
+    const int M = curveTitles.size();
+    const int P = int(d_p);
+
+    GlobalFitContext ctx;
+    ctx.M = M;
+    ctx.P = P;
+    ctx.curvesX.resize(size_t(M));
+    ctx.curvesY.resize(size_t(M));
+    ctx.curvesSigma.resize(size_t(M));
+    ctx.rowOffsets.resize(size_t(M), 0);
+    ctx.baseParams.assign(size_t(M), std::vector<double>(size_t(P), 1.0));
+
+    size_t n_total = 0;
+    for (int m = 0; m < M; ++m) {
+        NonLinearFit loader(app, d_graph);
+        loader.d_silent = true;
+        loader.setParametersList(d_param_names);
+        loader.setFormula(d_formula);
+        if (!d_model_name.isEmpty())
+            loader.d_model_name = d_model_name;
+        if (!loader.setDataFromCurve(curveTitles[m], d_graph) || loader.error() || loader.x().empty())
+            return false;
+
+        ctx.curvesX[size_t(m)] = loader.x();
+        ctx.curvesY[size_t(m)] = loader.y();
+        ctx.curvesSigma[size_t(m)] = loader.d_y_errors.empty()
+                ? std::vector<double>(loader.x().size(), 1.0)
+                : loader.d_y_errors;
+        ctx.rowOffsets[size_t(m)] = n_total;
+        n_total += loader.x().size();
+
+        loader.guessInitialValues();
+        for (int j = 0; j < P; ++j) {
+            if (d_all_guesses_set || d_explicit_init_vals.contains(j))
+                ctx.baseParams[size_t(m)][size_t(j)] = initialGuess(j);
+            else
+                ctx.baseParams[size_t(m)][size_t(j)] = loader.initialGuess(j);
+        }
+    }
+    ctx.n_total = n_total;
+
+    // Average auto-guessed shared parameters across datasets unless explicitly set
+    for (int j = 0; j < P; ++j) {
+        bool isShared = (j < sharedFlags.size()) ? sharedFlags[j] : false;
+        if (isShared && !d_all_guesses_set && !d_explicit_init_vals.contains(j)) {
+            double avg = 0.0;
+            for (int m = 0; m < M; ++m)
+                avg += ctx.baseParams[size_t(m)][size_t(j)];
+            avg /= double(M);
+            for (int m = 0; m < M; ++m)
+                ctx.baseParams[size_t(m)][size_t(j)] = avg;
+        }
+    }
+
+    std::vector<double> u0;
+    auto appendSlot = [&](int paramIdx, int curveIdx, double pInit) {
+        GlobalFitSlot sl;
+        sl.paramIdx = paramIdx;
+        sl.curveIdx = curveIdx;
+        double lo = -std::numeric_limits<double>::infinity();
+        double hi = std::numeric_limits<double>::infinity();
+        bool bounded = hasParameterBounds(paramIdx, &lo, &hi);
+        if (bounded && std::isfinite(lo) && std::isfinite(hi)) {
+            if (std::abs(hi - lo) <= 1e-15) {
+                double mid = 0.5 * (lo + hi);
+                if (curveIdx < 0) {
+                    for (int m = 0; m < M; ++m)
+                        ctx.baseParams[size_t(m)][size_t(paramIdx)] = mid;
+                } else {
+                    ctx.baseParams[size_t(curveIdx)][size_t(paramIdx)] = mid;
+                }
+                return;
+            }
+            sl.mode = GBoundBoth;
+            sl.lo = lo;
+            sl.hi = hi;
+            double t = std::max(1e-4, std::min(1.0 - 1e-4, (pInit - lo) / (hi - lo)));
+            u0.push_back(std::atanh(2.0 * t - 1.0));
+        } else if (bounded && std::isfinite(lo)) {
+            sl.mode = GBoundLower;
+            sl.lo = lo;
+            u0.push_back(std::sqrt(std::max(1e-3, pInit - lo)));
+        } else if (bounded && std::isfinite(hi)) {
+            sl.mode = GBoundUpper;
+            sl.hi = hi;
+            u0.push_back(std::sqrt(std::max(1e-3, hi - pInit)));
+        } else {
+            sl.mode = GBoundNone;
+            u0.push_back(pInit);
+        }
+        ctx.freeSlots.push_back(sl);
+    };
+
+    for (int j = 0; j < P; ++j) {
+        if (isParameterFixed(j))
+            continue;
+        bool isShared = (j < sharedFlags.size()) ? sharedFlags[j] : false;
+        if (isShared) {
+            appendSlot(j, -1, ctx.baseParams[0][size_t(j)]);
+        } else {
+            for (int m = 0; m < M; ++m)
+                appendSlot(j, m, ctx.baseParams[size_t(m)][size_t(j)]);
+        }
+    }
+
+    const size_t n_free = ctx.freeSlots.size();
+    if (n_total < std::max<size_t>(1, n_free))
+        return false;
+
+    MyParser parser;
+    double var_x = 0.0;
+    std::vector<double> var_p(size_t(P), 0.0);
+    parser.DefineVar(toString<mu::string_type>(QString("x")), &var_x);
+    for (int j = 0; j < P; ++j)
+        parser.DefineVar(toString<mu::string_type>(d_param_names[j]), &var_p[size_t(j)]);
+
+    QString exprLine = d_formula.section('\n', -1).trimmed();
+    try {
+        parser.SetExpr(exprLine);
+        (void)parser.Eval();
+    } catch (...) {
+        return false;
+    }
+
+    ctx.parser = &parser;
+    ctx.var_x = &var_x;
+    ctx.var_p = &var_p;
+
+    std::vector<std::vector<double>> fittedParams = ctx.baseParams;
+    std::vector<std::vector<double>> fittedErrors(size_t(M), std::vector<double>(size_t(P), 0.0));
+    double rss_total = 0.0;
+
+    if (n_free > 0) {
+        gsl_vector *u_init = gsl_vector_alloc(n_free);
+        for (size_t k = 0; k < n_free; ++k)
+            gsl_vector_set(u_init, k, u0[k]);
+
+        gsl_multifit_function_fdf fdf;
+        fdf.f = &GlobalFitContext::gsl_f;
+        fdf.df = &GlobalFitContext::gsl_df;
+        fdf.fdf = &GlobalFitContext::gsl_fdf;
+        fdf.n = n_total;
+        fdf.p = n_free;
+        fdf.params = &ctx;
+
+        gsl_multifit_fdfsolver *s =
+                gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n_total, n_free);
+        int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
+        if (status != GSL_SUCCESS) {
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
+        }
+
+        for (int iter = 0; iter < d_max_iterations; ++iter) {
+            status = gsl_multifit_fdfsolver_iterate(s);
+            int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
+            if (dstat == GSL_SUCCESS)
+                break;
+            if (status && status != GSL_CONTINUE)
+                break;
+        }
+
+        ctx.unpack(s->x, fittedParams);
+        gsl_blas_ddot(s->f, s->f, &rss_total);
+
+        // Compute covariance in physical slot space
+        gsl_matrix *J_u = gsl_matrix_alloc(n_total, n_free);
+        gsl_matrix *cov_p = gsl_matrix_alloc(n_free, n_free);
+#if GSL_MAJOR_VERSION < 2
+        gsl_matrix_memcpy(J_u, s->J);
+#else
+        gsl_multifit_fdfsolver_jac(s, J_u);
+#endif
+        for (size_t k = 0; k < n_free; ++k) {
+            double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
+            if (std::abs(dpdu) > 1e-15) {
+                for (size_t i = 0; i < n_total; ++i)
+                    gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            }
+        }
+        gsl_multifit_covar(J_u, 0.0, cov_p);
+        double dof = (n_total > n_free) ? double(n_total - n_free) : 1.0;
+        double scale = rss_total / dof;
+
+        for (size_t k = 0; k < n_free; ++k) {
+            const auto &sl = ctx.freeSlots[k];
+            double se = std::sqrt(std::max(0.0, scale * gsl_matrix_get(cov_p, k, k)));
+            if (sl.curveIdx < 0) {
+                for (int m = 0; m < M; ++m)
+                    fittedErrors[size_t(m)][size_t(sl.paramIdx)] = se;
+            } else {
+                fittedErrors[size_t(sl.curveIdx)][size_t(sl.paramIdx)] = se;
+            }
+        }
+
+        gsl_matrix_free(J_u);
+        gsl_matrix_free(cov_p);
+        gsl_multifit_fdfsolver_free(s);
+        gsl_vector_free(u_init);
+    }
+
+    // Compute per-curve R^2 and global R^2, and plot fitted curves on d_graph
+    std::vector<double> curveR2(size_t(M), 1.0);
+    double tss_total = 0.0;
+    double unwt_rss_total = 0.0;
+    for (int m = 0; m < M; ++m) {
+        std::vector<double> yhat;
+        ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat);
+        const auto &yv = ctx.curvesY[size_t(m)];
+        double meanY = std::accumulate(yv.begin(), yv.end(), 0.0) / double(yv.size());
+        double tss_m = 0.0, rss_m = 0.0;
+        for (size_t i = 0; i < yv.size(); ++i) {
+            double dt = yv[i] - meanY;
+            double dr = yv[i] - yhat[i];
+            tss_m += dt * dt;
+            rss_m += dr * dr;
+        }
+        curveR2[size_t(m)] = (tss_m > 1e-30) ? (1.0 - rss_m / tss_m) : 1.0;
+        tss_total += tss_m;
+        unwt_rss_total += rss_m;
+
+        if (!d_suppress_curve_output && d_graph && !ctx.curvesX[size_t(m)].empty()) {
+            int nGrid = std::max(2, d_points);
+            double x0 = *std::min_element(ctx.curvesX[size_t(m)].begin(),
+                                          ctx.curvesX[size_t(m)].end());
+            double x1 = *std::max_element(ctx.curvesX[size_t(m)].begin(),
+                                          ctx.curvesX[size_t(m)].end());
+            std::vector<double> xg(static_cast<size_t>(nGrid)), yg(static_cast<size_t>(nGrid));
+            double step = (x1 - x0) / double(nGrid - 1);
+            for (int i = 0; i < nGrid; ++i)
+                xg[size_t(i)] = x0 + i * step;
+            ctx.evalCurveY(fittedParams[size_t(m)], xg, yg);
+
+            QString fitCurveName = d_graph->generateFunctionName(
+                    QString("GlobalFit_%1").arg(curveTitles[m]));
+            FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, fitCurveName);
+            fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
+            fc->setData(xg.data(), yg.data(), nGrid);
+            fc->setRange(x0, x1);
+            fc->setFormula(exprLine);
+            d_graph->insertPlotItem(fc, Graph::Line);
+            d_graph->addFitCurve(fc);
+        }
+    }
+    if (!d_suppress_curve_output && d_graph)
+        d_graph->replot();
+
+    double globalR2 = (tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total) : 1.0;
+
+    // Store curve 0 state & global diagnostics on this NonLinearFit instance
+    setDataFromCurve(curveTitles[0], d_graph);
+    d_results = fittedParams[0];
+    d_result_errors = fittedErrors[0];
+    ctx.evalCurveY(d_results, d_x, d_y_fit);
+    chi_2 = unwt_rss_total;
+    d_has_custom_r2 = true;
+    d_custom_r2 = globalR2;
+    if (covar) {
+        gsl_matrix_set_zero(covar);
+        for (int j = 0; j < P; ++j)
+            gsl_matrix_set(covar, j, j, fittedErrors[0][size_t(j)] * fittedErrors[0][size_t(j)]);
+    }
+
+    // Create Global Fit Summary Table
+    QString tblName = app->generateUniqueName(tr("GlobalFitSummary"));
+    int totalRows = M * P;
+    Table *tbl = app->newTable(tblName, totalRows, 7);
+    if (tbl) {
+        tbl->setHeader(QStringList() << tr("Dataset") << tr("Parameter") << tr("Shared")
+                                     << tr("Value") << tr("Error") << tr("Curve_R2")
+                                     << tr("Global_R2"));
+        tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+        tbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 3; c < 7; ++c)
+            tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+
+        int rowIdx = 0;
+        for (int m = 0; m < M; ++m) {
+            for (int j = 0; j < P; ++j) {
+                bool isShared = (j < sharedFlags.size()) ? sharedFlags[j] : false;
+                tbl->column(0)->setTextAt(rowIdx, curveTitles[m]);
+                tbl->column(1)->setTextAt(rowIdx, d_param_names[j]);
+                tbl->column(2)->setTextAt(rowIdx, isShared ? QString("Yes") : QString("No"));
+                tbl->column(3)->setValueAt(rowIdx, fittedParams[size_t(m)][size_t(j)]);
+                tbl->column(4)->setValueAt(rowIdx, fittedErrors[size_t(m)][size_t(j)]);
+                tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
+                tbl->column(6)->setValueAt(rowIdx, globalR2);
+                ++rowIdx;
+            }
+        }
+        tbl->showNormal();
+        if (summaryOut)
+            *summaryOut = tbl;
+    }
+
+    return true;
+}
+
+bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringList &paramNames,
+                                  const QVector<double> &initVals)
+{
+    ApplicationWindow *app = (ApplicationWindow *)parent();
+    if (d_init_err || d_x.empty() || d_y.size() != d_x.size() || paramNames.isEmpty())
+        return false;
+
+    QString normExpr = normalizeImplicitExpr(implicitExprFxy);
+    if (normExpr.isEmpty())
+        return false;
+
+    // Preserve any pre-set fixed/bound flags across setParametersList
+    std::vector<bool> savedFixed = d_param_fixed;
+    std::vector<bool> savedBounded = d_param_bounded;
+    std::vector<double> savedMin = d_param_min;
+    std::vector<double> savedMax = d_param_max;
+
+    setParametersList(paramNames);
+    setFormula(normExpr);
+
+    d_param_fixed = savedFixed;
+    d_param_bounded = savedBounded;
+    d_param_min = savedMin;
+    d_param_max = savedMax;
+
+    const int P = int(d_p);
+    const size_t n = d_x.size();
+
+    ImplicitODRContext ctx;
+    ctx.n = n;
+    ctx.P = P;
+    ctx.X = &d_x;
+    ctx.Y = &d_y;
+    ctx.baseP.resize(size_t(P), 1.0);
+    for (int j = 0; j < P; ++j) {
+        double v = (j < initVals.size()) ? initVals[j] : 1.0;
+        ctx.baseP[size_t(j)] = v;
+        gsl_vector_set(d_param_init, j, v);
+    }
+
+    std::vector<double> u0;
+    for (int j = 0; j < P; ++j) {
+        if (isParameterFixed(j))
+            continue;
+        GlobalFitSlot sl;
+        sl.paramIdx = j;
+        sl.curveIdx = -1;
+        double pInit = ctx.baseP[size_t(j)];
+        double lo = -std::numeric_limits<double>::infinity();
+        double hi = std::numeric_limits<double>::infinity();
+        bool bounded = hasParameterBounds(j, &lo, &hi);
+        if (bounded && std::isfinite(lo) && std::isfinite(hi)) {
+            if (std::abs(hi - lo) <= 1e-15) {
+                ctx.baseP[size_t(j)] = 0.5 * (lo + hi);
+                continue;
+            }
+            sl.mode = GBoundBoth;
+            sl.lo = lo;
+            sl.hi = hi;
+            double t = std::max(1e-4, std::min(1.0 - 1e-4, (pInit - lo) / (hi - lo)));
+            u0.push_back(std::atanh(2.0 * t - 1.0));
+        } else if (bounded && std::isfinite(lo)) {
+            sl.mode = GBoundLower;
+            sl.lo = lo;
+            u0.push_back(std::sqrt(std::max(1e-3, pInit - lo)));
+        } else if (bounded && std::isfinite(hi)) {
+            sl.mode = GBoundUpper;
+            sl.hi = hi;
+            u0.push_back(std::sqrt(std::max(1e-3, hi - pInit)));
+        } else {
+            sl.mode = GBoundNone;
+            u0.push_back(pInit);
+        }
+        ctx.freeSlots.push_back(sl);
+    }
+
+    const size_t n_free = ctx.freeSlots.size();
+    if (n < std::max<size_t>(1, n_free))
+        return false;
+
+    MyParser parser;
+    double var_x = 0.0, var_y = 0.0;
+    std::vector<double> var_p(size_t(P), 1.0);
+    parser.DefineVar(toString<mu::string_type>(QString("x")), &var_x);
+    parser.DefineVar(toString<mu::string_type>(QString("y")), &var_y);
+    for (int j = 0; j < P; ++j)
+        parser.DefineVar(toString<mu::string_type>(paramNames[j]), &var_p[size_t(j)]);
+
+    try {
+        parser.SetExpr(normExpr);
+        (void)parser.Eval();
+    } catch (...) {
+        return false;
+    }
+
+    ctx.parser = &parser;
+    ctx.var_x = &var_x;
+    ctx.var_y = &var_y;
+    ctx.var_p = &var_p;
+
+    std::vector<double> pOpt = ctx.baseP;
+    std::vector<double> pErr(size_t(P), 0.0);
+    double ssr = 0.0;
+
+    if (n_free > 0) {
+        gsl_vector *u_init = gsl_vector_alloc(n_free);
+        for (size_t k = 0; k < n_free; ++k)
+            gsl_vector_set(u_init, k, u0[k]);
+
+        gsl_multifit_function_fdf fdf;
+        fdf.f = &ImplicitODRContext::gsl_f;
+        fdf.df = &ImplicitODRContext::gsl_df;
+        fdf.fdf = &ImplicitODRContext::gsl_fdf;
+        fdf.n = n;
+        fdf.p = n_free;
+        fdf.params = &ctx;
+
+        gsl_multifit_fdfsolver *s =
+                gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n, n_free);
+        int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
+        if (status != GSL_SUCCESS) {
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
+        }
+
+        for (int iter = 0; iter < d_max_iterations; ++iter) {
+            status = gsl_multifit_fdfsolver_iterate(s);
+            int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
+            if (dstat == GSL_SUCCESS)
+                break;
+            if (status && status != GSL_CONTINUE)
+                break;
+        }
+
+        ctx.unpack(s->x, pOpt);
+        gsl_blas_ddot(s->f, s->f, &ssr);
+
+        gsl_matrix *J_u = gsl_matrix_alloc(n, n_free);
+        gsl_matrix *cov_free = gsl_matrix_alloc(n_free, n_free);
+#if GSL_MAJOR_VERSION < 2
+        gsl_matrix_memcpy(J_u, s->J);
+#else
+        gsl_multifit_fdfsolver_jac(s, J_u);
+#endif
+        for (size_t k = 0; k < n_free; ++k) {
+            double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
+            if (std::abs(dpdu) > 1e-15) {
+                for (size_t i = 0; i < n; ++i)
+                    gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            }
+        }
+        gsl_multifit_covar(J_u, 0.0, cov_free);
+        double dof = (n > n_free) ? double(n - n_free) : 1.0;
+        double scale = ssr / dof;
+
+        gsl_matrix_set_zero(covar);
+        for (size_t a = 0; a < n_free; ++a) {
+            int ja = ctx.freeSlots[a].paramIdx;
+            pErr[size_t(ja)] = std::sqrt(std::max(0.0, scale * gsl_matrix_get(cov_free, a, a)));
+            for (size_t b = 0; b < n_free; ++b) {
+                int jb = ctx.freeSlots[b].paramIdx;
+                gsl_matrix_set(covar, ja, jb, scale * gsl_matrix_get(cov_free, a, b));
+            }
+        }
+
+        gsl_matrix_free(J_u);
+        gsl_matrix_free(cov_free);
+        gsl_multifit_fdfsolver_free(s);
+        gsl_vector_free(u_init);
+    } else {
+        std::vector<double> r;
+        ctx.evalResiduals(pOpt, r);
+        for (double v : r)
+            ssr += v * v;
+    }
+
+    // Preserve positive sign convention for even-symmetric parameters (e.g., semi-axes a, b in x^2/a^2 + y^2/b^2 - 1 = 0)
+    for (int j = 0; j < P; ++j) {
+        if (isParameterFixed(j))
+            continue;
+        double initV = (j < initVals.size()) ? initVals[j] : 1.0;
+        if (initV > 0.0 && pOpt[size_t(j)] < 0.0) {
+            double lo = -std::numeric_limits<double>::infinity();
+            double hi = std::numeric_limits<double>::infinity();
+            bool bounded = hasParameterBounds(j, &lo, &hi);
+            double flipped = -pOpt[size_t(j)];
+            if (!bounded || (flipped >= lo && flipped <= hi)) {
+                std::vector<double> pTest = pOpt;
+                pTest[size_t(j)] = flipped;
+                std::vector<double> rTest;
+                if (ctx.evalResiduals(pTest, rTest)) {
+                    double ssrTest = 0.0;
+                    for (double rv : rTest)
+                        ssrTest += rv * rv;
+                    if (std::abs(ssrTest - ssr) <= 1e-11 * (1.0 + ssr))
+                        pOpt[size_t(j)] = flipped;
+                }
+            }
+        }
+    }
+
+    d_results = pOpt;
+    d_result_errors = pErr;
+    chi_2 = ssr;
+
+    // Geometric R^2 relative to radial variance around centroid
+    double mx = std::accumulate(d_x.begin(), d_x.end(), 0.0) / double(n);
+    double my = std::accumulate(d_y.begin(), d_y.end(), 0.0) / double(n);
+    double geomTss = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double dx = d_x[i] - mx;
+        double dy = d_y[i] - my;
+        geomTss += dx * dx + dy * dy;
+    }
+    d_has_custom_r2 = true;
+    d_custom_r2 = (geomTss > 1e-30) ? std::max(0.0, 1.0 - ssr / geomTss) : 1.0;
+
+    // Trace implicit zero-contour F(x, y; pOpt) = 0 via Marching Squares and plot onto d_graph
+    if (!d_suppress_curve_output && d_graph) {
+        double xMin = *std::min_element(d_x.begin(), d_x.end());
+        double xMax = *std::max_element(d_x.begin(), d_x.end());
+        double yMin = *std::min_element(d_y.begin(), d_y.end());
+        double yMax = *std::max_element(d_y.begin(), d_y.end());
+        double xPad = std::max(1e-3, 0.35 * (xMax - xMin));
+        double yPad = std::max(1e-3, 0.35 * (yMax - yMin));
+        xMin -= xPad;
+        xMax += xPad;
+        yMin -= yPad;
+        yMax += yPad;
+
+        const int G = 96;
+        std::vector<double> gx(G), gy(G);
+        for (int i = 0; i < G; ++i) {
+            gx[i] = xMin + (xMax - xMin) * double(i) / double(G - 1);
+            gy[i] = yMin + (yMax - yMin) * double(i) / double(G - 1);
+        }
+        std::vector<double> Fgrid(G * G, 0.0);
+        for (int iy = 0; iy < G; ++iy) {
+            for (int ix = 0; ix < G; ++ix)
+                Fgrid[iy * G + ix] = ctx.evalF(gx[ix], gy[iy], pOpt);
+        }
+
+        auto interpEdge = [&](double x1, double y1, double f1, double x2, double y2,
+                              double f2) -> QPointF {
+            double denom = f1 - f2;
+            double t = (std::abs(denom) > 1e-30) ? (f1 / denom) : 0.5;
+            t = std::max(0.0, std::min(1.0, t));
+            // Two secant/bisection refinement steps along the edge
+            double ta = 0.0, tb = 1.0, fa = f1, fb = f2;
+            for (int r = 0; r < 3; ++r) {
+                double xm = x1 + t * (x2 - x1);
+                double ym = y1 + t * (y2 - y1);
+                double fm = ctx.evalF(xm, ym, pOpt);
+                if ((fa <= 0.0 && fm >= 0.0) || (fa >= 0.0 && fm <= 0.0)) {
+                    tb = t;
+                    fb = fm;
+                } else {
+                    ta = t;
+                    fa = fm;
+                }
+                double df = fa - fb;
+                t = (std::abs(df) > 1e-30) ? (ta + (tb - ta) * (fa / df)) : (0.5 * (ta + tb));
+                t = std::max(ta, std::min(tb, t));
+            }
+            return QPointF(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
+        };
+
+        struct Seg
+        {
+            QPointF a, b;
+            bool used = false;
+        };
+        std::vector<Seg> segs;
+        for (int iy = 0; iy + 1 < G; ++iy) {
+            for (int ix = 0; ix + 1 < G; ++ix) {
+                double f00 = Fgrid[iy * G + ix];
+                double f10 = Fgrid[iy * G + (ix + 1)];
+                double f11 = Fgrid[(iy + 1) * G + (ix + 1)];
+                double f01 = Fgrid[(iy + 1) * G + ix];
+                int mask = (f00 >= 0.0 ? 1 : 0) | (f10 >= 0.0 ? 2 : 0) | (f11 >= 0.0 ? 4 : 0)
+                        | (f01 >= 0.0 ? 8 : 0);
+                if (mask == 0 || mask == 15)
+                    continue;
+
+                QPointF eBottom, eRight, eTop, eLeft;
+                bool hasB = ((mask & 1) != 0) != ((mask & 2) != 0);
+                bool hasR = ((mask & 2) != 0) != ((mask & 4) != 0);
+                bool hasT = ((mask & 8) != 0) != ((mask & 4) != 0);
+                bool hasL = ((mask & 1) != 0) != ((mask & 8) != 0);
+                if (hasB)
+                    eBottom = interpEdge(gx[ix], gy[iy], f00, gx[ix + 1], gy[iy], f10);
+                if (hasR)
+                    eRight = interpEdge(gx[ix + 1], gy[iy], f10, gx[ix + 1], gy[iy + 1], f11);
+                if (hasT)
+                    eTop = interpEdge(gx[ix], gy[iy + 1], f01, gx[ix + 1], gy[iy + 1], f11);
+                if (hasL)
+                    eLeft = interpEdge(gx[ix], gy[iy], f00, gx[ix], gy[iy + 1], f01);
+
+                QVector<QPointF> pts;
+                if (hasB)
+                    pts.push_back(eBottom);
+                if (hasR)
+                    pts.push_back(eRight);
+                if (hasT)
+                    pts.push_back(eTop);
+                if (hasL)
+                    pts.push_back(eLeft);
+                if (pts.size() == 2) {
+                    segs.push_back({ pts[0], pts[1], false });
+                } else if (pts.size() == 4) {
+                    segs.push_back({ eBottom, eLeft, false });
+                    segs.push_back({ eRight, eTop, false });
+                }
+            }
+        }
+
+        if (!segs.empty()) {
+            double diag2 = (xMax - xMin) * (xMax - xMin) + (yMax - yMin) * (yMax - yMin);
+            double tol2 = 1e-8 * diag2;
+            auto dist2 = [](const QPointF &p, const QPointF &q) {
+                double dx = p.x() - q.x(), dy = p.y() - q.y();
+                return dx * dx + dy * dy;
+            };
+
+            std::vector<QVector<QPointF>> chains;
+            for (size_t i = 0; i < segs.size(); ++i) {
+                if (segs[i].used)
+                    continue;
+                segs[i].used = true;
+                QVector<QPointF> chain;
+                chain.push_back(segs[i].a);
+                chain.push_back(segs[i].b);
+
+                bool extended = true;
+                while (extended) {
+                    extended = false;
+                    for (size_t j = 0; j < segs.size(); ++j) {
+                        if (segs[j].used)
+                            continue;
+                        if (dist2(chain.back(), segs[j].a) <= tol2) {
+                            chain.push_back(segs[j].b);
+                            segs[j].used = true;
+                            extended = true;
+                        } else if (dist2(chain.back(), segs[j].b) <= tol2) {
+                            chain.push_back(segs[j].a);
+                            segs[j].used = true;
+                            extended = true;
+                        } else if (dist2(chain.front(), segs[j].a) <= tol2) {
+                            chain.prepend(segs[j].b);
+                            segs[j].used = true;
+                            extended = true;
+                        } else if (dist2(chain.front(), segs[j].b) <= tol2) {
+                            chain.prepend(segs[j].a);
+                            segs[j].used = true;
+                            extended = true;
+                        }
+                    }
+                }
+                chains.push_back(chain);
+            }
+
+            for (const auto &ch : chains) {
+                if (ch.size() < 2)
+                    continue;
+                std::vector<double> cx(size_t(ch.size())), cy(size_t(ch.size()));
+                for (int k = 0; k < ch.size(); ++k) {
+                    cx[size_t(k)] = ch[k].x();
+                    cy[size_t(k)] = ch[k].y();
+                }
+                QString title = d_graph->generateFunctionName(tr("ImplicitODRFit"));
+                FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, title);
+                fc->setPen(QPen(d_curveColor, 2));
+                fc->setData(cx.data(), cy.data(), ch.size());
+                fc->setRange(xMin, xMax);
+                fc->setFormula(normExpr + " = 0");
+                d_graph->insertPlotItem(fc, Graph::Line);
+                d_graph->addFitCurve(fc);
+            }
+            d_graph->replot();
+        }
+    }
+
+    if (app && app->writeFitResultsToLog && !d_silent && d_graph)
+        app->updateLog(logFitInfo(d_results, 0, 0, d_graph->parentPlotName()));
+
+    return true;
+}
+
+void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app || !g)
+        return;
+    QStringList curves = g->analysableCurvesList();
+    if (curves.isEmpty()) {
+        QMessageBox::warning(app, tr("Global Curve Fit"),
+                             tr("The active graph contains no analysable data curves."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(tr("Global Nonlinear Curve Fit (Shared Parameters)"));
+    dlg.resize(540, 480);
+    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+
+    QGroupBox *gbCurves = new QGroupBox(tr("1. Datasets to Fit Simultaneously"));
+    QVBoxLayout *cl = new QVBoxLayout(gbCurves);
+    QListWidget *curveList = new QListWidget();
+    for (const QString &c : curves) {
+        QListWidgetItem *it = new QListWidgetItem(c, curveList);
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+        it->setCheckState(Qt::Checked);
+    }
+    cl->addWidget(curveList);
+    mainLayout->addWidget(gbCurves);
+
+    QGroupBox *gbModel = new QGroupBox(tr("2. Model & Shared Parameter Flags"));
+    QFormLayout *fl = new QFormLayout(gbModel);
+    QComboBox *modelBox = new QComboBox();
+    modelBox->addItem(tr("<Custom Formula>"));
+    modelBox->addItems(builtInModelNames());
+    int expIdx = modelBox->findText("ExpDec1");
+    if (expIdx >= 0)
+        modelBox->setCurrentIndex(expIdx);
+
+    QLineEdit *formulaEdit = new QLineEdit();
+    QLineEdit *paramsEdit = new QLineEdit();
+    fl->addRow(tr("Model:"), modelBox);
+    fl->addRow(tr("Formula y(x):"), formulaEdit);
+    fl->addRow(tr("Parameters:"), paramsEdit);
+
+    QTableWidget *paramTable = new QTableWidget(0, 2);
+    paramTable->setHorizontalHeaderLabels(QStringList() << tr("Parameter") << tr("Share Across Curves"));
+    paramTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    paramTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    fl->addRow(paramTable);
+    mainLayout->addWidget(gbModel);
+
+    auto refreshParams = [&]() {
+        if (modelBox->currentIndex() > 0) {
+            QString m = modelBox->currentText();
+            formulaEdit->setText(builtInModelFormula(m));
+            paramsEdit->setText(builtInModelParameters(m).join(", "));
+        }
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        QStringList pList = paramsEdit->text().split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
+#else
+        QStringList pList = paramsEdit->text().split(QRegExp("[,;\\s]+"), QString::SkipEmptyParts);
+#endif
+        paramTable->setRowCount(pList.size());
+        for (int i = 0; i < pList.size(); ++i) {
+            QTableWidgetItem *it = new QTableWidgetItem(pList[i]);
+            it->setFlags(Qt::ItemIsEnabled);
+            paramTable->setItem(i, 0, it);
+            QCheckBox *cb = new QCheckBox();
+            cb->setChecked(i == 1 || pList[i] == "t" || pList[i] == "k" || pList[i] == "w");
+            paramTable->setCellWidget(i, 1, cb);
+        }
+    };
+    QObject::connect(modelBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     [&](int) { refreshParams(); });
+    QObject::connect(paramsEdit, &QLineEdit::editingFinished, refreshParams);
+    refreshParams();
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    mainLayout->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QStringList chosenCurves;
+    for (int i = 0; i < curveList->count(); ++i) {
+        if (curveList->item(i)->checkState() == Qt::Checked)
+            chosenCurves << curveList->item(i)->text();
+    }
+    if (chosenCurves.isEmpty())
+        return;
+
+    NonLinearFit fitter(app, g);
+    if (modelBox->currentIndex() > 0) {
+        fitter.setBuiltInModel(modelBox->currentText());
+    } else {
+        QStringList pNames;
+        for (int i = 0; i < paramTable->rowCount(); ++i)
+            pNames << paramTable->item(i, 0)->text();
+        fitter.setParametersList(pNames);
+        fitter.setFormula(formulaEdit->text().trimmed());
+    }
+
+    QVector<bool> sharedFlags(paramTable->rowCount(), false);
+    for (int i = 0; i < paramTable->rowCount(); ++i) {
+        QCheckBox *cb = qobject_cast<QCheckBox *>(paramTable->cellWidget(i, 1));
+        sharedFlags[i] = (cb && cb->isChecked());
+    }
+
+    Table *summary = nullptr;
+    if (!fitter.fitGlobal(chosenCurves, sharedFlags, &summary)) {
+        QMessageBox::warning(app, tr("Global Curve Fit"),
+                             tr("Global nonlinear curve fit failed to converge."));
+    }
+}
+
+void NonLinearFit::showImplicitFitDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app || !g)
+        return;
+    QStringList curves = g->analysableCurvesList();
+    if (curves.isEmpty()) {
+        QMessageBox::warning(app, tr("Implicit / ODR Fit"),
+                             tr("The active graph contains no analysable data curves."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(tr("Implicit / Orthogonal Distance Regression (ODR) Fit"));
+    dlg.resize(480, 260);
+    QFormLayout *fl = new QFormLayout(&dlg);
+
+    QComboBox *curveBox = new QComboBox();
+    curveBox->addItems(curves);
+    QLineEdit *exprEdit = new QLineEdit("x^2/a^2 + y^2/b^2 - 1");
+    QLineEdit *paramsEdit = new QLineEdit("a, b");
+    QLineEdit *initEdit = new QLineEdit("2.0, 1.5");
+
+    fl->addRow(tr("Dataset:"), curveBox);
+    fl->addRow(tr("Implicit Equation F(x, y) = 0:"), exprEdit);
+    fl->addRow(tr("Parameters:"), paramsEdit);
+    fl->addRow(tr("Initial Guesses:"), initEdit);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    fl->addRow(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList pNames = paramsEdit->text().split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
+    QStringList initStrs = initEdit->text().split(QRegExp("[,;\\s]+"), Qt::SkipEmptyParts);
+#else
+    QStringList pNames = paramsEdit->text().split(QRegExp("[,;\\s]+"), QString::SkipEmptyParts);
+    QStringList initStrs = initEdit->text().split(QRegExp("[,;\\s]+"), QString::SkipEmptyParts);
+#endif
+    QVector<double> initVals;
+    for (int i = 0; i < pNames.size(); ++i) {
+        double v = (i < initStrs.size()) ? initStrs[i].toDouble() : 1.0;
+        initVals.push_back(v);
+    }
+
+    NonLinearFit fitter(app, g, curveBox->currentText());
+    if (fitter.fitImplicitODR(exprEdit->text(), pNames, initVals)) {
+        fitter.parametersTable(app->generateUniqueName(tr("ImplicitODRParams")));
+    } else {
+        QMessageBox::warning(app, tr("Implicit / ODR Fit"),
+                             tr("Implicit ODR curve fit failed. Check formula and initial guesses."));
+    }
+}
+
+void NonLinearFit::showModelComparisonDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app || !g)
+        return;
+    QStringList curves = g->analysableCurvesList();
+    if (curves.isEmpty()) {
+        QMessageBox::warning(app, tr("Model Comparison (AIC / BIC)"),
+                             tr("The active graph contains no analysable data curves."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(tr("Compare Candidate Models (AIC / AICc / BIC Ranking)"));
+    dlg.resize(460, 420);
+    QVBoxLayout *vl = new QVBoxLayout(&dlg);
+
+    QHBoxLayout *hl = new QHBoxLayout();
+    hl->addWidget(new QLabel(tr("Dataset:")));
+    QComboBox *curveBox = new QComboBox();
+    curveBox->addItems(curves);
+    hl->addWidget(curveBox, 1);
+    vl->addLayout(hl);
+
+    QListWidget *modelList = new QListWidget();
+    QStringList defaults = QStringList() << "Linear"
+                                         << "Quadratic"
+                                         << "Cubic"
+                                         << "Poly4"
+                                         << "ExpDec1"
+                                         << "ExpDec2"
+                                         << "Gauss"
+                                         << "Lorentz"
+                                         << "PseudoVoigt1"
+                                         << "Boltzmann"
+                                         << "Hill"
+                                         << "Allometric1"
+                                         << "Logarithm";
+    for (int i = 0; i < defaults.size(); ++i) {
+        QListWidgetItem *it = new QListWidgetItem(defaults[i], modelList);
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+        it->setCheckState(i < 7 ? Qt::Checked : Qt::Unchecked);
+    }
+    vl->addWidget(new QLabel(tr("Candidate Models to Fit & Rank:")));
+    vl->addWidget(modelList, 1);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    vl->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QStringList chosen;
+    for (int i = 0; i < modelList->count(); ++i) {
+        if (modelList->item(i)->checkState() == Qt::Checked)
+            chosen << modelList->item(i)->text();
+    }
+    if (chosen.isEmpty())
+        return;
+
+    Fit::compareModels(app, g, curveBox->currentText(), chosen);
 }

@@ -41,9 +41,13 @@ public:
                   bool legend = false);
     PolynomialFit(ApplicationWindow *parent, Graph *g, QString &curveTitle, double start,
                   double end, int order = 2, bool legend = false);
+    ~PolynomialFit() override;
 
     QString legendInfo() override;
     void fit() override;
+
+    void setApparentFit(bool apparent = true) { d_apparent_fit = apparent; }
+    bool apparentFit() const { return d_apparent_fit; }
 
     static QString generateFormula(int order);
     static QStringList generateParameterList(int order);
@@ -55,6 +59,9 @@ private:
 
     int d_order;
     bool show_legend;
+    bool d_apparent_fit = false;
+    bool d_app_log_x = false;
+    bool d_app_log_y = false;
 };
 
 class LinearFit : public Fit
@@ -66,12 +73,32 @@ public:
     LinearFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle);
     LinearFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
               double end);
+    ~LinearFit() override;
 
     void fit() override;
+
+    void setApparentFit(bool apparent = true) { d_apparent_fit = apparent; }
+    bool apparentFit() const { return d_apparent_fit; }
+
+    bool fitWithXYErrors(const QString &xErrColName = QString(),
+                         const QString &yErrColName = QString());
+    double yorkSlope() const { return d_york_slope; }
+    double yorkIntercept() const { return d_york_intercept; }
+    double yorkSlopeError() const { return d_york_slope_err; }
+    double yorkInterceptError() const { return d_york_intercept_err; }
 
 private:
     void init();
     bool calculateFitCurveData(const std::vector<double> &, std::vector<double> &,
                                std::vector<double> &) override;
+
+    bool d_apparent_fit = false;
+    bool d_app_log_x = false;
+    bool d_app_log_y = false;
+
+    double d_york_slope = 0.0;
+    double d_york_intercept = 0.0;
+    double d_york_slope_err = 0.0;
+    double d_york_intercept_err = 0.0;
 };
 #endif

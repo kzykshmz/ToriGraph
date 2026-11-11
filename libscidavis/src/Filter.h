@@ -165,6 +165,9 @@ protected:
 
     //! String explaining the operation in the comment of the result table and in the project explorer
     QString d_explanation;
+
+    //! Suppresses modal warning/error message boxes during automated/batch operations
+    bool d_silent = false;
 };
 
 template <typename T>
@@ -187,10 +190,9 @@ std::vector<size_t> Filter::getIndices(const std::vector<T>& data, const T start
     }
     else
     {
-        size_t ii = 0;
-        for (auto it = data.cbegin(); data.cend() !=it; ++it)
-        if ((start <= *it)&&(end >= *it))
-            result.push_back(ii++);
+        for (size_t ii = 0; ii < data.size(); ++ii)
+            if ((start <= data[ii]) && (end >= data[ii]))
+                result.push_back(ii);
     }
     return result;
 }
