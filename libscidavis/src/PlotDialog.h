@@ -133,6 +133,7 @@ protected slots:
     void setAxesNumbersFont();
     void setLegendsFont();
     void editCurve();
+    void openColorPaletteEditor();
 
 private:
     void closeEvent(QCloseEvent *e);
@@ -201,7 +202,7 @@ private:
     QWidget *histogramPage, *spacingPage;
     QLineEdit *binSizeBox, *histogramBeginBox, *histogramEndBox;
     QCheckBox *automaticBox;
-    QPushButton *buttonStatistics, *btnEditCurve;
+    QPushButton *buttonStatistics, *btnEditCurve, *btnColorPalette;
     QSpinBox *gapBox, *offsetBox, *boxWidth;
     QWidget *vectPage, *boxPage, *percentilePage, *axesPage;
     QComboBox *xEndBox, *yEndBox, *boxType, *boxWhiskersType, *boxWhiskersRange, *boxRange;
@@ -209,6 +210,7 @@ private:
     QCheckBox *filledHeadBox;
     QSpinBox *boxCoef, *boxWhiskersCoef;
     QCheckBox *boxFillSymbols, *boxFillSymbol;
+    QCheckBox *boxViolinMode, *boxShowDataPoints;
     ColorButton *boxPercFillColor, *boxEdgeColor;
     QLabel *whiskerCoeffLabel, *whiskerRangeLabel, *boxCoeffLabel;
     QLabel *boxRangeLabel, *whiskerCntLabel, *boxCntLabel;

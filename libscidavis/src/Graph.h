@@ -746,6 +746,26 @@ public slots:
     void deselect();
     void print(QPainter *, const QRect &rect,
                const QwtPlotPrintFilter &pfilter = QwtPlotPrintFilter());
+
+    // OriginPro Color Palette System & Interactive Palette Editor
+    static QStringList builtInPaletteNames();
+    static QStringList customPaletteNames();
+    static QStringList allPaletteNames();
+    static QList<QColor> paletteColors(const QString &paletteName);
+    static void saveCustomPalette(const QString &name, const QList<QColor> &colors);
+    static void removeCustomPalette(const QString &name);
+    static QList<QColor> interpolatePalette(const QList<QColor> &anchors, int count);
+    void applyColorPalette(const QList<QColor> &colors, bool gradientMode = false,
+                           bool applyToSymbols = true);
+    void applyColorPaletteByName(const QString &paletteName, bool gradientMode = false);
+    static bool showColorPaletteEditor(QWidget *parent, Graph *targetGraph = nullptr);
+
+    // OriginPro Plot Types Support
+    void applyYOffsetStack(double offsetStep = 0.0, bool autoOffset = true);
+    void setupTernaryPlot(const QString &labelA = "A", const QString &labelB = "B",
+                          const QString &labelC = "C");
+    static QPointF ternaryToCartesian(double a, double b, double c);
+    bool isTernaryPlot() const { return d_is_ternary; }
 signals:
     void selectedGraph(Graph *);
     void closedGraph();
@@ -824,6 +844,7 @@ private:
 
     bool auxFilledArrowHead, ignoreResize;
     bool drawAxesBackbone, m_autoscale;
+    bool d_is_ternary;
 
     QColor defaultArrowColor;
     int defaultArrowLineWidth, defaultArrowHeadLength, defaultArrowHeadAngle;
