@@ -648,6 +648,71 @@ public slots:
     void defineErrorBars(const QString &curveName, const QString &errColumnName, int direction);
     void movePoints();
     void removePoints();
+    void maskDataPointsTool();
+    void unmaskDataPointsTool();
+    void maskRegionGadget();
+    void unmaskRegionGadget();
+    void clearAllMasksOnGraph();
+
+    //! \name OriginPro Interactive Gadgets
+    //@{
+    void attachVerticalCursorGadget();
+    void attachRegionStatsGadget();
+    void attachQuickFitGadget();
+    void attachQuickPeaksGadget();
+    void attachQuickSigmoidalGadget();
+    void attachIntegrateGadget();
+    void attachInterpolateGadget();
+    void attachFFTGadget();
+    void attachRiseTimeGadget();
+    void attachClusterGadget();
+    void clearActiveGadget();
+    //@}
+
+    //! \name OriginPro Curve Math, Fitting, Signal Processing, Statistics & Recalculation
+    //@{
+    void showSimpleCurveMathDialog();
+    void showSubtractStraightLineDialog();
+    void showAverageMultipleCurvesDialog();
+    void showNormalizeCurvesDialog();
+    void showCurveIntersectionsDialog();
+    void calculatePolygonLoopArea();
+
+    void fitApparentLinear();
+    void showYorkLinearFitDialog();
+    void showGlobalCurveFitDialog();
+    void showImplicitODRFitDialog();
+    void showModelComparisonDialog();
+    void showSurfaceFit3DDialog();
+    void showBatchPeakAnalysisDialog();
+    void show2DPeakAnalysisDialog();
+
+    void showSmoothLOWESSDialog();
+    void showSmoothWhittakerDialog();
+    void showSmoothMedianDialog();
+    void showIirDigitalFilterDialog();
+    void showStftSpectrogramDialog();
+    void showHilbertEnvelopeDialog();
+    void showWaveletTransformDialog();
+    void showWelchPsdCoherenceDialog();
+    void runMatrixFFT2D();
+    void runMatrixIFFT2D();
+
+    void showConfidenceEllipseDialog();
+    void showGroupComparisonDialog();
+    void showROCCurveDialog();
+    void showKaplanMeierDialog();
+    void showPCABiplotDialog();
+
+    void setRecalcModeAuto();
+    void setRecalcModeManual();
+    void setRecalcModeDisabled();
+    void syncRecalcMenuState();
+    void recalculatePendingLinksNow();
+    void repeatLinearFitForAllCurves();
+    void repeatNormalizationForAllCurves();
+    void showManageDialogThemes();
+    //@}
 
     //! \name Event Handlers
     //@{
@@ -1112,6 +1177,15 @@ public:
     /// location of translation resources
     QString qmPath;
 
+    QMenu *gadgetsMenu = nullptr;
+    QMenu *dataMaskMenu = nullptr;
+    QMenu *curveMathMenu = nullptr;
+    QMenu *advFitMenu = nullptr;
+    QMenu *peaksBaselineMenu = nullptr;
+    QMenu *advSignalMenu = nullptr;
+    QMenu *graphStatsMenu = nullptr;
+    QMenu *recalcMenu = nullptr;
+
 protected:
     //! Show a context menu for the widget
     QMenu *showWindowMenuImpl(MyWidget *widget);
@@ -1235,6 +1309,35 @@ private:
             *actionAspect16_9 = nullptr, *actionAspect3_2 = nullptr,
             *actionAspectCustom = nullptr, *actionKeepAspectRatio = nullptr;
     QAction *actionTabbedWorkspaceView = nullptr;
+    QAction *actionGadgetVerticalCursor = nullptr, *actionGadgetRegionStats = nullptr,
+            *actionGadgetQuickFit = nullptr, *actionGadgetQuickPeaks = nullptr,
+            *actionGadgetQuickSigmoidal = nullptr, *actionGadgetIntegrate = nullptr,
+            *actionGadgetInterpolate = nullptr, *actionGadgetFFT = nullptr,
+            *actionGadgetRiseTime = nullptr, *actionGadgetCluster = nullptr,
+            *actionGadgetClear = nullptr;
+    QAction *btnMaskPoints = nullptr, *btnUnmaskPoints = nullptr,
+            *actionMaskRegionROI = nullptr, *actionUnmaskRegionROI = nullptr,
+            *actionClearAllMasks = nullptr;
+    QAction *actionSimpleCurveMath = nullptr, *actionSubtractStraightLine = nullptr,
+            *actionAverageMultipleCurves = nullptr, *actionNormalizeCurves = nullptr,
+            *actionCurveIntersections = nullptr, *actionPolygonLoopArea = nullptr;
+    QAction *actionFitApparentLinear = nullptr, *actionFitYorkLinear = nullptr,
+            *actionGlobalCurveFit = nullptr, *actionImplicitODRFit = nullptr,
+            *actionModelComparison = nullptr, *actionSurfaceFit3D = nullptr,
+            *actionBatchPeakAnalysis = nullptr, *action2DPeakAnalysis = nullptr;
+    QAction *actionSmoothLOWESS = nullptr, *actionSmoothWhittaker = nullptr,
+            *actionSmoothMedian = nullptr, *actionIirDigitalFilter = nullptr,
+            *actionStftSpectrogram = nullptr, *actionHilbertEnvelope = nullptr,
+            *actionWaveletTransform = nullptr, *actionWelchPsdCoherence = nullptr,
+            *actionMatrixFFT2D = nullptr, *actionMatrixIFFT2D = nullptr;
+    QAction *actionConfidenceEllipse = nullptr, *actionGroupComparison = nullptr,
+            *actionROCCurve = nullptr, *actionKaplanMeier = nullptr,
+            *actionPCABiplot = nullptr;
+    QActionGroup *recalcModeGroup = nullptr;
+    QAction *actionRecalcAuto = nullptr, *actionRecalcManual = nullptr,
+            *actionRecalcDisabled = nullptr, *actionRecalculateNow = nullptr,
+            *actionRepeatLinearFitAll = nullptr, *actionRepeatNormalizeAll = nullptr,
+            *actionManageDialogThemes = nullptr;
     QWidget *d_explorer_container = nullptr;
     QLineEdit *d_explorer_search = nullptr;
     QComboBox *d_explorer_type_filter = nullptr;
