@@ -10,6 +10,7 @@
 #include <QColor>
 #include <QImage>
 #include <QPointF>
+#include <QRect>
 #include <QString>
 #include <QVector>
 
@@ -35,7 +36,8 @@ public:
                                                   const AxisCalibration &cal,
                                                   const QColor &targetColor,
                                                   int colorTolerance = 45,
-                                                  int numSamplesX = 100);
+                                                  int numSamplesX = 100,
+                                                  const QRect &pixelRoi = QRect());
     static Table *exportPointsToTable(ApplicationWindow *app,
                                       const QVector<QPointF> &dataPts,
                                       const QString &tableName = QString(),

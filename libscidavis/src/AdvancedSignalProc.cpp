@@ -13,10 +13,12 @@
 
 #include "ApplicationWindow.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "RecalcEngine.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
@@ -63,6 +65,113 @@ inline QString trSig(const char *text)
 {
     return QObject::tr(text);
 }
+
+void registerSignalProcTranslationsOnce()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Live Preview"), QStringLiteral("ライブプレビュー"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Detected Sampling Rate:"), QStringLiteral("検出サンプリング周波数:"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("%1 Hz (Nyquist: %2 Hz)"), QStringLiteral("%1 Hz (ナイキスト: %2 Hz)"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("IIR Digital Filter"), QStringLiteral("IIRデジタルフィルタ"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Savitzky-Golay Derivative"), QStringLiteral("Savitzky-Golay 微分"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Smooth Peak Envelope"), QStringLiteral("平滑ピーク包絡線"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Signal Decimation / Resampling"),
+            QStringLiteral("信号の間引き / リサンプリング"));
+}
+
+class SignalPreviewGuard
+{
+public:
+    explicit SignalPreviewGuard(Graph *g) : d_graph(g) {}
+    ~SignalPreviewGuard() { clear(); }
+
+    void setSingle(const std::vector<double> &xs, const std::vector<double> &ys, const QPen &pen)
+    {
+        if (!d_graph || !d_graph->plotWidget() || xs.size() < 2 || xs.size() != ys.size()) {
+            clear();
+            return;
+        }
+        detachCurve(d_curveB);
+        if (!d_curveA) {
+            d_curveA = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewA__"));
+            d_curveA->setItemAttribute(QwtPlotItem::Legend, false);
+            d_curveA->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+            d_curveA->attach(d_graph->plotWidget());
+        }
+        d_curveA->setPen(pen);
+        d_curveA->setData(xs.data(), ys.data(), static_cast<int>(xs.size()));
+        d_graph->plotWidget()->replot();
+    }
+
+    void setDual(const std::vector<double> &xs,
+                 const std::vector<double> *ysA, const QPen &penA,
+                 const std::vector<double> *ysB, const QPen &penB)
+    {
+        if (!d_graph || !d_graph->plotWidget() || xs.size() < 2) {
+            clear();
+            return;
+        }
+        if (ysA && ysA->size() == xs.size()) {
+            if (!d_curveA) {
+                d_curveA = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewA__"));
+                d_curveA->setItemAttribute(QwtPlotItem::Legend, false);
+                d_curveA->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+                d_curveA->attach(d_graph->plotWidget());
+            }
+            d_curveA->setPen(penA);
+            d_curveA->setData(xs.data(), ysA->data(), static_cast<int>(xs.size()));
+        } else {
+            detachCurve(d_curveA);
+        }
+
+        if (ysB && ysB->size() == xs.size()) {
+            if (!d_curveB) {
+                d_curveB = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewB__"));
+                d_curveB->setItemAttribute(QwtPlotItem::Legend, false);
+                d_curveB->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+                d_curveB->attach(d_graph->plotWidget());
+            }
+            d_curveB->setPen(penB);
+            d_curveB->setData(xs.data(), ysB->data(), static_cast<int>(xs.size()));
+        } else {
+            detachCurve(d_curveB);
+        }
+        d_graph->plotWidget()->replot();
+    }
+
+    void clear()
+    {
+        const bool hadAny = (d_curveA != nullptr || d_curveB != nullptr);
+        detachCurve(d_curveA);
+        detachCurve(d_curveB);
+        if (hadAny && d_graph && d_graph->plotWidget())
+            d_graph->plotWidget()->replot();
+    }
+
+private:
+    static void detachCurve(QwtPlotCurve *&c)
+    {
+        if (c) {
+            c->detach();
+            delete c;
+            c = nullptr;
+        }
+    }
+
+    Graph *d_graph = nullptr;
+    QwtPlotCurve *d_curveA = nullptr;
+    QwtPlotCurve *d_curveB = nullptr;
+};
 
 QwtPlotCurve *resolveSignalCurve(Graph *g, const QString &curveTitle)
 {
@@ -920,6 +1029,147 @@ std::vector<double> computeSplineUpperEnvelope(const std::vector<double> &xs,
     return env;
 }
 
+bool computeIirFilteredVector(Graph *g, const QString &curveTitle,
+                              AdvancedSignalProc::IirDesign design,
+                              AdvancedSignalProc::PassType pass, int order,
+                              double cutoffLowHz, double cutoffHighHz,
+                              bool zeroPhase, double rippleDb,
+                              std::vector<double> &tOut, std::vector<double> &filteredOut,
+                              double &fsOut)
+{
+    tOut.clear();
+    filteredOut.clear();
+    fsOut = 1.0;
+    std::vector<double> y;
+    if (!extractUniformSignal(g, curveTitle, tOut, y, fsOut) || y.size() < 4)
+        return false;
+
+    const std::vector<Biquad> sos =
+            designDigitalIirSOS(design, pass, order, fsOut, cutoffLowHz, cutoffHighHz, rippleDb);
+    if (sos.empty())
+        return false;
+
+    const int n = static_cast<int>(y.size());
+    if (zeroPhase && n >= 4) {
+        const int padLen = std::min(n - 1, std::max(6, 6 * static_cast<int>(sos.size())));
+        std::vector<double> work(static_cast<size_t>(n + 2 * padLen), 0.0);
+        for (int k = 0; k < padLen; ++k)
+            work[static_cast<size_t>(k)] = 2.0 * y[0] - y[static_cast<size_t>(padLen - k)];
+        for (int k = 0; k < n; ++k)
+            work[static_cast<size_t>(padLen + k)] = y[static_cast<size_t>(k)];
+        for (int k = 0; k < padLen; ++k)
+            work[static_cast<size_t>(padLen + n + k)] =
+                    2.0 * y[static_cast<size_t>(n - 1)] - y[static_cast<size_t>(n - 2 - k)];
+
+        applyCascadeForward(sos, work);
+        std::reverse(work.begin(), work.end());
+        applyCascadeForward(sos, work);
+        std::reverse(work.begin(), work.end());
+        filteredOut.assign(work.begin() + padLen, work.begin() + padLen + n);
+    } else {
+        filteredOut = y;
+        applyCascadeForward(sos, filteredOut);
+    }
+    return true;
+}
+
+bool computeSavGolDerivVector(Graph *g, const QString &curveTitle,
+                              int derivOrder, int windowPoints, int polyOrder,
+                              std::vector<double> &xsOut, std::vector<double> &derivOut,
+                              int *clampedOrderOut = nullptr)
+{
+    xsOut.clear();
+    derivOut.clear();
+    std::vector<double> ys;
+    if (!extractSortedSignalXY(g, curveTitle, xsOut, ys))
+        return false;
+
+    const int n = static_cast<int>(xsOut.size());
+    const int d = std::clamp(derivOrder, 1, 4);
+    if (clampedOrderOut)
+        *clampedOrderOut = d;
+    if (n < d + 1)
+        return false;
+
+    const int p = std::clamp(std::max(d, polyOrder), d, std::min(8, n - 1));
+    int W = std::max({ 3, p + 1, windowPoints });
+    if (W % 2 == 0)
+        ++W;
+    if (W > n) {
+        W = (n % 2 == 1) ? n : (n - 1);
+        if (W < p + 1)
+            W = n;
+    }
+
+    double factD = 1.0;
+    for (int k = 2; k <= d; ++k)
+        factD *= static_cast<double>(k);
+
+    const int nColsV = p + 1;
+    gsl_matrix *V = gsl_matrix_alloc(static_cast<size_t>(W), static_cast<size_t>(nColsV));
+    gsl_vector *rhs = gsl_vector_alloc(static_cast<size_t>(W));
+    gsl_vector *coeffs = gsl_vector_alloc(static_cast<size_t>(nColsV));
+    gsl_matrix *cov = gsl_matrix_alloc(static_cast<size_t>(nColsV), static_cast<size_t>(nColsV));
+    gsl_multifit_linear_workspace *ws =
+            gsl_multifit_linear_alloc(static_cast<size_t>(W), static_cast<size_t>(nColsV));
+
+    if (!V || !rhs || !coeffs || !cov || !ws) {
+        if (ws)
+            gsl_multifit_linear_free(ws);
+        if (cov)
+            gsl_matrix_free(cov);
+        if (coeffs)
+            gsl_vector_free(coeffs);
+        if (rhs)
+            gsl_vector_free(rhs);
+        if (V)
+            gsl_matrix_free(V);
+        return false;
+    }
+
+    derivOut.assign(static_cast<size_t>(n), 0.0);
+    const int halfW = W / 2;
+
+    for (int i = 0; i < n; ++i) {
+        int start = i - halfW;
+        if (start < 0)
+            start = 0;
+        if (start + W > n)
+            start = n - W;
+
+        const double xi = xsOut[static_cast<size_t>(i)];
+        double hScale = 0.0;
+        for (int m = 0; m < W; ++m)
+            hScale = std::max(hScale, std::fabs(xsOut[static_cast<size_t>(start + m)] - xi));
+        if (hScale <= 1e-300)
+            hScale = 1.0;
+
+        for (int m = 0; m < W; ++m) {
+            const double tau = (xsOut[static_cast<size_t>(start + m)] - xi) / hScale;
+            double pwr = 1.0;
+            for (int k = 0; k <= p; ++k) {
+                gsl_matrix_set(V, static_cast<size_t>(m), static_cast<size_t>(k), pwr);
+                pwr *= tau;
+            }
+            gsl_vector_set(rhs, static_cast<size_t>(m), ys[static_cast<size_t>(start + m)]);
+        }
+
+        double chisq = 0.0;
+        if (gsl_multifit_linear(V, rhs, coeffs, cov, &chisq, ws) == 0) {
+            const double cScaled = gsl_vector_get(coeffs, static_cast<size_t>(d));
+            const double hPow = std::pow(hScale, d);
+            derivOut[static_cast<size_t>(i)] = (hPow > 1e-300) ? (factD * cScaled / hPow) : 0.0;
+        }
+    }
+
+    gsl_multifit_linear_free(ws);
+    gsl_matrix_free(cov);
+    gsl_vector_free(coeffs);
+    gsl_vector_free(rhs);
+    gsl_matrix_free(V);
+    return true;
+}
+
 } // namespace
 
 // ============================================================================
@@ -935,42 +1185,12 @@ QwtPlotCurve *AdvancedSignalProc::iirFilter(ApplicationWindow *app, Graph *g,
     if (!app || !g)
         return nullptr;
 
-    std::vector<double> t, y;
+    std::vector<double> t, filtered;
     double fs = 1.0;
-    if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
+    if (!computeIirFilteredVector(g, curveTitle, design, pass, order, cutoffLowHz, cutoffHighHz,
+                                  zeroPhase, rippleDb, t, filtered, fs))
         return nullptr;
-
-    const std::vector<Biquad> sos =
-            designDigitalIirSOS(design, pass, order, fs, cutoffLowHz, cutoffHighHz, rippleDb);
-    if (sos.empty())
-        return nullptr;
-
-    const int n = static_cast<int>(y.size());
-    std::vector<double> filtered;
-
-    if (zeroPhase && n >= 4) {
-        const int padLen = std::min(n - 1, std::max(6, 6 * static_cast<int>(sos.size())));
-        std::vector<double> work(static_cast<size_t>(n + 2 * padLen), 0.0);
-
-        // Odd-symmetric boundary reflection preserves value and slope at endpoints
-        for (int k = 0; k < padLen; ++k)
-            work[static_cast<size_t>(k)] = 2.0 * y[0] - y[static_cast<size_t>(padLen - k)];
-        for (int k = 0; k < n; ++k)
-            work[static_cast<size_t>(padLen + k)] = y[static_cast<size_t>(k)];
-        for (int k = 0; k < padLen; ++k)
-            work[static_cast<size_t>(padLen + n + k)] =
-                    2.0 * y[static_cast<size_t>(n - 1)] - y[static_cast<size_t>(n - 2 - k)];
-
-        applyCascadeForward(sos, work);
-        std::reverse(work.begin(), work.end());
-        applyCascadeForward(sos, work);
-        std::reverse(work.begin(), work.end());
-
-        filtered.assign(work.begin() + padLen, work.begin() + padLen + n);
-    } else {
-        filtered = y;
-        applyCascadeForward(sos, filtered);
-    }
+    const int n = static_cast<int>(filtered.size());
 
     Table *tbl = buildSignalTable(app, "IIRFilter",
                                   QStringList() << "Time" << "FilteredY",
@@ -986,6 +1206,23 @@ QwtPlotCurve *AdvancedSignalProc::iirFilter(ApplicationWindow *app, Graph *g,
     if (resCurve)
         resCurve->setPen(QPen(QColor(0, 114, 178), 2.0, Qt::SolidLine));
     g->updatePlot();
+
+    if (resCurve) {
+        if (RecalcManager *mgr = RecalcManager::instance(app)) {
+            if (!mgr->isRecalculating() && mgr->recalcMode() != RecalcManager::Disabled) {
+                QVariantMap params;
+                params.insert(QStringLiteral("design"), static_cast<int>(design));
+                params.insert(QStringLiteral("pass"), static_cast<int>(pass));
+                params.insert(QStringLiteral("order"), order);
+                params.insert(QStringLiteral("cutoffLowHz"), cutoffLowHz);
+                params.insert(QStringLiteral("cutoffHighHz"), cutoffHighHz);
+                params.insert(QStringLiteral("zeroPhase"), zeroPhase);
+                params.insert(QStringLiteral("rippleDb"), rippleDb);
+                mgr->registerLink(app, g, nullptr, curveTitle, resCurve->title().text(),
+                                  RecalcManager::OpIIRFilter, params, nullptr);
+            }
+        }
+    }
 
     app->updateLog(QString("[%1] IIR Digital Filter (order=%2, zeroPhase=%3, fs=%4 Hz) -> %5\n")
                            .arg(QLocale().toString(QDateTime::currentDateTime()))
@@ -1447,6 +1684,20 @@ QwtPlotCurve *AdvancedSignalProc::waveletDenoiseDWT(ApplicationWindow *app, Grap
     if (resCurve)
         resCurve->setPen(QPen(QColor(0, 158, 115), 2.0, Qt::SolidLine));
     g->updatePlot();
+
+    if (resCurve) {
+        if (RecalcManager *mgr = RecalcManager::instance(app)) {
+            if (!mgr->isRecalculating() && mgr->recalcMode() != RecalcManager::Disabled) {
+                QVariantMap params;
+                params.insert(QStringLiteral("wavelet"), static_cast<int>(wtype));
+                params.insert(QStringLiteral("levels"), levels);
+                params.insert(QStringLiteral("softThreshold"), softThreshold);
+                params.insert(QStringLiteral("thresholdScale"), thresholdScale);
+                mgr->registerLink(app, g, nullptr, curveTitle, resCurve->title().text(),
+                                  RecalcManager::OpWaveletDenoise, params, nullptr);
+            }
+        }
+    }
     return resCurve;
 }
 
@@ -1846,6 +2097,7 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -1873,18 +2125,26 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
     sbOrder->setValue(4);
 
     std::vector<double> t, y;
-    double fs = 100.0;
-    extractUniformSignal(g, curves.first(), t, y, fs);
+    double currentFs = 100.0;
+    extractUniformSignal(g, curves.first(), t, y, currentFs);
+    if (currentFs <= 0.0 || !std::isfinite(currentFs))
+        currentFs = 100.0;
+
+    QLabel *lblFs = new QLabel(
+            QObject::tr("%1 Hz (Nyquist: %2 Hz)")
+                    .arg(currentFs, 0, 'g', 5)
+                    .arg(0.5 * currentFs, 0, 'g', 5),
+            &dlg);
 
     QDoubleSpinBox *sbLow = new QDoubleSpinBox(&dlg);
     sbLow->setRange(1e-6, 1e12);
     sbLow->setDecimals(4);
-    sbLow->setValue(std::max(0.01, 0.10 * fs));
+    sbLow->setValue(std::max(1e-5, 0.10 * currentFs));
 
     QDoubleSpinBox *sbHigh = new QDoubleSpinBox(&dlg);
     sbHigh->setRange(1e-6, 1e12);
     sbHigh->setDecimals(4);
-    sbHigh->setValue(std::max(0.02, 0.25 * fs));
+    sbHigh->setValue(std::max(2e-5, 0.25 * currentFs));
     sbHigh->setEnabled(false);
 
     QDoubleSpinBox *sbRipple = new QDoubleSpinBox(&dlg);
@@ -1896,17 +2156,78 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
     QCheckBox *chkZeroPhase = new QCheckBox(trSig("Zero-Phase Forward-Backward (filtfilt)"), &dlg);
     chkZeroPhase->setChecked(true);
 
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> px, py;
+        double pfs = 1.0;
+        if (computeIirFilteredVector(g, cbCurve->currentText(),
+                                     static_cast<IirDesign>(cbDesign->currentData().toInt()),
+                                     static_cast<PassType>(cbPass->currentData().toInt()),
+                                     sbOrder->value(), sbLow->value(), sbHigh->value(),
+                                     chkZeroPhase->isChecked(), sbRipple->value(), px, py, pfs)) {
+            previewGuard.setSingle(px, py, QPen(QColor(0, 114, 178), 2.0, Qt::DashLine));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &curveName) {
+                         std::vector<double> tmpT, tmpY;
+                         double newFs = currentFs;
+                         if (extractUniformSignal(g, curveName, tmpT, tmpY, newFs)
+                             && newFs > 0.0 && std::isfinite(newFs)) {
+                             const double ratioLow = (currentFs > 0.0)
+                                     ? std::clamp(sbLow->value() / currentFs, 0.001, 0.48)
+                                     : 0.10;
+                             const double ratioHigh = (currentFs > 0.0)
+                                     ? std::clamp(sbHigh->value() / currentFs,
+                                                  std::min(0.49, ratioLow + 0.01), 0.495)
+                                     : 0.25;
+                             currentFs = newFs;
+                             lblFs->setText(QObject::tr("%1 Hz (Nyquist: %2 Hz)")
+                                                    .arg(currentFs, 0, 'g', 5)
+                                                    .arg(0.5 * currentFs, 0, 'g', 5));
+                             sbLow->blockSignals(true);
+                             sbHigh->blockSignals(true);
+                             sbLow->setValue(std::max(1e-6, ratioLow * currentFs));
+                             sbHigh->setValue(std::max(2e-6, ratioHigh * currentFs));
+                             sbLow->blockSignals(false);
+                             sbHigh->blockSignals(false);
+                         }
+                         refreshPreview();
+                     });
     QObject::connect(cbPass, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int idx) {
                          const int p = cbPass->itemData(idx).toInt();
                          sbHigh->setEnabled(p == BandPass || p == BandStop);
+                         refreshPreview();
                      });
     QObject::connect(cbDesign, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int idx) {
                          sbRipple->setEnabled(cbDesign->itemData(idx).toInt() == ChebyshevI);
+                         refreshPreview();
                      });
+    QObject::connect(sbOrder, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(sbLow, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(sbHigh, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(sbRipple, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(chkZeroPhase, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
 
     form->addRow(trSig("Curve:"), cbCurve);
+    form->addRow(QObject::tr("Detected Sampling Rate:"), lblFs);
     form->addRow(trSig("Prototype Design:"), cbDesign);
     form->addRow(trSig("Pass Type:"), cbPass);
     form->addRow(trSig("Filter Order:"), sbOrder);
@@ -1914,6 +2235,7 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
     form->addRow(trSig("Upper Cutoff Frequency (Hz):"), sbHigh);
     form->addRow(trSig("Passband Ripple (dB):"), sbRipple);
     form->addRow(QString(), chkZeroPhase);
+    form->addRow(QString(), chkPreview);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -1923,7 +2245,10 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
+    refreshPreview();
+
     if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         iirFilter(app, g, cbCurve->currentText(),
                   static_cast<IirDesign>(cbDesign->currentData().toInt()),
                   static_cast<PassType>(cbPass->currentData().toInt()), sbOrder->value(),
@@ -2157,93 +2482,11 @@ QwtPlotCurve *AdvancedSignalProc::savitzkyGolayDerivative(ApplicationWindow *app
     if (!app || !g)
         return nullptr;
 
-    std::vector<double> xs, ys;
-    if (!extractSortedSignalXY(g, curveTitle, xs, ys))
+    std::vector<double> xs, deriv;
+    int d = 1;
+    if (!computeSavGolDerivVector(g, curveTitle, derivOrder, windowPoints, polyOrder, xs, deriv, &d))
         return nullptr;
-
     const int n = static_cast<int>(xs.size());
-    const int d = std::clamp(derivOrder, 1, 4);
-    if (n < d + 1)
-        return nullptr;
-
-    const int p = std::clamp(std::max(d, polyOrder), d, std::min(8, n - 1));
-    int W = std::max({ 3, p + 1, windowPoints });
-    if (W % 2 == 0)
-        ++W;
-    if (W > n) {
-        W = (n % 2 == 1) ? n : (n - 1);
-        if (W < p + 1)
-            W = n;
-    }
-
-    double factD = 1.0;
-    for (int k = 2; k <= d; ++k)
-        factD *= static_cast<double>(k);
-
-    const int nColsV = p + 1;
-    gsl_matrix *V = gsl_matrix_alloc(static_cast<size_t>(W), static_cast<size_t>(nColsV));
-    gsl_vector *rhs = gsl_vector_alloc(static_cast<size_t>(W));
-    gsl_vector *coeffs = gsl_vector_alloc(static_cast<size_t>(nColsV));
-    gsl_matrix *cov = gsl_matrix_alloc(static_cast<size_t>(nColsV), static_cast<size_t>(nColsV));
-    gsl_multifit_linear_workspace *ws =
-            gsl_multifit_linear_alloc(static_cast<size_t>(W), static_cast<size_t>(nColsV));
-
-    if (!V || !rhs || !coeffs || !cov || !ws) {
-        if (ws)
-            gsl_multifit_linear_free(ws);
-        if (cov)
-            gsl_matrix_free(cov);
-        if (coeffs)
-            gsl_vector_free(coeffs);
-        if (rhs)
-            gsl_vector_free(rhs);
-        if (V)
-            gsl_matrix_free(V);
-        return nullptr;
-    }
-
-    std::vector<double> deriv(static_cast<size_t>(n), 0.0);
-    const int halfW = W / 2;
-
-    for (int i = 0; i < n; ++i) {
-        int start = i - halfW;
-        if (start < 0)
-            start = 0;
-        if (start + W > n)
-            start = n - W;
-
-        const double xi = xs[static_cast<size_t>(i)];
-        double hScale = 0.0;
-        for (int m = 0; m < W; ++m) {
-            hScale = std::max(hScale,
-                              std::fabs(xs[static_cast<size_t>(start + m)] - xi));
-        }
-        if (hScale <= 1e-300)
-            hScale = 1.0;
-
-        for (int m = 0; m < W; ++m) {
-            const double tau = (xs[static_cast<size_t>(start + m)] - xi) / hScale;
-            double pwr = 1.0;
-            for (int k = 0; k <= p; ++k) {
-                gsl_matrix_set(V, static_cast<size_t>(m), static_cast<size_t>(k), pwr);
-                pwr *= tau;
-            }
-            gsl_vector_set(rhs, static_cast<size_t>(m), ys[static_cast<size_t>(start + m)]);
-        }
-
-        double chisq = 0.0;
-        if (gsl_multifit_linear(V, rhs, coeffs, cov, &chisq, ws) == 0) {
-            const double cScaled = gsl_vector_get(coeffs, static_cast<size_t>(d));
-            const double hPow = std::pow(hScale, d);
-            deriv[static_cast<size_t>(i)] = (hPow > 1e-300) ? (factD * cScaled / hPow) : 0.0;
-        }
-    }
-
-    gsl_multifit_linear_free(ws);
-    gsl_matrix_free(cov);
-    gsl_vector_free(coeffs);
-    gsl_vector_free(rhs);
-    gsl_matrix_free(V);
 
     const QString colLabel = (d == 1) ? QStringLiteral("dYdX")
                                       : QStringLiteral("d%1YdX%1").arg(d);
@@ -2261,6 +2504,19 @@ QwtPlotCurve *AdvancedSignalProc::savitzkyGolayDerivative(ApplicationWindow *app
     if (resCurve)
         resCurve->setPen(QPen(QColor(180, 35, 110), 2.0, Qt::SolidLine));
     g->updatePlot();
+
+    if (resCurve) {
+        if (RecalcManager *mgr = RecalcManager::instance(app)) {
+            if (!mgr->isRecalculating() && mgr->recalcMode() != RecalcManager::Disabled) {
+                QVariantMap params;
+                params.insert(QStringLiteral("derivOrder"), derivOrder);
+                params.insert(QStringLiteral("windowPoints"), windowPoints);
+                params.insert(QStringLiteral("polyOrder"), polyOrder);
+                mgr->registerLink(app, g, nullptr, curveTitle, resCurve->title().text(),
+                                  RecalcManager::OpSavGolDeriv, params, nullptr);
+            }
+        }
+    }
     return resCurve;
 }
 
@@ -2371,6 +2627,38 @@ QwtPlotCurve *AdvancedSignalProc::decimateCurve(ApplicationWindow *app, Graph *g
         return nullptr;
 
     const int n = static_cast<int>(ys.size());
+    if (n >= 3) {
+        const double meanDx = (xs.back() - xs.front()) / static_cast<double>(n - 1);
+        if (meanDx > 1e-300) {
+            double maxDev = 0.0;
+            for (int i = 0; i + 1 < n; ++i) {
+                const double dxi = xs[static_cast<size_t>(i + 1)] - xs[static_cast<size_t>(i)];
+                maxDev = std::max(maxDev, std::fabs(dxi - meanDx));
+            }
+            if (maxDev > 0.05 * meanDx) {
+                // Non-uniform spacing (>5% step variation): resample onto uniform grid before FIR/decimation
+                std::vector<double> uniX(static_cast<size_t>(n), 0.0);
+                std::vector<double> uniY(static_cast<size_t>(n), 0.0);
+                uniX[0] = xs.front();
+                uniY[0] = ys.front();
+                uniX[static_cast<size_t>(n - 1)] = xs.back();
+                uniY[static_cast<size_t>(n - 1)] = ys.back();
+                size_t seg = 0;
+                for (int i = 1; i < n - 1; ++i) {
+                    const double xq = xs.front() + static_cast<double>(i) * meanDx;
+                    uniX[static_cast<size_t>(i)] = xq;
+                    while (seg + 1 < static_cast<size_t>(n - 1) && xs[seg + 1] < xq)
+                        ++seg;
+                    const double dxSeg = xs[seg + 1] - xs[seg];
+                    const double alpha = (dxSeg > 1e-300) ? ((xq - xs[seg]) / dxSeg) : 0.0;
+                    uniY[static_cast<size_t>(i)] = ys[seg] + alpha * (ys[seg + 1] - ys[seg]);
+                }
+                xs.swap(uniX);
+                ys.swap(uniY);
+            }
+        }
+    }
+
     const int M = std::clamp(factor, 2, std::max(2, n));
 
     std::vector<double> xDec;
@@ -2466,6 +2754,7 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -2492,6 +2781,24 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
     sbWin->setSingleStep(2);
     sbWin->setValue(9);
 
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> px, pd;
+        if (computeSavGolDerivVector(g, cbCurve->currentText(), cbOrder->currentData().toInt(),
+                                     sbWin->value(), sbPoly->value(), px, pd)) {
+            previewGuard.setSingle(px, pd, QPen(QColor(180, 35, 110), 2.0, Qt::DashLine));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
     QObject::connect(cbOrder, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int idx) {
                          const int ord = cbOrder->itemData(idx).toInt();
@@ -2503,12 +2810,21 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
                                  ++w;
                              sbWin->setValue(w);
                          }
+                         refreshPreview();
                      });
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &) { refreshPreview(); });
+    QObject::connect(sbPoly, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(sbWin, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
 
     form->addRow(QObject::tr("Curve:"), cbCurve);
     form->addRow(QObject::tr("Derivative Order:"), cbOrder);
     form->addRow(QObject::tr("Polynomial Order:"), sbPoly);
     form->addRow(QObject::tr("Window Points (Odd):"), sbWin);
+    form->addRow(QString(), chkPreview);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -2518,7 +2834,10 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
+    refreshPreview();
+
     if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         savitzkyGolayDerivative(app, g, cbCurve->currentText(),
                                 cbOrder->currentData().toInt(), sbWin->value(), sbPoly->value());
     }
@@ -2528,6 +2847,7 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -2548,9 +2868,55 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
     sbMinDist->setRange(1, 5000);
     sbMinDist->setValue(3);
 
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> xs, ys;
+        if (!extractSortedSignalXY(g, cbCurve->currentText(), xs, ys) || xs.size() < 2) {
+            previewGuard.clear();
+            return;
+        }
+        const EnvelopeType envType = static_cast<EnvelopeType>(cbType->currentData().toInt());
+        const int minDist = sbMinDist->value();
+        std::vector<double> upperEnv;
+        std::vector<double> lowerEnv;
+        const bool wantUpper = (envType == EnvelopeUpper || envType == EnvelopeBoth);
+        const bool wantLower = (envType == EnvelopeLower || envType == EnvelopeBoth);
+        if (wantUpper)
+            upperEnv = computeSplineUpperEnvelope(xs, ys, minDist);
+        if (wantLower) {
+            std::vector<double> negY(ys.size(), 0.0);
+            for (size_t i = 0; i < ys.size(); ++i)
+                negY[i] = -ys[i];
+            std::vector<double> negEnv = computeSplineUpperEnvelope(xs, negY, minDist);
+            lowerEnv.resize(ys.size(), 0.0);
+            for (size_t i = 0; i < ys.size(); ++i)
+                lowerEnv[i] = -negEnv[i];
+        }
+        previewGuard.setDual(xs, wantUpper ? &upperEnv : nullptr,
+                             QPen(QColor(213, 62, 20), 2.0, Qt::DashLine),
+                             wantLower ? &lowerEnv : nullptr,
+                             QPen(QColor(20, 110, 190), 2.0, Qt::DotLine));
+    };
+
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &) { refreshPreview(); });
+    QObject::connect(cbType, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(sbMinDist, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+
     form->addRow(QObject::tr("Curve:"), cbCurve);
     form->addRow(QObject::tr("Envelope Type:"), cbType);
     form->addRow(QObject::tr("Min Peak Separation (Points):"), sbMinDist);
+    form->addRow(QString(), chkPreview);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -2560,7 +2926,10 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
+    refreshPreview();
+
     if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         computePeakEnvelope(app, g, cbCurve->currentText(),
                             static_cast<EnvelopeType>(cbType->currentData().toInt()),
                             sbMinDist->value(), nullptr);

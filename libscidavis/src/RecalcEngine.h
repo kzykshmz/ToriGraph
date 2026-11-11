@@ -31,13 +31,19 @@ public:
         OpMultiPeakFit = 3,
         OpSmooth = 4,
         OpNormalize = 5,
-        OpDifferentiate = 6
+        OpDifferentiate = 6,
+        OpRobustFit = 7,
+        OpPiecewiseFit = 8,
+        OpIIRFilter = 9,
+        OpSavGolDeriv = 10,
+        OpWaveletDenoise = 11
     };
 
     static RecalcManager *instance(ApplicationWindow *app = nullptr);
 
     void setRecalcMode(RecalcMode mode);
     RecalcMode recalcMode() const { return d_mode; }
+    bool isRecalculating() const { return d_recalculating; }
 
     int registerLink(ApplicationWindow *app, Graph *g, Table *srcTable,
                      const QString &srcCurveTitle, const QString &outCurveTitle,
