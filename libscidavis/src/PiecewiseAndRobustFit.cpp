@@ -1007,6 +1007,87 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
         resid[i] = yv[i] - (curIntercept + curSlope * xv[i]);
     curScaleMAD = computeMADScale(resid);
 
+    res.converged = converged;
+    res.intercept = curIntercept;
+    res.slope = curSlope;
+    res.scaleMAD = curScaleMAD;
+
+    if (method == PiecewiseAndRobustFit::QuantileReg) {
+        res.interceptSE = 0.0;
+        res.slopeSE = 0.0;
+        if (n > 2) {
+            double meanX = 0.0;
+            for (double xi : xv)
+                meanX += xi;
+            meanX /= double(n);
+            double sxx = 0.0;
+            for (double xi : xv) {
+                const double dx = xi - meanX;
+                sxx += dx * dx;
+            }
+
+            double meanR = 0.0;
+            for (double ri : resid)
+                meanR += ri;
+            meanR /= double(n);
+            double srr = 0.0;
+            for (double ri : resid) {
+                const double dr = ri - meanR;
+                srr += dr * dr;
+            }
+            const double sdR = std::sqrt(srr / double(n - 2));
+            const double q25 = computeVectorQuantile(std::vector<double>(resid), 0.25);
+            const double q75 = computeVectorQuantile(std::vector<double>(resid), 0.75);
+            const double iqrScale = (q75 - q25) / 1.3489795003921634;
+
+            double sigmaHat = 0.0;
+            if (sdR > 1e-14 && iqrScale > 1e-14)
+                sigmaHat = std::min(sdR, iqrScale);
+            else if (curScaleMAD > 1e-14)
+                sigmaHat = curScaleMAD;
+            else
+                sigmaHat = std::max(sdR, iqrScale);
+
+            if (sigmaHat > 1e-14 && sxx > 1e-30) {
+                // Hall-Sheather / Bofinger bandwidth + Powell Gaussian kernel sparsity estimator
+                constexpr double kInvSqrt2Pi = 0.39894228040143267794;
+                const double zTau = gsl_cdf_ugaussian_Pinv(tau);
+                const double phiTau = kInvSqrt2Pi * std::exp(-0.5 * zTau * zTau);
+                const double zAlpha = 1.959963984540054; // Phi^{-1}(0.975)
+                const double hsTerm = (1.5 * phiTau * phiTau) / (2.0 * zTau * zTau + 1.0);
+                const double h_hs = std::pow(double(n), -1.0 / 3.0)
+                        * std::pow(zAlpha, 2.0 / 3.0)
+                        * std::pow(std::max(1e-12, hsTerm), 1.0 / 3.0);
+                const double bofTerm =
+                        (4.5 * std::pow(phiTau, 4)) / std::pow(2.0 * zTau * zTau + 1.0, 2);
+                const double h_bof = std::pow(double(n), -0.2)
+                        * std::pow(std::max(1e-16, bofTerm), 0.2);
+                const double maxH = std::max(0.004, std::min(0.45, 0.9 * std::min(tau, 1.0 - tau)));
+                const double minH = std::min(0.01, maxH);
+                const double hProb = std::clamp(0.5 * (h_hs + h_bof), minH, maxH);
+                const double pLo = std::clamp(tau - hProb, 0.002, 0.996);
+                const double pHi = std::clamp(tau + hProb, std::min(0.997, pLo + 0.002), 0.998);
+                const double qSpan =
+                        std::max(0.05, gsl_cdf_ugaussian_Pinv(pHi) - gsl_cdf_ugaussian_Pinv(pLo));
+                const double bwFloor = 0.35 * sigmaHat * std::pow(double(n), -0.2);
+                const double bw = std::max({ 0.5 * sigmaHat * qSpan, bwFloor, 1e-12 });
+
+                double kSum = 0.0;
+                for (double ri : resid) {
+                    const double u = ri / bw;
+                    kSum += kInvSqrt2Pi * std::exp(-0.5 * u * u);
+                }
+                const double fHat0 = std::max(kSum / (double(n) * bw), 1e-12 / sigmaHat);
+                const double omega2 = (tau * (1.0 - tau)) / (fHat0 * fHat0);
+                const double invXtX_00 = (1.0 / double(n)) + (meanX * meanX) / sxx;
+                const double invXtX_11 = 1.0 / sxx;
+                res.interceptSE = std::sqrt(std::max(0.0, omega2 * invXtX_00));
+                res.slopeSE = std::sqrt(std::max(0.0, omega2 * invXtX_11));
+            }
+        }
+        return res.converged;
+    }
+
     int nEff = 0;
     for (double wi : weights) {
         if (wi > 1e-10)
@@ -1015,12 +1096,8 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
     const double dof = double(std::max(1, nEff - 2));
     const double varScale = (nEff > 2 && lastChisq > 1e-28) ? (lastChisq / dof) : 0.0;
 
-    res.converged = converged;
-    res.intercept = curIntercept;
-    res.slope = curSlope;
     res.interceptSE = (varScale > 0.0 && lastCov00 > 0.0) ? std::sqrt(varScale * lastCov00) : 0.0;
     res.slopeSE = (varScale > 0.0 && lastCov11 > 0.0) ? std::sqrt(varScale * lastCov11) : 0.0;
-    res.scaleMAD = curScaleMAD;
     return res.converged;
 }
 

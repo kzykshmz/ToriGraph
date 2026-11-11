@@ -66,7 +66,8 @@ public:
         WeightDirect = 2,
         WeightStatistical = 3,
         WeightProportional = 4,
-        WeightVariance = 5
+        WeightVariance = 5,
+        WeightArbitraryDataset = 6
     };
 
     struct BootstrapResult
@@ -90,6 +91,8 @@ public:
     bool setYErrorSource(ErrorSource err, const QString &colName = {}, bool fail_silently = false);
     bool setWeightingMethod(WeightingMethod m, const QString &colName = QString());
     WeightingMethod weightingMethod() const { return d_weighting_method; }
+    std::vector<double> computeWeightsVector() const;
+    double effectiveCovarScale() const;
 
     bool setLinearConstraintExpr(const QString &exprList);
     QString linearConstraintExpr() const { return d_linear_constraint_expr; }
@@ -179,7 +182,13 @@ public:
     double pearsonR() const;
 
     //! Specifies wheather the errors must be scaled with sqrt(chi_2/dof)
-    void scaleErrors(bool yes = true) { d_scale_errors = yes; };
+    void scaleErrors(bool yes = true)
+    {
+        if (d_scale_errors != yes) {
+            d_scale_errors = yes;
+            d_result_errors.clear();
+        }
+    }
 
     Table *parametersTable(const QString &tableName);
     Matrix *covarianceMatrix(const QString &matrixName);
@@ -322,6 +331,10 @@ protected:
 
     //! OriginPro weighting method and linear equality constraint expression
     WeightingMethod d_weighting_method = WeightNone;
+    bool d_explicit_weighting = false;
+    bool d_in_bootstrap = false;
+    QString d_weighting_col;
+    std::vector<double> d_raw_weights;
     QString d_linear_constraint_expr;
 
     //! Confidence and prediction band flags and confidence levels

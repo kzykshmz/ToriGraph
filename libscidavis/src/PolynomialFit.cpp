@@ -280,6 +280,7 @@ void PolynomialFit::fit()
     d_app_log_y = d_apparent_fit && isGraphAxisLog10(d_graph, yAx);
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
+        const std::vector<double> baseW = computeWeightsVector();
         std::vector<double> xt, yt, wt;
         xt.reserve(d_x.size());
         yt.reserve(d_y.size());
@@ -290,12 +291,15 @@ void PolynomialFit::fit()
                 continue;
             xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
             yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (d_y_error_source == UnknownErrors) {
+            if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
                 wt.push_back(1.0);
             } else {
-                double sy = (i < d_y_errors.size() && d_y_errors[i] > 0.0) ? d_y_errors[i] : 1.0;
-                double s_trans = d_app_log_y ? (sy / (d_y[i] * ln10)) : sy;
-                wt.push_back(1.0 / std::max(1e-30, s_trans * s_trans));
+                const double wi = (i < baseW.size() && std::isfinite(baseW[i]) && baseW[i] > 0.0)
+                                          ? baseW[i]
+                                          : 1.0;
+                const double w_trans =
+                        d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
+                wt.push_back(std::max(1e-30, w_trans));
             }
         }
         if (xt.size() < size_t(d_p))
@@ -313,10 +317,14 @@ void PolynomialFit::fit()
         gsl_vector_view yv = gsl_vector_view_array(yt.data(), yt.size());
         gsl_vector_view wv = gsl_vector_view_array(wt.data(), wt.size());
         gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(xt.size(), d_p);
-        if (d_y_error_source == UnknownErrors)
-            gsl_multifit_linear(X, &yv.vector, c, covar, &chi_2, work);
-        else
-            gsl_multifit_wlinear(X, &wv.vector, &yv.vector, c, covar, &chi_2, work);
+        gsl_multifit_wlinear(X, &wv.vector, &yv.vector, c, covar, &chi_2, work);
+        if (xt.size() < d_x.size() && xt.size() > size_t(d_p)
+            && (d_y_error_source == UnknownErrors || d_scale_errors)) {
+            const int fullDof = int(d_x.size()) - effectiveFreeParameters();
+            const int subDof = int(xt.size()) - int(d_p);
+            if (fullDof > 0 && subDof > 0)
+                gsl_matrix_scale(covar, double(fullDof) / double(subDof));
+        }
 
         for (unsigned i = 0; i < d_p; ++i)
             d_results[i] = gsl_vector_get(c, i);
@@ -377,10 +385,16 @@ void PolynomialFit::fit()
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
     } else {
-        gsl_matrix *X = gsl_matrix_alloc(d_x.size(), d_p);
+        const size_t n = d_x.size();
+        const std::vector<double> weightsVec = computeWeightsVector();
+        d_y_errors.resize(n, 1.0);
+        for (size_t i = 0; i < n; ++i)
+            d_y_errors[i] = 1.0 / std::sqrt(std::max(weightsVec[i], 1e-300));
+
+        gsl_matrix *X = gsl_matrix_alloc(n, d_p);
         gsl_vector *c = gsl_vector_alloc(d_p);
 
-        for (unsigned i = 0; i < d_x.size(); i++) {
+        for (size_t i = 0; i < n; i++) {
             double xpow = 1.0;
             for (unsigned j = 0; j < d_p; j++) {
                 gsl_matrix_set(X, i, j, xpow);
@@ -388,18 +402,11 @@ void PolynomialFit::fit()
             }
         }
 
-        gsl_vector_view y = gsl_vector_view_array(d_y.data(), d_y_errors.size());
+        gsl_vector_view y = gsl_vector_view_array(d_y.data(), n);
+        gsl_vector_const_view weights = gsl_vector_const_view_array(weightsVec.data(), n);
+        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(n, d_p);
 
-        gsl_vector *weights = gsl_vector_alloc(d_y_errors.size());
-        for (unsigned i = 0; i < d_y_errors.size(); i++)
-            gsl_vector_set(weights, i, 1.0 / pow(d_y_errors[i], 2));
-
-        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(d_x.size(), d_p);
-
-        if (d_y_error_source == UnknownErrors)
-            gsl_multifit_linear(X, &y.vector, c, covar, &chi_2, work);
-        else
-            gsl_multifit_wlinear(X, weights, &y.vector, c, covar, &chi_2, work);
+        gsl_multifit_wlinear(X, &weights.vector, &y.vector, c, covar, &chi_2, work);
 
         for (unsigned i = 0; i < d_p; i++)
             d_results[i] = gsl_vector_get(c, i);
@@ -407,7 +414,6 @@ void PolynomialFit::fit()
         gsl_multifit_linear_free(work);
         gsl_matrix_free(X);
         gsl_vector_free(c);
-        gsl_vector_free(weights);
 
         d_y_fit.resize(d_x.size());
         for (size_t i = 0; i < d_x.size(); ++i) {
@@ -545,6 +551,7 @@ void LinearFit::fit()
     d_app_log_y = d_apparent_fit && isGraphAxisLog10(d_graph, yAx);
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
+        const std::vector<double> baseW = computeWeightsVector();
         std::vector<double> xt, yt, wt;
         xt.reserve(d_x.size());
         yt.reserve(d_y.size());
@@ -555,24 +562,34 @@ void LinearFit::fit()
                 continue;
             xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
             yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (d_y_error_source == UnknownErrors) {
+            if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
                 wt.push_back(1.0);
             } else {
-                double sy = (i < d_y_errors.size() && d_y_errors[i] > 0.0) ? d_y_errors[i] : 1.0;
-                double s_trans = d_app_log_y ? (sy / (d_y[i] * ln10)) : sy;
-                wt.push_back(1.0 / std::max(1e-30, s_trans * s_trans));
+                const double wi = (i < baseW.size() && std::isfinite(baseW[i]) && baseW[i] > 0.0)
+                                          ? baseW[i]
+                                          : 1.0;
+                const double w_trans =
+                        d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
+                wt.push_back(std::max(1e-30, w_trans));
             }
         }
         if (xt.size() < 2)
             return;
 
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
-        if (d_y_error_source == UnknownErrors)
-            gsl_fit_linear(xt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00, &cov01, &cov11,
-                           &chi_2);
-        else
-            gsl_fit_wlinear(xt.data(), 1, wt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00,
-                            &cov01, &cov11, &chi_2);
+        gsl_fit_wlinear(xt.data(), 1, wt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00,
+                        &cov01, &cov11, &chi_2);
+        if (xt.size() < d_x.size() && xt.size() > 2
+            && (d_y_error_source == UnknownErrors || d_scale_errors)) {
+            const int fullDof = int(d_x.size()) - effectiveFreeParameters();
+            const int subDof = int(xt.size()) - 2;
+            if (fullDof > 0 && subDof > 0) {
+                const double adj = double(fullDof) / double(subDof);
+                cov00 *= adj;
+                cov01 *= adj;
+                cov11 *= adj;
+            }
+        }
 
         d_results[0] = c0;
         d_results[1] = c1;
@@ -607,18 +624,15 @@ void LinearFit::fit()
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
     } else {
-        double c0, c1, cov00, cov01, cov11;
+        double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
+        const size_t n = d_x.size();
+        const std::vector<double> weights = computeWeightsVector();
+        d_y_errors.resize(n, 1.0);
+        for (size_t i = 0; i < n; ++i)
+            d_y_errors[i] = 1.0 / std::sqrt(std::max(weights[i], 1e-300));
 
-        std::vector<double> weights(d_y_errors.size());
-        for (unsigned i = 0; i < d_y_errors.size(); i++)
-            weights[i] = 1.0 / pow(d_y_errors[i], 2);
-
-        if (d_y_error_source == UnknownErrors)
-            gsl_fit_linear(d_x.data(), 1, d_y.data(), 1, d_x.size(), &c0, &c1, &cov00, &cov01,
-                           &cov11, &chi_2);
-        else
-            gsl_fit_wlinear(d_x.data(), 1, weights.data(), 1, d_y.data(), 1, d_x.size(), &c0, &c1,
-                            &cov00, &cov01, &cov11, &chi_2);
+        gsl_fit_wlinear(d_x.data(), 1, weights.data(), 1, d_y.data(), 1, n, &c0, &c1, &cov00,
+                        &cov01, &cov11, &chi_2);
 
         d_results[0] = c0;
         d_results[1] = c1;
@@ -869,17 +883,21 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     double cov_ab = -x_adj_bar * var_b;
 
     bool usedFallbackUnitErrors = (!hasExplicitX && !hasExplicitY);
-    if ((usedFallbackUnitErrors || d_scale_errors) && n > 2) {
-        double mswd = S / double(n - 2);
-        var_b *= mswd;
-        var_a *= mswd;
-        cov_ab *= mswd;
-    }
+    d_y_error_source = usedFallbackUnitErrors ? UnknownErrors : CustomErrors;
+    d_weighting_method = usedFallbackUnitErrors ? WeightNone : WeightInstrumental;
+
+    gsl_matrix_set(covar, 0, 0, var_a);
+    gsl_matrix_set(covar, 0, 1, cov_ab);
+    gsl_matrix_set(covar, 1, 0, cov_ab);
+    gsl_matrix_set(covar, 1, 1, var_b);
+
+    chi_2 = S;
+    const double covScale = effectiveCovarScale();
 
     d_york_slope = b;
     d_york_intercept = a;
-    d_york_slope_err = std::sqrt(std::max(0.0, var_b));
-    d_york_intercept_err = std::sqrt(std::max(0.0, var_a));
+    d_york_slope_err = std::sqrt(std::max(0.0, covScale * var_b));
+    d_york_intercept_err = std::sqrt(std::max(0.0, covScale * var_a));
 
     d_app_log_x = false;
     d_app_log_y = false;
@@ -888,12 +906,6 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     d_results[1] = b;
     d_result_errors = { d_york_intercept_err, d_york_slope_err };
 
-    gsl_matrix_set(covar, 0, 0, var_a);
-    gsl_matrix_set(covar, 0, 1, cov_ab);
-    gsl_matrix_set(covar, 1, 0, cov_ab);
-    gsl_matrix_set(covar, 1, 1, var_b);
-
-    chi_2 = S;
     d_has_custom_r2 = true;
     d_custom_r2 = (S_tot > 1e-300) ? (1.0 - S / S_tot) : 1.0;
 

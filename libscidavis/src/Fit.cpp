@@ -518,6 +518,15 @@ enum ParamBoundMode {
     BoundUpper = 3
 };
 
+struct DependentBoundPenalty
+{
+    size_t dep_slot = 0; // index into dep_indices
+    double lo = -std::numeric_limits<double>::infinity();
+    double hi = std::numeric_limits<double>::infinity();
+    double scale = 1e5;
+    double delta = 1e-9;
+};
+
 struct ConstrainedFitContext
 {
     FitData *orig_data = nullptr;
@@ -535,6 +544,7 @@ struct ConstrainedFitContext
     std::vector<int> dep_indices;
     std::vector<double> dep_const;
     std::vector<std::vector<double>> dep_weights; // [m][k_free]
+    std::vector<DependentBoundPenalty> dep_penalties;
     gsl_vector *x_full_buf = nullptr;
     gsl_matrix *J_full_buf = nullptr;
 
@@ -639,6 +649,26 @@ struct ConstrainedFitContext
         }
     }
 
+    void evalPenaltyResidualAndSlope(size_t q, double &rOut, double &drDpDepOut) const
+    {
+        const DependentBoundPenalty &pen = dep_penalties[q];
+        const int depIdx = dep_indices[pen.dep_slot];
+        const double pDep = gsl_vector_get(x_full_buf, size_t(depIdx));
+        rOut = 0.0;
+        drDpDepOut = 0.0;
+        if (std::isfinite(pen.lo) && pDep < pen.lo) {
+            const double v = pen.lo - pDep; // > 0, dv/dpDep = -1
+            const double hyp = std::hypot(v, pen.delta);
+            rOut = pen.scale * (hyp - pen.delta);
+            drDpDepOut = -pen.scale * (v / std::max(hyp, 1e-30));
+        } else if (std::isfinite(pen.hi) && pDep > pen.hi) {
+            const double v = pDep - pen.hi; // > 0, dv/dpDep = +1
+            const double hyp = std::hypot(v, pen.delta);
+            rOut = pen.scale * (hyp - pen.delta);
+            drDpDepOut = pen.scale * (v / std::max(hyp, 1e-30));
+        }
+    }
+
     void projectJacobianToFree(const gsl_vector *u, gsl_matrix *J_free) const
     {
         for (size_t k = 0; k < free_to_full.size(); ++k) {
@@ -652,6 +682,13 @@ struct ConstrainedFitContext
                         df_dpk += gsl_matrix_get(J_full_buf, i, dep_indices[m]) * w;
                 }
                 gsl_matrix_set(J_free, i, k, df_dpk * scale);
+            }
+            for (size_t q = 0; q < dep_penalties.size(); ++q) {
+                double rPen = 0.0, drDpDep = 0.0;
+                evalPenaltyResidualAndSlope(q, rPen, drDpDep);
+                const size_t m = dep_penalties[q].dep_slot;
+                const double w = dep_weights[m][k];
+                gsl_matrix_set(J_free, n_pts + q, k, drDpDep * w * scale);
             }
         }
     }
@@ -711,7 +748,16 @@ struct ConstrainedFitContext
     {
         ConstrainedFitContext *ctx = static_cast<ConstrainedFitContext *>(params);
         ctx->unpackToFull(u, ctx->x_full_buf);
-        return ctx->orig_f(ctx->x_full_buf, ctx->orig_data, f);
+        gsl_vector_view fData = gsl_vector_subvector(f, 0, ctx->n_pts);
+        int st = ctx->orig_f(ctx->x_full_buf, ctx->orig_data, &fData.vector);
+        if (st != GSL_SUCCESS)
+            return st;
+        for (size_t q = 0; q < ctx->dep_penalties.size(); ++q) {
+            double rPen = 0.0, drDpDep = 0.0;
+            ctx->evalPenaltyResidualAndSlope(q, rPen, drDpDep);
+            gsl_vector_set(f, ctx->n_pts + q, rPen);
+        }
+        return GSL_SUCCESS;
     }
 
     static int eval_df(const gsl_vector *u, void *params, gsl_matrix *J_free)
@@ -729,16 +775,22 @@ struct ConstrainedFitContext
     {
         ConstrainedFitContext *ctx = static_cast<ConstrainedFitContext *>(params);
         ctx->unpackToFull(u, ctx->x_full_buf);
+        gsl_vector_view fData = gsl_vector_subvector(f, 0, ctx->n_pts);
         int st = GSL_SUCCESS;
         if (ctx->orig_fdf) {
-            st = ctx->orig_fdf(ctx->x_full_buf, ctx->orig_data, f, ctx->J_full_buf);
+            st = ctx->orig_fdf(ctx->x_full_buf, ctx->orig_data, &fData.vector, ctx->J_full_buf);
         } else {
-            st = ctx->orig_f(ctx->x_full_buf, ctx->orig_data, f);
+            st = ctx->orig_f(ctx->x_full_buf, ctx->orig_data, &fData.vector);
             if (st == GSL_SUCCESS)
                 st = ctx->orig_df(ctx->x_full_buf, ctx->orig_data, ctx->J_full_buf);
         }
         if (st != GSL_SUCCESS)
             return st;
+        for (size_t q = 0; q < ctx->dep_penalties.size(); ++q) {
+            double rPen = 0.0, drDpDep = 0.0;
+            ctx->evalPenaltyResidualAndSlope(q, rPen, drDpDep);
+            gsl_vector_set(f, ctx->n_pts + q, rPen);
+        }
         ctx->projectJacobianToFree(u, J_free);
         return GSL_SUCCESS;
     }
@@ -747,9 +799,182 @@ struct ConstrainedFitContext
     {
         ConstrainedFitContext *ctx = static_cast<ConstrainedFitContext *>(params);
         ctx->unpackToFull(u, ctx->x_full_buf);
-        return ctx->orig_fsimplex(ctx->x_full_buf, ctx->orig_data);
+        double cost = ctx->orig_fsimplex(ctx->x_full_buf, ctx->orig_data);
+        if (!std::isfinite(cost))
+            return cost;
+        for (size_t q = 0; q < ctx->dep_penalties.size(); ++q) {
+            double rPen = 0.0, drDpDep = 0.0;
+            ctx->evalPenaltyResidualAndSlope(q, rPen, drDpDep);
+            cost += rPen * rPen;
+        }
+        return cost;
     }
 };
+
+static void enforceDependentParameterBounds(unsigned d_p, CompiledLinearConstraints &lc,
+                                            std::vector<bool> &fixedMask,
+                                            std::vector<bool> &boundedMask,
+                                            std::vector<double> &loInternal,
+                                            std::vector<double> &hiInternal,
+                                            ConstrainedFitContext &ctx)
+{
+    if (!lc.valid || lc.dep_indices.empty())
+        return;
+
+    // 1. Tighten free parameter bounds whenever a bounded dependent parameter depends on <= 1 free param
+    bool changed = true;
+    for (int pass = 0; pass < int(lc.dep_indices.size()) + 1 && changed; ++pass) {
+        changed = false;
+        for (size_t m = 0; m < lc.dep_indices.size(); ++m) {
+            const int dep = lc.dep_indices[m];
+            if (dep < 0 || unsigned(dep) >= d_p || !boundedMask[size_t(dep)])
+                continue;
+            const double loD = loInternal[size_t(dep)];
+            const double hiD = hiInternal[size_t(dep)];
+            if (!std::isfinite(loD) && !std::isfinite(hiD))
+                continue;
+
+            int nnz = 0;
+            int singleJ = -1;
+            for (unsigned j = 0; j < d_p; ++j) {
+                if (fixedMask[j] || lc.isDependent(int(j)))
+                    continue;
+                if (std::abs(lc.dep_full_coeffs[m][j]) > 1e-14) {
+                    ++nnz;
+                    singleJ = int(j);
+                }
+            }
+            if (nnz == 0) {
+                if (std::isfinite(loD) && lc.dep_const[m] < loD)
+                    lc.dep_const[m] = loD;
+                if (std::isfinite(hiD) && lc.dep_const[m] > hiD)
+                    lc.dep_const[m] = hiD;
+            } else if (nnz == 1 && singleJ >= 0) {
+                const size_t jf = size_t(singleJ);
+                const double w = lc.dep_full_coeffs[m][jf];
+                const double c = lc.dep_const[m];
+                double newLo = loInternal[jf];
+                double newHi = hiInternal[jf];
+                if (w > 0.0) {
+                    if (std::isfinite(loD))
+                        newLo = std::max(newLo, (loD - c) / w);
+                    if (std::isfinite(hiD))
+                        newHi = std::min(newHi, (hiD - c) / w);
+                } else {
+                    if (std::isfinite(loD))
+                        newHi = std::min(newHi, (loD - c) / w);
+                    if (std::isfinite(hiD))
+                        newLo = std::max(newLo, (hiD - c) / w);
+                }
+                if (std::isfinite(newLo) && std::isfinite(newHi) && newLo > newHi) {
+                    const double mid = 0.5 * (newLo + newHi);
+                    newLo = mid;
+                    newHi = mid;
+                }
+                loInternal[jf] = newLo;
+                hiInternal[jf] = newHi;
+                if (std::isfinite(newLo))
+                    ctx.base_p[jf] = std::max(ctx.base_p[jf], newLo);
+                if (std::isfinite(newHi))
+                    ctx.base_p[jf] = std::min(ctx.base_p[jf], newHi);
+                if (std::isfinite(newLo) && std::isfinite(newHi)
+                    && std::abs(newHi - newLo) <= 1e-15) {
+                    const double fixedVal = 0.5 * (newLo + newHi);
+                    ctx.base_p[jf] = fixedVal;
+                    fixedMask[jf] = true;
+                    for (size_t m2 = 0; m2 < lc.dep_indices.size(); ++m2) {
+                        lc.dep_const[m2] += lc.dep_full_coeffs[m2][jf] * fixedVal;
+                        lc.dep_full_coeffs[m2][jf] = 0.0;
+                    }
+                    changed = true;
+                } else if (std::isfinite(newLo) || std::isfinite(newHi)) {
+                    boundedMask[jf] = true;
+                }
+            }
+        }
+    }
+
+    // 2. Project initial free guesses toward feasible polytope for multi-parameter dependent bounds
+    for (int iter = 0; iter < 30; ++iter) {
+        bool anyViol = false;
+        for (size_t m = 0; m < lc.dep_indices.size(); ++m) {
+            const int dep = lc.dep_indices[m];
+            if (dep < 0 || unsigned(dep) >= d_p || !boundedMask[size_t(dep)])
+                continue;
+            const double loD = loInternal[size_t(dep)];
+            const double hiD = hiInternal[size_t(dep)];
+            double val = lc.dep_const[m];
+            double norm2 = 0.0;
+            for (unsigned j = 0; j < d_p; ++j) {
+                if (fixedMask[j] || lc.isDependent(int(j)))
+                    continue;
+                const double w = lc.dep_full_coeffs[m][j];
+                val += w * ctx.base_p[j];
+                norm2 += w * w;
+            }
+            if (norm2 <= 1e-28)
+                continue;
+            double targetDelta = 0.0;
+            if (std::isfinite(loD) && val < loD)
+                targetDelta = loD - val;
+            else if (std::isfinite(hiD) && val > hiD)
+                targetDelta = hiD - val;
+            if (std::abs(targetDelta) > 1e-12) {
+                anyViol = true;
+                const double step = targetDelta / norm2;
+                for (unsigned j = 0; j < d_p; ++j) {
+                    if (fixedMask[j] || lc.isDependent(int(j)))
+                        continue;
+                    double pj = ctx.base_p[j] + step * lc.dep_full_coeffs[m][j];
+                    if (std::isfinite(loInternal[j]))
+                        pj = std::max(pj, loInternal[j]);
+                    if (std::isfinite(hiInternal[j]))
+                        pj = std::min(pj, hiInternal[j]);
+                    ctx.base_p[j] = pj;
+                }
+            }
+        }
+        if (!anyViol)
+            break;
+    }
+}
+
+static void registerDependentPenaltySlots(unsigned d_p, const CompiledLinearConstraints &lc,
+                                          const std::vector<bool> &boundedMask,
+                                          const std::vector<double> &loInternal,
+                                          const std::vector<double> &hiInternal,
+                                          double initResidualNorm, ConstrainedFitContext &ctx)
+{
+    ctx.dep_penalties.clear();
+    if (!lc.valid || lc.dep_indices.empty())
+        return;
+
+    const double baseNorm = (std::isfinite(initResidualNorm) && initResidualNorm > 1.0)
+                                    ? initResidualNorm
+                                    : 1.0;
+    for (size_t m = 0; m < lc.dep_indices.size(); ++m) {
+        const int dep = lc.dep_indices[m];
+        if (dep < 0 || unsigned(dep) >= d_p || !boundedMask[size_t(dep)])
+            continue;
+        const double loD = loInternal[size_t(dep)];
+        const double hiD = hiInternal[size_t(dep)];
+        if (!std::isfinite(loD) && !std::isfinite(hiD))
+            continue;
+        double span = 1.0;
+        if (std::isfinite(loD) && std::isfinite(hiD))
+            span = std::max(1e-6, hiD - loD);
+        else
+            span = std::max(1.0, std::max(std::isfinite(loD) ? std::abs(loD) : 0.0,
+                                          std::isfinite(hiD) ? std::abs(hiD) : 0.0));
+        DependentBoundPenalty pen;
+        pen.dep_slot = m;
+        pen.lo = loD;
+        pen.hi = hiD;
+        pen.scale = 1e5 * baseNorm / span;
+        pen.delta = 1e-9 * span;
+        ctx.dep_penalties.push_back(pen);
+    }
+}
 
 } // namespace
 
@@ -780,8 +1005,18 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
 {
     vector<double> result(d_p);
 
+    const std::vector<double> weightsVec = computeWeightsVector();
+    d_y_errors.resize(d_x.size(), 1.0);
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        const double wi = (i < weightsVec.size() && std::isfinite(weightsVec[i]) && weightsVec[i] > 0.0)
+                                  ? weightsVec[i]
+                                  : 1.0;
+        d_y_errors[i] = 1.0 / std::sqrt(std::max(wi, 1e-300));
+    }
+
     // declare input data
-    struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), &d_y_errors[0], this };
+    struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), d_y_errors.data(),
+                            this };
 
     const gsl_multifit_fdfsolver_type *T = nullptr;
     switch (d_solver) {
@@ -795,13 +1030,6 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         T = gsl_multifit_fdfsolver_lmsder;
         break;
     }
-
-    const auto shouldScaleCovarByReducedChi2 = [this]() {
-        return (d_y_error_source == UnknownErrors)
-               || (!d_scale_errors
-                   && (d_weighting_method == WeightDirect
-                       || d_weighting_method == WeightProportional));
-    };
 
     if (hasActiveConstraints()) {
         ConstrainedFitContext ctx;
@@ -859,6 +1087,8 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         CompiledLinearConstraints lc = compileLinearConstraintsForFit(
                 d_linear_constraint_expr, d_p, d_param_names, fixedMask, boundedMask, ctx.base_p,
                 slopeToUser, offsetToUser);
+        enforceDependentParameterBounds(d_p, lc, fixedMask, boundedMask, loInternal, hiInternal,
+                                        ctx);
 
         std::vector<double> u0_vals;
         for (unsigned j = 0; j < d_p; ++j) {
@@ -928,19 +1158,35 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             return result;
         }
 
+        double initResNorm = 1.0;
+        {
+            for (unsigned j = 0; j < d_p; ++j)
+                gsl_vector_set(ctx.x_full_buf, j, ctx.base_p[j]);
+            gsl_vector *f_init = gsl_vector_alloc(d_x.size());
+            if (d_f(ctx.x_full_buf, &data, f_init) == GSL_SUCCESS) {
+                double nrm = gsl_blas_dnrm2(f_init);
+                if (std::isfinite(nrm) && nrm > 1.0)
+                    initResNorm = nrm;
+            }
+            gsl_vector_free(f_init);
+        }
+        registerDependentPenaltySlots(d_p, lc, boundedMask, loInternal, hiInternal, initResNorm,
+                                      ctx);
+
         gsl_vector *u_init = gsl_vector_alloc(p_free);
         for (size_t k = 0; k < p_free; ++k)
             gsl_vector_set(u_init, k, u0_vals[k]);
 
+        const size_t n_solver = d_x.size() + ctx.dep_penalties.size();
         gsl_multifit_function_fdf f;
         f.f = &ConstrainedFitContext::eval_f;
         f.df = &ConstrainedFitContext::eval_df;
         f.fdf = &ConstrainedFitContext::eval_fdf;
-        f.n = d_x.size();
+        f.n = n_solver;
         f.p = p_free;
         f.params = &ctx;
 
-        gsl_multifit_fdfsolver *s = gsl_multifit_fdfsolver_alloc(T, d_x.size(), p_free);
+        gsl_multifit_fdfsolver *s = gsl_multifit_fdfsolver_alloc(T, n_solver, p_free);
         status = gsl_multifit_fdfsolver_set(s, &f, u_init);
         if (status) {
             gsl_multifit_fdfsolver_free(s);
@@ -1000,7 +1246,8 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             for (size_t i = 0; i < d_x.size(); ++i)
                 d_y_fit[i] = d_y[i] + gsl_vector_get(f_final, i) * d_y_errors[i];
         } else {
-            gsl_blas_ddot(s->f, s->f, &chi_2);
+            gsl_vector_view fDataView = gsl_vector_subvector(s->f, 0, d_x.size());
+            gsl_blas_ddot(&fDataView.vector, &fDataView.vector, &chi_2);
             d_y_fit.resize(d_x.size());
             for (size_t i = 0; i < d_x.size(); ++i)
                 d_y_fit[i] = d_y[i] + gsl_vector_get(s->f, i) * d_y_errors[i];
@@ -1010,10 +1257,6 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         gsl_matrix_set_zero(covar);
         if (d_df(ctx.x_full_buf, &data, ctx.J_full_buf) == GSL_SUCCESS)
             ctx.populateFullCovariance(covar);
-        if (shouldScaleCovarByReducedChi2()) {
-            double dof = (d_x.size() > p_free) ? double(d_x.size() - p_free) : 1.0;
-            gsl_matrix_scale(covar, chi_2 / dof);
-        }
 
         gsl_multifit_fdfsolver_free(s);
         gsl_vector_free(u_init);
@@ -1073,13 +1316,6 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         gsl_matrix_free(J);
     }
 #endif
-    if (shouldScaleCovarByReducedChi2()) {
-        // multiply covar by variance of residuals, which is used as an estimate for the
-        // statistical errors (this relies on the Y errors being set to 1.0, so that
-        // s->f is properly normalized)
-        double dof = (d_x.size() > d_p) ? double(d_x.size() - d_p) : 1.0;
-        gsl_matrix_scale(covar, chi_2 / dof);
-    }
 
     // free memory allocated for fitting
     gsl_multifit_fdfsolver_free(s);
@@ -1091,15 +1327,18 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
 {
     vector<double> result(d_p);
 
-    // declare input data
-    struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), &d_y_errors[0], this };
+    const std::vector<double> weightsVec = computeWeightsVector();
+    d_y_errors.resize(d_x.size(), 1.0);
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        const double wi = (i < weightsVec.size() && std::isfinite(weightsVec[i]) && weightsVec[i] > 0.0)
+                                  ? weightsVec[i]
+                                  : 1.0;
+        d_y_errors[i] = 1.0 / std::sqrt(std::max(wi, 1e-300));
+    }
 
-    const auto shouldScaleCovarByReducedChi2 = [this]() {
-        return (d_y_error_source == UnknownErrors)
-               || (!d_scale_errors
-                   && (d_weighting_method == WeightDirect
-                       || d_weighting_method == WeightProportional));
-    };
+    // declare input data
+    struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), d_y_errors.data(),
+                            this };
 
     if (hasActiveConstraints()) {
         ConstrainedFitContext ctx;
@@ -1157,6 +1396,8 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
         CompiledLinearConstraints lc = compileLinearConstraintsForFit(
                 d_linear_constraint_expr, d_p, d_param_names, fixedMask, boundedMask, ctx.base_p,
                 slopeToUser, offsetToUser);
+        enforceDependentParameterBounds(d_p, lc, fixedMask, boundedMask, loInternal, hiInternal,
+                                        ctx);
 
         std::vector<double> u0_vals;
         for (unsigned j = 0; j < d_p; ++j) {
@@ -1227,6 +1468,17 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             return result;
         }
 
+        double initResNorm = 1.0;
+        {
+            for (unsigned j = 0; j < d_p; ++j)
+                gsl_vector_set(ctx.x_full_buf, j, ctx.base_p[j]);
+            double cInit = d_fsimplex ? d_fsimplex(ctx.x_full_buf, &data) : 1.0;
+            if (std::isfinite(cInit) && cInit > 1.0)
+                initResNorm = std::sqrt(cInit);
+        }
+        registerDependentPenaltySlots(d_p, lc, boundedMask, loInternal, hiInternal, initResNorm,
+                                      ctx);
+
         gsl_vector *u_init = gsl_vector_alloc(p_free);
         gsl_vector *ss = gsl_vector_alloc(p_free);
         for (size_t k = 0; k < p_free; ++k) {
@@ -1262,10 +1514,12 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
         for (unsigned j = 0; j < d_p; ++j)
             gsl_vector_set(ctx.x_full_buf, j, result[j]);
 
-        chi_2 = s_min->fval;
+        double pureCost = d_fsimplex ? d_fsimplex(ctx.x_full_buf, &data) : s_min->fval;
+        chi_2 = std::isfinite(pureCost) ? pureCost : s_min->fval;
         if (d_f) {
             gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
             if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS) {
+                gsl_blas_ddot(f_vec, f_vec, &chi_2);
                 d_y_fit.resize(d_x.size());
                 for (size_t i = 0; i < d_x.size(); ++i)
                     d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
@@ -1275,10 +1529,6 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
         gsl_matrix_set_zero(covar);
         if (d_df && d_df(ctx.x_full_buf, &data, ctx.J_full_buf) == GSL_SUCCESS)
             ctx.populateFullCovariance(covar);
-        if (shouldScaleCovarByReducedChi2()) {
-            double dof = (d_x.size() > p_free) ? double(d_x.size() - p_free) : 1.0;
-            gsl_matrix_scale(covar, chi_2 / dof);
-        }
 
         gsl_multimin_fminimizer_free(s_min);
         gsl_vector_free(ss);
@@ -1331,12 +1581,6 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
     gsl_matrix *J = gsl_matrix_alloc(d_x.size(), d_p);
     d_df(s_min->x, (void *)f.params, J);
     gsl_multifit_covar(J, 0.0, covar);
-    if (shouldScaleCovarByReducedChi2()) {
-        // multiply covar by variance of residuals, which is used as an estimate for the
-        // statistical errors (this relies on the Y errors being set to 1.0)
-        double dof = (d_x.size() > d_p) ? double(d_x.size() - d_p) : 1.0;
-        gsl_matrix_scale(covar, chi_2 / dof);
-    }
 
     // free previously allocated memory
     gsl_matrix_free(J);
@@ -1350,8 +1594,16 @@ void Fit::setDataCurve(int curve, double start, double end)
 {
     Filter::setDataCurve(curve, start, end);
 
-    if (!setYErrorSource(AssociatedErrors, QString(), true))
-        setYErrorSource(UnknownErrors);
+    if (d_explicit_weighting) {
+        if (!setWeightingMethod(d_weighting_method, d_weighting_col)) {
+            d_explicit_weighting = false;
+            if (!setYErrorSource(AssociatedErrors, QString(), true))
+                setYErrorSource(UnknownErrors);
+        }
+    } else {
+        if (!setYErrorSource(AssociatedErrors, QString(), true))
+            setYErrorSource(UnknownErrors);
+    }
 }
 
 void Fit::setInitialGuesses(double *x_init)
@@ -1412,14 +1664,14 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
     info += tr("From x") + " = " + QLocale().toString(d_x[0], 'g', 15) + " " + tr("to x") + " = "
             + QLocale().toString(d_x.back(), 'g', 15) + "\n";
     double chi_2_dof = reducedChiSquare();
+    const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p; i++) {
+        const double se = covar
+                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
+                                  : 0.0;
         info += d_param_names[i] + " " + d_param_explain[i] + " = "
-                + QLocale().toString(par[i], 'g', d_prec) + " +/- ";
-        if (d_scale_errors)
-            info += QLocale().toString(sqrt(chi_2_dof * gsl_matrix_get(covar, i, i)), 'g', d_prec)
-                    + "\n";
-        else
-            info += QLocale().toString(sqrt(gsl_matrix_get(covar, i, i)), 'g', d_prec) + "\n";
+                + QLocale().toString(par[i], 'g', d_prec) + " +/- "
+                + QLocale().toString(se, 'g', d_prec) + "\n";
     }
     info += "--------------------------------------------------------------------------------------"
             "\n";
@@ -1439,6 +1691,15 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
                 "-----\n";
     }
     return info;
+}
+
+double Fit::effectiveCovarScale() const
+{
+    const int dof = int(d_x.size()) - effectiveFreeParameters();
+    return (d_y_error_source == UnknownErrors || d_scale_errors)
+                   ? ((dof > 0 && std::isfinite(chi_2) && chi_2 >= 0.0) ? (chi_2 / double(dof))
+                                                                        : 1.0)
+                   : 1.0;
 }
 
 double Fit::reducedChiSquare() const
@@ -1472,19 +1733,21 @@ double Fit::rSquare() const
 
     double mean = 0.0, tss = 0.0, weights_sum = 0.0;
 
-    if (d_y_error_source == UnknownErrors) {
+    if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
         mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
         for (auto it = d_y.cbegin(); d_y.cend() != it; ++it)
             tss += (*it - mean) * (*it - mean);
     } else {
-        for (unsigned i = 0; i < d_y.size(); i++) {
-            mean += d_y[i] / (d_y_errors[i] * d_y_errors[i]);
-            weights_sum += 1.0 / (d_y_errors[i] * d_y_errors[i]);
+        const std::vector<double> w = computeWeightsVector();
+        const size_t n = std::min(d_y.size(), w.size());
+        for (size_t i = 0; i < n; ++i) {
+            mean += d_y[i] * w[i];
+            weights_sum += w[i];
         }
         if (weights_sum > 0.0)
             mean /= weights_sum;
-        for (unsigned i = 0; i < d_y.size(); i++)
-            tss += (d_y[i] - mean) * (d_y[i] - mean) / (d_y_errors[i] * d_y_errors[i]);
+        for (size_t i = 0; i < n; ++i)
+            tss += (d_y[i] - mean) * (d_y[i] - mean) * w[i];
     }
     if (tss <= 0.0)
         return 1.0;
@@ -1526,17 +1789,17 @@ QString Fit::legendInfo()
     info += tr("Function") + ": " + d_formula + "\n\n";
 
     double chi_2_dof = reducedChiSquare();
+    const double covScale = effectiveCovarScale();
     info += "Chi^2/doF = " + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
     info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
     info += tr("Adj. R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
 
     for (unsigned i = 0; i < d_p; i++) {
-        info += d_param_names[i] + " = " + QLocale().toString(d_results[i], 'g', d_prec) + " +/- ";
-        if (d_scale_errors)
-            info += QLocale().toString(sqrt(chi_2_dof * gsl_matrix_get(covar, i, i)), 'g', d_prec)
-                    + "\n";
-        else
-            info += QLocale().toString(sqrt(gsl_matrix_get(covar, i, i)), 'g', d_prec) + "\n";
+        const double se = covar
+                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
+                                  : 0.0;
+        info += d_param_names[i] + " = " + QLocale().toString(d_results[i], 'g', d_prec) + " +/- "
+                + QLocale().toString(se, 'g', d_prec) + "\n";
     }
     return info;
 }
@@ -1562,6 +1825,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
     case UnknownErrors: {
         d_y_error_dataset = QString();
         d_weighting_method = WeightNone;
+        d_raw_weights.clear();
         // using 1.0 here is important for correct error estimates,
         // cmp. Fit::fitGslMultifit and Fit::fitGslMultimin
         std::fill(d_y_errors.begin(), d_y_errors.end(), 1.0);
@@ -1644,7 +1908,8 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
             d_y_errors[i] = t->cell(row, col);
         }
         sanitizePositiveErrorVector(d_y_errors);
-        d_weighting_method = WeightInstrumental;
+        d_raw_weights.clear();
+        d_weighting_method = WeightArbitraryDataset;
     } break;
     }
     return true;
@@ -1683,13 +1948,31 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         if (!setYErrorSource(UnknownErrors, QString(), true))
             return false;
         d_weighting_method = WeightNone;
+        d_explicit_weighting = false;
+        d_weighting_col.clear();
+        d_raw_weights.clear();
         return true;
 
     case WeightInstrumental: {
         bool ok = colName.isEmpty() ? setYErrorSource(AssociatedErrors, QString(), d_silent)
                                     : setYErrorSource(CustomErrors, colName, d_silent);
-        if (ok)
+        if (ok) {
             d_weighting_method = WeightInstrumental;
+            d_explicit_weighting = true;
+            d_weighting_col = colName;
+            d_raw_weights.clear();
+        }
+        return ok;
+    }
+
+    case WeightArbitraryDataset: {
+        bool ok = setYErrorSource(CustomErrors, colName, d_silent);
+        if (ok) {
+            d_weighting_method = WeightArbitraryDataset;
+            d_explicit_weighting = true;
+            d_weighting_col = colName;
+            d_raw_weights.clear();
+        }
         return ok;
     }
 
@@ -1697,6 +1980,7 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         std::vector<double> rawW;
         if (!readAlignedColumn(colName, rawW))
             return false;
+        d_raw_weights = rawW;
         d_y_errors.resize(d_x.size(), 1.0);
         double minPosW = std::numeric_limits<double>::infinity();
         for (double w : rawW) {
@@ -1712,10 +1996,13 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_y_error_source = CustomErrors;
         d_y_error_dataset = colName;
         d_weighting_method = WeightDirect;
+        d_explicit_weighting = true;
+        d_weighting_col = colName;
         return true;
     }
 
     case WeightStatistical: {
+        d_raw_weights.clear();
         d_y_errors.resize(d_x.size(), 1.0);
         double maxAbsY = 0.0;
         for (double yv : d_y) {
@@ -1733,10 +2020,13 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_y_error_source = PoissonErrors;
         d_y_error_dataset = d_curve ? d_curve->title().text() : QString();
         d_weighting_method = WeightStatistical;
+        d_explicit_weighting = true;
+        d_weighting_col.clear();
         return true;
     }
 
     case WeightProportional: {
+        d_raw_weights.clear();
         d_y_errors.resize(d_x.size(), 1.0);
         double minPosAbsY = std::numeric_limits<double>::infinity();
         for (double yv : d_y) {
@@ -1754,6 +2044,8 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_y_error_source = CustomErrors;
         d_y_error_dataset = d_curve ? d_curve->title().text() : QString();
         d_weighting_method = WeightProportional;
+        d_explicit_weighting = true;
+        d_weighting_col.clear();
         return true;
     }
 
@@ -1761,6 +2053,7 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         std::vector<double> rawVar;
         if (!readAlignedColumn(colName, rawVar))
             return false;
+        d_raw_weights = rawVar;
         d_y_errors.resize(d_x.size(), 1.0);
         double minPosV = std::numeric_limits<double>::infinity();
         for (double v : rawVar) {
@@ -1776,10 +2069,132 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_y_error_source = CustomErrors;
         d_y_error_dataset = colName;
         d_weighting_method = WeightVariance;
+        d_explicit_weighting = true;
+        d_weighting_col = colName;
         return true;
     }
     }
     return false;
+}
+
+std::vector<double> Fit::computeWeightsVector() const
+{
+    const size_t n = d_x.size();
+    std::vector<double> w(n, 1.0);
+    if (n == 0)
+        return w;
+
+    auto errorsToSafeWeights = [&](const std::vector<double> &errs) {
+        double minPos = std::numeric_limits<double>::infinity();
+        const size_t lim = std::min(n, errs.size());
+        for (size_t i = 0; i < lim; ++i) {
+            if (std::isfinite(errs[i]) && errs[i] > 0.0 && errs[i] < minPos)
+                minPos = errs[i];
+        }
+        const double fallbackS = std::isfinite(minPos) ? std::max(minPos, 1e-15) : 1.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double s = (i < errs.size() && std::isfinite(errs[i]) && errs[i] > 0.0)
+                                     ? std::max(errs[i], 1e-15)
+                                     : fallbackS;
+            w[i] = 1.0 / (s * s);
+        }
+    };
+
+    if (d_in_bootstrap && d_y_errors.size() == n) {
+        if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone)
+            return w;
+        errorsToSafeWeights(d_y_errors);
+        return w;
+    }
+
+    switch (d_weighting_method) {
+    case WeightNone:
+        if (d_y_error_source != UnknownErrors && !d_y_errors.empty())
+            errorsToSafeWeights(d_y_errors);
+        return w;
+
+    case WeightInstrumental:
+    case WeightArbitraryDataset:
+        errorsToSafeWeights(d_y_errors);
+        return w;
+
+    case WeightStatistical: {
+        double maxAbsY = 0.0;
+        const size_t lim = std::min(n, d_y.size());
+        for (size_t i = 0; i < lim; ++i) {
+            if (std::isfinite(d_y[i]))
+                maxAbsY = std::max(maxAbsY, std::abs(d_y[i]));
+        }
+        const double floorVal = (maxAbsY > 0.0 && maxAbsY < 1.0)
+                                        ? std::max(1e-12, 1e-3 * maxAbsY)
+                                        : 1.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double yv = (i < d_y.size() && std::isfinite(d_y[i])) ? std::abs(d_y[i]) : 0.0;
+            w[i] = 1.0 / std::max(yv, floorVal);
+        }
+        return w;
+    }
+
+    case WeightProportional: {
+        double minPosAbsY = std::numeric_limits<double>::infinity();
+        const size_t lim = std::min(n, d_y.size());
+        for (size_t i = 0; i < lim; ++i) {
+            if (std::isfinite(d_y[i]) && std::abs(d_y[i]) > 0.0 && std::abs(d_y[i]) < minPosAbsY)
+                minPosAbsY = std::abs(d_y[i]);
+        }
+        const double fallbackY = std::isfinite(minPosAbsY)
+                                         ? std::max(1e-12, 0.01 * minPosAbsY)
+                                         : 1.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double ay = (i < d_y.size() && std::isfinite(d_y[i])) ? std::abs(d_y[i]) : 0.0;
+            const double s = (ay > 0.0) ? std::max(ay, 1e-15) : fallbackY;
+            w[i] = 1.0 / (s * s);
+        }
+        return w;
+    }
+
+    case WeightDirect: {
+        if (d_raw_weights.size() == n) {
+            double minPosW = std::numeric_limits<double>::infinity();
+            for (double v : d_raw_weights) {
+                if (std::isfinite(v) && v > 0.0 && v < minPosW)
+                    minPosW = v;
+            }
+            const double fallbackW = std::isfinite(minPosW) ? std::max(minPosW, 1e-15) : 1.0;
+            for (size_t i = 0; i < n; ++i) {
+                const double wi = (std::isfinite(d_raw_weights[i]) && d_raw_weights[i] > 0.0)
+                                          ? d_raw_weights[i]
+                                          : fallbackW;
+                w[i] = std::max(wi, 1e-30);
+            }
+        } else {
+            errorsToSafeWeights(d_y_errors);
+        }
+        return w;
+    }
+
+    case WeightVariance: {
+        if (d_raw_weights.size() == n) {
+            double minPosV = std::numeric_limits<double>::infinity();
+            for (double v : d_raw_weights) {
+                if (std::isfinite(v) && v > 0.0 && v < minPosV)
+                    minPosV = v;
+            }
+            const double fallbackV = std::isfinite(minPosV) ? std::max(minPosV, 1e-30) : 1.0;
+            for (size_t i = 0; i < n; ++i) {
+                const double vi = (std::isfinite(d_raw_weights[i]) && d_raw_weights[i] > 0.0)
+                                          ? d_raw_weights[i]
+                                          : fallbackV;
+                w[i] = 1.0 / std::max(vi, 1e-30);
+            }
+        } else {
+            errorsToSafeWeights(d_y_errors);
+        }
+        return w;
+    }
+    }
+
+    return w;
 }
 
 Table *Fit::parametersTable(const QString &tableName)
@@ -1790,10 +2205,14 @@ Table *Fit::parametersTable(const QString &tableName)
     t->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     t->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
     t->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p; i++) {
         t->column(0)->setTextAt(i, d_param_names[i]);
         t->column(1)->setValueAt(i, d_results[i]);
-        t->column(2)->setValueAt(i, sqrt(gsl_matrix_get(covar, i, i)));
+        const double se = covar
+                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
+                                  : 0.0;
+        t->column(2)->setValueAt(i, se);
     }
 
     t->column(2)->setPlotDesignation(SciDAVis::yErr);
@@ -1810,9 +2229,10 @@ Matrix *Fit::covarianceMatrix(const QString &matrixName)
 {
     ApplicationWindow *app = (ApplicationWindow *)parent();
     Matrix *m = app->newMatrix(matrixName, d_p, d_p);
+    const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p; i++) {
         for (unsigned j = 0; j < d_p; j++)
-            m->setText(i, j, QLocale().toString(gsl_matrix_get(covar, i, j), 'g', d_prec));
+            m->setText(i, j, QLocale().toString(covScale * gsl_matrix_get(covar, i, j), 'g', d_prec));
     }
     m->showNormal();
     return m;
@@ -2005,13 +2425,12 @@ Table *Fit::createResidualsTable(const QString &tableName)
 const vector<double> &Fit::errors()
 {
     if (d_result_errors.empty()) {
-        d_result_errors.resize(d_p);
-        double chi_2_dof = reducedChiSquare();
-        for (unsigned i = 0; i < d_p; i++) {
-            if (d_scale_errors)
-                d_result_errors[i] = sqrt(chi_2_dof * gsl_matrix_get(covar, i, i));
-            else
-                d_result_errors[i] = sqrt(gsl_matrix_get(covar, i, i));
+        d_result_errors.resize(d_p, 0.0);
+        if (covar) {
+            const double covScale = effectiveCovarScale();
+            for (unsigned i = 0; i < d_p; i++)
+                d_result_errors[i] =
+                        std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
         }
     }
     return d_result_errors;
@@ -2580,6 +2999,7 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
 
     d_silent = true;
     d_suppress_curve_output = true;
+    d_in_bootstrap = true;
     d_max_iterations = std::min(savedMaxIter, 250);
 
     for (int b = 0; b < nSamples; ++b) {
@@ -2640,6 +3060,7 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_result_errors = savedResultErrors;
     chi_2 = savedChi2;
     d_max_iterations = savedMaxIter;
+    d_in_bootstrap = false;
     d_silent = origSilent;
     d_suppress_curve_output = origSuppress;
     if (d_param_init) {
@@ -2775,9 +3196,7 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
     double dof = (int(d_x.size()) > p_free) ? double(int(d_x.size()) - p_free) : 1.0;
     double s2 = std::max(0.0, rss() / dof);
 
-    double covScale = 1.0;
-    if (d_y_error_source != UnknownErrors && d_scale_errors)
-        covScale = std::max(0.0, reducedChiSquare());
+    const double covScale = effectiveCovarScale();
 
     double confAlpha = std::max(0.50, std::min(0.9999, d_conf_level));
     double predAlpha = std::max(0.50, std::min(0.9999, d_pred_level));
@@ -2918,6 +3337,7 @@ void Fit::insertFitSummaryBoxOnGraph()
     text += "----------------------------------\n";
 
     double chi2Dof = reducedChiSquare();
+    const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p && i < d_results.size(); ++i) {
         QString pName = (int(i) < d_param_names.size()) ? d_param_names[int(i)]
                                                         : QString("p%1").arg(i);
@@ -2925,8 +3345,7 @@ void Fit::insertFitSummaryBoxOnGraph()
         if (isParameterFixed(int(i))) {
             text += " (" + tr("fixed") + ")\n";
         } else if (covar) {
-            double err = d_scale_errors ? std::sqrt(std::max(0.0, chi2Dof * gsl_matrix_get(covar, i, i)))
-                                        : std::sqrt(std::max(0.0, gsl_matrix_get(covar, i, i)));
+            double err = std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
             text += " +/- " + QLocale().toString(err, 'g', d_prec) + "\n";
         } else {
             text += "\n";

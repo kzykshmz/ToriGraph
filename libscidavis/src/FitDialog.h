@@ -57,6 +57,9 @@ public:
     FitDialog(QWidget *parent = 0, Qt::WindowFlags fl = Qt::Widget);
     ~FitDialog() override;
 
+    static QString expandUserFunctions(const QString &rawFormula, const QStringList &names,
+                                       const QStringList &defs);
+
 protected:
     //! On closing show the fit function in the plot window if that option is selected
     void closeEvent(QCloseEvent *e);

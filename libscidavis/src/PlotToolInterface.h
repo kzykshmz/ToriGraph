@@ -67,7 +67,8 @@ public:
         TranslateCurve,
         RoiGadget,
         VerticalCursor,
-        DeltaCursor
+        DeltaCursor,
+        ImageProfileGadget
     };
     using RttiValues = RTTI;
     virtual RTTI rtti() const = 0;
