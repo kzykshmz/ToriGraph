@@ -298,6 +298,7 @@ public slots:
     void dimensionsDialog();
     void editTypeAndFormatOfSelectedColumns();
     void editDescriptionOfCurrentColumn();
+    void editColumnLabelsAndFormula();
     void moveColumn(int from, int to);
     //! Sort the given list of column
     /*
@@ -385,6 +386,7 @@ signals:
     void rowsRemoved(int first, int count);
     void dataChanged(int top, int left, int bottom, int right);
     void headerDataChanged(Qt::Orientation orientation, int first, int last);
+    void requestColumnPropertiesDialog(int col);
 #ifdef LEGACY_CODE_0_2_x
     void recalculate();
     void requestRowStatistics();
@@ -449,6 +451,7 @@ private:
     QAction *action_statistics_columns;
     QAction *action_type_format;
     QAction *action_edit_description;
+    QAction *action_edit_column_labels_formula;
     //@}
     //! \name row related actions
     //@{

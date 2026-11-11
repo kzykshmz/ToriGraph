@@ -28,12 +28,15 @@
  ***************************************************************************/
 #include "AssociationsDialog.h"
 #include "Table.h"
+#include "core/column/Column.h"
 #include "FunctionCurve.h"
 #include "PlotCurve.h"
 #include "QwtErrorPlotCurve.h"
 #include "VectorCurve.h"
 
 #include <QLabel>
+#include <QComboBox>
+#include <QSignalBlocker>
 #include <QListWidget>
 #include <QPushButton>
 #include <QTableWidget>
@@ -43,6 +46,27 @@
 #include <QLayout>
 #include <QApplication>
 #include <QMessageBox>
+
+namespace {
+struct DataCurveTableRebinder : public DataCurve
+{
+    static void rebindTable(DataCurve *c, Table *newTable)
+    {
+        if (!c || !newTable || c->table() == newTable)
+            return;
+        const bool wasFull = c->isFullRange();
+        Table *DataCurve::*tblMember = &DataCurveTableRebinder::d_table;
+        int DataCurve::*startMember = &DataCurveTableRebinder::d_start_row;
+        int DataCurve::*endMember = &DataCurveTableRebinder::d_end_row;
+        c->*tblMember = newTable;
+        const int maxEnd = qMax(0, newTable->numRows() - 1);
+        if (wasFull || (c->*endMember) > maxEnd) {
+            c->*startMember = 0;
+            c->*endMember = maxEnd;
+        }
+    }
+};
+} // namespace
 
 AssociationsDialog::AssociationsDialog(QWidget *parent, Qt::WindowFlags fl)
     : QDialog(parent, fl), graph(0)
@@ -54,9 +78,14 @@ AssociationsDialog::AssociationsDialog(QWidget *parent, Qt::WindowFlags fl)
     QVBoxLayout *vl = new QVBoxLayout();
 
     QHBoxLayout *hbox1 = new QHBoxLayout();
-    hbox1->addWidget(new QLabel(tr("Spreadsheet: ")));
+    hbox1->addWidget(new QLabel(tr("Worksheet:")));
+
+    boxTable = new QComboBox();
+    boxTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    hbox1->addWidget(boxTable, 1);
 
     tableCaptionLabel = new QLabel();
+    tableCaptionLabel->hide();
     hbox1->addWidget(tableCaptionLabel);
     vl->addLayout(hbox1);
 
@@ -96,8 +125,10 @@ AssociationsDialog::AssociationsDialog(QWidget *parent, Qt::WindowFlags fl)
     setLayout(vl);
 
     active_table = 0;
+    tables = 0;
 
     connect(associations, SIGNAL(currentRowChanged(int)), this, SLOT(updateTable(int)));
+    connect(boxTable, SIGNAL(currentIndexChanged(int)), this, SLOT(selectWorksheet(int)));
     connect(btnOK, SIGNAL(clicked()), this, SLOT(accept()));
     connect(btnCancel, SIGNAL(clicked()), this, SLOT(close()));
     connect(btnApply, SIGNAL(clicked()), this, SLOT(updateCurves()));
@@ -129,8 +160,12 @@ void AssociationsDialog::changePlotAssociation(int curve, const QString &text)
     if (!c || c->type() == Graph::Function)
         return;
 
-    if (c->plotAssociation() == text)
+    Table *targetTable = findTable(curve);
+    if (c->plotAssociation() == text && (!targetTable || c->table() == targetTable))
         return;
+
+    if (targetTable && targetTable != c->table())
+        DataCurveTableRebinder::rebindTable(c, targetTable);
 
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList lst = text.split(",", Qt::SkipEmptyParts);
@@ -197,6 +232,18 @@ void AssociationsDialog::initTablesList(QList<MyWidget *> *lst, int curve)
     tables = lst;
     active_table = 0;
 
+    {
+        QSignalBlocker blocker(boxTable);
+        boxTable->clear();
+        if (tables) {
+            for (int i = 0; i < tables->count(); i++) {
+                Table *t = qobject_cast<Table *>(tables->at(i));
+                if (t)
+                    boxTable->addItem(t->name(), t->objectName());
+            }
+        }
+    }
+
     if (curve < 0 || curve >= (int)associations->count())
         curve = 0;
 
@@ -205,17 +252,126 @@ void AssociationsDialog::initTablesList(QList<MyWidget *> *lst, int curve)
 
 Table *AssociationsDialog::findTable(int index)
 {
+    if (!tables || index < 0 || index >= associations->count() || !associations->item(index))
+        return 0;
     QString text = associations->item(index)->text();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList lst = text.split(":", Qt::SkipEmptyParts);
 #else
     QStringList lst = text.split(":", QString::SkipEmptyParts);
 #endif
+    if (lst.isEmpty())
+        return 0;
+    const QString tblName = lst[0].trimmed();
     for (int i = 0; i < (int)tables->count(); i++) {
-        if (tables->at(i)->objectName() == lst[0])
-            return (Table *)tables->at(i);
+        Table *t = qobject_cast<Table *>(tables->at(i));
+        if (t && (t->name() == tblName || t->objectName() == tblName))
+            return t;
     }
     return 0;
+}
+
+void AssociationsDialog::selectWorksheet(int comboIdx)
+{
+    if (!tables || comboIdx < 0 || comboIdx >= boxTable->count())
+        return;
+    const int curveRow = associations->currentRow();
+    if (curveRow < 0 || curveRow >= associations->count() || !associations->item(curveRow))
+        return;
+
+    const QString targetName = boxTable->itemText(comboIdx);
+    Table *newT = 0;
+    for (int i = 0; i < tables->count(); ++i) {
+        Table *t = qobject_cast<Table *>(tables->at(i));
+        if (t && t->name() == targetName) {
+            newT = t;
+            break;
+        }
+    }
+    if (!newT || newT->numCols() <= 0 || newT == active_table)
+        return;
+
+    const QString curText = associations->item(curveRow)->text();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList lst = curText.split(": ", Qt::SkipEmptyParts);
+    if (lst.size() < 2)
+        return;
+    QStringList cols = lst[1].split(",", Qt::SkipEmptyParts);
+#else
+    QStringList lst = curText.split(": ", QString::SkipEmptyParts);
+    if (lst.size() < 2)
+        return;
+    QStringList cols = lst[1].split(",", QString::SkipEmptyParts);
+#endif
+
+    const QStringList newColNames = newT->colNames();
+    auto mapColumnToNewTable = [&](const QString &colWithRole) -> QString {
+        static const char *kRoles[] = { "(xErr)", "(yErr)", "(X)", "(Y)", "(A)", "(M)" };
+        QString role;
+        QString base = colWithRole;
+        for (const char *r : kRoles) {
+            const QString rs = QLatin1String(r);
+            if (colWithRole.endsWith(rs)) {
+                role = rs;
+                base.chop(rs.size());
+                break;
+            }
+        }
+        if (newColNames.contains(base))
+            return base + role;
+
+        if (role == QLatin1String("(X)")) {
+            const int xIdx = newT->firstXCol();
+            return newColNames.at(xIdx >= 0 ? xIdx : 0) + role;
+        }
+        if (role == QLatin1String("(Y)")) {
+            for (int c = 0; c < newT->numCols(); ++c) {
+                if (newT->colPlotDesignation(c) == SciDAVis::Y)
+                    return newColNames.at(c) + role;
+            }
+            return newColNames.at(qMin(1, newColNames.size() - 1)) + role;
+        }
+        if (role == QLatin1String("(xErr)")) {
+            for (int c = 0; c < newT->numCols(); ++c) {
+                if (newT->colPlotDesignation(c) == SciDAVis::xErr)
+                    return newColNames.at(c) + role;
+            }
+        }
+        if (role == QLatin1String("(yErr)")) {
+            for (int c = 0; c < newT->numCols(); ++c) {
+                if (newT->colPlotDesignation(c) == SciDAVis::yErr)
+                    return newColNames.at(c) + role;
+            }
+        }
+        return newColNames.last() + role;
+    };
+
+    for (int i = 0; i < cols.size(); ++i)
+        cols[i] = mapColumnToNewTable(cols[i]);
+
+    const QString newText = newT->name() + ": " + cols.join(",");
+    const QString oldAs = plotAssociationsList[curveRow];
+    for (int i = 0; i < plotAssociationsList.count(); ++i) {
+        QString as = plotAssociationsList[i];
+        if (i != curveRow && as.startsWith(oldAs + ",")
+            && (as.contains("(xErr)") || as.contains("(yErr)"))) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            QStringList ls = as.split(",", Qt::SkipEmptyParts);
+#else
+            QStringList ls = as.split(",", QString::SkipEmptyParts);
+#endif
+            if (ls.size() >= 3) {
+                const QString updatedErr = newText + "," + mapColumnToNewTable(ls[2]);
+                plotAssociationsList[i] = updatedErr;
+                if (associations->item(i))
+                    associations->item(i)->setText(updatedErr);
+            }
+        }
+    }
+
+    plotAssociationsList[curveRow] = newText;
+    associations->item(curveRow)->setText(newText);
+    updateTable(curveRow);
 }
 
 void AssociationsDialog::updateTable(int index)
@@ -223,6 +379,13 @@ void AssociationsDialog::updateTable(int index)
     Table *t = findTable(index);
     if (!t)
         return;
+
+    if (boxTable) {
+        QSignalBlocker blocker(boxTable);
+        const int cIdx = boxTable->findText(t->name());
+        if (cIdx >= 0)
+            boxTable->setCurrentIndex(cIdx);
+    }
 
     if (active_table != t) {
         active_table = t;
@@ -233,6 +396,8 @@ void AssociationsDialog::updateTable(int index)
         QStringList colNames = t->colNames();
         for (int i = 0; i < table->rowCount(); i++) {
             QTableWidgetItem *cell = new QTableWidgetItem(colNames[i]);
+            if (Column *cp = t->column(i))
+                cell->setToolTip(cp->formattedAxisTitle());
             cell->setBackground(QBrush(Qt::lightGray));
             cell->setFlags(Qt::ItemIsEnabled);
             table->setItem(i, 0, cell);

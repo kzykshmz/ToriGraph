@@ -29,6 +29,7 @@
  ***************************************************************************/
 
 #include "TableCommentsHeaderModel.h"
+#include "core/column/Column.h"
 
 TableCommentsHeaderModel::TableCommentsHeaderModel(TableModel *table_model, QObject *parent)
     : QAbstractTableModel(parent), d_table_model(table_model)
@@ -67,11 +68,60 @@ QVariant TableCommentsHeaderModel::data(const QModelIndex &index, int role) cons
 QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orientation,
                                               int role) const
 {
-    if (orientation != Qt::Horizontal || role != Qt::DisplayRole || section < 0
-        || section >= columnCount())
+    if (orientation != Qt::Horizontal || section < 0 || section >= columnCount())
         return QVariant();
 
-    return QVariant(d_table_model->headerData(section, Qt::Horizontal, TableModel::CommentRole));
+    if (role != Qt::DisplayRole && role != Qt::ToolTipRole)
+        return QVariant();
+
+    Column *col = d_table_model ? d_table_model->column(section) : nullptr;
+    if (!col) {
+        if (role == Qt::DisplayRole && d_table_model)
+            return QVariant(
+                    d_table_model->headerData(section, Qt::Horizontal, TableModel::CommentRole));
+        return QVariant();
+    }
+
+    const QString ln = col->longName().trimmed();
+    const QString u = col->units().trimmed();
+    const QString cmt = col->comment().trimmed();
+    QString fx;
+    const QList<Interval<int>> fIntervals = col->formulaIntervals();
+    for (const Interval<int> &iv : fIntervals) {
+        const QString f = col->formula(iv.start()).trimmed();
+        if (!f.isEmpty()) {
+            fx = f;
+            break;
+        }
+    }
+    if (fx.isEmpty())
+        fx = col->formula(0).trimmed();
+
+    if (role == Qt::DisplayRole) {
+        QStringList lines;
+        if (!ln.isEmpty())
+            lines << ln;
+        if (!u.isEmpty())
+            lines << QString("[%1]").arg(u);
+        if (!cmt.isEmpty())
+            lines << cmt;
+        if (!fx.isEmpty())
+            lines << QString("F(x)= %1").arg(fx);
+        return lines.join(QLatin1String("\n"));
+    }
+
+    QStringList tipLines;
+    tipLines << QString("%1 [%2]").arg(col->name(), col->formattedAxisTitle());
+    if (!ln.isEmpty())
+        tipLines << tr("Long Name:") + QLatin1String(" ") + ln;
+    if (!u.isEmpty())
+        tipLines << tr("Units:") + QLatin1String(" ") + u;
+    if (!cmt.isEmpty())
+        tipLines << tr("Comments:") + QLatin1String(" ") + cmt;
+    if (!fx.isEmpty())
+        tipLines << QString("F(x)= %1").arg(fx);
+    tipLines << tr("Double-click header to edit Long Name, Units & F(x)=");
+    return tipLines.join(QLatin1String("\n"));
 }
 
 int TableCommentsHeaderModel::rowCount(const QModelIndex &parent) const

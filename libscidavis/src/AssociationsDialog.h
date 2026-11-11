@@ -33,6 +33,7 @@
 #include <QDialog>
 
 class QLabel;
+class QComboBox;
 class QListWidget;
 class QPushButton;
 class QTableWidget;
@@ -54,6 +55,7 @@ public:
 
 private slots:
     void updateTable(int index);
+    void selectWorksheet(int comboIdx);
     void updateCurves();
     void accept();
 
@@ -73,6 +75,7 @@ private:
     QList<int> dataCurvesList;
 
     QLabel *tableCaptionLabel;
+    QComboBox *boxTable;
     QTableWidget *table;
     QPushButton *btnOK, *btnCancel, *btnApply;
     QListWidget *associations;

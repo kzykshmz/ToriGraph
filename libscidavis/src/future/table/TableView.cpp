@@ -125,6 +125,25 @@ void TableView::init()
     connect(d_hide_button, SIGNAL(pressed()), this, SLOT(toggleControlTabBar()));
     d_control_tabs = new QWidget();
     ui.setupUi(d_control_tabs);
+    {
+        QWidget *lnRow = new QWidget(ui.description_tab);
+        QHBoxLayout *lnLay = new QHBoxLayout(lnRow);
+        lnLay->setContentsMargins(0, 0, 0, 0);
+        d_long_name_label = new QLabel(tr("Long Name:"), lnRow);
+        d_long_name_edit = new QLineEdit(lnRow);
+        lnLay->addWidget(d_long_name_label);
+        lnLay->addWidget(d_long_name_edit);
+        ui.verticalLayout->insertWidget(2, lnRow);
+
+        QWidget *uRow = new QWidget(ui.description_tab);
+        QHBoxLayout *uLay = new QHBoxLayout(uRow);
+        uLay->setContentsMargins(0, 0, 0, 0);
+        d_units_label = new QLabel(tr("Units:"), uRow);
+        d_units_edit = new QLineEdit(uRow);
+        uLay->addWidget(d_units_label);
+        uLay->addWidget(d_units_edit);
+        ui.verticalLayout->insertWidget(3, uRow);
+    }
     d_main_layout->addWidget(d_control_tabs);
 
     d_delegate = new TableItemDelegate(d_view_widget);
@@ -259,6 +278,10 @@ void TableView::retranslateStrings()
 {
     d_hide_button->setToolTip(tr("Show/hide control tabs"));
     ui.retranslateUi(d_control_tabs);
+    if (d_long_name_label)
+        d_long_name_label->setText(tr("Long Name:"));
+    if (d_units_label)
+        d_units_label->setText(tr("Units:"));
 
     // prevent losing current selection on retranslate
     auto index = ui.type_box->currentIndex();
@@ -347,7 +370,11 @@ void TableView::handleHorizontalSectionMoved(int, int from, int to)
 
 void TableView::handleHorizontalHeaderDoubleClicked(int index)
 {
-    Q_UNUSED(index);
+    if (d_table && index >= 0 && index < d_table->columnCount()) {
+        d_table->setCurrentColumn(index);
+        emit d_table->requestColumnPropertiesDialog(index);
+        return;
+    }
     showControlDescriptionTab();
 }
 
@@ -358,7 +385,9 @@ bool TableView::areCommentsShown() const
 
 void TableView::toggleComments()
 {
-    showComments(!areCommentsShown());
+    const bool next = !areCommentsShown();
+    d_user_hid_comments = !next;
+    showComments(next);
 }
 
 void TableView::showComments(bool on)
@@ -388,6 +417,10 @@ void TableView::setColumnForControlTabs(int col)
                 tr("Current column:\nName: %1\nPosition: %2").arg(col_ptr->name()).arg(col + 1);
 
         ui.name_edit->setText(col_ptr->name());
+        if (d_long_name_edit)
+            d_long_name_edit->setText(col_ptr->longName());
+        if (d_units_edit)
+            d_units_edit->setText(col_ptr->units());
         ui.comment_box->document()->setPlainText(col_ptr->comment());
         ui.type_box->setCurrentIndex(ui.type_box->findData((int)col_ptr->columnMode()));
         switch (col_ptr->columnMode()) {
@@ -434,6 +467,12 @@ void TableView::handleAspectDescriptionChanged(const AbstractAspect *aspect)
             return;
         ui.add_reference_combobox->setItemText(d_table->columnIndex(col),
                                                "col(\"" + col->name() + "\")");
+        if (!areCommentsShown() && !d_user_hid_comments) {
+            if (!col->longName().isEmpty() || !col->units().isEmpty()
+                || !col->comment().isEmpty() || !col->formulaIntervals().isEmpty()) {
+                showComments(true);
+            }
+        }
     }
 }
 
@@ -658,11 +697,16 @@ void TableView::applyDescription()
 {
     QItemSelectionModel *sel_model = d_view_widget->selectionModel();
     int index = sel_model->currentIndex().column();
-    if (d_table && index >= 0) {
+    if (d_table && index >= 0 && index < d_table->columnCount()) {
         // changing the name triggers an update of the UI, which also resets the content of the
         // comment box => need to cache it so name and comment can be changed simultaneously
-        QString comment = ui.comment_box->document()->toPlainText();
-        d_table->column(index)->setName(ui.name_edit->text());
+        const QString shortName = ui.name_edit->text();
+        const QString longName = d_long_name_edit ? d_long_name_edit->text() : QString();
+        const QString unitsStr = d_units_edit ? d_units_edit->text() : QString();
+        const QString comment = ui.comment_box->document()->toPlainText();
+        d_table->column(index)->setName(shortName);
+        d_table->column(index)->setLongName(longName);
+        d_table->column(index)->setUnits(unitsStr);
         d_table->column(index)->setComment(comment);
     }
 }
@@ -949,13 +993,17 @@ bool TableView::eventFilter(QObject *watched, QEvent *event)
             d_table->showTableViewRowContextMenu(global_pos);
         else if (watched == d_horizontal_header) {
             int col = d_horizontal_header->logicalIndexAt(cm_event->pos());
-            if (!isColumnSelected(col, true)) {
-                QItemSelectionModel *sel_model = d_view_widget->selectionModel();
-                sel_model->clearSelection();
-                sel_model->select(
-                        QItemSelection(d_model->index(0, col, QModelIndex()),
-                                       d_model->index(d_model->rowCount() - 1, col, QModelIndex())),
-                        QItemSelectionModel::Select);
+            if (col >= 0 && col < d_model->columnCount()) {
+                if (!isColumnSelected(col, true)) {
+                    QItemSelectionModel *sel_model = d_view_widget->selectionModel();
+                    sel_model->clearSelection();
+                    sel_model->select(
+                            QItemSelection(d_model->index(0, col, QModelIndex()),
+                                           d_model->index(d_model->rowCount() - 1, col,
+                                                          QModelIndex())),
+                            QItemSelectionModel::Select);
+                }
+                d_table->setCurrentColumn(col);
             }
             d_table->showTableViewColumnContextMenu(global_pos);
         } else if (watched == d_view_widget)
