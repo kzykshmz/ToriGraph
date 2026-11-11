@@ -32,6 +32,8 @@
 #include "core/datatypes/DateTime2StringFilter.h"
 #include <QDateTime>
 #include <QMessageBox>
+#include <QPainter>
+#include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 
 DataCurve::DataCurve(Table *t, const QString &xColName, const QString &name, int startRow,
@@ -286,9 +288,190 @@ void DataCurve::setVisible(bool on)
         c->setVisible(on);
 }
 
-int DataCurve::tableRow(int point)
+int DataCurve::tableRow(int point) const
 {
-    return d_index_to_row.value(point, -1);
+    if (!d_index_to_row.isEmpty())
+        return d_index_to_row.value(point, -1);
+    if (d_table && point >= 0 && point < dataSize()) {
+        int r = d_start_row + point;
+        if (r >= 0 && r < d_table->numRows())
+            return r;
+    }
+    return -1;
+}
+
+bool DataCurve::isPointMasked(int point) const
+{
+    if (!d_table || point < 0 || point >= dataSize())
+        return false;
+    const int row = tableRow(point);
+    if (row < 0)
+        return false;
+    Column *yCol = d_table->column(d_table->colIndex(title().text()));
+    if (!yCol)
+        yCol = d_table->column(title().text());
+    if (yCol && yCol->isMasked(row))
+        return true;
+    Column *xCol = d_table->column(d_table->colIndex(d_x_column));
+    if (!xCol)
+        xCol = d_table->column(d_x_column);
+    if (xCol && xCol->isMasked(row))
+        return true;
+    return false;
+}
+
+void DataCurve::maskPoint(int point, bool mask)
+{
+    if (!d_table || point < 0 || point >= dataSize())
+        return;
+    const int row = tableRow(point);
+    if (row < 0)
+        return;
+    Column *yCol = d_table->column(d_table->colIndex(title().text()));
+    if (!yCol)
+        yCol = d_table->column(title().text());
+    if (!yCol)
+        return;
+
+    yCol->setMasked(row, mask);
+    if (!mask) {
+        Column *xCol = d_table->column(d_table->colIndex(d_x_column));
+        if (!xCol)
+            xCol = d_table->column(d_x_column);
+        if (xCol && xCol->isMasked(row))
+            xCol->setMasked(row, false);
+    }
+
+    emit d_table->modifiedData(d_table, title().text());
+    if (plot()) {
+        Graph *g = qobject_cast<Graph *>(plot()->parent());
+        if (g)
+            g->replot();
+        else
+            plot()->replot();
+    }
+}
+
+int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
+{
+    if (!d_table || dataSize() <= 0)
+        return 0;
+    Column *yCol = d_table->column(d_table->colIndex(title().text()));
+    if (!yCol)
+        yCol = d_table->column(title().text());
+    if (!yCol)
+        return 0;
+    Column *xCol = d_table->column(d_table->colIndex(d_x_column));
+    if (!xCol)
+        xCol = d_table->column(d_x_column);
+
+    const QRectF normRect = dataRect.normalized();
+    int modifiedCount = 0;
+    const int n = dataSize();
+    for (int i = 0; i < n; ++i) {
+        const double px = x(i);
+        const double py = y(i);
+        if (px >= normRect.left() && px <= normRect.right() && py >= normRect.top()
+            && py <= normRect.bottom()) {
+            const int row = tableRow(i);
+            if (row < 0)
+                continue;
+            const bool wasMasked = isPointMasked(i);
+            yCol->setMasked(row, mask);
+            if (!mask && xCol && xCol->isMasked(row))
+                xCol->setMasked(row, false);
+            if (wasMasked != mask)
+                ++modifiedCount;
+        }
+    }
+
+    if (modifiedCount > 0) {
+        emit d_table->modifiedData(d_table, title().text());
+        if (plot()) {
+            Graph *g = qobject_cast<Graph *>(plot()->parent());
+            if (g)
+                g->replot();
+            else
+                plot()->replot();
+        }
+    }
+    return modifiedCount;
+}
+
+void DataCurve::clearMasks()
+{
+    if (!d_table)
+        return;
+    Column *yCol = d_table->column(d_table->colIndex(title().text()));
+    if (!yCol)
+        yCol = d_table->column(title().text());
+    if (!yCol)
+        return;
+
+    yCol->clearMasks();
+    emit d_table->modifiedData(d_table, title().text());
+    if (plot()) {
+        Graph *g = qobject_cast<Graph *>(plot()->parent());
+        if (g)
+            g->replot();
+        else
+            plot()->replot();
+    }
+}
+
+int DataCurve::maskedPointCount() const
+{
+    if (!d_table || dataSize() <= 0)
+        return 0;
+    int count = 0;
+    const int n = dataSize();
+    for (int i = 0; i < n; ++i) {
+        if (isPointMasked(i))
+            ++count;
+    }
+    return count;
+}
+
+void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,
+                     int to) const
+{
+    PlotCurve::draw(painter, xMap, yMap, from, to);
+
+    if (!painter || !d_table || dataSize() <= 0)
+        return;
+    const int n = dataSize();
+    const int startIdx = qMax(0, from);
+    const int endIdx = (to < 0) ? (n - 1) : qMin(to, n - 1);
+    if (startIdx > endIdx)
+        return;
+
+    bool anyMasked = false;
+    for (int i = startIdx; i <= endIdx; ++i) {
+        if (isPointMasked(i)) {
+            anyMasked = true;
+            break;
+        }
+    }
+    if (!anyMasked)
+        return;
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const QPen maskPen(QColor(220, 30, 30), 2, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+    painter->setPen(maskPen);
+    painter->setBrush(Qt::NoBrush);
+    const int r = qMax(5, symbol().size().width() / 2 + 2);
+
+    for (int i = startIdx; i <= endIdx; ++i) {
+        if (!isPointMasked(i))
+            continue;
+        const int px = xMap.transform(x(i));
+        const int py = yMap.transform(y(i));
+        painter->drawRect(QRect(px - r, py - r, 2 * r, 2 * r));
+        painter->drawLine(px - r + 1, py - r + 1, px + r - 1, py + r - 1);
+        painter->drawLine(px - r + 1, py + r - 1, px + r - 1, py - r + 1);
+    }
+    painter->restore();
 }
 
 QwtDoubleRect PlotCurve::boundingRect() const

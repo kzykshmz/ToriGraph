@@ -58,7 +58,16 @@ class Graph;
 class PlotToolInterface
 {
 public:
-    enum RTTI { DataPicker, ScreenPicker, LineProfile, MultiPeak, RangeSelector, TranslateCurve };
+    enum RTTI {
+        DataPicker,
+        ScreenPicker,
+        LineProfile,
+        MultiPeak,
+        RangeSelector,
+        TranslateCurve,
+        RoiGadget,
+        VerticalCursor
+    };
     virtual RTTI rtti() const = 0;
 
     PlotToolInterface(Graph *graph) { d_graph = graph; }

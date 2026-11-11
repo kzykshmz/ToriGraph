@@ -82,6 +82,12 @@ DataPickerTool::DataPickerTool(Graph *graph, ApplicationWindow *app, Mode mode,
     case Remove:
         emit statusText(tr("Select point and double click to remove it!"));
         break;
+    case Mask:
+        emit statusText(tr("Click on a data point to mask it (non-destructively exclude from analysis)!"));
+        break;
+    case Unmask:
+        emit statusText(tr("Click on a masked data point to unmask it!"));
+        break;
     }
 }
 
@@ -95,7 +101,8 @@ void DataPickerTool::append(const QPoint &pos)
 {
     int dist, point_index;
     const int curve = d_graph->plotWidget()->closestCurve(pos.x(), pos.y(), dist, point_index);
-    if (curve <= 0 || dist >= 5) { // 5 pixels tolerance
+    const int pixelTol = (d_mode == Mask || d_mode == Unmask) ? 10 : 5;
+    if (curve <= 0 || dist >= pixelTol) {
         setSelection(NULL, 0);
         return;
     }
@@ -109,7 +116,8 @@ void DataPickerTool::append(const QPoint &pos)
 
 void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
 {
-    if (curve == d_selected_curve && point_index == d_selected_point)
+    if (curve == d_selected_curve && point_index == d_selected_point
+        && d_mode != Mask && d_mode != Unmask)
         return;
 
     d_selected_curve = curve;
@@ -135,17 +143,41 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
                                 .arg(QLocale().toString(d_selected_curve->y(d_selected_point), 'G',
                                                         d_app->d_decimal_digits)));
     } else {
-        int row = ((DataCurve *)d_selected_curve)->tableRow(d_selected_point);
+        DataCurve *dc = dynamic_cast<DataCurve *>(d_selected_curve);
+        int row = dc ? dc->tableRow(d_selected_point) : -1;
+        Table *t = dc ? dc->table() : nullptr;
 
-        Table *t = ((DataCurve *)d_selected_curve)->table();
-        int xCol = t->colIndex(((DataCurve *)d_selected_curve)->xColumnName());
-        int yCol = t->colIndex(d_selected_curve->title().text());
+        if (dc && (d_mode == Mask || d_mode == Unmask)) {
+            const bool doMask = (d_mode == Mask);
+            dc->maskPoint(d_selected_point, doMask);
+            const int xCol = t ? t->colIndex(dc->xColumnName()) : -1;
+            const int yCol = t ? t->colIndex(d_selected_curve->title().text()) : -1;
+            const QString xStr = (t && row >= 0 && xCol >= 0)
+                    ? t->text(row, xCol)
+                    : QLocale().toString(d_selected_curve->x(d_selected_point), 'G',
+                                         d_app ? d_app->d_decimal_digits : 6);
+            const QString yStr = (t && row >= 0 && yCol >= 0)
+                    ? t->text(row, yCol)
+                    : QLocale().toString(d_selected_curve->y(d_selected_point), 'G',
+                                         d_app ? d_app->d_decimal_digits : 6);
+            emit statusText(QString("%1 %2[%3]: x=%4; y=%5")
+                                    .arg(doMask ? tr("[Masked]") : tr("[Unmasked]"))
+                                    .arg(d_selected_curve->title().text())
+                                    .arg(row + 1)
+                                    .arg(xStr)
+                                    .arg(yStr));
+            if (d_app)
+                d_app->modifiedProject();
+        } else if (t && row >= 0) {
+            int xCol = t->colIndex(dc->xColumnName());
+            int yCol = t->colIndex(d_selected_curve->title().text());
 
-        emit statusText(QString("%1[%2]: x=%3; y=%4")
-                                .arg(d_selected_curve->title().text())
-                                .arg(row + 1)
-                                .arg(t->text(row, xCol))
-                                .arg(t->text(row, yCol)));
+            emit statusText(QString("%1[%2]: x=%3; y=%4")
+                                    .arg(d_selected_curve->title().text())
+                                    .arg(row + 1)
+                                    .arg(t->text(row, xCol))
+                                    .arg(t->text(row, yCol)));
+        }
     }
 
     QwtDoublePoint selected_point_value(d_selected_curve->x(d_selected_point),
@@ -153,7 +185,7 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
     d_selection_marker.setValue(selected_point_value);
     if (d_selection_marker.plot() == NULL)
         d_selection_marker.attach(d_graph->plotWidget());
-    d_graph->plotWidget()->replot();
+    d_graph->replot();
 }
 
 bool DataPickerTool::eventFilter(QObject *obj, QEvent *event)
