@@ -186,7 +186,14 @@
 #include <QListWidget>
 #include <QHeaderView>
 #include <QHash>
+#include <QSlider>
+#include <QMouseEvent>
+#include <QKeyEvent>
 #include <qwt_symbol.h>
+#include <qwt_plot_canvas.h>
+#include <qwt_scale_div.h>
+#include <gsl/gsl_spline.h>
+#include <gsl/gsl_errno.h>
 #ifdef Q_OS_WIN
 #include "OleServer.h"
 #endif
@@ -976,6 +983,64 @@ void registerApplicationWindowJapaneseStrings()
             "ToriGraphの新しいバージョンが利用可能か確認します。インターネット接続を許可してください。");
         add("There is a newer version of ToriGraph (%1) available for download. Would you like to download it now?",
             "新しいバージョンのToriGraph (%1) が利用可能です。今すぐダウンロードしますか？");
+
+        // Round 2: High-DPI Page Copy, Interactive Stack Offsets, On-Canvas Baseline Anchors, Gadgets & Domain Analysis
+        add("Copy Page as &Image (High-DPI PNG)", "ページを高解像度画像としてコピー(&I) (300 DPI PNG)");
+        add("Copy Page as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)");
+        add("Ctrl+Alt+C", "Ctrl+Alt+C");
+        add("Copy active graph page to clipboard as a 300 DPI PNG image",
+            "アクティブなグラフページを300 DPI PNG画像としてクリップボードへコピー");
+        add("Copied %1 as 300 DPI PNG (%2 x %3 px) to clipboard.",
+            "%1 を 300 DPI PNG画像 (%2 x %3 px) としてクリップボードにコピーしました。");
+        add("2D &Cross-Section Profile Gadget (Image / Heatmap)",
+            "2D断面プロファイルガジェット (画像 / ヒートマップ)(&C)");
+        add("2D Cross-Section Profile Gadget (Image / Heatmap)",
+            "2D断面プロファイルガジェット (画像 / ヒートマップ)");
+        add("Interactive horizontal/vertical 2D cross-section profile gadget for heatmaps and images",
+            "画像・ヒートマップ上の水平・垂直2D断面プロファイルを対話表示するガジェット");
+        add("2D &Spatial Filter && Plane Leveling...",
+            "2D空間フィルタ・平面レベリング(&S)...");
+        add("2D Spatial Filter & Plane Leveling...",
+            "2D空間フィルタ・平面レベリング...");
+        add("Apply 2D Gaussian, median, Sobel/Laplacian filter or polynomial plane leveling to a matrix",
+            "行列データへ2Dガウシアン・メディアン・Sobel/Laplacianフィルタや多項式平面レベリングを適用");
+        add("&Fourier Self-Deconvolution (Peak Sharpening)...",
+            "フーリエ自己デコンボリューション (ピーク先鋭化)(&F)...");
+        add("Fourier Self-Deconvolution (Peak Sharpening)...",
+            "フーリエ自己デコンボリューション (ピーク先鋭化)...");
+        add("Sharpen overlapping spectral peaks via Kauppinen Fourier self-deconvolution",
+            "Kauppinenフーリエ自己デコンボリューションにより重畳スペクトルピークを先鋭化");
+        add("&EIS Nyquist && Bode Analyzer...",
+            "EIS ナイキスト・ボード線図アナライザ(&E)...");
+        add("EIS Nyquist & Bode Analyzer...",
+            "EIS ナイキスト・ボード線図アナライザ...");
+        add("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)",
+            "電気化学インピーダンス分光 (Nyquist・BodeプロットおよびRandles等価回路フィット)");
+        add("Passing-&Bablok && Deming Regression...",
+            "Passing-Bablok・Deming回帰 (測定法比較)(&B)...");
+        add("Passing-Bablok & Deming Regression...",
+            "Passing-Bablok・Deming回帰 (測定法比較)...");
+        add("Method-comparison regression with errors in both X and Y (Passing-Bablok & Deming)",
+            "X・Y両軸に誤差を含む測定法比較回帰 (Passing-Bablok法 / Deming回帰)");
+        add("Interactive Waterfall / Spectra Stacker",
+            "対話型ウォーターフォール / スペクトルスタック設定");
+        add("Y Offset (%):", "Yオフセット (%):");
+        add("X Offset (%):", "Xオフセット (%):");
+        add("Normalize [0, 1] (Scale Each Curve to Unit Span)",
+            "[0, 1] 正規化 (各曲線を単位スパンへスケール)");
+        add("Auto-Rescale Axes (Individual Autoscale)",
+            "軸の自動再スケール (個別オートスケール)");
+        add("Reverse Curve Order (Top-to-Bottom)",
+            "曲線の積上げ順序を反転 (上から下へ)");
+        add("Live Preview on Canvas", "キャンバス上でライブプレビュー");
+        add("Reset (0%, 0%)", "リセット (0%, 0%)");
+        add("User Anchors (Linear)", "ユーザーアンカー点 (線形補間)");
+        add("User Anchors (Cubic Spline)", "ユーザーアンカー点 (3次スプライン)");
+        add("Pick / Drag Anchors on Graph", "グラフ上でアンカー点を選択・ドラッグ");
+        add("Stop Picking Anchors (Active)", "アンカー選択・ドラッグを終了 (実行中)");
+        add("Clear Anchors", "アンカーをクリア");
+        add("Click on graph: add anchor (snaps to curve; Shift+Click for free Y) | Drag: move | Right-click / Delete: remove",
+            "グラフをクリック: アンカー追加 (曲線へスナップ / Shift+クリックで自由Y配置) | ドラッグ: 移動 | 右クリック・Delete: 削除");
     }
 }
 
@@ -1017,6 +1082,146 @@ double inverseStandardNormalCDF(double p)
                 / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
     }
 }
+
+QVector<QPointF> normalizeSortedAnchors(const QVector<QPointF> &anchors)
+{
+    QVector<QPointF> valid;
+    valid.reserve(anchors.size());
+    for (const QPointF &pt : anchors) {
+        if (std::isfinite(pt.x()) && std::isfinite(pt.y()))
+            valid.push_back(pt);
+    }
+    std::sort(valid.begin(), valid.end(),
+              [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+
+    QVector<QPointF> out;
+    out.reserve(valid.size());
+    for (int i = 0; i < valid.size();) {
+        double xSum = valid[i].x();
+        double ySum = valid[i].y();
+        int cnt = 1;
+        int j = i + 1;
+        while (j < valid.size() && std::abs(valid[j].x() - valid[i].x()) <= 1e-12) {
+            xSum += valid[j].x();
+            ySum += valid[j].y();
+            ++cnt;
+            ++j;
+        }
+        out.push_back(QPointF(xSum / double(cnt), ySum / double(cnt)));
+        i = j;
+    }
+    return out;
+}
+
+void evaluateAnchorBaselineSamples(const QVector<QPointF> &rawAnchors, bool cubicSpline,
+                                   double xMin, double xMax, int numSamples,
+                                   QVector<double> &outX, QVector<double> &outY)
+{
+    outX.clear();
+    outY.clear();
+    const QVector<QPointF> anchors = normalizeSortedAnchors(rawAnchors);
+    const int m = anchors.size();
+    if (m == 0 || numSamples < 2 || !std::isfinite(xMin) || !std::isfinite(xMax))
+        return;
+
+    if (xMax < xMin)
+        std::swap(xMin, xMax);
+    if (std::abs(xMax - xMin) <= 1e-15) {
+        xMin -= 0.5;
+        xMax += 0.5;
+    }
+
+    outX.resize(numSamples);
+    outY.resize(numSamples);
+    for (int i = 0; i < numSamples; ++i)
+        outX[i] = xMin + (xMax - xMin) * (double(i) / double(numSamples - 1));
+
+    if (m == 1) {
+        outY.fill(anchors[0].y());
+        return;
+    }
+
+    std::vector<double> ax(static_cast<size_t>(m)), ay(static_cast<size_t>(m));
+    for (int k = 0; k < m; ++k) {
+        ax[size_t(k)] = anchors[k].x();
+        ay[size_t(k)] = anchors[k].y();
+    }
+
+    if (m >= 3 && cubicSpline) {
+        gsl_error_handler_t *oldHandler = gsl_set_error_handler_off();
+        gsl_interp_accel *acc = gsl_interp_accel_alloc();
+        gsl_spline *sp = gsl_spline_alloc(gsl_interp_cspline, size_t(m));
+        if (acc && sp && gsl_spline_init(sp, ax.data(), ay.data(), size_t(m)) == GSL_SUCCESS) {
+            const double dLeft = gsl_spline_eval_deriv(sp, ax.front(), acc);
+            const double dRight = gsl_spline_eval_deriv(sp, ax.back(), acc);
+            for (int i = 0; i < numSamples; ++i) {
+                const double xi = outX[i];
+                if (xi <= ax.front())
+                    outY[i] = ay.front() + dLeft * (xi - ax.front());
+                else if (xi >= ax.back())
+                    outY[i] = ay.back() + dRight * (xi - ax.back());
+                else
+                    outY[i] = gsl_spline_eval(sp, xi, acc);
+            }
+            gsl_spline_free(sp);
+            gsl_interp_accel_free(acc);
+            gsl_set_error_handler(oldHandler);
+            return;
+        }
+        if (sp)
+            gsl_spline_free(sp);
+        if (acc)
+            gsl_interp_accel_free(acc);
+        gsl_set_error_handler(oldHandler);
+    }
+
+    for (int i = 0; i < numSamples; ++i) {
+        const double xi = outX[i];
+        if (xi <= ax.front()) {
+            const double dx0 = ax[1] - ax[0];
+            const double slope = (std::abs(dx0) > 1e-15) ? ((ay[1] - ay[0]) / dx0) : 0.0;
+            outY[i] = ay[0] + slope * (xi - ax[0]);
+        } else if (xi >= ax.back()) {
+            const double dxEnd = ax[size_t(m - 1)] - ax[size_t(m - 2)];
+            const double slope =
+                    (std::abs(dxEnd) > 1e-15) ? ((ay[size_t(m - 1)] - ay[size_t(m - 2)]) / dxEnd) : 0.0;
+            outY[i] = ay.back() + slope * (xi - ax.back());
+        } else {
+            auto it = std::upper_bound(ax.begin(), ax.end(), xi);
+            size_t k1 = size_t(std::distance(ax.begin(), it));
+            if (k1 == 0)
+                k1 = 1;
+            if (k1 >= size_t(m))
+                k1 = size_t(m - 1);
+            const size_t k0 = k1 - 1;
+            const double dxSeg = ax[k1] - ax[k0];
+            const double frac = (std::abs(dxSeg) > 1e-15) ? ((xi - ax[k0]) / dxSeg) : 0.0;
+            outY[i] = ay[k0] + frac * (ay[k1] - ay[k0]);
+        }
+    }
+}
+
+class PeakAnchorEventFilter final : public QObject
+{
+public:
+    std::function<bool(QObject *, QEvent *)> handler;
+    std::function<void()> onTeardown;
+
+    explicit PeakAnchorEventFilter(QObject *parent = nullptr) : QObject(parent) {}
+    ~PeakAnchorEventFilter() override
+    {
+        if (onTeardown)
+            onTeardown();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (handler)
+            return handler(watched, event);
+        return QObject::eventFilter(watched, event);
+    }
+};
 
 } // anonymous namespace
 
@@ -1095,6 +1300,8 @@ ApplicationWindow::ApplicationWindow()
             SLOT(handleAspectAdded(const AbstractAspect *, int)));
     connect(d_project, SIGNAL(aspectAboutToBeRemoved(const AbstractAspect *, int)), this,
             SLOT(handleAspectAboutToBeRemoved(const AbstractAspect *, int)));
+    connect(d_project, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
+            SLOT(handleAspectDescriptionChanged(const AbstractAspect *)), Qt::UniqueConnection);
 
     explorerWindow.setWindowTitle(tr("Project Explorer"));
     explorerWindow.setObjectName(
@@ -1920,11 +2127,13 @@ void ApplicationWindow::initMainMenu()
 
     edit->addAction(actionCutSelection);
     edit->addAction(actionCopySelection);
+    edit->addAction(actionCopyPageImage);
     edit->addAction(actionPasteSelection);
     edit->addAction(actionClearSelection);
     edit->addSeparator();
     edit->addAction(actionCopyGraphFormat);
     edit->addAction(actionPasteGraphFormat);
+    edit->addAction(actionCopyGraphOle);
     edit->addAction(actionCopyWindow);
     edit->addAction(actionBatchPlot);
 
@@ -2124,6 +2333,7 @@ void ApplicationWindow::initMainMenu()
     gadgetsMenu->addAction(actionGadgetIntersect);
     gadgetsMenu->addAction(actionGadgetFFT);
     gadgetsMenu->addAction(actionGadgetIntegrate2D);
+    gadgetsMenu->addAction(actionGadgetImageProfile);
     gadgetsMenu->addSeparator();
     gadgetsMenu->addAction(actionGadgetRiseTime);
     gadgetsMenu->addAction(actionGadgetCluster);
@@ -2171,6 +2381,7 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionArrheniusPlot);
     curveMathMenu->addAction(actionTaucPlot);
+    curveMathMenu->addAction(actionEISAnalyzer);
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionDifferentiate);
     curveMathMenu->addAction(actionSavGolSmoothDerivative);
@@ -2196,6 +2407,7 @@ void ApplicationWindow::initMainMenu()
     graphStatsMenu->addAction(actionPairedComparisonPlot);
     graphStatsMenu->addAction(actionTwoWayANOVA);
     graphStatsMenu->addAction(actionBlandAltman);
+    graphStatsMenu->addAction(actionPassingBablokDeming);
     graphStatsMenu->addAction(actionWeibullPlot);
     graphStatsMenu->addAction(actionROCCurve);
     graphStatsMenu->addAction(actionKaplanMeier);
@@ -2245,9 +2457,11 @@ void ApplicationWindow::initMainMenu()
     advSignalMenu->addAction(actionPeakEnvelope);
     advSignalMenu->addAction(actionWaveletTransform);
     advSignalMenu->addAction(actionWelchPsdCoherence);
+    advSignalMenu->addAction(actionFourierSelfDeconvolve);
     advSignalMenu->addSeparator();
     advSignalMenu->addAction(actionMatrixFFT2D);
     advSignalMenu->addAction(actionMatrixIFFT2D);
+    advSignalMenu->addAction(actionMatrixFilter2D);
 
     calcul->addSeparator();
     calcul->addAction(actionInterpolate);
@@ -2313,6 +2527,7 @@ void ApplicationWindow::initMainMenu()
     advFitMenu->addAction(actionFitLinear);
     advFitMenu->addAction(actionFitApparentLinear);
     advFitMenu->addAction(actionFitYorkLinear);
+    advFitMenu->addAction(actionPassingBablokDeming);
     advFitMenu->addAction(actionPiecewiseLinearFit);
     advFitMenu->addAction(actionRobustLinearFit);
     advFitMenu->addAction(actionShowFitPolynomDialog);
@@ -2337,6 +2552,7 @@ void ApplicationWindow::initMainMenu()
     peaksBaselineMenu->addAction(actionPeakFitDialog);
     peaksBaselineMenu->addAction(actionBatchPeakAnalysis);
     peaksBaselineMenu->addAction(action2DPeakAnalysis);
+    peaksBaselineMenu->addAction(actionFourierSelfDeconvolve);
     peaksBaselineMenu->addSeparator();
     peaksBaselineMenu->addAction(actionAutoPeakGauss);
     peaksBaselineMenu->addAction(actionAutoPeakLorentz);
@@ -2527,6 +2743,7 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionLogisticRegression);
     dataMenu->addAction(actionArrheniusPlot);
     dataMenu->addAction(actionTaucPlot);
+    dataMenu->addAction(actionEISAnalyzer);
     dataMenu->addAction(actionSurfaceFit3D);
     dataMenu->addAction(action2DPeakAnalysis);
     dataMenu->addSeparator();
@@ -2537,6 +2754,7 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionPairedComparisonPlot);
     dataMenu->addAction(actionTwoWayANOVA);
     dataMenu->addAction(actionBlandAltman);
+    dataMenu->addAction(actionPassingBablokDeming);
     dataMenu->addAction(actionWeibullPlot);
     dataMenu->addAction(actionROCCurve);
     dataMenu->addAction(actionKaplanMeier);
@@ -2573,6 +2791,8 @@ void ApplicationWindow::customMenu(MyWidget *w)
         actionPrint->setEnabled(true);
         actionCutSelection->setEnabled(true);
         actionCopySelection->setEnabled(true);
+        if (actionCopyPageImage)
+            actionCopyPageImage->setEnabled(w->inherits("MultiLayer"));
         actionPasteSelection->setEnabled(true);
         actionClearSelection->setEnabled(true);
         actionSaveTemplate->setEnabled(true);
@@ -2669,6 +2889,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
             matrixMenu->addSeparator();
             matrixMenu->addAction(actionMatrixFFT2D);
             matrixMenu->addAction(actionMatrixIFFT2D);
+            matrixMenu->addAction(actionMatrixFilter2D);
             matrixMenu->addAction(actionSurfaceFit3D);
             matrixMenu->addAction(action2DPeakAnalysis);
             matrixMenu->addSeparator();
@@ -2714,6 +2935,8 @@ void ApplicationWindow::disableActions()
 
     actionCutSelection->setEnabled(false);
     actionCopySelection->setEnabled(false);
+    if (actionCopyPageImage)
+        actionCopyPageImage->setEnabled(false);
     actionPasteSelection->setEnabled(false);
     actionClearSelection->setEnabled(false);
 }
@@ -2776,6 +2999,9 @@ void ApplicationWindow::customToolBars(MyWidget *w)
                         break;
                     case PlotToolInterface::ScreenPicker:
                         btnPicker->setChecked(true);
+                        break;
+                    case PlotToolInterface::ImageProfileGadget:
+                        btnPointer->setChecked(true);
                         break;
                     default:
                         btnPointer->setChecked(true);
@@ -3170,7 +3396,6 @@ void ApplicationWindow::plotYOffsetStack()
     if (!w)
         return;
 
-    MultiLayer *ml = nullptr;
     if (w->inherits("Table")) {
         Table *t = static_cast<Table *>(w);
         if (!validFor2DPlot(t, Graph::Line))
@@ -3181,19 +3406,30 @@ void ApplicationWindow::plotYOffsetStack()
                                  tr("Please select one or more Y columns to stack!"));
             return;
         }
-        ml = multilayerPlot(t, cols, Graph::Line, t->firstSelectedRow(), t->lastSelectedRow());
-    } else if (w->inherits("MultiLayer")) {
-        ml = static_cast<MultiLayer *>(w);
+        MultiLayer *ml =
+                multilayerPlot(t, cols, Graph::Line, t->firstSelectedRow(), t->lastSelectedRow());
+        if (!ml)
+            return;
+        Graph *g = ml->activeGraph();
+        if (!g || g->curves() < 1)
+            return;
+        // Apply non-destructive display-time stack offset (never mutate source Table cells!)
+        g->setStackOffsets(1, 15.0, 0.0, false);
+        g->setProperty("stackOffsetMode", 1);
+        g->setProperty("yStackOffsetPercent", 15.0);
+        g->setProperty("xStackOffsetPercent", 0.0);
+        g->setProperty("normalizeStackZeroOne", false);
+        g->setProperty("stackAutoscale", true);
+        g->setProperty("stackReverseOrder", false);
+        emit modified();
+        if (!m_batch)
+            showStackOffsetsDialog();
+        return;
     }
 
-    if (!ml)
-        return;
-    Graph *g = ml->activeGraph();
-    if (!g || g->curves() < 1)
-        return;
-
-    g->applyYOffsetStack(0.0, true);
-    emit modified();
+    if (w->inherits("MultiLayer")) {
+        showStackOffsetsDialog();
+    }
 }
 
 void ApplicationWindow::plotViolin()
@@ -3798,6 +4034,7 @@ void ApplicationWindow::updateColNames(const QString &oldName, const QString &ne
             }
         }
     }
+    refreshAllGraphsAutoAxisTitles();
 }
 
 void ApplicationWindow::changeMatrixName(const QString &oldName, const QString &newName)
@@ -10498,6 +10735,7 @@ void ApplicationWindow::showGraphContextMenu()
             cm.addAction(actionWaterfallStackOffset);
             cm.addAction(actionResetStackOffsets);
             cm.addAction(actionUnzoom);
+            cm.addAction(actionCopyPageImage);
             cm.addAction(actionCopyGraphOle);
         }
 
@@ -10672,6 +10910,7 @@ void ApplicationWindow::showLayerButtonContextMenu()
             cm.addAction(actionWaterfallStackOffset);
             cm.addAction(actionResetStackOffsets);
             cm.addAction(actionUnzoom);
+            cm.addAction(actionCopyPageImage);
             cm.addAction(actionCopyGraphOle);
         }
 
@@ -13004,6 +13243,10 @@ void ApplicationWindow::connectTable(Table *w)
     connect(w, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(modifiedProject(MyWidget *)));
     connect(w, SIGNAL(changedColHeader(const QString &, const QString &)), this,
             SLOT(updateColNames(const QString &, const QString &)));
+    if (w && w->d_future_table) {
+        connect(w->d_future_table, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
+                SLOT(handleAspectDescriptionChanged(const AbstractAspect *)), Qt::UniqueConnection);
+    }
 
 #ifdef LEGACY_CODE_0_2_x
     connect(w->d_future_table, SIGNAL(requestRowStatistics()), this, SLOT(showRowStatistics()));
@@ -14050,7 +14293,7 @@ void ApplicationWindow::createActions()
     connect(actionFillBetweenCurves, SIGNAL(triggered()), this, SLOT(showFillBetweenCurvesDialog()));
 
     actionWaterfallStackOffset = new QAction(tr("&Waterfall / Stack Offset..."), this);
-    connect(actionWaterfallStackOffset, SIGNAL(triggered()), this, SLOT(showWaterfallStackOffsetDialog()));
+    connect(actionWaterfallStackOffset, SIGNAL(triggered()), this, SLOT(showStackOffsetsDialog()));
 
     actionResetStackOffsets = new QAction(tr("&Reset Stack Offsets"), this);
     connect(actionResetStackOffsets, SIGNAL(triggered()), this, SLOT(resetActiveGraphStackOffsets()));
@@ -14072,6 +14315,45 @@ void ApplicationWindow::createActions()
 
     actionClustering = new QAction(tr("&Clustering (K-Means / Dendrogram)..."), this);
     connect(actionClustering, SIGNAL(triggered()), this, SLOT(showClusteringDialog()));
+
+    // Round 2: High-DPI Page Copy, 2D Cross-Section Profile Gadget & Domain Analysis
+    actionCopyPageImage =
+            new QAction(IconLoader::load("edit-copy"), tr("Copy Page as &Image (High-DPI PNG)"), this);
+    actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
+    actionCopyPageImage->setToolTip(
+            tr("Copy active graph page to clipboard as a 300 DPI PNG image"));
+    connect(actionCopyPageImage, SIGNAL(triggered()), this, SLOT(copyPageAsHighDpiImage()));
+
+    actionGadgetImageProfile = new QAction(
+            QIcon(QPixmap(":/cursors.xpm")),
+            tr("2D &Cross-Section Profile Gadget (Image / Heatmap)"), this);
+    actionGadgetImageProfile->setToolTip(
+            tr("Interactive horizontal/vertical 2D cross-section profile gadget for heatmaps and images"));
+    connect(actionGadgetImageProfile, SIGNAL(triggered()), this, SLOT(attachImageProfileGadget()));
+
+    actionMatrixFilter2D = new QAction(tr("2D &Spatial Filter && Plane Leveling..."), this);
+    actionMatrixFilter2D->setToolTip(
+            tr("Apply 2D Gaussian, median, Sobel/Laplacian filter or polynomial plane leveling to a matrix"));
+    connect(actionMatrixFilter2D, SIGNAL(triggered()), this, SLOT(showMatrixFilter2DDialog()));
+
+    actionFourierSelfDeconvolve =
+            new QAction(tr("&Fourier Self-Deconvolution (Peak Sharpening)..."), this);
+    actionFourierSelfDeconvolve->setToolTip(
+            tr("Sharpen overlapping spectral peaks via Kauppinen Fourier self-deconvolution"));
+    connect(actionFourierSelfDeconvolve, SIGNAL(triggered()), this,
+            SLOT(showFourierSelfDeconvolveDialog()));
+
+    actionEISAnalyzer = new QAction(tr("&EIS Nyquist && Bode Analyzer..."), this);
+    actionEISAnalyzer->setToolTip(
+            tr("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)"));
+    connect(actionEISAnalyzer, SIGNAL(triggered()), this, SLOT(showEISAnalyzerDialog()));
+
+    actionPassingBablokDeming =
+            new QAction(tr("Passing-&Bablok && Deming Regression..."), this);
+    actionPassingBablokDeming->setToolTip(
+            tr("Method-comparison regression with errors in both X and Y (Passing-Bablok & Deming)"));
+    connect(actionPassingBablokDeming, SIGNAL(triggered()), this,
+            SLOT(showPassingBablokDemingDialog()));
 
     actionCopyStatusBarText = new QAction(tr("&Copy status bar text"), this);
     connect(actionCopyStatusBarText, SIGNAL(triggered()), this, SLOT(copyStatusBarText()));
@@ -14794,6 +15076,39 @@ void ApplicationWindow::translateActionsStrings()
         actionCorrelationMatrix->setText(tr("&Correlation Matrix Heatmap..."));
     if (actionClustering)
         actionClustering->setText(tr("&Clustering (K-Means / Dendrogram)..."));
+    if (actionCopyPageImage) {
+        actionCopyPageImage->setText(tr("Copy Page as &Image (High-DPI PNG)"));
+        actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
+        actionCopyPageImage->setToolTip(
+                tr("Copy active graph page to clipboard as a 300 DPI PNG image"));
+    }
+    if (actionGadgetImageProfile) {
+        actionGadgetImageProfile->setText(
+                tr("2D &Cross-Section Profile Gadget (Image / Heatmap)"));
+        actionGadgetImageProfile->setToolTip(
+                tr("Interactive horizontal/vertical 2D cross-section profile gadget for heatmaps and images"));
+    }
+    if (actionMatrixFilter2D) {
+        actionMatrixFilter2D->setText(tr("2D &Spatial Filter && Plane Leveling..."));
+        actionMatrixFilter2D->setToolTip(
+                tr("Apply 2D Gaussian, median, Sobel/Laplacian filter or polynomial plane leveling to a matrix"));
+    }
+    if (actionFourierSelfDeconvolve) {
+        actionFourierSelfDeconvolve->setText(
+                tr("&Fourier Self-Deconvolution (Peak Sharpening)..."));
+        actionFourierSelfDeconvolve->setToolTip(
+                tr("Sharpen overlapping spectral peaks via Kauppinen Fourier self-deconvolution"));
+    }
+    if (actionEISAnalyzer) {
+        actionEISAnalyzer->setText(tr("&EIS Nyquist && Bode Analyzer..."));
+        actionEISAnalyzer->setToolTip(
+                tr("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)"));
+    }
+    if (actionPassingBablokDeming) {
+        actionPassingBablokDeming->setText(tr("Passing-&Bablok && Deming Regression..."));
+        actionPassingBablokDeming->setToolTip(
+                tr("Method-comparison regression with errors in both X and Y (Passing-Bablok & Deming)"));
+    }
 
     actionAddText->setText(tr("Add &Text"));
     actionAddText->setToolTip(tr("Add Text"));
@@ -15354,16 +15669,421 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     if (curves.isEmpty())
         return;
 
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Peak Analyzer (OriginPro)"));
-    dlg.setMinimumSize(580, 500);
+    if (d_active_peak_analyzer_dlg) {
+        d_active_peak_analyzer_dlg->close();
+        d_active_peak_analyzer_dlg = nullptr;
+    }
 
-    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+    QDialog *dlg = new QDialog(this, Qt::Window);
+    dlg->setAttribute(Qt::WA_DeleteOnClose, true);
+    dlg->setModal(false);
+    dlg->setWindowTitle(tr("Peak Analyzer (OriginPro)"));
+    dlg->setMinimumSize(620, 540);
+    d_active_peak_analyzer_dlg = dlg;
+
+    enum {
+        ComboUserAnchorsLinear = 100,
+        ComboUserAnchorsSpline = 101
+    };
+
+    struct PeakAnalyzerSession
+    {
+        QPointer<ApplicationWindow> app;
+        QPointer<Graph> g;
+        QPointer<QDialog> dlg;
+        QPointer<QWidget> canvas;
+
+        QComboBox *curveCombo = nullptr;
+        QComboBox *goalCombo = nullptr;
+        QComboBox *baselineCombo = nullptr;
+        QLineEdit *anchorEdit = nullptr;
+        QCheckBox *anchorSplineCheck = nullptr;
+        QPushButton *autoSeedAnchorsBtn = nullptr;
+        QPushButton *pickAnchorsBtn = nullptr;
+        QPushButton *clearAnchorsBtn = nullptr;
+        QLabel *anchorHintLabel = nullptr;
+
+        QSpinBox *peaksSpin = nullptr;
+        QCheckBox *autoCountCheck = nullptr;
+        QDoubleSpinBox *prominenceSpin = nullptr;
+        QLabel *detectedLabel = nullptr;
+        QRadioButton *autoModeRadio = nullptr;
+        QRadioButton *manualModeRadio = nullptr;
+        QTableWidget *peakTable = nullptr;
+
+        QComboBox *profileCombo = nullptr;
+        QDoubleSpinBox *voigtMuSpin = nullptr;
+        QDoubleSpinBox *pearsonMSpin = nullptr;
+        QDoubleSpinBox *asymAlphaSpin = nullptr;
+        QDoubleSpinBox *tailTauSpin = nullptr;
+        QCheckBox *plotPeaksCheck = nullptr;
+        QCheckBox *plotBaselineCheck = nullptr;
+        QCheckBox *summaryTableCheck = nullptr;
+        QCheckBox *integrateTableCheck = nullptr;
+        QCheckBox *residualsTableCheck = nullptr;
+
+        QwtPlotCurve *liveBaselineCurve = nullptr;
+        QwtPlotCurve *anchorMarkersCurve = nullptr;
+        QwtPlotCurve *activeAnchorMarkerCurve = nullptr;
+        PeakAnchorEventFilter *eventFilterObj = nullptr;
+
+        QVector<QPointF> anchors;
+        int selectedAnchorIdx = -1;
+        int draggingAnchorIdx = -1;
+        bool dragNewlyAdded = false;
+        QPoint pressPos;
+        QPoint lastMousePos;
+        bool hasLastMousePos = false;
+        bool syncingAnchorEdit = false;
+        bool suppressAutoSeedOnce = false;
+        bool cleanedUp = false;
+        int subToolAction = 0;
+
+        std::function<void()> refreshPeakTableFn;
+
+        bool isAnchorMode() const
+        {
+            if (!baselineCombo)
+                return false;
+            const int d = baselineCombo->currentData().toInt();
+            return d == ComboUserAnchorsLinear || d == ComboUserAnchorsSpline
+                    || d == (int)MultiPeakFit::BaselineAnchors;
+        }
+
+        int effectiveBaselineMode() const
+        {
+            if (!baselineCombo)
+                return (int)MultiPeakFit::BaselineConstant;
+            const int d = baselineCombo->currentData().toInt();
+            if (d == ComboUserAnchorsLinear || d == ComboUserAnchorsSpline)
+                return (int)MultiPeakFit::BaselineAnchors;
+            return d;
+        }
+
+        bool useCubicSpline() const
+        {
+            if (!baselineCombo)
+                return anchorSplineCheck ? anchorSplineCheck->isChecked() : true;
+            const int d = baselineCombo->currentData().toInt();
+            if (d == ComboUserAnchorsLinear)
+                return false;
+            if (d == ComboUserAnchorsSpline)
+                return true;
+            return anchorSplineCheck ? anchorSplineCheck->isChecked() : true;
+        }
+
+        const QwtPlotCurve *targetPlotCurve() const
+        {
+            if (!g || !curveCombo)
+                return nullptr;
+            return g->curve(curveCombo->currentText());
+        }
+
+        int targetXAxis() const
+        {
+            const QwtPlotCurve *tc = targetPlotCurve();
+            return tc ? tc->xAxis() : QwtPlot::xBottom;
+        }
+
+        int targetYAxis() const
+        {
+            const QwtPlotCurve *tc = targetPlotCurve();
+            return tc ? tc->yAxis() : QwtPlot::yLeft;
+        }
+
+        bool targetCurveBounds(double &xMin, double &xMax) const
+        {
+            const QwtPlotCurve *tc = targetPlotCurve();
+            if (!tc || tc->dataSize() < 1)
+                return false;
+            const DataCurve *dc = dynamic_cast<const DataCurve *>(tc);
+            bool first = true;
+            for (int i = 0; i < tc->dataSize(); ++i) {
+                if (dc && dc->isPointMasked(i))
+                    continue;
+                const double xv = tc->x(i);
+                const double yv = tc->y(i);
+                if (!std::isfinite(xv) || !std::isfinite(yv))
+                    continue;
+                if (first) {
+                    xMin = xMax = xv;
+                    first = false;
+                } else {
+                    xMin = qMin(xMin, xv);
+                    xMax = qMax(xMax, xv);
+                }
+            }
+            return !first;
+        }
+
+        double snapYToTargetCurve(double xQuery, double fallbackY) const
+        {
+            const QwtPlotCurve *tc = targetPlotCurve();
+            if (!tc || tc->dataSize() < 1)
+                return fallbackY;
+            const DataCurve *dc = dynamic_cast<const DataCurve *>(tc);
+            QVector<QPointF> pts;
+            pts.reserve(tc->dataSize());
+            for (int i = 0; i < tc->dataSize(); ++i) {
+                if (dc && dc->isPointMasked(i))
+                    continue;
+                const double xv = tc->x(i);
+                const double yv = tc->y(i);
+                if (std::isfinite(xv) && std::isfinite(yv))
+                    pts.push_back(QPointF(xv, yv));
+            }
+            if (pts.isEmpty())
+                return fallbackY;
+            std::sort(pts.begin(), pts.end(),
+                      [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+            if (xQuery <= pts.first().x())
+                return pts.first().y();
+            if (xQuery >= pts.last().x())
+                return pts.last().y();
+            auto it = std::lower_bound(
+                    pts.begin(), pts.end(), xQuery,
+                    [](const QPointF &pt, double val) { return pt.x() < val; });
+            if (it == pts.begin())
+                return it->y();
+            if (it == pts.end())
+                return pts.last().y();
+            const QPointF &p1 = *it;
+            const QPointF &p0 = *(it - 1);
+            const double dx = p1.x() - p0.x();
+            if (std::abs(dx) <= 1e-15)
+                return 0.5 * (p0.y() + p1.y());
+            const double t = (xQuery - p0.x()) / dx;
+            return p0.y() + t * (p1.y() - p0.y());
+        }
+
+        int findNearestAnchorPx(const QPoint &pos, double maxDistPx) const
+        {
+            if (!g || !g->plotWidget() || anchors.isEmpty())
+                return -1;
+            Plot *plt = g->plotWidget();
+            const int xAx = targetXAxis();
+            const int yAx = targetYAxis();
+            int bestIdx = -1;
+            double bestDist = maxDistPx;
+            for (int i = 0; i < anchors.size(); ++i) {
+                const double px = plt->transform(xAx, anchors[i].x());
+                const double py = plt->transform(yAx, anchors[i].y());
+                const double dist = std::hypot(px - double(pos.x()), py - double(pos.y()));
+                if (dist <= bestDist) {
+                    bestDist = dist;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        void parseAnchorsFromText()
+        {
+            anchors.clear();
+            if (!anchorEdit)
+                return;
+            const QString raw = anchorEdit->text().trimmed();
+            if (raw.isEmpty()) {
+                selectedAnchorIdx = -1;
+                return;
+            }
+            const QStringList items = raw.split(QRegExp("[;\\n]+"), Qt::SkipEmptyParts);
+            for (const QString &item : items) {
+                const QStringList xy = item.trimmed().split(QRegExp("[,\\s]+"), Qt::SkipEmptyParts);
+                if (xy.size() >= 2) {
+                    bool okX = false, okY = false;
+                    const double xv = xy[0].toDouble(&okX);
+                    const double yv = xy[1].toDouble(&okY);
+                    if (okX && okY && std::isfinite(xv) && std::isfinite(yv))
+                        anchors.append(QPointF(xv, yv));
+                }
+            }
+            anchors = normalizeSortedAnchors(anchors);
+            if (selectedAnchorIdx >= anchors.size())
+                selectedAnchorIdx = anchors.size() - 1;
+        }
+
+        void syncTextFromAnchors()
+        {
+            if (!anchorEdit)
+                return;
+            QStringList parts;
+            parts.reserve(anchors.size());
+            for (const QPointF &pt : anchors) {
+                parts << QString("%1,%2")
+                                 .arg(pt.x(), 0, 'g', 6)
+                                 .arg(pt.y(), 0, 'g', 6);
+            }
+            syncingAnchorEdit = true;
+            anchorEdit->setText(parts.join("; "));
+            syncingAnchorEdit = false;
+        }
+
+        void ensureOverlayCurves()
+        {
+            if (!g || !g->plotWidget() || cleanedUp)
+                return;
+            Plot *plt = g->plotWidget();
+            const int xAx = targetXAxis();
+            const int yAx = targetYAxis();
+
+            if (!liveBaselineCurve) {
+                liveBaselineCurve = new QwtPlotCurve();
+                liveBaselineCurve->setItemAttribute(QwtPlotItem::Legend, false);
+                liveBaselineCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
+                liveBaselineCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+                liveBaselineCurve->setStyle(QwtPlotCurve::Lines);
+                liveBaselineCurve->setPen(QPen(QColor(215, 48, 39), 2.0, Qt::DashLine));
+                liveBaselineCurve->setZ(998.0);
+                liveBaselineCurve->attach(plt);
+            }
+            liveBaselineCurve->setAxis(xAx, yAx);
+
+            if (!anchorMarkersCurve) {
+                anchorMarkersCurve = new QwtPlotCurve();
+                anchorMarkersCurve->setItemAttribute(QwtPlotItem::Legend, false);
+                anchorMarkersCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
+                anchorMarkersCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+                anchorMarkersCurve->setStyle(QwtPlotCurve::NoCurve);
+                anchorMarkersCurve->setSymbol(
+                        QwtSymbol(QwtSymbol::Diamond, QBrush(QColor(255, 210, 48)),
+                                  QPen(QColor(175, 25, 25), 2), QSize(11, 11)));
+                anchorMarkersCurve->setZ(999.0);
+                anchorMarkersCurve->attach(plt);
+            }
+            anchorMarkersCurve->setAxis(xAx, yAx);
+
+            if (!activeAnchorMarkerCurve) {
+                activeAnchorMarkerCurve = new QwtPlotCurve();
+                activeAnchorMarkerCurve->setItemAttribute(QwtPlotItem::Legend, false);
+                activeAnchorMarkerCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
+                activeAnchorMarkerCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+                activeAnchorMarkerCurve->setStyle(QwtPlotCurve::NoCurve);
+                activeAnchorMarkerCurve->setSymbol(
+                        QwtSymbol(QwtSymbol::Ellipse, QBrush(Qt::NoBrush),
+                                  QPen(QColor(0, 120, 215), 2), QSize(17, 17)));
+                activeAnchorMarkerCurve->setZ(1000.0);
+                activeAnchorMarkerCurve->attach(plt);
+            }
+            activeAnchorMarkerCurve->setAxis(xAx, yAx);
+        }
+
+        void updateCanvasOverlays()
+        {
+            if (!g || !g->plotWidget() || cleanedUp)
+                return;
+
+            const bool showAnchors = isAnchorMode() && !anchors.isEmpty();
+            if (!showAnchors) {
+                if (liveBaselineCurve)
+                    liveBaselineCurve->setVisible(false);
+                if (anchorMarkersCurve)
+                    anchorMarkersCurve->setVisible(false);
+                if (activeAnchorMarkerCurve)
+                    activeAnchorMarkerCurve->setVisible(false);
+                g->plotWidget()->replot();
+                return;
+            }
+
+            ensureOverlayCurves();
+
+            QVector<double> mx(anchors.size()), my(anchors.size());
+            for (int i = 0; i < anchors.size(); ++i) {
+                mx[i] = anchors[i].x();
+                my[i] = anchors[i].y();
+            }
+            anchorMarkersCurve->setData(mx.constData(), my.constData(), anchors.size());
+            anchorMarkersCurve->setVisible(true);
+
+            if (selectedAnchorIdx >= 0 && selectedAnchorIdx < anchors.size()) {
+                const double sx = anchors[selectedAnchorIdx].x();
+                const double sy = anchors[selectedAnchorIdx].y();
+                activeAnchorMarkerCurve->setData(&sx, &sy, 1);
+                activeAnchorMarkerCurve->setVisible(true);
+            } else {
+                activeAnchorMarkerCurve->setVisible(false);
+            }
+
+            double xMin = anchors.first().x();
+            double xMax = anchors.last().x();
+            double cMin = 0.0, cMax = 0.0;
+            if (targetCurveBounds(cMin, cMax)) {
+                xMin = qMin(xMin, cMin);
+                xMax = qMax(xMax, cMax);
+            }
+            QVector<double> bx, by;
+            evaluateAnchorBaselineSamples(anchors, useCubicSpline(), xMin, xMax, 256, bx, by);
+            if (!bx.isEmpty()) {
+                liveBaselineCurve->setData(bx.constData(), by.constData(), bx.size());
+                liveBaselineCurve->setVisible(true);
+            } else {
+                liveBaselineCurve->setVisible(false);
+            }
+
+            g->plotWidget()->replot();
+        }
+
+        void cleanup()
+        {
+            if (cleanedUp)
+                return;
+            cleanedUp = true;
+            draggingAnchorIdx = -1;
+
+            if (canvas && eventFilterObj)
+                canvas->removeEventFilter(eventFilterObj);
+            if (dlg && eventFilterObj)
+                dlg->removeEventFilter(eventFilterObj);
+            if (canvas)
+                canvas->unsetCursor();
+
+            if (g && g->plotWidget()) {
+                if (liveBaselineCurve) {
+                    liveBaselineCurve->detach();
+                    delete liveBaselineCurve;
+                }
+                if (anchorMarkersCurve) {
+                    anchorMarkersCurve->detach();
+                    delete anchorMarkersCurve;
+                }
+                if (activeAnchorMarkerCurve) {
+                    activeAnchorMarkerCurve->detach();
+                    delete activeAnchorMarkerCurve;
+                }
+                g->plotWidget()->replot();
+            }
+            liveBaselineCurve = nullptr;
+            anchorMarkersCurve = nullptr;
+            activeAnchorMarkerCurve = nullptr;
+        }
+    };
+
+    std::shared_ptr<PeakAnalyzerSession> st = std::make_shared<PeakAnalyzerSession>();
+    st->app = this;
+    st->g = g;
+    st->dlg = dlg;
+    if (g->plotWidget())
+        st->canvas = g->plotWidget()->canvas();
+
+    QObject::connect(g, &QObject::destroyed, dlg, [st]() {
+        // QwtPlotDict deletes attached QwtPlotItems when Plot is destroyed
+        st->liveBaselineCurve = nullptr;
+        st->anchorMarkersCurve = nullptr;
+        st->activeAnchorMarkerCurve = nullptr;
+        st->g = nullptr;
+        st->canvas = nullptr;
+        st->cleanedUp = true;
+        if (st->dlg)
+            st->dlg->reject();
+    });
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(dlg);
 
     // Top Target Curve bar
     QHBoxLayout *topCurveRow = new QHBoxLayout();
-    topCurveRow->addWidget(new QLabel(tr("Target Curve:"), &dlg));
-    QComboBox *curveCombo = new QComboBox(&dlg);
+    topCurveRow->addWidget(new QLabel(tr("Target Curve:"), dlg));
+    QComboBox *curveCombo = new QComboBox(dlg);
+    st->curveCombo = curveCombo;
     curveCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     curveCombo->addItems(curves);
     QString selectedCurve = g->selectedCurveTitle();
@@ -15381,34 +16101,36 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
         }
     }
     topCurveRow->addWidget(curveCombo, 1);
-    QPushButton *batchPeakBtn = new QPushButton(tr("Batch Peak Analysis (All Curves)..."), &dlg);
-    QPushButton *peak2DBtn = new QPushButton(tr("2D Peak Analysis (Matrix / Image)..."), &dlg);
+    QPushButton *batchPeakBtn = new QPushButton(tr("Batch Peak Analysis (All Curves)..."), dlg);
+    QPushButton *peak2DBtn = new QPushButton(tr("2D Peak Analysis (Matrix / Image)..."), dlg);
     topCurveRow->addWidget(batchPeakBtn);
     topCurveRow->addWidget(peak2DBtn);
     mainLayout->addLayout(topCurveRow);
 
-    int subToolAction = 0;
-    QObject::connect(batchPeakBtn, &QPushButton::clicked, &dlg, [&]() {
-        subToolAction = 1;
-        dlg.reject();
+    QObject::connect(batchPeakBtn, &QPushButton::clicked, dlg, [st]() {
+        st->subToolAction = 1;
+        if (st->dlg)
+            st->dlg->reject();
     });
-    QObject::connect(peak2DBtn, &QPushButton::clicked, &dlg, [&]() {
-        subToolAction = 2;
-        dlg.reject();
+    QObject::connect(peak2DBtn, &QPushButton::clicked, dlg, [st]() {
+        st->subToolAction = 2;
+        if (st->dlg)
+            st->dlg->reject();
     });
 
-    QTabWidget *tabs = new QTabWidget(&dlg);
+    QTabWidget *tabs = new QTabWidget(dlg);
     mainLayout->addWidget(tabs, 1);
 
     // =========================================================================
     // TAB 1: Goal & Baseline
     // =========================================================================
-    QWidget *tabGoalBaseline = new QWidget(&dlg);
+    QWidget *tabGoalBaseline = new QWidget(dlg);
     QVBoxLayout *tab1Layout = new QVBoxLayout(tabGoalBaseline);
 
     QGroupBox *goalGroup = new QGroupBox(tr("Analysis Goal"), tabGoalBaseline);
     QFormLayout *goalForm = new QFormLayout(goalGroup);
     QComboBox *goalCombo = new QComboBox(goalGroup);
+    st->goalCombo = goalCombo;
     goalCombo->addItem(tr("Fit Peaks (Pro) - Deconvolution & Nonlinear Fit"), 0);
     goalCombo->addItem(tr("Integrate Peaks - Numerical Peak Area Integration"), 1);
     goalCombo->addItem(tr("Find Peaks - Peak Detection & Summary Table"), 2);
@@ -15421,6 +16143,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QVBoxLayout *baseVBox = new QVBoxLayout(baseGroup);
     QFormLayout *baseForm = new QFormLayout();
     QComboBox *baselineCombo = new QComboBox(baseGroup);
+    st->baselineCombo = baselineCombo;
     baselineCombo->addItem(tr("Constant (Minimum / Fitted y0)"),
                            (int)MultiPeakFit::BaselineConstant);
     baselineCombo->addItem(tr("Zero (y = 0 Fixed)"), (int)MultiPeakFit::BaselineZero);
@@ -15428,34 +16151,56 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                            (int)MultiPeakFit::BaselineLinear);
     baselineCombo->addItem(tr("ALS / Moving Minimum Envelope (Curved XRD/Raman)"),
                            (int)MultiPeakFit::BaselineALS);
-    baselineCombo->addItem(tr("User Anchor Points (Spline)"),
-                           (int)MultiPeakFit::BaselineAnchors);
+    baselineCombo->addItem(tr("User Anchors (Linear)"), int(ComboUserAnchorsLinear));
+    baselineCombo->addItem(tr("User Anchors (Cubic Spline)"), int(ComboUserAnchorsSpline));
     baseForm->addRow(tr("Baseline Mode:"), baselineCombo);
 
     QLineEdit *anchorEdit = new QLineEdit(baseGroup);
+    st->anchorEdit = anchorEdit;
     anchorEdit->setPlaceholderText("x1,y1; x2,y2; x3,y3; ...");
     baseForm->addRow(tr("Anchor Points (x1,y1; x2,y2; ...):"), anchorEdit);
     baseVBox->addLayout(baseForm);
 
     QHBoxLayout *anchorOptRow = new QHBoxLayout();
     QCheckBox *anchorSplineCheck = new QCheckBox(tr("Cubic Spline Interpolation"), baseGroup);
+    st->anchorSplineCheck = anchorSplineCheck;
     anchorSplineCheck->setChecked(true);
+    QPushButton *pickAnchorsBtn =
+            new QPushButton(tr("Pick / Drag Anchors on Graph"), baseGroup);
+    st->pickAnchorsBtn = pickAnchorsBtn;
+    pickAnchorsBtn->setCheckable(true);
     QPushButton *autoSeedAnchorsBtn =
             new QPushButton(tr("Auto-Seed Anchors from Local Minima"), baseGroup);
+    st->autoSeedAnchorsBtn = autoSeedAnchorsBtn;
+    QPushButton *clearAnchorsBtn = new QPushButton(tr("Clear Anchors"), baseGroup);
+    st->clearAnchorsBtn = clearAnchorsBtn;
     anchorOptRow->addWidget(anchorSplineCheck);
+    anchorOptRow->addWidget(pickAnchorsBtn);
     anchorOptRow->addWidget(autoSeedAnchorsBtn);
+    anchorOptRow->addWidget(clearAnchorsBtn);
     anchorOptRow->addStretch();
     baseVBox->addLayout(anchorOptRow);
 
-    auto seedAnchorsFromCurve = [this, g, curveCombo, anchorEdit]() {
-        MultiPeakFit tmp(this, g, MultiPeakFit::Gauss, 1);
-        if (!tmp.setDataFromCurve(curveCombo->currentText()) || tmp.dataSize() < 2)
+    QLabel *anchorHintLabel = new QLabel(
+            tr("Click on graph: add anchor (snaps to curve; Shift+Click for free Y) | Drag: move | Right-click / Delete: remove"),
+            baseGroup);
+    st->anchorHintLabel = anchorHintLabel;
+    anchorHintLabel->setWordWrap(true);
+    anchorHintLabel->setStyleSheet("color: #555555; font-size: 11px;");
+    anchorHintLabel->setVisible(false);
+    baseVBox->addWidget(anchorHintLabel);
+
+    auto seedAnchorsFromCurve = [st]() {
+        if (!st->app || !st->g || !st->curveCombo)
+            return;
+        MultiPeakFit tmp(st->app, st->g, MultiPeakFit::Gauss, 1);
+        if (!tmp.setDataFromCurve(st->curveCombo->currentText()) || tmp.dataSize() < 2)
             return;
         const int n = tmp.dataSize();
         const auto &px = tmp.x();
         const auto &py = tmp.y();
         const int segments = qMin(6, qMax(2, n / 8));
-        QStringList parts;
+        st->anchors.clear();
         for (int s = 0; s < segments; ++s) {
             int i0 = (s * n) / segments;
             int i1 = ((s + 1) * n) / segments - 1;
@@ -15469,41 +16214,263 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                     bestIdx = i;
                 }
             }
-            parts << QString("%1,%2")
-                             .arg(px[bestIdx], 0, 'g', 6)
-                             .arg(py[bestIdx], 0, 'g', 6);
+            st->anchors.push_back(QPointF(px[bestIdx], py[bestIdx]));
         }
-        anchorEdit->setText(parts.join("; "));
+        st->anchors = normalizeSortedAnchors(st->anchors);
+        st->selectedAnchorIdx = st->anchors.isEmpty() ? -1 : 0;
+        st->syncTextFromAnchors();
+        st->updateCanvasOverlays();
     };
 
-    auto parseAnchors = [anchorEdit]() -> QVector<QPointF> {
-        QVector<QPointF> pts;
-        const QString raw = anchorEdit->text().trimmed();
-        if (raw.isEmpty())
-            return pts;
-        const QStringList items = raw.split(QRegExp("[;\\n]+"), Qt::SkipEmptyParts);
-        for (const QString &item : items) {
-            const QStringList xy = item.trimmed().split(QRegExp("[,\\s]+"), Qt::SkipEmptyParts);
-            if (xy.size() >= 2) {
-                bool okX = false, okY = false;
-                const double xv = xy[0].toDouble(&okX);
-                const double yv = xy[1].toDouble(&okY);
-                if (okX && okY && std::isfinite(xv) && std::isfinite(yv))
-                    pts.append(QPointF(xv, yv));
+    auto updateBaselineAnchorUi = [st, seedAnchorsFromCurve]() {
+        const bool isAnchors = st->isAnchorMode();
+        const int cData = st->baselineCombo->currentData().toInt();
+        if (cData == ComboUserAnchorsLinear || cData == ComboUserAnchorsSpline) {
+            st->anchorSplineCheck->blockSignals(true);
+            st->anchorSplineCheck->setChecked(cData == ComboUserAnchorsSpline);
+            st->anchorSplineCheck->blockSignals(false);
+        }
+        st->anchorEdit->setEnabled(isAnchors);
+        st->anchorSplineCheck->setEnabled(isAnchors);
+        st->autoSeedAnchorsBtn->setEnabled(isAnchors);
+        st->clearAnchorsBtn->setEnabled(isAnchors);
+        // Keep pickAnchorsBtn always clickable so clicking it from any mode auto-switches to User Anchors!
+        st->pickAnchorsBtn->setEnabled(true);
+
+        if (!isAnchors && st->pickAnchorsBtn->isChecked()) {
+            st->pickAnchorsBtn->setChecked(false);
+        }
+        if (isAnchors && st->anchors.isEmpty() && st->anchorEdit->text().trimmed().isEmpty()
+            && !st->suppressAutoSeedOnce) {
+            seedAnchorsFromCurve();
+        }
+        st->suppressAutoSeedOnce = false;
+        st->updateCanvasOverlays();
+    };
+
+    // Install interactive canvas + dialog event filter
+    PeakAnchorEventFilter *filterObj = new PeakAnchorEventFilter(dlg);
+    st->eventFilterObj = filterObj;
+    filterObj->onTeardown = [st]() { st->cleanup(); };
+    filterObj->handler = [st](QObject *watched, QEvent *ev) -> bool {
+        if (st->cleanedUp || !st->g || !st->g->plotWidget() || !st->pickAnchorsBtn
+            || !st->pickAnchorsBtn->isChecked()) {
+            return false;
+        }
+
+        if (ev->type() == QEvent::KeyPress) {
+            QKeyEvent *ke = static_cast<QKeyEvent *>(ev);
+            if (st->anchorEdit && st->anchorEdit->hasFocus())
+                return false;
+            if (ke->key() == Qt::Key_Escape) {
+                st->pickAnchorsBtn->setChecked(false);
+                return true;
+            }
+            if (ke->key() == Qt::Key_Delete || ke->key() == Qt::Key_Backspace) {
+                if (!st->anchors.isEmpty()) {
+                    int remIdx = st->selectedAnchorIdx;
+                    if (remIdx < 0 || remIdx >= st->anchors.size()) {
+                        remIdx = st->hasLastMousePos
+                                ? st->findNearestAnchorPx(st->lastMousePos, 1e9)
+                                : (st->anchors.size() - 1);
+                    }
+                    if (remIdx >= 0 && remIdx < st->anchors.size()) {
+                        st->anchors.removeAt(remIdx);
+                        if (st->selectedAnchorIdx >= st->anchors.size())
+                            st->selectedAnchorIdx = st->anchors.size() - 1;
+                        st->draggingAnchorIdx = -1;
+                        st->syncTextFromAnchors();
+                        st->updateCanvasOverlays();
+                        if (st->refreshPeakTableFn)
+                            st->refreshPeakTableFn();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        if (watched != st->canvas)
+            return false;
+
+        if (ev->type() == QEvent::ContextMenu)
+            return true;
+
+        Plot *plt = st->g->plotWidget();
+        const int xAx = st->targetXAxis();
+        const int yAx = st->targetYAxis();
+
+        if (ev->type() == QEvent::MouseButtonPress) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+            st->lastMousePos = me->pos();
+            st->hasLastMousePos = true;
+            if (st->canvas)
+                st->canvas->setFocus();
+
+            if (me->button() == Qt::LeftButton) {
+                const int hit = st->findNearestAnchorPx(me->pos(), 12.0);
+                if (hit >= 0) {
+                    st->selectedAnchorIdx = hit;
+                    st->draggingAnchorIdx = hit;
+                    st->dragNewlyAdded = false;
+                    st->pressPos = me->pos();
+                    if (st->canvas)
+                        st->canvas->setCursor(Qt::ClosedHandCursor);
+                    st->updateCanvasOverlays();
+                } else {
+                    const double xv = plt->invTransform(xAx, me->pos().x());
+                    const double freeY = plt->invTransform(yAx, me->pos().y());
+                    const bool freeMode = (me->modifiers() & Qt::ShiftModifier) != 0;
+                    const double yv = freeMode ? freeY : st->snapYToTargetCurve(xv, freeY);
+                    if (std::isfinite(xv) && std::isfinite(yv)) {
+                        const QPointF addedPt(xv, yv);
+                        st->anchors.push_back(addedPt);
+                        st->anchors = normalizeSortedAnchors(st->anchors);
+                        int newIdx = 0;
+                        double bestDx = std::numeric_limits<double>::infinity();
+                        for (int i = 0; i < st->anchors.size(); ++i) {
+                            const double dx = std::abs(st->anchors[i].x() - xv);
+                            if (dx < bestDx) {
+                                bestDx = dx;
+                                newIdx = i;
+                            }
+                        }
+                        st->selectedAnchorIdx = newIdx;
+                        st->draggingAnchorIdx = newIdx;
+                        st->dragNewlyAdded = !freeMode;
+                        st->pressPos = me->pos();
+                        st->syncTextFromAnchors();
+                        st->updateCanvasOverlays();
+                    }
+                }
+                return true;
+            }
+
+            if (me->button() == Qt::RightButton) {
+                int hit = st->findNearestAnchorPx(me->pos(), 28.0);
+                if (hit >= 0 && hit < st->anchors.size()) {
+                    st->anchors.removeAt(hit);
+                    if (st->selectedAnchorIdx >= st->anchors.size())
+                        st->selectedAnchorIdx = st->anchors.size() - 1;
+                    st->draggingAnchorIdx = -1;
+                    st->syncTextFromAnchors();
+                    st->updateCanvasOverlays();
+                    if (st->refreshPeakTableFn)
+                        st->refreshPeakTableFn();
+                }
+                return true;
+            }
+        } else if (ev->type() == QEvent::MouseMove) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+            st->lastMousePos = me->pos();
+            st->hasLastMousePos = true;
+
+            if (st->draggingAnchorIdx >= 0 && st->draggingAnchorIdx < st->anchors.size()) {
+                if (st->dragNewlyAdded && (me->pos() - st->pressPos).manhattanLength() < 4)
+                    return true;
+                st->dragNewlyAdded = false;
+
+                const double xv = plt->invTransform(xAx, me->pos().x());
+                const double freeY = plt->invTransform(yAx, me->pos().y());
+                const double yv = (me->modifiers() & Qt::ShiftModifier)
+                        ? st->snapYToTargetCurve(xv, freeY)
+                        : freeY;
+                if (std::isfinite(xv) && std::isfinite(yv)) {
+                    st->anchors[st->draggingAnchorIdx] = QPointF(xv, yv);
+                    std::sort(st->anchors.begin(), st->anchors.end(),
+                              [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+                    int trackedIdx = 0;
+                    double bestMetric = std::numeric_limits<double>::infinity();
+                    for (int i = 0; i < st->anchors.size(); ++i) {
+                        const double m = std::hypot(st->anchors[i].x() - xv,
+                                                    st->anchors[i].y() - yv);
+                        if (m < bestMetric) {
+                            bestMetric = m;
+                            trackedIdx = i;
+                        }
+                    }
+                    st->draggingAnchorIdx = trackedIdx;
+                    st->selectedAnchorIdx = trackedIdx;
+                    st->syncTextFromAnchors();
+                    st->updateCanvasOverlays();
+                }
+                return true;
+            } else if (st->canvas) {
+                const int hoverIdx = st->findNearestAnchorPx(me->pos(), 12.0);
+                st->canvas->setCursor(hoverIdx >= 0 ? Qt::OpenHandCursor : Qt::CrossCursor);
+            }
+        } else if (ev->type() == QEvent::MouseButtonRelease) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+            if (me->button() == Qt::LeftButton && st->draggingAnchorIdx >= 0) {
+                st->draggingAnchorIdx = -1;
+                st->dragNewlyAdded = false;
+                if (st->canvas) {
+                    const int hoverIdx = st->findNearestAnchorPx(me->pos(), 12.0);
+                    st->canvas->setCursor(hoverIdx >= 0 ? Qt::OpenHandCursor : Qt::CrossCursor);
+                }
+                st->syncTextFromAnchors();
+                st->updateCanvasOverlays();
+                if (st->refreshPeakTableFn)
+                    st->refreshPeakTableFn();
+                return true;
             }
         }
-        return pts;
+        return false;
     };
 
-    auto updateBaselineAnchorUi = [=]() {
-        const bool isAnchors =
-                (baselineCombo->currentData().toInt() == (int)MultiPeakFit::BaselineAnchors);
-        anchorEdit->setEnabled(isAnchors);
-        anchorSplineCheck->setEnabled(isAnchors);
-        autoSeedAnchorsBtn->setEnabled(isAnchors);
-        if (isAnchors && anchorEdit->text().trimmed().isEmpty())
-            seedAnchorsFromCurve();
-    };
+    dlg->installEventFilter(filterObj);
+    if (st->canvas)
+        st->canvas->installEventFilter(filterObj);
+
+    QObject::connect(pickAnchorsBtn, &QPushButton::toggled, dlg,
+                     [st, updateBaselineAnchorUi](bool checked) {
+                         st->draggingAnchorIdx = -1;
+                         if (checked) {
+                             if (!st->isAnchorMode()) {
+                                 st->suppressAutoSeedOnce = true;
+                                 const int targetData = st->anchorSplineCheck->isChecked()
+                                         ? int(ComboUserAnchorsSpline)
+                                         : int(ComboUserAnchorsLinear);
+                                 const int comboIdx = st->baselineCombo->findData(targetData);
+                                 if (comboIdx >= 0)
+                                     st->baselineCombo->setCurrentIndex(comboIdx);
+                             }
+                             st->pickAnchorsBtn->setText(
+                                     ApplicationWindow::tr("Stop Picking Anchors (Active)"));
+                             st->pickAnchorsBtn->setStyleSheet(
+                                     "QPushButton { background-color: #ffe8a3; font-weight: bold; }");
+                             st->anchorHintLabel->setVisible(true);
+                             if (st->g)
+                                 st->g->disableTools();
+                             if (st->app && st->app->btnPointer)
+                                 st->app->btnPointer->setChecked(true);
+                             if (st->canvas) {
+                                 st->canvas->setMouseTracking(true);
+                                 st->canvas->setFocusPolicy(Qt::StrongFocus);
+                                 st->canvas->setCursor(Qt::CrossCursor);
+                                 st->canvas->setFocus();
+                             }
+                         } else {
+                             st->pickAnchorsBtn->setText(
+                                     ApplicationWindow::tr("Pick / Drag Anchors on Graph"));
+                             st->pickAnchorsBtn->setStyleSheet(QString());
+                             st->anchorHintLabel->setVisible(false);
+                             if (st->canvas)
+                                 st->canvas->unsetCursor();
+                         }
+                         updateBaselineAnchorUi();
+                     });
+
+    QObject::connect(clearAnchorsBtn, &QPushButton::clicked, dlg, [st]() {
+        st->anchors.clear();
+        st->selectedAnchorIdx = -1;
+        st->draggingAnchorIdx = -1;
+        st->syncTextFromAnchors();
+        st->updateCanvasOverlays();
+        if (st->refreshPeakTableFn)
+            st->refreshPeakTableFn();
+    });
+
     updateBaselineAnchorUi();
 
     QHBoxLayout *baseBtnRow = new QHBoxLayout();
@@ -15523,7 +16490,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     // =========================================================================
     // TAB 2: Find Peaks & Peak List
     // =========================================================================
-    QWidget *tabFindPeaks = new QWidget(&dlg);
+    QWidget *tabFindPeaks = new QWidget(dlg);
     QVBoxLayout *tab2Layout = new QVBoxLayout(tabFindPeaks);
 
     QGroupBox *detectGroup = new QGroupBox(tr("Peak Detection Settings"), tabFindPeaks);
@@ -15532,16 +16499,19 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QHBoxLayout *countRow = new QHBoxLayout();
     countRow->addWidget(new QLabel(tr("Number of Peaks:"), detectGroup));
     QSpinBox *peaksSpin = new QSpinBox(detectGroup);
+    st->peaksSpin = peaksSpin;
     peaksSpin->setRange(1, 20);
     peaksSpin->setValue(2);
     countRow->addWidget(peaksSpin);
 
     QCheckBox *autoCountCheck = new QCheckBox(tr("Auto"), detectGroup);
+    st->autoCountCheck = autoCountCheck;
     autoCountCheck->setChecked(true);
     countRow->addWidget(autoCountCheck);
 
     countRow->addWidget(new QLabel(tr("Min Prominence:"), detectGroup));
     QDoubleSpinBox *prominenceSpin = new QDoubleSpinBox(detectGroup);
+    st->prominenceSpin = prominenceSpin;
     prominenceSpin->setRange(0.01, 0.90);
     prominenceSpin->setSingleStep(0.02);
     prominenceSpin->setDecimals(2);
@@ -15556,6 +16526,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     countRow->addWidget(secondDerivPeaksBtn);
 
     QLabel *detectedLabel = new QLabel(detectGroup);
+    st->detectedLabel = detectedLabel;
     countRow->addWidget(detectedLabel);
     countRow->addStretch();
     detectLayout->addLayout(countRow);
@@ -15565,6 +16536,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
             new QRadioButton(tr("Use Peak List Below (Auto / Editable Centers & Widths)"), detectGroup);
     QRadioButton *manualModeRadio =
             new QRadioButton(tr("Interactive Peak Picking on Graph"), detectGroup);
+    st->autoModeRadio = autoModeRadio;
+    st->manualModeRadio = manualModeRadio;
     autoModeRadio->setChecked(true);
     pickRow->addWidget(autoModeRadio);
     pickRow->addWidget(manualModeRadio);
@@ -15577,6 +16550,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QVBoxLayout *listLayout = new QVBoxLayout(listGroup);
 
     QTableWidget *peakTable = new QTableWidget(0, 5, listGroup);
+    st->peakTable = peakTable;
     QStringList headers;
     headers << tr("Peak #") << tr("Center (xc)") << tr("Height") << tr("FWHM (w)") << tr("Est. Area");
     peakTable->setHorizontalHeaderLabels(headers);
@@ -15599,13 +16573,14 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     // =========================================================================
     // TAB 3: Fit & Output
     // =========================================================================
-    QWidget *tabFitOutput = new QWidget(&dlg);
+    QWidget *tabFitOutput = new QWidget(dlg);
     QVBoxLayout *tab3Layout = new QVBoxLayout(tabFitOutput);
 
     QGroupBox *profileGroup = new QGroupBox(tr("Peak Profile & Shape Parameters"), tabFitOutput);
     QFormLayout *profileForm = new QFormLayout(profileGroup);
 
     QComboBox *profileCombo = new QComboBox(profileGroup);
+    st->profileCombo = profileCombo;
     profileCombo->addItem(tr("Gaussian (Area)"), (int)MultiPeakFit::Gauss);
     profileCombo->addItem(tr("Gaussian (Amplitude)"), (int)MultiPeakFit::GaussAmp);
     profileCombo->addItem(tr("Lorentzian"), (int)MultiPeakFit::Lorentz);
@@ -15625,6 +16600,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     profileForm->addRow(tr("Peak Profile:"), profileCombo);
 
     QDoubleSpinBox *voigtMuSpin = new QDoubleSpinBox(profileGroup);
+    st->voigtMuSpin = voigtMuSpin;
     voigtMuSpin->setRange(0.0, 1.0);
     voigtMuSpin->setSingleStep(0.05);
     voigtMuSpin->setDecimals(3);
@@ -15632,6 +16608,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     profileForm->addRow(tr("Pseudo-Voigt / Voigt Lorentz Fraction (\xCE\xBC):"), voigtMuSpin);
 
     QDoubleSpinBox *pearsonMSpin = new QDoubleSpinBox(profileGroup);
+    st->pearsonMSpin = pearsonMSpin;
     pearsonMSpin->setRange(0.5, 50.0);
     pearsonMSpin->setSingleStep(0.5);
     pearsonMSpin->setDecimals(2);
@@ -15639,6 +16616,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     profileForm->addRow(tr("Pearson VII Shape Parameter (m):"), pearsonMSpin);
 
     QDoubleSpinBox *asymAlphaSpin = new QDoubleSpinBox(profileGroup);
+    st->asymAlphaSpin = asymAlphaSpin;
     asymAlphaSpin->setRange(0.01, 10.0);
     asymAlphaSpin->setSingleStep(0.1);
     asymAlphaSpin->setDecimals(3);
@@ -15647,24 +16625,25 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                         asymAlphaSpin);
 
     QDoubleSpinBox *tailTauSpin = new QDoubleSpinBox(profileGroup);
+    st->tailTauSpin = tailTauSpin;
     tailTauSpin->setRange(0.05, 10.0);
     tailTauSpin->setSingleStep(0.1);
     tailTauSpin->setDecimals(3);
     tailTauSpin->setValue(1.2);
     profileForm->addRow(tr("Exponential Tail Factor (\xCF\x84, EMG / Asym2Sig):"), tailTauSpin);
 
-    auto updateProfileControls = [=]() {
-        int p = profileCombo->currentData().toInt();
-        voigtMuSpin->setEnabled(p == (int)MultiPeakFit::PseudoVoigt
-                                || p == (int)MultiPeakFit::Voigt);
-        pearsonMSpin->setEnabled(p == (int)MultiPeakFit::PearsonVII);
-        asymAlphaSpin->setEnabled(p == (int)MultiPeakFit::BiGaussian
-                                  || p == (int)MultiPeakFit::DoniachSunjic);
-        tailTauSpin->setEnabled(p == (int)MultiPeakFit::EMG
-                                || p == (int)MultiPeakFit::Asym2Sig);
+    auto updateProfileControls = [st]() {
+        const int p = st->profileCombo->currentData().toInt();
+        st->voigtMuSpin->setEnabled(p == (int)MultiPeakFit::PseudoVoigt
+                                    || p == (int)MultiPeakFit::Voigt);
+        st->pearsonMSpin->setEnabled(p == (int)MultiPeakFit::PearsonVII);
+        st->asymAlphaSpin->setEnabled(p == (int)MultiPeakFit::BiGaussian
+                                      || p == (int)MultiPeakFit::DoniachSunjic);
+        st->tailTauSpin->setEnabled(p == (int)MultiPeakFit::EMG
+                                    || p == (int)MultiPeakFit::Asym2Sig);
     };
-    QObject::connect(profileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [=](int) { updateProfileControls(); });
+    QObject::connect(profileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     [updateProfileControls](int) { updateProfileControls(); });
     updateProfileControls();
 
     tab3Layout->addWidget(profileGroup);
@@ -15673,18 +16652,23 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QVBoxLayout *outputLayout = new QVBoxLayout(outputGroup);
     QCheckBox *plotPeaksCheck =
             new QCheckBox(tr("Plot Individual Deconvoluted Peak Curves"), outputGroup);
+    st->plotPeaksCheck = plotPeaksCheck;
     plotPeaksCheck->setChecked(true);
     QCheckBox *plotBaselineCheck =
             new QCheckBox(tr("Plot Baseline Curve on Graph"), outputGroup);
+    st->plotBaselineCheck = plotBaselineCheck;
     plotBaselineCheck->setChecked(true);
     QCheckBox *summaryTableCheck =
             new QCheckBox(tr("Generate Peak Summary Table"), outputGroup);
+    st->summaryTableCheck = summaryTableCheck;
     summaryTableCheck->setChecked(true);
     QCheckBox *integrateTableCheck =
             new QCheckBox(tr("Generate Integrated Peak Area Table"), outputGroup);
+    st->integrateTableCheck = integrateTableCheck;
     integrateTableCheck->setChecked(true);
     QCheckBox *residualsTableCheck =
             new QCheckBox(tr("Generate Residuals Table"), outputGroup);
+    st->residualsTableCheck = residualsTableCheck;
     residualsTableCheck->setChecked(false);
     outputLayout->addWidget(plotPeaksCheck);
     outputLayout->addWidget(plotBaselineCheck);
@@ -15697,202 +16681,243 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     tabs->addTab(tabFitOutput, tr("3. Fit && Output"));
 
     // Populate Peak Table helper
-    auto refreshPeakTable = [this, g, curveCombo, profileCombo, baselineCombo, anchorSplineCheck,
-                             parseAnchors, prominenceSpin, autoCountCheck, peaksSpin, detectedLabel,
-                             peakTable]() {
+    auto refreshPeakTable = [st]() {
+        if (!st->app || !st->g)
+            return;
         MultiPeakFit previewFitter(
-                this, g, static_cast<MultiPeakFit::PeakProfile>(profileCombo->currentData().toInt()),
-                1);
-        const int bMode = baselineCombo->currentData().toInt();
+                st->app, st->g,
+                static_cast<MultiPeakFit::PeakProfile>(st->profileCombo->currentData().toInt()), 1);
+        const int bMode = st->effectiveBaselineMode();
         previewFitter.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
         if (bMode == (int)MultiPeakFit::BaselineAnchors)
-            previewFitter.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
+            previewFitter.setBaselineAnchors(st->anchors, st->useCubicSpline());
         int est = 1;
-        if (previewFitter.setDataFromCurve(curveCombo->currentText())) {
-            if (autoCountCheck->isChecked()) {
-                est = previewFitter.autoDetectAndUpdateNumPeaks(20, prominenceSpin->value());
-                peaksSpin->blockSignals(true);
-                peaksSpin->setValue(qBound(1, est, 20));
-                peaksSpin->blockSignals(false);
+        if (previewFitter.setDataFromCurve(st->curveCombo->currentText())) {
+            if (st->autoCountCheck->isChecked()) {
+                est = previewFitter.autoDetectAndUpdateNumPeaks(20, st->prominenceSpin->value());
+                st->peaksSpin->blockSignals(true);
+                st->peaksSpin->setValue(qBound(1, est, 20));
+                st->peaksSpin->blockSignals(false);
             } else {
-                est = peaksSpin->value();
+                est = st->peaksSpin->value();
                 previewFitter.setNumPeaks(est);
-                previewFitter.autoDetectPeaks(est, prominenceSpin->value());
+                previewFitter.autoDetectPeaks(est, st->prominenceSpin->value());
             }
-            detectedLabel->setText(tr("(Detected: %1)").arg(est));
-            const std::vector<MultiPeakFit::PeakSummaryRow> rows = previewFitter.initialPeakSummary();
-            peakTable->setRowCount(int(rows.size()));
+            st->detectedLabel->setText(ApplicationWindow::tr("(Detected: %1)").arg(est));
+            const std::vector<MultiPeakFit::PeakSummaryRow> rows =
+                    previewFitter.initialPeakSummary();
+            st->peakTable->setRowCount(int(rows.size()));
             for (int i = 0; i < int(rows.size()); ++i) {
                 QTableWidgetItem *idxItem =
                         new QTableWidgetItem(QString::number(rows[i].index));
                 idxItem->setFlags(idxItem->flags() & ~Qt::ItemIsEditable);
-                peakTable->setItem(i, 0, idxItem);
-                peakTable->setItem(i, 1,
-                                   new QTableWidgetItem(QString::number(rows[i].center, 'g', 6)));
+                st->peakTable->setItem(i, 0, idxItem);
+                st->peakTable->setItem(
+                        i, 1, new QTableWidgetItem(QString::number(rows[i].center, 'g', 6)));
                 QTableWidgetItem *hItem =
                         new QTableWidgetItem(QString::number(rows[i].height, 'g', 6));
                 hItem->setFlags(hItem->flags() & ~Qt::ItemIsEditable);
-                peakTable->setItem(i, 2, hItem);
-                peakTable->setItem(i, 3,
-                                   new QTableWidgetItem(QString::number(rows[i].fwhm, 'g', 6)));
+                st->peakTable->setItem(i, 2, hItem);
+                st->peakTable->setItem(
+                        i, 3, new QTableWidgetItem(QString::number(rows[i].fwhm, 'g', 6)));
                 QTableWidgetItem *aItem =
                         new QTableWidgetItem(QString::number(rows[i].area, 'g', 6));
                 aItem->setFlags(aItem->flags() & ~Qt::ItemIsEditable);
-                peakTable->setItem(i, 4, aItem);
+                st->peakTable->setItem(i, 4, aItem);
             }
         }
     };
+    st->refreshPeakTableFn = refreshPeakTable;
 
-    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [=](int) {
-                         if (baselineCombo->currentData().toInt()
-                             == (int)MultiPeakFit::BaselineAnchors)
+    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     [st, seedAnchorsFromCurve, refreshPeakTable](int) {
+                         if (st->isAnchorMode() && !st->pickAnchorsBtn->isChecked())
                              seedAnchorsFromCurve();
+                         else
+                             st->updateCanvasOverlays();
                          refreshPeakTable();
                      });
-    QObject::connect(baselineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [=](int) {
+    QObject::connect(baselineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     [updateBaselineAnchorUi, refreshPeakTable](int) {
                          updateBaselineAnchorUi();
                          refreshPeakTable();
                      });
-    QObject::connect(autoSeedAnchorsBtn, &QPushButton::clicked, &dlg, [=]() {
-        seedAnchorsFromCurve();
+    QObject::connect(autoSeedAnchorsBtn, &QPushButton::clicked, dlg,
+                     [seedAnchorsFromCurve, refreshPeakTable]() {
+                         seedAnchorsFromCurve();
+                         refreshPeakTable();
+                     });
+    QObject::connect(anchorEdit, &QLineEdit::textEdited, dlg, [st](const QString &) {
+        if (st->syncingAnchorEdit)
+            return;
+        st->parseAnchorsFromText();
+        st->updateCanvasOverlays();
+    });
+    QObject::connect(anchorEdit, &QLineEdit::editingFinished, dlg, [st, refreshPeakTable]() {
+        if (st->syncingAnchorEdit)
+            return;
+        st->parseAnchorsFromText();
+        st->updateCanvasOverlays();
         refreshPeakTable();
     });
-    QObject::connect(anchorEdit, &QLineEdit::editingFinished, &dlg, [=]() { refreshPeakTable(); });
-    QObject::connect(anchorSplineCheck, &QCheckBox::toggled, &dlg,
-                     [=](bool) { refreshPeakTable(); });
-    QObject::connect(prominenceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
-                     [=](double) { refreshPeakTable(); });
-    QObject::connect(autoCountCheck, &QCheckBox::toggled, &dlg, [=](bool checked) {
-        if (checked)
-            refreshPeakTable();
-    });
-    QObject::connect(peaksSpin, QOverload<int>::of(&QSpinBox::valueChanged), &dlg, [=](int) {
-        if (peaksSpin->hasFocus())
-            autoCountCheck->setChecked(false);
+    QObject::connect(anchorSplineCheck, &QCheckBox::toggled, dlg,
+                     [st, refreshPeakTable](bool checked) {
+                         if (st->isAnchorMode()) {
+                             const int wantData = checked ? int(ComboUserAnchorsSpline)
+                                                          : int(ComboUserAnchorsLinear);
+                             const int idx = st->baselineCombo->findData(wantData);
+                             if (idx >= 0 && st->baselineCombo->currentIndex() != idx) {
+                                 st->baselineCombo->blockSignals(true);
+                                 st->baselineCombo->setCurrentIndex(idx);
+                                 st->baselineCombo->blockSignals(false);
+                             }
+                         }
+                         st->updateCanvasOverlays();
+                         refreshPeakTable();
+                     });
+    QObject::connect(prominenceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), dlg,
+                     [refreshPeakTable](double) { refreshPeakTable(); });
+    QObject::connect(autoCountCheck, &QCheckBox::toggled, dlg,
+                     [refreshPeakTable](bool checked) {
+                         if (checked)
+                             refreshPeakTable();
+                     });
+    QObject::connect(peaksSpin, QOverload<int>::of(&QSpinBox::valueChanged), dlg,
+                     [st, refreshPeakTable](int) {
+                         if (st->peaksSpin->hasFocus())
+                             st->autoCountCheck->setChecked(false);
+                         refreshPeakTable();
+                     });
+    QObject::connect(findPeaksBtn, &QPushButton::clicked, dlg, [st, refreshPeakTable]() {
+        st->autoCountCheck->setChecked(true);
         refreshPeakTable();
     });
-    QObject::connect(findPeaksBtn, &QPushButton::clicked, &dlg, [=]() {
-        autoCountCheck->setChecked(true);
-        refreshPeakTable();
-    });
-    QObject::connect(secondDerivPeaksBtn, &QPushButton::clicked, &dlg, [=]() {
+    QObject::connect(secondDerivPeaksBtn, &QPushButton::clicked, dlg, [st]() {
+        if (!st->app || !st->g)
+            return;
         MultiPeakFit sdFitter(
-                this, g,
-                static_cast<MultiPeakFit::PeakProfile>(profileCombo->currentData().toInt()), 1);
-        const int bMode = baselineCombo->currentData().toInt();
+                st->app, st->g,
+                static_cast<MultiPeakFit::PeakProfile>(st->profileCombo->currentData().toInt()), 1);
+        const int bMode = st->effectiveBaselineMode();
         sdFitter.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
         if (bMode == (int)MultiPeakFit::BaselineAnchors)
-            sdFitter.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
-        if (sdFitter.setDataFromCurve(curveCombo->currentText())) {
+            sdFitter.setBaselineAnchors(st->anchors, st->useCubicSpline());
+        if (sdFitter.setDataFromCurve(st->curveCombo->currentText())) {
             const QVector<double> sdCenters =
-                    sdFitter.detectPeaksSecondDerivative(9, prominenceSpin->value());
+                    sdFitter.detectPeaksSecondDerivative(9, st->prominenceSpin->value());
             if (!sdCenters.isEmpty()) {
-                autoCountCheck->blockSignals(true);
-                autoCountCheck->setChecked(false);
-                autoCountCheck->blockSignals(false);
-                peaksSpin->blockSignals(true);
-                peaksSpin->setValue(qBound(1, sdCenters.size(), 20));
-                peaksSpin->blockSignals(false);
+                st->autoCountCheck->blockSignals(true);
+                st->autoCountCheck->setChecked(false);
+                st->autoCountCheck->blockSignals(false);
+                st->peaksSpin->blockSignals(true);
+                st->peaksSpin->setValue(qBound(1, sdCenters.size(), 20));
+                st->peaksSpin->blockSignals(false);
 
                 sdFitter.setNumPeaks(sdCenters.size());
                 std::vector<double> stdCenters(sdCenters.begin(), sdCenters.end());
-                sdFitter.seedPeaksFromCenters(stdCenters, prominenceSpin->value());
-                detectedLabel->setText(tr("(Detected: %1)").arg(sdCenters.size()));
+                sdFitter.seedPeaksFromCenters(stdCenters, st->prominenceSpin->value());
+                st->detectedLabel->setText(
+                        ApplicationWindow::tr("(Detected: %1)").arg(sdCenters.size()));
 
                 const std::vector<MultiPeakFit::PeakSummaryRow> rows =
                         sdFitter.initialPeakSummary();
-                peakTable->setRowCount(int(rows.size()));
+                st->peakTable->setRowCount(int(rows.size()));
                 for (int i = 0; i < int(rows.size()); ++i) {
                     QTableWidgetItem *idxItem =
                             new QTableWidgetItem(QString::number(rows[i].index));
                     idxItem->setFlags(idxItem->flags() & ~Qt::ItemIsEditable);
-                    peakTable->setItem(i, 0, idxItem);
-                    peakTable->setItem(
+                    st->peakTable->setItem(i, 0, idxItem);
+                    st->peakTable->setItem(
                             i, 1, new QTableWidgetItem(QString::number(rows[i].center, 'g', 6)));
                     QTableWidgetItem *hItem =
                             new QTableWidgetItem(QString::number(rows[i].height, 'g', 6));
                     hItem->setFlags(hItem->flags() & ~Qt::ItemIsEditable);
-                    peakTable->setItem(i, 2, hItem);
-                    peakTable->setItem(
+                    st->peakTable->setItem(i, 2, hItem);
+                    st->peakTable->setItem(
                             i, 3, new QTableWidgetItem(QString::number(rows[i].fwhm, 'g', 6)));
                     QTableWidgetItem *aItem =
                             new QTableWidgetItem(QString::number(rows[i].area, 'g', 6));
                     aItem->setFlags(aItem->flags() & ~Qt::ItemIsEditable);
-                    peakTable->setItem(i, 4, aItem);
+                    st->peakTable->setItem(i, 4, aItem);
                 }
             }
         }
     });
-    QObject::connect(addPeakRowBtn, &QPushButton::clicked, &dlg, [=]() {
-        autoCountCheck->setChecked(false);
-        int r = peakTable->rowCount();
-        peakTable->insertRow(r);
+    QObject::connect(addPeakRowBtn, &QPushButton::clicked, dlg, [st]() {
+        st->autoCountCheck->setChecked(false);
+        const int r = st->peakTable->rowCount();
+        st->peakTable->insertRow(r);
         double xcGuess = 0.0, wGuess = 1.0;
-        if (r > 0 && peakTable->item(r - 1, 1) && peakTable->item(r - 1, 3)) {
-            xcGuess = peakTable->item(r - 1, 1)->text().toDouble()
-                    + peakTable->item(r - 1, 3)->text().toDouble();
-            wGuess = peakTable->item(r - 1, 3)->text().toDouble();
+        if (r > 0 && st->peakTable->item(r - 1, 1) && st->peakTable->item(r - 1, 3)) {
+            xcGuess = st->peakTable->item(r - 1, 1)->text().toDouble()
+                    + st->peakTable->item(r - 1, 3)->text().toDouble();
+            wGuess = st->peakTable->item(r - 1, 3)->text().toDouble();
         }
         QTableWidgetItem *idxItem = new QTableWidgetItem(QString::number(r + 1));
         idxItem->setFlags(idxItem->flags() & ~Qt::ItemIsEditable);
-        peakTable->setItem(r, 0, idxItem);
-        peakTable->setItem(r, 1, new QTableWidgetItem(QString::number(xcGuess, 'g', 6)));
-        peakTable->setItem(r, 2, new QTableWidgetItem("1.0"));
-        peakTable->setItem(r, 3, new QTableWidgetItem(QString::number(wGuess, 'g', 6)));
-        peakTable->setItem(r, 4, new QTableWidgetItem("1.0"));
-        peaksSpin->blockSignals(true);
-        peaksSpin->setValue(peakTable->rowCount());
-        peaksSpin->blockSignals(false);
+        st->peakTable->setItem(r, 0, idxItem);
+        st->peakTable->setItem(r, 1, new QTableWidgetItem(QString::number(xcGuess, 'g', 6)));
+        st->peakTable->setItem(r, 2, new QTableWidgetItem("1.0"));
+        st->peakTable->setItem(r, 3, new QTableWidgetItem(QString::number(wGuess, 'g', 6)));
+        st->peakTable->setItem(r, 4, new QTableWidgetItem("1.0"));
+        st->peaksSpin->blockSignals(true);
+        st->peaksSpin->setValue(st->peakTable->rowCount());
+        st->peaksSpin->blockSignals(false);
     });
-    QObject::connect(removePeakRowBtn, &QPushButton::clicked, &dlg, [=]() {
-        if (peakTable->rowCount() <= 1)
+    QObject::connect(removePeakRowBtn, &QPushButton::clicked, dlg, [st]() {
+        if (st->peakTable->rowCount() <= 1)
             return;
-        autoCountCheck->setChecked(false);
-        int curRow = peakTable->currentRow();
+        st->autoCountCheck->setChecked(false);
+        int curRow = st->peakTable->currentRow();
         if (curRow < 0)
-            curRow = peakTable->rowCount() - 1;
-        peakTable->removeRow(curRow);
-        for (int i = 0; i < peakTable->rowCount(); ++i) {
-            if (peakTable->item(i, 0))
-                peakTable->item(i, 0)->setText(QString::number(i + 1));
+            curRow = st->peakTable->rowCount() - 1;
+        st->peakTable->removeRow(curRow);
+        for (int i = 0; i < st->peakTable->rowCount(); ++i) {
+            if (st->peakTable->item(i, 0))
+                st->peakTable->item(i, 0)->setText(QString::number(i + 1));
         }
-        peaksSpin->blockSignals(true);
-        peaksSpin->setValue(peakTable->rowCount());
-        peaksSpin->blockSignals(false);
+        st->peaksSpin->blockSignals(true);
+        st->peaksSpin->setValue(st->peakTable->rowCount());
+        st->peaksSpin->blockSignals(false);
     });
 
     // Baseline Preview & Subtract actions on Tab 1
-    QObject::connect(previewBaselineBtn, &QPushButton::clicked, &dlg, [=]() {
-        MultiPeakFit bf(this, g, MultiPeakFit::Gauss, 1);
-        const int bMode = baselineCombo->currentData().toInt();
+    QObject::connect(previewBaselineBtn, &QPushButton::clicked, dlg, [st]() {
+        if (!st->app || !st->g)
+            return;
+        st->parseAnchorsFromText();
+        MultiPeakFit bf(st->app, st->g, MultiPeakFit::Gauss, 1);
+        const int bMode = st->effectiveBaselineMode();
         bf.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
         if (bMode == (int)MultiPeakFit::BaselineAnchors)
-            bf.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
-        if (bf.setDataFromCurve(curveCombo->currentText())) {
+            bf.setBaselineAnchors(st->anchors, st->useCubicSpline());
+        if (bf.setDataFromCurve(st->curveCombo->currentText())) {
             bf.insertBaselineCurve();
-            g->replot();
+            st->g->replot();
         }
     });
-    QObject::connect(subtractBaselineBtn, &QPushButton::clicked, &dlg, [=]() {
-        MultiPeakFit bf(this, g, MultiPeakFit::Gauss, 1);
-        const int bMode = baselineCombo->currentData().toInt();
+    QObject::connect(subtractBaselineBtn, &QPushButton::clicked, dlg, [st, refreshPeakTable]() {
+        if (!st->app || !st->g)
+            return;
+        st->parseAnchorsFromText();
+        MultiPeakFit bf(st->app, st->g, MultiPeakFit::Gauss, 1);
+        const int bMode = st->effectiveBaselineMode();
         bf.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
         if (bMode == (int)MultiPeakFit::BaselineAnchors)
-            bf.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
-        if (bf.setDataFromCurve(curveCombo->currentText())) {
+            bf.setBaselineAnchors(st->anchors, st->useCubicSpline());
+        if (bf.setDataFromCurve(st->curveCombo->currentText())) {
             if (bf.subtractBaselineFromData()) {
-                // Also update underlying DataCurve table column if it is a DataCurve
-                DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(curveCombo->currentText()));
+                DataCurve *dc =
+                        dynamic_cast<DataCurve *>(st->g->curve(st->curveCombo->currentText()));
                 if (dc && dc->table()) {
                     Table *t = dc->table();
-                    int yCol = t->colIndex(dc->title().text());
-                    int startR = dc->startRow();
+                    const int yCol = t->colIndex(dc->title().text());
+                    const int startR = dc->startRow();
                     for (int i = 0; i < bf.dataSize(); ++i)
                         t->setCell(startR + i, yCol, bf.y()[i]);
-                    g->replot();
+                    st->g->replot();
                 }
+                st->updateCanvasOverlays();
                 refreshPeakTable();
             }
         }
@@ -15901,123 +16926,160 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     refreshPeakTable();
 
     QDialogButtonBox *buttonBox =
-            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
     if (QPushButton *okBtn = buttonBox->button(QDialogButtonBox::Ok))
         okBtn->setText(tr("Run Peak Analyzer"));
-    QObject::connect(buttonBox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    QObject::connect(buttonBox, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+    QObject::connect(buttonBox, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
     mainLayout->addWidget(buttonBox);
 
-    if (dlg.exec() != QDialog::Accepted) {
-        if (subToolAction == 1)
-            MultiPeakFit::showBatchPeakDialog(this, g);
-        else if (subToolAction == 2)
-            GraphStatsAndSurfaceFit::show2DPeakDialog(this);
-        return;
-    }
-
-    const int goal = goalCombo->currentData().toInt();
-    const int chosenProfile = profileCombo->currentData().toInt();
-    const int baseMode = baselineCombo->currentData().toInt();
-    const QString targetCurve = curveCombo->currentText();
-
-    if (manualModeRadio->isChecked() && goal == 0) {
-        g->setActiveTool(new MultiPeakFitTool(
-                g, this, static_cast<MultiPeakFit::PeakProfile>(chosenProfile), peaksSpin->value(),
-                d_status_info, SLOT(setText(const QString &))));
-        return;
-    }
-
-    // Collect edited peak centers and widths from peakTable
-    QVector<double> customCenters;
-    QVector<double> customWidths;
-    for (int i = 0; i < peakTable->rowCount(); ++i) {
-        if (peakTable->item(i, 1)) {
-            bool okC = false;
-            double xc = peakTable->item(i, 1)->text().toDouble(&okC);
-            double wVal = peakTable->item(i, 3) ? peakTable->item(i, 3)->text().toDouble() : 0.0;
-            if (okC && std::isfinite(xc)) {
-                customCenters.append(xc);
-                customWidths.append(wVal);
-            }
+    QObject::connect(dlg, &QDialog::accepted, this, [st]() {
+        if (!st->app || !st->g) {
+            st->cleanup();
+            return;
         }
-    }
+        ApplicationWindow *mw = st->app.data();
+        Graph *gr = st->g.data();
+        st->parseAnchorsFromText();
+        const QVector<QPointF> finalAnchors = st->anchors;
+        const bool cubicSpline = st->useCubicSpline();
+        const int goal = st->goalCombo->currentData().toInt();
+        const int chosenProfile = st->profileCombo->currentData().toInt();
+        const int baseMode = st->effectiveBaselineMode();
+        const QString targetCurve = st->curveCombo->currentText();
+        const bool manualMode = st->manualModeRadio->isChecked();
+        const int peaksSpinVal = st->peaksSpin->value();
+        const bool autoCount = st->autoCountCheck->isChecked();
+        const double prominence = st->prominenceSpin->value();
+        const double voigtMu = st->voigtMuSpin->value();
+        const double pearsonM = st->pearsonMSpin->value();
+        const double asymAlpha = st->asymAlphaSpin->value();
+        const double tailTau = st->tailTauSpin->value();
+        const bool plotPeaks = st->plotPeaksCheck->isChecked();
+        const bool plotBaseline = st->plotBaselineCheck->isChecked();
+        const bool summaryTbl = st->summaryTableCheck->isChecked();
+        const bool integrateTbl = st->integrateTableCheck->isChecked();
+        const bool residualsTbl = st->residualsTableCheck->isChecked();
 
-    int nPeaks = !customCenters.isEmpty() ? customCenters.size() : peaksSpin->value();
-    MultiPeakFit *fitter = new MultiPeakFit(
-            this, g, static_cast<MultiPeakFit::PeakProfile>(chosenProfile), qMax(1, nPeaks));
-    fitter->setLorentzFraction(voigtMuSpin->value());
-    fitter->setPearsonShape(pearsonMSpin->value());
-    fitter->setAsymmetryFactor(asymAlphaSpin->value());
-    fitter->setTailFactor(tailTauSpin->value());
-    fitter->setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(baseMode));
-    if (baseMode == (int)MultiPeakFit::BaselineAnchors)
-        fitter->setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
-    fitter->enablePeakCurves(plotPeaksCheck->isChecked());
-    fitter->setPeakCurvesColor(peakCurvesColor);
-    fitter->scaleErrors(fit_scale_errors);
-    fitter->setOutputPrecision(fit_output_precision);
-    fitter->generateFunction(generateUniformFitPoints, fitPoints);
-
-    if (fitter->setDataFromCurve(targetCurve)) {
-        if (!customCenters.isEmpty()) {
-            fitter->setNumPeaks(customCenters.size());
-            std::vector<double> stdCenters(customCenters.begin(), customCenters.end());
-            fitter->seedPeaksFromCenters(stdCenters, prominenceSpin->value());
-            fitter->setInitialPeakWidths(customWidths);
-        } else if (autoCountCheck->isChecked()) {
-            fitter->autoDetectAndUpdateNumPeaks(20, prominenceSpin->value());
-        } else {
-            fitter->setNumPeaks(nPeaks);
-            fitter->autoDetectPeaks(nPeaks, prominenceSpin->value());
-        }
-
-        if (goal == 4) {
-            // Create Baseline only
-            fitter->insertBaselineCurve();
-        } else if (goal == 3) {
-            // Subtract Baseline
-            if (fitter->subtractBaselineFromData()) {
-                DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(targetCurve));
-                if (dc && dc->table()) {
-                    Table *t = dc->table();
-                    int yCol = t->colIndex(dc->title().text());
-                    int startR = dc->startRow();
-                    for (int i = 0; i < fitter->dataSize(); ++i)
-                        t->setCell(startR + i, yCol, fitter->y()[i]);
-                    g->replot();
+        QVector<double> customCenters;
+        QVector<double> customWidths;
+        for (int i = 0; i < st->peakTable->rowCount(); ++i) {
+            if (st->peakTable->item(i, 1)) {
+                bool okC = false;
+                const double xc = st->peakTable->item(i, 1)->text().toDouble(&okC);
+                const double wVal = st->peakTable->item(i, 3)
+                        ? st->peakTable->item(i, 3)->text().toDouble()
+                        : 0.0;
+                if (okC && std::isfinite(xc)) {
+                    customCenters.append(xc);
+                    customWidths.append(wVal);
                 }
             }
-        } else if (goal == 2) {
-            // Find Peaks only
-            if (plotBaselineCheck->isChecked())
-                fitter->insertBaselineCurve();
-            fitter->createPeakSummaryTable();
-        } else if (goal == 1) {
-            // Integrate Peaks
-            if (plotBaselineCheck->isChecked())
-                fitter->insertBaselineCurve();
-            fitter->integratePeaksToTable();
-            if (summaryTableCheck->isChecked())
-                fitter->createPeakSummaryTable();
-        } else {
-            // Goal 0: Fit Peaks (Pro)
-            fitter->fit();
-            if (plotBaselineCheck->isChecked())
-                fitter->insertBaselineCurve();
-            if (pasteFitResultsToPlot)
-                fitter->showLegend();
-            if (summaryTableCheck->isChecked())
-                fitter->createPeakSummaryTable();
-            if (integrateTableCheck->isChecked())
-                fitter->integratePeaksToTable();
-            if (residualsTableCheck->isChecked())
-                fitter->createResidualsTable();
         }
-        g->replot();
-        emit modified();
-    }
-    delete fitter;
+
+        // Clean up temporary canvas overlays/event-filters before inserting permanent fit curves
+        st->cleanup();
+
+        if (manualMode && goal == 0) {
+            gr->setActiveTool(new MultiPeakFitTool(
+                    gr, mw, static_cast<MultiPeakFit::PeakProfile>(chosenProfile), peaksSpinVal,
+                    mw->d_status_info, SLOT(setText(const QString &))));
+            return;
+        }
+
+        const int nPeaks = !customCenters.isEmpty() ? customCenters.size() : peaksSpinVal;
+        MultiPeakFit *fitter = new MultiPeakFit(
+                mw, gr, static_cast<MultiPeakFit::PeakProfile>(chosenProfile), qMax(1, nPeaks));
+        fitter->setLorentzFraction(voigtMu);
+        fitter->setPearsonShape(pearsonM);
+        fitter->setAsymmetryFactor(asymAlpha);
+        fitter->setTailFactor(tailTau);
+        fitter->setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(baseMode));
+        if (baseMode == (int)MultiPeakFit::BaselineAnchors)
+            fitter->setBaselineAnchors(finalAnchors, cubicSpline);
+        fitter->enablePeakCurves(plotPeaks);
+        fitter->setPeakCurvesColor(mw->peakCurvesColor);
+        fitter->scaleErrors(mw->fit_scale_errors);
+        fitter->setOutputPrecision(mw->fit_output_precision);
+        fitter->generateFunction(mw->generateUniformFitPoints, mw->fitPoints);
+
+        if (fitter->setDataFromCurve(targetCurve)) {
+            if (!customCenters.isEmpty()) {
+                fitter->setNumPeaks(customCenters.size());
+                std::vector<double> stdCenters(customCenters.begin(), customCenters.end());
+                fitter->seedPeaksFromCenters(stdCenters, prominence);
+                fitter->setInitialPeakWidths(customWidths);
+            } else if (autoCount) {
+                fitter->autoDetectAndUpdateNumPeaks(20, prominence);
+            } else {
+                fitter->setNumPeaks(nPeaks);
+                fitter->autoDetectPeaks(nPeaks, prominence);
+            }
+
+            if (goal == 4) {
+                fitter->insertBaselineCurve();
+            } else if (goal == 3) {
+                if (fitter->subtractBaselineFromData()) {
+                    DataCurve *dc = dynamic_cast<DataCurve *>(gr->curve(targetCurve));
+                    if (dc && dc->table()) {
+                        Table *t = dc->table();
+                        const int yCol = t->colIndex(dc->title().text());
+                        const int startR = dc->startRow();
+                        for (int i = 0; i < fitter->dataSize(); ++i)
+                            t->setCell(startR + i, yCol, fitter->y()[i]);
+                        gr->replot();
+                    }
+                }
+            } else if (goal == 2) {
+                if (plotBaseline)
+                    fitter->insertBaselineCurve();
+                fitter->createPeakSummaryTable();
+            } else if (goal == 1) {
+                if (plotBaseline)
+                    fitter->insertBaselineCurve();
+                fitter->integratePeaksToTable();
+                if (summaryTbl)
+                    fitter->createPeakSummaryTable();
+            } else {
+                fitter->fit();
+                if (plotBaseline)
+                    fitter->insertBaselineCurve();
+                if (mw->pasteFitResultsToPlot)
+                    fitter->showLegend();
+                if (summaryTbl)
+                    fitter->createPeakSummaryTable();
+                if (integrateTbl)
+                    fitter->integratePeaksToTable();
+                if (residualsTbl)
+                    fitter->createResidualsTable();
+            }
+            gr->replot();
+            emit mw->modified();
+        }
+        delete fitter;
+    });
+
+    QObject::connect(dlg, &QDialog::rejected, this, [st]() {
+        ApplicationWindow *mw = st->app.data();
+        Graph *gr = st->g.data();
+        const int action = st->subToolAction;
+        st->cleanup();
+        if (mw && action == 1 && gr) {
+            QPointer<Graph> grGuard(gr);
+            QTimer::singleShot(0, mw, [mw, grGuard]() {
+                if (grGuard)
+                    MultiPeakFit::showBatchPeakDialog(mw, grGuard.data());
+            });
+        } else if (mw && action == 2) {
+            QTimer::singleShot(0, mw, [mw]() {
+                GraphStatsAndSurfaceFit::show2DPeakDialog(mw);
+            });
+        }
+    });
+
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void ApplicationWindow::showPeakFitDialog(int defaultProfile)
@@ -17945,6 +19007,7 @@ QMenu *ApplicationWindow::showWindowMenuImpl(MyWidget *widget)
         cm->addAction(actionAutoPeakPseudoVoigt);
         cm->addSeparator();
         cm->addAction(actionUnzoom);
+        cm->addAction(actionCopyPageImage);
         cm->addAction(actionCopyGraphOle);
         QStringList tbls = multilayerDependencies(widget);
         n = tbls.count();
@@ -18101,6 +19164,30 @@ void ApplicationWindow::handleAspectAboutToBeRemoved(const AbstractAspect *paren
     if (table) {
         closeWindow(static_cast<Table *>(table->view()));
         return;
+    }
+}
+
+void ApplicationWindow::handleAspectDescriptionChanged(const AbstractAspect *aspect)
+{
+    if (!aspect)
+        return;
+    if (qobject_cast<const Column *>(aspect) || qobject_cast<const ::future::Table *>(aspect))
+        refreshAllGraphsAutoAxisTitles();
+}
+
+void ApplicationWindow::refreshAllGraphsAutoAxisTitles()
+{
+    const QList<MyWidget *> windows = windowsList();
+    for (MyWidget *w : windows) {
+        if (w && w->inherits("MultiLayer")) {
+            MultiLayer *ml = static_cast<MultiLayer *>(w);
+            const QWidgetList graphs = ml->graphPtrs();
+            for (QWidget *gw : graphs) {
+                Graph *g = static_cast<Graph *>(gw);
+                if (g)
+                    g->refreshAutoAxisTitlesFromColumns();
+            }
+        }
     }
 }
 
@@ -19945,45 +21032,324 @@ void ApplicationWindow::showFillBetweenCurvesDialog()
         CurveMathTools::showFillBetweenDialog(this, g);
 }
 
-void ApplicationWindow::showWaterfallStackOffsetDialog()
+void ApplicationWindow::showStackOffsetsDialog()
 {
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
-    if (!g)
+    if (!g || !g->plotWidget())
         return;
 
+    QList<PlotCurve *> targetCurves;
+    for (int i = 0; i < g->curves(); ++i) {
+        const int ct = g->curveType(i);
+        if (ct == Graph::ErrorBars || ct == Graph::Pie || ct == Graph::Box
+            || ct == Graph::ColorMap || ct == Graph::GrayMap || ct == Graph::ContourMap)
+            continue;
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(g->curve(i));
+        if (pc && pc->isVisible() && pc->dataSize() > 0)
+            targetCurves.append(pc);
+    }
+    if (targetCurves.isEmpty())
+        return;
+
+    struct CurveStackSnapshot
+    {
+        PlotCurve *pc = nullptr;
+        double dx = 0.0;
+        double dy = 0.0;
+        bool norm01 = false;
+    };
+
+    QVector<CurveStackSnapshot> initialCurves;
+    initialCurves.reserve(targetCurves.size());
+    bool anyCurrentlyStacked = false;
+    for (PlotCurve *pc : targetCurves) {
+        CurveStackSnapshot snap;
+        snap.pc = pc;
+        snap.dx = pc->stackOffsetX();
+        snap.dy = pc->stackOffsetY();
+        snap.norm01 = pc->stackNormalize01();
+        if (qAbs(snap.dx) > 1e-12 || qAbs(snap.dy) > 1e-12 || snap.norm01)
+            anyCurrentlyStacked = true;
+        initialCurves.push_back(snap);
+    }
+
+    Plot *plt = g->plotWidget();
+    struct AxisScaleSnapshot
+    {
+        bool autoScale = true;
+        double lo = 0.0;
+        double hi = 1.0;
+    };
+    AxisScaleSnapshot initialAxes[QwtPlot::axisCnt];
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        initialAxes[a].autoScale = plt->axisAutoScale(a);
+        const QwtScaleDiv *sd = plt->axisScaleDiv(a);
+        if (sd) {
+            initialAxes[a].lo = sd->lowerBound();
+            initialAxes[a].hi = sd->upperBound();
+        }
+    }
+
+    const QVariant origPropMode = g->property("stackOffsetMode");
+    const QVariant origPropYPct = g->property("yStackOffsetPercent");
+    const QVariant origPropXPct = g->property("xStackOffsetPercent");
+    const QVariant origPropNorm = g->property("normalizeStackZeroOne");
+    const QVariant origPropAuto = g->property("stackAutoscale");
+    const QVariant origPropRev = g->property("stackReverseOrder");
+
+    // Reconstruct active Graph's current stack state on open
+    int initMode = 0;
+    double initYPct = 0.0;
+    double initXPct = 0.0;
+    bool initNorm = false;
+    bool initAutoScale = origPropAuto.isValid() ? origPropAuto.toBool() : true;
+    bool initRevOrder = false;
+
+    if (anyCurrentlyStacked && origPropYPct.isValid()) {
+        initMode = origPropMode.isValid() ? qBound(0, origPropMode.toInt(), 1) : 0;
+        initYPct = qBound(-100.0, origPropYPct.toDouble(), 200.0);
+        initXPct = origPropXPct.isValid() ? qBound(-100.0, origPropXPct.toDouble(), 200.0) : 0.0;
+        initNorm = origPropNorm.isValid() ? origPropNorm.toBool() : targetCurves.first()->stackNormalize01();
+        initRevOrder = origPropRev.isValid() ? origPropRev.toBool() : false;
+    } else if (anyCurrentlyStacked) {
+        initNorm = targetCurves.first()->stackNormalize01();
+        const int m = targetCurves.size();
+        if (m >= 2) {
+            initRevOrder = (qAbs(targetCurves.first()->stackOffsetY()) > 1e-9
+                            && qAbs(targetCurves.last()->stackOffsetY()) <= 1e-9);
+            PlotCurve *baseCurve = initRevOrder ? targetCurves.last() : targetCurves.first();
+            PlotCurve *secondCurve = initRevOrder ? targetCurves[m - 2] : targetCurves[1];
+
+            double sumSpanY = 0.0;
+            int validSpans = 0;
+            double maxSpanX = 0.0;
+            for (PlotCurve *pc : targetCurves) {
+                DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+                bool first = true;
+                double loX = 0.0, hiX = 0.0, loY = 0.0, hiY = 0.0;
+                for (int j = 0; j < pc->dataSize(); ++j) {
+                    if (dc && dc->isPointMasked(j))
+                        continue;
+                    const double xv = pc->x(j) - pc->stackOffsetX();
+                    const double yv = pc->y(j) - pc->stackOffsetY();
+                    if (!std::isfinite(xv) || !std::isfinite(yv))
+                        continue;
+                    if (first) {
+                        loX = hiX = xv;
+                        loY = hiY = yv;
+                        first = false;
+                    } else {
+                        loX = qMin(loX, xv);
+                        hiX = qMax(hiX, xv);
+                        loY = qMin(loY, yv);
+                        hiY = qMax(hiY, yv);
+                    }
+                }
+                if (!first) {
+                    sumSpanY += qMax(0.0, hiY - loY);
+                    ++validSpans;
+                    maxSpanX = qMax(maxSpanX, hiX - loX);
+                }
+            }
+            const double avgSpanY =
+                    (validSpans > 0 && sumSpanY > 1e-12) ? (sumSpanY / double(validSpans)) : 1.0;
+            const double refSpanX = (maxSpanX > 1e-12) ? maxSpanX : 1.0;
+            const double dxStep = secondCurve->stackOffsetX() - baseCurve->stackOffsetX();
+            const double dyStep = secondCurve->stackOffsetY() - baseCurve->stackOffsetY();
+            initXPct = qBound(-100.0, (dxStep / refSpanX) * 100.0, 200.0);
+            initYPct = qBound(-100.0, (dyStep / avgSpanY) * 100.0, 200.0);
+            initMode = 0;
+        }
+    }
+
+    auto syncCurveErrorBars = [](PlotCurve *pc) {
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
+            const int n = dc->dataSize();
+            QVector<double> xv(n), yv(n);
+            for (int j = 0; j < n; ++j) {
+                xv[j] = dc->x(j);
+                yv[j] = dc->y(j);
+            }
+            for (DataCurve *eb : dc->errorBarsList()) {
+                if (eb)
+                    eb->setData(xv.constData(), yv.constData(), n);
+            }
+        }
+    };
+
+    auto restoreInitialSnapshot = [&]() {
+        for (const CurveStackSnapshot &snap : initialCurves) {
+            snap.pc->setStackNormalize01(snap.norm01);
+            snap.pc->setStackOffset(snap.dx, snap.dy);
+            syncCurveErrorBars(snap.pc);
+        }
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (initialAxes[a].autoScale)
+                plt->setAxisAutoScale(a);
+            else
+                plt->setAxisScale(a, initialAxes[a].lo, initialAxes[a].hi);
+        }
+        g->setProperty("stackOffsetMode", origPropMode);
+        g->setProperty("yStackOffsetPercent", origPropYPct);
+        g->setProperty("xStackOffsetPercent", origPropXPct);
+        g->setProperty("normalizeStackZeroOne", origPropNorm);
+        g->setProperty("stackAutoscale", origPropAuto);
+        g->setProperty("stackReverseOrder", origPropRev);
+        g->updatePlot();
+    };
+
+    auto applyStackToGraph = [&](int mode, double yPct, double xPct, bool norm01,
+                                 bool autoRescale, bool revOrder) {
+        QList<PlotCurve *> ordered = targetCurves;
+        if (revOrder)
+            std::reverse(ordered.begin(), ordered.end());
+
+        for (PlotCurve *pc : ordered) {
+            pc->setStackOffset(0.0, 0.0);
+            pc->setStackNormalize01(norm01);
+        }
+
+        const int m = ordered.size();
+        if (m >= 2) {
+            QVector<double> minY(m, 0.0), maxY(m, 0.0);
+            double sumSpanY = 0.0;
+            int validSpansY = 0;
+            double maxSpanX = 0.0;
+
+            for (int k = 0; k < m; ++k) {
+                PlotCurve *pc = ordered[k];
+                DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+                const int n = pc->dataSize();
+                bool first = true;
+                double loX = 0.0, hiX = 0.0, loY = 0.0, hiY = 0.0;
+                for (int j = 0; j < n; ++j) {
+                    if (dc && dc->isPointMasked(j))
+                        continue;
+                    const double xv = pc->x(j);
+                    const double yv = pc->y(j);
+                    if (!std::isfinite(xv) || !std::isfinite(yv))
+                        continue;
+                    if (first) {
+                        loX = hiX = xv;
+                        loY = hiY = yv;
+                        first = false;
+                    } else {
+                        loX = qMin(loX, xv);
+                        hiX = qMax(hiX, xv);
+                        loY = qMin(loY, yv);
+                        hiY = qMax(hiY, yv);
+                    }
+                }
+                minY[k] = loY;
+                maxY[k] = hiY;
+                if (!first) {
+                    sumSpanY += qMax(0.0, hiY - loY);
+                    ++validSpansY;
+                    maxSpanX = qMax(maxSpanX, hiX - loX);
+                }
+            }
+
+            const double avgSpanY =
+                    (validSpansY > 0 && sumSpanY > 1e-12) ? (sumSpanY / double(validSpansY)) : 1.0;
+            const double refSpanX = (maxSpanX > 1e-12) ? maxSpanX : 1.0;
+            const double stepX = (qAbs(xPct) > 1e-12) ? (refSpanX * (xPct / 100.0)) : 0.0;
+
+            double prevTop = maxY[0];
+            for (int k = 1; k < m; ++k) {
+                const double dx = double(k) * stepX;
+                double dy = 0.0;
+                if (mode == 1) {
+                    dy = (prevTop - minY[k]) + (yPct / 100.0) * avgSpanY;
+                    prevTop = maxY[k] + dy;
+                } else {
+                    dy = double(k) * avgSpanY * (yPct / 100.0);
+                }
+                ordered[k]->setStackOffset(dx, dy);
+            }
+        }
+
+        for (PlotCurve *pc : ordered)
+            syncCurveErrorBars(pc);
+
+        if (autoRescale) {
+            for (int a = 0; a < QwtPlot::axisCnt; ++a)
+                plt->setAxisAutoScale(a);
+        } else {
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                if (!initialAxes[a].autoScale)
+                    plt->setAxisScale(a, initialAxes[a].lo, initialAxes[a].hi);
+            }
+        }
+        g->updatePlot();
+    };
+
     QDialog dlg(this);
-    dlg.setWindowTitle(tr("Waterfall / Stack Offset"));
+    dlg.setWindowTitle(tr("Interactive Waterfall / Spectra Stacker"));
+    dlg.setMinimumWidth(480);
     QVBoxLayout *vbox = new QVBoxLayout(&dlg);
     QFormLayout *form = new QFormLayout();
 
     QComboBox *modeCombo = new QComboBox(&dlg);
     modeCombo->addItem(tr("Uniform Step (% of Span)"), 0);
     modeCombo->addItem(tr("Auto Gap (% above Previous Curve Peak)"), 1);
-    modeCombo->setCurrentIndex(1);
+    modeCombo->setCurrentIndex(initMode);
     form->addRow(tr("Offset Mode:"), modeCombo);
 
-    QDoubleSpinBox *yGapSpin = new QDoubleSpinBox(&dlg);
-    yGapSpin->setRange(-500.0, 500.0);
-    yGapSpin->setDecimals(1);
-    yGapSpin->setSuffix(" %");
-    yGapSpin->setValue(15.0);
-    form->addRow(tr("Y Offset / Gap:"), yGapSpin);
+    QHBoxLayout *yRow = new QHBoxLayout();
+    QSlider *ySlider = new QSlider(Qt::Horizontal, &dlg);
+    ySlider->setRange(-1000, 2000);
+    ySlider->setSingleStep(10);
+    ySlider->setPageStep(100);
+    ySlider->setValue(qRound(initYPct * 10.0));
+    QDoubleSpinBox *ySpin = new QDoubleSpinBox(&dlg);
+    ySpin->setRange(-100.0, 200.0);
+    ySpin->setSingleStep(1.0);
+    ySpin->setDecimals(1);
+    ySpin->setSuffix(" %");
+    ySpin->setValue(initYPct);
+    yRow->addWidget(ySlider, 1);
+    yRow->addWidget(ySpin);
+    form->addRow(tr("Y Offset (%):"), yRow);
 
-    QDoubleSpinBox *xGapSpin = new QDoubleSpinBox(&dlg);
-    xGapSpin->setRange(-500.0, 500.0);
-    xGapSpin->setDecimals(1);
-    xGapSpin->setSuffix(" %");
-    xGapSpin->setValue(0.0);
-    form->addRow(tr("X Waterfall Shift:"), xGapSpin);
-
-    QCheckBox *normCheck = new QCheckBox(tr("Normalize Each Curve to [0, 1] Before Stacking"), &dlg);
-    normCheck->setChecked(false);
-    form->addRow(QString(), normCheck);
+    QHBoxLayout *xRow = new QHBoxLayout();
+    QSlider *xSlider = new QSlider(Qt::Horizontal, &dlg);
+    xSlider->setRange(-1000, 2000);
+    xSlider->setSingleStep(10);
+    xSlider->setPageStep(100);
+    xSlider->setValue(qRound(initXPct * 10.0));
+    QDoubleSpinBox *xSpin = new QDoubleSpinBox(&dlg);
+    xSpin->setRange(-100.0, 200.0);
+    xSpin->setSingleStep(1.0);
+    xSpin->setDecimals(1);
+    xSpin->setSuffix(" %");
+    xSpin->setValue(initXPct);
+    xRow->addWidget(xSlider, 1);
+    xRow->addWidget(xSpin);
+    form->addRow(tr("X Offset (%):"), xRow);
 
     vbox->addLayout(form);
 
+    QCheckBox *normCheck =
+            new QCheckBox(tr("Normalize [0, 1] (Scale Each Curve to Unit Span)"), &dlg);
+    normCheck->setChecked(initNorm);
+    vbox->addWidget(normCheck);
+
+    QCheckBox *autoScaleCheck =
+            new QCheckBox(tr("Auto-Rescale Axes (Individual Autoscale)"), &dlg);
+    autoScaleCheck->setChecked(initAutoScale);
+    vbox->addWidget(autoScaleCheck);
+
+    QCheckBox *revOrderCheck =
+            new QCheckBox(tr("Reverse Curve Order (Top-to-Bottom)"), &dlg);
+    revOrderCheck->setChecked(initRevOrder);
+    vbox->addWidget(revOrderCheck);
+
+    QCheckBox *livePreviewCheck = new QCheckBox(tr("Live Preview on Canvas"), &dlg);
+    livePreviewCheck->setChecked(true);
+    vbox->addWidget(livePreviewCheck);
+
     QHBoxLayout *btnRow = new QHBoxLayout();
-    QPushButton *resetBtn = new QPushButton(tr("Reset Offsets"), &dlg);
+    QPushButton *resetBtn = new QPushButton(tr("Reset (0%, 0%)"), &dlg);
     btnRow->addWidget(resetBtn);
     btnRow->addStretch();
     QDialogButtonBox *btns =
@@ -19991,20 +21357,107 @@ void ApplicationWindow::showWaterfallStackOffsetDialog()
     btnRow->addWidget(btns);
     vbox->addLayout(btnRow);
 
+    auto refreshLivePreview = [&]() {
+        if (!livePreviewCheck->isChecked())
+            return;
+        applyStackToGraph(modeCombo->currentData().toInt(), ySpin->value(), xSpin->value(),
+                          normCheck->isChecked(), autoScaleCheck->isChecked(),
+                          revOrderCheck->isChecked());
+    };
+
+    QObject::connect(ySlider, &QSlider::valueChanged, &dlg, [&](int val) {
+        ySpin->blockSignals(true);
+        ySpin->setValue(double(val) / 10.0);
+        ySpin->blockSignals(false);
+        refreshLivePreview();
+    });
+    QObject::connect(ySpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double val) {
+                         ySlider->blockSignals(true);
+                         ySlider->setValue(qRound(val * 10.0));
+                         ySlider->blockSignals(false);
+                         refreshLivePreview();
+                     });
+    QObject::connect(xSlider, &QSlider::valueChanged, &dlg, [&](int val) {
+        xSpin->blockSignals(true);
+        xSpin->setValue(double(val) / 10.0);
+        xSpin->blockSignals(false);
+        refreshLivePreview();
+    });
+    QObject::connect(xSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double val) {
+                         xSlider->blockSignals(true);
+                         xSlider->setValue(qRound(val * 10.0));
+                         xSlider->blockSignals(false);
+                         refreshLivePreview();
+                     });
+    QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshLivePreview(); });
+    QObject::connect(normCheck, &QCheckBox::toggled, &dlg, [&](bool) { refreshLivePreview(); });
+    QObject::connect(autoScaleCheck, &QCheckBox::toggled, &dlg,
+                     [&](bool) { refreshLivePreview(); });
+    QObject::connect(revOrderCheck, &QCheckBox::toggled, &dlg,
+                     [&](bool) { refreshLivePreview(); });
+    QObject::connect(livePreviewCheck, &QCheckBox::toggled, &dlg, [&](bool checked) {
+        if (checked)
+            refreshLivePreview();
+        else
+            restoreInitialSnapshot();
+    });
+
     QObject::connect(resetBtn, &QPushButton::clicked, &dlg, [&]() {
-        g->resetStackOffsets();
-        emit modified();
-        dlg.accept();
+        modeCombo->blockSignals(true);
+        modeCombo->setCurrentIndex(0);
+        modeCombo->blockSignals(false);
+        ySpin->blockSignals(true);
+        ySpin->setValue(0.0);
+        ySpin->blockSignals(false);
+        ySlider->blockSignals(true);
+        ySlider->setValue(0);
+        ySlider->blockSignals(false);
+        xSpin->blockSignals(true);
+        xSpin->setValue(0.0);
+        xSpin->blockSignals(false);
+        xSlider->blockSignals(true);
+        xSlider->setValue(0);
+        xSlider->blockSignals(false);
+        normCheck->blockSignals(true);
+        normCheck->setChecked(false);
+        normCheck->blockSignals(false);
+        revOrderCheck->blockSignals(true);
+        revOrderCheck->setChecked(false);
+        revOrderCheck->blockSignals(false);
+        refreshLivePreview();
     });
-    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, [&]() {
-        g->setStackOffsets(modeCombo->currentData().toInt(), yGapSpin->value(), xGapSpin->value(),
-                           normCheck->isChecked());
-        emit modified();
-        dlg.accept();
-    });
+
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    dlg.exec();
+    if (dlg.exec() == QDialog::Accepted) {
+        const int finalMode = modeCombo->currentData().toInt();
+        const double finalY = ySpin->value();
+        const double finalX = xSpin->value();
+        const bool finalNorm = normCheck->isChecked();
+        const bool finalAuto = autoScaleCheck->isChecked();
+        const bool finalRev = revOrderCheck->isChecked();
+
+        applyStackToGraph(finalMode, finalY, finalX, finalNorm, finalAuto, finalRev);
+        g->setProperty("stackOffsetMode", finalMode);
+        g->setProperty("yStackOffsetPercent", finalY);
+        g->setProperty("xStackOffsetPercent", finalX);
+        g->setProperty("normalizeStackZeroOne", finalNorm);
+        g->setProperty("stackAutoscale", finalAuto);
+        g->setProperty("stackReverseOrder", finalRev);
+        emit g->modifiedGraph();
+        emit modified();
+    } else {
+        restoreInitialSnapshot();
+    }
+}
+
+void ApplicationWindow::showWaterfallStackOffsetDialog()
+{
+    showStackOffsetsDialog();
 }
 
 void ApplicationWindow::resetActiveGraphStackOffsets()
@@ -20013,7 +21466,68 @@ void ApplicationWindow::resetActiveGraphStackOffsets()
     if (!g)
         return;
     g->resetStackOffsets();
+    g->setProperty("stackOffsetMode", 0);
+    g->setProperty("yStackOffsetPercent", 0.0);
+    g->setProperty("xStackOffsetPercent", 0.0);
+    g->setProperty("normalizeStackZeroOne", false);
+    g->setProperty("stackReverseOrder", false);
     emit modified();
+}
+
+void ApplicationWindow::copyPageAsHighDpiImage()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    const QImage img = ml->copyPageAsImage(300);
+    if (!img.isNull()) {
+        if (QClipboard *cb = QApplication::clipboard()) {
+            if (cb->image().isNull())
+                cb->setImage(img);
+        }
+        const QString msg = tr("Copied %1 as 300 DPI PNG (%2 x %3 px) to clipboard.")
+                                    .arg(ml->name())
+                                    .arg(img.width())
+                                    .arg(img.height());
+        setStatusBarText(msg);
+        if (statusBar())
+            statusBar()->showMessage(msg, 4000);
+    }
+}
+
+void ApplicationWindow::attachImageProfileGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    RoiGadgetTool::clearGadget(g);
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    g->setActiveTool(new ImageProfileGadgetTool(g, this));
+}
+
+void ApplicationWindow::showMatrixFilter2DDialog()
+{
+    AdvancedSignalProc::showMatrixFilter2DDialog(this);
+}
+
+void ApplicationWindow::showFourierSelfDeconvolveDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showFourierSelfDeconvolveDialog(this, g);
+}
+
+void ApplicationWindow::showEISAnalyzerDialog()
+{
+    CurveMathTools::showEISAnalyzerDialog(this);
+}
+
+void ApplicationWindow::showPassingBablokDemingDialog()
+{
+    GraphStatsAndSurfaceFit::showPassingBablokDemingDialog(this);
 }
 
 void ApplicationWindow::showWeibullPlotDialog()

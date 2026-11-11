@@ -22,7 +22,9 @@
 
 extern "C" HRESULT STDAPICALLTYPE SHCreateStdEnumFmtEtc(UINT cfmt, const FORMATETC afmt[], IEnumFORMATETC **ppenumFormatEtc);
 #include <wrl/client.h>
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -233,6 +235,28 @@ void ensureRenderedPayload(OleGraphPayload *payload)
     }
 }
 
+SIZEL naturalPayloadExtentHm(const OleGraphPayload &payload)
+{
+    if (payload.emfBytes.size() >= static_cast<int>(sizeof(ENHMETAHEADER))) {
+        ENHMETAHEADER hdr{};
+        std::memcpy(&hdr, payload.emfBytes.constData(), sizeof(hdr));
+        const LONG cx = hdr.rclFrame.right - hdr.rclFrame.left;
+        const LONG cy = hdr.rclFrame.bottom - hdr.rclFrame.top;
+        if (hdr.iType == EMR_HEADER && cx > 0 && cy > 0)
+            return SIZEL{ cx, cy };
+    }
+    if (payload.pixelSize.width() > 0 && payload.pixelSize.height() > 0) {
+        const LONG cx = std::max<LONG>(
+                100, static_cast<LONG>(std::lround(payload.pixelSize.width() * 2540.0 / 96.0)));
+        const LONG cy = std::max<LONG>(
+                100, static_cast<LONG>(std::lround(payload.pixelSize.height() * 2540.0 / 96.0)));
+        return SIZEL{ cx, cy };
+    }
+    if (payload.extentHm.cx > 0 && payload.extentHm.cy > 0)
+        return payload.extentHm;
+    return SIZEL{ 0, 0 };
+}
+
 class SciDAVisGraphObject final : public IOleObject,
                                   public IPersistStorage,
                                   public IDataObject,
@@ -330,12 +354,34 @@ class SciDAVisGraphObject final : public IOleObject,
                 newEmf = rg.emfBytes;
                 newDib = rg.dibBytes;
                 newPx = rg.pixelSize;
-                if (rg.extentHm.cx > 0 && rg.extentHm.cy > 0
-                    && m_initialRenderExtentHm.cx > 0 && m_initialRenderExtentHm.cy > 0
-                    && (rg.extentHm.cx != m_initialRenderExtentHm.cx
-                        || rg.extentHm.cy != m_initialRenderExtentHm.cy)) {
-                    m_extent = rg.extentHm;
-                    m_initialRenderExtentHm = rg.extentHm;
+                SIZEL renderedHm = rg.extentHm;
+                if ((renderedHm.cx <= 0 || renderedHm.cy <= 0)
+                    && rg.pixelSize.width() > 0 && rg.pixelSize.height() > 0) {
+                    renderedHm.cx = std::max<LONG>(
+                            100, static_cast<LONG>(std::lround(rg.pixelSize.width() * 2540.0 / 96.0)));
+                    renderedHm.cy = std::max<LONG>(
+                            100, static_cast<LONG>(std::lround(rg.pixelSize.height() * 2540.0 / 96.0)));
+                }
+                if (renderedHm.cx > 0 && renderedHm.cy > 0) {
+                    if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0) {
+                        m_initialRenderExtentHm = renderedHm;
+                        m_extent = renderedHm;
+                    } else if (renderedHm.cx != m_initialRenderExtentHm.cx
+                               || renderedHm.cy != m_initialRenderExtentHm.cy) {
+                        if (m_extent.cx > 0 && m_extent.cy > 0
+                            && (m_extent.cx != m_initialRenderExtentHm.cx
+                                || m_extent.cy != m_initialRenderExtentHm.cy)) {
+                            const double sx = double(renderedHm.cx) / double(m_initialRenderExtentHm.cx);
+                            const double sy = double(renderedHm.cy) / double(m_initialRenderExtentHm.cy);
+                            m_extent.cx = std::max<LONG>(
+                                    100, std::min<LONG>(1000000, static_cast<LONG>(std::lround(m_extent.cx * sx))));
+                            m_extent.cy = std::max<LONG>(
+                                    100, std::min<LONG>(1000000, static_cast<LONG>(std::lround(m_extent.cy * sy))));
+                        } else {
+                            m_extent = renderedHm;
+                        }
+                        m_initialRenderExtentHm = renderedHm;
+                    }
                 }
             }
         }
@@ -383,6 +429,9 @@ public:
         ensureRenderedPayload(&m_payload);
         if (m_payload.extentHm.cx > 0 && m_payload.extentHm.cy > 0)
             m_extent = m_payload.extentHm;
+        m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
+        if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0)
+            m_initialRenderExtentHm = m_extent;
         addRefServerProcess();
         CreateOleAdviseHolder(&m_oleAdvises);
         CreateDataAdviseHolder(&m_dataAdvises);
@@ -527,7 +576,7 @@ public:
                 mw = createSampleAppWindow();
 
             MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow);
-            m_initialRenderExtentHm = SIZEL{ 0, 0 };
+            m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
             if (ml) {
                 m_payload.targetWindow = ml->name();
                 mw->activateSubWindow(ml);
@@ -539,6 +588,12 @@ public:
                 OleRenderedGraph initRg = SciDAVisEmf::renderMultiLayer(ml, single);
                 if (initRg.extentHm.cx > 0 && initRg.extentHm.cy > 0)
                     m_initialRenderExtentHm = initRg.extentHm;
+                else if (initRg.pixelSize.width() > 0 && initRg.pixelSize.height() > 0) {
+                    m_initialRenderExtentHm.cx = std::max<LONG>(
+                            100, static_cast<LONG>(std::lround(initRg.pixelSize.width() * 2540.0 / 96.0)));
+                    m_initialRenderExtentHm.cy = std::max<LONG>(
+                            100, static_cast<LONG>(std::lround(initRg.pixelSize.height() * 2540.0 / 96.0)));
+                }
             }
 
             QString titleSuffix = m_payload.targetWindow.isEmpty() ? QStringLiteral("Embedded Graph") : m_payload.targetWindow;
@@ -694,6 +749,9 @@ public:
         m_handsOff = false;
         ensureRenderedPayload(&m_payload);
         m_extent = m_payload.extentHm;
+        m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
+        if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0)
+            m_initialRenderExtentHm = m_extent;
         return S_OK;
     }
 
@@ -707,6 +765,7 @@ public:
             return hr;
         m_payload = std::move(loaded);
         m_extent = m_payload.extentHm;
+        m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
         m_storage = s;
         m_dirty = false;
         m_pending = false;
@@ -783,6 +842,9 @@ public:
         ensureRenderedPayload(&loaded);
         m_payload = std::move(loaded);
         m_extent = m_payload.extentHm;
+        m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
+        if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0)
+            m_initialRenderExtentHm = m_extent;
         m_filename = path;
         m_dirty = false;
         ++m_revision;
