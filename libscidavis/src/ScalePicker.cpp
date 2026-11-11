@@ -33,6 +33,7 @@
 #include "GraphMiniToolbar.h"
 
 #include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_scale_widget.h>
 #include <qwt_text_label.h>
 
@@ -46,7 +47,8 @@ ScalePicker::ScalePicker(QwtPlot *plot)
       d_labels_selected(false),
       d_selected_axis(NULL),
       d_current_axis(NULL),
-      d_left_click_pending(false)
+      d_left_click_pending(false),
+      d_axis_panning(false)
 {
     refresh();
 }
@@ -59,8 +61,48 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
     QwtScaleWidget *scale = (QwtScaleWidget *)object;
     d_current_axis = scale;
 
+    auto resolveAxisIds = [](const QwtScaleWidget *sc, int &axisId, int &twinAxisId) {
+        axisId = -1;
+        twinAxisId = -1;
+        switch (sc->alignment()) {
+        case QwtScaleDraw::LeftScale:
+            axisId = QwtPlot::yLeft;
+            twinAxisId = QwtPlot::yRight;
+            break;
+        case QwtScaleDraw::RightScale:
+            axisId = QwtPlot::yRight;
+            twinAxisId = QwtPlot::yLeft;
+            break;
+        case QwtScaleDraw::BottomScale:
+            axisId = QwtPlot::xBottom;
+            twinAxisId = QwtPlot::xTop;
+            break;
+        case QwtScaleDraw::TopScale:
+            axisId = QwtPlot::xTop;
+            twinAxisId = QwtPlot::xBottom;
+            break;
+        }
+    };
+
+    auto shouldMirrorTwin = [](Plot *p, int axisId, int twinAxisId) -> bool {
+        if (!p || twinAxisId < 0 || !p->axisEnabled(twinAxisId))
+            return false;
+        if (p->hasVisibleItemOnAxis(twinAxisId))
+            return false;
+        const QwtScaleDraw *twinSd = p->axisScaleDraw(twinAxisId);
+        if (twinSd && twinSd->hasComponent(QwtAbstractScaleDraw::Labels))
+            return false;
+        const QwtScaleDiv *divMain = p->axisScaleDiv(axisId);
+        const QwtScaleDiv *divTwin = p->axisScaleDiv(twinAxisId);
+        return divMain && divTwin
+                && qAbs(divMain->lowerBound() - divTwin->lowerBound()) <= 1e-12
+                && qAbs(divMain->upperBound() - divTwin->upperBound()) <= 1e-12;
+    };
+
     if (e->type() == QEvent::MouseButtonDblClick) {
         d_left_click_pending = false;
+        d_axis_panning = false;
+        scale->unsetCursor();
         if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
             bar->hide();
         mouseDblClicked(scale, ((QMouseEvent *)e)->pos());
@@ -81,45 +123,26 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
 #endif
             int axisId = -1;
             int twinAxisId = -1;
-            int pixelCoord = 0;
-            switch (scale->alignment()) {
-            case QwtScaleDraw::LeftScale:
-                axisId = QwtPlot::yLeft;
-                twinAxisId = QwtPlot::yRight;
-                pixelCoord = pos.y();
-                break;
-            case QwtScaleDraw::RightScale:
-                axisId = QwtPlot::yRight;
-                twinAxisId = QwtPlot::yLeft;
-                pixelCoord = pos.y();
-                break;
-            case QwtScaleDraw::BottomScale:
-                axisId = QwtPlot::xBottom;
-                twinAxisId = QwtPlot::xTop;
-                pixelCoord = pos.x();
-                break;
-            case QwtScaleDraw::TopScale:
-                axisId = QwtPlot::xTop;
-                twinAxisId = QwtPlot::xBottom;
-                pixelCoord = pos.x();
-                break;
-            }
+            resolveAxisIds(scale, axisId, twinAxisId);
             Plot *p = dynamic_cast<Plot *>(plot());
             if (p && axisId >= 0) {
-                bool syncTwin = false;
-                const QwtScaleDiv *divMain = p->axisScaleDiv(axisId);
-                const QwtScaleDiv *divTwin = p->axisScaleDiv(twinAxisId);
-                if (divMain && divTwin
-                    && qAbs(divMain->lowerBound() - divTwin->lowerBound()) <= 1e-12
-                    && qAbs(divMain->upperBound() - divTwin->upperBound()) <= 1e-12) {
-                    syncTwin = true;
-                }
+                const QPoint canvasPos = p->canvas()
+                        ? p->canvas()->mapFromGlobal(scale->mapToGlobal(pos))
+                        : pos;
+                const int pixelCoord = (axisId == QwtPlot::yLeft || axisId == QwtPlot::yRight)
+                        ? canvasPos.y()
+                        : canvasPos.x();
+                const bool syncTwin = shouldMirrorTwin(p, axisId, twinAxisId);
                 p->zoomAxisAroundPos(axisId, pixelCoord, factor);
                 if (syncTwin)
                     p->zoomAxisAroundPos(twinAxisId, pixelCoord, factor);
-                p->replot();
-                if (graph())
+                if (graph()) {
+                    graph()->syncChildLinkedLayers();
+                    p->replot();
                     graph()->notifyChanges();
+                } else {
+                    p->replot();
+                }
                 we->accept();
                 return true;
             }
@@ -131,6 +154,8 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         QPoint pos = me->pos();
         if (me->button() == Qt::LeftButton) {
             d_press_pos = pos;
+            d_pan_last_pos = pos;
+            d_axis_panning = false;
             d_left_click_pending = !(me->modifiers() & Qt::ShiftModifier);
             scale->setFocus();
             emit clicked();
@@ -142,9 +167,16 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
             else if (!scaleTicksRect(scale).contains(pos))
                 selectLabels(scale);
 
-            return !(me->modifiers() & Qt::ShiftModifier) && !scaleTicksRect(scale).contains(pos);
+            return true;
+        } else if (me->button() == Qt::MiddleButton) {
+            d_press_pos = pos;
+            d_pan_last_pos = pos;
+            d_axis_panning = false;
+            d_left_click_pending = false;
+            return true;
         } else if (me->button() == Qt::RightButton) {
             d_left_click_pending = false;
+            d_axis_panning = false;
             mouseRightClicked(scale, pos);
             return true;
         }
@@ -152,31 +184,68 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
 
     if (e->type() == QEvent::MouseMove) {
         const QMouseEvent *me = (const QMouseEvent *)e;
-        if (d_left_click_pending && (me->pos() - d_press_pos).manhattanLength() > 5)
-            d_left_click_pending = false;
+        if (me->buttons() & (Qt::LeftButton | Qt::MiddleButton)) {
+            if (!d_axis_panning && (me->pos() - d_press_pos).manhattanLength() >= 4) {
+                d_axis_panning = true;
+                d_left_click_pending = false;
+                scale->setCursor(Qt::ClosedHandCursor);
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->hide();
+            }
+            if (d_axis_panning) {
+                int axisId = -1;
+                int twinAxisId = -1;
+                resolveAxisIds(scale, axisId, twinAxisId);
+                Plot *p = dynamic_cast<Plot *>(plot());
+                if (p && axisId >= 0) {
+                    const QPoint prevCanvasPos = p->canvas()
+                            ? p->canvas()->mapFromGlobal(scale->mapToGlobal(d_pan_last_pos))
+                            : d_pan_last_pos;
+                    const QPoint curCanvasPos = p->canvas()
+                            ? p->canvas()->mapFromGlobal(scale->mapToGlobal(me->pos()))
+                            : me->pos();
+                    const int prevCoord = (axisId == QwtPlot::yLeft || axisId == QwtPlot::yRight)
+                            ? prevCanvasPos.y()
+                            : prevCanvasPos.x();
+                    const int curCoord = (axisId == QwtPlot::yLeft || axisId == QwtPlot::yRight)
+                            ? curCanvasPos.y()
+                            : curCanvasPos.x();
+                    if (prevCoord != curCoord) {
+                        const bool syncTwin = shouldMirrorTwin(p, axisId, twinAxisId);
+                        p->panAxisByPixels(axisId, prevCoord, curCoord);
+                        if (syncTwin)
+                            p->panAxisByPixels(twinAxisId, prevCoord, curCoord);
+                        if (graph()) {
+                            graph()->syncChildLinkedLayers();
+                            p->replot();
+                            graph()->notifyChanges();
+                        } else {
+                            p->replot();
+                        }
+                    }
+                    d_pan_last_pos = me->pos();
+                    return true;
+                }
+            }
+        }
     }
 
     if (e->type() == QEvent::MouseButtonRelease) {
         const QMouseEvent *me = (const QMouseEvent *)e;
+        if (d_axis_panning
+            && (me->button() == Qt::LeftButton || me->button() == Qt::MiddleButton)) {
+            d_axis_panning = false;
+            d_left_click_pending = false;
+            scale->unsetCursor();
+            return true;
+        }
         if (me->button() == Qt::LeftButton && d_left_click_pending) {
             d_left_click_pending = false;
             if ((me->pos() - d_press_pos).manhattanLength() <= 5
                 && GraphMiniToolbar::isMiniToolbarEnabled() && graph()) {
                 int axisId = -1;
-                switch (scale->alignment()) {
-                case QwtScaleDraw::LeftScale:
-                    axisId = QwtPlot::yLeft;
-                    break;
-                case QwtScaleDraw::RightScale:
-                    axisId = QwtPlot::yRight;
-                    break;
-                case QwtScaleDraw::BottomScale:
-                    axisId = QwtPlot::xBottom;
-                    break;
-                case QwtScaleDraw::TopScale:
-                    axisId = QwtPlot::xTop;
-                    break;
-                }
+                int twinAxisId = -1;
+                resolveAxisIds(scale, axisId, twinAxisId);
                 if (axisId >= 0) {
                     if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                         bar->popupForAxis(graph(), axisId, me->globalPos());

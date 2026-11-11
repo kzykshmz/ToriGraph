@@ -185,6 +185,7 @@ private:
     QComboBox *boxConnect;
     PenWidget *penWidget;
     QSpinBox *boxPenWidth;
+    QSpinBox *boxLineOpacity, *boxAreaOpacity, *boxSymbolOpacity;
     ColorButton *boxAreaColor;
     QWidget *symbolPage;
     QSpinBox *boxSymbolSize;

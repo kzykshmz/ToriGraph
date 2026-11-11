@@ -125,5 +125,7 @@ private:
     bool d_labels_selected;
     QwtScaleWidget *d_selected_axis, *d_current_axis;
     QPoint d_press_pos;
+    QPoint d_pan_last_pos;
     bool d_left_click_pending;
+    bool d_axis_panning;
 };

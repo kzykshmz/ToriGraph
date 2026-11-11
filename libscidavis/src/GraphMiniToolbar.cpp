@@ -18,6 +18,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
@@ -316,6 +317,35 @@ void GraphMiniToolbar::popupForCanvas(Graph *g, const QPoint &globalPos)
     addActionBtn(QStringLiteral("1:1"), tr("1:1 (Square)"), SLOT(onCanvasAspectSquare()));
     addActionBtn(tr("Fit Page"), tr("Fit Page to Layers"), SLOT(onCanvasFitPageToLayers()));
 
+    if (g->multiLayerParent()) {
+        addSeparatorLine();
+        QToolButton *presetBtn = new QToolButton(this);
+        presetBtn->setText(tr("Style Presets"));
+        presetBtn->setToolTip(tr("Style Presets"));
+        presetBtn->setFocusPolicy(Qt::NoFocus);
+        presetBtn->setPopupMode(QToolButton::InstantPopup);
+        QMenu *presetMenu = new QMenu(presetBtn);
+        connect(presetMenu, &QMenu::aboutToShow, this, [this]() { d_in_modal_dialog = true; });
+        connect(presetMenu, &QMenu::aboutToHide, this, [this]() { d_in_modal_dialog = false; });
+        presetMenu->addAction(tr("ISIJ Journal (85 mm, 600 DPI)"), this, [this]() {
+            if (d_graph && d_graph->multiLayerParent())
+                d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+            hide();
+        });
+        presetMenu->addAction(tr("Presentation Slide (28 pt Arial)"), this, [this]() {
+            if (d_graph && d_graph->multiLayerParent())
+                d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+            hide();
+        });
+        presetMenu->addAction(tr("Nature / Science Compact (89 mm)"), this, [this]() {
+            if (d_graph && d_graph->multiLayerParent())
+                d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
+            hide();
+        });
+        presetBtn->setMenu(presetMenu);
+        d_layout->addWidget(presetBtn);
+    }
+
     showNearGlobalPos(globalPos);
 }
 
@@ -341,6 +371,12 @@ void GraphMiniToolbar::popupForLegend(Graph *g, Legend *legend, const QPoint &gl
     addSeparatorLine();
     addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onLegendFontDec()));
     addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onLegendFontInc()));
+    addSeparatorLine();
+    const int nCols = legend->numColumns();
+    const QString colLabel = (nCols <= 1) ? tr("Horizontal Legend")
+                                          : QString("%1 (%2)").arg(tr("Legend Columns:")).arg(nCols);
+    addActionBtn(colLabel, tr("Horizontal Legend"), SLOT(onLegendCycleColumns()), true, nCols > 1);
+    addActionBtn(tr("Reconstruct Legend"), tr("Reconstruct Legend"), SLOT(onLegendReconstruct()));
 
     showNearGlobalPos(globalPos);
 }
@@ -830,4 +866,30 @@ void GraphMiniToolbar::onLegendFontDec()
 void GraphMiniToolbar::onLegendFontInc()
 {
     adjustLegendFont(1);
+}
+
+void GraphMiniToolbar::onLegendReconstruct()
+{
+    if (!d_graph)
+        return;
+    d_graph->reconstructLegend();
+    d_legend = d_graph->legend();
+}
+
+void GraphMiniToolbar::onLegendCycleColumns()
+{
+    if (!isLegendValid())
+        return;
+    const int cur = d_legend->numColumns();
+    int next = 1;
+    if (cur <= 1)
+        next = qMax(2, d_graph ? d_graph->curves() : 4);
+    else if (cur >= 3 && d_graph && d_graph->curves() > 2)
+        next = 2;
+    else
+        next = 1;
+    d_legend->setNumColumns(next);
+    d_graph->replot();
+    d_graph->notifyChanges();
+    popupForLegend(d_graph, d_legend, pos() - QPoint(10, -height() - 10));
 }

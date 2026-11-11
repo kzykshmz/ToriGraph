@@ -92,7 +92,12 @@ public:
     int angle() { return d_angle; };
     void setAngle(int ang) { d_angle = ang; };
 
+    void setNumColumns(int cols);
+    int numColumns() const { return d_num_columns; }
+
 private:
+    void computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVector<int> &cellX,
+                            QVector<int> &cellCenterY, int &totalWidth, int &totalHeight) const;
     void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap, const QRect &r) const;
 
     void drawFrame(QPainter *p, int type, const QRect &rect) const;
@@ -130,6 +135,7 @@ protected:
     int left_margin, top_margin;
 
     int d_shadow_size_x, d_shadow_size_y;
+    int d_num_columns;
 };
 
 #endif

@@ -79,6 +79,8 @@ private slots:
     void onLegendToggleTransparent();
     void onLegendFontDec();
     void onLegendFontInc();
+    void onLegendReconstruct();
+    void onLegendCycleColumns();
 
 private:
     void clearButtons();

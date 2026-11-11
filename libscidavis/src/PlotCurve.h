@@ -38,15 +38,35 @@ class PlotCurve : public QwtPlotCurve
 {
 
 public:
-    PlotCurve(const QString &name = {}) : QwtPlotCurve(name), d_type(0) {};
+    PlotCurve(const QString &name = {})
+        : QwtPlotCurve(name),
+          d_type(0),
+          d_stack_dx(0.0),
+          d_stack_dy(0.0),
+          d_applied_dx(0.0),
+          d_applied_dy(0.0),
+          d_norm01(false) {};
 
     int type() const { return d_type; };
     void setType(int t) { d_type = t; };
+
+    void setStackOffset(double dx, double dy);
+    double stackOffsetX() const { return d_stack_dx; }
+    double stackOffsetY() const { return d_stack_dy; }
+    void setStackNormalize01(bool normalize);
+    bool stackNormalize01() const { return d_norm01; }
+    void applyStackTransformToCurrentData();
 
     QwtDoubleRect boundingRect() const;
 
 protected:
     int d_type;
+    double d_stack_dx;
+    double d_stack_dy;
+    double d_applied_dx;
+    double d_applied_dy;
+    bool d_norm01;
+    QVector<double> d_raw_y_backup;
 };
 
 class DataCurve : public PlotCurve

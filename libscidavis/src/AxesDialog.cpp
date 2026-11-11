@@ -86,6 +86,7 @@ AxesDialog::AxesDialog()
     initAxesPage();
     initFramePage();
     initReferenceLinesPage();
+    initAxisBreakPage();
 
     auto bottomButtons = new QHBoxLayout();
     bottomButtons->addStretch();
@@ -542,7 +543,23 @@ void AxesDialog::initAxesPage()
     boxFormula->setMaximumHeight(3 * metrics.height());
     boxFormula->hide();
     rightBoxLayout->addWidget(boxFormula, 6, 1);
-    rightBoxLayout->setRowStretch(7, 1);
+
+    labelDivideFactor = new QLabel(tr("Divide by Factor:"));
+    rightBoxLayout->addWidget(labelDivideFactor, 7, 0);
+    boxDivideFactor = new QLineEdit("1");
+    rightBoxLayout->addWidget(boxDivideFactor, 7, 1);
+
+    labelTickPrefix = new QLabel(tr("Prefix:"));
+    rightBoxLayout->addWidget(labelTickPrefix, 8, 0);
+    boxTickPrefix = new QLineEdit();
+    rightBoxLayout->addWidget(boxTickPrefix, 8, 1);
+
+    labelTickSuffix = new QLabel(tr("Suffix:"));
+    rightBoxLayout->addWidget(labelTickSuffix, 9, 0);
+    boxTickSuffix = new QLineEdit();
+    rightBoxLayout->addWidget(boxTickSuffix, 9, 1);
+
+    rightBoxLayout->setRowStretch(10, 1);
 
     QVBoxLayout *rightLayout = new QVBoxLayout();
     rightLayout->addLayout(topLayout);
@@ -582,6 +599,9 @@ void AxesDialog::initAxesPage()
     connect(boxBaseline, SIGNAL(valueChanged(int)), this, SLOT(changeBaselineDist(int)));
     connect(boxAxisType, SIGNAL(activated(int)), this, SLOT(showAxisFormatOptions(int)));
     connect(boxPrecision, SIGNAL(valueChanged(int)), this, SLOT(setLabelsNumericFormat(int)));
+    connect(boxDivideFactor, SIGNAL(editingFinished()), this, SLOT(applyTickLabelTransformFromUi()));
+    connect(boxTickPrefix, SIGNAL(editingFinished()), this, SLOT(applyTickLabelTransformFromUi()));
+    connect(boxTickSuffix, SIGNAL(editingFinished()), this, SLOT(applyTickLabelTransformFromUi()));
 }
 
 void AxesDialog::initFramePage()
@@ -694,8 +714,10 @@ void AxesDialog::initReferenceLinesPage()
     refStatBox->addItem(tr("Constant Value"), QString());
     refStatBox->addItem(tr("Mean"), QString("Mean"));
     refStatBox->addItem(tr("Median"), QString("Median"));
-    refStatBox->addItem(tr("Mean+SD"), QString("Mean+SD"));
-    refStatBox->addItem(tr("Mean-SD"), QString("Mean-SD"));
+    refStatBox->addItem(tr("+SD"), QString("Mean+SD"));
+    refStatBox->addItem(tr("-SD"), QString("Mean-SD"));
+    refStatBox->addItem(tr("Min"), QString("Min"));
+    refStatBox->addItem(tr("Max"), QString("Max"));
     gl->addWidget(refStatBox, 1, 1);
 
     gl->addWidget(new QLabel(tr("Value")), 2, 0);
@@ -750,6 +772,106 @@ void AxesDialog::initReferenceLinesPage()
     connect(btnRefUpdate, SIGNAL(clicked()), this, SLOT(updateSelectedRefLineFromUi()));
     connect(btnRefRemove, SIGNAL(clicked()), this, SLOT(removeSelectedRefLine()));
     connect(btnRefClear, SIGNAL(clicked()), this, SLOT(clearAllRefLines()));
+}
+
+void AxesDialog::initAxisBreakPage()
+{
+    axisBreakPage = new QWidget();
+
+    QPixmap image0(":/bottom_scl.xpm");
+    QPixmap image1(":/left_scl.xpm");
+    QPixmap image2(":/top_scl.xpm");
+    QPixmap image3(":/right_scl.xpm");
+
+    axisBreakAxesList = new QListWidget();
+    axisBreakAxesList->addItem(new QListWidgetItem(image0, tr("Bottom")));
+    axisBreakAxesList->addItem(new QListWidgetItem(image1, tr("Left")));
+    axisBreakAxesList->addItem(new QListWidgetItem(image2, tr("Top")));
+    axisBreakAxesList->addItem(new QListWidgetItem(image3, tr("Right")));
+    axisBreakAxesList->setIconSize(image0.size());
+    axisBreakAxesList->setCurrentRow(-1);
+
+    QFontMetrics fm(axisBreakAxesList->font());
+    int width = 32;
+    for (int i = 0; i < axisBreakAxesList->count(); i++) {
+#if QT_VERSION < QT_VERSION_CHECK(5, 11, 0)
+        auto newWidth = fm.width(axisBreakAxesList->item(i)->text());
+#else
+        auto newWidth = fm.horizontalAdvance(axisBreakAxesList->item(i)->text());
+#endif
+        if (newWidth > width)
+            width = newWidth;
+    }
+    axisBreakAxesList->setMaximumWidth(axisBreakAxesList->iconSize().width() + width + 50);
+    axisBreakAxesList->resize(axisBreakAxesList->maximumWidth(), axisBreakAxesList->height());
+
+    QGroupBox *breakBox = new QGroupBox(tr("Axis Breaks"));
+    QGridLayout *gl = new QGridLayout(breakBox);
+
+    boxEnableAxisBreak = new QCheckBox(tr("Enable Axis Break"));
+    boxEnableAxisBreak->setChecked(false);
+    gl->addWidget(boxEnableAxisBreak, 0, 0, 1, 3);
+
+    gl->addWidget(new QLabel(tr("Break From:")), 1, 0);
+    boxBreakFrom = new QLineEdit("0");
+    gl->addWidget(boxBreakFrom, 1, 1, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Break To:")), 2, 0);
+    boxBreakTo = new QLineEdit("0");
+    gl->addWidget(boxBreakTo, 2, 1, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Break Position (%):")), 3, 0);
+    boxBreakPositionPct = new QDoubleSpinBox();
+    boxBreakPositionPct->setRange(10.0, 90.0);
+    boxBreakPositionPct->setSingleStep(5.0);
+    boxBreakPositionPct->setDecimals(1);
+    boxBreakPositionPct->setSuffix("%");
+    boxBreakPositionPct->setValue(50.0);
+    gl->addWidget(boxBreakPositionPct, 3, 1, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Step Before:")), 4, 0);
+    boxBreakStepBefore = new QLineEdit("0");
+    gl->addWidget(boxBreakStepBefore, 4, 1, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Step After:")), 5, 0);
+    boxBreakStepAfter = new QLineEdit("0");
+    gl->addWidget(boxBreakStepAfter, 5, 1, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Type")), 6, 0);
+    boxBreakTypeBefore = new QComboBox();
+    boxBreakTypeBefore->addItem(tr("linear"));
+    boxBreakTypeBefore->addItem(tr("logarithmic"));
+    gl->addWidget(boxBreakTypeBefore, 6, 1);
+
+    boxBreakTypeAfter = new QComboBox();
+    boxBreakTypeAfter->addItem(tr("linear"));
+    boxBreakTypeAfter->addItem(tr("logarithmic"));
+    gl->addWidget(boxBreakTypeAfter, 6, 2);
+
+    gl->setRowStretch(7, 1);
+
+    QHBoxLayout *mainLayout = new QHBoxLayout(axisBreakPage);
+    mainLayout->addWidget(axisBreakAxesList);
+    mainLayout->addWidget(breakBox, 1);
+
+    generalDialog.addTab(axisBreakPage, tr("Axis Break"));
+
+    connect(axisBreakAxesList, SIGNAL(currentRowChanged(int)), this, SLOT(updateAxisBreakPage(int)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakFrom, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakTo, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakPositionPct, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakStepBefore, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakStepAfter, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakTypeBefore, SLOT(setEnabled(bool)));
+    connect(boxEnableAxisBreak, SIGNAL(toggled(bool)), boxBreakTypeAfter, SLOT(setEnabled(bool)));
+
+    boxBreakFrom->setEnabled(false);
+    boxBreakTo->setEnabled(false);
+    boxBreakPositionPct->setEnabled(false);
+    boxBreakStepBefore->setEnabled(false);
+    boxBreakStepAfter->setEnabled(false);
+    boxBreakTypeBefore->setEnabled(false);
+    boxBreakTypeAfter->setEnabled(false);
 }
 
 void AxesDialog::changeMinorTicksLength(int minLength)
@@ -828,6 +950,8 @@ void AxesDialog::showAxisFormatOptions(int format)
     boxFormula->hide();
     boxTableName->hide();
     labelTable->hide();
+    labelDivideFactor->hide();
+    boxDivideFactor->hide();
 
     switch (static_cast<Graph::AxisType>(boxAxisType->itemData(format).toInt())) {
     case Graph::AxisType::Numeric:
@@ -842,6 +966,8 @@ void AxesDialog::showAxisFormatOptions(int format)
         label3->show();
         boxPrecision->show();
         boxShowFormula->show();
+        labelDivideFactor->show();
+        boxDivideFactor->show();
 
         showAxisFormula(mapToQwtAxisId());
         break;
@@ -1014,6 +1140,9 @@ void AxesDialog::showAxis()
     boxColName->setEnabled(labels && ok);
     boxShowFormula->setEnabled(labels && ok);
     boxFormula->setEnabled(labels && ok);
+    boxDivideFactor->setEnabled(labels && ok);
+    boxTickPrefix->setEnabled(labels && ok);
+    boxTickSuffix->setEnabled(labels && ok);
 
     if (axis == QwtPlot::xBottom || axis == QwtPlot::xTop)
         boxAngle->setEnabled(labels && ok);
@@ -1082,12 +1211,27 @@ void AxesDialog::updateShowBox(int axis)
     }
 
     if (d_graph && axis >= 0 && axis < 4) {
+        const int qwtAxis = Graph::mapToQwtAxis(axis);
         boxAxisBackbone->blockSignals(true);
-        boxAxisBackbone->setChecked(d_graph->isAxisBackboneVisible(Graph::mapToQwtAxis(axis)));
+        boxAxisBackbone->setChecked(d_graph->isAxisBackboneVisible(qwtAxis));
         boxAxisBackbone->blockSignals(false);
+
+        boxDivideFactor->blockSignals(true);
+        boxTickPrefix->blockSignals(true);
+        boxTickSuffix->blockSignals(true);
+        boxDivideFactor->setText(QString::number(d_graph->tickDivideFactor(qwtAxis), 'g', 12));
+        boxTickPrefix->setText(d_graph->tickPrefix(qwtAxis));
+        boxTickSuffix->setText(d_graph->tickSuffix(qwtAxis));
+        boxDivideFactor->blockSignals(false);
+        boxTickPrefix->blockSignals(false);
+        boxTickSuffix->blockSignals(false);
     }
 
     bool ok = boxShowAxis->isChecked();
+    bool labels = boxShowLabels->isChecked();
+    boxDivideFactor->setEnabled(labels && ok);
+    boxTickPrefix->setEnabled(labels && ok);
+    boxTickSuffix->setEnabled(labels && ok);
     boxTitle->setEnabled(ok);
     boxAxisColor->setEnabled(ok);
     boxAxisNumColor->setEnabled(ok);
@@ -1417,9 +1561,16 @@ bool AxesDialog::updatePlot()
             }
         }
 
+        const Graph::AxisBreakSpec prevBrk = d_graph->axisBreak(a);
         d_graph->setScale(a, start, end, stp, boxMajorValue->value(),
                           boxMinorValue->currentText().toInt(), boxScaleType->currentIndex(),
                           btnInvert->isChecked());
+        if (prevBrk.enabled) {
+            const double lo = std::min(start, end);
+            const double hi = std::max(start, end);
+            if (lo < prevBrk.breakFrom && prevBrk.breakFrom < prevBrk.breakTo && prevBrk.breakTo < hi)
+                d_graph->setAxisBreak(a, prevBrk);
+        }
         d_graph->notifyChanges();
     } else if (generalDialog.currentWidget() == gridPage) {
         updateGrid();
@@ -1495,6 +1646,7 @@ bool AxesDialog::updatePlot()
                  boxPrecision->value(), boxAngle->value(), baseline, formula,
                  boxAxisNumColor->color());
         d_graph->setAxisBackboneVisible(axis, boxAxisBackbone->isChecked());
+        applyTickLabelTransformFromUi();
     } else if (generalDialog.currentWidget() == (QWidget *)frame) {
         d_graph->setAxesLinewidth(boxAxesLinewidth->value());
         d_graph->changeTicksLength(boxMinorTicksLength->value(), boxMajorTicksLength->value());
@@ -1505,6 +1657,64 @@ bool AxesDialog::updatePlot()
         if (refLinesList && refLinesList->currentRow() >= 0)
             updateSelectedRefLineFromUi();
         d_graph->updateStatReferenceLines();
+    } else if (generalDialog.currentWidget() == axisBreakPage) {
+        int axisRow = axisBreakAxesList ? axisBreakAxesList->currentRow() : 0;
+        if (axisRow < 0)
+            axisRow = 0;
+        const int qwtAxis = Graph::mapToQwtAxis(axisRow);
+        if (!boxEnableAxisBreak->isChecked()) {
+            d_graph->clearAxisBreak(qwtAxis);
+        } else {
+            auto parseExpr = [](const QString &txt, double fallback, bool *okOut) -> double {
+                const QString trimmed = txt.trimmed();
+                if (trimmed.isEmpty()) {
+                    if (okOut)
+                        *okOut = true;
+                    return fallback;
+                }
+                bool numOk = false;
+                double v = QLocale::c().toDouble(trimmed, &numOk);
+                if (!numOk)
+                    v = trimmed.toDouble(&numOk);
+                if (numOk) {
+                    if (okOut)
+                        *okOut = true;
+                    return v;
+                }
+                try {
+                    MyParser parser;
+                    parser.SetExpr(trimmed.toUtf8().constData());
+                    v = parser.Eval();
+                    if (okOut)
+                        *okOut = std::isfinite(v);
+                    return v;
+                } catch (...) {
+                    if (okOut)
+                        *okOut = false;
+                    return fallback;
+                }
+            };
+
+            bool okFrom = false, okTo = false, okStepB = false, okStepA = false;
+            Graph::AxisBreakSpec spec;
+            spec.enabled = true;
+            spec.breakFrom = parseExpr(boxBreakFrom->text(), 0.0, &okFrom);
+            spec.breakTo = parseExpr(boxBreakTo->text(), 0.0, &okTo);
+            spec.positionPct = qBound(0.10, boxBreakPositionPct->value() / 100.0, 0.90);
+            spec.stepBefore = qMax(0.0, parseExpr(boxBreakStepBefore->text(), 0.0, &okStepB));
+            spec.stepAfter = qMax(0.0, parseExpr(boxBreakStepAfter->text(), 0.0, &okStepA));
+            spec.log10Before = (boxBreakTypeBefore->currentIndex() == 1);
+            spec.log10After = (boxBreakTypeAfter->currentIndex() == 1);
+
+            if (!okFrom || !okTo || !(spec.breakFrom < spec.breakTo) || !okStepB || !okStepA) {
+                QMessageBox::critical(this, tr("Error"),
+                                      tr("Break From:") + " < " + tr("Break To:"));
+                boxBreakFrom->setFocus();
+                return false;
+            }
+            d_graph->setAxisBreak(qwtAxis, spec);
+        }
+        d_graph->notifyChanges();
     }
 
     return true;
@@ -1599,6 +1809,8 @@ void AxesDialog::refreshGraphState()
         setTicksType(curAxisRow);
     }
     showGridOptions(axesGridList->currentRow());
+    if (axisBreakAxesList)
+        updateAxisBreakPage(axisBreakAxesList->currentRow() >= 0 ? axisBreakAxesList->currentRow() : 0);
 }
 
 int AxesDialog::mapToQwtAxisId()
@@ -1696,10 +1908,11 @@ void AxesDialog::updateScale()
     btnInvert->setChecked(sc_eng->testAttribute(QwtScaleEngine::Inverted));
 
     QwtScaleTransformation *tr = sc_eng->transformation();
-    boxScaleType->setCurrentIndex((int)tr->type());
+    const bool isLog10 = (tr && tr->type() == QwtScaleTransformation::Log10);
+    boxScaleType->setCurrentIndex(isLog10 ? 1 : 0);
 
     boxMinorValue->clear();
-    if (tr->type()) // log scale
+    if (isLog10) // log scale
         boxMinorValue->addItems(QStringList() << "0"
                                               << "2"
                                               << "4"
@@ -1894,6 +2107,8 @@ void AxesDialog::setCurrentScale(int axisPos)
     if (axis >= 0) {
         axesList->setCurrentRow(axis);
         axesTitlesList->setCurrentRow(axis);
+        if (axisBreakAxesList)
+            axisBreakAxesList->setCurrentRow(axis);
     }
 }
 
@@ -1978,10 +2193,22 @@ void AxesDialog::showAxisFormula(int axis)
 
 void AxesDialog::updateLabelsFormat(int)
 {
+    int a = mapToQwtAxisId();
+    if (d_graph && a >= 0 && a < QwtPlot::axisCnt) {
+        boxDivideFactor->blockSignals(true);
+        boxTickPrefix->blockSignals(true);
+        boxTickSuffix->blockSignals(true);
+        boxDivideFactor->setText(QString::number(d_graph->tickDivideFactor(a), 'g', 12));
+        boxTickPrefix->setText(d_graph->tickPrefix(a));
+        boxTickSuffix->setText(d_graph->tickSuffix(a));
+        boxDivideFactor->blockSignals(false);
+        boxTickPrefix->blockSignals(false);
+        boxTickSuffix->blockSignals(false);
+    }
+
     if (currentSelectedAxisType() != Graph::AxisType::Numeric)
         return;
 
-    int a = mapToQwtAxisId();
     int format = d_graph->plotWidget()->axisLabelFormat(a);
     boxFormat->setCurrentIndex(format);
     boxPrecision->setValue(d_graph->plotWidget()->axisLabelPrecision(a));
@@ -2085,9 +2312,22 @@ void AxesDialog::refreshReferenceLinesList()
         for (int i = 0; i < lines.size(); ++i) {
             const Graph::ReferenceLineSpec &sp = lines[i];
             const QString orientTag = (sp.orientation == 1) ? QString("[X] ") : QString("[Y] ");
+            QString dispStat = sp.statMode;
+            if (dispStat == "Mean")
+                dispStat = tr("Mean");
+            else if (dispStat == "Median")
+                dispStat = tr("Median");
+            else if (dispStat == "Mean+SD" || dispStat == "+SD")
+                dispStat = tr("+SD");
+            else if (dispStat == "Mean-SD" || dispStat == "-SD")
+                dispStat = tr("-SD");
+            else if (dispStat == "Min")
+                dispStat = tr("Min");
+            else if (dispStat == "Max")
+                dispStat = tr("Max");
             const QString modeText = sp.statMode.isEmpty()
                     ? QString::number(sp.value, 'g', 6)
-                    : QString("%1 (%2)").arg(sp.statMode).arg(sp.value, 0, 'g', 5);
+                    : QString("%1 (%2)").arg(dispStat).arg(sp.value, 0, 'g', 5);
             const QString lbl = sp.label.isEmpty()
                     ? (orientTag + modeText)
                     : (orientTag + modeText + " - " + sp.label);
@@ -2202,16 +2442,105 @@ void AxesDialog::clearAllRefLines()
     refreshReferenceLinesList();
 }
 
+void AxesDialog::updateAxisBreakPage(int row)
+{
+    if (!d_graph || !axisBreakAxesList)
+        return;
+    if (row < 0)
+        row = axisBreakAxesList->currentRow();
+    if (row < 0 || row >= 4)
+        row = 0;
+
+    const int qwtAxis = Graph::mapToQwtAxis(row);
+    const Graph::AxisBreakSpec spec = d_graph->axisBreak(qwtAxis);
+    const QwtScaleDiv *scDiv = d_graph->plotWidget() ? d_graph->plotWidget()->axisScaleDiv(qwtAxis) : nullptr;
+    double defFrom = 0.0, defTo = 0.0;
+    if (scDiv) {
+        const double lo = std::min(scDiv->lowerBound(), scDiv->upperBound());
+        const double hi = std::max(scDiv->lowerBound(), scDiv->upperBound());
+        defFrom = lo + 0.35 * (hi - lo);
+        defTo = lo + 0.65 * (hi - lo);
+    }
+
+    boxEnableAxisBreak->setChecked(spec.enabled);
+    boxBreakFrom->setText(QString::number(spec.enabled ? spec.breakFrom : defFrom, 'g', 10));
+    boxBreakTo->setText(QString::number(spec.enabled ? spec.breakTo : defTo, 'g', 10));
+    boxBreakPositionPct->setValue(qBound(10.0, spec.positionPct * 100.0, 90.0));
+    boxBreakStepBefore->setText(QString::number(spec.stepBefore, 'g', 10));
+    boxBreakStepAfter->setText(QString::number(spec.stepAfter, 'g', 10));
+    boxBreakTypeBefore->setCurrentIndex(spec.log10Before ? 1 : 0);
+    boxBreakTypeAfter->setCurrentIndex(spec.log10After ? 1 : 0);
+
+    const bool en = spec.enabled;
+    boxBreakFrom->setEnabled(en);
+    boxBreakTo->setEnabled(en);
+    boxBreakPositionPct->setEnabled(en);
+    boxBreakStepBefore->setEnabled(en);
+    boxBreakStepAfter->setEnabled(en);
+    boxBreakTypeBefore->setEnabled(en);
+    boxBreakTypeAfter->setEnabled(en);
+}
+
+void AxesDialog::applyTickLabelTransformFromUi()
+{
+    if (!d_graph)
+        return;
+    const int axis = mapToQwtAxisId();
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    double factor = 1.0;
+    const QString factorTxt = boxDivideFactor ? boxDivideFactor->text().trimmed() : QString();
+    if (!factorTxt.isEmpty()) {
+        bool ok = false;
+        double v = QLocale::c().toDouble(factorTxt, &ok);
+        if (!ok)
+            v = factorTxt.toDouble(&ok);
+        if (!ok) {
+            try {
+                MyParser parser;
+                parser.SetExpr(factorTxt.toUtf8().constData());
+                v = parser.Eval();
+                ok = std::isfinite(v);
+            } catch (...) {
+                ok = false;
+            }
+        }
+        if (ok && std::isfinite(v) && std::fabs(v) > 1e-300)
+            factor = v;
+    }
+
+    const QString pfx = boxTickPrefix ? boxTickPrefix->text() : QString();
+    const QString sfx = boxTickSuffix ? boxTickSuffix->text() : QString();
+    if (std::fabs(d_graph->tickDivideFactor(axis) - factor) > 1e-15
+        || d_graph->tickPrefix(axis) != pfx
+        || d_graph->tickSuffix(axis) != sfx) {
+        d_graph->setTickLabelTransform(axis, factor, pfx, sfx);
+    }
+}
+
 void AxesDialog::pageChanged(int page)
 {
     QWidget *pageWidget = generalDialog.widget(page);
-    if (lastPage == scalesPage && pageWidget == axesPage) {
-        axesTitlesList->setCurrentRow(axesList->currentRow());
-        lastPage = pageWidget;
-    } else if (lastPage == axesPage && pageWidget == scalesPage) {
-        axesList->setCurrentRow(axesTitlesList->currentRow());
-        lastPage = pageWidget;
+    int syncRow = -1;
+    if (lastPage == scalesPage && axesList)
+        syncRow = axesList->currentRow();
+    else if (lastPage == axesPage && axesTitlesList)
+        syncRow = axesTitlesList->currentRow();
+    else if (lastPage == axisBreakPage && axisBreakAxesList)
+        syncRow = axisBreakAxesList->currentRow();
+
+    if (syncRow >= 0) {
+        if (pageWidget == axesPage && axesTitlesList)
+            axesTitlesList->setCurrentRow(syncRow);
+        else if (pageWidget == scalesPage && axesList)
+            axesList->setCurrentRow(syncRow);
+        else if (pageWidget == axisBreakPage && axisBreakAxesList)
+            axisBreakAxesList->setCurrentRow(syncRow);
     }
+    if (pageWidget == axisBreakPage)
+        updateAxisBreakPage();
+    lastPage = pageWidget;
 }
 
 int AxesDialog::exec()
@@ -2219,6 +2548,8 @@ int AxesDialog::exec()
     axesList->setCurrentRow(0);
     axesGridList->setCurrentRow(0);
     axesTitlesList->setCurrentRow(0);
+    if (axisBreakAxesList)
+        axisBreakAxesList->setCurrentRow(0);
 
     setModal(true);
     show();

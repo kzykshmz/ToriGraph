@@ -33,6 +33,7 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QPainter>
+#include <cmath>
 #include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 
@@ -244,9 +245,17 @@ bool DataCurve::loadData()
         return false;
     }
 
+    d_applied_dx = 0.0;
+    d_applied_dy = 0.0;
+    if (d_norm01)
+        d_raw_y_backup = points[1];
     setData(points[0].data(), points[1].data(), points[0].size());
-    foreach (DataCurve *c, d_error_bars)
-        c->setData(points[0].data(), points[1].data(), points[0].size());
+    if (d_norm01 || std::fabs(d_stack_dx) > 0.0 || std::fabs(d_stack_dy) > 0.0) {
+        applyStackTransformToCurrentData();
+    } else {
+        foreach (DataCurve *c, d_error_bars)
+            c->setData(points[0].data(), points[1].data(), points[0].size());
+    }
 
     return true;
 }
@@ -435,10 +444,9 @@ int DataCurve::maskedPointCount() const
 void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,
                      int to) const
 {
-    PlotCurve::draw(painter, xMap, yMap, from, to);
-
-    if (!painter || !d_table || dataSize() <= 0)
+    if (!painter || dataSize() <= 0)
         return;
+
     const int n = dataSize();
     const int startIdx = qMax(0, from);
     const int endIdx = (to < 0) ? (n - 1) : qMin(to, n - 1);
@@ -446,14 +454,30 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
         return;
 
     bool anyMasked = false;
-    for (int i = startIdx; i <= endIdx; ++i) {
-        if (isPointMasked(i)) {
-            anyMasked = true;
-            break;
+    if (d_table) {
+        for (int i = startIdx; i <= endIdx; ++i) {
+            if (isPointMasked(i)) {
+                anyMasked = true;
+                break;
+            }
         }
     }
-    if (!anyMasked)
+
+    if (!anyMasked) {
+        PlotCurve::draw(painter, xMap, yMap, from, to);
         return;
+    }
+
+    int segStart = -1;
+    for (int i = startIdx; i <= endIdx + 1; ++i) {
+        const bool masked = (i > endIdx) || isPointMasked(i);
+        if (!masked && segStart < 0) {
+            segStart = i;
+        } else if (masked && segStart >= 0) {
+            PlotCurve::draw(painter, xMap, yMap, segStart, i - 1);
+            segStart = -1;
+        }
+    }
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -472,6 +496,146 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
         painter->drawLine(px - r + 1, py + r - 1, px + r - 1, py - r + 1);
     }
     painter->restore();
+}
+
+void PlotCurve::setStackOffset(double dx, double dy)
+{
+    if (!std::isfinite(dx))
+        dx = 0.0;
+    if (!std::isfinite(dy))
+        dy = 0.0;
+    d_stack_dx = dx;
+    d_stack_dy = dy;
+
+    const int n = dataSize();
+    if (n <= 0) {
+        d_applied_dx = dx;
+        d_applied_dy = dy;
+        return;
+    }
+
+    const double deltaX = dx - d_applied_dx;
+    const double deltaY = dy - d_applied_dy;
+    if (std::fabs(deltaX) <= 1e-15 && std::fabs(deltaY) <= 1e-15)
+        return;
+
+    QVector<double> xs(n);
+    QVector<double> ys(n);
+    for (int i = 0; i < n; ++i) {
+        xs[i] = x(i) + deltaX;
+        ys[i] = y(i) + deltaY;
+    }
+    setData(xs.data(), ys.data(), n);
+    d_applied_dx = dx;
+    d_applied_dy = dy;
+
+    if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
+        foreach (DataCurve *err, dc->errorBarsList()) {
+            if (err)
+                err->setData(xs.data(), ys.data(), n);
+        }
+    }
+}
+
+void PlotCurve::setStackNormalize01(bool normalize)
+{
+    if (d_norm01 == normalize)
+        return;
+
+    const int n = dataSize();
+    if (n <= 0) {
+        d_norm01 = normalize;
+        if (!normalize)
+            d_raw_y_backup.clear();
+        return;
+    }
+
+    QVector<double> xs(n);
+    QVector<double> ys(n);
+    for (int i = 0; i < n; ++i)
+        xs[i] = x(i) - d_applied_dx;
+
+    if (normalize) {
+        d_raw_y_backup.resize(n);
+        for (int i = 0; i < n; ++i)
+            d_raw_y_backup[i] = y(i) - d_applied_dy;
+        d_norm01 = true;
+        d_applied_dx = 0.0;
+        d_applied_dy = 0.0;
+        setData(xs.data(), d_raw_y_backup.data(), n);
+        applyStackTransformToCurrentData();
+    } else {
+        if (d_raw_y_backup.size() == n) {
+            for (int i = 0; i < n; ++i)
+                ys[i] = d_raw_y_backup[i] + d_stack_dy;
+        } else {
+            for (int i = 0; i < n; ++i)
+                ys[i] = (y(i) - d_applied_dy) + d_stack_dy;
+        }
+        for (int i = 0; i < n; ++i)
+            xs[i] += d_stack_dx;
+        d_norm01 = false;
+        d_raw_y_backup.clear();
+        setData(xs.data(), ys.data(), n);
+        d_applied_dx = d_stack_dx;
+        d_applied_dy = d_stack_dy;
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
+            foreach (DataCurve *err, dc->errorBarsList()) {
+                if (err)
+                    err->setData(xs.data(), ys.data(), n);
+            }
+        }
+    }
+}
+
+void PlotCurve::applyStackTransformToCurrentData()
+{
+    const int n = dataSize();
+    if (n <= 0)
+        return;
+
+    QVector<double> xs(n);
+    QVector<double> ys(n);
+    for (int i = 0; i < n; ++i) {
+        xs[i] = x(i) - d_applied_dx;
+        ys[i] = (d_norm01 && d_raw_y_backup.size() == n) ? d_raw_y_backup[i] : (y(i) - d_applied_dy);
+    }
+
+    if (d_norm01) {
+        if (d_raw_y_backup.size() != n)
+            d_raw_y_backup = ys;
+        double minY = 1e300;
+        double maxY = -1e300;
+        for (int i = 0; i < n; ++i) {
+            if (std::isfinite(ys[i])) {
+                if (ys[i] < minY)
+                    minY = ys[i];
+                if (ys[i] > maxY)
+                    maxY = ys[i];
+            }
+        }
+        const double span = (maxY > minY) ? (maxY - minY) : 0.0;
+        for (int i = 0; i < n; ++i) {
+            if (std::isfinite(ys[i]))
+                ys[i] = (span > 1e-300) ? ((ys[i] - minY) / span) : 0.0;
+        }
+    }
+
+    for (int i = 0; i < n; ++i) {
+        xs[i] += d_stack_dx;
+        ys[i] += d_stack_dy;
+    }
+
+    setData(xs.data(), ys.data(), n);
+    d_applied_dx = d_stack_dx;
+    d_applied_dy = d_stack_dy;
+
+    if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
+        foreach (DataCurve *err, dc->errorBarsList()) {
+            if (err)
+                err->setData(xs.data(), ys.data(), n);
+        }
+    }
 }
 
 QwtDoubleRect PlotCurve::boundingRect() const

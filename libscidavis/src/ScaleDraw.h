@@ -51,9 +51,25 @@ public:
 
     double transformValue(double value) const;
 
+    void setTickLabelTransform(double divideByFactor, const QString &prefix = QString(),
+                               const QString &suffix = QString());
+    double divideByFactor() const { return d_divide_factor; }
+    QString prefix() const { return d_prefix; }
+    QString suffix() const { return d_suffix; }
+
+    void setAxisBreakIndicator(bool enabled, double breakValue = 0.0)
+    {
+        d_break_enabled = enabled;
+        d_break_value = breakValue;
+        invalidateCache();
+    }
+    bool hasAxisBreakIndicator() const { return d_break_enabled; }
+    double axisBreakValue() const { return d_break_value; }
+
     virtual QwtText label(double value) const
     {
-        return QwtText(QLocale().toString(transformValue(value), d_fmt, d_prec));
+        return QwtText(d_prefix + QLocale().toString(transformValue(value), d_fmt, d_prec)
+                       + d_suffix);
     };
 
     void labelFormat(char &f, int &prec) const;
@@ -69,12 +85,18 @@ public:
 
 protected:
     void drawTick(QPainter *p, double value, int len) const;
+    void drawBackbone(QPainter *p) const override;
 
 private:
     QString formula_string;
     char d_fmt;
     int d_prec;
     int d_minTicks, d_majTicks;
+    double d_divide_factor;
+    QString d_prefix;
+    QString d_suffix;
+    bool d_break_enabled = false;
+    double d_break_value = 0.0;
 };
 
 class QwtTextScaleDraw : public ScaleDraw

@@ -337,7 +337,7 @@ void PlotDialog::initPageTab()
     boxPageUnit->addItem(QStringLiteral("px"), (int)MultiLayer::UnitPx);
     boxPageUnit->addItem(QStringLiteral("mm"), (int)MultiLayer::UnitMm);
     boxPageUnit->addItem(QStringLiteral("cm"), (int)MultiLayer::UnitCm);
-    boxPageUnit->addItem(QStringLiteral("inch"), (int)MultiLayer::UnitInch);
+    boxPageUnit->addItem(tr("inch"), (int)MultiLayer::UnitInch);
     gl->addWidget(boxPageUnit, 2, 1);
 
     gl->addWidget(new QLabel(tr("DPI")), 3, 0);
@@ -645,6 +645,13 @@ void PlotDialog::initLinePage()
     penWidget = new PenWidget(this, QPen());
     gl1->addWidget(penWidget, 1, 0, 1, 2);
 
+    gl1->addWidget(new QLabel(tr("Opacity (%):")), 2, 0);
+    boxLineOpacity = new QSpinBox();
+    boxLineOpacity->setRange(0, 100);
+    boxLineOpacity->setSuffix(" %");
+    boxLineOpacity->setValue(100);
+    gl1->addWidget(boxLineOpacity, 2, 1);
+
     fillGroupBox = new QGroupBox(tr("Fill area under curve"));
     fillGroupBox->setCheckable(true);
     QGridLayout *gl2 = new QGridLayout(fillGroupBox);
@@ -654,7 +661,13 @@ void PlotDialog::initLinePage()
     gl2->addWidget(new QLabel(tr("Pattern")), 1, 0);
     boxPattern = new PatternBox();
     gl2->addWidget(boxPattern, 1, 1);
-    gl2->setRowStretch(2, 1);
+    gl2->addWidget(new QLabel(tr("Opacity (%):")), 2, 0);
+    boxAreaOpacity = new QSpinBox();
+    boxAreaOpacity->setRange(0, 100);
+    boxAreaOpacity->setSuffix(" %");
+    boxAreaOpacity->setValue(100);
+    gl2->addWidget(boxAreaOpacity, 2, 1);
+    gl2->setRowStretch(3, 1);
 
     linePage = new QWidget();
     QHBoxLayout *hlayout = new QHBoxLayout(linePage);
@@ -664,7 +677,9 @@ void PlotDialog::initLinePage()
 
     connect(boxConnect, SIGNAL(activated(int)), this, SLOT(acceptParams()));
     connect(penWidget, SIGNAL(penChanged(QPen)), this, SLOT(acceptParams()));
+    connect(boxLineOpacity, SIGNAL(valueChanged(int)), this, SLOT(acceptParams()));
     connect(boxPattern, SIGNAL(activated(int)), this, SLOT(acceptParams()));
+    connect(boxAreaOpacity, SIGNAL(valueChanged(int)), this, SLOT(acceptParams()));
     connect(fillGroupBox, SIGNAL(toggled(bool)), this, SLOT(showAreaColor(bool)));
     connect(fillGroupBox, SIGNAL(clicked()), this, SLOT(acceptParams()));
 }
@@ -692,7 +707,13 @@ void PlotDialog::initSymbolsPage()
     boxPenWidth = new QSpinBox();
     boxPenWidth->setRange(1, 100);
     gl->addWidget(boxPenWidth, 4, 1);
-    gl->setRowStretch(5, 1);
+    gl->addWidget(new QLabel(tr("Opacity (%):")), 5, 0);
+    boxSymbolOpacity = new QSpinBox();
+    boxSymbolOpacity->setRange(0, 100);
+    boxSymbolOpacity->setSuffix(" %");
+    boxSymbolOpacity->setValue(100);
+    gl->addWidget(boxSymbolOpacity, 5, 1);
+    gl->setRowStretch(6, 1);
     gl->setColumnStretch(2, 1);
 
     symbolPage = new QWidget();
@@ -702,6 +723,7 @@ void PlotDialog::initSymbolsPage()
     privateTabWidget->addTab(symbolPage, tr("Symbol"));
 
     connect(boxSymbolStyle, SIGNAL(activated(int)), this, SLOT(acceptParams()));
+    connect(boxSymbolOpacity, SIGNAL(valueChanged(int)), this, SLOT(acceptParams()));
     connect(boxFillSymbol, SIGNAL(clicked()), this, SLOT(fillSymbols()));
 }
 
@@ -873,7 +895,6 @@ void PlotDialog::initPercentilePage()
     connect(boxMaxStyle, SIGNAL(activated(int)), this, SLOT(acceptParams()));
     connect(box99Style, SIGNAL(activated(int)), this, SLOT(acceptParams()));
     connect(box1Style, SIGNAL(activated(int)), this, SLOT(acceptParams()));
-    connect(box1Style, SIGNAL(activated(int)), this, SLOT(acceptParams()));
     connect(boxFillSymbols, SIGNAL(clicked()), this, SLOT(fillBoxSymbols()));
 }
 
@@ -996,7 +1017,6 @@ void PlotDialog::initErrorsPage()
     minusBox = new QCheckBox(tr("Minus"));
     vl->addWidget(minusBox);
     xBox = new QCheckBox(tr("&X Error Bar"));
-    vl->addWidget(xBox);
     vl->addWidget(xBox);
     vl->addStretch();
 
@@ -1751,11 +1771,17 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
     penWidget->blockSignals(true);
     penWidget->setPen(c->pen());
     penWidget->blockSignals(false);
+    boxLineOpacity->blockSignals(true);
+    boxLineOpacity->setValue(qRound(c->pen().color().alpha() * 100.0 / 255.0));
+    boxLineOpacity->blockSignals(false);
     fillGroupBox->blockSignals(true);
     fillGroupBox->setChecked(c->brush().style() != Qt::NoBrush);
     fillGroupBox->blockSignals(false);
     boxAreaColor->setColor(c->brush().color());
     boxPattern->setPattern(c->brush().style());
+    boxAreaOpacity->blockSignals(true);
+    boxAreaOpacity->setValue(qRound(c->brush().color().alpha() * 100.0 / 255.0));
+    boxAreaOpacity->blockSignals(false);
 
     // symbol page
     const QwtSymbol s = c->symbol();
@@ -1766,6 +1792,9 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
     boxFillSymbol->setChecked(s.brush() != Qt::NoBrush);
     boxFillColor->setEnabled(s.brush() != Qt::NoBrush);
     boxFillColor->setColor(s.brush().color());
+    boxSymbolOpacity->blockSignals(true);
+    boxSymbolOpacity->setValue(qRound(s.pen().color().alpha() * 100.0 / 255.0));
+    boxSymbolOpacity->blockSignals(false);
 
     if (curveType == Graph::VerticalBars || curveType == Graph::HorizontalBars
         || curveType == Graph::Histogram) { // spacing page
@@ -2018,25 +2047,40 @@ bool PlotDialog::acceptParams()
         else {
             int index = item->plotItemIndex();
             graph->setCurveStyle(index, boxConnect->currentIndex());
-            QBrush br = QBrush(boxAreaColor->color(), boxPattern->getSelectedPattern());
+            QColor areaCol = boxAreaColor->color();
+            areaCol.setAlpha(qRound(boxAreaOpacity->value() * 255.0 / 100.0));
+            QBrush br = QBrush(areaCol, boxPattern->getSelectedPattern());
             if (!fillGroupBox->isChecked())
                 br = QBrush();
             graph->setCurveBrush(index, br);
             QwtPlotCurve *curve = (QwtPlotCurve *)plotItem;
-            curve->setPen(penWidget->pen());
+            QPen pen = penWidget->pen();
+            QColor penCol = pen.color();
+            penCol.setAlpha(qRound(boxLineOpacity->value() * 255.0 / 100.0));
+            pen.setColor(penCol);
+            curve->setPen(pen);
+            graph->replot();
+            graph->notifyChanges();
         }
     } else if (privateTabWidget->currentWidget() == symbolPage) {
         if (boxSymbolStyle->selectedSymbol() == QwtSymbol::NoSymbol) // no symbol => line plot
             boxPlotType->setCurrentIndex(0);
         else {
             int size = 2 * boxSymbolSize->value() + 1;
-            QBrush br = QBrush(boxFillColor->color(), Qt::SolidPattern);
+            const int symAlpha = qRound(boxSymbolOpacity->value() * 255.0 / 100.0);
+            QColor fillCol = boxFillColor->color();
+            fillCol.setAlpha(symAlpha);
+            QBrush br = QBrush(fillCol, Qt::SolidPattern);
             if (!boxFillSymbol->isChecked())
                 br = QBrush();
-            QPen pen = QPen(boxSymbolColor->color(), boxPenWidth->value(), Qt::SolidLine);
+            QColor symEdgeCol = boxSymbolColor->color();
+            symEdgeCol.setAlpha(symAlpha);
+            QPen pen = QPen(symEdgeCol, boxPenWidth->value(), Qt::SolidLine);
             QwtSymbol s = QwtSymbol(boxSymbolStyle->selectedSymbol(), br, pen, QSize(size, size));
             QwtPlotCurve *curve = (QwtPlotCurve *)plotItem;
             curve->setSymbol(s);
+            graph->replot();
+            graph->notifyChanges();
         }
     } else if (privateTabWidget->currentWidget() == histogramPage) {
         QwtHistogram *h = (QwtHistogram *)plotItem;
