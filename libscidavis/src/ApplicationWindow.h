@@ -712,6 +712,38 @@ public slots:
     void repeatLinearFitForAllCurves();
     void repeatNormalizationForAllCurves();
     void showManageDialogThemes();
+
+    // Phase 4: OriginPro Page/Layer/Frame UX, Gadgets, Robust/Piecewise/MLR Fit, Signal, Stats & Digitizer
+    void showPageSetupDialog();
+    void fitPageToLayers();
+    void fitLayersToPage();
+    void togglePageViewMode();
+    void addLinkedTopRightLayer();
+    void addZoomInsetLayer();
+    void applyFrameBoxInward();
+    void applyFrameBoxPlain();
+    void applyFrameOpenL();
+    void applyFrameZeroCrossed();
+    void toggleGraphMiniToolbar(bool enabled);
+    void syncGraphPageAndToolbarMenuState();
+
+    void attachDifferentiateGadget();
+    void attachIntersectGadget();
+    void attachIntegrate2DGadget();
+
+    void showPiecewiseLinearFitDialog();
+    void showRobustLinearFitDialog();
+    void showCompareDatasetsFitDialog();
+    void showMultipleLinearRegressionDialog();
+
+    void showSavGolSmoothDerivativeDialog();
+    void showPeakEnvelopeAnalysisDialog();
+    void showDecimateResampleDialog();
+
+    void showNormalityTestDialog();
+    void showBlandAltmanPlotDialog();
+    void showTwoWayANOVAPlotDialog();
+    void showGraphDigitizerDialog();
     //@}
 
     //! \name Event Handlers
@@ -1185,6 +1217,7 @@ public:
     QMenu *advSignalMenu = nullptr;
     QMenu *graphStatsMenu = nullptr;
     QMenu *recalcMenu = nullptr;
+    QMenu *framePresetsMenu = nullptr;
 
 protected:
     //! Show a context menu for the widget
@@ -1338,6 +1371,20 @@ private:
             *actionRecalcDisabled = nullptr, *actionRecalculateNow = nullptr,
             *actionRepeatLinearFitAll = nullptr, *actionRepeatNormalizeAll = nullptr,
             *actionManageDialogThemes = nullptr;
+    QAction *actionPageSetup = nullptr, *actionFitPageToLayers = nullptr,
+            *actionFitLayersToPage = nullptr, *actionTogglePageView = nullptr,
+            *actionAddLinkedLayer = nullptr, *actionAddInsetLayer = nullptr,
+            *actionFrameBoxInward = nullptr, *actionFrameBoxPlain = nullptr,
+            *actionFrameOpenL = nullptr, *actionFrameZeroCrossed = nullptr,
+            *actionToggleMiniToolbar = nullptr;
+    QAction *actionGadgetDifferentiate = nullptr, *actionGadgetIntersect = nullptr,
+            *actionGadgetIntegrate2D = nullptr;
+    QAction *actionPiecewiseLinearFit = nullptr, *actionRobustLinearFit = nullptr,
+            *actionCompareDatasetsFit = nullptr, *actionMultipleLinearRegression = nullptr;
+    QAction *actionSavGolSmoothDerivative = nullptr, *actionPeakEnvelope = nullptr,
+            *actionDecimateResample = nullptr;
+    QAction *actionNormalityTest = nullptr, *actionBlandAltman = nullptr,
+            *actionTwoWayANOVA = nullptr, *actionGraphDigitizer = nullptr;
     QWidget *d_explorer_container = nullptr;
     QLineEdit *d_explorer_search = nullptr;
     QComboBox *d_explorer_type_filter = nullptr;
