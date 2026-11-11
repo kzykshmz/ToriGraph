@@ -2179,22 +2179,22 @@ void ApplicationWindow::initMainMenu()
     colorPaletteMenu = new QMenu(this);
     colorPaletteMenu->setFont(appFont);
     colorPaletteMenu->setTitle(tr("Apply Color &Palette"));
-    const QStringList presetPalettes = {
-        "ISIJ / Origin Default",
-        "Origin Classic",
-        "Viridis",
-        "Plasma",
-        "Inferno",
-        "CoolWarm",
-        "Nature (NPG)",
-        "Science (AAAS)",
-        "Okabe-Ito (Colorblind Safe)",
-        "Monochrome / Grayscale"
+    static const char *const presetPalettes[] = {
+        QT_TR_NOOP("ISIJ / Origin Default"),
+        QT_TR_NOOP("Origin Classic"),
+        QT_TR_NOOP("Viridis"),
+        QT_TR_NOOP("Plasma"),
+        QT_TR_NOOP("Inferno"),
+        QT_TR_NOOP("CoolWarm"),
+        QT_TR_NOOP("Nature (NPG)"),
+        QT_TR_NOOP("Science (AAAS)"),
+        QT_TR_NOOP("Okabe-Ito (Colorblind Safe)"),
+        QT_TR_NOOP("Monochrome / Grayscale")
     };
-    for (const QString &palName : presetPalettes) {
+    for (const char *palName : presetPalettes) {
         QAction *palAct = colorPaletteMenu->addAction(
-                tr(palName.toUtf8().constData()), this, SLOT(applyColorPaletteByAction()));
-        palAct->setData(palName);
+                tr(palName), this, SLOT(applyColorPaletteByAction()));
+        palAct->setData(QString::fromUtf8(palName));
     }
     colorPaletteMenu->addSeparator();
     colorPaletteMenu->addAction(actionColorPaletteEditor);
@@ -18567,12 +18567,12 @@ void ApplicationWindow::dropFolderItems(QTreeWidgetItem *dest)
             Folder *f = ((FolderListItem *)it)->folder();
             FolderListItem *src = f->folderListItem();
             if (dest_f == f) {
-                QMessageBox::critical(this, "Error", tr("Cannot move an object to itself!"));
+                QMessageBox::critical(this, tr("Error"), tr("Cannot move an object to itself!"));
                 return;
             }
 
             if (((FolderListItem *)dest)->isChildOf(src)) {
-                QMessageBox::critical(this, "Error",
+                QMessageBox::critical(this, tr("Error"),
                                       tr("Cannot move a parent folder into a child folder!"));
                 draggedItems.clear();
                 folders.setCurrentItem(current_folder->folderListItem());
@@ -19589,17 +19589,17 @@ void ApplicationWindow::calculatePolygonLoopArea()
     updateLog(report);
     if (d_status_info) {
         d_status_info->setText(
-                QString("%1: |Area| = %2, Arc Length = %3")
+                tr("%1: |Area| = %2, Arc Length = %3")
                         .arg(targetCurve, QString::number(areaAbs, 'g', 6),
                              QString::number(arcLen, 'g', 6)));
     }
     if (!m_batch) {
-        QMessageBox::information(this, tr("Polygon / Hysteresis Loop Area & Arc Length"),
-                                 QString("%1: %2\n\n|Area| = %3\nSigned Area = %4\nArc Length = %5")
-                                         .arg(tr("Target Curve:"), targetCurve,
-                                              QString::number(areaAbs, 'g', fit_output_precision),
-                                              QString::number(areaSigned, 'g', fit_output_precision),
-                                              QString::number(arcLen, 'g', fit_output_precision)));
+        QMessageBox::information(
+                this, tr("Polygon / Hysteresis Loop Area & Arc Length"),
+                tr("Target Curve: %1\n\n|Area| = %2\nSigned Area = %3\nArc Length = %4")
+                        .arg(targetCurve, QString::number(areaAbs, 'g', fit_output_precision),
+                             QString::number(areaSigned, 'g', fit_output_precision),
+                             QString::number(arcLen, 'g', fit_output_precision)));
     }
 }
 

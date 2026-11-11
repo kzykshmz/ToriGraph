@@ -87,10 +87,11 @@ ImportOPJ::ImportOPJ(ApplicationWindow *app, const QString &filename, const QStr
     setCodec(codec);
     xoffset = 0;
     try {
-        mw->setStatusBarText(QString("Import start ..."));
+        mw->setStatusBarText(QObject::tr("Import start ..."));
         OriginFile opj((const char *)filename.toLocal8Bit());
         parse_error = opj.parse();
-        mw->setStatusBarText(QString("... file parsed. Starting conversion to SciDAVis ..."));
+        mw->setStatusBarText(
+                QObject::tr("... file parsed. Starting conversion to SciDAVis ..."));
         importTables(opj);
         importGraphs(opj);
         importNotes(opj);
@@ -100,7 +101,8 @@ ImportOPJ::ImportOPJ(ApplicationWindow *app, const QString &filename, const QStr
         mw->showResults(opj.resultsLogString().c_str(), mw->logWindow.isVisible());
     } catch (const std::logic_error &er) {
         QApplication::restoreOverrideCursor();
-        QMessageBox::critical(mw, "Origin Project Import Error", QString(er.what()));
+        QMessageBox::critical(mw, QObject::tr("Origin Project Import Error"),
+                              QObject::tr(er.what()));
     }
 }
 
@@ -499,7 +501,7 @@ bool ImportOPJ::importTables(const OriginFile &opj)
     int SciDAVis_scaling_factor = 10; // in Origin width is measured in characters while in SciDAVis
                                       // - pixels --- need to be accurate
     for (unsigned int s = 0; s < opj.spreadCount(); ++s) {
-        mw->setStatusBarText(QString("Spreadsheet %1 / %2").arg(s + 1).arg(opj.spreadCount()));
+        mw->setStatusBarText(QObject::tr("Spreadsheet %1 / %2").arg(s + 1).arg(opj.spreadCount()));
         Origin::SpreadSheet spread = opj.spread(s);
         int columnCount = spread.columns.size();
         if (!columnCount) // remove tables without cols
@@ -510,7 +512,7 @@ bool ImportOPJ::importTables(const OriginFile &opj)
     for (unsigned int s = 0; s < opj.excelCount(); ++s) {
         Origin::Excel excelwb = opj.excel(s);
         for (unsigned int j = 0; j < excelwb.sheets.size(); ++j) {
-            mw->setStatusBarText(QString("Excel %1 / %2, sheet %3 / %4")
+            mw->setStatusBarText(QObject::tr("Excel %1 / %2, sheet %3 / %4")
                                          .arg(s + 1)
                                          .arg(opj.excelCount())
                                          .arg(j + 1)
@@ -537,7 +539,7 @@ bool ImportOPJ::importTables(const OriginFile &opj)
             Origin::MatrixSheet &layer = matrix.sheets[l];
             int columnCount = layer.columnCount;
             int rowCount = layer.rowCount;
-            mw->setStatusBarText(QString("Matrix %1 / %2, sheet %3 / %4")
+            mw->setStatusBarText(QObject::tr("Matrix %1 / %2, sheet %3 / %4")
                                          .arg(s + 1)
                                          .arg(opj.matrixCount())
                                          .arg(l + 1)
@@ -646,7 +648,7 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
         ml->setWindowLabel(decodeMbcs(_graph.label.c_str()));
         unsigned int layers = _graph.layers.size();
         for (unsigned int l = 0; l < layers; ++l) {
-            mw->setStatusBarText(QString("Graph %1 / %2, layer %3 / %4")
+            mw->setStatusBarText(QObject::tr("Graph %1 / %2, layer %3 / %4")
                                          .arg(g + 1)
                                          .arg(opj.graphCount())
                                          .arg(l + 1)

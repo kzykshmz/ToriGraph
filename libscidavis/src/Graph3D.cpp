@@ -79,7 +79,8 @@ double UserFunction::operator()(double x, double y)
         parser.SetExpr(formula);
         result = parser.Eval();
     } catch (mu::ParserError &e) {
-        QMessageBox::critical(0, "Input function error", QStringFromString(e.GetMsg()));
+        QMessageBox::critical(0, QObject::tr("Input function error"),
+                              QStringFromString(e.GetMsg()));
     }
     return result;
 }
@@ -128,7 +129,7 @@ void Graph3D::initPlot()
     titleCol = QColor(Qt::black);
     sp->setTitleColor(Qt2GL(titleCol));
 
-    titleFnt = QFont("Times New Roman", 14);
+    titleFnt = QFont("Arial", 14);
     titleFnt.setBold(true);
 
     sp->setTitleFont(titleFnt.family(), titleFnt.pointSize(), titleFnt.weight(), titleFnt.italic());
@@ -149,6 +150,8 @@ void Graph3D::initPlot()
     sp->showColorLegend(legendOn);
     sp->legend()->setAutoScale(true);
     sp->legend()->setMajors(legendMajorTicks);
+    sp->legend()->setNumberFont(QFont("Arial", 10));
+    sp->legend()->setTitleFont("Arial", 10, QFont::Bold);
 
     labelsDist = 0;
 
@@ -210,6 +213,8 @@ void Graph3D::initCoord()
     labels << s;
 
     sp->setCoordinateStyle(BOX);
+    sp->coordinates()->setNumberFont(QFont("Arial", 12));
+    sp->coordinates()->setLabelFont(QFont("Arial", 12, QFont::Bold));
     sp->coordinates()->setAutoScale(false);
 }
 
@@ -786,7 +791,11 @@ QFont Graph3D::numbersFont()
 
 void Graph3D::setNumbersFont(const QFont &font)
 {
-    sp->coordinates()->setNumberFont(font);
+    QFont fnt = font;
+    if (fnt.family().trimmed().isEmpty())
+        fnt.setFamily("Arial");
+    sp->coordinates()->setNumberFont(fnt);
+    sp->legend()->setNumberFont(fnt);
     sp->makeCurrent();
     sp->update();
 }
@@ -794,7 +803,10 @@ void Graph3D::setNumbersFont(const QFont &font)
 void Graph3D::setNumbersFont(const QStringList &lst)
 {
     QFont fnt = QFont(lst[1], lst[2].toInt(), lst[3].toInt(), lst[4].toInt());
+    if (fnt.family().trimmed().isEmpty())
+        fnt.setFamily("Arial");
     sp->coordinates()->setNumberFont(fnt);
+    sp->legend()->setNumberFont(fnt);
 }
 
 void Graph3D::setXAxisLabelFont(const QFont &fnt)
@@ -1612,6 +1624,7 @@ void Graph3D::scaleFonts(double factor)
     QFont font = sp->coordinates()->axes[X1].numberFont();
     font.setPointSizeF(font.pointSizeF() * factor);
     sp->coordinates()->setNumberFont(font);
+    sp->legend()->setNumberFont(font);
 
     titleFnt.setPointSizeF(factor * titleFnt.pointSizeF());
     sp->setTitleFont(titleFnt.family(), titleFnt.pointSize(), titleFnt.weight(), titleFnt.italic());

@@ -46,7 +46,7 @@
 #include <QXmlStreamWriter>
 #include <QtDebug>
 
-#define NOT_IMPL (QMessageBox::information(0, "info", "not yet implemented"))
+#define NOT_IMPL (QMessageBox::information(0, QObject::tr("info"), QObject::tr("not yet implemented")))
 
 class Project::Private
 {

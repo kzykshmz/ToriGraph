@@ -596,8 +596,10 @@ public:
                 }
             }
 
-            QString titleSuffix = m_payload.targetWindow.isEmpty() ? QStringLiteral("Embedded Graph") : m_payload.targetWindow;
-            mw->setWindowTitle(QStringLiteral("ToriGraph - %1 [PowerPoint OLE]").arg(titleSuffix));
+            QString titleSuffix = m_payload.targetWindow.isEmpty()
+                    ? QObject::tr("Embedded Graph")
+                    : m_payload.targetWindow;
+            mw->setWindowTitle(QObject::tr("ToriGraph - %1 [PowerPoint OLE]").arg(titleSuffix));
             mw->setOleEmbeddedMode(true);
 
             mw->setOleEmbeddedCallbacks(

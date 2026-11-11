@@ -128,6 +128,8 @@ static bool relErrWithin(double actual, double expected, double tolRatio = 0.02)
     return std::fabs(actual - expected) / denom <= tolRatio;
 }
 
+static int runSuite36Round3SurgicalZero(ApplicationWindow *mw);
+
 int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
@@ -5240,8 +5242,11 @@ int main(int argc, char **argv)
         mw->switchToLanguage("en");
     }
 
+    if (runSuite36Round3SurgicalZero(mw) != 0)
+        return 1;
+
     mw->savedProject();
-    std::cout << "[PASS] All 35 ToriGraph OriginPro Parity, Round 2 P0/P1 Regression Gate, 2D Image Profile & Matrix Filter, EIS/FSD/Passing-Bablok, Colorbar/RGBA-EMF/FrameOpenL, Japanese Zero-Miss Localization, Arial Font, and OLE suites passed!\n";
+    std::cout << "[PASS] All 36 ToriGraph OriginPro Parity, Round 2 & Round 3 Surgical Zero Gate, 2D Image Profile & Matrix Filter, EIS/FSD/Passing-Bablok, Colorbar/RGBA-EMF/FrameOpenL, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -5257,5 +5262,230 @@ int main(int argc, char **argv)
     mw->setOleEmbeddedMode(true);
     delete mw;
     SciDAVisOle::shutdownOleServer();
+    return 0;
+}
+
+#include "Graph3D.h"
+#include "MyParser.h"
+
+static int runSuite36Round3SurgicalZero(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 36: Round 3 Surgical Zero Gate (tr(var)/QMessageBox JA, 3D Arial, Diamond DFS, Overlay Dtor, AutoAxisTitles)...\n";
+
+    auto hasJapaneseChars = [](const QString &s) {
+        for (const QChar &ch : s) {
+            if (ch.unicode() >= 0x3000)
+                return true;
+        }
+        return false;
+    };
+
+    // 1. Runtime Japanese verification for all Round 3 newly wrapped tr(var), QMessageBox, StatusBar, NonLinearFit & MyParser strings
+    mw->switchToLanguage("ja");
+    {
+        struct CtxStr {
+            const char *ctx;
+            const char *src;
+        };
+        static const CtxStr r3Checks[] = {
+            // RoiGadgetTool fitModels[] (QT_TR_NOOP + tr(fi.label))
+            { "RoiGadgetTool", "Linear" },
+            { "RoiGadgetTool", "Polynomial (Order 2)" },
+            { "RoiGadgetTool", "Gaussian" },
+            { "RoiGadgetTool", "Lorentzian" },
+            { "RoiGadgetTool", "Exponential Decay (ExpDec1)" },
+            { "RoiGadgetTool", "Boltzmann Sigmoidal" },
+            // ApplicationWindow calculatePolygonLoopArea & presetPalettes[]
+            { "ApplicationWindow", "%1: |Area| = %2, Arc Length = %3" },
+            { "ApplicationWindow", "Target Curve: %1\n\n|Area| = %2\nSigned Area = %3\nArc Length = %4" },
+            { "ApplicationWindow", "Error" },
+            { "ApplicationWindow", "ISIJ / Origin Default" },
+            { "ApplicationWindow", "Origin Classic" },
+            { "ApplicationWindow", "Viridis" },
+            { "ApplicationWindow", "Plasma" },
+            { "ApplicationWindow", "Inferno" },
+            { "ApplicationWindow", "CoolWarm" },
+            { "ApplicationWindow", "Nature (NPG)" },
+            { "ApplicationWindow", "Science (AAAS)" },
+            { "ApplicationWindow", "Okabe-Ito (Colorblind Safe)" },
+            { "ApplicationWindow", "Monochrome / Grayscale" },
+            // Legacy QMessageBox & StatusBar strings (#103 Section 1.3)
+            { "QObject", "Input function error" },
+            { "QObject", "Origin Project Import Error" },
+            { "QObject", "Import start ..." },
+            { "QObject", "... file parsed. Starting conversion to SciDAVis ..." },
+            { "QObject", "Spreadsheet %1 / %2" },
+            { "QObject", "Excel %1 / %2, sheet %3 / %4" },
+            { "QObject", "Matrix %1 / %2, sheet %3 / %4" },
+            { "QObject", "info" },
+            { "QObject", "not yet implemented" },
+            { "QObject", "Embedded Graph" },
+            { "QObject", "ToriGraph - %1 [PowerPoint OLE]" },
+            { "LineProfileTool", "Pixel selection warning" },
+            { "LineProfileTool", "Please select an image marker first." },
+            { "LineProfileTool", "Please select the end line point inside the image rectangle!" }
+        };
+
+        int misses = 0;
+        const int nChecks = int(sizeof(r3Checks) / sizeof(r3Checks[0]));
+        for (int i = 0; i < nChecks; ++i) {
+            const QString src = QString::fromUtf8(r3Checks[i].src);
+            const QString ja = QCoreApplication::translate(r3Checks[i].ctx, r3Checks[i].src);
+            if (ja.isEmpty() || ja == src || !hasJapaneseChars(ja)) {
+                ++misses;
+                std::cerr << "[MISS-R3] translate('" << r3Checks[i].ctx << "', '" << r3Checks[i].src
+                          << "') -> '" << ja.toUtf8().constData() << "'\n";
+            }
+        }
+
+        // Check all 58 NonLinearFit builtInModelDescription(name) entries
+        const QStringList nlModels = NonLinearFit::builtInModelNames();
+        CHECK_COND(!nlModels.isEmpty(), "NonLinearFit::builtInModelNames() empty");
+        for (const QString &mName : nlModels) {
+            const QString descJa = NonLinearFit::builtInModelDescription(mName);
+            if (descJa.isEmpty() || !hasJapaneseChars(descJa)) {
+                ++misses;
+                std::cerr << "[MISS-NLF] builtInModelDescription('" << mName.toUtf8().constData()
+                          << "') -> '" << descJa.toUtf8().constData() << "'\n";
+            }
+        }
+
+        // Check all MyParser::explainFunction(i) entries
+        const QStringList parserFuncs = MyParser::functionsList();
+        CHECK_COND(!parserFuncs.isEmpty(), "MyParser::functionsList() empty");
+        for (int i = 0; i < parserFuncs.size(); ++i) {
+            const QString expJa = MyParser::explainFunction(i);
+            if (expJa.isEmpty() || !hasJapaneseChars(expJa)) {
+                ++misses;
+                std::cerr << "[MISS-PARSER] explainFunction(" << i << ") -> '"
+                          << expJa.toUtf8().constData() << "'\n";
+            }
+        }
+
+        std::cout << "[INFO] Suite 36 JA runtime verified: explicit=" << nChecks
+                  << ", nlModels=" << nlModels.size()
+                  << ", parserFuncs=" << parserFuncs.size()
+                  << ", misses=" << misses << "\n";
+        CHECK_COND(misses == 0, "Suite 36 runtime Japanese translation had misses!");
+    }
+
+    // 2. 3D Plot & 3D Colorbar "Arial" Default Font Enforcement (#103 Section 2) (tested right inside JA mode too!)
+    {
+        Qwt3D::ColorLegend standaloneLegend;
+        CHECK_COND(standaloneLegend.numberFont().family() == "Arial",
+                   "Qwt3D::ColorLegend default numberFont must be Arial");
+
+        Graph3D *rawG3D = new Graph3D("");
+        CHECK_COND(rawG3D->titleFont().family() == "Arial",
+                   "Raw Graph3D default titleFont must be Arial");
+        CHECK_COND(rawG3D->numbersFont().family() == "Arial",
+                   "Raw Graph3D default numbersFont must be Arial");
+        CHECK_COND(rawG3D->xAxisLabelFont().family() == "Arial"
+                           && rawG3D->yAxisLabelFont().family() == "Arial"
+                           && rawG3D->zAxisLabelFont().family() == "Arial",
+                   "Raw Graph3D default axis label fonts must be Arial");
+        CHECK_COND(rawG3D->sp != nullptr
+                           && rawG3D->sp->legend()->numberFont().family() == "Arial",
+                   "Raw Graph3D sp->legend()->numberFont() must be Arial");
+        delete rawG3D;
+
+        Graph3D *appG3D = mw->newPlot3D();
+        CHECK_COND(appG3D != nullptr && appG3D->sp != nullptr, "mw->newPlot3D() returned null");
+        CHECK_COND(appG3D->titleFont().family() == "Arial"
+                           && appG3D->numbersFont().family() == "Arial"
+                           && appG3D->xAxisLabelFont().family() == "Arial"
+                           && appG3D->sp->legend()->numberFont().family() == "Arial",
+                   "ApplicationWindow::newPlot3D() in JA mode violated 3D Arial invariant!");
+
+        appG3D->setNumbersFont(QFont("Meiryo", 11));
+        CHECK_COND(appG3D->numbersFont().family() == "Meiryo"
+                           && appG3D->sp->legend()->numberFont().family() == "Meiryo"
+                           && appG3D->sp->legend()->numberFont().pointSize() == 11,
+                   "Graph3D::setNumbersFont failed to propagate font to 3D ColorLegend!");
+        appG3D->setNumbersFont(QFont("Arial", 10));
+        CHECK_COND(appG3D->sp->legend()->numberFont().family() == "Arial",
+                   "Graph3D::setNumbersFont failed to restore Arial on 3D ColorLegend!");
+    }
+    mw->switchToLanguage("en");
+
+    // 3. FitDialog::expandUserFunctions Diamond Topological Order & Cycle Guard (#102 P2.2 & #103 3.2)
+    {
+        const QString diamond2 = FitDialog::expandUserFunctions(
+                "a*f1 + b*f2",
+                QStringList() << "f1" << "f2",
+                QStringList() << "2*f2 + 1" << "x^2");
+        CHECK_COND(diamond2 == "f2=x^2\nf1=2*f2 + 1\na*f1 + b*f2",
+                   "expandUserFunctions failed 2-node diamond topological order!");
+
+        const QString diamond3 = FitDialog::expandUserFunctions(
+                "a*f1 + b*f2 + c*f3",
+                QStringList() << "f1" << "f2" << "f3",
+                QStringList() << "f2 + f3" << "f3 * x" << "sin(x)");
+        CHECK_COND(diamond3 == "f3=sin(x)\nf2=f3 * x\nf1=f2 + f3\na*f1 + b*f2 + c*f3",
+                   "expandUserFunctions failed 3-node diamond topological order!");
+
+        const QString cyclicRel = FitDialog::expandUserFunctions(
+                "a*f1",
+                QStringList() << "f1" << "f2",
+                QStringList() << "f1 = (x <= 0) ? f2 : 1" << "f2 = f1 + x");
+        CHECK_COND(cyclicRel.contains("(x <= 0) ? f2 : 1") && cyclicRel.endsWith("a*f1")
+                           && cyclicRel.size() < 120,
+                   "expandUserFunctions failed relational RHS + cycle guard!");
+        std::cout << "[INFO] Suite 36 expandUserFunctions(diamond3) = '"
+                  << QString(diamond3).replace('\n', "; ").toUtf8().constData() << "'\n";
+    }
+
+    // 4. ~ImageProfileOverlayItem() Destructor Nulling Guard (#102 P2.1 & #103 3.1)
+    {
+        Matrix *mProf = mw->newMatrix(8, 8);
+        mProf->setName("Suite36ProfMat");
+        for (int r = 0; r < 8; ++r)
+            for (int c = 0; c < 8; ++c)
+                mProf->setCell(r, c, double(r * c));
+        MultiLayer *mlProf = mw->plotColorMap(mProf);
+        Graph *gProf = mlProf->activeGraph();
+        ImageProfileGadgetTool *tool = ImageProfileGadgetTool::attach(gProf, mw);
+        CHECK_COND(tool != nullptr && gProf->activeTool() == tool,
+                   "ImageProfileGadgetTool::attach failed");
+        // Simulate Plot::clear() / detachItems deleting the overlay item before tool destruction
+        gProf->plotWidget()->detachItems(QwtPlotItem::Rtti_PlotUserItem + 704, true);
+        // Now destroying the tool via setActiveTool(nullptr) must not double-delete d_overlay_item
+        gProf->setActiveTool(nullptr);
+        CHECK_COND(gProf->activeTool() == nullptr, "gProf->setActiveTool(nullptr) failed");
+    }
+
+    // 5. Graph::restorePhase5Tag <ToriAutoAxisTitles> refreshes immediately when curves() > 0 (#103 3.3)
+    {
+        Table *tAuto = mw->newTable(6, 2, "Suite36AutoAxisTbl", "AutoAxis Restore Check");
+        tAuto->column(0)->setLongName("Temperature");
+        tAuto->column(0)->setUnits("K");
+        tAuto->column(1)->setLongName("Conductivity");
+        tAuto->column(1)->setUnits("S/m");
+        for (int r = 0; r < 6; ++r) {
+            tAuto->setCell(r, 0, 300.0 + r * 10.0);
+            tAuto->setCell(r, 1, 10.0 + r * 2.0);
+        }
+        MultiLayer *mlAuto = mw->multilayerPlot(
+                tAuto, QStringList() << (QString(tAuto->name()) + "_2"), Graph::LineSymbols);
+        Graph *gAuto = mlAuto->activeGraph();
+        CHECK_COND(gAuto != nullptr && gAuto->curves() > 0, "gAuto must have curves > 0");
+        gAuto->setAxisTitle(QwtPlot::xBottom, "Overridden Manual X");
+        gAuto->setAxisTitle(QwtPlot::yLeft, "Overridden Manual Y");
+        CHECK_COND(gAuto->plotWidget()->axisTitle(QwtPlot::xBottom).text() == "Overridden Manual X",
+                   "Manual X axis title override did not take effect");
+
+        const bool restored = gAuto->restorePhase5Tag(
+                "<ToriAutoAxisTitles unitFormat=\"ISIJSlash\" a0=\"1\" a1=\"1\" a2=\"1\" a3=\"1\">");
+        CHECK_COND(restored, "restorePhase5Tag(<ToriAutoAxisTitles>) returned false");
+        const QString xRestored = gAuto->plotWidget()->axisTitle(QwtPlot::xBottom).text();
+        const QString yRestored = gAuto->plotWidget()->axisTitle(QwtPlot::yLeft).text();
+        std::cout << "[INFO] Suite 36 restored AutoAxisTitles: X='"
+                  << xRestored.toUtf8().constData() << "', Y='"
+                  << yRestored.toUtf8().constData() << "'\n";
+        CHECK_COND(xRestored == "Temperature / K" && yRestored == "Conductivity / (S/m)"
+                           || (xRestored == "Temperature / K" && yRestored.startsWith("Conductivity / ")),
+                   "restorePhase5Tag(<ToriAutoAxisTitles>) did not refresh axis titles when curves() > 0!");
+    }
+
     return 0;
 }
