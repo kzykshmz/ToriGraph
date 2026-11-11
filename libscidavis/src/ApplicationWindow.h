@@ -47,6 +47,7 @@
 #include <QMenu>
 #include <QDockWidget>
 #include <QMdiArea>
+#include <QPointer>
 #include <QSettings>
 
 #ifdef _MSC_VER
@@ -59,6 +60,7 @@
 #include "SciDAVisObject.h"
 
 class QPixmap;
+class QDialog;
 class QCloseEvent;
 class QDropEvent;
 class QTimerEvent;
@@ -759,6 +761,7 @@ public slots:
     void showArrheniusPlotDialog();
     void showTaucPlotDialog();
     void showFillBetweenCurvesDialog();
+    void showStackOffsetsDialog();
     void showWaterfallStackOffsetDialog();
     void resetActiveGraphStackOffsets();
     void showWeibullPlotDialog();
@@ -767,6 +770,15 @@ public slots:
     void showPairedComparisonPlotDialog();
     void showCorrelationMatrixDialog();
     void showClusteringDialog();
+
+    // Round 2: High-DPI Page Copy, Auto-Axis-Title Sync, 2D Profile Gadget & Domain Analysis
+    void refreshAllGraphsAutoAxisTitles();
+    void copyPageAsHighDpiImage();
+    void attachImageProfileGadget();
+    void showMatrixFilter2DDialog();
+    void showFourierSelfDeconvolveDialog();
+    void showEISAnalyzerDialog();
+    void showPassingBablokDemingDialog();
     //@}
 
     //! \name Event Handlers
@@ -1420,6 +1432,10 @@ private:
     QAction *actionWeibullPlot = nullptr, *actionOutlierTest = nullptr,
             *actionNonparametricTests = nullptr, *actionPairedComparisonPlot = nullptr,
             *actionCorrelationMatrix = nullptr, *actionClustering = nullptr;
+    QAction *actionCopyPageImage = nullptr, *actionGadgetImageProfile = nullptr,
+            *actionMatrixFilter2D = nullptr, *actionFourierSelfDeconvolve = nullptr,
+            *actionEISAnalyzer = nullptr, *actionPassingBablokDeming = nullptr;
+    QPointer<QDialog> d_active_peak_analyzer_dlg;
     QToolButton *d_btn_style_presets_popup = nullptr;
     QWidget *d_explorer_container = nullptr;
     QLineEdit *d_explorer_search = nullptr;
@@ -1502,6 +1518,7 @@ private slots:
 
     void handleAspectAdded(const AbstractAspect *aspect, int index);
     void handleAspectAboutToBeRemoved(const AbstractAspect *aspect, int index);
+    void handleAspectDescriptionChanged(const AbstractAspect *aspect);
 protected slots:
     void lockToolbar(const bool status);
 };
