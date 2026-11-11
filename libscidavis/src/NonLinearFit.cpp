@@ -1529,36 +1529,38 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     }
 
     // Create Global Fit Summary Table
-    QString tblName = app->generateUniqueName(tr("GlobalFitSummary"));
-    int totalRows = M * P;
-    Table *tbl = app->newTable(tblName, totalRows, 7);
-    if (tbl) {
-        tbl->setHeader(QStringList() << tr("Dataset") << tr("Parameter") << tr("Shared")
-                                     << tr("Value") << tr("Error") << tr("Curve_R2")
-                                     << tr("Global_R2"));
-        tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
-        tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
-        tbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Text);
-        for (int c = 3; c < 7; ++c)
-            tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    if (summaryOut || !d_silent) {
+        QString tblName = app->generateUniqueName(tr("GlobalFitSummary"));
+        int totalRows = M * P;
+        Table *tbl = app->newTable(tblName, totalRows, 7);
+        if (tbl) {
+            tbl->setHeader(QStringList() << tr("Dataset") << tr("Parameter") << tr("Shared")
+                                         << tr("Value") << tr("Error") << tr("Curve_R2")
+                                         << tr("Global_R2"));
+            tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+            tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+            tbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Text);
+            for (int c = 3; c < 7; ++c)
+                tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
 
-        int rowIdx = 0;
-        for (int m = 0; m < M; ++m) {
-            for (int j = 0; j < P; ++j) {
-                bool isShared = (j < sharedFlags.size()) ? sharedFlags[j] : false;
-                tbl->column(0)->setTextAt(rowIdx, curveTitles[m]);
-                tbl->column(1)->setTextAt(rowIdx, d_param_names[j]);
-                tbl->column(2)->setTextAt(rowIdx, isShared ? QString("Yes") : QString("No"));
-                tbl->column(3)->setValueAt(rowIdx, fittedParams[size_t(m)][size_t(j)]);
-                tbl->column(4)->setValueAt(rowIdx, fittedErrors[size_t(m)][size_t(j)]);
-                tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
-                tbl->column(6)->setValueAt(rowIdx, globalR2);
-                ++rowIdx;
+            int rowIdx = 0;
+            for (int m = 0; m < M; ++m) {
+                for (int j = 0; j < P; ++j) {
+                    bool isShared = (j < sharedFlags.size()) ? sharedFlags[j] : false;
+                    tbl->column(0)->setTextAt(rowIdx, curveTitles[m]);
+                    tbl->column(1)->setTextAt(rowIdx, d_param_names[j]);
+                    tbl->column(2)->setTextAt(rowIdx, isShared ? QString("Yes") : QString("No"));
+                    tbl->column(3)->setValueAt(rowIdx, fittedParams[size_t(m)][size_t(j)]);
+                    tbl->column(4)->setValueAt(rowIdx, fittedErrors[size_t(m)][size_t(j)]);
+                    tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
+                    tbl->column(6)->setValueAt(rowIdx, globalR2);
+                    ++rowIdx;
+                }
             }
+            tbl->showNormal();
+            if (summaryOut)
+                *summaryOut = tbl;
         }
-        tbl->showNormal();
-        if (summaryOut)
-            *summaryOut = tbl;
     }
 
     return true;

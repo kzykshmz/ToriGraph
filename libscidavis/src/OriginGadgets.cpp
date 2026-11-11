@@ -9,9 +9,11 @@
 
 #include "ApplicationWindow.h"
 #include "Graph.h"
+#include "Matrix.h"
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "Spectrogram.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
@@ -19,6 +21,7 @@
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_item.h>
+#include <qwt_plot_spectrogram.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
 
@@ -310,9 +313,7 @@ static void drawReadoutBox(QPainter *painter, const QRect &canvasRect, const QPo
         return;
 
     painter->save();
-    QFont fnt = painter->font();
-    fnt.setFamily("Arial");
-    fnt.setPointSize(9);
+    QFont fnt("Arial", 9);
     fnt.setBold(false);
     painter->setFont(fnt);
 
@@ -362,6 +363,147 @@ static void drawReadoutBox(QPainter *painter, const QRect &canvasRect, const QPo
         curY += lineH;
     }
     painter->restore();
+}
+
+static QwtPlotSpectrogram *findSpectrogramOnGraph(Graph *g, Spectrogram **outSciSpec = nullptr)
+{
+    if (outSciSpec)
+        *outSciSpec = nullptr;
+    if (!g || !g->plotWidget())
+        return nullptr;
+
+    const QwtPlotItemList &items = g->plotWidget()->itemList();
+    for (QwtPlotItem *it : items) {
+        if (!it || !it->isVisible())
+            continue;
+        if (auto *sciSpec = dynamic_cast<Spectrogram *>(it)) {
+            if (outSciSpec)
+                *outSciSpec = sciSpec;
+            return sciSpec;
+        }
+        if (auto *qwtSpec = dynamic_cast<QwtPlotSpectrogram *>(it))
+            return qwtSpec;
+    }
+    return nullptr;
+}
+
+static double safeMatrixCell(Matrix *m, int r, int c)
+{
+    if (!m || r < 0 || c < 0 || r >= m->numRows() || c >= m->numCols())
+        return 0.0;
+    const double v = m->cell(r, c);
+    return std::isfinite(v) ? v : 0.0;
+}
+
+static double evalMatrixBilinear(Matrix *m, double x, double y)
+{
+    if (!m || m->numRows() <= 0 || m->numCols() <= 0)
+        return 0.0;
+
+    const int rows = m->numRows();
+    const int cols = m->numCols();
+    const double xs = m->xStart();
+    const double xe = m->xEnd();
+    const double ys = m->yStart();
+    const double ye = m->yEnd();
+
+    const double fc = (cols > 1 && std::fabs(xe - xs) > 1e-30)
+            ? std::clamp((x - xs) / (xe - xs), 0.0, 1.0) * double(cols - 1)
+            : 0.0;
+    const double fr = (rows > 1 && std::fabs(ye - ys) > 1e-30)
+            ? std::clamp((y - ys) / (ye - ys), 0.0, 1.0) * double(rows - 1)
+            : 0.0;
+
+    const int c0 = std::clamp(int(std::floor(fc)), 0, cols - 1);
+    const int c1 = std::min(cols - 1, c0 + 1);
+    const double tx = std::clamp(fc - double(c0), 0.0, 1.0);
+
+    const int r0 = std::clamp(int(std::floor(fr)), 0, rows - 1);
+    const int r1 = std::min(rows - 1, r0 + 1);
+    const double ty = std::clamp(fr - double(r0), 0.0, 1.0);
+
+    const double z00 = safeMatrixCell(m, r0, c0);
+    const double z01 = safeMatrixCell(m, r0, c1);
+    const double z10 = safeMatrixCell(m, r1, c0);
+    const double z11 = safeMatrixCell(m, r1, c1);
+
+    const double z0 = (1.0 - tx) * z00 + tx * z01;
+    const double z1 = (1.0 - tx) * z10 + tx * z11;
+    return (1.0 - ty) * z0 + ty * z1;
+}
+
+static void evalSavitzkyGolayAtPoint(const std::vector<double> &ux, const std::vector<double> &uy,
+                                     double xQuery, double &dydxOut, double &d2ydx2Out)
+{
+    dydxOut = 0.0;
+    d2ydx2Out = 0.0;
+    const int m = static_cast<int>(ux.size());
+    if (m < 2 || static_cast<int>(uy.size()) != m)
+        return;
+
+    if (m == 2) {
+        const double dx = ux[1] - ux[0];
+        dydxOut = (std::fabs(dx) > 1e-15) ? ((uy[1] - uy[0]) / dx) : 0.0;
+        d2ydx2Out = 0.0;
+        return;
+    }
+
+    auto it = std::lower_bound(ux.begin(), ux.end(), xQuery);
+    int nearIdx = 0;
+    if (it == ux.end()) {
+        nearIdx = m - 1;
+    } else if (it == ux.begin()) {
+        nearIdx = 0;
+    } else {
+        const int idxHi = static_cast<int>(std::distance(ux.begin(), it));
+        const int idxLo = idxHi - 1;
+        nearIdx = (std::fabs(ux[size_t(idxHi)] - xQuery) < std::fabs(ux[size_t(idxLo)] - xQuery))
+                ? idxHi
+                : idxLo;
+    }
+
+    const int W = std::min(m, 5);
+    const int start = std::clamp(nearIdx - W / 2, 0, m - W);
+    const int polyOrder = std::min(3, W - 1); // p=3 on 5 pts, p=2 on 3..4 pts -> exact for quadratics & cubics
+    const int nCoeffs = polyOrder + 1;
+
+    double h = 0.0;
+    for (int k = 0; k < W; ++k)
+        h = std::max(h, std::fabs(ux[size_t(start + k)] - xQuery));
+    if (h <= 1e-15)
+        return;
+
+    gsl_matrix *X = gsl_matrix_alloc(size_t(W), size_t(nCoeffs));
+    gsl_vector *Y = gsl_vector_alloc(size_t(W));
+    gsl_vector *C = gsl_vector_alloc(size_t(nCoeffs));
+    gsl_matrix *cov = gsl_matrix_alloc(size_t(nCoeffs), size_t(nCoeffs));
+    gsl_multifit_linear_workspace *ws = gsl_multifit_linear_alloc(size_t(W), size_t(nCoeffs));
+
+    for (int k = 0; k < W; ++k) {
+        const double u = (ux[size_t(start + k)] - xQuery) / h;
+        double upow = 1.0;
+        for (int j = 0; j < nCoeffs; ++j) {
+            gsl_matrix_set(X, size_t(k), size_t(j), upow);
+            upow *= u;
+        }
+        gsl_vector_set(Y, size_t(k), uy[size_t(start + k)]);
+    }
+
+    double chisq = 0.0;
+    if (gsl_multifit_linear(X, Y, C, cov, &chisq, ws) == GSL_SUCCESS) {
+        const double b1 = (nCoeffs > 1) ? gsl_vector_get(C, 1) : 0.0;
+        const double b2 = (nCoeffs > 2) ? gsl_vector_get(C, 2) : 0.0;
+        if (std::isfinite(b1))
+            dydxOut = b1 / h;
+        if (std::isfinite(b2))
+            d2ydx2Out = (2.0 * b2) / (h * h);
+    }
+
+    gsl_multifit_linear_free(ws);
+    gsl_matrix_free(cov);
+    gsl_vector_free(C);
+    gsl_vector_free(Y);
+    gsl_matrix_free(X);
 }
 
 } // anonymous namespace
@@ -566,6 +708,85 @@ public:
             }
         }
 
+        if (mode == RoiGadgetTool::Differentiate) {
+            if (d_owner->d_diff_preview_pts.size() >= 2) {
+                QPolygonF diffPx;
+                diffPx.reserve(d_owner->d_diff_preview_pts.size());
+                for (const QPointF &pt : d_owner->d_diff_preview_pts)
+                    diffPx.append(QPointF(xMap.transform(pt.x()), yMap.transform(pt.y())));
+                painter->setBrush(Qt::NoBrush);
+                painter->setPen(QPen(QColor(142, 36, 170), 2.0, Qt::SolidLine));
+                painter->drawPolyline(diffPx);
+            }
+            if (d_owner->d_has_diff_marker) {
+                const int mx = xMap.transform(d_owner->d_diff_max_x);
+                const int my = yMap.transform(d_owner->d_diff_max_y);
+                painter->setPen(QPen(QColor(142, 36, 170), 1.3, Qt::DashLine));
+                painter->drawLine(mx, pxRect.top(), mx, pxRect.bottom());
+                painter->drawLine(pxRect.left(), my, pxRect.right(), my);
+                painter->setBrush(QColor(255, 215, 0));
+                painter->setPen(QPen(QColor(142, 36, 170), 2.0));
+                painter->drawEllipse(QPoint(mx, my), 5, 5);
+            }
+        }
+
+        if (mode == RoiGadgetTool::Intersect && !d_owner->d_intersections.isEmpty()) {
+            QFont calloutFnt("Arial", 8, QFont::Bold);
+            painter->setFont(calloutFnt);
+            const QFontMetrics cfm(calloutFnt);
+            for (int k = 0; k < d_owner->d_intersections.size(); ++k) {
+                const auto &ir = d_owner->d_intersections[k];
+                const int ix = xMap.transform(ir.x);
+                const int iy = yMap.transform(ir.y);
+
+                QPolygon diamond;
+                diamond << QPoint(ix, iy - 6) << QPoint(ix + 6, iy) << QPoint(ix, iy + 6)
+                        << QPoint(ix - 6, iy);
+                painter->setBrush(QColor(0, 229, 255, 235));
+                painter->setPen(QPen(QColor(198, 40, 40), 1.8));
+                painter->drawPolygon(diamond);
+
+                if (k < 12) {
+                    const QString lbl =
+                            QString("(%1, %2)").arg(ir.x, 0, 'g', 5).arg(ir.y, 0, 'g', 5);
+                    const int tw = cfm.horizontalAdvance(lbl) + 8;
+                    const int th = cfm.height() + 4;
+                    int lx = ix + 8;
+                    int ly = iy - th - 4;
+                    if (lx + tw > canvasRect.right() - 2)
+                        lx = ix - tw - 8;
+                    if (ly < canvasRect.top() + 2)
+                        ly = iy + 6;
+                    const QRect pill(lx, ly, tw, th);
+                    painter->setBrush(QColor(255, 255, 255, 225));
+                    painter->setPen(QPen(QColor(198, 40, 40), 1.1));
+                    painter->drawRoundedRect(pill, 3.0, 3.0);
+                    painter->setPen(QColor(25, 25, 25));
+                    painter->drawText(pill.left() + 4, pill.top() + 2 + cfm.ascent(), lbl);
+                }
+            }
+        }
+
+        if (mode == RoiGadgetTool::Integrate2D && d_owner->d_has_2d_markers) {
+            const int cx = xMap.transform(d_owner->d_centroid_x);
+            const int cy = yMap.transform(d_owner->d_centroid_y);
+            painter->setPen(QPen(QColor(0, 120, 215), 1.4, Qt::DashLine));
+            painter->drawLine(cx - 10, cy, cx + 10, cy);
+            painter->drawLine(cx, cy - 10, cx, cy + 10);
+            painter->setBrush(QColor(255, 255, 255, 220));
+            painter->setPen(QPen(QColor(0, 120, 215), 2.0));
+            painter->drawEllipse(QPoint(cx, cy), 5, 5);
+
+            const int pkx = xMap.transform(d_owner->d_peak2d_x);
+            const int pky = yMap.transform(d_owner->d_peak2d_y);
+            QPolygon pkDia;
+            pkDia << QPoint(pkx, pky - 5) << QPoint(pkx + 5, pky) << QPoint(pkx, pky + 5)
+                  << QPoint(pkx - 5, pky);
+            painter->setBrush(QColor(255, 82, 82, 230));
+            painter->setPen(QPen(QColor(140, 0, 0), 1.4));
+            painter->drawPolygon(pkDia);
+        }
+
         // 3. Top-right live readout box above/inside ROI
         const QPoint anchor(pxRect.right(), std::max(canvasRect.top() + 4, pxRect.top() - 4));
         drawReadoutBox(painter, canvasRect, anchor, d_owner->d_summary_text, QColor(190, 130, 10),
@@ -635,8 +856,13 @@ void RoiGadgetTool::initDefaultRoi()
 
     Plot *plot = d_graph_guard->plotWidget();
     QwtPlotCurve *c = resolveTargetCurve();
-    const int xAxis = c ? c->xAxis() : int(QwtPlot::xBottom);
-    const int yAxis = c ? c->yAxis() : int(QwtPlot::yLeft);
+    Spectrogram *sciSpec = nullptr;
+    QwtPlotSpectrogram *qwtSpec = findSpectrogramOnGraph(d_graph_guard, &sciSpec);
+
+    const int xAxis = c ? c->xAxis() : (qwtSpec ? qwtSpec->xAxis() : int(QwtPlot::xBottom));
+    const int yAxis = c ? c->yAxis() : (qwtSpec ? qwtSpec->yAxis() : int(QwtPlot::yLeft));
+    if (!c && qwtSpec && d_overlay_item)
+        d_overlay_item->setAxis(xAxis, yAxis);
 
     double xMin = 0.0, xMax = 0.0, yMin = 0.0, yMax = 0.0;
     if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(xAxis)) {
@@ -648,7 +874,25 @@ void RoiGadgetTool::initDefaultRoi()
         yMax = std::max(yDiv->lowerBound(), yDiv->upperBound());
     }
 
-    if (c && c->dataSize() > 0) {
+    if (sciSpec && sciSpec->matrix()) {
+        Matrix *m = sciSpec->matrix();
+        const double mXMin = std::min(m->xStart(), m->xEnd());
+        const double mXMax = std::max(m->xStart(), m->xEnd());
+        const double mYMin = std::min(m->yStart(), m->yEnd());
+        const double mYMax = std::max(m->yStart(), m->yEnd());
+        if (d_mode == Integrate2D || !(xMax > xMin)) {
+            if (mXMax > mXMin) {
+                xMin = mXMin;
+                xMax = mXMax;
+            }
+        }
+        if (d_mode == Integrate2D || !(yMax > yMin)) {
+            if (mYMax > mYMin) {
+                yMin = mYMin;
+                yMax = mYMax;
+            }
+        }
+    } else if (c && c->dataSize() > 0) {
         if (!(xMax > xMin)) {
             xMin = c->minXValue();
             xMax = c->maxXValue();
@@ -778,12 +1022,357 @@ void RoiGadgetTool::recalculate()
     d_cluster_pts.clear();
     d_output_metrics.clear();
     d_fft_spectrum_pts.clear();
+    d_diff_rows.clear();
+    d_diff_preview_pts.clear();
+    d_intersections.clear();
     d_has_baseline = false;
     d_has_rise_markers = false;
     d_has_interp_marker = false;
     d_has_ec50_marker = false;
+    d_has_diff_marker = false;
+    d_has_2d_markers = false;
     d_primary_metric = 0.0;
     d_secondary_metric = 0.0;
+
+    const QRectF roi = d_roi_rect.normalized();
+
+    // Multi-curve Intersect mode inspects ALL visible curves on d_graph_guard
+    if (d_mode == Intersect) {
+        if (!d_graph_guard) {
+            d_secondary_metric = std::numeric_limits<double>::quiet_NaN();
+            d_summary_text = tr("ROI Intersect: No graph");
+            d_recalculating = false;
+            return;
+        }
+
+        struct Seg {
+            double x1, y1, x2, y2;
+        };
+        struct CurveSegSet {
+            QString title;
+            std::vector<Seg> segs;
+        };
+
+        std::vector<CurveSegSet> curveSets;
+        bool axisSynced = false;
+        for (int ci = 0; ci < d_graph_guard->curves(); ++ci) {
+            const int ctype = d_graph_guard->curveType(ci);
+            if (ctype == Graph::ErrorBars || ctype == Graph::Pie || ctype == Graph::Box)
+                continue;
+            QwtPlotCurve *c = d_graph_guard->curve(ci);
+            if (!c || !c->isVisible() || c->rtti() != QwtPlotItem::Rtti_PlotCurve
+                || c->dataSize() < 2)
+                continue;
+            if (!axisSynced && d_overlay_item) {
+                d_overlay_item->setAxis(c->xAxis(), c->yAxis());
+                axisSynced = true;
+            }
+
+            const DataCurve *dcCurve = dynamic_cast<const DataCurve *>(c);
+            CurveSegSet cs;
+            cs.title = c->title().text();
+            bool hasPrev = false;
+            double prevX = 0.0, prevY = 0.0;
+            const int mPts = c->dataSize();
+            for (int k = 0; k < mPts; ++k) {
+                if (dcCurve && dcCurve->isPointMasked(k)) {
+                    hasPrev = false;
+                    continue;
+                }
+                const double px = c->x(k);
+                const double py = c->y(k);
+                if (!std::isfinite(px) || !std::isfinite(py)) {
+                    hasPrev = false;
+                    continue;
+                }
+                if (hasPrev)
+                    cs.segs.push_back({ prevX, prevY, px, py });
+                prevX = px;
+                prevY = py;
+                hasPrev = true;
+            }
+            if (!cs.segs.empty())
+                curveSets.push_back(std::move(cs));
+        }
+
+        const double epsX = 1e-9 * std::max(1.0, roi.width());
+        const double epsY = 1e-9 * std::max(1.0, roi.height());
+        const double dupTolX = 1e-7 * std::max(1.0, roi.width());
+        const double dupTolY = 1e-7 * std::max(1.0, roi.height());
+        const double tolTU = 1e-9;
+
+        for (size_t a = 0; a < curveSets.size(); ++a) {
+            for (size_t b = a + 1; b < curveSets.size(); ++b) {
+                QVector<IntersectionRow> pairHits;
+                for (const Seg &sa : curveSets[a].segs) {
+                    const double saMinX = std::min(sa.x1, sa.x2);
+                    const double saMaxX = std::max(sa.x1, sa.x2);
+                    const double saMinY = std::min(sa.y1, sa.y2);
+                    const double saMaxY = std::max(sa.y1, sa.y2);
+                    if (saMaxX < roi.left() - epsX || saMinX > roi.right() + epsX
+                        || saMaxY < roi.top() - epsY || saMinY > roi.bottom() + epsY)
+                        continue;
+
+                    const double dx1 = sa.x2 - sa.x1;
+                    const double dy1 = sa.y2 - sa.y1;
+                    for (const Seg &sb : curveSets[b].segs) {
+                        const double sbMinX = std::min(sb.x1, sb.x2);
+                        const double sbMaxX = std::max(sb.x1, sb.x2);
+                        const double sbMinY = std::min(sb.y1, sb.y2);
+                        const double sbMaxY = std::max(sb.y1, sb.y2);
+                        if (sbMaxX < saMinX - epsX || sbMinX > saMaxX + epsX
+                            || sbMaxY < saMinY - epsY || sbMinY > saMaxY + epsY)
+                            continue;
+
+                        const double dx2 = sb.x2 - sb.x1;
+                        const double dy2 = sb.y2 - sb.y1;
+                        const double denom = dx1 * dy2 - dy1 * dx2;
+                        const double segScale =
+                                (std::fabs(dx1) + std::fabs(dy1)) * (std::fabs(dx2) + std::fabs(dy2));
+                        if (std::fabs(denom) <= 1e-13 * std::max(1.0, segScale))
+                            continue;
+
+                        const double qpx = sb.x1 - sa.x1;
+                        const double qpy = sb.y1 - sa.y1;
+                        const double t = (qpx * dy2 - qpy * dx2) / denom;
+                        const double u = (qpx * dy1 - qpy * dx1) / denom;
+                        if (t < -tolTU || t > 1.0 + tolTU || u < -tolTU || u > 1.0 + tolTU)
+                            continue;
+
+                        const double tc = std::clamp(t, 0.0, 1.0);
+                        const double ix = sa.x1 + tc * dx1;
+                        const double iy = sa.y1 + tc * dy1;
+                        if (ix < roi.left() - epsX || ix > roi.right() + epsX
+                            || iy < roi.top() - epsY || iy > roi.bottom() + epsY)
+                            continue;
+
+                        bool duplicate = false;
+                        for (const auto &eh : pairHits) {
+                            if (std::fabs(eh.x - ix) <= dupTolX
+                                && std::fabs(eh.y - iy) <= dupTolY) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate)
+                            pairHits.append({ curveSets[a].title, curveSets[b].title, ix, iy });
+                    }
+                }
+                for (const auto &ph : pairHits)
+                    d_intersections.append(ph);
+            }
+        }
+
+        std::stable_sort(d_intersections.begin(), d_intersections.end(),
+                         [](const IntersectionRow &lhs, const IntersectionRow &rhs) {
+                             if (std::fabs(lhs.x - rhs.x) > 1e-12)
+                                 return lhs.x < rhs.x;
+                             return lhs.y < rhs.y;
+                         });
+
+        d_primary_metric = double(d_intersections.size());
+        d_secondary_metric = d_intersections.isEmpty()
+                ? std::numeric_limits<double>::quiet_NaN()
+                : d_intersections.front().x;
+
+        d_output_metrics << qMakePair(QString("Intersection_Count"), d_primary_metric);
+        if (!d_intersections.isEmpty()) {
+            d_output_metrics << qMakePair(QString("First_X"), d_intersections.front().x)
+                             << qMakePair(QString("First_Y"), d_intersections.front().y);
+            d_summary_text = tr("Curve Intersection (N = %1)\nFirst: X = %2, Y = %3\n%4 × %5")
+                                     .arg(d_intersections.size())
+                                     .arg(d_intersections.front().x, 0, 'g', 6)
+                                     .arg(d_intersections.front().y, 0, 'g', 6)
+                                     .arg(d_intersections.front().curveA)
+                                     .arg(d_intersections.front().curveB);
+        } else {
+            d_summary_text = tr("Curve Intersection\n0 intersections in ROI");
+        }
+
+        if (d_app)
+            d_app->setStatusBarText(d_summary_text.simplified());
+        d_recalculating = false;
+        return;
+    }
+
+    // 2D Surface / Spectrogram / Matrix Integration mode
+    if (d_mode == Integrate2D) {
+        Spectrogram *sciSpec = nullptr;
+        QwtPlotSpectrogram *qwtSpec = findSpectrogramOnGraph(d_graph_guard, &sciSpec);
+        if (qwtSpec) {
+            if (d_overlay_item)
+                d_overlay_item->setAxis(qwtSpec->xAxis(), qwtSpec->yAxis());
+
+            Matrix *m = sciSpec ? sciSpec->matrix() : nullptr;
+            QRectF surfRect;
+            if (m && m->numRows() > 0 && m->numCols() > 0) {
+                surfRect = QRectF(QPointF(m->xStart(), m->yStart()),
+                                  QPointF(m->xEnd(), m->yEnd()))
+                                   .normalized();
+            } else {
+                const QwtDoubleRect br = qwtSpec->boundingRect();
+                surfRect = QRectF(br.left(), br.top(), br.width(), br.height()).normalized();
+            }
+
+            const QRectF dom = (surfRect.width() > 0.0 && surfRect.height() > 0.0)
+                    ? roi.intersected(surfRect)
+                    : roi;
+            if (dom.isEmpty() || dom.width() <= 0.0 || dom.height() <= 0.0) {
+                d_summary_text = tr("2D Integration\nROI outside matrix surface");
+                d_recalculating = false;
+                return;
+            }
+
+            auto evalZ = [&](double x, double y) -> double {
+                if (m && m->numRows() > 0 && m->numCols() > 0)
+                    return evalMatrixBilinear(m, x, y);
+                const double v = qwtSpec->data().value(x, y);
+                return std::isfinite(v) ? v : 0.0;
+            };
+
+            const double x0 = dom.left();
+            const double x1 = dom.right();
+            const double y0 = dom.top();
+            const double y1 = dom.bottom();
+
+            std::vector<double> gx;
+            std::vector<double> gy;
+            const int baseSub = 64;
+            gx.reserve(size_t(baseSub + (m ? m->numCols() : 0) + 4));
+            gy.reserve(size_t(baseSub + (m ? m->numRows() : 0) + 4));
+            for (int k = 0; k <= baseSub; ++k) {
+                gx.push_back(x0 + (x1 - x0) * double(k) / double(baseSub));
+                gy.push_back(y0 + (y1 - y0) * double(k) / double(baseSub));
+            }
+            if (m && m->numCols() > 1) {
+                const double xs = m->xStart(), xe = m->xEnd();
+                for (int c = 0; c < m->numCols(); ++c) {
+                    const double cx = xs + double(c) * (xe - xs) / double(m->numCols() - 1);
+                    if (cx > x0 && cx < x1)
+                        gx.push_back(cx);
+                }
+            }
+            if (m && m->numRows() > 1) {
+                const double ys = m->yStart(), ye = m->yEnd();
+                for (int r = 0; r < m->numRows(); ++r) {
+                    const double ry = ys + double(r) * (ye - ys) / double(m->numRows() - 1);
+                    if (ry > y0 && ry < y1)
+                        gy.push_back(ry);
+                }
+            }
+
+            auto sortDedup = [](std::vector<double> &vec, double span) {
+                std::sort(vec.begin(), vec.end());
+                std::vector<double> clean;
+                clean.reserve(vec.size());
+                const double tol = 1e-12 * std::max(1.0, span);
+                for (double v : vec) {
+                    if (clean.empty() || std::fabs(v - clean.back()) > tol)
+                        clean.push_back(v);
+                }
+                vec.swap(clean);
+            };
+            sortDedup(gx, x1 - x0);
+            sortDedup(gy, y1 - y0);
+
+            const size_t nx = gx.size();
+            const size_t ny = gy.size();
+            const double z00Corner = evalZ(x0, y0);
+            const double z10Corner = evalZ(x1, y0);
+            const double z01Corner = evalZ(x0, y1);
+            const double z11Corner = evalZ(x1, y1);
+
+            std::vector<double> zGrid(nx * ny, 0.0);
+            std::vector<double> zNetGrid(nx * ny, 0.0);
+            double zMax = -std::numeric_limits<double>::infinity();
+            double peakX = 0.5 * (x0 + x1);
+            double peakY = 0.5 * (y0 + y1);
+
+            for (size_t j = 0; j < ny; ++j) {
+                const double beta = (y1 > y0) ? ((gy[j] - y0) / (y1 - y0)) : 0.0;
+                for (size_t i = 0; i < nx; ++i) {
+                    const double alpha = (x1 > x0) ? ((gx[i] - x0) / (x1 - x0)) : 0.0;
+                    const double zv = evalZ(gx[i], gy[j]);
+                    const double zBase = (1.0 - alpha) * (1.0 - beta) * z00Corner
+                            + alpha * (1.0 - beta) * z10Corner
+                            + (1.0 - alpha) * beta * z01Corner
+                            + alpha * beta * z11Corner;
+                    zGrid[j * nx + i] = zv;
+                    zNetGrid[j * nx + i] = zv - zBase;
+                    if (zv > zMax) {
+                        zMax = zv;
+                        peakX = gx[i];
+                        peakY = gy[j];
+                    }
+                }
+            }
+
+            double totalVolume = 0.0;
+            double netVolume = 0.0;
+            double absMass = 0.0;
+            double momX = 0.0;
+            double momY = 0.0;
+
+            for (size_t j = 0; j + 1 < ny; ++j) {
+                const double dyCell = gy[j + 1] - gy[j];
+                const double ycCell = 0.5 * (gy[j] + gy[j + 1]);
+                for (size_t i = 0; i + 1 < nx; ++i) {
+                    const double dxCell = gx[i + 1] - gx[i];
+                    const double xcCell = 0.5 * (gx[i] + gx[i + 1]);
+                    const double dA = dxCell * dyCell;
+                    const double zAvg = 0.25
+                            * (zGrid[j * nx + i] + zGrid[j * nx + (i + 1)]
+                               + zGrid[(j + 1) * nx + i] + zGrid[(j + 1) * nx + (i + 1)]);
+                    const double zNetAvg = 0.25
+                            * (zNetGrid[j * nx + i] + zNetGrid[j * nx + (i + 1)]
+                               + zNetGrid[(j + 1) * nx + i] + zNetGrid[(j + 1) * nx + (i + 1)]);
+                    totalVolume += zAvg * dA;
+                    netVolume += zNetAvg * dA;
+
+                    const double w = std::fabs(zAvg) * dA;
+                    absMass += w;
+                    momX += xcCell * w;
+                    momY += ycCell * w;
+                }
+            }
+
+            const double centX = (absMass > 1e-24) ? (momX / absMass) : (0.5 * (x0 + x1));
+            const double centY = (absMass > 1e-24) ? (momY / absMass) : (0.5 * (y0 + y1));
+            if (!std::isfinite(zMax))
+                zMax = 0.0;
+
+            d_primary_metric = totalVolume;
+            d_secondary_metric = netVolume;
+            d_centroid_x = centX;
+            d_centroid_y = centY;
+            d_peak2d_x = peakX;
+            d_peak2d_y = peakY;
+            d_has_2d_markers = true;
+
+            d_output_metrics << qMakePair(QString("Total_Volume"), totalVolume)
+                             << qMakePair(QString("Net_Volume"), netVolume)
+                             << qMakePair(QString("Peak_Z_Max"), zMax)
+                             << qMakePair(QString("Peak_X"), peakX)
+                             << qMakePair(QString("Peak_Y"), peakY)
+                             << qMakePair(QString("Centroid_X"), centX)
+                             << qMakePair(QString("Centroid_Y"), centY)
+                             << qMakePair(QString("ROI_Area"), (x1 - x0) * (y1 - y0));
+
+            const QString surfLabel = m ? m->name() : qwtSpec->title().text();
+            d_summary_text =
+                    tr("2D Integrate [%1]\nVol = %2, Net Vol = %3\nZmax = %4, Centroid = (%5, %6)")
+                            .arg(surfLabel)
+                            .arg(totalVolume, 0, 'g', 6)
+                            .arg(netVolume, 0, 'g', 6)
+                            .arg(zMax, 0, 'g', 5)
+                            .arg(centX, 0, 'g', 5)
+                            .arg(centY, 0, 'g', 5);
+            if (d_app)
+                d_app->setStatusBarText(d_summary_text.simplified());
+            d_recalculating = false;
+            return;
+        }
+    }
 
     QwtPlotCurve *curve = resolveTargetCurve();
     if (!curve || curve->dataSize() <= 0) {
@@ -793,18 +1382,20 @@ void RoiGadgetTool::recalculate()
     }
 
     DataCurve *dc = dynamic_cast<DataCurve *>(curve);
-    const QRectF roi = d_roi_rect.normalized();
     const int nTotal = curve->dataSize();
 
     std::vector<XYPoint> pts;
     pts.reserve(size_t(nTotal));
 
+    const double roiEpsX = 1e-9 * std::max(1.0, roi.width());
+    const double roiEpsY = 1e-9 * std::max(1.0, roi.height());
     for (int i = 0; i < nTotal; ++i) {
         const double px = curve->x(i);
         const double py = curve->y(i);
         if (!std::isfinite(px) || !std::isfinite(py))
             continue;
-        if (px < roi.left() || px > roi.right() || py < roi.top() || py > roi.bottom())
+        if (px < roi.left() - roiEpsX || px > roi.right() + roiEpsX
+            || py < roi.top() - roiEpsY || py > roi.bottom() + roiEpsY)
             continue;
 
         const bool masked = (dc != nullptr) && dc->isPointMasked(i);
@@ -1540,6 +2131,146 @@ void RoiGadgetTool::recalculate()
         break;
     }
 
+    case Differentiate: {
+        // Build sorted distinct-X curve reference from all finite unmasked curve points
+        // so Savitzky-Golay derivative is accurate even at ROI boundary points
+        std::vector<std::pair<double, double>> fullPts;
+        fullPts.reserve(size_t(nTotal));
+        for (int k = 0; k < nTotal; ++k) {
+            if (dc && dc->isPointMasked(k))
+                continue;
+            const double fx = curve->x(k);
+            const double fy = curve->y(k);
+            if (std::isfinite(fx) && std::isfinite(fy))
+                fullPts.emplace_back(fx, fy);
+        }
+        std::stable_sort(fullPts.begin(), fullPts.end(),
+                         [](const auto &a, const auto &b) { return a.first < b.first; });
+
+        std::vector<double> ux, uy;
+        ux.reserve(fullPts.size());
+        uy.reserve(fullPts.size());
+        std::vector<int> dupCount;
+        for (const auto &fp : fullPts) {
+            if (!ux.empty() && std::fabs(fp.first - ux.back()) <= 1e-14) {
+                const int cNew = dupCount.back() + 1;
+                uy.back() = (uy.back() * double(dupCount.back()) + fp.second) / double(cNew);
+                dupCount.back() = cNew;
+            } else {
+                ux.push_back(fp.first);
+                uy.push_back(fp.second);
+                dupCount.push_back(1);
+            }
+        }
+
+        d_diff_rows.reserve(static_cast<int>(n));
+        double maxAbsSlope = -1.0;
+        double signedSlopeAtMax = 0.0;
+        double xAtMaxSlope = xv.front();
+        double yAtMaxSlope = yv.front();
+        double maxAbsD2 = 0.0;
+        double xAtMaxD2 = xv.front();
+        double minD1 = std::numeric_limits<double>::infinity();
+        double maxD1 = -std::numeric_limits<double>::infinity();
+
+        for (size_t i = 0; i < n; ++i) {
+            double d1 = 0.0, d2 = 0.0;
+            evalSavitzkyGolayAtPoint(ux, uy, xv[i], d1, d2);
+            d_diff_rows.append({ xv[i], yv[i], d1, d2 });
+
+            const double absD1 = std::fabs(d1);
+            if (absD1 > maxAbsSlope) {
+                maxAbsSlope = absD1;
+                signedSlopeAtMax = d1;
+                xAtMaxSlope = xv[i];
+                yAtMaxSlope = yv[i];
+            }
+            if (std::fabs(d2) > maxAbsD2) {
+                maxAbsD2 = std::fabs(d2);
+                xAtMaxD2 = xv[i];
+            }
+            minD1 = std::min(minD1, d1);
+            maxD1 = std::max(maxD1, d1);
+        }
+        if (maxAbsSlope < 0.0)
+            maxAbsSlope = 0.0;
+
+        d_diff_preview_pts.reserve(static_cast<int>(n));
+        const double yLoPreview = roi.top() + 0.12 * roi.height();
+        const double ySpanPreview = 0.76 * roi.height();
+        for (const auto &dr : d_diff_rows) {
+            double pyScaled = roi.center().y();
+            if (maxD1 > minD1 + 1e-30 && roi.height() > 0.0)
+                pyScaled = yLoPreview + ((dr.dydx - minD1) / (maxD1 - minD1)) * ySpanPreview;
+            d_diff_preview_pts.append(QPointF(dr.x, pyScaled));
+        }
+
+        d_primary_metric = maxAbsSlope;
+        d_secondary_metric = xAtMaxSlope;
+        d_diff_max_x = xAtMaxSlope;
+        d_diff_max_y = yAtMaxSlope;
+        d_diff_signed_slope = signedSlopeAtMax;
+        d_has_diff_marker = (n >= 2);
+
+        d_output_metrics << qMakePair(QString("Max_Abs_dY_dX"), maxAbsSlope)
+                         << qMakePair(QString("Signed_Slope_at_Max"), signedSlopeAtMax)
+                         << qMakePair(QString("X_at_Max_Slope"), xAtMaxSlope)
+                         << qMakePair(QString("Max_Abs_d2Y_dX2"), maxAbsD2)
+                         << qMakePair(QString("X_at_Max_d2Y_dX2"), xAtMaxD2);
+
+        d_summary_text =
+                tr("Differentiate [%1]\nMax |dY/dX| = %2 at X = %3\nMax |d²Y/dX²| = %4")
+                        .arg(curve->title().text())
+                        .arg(maxAbsSlope, 0, 'g', 6)
+                        .arg(xAtMaxSlope, 0, 'g', 6)
+                        .arg(maxAbsD2, 0, 'g', 5);
+        break;
+    }
+
+    case Integrate2D: {
+        // Fallback when no Spectrogram/Matrix is present on Graph: 2D scatter/curve trapezoidal
+        double area = 0.0;
+        double baseArea = 0.0;
+        if (n >= 2) {
+            for (size_t i = 0; i + 1 < n; ++i)
+                area += 0.5 * (yv[i] + yv[i + 1]) * (xv[i + 1] - xv[i]);
+            baseArea = 0.5 * (yv.front() + yv.back()) * (xv.back() - xv.front());
+        }
+        const double netArea = area - baseArea;
+        double wSum = 0.0, wxSum = 0.0, wySum = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double w = std::max(1e-15, std::fabs(yv[i]));
+            wSum += w;
+            wxSum += w * xv[i];
+            wySum += w * yv[i];
+        }
+        const double centX = (wSum > 0.0) ? (wxSum / wSum) : roi.center().x();
+        const double centY = (wSum > 0.0) ? (wySum / wSum) : roi.center().y();
+
+        d_primary_metric = area;
+        d_secondary_metric = netArea;
+        d_centroid_x = centX;
+        d_centroid_y = centY;
+        d_peak2d_x = xAtMax;
+        d_peak2d_y = maxY;
+        d_has_2d_markers = true;
+
+        d_output_metrics << qMakePair(QString("Total_Volume"), area)
+                         << qMakePair(QString("Net_Volume"), netArea)
+                         << qMakePair(QString("Peak_Z_Max"), maxY)
+                         << qMakePair(QString("Centroid_X"), centX)
+                         << qMakePair(QString("Centroid_Y"), centY);
+
+        d_summary_text = tr("2D Integrate [%1]\nIntegral = %2, Net = %3\nPeak = %4, Centroid = (%5, %6)")
+                                 .arg(curve->title().text())
+                                 .arg(area, 0, 'g', 6)
+                                 .arg(netArea, 0, 'g', 6)
+                                 .arg(maxY, 0, 'g', 5)
+                                 .arg(centX, 0, 'g', 5)
+                                 .arg(centY, 0, 'g', 5);
+        break;
+    }
+
     default:
         break;
     }
@@ -1561,6 +2292,52 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
         baseName = d_app->generateUniqueName("GadgetResult");
     else if (d_app->table(baseName))
         baseName = d_app->generateUniqueName(baseName);
+
+    if (d_mode == Differentiate && !d_diff_rows.isEmpty()) {
+        const int rows = d_diff_rows.size();
+        Table *t = d_app->newTable(rows, 4, baseName, tr("ROI Differentiate Output"));
+        if (!t)
+            return nullptr;
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        t->setColName(2, "dY/dX");
+        t->setColName(3, "d2Y/dX2");
+        t->setColPlotDesignation(0, SciDAVis::X);
+        t->setColPlotDesignation(1, SciDAVis::Y);
+        t->setColPlotDesignation(2, SciDAVis::Y);
+        t->setColPlotDesignation(3, SciDAVis::Y);
+        for (int r = 0; r < rows; ++r) {
+            const auto &dr = d_diff_rows[r];
+            t->setCell(r, 0, dr.x);
+            t->setCell(r, 1, dr.y);
+            t->setCell(r, 2, dr.dydx);
+            t->setCell(r, 3, dr.d2ydx2);
+        }
+        return t;
+    }
+
+    if (d_mode == Intersect) {
+        const int rows = std::max(1, d_intersections.size());
+        Table *t = d_app->newTable(rows, 4, baseName, tr("ROI Curve Intersections"));
+        if (!t)
+            return nullptr;
+        t->setColName(0, "CurveA");
+        t->setColumnType(0, SciDAVis::ColumnMode::Text);
+        t->setColName(1, "CurveB");
+        t->setColumnType(1, SciDAVis::ColumnMode::Text);
+        t->setColName(2, "X");
+        t->setColName(3, "Y");
+        t->setColPlotDesignation(2, SciDAVis::X);
+        t->setColPlotDesignation(3, SciDAVis::Y);
+        for (int r = 0; r < d_intersections.size(); ++r) {
+            const auto &ir = d_intersections[r];
+            t->setText(r, 0, ir.curveA);
+            t->setText(r, 1, ir.curveB);
+            t->setCell(r, 2, ir.x);
+            t->setCell(r, 3, ir.y);
+        }
+        return t;
+    }
 
     if (d_mode == QuickPeaks && !d_detected_peaks.isEmpty()) {
         const int rows = d_detected_peaks.size();
@@ -1756,17 +2533,20 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         const char *label;
     };
     const ModeItem modes[] = {
-        { RegionStats, "Region Statistics" },
-        { QuickFit, "Quick Fit" },
-        { QuickPeaks, "Quick Peaks" },
-        { QuickSigmoidal, "Quick Sigmoidal Fit" },
-        { Integrate, "Integrate" },
-        { Interpolate, "Interpolate" },
-        { FFT, "FFT Preview" },
-        { RiseTime, "Rise Time (10-90%)" },
-        { Cluster, "Cluster Selector" },
-        { MaskRegion, "Mask Region" },
-        { UnmaskRegion, "Unmask Region" }
+        { RegionStats, QT_TR_NOOP("Region Statistics") },
+        { QuickFit, QT_TR_NOOP("Quick Fit") },
+        { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
+        { QuickSigmoidal, QT_TR_NOOP("Quick Sigmoidal Fit") },
+        { Integrate, QT_TR_NOOP("Integrate") },
+        { Interpolate, QT_TR_NOOP("Interpolate") },
+        { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
+        { Intersect, QT_TR_NOOP("Curve Intersection") },
+        { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
+        { FFT, QT_TR_NOOP("FFT Preview") },
+        { RiseTime, QT_TR_NOOP("Rise Time (10-90%)") },
+        { Cluster, QT_TR_NOOP("Cluster Selector") },
+        { MaskRegion, QT_TR_NOOP("Mask Region") },
+        { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
     };
     for (const auto &mi : modes) {
         QAction *act = modeMenu->addAction(tr(mi.label));

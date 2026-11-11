@@ -1689,11 +1689,14 @@ void Fit::insertFitSummaryBoxOnGraph()
             + " (p = " + QLocale().toString(anovaPValue(), 'g', 4) + ")";
 
     Legend *mrk = d_graph->newLegend(text);
-    if (d_graph->hasLegend() && mrk) {
-        Legend *leg = d_graph->legend();
-        if (leg && leg != mrk) {
-            QPoint p = leg->rect().bottomLeft();
-            mrk->setOrigin(QPoint(p.x(), p.y() + 20));
+    if (mrk) {
+        mrk->setFont(QFont("Arial", 9));
+        if (d_graph->hasLegend()) {
+            Legend *leg = d_graph->legend();
+            if (leg && leg != mrk) {
+                QPoint p = leg->rect().bottomLeft();
+                mrk->setOrigin(QPoint(p.x(), p.y() + 20));
+            }
         }
     }
     d_graph->replot();
@@ -1716,12 +1719,18 @@ MultiLayer *Fit::createResidualPlotWindow()
     if (!ml)
         return nullptr;
 
+    ml->setFonts(QFont("Arial", 11, QFont::Bold), QFont("Arial", 10, QFont::Bold),
+                 QFont("Arial", 9), QFont("Arial", 9));
     Graph *rg = ml->activeGraph();
     if (rg) {
         QString srcTitle = d_curve ? d_curve->title().text() : objectName();
         rg->setTitle(tr("Residuals of %1 (%2)").arg(srcTitle, objectName()));
+        rg->setTitleFont(QFont("Arial", 11, QFont::Bold));
         rg->setXAxisTitle(tr("X"));
         rg->setYAxisTitle(tr("Residual (Y - Y_Fit)"));
+        rg->initFonts(QFont("Arial", 10, QFont::Bold), QFont("Arial", 9));
+        if (rg->legend())
+            rg->legend()->setFont(QFont("Arial", 9));
         if (!d_x.empty()) {
             double xMin = *std::min_element(d_x.begin(), d_x.end());
             double xMax = *std::max_element(d_x.begin(), d_x.end());
