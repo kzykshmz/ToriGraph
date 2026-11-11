@@ -25,6 +25,7 @@
 #include <qwt_plot_curve.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
@@ -1347,6 +1348,65 @@ void registerMatSciTranslationsOnce()
     reg("No numeric worksheets are open.", "数値データを含むワークシートが開かれていません。");
     reg("Please open a graph with at least two curves first.",
         "2本以上の曲線を含むグラフを開いてください。");
+    reg("EIS Nyquist & Bode Analyzer (Randles-CPE)",
+        "EIS ナイキスト・ボード解析 (Randles-CPE等価回路)");
+    reg("EIS Nyquist & Bode Analyzer...", "EIS ナイキスト・ボード解析...");
+    reg("EIS Nyquist Plot (Randles-CPE)", "EIS ナイキスト線図 (Randles-CPE)");
+    reg("EIS Bode Plot (Impedance & Phase)", "EIS ボード線図 (インピーダンス・位相)");
+    reg("Frequency Column (Hz):", "周波数データ列 (Hz):");
+    reg("Real Impedance Column (Z'):", "実部インピーダンス列 (Z'):");
+    reg("Imaginary Impedance Column (Z'' or -Z''):", "虚部インピーダンス列 (Z'' または -Z''):");
+    reg("Imaginary column is already negated (-Z'' > 0)", "虚部列は既に符号反転済み (-Z'' > 0)");
+    reg("Fit Randles + CPE Equivalent Circuit (Rs + Rct || CPE)",
+        "Randles + CPE 等価回路フィッティングを実行 (Rs + Rct || CPE)");
+    reg("Z' (Ω)", "Z' (Ω)");
+    reg("-Z'' (Ω)", "-Z'' (Ω)");
+    reg("log10(f / Hz)", "log10(f / Hz)");
+    reg("log10(|Z| / Ω)", "log10(|Z| / Ω)");
+    reg("Phase (°)", "位相角 (°)");
+    reg("Please open a worksheet with at least 3 numeric columns (Frequency, Z', Z'').",
+        "3列以上の数値データ列 (周波数, Z', Z'') を含むワークシートを開いてください。");
+    reg("EIS analysis requires at least 4 valid positive-frequency data points.",
+        "EIS解析には有効な正の周波数データ点が4点以上必要です。");
+}
+
+bool readMatSciCell(const Column *col, int row, double &val)
+{
+    if (!col || row < 0 || row >= col->rowCount())
+        return false;
+    if (col->isInvalid(row) || col->isMasked(row))
+        return false;
+    if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+        val = col->valueAt(row);
+        return std::isfinite(val);
+    }
+    QString txt;
+    if (col->columnMode() == SciDAVis::ColumnMode::Text)
+        txt = col->textAt(row).trimmed();
+    else if (col->asStringColumn())
+        txt = col->asStringColumn()->textAt(row).trimmed();
+    if (txt.isEmpty())
+        return false;
+    bool ok = false;
+    val = txt.toDouble(&ok);
+    if (!ok)
+        val = QLocale().toDouble(txt, &ok);
+    return ok && std::isfinite(val);
+}
+
+bool matSciColumnHasNumeric(const Column *col)
+{
+    if (!col)
+        return false;
+    if (col->columnMode() == SciDAVis::ColumnMode::Numeric)
+        return true;
+    double tmp = 0.0;
+    const int n = col->rowCount();
+    for (int r = 0; r < n; ++r) {
+        if (readMatSciCell(col, r, tmp))
+            return true;
+    }
+    return false;
 }
 
 Column *resolveMatSciColumn(Table *t, const QString &colSpec)
@@ -1426,9 +1486,12 @@ void applyArialToMatSciGraph(Graph *g)
 {
     if (!g)
         return;
-    g->initFonts(QFont(QStringLiteral("Arial"), 11, QFont::Bold),
-                 QFont(QStringLiteral("Arial"), 10));
+    const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Bold);
+    const QFont tickFnt(QStringLiteral("Arial"), 10);
+    g->initFonts(titleFnt, tickFnt);
     g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    g->setRightAxisTitleFont(titleFnt);
+    g->setAxisFont(QwtPlot::yRight, tickFnt);
     if (g->legend())
         g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
     g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
@@ -1451,55 +1514,6 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text)
     box->setOriginCoord(x, y);
     return box;
 }
-
-class FilledPolygonDataCurve : public DataCurve
-{
-public:
-    FilledPolygonDataCurve(Table *t, const QString &xColName, const QString &yColName,
-                           int startRow, int endRow, const QColor &fillColor)
-        : DataCurve(t, xColName, yColName, startRow, endRow)
-    {
-        setType(Graph::Line);
-        setStyle(QwtPlotCurve::Lines);
-        QColor borderCol = fillColor;
-        borderCol.setAlpha(std::clamp(fillColor.alpha() + 90, 90, 220));
-        setPen(QPen(borderCol, 1.0, Qt::SolidLine));
-        setBrush(QBrush(fillColor));
-        setRenderHint(QwtPlotItem::RenderAntialiased, true);
-    }
-
-    using DataCurve::draw;
-    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
-              int from, int to) const override
-    {
-        if (!painter || dataSize() < 3)
-            return;
-        if (to < 0)
-            to = dataSize() - 1;
-        from = std::max(0, from);
-        to = std::min(dataSize() - 1, to);
-        if (to - from + 1 < 3)
-            return;
-
-        QPolygonF poly;
-        poly.reserve(to - from + 1);
-        for (int i = from; i <= to; ++i) {
-            const double xv = x(i);
-            const double yv = y(i);
-            if (std::isfinite(xv) && std::isfinite(yv))
-                poly.append(QPointF(xMap.transform(xv), yMap.transform(yv)));
-        }
-        if (poly.size() < 3)
-            return;
-
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setBrush(brush());
-        painter->setPen(pen());
-        painter->drawPolygon(poly, Qt::OddEvenFill);
-        painter->restore();
-    }
-};
 
 } // namespace
 
@@ -1531,12 +1545,8 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
     pts.reserve(static_cast<size_t>(std::max(0, nRows)));
 
     for (int r = 0; r < nRows; ++r) {
-        if (cTemp->isInvalid(r) || cRate->isInvalid(r)
-            || cTemp->isMasked(r) || cRate->isMasked(r))
-            continue;
-        const double rawT = cTemp->valueAt(r);
-        const double rawK = cRate->valueAt(r);
-        if (!std::isfinite(rawT) || !std::isfinite(rawK))
+        double rawT = 0.0, rawK = 0.0;
+        if (!readMatSciCell(cTemp, r, rawT) || !readMatSciCell(cRate, r, rawK))
             continue;
         const double tK = tempInCelsius ? (rawT + 273.15) : rawT;
         const double prod = sigmaTimesT ? (rawK * tK) : rawK;
@@ -1701,12 +1711,10 @@ CurveMathTools::TaucResult CurveMathTools::createTaucPlot(
     rawPts.reserve(static_cast<size_t>(std::max(0, nRows)));
 
     for (int r = 0; r < nRows; ++r) {
-        if (cX->isInvalid(r) || cAlpha->isInvalid(r)
-            || cX->isMasked(r) || cAlpha->isMasked(r))
+        double xv = 0.0, av = 0.0;
+        if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cAlpha, r, av))
             continue;
-        const double xv = cX->valueAt(r);
-        const double av = cAlpha->valueAt(r);
-        if (!std::isfinite(xv) || !std::isfinite(av) || xv <= 0.0 || av < 0.0)
+        if (xv <= 0.0 || av < 0.0)
             continue;
         const double hv = xIsWavelengthNm ? (kPlanckHcEvNm / xv) : xv;
         if (!std::isfinite(hv) || hv <= 0.0)
@@ -1922,6 +1930,10 @@ CurveMathTools::TaucResult CurveMathTools::createTaucPlot(
     tbl->column(3)->setValueAt(0, 0.0);
     tbl->column(2)->setValueAt(1, tanE1);
     tbl->column(3)->setValueAt(1, std::max(0.0, tanY1));
+    for (int r = 2; r < tbl->numRows(); ++r) {
+        tbl->column(2)->setInvalid(r, true);
+        tbl->column(3)->setInvalid(r, true);
+    }
 
     MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TaucPlot")));
     res.plot = ml;
@@ -1979,6 +1991,11 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
     if (!app || !g)
         return nullptr;
 
+    QwtPlotCurve *cA = resolveCurve(g, curveA);
+    QwtPlotCurve *cB = resolveCurve(g, curveB);
+    if (!cA || !cB)
+        return nullptr;
+
     std::vector<double> xA, yA, xB, yB;
     if (!extractUnmaskedCurvePoints(g, curveA, xA, yA, true, true)
         || !extractUnmaskedCurvePoints(g, curveB, xB, yB, true, true))
@@ -1988,10 +2005,10 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
 
     const double ovLo = std::max(xA.front(), xB.front());
     const double ovHi = std::min(xA.back(), xB.back());
-    const double xStart = (ovHi > ovLo) ? ovLo : std::min(xA.front(), xB.front());
-    const double xEnd = (ovHi > ovLo) ? ovHi : std::max(xA.back(), xB.back());
-    if (!(xEnd > xStart))
+    if (!(ovHi > ovLo))
         return nullptr;
+    const double xStart = ovLo;
+    const double xEnd = ovHi;
 
     // Collect union X knots + dense sampling + exact intersection X points
     std::vector<double> knots;
@@ -2056,37 +2073,711 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
         }
     }
 
-    const size_t m = xg.size();
-    std::vector<double> polyX;
-    std::vector<double> polyY;
-    polyX.reserve(2 * m + 1);
-    polyY.reserve(2 * m + 1);
-    for (size_t k = 0; k < m; ++k) {
-        polyX.push_back(xg[k]);
-        polyY.push_back(yAg[k]);
-    }
-    for (size_t k = m; k-- > 0;) {
-        polyX.push_back(xg[k]);
-        polyY.push_back(yBg[k]);
-    }
-    polyX.push_back(xg[0]);
-    polyY.push_back(yAg[0]);
-
-    Table *polyTbl = createNumericTable(
-            app, QStringLiteral("FillBetween"),
-            QStringList() << QStringLiteral("FillX") << QStringLiteral("FillY"),
-            QList<SciDAVis::PlotDesignation>() << SciDAVis::X << SciDAVis::Y,
-            { polyX, polyY });
-    if (!polyTbl)
+    const int m = static_cast<int>(xg.size());
+    if (m < 2)
         return nullptr;
 
-    const int nPoly = static_cast<int>(polyX.size());
-    auto *fillCurve = new FilledPolygonDataCurve(
-            polyTbl, polyTbl->colName(0), polyTbl->colName(1), 0, nPoly - 1, fillColor);
-    fillCurve->loadData();
-    g->insertPlotItem(fillCurve, Graph::Line);
+    QVector<double> vx(m), vyLow(m), vyHigh(m), vDiff(m);
+    for (int k = 0; k < m; ++k) {
+        const size_t idx = static_cast<size_t>(k);
+        vx[k] = xg[idx];
+        vyLow[k] = std::min(yAg[idx], yBg[idx]);
+        vyHigh[k] = std::max(yAg[idx], yBg[idx]);
+        vDiff[k] = yAg[idx] - yBg[idx];
+    }
+
+    const double minCurveZ = std::min(cA->z(), cB->z());
+    QwtPlotItem *bandItem = g->addShadedBand(vx, vyLow, vyHigh, fillColor,
+                                             QStringLiteral("FillBetween"));
+    if (bandItem) {
+        bandItem->setAxis(cA->xAxis(), cA->yAxis());
+        bandItem->setZ(minCurveZ - 0.25);
+    }
+
+    Column *colX = new Column(QStringLiteral("FillX"), SciDAVis::ColumnMode::Numeric);
+    Column *colDiff = new Column(QStringLiteral("DiffAB"), SciDAVis::ColumnMode::Numeric);
+    colX->setPlotDesignation(SciDAVis::X);
+    colDiff->setPlotDesignation(SciDAVis::Y);
+    colX->replaceValues(0, vx);
+    colDiff->replaceValues(0, vDiff);
+
+    const QString hidName = app->generateUniqueName(QStringLiteral("FillBetween"));
+    Table *hidTbl = app->newHiddenTable(hidName, QStringLiteral("Fill Between Curves"),
+                                        QList<Column *>() << colX << colDiff);
+    if (!hidTbl)
+        return nullptr;
+
+    auto *diffCurve = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colX->name(),
+                                    hidName + QStringLiteral("_") + colDiff->name(), 0, m - 1);
+    diffCurve->setType(Graph::Line);
+    diffCurve->setStyle(QwtPlotCurve::Lines);
+    QColor diffStroke = fillColor;
+    diffStroke.setAlpha(std::clamp(fillColor.alpha() + 95, 95, 215));
+    diffCurve->setPen(QPen(diffStroke, 1.2, Qt::DashLine));
+    diffCurve->setBrush(QBrush(Qt::NoBrush));
+    diffCurve->loadData();
+    g->insertPlotItem(diffCurve, Graph::Line);
+    diffCurve->setAxis(cA->xAxis(), cA->yAxis());
+    diffCurve->setZ(minCurveZ - 0.15);
     g->updatePlot();
-    return fillCurve;
+    return diffCurve;
+}
+
+CurveMathTools::EISResult CurveMathTools::analyzeEIS(
+        ApplicationWindow *app, Table *srcTable, const QString &freqCol,
+        const QString &zRealCol, const QString &zImagCol,
+        bool zImagAlreadyNegated, bool fitRandlesCPE)
+{
+    registerMatSciTranslationsOnce();
+    EISResult res;
+    if (!srcTable)
+        return res;
+
+    Column *cFreq = resolveMatSciColumn(srcTable, freqCol);
+    Column *cRe = resolveMatSciColumn(srcTable, zRealCol);
+    Column *cIm = resolveMatSciColumn(srcTable, zImagCol);
+    if (!cFreq || !cRe || !cIm)
+        return res;
+
+    struct EisSample {
+        double f = 0.0;
+        double omega = 0.0;
+        double zRe = 0.0;
+        double negZIm = 0.0; // capacitive positive ordinate: -Z''
+    };
+
+    const int nRows = std::min({ cFreq->rowCount(), cRe->rowCount(), cIm->rowCount() });
+    std::vector<EisSample> pts;
+    pts.reserve(static_cast<size_t>(std::max(0, nRows)));
+    for (int r = 0; r < nRows; ++r) {
+        double fv = 0.0, zr = 0.0, ziRaw = 0.0;
+        if (!readMatSciCell(cFreq, r, fv) || !readMatSciCell(cRe, r, zr)
+            || !readMatSciCell(cIm, r, ziRaw))
+            continue;
+        if (!(fv > 0.0) || !std::isfinite(zr) || !std::isfinite(ziRaw))
+            continue;
+        const double negZi = zImagAlreadyNegated ? ziRaw : (-ziRaw);
+        pts.push_back({ fv, 2.0 * M_PI * fv, zr, negZi });
+    }
+
+    if (pts.size() < 4)
+        return res;
+
+    // Sort by ascending frequency so log10(f) is monotonic for Bode and Z' traces smoothly for Nyquist
+    std::stable_sort(pts.begin(), pts.end(),
+                     [](const EisSample &a, const EisSample &b) { return a.f < b.f; });
+
+    const int N = static_cast<int>(pts.size());
+
+    // Helper: evaluate Randles + CPE model Z(w) = Rs + Rct / (1 + Rct * Q * (j*w)^n)
+    auto evalRandlesCPE = [](double omega, double rs, double rct, double q, double n,
+                             double &outRe, double &outNegIm) {
+        const double nClamped = std::clamp(n, 0.05, 1.0);
+        const double lnAlpha = std::log(std::max(1e-300, rct)) + std::log(std::max(1e-300, q))
+                + nClamped * std::log(std::max(1e-300, omega));
+        if (lnAlpha > 100.0) {
+            outRe = rs;
+            outNegIm = 0.0;
+            return;
+        }
+        const double alpha = (lnAlpha < -100.0) ? 0.0 : std::exp(lnAlpha);
+        const double ang = 0.5 * M_PI * nClamped;
+        const double c = std::cos(ang);
+        const double s = std::sin(ang);
+        const double denom = std::max(1e-300, 1.0 + 2.0 * alpha * c + alpha * alpha);
+        outRe = rs + rct * (1.0 + alpha * c) / denom;
+        outNegIm = rct * (alpha * s) / denom;
+    };
+
+    // Step 1: Taubin (1991) algebraic circle fit on (x = Z', y = -Z'')
+    double meanX = 0.0, meanY = 0.0;
+    double minRe = pts.front().zRe, maxRe = pts.front().zRe;
+    int idxPeak = 0;
+    for (int i = 0; i < N; ++i) {
+        const EisSample &s = pts[static_cast<size_t>(i)];
+        meanX += s.zRe;
+        meanY += s.negZIm;
+        minRe = std::min(minRe, s.zRe);
+        maxRe = std::max(maxRe, s.zRe);
+        if (s.negZIm > pts[static_cast<size_t>(idxPeak)].negZIm)
+            idxPeak = i;
+    }
+    meanX /= static_cast<double>(N);
+    meanY /= static_cast<double>(N);
+
+    double sumR2 = 0.0;
+    for (const EisSample &s : pts) {
+        const double dx = s.zRe - meanX;
+        const double dy = s.negZIm - meanY;
+        sumR2 += dx * dx + dy * dy;
+    }
+    const double scale = std::sqrt(std::max(1e-24, sumR2 / static_cast<double>(N)));
+
+    double mXX = 0.0, mXY = 0.0, mYY = 0.0, mXZ = 0.0, mYZ = 0.0, mZZ = 0.0;
+    for (const EisSample &s : pts) {
+        const double u = (s.zRe - meanX) / scale;
+        const double v = (s.negZIm - meanY) / scale;
+        const double z = u * u + v * v;
+        mXX += u * u;
+        mXY += u * v;
+        mYY += v * v;
+        mXZ += u * z;
+        mYZ += v * z;
+        mZZ += z * z;
+    }
+    const double invN = 1.0 / static_cast<double>(N);
+    mXX *= invN;
+    mXY *= invN;
+    mYY *= invN;
+    mXZ *= invN;
+    mYZ *= invN;
+    mZZ *= invN;
+
+    const double mZ = mXX + mYY; // == 1.0 when normalized
+    const double covXY = mXX * mYY - mXY * mXY;
+    const double varZ = mZZ - mZ * mZ;
+    const double a3 = 4.0 * mZ;
+    const double a2 = -3.0 * mZ * mZ - mZZ;
+    const double a1 = varZ * mZ + 4.0 * covXY * mZ - mXZ * mXZ - mYZ * mYZ;
+    const double a0 = mXZ * (mXZ * mYY - mYZ * mXY) + mYZ * (mYZ * mXX - mXZ * mXY) - varZ * covXY;
+
+    // Newton-Raphson from eta = 0 finds the smallest non-negative root of Taubin's characteristic polynomial
+    double eta = 0.0;
+    for (int it = 0; it < 30; ++it) {
+        const double fVal = ((a3 * eta + a2) * eta + a1) * eta + a0;
+        const double dfVal = (3.0 * a3 * eta + 2.0 * a2) * eta + a1;
+        if (std::fabs(dfVal) <= 1e-30)
+            break;
+        const double nextEta = std::max(0.0, eta - fVal / dfVal);
+        if (std::fabs(nextEta - eta) <= 1e-13) {
+            eta = nextEta;
+            break;
+        }
+        eta = nextEta;
+    }
+
+    const double cXX = mXX - eta;
+    const double cYY = mYY - eta;
+    const double det2 = cXX * cYY - mXY * mXY;
+
+    double rsSeed = std::max(1e-6, std::max(0.0, pts.back().zRe));
+    double rctSeed = std::max(1e-3, maxRe - minRe);
+    double nSeed = 0.90;
+
+    if (std::fabs(det2) > 1e-18) {
+        const double uc = (mXZ * cYY - mYZ * mXY) / (2.0 * det2);
+        const double vc = (mYZ * cXX - mXZ * mXY) / (2.0 * det2);
+        const double radNorm = std::sqrt(std::max(1e-18, uc * uc + vc * vc + mZ));
+        const double xc = meanX + uc * scale;
+        const double yc = meanY + vc * scale;
+        const double rad = radNorm * scale;
+        if (std::isfinite(xc) && std::isfinite(yc) && std::isfinite(rad) && rad > 0.0) {
+            const double halfChordSq = rad * rad - yc * yc;
+            if (halfChordSq > 1e-18) {
+                const double halfChord = std::sqrt(halfChordSq);
+                rsSeed = std::max(1e-6, xc - halfChord);
+                rctSeed = std::max(1e-4, 2.0 * halfChord);
+                const double depAngle = std::clamp(std::atan2(-yc, halfChord), 0.0, 0.46 * M_PI);
+                nSeed = std::clamp(1.0 - (2.0 * depAngle / M_PI), 0.35, 1.0);
+            } else {
+                rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
+                rctSeed = std::max(1e-4, std::max(2.0 * rad, maxRe - rsSeed));
+            }
+        }
+    } else {
+        rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
+        rctSeed = std::max(1e-4, std::max(maxRe - rsSeed, 2.0 * pts[static_cast<size_t>(idxPeak)].negZIm));
+    }
+
+    const double omegaPeakSeed = std::max(1e-9, pts[static_cast<size_t>(idxPeak)].omega);
+    double qSeed = 1.0 / std::max(1e-30, rctSeed * std::pow(omegaPeakSeed, nSeed));
+    qSeed = std::clamp(qSeed, 1e-18, 1e6);
+
+    auto unpackParams = [](const double p[4], double &rs, double &rct, double &q, double &n) {
+        rs = std::exp(std::clamp(p[0], -30.0, 30.0));
+        rct = std::exp(std::clamp(p[1], -30.0, 30.0));
+        q = std::exp(std::clamp(p[2], -45.0, 20.0));
+        n = 0.05 + 0.475 * (1.0 + std::cos(p[3]));
+    };
+
+    auto packParams = [](double rs, double rct, double q, double n, double p[4]) {
+        p[0] = std::log(std::clamp(rs, 1e-12, 1e12));
+        p[1] = std::log(std::clamp(rct, 1e-12, 1e12));
+        p[2] = std::log(std::clamp(q, 1e-19, 1e8));
+        const double cosVal = std::clamp((std::clamp(n, 0.05, 1.0) - 0.05) / 0.475 - 1.0, -1.0, 1.0);
+        p[3] = std::acos(cosVal);
+    };
+
+    auto evalRssParams = [&](const double p[4]) -> double {
+        double rs = 0.0, rct = 0.0, q = 0.0, n = 1.0;
+        unpackParams(p, rs, rct, q, n);
+        double rss = 0.0;
+        for (const EisSample &s : pts) {
+            double mr = 0.0, mi = 0.0;
+            evalRandlesCPE(s.omega, rs, rct, q, n, mr, mi);
+            const double er = s.zRe - mr;
+            const double ei = s.negZIm - mi;
+            rss += er * er + ei * ei;
+        }
+        return rss;
+    };
+
+    double bestP[4] = { 0.0, 0.0, 0.0, 0.0 };
+    packParams(rsSeed, rctSeed, qSeed, nSeed, bestP);
+    double bestRss = evalRssParams(bestP);
+
+    if (fitRandlesCPE) {
+        // Also test ideal n = 1.0 Debye capacitor seed in case circle depression was slightly noisy
+        double idealP[4] = { 0.0, 0.0, 0.0, 0.0 };
+        packParams(rsSeed, rctSeed, 1.0 / std::max(1e-30, rctSeed * omegaPeakSeed), 1.0, idealP);
+        const double idealRss = evalRssParams(idealP);
+        if (idealRss < bestRss) {
+            for (int k = 0; k < 4; ++k)
+                bestP[k] = idealP[k];
+            bestRss = idealRss;
+        }
+
+        // Step 2: Levenberg-Marquardt nonlinear least squares (2N residuals x 4 parameters)
+        double lambda = 1e-3;
+        std::vector<double> rVec(static_cast<size_t>(2 * N), 0.0);
+        std::vector<double> jac(static_cast<size_t>(2 * N * 4), 0.0);
+
+        auto solve4x4 = [](double A[4][4], double b[4], double x[4]) -> bool {
+            double aug[4][5];
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 4; ++c)
+                    aug[r][c] = A[r][c];
+                aug[r][4] = b[r];
+            }
+            for (int col = 0; col < 4; ++col) {
+                int piv = col;
+                for (int r = col + 1; r < 4; ++r) {
+                    if (std::fabs(aug[r][col]) > std::fabs(aug[piv][col]))
+                        piv = r;
+                }
+                if (std::fabs(aug[piv][col]) <= 1e-30)
+                    return false;
+                if (piv != col) {
+                    for (int c = col; c < 5; ++c)
+                        std::swap(aug[col][c], aug[piv][c]);
+                }
+                const double invDiag = 1.0 / aug[col][col];
+                for (int c = col; c < 5; ++c)
+                    aug[col][c] *= invDiag;
+                for (int r = 0; r < 4; ++r) {
+                    if (r == col)
+                        continue;
+                    const double f = aug[r][col];
+                    for (int c = col; c < 5; ++c)
+                        aug[r][c] -= f * aug[col][c];
+                }
+            }
+            for (int r = 0; r < 4; ++r)
+                x[r] = aug[r][4];
+            return true;
+        };
+
+        for (int iter = 0; iter < 120; ++iter) {
+            double rs = 0.0, rct = 0.0, q = 0.0, n = 1.0;
+            unpackParams(bestP, rs, rct, q, n);
+            for (int i = 0; i < N; ++i) {
+                double mr = 0.0, mi = 0.0;
+                evalRandlesCPE(pts[static_cast<size_t>(i)].omega, rs, rct, q, n, mr, mi);
+                rVec[static_cast<size_t>(2 * i)] = mr - pts[static_cast<size_t>(i)].zRe;
+                rVec[static_cast<size_t>(2 * i + 1)] = mi - pts[static_cast<size_t>(i)].negZIm;
+            }
+
+            for (int j = 0; j < 4; ++j) {
+                const double h = (j == 3) ? 1e-6 : (1e-6 * std::max(1.0, std::fabs(bestP[j])));
+                double pPlus[4] = { bestP[0], bestP[1], bestP[2], bestP[3] };
+                double pMinus[4] = { bestP[0], bestP[1], bestP[2], bestP[3] };
+                pPlus[j] += h;
+                pMinus[j] -= h;
+                double rsP = 0.0, rctP = 0.0, qP = 0.0, nP = 1.0;
+                double rsM = 0.0, rctM = 0.0, qM = 0.0, nM = 1.0;
+                unpackParams(pPlus, rsP, rctP, qP, nP);
+                unpackParams(pMinus, rsM, rctM, qM, nM);
+                const double inv2h = 0.5 / h;
+                for (int i = 0; i < N; ++i) {
+                    const double w = pts[static_cast<size_t>(i)].omega;
+                    double mrP = 0.0, miP = 0.0, mrM = 0.0, miM = 0.0;
+                    evalRandlesCPE(w, rsP, rctP, qP, nP, mrP, miP);
+                    evalRandlesCPE(w, rsM, rctM, qM, nM, mrM, miM);
+                    jac[static_cast<size_t>((2 * i) * 4 + j)] = (mrP - mrM) * inv2h;
+                    jac[static_cast<size_t>((2 * i + 1) * 4 + j)] = (miP - miM) * inv2h;
+                }
+            }
+
+            double jtj[4][4] = {};
+            double negJtr[4] = {};
+            for (int row = 0; row < 2 * N; ++row) {
+                const double rv = rVec[static_cast<size_t>(row)];
+                for (int j = 0; j < 4; ++j) {
+                    const double jv = jac[static_cast<size_t>(row * 4 + j)];
+                    negJtr[j] -= jv * rv;
+                    for (int k = j; k < 4; ++k)
+                        jtj[j][k] += jv * jac[static_cast<size_t>(row * 4 + k)];
+                }
+            }
+            for (int j = 0; j < 4; ++j) {
+                for (int k = 0; k < j; ++k)
+                    jtj[j][k] = jtj[k][j];
+            }
+
+            bool accepted = false;
+            for (int sub = 0; sub < 10; ++sub) {
+                double lhs[4][4];
+                for (int j = 0; j < 4; ++j) {
+                    for (int k = 0; k < 4; ++k)
+                        lhs[j][k] = jtj[j][k];
+                    lhs[j][j] += lambda * std::max(1e-8, jtj[j][j]);
+                }
+                double step[4] = {};
+                if (!solve4x4(lhs, negJtr, step)) {
+                    lambda *= 10.0;
+                    continue;
+                }
+                double cand[4];
+                double stepNorm = 0.0;
+                for (int j = 0; j < 4; ++j) {
+                    cand[j] = bestP[j] + step[j];
+                    stepNorm += step[j] * step[j];
+                }
+                const double candRss = evalRssParams(cand);
+                if (std::isfinite(candRss) && candRss < bestRss) {
+                    const double relImprov = (bestRss - candRss) / std::max(1e-30, bestRss);
+                    for (int j = 0; j < 4; ++j)
+                        bestP[j] = cand[j];
+                    bestRss = candRss;
+                    lambda = std::max(1e-12, lambda * 0.3);
+                    accepted = true;
+                    if (stepNorm < 1e-20 || (relImprov < 1e-14 && bestRss < 1e-18))
+                        iter = 120;
+                    break;
+                }
+                lambda = std::min(1e12, lambda * 5.0);
+            }
+            if (!accepted && lambda >= 1e11)
+                break;
+        }
+
+        // Step 3: Nelder-Mead simplex polish (escapes cosine boundary saddles smoothly)
+        double simp[5][4];
+        double fSimp[5];
+        for (int j = 0; j < 4; ++j)
+            simp[0][j] = bestP[j];
+        fSimp[0] = bestRss;
+        const double initDelta[4] = { 0.04, 0.04, 0.08, 0.05 };
+        for (int v = 1; v <= 4; ++v) {
+            for (int j = 0; j < 4; ++j)
+                simp[v][j] = bestP[j];
+            simp[v][v - 1] += initDelta[v - 1];
+            fSimp[v] = evalRssParams(simp[v]);
+        }
+
+        for (int it = 0; it < 240; ++it) {
+            int order[5] = { 0, 1, 2, 3, 4 };
+            std::sort(order, order + 5, [&](int a, int b) { return fSimp[a] < fSimp[b]; });
+            double sortedS[5][4];
+            double sortedF[5];
+            for (int v = 0; v < 5; ++v) {
+                sortedF[v] = fSimp[order[v]];
+                for (int j = 0; j < 4; ++j)
+                    sortedS[v][j] = simp[order[v]][j];
+            }
+            for (int v = 0; v < 5; ++v) {
+                fSimp[v] = sortedF[v];
+                for (int j = 0; j < 4; ++j)
+                    simp[v][j] = sortedS[v][j];
+            }
+            if (std::fabs(fSimp[4] - fSimp[0]) <= 1e-22 * std::max(1.0, fSimp[0]))
+                break;
+
+            double cent[4] = {};
+            for (int v = 0; v < 4; ++v) {
+                for (int j = 0; j < 4; ++j)
+                    cent[j] += 0.25 * simp[v][j];
+            }
+
+            double xr[4];
+            for (int j = 0; j < 4; ++j)
+                xr[j] = cent[j] + (cent[j] - simp[4][j]);
+            const double fr = evalRssParams(xr);
+
+            if (fr < fSimp[0]) {
+                double xe[4];
+                for (int j = 0; j < 4; ++j)
+                    xe[j] = cent[j] + 2.0 * (xr[j] - cent[j]);
+                const double fe = evalRssParams(xe);
+                for (int j = 0; j < 4; ++j)
+                    simp[4][j] = (fe < fr) ? xe[j] : xr[j];
+                fSimp[4] = std::min(fe, fr);
+            } else if (fr < fSimp[3]) {
+                for (int j = 0; j < 4; ++j)
+                    simp[4][j] = xr[j];
+                fSimp[4] = fr;
+            } else {
+                double xc[4];
+                for (int j = 0; j < 4; ++j)
+                    xc[j] = cent[j] + 0.5 * (((fr < fSimp[4]) ? xr[j] : simp[4][j]) - cent[j]);
+                const double fc = evalRssParams(xc);
+                if (fc < std::min(fr, fSimp[4])) {
+                    for (int j = 0; j < 4; ++j)
+                        simp[4][j] = xc[j];
+                    fSimp[4] = fc;
+                } else {
+                    for (int v = 1; v < 5; ++v) {
+                        for (int j = 0; j < 4; ++j)
+                            simp[v][j] = simp[0][j] + 0.5 * (simp[v][j] - simp[0][j]);
+                        fSimp[v] = evalRssParams(simp[v]);
+                    }
+                }
+            }
+        }
+        int bestIdx = 0;
+        for (int v = 1; v < 5; ++v) {
+            if (fSimp[v] < fSimp[bestIdx])
+                bestIdx = v;
+        }
+        if (fSimp[bestIdx] < bestRss) {
+            bestRss = fSimp[bestIdx];
+            for (int j = 0; j < 4; ++j)
+                bestP[j] = simp[bestIdx][j];
+        }
+    }
+
+    unpackParams(bestP, res.rs, res.rct, res.qCpe, res.nCpe);
+    res.cEff = std::pow(std::max(1e-300, res.qCpe * std::pow(std::max(1e-300, res.rct), 1.0 - res.nCpe)),
+                        1.0 / std::max(0.05, res.nCpe));
+    res.fPeakHz = 1.0 / (2.0 * M_PI * std::pow(std::max(1e-300, res.rct * res.qCpe),
+                                               1.0 / std::max(0.05, res.nCpe)));
+    res.rmse = std::sqrt(std::max(0.0, bestRss / static_cast<double>(2 * N)));
+    res.valid = true;
+
+    if (!app)
+        return res;
+
+    // Build experimental + fitted worksheet
+    std::vector<double> colFreq(static_cast<size_t>(N));
+    std::vector<double> colLogF(static_cast<size_t>(N));
+    std::vector<double> colZRe(static_cast<size_t>(N));
+    std::vector<double> colNegZIm(static_cast<size_t>(N));
+    std::vector<double> colZReFit(static_cast<size_t>(N));
+    std::vector<double> colNegZImFit(static_cast<size_t>(N));
+    std::vector<double> colLogMag(static_cast<size_t>(N));
+    std::vector<double> colLogMagFit(static_cast<size_t>(N));
+    std::vector<double> colPhase(static_cast<size_t>(N));
+    std::vector<double> colPhaseFit(static_cast<size_t>(N));
+
+    for (int i = 0; i < N; ++i) {
+        const size_t idx = static_cast<size_t>(i);
+        const EisSample &s = pts[idx];
+        double mr = 0.0, mNegIm = 0.0;
+        evalRandlesCPE(s.omega, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
+        const double zIm = -s.negZIm;
+        const double zImFit = -mNegIm;
+        colFreq[idx] = s.f;
+        colLogF[idx] = std::log10(s.f);
+        colZRe[idx] = s.zRe;
+        colNegZIm[idx] = s.negZIm;
+        colZReFit[idx] = mr;
+        colNegZImFit[idx] = mNegIm;
+        colLogMag[idx] = std::log10(std::max(1e-30, std::hypot(s.zRe, zIm)));
+        colLogMagFit[idx] = std::log10(std::max(1e-30, std::hypot(mr, zImFit)));
+        colPhase[idx] = std::atan2(zIm, s.zRe) * (180.0 / M_PI);
+        colPhaseFit[idx] = std::atan2(zImFit, mr) * (180.0 / M_PI);
+    }
+
+    Table *resTbl = createNumericTable(
+            app, QStringLiteral("EISData"),
+            QStringList() << QStringLiteral("FreqHz") << QStringLiteral("LogFreqHz")
+                          << QStringLiteral("ZReal") << QStringLiteral("NegZImag")
+                          << QStringLiteral("ZRealFit") << QStringLiteral("NegZImagFit")
+                          << QStringLiteral("LogMagZ") << QStringLiteral("LogMagZFit")
+                          << QStringLiteral("PhaseDeg") << QStringLiteral("PhaseDegFit"),
+            QList<SciDAVis::PlotDesignation>()
+                    << SciDAVis::X << SciDAVis::X << SciDAVis::X << SciDAVis::Y << SciDAVis::X
+                    << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y,
+            { colFreq, colLogF, colZRe, colNegZIm, colZReFit, colNegZImFit,
+              colLogMag, colLogMagFit, colPhase, colPhaseFit });
+    res.resultTable = resTbl;
+    if (!resTbl)
+        return res;
+
+    // Dense 200-point Randles-CPE arc backing table for smooth Nyquist semicircle & Bode fit curves
+    constexpr int kArcPts = 200;
+    const double logFMin = colLogF.front() - 0.15;
+    const double logFMax = colLogF.back() + 0.15;
+    QVector<qreal> arcLogF(kArcPts), arcZRe(kArcPts), arcNegZIm(kArcPts);
+    QVector<qreal> arcLogMag(kArcPts), arcPhase(kArcPts);
+    for (int k = 0; k < kArcPts; ++k) {
+        const double lf = logFMin + (logFMax - logFMin) * static_cast<double>(k) / (kArcPts - 1);
+        const double w = 2.0 * M_PI * std::pow(10.0, lf);
+        double mr = 0.0, mNegIm = 0.0;
+        evalRandlesCPE(w, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
+        arcLogF[k] = lf;
+        arcZRe[k] = mr;
+        arcNegZIm[k] = mNegIm;
+        arcLogMag[k] = std::log10(std::max(1e-30, std::hypot(mr, -mNegIm)));
+        arcPhase[k] = std::atan2(-mNegIm, mr) * (180.0 / M_PI);
+    }
+
+    Column *cArcLogF = new Column(QStringLiteral("ArcLogF"), SciDAVis::ColumnMode::Numeric);
+    Column *cArcZRe = new Column(QStringLiteral("ArcZRe"), SciDAVis::ColumnMode::Numeric);
+    Column *cArcNegZIm = new Column(QStringLiteral("ArcNegZIm"), SciDAVis::ColumnMode::Numeric);
+    Column *cArcLogMag = new Column(QStringLiteral("ArcLogMag"), SciDAVis::ColumnMode::Numeric);
+    Column *cArcPhase = new Column(QStringLiteral("ArcPhase"), SciDAVis::ColumnMode::Numeric);
+    cArcLogF->setPlotDesignation(SciDAVis::X);
+    cArcZRe->setPlotDesignation(SciDAVis::X);
+    cArcNegZIm->setPlotDesignation(SciDAVis::Y);
+    cArcLogMag->setPlotDesignation(SciDAVis::Y);
+    cArcPhase->setPlotDesignation(SciDAVis::Y);
+    cArcLogF->replaceValues(0, arcLogF);
+    cArcZRe->replaceValues(0, arcZRe);
+    cArcNegZIm->replaceValues(0, arcNegZIm);
+    cArcLogMag->replaceValues(0, arcLogMag);
+    cArcPhase->replaceValues(0, arcPhase);
+
+    const QString hidArcName = app->generateUniqueName(QStringLiteral("EISModelArc"));
+    Table *arcTbl = app->newHiddenTable(
+            hidArcName, QStringLiteral("EIS Randles-CPE Smooth Fit"),
+            QList<Column *>() << cArcLogF << cArcZRe << cArcNegZIm << cArcLogMag << cArcPhase);
+
+    // 1. Nyquist Plot (-Z'' vs Z' with 1:1 isometric equal-span axes)
+    MultiLayer *mlNyq = app->newGraph(makeUniqueTableName(app, QStringLiteral("EISNyquistPlot")));
+    res.nyquistPlot = mlNyq;
+    if (mlNyq) {
+        mlNyq->resize(560, 540);
+        if (Graph *gNyq = mlNyq->activeGraph()) {
+            if (gNyq->insertCurve(resTbl, resTbl->colName(2), resTbl->colName(3),
+                                  Graph::Scatter, 0, N - 1)) {
+                const int idx = gNyq->curves() - 1;
+                gNyq->setCurvePen(idx, QPen(QColor(25, 75, 155), 1.5));
+                gNyq->setCurveSymbol(idx,
+                                     QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(40, 105, 195)),
+                                               QPen(QColor(15, 45, 95), 1.2), QSize(8, 8)));
+            }
+            if (arcTbl) {
+                insertStyledCurve(gNyq, arcTbl, 1, 2, kArcPts,
+                                  QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
+            } else {
+                insertStyledCurve(gNyq, resTbl, 4, 5, N,
+                                  QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
+            }
+
+            double xLo = *std::min_element(colZRe.begin(), colZRe.end());
+            double xHi = *std::max_element(colZRe.begin(), colZRe.end());
+            double yLo = std::min(0.0, *std::min_element(colNegZIm.begin(), colNegZIm.end()));
+            double yHi = *std::max_element(colNegZIm.begin(), colNegZIm.end());
+            xLo = std::min(xLo, res.rs);
+            xHi = std::max(xHi, res.rs + res.rct);
+            for (int k = 0; k < kArcPts; ++k) {
+                xLo = std::min(xLo, static_cast<double>(arcZRe[k]));
+                xHi = std::max(xHi, static_cast<double>(arcZRe[k]));
+                yLo = std::min(yLo, static_cast<double>(arcNegZIm[k]));
+                yHi = std::max(yHi, static_cast<double>(arcNegZIm[k]));
+            }
+            const double rawSpan = std::max({ 1e-6, xHi - xLo, yHi - yLo });
+            const double isoSpan = rawSpan * 1.16;
+            const double xMid = 0.5 * (xLo + xHi);
+            const double isoXStart = xMid - 0.5 * isoSpan;
+            const double isoXEnd = xMid + 0.5 * isoSpan;
+            const double isoYStart = yLo - 0.05 * isoSpan;
+            const double isoYEnd = isoYStart + isoSpan;
+
+            gNyq->setScale(QwtPlot::xBottom, isoXStart, isoXEnd);
+            gNyq->setScale(QwtPlot::yLeft, isoYStart, isoYEnd);
+            gNyq->setXAxisTitle(QObject::tr("Z' (Ω)"));
+            gNyq->setYAxisTitle(QObject::tr("-Z'' (Ω)"));
+            gNyq->setTitle(QObject::tr("EIS Nyquist Plot (Randles-CPE)"));
+            if (gNyq->legend())
+                gNyq->legend()->setText(gNyq->legendText());
+            applyArialToMatSciGraph(gNyq);
+
+            const QString summary = QStringLiteral(
+                    "Rs = %1 Ω,  Rct = %2 Ω\n"
+                    "Q = %3 S·s^n,  n = %4\n"
+                    "Ceff = %5 F,  f_peak = %6 Hz\n"
+                    "RMSE = %7 Ω")
+                    .arg(res.rs, 0, 'g', 5)
+                    .arg(res.rct, 0, 'g', 5)
+                    .arg(res.qCpe, 0, 'e', 3)
+                    .arg(res.nCpe, 0, 'f', 4)
+                    .arg(res.cEff, 0, 'e', 3)
+                    .arg(res.fPeakHz, 0, 'g', 4)
+                    .arg(res.rmse, 0, 'g', 4);
+            addMatSciCalloutBox(gNyq, isoXStart + 0.05 * isoSpan,
+                                isoYStart + 0.93 * isoSpan, summary);
+            gNyq->replot();
+        }
+    }
+
+    // 2. Dual-Y Bode Plot (log10|Z| on yLeft & Phase deg on yRight vs log10(f))
+    MultiLayer *mlBode = app->newGraph(makeUniqueTableName(app, QStringLiteral("EISBodePlot")));
+    res.bodePlot = mlBode;
+    if (mlBode) {
+        if (Graph *gBode = mlBode->activeGraph()) {
+            gBode->enableAxis(QwtPlot::yRight, true);
+
+            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(6),
+                                   Graph::Scatter, 0, N - 1)) {
+                const int idx = gBode->curves() - 1;
+                gBode->setCurvePen(idx, QPen(QColor(25, 75, 155), 1.4));
+                gBode->setCurveSymbol(idx,
+                                      QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 95, 185)),
+                                                QPen(QColor(15, 45, 95), 1.1), QSize(7, 7)));
+            }
+            if (arcTbl) {
+                insertStyledCurve(gBode, arcTbl, 0, 3, kArcPts,
+                                  QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
+            } else {
+                insertStyledCurve(gBode, resTbl, 1, 7, N,
+                                  QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
+            }
+
+            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(8),
+                                   Graph::Scatter, 0, N - 1)) {
+                const int idx = gBode->curves() - 1;
+                gBode->setCurvePen(idx, QPen(QColor(195, 55, 30), 1.4));
+                gBode->setCurveSymbol(idx,
+                                      QwtSymbol(QwtSymbol::Triangle, QBrush(QColor(215, 75, 40)),
+                                                QPen(QColor(145, 35, 15), 1.1), QSize(7, 7)));
+                if (QwtPlotCurve *cPhPts = gBode->curve(idx))
+                    cPhPts->setAxis(QwtPlot::xBottom, QwtPlot::yRight);
+            }
+            QwtPlotCurve *cPhFit = arcTbl
+                    ? insertStyledCurve(gBode, arcTbl, 0, 4, kArcPts,
+                                        QPen(QColor(195, 55, 30), 2.0, Qt::DashLine))
+                    : insertStyledCurve(gBode, resTbl, 1, 9, N,
+                                        QPen(QColor(195, 55, 30), 2.0, Qt::DashLine));
+            if (cPhFit)
+                cPhFit->setAxis(QwtPlot::xBottom, QwtPlot::yRight);
+
+            const auto magMM = std::minmax_element(colLogMag.begin(), colLogMag.end());
+            const double magSpan = std::max(0.2, *magMM.second - *magMM.first);
+            const auto phMM = std::minmax_element(colPhase.begin(), colPhase.end());
+            const double phLo = std::min(-90.0, *phMM.first - 5.0);
+            const double phHi = std::max(5.0, *phMM.second + 5.0);
+
+            gBode->setScale(QwtPlot::xBottom, logFMin, logFMax);
+            gBode->setScale(QwtPlot::yLeft, *magMM.first - 0.12 * magSpan,
+                            *magMM.second + 0.15 * magSpan);
+            gBode->setScale(QwtPlot::yRight, phLo, phHi);
+
+            gBode->setXAxisTitle(QObject::tr("log10(f / Hz)"));
+            gBode->setYAxisTitle(QObject::tr("log10(|Z| / Ω)"));
+            gBode->setRightAxisTitle(QObject::tr("Phase (°)"));
+            gBode->setTitle(QObject::tr("EIS Bode Plot (Impedance & Phase)"));
+            gBode->setYAxisTitleColor(QColor(25, 75, 155));
+            gBode->setRightAxisTitleColor(QColor(195, 55, 30));
+            if (gBode->legend())
+                gBode->legend()->setText(gBode->legendText());
+            applyArialToMatSciGraph(gBode);
+            gBode->replot();
+        }
+    }
+
+    return res;
 }
 
 void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
@@ -2124,7 +2815,10 @@ void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
             return;
         Table *t = tables[tblIdx];
         for (int c = 0; c < t->numCols(); ++c) {
-            const QString cn = t->column(c) ? t->column(c)->name() : t->colLabel(c);
+            Column *col = t->column(c);
+            if (!matSciColumnHasNumeric(col))
+                continue;
+            const QString cn = col ? col->name() : t->colLabel(c);
             cbTemp->addItem(cn);
             cbRate->addItem(cn);
         }
@@ -2202,7 +2896,10 @@ void CurveMathTools::showTaucDialog(ApplicationWindow *app)
             return;
         Table *t = tables[tblIdx];
         for (int c = 0; c < t->numCols(); ++c) {
-            const QString cn = t->column(c) ? t->column(c)->name() : t->colLabel(c);
+            Column *col = t->column(c);
+            if (!matSciColumnHasNumeric(col))
+                continue;
+            const QString cn = col ? col->name() : t->colLabel(c);
             cbWave->addItem(cn);
             cbAlpha->addItem(cn);
         }
@@ -2320,5 +3017,107 @@ void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         fillBetweenCurves(app, targetGraph, cbA->currentText(), cbB->currentText(), chosenColor);
+    }
+}
+
+void CurveMathTools::showEISAnalyzerDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerMatSciTranslationsOnce();
+    const QList<Table *> allTables = collectProjectTables(app);
+    QList<Table *> tables;
+    for (Table *t : allTables) {
+        int numValidCols = 0;
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (matSciColumnHasNumeric(t->column(c)))
+                ++numValidCols;
+        }
+        if (numValidCols >= 3)
+            tables.append(t);
+    }
+    if (tables.isEmpty()) {
+        QMessageBox::information(
+                app, QObject::tr("EIS Nyquist & Bode Analyzer (Randles-CPE)"),
+                QObject::tr("Please open a worksheet with at least 3 numeric columns (Frequency, Z', Z'')."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("EIS Nyquist & Bode Analyzer (Randles-CPE)"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *activeTbl = findActiveOrFirstTable(app);
+    int initIdx = 0;
+    for (int i = 0; i < tables.size(); ++i) {
+        cbTable->addItem(tables[i]->name());
+        if (tables[i] == activeTbl)
+            initIdx = i;
+    }
+    cbTable->setCurrentIndex(initIdx);
+
+    QComboBox *cbFreq = new QComboBox(&dlg);
+    QComboBox *cbRe = new QComboBox(&dlg);
+    QComboBox *cbIm = new QComboBox(&dlg);
+    auto repopulateCols = [&](int tblIdx) {
+        cbFreq->clear();
+        cbRe->clear();
+        cbIm->clear();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Table *t = tables[tblIdx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!matSciColumnHasNumeric(col))
+                continue;
+            const QString cn = col ? col->name() : t->colLabel(c);
+            cbFreq->addItem(cn);
+            cbRe->addItem(cn);
+            cbIm->addItem(cn);
+        }
+        if (cbRe->count() >= 2)
+            cbRe->setCurrentIndex(1);
+        if (cbIm->count() >= 3)
+            cbIm->setCurrentIndex(2);
+    };
+    repopulateCols(initIdx);
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     repopulateCols);
+
+    QCheckBox *chkNegated =
+            new QCheckBox(QObject::tr("Imaginary column is already negated (-Z'' > 0)"), &dlg);
+    chkNegated->setChecked(false);
+    QCheckBox *chkFit = new QCheckBox(
+            QObject::tr("Fit Randles + CPE Equivalent Circuit (Rs + Rct || CPE)"), &dlg);
+    chkFit->setChecked(true);
+
+    form->addRow(QObject::tr("Source Worksheet:"), cbTable);
+    form->addRow(QObject::tr("Frequency Column (Hz):"), cbFreq);
+    form->addRow(QObject::tr("Real Impedance Column (Z'):"), cbRe);
+    form->addRow(QObject::tr("Imaginary Impedance Column (Z'' or -Z''):"), cbIm);
+    form->addRow(QString(), chkNegated);
+    form->addRow(QString(), chkFit);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int idx = cbTable->currentIndex();
+        if (idx >= 0 && idx < tables.size()) {
+            const EISResult eis = analyzeEIS(
+                    app, tables[idx], cbFreq->currentText(), cbRe->currentText(),
+                    cbIm->currentText(), chkNegated->isChecked(), chkFit->isChecked());
+            if (!eis.valid) {
+                QMessageBox::warning(
+                        app, QObject::tr("EIS Nyquist & Bode Analyzer (Randles-CPE)"),
+                        QObject::tr("EIS analysis requires at least 4 valid positive-frequency data points."));
+            }
+        }
     }
 }

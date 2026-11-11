@@ -77,6 +77,9 @@ public:
         double modulusMSE = 0.0;
         double scaleSigma0 = 0.0;     // characteristic strength/life eta (63.2%)
         double scaleSigma0SE = 0.0;
+        double thresholdGamma = 0.0;
+        bool threeParameter = false;
+        int censoredCount = 0;
         double b10Life = 0.0;
         double b50Life = 0.0;
         double rSquare = 0.0;
@@ -88,10 +91,21 @@ public:
         int n = 0;
         QVector<int> outlierRows;
         QVector<double> outlierValues;
-        double primaryStatistic = 0.0; // Grubbs G or Dixon Q
+        double primaryStatistic = 0.0; // Grubbs G, ESD R, or Dixon Q
+        double testStatistic = 0.0;
         double criticalValue = 0.0;
         double pValue = 1.0;
         Table *reportTable = nullptr;
+    };
+    struct PassingBablokDemingResult {
+        bool valid = false;
+        int n = 0;
+        double pbSlope = 0.0, pbSlopeCILow = 0.0, pbSlopeCIHigh = 0.0;
+        double pbIntercept = 0.0, pbInterceptCILow = 0.0, pbInterceptCIHigh = 0.0;
+        double cusumStat = 0.0, cusumLinearityP = 1.0;
+        double demingSlope = 0.0, demingSlopeSE = 0.0, demingIntercept = 0.0, demingInterceptSE = 0.0;
+        Table *summaryTable = nullptr;
+        MultiLayer *comparisonPlot = nullptr;
     };
     enum NonparamMethod { TestMannWhitneyU = 0, TestWilcoxonSignedRank = 1,
                           TestKruskalWallisDunn = 2, TestAutoSmartSwitch = 3 };
@@ -155,9 +169,15 @@ public:
                                             const QString &responseCol,
                                             bool plotInteraction = true);
 
-    static WeibullPlotResult plotWeibullProbability(ApplicationWindow *app, Table *srcTable,
-                                                    const QString &dataCol,
-                                                    const QString &censorCol = QString());
+    static WeibullPlotResult plotWeibullProbability(
+            ApplicationWindow *app, Table *srcTable, const QString &dataCol,
+            const QString &censorCol = QString(),
+            int censorCoding = 0 /*0: 1=Failure/0=Censored (KM standard); 1: 0=Failure/1=Censored*/,
+            bool fitThreeParam = false);
+    static PassingBablokDemingResult runPassingBablokDeming(
+            ApplicationWindow *app, Table *srcTable, const QString &colXName,
+            const QString &colYName, double errorVarianceRatioLambda = 1.0,
+            bool createPlot = true);
     static OutlierTestResult runOutlierTest(ApplicationWindow *app, Table *srcTable,
                                             const QString &colName,
                                             int method = 0 /*0=Grubbs, 1=GeneralizedESD, 2=DixonQ*/,
@@ -192,6 +212,7 @@ public:
     static void showBlandAltmanDialog(ApplicationWindow *app);
     static void showTwoWayANOVADialog(ApplicationWindow *app);
     static void showWeibullDialog(ApplicationWindow *app);
+    static void showPassingBablokDemingDialog(ApplicationWindow *app);
     static void showOutlierTestDialog(ApplicationWindow *app);
     static void showNonparametricDialog(ApplicationWindow *app, Graph *g = nullptr);
     static void showPairedComparisonDialog(ApplicationWindow *app);

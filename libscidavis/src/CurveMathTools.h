@@ -80,6 +80,13 @@ public:
         Table *dataTable = nullptr;
         MultiLayer *plot = nullptr;
     };
+    struct EISResult {
+        bool valid = false;
+        double rs = 0.0, rct = 0.0, qCpe = 0.0, nCpe = 1.0, cEff = 0.0, fPeakHz = 0.0, rmse = 0.0;
+        Table *resultTable = nullptr;
+        MultiLayer *nyquistPlot = nullptr;
+        MultiLayer *bodePlot = nullptr;
+    };
 
     static ArrheniusResult createArrheniusPlot(ApplicationWindow *app, Table *srcTable,
                                                const QString &tempCol, const QString &rateCol,
@@ -93,6 +100,10 @@ public:
     static QwtPlotCurve *fillBetweenCurves(ApplicationWindow *app, Graph *g,
                                            const QString &curveA, const QString &curveB,
                                            const QColor &fillColor = QColor(30, 102, 184, 55));
+    static EISResult analyzeEIS(ApplicationWindow *app, Table *srcTable,
+                                const QString &freqCol, const QString &zRealCol,
+                                const QString &zImagCol, bool zImagAlreadyNegated = false,
+                                bool fitRandlesCPE = true);
 
     static void showCurveMathDialog(ApplicationWindow *app, Graph *g);
     static void showSubtractLineDialog(ApplicationWindow *app, Graph *g);
@@ -102,6 +113,7 @@ public:
     static void showArrheniusDialog(ApplicationWindow *app);
     static void showTaucDialog(ApplicationWindow *app);
     static void showFillBetweenDialog(ApplicationWindow *app, Graph *g);
+    static void showEISAnalyzerDialog(ApplicationWindow *app);
 };
 
 #endif // CURVEMATHTOOLS_H

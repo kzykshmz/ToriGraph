@@ -27,6 +27,13 @@ public:
     enum PassType { LowPass = 0, HighPass = 1, BandPass = 2, BandStop = 3 };
     enum WaveletType { Morlet = 0, RickerMexicanHat = 1, Haar = 2, Daubechies4 = 3 };
     enum EnvelopeType { EnvelopeUpper = 0, EnvelopeLower = 1, EnvelopeBoth = 2 };
+    enum MatrixFilter2DMethod {
+        FilterGaussian2D = 0,
+        FilterMedian2D = 1,
+        FilterLaplacianSharpen2D = 2,
+        FilterSobelGradient2D = 3,
+        FilterSubtractPlanarTilt2D = 4
+    };
 
     static QwtPlotCurve *iirFilter(ApplicationWindow *app, Graph *g, const QString &curveTitle,
                                    IirDesign design, PassType pass, int order,
@@ -67,6 +74,15 @@ public:
     static QwtPlotCurve *decimateCurve(ApplicationWindow *app, Graph *g,
                                        const QString &curveTitle,
                                        int factor = 4, bool firAntiAlias = true);
+    static Matrix *filterMatrix2D(ApplicationWindow *app, Matrix *srcMatrix,
+                                  MatrixFilter2DMethod method, double param = 1.5,
+                                  int radius = 1, bool inPlace = false,
+                                  bool plotHeatmap = false);
+    static QwtPlotCurve *fourierSelfDeconvolve(ApplicationWindow *app, Graph *g,
+                                               const QString &curveTitle,
+                                               double lorentzFwhmGamma,
+                                               double sharpeningFactorK = 1.8,
+                                               int apodization = 0 /*0=Bessel, 1=Gaussian*/);
 
     static void showIirFilterDialog(ApplicationWindow *app, Graph *g);
     static void showStftDialog(ApplicationWindow *app, Graph *g);
@@ -76,6 +92,8 @@ public:
     static void showSavGolDerivativeDialog(ApplicationWindow *app, Graph *g);
     static void showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g);
     static void showDecimateDialog(ApplicationWindow *app, Graph *g);
+    static void showMatrixFilter2DDialog(ApplicationWindow *app);
+    static void showFourierSelfDeconvolveDialog(ApplicationWindow *app, Graph *g);
 };
 
 #endif // ADVANCEDSIGNALPROC_H
