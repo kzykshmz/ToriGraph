@@ -110,6 +110,46 @@ TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWi
     buttonUnderline->setFont(font);
     buttonUnderline->setMaximumWidth(40);
     layout->addWidget(buttonUnderline);
+
+    QFont sciFont = this->font();
+    sciFont.setPointSize(11);
+
+    buttonSigma = new QPushButton(QString(QChar(0x03C3)));
+    buttonSigma->setFont(sciFont);
+    buttonSigma->setMaximumWidth(34);
+    buttonSigma->setToolTip(tr("Insert &sigma;"));
+    layout->addWidget(buttonSigma);
+
+    buttonEpsilon = new QPushButton(QString(QChar(0x03B5)));
+    buttonEpsilon->setFont(sciFont);
+    buttonEpsilon->setMaximumWidth(34);
+    buttonEpsilon->setToolTip(tr("Insert &epsilon;"));
+    layout->addWidget(buttonEpsilon);
+
+    buttonMu = new QPushButton(QString(QChar(0x03BC)));
+    buttonMu->setFont(sciFont);
+    buttonMu->setMaximumWidth(34);
+    buttonMu->setToolTip(tr("Insert &mu;"));
+    layout->addWidget(buttonMu);
+
+    buttonDelta = new QPushButton(QString(QChar(0x0394)));
+    buttonDelta->setFont(sciFont);
+    buttonDelta->setMaximumWidth(34);
+    buttonDelta->setToolTip(tr("Insert &Delta;"));
+    layout->addWidget(buttonDelta);
+
+    buttonDegC = new QPushButton(QString(QChar(0x00B0)) + "C");
+    buttonDegC->setFont(sciFont);
+    buttonDegC->setMaximumWidth(40);
+    buttonDegC->setToolTip(tr("Insert &deg;C"));
+    layout->addWidget(buttonDegC);
+
+    buttonInvMm3 = new QPushButton(QString("mm") + QChar(0x207B) + QChar(0x00B3));
+    buttonInvMm3->setFont(sciFont);
+    buttonInvMm3->setMaximumWidth(52);
+    buttonInvMm3->setToolTip(tr("Insert mm<sup>-3</sup>"));
+    layout->addWidget(buttonInvMm3);
+
     layout->addStretch();
 
     connect(buttonCurve, SIGNAL(clicked()), this, SLOT(addCurve()));
@@ -122,6 +162,12 @@ TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWi
     connect(buttonUpperGreek, SIGNAL(clicked()), this, SLOT(showUpperGreek()));
     connect(buttonMathSymbols, SIGNAL(clicked()), this, SLOT(showMathSymbols()));
     connect(buttonArrowSymbols, SIGNAL(clicked()), this, SLOT(showArrowSymbols()));
+    connect(buttonSigma, SIGNAL(clicked()), this, SLOT(addSigma()));
+    connect(buttonEpsilon, SIGNAL(clicked()), this, SLOT(addEpsilon()));
+    connect(buttonMu, SIGNAL(clicked()), this, SLOT(addMu()));
+    connect(buttonDelta, SIGNAL(clicked()), this, SLOT(addDelta()));
+    connect(buttonDegC, SIGNAL(clicked()), this, SLOT(addDegC()));
+    connect(buttonInvMm3, SIGNAL(clicked()), this, SLOT(addInvMm3()));
 }
 
 void TextFormatButtons::showLowerGreek()
@@ -214,6 +260,42 @@ void TextFormatButtons::addSubscript()
 void TextFormatButtons::addSuperscript()
 {
     formatText("<sup>", "</sup>");
+}
+
+void TextFormatButtons::addSigma()
+{
+    addSymbol("&sigma;");
+    connectedTextEdit->setFocus();
+}
+
+void TextFormatButtons::addEpsilon()
+{
+    addSymbol("&epsilon;");
+    connectedTextEdit->setFocus();
+}
+
+void TextFormatButtons::addMu()
+{
+    addSymbol("&mu;");
+    connectedTextEdit->setFocus();
+}
+
+void TextFormatButtons::addDelta()
+{
+    addSymbol("&Delta;");
+    connectedTextEdit->setFocus();
+}
+
+void TextFormatButtons::addDegC()
+{
+    addSymbol("&deg;C");
+    connectedTextEdit->setFocus();
+}
+
+void TextFormatButtons::addInvMm3()
+{
+    addSymbol("mm<sup>-3</sup>");
+    connectedTextEdit->setFocus();
 }
 
 void TextFormatButtons::formatText(const QString &prefix, const QString &postfix)

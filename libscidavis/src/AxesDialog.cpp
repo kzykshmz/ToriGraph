@@ -1698,11 +1698,15 @@ void AxesDialog::setCurrentScale(int axisPos)
     case QwtScaleDraw::TopScale:
         axis = 2;
         break;
+    default:
+        if (axisPos >= 0 && axisPos < 4)
+            axis = axisPos;
+        break;
     }
-    if (generalDialog.currentWidget() == (QWidget *)scalesPage)
+    if (axis >= 0) {
         axesList->setCurrentRow(axis);
-    else if (generalDialog.currentWidget() == (QWidget *)axesPage)
         axesTitlesList->setCurrentRow(axis);
+    }
 }
 
 void AxesDialog::showAxesPage()

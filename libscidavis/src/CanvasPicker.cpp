@@ -65,6 +65,11 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
 
         const QMouseEvent *me = (const QMouseEvent *)e;
 
+        if (me->button() == Qt::MiddleButton
+            || (me->button() == Qt::LeftButton && (me->modifiers() & Qt::AltModifier))) {
+            return false;
+        }
+
         if (me->button() == Qt::LeftButton && (plot()->drawLineActive())) {
             startLinePoint = me->pos();
             return true;
@@ -93,6 +98,9 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
     } break;
 
     case QEvent::MouseButtonDblClick: {
+        const QMouseEvent *dblMe = (const QMouseEvent *)e;
+        if (dblMe->button() == Qt::MiddleButton)
+            return false;
         if (d_editing_marker) {
             return d_editing_marker->eventFilter(plotWidget->canvas(), e);
         } else if (plot()->selectedMarkerKey() >= 0) {
@@ -123,8 +131,11 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
 
     case QEvent::MouseMove: {
         const QMouseEvent *me = (const QMouseEvent *)e;
+        if ((me->buttons() & Qt::MiddleButton)
+            || ((me->buttons() & Qt::LeftButton) && (me->modifiers() & Qt::AltModifier)))
+            return false;
         if (me->buttons() != Qt::LeftButton)
-            return true;
+            return false;
 
         QPoint pos = me->pos();
 

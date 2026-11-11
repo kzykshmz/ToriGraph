@@ -31,6 +31,7 @@
 
 #include <QObject>
 #include <QMap>
+#include <QPoint>
 
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
@@ -93,6 +94,10 @@ public:
     void print(QPainter *, const QRect &rect,
                const QwtPlotPrintFilter & = QwtPlotPrintFilter()) const override;
 
+    bool eventFilter(QObject *object, QEvent *e) override;
+    void zoomAxisAroundPos(int axis, int pixelPos, double factor);
+    void panAxisByPixels(int axis, int startPixel, int endPixel);
+
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],
                    const QwtPlotPrintFilter &pfilter) const override;
@@ -106,5 +111,8 @@ protected:
     int minTickLength, majTickLength;
     int marker_key;
     int curve_key;
+    bool d_is_panning;
+    bool d_space_pressed;
+    QPoint d_pan_last_pos;
 };
 #endif

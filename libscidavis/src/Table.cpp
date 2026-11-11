@@ -36,6 +36,7 @@
 #include "core/datatypes/String2DoubleFilter.h"
 #include "core/datatypes/DateTime2StringFilter.h"
 #include "table/AsciiTableImportFilter.h"
+#include "table/TableDoubleHeaderView.h"
 #include "ScriptEdit.h"
 
 #include <QMessageBox>
@@ -43,6 +44,9 @@
 #include <QTextStream>
 #include <QTextCodec>
 #include <QClipboard>
+#include <QMimeData>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QApplication>
 #include <QPainter>
 #include <QEvent>
@@ -55,6 +59,7 @@
 #include <QFile>
 #include <QTemporaryFile>
 #include <vector>
+#include <cmath>
 #include <iostream>
 using namespace std;
 
@@ -149,6 +154,16 @@ void Table::init()
             SLOT(handleAspectDescriptionChange(const AbstractAspect *)));
     connect(d_future_table, SIGNAL(aspectDescriptionAboutToChange(const AbstractAspect *)), this,
             SLOT(handleAspectDescriptionAboutToChange(const AbstractAspect *)));
+
+    this->installEventFilter(this);
+    if (d_view_widget && d_view_widget->viewport())
+        d_view_widget->viewport()->installEventFilter(this);
+    if (d_horizontal_header) {
+        if (d_horizontal_header->viewport())
+            d_horizontal_header->viewport()->installEventFilter(this);
+        connect(d_horizontal_header, SIGNAL(sectionDoubleClicked(int)), this,
+                SLOT(columnNumericFormat(int)));
+    }
 }
 
 void Table::handleChange()
@@ -833,8 +848,40 @@ void Table::deselect()
 
 void Table::clearSelection()
 {
-    if (d_future_table)
-        d_future_table->clearSelectedCells();
+    if (!d_future_table)
+        return;
+
+    int firstRow = firstSelectedRow(false);
+    int lastRow = lastSelectedRow(false);
+    int firstCol = firstSelectedColumn(false);
+    int lastCol = lastSelectedColumn(false);
+
+    d_future_table->beginMacro(tr("%1: clear selected cell(s)").arg(name()));
+    if (firstRow >= 0 && firstCol >= 0) {
+        for (int c = firstCol; c <= lastCol && c < numCols(); ++c) {
+            Column *colPtr = column(c);
+            if (!colPtr)
+                continue;
+            for (int r = firstRow; r <= lastRow && r < numRows(); ++r) {
+                if (isCellSelected(r, c)) {
+                    if (formulaModeActive())
+                        colPtr->setFormula(r, QString());
+                    else
+                        clearCell(r, c);
+                }
+            }
+        }
+    } else {
+        int curRow = -1, curCol = -1;
+        getCurrentCell(&curRow, &curCol);
+        if (curRow >= 0 && curRow < numRows() && curCol >= 0 && curCol < numCols()) {
+            if (formulaModeActive())
+                column(curCol)->setFormula(curRow, QString());
+            else
+                clearCell(curRow, curCol);
+        }
+    }
+    d_future_table->endMacro();
 }
 
 void Table::copySelection()
@@ -845,8 +892,151 @@ void Table::copySelection()
 
 void Table::pasteSelection()
 {
-    if (d_future_table)
-        d_future_table->pasteIntoSelection();
+    if (!d_future_table)
+        return;
+
+    const QClipboard *clipboard = QApplication::clipboard();
+    if (!clipboard)
+        return;
+    QString rawText = clipboard->text();
+    if (rawText.isEmpty())
+        return;
+
+    QString normalized = rawText;
+    normalized.replace("\r\n", "\n");
+    normalized.replace('\r', '\n');
+    QStringList lines = normalized.split('\n');
+    while (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    if (lines.isEmpty())
+        return;
+
+    bool hasTab = normalized.contains('\t');
+    bool hasComma = !hasTab && normalized.contains(',');
+
+    QList<QStringList> grid;
+    int maxCols = 0;
+    for (const QString &line : lines) {
+        QStringList rowCells;
+        if (hasTab) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            rowCells = line.split('\t', Qt::KeepEmptyParts);
+#else
+            rowCells = line.split('\t', QString::KeepEmptyParts);
+#endif
+        } else if (hasComma) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            rowCells = line.split(',', Qt::KeepEmptyParts);
+#else
+            rowCells = line.split(',', QString::KeepEmptyParts);
+#endif
+        } else {
+            QString trimmedLine = line.trimmed();
+            if (trimmedLine.isEmpty()) {
+                rowCells << QString();
+            } else {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                rowCells = trimmedLine.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
+#else
+                rowCells = trimmedLine.split(QRegExp("\\s+"), QString::SkipEmptyParts);
+#endif
+            }
+        }
+        for (int i = 0; i < rowCells.size(); ++i)
+            rowCells[i] = rowCells[i].trimmed();
+        maxCols = qMax(maxCols, rowCells.size());
+        grid.append(rowCells);
+    }
+
+    int pastedRows = grid.size();
+    int pastedCols = maxCols;
+    if (pastedRows <= 0 || pastedCols <= 0)
+        return;
+
+    int startRow = firstSelectedRow(false);
+    int startCol = firstSelectedColumn(false);
+    if (startRow < 0 || startCol < 0)
+        getCurrentCell(&startRow, &startCol);
+    if (startRow < 0)
+        startRow = 0;
+    if (startCol < 0)
+        startCol = 0;
+
+    d_future_table->beginMacro(tr("%1: paste from clipboard").arg(name()));
+
+    int neededCols = startCol + pastedCols;
+    int neededRows = startRow + pastedRows;
+    if (neededCols > numCols())
+        setNumCols(neededCols);
+    if (neededRows > numRows())
+        setNumRows(neededRows);
+
+    auto isMissingToken = [](const QString &s) -> bool {
+        if (s.isEmpty() || s == "-" || s == "--" || s == "---")
+            return true;
+        if (s.compare("nan", Qt::CaseInsensitive) == 0
+            || s.compare("na", Qt::CaseInsensitive) == 0
+            || s.compare("n/a", Qt::CaseInsensitive) == 0
+            || s.compare("null", Qt::CaseInsensitive) == 0)
+            return true;
+        return false;
+    };
+
+    auto tryParseDouble = [](const QString &s, double &outVal) -> bool {
+        bool ok = false;
+        outVal = QLocale::c().toDouble(s, &ok);
+        if (ok)
+            return true;
+        outVal = QLocale().toDouble(s, &ok);
+        if (ok)
+            return true;
+        QString alt = s;
+        alt.replace(',', '.');
+        outVal = QLocale::c().toDouble(alt, &ok);
+        return ok;
+    };
+
+    for (int c = 0; c < pastedCols; ++c) {
+        int targetCol = startCol + c;
+        Column *colPtr = column(targetCol);
+        if (!colPtr)
+            continue;
+
+        for (int r = 0; r < pastedRows; ++r) {
+            int targetRow = startRow + r;
+            QString cellStr = (c < grid[r].size()) ? grid[r][c] : QString();
+
+            if (formulaModeActive()) {
+                colPtr->setFormula(targetRow, cellStr);
+                colPtr->setInvalid(targetRow, false);
+                continue;
+            }
+
+            if (isMissingToken(cellStr)) {
+                clearCell(targetRow, targetCol);
+                continue;
+            }
+
+            if (colPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                double val = 0.0;
+                if (tryParseDouble(cellStr, val) && !std::isnan(val)) {
+                    colPtr->setValueAt(targetRow, val);
+                    if (colPtr->isInvalid(targetRow))
+                        colPtr->setInvalid(targetRow, false);
+                } else {
+                    clearCell(targetRow, targetCol);
+                }
+            } else {
+                setText(targetRow, targetCol, cellStr);
+            }
+        }
+    }
+
+    deselectAll();
+    setCellsSelected(startRow, startCol, startRow + pastedRows - 1, startCol + pastedCols - 1, true);
+    goToCell(startRow, startCol);
+
+    d_future_table->endMacro();
 }
 
 void Table::removeCol()
@@ -1286,6 +1476,112 @@ QString Table::columnFormat(int col)
 
     DateTime2StringFilter *filter = static_cast<DateTime2StringFilter *>(col_ptr->outputFilter());
     return filter->format();
+}
+
+void Table::columnNumericFormat(int col)
+{
+    if (!d_future_table || numCols() <= 0)
+        return;
+    if (col < 0 || col >= numCols())
+        col = firstSelectedColumn(false);
+    if (col < 0 || col >= numCols())
+        col = 0;
+
+    if (numRows() > 0) {
+        deselectAll();
+        setCellsSelected(0, col, numRows() - 1, col, true);
+        goToCell(0, col);
+    }
+    setColumnForControlTabs(col);
+    d_future_table->setCurrentColumn(col);
+    showControlTypeTab();
+}
+
+void Table::showColMenu(int col)
+{
+    columnNumericFormat(col);
+}
+
+bool Table::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress
+        && (watched == this || watched == d_view_widget
+            || (d_view_widget && watched == d_view_widget->viewport()))) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if (ke->matches(QKeySequence::Paste)) {
+            pasteSelection();
+            return true;
+        }
+        if (ke->matches(QKeySequence::Copy)) {
+            copySelection();
+            return true;
+        }
+        if (ke->matches(QKeySequence::Cut)) {
+            cutSelection();
+            return true;
+        }
+        if (ke->key() == Qt::Key_Delete || ke->key() == Qt::Key_Backspace) {
+            clearSelection();
+            return true;
+        }
+        if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+            int curRow = -1, curCol = -1;
+            getCurrentCell(&curRow, &curCol);
+            if (curRow < 0 || curCol < 0 || !isCellSelected(curRow, curCol)) {
+                int selRow = lastSelectedRow(false);
+                int selCol = firstSelectedColumn(false);
+                if (selRow >= 0 && selCol >= 0) {
+                    curRow = selRow;
+                    curCol = selCol;
+                }
+            }
+            if (curRow < 0)
+                curRow = 0;
+            if (curCol < 0)
+                curCol = 0;
+            int nextRow = curRow + 1;
+            if (nextRow >= numRows())
+                setNumRows(nextRow + 1);
+            deselectAll();
+            goToCell(nextRow, curCol);
+            setCellSelected(nextRow, curCol, true);
+            return true;
+        }
+        if (ke->key() == Qt::Key_Tab) {
+            int curRow = -1, curCol = -1;
+            getCurrentCell(&curRow, &curCol);
+            if (curRow < 0 || curCol < 0 || !isCellSelected(curRow, curCol)) {
+                int selRow = firstSelectedRow(false);
+                int selCol = lastSelectedColumn(false);
+                if (selRow >= 0 && selCol >= 0) {
+                    curRow = selRow;
+                    curCol = selCol;
+                }
+            }
+            if (curRow < 0)
+                curRow = 0;
+            if (curCol < 0)
+                curCol = 0;
+            if (numCols() > 0) {
+                int nextCol = (curCol + 1) % numCols();
+                deselectAll();
+                goToCell(curRow, nextCol);
+                setCellSelected(curRow, nextCol, true);
+            }
+            return true;
+        }
+    } else if (event->type() == QEvent::MouseButtonDblClick
+               && (watched == d_horizontal_header
+                   || (d_horizontal_header && watched == d_horizontal_header->viewport()))) {
+        QMouseEvent *me = static_cast<QMouseEvent *>(event);
+        int col = d_horizontal_header->logicalIndexAt(me->pos());
+        if (col >= 0 && col < numCols()) {
+            columnNumericFormat(col);
+            return true;
+        }
+    }
+
+    return TableView::eventFilter(watched, event);
 }
 
 int Table::verticalHeaderWidth()

@@ -600,6 +600,18 @@ public slots:
     void fitMultiPeak(int profile);
     void fitMultiPeakGauss();
     void fitMultiPeakLorentz();
+    void fitMultiPeakGaussAmp();
+    void fitMultiPeakPseudoVoigt();
+    void fitMultiPeakPearsonVII();
+    void showPeakFitDialog(int defaultProfile = 0);
+    void fitAutoPeakGauss();
+    void fitAutoPeakLorentz();
+    void fitAutoPeakPseudoVoigt();
+    void runAutoPeakFit(int profile, int numPeaks = 0, bool autoCount = true,
+                        bool plotPeakCurves = true, bool createSummary = true,
+                        bool createResiduals = false, const QString &curveTitle = QString(),
+                        double prominence = 0.08, double voigtMu = 0.5, double pearsonM = 2.0);
+    void copyGraphAsOleObject();
     //@}
 
     //! \name Calculus
@@ -1184,6 +1196,11 @@ private:
     QAction *actionConvolute, *actionDeconvolute, *actionCorrelate, *actionAutoCorrelate;
     QAction *actionTranslateHor, *actionTranslateVert;
     QAction *actionBoxPlot, *actionMultiPeakGauss, *actionMultiPeakLorentz;
+    QAction *actionMultiPeakGaussAmp = nullptr, *actionMultiPeakPseudoVoigt = nullptr,
+            *actionMultiPeakPearsonVII = nullptr;
+    QAction *actionPeakFitDialog = nullptr, *actionAutoPeakGauss = nullptr,
+            *actionAutoPeakLorentz = nullptr, *actionAutoPeakPseudoVoigt = nullptr;
+    QAction *actionCopyGraphOle = nullptr;
 #ifdef SEARCH_FOR_UPDATES
     QAction *actionCheckUpdates;
 #endif

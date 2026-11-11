@@ -54,7 +54,7 @@ Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0)
 
     hspace = 30;
     left_margin = 10;
-    top_margin = 5;
+    top_margin = 6;
     d_shadow_size_x = 5;
     d_shadow_size_y = 5;
 }
@@ -256,9 +256,10 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
     Graph *g = (Graph *)d_plot->parent();
+    const bool scatterOnly = isScatterOnly();
 
     int w = rect.x() + left_margin;
-    int l = symbolLineLength + 2 * left_margin;
+    int l = scatterOnly ? qMax(symbolLineLength, 14) : (symbolLineLength + 2 * left_margin);
 
     QString text = d_text->text().trimmed();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
@@ -284,10 +285,10 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
             if (cv < 0)
                 continue;
 
-            if (g->curveType(cv) == Graph ::VectXYXY || g->curveType(cv) == Graph ::VectXYAM)
+            if (g && (g->curveType(cv) == Graph ::VectXYXY || g->curveType(cv) == Graph ::VectXYAM))
                 drawVector(p, w, height[i], l, cv);
             else {
-                const QwtPlotCurve *curve = g->curve(cv);
+                const QwtPlotCurve *curve = g ? g->curve(cv) : nullptr;
                 if (curve && curve->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
                     QwtSymbol symb = curve->symbol();
                     const QBrush br = curve->brush();
@@ -344,6 +345,9 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
     int w = rect.x() + left_margin;
+    const bool scatterOnly = isScatterOnly();
+    const int sampleOffset =
+            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
 
     QString text = d_text->text().trimmed();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
@@ -356,11 +360,12 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
         QString str = titles[i];
         int x = w;
         if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
-            x += symbolLineLength + hspace;
+            x += sampleOffset;
 
         QwtText aux(parse(str));
         aux.setFont(d_text->font());
         aux.setColor(d_text->color());
+        aux.setRenderFlags(Qt::AlignLeft | Qt::AlignVCenter);
 
         QSize size = aux.textSize();
         // bug in Qwt; workaround in QwtText::textSize() only works for short texts.
@@ -385,6 +390,10 @@ QwtArray<long> Legend::itemsHeight(int y, int symbolLineLength, int &width, int 
     width = 0;
     height = 0;
 
+    const bool scatterOnly = isScatterOnly();
+    const int sampleOffset =
+            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
+
     QString text = d_text->text().trimmed();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList titles = text.split("\n", Qt::KeepEmptyParts);
@@ -400,7 +409,7 @@ QwtArray<long> Legend::itemsHeight(int y, int symbolLineLength, int &width, int 
         QString str = titles[i];
         int textL = 0;
         if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
-            textL = symbolLineLength + hspace;
+            textL = sampleOffset;
 
         QwtText aux(parse(str));
         QSize size = aux.textSize(d_text->font());
@@ -433,6 +442,7 @@ QwtArray<long> Legend::itemsHeight(int y, int symbolLineLength, int &width, int 
 int Legend::symbolsMaxLineLength() const
 {
     QList<int> cvs = d_plot->curveKeys();
+    Graph *g = d_plot ? qobject_cast<Graph *>(d_plot->parent()) : nullptr;
 
     int maxL = 0;
     QString text = d_text->text().trimmed();
@@ -442,7 +452,7 @@ int Legend::symbolsMaxLineLength() const
     QStringList titles = text.split("\n", QString::KeepEmptyParts);
 #endif
     for (int i = 0; i < (int)titles.count(); i++) {
-        if (titles[i].contains("\\c{") && (int)cvs.size() > 0) {
+        if ((titles[i].contains("\\c{") || titles[i].contains("\\l(")) && (int)cvs.size() > 0) {
             QString aux;
             if (titles[i].contains("\\c{")) { // SciDAVis symbol specification
                 int pos = titles[i].indexOf("{", 0);
@@ -455,10 +465,12 @@ int Legend::symbolsMaxLineLength() const
             }
 
             int cv = aux.toInt() - 1;
-            if (cv < 0 || cv >= cvs.count())
+            if (cv < 0)
                 continue;
 
-            const QwtPlotCurve *c = (QwtPlotCurve *)d_plot->curve(cvs[cv]);
+            const QwtPlotCurve *c = g ? g->curve(cv)
+                                      : ((cv < cvs.count()) ? (const QwtPlotCurve *)d_plot->curve(cvs[cv])
+                                                            : nullptr);
             if (c && c->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
                 int l = c->symbol().size().width();
                 if (l < 3)
@@ -474,6 +486,61 @@ int Legend::symbolsMaxLineLength() const
             maxL = 10;
     }
     return maxL;
+}
+
+bool Legend::isScatterOnly() const
+{
+    if (!d_plot)
+        return false;
+
+    Graph *g = qobject_cast<Graph *>(d_plot->parent());
+    QList<int> cvs = d_plot->curveKeys();
+
+    QString text = d_text->text().trimmed();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
+#else
+    QStringList titles = text.split("\n", QString::KeepEmptyParts);
+#endif
+
+    bool hasScatter = false;
+    for (int i = 0; i < (int)titles.count(); i++) {
+        if (titles[i].contains("\\p{"))
+            return false;
+
+        if (titles[i].contains("\\c{") || titles[i].contains("\\l(")) {
+            QString aux;
+            if (titles[i].contains("\\c{")) {
+                int pos = titles[i].indexOf("{", 0);
+                int pos2 = titles[i].indexOf("}", pos);
+                aux = titles[i].mid(pos + 1, pos2 - pos - 1);
+            } else if (titles[i].contains("\\l(")) {
+                int pos = titles[i].indexOf("(", 0);
+                int pos2 = titles[i].indexOf(")", pos);
+                aux = titles[i].mid(pos + 1, pos2 - pos - 1);
+            }
+
+            int cv = aux.toInt() - 1;
+            if (cv < 0)
+                continue;
+
+            if (g
+                && (g->curveType(cv) == Graph::VectXYXY || g->curveType(cv) == Graph::VectXYAM
+                    || g->curveType(cv) == Graph::Box))
+                return false;
+
+            const QwtPlotCurve *c = g ? g->curve(cv)
+                                      : ((cv < cvs.count()) ? (const QwtPlotCurve *)d_plot->curve(cvs[cv])
+                                                            : nullptr);
+            if (c && c->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (c->style() != QwtPlotCurve::NoCurve || c->brush().style() != Qt::NoBrush)
+                    return false;
+                if (c->symbol().style() != QwtSymbol::NoSymbol)
+                    hasScatter = true;
+            }
+        }
+    }
+    return hasScatter;
 }
 
 QString Legend::parse(const QString &str) const

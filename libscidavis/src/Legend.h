@@ -104,6 +104,7 @@ private:
 
     QwtArray<long> itemsHeight(int y, int symbolLineLength, int &width, int &height) const;
     int symbolsMaxLineLength() const;
+    bool isScatterOnly() const;
     QString parse(const QString &str) const;
 
 protected:

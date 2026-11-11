@@ -61,11 +61,17 @@ private:
     QPushButton *buttonBold;
     QPushButton *buttonItalics;
     QPushButton *buttonUnderline;
+    QPushButton *buttonSigma;
+    QPushButton *buttonEpsilon;
+    QPushButton *buttonMu;
+    QPushButton *buttonDelta;
+    QPushButton *buttonDegC;
+    QPushButton *buttonInvMm3;
 
     //! Internal function: format selected text with prefix and postfix
     void formatText(const QString &prefix, const QString &postfix);
 
-private slots:
+public slots:
     //! Format seleted text to subscript
     void addSubscript();
     //! Format seleted text to superscript
@@ -78,6 +84,14 @@ private slots:
     void addBold();
     //! Insert curve marker into the text
     void addCurve();
+
+    //! Quick-insert OriginPro 2021 scientific symbols & units
+    void addSigma();
+    void addEpsilon();
+    void addMu();
+    void addDelta();
+    void addDegC();
+    void addInvMm3();
 
     //! Let the user insert lower case greek letters
     void showLowerGreek();

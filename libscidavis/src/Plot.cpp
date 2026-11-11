@@ -39,10 +39,15 @@
 #include <qwt_plot_layout.h>
 #include <qwt_scale_widget.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_engine.h>
 #include <qwt_text_label.h>
 
 #include <QPainter>
+#include <QWheelEvent>
+#include <QMouseEvent>
+#include <QKeyEvent>
 
+#include <cmath>
 #include <iostream>
 using namespace std;
 
@@ -52,6 +57,8 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 
     marker_key = 0;
     curve_key = 0;
+    d_is_panning = false;
+    d_space_pressed = false;
 
     minTickLength = 5;
     majTickLength = 9;
@@ -121,6 +128,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     plCanvas->setLineWidth(0);
     plCanvas->setPaintAttribute(QwtPlotCanvas::PaintCached, false);
     plCanvas->setPaintAttribute(QwtPlotCanvas::PaintPacked, false);
+    plCanvas->installEventFilter(this);
 
     QColor background = QColor(Qt::white);
     background.setAlpha(255);
@@ -599,4 +607,277 @@ void Plot::setAxisLabelFormat(int axis, char f, int prec)
 const QColor &Plot::paletteBackgroundColor() const
 {
     return palette().color(QPalette::Window);
+}
+
+void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
+{
+    if (!axisValid(axis))
+        return;
+
+    QwtScaleEngine *se = axisScaleEngine(axis);
+    const QwtScaleDiv *scDiv = axisScaleDiv(axis);
+    if (!se || !scDiv)
+        return;
+
+    const bool inverted = se->testAttribute(QwtScaleEngine::Inverted)
+            || (scDiv->lowerBound() > scDiv->upperBound());
+    double minVal = std::min(scDiv->lowerBound(), scDiv->upperBound());
+    double maxVal = std::max(scDiv->lowerBound(), scDiv->upperBound());
+    if (maxVal <= minVal)
+        return;
+
+    const QwtScaleMap map = canvasMap(axis);
+    double centerVal = map.invTransform(pixelPos);
+    const bool isLog = (se->transformation()->type() == QwtScaleTransformation::Log10);
+
+    double newMin = minVal;
+    double newMax = maxVal;
+    if (isLog) {
+        if (minVal <= 0.0 || maxVal <= 0.0)
+            return;
+        if (centerVal <= 0.0 || !std::isfinite(centerVal))
+            centerVal = std::sqrt(minVal * maxVal);
+        centerVal = qBound(minVal, centerVal, maxVal);
+        const double logMin = std::log10(minVal);
+        const double logMax = std::log10(maxVal);
+        const double logCenter = std::log10(centerVal);
+        const double newLogMin = logCenter + (logMin - logCenter) * factor;
+        const double newLogMax = logCenter + (logMax - logCenter) * factor;
+        if (newLogMax - newLogMin < 1e-6 || newLogMin < -300.0 || newLogMax > 300.0)
+            return;
+        newMin = std::pow(10.0, newLogMin);
+        newMax = std::pow(10.0, newLogMax);
+    } else {
+        if (!std::isfinite(centerVal))
+            centerVal = 0.5 * (minVal + maxVal);
+        centerVal = qBound(minVal, centerVal, maxVal);
+        newMin = centerVal + (minVal - centerVal) * factor;
+        newMax = centerVal + (maxVal - centerVal) * factor;
+        if (newMax - newMin <= 1e-15)
+            return;
+    }
+
+    int maxMajor = qMax(axisMaxMajor(axis), 2);
+    int minorTicks = axisMaxMinor(axis);
+    int maxMinIntervals = minorTicks;
+    if (minorTicks == 1)
+        maxMinIntervals = 3;
+    else if (minorTicks > 1)
+        maxMinIntervals = minorTicks + 1;
+
+    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals);
+    if (inverted) {
+        se->setAttribute(QwtScaleEngine::Inverted);
+        if (div.lowerBound() < div.upperBound())
+            div.invert();
+    }
+    setAxisScaleDiv(axis, div);
+}
+
+void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
+{
+    if (startPixel == endPixel || !axisValid(axis))
+        return;
+
+    QwtScaleEngine *se = axisScaleEngine(axis);
+    const QwtScaleDiv *scDiv = axisScaleDiv(axis);
+    if (!se || !scDiv)
+        return;
+
+    const bool inverted = se->testAttribute(QwtScaleEngine::Inverted)
+            || (scDiv->lowerBound() > scDiv->upperBound());
+    double minVal = std::min(scDiv->lowerBound(), scDiv->upperBound());
+    double maxVal = std::max(scDiv->lowerBound(), scDiv->upperBound());
+    if (maxVal <= minVal)
+        return;
+
+    const QwtScaleMap map = canvasMap(axis);
+    const double vStart = map.invTransform(startPixel);
+    const double vEnd = map.invTransform(endPixel);
+    const bool isLog = (se->transformation()->type() == QwtScaleTransformation::Log10);
+
+    double newMin = minVal;
+    double newMax = maxVal;
+    double step = 0.0;
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (g && !isLog)
+        step = g->axisStep(axis);
+
+    if (isLog) {
+        if (minVal <= 0.0 || maxVal <= 0.0 || vStart <= 0.0 || vEnd <= 0.0)
+            return;
+        const double logDelta = std::log10(vStart) - std::log10(vEnd);
+        const double newLogMin = std::log10(minVal) + logDelta;
+        const double newLogMax = std::log10(maxVal) + logDelta;
+        if (newLogMin < -300.0 || newLogMax > 300.0)
+            return;
+        newMin = std::pow(10.0, newLogMin);
+        newMax = std::pow(10.0, newLogMax);
+    } else {
+        const double delta = vStart - vEnd;
+        if (!std::isfinite(delta))
+            return;
+        newMin = minVal + delta;
+        newMax = maxVal + delta;
+    }
+
+    int maxMajor = qMax(axisMaxMajor(axis), 2);
+    int minorTicks = axisMaxMinor(axis);
+    int maxMinIntervals = minorTicks;
+    if (minorTicks == 1)
+        maxMinIntervals = 3;
+    else if (minorTicks > 1)
+        maxMinIntervals = minorTicks + 1;
+
+    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals, step);
+    if (inverted) {
+        se->setAttribute(QwtScaleEngine::Inverted);
+        if (div.lowerBound() < div.upperBound())
+            div.invert();
+    }
+    setAxisScaleDiv(axis, div);
+}
+
+bool Plot::eventFilter(QObject *object, QEvent *e)
+{
+    if (object == canvas()) {
+        Graph *g = qobject_cast<Graph *>(parent());
+        if (g && g->isPiePlot())
+            return QwtPlot::eventFilter(object, e);
+
+        switch (e->type()) {
+        case QEvent::Wheel: {
+            if (g && (g->zoomOn() || g->activeTool()))
+                return QwtPlot::eventFilter(object, e);
+
+            QWheelEvent *we = static_cast<QWheelEvent *>(e);
+            int delta = we->angleDelta().y();
+            if (delta == 0)
+                delta = we->angleDelta().x();
+            if (delta == 0)
+                return false;
+
+            const double factor = (delta > 0) ? 0.85 : (1.0 / 0.85);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            const QPoint pos = we->position().toPoint();
+#else
+            const QPoint pos = we->pos();
+#endif
+            const Qt::KeyboardModifiers mods = we->modifiers();
+            bool zoomX = true;
+            bool zoomY = true;
+            if (mods & Qt::ShiftModifier) {
+                zoomX = true;
+                zoomY = false;
+            } else if (mods & (Qt::ControlModifier | Qt::AltModifier)) {
+                zoomX = false;
+                zoomY = true;
+            }
+
+            if (zoomX) {
+                zoomAxisAroundPos(QwtPlot::xBottom, pos.x(), factor);
+                zoomAxisAroundPos(QwtPlot::xTop, pos.x(), factor);
+            }
+            if (zoomY) {
+                zoomAxisAroundPos(QwtPlot::yLeft, pos.y(), factor);
+                zoomAxisAroundPos(QwtPlot::yRight, pos.y(), factor);
+            }
+            replot();
+            if (g)
+                g->notifyChanges();
+            we->accept();
+            return true;
+        }
+
+        case QEvent::KeyPress: {
+            QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+            if (ke->key() == Qt::Key_Space && !ke->isAutoRepeat())
+                d_space_pressed = true;
+            break;
+        }
+
+        case QEvent::KeyRelease: {
+            QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+            if (ke->key() == Qt::Key_Space && !ke->isAutoRepeat())
+                d_space_pressed = false;
+            break;
+        }
+
+        case QEvent::MouseButtonDblClick: {
+            QMouseEvent *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::MiddleButton) {
+                d_is_panning = false;
+                canvas()->setCursor(Qt::ArrowCursor);
+                if (g) {
+                    g->setAutoScale();
+                } else {
+                    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+                        setAxisAutoScale(a);
+                    replot();
+                }
+                me->accept();
+                return true;
+            }
+            break;
+        }
+
+        case QEvent::MouseButtonPress: {
+            QMouseEvent *me = static_cast<QMouseEvent *>(e);
+            const bool isPanTrigger = (me->button() == Qt::MiddleButton)
+                    || (me->button() == Qt::LeftButton
+                        && ((me->modifiers() & Qt::AltModifier) || d_space_pressed));
+            if (isPanTrigger
+                && (!g
+                    || (!g->zoomOn() && !g->activeTool() && !g->drawLineActive()
+                        && !g->drawTextActive()))) {
+                d_is_panning = true;
+                d_pan_last_pos = me->pos();
+                canvas()->setCursor(Qt::ClosedHandCursor);
+                me->accept();
+                return true;
+            }
+            break;
+        }
+
+        case QEvent::MouseMove: {
+            if (d_is_panning) {
+                QMouseEvent *me = static_cast<QMouseEvent *>(e);
+                if (!(me->buttons() & (Qt::MiddleButton | Qt::LeftButton))) {
+                    d_is_panning = false;
+                    canvas()->setCursor(Qt::ArrowCursor);
+                    return false;
+                }
+                const QPoint curPos = me->pos();
+                panAxisByPixels(QwtPlot::xBottom, d_pan_last_pos.x(), curPos.x());
+                panAxisByPixels(QwtPlot::xTop, d_pan_last_pos.x(), curPos.x());
+                panAxisByPixels(QwtPlot::yLeft, d_pan_last_pos.y(), curPos.y());
+                panAxisByPixels(QwtPlot::yRight, d_pan_last_pos.y(), curPos.y());
+                d_pan_last_pos = curPos;
+                replot();
+                if (g)
+                    g->notifyChanges();
+                me->accept();
+                return true;
+            }
+            break;
+        }
+
+        case QEvent::MouseButtonRelease: {
+            if (d_is_panning) {
+                QMouseEvent *me = static_cast<QMouseEvent *>(e);
+                if (me->button() == Qt::MiddleButton || me->button() == Qt::LeftButton) {
+                    d_is_panning = false;
+                    canvas()->setCursor(Qt::ArrowCursor);
+                    me->accept();
+                    return true;
+                }
+            }
+            break;
+        }
+
+        default:
+            break;
+        }
+    }
+    return QwtPlot::eventFilter(object, e);
 }
