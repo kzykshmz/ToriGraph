@@ -62,13 +62,17 @@ public:
     };
     struct PeakSummaryRow
     {
-        int index;
-        double center;
-        double fwhm;
-        double height;
-        double area;
-        double areaPercent;
-        double baseline;
+        int index = 0;
+        double center = 0.0;
+        double fwhm = 0.0;
+        double height = 0.0;
+        double area = 0.0;
+        double areaPercent = 0.0;
+        double baseline = 0.0;
+        double centerSE = 0.0;
+        double fwhmSE = 0.0;
+        double heightSE = 0.0;
+        double areaSE = 0.0;
     };
 
     MultiPeakFit(ApplicationWindow *parent, Graph *g = 0, PeakProfile profile = Gauss,
@@ -119,11 +123,17 @@ public:
                               double minProminenceRatio = 0.08);
     QVector<double> detectPeaksSecondDerivative(int sgWindow = 9, double relThreshold = 0.08);
 
+    void setInitialPeakWidths(const QVector<double> &fwhms);
+    QVector<double> initialPeakWidths() const { return d_initial_peak_widths; }
+    void setNegativePeaksAllowed(bool allow);
+    bool negativePeaksAllowed() const { return d_negative_peaks_allowed; }
+
     void setPerPeakProfiles(const QVector<PeakProfile> &profiles);
     void addPeakDoubletConstraint(int secondaryPeakIdx, int primaryPeakIdx,
                                   double areaRatio, double centerOffset, bool shareWidth = true);
     static Table *batchAnalyzeCurves(ApplicationWindow *app, Graph *g, const QStringList &curveTitles,
-                                     PeakProfile profile = Gauss, BaselineMode baseMode = BaselineLinear);
+                                     PeakProfile profile = Gauss, BaselineMode baseMode = BaselineLinear,
+                                     bool allowNegativePeaks = false);
     static void showBatchPeakDialog(ApplicationWindow *app, Graph *g);
 
     Table *createPeakSummaryTable(const QString &tableName = QString());
@@ -151,6 +161,10 @@ private:
     PeakProfile peakProfileAt(int peakIndex) const;
     bool usesCustomMultiPeakCallbacks() const;
     void applyDoubletConstraints(std::vector<double> &par) const;
+    void applyCustomInitialWidths();
+    void evalSinglePeakMetrics(PeakProfile prof, double signedRawA, double w, double &fwhmOut,
+                               double &heightOut, double &areaOut) const;
+    double estimateConstantBaselineY0(const std::vector<double> &y) const;
     double peakTrueArea(PeakProfile prof, double rawA, double w) const;
     double rawParamFromTrueArea(PeakProfile prof, double targetArea, double w) const;
     double peakFWHMFromW(PeakProfile prof, double w) const;
@@ -213,6 +227,12 @@ private:
 
     //! Stores last fitted results for summary table generation
     std::vector<double> d_last_results;
+
+    //! Custom per-peak initial FWHM overrides (<= 0 leaves auto-estimated width)
+    QVector<double> d_initial_peak_widths;
+
+    //! Whether inverted / negative trough peaks (A < 0) are permitted
+    bool d_negative_peaks_allowed = false;
 };
 
 class LorentzFit : public MultiPeakFit

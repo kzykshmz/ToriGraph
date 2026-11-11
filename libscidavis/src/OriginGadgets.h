@@ -34,6 +34,7 @@ class Table;
 
 class RoiOverlayItem;
 class VerticalCursorOverlayItem;
+class DeltaCursorOverlayItem;
 
 class RoiGadgetTool : public QObject, public PlotToolInterface
 {
@@ -63,6 +64,11 @@ public:
         FitExpDec1 = 4,
         FitBoltzmann = 5
     };
+    enum IntegrateBaseline {
+        BaseYZero = 0,
+        BaseEndpointsLine = 1,
+        BaseRoiMin = 2
+    };
 
     RoiGadgetTool(ApplicationWindow *app, Graph *graph, GadgetMode mode = RegionStats);
     ~RoiGadgetTool() override;
@@ -72,6 +78,17 @@ public:
     void setGadgetMode(GadgetMode mode);
     void setQuickFitModel(QuickFitModel model);
     QuickFitModel quickFitModel() const { return d_fit_model; }
+
+    void setIntegrateBaseline(IntegrateBaseline b);
+    IntegrateBaseline integrateBaseline() const { return d_integrate_baseline; }
+
+    void setDetectNegativePeaks(bool on);
+    bool detectNegativePeaks() const { return d_detect_negative_peaks; }
+
+    void setSavGolWindow(int windowSize);
+    int savGolWindow() const { return d_sg_window; }
+
+    void keepFittedCurveOnGraph();
 
     QRectF roiRect() const { return d_roi_rect; }
     void setRoiRect(const QRectF &dataRect);
@@ -144,6 +161,9 @@ private:
     QPointer<Graph> d_graph_guard;
     GadgetMode d_mode;
     QuickFitModel d_fit_model;
+    IntegrateBaseline d_integrate_baseline = BaseYZero;
+    bool d_detect_negative_peaks = false;
+    int d_sg_window = 5;
     QRectF d_roi_rect;
     QString d_curve_title;
     bool d_explicit_curve;
@@ -238,6 +258,85 @@ private:
 
     QList<QPointer<Graph>> d_filtered_graphs;
     QList<VerticalCursorOverlayItem *> d_overlay_items;
+};
+
+class DeltaCursorTool : public QObject, public PlotToolInterface
+{
+    Q_OBJECT
+public:
+    enum SnapMode {
+        SnapInterpolateCurve = 0,
+        SnapNearestPoint = 1,
+        FreeScreenCrosshair = 2
+    };
+    struct Readout {
+        double x1 = 0.0, y1 = 0.0, x2 = 0.0, y2 = 0.0;
+        double dx = 0.0, dy = 0.0, slope = 0.0, ratio = 0.0;
+        double area = 0.0, rms = 0.0, minY = 0.0, maxY = 0.0;
+    };
+
+    DeltaCursorTool(ApplicationWindow *app, Graph *graph, SnapMode mode = SnapInterpolateCurve);
+    ~DeltaCursorTool() override;
+    RTTI rtti() const override { return DeltaCursor; }
+
+    void setCursorPositions(double x1, double x2);
+    void setCursorPoints2D(double x1, double y1, double x2, double y2);
+    void setHorizontalCrosshairEnabled(bool on);
+    bool horizontalCrosshairEnabled() const { return d_horiz_crosshair; }
+    void setSnapMode(SnapMode mode);
+    SnapMode snapMode() const { return d_snap_mode; }
+    void setTargetCurve(const QString &curveTitle);
+    QString targetCurveTitle() const { return d_curve_title; }
+    Readout currentReadout() const { return d_readout; }
+    QString readoutText() const { return d_readout_text; }
+    void stampCalloutOnGraph();
+    Table *createReadoutTable();
+
+    static DeltaCursorTool *attach(ApplicationWindow *app, Graph *g,
+                                   SnapMode mode = SnapInterpolateCurve);
+
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
+private slots:
+    void onSourceTableModified(Table *t, const QString &colName);
+
+private:
+    friend class DeltaCursorOverlayItem;
+
+    enum DragTarget {
+        DragNone = 0,
+        DragCursor1,
+        DragCursor2,
+        DragSpan
+    };
+
+    QwtPlotCurve *resolveTargetCurve();
+    void initDefaultPositions();
+    void recalculate();
+    DragTarget hitTestPixelPos(const QPoint &pos) const;
+    void updateCursorForPos(const QPoint &pos);
+    void showContextMenu(const QPoint &globalPos);
+
+    QPointer<ApplicationWindow> d_app;
+    QPointer<Graph> d_graph_guard;
+    SnapMode d_snap_mode = SnapInterpolateCurve;
+    bool d_horiz_crosshair = true;
+    QString d_curve_title;
+    double d_x1 = 0.0;
+    double d_y1 = 0.0;
+    double d_x2 = 0.0;
+    double d_y2 = 0.0;
+    Readout d_readout;
+    QString d_readout_text;
+    QVector<QPointF> d_span_poly_pts;
+    DeltaCursorOverlayItem *d_overlay_item = nullptr;
+
+    DragTarget d_drag_target = DragNone;
+    QPoint d_drag_start_pos;
+    double d_drag_start_x1 = 0.0;
+    double d_drag_start_y1 = 0.0;
+    double d_drag_start_x2 = 0.0;
+    double d_drag_start_y2 = 0.0;
 };
 
 #endif // ORIGIN_GADGETS_H

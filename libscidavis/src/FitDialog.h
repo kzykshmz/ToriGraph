@@ -46,6 +46,7 @@ class QRadioButton;
 class QLineEdit;
 class ColorButton;
 class Fit;
+class QwtPlotCurve;
 
 //! Fit Wizard
 class FitDialog : public QDialog
@@ -54,6 +55,7 @@ class FitDialog : public QDialog
 
 public:
     FitDialog(QWidget *parent = 0, Qt::WindowFlags fl = Qt::Widget);
+    ~FitDialog() override;
 
 protected:
     //! On closing show the fit function in the plot window if that option is selected
@@ -132,6 +134,12 @@ public slots:
     void showParametersTable();
     //! Display the covariance matrix
     void showCovarianceMatrix();
+    //! Display the residual plot window
+    void showResidualPlot();
+    //! Run nonparametric / wild bootstrap confidence intervals
+    void showBootstrapDialog();
+    //! Refresh or clear the live initial-guess preview curve on d_graph
+    void updateLivePreview();
 
     //! Applies the user changes to the numerical format of the output results
     void applyChanges();
@@ -148,8 +156,11 @@ signals:
     void saveFunctionsList(const QStringList &);
 
 private:
+    void clearPreviewCurve();
+
     Fit *d_fitter;
     Graph *d_graph;
+    QwtPlotCurve *d_preview_curve = nullptr;
     QStringList d_user_functions, d_user_function_names, d_user_function_params;
     QStringList d_built_in_function_names, d_built_in_functions;
     QStringList d_plugin_function_names, d_plugin_functions, d_plugin_files_list, d_plugin_params;
@@ -185,8 +196,11 @@ private:
     QRadioButton *generatePointsBtn, *samePointsBtn;
     QPushButton *btnParamTable, *btnCovMatrix, *btnResidualPlot;
     QLineEdit *covMatrixName, *paramTableName;
+    QLineEdit *boxLinearConstraints = nullptr;
     QCheckBox *plotLabelBox, *logBox, *scaleErrorsBox;
     QCheckBox *confBandBox, *predBandBox, *summaryOnGraphBox;
+    QCheckBox *chkLivePreview = nullptr;
+    QPushButton *btnBootstrapCI = nullptr;
 };
 
 #endif // FITDIALOG_H

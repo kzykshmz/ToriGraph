@@ -35,12 +35,15 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
 #include <gsl/gsl_cdf.h>
+#include <gsl/gsl_errno.h>
 #include <gsl/gsl_fit.h>
+#include <gsl/gsl_linalg.h>
 #include <gsl/gsl_multifit.h>
 #include <gsl/gsl_multimin.h>
 
@@ -421,38 +424,108 @@ static bool configureModelOnFitter(SilentNonLinearFit &nlf, const QString &rawMo
     return false;
 }
 
-} // anonymous namespace
-
-// ============================================================================
-// 1. Piecewise Linear Breakpoint Regression
-// ============================================================================
-
-PiecewiseAndRobustFit::PiecewiseResult
-PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
-                                          const QString &curveTitle, int numSegments,
-                                          bool annotateGraph)
+static bool invertMatrixGsl(const std::vector<std::vector<double>> &mat,
+                            std::vector<std::vector<double>> &invOut)
 {
-    PiecewiseResult res;
+    const size_t d = mat.size();
+    if (d == 0)
+        return false;
+
+    gsl_error_handler_t *oldHandler = gsl_set_error_handler_off();
+    gsl_matrix *A = gsl_matrix_alloc(d, d);
+    gsl_matrix *Inv = gsl_matrix_alloc(d, d);
+    gsl_permutation *perm = gsl_permutation_alloc(d);
+    if (!A || !Inv || !perm) {
+        if (A)
+            gsl_matrix_free(A);
+        if (Inv)
+            gsl_matrix_free(Inv);
+        if (perm)
+            gsl_permutation_free(perm);
+        gsl_set_error_handler(oldHandler);
+        return false;
+    }
+
+    for (size_t r = 0; r < d; ++r) {
+        for (size_t c = 0; c < d; ++c)
+            gsl_matrix_set(A, r, c, mat[r][c]);
+    }
+
+    int signum = 0;
+    bool ok = (gsl_linalg_LU_decomp(A, perm, &signum) == GSL_SUCCESS)
+            && (gsl_linalg_LU_invert(A, perm, Inv) == GSL_SUCCESS);
+
+    invOut.assign(d, std::vector<double>(d, 0.0));
+    if (ok) {
+        for (size_t r = 0; r < d; ++r) {
+            for (size_t c = 0; c < d; ++c) {
+                const double v = gsl_matrix_get(Inv, r, c);
+                if (!std::isfinite(v))
+                    ok = false;
+                invOut[r][c] = v;
+            }
+        }
+    }
+
+    gsl_permutation_free(perm);
+    gsl_matrix_free(Inv);
+    gsl_matrix_free(A);
+    gsl_set_error_handler(oldHandler);
+    return ok;
+}
+
+struct DialogPreviewCurveGuard
+{
+    QPointer<Graph> graph;
+    QwtPlotCurve *curve = nullptr;
+    ~DialogPreviewCurveGuard() { clear(); }
+    void clear()
+    {
+        if (curve) {
+            if (graph && graph->plotWidget()) {
+                curve->detach();
+                graph->replot();
+            }
+            delete curve;
+            curve = nullptr;
+        }
+    }
+    void showData(const QString &srcCurveTitle, const std::vector<double> &gx,
+                  const std::vector<double> &gy, const QColor &color)
+    {
+        if (!graph || !graph->plotWidget() || gx.size() < 2 || gy.size() != gx.size()) {
+            clear();
+            return;
+        }
+        if (!curve) {
+            curve = new QwtPlotCurve(QObject::tr("Live Fit Preview"));
+            curve->setItemAttribute(QwtPlotItem::Legend, false);
+            curve->attach(graph->plotWidget());
+        }
+        curve->setPen(QPen(color, 2, Qt::DashLine));
+        if (QwtPlotCurve *src = resolveCurveOnGraph(graph, srcCurveTitle))
+            curve->setAxis(src->xAxis(), src->yAxis());
+        curve->setData(gx.data(), gy.data(), static_cast<int>(gx.size()));
+        graph->replot();
+    }
+};
+
+static bool computePiecewiseCore(const std::vector<double> &xv, const std::vector<double> &yv,
+                                 int numSegments, PiecewiseAndRobustFit::PiecewiseResult &res,
+                                 double &bestRssOut, std::vector<double> &gxOut,
+                                 std::vector<double> &gyOut)
+{
     const int S = std::clamp(numSegments, 2, 3);
     res.segments = S;
-    if (!app || !g)
-        return res;
-
-    QString resolvedName;
-    QwtPlotCurve *curve = resolveCurveOnGraph(g, curveTitle, &resolvedName);
-    std::vector<double> xv, yv;
-    if (!extractUnmaskedSortedXY(curve, xv, yv))
-        return res;
-
     const size_t n = xv.size();
-    if (n < size_t(2 * S))
-        return res;
+    if (n < size_t(2 * S) || yv.size() != n)
+        return false;
 
     const double xMin = xv.front();
     const double xMax = xv.back();
     const double xSpan = xMax - xMin;
     if (!(xSpan > 1e-15))
-        return res;
+        return false;
 
     HingeContext ctx;
     ctx.numKnots = S - 1;
@@ -461,7 +534,6 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
     for (size_t i = 0; i < n; ++i)
         ctx.u[i] = (xv[i] - xMin) / xSpan;
 
-    // Distinct sorted normalized abscissas for exact sub-interval search
     std::vector<double> uDistinct;
     uDistinct.reserve(n);
     for (double ui : ctx.u) {
@@ -469,12 +541,12 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
             uDistinct.push_back(ui);
     }
     if (uDistinct.size() < size_t(2 * S))
-        return res;
+        return false;
 
     const double tauLo = std::max(1e-5, ctx.u[1] + 1e-7);
     const double tauHi = std::min(1.0 - 1e-5, ctx.u[n - 2] - 1e-7);
     if (!(tauHi > tauLo))
-        return res;
+        return false;
 
     ctx.minGap = std::max(1e-4, 0.5 / double(uDistinct.size()));
 
@@ -482,7 +554,6 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
     double bestRss = 1e100;
 
     if (S == 2) {
-        // Dense grid + per-data-interval candidates + golden-section refinement
         struct IntervalCand {
             double lo;
             double hi;
@@ -513,7 +584,6 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
             }
         }
 
-        // Refine top 12 data sub-intervals with golden-section search (exact global optimum!)
         std::sort(intervals.begin(), intervals.end(),
                   [](const IntervalCand &a, const IntervalCand &b) { return a.midRss < b.midRss; });
         const size_t nRefine = std::min<size_t>(intervals.size(), 12);
@@ -526,7 +596,6 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
             }
         }
 
-        // Also refine wider bracket around best grid candidate
         const double wideHalf = 0.04 * (tauHi - tauLo);
         double xWideOpt = bestTau[0];
         const double fWideOpt = goldenSectionMinimize1D(
@@ -537,7 +606,6 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
             bestTau[0] = xWideOpt;
         }
     } else {
-        // S == 3 (2 breakpoints): 2D triangular grid search + multi-start Nelder-Mead simplex
         struct PairSeed {
             double t1;
             double t2;
@@ -605,9 +673,8 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
 
     std::vector<double> coeffs;
     if (!ctx.solveAtKnots(bestTau, coeffs, bestRss))
-        return res;
+        return false;
 
-    // Convert normalized u-space parameters back to physical x-space
     const double alpha0 = coeffs[0];
     const double gamma1 = coeffs[1];
     res.slopes.resize(S);
@@ -629,9 +696,11 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
         return yVal;
     };
 
-    res.breakpointsX.resize(S - 1);
-    res.breakpointsY.resize(S - 1);
-    for (int j = 0; j < S - 1; ++j) {
+    const int K = S - 1;
+    res.breakpointsX.resize(K);
+    res.breakpointsXSE.fill(0.0, K);
+    res.breakpointsY.resize(K);
+    for (int j = 0; j < K; ++j) {
         const double bpX = xMin + bestTau[size_t(j)] * xSpan;
         res.breakpointsX[j] = bpX;
         res.breakpointsY[j] = evalModelY(bpX);
@@ -648,23 +717,340 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
     const int kFree = 2 * S; // a0 + S slopes + (S-1) breakpoints = 2*S
     const double effRss = std::max(bestRss, 1e-30 * std::max(1.0, tss));
     res.aic = double(n) * std::log(effRss / double(n)) + 2.0 * double(kFree + 1);
+
+    // Compute Breakpoint X Standard Errors (Delta-Method Segmented Fisher Info + Profile-RSS Fallback)
+    const int dof = std::max(1, static_cast<int>(n) - kFree);
+    const bool noiseless = (bestRss <= 1e-24 * std::max(1.0, tss));
+    if (!noiseless && static_cast<int>(n) > kFree) {
+        const double s2 = bestRss / double(dof);
+        const size_t dim = static_cast<size_t>(kFree);
+        std::vector<std::vector<double>> jtj(dim, std::vector<double>(dim, 0.0));
+        std::vector<double> jRow(dim, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            const double ui = ctx.u[i];
+            jRow[0] = 1.0;
+            jRow[1] = ui;
+            for (int j = 0; j < K; ++j) {
+                const double tj = bestTau[size_t(j)];
+                const double dGamma = coeffs[size_t(2 + j)];
+                jRow[size_t(2 + j)] = (ui > tj) ? (ui - tj) : 0.0;
+                jRow[size_t(2 + K + j)] = (ui > tj) ? (-dGamma) : 0.0;
+            }
+            for (size_t r = 0; r < dim; ++r) {
+                for (size_t c = r; c < dim; ++c)
+                    jtj[r][c] += jRow[r] * jRow[c];
+            }
+        }
+        double trG = 0.0;
+        for (size_t r = 0; r < dim; ++r) {
+            trG += jtj[r][r];
+            for (size_t c = 0; c < r; ++c)
+                jtj[r][c] = jtj[c][r];
+        }
+        const double tinyRidge = std::max(1e-18, 1e-13 * trG / double(dim));
+        std::vector<std::vector<double>> jtjReg = jtj;
+        for (size_t r = 0; r < dim; ++r)
+            jtjReg[r][r] += tinyRidge;
+
+        std::vector<std::vector<double>> invG;
+        const bool invOk = invertMatrixGsl(jtjReg, invG);
+
+        // Profile-likelihood 1-SE interval helper: RSS(tau_j) <= bestRss + s^2
+        auto profileTauSE = [&](int knotIdx) -> double {
+            const double t0 = bestTau[size_t(knotIdx)];
+            const double loLim = (knotIdx == 0) ? tauLo
+                                                : std::min(tauHi, bestTau[size_t(knotIdx - 1)] + ctx.minGap);
+            const double hiLim = (knotIdx + 1 == K) ? tauHi
+                                                    : std::max(tauLo, bestTau[size_t(knotIdx + 1)] - ctx.minGap);
+            const double critRss = bestRss + s2;
+            const int nProbe = 120;
+
+            double tLeft = loLim;
+            for (int s = 1; s <= nProbe; ++s) {
+                double cand = t0 - (t0 - loLim) * double(s) / double(nProbe);
+                std::vector<double> trial = bestTau;
+                trial[size_t(knotIdx)] = cand;
+                const double r = ctx.evalObjective(trial);
+                if (r >= critRss && r < 1e90) {
+                    const double prevCand = t0 - (t0 - loLim) * double(s - 1) / double(nProbe);
+                    std::vector<double> prevTrial = bestTau;
+                    prevTrial[size_t(knotIdx)] = prevCand;
+                    const double rPrev = ctx.evalObjective(prevTrial);
+                    const double frac = (r > rPrev + 1e-30)
+                            ? std::clamp((critRss - rPrev) / (r - rPrev), 0.0, 1.0)
+                            : 0.5;
+                    tLeft = prevCand + frac * (cand - prevCand);
+                    break;
+                }
+            }
+
+            double tRight = hiLim;
+            for (int s = 1; s <= nProbe; ++s) {
+                double cand = t0 + (hiLim - t0) * double(s) / double(nProbe);
+                std::vector<double> trial = bestTau;
+                trial[size_t(knotIdx)] = cand;
+                const double r = ctx.evalObjective(trial);
+                if (r >= critRss && r < 1e90) {
+                    const double prevCand = t0 + (hiLim - t0) * double(s - 1) / double(nProbe);
+                    std::vector<double> prevTrial = bestTau;
+                    prevTrial[size_t(knotIdx)] = prevCand;
+                    const double rPrev = ctx.evalObjective(prevTrial);
+                    const double frac = (r > rPrev + 1e-30)
+                            ? std::clamp((critRss - rPrev) / (r - rPrev), 0.0, 1.0)
+                            : 0.5;
+                    tRight = prevCand + frac * (cand - prevCand);
+                    break;
+                }
+            }
+            return std::max(0.0, 0.5 * (tRight - tLeft));
+        };
+
+        for (int j = 0; j < K; ++j) {
+            const double dGamma = std::fabs(coeffs[size_t(2 + j)]);
+            const size_t idxBp = size_t(2 + K + j);
+            double seTau = 0.0;
+            if (invOk && dGamma > 1e-8 && invG[idxBp][idxBp] > 0.0) {
+                const double deltaSE = std::sqrt(s2 * invG[idxBp][idxBp]);
+                if (std::isfinite(deltaSE) && deltaSE <= 0.5) {
+                    seTau = deltaSE;
+                } else {
+                    seTau = profileTauSE(j);
+                }
+            } else {
+                seTau = profileTauSE(j);
+            }
+            res.breakpointsXSE[j] = (std::isfinite(seTau) && seTau > 0.0) ? (seTau * xSpan) : 0.0;
+        }
+    }
+
     res.converged = true;
+    bestRssOut = bestRss;
 
-    // Plot piecewise linear fitted curve with exact hinge breakpoints included
-    std::vector<double> gx;
-    gx.reserve(210);
+    gxOut.clear();
+    gxOut.reserve(210);
     for (int k = 0; k <= 200; ++k)
-        gx.push_back(xMin + xSpan * double(k) / 200.0);
+        gxOut.push_back(xMin + xSpan * double(k) / 200.0);
     for (double bpX : res.breakpointsX)
-        gx.push_back(bpX);
-    std::sort(gx.begin(), gx.end());
-    gx.erase(std::unique(gx.begin(), gx.end(),
-                         [xSpan](double a, double b) { return std::fabs(a - b) <= 1e-13 * xSpan; }),
-             gx.end());
+        gxOut.push_back(bpX);
+    std::sort(gxOut.begin(), gxOut.end());
+    gxOut.erase(std::unique(gxOut.begin(), gxOut.end(),
+                            [xSpan](double a, double b) { return std::fabs(a - b) <= 1e-13 * xSpan; }),
+                gxOut.end());
 
-    std::vector<double> gy(gx.size());
-    for (size_t i = 0; i < gx.size(); ++i)
-        gy[i] = evalModelY(gx[i]);
+    gyOut.resize(gxOut.size());
+    for (size_t i = 0; i < gxOut.size(); ++i)
+        gyOut[i] = evalModelY(gxOut[i]);
+
+    return true;
+}
+
+static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
+                                        const std::vector<double> &yv,
+                                        PiecewiseAndRobustFit::RobustMethod method,
+                                        double quantileTau,
+                                        PiecewiseAndRobustFit::RobustFitResult &res)
+{
+    const size_t n = xv.size();
+    if (n < 2 || yv.size() != n)
+        return false;
+
+    const double xSpan = xv.back() - xv.front();
+    if (!(xSpan > 1e-15))
+        return false;
+
+    if (method == PiecewiseAndRobustFit::OrdinaryLS) {
+        double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, sumsq = 0.0;
+        if (gsl_fit_linear(xv.data(), 1, yv.data(), 1, n, &c0, &c1, &cov00, &cov01, &cov11, &sumsq)
+            != GSL_SUCCESS)
+            return false;
+
+        std::vector<double> resid(n);
+        for (size_t i = 0; i < n; ++i)
+            resid[i] = yv[i] - (c0 + c1 * xv[i]);
+
+        res.converged = true;
+        res.intercept = c0;
+        res.slope = c1;
+        res.interceptSE = (n > 2 && cov00 > 0.0) ? std::sqrt(cov00) : 0.0;
+        res.slopeSE = (n > 2 && cov11 > 0.0) ? std::sqrt(cov11) : 0.0;
+        res.scaleMAD = computeMADScale(resid);
+        return true;
+    }
+
+    std::vector<size_t> subIdx;
+    const size_t maxPairsPts = 500;
+    if (n <= maxPairsPts) {
+        subIdx.resize(n);
+        std::iota(subIdx.begin(), subIdx.end(), 0);
+    } else {
+        subIdx.reserve(maxPairsPts);
+        for (size_t k = 0; k < maxPairsPts; ++k)
+            subIdx.push_back((k * (n - 1)) / (maxPairsPts - 1));
+    }
+
+    std::vector<double> pairSlopes;
+    pairSlopes.reserve((subIdx.size() * (subIdx.size() - 1)) / 2);
+    for (size_t a = 0; a < subIdx.size(); ++a) {
+        const size_t ia = subIdx[a];
+        for (size_t b = a + 1; b < subIdx.size(); ++b) {
+            const size_t ib = subIdx[b];
+            const double dx = xv[ib] - xv[ia];
+            if (std::fabs(dx) > 1e-12 * xSpan)
+                pairSlopes.push_back((yv[ib] - yv[ia]) / dx);
+        }
+    }
+    if (pairSlopes.empty())
+        return false;
+
+    double curSlope = computeVectorMedian(std::move(pairSlopes));
+    std::vector<double> candIntercepts(n);
+    for (size_t i = 0; i < n; ++i)
+        candIntercepts[i] = yv[i] - curSlope * xv[i];
+
+    const double tau = std::clamp(quantileTau, 0.01, 0.99);
+    double curIntercept = (method == PiecewiseAndRobustFit::QuantileReg)
+            ? computeVectorQuantile(std::move(candIntercepts), tau)
+            : computeVectorMedian(std::move(candIntercepts));
+
+    const double madY = std::max(1.0, computeMADScale(yv));
+    const double minScaleFloor = 1e-7 * madY;
+
+    std::vector<double> resid(n, 0.0);
+    std::vector<double> weights(n, 1.0);
+    double curScaleMAD = 0.0;
+    double lastCov00 = 0.0, lastCov11 = 0.0, lastChisq = 0.0;
+    bool converged = false;
+
+    const int maxIter = (method == PiecewiseAndRobustFit::QuantileReg) ? 160 : 100;
+    for (int iter = 0; iter < maxIter; ++iter) {
+        for (size_t i = 0; i < n; ++i)
+            resid[i] = yv[i] - (curIntercept + curSlope * xv[i]);
+
+        curScaleMAD = computeMADScale(resid);
+        const double s = std::max(curScaleMAD, minScaleFloor);
+
+        int posWeightCount = 0;
+        double minWeightedX = std::numeric_limits<double>::infinity();
+        double maxWeightedX = -std::numeric_limits<double>::infinity();
+
+        if (method == PiecewiseAndRobustFit::HuberM) {
+            const double cHuber = 1.345;
+            for (size_t i = 0; i < n; ++i) {
+                const double u = std::fabs(resid[i]) / s;
+                weights[i] = (u <= cHuber) ? 1.0 : (cHuber / u);
+                if (weights[i] > 1e-15) {
+                    ++posWeightCount;
+                    minWeightedX = std::min(minWeightedX, xv[i]);
+                    maxWeightedX = std::max(maxWeightedX, xv[i]);
+                }
+            }
+        } else if (method == PiecewiseAndRobustFit::TukeyBisquare) {
+            const double cTukey = 4.685;
+            for (size_t i = 0; i < n; ++i) {
+                const double u = std::fabs(resid[i]) / s;
+                if (u < cTukey) {
+                    const double t = u / cTukey;
+                    const double oneMinusT2 = 1.0 - t * t;
+                    weights[i] = oneMinusT2 * oneMinusT2;
+                } else {
+                    weights[i] = 0.0;
+                }
+                if (weights[i] > 1e-12) {
+                    ++posWeightCount;
+                    minWeightedX = std::min(minWeightedX, xv[i]);
+                    maxWeightedX = std::max(maxWeightedX, xv[i]);
+                }
+            }
+        } else {
+            const double epsPinball = std::max(1e-6, 1e-6 * madY);
+            for (size_t i = 0; i < n; ++i) {
+                const double asym = (resid[i] >= 0.0) ? tau : (1.0 - tau);
+                weights[i] = asym / std::max(std::fabs(resid[i]), epsPinball);
+                ++posWeightCount;
+                minWeightedX = std::min(minWeightedX, xv[i]);
+                maxWeightedX = std::max(maxWeightedX, xv[i]);
+            }
+        }
+
+        if (posWeightCount < 2 || !(maxWeightedX > minWeightedX + 1e-13 * xSpan)) {
+            converged = true;
+            break;
+        }
+
+        double nextInt = curIntercept, nextSlope = curSlope;
+        double cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, chisq = 0.0;
+        if (gsl_fit_wlinear(xv.data(), 1, weights.data(), 1, yv.data(), 1, n, &nextInt,
+                            &nextSlope, &cov00, &cov01, &cov11, &chisq)
+            != GSL_SUCCESS) {
+            break;
+        }
+        if (!std::isfinite(nextInt) || !std::isfinite(nextSlope))
+            break;
+
+        lastCov00 = cov00;
+        lastCov11 = cov11;
+        lastChisq = chisq;
+
+        const double delta = std::fabs(nextInt - curIntercept)
+                + std::fabs(nextSlope - curSlope) * xSpan;
+        curIntercept = nextInt;
+        curSlope = nextSlope;
+        if (delta <= 1e-11 * std::max(1.0, madY)) {
+            converged = true;
+            break;
+        }
+        if (iter + 1 == maxIter)
+            converged = true;
+    }
+
+    for (size_t i = 0; i < n; ++i)
+        resid[i] = yv[i] - (curIntercept + curSlope * xv[i]);
+    curScaleMAD = computeMADScale(resid);
+
+    int nEff = 0;
+    for (double wi : weights) {
+        if (wi > 1e-10)
+            ++nEff;
+    }
+    const double dof = double(std::max(1, nEff - 2));
+    const double varScale = (nEff > 2 && lastChisq > 1e-28) ? (lastChisq / dof) : 0.0;
+
+    res.converged = converged;
+    res.intercept = curIntercept;
+    res.slope = curSlope;
+    res.interceptSE = (varScale > 0.0 && lastCov00 > 0.0) ? std::sqrt(varScale * lastCov00) : 0.0;
+    res.slopeSE = (varScale > 0.0 && lastCov11 > 0.0) ? std::sqrt(varScale * lastCov11) : 0.0;
+    res.scaleMAD = curScaleMAD;
+    return res.converged;
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// 1. Piecewise Linear Breakpoint Regression
+// ============================================================================
+
+PiecewiseAndRobustFit::PiecewiseResult
+PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
+                                          const QString &curveTitle, int numSegments,
+                                          bool annotateGraph)
+{
+    PiecewiseResult res;
+    const int S = std::clamp(numSegments, 2, 3);
+    res.segments = S;
+    if (!app || !g)
+        return res;
+
+    QString resolvedName;
+    QwtPlotCurve *curve = resolveCurveOnGraph(g, curveTitle, &resolvedName);
+    std::vector<double> xv, yv;
+    if (!extractUnmaskedSortedXY(curve, xv, yv))
+        return res;
+
+    double bestRss = 0.0;
+    std::vector<double> gx, gy;
+    if (!computePiecewiseCore(xv, yv, S, res, bestRss, gx, gy))
+        return res;
 
     res.fittedCurve = addFittedLineToGraph(app, g, QStringLiteral("PiecewiseFit"), gx, gy,
                                            QColor(215, 25, 28));
@@ -674,9 +1060,11 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
         lines << QObject::tr("Piecewise Linear Fit (%1 segments)").arg(S);
         lines << QObject::tr("Dataset: %1").arg(resolvedName);
         for (int j = 0; j < S - 1; ++j) {
-            lines << QObject::tr("Breakpoint %1: X = %2, Y = %3")
+            const double bpSE = (j < res.breakpointsXSE.size()) ? res.breakpointsXSE[j] : 0.0;
+            lines << QObject::tr("Breakpoint %1: X = %2 ± %3, Y = %4")
                              .arg(j + 1)
                              .arg(res.breakpointsX[j], 0, 'g', 6)
+                             .arg(bpSE, 0, 'g', 4)
                              .arg(res.breakpointsY[j], 0, 'g', 6);
         }
         for (int m = 0; m < S; ++m) {
@@ -697,6 +1085,8 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
         reportRows << qMakePair(QStringLiteral("Slope_%1").arg(m + 1), res.slopes[m]);
     for (int j = 0; j < S - 1; ++j) {
         reportRows << qMakePair(QStringLiteral("Breakpoint_X_%1").arg(j + 1), res.breakpointsX[j]);
+        reportRows << qMakePair(QStringLiteral("Breakpoint_X_SE_%1").arg(j + 1),
+                                (j < res.breakpointsXSE.size()) ? res.breakpointsXSE[j] : 0.0);
         reportRows << qMakePair(QStringLiteral("Breakpoint_Y_%1").arg(j + 1), res.breakpointsY[j]);
     }
     reportRows << qMakePair(QStringLiteral("R_Square"), res.rSquare)
@@ -737,183 +1127,15 @@ PiecewiseAndRobustFit::fitRobustOrQuantileLinear(ApplicationWindow *app, Graph *
     QString resolvedName;
     QwtPlotCurve *curve = resolveCurveOnGraph(g, curveTitle, &resolvedName);
     std::vector<double> xv, yv;
-    if (!extractUnmaskedSortedXY(curve, xv, yv))
+    if (!extractUnmaskedSortedXY(curve, xv, yv) || xv.size() < 2)
+        return res;
+
+    if (!computeRobustOrQuantileCore(xv, yv, method, quantileTau, res))
         return res;
 
     const size_t n = xv.size();
-    if (n < 2)
-        return res;
-
     const double xMin = xv.front();
     const double xMax = xv.back();
-    const double xSpan = xMax - xMin;
-    if (!(xSpan > 1e-15))
-        return res;
-
-    if (method == OrdinaryLS) {
-        double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, sumsq = 0.0;
-        if (gsl_fit_linear(xv.data(), 1, yv.data(), 1, n, &c0, &c1, &cov00, &cov01, &cov11, &sumsq)
-            != GSL_SUCCESS)
-            return res;
-
-        std::vector<double> resid(n);
-        for (size_t i = 0; i < n; ++i)
-            resid[i] = yv[i] - (c0 + c1 * xv[i]);
-
-        res.converged = true;
-        res.intercept = c0;
-        res.slope = c1;
-        res.interceptSE = (n > 2 && cov00 > 0.0) ? std::sqrt(cov00) : 0.0;
-        res.slopeSE = (n > 2 && cov11 > 0.0) ? std::sqrt(cov11) : 0.0;
-        res.scaleMAD = computeMADScale(resid);
-    } else {
-        // Outlier-immune Theil-Sen median slope initialization
-        std::vector<size_t> subIdx;
-        const size_t maxPairsPts = 500;
-        if (n <= maxPairsPts) {
-            subIdx.resize(n);
-            std::iota(subIdx.begin(), subIdx.end(), 0);
-        } else {
-            subIdx.reserve(maxPairsPts);
-            for (size_t k = 0; k < maxPairsPts; ++k)
-                subIdx.push_back((k * (n - 1)) / (maxPairsPts - 1));
-        }
-
-        std::vector<double> pairSlopes;
-        pairSlopes.reserve((subIdx.size() * (subIdx.size() - 1)) / 2);
-        for (size_t a = 0; a < subIdx.size(); ++a) {
-            const size_t ia = subIdx[a];
-            for (size_t b = a + 1; b < subIdx.size(); ++b) {
-                const size_t ib = subIdx[b];
-                const double dx = xv[ib] - xv[ia];
-                if (std::fabs(dx) > 1e-12 * xSpan)
-                    pairSlopes.push_back((yv[ib] - yv[ia]) / dx);
-            }
-        }
-        if (pairSlopes.empty())
-            return res;
-
-        double curSlope = computeVectorMedian(std::move(pairSlopes));
-        std::vector<double> candIntercepts(n);
-        for (size_t i = 0; i < n; ++i)
-            candIntercepts[i] = yv[i] - curSlope * xv[i];
-
-        const double tau = std::clamp(quantileTau, 0.01, 0.99);
-        double curIntercept = (method == QuantileReg)
-                ? computeVectorQuantile(std::move(candIntercepts), tau)
-                : computeVectorMedian(std::move(candIntercepts));
-
-        const double madY = std::max(1.0, computeMADScale(yv));
-        const double minScaleFloor = 1e-7 * madY;
-
-        std::vector<double> resid(n, 0.0);
-        std::vector<double> weights(n, 1.0);
-        double curScaleMAD = 0.0;
-        double lastCov00 = 0.0, lastCov11 = 0.0, lastChisq = 0.0;
-        bool converged = false;
-
-        const int maxIter = (method == QuantileReg) ? 160 : 100;
-        for (int iter = 0; iter < maxIter; ++iter) {
-            for (size_t i = 0; i < n; ++i)
-                resid[i] = yv[i] - (curIntercept + curSlope * xv[i]);
-
-            curScaleMAD = computeMADScale(resid);
-            const double s = std::max(curScaleMAD, minScaleFloor);
-
-            int posWeightCount = 0;
-            double minWeightedX = std::numeric_limits<double>::infinity();
-            double maxWeightedX = -std::numeric_limits<double>::infinity();
-
-            if (method == HuberM) {
-                const double cHuber = 1.345;
-                for (size_t i = 0; i < n; ++i) {
-                    const double u = std::fabs(resid[i]) / s;
-                    weights[i] = (u <= cHuber) ? 1.0 : (cHuber / u);
-                    if (weights[i] > 1e-15) {
-                        ++posWeightCount;
-                        minWeightedX = std::min(minWeightedX, xv[i]);
-                        maxWeightedX = std::max(maxWeightedX, xv[i]);
-                    }
-                }
-            } else if (method == TukeyBisquare) {
-                const double cTukey = 4.685;
-                for (size_t i = 0; i < n; ++i) {
-                    const double u = std::fabs(resid[i]) / s;
-                    if (u < cTukey) {
-                        const double t = u / cTukey;
-                        const double oneMinusT2 = 1.0 - t * t;
-                        weights[i] = oneMinusT2 * oneMinusT2;
-                    } else {
-                        weights[i] = 0.0;
-                    }
-                    if (weights[i] > 1e-12) {
-                        ++posWeightCount;
-                        minWeightedX = std::min(minWeightedX, xv[i]);
-                        maxWeightedX = std::max(maxWeightedX, xv[i]);
-                    }
-                }
-            } else {
-                // Quantile Regression pinball IRLS
-                const double epsPinball = std::max(1e-6, 1e-6 * madY);
-                for (size_t i = 0; i < n; ++i) {
-                    const double asym = (resid[i] >= 0.0) ? tau : (1.0 - tau);
-                    weights[i] = asym / std::max(std::fabs(resid[i]), epsPinball);
-                    ++posWeightCount;
-                    minWeightedX = std::min(minWeightedX, xv[i]);
-                    maxWeightedX = std::max(maxWeightedX, xv[i]);
-                }
-            }
-
-            if (posWeightCount < 2 || !(maxWeightedX > minWeightedX + 1e-13 * xSpan)) {
-                converged = true;
-                break;
-            }
-
-            double nextInt = curIntercept, nextSlope = curSlope;
-            double cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, chisq = 0.0;
-            if (gsl_fit_wlinear(xv.data(), 1, weights.data(), 1, yv.data(), 1, n, &nextInt,
-                                &nextSlope, &cov00, &cov01, &cov11, &chisq)
-                != GSL_SUCCESS) {
-                break;
-            }
-            if (!std::isfinite(nextInt) || !std::isfinite(nextSlope))
-                break;
-
-            lastCov00 = cov00;
-            lastCov11 = cov11;
-            lastChisq = chisq;
-
-            const double delta = std::fabs(nextInt - curIntercept)
-                    + std::fabs(nextSlope - curSlope) * xSpan;
-            curIntercept = nextInt;
-            curSlope = nextSlope;
-            if (delta <= 1e-11 * std::max(1.0, madY)) {
-                converged = true;
-                break;
-            }
-            if (iter + 1 == maxIter)
-                converged = true;
-        }
-
-        for (size_t i = 0; i < n; ++i)
-            resid[i] = yv[i] - (curIntercept + curSlope * xv[i]);
-        curScaleMAD = computeMADScale(resid);
-
-        int nEff = 0;
-        for (double wi : weights) {
-            if (wi > 1e-10)
-                ++nEff;
-        }
-        const double dof = double(std::max(1, nEff - 2));
-        const double varScale = (nEff > 2 && lastChisq > 1e-28) ? (lastChisq / dof) : 0.0;
-
-        res.converged = converged;
-        res.intercept = curIntercept;
-        res.slope = curSlope;
-        res.interceptSE = (varScale > 0.0 && lastCov00 > 0.0) ? std::sqrt(varScale * lastCov00) : 0.0;
-        res.slopeSE = (varScale > 0.0 && lastCov11 > 0.0) ? std::sqrt(varScale * lastCov11) : 0.0;
-        res.scaleMAD = curScaleMAD;
-    }
 
     // Plot fitted line
     const std::vector<double> gx = { xMin, xMax };
@@ -1560,6 +1782,699 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
 }
 
 // ============================================================================
+// 4b. Binary Logistic Regression (IRLS / Newton-Raphson MLE + L2 Safeguard)
+// ============================================================================
+
+PiecewiseAndRobustFit::LogisticResult
+PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcTable,
+                                             const QString &yBinaryCol,
+                                             const QStringList &xColNames,
+                                             bool plotProbCurve)
+{
+    LogisticResult res;
+    if (!app || !srcTable || yBinaryCol.trimmed().isEmpty() || xColNames.isEmpty())
+        return res;
+
+    const int yCol = resolveTableColumnIndex(srcTable, yBinaryCol);
+    if (yCol < 0)
+        return res;
+
+    QVector<int> xCols;
+    QStringList xLabels;
+    for (const QString &xn : xColNames) {
+        const int xc = resolveTableColumnIndex(srcTable, xn);
+        if (xc < 0 || xc == yCol || xCols.contains(xc))
+            return res;
+        xCols.append(xc);
+        xLabels << srcTable->colLabel(xc);
+    }
+
+    const int k = xCols.size();
+    const int p = k + 1;
+
+    auto readNumericCell = [&](int r, int c, double &valOut) -> bool {
+        Column *col = srcTable->column(c);
+        if (!col || col->isInvalid(r) || col->isMasked(r))
+            return false;
+        const QString rawTxt = srcTable->text(r, c).trimmed();
+        if (rawTxt.isEmpty())
+            return false;
+        if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            const double v = col->valueAt(r);
+            if (!std::isfinite(v))
+                return false;
+            valOut = v;
+            return true;
+        }
+        bool okNum = false;
+        double v = QLocale().toDouble(rawTxt, &okNum);
+        if (!okNum)
+            v = rawTxt.toDouble(&okNum);
+        if (!okNum || !std::isfinite(v))
+            return false;
+        valOut = v;
+        return true;
+    };
+
+    Column *yColumnPtr = srcTable->column(yCol);
+    if (!yColumnPtr)
+        return res;
+
+    struct RawLogRow
+    {
+        bool yIsNum = false;
+        double yNum = 0.0;
+        QString yStr;
+        std::vector<double> xRow;
+    };
+    std::vector<RawLogRow> rawRows;
+    const int totalRows = srcTable->numRows();
+    rawRows.reserve(size_t(std::max(0, totalRows)));
+
+    for (int r = 0; r < totalRows; ++r) {
+        if (yColumnPtr->isInvalid(r) || yColumnPtr->isMasked(r))
+            continue;
+        const QString yTxt = srcTable->text(r, yCol).trimmed();
+        if (yTxt.isEmpty())
+            continue;
+
+        std::vector<double> xr(size_t(k), 0.0);
+        bool okX = true;
+        for (int j = 0; j < k; ++j) {
+            if (!readNumericCell(r, xCols[j], xr[size_t(j)])) {
+                okX = false;
+                break;
+            }
+        }
+        if (!okX)
+            continue;
+
+        RawLogRow rr;
+        rr.xRow = std::move(xr);
+        double yNumVal = 0.0;
+        if (readNumericCell(r, yCol, yNumVal)) {
+            rr.yIsNum = true;
+            rr.yNum = yNumVal;
+        } else {
+            rr.yIsNum = false;
+            rr.yStr = yTxt;
+        }
+        rawRows.push_back(std::move(rr));
+    }
+
+    if (static_cast<int>(rawRows.size()) < p + 1)
+        return res;
+
+    bool allNumericY = true;
+    for (const auto &rr : rawRows) {
+        if (!rr.yIsNum) {
+            allNumericY = false;
+            break;
+        }
+    }
+
+    std::vector<int> yBin(rawRows.size(), 0);
+    if (allNumericY) {
+        bool strictZeroOne = true;
+        std::vector<double> distinctVals;
+        for (const auto &rr : rawRows) {
+            if (std::fabs(rr.yNum) > 1e-9 && std::fabs(rr.yNum - 1.0) > 1e-9)
+                strictZeroOne = false;
+            bool seen = false;
+            for (double dv : distinctVals) {
+                if (std::fabs(dv - rr.yNum) <= 1e-9) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                distinctVals.push_back(rr.yNum);
+                if (distinctVals.size() > 2 && !strictZeroOne)
+                    return res;
+            }
+        }
+        if (strictZeroOne) {
+            for (size_t i = 0; i < rawRows.size(); ++i)
+                yBin[i] = (std::fabs(rawRows[i].yNum - 1.0) <= 1e-9) ? 1 : 0;
+        } else {
+            if (distinctVals.size() != 2)
+                return res;
+            std::sort(distinctVals.begin(), distinctVals.end());
+            const double hiVal = distinctVals[1];
+            for (size_t i = 0; i < rawRows.size(); ++i)
+                yBin[i] = (std::fabs(rawRows[i].yNum - hiVal) <= 1e-9) ? 1 : 0;
+        }
+    } else {
+        QStringList distinctLabels;
+        for (const auto &rr : rawRows) {
+            const QString key = rr.yIsNum ? QString::number(rr.yNum) : rr.yStr;
+            bool seen = false;
+            for (const QString &dl : distinctLabels) {
+                if (dl.compare(key, Qt::CaseInsensitive) == 0) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                distinctLabels << key;
+                if (distinctLabels.size() > 2)
+                    return res;
+            }
+        }
+        if (distinctLabels.size() != 2)
+            return res;
+        distinctLabels.sort(Qt::CaseInsensitive);
+        QString posLabel = distinctLabels[1];
+        auto isPositiveToken = [](const QString &s) {
+            return s.compare(QStringLiteral("1"), Qt::CaseInsensitive) == 0
+                    || s.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0
+                    || s.compare(QStringLiteral("yes"), Qt::CaseInsensitive) == 0;
+        };
+        if (isPositiveToken(distinctLabels[0]) && !isPositiveToken(distinctLabels[1]))
+            posLabel = distinctLabels[0];
+
+        for (size_t i = 0; i < rawRows.size(); ++i) {
+            const QString key = rawRows[i].yIsNum ? QString::number(rawRows[i].yNum) : rawRows[i].yStr;
+            yBin[i] = (key.compare(posLabel, Qt::CaseInsensitive) == 0) ? 1 : 0;
+        }
+    }
+
+    const int n = static_cast<int>(rawRows.size());
+    int n1 = 0;
+    for (int yi : yBin)
+        n1 += yi;
+    const int n0 = n - n1;
+    if (n0 < 1 || n1 < 1 || n < p + 1)
+        return res;
+
+    // Standardize predictors X_1..X_k for well-conditioned Newton-Raphson / IRLS
+    std::vector<double> xMean(size_t(k), 0.0);
+    std::vector<double> xScale(size_t(k), 1.0);
+    for (int j = 0; j < k; ++j) {
+        double sum = 0.0;
+        for (int i = 0; i < n; ++i)
+            sum += rawRows[size_t(i)].xRow[size_t(j)];
+        xMean[size_t(j)] = sum / double(n);
+
+        double sq = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double d = rawRows[size_t(i)].xRow[size_t(j)] - xMean[size_t(j)];
+            sq += d * d;
+        }
+        const double sd = std::sqrt(sq / double(n));
+        xScale[size_t(j)] = (std::isfinite(sd) && sd > 1e-15) ? sd : 1.0;
+    }
+
+    std::vector<std::vector<double>> Z(size_t(n), std::vector<double>(size_t(p), 1.0));
+    for (int i = 0; i < n; ++i) {
+        Z[size_t(i)][0] = 1.0;
+        for (int j = 0; j < k; ++j) {
+            Z[size_t(i)][size_t(j + 1)] =
+                    (rawRows[size_t(i)].xRow[size_t(j)] - xMean[size_t(j)]) / xScale[size_t(j)];
+        }
+    }
+
+    auto sigmoidStable = [](double eta) -> double {
+        if (eta >= 0.0) {
+            const double ez = std::exp(-eta);
+            return 1.0 / (1.0 + ez);
+        }
+        const double ez = std::exp(eta);
+        return ez / (1.0 + ez);
+    };
+
+    const double ridgeLambda = 1e-9; // Tiny L2 safeguard against quasi-complete separation
+
+    auto evalLogLik = [&](const std::vector<double> &gamma, bool includePenalty) -> double {
+        double ll = 0.0;
+        for (int i = 0; i < n; ++i) {
+            double eta = 0.0;
+            for (int m = 0; m < p; ++m)
+                eta += Z[size_t(i)][size_t(m)] * gamma[size_t(m)];
+            const double absEta = std::fabs(eta);
+            ll += double(yBin[size_t(i)]) * eta - std::max(0.0, eta)
+                    - std::log1p(std::exp(-absEta));
+        }
+        if (includePenalty) {
+            double pen = 0.0;
+            for (int j = 1; j < p; ++j)
+                pen += gamma[size_t(j)] * gamma[size_t(j)];
+            ll -= 0.5 * ridgeLambda * pen;
+        }
+        return ll;
+    };
+
+    const double p0 = double(n1) / double(n);
+    const double llNull = double(n1) * std::log(p0) + double(n0) * std::log(1.0 - p0);
+
+    std::vector<double> gamma(size_t(p), 0.0);
+    gamma[0] = std::log(p0 / (1.0 - p0));
+
+    double curPenLL = evalLogLik(gamma, true);
+    bool mleConverged = false;
+    const int maxIter = 100;
+
+    for (int iter = 0; iter < maxIter; ++iter) {
+        std::vector<double> grad(size_t(p), 0.0);
+        std::vector<std::vector<double>> H(size_t(p), std::vector<double>(size_t(p), 0.0));
+
+        for (int i = 0; i < n; ++i) {
+            double eta = 0.0;
+            for (int m = 0; m < p; ++m)
+                eta += Z[size_t(i)][size_t(m)] * gamma[size_t(m)];
+            const double pi = sigmoidStable(eta);
+            const double diff = double(yBin[size_t(i)]) - pi;
+            const double wi = std::max(pi * (1.0 - pi), 1e-14);
+            for (int a = 0; a < p; ++a) {
+                const double za = Z[size_t(i)][size_t(a)];
+                grad[size_t(a)] += diff * za;
+                for (int b = a; b < p; ++b)
+                    H[size_t(a)][size_t(b)] += wi * za * Z[size_t(i)][size_t(b)];
+            }
+        }
+
+        H[0][0] += 1e-12;
+        for (int j = 1; j < p; ++j) {
+            grad[size_t(j)] -= ridgeLambda * gamma[size_t(j)];
+            H[size_t(j)][size_t(j)] += ridgeLambda;
+        }
+        for (int a = 0; a < p; ++a) {
+            for (int b = 0; b < a; ++b)
+                H[size_t(a)][size_t(b)] = H[size_t(b)][size_t(a)];
+        }
+
+        double maxGrad = 0.0;
+        for (double gv : grad)
+            maxGrad = std::max(maxGrad, std::fabs(gv));
+        if (maxGrad < 1e-8) {
+            mleConverged = true;
+            break;
+        }
+
+        std::vector<std::vector<double>> invH;
+        std::vector<double> stepVec(size_t(p), 0.0);
+        if (invertMatrixGsl(H, invH)) {
+            for (int a = 0; a < p; ++a) {
+                double s = 0.0;
+                for (int b = 0; b < p; ++b)
+                    s += invH[size_t(a)][size_t(b)] * grad[size_t(b)];
+                stepVec[size_t(a)] = s;
+            }
+        } else {
+            stepVec = grad;
+        }
+
+        double dirDeriv = 0.0;
+        double maxStep = 0.0;
+        for (int m = 0; m < p; ++m) {
+            dirDeriv += grad[size_t(m)] * stepVec[size_t(m)];
+            maxStep = std::max(maxStep, std::fabs(stepVec[size_t(m)]));
+        }
+        if (!(dirDeriv > 0.0) || !std::isfinite(maxStep)) {
+            stepVec = grad;
+            dirDeriv = 0.0;
+            maxStep = 0.0;
+            for (int m = 0; m < p; ++m) {
+                dirDeriv += grad[size_t(m)] * stepVec[size_t(m)];
+                maxStep = std::max(maxStep, std::fabs(stepVec[size_t(m)]));
+            }
+        }
+        if (maxStep > 5.0) {
+            const double shrink = 5.0 / maxStep;
+            for (double &sv : stepVec)
+                sv *= shrink;
+            dirDeriv *= shrink;
+            maxStep = 5.0;
+        }
+
+        double alpha = 1.0;
+        bool accepted = false;
+        std::vector<double> trialGamma(size_t(p), 0.0);
+        while (alpha >= 1e-10) {
+            for (int m = 0; m < p; ++m)
+                trialGamma[size_t(m)] = gamma[size_t(m)] + alpha * stepVec[size_t(m)];
+            const double trialLL = evalLogLik(trialGamma, true);
+            if (std::isfinite(trialLL)
+                && trialLL >= curPenLL + 1e-4 * alpha * dirDeriv - 1e-13 * (1.0 + std::fabs(curPenLL))) {
+                gamma = trialGamma;
+                curPenLL = trialLL;
+                accepted = true;
+                break;
+            }
+            alpha *= 0.5;
+        }
+
+        if (!accepted) {
+            if (maxGrad < 1e-4)
+                mleConverged = true;
+            break;
+        }
+
+        if (alpha * maxStep < 1e-9) {
+            mleConverged = true;
+            break;
+        }
+        if (iter + 1 == maxIter)
+            mleConverged = std::isfinite(curPenLL);
+    }
+
+    if (!mleConverged)
+        return res;
+
+    // Final Fisher information & covariance in standardized space
+    std::vector<std::vector<double>> Hfinal(size_t(p), std::vector<double>(size_t(p), 0.0));
+    for (int i = 0; i < n; ++i) {
+        double eta = 0.0;
+        for (int m = 0; m < p; ++m)
+            eta += Z[size_t(i)][size_t(m)] * gamma[size_t(m)];
+        const double pi = sigmoidStable(eta);
+        const double wi = std::max(pi * (1.0 - pi), 1e-14);
+        for (int a = 0; a < p; ++a) {
+            for (int b = a; b < p; ++b)
+                Hfinal[size_t(a)][size_t(b)] += wi * Z[size_t(i)][size_t(a)] * Z[size_t(i)][size_t(b)];
+        }
+    }
+    Hfinal[0][0] += 1e-12;
+    for (int j = 1; j < p; ++j)
+        Hfinal[size_t(j)][size_t(j)] += ridgeLambda;
+    for (int a = 0; a < p; ++a) {
+        for (int b = 0; b < a; ++b)
+            Hfinal[size_t(a)][size_t(b)] = Hfinal[size_t(b)][size_t(a)];
+    }
+
+    std::vector<std::vector<double>> covGamma(size_t(p), std::vector<double>(size_t(p), 0.0));
+    invertMatrixGsl(Hfinal, covGamma);
+
+    // Unstandardize coefficients beta = M * gamma and covariance covBeta = M * covGamma * M^T
+    std::vector<std::vector<double>> M(size_t(p), std::vector<double>(size_t(p), 0.0));
+    M[0][0] = 1.0;
+    for (int j = 0; j < k; ++j) {
+        M[0][size_t(j + 1)] = -xMean[size_t(j)] / xScale[size_t(j)];
+        M[size_t(j + 1)][size_t(j + 1)] = 1.0 / xScale[size_t(j)];
+    }
+
+    std::vector<std::vector<double>> covBeta(size_t(p), std::vector<double>(size_t(p), 0.0));
+    for (int a = 0; a < p; ++a) {
+        for (int b = 0; b < p; ++b) {
+            double sum = 0.0;
+            for (int u = 0; u < p; ++u) {
+                if (M[size_t(a)][size_t(u)] == 0.0)
+                    continue;
+                for (int v = 0; v < p; ++v) {
+                    if (M[size_t(b)][size_t(v)] != 0.0)
+                        sum += M[size_t(a)][size_t(u)] * covGamma[size_t(u)][size_t(v)]
+                                * M[size_t(b)][size_t(v)];
+                }
+            }
+            covBeta[size_t(a)][size_t(b)] = sum;
+        }
+    }
+
+    res.betas.resize(p);
+    res.stdErrors.resize(p);
+    res.waldZ.resize(p);
+    res.pValues.resize(p);
+    res.oddsRatios.resize(k);
+
+    res.betas[0] = gamma[0];
+    for (int j = 0; j < k; ++j) {
+        const double bj = gamma[size_t(j + 1)] / xScale[size_t(j)];
+        res.betas[j + 1] = bj;
+        res.betas[0] -= bj * xMean[size_t(j)];
+        res.oddsRatios[j] = std::exp(std::clamp(bj, -500.0, 500.0));
+    }
+
+    for (int m = 0; m < p; ++m) {
+        const double vmm = covBeta[size_t(m)][size_t(m)];
+        const double se = (std::isfinite(vmm) && vmm > 0.0) ? std::sqrt(vmm) : 0.0;
+        res.stdErrors[m] = se;
+        if (se > 1e-30) {
+            const double zv = res.betas[m] / se;
+            res.waldZ[m] = zv;
+            res.pValues[m] = std::clamp(2.0 * gsl_cdf_ugaussian_Q(std::fabs(zv)), 0.0, 1.0);
+        } else {
+            res.waldZ[m] = 0.0;
+            res.pValues[m] = 1.0;
+        }
+    }
+
+    res.logLikelihood = evalLogLik(gamma, false);
+    res.lrChi2 = std::max(0.0, 2.0 * (res.logLikelihood - llNull));
+    res.lrPValue = std::clamp(gsl_cdf_chisq_Q(res.lrChi2, double(k)), 0.0, 1.0);
+    res.mcFaddenR2 = (llNull < -1e-15) ? std::clamp(1.0 - (res.logLikelihood / llNull), 0.0, 1.0)
+                                       : 0.0;
+    res.aic = -2.0 * res.logLikelihood + 2.0 * double(p);
+    res.converged = true;
+
+    // Create Report Worksheet
+    const int nSummaryMetrics = 7;
+    const int reportRows = std::max(p, nSummaryMetrics);
+    const QString tblName =
+            app->generateUniqueName(srcTable->name() + QStringLiteral("_Logistic"), false);
+    Table *tbl = app->newTable(reportRows, 10, tblName,
+                               QObject::tr("Binary Logistic Regression Summary"));
+    if (tbl) {
+        tbl->setHeader(QStringList()
+                       << QObject::tr("Term") << QObject::tr("Beta") << QObject::tr("Std_Error")
+                       << QObject::tr("Wald_Z") << QObject::tr("p_Value")
+                       << QObject::tr("Odds_Ratio") << QObject::tr("OR_95CI_Low")
+                       << QObject::tr("OR_95CI_High") << QObject::tr("Model_Metric")
+                       << QObject::tr("Metric_Value"));
+        tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 1; c <= 7; ++c)
+            tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        tbl->column(8)->setColumnMode(SciDAVis::ColumnMode::Text);
+        tbl->column(9)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+
+        const double z95 = 1.959963984540054;
+        for (int r = 0; r < reportRows; ++r) {
+            if (r < p) {
+                tbl->column(0)->setTextAt(r, (r == 0) ? QStringLiteral("(Intercept)")
+                                                      : xLabels[r - 1]);
+                tbl->column(1)->setValueAt(r, res.betas[r]);
+                tbl->column(2)->setValueAt(r, res.stdErrors[r]);
+                tbl->column(3)->setValueAt(r, res.waldZ[r]);
+                tbl->column(4)->setValueAt(r, res.pValues[r]);
+                if (r == 0) {
+                    tbl->column(5)->setInvalid(r, true);
+                    tbl->column(6)->setInvalid(r, true);
+                    tbl->column(7)->setInvalid(r, true);
+                } else {
+                    const double b = res.betas[r];
+                    const double se = res.stdErrors[r];
+                    tbl->column(5)->setValueAt(r, res.oddsRatios[r - 1]);
+                    tbl->column(6)->setValueAt(r, std::exp(std::clamp(b - z95 * se, -500.0, 500.0)));
+                    tbl->column(7)->setValueAt(r, std::exp(std::clamp(b + z95 * se, -500.0, 500.0)));
+                }
+            } else {
+                for (int c = 1; c <= 7; ++c)
+                    tbl->column(c)->setInvalid(r, true);
+            }
+        }
+
+        const QVector<QPair<QString, double>> modelMetrics = {
+            { QStringLiteral("Log_Likelihood"), res.logLikelihood },
+            { QStringLiteral("Null_Log_Likelihood"), llNull },
+            { QStringLiteral("LR_Chi2"), res.lrChi2 },
+            { QStringLiteral("LR_p_Value"), res.lrPValue },
+            { QStringLiteral("McFadden_R2"), res.mcFaddenR2 },
+            { QStringLiteral("AIC"), res.aic },
+            { QStringLiteral("N_Observations"), double(n) }
+        };
+        for (int r = 0; r < reportRows; ++r) {
+            if (r < modelMetrics.size()) {
+                tbl->column(8)->setTextAt(r, modelMetrics[r].first);
+                tbl->column(9)->setValueAt(r, modelMetrics[r].second);
+            } else {
+                tbl->column(9)->setInvalid(r, true);
+            }
+        }
+        res.reportTable = tbl;
+    }
+
+    // Optional Logistic Probability + 95% CI Curve MultiLayer (explicit "Arial" fonts)
+    if (plotProbCurve) {
+        std::vector<double> axisCoord(size_t(n), 0.0);
+        double normGammaSlopeSq = 0.0;
+        for (int j = 1; j < p; ++j)
+            normGammaSlopeSq += gamma[size_t(j)] * gamma[size_t(j)];
+
+        for (int i = 0; i < n; ++i) {
+            if (k == 1) {
+                axisCoord[size_t(i)] = rawRows[size_t(i)].xRow[0];
+            } else {
+                double eta = res.betas[0];
+                for (int j = 0; j < k; ++j)
+                    eta += res.betas[j + 1] * rawRows[size_t(i)].xRow[size_t(j)];
+                axisCoord[size_t(i)] = eta;
+            }
+        }
+
+        double tMin = *std::min_element(axisCoord.begin(), axisCoord.end());
+        double tMax = *std::max_element(axisCoord.begin(), axisCoord.end());
+        if (!(tMax > tMin + 1e-12)) {
+            tMin -= 1.0;
+            tMax += 1.0;
+        } else {
+            const double pad = 0.04 * (tMax - tMin);
+            tMin -= pad;
+            tMax += pad;
+        }
+
+        const QString dataTblName =
+                app->generateUniqueName(srcTable->name() + QStringLiteral("_Logistic_Plot"), false);
+        Table *plotTbl = app->newTable(n, 3, dataTblName,
+                                       QObject::tr("Logistic Regression Probability Data"));
+        if (plotTbl) {
+            plotTbl->setHeader(QStringList()
+                               << ((k == 1) ? xLabels[0] : QObject::tr("Linear_Score_z"))
+                               << QObject::tr("Observed_Y")
+                               << QObject::tr("Predicted_Prob"));
+            for (int c = 0; c < 3; ++c)
+                plotTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            plotTbl->column(0)->setPlotDesignation(SciDAVis::X);
+            plotTbl->column(1)->setPlotDesignation(SciDAVis::Y);
+            plotTbl->column(2)->setPlotDesignation(SciDAVis::Y);
+
+            for (int i = 0; i < n; ++i) {
+                double eta = res.betas[0];
+                for (int j = 0; j < k; ++j)
+                    eta += res.betas[j + 1] * rawRows[size_t(i)].xRow[size_t(j)];
+                plotTbl->column(0)->setValueAt(i, axisCoord[size_t(i)]);
+                plotTbl->column(1)->setValueAt(i, double(yBin[size_t(i)]));
+                plotTbl->column(2)->setValueAt(i, sigmoidStable(eta));
+            }
+
+            MultiLayer *ml = app->newGraph(
+                    app->generateUniqueName(QStringLiteral("Logistic_Probability"), false));
+            if (ml) {
+                Graph *gp = ml->activeGraph();
+                const QFont titleFnt("Arial", 11, QFont::Bold);
+                const QFont axisFnt("Arial", 10, QFont::Bold);
+                const QFont numFnt("Arial", 9);
+                const QFont legFnt("Arial", 9);
+                ml->setFonts(titleFnt, axisFnt, numFnt, legFnt);
+
+                if (gp) {
+                    if (gp->insertCurve(plotTbl, plotTbl->colName(0), plotTbl->colName(1),
+                                        Graph::Scatter)) {
+                        const int cIdx = gp->curves() - 1;
+                        QwtSymbol sym(QwtSymbol::Ellipse, QBrush(QColor(31, 119, 180, 175)),
+                                      QPen(QColor(20, 80, 140), 1), QSize(7, 7));
+                        gp->setCurveSymbol(cIdx, sym);
+                    }
+
+                    const int nGrid = 201;
+                    std::vector<double> gx(static_cast<size_t>(nGrid)),
+                            gyProb(static_cast<size_t>(nGrid)),
+                            gyLo(static_cast<size_t>(nGrid)),
+                            gyHi(static_cast<size_t>(nGrid));
+                    const double z95 = 1.959963984540054;
+                    std::vector<double> vStd(size_t(p), 0.0);
+
+                    for (int gi = 0; gi < nGrid; ++gi) {
+                        const double tg = tMin + (tMax - tMin) * double(gi) / double(nGrid - 1);
+                        gx[size_t(gi)] = tg;
+
+                        double etaHat = 0.0;
+                        double varEta = 0.0;
+                        if (k == 1) {
+                            etaHat = res.betas[0] + res.betas[1] * tg;
+                            varEta = covBeta[0][0] + 2.0 * tg * covBeta[0][1]
+                                    + tg * tg * covBeta[1][1];
+                        } else {
+                            etaHat = tg;
+                            vStd[0] = 1.0;
+                            const double scaleDir = (normGammaSlopeSq > 1e-24)
+                                    ? ((tg - gamma[0]) / normGammaSlopeSq)
+                                    : 0.0;
+                            for (int j = 1; j < p; ++j)
+                                vStd[size_t(j)] = scaleDir * gamma[size_t(j)];
+                            for (int a = 0; a < p; ++a) {
+                                for (int b = 0; b < p; ++b)
+                                    varEta += vStd[size_t(a)] * covGamma[size_t(a)][size_t(b)]
+                                            * vStd[size_t(b)];
+                            }
+                        }
+
+                        const double seEta = (std::isfinite(varEta) && varEta > 0.0)
+                                ? std::sqrt(varEta)
+                                : 0.0;
+                        gyProb[size_t(gi)] = sigmoidStable(etaHat);
+                        gyLo[size_t(gi)] = sigmoidStable(etaHat - z95 * seEta);
+                        gyHi[size_t(gi)] = sigmoidStable(etaHat + z95 * seEta);
+                    }
+
+                    auto attachCurve = [&](const QString &name, const std::vector<double> &yvCurve,
+                                           const QPen &pen) {
+                        FunctionCurve *fc = new FunctionCurve(
+                                app, FunctionCurve::Normal, gp->generateFunctionName(name));
+                        fc->setPen(pen);
+                        fc->setData(gx.data(), yvCurve.data(), nGrid);
+                        fc->setRange(tMin, tMax);
+                        gp->insertPlotItem(fc, Graph::Line);
+                        gp->addFitCurve(fc);
+                    };
+
+                    attachCurve(QStringLiteral("Logistic_P"), gyProb,
+                                QPen(QColor(215, 25, 28), 2, Qt::SolidLine));
+                    attachCurve(QStringLiteral("Logistic_95CI_Lower"), gyLo,
+                                QPen(QColor(0, 114, 178), 1, Qt::DashLine));
+                    attachCurve(QStringLiteral("Logistic_95CI_Upper"), gyHi,
+                                QPen(QColor(0, 114, 178), 1, Qt::DashLine));
+
+                    // P = 0.5 decision threshold reference line
+                    FunctionCurve *halfLn = new FunctionCurve(
+                            app, FunctionCurve::Normal, gp->generateFunctionName(QStringLiteral("P_0.5")));
+                    halfLn->setPen(QPen(Qt::darkGray, 1, Qt::DotLine));
+                    const double hx[2] = { tMin, tMax };
+                    const double hy[2] = { 0.5, 0.5 };
+                    halfLn->setData(hx, hy, 2);
+                    halfLn->setRange(tMin, tMax);
+                    gp->insertPlotItem(halfLn, Graph::Line);
+
+                    gp->setTitle(QObject::tr("Binary Logistic Regression (McFadden R² = %1, LR p = %2)")
+                                         .arg(res.mcFaddenR2, 0, 'f', 4)
+                                         .arg(res.lrPValue, 0, 'g', 4));
+                    gp->setTitleFont(titleFnt);
+                    gp->setXAxisTitle((k == 1)
+                                              ? xLabels[0]
+                                              : QObject::tr("Linear Predictor Score z = X·β"));
+                    gp->setYAxisTitle(QObject::tr("Probability P(%1 = 1)")
+                                              .arg(srcTable->colLabel(yCol)));
+                    gp->setScale(2, -0.05, 1.05);
+                    gp->initFonts(axisFnt, numFnt);
+                    if (gp->legend())
+                        gp->legend()->setFont(legFnt);
+
+                    QStringList summaryLines;
+                    summaryLines << QObject::tr("Logistic MLE (95% CI Band)");
+                    summaryLines << QObject::tr("LR χ²(%1) = %2 (p = %3)")
+                                            .arg(k)
+                                            .arg(res.lrChi2, 0, 'g', 5)
+                                            .arg(res.lrPValue, 0, 'g', 4);
+                    summaryLines << QObject::tr("McFadden R² = %1, AIC = %2")
+                                            .arg(res.mcFaddenR2, 0, 'f', 4)
+                                            .arg(res.aic, 0, 'g', 6);
+                    if (k == 1) {
+                        summaryLines << QObject::tr("OR(%1) = %2")
+                                                .arg(xLabels[0])
+                                                .arg(res.oddsRatios[0], 0, 'g', 5);
+                    }
+                    insertArialSummaryBox(gp, summaryLines.join('\n'));
+                    gp->replot();
+                }
+
+                ml->setFonts(titleFnt, axisFnt, numFnt, legFnt);
+                res.probGraph = ml;
+            }
+        }
+    }
+
+    return res;
+}
+
+// ============================================================================
 // 5. Interactive Dialogs (100% tr(...) localized)
 // ============================================================================
 
@@ -1617,7 +2532,42 @@ void PiecewiseAndRobustFit::showPiecewiseFitDialog(ApplicationWindow *app, Graph
     annotateChk->setChecked(true);
     form->addRow(QString(), annotateChk);
 
+    auto *livePreviewChk = new QCheckBox(QObject::tr("Live preview on graph"), &dlg);
+    livePreviewChk->setChecked(true);
+    form->addRow(QString(), livePreviewChk);
+
     mainLay->addLayout(form);
+
+    DialogPreviewCurveGuard previewGuard;
+    previewGuard.graph = g;
+    auto updatePiecewisePreview = [&]() {
+        if (!livePreviewChk->isChecked() || !previewGuard.graph) {
+            previewGuard.clear();
+            return;
+        }
+        QwtPlotCurve *c = resolveCurveOnGraph(previewGuard.graph, curveCombo->currentText());
+        std::vector<double> xv, yv;
+        if (!extractUnmaskedSortedXY(c, xv, yv)) {
+            previewGuard.clear();
+            return;
+        }
+        PiecewiseResult tmpRes;
+        double rss = 0.0;
+        std::vector<double> gx, gy;
+        if (computePiecewiseCore(xv, yv, segSpin->value(), tmpRes, rss, gx, gy)) {
+            previewGuard.showData(curveCombo->currentText(), gx, gy, QColor(215, 25, 28, 210));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
+    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { updatePiecewisePreview(); });
+    QObject::connect(segSpin, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { updatePiecewisePreview(); });
+    QObject::connect(livePreviewChk, &QCheckBox::toggled, &dlg,
+                     [&](bool) { updatePiecewisePreview(); });
+    updatePiecewisePreview();
 
     auto *btns = new QDialogButtonBox(&dlg);
     QPushButton *okBtn = btns->addButton(QObject::tr("Fit"), QDialogButtonBox::AcceptRole);
@@ -1626,7 +2576,9 @@ void PiecewiseAndRobustFit::showPiecewiseFitDialog(ApplicationWindow *app, Graph
     QObject::connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
     mainLay->addWidget(btns);
 
-    if (dlg.exec() == QDialog::Accepted) {
+    const int rc = dlg.exec();
+    previewGuard.clear();
+    if (rc == QDialog::Accepted) {
         const auto out = fitPiecewiseLinear(app, g, curveCombo->currentText(), segSpin->value(),
                                             annotateChk->isChecked());
         if (!out.converged) {
@@ -1680,16 +2632,53 @@ void PiecewiseAndRobustFit::showRobustFitDialog(ApplicationWindow *app, Graph *g
     tauSpin->setEnabled(false);
     form->addRow(QObject::tr("Quantile (tau):"), tauSpin);
 
-    QObject::connect(methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [methodCombo, tauSpin](int) {
-                         tauSpin->setEnabled(methodCombo->currentData().toInt() == int(QuantileReg));
-                     });
-
     auto *annotateChk = new QCheckBox(QObject::tr("Add summary box on graph"), &dlg);
     annotateChk->setChecked(true);
     form->addRow(QString(), annotateChk);
 
+    auto *livePreviewChk = new QCheckBox(QObject::tr("Live preview on graph"), &dlg);
+    livePreviewChk->setChecked(true);
+    form->addRow(QString(), livePreviewChk);
+
     mainLay->addLayout(form);
+
+    DialogPreviewCurveGuard previewGuard;
+    previewGuard.graph = g;
+    auto updateRobustPreview = [&]() {
+        if (!livePreviewChk->isChecked() || !previewGuard.graph) {
+            previewGuard.clear();
+            return;
+        }
+        QwtPlotCurve *c = resolveCurveOnGraph(previewGuard.graph, curveCombo->currentText());
+        std::vector<double> xv, yv;
+        if (!extractUnmaskedSortedXY(c, xv, yv) || xv.size() < 2) {
+            previewGuard.clear();
+            return;
+        }
+        const auto m = static_cast<RobustMethod>(methodCombo->currentData().toInt());
+        RobustFitResult tmpRes;
+        if (computeRobustOrQuantileCore(xv, yv, m, tauSpin->value(), tmpRes)) {
+            const std::vector<double> gx = { xv.front(), xv.back() };
+            const std::vector<double> gy = { tmpRes.intercept + tmpRes.slope * xv.front(),
+                                             tmpRes.intercept + tmpRes.slope * xv.back() };
+            previewGuard.showData(curveCombo->currentText(), gx, gy, QColor(0, 114, 178, 210));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
+    QObject::connect(methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [methodCombo, tauSpin, &updateRobustPreview](int) {
+                         tauSpin->setEnabled(methodCombo->currentData().toInt() == int(QuantileReg));
+                         updateRobustPreview();
+                     });
+    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { updateRobustPreview(); });
+    QObject::connect(tauSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { updateRobustPreview(); });
+    QObject::connect(livePreviewChk, &QCheckBox::toggled, &dlg,
+                     [&](bool) { updateRobustPreview(); });
+    updateRobustPreview();
 
     auto *btns = new QDialogButtonBox(&dlg);
     QPushButton *okBtn = btns->addButton(QObject::tr("Fit"), QDialogButtonBox::AcceptRole);
@@ -1698,7 +2687,9 @@ void PiecewiseAndRobustFit::showRobustFitDialog(ApplicationWindow *app, Graph *g
     QObject::connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
     mainLay->addWidget(btns);
 
-    if (dlg.exec() == QDialog::Accepted) {
+    const int rc = dlg.exec();
+    previewGuard.clear();
+    if (rc == QDialog::Accepted) {
         const auto m = static_cast<RobustMethod>(methodCombo->currentData().toInt());
         const auto out = fitRobustOrQuantileLinear(app, g, curveCombo->currentText(), m,
                                                    tauSpin->value(), annotateChk->isChecked());
@@ -1883,6 +2874,114 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
         if (!out.valid) {
             QMessageBox::warning(app, QObject::tr("Multiple Linear Regression"),
                                  QObject::tr("Multiple linear regression failed (insufficient valid rows)."));
+        }
+    }
+}
+
+void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+
+    QList<Table *> tables;
+    if (app->tableList()) {
+        for (MyWidget *w : *app->tableList()) {
+            if (auto *t = qobject_cast<Table *>(w)) {
+                if (t->numCols() >= 2)
+                    tables.append(t);
+            }
+        }
+    }
+    if (tables.isEmpty()) {
+        QMessageBox::information(
+                app, QObject::tr("Binary Logistic Regression"),
+                QObject::tr("Please open a worksheet with a binary Y column and at least one predictor column."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Binary Logistic Regression (MLE & Odds Ratios)"));
+    dlg.setMinimumWidth(440);
+
+    auto *mainLay = new QVBoxLayout(&dlg);
+    auto *form = new QFormLayout();
+
+    auto *tblCombo = new QComboBox(&dlg);
+    for (Table *t : tables)
+        tblCombo->addItem(t->name());
+    form->addRow(QObject::tr("Worksheet:"), tblCombo);
+
+    auto *yCombo = new QComboBox(&dlg);
+    form->addRow(QObject::tr("Binary Response (Y in {0, 1}):"), yCombo);
+    mainLay->addLayout(form);
+
+    auto *xGrp = new QGroupBox(QObject::tr("Predictor Variables (X1, X2, ...)"), &dlg);
+    auto *xLay = new QVBoxLayout(xGrp);
+    auto *xList = new QListWidget(xGrp);
+    xList->setSelectionMode(QAbstractItemView::NoSelection);
+    xLay->addWidget(xList);
+    mainLay->addWidget(xGrp);
+
+    auto *probChk = new QCheckBox(
+            QObject::tr("Plot Logistic Probability & 95% CI Curve"), &dlg);
+    probChk->setChecked(true);
+    mainLay->addWidget(probChk);
+
+    auto repopulateCols = [&tables, tblCombo, yCombo, xList]() {
+        const int idx = tblCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        yCombo->clear();
+        xList->clear();
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString lbl = t->colLabel(c);
+            yCombo->addItem(lbl);
+            auto *it = new QListWidgetItem(lbl, xList);
+            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            it->setCheckState((c > 0) ? Qt::Checked : Qt::Unchecked);
+        }
+        if (t->numCols() > 0) {
+            yCombo->setCurrentIndex(t->numCols() - 1);
+            xList->item(t->numCols() - 1)->setCheckState(Qt::Unchecked);
+            if (t->numCols() >= 2)
+                xList->item(0)->setCheckState(Qt::Checked);
+        }
+    };
+    QObject::connect(tblCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [repopulateCols](int) { repopulateCols(); });
+    repopulateCols();
+
+    auto *btns = new QDialogButtonBox(&dlg);
+    QPushButton *okBtn =
+            btns->addButton(QObject::tr("Run Logistic Regression"), QDialogButtonBox::AcceptRole);
+    QPushButton *cancelBtn = btns->addButton(QObject::tr("Cancel"), QDialogButtonBox::RejectRole);
+    QObject::connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    QObject::connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    mainLay->addWidget(btns);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int idx = tblCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        const QString yName = yCombo->currentText();
+        QStringList xNames;
+        for (int i = 0; i < xList->count(); ++i) {
+            if (xList->item(i)->checkState() == Qt::Checked && xList->item(i)->text() != yName)
+                xNames << xList->item(i)->text();
+        }
+        if (xNames.isEmpty()) {
+            QMessageBox::warning(
+                    app, QObject::tr("Binary Logistic Regression"),
+                    QObject::tr("Please select at least one predictor column distinct from Y."));
+            return;
+        }
+        const auto out = runLogisticRegression(app, t, yName, xNames, probChk->isChecked());
+        if (!out.converged) {
+            QMessageBox::warning(
+                    app, QObject::tr("Binary Logistic Regression"),
+                    QObject::tr("Logistic regression could not converge (ensure Y has two distinct binary outcomes and sufficient valid rows)."));
         }
     }
 }
