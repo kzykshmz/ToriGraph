@@ -29,6 +29,7 @@
 #ifndef PLOTCURVE_H
 #define PLOTCURVE_H
 
+#include <QRectF>
 #include <qwt_plot_curve.h>
 #include "Table.h"
 
@@ -55,16 +56,16 @@ public:
     DataCurve(Table *t, const QString &xColName, const QString &name, int startRow = 0,
               int endRow = -1);
 
-    QString xColumnName() { return d_x_column; };
+    QString xColumnName() const { return d_x_column; };
     void setXColumnName(const QString &name) { d_x_column = name; };
 
-    QString yColumnName() { return title().text(); }
+    QString yColumnName() const { return title().text(); }
     void setYColumnName(const QString &name) { setTitle(name); }
 
-    Table *table() { return d_table; };
+    Table *table() const { return d_table; };
 
-    int startRow() { return d_start_row; };
-    int endRow() { return d_end_row; };
+    int startRow() const { return d_start_row; };
+    int endRow() const { return d_end_row; };
     void setRowRange(int startRow, int endRow);
 
     bool isFullRange();
@@ -75,7 +76,16 @@ public:
     QList<QVector<double>> convertData(const QList<Column *> &cols, const QList<int> &axes) const;
 
     //! Returns the row index in the data source table corresponding to the data point index.
-    int tableRow(int point);
+    int tableRow(int point) const;
+
+    bool isPointMasked(int point) const;
+    void maskPoint(int point, bool mask = true);
+    int maskRegion(const QRectF &dataRect, bool mask = true);
+    void clearMasks();
+    int maskedPointCount() const;
+    using PlotCurve::draw;
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,
+              int to) const override;
 
     void remove();
 
