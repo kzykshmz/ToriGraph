@@ -16,6 +16,7 @@
 #include "MyParser.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "QwtHistogram.h"
 #include "RecalcEngine.h"
 #include "Table.h"
 #include "core/column/Column.h"
@@ -58,6 +59,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -232,6 +234,21 @@ void addLineSegmentOnGraph(Graph *g, double x0, double y0, double x1, double y1,
     g->addArrow(&mrk);
 }
 
+void applyArialGraphFonts(Graph *g)
+{
+    if (!g)
+        return;
+    g->initFonts(QFont(QStringLiteral("Arial"), 11, QFont::Bold),
+                 QFont(QStringLiteral("Arial"), 10));
+    g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    if (g->legend())
+        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
+    g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
+                             QFont(QStringLiteral("Arial"), 10),
+                             g->textMarkerDefaultColor(),
+                             g->textMarkerDefaultBackground());
+}
+
 Legend *addTextLabelOnGraph(Graph *g, double x, double y, const QString &text,
                             const QColor &color = QColor(20, 20, 20), bool bold = true,
                             int pointSizeDelta = 0)
@@ -244,13 +261,31 @@ Legend *addTextLabelOnGraph(Graph *g, double x, double y, const QString &text,
     lbl->setFrameStyle(Legend::None);
     lbl->setBackgroundColor(QColor(255, 255, 255, 0));
     lbl->setTextColor(color);
-    QFont f = g->defaultTextMarkerFont();
-    f.setBold(bold);
-    if (pointSizeDelta != 0 && f.pointSize() + pointSizeDelta >= 6)
-        f.setPointSize(f.pointSize() + pointSizeDelta);
+    int ptSize = g->defaultTextMarkerFont().pointSize();
+    if (ptSize <= 0)
+        ptSize = 10;
+    if (pointSizeDelta != 0 && ptSize + pointSizeDelta >= 6)
+        ptSize += pointSizeDelta;
+    QFont f(QStringLiteral("Arial"), ptSize, bold ? QFont::Bold : QFont::Normal);
     lbl->setFont(f);
     lbl->setOriginCoord(x, y);
     return lbl;
+}
+
+Legend *addFramedBoxOnGraph(Graph *g, double x, double y, const QString &text,
+                            const QColor &textColor = QColor(20, 30, 50), int ptSize = 9)
+{
+    if (!g)
+        return nullptr;
+    Legend *box = g->newLegend(text);
+    if (!box)
+        return nullptr;
+    box->setFrameStyle(Legend::Line);
+    box->setBackgroundColor(QColor(255, 255, 255, 225));
+    box->setTextColor(textColor);
+    box->setFont(QFont(QStringLiteral("Arial"), ptSize));
+    box->setOriginCoord(x, y);
+    return box;
 }
 
 // ============================================================================
@@ -919,6 +954,279 @@ QString starRatingForP(double p)
     return QStringLiteral("ns");
 }
 
+void computeShapiroWilkRoyston(const std::vector<double> &sortedX, double ss,
+                               double &wOut, double &pOut)
+{
+    const int nFull = static_cast<int>(sortedX.size());
+    if (nFull < 3 || ss <= 1e-30) {
+        wOut = 0.0;
+        pOut = 0.0;
+        return;
+    }
+
+    // Subsample evenly if n > 5000 (AS R94 domain is 3 <= n <= 5000)
+    std::vector<double> xSub;
+    const std::vector<double> *xPtr = &sortedX;
+    if (nFull > 5000) {
+        xSub.resize(5000);
+        for (int i = 0; i < 5000; ++i) {
+            const size_t idx = static_cast<size_t>(
+                    std::round(static_cast<double>(i) * static_cast<double>(nFull - 1) / 4999.0));
+            xSub[static_cast<size_t>(i)] = sortedX[std::min(sortedX.size() - 1, idx)];
+        }
+        xPtr = &xSub;
+    }
+
+    const std::vector<double> &x = *xPtr;
+    const int n = static_cast<int>(x.size());
+
+    double ssUse = ss;
+    if (n != nFull) {
+        const double mSub = std::accumulate(x.begin(), x.end(), 0.0) / static_cast<double>(n);
+        ssUse = 0.0;
+        for (double v : x) {
+            const double d = v - mSub;
+            ssUse += d * d;
+        }
+        if (ssUse <= 1e-30) {
+            wOut = 0.0;
+            pOut = 0.0;
+            return;
+        }
+    }
+
+    if (n == 3) {
+        const double a1 = 0.70710678118654752440;
+        const double num = a1 * (x[2] - x[0]);
+        double w = (num * num) / ssUse;
+        w = std::clamp(w, 0.75, 1.0);
+        wOut = w;
+        const double p = (6.0 / kPi) * (std::asin(std::sqrt(w)) - std::asin(std::sqrt(0.75)));
+        pOut = std::clamp(p, 0.0, 1.0);
+        return;
+    }
+
+    std::vector<double> m(static_cast<size_t>(n), 0.0);
+    double sumM2 = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double prob = (static_cast<double>(i + 1) - 0.375) / (static_cast<double>(n) + 0.25);
+        m[static_cast<size_t>(i)] = gsl_cdf_ugaussian_Pinv(std::clamp(prob, 1e-12, 1.0 - 1e-12));
+        sumM2 += m[static_cast<size_t>(i)] * m[static_cast<size_t>(i)];
+    }
+    const double normM = std::sqrt(std::max(1e-30, sumM2));
+    const double cn = m[static_cast<size_t>(n - 1)] / normM;
+    const double cn1 = m[static_cast<size_t>(n - 2)] / normM;
+    const double u = 1.0 / std::sqrt(static_cast<double>(n));
+    const double u2 = u * u;
+    const double u3 = u2 * u;
+    const double u4 = u3 * u;
+    const double u5 = u4 * u;
+
+    std::vector<double> a(static_cast<size_t>(n), 0.0);
+    const double an = -2.706056 * u5 + 4.434685 * u4 - 2.071190 * u3 - 0.147981 * u2
+            + 0.221157 * u + cn;
+    a[static_cast<size_t>(n - 1)] = an;
+    a[0] = -an;
+
+    if (n <= 5) {
+        const double mn = m[static_cast<size_t>(n - 1)];
+        const double phi = (sumM2 - 2.0 * mn * mn) / std::max(1e-12, 1.0 - 2.0 * an * an);
+        const double invSqrtPhi = 1.0 / std::sqrt(std::max(1e-30, phi));
+        for (int i = 1; i <= n - 2; ++i)
+            a[static_cast<size_t>(i)] = m[static_cast<size_t>(i)] * invSqrtPhi;
+    } else {
+        const double an1 = -3.582633 * u5 + 5.682633 * u4 - 1.752461 * u3 - 0.293762 * u2
+                + 0.042981 * u + cn1;
+        a[static_cast<size_t>(n - 2)] = an1;
+        a[1] = -an1;
+        const double mn = m[static_cast<size_t>(n - 1)];
+        const double mn1 = m[static_cast<size_t>(n - 2)];
+        const double phi = (sumM2 - 2.0 * mn * mn - 2.0 * mn1 * mn1)
+                / std::max(1e-12, 1.0 - 2.0 * an * an - 2.0 * an1 * an1);
+        const double invSqrtPhi = 1.0 / std::sqrt(std::max(1e-30, phi));
+        for (int i = 2; i <= n - 3; ++i)
+            a[static_cast<size_t>(i)] = m[static_cast<size_t>(i)] * invSqrtPhi;
+    }
+
+    double sumA2 = 0.0;
+    for (double ai : a)
+        sumA2 += ai * ai;
+    if (sumA2 > 1e-30) {
+        const double invNormA = 1.0 / std::sqrt(sumA2);
+        for (double &ai : a)
+            ai *= invNormA;
+    }
+
+    double linComb = 0.0;
+    for (int i = 0; i < n; ++i)
+        linComb += a[static_cast<size_t>(i)] * x[static_cast<size_t>(i)];
+
+    double w = (linComb * linComb) / ssUse;
+    w = std::clamp(w, 1e-15, 1.0);
+    wOut = w;
+
+    if (1.0 - w <= 1e-15) {
+        pOut = 1.0;
+        return;
+    }
+
+    const double dn = static_cast<double>(n);
+    if (n <= 11) {
+        const double gamma = 0.459 * dn - 2.273;
+        const double arg = gamma - std::log(1.0 - w);
+        if (arg <= 1e-12) {
+            pOut = 0.0;
+            return;
+        }
+        const double y = -std::log(arg);
+        const double mu = -0.0006714 * dn * dn * dn + 0.025054 * dn * dn - 0.39978 * dn + 0.5440;
+        const double sigma = std::exp(-0.0020322 * dn * dn * dn + 0.062767 * dn * dn
+                                      - 0.77857 * dn + 1.3822);
+        const double z = (y - mu) / std::max(1e-12, sigma);
+        pOut = std::clamp(gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
+    } else {
+        const double lnN = std::log(dn);
+        const double y = std::log(1.0 - w);
+        const double mu = 0.0038915 * lnN * lnN * lnN - 0.083751 * lnN * lnN - 0.31082 * lnN
+                - 1.5861;
+        const double sigma = std::exp(0.0030302 * lnN * lnN - 0.082676 * lnN - 0.4803);
+        const double z = (y - mu) / std::max(1e-12, sigma);
+        pOut = std::clamp(gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
+    }
+}
+
+void computeLillieforsKS(const std::vector<double> &sortedX, double mean, double sd,
+                         double &dOut, double &pOut)
+{
+    const int n = static_cast<int>(sortedX.size());
+    if (n < 3 || sd <= 1e-30) {
+        dOut = 1.0;
+        pOut = 0.0;
+        return;
+    }
+
+    const double dn = static_cast<double>(n);
+    double maxD = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double z = (sortedX[static_cast<size_t>(i)] - mean) / sd;
+        const double cdf = gsl_cdf_ugaussian_P(z);
+        const double dPlus = (static_cast<double>(i + 1) / dn) - cdf;
+        const double dMinus = cdf - (static_cast<double>(i) / dn);
+        maxD = std::max({ maxD, dPlus, dMinus });
+    }
+    dOut = std::clamp(maxD, 0.0, 1.0);
+
+    // Dallal & Wilkinson (1986) analytic Lilliefors p-value approximation
+    double dAdj = dOut;
+    double nEff = std::max(5.0, dn);
+    if (dn > 100.0) {
+        dAdj = dOut * std::pow(dn / 100.0, 0.49);
+        nEff = 100.0;
+    }
+    const double sTerm = std::sqrt(nEff + 2.78019);
+    const double peakD = 2.99587 / (2.0 * 7.01256 * sTerm);
+    if (dAdj <= peakD) {
+        pOut = 1.0;
+        return;
+    }
+    const double expo = -7.01256 * dAdj * dAdj * (nEff + 2.78019) + 2.99587 * dAdj * sTerm
+            - 0.122119 + 0.974598 / std::sqrt(nEff) + 1.67997 / nEff;
+    pOut = std::clamp(std::exp(std::clamp(expo, -700.0, 50.0)), 0.0, 1.0);
+}
+
+void computeAndersonDarlingStephens(const std::vector<double> &sortedX, double mean, double sd,
+                                    double &a2StarOut, double &pOut)
+{
+    const int n = static_cast<int>(sortedX.size());
+    if (n < 3 || sd <= 1e-30) {
+        a2StarOut = 1e6;
+        pOut = 0.0;
+        return;
+    }
+
+    std::vector<double> F(static_cast<size_t>(n), 0.5);
+    for (int i = 0; i < n; ++i) {
+        const double z = (sortedX[static_cast<size_t>(i)] - mean) / sd;
+        F[static_cast<size_t>(i)] = std::clamp(gsl_cdf_ugaussian_P(z), 1e-15, 1.0 - 1e-15);
+    }
+
+    const double dn = static_cast<double>(n);
+    double sumS = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double coef = static_cast<double>(2 * i + 1) / dn;
+        sumS += coef * (std::log(F[static_cast<size_t>(i)])
+                        + std::log(1.0 - F[static_cast<size_t>(n - 1 - i)]));
+    }
+    const double a2 = std::max(0.0, -dn - sumS);
+    const double a2Star = a2 * (1.0 + 0.75 / dn + 2.25 / (dn * dn));
+    a2StarOut = a2Star;
+
+    double p = 1.0;
+    if (a2Star >= 0.6) {
+        p = std::exp(std::clamp(1.2937 - 5.709 * a2Star + 0.0186 * a2Star * a2Star, -700.0, 0.0));
+    } else if (a2Star > 0.34) {
+        p = std::exp(std::clamp(0.9177 - 4.279 * a2Star - 1.38 * a2Star * a2Star, -700.0, 0.0));
+    } else if (a2Star > 0.2) {
+        p = 1.0 - std::exp(std::clamp(-8.318 + 42.796 * a2Star - 59.938 * a2Star * a2Star,
+                                      -700.0, 0.0));
+    } else {
+        p = 1.0 - std::exp(std::clamp(-13.436 + 101.14 * a2Star - 223.73 * a2Star * a2Star,
+                                      -700.0, 0.0));
+    }
+    pOut = std::clamp(p, 0.0, 1.0);
+}
+
+bool solveOlsRssAndRank(const std::vector<std::vector<double>> &designRows,
+                        const std::vector<double> &y, double &rssOut, int &rankOut)
+{
+    rssOut = 0.0;
+    rankOut = 0;
+    const size_t n = y.size();
+    if (n == 0 || designRows.size() != n || designRows[0].empty())
+        return false;
+    const size_t p = designRows[0].size();
+    if (n < p)
+        return false;
+
+    gsl_matrix *X = gsl_matrix_alloc(n, p);
+    gsl_vector *yv = gsl_vector_alloc(n);
+    gsl_vector *c = gsl_vector_alloc(p);
+    gsl_matrix *cov = gsl_matrix_alloc(p, p);
+    gsl_multifit_linear_workspace *ws = gsl_multifit_linear_alloc(n, p);
+    if (!X || !yv || !c || !cov || !ws) {
+        if (ws)
+            gsl_multifit_linear_free(ws);
+        if (cov)
+            gsl_matrix_free(cov);
+        if (c)
+            gsl_vector_free(c);
+        if (yv)
+            gsl_vector_free(yv);
+        if (X)
+            gsl_matrix_free(X);
+        return false;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        gsl_vector_set(yv, i, y[i]);
+        for (size_t j = 0; j < p; ++j)
+            gsl_matrix_set(X, i, j, designRows[i][j]);
+    }
+
+    double chisq = 0.0;
+    size_t rk = 0;
+    const int st = gsl_multifit_linear_tsvd(X, yv, 1e-10, c, cov, &chisq, &rk, ws);
+    rssOut = std::max(0.0, chisq);
+    rankOut = static_cast<int>(rk);
+
+    gsl_multifit_linear_free(ws);
+    gsl_matrix_free(cov);
+    gsl_vector_free(c);
+    gsl_vector_free(yv);
+    gsl_matrix_free(X);
+    return st == GSL_SUCCESS;
+}
+
 } // namespace
 
 // ============================================================================
@@ -1306,6 +1614,7 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             addTextLabelOnGraph(overlayGraph, rec.xc, rec.yc,
                                 QStringLiteral("P%1").arg(i + 1), QColor(220, 30, 30), true, -1);
         }
+        applyArialGraphFonts(overlayGraph);
         overlayGraph->replot();
     }
 
@@ -1428,6 +1737,7 @@ QwtPlotCurve *GraphStatsAndSurfaceFit::addConfidenceEllipse(ApplicationWindow *a
     ellipseCurve->setBrush(QBrush(fillC));
     g->insertPlotItem(ellipseCurve, Graph::Line);
     g->addFitCurve(ellipseCurve);
+    applyArialGraphFonts(g);
     g->updatePlot();
 
     return ellipseCurve;
@@ -1708,6 +2018,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar + 0.42 * stepY, stars,
                                 bracketColor, true, 1);
         }
+        applyArialGraphFonts(annotateGraph);
         annotateGraph->replot();
     }
 
@@ -1887,6 +2198,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
         g->setScale(QwtPlot::yLeft, 0.0, 1.02);
         if (g->legend())
             g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
         g->replot();
 
         QString summary = QObject::tr("AUC = %1 (SE = %2)\nOptimal J = %3 @ Cutoff = %4\n(Sens = %5, Spec = %6)")
@@ -2206,6 +2518,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotKaplanMeier(ApplicationWindow *app, Tab
         g->setScale(QwtPlot::yLeft, 0.0, 1.05);
         if (g->legend())
             g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
         g->replot();
 
         if (G >= 2) {
@@ -2463,12 +2776,13 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
         const double lim = 1.25 * maxScoreAbs;
         g->setScale(QwtPlot::xBottom, -lim, lim);
         g->setScale(QwtPlot::yLeft, -lim, lim);
-        g->setXAxisTitle(QStringLiteral("PC1 (%1%)").arg(explainedPct[0], 0, 'f', 1));
-        g->setYAxisTitle(QStringLiteral("PC2 (%1%)").arg(explainedPct[1], 0, 'f', 1));
+        g->setXAxisTitle(QObject::tr("PC1 (%1%)").arg(explainedPct[0], 0, 'f', 1));
+        g->setYAxisTitle(QObject::tr("PC2 (%1%)").arg(explainedPct[1], 0, 'f', 1));
         g->setTitle(QObject::tr("PCA Biplot (PC1 + PC2 = %1%)")
                             .arg(explainedPct[0] + explainedPct[1], 0, 'f', 1));
         if (g->legend())
             g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
         g->replot();
 
         // Zero-reference axes
@@ -3040,4 +3354,912 @@ void GraphStatsAndSurfaceFit::showPCADialog(ApplicationWindow *app)
         return;
 
     runPCAAndBiplot(app, tables[tableCombo->currentIndex()], selected);
+}
+
+// ============================================================================
+// Normality Tests + Histogram PDF Overlay, Bland-Altman Plot, & Two-Way ANOVA
+// ============================================================================
+
+GraphStatsAndSurfaceFit::NormalityResult
+GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTable,
+                                          const QString &colName,
+                                          Graph *histogramGraphToOverlay)
+{
+    NormalityResult res;
+    if (!app || !srcTable)
+        return res;
+
+    Column *col = resolveTableColumn(srcTable, colName);
+    if (!col)
+        return res;
+
+    std::vector<double> vals;
+    vals.reserve(static_cast<size_t>(col->rowCount()));
+    for (int r = 0; r < col->rowCount(); ++r) {
+        if (col->isInvalid(r) || col->isMasked(r))
+            continue;
+        double v = 0.0;
+        if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            v = col->valueAt(r);
+        } else {
+            bool ok = false;
+            v = col->asStringColumn()->textAt(r).trimmed().toDouble(&ok);
+            if (!ok)
+                continue;
+        }
+        if (std::isfinite(v))
+            vals.push_back(v);
+    }
+
+    const int n = static_cast<int>(vals.size());
+    res.n = n;
+    if (n < 3) {
+        res.isNormalAt005 = false;
+        return res;
+    }
+
+    std::sort(vals.begin(), vals.end());
+    const double mean = std::accumulate(vals.begin(), vals.end(), 0.0) / static_cast<double>(n);
+    double ss = 0.0;
+    for (double v : vals) {
+        const double d = v - mean;
+        ss += d * d;
+    }
+    const double sd = std::sqrt(ss / static_cast<double>(n - 1));
+
+    res.mean = mean;
+    res.sd = sd;
+
+    if (sd <= 1e-30) {
+        res.shapiroWilkW = 0.0;
+        res.shapiroWilkP = 0.0;
+        res.ksD = 1.0;
+        res.ksP = 0.0;
+        res.andersonDarlingA2 = 1e6;
+        res.isNormalAt005 = false;
+        return res;
+    }
+
+    computeShapiroWilkRoyston(vals, ss, res.shapiroWilkW, res.shapiroWilkP);
+    computeLillieforsKS(vals, mean, sd, res.ksD, res.ksP);
+    double adP = 1.0;
+    computeAndersonDarlingStephens(vals, mean, sd, res.andersonDarlingA2, adP);
+    res.isNormalAt005 = (res.shapiroWilkP >= 0.05);
+
+    // Create Normality Summary Table
+    QString tblName =
+            app->generateUniqueName(srcTable->name() + QStringLiteral("_Normality"), false);
+    Table *repTbl = app->newTable(4, 4, tblName, QObject::tr("Normality Test Report"));
+    if (repTbl) {
+        repTbl->setHeader(QStringList() << QObject::tr("Test") << QObject::tr("Statistic")
+                                        << QObject::tr("p_value") << QObject::tr("Decision_005"));
+        repTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        repTbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        repTbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        repTbl->column(3)->setColumnMode(SciDAVis::ColumnMode::Text);
+
+        const QString normalYes = QObject::tr("Normal (p >= 0.05)");
+        const QString normalNo = QObject::tr("Reject Normality (p < 0.05)");
+
+        repTbl->column(0)->setTextAt(0, QObject::tr("Sample Summary (N=%1, SD=%2)")
+                                                .arg(n)
+                                                .arg(sd, 0, 'g', 5));
+        repTbl->column(1)->setValueAt(0, mean);
+        repTbl->column(2)->setValueAt(0, sd);
+        repTbl->column(3)->setTextAt(0, res.isNormalAt005 ? normalYes : normalNo);
+
+        repTbl->column(0)->setTextAt(1, QObject::tr("Shapiro-Wilk W"));
+        repTbl->column(1)->setValueAt(1, res.shapiroWilkW);
+        repTbl->column(2)->setValueAt(1, res.shapiroWilkP);
+        repTbl->column(3)->setTextAt(1, (res.shapiroWilkP >= 0.05) ? normalYes : normalNo);
+
+        repTbl->column(0)->setTextAt(2, QObject::tr("Kolmogorov-Smirnov (Lilliefors) D"));
+        repTbl->column(1)->setValueAt(2, res.ksD);
+        repTbl->column(2)->setValueAt(2, res.ksP);
+        repTbl->column(3)->setTextAt(2, (res.ksP >= 0.05) ? normalYes : normalNo);
+
+        repTbl->column(0)->setTextAt(3, QObject::tr("Anderson-Darling A*2"));
+        repTbl->column(1)->setValueAt(3, res.andersonDarlingA2);
+        repTbl->column(2)->setValueAt(3, adP);
+        repTbl->column(3)->setTextAt(3, (adP >= 0.05) ? normalYes : normalNo);
+
+        res.reportTable = repTbl;
+    }
+
+    // Optional Normal PDF curve + Arial summary callout overlaid on histogramGraphToOverlay
+    if (histogramGraphToOverlay) {
+        double areaScale = 1.0;
+        double xDomainMin = std::min(vals.front(), mean - 3.8 * sd);
+        double xDomainMax = std::max(vals.back(), mean + 3.8 * sd);
+        double peakY = 0.0;
+
+        for (int k = 0; k < histogramGraphToOverlay->curves(); ++k) {
+            QwtPlotCurve *cv = histogramGraphToOverlay->curve(k);
+            if (!cv)
+                continue;
+            if (auto *hist = dynamic_cast<QwtHistogram *>(cv)) {
+                const double bw = hist->binSize();
+                double sumCounts = 0.0;
+                for (int j = 0; j < hist->dataSize(); ++j)
+                    sumCounts += std::max(0.0, hist->y(j));
+                if (bw > 0.0 && sumCounts > 0.0)
+                    areaScale = sumCounts * bw;
+                else if (bw > 0.0)
+                    areaScale = static_cast<double>(n) * bw;
+                xDomainMin = std::min(xDomainMin, hist->begin());
+                xDomainMax = std::max(xDomainMax, hist->end());
+                break;
+            }
+            if (cv->dataSize() >= 2) {
+                const double dx = std::fabs(cv->x(1) - cv->x(0));
+                double sumH = 0.0;
+                for (int j = 0; j < cv->dataSize(); ++j)
+                    sumH += std::max(0.0, cv->y(j));
+                if (dx > 0.0 && sumH > 0.0)
+                    areaScale = sumH * dx;
+                break;
+            }
+        }
+
+        constexpr int kGrid = 201;
+        std::vector<double> gx(kGrid), gy(kGrid);
+        Column *colX = new Column(QStringLiteral("X"), SciDAVis::ColumnMode::Numeric);
+        Column *colY = new Column(QStringLiteral("NormalPDF"), SciDAVis::ColumnMode::Numeric);
+        colX->setPlotDesignation(SciDAVis::X);
+        colY->setPlotDesignation(SciDAVis::Y);
+
+        const double normConst = areaScale / (sd * std::sqrt(2.0 * kPi));
+        for (int i = 0; i < kGrid; ++i) {
+            const double xq = xDomainMin
+                    + (xDomainMax - xDomainMin) * static_cast<double>(i)
+                            / static_cast<double>(kGrid - 1);
+            const double z = (xq - mean) / sd;
+            const double yq = normConst * std::exp(-0.5 * z * z);
+            gx[static_cast<size_t>(i)] = xq;
+            gy[static_cast<size_t>(i)] = yq;
+            peakY = std::max(peakY, yq);
+            colX->setValueAt(i, xq);
+            colY->setValueAt(i, yq);
+        }
+
+        QString hidName = app->generateUniqueName(QStringLiteral("NormalOverlay"));
+        Table *backing = app->newHiddenTable(
+                hidName, QObject::tr("Normal PDF Overlay (%1)").arg(col->name()),
+                QList<Column *>() << colX << colY);
+        if (backing) {
+            DataCurve *pdfCurve = new DataCurve(backing, hidName + "_" + colX->name(),
+                                                hidName + "_" + colY->name());
+            pdfCurve->setData(gx.data(), gy.data(), kGrid);
+            pdfCurve->setPen(QPen(QColor(200, 30, 35), 2, Qt::SolidLine));
+            histogramGraphToOverlay->insertPlotItem(pdfCurve, Graph::Line);
+            histogramGraphToOverlay->addFitCurve(pdfCurve);
+            res.normalOverlayCurve = pdfCurve;
+        }
+
+        const QString annot = QObject::tr("Normality (%1, N = %2)\n"
+                                          "Mean = %3, SD = %4\n"
+                                          "Shapiro-Wilk W = %5 (p = %6)\n"
+                                          "KS D = %7, AD A*2 = %8")
+                                      .arg(col->name())
+                                      .arg(n)
+                                      .arg(mean, 0, 'g', 5)
+                                      .arg(sd, 0, 'g', 5)
+                                      .arg(res.shapiroWilkW, 0, 'f', 4)
+                                      .arg(res.shapiroWilkP, 0, 'g', 4)
+                                      .arg(res.ksD, 0, 'f', 4)
+                                      .arg(res.andersonDarlingA2, 0, 'f', 4);
+
+        const double boxX = xDomainMin + 0.56 * (xDomainMax - xDomainMin);
+        const double boxY = std::max(0.1, 0.88 * peakY);
+        addFramedBoxOnGraph(histogramGraphToOverlay, boxX, boxY, annot, QColor(20, 30, 50), 9);
+        applyArialGraphFonts(histogramGraphToOverlay);
+        histogramGraphToOverlay->updatePlot();
+    }
+
+    return res;
+}
+
+MultiLayer *GraphStatsAndSurfaceFit::plotBlandAltman(ApplicationWindow *app, Table *srcTable,
+                                                     const QString &methodACol,
+                                                     const QString &methodBCol,
+                                                     double *meanBiasOut,
+                                                     double *loaLowerOut,
+                                                     double *loaUpperOut)
+{
+    if (meanBiasOut)
+        *meanBiasOut = 0.0;
+    if (loaLowerOut)
+        *loaLowerOut = 0.0;
+    if (loaUpperOut)
+        *loaUpperOut = 0.0;
+    if (!app || !srcTable)
+        return nullptr;
+
+    Column *colA = resolveTableColumn(srcTable, methodACol);
+    Column *colB = resolveTableColumn(srcTable, methodBCol);
+    if (!colA || !colB)
+        return nullptr;
+
+    const int maxRows = std::min(colA->rowCount(), colB->rowCount());
+    std::vector<double> means;
+    std::vector<double> diffs;
+    means.reserve(static_cast<size_t>(maxRows));
+    diffs.reserve(static_cast<size_t>(maxRows));
+
+    for (int r = 0; r < maxRows; ++r) {
+        if (colA->isInvalid(r) || colB->isInvalid(r) || colA->isMasked(r) || colB->isMasked(r))
+            continue;
+        const double a = colA->valueAt(r);
+        const double b = colB->valueAt(r);
+        if (std::isfinite(a) && std::isfinite(b)) {
+            means.push_back(0.5 * (a + b));
+            diffs.push_back(a - b);
+        }
+    }
+
+    const int n = static_cast<int>(diffs.size());
+    if (n < 2)
+        return nullptr;
+
+    const double meanBias =
+            std::accumulate(diffs.begin(), diffs.end(), 0.0) / static_cast<double>(n);
+    double ssDiff = 0.0;
+    for (double d : diffs) {
+        const double dev = d - meanBias;
+        ssDiff += dev * dev;
+    }
+    const double sdDiff = std::sqrt(ssDiff / static_cast<double>(n - 1));
+    const double loaUpper = meanBias + 1.96 * sdDiff;
+    const double loaLower = meanBias - 1.96 * sdDiff;
+
+    if (meanBiasOut)
+        *meanBiasOut = meanBias;
+    if (loaLowerOut)
+        *loaLowerOut = loaLower;
+    if (loaUpperOut)
+        *loaUpperOut = loaUpper;
+
+    QString tblName =
+            app->generateUniqueName(srcTable->name() + QStringLiteral("_BlandAltman"), false);
+    Table *baTbl = app->newTable(n, 5, tblName, QObject::tr("Bland-Altman Method Comparison"));
+    if (!baTbl)
+        return nullptr;
+
+    baTbl->setHeader(QStringList() << QStringLiteral("Mean_AB") << QStringLiteral("Diff_A_minus_B")
+                                   << QStringLiteral("MeanBias") << QStringLiteral("UpperLoA")
+                                   << QStringLiteral("LowerLoA"));
+    for (int c = 0; c < 5; ++c) {
+        baTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        baTbl->column(c)->setPlotDesignation(c == 0 ? SciDAVis::X : SciDAVis::Y);
+    }
+
+    double mMin = means.front(), mMax = means.front();
+    double dMin = diffs.front(), dMax = diffs.front();
+    for (int i = 0; i < n; ++i) {
+        const double mv = means[static_cast<size_t>(i)];
+        const double dv = diffs[static_cast<size_t>(i)];
+        mMin = std::min(mMin, mv);
+        mMax = std::max(mMax, mv);
+        dMin = std::min(dMin, dv);
+        dMax = std::max(dMax, dv);
+        baTbl->column(0)->setValueAt(i, mv);
+        baTbl->column(1)->setValueAt(i, dv);
+        baTbl->column(2)->setValueAt(i, meanBias);
+        baTbl->column(3)->setValueAt(i, loaUpper);
+        baTbl->column(4)->setValueAt(i, loaLower);
+    }
+
+    MultiLayer *ml = app->newGraph(
+            app->generateUniqueName(QStringLiteral("BlandAltman_") + srcTable->name(), false));
+    if (!ml)
+        return nullptr;
+
+    Graph *g = ml->activeGraph();
+    if (g) {
+        if (g->insertCurve(baTbl, baTbl->colName(0), baTbl->colName(1), Graph::Scatter, 0, n - 1)) {
+            const int cIdx = g->curves() - 1;
+            QwtSymbol sym(QwtSymbol::Ellipse, QBrush(QColor(35, 105, 195, 195)),
+                          QPen(QColor(20, 65, 135), 1), QSize(8, 8));
+            g->setCurveSymbol(cIdx, sym);
+        }
+
+        const double xSpan = std::max(1e-6, mMax - mMin);
+        const double xLo = mMin - 0.08 * xSpan;
+        const double xHi = mMax + 0.24 * xSpan;
+
+        const double yRawMin = std::min(dMin, loaLower);
+        const double yRawMax = std::max(dMax, loaUpper);
+        const double ySpan = std::max(1e-6, yRawMax - yRawMin);
+        const double yLo = yRawMin - 0.18 * ySpan;
+        const double yHi = yRawMax + 0.20 * ySpan;
+
+        g->setScale(QwtPlot::xBottom, xLo, xHi);
+        g->setScale(QwtPlot::yLeft, yLo, yHi);
+        g->setXAxisTitle(QObject::tr("Mean of %1 and %2").arg(colA->name(), colB->name()));
+        g->setYAxisTitle(QObject::tr("Difference (%1 - %2)").arg(colA->name(), colB->name()));
+        g->setTitle(QObject::tr("Bland-Altman Plot (%1 vs %2)").arg(colA->name(), colB->name()));
+        if (g->legend())
+            g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
+        g->replot();
+
+        const QColor biasColor(20, 90, 200);
+        const QColor loaColor(205, 35, 35);
+
+        // Solid blue Mean Bias horizontal line & dashed red +/- 1.96 SD LoA horizontal lines
+        addLineSegmentOnGraph(g, xLo, meanBias, xHi, meanBias, biasColor, 2, Qt::SolidLine, false);
+        addLineSegmentOnGraph(g, xLo, loaUpper, xHi, loaUpper, loaColor, 2, Qt::DashLine, false);
+        addLineSegmentOnGraph(g, xLo, loaLower, xHi, loaLower, loaColor, 2, Qt::DashLine, false);
+
+        const double calloutX = mMax + 0.02 * xSpan;
+        const double dyLabel = 0.055 * ySpan;
+        addTextLabelOnGraph(g, calloutX, meanBias + dyLabel,
+                            QObject::tr("Mean = %1").arg(meanBias, 0, 'g', 5), biasColor, true, -1);
+        addTextLabelOnGraph(g, calloutX, loaUpper + dyLabel,
+                            QObject::tr("+1.96 SD = %1").arg(loaUpper, 0, 'g', 5), loaColor, true,
+                            -1);
+        addTextLabelOnGraph(g, calloutX, loaLower + dyLabel,
+                            QObject::tr("-1.96 SD = %1").arg(loaLower, 0, 'g', 5), loaColor, true,
+                            -1);
+        g->replot();
+    }
+
+    return ml;
+}
+
+GraphStatsAndSurfaceFit::TwoWayANOVAResult
+GraphStatsAndSurfaceFit::runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
+                                        const QString &factorACol,
+                                        const QString &factorBCol,
+                                        const QString &responseCol,
+                                        bool plotInteraction)
+{
+    TwoWayANOVAResult res;
+    if (!app || !srcTable)
+        return res;
+
+    Column *colA = resolveTableColumn(srcTable, factorACol);
+    Column *colB = resolveTableColumn(srcTable, factorBCol);
+    Column *colY = resolveTableColumn(srcTable, responseCol);
+    if (!colA || !colB || !colY)
+        return res;
+
+    auto readFactorLevel = [](Column *c, int r, QString &out) -> bool {
+        if (!c || r < 0 || r >= c->rowCount() || c->isInvalid(r) || c->isMasked(r))
+            return false;
+        if (c->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            const double v = c->valueAt(r);
+            if (!std::isfinite(v))
+                return false;
+            out = QString::number(v, 'g', 10);
+            return true;
+        }
+        out = c->asStringColumn()->textAt(r).trimmed();
+        return !out.isEmpty();
+    };
+
+    struct AnovaObs
+    {
+        int iA = 0;
+        int jB = 0;
+        double y = 0.0;
+    };
+
+    const int maxRows = std::min({ colA->rowCount(), colB->rowCount(), colY->rowCount() });
+    QStringList levelsA;
+    QStringList levelsB;
+    std::vector<std::tuple<QString, QString, double>> rawTriples;
+    rawTriples.reserve(static_cast<size_t>(maxRows));
+
+    for (int r = 0; r < maxRows; ++r) {
+        if (colY->isInvalid(r) || colY->isMasked(r))
+            continue;
+        QString sA, sB;
+        if (!readFactorLevel(colA, r, sA) || !readFactorLevel(colB, r, sB))
+            continue;
+        double yv = 0.0;
+        if (colY->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            yv = colY->valueAt(r);
+        } else {
+            bool ok = false;
+            yv = colY->asStringColumn()->textAt(r).trimmed().toDouble(&ok);
+            if (!ok)
+                continue;
+        }
+        if (!std::isfinite(yv))
+            continue;
+        if (!levelsA.contains(sA))
+            levelsA.append(sA);
+        if (!levelsB.contains(sB))
+            levelsB.append(sB);
+        rawTriples.emplace_back(sA, sB, yv);
+    }
+
+    const int I = levelsA.size();
+    const int J = levelsB.size();
+    const int N = static_cast<int>(rawTriples.size());
+    if (I < 2 || J < 2 || N <= I * J)
+        return res;
+
+    std::vector<AnovaObs> obs(static_cast<size_t>(N));
+    std::vector<double> yVec(static_cast<size_t>(N), 0.0);
+    for (int k = 0; k < N; ++k) {
+        obs[static_cast<size_t>(k)].iA = levelsA.indexOf(std::get<0>(rawTriples[static_cast<size_t>(k)]));
+        obs[static_cast<size_t>(k)].jB = levelsB.indexOf(std::get<1>(rawTriples[static_cast<size_t>(k)]));
+        obs[static_cast<size_t>(k)].y = std::get<2>(rawTriples[static_cast<size_t>(k)]);
+        yVec[static_cast<size_t>(k)] = obs[static_cast<size_t>(k)].y;
+    }
+
+    // Sum-to-zero effect-coded OLS design matrices (exact for balanced & Type III unbalanced)
+    const int nA = I - 1;
+    const int nB = J - 1;
+    const int nAB = nA * nB;
+
+    auto buildDesign = [&](bool incA, bool incB, bool incAB) {
+        const size_t pCols = static_cast<size_t>(1 + (incA ? nA : 0) + (incB ? nB : 0)
+                                                 + (incAB ? nAB : 0));
+        std::vector<std::vector<double>> X(static_cast<size_t>(N), std::vector<double>(pCols, 0.0));
+        for (int k = 0; k < N; ++k) {
+            const int ia = obs[static_cast<size_t>(k)].iA;
+            const int jb = obs[static_cast<size_t>(k)].jB;
+            size_t colIdx = 0;
+            X[static_cast<size_t>(k)][colIdx++] = 1.0;
+
+            if (incA) {
+                for (int u = 0; u < nA; ++u) {
+                    X[static_cast<size_t>(k)][colIdx++] =
+                            (ia == u) ? 1.0 : ((ia == I - 1) ? -1.0 : 0.0);
+                }
+            }
+            if (incB) {
+                for (int v = 0; v < nB; ++v) {
+                    X[static_cast<size_t>(k)][colIdx++] =
+                            (jb == v) ? 1.0 : ((jb == J - 1) ? -1.0 : 0.0);
+                }
+            }
+            if (incAB) {
+                for (int u = 0; u < nA; ++u) {
+                    const double ca = (ia == u) ? 1.0 : ((ia == I - 1) ? -1.0 : 0.0);
+                    for (int v = 0; v < nB; ++v) {
+                        const double cb = (jb == v) ? 1.0 : ((jb == J - 1) ? -1.0 : 0.0);
+                        X[static_cast<size_t>(k)][colIdx++] = ca * cb;
+                    }
+                }
+            }
+        }
+        return X;
+    };
+
+    double rssFull = 0.0, rssNoAB = 0.0, rssNoA = 0.0, rssNoB = 0.0;
+    int rkFull = 0, rkNoAB = 0, rkNoA = 0, rkNoB = 0;
+    if (!solveOlsRssAndRank(buildDesign(true, true, true), yVec, rssFull, rkFull))
+        return res;
+    if (!solveOlsRssAndRank(buildDesign(true, true, false), yVec, rssNoAB, rkNoAB))
+        return res;
+    if (!solveOlsRssAndRank(buildDesign(false, true, true), yVec, rssNoA, rkNoA))
+        return res;
+    if (!solveOlsRssAndRank(buildDesign(true, false, true), yVec, rssNoB, rkNoB))
+        return res;
+
+    const int dfErrorInt = N - rkFull;
+    if (dfErrorInt < 1)
+        return res;
+
+    double ssA = std::max(0.0, rssNoA - rssFull);
+    int dfAInt = rkFull - rkNoA;
+    double ssB = std::max(0.0, rssNoB - rssFull);
+    int dfBInt = rkFull - rkNoB;
+    const double ssAB = std::max(0.0, rssNoAB - rssFull);
+    const int dfABInt = std::max(1, rkFull - rkNoAB);
+
+    // Fallback to Type II main effects if an empty cell made Type III main-effect contrast aliased
+    if (dfAInt < 1) {
+        double rssOnlyB = 0.0;
+        int rkOnlyB = 0;
+        if (solveOlsRssAndRank(buildDesign(false, true, false), yVec, rssOnlyB, rkOnlyB)) {
+            ssA = std::max(0.0, rssOnlyB - rssNoAB);
+            dfAInt = std::max(1, rkNoAB - rkOnlyB);
+        } else {
+            dfAInt = nA;
+        }
+    }
+    if (dfBInt < 1) {
+        double rssOnlyA = 0.0;
+        int rkOnlyA = 0;
+        if (solveOlsRssAndRank(buildDesign(true, false, false), yVec, rssOnlyA, rkOnlyA)) {
+            ssB = std::max(0.0, rssOnlyA - rssNoAB);
+            dfBInt = std::max(1, rkNoAB - rkOnlyA);
+        } else {
+            dfBInt = nB;
+        }
+    }
+
+    const double grandMean = std::accumulate(yVec.begin(), yVec.end(), 0.0) / static_cast<double>(N);
+    double ssTotal = 0.0;
+    for (double yv : yVec) {
+        const double d = yv - grandMean;
+        ssTotal += d * d;
+    }
+
+    const double dfA = static_cast<double>(dfAInt);
+    const double dfB = static_cast<double>(dfBInt);
+    const double dfAB = static_cast<double>(dfABInt);
+    const double dfE = static_cast<double>(dfErrorInt);
+
+    const double msA = ssA / dfA;
+    const double msB = ssB / dfB;
+    const double msAB = ssAB / dfAB;
+    const double msE = rssFull / dfE;
+
+    auto evalFAndP = [&](double msEff, double dfEff, double &fOut, double &pOut) {
+        if (msE > 1e-30) {
+            fOut = msEff / msE;
+            pOut = (fOut > 0.0) ? std::clamp(gsl_cdf_fdist_Q(fOut, dfEff, dfE), 0.0, 1.0) : 1.0;
+        } else if (msEff > 1e-30) {
+            fOut = 1e12;
+            pOut = 0.0;
+        } else {
+            fOut = 0.0;
+            pOut = 1.0;
+        }
+    };
+
+    evalFAndP(msA, dfA, res.fFactorA, res.pFactorA);
+    evalFAndP(msB, dfB, res.fFactorB, res.pFactorB);
+    evalFAndP(msAB, dfAB, res.fInteraction, res.pInteraction);
+    res.valid = true;
+
+    // Build Two-Way ANOVA Summary Table
+    QString repName =
+            app->generateUniqueName(srcTable->name() + QStringLiteral("_TwoWayANOVA"), false);
+    Table *repTbl = app->newTable(5, 7, repName, QObject::tr("Two-Way ANOVA Summary"));
+    if (repTbl) {
+        repTbl->setHeader(QStringList() << QObject::tr("Source") << QObject::tr("SS")
+                                        << QObject::tr("df") << QObject::tr("MS")
+                                        << QObject::tr("F_value") << QObject::tr("p_value")
+                                        << QObject::tr("Significance"));
+        repTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 1; c <= 5; ++c)
+            repTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        repTbl->column(6)->setColumnMode(SciDAVis::ColumnMode::Text);
+
+        auto setRow = [&](int r, const QString &src, double ssVal, double dfVal, double msVal,
+                          double fVal, double pVal, bool hasF) {
+            repTbl->column(0)->setTextAt(r, src);
+            repTbl->column(1)->setValueAt(r, ssVal);
+            repTbl->column(2)->setValueAt(r, dfVal);
+            if (std::isfinite(msVal))
+                repTbl->column(3)->setValueAt(r, msVal);
+            else
+                repTbl->column(3)->setInvalid(r, true);
+            if (hasF) {
+                repTbl->column(4)->setValueAt(r, fVal);
+                repTbl->column(5)->setValueAt(r, pVal);
+                repTbl->column(6)->setTextAt(r, starRatingForP(pVal));
+            } else {
+                repTbl->column(4)->setInvalid(r, true);
+                repTbl->column(5)->setInvalid(r, true);
+                repTbl->column(6)->setTextAt(r, QString());
+            }
+        };
+
+        setRow(0, colA->name(), ssA, dfA, msA, res.fFactorA, res.pFactorA, true);
+        setRow(1, colB->name(), ssB, dfB, msB, res.fFactorB, res.pFactorB, true);
+        setRow(2, QStringLiteral("%1 x %2").arg(colA->name(), colB->name()), ssAB, dfAB, msAB,
+               res.fInteraction, res.pInteraction, true);
+        setRow(3, QObject::tr("Error (Within)"), rssFull, dfE, msE, 0.0, 1.0, false);
+        setRow(4, QObject::tr("Total"), ssTotal, static_cast<double>(N - 1),
+               std::numeric_limits<double>::quiet_NaN(), 0.0, 1.0, false);
+        res.reportTable = repTbl;
+    }
+
+    // Optional Mean +/- SE Interaction Plot MultiLayer
+    if (plotInteraction) {
+        QString intTblName = app->generateUniqueName(
+                srcTable->name() + QStringLiteral("_InteractionCells"), false);
+        const int nColsInt = 2 + 2 * J;
+        Table *intTbl =
+                app->newTable(I, nColsInt, intTblName, QObject::tr("Two-Way Interaction Means"));
+        if (intTbl) {
+            QStringList hdr;
+            hdr << QStringLiteral("FactorA_Index") << colA->name();
+            for (int j = 0; j < J; ++j) {
+                QString cleanB = levelsB[j];
+                cleanB.replace(' ', '_');
+                hdr << QStringLiteral("Mean_%1").arg(cleanB)
+                    << QStringLiteral("SE_%1").arg(cleanB);
+            }
+            intTbl->setHeader(hdr);
+            intTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            intTbl->column(0)->setPlotDesignation(SciDAVis::X);
+            intTbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+
+            for (int j = 0; j < J; ++j) {
+                intTbl->column(2 + 2 * j)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                intTbl->column(2 + 2 * j)->setPlotDesignation(SciDAVis::Y);
+                intTbl->column(2 + 2 * j + 1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                intTbl->column(2 + 2 * j + 1)->setPlotDesignation(SciDAVis::yErr);
+            }
+
+            double yMinPlot = std::numeric_limits<double>::max();
+            double yMaxPlot = -std::numeric_limits<double>::max();
+
+            for (int i = 0; i < I; ++i) {
+                intTbl->column(0)->setValueAt(i, static_cast<double>(i + 1));
+                intTbl->column(1)->setTextAt(i, levelsA[i]);
+                for (int j = 0; j < J; ++j) {
+                    std::vector<double> cellVals;
+                    for (const AnovaObs &o : obs) {
+                        if (o.iA == i && o.jB == j)
+                            cellVals.push_back(o.y);
+                    }
+                    const int meanCol = 2 + 2 * j;
+                    const int seCol = meanCol + 1;
+                    if (!cellVals.empty()) {
+                        const double cm =
+                                std::accumulate(cellVals.begin(), cellVals.end(), 0.0)
+                                / static_cast<double>(cellVals.size());
+                        double cse = 0.0;
+                        if (cellVals.size() >= 2) {
+                            double css = 0.0;
+                            for (double cv : cellVals) {
+                                const double d = cv - cm;
+                                css += d * d;
+                            }
+                            cse = std::sqrt(css
+                                            / (static_cast<double>(cellVals.size())
+                                               * static_cast<double>(cellVals.size() - 1)));
+                        }
+                        intTbl->column(meanCol)->setValueAt(i, cm);
+                        intTbl->column(seCol)->setValueAt(i, cse);
+                        yMinPlot = std::min(yMinPlot, cm - cse);
+                        yMaxPlot = std::max(yMaxPlot, cm + cse);
+                    } else {
+                        intTbl->column(meanCol)->setInvalid(i, true);
+                        intTbl->column(seCol)->setInvalid(i, true);
+                    }
+                }
+            }
+
+            MultiLayer *ml = app->newGraph(app->generateUniqueName(
+                    QStringLiteral("Interaction_") + srcTable->name(), false));
+            if (ml) {
+                Graph *g = ml->activeGraph();
+                if (g) {
+                    static const QColor kTraceColors[] = {
+                        QColor(25, 95, 195),  QColor(210, 45, 45),  QColor(25, 150, 75),
+                        QColor(155, 55, 180), QColor(225, 130, 20), QColor(20, 155, 175)
+                    };
+                    static const QwtSymbol::Style kSyms[] = {
+                        QwtSymbol::Ellipse, QwtSymbol::Rect,     QwtSymbol::Triangle,
+                        QwtSymbol::Diamond, QwtSymbol::UTriangle, QwtSymbol::DTriangle
+                    };
+
+                    for (int j = 0; j < J; ++j) {
+                        const int meanCol = 2 + 2 * j;
+                        const int seCol = meanCol + 1;
+                        const QColor tc = kTraceColors[j % 6];
+                        if (g->insertCurve(intTbl, intTbl->colName(0), intTbl->colName(meanCol),
+                                           Graph::LineSymbols, 0, I - 1)) {
+                            const int cIdx = g->curves() - 1;
+                            g->setCurvePen(cIdx, QPen(tc, 2, Qt::SolidLine));
+                            QwtSymbol sym(kSyms[j % 6], QBrush(tc), QPen(tc.darker(125), 1),
+                                          QSize(8, 8));
+                            g->setCurveSymbol(cIdx, sym);
+                            g->addErrorBars(intTbl->colName(0), intTbl->colName(meanCol), intTbl,
+                                            intTbl->colName(seCol), 1, 1, 6, tc, true, true, true);
+                        }
+                    }
+
+                    g->setLabelsTextFormat(Graph::Bottom, intTbl->column(1), 0, I - 1);
+                    const double ySpan = (yMaxPlot > yMinPlot) ? (yMaxPlot - yMinPlot) : 1.0;
+                    g->setScale(QwtPlot::xBottom, 0.6, static_cast<double>(I) + 0.4, 1.0);
+                    g->setScale(QwtPlot::yLeft, yMinPlot - 0.15 * ySpan, yMaxPlot + 0.22 * ySpan);
+                    g->setXAxisTitle(colA->name());
+                    g->setYAxisTitle(QObject::tr("%1 (Mean ± SE)").arg(colY->name()));
+                    g->setTitle(QObject::tr("Two-Way Interaction Plot (%1 × %2, p_AB = %3)")
+                                        .arg(colA->name(), colB->name())
+                                        .arg(res.pInteraction, 0, 'g', 4));
+                    if (g->legend())
+                        g->legend()->setText(g->legendText());
+                    applyArialGraphFonts(g);
+                    g->replot();
+                }
+                res.interactionGraph = ml;
+            }
+        }
+    }
+
+    return res;
+}
+
+void GraphStatsAndSurfaceFit::showNormalityDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app)
+        return;
+    QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    Graph *targetG = resolveActiveGraph(app, g);
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Normality Test (Shapiro-Wilk / KS / Anderson-Darling)"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *tableCombo = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        tableCombo->addItem(t->name());
+        if (t == actTbl)
+            tableCombo->setCurrentIndex(tableCombo->count() - 1);
+    }
+    form->addRow(QObject::tr("Source Table:"), tableCombo);
+
+    QComboBox *colCombo = new QComboBox(&dlg);
+    form->addRow(QObject::tr("Data Column:"), colCombo);
+
+    QCheckBox *overlayCheck =
+            new QCheckBox(QObject::tr("Overlay Fitted Normal PDF Curve on Active Graph"), &dlg);
+    overlayCheck->setChecked(targetG != nullptr);
+    overlayCheck->setEnabled(targetG != nullptr);
+    form->addRow(QString(), overlayCheck);
+    lay->addLayout(form);
+
+    auto refreshCols = [&]() {
+        colCombo->clear();
+        int idx = tableCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c)
+            colCombo->addItem(t->column(c)->name());
+    };
+    refreshCols();
+    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     [&](int) { refreshCols(); });
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    runNormalityTest(app, tables[tableCombo->currentIndex()], colCombo->currentText(),
+                     overlayCheck->isChecked() ? targetG : nullptr);
+}
+
+void GraphStatsAndSurfaceFit::showBlandAltmanDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Bland-Altman Method Agreement Plot"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *tableCombo = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        tableCombo->addItem(t->name());
+        if (t == actTbl)
+            tableCombo->setCurrentIndex(tableCombo->count() - 1);
+    }
+    form->addRow(QObject::tr("Source Table:"), tableCombo);
+
+    QComboBox *colACombo = new QComboBox(&dlg);
+    QComboBox *colBCombo = new QComboBox(&dlg);
+    form->addRow(QObject::tr("Method A Column:"), colACombo);
+    form->addRow(QObject::tr("Method B Column:"), colBCombo);
+    lay->addLayout(form);
+
+    auto refreshCols = [&]() {
+        colACombo->clear();
+        colBCombo->clear();
+        int idx = tableCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c)->name();
+            colACombo->addItem(cn);
+            colBCombo->addItem(cn);
+        }
+        if (t->numCols() >= 2)
+            colBCombo->setCurrentIndex(1);
+    };
+    refreshCols();
+    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     [&](int) { refreshCols(); });
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    plotBlandAltman(app, tables[tableCombo->currentIndex()], colACombo->currentText(),
+                    colBCombo->currentText());
+}
+
+void GraphStatsAndSurfaceFit::showTwoWayANOVADialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Two-Way ANOVA & Interaction Plot"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *tableCombo = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        tableCombo->addItem(t->name());
+        if (t == actTbl)
+            tableCombo->setCurrentIndex(tableCombo->count() - 1);
+    }
+    form->addRow(QObject::tr("Source Table:"), tableCombo);
+
+    QComboBox *factorACombo = new QComboBox(&dlg);
+    QComboBox *factorBCombo = new QComboBox(&dlg);
+    QComboBox *respCombo = new QComboBox(&dlg);
+    form->addRow(QObject::tr("Factor A Column:"), factorACombo);
+    form->addRow(QObject::tr("Factor B Column:"), factorBCombo);
+    form->addRow(QObject::tr("Response Column:"), respCombo);
+
+    QCheckBox *plotCheck =
+            new QCheckBox(QObject::tr("Create Mean ± SE Interaction Plot"), &dlg);
+    plotCheck->setChecked(true);
+    form->addRow(QString(), plotCheck);
+    lay->addLayout(form);
+
+    auto refreshCols = [&]() {
+        factorACombo->clear();
+        factorBCombo->clear();
+        respCombo->clear();
+        int idx = tableCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c)->name();
+            factorACombo->addItem(cn);
+            factorBCombo->addItem(cn);
+            respCombo->addItem(cn);
+        }
+        if (t->numCols() >= 2)
+            factorBCombo->setCurrentIndex(1);
+        if (t->numCols() >= 3)
+            respCombo->setCurrentIndex(2);
+    };
+    refreshCols();
+    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     [&](int) { refreshCols(); });
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    runTwoWayANOVA(app, tables[tableCombo->currentIndex()], factorACombo->currentText(),
+                   factorBCombo->currentText(), respCombo->currentText(), plotCheck->isChecked());
 }

@@ -46,6 +46,31 @@ public:
         Table *paramTable = nullptr;
     };
 
+    struct NormalityResult
+    {
+        int n = 0;
+        double mean = 0.0;
+        double sd = 0.0;
+        double shapiroWilkW = 0.0;
+        double shapiroWilkP = 1.0;
+        double ksD = 0.0;
+        double ksP = 1.0;
+        double andersonDarlingA2 = 0.0;
+        bool isNormalAt005 = true;
+        Table *reportTable = nullptr;
+        QwtPlotCurve *normalOverlayCurve = nullptr;
+    };
+
+    struct TwoWayANOVAResult
+    {
+        bool valid = false;
+        double fFactorA = 0.0, pFactorA = 1.0;
+        double fFactorB = 0.0, pFactorB = 1.0;
+        double fInteraction = 0.0, pInteraction = 1.0;
+        Table *reportTable = nullptr;
+        MultiLayer *interactionGraph = nullptr;
+    };
+
     static SurfaceFitResult fitSurfaceXYZ(ApplicationWindow *app, Table *srcTable,
                                           const QString &xCol, const QString &yCol,
                                           const QString &zCol, SurfaceModel model = Gauss2D,
@@ -76,6 +101,20 @@ public:
                                        const QStringList &colNames,
                                        Table **scoresTableOut = nullptr);
 
+    static NormalityResult runNormalityTest(ApplicationWindow *app, Table *srcTable,
+                                            const QString &colName,
+                                            Graph *histogramGraphToOverlay = nullptr);
+    static MultiLayer *plotBlandAltman(ApplicationWindow *app, Table *srcTable,
+                                       const QString &methodACol, const QString &methodBCol,
+                                       double *meanBiasOut = nullptr,
+                                       double *loaLowerOut = nullptr,
+                                       double *loaUpperOut = nullptr);
+    static TwoWayANOVAResult runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
+                                            const QString &factorACol,
+                                            const QString &factorBCol,
+                                            const QString &responseCol,
+                                            bool plotInteraction = true);
+
     static void showSurfaceFitDialog(ApplicationWindow *app);
     static void show2DPeakDialog(ApplicationWindow *app);
     static void showConfidenceEllipseDialog(ApplicationWindow *app, Graph *g = nullptr);
@@ -83,6 +122,9 @@ public:
     static void showROCDialog(ApplicationWindow *app);
     static void showKaplanMeierDialog(ApplicationWindow *app);
     static void showPCADialog(ApplicationWindow *app);
+    static void showNormalityDialog(ApplicationWindow *app, Graph *g = nullptr);
+    static void showBlandAltmanDialog(ApplicationWindow *app);
+    static void showTwoWayANOVADialog(ApplicationWindow *app);
 };
 
 #endif // GRAPH_STATS_AND_SURFACE_FIT_H

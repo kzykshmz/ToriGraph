@@ -26,6 +26,7 @@ public:
     enum IirDesign { Butterworth = 0, ChebyshevI = 1, Bessel = 2 };
     enum PassType { LowPass = 0, HighPass = 1, BandPass = 2, BandStop = 3 };
     enum WaveletType { Morlet = 0, RickerMexicanHat = 1, Haar = 2, Daubechies4 = 3 };
+    enum EnvelopeType { EnvelopeUpper = 0, EnvelopeLower = 1, EnvelopeBoth = 2 };
 
     static QwtPlotCurve *iirFilter(ApplicationWindow *app, Graph *g, const QString &curveTitle,
                                    IirDesign design, PassType pass, int order,
@@ -54,11 +55,27 @@ public:
                                  const QString &curveB, int segmentLen = 128,
                                  bool plotResult = true);
 
+    static QwtPlotCurve *savitzkyGolayDerivative(ApplicationWindow *app, Graph *g,
+                                                 const QString &curveTitle,
+                                                 int derivOrder = 1, int windowPoints = 9,
+                                                 int polyOrder = 3);
+    static QwtPlotCurve *computePeakEnvelope(ApplicationWindow *app, Graph *g,
+                                             const QString &curveTitle,
+                                             EnvelopeType envType = EnvelopeBoth,
+                                             int minPeakDistPts = 3,
+                                             QwtPlotCurve **lowerCurveOut = nullptr);
+    static QwtPlotCurve *decimateCurve(ApplicationWindow *app, Graph *g,
+                                       const QString &curveTitle,
+                                       int factor = 4, bool firAntiAlias = true);
+
     static void showIirFilterDialog(ApplicationWindow *app, Graph *g);
     static void showStftDialog(ApplicationWindow *app, Graph *g);
     static void showHilbertDialog(ApplicationWindow *app, Graph *g);
     static void showWaveletDialog(ApplicationWindow *app, Graph *g);
     static void showPsdCoherenceDialog(ApplicationWindow *app, Graph *g);
+    static void showSavGolDerivativeDialog(ApplicationWindow *app, Graph *g);
+    static void showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g);
+    static void showDecimateDialog(ApplicationWindow *app, Graph *g);
 };
 
 #endif // ADVANCEDSIGNALPROC_H
