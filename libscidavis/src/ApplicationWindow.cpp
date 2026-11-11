@@ -183,8 +183,10 @@
 #include <QLineEdit>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QListWidget>
 #include <QHeaderView>
 #include <QHash>
+#include <qwt_symbol.h>
 #ifdef Q_OS_WIN
 #include "OleServer.h"
 #endif
@@ -844,6 +846,136 @@ void registerApplicationWindowJapaneseStrings()
         add("Edit Column &Description", "列の説明を編集(&D)");
         add("S&et Column(s) As", "列の役割を設定(&E)");
         add("Clear Matrix", "行列をクリア");
+
+        // Phase 5: Copy/Paste Graph Format, Batch Plotting, Style Presets & Menus
+        add("&Style Presets", "スタイルプリセット(&S)");
+        add("Style Presets", "スタイルプリセット");
+        add("1-Click Publication & Slide Style Presets", "論文・発表スライド用ワンクリック・スタイルプリセット");
+        add("&ISIJ Journal (85 mm, 600 DPI)", "鉄と鋼 / ISIJ 論文標準 (85 mm, 600 DPI)(&I)");
+        add("ISIJ Journal (85 mm, 600 DPI)", "鉄と鋼 / ISIJ 論文標準 (85 mm, 600 DPI)");
+        add("Apply 1-column ISIJ / Metallurgy journal style (85 mm, 600 DPI, inward ticks, Arial)",
+            "鉄と鋼 / ISIJ 1段組論文スタイルを適用 (85 mm, 600 DPI, 内向き目盛, Arial)");
+        add("&Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)(&P)");
+        add("Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)");
+        add("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)",
+            "高視認性プレゼンテーションスライド用スタイルを適用 (16:9, 28 pt Arial, 太線)");
+        add("&Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)(&N)");
+        add("Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)");
+        add("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)",
+            "Nature / Science 1段組コンパクトスタイルを適用 (89 mm, L字枠, 8 pt Arial)");
+
+        add("Copy &Format", "書式をコピー(&F)");
+        add("Copy Format", "書式をコピー");
+        add("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)",
+            "グラフ書式をコピー (フォント・軸・目盛・ページ寸法・線幅・基準線)");
+        add("Paste &Format", "書式を貼り付け(&F)");
+        add("Paste Format", "書式を貼り付け");
+        add("Paste copied graph format onto active graph", "コピーしたグラフ書式をアクティブグラフへ適用");
+        add("Copied graph format from %1.", "%1 からグラフ書式をコピーしました。");
+        add("Applied copied graph format to %1.", "%1 にグラフ書式を適用しました。");
+
+        add("Duplicate (&Batch Plotting)...", "一括複製プロット (バッチプロット)(&B)...");
+        add("Duplicate (Batch Plotting)...", "一括複製プロット (バッチプロット)...");
+        add("Duplicate (Batch Plotting)", "一括複製プロット (バッチプロット)");
+        add("Batch-clone graph across multiple worksheets or Y columns",
+            "テンプレートグラフを複数ワークシートまたはY列へ一括複製");
+        add("Please create a template 2D graph first before batch plotting.",
+            "バッチプロットを実行する前にテンプレートとなる2Dグラフを作成してください。");
+        add("No worksheets are available in this project.",
+            "プロジェクト内に利用可能なワークシートがありません。");
+        add("Template Graph:", "テンプレートグラフ:");
+        add("Select target worksheets to clone the template graph onto:",
+            "テンプレートグラフを複製する対象ワークシートを選択:");
+        add("Batch Across Worksheets", "複数ワークシートへ一括複製");
+        add("Batch Across Y Columns", "Y列ごとに一括複製");
+        add("Source Worksheet:", "元ワークシート:");
+        add("Create one styled graph per checked Y column:",
+            "チェックした各Y列ごとに書式付きグラフを作成:");
+
+        // Phase 5: Legend, Curve & Context Menu Additions
+        add("New / Reconstruct &Legend", "凡例の新規作成・再構築(&L)");
+        add("New / Reconstruct Legend", "凡例の新規作成・再構築");
+        add("Add or reconstruct legend", "凡例の追加または再構築");
+        add("&Reconstruct Legend (Ctrl+L)", "凡例を再構築(&R) (Ctrl+L)");
+        add("Reconstruct Legend (Ctrl+L)", "凡例を再構築 (Ctrl+L)");
+        add("Legend &Columns", "凡例の段数(&C)");
+        add("Legend Columns", "凡例の段数");
+        add("&1 Column (Vertical)", "1列 (縦並び)(&1)");
+        add("1 Column (Vertical)", "1列 (縦並び)");
+        add("&%1 Columns (Horizontal)", "%1列 (横並び)(&%1)");
+        add("%1 Columns (Horizontal)", "%1列 (横並び)");
+        add("Change &Plot Type", "プロット形式を変更(&P)");
+        add("Change Plot Type", "プロット形式を変更");
+        add("Line + &Symbol", "線 + シンボル(&S)");
+        add("Line + Symbol", "線 + シンボル");
+        add("Go to &Worksheet", "ワークシートへ移動(&W)");
+        add("Go to Worksheet", "ワークシートへ移動");
+
+        // Phase 5: Gadgets, Fitting, Materials Science, Waterfall & Nonparametric / Multivariate Stats
+        add("&Delta Cursor (C1-C2)...", "デルタカーソル (2点間差分 C1-C2)(&D)...");
+        add("Delta Cursor (C1-C2)...", "デルタカーソル (2点間差分 C1-C2)...");
+        add("Dual-crosshair Delta Cursor (dx, dy, slope, ratio, area, RMS)",
+            "2点クロスヘア・デルタカーソル (dx, dy, 傾き, 比, 面積, RMS)");
+        add("Binary &Logistic Regression...", "二値ロジスティック回帰(&L)...");
+        add("Binary Logistic Regression...", "二値ロジスティック回帰...");
+        add("&Arrhenius Plot (Activation Energy)...", "アレニウスプロット (活性化エネルギー)(&A)...");
+        add("Arrhenius Plot (Activation Energy)...", "アレニウスプロット (活性化エネルギー)...");
+        add("&Tauc Plot (Optical Bandgap)...", "Taucプロット (光学バンドギャップ)(&T)...");
+        add("Tauc Plot (Optical Bandgap)...", "Taucプロット (光学バンドギャップ)...");
+        add("&Fill Area Between Curves...", "曲線間領域の塗りつぶし(&F)...");
+        add("Fill Area Between Curves...", "曲線間領域の塗りつぶし...");
+        add("&Waterfall / Stack Offset...", "ウォーターフォール / スタックオフセット(&W)...");
+        add("Waterfall / Stack Offset...", "ウォーターフォール / スタックオフセット...");
+        add("Waterfall / Stack Offset", "ウォーターフォール / スタックオフセット");
+        add("&Reset Stack Offsets", "スタックオフセットをリセット(&R)");
+        add("Reset Stack Offsets", "スタックオフセットをリセット");
+        add("Reset Offsets", "オフセットをリセット");
+        add("Offset Mode:", "オフセット方式:");
+        add("Uniform Step (% of Span)", "等間隔ステップ (スパンに対する%)");
+        add("Auto Gap (% above Previous Curve Peak)", "自動ギャップ (前曲線ピークからの余白%)");
+        add("Y Offset / Gap:", "Yオフセット / 余白:");
+        add("X Waterfall Shift:", "Xウォーターフォールシフト:");
+        add("Normalize Each Curve to [0, 1] Before Stacking",
+            "スタック前に各曲線を [0, 1] に正規化");
+        add("&Weibull Probability Plot...", "ワイブル確率プロット(&W)...");
+        add("Weibull Probability Plot...", "ワイブル確率プロット...");
+        add("&Outlier Test (Grubbs / ESD / Dixon)...", "外れ値検定 (Grubbs / ESD / Dixon)(&O)...");
+        add("Outlier Test (Grubbs / ESD / Dixon)...", "外れ値検定 (Grubbs / ESD / Dixon)...");
+        add("&Nonparametric Tests (Mann-Whitney / Kruskal-Wallis / Auto)...",
+            "ノンパラメトリック検定 (Mann-Whitney / Kruskal-Wallis / 自動)(&N)...");
+        add("Nonparametric Tests (Mann-Whitney / Kruskal-Wallis / Auto)...",
+            "ノンパラメトリック検定 (Mann-Whitney / Kruskal-Wallis / 自動)...");
+        add("&Paired Comparison Plot (Before-After)...", "対応のある前後比較プロット (Before-After)(&P)...");
+        add("Paired Comparison Plot (Before-After)...", "対応のある前後比較プロット (Before-After)...");
+        add("&Correlation Matrix Heatmap...", "相関行列ヒートマップ(&C)...");
+        add("Correlation Matrix Heatmap...", "相関行列ヒートマップ...");
+        add("&Clustering (K-Means / Dendrogram)...", "クラスタリング (K-Means / デンドログラム)(&C)...");
+        add("Clustering (K-Means / Dendrogram)...", "クラスタリング (K-Means / デンドログラム)...");
+
+        // ToriGraph Rebranded Strings & Additional UI Menus
+        add("ToriGraph", "ToriGraph");
+        add("ToriGraph 2D Graph Template", "ToriGraph 2Dグラフテンプレート");
+        add("ToriGraph 3D Surface Template", "ToriGraph 3Dサーフェステンプレート");
+        add("ToriGraph Matrix Template", "ToriGraph 行列テンプレート");
+        add("ToriGraph Table Template", "ToriGraph テーブルテンプレート");
+        add("ToriGraph currently does not support Origin import.",
+            "現在のビルドではOriginインポートはサポートされていません。");
+        add("ToriGraph does not support QtiPlot project files from versions later than 0.9.0.",
+            "ToriGraphはバージョン0.9.0以降のQtiPlotプロジェクトファイルには対応していません。");
+        add("ToriGraph does not support QtiPlot template files from versions later than 0.9.0.",
+            "ToriGraphはバージョン0.9.0以降のQtiPlotテンプレートファイルには対応していません。");
+        add("The file: <b>%1</b> is not a ToriGraph or Origin project file!",
+            "ファイル <b>%1</b> は有効なToriGraphまたはOriginプロジェクトファイルではありません！");
+        add("The file: <b>%1</b> is not a ToriGraph template file!",
+            "ファイル <b>%1</b> は有効なToriGraphテンプレートファイルではありません！");
+        add("Choose the location of the ToriGraph help folder!",
+            "ToriGraphヘルプフォルダの場所を選択してください！");
+        add("Do you want ToriGraph to guess the best position for the new layer?\n Warning: this will rearrange existing layers!",
+            "新規レイヤの最適な配置を自動推定しますか？\n警告: 既存レイヤが再配置されます！");
+        add("ToriGraph will now try to determine whether a new version of ToriGraph is available. Please modify your firewall settings in order to allow ToriGraph to connect to the internet.",
+            "ToriGraphの新しいバージョンが利用可能か確認します。インターネット接続を許可してください。");
+        add("There is a newer version of ToriGraph (%1) available for download. Would you like to download it now?",
+            "新しいバージョンのToriGraph (%1) が利用可能です。今すぐダウンロードしますか？");
     }
 }
 
@@ -1659,6 +1791,10 @@ void ApplicationWindow::insertTranslatedStrings()
         aspectRatioMenu->setTitle(tr("Graph &Aspect Ratio"));
     if (framePresetsMenu)
         framePresetsMenu->setTitle(tr("&Frame Presets"));
+    if (stylePresetsMenu)
+        stylePresetsMenu->setTitle(tr("&Style Presets"));
+    if (d_btn_style_presets_popup)
+        d_btn_style_presets_popup->setToolTip(tr("1-Click Publication & Slide Style Presets"));
     if (languageMenu)
         languageMenu->setTitle(tr("&Language (言語)"));
 
@@ -1786,6 +1922,11 @@ void ApplicationWindow::initMainMenu()
     edit->addAction(actionCopySelection);
     edit->addAction(actionPasteSelection);
     edit->addAction(actionClearSelection);
+    edit->addSeparator();
+    edit->addAction(actionCopyGraphFormat);
+    edit->addAction(actionPasteGraphFormat);
+    edit->addAction(actionCopyWindow);
+    edit->addAction(actionBatchPlot);
 
     edit->addSeparator();
 
@@ -1868,6 +2009,13 @@ void ApplicationWindow::initMainMenu()
     framePresetsMenu->addAction(actionFrameOpenL);
     framePresetsMenu->addAction(actionFrameZeroCrossed);
 
+    stylePresetsMenu = new QMenu(this);
+    stylePresetsMenu->setFont(appFont);
+    stylePresetsMenu->setTitle(tr("&Style Presets"));
+    stylePresetsMenu->addAction(actionStyleISIJ);
+    stylePresetsMenu->addAction(actionStyleSlide);
+    stylePresetsMenu->addAction(actionStyleNature);
+
     graph = new QMenu(this);
     graph->setFont(appFont);
     graph->setTitle(tr("&Graph"));
@@ -1897,8 +2045,15 @@ void ApplicationWindow::initMainMenu()
     graph->addAction(actionFitPageToLayers);
     graph->addAction(actionFitLayersToPage);
     graph->addAction(actionTogglePageView);
+    graph->addMenu(stylePresetsMenu);
     graph->addMenu(framePresetsMenu);
     graph->addAction(actionToggleMiniToolbar);
+    graph->addSeparator();
+    graph->addAction(actionCopyGraphFormat);
+    graph->addAction(actionPasteGraphFormat);
+    graph->addAction(actionBatchPlot);
+    graph->addAction(actionWaterfallStackOffset);
+    graph->addAction(actionResetStackOffsets);
     graph->addSeparator();
     graph->addAction(actionColorPaletteEditor);
     graph->addMenu(colorPaletteMenu);
@@ -1957,6 +2112,7 @@ void ApplicationWindow::initMainMenu()
     gadgetsMenu->setFont(appFont);
     gadgetsMenu->setTitle(tr("&Gadgets"));
     gadgetsMenu->addAction(actionGadgetVerticalCursor);
+    gadgetsMenu->addAction(actionGadgetDeltaCursor);
     gadgetsMenu->addSeparator();
     gadgetsMenu->addAction(actionGadgetRegionStats);
     gadgetsMenu->addAction(actionGadgetQuickFit);
@@ -1982,6 +2138,17 @@ void ApplicationWindow::initMainMenu()
         btnGadgetsPopup->setIcon(QPixmap(":/cursors.xpm"));
         btnGadgetsPopup->setToolTip(tr("OriginPro Interactive ROI Gadgets"));
         graph_tools->addWidget(btnGadgetsPopup);
+
+        d_btn_style_presets_popup = new QToolButton(this);
+        d_btn_style_presets_popup->setMenu(stylePresetsMenu);
+        d_btn_style_presets_popup->setPopupMode(QToolButton::InstantPopup);
+        d_btn_style_presets_popup->setIcon(QPixmap(":/auto_layout.xpm"));
+        d_btn_style_presets_popup->setToolTip(tr("1-Click Publication & Slide Style Presets"));
+        graph_tools->addWidget(d_btn_style_presets_popup);
+
+        graph_tools->addAction(actionCopyGraphFormat);
+        graph_tools->addAction(actionPasteGraphFormat);
+        graph_tools->addAction(actionBatchPlot);
         graph_tools->addAction(actionRecalculateNow);
     }
 
@@ -1998,6 +2165,12 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addAction(actionNormalizeCurves);
     curveMathMenu->addAction(actionCurveIntersections);
     curveMathMenu->addAction(actionPolygonLoopArea);
+    curveMathMenu->addAction(actionFillBetweenCurves);
+    curveMathMenu->addAction(actionWaterfallStackOffset);
+    curveMathMenu->addAction(actionResetStackOffsets);
+    curveMathMenu->addSeparator();
+    curveMathMenu->addAction(actionArrheniusPlot);
+    curveMathMenu->addAction(actionTaucPlot);
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionDifferentiate);
     curveMathMenu->addAction(actionSavGolSmoothDerivative);
@@ -2016,12 +2189,18 @@ void ApplicationWindow::initMainMenu()
     graphStatsMenu = calcul->addMenu(tr("S&tatistics"));
     graphStatsMenu->setFont(appFont);
     graphStatsMenu->addAction(actionNormalityTest);
+    graphStatsMenu->addAction(actionOutlierTest);
     graphStatsMenu->addAction(actionConfidenceEllipse);
     graphStatsMenu->addAction(actionGroupComparison);
+    graphStatsMenu->addAction(actionNonparametricTests);
+    graphStatsMenu->addAction(actionPairedComparisonPlot);
     graphStatsMenu->addAction(actionTwoWayANOVA);
     graphStatsMenu->addAction(actionBlandAltman);
+    graphStatsMenu->addAction(actionWeibullPlot);
     graphStatsMenu->addAction(actionROCCurve);
     graphStatsMenu->addAction(actionKaplanMeier);
+    graphStatsMenu->addAction(actionCorrelationMatrix);
+    graphStatsMenu->addAction(actionClustering);
     graphStatsMenu->addAction(actionPCABiplot);
 
     calcul->addMenu(recalcMenu);
@@ -2121,6 +2300,7 @@ void ApplicationWindow::initMainMenu()
     d_quick_fit_menu->addAction(actionModelComparison);
     d_quick_fit_menu->addAction(actionCompareDatasetsFit);
     d_quick_fit_menu->addAction(actionMultipleLinearRegression);
+    d_quick_fit_menu->addAction(actionLogisticRegression);
     d_quick_fit_menu->addAction(actionSurfaceFit3D);
     d_quick_fit_menu->addSeparator();
     d_quick_fit_menu->addAction(actionPeakAnalyzerDialog);
@@ -2148,6 +2328,7 @@ void ApplicationWindow::initMainMenu()
     advFitMenu->addAction(actionModelComparison);
     advFitMenu->addAction(actionCompareDatasetsFit);
     advFitMenu->addAction(actionMultipleLinearRegression);
+    advFitMenu->addAction(actionLogisticRegression);
     advFitMenu->addAction(actionSurfaceFit3D);
     advFitMenu->addSeparator();
     advFitMenu->addAction(actionShowFitDialog);
@@ -2343,15 +2524,24 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionPeakAnalyzerDialog);
     dataMenu->addAction(actionShowFitDialog);
     dataMenu->addAction(actionMultipleLinearRegression);
+    dataMenu->addAction(actionLogisticRegression);
+    dataMenu->addAction(actionArrheniusPlot);
+    dataMenu->addAction(actionTaucPlot);
     dataMenu->addAction(actionSurfaceFit3D);
     dataMenu->addAction(action2DPeakAnalysis);
     dataMenu->addSeparator();
     dataMenu->addAction(actionNormalityTest);
+    dataMenu->addAction(actionOutlierTest);
     dataMenu->addAction(actionGroupComparison);
+    dataMenu->addAction(actionNonparametricTests);
+    dataMenu->addAction(actionPairedComparisonPlot);
     dataMenu->addAction(actionTwoWayANOVA);
     dataMenu->addAction(actionBlandAltman);
+    dataMenu->addAction(actionWeibullPlot);
     dataMenu->addAction(actionROCCurve);
     dataMenu->addAction(actionKaplanMeier);
+    dataMenu->addAction(actionCorrelationMatrix);
+    dataMenu->addAction(actionClustering);
     dataMenu->addAction(actionPCABiplot);
     dataMenu->addSeparator();
     dataMenu->addAction(actionGraphDigitizer);
@@ -2419,6 +2609,14 @@ void ApplicationWindow::customMenu(MyWidget *w)
             }
             if (framePresetsMenu)
                 format->addMenu(framePresetsMenu);
+            if (stylePresetsMenu)
+                format->addMenu(stylePresetsMenu);
+            format->addSeparator();
+            format->addAction(actionCopyGraphFormat);
+            format->addAction(actionPasteGraphFormat);
+            format->addAction(actionBatchPlot);
+            format->addAction(actionWaterfallStackOffset);
+            format->addAction(actionResetStackOffsets);
             format->addSeparator();
             format->addAction(actionPageSetup);
             format->addAction(actionFitPageToLayers);
@@ -2871,7 +3069,12 @@ void ApplicationWindow::plotDoubleY()
             startRow = 0;
             endRow = t->numRows() - 1;
         }
-        rightTitle = t->colLabel(t->colIndex(cols[1]));
+        const int rightColIdx = t->colIndex(cols[1]);
+        if (Column *rightCol = t->column(rightColIdx)) {
+            rightTitle = rightCol->formattedAxisTitle().trimmed();
+        }
+        if (rightTitle.isEmpty())
+            rightTitle = t->colLabel(rightColIdx);
         ml = multilayerPlot(t, cols, Graph::LineSymbols, startRow, endRow);
     } else if (w->inherits("MultiLayer")) {
         ml = static_cast<MultiLayer *>(w);
@@ -2894,9 +3097,45 @@ void ApplicationWindow::plotDoubleY()
         sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
         sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
     }
+    if (rightTitle.isEmpty()) {
+        if (DataCurve *rdc = dynamic_cast<DataCurve *>(rightCurve)) {
+            if (Table *rt = rdc->table()) {
+                if (Column *rc = rt->column(rt->colIndex(rdc->yColumnName())))
+                    rightTitle = rc->formattedAxisTitle().trimmed();
+            }
+        }
+    }
     if (rightTitle.isEmpty())
         rightTitle = rightCurve->title().text();
-    g->setRightAxisTitle(rightTitle);
+    {
+        QFont rf = g->axisTitleFont(QwtPlot::yRight);
+        rf.setFamily("Arial");
+        g->setRightAxisTitle(rightTitle);
+        g->setAxisTitleFont(QwtPlot::yRight, rf);
+    }
+    // Also refresh Left Y axis title now that curve 1 moved to Right Y axis
+    {
+        QList<Column *> leftCols;
+        for (int ci = 0; ci < g->curves(); ++ci) {
+            QwtPlotCurve *pc = g->curve(ci);
+            DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+            if (dc && dc->type() != Graph::ErrorBars && pc->yAxis() == QwtPlot::yLeft && dc->table()) {
+                if (Column *yc = dc->table()->column(dc->table()->colIndex(dc->yColumnName())))
+                    leftCols << yc;
+            }
+        }
+        if (leftCols.size() == 1) {
+            QString lt = leftCols.first()->formattedAxisTitle().trimmed();
+            if (lt.isEmpty())
+                lt = leftCols.first()->name();
+            if (!lt.isEmpty()) {
+                QFont lf = g->axisTitleFont(QwtPlot::yLeft);
+                lf.setFamily("Arial");
+                g->setYAxisTitle(lt);
+                g->setAxisTitleFont(QwtPlot::yLeft, lf);
+            }
+        }
+    }
 
     // Compute scale for Right Y axis from curves attached to yRight
     double yMin = DBL_MAX, yMax = -DBL_MAX;
@@ -4115,6 +4354,203 @@ MultiLayer *ApplicationWindow::newGraph(const QString &caption)
     return ml;
 }
 
+static void setGraphAxisTitlePreservingArial(Graph *ag, int qwtAxis, const QString &titleText)
+{
+    if (!ag)
+        return;
+    QFont af = ag->axisTitleFont(qwtAxis);
+    af.setFamily("Arial");
+    ag->setAxisTitle(qwtAxis, titleText);
+    ag->setAxisTitleFont(qwtAxis, af);
+}
+
+static void applyWorksheetMetadataToGraph(Graph *ag, Table *fallbackTable = nullptr,
+                                          const QStringList &fallbackCols = QStringList(),
+                                          int style = -1)
+{
+    if (!ag || ag->isPiePlot() || ag->isTernaryPlot())
+        return;
+
+    // Ensure all 4 axis title fonts strictly keep "Arial"
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QFont af = ag->axisTitleFont(a);
+        if (af.family() != "Arial") {
+            af.setFamily("Arial");
+            ag->setAxisTitleFont(a, af);
+        }
+    }
+
+    QList<Column *> xCols;
+    QList<Column *> leftYCols;
+    QList<Column *> rightYCols;
+    Table *singleTable = nullptr;
+    bool multipleTables = false;
+    int detectedStyle = style;
+
+    for (int i = 0; i < ag->curves(); ++i) {
+        QwtPlotCurve *pc = ag->curve(i);
+        if (!pc || pc->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+            continue;
+        const int cType = ag->curveType(i);
+        if (cType == Graph::ErrorBars)
+            continue;
+        if (detectedStyle < 0)
+            detectedStyle = cType;
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        if (!dc)
+            continue;
+        Table *t = dc->table() ? dc->table() : fallbackTable;
+        if (!t)
+            continue;
+        if (!singleTable)
+            singleTable = t;
+        else if (singleTable != t)
+            multipleTables = true;
+
+        const int xIdx = t->colIndex(dc->xColumnName());
+        const int yIdx = t->colIndex(dc->yColumnName());
+        if (Column *xc = (xIdx >= 0 ? t->column(xIdx) : nullptr)) {
+            if (!xCols.contains(xc))
+                xCols << xc;
+        }
+        if (Column *yc = (yIdx >= 0 ? t->column(yIdx) : nullptr)) {
+            if (pc->yAxis() == QwtPlot::yRight)
+                rightYCols << yc;
+            else
+                leftYCols << yc;
+        }
+    }
+
+    if (leftYCols.isEmpty() && fallbackTable && !fallbackCols.isEmpty()) {
+        if (!singleTable)
+            singleTable = fallbackTable;
+        for (const QString &colName : fallbackCols) {
+            const int yIdx = fallbackTable->colIndex(colName);
+            if (yIdx >= 0) {
+                if (Column *yc = fallbackTable->column(yIdx))
+                    leftYCols << yc;
+                const int xIdx = fallbackTable->colX(yIdx);
+                if (Column *xc = (xIdx >= 0 ? fallbackTable->column(xIdx) : nullptr)) {
+                    if (!xCols.contains(xc))
+                        xCols << xc;
+                }
+            }
+        }
+    }
+
+    auto cleanColAxisTitle = [](Column *col) -> QString {
+        if (!col)
+            return QString();
+        QString t = col->formattedAxisTitle().trimmed();
+        if (t.isEmpty())
+            t = col->name().trimmed();
+        return t;
+    };
+
+    auto resolveMultiColAxisTitle = [&](const QList<Column *> &cols) -> QString {
+        if (cols.isEmpty())
+            return QString();
+        if (cols.size() == 1)
+            return cleanColAxisTitle(cols.first());
+        const QString firstFull = cleanColAxisTitle(cols.first());
+        bool allSameFull = !firstFull.isEmpty();
+        const QString firstUnits = cols.first()->units().trimmed();
+        bool allSameNonEmptyUnits = !firstUnits.isEmpty();
+        for (int i = 1; i < cols.size(); ++i) {
+            if (cleanColAxisTitle(cols[i]) != firstFull)
+                allSameFull = false;
+            if (cols[i]->units().trimmed() != firstUnits)
+                allSameNonEmptyUnits = false;
+        }
+        if (allSameFull || allSameNonEmptyUnits)
+            return firstFull;
+        return QString();
+    };
+
+    if (detectedStyle == Graph::Histogram) {
+        const QString binAxisTitle = resolveMultiColAxisTitle(leftYCols);
+        if (!binAxisTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, binAxisTitle);
+    } else if (detectedStyle == Graph::Box) {
+        const QString boxValTitle = resolveMultiColAxisTitle(leftYCols);
+        if (!boxValTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, boxValTitle);
+    } else if (detectedStyle == Graph::HorizontalBars) {
+        const QString valTitle = resolveMultiColAxisTitle(leftYCols);
+        const QString catTitle = resolveMultiColAxisTitle(xCols);
+        if (!valTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, valTitle);
+        if (!catTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, catTitle);
+    } else {
+        const QString xTitle = resolveMultiColAxisTitle(xCols);
+        if (!xTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, xTitle);
+        const QString yLeftTitle = resolveMultiColAxisTitle(leftYCols);
+        if (!yLeftTitle.isEmpty())
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, yLeftTitle);
+        const QString yRightTitle = resolveMultiColAxisTitle(rightYCols);
+        if (!yRightTitle.isEmpty() && ag->plotWidget()->axisEnabled(QwtPlot::yRight))
+            setGraphAxisTitlePreservingArial(ag, QwtPlot::yRight, yRightTitle);
+    }
+
+    // Update initial legend cleanly when all curves come from a single Table
+    if (singleTable && !multipleTables && ag->legend()) {
+        ag->reconstructLegend();
+        bool anyLongName = false;
+        QString firstNonEmptyLongName;
+        for (int i = 0; i < ag->curves(); ++i) {
+            if (ag->curveType(i) == Graph::ErrorBars)
+                continue;
+            DataCurve *dc = dynamic_cast<DataCurve *>(ag->curve(i));
+            if (!dc)
+                continue;
+            if (Column *yc = singleTable->column(singleTable->colIndex(dc->yColumnName()))) {
+                const QString ln = yc->longName().trimmed();
+                if (!ln.isEmpty()) {
+                    anyLongName = true;
+                    if (firstNonEmptyLongName.isEmpty())
+                        firstNonEmptyLongName = ln;
+                }
+            }
+        }
+        if (anyLongName && ag->legend() && !ag->legend()->text().contains(firstNonEmptyLongName)) {
+            QString legText;
+            for (int i = 0; i < ag->curves(); ++i) {
+                const QwtPlotCurve *c = ag->curve(i);
+                if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+                    || ag->curveType(i) == Graph::ErrorBars)
+                    continue;
+                legText += "\\c{" + QString::number(i + 1) + "}";
+                if (const FunctionCurve *fc = dynamic_cast<const FunctionCurve *>(c)) {
+                    legText += fc->legend();
+                } else if (DataCurve *dc = dynamic_cast<DataCurve *>(const_cast<QwtPlotCurve *>(c))) {
+                    QString lbl;
+                    if (Column *yc = singleTable->column(singleTable->colIndex(dc->yColumnName()))) {
+                        lbl = yc->longName().trimmed();
+                        if (lbl.isEmpty())
+                            lbl = yc->name().trimmed();
+                    }
+                    if (lbl.isEmpty()) {
+                        lbl = c->title().text();
+                        const QString pfx = QString(singleTable->name()) + "_";
+                        if (lbl.startsWith(pfx) && lbl.length() > pfx.length())
+                            lbl = lbl.mid(pfx.length());
+                    }
+                    legText += lbl;
+                } else {
+                    legText += c->title().text();
+                }
+                legText += "\n";
+            }
+            if (legText.endsWith('\n'))
+                legText.chop(1);
+            ag->legend()->setText(legText);
+        }
+    }
+}
+
 MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colList, int style,
                                               int startRow, int endRow)
 { // used when plotting selected columns
@@ -4135,6 +4571,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
 
     polishGraph(ag, style);
     ag->newLegend();
+    applyWorksheetMetadataToGraph(ag, w, colList, style);
     g->arrangeLayers(false, false);
     customMenu(g);
 
@@ -4185,6 +4622,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
                 ag->setAutoscaleFonts(false); // in order to avoid to small fonts
                 ag->setIgnoreResizeEvents(false);
                 polishGraph(ag, style);
+                applyWorksheetMetadataToGraph(ag, w, QStringList(list[i]), style);
             }
         }
     } else {
@@ -4199,6 +4637,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
                 ag->setAutoscaleFonts(false); // in order to avoid to small fonts
                 ag->setIgnoreResizeEvents(false);
                 polishGraph(ag, style);
+                applyWorksheetMetadataToGraph(ag, w, lst, style);
             }
         }
     }
@@ -4270,6 +4709,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
         ag->updateCurveLayout(i, &cl);
     }
     ag->newLegend();
+    applyWorksheetMetadataToGraph(ag, nullptr, QStringList(), defaultCurveStyle);
     ag->updatePlot();
     g->arrangeLayers(true, false);
     customMenu(g);
@@ -5392,9 +5832,7 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
     {
         QMessageBox::critical(
                 this, tr("File opening error"),
-                tr("SciDAVis currently does not support Origin import. If you are interested in "
-                   "reviving and maintaining an Origin import filter, contact the developers.")
-                        .arg(fn));
+                tr("ToriGraph currently does not support Origin import."));
         return 0;
     }
 #endif
@@ -5571,9 +6009,8 @@ bool ApplicationWindow::loadProject(const QString &fn)
         d_file_version = 100 * (vl[0]).toInt() + 10 * (vl[1]).toInt() + (vl[2]).toInt();
         if (d_file_version > 90) {
             QMessageBox::critical(this, tr("File opening error"),
-                                  tr("SciDAVis does not support QtiPlot project files from "
-                                     "versions later than 0.9.0.")
-                                          .arg(fn));
+                                  tr("ToriGraph does not support QtiPlot project files from "
+                                     "versions later than 0.9.0."));
             return false;
         }
     } else
@@ -5774,15 +6211,20 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
             while (s != "</multiLayer>") { // open layers
                 s = t.readLine();
+                if (s.isNull())
+                    break;
                 if (s.left(7) == "<graph>") {
                     list.clear();
-                    while (s != "</graph>") {
+                    while (s != "</graph>" && !t.atEnd()) {
                         s = t.readLine();
                         list << s;
                     }
                     openGraph(this, plot, list);
+                } else if (s.trimmed().startsWith("<Tori")) {
+                    plot->restorePhase5Tag(s.trimmed());
                 }
             }
+            plot->finalizePhase5Restore();
             plot->blockSignals(false);
             activateSubWindow(plot);
             progress.setValue(aux);
@@ -5927,10 +6369,10 @@ void ApplicationWindow::restartScriptingEnv()
 // TODO: rewrite the template system
 void ApplicationWindow::openTemplate()
 {
-    QString filter = "SciDAVis/QtiPlot 2D Graph Template (*.qpt);;";
-    filter += "SciDAVis/QtiPlot 3D Surface Template (*.qst);;";
-    filter += "SciDAVis/QtiPlot Table Template (*.qtt);;";
-    filter += "SciDAVis/QtiPlot Matrix Template (*.qmt)";
+    QString filter = tr("ToriGraph 2D Graph Template") + " (*.qpt);;";
+    filter += tr("ToriGraph 3D Surface Template") + " (*.qst);;";
+    filter += tr("ToriGraph Table Template") + " (*.qtt);;";
+    filter += tr("ToriGraph Matrix Template") + " (*.qmt)";
 
     QString fn = QFileDialog::getOpenFileName(this, tr("Open Template File"), templatesDir, filter);
     if (!fn.isEmpty()) {
@@ -5968,9 +6410,8 @@ void ApplicationWindow::openTemplate()
                 d_file_version = 100 * (vl[0]).toInt() + 10 * (vl[1]).toInt() + (vl[2]).toInt();
                 if (d_file_version > 90) {
                     QMessageBox::critical(this, tr("File opening error"),
-                                          tr("SciDAVis does not support QtiPlot template files "
-                                             "from versions later than 0.9.0.")
-                                                  .arg(fn));
+                                          tr("ToriGraph does not support QtiPlot template files "
+                                             "from versions later than 0.9.0."));
                     return;
                 }
             } else
@@ -6035,13 +6476,16 @@ void ApplicationWindow::openTemplate()
                             QString s = t.readLine();
                             if (s.left(7) == "<graph>") {
                                 QStringList lst;
-                                while (s != "</graph>") {
+                                while (s != "</graph>" && !t.atEnd()) {
                                     s = t.readLine();
                                     lst << s;
                                 }
                                 openGraph(this, (MultiLayer *)w, lst);
+                            } else if (s.trimmed().startsWith("<Tori")) {
+                                ((MultiLayer *)w)->restorePhase5Tag(s.trimmed());
                             }
                         }
+                        ((MultiLayer *)w)->finalizePhase5Restore();
                     }
                 } else {
                     if (templateType == "<table>")
@@ -6081,7 +6525,7 @@ void ApplicationWindow::openTemplate()
         } else {
             QMessageBox::critical(
                     this, tr("File opening error"),
-                    tr("The file: <b>%1</b> is not a SciDAVis template file!").arg(fn));
+                    tr("The file: <b>%1</b> is not a ToriGraph template file!").arg(fn));
             return;
         }
     }
@@ -7061,13 +7505,13 @@ void ApplicationWindow::saveAsTemplate()
 
     QString filter;
     if (w->inherits("Matrix"))
-        filter = tr("SciDAVis/QtiPlot Matrix Template") + " (*.qmt)";
+        filter = tr("ToriGraph Matrix Template") + " (*.qmt)";
     else if (w->inherits("MultiLayer"))
-        filter = tr("SciDAVis/QtiPlot 2D Graph Template") + " (*.qpt)";
+        filter = tr("ToriGraph 2D Graph Template") + " (*.qpt)";
     else if (w->inherits("Table"))
-        filter = tr("SciDAVis/QtiPlot Table Template") + " (*.qtt)";
+        filter = tr("ToriGraph Table Template") + " (*.qtt)";
     else if (w->inherits("Graph3D"))
-        filter = tr("SciDAVis/QtiPlot 3D Surface Template") + " (*.qst)";
+        filter = tr("ToriGraph 3D Surface Template") + " (*.qst)";
 
     QString selectedFilter;
     QString fn =
@@ -7850,23 +8294,80 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return nullptr;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
-    DataCurve *c = (DataCurve *)g->curve(g->curveIndex(curveKey));
-    if (!c || !c->isVisible())
+    Graph *g = static_cast<MultiLayer *>(d_workspace.activeSubWindow())->activeGraph();
+    if (!g)
+        return nullptr;
+
+    const int curveIdx = g->curveIndex(curveKey);
+    if (curveIdx < 0 || curveIdx >= g->curves())
+        return nullptr;
+
+    QwtPlotItem *plotIt = g->plotItem(curveIdx);
+    if (!plotIt || !plotIt->isVisible())
+        return nullptr;
+
+    if (Spectrogram *sp = dynamic_cast<Spectrogram *>(plotIt)) {
+        auto curveMenu = new QMenu(this);
+        actionShowCurvePlotDialog->setData(curveKey);
+        curveMenu->addAction(sp->title().text(), this, SLOT(showCurvePlotDialog()));
+        curveMenu->addSeparator();
+        curveMenu->addAction(actionShowCurveWorksheet);
+        actionShowCurveWorksheet->setData(curveKey);
+        curveMenu->addAction(actionShowCurvePlotDialog);
+        curveMenu->addSeparator();
+        curveMenu->addAction(actionRemoveCurve);
+        actionRemoveCurve->setData(curveKey);
+        return curveMenu;
+    }
+
+    QwtPlotCurve *qwtCurve = g->curve(curveIdx);
+    PlotCurve *pc = dynamic_cast<PlotCurve *>(qwtCurve);
+    DataCurve *dc = dynamic_cast<DataCurve *>(qwtCurve);
+    if (!pc)
         return nullptr;
 
     auto curveMenu = new QMenu(this);
-    curveMenu->addAction(c->title().text(), this, SLOT(showCurvePlotDialog()));
+    actionShowCurvePlotDialog->setData(curveKey);
+    curveMenu->addAction(pc->title().text(), this, SLOT(showCurvePlotDialog()));
     curveMenu->addSeparator();
+
+    if (pc->type() != Graph::ErrorBars && pc->type() != Graph::Pie && pc->type() != Graph::Box) {
+        QMenu *plotTypeMenu = curveMenu->addMenu(tr("Change &Plot Type"));
+        QAction *actLine = plotTypeMenu->addAction(tr("&Line"));
+        QAction *actScatter = plotTypeMenu->addAction(tr("&Scatter"));
+        QAction *actLineSym = plotTypeMenu->addAction(tr("Line + &Symbol"));
+        connect(actLine, &QAction::triggered, this, [this, g, curveIdx]() {
+            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
+                g->setCurveType(curveIdx, Graph::Line);
+                g->updatePlot();
+                emit modified();
+            }
+        });
+        connect(actScatter, &QAction::triggered, this, [this, g, curveIdx]() {
+            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
+                g->setCurveType(curveIdx, Graph::Scatter);
+                g->updatePlot();
+                emit modified();
+            }
+        });
+        connect(actLineSym, &QAction::triggered, this, [this, g, curveIdx]() {
+            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
+                g->setCurveType(curveIdx, Graph::LineSymbols);
+                g->updatePlot();
+                emit modified();
+            }
+        });
+        curveMenu->addSeparator();
+    }
 
     curveMenu->addAction(actionHideCurve);
     actionHideCurve->setData(curveKey);
 
-    if (g->visibleCurves() > 1 && c->type() == Graph::Function) {
+    if (g->visibleCurves() > 1 && pc->type() == Graph::Function) {
         curveMenu->addAction(actionHideOtherCurves);
         actionHideOtherCurves->setData(curveKey);
-    } else if (c->type() != Graph::Function) {
-        if ((g->visibleCurves() - c->errorBarsList().count()) > 1) {
+    } else if (dc && pc->type() != Graph::Function) {
+        if ((g->visibleCurves() - dc->errorBarsList().count()) > 1) {
             curveMenu->addAction(actionHideOtherCurves);
             actionHideOtherCurves->setData(curveKey);
         }
@@ -7876,37 +8377,44 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
         curveMenu->addAction(actionShowAllCurves);
     curveMenu->addSeparator();
 
-    if (c->type() == Graph::Function) {
+    if (pc->type() == Graph::Function) {
         curveMenu->addAction(actionEditFunction);
         actionEditFunction->setData(curveKey);
-    } else if (c->type() != Graph::ErrorBars) {
+    } else if (dc && pc->type() != Graph::ErrorBars) {
         curveMenu->addAction(actionEditCurveRange);
         actionEditCurveRange->setData(curveKey);
 
         curveMenu->addAction(actionCurveFullRange);
-        if (c->isFullRange())
-            actionCurveFullRange->setDisabled(true);
-        else
-            actionCurveFullRange->setEnabled(true);
+        actionCurveFullRange->setEnabled(!dc->isFullRange());
         actionCurveFullRange->setData(curveKey);
 
         curveMenu->addSeparator();
     }
 
+    actionShowCurveWorksheet->setText(tr("Go to &Worksheet"));
     curveMenu->addAction(actionShowCurveWorksheet);
     actionShowCurveWorksheet->setData(curveKey);
 
     curveMenu->addAction(actionShowCurvePlotDialog);
     actionShowCurvePlotDialog->setData(curveKey);
 
-    if (c->type() != Graph::Function && c->type() != Graph::ErrorBars) {
+    if (pc->type() != Graph::Function && pc->type() != Graph::ErrorBars) {
         curveMenu->addSeparator();
-        if (dataMaskMenu)
-            curveMenu->addMenu(dataMaskMenu);
+        curveMenu->addAction(actionFitLinear);
+        curveMenu->addAction(actionShowFitDialog);
+        curveMenu->addAction(actionPeakAnalyzerDialog);
         curveMenu->addAction(actionPeakFitDialog);
-        curveMenu->addAction(actionAutoPeakGauss);
-        curveMenu->addAction(actionAutoPeakLorentz);
-        curveMenu->addAction(actionAutoPeakPseudoVoigt);
+        if (smooth)
+            curveMenu->addMenu(smooth);
+        else
+            curveMenu->addAction(actionSmoothSavGol);
+        curveMenu->addAction(actionSavGolSmoothDerivative);
+        curveMenu->addAction(actionNormalizeCurves);
+        curveMenu->addAction(actionWaterfallStackOffset);
+        if (dataMaskMenu) {
+            curveMenu->addSeparator();
+            curveMenu->addMenu(dataMaskMenu);
+        }
     }
 
     curveMenu->addSeparator();
@@ -7984,12 +8492,20 @@ void ApplicationWindow::showCurveWorksheet(Graph *g, int curveIndex)
         return;
 
     if (auto sp = dynamic_cast<Spectrogram *>(it)) {
-        if (sp->matrix())
-            sp->matrix()->showMaximized();
-    } else if (((PlotCurve *)it)->type() == Graph::Function)
-        g->createTable((PlotCurve *)it);
-    else
-        showTable(it->title().text());
+        if (sp->matrix()) {
+            Matrix *m = sp->matrix();
+            if (m->isMinimized() || m->isHidden())
+                m->showNormal();
+            activateSubWindow(m);
+            m->raise();
+            m->setFocus();
+        }
+    } else if (PlotCurve *pc = dynamic_cast<PlotCurve *>(it)) {
+        if (pc->type() == Graph::Function)
+            g->createTable(pc);
+        else
+            showTable(it->title().text());
+    }
 }
 
 void ApplicationWindow::showCurveWorksheet()
@@ -8619,8 +9135,13 @@ void ApplicationWindow::newLegend()
     }
 
     Graph *g = (Graph *)plot->activeGraph();
-    if (g)
-        g->newLegend();
+    if (g) {
+        if (g->legend())
+            g->reconstructLegend();
+        else
+            g->newLegend();
+        emit modified();
+    }
 }
 
 void ApplicationWindow::addTimeStamp()
@@ -9455,8 +9976,32 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showLineDialog()));
     else if (g->imageMarkerSelected())
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showImageDialog()));
-    else
+    else {
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showTextDialog()));
+        markerMenu->addAction(tr("&Reconstruct Legend (Ctrl+L)"), this, [this, g]() {
+            if (g) {
+                g->reconstructLegend();
+                emit modified();
+            }
+        });
+        if (Legend *leg = dynamic_cast<Legend *>(g->selectedMarkerPtr())) {
+            QMenu *colMenu = markerMenu->addMenu(tr("Legend &Columns"));
+            for (int ncols = 1; ncols <= 4; ++ncols) {
+                QAction *actCol = colMenu->addAction(
+                        (ncols == 1) ? tr("&1 Column (Vertical)")
+                                     : tr("&%1 Columns (Horizontal)").arg(ncols));
+                actCol->setCheckable(true);
+                actCol->setChecked(leg->numColumns() == ncols);
+                connect(actCol, &QAction::triggered, this, [this, g, leg, ncols]() {
+                    if (leg && g) {
+                        leg->setNumColumns(ncols);
+                        g->replot();
+                        emit modified();
+                    }
+                });
+            }
+        }
+    }
 
     markerMenu->addSeparator();
     markerMenu->addAction(actionPeakFitDialog);
@@ -9746,14 +10291,26 @@ void ApplicationWindow::showTable(const QString &curve)
     if (!w)
         return;
 
+    const bool keepMax = d_workspace.activeSubWindow()
+            && d_workspace.activeSubWindow()->isMaximized();
     updateWindowLists(w);
     int colIndex = w->colIndex(curve);
     w->deselectAll();
-    w->setCellsSelected(0, colIndex, w->d_future_table->rowCount() - 1, colIndex);
-    w->showMaximized();
-    QTreeWidgetItem *it = lv.findItems(w->name(), Qt::MatchExactly | Qt::MatchCaseSensitive).at(0);
-    if (it)
-        it->setText(2, tr("Maximized"));
+    if (colIndex >= 0 && w->d_future_table && w->d_future_table->rowCount() > 0)
+        w->setCellsSelected(0, colIndex, w->d_future_table->rowCount() - 1, colIndex);
+    if (keepMax || w->status() == MyWidget::Maximized)
+        w->showMaximized();
+    else {
+        if (w->isMinimized() || w->isHidden())
+            w->showNormal();
+        activateSubWindow(w);
+        w->raise();
+        w->setFocus();
+    }
+    const QList<QTreeWidgetItem *> items =
+            lv.findItems(w->name(), Qt::MatchExactly | Qt::MatchCaseSensitive);
+    if (!items.isEmpty() && items.at(0))
+        items.at(0)->setText(2, w->isMaximized() ? tr("Maximized") : tr("Normal"));
     emit modified();
 }
 
@@ -9931,6 +10488,15 @@ void ApplicationWindow::showGraphContextMenu()
                     actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
                 cm.addMenu(aspectRatioMenu);
             }
+            if (stylePresetsMenu)
+                cm.addMenu(stylePresetsMenu);
+            if (framePresetsMenu)
+                cm.addMenu(framePresetsMenu);
+            cm.addAction(actionCopyGraphFormat);
+            cm.addAction(actionPasteGraphFormat);
+            cm.addAction(actionBatchPlot);
+            cm.addAction(actionWaterfallStackOffset);
+            cm.addAction(actionResetStackOffsets);
             cm.addAction(actionUnzoom);
             cm.addAction(actionCopyGraphOle);
         }
@@ -10096,6 +10662,15 @@ void ApplicationWindow::showLayerButtonContextMenu()
                     actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
                 cm.addMenu(aspectRatioMenu);
             }
+            if (stylePresetsMenu)
+                cm.addMenu(stylePresetsMenu);
+            if (framePresetsMenu)
+                cm.addMenu(framePresetsMenu);
+            cm.addAction(actionCopyGraphFormat);
+            cm.addAction(actionPasteGraphFormat);
+            cm.addAction(actionBatchPlot);
+            cm.addAction(actionWaterfallStackOffset);
+            cm.addAction(actionResetStackOffsets);
             cm.addAction(actionUnzoom);
             cm.addAction(actionCopyGraphOle);
         }
@@ -10169,6 +10744,11 @@ void ApplicationWindow::showWindowContextMenu()
             cm.addSeparator();
         cm.addAction(actionRename);
         cm.addAction(actionCopyWindow);
+        cm.addAction(actionBatchPlot);
+        cm.addAction(actionCopyGraphFormat);
+        cm.addAction(actionPasteGraphFormat);
+        if (stylePresetsMenu)
+            cm.addMenu(stylePresetsMenu);
         cm.addSeparator();
         cm.addAction(actionPeakAnalyzerDialog);
         cm.addAction(actionPeakFitDialog);
@@ -10259,7 +10839,7 @@ void ApplicationWindow::chooseHelpFolder()
         helpFilePath = locateDefaultHelp;
     } else {
         const QString dir = QFileDialog::getExistingDirectory(
-                this, tr("Choose the location of the SciDAVis help folder!"),
+                this, tr("Choose the location of the ToriGraph help folder!"),
                 qApp->applicationDirPath());
 
         if (!dir.isEmpty()) {
@@ -11078,7 +11658,7 @@ void ApplicationWindow::addLayer()
     MultiLayer *plot = (MultiLayer *)d_workspace.activeSubWindow();
     switch (QMessageBox::information(
             this, tr("Guess best origin for the new layer?"),
-            tr("Do you want SciDAVis to guess the best position for the new layer?\n Warning: this "
+            tr("Do you want ToriGraph to guess the best position for the new layer?\n Warning: this "
                "will rearrange existing layers!"),
             tr("&Guess"), tr("&Top-left corner"), tr("&Cancel"), 0, 2)) {
     case 0: {
@@ -12001,6 +12581,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                     }
                 }
             }
+        } else if (ag && s.trimmed().startsWith("<Tori")) {
+            ag->restorePhase5Tag(s.trimmed());
         }
     }
     ag->replot();
@@ -12539,7 +13121,9 @@ void ApplicationWindow::createActions()
     actionUndo->setEnabled(false);
 
     actionRedo = new QAction(IconLoader::load("edit-redo"), tr("&Redo"), this);
-    actionRedo->setShortcut(tr("Ctrl+R"));
+    actionRedo->setShortcuts(QList<QKeySequence>()
+                             << QKeySequence(tr("Ctrl+Y"))
+                             << QKeySequence(tr("Ctrl+Shift+Z")));
     connect(actionRedo, SIGNAL(triggered()), this, SLOT(redo()));
     actionRedo->setEnabled(false);
 
@@ -12658,10 +13242,12 @@ void ApplicationWindow::createActions()
     connect(actionAddFunctionCurve, SIGNAL(triggered()), this, SLOT(addFunctionCurve()));
 
     actionUnzoom = new QAction(QIcon(QPixmap(":/unzoom.xpm")), tr("&Rescale to Show All"), this);
-    actionUnzoom->setShortcut(tr("Ctrl+Shift+R"));
+    actionUnzoom->setShortcuts(QList<QKeySequence>()
+                               << QKeySequence(tr("Ctrl+R"))
+                               << QKeySequence(tr("Ctrl+Shift+R")));
     connect(actionUnzoom, SIGNAL(triggered()), this, SLOT(setAutoScale()));
 
-    actionNewLegend = new QAction(QIcon(QPixmap(":/legend.xpm")), tr("New &Legend"), this);
+    actionNewLegend = new QAction(QIcon(QPixmap(":/legend.xpm")), tr("New / Reconstruct &Legend"), this);
     actionNewLegend->setShortcut(tr("Ctrl+L"));
     connect(actionNewLegend, SIGNAL(triggered()), this, SLOT(newLegend()));
 
@@ -12834,7 +13420,7 @@ void ApplicationWindow::createActions()
     connect(actionFitLorentz, SIGNAL(triggered()), this, SLOT(fitLorentz()));
 
     actionShowFitDialog = new QAction(tr("Fit &Wizard..."), this);
-    actionShowFitDialog->setShortcut(tr("Ctrl+Y"));
+    actionShowFitDialog->setShortcut(tr("Ctrl+Shift+Y"));
     connect(actionShowFitDialog, SIGNAL(triggered()), this, SLOT(showFitDialog()));
 
     actionShowPlotDialog = new QAction(tr("&Plot ..."), this);
@@ -13420,6 +14006,73 @@ void ApplicationWindow::createActions()
     actionGraphDigitizer = new QAction(tr("&Digitizer (Extract Data from Image)..."), this);
     connect(actionGraphDigitizer, SIGNAL(triggered()), this, SLOT(showGraphDigitizerDialog()));
 
+    // Phase 5: OriginPro Format Copy/Paste, Batch Plotting, Style Presets, Delta Cursor, Waterfall & Analysis
+    actionCopyGraphFormat = new QAction(IconLoader::load("edit-copy"), tr("Copy &Format"), this);
+    actionCopyGraphFormat->setShortcut(tr("Ctrl+Shift+C"));
+    actionCopyGraphFormat->setToolTip(tr("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)"));
+    connect(actionCopyGraphFormat, SIGNAL(triggered()), this, SLOT(copyGraphFormat()));
+
+    actionPasteGraphFormat = new QAction(IconLoader::load("edit-paste"), tr("Paste &Format"), this);
+    actionPasteGraphFormat->setShortcut(tr("Ctrl+Shift+V"));
+    actionPasteGraphFormat->setToolTip(tr("Paste copied graph format onto active graph"));
+    connect(actionPasteGraphFormat, SIGNAL(triggered()), this, SLOT(pasteGraphFormat()));
+
+    actionBatchPlot = new QAction(QIcon(QPixmap(":/duplicate.xpm")), tr("Duplicate (&Batch Plotting)..."), this);
+    actionBatchPlot->setToolTip(tr("Batch-clone graph across multiple worksheets or Y columns"));
+    connect(actionBatchPlot, SIGNAL(triggered()), this, SLOT(showBatchPlotDialog()));
+
+    actionStyleISIJ = new QAction(tr("&ISIJ Journal (85 mm, 600 DPI)"), this);
+    actionStyleISIJ->setToolTip(tr("Apply 1-column ISIJ / Metallurgy journal style (85 mm, 600 DPI, inward ticks, Arial)"));
+    connect(actionStyleISIJ, SIGNAL(triggered()), this, SLOT(applyStyleISIJJournal()));
+
+    actionStyleSlide = new QAction(tr("&Presentation Slide (28 pt Arial)"), this);
+    actionStyleSlide->setToolTip(tr("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)"));
+    connect(actionStyleSlide, SIGNAL(triggered()), this, SLOT(applyStylePresentationSlide()));
+
+    actionStyleNature = new QAction(tr("&Nature / Science Compact (89 mm)"), this);
+    actionStyleNature->setToolTip(tr("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)"));
+    connect(actionStyleNature, SIGNAL(triggered()), this, SLOT(applyStyleNatureCompact()));
+
+    actionGadgetDeltaCursor = new QAction(QIcon(QPixmap(":/cursors.xpm")), tr("&Delta Cursor (C1-C2)..."), this);
+    actionGadgetDeltaCursor->setToolTip(tr("Dual-crosshair Delta Cursor (dx, dy, slope, ratio, area, RMS)"));
+    connect(actionGadgetDeltaCursor, SIGNAL(triggered()), this, SLOT(attachDeltaCursorGadget()));
+
+    actionLogisticRegression = new QAction(tr("Binary &Logistic Regression..."), this);
+    connect(actionLogisticRegression, SIGNAL(triggered()), this, SLOT(showLogisticRegressionDialog()));
+
+    actionArrheniusPlot = new QAction(tr("&Arrhenius Plot (Activation Energy)..."), this);
+    connect(actionArrheniusPlot, SIGNAL(triggered()), this, SLOT(showArrheniusPlotDialog()));
+
+    actionTaucPlot = new QAction(tr("&Tauc Plot (Optical Bandgap)..."), this);
+    connect(actionTaucPlot, SIGNAL(triggered()), this, SLOT(showTaucPlotDialog()));
+
+    actionFillBetweenCurves = new QAction(tr("&Fill Area Between Curves..."), this);
+    connect(actionFillBetweenCurves, SIGNAL(triggered()), this, SLOT(showFillBetweenCurvesDialog()));
+
+    actionWaterfallStackOffset = new QAction(tr("&Waterfall / Stack Offset..."), this);
+    connect(actionWaterfallStackOffset, SIGNAL(triggered()), this, SLOT(showWaterfallStackOffsetDialog()));
+
+    actionResetStackOffsets = new QAction(tr("&Reset Stack Offsets"), this);
+    connect(actionResetStackOffsets, SIGNAL(triggered()), this, SLOT(resetActiveGraphStackOffsets()));
+
+    actionWeibullPlot = new QAction(tr("&Weibull Probability Plot..."), this);
+    connect(actionWeibullPlot, SIGNAL(triggered()), this, SLOT(showWeibullPlotDialog()));
+
+    actionOutlierTest = new QAction(tr("&Outlier Test (Grubbs / ESD / Dixon)..."), this);
+    connect(actionOutlierTest, SIGNAL(triggered()), this, SLOT(showOutlierTestDialog()));
+
+    actionNonparametricTests = new QAction(tr("&Nonparametric Tests (Mann-Whitney / Kruskal-Wallis / Auto)..."), this);
+    connect(actionNonparametricTests, SIGNAL(triggered()), this, SLOT(showNonparametricTestsDialog()));
+
+    actionPairedComparisonPlot = new QAction(tr("&Paired Comparison Plot (Before-After)..."), this);
+    connect(actionPairedComparisonPlot, SIGNAL(triggered()), this, SLOT(showPairedComparisonPlotDialog()));
+
+    actionCorrelationMatrix = new QAction(tr("&Correlation Matrix Heatmap..."), this);
+    connect(actionCorrelationMatrix, SIGNAL(triggered()), this, SLOT(showCorrelationMatrixDialog()));
+
+    actionClustering = new QAction(tr("&Clustering (K-Means / Dendrogram)..."), this);
+    connect(actionClustering, SIGNAL(triggered()), this, SLOT(showClusteringDialog()));
+
     actionCopyStatusBarText = new QAction(tr("&Copy status bar text"), this);
     connect(actionCopyStatusBarText, SIGNAL(triggered()), this, SLOT(copyStatusBarText()));
 }
@@ -13499,7 +14152,9 @@ void ApplicationWindow::translateActionsStrings()
 
     actionRedo->setText(tr("&Redo"));
     actionRedo->setToolTip(tr("Redo changes"));
-    actionRedo->setShortcut(tr("Ctrl+R"));
+    actionRedo->setShortcuts(QList<QKeySequence>()
+                             << QKeySequence(tr("Ctrl+Y"))
+                             << QKeySequence(tr("Ctrl+Shift+Z")));
 
     actionCopyWindow->setText(tr("&Duplicate"));
     actionCopyWindow->setToolTip(tr("Duplicate window"));
@@ -13594,12 +14249,14 @@ void ApplicationWindow::translateActionsStrings()
     actionAddFunctionCurve->setShortcut(tr("Ctrl+Alt+F"));
 
     actionUnzoom->setText(tr("&Rescale to Show All"));
-    actionUnzoom->setShortcut(tr("Ctrl+Shift+R"));
+    actionUnzoom->setShortcuts(QList<QKeySequence>()
+                               << QKeySequence(tr("Ctrl+R"))
+                               << QKeySequence(tr("Ctrl+Shift+R")));
     actionUnzoom->setToolTip(tr("Best fit"));
 
-    actionNewLegend->setText(tr("New &Legend"));
+    actionNewLegend->setText(tr("New / Reconstruct &Legend"));
     actionNewLegend->setShortcut(tr("Ctrl+L"));
-    actionNewLegend->setToolTip(tr("Add new legend"));
+    actionNewLegend->setToolTip(tr("Add or reconstruct legend"));
 
     actionTimeStamp->setText(tr("Add Time Stamp"));
     actionTimeStamp->setShortcut(tr("Ctrl+ALT+T"));
@@ -13697,7 +14354,7 @@ void ApplicationWindow::translateActionsStrings()
     actionFitLorentz->setText(tr("Fit Lorent&zian"));
 
     actionShowFitDialog->setText(tr("Fit &Wizard..."));
-    actionShowFitDialog->setShortcut(tr("Ctrl+Y"));
+    actionShowFitDialog->setShortcut(tr("Ctrl+Shift+Y"));
 
     actionShowPlotDialog->setText(tr("&Plot ..."));
     actionShowScaleDialog->setText(tr("&Scales..."));
@@ -14075,6 +14732,68 @@ void ApplicationWindow::translateActionsStrings()
         actionTwoWayANOVA->setText(tr("T&wo-Way ANOVA && Interaction Plot..."));
     if (actionGraphDigitizer)
         actionGraphDigitizer->setText(tr("&Digitizer (Extract Data from Image)..."));
+
+    if (actionCopyGraphFormat) {
+        actionCopyGraphFormat->setText(tr("Copy &Format"));
+        actionCopyGraphFormat->setShortcut(tr("Ctrl+Shift+C"));
+        actionCopyGraphFormat->setToolTip(
+                tr("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)"));
+    }
+    if (actionPasteGraphFormat) {
+        actionPasteGraphFormat->setText(tr("Paste &Format"));
+        actionPasteGraphFormat->setShortcut(tr("Ctrl+Shift+V"));
+        actionPasteGraphFormat->setToolTip(tr("Paste copied graph format onto active graph"));
+    }
+    if (actionBatchPlot) {
+        actionBatchPlot->setText(tr("Duplicate (&Batch Plotting)..."));
+        actionBatchPlot->setToolTip(
+                tr("Batch-clone graph across multiple worksheets or Y columns"));
+    }
+    if (actionStyleISIJ) {
+        actionStyleISIJ->setText(tr("&ISIJ Journal (85 mm, 600 DPI)"));
+        actionStyleISIJ->setToolTip(
+                tr("Apply 1-column ISIJ / Metallurgy journal style (85 mm, 600 DPI, inward ticks, Arial)"));
+    }
+    if (actionStyleSlide) {
+        actionStyleSlide->setText(tr("&Presentation Slide (28 pt Arial)"));
+        actionStyleSlide->setToolTip(
+                tr("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)"));
+    }
+    if (actionStyleNature) {
+        actionStyleNature->setText(tr("&Nature / Science Compact (89 mm)"));
+        actionStyleNature->setToolTip(
+                tr("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)"));
+    }
+    if (actionGadgetDeltaCursor) {
+        actionGadgetDeltaCursor->setText(tr("&Delta Cursor (C1-C2)..."));
+        actionGadgetDeltaCursor->setToolTip(
+                tr("Dual-crosshair Delta Cursor (dx, dy, slope, ratio, area, RMS)"));
+    }
+    if (actionLogisticRegression)
+        actionLogisticRegression->setText(tr("Binary &Logistic Regression..."));
+    if (actionArrheniusPlot)
+        actionArrheniusPlot->setText(tr("&Arrhenius Plot (Activation Energy)..."));
+    if (actionTaucPlot)
+        actionTaucPlot->setText(tr("&Tauc Plot (Optical Bandgap)..."));
+    if (actionFillBetweenCurves)
+        actionFillBetweenCurves->setText(tr("&Fill Area Between Curves..."));
+    if (actionWaterfallStackOffset)
+        actionWaterfallStackOffset->setText(tr("&Waterfall / Stack Offset..."));
+    if (actionResetStackOffsets)
+        actionResetStackOffsets->setText(tr("&Reset Stack Offsets"));
+    if (actionWeibullPlot)
+        actionWeibullPlot->setText(tr("&Weibull Probability Plot..."));
+    if (actionOutlierTest)
+        actionOutlierTest->setText(tr("&Outlier Test (Grubbs / ESD / Dixon)..."));
+    if (actionNonparametricTests)
+        actionNonparametricTests->setText(
+                tr("&Nonparametric Tests (Mann-Whitney / Kruskal-Wallis / Auto)..."));
+    if (actionPairedComparisonPlot)
+        actionPairedComparisonPlot->setText(tr("&Paired Comparison Plot (Before-After)..."));
+    if (actionCorrelationMatrix)
+        actionCorrelationMatrix->setText(tr("&Correlation Matrix Heatmap..."));
+    if (actionClustering)
+        actionClustering->setText(tr("&Clustering (K-Means / Dendrogram)..."));
 
     actionAddText->setText(tr("Add &Text"));
     actionAddText->setToolTip(tr("Add Text"));
@@ -15245,6 +15964,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
             fitter->setNumPeaks(customCenters.size());
             std::vector<double> stdCenters(customCenters.begin(), customCenters.end());
             fitter->seedPeaksFromCenters(stdCenters, prominenceSpin->value());
+            fitter->setInitialPeakWidths(customWidths);
         } else if (autoCountCheck->isChecked()) {
             fitter->autoDetectAndUpdateNumPeaks(20, prominenceSpin->value());
         } else {
@@ -15690,7 +16410,7 @@ void ApplicationWindow::appendProject(const QString &fn)
     } else {
         QMessageBox::critical(
                 this, tr("File opening error"),
-                tr("The file: <b>%1</b> is not a SciDAVis or Origin project file!").arg(fn));
+                tr("The file: <b>%1</b> is not a ToriGraph or Origin project file!").arg(fn));
         return;
     }
 
@@ -15739,9 +16459,7 @@ void ApplicationWindow::appendProject(const QString &fn)
     {
         QMessageBox::critical(
                 this, tr("File opening error"),
-                tr("SciDAVis currently does not support Origin import. If you are interested in "
-                   "reviving and maintaining an Origin import filter, contact the developers.")
-                        .arg(fn));
+                tr("ToriGraph currently does not support Origin import."));
         return;
     }
 #endif
@@ -15872,15 +16590,20 @@ void ApplicationWindow::appendProject(const QString &fn)
 
                 while (s != "</multiLayer>") { // open layers
                     s = t.readLine();
+                    if (s.isNull())
+                        break;
                     if (s.left(7) == "<graph>") {
                         lst.clear();
-                        while (s != "</graph>") {
+                        while (s != "</graph>" && !t.atEnd()) {
                             s = t.readLine();
                             lst << s;
                         }
                         openGraph(this, plot, lst);
+                    } else if (s.trimmed().startsWith("<Tori")) {
+                        plot->restorePhase5Tag(s.trimmed());
                     }
                 }
+                plot->finalizePhase5Restore();
                 plot->blockSignals(false);
             } else if (s == "<SurfacePlot>") { // process 3D plots information
                 lst.clear();
@@ -16890,8 +17613,8 @@ void ApplicationWindow::searchForUpdates()
 {
     int choice = QMessageBox::question(
             this, versionString(),
-            tr("SciDAVis will now try to determine whether a new version of SciDAVis is available. "
-               "Please modify your firewall settings in order to allow SciDAVis to connect to the "
+            tr("ToriGraph will now try to determine whether a new version of ToriGraph is available. "
+               "Please modify your firewall settings in order to allow ToriGraph to connect to the "
                "internet.")
                     + "\n" + tr("Do you wish to continue?"),
             QMessageBox::Yes | QMessageBox::Default, QMessageBox::No | QMessageBox::Escape);
@@ -16936,7 +17659,7 @@ void ApplicationWindow::receivedVersionFile(QNetworkReply *netreply)
         if (intok) {
             if (available_version > SciDAVis::version()) {
                 if (QMessageBox::question(this, tr("Updates Available"),
-                                          tr("There is a newer version of SciDAVis (%1) available "
+                                          tr("There is a newer version of ToriGraph (%1) available "
                                              "for download. Would you like to download it now?")
                                                   .arg(available_versionString),
                                           QMessageBox::Yes | QMessageBox::Default,
@@ -18309,4 +19032,1023 @@ void ApplicationWindow::showTwoWayANOVAPlotDialog()
 void ApplicationWindow::showGraphDigitizerDialog()
 {
     GraphDigitizer::showDigitizerDialog(this);
+}
+
+// ============================================================================
+// Phase 5: Copy/Paste Graph Format, Batch Plotting, Style Presets & Analysis
+// ============================================================================
+
+namespace {
+
+struct CopiedCurveFormatSpec
+{
+    QPen pen;
+    QBrush brush;
+    QwtPlotCurve::CurveStyle curveStyle = QwtPlotCurve::Lines;
+    QwtSymbol symbol;
+};
+
+struct CopiedLayerFormatSpec
+{
+    bool valid = false;
+    QFont titleFont;
+    QColor titleColor = QColor(Qt::black);
+    int titleAlign = Qt::AlignHCenter;
+
+    QVector<bool> enabledAxes;
+    bool globalBackbones = true;
+    bool axisBackboneVisible[4] = { true, true, true, true };
+    QFont axisTitleFonts[4];
+    QFont axisTickFonts[4];
+    QColor axisTitleColors[4];
+    int axisTitleAlignments[4] = { Qt::AlignHCenter, Qt::AlignHCenter, Qt::AlignHCenter,
+                                   Qt::AlignHCenter };
+    int labelRotations[4] = { 0, 0, 0, 0 };
+    QStringList axesColors;
+    QStringList axesNumColors;
+    QStringList enabledTickLabels;
+    QList<int> axesBaselines;
+
+    int axesLinewidth = 1;
+    QList<int> majorTicksType;
+    QList<int> minorTicksType;
+    int minorTickLength = 5;
+    int majorTickLength = 9;
+
+    double tickDivideFactors[4] = { 1.0, 1.0, 1.0, 1.0 };
+    QString tickPrefixes[4];
+    QString tickSuffixes[4];
+    Graph::AxisBreakSpec axisBreaks[4];
+
+    bool framed = false;
+    int canvasFrameWidth = 1;
+    QColor canvasFrameColor = QColor(Qt::black);
+    QColor canvasBackground = QColor(Qt::white);
+    QColor backgroundColor = QColor(Qt::white);
+    bool antialiasing = true;
+
+    bool hasGrid = false;
+    bool gridXEnabled = false;
+    bool gridYEnabled = false;
+    bool gridXMinEnabled = false;
+    bool gridYMinEnabled = false;
+    bool gridXZero = false;
+    bool gridYZero = false;
+    QPen gridMajPenX;
+    QPen gridMinPenX;
+    QPen gridMajPenY;
+    QPen gridMinPenY;
+
+    bool hasLegend = false;
+    QFont legendFont;
+    QColor legendTextColor = QColor(Qt::black);
+    QColor legendBgColor = QColor(Qt::white);
+    int legendFrameStyle = 0;
+    int legendNumColumns = 1;
+
+    QVector<CopiedCurveFormatSpec> curves;
+    QVector<Graph::ReferenceLineSpec> referenceLines;
+};
+
+struct CopiedGraphFormatClipboard
+{
+    bool valid = false;
+    bool pageViewMode = false;
+    MultiLayer::PageUnit pageUnit = MultiLayer::UnitPx;
+    double pageWidthPhysical = 520.0;
+    double pageHeightPhysical = 520.0;
+    int pageDpi = 300;
+    QColor pageBackgroundColor = QColor(Qt::white);
+
+    bool keepAspectRatio = false;
+    double targetAspectRatio = 0.0;
+    QSize windowSize;
+    QSize layerCanvasSize;
+    int leftMargin = 5;
+    int rightMargin = 5;
+    int topMargin = 5;
+    int bottomMargin = 5;
+    int rowsSpacing = 5;
+    int colsSpacing = 5;
+    int horAlign = 0;
+    int vertAlign = 0;
+
+    CopiedLayerFormatSpec activeLayer;
+    QVector<CopiedLayerFormatSpec> allLayers;
+};
+
+static CopiedGraphFormatClipboard s_copiedGraphFormat;
+
+static CopiedLayerFormatSpec captureLayerFormat(Graph *g)
+{
+    CopiedLayerFormatSpec spec;
+    if (!g || !g->plotWidget())
+        return spec;
+    spec.valid = true;
+
+    QwtText titleTxt = g->plotWidget()->title();
+    spec.titleFont = titleTxt.font();
+    if (spec.titleFont.family().isEmpty())
+        spec.titleFont.setFamily("Arial");
+    spec.titleColor = titleTxt.color();
+    spec.titleAlign = titleTxt.renderFlags();
+
+    spec.enabledAxes = g->enabledAxes();
+    spec.globalBackbones = g->axesBackbones();
+    for (int a = 0; a < 4; ++a) {
+        spec.axisBackboneVisible[a] = g->isAxisBackboneVisible(a);
+        spec.axisTitleFonts[a] = g->axisTitleFont(a);
+        if (spec.axisTitleFonts[a].family().isEmpty())
+            spec.axisTitleFonts[a].setFamily("Arial");
+        spec.axisTickFonts[a] = g->axisFont(a);
+        if (spec.axisTickFonts[a].family().isEmpty())
+            spec.axisTickFonts[a].setFamily("Arial");
+        spec.axisTitleColors[a] = g->axisTitleColor(a);
+        spec.axisTitleAlignments[a] = g->axisTitleAlignment(a);
+        spec.labelRotations[a] = g->labelsRotation(a);
+        spec.tickDivideFactors[a] = g->tickDivideFactor(a);
+        spec.tickPrefixes[a] = g->tickPrefix(a);
+        spec.tickSuffixes[a] = g->tickSuffix(a);
+        spec.axisBreaks[a] = g->axisBreak(a);
+    }
+    spec.axesColors = g->axesColors();
+    spec.axesNumColors = g->axesNumColors();
+    spec.enabledTickLabels = g->enabledTickLabels();
+    spec.axesBaselines = g->axesBaseline();
+
+    spec.axesLinewidth = g->plotWidget()->axesLinewidth();
+    spec.majorTicksType = g->plotWidget()->getMajorTicksType();
+    spec.minorTicksType = g->plotWidget()->getMinorTicksType();
+    spec.minorTickLength = g->minorTickLength();
+    spec.majorTickLength = g->majorTickLength();
+
+    spec.framed = g->framed();
+    spec.canvasFrameWidth = g->canvasFrameWidth();
+    spec.canvasFrameColor = g->canvasFrameColor();
+    spec.canvasBackground = g->plotWidget()->canvasBackground();
+    spec.backgroundColor = g->plotWidget()->paletteBackgroundColor();
+    spec.antialiasing = g->antialiasing();
+
+    if (Grid *gr = g->grid()) {
+        spec.hasGrid = true;
+        spec.gridXEnabled = gr->xEnabled();
+        spec.gridYEnabled = gr->yEnabled();
+        spec.gridXMinEnabled = gr->xMinEnabled();
+        spec.gridYMinEnabled = gr->yMinEnabled();
+        spec.gridXZero = gr->xZeroLineEnabled();
+        spec.gridYZero = gr->yZeroLineEnabled();
+        spec.gridMajPenX = gr->majPenX();
+        spec.gridMinPenX = gr->minPenX();
+        spec.gridMajPenY = gr->majPenY();
+        spec.gridMinPenY = gr->minPenY();
+    }
+
+    if (Legend *leg = g->legend()) {
+        spec.hasLegend = true;
+        spec.legendFont = leg->font();
+        if (spec.legendFont.family().isEmpty())
+            spec.legendFont.setFamily("Arial");
+        spec.legendTextColor = leg->textColor();
+        spec.legendBgColor = leg->backgroundColor();
+        spec.legendFrameStyle = leg->frameStyle();
+        spec.legendNumColumns = leg->numColumns();
+    }
+
+    for (int i = 0; i < g->curves(); ++i) {
+        QwtPlotCurve *c = g->curve(i);
+        if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+            || g->curveType(i) == Graph::ErrorBars)
+            continue;
+        CopiedCurveFormatSpec cf;
+        cf.pen = c->pen();
+        cf.brush = c->brush();
+        cf.curveStyle = c->style();
+        cf.symbol = c->symbol();
+        spec.curves.append(cf);
+    }
+
+    spec.referenceLines = g->referenceLines();
+    return spec;
+}
+
+static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatSpec &spec)
+{
+    if (!dstG || !dstG->plotWidget() || !spec.valid)
+        return;
+
+    dstG->setTitleFont(spec.titleFont);
+    dstG->setTitleColor(spec.titleColor);
+    dstG->setTitleAlignment(spec.titleAlign);
+
+    if (spec.enabledAxes.size() == 4)
+        dstG->enableAxes(spec.enabledAxes);
+    dstG->drawAxesBackbones(spec.globalBackbones);
+    dstG->setAxesLinewidth(spec.axesLinewidth);
+
+    if (spec.axesColors.size() == 4)
+        dstG->setAxesColors(spec.axesColors);
+    if (spec.axesNumColors.size() == 4)
+        dstG->setAxesNumColors(spec.axesNumColors);
+    if (spec.enabledTickLabels.size() == 4)
+        dstG->setEnabledTickLabels(spec.enabledTickLabels);
+    if (spec.axesBaselines.size() == 4)
+        dstG->setAxesBaseline(spec.axesBaselines);
+
+    if (spec.majorTicksType.size() == 4)
+        dstG->setMajorTicksType(spec.majorTicksType);
+    if (spec.minorTicksType.size() == 4)
+        dstG->setMinorTicksType(spec.minorTicksType);
+    dstG->setTicksLength(spec.minorTickLength, spec.majorTickLength);
+
+    dstG->setYAxisTitleColor(spec.axisTitleColors[QwtPlot::yLeft]);
+    dstG->setRightAxisTitleColor(spec.axisTitleColors[QwtPlot::yRight]);
+    dstG->setXAxisTitleColor(spec.axisTitleColors[QwtPlot::xBottom]);
+    dstG->setTopAxisTitleColor(spec.axisTitleColors[QwtPlot::xTop]);
+
+    dstG->setYAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yLeft]);
+    dstG->setRightAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yRight]);
+    dstG->setXAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xBottom]);
+    dstG->setTopAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xTop]);
+
+    for (int a = 0; a < 4; ++a) {
+        dstG->setAxisTitleFont(a, spec.axisTitleFonts[a]);
+        dstG->setAxisFont(a, spec.axisTickFonts[a]);
+        dstG->setAxisBackboneVisible(a, spec.axisBackboneVisible[a]);
+        if (a == QwtPlot::xBottom || a == QwtPlot::xTop)
+            dstG->setAxisLabelRotation(a, spec.labelRotations[a]);
+        dstG->setTickLabelTransform(a, spec.tickDivideFactors[a], spec.tickPrefixes[a],
+                                    spec.tickSuffixes[a]);
+        if (spec.axisBreaks[a].enabled)
+            dstG->setAxisBreak(a, spec.axisBreaks[a]);
+        else
+            dstG->clearAxisBreak(a);
+    }
+
+    dstG->drawCanvasFrame(spec.framed, spec.canvasFrameWidth, spec.canvasFrameColor);
+    dstG->setCanvasBackground(spec.canvasBackground);
+    dstG->setBackgroundColor(spec.backgroundColor);
+    dstG->setAntialiasing(spec.antialiasing, false);
+
+    if (spec.hasGrid && dstG->grid()) {
+        Grid *gr = dstG->grid();
+        gr->enableX(spec.gridXEnabled);
+        gr->enableY(spec.gridYEnabled);
+        gr->enableXMin(spec.gridXMinEnabled);
+        gr->enableYMin(spec.gridYMinEnabled);
+        gr->enableZeroLineX(spec.gridXZero);
+        gr->enableZeroLineY(spec.gridYZero);
+        gr->setMajPenX(spec.gridMajPenX);
+        gr->setMinPenX(spec.gridMinPenX);
+        gr->setMajPenY(spec.gridMajPenY);
+        gr->setMinPenY(spec.gridMinPenY);
+    }
+
+    if (spec.hasLegend && dstG->legend()) {
+        Legend *leg = dstG->legend();
+        leg->setFont(spec.legendFont);
+        leg->setTextColor(spec.legendTextColor);
+        leg->setBackgroundColor(spec.legendBgColor);
+        leg->setFrameStyle(spec.legendFrameStyle);
+        leg->setNumColumns(spec.legendNumColumns);
+    }
+
+    if (!spec.curves.isEmpty()) {
+        int visibleIdx = 0;
+        for (int i = 0; i < dstG->curves(); ++i) {
+            QwtPlotCurve *c = dstG->curve(i);
+            if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+                || dstG->curveType(i) == Graph::ErrorBars)
+                continue;
+            const bool directMatch = (visibleIdx < spec.curves.size());
+            const CopiedCurveFormatSpec &cf =
+                    spec.curves[directMatch ? visibleIdx : (spec.curves.size() - 1)];
+            if (directMatch) {
+                dstG->setCurvePen(i, cf.pen);
+                dstG->setCurveBrush(i, cf.brush);
+                dstG->setCurveSymbol(i, cf.symbol);
+            } else {
+                QPen p = c->pen();
+                p.setWidthF(cf.pen.widthF());
+                p.setStyle(cf.pen.style());
+                p.setCapStyle(cf.pen.capStyle());
+                p.setJoinStyle(cf.pen.joinStyle());
+                dstG->setCurvePen(i, p);
+                QwtSymbol s = c->symbol();
+                s.setSize(cf.symbol.size());
+                QPen sp = s.pen();
+                sp.setWidthF(cf.symbol.pen().widthF());
+                s.setPen(sp);
+                dstG->setCurveSymbol(i, s);
+            }
+            ++visibleIdx;
+        }
+    }
+
+    dstG->setReferenceLines(spec.referenceLines);
+    dstG->updateStatReferenceLines();
+    dstG->replot();
+}
+
+} // anonymous namespace
+
+void ApplicationWindow::copyGraphFormat()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *srcMl = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!srcMl || srcMl->isEmpty())
+        return;
+
+    s_copiedGraphFormat = CopiedGraphFormatClipboard();
+    s_copiedGraphFormat.valid = true;
+    s_copiedGraphFormat.pageViewMode = srcMl->pageViewMode();
+    s_copiedGraphFormat.pageUnit = srcMl->pageUnit();
+    s_copiedGraphFormat.pageWidthPhysical = srcMl->pageWidthPhysical();
+    s_copiedGraphFormat.pageHeightPhysical = srcMl->pageHeightPhysical();
+    s_copiedGraphFormat.pageDpi = srcMl->pageDpi();
+    s_copiedGraphFormat.pageBackgroundColor = srcMl->pageBackgroundColor();
+    s_copiedGraphFormat.keepAspectRatio = srcMl->keepAspectRatio();
+    s_copiedGraphFormat.targetAspectRatio = srcMl->targetAspectRatio();
+    s_copiedGraphFormat.windowSize = srcMl->size();
+    s_copiedGraphFormat.layerCanvasSize = srcMl->layerCanvasSize();
+    s_copiedGraphFormat.leftMargin = srcMl->leftMargin();
+    s_copiedGraphFormat.rightMargin = srcMl->rightMargin();
+    s_copiedGraphFormat.topMargin = srcMl->topMargin();
+    s_copiedGraphFormat.bottomMargin = srcMl->bottomMargin();
+    s_copiedGraphFormat.rowsSpacing = srcMl->rowsSpacing();
+    s_copiedGraphFormat.colsSpacing = srcMl->colsSpacing();
+    s_copiedGraphFormat.horAlign = srcMl->horizontalAlignement();
+    s_copiedGraphFormat.vertAlign = srcMl->verticalAlignement();
+
+    QList<Graph *> layers = srcMl->layersList();
+    Graph *actG = srcMl->activeGraph();
+    if (!actG && !layers.isEmpty())
+        actG = layers.first();
+    if (actG)
+        s_copiedGraphFormat.activeLayer = captureLayerFormat(actG);
+    for (Graph *lg : layers)
+        s_copiedGraphFormat.allLayers.append(captureLayerFormat(lg));
+
+    if (statusBar())
+        statusBar()->showMessage(tr("Copied graph format from %1.").arg(srcMl->name()), 3000);
+}
+
+void ApplicationWindow::pasteGraphFormat()
+{
+    if (!s_copiedGraphFormat.valid)
+        return;
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *dstMl = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!dstMl || dstMl->isEmpty())
+        return;
+
+    dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
+                      s_copiedGraphFormat.topMargin, s_copiedGraphFormat.bottomMargin);
+    dstMl->setSpacing(s_copiedGraphFormat.rowsSpacing, s_copiedGraphFormat.colsSpacing);
+    dstMl->setAlignement(s_copiedGraphFormat.horAlign, s_copiedGraphFormat.vertAlign);
+    dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
+    if (s_copiedGraphFormat.pageWidthPhysical > 0.0 && s_copiedGraphFormat.pageHeightPhysical > 0.0) {
+        dstMl->setPageSizePhysical(s_copiedGraphFormat.pageWidthPhysical,
+                                   s_copiedGraphFormat.pageHeightPhysical,
+                                   s_copiedGraphFormat.pageUnit, s_copiedGraphFormat.pageDpi);
+    }
+    dstMl->setPageViewMode(s_copiedGraphFormat.pageViewMode);
+    dstMl->setTargetAspectRatio(s_copiedGraphFormat.targetAspectRatio);
+    dstMl->setKeepAspectRatio(s_copiedGraphFormat.keepAspectRatio);
+    if (s_copiedGraphFormat.windowSize.isValid() && !dstMl->isMaximized())
+        dstMl->resize(s_copiedGraphFormat.windowSize);
+
+    QList<Graph *> dstLayers = dstMl->layersList();
+    for (int i = 0; i < dstLayers.size(); ++i) {
+        const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
+                ? s_copiedGraphFormat.allLayers[i]
+                : s_copiedGraphFormat.activeLayer;
+        applyLayerFormatNonDestructive(dstLayers[i], lspec);
+        if (dstLayers[i]->legend())
+            dstLayers[i]->reconstructLegend();
+    }
+    dstMl->arrangeLayers(false, false);
+    emit modified();
+    if (statusBar())
+        statusBar()->showMessage(tr("Applied copied graph format to %1.").arg(dstMl->name()), 3000);
+}
+
+MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *targetTable)
+{
+    if (!srcMl || !targetTable || srcMl->isEmpty())
+        return nullptr;
+
+    QList<Table *> allTables;
+    for (MyWidget *mw : windowsList()) {
+        if (mw && mw->inherits("Table"))
+            allTables.append(static_cast<Table *>(mw));
+    }
+
+    auto findOwnerTable = [&](const QString &colRef, QString &outShortName) -> Table * {
+        Table *best = nullptr;
+        int bestLen = -1;
+        for (Table *cand : allTables) {
+            const QString pfx = QString(cand->name()) + "_";
+            if (colRef.startsWith(pfx) && pfx.length() > bestLen) {
+                best = cand;
+                bestLen = pfx.length();
+            }
+        }
+        if (best)
+            outShortName = colRef.mid(bestLen);
+        return best;
+    };
+
+    auto mapColumnToTarget = [&](const QString &colRef, Table **outOrigTbl = nullptr) -> QString {
+        QString shortName;
+        Table *origTbl = findOwnerTable(colRef, shortName);
+        if (outOrigTbl)
+            *outOrigTbl = origTbl;
+        if (!origTbl || targetTable->numCols() <= 0)
+            return colRef;
+
+        const int origIdx = origTbl->colIndex(colRef);
+        int dstIdx = targetTable->colIndex(QString(targetTable->name()) + "_" + shortName);
+        if (dstIdx < 0)
+            dstIdx = targetTable->colIndex(shortName);
+
+        if (dstIdx < 0 && origIdx >= 0) {
+            if (Column *origCol = origTbl->column(origIdx)) {
+                const QString origLn = origCol->longName().trimmed();
+                const SciDAVis::PlotDesignation origPd = origTbl->colPlotDesignation(origIdx);
+                if (!origLn.isEmpty()) {
+                    for (int c = 0; c < targetTable->numCols(); ++c) {
+                        Column *candCol = targetTable->column(c);
+                        if (candCol
+                            && candCol->longName().trimmed().compare(origLn, Qt::CaseInsensitive)
+                                    == 0
+                            && targetTable->colPlotDesignation(c) == origPd) {
+                            dstIdx = c;
+                            break;
+                        }
+                    }
+                    if (dstIdx < 0) {
+                        for (int c = 0; c < targetTable->numCols(); ++c) {
+                            Column *candCol = targetTable->column(c);
+                            if (candCol
+                                && candCol->longName().trimmed().compare(origLn,
+                                                                         Qt::CaseInsensitive)
+                                        == 0) {
+                                dstIdx = c;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (dstIdx < 0 && origIdx >= 0 && origIdx < targetTable->numCols())
+            dstIdx = origIdx;
+
+        if (dstIdx < 0 && origIdx >= 0) {
+            if (origTbl->colPlotDesignation(origIdx) == SciDAVis::X)
+                dstIdx = targetTable->firstXCol();
+            if (dstIdx < 0)
+                dstIdx = qMin(origIdx, targetTable->numCols() - 1);
+        }
+
+        if (dstIdx >= 0 && dstIdx < targetTable->numCols())
+            return targetTable->colName(dstIdx);
+        return colRef;
+    };
+
+    auto remapGraphSpecLines = [&](const QStringList &rawLines) -> QStringList {
+        QStringList out;
+        out.reserve(rawLines.size());
+        const int targetLastRow = qMax(0, targetTable->numRows() - 1);
+        for (const QString &line : rawLines) {
+            if (line.startsWith("curve\t")) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                QStringList parts = line.split('\t', Qt::SkipEmptyParts);
+#else
+                QStringList parts = line.split('\t', QString::SkipEmptyParts);
+#endif
+                if (parts.size() >= 6) {
+                    const int plotType = parts[3].toInt();
+                    Table *origTbl = nullptr;
+                    if (plotType != Graph::Box)
+                        parts[1] = mapColumnToTarget(parts[1], &origTbl);
+                    Table *origYTbl = nullptr;
+                    parts[2] = mapColumnToTarget(parts[2], &origYTbl);
+                    if (!origTbl)
+                        origTbl = origYTbl;
+                    if (plotType == Graph::VectXYXY || plotType == Graph::VectXYAM) {
+                        for (int vi = 20; vi < qMin(parts.size() - 5, 26); ++vi) {
+                            QString sn;
+                            if (findOwnerTable(parts[vi], sn))
+                                parts[vi] = mapColumnToTarget(parts[vi]);
+                        }
+                    }
+                    if (plotType != Graph::Box && parts.size() >= 8) {
+                        const int endRowIdx = parts.size() - 2;
+                        const int origEndRow = parts[endRowIdx].toInt();
+                        if (origEndRow < 0
+                            || (origTbl && origEndRow >= origTbl->numRows() - 1)
+                            || origEndRow > targetLastRow) {
+                            parts[endRowIdx] = QString::number(targetLastRow);
+                        }
+                    }
+                    out.append(parts.join("\t"));
+                    continue;
+                }
+            } else if (line.startsWith("ErrorBars\t")) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                QStringList parts = line.split('\t', Qt::SkipEmptyParts);
+#else
+                QStringList parts = line.split('\t', QString::SkipEmptyParts);
+#endif
+                if (parts.size() >= 5) {
+                    parts[2] = mapColumnToTarget(parts[2]);
+                    parts[3] = mapColumnToTarget(parts[3]);
+                    parts[4] = mapColumnToTarget(parts[4]);
+                    out.append(parts.join("\t"));
+                    continue;
+                }
+            } else if (line.startsWith("PieCurve\t")) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                QStringList parts = line.split('\t', Qt::SkipEmptyParts);
+#else
+                QStringList parts = line.split('\t', QString::SkipEmptyParts);
+#endif
+                if (parts.size() >= 8) {
+                    Table *origTbl = nullptr;
+                    parts[1] = mapColumnToTarget(parts[1], &origTbl);
+                    const int endRowIdx = parts.size() - 2;
+                    const int origEndRow = parts[endRowIdx].toInt();
+                    if (origEndRow < 0 || (origTbl && origEndRow >= origTbl->numRows() - 1)
+                        || origEndRow > targetLastRow) {
+                        parts[endRowIdx] = QString::number(targetLastRow);
+                    }
+                    out.append(parts.join("\t"));
+                    continue;
+                }
+            } else if (line.startsWith("AxisType\t")) {
+                QStringList parts = line.split('\t');
+                for (int ai = 1; ai < parts.size(); ++ai) {
+                    const int semi = parts[ai].indexOf(';');
+                    if (semi > 0) {
+                        const int fmtCode = parts[ai].left(semi).toInt();
+                        const QString payload = parts[ai].mid(semi + 1);
+                        if (fmtCode == static_cast<int>(Graph::AxisType::Txt)) {
+                            QString sn;
+                            if (findOwnerTable(payload, sn))
+                                parts[ai] = QString::number(fmtCode) + ";"
+                                        + mapColumnToTarget(payload);
+                        } else if (fmtCode == static_cast<int>(Graph::AxisType::ColHeader)) {
+                            parts[ai] = QString::number(fmtCode) + ";" + targetTable->name();
+                        }
+                    }
+                }
+                out.append(parts.join("\t"));
+                continue;
+            }
+            out.append(line);
+        }
+        return out;
+    };
+
+    const int savedFileVer = d_file_version;
+    d_file_version = SciDAVis::version();
+
+    const QString mlSerialized = srcMl->saveToString("");
+    QTextStream ts(const_cast<QString *>(&mlSerialized), QIODevice::ReadOnly);
+
+    const QString baseCap = generateUniqueName(QString("%1_%2").arg(srcMl->name(), targetTable->name()));
+    MultiLayer *cloned = multilayerPlot(baseCap);
+    if (!cloned) {
+        d_file_version = savedFileVer;
+        return nullptr;
+    }
+
+    cloned->setCols(srcMl->getCols());
+    cloned->setRows(srcMl->getRows());
+    cloned->setMargins(srcMl->leftMargin(), srcMl->rightMargin(), srcMl->topMargin(),
+                       srcMl->bottomMargin());
+    cloned->setSpacing(srcMl->rowsSpacing(), srcMl->colsSpacing());
+    const QSize lcs = srcMl->layerCanvasSize();
+    cloned->setLayerCanvasSize(lcs.width(), lcs.height());
+    cloned->setAlignement(srcMl->horizontalAlignement(), srcMl->verticalAlignement());
+    cloned->setWindowLabel(targetTable->windowLabel().isEmpty() ? targetTable->name()
+                                                                : targetTable->windowLabel());
+    setListViewLabel(cloned->name(), cloned->windowLabel());
+    cloned->setCaptionPolicy(srcMl->captionPolicy());
+    if (!srcMl->isMaximized())
+        cloned->resize(srcMl->size());
+
+    cloned->blockSignals(true);
+    QString s;
+    while (!ts.atEnd()) {
+        s = ts.readLine();
+        if (s == "</multiLayer>")
+            break;
+        if (s.startsWith("<graph>")) {
+            QStringList gLines;
+            while (!ts.atEnd()) {
+                s = ts.readLine();
+                if (s == "</graph>")
+                    break;
+                gLines << s;
+            }
+            openGraph(this, cloned, remapGraphSpecLines(gLines));
+        } else if (s.trimmed().startsWith("<Tori")) {
+            cloned->restorePhase5Tag(s.trimmed());
+        }
+    }
+    cloned->finalizePhase5Restore();
+    cloned->blockSignals(false);
+    d_file_version = savedFileVer;
+
+    QList<Graph *> clonedLayers = cloned->layersList();
+    for (Graph *lg : clonedLayers) {
+        if (!lg)
+            continue;
+        applyWorksheetMetadataToGraph(lg, targetTable);
+        lg->setAutoScale();
+        lg->updateStatReferenceLines();
+        lg->syncChildLinkedLayers();
+        lg->replot();
+    }
+    cloned->arrangeLayers(false, false);
+    customMenu(cloned);
+    activateSubWindow(cloned);
+    emit modified();
+    return cloned;
+}
+
+void ApplicationWindow::showBatchPlotDialog()
+{
+    QList<MultiLayer *> allGraphs;
+    QList<Table *> allTables;
+    for (MyWidget *mw : windowsList()) {
+        if (!mw)
+            continue;
+        if (mw->inherits("MultiLayer") && !static_cast<MultiLayer *>(mw)->isEmpty())
+            allGraphs.append(static_cast<MultiLayer *>(mw));
+        else if (mw->inherits("Table"))
+            allTables.append(static_cast<Table *>(mw));
+    }
+
+    if (allGraphs.isEmpty()) {
+        QMessageBox::information(this, tr("Duplicate (Batch Plotting)"),
+                                 tr("Please create a template 2D graph first before batch plotting."));
+        return;
+    }
+    if (allTables.isEmpty()) {
+        QMessageBox::information(this, tr("Duplicate (Batch Plotting)"),
+                                 tr("No worksheets are available in this project."));
+        return;
+    }
+
+    QWidget *activeW = d_workspace.activeSubWindow();
+    MultiLayer *initialGraph = (activeW && activeW->inherits("MultiLayer"))
+            ? static_cast<MultiLayer *>(activeW)
+            : allGraphs.last();
+    Table *initialTable = (activeW && activeW->inherits("Table"))
+            ? static_cast<Table *>(activeW)
+            : nullptr;
+    if (!initialTable && initialGraph) {
+        for (Graph *lg : initialGraph->layersList()) {
+            for (int i = 0; i < lg->curves(); ++i) {
+                if (DataCurve *dc = dynamic_cast<DataCurve *>(lg->curve(i))) {
+                    if (dc->table()) {
+                        initialTable = dc->table();
+                        break;
+                    }
+                }
+            }
+            if (initialTable)
+                break;
+        }
+    }
+    if (!initialTable)
+        initialTable = allTables.first();
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Duplicate (Batch Plotting)"));
+    dlg.setMinimumWidth(460);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+
+    QFormLayout *topForm = new QFormLayout();
+    QComboBox *srcGraphCombo = new QComboBox(&dlg);
+    for (int i = 0; i < allGraphs.size(); ++i) {
+        srcGraphCombo->addItem(allGraphs[i]->name(), i);
+        if (allGraphs[i] == initialGraph)
+            srcGraphCombo->setCurrentIndex(i);
+    }
+    topForm->addRow(tr("Template Graph:"), srcGraphCombo);
+    vbox->addLayout(topForm);
+
+    QTabWidget *modeTabs = new QTabWidget(&dlg);
+
+    // Tab 0: Clone across selected worksheets
+    QWidget *wsPage = new QWidget(&dlg);
+    QVBoxLayout *wsLayout = new QVBoxLayout(wsPage);
+    wsLayout->addWidget(new QLabel(tr("Select target worksheets to clone the template graph onto:"),
+                                   wsPage));
+    QListWidget *wsList = new QListWidget(wsPage);
+    for (Table *t : allTables) {
+        QListWidgetItem *item = new QListWidgetItem(
+                t->windowLabel().isEmpty() ? QString(t->name())
+                                           : QString("%1 (%2)").arg(t->name(), t->windowLabel()),
+                wsList);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState((t != initialTable || allTables.size() == 1) ? Qt::Checked
+                                                                         : Qt::Unchecked);
+    }
+    wsLayout->addWidget(wsList);
+    QHBoxLayout *wsBtnRow = new QHBoxLayout();
+    QPushButton *btnSelAllWs = new QPushButton(tr("Select All"), wsPage);
+    QPushButton *btnClrAllWs = new QPushButton(tr("Clear All"), wsPage);
+    wsBtnRow->addWidget(btnSelAllWs);
+    wsBtnRow->addWidget(btnClrAllWs);
+    wsBtnRow->addStretch();
+    wsLayout->addLayout(wsBtnRow);
+    QObject::connect(btnSelAllWs, &QPushButton::clicked, &dlg, [=]() {
+        for (int i = 0; i < wsList->count(); ++i)
+            wsList->item(i)->setCheckState(Qt::Checked);
+    });
+    QObject::connect(btnClrAllWs, &QPushButton::clicked, &dlg, [=]() {
+        for (int i = 0; i < wsList->count(); ++i)
+            wsList->item(i)->setCheckState(Qt::Unchecked);
+    });
+    modeTabs->addTab(wsPage, tr("Batch Across Worksheets"));
+
+    // Tab 1: Clone across Y columns in a single worksheet
+    QWidget *colPage = new QWidget(&dlg);
+    QVBoxLayout *colLayout = new QVBoxLayout(colPage);
+    QFormLayout *colForm = new QFormLayout();
+    QComboBox *targetTblCombo = new QComboBox(colPage);
+    for (int i = 0; i < allTables.size(); ++i) {
+        targetTblCombo->addItem(allTables[i]->name(), i);
+        if (allTables[i] == initialTable)
+            targetTblCombo->setCurrentIndex(i);
+    }
+    colForm->addRow(tr("Source Worksheet:"), targetTblCombo);
+    colLayout->addLayout(colForm);
+    colLayout->addWidget(new QLabel(tr("Create one styled graph per checked Y column:"), colPage));
+    QListWidget *yColList = new QListWidget(colPage);
+    colLayout->addWidget(yColList);
+
+    auto repopulateYCols = [=]() {
+        yColList->clear();
+        const int ti = targetTblCombo->currentIndex();
+        if (ti < 0 || ti >= allTables.size())
+            return;
+        Table *tbl = allTables[ti];
+        for (int c = 0; c < tbl->numCols(); ++c) {
+            if (tbl->colPlotDesignation(c) == SciDAVis::X)
+                continue;
+            Column *colObj = tbl->column(c);
+            const QString desc = colObj ? colObj->formattedAxisTitle() : tbl->colLabel(c);
+            QListWidgetItem *it = new QListWidgetItem(
+                    QString("%1 — %2").arg(tbl->colLabel(c), desc), yColList);
+            it->setData(Qt::UserRole, c);
+            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            it->setCheckState(tbl->colPlotDesignation(c) == SciDAVis::Y ? Qt::Checked
+                                                                        : Qt::Unchecked);
+        }
+    };
+    QObject::connect(targetTblCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [=](int) { repopulateYCols(); });
+    repopulateYCols();
+    modeTabs->addTab(colPage, tr("Batch Across Y Columns"));
+    vbox->addWidget(modeTabs);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    vbox->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    const int gi = srcGraphCombo->currentIndex();
+    if (gi < 0 || gi >= allGraphs.size())
+        return;
+    MultiLayer *srcMl = allGraphs[gi];
+
+    if (modeTabs->currentIndex() == 0) {
+        for (int i = 0; i < wsList->count() && i < allTables.size(); ++i) {
+            if (wsList->item(i)->checkState() == Qt::Checked)
+                batchCloneGraphToTable(srcMl, allTables[i]);
+        }
+    } else {
+        const int ti = targetTblCombo->currentIndex();
+        if (ti < 0 || ti >= allTables.size())
+            return;
+        Table *tbl = allTables[ti];
+        Graph *srcG = srcMl->activeGraph() ? srcMl->activeGraph()
+                                           : (srcMl->layersList().isEmpty()
+                                                      ? nullptr
+                                                      : srcMl->layersList().first());
+        const int style = (srcG && srcG->curves() > 0) ? srcG->curveType(0) : Graph::LineSymbols;
+        const CopiedLayerFormatSpec fmtSpec = captureLayerFormat(srcG);
+
+        for (int i = 0; i < yColList->count(); ++i) {
+            if (yColList->item(i)->checkState() != Qt::Checked)
+                continue;
+            const int yColIdx = yColList->item(i)->data(Qt::UserRole).toInt();
+            if (yColIdx < 0 || yColIdx >= tbl->numCols())
+                continue;
+            MultiLayer *newMl =
+                    multilayerPlot(tbl, QStringList() << tbl->colName(yColIdx), style, 0,
+                                   qMax(0, tbl->numRows() - 1));
+            if (!newMl)
+                continue;
+            newMl->setPageBackgroundColor(srcMl->pageBackgroundColor());
+            if (srcMl->pageWidthPhysical() > 0.0 && srcMl->pageHeightPhysical() > 0.0) {
+                newMl->setPageSizePhysical(srcMl->pageWidthPhysical(), srcMl->pageHeightPhysical(),
+                                           srcMl->pageUnit(), srcMl->pageDpi());
+            }
+            newMl->setPageViewMode(srcMl->pageViewMode());
+            newMl->setTargetAspectRatio(srcMl->targetAspectRatio());
+            newMl->setKeepAspectRatio(srcMl->keepAspectRatio());
+            if (!srcMl->isMaximized())
+                newMl->resize(srcMl->size());
+            if (Graph *ng = newMl->activeGraph()) {
+                applyLayerFormatNonDestructive(ng, fmtSpec);
+                applyWorksheetMetadataToGraph(ng, tbl, QStringList() << tbl->colName(yColIdx),
+                                              style);
+                ng->setAutoScale();
+                ng->updateStatReferenceLines();
+                ng->replot();
+            }
+            newMl->arrangeLayers(false, false);
+        }
+        emit modified();
+    }
+}
+
+void ApplicationWindow::applyStyleISIJJournal()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!ml)
+        return;
+    ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+    emit modified();
+}
+
+void ApplicationWindow::applyStylePresentationSlide()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!ml)
+        return;
+    ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+    emit modified();
+}
+
+void ApplicationWindow::applyStyleNatureCompact()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!ml)
+        return;
+    ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
+    emit modified();
+}
+
+void ApplicationWindow::attachDeltaCursorGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    DeltaCursorTool::attach(this, g);
+}
+
+void ApplicationWindow::showLogisticRegressionDialog()
+{
+    PiecewiseAndRobustFit::showLogisticRegressionDialog(this);
+}
+
+void ApplicationWindow::showArrheniusPlotDialog()
+{
+    CurveMathTools::showArrheniusDialog(this);
+}
+
+void ApplicationWindow::showTaucPlotDialog()
+{
+    CurveMathTools::showTaucDialog(this);
+}
+
+void ApplicationWindow::showFillBetweenCurvesDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showFillBetweenDialog(this, g);
+}
+
+void ApplicationWindow::showWaterfallStackOffsetDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Waterfall / Stack Offset"));
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *modeCombo = new QComboBox(&dlg);
+    modeCombo->addItem(tr("Uniform Step (% of Span)"), 0);
+    modeCombo->addItem(tr("Auto Gap (% above Previous Curve Peak)"), 1);
+    modeCombo->setCurrentIndex(1);
+    form->addRow(tr("Offset Mode:"), modeCombo);
+
+    QDoubleSpinBox *yGapSpin = new QDoubleSpinBox(&dlg);
+    yGapSpin->setRange(-500.0, 500.0);
+    yGapSpin->setDecimals(1);
+    yGapSpin->setSuffix(" %");
+    yGapSpin->setValue(15.0);
+    form->addRow(tr("Y Offset / Gap:"), yGapSpin);
+
+    QDoubleSpinBox *xGapSpin = new QDoubleSpinBox(&dlg);
+    xGapSpin->setRange(-500.0, 500.0);
+    xGapSpin->setDecimals(1);
+    xGapSpin->setSuffix(" %");
+    xGapSpin->setValue(0.0);
+    form->addRow(tr("X Waterfall Shift:"), xGapSpin);
+
+    QCheckBox *normCheck = new QCheckBox(tr("Normalize Each Curve to [0, 1] Before Stacking"), &dlg);
+    normCheck->setChecked(false);
+    form->addRow(QString(), normCheck);
+
+    vbox->addLayout(form);
+
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    QPushButton *resetBtn = new QPushButton(tr("Reset Offsets"), &dlg);
+    btnRow->addWidget(resetBtn);
+    btnRow->addStretch();
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    btnRow->addWidget(btns);
+    vbox->addLayout(btnRow);
+
+    QObject::connect(resetBtn, &QPushButton::clicked, &dlg, [&]() {
+        g->resetStackOffsets();
+        emit modified();
+        dlg.accept();
+    });
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, [&]() {
+        g->setStackOffsets(modeCombo->currentData().toInt(), yGapSpin->value(), xGapSpin->value(),
+                           normCheck->isChecked());
+        emit modified();
+        dlg.accept();
+    });
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    dlg.exec();
+}
+
+void ApplicationWindow::resetActiveGraphStackOffsets()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    g->resetStackOffsets();
+    emit modified();
+}
+
+void ApplicationWindow::showWeibullPlotDialog()
+{
+    GraphStatsAndSurfaceFit::showWeibullDialog(this);
+}
+
+void ApplicationWindow::showOutlierTestDialog()
+{
+    GraphStatsAndSurfaceFit::showOutlierTestDialog(this);
+}
+
+void ApplicationWindow::showNonparametricTestsDialog()
+{
+    Graph *g = nullptr;
+    QWidget *w = d_workspace.activeSubWindow();
+    if (w && w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        if (!ml->isEmpty())
+            g = static_cast<Graph *>(ml->activeGraph());
+    }
+    GraphStatsAndSurfaceFit::showNonparametricDialog(this, g);
+}
+
+void ApplicationWindow::showPairedComparisonPlotDialog()
+{
+    GraphStatsAndSurfaceFit::showPairedComparisonDialog(this);
+}
+
+void ApplicationWindow::showCorrelationMatrixDialog()
+{
+    GraphStatsAndSurfaceFit::showCorrelationMatrixDialog(this);
+}
+
+void ApplicationWindow::showClusteringDialog()
+{
+    GraphStatsAndSurfaceFit::showClusteringDialog(this);
 }

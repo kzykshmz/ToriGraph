@@ -744,6 +744,29 @@ public slots:
     void showBlandAltmanPlotDialog();
     void showTwoWayANOVAPlotDialog();
     void showGraphDigitizerDialog();
+
+    // Phase 5: OriginPro Format Copy/Paste, Batch Plotting, Style Presets, Delta Cursor, Waterfall & Domain Analysis
+    void copyGraphFormat();
+    void pasteGraphFormat();
+    MultiLayer *batchCloneGraphToTable(MultiLayer *srcMl, Table *targetTable);
+    void showBatchPlotDialog();
+    void applyStyleISIJJournal();
+    void applyStylePresentationSlide();
+    void applyStyleNatureCompact();
+
+    void attachDeltaCursorGadget();
+    void showLogisticRegressionDialog();
+    void showArrheniusPlotDialog();
+    void showTaucPlotDialog();
+    void showFillBetweenCurvesDialog();
+    void showWaterfallStackOffsetDialog();
+    void resetActiveGraphStackOffsets();
+    void showWeibullPlotDialog();
+    void showOutlierTestDialog();
+    void showNonparametricTestsDialog();
+    void showPairedComparisonPlotDialog();
+    void showCorrelationMatrixDialog();
+    void showClusteringDialog();
     //@}
 
     //! \name Event Handlers
@@ -1218,6 +1241,7 @@ public:
     QMenu *graphStatsMenu = nullptr;
     QMenu *recalcMenu = nullptr;
     QMenu *framePresetsMenu = nullptr;
+    QMenu *stylePresetsMenu = nullptr;
 
 protected:
     //! Show a context menu for the widget
@@ -1385,6 +1409,18 @@ private:
             *actionDecimateResample = nullptr;
     QAction *actionNormalityTest = nullptr, *actionBlandAltman = nullptr,
             *actionTwoWayANOVA = nullptr, *actionGraphDigitizer = nullptr;
+    QAction *actionCopyGraphFormat = nullptr, *actionPasteGraphFormat = nullptr,
+            *actionBatchPlot = nullptr;
+    QAction *actionStyleISIJ = nullptr, *actionStyleSlide = nullptr,
+            *actionStyleNature = nullptr;
+    QAction *actionGadgetDeltaCursor = nullptr, *actionLogisticRegression = nullptr,
+            *actionArrheniusPlot = nullptr, *actionTaucPlot = nullptr,
+            *actionFillBetweenCurves = nullptr, *actionWaterfallStackOffset = nullptr,
+            *actionResetStackOffsets = nullptr;
+    QAction *actionWeibullPlot = nullptr, *actionOutlierTest = nullptr,
+            *actionNonparametricTests = nullptr, *actionPairedComparisonPlot = nullptr,
+            *actionCorrelationMatrix = nullptr, *actionClustering = nullptr;
+    QToolButton *d_btn_style_presets_popup = nullptr;
     QWidget *d_explorer_container = nullptr;
     QLineEdit *d_explorer_search = nullptr;
     QComboBox *d_explorer_type_filter = nullptr;
