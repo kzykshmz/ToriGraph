@@ -77,11 +77,50 @@
 #include "TeXTableSettings.h"
 
 #include "ui_DimensionsDialog.h"
+#include <QEvent>
+#include <QPointer>
+#include <functional>
 
 #define WAIT_CURSOR QApplication::setOverrideCursor(QCursor(Qt::WaitCursor))
 #define RESET_CURSOR QApplication::restoreOverrideCursor()
 
 namespace future {
+
+namespace {
+class TableLangChangeFilter : public QObject
+{
+public:
+    std::function<void()> onLanguageChange;
+    QPointer<QMenu> projectMenu;
+    QPointer<QMenu> submenuSetAs;
+    QPointer<QMenu> submenuFill;
+    explicit TableLangChangeFilter(QObject *parent) : QObject(parent)
+    {
+        setObjectName(QStringLiteral("_tg_table_lang_flt"));
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event && event->type() == QEvent::LanguageChange && onLanguageChange)
+            onLanguageChange();
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+TableLangChangeFilter *ensureTableLangFilter(Table *tbl, std::function<void()> cb)
+{
+    auto *flt = tbl->findChild<TableLangChangeFilter *>(QStringLiteral("_tg_table_lang_flt"),
+                                                        Qt::FindDirectChildrenOnly);
+    if (!flt) {
+        flt = new TableLangChangeFilter(tbl);
+        flt->onLanguageChange = std::move(cb);
+        if (qApp)
+            qApp->installEventFilter(flt);
+    }
+    return flt;
+}
+} // anonymous namespace
 
 bool Table::d_default_comment_visibility = false;
 int Table::default_column_width = 120;
@@ -1073,22 +1112,22 @@ bool Table::fillProjectMenu(QMenu *menu)
 {
     menu->setTitle(tr("&Table"));
 
-    QMenu *submenu = new QMenu(tr("S&et Column(s) As"));
-    submenu->addAction(action_set_as_x);
-    submenu->addAction(action_set_as_y);
-    submenu->addAction(action_set_as_z);
-    submenu->addSeparator();
-    submenu->addAction(action_set_as_xerr);
-    submenu->addAction(action_set_as_yerr);
-    submenu->addSeparator();
-    submenu->addAction(action_set_as_none);
-    menu->addMenu(submenu);
+    QMenu *submenuSetAs = new QMenu(tr("S&et Column(s) As"), menu);
+    submenuSetAs->addAction(action_set_as_x);
+    submenuSetAs->addAction(action_set_as_y);
+    submenuSetAs->addAction(action_set_as_z);
+    submenuSetAs->addSeparator();
+    submenuSetAs->addAction(action_set_as_xerr);
+    submenuSetAs->addAction(action_set_as_yerr);
+    submenuSetAs->addSeparator();
+    submenuSetAs->addAction(action_set_as_none);
+    menu->addMenu(submenuSetAs);
     menu->addSeparator();
 
-    submenu = new QMenu(tr("Fi&ll Selection with"));
-    submenu->addAction(action_fill_row_numbers);
-    submenu->addAction(action_fill_random);
-    menu->addMenu(submenu);
+    QMenu *submenuFill = new QMenu(tr("Fi&ll Selection with"), menu);
+    submenuFill->addAction(action_fill_row_numbers);
+    submenuFill->addAction(action_fill_random);
+    menu->addMenu(submenuFill);
     menu->addSeparator();
 
     connect(menu, SIGNAL(aboutToShow()), this, SLOT(adjustActionNames()));
@@ -1111,8 +1150,31 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->addAction(action_dimensions_dialog);
     menu->addSeparator();
     menu->addAction(action_go_to_cell);
-    if (action_edit_description->text() != tr("Edit Column &Description"))
-        translateActionsStrings();
+
+    translateActionsStrings();
+    adjustActionNames();
+
+    QPointer<Table> self(this);
+    auto *flt = ensureTableLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        self->adjustActionNames();
+        if (auto *f = self->findChild<TableLangChangeFilter *>(
+                    QStringLiteral("_tg_table_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Table::tr("&Table"));
+            if (f->submenuSetAs)
+                f->submenuSetAs->setTitle(Table::tr("S&et Column(s) As"));
+            if (f->submenuFill)
+                f->submenuFill->setTitle(Table::tr("Fi&ll Selection with"));
+        }
+    });
+    flt->projectMenu = menu;
+    flt->submenuSetAs = submenuSetAs;
+    flt->submenuFill = submenuFill;
+    menu->removeEventFilter(flt);
+    menu->installEventFilter(flt);
 
     return true;
 
@@ -1211,7 +1273,7 @@ void Table::createActions()
     icon_temp = new QIcon();
     icon_temp->addPixmap(QPixmap(":/16x16/table_header.png"));
     icon_temp->addPixmap(QPixmap(":/32x32/table_header.png"));
-    action_toggle_comments = new QAction(*icon_temp, QString("Show/Hide comments"),
+    action_toggle_comments = new QAction(*icon_temp, tr("Show/Hide comments"),
                                          this); // show/hide column comments
     actionManager()->addAction(action_toggle_comments, "toggle_comments");
     delete icon_temp;
@@ -1220,7 +1282,7 @@ void Table::createActions()
     icon_temp->addPixmap(QPixmap(":/16x16/table_options.png"));
     icon_temp->addPixmap(QPixmap(":/32x32/table_options.png"));
     action_toggle_tabbar =
-            new QAction(*icon_temp, QString("Show/Hide Controls"), this); // show/hide control tabs
+            new QAction(*icon_temp, tr("Show/Hide Controls"), this); // show/hide control tabs
     action_toggle_tabbar->setShortcut(tr("F12"));
     actionManager()->addAction(action_toggle_tabbar, "toggle_tabbar");
     delete icon_temp;
@@ -1472,6 +1534,27 @@ void Table::connectActions()
 
 void Table::addActionsToView()
 {
+    QPointer<Table> self(this);
+    auto *flt = ensureTableLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        self->adjustActionNames();
+        if (auto *f = self->findChild<TableLangChangeFilter *>(
+                    QStringLiteral("_tg_table_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Table::tr("&Table"));
+            if (f->submenuSetAs)
+                f->submenuSetAs->setTitle(Table::tr("S&et Column(s) As"));
+            if (f->submenuFill)
+                f->submenuFill->setTitle(Table::tr("Fi&ll Selection with"));
+        }
+    });
+    if (d_view) {
+        d_view->removeEventFilter(flt);
+        d_view->installEventFilter(flt);
+    }
+
     connect(action_toggle_comments, SIGNAL(triggered()), d_view, SLOT(toggleComments()));
     connect(action_toggle_tabbar, SIGNAL(triggered()), d_view, SLOT(toggleControlTabBar()));
     connect(action_formula_mode, SIGNAL(toggled(bool)), d_view, SLOT(activateFormulaMode(bool)));
@@ -1570,6 +1653,16 @@ void Table::translateActionsStrings()
     action_clear_rows->setText(tr("Clea&r Rows"));
     action_add_rows->setText(tr("&Add Rows"));
     action_statistics_rows->setText(tr("Row Statisti&cs"));
+    action_add_column->setToolTip(tr("append a new column to the table"));
+    action_dimensions_dialog->setToolTip(tr("change the table size"));
+    action_statistics_columns->setToolTip(tr("statistics on columns"));
+    action_statistics_rows->setToolTip(tr("statistics on rows"));
+    if (d_view) {
+        adjustActionNames();
+    } else {
+        action_toggle_comments->setText(tr("Show/Hide comments"));
+        action_toggle_tabbar->setText(tr("Show/Hide Controls"));
+    }
 }
 void Table::showTableViewContextMenu(const QPoint &pos)
 {

@@ -49,8 +49,43 @@
 
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_math.h>
+#include <functional>
 
 namespace future {
+
+namespace {
+class MatrixLangChangeFilter : public QObject
+{
+public:
+    std::function<void()> onLanguageChange;
+    QPointer<QMenu> projectMenu;
+    explicit MatrixLangChangeFilter(QObject *parent) : QObject(parent)
+    {
+        setObjectName(QStringLiteral("_tg_matrix_lang_flt"));
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event && event->type() == QEvent::LanguageChange && onLanguageChange)
+            onLanguageChange();
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+MatrixLangChangeFilter *ensureMatrixLangFilter(Matrix *mtx, std::function<void()> cb)
+{
+    auto *flt = mtx->findChild<MatrixLangChangeFilter *>(QStringLiteral("_tg_matrix_lang_flt"),
+                                                         Qt::FindDirectChildrenOnly);
+    if (!flt) {
+        flt = new MatrixLangChangeFilter(mtx);
+        flt->onLanguageChange = std::move(cb);
+        if (qApp)
+            qApp->installEventFilter(flt);
+    }
+    return flt;
+}
+} // anonymous namespace
 
 #define WAIT_CURSOR QApplication::setOverrideCursor(QCursor(Qt::WaitCursor))
 #define RESET_CURSOR QApplication::restoreOverrideCursor()
@@ -599,7 +634,7 @@ void Matrix::createActions()
     icon_temp->addPixmap(QPixmap(":/16x16/table_options.png"));
     icon_temp->addPixmap(QPixmap(":/32x32/table_options.png"));
     action_toggle_tabbar =
-            new QAction(*icon_temp, QString("Show/Hide Controls"), this); // show/hide control tabs
+            new QAction(*icon_temp, tr("Show/Hide Controls"), this); // show/hide control tabs
     action_toggle_tabbar->setShortcut(tr("F12"));
     actionManager()->addAction(action_toggle_tabbar, "toggle_tabbar");
     delete icon_temp;
@@ -748,6 +783,22 @@ void Matrix::connectActions()
 
 void Matrix::addActionsToView()
 {
+    QPointer<Matrix> self(this);
+    auto *flt = ensureMatrixLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        if (auto *f = self->findChild<MatrixLangChangeFilter *>(
+                    QStringLiteral("_tg_matrix_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Matrix::tr("&Matrix"));
+        }
+    });
+    if (d_view) {
+        d_view->removeEventFilter(flt);
+        d_view->installEventFilter(flt);
+    }
+
     connect(action_toggle_tabbar, SIGNAL(triggered()), d_view, SLOT(toggleControlTabBar()));
 
     d_view->addAction(action_cut_selection);
@@ -809,6 +860,10 @@ void Matrix::translateActionsStrings()
     action_remove_rows->setText(tr("Remo&ve Rows"));
     action_clear_rows->setText(tr("Clea&r Rows"));
     action_add_rows->setText(tr("&Add Rows"));
+    if (d_view)
+        adjustTabBarAction(d_view->isControlTabBarVisible());
+    else
+        action_toggle_tabbar->setText(tr("Show/Hide Controls"));
 }
 
 bool Matrix::fillProjectMenu(QMenu *menu)
@@ -835,10 +890,25 @@ bool Matrix::fillProjectMenu(QMenu *menu)
     menu->addAction(action_import_image);
     menu->addSeparator();
     menu->addAction(action_go_to_cell);
-    if (action_clear_matrix->text() != tr("Clear Matrix")) {
-        translateActionsStrings();
+
+    translateActionsStrings();
+    if (d_view)
         adjustTabBarAction(d_view->isControlTabBarVisible());
-    }
+
+    QPointer<Matrix> self(this);
+    auto *flt = ensureMatrixLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        if (auto *f = self->findChild<MatrixLangChangeFilter *>(
+                    QStringLiteral("_tg_matrix_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Matrix::tr("&Matrix"));
+        }
+    });
+    flt->projectMenu = menu;
+    menu->removeEventFilter(flt);
+    menu->installEventFilter(flt);
 
     return true;
 

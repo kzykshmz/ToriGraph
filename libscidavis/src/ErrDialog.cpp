@@ -203,5 +203,5 @@ void ErrDialog::languageChange()
     standardBox->setText(tr("Standard Deviation of Data"));
     yErrBox->setText(tr("&Y Error Bars"));
     buttonCancel->setText(tr("&Close"));
-    columnBox->setText("Existing column");
+    columnBox->setText(tr("Existing column"));
 }

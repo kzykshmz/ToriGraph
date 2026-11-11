@@ -63,17 +63,22 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 {
     // get current values from app window
     ApplicationWindow *app = (ApplicationWindow *)parentWidget();
+    auto ensureGraphFont = [](const QFont &f, int defaultPt, int weight = QFont::Normal) -> QFont {
+        if (f.family().trimmed().isEmpty())
+            return QFont(QStringLiteral("Arial"), defaultPt, weight);
+        return f;
+    };
     plot3DColors = app->plot3DColors;
-    plot3DTitleFont = app->plot3DTitleFont;
-    plot3DNumbersFont = app->plot3DNumbersFont;
-    plot3DAxesFont = app->plot3DAxesFont;
+    plot3DTitleFont = ensureGraphFont(app->plot3DTitleFont, 14, QFont::Bold);
+    plot3DNumbersFont = ensureGraphFont(app->plot3DNumbersFont, 10);
+    plot3DAxesFont = ensureGraphFont(app->plot3DAxesFont, 12, QFont::Bold);
     textFont = app->tableTextFont;
     headerFont = app->tableHeaderFont;
     appFont = app->appFont;
-    axesFont = app->plotAxesFont;
-    numbersFont = app->plotNumbersFont;
-    legendFont = app->plotLegendFont;
-    titleFont = app->plotTitleFont;
+    axesFont = ensureGraphFont(app->plotAxesFont, 14, QFont::Bold);
+    numbersFont = ensureGraphFont(app->plotNumbersFont, 12);
+    legendFont = ensureGraphFont(app->plotLegendFont, 10);
+    titleFont = ensureGraphFont(app->plotTitleFont, 14, QFont::Bold);
 
     QPalette pal;
     pal.setColor(QPalette::Window, app->palette().color(QPalette::Window));
@@ -967,6 +972,7 @@ void ConfigDialog::languageChange()
 
     // tables page
     boxTableComments->setText(tr("&Display Comments in Header"));
+    lblTableRowHeight->setText(tr("Default Row Height"));
     groupBoxTableCol->setTitle(tr("Colors"));
     lblSeparator->setText(tr("Default Column Separator"));
     boxSeparator->clear();
@@ -1541,7 +1547,7 @@ void ConfigDialog::insertLanguagesList()
     int lang = 0;
     for (int i = 0; i < (int)locales.size(); i++) {
         if (locales[i] == "en")
-            languages.push_back("English");
+            languages.push_back(tr("English"));
         else if (locales[i] == "ja")
             languages.push_back(QString::fromUtf8("日本語 (Japanese)"));
         else {

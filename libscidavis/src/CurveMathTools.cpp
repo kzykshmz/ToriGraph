@@ -362,7 +362,7 @@ QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
                                                QPen(QColor(0, 114, 178), 2.0, Qt::SolidLine));
     g->updatePlot();
 
-    app->updateLog(QString("[%1] Curve Math (%2): %3 vs %4 -> %5 (%6 pts)\n")
+    app->updateLog(trMath("[%1] Curve Math (%2): %3 vs %4 -> %5 (%6 pts)\n")
                            .arg(QLocale().toString(QDateTime::currentDateTime()), opTag, curveA,
                                 curveB, t->name())
                            .arg(outX.size()));
@@ -559,7 +559,7 @@ QwtPlotCurve *CurveMathTools::averageMultipleCurves(ApplicationWindow *app, Grap
     }
 
     g->updatePlot();
-    app->updateLog(QString("[%1] Averaged %2 curves -> %3 (%4 grid points)\n")
+    app->updateLog(trMath("[%1] Averaged %2 curves -> %3 (%4 grid points)\n")
                            .arg(QLocale().toString(QDateTime::currentDateTime()))
                            .arg(series.size())
                            .arg(t->name())
@@ -1259,7 +1259,7 @@ void CurveMathTools::showIntersectionLookupDialog(ApplicationWindow *app, Graph 
 
     QObject::connect(btnFindX, &QPushButton::clicked, &dlg, [&]() {
         const QVector<double> xs = findXFromY(g, cbLookCurve->currentText(), sbQueryVal->value());
-        QString txt = QString("X values for Y = %1 (%2 match(es)):\n")
+        QString txt = trMath("X values for Y = %1 (%2 match(es)):\n")
                               .arg(sbQueryVal->value(), 0, 'g', 10)
                               .arg(xs.size());
         for (int i = 0; i < xs.size(); ++i)
@@ -1272,7 +1272,7 @@ void CurveMathTools::showIntersectionLookupDialog(ApplicationWindow *app, Graph 
         const double areaAbs = polygonArea(g, cbLookCurve->currentText(), false);
         const double areaSigned = polygonArea(g, cbLookCurve->currentText(), true);
         const double arcLen = curveArcLength(g, cbLookCurve->currentText());
-        const QString txt = QString("Curve: %1\n  Polygon Area = %2 (Signed = %3)\n  Arc Length = %4\n")
+        const QString txt = trMath("Curve: %1\n  Polygon Area = %2 (Signed = %3)\n  Arc Length = %4\n")
                                     .arg(cbLookCurve->currentText())
                                     .arg(areaAbs, 0, 'g', 10)
                                     .arg(areaSigned, 0, 'g', 10)
