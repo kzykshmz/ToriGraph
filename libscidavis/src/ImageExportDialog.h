@@ -65,6 +65,9 @@ private:
     //! Container widget for all options available for raster formats.
     QGroupBox *d_raster_options;
     QSpinBox *d_quality;
+    QSpinBox *d_raster_resolution;
+    QCheckBox *d_transparency;
+    void saveOptionsToApp();
 
 public:
     //! Constructor
@@ -76,8 +79,12 @@ public:
      */
     ImageExportDialog(QWidget *parent = 0, bool vector_options = true, bool extended = true,
                       Qt::WindowFlags flags = Qt::Widget);
-    //! For vector formats: returns the output resolution the user selected, defaulting to the screen resolution.
-    int resolution() const { return d_resolution->value(); }
+    //! For vector and raster formats: returns the output resolution (DPI) the user selected.
+    int resolution() const;
+    void setResolution(int dpi);
+    //! For raster formats: returns whether transparent background is enabled.
+    bool transparency() const { return d_transparency ? d_transparency->isChecked() : false; }
+    void setTransparency(bool on);
     //! For vector formats: returns whether colors should be enabled for ouput (default: true).
     bool color() const { return d_color->isChecked(); }
     //! For vector formats: returns whether the output should preserve aspect ratio of the plot (default: true).
@@ -93,7 +100,8 @@ public:
     void selectFilter(const QString &filter);
 
 protected slots:
-    void closeEvent(QCloseEvent *);
+    void done(int r) override;
+    void closeEvent(QCloseEvent *) override;
     //! Update which options are visible and enabled based on the output format.
     void updateAdvancedOptions(const QString &filter);
 };

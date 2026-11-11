@@ -121,10 +121,13 @@ typedef struct CurveLayout_struct
 class Graph : public QWidget
 {
     Q_OBJECT
+    Q_PROPERTY(bool isExporting READ isExporting)
 
 public:
     Graph(QWidget *parent = 0, QString name = QString(), Qt::WindowFlags f = Qt::Widget);
     ~Graph();
+
+    bool isExporting() const { return d_is_exporting; }
 
     enum Axis { Left, Right, Bottom, Top };
     enum class AxisType : int {
@@ -279,7 +282,8 @@ public slots:
     void exportVector(const QString &fileName, int res = 0, bool color = true,
                       bool keepAspect = true, QPageSize pageSize = QPageSize(QPageSize::Custom),
                       QPageLayout::Orientation orientation = QPageLayout::Portrait);
-    void exportImage(const QString &fileName, int quality = -1);
+    void exportImage(const QString &fileName, int quality = -1, bool transparent = false,
+                     int dpi = 0);
     //@}
 
     void replot() { d_plot->replot(); };
@@ -401,6 +405,7 @@ public slots:
     Legend *legend();
     Legend *newLegend();
     Legend *newLegend(const QString &text);
+    void reconstructLegend();
     bool hasLegend() { return legendMarkerID >= 0; };
 
     //! Creates a new legend text using the curves titles
@@ -808,6 +813,40 @@ public:
     void syncChildLinkedLayers();
     MultiLayer *multiLayerParent() const;
 
+    struct AxisBreakSpec {
+        bool enabled = false;
+        double breakFrom = 0.0;
+        double breakTo = 0.0;
+        double positionPct = 0.50; // 0.10 .. 0.90 of axis length
+        double stepBefore = 0.0;
+        double stepAfter = 0.0;
+        bool log10Before = false;
+        bool log10After = false;
+    };
+
+    void setAxisBreak(int axis, const AxisBreakSpec &spec);
+    AxisBreakSpec axisBreak(int axis) const;
+    void clearAxisBreak(int axis);
+
+    void setTickLabelTransform(int axis, double divideByFactor,
+                               const QString &prefix = QString(),
+                               const QString &suffix = QString());
+    double tickDivideFactor(int axis) const;
+    QString tickPrefix(int axis) const;
+    QString tickSuffix(int axis) const;
+
+    QwtPlotItem *addShadedBand(const QVector<double> &x, const QVector<double> &yLow,
+                               const QVector<double> &yHigh,
+                               const QColor &fillColor = QColor(30, 102, 184, 55),
+                               const QString &title = QString());
+    void setStackOffsets(int mode /*0=Uniform,1=AutoGap*/, double yGapPct = 15.0,
+                         double xGapPct = 0.0, bool normalize01 = false);
+    void resetStackOffsets();
+
+    bool restorePhase5Tag(const QString &line);
+    int pendingLinkedParentIndex() const { return d_pending_linked_parent_idx; }
+    void clearPendingLinkedParentIndex() { d_pending_linked_parent_idx = -1; }
+
 signals:
     void selectedGraph(Graph *);
     void closedGraph();
@@ -903,11 +942,29 @@ private:
     bool d_axis_backbone[4];
     QVector<ReferenceLineSpec> d_ref_lines;
     QwtPlotItem *d_ref_line_item = nullptr;
+    QwtPlotItem *d_ref_fill_item = nullptr;
     QPointer<Graph> d_linked_parent;
     int d_x_link_mode = 0;
     int d_y_link_mode = 0;
     QString d_x_link_expr = QString("x");
     QString d_y_link_expr = QString("y");
     bool d_syncing_link = false;
+
+    bool d_is_exporting = false;
+    AxisBreakSpec d_axis_breaks[4];
+    double d_tick_divide_factor[4] = { 1.0, 1.0, 1.0, 1.0 };
+    QString d_tick_prefix[4];
+    QString d_tick_suffix[4];
+    QString d_ternary_labels[3] = { QString("A"), QString("B"), QString("C") };
+    struct ShadedBandSpec {
+        QVector<double> x;
+        QVector<double> yLow;
+        QVector<double> yHigh;
+        QColor fillColor;
+        QString title;
+        QwtPlotItem *item = nullptr;
+    };
+    QVector<ShadedBandSpec> d_shaded_bands;
+    int d_pending_linked_parent_idx = -1;
 };
 #endif // GRAPH_H

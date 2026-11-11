@@ -55,6 +55,9 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool 
 #if QT_VERSION >= 0x040300
     list << "SVG";
 #endif
+#ifdef Q_OS_WIN
+    list << "EMF";
+#endif
 
     QStringList filters;
     for (int i = 0; i < list.count(); i++)
@@ -82,7 +85,15 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool 
 
 void ImageExportDialog::initAdvancedOptions()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+    const int initDpi = (app && app->d_export_resolution > 0) ? app->d_export_resolution : 300;
+    const bool initColor = app ? app->d_export_color : true;
+    const int initVecSize = app ? app->d_export_vector_size : int(QPageSize::Custom);
+    const int initOrient = app ? app->d_export_orientation : int(QPageLayout::Portrait);
+    const bool initKeepAspect = app ? app->d_keep_plot_aspect : true;
+    const int initQuality = app ? app->d_export_quality : 100;
+    const bool initTransparency = app ? app->d_export_transparency : false;
+
     d_advanced_options = new QStackedWidget();
 
     d_vector_options = new QGroupBox();
@@ -91,14 +102,15 @@ void ImageExportDialog::initAdvancedOptions()
 
     vector_layout->addWidget(new QLabel(tr("Resolution (DPI)")), 1, 0);
     d_resolution = new QSpinBox();
-    d_resolution->setRange(0, 1000);
-    d_resolution->setValue(app->d_export_resolution);
+    d_resolution->setRange(72, 2400);
+    d_resolution->setSingleStep(50);
+    d_resolution->setValue(qBound(72, initDpi, 2400));
     vector_layout->addWidget(d_resolution, 1, 1);
-    d_resolution->setEnabled(false); // FIXME temporary disabled
+    d_resolution->setEnabled(true);
 
     d_color = new QCheckBox();
     d_color->setText(tr("Export in &color"));
-    d_color->setChecked(app->d_export_color);
+    d_color->setChecked(initColor);
     vector_layout->addWidget(d_color, 2, 0, 1, 2);
 
     d_standard_page = new QCheckBox();
@@ -138,9 +150,9 @@ void ImageExportDialog::initAdvancedOptions()
     d_box_page_size->addItem(tr("Tabloid 279 x 432 mm"), QVariant(QPageSize::Tabloid));
 
     vector_layout->addWidget(new QLabel(tr("Page size")), 4, 0);
-    setPageSize(QPageSize((QPageSize::PageSizeId)app->d_export_vector_size));
-    d_standard_page->setChecked(app->d_export_vector_size != QPageSize::Custom);
-    d_box_page_size->setEnabled(app->d_export_vector_size != QPageSize::Custom);
+    setPageSize(QPageSize((QPageSize::PageSizeId)initVecSize));
+    d_standard_page->setChecked(initVecSize != QPageSize::Custom);
+    d_box_page_size->setEnabled(initVecSize != QPageSize::Custom);
     vector_layout->addWidget(d_box_page_size, 4, 1, 1, 2);
 
     vector_layout->addWidget(new QLabel(tr("Orientation")), 5, 0);
@@ -149,8 +161,8 @@ void ImageExportDialog::initAdvancedOptions()
                                     QVariant(QPageLayout::Portrait));
     d_box_page_orientation->addItem(tr("Landscape", "page orientation"),
                                     QVariant(QPageLayout::Landscape));
-    d_box_page_orientation->setCurrentIndex(app->d_export_orientation);
-    d_box_page_orientation->setEnabled(app->d_export_vector_size != QPrinter::Custom);
+    d_box_page_orientation->setCurrentIndex(initOrient);
+    d_box_page_orientation->setEnabled(initVecSize != QPrinter::Custom);
     vector_layout->addWidget(d_box_page_orientation, 5, 1, 1, 2);
 
     connect(d_standard_page, SIGNAL(toggled(bool)), d_box_page_size, SLOT(setEnabled(bool)));
@@ -158,7 +170,7 @@ void ImageExportDialog::initAdvancedOptions()
 
     d_keep_aspect = new QCheckBox();
     d_keep_aspect->setText(tr("&Keep aspect ratio"));
-    d_keep_aspect->setChecked(app->d_keep_plot_aspect);
+    d_keep_aspect->setChecked(initKeepAspect);
     vector_layout->addWidget(d_keep_aspect, 6, 0, 1, 2);
 
     d_raster_options = new QGroupBox();
@@ -168,40 +180,98 @@ void ImageExportDialog::initAdvancedOptions()
     raster_layout->addWidget(new QLabel(tr("Image quality")), 1, 0);
     d_quality = new QSpinBox();
     d_quality->setRange(1, 100);
-    d_quality->setValue(app->d_export_quality);
+    d_quality->setValue(qBound(1, initQuality, 100));
     raster_layout->addWidget(d_quality, 1, 1);
+
+    raster_layout->addWidget(new QLabel(tr("Export DPI:")), 2, 0);
+    d_raster_resolution = new QSpinBox();
+    d_raster_resolution->setRange(72, 2400);
+    d_raster_resolution->setSingleStep(50);
+    d_raster_resolution->setValue(qBound(72, initDpi, 2400));
+    raster_layout->addWidget(d_raster_resolution, 2, 1);
+
+    d_transparency = new QCheckBox(tr("Transparency"));
+    d_transparency->setChecked(initTransparency);
+    raster_layout->addWidget(d_transparency, 3, 0, 1, 2);
+
+    connect(d_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
+            d_raster_resolution, &QSpinBox::setValue);
+    connect(d_raster_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
+            d_resolution, &QSpinBox::setValue);
+}
+
+int ImageExportDialog::resolution() const
+{
+    if (d_advanced_options && d_advanced_options->currentIndex() == 1 && d_raster_resolution)
+        return d_raster_resolution->value();
+    return d_resolution ? d_resolution->value() : 300;
+}
+
+void ImageExportDialog::setResolution(int dpi)
+{
+    const int clamped = qBound(72, dpi, 2400);
+    if (d_resolution)
+        d_resolution->setValue(clamped);
+    if (d_raster_resolution)
+        d_raster_resolution->setValue(clamped);
+}
+
+void ImageExportDialog::setTransparency(bool on)
+{
+    if (d_transparency)
+        d_transparency->setChecked(on);
 }
 
 void ImageExportDialog::updateAdvancedOptions(const QString &filter)
 {
-    if (filter.contains("*.svg")) {
+    if (filter.contains("*.svg", Qt::CaseInsensitive)
+        || filter.contains("*.emf", Qt::CaseInsensitive)) {
         d_extension_toggle->setChecked(false);
         d_extension_toggle->setEnabled(false);
         return;
     }
     d_extension_toggle->setEnabled(true);
-    if (filter.contains("*.eps") || filter.contains("*.ps") || filter.contains("*.pdf"))
+    if (filter.contains("*.eps", Qt::CaseInsensitive)
+        || filter.contains("*.ps", Qt::CaseInsensitive)
+        || filter.contains("*.pdf", Qt::CaseInsensitive))
         d_advanced_options->setCurrentIndex(0);
     else {
         d_advanced_options->setCurrentIndex(1);
+        const bool supportsAlpha = filter.contains("*.png", Qt::CaseInsensitive)
+                || filter.contains("*.tif", Qt::CaseInsensitive)
+                || filter.contains("*.webp", Qt::CaseInsensitive)
+                || filter.contains("*.ico", Qt::CaseInsensitive);
+        if (d_transparency)
+            d_transparency->setEnabled(supportsAlpha);
     }
 }
 
-void ImageExportDialog::closeEvent(QCloseEvent *e)
+void ImageExportDialog::saveOptionsToApp()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (app) {
         app->d_extended_export_dialog = this->isExtended();
         app->d_image_export_filter = this->selectedNameFilter();
         app->d_export_quality = d_quality->value();
-
-        app->d_export_resolution = d_resolution->value();
+        app->d_export_resolution = resolution();
+        app->d_export_transparency = transparency();
         app->d_export_color = d_color->isChecked();
         app->d_export_vector_size = (int)pageSize().id();
         app->d_keep_plot_aspect = d_keep_aspect->isChecked();
         app->d_export_orientation = d_box_page_orientation->currentIndex();
     }
+}
 
+void ImageExportDialog::done(int r)
+{
+    if (r == QDialog::Accepted)
+        saveOptionsToApp();
+    ExtensibleFileDialog::done(r);
+}
+
+void ImageExportDialog::closeEvent(QCloseEvent *e)
+{
+    saveOptionsToApp();
     e->accept();
 }
 

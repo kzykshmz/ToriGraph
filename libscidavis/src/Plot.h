@@ -99,6 +99,9 @@ public:
     bool eventFilter(QObject *object, QEvent *e) override;
     void zoomAxisAroundPos(int axis, int pixelPos, double factor);
     void panAxisByPixels(int axis, int startPixel, int endPixel);
+    bool hasVisibleItemOnAxis(int axis) const;
+    void setHighlightedCurveKey(int key);
+    int highlightedCurveKey() const { return d_highlighted_curve_key; }
 
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],
@@ -115,6 +118,10 @@ protected:
     int curve_key;
     bool d_is_panning;
     bool d_space_pressed;
+    bool d_z_pressed;
+    bool d_x_pressed;
+    bool d_y_pressed;
+    int d_highlighted_curve_key;
     QPoint d_pan_last_pos;
 };
 #endif

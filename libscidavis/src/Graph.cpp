@@ -57,6 +57,7 @@
 #include "ApplicationWindow.h"
 #include "core/column/Column.h"
 #include "MultiLayer.h"
+#include "EmfPaintDevice.h"
 #include "MyParser.h"
 #include <algorithm>
 
@@ -64,8 +65,10 @@
 #include <QBitmap>
 #include <QClipboard>
 #include <QCursor>
+#include <QFile>
 #include <QImage>
 #include <QMessageBox>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPainter>
 #include <QMenu>
@@ -1251,7 +1254,7 @@ void Graph::updateSecondaryAxis(int axis)
     QwtScaleEngine *sc_engine = 0;
     if (se->transformation()->type() == QwtScaleTransformation::Log10)
         sc_engine = new QwtLog10ScaleEngine();
-    else if (se->transformation()->type() == QwtScaleTransformation::Linear)
+    else
         sc_engine = new QwtLinearScaleEngine();
 
     if (se->testAttribute(QwtScaleEngine::Inverted))
@@ -1259,6 +1262,12 @@ void Graph::updateSecondaryAxis(int axis)
 
     d_plot->setAxisScaleEngine(axis, sc_engine);
     d_plot->setAxisScaleDiv(axis, *sd);
+
+    if (d_axis_breaks[a].enabled && !d_axis_breaks[axis].enabled) {
+        ScaleDraw *mirrorSd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis));
+        if (mirrorSd)
+            mirrorSd->setAxisBreakIndicator(true, d_axis_breaks[a].breakFrom);
+    }
 
     d_user_step[axis] = d_user_step[a];
 
@@ -1318,6 +1327,14 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
         && d_plot->axisLabelFormat(axis) == Plot::Automatic
         && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
         setLabelsNumericFormat(axis, Plot::Superscripts, 0, axesFormulas[axis]);
+    } else if (!type && axisType[axis] == AxisType::Numeric
+               && d_plot->axisLabelFormat(axis) == Plot::Superscripts
+               && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
+        setLabelsNumericFormat(axis, Plot::Automatic, 4, axesFormulas[axis]);
+    }
+
+    if (!type && d_axis_breaks[axis].enabled) {
+        setAxisBreak(axis, d_axis_breaks[axis]);
     }
 
     d_zoomer[0]->setZoomBase();
@@ -1392,16 +1409,20 @@ void Graph::exportToFile(const QString &fileName)
         return;
     }
 
-    if (fileName.contains(".eps") || fileName.contains(".pdf") || fileName.contains(".ps")) {
+    const QString lowerName = fileName.toLower();
+    if (lowerName.endsWith(".eps") || lowerName.endsWith(".pdf") || lowerName.endsWith(".ps")) {
         exportVector(fileName);
         return;
-    } else if (fileName.contains(".svg")) {
+    } else if (lowerName.endsWith(".svg")) {
         exportSVG(fileName);
+        return;
+    } else if (lowerName.endsWith(".emf")) {
+        exportImage(fileName);
         return;
     } else {
         QList<QByteArray> list = QImageWriter::supportedImageFormats();
         for (int i = 0; i < list.count(); i++) {
-            if (fileName.contains("." + list[i].toLower())) {
+            if (lowerName.endsWith("." + QString::fromLatin1(list[i]).toLower())) {
                 exportImage(fileName);
                 return;
             }
@@ -1410,14 +1431,76 @@ void Graph::exportToFile(const QString &fileName)
     }
 }
 
-void Graph::exportImage(const QString &fileName, int quality)
+void Graph::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
 {
-    QImage image(size(), QImage::Format_ARGB32);
-    exportPainter(image);
-    image.save(fileName, 0, quality);
+    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
+#ifdef Q_OS_WIN
+        OleRenderedGraph emf = SciDAVisEmf::renderMultiLayer(multiLayerParent(), this);
+        if (!emf.emfBytes.isEmpty()) {
+            QFile f(fileName);
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write(emf.emfBytes);
+                f.close();
+            }
+        }
+#endif
+        return;
+    }
+
+    const int effectiveDpi = (dpi > 0) ? dpi : 96;
+    const double scaleFactor = double(effectiveDpi) / 96.0;
+    const QSize baseSize = (d_plot && !d_plot->size().isEmpty()) ? d_plot->size() : size();
+    const QSize targetSize(qMax(1, qRound(baseSize.width() * scaleFactor)),
+                           qMax(1, qRound(baseSize.height() * scaleFactor)));
+
+    QImage image(targetSize, QImage::Format_ARGB32);
+    image.fill(transparent ? Qt::transparent : Qt::white);
+
+    QPalette origPlotPal;
+    bool origAutoFill = false;
+    QColor origCanvasBg;
+    if (transparent && d_plot) {
+        origPlotPal = d_plot->palette();
+        origAutoFill = d_plot->autoFillBackground();
+        origCanvasBg = d_plot->canvasBackground();
+        QPalette transPal = origPlotPal;
+        QColor winCol = transPal.color(QPalette::Window);
+        winCol.setAlpha(0);
+        transPal.setColor(QPalette::Window, winCol);
+        d_plot->setPalette(transPal);
+        d_plot->setAutoFillBackground(false);
+        QColor cbg = origCanvasBg;
+        cbg.setAlpha(0);
+        d_plot->setCanvasBackground(cbg);
+    }
+
+    {
+        QPainter p(&image);
+        exportPainter(p, false, QRect(QPoint(0, 0), baseSize), targetSize);
+        p.end();
+    }
+
+    if (transparent && d_plot) {
+        d_plot->setPalette(origPlotPal);
+        d_plot->setAutoFillBackground(origAutoFill);
+        d_plot->setCanvasBackground(origCanvasBg);
+    }
+
+    const int dpm = qRound(double(effectiveDpi) / 0.0254);
+    image.setDotsPerMeterX(dpm);
+    image.setDotsPerMeterY(dpm);
+
+    QImageWriter writer(fileName);
+    if (fileName.endsWith(".tif", Qt::CaseInsensitive)
+        || fileName.endsWith(".tiff", Qt::CaseInsensitive)) {
+        writer.setCompression(1);
+    }
+    if (quality >= 0)
+        writer.setQuality(quality);
+    writer.write(image);
 }
 
-void Graph::exportVector(const QString &fileName, int, bool color, bool keepAspect,
+void Graph::exportVector(const QString &fileName, int res, bool color, bool keepAspect,
                          QPageSize pageSize, QPageLayout::Orientation orientation)
 {
     if (fileName.isEmpty()) {
@@ -1426,8 +1509,10 @@ void Graph::exportVector(const QString &fileName, int, bool color, bool keepAspe
     }
 
     QPrinter printer;
-    printer.setCreator("SciDAVis");
+    printer.setCreator("ToriGraph");
     printer.setFullPage(true);
+    if (res > 0)
+        printer.setResolution(res);
 
     printer.setOutputFileName(fileName);
     if (fileName.contains(".eps")) {
@@ -1446,14 +1531,17 @@ void Graph::exportVector(const QString &fileName, int, bool color, bool keepAspe
     else
         printer.setColorMode(QPrinter::GrayScale);
 
-    if (pageSize == QPageSize(QPageSize::Custom))
-        printer.setPageSize(QPageSize(size(), QPageSize::Point));
-    else {
+    if (pageSize == QPageSize(QPageSize::Custom)) {
+        const QSize basePx = (d_plot && !d_plot->size().isEmpty()) ? d_plot->size() : size();
+        const QSizeF ptSize(basePx.width() * 72.0 / 96.0, basePx.height() * 72.0 / 96.0);
+        printer.setPageSize(QPageSize(ptSize, QPageSize::Point));
+    } else {
         printer.setPageOrientation(orientation);
         printer.setPageSize(pageSize);
     }
 
-    exportPainter(printer, keepAspect);
+    const QSize basePx = (d_plot && !d_plot->size().isEmpty()) ? d_plot->size() : size();
+    exportPainter(printer, keepAspect, QRect(QPoint(0, 0), basePx));
 }
 
 void Graph::print()
@@ -1541,10 +1629,15 @@ void Graph::exportPainter(QPainter &painter, bool keepAspect, QRect rect, QSize 
         size = scaled;
     }
 
+    const bool prevExporting = d_is_exporting;
+    d_is_exporting = true;
+    painter.save();
     painter.scale((double)size.width() / (double)rect.width(),
                   (double)size.height() / (double)rect.height());
 
     print(&painter, rect);
+    painter.restore();
+    d_is_exporting = prevExporting;
 }
 
 int Graph::selectedCurveID()
@@ -2137,7 +2230,9 @@ QString Graph::saveScale()
 
         const QwtScaleEngine *sc_eng = d_plot->axisScaleEngine(i);
         QwtScaleTransformation *tr = sc_eng->transformation();
-        s += QString::number((int)tr->type()) + "\t";
+        const int savedScaleType =
+                (tr && tr->type() == QwtScaleTransformation::Log10) ? 1 : 0;
+        s += QString::number(savedScaleType) + "\t";
         s += QString::number(sc_eng->testAttribute(QwtScaleEngine::Inverted)) + "\n";
     }
     return s;
@@ -2408,6 +2503,8 @@ QString Graph::saveCurveLayout(int index)
         s += QString::number(b->boxRange()) + "\t";
         s += QString::number(b->whiskersRangeType()) + "\t";
         s += QString::number(b->whiskersRange()) + "\t";
+        s += QString::number(b->violinMode() ? 1 : 0) + "\t";
+        s += QString::number(b->showDataPoints() ? 1 : 0) + "\t";
     }
 
     return s;
@@ -2687,6 +2784,7 @@ long Graph::insertTextMarker(Legend *mrk)
     aux->setFont(mrk->font());
     aux->setFrameStyle(mrk->frameStyle());
     aux->setAngle(mrk->angle());
+    aux->setNumColumns(mrk->numColumns());
     aux->setText(mrk->text());
     return selectedMarker;
 }
@@ -3671,15 +3769,54 @@ void Graph::addLegendItem(const QString &colName)
     if (legendMarkerID >= 0) {
         Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
         if (mrk) {
+            QString label = colName;
+            if (n_curves > 0) {
+                DataCurve *dc = dynamic_cast<DataCurve *>(curve(n_curves - 1));
+                if (dc && dc->table()) {
+                    const QString prefix = QString(dc->table()->name()) + "_";
+                    if (label.startsWith(prefix) && label.length() > prefix.length())
+                        label = label.mid(prefix.length());
+                }
+            }
             QString text = mrk->text();
-            if (text.endsWith("\n", Qt::CaseSensitive))
-                text.append("\\c{" + QString::number(curves()) + "}" + colName + "\n");
+            if (text.isEmpty() || text.endsWith("\n", Qt::CaseSensitive))
+                text.append("\\c{" + QString::number(curves()) + "}" + label + "\n");
             else
-                text.append("\n\\c{" + QString::number(curves()) + "}" + colName + "\n");
+                text.append("\n\\c{" + QString::number(curves()) + "}" + label + "\n");
 
             mrk->setText(text);
         }
     }
+}
+
+void Graph::reconstructLegend()
+{
+    Legend *mrk = legend();
+    if (!mrk) {
+        for (int i = 0; i < d_texts.size(); ++i) {
+            Legend *cand = dynamic_cast<Legend *>(d_plot->marker(d_texts[i]));
+            if (cand
+                && (cand->text().contains("\\c{") || cand->text().contains("\\p{")
+                    || cand->text().contains("%("))) {
+                legendMarkerID = d_texts[i];
+                mrk = cand;
+                break;
+            }
+        }
+    }
+
+    if (!mrk) {
+        newLegend();
+        return;
+    }
+
+    if (isPiePlot())
+        mrk->setText(pieLegendText());
+    else
+        mrk->setText(legendText());
+
+    d_plot->replot();
+    emit modifiedGraph();
 }
 
 void Graph::contextMenuEvent(QContextMenuEvent *e)
@@ -4074,6 +4211,195 @@ QString Graph::saveToString(bool saveAsTemplate)
     s += "AxesLineWidth\t" + QString::number(d_plot->axesLinewidth()) + "\n";
     s += saveLabelsRotation();
     s += saveMarkers();
+
+    // Phase 5 lossless persistence tags
+    {
+        auto escAttr = [](const QString &raw) -> QString {
+            QString out;
+            out.reserve(raw.size() + 8);
+            for (QChar ch : raw) {
+                const ushort u = ch.unicode();
+                if (ch == '&')
+                    out += "&amp;";
+                else if (ch == '"')
+                    out += "&quot;";
+                else if (ch == '<')
+                    out += "&lt;";
+                else if (ch == '>')
+                    out += "&gt;";
+                else if (ch == '\n')
+                    out += "&#10;";
+                else if (ch == '\r')
+                    out += "&#13;";
+                else if (ch == '\t')
+                    out += "&#9;";
+                else if (u < 32)
+                    out += QString("&#%1;").arg(int(u));
+                else
+                    out += ch;
+            }
+            static const char *const kLegacyTokens[] = {
+                "ggeometry",         "EnabledAxes",      "AxesBaseline",     "EnabledTicks",
+                "MajorTicks",        "MinorTicks",       "TicksLength",      "EnabledTickLabels",
+                "AxesColors",        "AxesNumberColors", "PieCurve",         "FunctionCurve",
+                "ErrorBars",         "PlotTitle",        "TitleFont",        "AxesTitles",
+                "AxesTitleColors",   "AxesTitleAlignment","ScaleFont",       "AxisFont",
+                "AxesFormulas",      "LabelsFormat",     "LabelsRotation",   "DrawAxesBackbone",
+                "AxesLineWidth",     "CanvasFrame",      "CanvasBackground", "Legend",
+                "textMarker",        "lineMarker",       "ImageMarker",      "AxisType",
+                "AxesTickLabelsCol"
+            };
+            for (const char *tok : kLegacyTokens) {
+                const QString qtok = QString::fromLatin1(tok);
+                if (out.contains(qtok)) {
+                    const QString repl =
+                            QString("&#%1;").arg(int(qtok.at(0).unicode())) + qtok.mid(1);
+                    out.replace(qtok, repl);
+                }
+            }
+            return out;
+        };
+
+        int legCols = 1;
+        if (Legend *leg = legend())
+            legCols = leg->numColumns();
+
+        QStringList textColsParts;
+        for (int ti = 0; ti < d_texts.size(); ++ti) {
+            Legend *tm = dynamic_cast<Legend *>(d_plot->marker(d_texts[ti]));
+            if (tm && tm->numColumns() > 1)
+                textColsParts << QString("%1:%2").arg(ti).arg(tm->numColumns());
+        }
+
+        QStringList alphaParts;
+        QStringList stackParts;
+        if (!saveAsTemplate) {
+            for (int ci = 0; ci < n_curves; ++ci) {
+                QwtPlotCurve *cv = curve(ci);
+                if (!cv)
+                    continue;
+                const int la = cv->pen().color().alpha();
+                const int ba = cv->brush().color().alpha();
+                const int spa = cv->symbol().pen().color().alpha();
+                const int sba = cv->symbol().brush().color().alpha();
+                if (la < 255 || ba < 255 || spa < 255 || sba < 255) {
+                    alphaParts << QString("%1:%2,%3,%4,%5")
+                                          .arg(ci)
+                                          .arg(la)
+                                          .arg(ba)
+                                          .arg(spa)
+                                          .arg(sba);
+                }
+                PlotCurve *pc = dynamic_cast<PlotCurve *>(cv);
+                if (pc
+                    && (qAbs(pc->stackOffsetX()) > 1e-15 || qAbs(pc->stackOffsetY()) > 1e-15
+                        || pc->stackNormalize01())) {
+                    stackParts << QString("%1:%2,%3,%4")
+                                          .arg(ci)
+                                          .arg(QString::number(pc->stackOffsetX(), 'g', 15))
+                                          .arg(QString::number(pc->stackOffsetY(), 'g', 15))
+                                          .arg(pc->stackNormalize01() ? 1 : 0);
+                }
+            }
+        }
+
+        s += QString("<ToriBackbones draw=\"%1\" b0=\"%2\" b1=\"%3\" b2=\"%4\" b3=\"%5\" "
+                     "legendCols=\"%6\" textCols=\"%7\" curveAlphas=\"%8\" stackOffsets=\"%9\"/>\n")
+                     .arg(drawAxesBackbone ? 1 : 0)
+                     .arg(d_axis_backbone[0] ? 1 : 0)
+                     .arg(d_axis_backbone[1] ? 1 : 0)
+                     .arg(d_axis_backbone[2] ? 1 : 0)
+                     .arg(d_axis_backbone[3] ? 1 : 0)
+                     .arg(legCols)
+                     .arg(textColsParts.join(";"))
+                     .arg(alphaParts.join(";"))
+                     .arg(stackParts.join(";"));
+
+        for (const ReferenceLineSpec &rl : d_ref_lines) {
+            s += QString("<ToriRefLine orient=\"%1\" value=\"%2\" stat=\"%3\" color=\"%4\" "
+                         "style=\"%5\" width=\"%6\" label=\"%7\" fill=\"%8\" fillColor=\"%9\"/>\n")
+                         .arg(rl.orientation)
+                         .arg(QString::number(rl.value, 'g', 15))
+                         .arg(escAttr(rl.statMode))
+                         .arg(rl.color.name(QColor::HexArgb))
+                         .arg(int(rl.style))
+                         .arg(QString::number(rl.width, 'g', 8))
+                         .arg(escAttr(rl.label))
+                         .arg(rl.fillToAxis ? 1 : 0)
+                         .arg(rl.fillColor.name(QColor::HexArgb));
+        }
+
+        if (!saveAsTemplate) {
+            for (const ShadedBandSpec &bs : d_shaded_bands) {
+                QStringList xStr, ylStr, yhStr;
+                const int m = qMin(bs.x.size(), qMin(bs.yLow.size(), bs.yHigh.size()));
+                xStr.reserve(m);
+                ylStr.reserve(m);
+                yhStr.reserve(m);
+                for (int k = 0; k < m; ++k) {
+                    xStr << QString::number(bs.x[k], 'g', 12);
+                    ylStr << QString::number(bs.yLow[k], 'g', 12);
+                    yhStr << QString::number(bs.yHigh[k], 'g', 12);
+                }
+                s += QString("<ToriRefLine kind=\"band\" color=\"%1\" title=\"%2\" x=\"%3\" "
+                             "yLow=\"%4\" yHigh=\"%5\"/>\n")
+                             .arg(bs.fillColor.name(QColor::HexArgb))
+                             .arg(escAttr(bs.title))
+                             .arg(xStr.join(","))
+                             .arg(ylStr.join(","))
+                             .arg(yhStr.join(","));
+            }
+        }
+
+        if (d_linked_parent) {
+            int parentIdx = -1;
+            if (MultiLayer *ml = multiLayerParent())
+                parentIdx = ml->layersList().indexOf(d_linked_parent.data());
+            if (parentIdx >= 0) {
+                s += QString("<ToriLinkedLayer parentIdx=\"%1\" xMode=\"%2\" xExpr=\"%3\" "
+                             "yMode=\"%4\" yExpr=\"%5\"/>\n")
+                             .arg(parentIdx)
+                             .arg(d_x_link_mode)
+                             .arg(escAttr(d_x_link_expr))
+                             .arg(d_y_link_mode)
+                             .arg(escAttr(d_y_link_expr));
+            }
+        }
+
+        for (int a = 0; a < 4; ++a) {
+            const AxisBreakSpec &ab = d_axis_breaks[a];
+            if (ab.enabled) {
+                s += QString("<ToriAxisBreak axis=\"%1\" enabled=\"1\" from=\"%2\" to=\"%3\" "
+                             "pos=\"%4\" stepBefore=\"%5\" stepAfter=\"%6\" logBefore=\"%7\" "
+                             "logAfter=\"%8\"/>\n")
+                             .arg(a)
+                             .arg(QString::number(ab.breakFrom, 'g', 15))
+                             .arg(QString::number(ab.breakTo, 'g', 15))
+                             .arg(QString::number(ab.positionPct, 'g', 8))
+                             .arg(QString::number(ab.stepBefore, 'g', 15))
+                             .arg(QString::number(ab.stepAfter, 'g', 15))
+                             .arg(ab.log10Before ? 1 : 0)
+                             .arg(ab.log10After ? 1 : 0);
+            }
+            if (qAbs(d_tick_divide_factor[a] - 1.0) > 1e-15 || !d_tick_prefix[a].isEmpty()
+                || !d_tick_suffix[a].isEmpty()) {
+                s += QString("<ToriTickTransform axis=\"%1\" factor=\"%2\" prefix=\"%3\" "
+                             "suffix=\"%4\"/>\n")
+                             .arg(a)
+                             .arg(QString::number(d_tick_divide_factor[a], 'g', 15))
+                             .arg(escAttr(d_tick_prefix[a]))
+                             .arg(escAttr(d_tick_suffix[a]));
+            }
+        }
+
+        if (d_is_ternary) {
+            s += QString("<ToriTernary enabled=\"1\" a=\"%1\" b=\"%2\" c=\"%3\"/>\n")
+                         .arg(escAttr(d_ternary_labels[0]))
+                         .arg(escAttr(d_ternary_labels[1]))
+                         .arg(escAttr(d_ternary_labels[2]));
+        }
+    }
+
     s += "</graph>\n";
     return s;
 }
@@ -4628,6 +4954,11 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
             else if (cv->testCurveAttribute(QwtPlotCurve::Inverted))
                 c->setCurveAttribute(QwtPlotCurve::Inverted, true);
 
+            if (c && cv && c_type[i] != Box && c_type[i] != ErrorBars) {
+                c->setStackNormalize01(cv->stackNormalize01());
+                c->setStackOffset(cv->stackOffsetX(), cv->stackOffsetY());
+            }
+
             c->setAxis(cv->xAxis(), cv->yAxis());
             c->setVisible(cv->isVisible());
 
@@ -4688,7 +5019,7 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         QwtScaleEngine *sc_engine = 0;
         if (se->transformation()->type() == QwtScaleTransformation::Log10)
             sc_engine = new QwtLog10ScaleEngine();
-        else if (se->transformation()->type() == QwtScaleTransformation::Linear)
+        else
             sc_engine = new QwtLinearScaleEngine();
 
         int majorTicks = plot->axisMaxMajor(i);
@@ -4750,6 +5081,26 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         if (lmrk)
             addArrow(lmrk);
     }
+
+    for (i = 0; i < QwtPlot::axisCnt; ++i) {
+        if (g->drawAxesBackbone)
+            setAxisBackboneVisible(i, g->isAxisBackboneVisible(i));
+        setTickLabelTransform(i, g->tickDivideFactor(i), g->tickPrefix(i), g->tickSuffix(i));
+        if (g->axisBreak(i).enabled)
+            setAxisBreak(i, g->axisBreak(i));
+    }
+
+    if (!g->referenceLines().isEmpty())
+        setReferenceLines(g->referenceLines());
+
+    for (const ShadedBandSpec &bs : g->d_shaded_bands) {
+        addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title);
+    }
+
+    d_is_ternary = g->d_is_ternary;
+    for (int k = 0; k < 3; ++k)
+        d_ternary_labels[k] = g->d_ternary_labels[k];
+
     d_plot->replot();
 
     if (isPiePlot()) {
@@ -4886,6 +5237,10 @@ void Graph::openBoxDiagram(Table *w, const QStringList &l, int fileVersion)
     c->setBoxWidth(l[22 + s_offset].toInt());
     c->setBoxRange(l[23 + s_offset].toInt(), l[24 + s_offset].toDouble());
     c->setWhiskersRange(l[25 + s_offset].toInt(), l[26 + s_offset].toDouble());
+    if (l.count() > 33 + s_offset) {
+        c->setViolinMode(l[27 + s_offset].toInt() != 0);
+        c->setShowDataPoints(l[28 + s_offset].toInt() != 0);
+    }
 }
 
 void Graph::setActiveTool(PlotToolInterface *tool)
@@ -5434,7 +5789,10 @@ int Graph::mapToQwtAxis(int axis)
 
 void Graph::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFilter &pfilter)
 {
+    const bool prevExporting = d_is_exporting;
+    d_is_exporting = true;
     d_plot->print(painter, plotRect, pfilter);
+    d_is_exporting = prevExporting;
 }
 
 void Graph::deselect()
@@ -6095,6 +6453,9 @@ QPointF Graph::ternaryToCartesian(double a, double b, double c)
 void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const QString &labelC)
 {
     d_is_ternary = true;
+    d_ternary_labels[0] = labelA.isEmpty() ? QString("A") : labelA;
+    d_ternary_labels[1] = labelB.isEmpty() ? QString("B") : labelB;
+    d_ternary_labels[2] = labelC.isEmpty() ? QString("C") : labelC;
     m_autoscale = false;
 
     const double h = std::sqrt(3.0) * 0.5; // ~0.8660254
@@ -6200,6 +6561,82 @@ void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const
 // ============================================================================
 
 namespace {
+QString localizedStatModeLabel(const QString &rawStatMode)
+{
+    const QString trimmed = rawStatMode.trimmed();
+    QString norm = trimmed.toLower();
+    norm.remove(' ');
+    if (norm == "mean")
+        return Graph::tr("Mean");
+    if (norm == "median")
+        return Graph::tr("Median");
+    if (norm == "mean+sd" || norm == "+sd")
+        return Graph::tr("+SD");
+    if (norm == "mean-sd" || norm == "-sd")
+        return Graph::tr("-SD");
+    if (norm == "min")
+        return Graph::tr("Min");
+    if (norm == "max")
+        return Graph::tr("Max");
+    return trimmed;
+}
+
+class OriginReferenceFillItem : public QwtPlotItem
+{
+public:
+    explicit OriginReferenceFillItem(const Graph *graph) : d_graph(graph)
+    {
+        setZ(14.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 41; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_graph)
+            return;
+        const QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+        if (lines.isEmpty())
+            return;
+
+        painter->save();
+        for (const Graph::ReferenceLineSpec &spec : lines) {
+            if (!spec.fillToAxis || !std::isfinite(spec.value))
+                continue;
+            if (spec.orientation == 0) {
+                const double yPx = yMap.transform(spec.value);
+                const double yLo = qMin(yMap.s1(), yMap.s2());
+                const double yHi = qMax(yMap.s1(), yMap.s2());
+                const double basePx = (0.0 >= yLo && 0.0 <= yHi) ? yMap.transform(0.0)
+                                                                 : double(canvasRect.bottom());
+                QRectF fillRect(canvasRect.left(), qMin(yPx, basePx), canvasRect.width(),
+                                qAbs(basePx - yPx));
+                fillRect = fillRect.intersected(QRectF(canvasRect));
+                if (!fillRect.isEmpty())
+                    painter->fillRect(fillRect, spec.fillColor);
+            } else {
+                const double xPx = xMap.transform(spec.value);
+                const double xLo = qMin(xMap.s1(), xMap.s2());
+                const double xHi = qMax(xMap.s1(), xMap.s2());
+                const double basePx = (0.0 >= xLo && 0.0 <= xHi) ? xMap.transform(0.0)
+                                                                 : double(canvasRect.left());
+                QRectF fillRect(qMin(xPx, basePx), canvasRect.top(), qAbs(basePx - xPx),
+                                canvasRect.height());
+                fillRect = fillRect.intersected(QRectF(canvasRect));
+                if (!fillRect.isEmpty())
+                    painter->fillRect(fillRect, spec.fillColor);
+            }
+        }
+        painter->restore();
+    }
+
+private:
+    const Graph *d_graph;
+};
+
 class OriginReferenceLineItem : public QwtPlotItem
 {
 public:
@@ -6233,28 +6670,16 @@ public:
                 continue;
 
             QString displayLabel = spec.label.trimmed();
-            if (displayLabel.isEmpty() && !spec.statMode.trimmed().isEmpty()) {
+            if (displayLabel.isEmpty() && !spec.statMode.trimmed().isEmpty()
+                && spec.statMode.trimmed().compare("Constant", Qt::CaseInsensitive) != 0) {
                 displayLabel = QString("%1 = %2")
-                                       .arg(spec.statMode.trimmed())
+                                       .arg(localizedStatModeLabel(spec.statMode))
                                        .arg(spec.value, 0, 'g', 4);
             }
 
             if (spec.orientation == 0) {
                 // Horizontal line (Y = spec.value)
                 const double yPx = yMap.transform(spec.value);
-                if (spec.fillToAxis) {
-                    const double yLo = qMin(yMap.s1(), yMap.s2());
-                    const double yHi = qMax(yMap.s1(), yMap.s2());
-                    const double basePx = (0.0 >= yLo && 0.0 <= yHi)
-                            ? yMap.transform(0.0)
-                            : double(canvasRect.bottom());
-                    QRectF fillRect(canvasRect.left(), qMin(yPx, basePx), canvasRect.width(),
-                                    qAbs(basePx - yPx));
-                    fillRect = fillRect.intersected(QRectF(canvasRect));
-                    if (!fillRect.isEmpty())
-                        painter->fillRect(fillRect, spec.fillColor);
-                }
-
                 if (yPx >= canvasRect.top() - 2 && yPx <= canvasRect.bottom() + 2) {
                     QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
                     painter->setPen(pen);
@@ -6280,19 +6705,6 @@ public:
             } else {
                 // Vertical line (X = spec.value)
                 const double xPx = xMap.transform(spec.value);
-                if (spec.fillToAxis) {
-                    const double xLo = qMin(xMap.s1(), xMap.s2());
-                    const double xHi = qMax(xMap.s1(), xMap.s2());
-                    const double basePx = (0.0 >= xLo && 0.0 <= xHi)
-                            ? xMap.transform(0.0)
-                            : double(canvasRect.left());
-                    QRectF fillRect(qMin(xPx, basePx), canvasRect.top(), qAbs(basePx - xPx),
-                                    canvasRect.height());
-                    fillRect = fillRect.intersected(QRectF(canvasRect));
-                    if (!fillRect.isEmpty())
-                        painter->fillRect(fillRect, spec.fillColor);
-                }
-
                 if (xPx >= canvasRect.left() - 2 && xPx <= canvasRect.right() + 2) {
                     QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
                     painter->setPen(pen);
@@ -6484,6 +6896,10 @@ void Graph::applyFramePreset(FramePreset preset)
 
 void Graph::addReferenceLine(const ReferenceLineSpec &spec)
 {
+    if (!d_ref_fill_item) {
+        d_ref_fill_item = new OriginReferenceFillItem(this);
+        d_ref_fill_item->attach(d_plot);
+    }
     if (!d_ref_line_item) {
         d_ref_line_item = new OriginReferenceLineItem(this);
         d_ref_line_item->attach(d_plot);
@@ -6496,9 +6912,15 @@ void Graph::addReferenceLine(const ReferenceLineSpec &spec)
 
 void Graph::setReferenceLines(const QVector<ReferenceLineSpec> &specs)
 {
-    if (!d_ref_line_item && !specs.isEmpty()) {
-        d_ref_line_item = new OriginReferenceLineItem(this);
-        d_ref_line_item->attach(d_plot);
+    if (!specs.isEmpty()) {
+        if (!d_ref_fill_item) {
+            d_ref_fill_item = new OriginReferenceFillItem(this);
+            d_ref_fill_item->attach(d_plot);
+        }
+        if (!d_ref_line_item) {
+            d_ref_line_item = new OriginReferenceLineItem(this);
+            d_ref_line_item->attach(d_plot);
+        }
     }
     d_ref_lines = specs;
     updateStatReferenceLines();
@@ -6564,8 +6986,8 @@ void Graph::updateStatReferenceLines()
 
     DataCurve *dc = dynamic_cast<DataCurve *>(activeCurve);
 
-    auto computeStats = [&](int orientation, double &outMean, double &outSD,
-                            double &outMedian) -> bool {
+    auto computeStats = [&](int orientation, double &outMean, double &outSD, double &outMedian,
+                            double &outMin, double &outMax) -> bool {
         QVector<double> vals;
         const int n = activeCurve->dataSize();
         vals.reserve(n);
@@ -6595,12 +7017,14 @@ void Graph::updateStatReferenceLines()
         std::sort(sorted.begin(), sorted.end());
         const int m = sorted.size();
         outMedian = (m % 2 == 1) ? sorted[m / 2] : 0.5 * (sorted[m / 2 - 1] + sorted[m / 2]);
+        outMin = sorted.first();
+        outMax = sorted.last();
         return true;
     };
 
-    double yMean = 0.0, ySD = 0.0, yMed = 0.0;
+    double yMean = 0.0, ySD = 0.0, yMed = 0.0, yMin = 0.0, yMax = 0.0;
     bool yReady = false, yValid = false;
-    double xMean = 0.0, xSD = 0.0, xMed = 0.0;
+    double xMean = 0.0, xSD = 0.0, xMed = 0.0, xMin = 0.0, xMax = 0.0;
     bool xReady = false, xValid = false;
 
     for (ReferenceLineSpec &spec : d_ref_lines) {
@@ -6609,10 +7033,10 @@ void Graph::updateStatReferenceLines()
         if (mode.isEmpty() || mode == "constant")
             continue;
 
-        double mean = 0.0, sd = 0.0, med = 0.0;
+        double mean = 0.0, sd = 0.0, med = 0.0, minV = 0.0, maxV = 0.0;
         if (spec.orientation == 0) {
             if (!yReady) {
-                yValid = computeStats(0, yMean, ySD, yMed);
+                yValid = computeStats(0, yMean, ySD, yMed, yMin, yMax);
                 yReady = true;
             }
             if (!yValid)
@@ -6620,9 +7044,11 @@ void Graph::updateStatReferenceLines()
             mean = yMean;
             sd = ySD;
             med = yMed;
+            minV = yMin;
+            maxV = yMax;
         } else {
             if (!xReady) {
-                xValid = computeStats(1, xMean, xSD, xMed);
+                xValid = computeStats(1, xMean, xSD, xMed, xMin, xMax);
                 xReady = true;
             }
             if (!xValid)
@@ -6630,18 +7056,24 @@ void Graph::updateStatReferenceLines()
             mean = xMean;
             sd = xSD;
             med = xMed;
+            minV = xMin;
+            maxV = xMax;
         }
 
         if (mode == "mean")
             spec.value = mean;
         else if (mode == "median")
             spec.value = med;
-        else if (mode == "mean+sd")
+        else if (mode == "mean+sd" || mode == "+sd")
             spec.value = mean + sd;
-        else if (mode == "mean-sd")
+        else if (mode == "mean-sd" || mode == "-sd")
             spec.value = mean - sd;
         else if (mode == "sd")
             spec.value = sd;
+        else if (mode == "min")
+            spec.value = minV;
+        else if (mode == "max")
+            spec.value = maxV;
     }
 }
 
@@ -6836,5 +7268,835 @@ void Graph::syncChildLinkedLayers()
         }
     }
 }
+
+// ============================================================================
+// OriginPro Phase 5: Piecewise Axis Breaks, Tick Transforms, Shaded Bands,
+// Non-Destructive Stack Offsets & Lossless Phase 5 Persistence
+// ============================================================================
+
+namespace {
+
+class PiecewiseBreakScaleTransformation : public QwtScaleTransformation
+{
+public:
+    explicit PiecewiseBreakScaleTransformation(const Graph::AxisBreakSpec &spec)
+        : QwtScaleTransformation(QwtScaleTransformation::Other), d_spec(spec)
+    {
+    }
+
+    PiecewiseBreakScaleTransformation(const PiecewiseBreakScaleTransformation &other)
+        : QwtScaleTransformation(QwtScaleTransformation::Other), d_spec(other.d_spec)
+    {
+    }
+
+    QwtScaleTransformation *copy() const override
+    {
+        return new PiecewiseBreakScaleTransformation(*this);
+    }
+
+    double xForm(double s, double s1, double s2, double p1, double p2) const override
+    {
+        const double lo = qMin(s1, s2);
+        const double hi = qMax(s1, s2);
+        if (hi - lo <= 1e-300)
+            return p1;
+
+        const double bf = qMin(d_spec.breakFrom, d_spec.breakTo);
+        const double bt = qMax(d_spec.breakFrom, d_spec.breakTo);
+        const double pos = qBound(0.10, d_spec.positionPct, 0.90);
+
+        double u = 0.0;
+        if (!d_spec.enabled || !(bf > lo && bt < hi && bt > bf + 1e-15)) {
+            u = (s - lo) / (hi - lo);
+        } else if (s <= bf) {
+            if (d_spec.log10Before && lo > 0.0 && bf > lo) {
+                const double sc = qMax(s, 1e-300);
+                u = pos * (std::log10(sc) - std::log10(lo)) / (std::log10(bf) - std::log10(lo));
+            } else {
+                u = pos * (s - lo) / (bf - lo);
+            }
+        } else if (s >= bt) {
+            if (d_spec.log10After && bt > 0.0 && hi > bt) {
+                const double sc = qMax(s, 1e-300);
+                u = pos
+                        + (1.0 - pos) * (std::log10(sc) - std::log10(bt))
+                                / (std::log10(hi) - std::log10(bt));
+            } else {
+                u = pos + (1.0 - pos) * (s - bt) / (hi - bt);
+            }
+        } else {
+            u = pos;
+        }
+
+        const double t = (s1 <= s2) ? u : (1.0 - u);
+        return p1 + t * (p2 - p1);
+    }
+
+    double invXForm(double p, double p1, double p2, double s1, double s2) const override
+    {
+        if (qAbs(p2 - p1) <= 1e-15)
+            return s1;
+
+        const double lo = qMin(s1, s2);
+        const double hi = qMax(s1, s2);
+        const double t = (p - p1) / (p2 - p1);
+        const double u = (s1 <= s2) ? t : (1.0 - t);
+
+        const double bf = qMin(d_spec.breakFrom, d_spec.breakTo);
+        const double bt = qMax(d_spec.breakFrom, d_spec.breakTo);
+        const double pos = qBound(0.10, d_spec.positionPct, 0.90);
+
+        if (!d_spec.enabled || !(bf > lo && bt < hi && bt > bf + 1e-15))
+            return lo + u * (hi - lo);
+
+        if (u <= pos) {
+            const double f = (pos > 1e-12) ? (u / pos) : 0.0;
+            if (d_spec.log10Before && lo > 0.0 && bf > lo)
+                return std::pow(10.0, std::log10(lo) + f * (std::log10(bf) - std::log10(lo)));
+            return lo + f * (bf - lo);
+        }
+
+        const double f = (1.0 - pos > 1e-12) ? ((u - pos) / (1.0 - pos)) : 0.0;
+        if (d_spec.log10After && bt > 0.0 && hi > bt)
+            return std::pow(10.0, std::log10(bt) + f * (std::log10(hi) - std::log10(bt)));
+        return bt + f * (hi - bt);
+    }
+
+private:
+    Graph::AxisBreakSpec d_spec;
+};
+
+class PiecewiseBreakScaleEngine : public QwtLinearScaleEngine
+{
+public:
+    explicit PiecewiseBreakScaleEngine(const Graph::AxisBreakSpec &spec) : d_spec(spec) {}
+
+    QwtScaleTransformation *transformation() const override
+    {
+        return new PiecewiseBreakScaleTransformation(d_spec);
+    }
+
+    QwtScaleDiv divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
+                            double stepSize = 0.0) const override
+    {
+        const double lo = qMin(x1, x2);
+        const double hi = qMax(x1, x2);
+        const double bf = qMin(d_spec.breakFrom, d_spec.breakTo);
+        const double bt = qMax(d_spec.breakFrom, d_spec.breakTo);
+        const double pos = qBound(0.10, d_spec.positionPct, 0.90);
+
+        if (!d_spec.enabled || !(bf > lo && bt < hi && bt > bf + 1e-15))
+            return QwtLinearScaleEngine::divideScale(x1, x2, maxMajSteps, maxMinSteps, stepSize);
+
+        const int maj1 = qMax(1, qRound(qMax(2, maxMajSteps) * pos));
+        const int maj2 = qMax(1, qMax(2, maxMajSteps) - maj1);
+
+        QwtScaleDiv div1;
+        if (d_spec.log10Before && lo > 0.0) {
+            QwtLog10ScaleEngine le1;
+            div1 = le1.divideScale(lo, bf, maj1, maxMinSteps,
+                                   d_spec.stepBefore > 0.0 ? d_spec.stepBefore : 0.0);
+        } else {
+            QwtLinearScaleEngine le1;
+            div1 = le1.divideScale(lo, bf, maj1, maxMinSteps,
+                                   d_spec.stepBefore > 0.0 ? d_spec.stepBefore : stepSize);
+        }
+
+        QwtScaleDiv div2;
+        if (d_spec.log10After && bt > 0.0) {
+            QwtLog10ScaleEngine le2;
+            div2 = le2.divideScale(bt, hi, maj2, maxMinSteps,
+                                   d_spec.stepAfter > 0.0 ? d_spec.stepAfter : 0.0);
+        } else {
+            QwtLinearScaleEngine le2;
+            div2 = le2.divideScale(bt, hi, maj2, maxMinSteps,
+                                   d_spec.stepAfter > 0.0 ? d_spec.stepAfter : stepSize);
+        }
+
+        const double guard1 = 0.04 * (bf - lo);
+        const double guard2 = 0.04 * (hi - bt);
+        QwtValueList mergedTicks[QwtScaleDiv::NTickTypes];
+        for (int tt = 0; tt < QwtScaleDiv::NTickTypes; ++tt) {
+            const QwtScaleDiv::TickType tickType = static_cast<QwtScaleDiv::TickType>(tt);
+            for (double v : div1.ticks(tickType)) {
+                if (v >= lo - 1e-12 * (bf - lo) && v <= bf - guard1)
+                    mergedTicks[tt].append(v);
+            }
+            for (double v : div2.ticks(tickType)) {
+                if (v >= bt + guard2 && v <= hi + 1e-12 * (hi - bt))
+                    mergedTicks[tt].append(v);
+            }
+        }
+
+        QwtScaleDiv out(lo, hi, mergedTicks);
+        if (x1 > x2)
+            out.invert();
+        return out;
+    }
+
+private:
+    Graph::AxisBreakSpec d_spec;
+};
+
+class ShadedBandPlotItem : public QwtPlotItem
+{
+public:
+    ShadedBandPlotItem(const QVector<double> &x, const QVector<double> &yLow,
+                       const QVector<double> &yHigh, const QColor &fillColor,
+                       const QString &bandTitle)
+        : d_x(x), d_yLow(yLow), d_yHigh(yHigh), d_color(fillColor)
+    {
+        setZ(15.0);
+        setTitle(bandTitle);
+        setItemAttribute(QwtPlotItem::AutoScale, true);
+        setItemAttribute(QwtPlotItem::Legend, !bandTitle.trimmed().isEmpty());
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 43; }
+
+    QwtDoubleRect boundingRect() const override
+    {
+        const int n = qMin(d_x.size(), qMin(d_yLow.size(), d_yHigh.size()));
+        if (n <= 0)
+            return QwtDoubleRect(0.0, 0.0, -1.0, -1.0);
+        double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+        bool first = true;
+        for (int i = 0; i < n; ++i) {
+            if (!std::isfinite(d_x[i]) || !std::isfinite(d_yLow[i]) || !std::isfinite(d_yHigh[i]))
+                continue;
+            const double lo = qMin(d_yLow[i], d_yHigh[i]);
+            const double hi = qMax(d_yLow[i], d_yHigh[i]);
+            if (first) {
+                minX = maxX = d_x[i];
+                minY = lo;
+                maxY = hi;
+                first = false;
+            } else {
+                minX = qMin(minX, d_x[i]);
+                maxX = qMax(maxX, d_x[i]);
+                minY = qMin(minY, lo);
+                maxY = qMax(maxY, hi);
+            }
+        }
+        if (first)
+            return QwtDoubleRect(0.0, 0.0, -1.0, -1.0);
+        return QwtDoubleRect(minX, minY, qMax(1e-15, maxX - minX), qMax(1e-15, maxY - minY));
+    }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &) const override
+    {
+        if (!painter)
+            return;
+        const int n = qMin(d_x.size(), qMin(d_yLow.size(), d_yHigh.size()));
+        if (n < 2)
+            return;
+
+        painter->save();
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QBrush(d_color));
+
+        int i = 0;
+        while (i < n) {
+            while (i < n
+                   && (!std::isfinite(d_x[i]) || !std::isfinite(d_yLow[i])
+                       || !std::isfinite(d_yHigh[i]))) {
+                ++i;
+            }
+            const int segStart = i;
+            while (i < n && std::isfinite(d_x[i]) && std::isfinite(d_yLow[i])
+                   && std::isfinite(d_yHigh[i])) {
+                ++i;
+            }
+            const int segEnd = i - 1;
+            if (segEnd - segStart >= 1) {
+                QPolygonF poly;
+                poly.reserve(2 * (segEnd - segStart + 1));
+                for (int k = segStart; k <= segEnd; ++k)
+                    poly.append(QPointF(xMap.xTransform(d_x[k]), yMap.xTransform(d_yHigh[k])));
+                for (int k = segEnd; k >= segStart; --k)
+                    poly.append(QPointF(xMap.xTransform(d_x[k]), yMap.xTransform(d_yLow[k])));
+                painter->drawPolygon(poly);
+            }
+        }
+        painter->restore();
+    }
+
+private:
+    QVector<double> d_x;
+    QVector<double> d_yLow;
+    QVector<double> d_yHigh;
+    QColor d_color;
+};
+
+QString unescapePhase5Attr(const QString &enc)
+{
+    QString out;
+    out.reserve(enc.size());
+    int i = 0;
+    const int n = enc.size();
+    while (i < n) {
+        if (enc[i] == '&') {
+            const int semi = enc.indexOf(';', i + 1);
+            if (semi > i + 1 && semi - i <= 10) {
+                const QString ent = enc.mid(i + 1, semi - i - 1);
+                if (ent == "amp") {
+                    out += '&';
+                    i = semi + 1;
+                    continue;
+                } else if (ent == "quot") {
+                    out += '"';
+                    i = semi + 1;
+                    continue;
+                } else if (ent == "apos") {
+                    out += '\'';
+                    i = semi + 1;
+                    continue;
+                } else if (ent == "lt") {
+                    out += '<';
+                    i = semi + 1;
+                    continue;
+                } else if (ent == "gt") {
+                    out += '>';
+                    i = semi + 1;
+                    continue;
+                } else if (ent.startsWith("#x") || ent.startsWith("#X")) {
+                    bool ok = false;
+                    const uint code = ent.mid(2).toUInt(&ok, 16);
+                    if (ok && code <= 0xFFFF) {
+                        out += QChar(ushort(code));
+                        i = semi + 1;
+                        continue;
+                    }
+                } else if (ent.startsWith('#')) {
+                    bool ok = false;
+                    const uint code = ent.mid(1).toUInt(&ok, 10);
+                    if (ok && code <= 0xFFFF) {
+                        out += QChar(ushort(code));
+                        i = semi + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out += enc[i];
+        ++i;
+    }
+    return out;
+}
+
+QMap<QString, QString> parsePhase5XmlAttrs(const QString &line)
+{
+    QMap<QString, QString> attrs;
+    QRegExp rx("([A-Za-z0-9_]+)\\s*=\\s*\"([^\"]*)\"");
+    int pos = 0;
+    while ((pos = rx.indexIn(line, pos)) != -1) {
+        attrs.insert(rx.cap(1), unescapePhase5Attr(rx.cap(2)));
+        pos += rx.matchedLength();
+    }
+    return attrs;
+}
+
+} // namespace
+
+void Graph::setAxisBreak(int axis, const AxisBreakSpec &spec)
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    AxisBreakSpec norm = spec;
+    if (norm.breakFrom > norm.breakTo)
+        std::swap(norm.breakFrom, norm.breakTo);
+    norm.positionPct = qBound(0.10, norm.positionPct, 0.90);
+    d_axis_breaks[axis] = norm;
+
+    if (!norm.enabled) {
+        clearAxisBreak(axis);
+        return;
+    }
+
+    const QwtScaleDiv *oldDiv = d_plot->axisScaleDiv(axis);
+    const QwtScaleEngine *oldEng = d_plot->axisScaleEngine(axis);
+    const double lo = oldDiv ? qMin(oldDiv->lowerBound(), oldDiv->upperBound()) : 0.0;
+    const double hi = oldDiv ? qMax(oldDiv->lowerBound(), oldDiv->upperBound()) : 100.0;
+    const bool inv = oldEng ? oldEng->testAttribute(QwtScaleEngine::Inverted) : false;
+    const int maj = d_plot->axisMaxMajor(axis);
+    const int minT = d_plot->axisMaxMinor(axis);
+    int maxMinInt = minT;
+    if (minT == 1)
+        maxMinInt = 3;
+    else if (minT > 1)
+        maxMinInt = minT + 1;
+
+    PiecewiseBreakScaleEngine *eng = new PiecewiseBreakScaleEngine(norm);
+    QwtScaleDiv div = eng->divideScale(lo, hi, maj, maxMinInt, d_user_step[axis]);
+    if (inv) {
+        eng->setAttribute(QwtScaleEngine::Inverted);
+        div.invert();
+    }
+
+    d_plot->setAxisScaleEngine(axis, eng);
+    d_plot->setAxisScaleDiv(axis, div);
+
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
+        sd->setAxisBreakIndicator(true, norm.breakFrom);
+
+    if (axis == QwtPlot::xBottom)
+        updateSecondaryAxis(QwtPlot::xTop);
+    else if (axis == QwtPlot::yLeft)
+        updateSecondaryAxis(QwtPlot::yRight);
+
+    if (QwtScaleWidget *sw = d_plot->axisWidget(axis))
+        sw->repaint();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+Graph::AxisBreakSpec Graph::axisBreak(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return AxisBreakSpec();
+    return d_axis_breaks[axis];
+}
+
+void Graph::clearAxisBreak(int axis)
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    d_axis_breaks[axis].enabled = false;
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
+        sd->setAxisBreakIndicator(false, 0.0);
+
+    const QwtScaleDiv *oldDiv = d_plot->axisScaleDiv(axis);
+    const QwtScaleEngine *oldEng = d_plot->axisScaleEngine(axis);
+    const double lo = oldDiv ? qMin(oldDiv->lowerBound(), oldDiv->upperBound()) : 0.0;
+    const double hi = oldDiv ? qMax(oldDiv->lowerBound(), oldDiv->upperBound()) : 100.0;
+    const bool inv = oldEng ? oldEng->testAttribute(QwtScaleEngine::Inverted) : false;
+
+    setScale(axis, lo, hi, d_user_step[axis], d_plot->axisMaxMajor(axis),
+             d_plot->axisMaxMinor(axis), 0, inv);
+
+    const int mirrorAxis = (axis == QwtPlot::xBottom)
+            ? QwtPlot::xTop
+            : ((axis == QwtPlot::yLeft) ? QwtPlot::yRight : -1);
+    if (mirrorAxis >= 0 && !d_axis_breaks[mirrorAxis].enabled) {
+        if (ScaleDraw *msd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(mirrorAxis)))
+            msd->setAxisBreakIndicator(false, 0.0);
+    }
+
+    if (QwtScaleWidget *sw = d_plot->axisWidget(axis))
+        sw->repaint();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::setTickLabelTransform(int axis, double divideByFactor, const QString &prefix,
+                                  const QString &suffix)
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    if (!std::isfinite(divideByFactor) || qAbs(divideByFactor) <= 1e-300)
+        divideByFactor = 1.0;
+
+    d_tick_divide_factor[axis] = divideByFactor;
+    d_tick_prefix[axis] = prefix;
+    d_tick_suffix[axis] = suffix;
+
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+        sd->setTickLabelTransform(divideByFactor, prefix, suffix);
+    }
+    d_plot->updateLayout();
+    if (QwtScaleWidget *sw = d_plot->axisWidget(axis))
+        sw->repaint();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+double Graph::tickDivideFactor(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return 1.0;
+    return d_tick_divide_factor[axis];
+}
+
+QString Graph::tickPrefix(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return QString();
+    return d_tick_prefix[axis];
+}
+
+QString Graph::tickSuffix(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return QString();
+    return d_tick_suffix[axis];
+}
+
+QwtPlotItem *Graph::addShadedBand(const QVector<double> &x, const QVector<double> &yLow,
+                                  const QVector<double> &yHigh, const QColor &fillColor,
+                                  const QString &title)
+{
+    if (!d_plot)
+        return nullptr;
+    const int n = qMin(x.size(), qMin(yLow.size(), yHigh.size()));
+    if (n < 2)
+        return nullptr;
+
+    ShadedBandPlotItem *item = new ShadedBandPlotItem(x, yLow, yHigh, fillColor, title);
+    item->attach(d_plot);
+
+    ShadedBandSpec spec;
+    spec.x = x;
+    spec.yLow = yLow;
+    spec.yHigh = yHigh;
+    spec.fillColor = fillColor;
+    spec.title = title;
+    spec.item = item;
+    d_shaded_bands.append(spec);
+
+    d_plot->replot();
+    emit modifiedGraph();
+    return item;
+}
+
+void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool normalize01)
+{
+    QList<PlotCurve *> targetCurves;
+    for (int i = 0; i < n_curves; ++i) {
+        if (c_type[i] == ErrorBars || c_type[i] == Pie || c_type[i] == Box
+            || c_type[i] == ColorMap || c_type[i] == GrayMap || c_type[i] == ContourMap)
+            continue;
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(curve(i));
+        if (pc && pc->isVisible() && pc->dataSize() > 0)
+            targetCurves.append(pc);
+    }
+    if (targetCurves.isEmpty())
+        return;
+
+    // First reset to clean raw unstacked values (with optional 0..1 normalization)
+    for (PlotCurve *pc : targetCurves) {
+        pc->setStackOffset(0.0, 0.0);
+        pc->setStackNormalize01(normalize01);
+    }
+
+    if (targetCurves.size() < 2) {
+        if (m_autoscale) {
+            for (int a = 0; a < QwtPlot::axisCnt; ++a)
+                d_plot->setAxisAutoScale(a);
+        }
+        updatePlot();
+        emit modifiedGraph();
+        return;
+    }
+
+    const int m = targetCurves.size();
+    QVector<double> minY(m, 0.0), maxY(m, 0.0), spanY(m, 0.0);
+    double sumSpanY = 0.0;
+    int validSpansY = 0;
+    double maxSpanX = 0.0;
+
+    for (int k = 0; k < m; ++k) {
+        PlotCurve *pc = targetCurves[k];
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        const int n = pc->dataSize();
+        bool first = true;
+        double loX = 0.0, hiX = 0.0, loY = 0.0, hiY = 0.0;
+        for (int j = 0; j < n; ++j) {
+            if (dc && dc->isPointMasked(j))
+                continue;
+            const double xv = pc->x(j);
+            const double yv = pc->y(j);
+            if (!std::isfinite(xv) || !std::isfinite(yv))
+                continue;
+            if (first) {
+                loX = hiX = xv;
+                loY = hiY = yv;
+                first = false;
+            } else {
+                loX = qMin(loX, xv);
+                hiX = qMax(hiX, xv);
+                loY = qMin(loY, yv);
+                hiY = qMax(hiY, yv);
+            }
+        }
+        minY[k] = loY;
+        maxY[k] = hiY;
+        spanY[k] = qMax(0.0, hiY - loY);
+        if (!first) {
+            sumSpanY += spanY[k];
+            validSpansY++;
+            maxSpanX = qMax(maxSpanX, hiX - loX);
+        }
+    }
+
+    const double avgSpanY =
+            (validSpansY > 0 && sumSpanY > 1e-12) ? (sumSpanY / double(validSpansY)) : 1.0;
+    const double refSpanX = (maxSpanX > 1e-12) ? maxSpanX : 1.0;
+    const double stepX =
+            (qAbs(xGapPct) > 1e-12) ? (refSpanX * (xGapPct / 100.0)) : 0.0;
+
+    double prevTop = maxY[0];
+    for (int k = 1; k < m; ++k) {
+        PlotCurve *pc = targetCurves[k];
+        const double dx = double(k) * stepX;
+        double dy = 0.0;
+        if (mode == 1) {
+            // AutoGap: each curve sits cleanly above the previous curve with yGapPct% margin
+            dy = (prevTop - minY[k]) + (yGapPct / 100.0) * avgSpanY;
+            prevTop = maxY[k] + dy;
+        } else {
+            // Uniform: constant vertical step across all curves
+            if (qAbs(yGapPct) <= 1e-12 && qAbs(xGapPct) > 1e-12)
+                dy = 0.0;
+            else
+                dy = double(k) * avgSpanY * (1.0 + yGapPct / 100.0);
+        }
+        pc->setStackOffset(dx, dy);
+
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
+            const int n = dc->dataSize();
+            QVector<double> xv(n), yv(n);
+            for (int j = 0; j < n; ++j) {
+                xv[j] = dc->x(j);
+                yv[j] = dc->y(j);
+            }
+            for (DataCurve *eb : dc->errorBarsList()) {
+                if (eb)
+                    eb->setData(xv.constData(), yv.constData(), n);
+            }
+        }
+    }
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        d_plot->setAxisAutoScale(a);
+    updatePlot();
+    emit modifiedGraph();
+}
+
+void Graph::resetStackOffsets()
+{
+    bool changed = false;
+    for (int i = 0; i < n_curves; ++i) {
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(curve(i));
+        if (!pc)
+            continue;
+        if (qAbs(pc->stackOffsetX()) > 1e-15 || qAbs(pc->stackOffsetY()) > 1e-15
+            || pc->stackNormalize01()) {
+            pc->setStackNormalize01(false);
+            pc->setStackOffset(0.0, 0.0);
+            changed = true;
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
+                const int n = dc->dataSize();
+                QVector<double> xv(n), yv(n);
+                for (int j = 0; j < n; ++j) {
+                    xv[j] = dc->x(j);
+                    yv[j] = dc->y(j);
+                }
+                for (DataCurve *eb : dc->errorBarsList()) {
+                    if (eb)
+                        eb->setData(xv.constData(), yv.constData(), n);
+                }
+            }
+        }
+    }
+    if (changed) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            d_plot->setAxisAutoScale(a);
+        updatePlot();
+        emit modifiedGraph();
+    }
+}
+
+bool Graph::restorePhase5Tag(const QString &line)
+{
+    const QString s = line.trimmed();
+    if (!s.startsWith("<Tori"))
+        return false;
+
+    const QMap<QString, QString> attrs = parsePhase5XmlAttrs(s);
+
+    if (s.startsWith("<ToriBackbones")) {
+        const bool anyDraw = attrs.value("draw", "1").toInt() != 0;
+        drawAxesBackbone = anyDraw;
+        for (int a = 0; a < 4; ++a) {
+            const QString key = QString("b%1").arg(a);
+            if (attrs.contains(key)) {
+                const bool vis = anyDraw && (attrs.value(key).toInt() != 0);
+                d_axis_backbone[a] = vis;
+                if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(a)))
+                    sd->enableComponent(QwtAbstractScaleDraw::Backbone, vis);
+            }
+        }
+        if (attrs.contains("legendCols")) {
+            const int cols = qMax(1, attrs.value("legendCols").toInt());
+            if (Legend *leg = legend())
+                leg->setNumColumns(cols);
+        }
+        const QString textCols = attrs.value("textCols");
+        if (!textCols.isEmpty()) {
+            for (const QString &pair : textCols.split(';', Qt::SkipEmptyParts)) {
+                const QStringList kv = pair.split(':');
+                if (kv.size() == 2) {
+                    const int ti = kv[0].toInt();
+                    const int cols = qMax(1, kv[1].toInt());
+                    if (ti >= 0 && ti < d_texts.size()) {
+                        if (Legend *tm = dynamic_cast<Legend *>(d_plot->marker(d_texts[ti])))
+                            tm->setNumColumns(cols);
+                    }
+                }
+            }
+        }
+        const QString curveAlphas = attrs.value("curveAlphas");
+        if (!curveAlphas.isEmpty()) {
+            for (const QString &entry : curveAlphas.split(';', Qt::SkipEmptyParts)) {
+                const QStringList kv = entry.split(':');
+                if (kv.size() == 2) {
+                    const int ci = kv[0].toInt();
+                    const QStringList rgba = kv[1].split(',');
+                    QwtPlotCurve *cv = curve(ci);
+                    if (cv && rgba.size() == 4) {
+                        QPen p = cv->pen();
+                        QColor lc = p.color();
+                        lc.setAlpha(qBound(0, rgba[0].toInt(), 255));
+                        p.setColor(lc);
+                        cv->setPen(p);
+
+                        QBrush br = cv->brush();
+                        QColor bc = br.color();
+                        bc.setAlpha(qBound(0, rgba[1].toInt(), 255));
+                        br.setColor(bc);
+                        cv->setBrush(br);
+
+                        QwtSymbol sym = cv->symbol();
+                        QPen sp = sym.pen();
+                        QColor spc = sp.color();
+                        spc.setAlpha(qBound(0, rgba[2].toInt(), 255));
+                        sp.setColor(spc);
+                        sym.setPen(sp);
+                        QBrush sb = sym.brush();
+                        if (sb.style() != Qt::NoBrush) {
+                            QColor sbc = sb.color();
+                            sbc.setAlpha(qBound(0, rgba[3].toInt(), 255));
+                            sb.setColor(sbc);
+                            sym.setBrush(sb);
+                        }
+                        cv->setSymbol(sym);
+                    }
+                }
+            }
+        }
+        const QString stackOffsets = attrs.value("stackOffsets");
+        if (!stackOffsets.isEmpty()) {
+            for (const QString &entry : stackOffsets.split(';', Qt::SkipEmptyParts)) {
+                const QStringList kv = entry.split(':');
+                if (kv.size() == 2) {
+                    const int ci = kv[0].toInt();
+                    const QStringList vals = kv[1].split(',');
+                    PlotCurve *pc = dynamic_cast<PlotCurve *>(curve(ci));
+                    if (pc && vals.size() >= 3) {
+                        pc->setStackNormalize01(vals[2].toInt() != 0);
+                        pc->setStackOffset(vals[0].toDouble(), vals[1].toDouble());
+                    }
+                }
+            }
+        }
+        d_plot->replot();
+        return true;
+    }
+
+    if (s.startsWith("<ToriRefLine") || s.startsWith("<ToriShadedBand")) {
+        if (s.startsWith("<ToriShadedBand") || attrs.value("kind") == "band") {
+            const QStringList xs = attrs.value("x").split(',', Qt::SkipEmptyParts);
+            const QStringList yls = attrs.value("yLow").split(',', Qt::SkipEmptyParts);
+            const QStringList yhs = attrs.value("yHigh").split(',', Qt::SkipEmptyParts);
+            const int m = qMin(xs.size(), qMin(yls.size(), yhs.size()));
+            if (m >= 2) {
+                QVector<double> xv(m), ylv(m), yhv(m);
+                for (int k = 0; k < m; ++k) {
+                    xv[k] = xs[k].toDouble();
+                    ylv[k] = yls[k].toDouble();
+                    yhv[k] = yhs[k].toDouble();
+                }
+                QColor col(attrs.value("color", "#371e66b8"));
+                if (!col.isValid())
+                    col = QColor(30, 102, 184, 55);
+                addShadedBand(xv, ylv, yhv, col, attrs.value("title"));
+            }
+            return true;
+        }
+
+        ReferenceLineSpec rl;
+        rl.orientation = attrs.value("orient", "0").toInt();
+        rl.value = attrs.value("value", "0").toDouble();
+        rl.statMode = attrs.value("stat");
+        const QColor col(attrs.value("color", "#ff1e66b8"));
+        if (col.isValid())
+            rl.color = col;
+        rl.style = static_cast<Qt::PenStyle>(attrs.value("style", "2").toInt());
+        rl.width = attrs.value("width", "1.5").toDouble();
+        rl.label = attrs.value("label");
+        rl.fillToAxis = attrs.value("fill", "0").toInt() != 0;
+        const QColor fcol(attrs.value("fillColor", "#201e66b8"));
+        if (fcol.isValid())
+            rl.fillColor = fcol;
+        addReferenceLine(rl);
+        return true;
+    }
+
+    if (s.startsWith("<ToriLinkedLayer")) {
+        d_pending_linked_parent_idx = attrs.value("parentIdx", "-1").toInt();
+        d_x_link_mode = attrs.value("xMode", "0").toInt();
+        d_x_link_expr = attrs.value("xExpr", "x");
+        d_y_link_mode = attrs.value("yMode", "0").toInt();
+        d_y_link_expr = attrs.value("yExpr", "y");
+        return true;
+    }
+
+    if (s.startsWith("<ToriAxisBreak")) {
+        const int axis = attrs.value("axis", "-1").toInt();
+        if (axis >= 0 && axis < 4) {
+            AxisBreakSpec ab;
+            ab.enabled = attrs.value("enabled", "1").toInt() != 0;
+            ab.breakFrom = attrs.value("from", "0").toDouble();
+            ab.breakTo = attrs.value("to", "0").toDouble();
+            ab.positionPct = attrs.value("pos", "0.5").toDouble();
+            ab.stepBefore = attrs.value("stepBefore", "0").toDouble();
+            ab.stepAfter = attrs.value("stepAfter", "0").toDouble();
+            ab.log10Before = attrs.value("logBefore", "0").toInt() != 0;
+            ab.log10After = attrs.value("logAfter", "0").toInt() != 0;
+            setAxisBreak(axis, ab);
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriTickTransform")) {
+        const int axis = attrs.value("axis", "-1").toInt();
+        if (axis >= 0 && axis < 4) {
+            setTickLabelTransform(axis, attrs.value("factor", "1").toDouble(),
+                                  attrs.value("prefix"), attrs.value("suffix"));
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriTernary")) {
+        d_is_ternary = attrs.value("enabled", "1").toInt() != 0;
+        if (attrs.contains("a"))
+            d_ternary_labels[0] = attrs.value("a");
+        if (attrs.contains("b"))
+            d_ternary_labels[1] = attrs.value("b");
+        if (attrs.contains("c"))
+            d_ternary_labels[2] = attrs.value("c");
+        if (d_is_ternary)
+            m_autoscale = false;
+        return true;
+    }
+
+    return false;
+}
+
 
 

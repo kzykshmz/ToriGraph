@@ -193,27 +193,42 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
         if (me->button() == Qt::LeftButton && d_left_click_pending) {
             d_left_click_pending = false;
             if ((me->pos() - d_press_pos).manhattanLength() <= 5
-                && GraphMiniToolbar::isMiniToolbarEnabled() && !g->zoomOn() && !g->activeTool()
-                && !g->rangeSelectorsEnabled() && !(me->modifiers() & Qt::ShiftModifier)) {
-                GraphMiniToolbar *bar = GraphMiniToolbar::instance();
-                if (bar) {
-                    long selKey = g->selectedMarkerKey();
-                    if (selKey >= 0 && texts.contains(selKey)) {
+                && !g->zoomOn() && !g->activeTool() && !g->rangeSelectorsEnabled()
+                && !(me->modifiers() & Qt::ShiftModifier)) {
+                GraphMiniToolbar *bar = GraphMiniToolbar::isMiniToolbarEnabled()
+                        ? GraphMiniToolbar::instance()
+                        : nullptr;
+                long selKey = g->selectedMarkerKey();
+                if (selKey >= 0 && texts.contains(selKey)) {
+                    plotWidget->setHighlightedCurveKey(-1);
+                    if (bar) {
                         Legend *leg = dynamic_cast<Legend *>(plotWidget->marker(selKey));
                         if (leg)
                             bar->popupForLegend(g, leg, me->globalPos());
-                    } else if (!g->markerSelected() && !d_editing_marker && !g->isPiePlot()) {
-                        int dist = 999;
-                        int point = -1;
-                        int curveKey =
-                                plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
-                        if (curveKey >= 0 && dist < 10) {
-                            int cIdx = g->curveIndex(curveKey);
-                            if (cIdx >= 0)
-                                bar->popupForCurve(g, cIdx, me->globalPos());
-                        } else {
-                            bar->popupForCanvas(g, me->globalPos());
+                    }
+                } else if (!g->markerSelected() && !d_editing_marker && !g->isPiePlot()) {
+                    int dist = 999;
+                    int point = -1;
+                    int curveKey =
+                            plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
+                    if (curveKey >= 0 && dist < 10) {
+                        plotWidget->setHighlightedCurveKey(curveKey);
+                        QwtPlotCurve *hitCurve = plotWidget->curve(curveKey);
+                        if (hitCurve && point >= 0 && point < hitCurve->dataSize()) {
+                            emit g->cursorInfo(
+                                    QString("%1 [%2]: X=%3, Y=%4")
+                                            .arg(hitCurve->title().text())
+                                            .arg(point + 1)
+                                            .arg(hitCurve->x(point), 0, 'g', 6)
+                                            .arg(hitCurve->y(point), 0, 'g', 6));
                         }
+                        int cIdx = g->curveIndex(curveKey);
+                        if (bar && cIdx >= 0)
+                            bar->popupForCurve(g, cIdx, me->globalPos());
+                    } else {
+                        plotWidget->setHighlightedCurveKey(-1);
+                        if (bar)
+                            bar->popupForCanvas(g, me->globalPos());
                     }
                 }
             }

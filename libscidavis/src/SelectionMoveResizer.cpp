@@ -374,12 +374,15 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
 void SelectionMoveResizer::operateOnTargets()
 {
     foreach (Legend *i, d_legend_markers) {
-        QRect new_rect = operateOn(i->rect());
+        const QRect old_rect = i->rect();
+        QRect new_rect = operateOn(old_rect);
         i->setOrigin(new_rect.topLeft());
-        if (!i->text().isEmpty()) {
+        if (!i->text().isEmpty() && d_op != Move && d_op != None
+            && new_rect.height() != old_rect.height()) {
             QFont f = i->font();
-            f.setPointSize(f.pointSize() * new_rect.width() * new_rect.height()
-                           / (i->rect().width() * i->rect().height()));
+            const double basePt = (f.pointSizeF() > 0.0) ? f.pointSizeF() : double(f.pointSize());
+            f.setPointSize(qMax(
+                    4, qRound(basePt * double(new_rect.height()) / qMax(1, old_rect.height()))));
             i->setFont(f);
         }
     }
@@ -522,41 +525,33 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         ke->accept();
         return;
     case Qt::Key_Left:
-        if (d_op == None) {
-            d_op = Move;
-            d_op_start = QPoint(-1, -1);
-        }
-        d_op_dp += QPoint(-1, 0);
-        repaint();
-        ke->accept();
-        break;
     case Qt::Key_Right:
-        if (d_op == None) {
-            d_op = Move;
-            d_op_start = QPoint(-1, -1);
-        }
-        d_op_dp += QPoint(1, 0);
-        repaint();
-        ke->accept();
-        break;
     case Qt::Key_Up:
-        if (d_op == None) {
-            d_op = Move;
-            d_op_start = QPoint(-1, -1);
-        }
-        d_op_dp += QPoint(0, -1);
+    case Qt::Key_Down: {
+        int step = 2;
+        if (ke->modifiers() & Qt::ShiftModifier)
+            step = 10;
+        else if (ke->modifiers() & Qt::ControlModifier)
+            step = 1;
+        QPoint delta(0, 0);
+        if (ke->key() == Qt::Key_Left)
+            delta = QPoint(-step, 0);
+        else if (ke->key() == Qt::Key_Right)
+            delta = QPoint(step, 0);
+        else if (ke->key() == Qt::Key_Up)
+            delta = QPoint(0, -step);
+        else if (ke->key() == Qt::Key_Down)
+            delta = QPoint(0, step);
+        d_op = Move;
+        d_op_start = QPoint(0, 0);
+        d_op_dp = delta;
+        operateOnTargets();
+        d_op = None;
+        d_op_dp = QPoint(0, 0);
         repaint();
         ke->accept();
         break;
-    case Qt::Key_Down:
-        if (d_op == None) {
-            d_op = Move;
-            d_op_start = QPoint(-1, -1);
-        }
-        d_op_dp += QPoint(0, 1);
-        repaint();
-        ke->accept();
-        break;
+    }
     default:
         ke->ignore();
     }

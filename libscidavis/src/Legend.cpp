@@ -42,7 +42,7 @@
 #include <qwt_layout_metrics.h>
 #include <qwt_symbol.h>
 
-Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0)
+Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0), d_num_columns(1)
 {
     d_text = new QwtText(QString(), QwtText::RichText);
     d_text->setFont(QFont("Arial", 12, QFont::Normal, false));
@@ -195,6 +195,96 @@ void Legend::setFont(const QFont &font)
     d_text->setFont(resolved);
 }
 
+void Legend::setNumColumns(int cols)
+{
+    const int clamped = qMax(1, cols);
+    if (d_num_columns == clamped)
+        return;
+    d_num_columns = clamped;
+}
+
+void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVector<int> &cellX,
+                                QVector<int> &cellCenterY, int &totalWidth, int &totalHeight) const
+{
+    totalWidth = 0;
+    totalHeight = 0;
+
+    const bool scatterOnly = isScatterOnly();
+    const int sampleOffset =
+            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
+
+    QString text = d_text->text().trimmed();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
+#else
+    QStringList titles = text.split("\n", QString::KeepEmptyParts);
+#endif
+    const int n = titles.count();
+    cellX.resize(n);
+    cellCenterY.resize(n);
+    if (n <= 0) {
+        totalWidth = 2 * left_margin;
+        totalHeight = 2 * top_margin;
+        return;
+    }
+
+    const int cols = qBound(1, d_num_columns, n);
+    const int rows = (n + cols - 1) / cols;
+    QVector<int> colWidths(cols, 0);
+    QVector<int> rowHeights(rows, 0);
+
+    const QwtMetricsMap map = QwtPainter::metricsMap();
+    for (int i = 0; i < n; ++i) {
+        const QString &str = titles[i];
+        int itemW = 0;
+        if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
+            itemW = sampleOffset;
+
+        QwtText aux(parse(str));
+        QSize size = aux.textSize(d_text->font());
+        if (!map.isIdentity()) {
+            int screen_width = map.layoutToScreenX(size.width());
+            screen_width -= 3;
+            screen_width *= 1.1;
+            size = QSize(map.screenToLayoutX(screen_width), size.height());
+        }
+        itemW += size.width();
+        const int itemH = size.height();
+        const int row = i / cols;
+        const int col = i % cols;
+        if (itemW > colWidths[col])
+            colWidths[col] = itemW;
+        if (itemH > rowHeights[row])
+            rowHeights[row] = itemH;
+    }
+
+    const int colGap = (cols > 1) ? (2 * left_margin + 6) : 0;
+    QVector<int> colOffsetX(cols, baseX + left_margin);
+    for (int c = 1; c < cols; ++c)
+        colOffsetX[c] = colOffsetX[c - 1] + colWidths[c - 1] + colGap;
+
+    QVector<int> rowOffsetY(rows, baseY + top_margin);
+    for (int r = 1; r < rows; ++r)
+        rowOffsetY[r] = rowOffsetY[r - 1] + rowHeights[r - 1];
+
+    for (int i = 0; i < n; ++i) {
+        const int row = i / cols;
+        const int col = i % cols;
+        cellX[i] = colOffsetX[col];
+        cellCenterY[i] = rowOffsetY[row] + rowHeights[row] / 2;
+    }
+
+    int sumW = 0;
+    for (int c = 0; c < cols; ++c)
+        sumW += colWidths[c];
+    int sumH = 0;
+    for (int r = 0; r < rows; ++r)
+        sumH += rowHeights[r];
+
+    totalWidth = 2 * left_margin + sumW + (cols - 1) * colGap;
+    totalHeight = 2 * top_margin + sumH;
+}
+
 void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const
 {
     p->save();
@@ -261,8 +351,12 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
     Graph *g = (Graph *)d_plot->parent();
     const bool scatterOnly = isScatterOnly();
 
-    int w = rect.x() + left_margin;
     int l = scatterOnly ? qMax(symbolLineLength, 14) : (symbolLineLength + 2 * left_margin);
+
+    QVector<int> cellX;
+    QVector<int> cellCenterY;
+    int dummyW = 0, dummyH = 0;
+    computeCellsLayout(rect.x(), rect.y(), symbolLineLength, cellX, cellCenterY, dummyW, dummyH);
 
     QString text = d_text->text().trimmed();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
@@ -272,6 +366,8 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 #endif
 
     for (int i = 0; i < (int)titles.count(); i++) {
+        const int w = (i < cellX.size()) ? cellX[i] : (rect.x() + left_margin);
+        const int cy = (i < cellCenterY.size()) ? cellCenterY[i] : int(height[i]);
         if (titles[i].contains("\\c{") || titles[i].contains("\\l(")) {
             QString aux;
             if (titles[i].contains("\\c{")) { // SciDAVis symbol specification
@@ -289,7 +385,7 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                 continue;
 
             if (g && (g->curveType(cv) == Graph ::VectXYXY || g->curveType(cv) == Graph ::VectXYAM))
-                drawVector(p, w, height[i], l, cv);
+                drawVector(p, w, cy, l, cv);
             else {
                 const QwtPlotCurve *curve = g ? g->curve(cv) : nullptr;
                 if (curve && curve->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
@@ -302,11 +398,11 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     if (curve->style() != 0) {
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
-                            QRect lr = QRect(w, height[i] - 4, l, 10);
+                            QRect lr = QRect(w, cy - 4, l, 10);
                             p->setBrush(br);
                             QwtPainter::drawRect(p, lr);
                         } else
-                            QwtPainter::drawLine(p, w, height[i], w + l, height[i]);
+                            QwtPainter::drawLine(p, w, cy, w + l, cy);
                     }
                     int symb_size = symb.size().width();
                     if (symb_size > 15)
@@ -314,7 +410,7 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     else if (symb_size < 3)
                         symb_size = 3;
                     symb.setSize(symb_size);
-                    symb.draw(p, w + l / 2, height[i]);
+                    symb.draw(p, w + l / 2, cy);
                     p->restore();
                 }
             }
@@ -334,7 +430,7 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 
                     p->save();
                     p->setPen(QPen(pen.color(), 1, Qt::SolidLine));
-                    QRect lr = QRect(w, height[i] - 4, l, 10);
+                    QRect lr = QRect(w, cy - 4, l, 10);
                     p->setBrush(br);
                     QwtPainter::drawRect(p, lr);
                     p->restore();
@@ -347,10 +443,14 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
-    int w = rect.x() + left_margin;
     const bool scatterOnly = isScatterOnly();
     const int sampleOffset =
             scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
+
+    QVector<int> cellX;
+    QVector<int> cellCenterY;
+    int dummyW = 0, dummyH = 0;
+    computeCellsLayout(rect.x(), rect.y(), symbolLineLength, cellX, cellCenterY, dummyW, dummyH);
 
     QString text = d_text->text().trimmed();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
@@ -361,7 +461,8 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
 
     for (int i = 0; i < (int)titles.count(); i++) {
         QString str = titles[i];
-        int x = w;
+        int x = (i < cellX.size()) ? cellX[i] : (rect.x() + left_margin);
+        const int cy = (i < cellCenterY.size()) ? cellCenterY[i] : int(height[i]);
         if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
             x += sampleOffset;
 
@@ -381,64 +482,20 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
             size = QSize(map.screenToLayoutX(screen_width), size.height());
         }
 
-        QRect tr = QRect(QPoint(x, height[i] - size.height() / 2), size);
+        QRect tr = QRect(QPoint(x, cy - size.height() / 2), size);
         aux.draw(p, tr);
     }
 }
 
 QwtArray<long> Legend::itemsHeight(int y, int symbolLineLength, int &width, int &height) const
 {
-    int maxL = 0;
+    QVector<int> cellX;
+    QVector<int> cellCenterY;
+    computeCellsLayout(0, y, symbolLineLength, cellX, cellCenterY, width, height);
 
-    width = 0;
-    height = 0;
-
-    const bool scatterOnly = isScatterOnly();
-    const int sampleOffset =
-            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
-
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
-    int n = (int)titles.count();
-    QwtArray<long> heights(n);
-
-    int h = top_margin;
-
-    for (int i = 0; i < n; i++) {
-        QString str = titles[i];
-        int textL = 0;
-        if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
-            textL = sampleOffset;
-
-        QwtText aux(parse(str));
-        QSize size = aux.textSize(d_text->font());
-        // bug in Qwt; workaround in QwtText::textSize() only works for short texts.
-        // Thus, we work around the workaround.
-        const QwtMetricsMap map = QwtPainter::metricsMap();
-        if (!map.isIdentity()) {
-            int screen_width = map.layoutToScreenX(size.width());
-            screen_width -= 3;
-            screen_width *= 1.1;
-            size = QSize(map.screenToLayoutX(screen_width), size.height());
-        }
-        textL += size.width();
-        if (textL > maxL)
-            maxL = textL;
-
-        int textH = size.height();
-        height += textH;
-
-        heights[i] = y + h + textH / 2;
-        h += textH;
-    }
-
-    height += 2 * top_margin;
-    width = 2 * left_margin + maxL;
-
+    QwtArray<long> heights(cellCenterY.size());
+    for (int i = 0; i < cellCenterY.size(); ++i)
+        heights[i] = cellCenterY[i];
     return heights;
 }
 
@@ -556,18 +613,29 @@ QString Legend::parse(const QString &str) const
         s = s.right(s.length() - pos - 1);
     }
 
-    if (s.contains("%(")) { // curve name specification
-        int pos = s.indexOf("%(", 0);
-        int pos2 = s.indexOf(")", pos);
-        int cv = s.mid(pos + 2, pos2 - pos - 2).toInt() - 1;
-        if (cv >= 0) {
-            Graph *g = (Graph *)d_plot->parent();
+    int searchFrom = 0;
+    int pos = -1;
+    while ((pos = s.indexOf("%(", searchFrom)) >= 0) { // curve name specification
+        int pos2 = s.indexOf(")", pos + 2);
+        if (pos2 < 0)
+            break;
+        bool ok = false;
+        int cv = s.mid(pos + 2, pos2 - pos - 2).toInt(&ok) - 1;
+        bool replaced = false;
+        if (ok && cv >= 0) {
+            Graph *g = d_plot ? (Graph *)d_plot->parent() : nullptr;
             if (g) {
                 const QwtPlotCurve *c = (QwtPlotCurve *)g->curve(cv);
-                if (c)
-                    s = s.replace(pos, pos2 - pos + 1, c->title().text());
+                if (c) {
+                    const QString repl = c->title().text();
+                    s.replace(pos, pos2 - pos + 1, repl);
+                    searchFrom = pos + repl.length();
+                    replaced = true;
+                }
             }
         }
+        if (!replaced)
+            searchFrom = pos2 + 1;
     }
     return s;
 }

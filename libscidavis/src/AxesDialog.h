@@ -88,6 +88,8 @@ protected:
     void initFramePage();
     //! generate UI for the reference lines page
     void initReferenceLinesPage();
+    //! generate UI for the axis break page
+    void initAxisBreakPage();
     void refreshGraphState();
 
     QPushButton *buttonApply;
@@ -130,6 +132,8 @@ protected:
     QComboBox *boxMajorTicksType, *boxMinorTicksType, *boxFormat, *boxAxisType, *boxColName;
     QGroupBox *boxFramed;
     QLabel *label1, *label2, *label3, *boxScaleTypeLabel, *minorBoxLabel, *labelTable;
+    QLabel *labelDivideFactor, *labelTickPrefix, *labelTickSuffix;
+    QLineEdit *boxDivideFactor, *boxTickPrefix, *boxTickSuffix;
     QSpinBox *boxMajorTicksLength, *boxMinorTicksLength, *boxBorderWidth;
     QComboBox *boxUnit, *boxTableName, *boxGridXAxis, *boxGridYAxis;
     ColorButton *boxFrameColor, *boxAxisNumColor;
@@ -146,6 +150,12 @@ protected:
     QLineEdit *refLabelEdit;
     QCheckBox *refFillBox;
     QPushButton *btnRefAdd, *btnRefUpdate, *btnRefRemove, *btnRefClear;
+    QWidget *axisBreakPage;
+    QListWidget *axisBreakAxesList;
+    QCheckBox *boxEnableAxisBreak;
+    QLineEdit *boxBreakFrom, *boxBreakTo, *boxBreakStepBefore, *boxBreakStepAfter;
+    QDoubleSpinBox *boxBreakPositionPct;
+    QComboBox *boxBreakTypeBefore, *boxBreakTypeAfter;
 
 public slots:
     void setAxisType(int axis);
@@ -206,6 +216,8 @@ public slots:
     void updateSelectedRefLineFromUi();
     void removeSelectedRefLine();
     void clearAllRefLines();
+    void updateAxisBreakPage(int row = -1);
+    void applyTickLabelTransformFromUi();
 
     //! Shows the dialog as a modal dialog
     /**

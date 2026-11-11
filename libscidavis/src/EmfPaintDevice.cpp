@@ -63,6 +63,72 @@ public:
         };
     }
 
+    static COLORREF compositeColorOverWhite(const QColor &c)
+    {
+        const int a = std::clamp(c.alpha(), 0, 255);
+        if (a >= 255)
+            return RGB(c.red(), c.green(), c.blue());
+        const int r = (c.red() * a + 255 * (255 - a) + 127) / 255;
+        const int g = (c.green() * a + 255 * (255 - a) + 127) / 255;
+        const int b = (c.blue() * a + 255 * (255 - a) + 127) / 255;
+        return RGB(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
+    }
+
+    bool alphaBlendClippedPath(const QColor &c) const
+    {
+        const int a = std::clamp(c.alpha(), 0, 255);
+        if (a <= 0 || a >= 255 || !m_hdc)
+            return false;
+
+        RECT clipBox{};
+        if (GetClipBox(m_hdc, &clipBox) == ERROR || clipBox.right <= clipBox.left
+            || clipBox.bottom <= clipBox.top) {
+            return false;
+        }
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = 1;
+        bmi.bmiHeader.biHeight = -1;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void *bits = nullptr;
+        HDC memDc = CreateCompatibleDC(m_hdc);
+        if (!memDc)
+            return false;
+        HBITMAP hBmp = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (!hBmp || !bits) {
+            if (hBmp)
+                DeleteObject(hBmp);
+            DeleteDC(memDc);
+            return false;
+        }
+
+        auto *px = static_cast<unsigned char *>(bits);
+        px[0] = static_cast<unsigned char>(c.blue());
+        px[1] = static_cast<unsigned char>(c.green());
+        px[2] = static_cast<unsigned char>(c.red());
+        px[3] = 255;
+
+        HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
+        BLENDFUNCTION bf{};
+        bf.BlendOp = AC_SRC_OVER;
+        bf.BlendFlags = 0;
+        bf.SourceConstantAlpha = static_cast<BYTE>(a);
+        bf.AlphaFormat = 0;
+
+        const BOOL ok = GdiAlphaBlend(m_hdc, clipBox.left, clipBox.top,
+                                      clipBox.right - clipBox.left,
+                                      clipBox.bottom - clipBox.top,
+                                      memDc, 0, 0, 1, 1, bf);
+        SelectObject(memDc, oldBmp);
+        DeleteObject(hBmp);
+        DeleteDC(memDc);
+        return ok != FALSE;
+    }
+
     HPEN createCurrentPen() const
     {
         if (m_pen.style() == Qt::NoPen || m_pen.color().alpha() == 0)
@@ -112,7 +178,7 @@ public:
         QColor c = m_pen.color();
         LOGBRUSH lb{};
         lb.lbStyle = BS_SOLID;
-        lb.lbColor = RGB(c.red(), c.green(), c.blue());
+        lb.lbColor = compositeColorOverWhite(c);
         lb.lbHatch = 0;
 
         HPEN hPen = ExtCreatePen(PS_GEOMETRIC | penStyle | capStyle | joinStyle, gdiWidth, &lb, 0, nullptr);
@@ -126,7 +192,7 @@ public:
         if (m_brush.style() == Qt::NoBrush || m_brush.color().alpha() == 0)
             return static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
         QColor c = m_brush.color();
-        return CreateSolidBrush(RGB(c.red(), c.green(), c.blue()));
+        return CreateSolidBrush(compositeColorOverWhite(c));
     }
 
     static void deletePenIfCustom(HPEN pen)
@@ -208,6 +274,36 @@ public:
             return;
 
         SetPolyFillMode(m_hdc, path.fillRule() == Qt::WindingFill ? WINDING : ALTERNATE);
+        const bool translucentBrush = hasBrush && m_brush.color().alpha() < 255;
+
+        if (translucentBrush) {
+            bool blended = false;
+            const int savedDc = SaveDC(m_hdc);
+            if (savedDc != 0) {
+                emitPathToGdi(path);
+                if (SelectClipPath(m_hdc, RGN_AND))
+                    blended = alphaBlendClippedPath(m_brush.color());
+                RestoreDC(m_hdc, savedDc);
+            }
+            if (!blended) {
+                HBRUSH brush = createCurrentBrush();
+                HGDIOBJ oldBrush = SelectObject(m_hdc, brush);
+                emitPathToGdi(path);
+                FillPath(m_hdc);
+                SelectObject(m_hdc, oldBrush);
+                deleteBrushIfCustom(brush);
+            }
+            if (hasPen) {
+                HPEN pen = createCurrentPen();
+                HGDIOBJ oldPen = SelectObject(m_hdc, pen);
+                emitPathToGdi(path);
+                StrokePath(m_hdc);
+                SelectObject(m_hdc, oldPen);
+                deletePenIfCustom(pen);
+            }
+            return;
+        }
+
         HPEN pen = createCurrentPen();
         HBRUSH brush = createCurrentBrush();
         HGDIOBJ oldPen = SelectObject(m_hdc, pen);
@@ -234,6 +330,18 @@ public:
     {
         if (!points || pointCount < 2)
             return;
+        if (mode != PolylineMode && m_brush.style() != Qt::NoBrush
+            && m_brush.color().alpha() > 0 && m_brush.color().alpha() < 255) {
+            QPainterPath path;
+            path.setFillRule(mode == WindingMode ? Qt::WindingFill : Qt::OddEvenFill);
+            path.moveTo(points[0]);
+            for (int i = 1; i < pointCount; ++i)
+                path.lineTo(points[i]);
+            path.closeSubpath();
+            drawPath(path);
+            return;
+        }
+
         std::vector<POINT> pts(static_cast<size_t>(pointCount));
         for (int i = 0; i < pointCount; ++i)
             pts[static_cast<size_t>(i)] = mapPoint(points[i]);
@@ -340,7 +448,7 @@ public:
         if (m_pen.style() == Qt::NoPen || m_pen.color().alpha() == 0)
             return;
         QColor c = m_pen.color();
-        COLORREF cr = RGB(c.red(), c.green(), c.blue());
+        COLORREF cr = compositeColorOverWhite(c);
         HBRUSH br = CreateSolidBrush(cr);
         for (int i = 0; i < pointCount; ++i) {
             POINT p = mapPoint(points[i]);
@@ -410,7 +518,7 @@ public:
         HGDIOBJ oldFont = SelectObject(m_hdc, hFont);
 
         QColor tc = m_pen.color();
-        SetTextColor(m_hdc, RGB(tc.red(), tc.green(), tc.blue()));
+        SetTextColor(m_hdc, compositeColorOverWhite(tc));
         SetBkMode(m_hdc, TRANSPARENT);
         SetTextAlign(m_hdc, TA_LEFT | TA_BASELINE);
 
@@ -652,31 +760,41 @@ OleRenderedGraph renderFromImage(const QImage &img)
 
 OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
 {
-    if (!ml)
+    if (!ml && !singleLayer)
         return renderFromImage(QImage());
 
     QRect mlLayersRect;
-    if (!singleLayer) {
-        QWidgetList gl = ml->graphPtrs();
-        for (int i = 0; i < gl.count(); ++i) {
-            Graph *gr = qobject_cast<Graph *>(gl.at(i));
-            if (gr && gr->plotWidget())
-                mlLayersRect = mlLayersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-        }
-        if (!mlLayersRect.isEmpty()) {
-            mlLayersRect.adjust(-ml->leftMargin(), -ml->topMargin(), ml->rightMargin(),
-                                ml->bottomMargin());
+    if (!singleLayer && ml) {
+        if (ml->pageUnit() != MultiLayer::UnitPx && ml->canvasWidget()
+            && !ml->canvasWidget()->rect().isEmpty()) {
+            mlLayersRect = ml->canvasWidget()->rect();
+        } else {
+            QWidgetList gl = ml->graphPtrs();
+            for (int i = 0; i < gl.count(); ++i) {
+                Graph *gr = qobject_cast<Graph *>(gl.at(i));
+                if (gr && gr->plotWidget())
+                    mlLayersRect = mlLayersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+            }
+            if (!mlLayersRect.isEmpty()) {
+                mlLayersRect.adjust(-ml->leftMargin(), -ml->topMargin(), ml->rightMargin(),
+                                    ml->bottomMargin());
+            }
         }
     }
 
     QSize pxSize = singleLayer && singleLayer->plotWidget()
             ? singleLayer->plotWidget()->size()
-            : (!mlLayersRect.isEmpty() ? mlLayersRect.size() : ml->canvasWidget()->size());
+            : (!mlLayersRect.isEmpty()
+                       ? mlLayersRect.size()
+                       : (ml && ml->canvasWidget() ? ml->canvasWidget()->size() : QSize(500, 500)));
     if (pxSize.width() < 50 || pxSize.height() < 50)
         pxSize = QSize(500, 500);
 
-    int dpiX = ml->logicalDpiX() > 0 ? ml->logicalDpiX() : 96;
-    int dpiY = ml->logicalDpiY() > 0 ? ml->logicalDpiY() : 96;
+    const QWidget *dpiWidget = ml ? static_cast<const QWidget *>(ml)
+                                  : static_cast<const QWidget *>(singleLayer);
+    const int dpiX = (dpiWidget && dpiWidget->logicalDpiX() > 0) ? dpiWidget->logicalDpiX() : 96;
+    const int dpiY = (dpiWidget && dpiWidget->logicalDpiY() > 0) ? dpiWidget->logicalDpiY() : 96;
+    const double zoom = ml ? std::max(0.1, ml->pageZoom()) : 1.0;
 
     // 1. Render raster QImage for CF_DIB compatibility
     QImage raster(pxSize, QImage::Format_ARGB32);
@@ -685,8 +803,8 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
         QPainter rp(&raster);
         if (singleLayer)
             singleLayer->exportPainter(rp, false, QRect(QPoint(0, 0), pxSize), pxSize);
-        else
-            ml->exportPainter(rp, false, QRect(), pxSize);
+        else if (ml)
+            ml->exportPainter(rp, false, mlLayersRect, pxSize);
         rp.end();
     }
 
@@ -694,8 +812,36 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
     out.pixelSize = pxSize;
     out.dibBytes = imageToDibBytes(raster);
 
-    const LONG widthHm = std::max(1000L, static_cast<LONG>(std::lround(pxSize.width() * 2540.0 / dpiX)));
-    const LONG heightHm = std::max(1000L, static_cast<LONG>(std::lround(pxSize.height() * 2540.0 / dpiY)));
+    LONG widthHm = 15000L;
+    LONG heightHm = 11250L;
+    if (!singleLayer && ml && ml->pageUnit() != MultiLayer::UnitPx) {
+        auto toHm = [](double val, MultiLayer::PageUnit u) -> LONG {
+            double hm = val * 100.0;
+            switch (u) {
+            case MultiLayer::UnitMm:
+                hm = val * 100.0;
+                break;
+            case MultiLayer::UnitCm:
+                hm = val * 1000.0;
+                break;
+            case MultiLayer::UnitInch:
+                hm = val * 2540.0;
+                break;
+            case MultiLayer::UnitPx:
+            default:
+                hm = (val / 96.0) * 2540.0;
+                break;
+            }
+            return std::max(1000L, static_cast<LONG>(std::lround(hm)));
+        };
+        widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
+        heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
+    } else {
+        const double unzoomedW = double(pxSize.width()) / zoom;
+        const double unzoomedH = double(pxSize.height()) / zoom;
+        widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / dpiX)));
+        heightHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedH * 2540.0 / dpiY)));
+    }
     out.extentHm = SIZEL{ widthHm, heightHm };
 
     HDC ref = GetDC(nullptr);
@@ -716,13 +862,15 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
         return out;
 
     {
-        WinGdiEmfPaintDevice emfDev(dc, pxSize, QSize(targetW, targetH), dpiX, dpiY);
+        const int emfLogicalDpiX = std::max(36, static_cast<int>(std::lround(dpiX * zoom)));
+        const int emfLogicalDpiY = std::max(36, static_cast<int>(std::lround(dpiY * zoom)));
+        WinGdiEmfPaintDevice emfDev(dc, pxSize, QSize(targetW, targetH), emfLogicalDpiX, emfLogicalDpiY);
         QPainter vp(&emfDev);
         if (singleLayer) {
             vp.fillRect(QRect(QPoint(0, 0), pxSize), Qt::white);
             singleLayer->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
-        } else {
-            ml->exportPainter(vp, false, QRect(), pxSize);
+        } else if (ml) {
+            ml->exportPainter(vp, false, mlLayersRect, pxSize);
         }
         vp.end();
     }

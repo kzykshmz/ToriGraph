@@ -31,12 +31,20 @@
 
 #include <QDateTime>
 #include <QMessageBox>
+#include <QPainter>
+#include <cmath>
 
 #include <qwt_painter.h>
+#include <qwt_scale_map.h>
 #include <qwt_text.h>
 
 ScaleDraw::ScaleDraw(const QString &s)
-    : formula_string(s), d_fmt('g'), d_prec(4), d_minTicks(In), d_majTicks(In)
+    : formula_string(s),
+      d_fmt('g'),
+      d_prec(4),
+      d_minTicks(In),
+      d_majTicks(In),
+      d_divide_factor(1.0)
 {
 }
 
@@ -44,16 +52,33 @@ ScaleDraw::ScaleDraw(const ScaleDraw &other, const QString &s)
     : QwtScaleDraw(other),
       formula_string(s),
       d_minTicks(other.minorTicksStyle()),
-      d_majTicks(other.majorTicksStyle())
+      d_majTicks(other.majorTicksStyle()),
+      d_divide_factor(other.d_divide_factor),
+      d_prefix(other.d_prefix),
+      d_suffix(other.d_suffix),
+      d_break_enabled(other.d_break_enabled),
+      d_break_value(other.d_break_value)
 {
     other.labelFormat(d_fmt, d_prec);
     invalidateCache();
 }
 
+void ScaleDraw::setTickLabelTransform(double divideByFactor, const QString &prefix,
+                                      const QString &suffix)
+{
+    if (std::isfinite(divideByFactor) && std::fabs(divideByFactor) > 1e-300)
+        d_divide_factor = divideByFactor;
+    else
+        d_divide_factor = 1.0;
+    d_prefix = prefix;
+    d_suffix = suffix;
+    invalidateCache();
+}
+
 double ScaleDraw::transformValue(double value) const
 {
+    double res = value;
     if (!formula_string.isEmpty()) {
-        double lbl = 0.0;
         try {
             MyParser parser;
             if (formula_string.contains("x"))
@@ -62,14 +87,16 @@ double ScaleDraw::transformValue(double value) const
                 parser.DefineVar(_T("y"), &value);
 
             parser.SetExpr(formula_string.toUtf8().constData());
-            lbl = parser.Eval();
+            res = parser.Eval();
         } catch (mu::ParserError &) {
             return 0;
         }
-
-        return lbl;
-    } else
-        return value;
+    }
+    if (std::isfinite(d_divide_factor) && std::fabs(d_divide_factor) > 1e-300
+        && std::fabs(d_divide_factor - 1.0) > 1e-15) {
+        res /= d_divide_factor;
+    }
+    return res;
 }
 
 /*!
@@ -124,6 +151,53 @@ void ScaleDraw::drawTick(QPainter *p, double value, int len) const
         return;
 
     QwtScaleDraw::drawTick(p, value, len);
+}
+
+void ScaleDraw::drawBackbone(QPainter *painter) const
+{
+    if (!d_break_enabled || !painter) {
+        QwtScaleDraw::drawBackbone(painter);
+        return;
+    }
+
+    const int bw2 = painter->pen().width() / 2;
+    const QPoint p0 = pos();
+    const int len = length() - 1;
+    const int brkPx = map().transform(d_break_value);
+    const int gap = 4;
+
+    switch (alignment()) {
+    case LeftScale:
+    case RightScale: {
+        const int x = (alignment() == LeftScale) ? (p0.x() - bw2) : (p0.x() + bw2);
+        const int y0 = p0.y();
+        const int y1 = p0.y() + len;
+        if (brkPx > y0 + gap + 4 && brkPx < y1 - gap - 4) {
+            QwtPainter::drawLine(painter, x, y0, x, brkPx - gap);
+            QwtPainter::drawLine(painter, x, brkPx + gap, x, y1);
+            QwtPainter::drawLine(painter, x - 5, brkPx - gap + 3, x + 5, brkPx - gap - 3);
+            QwtPainter::drawLine(painter, x - 5, brkPx + gap + 3, x + 5, brkPx + gap - 3);
+        } else {
+            QwtScaleDraw::drawBackbone(painter);
+        }
+        break;
+    }
+    case TopScale:
+    case BottomScale: {
+        const int y = (alignment() == TopScale) ? (p0.y() - bw2) : (p0.y() + bw2);
+        const int x0 = p0.x();
+        const int x1 = p0.x() + len;
+        if (brkPx > x0 + gap + 4 && brkPx < x1 - gap - 4) {
+            QwtPainter::drawLine(painter, x0, y, brkPx - gap, y);
+            QwtPainter::drawLine(painter, brkPx + gap, y, x1, y);
+            QwtPainter::drawLine(painter, brkPx - gap - 3, y + 5, brkPx - gap + 3, y - 5);
+            QwtPainter::drawLine(painter, brkPx + gap - 3, y + 5, brkPx + gap + 3, y - 5);
+        } else {
+            QwtScaleDraw::drawBackbone(painter);
+        }
+        break;
+    }
+    }
 }
 
 /*****************************************************************************
@@ -300,31 +374,46 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
     int prec;
     labelFormat(f, prec);
 
-    QString txt = QLocale().toString(transformValue(value), 'e', prec);
+    const double transformed = transformValue(value);
+    if (transformed == 0.0)
+        return QwtText(prefix() + QString("0") + suffix());
+
+    QString txt = QLocale().toString(transformed, 'e', prec);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList list = txt.split("e", Qt::SkipEmptyParts);
+    QStringList list = txt.split('e', Qt::SkipEmptyParts, Qt::CaseInsensitive);
 #else
-    QStringList list = txt.split("e", QString::SkipEmptyParts);
+    QStringList list = txt.split('e', QString::SkipEmptyParts, Qt::CaseInsensitive);
 #endif
-    if (list[0].toDouble() == 0.0)
-        return QString("0");
+    if (list.size() < 2)
+        return QwtText(prefix() + txt + suffix());
+
+    bool okMant = false;
+    double mant = QLocale().toDouble(list[0], &okMant);
+    if (!okMant)
+        mant = list[0].toDouble(&okMant);
+    if (okMant && mant == 0.0)
+        return QwtText(prefix() + QString("0") + suffix());
 
     QString s = list[1];
-    int l = s.length();
-    QChar sign = s[0];
-
-    s.remove(sign);
-
-    while (l > 1 && s.startsWith("0", Qt::CaseInsensitive)) {
+    QChar sign;
+    if (!s.isEmpty() && (s[0] == '+' || s[0] == '-')) {
+        sign = s[0];
         s.remove(0, 1);
-        l = s.length();
     }
+
+    while (s.length() > 1 && s.startsWith('0'))
+        s.remove(0, 1);
 
     if (sign == '-')
         s.prepend(sign);
 
-    if (qAbs(list[0].toDouble() - 1.0) < 1e-9)
-        return QwtText("10<sup>" + s + "</sup>");
+    QString core;
+    if (okMant && qAbs(mant - 1.0) < 1e-9)
+        core = "10<sup>" + s + "</sup>";
+    else if (okMant && qAbs(mant + 1.0) < 1e-9)
+        core = "-10<sup>" + s + "</sup>";
     else
-        return QwtText(list[0] + "x10<sup>" + s + "</sup>");
+        core = list[0] + QString::fromUtf8("\xC3\x97") + "10<sup>" + s + "</sup>";
+
+    return QwtText(prefix() + core + suffix());
 }

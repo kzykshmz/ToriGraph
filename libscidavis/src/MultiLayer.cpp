@@ -55,6 +55,7 @@
 #include "ApplicationWindow.h"
 #ifdef Q_OS_WIN
 #include "OleServer.h"
+#include "EmfPaintDevice.h"
 #endif
 #include "Plot.h"
 #include "Legend.h"
@@ -64,6 +65,9 @@
 #include "ColorButton.h"
 #include "ScaleDraw.h"
 
+#include <qwt_symbol.h>
+#include <QFile>
+#include <QRegularExpression>
 #include <QToolButton>
 #include <QMenu>
 #include <QDialog>
@@ -772,16 +776,34 @@ void MultiLayer::exportToFile(const QString &fileName)
         return;
     }
 
-    if (fileName.contains(".eps") || fileName.contains(".pdf") || fileName.contains(".ps")) {
+    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
+#ifdef Q_OS_WIN
+        const OleRenderedGraph emf = SciDAVisEmf::renderMultiLayer(this, nullptr);
+        if (!emf.emfBytes.isEmpty()) {
+            QFile f(fileName);
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write(emf.emfBytes);
+                f.close();
+                return;
+            }
+        }
+#endif
+        QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
+        return;
+    }
+
+    if (fileName.contains(".eps", Qt::CaseInsensitive)
+        || fileName.contains(".pdf", Qt::CaseInsensitive)
+        || fileName.contains(".ps", Qt::CaseInsensitive)) {
         exportVector(fileName);
         return;
-    } else if (fileName.contains(".svg")) {
+    } else if (fileName.contains(".svg", Qt::CaseInsensitive)) {
         exportSVG(fileName);
         return;
     } else {
         QList<QByteArray> list = QImageWriter::supportedImageFormats();
         for (int i = 0; i < list.count(); i++) {
-            if (fileName.contains("." + list[i].toLower())) {
+            if (fileName.contains("." + list[i].toLower(), Qt::CaseInsensitive)) {
                 exportImage(fileName);
                 return;
             }
@@ -790,8 +812,13 @@ void MultiLayer::exportToFile(const QString &fileName)
     }
 }
 
-void MultiLayer::exportImage(const QString &fileName, int quality)
+void MultiLayer::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
 {
+    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
+        exportToFile(fileName);
+        return;
+    }
+
     QRect layersRect;
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -801,11 +828,111 @@ void MultiLayer::exportImage(const QString &fileName, int quality)
     if (!layersRect.isEmpty())
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
-        layersRect = canvas->rect();
+        layersRect = canvas ? canvas->rect() : QRect(0, 0, 520, 520);
 
-    QImage image(layersRect.size(), QImage::Format_ARGB32);
-    exportPainter(image);
-    image.save(fileName, 0, quality);
+    const bool hasPhysicalPage = (d_page_unit != UnitPx);
+    const QRect srcRect = (hasPhysicalPage || d_page_view_mode)
+            ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
+            : layersRect;
+
+    const int effectiveDpi = (dpi > 0)
+            ? qBound(36, dpi, 4800)
+            : (hasPhysicalPage ? qBound(36, d_page_dpi, 4800) : 96);
+
+    QSize targetSize;
+    if (hasPhysicalPage) {
+        auto toInches = [](double val, PageUnit u) -> double {
+            switch (u) {
+            case UnitMm:
+                return val / 25.4;
+            case UnitCm:
+                return val / 2.54;
+            case UnitInch:
+                return val;
+            case UnitPx:
+            default:
+                return val / 96.0;
+            }
+        };
+        const double wIn = toInches(d_page_width_val, d_page_unit);
+        const double hIn = toInches(d_page_height_val, d_page_unit);
+        targetSize = QSize(qMax(1, qRound(wIn * double(effectiveDpi))),
+                           qMax(1, qRound(hIn * double(effectiveDpi))));
+    } else {
+        const double scale = double(effectiveDpi) / 96.0;
+        targetSize = QSize(qMax(1, qRound(srcRect.width() * scale)),
+                           qMax(1, qRound(srcRect.height() * scale)));
+    }
+
+    QImage image(targetSize, QImage::Format_ARGB32);
+    image.fill(transparent ? QColor(255, 255, 255, 0)
+                           : (d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white)));
+
+    QVector<QColor> savedBg(graphsList.count()), savedCanvasBg(graphsList.count());
+    if (transparent) {
+        for (int i = 0; i < graphsList.count(); ++i) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            if (!gr || !gr->plotWidget())
+                continue;
+            savedBg[i] = gr->plotWidget()->palette().color(QPalette::Window);
+            savedCanvasBg[i] = gr->plotWidget()->canvasBackground();
+            QColor bg = savedBg[i];
+            bg.setAlpha(0);
+            QPalette pal = gr->plotWidget()->palette();
+            pal.setColor(QPalette::Window, bg);
+            gr->plotWidget()->setPalette(pal);
+            QColor cbg = savedCanvasBg[i];
+            cbg.setAlpha(0);
+            gr->plotWidget()->setCanvasBackground(cbg);
+        }
+    }
+
+    {
+        QPainter p(&image);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                         | QPainter::SmoothPixmapTransform);
+        p.scale(double(targetSize.width()) / double(qMax(1, srcRect.width())),
+                double(targetSize.height()) / double(qMax(1, srcRect.height())));
+        if (!transparent) {
+            p.fillRect(QRect(QPoint(0, 0), srcRect.size()),
+                       d_page_bg_color.isValid() ? QBrush(d_page_bg_color)
+                                                 : widget()->palette().brush(backgroundRole()));
+        }
+        for (int i = 0; i < (int)graphsList.count(); i++) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            if (!gr || !gr->plotWidget())
+                continue;
+            Plot *myPlot = (Plot *)gr->plotWidget();
+            QPoint pos = gr->pos() - srcRect.topLeft();
+            gr->exportPainter(p, false, QRect(pos, myPlot->size()));
+        }
+        p.end();
+    }
+
+    if (transparent) {
+        for (int i = 0; i < graphsList.count(); ++i) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            if (!gr || !gr->plotWidget())
+                continue;
+            QPalette pal = gr->plotWidget()->palette();
+            pal.setColor(QPalette::Window, savedBg[i]);
+            gr->plotWidget()->setPalette(pal);
+            gr->plotWidget()->setCanvasBackground(savedCanvasBg[i]);
+        }
+    }
+
+    const int dpm = qRound(double(effectiveDpi) / 0.0254);
+    image.setDotsPerMeterX(dpm);
+    image.setDotsPerMeterY(dpm);
+
+    QImageWriter writer(fileName);
+    if (fileName.endsWith(".tif", Qt::CaseInsensitive)
+        || fileName.endsWith(".tiff", Qt::CaseInsensitive)) {
+        writer.setCompression(1); // LZW
+    }
+    if (quality >= 0)
+        writer.setQuality(quality);
+    writer.write(image);
 }
 
 void MultiLayer::exportPDF(const QString &fname)
@@ -813,7 +940,7 @@ void MultiLayer::exportPDF(const QString &fname)
     exportVector(fname);
 }
 
-void MultiLayer::exportVector(const QString &fileName, int, bool color, bool keepAspect,
+void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool keepAspect,
                               QPageSize pageSize, QPageLayout::Orientation orientation)
 {
     if (fileName.isEmpty()) {
@@ -821,12 +948,22 @@ void MultiLayer::exportVector(const QString &fileName, int, bool color, bool kee
         return;
     }
 
+    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
+        exportToFile(fileName);
+        return;
+    }
+
     QPrinter printer;
     printer.setDocName(this->name());
-    printer.setCreator("SciDAVis");
+    printer.setCreator("ToriGraph");
     printer.setFullPage(true);
+    if (res > 0)
+        printer.setResolution(res);
+    else if (d_page_unit != UnitPx && d_page_dpi > 0)
+        printer.setResolution(d_page_dpi);
+
     printer.setOutputFileName(fileName);
-    if (fileName.contains(".eps")) {
+    if (fileName.contains(".eps", Qt::CaseInsensitive)) {
 #if QT_VERSION >= 0x050000
         QMessageBox::warning(this, tr("Warning"),
                              tr("Output in postscript format is not available for Qt5, using PDF"));
@@ -842,24 +979,49 @@ void MultiLayer::exportVector(const QString &fileName, int, bool color, bool kee
     else
         printer.setColorMode(QPrinter::GrayScale);
 
+    QRect srcRect;
     if (pageSize == QPageSize(QPageSize::Custom)) {
-        QRect layersRect;
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
-            if (gr && gr->plotWidget())
-                layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+        if (d_page_unit != UnitPx) {
+            auto toMm = [](double val, PageUnit u) -> double {
+                switch (u) {
+                case UnitMm:
+                    return val;
+                case UnitCm:
+                    return val * 10.0;
+                case UnitInch:
+                    return val * 25.4;
+                case UnitPx:
+                default:
+                    return (val / 96.0) * 25.4;
+                }
+            };
+            const double wMm = qMax(5.0, toMm(d_page_width_val, d_page_unit));
+            const double hMm = qMax(5.0, toMm(d_page_height_val, d_page_unit));
+            printer.setPageSize(QPageSize(QSizeF(wMm, hMm), QPageSize::Millimeter));
+            if (canvas && !canvas->rect().isEmpty())
+                srcRect = canvas->rect();
+        } else {
+            QRect layersRect;
+            for (int i = 0; i < (int)graphsList.count(); i++) {
+                Graph *gr = (Graph *)graphsList.at(i);
+                if (gr && gr->plotWidget())
+                    layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+            }
+            if (!layersRect.isEmpty())
+                layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+            else
+                layersRect = canvas->rect();
+            const QSizeF ptSize(layersRect.width() * 72.0 / 96.0,
+                                layersRect.height() * 72.0 / 96.0);
+            printer.setPageSize(QPageSize(ptSize, QPageSize::Point));
+            srcRect = layersRect;
         }
-        if (!layersRect.isEmpty())
-            layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-        else
-            layersRect = canvas->rect();
-        printer.setPageSize(QPageSize(layersRect.size(), QPageSize::Point));
     } else {
         printer.setPageOrientation(orientation);
         printer.setPageSize(pageSize);
     }
 
-    exportPainter(printer, keepAspect);
+    exportPainter(printer, keepAspect, srcRect);
 }
 
 void MultiLayer::exportSVG(const QString &fname)
@@ -876,15 +1038,22 @@ void MultiLayer::exportSVG(const QString &fname)
     else
         layersRect = canvas->rect();
 
+    const QRect srcRect = (d_page_unit != UnitPx && canvas && !canvas->rect().isEmpty())
+            ? canvas->rect()
+            : layersRect;
+    QSize svgPxSize = srcRect.size();
+    if (d_page_unit != UnitPx && d_base_page_px.isValid())
+        svgPxSize = d_base_page_px;
+
     QSvgGenerator generator;
     generator.setFileName(fname);
 #if QT_VERSION >= 0x040500
-    generator.setSize(layersRect.size());
-    generator.setViewBox(QRect(QPoint(0, 0), generator.size()));
-    generator.setResolution(96); // FIXME hardcored
+    generator.setSize(svgPxSize);
+    generator.setViewBox(QRect(QPoint(0, 0), svgPxSize));
+    generator.setResolution(96);
     generator.setTitle(this->name());
 #endif
-    exportPainter(generator);
+    exportPainter(generator, false, srcRect);
 #endif
 }
 
@@ -1210,14 +1379,16 @@ void MultiLayer::wheelEvent(QWheelEvent *e)
     int xMouse = e->x();
     int yMouse = e->y();
 #endif
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        intSize = gr->plotWidget()->size();
-        aux = gr->pos();
-        if (xMouse > aux.x() && xMouse < (aux.x() + intSize.width())) {
-            if (yMouse > aux.y() && yMouse < (aux.y() + intSize.height())) {
-                resize_graph = gr;
-                resize = true;
+    if (d_layers_selector != nullptr) {
+        for (int i = 0; i < (int)graphsList.count(); i++) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            intSize = gr->plotWidget()->size();
+            aux = gr->pos();
+            if (xMouse > aux.x() && xMouse < (aux.x() + intSize.width())) {
+                if (yMouse > aux.y() && yMouse < (aux.y() + intSize.height())) {
+                    resize_graph = gr;
+                    resize = true;
+                }
             }
         }
     }
@@ -1231,7 +1402,7 @@ void MultiLayer::wheelEvent(QWheelEvent *e)
         QApplication::restoreOverrideCursor();
         return;
     }
-    if (resize
+    if (resize && d_layers_selector != nullptr
         && (e->modifiers() == Qt::AltModifier || e->modifiers() == Qt::ControlModifier
             || e->modifiers() == Qt::ShiftModifier)) {
         intSize = resize_graph->plotWidget()->size();
@@ -1278,10 +1449,38 @@ QString MultiLayer::saveToString(const QString &geometry)
     s += "LayerCanvasSize\t" + QString::number(l_canvas_width) + "\t"
             + QString::number(l_canvas_height) + "\n";
     s += "Alignement\t" + QString::number(hor_align) + "\t" + QString::number(vert_align) + "\n";
+    s += QString("<ToriPageSetup view=\"%1\" zoom=\"%2\" unit=\"%3\" dpi=\"%4\" w=\"%5\" h=\"%6\" bg=\"%7\"/>\n")
+                 .arg(d_page_view_mode ? 1 : 0)
+                 .arg(d_page_zoom, 0, 'g', 12)
+                 .arg(int(d_page_unit))
+                 .arg(d_page_dpi)
+                 .arg(d_page_width_val, 0, 'g', 12)
+                 .arg(d_page_height_val, 0, 'g', 12)
+                 .arg((d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white))
+                              .name(QColor::HexArgb));
+    s += QString("<ToriAspectRatio keep=\"%1\" ratio=\"%2\"/>\n")
+                 .arg(d_keep_aspect_ratio ? 1 : 0)
+                 .arg(d_target_aspect_ratio, 0, 'g', 12);
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *ag = (Graph *)graphsList.at(i);
         s += ag->saveToString();
+    }
+    for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
+        Graph *insetGr = it.key();
+        Graph *srcGr = it.value().first.data();
+        const int childIdx = graphsList.indexOf(insetGr);
+        const int srcIdx = graphsList.indexOf(srcGr);
+        if (childIdx >= 0 && srcIdx >= 0) {
+            const QRectF rel = it.value().second;
+            s += QString("<ToriInsetSpec child=\"%1\" source=\"%2\" x=\"%3\" y=\"%4\" w=\"%5\" h=\"%6\"/>\n")
+                         .arg(childIdx)
+                         .arg(srcIdx)
+                         .arg(rel.x(), 0, 'g', 12)
+                         .arg(rel.y(), 0, 'g', 12)
+                         .arg(rel.width(), 0, 'g', 12)
+                         .arg(rel.height(), 0, 'g', 12);
+        }
     }
     return s + "</multiLayer>\n";
 }
@@ -1483,20 +1682,66 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     hide(); // FIXME: find a better way to avoid a resize event
     resize(ml->size());
 
+    setCols(ml->getCols());
+    setRows(ml->getRows());
     setSpacing(ml->rowsSpacing(), ml->colsSpacing());
     setAlignement(ml->horizontalAlignement(), ml->verticalAlignement());
     setMargins(ml->leftMargin(), ml->rightMargin(), ml->topMargin(), ml->bottomMargin());
+    setLayerCanvasSize(ml->layerCanvasSize().width(), ml->layerCanvasSize().height());
     d_keep_aspect_ratio = ml->keepAspectRatio();
     d_target_aspect_ratio = ml->targetAspectRatio();
+    d_page_view_mode = ml->d_page_view_mode;
+    d_page_zoom = ml->d_page_zoom;
+    d_page_unit = ml->d_page_unit;
+    d_page_dpi = ml->d_page_dpi;
+    d_page_width_val = ml->d_page_width_val;
+    d_page_height_val = ml->d_page_height_val;
+    d_base_page_px = ml->d_base_page_px;
+    setPageBackgroundColor(ml->d_page_bg_color);
+    if (ml->canvasWidget() && canvas)
+        canvas->resize(ml->canvasWidget()->size());
 
-    QWidgetList graphsList = ml->graphPtrs();
-    for (int i = 0; i < graphsList.count(); i++) {
-        Graph *g = (Graph *)graphsList.at(i);
+    QWidgetList srcGraphs = ml->graphPtrs();
+    for (int i = 0; i < srcGraphs.count(); i++) {
+        Graph *g = (Graph *)srcGraphs.at(i);
         Graph *g2 = addLayer(g->pos().x(), g->pos().y(), g->width(), g->height());
         g2->copy(parent, g);
         g2->setIgnoreResizeEvents(g->ignoresResizeEvents());
         g2->setAutoscaleFonts(g->autoscaleFonts());
     }
+
+    // Rebind linked overlay parent layers and inset specs across cloned layers
+    for (int i = 0; i < srcGraphs.count(); ++i) {
+        Graph *srcG = (Graph *)srcGraphs.at(i);
+        Graph *dstG = (Graph *)graphsList.value(i, nullptr);
+        if (!srcG || !dstG)
+            continue;
+        if (Graph *srcParent = srcG->linkedParentLayer()) {
+            const int pIdx = srcGraphs.indexOf(srcParent);
+            Graph *dstParent = (pIdx >= 0) ? (Graph *)graphsList.value(pIdx, nullptr) : nullptr;
+            if (dstParent) {
+                dstG->setBackgroundColor(QColor(255, 255, 255, 0));
+                dstG->setCanvasBackground(QColor(255, 255, 255, 0));
+                if (Plot *cPlot = dstG->plotWidget()) {
+                    cPlot->setAutoFillBackground(false);
+                    cPlot->setAttribute(Qt::WA_TranslucentBackground, true);
+                    if (cPlot->canvas())
+                        cPlot->canvas()->setAutoFillBackground(false);
+                }
+                dstG->setAttribute(Qt::WA_TranslucentBackground, true);
+                dstG->setLinkedParentLayer(dstParent, srcG->xLinkMode(), srcG->xLinkExpr(),
+                                           srcG->yLinkMode(), srcG->yLinkExpr());
+            }
+        }
+        if (ml->d_inset_specs.contains(srcG)) {
+            Graph *srcSource = ml->d_inset_specs[srcG].first.data();
+            const int sIdx = srcGraphs.indexOf(srcSource);
+            Graph *dstSource = (sIdx >= 0) ? (Graph *)graphsList.value(sIdx, nullptr) : nullptr;
+            if (dstSource)
+                d_inset_specs[dstG] = qMakePair(QPointer<Graph>(dstSource), ml->d_inset_specs[srcG].second);
+        }
+    }
+    syncChildOverlayAndInsetGeometries();
     show();
 }
 
@@ -1701,7 +1946,8 @@ void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit
     d_base_page_px = QSize(qMax(120, qRound(pxW)), qMax(120, qRound(pxH)));
     graph_width = d_base_page_px.width();
     graph_height = d_base_page_px.height();
-    d_target_aspect_ratio = pxW / qMax(1.0, pxH);
+    if (!d_keep_aspect_ratio)
+        d_target_aspect_ratio = pxW / qMax(1.0, pxH);
 
     const QSize targetCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
                                  qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
@@ -1796,10 +2042,12 @@ void MultiLayer::fitLayersToPage()
         return;
 
     const bool savedKeepAspect = d_keep_aspect_ratio;
-    d_keep_aspect_ratio = false;
+    const double savedTargetAspect = d_target_aspect_ratio;
     arrangeLayers(false, false);
     d_keep_aspect_ratio = savedKeepAspect;
-    if (l_canvas_width > 0 && l_canvas_height > 0)
+    if (savedKeepAspect && savedTargetAspect > 0.05)
+        d_target_aspect_ratio = savedTargetAspect;
+    else if (l_canvas_width > 0 && l_canvas_height > 0)
         d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
     syncChildOverlayAndInsetGeometries();
     emit modifiedPlot();
@@ -1831,7 +2079,7 @@ void MultiLayer::showPageSetupDialog()
     comboUnit->addItem(QStringLiteral("px"), int(UnitPx));
     comboUnit->addItem(QStringLiteral("mm"), int(UnitMm));
     comboUnit->addItem(QStringLiteral("cm"), int(UnitCm));
-    comboUnit->addItem(QStringLiteral("inch"), int(UnitInch));
+    comboUnit->addItem(tr("inch"), int(UnitInch));
     comboUnit->setCurrentIndex(int(d_page_unit));
     grid->addWidget(comboUnit, 1, 1, 1, 2);
 
@@ -2168,5 +2416,329 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
     inset->raise();
     emit modifiedPlot();
     return inset;
+}
+
+void MultiLayer::applyStylePreset(StylePreset preset)
+{
+    d_keep_aspect_ratio = true;
+    d_target_aspect_ratio = 1.0;
+    setPageBackgroundColor(QColor(Qt::white));
+
+    double pageW = 85.0;
+    double pageH = 85.0;
+    int targetDpi = 600;
+    int marginPx = 8;
+    Graph::FramePreset framePreset = Graph::FrameBoxInwardTicks;
+    int axisLw = 2;
+    int minTickLen = 4;
+    int majTickLen = 8;
+    QFont titleFnt("Arial", 11, QFont::Normal, false);
+    QFont tickFnt("Arial", 10, QFont::Normal, false);
+    QFont legFnt("Arial", 10, QFont::Normal, false);
+    legFnt.setPointSizeF(9.5);
+    int legFrame = Legend::Line;
+    QColor legBg(255, 255, 255, 255);
+    int minCurveWidth = 2;
+    int minSymSize = 0;
+
+    switch (preset) {
+    case StyleISIJJournal85mm:
+        pageW = 85.0;
+        pageH = 85.0;
+        targetDpi = 600;
+        marginPx = 8;
+        framePreset = Graph::FrameBoxInwardTicks;
+        axisLw = 2;
+        minTickLen = 4;
+        majTickLen = 8;
+        titleFnt = QFont("Arial", 11, QFont::Normal, false);
+        tickFnt = QFont("Arial", 10, QFont::Normal, false);
+        legFnt = QFont("Arial", 10, QFont::Normal, false);
+        legFnt.setPointSizeF(9.5);
+        legFrame = Legend::Line;
+        legBg = QColor(255, 255, 255, 255);
+        minCurveWidth = 2;
+        minSymSize = 7;
+        break;
+
+    case StylePresentationSlide28pt:
+        pageW = 190.0;
+        pageH = 190.0;
+        targetDpi = 300;
+        marginPx = 14;
+        framePreset = Graph::FrameBoxInwardTicks;
+        axisLw = 3;
+        minTickLen = 6;
+        majTickLen = 12;
+        titleFnt = QFont("Arial", 28, QFont::Normal, false);
+        tickFnt = QFont("Arial", 28, QFont::Normal, false);
+        legFnt = QFont("Arial", 24, QFont::Normal, false);
+        legFrame = Legend::Line;
+        legBg = QColor(255, 255, 255, 255);
+        minCurveWidth = 3;
+        minSymSize = 12;
+        break;
+
+    case StyleNatureCompact89mm:
+        pageW = 89.0;
+        pageH = 89.0;
+        targetDpi = 600;
+        marginPx = 6;
+        framePreset = Graph::FrameOpenL;
+        axisLw = 1;
+        minTickLen = 3;
+        majTickLen = 6;
+        titleFnt = QFont("Arial", 8, QFont::Normal, false);
+        tickFnt = QFont("Arial", 7, QFont::Normal, false);
+        legFnt = QFont("Arial", 7, QFont::Normal, false);
+        legFnt.setPointSizeF(6.5);
+        legFrame = Legend::None;
+        legBg = QColor(255, 255, 255, 0);
+        minCurveWidth = 1;
+        minSymSize = 5;
+        break;
+    }
+
+    titleFnt.setBold(false);
+    tickFnt.setBold(false);
+    legFnt.setBold(false);
+
+    setMargins(marginPx, marginPx, marginPx, marginPx);
+    setPageZoom(1.0);
+    setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
+    d_keep_aspect_ratio = true;
+    d_target_aspect_ratio = 1.0;
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (!gr || !gr->plotWidget())
+            continue;
+
+        const bool isInset = d_inset_specs.contains(gr);
+        const bool isLinkedOverlay = (gr->linkedParentLayer() != nullptr);
+
+        if (!isLinkedOverlay && !isInset) {
+            gr->applyFramePreset(framePreset);
+            gr->setBackgroundColor(QColor(Qt::white));
+            gr->setCanvasBackground(QColor(Qt::white));
+        }
+
+        gr->setAxesLinewidth(axisLw);
+        gr->changeTicksLength(minTickLen, majTickLen);
+
+        QwtPlot *plot = gr->plotWidget();
+        QwtText pTitle = plot->title();
+        pTitle.setFont(titleFnt);
+        plot->setTitle(pTitle);
+
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const QFont useTick = isInset ? QFont("Arial", qMax(6, tickFnt.pointSize() - 2), QFont::Normal, false) : tickFnt;
+            const QFont useTitle = isInset ? QFont("Arial", qMax(7, titleFnt.pointSize() - 2), QFont::Normal, false) : titleFnt;
+            gr->setAxisFont(a, useTick);
+            gr->setAxisTitleFont(a, useTitle);
+            QString rawTitle = gr->axisTitle(a);
+            if (rawTitle.startsWith("<b>", Qt::CaseInsensitive)
+                && rawTitle.endsWith("</b>", Qt::CaseInsensitive)) {
+                rawTitle = rawTitle.mid(3, rawTitle.length() - 7);
+                gr->setAxisTitle(a, rawTitle);
+            }
+        }
+
+        gr->setTextMarkerDefaults(legFrame, legFnt, QColor(Qt::black), legBg);
+        const QVector<int> txtKeys = gr->textMarkerKeys();
+        for (int k = 0; k < txtKeys.size(); ++k) {
+            Legend *mrk = gr->textMarker(txtKeys[k]);
+            if (!mrk)
+                continue;
+            mrk->setFont(legFnt);
+            mrk->setTextColor(QColor(Qt::black));
+            if (mrk == gr->legend() || mrk->text().contains("\\c{") || mrk->text().contains("\\p{")) {
+                mrk->setFrameStyle(legFrame);
+                mrk->setBackgroundColor(legBg);
+            }
+        }
+
+        for (int cIdx = 0; cIdx < gr->curves(); ++cIdx) {
+            QwtPlotCurve *c = gr->curve(cIdx);
+            if (!c)
+                continue;
+            QPen pen = c->pen();
+            if (pen.style() != Qt::NoPen && pen.width() < minCurveWidth && pen.widthF() < double(minCurveWidth)) {
+                pen.setWidth(minCurveWidth);
+                c->setPen(pen);
+            }
+            if (minSymSize > 0 && c->symbol().style() != QwtSymbol::NoSymbol) {
+                QwtSymbol sym = c->symbol();
+                if (sym.size().width() < minSymSize || sym.size().height() < minSymSize) {
+                    sym.setSize(QSize(qMax(minSymSize, sym.size().width()),
+                                      qMax(minSymSize, sym.size().height())));
+                }
+                if (preset == StylePresentationSlide28pt) {
+                    QPen sp = sym.pen();
+                    if (sp.width() < 2)
+                        sp.setWidth(2);
+                    sym.setPen(sp);
+                }
+                c->setSymbol(sym);
+            }
+        }
+        plot->updateLayout();
+        plot->replot();
+    }
+
+    fitLayersToPage();
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget()) {
+            gr->plotWidget()->updateLayout();
+            gr->plotWidget()->replot();
+        }
+    }
+    emit modifiedPlot();
+}
+
+bool MultiLayer::restorePhase5Tag(const QString &line)
+{
+    const QString trimmed = line.trimmed();
+    if (!trimmed.startsWith("<Tori"))
+        return false;
+
+    auto parseAttrs = [](const QString &tagLine) -> QMap<QString, QString> {
+        QMap<QString, QString> attrs;
+        static const QRegularExpression rx("([A-Za-z0-9_]+)=\"([^\"]*)\"");
+        auto it = rx.globalMatch(tagLine);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            QString val = m.captured(2);
+            val.replace("&quot;", "\"");
+            val.replace("&lt;", "<");
+            val.replace("&gt;", ">");
+            val.replace("&amp;", "&");
+            attrs.insert(m.captured(1), val);
+        }
+        return attrs;
+    };
+
+    if (trimmed.startsWith("<ToriPageSetup")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        d_page_view_mode = (a.value("view", "0").toInt() != 0);
+        d_page_zoom = qBound(0.25, a.value("zoom", "1").toDouble(), 4.0);
+        d_page_unit = static_cast<PageUnit>(qBound(0, a.value("unit", "0").toInt(), 3));
+        d_page_dpi = qBound(36, a.value("dpi", "300").toInt(), 2400);
+        d_page_width_val = qMax(1.0, a.value("w", "520").toDouble());
+        d_page_height_val = qMax(1.0, a.value("h", "520").toDouble());
+        const QColor bg(a.value("bg", "#ffffffff"));
+        setPageBackgroundColor(bg.isValid() ? bg : QColor(Qt::white));
+
+        const double screenPpi = 96.0;
+        double pxW = d_page_width_val;
+        double pxH = d_page_height_val;
+        switch (d_page_unit) {
+        case UnitPx:
+            break;
+        case UnitMm:
+            pxW = (d_page_width_val / 25.4) * screenPpi;
+            pxH = (d_page_height_val / 25.4) * screenPpi;
+            break;
+        case UnitCm:
+            pxW = (d_page_width_val / 2.54) * screenPpi;
+            pxH = (d_page_height_val / 2.54) * screenPpi;
+            break;
+        case UnitInch:
+            pxW = d_page_width_val * screenPpi;
+            pxH = d_page_height_val * screenPpi;
+            break;
+        }
+        d_base_page_px = QSize(qMax(120, qRound(pxW)), qMax(120, qRound(pxH)));
+        graph_width = d_base_page_px.width();
+        graph_height = d_base_page_px.height();
+        if (d_page_unit != UnitPx || d_page_view_mode || qAbs(d_page_zoom - 1.0) > 1e-4) {
+            const QSize targetCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
+                                         qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
+            lastSize = targetCanvasSize;
+            if (canvas)
+                canvas->resize(targetCanvasSize);
+        }
+        if (canvas)
+            canvas->update();
+        return true;
+    }
+
+    if (trimmed.startsWith("<ToriAspectRatio")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        d_keep_aspect_ratio = (a.value("keep", "0").toInt() != 0);
+        const double r = a.value("ratio", "1").toDouble();
+        if (r > 0.05 && r <= 20.0)
+            d_target_aspect_ratio = r;
+        return true;
+    }
+
+    if (trimmed.startsWith("<ToriInsetSpec")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        PendingInsetSpec ps;
+        ps.childIdx = a.value("child", "-1").toInt();
+        ps.sourceIdx = a.contains("source") ? a.value("source", "-1").toInt()
+                                            : a.value("src", "-1").toInt();
+        ps.relRect = QRectF(a.value("x", "0.54").toDouble(),
+                            a.value("y", "0.08").toDouble(),
+                            a.value("w", "0.38").toDouble(),
+                            a.value("h", "0.38").toDouble());
+        if (ps.childIdx >= 0 && ps.sourceIdx >= 0) {
+            d_pending_inset_specs.append(ps);
+            if (ps.childIdx < graphsList.count() && ps.sourceIdx < graphsList.count()) {
+                Graph *cGr = (Graph *)graphsList.at(ps.childIdx);
+                Graph *sGr = (Graph *)graphsList.at(ps.sourceIdx);
+                if (cGr && sGr)
+                    d_inset_specs[cGr] = qMakePair(QPointer<Graph>(sGr), ps.relRect);
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void MultiLayer::finalizePhase5Restore()
+{
+    for (const PendingInsetSpec &ps : d_pending_inset_specs) {
+        if (ps.childIdx >= 0 && ps.childIdx < graphsList.count()
+            && ps.sourceIdx >= 0 && ps.sourceIdx < graphsList.count()) {
+            Graph *cGr = (Graph *)graphsList.at(ps.childIdx);
+            Graph *sGr = (Graph *)graphsList.at(ps.sourceIdx);
+            if (cGr && sGr && cGr != sGr) {
+                d_inset_specs[cGr] = qMakePair(QPointer<Graph>(sGr), ps.relRect);
+                cGr->setIgnoreResizeEvents(true);
+            }
+        }
+    }
+    d_pending_inset_specs.clear();
+
+    const QList<Graph *> allLayers = layersList();
+    for (Graph *gr : allLayers) {
+        if (!gr)
+            continue;
+        const int pIdx = gr->pendingLinkedParentIndex();
+        if (pIdx >= 0 && pIdx < allLayers.size()) {
+            Graph *parentLayer = allLayers.at(pIdx);
+            if (parentLayer && parentLayer != gr) {
+                gr->setIgnoreResizeEvents(true);
+                gr->setBackgroundColor(QColor(255, 255, 255, 0));
+                gr->setCanvasBackground(QColor(255, 255, 255, 0));
+                if (Plot *cPlot = gr->plotWidget()) {
+                    cPlot->setAutoFillBackground(false);
+                    cPlot->setAttribute(Qt::WA_TranslucentBackground, true);
+                    if (cPlot->canvas())
+                        cPlot->canvas()->setAutoFillBackground(false);
+                }
+                gr->setAttribute(Qt::WA_TranslucentBackground, true);
+                gr->setLinkedParentLayer(parentLayer, gr->xLinkMode(), gr->xLinkExpr(),
+                                         gr->yLinkMode(), gr->yLinkExpr());
+                gr->raise();
+            }
+            gr->clearPendingLinkedParentIndex();
+        }
+    }
+
+    syncChildOverlayAndInsetGeometries();
 }
 

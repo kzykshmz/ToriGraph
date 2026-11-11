@@ -84,6 +84,15 @@ public:
     enum HorAlignement { HCenter, Left, Right };
     enum VertAlignement { VCenter, Top, Bottom };
     enum PageUnit { UnitPx = 0, UnitMm = 1, UnitCm = 2, UnitInch = 3 };
+    enum StylePreset {
+        StyleISIJJournal85mm = 0,
+        StylePresentationSlide28pt = 1,
+        StyleNatureCompact89mm = 2
+    };
+
+    void applyStylePreset(StylePreset preset);
+    bool restorePhase5Tag(const QString &line);
+    void finalizePhase5Restore();
 
     void setPageViewMode(bool enabled);
     bool pageViewMode() const;
@@ -197,7 +206,8 @@ public slots:
     //! \name Print and Export
     //@{
     void exportToFile(const QString &fileName);
-    void exportImage(const QString &fileName, int quality = -1);
+    void exportImage(const QString &fileName, int quality = -1, bool transparent = false,
+                     int dpi = 0);
     void exportSVG(const QString &fname);
     void exportPDF(const QString &fname);
     void exportVector(const QString &fileName, int res = 0, bool color = true,
@@ -283,6 +293,13 @@ private:
     QSize d_base_page_px = QSize(520, 520);
     QColor d_page_bg_color = QColor(Qt::white);
     QMap<Graph *, QPair<QPointer<Graph>, QRectF>> d_inset_specs;
+    struct PendingInsetSpec
+    {
+        int childIdx = -1;
+        int sourceIdx = -1;
+        QRectF relRect;
+    };
+    QVector<PendingInsetSpec> d_pending_inset_specs;
 
     void syncChildOverlayAndInsetGeometries();
     void openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos);
