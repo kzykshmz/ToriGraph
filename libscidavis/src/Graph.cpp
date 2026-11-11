@@ -8393,6 +8393,8 @@ bool Graph::restorePhase5Tag(const QString &line)
             if (attrs.contains(key))
                 d_axis_title_auto[a] = (attrs.value(key).toInt() != 0);
         }
+        if (curves() > 0)
+            refreshAutoAxisTitlesFromColumns();
         return true;
     }
 

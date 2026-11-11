@@ -3076,12 +3076,12 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         const char *label;
     };
     const FitItem fitModels[] = {
-        { FitLinear, "Linear" },
-        { FitPoly2, "Polynomial (Order 2)" },
-        { FitGauss, "Gaussian" },
-        { FitLorentz, "Lorentzian" },
-        { FitExpDec1, "Exponential Decay (ExpDec1)" },
-        { FitBoltzmann, "Boltzmann Sigmoidal" }
+        { FitLinear, QT_TR_NOOP("Linear") },
+        { FitPoly2, QT_TR_NOOP("Polynomial (Order 2)") },
+        { FitGauss, QT_TR_NOOP("Gaussian") },
+        { FitLorentz, QT_TR_NOOP("Lorentzian") },
+        { FitExpDec1, QT_TR_NOOP("Exponential Decay (ExpDec1)") },
+        { FitBoltzmann, QT_TR_NOOP("Boltzmann Sigmoidal") }
     };
     for (const auto &fi : fitModels) {
         QAction *act = fitMenu->addAction(tr(fi.label));
@@ -4954,6 +4954,12 @@ public:
         setZ(1.0e6 + 3.0);
         setItemAttribute(QwtPlotItem::Legend, false);
         setItemAttribute(QwtPlotItem::AutoScale, false);
+    }
+
+    ~ImageProfileOverlayItem() override
+    {
+        if (d_owner && d_owner->d_overlay_item == this)
+            d_owner->d_overlay_item = nullptr;
     }
 
     int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 704; }

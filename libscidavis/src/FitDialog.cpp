@@ -1691,10 +1691,11 @@ void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)
 QString FitDialog::expandUserFunctions(const QString &rawFormula, const QStringList &names,
                                        const QStringList &defs)
 {
-    QString formula = rawFormula;
+    if (rawFormula.trimmed().isEmpty())
+        return rawFormula;
     const int n = qMin(names.size(), defs.size());
-    if (n <= 0 || formula.trimmed().isEmpty())
-        return formula;
+    if (n <= 0)
+        return rawFormula;
 
     auto extractRhs = [](const QString &def) -> QString {
         for (int idx = 0; idx < def.size(); ++idx) {
@@ -1710,30 +1711,66 @@ QString FitDialog::expandUserFunctions(const QString &rawFormula, const QStringL
         return def.trimmed();
     };
 
-    QSet<QString> expanded;
-    constexpr int kMaxDepth = 16;
-    for (int depth = 0; depth < kMaxDepth; ++depth) {
-        bool foundUf = false;
-        const QString snapshot = formula;
-        for (int i = 0; i < n; ++i) {
-            const QString name = names[i].trimmed();
-            if (name.isEmpty() || expanded.contains(name))
-                continue;
-            QRegularExpression re(QStringLiteral("\\b") + QRegularExpression::escape(name)
-                                  + QStringLiteral("\\b"));
-            if (re.match(snapshot).hasMatch()) {
-                const QString rhs = extractRhs(defs[i]);
-                if (!rhs.isEmpty()) {
-                    formula.prepend(QString("%1=%2\n").arg(name, rhs));
-                    expanded.insert(name);
-                    foundUf = true;
-                }
+    struct HelperFunc {
+        QString name;
+        QString rhs;
+        QRegularExpression wordRe;
+    };
+
+    QVector<HelperFunc> helpers;
+    helpers.reserve(n);
+    QSet<QString> seenNames;
+    for (int i = 0; i < n; ++i) {
+        const QString name = names[i].trimmed();
+        if (name.isEmpty() || seenNames.contains(name))
+            continue;
+        const QString rhs = extractRhs(defs[i]);
+        if (rhs.isEmpty())
+            continue;
+        seenNames.insert(name);
+        HelperFunc hf;
+        hf.name = name;
+        hf.rhs = rhs;
+        hf.wordRe = QRegularExpression(QStringLiteral("\\b") + QRegularExpression::escape(name)
+                                       + QStringLiteral("\\b"));
+        helpers.push_back(std::move(hf));
+    }
+
+    const int m = helpers.size();
+    if (m <= 0)
+        return rawFormula;
+
+    // Post-order DFS emits dependencies before dependents even on diamond references,
+    // while state[u] == 1 (visiting) breaks cycles in O(1).
+    const int maxDepth = qMax(16, m);
+    QVector<int> state(m, 0); // 0 = unvisited, 1 = visiting, 2 = visited
+    QString prefixDefs;
+
+    auto visit = [&](auto &self, int u, int depth) -> void {
+        if (state[u] != 0)
+            return;
+        state[u] = 1;
+        if (depth < maxDepth) {
+            const QString &uRhs = helpers[u].rhs;
+            for (int v = 0; v < m; ++v) {
+                if (v == u || state[v] != 0)
+                    continue;
+                if (helpers[v].wordRe.match(uRhs).hasMatch())
+                    self(self, v, depth + 1);
             }
         }
-        if (!foundUf)
-            break;
+        state[u] = 2;
+        prefixDefs.append(QString("%1=%2\n").arg(helpers[u].name, helpers[u].rhs));
+    };
+
+    for (int i = 0; i < m; ++i) {
+        if (state[i] == 0 && helpers[i].wordRe.match(rawFormula).hasMatch())
+            visit(visit, i, 0);
     }
-    return formula;
+
+    if (prefixDefs.isEmpty())
+        return rawFormula;
+    return prefixDefs + rawFormula;
 }
 
 bool FitDialog::containsUserFunctionName(const QString &function)
