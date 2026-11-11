@@ -34,6 +34,7 @@
 class QGroupBox;
 class QPushButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QCheckBox;
 class QComboBox;
 
@@ -50,6 +51,7 @@ protected slots:
     void accept();
     void update();
     void enableLayoutOptions(bool ok);
+    void onAspectPresetChanged(int index);
 
 private:
     MultiLayer *multi_layer;
@@ -62,6 +64,9 @@ private:
     QSpinBox *boxRightSpace, *boxLeftSpace, *boxTopSpace, *boxBottomSpace;
     QSpinBox *boxCanvasWidth, *boxCanvasHeight, *layersBox;
     QCheckBox *fitBox;
+    QCheckBox *keepAspectBox;
+    QComboBox *aspectPresetBox;
+    QDoubleSpinBox *customAspectBox;
     QComboBox *alignHorBox, *alignVertBox;
 };
 

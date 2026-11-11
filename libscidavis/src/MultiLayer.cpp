@@ -116,6 +116,8 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     addTextOn = false;
     d_scale_on_print = true;
     d_print_cropmarks = false;
+    d_keep_aspect_ratio = true;
+    d_target_aspect_ratio = 1.0;
 
     layerButtonsBox = new QHBoxLayout();
     QHBoxLayout *hbox = new QHBoxLayout();
@@ -388,152 +390,133 @@ QSize MultiLayer::arrangeLayers(bool userSize)
                      qMax(200, height() - LayerButton::btnSize() - 36));
     }
 
-    gsl_vector *xTopR =
-            gsl_vector_calloc(graphs); // ratio between top axis + title and canvas height
-    gsl_vector *xBottomR = gsl_vector_calloc(graphs); // ratio between bottom axis and canvas height
-    gsl_vector *yLeftR = gsl_vector_calloc(graphs);
-    gsl_vector *yRightR = gsl_vector_calloc(graphs);
-    gsl_vector *maxXTopHeight = gsl_vector_calloc(rows); // maximum top axis + title height in a row
-    gsl_vector *maxXBottomHeight = gsl_vector_calloc(rows); // maximum bottom axis height in a row
-    gsl_vector *maxYLeftWidth = gsl_vector_calloc(cols); // maximum left axis width in a column
-    gsl_vector *maxYRightWidth = gsl_vector_calloc(cols); // maximum right axis width in a column
-    gsl_vector *Y = gsl_vector_calloc(rows);
-    gsl_vector *X = gsl_vector_calloc(cols);
+    const int nRows = qMax(1, rows);
+    const int nCols = qMax(1, cols);
+
+    QVector<int> topHeights(graphs, 0);
+    QVector<int> bottomHeights(graphs, 0);
+    QVector<int> leftWidths(graphs, 0);
+    QVector<int> rightWidths(graphs, 0);
+    QVector<int> maxTopH(nRows, 0);
+    QVector<int> maxBottomH(nRows, 0);
+    QVector<int> maxLeftW(nCols, 0);
+    QVector<int> maxRightW(nCols, 0);
 
     int i;
-    for (i = 0; i < graphs; i++) { // calculate scales/canvas dimensions reports for each layer and
-                                   // stores them in the above vectors
+    for (i = 0; i < graphs; i++) {
         Graph *gr = (Graph *)graphsList.at(i);
         QwtPlot *plot = gr->plotWidget();
         plot->updateLayout();
         QwtPlotLayout *plotLayout = plot->plotLayout();
         QRect cRect = plotLayout->canvasRect();
-        double ch = qMax(1.0, (double)cRect.height());
-        double cw = qMax(1.0, (double)cRect.width());
 
         const int topHeight = qMax(0, cRect.top());
         const int bottomHeight = qMax(0, plot->height() - (cRect.top() + cRect.height()));
         const int leftWidth = qMax(0, cRect.left());
-        const int rightWidth = qMax(0, plot->width() - (cRect.left() + cRect.width()));
+        const int rightWidth = qMax(32, plot->width() - (cRect.left() + cRect.width()));
 
-        gsl_vector_set(xTopR, i, double(topHeight) / ch);
-        gsl_vector_set(xBottomR, i, double(bottomHeight) / ch);
-        gsl_vector_set(yLeftR, i, double(leftWidth) / cw);
-        gsl_vector_set(yRightR, i, double(rightWidth) / cw);
+        topHeights[i] = topHeight;
+        bottomHeights[i] = bottomHeight;
+        leftWidths[i] = leftWidth;
+        rightWidths[i] = rightWidth;
 
-        // calculate max scales/canvas dimensions ratio for each line and column and stores them to
-        // vectors
-        int row = i / cols;
-        if (row >= rows)
-            row = rows - 1;
+        int row = i / nCols;
+        if (row >= nRows)
+            row = nRows - 1;
+        int col = i % nCols;
 
-        int col = i % cols;
-
-        double aux = gsl_vector_get(xTopR, i);
-        double old_max = gsl_vector_get(maxXTopHeight, row);
-        if (aux >= old_max)
-            gsl_vector_set(maxXTopHeight, row, aux);
-
-        aux = gsl_vector_get(xBottomR, i);
-        if (aux >= gsl_vector_get(maxXBottomHeight, row))
-            gsl_vector_set(maxXBottomHeight, row, aux);
-
-        aux = gsl_vector_get(yLeftR, i);
-        if (aux >= gsl_vector_get(maxYLeftWidth, col))
-            gsl_vector_set(maxYLeftWidth, col, aux);
-
-        aux = gsl_vector_get(yRightR, i);
-        if (aux >= gsl_vector_get(maxYRightWidth, col))
-            gsl_vector_set(maxYRightWidth, col, aux);
+        if (topHeight > maxTopH[row])
+            maxTopH[row] = topHeight;
+        if (bottomHeight > maxBottomH[row])
+            maxBottomH[row] = bottomHeight;
+        if (leftWidth > maxLeftW[col])
+            maxLeftW[col] = leftWidth;
+        if (rightWidth > maxRightW[col])
+            maxRightW[col] = rightWidth;
     }
 
-    double c_heights = 0.0;
-    for (i = 0; i < rows; i++) {
-        gsl_vector_set(Y, i, c_heights);
-        c_heights += 1 + gsl_vector_get(maxXTopHeight, i) + gsl_vector_get(maxXBottomHeight, i);
-    }
+    int sumMarginH = 0;
+    for (i = 0; i < nRows; i++)
+        sumMarginH += maxTopH[i] + maxBottomH[i];
 
-    double c_widths = 0.0;
-    for (i = 0; i < cols; i++) {
-        gsl_vector_set(X, i, c_widths);
-        c_widths += 1 + gsl_vector_get(maxYLeftWidth, i) + gsl_vector_get(maxYRightWidth, i);
-    }
+    int sumMarginW = 0;
+    for (i = 0; i < nCols; i++)
+        sumMarginW += maxLeftW[i] + maxRightW[i];
 
     if (!userSize) {
-        const double aspect = (l_canvas_width > 0 && l_canvas_height > 0)
-                ? (double)l_canvas_width / (double)l_canvas_height
-                : 1.0;
-        int availW = qRound((rect.width() - (cols - 1) * colsSpace - right_margin - left_margin)
-                            / c_widths);
-        int availH = qRound((rect.height() - (rows - 1) * rowsSpace - top_margin - bottom_margin)
-                            / c_heights);
-        int fitW = availW;
-        int fitH = qRound(fitW / aspect);
-        if (fitH > availH) {
-            fitH = availH;
-            fitW = qRound(fitH * aspect);
+        const double aspect = (d_keep_aspect_ratio && d_target_aspect_ratio > 0.0)
+                ? d_target_aspect_ratio
+                : ((l_canvas_width > 0 && l_canvas_height > 0)
+                           ? (double)l_canvas_width / (double)l_canvas_height
+                           : 1.0);
+        int availW = (rect.width() - (nCols - 1) * colsSpace - right_margin - left_margin
+                      - sumMarginW)
+                / nCols;
+        int availH = (rect.height() - (nRows - 1) * rowsSpace - top_margin - bottom_margin
+                      - sumMarginH)
+                / nRows;
+        if (d_keep_aspect_ratio) {
+            int fitW = availW;
+            int fitH = qRound(fitW / aspect);
+            if (fitH > availH) {
+                fitH = availH;
+                fitW = qRound(fitH * aspect);
+            }
+            l_canvas_width = qMax(50, fitW);
+            l_canvas_height = qMax(50, fitH);
+        } else {
+            l_canvas_width = qMax(50, availW);
+            l_canvas_height = qMax(50, availH);
         }
-        l_canvas_width = qMax(50, fitW);
-        l_canvas_height = qMax(50, fitH);
     }
 
     QSize size = QSize(l_canvas_width, l_canvas_height);
 
-    const int totalW = qRound(l_canvas_width * c_widths) + (cols - 1) * colsSpace + left_margin
-            + right_margin;
-    const int totalH = qRound(l_canvas_height * c_heights) + (rows - 1) * rowsSpace + top_margin
-            + bottom_margin;
+    QVector<int> colX(nCols, 0);
+    int accumW = 0;
+    for (i = 0; i < nCols; i++) {
+        colX[i] = accumW;
+        accumW += maxLeftW[i] + l_canvas_width + maxRightW[i];
+    }
+
+    QVector<int> rowY(nRows, 0);
+    int accumH = 0;
+    for (i = 0; i < nRows; i++) {
+        rowY[i] = accumH;
+        accumH += maxTopH[i] + l_canvas_height + maxBottomH[i];
+    }
+
+    const int totalW = accumW + (nCols - 1) * colsSpace + left_margin + right_margin;
+    const int totalH = accumH + (nRows - 1) * rowsSpace + top_margin + bottom_margin;
     const int offsetX = userSize ? 0 : qMax(0, (rect.width() - totalW) / 2);
     const int offsetY = userSize ? 0 : qMax(0, (rect.height() - totalH) / 2);
 
     for (i = 0; i < graphs; i++) {
-        int row = i / cols;
-        if (row >= rows)
-            row = rows - 1;
+        int row = i / nCols;
+        if (row >= nRows)
+            row = nRows - 1;
 
-        int col = i % cols;
+        int col = i % nCols;
 
-        // calculate sizes and positions for layers
-        const int w =
-                qRound(l_canvas_width * (1 + gsl_vector_get(yLeftR, i) + gsl_vector_get(yRightR, i)));
-        const int h =
-                qRound(l_canvas_height * (1 + gsl_vector_get(xTopR, i) + gsl_vector_get(xBottomR, i)));
+        const int w = l_canvas_width + leftWidths[i] + rightWidths[i];
+        const int h = l_canvas_height + topHeights[i] + bottomHeights[i];
 
-        int x = left_margin + offsetX + col * colsSpace;
+        int x = left_margin + offsetX + col * colsSpace + colX[col];
         if (hor_align == HCenter)
-            x += qRound(l_canvas_width
-                     * (gsl_vector_get(X, col) + gsl_vector_get(maxYLeftWidth, col)
-                        - gsl_vector_get(yLeftR, i)));
-        else if (hor_align == Left)
-            x += qRound(l_canvas_width * gsl_vector_get(X, col));
+            x += maxLeftW[col] - leftWidths[i];
         else if (hor_align == Right)
-            x += qRound(l_canvas_width
-                     * (gsl_vector_get(X, col) + gsl_vector_get(maxYLeftWidth, col)
-                        - gsl_vector_get(yLeftR, i) + gsl_vector_get(maxYRightWidth, col)
-                        - gsl_vector_get(yRightR, i)));
+            x += (maxLeftW[col] - leftWidths[i]) + (maxRightW[col] - rightWidths[i]);
 
-        int y = top_margin + offsetY + row * rowsSpace;
+        int y = top_margin + offsetY + row * rowsSpace + rowY[row];
         if (vert_align == VCenter)
-            y += qRound(l_canvas_height
-                     * (gsl_vector_get(Y, row) + gsl_vector_get(maxXTopHeight, row)
-                        - gsl_vector_get(xTopR, i)));
-        else if (vert_align == Top)
-            y += qRound(l_canvas_height * gsl_vector_get(Y, row));
+            y += maxTopH[row] - topHeights[i];
         else if (vert_align == Bottom)
-            y += qRound(l_canvas_height
-                     * (gsl_vector_get(Y, row) + gsl_vector_get(maxXTopHeight, row)
-                        - gsl_vector_get(xTopR, i) + gsl_vector_get(maxXBottomHeight, row)
-                        - gsl_vector_get(xBottomR, i)));
+            y += (maxTopH[row] - topHeights[i]) + (maxBottomH[row] - bottomHeights[i]);
 
-        // resizes and moves layers
         Graph *gr = (Graph *)graphsList.at(i);
         bool autoscaleFonts = false;
-        if (!userSize) { // When the user specifies the layer canvas size, the window is resized
-            // and the fonts must be scaled accordingly. If the size is calculated
-            // automatically we don't rescale the fonts in order to prevent problems
-            // with too small fonts when the user adds new layers or when removing layers
-
-            autoscaleFonts = gr->autoscaleFonts(); // save user settings
+        if (!userSize) {
+            autoscaleFonts = gr->autoscaleFonts();
             gr->setAutoscaleFonts(false);
         }
 
@@ -542,20 +525,9 @@ QSize MultiLayer::arrangeLayers(bool userSize)
         gr->plotWidget()->updateLayout();
 
         if (!userSize)
-            gr->setAutoscaleFonts(autoscaleFonts); // restore user settings
+            gr->setAutoscaleFonts(autoscaleFonts);
     }
 
-    // free memory
-    gsl_vector_free(maxXTopHeight);
-    gsl_vector_free(maxXBottomHeight);
-    gsl_vector_free(maxYLeftWidth);
-    gsl_vector_free(maxYRightWidth);
-    gsl_vector_free(xTopR);
-    gsl_vector_free(xBottomR);
-    gsl_vector_free(yLeftR);
-    gsl_vector_free(yRightR);
-    gsl_vector_free(X);
-    gsl_vector_free(Y);
     return size;
 }
 
@@ -1100,9 +1072,13 @@ void MultiLayer::wheelEvent(QWheelEvent *e)
             || e->modifiers() == Qt::ShiftModifier)) {
         intSize = resize_graph->plotWidget()->size();
         int delta = (e->angleDelta().y() > 0) ? 5 : ((e->angleDelta().y() < 0) ? -5 : 0);
-        if (delta != 0 && intSize.width() + delta >= 100 && intSize.height() + delta >= 100) {
-            intSize.rwidth() += delta;
-            intSize.rheight() += delta;
+        int deltaW = delta;
+        int deltaH = d_keep_aspect_ratio && d_target_aspect_ratio > 0.05
+                ? qRound(delta / d_target_aspect_ratio)
+                : delta;
+        if (delta != 0 && intSize.width() + deltaW >= 100 && intSize.height() + deltaH >= 100) {
+            intSize.rwidth() += deltaW;
+            intSize.rheight() += deltaH;
         }
 
         aux = resize_graph->pos();
@@ -1236,6 +1212,49 @@ void MultiLayer::setLayerCanvasSize(int w, int h)
         l_canvas_width = w;
     if (l_canvas_height != h)
         l_canvas_height = h;
+    if (w > 0 && h > 0)
+        d_target_aspect_ratio = (double)w / (double)h;
+}
+
+void MultiLayer::setKeepAspectRatio(bool keep)
+{
+    if (d_keep_aspect_ratio == keep)
+        return;
+    d_keep_aspect_ratio = keep;
+    if (d_keep_aspect_ratio && d_target_aspect_ratio <= 0.05) {
+        if (l_canvas_width > 0 && l_canvas_height > 0)
+            d_target_aspect_ratio = (double)l_canvas_width / (double)l_canvas_height;
+        else
+            d_target_aspect_ratio = 1.0;
+    }
+    if (graphs > 0)
+        arrangeLayers(false, false);
+    emit modifiedPlot();
+}
+
+void MultiLayer::setTargetAspectRatio(double ratio)
+{
+    if (ratio <= 0.05 || ratio > 20.0)
+        return;
+    d_target_aspect_ratio = ratio;
+    if (l_canvas_height <= 0)
+        l_canvas_height = 360;
+    l_canvas_width = qMax(50, qRound(l_canvas_height * d_target_aspect_ratio));
+    if (graphs > 0) {
+        const bool prevKeep = d_keep_aspect_ratio;
+        d_keep_aspect_ratio = true;
+        arrangeLayers(false, false);
+        d_keep_aspect_ratio = prevKeep;
+    }
+    emit modifiedPlot();
+}
+
+void MultiLayer::applyAspectRatioPreset(double ratio, bool keepLocked)
+{
+    if (ratio <= 0.05 || ratio > 20.0)
+        return;
+    d_keep_aspect_ratio = keepLocked;
+    setTargetAspectRatio(ratio);
 }
 
 void MultiLayer::setAlignement(int ha, int va)
@@ -1303,6 +1322,8 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     setSpacing(ml->rowsSpacing(), ml->colsSpacing());
     setAlignement(ml->horizontalAlignement(), ml->verticalAlignement());
     setMargins(ml->leftMargin(), ml->rightMargin(), ml->topMargin(), ml->bottomMargin());
+    d_keep_aspect_ratio = ml->keepAspectRatio();
+    d_target_aspect_ratio = ml->targetAspectRatio();
 
     QWidgetList graphsList = ml->graphPtrs();
     for (int i = 0; i < graphsList.count(); i++) {

@@ -101,6 +101,13 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
             if (i == QwtPlot::yRight || i == QwtPlot::xTop) {
                 sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
                 sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
+                if (i == QwtPlot::yRight)
+                    sd->setMinimumExtent(20);
+                else if (i == QwtPlot::xTop)
+                    sd->setMinimumExtent(8);
+            } else if (i == QwtPlot::xBottom) {
+                scale->setMinBorderDist(10, 28);
+                scale->setBorderDist(10, 28);
             }
 
             setAxisScaleDraw(i, sd);
@@ -145,6 +152,8 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     setFrameShape(QFrame::Box);
     setLineWidth(0);
     setMargin(14);
+    updateAxes();
+    updateLayout();
 }
 
 QColor Plot::frameColor()
@@ -399,12 +408,104 @@ void Plot::setTickLength(int minLength, int majLength)
     minTickLength = minLength;
 }
 
+void Plot::updateLayout()
+{
+    for (int axis = 0; axis < QwtPlot::axisCnt; ++axis) {
+        if (!axisScaleDiv(axis) || !axisScaleDiv(axis)->isValid()) {
+            updateAxes();
+            break;
+        }
+    }
+
+    for (int axis = 0; axis < QwtPlot::axisCnt; ++axis) {
+        QwtScaleWidget *sw = axisWidget(axis);
+        if (!sw || !sw->scaleDraw())
+            continue;
+        if (sw->scaleDraw()->hasComponent(QwtAbstractScaleDraw::Labels)) {
+            if (axis == QwtPlot::xBottom)
+                sw->setMinBorderDist(10, 28);
+            int sDist = 0, eDist = 0;
+            sw->getBorderDistHint(sDist, eDist);
+            sw->setBorderDist(sDist, eDist);
+        } else {
+            sw->setMinBorderDist(0, 0);
+            sw->setBorderDist(0, 0);
+        }
+    }
+
+    int rightOverhang = 30;
+    if (axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom)) {
+        int s = 0, e = 0;
+        axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
+        rightOverhang = qMax(rightOverhang, e + 6);
+    }
+    if (axisEnabled(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)) {
+        int s = 0, e = 0;
+        axisWidget(QwtPlot::xTop)->getBorderDistHint(s, e);
+        rightOverhang = qMax(rightOverhang, e + 6);
+    }
+    if (axisWidget(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)->scaleDraw()) {
+        const int minRightDim = qMax(20, rightOverhang - margin() + 2);
+        axisWidget(QwtPlot::yRight)->scaleDraw()->setMinimumExtent(minRightDim);
+    }
+
+    int topOverhang = 18;
+    if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft)) {
+        int s = 0, e = 0;
+        axisWidget(QwtPlot::yLeft)->getBorderDistHint(s, e);
+        topOverhang = qMax(topOverhang, s + 4);
+    }
+    if (axisEnabled(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)) {
+        int s = 0, e = 0;
+        axisWidget(QwtPlot::yRight)->getBorderDistHint(s, e);
+        topOverhang = qMax(topOverhang, s + 4);
+    }
+    if (axisWidget(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)->scaleDraw()) {
+        const int minTopDim = qMax(8, topOverhang - margin() + 2);
+        axisWidget(QwtPlot::xTop)->scaleDraw()->setMinimumExtent(minTopDim);
+    }
+
+    QwtPlot::updateLayout();
+
+    if (axisWidget(QwtPlot::xBottom))
+        axisWidget(QwtPlot::xBottom)->clearMask();
+    if (axisWidget(QwtPlot::xTop))
+        axisWidget(QwtPlot::xTop)->clearMask();
+}
+
+void Plot::replot()
+{
+    updateAxes();
+    updateLayout();
+    QwtPlot::replot();
+}
+
 void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFilter &pfilter) const
 {
+    const_cast<Plot *>(this)->updateLayout();
     printFrame(painter, plotRect);
-    const int m = margin();
-    const QRect innerRect = (m > 0 && plotRect.width() > 2 * m && plotRect.height() > 2 * m)
-            ? plotRect.adjusted(m, m, -m, -m)
+    const int m = qMax(margin(), 14);
+    int mLeft = m;
+    int mTop = m;
+    int mRight = m;
+    int mBottom = m;
+
+    if (!axisEnabled(QwtPlot::yRight)) {
+        int s = 0, e = 0;
+        if (axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom))
+            axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
+        mRight = qMax(mRight, e + 6);
+    }
+    if (!axisEnabled(QwtPlot::xTop) && title().isEmpty()) {
+        int s = 0, e = 0;
+        if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft))
+            axisWidget(QwtPlot::yLeft)->getBorderDistHint(s, e);
+        mTop = qMax(mTop, s + 6);
+    }
+
+    const QRect innerRect =
+            (plotRect.width() > (mLeft + mRight) && plotRect.height() > (mTop + mBottom))
+            ? plotRect.adjusted(mLeft, mTop, -mRight, -mBottom)
             : plotRect;
     QwtPlot::print(painter, innerRect, pfilter);
 }

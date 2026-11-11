@@ -31,6 +31,7 @@
 
 #include <QLayout>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QPushButton>
@@ -39,6 +40,7 @@
 #include <QFontDialog>
 #include <QFont>
 #include <QMessageBox>
+#include <cmath>
 
 LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
@@ -54,7 +56,29 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, 
     fitBox = new QCheckBox(tr("Automatic &layout"));
     fitBox->setChecked(false);
     gl1->addWidget(fitBox, 1, 1);
-    gl1->setRowStretch(2, 1);
+
+    keepAspectBox = new QCheckBox(tr("Keep plot &aspect ratio"));
+    keepAspectBox->setChecked(true);
+    gl1->addWidget(keepAspectBox, 2, 0, 1, 2);
+
+    gl1->addWidget(new QLabel(tr("Aspect Ratio")), 3, 0);
+    aspectPresetBox = new QComboBox();
+    aspectPresetBox->addItem(tr("1:1 (Square)"), 1.0);
+    aspectPresetBox->addItem(tr("4:3 (Standard)"), 4.0 / 3.0);
+    aspectPresetBox->addItem(tr("16:9 (Widescreen)"), 16.0 / 9.0);
+    aspectPresetBox->addItem(tr("3:2"), 1.5);
+    aspectPresetBox->addItem(tr("sqrt(2):1 (A-Series)"), std::sqrt(2.0));
+    aspectPresetBox->addItem(tr("Custom"), -1.0);
+    gl1->addWidget(aspectPresetBox, 3, 1);
+
+    gl1->addWidget(new QLabel(tr("Ratio (W/H)")), 4, 0);
+    customAspectBox = new QDoubleSpinBox();
+    customAspectBox->setRange(0.1, 10.0);
+    customAspectBox->setDecimals(3);
+    customAspectBox->setSingleStep(0.1);
+    customAspectBox->setValue(1.0);
+    gl1->addWidget(customAspectBox, 4, 1);
+    gl1->setRowStretch(5, 1);
 
     QGroupBox *gb2 = new QGroupBox(tr("Alignement"));
     QGridLayout *gl2 = new QGridLayout(gb2);
@@ -171,6 +195,22 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, 
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(update()));
     connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(fitBox, SIGNAL(toggled(bool)), this, SLOT(enableLayoutOptions(bool)));
+    connect(aspectPresetBox, SIGNAL(currentIndexChanged(int)), this,
+            SLOT(onAspectPresetChanged(int)));
+    connect(keepAspectBox, SIGNAL(toggled(bool)), aspectPresetBox, SLOT(setEnabled(bool)));
+    connect(keepAspectBox, SIGNAL(toggled(bool)), customAspectBox, SLOT(setEnabled(bool)));
+}
+
+void LayerDialog::onAspectPresetChanged(int index)
+{
+    if (!aspectPresetBox || !customAspectBox)
+        return;
+    const double ratio = aspectPresetBox->itemData(index).toDouble();
+    if (ratio > 0.0) {
+        customAspectBox->setValue(ratio);
+        if (boxCanvasHeight && boxCanvasHeight->value() > 0 && boxCanvasWidth)
+            boxCanvasWidth->setValue(qMax(50, qRound(boxCanvasHeight->value() * ratio)));
+    }
 }
 
 void LayerDialog::enableLayoutOptions(bool ok)
@@ -196,6 +236,23 @@ void LayerDialog::setMultiLayer(MultiLayer *g)
     boxCanvasHeight->setValue(g->layerCanvasSize().height());
     alignHorBox->setCurrentIndex(g->horizontalAlignement());
     alignVertBox->setCurrentIndex(g->verticalAlignement());
+
+    keepAspectBox->setChecked(g->keepAspectRatio());
+    const double ratio = g->targetAspectRatio();
+    customAspectBox->setValue(ratio > 0.05 ? ratio : 1.0);
+    int matchedIdx = aspectPresetBox->count() - 1;
+    for (int i = 0; i < aspectPresetBox->count() - 1; ++i) {
+        const double presetRatio = aspectPresetBox->itemData(i).toDouble();
+        if (std::abs(presetRatio - ratio) < 0.01) {
+            matchedIdx = i;
+            break;
+        }
+    }
+    aspectPresetBox->blockSignals(true);
+    aspectPresetBox->setCurrentIndex(matchedIdx);
+    aspectPresetBox->blockSignals(false);
+    aspectPresetBox->setEnabled(g->keepAspectRatio());
+    customAspectBox->setEnabled(g->keepAspectRatio());
 }
 
 void LayerDialog::update()
@@ -247,8 +304,15 @@ void LayerDialog::update()
         multi_layer->setRows(rows);
     }
 
-    if (GroupCanvasSize->isChecked())
+    multi_layer->setKeepAspectRatio(keepAspectBox->isChecked());
+    if (GroupCanvasSize->isChecked()) {
         multi_layer->setLayerCanvasSize(boxCanvasWidth->value(), boxCanvasHeight->value());
+        if (boxCanvasWidth->value() > 0 && boxCanvasHeight->value() > 0)
+            customAspectBox->setValue((double)boxCanvasWidth->value()
+                                      / (double)boxCanvasHeight->value());
+    } else if (keepAspectBox->isChecked() && customAspectBox->value() > 0.05) {
+        multi_layer->setTargetAspectRatio(customAspectBox->value());
+    }
 
     multi_layer->setAlignement(alignHorBox->currentIndex(), alignVertBox->currentIndex());
 
