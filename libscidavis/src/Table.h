@@ -73,6 +73,7 @@ public:
 
     //! Sets the number of significant digits
     void setNumericPrecision(int prec);
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     //! Return the window name
     virtual QString name() { return d_future_table ? d_future_table->name() : QString(); }
@@ -252,6 +253,8 @@ public slots:
     void setColumnType(int col, SciDAVis::ColumnMode mode);
 
     QString columnFormat(int col);
+    void columnNumericFormat(int col = -1);
+    void showColMenu(int col = -1);
 
     void importASCII(const QString &fname, const QString &sep, int ignoredLines, bool renameCols,
                      bool stripSpaces, bool simplifySpaces, bool newTable);

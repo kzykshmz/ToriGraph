@@ -156,6 +156,17 @@
 #include <QScrollBar>
 #include <QMimeData>
 #include <QBuffer>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QComboBox>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QCheckBox>
+#include <QRadioButton>
+#include <QPushButton>
+#include <QLabel>
 #ifdef Q_OS_WIN
 #include "OleServer.h"
 #endif
@@ -973,12 +984,26 @@ void ApplicationWindow::initMainMenu()
 
     multiPeakMenu = d_quick_fit_menu->addMenu(tr("Fit &Multi-peak"));
     multiPeakMenu->setFont(appFont);
+    multiPeakMenu->addAction(actionPeakFitDialog);
+    multiPeakMenu->addSeparator();
+    multiPeakMenu->addAction(actionAutoPeakGauss);
+    multiPeakMenu->addAction(actionAutoPeakLorentz);
+    multiPeakMenu->addAction(actionAutoPeakPseudoVoigt);
+    multiPeakMenu->addSeparator();
     multiPeakMenu->addAction(actionMultiPeakGauss);
+    multiPeakMenu->addAction(actionMultiPeakGaussAmp);
     multiPeakMenu->addAction(actionMultiPeakLorentz);
+    multiPeakMenu->addAction(actionMultiPeakPseudoVoigt);
+    multiPeakMenu->addAction(actionMultiPeakPearsonVII);
 
     d_quick_fit_menu->addSeparator();
+    d_quick_fit_menu->addAction(actionPeakFitDialog);
+    d_quick_fit_menu->addAction(actionAutoPeakGauss);
+    d_quick_fit_menu->addAction(actionAutoPeakLorentz);
+    d_quick_fit_menu->addAction(actionAutoPeakPseudoVoigt);
 
     calcul->addMenu(d_quick_fit_menu);
+    calcul->addAction(actionPeakFitDialog);
     calcul->addAction(actionShowFitDialog);
 
     format = new QMenu(this);
@@ -5913,6 +5938,14 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
     curveMenu->addAction(actionShowCurvePlotDialog);
     actionShowCurvePlotDialog->setData(curveKey);
 
+    if (c->type() != Graph::Function && c->type() != Graph::ErrorBars) {
+        curveMenu->addSeparator();
+        curveMenu->addAction(actionPeakFitDialog);
+        curveMenu->addAction(actionAutoPeakGauss);
+        curveMenu->addAction(actionAutoPeakLorentz);
+        curveMenu->addAction(actionAutoPeakPseudoVoigt);
+    }
+
     curveMenu->addSeparator();
 
     curveMenu->addAction(actionRemoveCurve);
@@ -7453,6 +7486,15 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
     else
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showTextDialog()));
 
+    markerMenu->addSeparator();
+    markerMenu->addAction(actionPeakFitDialog);
+    markerMenu->addAction(actionAutoPeakGauss);
+    markerMenu->addAction(actionAutoPeakLorentz);
+    markerMenu->addAction(actionAutoPeakPseudoVoigt);
+    markerMenu->addSeparator();
+    markerMenu->addAction(actionUnzoom);
+    markerMenu->addAction(actionCopyGraphOle);
+
     return markerMenu;
 }
 
@@ -7865,11 +7907,30 @@ void ApplicationWindow::showGraphContextMenu()
             calcul->addAction(actionFitLorentz);
 
             QMenu *multiPeakMenu = calcul->addMenu(tr("Fit &Multi-Peak"));
+            multiPeakMenu->addAction(actionPeakFitDialog);
+            multiPeakMenu->addSeparator();
+            multiPeakMenu->addAction(actionAutoPeakGauss);
+            multiPeakMenu->addAction(actionAutoPeakLorentz);
+            multiPeakMenu->addAction(actionAutoPeakPseudoVoigt);
+            multiPeakMenu->addSeparator();
             multiPeakMenu->addAction(actionMultiPeakGauss);
+            multiPeakMenu->addAction(actionMultiPeakGaussAmp);
             multiPeakMenu->addAction(actionMultiPeakLorentz);
+            multiPeakMenu->addAction(actionMultiPeakPseudoVoigt);
+            multiPeakMenu->addAction(actionMultiPeakPearsonVII);
 
             calcul->addSeparator();
+            calcul->addAction(actionPeakFitDialog);
+            calcul->addAction(actionAutoPeakGauss);
+            calcul->addAction(actionAutoPeakLorentz);
+            calcul->addAction(actionAutoPeakPseudoVoigt);
+            calcul->addSeparator();
             calcul->addAction(actionShowFitDialog);
+
+            cm.addSeparator();
+            cm.addAction(actionPeakFitDialog);
+            cm.addAction(actionUnzoom);
+            cm.addAction(actionCopyGraphOle);
         }
 
         if (copiedLayer) {
@@ -7891,6 +7952,7 @@ void ApplicationWindow::showGraphContextMenu()
         cm.addSeparator();
         QMenu *copy = cm.addMenu(tr("&Copy"));
         copy->setIcon(IconLoader::load("edit-copy"));
+        copy->addAction(actionCopyGraphOle);
         copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
         copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
 
@@ -7980,11 +8042,30 @@ void ApplicationWindow::showLayerButtonContextMenu()
             calcul->addAction(actionFitLorentz);
 
             QMenu *multiPeakMenu = calcul->addMenu(tr("Fit &Multi-Peak"));
+            multiPeakMenu->addAction(actionPeakFitDialog);
+            multiPeakMenu->addSeparator();
+            multiPeakMenu->addAction(actionAutoPeakGauss);
+            multiPeakMenu->addAction(actionAutoPeakLorentz);
+            multiPeakMenu->addAction(actionAutoPeakPseudoVoigt);
+            multiPeakMenu->addSeparator();
             multiPeakMenu->addAction(actionMultiPeakGauss);
+            multiPeakMenu->addAction(actionMultiPeakGaussAmp);
             multiPeakMenu->addAction(actionMultiPeakLorentz);
+            multiPeakMenu->addAction(actionMultiPeakPseudoVoigt);
+            multiPeakMenu->addAction(actionMultiPeakPearsonVII);
 
             calcul->addSeparator();
+            calcul->addAction(actionPeakFitDialog);
+            calcul->addAction(actionAutoPeakGauss);
+            calcul->addAction(actionAutoPeakLorentz);
+            calcul->addAction(actionAutoPeakPseudoVoigt);
+            calcul->addSeparator();
             calcul->addAction(actionShowFitDialog);
+
+            cm.addSeparator();
+            cm.addAction(actionPeakFitDialog);
+            cm.addAction(actionUnzoom);
+            cm.addAction(actionCopyGraphOle);
         }
 
         if (copiedLayer) {
@@ -8007,6 +8088,7 @@ void ApplicationWindow::showLayerButtonContextMenu()
 
         QMenu *copy = cm.addMenu(tr("&Copy"));
         copy->setIcon(IconLoader::load("edit-copy"));
+        copy->addAction(actionCopyGraphOle);
         copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
         copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
 
@@ -8056,6 +8138,13 @@ void ApplicationWindow::showWindowContextMenu()
         cm.addAction(actionRename);
         cm.addAction(actionCopyWindow);
         cm.addSeparator();
+        cm.addAction(actionPeakFitDialog);
+        cm.addAction(actionAutoPeakGauss);
+        cm.addAction(actionAutoPeakLorentz);
+        cm.addAction(actionAutoPeakPseudoVoigt);
+        cm.addSeparator();
+        cm.addAction(actionUnzoom);
+        cm.addAction(actionCopyGraphOle);
         cm.addAction(IconLoader::load("edit-copy"), tr("&Copy Page"), g, SLOT(copyAllLayers()));
         cm.addAction(tr("E&xport Page"), this, SLOT(exportGraph()));
         cm.addAction(actionPrint);
@@ -10834,6 +10923,31 @@ void ApplicationWindow::createActions()
     actionMultiPeakLorentz = new QAction(tr("&Lorentzian..."), this);
     connect(actionMultiPeakLorentz, SIGNAL(triggered()), this, SLOT(fitMultiPeakLorentz()));
 
+    actionMultiPeakGaussAmp = new QAction(tr("Gaussian (&Amplitude)..."), this);
+    connect(actionMultiPeakGaussAmp, SIGNAL(triggered()), this, SLOT(fitMultiPeakGaussAmp()));
+
+    actionMultiPeakPseudoVoigt = new QAction(tr("&Pseudo-Voigt..."), this);
+    connect(actionMultiPeakPseudoVoigt, SIGNAL(triggered()), this, SLOT(fitMultiPeakPseudoVoigt()));
+
+    actionMultiPeakPearsonVII = new QAction(tr("Pearson &VII..."), this);
+    connect(actionMultiPeakPearsonVII, SIGNAL(triggered()), this, SLOT(fitMultiPeakPearsonVII()));
+
+    actionPeakFitDialog = new QAction(tr("&Peak / Multi-Peak Fit..."), this);
+    actionPeakFitDialog->setShortcut(tr("Ctrl+Shift+P"));
+    connect(actionPeakFitDialog, SIGNAL(triggered()), this, SLOT(showPeakFitDialog()));
+
+    actionAutoPeakGauss = new QAction(tr("Auto Peak Fit (&Gaussian)"), this);
+    connect(actionAutoPeakGauss, SIGNAL(triggered()), this, SLOT(fitAutoPeakGauss()));
+
+    actionAutoPeakLorentz = new QAction(tr("Auto Peak Fit (&Lorentzian)"), this);
+    connect(actionAutoPeakLorentz, SIGNAL(triggered()), this, SLOT(fitAutoPeakLorentz()));
+
+    actionAutoPeakPseudoVoigt = new QAction(tr("Auto Peak Fit (Pseudo-&Voigt)"), this);
+    connect(actionAutoPeakPseudoVoigt, SIGNAL(triggered()), this, SLOT(fitAutoPeakPseudoVoigt()));
+
+    actionCopyGraphOle = new QAction(IconLoader::load("edit-copy"), tr("Copy Graph as &OLE Object"), this);
+    connect(actionCopyGraphOle, SIGNAL(triggered()), this, SLOT(copyGraphAsOleObject()));
+
 #ifdef SEARCH_FOR_UPDATES
     actionCheckUpdates = new QAction(tr("Search for &Updates"), this);
     connect(actionCheckUpdates, SIGNAL(triggered()), this, SLOT(searchForUpdates()));
@@ -11236,6 +11350,24 @@ void ApplicationWindow::translateActionsStrings()
 
     actionMultiPeakGauss->setText(tr("&Gaussian..."));
     actionMultiPeakLorentz->setText(tr("&Lorentzian..."));
+    if (actionMultiPeakGaussAmp)
+        actionMultiPeakGaussAmp->setText(tr("Gaussian (&Amplitude)..."));
+    if (actionMultiPeakPseudoVoigt)
+        actionMultiPeakPseudoVoigt->setText(tr("&Pseudo-Voigt..."));
+    if (actionMultiPeakPearsonVII)
+        actionMultiPeakPearsonVII->setText(tr("Pearson &VII..."));
+    if (actionPeakFitDialog) {
+        actionPeakFitDialog->setText(tr("&Peak / Multi-Peak Fit..."));
+        actionPeakFitDialog->setShortcut(tr("Ctrl+Shift+P"));
+    }
+    if (actionAutoPeakGauss)
+        actionAutoPeakGauss->setText(tr("Auto Peak Fit (&Gaussian)"));
+    if (actionAutoPeakLorentz)
+        actionAutoPeakLorentz->setText(tr("Auto Peak Fit (&Lorentzian)"));
+    if (actionAutoPeakPseudoVoigt)
+        actionAutoPeakPseudoVoigt->setText(tr("Auto Peak Fit (Pseudo-&Voigt)"));
+    if (actionCopyGraphOle)
+        actionCopyGraphOle->setText(tr("Copy Graph as &OLE Object"));
     actionHomePage->setText(tr("&ToriGraph Homepage"));
 #ifdef SEARCH_FOR_UPDATES
     actionCheckUpdates->setText(tr("Search for &Updates"));
@@ -11689,13 +11821,123 @@ void ApplicationWindow::fitMultiPeakLorentz()
     fitMultiPeak((int)MultiPeakFit::Lorentz);
 }
 
-void ApplicationWindow::fitMultiPeak(int profile)
+void ApplicationWindow::fitMultiPeakGaussAmp()
+{
+    fitMultiPeak((int)MultiPeakFit::GaussAmp);
+}
+
+void ApplicationWindow::fitMultiPeakPseudoVoigt()
+{
+    fitMultiPeak((int)MultiPeakFit::PseudoVoigt);
+}
+
+void ApplicationWindow::fitMultiPeakPearsonVII()
+{
+    fitMultiPeak((int)MultiPeakFit::PearsonVII);
+}
+
+void ApplicationWindow::fitAutoPeakGauss()
+{
+    runAutoPeakFit((int)MultiPeakFit::Gauss, 0, true, true, true, false);
+}
+
+void ApplicationWindow::fitAutoPeakLorentz()
+{
+    runAutoPeakFit((int)MultiPeakFit::Lorentz, 0, true, true, true, false);
+}
+
+void ApplicationWindow::fitAutoPeakPseudoVoigt()
+{
+    runAutoPeakFit((int)MultiPeakFit::PseudoVoigt, 0, true, true, true, false);
+}
+
+void ApplicationWindow::copyGraphAsOleObject()
+{
+    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+        return;
+
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+#ifdef Q_OS_WIN
+    Graph *g = ml->activeGraph();
+    if (SciDAVisOle::copyGraphAsOle(this, ml, g))
+        return;
+#endif
+    ml->copyAllLayers();
+}
+
+void ApplicationWindow::runAutoPeakFit(int profile, int numPeaks, bool autoCount,
+                                       bool plotPeakCurves, bool createSummary,
+                                       bool createResiduals, const QString &curveTitle,
+                                       double prominence, double voigtMu, double pearsonM)
 {
     QWidget *w = d_workspace.activeSubWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
 
-    MultiLayer *plot = (MultiLayer *)w;
+    MultiLayer *plot = static_cast<MultiLayer *>(w);
+    if (plot->isEmpty())
+        return;
+
+    Graph *g = static_cast<Graph *>(plot->activeGraph());
+    if (!g || !g->validCurvesDataSize() || g->isPiePlot())
+        return;
+
+    QString targetCurve = curveTitle;
+    if (targetCurve.isEmpty())
+        targetCurve = g->selectedCurveTitle();
+    if (targetCurve.isEmpty()) {
+        QStringList lst = g->analysableCurvesList();
+        for (const QString &cName : lst) {
+            const QwtPlotCurve *c = g->curve(cName);
+            if (c && static_cast<const PlotCurve *>(c)->type() != Graph::Function) {
+                targetCurve = cName;
+                break;
+            }
+        }
+        if (targetCurve.isEmpty() && !lst.isEmpty())
+            targetCurve = lst.first();
+    }
+    if (targetCurve.isEmpty())
+        return;
+
+    int initialPeaks = (numPeaks > 0) ? numPeaks : 1;
+    MultiPeakFit *fitter = new MultiPeakFit(
+            this, g, static_cast<MultiPeakFit::PeakProfile>(profile), initialPeaks);
+    fitter->setLorentzFraction(voigtMu);
+    fitter->setPearsonShape(pearsonM);
+    fitter->enablePeakCurves(plotPeakCurves);
+    fitter->setPeakCurvesColor(peakCurvesColor);
+    fitter->scaleErrors(fit_scale_errors);
+    fitter->setOutputPrecision(fit_output_precision);
+    fitter->generateFunction(generateUniformFitPoints, fitPoints);
+
+    if (fitter->setDataFromCurve(targetCurve)) {
+        if (autoCount || numPeaks <= 0) {
+            int maxP = (numPeaks > 0) ? numPeaks : 10;
+            fitter->autoDetectAndUpdateNumPeaks(maxP, prominence);
+        } else {
+            fitter->setNumPeaks(numPeaks);
+            fitter->autoDetectPeaks(numPeaks, prominence);
+        }
+        fitter->fit();
+        if (pasteFitResultsToPlot)
+            fitter->showLegend();
+        if (createSummary)
+            fitter->createPeakSummaryTable();
+        if (createResiduals)
+            fitter->createResidualsTable();
+        g->replot();
+    }
+    delete fitter;
+}
+
+void ApplicationWindow::showPeakFitDialog(int defaultProfile)
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+
+    MultiLayer *plot = static_cast<MultiLayer *>(w);
     if (plot->isEmpty()) {
         QMessageBox::warning(this, tr("Warning"),
                              tr("<h4>There are no plot layers available in this window.</h4>"
@@ -11704,7 +11946,7 @@ void ApplicationWindow::fitMultiPeak(int profile)
         return;
     }
 
-    Graph *g = (Graph *)plot->activeGraph();
+    Graph *g = static_cast<Graph *>(plot->activeGraph());
     if (!g || !g->validCurvesDataSize())
         return;
 
@@ -11712,16 +11954,192 @@ void ApplicationWindow::fitMultiPeak(int profile)
         QMessageBox::warning(this, tr("Warning"),
                              tr("This functionality is not available for pie plots!"));
         return;
+    }
+
+    QStringList curves = g->analysableCurvesList();
+    if (curves.isEmpty())
+        return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Peak / Multi-Peak Fit Analyzer"));
+    dlg.setMinimumWidth(420);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+
+    QGroupBox *curveGroup = new QGroupBox(tr("Curve & Peak Function"), &dlg);
+    QFormLayout *curveForm = new QFormLayout(curveGroup);
+
+    QComboBox *curveCombo = new QComboBox(curveGroup);
+    curveCombo->addItems(curves);
+    QString selectedCurve = g->selectedCurveTitle();
+    if (!selectedCurve.isEmpty()) {
+        int idx = curveCombo->findText(selectedCurve);
+        if (idx >= 0)
+            curveCombo->setCurrentIndex(idx);
     } else {
-        bool ok;
-        int peaks = QInputDialog::getInt(this, tr("Enter the number of peaks"), tr("Peaks"), 2, 2,
-                                         1000000, 1, &ok);
-        if (ok && peaks) {
-            g->setActiveTool(new MultiPeakFitTool(g, this, (MultiPeakFit::PeakProfile)profile,
-                                                  peaks, d_status_info,
-                                                  SLOT(setText(const QString &))));
+        for (int i = 0; i < curves.size(); ++i) {
+            const QwtPlotCurve *c = g->curve(curves[i]);
+            if (c && static_cast<const PlotCurve *>(c)->type() != Graph::Function) {
+                curveCombo->setCurrentIndex(i);
+                break;
+            }
         }
     }
+    curveForm->addRow(tr("Target Curve:"), curveCombo);
+
+    QComboBox *profileCombo = new QComboBox(curveGroup);
+    profileCombo->addItem(tr("Gaussian (Area)"), (int)MultiPeakFit::Gauss);
+    profileCombo->addItem(tr("Gaussian (Amplitude)"), (int)MultiPeakFit::GaussAmp);
+    profileCombo->addItem(tr("Lorentzian"), (int)MultiPeakFit::Lorentz);
+    profileCombo->addItem(tr("Pseudo-Voigt"), (int)MultiPeakFit::PseudoVoigt);
+    profileCombo->addItem(tr("Pearson VII"), (int)MultiPeakFit::PearsonVII);
+    int profIdx = profileCombo->findData(defaultProfile);
+    if (profIdx >= 0)
+        profileCombo->setCurrentIndex(profIdx);
+    curveForm->addRow(tr("Peak Profile:"), profileCombo);
+
+    QDoubleSpinBox *voigtMuSpin = new QDoubleSpinBox(curveGroup);
+    voigtMuSpin->setRange(0.0, 1.0);
+    voigtMuSpin->setSingleStep(0.05);
+    voigtMuSpin->setDecimals(3);
+    voigtMuSpin->setValue(0.5);
+    curveForm->addRow(tr("Pseudo-Voigt Lorentz Fraction (\xCE\xBC):"), voigtMuSpin);
+
+    QDoubleSpinBox *pearsonMSpin = new QDoubleSpinBox(curveGroup);
+    pearsonMSpin->setRange(0.5, 50.0);
+    pearsonMSpin->setSingleStep(0.5);
+    pearsonMSpin->setDecimals(2);
+    pearsonMSpin->setValue(2.0);
+    curveForm->addRow(tr("Pearson VII Shape Parameter (m):"), pearsonMSpin);
+
+    auto updateProfileControls = [=]() {
+        int p = profileCombo->currentData().toInt();
+        voigtMuSpin->setEnabled(p == (int)MultiPeakFit::PseudoVoigt);
+        pearsonMSpin->setEnabled(p == (int)MultiPeakFit::PearsonVII);
+    };
+    QObject::connect(profileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [=](int) { updateProfileControls(); });
+    updateProfileControls();
+
+    mainLayout->addWidget(curveGroup);
+
+    QGroupBox *detectGroup = new QGroupBox(tr("Peak Detection & Count"), &dlg);
+    QVBoxLayout *detectLayout = new QVBoxLayout(detectGroup);
+
+    QRadioButton *autoModeRadio =
+            new QRadioButton(tr("Auto-Detect && Fit Immediately (One-Click)"), detectGroup);
+    QRadioButton *manualModeRadio =
+            new QRadioButton(tr("Interactive Peak Picking on Graph"), detectGroup);
+    autoModeRadio->setChecked(true);
+    detectLayout->addWidget(autoModeRadio);
+    detectLayout->addWidget(manualModeRadio);
+
+    QHBoxLayout *countRow = new QHBoxLayout();
+    countRow->addWidget(new QLabel(tr("Number of Peaks:"), detectGroup));
+    QSpinBox *peaksSpin = new QSpinBox(detectGroup);
+    peaksSpin->setRange(1, 20);
+    peaksSpin->setValue(2);
+    countRow->addWidget(peaksSpin);
+
+    QCheckBox *autoCountCheck = new QCheckBox(tr("Auto"), detectGroup);
+    autoCountCheck->setChecked(true);
+    countRow->addWidget(autoCountCheck);
+
+    QPushButton *detectBtn = new QPushButton(tr("Preview Count"), detectGroup);
+    countRow->addWidget(detectBtn);
+
+    QLabel *detectedLabel = new QLabel(detectGroup);
+    countRow->addWidget(detectedLabel);
+    countRow->addStretch();
+    detectLayout->addLayout(countRow);
+
+    QHBoxLayout *promRow = new QHBoxLayout();
+    promRow->addWidget(new QLabel(tr("Min Prominence Ratio:"), detectGroup));
+    QDoubleSpinBox *prominenceSpin = new QDoubleSpinBox(detectGroup);
+    prominenceSpin->setRange(0.01, 0.90);
+    prominenceSpin->setSingleStep(0.02);
+    prominenceSpin->setDecimals(2);
+    prominenceSpin->setValue(0.08);
+    promRow->addWidget(prominenceSpin);
+    promRow->addStretch();
+    detectLayout->addLayout(promRow);
+
+    auto updateDetectedPreview = [this, g, curveCombo, prominenceSpin, autoCountCheck, peaksSpin,
+                                  detectedLabel]() {
+        MultiPeakFit previewFitter(this, g, MultiPeakFit::Gauss, 1);
+        int est = 1;
+        if (previewFitter.setDataFromCurve(curveCombo->currentText()))
+            est = qBound(1, previewFitter.estimatePeakCount(prominenceSpin->value()), 20);
+        detectedLabel->setText(tr("(Detected: %1)").arg(est));
+        if (autoCountCheck->isChecked())
+            peaksSpin->setValue(est);
+    };
+
+    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [=](int) { updateDetectedPreview(); });
+    QObject::connect(prominenceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [=](double) { updateDetectedPreview(); });
+    QObject::connect(autoCountCheck, &QCheckBox::toggled, &dlg, [=](bool checked) {
+        if (checked)
+            updateDetectedPreview();
+    });
+    QObject::connect(peaksSpin, QOverload<int>::of(&QSpinBox::valueChanged), &dlg, [=](int val) {
+        if (peaksSpin->hasFocus())
+            autoCountCheck->setChecked(false);
+        Q_UNUSED(val);
+    });
+    QObject::connect(detectBtn, &QPushButton::clicked, &dlg, [=]() {
+        autoCountCheck->setChecked(true);
+        updateDetectedPreview();
+    });
+    updateDetectedPreview();
+
+    mainLayout->addWidget(detectGroup);
+
+    QGroupBox *outputGroup = new QGroupBox(tr("Output Options"), &dlg);
+    QVBoxLayout *outputLayout = new QVBoxLayout(outputGroup);
+    QCheckBox *plotPeaksCheck =
+            new QCheckBox(tr("Plot Individual Deconvoluted Peak Curves"), outputGroup);
+    plotPeaksCheck->setChecked(true);
+    QCheckBox *summaryTableCheck =
+            new QCheckBox(tr("Generate Peak Summary Table"), outputGroup);
+    summaryTableCheck->setChecked(true);
+    QCheckBox *residualsTableCheck =
+            new QCheckBox(tr("Generate Residuals Table"), outputGroup);
+    residualsTableCheck->setChecked(false);
+    outputLayout->addWidget(plotPeaksCheck);
+    outputLayout->addWidget(summaryTableCheck);
+    outputLayout->addWidget(residualsTableCheck);
+    mainLayout->addWidget(outputGroup);
+
+    QDialogButtonBox *buttonBox =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    if (QPushButton *okBtn = buttonBox->button(QDialogButtonBox::Ok))
+        okBtn->setText(tr("Fit"));
+    QObject::connect(buttonBox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    mainLayout->addWidget(buttonBox);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    int chosenProfile = profileCombo->currentData().toInt();
+    int nPeaks = peaksSpin->value();
+    if (autoModeRadio->isChecked()) {
+        runAutoPeakFit(chosenProfile, nPeaks, autoCountCheck->isChecked(),
+                       plotPeaksCheck->isChecked(), summaryTableCheck->isChecked(),
+                       residualsTableCheck->isChecked(), curveCombo->currentText(),
+                       prominenceSpin->value(), voigtMuSpin->value(), pearsonMSpin->value());
+    } else {
+        g->setActiveTool(new MultiPeakFitTool(g, this,
+                                              static_cast<MultiPeakFit::PeakProfile>(chosenProfile),
+                                              nPeaks, d_status_info, SLOT(setText(const QString &))));
+    }
+}
+
+void ApplicationWindow::fitMultiPeak(int profile)
+{
+    showPeakFitDialog(profile);
 }
 
 #ifdef DOWNLOAD_LINKS
@@ -13582,6 +14000,14 @@ QMenu *ApplicationWindow::showWindowMenuImpl(MyWidget *widget)
             cm->addMenu(depend_menu);
         }
     } else if (widget->inherits("MultiLayer")) {
+        cm->addSeparator();
+        cm->addAction(actionPeakFitDialog);
+        cm->addAction(actionAutoPeakGauss);
+        cm->addAction(actionAutoPeakLorentz);
+        cm->addAction(actionAutoPeakPseudoVoigt);
+        cm->addSeparator();
+        cm->addAction(actionUnzoom);
+        cm->addAction(actionCopyGraphOle);
         QStringList tbls = multilayerDependencies(widget);
         n = tbls.count();
         if (n > 0) {
