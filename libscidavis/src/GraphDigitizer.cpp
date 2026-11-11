@@ -1,0 +1,1000 @@
+/***************************************************************************
+    File                 : GraphDigitizer.cpp
+    Project              : ToriGraph (SciDAVis OriginPro Parity)
+    Description          : Interactive Graph Image Digitizer (4-point linear/log10
+                           axis calibration, manual picking, RGB color auto-tracing,
+                           and worksheet/graph export)
+ ***************************************************************************/
+#include "GraphDigitizer.h"
+
+#include "ApplicationWindow.h"
+#include "Graph.h"
+#include "Legend.h"
+#include "MultiLayer.h"
+#include "Table.h"
+#include "core/column/Column.h"
+
+#include <qwt_plot.h>
+#include <qwt_symbol.h>
+
+#include <QClipboard>
+#include <QColorDialog>
+#include <QComboBox>
+#include <QDialog>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QTableWidget>
+#include <QVBoxLayout>
+#include <QWidget>
+
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <vector>
+
+namespace {
+
+void applyArialToDigitizedGraph(Graph *g)
+{
+    if (!g)
+        return;
+    g->initFonts(QFont(QStringLiteral("Arial"), 11, QFont::Bold),
+                 QFont(QStringLiteral("Arial"), 10));
+    g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    if (g->legend())
+        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
+    g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
+                             QFont(QStringLiteral("Arial"), 10),
+                             g->textMarkerDefaultColor(),
+                             g->textMarkerDefaultBackground());
+}
+
+enum class DigitizerToolMode {
+    SetX1 = 0,
+    SetX2 = 1,
+    SetY1 = 2,
+    SetY2 = 3,
+    PickPoints = 4,
+    PickColorAutoTrace = 5
+};
+
+class DigitizerImageCanvas : public QWidget
+{
+public:
+    explicit DigitizerImageCanvas(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumSize(480, 360);
+        setMouseTracking(true);
+        setCursor(Qt::CrossCursor);
+    }
+
+    void setImage(const QImage &img)
+    {
+        d_image = img;
+        update();
+    }
+
+    const QImage &image() const { return d_image; }
+
+    void setCalibration(const GraphDigitizer::AxisCalibration &cal,
+                        bool hasX1, bool hasX2, bool hasY1, bool hasY2)
+    {
+        d_cal = cal;
+        d_hasX1 = hasX1;
+        d_hasX2 = hasX2;
+        d_hasY1 = hasY1;
+        d_hasY2 = hasY2;
+        update();
+    }
+
+    void setPickedPixelPoints(const QVector<QPointF> &pts)
+    {
+        d_pixelPts = pts;
+        update();
+    }
+
+    std::function<void(const QPointF &, Qt::MouseButton)> onImageClicked;
+    std::function<void(const QPointF &)> onImageHovered;
+
+protected:
+    QRectF computeTargetImageRect() const
+    {
+        if (d_image.isNull() || d_image.width() <= 0 || d_image.height() <= 0)
+            return QRectF();
+        const double pad = 10.0;
+        const double availW = std::max(1.0, static_cast<double>(width()) - 2.0 * pad);
+        const double availH = std::max(1.0, static_cast<double>(height()) - 2.0 * pad);
+        const double scale = std::min(availW / static_cast<double>(d_image.width()),
+                                      availH / static_cast<double>(d_image.height()));
+        const double drawW = static_cast<double>(d_image.width()) * scale;
+        const double drawH = static_cast<double>(d_image.height()) * scale;
+        const double left = 0.5 * (static_cast<double>(width()) - drawW);
+        const double top = 0.5 * (static_cast<double>(height()) - drawH);
+        return QRectF(left, top, drawW, drawH);
+    }
+
+    QPointF widgetToImagePixel(const QPointF &wPt, bool *insideOut = nullptr) const
+    {
+        const QRectF r = computeTargetImageRect();
+        if (r.isEmpty() || d_image.isNull()) {
+            if (insideOut)
+                *insideOut = false;
+            return QPointF(0.0, 0.0);
+        }
+        const bool inside = r.contains(wPt);
+        if (insideOut)
+            *insideOut = inside;
+        const double ux = std::clamp((wPt.x() - r.left()) / r.width(), 0.0, 1.0);
+        const double uy = std::clamp((wPt.y() - r.top()) / r.height(), 0.0, 1.0);
+        return QPointF(ux * static_cast<double>(d_image.width() - 1),
+                       uy * static_cast<double>(d_image.height() - 1));
+    }
+
+    QPointF imagePixelToWidget(const QPointF &imgPt) const
+    {
+        const QRectF r = computeTargetImageRect();
+        if (r.isEmpty() || d_image.width() <= 1 || d_image.height() <= 1)
+            return QPointF(0.0, 0.0);
+        const double ux = imgPt.x() / static_cast<double>(d_image.width() - 1);
+        const double uy = imgPt.y() / static_cast<double>(d_image.height() - 1);
+        return QPointF(r.left() + ux * r.width(), r.top() + uy * r.height());
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.fillRect(rect(), QColor(242, 244, 248));
+
+        if (d_image.isNull()) {
+            p.setPen(QColor(100, 110, 125));
+            p.setFont(QFont(QStringLiteral("Arial"), 11));
+            p.drawText(rect(), Qt::AlignCenter,
+                       tr("Open an image or paste a graph screenshot from the clipboard."));
+            return;
+        }
+
+        const QRectF imgRect = computeTargetImageRect();
+        p.drawImage(imgRect, d_image);
+        p.setPen(QPen(QColor(160, 168, 180), 1));
+        p.drawRect(imgRect);
+
+        // Draw calibrated X & Y axis vectors
+        if (d_hasX1 && d_hasX2) {
+            p.setPen(QPen(QColor(25, 100, 210), 2, Qt::DashLine));
+            p.drawLine(imagePixelToWidget(d_cal.pixelX1), imagePixelToWidget(d_cal.pixelX2));
+        }
+        if (d_hasY1 && d_hasY2) {
+            p.setPen(QPen(QColor(20, 155, 85), 2, Qt::DashLine));
+            p.drawLine(imagePixelToWidget(d_cal.pixelY1), imagePixelToWidget(d_cal.pixelY2));
+        }
+
+        auto drawAnchor = [&](const QPointF &pix, const QString &tag, const QColor &col) {
+            const QPointF wp = imagePixelToWidget(pix);
+            p.setPen(QPen(col, 2));
+            p.setBrush(QColor(255, 255, 255, 210));
+            p.drawEllipse(wp, 5.5, 5.5);
+            p.drawLine(QPointF(wp.x() - 8.0, wp.y()), QPointF(wp.x() + 8.0, wp.y()));
+            p.drawLine(QPointF(wp.x(), wp.y() - 8.0), QPointF(wp.x(), wp.y() + 8.0));
+            p.setFont(QFont(QStringLiteral("Arial"), 9, QFont::Bold));
+            p.drawText(wp + QPointF(7.0, -6.0), tag);
+        };
+
+        if (d_hasX1)
+            drawAnchor(d_cal.pixelX1, QStringLiteral("X1"), QColor(25, 100, 210));
+        if (d_hasX2)
+            drawAnchor(d_cal.pixelX2, QStringLiteral("X2"), QColor(25, 100, 210));
+        if (d_hasY1)
+            drawAnchor(d_cal.pixelY1, QStringLiteral("Y1"), QColor(20, 155, 85));
+        if (d_hasY2)
+            drawAnchor(d_cal.pixelY2, QStringLiteral("Y2"), QColor(20, 155, 85));
+
+        // Draw digitized points & polyline preview
+        if (!d_pixelPts.isEmpty()) {
+            p.setPen(QPen(QColor(220, 40, 45, 180), 1.5, Qt::SolidLine));
+            for (int i = 1; i < d_pixelPts.size(); ++i) {
+                p.drawLine(imagePixelToWidget(d_pixelPts[i - 1]),
+                           imagePixelToWidget(d_pixelPts[i]));
+            }
+            p.setPen(QPen(QColor(185, 20, 25), 1.5));
+            p.setBrush(QColor(235, 55, 55, 210));
+            for (const QPointF &pt : d_pixelPts) {
+                const QPointF wp = imagePixelToWidget(pt);
+                p.drawEllipse(wp, 3.5, 3.5);
+            }
+        }
+    }
+
+    void mousePressEvent(QMouseEvent *ev) override
+    {
+        if (d_image.isNull() || !ev)
+            return;
+        bool inside = false;
+        const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
+        if (inside && onImageClicked)
+            onImageClicked(pix, ev->button());
+    }
+
+    void mouseMoveEvent(QMouseEvent *ev) override
+    {
+        if (d_image.isNull() || !ev)
+            return;
+        bool inside = false;
+        const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
+        if (inside && onImageHovered)
+            onImageHovered(pix);
+    }
+
+private:
+    QImage d_image;
+    GraphDigitizer::AxisCalibration d_cal;
+    bool d_hasX1 = false;
+    bool d_hasX2 = false;
+    bool d_hasY1 = false;
+    bool d_hasY2 = false;
+    QVector<QPointF> d_pixelPts;
+};
+
+class DigitizerDialog : public QDialog
+{
+public:
+    DigitizerDialog(ApplicationWindow *app, const QString &initialPath)
+        : QDialog(app), d_app(app)
+    {
+        setWindowTitle(tr("Graph Image Digitizer"));
+        resize(980, 660);
+
+        QVBoxLayout *rootLay = new QVBoxLayout(this);
+
+        // Top toolbar: Image loading + Mode indicator
+        QHBoxLayout *topBar = new QHBoxLayout();
+        QPushButton *btnOpen = new QPushButton(tr("Open Image..."), this);
+        QPushButton *btnPaste = new QPushButton(tr("Paste from Clipboard"), this);
+        d_lblModeStatus = new QLabel(tr("Step 1: Load an image and calibrate X1, X2, Y1, Y2."), this);
+        d_lblCursorReadout = new QLabel(tr("Cursor: (-, -)"), this);
+        topBar->addWidget(btnOpen);
+        topBar->addWidget(btnPaste);
+        topBar->addSpacing(12);
+        topBar->addWidget(d_lblModeStatus, 1);
+        topBar->addWidget(d_lblCursorReadout);
+        rootLay->addLayout(topBar);
+
+        QSplitter *split = new QSplitter(Qt::Horizontal, this);
+        d_canvas = new DigitizerImageCanvas(split);
+        split->addWidget(d_canvas);
+
+        // Right control panel
+        QWidget *sidePanel = new QWidget(split);
+        sidePanel->setMinimumWidth(340);
+        QVBoxLayout *sideLay = new QVBoxLayout(sidePanel);
+        sideLay->setContentsMargins(6, 0, 0, 0);
+
+        // 1. Axis Calibration Group
+        QGroupBox *grpCal = new QGroupBox(tr("4-Point Axis Calibration"), sidePanel);
+        QFormLayout *calForm = new QFormLayout(grpCal);
+
+        auto makeValueSpin = [&](double initVal) {
+            QDoubleSpinBox *sb = new QDoubleSpinBox(grpCal);
+            sb->setRange(-1e15, 1e15);
+            sb->setDecimals(6);
+            sb->setValue(initVal);
+            return sb;
+        };
+
+        QPushButton *btnSetX1 = new QPushButton(tr("Set X1"), grpCal);
+        d_sbX1 = makeValueSpin(0.0);
+        QHBoxLayout *rowX1 = new QHBoxLayout();
+        rowX1->addWidget(btnSetX1);
+        rowX1->addWidget(d_sbX1, 1);
+        calForm->addRow(tr("X1 Anchor & Value:"), rowX1);
+
+        QPushButton *btnSetX2 = new QPushButton(tr("Set X2"), grpCal);
+        d_sbX2 = makeValueSpin(100.0);
+        QHBoxLayout *rowX2 = new QHBoxLayout();
+        rowX2->addWidget(btnSetX2);
+        rowX2->addWidget(d_sbX2, 1);
+        calForm->addRow(tr("X2 Anchor & Value:"), rowX2);
+
+        d_cbScaleX = new QComboBox(grpCal);
+        d_cbScaleX->addItem(tr("Linear"), false);
+        d_cbScaleX->addItem(tr("Log10"), true);
+        calForm->addRow(tr("X Axis Scale:"), d_cbScaleX);
+
+        QPushButton *btnSetY1 = new QPushButton(tr("Set Y1"), grpCal);
+        d_sbY1 = makeValueSpin(0.0);
+        QHBoxLayout *rowY1 = new QHBoxLayout();
+        rowY1->addWidget(btnSetY1);
+        rowY1->addWidget(d_sbY1, 1);
+        calForm->addRow(tr("Y1 Anchor & Value:"), rowY1);
+
+        QPushButton *btnSetY2 = new QPushButton(tr("Set Y2"), grpCal);
+        d_sbY2 = makeValueSpin(100.0);
+        QHBoxLayout *rowY2 = new QHBoxLayout();
+        rowY2->addWidget(btnSetY2);
+        rowY2->addWidget(d_sbY2, 1);
+        calForm->addRow(tr("Y2 Anchor & Value:"), rowY2);
+
+        d_cbScaleY = new QComboBox(grpCal);
+        d_cbScaleY->addItem(tr("Linear"), false);
+        d_cbScaleY->addItem(tr("Log10"), true);
+        calForm->addRow(tr("Y Axis Scale:"), d_cbScaleY);
+
+        sideLay->addWidget(grpCal);
+
+        // 2. Digitizing & Auto-Trace Group
+        QGroupBox *grpTrace = new QGroupBox(tr("Point Picking & Color Auto-Trace"), sidePanel);
+        QVBoxLayout *traceLay = new QVBoxLayout(grpTrace);
+
+        QHBoxLayout *pickRow = new QHBoxLayout();
+        QPushButton *btnPickManual = new QPushButton(tr("Pick Data Points"), grpTrace);
+        QPushButton *btnPickColor = new QPushButton(tr("Pick Curve Color & Auto-Trace"), grpTrace);
+        pickRow->addWidget(btnPickManual);
+        pickRow->addWidget(btnPickColor);
+        traceLay->addLayout(pickRow);
+
+        QFormLayout *traceForm = new QFormLayout();
+        QHBoxLayout *colRow = new QHBoxLayout();
+        d_lblColorSwatch = new QLabel(grpTrace);
+        d_lblColorSwatch->setFixedSize(28, 20);
+        QPushButton *btnChooseColor = new QPushButton(tr("Select Color..."), grpTrace);
+        QPushButton *btnRunTrace = new QPushButton(tr("Auto-Trace"), grpTrace);
+        colRow->addWidget(d_lblColorSwatch);
+        colRow->addWidget(btnChooseColor);
+        colRow->addWidget(btnRunTrace);
+        traceForm->addRow(tr("Target Color:"), colRow);
+
+        d_sbTol = new QSpinBox(grpTrace);
+        d_sbTol->setRange(1, 255);
+        d_sbTol->setValue(45);
+        traceForm->addRow(tr("Color Tolerance:"), d_sbTol);
+
+        d_sbSamples = new QSpinBox(grpTrace);
+        d_sbSamples->setRange(5, 2000);
+        d_sbSamples->setValue(100);
+        traceForm->addRow(tr("Sample Points:"), d_sbSamples);
+        traceLay->addLayout(traceForm);
+
+        QHBoxLayout *editPtsRow = new QHBoxLayout();
+        QPushButton *btnRemoveSel = new QPushButton(tr("Delete Selected Point"), grpTrace);
+        QPushButton *btnClearPts = new QPushButton(tr("Clear Points"), grpTrace);
+        editPtsRow->addWidget(btnRemoveSel);
+        editPtsRow->addWidget(btnClearPts);
+        traceLay->addLayout(editPtsRow);
+
+        sideLay->addWidget(grpTrace);
+
+        // 3. Live Point Preview Table
+        d_tablePreview = new QTableWidget(0, 2, sidePanel);
+        d_tablePreview->setHorizontalHeaderLabels(QStringList() << tr("X") << tr("Y"));
+        d_tablePreview->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        sideLay->addWidget(d_tablePreview, 1);
+
+        // 4. Export Controls
+        QFormLayout *expForm = new QFormLayout();
+        d_edTableName = new QLineEdit(QStringLiteral("DigitizedData"), sidePanel);
+        expForm->addRow(tr("Output Worksheet Name:"), d_edTableName);
+        sideLay->addLayout(expForm);
+
+        QHBoxLayout *expBtns = new QHBoxLayout();
+        QPushButton *btnExportTbl = new QPushButton(tr("Export to Worksheet"), sidePanel);
+        QPushButton *btnExportBoth = new QPushButton(tr("Export to Worksheet & Graph"), sidePanel);
+        QPushButton *btnClose = new QPushButton(tr("Close"), sidePanel);
+        expBtns->addWidget(btnExportTbl);
+        expBtns->addWidget(btnExportBoth);
+        expBtns->addWidget(btnClose);
+        sideLay->addLayout(expBtns);
+
+        split->addWidget(sidePanel);
+        split->setStretchFactor(0, 3);
+        split->setStretchFactor(1, 2);
+        rootLay->addWidget(split, 1);
+
+        updateColorSwatch();
+
+        // Wire signals
+        connect(btnOpen, &QPushButton::clicked, this, [this]() {
+            const QString fn = QFileDialog::getOpenFileName(
+                    this, tr("Open Graph Image"), QString(),
+                    tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;All Files (*)"));
+            if (!fn.isEmpty())
+                loadImageFile(fn);
+        });
+        connect(btnPaste, &QPushButton::clicked, this, [this]() {
+            const QClipboard *cb = QGuiApplication::clipboard();
+            if (!cb)
+                return;
+            QImage clipImg = cb->image();
+            if (clipImg.isNull()) {
+                QMessageBox::information(this, tr("Graph Image Digitizer"),
+                                         tr("No image found in the system clipboard."));
+                return;
+            }
+            setWorkingImage(clipImg);
+        });
+
+        connect(btnSetX1, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetX1); });
+        connect(btnSetX2, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetX2); });
+        connect(btnSetY1, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetY1); });
+        connect(btnSetY2, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetY2); });
+        connect(btnPickManual, &QPushButton::clicked, this,
+                [this]() { setMode(DigitizerToolMode::PickPoints); });
+        connect(btnPickColor, &QPushButton::clicked, this,
+                [this]() { setMode(DigitizerToolMode::PickColorAutoTrace); });
+
+        auto onCalChanged = [this]() { refreshCalibrationAndPreview(); };
+        connect(d_sbX1, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [onCalChanged](double) { onCalChanged(); });
+        connect(d_sbX2, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [onCalChanged](double) { onCalChanged(); });
+        connect(d_sbY1, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [onCalChanged](double) { onCalChanged(); });
+        connect(d_sbY2, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [onCalChanged](double) { onCalChanged(); });
+        connect(d_cbScaleX, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [onCalChanged](int) { onCalChanged(); });
+        connect(d_cbScaleY, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [onCalChanged](int) { onCalChanged(); });
+
+        connect(btnChooseColor, &QPushButton::clicked, this, [this]() {
+            const QColor chosen = QColorDialog::getColor(d_targetColor, this, tr("Select Curve Color"));
+            if (chosen.isValid()) {
+                d_targetColor = chosen;
+                updateColorSwatch();
+            }
+        });
+        connect(btnRunTrace, &QPushButton::clicked, this, [this]() { runAutoTraceNow(); });
+
+        connect(btnRemoveSel, &QPushButton::clicked, this, [this]() {
+            const int row = d_tablePreview->currentRow();
+            if (row >= 0 && row < d_pixelPts.size()) {
+                d_pixelPts.remove(row);
+                refreshCalibrationAndPreview();
+            }
+        });
+        connect(btnClearPts, &QPushButton::clicked, this, [this]() {
+            d_pixelPts.clear();
+            refreshCalibrationAndPreview();
+        });
+
+        connect(btnExportTbl, &QPushButton::clicked, this, [this]() { exportData(false); });
+        connect(btnExportBoth, &QPushButton::clicked, this, [this]() { exportData(true); });
+        connect(btnClose, &QPushButton::clicked, this, &QDialog::accept);
+
+        d_canvas->onImageClicked = [this](const QPointF &pix, Qt::MouseButton btn) {
+            handleCanvasClick(pix, btn);
+        };
+        d_canvas->onImageHovered = [this](const QPointF &pix) {
+            const QPointF dp = GraphDigitizer::mapPixelToData(pix, currentCalibration());
+            d_lblCursorReadout->setText(tr("Pixel (%1, %2) -> Data (%3, %4)")
+                                                .arg(std::round(pix.x()))
+                                                .arg(std::round(pix.y()))
+                                                .arg(dp.x(), 0, 'g', 5)
+                                                .arg(dp.y(), 0, 'g', 5));
+        };
+
+        if (!initialPath.trimmed().isEmpty())
+            loadImageFile(initialPath);
+    }
+
+private:
+    GraphDigitizer::AxisCalibration currentCalibration() const
+    {
+        GraphDigitizer::AxisCalibration cal = d_cal;
+        cal.valueX1 = d_sbX1->value();
+        cal.valueX2 = d_sbX2->value();
+        cal.logX = d_cbScaleX->currentData().toBool();
+        cal.valueY1 = d_sbY1->value();
+        cal.valueY2 = d_sbY2->value();
+        cal.logY = d_cbScaleY->currentData().toBool();
+        return cal;
+    }
+
+    void updateColorSwatch()
+    {
+        d_lblColorSwatch->setStyleSheet(
+                QStringLiteral("background-color: %1; border: 1px solid #555;")
+                        .arg(d_targetColor.name()));
+    }
+
+    void setMode(DigitizerToolMode m)
+    {
+        d_mode = m;
+        switch (m) {
+        case DigitizerToolMode::SetX1:
+            d_lblModeStatus->setText(tr("Click on the image to set X1 anchor."));
+            break;
+        case DigitizerToolMode::SetX2:
+            d_lblModeStatus->setText(tr("Click on the image to set X2 anchor."));
+            break;
+        case DigitizerToolMode::SetY1:
+            d_lblModeStatus->setText(tr("Click on the image to set Y1 anchor."));
+            break;
+        case DigitizerToolMode::SetY2:
+            d_lblModeStatus->setText(tr("Click on the image to set Y2 anchor."));
+            break;
+        case DigitizerToolMode::PickPoints:
+            d_lblModeStatus->setText(tr("Left-click on curve to add points; right-click to undo last point."));
+            break;
+        case DigitizerToolMode::PickColorAutoTrace:
+            d_lblModeStatus->setText(tr("Click directly on a colored curve in the image to sample color & auto-trace."));
+            break;
+        }
+    }
+
+    void loadImageFile(const QString &path)
+    {
+        QImage img(path);
+        if (img.isNull()) {
+            QMessageBox::warning(this, tr("Graph Image Digitizer"),
+                                 tr("Failed to load image file: %1").arg(path));
+            return;
+        }
+        setWorkingImage(img);
+    }
+
+    void setWorkingImage(const QImage &img)
+    {
+        const int w = img.width();
+        const int h = img.height();
+        d_cal.pixelX1 = QPointF(0.10 * w, 0.88 * h);
+        d_cal.pixelX2 = QPointF(0.90 * w, 0.88 * h);
+        d_cal.pixelY1 = QPointF(0.10 * w, 0.88 * h);
+        d_cal.pixelY2 = QPointF(0.10 * w, 0.12 * h);
+        d_hasX1 = true;
+        d_hasX2 = true;
+        d_hasY1 = true;
+        d_hasY2 = true;
+        d_pixelPts.clear();
+        d_canvas->setImage(img);
+        setMode(DigitizerToolMode::SetX1);
+        refreshCalibrationAndPreview();
+    }
+
+    void handleCanvasClick(const QPointF &pix, Qt::MouseButton btn)
+    {
+        if (btn == Qt::RightButton) {
+            if (!d_pixelPts.isEmpty()) {
+                d_pixelPts.removeLast();
+                refreshCalibrationAndPreview();
+            }
+            return;
+        }
+        if (btn != Qt::LeftButton)
+            return;
+
+        switch (d_mode) {
+        case DigitizerToolMode::SetX1:
+            d_cal.pixelX1 = pix;
+            d_hasX1 = true;
+            setMode(DigitizerToolMode::SetX2);
+            break;
+        case DigitizerToolMode::SetX2:
+            d_cal.pixelX2 = pix;
+            d_hasX2 = true;
+            setMode(DigitizerToolMode::SetY1);
+            break;
+        case DigitizerToolMode::SetY1:
+            d_cal.pixelY1 = pix;
+            d_hasY1 = true;
+            setMode(DigitizerToolMode::SetY2);
+            break;
+        case DigitizerToolMode::SetY2:
+            d_cal.pixelY2 = pix;
+            d_hasY2 = true;
+            setMode(DigitizerToolMode::PickPoints);
+            break;
+        case DigitizerToolMode::PickPoints:
+            d_pixelPts.append(pix);
+            break;
+        case DigitizerToolMode::PickColorAutoTrace: {
+            const QImage &im = d_canvas->image();
+            const int ix = std::clamp(static_cast<int>(std::round(pix.x())), 0, im.width() - 1);
+            const int iy = std::clamp(static_cast<int>(std::round(pix.y())), 0, im.height() - 1);
+            d_targetColor = im.pixelColor(ix, iy);
+            updateColorSwatch();
+            runAutoTraceNow();
+            setMode(DigitizerToolMode::PickPoints);
+            return;
+        }
+        }
+        refreshCalibrationAndPreview();
+    }
+
+    void runAutoTraceNow()
+    {
+        const QImage &im = d_canvas->image();
+        if (im.isNull())
+            return;
+        const GraphDigitizer::AxisCalibration cal = currentCalibration();
+        const QVector<QPointF> tracedData = GraphDigitizer::autoTraceCurveByColor(
+                im, cal, d_targetColor, d_sbTol->value(), d_sbSamples->value());
+        d_pixelPts.clear();
+        d_pixelPts.reserve(tracedData.size());
+        for (const QPointF &dp : tracedData)
+            d_pixelPts.append(GraphDigitizer::mapDataToPixel(dp, cal));
+        refreshCalibrationAndPreview();
+    }
+
+    QVector<QPointF> currentSortedDataPoints() const
+    {
+        const GraphDigitizer::AxisCalibration cal = currentCalibration();
+        QVector<QPointF> out;
+        out.reserve(d_pixelPts.size());
+        for (const QPointF &pp : d_pixelPts)
+            out.append(GraphDigitizer::mapPixelToData(pp, cal));
+        std::sort(out.begin(), out.end(),
+                  [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+        return out;
+    }
+
+    void refreshCalibrationAndPreview()
+    {
+        const GraphDigitizer::AxisCalibration cal = currentCalibration();
+        d_canvas->setCalibration(cal, d_hasX1, d_hasX2, d_hasY1, d_hasY2);
+        d_canvas->setPickedPixelPoints(d_pixelPts);
+
+        const QVector<QPointF> dataPts = currentSortedDataPoints();
+        d_tablePreview->setRowCount(dataPts.size());
+        for (int i = 0; i < dataPts.size(); ++i) {
+            d_tablePreview->setItem(
+                    i, 0, new QTableWidgetItem(QString::number(dataPts[i].x(), 'g', 7)));
+            d_tablePreview->setItem(
+                    i, 1, new QTableWidgetItem(QString::number(dataPts[i].y(), 'g', 7)));
+        }
+    }
+
+    void exportData(bool withPlot)
+    {
+        const QVector<QPointF> dataPts = currentSortedDataPoints();
+        if (dataPts.isEmpty()) {
+            QMessageBox::information(this, tr("Graph Image Digitizer"),
+                                     tr("Please pick or auto-trace at least one curve point first."));
+            return;
+        }
+        MultiLayer *ml = nullptr;
+        GraphDigitizer::exportPointsToTable(d_app, dataPts, d_edTableName->text().trimmed(),
+                                            withPlot ? &ml : nullptr);
+    }
+
+    ApplicationWindow *d_app = nullptr;
+    DigitizerImageCanvas *d_canvas = nullptr;
+    GraphDigitizer::AxisCalibration d_cal;
+    bool d_hasX1 = false;
+    bool d_hasX2 = false;
+    bool d_hasY1 = false;
+    bool d_hasY2 = false;
+    DigitizerToolMode d_mode = DigitizerToolMode::SetX1;
+    QColor d_targetColor = QColor(220, 30, 30);
+    QVector<QPointF> d_pixelPts;
+
+    QLabel *d_lblModeStatus = nullptr;
+    QLabel *d_lblCursorReadout = nullptr;
+    QLabel *d_lblColorSwatch = nullptr;
+    QDoubleSpinBox *d_sbX1 = nullptr;
+    QDoubleSpinBox *d_sbX2 = nullptr;
+    QDoubleSpinBox *d_sbY1 = nullptr;
+    QDoubleSpinBox *d_sbY2 = nullptr;
+    QComboBox *d_cbScaleX = nullptr;
+    QComboBox *d_cbScaleY = nullptr;
+    QSpinBox *d_sbTol = nullptr;
+    QSpinBox *d_sbSamples = nullptr;
+    QTableWidget *d_tablePreview = nullptr;
+    QLineEdit *d_edTableName = nullptr;
+};
+
+} // namespace
+
+QPointF GraphDigitizer::mapPixelToData(const QPointF &pixelPt, const AxisCalibration &cal)
+{
+    const QPointF uX = cal.pixelX2 - cal.pixelX1;
+    const double lenSqX = uX.x() * uX.x() + uX.y() * uX.y();
+    const double tX = (lenSqX > 1e-24)
+            ? (((pixelPt.x() - cal.pixelX1.x()) * uX.x()
+                + (pixelPt.y() - cal.pixelX1.y()) * uX.y())
+               / lenSqX)
+            : 0.0;
+
+    const QPointF uY = cal.pixelY2 - cal.pixelY1;
+    const double lenSqY = uY.x() * uY.x() + uY.y() * uY.y();
+    const double tY = (lenSqY > 1e-24)
+            ? (((pixelPt.x() - cal.pixelY1.x()) * uY.x()
+                + (pixelPt.y() - cal.pixelY1.y()) * uY.y())
+               / lenSqY)
+            : 0.0;
+
+    double dataX = 0.0;
+    if (cal.logX && cal.valueX1 > 0.0 && cal.valueX2 > 0.0) {
+        const double l1 = std::log10(cal.valueX1);
+        const double l2 = std::log10(cal.valueX2);
+        dataX = std::pow(10.0, l1 + tX * (l2 - l1));
+    } else {
+        dataX = cal.valueX1 + tX * (cal.valueX2 - cal.valueX1);
+    }
+
+    double dataY = 0.0;
+    if (cal.logY && cal.valueY1 > 0.0 && cal.valueY2 > 0.0) {
+        const double l1 = std::log10(cal.valueY1);
+        const double l2 = std::log10(cal.valueY2);
+        dataY = std::pow(10.0, l1 + tY * (l2 - l1));
+    } else {
+        dataY = cal.valueY1 + tY * (cal.valueY2 - cal.valueY1);
+    }
+
+    return QPointF(dataX, dataY);
+}
+
+QPointF GraphDigitizer::mapDataToPixel(const QPointF &dataPt, const AxisCalibration &cal)
+{
+    double tX = 0.0;
+    if (cal.logX && cal.valueX1 > 0.0 && cal.valueX2 > 0.0 && dataPt.x() > 0.0) {
+        const double l1 = std::log10(cal.valueX1);
+        const double l2 = std::log10(cal.valueX2);
+        const double dl = l2 - l1;
+        tX = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.x()) - l1) / dl) : 0.0;
+    } else {
+        const double dv = cal.valueX2 - cal.valueX1;
+        tX = (std::fabs(dv) > 1e-300) ? ((dataPt.x() - cal.valueX1) / dv) : 0.0;
+    }
+
+    double tY = 0.0;
+    if (cal.logY && cal.valueY1 > 0.0 && cal.valueY2 > 0.0 && dataPt.y() > 0.0) {
+        const double l1 = std::log10(cal.valueY1);
+        const double l2 = std::log10(cal.valueY2);
+        const double dl = l2 - l1;
+        tY = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.y()) - l1) / dl) : 0.0;
+    } else {
+        const double dv = cal.valueY2 - cal.valueY1;
+        tY = (std::fabs(dv) > 1e-300) ? ((dataPt.y() - cal.valueY1) / dv) : 0.0;
+    }
+
+    const QPointF uX = cal.pixelX2 - cal.pixelX1;
+    const QPointF uY = cal.pixelY2 - cal.pixelY1;
+    const double lenSqX = uX.x() * uX.x() + uX.y() * uX.y();
+    const double lenSqY = uY.x() * uY.x() + uY.y() * uY.y();
+
+    // Exact 2x2 inverse of orthogonal/oblique axis-vector projection
+    const double det = uX.x() * uY.y() - uX.y() * uY.x();
+    const double normScale = std::sqrt(std::max(1e-30, lenSqX * lenSqY));
+    if (lenSqX > 1e-24 && lenSqY > 1e-24 && std::fabs(det) > 1e-12 * normScale) {
+        const double r1 = (cal.pixelX1.x() * uX.x() + cal.pixelX1.y() * uX.y()) + tX * lenSqX;
+        const double r2 = (cal.pixelY1.x() * uY.x() + cal.pixelY1.y() * uY.y()) + tY * lenSqY;
+        const double px = (r1 * uY.y() - r2 * uX.y()) / det;
+        const double py = (uX.x() * r2 - uY.x() * r1) / det;
+        return QPointF(px, py);
+    }
+
+    return QPointF(cal.pixelX1.x() + tX * uX.x(), cal.pixelY1.y() + tY * uY.y());
+}
+
+QVector<QPointF> GraphDigitizer::autoTraceCurveByColor(const QImage &img,
+                                                       const AxisCalibration &cal,
+                                                       const QColor &targetColor,
+                                                       int colorTolerance,
+                                                       int numSamplesX)
+{
+    QVector<QPointF> out;
+    if (img.isNull() || img.width() <= 0 || img.height() <= 0 || !targetColor.isValid())
+        return out;
+
+    const QImage argb = img.convertToFormat(QImage::Format_ARGB32);
+    const int W = argb.width();
+    const int H = argb.height();
+
+    double xMinPix = std::min(cal.pixelX1.x(), cal.pixelX2.x());
+    double xMaxPix = std::max(cal.pixelX1.x(), cal.pixelX2.x());
+    if (xMaxPix - xMinPix < 1.0) {
+        xMinPix = 0.0;
+        xMaxPix = static_cast<double>(W - 1);
+    }
+    xMinPix = std::clamp(xMinPix, 0.0, static_cast<double>(W - 1));
+    xMaxPix = std::clamp(xMaxPix, 0.0, static_cast<double>(W - 1));
+
+    const double yMinCal = std::min(cal.pixelY1.y(), cal.pixelY2.y());
+    const double yMaxCal = std::max(cal.pixelY1.y(), cal.pixelY2.y());
+    int yLo = 0;
+    int yHi = H - 1;
+    if (yMaxCal - yMinCal >= 1.0) {
+        yLo = std::clamp(static_cast<int>(std::floor(yMinCal)) - 2, 0, H - 1);
+        yHi = std::clamp(static_cast<int>(std::ceil(yMaxCal)) + 2, 0, H - 1);
+    }
+
+    const int nSamples = std::max(2, numSamplesX);
+    const double tol = static_cast<double>(std::max(0, colorTolerance));
+    const double tolSq = tol * tol;
+    const int trR = targetColor.red();
+    const int trG = targetColor.green();
+    const int trB = targetColor.blue();
+
+    int prevPx = -1;
+    out.reserve(nSamples);
+
+    for (int s = 0; s < nSamples; ++s) {
+        const double pxF = xMinPix
+                + (xMaxPix - xMinPix) * static_cast<double>(s) / static_cast<double>(nSamples - 1);
+        const int px = std::clamp(static_cast<int>(std::round(pxF)), 0, W - 1);
+        if (px == prevPx)
+            continue;
+        prevPx = px;
+
+        // Find contiguous vertical runs of color-matching pixels and pick strongest cluster
+        double bestClusterWeight = 0.0;
+        double bestClusterWy = 0.0;
+
+        double curWeight = 0.0;
+        double curWy = 0.0;
+        int lastMatchY = -10;
+
+        for (int py = yLo; py <= yHi; ++py) {
+            const QRgb rgb = reinterpret_cast<const QRgb *>(argb.constScanLine(py))[px];
+            if (qAlpha(rgb) < 16)
+                continue;
+            const double dr = static_cast<double>(qRed(rgb) - trR);
+            const double dg = static_cast<double>(qGreen(rgb) - trG);
+            const double db = static_cast<double>(qBlue(rgb) - trB);
+            const double distSq = dr * dr + dg * dg + db * db;
+            if (distSq <= tolSq) {
+                const double dist = std::sqrt(distSq);
+                const double w = (1.0 - dist / (tol + 1.0)) + 0.05;
+                if (py - lastMatchY <= 2) {
+                    curWeight += w;
+                    curWy += w * static_cast<double>(py);
+                } else {
+                    if (curWeight > bestClusterWeight) {
+                        bestClusterWeight = curWeight;
+                        bestClusterWy = curWy;
+                    }
+                    curWeight = w;
+                    curWy = w * static_cast<double>(py);
+                }
+                lastMatchY = py;
+            }
+        }
+        if (curWeight > bestClusterWeight) {
+            bestClusterWeight = curWeight;
+            bestClusterWy = curWy;
+        }
+
+        if (bestClusterWeight <= 0.0) {
+            // Fallback for thin 1px anti-aliased strokes blended over white background
+            const double wDx = static_cast<double>(trR - 255);
+            const double wDy = static_cast<double>(trG - 255);
+            const double wDz = static_cast<double>(trB - 255);
+            const double rayLenSq = wDx * wDx + wDy * wDy + wDz * wDz;
+            if (rayLenSq > std::max(400.0, tolSq)) {
+                double aaWeight = 0.0;
+                double aaWy = 0.0;
+                int lastAaY = -10;
+                for (int py = yLo; py <= yHi; ++py) {
+                    const QRgb rgb = reinterpret_cast<const QRgb *>(argb.constScanLine(py))[px];
+                    if (qAlpha(rgb) < 16)
+                        continue;
+                    const double pxR = static_cast<double>(qRed(rgb) - 255);
+                    const double pxG = static_cast<double>(qGreen(rgb) - 255);
+                    const double pxB = static_cast<double>(qBlue(rgb) - 255);
+                    const double alpha = (pxR * wDx + pxG * wDy + pxB * wDz) / rayLenSq;
+                    if (alpha >= 0.35 && alpha <= 1.15) {
+                        const double rx = pxR - alpha * wDx;
+                        const double ry = pxG - alpha * wDy;
+                        const double rz = pxB - alpha * wDz;
+                        const double perpSq = rx * rx + ry * ry + rz * rz;
+                        const double maxPerp = tol * std::min(1.0, alpha);
+                        if (perpSq <= maxPerp * maxPerp) {
+                            const double w = alpha;
+                            if (py - lastAaY <= 2) {
+                                aaWeight += w;
+                                aaWy += w * static_cast<double>(py);
+                            } else {
+                                if (aaWeight > bestClusterWeight) {
+                                    bestClusterWeight = aaWeight;
+                                    bestClusterWy = aaWy;
+                                }
+                                aaWeight = w;
+                                aaWy = w * static_cast<double>(py);
+                            }
+                            lastAaY = py;
+                        }
+                    }
+                }
+                if (aaWeight > bestClusterWeight) {
+                    bestClusterWeight = aaWeight;
+                    bestClusterWy = aaWy;
+                }
+            }
+        }
+
+        if (bestClusterWeight > 0.0) {
+            const double centroidY = bestClusterWy / bestClusterWeight;
+            out.append(mapPixelToData(QPointF(static_cast<double>(px), centroidY), cal));
+        }
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+    return out;
+}
+
+Table *GraphDigitizer::exportPointsToTable(ApplicationWindow *app,
+                                           const QVector<QPointF> &dataPts,
+                                           const QString &tableName,
+                                           MultiLayer **outPlot)
+{
+    if (outPlot)
+        *outPlot = nullptr;
+    if (!app || dataPts.isEmpty())
+        return nullptr;
+
+    QString baseName = tableName.trimmed();
+    if (baseName.isEmpty())
+        baseName = QStringLiteral("DigitizedData");
+    baseName.replace(' ', '_');
+
+    QString uniqueName = baseName;
+    if (app->alreadyUsedName(uniqueName))
+        uniqueName = app->generateUniqueName(baseName, false);
+
+    const int nRows = dataPts.size();
+    Table *tbl = app->newTable(nRows, 2, uniqueName, QObject::tr("Digitized Curve Data"));
+    if (!tbl)
+        return nullptr;
+
+    tbl->setHeader(QStringList() << QStringLiteral("X") << QStringLiteral("Y"));
+    tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    tbl->column(0)->setPlotDesignation(SciDAVis::X);
+    tbl->column(1)->setPlotDesignation(SciDAVis::Y);
+
+    for (int i = 0; i < nRows; ++i) {
+        tbl->column(0)->setValueAt(i, dataPts[i].x());
+        tbl->column(1)->setValueAt(i, dataPts[i].y());
+    }
+
+    if (outPlot) {
+        MultiLayer *ml = app->newGraph(
+                app->generateUniqueName(QStringLiteral("DigitizedPlot_") + uniqueName, false));
+        if (ml) {
+            if (Graph *g = ml->activeGraph()) {
+                if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::LineSymbols, 0,
+                                   nRows - 1)) {
+                    const int cIdx = g->curves() - 1;
+                    g->setCurvePen(cIdx, QPen(QColor(210, 35, 40), 2, Qt::SolidLine));
+                    QwtSymbol sym(QwtSymbol::Ellipse, QBrush(QColor(210, 35, 40)),
+                                  QPen(QColor(140, 20, 25), 1), QSize(6, 6));
+                    g->setCurveSymbol(cIdx, sym);
+                }
+                g->setXAxisTitle(QObject::tr("X"));
+                g->setYAxisTitle(QObject::tr("Y"));
+                g->setTitle(QObject::tr("Digitized Curve (%1)").arg(uniqueName));
+                if (g->legend())
+                    g->legend()->setText(g->legendText());
+                applyArialToDigitizedGraph(g);
+                g->replot();
+            }
+            *outPlot = ml;
+        }
+    }
+
+    return tbl;
+}
+
+void GraphDigitizer::showDigitizerDialog(ApplicationWindow *app, const QString &imagePath)
+{
+    if (!app)
+        return;
+    DigitizerDialog dlg(app, imagePath);
+    dlg.exec();
+}
