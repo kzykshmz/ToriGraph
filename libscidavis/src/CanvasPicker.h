@@ -97,4 +97,6 @@ private:
      * should be generalized. See ImageMarker for details.
      */
     ArrowMarker *d_editing_marker;
+    QPoint d_press_pos;
+    bool d_left_click_pending;
 };

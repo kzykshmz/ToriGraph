@@ -134,11 +134,16 @@ protected slots:
     void setLegendsFont();
     void editCurve();
     void openColorPaletteEditor();
+    void fitPageToLayersFromDialog();
+    void fitLayersToPageFromDialog();
+    void openPageSetupFromDialog();
+    void syncPageTabFromMultiLayer();
 
 private:
     void closeEvent(QCloseEvent *e);
 
     void clearTabWidget();
+    void initPageTab();
     void initAxesPage();
     void initLinePage();
     void initSymbolsPage();
@@ -224,6 +229,22 @@ private:
 
     SymbolBox *boxMaxStyle, *boxMinStyle, *boxMeanStyle, *box99Style, *box1Style;
     QDoubleSpinBox *whiskerCnt, *boxCnt;
+
+    // OriginPro Page & Layer hierarchy controls
+    QWidget *pageTab;
+    QDoubleSpinBox *boxPageWidth, *boxPageHeight;
+    QComboBox *boxPageUnit;
+    QSpinBox *boxPageDpi, *boxPageZoom;
+    QCheckBox *boxPageView;
+    ColorButton *boxPageBgColor;
+    QPushButton *btnFitPageToLayers, *btnFitLayersToPage, *btnOpenPageSetup;
+
+    QSpinBox *boxLayerX, *boxLayerY, *boxLayerW, *boxLayerH;
+    QCheckBox *boxKeepAspect;
+    QDoubleSpinBox *boxAspectRatio;
+    QComboBox *boxFramePreset;
+    QComboBox *boxLinkParentLayer, *boxLinkXMode, *boxLinkYMode;
+    QLineEdit *editLinkXFormula, *editLinkYFormula;
 };
 
 /*****************************************************************************

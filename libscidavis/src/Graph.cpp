@@ -57,6 +57,8 @@
 #include "ApplicationWindow.h"
 #include "core/column/Column.h"
 #include "MultiLayer.h"
+#include "MyParser.h"
+#include <algorithm>
 
 #include <QApplication>
 #include <QBitmap>
@@ -143,9 +145,12 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     defaultArrowHeadFill = true;
 
     defaultMarkerFont = QFont("Arial", 14, QFont::Normal, false);
+    auxMrkFont = QFont("Arial", 12, QFont::Normal, false);
     defaultMarkerFrame = 1;
     defaultTextMarkerColor = QColor(Qt::black);
     defaultTextMarkerBackground = QColor(255, 255, 255, 255);
+    for (int i = 0; i < 4; ++i)
+        d_axis_backbone[i] = true;
 
     d_user_step = QVector<double>(QwtPlot::axisCnt);
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
@@ -157,6 +162,11 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
 
     d_plot = new Plot(this);
     initFonts(QFont("Arial", 18, QFont::Normal, false), QFont("Arial", 16, QFont::Normal, false));
+    {
+        QwtText t = d_plot->title();
+        t.setFont(QFont("Arial", 18, QFont::Bold, false));
+        d_plot->setTitle(t);
+    }
     cp = new CanvasPicker(this);
 
     titlePicker = new TitlePicker(d_plot);
@@ -212,6 +222,8 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
 
 void Graph::notifyChanges()
 {
+    updateStatReferenceLines();
+    syncChildLinkedLayers();
     emit modifiedGraph();
 }
 
@@ -1094,30 +1106,22 @@ void Graph::setTitleFont(const QFont &fnt)
 
 void Graph::setYAxisTitle(const QString &text)
 {
-    d_plot->setAxisTitle(QwtPlot::yLeft, text);
-    d_plot->replot();
-    emit modifiedGraph();
+    setAxisTitle(QwtPlot::yLeft, text);
 }
 
 void Graph::setXAxisTitle(const QString &text)
 {
-    d_plot->setAxisTitle(QwtPlot::xBottom, text);
-    d_plot->replot();
-    emit modifiedGraph();
+    setAxisTitle(QwtPlot::xBottom, text);
 }
 
 void Graph::setRightAxisTitle(const QString &text)
 {
-    d_plot->setAxisTitle(QwtPlot::yRight, text);
-    d_plot->replot();
-    emit modifiedGraph();
+    setAxisTitle(QwtPlot::yRight, text);
 }
 
 void Graph::setTopAxisTitle(const QString &text)
 {
-    d_plot->setAxisTitle(QwtPlot::xTop, text);
-    d_plot->replot();
-    emit modifiedGraph();
+    setAxisTitle(QwtPlot::xTop, text);
 }
 
 int Graph::axisTitleAlignment(int axis)
@@ -1175,7 +1179,13 @@ void Graph::setRightAxisTitleAlignment(int align)
 
 void Graph::setAxisTitle(int axis, const QString &text)
 {
-    d_plot->setAxisTitle(axis, text);
+    QwtText t = d_plot->axisTitle(axis);
+    QFont f = t.font();
+    if (f.family().trimmed().isEmpty())
+        f = QFont("Arial", 14, QFont::Bold, false);
+    t.setFont(f);
+    t.setText(text);
+    d_plot->setAxisTitle(axis, t);
     d_plot->replot();
     emit modifiedGraph();
 }
@@ -1269,6 +1279,9 @@ void Graph::setAutoScale()
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
     updateScale();
+    if (d_linked_parent)
+        syncLinkedAxesFromParent();
+    syncChildLinkedLayers();
 
     emit modifiedGraph();
 }
@@ -1326,6 +1339,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     // keep markers on canvas area
     updateMarkersBoundingRect();
     d_plot->replot();
+    syncChildLinkedLayers();
 }
 
 QStringList Graph::analysableCurvesList()
@@ -1732,15 +1746,20 @@ void Graph::selectTitle()
 
 void Graph::setTitle(const QString &t)
 {
-    d_plot->setTitle(t);
+    QwtText cur = d_plot->title();
+    QFont f = cur.font();
+    if (f.family().trimmed().isEmpty())
+        f = QFont("Arial", 16, QFont::Bold, false);
+    cur.setFont(f);
+    cur.setText(t);
+    d_plot->setTitle(cur);
     emit modifiedGraph();
 }
 
 void Graph::removeTitle()
 {
     if (d_plot->titleLabel()->hasFocus()) {
-        d_plot->setTitle(" ");
-        emit modifiedGraph();
+        setTitle(" ");
     }
 }
 
@@ -1888,6 +1907,7 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
         updated_curves++;
     }
     if (updated_curves) {
+        updateStatReferenceLines();
         if (isPiePlot())
             updatePlot();
         else {
@@ -1895,7 +1915,10 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                 for (int i = 0; i < QwtPlot::axisCnt; i++)
                     d_plot->setAxisAutoScale(i);
             }
+            if (d_linked_parent)
+                syncLinkedAxesFromParent();
             d_plot->replot();
+            syncChildLinkedLayers();
         }
     }
 }
@@ -1968,12 +1991,9 @@ void Graph::drawCanvasFrame(bool frameOn, int width)
 
 void Graph::drawAxesBackbones(bool yes)
 {
-    if (drawAxesBackbone == yes)
-        return;
-
     drawAxesBackbone = yes;
-
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
+        d_axis_backbone[i] = yes;
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
         if (scale) {
             ScaleDraw *sclDraw = (ScaleDraw *)d_plot->axisScaleDraw(i);
@@ -1994,6 +2014,7 @@ void Graph::loadAxesOptions(const QString &s)
     drawAxesBackbone = false;
 
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
+        d_axis_backbone[i] = false;
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
         if (scale) {
             ScaleDraw *sclDraw = (ScaleDraw *)d_plot->axisScaleDraw(i);
@@ -3456,6 +3477,10 @@ void Graph::updatePlot()
     d_plot->replot();
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
+    updateStatReferenceLines();
+    if (d_linked_parent)
+        syncLinkedAxesFromParent();
+    syncChildLinkedLayers();
 }
 
 void Graph::updateScale()
@@ -3463,7 +3488,7 @@ void Graph::updateScale()
     const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(QwtPlot::xBottom);
     QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
 
-    double step = fabs(lst[1] - lst[0]);
+    double step = (lst.count() >= 2) ? fabs(lst[1] - lst[0]) : 0.0;
 
     if (!m_autoscale)
 #if QWT_VERSION >= 0x050200
@@ -3475,7 +3500,7 @@ void Graph::updateScale()
     scDiv = d_plot->axisScaleDiv(QwtPlot::yLeft);
     lst = scDiv->ticks(QwtScaleDiv::MajorTick);
 
-    step = fabs(lst[1] - lst[0]);
+    step = (lst.count() >= 2) ? fabs(lst[1] - lst[0]) : 0.0;
 
     if (!m_autoscale)
 #if QWT_VERSION >= 0x050200
@@ -3490,6 +3515,7 @@ void Graph::updateScale()
     updateSecondaryAxis(QwtPlot::yRight);
 
     d_plot->replot(); // TODO: avoid 2nd replot!
+    syncChildLinkedLayers();
 }
 
 void Graph::setBarsGap(int curve, int gapPercent, int offset)
@@ -3689,6 +3715,7 @@ bool Graph::zoomOn()
 
 void Graph::zoomed(const QwtDoubleRect &)
 {
+    syncChildLinkedLayers();
     emit modifiedGraph();
 }
 
@@ -3720,6 +3747,7 @@ void Graph::zoomOut()
 
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);
+    syncChildLinkedLayers();
 }
 
 void Graph::drawText(bool on)
@@ -4898,7 +4926,10 @@ bool Graph::enableRangeSelectors(const QObject *status_target, const char *statu
 void Graph::setTextMarkerDefaults(int f, const QFont &font, const QColor &textCol,
                                   const QColor &backgroundCol)
 {
-    defaultMarkerFont = font;
+    QFont resolved = font;
+    if (resolved.family().trimmed().isEmpty())
+        resolved = QFont("Arial", 12, QFont::Normal, false);
+    defaultMarkerFont = resolved;
     defaultMarkerFrame = f;
     defaultTextMarkerColor = textCol;
     defaultTextMarkerBackground = backgroundCol;
@@ -6163,4 +6194,647 @@ void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const
     d_plot->replot();
     emit modifiedGraph();
 }
+
+// ============================================================================
+// OriginPro Frame Presets, Per-Side Axis Backbones, Reference Lines & Linked Axes
+// ============================================================================
+
+namespace {
+class OriginReferenceLineItem : public QwtPlotItem
+{
+public:
+    explicit OriginReferenceLineItem(const Graph *graph) : d_graph(graph)
+    {
+        setZ(65.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 42; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_graph)
+            return;
+        const QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+        if (lines.isEmpty())
+            return;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing,
+                               const_cast<Graph *>(d_graph)->antialiasing());
+
+        const QFont labelFont("Arial", 9, QFont::Bold);
+        const QFontMetrics fm(labelFont);
+
+        for (const Graph::ReferenceLineSpec &spec : lines) {
+            if (!std::isfinite(spec.value))
+                continue;
+
+            QString displayLabel = spec.label.trimmed();
+            if (displayLabel.isEmpty() && !spec.statMode.trimmed().isEmpty()) {
+                displayLabel = QString("%1 = %2")
+                                       .arg(spec.statMode.trimmed())
+                                       .arg(spec.value, 0, 'g', 4);
+            }
+
+            if (spec.orientation == 0) {
+                // Horizontal line (Y = spec.value)
+                const double yPx = yMap.transform(spec.value);
+                if (spec.fillToAxis) {
+                    const double yLo = qMin(yMap.s1(), yMap.s2());
+                    const double yHi = qMax(yMap.s1(), yMap.s2());
+                    const double basePx = (0.0 >= yLo && 0.0 <= yHi)
+                            ? yMap.transform(0.0)
+                            : double(canvasRect.bottom());
+                    QRectF fillRect(canvasRect.left(), qMin(yPx, basePx), canvasRect.width(),
+                                    qAbs(basePx - yPx));
+                    fillRect = fillRect.intersected(QRectF(canvasRect));
+                    if (!fillRect.isEmpty())
+                        painter->fillRect(fillRect, spec.fillColor);
+                }
+
+                if (yPx >= canvasRect.top() - 2 && yPx <= canvasRect.bottom() + 2) {
+                    QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
+                    painter->setPen(pen);
+                    painter->drawLine(QPointF(canvasRect.left(), yPx),
+                                      QPointF(canvasRect.right(), yPx));
+
+                    if (!displayLabel.isEmpty()) {
+                        painter->setFont(labelFont);
+                        const int tw = fm.horizontalAdvance(displayLabel);
+                        const int th = fm.height();
+                        double tx = canvasRect.right() - tw - 8;
+                        if (tx < canvasRect.left() + 4)
+                            tx = canvasRect.left() + 4;
+                        double ty = yPx - 5;
+                        if (ty - fm.ascent() < canvasRect.top() + 2)
+                            ty = yPx + fm.ascent() + 4;
+                        QRectF pill(tx - 3, ty - fm.ascent() - 1, tw + 6, th + 2);
+                        painter->fillRect(pill, QColor(255, 255, 255, 205));
+                        painter->setPen(spec.color.darker(115));
+                        painter->drawText(QPointF(tx, ty), displayLabel);
+                    }
+                }
+            } else {
+                // Vertical line (X = spec.value)
+                const double xPx = xMap.transform(spec.value);
+                if (spec.fillToAxis) {
+                    const double xLo = qMin(xMap.s1(), xMap.s2());
+                    const double xHi = qMax(xMap.s1(), xMap.s2());
+                    const double basePx = (0.0 >= xLo && 0.0 <= xHi)
+                            ? xMap.transform(0.0)
+                            : double(canvasRect.left());
+                    QRectF fillRect(qMin(xPx, basePx), canvasRect.top(), qAbs(basePx - xPx),
+                                    canvasRect.height());
+                    fillRect = fillRect.intersected(QRectF(canvasRect));
+                    if (!fillRect.isEmpty())
+                        painter->fillRect(fillRect, spec.fillColor);
+                }
+
+                if (xPx >= canvasRect.left() - 2 && xPx <= canvasRect.right() + 2) {
+                    QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
+                    painter->setPen(pen);
+                    painter->drawLine(QPointF(xPx, canvasRect.top()),
+                                      QPointF(xPx, canvasRect.bottom()));
+
+                    if (!displayLabel.isEmpty()) {
+                        painter->setFont(labelFont);
+                        const int tw = fm.horizontalAdvance(displayLabel);
+                        const int th = fm.height();
+                        double tx = xPx + 5;
+                        if (tx + tw > canvasRect.right() - 4)
+                            tx = xPx - tw - 5;
+                        double ty = canvasRect.top() + fm.ascent() + 6;
+                        QRectF pill(tx - 3, ty - fm.ascent() - 1, tw + 6, th + 2);
+                        painter->fillRect(pill, QColor(255, 255, 255, 205));
+                        painter->setPen(spec.color.darker(115));
+                        painter->drawText(QPointF(tx, ty), displayLabel);
+                    }
+                }
+            }
+        }
+
+        painter->restore();
+    }
+
+private:
+    const Graph *d_graph;
+};
+} // namespace
+
+MultiLayer *Graph::multiLayerParent() const
+{
+    QObject *p = parent();
+    while (p) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(p))
+            return ml;
+        p = p->parent();
+    }
+    return nullptr;
+}
+
+void Graph::setAxisBackboneVisible(int axis, bool visible)
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    d_axis_backbone[axis] = visible;
+    bool anyVisible = false;
+    for (int i = 0; i < QwtPlot::axisCnt; ++i) {
+        if (d_axis_backbone[i])
+            anyVisible = true;
+    }
+    drawAxesBackbone = anyVisible;
+
+    QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(axis);
+    if (scale) {
+        ScaleDraw *sclDraw = (ScaleDraw *)d_plot->axisScaleDraw(axis);
+        if (sclDraw)
+            sclDraw->enableComponent(QwtAbstractScaleDraw::Backbone, visible);
+        scale->repaint();
+    }
+
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+bool Graph::isAxisBackboneVisible(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return false;
+    return drawAxesBackbone && d_axis_backbone[axis];
+}
+
+void Graph::applyFramePreset(FramePreset preset)
+{
+    bool hasRightCurve = false;
+    bool hasTopCurve = false;
+    for (int i = 0; i < n_curves; ++i) {
+        QwtPlotItem *it = plotItem(i);
+        if (!it)
+            continue;
+        if (it->yAxis() == QwtPlot::yRight)
+            hasRightCurve = true;
+        if (it->xAxis() == QwtPlot::xTop)
+            hasTopCurve = true;
+    }
+
+    auto setTickLabelsOnAxis = [&](int axis, bool on) {
+        QwtScaleDraw *sd = d_plot->axisScaleDraw(axis);
+        if (sd)
+            sd->enableComponent(QwtAbstractScaleDraw::Labels, on);
+    };
+
+    if (d_plot->grid()) {
+        d_plot->grid()->enableZeroLineX(false);
+        d_plot->grid()->enableZeroLineY(false);
+    }
+
+    switch (preset) {
+    case FrameBoxInwardTicks: {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            enableAxis(a, true);
+        drawAxesBackbones(true);
+        setTickLabelsOnAxis(QwtPlot::yLeft, true);
+        setTickLabelsOnAxis(QwtPlot::xBottom, true);
+        setTickLabelsOnAxis(QwtPlot::yRight, hasRightCurve);
+        setTickLabelsOnAxis(QwtPlot::xTop, hasTopCurve);
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            d_plot->setMajorTicksType(a, ScaleDraw::In);
+            d_plot->setMinorTicksType(a, ScaleDraw::In);
+        }
+        updateSecondaryAxis(QwtPlot::xTop);
+        updateSecondaryAxis(QwtPlot::yRight);
+        break;
+    }
+    case FrameBoxPlainOpposite: {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            enableAxis(a, true);
+        drawAxesBackbones(true);
+        setTickLabelsOnAxis(QwtPlot::yLeft, true);
+        setTickLabelsOnAxis(QwtPlot::xBottom, true);
+        setTickLabelsOnAxis(QwtPlot::yRight, hasRightCurve);
+        setTickLabelsOnAxis(QwtPlot::xTop, hasTopCurve);
+        d_plot->setMajorTicksType(QwtPlot::yLeft, ScaleDraw::In);
+        d_plot->setMinorTicksType(QwtPlot::yLeft, ScaleDraw::In);
+        d_plot->setMajorTicksType(QwtPlot::xBottom, ScaleDraw::In);
+        d_plot->setMinorTicksType(QwtPlot::xBottom, ScaleDraw::In);
+        d_plot->setMajorTicksType(QwtPlot::yRight,
+                                  hasRightCurve ? ScaleDraw::In : ScaleDraw::None);
+        d_plot->setMinorTicksType(QwtPlot::yRight,
+                                  hasRightCurve ? ScaleDraw::In : ScaleDraw::None);
+        d_plot->setMajorTicksType(QwtPlot::xTop, hasTopCurve ? ScaleDraw::In : ScaleDraw::None);
+        d_plot->setMinorTicksType(QwtPlot::xTop, hasTopCurve ? ScaleDraw::In : ScaleDraw::None);
+        updateSecondaryAxis(QwtPlot::xTop);
+        updateSecondaryAxis(QwtPlot::yRight);
+        break;
+    }
+    case FrameOpenL: {
+        enableAxis(QwtPlot::yLeft, true);
+        enableAxis(QwtPlot::xBottom, true);
+        enableAxis(QwtPlot::yRight, hasRightCurve);
+        enableAxis(QwtPlot::xTop, hasTopCurve);
+        setAxisBackboneVisible(QwtPlot::yLeft, true);
+        setAxisBackboneVisible(QwtPlot::xBottom, true);
+        setAxisBackboneVisible(QwtPlot::yRight, hasRightCurve);
+        setAxisBackboneVisible(QwtPlot::xTop, hasTopCurve);
+        setTickLabelsOnAxis(QwtPlot::yLeft, true);
+        setTickLabelsOnAxis(QwtPlot::xBottom, true);
+        setTickLabelsOnAxis(QwtPlot::yRight, hasRightCurve);
+        setTickLabelsOnAxis(QwtPlot::xTop, hasTopCurve);
+        d_plot->setMajorTicksType(QwtPlot::yLeft, ScaleDraw::Out);
+        d_plot->setMinorTicksType(QwtPlot::yLeft, ScaleDraw::Out);
+        d_plot->setMajorTicksType(QwtPlot::xBottom, ScaleDraw::Out);
+        d_plot->setMinorTicksType(QwtPlot::xBottom, ScaleDraw::Out);
+        d_plot->setMajorTicksType(QwtPlot::yRight,
+                                  hasRightCurve ? ScaleDraw::Out : ScaleDraw::None);
+        d_plot->setMinorTicksType(QwtPlot::yRight,
+                                  hasRightCurve ? ScaleDraw::Out : ScaleDraw::None);
+        d_plot->setMajorTicksType(QwtPlot::xTop, hasTopCurve ? ScaleDraw::Out : ScaleDraw::None);
+        d_plot->setMinorTicksType(QwtPlot::xTop, hasTopCurve ? ScaleDraw::Out : ScaleDraw::None);
+        break;
+    }
+    case FrameZeroCrossed: {
+        enableAxis(QwtPlot::yLeft, true);
+        enableAxis(QwtPlot::xBottom, true);
+        enableAxis(QwtPlot::yRight, false);
+        enableAxis(QwtPlot::xTop, false);
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            setAxisBackboneVisible(a, false);
+        setTickLabelsOnAxis(QwtPlot::yLeft, true);
+        setTickLabelsOnAxis(QwtPlot::xBottom, true);
+        d_plot->setMajorTicksType(QwtPlot::yLeft, ScaleDraw::Out);
+        d_plot->setMinorTicksType(QwtPlot::yLeft, ScaleDraw::Out);
+        d_plot->setMajorTicksType(QwtPlot::xBottom, ScaleDraw::Out);
+        d_plot->setMinorTicksType(QwtPlot::xBottom, ScaleDraw::Out);
+        if (d_plot->grid()) {
+            d_plot->grid()->enableZeroLineX(true);
+            d_plot->grid()->enableZeroLineY(true);
+        }
+        break;
+    }
+    }
+
+    scalePicker->refresh();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::addReferenceLine(const ReferenceLineSpec &spec)
+{
+    if (!d_ref_line_item) {
+        d_ref_line_item = new OriginReferenceLineItem(this);
+        d_ref_line_item->attach(d_plot);
+    }
+    d_ref_lines.append(spec);
+    updateStatReferenceLines();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::setReferenceLines(const QVector<ReferenceLineSpec> &specs)
+{
+    if (!d_ref_line_item && !specs.isEmpty()) {
+        d_ref_line_item = new OriginReferenceLineItem(this);
+        d_ref_line_item->attach(d_plot);
+    }
+    d_ref_lines = specs;
+    updateStatReferenceLines();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+QVector<Graph::ReferenceLineSpec> Graph::referenceLines() const
+{
+    return d_ref_lines;
+}
+
+void Graph::clearReferenceLines()
+{
+    d_ref_lines.clear();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::updateStatReferenceLines()
+{
+    if (d_ref_lines.isEmpty())
+        return;
+
+    bool hasAnyStat = false;
+    for (const ReferenceLineSpec &s : d_ref_lines) {
+        if (!s.statMode.trimmed().isEmpty()
+            && s.statMode.trimmed().compare("Constant", Qt::CaseInsensitive) != 0) {
+            hasAnyStat = true;
+            break;
+        }
+    }
+    if (!hasAnyStat)
+        return;
+
+    QwtPlotCurve *activeCurve = nullptr;
+    if (d_range_selector && d_range_selector->selectedCurve()) {
+        activeCurve = d_range_selector->selectedCurve();
+    }
+    if (!activeCurve) {
+        for (int i = 0; i < n_curves; ++i) {
+            if (c_type[i] == ErrorBars || c_type[i] == Pie || c_type[i] == Box
+                || c_type[i] == ColorMap || c_type[i] == GrayMap || c_type[i] == ContourMap)
+                continue;
+            QwtPlotCurve *c = curve(i);
+            if (c && c->isVisible() && c->dataSize() > 0) {
+                activeCurve = c;
+                break;
+            }
+        }
+    }
+    if (!activeCurve) {
+        for (int i = 0; i < n_curves; ++i) {
+            QwtPlotCurve *c = curve(i);
+            if (c && c->dataSize() > 0) {
+                activeCurve = c;
+                break;
+            }
+        }
+    }
+    if (!activeCurve)
+        return;
+
+    DataCurve *dc = dynamic_cast<DataCurve *>(activeCurve);
+
+    auto computeStats = [&](int orientation, double &outMean, double &outSD,
+                            double &outMedian) -> bool {
+        QVector<double> vals;
+        const int n = activeCurve->dataSize();
+        vals.reserve(n);
+        for (int j = 0; j < n; ++j) {
+            if (dc && dc->isPointMasked(j))
+                continue;
+            const double v = (orientation == 0) ? activeCurve->y(j) : activeCurve->x(j);
+            if (std::isfinite(v))
+                vals.append(v);
+        }
+        if (vals.isEmpty())
+            return false;
+
+        double sum = 0.0;
+        for (double v : vals)
+            sum += v;
+        outMean = sum / double(vals.size());
+
+        double sqSum = 0.0;
+        for (double v : vals) {
+            const double d = v - outMean;
+            sqSum += d * d;
+        }
+        outSD = (vals.size() > 1) ? std::sqrt(sqSum / double(vals.size() - 1)) : 0.0;
+
+        QVector<double> sorted = vals;
+        std::sort(sorted.begin(), sorted.end());
+        const int m = sorted.size();
+        outMedian = (m % 2 == 1) ? sorted[m / 2] : 0.5 * (sorted[m / 2 - 1] + sorted[m / 2]);
+        return true;
+    };
+
+    double yMean = 0.0, ySD = 0.0, yMed = 0.0;
+    bool yReady = false, yValid = false;
+    double xMean = 0.0, xSD = 0.0, xMed = 0.0;
+    bool xReady = false, xValid = false;
+
+    for (ReferenceLineSpec &spec : d_ref_lines) {
+        QString mode = spec.statMode.trimmed().toLower();
+        mode.remove(' ');
+        if (mode.isEmpty() || mode == "constant")
+            continue;
+
+        double mean = 0.0, sd = 0.0, med = 0.0;
+        if (spec.orientation == 0) {
+            if (!yReady) {
+                yValid = computeStats(0, yMean, ySD, yMed);
+                yReady = true;
+            }
+            if (!yValid)
+                continue;
+            mean = yMean;
+            sd = ySD;
+            med = yMed;
+        } else {
+            if (!xReady) {
+                xValid = computeStats(1, xMean, xSD, xMed);
+                xReady = true;
+            }
+            if (!xValid)
+                continue;
+            mean = xMean;
+            sd = xSD;
+            med = xMed;
+        }
+
+        if (mode == "mean")
+            spec.value = mean;
+        else if (mode == "median")
+            spec.value = med;
+        else if (mode == "mean+sd")
+            spec.value = mean + sd;
+        else if (mode == "mean-sd")
+            spec.value = mean - sd;
+        else if (mode == "sd")
+            spec.value = sd;
+    }
+}
+
+void Graph::setLinkedParentLayer(Graph *parentLayer, int xLinkMode, const QString &xExpr,
+                                 int yLinkMode, const QString &yExpr)
+{
+    if (parentLayer == this)
+        parentLayer = nullptr;
+
+    d_linked_parent = parentLayer;
+    d_x_link_mode = xLinkMode;
+    d_x_link_expr = xExpr.trimmed().isEmpty() ? QString("x") : xExpr.trimmed();
+    d_y_link_mode = yLinkMode;
+    d_y_link_expr = yExpr.trimmed().isEmpty() ? QString("y") : yExpr.trimmed();
+
+    if (d_linked_parent)
+        syncLinkedAxesFromParent();
+}
+
+Graph *Graph::linkedParentLayer() const
+{
+    return d_linked_parent.data();
+}
+
+void Graph::syncLinkedAxesFromParent()
+{
+    if (d_syncing_link || !d_linked_parent)
+        return;
+
+    d_syncing_link = true;
+    Plot *parentPlot = d_linked_parent->plotWidget();
+    if (!parentPlot) {
+        d_syncing_link = false;
+        return;
+    }
+
+    auto evalEndpoint = [](const QString &expr, double val, bool &ok) -> double {
+        ok = false;
+        if (expr.isEmpty()) {
+            ok = true;
+            return val;
+        }
+        try {
+            MyParser parser;
+            double v = val;
+            parser.DefineVar(_T("x"), &v);
+            parser.DefineVar(_T("x1"), &v);
+            parser.DefineVar(_T("X"), &v);
+            parser.DefineVar(_T("y"), &v);
+            parser.DefineVar(_T("y1"), &v);
+            parser.DefineVar(_T("Y"), &v);
+            parser.SetExpr(expr);
+            const double res = parser.Eval();
+            if (std::isfinite(res)) {
+                ok = true;
+                return res;
+            }
+        } catch (...) {
+        }
+        return val;
+    };
+
+    if (d_x_link_mode == 1 || d_x_link_mode == 2) {
+        const int srcAxis = parentPlot->axisEnabled(QwtPlot::xBottom) ? QwtPlot::xBottom
+                                                                      : QwtPlot::xTop;
+        const QwtScaleDiv *pDiv = parentPlot->axisScaleDiv(srcAxis);
+        const QwtScaleEngine *pEng = parentPlot->axisScaleEngine(srcAxis);
+        if (pDiv && pEng) {
+            const double p1 = pDiv->lowerBound();
+            const double p2 = pDiv->upperBound();
+            double c1 = p1;
+            double c2 = p2;
+            bool ok = true;
+            if (d_x_link_mode == 2) {
+                bool ok1 = false, ok2 = false;
+                c1 = evalEndpoint(d_x_link_expr, p1, ok1);
+                c2 = evalEndpoint(d_x_link_expr, p2, ok2);
+                ok = ok1 && ok2;
+            }
+            if (ok && qAbs(c2 - c1) > 1e-300) {
+                const double lo = qMin(c1, c2);
+                const double hi = qMax(c1, c2);
+                const int scaleType = (d_x_link_mode == 1
+                                       && pEng->transformation()->type()
+                                               == QwtScaleTransformation::Log10
+                                       && lo > 0.0)
+                        ? 1
+                        : 0;
+                const bool inv = pEng->testAttribute(QwtScaleEngine::Inverted);
+                const int maj = parentPlot->axisMaxMajor(srcAxis);
+                const int minT = parentPlot->axisMaxMinor(srcAxis);
+
+                auto applyAxis = [&](int targetAxis) {
+                    QwtScaleEngine *se = scaleType ? static_cast<QwtScaleEngine *>(new QwtLog10ScaleEngine())
+                                                   : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
+                    int maxMinInt = minT;
+                    if (minT == 1)
+                        maxMinInt = 3;
+                    else if (minT > 1)
+                        maxMinInt = minT + 1;
+                    QwtScaleDiv div = se->divideScale(lo, hi, maj, maxMinInt, 0.0);
+                    if (inv) {
+                        se->setAttribute(QwtScaleEngine::Inverted);
+                        div.invert();
+                    }
+                    d_plot->setAxisMaxMajor(targetAxis, maj);
+                    d_plot->setAxisMaxMinor(targetAxis, minT);
+                    d_plot->setAxisScaleEngine(targetAxis, se);
+                    d_plot->setAxisScaleDiv(targetAxis, div);
+                };
+
+                applyAxis(QwtPlot::xTop);
+                applyAxis(QwtPlot::xBottom);
+            }
+        }
+    }
+
+    if (d_y_link_mode == 1 || d_y_link_mode == 2) {
+        const int srcAxis = parentPlot->axisEnabled(QwtPlot::yLeft) ? QwtPlot::yLeft
+                                                                    : QwtPlot::yRight;
+        const QwtScaleDiv *pDiv = parentPlot->axisScaleDiv(srcAxis);
+        const QwtScaleEngine *pEng = parentPlot->axisScaleEngine(srcAxis);
+        if (pDiv && pEng) {
+            const double p1 = pDiv->lowerBound();
+            const double p2 = pDiv->upperBound();
+            double c1 = p1;
+            double c2 = p2;
+            bool ok = true;
+            if (d_y_link_mode == 2) {
+                bool ok1 = false, ok2 = false;
+                c1 = evalEndpoint(d_y_link_expr, p1, ok1);
+                c2 = evalEndpoint(d_y_link_expr, p2, ok2);
+                ok = ok1 && ok2;
+            }
+            if (ok && qAbs(c2 - c1) > 1e-300) {
+                const double lo = qMin(c1, c2);
+                const double hi = qMax(c1, c2);
+                const int scaleType = (d_y_link_mode == 1
+                                       && pEng->transformation()->type()
+                                               == QwtScaleTransformation::Log10
+                                       && lo > 0.0)
+                        ? 1
+                        : 0;
+                const bool inv = pEng->testAttribute(QwtScaleEngine::Inverted);
+                const int maj = parentPlot->axisMaxMajor(srcAxis);
+                const int minT = parentPlot->axisMaxMinor(srcAxis);
+
+                auto applyAxis = [&](int targetAxis) {
+                    QwtScaleEngine *se = scaleType ? static_cast<QwtScaleEngine *>(new QwtLog10ScaleEngine())
+                                                   : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
+                    int maxMinInt = minT;
+                    if (minT == 1)
+                        maxMinInt = 3;
+                    else if (minT > 1)
+                        maxMinInt = minT + 1;
+                    QwtScaleDiv div = se->divideScale(lo, hi, maj, maxMinInt, 0.0);
+                    if (inv) {
+                        se->setAttribute(QwtScaleEngine::Inverted);
+                        div.invert();
+                    }
+                    d_plot->setAxisMaxMajor(targetAxis, maj);
+                    d_plot->setAxisMaxMinor(targetAxis, minT);
+                    d_plot->setAxisScaleEngine(targetAxis, se);
+                    d_plot->setAxisScaleDiv(targetAxis, div);
+                };
+
+                applyAxis(QwtPlot::yRight);
+                applyAxis(QwtPlot::yLeft);
+            }
+        }
+    }
+
+    d_zoomer[0]->setZoomBase();
+    d_zoomer[1]->setZoomBase();
+    d_plot->replot();
+    d_syncing_link = false;
+}
+
+void Graph::syncChildLinkedLayers()
+{
+    if (d_syncing_link)
+        return;
+
+    MultiLayer *ml = multiLayerParent();
+    if (!ml)
+        return;
+
+    const QList<Graph *> allGraphs = ml->layersList();
+    for (Graph *g : allGraphs) {
+        if (g && g != this && g->linkedParentLayer() == this) {
+            g->syncLinkedAxesFromParent();
+        }
+    }
+}
+
 

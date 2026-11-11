@@ -59,6 +59,20 @@
 #include "Plot.h"
 #include "Legend.h"
 #include "SelectionMoveResizer.h"
+#include "LayerDialog.h"
+#include "PlotCurve.h"
+#include "ColorButton.h"
+#include "ScaleDraw.h"
+
+#include <QToolButton>
+#include <QMenu>
+#include <QDialog>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QGroupBox>
+#include <QLabel>
 
 #include <gsl/gsl_vector.h>
 
@@ -67,20 +81,30 @@ using namespace std;
 
 LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(text, parent)
 {
-    int btn_size = 20;
+    int btn_size = LayerButton::btnSize();
 
     setCheckable(true);
     setChecked(true);
-    setMaximumWidth(btn_size);
-    setMaximumHeight(btn_size);
+    setFixedSize(btn_size, btn_size);
+    setFont(QFont("Arial", 9, QFont::Bold, false));
+    setStyleSheet(
+            "QPushButton { background-color: #F0F2F5; color: #222222; border: 1px solid #B0B6BF; "
+            "border-radius: 2px; padding: 0px; margin: 1px; }"
+            "QPushButton:hover { background-color: #E2E7EE; border: 1px solid #7A869A; }"
+            "QPushButton:checked { background-color: #1E66B8; color: #FFFFFF; border: 1px solid "
+            "#144A86; }");
 }
 
 void LayerButton::mousePressEvent(QMouseEvent *event)
 {
     if (!isChecked())
         emit clicked(this);
-    if (event->button() == Qt::RightButton)
+    if (event->button() == Qt::RightButton) {
         emit showContextMenu();
+        event->accept();
+        return;
+    }
+    QPushButton::mousePressEvent(event);
 }
 
 void LayerButton::mouseDoubleClickEvent(QMouseEvent *)
@@ -120,16 +144,87 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     d_keep_aspect_ratio = true;
     d_target_aspect_ratio = 1.0;
 
+    defaultTextMarkerFrame = 1;
+    defaultTextMarkerFont = QFont("Arial", 12, QFont::Normal, false);
+    defaultTextMarkerColor = QColor(Qt::black);
+    defaultTextMarkerBackground = QColor(Qt::white);
+
+    d_page_view_mode = false;
+    d_page_zoom = 1.0;
+    d_page_unit = UnitPx;
+    d_page_dpi = 300;
+    d_page_width_val = graph_width;
+    d_page_height_val = graph_height;
+    d_base_page_px = QSize(graph_width, graph_height);
+    d_page_bg_color = QColor(Qt::white);
+
     layerButtonsBox = new QHBoxLayout();
+    layerButtonsBox->setContentsMargins(2, 1, 2, 1);
+    layerButtonsBox->setSpacing(2);
     QHBoxLayout *hbox = new QHBoxLayout();
+    hbox->setContentsMargins(2, 1, 2, 1);
+    hbox->setSpacing(2);
     // add a zero width widget to reserve space for the layer's buttons
     QWidget *strut = new QWidget();
     strut->setFixedSize(0, LayerButton::btnSize());
     hbox->addWidget(strut);
     hbox->addLayout(layerButtonsBox);
+
+    d_add_layer_btn = new QToolButton();
+    d_add_layer_btn->setText("+");
+    d_add_layer_btn->setToolTip(tr("Add Layer"));
+    d_add_layer_btn->setFont(QFont("Arial", 10, QFont::Bold, false));
+    d_add_layer_btn->setFixedSize(LayerButton::btnSize(), LayerButton::btnSize());
+    d_add_layer_btn->setPopupMode(QToolButton::InstantPopup);
+    d_add_layer_btn->setStyleSheet(
+            "QToolButton { background-color: #F0F2F5; color: #1E66B8; border: 1px solid #B0B6BF; "
+            "border-radius: 2px; padding: 0px; margin: 1px; }"
+            "QToolButton:hover { background-color: #E2E7EE; border: 1px solid #1E66B8; }"
+            "QToolButton::menu-indicator { image: none; width: 0px; }");
+    QMenu *addMenu = new QMenu(d_add_layer_btn);
+    addMenu->addAction(tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
+        addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+    });
+    addMenu->addAction(tr("Add Right-Y Layer (Double-Y)"), this, [this]() {
+        Graph *g = addLinkedLayer(activeGraph(), true, false, QString("x"), QString("y"));
+        if (g && g->plotWidget()) {
+            g->enableAxis(QwtPlot::yRight, true);
+            g->enableAxis(QwtPlot::xTop, false);
+            g->setAxisBackboneVisible(QwtPlot::xTop, false);
+            g->setAxisBackboneVisible(QwtPlot::yRight, true);
+            if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            g->plotWidget()->replot();
+        }
+    });
+    addMenu->addAction(tr("Add Zoom Inset Layer"), this, [this]() {
+        addInsetLayer(activeGraph());
+    });
+    addMenu->addSeparator();
+    addMenu->addAction(tr("Add Empty Layer"), this, [this]() {
+        Graph *g = addLayer();
+        if (g)
+            arrangeLayers(true, false);
+    });
+    addMenu->addAction(tr("Layer Management..."), this, [this]() {
+        LayerDialog dlg(this);
+        dlg.setMultiLayer(this);
+        dlg.exec();
+    });
+    addMenu->addAction(tr("Page Setup..."), this, [this]() { showPageSetupDialog(); });
+    d_add_layer_btn->setMenu(addMenu);
+    hbox->addWidget(d_add_layer_btn);
     hbox->addStretch();
 
     canvas = new QWidget();
+    canvas->setAutoFillBackground(true);
+    {
+        QPalette cpal = canvas->palette();
+        cpal.setColor(QPalette::Window, QColor("#FFFFFF"));
+        canvas->setPalette(cpal);
+    }
     canvas->installEventFilter(this);
 
     QWidget *d_main_widget = new QWidget();
@@ -147,7 +242,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     pal.setColor(QPalette::Window, QColor(Qt::white));
     d_main_widget->setPalette(pal);
 
-    setMinimumSize(320, 320);
+    setMinimumSize(160, 160);
     setGeometry(QRect(0, 0, graph_width, graph_height));
     setFocusPolicy(Qt::StrongFocus);
 
@@ -161,8 +256,21 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     }
 }
 
+QList<Graph *> MultiLayer::layersList() const
+{
+    QList<Graph *> res;
+    res.reserve(graphsList.size());
+    for (QWidget *w : graphsList) {
+        if (Graph *g = qobject_cast<Graph *>(w))
+            res.append(g);
+    }
+    return res;
+}
+
 Graph *MultiLayer::layer(int num)
 {
+    if (num < 1 || num > graphsList.size())
+        return nullptr;
     return (Graph *)graphsList.at(num - 1);
 }
 
@@ -174,8 +282,11 @@ LayerButton *MultiLayer::addLayerButton()
     }
 
     LayerButton *button = new LayerButton(QString::number(++graphs));
+    button->setToolTip(tr("Layer %1").arg(graphs));
     connect(button, SIGNAL(clicked(LayerButton *)), this, SLOT(activateGraph(LayerButton *)));
-    connect(button, SIGNAL(showContextMenu()), this, SIGNAL(showLayerButtonContextMenu()));
+    connect(button, &LayerButton::showContextMenu, this, [this, button]() {
+        openLayerButtonContextMenu(button, QCursor::pos());
+    });
     connect(button, SIGNAL(showCurvesDialog()), this, SIGNAL(showCurvesDialog()));
 
     buttonsList.append(button);
@@ -355,6 +466,7 @@ void MultiLayer::removeLayer()
         emit setPointerCursor();
 
     int index = graphsList.indexOf(active_graph);
+    d_inset_specs.remove(active_graph);
     graphsList.removeAt(index);
     active_graph->close();
     graphs--;
@@ -400,21 +512,37 @@ QSize MultiLayer::arrangeLayers(bool userSize)
                      qMax(200, height() - LayerButton::btnSize() - 36));
     }
 
+    QList<Graph *> primaryGraphs;
+    primaryGraphs.reserve(graphs);
+    for (int k = 0; k < graphs; ++k) {
+        Graph *gr = (Graph *)graphsList.at(k);
+        if (!gr)
+            continue;
+        if (gr->linkedParentLayer() || d_inset_specs.contains(gr))
+            continue;
+        primaryGraphs.append(gr);
+    }
+    if (primaryGraphs.isEmpty()) {
+        syncChildOverlayAndInsetGeometries();
+        return QSize(l_canvas_width, l_canvas_height);
+    }
+
+    const int nPrimary = primaryGraphs.size();
     const int nRows = qMax(1, rows);
     const int nCols = qMax(1, cols);
 
-    QVector<int> topHeights(graphs, 0);
-    QVector<int> bottomHeights(graphs, 0);
-    QVector<int> leftWidths(graphs, 0);
-    QVector<int> rightWidths(graphs, 0);
+    QVector<int> topHeights(nPrimary, 0);
+    QVector<int> bottomHeights(nPrimary, 0);
+    QVector<int> leftWidths(nPrimary, 0);
+    QVector<int> rightWidths(nPrimary, 0);
     QVector<int> maxTopH(nRows, 0);
     QVector<int> maxBottomH(nRows, 0);
     QVector<int> maxLeftW(nCols, 0);
     QVector<int> maxRightW(nCols, 0);
 
     int i;
-    for (i = 0; i < graphs; i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
+    for (i = 0; i < nPrimary; i++) {
+        Graph *gr = primaryGraphs.at(i);
         QwtPlot *plot = gr->plotWidget();
         plot->updateLayout();
         QwtPlotLayout *plotLayout = plot->plotLayout();
@@ -501,7 +629,7 @@ QSize MultiLayer::arrangeLayers(bool userSize)
     const int offsetX = userSize ? 0 : qMax(0, (rect.width() - totalW) / 2);
     const int offsetY = userSize ? 0 : qMax(0, (rect.height() - totalH) / 2);
 
-    for (i = 0; i < graphs; i++) {
+    for (i = 0; i < nPrimary; i++) {
         int row = i / nCols;
         if (row >= nRows)
             row = nRows - 1;
@@ -523,7 +651,7 @@ QSize MultiLayer::arrangeLayers(bool userSize)
         else if (vert_align == Bottom)
             y += (maxTopH[row] - topHeights[i]) + (maxBottomH[row] - bottomHeights[i]);
 
-        Graph *gr = (Graph *)graphsList.at(i);
+        Graph *gr = primaryGraphs.at(i);
         bool autoscaleFonts = false;
         if (!userSize) {
             autoscaleFonts = gr->autoscaleFonts();
@@ -538,12 +666,20 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             gr->setAutoscaleFonts(autoscaleFonts);
     }
 
+    syncChildOverlayAndInsetGeometries();
     return size;
 }
 
 void MultiLayer::findBestLayout(int &rows, int &cols)
 {
-    int NumGraph = graphs;
+    int NumGraph = 0;
+    for (int k = 0; k < graphs; ++k) {
+        Graph *gr = (Graph *)graphsList.at(k);
+        if (gr && !gr->linkedParentLayer() && !d_inset_specs.contains(gr))
+            ++NumGraph;
+    }
+    if (NumGraph <= 0)
+        NumGraph = qMax(1, graphs);
     if (NumGraph % 2 == 0) // NumGraph is an even number
     {
         if (NumGraph <= 2)
@@ -1014,6 +1150,14 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
         return false;
     } else if (e->type() == QEvent::Resize && object == (QObject *)canvas) {
         resizeLayers((const QResizeEvent *)e);
+    } else if (e->type() == QEvent::Paint && object == (QObject *)canvas && d_page_view_mode) {
+        const bool ret = MyWidget::eventFilter(object, e);
+        QPainter p(canvas);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(QPen(QColor("#B8BEC6"), 1, Qt::SolidLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(canvas->rect().adjusted(0, 0, -1, -1));
+        return ret;
     }
     return MyWidget::eventFilter(object, e);
 }
@@ -1076,6 +1220,16 @@ void MultiLayer::wheelEvent(QWheelEvent *e)
                 resize = true;
             }
         }
+    }
+    if (!resize && (e->modifiers() & Qt::ControlModifier)) {
+        const int dy = e->angleDelta().y();
+        if (dy != 0) {
+            const double factor = (dy > 0) ? 1.1 : (1.0 / 1.1);
+            setPageZoom(d_page_zoom * factor);
+            e->accept();
+        }
+        QApplication::restoreOverrideCursor();
+        return;
     }
     if (resize
         && (e->modifiers() == Qt::AltModifier || e->modifiers() == Qt::ControlModifier
@@ -1353,3 +1507,666 @@ bool MultiLayer::focusNextPrevChild(bool next)
 
     return active_graph->focusNextPrevChild(next);
 }
+
+// ============================================================================
+// OriginPro Page View, Physical Page Sizing, Zoom, Linked Axes & Inset Layers
+// ============================================================================
+
+void MultiLayer::syncChildOverlayAndInsetGeometries()
+{
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (!gr)
+            continue;
+        if (Graph *parentLayer = gr->linkedParentLayer()) {
+            const QRect pGeo = parentLayer->geometry();
+            if (gr->geometry() != pGeo) {
+                gr->setGeometry(pGeo);
+                gr->plotWidget()->resize(pGeo.size());
+                gr->plotWidget()->updateLayout();
+            }
+        } else if (d_inset_specs.contains(gr)) {
+            Graph *srcLayer = d_inset_specs[gr].first.data();
+            const QRectF rel = d_inset_specs[gr].second;
+            if (srcLayer) {
+                const QRect srcGeo = srcLayer->geometry();
+                const int ix = srcGeo.x() + qRound(rel.x() * srcGeo.width());
+                const int iy = srcGeo.y() + qRound(rel.y() * srcGeo.height());
+                const int iw = qMax(40, qRound(rel.width() * srcGeo.width()));
+                const int ih = qMax(40, qRound(rel.height() * srcGeo.height()));
+                const QRect targetGeo(ix, iy, iw, ih);
+                if (gr->geometry() != targetGeo) {
+                    gr->setGeometry(targetGeo);
+                    gr->plotWidget()->resize(targetGeo.size());
+                    gr->plotWidget()->updateLayout();
+                }
+                gr->raise();
+            }
+        }
+    }
+}
+
+void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos)
+{
+    if (btn)
+        activateGraph(btn);
+
+    QMenu menu(this);
+    menu.addAction(tr("Layer Properties..."), this, [this]() { emit showPlotDialog(-1); });
+    menu.addAction(tr("Link Axes Scales..."), this, [this]() {
+        LayerDialog dlg(this);
+        dlg.setMultiLayer(this);
+        dlg.exec();
+    });
+    menu.addSeparator();
+    menu.addAction(tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
+        addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+    });
+    menu.addAction(tr("Add Inset Layer"), this, [this]() { addInsetLayer(activeGraph()); });
+    menu.addSeparator();
+    QAction *actRemove = menu.addAction(tr("Remove Layer"), this, [this]() {
+        if (graphs > 1)
+            confirmRemoveLayer();
+        else
+            removeLayer();
+    });
+    actRemove->setEnabled(graphs > 0);
+    menu.exec(globalPos);
+}
+
+void MultiLayer::setPageViewMode(bool enabled)
+{
+    d_page_view_mode = enabled;
+    setPageBackgroundColor(d_page_view_mode && !d_page_bg_color.isValid() ? QColor("#FFFFFF")
+                                                                          : d_page_bg_color);
+    if (canvas)
+        canvas->update();
+    emit modifiedPlot();
+}
+
+bool MultiLayer::pageViewMode() const
+{
+    return d_page_view_mode;
+}
+
+void MultiLayer::setPageBackgroundColor(const QColor &color)
+{
+    d_page_bg_color = color.isValid() ? color : QColor("#FFFFFF");
+    if (canvas) {
+        QPalette cpal = canvas->palette();
+        cpal.setColor(QPalette::Window, d_page_bg_color);
+        canvas->setPalette(cpal);
+        canvas->setAutoFillBackground(true);
+        canvas->update();
+    }
+    if (widget()) {
+        QPalette wpal = widget()->palette();
+        wpal.setColor(QPalette::Window, d_page_view_mode ? QColor("#EAEEF3") : d_page_bg_color);
+        widget()->setPalette(wpal);
+    }
+    emit modifiedPlot();
+}
+
+void MultiLayer::setPageZoom(double factor)
+{
+    const double clamped = qBound(0.25, factor, 4.0);
+    if (qAbs(clamped - d_page_zoom) < 1e-6)
+        return;
+
+    if (!d_base_page_px.isValid() || d_base_page_px.width() < 50 || d_base_page_px.height() < 50) {
+        const QSize cur = (canvas && canvas->width() >= 50 && canvas->height() >= 50)
+                ? canvas->size()
+                : QSize(graph_width, graph_height);
+        d_base_page_px = QSize(qMax(80, qRound(cur.width() / d_page_zoom)),
+                               qMax(80, qRound(cur.height() / d_page_zoom)));
+    }
+
+    const double ratio = clamped / d_page_zoom;
+    d_page_zoom = clamped;
+
+    const QSize newCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
+                              qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
+
+    QVector<bool> savedIgnore(graphsList.count(), false);
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr) {
+            savedIgnore[i] = gr->ignoresResizeEvents();
+            gr->setIgnoreResizeEvents(true);
+        }
+    }
+
+    lastSize = newCanvasSize;
+    if (canvas)
+        canvas->resize(newCanvasSize);
+    this->resize(newCanvasSize.width(), newCanvasSize.height() + LayerButton::btnSize() + 4);
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (!gr)
+            continue;
+        const QRect gRect = gr->geometry();
+        const QRect scaledRect(qRound(gRect.x() * ratio), qRound(gRect.y() * ratio),
+                               qMax(60, qRound(gRect.width() * ratio)),
+                               qMax(60, qRound(gRect.height() * ratio)));
+        gr->setGeometry(scaledRect);
+        gr->plotWidget()->resize(scaledRect.size());
+        gr->plotWidget()->updateLayout();
+        gr->setIgnoreResizeEvents(savedIgnore[i]);
+    }
+    l_canvas_width = qMax(50, qRound(l_canvas_width * ratio));
+    l_canvas_height = qMax(50, qRound(l_canvas_height * ratio));
+    syncChildOverlayAndInsetGeometries();
+    lastSize = canvas ? canvas->size() : newCanvasSize;
+    emit modifiedPlot();
+}
+
+double MultiLayer::pageZoom() const
+{
+    return d_page_zoom;
+}
+
+void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit unit, int dpi)
+{
+    if (widthVal <= 0.0 || heightVal <= 0.0)
+        return;
+
+    d_page_width_val = widthVal;
+    d_page_height_val = heightVal;
+    d_page_unit = unit;
+    d_page_dpi = qBound(36, dpi, 2400);
+
+    const double screenPpi = 96.0;
+    double pxW = widthVal;
+    double pxH = heightVal;
+    switch (unit) {
+    case UnitPx:
+        pxW = widthVal;
+        pxH = heightVal;
+        break;
+    case UnitMm:
+        pxW = (widthVal / 25.4) * screenPpi;
+        pxH = (heightVal / 25.4) * screenPpi;
+        break;
+    case UnitCm:
+        pxW = (widthVal / 2.54) * screenPpi;
+        pxH = (heightVal / 2.54) * screenPpi;
+        break;
+    case UnitInch:
+        pxW = widthVal * screenPpi;
+        pxH = heightVal * screenPpi;
+        break;
+    }
+
+    d_base_page_px = QSize(qMax(120, qRound(pxW)), qMax(120, qRound(pxH)));
+    graph_width = d_base_page_px.width();
+    graph_height = d_base_page_px.height();
+    d_target_aspect_ratio = pxW / qMax(1.0, pxH);
+
+    const QSize targetCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
+                                 qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
+
+    QVector<bool> savedIgnore(graphsList.count(), false);
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr) {
+            savedIgnore[i] = gr->ignoresResizeEvents();
+            gr->setIgnoreResizeEvents(true);
+        }
+    }
+
+    lastSize = targetCanvasSize;
+    if (canvas)
+        canvas->resize(targetCanvasSize);
+    this->resize(targetCanvasSize.width(), targetCanvasSize.height() + LayerButton::btnSize() + 4);
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr)
+            gr->setIgnoreResizeEvents(savedIgnore[i]);
+    }
+
+    if (graphs > 0)
+        fitLayersToPage();
+    lastSize = canvas ? canvas->size() : targetCanvasSize;
+    emit modifiedPlot();
+}
+
+int MultiLayer::pageDpi() const
+{
+    return d_page_dpi;
+}
+
+MultiLayer::PageUnit MultiLayer::pageUnit() const
+{
+    return d_page_unit;
+}
+
+void MultiLayer::fitPageToLayers(int marginPx)
+{
+    if (graphsList.isEmpty())
+        return;
+
+    QRect unionRect;
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (!gr)
+            continue;
+        const QSize sz = gr->plotWidget() ? gr->plotWidget()->size() : gr->size();
+        unionRect = unionRect.united(QRect(gr->pos(), sz));
+    }
+    if (unionRect.isEmpty())
+        return;
+
+    const int m = qMax(0, marginPx);
+    const QPoint shift(m - unionRect.left(), m - unionRect.top());
+    const QSize tightSize(qMax(100, unionRect.width() + 2 * m),
+                          qMax(100, unionRect.height() + 2 * m));
+
+    QVector<bool> savedIgnore(graphsList.count(), false);
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr) {
+            savedIgnore[i] = gr->ignoresResizeEvents();
+            gr->setIgnoreResizeEvents(true);
+            gr->move(gr->pos() + shift);
+        }
+    }
+
+    d_base_page_px = QSize(qMax(80, qRound(tightSize.width() / d_page_zoom)),
+                           qMax(80, qRound(tightSize.height() / d_page_zoom)));
+    lastSize = tightSize;
+    if (canvas)
+        canvas->resize(tightSize);
+    this->resize(tightSize.width(), tightSize.height() + LayerButton::btnSize() + 4);
+    lastSize = canvas ? canvas->size() : tightSize;
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr)
+            gr->setIgnoreResizeEvents(savedIgnore[i]);
+    }
+
+    emit modifiedPlot();
+}
+
+void MultiLayer::fitLayersToPage()
+{
+    if (graphs <= 0)
+        return;
+
+    const bool savedKeepAspect = d_keep_aspect_ratio;
+    d_keep_aspect_ratio = false;
+    arrangeLayers(false, false);
+    d_keep_aspect_ratio = savedKeepAspect;
+    if (l_canvas_width > 0 && l_canvas_height > 0)
+        d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
+    syncChildOverlayAndInsetGeometries();
+    emit modifiedPlot();
+}
+
+void MultiLayer::showPageSetupDialog()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Page Setup"));
+    dlg.setMinimumWidth(420);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+
+    QGroupBox *grpPreset = new QGroupBox(tr("Page Size"), &dlg);
+    QGridLayout *grid = new QGridLayout(grpPreset);
+
+    grid->addWidget(new QLabel(tr("Preset:"), grpPreset), 0, 0);
+    QComboBox *comboPreset = new QComboBox(grpPreset);
+    comboPreset->addItem(tr("Custom"));
+    comboPreset->addItem(tr("Journal 1-Column (85 x 85 mm)"));
+    comboPreset->addItem(tr("Journal 1.5-Column (120 x 90 mm)"));
+    comboPreset->addItem(tr("Journal 2-Column (170 x 120 mm)"));
+    comboPreset->addItem(tr("Presentation 16:9 (254 x 143 mm)"));
+    comboPreset->addItem(tr("A4 Landscape"));
+    grid->addWidget(comboPreset, 0, 1, 1, 2);
+
+    grid->addWidget(new QLabel(tr("Units:"), grpPreset), 1, 0);
+    QComboBox *comboUnit = new QComboBox(grpPreset);
+    comboUnit->addItem(QStringLiteral("px"), int(UnitPx));
+    comboUnit->addItem(QStringLiteral("mm"), int(UnitMm));
+    comboUnit->addItem(QStringLiteral("cm"), int(UnitCm));
+    comboUnit->addItem(QStringLiteral("inch"), int(UnitInch));
+    comboUnit->setCurrentIndex(int(d_page_unit));
+    grid->addWidget(comboUnit, 1, 1, 1, 2);
+
+    grid->addWidget(new QLabel(tr("Width:"), grpPreset), 2, 0);
+    QDoubleSpinBox *spinW = new QDoubleSpinBox(grpPreset);
+    spinW->setRange(1.0, 10000.0);
+    spinW->setDecimals(2);
+    spinW->setValue(d_page_width_val);
+    grid->addWidget(spinW, 2, 1, 1, 2);
+
+    grid->addWidget(new QLabel(tr("Height:"), grpPreset), 3, 0);
+    QDoubleSpinBox *spinH = new QDoubleSpinBox(grpPreset);
+    spinH->setRange(1.0, 10000.0);
+    spinH->setDecimals(2);
+    spinH->setValue(d_page_height_val);
+    grid->addWidget(spinH, 3, 1, 1, 2);
+
+    grid->addWidget(new QLabel(tr("Resolution (DPI):"), grpPreset), 4, 0);
+    QSpinBox *spinDpi = new QSpinBox(grpPreset);
+    spinDpi->setRange(72, 2400);
+    spinDpi->setSingleStep(50);
+    spinDpi->setValue(d_page_dpi);
+    grid->addWidget(spinDpi, 4, 1, 1, 2);
+
+    mainLayout->addWidget(grpPreset);
+
+    QGroupBox *grpView = new QGroupBox(tr("Page View Mode"), &dlg);
+    QGridLayout *vGrid = new QGridLayout(grpView);
+
+    QCheckBox *chkPageView = new QCheckBox(tr("Page View Mode"), grpView);
+    chkPageView->setChecked(d_page_view_mode);
+    vGrid->addWidget(chkPageView, 0, 0, 1, 2);
+
+    vGrid->addWidget(new QLabel(tr("Zoom") + QStringLiteral(" (%):"), grpView), 1, 0);
+    QDoubleSpinBox *spinZoom = new QDoubleSpinBox(grpView);
+    spinZoom->setRange(25.0, 400.0);
+    spinZoom->setDecimals(0);
+    spinZoom->setSingleStep(10.0);
+    spinZoom->setValue(d_page_zoom * 100.0);
+    vGrid->addWidget(spinZoom, 1, 1);
+
+    vGrid->addWidget(new QLabel(tr("Background Color:"), grpView), 2, 0);
+    ColorButton *btnBg = new ColorButton(grpView);
+    btnBg->setColor(d_page_bg_color);
+    vGrid->addWidget(btnBg, 2, 1);
+
+    QHBoxLayout *fitRow = new QHBoxLayout();
+    QPushButton *btnFitPage = new QPushButton(tr("Fit Page to Layers"), grpView);
+    QPushButton *btnFitLayers = new QPushButton(tr("Fit Layers to Page"), grpView);
+    fitRow->addWidget(btnFitPage);
+    fitRow->addWidget(btnFitLayers);
+    vGrid->addLayout(fitRow, 3, 0, 1, 2);
+
+    mainLayout->addWidget(grpView);
+
+    auto toMm = [](double val, PageUnit u) -> double {
+        switch (u) {
+        case UnitPx:
+            return (val / 96.0) * 25.4;
+        case UnitMm:
+            return val;
+        case UnitCm:
+            return val * 10.0;
+        case UnitInch:
+            return val * 25.4;
+        }
+        return val;
+    };
+    auto fromMm = [](double mm, PageUnit u) -> double {
+        switch (u) {
+        case UnitPx:
+            return (mm / 25.4) * 96.0;
+        case UnitMm:
+            return mm;
+        case UnitCm:
+            return mm / 10.0;
+        case UnitInch:
+            return mm / 25.4;
+        }
+        return mm;
+    };
+
+    PageUnit lastUnit = d_page_unit;
+    QObject::connect(comboUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int idx) {
+                         const PageUnit newUnit = PageUnit(comboUnit->itemData(idx).toInt());
+                         const double wMm = toMm(spinW->value(), lastUnit);
+                         const double hMm = toMm(spinH->value(), lastUnit);
+                         spinW->blockSignals(true);
+                         spinH->blockSignals(true);
+                         spinW->setValue(fromMm(wMm, newUnit));
+                         spinH->setValue(fromMm(hMm, newUnit));
+                         spinW->blockSignals(false);
+                         spinH->blockSignals(false);
+                         lastUnit = newUnit;
+                     });
+
+    QObject::connect(comboPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int idx) {
+                         double wMm = 0.0, hMm = 0.0;
+                         if (idx == 1) {
+                             wMm = 85.0;
+                             hMm = 85.0;
+                         } else if (idx == 2) {
+                             wMm = 120.0;
+                             hMm = 90.0;
+                         } else if (idx == 3) {
+                             wMm = 170.0;
+                             hMm = 120.0;
+                         } else if (idx == 4) {
+                             wMm = 254.0;
+                             hMm = 143.0;
+                         } else if (idx == 5) {
+                             wMm = 297.0;
+                             hMm = 210.0;
+                         } else {
+                             return;
+                         }
+                         comboUnit->setCurrentIndex(int(UnitMm));
+                         lastUnit = UnitMm;
+                         spinW->setValue(wMm);
+                         spinH->setValue(hMm);
+                     });
+
+    QObject::connect(btnFitPage, &QPushButton::clicked, &dlg, [&]() { fitPageToLayers(14); });
+    QObject::connect(btnFitLayers, &QPushButton::clicked, &dlg, [&]() { fitLayersToPage(); });
+
+    auto applyNow = [&]() {
+        const PageUnit u = PageUnit(comboUnit->currentData().toInt());
+        setPageBackgroundColor(btnBg->color());
+        setPageViewMode(chkPageView->isChecked());
+        setPageZoom(spinZoom->value() / 100.0);
+        setPageSizePhysical(spinW->value(), spinH->value(), u, spinDpi->value());
+    };
+
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->addStretch();
+    QPushButton *btnApply = new QPushButton(tr("&Apply"), &dlg);
+    QPushButton *btnOk = new QPushButton(tr("&OK"), &dlg);
+    QPushButton *btnCancel = new QPushButton(tr("&Cancel"), &dlg);
+    btnOk->setDefault(true);
+    btnLayout->addWidget(btnApply);
+    btnLayout->addWidget(btnOk);
+    btnLayout->addWidget(btnCancel);
+    mainLayout->addLayout(btnLayout);
+
+    QObject::connect(btnApply, &QPushButton::clicked, &dlg, applyNow);
+    QObject::connect(btnOk, &QPushButton::clicked, &dlg, [&]() {
+        applyNow();
+        dlg.accept();
+    });
+    QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    dlg.exec();
+}
+
+Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
+                                  const QString &xFormula, const QString &yFormula)
+{
+    if (!parentLayer)
+        parentLayer = active_graph ? active_graph : layer(1);
+    if (!parentLayer)
+        return addLayer();
+
+    const QRect pGeo = parentLayer->geometry();
+    Graph *child = addLayer(pGeo.x(), pGeo.y(), pGeo.width(), pGeo.height());
+    if (!child)
+        return nullptr;
+
+    child->setIgnoreResizeEvents(true);
+    child->removeLegend();
+    child->setTitle("");
+    child->setFrame(0);
+    child->drawCanvasFrame(false, 0);
+    child->setBackgroundColor(QColor(255, 255, 255, 0));
+    child->setCanvasBackground(QColor(255, 255, 255, 0));
+
+    Plot *cPlot = child->plotWidget();
+    if (cPlot) {
+        cPlot->setAutoFillBackground(false);
+        cPlot->setAttribute(Qt::WA_TranslucentBackground, true);
+        if (cPlot->canvas())
+            cPlot->canvas()->setAutoFillBackground(false);
+        cPlot->setMargin(parentLayer->plotWidget() ? parentLayer->plotWidget()->margin() : 14);
+    }
+    child->setAttribute(Qt::WA_TranslucentBackground, true);
+
+    child->enableAxis(QwtPlot::xBottom, false);
+    child->enableAxis(QwtPlot::yLeft, false);
+    child->enableAxis(QwtPlot::xTop, true);
+    child->enableAxis(QwtPlot::yRight, true);
+
+    child->setAxisBackboneVisible(QwtPlot::xBottom, false);
+    child->setAxisBackboneVisible(QwtPlot::yLeft, false);
+    child->setAxisBackboneVisible(QwtPlot::xTop, true);
+    child->setAxisBackboneVisible(QwtPlot::yRight, true);
+
+    if (cPlot) {
+        if (QwtScaleDraw *sdTop = cPlot->axisScaleDraw(QwtPlot::xTop))
+            sdTop->enableComponent(QwtAbstractScaleDraw::Labels, linkX);
+        if (QwtScaleDraw *sdRight = cPlot->axisScaleDraw(QwtPlot::yRight))
+            sdRight->enableComponent(QwtAbstractScaleDraw::Labels, linkY || !linkX);
+        cPlot->setMajorTicksType(QwtPlot::xTop, linkX ? ScaleDraw::In : ScaleDraw::None);
+        cPlot->setMinorTicksType(QwtPlot::xTop, linkX ? ScaleDraw::In : ScaleDraw::None);
+        cPlot->setMajorTicksType(QwtPlot::yRight,
+                                 (linkY || !linkX) ? ScaleDraw::In : ScaleDraw::None);
+        cPlot->setMinorTicksType(QwtPlot::yRight,
+                                 (linkY || !linkX) ? ScaleDraw::In : ScaleDraw::None);
+    }
+
+    child->setAxisTitle(QwtPlot::xTop, QString());
+    child->setAxisTitle(QwtPlot::yRight, QString());
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        child->setAxisFont(a, parentLayer->axisFont(a));
+        child->setAxisTitleFont(a, parentLayer->axisTitleFont(a));
+    }
+
+    auto classifyMode = [](bool enabled, const QString &expr, const QString &ident1,
+                           const QString &ident2) -> int {
+        if (!enabled)
+            return 0;
+        const QString e = expr.trimmed();
+        if (e.isEmpty() || e.compare(ident1, Qt::CaseInsensitive) == 0
+            || e.compare(ident2, Qt::CaseInsensitive) == 0)
+            return 1;
+        return 2;
+    };
+
+    const int xMode = classifyMode(linkX, xFormula, QString("x"), QString("x1"));
+    const int yMode = classifyMode(linkY, yFormula, QString("y"), QString("y1"));
+
+    child->setLinkedParentLayer(parentLayer, xMode, xFormula, yMode, yFormula);
+    child->raise();
+    emit modifiedPlot();
+    return child;
+}
+
+Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
+{
+    if (!sourceLayer)
+        sourceLayer = active_graph ? active_graph : layer(1);
+    if (!sourceLayer)
+        return addLayer();
+
+    const QRect srcGeo = sourceLayer->geometry();
+    const int ix = srcGeo.x() + qRound(0.54 * srcGeo.width());
+    const int iy = srcGeo.y() + qRound(0.08 * srcGeo.height());
+    const int iw = qMax(40, qRound(0.38 * srcGeo.width()));
+    const int ih = qMax(40, qRound(0.38 * srcGeo.height()));
+
+    Graph *inset = addLayer(ix, iy, iw, ih);
+    if (!inset)
+        return nullptr;
+
+    d_inset_specs[inset] = qMakePair(QPointer<Graph>(sourceLayer), QRectF(0.54, 0.08, 0.38, 0.38));
+    inset->setIgnoreResizeEvents(true);
+    inset->removeLegend();
+    inset->setTitle("");
+    inset->setBackgroundColor(QColor("#FFFFFF"));
+    inset->setCanvasBackground(QColor("#FFFFFF"));
+    if (inset->plotWidget())
+        inset->plotWidget()->setMargin(4);
+
+    for (int i = 0; i < sourceLayer->curves(); ++i) {
+        QwtPlotItem *it = sourceLayer->plotItem(i);
+        if (!it || it->rtti() != QwtPlotItem::Rtti_PlotCurve)
+            continue;
+        const int cType = sourceLayer->curveType(i);
+        if (cType == Graph::ErrorBars || cType == Graph::Pie || cType == Graph::Box)
+            continue;
+        QwtPlotCurve *srcCurve = sourceLayer->curve(i);
+        if (!srcCurve)
+            continue;
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(srcCurve);
+        if (dc && dc->table()) {
+            inset->insertCurve(dc->table(), dc->xColumnName(), dc->yColumnName(), cType,
+                               dc->startRow(), dc->endRow());
+            if (QwtPlotCurve *dstCurve = inset->curve(inset->curves() - 1)) {
+                dstCurve->setPen(srcCurve->pen());
+                dstCurve->setSymbol(srcCurve->symbol());
+                dstCurve->setBrush(srcCurve->brush());
+                dstCurve->setStyle(srcCurve->style());
+            }
+        } else {
+            const int n = srcCurve->dataSize();
+            if (n > 0) {
+                PlotCurve *pc = new PlotCurve(srcCurve->title().text());
+                pc->setType(cType);
+                QVector<double> xv(n), yv(n);
+                for (int j = 0; j < n; ++j) {
+                    xv[j] = srcCurve->x(j);
+                    yv[j] = srcCurve->y(j);
+                }
+                pc->setData(xv.constData(), yv.constData(), n);
+                pc->setPen(srcCurve->pen());
+                pc->setSymbol(srcCurve->symbol());
+                pc->setBrush(srcCurve->brush());
+                pc->setStyle(srcCurve->style());
+                inset->insertPlotItem(pc, cType);
+            }
+        }
+    }
+
+    inset->removeLegend();
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        inset->setAxisTitle(a, QString());
+        inset->setAxisFont(a, QFont("Arial", 9, QFont::Normal, false));
+        inset->setAxisTitleFont(a, QFont("Arial", 9, QFont::Bold, false));
+    }
+    inset->applyFramePreset(Graph::FrameBoxInwardTicks);
+
+    if (!roiDataRect.isNull()
+        && (qAbs(roiDataRect.width()) > 1e-15 || qAbs(roiDataRect.height()) > 1e-15)) {
+        inset->enableAutoscaling(false);
+        if (qAbs(roiDataRect.width()) > 1e-15) {
+            inset->setScale(QwtPlot::xBottom, qMin(roiDataRect.left(), roiDataRect.right()),
+                            qMax(roiDataRect.left(), roiDataRect.right()));
+        }
+        if (qAbs(roiDataRect.height()) > 1e-15) {
+            inset->setScale(QwtPlot::yLeft, qMin(roiDataRect.top(), roiDataRect.bottom()),
+                            qMax(roiDataRect.top(), roiDataRect.bottom()));
+        }
+    } else {
+        inset->setAutoScale();
+    }
+
+    inset->setGeometry(ix, iy, iw, ih);
+    if (inset->plotWidget()) {
+        inset->plotWidget()->resize(QSize(iw, ih));
+        inset->plotWidget()->updateLayout();
+        inset->plotWidget()->replot();
+    }
+    inset->raise();
+    emit modifiedPlot();
+    return inset;
+}
+

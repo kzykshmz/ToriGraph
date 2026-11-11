@@ -27,9 +27,9 @@
  *                                                                         *
  ***************************************************************************/
 #include <QObject>
+#include <QPoint>
 
 class QRect;
-class QPoint;
 class QwtPlot;
 class QwtScaleWidget;
 class Graph;
@@ -124,4 +124,6 @@ private:
     bool d_title_selected;
     bool d_labels_selected;
     QwtScaleWidget *d_selected_axis, *d_current_axis;
+    QPoint d_press_pos;
+    bool d_left_click_pending;
 };

@@ -42,6 +42,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QTabWidget>
 #include <QLayout>
 #include <QMessageBox>
@@ -62,6 +63,17 @@
 #endif
 
 AxesDialog::AxesDialog()
+    : xBottomFont(QFont("Arial", 12, QFont::Normal, false)),
+      yLeftFont(QFont("Arial", 12, QFont::Normal, false)),
+      xTopFont(QFont("Arial", 12, QFont::Normal, false)),
+      yRightFont(QFont("Arial", 12, QFont::Normal, false)),
+      xAxisOn(true),
+      yAxisOn(true),
+      topAxisOn(false),
+      rightAxisOn(false),
+      xBottomLabelsRotation(0),
+      xTopLabelsRotation(0),
+      d_graph(nullptr)
 {
     QPixmap image4(":/image4.xpm");
     QPixmap image5(":/image5.xpm");
@@ -73,6 +85,7 @@ AxesDialog::AxesDialog()
     initGridPage();
     initAxesPage();
     initFramePage();
+    initReferenceLinesPage();
 
     auto bottomButtons = new QHBoxLayout();
     bottomButtons->addStretch();
@@ -399,9 +412,15 @@ void AxesDialog::initAxesPage()
 
     QHBoxLayout *topLayout = new QHBoxLayout();
 
+    QVBoxLayout *showAxisCol = new QVBoxLayout();
     boxShowAxis = new QCheckBox(tr("Show"));
     boxShowAxis->setChecked(true);
-    topLayout->addWidget(boxShowAxis);
+    showAxisCol->addWidget(boxShowAxis);
+    boxAxisBackbone = new QCheckBox(tr("Show Axis Line (Backbone)"));
+    boxAxisBackbone->setChecked(true);
+    showAxisCol->addWidget(boxAxisBackbone);
+    showAxisCol->addStretch();
+    topLayout->addLayout(showAxisCol);
 
     labelBox = new QGroupBox(tr("Title"));
     topLayout->addWidget(labelBox);
@@ -556,6 +575,7 @@ void AxesDialog::initAxesPage()
     connect(boxMinorTicksType, SIGNAL(activated(int)), this, SLOT(updateMinTicksType(int)));
 
     connect(boxShowAxis, SIGNAL(clicked()), this, SLOT(showAxis()));
+    connect(boxAxisBackbone, SIGNAL(toggled(bool)), this, SLOT(toggleAxisBackbone(bool)));
     connect(boxFormat, SIGNAL(activated(int)), this, SLOT(setLabelsNumericFormat(int)));
 
     connect(btnAxesFont, SIGNAL(clicked()), this, SLOT(customAxisFont()));
@@ -606,9 +626,22 @@ void AxesDialog::initFramePage()
 
     boxAxesLayout->setRowStretch(4, 1);
 
+    QGroupBox *boxPresets = new QGroupBox(tr("OriginPro Frame Presets"));
+    QVBoxLayout *presetsLayout = new QVBoxLayout(boxPresets);
+    btnPresetBoxInward = new QPushButton(tr("4-Sided Box [Inward Ticks]"));
+    btnPresetBoxPlain = new QPushButton(tr("4-Sided Box [Plain Top/Right]"));
+    btnPresetOpenL = new QPushButton(tr("Open L-Frame"));
+    btnPresetZeroCrossed = new QPushButton(tr("Zero-Crossed"));
+    presetsLayout->addWidget(btnPresetBoxInward);
+    presetsLayout->addWidget(btnPresetBoxPlain);
+    presetsLayout->addWidget(btnPresetOpenL);
+    presetsLayout->addWidget(btnPresetZeroCrossed);
+    presetsLayout->addStretch(1);
+
     QHBoxLayout *mainLayout = new QHBoxLayout(frame);
     mainLayout->addWidget(boxFramed);
     mainLayout->addWidget(boxAxes);
+    mainLayout->addWidget(boxPresets);
 
     generalDialog.addTab(frame, tr("General"));
 
@@ -621,6 +654,102 @@ void AxesDialog::initFramePage()
             SLOT(changeMajorTicksLength(int)));
     connect(boxMinorTicksLength, SIGNAL(valueChanged(int)), this,
             SLOT(changeMinorTicksLength(int)));
+    connect(btnPresetBoxInward, SIGNAL(clicked()), this, SLOT(applyPresetBoxInward()));
+    connect(btnPresetBoxPlain, SIGNAL(clicked()), this, SLOT(applyPresetBoxPlain()));
+    connect(btnPresetOpenL, SIGNAL(clicked()), this, SLOT(applyPresetOpenL()));
+    connect(btnPresetZeroCrossed, SIGNAL(clicked()), this, SLOT(applyPresetZeroCrossed()));
+}
+
+void AxesDialog::initReferenceLinesPage()
+{
+    refLinesPage = new QWidget();
+
+    QGroupBox *listGroup = new QGroupBox(tr("Reference Lines"));
+    QVBoxLayout *listLayout = new QVBoxLayout(listGroup);
+    refLinesList = new QListWidget();
+    listLayout->addWidget(refLinesList);
+
+    QHBoxLayout *listBtns = new QHBoxLayout();
+    btnRefAdd = new QPushButton(tr("Add"));
+    btnRefUpdate = new QPushButton(tr("Apply"));
+    btnRefRemove = new QPushButton(tr("Remove"));
+    btnRefClear = new QPushButton(tr("Clear"));
+    listBtns->addWidget(btnRefAdd);
+    listBtns->addWidget(btnRefUpdate);
+    listBtns->addWidget(btnRefRemove);
+    listBtns->addWidget(btnRefClear);
+    listLayout->addLayout(listBtns);
+
+    QGroupBox *propsGroup = new QGroupBox(tr("Properties"));
+    QGridLayout *gl = new QGridLayout(propsGroup);
+
+    gl->addWidget(new QLabel(tr("Orientation")), 0, 0);
+    refOrientBox = new QComboBox();
+    refOrientBox->addItem(tr("Horizontal (Y)"), 0);
+    refOrientBox->addItem(tr("Vertical (X)"), 1);
+    gl->addWidget(refOrientBox, 0, 1);
+
+    gl->addWidget(new QLabel(tr("Mode")), 1, 0);
+    refStatBox = new QComboBox();
+    refStatBox->addItem(tr("Constant Value"), QString());
+    refStatBox->addItem(tr("Mean"), QString("Mean"));
+    refStatBox->addItem(tr("Median"), QString("Median"));
+    refStatBox->addItem(tr("Mean+SD"), QString("Mean+SD"));
+    refStatBox->addItem(tr("Mean-SD"), QString("Mean-SD"));
+    gl->addWidget(refStatBox, 1, 1);
+
+    gl->addWidget(new QLabel(tr("Value")), 2, 0);
+    refValueBox = new QDoubleSpinBox();
+    refValueBox->setRange(-1e12, 1e12);
+    refValueBox->setDecimals(4);
+    refValueBox->setValue(0.0);
+    gl->addWidget(refValueBox, 2, 1);
+
+    gl->addWidget(new QLabel(tr("Line Color")), 3, 0);
+    refColorBtn = new ColorButton();
+    refColorBtn->setColor(QColor(30, 102, 184));
+    gl->addWidget(refColorBtn, 3, 1);
+
+    gl->addWidget(new QLabel(tr("Line Type")), 4, 0);
+    refStyleBox = new QComboBox();
+    refStyleBox->addItem(tr("Solid Line"), (int)Qt::SolidLine);
+    refStyleBox->addItem(tr("Dash Line"), (int)Qt::DashLine);
+    refStyleBox->addItem(tr("Dot Line"), (int)Qt::DotLine);
+    refStyleBox->addItem(tr("Dash-Dot Line"), (int)Qt::DashDotLine);
+    refStyleBox->setCurrentIndex(1);
+    gl->addWidget(refStyleBox, 4, 1);
+
+    gl->addWidget(new QLabel(tr("Thickness")), 5, 0);
+    refWidthBox = new QDoubleSpinBox();
+    refWidthBox->setRange(0.5, 20.0);
+    refWidthBox->setSingleStep(0.5);
+    refWidthBox->setDecimals(1);
+    refWidthBox->setValue(1.5);
+    gl->addWidget(refWidthBox, 5, 1);
+
+    gl->addWidget(new QLabel(tr("Label")), 6, 0);
+    refLabelEdit = new QLineEdit();
+    gl->addWidget(refLabelEdit, 6, 1);
+
+    refFillBox = new QCheckBox(tr("Fill to Axis"));
+    gl->addWidget(refFillBox, 7, 0);
+    refFillColorBtn = new ColorButton();
+    refFillColorBtn->setColor(QColor(30, 102, 184, 32));
+    gl->addWidget(refFillColorBtn, 7, 1);
+    gl->setRowStretch(8, 1);
+
+    QHBoxLayout *mainLayout = new QHBoxLayout(refLinesPage);
+    mainLayout->addWidget(listGroup, 1);
+    mainLayout->addWidget(propsGroup, 1);
+
+    generalDialog.addTab(refLinesPage, tr("Reference Lines"));
+
+    connect(refLinesList, SIGNAL(currentRowChanged(int)), this, SLOT(selectReferenceLine(int)));
+    connect(refStatBox, SIGNAL(currentIndexChanged(int)), this, SLOT(refStatModeChanged(int)));
+    connect(btnRefAdd, SIGNAL(clicked()), this, SLOT(addRefLineFromUi()));
+    connect(btnRefUpdate, SIGNAL(clicked()), this, SLOT(updateSelectedRefLineFromUi()));
+    connect(btnRefRemove, SIGNAL(clicked()), this, SLOT(removeSelectedRefLine()));
+    connect(btnRefClear, SIGNAL(clicked()), this, SLOT(clearAllRefLines()));
 }
 
 void AxesDialog::changeMinorTicksLength(int minLength)
@@ -909,6 +1038,9 @@ void AxesDialog::showAxis()
 
 void AxesDialog::updateShowBox(int axis)
 {
+    if (tickLabelsOn.size() < 4)
+        return;
+
     switch (axis) {
     case 0: {
         boxShowAxis->setChecked(xAxisOn);
@@ -949,6 +1081,12 @@ void AxesDialog::updateShowBox(int axis)
     }
     }
 
+    if (d_graph && axis >= 0 && axis < 4) {
+        boxAxisBackbone->blockSignals(true);
+        boxAxisBackbone->setChecked(d_graph->isAxisBackboneVisible(Graph::mapToQwtAxis(axis)));
+        boxAxisBackbone->blockSignals(false);
+    }
+
     bool ok = boxShowAxis->isChecked();
     boxTitle->setEnabled(ok);
     boxAxisColor->setEnabled(ok);
@@ -964,7 +1102,10 @@ void AxesDialog::updateShowBox(int axis)
 
 void AxesDialog::customAxisFont()
 {
-    bool okF;
+    if (!d_graph)
+        return;
+
+    bool okF = false;
     int axis = -1;
     QFont fnt;
     switch (axesTitlesList->currentRow()) {
@@ -998,7 +1139,8 @@ void AxesDialog::customAxisFont()
     }
     }
 
-    d_graph->setAxisFont(axis, fnt);
+    if (okF && axis >= 0)
+        d_graph->setAxisFont(axis, fnt);
 }
 
 void AxesDialog::accept()
@@ -1171,6 +1313,9 @@ void AxesDialog::changeBaselineDist(int baseline)
 
 bool AxesDialog::updatePlot()
 {
+    if (!d_graph)
+        return false;
+
     if (generalDialog.currentWidget() == (QWidget *)scalesPage) {
         QString from = boxStart->text().toLower();
         QString to = boxEnd->text().toLower();
@@ -1349,12 +1494,17 @@ bool AxesDialog::updatePlot()
                  boxShowLabels->isChecked(), boxAxisColor->color(), boxFormat->currentIndex(),
                  boxPrecision->value(), boxAngle->value(), baseline, formula,
                  boxAxisNumColor->color());
+        d_graph->setAxisBackboneVisible(axis, boxAxisBackbone->isChecked());
     } else if (generalDialog.currentWidget() == (QWidget *)frame) {
         d_graph->setAxesLinewidth(boxAxesLinewidth->value());
         d_graph->changeTicksLength(boxMinorTicksLength->value(), boxMajorTicksLength->value());
         d_graph->drawCanvasFrame(boxFramed->isChecked(), boxFrameWidth->value(),
                                  boxFrameColor->color());
         d_graph->drawAxesBackbones(boxBackbones->isChecked());
+    } else if (generalDialog.currentWidget() == refLinesPage) {
+        if (refLinesList && refLinesList->currentRow() >= 0)
+            updateSelectedRefLineFromUi();
+        d_graph->updateStatReferenceLines();
     }
 
     return true;
@@ -1362,18 +1512,31 @@ bool AxesDialog::updatePlot()
 
 void AxesDialog::setGraph(Graph *g)
 {
-    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
-
-    if (!app || !g)
+    if (!g)
         return;
 
     d_graph = g;
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    if (app) {
+        tablesList = app->tableWindows();
+        boxTableName->clear();
+        boxTableName->addItems(tablesList);
+        boxColName->clear();
+        boxColName->addItems(app->columnsList());
+    }
+
+    refreshGraphState();
+    refreshReferenceLinesList();
+}
+
+void AxesDialog::refreshGraphState()
+{
+    if (!d_graph)
+        return;
+
     Plot *p = d_graph->plotWidget();
-
-    tablesList = app->tableWindows();
-    boxTableName->addItems(tablesList);
-
-    boxColName->addItems(app->columnsList());
+    if (!p)
+        return;
 
     xAxisOn = p->axisEnabled(QwtPlot::xBottom);
     yAxisOn = p->axisEnabled(QwtPlot::yLeft);
@@ -1381,24 +1544,38 @@ void AxesDialog::setGraph(Graph *g)
     rightAxisOn = p->axisEnabled(QwtPlot::yRight);
 
     xBottomFont = p->axisFont(QwtPlot::xBottom);
+    if (xBottomFont.family().isEmpty())
+        xBottomFont.setFamily("Arial");
     yLeftFont = p->axisFont(QwtPlot::yLeft);
+    if (yLeftFont.family().isEmpty())
+        yLeftFont.setFamily("Arial");
     xTopFont = p->axisFont(QwtPlot::xTop);
+    if (xTopFont.family().isEmpty())
+        xTopFont.setFamily("Arial");
     yRightFont = p->axisFont(QwtPlot::yRight);
+    if (yRightFont.family().isEmpty())
+        yRightFont.setFamily("Arial");
 
     majTicks = p->getMajorTicksType();
     minTicks = p->getMinorTicksType();
 
-    formatInfo = g->axesLabelsFormatInfo();
-    updateTitleBox(0);
+    formatInfo = d_graph->axesLabelsFormatInfo();
+    int curAxisRow = axesTitlesList->currentRow();
+    updateTitleBox(curAxisRow >= 0 ? curAxisRow : 0);
 
-    xBottomLabelsRotation = g->labelsRotation(QwtPlot::xBottom);
-    xTopLabelsRotation = g->labelsRotation(QwtPlot::xTop);
+    xBottomLabelsRotation = d_graph->labelsRotation(QwtPlot::xBottom);
+    xTopLabelsRotation = d_graph->labelsRotation(QwtPlot::xTop);
 
-    tickLabelsOn = g->enabledTickLabels();
-
-    axesBaseline = g->axesBaseline();
-
+    tickLabelsOn = d_graph->enabledTickLabels();
+    axesBaseline = d_graph->axesBaseline();
     axesType = d_graph->axesType();
+
+    boxAxesLinewidth->blockSignals(true);
+    boxBackbones->blockSignals(true);
+    boxFramed->blockSignals(true);
+    boxFrameWidth->blockSignals(true);
+    boxMinorTicksLength->blockSignals(true);
+    boxMajorTicksLength->blockSignals(true);
 
     boxAxesLinewidth->setValue(p->axesLinewidth());
     boxBackbones->setChecked(d_graph->axesBackbones());
@@ -1410,6 +1587,17 @@ void AxesDialog::setGraph(Graph *g)
     boxMinorTicksLength->setValue(p->minorTickLength());
     boxMajorTicksLength->setValue(p->majorTickLength());
 
+    boxAxesLinewidth->blockSignals(false);
+    boxBackbones->blockSignals(false);
+    boxFramed->blockSignals(false);
+    boxFrameWidth->blockSignals(false);
+    boxMinorTicksLength->blockSignals(false);
+    boxMajorTicksLength->blockSignals(false);
+
+    if (curAxisRow >= 0) {
+        updateShowBox(curAxisRow);
+        setTicksType(curAxisRow);
+    }
     showGridOptions(axesGridList->currentRow());
 }
 
@@ -1831,12 +2019,187 @@ void AxesDialog::showFormulaBox()
 
 void AxesDialog::customAxisLabelFont()
 {
+    if (!d_graph)
+        return;
+
     int axis = mapToQwtAxisId();
-    bool okF;
+    bool okF = false;
     QFont oldFont = d_graph->axisTitleFont(axis);
+    if (oldFont.family().isEmpty())
+        oldFont.setFamily("Arial");
     QFont fnt = QFontDialog::getFont(&okF, oldFont, this);
     if (okF && fnt != oldFont)
         d_graph->setAxisTitleFont(axis, fnt);
+}
+
+void AxesDialog::toggleAxisBackbone(bool checked)
+{
+    if (!d_graph)
+        return;
+    int axis = mapToQwtAxisId();
+    if (axis >= 0 && axis < QwtPlot::axisCnt)
+        d_graph->setAxisBackboneVisible(axis, checked);
+}
+
+void AxesDialog::applyPresetBoxInward()
+{
+    if (!d_graph)
+        return;
+    d_graph->applyFramePreset(Graph::FrameBoxInwardTicks);
+    refreshGraphState();
+}
+
+void AxesDialog::applyPresetBoxPlain()
+{
+    if (!d_graph)
+        return;
+    d_graph->applyFramePreset(Graph::FrameBoxPlainOpposite);
+    refreshGraphState();
+}
+
+void AxesDialog::applyPresetOpenL()
+{
+    if (!d_graph)
+        return;
+    d_graph->applyFramePreset(Graph::FrameOpenL);
+    refreshGraphState();
+}
+
+void AxesDialog::applyPresetZeroCrossed()
+{
+    if (!d_graph)
+        return;
+    d_graph->applyFramePreset(Graph::FrameZeroCrossed);
+    refreshGraphState();
+}
+
+void AxesDialog::refreshReferenceLinesList()
+{
+    if (!refLinesList)
+        return;
+    int prevRow = refLinesList->currentRow();
+    refLinesList->blockSignals(true);
+    refLinesList->clear();
+    if (d_graph) {
+        const QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+        for (int i = 0; i < lines.size(); ++i) {
+            const Graph::ReferenceLineSpec &sp = lines[i];
+            const QString orientTag = (sp.orientation == 1) ? QString("[X] ") : QString("[Y] ");
+            const QString modeText = sp.statMode.isEmpty()
+                    ? QString::number(sp.value, 'g', 6)
+                    : QString("%1 (%2)").arg(sp.statMode).arg(sp.value, 0, 'g', 5);
+            const QString lbl = sp.label.isEmpty()
+                    ? (orientTag + modeText)
+                    : (orientTag + modeText + " - " + sp.label);
+            refLinesList->addItem(lbl);
+        }
+    }
+    refLinesList->blockSignals(false);
+    if (refLinesList->count() > 0) {
+        int sel = qBound(0, prevRow >= 0 ? prevRow : 0, refLinesList->count() - 1);
+        refLinesList->setCurrentRow(sel);
+        selectReferenceLine(sel);
+    }
+}
+
+void AxesDialog::selectReferenceLine(int row)
+{
+    if (!d_graph)
+        return;
+    const QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+    if (row < 0 || row >= lines.size())
+        return;
+
+    const Graph::ReferenceLineSpec &sp = lines[row];
+    refOrientBox->setCurrentIndex(sp.orientation == 1 ? 1 : 0);
+    int statIdx = refStatBox->findData(sp.statMode);
+    refStatBox->setCurrentIndex(statIdx >= 0 ? statIdx : 0);
+    refValueBox->setValue(sp.value);
+    refValueBox->setEnabled(sp.statMode.isEmpty());
+    refColorBtn->setColor(sp.color);
+    int styleIdx = refStyleBox->findData((int)sp.style);
+    refStyleBox->setCurrentIndex(styleIdx >= 0 ? styleIdx : 1);
+    refWidthBox->setValue(sp.width);
+    refLabelEdit->setText(sp.label);
+    refFillBox->setChecked(sp.fillToAxis);
+    refFillColorBtn->setColor(sp.fillColor);
+}
+
+void AxesDialog::refStatModeChanged(int index)
+{
+    if (!refStatBox || !refValueBox)
+        return;
+    const QString mode = refStatBox->itemData(index).toString();
+    refValueBox->setEnabled(mode.isEmpty());
+}
+
+void AxesDialog::addRefLineFromUi()
+{
+    if (!d_graph)
+        return;
+    Graph::ReferenceLineSpec sp;
+    sp.orientation = refOrientBox->currentData().toInt();
+    sp.statMode = refStatBox->currentData().toString();
+    sp.value = refValueBox->value();
+    sp.color = refColorBtn->color();
+    sp.style = static_cast<Qt::PenStyle>(refStyleBox->currentData().toInt());
+    sp.width = refWidthBox->value();
+    sp.label = refLabelEdit->text().trimmed();
+    sp.fillToAxis = refFillBox->isChecked();
+    sp.fillColor = refFillColorBtn->color();
+    if (sp.fillToAxis && sp.fillColor.alpha() == 255)
+        sp.fillColor.setAlpha(36);
+    d_graph->addReferenceLine(sp);
+    refreshReferenceLinesList();
+    if (refLinesList->count() > 0)
+        refLinesList->setCurrentRow(refLinesList->count() - 1);
+}
+
+void AxesDialog::updateSelectedRefLineFromUi()
+{
+    if (!d_graph || !refLinesList)
+        return;
+    int row = refLinesList->currentRow();
+    QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+    if (row < 0 || row >= lines.size())
+        return;
+
+    Graph::ReferenceLineSpec &sp = lines[row];
+    sp.orientation = refOrientBox->currentData().toInt();
+    sp.statMode = refStatBox->currentData().toString();
+    sp.value = refValueBox->value();
+    sp.color = refColorBtn->color();
+    sp.style = static_cast<Qt::PenStyle>(refStyleBox->currentData().toInt());
+    sp.width = refWidthBox->value();
+    sp.label = refLabelEdit->text().trimmed();
+    sp.fillToAxis = refFillBox->isChecked();
+    sp.fillColor = refFillColorBtn->color();
+    if (sp.fillToAxis && sp.fillColor.alpha() == 255)
+        sp.fillColor.setAlpha(36);
+
+    d_graph->setReferenceLines(lines);
+    refreshReferenceLinesList();
+}
+
+void AxesDialog::removeSelectedRefLine()
+{
+    if (!d_graph || !refLinesList)
+        return;
+    int row = refLinesList->currentRow();
+    QVector<Graph::ReferenceLineSpec> lines = d_graph->referenceLines();
+    if (row < 0 || row >= lines.size())
+        return;
+    lines.removeAt(row);
+    d_graph->setReferenceLines(lines);
+    refreshReferenceLinesList();
+}
+
+void AxesDialog::clearAllRefLines()
+{
+    if (!d_graph)
+        return;
+    d_graph->clearReferenceLines();
+    refreshReferenceLinesList();
 }
 
 void AxesDialog::pageChanged(int page)
@@ -1864,6 +2227,9 @@ int AxesDialog::exec()
 
 void AxesDialog::updateMinorTicksList(int scaleType)
 {
+    if (!d_graph)
+        return;
+
     updatePlot();
 
     boxMinorValue->clear();
@@ -1889,16 +2255,14 @@ void AxesDialog::showAxis(int axis, Graph::AxisType type, const QString &labelsC
                           int format, int prec, int rotation, int baselineDist,
                           const QString &formula, const QColor &labelsColor)
 {
-    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
-    if (!app)
+    if (!d_graph)
         return;
 
-    Table *w = app->table(labelsColName);
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    Table *w = app ? app->table(labelsColName) : nullptr;
     if ((type == Graph::AxisType::Txt || type == Graph::AxisType::ColHeader) && !w)
         return;
 
-    if (!d_graph)
-        return;
     d_graph->showAxis(axis, type, labelsColName, w, axisOn, majTicksType, minTicksType, labelsOn, c,
                       format, prec, rotation, baselineDist, formula, labelsColor);
 }

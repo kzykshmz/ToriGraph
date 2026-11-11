@@ -37,12 +37,14 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QFontDialog>
 #include <QFont>
 #include <QMessageBox>
 #include <cmath>
 
-LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
+LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
+    : QDialog(parent, fl), multi_layer(nullptr)
 {
     setWindowTitle(tr("Arrange Layers"));
 
@@ -185,7 +187,63 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, 
     gl6->addWidget(gb2, 0, 1);
     gl6->addLayout(vbox1, 1, 0);
     gl6->addWidget(gb4, 1, 1);
-    gl6->setRowStretch(2, 1);
+
+    GroupLinkAxes = new QGroupBox(tr("Link Axes & Layer Geometry"));
+    QGridLayout *glLink = new QGridLayout(GroupLinkAxes);
+    glLink->addWidget(new QLabel(tr("Layer")), 0, 0);
+    targetLayerBox = new QComboBox();
+    glLink->addWidget(targetLayerBox, 0, 1);
+    glLink->addWidget(new QLabel(tr("Parent Layer")), 0, 2);
+    parentLayerBox = new QComboBox();
+    glLink->addWidget(parentLayerBox, 0, 3);
+
+    glLink->addWidget(new QLabel(tr("X Link Mode")), 1, 0);
+    xLinkModeBox = new QComboBox();
+    xLinkModeBox->addItem(tr("None"), 0);
+    xLinkModeBox->addItem(tr("Straight (1:1)"), 1);
+    xLinkModeBox->addItem(tr("Custom Formula"), 2);
+    glLink->addWidget(xLinkModeBox, 1, 1);
+    glLink->addWidget(new QLabel(tr("X Link Formula")), 1, 2);
+    xFormulaEdit = new QLineEdit(QString("x"));
+    xFormulaEdit->setPlaceholderText(QString("1000/(x+273.15)"));
+    glLink->addWidget(xFormulaEdit, 1, 3);
+
+    glLink->addWidget(new QLabel(tr("Y Link Mode")), 2, 0);
+    yLinkModeBox = new QComboBox();
+    yLinkModeBox->addItem(tr("None"), 0);
+    yLinkModeBox->addItem(tr("Straight (1:1)"), 1);
+    yLinkModeBox->addItem(tr("Custom Formula"), 2);
+    glLink->addWidget(yLinkModeBox, 2, 1);
+    glLink->addWidget(new QLabel(tr("Y Link Formula")), 2, 2);
+    yFormulaEdit = new QLineEdit(QString("y"));
+    yFormulaEdit->setPlaceholderText(QString("y"));
+    glLink->addWidget(yFormulaEdit, 2, 3);
+
+    QHBoxLayout *geoRow = new QHBoxLayout();
+    geoRow->addWidget(new QLabel(QStringLiteral("X:")));
+    layerGeoXBox = new QSpinBox();
+    layerGeoXBox->setRange(-5000, 10000);
+    layerGeoXBox->setSuffix(QStringLiteral(" px"));
+    geoRow->addWidget(layerGeoXBox);
+    geoRow->addWidget(new QLabel(QStringLiteral("Y:")));
+    layerGeoYBox = new QSpinBox();
+    layerGeoYBox->setRange(-5000, 10000);
+    layerGeoYBox->setSuffix(QStringLiteral(" px"));
+    geoRow->addWidget(layerGeoYBox);
+    geoRow->addWidget(new QLabel(QStringLiteral("W:")));
+    layerGeoWBox = new QSpinBox();
+    layerGeoWBox->setRange(40, 10000);
+    layerGeoWBox->setSuffix(QStringLiteral(" px"));
+    geoRow->addWidget(layerGeoWBox);
+    geoRow->addWidget(new QLabel(QStringLiteral("H:")));
+    layerGeoHBox = new QSpinBox();
+    layerGeoHBox->setRange(40, 10000);
+    layerGeoHBox->setSuffix(QStringLiteral(" px"));
+    geoRow->addWidget(layerGeoHBox);
+    glLink->addLayout(geoRow, 3, 0, 1, 4);
+
+    gl6->addWidget(GroupLinkAxes, 2, 0, 1, 2);
+    gl6->setRowStretch(3, 1);
 
     QVBoxLayout *vbox2 = new QVBoxLayout(this);
     vbox2->addLayout(gl6);
@@ -199,6 +257,12 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, 
             SLOT(onAspectPresetChanged(int)));
     connect(keepAspectBox, SIGNAL(toggled(bool)), aspectPresetBox, SLOT(setEnabled(bool)));
     connect(keepAspectBox, SIGNAL(toggled(bool)), customAspectBox, SLOT(setEnabled(bool)));
+    connect(targetLayerBox, SIGNAL(currentIndexChanged(int)), this,
+            SLOT(onTargetLayerChanged(int)));
+    connect(parentLayerBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onLinkModeChanged()));
+    connect(xLinkModeBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onLinkModeChanged()));
+    connect(yLinkModeBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onLinkModeChanged()));
+    onLinkModeChanged();
 }
 
 void LayerDialog::onAspectPresetChanged(int index)
@@ -253,10 +317,90 @@ void LayerDialog::setMultiLayer(MultiLayer *g)
     aspectPresetBox->blockSignals(false);
     aspectPresetBox->setEnabled(g->keepAspectRatio());
     customAspectBox->setEnabled(g->keepAspectRatio());
+    refreshLayerSelectors();
+}
+
+void LayerDialog::refreshLayerSelectors()
+{
+    if (!multi_layer)
+        return;
+
+    targetLayerBox->blockSignals(true);
+    parentLayerBox->blockSignals(true);
+    targetLayerBox->clear();
+    parentLayerBox->clear();
+    parentLayerBox->addItem(tr("None"), 0);
+
+    int activeIdx = 0;
+    for (int i = 1; i <= multi_layer->layers(); ++i) {
+        const QString lbl = tr("Layer") + " " + QString::number(i);
+        targetLayerBox->addItem(lbl, i);
+        parentLayerBox->addItem(lbl, i);
+        if (multi_layer->layer(i) == multi_layer->activeGraph())
+            activeIdx = i - 1;
+    }
+    targetLayerBox->setCurrentIndex(activeIdx);
+    targetLayerBox->blockSignals(false);
+    parentLayerBox->blockSignals(false);
+
+    onTargetLayerChanged(activeIdx);
+}
+
+void LayerDialog::onTargetLayerChanged(int index)
+{
+    if (!multi_layer || index < 0)
+        return;
+    const int layerNum = targetLayerBox->itemData(index).toInt();
+    Graph *g = multi_layer->layer(layerNum);
+    if (!g)
+        return;
+
+    parentLayerBox->blockSignals(true);
+    int pIdx = 0;
+    if (Graph *parentG = g->linkedParentLayer()) {
+        const QList<Graph *> all = multi_layer->layersList();
+        const int pos = all.indexOf(parentG);
+        if (pos >= 0)
+            pIdx = pos + 1;
+    }
+    parentLayerBox->setCurrentIndex(pIdx);
+    parentLayerBox->blockSignals(false);
+
+    xLinkModeBox->blockSignals(true);
+    yLinkModeBox->blockSignals(true);
+    xLinkModeBox->setCurrentIndex(qBound(0, g->xLinkMode(), 2));
+    yLinkModeBox->setCurrentIndex(qBound(0, g->yLinkMode(), 2));
+    xLinkModeBox->blockSignals(false);
+    yLinkModeBox->blockSignals(false);
+
+    xFormulaEdit->setText(g->xLinkExpr());
+    yFormulaEdit->setText(g->yLinkExpr());
+
+    const QRect geo = g->geometry();
+    layerGeoXBox->setValue(geo.x());
+    layerGeoYBox->setValue(geo.y());
+    layerGeoWBox->setValue(geo.width());
+    layerGeoHBox->setValue(geo.height());
+    onLinkModeChanged();
+}
+
+void LayerDialog::onLinkModeChanged()
+{
+    const bool hasParent = parentLayerBox && parentLayerBox->currentData().toInt() > 0;
+    if (xLinkModeBox)
+        xLinkModeBox->setEnabled(hasParent);
+    if (yLinkModeBox)
+        yLinkModeBox->setEnabled(hasParent);
+    if (xFormulaEdit)
+        xFormulaEdit->setEnabled(hasParent && xLinkModeBox->currentData().toInt() == 2);
+    if (yFormulaEdit)
+        yFormulaEdit->setEnabled(hasParent && yLinkModeBox->currentData().toInt() == 2);
 }
 
 void LayerDialog::update()
 {
+    if (!multi_layer)
+        return;
     int graphs = layersBox->value();
     int old_graphs = multi_layer->layers();
     int dn = multi_layer->layers() - graphs;
@@ -273,9 +417,11 @@ void LayerDialog::update()
         return;
 
     if (dn < 0) { // Customize new layers with user default settings
-        ApplicationWindow *app = (ApplicationWindow *)this->parent();
-        for (int i = old_graphs + 1; i <= graphs; i++)
-            app->setPreferences(multi_layer->layer(i));
+        ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+        if (app) {
+            for (int i = old_graphs + 1; i <= graphs; i++)
+                app->setPreferences(multi_layer->layer(i));
+        }
     }
 
     int cols = boxX->value();
@@ -331,6 +477,28 @@ void LayerDialog::update()
         boxX->setValue(multi_layer->getCols());
         boxY->setValue(multi_layer->getRows());
     }
+
+    const int targetNum = targetLayerBox->currentData().toInt();
+    if (Graph *targetG = multi_layer->layer(targetNum)) {
+        const int parentNum = parentLayerBox->currentData().toInt();
+        Graph *parentG = (parentNum > 0 && parentNum != targetNum) ? multi_layer->layer(parentNum)
+                                                                   : nullptr;
+        targetG->setLinkedParentLayer(parentG, xLinkModeBox->currentData().toInt(),
+                                      xFormulaEdit->text(), yLinkModeBox->currentData().toInt(),
+                                      yFormulaEdit->text());
+        const QRect desiredGeo(layerGeoXBox->value(), layerGeoYBox->value(), layerGeoWBox->value(),
+                               layerGeoHBox->value());
+        if (desiredGeo != targetG->geometry() && desiredGeo.width() >= 40
+            && desiredGeo.height() >= 40) {
+            targetG->setGeometry(desiredGeo);
+            if (targetG->plotWidget()) {
+                targetG->plotWidget()->resize(desiredGeo.size());
+                targetG->plotWidget()->updateLayout();
+                targetG->plotWidget()->replot();
+            }
+        }
+    }
+    refreshLayerSelectors();
 }
 
 void LayerDialog::accept()
