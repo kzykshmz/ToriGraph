@@ -22,6 +22,7 @@
 
 extern "C" HRESULT STDAPICALLTYPE SHCreateStdEnumFmtEtc(UINT cfmt, const FORMATETC afmt[], IEnumFORMATETC **ppenumFormatEtc);
 #include <wrl/client.h>
+#include <atomic>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -163,7 +164,11 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
     if (projectBytes.isEmpty())
         return nullptr;
 
-    QString tempPath = QDir::tempPath() + QString("/scidavis_ole_%1.sciprj").arg(GetTickCount64());
+    static std::atomic<unsigned long long> s_oleTempSeq{ 0 };
+    QString tempPath = QDir::tempPath()
+            + QString("/torigraph_ole_%1_%2.sciprj")
+                      .arg(GetTickCount64())
+                      .arg(++s_oleTempSeq);
     {
         QFile f(tempPath);
         if (!f.open(QIODevice::WriteOnly))
@@ -247,6 +252,7 @@ class SciDAVisGraphObject final : public IOleObject,
     bool m_visible = false;
     size_t m_editorGeneration = 0;
     SIZEL m_extent{ 15000, 11250 };
+    SIZEL m_initialRenderExtentHm{ 0, 0 };
     QPointer<ApplicationWindow> m_editor;
     std::wstring m_filename;
 
@@ -324,10 +330,18 @@ class SciDAVisGraphObject final : public IOleObject,
                 newEmf = rg.emfBytes;
                 newDib = rg.dibBytes;
                 newPx = rg.pixelSize;
+                if (rg.extentHm.cx > 0 && rg.extentHm.cy > 0
+                    && m_initialRenderExtentHm.cx > 0 && m_initialRenderExtentHm.cy > 0
+                    && (rg.extentHm.cx != m_initialRenderExtentHm.cx
+                        || rg.extentHm.cy != m_initialRenderExtentHm.cy)) {
+                    m_extent = rg.extentHm;
+                    m_initialRenderExtentHm = rg.extentHm;
+                }
             }
         }
 
-        const bool changed = (newProj != m_payload.projectBytes) || (newEmf != m_payload.emfBytes);
+        const bool changed = (newProj != m_payload.projectBytes) || (newEmf != m_payload.emfBytes)
+                || (m_extent.cx != m_payload.extentHm.cx) || (m_extent.cy != m_payload.extentHm.cy);
         m_payload.projectBytes = std::move(newProj);
         m_payload.emfBytes = std::move(newEmf);
         m_payload.dibBytes = std::move(newDib);
@@ -513,12 +527,18 @@ public:
                 mw = createSampleAppWindow();
 
             MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow);
+            m_initialRenderExtentHm = SIZEL{ 0, 0 };
             if (ml) {
                 m_payload.targetWindow = ml->name();
                 mw->activateSubWindow(ml);
+                Graph *single = nullptr;
                 if (m_payload.targetLayer >= 1 && m_payload.targetLayer <= ml->layers()) {
-                    ml->setActiveGraph(ml->layer(m_payload.targetLayer));
+                    single = ml->layer(m_payload.targetLayer);
+                    ml->setActiveGraph(single);
                 }
+                OleRenderedGraph initRg = SciDAVisEmf::renderMultiLayer(ml, single);
+                if (initRg.extentHm.cx > 0 && initRg.extentHm.cy > 0)
+                    m_initialRenderExtentHm = initRg.extentHm;
             }
 
             QString titleSuffix = m_payload.targetWindow.isEmpty() ? QStringLiteral("Embedded Graph") : m_payload.targetWindow;
