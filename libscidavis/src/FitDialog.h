@@ -183,9 +183,10 @@ private:
     ColorButton *btnColor;
     QComboBox *boxYErrorSource, *tableNamesBox, *colNamesBox;
     QRadioButton *generatePointsBtn, *samePointsBtn;
-    QPushButton *btnParamTable, *btnCovMatrix;
+    QPushButton *btnParamTable, *btnCovMatrix, *btnResidualPlot;
     QLineEdit *covMatrixName, *paramTableName;
     QCheckBox *plotLabelBox, *logBox, *scaleErrorsBox;
+    QCheckBox *confBandBox, *predBandBox, *summaryOnGraphBox;
 };
 
 #endif // FITDIALOG_H

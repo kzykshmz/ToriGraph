@@ -32,7 +32,7 @@
 #include "Table.h"
 #include "FunctionCurve.h"
 #include "PlotCurve.h"
-#include "core/column/Column.h"
+#include "future/core/column/Column.h"
 
 #include <QApplication>
 #include <QMessageBox>
@@ -97,6 +97,8 @@ void Filter::setDataCurve(const int curve, double start, double end)
     QList<Graph::AxisType> axType = d_graph->axesType();
     for (const auto &type : axType)
         if (Graph::AxisType::Numeric != type) {
+            if (d_silent)
+                break;
             auto ret = QMessageBox::warning((ApplicationWindow *)parent(),
                                             tr("ToriGraph") + " - " + tr("Warning"),
                                             tr("At least one of the axis is not numerical!"),
@@ -113,6 +115,29 @@ void Filter::setDataCurve(const int curve, double start, double end)
         temp[ii]=d_curve->x(ii);
 
     d_indices = getIndices(temp, start, end, d_sort_data);
+
+    // Mask-aware filtering: skip points whose X or Y cell is masked in the source table
+    if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
+        if (Table *tbl = dc->table()) {
+            int xi = tbl->colIndex(dc->xColumnName());
+            Column *xCol = (xi >= 0) ? tbl->column(xi) : tbl->column(dc->xColumnName());
+            int yi = tbl->colIndex(dc->yColumnName());
+            Column *yCol = (yi >= 0) ? tbl->column(yi) : tbl->column(dc->yColumnName());
+            if (xCol || yCol) {
+                std::vector<size_t> unmasked;
+                unmasked.reserve(d_indices.size());
+                for (size_t idx : d_indices) {
+                    int row = dc->tableRow(int(idx));
+                    if (row < 0)
+                        row = dc->startRow() + int(idx);
+                    if (row >= 0 && ((xCol && xCol->isMasked(row)) || (yCol && yCol->isMasked(row))))
+                        continue;
+                    unmasked.push_back(idx);
+                }
+                d_indices.swap(unmasked);
+            }
+        }
+    }
 
     try
     {
@@ -155,9 +180,10 @@ bool Filter::isDataAcceptable() const
 {
 
     if (d_x.size() < unsigned(d_min_points)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("You need at least %1 points in order to perform this operation!")
-                                      .arg(d_min_points));
+        if (!d_silent)
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("You need at least %1 points in order to perform this operation!")
+                                          .arg(d_min_points));
         return false;
     }
     return true;

@@ -30,6 +30,9 @@
 #define MULTIPEAKFIT_H
 
 #include <QColor>
+#include <QPointF>
+#include <QStringList>
+#include <QVector>
 #include "Fit.h"
 
 class MultiPeakFit : public Fit
@@ -54,7 +57,8 @@ public:
         BaselineConstant = 0,
         BaselineZero = 1,
         BaselineLinear = 2,
-        BaselineALS = 3
+        BaselineALS = 3,
+        BaselineAnchors = 4
     };
     struct PeakSummaryRow
     {
@@ -88,8 +92,12 @@ public:
     void setTailFactor(double tau);
     double tailFactor() const { return d_tail_tau; }
 
+    void setDataCurve(int curve, double start, double end) override;
+
     void setBaselineMode(BaselineMode mode);
     BaselineMode baselineMode() const { return d_baseline_mode; }
+    void setBaselineAnchors(const QVector<QPointF> &anchors, bool cubicSpline = true);
+    QVector<QPointF> baselineAnchors() const { return d_baseline_anchors; }
     std::vector<double> computeBaseline(const std::vector<double> &x,
                                         const std::vector<double> &y) const;
     std::vector<double> computeBaseline() const;
@@ -109,6 +117,14 @@ public:
     int autoDetectAndUpdateNumPeaks(int maxPeaks = 10, double minProminenceRatio = 0.08);
     bool seedPeaksFromCenters(const std::vector<double> &pickedCenters,
                               double minProminenceRatio = 0.08);
+    QVector<double> detectPeaksSecondDerivative(int sgWindow = 9, double relThreshold = 0.08);
+
+    void setPerPeakProfiles(const QVector<PeakProfile> &profiles);
+    void addPeakDoubletConstraint(int secondaryPeakIdx, int primaryPeakIdx,
+                                  double areaRatio, double centerOffset, bool shareWidth = true);
+    static Table *batchAnalyzeCurves(ApplicationWindow *app, Graph *g, const QStringList &curveTitles,
+                                     PeakProfile profile = Gauss, BaselineMode baseMode = BaselineLinear);
+    static void showBatchPeakDialog(ApplicationWindow *app, Graph *g);
 
     Table *createPeakSummaryTable(const QString &tableName = QString());
     std::vector<PeakSummaryRow> computePeakSummary(const std::vector<double> &res) const;
@@ -116,7 +132,38 @@ public:
 
     void guessInitialValues() override;
 
+protected:
+    bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,
+                            std::vector<double> &Y) override;
+    double toInternalParameter(int index, double userVal) const override;
+    double fromInternalParameter(int index, double internalVal) const override;
+
 private:
+    struct DoubletConstraint
+    {
+        int secIdx = 0;
+        int priIdx = 0;
+        double areaRatio = 1.0;
+        double centerOffset = 0.0;
+        bool shareWidth = true;
+    };
+
+    PeakProfile peakProfileAt(int peakIndex) const;
+    bool usesCustomMultiPeakCallbacks() const;
+    void applyDoubletConstraints(std::vector<double> &par) const;
+    double peakTrueArea(PeakProfile prof, double rawA, double w) const;
+    double rawParamFromTrueArea(PeakProfile prof, double targetArea, double w) const;
+    double peakFWHMFromW(PeakProfile prof, double w) const;
+    double wFromPeakFWHM(PeakProfile prof, double fwhm) const;
+    QString buildFormula() const;
+    static QString profileDisplayName(PeakProfile profile);
+
+    static int custom_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+    static int custom_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+    static int custom_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f,
+                                     gsl_matrix *J);
+    static double custom_multi_peak_d(const gsl_vector *x, void *params);
+
     void updateProfileFunctions();
     double evalPeakAt(const std::vector<double> &par, int peakIndex, double x,
                       bool isStoredResults = false) const;
@@ -142,8 +189,21 @@ private:
     //! The peak profile
     PeakProfile d_profile;
 
+    //! Per-peak profile overrides when mixed peak shapes are configured
+    QVector<PeakProfile> d_per_peak_profiles;
+
+    //! Coupled doublet constraints across peak pairs
+    QVector<DoubletConstraint> d_doublet_constraints;
+
     //! Baseline mode for Peak Analyzer
     BaselineMode d_baseline_mode = BaselineConstant;
+
+    //! User-defined anchor points for BaselineAnchors mode
+    QVector<QPointF> d_baseline_anchors;
+    bool d_anchors_cubic_spline = true;
+
+    //! Cached peak centers from last detectPeaksSecondDerivative() call
+    std::vector<double> d_detected_2nd_deriv_centers;
 
     //! Tracks whether subtractBaselineFromData() was applied
     bool d_baseline_subtracted = false;

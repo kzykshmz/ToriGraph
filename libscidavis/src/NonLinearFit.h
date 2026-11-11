@@ -30,6 +30,7 @@
 #define NONLINEARFIT_H
 
 #include "Fit.h"
+#include <QVector>
 
 class NonLinearFit : public Fit
 {
@@ -47,6 +48,14 @@ public:
     bool setBuiltInModel(const QString &modelName);
     void guessBuiltInParameters(const QString &modelName = QString());
     void guessInitialValues() override;
+
+    bool fitGlobal(const QStringList &curveTitles, const QVector<bool> &sharedFlags,
+                   Table **summaryOut = nullptr);
+    bool fitImplicitODR(const QString &implicitExprFxy, const QStringList &paramNames,
+                        const QVector<double> &initVals);
+    static void showGlobalFitDialog(ApplicationWindow *app, Graph *g);
+    static void showImplicitFitDialog(ApplicationWindow *app, Graph *g);
+    static void showModelComparisonDialog(ApplicationWindow *app, Graph *g);
 
     static QStringList builtInModelNames();
     static QString builtInModelFormula(const QString &modelName);

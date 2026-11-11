@@ -30,6 +30,7 @@
 #define FIT_H
 
 #include <QObject>
+#include <QMap>
 
 #include "Filter.h"
 #include "Script.h"
@@ -41,6 +42,7 @@
 
 class Table;
 class Matrix;
+class MultiLayer;
 class ApplicationWindow;
 class Script;
 
@@ -70,21 +72,48 @@ public:
     void setDataCurve(int curve, double start, double end);
 
     QString formula() { return d_formula; };
-    int numParameters() { return d_p; }
+    int numParameters() const { return d_p; }
 
     void setInitialGuess(int parIndex, double val)
     {
-        if (d_param_init && parIndex >= 0 && unsigned(parIndex) < d_p)
-            gsl_vector_set(d_param_init, parIndex, val);
+        if (parIndex >= 0) {
+            d_explicit_init_vals[parIndex] = val;
+            if (d_param_init && unsigned(parIndex) < d_p)
+                gsl_vector_set(d_param_init, parIndex, toInternalParameter(parIndex, val));
+        }
         d_initial_guesses_set = true;
     };
     void setInitialGuesses(double *x_init);
     double initialGuess(int parIndex) const
     {
+        if (d_explicit_init_vals.contains(parIndex))
+            return d_explicit_init_vals.value(parIndex);
         if (d_param_init && parIndex >= 0 && unsigned(parIndex) < d_p)
-            return gsl_vector_get(d_param_init, parIndex);
+            return fromInternalParameter(parIndex, gsl_vector_get(d_param_init, parIndex));
         return 0.0;
     }
+
+    void setParameterFixed(int index, bool fixed = true);
+    bool isParameterFixed(int index) const;
+    void setParameterBounds(int index, double minVal, double maxVal);
+    void clearParameterBounds(int index);
+    bool hasParameterBounds(int index, double *minOut = nullptr, double *maxOut = nullptr) const;
+
+    void enableConfidenceBand(bool on = true, double confLevel = 0.95);
+    void enablePredictionBand(bool on = true, double confLevel = 0.95);
+    bool confidenceBandEnabled() const { return d_conf_band; }
+    bool predictionBandEnabled() const { return d_pred_band; }
+
+    double aic() const;
+    double aicc() const;
+    double bic() const;
+    double anovaFValue() const;
+    double anovaPValue() const;
+
+    void insertFitSummaryBoxOnGraph();
+    MultiLayer *createResidualPlotWindow();
+    static Table *compareModels(ApplicationWindow *app, Graph *g, const QString &curveTitle,
+                                const QStringList &modelNames);
 
     virtual void guessInitialValues() {};
 
@@ -103,22 +132,22 @@ public:
     const std::vector<double> &errors();
 
     //! Returns the sum of squares of the residuals from the best-fit line
-    double chiSquare() { return chi_2; };
+    double chiSquare() const { return chi_2; };
 
     //! Returns the reduced chi-square (Chi^2 / doF)
-    double reducedChiSquare();
+    double reducedChiSquare() const;
 
     //! Returns the unweighted residual sum of squares (RSS)
-    double rss();
+    double rss() const;
 
     //! Returns the coefficient of determination, R^2 (COD)
-    double rSquare();
+    double rSquare() const;
 
     //! Returns the adjusted R^2: 1 - (1 - R^2)*(n - 1)/(n - p)
-    double adjustedRSquare();
+    double adjustedRSquare() const;
 
     //! Returns Pearson's correlation coefficient r
-    double pearsonR();
+    double pearsonR() const;
 
     //! Specifies wheather the errors must be scaled with sqrt(chi_2/dof)
     void scaleErrors(bool yes = true) { d_scale_errors = yes; };
@@ -140,7 +169,7 @@ public:
 protected slots:
     void scriptError(const QString &message, const QString &script_name, int line_number);
 
-private:
+protected:
     //! Execute the fit using GSL multidimensional minimization (Nelder-Mead Simplex).
     std::vector<double> fitGslMultimin(int &iterations, int &status);
 
@@ -150,7 +179,6 @@ private:
     //! Customs and stores the fit results according to the derived class specifications. Used by exponential fits.
     virtual void storeCustomFitResults(const std::vector<double> &par) { d_results = par; }
 
-protected:
     //! Generates argument values wrt to d_gen_function
     void generateX(std::vector<double> &X) const;
 
@@ -167,6 +195,31 @@ protected:
     {
         return false;
     }
+
+    //! Evaluates model curve directly from internal solver parameters (matches covar coordinates)
+    virtual bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,
+                                    std::vector<double> &Y)
+    {
+        return calculateFitCurveData(solverPar, X, Y);
+    }
+
+    virtual double toInternalParameter(int index, double userVal) const
+    {
+        Q_UNUSED(index)
+        return userVal;
+    }
+
+    virtual double fromInternalParameter(int index, double internalVal) const
+    {
+        Q_UNUSED(index)
+        return internalVal;
+    }
+
+    int effectiveFreeParameters() const;
+    bool hasActiveConstraints() const;
+    void ensureConstraintCapacity(int index);
+    void applyExplicitInitialGuesses();
+    void addConfidenceAndPredictionBands(const std::vector<double> &solverPar);
 
     //! Output string added to the result log
     virtual QString logFitInfo(const std::vector<double> &par, int iterations, int status,
@@ -229,6 +282,27 @@ protected:
 
     //! Tracks whether initial parameter guesses have been explicitly set
     bool d_initial_guesses_set = false;
+    bool d_all_guesses_set = false;
+    QMap<int, double> d_explicit_init_vals;
+
+    //! Parameter fixing and box-constraint storage
+    std::vector<bool> d_param_fixed;
+    std::vector<bool> d_param_bounded;
+    std::vector<double> d_param_min;
+    std::vector<double> d_param_max;
+
+    //! Confidence and prediction band flags and confidence levels
+    bool d_conf_band = false;
+    bool d_pred_band = false;
+    double d_conf_level = 0.95;
+    double d_pred_level = 0.95;
+
+    //! Optional custom R^2 override (e.g. apparent log-space fit or implicit ODR)
+    bool d_has_custom_r2 = false;
+    double d_custom_r2 = 0.0;
+
+    //! Suppresses plotting curves onto d_graph during model comparison
+    bool d_suppress_curve_output = false;
 
     //! Fitted Y values corresponding to d_x
     std::vector<double> d_y_fit;
