@@ -41,7 +41,14 @@ public:
     SmoothFilter(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                  double end, int m = 3);
 
-    enum SmoothMethod { SavitzkyGolay = 1, FFT = 2, Average = 3 };
+    enum SmoothMethod {
+        SavitzkyGolay = 1,
+        FFT = 2,
+        Average = 3,
+        LOWESS = 4,
+        Whittaker = 5,
+        Median = 6
+    };
 
     int method() { return (int)d_method; };
     void setMethod(int m);
@@ -51,6 +58,14 @@ public:
     //! Sets the polynomial order in the Savitky-Golay algorithm.
     void setPolynomOrder(int order);
 
+    //! Sets the span fraction in (0, 1] for Cleveland LOWESS smoothing (default 0.2).
+    void setLowessSpan(double fraction);
+    double lowessSpan() const { return d_lowess_span; }
+
+    //! Sets the roughness penalty lambda > 0 for Eilers Whittaker smoothing (default 100.0).
+    void setWhittakerLambda(double lambda);
+    double whittakerLambda() const { return d_whittaker_lambda; }
+
 private:
     void init(int m);
     void calculateOutputData(std::vector<double>& x, std::vector<double>&  y) override;
@@ -58,6 +73,9 @@ private:
     void smoothAverage(std::vector<double>& x, std::vector<double>&  y);
     void smoothSavGol(std::vector<double>& x, std::vector<double>&  y);
     void smoothModifiedSavGol(std::vector<double>& x, std::vector<double>&  y);
+    void smoothLowess(std::vector<double>& x, std::vector<double>&  y);
+    void smoothWhittaker(std::vector<double>& x, std::vector<double>&  y);
+    void smoothMedian(std::vector<double>& x, std::vector<double>&  y);
     static int savitzkyGolayCoefficients(int points, int polynom_order, gsl_matrix *h);
 
     //! The smooth method.
@@ -71,6 +89,12 @@ private:
 
     //! Polynomial order in the Savitzky-Golay algorithm.
     int d_polynom_order;
+
+    //! Span fraction for Cleveland LOWESS smoothing.
+    double d_lowess_span;
+
+    //! Roughness penalty parameter for Whittaker penalized least squares smoothing.
+    double d_whittaker_lambda;
 };
 
 #endif

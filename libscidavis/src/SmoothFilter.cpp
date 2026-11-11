@@ -33,6 +33,10 @@
 #include <QApplication>
 #include <QMessageBox>
 
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+
 #include <gsl/gsl_fft_halfcomplex.h>
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_blas.h>
@@ -56,19 +60,22 @@ SmoothFilter::SmoothFilter(ApplicationWindow *parent, Graph *g, const QString &c
 void SmoothFilter::init(int m)
 {
     setObjectName(tr("Smoothed"));
-    setMethod(m);
-    d_points = d_x.size();
+    d_points = static_cast<int>(d_x.size());
     d_right_points = 2;
     d_left_points = 2;
     d_polynom_order = 2;
+    d_lowess_span = 0.2;
+    d_whittaker_lambda = 100.0;
+    setMethod(m);
 }
 
 void SmoothFilter::setMethod(int m)
 {
-    if (m < 1 || m > 3) {
+    if (m < 1 || m > 6) {
         QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Unknown smooth filter. Valid values are: 1 - Savitky-Golay, 2 - "
-                                 "FFT, 3 - Moving Window Average."));
+                              tr("Unknown smooth filter. Valid values are: 1 - Savitzky-Golay, 2 - "
+                                 "FFT, 3 - Moving Window Average, 4 - LOWESS, 5 - Whittaker, "
+                                 "6 - Median."));
         d_init_err = true;
         return;
     }
@@ -83,20 +90,34 @@ void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<doubl
     }
 
     switch ((int)d_method) {
-    case 1:
+    case SavitzkyGolay:
         d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
                 + tr("Savitzky-Golay smoothing");
         smoothSavGol(x, y);
         break;
-    case 2:
+    case FFT:
         d_explanation =
                 QString::number(d_right_points) + " " + tr("points") + " " + tr("FFT smoothing");
         smoothFFT(x, y);
         break;
-    case 3:
+    case Average:
         d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
                 + tr("average smoothing");
         smoothAverage(x, y);
+        break;
+    case LOWESS:
+        d_explanation = tr("LOWESS smoothing") + QString(" (span=%1)").arg(d_lowess_span, 0, 'g', 4);
+        smoothLowess(x, y);
+        break;
+    case Whittaker:
+        d_explanation = tr("Whittaker smoothing")
+                + QString(" (lambda=%1)").arg(d_whittaker_lambda, 0, 'g', 4);
+        smoothWhittaker(x, y);
+        break;
+    case Median:
+        d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
+                + tr("median smoothing");
+        smoothMedian(x, y);
         break;
     }
 }
@@ -395,6 +416,260 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
     y_inout = std::move(result);
 }
 
+void SmoothFilter::smoothLowess(std::vector<double> &x, std::vector<double> &y)
+{
+    const int n = static_cast<int>(y.size());
+    if (n < 2)
+        return;
+
+    const double span = std::clamp(d_lowess_span, 2.0 / static_cast<double>(n), 1.0);
+    const int r = std::clamp(static_cast<int>(std::ceil(span * static_cast<double>(n))), 2, n);
+
+    // Sort indices by x ascending so r-nearest neighbors can be found in O(1) amortized per point
+    std::vector<int> ord(n);
+    std::iota(ord.begin(), ord.end(), 0);
+    std::stable_sort(ord.begin(), ord.end(),
+                     [&x](int a, int b) { return x[a] < x[b]; });
+
+    std::vector<double> xs(n), ys(n);
+    for (int i = 0; i < n; ++i) {
+        xs[i] = x[ord[i]];
+        ys[i] = y[ord[i]];
+    }
+
+    std::vector<double> robWeights(n, 1.0);
+    std::vector<double> yhat(n, 0.0);
+    std::vector<double> absRes(n, 0.0);
+
+    double yMaxAbs = 0.0;
+    for (double v : ys)
+        yMaxAbs = std::max(yMaxAbs, std::fabs(v));
+
+    // Cleveland (1979): initial fit + 2 bisquare robustness iterations (3 passes total)
+    for (int iter = 0; iter < 3; ++iter) {
+        int left = 0;
+        int right = r - 1;
+
+        for (int i = 0; i < n; ++i) {
+            const double xi = xs[i];
+            while (right + 1 < n
+                   && std::fabs(xs[right + 1] - xi) < std::fabs(xs[left] - xi)) {
+                ++left;
+                ++right;
+            }
+
+            const double dLeft = std::fabs(xi - xs[left]);
+            const double dRight = std::fabs(xs[right] - xi);
+            const double dr = std::max(dLeft, dRight);
+
+            if (dr <= 0.0) {
+                double wSum = 0.0, wySum = 0.0;
+                for (int k = left; k <= right; ++k) {
+                    wSum += robWeights[k];
+                    wySum += robWeights[k] * ys[k];
+                }
+                yhat[i] = (wSum > 0.0) ? (wySum / wSum) : ys[i];
+                continue;
+            }
+
+            double nextDist = dr * 1.001;
+            if (left > 0 && right + 1 < n) {
+                nextDist = std::min(std::fabs(xi - xs[left - 1]), std::fabs(xs[right + 1] - xi));
+            } else if (left > 0) {
+                nextDist = std::fabs(xi - xs[left - 1]);
+            } else if (right + 1 < n) {
+                nextDist = std::fabs(xs[right + 1] - xi);
+            }
+            const double h = std::max(dr * 1.0001, 0.5 * (dr + std::max(dr, nextDist)));
+
+            auto evalLocalLinear = [&](bool useRobustness, double &outVal) -> bool {
+                double s0 = 0.0, s1 = 0.0, s2 = 0.0, t0 = 0.0, t1 = 0.0;
+                for (int k = left; k <= right; ++k) {
+                    const double dx = xs[k] - xi;
+                    const double u = std::fabs(dx) / h;
+                    if (u >= 1.0)
+                        continue;
+                    const double oneMinusU3 = 1.0 - u * u * u;
+                    const double wTri = oneMinusU3 * oneMinusU3 * oneMinusU3;
+                    const double w = useRobustness ? (robWeights[k] * wTri) : wTri;
+                    if (w <= 0.0)
+                        continue;
+                    s0 += w;
+                    s1 += w * dx;
+                    s2 += w * dx * dx;
+                    t0 += w * ys[k];
+                    t1 += w * dx * ys[k];
+                }
+                if (s0 <= 0.0)
+                    return false;
+                const double det = s0 * s2 - s1 * s1;
+                if (det > 1e-18 * s0 * s0 * h * h)
+                    outVal = (s2 * t0 - s1 * t1) / det;
+                else
+                    outVal = t0 / s0;
+                return std::isfinite(outVal);
+            };
+
+            double val = ys[i];
+            if (!evalLocalLinear(true, val))
+                evalLocalLinear(false, val);
+            yhat[i] = val;
+        }
+
+        if (iter < 2) {
+            for (int i = 0; i < n; ++i)
+                absRes[i] = std::fabs(ys[i] - yhat[i]);
+
+            std::vector<double> sortedRes = absRes;
+            const int mid = n / 2;
+            std::nth_element(sortedRes.begin(), sortedRes.begin() + mid, sortedRes.end());
+            double mad = sortedRes[mid];
+            if (n % 2 == 0) {
+                const double lowerMax = *std::max_element(sortedRes.begin(), sortedRes.begin() + mid);
+                mad = 0.5 * (lowerMax + mad);
+            }
+
+            const double scale = 6.0 * mad;
+            if (scale <= 1e-14 * (yMaxAbs + 1.0))
+                break;
+
+            for (int i = 0; i < n; ++i) {
+                const double u = absRes[i] / scale;
+                if (u >= 1.0) {
+                    robWeights[i] = 0.0;
+                } else {
+                    const double oneMinusU2 = 1.0 - u * u;
+                    robWeights[i] = oneMinusU2 * oneMinusU2;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < n; ++i)
+        y[ord[i]] = yhat[i];
+}
+
+void SmoothFilter::smoothWhittaker(std::vector<double> &, std::vector<double> &y)
+{
+    const int n = static_cast<int>(y.size());
+    const double lam = std::max(0.0, d_whittaker_lambda);
+    if (n < 3 || lam <= 0.0)
+        return;
+
+    // Assemble SPD pentadiagonal matrix A = I + lam * D2^T * D2 in O(N)
+    std::vector<double> a(n, 1.0);
+    std::vector<double> b(n - 1, 0.0);
+    std::vector<double> c(n - 2, 0.0);
+
+    for (int r = 0; r < n - 2; ++r) {
+        a[r] += lam;
+        a[r + 1] += 4.0 * lam;
+        a[r + 2] += lam;
+        b[r] -= 2.0 * lam;
+        b[r + 1] -= 2.0 * lam;
+        c[r] += lam;
+    }
+
+    // Banded LDL^T factorization in O(N)
+    std::vector<double> d(n, 0.0);
+    std::vector<double> e(n - 1, 0.0);
+    std::vector<double> f(n - 2, 0.0);
+
+    d[0] = a[0];
+    e[0] = b[0] / d[0];
+    f[0] = c[0] / d[0];
+
+    d[1] = a[1] - d[0] * e[0] * e[0];
+    if (n > 2)
+        e[1] = (b[1] - d[0] * f[0] * e[0]) / d[1];
+    if (n > 3)
+        f[1] = c[1] / d[1];
+
+    for (int i = 2; i < n; ++i) {
+        d[i] = a[i] - d[i - 2] * f[i - 2] * f[i - 2] - d[i - 1] * e[i - 1] * e[i - 1];
+        if (i <= n - 2)
+            e[i] = (b[i] - d[i - 1] * f[i - 1] * e[i - 1]) / d[i];
+        if (i <= n - 3)
+            f[i] = c[i] / d[i];
+    }
+
+    // Forward substitution L * z = y
+    std::vector<double> z(n, 0.0);
+    z[0] = y[0];
+    z[1] = y[1] - e[0] * z[0];
+    for (int i = 2; i < n; ++i)
+        z[i] = y[i] - e[i - 1] * z[i - 1] - f[i - 2] * z[i - 2];
+
+    // Diagonal scaling w = D^{-1} * z
+    for (int i = 0; i < n; ++i)
+        z[i] /= d[i];
+
+    // Backward substitution L^T * yhat = w
+    std::vector<double> yhat(n, 0.0);
+    yhat[n - 1] = z[n - 1];
+    yhat[n - 2] = z[n - 2] - e[n - 2] * yhat[n - 1];
+    for (int i = n - 3; i >= 0; --i)
+        yhat[i] = z[i] - e[i] * yhat[i + 1] - f[i] * yhat[i + 2];
+
+    y = std::move(yhat);
+}
+
+void SmoothFilter::smoothMedian(std::vector<double> &, std::vector<double> &y)
+{
+    const int n = static_cast<int>(y.size());
+    if (n < 2)
+        return;
+
+    int halfLeft = d_left_points;
+    int halfRight = d_right_points;
+    if (halfLeft <= 0) {
+        const int half = (d_right_points <= 1) ? 0 : (d_right_points / 2);
+        halfLeft = half;
+        halfRight = half;
+    }
+    if (halfLeft == 0 && halfRight == 0)
+        return;
+
+    std::vector<double> result(n);
+    std::vector<double> win;
+    win.reserve(static_cast<size_t>(halfLeft + halfRight + 1));
+
+    for (int i = 0; i < n; ++i) {
+        const int lo = std::max(0, i - halfLeft);
+        const int hi = std::min(n - 1, i + halfRight);
+        win.assign(y.begin() + lo, y.begin() + hi + 1);
+        const int m = static_cast<int>(win.size());
+        const int mid = m / 2;
+        std::nth_element(win.begin(), win.begin() + mid, win.end());
+        double med = win[mid];
+        if (m % 2 == 0) {
+            const double lowerMax = *std::max_element(win.begin(), win.begin() + mid);
+            med = 0.5 * (lowerMax + med);
+        }
+        result[i] = med;
+    }
+
+    y = std::move(result);
+}
+
+void SmoothFilter::setLowessSpan(double fraction)
+{
+    if (!std::isfinite(fraction) || fraction <= 0.0 || fraction > 1.0) {
+        d_lowess_span = std::clamp(std::isfinite(fraction) ? fraction : 0.2, 0.01, 1.0);
+        return;
+    }
+    d_lowess_span = fraction;
+}
+
+void SmoothFilter::setWhittakerLambda(double lambda)
+{
+    if (!std::isfinite(lambda) || lambda < 0.0) {
+        d_whittaker_lambda = 100.0;
+        return;
+    }
+    d_whittaker_lambda = lambda;
+}
+
 void SmoothFilter::setSmoothPoints(int points, int left_points)
 {
     if (points < 0 || left_points < 0) {
@@ -402,7 +677,7 @@ void SmoothFilter::setSmoothPoints(int points, int left_points)
                               tr("The number of points must be positive!"));
         d_init_err = true;
         return;
-    } else if (d_polynom_order > points + left_points) {
+    } else if (d_method == SavitzkyGolay && d_polynom_order > points + left_points) {
         QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                               tr("The polynomial order must be lower than the number of left "
                                  "points plus the number of right points!"));

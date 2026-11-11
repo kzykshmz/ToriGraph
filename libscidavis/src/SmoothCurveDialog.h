@@ -34,6 +34,8 @@
 class QPushButton;
 class QComboBox;
 class QSpinBox;
+class QDoubleSpinBox;
+class QLabel;
 class Graph;
 class ColorButton;
 
@@ -49,17 +51,25 @@ public:
     QPushButton *btnSmooth;
     QPushButton *buttonCancel;
     QComboBox *boxName;
+    QComboBox *boxMethod;
     QSpinBox *boxPointsLeft, *boxPointsRight, *boxOrder;
+    QDoubleSpinBox *boxLowessSpan, *boxWhittakerLambda;
     ColorButton *btnColor;
 
 public slots:
     void setGraph(Graph *g);
     void smooth();
     void activateCurve(const QString &curveName);
+    void updateMethodControls(int methodIndex);
 
 private:
     Graph *graph;
     int smooth_method;
+    QLabel *lblOrder;
+    QLabel *lblPointsLeft;
+    QLabel *lblPointsRight;
+    QLabel *lblLowessSpan;
+    QLabel *lblWhittakerLambda;
 };
 
 #endif
