@@ -30,6 +30,7 @@
 #include "ScaleDraw.h"
 #include "Plot.h"
 #include "Graph.h"
+#include "GraphMiniToolbar.h"
 
 #include <qwt_plot.h>
 #include <qwt_scale_widget.h>
@@ -44,7 +45,8 @@ ScalePicker::ScalePicker(QwtPlot *plot)
       d_title_selected(false),
       d_labels_selected(false),
       d_selected_axis(NULL),
-      d_current_axis(NULL)
+      d_current_axis(NULL),
+      d_left_click_pending(false)
 {
     refresh();
 }
@@ -58,6 +60,9 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
     d_current_axis = scale;
 
     if (e->type() == QEvent::MouseButtonDblClick) {
+        d_left_click_pending = false;
+        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+            bar->hide();
         mouseDblClicked(scale, ((QMouseEvent *)e)->pos());
         return true;
     }
@@ -125,6 +130,8 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         const QMouseEvent *me = (const QMouseEvent *)e;
         QPoint pos = me->pos();
         if (me->button() == Qt::LeftButton) {
+            d_press_pos = pos;
+            d_left_click_pending = !(me->modifiers() & Qt::ShiftModifier);
             scale->setFocus();
             emit clicked();
 
@@ -137,8 +144,44 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
 
             return !(me->modifiers() & Qt::ShiftModifier) && !scaleTicksRect(scale).contains(pos);
         } else if (me->button() == Qt::RightButton) {
+            d_left_click_pending = false;
             mouseRightClicked(scale, pos);
             return true;
+        }
+    }
+
+    if (e->type() == QEvent::MouseMove) {
+        const QMouseEvent *me = (const QMouseEvent *)e;
+        if (d_left_click_pending && (me->pos() - d_press_pos).manhattanLength() > 5)
+            d_left_click_pending = false;
+    }
+
+    if (e->type() == QEvent::MouseButtonRelease) {
+        const QMouseEvent *me = (const QMouseEvent *)e;
+        if (me->button() == Qt::LeftButton && d_left_click_pending) {
+            d_left_click_pending = false;
+            if ((me->pos() - d_press_pos).manhattanLength() <= 5
+                && GraphMiniToolbar::isMiniToolbarEnabled() && graph()) {
+                int axisId = -1;
+                switch (scale->alignment()) {
+                case QwtScaleDraw::LeftScale:
+                    axisId = QwtPlot::yLeft;
+                    break;
+                case QwtScaleDraw::RightScale:
+                    axisId = QwtPlot::yRight;
+                    break;
+                case QwtScaleDraw::BottomScale:
+                    axisId = QwtPlot::xBottom;
+                    break;
+                case QwtScaleDraw::TopScale:
+                    axisId = QwtPlot::xTop;
+                    break;
+                }
+                if (axisId >= 0) {
+                    if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                        bar->popupForAxis(graph(), axisId, me->globalPos());
+                }
+            }
         }
     }
     return QObject::eventFilter(object, e);

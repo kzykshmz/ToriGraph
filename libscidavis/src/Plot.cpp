@@ -63,9 +63,28 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     minTickLength = 5;
     majTickLength = 9;
 
+    const QFont defaultTickFont("Arial", 12, QFont::Normal, false);
+    const QFont defaultTitleFont("Arial", 14, QFont::Bold, false);
+    setFont(defaultTickFont);
+    if (titleLabel()) {
+        titleLabel()->setFont(defaultTitleFont);
+        QwtText pTitle = title();
+        pTitle.setFont(defaultTitleFont);
+        setTitle(pTitle);
+    }
+
     setGeometry(QRect(0, 0, 500, 500));
-    setAxisTitle(QwtPlot::yLeft, tr("Y Axis Title"));
-    setAxisTitle(QwtPlot::xBottom, tr("X Axis Title"));
+    {
+        QwtText yTitle(tr("Y Axis Title"));
+        yTitle.setFont(defaultTitleFont);
+        yTitle.setColor(Qt::black);
+        setAxisTitle(QwtPlot::yLeft, yTitle);
+
+        QwtText xTitle(tr("X Axis Title"));
+        xTitle.setFont(defaultTitleFont);
+        xTitle.setColor(Qt::black);
+        setAxisTitle(QwtPlot::xBottom, xTitle);
+    }
 
     // grid
     d_grid = new Grid;
@@ -78,14 +97,17 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     // custom scale
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
         setAxisMaxMinor(i, 2);
+        setAxisFont(i, defaultTickFont);
         QwtScaleWidget *scale = (QwtScaleWidget *)axisWidget(i);
         if (scale) {
+            scale->setFont(defaultTickFont);
             scale->setMargin(0);
             scale->setSpacing(6);
             scale->setPenWidth(2);
 
-            // the axis title color must be initialized...
+            // the axis title color & Arial font must be initialized...
             QwtText title = scale->title();
+            title.setFont(defaultTitleFont);
             title.setColor(Qt::black);
             scale->setTitle(title);
 
@@ -202,17 +224,32 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         if (min || maj)
             drawInwardTicks(painter, rect, map[i], i, min, maj);
     }
-    if (((Graph *)parent())->axesBackbones()) {
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones()) {
         int apw2 = axesLinewidth() / 2;
         bool clp = painter->hasClipping();
         painter->save();
         painter->setPen(QPen(canvas()->palette().color(QPalette::Active, QPalette::WindowText),
                              axesLinewidth(), Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
         painter->setClipping(false);
-        const bool allFourEnabled = axisEnabled(QwtPlot::yLeft) && axisEnabled(QwtPlot::yRight)
-                && axisEnabled(QwtPlot::xBottom) && axisEnabled(QwtPlot::xTop);
-        if ((pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales) || allFourEnabled)
-            painter->drawRect(rect.adjusted(-(apw2 + 1), -(apw2 + 1), apw2, apw2));
+        const QRect br = rect.adjusted(-(apw2 + 1), -(apw2 + 1), apw2, apw2);
+        const bool forceFrame = (pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales);
+        const bool showLeft = g->isAxisBackboneVisible(QwtPlot::yLeft) || forceFrame;
+        const bool showRight = g->isAxisBackboneVisible(QwtPlot::yRight) || forceFrame;
+        const bool showBottom = g->isAxisBackboneVisible(QwtPlot::xBottom) || forceFrame;
+        const bool showTop = g->isAxisBackboneVisible(QwtPlot::xTop) || forceFrame;
+        if (showLeft && showRight && showBottom && showTop) {
+            painter->drawRect(br);
+        } else {
+            if (showLeft)
+                painter->drawLine(br.topLeft(), br.bottomLeft());
+            if (showRight)
+                painter->drawLine(br.topRight(), br.bottomRight());
+            if (showTop)
+                painter->drawLine(br.topLeft(), br.topRight());
+            if (showBottom)
+                painter->drawLine(br.bottomLeft(), br.bottomRight());
+        }
         painter->restore();
         painter->setClipping(clp);
     }

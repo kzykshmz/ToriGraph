@@ -32,6 +32,7 @@
 #include "ImageMarker.h"
 #include "Legend.h"
 #include "ArrowMarker.h"
+#include "GraphMiniToolbar.h"
 
 #include <QVector>
 #include <QMouseEvent>
@@ -43,6 +44,7 @@ CanvasPicker::CanvasPicker(Graph *graph) : QObject(graph)
 {
     pointSelected = false;
     d_editing_marker = 0;
+    d_left_click_pending = false;
 
     plotWidget = graph->plotWidget();
 
@@ -80,6 +82,15 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             return true;
         }
 
+        if (me->button() == Qt::LeftButton && !plot()->zoomOn() && !plot()->activeTool()
+            && !plot()->rangeSelectorsEnabled() && !plot()->drawLineActive()
+            && !plot()->drawTextActive()) {
+            d_press_pos = me->pos();
+            d_left_click_pending = true;
+        } else {
+            d_left_click_pending = false;
+        }
+
         if (!plot()->zoomOn() && selectMarker(me)) {
             if (me->button() == Qt::RightButton)
                 emit showMarkerPopupMenu();
@@ -98,6 +109,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
     } break;
 
     case QEvent::MouseButtonDblClick: {
+        d_left_click_pending = false;
+        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+            bar->hide();
+
         const QMouseEvent *dblMe = (const QMouseEvent *)e;
         if (dblMe->button() == Qt::MiddleButton)
             return false;
@@ -138,6 +153,8 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             return false;
 
         QPoint pos = me->pos();
+        if (d_left_click_pending && (pos - d_press_pos).manhattanLength() > 5)
+            d_left_click_pending = false;
 
         if (plot()->drawLineActive()) {
             drawLineMarker(pos, plot()->drawArrow());
@@ -171,6 +188,35 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             plotWidget->replot();
 
             return true;
+        }
+
+        if (me->button() == Qt::LeftButton && d_left_click_pending) {
+            d_left_click_pending = false;
+            if ((me->pos() - d_press_pos).manhattanLength() <= 5
+                && GraphMiniToolbar::isMiniToolbarEnabled() && !g->zoomOn() && !g->activeTool()
+                && !g->rangeSelectorsEnabled() && !(me->modifiers() & Qt::ShiftModifier)) {
+                GraphMiniToolbar *bar = GraphMiniToolbar::instance();
+                if (bar) {
+                    long selKey = g->selectedMarkerKey();
+                    if (selKey >= 0 && texts.contains(selKey)) {
+                        Legend *leg = dynamic_cast<Legend *>(plotWidget->marker(selKey));
+                        if (leg)
+                            bar->popupForLegend(g, leg, me->globalPos());
+                    } else if (!g->markerSelected() && !d_editing_marker && !g->isPiePlot()) {
+                        int dist = 999;
+                        int point = -1;
+                        int curveKey =
+                                plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
+                        if (curveKey >= 0 && dist < 10) {
+                            int cIdx = g->curveIndex(curveKey);
+                            if (cIdx >= 0)
+                                bar->popupForCurve(g, cIdx, me->globalPos());
+                        } else {
+                            bar->popupForCanvas(g, me->globalPos());
+                        }
+                    }
+                }
+            }
         }
         return false;
     } break;

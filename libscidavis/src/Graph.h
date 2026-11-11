@@ -62,6 +62,7 @@ class RangeSelectorTool;
 class DataCurve;
 class PlotCurve;
 class QwtErrorPlotCurve;
+class MultiLayer;
 
 //! Structure containing curve layout parameters
 typedef struct CurveLayout_struct
@@ -766,6 +767,47 @@ public slots:
                           const QString &labelC = "C");
     static QPointF ternaryToCartesian(double a, double b, double c);
     bool isTernaryPlot() const { return d_is_ternary; }
+
+public:
+    enum FramePreset {
+        FrameBoxInwardTicks = 0,
+        FrameBoxPlainOpposite = 1,
+        FrameOpenL = 2,
+        FrameZeroCrossed = 3
+    };
+
+    struct ReferenceLineSpec {
+        int orientation = 0; // 0 = Horizontal (Y), 1 = Vertical (X)
+        double value = 0.0;
+        QString statMode;
+        QColor color = QColor(30, 102, 184);
+        Qt::PenStyle style = Qt::DashLine;
+        double width = 1.5;
+        QString label;
+        bool fillToAxis = false;
+        QColor fillColor = QColor(30, 102, 184, 32);
+    };
+
+    void applyFramePreset(FramePreset preset);
+    void setAxisBackboneVisible(int axis, bool visible);
+    bool isAxisBackboneVisible(int axis) const;
+    void addReferenceLine(const ReferenceLineSpec &spec);
+    void setReferenceLines(const QVector<ReferenceLineSpec> &specs);
+    QVector<ReferenceLineSpec> referenceLines() const;
+    void clearReferenceLines();
+    void updateStatReferenceLines();
+
+    void setLinkedParentLayer(Graph *parentLayer, int xLinkMode, const QString &xExpr,
+                              int yLinkMode, const QString &yExpr);
+    Graph *linkedParentLayer() const;
+    int xLinkMode() const { return d_x_link_mode; }
+    int yLinkMode() const { return d_y_link_mode; }
+    QString xLinkExpr() const { return d_x_link_expr; }
+    QString yLinkExpr() const { return d_y_link_expr; }
+    void syncLinkedAxesFromParent();
+    void syncChildLinkedLayers();
+    MultiLayer *multiLayerParent() const;
+
 signals:
     void selectedGraph(Graph *);
     void closedGraph();
@@ -857,5 +899,15 @@ private:
     QPointer<RangeSelectorTool> d_range_selector;
     //! The currently active tool, or NULL for default (pointer).
     PlotToolInterface *d_active_tool;
+
+    bool d_axis_backbone[4];
+    QVector<ReferenceLineSpec> d_ref_lines;
+    QwtPlotItem *d_ref_line_item = nullptr;
+    QPointer<Graph> d_linked_parent;
+    int d_x_link_mode = 0;
+    int d_y_link_mode = 0;
+    QString d_x_link_expr = QString("x");
+    QString d_y_link_expr = QString("y");
+    bool d_syncing_link = false;
 };
 #endif // GRAPH_H

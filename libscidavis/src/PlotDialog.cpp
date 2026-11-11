@@ -67,7 +67,12 @@
 #include <QDateTime>
 
 PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
-    : QDialog(parent, fl), d_ml(0)
+    : QDialog(parent, fl),
+      titleFont("Arial", 14, QFont::Bold),
+      legendFont("Arial", 12),
+      axesFont("Arial", 12, QFont::Bold),
+      numbersFont("Arial", 12),
+      d_ml(0)
 {
     setWindowTitle(tr("Plot details"));
 
@@ -102,6 +107,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     initPercentilePage();
     initSpectrogramPage();
     initPiePage();
+    initPageTab();
     initLayerPage();
     initFontsPage();
     initPrintPage();
@@ -160,7 +166,7 @@ void PlotDialog::showAll(bool all)
         listBox->setFocus();
 
         QTreeWidgetItem *item = listBox->currentItem();
-        if (item->type() == CurveTreeItem::PlotCurveTreeItem)
+        if (item && item->type() == CurveTreeItem::PlotCurveTreeItem)
             curvePlotTypeBox->show();
 
         btnMore->setText("&>>");
@@ -176,7 +182,7 @@ void PlotDialog::showPlotAssociations(QTreeWidgetItem *item, int)
     if (!item)
         return;
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (!app)
         return;
 
@@ -211,7 +217,7 @@ void PlotDialog::showPlotAssociations(QTreeWidgetItem *item, int)
 
 void PlotDialog::editCurve()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
 
     CurveTreeItem *item = (CurveTreeItem *)listBox->currentItem();
     if (!item)
@@ -305,11 +311,85 @@ void PlotDialog::initFontsPage()
     connect(btnLegend, SIGNAL(clicked()), this, SLOT(setLegendsFont()));
 }
 
+void PlotDialog::initPageTab()
+{
+    pageTab = new QWidget();
+
+    QGroupBox *gbPage = new QGroupBox(tr("Page Setup"));
+    QGridLayout *gl = new QGridLayout(gbPage);
+
+    gl->addWidget(new QLabel(tr("Width")), 0, 0);
+    boxPageWidth = new QDoubleSpinBox();
+    boxPageWidth->setRange(1.0, 20000.0);
+    boxPageWidth->setDecimals(2);
+    boxPageWidth->setValue(500.0);
+    gl->addWidget(boxPageWidth, 0, 1);
+
+    gl->addWidget(new QLabel(tr("Height")), 1, 0);
+    boxPageHeight = new QDoubleSpinBox();
+    boxPageHeight->setRange(1.0, 20000.0);
+    boxPageHeight->setDecimals(2);
+    boxPageHeight->setValue(400.0);
+    gl->addWidget(boxPageHeight, 1, 1);
+
+    gl->addWidget(new QLabel(tr("Unit")), 2, 0);
+    boxPageUnit = new QComboBox();
+    boxPageUnit->addItem(QStringLiteral("px"), (int)MultiLayer::UnitPx);
+    boxPageUnit->addItem(QStringLiteral("mm"), (int)MultiLayer::UnitMm);
+    boxPageUnit->addItem(QStringLiteral("cm"), (int)MultiLayer::UnitCm);
+    boxPageUnit->addItem(QStringLiteral("inch"), (int)MultiLayer::UnitInch);
+    gl->addWidget(boxPageUnit, 2, 1);
+
+    gl->addWidget(new QLabel(tr("DPI")), 3, 0);
+    boxPageDpi = new QSpinBox();
+    boxPageDpi->setRange(72, 1200);
+    boxPageDpi->setValue(300);
+    gl->addWidget(boxPageDpi, 3, 1);
+
+    gl->addWidget(new QLabel(tr("Background Color")), 4, 0);
+    boxPageBgColor = new ColorButton();
+    boxPageBgColor->setColor(QColor(Qt::white));
+    gl->addWidget(boxPageBgColor, 4, 1);
+
+    boxPageView = new QCheckBox(tr("Page View Mode"));
+    boxPageView->setChecked(true);
+    gl->addWidget(boxPageView, 5, 0, 1, 2);
+
+    gl->addWidget(new QLabel(tr("Zoom (%)")), 6, 0);
+    boxPageZoom = new QSpinBox();
+    boxPageZoom->setRange(25, 400);
+    boxPageZoom->setSuffix(" %");
+    boxPageZoom->setValue(100);
+    gl->addWidget(boxPageZoom, 6, 1);
+    gl->setRowStretch(7, 1);
+
+    QGroupBox *gbFit = new QGroupBox(tr("Page Size"));
+    QVBoxLayout *fitLayout = new QVBoxLayout(gbFit);
+    btnFitPageToLayers = new QPushButton(tr("Fit Page to Layers"));
+    btnFitLayersToPage = new QPushButton(tr("Fit Layers to Page"));
+    btnOpenPageSetup = new QPushButton(tr("Page Setup..."));
+    fitLayout->addWidget(btnFitPageToLayers);
+    fitLayout->addWidget(btnFitLayersToPage);
+    fitLayout->addSpacing(8);
+    fitLayout->addWidget(btnOpenPageSetup);
+    fitLayout->addStretch(1);
+
+    QHBoxLayout *hl = new QHBoxLayout(pageTab);
+    hl->addWidget(gbPage, 1);
+    hl->addWidget(gbFit, 1);
+
+    privateTabWidget->addTab(pageTab, tr("Page"));
+
+    connect(btnFitPageToLayers, SIGNAL(clicked()), this, SLOT(fitPageToLayersFromDialog()));
+    connect(btnFitLayersToPage, SIGNAL(clicked()), this, SLOT(fitLayersToPageFromDialog()));
+    connect(btnOpenPageSetup, SIGNAL(clicked()), this, SLOT(openPageSetupFromDialog()));
+}
+
 void PlotDialog::initLayerPage()
 {
     layerPage = new QWidget();
 
-    QGroupBox *boxBkg = new QGroupBox();
+    QGroupBox *boxBkg = new QGroupBox(tr("Border"));
     QGridLayout *boxBkgLayout = new QGridLayout(boxBkg);
 
     boxBkgLayout->addWidget(new QLabel(tr("Background Color")), 0, 0);
@@ -343,7 +423,7 @@ void PlotDialog::initLayerPage()
     boxBkgLayout->addWidget(boxBorderWidth, 2, 3);
     boxBkgLayout->setRowStretch(4, 1);
 
-    QGroupBox *box4 = new QGroupBox(QString());
+    QGroupBox *box4 = new QGroupBox(tr("Options"));
     QGridLayout *box4Layout = new QGridLayout(box4);
 
     box4Layout->addWidget(new QLabel(tr("Margin")), 0, 0);
@@ -353,15 +433,86 @@ void PlotDialog::initLayerPage()
     box4Layout->addWidget(boxMargin, 0, 1);
 
     boxAntialiasing = new QCheckBox(tr("Antialiasing"));
-    box4Layout->addWidget(boxAntialiasing, 1, 1);
+    box4Layout->addWidget(boxAntialiasing, 1, 0, 1, 2);
 
     boxAll = new QCheckBox(tr("Apply to all layers"));
-    box4Layout->addWidget(boxAll, 2, 1);
+    box4Layout->addWidget(boxAll, 2, 0, 1, 2);
     box4Layout->setRowStretch(3, 1);
 
+    QGroupBox *boxGeom = new QGroupBox(tr("Geometry"));
+    QGridLayout *geomLayout = new QGridLayout(boxGeom);
+    geomLayout->addWidget(new QLabel(tr("Position")), 0, 0);
+    boxLayerX = new QSpinBox();
+    boxLayerX->setRange(-2000, 10000);
+    boxLayerY = new QSpinBox();
+    boxLayerY->setRange(-2000, 10000);
+    geomLayout->addWidget(boxLayerX, 0, 1);
+    geomLayout->addWidget(boxLayerY, 0, 2);
+
+    geomLayout->addWidget(new QLabel(tr("Size")), 1, 0);
+    boxLayerW = new QSpinBox();
+    boxLayerW->setRange(20, 10000);
+    boxLayerH = new QSpinBox();
+    boxLayerH->setRange(20, 10000);
+    geomLayout->addWidget(boxLayerW, 1, 1);
+    geomLayout->addWidget(boxLayerH, 1, 2);
+
+    boxKeepAspect = new QCheckBox(tr("Keep aspect ratio"));
+    geomLayout->addWidget(boxKeepAspect, 2, 0, 1, 2);
+    boxAspectRatio = new QDoubleSpinBox();
+    boxAspectRatio->setRange(0.1, 10.0);
+    boxAspectRatio->setDecimals(3);
+    boxAspectRatio->setSingleStep(0.05);
+    boxAspectRatio->setValue(4.0 / 3.0);
+    geomLayout->addWidget(boxAspectRatio, 2, 2);
+
+    geomLayout->addWidget(new QLabel(tr("Frame Presets")), 3, 0);
+    boxFramePreset = new QComboBox();
+    boxFramePreset->addItem(tr("Current"), -1);
+    boxFramePreset->addItem(tr("4-Sided Box [Inward Ticks]"), (int)Graph::FrameBoxInwardTicks);
+    boxFramePreset->addItem(tr("4-Sided Box [Plain Top/Right]"), (int)Graph::FrameBoxPlainOpposite);
+    boxFramePreset->addItem(tr("Open L-Frame"), (int)Graph::FrameOpenL);
+    boxFramePreset->addItem(tr("Zero-Crossed"), (int)Graph::FrameZeroCrossed);
+    geomLayout->addWidget(boxFramePreset, 3, 1, 1, 2);
+    geomLayout->setRowStretch(4, 1);
+
+    QGroupBox *boxLink = new QGroupBox(tr("Link Axes Scales"));
+    QGridLayout *linkLayout = new QGridLayout(boxLink);
+    linkLayout->addWidget(new QLabel(tr("Parent Layer")), 0, 0);
+    boxLinkParentLayer = new QComboBox();
+    boxLinkParentLayer->addItem(tr("None"), -1);
+    linkLayout->addWidget(boxLinkParentLayer, 0, 1, 1, 2);
+
+    linkLayout->addWidget(new QLabel(tr("X Link Mode")), 1, 0);
+    boxLinkXMode = new QComboBox();
+    boxLinkXMode->addItem(tr("None"));
+    boxLinkXMode->addItem(tr("Straight (1:1)"));
+    boxLinkXMode->addItem(tr("Custom Formula"));
+    linkLayout->addWidget(boxLinkXMode, 1, 1);
+    editLinkXFormula = new QLineEdit("x");
+    linkLayout->addWidget(editLinkXFormula, 1, 2);
+
+    linkLayout->addWidget(new QLabel(tr("Y Link Mode")), 2, 0);
+    boxLinkYMode = new QComboBox();
+    boxLinkYMode->addItem(tr("None"));
+    boxLinkYMode->addItem(tr("Straight (1:1)"));
+    boxLinkYMode->addItem(tr("Custom Formula"));
+    linkLayout->addWidget(boxLinkYMode, 2, 1);
+    editLinkYFormula = new QLineEdit("y");
+    linkLayout->addWidget(editLinkYFormula, 2, 2);
+    linkLayout->setRowStretch(3, 1);
+
+    QVBoxLayout *leftCol = new QVBoxLayout();
+    leftCol->addWidget(boxBkg);
+    leftCol->addWidget(box4);
+
+    QVBoxLayout *rightCol = new QVBoxLayout();
+    rightCol->addWidget(boxGeom);
+    rightCol->addWidget(boxLink);
+
     QHBoxLayout *hl = new QHBoxLayout(layerPage);
-    hl->addWidget(boxBkg);
-    hl->addWidget(box4);
+    hl->addLayout(leftCol, 1);
+    hl->addLayout(rightCol, 1);
 
     privateTabWidget->addTab(layerPage, tr("Layer"));
 
@@ -1015,19 +1166,29 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
     d_ml = ml;
     boxScaleLayers->setChecked(d_ml->scaleLayersOnPrint());
     boxPrintCrops->setChecked(d_ml->printCropmarksEnabled());
+    syncPageTabFromMultiLayer();
 
-    QTreeWidgetItem *item = new QTreeWidgetItem(listBox, QStringList(ml->name()));
+    boxLinkParentLayer->clear();
+    boxLinkParentLayer->addItem(tr("None"), -1);
+    QWidgetList plots = ml->graphPtrs();
+    for (int i = 0; i < plots.count(); ++i)
+        boxLinkParentLayer->addItem(tr("Layer") + " " + QString::number(i + 1), i);
+
+    const QString pageLabel = ml->name().isEmpty()
+            ? tr("Page")
+            : (tr("Page") + " (" + ml->name() + ")");
+    QTreeWidgetItem *item = new QTreeWidgetItem(listBox, QStringList(pageLabel));
     item->setIcon(0, QIcon(":/folder_open.xpm"));
     listBox->addTopLevelItem(item);
+    item->setExpanded(true);
     listBox->setCurrentItem(item);
 
-    QWidgetList plots = ml->graphPtrs();
     for (int i = 0; i < plots.count(); ++i) {
         Graph *g = (Graph *)plots.at(i);
         if (!g)
             continue;
 
-        LayerItem *layer = new LayerItem(g, item, tr("Layer") + QString::number(i + 1));
+        LayerItem *layer = new LayerItem(g, item, tr("Layer") + " " + QString::number(i + 1));
         item->addChild(layer);
 
         if (g == ml->activeGraph()) {
@@ -1054,7 +1215,7 @@ void PlotDialog::selectCurve(int index)
 
 void PlotDialog::showStatistics()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (!app)
         return;
 
@@ -1254,13 +1415,15 @@ void PlotDialog::showAreaColor(bool show)
 
 void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *previousItem)
 {
-    if (!previousItem || !currentItem)
+    if (!currentItem)
         return;
 
-    if (previousItem->type() == CurveTreeItem::PlotCurveTreeItem)
-        ((CurveTreeItem *)previousItem)->setActive(false);
-    else if (previousItem->type() == LayerItem::LayerTreeItem)
-        ((LayerItem *)previousItem)->setActive(false);
+    if (previousItem) {
+        if (previousItem->type() == CurveTreeItem::PlotCurveTreeItem)
+            ((CurveTreeItem *)previousItem)->setActive(false);
+        else if (previousItem->type() == LayerItem::LayerTreeItem)
+            ((LayerItem *)previousItem)->setActive(false);
+    }
 
     boxPlotType->blockSignals(true);
 
@@ -1268,7 +1431,7 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
         CurveTreeItem *curveItem = (CurveTreeItem *)currentItem;
         setActiveCurve(curveItem);
 
-        if (previousItem->type() != CurveTreeItem::PlotCurveTreeItem
+        if (!previousItem || previousItem->type() != CurveTreeItem::PlotCurveTreeItem
             || ((CurveTreeItem *)previousItem)->plotItemType() != curveItem->plotItemType()) {
             clearTabWidget();
             int plot_type = setPlotType(curveItem);
@@ -1278,7 +1441,7 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
                 curvePlotTypeBox->show();
         }
     } else if (currentItem->type() == LayerItem::LayerTreeItem) {
-        if (previousItem->type() != LayerItem::LayerTreeItem) {
+        if (!previousItem || previousItem->type() != LayerItem::LayerTreeItem) {
             clearTabWidget();
             privateTabWidget->addTab(layerPage, tr("Layer"));
             privateTabWidget->setCurrentIndex(privateTabWidget->indexOf(layerPage));
@@ -1286,9 +1449,11 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
         setActiveLayer((LayerItem *)currentItem);
     } else {
         clearTabWidget();
+        privateTabWidget->addTab(pageTab, tr("Page"));
         privateTabWidget->addTab(printPage, tr("Print"));
         privateTabWidget->addTab(fontsPage, tr("Fonts"));
-        privateTabWidget->setCurrentIndex(privateTabWidget->indexOf(printPage));
+        privateTabWidget->setCurrentIndex(privateTabWidget->indexOf(pageTab));
+        syncPageTabFromMultiLayer();
 
         curvePlotTypeBox->hide();
         btnWorksheet->hide();
@@ -1366,6 +1531,7 @@ void PlotDialog::clearTabWidget()
     privateTabWidget->removeTab(privateTabWidget->indexOf(spectrogramPage));
     privateTabWidget->removeTab(privateTabWidget->indexOf(piePage));
 
+    privateTabWidget->removeTab(privateTabWidget->indexOf(pageTab));
     privateTabWidget->removeTab(privateTabWidget->indexOf(layerPage));
     privateTabWidget->removeTab(privateTabWidget->indexOf(fontsPage));
     privateTabWidget->removeTab(privateTabWidget->indexOf(printPage));
@@ -1379,7 +1545,7 @@ void PlotDialog::quit()
 
 void PlotDialog::showWorksheet()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (!app)
         return;
 
@@ -1478,6 +1644,30 @@ void PlotDialog::setActiveLayer(LayerItem *item)
     boxCanvasColor->setColor(c);
 
     boxAntialiasing->setChecked(g->antialiasing());
+
+    QRect geom = g->geometry();
+    boxLayerX->setValue(geom.x());
+    boxLayerY->setValue(geom.y());
+    boxLayerW->setValue(qMax(20, geom.width()));
+    boxLayerH->setValue(qMax(20, geom.height()));
+
+    if (d_ml) {
+        boxKeepAspect->setChecked(d_ml->keepAspectRatio());
+        boxAspectRatio->setValue(d_ml->targetAspectRatio());
+    }
+    boxFramePreset->setCurrentIndex(0);
+
+    int parentIdx = -1;
+    if (d_ml && g->linkedParentLayer()) {
+        QWidgetList plots = d_ml->graphPtrs();
+        parentIdx = plots.indexOf(g->linkedParentLayer());
+    }
+    int comboIdx = boxLinkParentLayer->findData(parentIdx);
+    boxLinkParentLayer->setCurrentIndex(comboIdx >= 0 ? comboIdx : 0);
+    boxLinkXMode->setCurrentIndex(qBound(0, g->xLinkMode(), 2));
+    boxLinkYMode->setCurrentIndex(qBound(0, g->yLinkMode(), 2));
+    editLinkXFormula->setText(g->xLinkExpr().isEmpty() ? QString("x") : g->xLinkExpr());
+    editLinkYFormula->setText(g->yLinkExpr().isEmpty() ? QString("y") : g->yLinkExpr());
 
     boxBackgroundTransparency->blockSignals(false);
     boxCanvasTransparency->blockSignals(false);
@@ -1692,7 +1882,19 @@ void PlotDialog::updateEndPointColumns(const QString &text)
 
 bool PlotDialog::acceptParams()
 {
-    if (privateTabWidget->currentWidget() == fontsPage) {
+    if (!d_ml)
+        return false;
+
+    if (privateTabWidget->currentWidget() == pageTab) {
+        MultiLayer::PageUnit u =
+                static_cast<MultiLayer::PageUnit>(boxPageUnit->currentData().toInt());
+        d_ml->setPageSizePhysical(boxPageWidth->value(), boxPageHeight->value(), u,
+                                  boxPageDpi->value());
+        d_ml->setPageBackgroundColor(boxPageBgColor->color());
+        d_ml->setPageViewMode(boxPageView->isChecked());
+        d_ml->setPageZoom(boxPageZoom->value() / 100.0);
+        return true;
+    } else if (privateTabWidget->currentWidget() == fontsPage) {
         d_ml->setFonts(titleFont, axesFont, numbersFont, legendFont);
         return true;
     } else if (privateTabWidget->currentWidget() == printPage) {
@@ -1700,32 +1902,71 @@ bool PlotDialog::acceptParams()
         d_ml->printCropmarks(boxPrintCrops->isChecked());
         return true;
     } else if (privateTabWidget->currentWidget() == layerPage) {
-        if (!boxAll->isChecked())
-            return true;
+        d_ml->setTargetAspectRatio(boxAspectRatio->value());
+        d_ml->setKeepAspectRatio(boxKeepAspect->isChecked());
 
+        int presetVal = boxFramePreset->currentData().toInt();
         QWidgetList allPlots = d_ml->graphPtrs();
-        for (int i = 0; i < allPlots.count(); i++) {
-            Graph *g = (Graph *)allPlots.at(i);
-            if (g) {
-                g->setFrame(boxBorderWidth->value(), boxBorderColor->color());
-                g->setMargin(boxMargin->value());
 
-                QColor c = boxBackgroundColor->color();
-                c.setAlpha(boxBackgroundTransparency->value());
-                g->setBackgroundColor(c);
+        QTreeWidgetItem *curTreeIt = listBox->currentItem();
+        LayerItem *selLayerIt = (curTreeIt && curTreeIt->type() == LayerItem::LayerTreeItem)
+                ? static_cast<LayerItem *>(curTreeIt)
+                : nullptr;
+        Graph *selG = selLayerIt ? selLayerIt->graph() : nullptr;
 
-                c = boxCanvasColor->color();
-                c.setAlpha(boxCanvasTransparency->value());
-                g->setCanvasBackground(c);
+        if (selG) {
+            QRect newRect(boxLayerX->value(), boxLayerY->value(), boxLayerW->value(),
+                          boxLayerH->value());
+            if (selG->geometry() != newRect)
+                selG->setGeometry(newRect);
 
-                g->setAntialiasing(boxAntialiasing->isChecked());
+            if (presetVal >= 0 && !boxAll->isChecked())
+                selG->applyFramePreset(static_cast<Graph::FramePreset>(presetVal));
+
+            int parentIdx = boxLinkParentLayer->currentData().toInt();
+            Graph *parentG = (parentIdx >= 0 && parentIdx < allPlots.size())
+                    ? qobject_cast<Graph *>(allPlots.at(parentIdx))
+                    : nullptr;
+            if (parentG == selG)
+                parentG = nullptr;
+
+            const QString xExpr = editLinkXFormula->text().trimmed().isEmpty()
+                    ? QString("x")
+                    : editLinkXFormula->text().trimmed();
+            const QString yExpr = editLinkYFormula->text().trimmed().isEmpty()
+                    ? QString("y")
+                    : editLinkYFormula->text().trimmed();
+            selG->setLinkedParentLayer(parentG, boxLinkXMode->currentIndex(), xExpr,
+                                       boxLinkYMode->currentIndex(), yExpr);
+        }
+
+        if (boxAll->isChecked()) {
+            for (int i = 0; i < allPlots.count(); i++) {
+                Graph *g = (Graph *)allPlots.at(i);
+                if (g) {
+                    g->setFrame(boxBorderWidth->value(), boxBorderColor->color());
+                    g->setMargin(boxMargin->value());
+
+                    QColor c = boxBackgroundColor->color();
+                    c.setAlpha(boxBackgroundTransparency->value());
+                    g->setBackgroundColor(c);
+
+                    c = boxCanvasColor->color();
+                    c.setAlpha(boxCanvasTransparency->value());
+                    g->setCanvasBackground(c);
+
+                    g->setAntialiasing(boxAntialiasing->isChecked());
+                    if (presetVal >= 0)
+                        g->applyFramePreset(static_cast<Graph::FramePreset>(presetVal));
+                }
             }
         }
+        d_ml->notifyChanges();
         return true;
     }
 
     QTreeWidgetItem *it = listBox->currentItem();
-    if (!it)
+    if (!it || it->type() != CurveTreeItem::PlotCurveTreeItem)
         return false;
 
     CurveTreeItem *item = (CurveTreeItem *)it;
@@ -1830,7 +2071,7 @@ bool PlotDialog::acceptParams()
         graph->setBarsGap(item->plotItemIndex(), gapBox->value(), offsetBox->value());
     else if (privateTabWidget->currentWidget() == vectPage) {
         int index = item->plotItemIndex();
-        ApplicationWindow *app = (ApplicationWindow *)this->parent();
+        ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
         if (!app)
             return false;
 
@@ -2421,14 +2662,61 @@ void PlotDialog::initFonts(const QFont &titlefont, const QFont &axesfont, const 
                            const QFont &legendfont)
 {
     axesFont = axesfont;
+    if (axesFont.family().isEmpty())
+        axesFont.setFamily("Arial");
     titleFont = titlefont;
+    if (titleFont.family().isEmpty())
+        titleFont.setFamily("Arial");
     numbersFont = numbersfont;
+    if (numbersFont.family().isEmpty())
+        numbersFont.setFamily("Arial");
     legendFont = legendfont;
+    if (legendFont.family().isEmpty())
+        legendFont.setFamily("Arial");
+}
+
+void PlotDialog::syncPageTabFromMultiLayer()
+{
+    if (!d_ml)
+        return;
+
+    int unitIdx = boxPageUnit->findData((int)d_ml->pageUnit());
+    boxPageUnit->setCurrentIndex(unitIdx >= 0 ? unitIdx : 0);
+    boxPageDpi->setValue(d_ml->pageDpi());
+    boxPageWidth->setValue(d_ml->pageWidthPhysical());
+    boxPageHeight->setValue(d_ml->pageHeightPhysical());
+    boxPageBgColor->setColor(d_ml->pageBackgroundColor());
+    boxPageView->setChecked(d_ml->pageViewMode());
+    boxPageZoom->setValue(qRound(d_ml->pageZoom() * 100.0));
+}
+
+void PlotDialog::fitPageToLayersFromDialog()
+{
+    if (!d_ml)
+        return;
+    d_ml->fitPageToLayers();
+    syncPageTabFromMultiLayer();
+}
+
+void PlotDialog::fitLayersToPageFromDialog()
+{
+    if (!d_ml)
+        return;
+    d_ml->fitLayersToPage();
+    syncPageTabFromMultiLayer();
+}
+
+void PlotDialog::openPageSetupFromDialog()
+{
+    if (!d_ml)
+        return;
+    d_ml->showPageSetupDialog();
+    syncPageTabFromMultiLayer();
 }
 
 void PlotDialog::closeEvent(QCloseEvent *e)
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (app)
         app->d_extended_plot_dialog = btnMore->isChecked();
 
@@ -2469,8 +2757,9 @@ void LayerItem::insertCurvesList()
             PlotCurve *c = (PlotCurve *)it;
             if (c->type() != Graph::Function) {
                 QString s = ((DataCurve *)it)->plotAssociation();
-                QString table = ((DataCurve *)it)->table()->name();
-                plotAssociation = table + ": " + s.remove(table + "_");
+                Table *tbl = ((DataCurve *)it)->table();
+                QString table = tbl ? tbl->name() : QString();
+                plotAssociation = table.isEmpty() ? s : (table + ": " + s.remove(table + "_"));
             } else
                 plotAssociation = it->title().text();
         } else

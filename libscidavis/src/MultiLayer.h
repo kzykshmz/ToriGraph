@@ -37,11 +37,14 @@
 #include <QPushButton>
 #include <QLayout>
 #include <QPointer>
+#include <QMap>
+#include <QPair>
+#include <QRectF>
 #include "core/column/Column.h"
 
 class QWidget;
 class QLabel;
-class QWidget;
+class QToolButton;
 class LayerButton;
 class SelectionMoveResizer;
 class ApplicationWindow;
@@ -72,6 +75,7 @@ public:
     MultiLayer(const QString &label, QWidget *parent = 0, const QString name = QString(),
                Qt::WindowFlags f = Qt::Widget);
     QWidgetList graphPtrs() { return graphsList; };
+    QList<Graph *> layersList() const;
     Graph *layer(int num);
     QWidgetList layerWidgets() const { return graphsList; }
     LayerButton *addLayerButton();
@@ -79,6 +83,27 @@ public:
 
     enum HorAlignement { HCenter, Left, Right };
     enum VertAlignement { VCenter, Top, Bottom };
+    enum PageUnit { UnitPx = 0, UnitMm = 1, UnitCm = 2, UnitInch = 3 };
+
+    void setPageViewMode(bool enabled);
+    bool pageViewMode() const;
+    void setPageZoom(double factor);
+    double pageZoom() const;
+    void setPageSizePhysical(double widthVal, double heightVal, PageUnit unit, int dpi = 300);
+    int pageDpi() const;
+    PageUnit pageUnit() const;
+    double pageWidthPhysical() const { return d_page_width_val; }
+    double pageHeightPhysical() const { return d_page_height_val; }
+    QColor pageBackgroundColor() const { return d_page_bg_color; }
+    void setPageBackgroundColor(const QColor &color);
+    void fitPageToLayers(int marginPx = 14);
+    void fitLayersToPage();
+    void showPageSetupDialog();
+
+    Graph *addLinkedLayer(Graph *parentLayer = nullptr, bool linkX = true, bool linkY = false,
+                          const QString &xFormula = QString("x"),
+                          const QString &yFormula = QString("y"));
+    Graph *addInsetLayer(Graph *sourceLayer = nullptr, const QRectF &roiDataRect = QRectF());
 
     //! \name Event Handlers
     //@{
@@ -246,7 +271,21 @@ private:
 
     QWidgetList buttonsList, graphsList;
     QHBoxLayout *layerButtonsBox;
+    QToolButton *d_add_layer_btn = nullptr;
     QWidget *canvas;
+
+    bool d_page_view_mode = false;
+    double d_page_zoom = 1.0;
+    PageUnit d_page_unit = UnitPx;
+    int d_page_dpi = 300;
+    double d_page_width_val = 520.0;
+    double d_page_height_val = 520.0;
+    QSize d_base_page_px = QSize(520, 520);
+    QColor d_page_bg_color = QColor(Qt::white);
+    QMap<Graph *, QPair<QPointer<Graph>, QRectF>> d_inset_specs;
+
+    void syncChildOverlayAndInsetGeometries();
+    void openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos);
 
     QPointer<SelectionMoveResizer> d_layers_selector;
 };
@@ -260,7 +299,7 @@ public:
     LayerButton(const QString &text = {}, QWidget *parent = 0);
     ~LayerButton() {};
 
-    static int btnSize() { return 20; };
+    static int btnSize() { return 22; };
 
 protected:
     void mousePressEvent(QMouseEvent *);

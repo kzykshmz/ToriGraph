@@ -186,10 +186,13 @@ void Legend::setOriginCoord(double x, double y)
 
 void Legend::setFont(const QFont &font)
 {
-    if (font == d_text->font())
+    QFont resolved = font;
+    if (resolved.family().trimmed().isEmpty())
+        resolved.setFamily("Arial");
+    if (resolved == d_text->font())
         return;
 
-    d_text->setFont(font);
+    d_text->setFont(resolved);
 }
 
 void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const

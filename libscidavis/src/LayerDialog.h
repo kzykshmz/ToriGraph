@@ -37,6 +37,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QCheckBox;
 class QComboBox;
+class QLineEdit;
 
 //! Arrange layers dialog
 class LayerDialog : public QDialog
@@ -52,14 +53,18 @@ protected slots:
     void update();
     void enableLayoutOptions(bool ok);
     void onAspectPresetChanged(int index);
+    void onTargetLayerChanged(int index);
+    void onLinkModeChanged();
 
 private:
+    void refreshLayerSelectors();
+
     MultiLayer *multi_layer;
 
     QPushButton *buttonOk;
     QPushButton *buttonCancel;
     QPushButton *buttonApply;
-    QGroupBox *GroupCanvasSize, *GroupGrid;
+    QGroupBox *GroupCanvasSize, *GroupGrid, *GroupLinkAxes;
     QSpinBox *boxX, *boxY, *boxColsGap, *boxRowsGap;
     QSpinBox *boxRightSpace, *boxLeftSpace, *boxTopSpace, *boxBottomSpace;
     QSpinBox *boxCanvasWidth, *boxCanvasHeight, *layersBox;
@@ -68,6 +73,14 @@ private:
     QComboBox *aspectPresetBox;
     QDoubleSpinBox *customAspectBox;
     QComboBox *alignHorBox, *alignVertBox;
+
+    QComboBox *targetLayerBox;
+    QComboBox *parentLayerBox;
+    QComboBox *xLinkModeBox;
+    QLineEdit *xFormulaEdit;
+    QComboBox *yLinkModeBox;
+    QLineEdit *yFormulaEdit;
+    QSpinBox *layerGeoXBox, *layerGeoYBox, *layerGeoWBox, *layerGeoHBox;
 };
 
 #endif

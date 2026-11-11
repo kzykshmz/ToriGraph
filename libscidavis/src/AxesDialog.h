@@ -48,6 +48,7 @@ class QLineEdit;
 class QPushButton;
 class QRadioButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QTabWidget;
 class QWidget;
 class QStringList;
@@ -85,6 +86,9 @@ protected:
     void initGridPage();
     //! generate UI for the general page
     void initFramePage();
+    //! generate UI for the reference lines page
+    void initReferenceLinesPage();
+    void refreshGraphState();
 
     QPushButton *buttonApply;
     QPushButton *buttonOk;
@@ -132,6 +136,16 @@ protected:
     QGroupBox *labelBox;
     QPushButton *buttonLabelFont;
     TextFormatButtons *formatButtons;
+    QCheckBox *boxAxisBackbone;
+    QPushButton *btnPresetBoxInward, *btnPresetBoxPlain, *btnPresetOpenL, *btnPresetZeroCrossed;
+    QWidget *refLinesPage;
+    QListWidget *refLinesList;
+    QComboBox *refOrientBox, *refStatBox, *refStyleBox;
+    QDoubleSpinBox *refValueBox, *refWidthBox;
+    ColorButton *refColorBtn, *refFillColorBtn;
+    QLineEdit *refLabelEdit;
+    QCheckBox *refFillBox;
+    QPushButton *btnRefAdd, *btnRefUpdate, *btnRefRemove, *btnRefClear;
 
 public slots:
     void setAxisType(int axis);
@@ -180,6 +194,18 @@ public slots:
     void showAxisFormula(int axis);
 
     void customAxisLabelFont();
+    void toggleAxisBackbone(bool checked);
+    void applyPresetBoxInward();
+    void applyPresetBoxPlain();
+    void applyPresetOpenL();
+    void applyPresetZeroCrossed();
+    void refreshReferenceLinesList();
+    void selectReferenceLine(int row);
+    void refStatModeChanged(int index);
+    void addRefLineFromUi();
+    void updateSelectedRefLineFromUi();
+    void removeSelectedRefLine();
+    void clearAllRefLines();
 
     //! Shows the dialog as a modal dialog
     /**
