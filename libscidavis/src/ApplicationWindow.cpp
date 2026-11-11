@@ -117,6 +117,10 @@
 #include "AdvancedSignalProc.h"
 #include "GraphStatsAndSurfaceFit.h"
 #include "RecalcEngine.h"
+#include "I18nJapanese.h"
+#include "GraphMiniToolbar.h"
+#include "PiecewiseAndRobustFit.h"
+#include "GraphDigitizer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -206,37 +210,18 @@ void file_compress(const char *file, const char *mode);
 
 namespace {
 
-class ToriGraphJapaneseTranslator : public QTranslator
+void registerApplicationWindowJapaneseStrings()
 {
-public:
-    explicit ToriGraphJapaneseTranslator(QObject *parent = nullptr)
-        : QTranslator(parent), m_enabled(true)
-    {
-        initDictionary();
-    }
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
 
-    void setEnabled(bool on) { m_enabled = on; }
-    bool isEnabled() const { return m_enabled; }
-    bool isEmpty() const override { return !m_enabled || m_dict.isEmpty(); }
-
-    QString translate(const char * /*context*/, const char *sourceText,
-                      const char * /*disambiguation*/ = nullptr, int /*n*/ = -1) const override
+    auto add = [](const char *src, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(src),
+                                                                  QString::fromUtf8(ja));
+    };
     {
-        if (!m_enabled || !sourceText)
-            return QString();
-        const QString key = QString::fromUtf8(sourceText);
-        auto it = m_dict.constFind(key);
-        if (it != m_dict.constEnd())
-            return it.value();
-        return QString();
-    }
-
-private:
-    void initDictionary()
-    {
-        auto add = [this](const char *src, const char *ja) {
-            m_dict.insert(QString::fromUtf8(src), QString::fromUtf8(ja));
-        };
         // Main menus
         add("&File", "ファイル(&F)");
         add("&Edit", "編集(&E)");
@@ -597,11 +582,270 @@ private:
             "%1 本の曲線からすべてのマスクをクリアしました。");
         add("Recalculated %1 linked analysis output(s).",
             "%1 件の解析リンクを再計算しました。");
-    }
 
-    bool m_enabled;
-    QHash<QString, QString> m_dict;
-};
+        // Language menu & Toolbar window titles & Cold-start core strings
+        add("&Language (言語)", "言語 / Language(&L)");
+        add("日本語 (&Japanese)", "日本語 (&Japanese)");
+        add("&English", "英語 (English)(&E)");
+        add("English", "英語 (English)");
+        add("UNTITLED", "無題");
+        add("File", "ファイル");
+        add("Edit", "編集");
+        add("Plot", "作図");
+        add("Matrix Plot", "行列プロット");
+        add("3D Surface", "3D曲面");
+        add("Undo/Redo History", "元に戻す/やり直し履歴");
+        add("Search windows / labels...", "ウィンドウ検索 (名前・ラベル)...");
+        add("&Console", "スクリプトコンソール(&C)");
+        add("New Folder", "新規フォルダ");
+        add("New Table", "新規テーブル");
+        add("New Table (Workbook)", "新規テーブル (ワークブック)");
+        add("New Graph", "新規グラフ");
+        add("New 2D Graph", "新規2Dグラフ");
+        add("New Aspect", "新規オブジェクト作成");
+
+        // Color Palette Presets
+        add("ISIJ / Origin Default", "ISIJ / Origin 標準");
+        add("Origin Classic", "Origin クラシック");
+        add("Viridis", "Viridis (知覚均等)");
+        add("Plasma", "Plasma (知覚均等)");
+        add("Inferno", "Inferno (知覚均等)");
+        add("CoolWarm", "CoolWarm (発散型)");
+        add("Nature (NPG)", "Nature (NPG誌パレット)");
+        add("Science (AAAS)", "Science (AAAS誌パレット)");
+        add("Okabe-Ito (Colorblind Safe)", "岡部・伊藤 (色覚バリアフリー)");
+        add("Monochrome / Grayscale", "モノクロ / グレースケール");
+
+        // Complete Classic Menu / Action / Toolbar / Context Coverage
+        add("&Open...", "開く(&O)...");
+        add("Open Image &File...", "画像ファイルを開く(&F)...");
+        add("Arran&ge Layers", "レイヤ配置(&G)");
+        add("Arran&ge Layers...", "レイヤ配置(&G)...");
+        add("&Current...", "現在のグラフ(&C)...");
+        add("&All...", "すべてのグラフ(&A)...");
+        add("&Export PDF...", "PDFエクスポート(&E)...");
+        add("&Print...", "印刷(&P)...");
+        add("Print All Plo&ts...", "全プロットを印刷(&T)...");
+        add("E&xport ASCII...", "ASCIIエクスポート(&X)...");
+        add("Add La&yer", "レイヤ追加(&Y)");
+        add("Automatic Layout", "自動レイアウト");
+        add("&Remove Layer", "レイヤ削除(&R)");
+        add("Add/Remove &Curve...", "曲線の追加/削除(&C)...");
+        add("Add &Error Bars...", "エラーバー追加(&E)...");
+        add("Add &Function...", "関数曲線の追加(&F)...");
+        add("New &Legend", "新規凡例(&L)");
+        add("Add Time Stamp", "タイムスタンプ追加");
+        add("Add &Image", "画像の追加(&I)");
+        add("Add &Text", "テキスト追加(&T)");
+        add("Draw &Arrow", "矢印を描画(&A)");
+        add("Draw &Line", "直線を描画(&L)");
+        add("Manage layers", "レイヤ管理");
+        add("Add curves / error bars", "曲線・エラーバーの追加");
+        add("Enrichments", "注釈・図形要素");
+        add("Lines and/or symbols", "折れ線・散布図");
+        add("Disable &Tools", "ツール選択解除(&T)");
+        add("Disable &tools", "ツール選択解除(&T)");
+        add("&Zoom In", "拡大(&Z)");
+        add("&Zoom Out", "縮小(&Z)");
+        add("Zoom &Out", "縮小(&O)");
+        add("S&creen Reader", "スクリーン座標読取(&C)");
+        add("&Data Reader", "データ読取カーソル(&D)");
+        add("&Select Data Range", "データ範囲選択(&S)");
+        add("&Move Data Points...", "データ点の移動(&M)...");
+        add("Remove &Bad Data Points...", "外れ値データ点の除外(&B)...");
+        add("&Double-Y Plot", "2軸グラフ (Double-Y)(&D)");
+        add("&Waterfall / Y-Offset Stack", "Yオフセット積み上げ (Waterfall)(&W)");
+        add("Pa&reto Chart", "パレート図 (Pareto)(&R)");
+        add("&Ternary Plot (A-B-C)", "三角図 (A-B-C)(&T)");
+        add("Color &Palette Editor...", "カラーパレットエディタ(&P)...");
+        add("&1:1 (Square - ISIJ)", "1:1 (正方形 - ISIJ標準)(&1)");
+        add("&4:3 (Standard)", "4:3 (標準)(&4)");
+        add("1&6:9 (Widescreen)", "16:9 (ワイド)(&6)");
+        add("&3:2 (Classic)", "3:2 (クラシック)(&3)");
+        add("&Custom Aspect Ratio...", "カスタム縦横比(&C)...");
+        add("&Keep Aspect Ratio on Resize", "リサイズ時に縦横比を維持(&K)");
+        add("Custom Graph Aspect Ratio", "カスタムグラフ縦横比");
+        add("Aspect ratio (Width / Height):", "縦横比 (幅 / 高さ):");
+        add("&Ribbon", "3Dリボン(&R)");
+        add("&Bars", "3D棒グラフ(&B)");
+        add("&Trajectory", "3D軌跡(&T)");
+        add("Contour + &Color Fill", "等高線 + カラー塗りつぶし(&C)");
+        add("Contour &Lines", "等高線のみ(&L)");
+        add("&Gray Scale Map", "グレースケールマップ(&G)");
+        add("3D &Wire Frame", "3Dワイヤフレーム(&W)");
+        add("3D &Hidden Line", "3D隠線処理(&H)");
+        add("3D &Polygons", "3Dポリゴン(&P)");
+        add("3D Wire &Surface", "3Dワイヤ曲面(&S)");
+        add("&Invert", "逆行列(&I)");
+        add("&Determinant", "行列式(&D)");
+        add("&Convert to Table", "テーブルへ変換(&C)");
+        add("Convert to &Matrix", "行列へ変換(&M)");
+        add("&Low Pass...", "ローパスフィルタ(&L)...");
+        add("&High Pass...", "ハイパスフィルタ(&H)...");
+        add("&Band Pass...", "バンドパスフィルタ(&B)...");
+        add("&Band Block...", "バンド阻止フィルタ(&B)...");
+        add("&Savitzky-Golay...", "Savitzky-Golay平滑化(&S)...");
+        add("&FFT Filter...", "FFTフィルタ平滑化(&F)...");
+        add("Moving Window &Average...", "移動平均平滑化(&A)...");
+        add("&First Order ...", "1次指数減衰(&F)...");
+        add("&Second Order ...", "2次指数減衰(&S)...");
+        add("&Third Order ...", "3次指数減衰(&T)...");
+        add("Fit Exponential Gro&wth ...", "指数成長フィット(&W)...");
+        add("Co&rrelate", "相互相関(&R)");
+        add("&Autocorrelate", "自己相関(&A)");
+        add("&Convolute", "畳み込み (Convolution)(&C)");
+        add("&Deconvolute", "逆畳み込み (Deconvolution)(&D)");
+        add("&Horizontal", "水平移動(&H)");
+        add("&Vertical", "垂直移動(&V)");
+        add("&Gaussian...", "ガウス関数 (Gaussian)(&G)...");
+        add("&Lorentzian...", "ローレンツ関数 (Lorentzian)(&L)...");
+        add("Gaussian (&Amplitude)...", "ガウス関数・振幅型(&A)...");
+        add("&Pseudo-Voigt...", "擬フォークト関数 (Pseudo-Voigt)(&P)...");
+        add("Pearson &VII...", "ピアソンVII関数 (Pearson VII)(&V)...");
+        add("Scripting &Language", "スクリプト言語の選択(&L)");
+        add("&Restart Scripting", "スクリプト環境を再起動(&R)");
+        add("E&xecute", "選択行を実行(&X)");
+        add("Execute &All", "すべて実行(&A)");
+        add("&Evaluate Expression", "式を評価(&E)");
+        add("&Save Note As...", "ノートに名前を付けて保存(&S)...");
+        add("&Cascade", "重ねて表示(&C)");
+        add("&Tile", "並べて表示(&T)");
+        add("&Next", "次のウィンドウ(&N)");
+        add("&Previous", "前のウィンドウ(&P)");
+        add("&Rename Window", "ウィンドウ名の変更(&R)");
+        add("Close &Window", "ウィンドウを閉じる(&W)");
+        add("Window &Geometry...", "ウィンドウの位置とサイズ(&G)...");
+        add("&Hide Window", "ウィンドウを隠す(&H)");
+        add("More Windows...", "その他のウィンドウ...");
+        add("More windows...", "その他のウィンドウ...");
+        add("&Activate Window", "ウィンドウをアクティブ化(&A)");
+        add("Mi&nimize Window", "ウィンドウを最小化(&N)");
+        add("Ma&ximize Window", "ウィンドウを最大化(&X)");
+        add("Re&size Window...", "ウィンドウサイズ変更(&S)...");
+        add("&Print Window", "ウィンドウを印刷(&P)");
+        add("&About ToriGraph", "ToriGraph について(&A)");
+        add("&Choose Help Folder...", "ヘルプフォルダを選択(&C)...");
+        add("Search for &Updates", "アップデートを確認(&U)");
+        add("&ToriGraph Homepage", "ToriGraph ホームページ(&T)");
+        add("ToriGraph &Forums", "ToriGraph フォーラム(&F)");
+        add("Visit ToriGraph &Forums", "ToriGraph フォーラムを開く(&F)");
+        add("Report a &Bug", "バグを報告(&B)");
+        add("Download &Manual", "マニュアルをダウンロード(&M)");
+        add("&Plot details...", "プロット詳細(&P)...");
+        add("&Worksheet", "ワークシートを表示(&W)");
+        add("&Reset to Full Range", "全データ範囲にリセット(&R)");
+        add("Edit &Range...", "データ範囲を編集(&R)...");
+        add("&Delete", "削除(&D)");
+        add("&Cut", "切り取り(&C)");
+        add("&Copy", "コピー(&C)");
+        add("&Hide", "非表示(&H)");
+        add("Hide &Other Curves", "他の曲線を非表示(&O)");
+        add("&Show All Curves", "すべての曲線を表示(&S)");
+        add("&Edit Function...", "関数式を編集(&E)...");
+        add("&Copy status bar text", "ステータスバーのテキストをコピー(&C)");
+        add("&View Pixel Line Profile", "ピクセルラインプロファイル(&V)");
+        add("&View Pixel Line profile", "ピクセルラインプロファイル(&V)");
+        add("&Intensity Table", "強度テーブル作成(&I)");
+        add("&Intensity Matrix", "強度行列作成(&I)");
+        add("&Properties", "プロパティ(&P)");
+        add("&Properties...", "プロパティ(&P)...");
+        add("&Layer Geometry", "レイヤ配置・サイズ(&L)");
+        add("&Surface...", "曲面設定(&S)...");
+        add("&Data Set...", "データセット選択(&D)...");
+        add("Box", "ボックス枠");
+        add("Frame", "フレーム枠");
+        add("&Frame", "フレーム枠(&F)");
+        add("No Axes", "軸なし");
+        add("Front grid", "前面グリッド");
+        add("Back grid", "背面グリッド");
+        add("Right grid", "右面グリッド");
+        add("Left grid", "左面グリッド");
+        add("Ceiling grid", "上面グリッド");
+        add("Floor grid", "底面グリッド");
+        add("Wireframe", "ワイヤフレーム");
+        add("Hidden Line", "隠線処理");
+        add("Polygon Only", "ポリゴンのみ");
+        add("Mesh & Filled Polygons", "メッシュ＋塗りつぶしポリゴン");
+        add("Dots", "ドット");
+        add("Bars", "3Dバー");
+        add("Cones", "コーン");
+        add("Crosshairs", "クロスヘア");
+        add("Floor Data Projection", "底面データ投影");
+        add("Floor Isolines", "底面等高線");
+        add("Empty Floor", "底面投影なし");
+        add("Animation", "回転アニメーション");
+        add("Enable perspective", "透視投影を有効化");
+        add("Reset rotation", "回転をリセット");
+        add("Fit frame to window", "枠をウィンドウに合わせる");
+
+        // Phase 4: OriginPro Page / Layer / Frame / Mini-Toolbar UX
+        add("Page &Setup...", "ページ設定(&S)...");
+        add("Page Setup...", "ページ設定...");
+        add("Fit &Page to Layers", "ページをレイヤに合わせる(&P)");
+        add("Fit Page to Layers", "ページをレイヤに合わせる");
+        add("Fit &Layers to Page", "レイヤをページに合わせる(&L)");
+        add("Fit Layers to Page", "レイヤをページに合わせる");
+        add("Toggle Page &View", "ページ印刷ビュー切替(&V)");
+        add("Toggle Page View", "ページ印刷ビュー切替");
+        add("Add Linked &Top-X / Right-Y Layer", "上X・右Y連動レイヤを追加(&T)");
+        add("Add Linked Top-X / Right-Y Layer", "上X・右Y連動レイヤを追加");
+        add("Add &Zoom Inset Layer", "拡大インセットレイヤを追加(&Z)");
+        add("Add Zoom Inset Layer", "拡大インセットレイヤを追加");
+        add("&Frame Presets", "軸フレームプリセット(&F)");
+        add("Frame Presets", "軸フレームプリセット");
+        add("&Box Frame (Inward Ticks)", "ボックス枠・内向き目盛 (ISIJ標準)(&B)");
+        add("Box Frame (Inward Ticks)", "ボックス枠・内向き目盛 (ISIJ標準)");
+        add("Box Frame (&Plain Top/Right)", "ボックス枠・上右目盛なし(&P)");
+        add("Box Frame (Plain Top/Right)", "ボックス枠・上右目盛なし");
+        add("&Open L-Frame", "オープンL字枠 (上右軸なし)(&O)");
+        add("Open L-Frame", "オープンL字枠 (上右軸なし)");
+        add("&Zero-Crossed Axes", "原点交差軸 (X=0, Y=0)(&Z)");
+        add("Zero-Crossed Axes", "原点交差軸 (X=0, Y=0)");
+        add("Toggle Graph &Mini-Toolbar", "グラフミニツールバー表示(&M)");
+        add("Toggle Graph Mini-Toolbar", "グラフミニツールバー表示");
+
+        // Phase 4: Additional Gadgets
+        add("&Differentiate Gadget...", "微分ガジェット (ROI)(&D)...");
+        add("Differentiate Gadget...", "微分ガジェット (ROI)...");
+        add("&Intersect Gadget...", "交点検出ガジェット (ROI)(&I)...");
+        add("Intersect Gadget...", "交点検出ガジェット (ROI)...");
+        add("&2D Integration Gadget (Matrix/Contour)...", "2次元積分ガジェット (行列・等高線)(&2)...");
+        add("2D Integration Gadget (Matrix/Contour)...", "2次元積分ガジェット (行列・等高線)...");
+
+        // Phase 4: Piecewise, Robust & Quantile, Compare Datasets, MLR
+        add("&Piecewise Linear Fit (Breakpoint)...", "折れ線・区分線形フィット (変化点検出)(&P)...");
+        add("Piecewise Linear Fit (Breakpoint)...", "折れ線・区分線形フィット (変化点検出)...");
+        add("&Robust && Quantile Linear Fit...", "ロバスト・分位点線形フィット(&R)...");
+        add("Robust & Quantile Linear Fit...", "ロバスト・分位点線形フィット...");
+        add("Compare &Datasets (F-Test / AIC)...", "データセット間モデル比較 (F検定 / AIC)(&D)...");
+        add("Compare Datasets (F-Test / AIC)...", "データセット間モデル比較 (F検定 / AIC)...");
+        add("&Multiple Linear Regression (MLR)...", "重回帰分析 (MLR)(&M)...");
+        add("Multiple Linear Regression (MLR)...", "重回帰分析 (MLR)...");
+
+        // Phase 4: Signal Processing Additions
+        add("Savitzky-Golay Smooth &Derivative...", "Savitzky-Golay平滑化微分(&D)...");
+        add("Savitzky-Golay Smooth Derivative...", "Savitzky-Golay平滑化微分...");
+        add("Peak &Envelope (Upper / Lower)...", "ピーク包絡線抽出 (上限・下限)(&E)...");
+        add("Peak Envelope (Upper / Lower)...", "ピーク包絡線抽出 (上限・下限)...");
+        add("&Decimate / Anti-Alias Resample...", "間引き・アンチエイリアス再サンプリング(&D)...");
+        add("Decimate / Anti-Alias Resample...", "間引き・アンチエイリアス再サンプリング...");
+
+        // Phase 4: Normality Test, Bland-Altman, Two-Way ANOVA & Graph Digitizer
+        add("&Normality Test (Shapiro-Wilk / KS / AD)...",
+            "正規性検定 (Shapiro-Wilk / KS / AD)(&N)...");
+        add("Normality Test (Shapiro-Wilk / KS / AD)...",
+            "正規性検定 (Shapiro-Wilk / KS / AD)...");
+        add("&Bland-Altman Method Comparison...", "Bland-Altman一致度比較プロット(&B)...");
+        add("Bland-Altman Method Comparison...", "Bland-Altman一致度比較プロット...");
+        add("T&wo-Way ANOVA && Interaction Plot...", "二元配置分散分析・交互作用プロット(&W)...");
+        add("Two-Way ANOVA & Interaction Plot...", "二元配置分散分析・交互作用プロット...");
+        add("&Digitizer (Extract Data from Image)...", "デジタイザ (画像からデータ抽出)(&D)...");
+        add("Digitizer (Extract Data from Image)...", "デジタイザ (画像からデータ抽出)...");
+        add("Edit Column &Description", "列の説明を編集(&D)");
+        add("S&et Column(s) As", "列の役割を設定(&E)");
+        add("Clear Matrix", "行列をクリア");
+    }
+}
 
 // Acklam's rational approximation for the standard normal inverse CDF \Phi^{-1}(p)
 double inverseStandardNormalCDF(double p)
@@ -682,6 +926,28 @@ ApplicationWindow::ApplicationWindow()
 {
     setAttribute(Qt::WA_DeleteOnClose);
     QCoreApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
+
+    // Cold-start i18n fix: register extra dictionary entries and install Japanese translator
+    // BEFORE any UI strings, dock titles, Project Explorer headers, actions, toolbars, or menus are built.
+    registerApplicationWindowJapaneseStrings();
+    {
+        auto &earlySettings = getSettings();
+        earlySettings.beginGroup("/General");
+        appLanguage = earlySettings
+                              .value("/Language", QLocale::system().name().section('_', 0, 0))
+                              .toString();
+        earlySettings.endGroup();
+    }
+    d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
+    if (appLanguage.startsWith("ja")) {
+        qApp->installTranslator(d_builtin_ja_translator);
+    }
+    if (current_folder)
+        current_folder->setName(tr("UNTITLED"));
+    if (actionNextWindow)
+        actionNextWindow->setText(tr("&Next", "next window"));
+    if (actionPrevWindow)
+        actionPrevWindow->setText(tr("&Previous", "previous window"));
 
     setWindowTitle(tr("ToriGraph - untitled"));
 
@@ -908,18 +1174,16 @@ ApplicationWindow::ApplicationWindow()
 
 void ApplicationWindow::initFonts()
 {
-    QString family = appFont.family();
-    int pointSize = appFont.pointSize();
     tableTextFont = appFont;
     tableHeaderFont = appFont;
-    plotAxesFont = QFont("Arial", 18, QFont::Normal, false);
-    plotNumbersFont = QFont("Arial", 16, QFont::Normal, false);
-    plotLegendFont = QFont("Arial", 14, QFont::Normal, false);
-    plotTitleFont = QFont("Arial", 18, QFont::Normal, false);
+    plotAxesFont = QFont("Arial", 14, QFont::Bold);
+    plotNumbersFont = QFont("Arial", 12);
+    plotLegendFont = QFont("Arial", 10);
+    plotTitleFont = QFont("Arial", 14, QFont::Bold);
 
-    plot3DAxesFont = QFont(family, pointSize, QFont::Bold, false);
-    plot3DNumbersFont = QFont(family, pointSize);
-    plot3DTitleFont = QFont(family, pointSize + 2, QFont::Bold, false);
+    plot3DAxesFont = QFont("Arial", 12, QFont::Bold);
+    plot3DNumbersFont = QFont("Arial", 10);
+    plot3DTitleFont = QFont("Arial", 14, QFont::Bold);
 }
 
 void ApplicationWindow::applyUserSettings()
@@ -1026,8 +1290,15 @@ void ApplicationWindow::initToolBars()
 
     menu_layers->addAction(actionAutomaticLayout);
     menu_layers->addAction(actionAddLayer);
+    menu_layers->addAction(actionAddLinkedLayer);
+    menu_layers->addAction(actionAddInsetLayer);
     menu_layers->addAction(actionDeleteLayer);
     menu_layers->addAction(actionShowLayerDialog);
+    menu_layers->addSeparator();
+    menu_layers->addAction(actionPageSetup);
+    menu_layers->addAction(actionFitPageToLayers);
+    menu_layers->addAction(actionFitLayersToPage);
+    menu_layers->addAction(actionTogglePageView);
 
     QMenu *menu_curves = new QMenu(this);
     QToolButton *btn_curves = new QToolButton(this);
@@ -1270,11 +1541,40 @@ void ApplicationWindow::insertTranslatedStrings()
     if (projectname == "untitled")
         setWindowTitle(tr("ToriGraph - untitled"));
 
-    lv.headerItem()->setText(0, tr("Name"));
-    lv.headerItem()->setText(1, tr("Type"));
-    lv.headerItem()->setText(2, tr("View"));
-    lv.headerItem()->setText(3, tr("Created"));
-    lv.headerItem()->setText(4, tr("Label"));
+    if (folders.headerItem())
+        folders.headerItem()->setText(0, tr("Folder"));
+
+    if (lv.headerItem()) {
+        lv.headerItem()->setText(0, tr("Name"));
+        lv.headerItem()->setText(1, tr("Type"));
+        lv.headerItem()->setText(2, tr("View"));
+        lv.headerItem()->setText(3, tr("Created"));
+        lv.headerItem()->setText(4, tr("Label"));
+    }
+
+    for (int i = 0; i < lv.topLevelItemCount(); ++i) {
+        QTreeWidgetItem *it = lv.topLevelItem(i);
+        if (!it)
+            continue;
+        if (it->type() == FolderListItem::FolderType) {
+            it->setText(1, tr("Folder"));
+        } else if (it->type() == WindowListItem::WindowType) {
+            MyWidget *w = static_cast<WindowListItem *>(it)->window();
+            if (!w)
+                continue;
+            if (w->inherits("Matrix"))
+                it->setText(1, tr("Matrix"));
+            else if (w->inherits("Table"))
+                it->setText(1, tr("Table"));
+            else if (w->inherits("Note"))
+                it->setText(1, tr("Note"));
+            else if (w->inherits("MultiLayer"))
+                it->setText(1, tr("Graph"));
+            else if (w->inherits("Graph3D"))
+                it->setText(1, tr("3D Graph"));
+            it->setText(2, w->aspect());
+        }
+    }
 
     explorerWindow.setWindowTitle(tr("Project Explorer"));
     if (d_explorer_search) {
@@ -1292,7 +1592,8 @@ void ApplicationWindow::insertTranslatedStrings()
     }
     if (d_explorer_subfolder_check) {
         d_explorer_subfolder_check->setText(tr("Subfolders"));
-        d_explorer_subfolder_check->setToolTip(tr("Include windows from subfolders when searching/filtering"));
+        d_explorer_subfolder_check->setToolTip(
+                tr("Include windows from subfolders when searching/filtering"));
     }
     if (d_btn_explorer_new_folder)
         d_btn_explorer_new_folder->setToolTip(tr("New Folder"));
@@ -1300,13 +1601,22 @@ void ApplicationWindow::insertTranslatedStrings()
         d_btn_explorer_new_table->setToolTip(tr("New Table (Workbook)"));
     if (d_btn_explorer_new_graph)
         d_btn_explorer_new_graph->setToolTip(tr("New 2D Graph"));
-    if (d_btn_tabbed_view)
+    if (d_btn_tabbed_view) {
+        d_btn_tabbed_view->setText(tr("Tabbed View"));
         d_btn_tabbed_view->setToolTip(tr("Toggle Origin-style Tabbed Workspace vs SubWindows"));
+    }
 
     logWindow.setWindowTitle(tr("Results Log"));
 #ifdef SCRIPTING_CONSOLE
     consoleWindow.setWindowTitle(tr("Scripting Console"));
 #endif
+    for (QUndoView *uv : findChildren<QUndoView *>()) {
+        if (uv->parentWidget() && uv->parentWidget()->inherits("QDialog"))
+            uv->parentWidget()->setWindowTitle(tr("Undo/Redo History"));
+        else
+            uv->setWindowTitle(tr("Undo/Redo History"));
+    }
+
     table_tools->setWindowTitle(tr("Table"));
     plot_tools->setWindowTitle(tr("Plot"));
     graph_tools->setWindowTitle(tr("Graph"));
@@ -1314,6 +1624,10 @@ void ApplicationWindow::insertTranslatedStrings()
     edit_tools->setWindowTitle(tr("Edit"));
     matrix_plot_tools->setWindowTitle(tr("Matrix Plot"));
     graph_3D_tools->setWindowTitle(tr("3D Surface"));
+    for (QToolBar *tb : findChildren<QToolBar *>()) {
+        if (tb && tb->parentWidget() == this && tb->toggleViewAction())
+            tb->toggleViewAction()->setText(tb->windowTitle());
+    }
 
     file->setTitle(tr("&File"));
     edit->setTitle(tr("&Edit"));
@@ -1331,10 +1645,20 @@ void ApplicationWindow::insertTranslatedStrings()
     format->setTitle(tr("For&mat"));
     windowsMenu->setTitle(tr("&Windows"));
     help->setTitle(tr("&Help"));
-    if (colorPaletteMenu)
+    if (colorPaletteMenu) {
         colorPaletteMenu->setTitle(tr("Apply Color &Palette"));
+        for (QAction *palAct : colorPaletteMenu->actions()) {
+            if (!palAct || palAct->isSeparator())
+                continue;
+            const QString key = palAct->data().toString();
+            if (!key.isEmpty())
+                palAct->setText(tr(key.toUtf8().constData()));
+        }
+    }
     if (aspectRatioMenu)
         aspectRatioMenu->setTitle(tr("Graph &Aspect Ratio"));
+    if (framePresetsMenu)
+        framePresetsMenu->setTitle(tr("&Frame Presets"));
     if (languageMenu)
         languageMenu->setTitle(tr("&Language (言語)"));
 
@@ -1370,8 +1694,45 @@ void ApplicationWindow::insertTranslatedStrings()
         recalcMenu->setTitle(tr("&Recalculation && Themes"));
 
     translateActionsStrings();
-    for (auto w : windowsList())
-        customMenu(w);
+
+    QEvent langChangeEvent(QEvent::LanguageChange);
+    for (MyWidget *w : windowsList()) {
+        if (!w)
+            continue;
+        qApp->sendEvent(w, &langChangeEvent);
+        if (w->inherits("Table")) {
+            Table *tbl = static_cast<Table *>(w);
+            if (tbl->d_future_table) {
+                qApp->sendEvent(tbl->d_future_table, &langChangeEvent);
+                QMenu dummy(this);
+                tbl->d_future_table->fillProjectMenu(&dummy);
+                for (QAction *a : dummy.actions()) {
+                    if (a && a->menu() && !a->menu()->parent())
+                        delete a->menu();
+                }
+            }
+        } else if (w->inherits("Matrix")) {
+            Matrix *mat = static_cast<Matrix *>(w);
+            if (mat->d_future_matrix) {
+                qApp->sendEvent(mat->d_future_matrix, &langChangeEvent);
+                QMenu dummy(this);
+                mat->d_future_matrix->fillProjectMenu(&dummy);
+                for (QAction *a : dummy.actions()) {
+                    if (a && a->menu() && !a->menu()->parent())
+                        delete a->menu();
+                }
+            }
+        }
+        for (QWidget *child : w->findChildren<QWidget *>()) {
+            if (child)
+                qApp->sendEvent(child, &langChangeEvent);
+        }
+    }
+
+    MyWidget *activeWin = qobject_cast<MyWidget *>(d_workspace.activeSubWindow());
+    customMenu(activeWin);
+    if (activeWin)
+        customToolBars(activeWin);
 }
 
 void ApplicationWindow::initMainMenu()
@@ -1399,6 +1760,7 @@ void ApplicationWindow::initMainMenu()
 
     file->addAction(actionLoadImage);
     file->addAction(actionImportImage);
+    file->addAction(actionGraphDigitizer);
 
     file->addSeparator();
 
@@ -1459,6 +1821,8 @@ void ApplicationWindow::initMainMenu()
     view->addMenu(toolbarsMenu);
     view->addAction(locktoolbar);
     view->addAction(actionTabbedWorkspaceView);
+    view->addAction(actionToggleMiniToolbar);
+    connect(view, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
     view->addSeparator();
     view->addAction(actionShowPlotWizard);
     view->addAction(actionShowExplorer);
@@ -1492,7 +1856,8 @@ void ApplicationWindow::initMainMenu()
         "Monochrome / Grayscale"
     };
     for (const QString &palName : presetPalettes) {
-        QAction *palAct = colorPaletteMenu->addAction(palName, this, SLOT(applyColorPaletteByAction()));
+        QAction *palAct = colorPaletteMenu->addAction(
+                tr(palName.toUtf8().constData()), this, SLOT(applyColorPaletteByAction()));
         palAct->setData(palName);
     }
     colorPaletteMenu->addSeparator();
@@ -1509,9 +1874,18 @@ void ApplicationWindow::initMainMenu()
     aspectRatioMenu->addSeparator();
     aspectRatioMenu->addAction(actionKeepAspectRatio);
 
+    framePresetsMenu = new QMenu(this);
+    framePresetsMenu->setFont(appFont);
+    framePresetsMenu->setTitle(tr("&Frame Presets"));
+    framePresetsMenu->addAction(actionFrameBoxInward);
+    framePresetsMenu->addAction(actionFrameBoxPlain);
+    framePresetsMenu->addAction(actionFrameOpenL);
+    framePresetsMenu->addAction(actionFrameZeroCrossed);
+
     graph = new QMenu(this);
     graph->setFont(appFont);
     graph->setTitle(tr("&Graph"));
+    connect(graph, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
     graph->addAction(actionShowCurvesDialog);
     graph->addAction(actionAddErrorBars);
     graph->addAction(actionAddFunctionCurve);
@@ -1528,12 +1902,23 @@ void ApplicationWindow::initMainMenu()
     graph->addSeparator(); // layers section
     graph->addAction(actionAutomaticLayout);
     graph->addAction(actionAddLayer);
+    graph->addAction(actionAddLinkedLayer);
+    graph->addAction(actionAddInsetLayer);
     graph->addAction(actionDeleteLayer);
     graph->addAction(actionShowLayerDialog);
+    graph->addSeparator(); // page & frame presets section
+    graph->addAction(actionPageSetup);
+    graph->addAction(actionFitPageToLayers);
+    graph->addAction(actionFitLayersToPage);
+    graph->addAction(actionTogglePageView);
+    graph->addMenu(framePresetsMenu);
+    graph->addAction(actionToggleMiniToolbar);
     graph->addSeparator();
     graph->addAction(actionColorPaletteEditor);
     graph->addMenu(colorPaletteMenu);
     graph->addMenu(aspectRatioMenu);
+    graph->addSeparator();
+    graph->addAction(actionGraphDigitizer);
 
     plot3DMenu = new QMenu(this);
     plot3DMenu->setFont(appFont);
@@ -1592,8 +1977,11 @@ void ApplicationWindow::initMainMenu()
     gadgetsMenu->addAction(actionGadgetQuickPeaks);
     gadgetsMenu->addAction(actionGadgetQuickSigmoidal);
     gadgetsMenu->addAction(actionGadgetIntegrate);
+    gadgetsMenu->addAction(actionGadgetDifferentiate);
     gadgetsMenu->addAction(actionGadgetInterpolate);
+    gadgetsMenu->addAction(actionGadgetIntersect);
     gadgetsMenu->addAction(actionGadgetFFT);
+    gadgetsMenu->addAction(actionGadgetIntegrate2D);
     gadgetsMenu->addSeparator();
     gadgetsMenu->addAction(actionGadgetRiseTime);
     gadgetsMenu->addAction(actionGadgetCluster);
@@ -1626,6 +2014,7 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addAction(actionPolygonLoopArea);
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionDifferentiate);
+    curveMathMenu->addAction(actionSavGolSmoothDerivative);
     curveMathMenu->addAction(actionShowIntDialog);
     curveMathMenu->addAction(actionInterpolate);
 
@@ -1640,8 +2029,11 @@ void ApplicationWindow::initMainMenu()
 
     graphStatsMenu = calcul->addMenu(tr("S&tatistics"));
     graphStatsMenu->setFont(appFont);
+    graphStatsMenu->addAction(actionNormalityTest);
     graphStatsMenu->addAction(actionConfidenceEllipse);
     graphStatsMenu->addAction(actionGroupComparison);
+    graphStatsMenu->addAction(actionTwoWayANOVA);
+    graphStatsMenu->addAction(actionBlandAltman);
     graphStatsMenu->addAction(actionROCCurve);
     graphStatsMenu->addAction(actionKaplanMeier);
     graphStatsMenu->addAction(actionPCABiplot);
@@ -1677,12 +2069,15 @@ void ApplicationWindow::initMainMenu()
     filter->addAction(actionBandBlockFilter);
 
     advSignalMenu->addMenu(smooth);
+    advSignalMenu->addAction(actionSavGolSmoothDerivative);
     advSignalMenu->addMenu(filter);
     advSignalMenu->addAction(actionIirDigitalFilter);
+    advSignalMenu->addAction(actionDecimateResample);
     advSignalMenu->addSeparator();
     advSignalMenu->addAction(actionFFT);
     advSignalMenu->addAction(actionStftSpectrogram);
     advSignalMenu->addAction(actionHilbertEnvelope);
+    advSignalMenu->addAction(actionPeakEnvelope);
     advSignalMenu->addAction(actionWaveletTransform);
     advSignalMenu->addAction(actionWelchPsdCoherence);
     advSignalMenu->addSeparator();
@@ -1700,6 +2095,8 @@ void ApplicationWindow::initMainMenu()
     d_quick_fit_menu->addAction(actionFitLinear);
     d_quick_fit_menu->addAction(actionFitApparentLinear);
     d_quick_fit_menu->addAction(actionFitYorkLinear);
+    d_quick_fit_menu->addAction(actionPiecewiseLinearFit);
+    d_quick_fit_menu->addAction(actionRobustLinearFit);
     d_quick_fit_menu->addAction(actionShowFitPolynomDialog);
 
     d_quick_fit_menu->addSeparator();
@@ -1736,6 +2133,8 @@ void ApplicationWindow::initMainMenu()
     d_quick_fit_menu->addAction(actionGlobalCurveFit);
     d_quick_fit_menu->addAction(actionImplicitODRFit);
     d_quick_fit_menu->addAction(actionModelComparison);
+    d_quick_fit_menu->addAction(actionCompareDatasetsFit);
+    d_quick_fit_menu->addAction(actionMultipleLinearRegression);
     d_quick_fit_menu->addAction(actionSurfaceFit3D);
     d_quick_fit_menu->addSeparator();
     d_quick_fit_menu->addAction(actionPeakAnalyzerDialog);
@@ -1748,6 +2147,8 @@ void ApplicationWindow::initMainMenu()
     advFitMenu->addAction(actionFitLinear);
     advFitMenu->addAction(actionFitApparentLinear);
     advFitMenu->addAction(actionFitYorkLinear);
+    advFitMenu->addAction(actionPiecewiseLinearFit);
+    advFitMenu->addAction(actionRobustLinearFit);
     advFitMenu->addAction(actionShowFitPolynomDialog);
     advFitMenu->addSeparator();
     advFitMenu->addMenu(decay);
@@ -1759,6 +2160,8 @@ void ApplicationWindow::initMainMenu()
     advFitMenu->addAction(actionGlobalCurveFit);
     advFitMenu->addAction(actionImplicitODRFit);
     advFitMenu->addAction(actionModelComparison);
+    advFitMenu->addAction(actionCompareDatasetsFit);
+    advFitMenu->addAction(actionMultipleLinearRegression);
     advFitMenu->addAction(actionSurfaceFit3D);
     advFitMenu->addSeparator();
     advFitMenu->addAction(actionShowFitDialog);
@@ -1786,6 +2189,7 @@ void ApplicationWindow::initMainMenu()
     format = new QMenu(this);
     format->setFont(appFont);
     format->setTitle(tr("For&mat"));
+    connect(format, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
 
     scriptingMenu = new QMenu(this);
     scriptingMenu->setFont(appFont);
@@ -1860,6 +2264,10 @@ void ApplicationWindow::initPlotDataMenu()
     plotDataMenu->addAction(actionMaskRegionROI);
     plotDataMenu->addAction(actionUnmaskRegionROI);
     plotDataMenu->addAction(actionClearAllMasks);
+    plotDataMenu->addSeparator();
+    plotDataMenu->addAction(actionGraphDigitizer);
+    plotDataMenu->addAction(actionToggleMiniToolbar);
+    connect(plotDataMenu, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
 }
 
 void ApplicationWindow::initPlotMenu()
@@ -1948,13 +2356,19 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addSeparator();
     dataMenu->addAction(actionPeakAnalyzerDialog);
     dataMenu->addAction(actionShowFitDialog);
+    dataMenu->addAction(actionMultipleLinearRegression);
     dataMenu->addAction(actionSurfaceFit3D);
     dataMenu->addAction(action2DPeakAnalysis);
     dataMenu->addSeparator();
+    dataMenu->addAction(actionNormalityTest);
     dataMenu->addAction(actionGroupComparison);
+    dataMenu->addAction(actionTwoWayANOVA);
+    dataMenu->addAction(actionBlandAltman);
     dataMenu->addAction(actionROCCurve);
     dataMenu->addAction(actionKaplanMeier);
     dataMenu->addAction(actionPCABiplot);
+    dataMenu->addSeparator();
+    dataMenu->addAction(actionGraphDigitizer);
     if (recalcMenu) {
         dataMenu->addSeparator();
         dataMenu->addMenu(recalcMenu);
@@ -2017,6 +2431,15 @@ void ApplicationWindow::customMenu(MyWidget *w)
                     actionKeepAspectRatio->setChecked(static_cast<MultiLayer *>(w)->keepAspectRatio());
                 format->addMenu(aspectRatioMenu);
             }
+            if (framePresetsMenu)
+                format->addMenu(framePresetsMenu);
+            format->addSeparator();
+            format->addAction(actionPageSetup);
+            format->addAction(actionFitPageToLayers);
+            format->addAction(actionFitLayersToPage);
+            format->addAction(actionTogglePageView);
+            format->addAction(actionToggleMiniToolbar);
+            syncGraphPageAndToolbarMenuState();
         } else if (w->inherits("Graph3D")) {
             disableActions();
 
@@ -5835,7 +6258,22 @@ void ApplicationWindow::readSettings()
 
     /* --------------- group 2D Plots ----------------------------- */
     settings.beginGroup("/2DPlots");
-    const bool migrateToriGraphStyle = settings.value("/ToriGraphStyleVersion", 0).toInt() < 2;
+    const int toriStyleVersion = settings.value("/ToriGraphStyleVersion", 0).toInt();
+    const bool migrateToriGraphStyle = toriStyleVersion < 2;
+    const bool migrateArialGraphFonts = toriStyleVersion < 3;
+    auto sanitizePlotFontToArial = [migrateArialGraphFonts](QFont &f) {
+        const QString fam = f.family().trimmed();
+        const bool isWinUiFont = fam.isEmpty()
+                || fam.compare("Yu Gothic UI", Qt::CaseInsensitive) == 0
+                || fam.compare("Yu Gothic", Qt::CaseInsensitive) == 0
+                || fam.compare("MS UI Gothic", Qt::CaseInsensitive) == 0
+                || fam.compare("MS PGothic", Qt::CaseInsensitive) == 0
+                || fam.compare("MS Shell Dlg 2", Qt::CaseInsensitive) == 0
+                || fam.compare("Meiryo UI", Qt::CaseInsensitive) == 0
+                || fam.compare("Meiryo", Qt::CaseInsensitive) == 0;
+        if (migrateArialGraphFonts || isWinUiFont)
+            f.setFamily("Arial");
+    };
     settings.beginGroup("/General");
     titleOn = migrateToriGraphStyle ? false : settings.value("/Title", false).toBool();
     allAxesOn = migrateToriGraphStyle ? true : settings.value("/AllAxes", true).toBool();
@@ -5862,6 +6300,10 @@ void ApplicationWindow::readSettings()
         plotTitleFont = QFont(graphFonts[12], graphFonts[13].toInt(), graphFonts[14].toInt(),
                               graphFonts[15].toInt());
     }
+    sanitizePlotFontToArial(plotAxesFont);
+    sanitizePlotFontToArial(plotNumbersFont);
+    sanitizePlotFontToArial(plotLegendFont);
+    sanitizePlotFontToArial(plotTitleFont);
     settings.endGroup(); // General
 
     settings.beginGroup("/Curves");
@@ -5923,6 +6365,9 @@ void ApplicationWindow::readSettings()
         plot3DAxesFont = QFont(plot3DFonts[8], plot3DFonts[9].toInt(), plot3DFonts[10].toInt(),
                                plot3DFonts[11].toInt());
     }
+    sanitizePlotFontToArial(plot3DTitleFont);
+    sanitizePlotFontToArial(plot3DNumbersFont);
+    sanitizePlotFontToArial(plot3DAxesFont);
 
     settings.beginGroup("/Colors");
     plot3DColors << settings.value("/MaxData", "blue").toString();
@@ -6145,7 +6590,7 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/HeadFill", defaultArrowHeadFill);
     settings.setValue("/LineStyle", Graph::penStyleName(defaultArrowLineStyle));
     settings.endGroup(); // Arrows
-    settings.setValue("/ToriGraphStyleVersion", 2);
+    settings.setValue("/ToriGraphStyleVersion", 3);
     settings.endGroup();
     /* ----------------- end group 2D Plots -------- */
 
@@ -12899,6 +13344,96 @@ void ApplicationWindow::createActions()
     actionManageDialogThemes = new QAction(tr("Manage Dialog &Themes..."), this);
     connect(actionManageDialogThemes, SIGNAL(triggered()), this, SLOT(showManageDialogThemes()));
 
+    // Phase 4: OriginPro Page / Layer / Frame / Mini-Toolbar UX
+    actionPageSetup = new QAction(tr("Page &Setup..."), this);
+    connect(actionPageSetup, SIGNAL(triggered()), this, SLOT(showPageSetupDialog()));
+
+    actionFitPageToLayers = new QAction(tr("Fit &Page to Layers"), this);
+    connect(actionFitPageToLayers, SIGNAL(triggered()), this, SLOT(fitPageToLayers()));
+
+    actionFitLayersToPage = new QAction(tr("Fit &Layers to Page"), this);
+    connect(actionFitLayersToPage, SIGNAL(triggered()), this, SLOT(fitLayersToPage()));
+
+    actionTogglePageView = new QAction(tr("Toggle Page &View"), this);
+    actionTogglePageView->setCheckable(true);
+    actionTogglePageView->setChecked(false);
+    connect(actionTogglePageView, SIGNAL(triggered()), this, SLOT(togglePageViewMode()));
+
+    actionAddLinkedLayer = new QAction(tr("Add Linked &Top-X / Right-Y Layer"), this);
+    connect(actionAddLinkedLayer, SIGNAL(triggered()), this, SLOT(addLinkedTopRightLayer()));
+
+    actionAddInsetLayer = new QAction(tr("Add &Zoom Inset Layer"), this);
+    connect(actionAddInsetLayer, SIGNAL(triggered()), this, SLOT(addZoomInsetLayer()));
+
+    actionFrameBoxInward = new QAction(tr("&Box Frame (Inward Ticks)"), this);
+    connect(actionFrameBoxInward, SIGNAL(triggered()), this, SLOT(applyFrameBoxInward()));
+
+    actionFrameBoxPlain = new QAction(tr("Box Frame (&Plain Top/Right)"), this);
+    connect(actionFrameBoxPlain, SIGNAL(triggered()), this, SLOT(applyFrameBoxPlain()));
+
+    actionFrameOpenL = new QAction(tr("&Open L-Frame"), this);
+    connect(actionFrameOpenL, SIGNAL(triggered()), this, SLOT(applyFrameOpenL()));
+
+    actionFrameZeroCrossed = new QAction(tr("&Zero-Crossed Axes"), this);
+    connect(actionFrameZeroCrossed, SIGNAL(triggered()), this, SLOT(applyFrameZeroCrossed()));
+
+    actionToggleMiniToolbar = new QAction(tr("Toggle Graph &Mini-Toolbar"), this);
+    actionToggleMiniToolbar->setCheckable(true);
+    actionToggleMiniToolbar->setChecked(GraphMiniToolbar::isMiniToolbarEnabled());
+    connect(actionToggleMiniToolbar, SIGNAL(toggled(bool)), this,
+            SLOT(toggleGraphMiniToolbar(bool)));
+
+    // Phase 4: Additional Gadgets
+    actionGadgetDifferentiate = new QAction(tr("&Differentiate Gadget..."), this);
+    connect(actionGadgetDifferentiate, SIGNAL(triggered()), this,
+            SLOT(attachDifferentiateGadget()));
+
+    actionGadgetIntersect = new QAction(tr("&Intersect Gadget..."), this);
+    connect(actionGadgetIntersect, SIGNAL(triggered()), this, SLOT(attachIntersectGadget()));
+
+    actionGadgetIntegrate2D = new QAction(tr("&2D Integration Gadget (Matrix/Contour)..."), this);
+    connect(actionGadgetIntegrate2D, SIGNAL(triggered()), this, SLOT(attachIntegrate2DGadget()));
+
+    // Phase 4: Piecewise, Robust & Quantile, Compare Datasets, MLR
+    actionPiecewiseLinearFit = new QAction(tr("&Piecewise Linear Fit (Breakpoint)..."), this);
+    connect(actionPiecewiseLinearFit, SIGNAL(triggered()), this,
+            SLOT(showPiecewiseLinearFitDialog()));
+
+    actionRobustLinearFit = new QAction(tr("&Robust && Quantile Linear Fit..."), this);
+    connect(actionRobustLinearFit, SIGNAL(triggered()), this, SLOT(showRobustLinearFitDialog()));
+
+    actionCompareDatasetsFit = new QAction(tr("Compare &Datasets (F-Test / AIC)..."), this);
+    connect(actionCompareDatasetsFit, SIGNAL(triggered()), this,
+            SLOT(showCompareDatasetsFitDialog()));
+
+    actionMultipleLinearRegression = new QAction(tr("&Multiple Linear Regression (MLR)..."), this);
+    connect(actionMultipleLinearRegression, SIGNAL(triggered()), this,
+            SLOT(showMultipleLinearRegressionDialog()));
+
+    // Phase 4: Signal Processing Additions
+    actionSavGolSmoothDerivative = new QAction(tr("Savitzky-Golay Smooth &Derivative..."), this);
+    connect(actionSavGolSmoothDerivative, SIGNAL(triggered()), this,
+            SLOT(showSavGolSmoothDerivativeDialog()));
+
+    actionPeakEnvelope = new QAction(tr("Peak &Envelope (Upper / Lower)..."), this);
+    connect(actionPeakEnvelope, SIGNAL(triggered()), this, SLOT(showPeakEnvelopeAnalysisDialog()));
+
+    actionDecimateResample = new QAction(tr("&Decimate / Anti-Alias Resample..."), this);
+    connect(actionDecimateResample, SIGNAL(triggered()), this, SLOT(showDecimateResampleDialog()));
+
+    // Phase 4: Normality Test, Bland-Altman, Two-Way ANOVA & Graph Digitizer
+    actionNormalityTest = new QAction(tr("&Normality Test (Shapiro-Wilk / KS / AD)..."), this);
+    connect(actionNormalityTest, SIGNAL(triggered()), this, SLOT(showNormalityTestDialog()));
+
+    actionBlandAltman = new QAction(tr("&Bland-Altman Method Comparison..."), this);
+    connect(actionBlandAltman, SIGNAL(triggered()), this, SLOT(showBlandAltmanPlotDialog()));
+
+    actionTwoWayANOVA = new QAction(tr("T&wo-Way ANOVA && Interaction Plot..."), this);
+    connect(actionTwoWayANOVA, SIGNAL(triggered()), this, SLOT(showTwoWayANOVAPlotDialog()));
+
+    actionGraphDigitizer = new QAction(tr("&Digitizer (Extract Data from Image)..."), this);
+    connect(actionGraphDigitizer, SIGNAL(triggered()), this, SLOT(showGraphDigitizerDialog()));
+
     actionCopyStatusBarText = new QAction(tr("&Copy status bar text"), this);
     connect(actionCopyStatusBarText, SIGNAL(triggered()), this, SLOT(copyStatusBarText()));
 }
@@ -13493,6 +14028,67 @@ void ApplicationWindow::translateActionsStrings()
         actionRepeatNormalizeAll->setText(tr("Repeat &Normalization for All Curves"));
     if (actionManageDialogThemes)
         actionManageDialogThemes->setText(tr("Manage Dialog &Themes..."));
+    if (locktoolbar)
+        locktoolbar->setText(tr("&Lock Toolbars"));
+    if (actionShowHistory)
+        actionShowHistory->setText(tr("Undo/Redo &History"));
+    if (actionSaveNote)
+        actionSaveNote->setText(tr("&Save Note As..."));
+
+    if (actionPageSetup)
+        actionPageSetup->setText(tr("Page &Setup..."));
+    if (actionFitPageToLayers)
+        actionFitPageToLayers->setText(tr("Fit &Page to Layers"));
+    if (actionFitLayersToPage)
+        actionFitLayersToPage->setText(tr("Fit &Layers to Page"));
+    if (actionTogglePageView)
+        actionTogglePageView->setText(tr("Toggle Page &View"));
+    if (actionAddLinkedLayer)
+        actionAddLinkedLayer->setText(tr("Add Linked &Top-X / Right-Y Layer"));
+    if (actionAddInsetLayer)
+        actionAddInsetLayer->setText(tr("Add &Zoom Inset Layer"));
+    if (actionFrameBoxInward)
+        actionFrameBoxInward->setText(tr("&Box Frame (Inward Ticks)"));
+    if (actionFrameBoxPlain)
+        actionFrameBoxPlain->setText(tr("Box Frame (&Plain Top/Right)"));
+    if (actionFrameOpenL)
+        actionFrameOpenL->setText(tr("&Open L-Frame"));
+    if (actionFrameZeroCrossed)
+        actionFrameZeroCrossed->setText(tr("&Zero-Crossed Axes"));
+    if (actionToggleMiniToolbar)
+        actionToggleMiniToolbar->setText(tr("Toggle Graph &Mini-Toolbar"));
+
+    if (actionGadgetDifferentiate)
+        actionGadgetDifferentiate->setText(tr("&Differentiate Gadget..."));
+    if (actionGadgetIntersect)
+        actionGadgetIntersect->setText(tr("&Intersect Gadget..."));
+    if (actionGadgetIntegrate2D)
+        actionGadgetIntegrate2D->setText(tr("&2D Integration Gadget (Matrix/Contour)..."));
+
+    if (actionPiecewiseLinearFit)
+        actionPiecewiseLinearFit->setText(tr("&Piecewise Linear Fit (Breakpoint)..."));
+    if (actionRobustLinearFit)
+        actionRobustLinearFit->setText(tr("&Robust && Quantile Linear Fit..."));
+    if (actionCompareDatasetsFit)
+        actionCompareDatasetsFit->setText(tr("Compare &Datasets (F-Test / AIC)..."));
+    if (actionMultipleLinearRegression)
+        actionMultipleLinearRegression->setText(tr("&Multiple Linear Regression (MLR)..."));
+
+    if (actionSavGolSmoothDerivative)
+        actionSavGolSmoothDerivative->setText(tr("Savitzky-Golay Smooth &Derivative..."));
+    if (actionPeakEnvelope)
+        actionPeakEnvelope->setText(tr("Peak &Envelope (Upper / Lower)..."));
+    if (actionDecimateResample)
+        actionDecimateResample->setText(tr("&Decimate / Anti-Alias Resample..."));
+
+    if (actionNormalityTest)
+        actionNormalityTest->setText(tr("&Normality Test (Shapiro-Wilk / KS / AD)..."));
+    if (actionBlandAltman)
+        actionBlandAltman->setText(tr("&Bland-Altman Method Comparison..."));
+    if (actionTwoWayANOVA)
+        actionTwoWayANOVA->setText(tr("T&wo-Way ANOVA && Interaction Plot..."));
+    if (actionGraphDigitizer)
+        actionGraphDigitizer->setText(tr("&Digitizer (Extract Data from Image)..."));
 
     actionAddText->setText(tr("Add &Text"));
     actionAddText->setToolTip(tr("Add Text"));
@@ -14878,9 +15474,12 @@ void ApplicationWindow::parseCommandLineArguments(const QStringList &args)
 
 void ApplicationWindow::createLanguagesList()
 {
+    registerApplicationWindowJapaneseStrings();
     appTranslator = new QTranslator(this);
     qtTranslator = new QTranslator(this);
-    d_builtin_ja_translator = new ToriGraphJapaneseTranslator(this);
+    if (!d_builtin_ja_translator)
+        d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
+    qApp->removeTranslator(d_builtin_ja_translator);
     qApp->installTranslator(appTranslator);
     qApp->installTranslator(qtTranslator);
 
@@ -14925,10 +15524,6 @@ void ApplicationWindow::createLanguagesList()
         locales.push_back("ja");
     locales.sort();
 
-    if (appLanguage.startsWith("ja")) {
-        qApp->installTranslator(d_builtin_ja_translator);
-    }
-
     if (appLanguage != "en") {
         if (!appTranslator->load("scidavis_" + appLanguage, qmPath))
             if (!appTranslator->load("scidavis_" + appLanguage))
@@ -14943,6 +15538,11 @@ void ApplicationWindow::createLanguagesList()
                         if (!qtTranslator->load("qt_" + slng, qmPath + "/qt"))
                             qtTranslator->load("qt_" + slng);
     }
+
+    // Install built-in full Japanese translator LAST so it has top priority in Qt's LIFO stack
+    if (appLanguage.startsWith("ja")) {
+        qApp->installTranslator(d_builtin_ja_translator);
+    }
 }
 
 void ApplicationWindow::switchToLanguage(int param)
@@ -14953,6 +15553,7 @@ void ApplicationWindow::switchToLanguage(int param)
 
 void ApplicationWindow::switchToLanguage(const QString &locale)
 {
+    registerApplicationWindowJapaneseStrings();
     QString targetLocale = locale;
     if (targetLocale.startsWith("ja"))
         targetLocale = "ja";
@@ -14964,7 +15565,7 @@ void ApplicationWindow::switchToLanguage(const QString &locale)
 
     appLanguage = targetLocale;
     if (!d_builtin_ja_translator)
-        d_builtin_ja_translator = new ToriGraphJapaneseTranslator(this);
+        d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
 
     qApp->removeTranslator(d_builtin_ja_translator);
     qApp->removeTranslator(appTranslator);
@@ -17496,4 +18097,230 @@ void ApplicationWindow::repeatNormalizationForAllCurves()
 void ApplicationWindow::showManageDialogThemes()
 {
     DialogThemeManager::showManageThemesDialog(this);
+}
+
+// ============================================================================
+// Phase 4: OriginPro Page/Layer/Frame UX, Gadgets, Fitting, Signal, Stats & Digitizer
+// ============================================================================
+
+void ApplicationWindow::showPageSetupDialog()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    static_cast<MultiLayer *>(w)->showPageSetupDialog();
+    syncGraphPageAndToolbarMenuState();
+    emit modified();
+}
+
+void ApplicationWindow::fitPageToLayers()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    static_cast<MultiLayer *>(w)->fitPageToLayers();
+    emit modified();
+}
+
+void ApplicationWindow::fitLayersToPage()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    static_cast<MultiLayer *>(w)->fitLayersToPage();
+    emit modified();
+}
+
+void ApplicationWindow::togglePageViewMode()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    ml->setPageViewMode(!ml->pageViewMode());
+    syncGraphPageAndToolbarMenuState();
+}
+
+void ApplicationWindow::addLinkedTopRightLayer()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    if (ml->addLinkedLayer())
+        emit modified();
+}
+
+void ApplicationWindow::addZoomInsetLayer()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    if (ml->addInsetLayer())
+        emit modified();
+}
+
+void ApplicationWindow::applyFrameBoxInward()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    g->applyFramePreset(Graph::FrameBoxInwardTicks);
+    emit modified();
+}
+
+void ApplicationWindow::applyFrameBoxPlain()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    g->applyFramePreset(Graph::FrameBoxPlainOpposite);
+    emit modified();
+}
+
+void ApplicationWindow::applyFrameOpenL()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    g->applyFramePreset(Graph::FrameOpenL);
+    emit modified();
+}
+
+void ApplicationWindow::applyFrameZeroCrossed()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    g->applyFramePreset(Graph::FrameZeroCrossed);
+    emit modified();
+}
+
+void ApplicationWindow::toggleGraphMiniToolbar(bool enabled)
+{
+    GraphMiniToolbar::setMiniToolbarEnabled(enabled);
+    syncGraphPageAndToolbarMenuState();
+}
+
+void ApplicationWindow::syncGraphPageAndToolbarMenuState()
+{
+    if (actionToggleMiniToolbar) {
+        actionToggleMiniToolbar->blockSignals(true);
+        actionToggleMiniToolbar->setChecked(GraphMiniToolbar::isMiniToolbarEnabled());
+        actionToggleMiniToolbar->blockSignals(false);
+    }
+    if (actionTogglePageView) {
+        bool pageViewOn = false;
+        QWidget *w = d_workspace.activeSubWindow();
+        if (w && w->inherits("MultiLayer"))
+            pageViewOn = static_cast<MultiLayer *>(w)->pageViewMode();
+        actionTogglePageView->blockSignals(true);
+        actionTogglePageView->setChecked(pageViewOn);
+        actionTogglePageView->blockSignals(false);
+    }
+}
+
+void ApplicationWindow::attachDifferentiateGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Differentiate);
+}
+
+void ApplicationWindow::attachIntersectGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Intersect);
+}
+
+void ApplicationWindow::attachIntegrate2DGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Integrate2D);
+}
+
+void ApplicationWindow::showPiecewiseLinearFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        PiecewiseAndRobustFit::showPiecewiseFitDialog(this, g);
+}
+
+void ApplicationWindow::showRobustLinearFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        PiecewiseAndRobustFit::showRobustFitDialog(this, g);
+}
+
+void ApplicationWindow::showCompareDatasetsFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        PiecewiseAndRobustFit::showCompareDatasetsDialog(this, g);
+}
+
+void ApplicationWindow::showMultipleLinearRegressionDialog()
+{
+    PiecewiseAndRobustFit::showMLRDialog(this);
+}
+
+void ApplicationWindow::showSavGolSmoothDerivativeDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showSavGolDerivativeDialog(this, g);
+}
+
+void ApplicationWindow::showPeakEnvelopeAnalysisDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showPeakEnvelopeDialog(this, g);
+}
+
+void ApplicationWindow::showDecimateResampleDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showDecimateDialog(this, g);
+}
+
+void ApplicationWindow::showNormalityTestDialog()
+{
+    Graph *g = nullptr;
+    QWidget *w = d_workspace.activeSubWindow();
+    if (w && w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        if (!ml->isEmpty())
+            g = static_cast<Graph *>(ml->activeGraph());
+    }
+    GraphStatsAndSurfaceFit::showNormalityDialog(this, g);
+}
+
+void ApplicationWindow::showBlandAltmanPlotDialog()
+{
+    GraphStatsAndSurfaceFit::showBlandAltmanDialog(this);
+}
+
+void ApplicationWindow::showTwoWayANOVAPlotDialog()
+{
+    GraphStatsAndSurfaceFit::showTwoWayANOVADialog(this);
+}
+
+void ApplicationWindow::showGraphDigitizerDialog()
+{
+    GraphDigitizer::showDigitizerDialog(this);
 }
