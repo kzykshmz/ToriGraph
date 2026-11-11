@@ -50,6 +50,7 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     setSizeGripEnabled(true);
 
     textType = type;
+    selectedFont = QFont(QStringLiteral("Arial"), 12);
 
     // top groupbox
     groupBox1 = new QGroupBox(QString());
@@ -159,7 +160,7 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
 
     textEditBox = new QTextEdit();
     textEditBox->setAcceptRichText(false);
-    textEditBox->setFont(QFont());
+    textEditBox->setFont(selectedFont);
 
     formatButtons = new TextFormatButtons(textEditBox);
     formatButtons->toggleCurveButton(textType == TextDialog::TextMarker);
@@ -308,7 +309,9 @@ void TextDialog::setBackgroundColor(QColor c)
 
 void TextDialog::setFont(const QFont &fnt)
 {
-    selectedFont = fnt;
+    selectedFont = fnt.family().trimmed().isEmpty() ? QFont(QStringLiteral("Arial"), 12) : fnt;
+    if (textEditBox)
+        textEditBox->setFont(selectedFont);
 }
 
 void TextDialog::updateTransparency(int alpha)
