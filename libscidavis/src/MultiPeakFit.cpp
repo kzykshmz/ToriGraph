@@ -55,7 +55,7 @@ MultiPeakFit::MultiPeakFit(ApplicationWindow *parent, Graph *g, PeakProfile prof
     setNumPeaks(peaks);
 
     generate_peak_curves = true;
-    d_peaks_color = ColorButton::color(2); // green
+    d_peaks_color = QColor("#2ca02c"); // publication green
 }
 
 void MultiPeakFit::updateProfileFunctions()
@@ -701,7 +701,7 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
 
     FunctionCurve *c =
             new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal, title);
-    c->setPen(QPen(d_peaks_color, 1));
+    c->setPen(QPen(d_peaks_color, 2, Qt::DashLine));
     c->setData(x.data(), y.data(), d_points);
     c->setRange(d_x.front(), d_x.back());
 

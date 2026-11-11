@@ -106,30 +106,39 @@ int main(int argc, char **argv)
     // =========================================================================
     // 1. OriginPro 2021 Reference Scatter Plot & Visual Parity
     // =========================================================================
-    Table *t = mw->newTable("TestTable", 7, 4);
+    struct ScatterPt { double x; double y; int series; };
+    const ScatterPt pts[] = {
+        // H18 (series 1)
+        { 194.0, 110.0, 1 }, { 202.0, 250.0, 1 }, { 204.0, 260.0, 1 },
+        { 203.0, 315.0, 1 }, { 202.0, 830.0, 1 }, { 201.0, 1900.0, 1 },
+        { 199.0, 4800.0, 1 }, { 191.0, 6500.0, 1 }, { 178.0, 17500.0, 1 },
+        // 240°C-3h (series 2)
+        { 112.0, 102.0, 2 }, { 119.0, 85.0, 2 }, { 122.0, 410.0, 2 },
+        { 126.0, 540.0, 2 }, { 128.0, 1120.0, 2 }, { 131.0, 1480.0, 2 },
+        { 133.0, 2550.0, 2 }, { 134.0, 3200.0, 2 }, { 141.0, 4700.0, 2 },
+        { 148.0, 6800.0, 2 }, { 153.0, 10300.0, 2 }, { 158.0, 15800.0, 2 },
+        { 160.0, 20500.0, 2 },
+        // 260°C-3h (series 3)
+        { 98.0, 245.0, 3 }, { 102.0, 178.0, 3 }, { 107.0, 290.0, 3 },
+        { 110.0, 485.0, 3 }, { 115.0, 910.0, 3 }, { 119.0, 1380.0, 3 },
+        { 124.0, 2580.0, 3 }, { 127.0, 2750.0, 3 }, { 138.0, 5350.0, 3 },
+        { 145.0, 8100.0, 3 }, { 147.0, 10800.0, 3 }, { 149.0, 14500.0, 3 }
+    };
+    const int nScatterRows = int(sizeof(pts) / sizeof(pts[0]));
+    Table *t = mw->newTable("TestTable", nScatterRows, 4);
     CHECK_COND(t != nullptr, "Failed to create Table");
     t->setColName(0, "stress");
     t->setColName(1, "H18");
     t->setColName(2, QString::fromUtf8("240\xC2\xB0" "C-3h"));
     t->setColName(3, QString::fromUtf8("260\xC2\xB0" "C-3h"));
-    const double xs[7] = { 130.0, 145.0, 160.0, 175.0, 190.0, 205.0, 222.0 };
-    const double y1[7] = { 0.0, 0.0, 0.0, 0.0, 0.0, 32.0, 9500.0 };
-    const double y2[7] = { 0.0, 220.0, 380.0, 1050.0, 5600.0, 8600.0, 0.0 };
-    const double y3[7] = { 160.0, 340.0, 880.0, 2600.0, 6800.0, 0.0, 0.0 };
-    for (int r = 0; r < 7; ++r) {
-        t->setCell(r, 0, xs[r]);
-        if (y1[r] > 0)
-            t->setCell(r, 1, y1[r]);
-        else
-            t->clearCell(r, 1);
-        if (y2[r] > 0)
-            t->setCell(r, 2, y2[r]);
-        else
-            t->clearCell(r, 2);
-        if (y3[r] > 0)
-            t->setCell(r, 3, y3[r]);
-        else
-            t->clearCell(r, 3);
+    for (int r = 0; r < nScatterRows; ++r) {
+        t->setCell(r, 0, pts[r].x);
+        for (int c = 1; c <= 3; ++c) {
+            if (pts[r].series == c)
+                t->setCell(r, c, pts[r].y);
+            else
+                t->clearCell(r, c);
+        }
     }
 
     QStringList cols;
@@ -142,10 +151,10 @@ int main(int argc, char **argv)
     CHECK_COND(ag != nullptr, "Active Graph is null");
     ag->setXAxisTitle("Local flow stress, <i>&sigma;</i><sub>f</sub> / MPa");
     ag->setYAxisTitle("<i>N</i><sub>v</sub> / mm<sup>-3</sup>");
-    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 4, 0, false);
+    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 1, 0, false);
     ag->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 8, 8, 1, false);
     if (ag->legend()) {
-        ag->legend()->setOriginCoord(62.0, 35000.0);
+        ag->legend()->setOriginCoord(162.0, 110.0);
     }
 
     // Verify 1:1 square plot canvas after non-square window resizes
@@ -225,7 +234,7 @@ int main(int argc, char **argv)
                "Middle-drag pan did not shift axis ranges or broke Log10 positivity");
 
     // Restore reference scales
-    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 4, 0, false);
+    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 1, 0, false);
     ag->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 8, 8, 1, false);
     plotW->replot();
 
