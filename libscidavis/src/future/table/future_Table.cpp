@@ -102,7 +102,8 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event && event->type() == QEvent::LanguageChange && onLanguageChange)
+        if (event && event->type() == QEvent::LanguageChange && onLanguageChange
+            && (watched == parent() || watched == projectMenu.data()))
             onLanguageChange();
         return QObject::eventFilter(watched, event);
     }
@@ -115,8 +116,7 @@ TableLangChangeFilter *ensureTableLangFilter(Table *tbl, std::function<void()> c
     if (!flt) {
         flt = new TableLangChangeFilter(tbl);
         flt->onLanguageChange = std::move(cb);
-        if (qApp)
-            qApp->installEventFilter(flt);
+        tbl->installEventFilter(flt);
     }
     return flt;
 }
@@ -1474,6 +1474,23 @@ void Table::createActions()
             new QAction(QIcon(QPixmap(":/stat_rows.xpm")), tr("Row Statisti&cs"), this);
     action_statistics_rows->setToolTip(tr("statistics on rows"));
     actionManager()->addAction(action_statistics_rows, "statistics_rows");
+
+    QPointer<Table> self(this);
+    ensureTableLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        self->adjustActionNames();
+        if (auto *f = self->findChild<TableLangChangeFilter *>(
+                    QStringLiteral("_tg_table_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Table::tr("&Table"));
+            if (f->submenuSetAs)
+                f->submenuSetAs->setTitle(Table::tr("S&et Column(s) As"));
+            if (f->submenuFill)
+                f->submenuFill->setTitle(Table::tr("Fi&ll Selection with"));
+        }
+    });
 }
 
 void Table::connectActions()

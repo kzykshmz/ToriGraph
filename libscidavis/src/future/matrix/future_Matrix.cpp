@@ -67,7 +67,8 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event && event->type() == QEvent::LanguageChange && onLanguageChange)
+        if (event && event->type() == QEvent::LanguageChange && onLanguageChange
+            && (watched == parent() || watched == projectMenu.data()))
             onLanguageChange();
         return QObject::eventFilter(watched, event);
     }
@@ -80,8 +81,7 @@ MatrixLangChangeFilter *ensureMatrixLangFilter(Matrix *mtx, std::function<void()
     if (!flt) {
         flt = new MatrixLangChangeFilter(mtx);
         flt->onLanguageChange = std::move(cb);
-        if (qApp)
-            qApp->installEventFilter(flt);
+        mtx->installEventFilter(flt);
     }
     return flt;
 }
@@ -748,6 +748,18 @@ void Matrix::createActions()
     ;
     actionManager()->addAction(action_add_rows, "add_rows");
     delete icon_temp;
+
+    QPointer<Matrix> self(this);
+    ensureMatrixLangFilter(this, [self]() {
+        if (!self)
+            return;
+        self->translateActionsStrings();
+        if (auto *f = self->findChild<MatrixLangChangeFilter *>(
+                    QStringLiteral("_tg_matrix_lang_flt"), Qt::FindDirectChildrenOnly)) {
+            if (f->projectMenu)
+                f->projectMenu->setTitle(Matrix::tr("&Matrix"));
+        }
+    });
 }
 
 void Matrix::connectActions()

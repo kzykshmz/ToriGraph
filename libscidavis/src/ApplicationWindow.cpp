@@ -1702,26 +1702,12 @@ void ApplicationWindow::insertTranslatedStrings()
         qApp->sendEvent(w, &langChangeEvent);
         if (w->inherits("Table")) {
             Table *tbl = static_cast<Table *>(w);
-            if (tbl->d_future_table) {
+            if (tbl->d_future_table)
                 qApp->sendEvent(tbl->d_future_table, &langChangeEvent);
-                QMenu dummy(this);
-                tbl->d_future_table->fillProjectMenu(&dummy);
-                for (QAction *a : dummy.actions()) {
-                    if (a && a->menu() && !a->menu()->parent())
-                        delete a->menu();
-                }
-            }
         } else if (w->inherits("Matrix")) {
             Matrix *mat = static_cast<Matrix *>(w);
-            if (mat->d_future_matrix) {
+            if (mat->d_future_matrix)
                 qApp->sendEvent(mat->d_future_matrix, &langChangeEvent);
-                QMenu dummy(this);
-                mat->d_future_matrix->fillProjectMenu(&dummy);
-                for (QAction *a : dummy.actions()) {
-                    if (a && a->menu() && !a->menu()->parent())
-                        delete a->menu();
-                }
-            }
         }
         for (QWidget *child : w->findChildren<QWidget *>()) {
             if (child)

@@ -22,17 +22,32 @@
 #include "RecalcEngine.h"
 #include "Matrix.h"
 #include "FunctionCurve.h"
+#include "I18nJapanese.h"
+#include "ConfigDialog.h"
+#include "AxesDialog.h"
+#include "PlotDialog.h"
+#include "LayerDialog.h"
+#include "FitDialog.h"
+#include "GraphMiniToolbar.h"
+#include "PiecewiseAndRobustFit.h"
+#include "GraphDigitizer.h"
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
 #include <qwt_scale_div.h>
 #include <QApplication>
 #include <QClipboard>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QKeyEvent>
+#include <QMenuBar>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPushButton>
+#include <QTabWidget>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QWheelEvent>
 #include <cmath>
 #include <iostream>
@@ -2254,8 +2269,918 @@ int main(int argc, char **argv)
                    "switchToLanguage(\"en\") did not restore &Gadgets");
     }
 
+    // =========================================================================
+    // 20. Suite 20: 100% Japanese GUI Localization Audit
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 20: 100% Japanese GUI Localization Audit...\n";
+
+        Table *tJa = mw->newTable(20, 2, "JaAuditTable", "JaAudit");
+        for (int r = 0; r < 20; ++r) {
+            double x = double(r) * 1.5;
+            tJa->setCell(r, 0, x);
+            tJa->setCell(r, 1, 2.0 + 15.0 * std::exp(-0.5 * std::pow((x - 12.0) / 3.0, 2.0)));
+        }
+        MultiLayer *mlJa = mw->multilayerPlot(tJa, QStringList() << "JaAuditTable_2", Graph::LineSymbols);
+        CHECK_COND(mlJa != nullptr && mlJa->activeGraph() != nullptr, "Failed to create mlJa for Suite 20");
+        Graph *gJa = mlJa->activeGraph();
+        mw->activateSubWindow(mlJa);
+        mw->customMenu(mlJa);
+
+        mw->switchToLanguage("ja");
+        CHECK_COND(mw->appLanguage == "ja", "appLanguage was not set to 'ja'");
+
+        auto stripMnemonics = [](QString s) -> QString {
+            s.replace("&&", "\x01");
+            int idx = 0;
+            while ((idx = s.indexOf("(&", idx)) >= 0) {
+                if (idx + 3 < s.size() && s.at(idx + 3) == QChar(')'))
+                    s.remove(idx, 4);
+                else
+                    idx += 2;
+            }
+            s.remove('&');
+            s.replace('\x01', '&');
+            return s.trimmed();
+        };
+
+        auto hasJapaneseChars = [](const QString &s) -> bool {
+            for (int i = 0; i < s.size(); ++i) {
+                ushort u = s.at(i).unicode();
+                if ((u >= 0x3040 && u <= 0x30FF)       // Hiragana & Katakana
+                    || (u >= 0x4E00 && u <= 0x9FFF)    // CJK Unified Ideographs
+                    || (u >= 0x3400 && u <= 0x4DBF)) { // CJK Extension A
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const QSet<QString> allowedUniversalTokens = {
+            "English", "English (&E)", "OK", "FFT", "IFFT", "2D", "3D",
+            "AIC", "BIC", "AIC/BIC", "PCA", "ROC", "CSV", "SVG", "PDF", "EPS",
+            "ASCII", "TeX", "LaTeX", "LOWESS", "LOESS", "STFT", "IIR", "FIR",
+            "CWT", "DWT", "PSD", "MLR", "ANOVA", "Savitzky-Golay",
+            "X", "Y", "Z", "A", "B", "C", "R^2", "R²", "p", "t", "F"
+        };
+
+        auto isLocalizedJapaneseOrUniversal = [&](const QString &raw) -> bool {
+            QString clean = stripMnemonics(raw);
+            if (clean.isEmpty())
+                return true;
+            if (hasJapaneseChars(clean))
+                return true;
+            if (allowedUniversalTokens.contains(clean))
+                return true;
+            bool anyAsciiAlpha = false;
+            for (int i = 0; i < clean.size(); ++i) {
+                ushort u = clean.at(i).unicode();
+                if ((u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z')) {
+                    anyAsciiAlpha = true;
+                    break;
+                }
+            }
+            if (!anyAsciiAlpha)
+                return true;
+            return false;
+        };
+
+        int verifiedMenuActions = 0;
+        QStringList untranslatedItems;
+        QSet<const QMenu *> visitedMenus;
+
+        std::function<void(QMenu *, const QString &)> auditMenuRecursive =
+                [&](QMenu *menu, const QString &pathPrefix) {
+            if (!menu || visitedMenus.contains(menu))
+                return;
+            if (pathPrefix.contains(QString::fromUtf8("最近のプロジェクト"))
+                || pathPrefix.contains("Recent Projects")) {
+                return;
+            }
+            visitedMenus.insert(menu);
+
+            QString menuTitle = menu->title();
+            if (!menuTitle.isEmpty()) {
+                ++verifiedMenuActions;
+                if (!isLocalizedJapaneseOrUniversal(menuTitle)) {
+                    untranslatedItems << QString("MenuTitle[%1]: '%2'").arg(pathPrefix, menuTitle);
+                }
+            }
+
+            for (QAction *act : menu->actions()) {
+                if (!act || act->isSeparator())
+                    continue;
+                if (act->menu()) {
+                    auditMenuRecursive(act->menu(), pathPrefix + "/" + stripMnemonics(act->text()));
+                    continue;
+                }
+                QString txt = act->text();
+                if (txt.trimmed().isEmpty())
+                    continue;
+                // Skip dynamic window list entries in Windows menu or recent file paths
+                QString stripped = stripMnemonics(txt);
+                // Dynamic window entries look like "&1 Table1" or window names in workspace
+                int spIdx = stripped.indexOf(' ');
+                QString afterNum = (spIdx > 0) ? stripped.mid(spIdx + 1).trimmed() : stripped;
+                if (mw->alreadyUsedName(stripped) || mw->alreadyUsedName(afterNum)
+                    || QFile::exists(stripped)) {
+                    continue;
+                }
+                ++verifiedMenuActions;
+                if (!isLocalizedJapaneseOrUniversal(txt)) {
+                    untranslatedItems << QString("MenuAction[%1]: '%2'").arg(pathPrefix, txt);
+                }
+            }
+        };
+
+        auto auditCurrentMenuBar = [&]() {
+            for (QAction *topAct : mw->menuBar()->actions()) {
+                if (!topAct || topAct->isSeparator())
+                    continue;
+                if (topAct->menu()) {
+                    auditMenuRecursive(topAct->menu(), stripMnemonics(topAct->text()));
+                } else if (!topAct->text().trimmed().isEmpty()) {
+                    ++verifiedMenuActions;
+                    if (!isLocalizedJapaneseOrUniversal(topAct->text()))
+                        untranslatedItems << QString("TopBarAction: '%1'").arg(topAct->text());
+                }
+            }
+        };
+
+        // Audit menuBar with Table active, Matrix active, and 2D Graph active so all context menus are covered
+        Matrix *mJa = mw->newMatrix(4, 4);
+        mw->customMenu(tJa);
+        auditCurrentMenuBar();
+        mw->customMenu(mJa);
+        auditCurrentMenuBar();
+        mw->activateSubWindow(mlJa);
+        mw->customMenu(mlJa);
+        auditCurrentMenuBar();
+        if (mw->gadgetsMenu)
+            auditMenuRecursive(mw->gadgetsMenu, "GadgetsMenu");
+
+        // Audit Project Explorer header labels
+        int verifiedExplorerHeaders = 0;
+        CHECK_COND(mw->lv.headerItem() != nullptr, "Project Explorer lv.headerItem() is null");
+        for (int col = 0; col < 5; ++col) {
+            QString hTxt = mw->lv.headerItem()->text(col);
+            ++verifiedExplorerHeaders;
+            if (!hasJapaneseChars(hTxt))
+                untranslatedItems << QString("ExplorerHeader[col=%1]: '%2'").arg(col).arg(hTxt);
+        }
+        if (mw->folders.headerItem()) {
+            QString fTxt = mw->folders.headerItem()->text(0);
+            ++verifiedExplorerHeaders;
+            if (!hasJapaneseChars(fTxt))
+                untranslatedItems << QString("ExplorerFolderHeader: '%1'").arg(fTxt);
+        }
+
+        // Audit key dialogs: QTabWidget tab labels + QDialogButtonBox buttons + top-level action buttons
+        int verifiedDialogLabels = 0;
+        auto auditDialogWidget = [&](QDialog *dlg, const QString &dlgName) {
+            if (!dlg)
+                return;
+            QString wTitle = dlg->windowTitle();
+            if (!wTitle.trimmed().isEmpty()) {
+                ++verifiedDialogLabels;
+                if (!isLocalizedJapaneseOrUniversal(wTitle))
+                    untranslatedItems << QString("%1.windowTitle: '%2'").arg(dlgName, wTitle);
+            }
+            for (QTabWidget *tw : dlg->findChildren<QTabWidget *>()) {
+                for (int ti = 0; ti < tw->count(); ++ti) {
+                    QString tabTxt = tw->tabText(ti);
+                    if (tabTxt.trimmed().isEmpty())
+                        continue;
+                    ++verifiedDialogLabels;
+                    if (!isLocalizedJapaneseOrUniversal(tabTxt))
+                        untranslatedItems << QString("%1.Tab[%2]: '%3'").arg(dlgName).arg(ti).arg(tabTxt);
+                }
+            }
+            for (QDialogButtonBox *bb : dlg->findChildren<QDialogButtonBox *>()) {
+                for (QAbstractButton *btn : bb->buttons()) {
+                    if (!btn || btn->text().trimmed().isEmpty())
+                        continue;
+                    ++verifiedDialogLabels;
+                    if (!isLocalizedJapaneseOrUniversal(btn->text()))
+                        untranslatedItems << QString("%1.ButtonBox: '%2'").arg(dlgName, btn->text());
+                }
+            }
+            for (QPushButton *pb : dlg->findChildren<QPushButton *>()) {
+                if (!pb)
+                    continue;
+                // Skip symbol/math-operator keypad or format mini-buttons
+                if (pb->parentWidget() && pb->parentWidget()->inherits("TextFormatButtons"))
+                    continue;
+                QString bTxt = pb->text();
+                if (bTxt.trimmed().isEmpty())
+                    continue;
+                QString strippedBtn = stripMnemonics(bTxt);
+                if (strippedBtn == "exp" || strippedBtn == "ln" || strippedBtn == "log"
+                    || strippedBtn == "sin" || strippedBtn == "cos" || strippedBtn == "tan"
+                    || strippedBtn == "sqrt" || strippedBtn == "abs") {
+                    continue;
+                }
+                ++verifiedDialogLabels;
+                if (!isLocalizedJapaneseOrUniversal(bTxt))
+                    untranslatedItems << QString("%1.PushButton: '%2'").arg(dlgName, bTxt);
+            }
+        };
+
+        {
+            ConfigDialog cfgDlg(mw);
+            auditDialogWidget(&cfgDlg, "ConfigDialog");
+        }
+        {
+            AxesDialog axesDlg;
+            axesDlg.setGraph(gJa);
+            auditDialogWidget(&axesDlg, "AxesDialog");
+        }
+        {
+            PlotDialog plotDlg(true, mw);
+            plotDlg.initFonts(mw->plotTitleFont, mw->plotAxesFont, mw->plotNumbersFont, mw->plotLegendFont);
+            plotDlg.setMultiLayer(mlJa);
+            auditDialogWidget(&plotDlg, "PlotDialog");
+        }
+        {
+            LayerDialog layerDlg(mw);
+            layerDlg.setMultiLayer(mlJa);
+            auditDialogWidget(&layerDlg, "LayerDialog");
+        }
+        {
+            FitDialog fitDlg(mw);
+            fitDlg.setGraph(gJa);
+            auditDialogWidget(&fitDlg, "FitDialog");
+        }
+        {
+            bool auditedPeakDlg = false;
+            QTimer::singleShot(0, [&]() {
+                if (QWidget *w = QApplication::activeModalWidget()) {
+                    if (QDialog *d = qobject_cast<QDialog *>(w)) {
+                        auditDialogWidget(d, "PeakAnalyzerDialog");
+                        auditedPeakDlg = true;
+                        d->reject();
+                    }
+                }
+            });
+            mw->showPeakAnalyzerDialog(0);
+            CHECK_COND(auditedPeakDlg, "PeakAnalyzerDialog was not opened/audited");
+        }
+        {
+            bool auditedPaletteDlg = false;
+            QTimer::singleShot(0, [&]() {
+                if (QWidget *w = QApplication::activeModalWidget()) {
+                    if (QDialog *d = qobject_cast<QDialog *>(w)) {
+                        auditDialogWidget(d, "ColorPaletteDialog");
+                        auditedPaletteDlg = true;
+                        d->reject();
+                    }
+                }
+            });
+            Graph::showColorPaletteEditor(mw, gJa);
+            CHECK_COND(auditedPaletteDlg, "ColorPaletteDialog was not opened/audited");
+        }
+
+        if (!untranslatedItems.isEmpty()) {
+            std::cerr << "[WARN] Untranslated items detected in Suite 20 ("
+                      << untranslatedItems.size() << "):\n";
+            for (const QString &u : untranslatedItems)
+                std::cerr << "  - " << u.toUtf8().constData() << "\n";
+        }
+        std::cout << "[INFO] Suite 20 Japanese GUI Audit: verifiedMenuActions=" << verifiedMenuActions
+                  << ", verifiedExplorerHeaders=" << verifiedExplorerHeaders
+                  << ", verifiedDialogLabels=" << verifiedDialogLabels
+                  << ", untranslated=" << untranslatedItems.size() << "\n";
+        CHECK_COND(verifiedMenuActions >= 80, "Too few menu actions audited in Suite 20");
+        CHECK_COND(verifiedExplorerHeaders >= 5, "Too few Project Explorer headers audited in Suite 20");
+        CHECK_COND(verifiedDialogLabels >= 40, "Too few dialog tabs/buttons audited in Suite 20");
+        CHECK_COND(untranslatedItems.isEmpty(),
+                   "Suite 20 detected untranslated English GUI menu/tab/button labels!");
+    }
+
+    // =========================================================================
+    // 21. Suite 21: Strict Default Arial Font Verification (While UI is Japanese)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 21: Strict Default Arial Font Verification...\n";
+        CHECK_COND(mw->appLanguage == "ja", "Suite 21 must run while appLanguage == 'ja'");
+
+        CHECK_COND(mw->plotAxesFont.family() == "Arial", "mw->plotAxesFont.family() != Arial");
+        CHECK_COND(mw->plotNumbersFont.family() == "Arial", "mw->plotNumbersFont.family() != Arial");
+        CHECK_COND(mw->plotLegendFont.family() == "Arial", "mw->plotLegendFont.family() != Arial");
+        CHECK_COND(mw->plotTitleFont.family() == "Arial", "mw->plotTitleFont.family() != Arial");
+        CHECK_COND(mw->plot3DAxesFont.family() == "Arial", "mw->plot3DAxesFont.family() != Arial");
+        CHECK_COND(mw->plot3DNumbersFont.family() == "Arial", "mw->plot3DNumbersFont.family() != Arial");
+        CHECK_COND(mw->plot3DTitleFont.family() == "Arial", "mw->plot3DTitleFont.family() != Arial");
+
+        Table *tAr = mw->newTable(15, 2, "ArialCheckTable", "Arial Plot Data");
+        for (int r = 0; r < 15; ++r) {
+            double x = double(r) * 2.0;
+            tAr->setCell(r, 0, x);
+            tAr->setCell(r, 1, 3.0 * x + 7.5);
+        }
+        MultiLayer *mlAr = mw->multilayerPlot(tAr, QStringList() << "ArialCheckTable_2", Graph::LineSymbols);
+        CHECK_COND(mlAr != nullptr && mlAr->activeGraph() != nullptr, "Failed to create 2D plot in Suite 21");
+        Graph *gAr = mlAr->activeGraph();
+        gAr->setTitle("Thermal Conductivity vs Temperature");
+        if (!gAr->legend())
+            gAr->newLegend();
+
+        // Add Fit Summary Box on plot
+        bool savedPasteFit = mw->pasteFitResultsToPlot;
+        mw->pasteFitResultsToPlot = true;
+        LinearFit *lfAr = new LinearFit(mw, gAr);
+        lfAr->setDataFromCurve("ArialCheckTable_2");
+        lfAr->fit();
+        lfAr->insertFitSummaryBoxOnGraph();
+        delete lfAr;
+        mw->pasteFitResultsToPlot = savedPasteFit;
+
+        // Add Reference Line on plot
+        Graph::ReferenceLineSpec refAr;
+        refAr.orientation = 0;
+        refAr.value = 35.0;
+        refAr.label = "Threshold";
+        gAr->addReferenceLine(refAr);
+        gAr->replot();
+
+        // Verify plot title, all 4 axis title fonts, all 4 axis tick number fonts, and all Legend/Fit boxes
+        CHECK_COND(gAr->plotWidget()->title().font().family() == "Arial",
+                   "2D Graph plot title font family is not Arial");
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            CHECK_COND(gAr->axisTitleFont(a).family() == "Arial",
+                       "gAr->axisTitleFont(a) family is not Arial");
+            CHECK_COND(gAr->axisFont(a).family() == "Arial",
+                       "gAr->axisFont(a) tick number font family is not Arial");
+            CHECK_COND(gAr->plotWidget()->axisTitle(a).font().family() == "Arial",
+                       "plotWidget()->axisTitle(a) font family is not Arial");
+            CHECK_COND(gAr->plotWidget()->axisFont(a).family() == "Arial",
+                       "plotWidget()->axisFont(a) font family is not Arial");
+        }
+        CHECK_COND(gAr->legend() != nullptr && gAr->legend()->font().family() == "Arial",
+                   "Graph legend font family is not Arial");
+
+        int checkedTextBoxes = 0;
+        for (QwtPlotItem *it : gAr->plotWidget()->itemList()) {
+            Legend *txtBox = dynamic_cast<Legend *>(it);
+            if (txtBox) {
+                ++checkedTextBoxes;
+                CHECK_COND(txtBox->font().family() == "Arial",
+                           "Graph text/fit-summary Legend box font family is not Arial");
+            }
+        }
+        CHECK_COND(checkedTextBoxes >= 2,
+                   "Expected both Legend and Fit Summary Legend boxes on gAr");
+        QImage renderImg(600, 450, QImage::Format_ARGB32);
+        renderImg.fill(Qt::white);
+        QPainter rp(&renderImg);
+        gAr->exportPainter(rp, false, QRect(0, 0, 600, 450));
+        rp.end();
+
+        std::cout << "[INFO] Suite 21 Arial verified (appLanguage=" << mw->appLanguage.toStdString()
+                  << ", text/legend boxes=" << (checkedTextBoxes + 1) << ", axes=4)\n";
+
+        mw->switchToLanguage("en");
+        CHECK_COND(mw->appLanguage == "en", "Failed to restore appLanguage to 'en' after Suite 21");
+    }
+
+    // =========================================================================
+    // 22. Suite 22: OriginPro Page, Layer Linking, Inset Graph, Frame Presets & Reference Lines
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 22: Page View, Layer Linking, Inset Graph, Frame Presets & Reference Lines...\n";
+
+        Table *t22 = mw->newTable(21, 2, "PageLayerTable", "Arrhenius & Inset");
+        double sumY22 = 0.0;
+        for (int r = 0; r < 21; ++r) {
+            double x = 5.0 + double(r) * 36.1; // spans 5.0 .. 727.0
+            double y = 10.0 + 2.0 * double(r); // 10, 12, ..., 50 -> exact mean = 30.0
+            t22->setCell(r, 0, x);
+            t22->setCell(r, 1, y);
+            sumY22 += y;
+        }
+        const double expectedMeanY22 = sumY22 / 21.0;
+
+        MultiLayer *ml22 = mw->multilayerPlot(t22, QStringList() << "PageLayerTable_2", Graph::LineSymbols);
+        CHECK_COND(ml22 != nullptr && ml22->activeGraph() != nullptr, "Failed to create ml22");
+        Graph *g1 = ml22->activeGraph();
+
+        // 1. Page Physical Size, Page Zoom & Fit Page to Layers
+        ml22->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+        CHECK_COND(ml22->pageUnit() == MultiLayer::UnitMm && ml22->pageDpi() == 300,
+                   "setPageSizePhysical did not store UnitMm / 300 DPI");
+        CHECK_COND(std::fabs(ml22->pageWidthPhysical() - 85.0) < 1e-6
+                           && std::fabs(ml22->pageHeightPhysical() - 85.0) < 1e-6,
+                   "setPageSizePhysical 85x85 mm mismatch");
+        ml22->setPageZoom(1.25);
+        CHECK_COND(std::fabs(ml22->pageZoom() - 1.25) < 1e-6, "setPageZoom(1.25) mismatch");
+        ml22->fitPageToLayers();
+        CHECK_COND(ml22->width() >= 100 && ml22->height() >= 100, "fitPageToLayers produced invalid size");
+
+        // 2. Frame Presets & Reference Lines (Constant + Statistical "Mean") & MiniToolbar on g1
+        g1->applyFramePreset(Graph::FrameBoxInwardTicks);
+        CHECK_COND(g1->isAxisBackboneVisible(QwtPlot::xBottom)
+                           && g1->isAxisBackboneVisible(QwtPlot::yLeft)
+                           && g1->isAxisBackboneVisible(QwtPlot::xTop)
+                           && g1->isAxisBackboneVisible(QwtPlot::yRight),
+                   "FrameBoxInwardTicks did not enable all 4 axis backbones");
+
+        g1->applyFramePreset(Graph::FrameOpenL);
+        CHECK_COND(g1->isAxisBackboneVisible(QwtPlot::xBottom)
+                           && g1->isAxisBackboneVisible(QwtPlot::yLeft)
+                           && !g1->isAxisBackboneVisible(QwtPlot::xTop)
+                           && !g1->isAxisBackboneVisible(QwtPlot::yRight),
+                   "FrameOpenL did not hide Top/Right axis backbones");
+
+        g1->clearReferenceLines();
+        Graph::ReferenceLineSpec constRef;
+        constRef.orientation = 0;
+        constRef.value = 22.5;
+        constRef.statMode = "Constant";
+        constRef.label = "Spec Limit";
+        g1->addReferenceLine(constRef);
+
+        Graph::ReferenceLineSpec meanRef;
+        meanRef.orientation = 0;
+        meanRef.statMode = "Mean";
+        g1->addReferenceLine(meanRef);
+
+        QVector<Graph::ReferenceLineSpec> refs = g1->referenceLines();
+        CHECK_COND(refs.size() == 2, "Expected 2 reference lines on g1");
+        CHECK_COND(std::fabs(refs[0].value - 22.5) < 1e-9, "Constant reference line value != 22.5");
+        CHECK_COND(std::fabs(refs[1].value - expectedMeanY22) < 1e-6,
+                   "Statistical 'Mean' reference line did not compute exact curve mean 30.0");
+
+        GraphMiniToolbar::setMiniToolbarEnabled(true);
+        CHECK_COND(GraphMiniToolbar::isMiniToolbarEnabled(), "GraphMiniToolbar failed to enable");
+        GraphMiniToolbar *mtb = GraphMiniToolbar::instance();
+        CHECK_COND(mtb != nullptr, "GraphMiniToolbar::instance() returned null");
+        mtb->popupForCanvas(g1, QPoint(240, 240));
+        CHECK_COND(mtb->currentGraph() == g1 && mtb->currentTarget() == GraphMiniToolbar::TargetCanvas,
+                   "GraphMiniToolbar::popupForCanvas state mismatch");
+        mtb->hide();
+
+        // 3. Mathematical Linked Layer: 1000/(x+273.15)
+        Graph *g2 = ml22->addLinkedLayer(g1, true, false, "1000/(x+273.15)", "y");
+        CHECK_COND(g2 != nullptr && g2->linkedParentLayer() == g1, "addLinkedLayer failed");
+        g1->setScale(QwtPlot::xBottom, 27.0, 727.0);
+        const QwtScaleDiv *topDiv = g2->plotWidget()->axisScaleDiv(QwtPlot::xTop);
+        CHECK_COND(topDiv != nullptr, "Linked g2 Top X scaleDiv is null");
+        const double expLo = 1000.0 / (727.0 + 273.15); // ~0.99985002 (1.0)
+        const double expHi = 1000.0 / (27.0 + 273.15);  // 1000.0 / 300.15 = 3.3316675
+        const double gotLo = std::min(topDiv->lowerBound(), topDiv->upperBound());
+        const double gotHi = std::max(topDiv->lowerBound(), topDiv->upperBound());
+        std::cout << "[INFO] Linked Top X [27..727 C] -> [" << gotLo << ", " << gotHi
+                  << "] (expected [" << expLo << ", " << expHi << "])\n";
+        CHECK_COND(std::fabs(gotLo - expLo) < 1e-4 && std::fabs(gotLo - 1.0) < 1e-3
+                           && std::fabs(gotHi - expHi) < 1e-4,
+                   "Linked layer Top X mathematical endpoints mismatch for 1000/(x+273.15)");
+
+        // 4. Zoomed Inset Layer inside g1
+        Graph *gInset = ml22->addInsetLayer(g1, QRectF(10.0, 0.0, 20.0, 50.0));
+        CHECK_COND(gInset != nullptr && ml22->layersList().size() == 3,
+                   "addInsetLayer did not create 3rd layer inside ml22");
+        CHECK_COND(gInset->curves() >= 1, "addInsetLayer did not copy curves from g1");
+        const QwtScaleDiv *inX = gInset->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        const QwtScaleDiv *inY = gInset->plotWidget()->axisScaleDiv(QwtPlot::yLeft);
+        CHECK_COND(inX != nullptr && inY != nullptr
+                           && std::fabs(inX->lowerBound() - 10.0) < 1e-5
+                           && std::fabs(inX->upperBound() - 30.0) < 1e-5
+                           && std::fabs(inY->lowerBound() - 0.0) < 1e-5
+                           && std::fabs(inY->upperBound() - 50.0) < 1e-5,
+                   "Inset layer zoomed scale bounds mismatch for QRectF(10, 0, 20, 50)");
+    }
+
+    // =========================================================================
+    // 23. Suite 23: Phase 4 Gadgets & Advanced Regression
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 23: Phase 4 Gadgets & Advanced Regression...\n";
+
+        // 1. RoiGadgetTool::Differentiate on y = 3*x^2 over [0..10], ROI [2..8] -> maxSlope at x=8 is 6*8 = 48
+        Table *tDiff = mw->newTable(101, 2, "DiffGadgetTbl", "y=3x^2");
+        for (int i = 0; i <= 100; ++i) {
+            double x = double(i) * 0.1;
+            tDiff->setCell(i, 0, x);
+            tDiff->setCell(i, 1, 3.0 * x * x);
+        }
+        MultiLayer *mlDiff = mw->multilayerPlot(tDiff, QStringList() << "DiffGadgetTbl_2", Graph::Line);
+        Graph *gDiff = mlDiff->activeGraph();
+        RoiGadgetTool *diffGadget = RoiGadgetTool::attachGadget(mw, gDiff, RoiGadgetTool::Differentiate);
+        CHECK_COND(diffGadget != nullptr, "Failed to attach Differentiate gadget");
+        diffGadget->setRoiRect(QRectF(2.0, -10.0, 6.0, 400.0)); // x in [2, 8], xmax = 8 -> 6*8 = 48
+        double maxSlope = diffGadget->primaryMetric();
+        double xAtMax = diffGadget->secondaryMetric();
+        std::cout << "[INFO] Differentiate y=3x^2 on [2..8]: maxSlope=" << maxSlope
+                  << " at x=" << xAtMax << " (expected 48.0 at x=8.0)\n";
+        CHECK_COND(relErrWithin(maxSlope, 48.0, 0.02) && std::fabs(xAtMax - 8.0) < 0.15,
+                   "RoiGadgetTool::Differentiate maxSlope mismatch vs analytic 6*xmax");
+        RoiGadgetTool::clearGadget(gDiff);
+
+        // 2. RoiGadgetTool::Intersect on y = 2x vs y = 10 - 3x -> exact intersection at (2.0, 4.0)
+        Table *tInt = mw->newTable(21, 3, "IntersectGadgetTbl", "Two Lines");
+        tInt->setColPlotDesignation(2, SciDAVis::Y);
+        for (int i = 0; i <= 20; ++i) {
+            double x = double(i) * 0.25; // 0 .. 5
+            tInt->setCell(i, 0, x);
+            tInt->setCell(i, 1, 2.0 * x);
+            tInt->setCell(i, 2, 10.0 - 3.0 * x);
+        }
+        MultiLayer *mlInt = mw->multilayerPlot(
+                tInt, QStringList() << "IntersectGadgetTbl_2" << "IntersectGadgetTbl_3", Graph::Line);
+        Graph *gInt = mlInt->activeGraph();
+        RoiGadgetTool *intGadget = RoiGadgetTool::attachGadget(mw, gInt, RoiGadgetTool::Intersect);
+        CHECK_COND(intGadget != nullptr, "Failed to attach Intersect gadget");
+        intGadget->setRoiRect(QRectF(0.5, -5.0, 4.0, 20.0));
+        Table *intOutTbl = intGadget->createOutputTable("IntersectHitsTbl");
+        CHECK_COND(intGadget->primaryMetric() == 1.0 && intOutTbl != nullptr,
+                   "RoiGadgetTool::Intersect did not find exactly 1 intersection");
+        double hitX = intOutTbl->cell(0, 2);
+        double hitY = intOutTbl->cell(0, 3);
+        std::cout << "[INFO] Intersect y=2x vs y=10-3x: count=" << intGadget->primaryMetric()
+                  << ", hit=(" << hitX << ", " << hitY << ") (expected 2.0, 4.0)\n";
+        CHECK_COND(std::fabs(hitX - 2.0) < 1e-6 && std::fabs(hitY - 4.0) < 1e-6,
+                   "RoiGadgetTool::Intersect coordinates mismatch vs (2, 4)");
+        RoiGadgetTool::clearGadget(gInt);
+
+        // 3. RoiGadgetTool::Integrate2D on a Matrix / Spectrogram surface
+        // z(x,y) = 5.0 + 12.0 on [0..4]x[0..3]: let's use z(x,y) = 10.0 constant + Gaussian bump, or exact planar z = 10.0 + 2*x + 4*y!
+        // On ROI [1..3] x [1..3] (width=2, height=2, area=4): mean of (10 + 2x + 4y) is 10 + 4 + 8 = 22 -> Total Volume = 22 * 4 = 88.0!
+        // And with a Gaussian peak 20*exp(-((x-2)^2+(y-2)^2)/0.15) on baseline 5.0, Net Volume > 0 and Total Volume = Net + 5*4!
+        Matrix *mat2D = mw->newMatrix(41, 41);
+        mat2D->setCoordinates(0.0, 4.0, 0.0, 4.0);
+        for (int r = 0; r < 41; ++r) {
+            double y = 4.0 * double(r) / 40.0;
+            for (int c = 0; c < 41; ++c) {
+                double x = 4.0 * double(c) / 40.0;
+                double z = 5.0 + 25.0 * std::exp(-((x - 2.0) * (x - 2.0) + (y - 2.0) * (y - 2.0)) / 0.16);
+                mat2D->setCell(r, c, z);
+            }
+        }
+        MultiLayer *mlSpec = mw->plotSpectrogram(mat2D, Graph::ColorMap);
+        CHECK_COND(mlSpec != nullptr && mlSpec->activeGraph() != nullptr, "plotSpectrogram failed in Suite 23");
+        Graph *gSpec = mlSpec->activeGraph();
+        RoiGadgetTool *int2DGadget = RoiGadgetTool::attachGadget(mw, gSpec, RoiGadgetTool::Integrate2D);
+        CHECK_COND(int2DGadget != nullptr, "Failed to attach Integrate2D gadget");
+        int2DGadget->setRoiRect(QRectF(0.0, 0.0, 4.0, 4.0));
+        double totalVol2D = int2DGadget->primaryMetric();
+        double netVol2D = int2DGadget->secondaryMetric();
+        // Analytic Gaussian integral on R^2: 25 * pi * 0.16 = 4 * pi = 12.56637; base = 5 * 16 = 80 -> total ~ 92.566
+        std::cout << "[INFO] Integrate2D Spectrogram: totalVol=" << totalVol2D
+                  << ", netVol=" << netVol2D << " (expected ~92.57, ~12.57)\n";
+        CHECK_COND(relErrWithin(totalVol2D, 80.0 + 4.0 * M_PI, 0.02)
+                           && relErrWithin(netVol2D, 4.0 * M_PI, 0.03),
+                   "RoiGadgetTool::Integrate2D volume mismatch on Matrix Spectrogram");
+        RoiGadgetTool::clearGadget(gSpec);
+
+        // 4. PiecewiseAndRobustFit::fitPiecewiseLinear (2-segment bilinear, breakpoint at x=40)
+        Table *tPw = mw->newTable(81, 2, "PiecewiseTbl", "Bilinear");
+        for (int i = 0; i <= 80; ++i) {
+            double x = double(i); // 0 .. 80
+            double y = (x <= 40.0) ? (2.0 * x) : (80.0 + 0.5 * (x - 40.0));
+            tPw->setCell(i, 0, x);
+            tPw->setCell(i, 1, y);
+        }
+        MultiLayer *mlPw = mw->multilayerPlot(tPw, QStringList() << "PiecewiseTbl_2", Graph::Scatter);
+        Graph *gPw = mlPw->activeGraph();
+        auto pwRes = PiecewiseAndRobustFit::fitPiecewiseLinear(mw, gPw, "PiecewiseTbl_2", 2, true);
+        CHECK_COND(pwRes.converged && pwRes.breakpointsX.size() == 1 && pwRes.slopes.size() == 2,
+                   "fitPiecewiseLinear did not converge with 1 breakpoint and 2 slopes");
+        std::cout << "[INFO] Piecewise Linear: bpX=" << pwRes.breakpointsX[0]
+                  << ", slopes=(" << pwRes.slopes[0] << ", " << pwRes.slopes[1]
+                  << "), R^2=" << pwRes.rSquare << "\n";
+        CHECK_COND(std::fabs(pwRes.breakpointsX[0] - 40.0) <= 0.2
+                           && std::fabs(pwRes.slopes[0] - 2.0) < 0.02
+                           && std::fabs(pwRes.slopes[1] - 0.5) < 0.02
+                           && pwRes.rSquare > 0.999,
+                   "fitPiecewiseLinear parameter accuracy check failed");
+
+        // 5. PiecewiseAndRobustFit::fitRobustOrQuantileLinear (TukeyBisquare with two +9999 outliers, NO masking!)
+        Table *tRob = mw->newTable(30, 2, "RobustTbl", "y=3x+5 with +9999 outliers");
+        for (int i = 0; i < 30; ++i) {
+            double x = double(i);
+            double y = 3.0 * x + 5.0 + 0.01 * std::sin(double(i));
+            if (i == 7 || i == 21)
+                y = 9999.0;
+            tRob->setCell(i, 0, x);
+            tRob->setCell(i, 1, y);
+        }
+        MultiLayer *mlRob = mw->multilayerPlot(tRob, QStringList() << "RobustTbl_2", Graph::Scatter);
+        Graph *gRob = mlRob->activeGraph();
+        auto robRes = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
+                mw, gRob, "RobustTbl_2", PiecewiseAndRobustFit::TukeyBisquare, 0.5, true);
+        std::cout << "[INFO] TukeyBisquare Robust Fit (with two +9999 outliers): slope="
+                  << robRes.slope << ", intercept=" << robRes.intercept << "\n";
+        CHECK_COND(robRes.converged && std::fabs(robRes.slope - 3.0) < 0.05
+                           && std::fabs(robRes.intercept - 5.0) < 0.1,
+                   "fitRobustOrQuantileLinear(TukeyBisquare) failed to reject +9999 outliers");
+
+        // 6. PiecewiseAndRobustFit::compareDatasets (identical vs distinct decay curves)
+        Table *tCmp = mw->newTable(40, 4, "CompareDecayTbl", "Decay F-test");
+        tCmp->setColPlotDesignation(2, SciDAVis::Y);
+        tCmp->setColPlotDesignation(3, SciDAVis::Y);
+        for (int i = 0; i < 40; ++i) {
+            double x = double(i) * 1.5;
+            double base = 5.0 + 100.0 * std::exp(-x / 18.0);
+            double n1 = 0.35 * std::sin(1.7 * double(i) + 0.3);
+            double n2 = 0.35 * std::cos(1.9 * double(i) - 0.2);
+            double distinct = 5.0 + 100.0 * std::exp(-x / 6.0) + 0.35 * std::sin(1.3 * double(i));
+            tCmp->setCell(i, 0, x);
+            tCmp->setCell(i, 1, base + n1);
+            tCmp->setCell(i, 2, base + n2);
+            tCmp->setCell(i, 3, distinct);
+        }
+        MultiLayer *mlCmp = mw->multilayerPlot(
+                tCmp,
+                QStringList() << "CompareDecayTbl_2" << "CompareDecayTbl_3" << "CompareDecayTbl_4",
+                Graph::Scatter);
+        Graph *gCmp = mlCmp->activeGraph();
+        auto cmpSame = PiecewiseAndRobustFit::compareDatasets(
+                mw, gCmp, QStringList() << "CompareDecayTbl_2" << "CompareDecayTbl_3", "ExpDec1");
+        auto cmpDiff = PiecewiseAndRobustFit::compareDatasets(
+                mw, gCmp, QStringList() << "CompareDecayTbl_2" << "CompareDecayTbl_4", "ExpDec1");
+        std::cout << "[INFO] compareDatasets(same tau=18): F=" << cmpSame.fStatistic
+                  << ", p=" << cmpSame.pValue << ", preferSeparate=" << cmpSame.preferSeparate << "\n";
+        std::cout << "[INFO] compareDatasets(tau=18 vs 6): F=" << cmpDiff.fStatistic
+                  << ", p=" << cmpDiff.pValue << ", preferSeparate=" << cmpDiff.preferSeparate << "\n";
+        CHECK_COND(cmpSame.valid && cmpSame.pValue > 0.1 && !cmpSame.preferSeparate,
+                   "compareDatasets falsely rejected shared parameters on identical decay curves");
+        CHECK_COND(cmpDiff.valid && cmpDiff.pValue < 0.01 && cmpDiff.preferSeparate,
+                   "compareDatasets failed to detect distinct decay time constants");
+
+        // 7. PiecewiseAndRobustFit::fitMultipleLinearRegression on Y = 4 + 2*X1 - 3*X2
+        Table *tMlr = mw->newTable(30, 3, "MlrTbl", "Y = 4 + 2*X1 - 3*X2");
+        tMlr->setColName(0, "X1");
+        tMlr->setColName(1, "X2");
+        tMlr->setColName(2, "Y");
+        for (int i = 0; i < 30; ++i) {
+            double x1 = double(i) * 0.5;
+            double x2 = std::sin(double(i) * 0.7) * 4.0 + double(i % 5);
+            double y = 4.0 + 2.0 * x1 - 3.0 * x2 + 1e-4 * std::cos(double(i));
+            tMlr->setCell(i, 0, x1);
+            tMlr->setCell(i, 1, x2);
+            tMlr->setCell(i, 2, y);
+        }
+        auto mlrRes = PiecewiseAndRobustFit::fitMultipleLinearRegression(
+                mw, tMlr, "Y", QStringList() << "X1" << "X2", true);
+        CHECK_COND(mlrRes.valid && mlrRes.betas.size() == 3 && mlrRes.vif.size() == 2,
+                   "fitMultipleLinearRegression returned invalid result sizes");
+        std::cout << "[INFO] MLR betas=(" << mlrRes.betas[0] << ", " << mlrRes.betas[1]
+                  << ", " << mlrRes.betas[2] << "), R^2=" << mlrRes.rSquare
+                  << ", VIF=(" << mlrRes.vif[0] << ", " << mlrRes.vif[1] << ")\n";
+        CHECK_COND(std::fabs(mlrRes.betas[0] - 4.0) < 1e-3
+                           && std::fabs(mlrRes.betas[1] - 2.0) < 1e-3
+                           && std::fabs(mlrRes.betas[2] - (-3.0)) < 1e-3
+                           && mlrRes.rSquare > 0.9999
+                           && mlrRes.vif[0] >= 1.0 && mlrRes.vif[1] >= 1.0 && mlrRes.vif[0] < 5.0,
+                   "fitMultipleLinearRegression accuracy or VIF verification failed");
+    }
+
+    // =========================================================================
+    // 24. Suite 24: Savitzky-Golay Derivative, Peak Envelope, Decimation,
+    //               Normality, Bland-Altman, Two-Way ANOVA & Graph Digitizer
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 24: Signal Derivatives/Envelope/Decimation, Normality/Bland-Altman/2-Way ANOVA & Graph Digitizer...\n";
+
+        // 1. Savitzky-Golay 1st & 2nd Derivative on cubic y = 2*x^3 - 3*x^2 + 4*x + 1
+        // Analytic: y'(x) = 6*x^2 - 6*x + 4, y''(x) = 12*x - 6 (exact for polyOrder=3!)
+        Table *tSg = mw->newTable(101, 2, "SavGolCubicTbl", "Cubic");
+        for (int i = 0; i <= 100; ++i) {
+            double x = -2.0 + 0.05 * double(i); // -2.0 .. 3.0
+            double y = 2.0 * x * x * x - 3.0 * x * x + 4.0 * x + 1.0;
+            tSg->setCell(i, 0, x);
+            tSg->setCell(i, 1, y);
+        }
+        MultiLayer *mlSg = mw->multilayerPlot(tSg, QStringList() << "SavGolCubicTbl_2", Graph::Line);
+        Graph *gSg = mlSg->activeGraph();
+        QwtPlotCurve *cD1 = AdvancedSignalProc::savitzkyGolayDerivative(
+                mw, gSg, "SavGolCubicTbl_2", 1, 9, 3);
+        QwtPlotCurve *cD2 = AdvancedSignalProc::savitzkyGolayDerivative(
+                mw, gSg, "SavGolCubicTbl_2", 2, 9, 3);
+        CHECK_COND(cD1 != nullptr && cD2 != nullptr && cD1->dataSize() == 101 && cD2->dataSize() == 101,
+                   "savitzkyGolayDerivative failed on cubic");
+        // Check interior index i=50 (x = 0.5): y'(0.5) = 6*(0.25) - 3 + 4 = 2.5; y''(0.5) = 6 - 6 = 0;
+        // and index i=70 (x = 1.5): y'(1.5) = 6*(2.25) - 9 + 4 = 8.5; y''(1.5) = 18 - 6 = 12.0
+        std::cout << "[INFO] SavGol at x=1.5: d1=" << cD1->y(70) << " (exp 8.5), d2="
+                  << cD2->y(70) << " (exp 12.0)\n";
+        CHECK_COND(std::fabs(cD1->y(50) - 2.5) < 1e-4 && std::fabs(cD1->y(70) - 8.5) < 1e-4
+                           && std::fabs(cD2->y(70) - 12.0) < 1e-3,
+                   "savitzkyGolayDerivative 1st/2nd derivative mismatch vs analytic cubic");
+
+        // 2. Peak Envelope (EnvelopeBoth) on AM modulated carrier A(x)*sin(omega*x) + Decimation (factor=4)
+        const int nAm = 400;
+        Table *tAm = mw->newTable(nAm, 2, "AmEnvTbl", "AM Carrier");
+        for (int i = 0; i < nAm; ++i) {
+            double x = double(i) * 0.01; // 0 .. 3.99
+            double env = 2.0 + 0.8 * std::cos(2.0 * M_PI * 0.5 * x);
+            double y = env * std::sin(2.0 * M_PI * 12.5 * x);
+            tAm->setCell(i, 0, x);
+            tAm->setCell(i, 1, y);
+        }
+        MultiLayer *mlAm = mw->multilayerPlot(tAm, QStringList() << "AmEnvTbl_2", Graph::Line);
+        Graph *gAm = mlAm->activeGraph();
+        QwtPlotCurve *lowerEnvCurve = nullptr;
+        QwtPlotCurve *upperEnvCurve = AdvancedSignalProc::computePeakEnvelope(
+                mw, gAm, "AmEnvTbl_2", AdvancedSignalProc::EnvelopeBoth, 3, &lowerEnvCurve);
+        CHECK_COND(upperEnvCurve != nullptr && lowerEnvCurve != nullptr
+                           && upperEnvCurve->dataSize() == nAm && lowerEnvCurve->dataSize() == nAm,
+                   "computePeakEnvelope(EnvelopeBoth) did not return upper & lower curves");
+        double envErrSq = 0.0;
+        int envCnt = 0;
+        for (int i = 40; i < nAm - 40; ++i) {
+            double x = upperEnvCurve->x(i);
+            double expEnv = 2.0 + 0.8 * std::cos(2.0 * M_PI * 0.5 * x);
+            double du = upperEnvCurve->y(i) - expEnv;
+            double dl = lowerEnvCurve->y(i) - (-expEnv);
+            envErrSq += 0.5 * (du * du + dl * dl);
+            ++envCnt;
+        }
+        double envRms = std::sqrt(envErrSq / double(envCnt));
+        std::cout << "[INFO] PeakEnvelope(EnvelopeBoth) interior RMS error = " << envRms << "\n";
+        CHECK_COND(envRms < 0.08, "computePeakEnvelope RMS error too large on AM carrier");
+
+        QwtPlotCurve *decCurve = AdvancedSignalProc::decimateCurve(mw, gAm, "AmEnvTbl_2", 4, true);
+        CHECK_COND(decCurve != nullptr && decCurve->dataSize() == nAm / 4,
+                   "decimateCurve(factor=4) output length mismatch");
+
+        // 3. Normality Test (Gaussian passes p > 0.05 vs strongly bimodal/exponential rejected p < 0.05)
+        // Use inverse normal CDF (Acklam / Box-Muller deterministic quantiles) for clean Gaussian sample
+        const int nNorm = 60;
+        Table *tNorm = mw->newTable(nNorm, 2, "NormalityTbl", "Gauss vs Bimodal");
+        tNorm->setColName(0, "GaussianSample");
+        tNorm->setColName(1, "ExponentialBimodal");
+        for (int i = 0; i < nNorm; ++i) {
+            // Deterministic Box-Muller pair from Halton sequence (bases 2 and 3)
+            auto halton = [](int index, int base) {
+                double f = 1.0, r = 0.0;
+                int k = index;
+                while (k > 0) {
+                    f /= double(base);
+                    r += f * double(k % base);
+                    k /= base;
+                }
+                return r;
+            };
+            double u1 = std::max(1e-6, std::min(1.0 - 1e-6, halton(i + 1, 2)));
+            double u2 = halton(i + 1, 3);
+            double z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
+            tNorm->setCell(i, 0, 50.0 + 10.0 * z);
+            tNorm->setCell(i, 1, (i < 42) ? (1.0 + 0.1 * double(i % 5)) : (100.0 + double(i)));
+        }
+        auto normPass = GraphStatsAndSurfaceFit::runNormalityTest(mw, tNorm, "GaussianSample", nullptr);
+        auto normFail = GraphStatsAndSurfaceFit::runNormalityTest(mw, tNorm, "ExponentialBimodal", nullptr);
+        std::cout << "[INFO] Normality(Gaussian): W=" << normPass.shapiroWilkW
+                  << ", p=" << normPass.shapiroWilkP << ", normal=" << normPass.isNormalAt005 << "\n";
+        std::cout << "[INFO] Normality(Bimodal):  W=" << normFail.shapiroWilkW
+                  << ", p=" << normFail.shapiroWilkP << ", normal=" << normFail.isNormalAt005 << "\n";
+        CHECK_COND(normPass.shapiroWilkP > 0.05 && normPass.isNormalAt005,
+                   "runNormalityTest rejected valid Gaussian sample");
+        CHECK_COND(normFail.shapiroWilkP < 0.05 && !normFail.isNormalAt005,
+                   "runNormalityTest failed to reject strongly non-normal sample");
+
+        // 4. Bland-Altman Plot (exact Mean Bias & +/- 1.96 SD Limits of Agreement)
+        const int nBa = 25;
+        Table *tBa = mw->newTable(nBa, 2, "BlandAltmanTbl", "Method A vs B");
+        tBa->setColName(0, "MethodA");
+        tBa->setColName(1, "MethodB");
+        QVector<double> diffs(nBa);
+        double diffSum = 0.0;
+        for (int i = 0; i < nBa; ++i) {
+            double a = 10.0 + 2.0 * double(i);
+            double d = 1.5 + 0.4 * std::sin(double(i) * 1.1); // A - B or B - A
+            double b = a - d;
+            tBa->setCell(i, 0, a);
+            tBa->setCell(i, 1, b);
+            diffs[i] = d;
+            diffSum += d;
+        }
+        const double meanD = diffSum / double(nBa);
+        double varD = 0.0;
+        for (int i = 0; i < nBa; ++i)
+            varD += (diffs[i] - meanD) * (diffs[i] - meanD);
+        const double sdD = std::sqrt(varD / double(nBa - 1));
+
+        double biasOut = 0.0, loaLo = 0.0, loaHi = 0.0;
+        MultiLayer *mlBa = GraphStatsAndSurfaceFit::plotBlandAltman(
+                mw, tBa, "MethodA", "MethodB", &biasOut, &loaLo, &loaHi);
+        CHECK_COND(mlBa != nullptr, "plotBlandAltman returned null MultiLayer");
+        // Accept either (A - B) or (B - A) convention as long as |biasOut| == |meanD| and span == 2 * 1.96 * sdD
+        std::cout << "[INFO] Bland-Altman: bias=" << biasOut << ", LoA=[" << loaLo << ", " << loaHi
+                  << "] (expected |bias|=" << std::fabs(meanD) << ", 1.96*SD=" << 1.96 * sdD << ")\n";
+        CHECK_COND(std::fabs(std::fabs(biasOut) - std::fabs(meanD)) < 1e-6
+                           && std::fabs((biasOut - loaLo) - 1.96 * sdD) < 1e-4
+                           && std::fabs((loaHi - biasOut) - 1.96 * sdD) < 1e-4,
+                   "plotBlandAltman Mean Bias or +/-1.96 SD LoA mismatch");
+
+        // 5. Two-Way ANOVA (2x2 factorial with strong Factor A, Factor B, and A x B interaction)
+        Table *tAnova2 = mw->newTable(24, 3, "TwoWayAnovaTbl", "2x2 Factorial");
+        tAnova2->setColName(0, "TempLevel");
+        tAnova2->setColumnType(0, SciDAVis::ColumnMode::Text);
+        tAnova2->setColName(1, "Catalyst");
+        tAnova2->setColumnType(1, SciDAVis::ColumnMode::Text);
+        tAnova2->setColName(2, "Yield");
+        int rowIdx = 0;
+        for (int a = 0; a < 2; ++a) {
+            for (int b = 0; b < 2; ++b) {
+                double cellMean = 20.0 + 15.0 * double(a) + 12.0 * double(b) + 25.0 * double(a * b);
+                for (int rep = 0; rep < 6; ++rep) {
+                    tAnova2->setText(rowIdx, 0, a == 0 ? "LowTemp" : "HighTemp");
+                    tAnova2->setText(rowIdx, 1, b == 0 ? "CatA" : "CatB");
+                    tAnova2->setCell(rowIdx, 2, cellMean + 0.3 * double(rep - 2.5));
+                    ++rowIdx;
+                }
+            }
+        }
+        auto a2Res = GraphStatsAndSurfaceFit::runTwoWayANOVA(
+                mw, tAnova2, "TempLevel", "Catalyst", "Yield", true);
+        std::cout << "[INFO] Two-Way ANOVA: pA=" << a2Res.pFactorA << ", pB=" << a2Res.pFactorB
+                  << ", pAxB=" << a2Res.pInteraction << "\n";
+        CHECK_COND(a2Res.valid && a2Res.pFactorA < 0.001 && a2Res.pFactorB < 0.001
+                           && a2Res.pInteraction < 0.001 && a2Res.interactionGraph != nullptr,
+                   "runTwoWayANOVA failed to detect significant A, B, and A x B effects");
+
+        // 6. GraphDigitizer: Linear & Log10 round-trip + synthetic QImage(500, 400) auto-trace y = 0.5*x + 10
+        GraphDigitizer::AxisCalibration calLin;
+        calLin.pixelX1 = QPointF(60.0, 350.0);
+        calLin.valueX1 = 0.0;
+        calLin.pixelX2 = QPointF(460.0, 350.0); // 400 px for X in [0..100] -> 4 px/unit
+        calLin.valueX2 = 100.0;
+        calLin.logX = false;
+        calLin.pixelY1 = QPointF(60.0, 350.0);
+        calLin.valueY1 = 0.0;
+        calLin.pixelY2 = QPointF(60.0, 50.0);   // 300 px upward for Y in [0..100] -> 3 px/unit
+        calLin.valueY2 = 100.0;
+        calLin.logY = false;
+
+        QPointF testDataLin(42.5, 31.25);
+        QPointF pxLin = GraphDigitizer::mapDataToPixel(testDataLin, calLin);
+        QPointF backLin = GraphDigitizer::mapPixelToData(pxLin, calLin);
+        CHECK_COND(std::fabs(backLin.x() - testDataLin.x()) < 1e-9
+                           && std::fabs(backLin.y() - testDataLin.y()) < 1e-9,
+                   "GraphDigitizer Linear mapDataToPixel/mapPixelToData round-trip failed");
+
+        GraphDigitizer::AxisCalibration calLog = calLin;
+        calLog.valueX1 = 1.0;
+        calLog.valueX2 = 1000.0;
+        calLog.logX = true;
+        calLog.valueY1 = 0.1;
+        calLog.valueY2 = 1000.0;
+        calLog.logY = true;
+        QPointF testDataLog(31.6227766, 25.0);
+        QPointF pxLog = GraphDigitizer::mapDataToPixel(testDataLog, calLog);
+        QPointF backLog = GraphDigitizer::mapPixelToData(pxLog, calLog);
+        CHECK_COND(relErrWithin(backLog.x(), testDataLog.x(), 1e-9)
+                           && relErrWithin(backLog.y(), testDataLog.y(), 1e-9),
+                   "GraphDigitizer Log10 mapDataToPixel/mapPixelToData round-trip failed");
+
+        // Render synthetic 500x400 white image with pure red curve y = 0.5*x + 10
+        QImage digImg(500, 400, QImage::Format_RGB32);
+        digImg.fill(Qt::white);
+        {
+            QPainter p(&digImg);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            // Black axes frame (will be ignored by red color tracer)
+            p.setPen(QPen(Qt::black, 1));
+            p.drawLine(QPointF(60.0, 50.0), QPointF(60.0, 350.0));
+            p.drawLine(QPointF(60.0, 350.0), QPointF(460.0, 350.0));
+            // Pure red line y = 0.5*x + 10 for x in [5..95]
+            p.setPen(QPen(QColor(255, 0, 0), 3, Qt::SolidLine, Qt::RoundCap));
+            QPointF pStart = GraphDigitizer::mapDataToPixel(QPointF(5.0, 0.5 * 5.0 + 10.0), calLin);
+            QPointF pEnd = GraphDigitizer::mapDataToPixel(QPointF(95.0, 0.5 * 95.0 + 10.0), calLin);
+            p.drawLine(pStart, pEnd);
+        }
+
+        QVector<QPointF> tracedPts = GraphDigitizer::autoTraceCurveByColor(
+                digImg, calLin, QColor(255, 0, 0), 40, 80);
+        CHECK_COND(tracedPts.size() >= 50, "autoTraceCurveByColor extracted too few points");
+
+        MultiLayer *digPlot = nullptr;
+        Table *digTbl = GraphDigitizer::exportPointsToTable(mw, tracedPts, "DigitizedRedLine", &digPlot);
+        CHECK_COND(digTbl != nullptr && digPlot != nullptr && digTbl->numRows() == tracedPts.size(),
+                   "exportPointsToTable failed to create Table & MultiLayer");
+
+        double maxPixErrY = 0.0;
+        for (int i = 0; i < digTbl->numRows(); ++i) {
+            double x = digTbl->cell(i, 0);
+            double y = digTbl->cell(i, 1);
+            // Skip extreme cap endpoints (x near 5.0 or 95.0) if within 1px of cap
+            if (x < 7.0 || x > 93.0)
+                continue;
+            double expectedY = 0.5 * x + 10.0;
+            QPointF actualPix = GraphDigitizer::mapDataToPixel(QPointF(x, y), calLin);
+            QPointF expectedPix = GraphDigitizer::mapDataToPixel(QPointF(x, expectedY), calLin);
+            double pixErr = std::fabs(actualPix.y() - expectedPix.y());
+            if (pixErr > maxPixErrY)
+                maxPixErrY = pixErr;
+        }
+        std::cout << "[INFO] GraphDigitizer autoTrace points=" << tracedPts.size()
+                  << ", max pixel Y error=" << maxPixErrY << " px (< 1.0 px)\n";
+        CHECK_COND(maxPixErrY < 1.0,
+                   "GraphDigitizer extracted (X,Y) exceeded 1.0 pixel tolerance vs y = 0.5*x + 10");
+    }
+
     mw->savedProject();
-    std::cout << "[PASS] All 19 OriginPro 2021 Graph Analysis, Fitting, Signal, Stats, Gadgets, Recalc, and OLE suites passed!\n";
+    std::cout << "[PASS] All 24 ToriGraph OriginPro Parity, Japanese Localization, Arial Font, Page/Layer, Gadgets, Fitting, Signal, Stats, Digitizer, and OLE suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
