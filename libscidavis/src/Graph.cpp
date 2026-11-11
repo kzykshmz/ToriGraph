@@ -105,7 +105,7 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
 
     n_curves = 0;
     d_active_tool = NULL;
-    widthLine = 1;
+    widthLine = 2;
     selectedMarker = -1;
     drawTextOn = false;
     drawLineOn = false;
@@ -126,10 +126,10 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     defaultArrowHeadAngle = 45;
     defaultArrowHeadFill = true;
 
-    defaultMarkerFont = QFont();
+    defaultMarkerFont = QFont("Arial", 14, QFont::Normal, false);
     defaultMarkerFrame = 1;
     defaultTextMarkerColor = QColor(Qt::black);
-    defaultTextMarkerBackground = QColor(Qt::white);
+    defaultTextMarkerBackground = QColor(255, 255, 255, 255);
 
     d_user_step = QVector<double>(QwtPlot::axisCnt);
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
@@ -140,6 +140,7 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     }
 
     d_plot = new Plot(this);
+    initFonts(QFont("Arial", 18, QFont::Normal, false), QFont("Arial", 16, QFont::Normal, false));
     cp = new CanvasPicker(this);
 
     titlePicker = new TitlePicker(d_plot);
@@ -154,7 +155,7 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
                                     QwtPicker::AlwaysOff, d_plot->canvas());
     zoom(false);
 
-    setGeometry(0, 0, 500, 400);
+    setGeometry(0, 0, 500, 500);
     setFocusPolicy(Qt::StrongFocus);
     setFocusProxy(d_plot);
     setMouseTracking(true);
@@ -389,6 +390,7 @@ void Graph::setLabelsNumericFormat(int axis, int format, int prec, const QString
         QwtSupersciptsScaleDraw *sd = new QwtSupersciptsScaleDraw(
                 *static_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axis)),
                 formula.toUtf8().constData());
+        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
         sd->setLabelFormat('s', prec);
         sd->setScaleDiv(div);
         d_plot->setAxisScaleDraw(axis, sd);
@@ -585,6 +587,10 @@ void Graph::setAxisTicksLength(int axis, int majTicksType, int minTicksType, int
     sd->setMinorTicksStyle((ScaleDraw::TicksStyle)minTicksType);
 
     if (majTicksType == ScaleDraw::None && minTicksType == ScaleDraw::None)
+        sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
+    else if (!sd->hasComponent(QwtAbstractScaleDraw::Labels)
+             && (majTicksType == ScaleDraw::None || majTicksType == ScaleDraw::In)
+             && (minTicksType == ScaleDraw::None || minTicksType == ScaleDraw::In))
         sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
     else
         sd->enableComponent(QwtAbstractScaleDraw::Ticks);
@@ -1279,6 +1285,12 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     d_plot->setAxisScaleEngine(axis, sc_engine);
     d_plot->setAxisScaleDiv(axis, div);
 
+    if (type && axisType[axis] == AxisType::Numeric
+        && d_plot->axisLabelFormat(axis) == Plot::Automatic
+        && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
+        setLabelsNumericFormat(axis, Plot::Superscripts, 0, axesFormulas[axis]);
+    }
+
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
 
@@ -1778,8 +1790,16 @@ QString Graph::legendText()
             const FunctionCurve *fc = dynamic_cast<const FunctionCurve *>(c);
             if (fc)
                 text += fc->legend();
-            else
-                text += c->title().text();
+            else {
+                QString label = c->title().text();
+                DataCurve *dc = dynamic_cast<DataCurve *>(const_cast<QwtPlotCurve *>(c));
+                if (dc && dc->table()) {
+                    const QString prefix = QString(dc->table()->name()) + "_";
+                    if (label.startsWith(prefix) && label.length() > prefix.length())
+                        label = label.mid(prefix.length());
+                }
+                text += label;
+            }
             text += "\n";
         }
     }
@@ -2420,7 +2440,7 @@ QString Graph::saveCurves()
 Legend *Graph::newLegend()
 {
     Legend *mrk = new Legend(d_plot);
-    mrk->setOrigin(QPoint(10, 10));
+    mrk->setOrigin(QPoint(16, 16));
 
     if (isPiePlot())
         mrk->setText(pieLegendText());
@@ -2774,16 +2794,17 @@ CurveLayout Graph::initCurveLayout()
     CurveLayout cl;
     cl.connectType = 1;
     cl.lStyle = 0;
-    cl.lWidth = 1;
-    cl.sSize = 7;
-    cl.sType = 0;
+    cl.lWidth = 2;
+    cl.sSize = 9;
+    cl.sType = 1;
     cl.filledArea = 0;
     cl.aCol = 0;
     cl.aStyle = 0;
-    cl.lCol = 0;
-    cl.penWidth = 1;
-    cl.symCol = 0;
-    cl.fillCol = 0;
+    cl.lCol = QColor("#1f77b4").rgba();
+    cl.penWidth = 2;
+    cl.symCol = QColor("#1f77b4").rgba();
+    cl.fillCol = QColor("#1f77b4").rgba();
+    cl.symbolFill = true;
     return cl;
 }
 
@@ -4869,8 +4890,31 @@ QString Graph::parentPlotName()
 
 void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
 {
-    colorIndex = 0;
-    symbolIndex = 0;
+    static const char *const kPaletteHex[] = {
+        "#1f77b4", // blue
+        "#ff7f0e", // orange
+        "#2ca02c", // green
+        "#d62728", // red
+        "#9467bd", // purple
+        "#8c564b", // brown
+        "#e377c2", // pink
+        "#7f7f7f", // gray
+        "#bcbd22", // olive
+        "#17becf"  // cyan
+    };
+    static const int kSymbolIndices[] = {
+        1,  // Ellipse (circle)
+        2,  // Rect (square)
+        6,  // UTriangle (up-triangle)
+        5,  // DTriangle (down-triangle)
+        3,  // Diamond
+        7,  // LTriangle
+        8,  // RTriangle
+        15, // Hexagon
+        13, // Star1
+        9   // Cross
+    };
+    const int kPaletteCount = int(sizeof(kPaletteHex) / sizeof(kPaletteHex[0]));
 
     int curve_index = n_curves - 1;
     if (curve_index >= 0
@@ -4879,31 +4923,20 @@ void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
         DataCurve *master_curve = er->masterCurve();
         if (master_curve) {
             colorIndex = ColorButton::colorIndex(master_curve->pen().color());
+            symbolIndex = 1;
             return;
         }
     }
 
+    int dataCurves = 0;
     for (int i = 0; i < n_curves; i++) {
         const QwtPlotCurve *c = curve(i);
-        if (c && c->rtti() == QwtPlotItem::Rtti_PlotCurve) {
-            int index = ColorButton::colorIndex(c->pen().color());
-            if (index > colorIndex)
-                colorIndex = index;
-
-            QwtSymbol symb = c->symbol();
-            index = SymbolBox::symbolIndex(symb.style());
-            if (index > symbolIndex)
-                symbolIndex = index;
-        }
+        if (c && c->rtti() == QwtPlotItem::Rtti_PlotCurve && c_type[i] != ErrorBars)
+            dataCurves++;
     }
-    if (n_curves > 1)
-        colorIndex = (colorIndex + 1) % 16;
-    if (colorIndex == 13) // avoid white invisible curves
-        colorIndex = 0;
-
-    symbolIndex = (symbolIndex + 1) % 15;
-    if (!symbolIndex)
-        symbolIndex = 1;
+    int idx = qMax(0, dataCurves - 1) % kPaletteCount;
+    colorIndex = int(QColor(kPaletteHex[idx]).rgba());
+    symbolIndex = kSymbolIndices[idx];
 }
 
 void Graph::addFitCurve(QwtPlotCurve *c)

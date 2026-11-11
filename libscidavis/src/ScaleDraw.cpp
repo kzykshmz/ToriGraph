@@ -36,15 +36,15 @@
 #include <qwt_text.h>
 
 ScaleDraw::ScaleDraw(const QString &s)
-    : formula_string(s), d_fmt('g'), d_prec(4), d_minTicks(Out), d_majTicks(Out)
+    : formula_string(s), d_fmt('g'), d_prec(4), d_minTicks(In), d_majTicks(In)
 {
 }
 
 ScaleDraw::ScaleDraw(const ScaleDraw &other, const QString &s)
     : QwtScaleDraw(other),
       formula_string(s),
-      d_minTicks(other.majorTicksStyle()),
-      d_majTicks(other.minorTicksStyle())
+      d_minTicks(other.minorTicksStyle()),
+      d_majTicks(other.majorTicksStyle())
 {
     other.labelFormat(d_fmt, d_prec);
     invalidateCache();
@@ -323,7 +323,7 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
     if (sign == '-')
         s.prepend(sign);
 
-    if (list[0] == "1")
+    if (qAbs(list[0].toDouble() - 1.0) < 1e-9)
         return QwtText("10<sup>" + s + "</sup>");
     else
         return QwtText(list[0] + "x10<sup>" + s + "</sup>");

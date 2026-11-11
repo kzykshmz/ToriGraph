@@ -35,11 +35,14 @@
 #include <qwt_scale_map.h>
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
+#include <qwt_plot_layout.h>
 
 #include "Legend.h"
 #include "ArrowMarker.h"
 #include "ImageMarker.h"
 #include "PlotEnrichement.h"
+#include "Graph.h"
+#include "Plot.h"
 
 SelectionMoveResizer::SelectionMoveResizer(Legend *target) : QWidget(target->plot()->canvas())
 {
@@ -288,6 +291,53 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
         return in;
     }
     boundary_out = boundary_out.normalized();
+    if (!d_widgets.isEmpty() && d_op != Move && d_bounding_rect.width() > 0
+        && d_bounding_rect.height() > 0) {
+        int marginW = 0;
+        int marginH = 0;
+        double canvasAspect =
+                (double)d_bounding_rect.width() / (double)d_bounding_rect.height();
+        if (d_widgets.size() == 1) {
+            Graph *g = qobject_cast<Graph *>(d_widgets.first());
+            if (g && g->plotWidget() && g->plotWidget()->plotLayout()) {
+                QRect cRect = g->plotWidget()->plotLayout()->canvasRect();
+                if (cRect.width() > 0 && cRect.height() > 0) {
+                    marginW = qMax(0, d_bounding_rect.width() - cRect.width());
+                    marginH = qMax(0, d_bounding_rect.height() - cRect.height());
+                    canvasAspect = (double)cRect.width() / (double)cRect.height();
+                }
+            }
+        }
+        int newCW = qMax(50, boundary_out.width() - marginW);
+        int newCH = qMax(50, boundary_out.height() - marginH);
+        if (d_op == Resize_E || d_op == Resize_W) {
+            newCH = qMax(50, qRound(newCW / canvasAspect));
+        } else if (d_op == Resize_N || d_op == Resize_S) {
+            newCW = qMax(50, qRound(newCH * canvasAspect));
+        } else {
+            if (qAbs(boundary_out.width() - d_bounding_rect.width())
+                >= qAbs(boundary_out.height() - d_bounding_rect.height())) {
+                newCH = qMax(50, qRound(newCW / canvasAspect));
+            } else {
+                newCW = qMax(50, qRound(newCH * canvasAspect));
+            }
+        }
+        const int newW = newCW + marginW;
+        const int newH = newCH + marginH;
+        int left = d_bounding_rect.left();
+        int top = d_bounding_rect.top();
+        if (d_op == Resize_W || d_op == Resize_NW || d_op == Resize_SW)
+            left = d_bounding_rect.right() - newW + 1;
+        else if (d_op == Resize_N || d_op == Resize_S)
+            left = d_bounding_rect.center().x() - newW / 2;
+
+        if (d_op == Resize_N || d_op == Resize_NW || d_op == Resize_NE)
+            top = d_bounding_rect.bottom() - newH + 1;
+        else if (d_op == Resize_E || d_op == Resize_W)
+            top = d_bounding_rect.center().y() - newH / 2;
+
+        boundary_out = QRect(left, top, newW, newH);
+    }
     if (in == d_bounding_rect)
         return boundary_out;
     double scale_x = ((double)boundary_out.width()) / d_bounding_rect.width();
@@ -330,8 +380,10 @@ void SelectionMoveResizer::operateOnTargets()
         // ugly hack
         // see Graph::setIgnoreResizeEvents() and Graph::resizeEvent()
         Graph *g = qobject_cast<Graph *>(i);
-        if (g)
+        if (g) {
             g->plotWidget()->resize(i->size());
+            g->plotWidget()->updateLayout();
+        }
     }
     recalcBoundingRect();
 

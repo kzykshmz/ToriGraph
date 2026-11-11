@@ -56,7 +56,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     minTickLength = 5;
     majTickLength = 9;
 
-    setGeometry(QRect(0, 0, 500, 400));
+    setGeometry(QRect(0, 0, 500, 500));
     setAxisTitle(QwtPlot::yLeft, tr("Y Axis Title"));
     setAxisTitle(QwtPlot::xBottom, tr("X Axis Title"));
 
@@ -70,9 +70,12 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 
     // custom scale
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
+        setAxisMaxMinor(i, 2);
         QwtScaleWidget *scale = (QwtScaleWidget *)axisWidget(i);
         if (scale) {
             scale->setMargin(0);
+            scale->setSpacing(6);
+            scale->setPenWidth(2);
 
             // the axis title color must be initialized...
             QwtText title = scale->title();
@@ -85,13 +88,20 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
             scale->setPalette(pal);
 
             ScaleDraw *sd = new ScaleDraw();
-            sd->setTickLength(QwtScaleDiv::MinorTick, minTickLength);
-            sd->setTickLength(QwtScaleDiv::MediumTick, minTickLength);
-            sd->setTickLength(QwtScaleDiv::MajorTick, majTickLength);
+            sd->setTickLength(QwtScaleDiv::MinorTick, 0);
+            sd->setTickLength(QwtScaleDiv::MediumTick, 0);
+            sd->setTickLength(QwtScaleDiv::MajorTick, minTickLength);
+            if (i == QwtPlot::yRight || i == QwtPlot::xTop) {
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+                sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
+            }
 
             setAxisScaleDraw(i, sd);
         }
     }
+
+    enableAxis(QwtPlot::yRight, true);
+    enableAxis(QwtPlot::xTop, true);
 
     // set tick labels alignment [ScaleDraw() defaults to Qt::AlignLeft | Qt::AlignVCenter, good only for yLeft axis]
     setAxisLabelAlignment(QwtPlot::yRight, Qt::AlignRight | Qt::AlignVCenter);
@@ -126,6 +136,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     setFocusProxy(plCanvas);
     setFrameShape(QFrame::Box);
     setLineWidth(0);
+    setMargin(14);
 }
 
 QColor Plot::frameColor()
@@ -179,9 +190,11 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         bool clp = painter->hasClipping();
         painter->save();
         painter->setPen(QPen(canvas()->palette().color(QPalette::Active, QPalette::WindowText),
-                             axesLinewidth(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                             axesLinewidth(), Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
         painter->setClipping(false);
-        if (pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales)
+        const bool allFourEnabled = axisEnabled(QwtPlot::yLeft) && axisEnabled(QwtPlot::yRight)
+                && axisEnabled(QwtPlot::xBottom) && axisEnabled(QwtPlot::xTop);
+        if ((pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales) || allFourEnabled)
             painter->drawRect(rect.adjusted(-(apw2 + 1), -(apw2 + 1), apw2, apw2));
         painter->restore();
         painter->setClipping(clp);
@@ -218,10 +231,10 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         x = x1;
         low = y1;
         if (axisEnabled(QwtPlot::xTop))
-            low += majTickLength;
+            low += 1;
         high = y2;
         if (axisEnabled(QwtPlot::xBottom))
-            high -= majTickLength;
+            high -= 1;
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
@@ -248,10 +261,10 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         x = x2;
         low = y1;
         if (axisEnabled(QwtPlot::xTop))
-            low += majTickLength;
+            low += 1;
         high = y2;
         if (axisEnabled(QwtPlot::xBottom))
-            high -= majTickLength;
+            high -= 1;
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
@@ -278,10 +291,10 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         y = y2;
         low = x1;
         if (axisEnabled(QwtPlot::yLeft))
-            low += majTickLength;
+            low += 1;
         high = x2;
         if (axisEnabled(QwtPlot::yRight))
-            high -= majTickLength;
+            high -= 1;
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
@@ -308,10 +321,10 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         y = y1;
         low = x1;
         if (axisEnabled(QwtPlot::yLeft))
-            low += majTickLength;
+            low += 1;
         high = x2;
         if (axisEnabled(QwtPlot::yRight))
-            high -= majTickLength;
+            high -= 1;
 
         if (min) {
             for (j = 0; j < minTicks; j++) {
@@ -380,10 +393,12 @@ void Plot::setTickLength(int minLength, int majLength)
 
 void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFilter &pfilter) const
 {
-    // QwtText t = title();
     printFrame(painter, plotRect);
-    QwtPlot::print(painter, plotRect, pfilter);
-    // setTitle(t);  WTF??
+    const int m = margin();
+    const QRect innerRect = (m > 0 && plotRect.width() > 2 * m && plotRect.height() > 2 * m)
+            ? plotRect.adjusted(m, m, -m, -m)
+            : plotRect;
+    QwtPlot::print(painter, innerRect, pfilter);
 }
 
 QwtPlotCurve *Plot::curve(int index)
@@ -484,7 +499,7 @@ QList<int> Plot::getMajorTicksType()
             ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
             majorTicksType << sd->majorTicksStyle();
         } else
-            majorTicksType << ScaleDraw::Out;
+            majorTicksType << ScaleDraw::In;
     }
     return majorTicksType;
 }
@@ -504,7 +519,7 @@ QList<int> Plot::getMinorTicksType()
             ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
             minorTicksType << sd->minorTicksStyle();
         } else
-            minorTicksType << ScaleDraw::Out;
+            minorTicksType << ScaleDraw::In;
     }
     return minorTicksType;
 }

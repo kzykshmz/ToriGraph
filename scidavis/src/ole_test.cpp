@@ -1,10 +1,13 @@
 #include "ApplicationWindow.h"
 #include "MultiLayer.h"
 #include "Graph.h"
+#include "Plot.h"
+#include "Legend.h"
 #include "Table.h"
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
 
+#include <qwt_plot_layout.h>
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -78,19 +81,69 @@ int main(int argc, char **argv)
 
     ApplicationWindow *mw = new ApplicationWindow();
     mw->applyUserSettings();
-    Table *t = mw->newTable("TestTable", 10, 2);
+    mw->saveSettings();
+    Table *t = mw->newTable("TestTable", 9, 4);
     CHECK_COND(t != nullptr, "Failed to create Table");
-    for (int r = 0; r < 10; ++r) {
-        double x = double(r + 1);
-        double y = x * x * 0.5 + 2.0;
-        t->setText(r, 0, QString::number(x));
-        t->setText(r, 1, QString::number(y));
+    t->setColName(0, "strain");
+    t->setColName(1, "H18");
+    t->setColName(2, QString::fromUtf8("240\xC2\xB0" "C-3h"));
+    t->setColName(3, QString::fromUtf8("260\xC2\xB0" "C-3h"));
+    const double xs[9] = { 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40 };
+    const double y1[9] = { 32.0, 450.0, 9500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+    const double y2[9] = { 220.0, 380.0, 1050.0, 1800.0, 5600.0, 8600.0, 0.0, 0.0, 0.0 };
+    const double y3[9] = { 160.0, 340.0, 410.0, 880.0, 1650.0, 2600.0, 3800.0, 5100.0, 6800.0 };
+    for (int r = 0; r < 9; ++r) {
+        t->setText(r, 0, QString::number(xs[r]));
+        if (y1[r] > 0)
+            t->setText(r, 1, QString::number(y1[r]));
+        if (y2[r] > 0)
+            t->setText(r, 2, QString::number(y2[r]));
+        if (y3[r] > 0)
+            t->setText(r, 3, QString::number(y3[r]));
     }
 
-    MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_2"), Graph::LineSymbols);
+    QStringList cols;
+    cols << (t->name() + "_H18")
+         << (t->name() + "_" + QString::fromUtf8("240\xC2\xB0" "C-3h"))
+         << (t->name() + "_" + QString::fromUtf8("260\xC2\xB0" "C-3h"));
+    MultiLayer *ml = mw->multilayerPlot(t, cols, Graph::LineSymbols);
     CHECK_COND(ml != nullptr, "Failed to create MultiLayer plot");
-    ml->resize(560, 420);
+    Graph *ag = ml->activeGraph();
+    CHECK_COND(ag != nullptr, "Active Graph is null");
+    ag->setXAxisTitle("Applied strain, <i>&epsilon;</i><sub>a</sub>");
+    ag->setYAxisTitle("<i>N</i><sub>v</sub> / mm<sup>-3</sup>");
+    ag->setScale(QwtPlot::xBottom, 0.0, 0.45, 0.1, 8, 1, 0, false);
+    ag->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 8, 8, 1, false);
+    if (ag->legend())
+        ag->legend()->setOriginCoord(0.24, 150.0);
+
+    // Verify 1:1 square plot canvas after non-square window resizes
+    ml->show();
+    QApplication::processEvents();
+    ml->resize(800, 480);
+    ml->canvasWidget()->resize(780, 420);
+    QApplication::processEvents();
+    QRect cRectWide = ag->plotWidget()->plotLayout()->canvasRect();
+    std::cout << "[INFO] After wide resize (800x480): canvasRect=" << cRectWide.width() << "x"
+              << cRectWide.height() << "\n";
+    CHECK_COND(qAbs(cRectWide.width() - cRectWide.height()) <= 2,
+               "Plot canvas did not preserve 1:1 aspect ratio on wide resize");
+
+    ml->resize(480, 800);
+    ml->canvasWidget()->resize(460, 740);
+    QApplication::processEvents();
+    QRect cRectTall = ag->plotWidget()->plotLayout()->canvasRect();
+    std::cout << "[INFO] After tall resize (480x800): canvasRect=" << cRectTall.width() << "x"
+              << cRectTall.height() << "\n";
+    CHECK_COND(qAbs(cRectTall.width() - cRectTall.height()) <= 2,
+               "Plot canvas did not preserve 1:1 aspect ratio on tall resize");
+
+    ml->resize(520, 520);
+    ml->canvasWidget()->resize(500, 460);
+    QApplication::processEvents();
     ml->arrangeLayers(false, false);
+    if (args.contains("--save-preview"))
+        ml->exportImage(QCoreApplication::applicationDirPath() + "/style_preview.png", 100);
     mw->savedProject();
 
     // 1. Test EMF Vector Rendering

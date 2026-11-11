@@ -99,16 +99,16 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     graphs = 0;
     cols = 1;
     rows = 1;
-    graph_width = 500;
-    graph_height = 400;
+    graph_width = 520;
+    graph_height = 520;
     colsSpace = 5;
     rowsSpace = 5;
     left_margin = 5;
     right_margin = 5;
     top_margin = 5;
     bottom_margin = 5;
-    l_canvas_width = 400;
-    l_canvas_height = 300;
+    l_canvas_width = 360;
+    l_canvas_height = 360;
     lastSize = QSize(-1, -1);
     hor_align = HCenter;
     vert_align = VCenter;
@@ -144,7 +144,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     pal.setColor(QPalette::Window, QColor(Qt::white));
     d_main_widget->setPalette(pal);
 
-    setMinimumSize(400, 300);
+    setMinimumSize(320, 320);
     setGeometry(QRect(0, 0, graph_width, graph_height));
     setFocusPolicy(Qt::StrongFocus);
 }
@@ -258,24 +258,34 @@ void MultiLayer::resizeLayers(const QResizeEvent *re)
 
 void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scaleFonts)
 {
+    Q_UNUSED(oldSize);
+    if (graphs <= 0) {
+        lastSize = size;
+        return;
+    }
+
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    double w_ratio = (double)size.width() / (double)oldSize.width();
-    double h_ratio = (double)(size.height()) / (double)(oldSize.height());
-
+    bool anyResizable = false;
     for (int i = 0; i < graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
         if (gr && !gr->ignoresResizeEvents()) {
-            int gx = qRound(gr->x() * w_ratio);
-            int gy = qRound(gr->y() * h_ratio);
-            int gw = qRound(gr->width() * w_ratio);
-            int gh = qRound(gr->height() * h_ratio);
+            anyResizable = true;
+            break;
+        }
+    }
 
-            gr->setGeometry(QRect(gx, gy, gw, gh));
-            gr->plotWidget()->resize(QSize(gw, gh));
-
-            if (scaleFonts)
-                gr->scaleFonts(h_ratio);
+    if (anyResizable) {
+        const int prevCanvasH = qMax(1, l_canvas_height);
+        arrangeLayers(false, false);
+        if (scaleFonts && l_canvas_height > 0 && l_canvas_height != prevCanvasH) {
+            const double ratio = (double)l_canvas_height / (double)prevCanvasH;
+            for (int i = 0; i < graphsList.count(); i++) {
+                Graph *gr = (Graph *)graphsList.at(i);
+                if (gr && !gr->ignoresResizeEvents())
+                    gr->scaleFonts(ratio);
+            }
+            arrangeLayers(false, false);
         }
     }
 
@@ -370,7 +380,13 @@ void MultiLayer::setGraphGeometry(int x, int y, int w, int h)
 
 QSize MultiLayer::arrangeLayers(bool userSize)
 {
-    const QRect rect = canvas->geometry();
+    if (widget() && widget()->layout())
+        widget()->layout()->activate();
+    QRect rect = canvas->geometry();
+    if (rect.width() < 100 || rect.height() < 100) {
+        rect = QRect(0, 0, qMax(200, width() - 16),
+                     qMax(200, height() - LayerButton::btnSize() - 36));
+    }
 
     gsl_vector *xTopR =
             gsl_vector_calloc(graphs); // ratio between top axis + title and canvas height
@@ -389,40 +405,21 @@ QSize MultiLayer::arrangeLayers(bool userSize)
                                    // stores them in the above vectors
         Graph *gr = (Graph *)graphsList.at(i);
         QwtPlot *plot = gr->plotWidget();
+        plot->updateLayout();
         QwtPlotLayout *plotLayout = plot->plotLayout();
         QRect cRect = plotLayout->canvasRect();
-        double ch = (double)cRect.height();
-        double cw = (double)cRect.width();
+        double ch = qMax(1.0, (double)cRect.height());
+        double cw = qMax(1.0, (double)cRect.width());
 
-        QRect tRect = plotLayout->titleRect();
-        QwtScaleWidget *scale = (QwtScaleWidget *)plot->axisWidget(QwtPlot::xTop);
+        const int topHeight = qMax(0, cRect.top());
+        const int bottomHeight = qMax(0, plot->height() - (cRect.top() + cRect.height()));
+        const int leftWidth = qMax(0, cRect.left());
+        const int rightWidth = qMax(0, plot->width() - (cRect.left() + cRect.width()));
 
-        int topHeight = 0;
-        if (!tRect.isNull())
-            topHeight += tRect.height() + plotLayout->spacing();
-        if (scale) {
-            QRect sRect = plotLayout->scaleRect(QwtPlot::xTop);
-            topHeight += sRect.height();
-        }
         gsl_vector_set(xTopR, i, double(topHeight) / ch);
-
-        scale = (QwtScaleWidget *)plot->axisWidget(QwtPlot::xBottom);
-        if (scale) {
-            QRect sRect = plotLayout->scaleRect(QwtPlot::xBottom);
-            gsl_vector_set(xBottomR, i, double(sRect.height()) / ch);
-        }
-
-        scale = (QwtScaleWidget *)plot->axisWidget(QwtPlot::yLeft);
-        if (scale) {
-            QRect sRect = plotLayout->scaleRect(QwtPlot::yLeft);
-            gsl_vector_set(yLeftR, i, double(sRect.width()) / cw);
-        }
-
-        scale = (QwtScaleWidget *)plot->axisWidget(QwtPlot::yRight);
-        if (scale) {
-            QRect sRect = plotLayout->scaleRect(QwtPlot::yRight);
-            gsl_vector_set(yRightR, i, double(sRect.width()) / cw);
-        }
+        gsl_vector_set(xBottomR, i, double(bottomHeight) / ch);
+        gsl_vector_set(yLeftR, i, double(leftWidth) / cw);
+        gsl_vector_set(yRightR, i, double(rightWidth) / cw);
 
         // calculate max scales/canvas dimensions ratio for each line and column and stores them to
         // vectors
@@ -463,13 +460,31 @@ QSize MultiLayer::arrangeLayers(bool userSize)
     }
 
     if (!userSize) {
-        l_canvas_width = int((rect.width() - (cols - 1) * colsSpace - right_margin - left_margin)
-                             / c_widths);
-        l_canvas_height = int((rect.height() - (rows - 1) * rowsSpace - top_margin - bottom_margin)
-                              / c_heights);
+        const double aspect = (l_canvas_width > 0 && l_canvas_height > 0)
+                ? (double)l_canvas_width / (double)l_canvas_height
+                : 1.0;
+        int availW = qRound((rect.width() - (cols - 1) * colsSpace - right_margin - left_margin)
+                            / c_widths);
+        int availH = qRound((rect.height() - (rows - 1) * rowsSpace - top_margin - bottom_margin)
+                            / c_heights);
+        int fitW = availW;
+        int fitH = qRound(fitW / aspect);
+        if (fitH > availH) {
+            fitH = availH;
+            fitW = qRound(fitH * aspect);
+        }
+        l_canvas_width = qMax(50, fitW);
+        l_canvas_height = qMax(50, fitH);
     }
 
     QSize size = QSize(l_canvas_width, l_canvas_height);
+
+    const int totalW = qRound(l_canvas_width * c_widths) + (cols - 1) * colsSpace + left_margin
+            + right_margin;
+    const int totalH = qRound(l_canvas_height * c_heights) + (rows - 1) * rowsSpace + top_margin
+            + bottom_margin;
+    const int offsetX = userSize ? 0 : qMax(0, (rect.width() - totalW) / 2);
+    const int offsetY = userSize ? 0 : qMax(0, (rect.height() - totalH) / 2);
 
     for (i = 0; i < graphs; i++) {
         int row = i / cols;
@@ -480,34 +495,34 @@ QSize MultiLayer::arrangeLayers(bool userSize)
 
         // calculate sizes and positions for layers
         const int w =
-                int(l_canvas_width * (1 + gsl_vector_get(yLeftR, i) + gsl_vector_get(yRightR, i)));
+                qRound(l_canvas_width * (1 + gsl_vector_get(yLeftR, i) + gsl_vector_get(yRightR, i)));
         const int h =
-                int(l_canvas_height * (1 + gsl_vector_get(xTopR, i) + gsl_vector_get(xBottomR, i)));
+                qRound(l_canvas_height * (1 + gsl_vector_get(xTopR, i) + gsl_vector_get(xBottomR, i)));
 
-        int x = left_margin + col * colsSpace;
+        int x = left_margin + offsetX + col * colsSpace;
         if (hor_align == HCenter)
-            x += int(l_canvas_width
+            x += qRound(l_canvas_width
                      * (gsl_vector_get(X, col) + gsl_vector_get(maxYLeftWidth, col)
                         - gsl_vector_get(yLeftR, i)));
         else if (hor_align == Left)
-            x += int(l_canvas_width * gsl_vector_get(X, col));
+            x += qRound(l_canvas_width * gsl_vector_get(X, col));
         else if (hor_align == Right)
-            x += int(l_canvas_width
+            x += qRound(l_canvas_width
                      * (gsl_vector_get(X, col) + gsl_vector_get(maxYLeftWidth, col)
                         - gsl_vector_get(yLeftR, i) + gsl_vector_get(maxYRightWidth, col)
                         - gsl_vector_get(yRightR, i)));
 
-        int y = top_margin + row * rowsSpace;
+        int y = top_margin + offsetY + row * rowsSpace;
         if (vert_align == VCenter)
-            y += int(l_canvas_height
+            y += qRound(l_canvas_height
                      * (gsl_vector_get(Y, row) + gsl_vector_get(maxXTopHeight, row)
                         - gsl_vector_get(xTopR, i)));
         else if (vert_align == Top)
-            y += int(l_canvas_height * gsl_vector_get(Y, row));
+            y += qRound(l_canvas_height * gsl_vector_get(Y, row));
         else if (vert_align == Bottom)
-            y += int(l_canvas_height
+            y += qRound(l_canvas_height
                      * (gsl_vector_get(Y, row) + gsl_vector_get(maxXTopHeight, row)
-                        - gsl_vector_get(xTopR, i) + +gsl_vector_get(maxXBottomHeight, row)
+                        - gsl_vector_get(xTopR, i) + gsl_vector_get(maxXBottomHeight, row)
                         - gsl_vector_get(xBottomR, i)));
 
         // resizes and moves layers
@@ -524,6 +539,7 @@ QSize MultiLayer::arrangeLayers(bool userSize)
 
         gr->setGeometry(QRect(x, y, w, h));
         gr->plotWidget()->resize(QSize(w, h));
+        gr->plotWidget()->updateLayout();
 
         if (!userSize)
             gr->setAutoscaleFonts(autoscaleFonts); // restore user settings
@@ -591,7 +607,7 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
     int iterations = 0;
     QSize size = arrangeLayers(userSize);
     QSize canvas_size = QSize(1, 1);
-    while (canvas_size != size && iterations < 10) {
+    while ((canvas_size != size || iterations < 3) && iterations < 10) {
         iterations++;
         canvas_size = size;
         size = arrangeLayers(userSize);
@@ -658,7 +674,18 @@ void MultiLayer::exportToFile(const QString &fileName)
 
 void MultiLayer::exportImage(const QString &fileName, int quality)
 {
-    QImage image(canvas->size(), QImage::Format_ARGB32);
+    QRect layersRect;
+    for (int i = 0; i < (int)graphsList.count(); i++) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget())
+            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+    }
+    if (!layersRect.isEmpty())
+        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+    else
+        layersRect = canvas->rect();
+
+    QImage image(layersRect.size(), QImage::Format_ARGB32);
     exportPainter(image);
     image.save(fileName, 0, quality);
 }
@@ -697,9 +724,19 @@ void MultiLayer::exportVector(const QString &fileName, int, bool color, bool kee
     else
         printer.setColorMode(QPrinter::GrayScale);
 
-    if (pageSize == QPageSize(QPageSize::Custom))
-        printer.setPageSize(QPageSize(canvas->size(), QPageSize::Point));
-    else {
+    if (pageSize == QPageSize(QPageSize::Custom)) {
+        QRect layersRect;
+        for (int i = 0; i < (int)graphsList.count(); i++) {
+            Graph *gr = (Graph *)graphsList.at(i);
+            if (gr && gr->plotWidget())
+                layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+        }
+        if (!layersRect.isEmpty())
+            layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+        else
+            layersRect = canvas->rect();
+        printer.setPageSize(QPageSize(layersRect.size(), QPageSize::Point));
+    } else {
         printer.setPageOrientation(orientation);
         printer.setPageSize(pageSize);
     }
@@ -710,10 +747,21 @@ void MultiLayer::exportVector(const QString &fileName, int, bool color, bool kee
 void MultiLayer::exportSVG(const QString &fname)
 {
 #if QT_VERSION >= 0x040300
+    QRect layersRect;
+    for (int i = 0; i < (int)graphsList.count(); i++) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget())
+            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+    }
+    if (!layersRect.isEmpty())
+        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+    else
+        layersRect = canvas->rect();
+
     QSvgGenerator generator;
     generator.setFileName(fname);
 #if QT_VERSION >= 0x040500
-    generator.setSize(canvas->size());
+    generator.setSize(layersRect.size());
     generator.setViewBox(QRect(QPoint(0, 0), generator.size()));
     generator.setResolution(96); // FIXME hardcored
     generator.setTitle(this->name());
@@ -731,10 +779,21 @@ void MultiLayer::exportPainter(QPaintDevice &paintDevice, bool keepAspect, QRect
 
 void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, QSize size)
 {
-    if (size == QSize())
-        size = canvas->size();
+    QRect layersRect;
+    for (int i = 0; i < (int)graphsList.count(); i++) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget())
+            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+    }
+    if (!layersRect.isEmpty())
+        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+    else
+        layersRect = canvas->rect();
+
     if (rect == QRect())
-        rect = canvas->rect();
+        rect = layersRect;
+    if (size == QSize())
+        size = rect.size();
     if (keepAspect) {
         QSize scaled = rect.size();
         scaled.scale(size, Qt::KeepAspectRatio);
@@ -743,13 +802,14 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
     painter.scale((double)size.width() / (double)rect.width(),
                   (double)size.height() / (double)rect.height());
 
-    painter.fillRect(rect, widget()->palette().brush(backgroundRole()));
+    painter.fillRect(QRect(QPoint(0, 0), rect.size()),
+                     widget()->palette().brush(backgroundRole()));
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
         Plot *myPlot = (Plot *)gr->plotWidget();
 
-        QPoint pos = QPoint(gr->pos().x(), gr->pos().y());
+        QPoint pos = gr->pos() - rect.topLeft();
         gr->exportPainter(painter, false, QRect(pos, myPlot->size()));
     }
 }
@@ -760,7 +820,17 @@ void MultiLayer::copyAllLayers()
     if (SciDAVisOle::copyGraphAsOle(qobject_cast<ApplicationWindow *>(window()), this, nullptr))
         return;
 #endif
-    QImage image(canvas->size(), QImage::Format_ARGB32);
+    QRect layersRect;
+    for (int i = 0; i < (int)graphsList.count(); i++) {
+        Graph *gr = (Graph *)graphsList.at(i);
+        if (gr && gr->plotWidget())
+            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+    }
+    if (!layersRect.isEmpty())
+        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
+    else
+        layersRect = canvas->rect();
+    QImage image(layersRect.size(), QImage::Format_ARGB32);
     exportPainter(image);
     QApplication::clipboard()->setImage(image);
 }
@@ -1029,36 +1099,16 @@ void MultiLayer::wheelEvent(QWheelEvent *e)
         && (e->modifiers() == Qt::AltModifier || e->modifiers() == Qt::ControlModifier
             || e->modifiers() == Qt::ShiftModifier)) {
         intSize = resize_graph->plotWidget()->size();
-        // If Alt is pressed then change the width
-        if (e->modifiers() == Qt::AltModifier) {
-            if (e->angleDelta().y() > 0) {
-                intSize.rwidth() += 5;
-            } else if (e->angleDelta().y() < 0) {
-                intSize.rwidth() -= 5;
-            }
-        }
-        // If Ctrl is pressed then changed the height
-        else if (e->modifiers() == Qt::ControlModifier) {
-            if (e->angleDelta().y() > 0) {
-                intSize.rheight() += 5;
-            } else if (e->angleDelta().y() < 0) {
-                intSize.rheight() -= 5;
-            }
-        }
-        // If Shift is pressed then resize
-        else if (e->modifiers() == Qt::ShiftModifier) {
-            if (e->angleDelta().y() > 0) {
-                intSize.rwidth() += 5;
-                intSize.rheight() += 5;
-            } else if (e->angleDelta().y() < 0) {
-                intSize.rwidth() -= 5;
-                intSize.rheight() -= 5;
-            }
+        int delta = (e->angleDelta().y() > 0) ? 5 : ((e->angleDelta().y() < 0) ? -5 : 0);
+        if (delta != 0 && intSize.width() + delta >= 100 && intSize.height() + delta >= 100) {
+            intSize.rwidth() += delta;
+            intSize.rheight() += delta;
         }
 
         aux = resize_graph->pos();
         resize_graph->setGeometry(QRect(QPoint(aux.x(), aux.y()), intSize));
         resize_graph->plotWidget()->resize(intSize);
+        resize_graph->plotWidget()->updateLayout();
 
         emit modifiedPlot();
     }

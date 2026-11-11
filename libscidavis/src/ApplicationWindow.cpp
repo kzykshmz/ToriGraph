@@ -381,10 +381,10 @@ void ApplicationWindow::initFonts()
     int pointSize = appFont.pointSize();
     tableTextFont = appFont;
     tableHeaderFont = appFont;
-    plotAxesFont = QFont(family, pointSize, QFont::Bold, false);
-    plotNumbersFont = QFont(family, pointSize);
-    plotLegendFont = appFont;
-    plotTitleFont = QFont(family, pointSize + 2, QFont::Bold, false);
+    plotAxesFont = QFont("Arial", 18, QFont::Normal, false);
+    plotNumbersFont = QFont("Arial", 16, QFont::Normal, false);
+    plotLegendFont = QFont("Arial", 14, QFont::Normal, false);
+    plotTitleFont = QFont("Arial", 18, QFont::Normal, false);
 
     plot3DAxesFont = QFont(family, pointSize, QFont::Bold, false);
     plot3DNumbersFont = QFont(family, pointSize);
@@ -2387,6 +2387,12 @@ void ApplicationWindow::setPreferences(Graph *g)
             QVector<bool> axesOn(QwtPlot::axisCnt);
             axesOn.fill(true);
             g->enableAxes(axesOn);
+            if (g->plotWidget() && g->plotWidget()->axisScaleDraw(QwtPlot::xTop))
+                g->plotWidget()->axisScaleDraw(QwtPlot::xTop)->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            if (g->plotWidget() && g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                g->plotWidget()->axisScaleDraw(QwtPlot::yRight)->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            g->setTopAxisTitle("");
+            g->setRightAxisTitle("");
             g->updateSecondaryAxis(QwtPlot::xTop);
             g->updateSecondaryAxis(QwtPlot::yRight);
         }
@@ -4275,23 +4281,24 @@ void ApplicationWindow::readSettings()
 
     /* --------------- group 2D Plots ----------------------------- */
     settings.beginGroup("/2DPlots");
+    const bool migrateToriGraphStyle = settings.value("/ToriGraphStyleVersion", 0).toInt() < 2;
     settings.beginGroup("/General");
-    titleOn = settings.value("/Title", true).toBool();
-    allAxesOn = settings.value("/AllAxes", false).toBool();
+    titleOn = migrateToriGraphStyle ? false : settings.value("/Title", false).toBool();
+    allAxesOn = migrateToriGraphStyle ? true : settings.value("/AllAxes", true).toBool();
     canvasFrameOn = settings.value("/CanvasFrame", false).toBool();
     canvasFrameWidth = settings.value("/CanvasFrameWidth", 0).toInt();
-    defaultPlotMargin = settings.value("/Margin", 0).toInt();
-    drawBackbones = settings.value("/AxesBackbones", true).toBool();
-    axesLineWidth = settings.value("/AxesLineWidth", 1).toInt();
+    defaultPlotMargin = migrateToriGraphStyle ? 14 : settings.value("/Margin", 14).toInt();
+    drawBackbones = migrateToriGraphStyle ? true : settings.value("/AxesBackbones", true).toBool();
+    axesLineWidth = migrateToriGraphStyle ? 2 : settings.value("/AxesLineWidth", 2).toInt();
     autoscale2DPlots = settings.value("/Autoscale", true).toBool();
-    autoScaleFonts = settings.value("/AutoScaleFonts", true).toBool();
-    autoResizeLayers = settings.value("/AutoResizeLayers", true).toBool();
-    antialiasing2DPlots = settings.value("/Antialiasing", true).toBool();
+    autoScaleFonts = migrateToriGraphStyle ? false : settings.value("/AutoScaleFonts", false).toBool();
+    autoResizeLayers = migrateToriGraphStyle ? true : settings.value("/AutoResizeLayers", true).toBool();
+    antialiasing2DPlots = migrateToriGraphStyle ? true : settings.value("/Antialiasing", true).toBool();
     d_scale_plots_on_print = settings.value("/ScaleLayersOnPrint", false).toBool();
     d_print_cropmarks = settings.value("/PrintCropmarks", false).toBool();
 
     QStringList graphFonts = settings.value("/Fonts").toStringList();
-    if (graphFonts.size() == 16) {
+    if (!migrateToriGraphStyle && graphFonts.size() == 16) {
         plotAxesFont = QFont(graphFonts[0], graphFonts[1].toInt(), graphFonts[2].toInt(),
                              graphFonts[3].toInt());
         plotNumbersFont = QFont(graphFonts[4], graphFonts[5].toInt(), graphFonts[6].toInt(),
@@ -4304,26 +4311,31 @@ void ApplicationWindow::readSettings()
     settings.endGroup(); // General
 
     settings.beginGroup("/Curves");
-    defaultCurveStyle = settings.value("/Style", Graph::LineSymbols).toInt();
-    defaultCurveLineWidth = settings.value("/LineWidth", 1).toInt();
-    defaultSymbolSize = settings.value("/SymbolSize", 7).toInt();
+    defaultCurveStyle = migrateToriGraphStyle ? int(Graph::LineSymbols)
+                                              : settings.value("/Style", Graph::LineSymbols).toInt();
+    defaultCurveLineWidth = migrateToriGraphStyle ? 2 : settings.value("/LineWidth", 2).toInt();
+    defaultSymbolSize = migrateToriGraphStyle ? 9 : settings.value("/SymbolSize", 9).toInt();
     settings.endGroup(); // Curves
 
     settings.beginGroup("/Ticks");
-    majTicksStyle = settings.value("/MajTicksStyle", ScaleDraw::Out).toInt();
-    minTicksStyle = settings.value("/MinTicksStyle", ScaleDraw::Out).toInt();
-    minTicksLength = settings.value("/MinTicksLength", 5).toInt();
-    majTicksLength = settings.value("/MajTicksLength", 9).toInt();
+    majTicksStyle = migrateToriGraphStyle ? int(ScaleDraw::In)
+                                          : settings.value("/MajTicksStyle", ScaleDraw::In).toInt();
+    minTicksStyle = migrateToriGraphStyle ? int(ScaleDraw::In)
+                                          : settings.value("/MinTicksStyle", ScaleDraw::In).toInt();
+    minTicksLength = migrateToriGraphStyle ? 5 : settings.value("/MinTicksLength", 5).toInt();
+    majTicksLength = migrateToriGraphStyle ? 9 : settings.value("/MajTicksLength", 9).toInt();
     settings.endGroup(); // Ticks
 
     settings.beginGroup("/Legend");
-    legendFrameStyle = settings.value("/FrameStyle", Legend::Line).toInt();
+    legendFrameStyle = migrateToriGraphStyle ? int(Legend::Line)
+                                             : settings.value("/FrameStyle", Legend::Line).toInt();
     legendTextColor = QColor(COLORVALUE(
             settings.value("/TextColor", "#ff000000").toString())); // default color Qt::black
     legendBackground = QColor(COLORVALUE(
             settings.value("/BackgroundColor", "#ffffffff").toString())); // default color Qt::white
-    legendBackground.setAlpha(
-            settings.value("/Transparency", 0).toInt()); // transparent by default;
+    legendBackground.setAlpha(migrateToriGraphStyle
+                                      ? 255
+                                      : settings.value("/Transparency", 255).toInt()); // opaque white by default
     settings.endGroup(); // Legend
 
     settings.beginGroup("/Arrows");
@@ -4578,6 +4590,7 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/HeadFill", defaultArrowHeadFill);
     settings.setValue("/LineStyle", Graph::penStyleName(defaultArrowLineStyle));
     settings.endGroup(); // Arrows
+    settings.setValue("/ToriGraphStyleVersion", 2);
     settings.endGroup();
     /* ----------------- end group 2D Plots -------- */
 

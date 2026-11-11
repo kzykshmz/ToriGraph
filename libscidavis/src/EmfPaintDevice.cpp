@@ -655,11 +655,25 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
     if (!ml)
         return renderFromImage(QImage());
 
+    QRect mlLayersRect;
+    if (!singleLayer) {
+        QWidgetList gl = ml->graphPtrs();
+        for (int i = 0; i < gl.count(); ++i) {
+            Graph *gr = qobject_cast<Graph *>(gl.at(i));
+            if (gr && gr->plotWidget())
+                mlLayersRect = mlLayersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+        }
+        if (!mlLayersRect.isEmpty()) {
+            mlLayersRect.adjust(-ml->leftMargin(), -ml->topMargin(), ml->rightMargin(),
+                                ml->bottomMargin());
+        }
+    }
+
     QSize pxSize = singleLayer && singleLayer->plotWidget()
             ? singleLayer->plotWidget()->size()
-            : ml->canvasWidget()->size();
+            : (!mlLayersRect.isEmpty() ? mlLayersRect.size() : ml->canvasWidget()->size());
     if (pxSize.width() < 50 || pxSize.height() < 50)
-        pxSize = QSize(500, 400);
+        pxSize = QSize(500, 500);
 
     int dpiX = ml->logicalDpiX() > 0 ? ml->logicalDpiX() : 96;
     int dpiY = ml->logicalDpiY() > 0 ? ml->logicalDpiY() : 96;
@@ -672,7 +686,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
         if (singleLayer)
             singleLayer->exportPainter(rp, false, QRect(QPoint(0, 0), pxSize), pxSize);
         else
-            ml->exportPainter(rp, false, QRect(QPoint(0, 0), pxSize), pxSize);
+            ml->exportPainter(rp, false, QRect(), pxSize);
         rp.end();
     }
 
@@ -708,7 +722,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
             vp.fillRect(QRect(QPoint(0, 0), pxSize), Qt::white);
             singleLayer->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
         } else {
-            ml->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
+            ml->exportPainter(vp, false, QRect(), pxSize);
         }
         vp.end();
     }
