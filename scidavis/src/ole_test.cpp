@@ -4,16 +4,29 @@
 #include "Plot.h"
 #include "Legend.h"
 #include "Table.h"
+#include "MultiPeakFit.h"
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
+#include "core/column/Column.h"
 
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
+#include <qwt_scale_div.h>
 #include <QApplication>
+#include <QClipboard>
 #include <QDir>
 #include <QFile>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QTimer>
+#include <QWheelEvent>
+#include <cmath>
 #include <iostream>
 #include <wrl/client.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 using Microsoft::WRL::ComPtr;
 
@@ -70,8 +83,15 @@ static int CALLBACK enumEmfProc(HDC, HANDLETABLE *, const ENHMETARECORD *rec, in
         } \
     } while (0)
 
+static bool relErrWithin(double actual, double expected, double tolRatio = 0.02)
+{
+    double denom = std::max(std::fabs(expected), 1e-9);
+    return std::fabs(actual - expected) / denom <= tolRatio;
+}
+
 int main(int argc, char **argv)
 {
+    std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
     QApplication app(argc, argv);
     QStringList args = app.arguments();
 
@@ -82,40 +102,51 @@ int main(int argc, char **argv)
     ApplicationWindow *mw = new ApplicationWindow();
     mw->applyUserSettings();
     mw->saveSettings();
-    Table *t = mw->newTable("TestTable", 9, 4);
+
+    // =========================================================================
+    // 1. OriginPro 2021 Reference Scatter Plot & Visual Parity
+    // =========================================================================
+    Table *t = mw->newTable("TestTable", 7, 4);
     CHECK_COND(t != nullptr, "Failed to create Table");
-    t->setColName(0, "strain");
+    t->setColName(0, "stress");
     t->setColName(1, "H18");
     t->setColName(2, QString::fromUtf8("240\xC2\xB0" "C-3h"));
     t->setColName(3, QString::fromUtf8("260\xC2\xB0" "C-3h"));
-    const double xs[9] = { 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40 };
-    const double y1[9] = { 32.0, 450.0, 9500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-    const double y2[9] = { 220.0, 380.0, 1050.0, 1800.0, 5600.0, 8600.0, 0.0, 0.0, 0.0 };
-    const double y3[9] = { 160.0, 340.0, 410.0, 880.0, 1650.0, 2600.0, 3800.0, 5100.0, 6800.0 };
-    for (int r = 0; r < 9; ++r) {
-        t->setText(r, 0, QString::number(xs[r]));
+    const double xs[7] = { 130.0, 145.0, 160.0, 175.0, 190.0, 205.0, 222.0 };
+    const double y1[7] = { 0.0, 0.0, 0.0, 0.0, 0.0, 32.0, 9500.0 };
+    const double y2[7] = { 0.0, 220.0, 380.0, 1050.0, 5600.0, 8600.0, 0.0 };
+    const double y3[7] = { 160.0, 340.0, 880.0, 2600.0, 6800.0, 0.0, 0.0 };
+    for (int r = 0; r < 7; ++r) {
+        t->setCell(r, 0, xs[r]);
         if (y1[r] > 0)
-            t->setText(r, 1, QString::number(y1[r]));
+            t->setCell(r, 1, y1[r]);
+        else
+            t->clearCell(r, 1);
         if (y2[r] > 0)
-            t->setText(r, 2, QString::number(y2[r]));
+            t->setCell(r, 2, y2[r]);
+        else
+            t->clearCell(r, 2);
         if (y3[r] > 0)
-            t->setText(r, 3, QString::number(y3[r]));
+            t->setCell(r, 3, y3[r]);
+        else
+            t->clearCell(r, 3);
     }
 
     QStringList cols;
     cols << (t->name() + "_H18")
          << (t->name() + "_" + QString::fromUtf8("240\xC2\xB0" "C-3h"))
          << (t->name() + "_" + QString::fromUtf8("260\xC2\xB0" "C-3h"));
-    MultiLayer *ml = mw->multilayerPlot(t, cols, Graph::LineSymbols);
+    MultiLayer *ml = mw->multilayerPlot(t, cols, Graph::Scatter);
     CHECK_COND(ml != nullptr, "Failed to create MultiLayer plot");
     Graph *ag = ml->activeGraph();
     CHECK_COND(ag != nullptr, "Active Graph is null");
-    ag->setXAxisTitle("Applied strain, <i>&epsilon;</i><sub>a</sub>");
+    ag->setXAxisTitle("Local flow stress, <i>&sigma;</i><sub>f</sub> / MPa");
     ag->setYAxisTitle("<i>N</i><sub>v</sub> / mm<sup>-3</sup>");
-    ag->setScale(QwtPlot::xBottom, 0.0, 0.45, 0.1, 8, 1, 0, false);
+    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 4, 0, false);
     ag->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 8, 8, 1, false);
-    if (ag->legend())
-        ag->legend()->setOriginCoord(0.24, 150.0);
+    if (ag->legend()) {
+        ag->legend()->setOriginCoord(62.0, 35000.0);
+    }
 
     // Verify 1:1 square plot canvas after non-square window resizes
     ml->show();
@@ -144,9 +175,281 @@ int main(int argc, char **argv)
     ml->arrangeLayers(false, false);
     if (args.contains("--save-preview"))
         ml->exportImage(QCoreApplication::applicationDirPath() + "/style_preview.png", 100);
+
+    // =========================================================================
+    // 2. Test Mouse Wheel Zoom & Pan on Linear and Log10 Axes
+    // =========================================================================
+    Plot *plotW = ag->plotWidget();
+    QWidget *canvasW = plotW->canvas();
+    CHECK_COND(canvasW != nullptr, "Plot canvas is null");
+    QPoint centerPt(canvasW->width() / 2, canvasW->height() / 2);
+
+    double xMinBefore = plotW->axisScaleDiv(QwtPlot::xBottom)->lowerBound();
+    double xMaxBefore = plotW->axisScaleDiv(QwtPlot::xBottom)->upperBound();
+    double yMinBefore = plotW->axisScaleDiv(QwtPlot::yLeft)->lowerBound();
+    double yMaxBefore = plotW->axisScaleDiv(QwtPlot::yLeft)->upperBound();
+
+    // Send wheel zoom-in event (delta = +120)
+    QWheelEvent wheelIn(centerPt, canvasW->mapToGlobal(centerPt), 120, Qt::NoButton,
+                        Qt::NoModifier, Qt::Vertical);
+    QCoreApplication::sendEvent(canvasW, &wheelIn);
+
+    double xMinZoom = plotW->axisScaleDiv(QwtPlot::xBottom)->lowerBound();
+    double xMaxZoom = plotW->axisScaleDiv(QwtPlot::xBottom)->upperBound();
+    double yMinZoom = plotW->axisScaleDiv(QwtPlot::yLeft)->lowerBound();
+    double yMaxZoom = plotW->axisScaleDiv(QwtPlot::yLeft)->upperBound();
+    std::cout << "[INFO] After wheel zoom-in: X=[" << xMinZoom << ", " << xMaxZoom
+              << "], Y(Log10)=[" << yMinZoom << ", " << yMaxZoom << "]\n";
+    CHECK_COND((xMaxZoom - xMinZoom) < (xMaxBefore - xMinBefore),
+               "Linear X axis range did not narrow on wheel zoom-in");
+    CHECK_COND(yMinZoom > yMinBefore && yMaxZoom < yMaxBefore && yMinZoom > 0.0,
+               "Log10 Y axis range did not narrow positively on wheel zoom-in");
+
+    // Test Middle-Button Drag Pan on canvas
+    QPoint dragStart = centerPt;
+    QPoint dragEnd(centerPt.x() + 40, centerPt.y() - 30);
+    QMouseEvent panPress(QEvent::MouseButtonPress, dragStart, Qt::MiddleButton,
+                         Qt::MiddleButton, Qt::NoModifier);
+    QMouseEvent panMove(QEvent::MouseMove, dragEnd, Qt::NoButton,
+                        Qt::MiddleButton, Qt::NoModifier);
+    QMouseEvent panRelease(QEvent::MouseButtonRelease, dragEnd, Qt::MiddleButton,
+                           Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(canvasW, &panPress);
+    QCoreApplication::sendEvent(canvasW, &panMove);
+    QCoreApplication::sendEvent(canvasW, &panRelease);
+
+    double xMinPan = plotW->axisScaleDiv(QwtPlot::xBottom)->lowerBound();
+    double yMinPan = plotW->axisScaleDiv(QwtPlot::yLeft)->lowerBound();
+    std::cout << "[INFO] After middle-drag pan: xMin=" << xMinPan << ", yMin=" << yMinPan << "\n";
+    CHECK_COND(std::fabs(xMinPan - xMinZoom) > 1e-3 && yMinPan > 0.0,
+               "Middle-drag pan did not shift axis ranges or broke Log10 positivity");
+
+    // Restore reference scales
+    ag->setScale(QwtPlot::xBottom, 50.0, 250.0, 50.0, 5, 4, 0, false);
+    ag->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 8, 8, 1, false);
+    plotW->replot();
+
+    // =========================================================================
+    // 3. Test Single-Peak & Multi-Peak Auto-Detection & Fitting
+    // =========================================================================
+    const int nPts = 201;
+    Table *peakTable = mw->newTable("PeakData", nPts, 4);
+    CHECK_COND(peakTable != nullptr, "Failed to create PeakData table");
+    peakTable->setColName(0, "X");
+    peakTable->setColName(1, "Gauss2");
+    peakTable->setColName(2, "Lorentz3");
+    peakTable->setColName(3, "PseudoVoigt2");
+
+    // Ground truth 2-peak Gauss (Area parameterization):
+    // y = y0 + sum A_i * sqrt(2/pi) / w_i * exp(-2 * ((x - xc_i) / w_i)^2)
+    const double g_y0 = 5.0;
+    const double g_xc[2] = { 30.0, 68.0 };
+    const double g_w[2] = { 6.0, 8.0 };
+    const double g_A[2] = { 250.0, 420.0 };
+
+    // Ground truth 3-peak Lorentz (Area parameterization):
+    // y = y0 + sum (2 * A_i / pi) * w_i / (4 * (x - xc_i)^2 + w_i^2)
+    const double l_y0 = 2.0;
+    const double l_xc[3] = { 20.0, 50.0, 80.0 };
+    const double l_w[3] = { 4.5, 6.0, 5.0 };
+    const double l_A[3] = { 180.0, 320.0, 240.0 };
+
+    // Ground truth 2-peak Pseudo-Voigt (mu = 0.5, w_i = FWHM, A_i = Area):
+    const double pv_y0 = 3.5;
+    const double pv_mu = 0.5;
+    const double pv_xc[2] = { 36.0, 56.0 };
+    const double pv_w[2] = { 13.0, 15.0 };
+    const double pv_A[2] = { 420.0, 620.0 };
+
+    const double cGaussNorm = std::sqrt(4.0 * std::log(2.0) / M_PI);
+    const double cGaussExp = 4.0 * std::log(2.0);
+
+    for (int i = 0; i < nPts; ++i) {
+        double x = 0.5 * i; // 0.0 .. 100.0
+        double yg = g_y0;
+        for (int k = 0; k < 2; ++k) {
+            double z = (x - g_xc[k]) / g_w[k];
+            yg += g_A[k] * std::sqrt(2.0 / M_PI) / g_w[k] * std::exp(-2.0 * z * z);
+        }
+
+        double yl = l_y0;
+        for (int k = 0; k < 3; ++k) {
+            double dx = x - l_xc[k];
+            yl += (2.0 * l_A[k] / M_PI) * l_w[k] / (4.0 * dx * dx + l_w[k] * l_w[k]);
+        }
+
+        double ypv = pv_y0;
+        for (int k = 0; k < 2; ++k) {
+            double dx = x - pv_xc[k];
+            double w = pv_w[k];
+            double L = (2.0 / M_PI) * w / (4.0 * dx * dx + w * w);
+            double G = (cGaussNorm / w) * std::exp(-cGaussExp * dx * dx / (w * w));
+            ypv += pv_A[k] * (pv_mu * L + (1.0 - pv_mu) * G);
+        }
+
+        peakTable->setCell(i, 0, x);
+        peakTable->setCell(i, 1, yg);
+        peakTable->setCell(i, 2, yl);
+        peakTable->setCell(i, 3, ypv);
+    }
+
+    // 3a. 2-Peak Gaussian Auto-Detection & Fit
+    MultiLayer *mlGauss = mw->multilayerPlot(
+            peakTable, QStringList() << (peakTable->name() + "_Gauss2"), Graph::Scatter);
+    CHECK_COND(mlGauss != nullptr, "Failed to create Gauss2 plot");
+    Graph *gGauss = mlGauss->activeGraph();
+    MultiPeakFit *gaussFit = new MultiPeakFit(mw, gGauss, MultiPeakFit::Gauss, 2);
+    gaussFit->enablePeakCurves(true);
+    CHECK_COND(gaussFit->setDataFromCurve(peakTable->name() + "_Gauss2"),
+               "gaussFit->setDataFromCurve failed");
+    gaussFit->fit(); // Automatically invokes guessInitialValues() -> autoDetectPeaks()
+
+    const std::vector<double> &gRes = gaussFit->results();
+    CHECK_COND(gRes.size() == 7, "Expected 7 parameters for 2-peak Gauss fit");
+    std::cout << "[INFO] 2-Peak Gauss Fit: R^2=" << gaussFit->rSquare()
+              << ", AdjR^2=" << gaussFit->adjustedRSquare()
+              << ", chi^2=" << gaussFit->chiSquare()
+              << ", Peak1(A=" << gRes[0] << ", xc=" << gRes[1] << ", w=" << gRes[2] << ")"
+              << ", Peak2(A=" << gRes[3] << ", xc=" << gRes[4] << ", w=" << gRes[5] << ")"
+              << ", y0=" << gRes[6] << "\n";
+    CHECK_COND(gaussFit->rSquare() > 0.999, "2-Peak Gauss R^2 < 0.999");
+    CHECK_COND(gaussFit->adjustedRSquare() > 0.999, "2-Peak Gauss Adjusted R^2 < 0.999");
+    CHECK_COND(relErrWithin(gRes[0], g_A[0]) && relErrWithin(gRes[1], g_xc[0])
+                       && relErrWithin(gRes[2], g_w[0]),
+               "2-Peak Gauss Peak 1 parameters exceeded 2% tolerance");
+    CHECK_COND(relErrWithin(gRes[3], g_A[1]) && relErrWithin(gRes[4], g_xc[1])
+                       && relErrWithin(gRes[5], g_w[1]) && relErrWithin(gRes[6], g_y0),
+               "2-Peak Gauss Peak 2 / baseline parameters exceeded 2% tolerance");
+    // Data curve + total fit curve + 2 individual peak curves = 4 curves
+    CHECK_COND(gGauss->curves() >= 4, "Expected individual deconvoluted peak curves on Gauss graph");
+
+    Table *gaussSummary = gaussFit->createPeakSummaryTable("GaussPeakSummary");
+    CHECK_COND(gaussSummary != nullptr && gaussSummary->numRows() == 2,
+               "createPeakSummaryTable failed for 2-Peak Gauss");
+    CHECK_COND(relErrWithin(gaussSummary->cell(0, 1), g_xc[0])
+                       && relErrWithin(gaussSummary->cell(1, 1), g_xc[1]),
+               "GaussPeakSummary centers mismatch");
+    CHECK_COND(relErrWithin(gaussSummary->cell(0, 4) + gaussSummary->cell(1, 4),
+                            g_A[0] + g_A[1]),
+               "GaussPeakSummary total area mismatch");
+    CHECK_COND(std::fabs((gaussSummary->cell(0, 5) + gaussSummary->cell(1, 5)) - 100.0) < 0.1,
+               "GaussPeakSummary AreaPercent did not sum to 100%");
+
+    Table *gaussResiduals = gaussFit->createResidualsTable("GaussResiduals");
+    CHECK_COND(gaussResiduals != nullptr && gaussResiduals->numRows() == nPts,
+               "createResidualsTable failed for 2-Peak Gauss");
+    CHECK_COND(std::fabs(gaussResiduals->cell(50, 3)) < 1e-2,
+               "Residual value in GaussResiduals table is too large");
+    delete gaussFit;
+
+    // 3b. 3-Peak Lorentzian Auto-Count Detection & Fit
+    MultiLayer *mlLorentz = mw->multilayerPlot(
+            peakTable, QStringList() << (peakTable->name() + "_Lorentz3"), Graph::Scatter);
+    CHECK_COND(mlLorentz != nullptr, "Failed to create Lorentz3 plot");
+    Graph *gLorentz = mlLorentz->activeGraph();
+    MultiPeakFit *lorentzFit = new MultiPeakFit(mw, gLorentz, MultiPeakFit::Lorentz, 1);
+    lorentzFit->enablePeakCurves(true);
+    CHECK_COND(lorentzFit->setDataFromCurve(peakTable->name() + "_Lorentz3"),
+               "lorentzFit->setDataFromCurve failed");
+    int detectedLorentzPeaks = lorentzFit->autoDetectAndUpdateNumPeaks(10, 0.08);
+    std::cout << "[INFO] Auto-detected Lorentz peak count = " << detectedLorentzPeaks << "\n";
+    CHECK_COND(detectedLorentzPeaks == 3, "Expected autoDetectAndUpdateNumPeaks to find 3 peaks");
+    lorentzFit->fit();
+
+    const std::vector<double> &lRes = lorentzFit->results();
+    CHECK_COND(lRes.size() == 10, "Expected 10 parameters for 3-peak Lorentz fit");
+    std::cout << "[INFO] 3-Peak Lorentz Fit: R^2=" << lorentzFit->rSquare()
+              << ", Peak1(A=" << lRes[0] << ", xc=" << lRes[1] << ", w=" << lRes[2] << ")"
+              << ", Peak2(A=" << lRes[3] << ", xc=" << lRes[4] << ", w=" << lRes[5] << ")"
+              << ", Peak3(A=" << lRes[6] << ", xc=" << lRes[7] << ", w=" << lRes[8] << ")"
+              << ", y0=" << lRes[9] << "\n";
+    CHECK_COND(lorentzFit->rSquare() > 0.999, "3-Peak Lorentz R^2 < 0.999");
+    for (int k = 0; k < 3; ++k) {
+        CHECK_COND(relErrWithin(lRes[3 * k + 0], l_A[k])
+                           && relErrWithin(lRes[3 * k + 1], l_xc[k])
+                           && relErrWithin(lRes[3 * k + 2], l_w[k]),
+                   "3-Peak Lorentz parameter exceeded 2% tolerance");
+    }
+    CHECK_COND(gLorentz->curves() >= 5,
+               "Expected 3 deconvoluted peak curves + total fit curve on Lorentz graph");
+    delete lorentzFit;
+
+    // 3c. 2-Peak Pseudo-Voigt Auto-Detection & Fit
+    MultiLayer *mlPV = mw->multilayerPlot(
+            peakTable, QStringList() << (peakTable->name() + "_PseudoVoigt2"), Graph::Scatter);
+    CHECK_COND(mlPV != nullptr, "Failed to create PseudoVoigt2 plot");
+    Graph *gPV = mlPV->activeGraph();
+    gPV->setXAxisTitle("Diffraction angle, 2<i>&theta;</i> / deg");
+    gPV->setYAxisTitle("Intensity / a.u.");
+    MultiPeakFit *pvFit = new MultiPeakFit(mw, gPV, MultiPeakFit::PseudoVoigt, 2);
+    pvFit->setLorentzFraction(pv_mu);
+    pvFit->enablePeakCurves(true);
+    CHECK_COND(pvFit->setDataFromCurve(peakTable->name() + "_PseudoVoigt2"),
+               "pvFit->setDataFromCurve failed");
+    pvFit->fit();
+
+    const std::vector<double> &pvRes = pvFit->results();
+    CHECK_COND(pvRes.size() == 7, "Expected 7 parameters for 2-peak Pseudo-Voigt fit");
+    std::cout << "[INFO] 2-Peak Pseudo-Voigt Fit: R^2=" << pvFit->rSquare()
+              << ", Peak1(A=" << pvRes[0] << ", xc=" << pvRes[1] << ", w=" << pvRes[2] << ")"
+              << ", Peak2(A=" << pvRes[3] << ", xc=" << pvRes[4] << ", w=" << pvRes[5] << ")"
+              << ", y0=" << pvRes[6] << "\n";
+    CHECK_COND(pvFit->rSquare() > 0.999, "2-Peak Pseudo-Voigt R^2 < 0.999");
+    for (int k = 0; k < 2; ++k) {
+        CHECK_COND(relErrWithin(pvRes[3 * k + 0], pv_A[k])
+                           && relErrWithin(pvRes[3 * k + 1], pv_xc[k])
+                           && relErrWithin(pvRes[3 * k + 2], pv_w[k]),
+                   "2-Peak Pseudo-Voigt parameter exceeded 2% tolerance");
+    }
+    if (args.contains("--save-preview"))
+        mlPV->exportImage(QCoreApplication::applicationDirPath() + "/peak_fit_preview.png", 100);
+    delete pvFit;
+
+    // =========================================================================
+    // 4. Test OriginPro 2021 Worksheet (Table) Auto-Expanding Paste & Keys
+    // =========================================================================
+    Table *pasteTbl = mw->newTable("PasteTest", 2, 2);
+    CHECK_COND(pasteTbl != nullptr, "Failed to create PasteTest table");
+    pasteTbl->setCellsSelected(0, 0, 0, 0, true);
+    QApplication::clipboard()->setText(
+            "1.5\t1.25e-3\t10.0\n"
+            "2.5\t--\t20.0\n"
+            "3.5\t3.5E+04\tNaN\n"
+            "4.5\t7.0\t40.0\n");
+    pasteTbl->pasteSelection();
+
+    std::cout << "[INFO] After 4x3 paste into 2x2 table: rows=" << pasteTbl->numRows()
+              << ", cols=" << pasteTbl->numCols() << "\n";
+    CHECK_COND(pasteTbl->numRows() == 4 && pasteTbl->numCols() == 3,
+               "Table::pasteSelection did not auto-expand rows and columns to 4x3");
+    CHECK_COND(relErrWithin(pasteTbl->cell(0, 1), 1.25e-3, 1e-6),
+               "Scientific notation 1.25e-3 was not parsed accurately");
+    CHECK_COND(relErrWithin(pasteTbl->cell(2, 1), 3.5e4, 1e-6),
+               "Scientific notation 3.5E+04 was not parsed accurately");
+    CHECK_COND(pasteTbl->column(1)->isInvalid(1) && pasteTbl->column(2)->isInvalid(2),
+               "Missing tokens '--' and 'NaN' were not marked invalid/empty");
+
+    // Test Delete key clearing selected cell without shrinking rows
+    pasteTbl->deselectAll();
+    pasteTbl->setCellsSelected(0, 0, 0, 0, true);
+    QKeyEvent delKey(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    QCoreApplication::sendEvent(pasteTbl, &delKey);
+    CHECK_COND(pasteTbl->column(0)->isInvalid(0) && pasteTbl->numRows() == 4,
+               "Delete key did not clear cell(0,0) or unexpectedly altered row count");
+
+    // Test Return/Enter key at bottom row auto-appending a new row
+    pasteTbl->deselectAll();
+    pasteTbl->setCellsSelected(3, 0, 3, 0, true);
+    QKeyEvent enterKey(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QCoreApplication::sendEvent(pasteTbl, &enterKey);
+    CHECK_COND(pasteTbl->numRows() == 5,
+               "Pressing Return on bottom row did not auto-append row 5");
+
     mw->savedProject();
 
-    // 1. Test EMF Vector Rendering
+    // =========================================================================
+    // 5. Test EMF Vector Rendering & OLE Storage Round-Trip + Clipboard
+    // =========================================================================
     OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, nullptr);
     CHECK_COND(!rg.emfBytes.isEmpty(), "EMF bytes are empty");
     CHECK_COND(!rg.dibBytes.isEmpty(), "DIB bytes are empty");
@@ -172,7 +475,6 @@ int main(int argc, char **argv)
     CHECK_COND(stats.vectorPathOrLineRecords > 5, "Expected vector path/line records in EMF");
     CHECK_COND(stats.textRecords > 0, "Expected vector text records in EMF");
 
-    // 2. Test OLE Object Creation & Storage Persistence Round-Trip
     SciDAVisOle::OleGraphPayload payload;
     payload.projectBytes = mw->saveProjectToByteArray();
     payload.targetWindow = ml->name();
@@ -235,7 +537,7 @@ int main(int argc, char **argv)
     stg.Reset();
     QFile::remove(stgPath);
 
-    // 3. Test Clipboard Copy via MultiLayer::copyAllLayers()
+    // Test Clipboard Copy via MultiLayer::copyAllLayers()
     ml->copyAllLayers();
 
     ComPtr<IDataObject> clipData;
@@ -262,7 +564,7 @@ int main(int argc, char **argv)
     CHECK_COND(clipData->QueryGetData(&fmtDib) == S_OK, "Clipboard missing CF_DIB");
 
     clipData.Reset();
-    std::cout << "[PASS] All OLE unit and clipboard tests passed!\n";
+    std::cout << "[PASS] All OriginPro 2021 parity, Multi-Peak Fit, Table UX, and OLE tests passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");

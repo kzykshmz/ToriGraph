@@ -688,11 +688,16 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
 {
     QStringList curves = d_graph->curvesList();
     int index = 0;
+    QString prefix = tr("Peak");
     for (int i = 0; i < (int)curves.count(); i++) {
-        if (curves[i].startsWith(tr("Peak")))
-            index++;
+        if (curves[i].startsWith(prefix)) {
+            bool ok = false;
+            curves[i].mid(prefix.length()).toInt(&ok);
+            if (ok)
+                index++;
+        }
     }
-    QString title = tr("Peak") + QString::number(++index);
+    QString title = prefix + QString::number(++index);
 
     FunctionCurve *c =
             new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal, title);
