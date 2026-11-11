@@ -240,6 +240,11 @@ protected:
     QHBoxLayout *d_main_layout;
     TableDoubleHeaderView *d_horizontal_header;
     QPointer<future::Table> d_table;
+    QLabel *d_long_name_label = nullptr;
+    QLineEdit *d_long_name_edit = nullptr;
+    QLabel *d_units_label = nullptr;
+    QLineEdit *d_units_edit = nullptr;
+    bool d_user_hid_comments = false;
 
     //! Initialization
     void init();

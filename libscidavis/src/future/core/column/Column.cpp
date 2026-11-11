@@ -146,6 +146,41 @@ void Column::setPlotDesignation(SciDAVis::PlotDesignation pd)
         exec(new ColumnSetPlotDesignationCmd(d_column_private, pd));
 }
 
+QString Column::longName() const
+{
+    return d_column_private->longName();
+}
+
+void Column::setLongName(const QString &s)
+{
+    d_column_private->setLongName(s);
+}
+
+QString Column::units() const
+{
+    return d_column_private->units();
+}
+
+void Column::setUnits(const QString &s)
+{
+    d_column_private->setUnits(s);
+}
+
+QString Column::formattedAxisTitle(UnitFormat fmt) const
+{
+    const QString ln = longName().trimmed();
+    const QString base = ln.isEmpty() ? name() : ln;
+    const QString u = units().trimmed();
+    if (u.isEmpty())
+        return base;
+    if (fmt == UnitFormat::ISIJSlash) {
+        if (u == QLatin1String("%"))
+            return QString("%1 (%)").arg(base);
+        return QString("%1 / %2").arg(base, u);
+    }
+    return QString("%1 (%2)").arg(base, u);
+}
+
 void Column::clear()
 {
     exec(new ColumnClearCmd(d_column_private));
@@ -290,6 +325,8 @@ void Column::save(QXmlStreamWriter *writer) const
     writer->writeAttribute("mode", SciDAVis::enumValueToString(static_cast<int>(columnMode()), "ColumnMode"));
     writer->writeAttribute("plot_designation",
                            SciDAVis::enumValueToString(plotDesignation(), "PlotDesignation"));
+    writer->writeAttribute("long_name", longName());
+    writer->writeAttribute("units", units());
     writeCommentElement(writer);
     writer->writeStartElement("input_filter");
     d_column_private->inputFilter()->save(writer);
@@ -418,6 +455,8 @@ bool Column::load(XmlStreamReader *reader)
         } else
             setPlotDesignation((SciDAVis::PlotDesignation)pd_code);
 
+        setLongName(attribs.value(reader->namespaceUri().toString(), "long_name").toString());
+        setUnits(attribs.value(reader->namespaceUri().toString(), "units").toString());
         setComment("");
         if (rowCount() > 0)
             removeRows(0, rowCount());

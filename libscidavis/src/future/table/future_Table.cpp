@@ -122,7 +122,7 @@ TableLangChangeFilter *ensureTableLangFilter(Table *tbl, std::function<void()> c
 }
 } // anonymous namespace
 
-bool Table::d_default_comment_visibility = false;
+bool Table::d_default_comment_visibility = true;
 int Table::default_column_width = 120;
 
 // TODO: move all selection related stuff to the primary view ?
@@ -190,6 +190,33 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
         if (col->name() == name
             || (legacy_kludge && (col->name() == label || col->name() == prefixLabel)))
             return col;
+    }
+
+    // OriginPro-compatible fallback for formula lookup (!legacy_kludge):
+    // match Long Name or Excel/Origin column letter ("A"->0, "B"->1, ...) or 1-based index
+    if (!legacy_kludge && !name.isEmpty()) {
+        for (int i = 0; i < columnCount(); i++) {
+            Column *col = d_table_private.column(i);
+            if (!col->longName().isEmpty() && col->longName() == name)
+                return col;
+        }
+        bool allUpperAlpha = true;
+        int alphaIdx = 0;
+        for (int k = 0; k < name.size(); ++k) {
+            const QChar ch = name.at(k);
+            if (ch < QLatin1Char('A') || ch > QLatin1Char('Z')) {
+                allUpperAlpha = false;
+                break;
+            }
+            alphaIdx = alphaIdx * 26 + (ch.unicode() - QLatin1Char('A').unicode() + 1);
+        }
+        if (allUpperAlpha && alphaIdx >= 1 && alphaIdx <= columnCount())
+            return d_table_private.column(alphaIdx - 1);
+
+        bool okNum = false;
+        const int oneBased = name.toInt(&okNum);
+        if (okNum && oneBased >= 1 && oneBased <= columnCount())
+            return d_table_private.column(oneBased - 1);
     }
 
     return NULL;
@@ -1096,6 +1123,18 @@ void Table::editDescriptionOfCurrentColumn()
     d_view->showControlDescriptionTab();
 }
 
+void Table::editColumnLabelsAndFormula()
+{
+    int col = -1;
+    if (d_view)
+        col = d_view->firstSelectedColumn(false);
+    if (col < 0 && currentColumn())
+        col = columnIndex(currentColumn());
+    if (col < 0 && columnCount() > 0)
+        col = 0;
+    emit requestColumnPropertiesDialog(col);
+}
+
 void Table::addRows()
 {
     if (!d_view)
@@ -1131,6 +1170,7 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->addSeparator();
 
     connect(menu, SIGNAL(aboutToShow()), this, SLOT(adjustActionNames()));
+    menu->addAction(action_edit_column_labels_formula);
     menu->addAction(action_toggle_comments);
     menu->addAction(action_toggle_tabbar);
     menu->addAction(action_formula_mode);
@@ -1439,6 +1479,9 @@ void Table::createActions()
     icon_temp->addPixmap(QPixmap(":/32x32/column_description.png"));
     action_edit_description = new QAction(*icon_temp, tr("Edit Column &Description"), this);
     actionManager()->addAction(action_edit_description, "edit_description");
+    action_edit_column_labels_formula = new QAction(
+            *icon_temp, tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."), this);
+    actionManager()->addAction(action_edit_column_labels_formula, "edit_column_labels_formula");
     delete icon_temp;
 
     // row related actions
@@ -1542,6 +1585,8 @@ void Table::connectActions()
             SLOT(editTypeAndFormatOfSelectedColumns()));
     connect(action_edit_description, SIGNAL(triggered()), this,
             SLOT(editDescriptionOfCurrentColumn()));
+    connect(action_edit_column_labels_formula, SIGNAL(triggered()), this,
+            SLOT(editColumnLabelsAndFormula()));
     connect(action_insert_rows, SIGNAL(triggered()), this, SLOT(insertEmptyRows()));
     connect(action_remove_rows, SIGNAL(triggered()), this, SLOT(removeSelectedRows()));
     connect(action_clear_rows, SIGNAL(triggered()), this, SLOT(clearSelectedCells()));
@@ -1618,6 +1663,7 @@ void Table::addActionsToView()
     d_view->addAction(action_statistics_columns);
     d_view->addAction(action_type_format);
     d_view->addAction(action_edit_description);
+    d_view->addAction(action_edit_column_labels_formula);
     d_view->addAction(action_insert_rows);
     d_view->addAction(action_remove_rows);
     d_view->addAction(action_clear_rows);
@@ -1665,6 +1711,8 @@ void Table::translateActionsStrings()
     action_statistics_columns->setText(tr("Column Statisti&cs"));
     action_type_format->setText(tr("Change &Type && Format"));
     action_edit_description->setText(tr("Edit Column &Description"));
+    action_edit_column_labels_formula->setText(
+            tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."));
     action_insert_rows->setText(tr("&Insert Empty Rows"));
     action_remove_rows->setText(tr("Remo&ve Rows"));
     action_clear_rows->setText(tr("Clea&r Rows"));
@@ -1894,6 +1942,9 @@ QMenu *Table::createColumnMenu(QMenu *append_to)
     if (!menu)
         menu = new QMenu();
 
+    menu->addAction(action_edit_column_labels_formula);
+    menu->addSeparator();
+
     QMenu *submenu = new QMenu(tr("S&et Column(s) As"));
     submenu->addAction(action_set_as_x);
     submenu->addAction(action_set_as_y);
@@ -1940,6 +1991,7 @@ QMenu *Table::createTableMenu(QMenu *append_to)
         menu = new QMenu();
 
     connect(menu, SIGNAL(aboutToShow()), this, SLOT(adjustActionNames()));
+    menu->addAction(action_edit_column_labels_formula);
     menu->addAction(action_toggle_comments);
     menu->addAction(action_toggle_tabbar);
     menu->addAction(action_formula_mode);
@@ -2039,6 +2091,9 @@ void Table::copy(Table *other)
         Column *new_col = new Column(src_col->name(), src_col->columnMode());
         new_col->copy(src_col);
         new_col->setPlotDesignation(src_col->plotDesignation());
+        new_col->setLongName(src_col->longName());
+        new_col->setUnits(src_col->units());
+        new_col->setComment(src_col->comment());
         QList<Interval<int>> masks = src_col->maskedIntervals();
         foreach (Interval<int> iv, masks)
             new_col->setMasked(iv);

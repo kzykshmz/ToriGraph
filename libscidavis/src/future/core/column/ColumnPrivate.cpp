@@ -757,6 +757,22 @@ void Column::Private::setPlotDesignation(SciDAVis::PlotDesignation pd)
     emit d_owner->plotDesignationChanged(d_owner);
 }
 
+void Column::Private::setLongName(const QString &s)
+{
+    if (d_long_name == s)
+        return;
+    d_long_name = s;
+    emit d_owner->aspectDescriptionChanged(d_owner);
+}
+
+void Column::Private::setUnits(const QString &s)
+{
+    if (d_units == s)
+        return;
+    d_units = s;
+    emit d_owner->aspectDescriptionChanged(d_owner);
+}
+
 void Column::Private::clear()
 {
     removeRows(0, rowCount());
@@ -803,6 +819,7 @@ void Column::Private::setMasked(int row, bool mask)
 void Column::Private::setFormula(Interval<int> i, QString formula)
 {
     d_formulas.setValue(i, formula);
+    emit d_owner->aspectDescriptionChanged(d_owner);
 }
 
 void Column::Private::setFormula(int row, QString formula)
@@ -813,6 +830,7 @@ void Column::Private::setFormula(int row, QString formula)
 void Column::Private::clearFormulas()
 {
     d_formulas.clear();
+    emit d_owner->aspectDescriptionChanged(d_owner);
 }
 
 QString Column::Private::textAt(int row) const
@@ -989,6 +1007,7 @@ void Column::Private::replaceMasking(IntervalAttribute<bool> masking)
 void Column::Private::replaceFormulas(IntervalAttribute<QString> formulas)
 {
     d_formulas = formulas;
+    emit d_owner->aspectDescriptionChanged(d_owner);
 }
 
 QString Column::Private::name() const

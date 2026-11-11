@@ -31,6 +31,7 @@
 #include "TableCommentsHeaderModel.h"
 #include <QApplication>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QLayout>
 
 TableCommentsHeaderView::TableCommentsHeaderView(QWidget *parent)
@@ -56,6 +57,29 @@ void TableCommentsHeaderView::setModel(QAbstractItemModel *model)
                     QModelIndex, int,
                     int))); // We have to make sure sectionsInserted is called in the right order
     delete old_model;
+}
+
+QSize TableCommentsHeaderView::sizeHint() const
+{
+    QSize base = QHeaderView::sizeHint();
+    const QAbstractItemModel *m = model();
+    const QFontMetrics fm(font());
+    int maxLines = 1;
+    if (m) {
+        const int cols = m->columnCount();
+        for (int c = 0; c < cols; ++c) {
+            const QString txt = m->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
+            if (!txt.isEmpty()) {
+                const int n = txt.count(QLatin1Char('\n')) + 1;
+                if (n > maxLines)
+                    maxLines = n;
+            }
+        }
+    }
+    const int neededH = maxLines * (fm.lineSpacing() + 2) + 8;
+    if (neededH > base.height())
+        base.setHeight(neededH);
+    return base;
 }
 
 TableDoubleHeaderView::TableDoubleHeaderView(QWidget *parent) : QHeaderView(Qt::Horizontal, parent)

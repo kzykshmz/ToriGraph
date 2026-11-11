@@ -140,6 +140,11 @@ public:
     SciDAVis::PlotDesignation plotDesignation() const { return d_plot_designation; };
     //! Set the column plot designation
     void setPlotDesignation(SciDAVis::PlotDesignation pd);
+    //! OriginPro column long name & units
+    QString longName() const { return d_long_name; }
+    void setLongName(const QString &s);
+    QString units() const { return d_units; }
+    void setUnits(const QString &s);
     //! Clear the whole column
     void clear();
     //! Return the data pointer
@@ -331,6 +336,9 @@ private:
     IntervalAttribute<QString> d_formulas;
     //! The plot designation
     SciDAVis::PlotDesignation d_plot_designation;
+    //! OriginPro Long Name and Units metadata
+    QString d_long_name;
+    QString d_units;
     //! The owner column
     Column *d_owner;
     //@}

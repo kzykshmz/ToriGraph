@@ -58,6 +58,12 @@
 #include <QProgressDialog>
 #include <QFile>
 #include <QTemporaryFile>
+#include <QDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
+#include <QPlainTextEdit>
+#include <QCheckBox>
+#include <QGroupBox>
 #include <vector>
 #include <cmath>
 #include <iostream>
@@ -149,6 +155,8 @@ void Table::init()
     connect(d_future_table, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
             SLOT(handleChange()));
     connect(d_future_table, SIGNAL(recalculate()), this, SLOT(recalculate()));
+    connect(d_future_table, SIGNAL(requestColumnPropertiesDialog(int)), this,
+            SLOT(showColumnPropertiesDialog(int)));
 
     connect(d_future_table, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
             SLOT(handleAspectDescriptionChange(const AbstractAspect *)));
@@ -161,8 +169,6 @@ void Table::init()
     if (d_horizontal_header) {
         if (d_horizontal_header->viewport())
             d_horizontal_header->viewport()->installEventFilter(this);
-        connect(d_horizontal_header, SIGNAL(sectionDoubleClicked(int)), this,
-                SLOT(columnNumericFormat(int)));
     }
 }
 
@@ -175,6 +181,8 @@ void Table::handleColumnChange(int first, int count)
 {
     for (int i = first; i < first + count; i++)
         emit modifiedData(this, colName(i));
+    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+        autoRecalculateDependentColumns(first, count);
 }
 
 void Table::handleColumnChange(int top, int left, int bottom, int right)
@@ -416,13 +424,39 @@ QString Table::saveColumnTypes()
 
 void Table::setCommands(const QStringList &com)
 {
-    for (int i = 0; i < (int)com.size() && i < numCols(); i++)
-        column(i)->setFormula(Interval<int>(0, numRows() - 1), com.at(i).trimmed());
+    const bool prevGuard = d_in_auto_recalc;
+    d_in_auto_recalc = true;
+    for (int i = 0; i < (int)com.size() && i < numCols(); i++) {
+        const QString trimmed = com.at(i).trimmed();
+        if (trimmed.isEmpty())
+            column(i)->clearFormulas();
+        else
+            column(i)->setFormula(Interval<int>(0, qMax(0, numRows() - 1)), trimmed);
+    }
+    d_in_auto_recalc = prevGuard;
+    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+        autoRecalculateDependentColumns(-1, 0);
 }
 
 void Table::setCommand(int col, const QString &com)
 {
-    column(col)->setFormula(Interval<int>(0, numRows() - 1), com.trimmed());
+    Column *c = column(col);
+    if (!c)
+        return;
+    const QString trimmed = com.trimmed();
+    const bool prevGuard = d_in_auto_recalc;
+    d_in_auto_recalc = true;
+    if (trimmed.isEmpty())
+        c->clearFormulas();
+    else
+        c->setFormula(Interval<int>(0, qMax(0, numRows() - 1)), trimmed);
+    d_in_auto_recalc = prevGuard;
+    if (!trimmed.isEmpty() && d_auto_recalc_formulas && !d_in_auto_recalc) {
+        d_in_auto_recalc = true;
+        recalculateColumnInternal(col, false, true);
+        d_in_auto_recalc = false;
+        autoRecalculateDependentColumns(col, 1);
+    }
 }
 
 void Table::setCommands(const QString &com)
@@ -434,65 +468,153 @@ void Table::setCommands(const QString &com)
 
 bool Table::recalculate()
 {
-    for (int col = firstSelectedColumn(); col <= lastSelectedColumn(); col++)
+    int firstCol = firstSelectedColumn();
+    int lastCol = lastSelectedColumn();
+    bool anySelectedHasFormula = false;
+    if (firstCol >= 0 && lastCol >= firstCol) {
+        for (int col = firstCol; col <= lastCol; ++col) {
+            Column *c = column(col);
+            if (c && !c->formulaIntervals().isEmpty()) {
+                anySelectedHasFormula = true;
+                break;
+            }
+        }
+    }
+    if (!anySelectedHasFormula) {
+        firstCol = 0;
+        lastCol = numCols() - 1;
+    }
+    for (int col = firstCol; col <= lastCol; col++) {
+        Column *c = column(col);
+        if (!c || c->formulaIntervals().isEmpty())
+            continue;
         if (!recalculate(col, true))
             return false;
+    }
     return true;
 }
 
 bool Table::recalculate(int col, bool only_selected_rows)
 {
     QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool ok = recalculateColumnInternal(col, only_selected_rows, false);
+    QApplication::restoreOverrideCursor();
+    return ok;
+}
+
+bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors)
+{
     Column *col_ptr = column(col);
-    if (!col_ptr)
+    if (!col_ptr || !scriptEnv)
         return false;
 
+    if (only_selected_rows && selectedRowCount(false) < 2)
+        only_selected_rows = false;
+
     QList<Interval<int>> formula_intervals = col_ptr->formulaIntervals();
+    if (formula_intervals.isEmpty())
+        return true;
+
+    const int tableRows = numRows();
     if (only_selected_rows) {
-        // remove non-selected rows from list of intervals
-        QList<Interval<int>> deselected =
-                Interval<int>(0, col_ptr->rowCount() - 1) - selectedRows().intervals();
-        foreach (Interval<int> i, deselected)
-            Interval<int>::subtractIntervalFromList(&formula_intervals, i);
+        const int maxRow = qMax(tableRows, col_ptr->rowCount()) - 1;
+        if (maxRow >= 0) {
+            QList<Interval<int>> deselected =
+                    Interval<int>(0, maxRow) - selectedRows().intervals();
+            foreach (Interval<int> i, deselected)
+                Interval<int>::subtractIntervalFromList(&formula_intervals, i);
+        }
     }
+
     foreach (Interval<int> interval, formula_intervals) {
         QString formula = col_ptr->formula(interval.start());
         if (formula.isEmpty())
             continue;
 
         Script *colscript = scriptEnv->newScript(formula, this, QString("<%1>").arg(colName(col)));
-        connect(colscript, SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
-                SIGNAL(error(const QString &, const QString &, int)));
-        connect(colscript, SIGNAL(print(const QString &)), scriptEnv,
-                SIGNAL(print(const QString &)));
+        if (!silentErrors) {
+            connect(colscript, SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
+                    SIGNAL(error(const QString &, const QString &, int)));
+            connect(colscript, SIGNAL(print(const QString &)), scriptEnv,
+                    SIGNAL(print(const QString &)));
+        }
 
         if (!colscript->compile()) {
             delete colscript;
-            QApplication::restoreOverrideCursor();
             return false;
         }
 
         colscript->setInt(col + 1, "j");
         QVariant ret;
-        int start_row = interval.start();
+        int start_row = qMax(0, interval.start());
         int end_row = interval.end();
+        if (!only_selected_rows && formula_intervals.size() == 1 && start_row == 0
+            && tableRows > 0 && end_row < tableRows - 1
+            && end_row >= qMax(0, col_ptr->rowCount() - 1)) {
+            end_row = tableRows - 1;
+        }
+        if (tableRows > 0 && end_row >= tableRows)
+            end_row = tableRows - 1;
+        if (end_row < start_row) {
+            delete colscript;
+            continue;
+        }
+
         switch (col_ptr->columnMode()) {
         case SciDAVis::ColumnMode::Numeric: {
-            QVector<qreal> results(end_row - start_row + 1);
+            const int span = end_row - start_row + 1;
+            QVector<qreal> results(span, 0.0);
+            QVector<bool> emptyRows(span, false);
             for (int i = start_row; i <= end_row; i++) {
                 colscript->setInt(i + 1, "i");
                 ret = colscript->eval();
                 if (!ret.isValid()) {
                     delete colscript;
-                    QApplication::restoreOverrideCursor();
                     return false;
                 }
-                if (ret.canConvert(QVariant::Double))
+                if (ret.type() == QVariant::String && ret.toString().isEmpty()) {
+                    emptyRows[i - start_row] = true;
+                    results[i - start_row] = 0.0;
+                } else if (ret.canConvert(QVariant::Double)) {
                     results[i - start_row] = ret.toDouble();
-                else
+                } else {
                     results[i - start_row] = NAN;
+                }
             }
-            col_ptr->replaceValues(start_row, results);
+            bool anyChanged = (col_ptr->rowCount() <= end_row);
+            if (!anyChanged) {
+                for (int k = 0; k < span; ++k) {
+                    const int r = start_row + k;
+                    if (col_ptr->isInvalid(r) != emptyRows[k]) {
+                        anyChanged = true;
+                        break;
+                    }
+                    if (!emptyRows[k]) {
+                        const double oldV = col_ptr->valueAt(r);
+                        const double newV = results[k];
+                        if ((std::isnan(oldV) != std::isnan(newV))
+                            || (!std::isnan(newV) && oldV != newV)) {
+                            anyChanged = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (anyChanged) {
+                col_ptr->replaceValues(start_row, results);
+                int k = 0;
+                while (k < span) {
+                    if (emptyRows[k]) {
+                        int kEnd = k;
+                        while (kEnd + 1 < span && emptyRows[kEnd + 1])
+                            ++kEnd;
+                        col_ptr->setInvalid(Interval<int>(start_row + k, start_row + kEnd), true);
+                        k = kEnd + 1;
+                    } else {
+                        ++k;
+                    }
+                }
+            }
             break;
         }
         default: {
@@ -502,7 +624,6 @@ bool Table::recalculate(int col, bool only_selected_rows)
                 ret = colscript->eval();
                 if (!ret.isValid()) {
                     delete colscript;
-                    QApplication::restoreOverrideCursor();
                     return false;
                 }
                 if (ret.type() == QVariant::Double)
@@ -512,14 +633,52 @@ bool Table::recalculate(int col, bool only_selected_rows)
                 else
                     results << QString();
             }
-            col_ptr->asStringColumn()->replaceTexts(start_row, results);
+            bool anyChanged = (col_ptr->rowCount() <= end_row);
+            if (!anyChanged) {
+                for (int k = 0; k < results.size(); ++k) {
+                    if (col_ptr->asStringColumn()->textAt(start_row + k) != results.at(k)) {
+                        anyChanged = true;
+                        break;
+                    }
+                }
+            }
+            if (anyChanged)
+                col_ptr->asStringColumn()->replaceTexts(start_row, results);
             break;
         }
         }
         delete colscript;
     }
-    QApplication::restoreOverrideCursor();
     return true;
+}
+
+void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCount)
+{
+    if (!d_auto_recalc_formulas || d_in_auto_recalc || !d_future_table || !scriptEnv)
+        return;
+
+    QVector<int> fCols;
+    const int nCols = numCols();
+    for (int c = 0; c < nCols; ++c) {
+        if (changedCount > 0 && c >= changedFirstCol && c < changedFirstCol + changedCount)
+            continue;
+        Column *cp = column(c);
+        if (cp && !cp->formulaIntervals().isEmpty()) {
+            const QString f = cp->formula(cp->formulaIntervals().first().start()).trimmed();
+            if (!f.isEmpty())
+                fCols.push_back(c);
+        }
+    }
+    if (fCols.isEmpty())
+        return;
+
+    d_in_auto_recalc = true;
+    const int maxPasses = qMin(fCols.size(), 4);
+    for (int pass = 0; pass < maxPasses; ++pass) {
+        for (int idx = 0; idx < fCols.size(); ++idx)
+            recalculateColumnInternal(fCols[idx], false, true);
+    }
+    d_in_auto_recalc = false;
 }
 
 QString Table::saveCommands()
@@ -1355,6 +1514,9 @@ QString Table::saveAsTemplate(const QString &geometryInfo)
 
 void Table::restore(const QStringList &list_in)
 {
+    const bool prevAutoRecalc = d_auto_recalc_formulas;
+    d_auto_recalc_formulas = false;
+
     // TODO: obsolete, remove in 0.3.0, only needed for template loading
     QStringList temp_list;
     QStringList::const_iterator iterator = list_in.begin();
@@ -1397,6 +1559,8 @@ void Table::restore(const QStringList &list_in)
     temp_list = (*iterator++).split("\t");
     temp_list.removeFirst();
     setColComments(temp_list);
+
+    d_auto_recalc_formulas = prevAutoRecalc;
 }
 
 void Table::clear()
@@ -1576,7 +1740,7 @@ bool Table::eventFilter(QObject *watched, QEvent *event)
         QMouseEvent *me = static_cast<QMouseEvent *>(event);
         int col = d_horizontal_header->logicalIndexAt(me->pos());
         if (col >= 0 && col < numCols()) {
-            columnNumericFormat(col);
+            showColumnPropertiesDialog(col);
             return true;
         }
     }
@@ -1613,6 +1777,284 @@ void Table::setColComments(const QStringList &list)
 bool Table::commentsEnabled()
 {
     return areCommentsShown();
+}
+
+QString Table::colLongName(int col) const
+{
+    const Column *c = column(col);
+    return c ? c->longName() : QString();
+}
+
+void Table::setColLongName(int col, const QString &s)
+{
+    if (Column *c = column(col))
+        c->setLongName(s);
+}
+
+QString Table::colUnits(int col) const
+{
+    const Column *c = column(col);
+    return c ? c->units() : QString();
+}
+
+void Table::setColUnits(int col, const QString &s)
+{
+    if (Column *c = column(col))
+        c->setUnits(s);
+}
+
+void Table::setAutoRecalcFormulas(bool on)
+{
+    d_auto_recalc_formulas = on;
+    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+        autoRecalculateDependentColumns(-1, 0);
+}
+
+bool Table::autoRecalcFormulas() const
+{
+    return d_auto_recalc_formulas;
+}
+
+void Table::showColumnPropertiesDialog(int col)
+{
+    if (!d_future_table || numCols() <= 0)
+        return;
+    if (col < 0 || col >= numCols())
+        col = firstSelectedColumn(false);
+    if (col < 0 || col >= numCols()) {
+        if (d_future_table->currentColumn())
+            col = d_future_table->columnIndex(d_future_table->currentColumn());
+    }
+    if (col < 0 || col >= numCols())
+        col = 0;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Column Properties"));
+    dlg.setMinimumWidth(480);
+
+    QVBoxLayout *mainLay = new QVBoxLayout(&dlg);
+
+    // Top bar: Column selector + Prev / Next navigation
+    QHBoxLayout *navLay = new QHBoxLayout();
+    QLabel *lblColTarget = new QLabel(tr("Column:"), &dlg);
+    QComboBox *boxColSelect = new QComboBox(&dlg);
+    boxColSelect->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    QPushButton *btnPrevCol = new QPushButton(tr("<< Previous"), &dlg);
+    QPushButton *btnNextCol = new QPushButton(tr("Next >>"), &dlg);
+    navLay->addWidget(lblColTarget);
+    navLay->addWidget(boxColSelect, 1);
+    navLay->addWidget(btnPrevCol);
+    navLay->addWidget(btnNextCol);
+    mainLay->addLayout(navLay);
+
+    // Labels & Designation group
+    QGroupBox *grpMeta = new QGroupBox(tr("Column Labels & Designation"), &dlg);
+    QFormLayout *metaForm = new QFormLayout(grpMeta);
+    QLineEdit *editShortName = new QLineEdit(grpMeta);
+    QLineEdit *editLongName = new QLineEdit(grpMeta);
+    editLongName->setPlaceholderText(tr("e.g. Nominal Stress, Temperature"));
+    QLineEdit *editUnits = new QLineEdit(grpMeta);
+    editUnits->setPlaceholderText(tr("e.g. MPa, %, K, eV"));
+
+    QComboBox *boxDesignation = new QComboBox(grpMeta);
+    boxDesignation->addItem(tr("X (Abscissa)"), int(SciDAVis::X));
+    boxDesignation->addItem(tr("Y (Ordinate)"), int(SciDAVis::Y));
+    boxDesignation->addItem(tr("Z"), int(SciDAVis::Z));
+    boxDesignation->addItem(tr("X Error"), int(SciDAVis::xErr));
+    boxDesignation->addItem(tr("Y Error"), int(SciDAVis::yErr));
+    boxDesignation->addItem(tr("None (Disregard)"), int(SciDAVis::noDesignation));
+
+    QHBoxLayout *typeRowLay = new QHBoxLayout();
+    QComboBox *boxDataType = new QComboBox(grpMeta);
+    boxDataType->addItem(tr("Numeric"), int(SciDAVis::ColumnMode::Numeric));
+    boxDataType->addItem(tr("Text"), int(SciDAVis::ColumnMode::Text));
+    boxDataType->addItem(tr("Date and time"), int(SciDAVis::ColumnMode::DateTime));
+    boxDataType->addItem(tr("Month names"), int(SciDAVis::ColumnMode::Month));
+    boxDataType->addItem(tr("Day names"), int(SciDAVis::ColumnMode::Day));
+    QPushButton *btnFormatPanel = new QPushButton(tr("Type & Format..."), grpMeta);
+    typeRowLay->addWidget(boxDataType, 1);
+    typeRowLay->addWidget(btnFormatPanel);
+
+    QPlainTextEdit *editComments = new QPlainTextEdit(grpMeta);
+    editComments->setFixedHeight(56);
+
+    metaForm->addRow(tr("Short Name:"), editShortName);
+    metaForm->addRow(tr("Long Name:"), editLongName);
+    metaForm->addRow(tr("Units:"), editUnits);
+    metaForm->addRow(tr("Plot Designation:"), boxDesignation);
+    metaForm->addRow(tr("Data Type:"), typeRowLay);
+    metaForm->addRow(tr("Comments:"), editComments);
+    mainLay->addWidget(grpMeta);
+
+    // Formula F(x)= group
+    QGroupBox *grpFormula = new QGroupBox(tr("F(x)= Column Formula"), &dlg);
+    QVBoxLayout *fLay = new QVBoxLayout(grpFormula);
+    QHBoxLayout *refLay = new QHBoxLayout();
+    QComboBox *boxRefCol = new QComboBox(grpFormula);
+    QPushButton *btnInsertRef = new QPushButton(tr("Insert Column"), grpFormula);
+    refLay->addWidget(new QLabel(tr("Reference:"), grpFormula));
+    refLay->addWidget(boxRefCol, 1);
+    refLay->addWidget(btnInsertRef);
+    fLay->addLayout(refLay);
+
+    QPlainTextEdit *editFormula = new QPlainTextEdit(grpFormula);
+    editFormula->setFixedHeight(64);
+    editFormula->setPlaceholderText(QStringLiteral("col(\"A\") * 2.0 + 1.0"));
+    fLay->addWidget(editFormula);
+
+    QCheckBox *chkAutoRecalc =
+            new QCheckBox(tr("Auto-recalculate formulas when source cells change"), grpFormula);
+    chkAutoRecalc->setChecked(d_auto_recalc_formulas);
+    fLay->addWidget(chkAutoRecalc);
+    mainLay->addWidget(grpFormula);
+
+    QDialogButtonBox *btnBox = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, &dlg);
+    mainLay->addWidget(btnBox);
+
+    int currentCol = col;
+    bool loadingUi = false;
+
+    auto rebuildCombos = [&]() {
+        loadingUi = true;
+        boxColSelect->clear();
+        boxRefCol->clear();
+        for (int i = 0; i < numCols(); ++i) {
+            Column *cp = column(i);
+            if (!cp)
+                continue;
+            const QString disp = cp->longName().trimmed().isEmpty()
+                    ? QString("%1. %2").arg(i + 1).arg(cp->name())
+                    : QString("%1. %2 (%3)").arg(i + 1).arg(cp->name(), cp->longName().trimmed());
+            boxColSelect->addItem(disp, i);
+            boxRefCol->addItem(QString("col(\"%1\")").arg(cp->name()));
+        }
+        boxColSelect->setCurrentIndex(qBound(0, currentCol, qMax(0, boxColSelect->count() - 1)));
+        loadingUi = false;
+    };
+
+    auto loadColIntoUi = [&](int cIdx) {
+        if (cIdx < 0 || cIdx >= numCols())
+            return;
+        currentCol = cIdx;
+        Column *cp = column(cIdx);
+        if (!cp)
+            return;
+        loadingUi = true;
+        boxColSelect->setCurrentIndex(cIdx);
+        editShortName->setText(cp->name());
+        editLongName->setText(cp->longName());
+        editUnits->setText(cp->units());
+        const int pdIdx = boxDesignation->findData(int(cp->plotDesignation()));
+        boxDesignation->setCurrentIndex(pdIdx >= 0 ? pdIdx : 0);
+        const int dtIdx = boxDataType->findData(int(cp->columnMode()));
+        boxDataType->setCurrentIndex(dtIdx >= 0 ? dtIdx : 0);
+        editComments->setPlainText(cp->comment());
+
+        QString fx;
+        const QList<Interval<int>> ivs = cp->formulaIntervals();
+        for (const Interval<int> &iv : ivs) {
+            const QString f = cp->formula(iv.start()).trimmed();
+            if (!f.isEmpty()) {
+                fx = f;
+                break;
+            }
+        }
+        if (fx.isEmpty())
+            fx = cp->formula(0).trimmed();
+        editFormula->setPlainText(fx);
+        loadingUi = false;
+    };
+
+    auto applyUiToColumn = [&]() -> bool {
+        if (currentCol < 0 || currentCol >= numCols())
+            return false;
+        Column *cp = column(currentCol);
+        if (!cp)
+            return false;
+
+        d_auto_recalc_formulas = chkAutoRecalc->isChecked();
+        const QString newShort = editShortName->text().trimmed();
+        if (!newShort.isEmpty() && newShort != cp->name())
+            cp->setName(newShort);
+        cp->setLongName(editLongName->text().trimmed());
+        cp->setUnits(editUnits->text().trimmed());
+        cp->setComment(editComments->toPlainText());
+        cp->setPlotDesignation(
+                static_cast<SciDAVis::PlotDesignation>(boxDesignation->currentData().toInt()));
+        const SciDAVis::ColumnMode newMode =
+                static_cast<SciDAVis::ColumnMode>(boxDataType->currentData().toInt());
+        if (newMode != cp->columnMode())
+            cp->setColumnMode(newMode);
+
+        const QString fx = editFormula->toPlainText().trimmed();
+        if (!fx.isEmpty()) {
+            if (cp->rowCount() < numRows())
+                cp->insertRows(cp->rowCount(), numRows() - cp->rowCount());
+            const bool prevGuard = d_in_auto_recalc;
+            d_in_auto_recalc = true;
+            cp->setFormula(Interval<int>(0, qMax(0, numRows() - 1)), fx);
+            d_in_auto_recalc = prevGuard;
+            if (!recalculate(currentCol, false))
+                return false;
+            if (d_auto_recalc_formulas && !d_in_auto_recalc)
+                autoRecalculateDependentColumns(currentCol, 1);
+        } else if (!cp->formulaIntervals().isEmpty()) {
+            cp->clearFormulas();
+        }
+
+        if (!cp->longName().isEmpty() || !cp->units().isEmpty()
+            || !cp->comment().isEmpty() || !fx.isEmpty()) {
+            showComments(true);
+        }
+        setColumnForControlTabs(currentCol);
+        d_future_table->setCurrentColumn(currentCol);
+        rebuildCombos();
+        return true;
+    };
+
+    rebuildCombos();
+    loadColIntoUi(currentCol);
+    editLongName->setFocus();
+
+    connect(btnInsertRef, &QPushButton::clicked, &dlg, [&]() {
+        editFormula->insertPlainText(boxRefCol->currentText());
+        editFormula->setFocus();
+    });
+    connect(boxColSelect, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+            &dlg, [&](int newIdx) {
+                if (loadingUi || newIdx < 0 || newIdx >= numCols() || newIdx == currentCol)
+                    return;
+                applyUiToColumn();
+                loadColIntoUi(newIdx);
+            });
+    connect(btnPrevCol, &QPushButton::clicked, &dlg, [&]() {
+        if (numCols() <= 1)
+            return;
+        applyUiToColumn();
+        loadColIntoUi((currentCol - 1 + numCols()) % numCols());
+    });
+    connect(btnNextCol, &QPushButton::clicked, &dlg, [&]() {
+        if (numCols() <= 1)
+            return;
+        applyUiToColumn();
+        loadColIntoUi((currentCol + 1) % numCols());
+    });
+    connect(btnFormatPanel, &QPushButton::clicked, &dlg, [&]() {
+        applyUiToColumn();
+        dlg.accept();
+        columnNumericFormat(currentCol);
+    });
+    if (QPushButton *applyBtn = btnBox->button(QDialogButtonBox::Apply)) {
+        connect(applyBtn, &QPushButton::clicked, &dlg, [&]() { applyUiToColumn(); });
+    }
+    connect(btnBox, &QDialogButtonBox::accepted, &dlg, [&]() {
+        if (applyUiToColumn())
+            dlg.accept();
+    });
+    connect(btnBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    dlg.exec();
 }
 
 void Table::applyFormula()
@@ -1669,22 +2111,38 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
         return;
     }
     const Column *col = qobject_cast<const Column *>(aspect);
-    if (col && d_future_table && d_future_table->columnIndex(col) != -1
-        && d_stored_column_labels.contains(col)) {
-        QString old_name = d_stored_column_labels.value(col);
-        QString new_name = col->name();
-        emit changedColHeader(name() + "_" + old_name, name() + "_" + new_name);
+    if (!col || !d_future_table)
+        return;
+    const int colIdx = d_future_table->columnIndex(col);
+    if (colIdx == -1)
+        return;
 
-        for (int i = 0; i < d_future_table->columnCount(); i++) {
-            QList<Interval<int>> formula_intervals = column(i)->formulaIntervals();
-            foreach (Interval<int> interval, formula_intervals) {
-                QString formula = column(i)->formula(interval.start());
-                if (formula.contains("\"" + old_name + "\"")) {
-                    formula.replace("\"" + old_name + "\"", "\"" + new_name + "\"");
-                    column(i)->setFormula(interval, formula);
+    if (d_stored_column_labels.contains(col)) {
+        const QString old_name = d_stored_column_labels.take(col);
+        const QString new_name = col->name();
+        if (old_name != new_name) {
+            emit changedColHeader(name() + "_" + old_name, name() + "_" + new_name);
+
+            const bool prevGuard = d_in_auto_recalc;
+            d_in_auto_recalc = true;
+            for (int i = 0; i < d_future_table->columnCount(); i++) {
+                QList<Interval<int>> formula_intervals = column(i)->formulaIntervals();
+                foreach (Interval<int> interval, formula_intervals) {
+                    QString formula = column(i)->formula(interval.start());
+                    if (formula.contains("\"" + old_name + "\"")) {
+                        formula.replace("\"" + old_name + "\"", "\"" + new_name + "\"");
+                        column(i)->setFormula(interval, formula);
+                    }
                 }
             }
+            d_in_auto_recalc = prevGuard;
         }
+    }
+
+    if (d_auto_recalc_formulas && !d_in_auto_recalc && !col->formulaIntervals().isEmpty()) {
+        d_in_auto_recalc = true;
+        recalculateColumnInternal(colIdx, false, true);
+        d_in_auto_recalc = false;
     }
 }
 

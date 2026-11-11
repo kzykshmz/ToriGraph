@@ -286,6 +286,19 @@ public slots:
     void setColComments(const QStringList &lst);
     bool commentsEnabled();
 
+    //! OriginPro Column Metadata Convenience Helpers (Long Name & Units)
+    QString colLongName(int col) const;
+    void setColLongName(int col, const QString &s);
+    QString colUnits(int col) const;
+    void setColUnits(int col, const QString &s);
+
+    //! Live Worksheet F(x)= Formula Auto-Recalculation
+    void setAutoRecalcFormulas(bool on);
+    bool autoRecalcFormulas() const;
+
+    //! OriginPro-style Column Properties Dialog (Short Name, Long Name, Units, Designation, Comments, F(x)=)
+    void showColumnPropertiesDialog(int col = -1);
+
     QString saveAsTemplate(const QString &geometryInfo);
     void restore(const QStringList &lst);
 
@@ -306,7 +319,12 @@ protected slots:
     void handleAspectDescriptionAboutToChange(const AbstractAspect *aspect);
 
 private:
+    void autoRecalculateDependentColumns(int changedFirstCol, int changedCount);
+    bool recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors);
+
     QHash<const AbstractAspect *, QString> d_stored_column_labels;
+    bool d_auto_recalc_formulas = true;
+    bool d_in_auto_recalc = false;
 };
 
 #endif

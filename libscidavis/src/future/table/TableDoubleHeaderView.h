@@ -52,6 +52,7 @@ public:
     virtual ~TableCommentsHeaderView();
 
     virtual void setModel(QAbstractItemModel *model);
+    virtual QSize sizeHint() const override;
 
     friend class TableDoubleHeaderView; // access to paintSection (protected)
 };
