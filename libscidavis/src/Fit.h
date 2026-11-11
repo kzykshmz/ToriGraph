@@ -72,7 +72,12 @@ public:
     QString formula() { return d_formula; };
     int numParameters() { return d_p; }
 
-    void setInitialGuess(int parIndex, double val) { gsl_vector_set(d_param_init, parIndex, val); };
+    void setInitialGuess(int parIndex, double val)
+    {
+        if (d_param_init && parIndex >= 0 && unsigned(parIndex) < d_p)
+            gsl_vector_set(d_param_init, parIndex, val);
+        d_initial_guesses_set = true;
+    };
     void setInitialGuesses(double *x_init);
 
     virtual void guessInitialValues() {};
@@ -94,14 +99,30 @@ public:
     //! Returns the sum of squares of the residuals from the best-fit line
     double chiSquare() { return chi_2; };
 
-    //! Returns the coefficient of determination, R^2
+    //! Returns the reduced chi-square (Chi^2 / doF)
+    double reducedChiSquare();
+
+    //! Returns the unweighted residual sum of squares (RSS)
+    double rss();
+
+    //! Returns the coefficient of determination, R^2 (COD)
     double rSquare();
+
+    //! Returns the adjusted R^2: 1 - (1 - R^2)*(n - 1)/(n - p)
+    double adjustedRSquare();
+
+    //! Returns Pearson's correlation coefficient r
+    double pearsonR();
 
     //! Specifies wheather the errors must be scaled with sqrt(chi_2/dof)
     void scaleErrors(bool yes = true) { d_scale_errors = yes; };
 
     Table *parametersTable(const QString &tableName);
     Matrix *covarianceMatrix(const QString &matrixName);
+    Table *createResidualsTable(const QString &tableName = QString());
+
+    double voigtLorentzFraction() const { return d_voigt_mu; }
+    double pearsonShapeParameter() const { return d_pearson_m; }
 
     int evaluate_f(const gsl_vector *x, gsl_vector *f);
     double evaluate_d(const gsl_vector *x);
@@ -197,6 +218,18 @@ protected:
 
     //! Specifies wheather the errors must be scaled with sqrt(chi_2/dof)
     bool d_scale_errors;
+
+    //! Tracks whether initial parameter guesses have been explicitly set
+    bool d_initial_guesses_set = false;
+
+    //! Fitted Y values corresponding to d_x
+    std::vector<double> d_y_fit;
+
+    //! Lorentz fraction mu in [0, 1] for Pseudo-Voigt profile (default 0.5)
+    double d_voigt_mu = 0.5;
+
+    //! Shape parameter m for Pearson VII profile (default 2.0)
+    double d_pearson_m = 2.0;
 
     //! Script used to evaluate user-defined functions.
     std::unique_ptr<Script> d_script;

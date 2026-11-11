@@ -391,6 +391,8 @@ int gauss_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
     for (i = 0; i < peaks; i++) {
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         double wi = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(wi) < 1e-15)
+            wi = (wi < 0 ? -1e-15 : 1e-15);
         a[i] = sqrt(M_2_PI) * gsl_vector_get(x, 3 * i) / wi;
         w2[i] = wi * wi;
     }
@@ -427,6 +429,8 @@ double gauss_multi_peak_d(const gsl_vector *x, void *params)
     for (i = 0; i < peaks; i++) {
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         double wi = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(wi) < 1e-15)
+            wi = (wi < 0 ? -1e-15 : 1e-15);
         a[i] = sqrt(M_2_PI) * gsl_vector_get(x, 3 * i) / wi;
         w2[i] = wi * wi;
     }
@@ -463,6 +467,8 @@ int gauss_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
         a[i] = gsl_vector_get(x, 3 * i);
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
     }
     for (i = 0; i < n; i++) {
         double s = sigma[i];
@@ -509,6 +515,8 @@ int lorentz_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
         a[i] = gsl_vector_get(x, 3 * i);
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
     }
     for (i = 0; i < n; i++) {
         double res = 0;
@@ -544,6 +552,8 @@ double lorentz_multi_peak_d(const gsl_vector *x, void *params)
         a[i] = gsl_vector_get(x, 3 * i);
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
     }
     for (i = 0; i < n; i++) {
         double res = 0;
@@ -557,7 +567,7 @@ double lorentz_multi_peak_d(const gsl_vector *x, void *params)
     delete[] a;
     delete[] xc;
     delete[] w;
-    return GSL_SUCCESS;
+    return val;
 }
 
 int lorentz_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
@@ -577,6 +587,8 @@ int lorentz_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
         a[i] = gsl_vector_get(x, 3 * i);
         xc[i] = gsl_vector_get(x, 3 * i + 1);
         w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
     }
     for (i = 0; i < n; i++) {
         double s = sigma[i];
@@ -587,7 +599,7 @@ int lorentz_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
             double den = 4 * diff * diff - w2;
 
             gsl_matrix_set(J, i, 3 * j, w[j] * num / s);
-            gsl_matrix_set(J, i, 3 * j + 1, 8 * diff * a[j] * w[j] * num * sqrt(num) / s);
+            gsl_matrix_set(J, i, 3 * j + 1, 8 * diff * a[j] * w[j] * num * num / s);
             gsl_matrix_set(J, i, 3 * j + 2, den * a[j] * num * num / s);
         }
         gsl_matrix_set(J, i, p - 1, 1.0 / s);
@@ -602,6 +614,424 @@ int lorentz_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl
 {
     lorentz_multi_peak_f(x, params, f);
     lorentz_multi_peak_df(x, params, J);
+    return GSL_SUCCESS;
+}
+
+int gauss_amp_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
+{
+    size_t n = ((struct FitData *)params)->n;
+    size_t p = ((struct FitData *)params)->p;
+    double *X = ((struct FitData *)params)->X;
+    double *Y = ((struct FitData *)params)->Y;
+    double *sigma = ((struct FitData *)params)->sigma;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w2 = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        double wi = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(wi) < 1e-15)
+            wi = (wi < 0 ? -1e-15 : 1e-15);
+        w2[i] = wi * wi;
+    }
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            res += a[j] * exp(-2.0 * diff * diff / w2[j]);
+        }
+        gsl_vector_set(f, i, (res + offset - Y[i]) / sigma[i]);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w2;
+    return GSL_SUCCESS;
+}
+
+double gauss_amp_multi_peak_d(const gsl_vector *x, void *params)
+{
+    size_t n = ((struct FitData *)params)->n;
+    size_t p = ((struct FitData *)params)->p;
+    double *X = ((struct FitData *)params)->X;
+    double *Y = ((struct FitData *)params)->Y;
+    double *sigma = ((struct FitData *)params)->sigma;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w2 = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        double wi = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(wi) < 1e-15)
+            wi = (wi < 0 ? -1e-15 : 1e-15);
+        w2[i] = wi * wi;
+    }
+    double val = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            res += a[j] * exp(-2.0 * diff * diff / w2[j]);
+        }
+        double t = (res + offset - Y[i]) / sigma[i];
+        val += t * t;
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w2;
+    return val;
+}
+
+int gauss_amp_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
+{
+    size_t n = ((struct FitData *)params)->n;
+    size_t p = ((struct FitData *)params)->p;
+    double *X = ((struct FitData *)params)->X;
+    double *sigma = ((struct FitData *)params)->sigma;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+    for (size_t i = 0; i < n; i++) {
+        double s = sigma[i];
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double w2 = w[j] * w[j];
+            double e = exp(-2.0 * diff * diff / w2) / s;
+
+            gsl_matrix_set(J, i, 3 * j, e);
+            gsl_matrix_set(J, i, 3 * j + 1, 4.0 * diff * a[j] * e / w2);
+            gsl_matrix_set(J, i, 3 * j + 2, 4.0 * diff * diff * a[j] * e / (w2 * w[j]));
+        }
+        gsl_matrix_set(J, i, p - 1, 1.0 / s);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return GSL_SUCCESS;
+}
+
+int gauss_amp_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
+{
+    gauss_amp_multi_peak_f(x, params, f);
+    gauss_amp_multi_peak_df(x, params, J);
+    return GSL_SUCCESS;
+}
+
+int pseudovoigt_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    const double kG = 4.0 * M_LN2;
+    const double cG = sqrt(kG / M_PI);
+    const double cL = 2.0 / M_PI;
+
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double wj = w[j];
+            double w2 = wj * wj;
+            double L = cL * wj / (4.0 * diff * diff + w2);
+            double G = (cG / wj) * exp(-kG * diff * diff / w2);
+            res += a[j] * (mu * L + (1.0 - mu) * G);
+        }
+        gsl_vector_set(f, i, (res + offset - Y[i]) / sigma[i]);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return GSL_SUCCESS;
+}
+
+double pseudovoigt_multi_peak_d(const gsl_vector *x, void *params)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    const double kG = 4.0 * M_LN2;
+    const double cG = sqrt(kG / M_PI);
+    const double cL = 2.0 / M_PI;
+
+    double val = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double wj = w[j];
+            double w2 = wj * wj;
+            double L = cL * wj / (4.0 * diff * diff + w2);
+            double G = (cG / wj) * exp(-kG * diff * diff / w2);
+            res += a[j] * (mu * L + (1.0 - mu) * G);
+        }
+        double t = (res + offset - Y[i]) / sigma[i];
+        val += t * t;
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return val;
+}
+
+int pseudovoigt_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    const double kG = 4.0 * M_LN2;
+    const double cG = sqrt(kG / M_PI);
+    const double cL = 2.0 / M_PI;
+
+    for (size_t i = 0; i < n; i++) {
+        double s = sigma[i];
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double wj = w[j];
+            double w2 = wj * wj;
+            double D = 4.0 * diff * diff + w2;
+            double invD = 1.0 / D;
+            double L = cL * wj * invD;
+            double G = (cG / wj) * exp(-kG * diff * diff / w2);
+
+            double dL_dxc = cL * 8.0 * diff * wj * invD * invD;
+            double dL_dw = cL * (4.0 * diff * diff - w2) * invD * invD;
+
+            double dG_dxc = G * (2.0 * kG * diff / w2);
+            double dG_dw = (G / wj) * (2.0 * kG * diff * diff / w2 - 1.0);
+
+            gsl_matrix_set(J, i, 3 * j, (mu * L + (1.0 - mu) * G) / s);
+            gsl_matrix_set(J, i, 3 * j + 1, a[j] * (mu * dL_dxc + (1.0 - mu) * dG_dxc) / s);
+            gsl_matrix_set(J, i, 3 * j + 2, a[j] * (mu * dL_dw + (1.0 - mu) * dG_dw) / s);
+        }
+        gsl_matrix_set(J, i, p - 1, 1.0 / s);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return GSL_SUCCESS;
+}
+
+int pseudovoigt_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
+{
+    pseudovoigt_multi_peak_f(x, params, f);
+    pseudovoigt_multi_peak_df(x, params, J);
+    return GSL_SUCCESS;
+}
+
+int pearson7_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    if (m < 0.55)
+        m = 0.55;
+    const double cm = pow(2.0, 1.0 / m) - 1.0;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double u = 2.0 * diff / w[j];
+            double B = 1.0 + cm * u * u;
+            res += a[j] * pow(B, -m);
+        }
+        gsl_vector_set(f, i, (res + offset - Y[i]) / sigma[i]);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return GSL_SUCCESS;
+}
+
+double pearson7_multi_peak_d(const gsl_vector *x, void *params)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    if (m < 0.55)
+        m = 0.55;
+    const double cm = pow(2.0, 1.0 / m) - 1.0;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    double val = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double u = 2.0 * diff / w[j];
+            double B = 1.0 + cm * u * u;
+            res += a[j] * pow(B, -m);
+        }
+        double t = (res + offset - Y[i]) / sigma[i];
+        val += t * t;
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return val;
+}
+
+int pearson7_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *sigma = data->sigma;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    if (m < 0.55)
+        m = 0.55;
+    const double cm = pow(2.0, 1.0 / m) - 1.0;
+
+    size_t peaks = (p - 1) / 3;
+    double *a = new double[peaks];
+    double *xc = new double[peaks];
+    double *w = new double[peaks];
+
+    for (size_t i = 0; i < peaks; i++) {
+        a[i] = gsl_vector_get(x, 3 * i);
+        xc[i] = gsl_vector_get(x, 3 * i + 1);
+        w[i] = gsl_vector_get(x, 3 * i + 2);
+        if (fabs(w[i]) < 1e-15)
+            w[i] = (w[i] < 0 ? -1e-15 : 1e-15);
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        double s = sigma[i];
+        for (size_t j = 0; j < peaks; j++) {
+            double diff = X[i] - xc[j];
+            double wj = w[j];
+            double w2 = wj * wj;
+            double u = 2.0 * diff / wj;
+            double B = 1.0 + cm * u * u;
+            double Bm = pow(B, -m);
+            double Bm1 = Bm / B;
+
+            gsl_matrix_set(J, i, 3 * j, Bm / s);
+            gsl_matrix_set(J, i, 3 * j + 1, (8.0 * m * cm * a[j] * diff / w2) * Bm1 / s);
+            gsl_matrix_set(J, i, 3 * j + 2, (8.0 * m * cm * a[j] * diff * diff / (w2 * wj)) * Bm1 / s);
+        }
+        gsl_matrix_set(J, i, p - 1, 1.0 / s);
+    }
+    delete[] a;
+    delete[] xc;
+    delete[] w;
+    return GSL_SUCCESS;
+}
+
+int pearson7_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
+{
+    pearson7_multi_peak_f(x, params, f);
+    pearson7_multi_peak_df(x, params, J);
     return GSL_SUCCESS;
 }
 

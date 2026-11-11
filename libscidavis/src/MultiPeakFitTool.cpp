@@ -1,6 +1,6 @@
 /***************************************************************************
     File                 : MultiPeakFitTool.cpp
-    Project              : SciDAVis
+    Project              : SciDAVis / ToriGraph
     --------------------------------------------------------------------
     Copyright            : (C) 2006,2007 by Ion Vasilief,
                            Tilman Benkert, Knut Franke
@@ -33,7 +33,11 @@
 #include "DataPickerTool.h"
 #include "Plot.h"
 #include <qwt_plot_curve.h>
+#include <qwt_symbol.h>
+#include <qwt_text.h>
 #include <QApplication>
+#include <QKeyEvent>
+#include <QLocale>
 
 MultiPeakFitTool::MultiPeakFitTool(Graph *graph, ApplicationWindow *app,
                                    MultiPeakFit::PeakProfile profile, int num_peaks,
@@ -54,68 +58,137 @@ MultiPeakFitTool::MultiPeakFitTool(Graph *graph, ApplicationWindow *app,
                                        SIGNAL(statusText(const QString &)));
     connect(d_picker_tool, SIGNAL(selected(QwtPlotCurve *, int)), this,
             SLOT(selectPeak(QwtPlotCurve *, int)));
-    d_graph->plotWidget()->canvas()->grabMouse();
-    emit statusText(tr("Move cursor and click to select a point and double-click/press 'Enter' to "
-                       "set the position of a peak!"));
+    if (d_graph && d_graph->plotWidget() && d_graph->plotWidget()->canvas()) {
+        d_graph->plotWidget()->canvas()->installEventFilter(this);
+        d_graph->plotWidget()->installEventFilter(this);
+        d_graph->plotWidget()->canvas()->grabMouse();
+    }
+    emit statusText(
+            tr("Peak 0/%1 selected - double-click/Enter on a peak point, or press 'Space' to "
+               "auto-detect remaining peaks!")
+                    .arg(QString::number(d_num_peaks)));
 }
 
 MultiPeakFitTool::~MultiPeakFitTool()
 {
+    if (d_graph && d_graph->plotWidget()) {
+        if (d_graph->plotWidget()->canvas())
+            d_graph->plotWidget()->canvas()->removeEventFilter(this);
+        d_graph->plotWidget()->removeEventFilter(this);
+    }
+    removePeakMarkers();
     if (d_picker_tool)
         delete d_picker_tool;
     if (d_fit)
         delete d_fit;
-    d_graph->plotWidget()->canvas()->unsetCursor();
+    if (d_graph && d_graph->plotWidget() && d_graph->plotWidget()->canvas())
+        d_graph->plotWidget()->canvas()->unsetCursor();
+}
+
+void MultiPeakFitTool::removePeakMarkers()
+{
+    if (!d_graph || !d_graph->plotWidget())
+        return;
+    for (int key : d_marker_keys)
+        d_graph->plotWidget()->removeMarker(key);
+    d_marker_keys.clear();
+}
+
+bool MultiPeakFitTool::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Space) {
+            finalize();
+            return true;
+        }
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+            && (!d_picker_tool || !d_picker_tool->selectedCurve())) {
+            finalize();
+            return true;
+        }
+        if (ke->key() == Qt::Key_Escape) {
+            if (d_graph && d_graph->plotWidget() && d_graph->plotWidget()->canvas())
+                d_graph->plotWidget()->canvas()->releaseMouse();
+            removePeakMarkers();
+            if (d_graph && d_graph->plotWidget())
+                d_graph->plotWidget()->replot();
+            if (d_graph)
+                d_graph->setActiveTool(NULL);
+            return true;
+        }
+    }
+    return QObject::eventFilter(obj, event);
 }
 
 void MultiPeakFitTool::selectPeak(QwtPlotCurve *curve, int point_index)
 {
-    // TODO: warn user
     if (!curve || (d_curve && d_curve != curve))
         return;
     d_curve = curve;
 
-    d_fit->setInitialGuess(3 * d_selected_peaks, curve->y(point_index));
-    d_fit->setInitialGuess(3 * d_selected_peaks + 1, curve->x(point_index));
+    double xc = curve->x(point_index);
+    double yc = curve->y(point_index);
+    d_picked_centers.push_back(xc);
+
+    d_fit->setInitialGuess(3 * d_selected_peaks, yc);
+    d_fit->setInitialGuess(3 * d_selected_peaks + 1, xc);
 
     QwtPlotMarker *m = new QwtPlotMarker();
     m->setLineStyle(QwtPlotMarker::VLine);
-    m->setLinePen(QPen(Qt::green, 2, Qt::DashLine));
-    m->setXValue(curve->x(point_index));
-    d_graph->plotWidget()->insertMarker(m);
+    m->setLinePen(QPen(Qt::darkGreen, 2, Qt::DashLine));
+    m->setSymbol(QwtSymbol(QwtSymbol::DTriangle, QBrush(QColor(0, 180, 0, 180)),
+                           QPen(Qt::darkGreen, 1), QSize(10, 10)));
+    m->setValue(xc, yc);
+    QwtText lbl(tr("Peak %1").arg(d_selected_peaks + 1));
+    lbl.setColor(Qt::darkGreen);
+    m->setLabel(lbl);
+    m->setLabelAlignment(Qt::AlignRight | Qt::AlignTop);
+    int key = d_graph->plotWidget()->insertMarker(m);
+    d_marker_keys.append(key);
     d_graph->plotWidget()->replot();
 
     d_selected_peaks++;
     if (d_selected_peaks == d_num_peaks)
         finalize();
     else
-        emit statusText(tr("Peak %1 selected! Click to select a point and double-click/press "
-                           "'Enter' to set the position of the next peak!")
-                                .arg(QString::number(d_selected_peaks)));
+        emit statusText(
+                tr("Peak %1/%2 selected (x=%3, y=%4)! Select next peak or press 'Space' to "
+                   "auto-detect remaining peaks!")
+                        .arg(QString::number(d_selected_peaks))
+                        .arg(QString::number(d_num_peaks))
+                        .arg(QLocale().toString(xc, 'g', 6))
+                        .arg(QLocale().toString(yc, 'g', 6)));
 }
 
 void MultiPeakFitTool::finalize()
 {
     delete d_picker_tool;
     d_picker_tool = NULL;
-    d_graph->plotWidget()->canvas()->releaseMouse();
+    if (d_graph && d_graph->plotWidget() && d_graph->plotWidget()->canvas())
+        d_graph->plotWidget()->canvas()->releaseMouse();
 
-    if (d_fit->setDataFromCurve(d_curve->title().text())) {
+    if (!d_curve && d_graph) {
+        QString selectedTitle = d_graph->selectedCurveTitle();
+        if (!selectedTitle.isEmpty())
+            d_curve = d_graph->curve(selectedTitle);
+        if (!d_curve && d_graph->curves() > 0)
+            d_curve = d_graph->curve(0);
+    }
+
+    if (d_curve && d_fit && d_fit->setDataFromCurve(d_curve->title().text())) {
         QApplication::setOverrideCursor(Qt::WaitCursor);
+        d_fit->seedPeaksFromCenters(d_picked_centers);
         d_fit->fit();
         delete d_fit;
         d_fit = NULL;
         QApplication::restoreOverrideCursor();
     }
 
-    // remove peak line markers
-    QList<int> mrks = d_graph->plotWidget()->markerKeys();
-    int n = (int)mrks.count();
-    for (int i = 0; i < d_num_peaks; i++)
-        d_graph->plotWidget()->removeMarker(mrks[n - i - 1]);
+    removePeakMarkers();
+    if (d_graph && d_graph->plotWidget())
+        d_graph->plotWidget()->replot();
 
-    d_graph->plotWidget()->replot();
-
-    d_graph->setActiveTool(NULL);
-    // attention: I'm now deleted. Maybe there is a cleaner solution...
+    if (d_graph)
+        d_graph->setActiveTool(NULL);
 }

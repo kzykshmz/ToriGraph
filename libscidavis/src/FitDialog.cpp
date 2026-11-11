@@ -744,10 +744,13 @@ void FitDialog::setFunction(bool ok)
                     << "y0";
                 break;
             case 5:
-                lst << "y0"
-                    << "A"
-                    << "xc"
-                    << "w";
+                if (polynomOrderBox->value() > 1)
+                    lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
+                else
+                    lst << "y0"
+                        << "A"
+                        << "xc"
+                        << "w";
                 break;
             case 6:
                 lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
@@ -757,6 +760,23 @@ void FitDialog::setFunction(bool ok)
                 break;
             case 8:
                 lst = PolynomialFit::generateParameterList(polynomOrderBox->value());
+                break;
+            case 9:
+            case 10:
+                lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
+                break;
+            case 11:
+                lst << "A"
+                    << "xc"
+                    << "w"
+                    << "mu"
+                    << "y0";
+                break;
+            case 12:
+                lst << "A"
+                    << "xc"
+                    << "w"
+                    << "y0";
                 break;
             }
             boxParam->setText(lst.join(", "));
@@ -776,6 +796,11 @@ void FitDialog::clearUserFunctions()
         buttonClearUsrList->setEnabled(false);
     }
     emit clearFunctionsList();
+}
+
+void FitDialog::insertFunctionsList(const QStringList &list)
+{
+    addUserFunctions(list);
 }
 
 void FitDialog::addUserFunctions(const QStringList &list)
@@ -920,7 +945,11 @@ void FitDialog::setBuiltInFunctionNames()
                               << "GaussAmp"
                               << "Gauss"
                               << "Lorentz"
-                              << "Polynomial";
+                              << "Polynomial"
+                              << "PseudoVoigt"
+                              << "PearsonVII"
+                              << "VoigtApprox"
+                              << "LogNormal";
 }
 
 void FitDialog::setBuiltInFunctions()
@@ -931,6 +960,13 @@ void FitDialog::setBuiltInFunctions()
     d_built_in_functions << "y0+A1*exp(-x/t1)+A2*exp(-x/t2)";
     d_built_in_functions << "y0+A1*exp(-x/t1)+A2*exp(-x/t2)+A3*exp(-x/t3)";
     d_built_in_functions << "y0+A*exp(-(x-xc)*(x-xc)/(2*w*w))";
+    d_built_in_functions << "y0+A*sqrt(2/PI)/w*exp(-2*((x-xc)/w)^2)";
+    d_built_in_functions << "y0+2*A/PI*w/(4*(x-xc)^2+w^2)";
+    d_built_in_functions << "a0+a1*x+a2*x^2";
+    d_built_in_functions << "y0+A*(0.5*2/PI*w/(4*(x-xc)^2+w^2)+0.5*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
+    d_built_in_functions << "y0+A*(1+(sqrt(2)-1)*(2*(x-xc)/w)^2)^(-2)";
+    d_built_in_functions << "y0+A*(mu*2/PI*w/(4*(x-xc)^2+w^2)+(1-mu)*sqrt(4*ln(2))/(sqrt(PI)*w)*exp(-4*ln(2)*((x-xc)/w)^2))";
+    d_built_in_functions << "y0+A/(sqrt(2*PI)*w*x)*exp(-(ln(x/xc))^2/(2*w^2))";
 }
 
 void FitDialog::showParseFunctions()
@@ -950,6 +986,14 @@ void FitDialog::showExpression(int function)
         polynomOrderBox->show();
 
         switch (funcBox->currentRow()) {
+        case 5: // GaussAmp
+            polynomOrderLabel->setText(tr("Peaks"));
+            if (polynomOrderBox->value() > 1)
+                explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
+                                                                  MultiPeakFit::GaussAmp));
+            else
+                explainBox->setText(d_built_in_functions[5]);
+            break;
         case 6: // Gauss
             polynomOrderLabel->setText(tr("Peaks"));
             explainBox->setText(
@@ -964,11 +1008,22 @@ void FitDialog::showExpression(int function)
             polynomOrderLabel->setText(tr("Polynomial Order"));
             explainBox->setText(PolynomialFit::generateFormula(polynomOrderBox->value()));
             break;
+        case 9: // PseudoVoigt
+            polynomOrderLabel->setText(tr("Peaks"));
+            explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
+                                                              MultiPeakFit::PseudoVoigt));
+            break;
+        case 10: // PearsonVII
+            polynomOrderLabel->setText(tr("Peaks"));
+            explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
+                                                              MultiPeakFit::PearsonVII));
+            break;
         default:
             polynomOrderLabel->hide();
             polynomOrderBox->hide();
             polynomOrderBox->setValue(1);
-            explainBox->setText(d_built_in_functions[function]);
+            if (function < d_built_in_functions.size())
+                explainBox->setText(d_built_in_functions[function]);
         }
         setFunction(boxUseBuiltIn->isChecked());
     } else if (categoryBox->currentRow() == 0) {
@@ -1210,16 +1265,36 @@ void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)
         d_fitter = new ThreeExpFit(app, d_graph);
     } else if (function == "Boltzmann")
         d_fitter = new SigmoidalFit(app, d_graph);
-    else if (function == "GaussAmp")
-        d_fitter = new GaussAmpFit(app, d_graph);
-    else if (function == "Gauss")
+    else if (function == "GaussAmp") {
+        if (polynomOrderBox->value() > 1)
+            d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::GaussAmp,
+                                        polynomOrderBox->value());
+        else
+            d_fitter = new GaussAmpFit(app, d_graph);
+    } else if (function == "Gauss")
         d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::Gauss, polynomOrderBox->value());
     else if (function == "Lorentz")
         d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::Lorentz, polynomOrderBox->value());
-    else if (function == "Polynomial")
+    else if (function == "PseudoVoigt")
+        d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::PseudoVoigt,
+                                    polynomOrderBox->value());
+    else if (function == "PearsonVII")
+        d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::PearsonVII,
+                                    polynomOrderBox->value());
+    else if (function == "VoigtApprox") {
+        d_fitter = new NonLinearFit(app, d_graph);
+        ((NonLinearFit *)d_fitter)
+                ->setParametersList(QStringList() << "A" << "xc" << "w" << "mu" << "y0");
+        ((NonLinearFit *)d_fitter)->setFormula(d_built_in_functions[11]);
+    } else if (function == "LogNormal") {
+        d_fitter = new NonLinearFit(app, d_graph);
+        ((NonLinearFit *)d_fitter)
+                ->setParametersList(QStringList() << "A" << "xc" << "w" << "y0");
+        ((NonLinearFit *)d_fitter)->setFormula(d_built_in_functions[12]);
+    } else if (function == "Polynomial")
         d_fitter = new PolynomialFit(app, d_graph, polynomOrderBox->value());
 
-    if (function != "Polynomial")
+    if (function != "Polynomial" && d_fitter)
         d_fitter->setInitialGuesses(initVal);
 }
 

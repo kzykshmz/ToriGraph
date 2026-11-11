@@ -84,6 +84,21 @@ double lorentz_multi_peak_d(const gsl_vector *x, void *params);
 int lorentz_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
 int lorentz_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
 
+int gauss_amp_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double gauss_amp_multi_peak_d(const gsl_vector *x, void *params);
+int gauss_amp_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int gauss_amp_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int pseudovoigt_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double pseudovoigt_multi_peak_d(const gsl_vector *x, void *params);
+int pseudovoigt_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int pseudovoigt_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int pearson7_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double pearson7_multi_peak_d(const gsl_vector *x, void *params);
+int pearson7_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int pearson7_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
 int user_f(const gsl_vector *x, void *params, gsl_vector *f);
 double user_d(const gsl_vector *x, void *params);
 int user_df(const gsl_vector *x, void *params, gsl_matrix *J);

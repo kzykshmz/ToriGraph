@@ -70,6 +70,7 @@ public slots:
     void accept();
     //! Add a list of user defined functions
     void addUserFunctions(const QStringList &list);
+    void insertFunctionsList(const QStringList &list);
     //! Clear the list of user defined functions
     void clearUserFunctions();
     //! Clears the function editor, the parameter names and the function name

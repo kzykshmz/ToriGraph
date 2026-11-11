@@ -37,12 +37,32 @@ class MultiPeakFit : public Fit
     Q_OBJECT
 
 public:
-    enum PeakProfile { Gauss, Lorentz };
+    enum PeakProfile { Gauss = 0, Lorentz = 1, GaussAmp = 2, PseudoVoigt = 3, PearsonVII = 4 };
+    struct PeakSummaryRow
+    {
+        int index;
+        double center;
+        double fwhm;
+        double height;
+        double area;
+        double areaPercent;
+        double baseline;
+    };
+
     MultiPeakFit(ApplicationWindow *parent, Graph *g = 0, PeakProfile profile = Gauss,
                  int peaks = 1);
 
-    int peaks() { return d_peaks; };
+    int peaks() const { return d_peaks; };
     void setNumPeaks(int n);
+
+    PeakProfile profile() const { return d_profile; }
+    void setPeakProfile(PeakProfile profile);
+
+    void setLorentzFraction(double mu);
+    double lorentzFraction() const { return d_voigt_mu; }
+
+    void setPearsonShape(double m);
+    double pearsonShape() const { return d_pearson_m; }
 
     void enablePeakCurves(bool on) { generate_peak_curves = on; };
     void setPeakCurvesColor(QColor color) { d_peaks_color = color; };
@@ -51,17 +71,29 @@ public:
     static QStringList generateParameterList(int order);
     static QStringList generateExplanationList(int order);
 
+    bool autoDetectPeaks(int maxPeaks = 0, double minProminenceRatio = 0.08);
+    int estimatePeakCount(double minProminenceRatio = 0.08) const;
+    int autoDetectAndUpdateNumPeaks(int maxPeaks = 10, double minProminenceRatio = 0.08);
+    bool seedPeaksFromCenters(const std::vector<double> &pickedCenters,
+                              double minProminenceRatio = 0.08);
+
+    Table *createPeakSummaryTable(const QString &tableName = QString());
+    std::vector<PeakSummaryRow> computePeakSummary(const std::vector<double> &res) const;
+
+    void guessInitialValues() override;
+
 private:
+    void updateProfileFunctions();
+    double evalPeakAt(const std::vector<double> &par, int peakIndex, double x,
+                      bool isStoredResults = false) const;
+    bool calculateFitCurveData(const std::vector<double> &, std::vector<double> &,
+                               std::vector<double> &) override;
     QString logFitInfo(const std::vector<double> &, int, int, const QString &) override;
     void generateFitCurve(const std::vector<double> &) override;
     static QString peakFormula(int peakIndex, PeakProfile profile);
     //! Inserts a peak function curve into the plot
     void insertPeakFunctionCurve(std::vector<double> &x, std::vector<double> &y, int peak);
     void storeCustomFitResults(const std::vector<double> &) override;
-
-    //! Used by the GaussFit and LorentzFit derived classes to calculate initial values for the parameters
-protected:
-    void guessInitialValues() override;
 
 private:
     //! Number of peaks
@@ -75,6 +107,9 @@ private:
 
     //! The peak profile
     PeakProfile d_profile;
+
+    //! Stores last fitted results for summary table generation
+    std::vector<double> d_last_results;
 };
 
 class LorentzFit : public MultiPeakFit
@@ -114,6 +149,7 @@ public:
     GaussAmpFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle);
     GaussAmpFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                 double end);
+    void guessInitialValues() override;
 
 private:
     void init();

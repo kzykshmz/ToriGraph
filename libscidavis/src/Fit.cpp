@@ -69,6 +69,7 @@ Fit::Fit(ApplicationWindow *parent, Graph *g, QString name)
     chi_2 = -1;
     d_scale_errors = false;
     d_sort_data = true;
+    d_initial_guesses_set = false;
 }
 
 vector<double> Fit::fitGslMultifit(int &iterations, int &status)
@@ -99,16 +100,26 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     }
     gsl_multifit_fdfsolver *s = gsl_multifit_fdfsolver_alloc(T, d_x.size(), d_p);
     status = gsl_multifit_fdfsolver_set(s, &f, d_param_init);
-    if (status)
+    if (status) {
+        gsl_multifit_fdfsolver_free(s);
         return result;
+    }
 
     // iterate solver algorithm
     for (iterations = 0; iterations < d_max_iterations; iterations++) {
         status = gsl_multifit_fdfsolver_iterate(s);
-        if (status)
+        int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
+        if (delta_status == GSL_SUCCESS) {
+            status = GSL_SUCCESS;
             break;
-
-        status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
+        }
+        if (status) {
+            if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
+                || status == GSL_ETOLG)
+                status = GSL_SUCCESS;
+            break;
+        }
+        status = delta_status;
         if (status != GSL_CONTINUE)
             break;
     }
@@ -117,6 +128,9 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     for (unsigned i = 0; i < d_p; i++)
         result[i] = gsl_vector_get(s->x, i);
     gsl_blas_ddot(s->f, s->f, &chi_2);
+    d_y_fit.resize(d_x.size());
+    for (size_t i = 0; i < d_x.size(); ++i)
+        d_y_fit[i] = d_y[i] + gsl_vector_get(s->f, i) * d_y_errors[i];
 #if GSL_MAJOR_VERSION < 2
     gsl_multifit_covar(s->J, 0.0, covar);
 #else
@@ -131,7 +145,8 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         // multiply covar by variance of residuals, which is used as an estimate for the
         // statistical errors (this relies on the Y errors being set to 1.0, so that
         // s->f is properly normalized)
-        gsl_matrix_scale(covar, chi_2 / (d_x.size() - d_p));
+        double dof = (d_x.size() > d_p) ? double(d_x.size() - d_p) : 1.0;
+        gsl_matrix_scale(covar, chi_2 / dof);
     }
 
     // free memory allocated for fitting
@@ -177,13 +192,23 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
     for (unsigned i = 0; i < d_p; i++)
         result[i] = gsl_vector_get(s_min->x, i);
     chi_2 = s_min->fval;
+    if (d_f) {
+        gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
+        if (d_f(s_min->x, (void *)f.params, f_vec) == GSL_SUCCESS) {
+            d_y_fit.resize(d_x.size());
+            for (size_t i = 0; i < d_x.size(); ++i)
+                d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+        }
+        gsl_vector_free(f_vec);
+    }
     gsl_matrix *J = gsl_matrix_alloc(d_x.size(), d_p);
     d_df(s_min->x, (void *)f.params, J);
     gsl_multifit_covar(J, 0.0, covar);
     if (d_y_error_source == UnknownErrors) {
         // multiply covar by variance of residuals, which is used as an estimate for the
         // statistical errors (this relies on the Y errors being set to 1.0)
-        gsl_matrix_scale(covar, chi_2 / (d_x.size() - d_p));
+        double dof = (d_x.size() > d_p) ? double(d_x.size() - d_p) : 1.0;
+        gsl_matrix_scale(covar, chi_2 / dof);
     }
 
     // free previously allocated memory
@@ -206,6 +231,7 @@ void Fit::setInitialGuesses(double *x_init)
 {
     for (unsigned i = 0; i < d_p; i++)
         gsl_vector_set(d_param_init, i, x_init[i]);
+    d_initial_guesses_set = true;
 }
 
 void Fit::generateFunction(bool yes, int points)
@@ -256,7 +282,7 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
 
     info += tr("From x") + " = " + QLocale().toString(d_x[0], 'g', 15) + " " + tr("to x") + " = "
             + QLocale().toString(d_x.back(), 'g', 15) + "\n";
-    double chi_2_dof = chi_2 / (d_x.size() - d_p);
+    double chi_2_dof = reducedChiSquare();
     for (unsigned i = 0; i < d_p; i++) {
         info += d_param_names[i] + " " + d_param_explain[i] + " = "
                 + QLocale().toString(par[i], 'g', d_prec) + " +/- ";
@@ -269,8 +295,12 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
     info += "--------------------------------------------------------------------------------------"
             "\n";
     info += "Chi^2 = " + QLocale().toString(chi_2, 'g', d_prec) + "\n";
-
-    info += tr("R^2") + " = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
+    info += tr("Reduced Chi^2") + " (Chi^2/doF) = "
+            + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
+    info += tr("RSS") + " = " + QLocale().toString(rss(), 'g', d_prec) + "\n";
+    info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
+    info += tr("Adjusted R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
+    info += tr("Pearson's r") + " = " + QLocale().toString(pearsonR(), 'g', d_prec) + "\n";
     info += "--------------------------------------------------------------------------------------"
             "-\n";
     if (is_non_linear) {
@@ -282,25 +312,78 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
     return info;
 }
 
+double Fit::reducedChiSquare()
+{
+    if (d_x.size() <= d_p)
+        return chi_2;
+    return chi_2 / double(d_x.size() - d_p);
+}
+
+double Fit::rss()
+{
+    if (d_y_fit.size() == d_y.size() && !d_y.empty()) {
+        double sum = 0.0;
+        for (size_t i = 0; i < d_y.size(); ++i) {
+            double r = d_y[i] - d_y_fit[i];
+            sum += r * r;
+        }
+        return sum;
+    }
+    return chi_2 >= 0.0 ? chi_2 : 0.0;
+}
+
 double Fit::rSquare()
 {
+    if (d_y.empty())
+        return 0.0;
+
     double mean = 0.0, tss = 0.0, weights_sum = 0.0;
 
     if (d_y_error_source == UnknownErrors) {
-        std::accumulate(d_y.cbegin(), d_y.cend(), mean);
-        mean /= d_y.size();
-        for (auto it = d_y.cbegin(); d_y.cend()!=it;++it)
+        mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
+        for (auto it = d_y.cbegin(); d_y.cend() != it; ++it)
             tss += (*it - mean) * (*it - mean);
     } else {
         for (unsigned i = 0; i < d_y.size(); i++) {
             mean += d_y[i] / (d_y_errors[i] * d_y_errors[i]);
             weights_sum += 1.0 / (d_y_errors[i] * d_y_errors[i]);
         }
-        mean /= weights_sum;
+        if (weights_sum > 0.0)
+            mean /= weights_sum;
         for (unsigned i = 0; i < d_y.size(); i++)
             tss += (d_y[i] - mean) * (d_y[i] - mean) / (d_y_errors[i] * d_y_errors[i]);
     }
-    return 1 - chi_2 / tss;
+    if (tss <= 0.0)
+        return 1.0;
+    return 1.0 - chi_2 / tss;
+}
+
+double Fit::adjustedRSquare()
+{
+    double r2 = rSquare();
+    if (d_x.size() <= d_p || d_x.size() <= 1)
+        return r2;
+    return 1.0 - (1.0 - r2) * double(d_x.size() - 1) / double(d_x.size() - d_p);
+}
+
+double Fit::pearsonR()
+{
+    if (d_y_fit.size() == d_y.size() && d_y.size() > 1) {
+        double mean_y = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
+        double mean_f = std::accumulate(d_y_fit.cbegin(), d_y_fit.cend(), 0.0) / double(d_y_fit.size());
+        double s_yf = 0.0, s_yy = 0.0, s_ff = 0.0;
+        for (size_t i = 0; i < d_y.size(); ++i) {
+            double dy = d_y[i] - mean_y;
+            double df = d_y_fit[i] - mean_f;
+            s_yf += dy * df;
+            s_yy += dy * dy;
+            s_ff += df * df;
+        }
+        if (s_yy > 0.0 && s_ff > 0.0)
+            return s_yf / sqrt(s_yy * s_ff);
+    }
+    double r2 = rSquare();
+    return r2 > 0.0 ? sqrt(r2) : 0.0;
 }
 
 QString Fit::legendInfo()
@@ -308,9 +391,10 @@ QString Fit::legendInfo()
     QString info = tr("Dataset") + ": " + d_curve->title().text() + "\n";
     info += tr("Function") + ": " + d_formula + "\n\n";
 
-    double chi_2_dof = chi_2 / (d_x.size() - d_p);
-    info += "Chi^2 = " + QLocale().toString(chi_2, 'g', d_prec) + "\n";
-    info += tr("R^2") + " = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
+    double chi_2_dof = reducedChiSquare();
+    info += "Chi^2/doF = " + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
+    info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
+    info += tr("Adj. R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
 
     for (unsigned i = 0; i < d_p; i++) {
         info += d_param_names[i] + " = " + QLocale().toString(d_results[i], 'g', d_prec) + " +/- ";
@@ -443,11 +527,59 @@ Matrix *Fit::covarianceMatrix(const QString &matrixName)
     return m;
 }
 
+Table *Fit::createResidualsTable(const QString &tableName)
+{
+    ApplicationWindow *app = (ApplicationWindow *)parent();
+    if (!app || d_init_err || d_x.empty() || d_y.size() != d_x.size())
+        return nullptr;
+
+    if (d_y_fit.size() != d_x.size() && !d_results.empty()) {
+        bool old_gen = d_gen_function;
+        int old_pts = d_points;
+        d_gen_function = false;
+        d_points = int(d_x.size());
+        std::vector<double> X_tmp(d_x.size()), Y_tmp(d_x.size());
+        if (calculateFitCurveData(d_results, X_tmp, Y_tmp)) {
+            d_y_fit = Y_tmp;
+        }
+        d_gen_function = old_gen;
+        d_points = old_pts;
+    }
+
+    if (d_y_fit.size() != d_x.size())
+        return nullptr;
+
+    QString name = tableName.isEmpty() ? app->generateUniqueName(tr("Residuals"))
+                                       : app->generateUniqueName(tableName, false);
+    int rows = int(d_x.size());
+    Table *t = app->newTable(name, rows, 4);
+    if (!t)
+        return nullptr;
+
+    t->setHeader(QStringList() << tr("X") << tr("Y_Obs") << tr("Y_Fit") << tr("Residual"));
+    for (int col = 0; col < 4; ++col)
+        t->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    t->column(0)->setPlotDesignation(SciDAVis::X);
+    t->column(1)->setPlotDesignation(SciDAVis::Y);
+    t->column(2)->setPlotDesignation(SciDAVis::Y);
+    t->column(3)->setPlotDesignation(SciDAVis::Y);
+
+    for (int i = 0; i < rows; ++i) {
+        t->column(0)->setValueAt(i, d_x[i]);
+        t->column(1)->setValueAt(i, d_y[i]);
+        t->column(2)->setValueAt(i, d_y_fit[i]);
+        t->column(3)->setValueAt(i, d_y[i] - d_y_fit[i]);
+    }
+
+    t->showNormal();
+    return t;
+}
+
 const vector<double> &Fit::errors()
 {
     if (d_result_errors.empty()) {
         d_result_errors.resize(d_p);
-        double chi_2_dof = chi_2 / (d_x.size() - d_p);
+        double chi_2_dof = reducedChiSquare();
         for (unsigned i = 0; i < d_p; i++) {
             if (d_scale_errors)
                 d_result_errors[i] = sqrt(chi_2_dof * gsl_matrix_get(covar, i, i));
@@ -488,6 +620,11 @@ void Fit::fit()
                 tr("You must specify a valid fit function first. Operation aborted!"));
         return;
     }
+
+    if (!d_initial_guesses_set)
+        guessInitialValues();
+
+    d_result_errors.clear();
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
 

@@ -1,6 +1,6 @@
 /***************************************************************************
     File                 : MultiPeakFitTool.h
-    Project              : SciDAVis
+    Project              : SciDAVis / ToriGraph
     --------------------------------------------------------------------
     Copyright            : (C) 2006,2007 by Ion Vasilief,
                            Tilman Benkert, Knut Franke
@@ -34,6 +34,8 @@
 #include "PlotToolInterface.h"
 #include "MultiPeakFit.h"
 #include <QObject>
+#include <QList>
+#include <vector>
 
 class DataPickerTool;
 class ApplicationWindow;
@@ -43,9 +45,6 @@ class QwtPlotCurve;
  *
  * This class can be seen as a user-interface wrapper around MultiPeakFit, providing functionality
  * for visually selecting estimated peak positions and finally executing the fit.
- *
- * Maybe some other parts of the multi-peak fitting process (namely, specifying the number of peaks
- * and optionally the peak profile) could be moved here as well.
  */
 class MultiPeakFitTool : public QObject, public PlotToolInterface
 {
@@ -55,6 +54,7 @@ public:
                      int num_peaks, const QObject *status_target, const char *status_slot);
     virtual RTTI rtti() const { return MultiPeak; }
     virtual ~MultiPeakFitTool();
+    bool eventFilter(QObject *obj, QEvent *event) override;
 signals:
     /*! Emitted whenever a new message should be presented to the user.
      *
@@ -67,11 +67,14 @@ protected slots:
 
 private:
     void finalize();
+    void removePeakMarkers();
     MultiPeakFit::PeakProfile d_profile;
     int d_num_peaks, d_selected_peaks;
     DataPickerTool *d_picker_tool;
     MultiPeakFit *d_fit;
     QwtPlotCurve *d_curve;
+    QList<int> d_marker_keys;
+    std::vector<double> d_picked_centers;
 };
 
 #endif // ifndef MULTI_PEAK_FIT_TOOL
