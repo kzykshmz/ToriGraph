@@ -85,6 +85,7 @@
 #include "Fit.h"
 #include "MultiPeakFit.h"
 #include "PolynomialFit.h"
+#include "NonLinearFit.h"
 #include "SigmoidalFit.h"
 #include "FunctionCurve.h"
 #include "QwtPieCurve.h"
@@ -111,6 +112,11 @@
 #include "TranslateCurveTool.h"
 #include "MultiPeakFitTool.h"
 #include "LineProfileTool.h"
+#include "OriginGadgets.h"
+#include "CurveMathTools.h"
+#include "AdvancedSignalProc.h"
+#include "GraphStatsAndSurfaceFit.h"
+#include "RecalcEngine.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -420,6 +426,177 @@ private:
         add("Generate Peak Summary Table", "ピーク特性一覧テーブルを生成");
         add("Generate Integrated Peak Area Table", "数値積分ピーク面積テーブルを生成");
         add("Generate Residuals Table", "残差テーブルを生成");
+
+        // Phase 3: OriginPro Top-Level Gadgets Menu & Interactive Gadgets
+        add("&Gadgets", "ガジェット(&G)");
+        add("Gadgets", "ガジェット");
+        add("&Vertical Cursor (All Layers)", "垂直カーソル (全レイヤ連動)(&V)");
+        add("Vertical Cursor (All Layers)", "垂直カーソル (全レイヤ連動)");
+        add("&Region Statistics (ROI)...", "領域統計 (ROI)(&R)...");
+        add("Region Statistics (ROI)...", "領域統計 (ROI)...");
+        add("Quick &Fit (ROI)...", "クイックフィット (ROI)(&F)...");
+        add("Quick Fit (ROI)...", "クイックフィット (ROI)...");
+        add("Quick &Peaks (ROI)...", "クイックピーク解析 (ROI)(&P)...");
+        add("Quick Peaks (ROI)...", "クイックピーク解析 (ROI)...");
+        add("Quick &Sigmoidal Fit (ROI)...", "クイックシグモイドフィット (ROI)(&S)...");
+        add("Quick Sigmoidal Fit (ROI)...", "クイックシグモイドフィット (ROI)...");
+        add("&Integrate (ROI)...", "数値積分 (ROI)(&I)...");
+        add("Integrate (ROI)...", "数値積分 (ROI)...");
+        add("In&terpolate (ROI)...", "補間 (ROI)(&T)...");
+        add("Interpolate (ROI)...", "補間 (ROI)...");
+        add("FF&T Preview (ROI)...", "FFTプレビュー (ROI)(&T)...");
+        add("FFT Preview (ROI)...", "FFTプレビュー (ROI)...");
+        add("Rise &Time (Pro)...", "立ち上がり時間解析 (Pro)(&T)...");
+        add("Rise Time (Pro)...", "立ち上がり時間解析 (Pro)...");
+        add("&Cluster Selector (Pro)...", "クラスタ選択・統計 (Pro)(&C)...");
+        add("Cluster Selector (Pro)...", "クラスタ選択・統計 (Pro)...");
+        add("Clear Active &Gadget / ROI", "アクティブなガジェット/ROIを解除(&G)");
+        add("Clear Active Gadget / ROI", "アクティブなガジェット/ROIを解除");
+        add("OriginPro Interactive ROI Gadgets", "OriginPro インタラクティブROIガジェット");
+
+        // Phase 3: Non-Destructive Data Masking
+        add("Data &Masking", "データマスク(&M)");
+        add("Data Masking", "データマスク");
+        add("&Mask Data Points (Click)", "データ点をマスク (クリック)(&M)");
+        add("Mask Data Points (Click)", "データ点をマスク (クリック)");
+        add("&Unmask Data Points (Click)", "データ点のマスク解除 (クリック)(&U)");
+        add("Unmask Data Points (Click)", "データ点のマスク解除 (クリック)");
+        add("Mask &Region (ROI)", "矩形領域をマスク (ROI)(&R)");
+        add("Mask Region (ROI)", "矩形領域をマスク (ROI)");
+        add("Unmask Re&gion (ROI)", "矩形領域のマスク解除 (ROI)(&G)");
+        add("Unmask Region (ROI)", "矩形領域のマスク解除 (ROI)");
+        add("&Clear All Masks on Graph", "グラフ上の全マスクをクリア(&C)");
+        add("Clear All Masks on Graph", "グラフ上の全マスクをクリア");
+        add("Mask data points on graph without deleting table values",
+            "テーブル値を削除せず非破壊でグラフ上のデータ点をマスクします");
+        add("Unmask previously masked data points on graph",
+            "マスクされたデータ点のマスクを解除します");
+
+        // Phase 3: Structured OriginPro Analysis Submenus
+        add("&Mathematics", "数学・曲線演算(&M)");
+        add("Mathematics", "数学・曲線演算");
+        add("&Fitting", "フィット(&F)");
+        add("Fitting", "フィット");
+        add("&Peaks and Baseline", "ピークとベースライン(&P)");
+        add("Peaks and Baseline", "ピークとベースライン");
+        add("Signal &Processing", "信号処理(&P)");
+        add("Signal Processing", "信号処理");
+        add("S&tatistics", "グラフ統計解析(&T)");
+        add("Statistics on Graph", "グラフ統計解析");
+        add("&Recalculation && Themes", "再計算とテーマ(&R)");
+        add("Recalculation & Themes", "再計算とテーマ");
+
+        // Phase 3: Curve Mathematics
+        add("&Simple Curve Math (A +-*/ B)...", "単純曲線演算 (A +-*/ B)(&S)...");
+        add("Simple Curve Math (A +-*/ B)...", "単純曲線演算 (A +-*/ B)...");
+        add("Su&btract Straight Line...", "直線の減算(&B)...");
+        add("Subtract Straight Line...", "直線の減算...");
+        add("&Average Multiple Curves (Mean \xC2\xB1 SD)...", "複数曲線の平均 (平均 \xC2\xB1 SD)(&A)...");
+        add("Average Multiple Curves (Mean \xC2\xB1 SD)...", "複数曲線の平均 (平均 \xC2\xB1 SD)...");
+        add("&Normalize Curves...", "曲線の正規化(&N)...");
+        add("Normalize Curves...", "曲線の正規化...");
+        add("Curve &Intersections && X/Y Lookup...", "曲線の交点・X/Y逆引き検索(&I)...");
+        add("Curve Intersections & X/Y Lookup...", "曲線の交点・X/Y逆引き検索...");
+        add("Calculate &Polygon / Loop Area", "ポリゴン面積・曲線長を計算(&P)");
+        add("Calculate Polygon / Loop Area", "ポリゴン面積・曲線長を計算");
+        add("Polygon / Hysteresis Loop Area & Arc Length", "ポリゴン閉ループ面積・曲線長");
+
+        // Phase 3: Advanced Fitting & Surface / 2D Peaks
+        add("&Apparent Linear Fit (Log Axes)", "見かけの線形フィット (対数軸)(&A)");
+        add("Apparent Linear Fit (Log Axes)", "見かけの線形フィット (対数軸)");
+        add("Linear Fit with X && Y Errors (&York)...", "X・Y誤差付き線形フィット (York法)(&Y)...");
+        add("Linear Fit with X & Y Errors (York)...", "X・Y誤差付き線形フィット (York法)...");
+        add("&Global Curve Fit (Shared Parameters)...", "グローバルフィット (共有パラメータ)(&G)...");
+        add("Global Curve Fit (Shared Parameters)...", "グローバルフィット (共有パラメータ)...");
+        add("&Implicit / ODR Curve Fit...", "陰関数・直交距離回帰 (ODR) フィット(&I)...");
+        add("Implicit / ODR Curve Fit...", "陰関数・直交距離回帰 (ODR) フィット...");
+        add("&Compare && Rank Fit Models (AIC/BIC)...", "フィットモデル比較・AIC/BIC順位付け(&C)...");
+        add("Compare & Rank Fit Models (AIC/BIC)...", "フィットモデル比較・AIC/BIC順位付け...");
+        add("3D &Surface Fit (XYZ / Matrix)...", "3D曲面フィット (XYZ / 行列)(&S)...");
+        add("3D Surface Fit (XYZ / Matrix)...", "3D曲面フィット (XYZ / 行列)...");
+        add("&Batch Peak Analysis (All Curves)...", "バッチピーク解析 (全曲線一括)(&B)...");
+        add("Batch Peak Analysis (All Curves)...", "バッチピーク解析 (全曲線一括)...");
+        add("&2D Peak Analysis (Matrix / Image)...", "2Dピーク解析 (行列・画像)(&2)...");
+        add("2D Peak Analysis (Matrix / Image)...", "2Dピーク解析 (行列・画像)...");
+
+        // Phase 3: Peak Analyzer Upgrades
+        add("User Anchor Points (Spline)", "ユーザー指定アンカー点 (スプライン補間)");
+        add("Anchor Points (x1,y1; x2,y2; ...):", "アンカー座標 (x1,y1; x2,y2; ...):");
+        add("Auto-Seed Anchors from Local Minima", "極小値からアンカー点を自動抽出");
+        add("Cubic Spline Interpolation", "3次スプライン補間 (オフ時は折れ線)");
+        add("2nd Derivative (Hidden / Shoulder Peaks)", "2次微分法 (隠れピーク・ショルダー検出)");
+
+        // Phase 3: Signal Processing & Smoothing Upgrades
+        add("&LOWESS Smooth...", "LOWESS局所回帰平滑化(&L)...");
+        add("LOWESS Smooth...", "LOWESS局所回帰平滑化...");
+        add("LOWESS Smooth", "LOWESS局所回帰平滑化");
+        add("&Whittaker Smooth...", "Whittakerペナルティ付き平滑化(&W)...");
+        add("Whittaker Smooth...", "Whittakerペナルティ付き平滑化...");
+        add("Whittaker Smooth", "Whittakerペナルティ付き平滑化");
+        add("M&edian Filter Smooth...", "メディアンフィルタ平滑化(&E)...");
+        add("Median Filter Smooth...", "メディアンフィルタ平滑化...");
+        add("&IIR Digital Filter (Butterworth/Chebyshev/Bessel)...",
+            "IIRデジタルフィルタ (Butterworth/Chebyshev/Bessel)(&I)...");
+        add("IIR Digital Filter (Butterworth/Chebyshev/Bessel)...",
+            "IIRデジタルフィルタ (Butterworth/Chebyshev/Bessel)...");
+        add("&Short-Time Fourier Transform (STFT)...", "短時間フーリエ変換 (STFTスペクトログラム)(&S)...");
+        add("Short-Time Fourier Transform (STFT)...", "短時間フーリエ変換 (STFTスペクトログラム)...");
+        add("&Hilbert Transform (Envelope)...", "ヒルベルト変換 (包絡線・瞬時位相)(&H)...");
+        add("Hilbert Transform (Envelope)...", "ヒルベルト変換 (包絡線・瞬時位相)...");
+        add("&Wavelet Transform (CWT / DWT Denoise)...",
+            "ウェーブレット変換 (CWT / DWTノイズ除去)(&W)...");
+        add("Wavelet Transform (CWT / DWT Denoise)...",
+            "ウェーブレット変換 (CWT / DWTノイズ除去)...");
+        add("Welch &PSD && Cross-Coherence...", "Welchパワースペクトル密度・コヒーレンス(&P)...");
+        add("Welch PSD & Cross-Coherence...", "Welchパワースペクトル密度・コヒーレンス...");
+        add("2D &FFT (Matrix)", "2次元FFT (行列)(&F)");
+        add("2D FFT (Matrix)", "2次元FFT (行列)");
+        add("2D &IFFT (Inverse Matrix FFT)", "2次元逆FFT (行列IFFT)(&I)");
+        add("2D IFFT (Inverse Matrix FFT)", "2次元逆FFT (行列IFFT)");
+        add("2D FFT / IFFT (Matrix)", "2次元FFT / IFFT (行列)");
+
+        // Phase 3: Statistics on Graph
+        add("2D &Confidence / Prediction Ellipse...", "2D信頼楕円・予測楕円(&C)...");
+        add("2D Confidence / Prediction Ellipse...", "2D信頼楕円・予測楕円...");
+        add("&t-Test / One-Way ANOVA + Significance Brackets...",
+            "t検定・一元配置分散分析 (有意差ブラケット描画)(&T)...");
+        add("t-Test / One-Way ANOVA + Significance Brackets...",
+            "t検定・一元配置分散分析 (有意差ブラケット描画)...");
+        add("&ROC Curve (AUC)...", "ROC曲線・AUC解析(&R)...");
+        add("ROC Curve (AUC)...", "ROC曲線・AUC解析...");
+        add("&Kaplan-Meier Survival Analysis...", "Kaplan-Meier生存時間解析(&K)...");
+        add("Kaplan-Meier Survival Analysis...", "Kaplan-Meier生存時間解析...");
+        add("&Principal Component Analysis (PCA Biplot)...", "主成分分析 (PCAバイプロット)(&P)...");
+        add("Principal Component Analysis (PCA Biplot)...", "主成分分析 (PCAバイプロット)...");
+
+        // Phase 3: Dynamic Recalculation & Dialog Themes
+        add("&Auto Recalculate (Green Lock)", "自動再計算 (グリーンロック)(&A)");
+        add("Auto Recalculate (Green Lock)", "自動再計算 (グリーンロック)");
+        add("&Manual Recalculate", "手動再計算(&M)");
+        add("Manual Recalculate", "手動再計算");
+        add("&Disable Recalculation", "再計算を無効化(&D)");
+        add("Disable Recalculation", "再計算を無効化");
+        add("&Recalculate Pending Links Now", "保留中の再計算リンクを今すぐ更新(&R)");
+        add("Recalculate Pending Links Now", "保留中の再計算リンクを今すぐ更新");
+        add("Repeat &Linear Fit for All Curves", "全曲線に対して線形フィットを一括実行(&L)");
+        add("Repeat Linear Fit for All Curves", "全曲線に対して線形フィットを一括実行");
+        add("Repeat &Normalization for All Curves", "全曲線に対して正規化を一括実行(&N)");
+        add("Repeat Normalization for All Curves", "全曲線に対して正規化を一括実行");
+        add("Manage Dialog &Themes...", "ダイアログテーマの管理(&T)...");
+        add("Manage Dialog Themes...", "ダイアログテーマの管理...");
+        add("X Error Column (\xCF\x83x):", "X誤差列 (\xCF\x83x):");
+        add("Y Error Column (\xCF\x83y):", "Y誤差列 (\xCF\x83y):");
+        add("Plot 95% Confidence Band", "95%信頼帯 (Confidence Band) をプロット");
+        add("Plot 95% Prediction Band", "95%予測帯 (Prediction Band) をプロット");
+        add("Insert Fit Summary Box on Graph", "グラフ上にフィット結果表を挿入");
+        add("<None / Unit Weights>", "<なし / 等重み>");
+        add("Select Matrix:", "対象行列の選択:");
+        add("Please create or activate a Matrix window first.",
+            "先に行列 (Matrix) ウィンドウを作成またはアクティブにしてください。");
+        add("Cleared all masked points across %1 curve(s).",
+            "%1 本の曲線からすべてのマスクをクリアしました。");
+        add("Recalculated %1 linked analysis output(s).",
+            "%1 件の解析リンクを再計算しました。");
     }
 
     bool m_enabled;
@@ -949,6 +1126,22 @@ void ApplicationWindow::initToolBars()
     btnRemovePoints->setCheckable(true);
     btnRemovePoints->setIcon(QIcon(QPixmap(":/gomme.xpm")));
 
+    btnMaskPoints = new QAction(tr("&Mask Data Points (Click)"), this);
+    btnMaskPoints->setShortcut(tr("Ctrl+Shift+M"));
+    btnMaskPoints->setActionGroup(dataTools);
+    btnMaskPoints->setCheckable(true);
+    btnMaskPoints->setIcon(QIcon(QPixmap(":/erase.xpm")));
+    btnMaskPoints->setToolTip(tr("Mask data points on graph without deleting table values"));
+    graph_tools->addAction(btnMaskPoints);
+
+    btnUnmaskPoints = new QAction(tr("&Unmask Data Points (Click)"), this);
+    btnUnmaskPoints->setShortcut(tr("Ctrl+Alt+U"));
+    btnUnmaskPoints->setActionGroup(dataTools);
+    btnUnmaskPoints->setCheckable(true);
+    btnUnmaskPoints->setIcon(QIcon(QPixmap(":/select.xpm")));
+    btnUnmaskPoints->setToolTip(tr("Unmask previously masked data points on graph"));
+    graph_tools->addAction(btnUnmaskPoints);
+
     connect(dataTools, SIGNAL(triggered(QAction *)), this, SLOT(pickDataTool(QAction *)));
 
     plot_tools = new QToolBar(tr("Plot"), this);
@@ -1159,6 +1352,22 @@ void ApplicationWindow::insertTranslatedStrings()
     filter->setTitle(tr("&FFT Filter"));
     decay->setTitle(tr("Fit E&xponential Decay"));
     multiPeakMenu->setTitle(tr("Fit &Multi-Peak"));
+    if (gadgetsMenu)
+        gadgetsMenu->setTitle(tr("&Gadgets"));
+    if (dataMaskMenu)
+        dataMaskMenu->setTitle(tr("Data &Masking"));
+    if (curveMathMenu)
+        curveMathMenu->setTitle(tr("&Mathematics"));
+    if (advFitMenu)
+        advFitMenu->setTitle(tr("&Fitting"));
+    if (peaksBaselineMenu)
+        peaksBaselineMenu->setTitle(tr("&Peaks and Baseline"));
+    if (advSignalMenu)
+        advSignalMenu->setTitle(tr("Signal &Processing"));
+    if (graphStatsMenu)
+        graphStatsMenu->setTitle(tr("S&tatistics"));
+    if (recalcMenu)
+        recalcMenu->setTitle(tr("&Recalculation && Themes"));
 
     translateActionsStrings();
     for (auto w : windowsList())
@@ -1354,13 +1563,91 @@ void ApplicationWindow::initMainMenu()
     tableMenu->setFont(appFont);
     tableMenu->setTitle(tr("&Table"));
 
+    recalcMenu = new QMenu(this);
+    recalcMenu->setFont(appFont);
+    recalcMenu->setTitle(tr("&Recalculation && Themes"));
+    recalcMenu->addAction(actionRecalcAuto);
+    recalcMenu->addAction(actionRecalcManual);
+    recalcMenu->addAction(actionRecalcDisabled);
+    recalcMenu->addSeparator();
+    recalcMenu->addAction(actionRecalculateNow);
+    recalcMenu->addSeparator();
+    recalcMenu->addAction(actionRepeatLinearFitAll);
+    recalcMenu->addAction(actionRepeatNormalizeAll);
+    recalcMenu->addSeparator();
+    recalcMenu->addAction(actionManageDialogThemes);
+    connect(recalcMenu, SIGNAL(aboutToShow()), this, SLOT(syncRecalcMenuState()));
+
     initPlotMenu();
     initTableAnalysisMenu();
     initPlotDataMenu();
 
+    gadgetsMenu = new QMenu(this);
+    gadgetsMenu->setFont(appFont);
+    gadgetsMenu->setTitle(tr("&Gadgets"));
+    gadgetsMenu->addAction(actionGadgetVerticalCursor);
+    gadgetsMenu->addSeparator();
+    gadgetsMenu->addAction(actionGadgetRegionStats);
+    gadgetsMenu->addAction(actionGadgetQuickFit);
+    gadgetsMenu->addAction(actionGadgetQuickPeaks);
+    gadgetsMenu->addAction(actionGadgetQuickSigmoidal);
+    gadgetsMenu->addAction(actionGadgetIntegrate);
+    gadgetsMenu->addAction(actionGadgetInterpolate);
+    gadgetsMenu->addAction(actionGadgetFFT);
+    gadgetsMenu->addSeparator();
+    gadgetsMenu->addAction(actionGadgetRiseTime);
+    gadgetsMenu->addAction(actionGadgetCluster);
+    gadgetsMenu->addSeparator();
+    gadgetsMenu->addAction(actionGadgetClear);
+
+    if (graph_tools) {
+        graph_tools->addSeparator();
+        QToolButton *btnGadgetsPopup = new QToolButton(this);
+        btnGadgetsPopup->setMenu(gadgetsMenu);
+        btnGadgetsPopup->setPopupMode(QToolButton::InstantPopup);
+        btnGadgetsPopup->setIcon(QPixmap(":/cursors.xpm"));
+        btnGadgetsPopup->setToolTip(tr("OriginPro Interactive ROI Gadgets"));
+        graph_tools->addWidget(btnGadgetsPopup);
+        graph_tools->addAction(actionRecalculateNow);
+    }
+
     calcul = new QMenu(this);
     calcul->setFont(appFont);
     calcul->setTitle(tr("&Analysis"));
+
+    // Structured OriginPro Analysis Domain Submenus
+    curveMathMenu = calcul->addMenu(tr("&Mathematics"));
+    curveMathMenu->setFont(appFont);
+    curveMathMenu->addAction(actionSimpleCurveMath);
+    curveMathMenu->addAction(actionSubtractStraightLine);
+    curveMathMenu->addAction(actionAverageMultipleCurves);
+    curveMathMenu->addAction(actionNormalizeCurves);
+    curveMathMenu->addAction(actionCurveIntersections);
+    curveMathMenu->addAction(actionPolygonLoopArea);
+    curveMathMenu->addSeparator();
+    curveMathMenu->addAction(actionDifferentiate);
+    curveMathMenu->addAction(actionShowIntDialog);
+    curveMathMenu->addAction(actionInterpolate);
+
+    advFitMenu = calcul->addMenu(tr("&Fitting"));
+    advFitMenu->setFont(appFont);
+
+    peaksBaselineMenu = calcul->addMenu(tr("&Peaks and Baseline"));
+    peaksBaselineMenu->setFont(appFont);
+
+    advSignalMenu = calcul->addMenu(tr("Signal &Processing"));
+    advSignalMenu->setFont(appFont);
+
+    graphStatsMenu = calcul->addMenu(tr("S&tatistics"));
+    graphStatsMenu->setFont(appFont);
+    graphStatsMenu->addAction(actionConfidenceEllipse);
+    graphStatsMenu->addAction(actionGroupComparison);
+    graphStatsMenu->addAction(actionROCCurve);
+    graphStatsMenu->addAction(actionKaplanMeier);
+    graphStatsMenu->addAction(actionPCABiplot);
+
+    calcul->addMenu(recalcMenu);
+    calcul->addSeparator();
 
     translateMenu = calcul->addMenu(tr("&Translate"));
     translateMenu->setFont(appFont);
@@ -1378,6 +1665,9 @@ void ApplicationWindow::initMainMenu()
     smooth->addAction(actionSmoothSavGol);
     smooth->addAction(actionSmoothAverage);
     smooth->addAction(actionSmoothFFT);
+    smooth->addAction(actionSmoothLOWESS);
+    smooth->addAction(actionSmoothWhittaker);
+    smooth->addAction(actionSmoothMedian);
 
     filter = calcul->addMenu(tr("&FFT Filter"));
     filter->setFont(appFont);
@@ -1385,6 +1675,19 @@ void ApplicationWindow::initMainMenu()
     filter->addAction(actionHighPassFilter);
     filter->addAction(actionBandPassFilter);
     filter->addAction(actionBandBlockFilter);
+
+    advSignalMenu->addMenu(smooth);
+    advSignalMenu->addMenu(filter);
+    advSignalMenu->addAction(actionIirDigitalFilter);
+    advSignalMenu->addSeparator();
+    advSignalMenu->addAction(actionFFT);
+    advSignalMenu->addAction(actionStftSpectrogram);
+    advSignalMenu->addAction(actionHilbertEnvelope);
+    advSignalMenu->addAction(actionWaveletTransform);
+    advSignalMenu->addAction(actionWelchPsdCoherence);
+    advSignalMenu->addSeparator();
+    advSignalMenu->addAction(actionMatrixFFT2D);
+    advSignalMenu->addAction(actionMatrixIFFT2D);
 
     calcul->addSeparator();
     calcul->addAction(actionInterpolate);
@@ -1395,6 +1698,8 @@ void ApplicationWindow::initMainMenu()
     d_quick_fit_menu->setTitle(tr("&Quick Fit"));
 
     d_quick_fit_menu->addAction(actionFitLinear);
+    d_quick_fit_menu->addAction(actionFitApparentLinear);
+    d_quick_fit_menu->addAction(actionFitYorkLinear);
     d_quick_fit_menu->addAction(actionShowFitPolynomDialog);
 
     d_quick_fit_menu->addSeparator();
@@ -1414,6 +1719,8 @@ void ApplicationWindow::initMainMenu()
     multiPeakMenu->setFont(appFont);
     multiPeakMenu->addAction(actionPeakAnalyzerDialog);
     multiPeakMenu->addAction(actionPeakFitDialog);
+    multiPeakMenu->addAction(actionBatchPeakAnalysis);
+    multiPeakMenu->addAction(action2DPeakAnalysis);
     multiPeakMenu->addSeparator();
     multiPeakMenu->addAction(actionAutoPeakGauss);
     multiPeakMenu->addAction(actionAutoPeakLorentz);
@@ -1426,11 +1733,50 @@ void ApplicationWindow::initMainMenu()
     multiPeakMenu->addAction(actionMultiPeakPearsonVII);
 
     d_quick_fit_menu->addSeparator();
+    d_quick_fit_menu->addAction(actionGlobalCurveFit);
+    d_quick_fit_menu->addAction(actionImplicitODRFit);
+    d_quick_fit_menu->addAction(actionModelComparison);
+    d_quick_fit_menu->addAction(actionSurfaceFit3D);
+    d_quick_fit_menu->addSeparator();
     d_quick_fit_menu->addAction(actionPeakAnalyzerDialog);
     d_quick_fit_menu->addAction(actionPeakFitDialog);
     d_quick_fit_menu->addAction(actionAutoPeakGauss);
     d_quick_fit_menu->addAction(actionAutoPeakLorentz);
     d_quick_fit_menu->addAction(actionAutoPeakPseudoVoigt);
+
+    // Populate structured Fitting & Peaks submenus
+    advFitMenu->addAction(actionFitLinear);
+    advFitMenu->addAction(actionFitApparentLinear);
+    advFitMenu->addAction(actionFitYorkLinear);
+    advFitMenu->addAction(actionShowFitPolynomDialog);
+    advFitMenu->addSeparator();
+    advFitMenu->addMenu(decay);
+    advFitMenu->addAction(actionFitExpGrowth);
+    advFitMenu->addAction(actionFitSigmoidal);
+    advFitMenu->addAction(actionFitGauss);
+    advFitMenu->addAction(actionFitLorentz);
+    advFitMenu->addSeparator();
+    advFitMenu->addAction(actionGlobalCurveFit);
+    advFitMenu->addAction(actionImplicitODRFit);
+    advFitMenu->addAction(actionModelComparison);
+    advFitMenu->addAction(actionSurfaceFit3D);
+    advFitMenu->addSeparator();
+    advFitMenu->addAction(actionShowFitDialog);
+
+    peaksBaselineMenu->addAction(actionPeakAnalyzerDialog);
+    peaksBaselineMenu->addAction(actionPeakFitDialog);
+    peaksBaselineMenu->addAction(actionBatchPeakAnalysis);
+    peaksBaselineMenu->addAction(action2DPeakAnalysis);
+    peaksBaselineMenu->addSeparator();
+    peaksBaselineMenu->addAction(actionAutoPeakGauss);
+    peaksBaselineMenu->addAction(actionAutoPeakLorentz);
+    peaksBaselineMenu->addAction(actionAutoPeakPseudoVoigt);
+    peaksBaselineMenu->addSeparator();
+    peaksBaselineMenu->addAction(actionMultiPeakGauss);
+    peaksBaselineMenu->addAction(actionMultiPeakGaussAmp);
+    peaksBaselineMenu->addAction(actionMultiPeakLorentz);
+    peaksBaselineMenu->addAction(actionMultiPeakPseudoVoigt);
+    peaksBaselineMenu->addAction(actionMultiPeakPearsonVII);
 
     calcul->addMenu(d_quick_fit_menu);
     calcul->addAction(actionPeakAnalyzerDialog);
@@ -1497,6 +1843,23 @@ void ApplicationWindow::initPlotDataMenu()
 
     plotDataMenu->addAction(btnMovePoints);
     plotDataMenu->addAction(btnRemovePoints);
+    plotDataMenu->addSeparator();
+
+    dataMaskMenu = plotDataMenu->addMenu(tr("Data &Masking"));
+    dataMaskMenu->setFont(appFont);
+    dataMaskMenu->addAction(btnMaskPoints);
+    dataMaskMenu->addAction(btnUnmaskPoints);
+    dataMaskMenu->addSeparator();
+    dataMaskMenu->addAction(actionMaskRegionROI);
+    dataMaskMenu->addAction(actionUnmaskRegionROI);
+    dataMaskMenu->addSeparator();
+    dataMaskMenu->addAction(actionClearAllMasks);
+
+    plotDataMenu->addAction(btnMaskPoints);
+    plotDataMenu->addAction(btnUnmaskPoints);
+    plotDataMenu->addAction(actionMaskRegionROI);
+    plotDataMenu->addAction(actionUnmaskRegionROI);
+    plotDataMenu->addAction(actionClearAllMasks);
 }
 
 void ApplicationWindow::initPlotMenu()
@@ -1585,6 +1948,17 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addSeparator();
     dataMenu->addAction(actionPeakAnalyzerDialog);
     dataMenu->addAction(actionShowFitDialog);
+    dataMenu->addAction(actionSurfaceFit3D);
+    dataMenu->addAction(action2DPeakAnalysis);
+    dataMenu->addSeparator();
+    dataMenu->addAction(actionGroupComparison);
+    dataMenu->addAction(actionROCCurve);
+    dataMenu->addAction(actionKaplanMeier);
+    dataMenu->addAction(actionPCABiplot);
+    if (recalcMenu) {
+        dataMenu->addSeparator();
+        dataMenu->addMenu(recalcMenu);
+    }
 }
 
 void ApplicationWindow::customMenu(MyWidget *w)
@@ -1617,6 +1991,8 @@ void ApplicationWindow::customMenu(MyWidget *w)
             menuBar()->addMenu(graph);
             menuBar()->addMenu(plotDataMenu);
             menuBar()->addMenu(calcul);
+            if (gadgetsMenu)
+                menuBar()->addMenu(gadgetsMenu);
             menuBar()->addMenu(format);
 
             exportPlot->setEnabled(true);
@@ -1656,6 +2032,8 @@ void ApplicationWindow::customMenu(MyWidget *w)
             format->addAction(actionShowScaleDialog);
             format->addAction(actionShowAxisDialog);
             format->addAction(actionShowTitleDialog);
+            format->addSeparator();
+            format->addAction(actionSurfaceFit3D);
             if (((Graph3D *)w)->coordStyle() == Qwt3D::NOCOORD)
                 actionShowAxisDialog->setEnabled(false);
         } else if (w->inherits("Table")) {
@@ -1681,6 +2059,11 @@ void ApplicationWindow::customMenu(MyWidget *w)
             matrixMenu->addSeparator();
             matrixMenu->addAction(actionInvertMatrix);
             matrixMenu->addAction(actionMatrixDeterminant);
+            matrixMenu->addSeparator();
+            matrixMenu->addAction(actionMatrixFFT2D);
+            matrixMenu->addAction(actionMatrixIFFT2D);
+            matrixMenu->addAction(actionSurfaceFit3D);
+            matrixMenu->addAction(action2DPeakAnalysis);
             matrixMenu->addSeparator();
             matrixMenu->addAction(actionConvertMatrix);
             menuBar()->addMenu(matrixMenu);
@@ -1773,6 +2156,14 @@ void ApplicationWindow::customToolBars(MyWidget *w)
                             break;
                         case DataPickerTool::Remove:
                             btnRemovePoints->setChecked(true);
+                            break;
+                        case DataPickerTool::Mask:
+                            if (btnMaskPoints)
+                                btnMaskPoints->setChecked(true);
+                            break;
+                        case DataPickerTool::Unmask:
+                            if (btnUnmaskPoints)
+                                btnUnmaskPoints->setChecked(true);
                             break;
                         }
                         break;
@@ -7079,6 +7470,8 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
 
     if (c->type() != Graph::Function && c->type() != Graph::ErrorBars) {
         curveMenu->addSeparator();
+        if (dataMaskMenu)
+            curveMenu->addMenu(dataMaskMenu);
         curveMenu->addAction(actionPeakFitDialog);
         curveMenu->addAction(actionAutoPeakGauss);
         curveMenu->addAction(actionAutoPeakLorentz);
@@ -8508,6 +8901,10 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
         }
     } else if (w->inherits("MultiLayer")) {
         MultiLayer *ml = (MultiLayer *)w;
+        for (QWidget *gw : ml->graphPtrs()) {
+            if (gw)
+                RecalcManager::instance(this)->removeLinksForGraph(static_cast<Graph *>(gw));
+        }
         Graph *g = ml->activeGraph();
         if (g)
             btnPointer->setChecked(true);
@@ -9025,6 +9422,9 @@ void ApplicationWindow::showGraphContextMenu()
             smooth->addAction(actionSmoothSavGol);
             smooth->addAction(actionSmoothFFT);
             smooth->addAction(actionSmoothAverage);
+            smooth->addAction(actionSmoothLOWESS);
+            smooth->addAction(actionSmoothWhittaker);
+            smooth->addAction(actionSmoothMedian);
 
             QMenu *filter = calcul->addMenu(tr("&FFT Filter"));
             filter->addAction(actionLowPassFilter);
@@ -9074,6 +9474,22 @@ void ApplicationWindow::showGraphContextMenu()
             calcul->addAction(actionShowFitDialog);
 
             cm.addSeparator();
+            if (gadgetsMenu)
+                cm.addMenu(gadgetsMenu);
+            if (dataMaskMenu)
+                cm.addMenu(dataMaskMenu);
+            if (curveMathMenu)
+                calcul->addMenu(curveMathMenu);
+            if (advFitMenu)
+                calcul->addMenu(advFitMenu);
+            if (peaksBaselineMenu)
+                calcul->addMenu(peaksBaselineMenu);
+            if (advSignalMenu)
+                calcul->addMenu(advSignalMenu);
+            if (graphStatsMenu)
+                calcul->addMenu(graphStatsMenu);
+            if (recalcMenu)
+                calcul->addMenu(recalcMenu);
             cm.addAction(actionPeakAnalyzerDialog);
             cm.addAction(actionPeakFitDialog);
             cm.addAction(actionColorPaletteEditor);
@@ -9171,6 +9587,9 @@ void ApplicationWindow::showLayerButtonContextMenu()
             smooth->addAction(actionSmoothSavGol);
             smooth->addAction(actionSmoothFFT);
             smooth->addAction(actionSmoothAverage);
+            smooth->addAction(actionSmoothLOWESS);
+            smooth->addAction(actionSmoothWhittaker);
+            smooth->addAction(actionSmoothMedian);
 
             QMenu *filter = calcul->addMenu(tr("&FFT Filter"));
             filter->addAction(actionLowPassFilter);
@@ -9220,6 +9639,22 @@ void ApplicationWindow::showLayerButtonContextMenu()
             calcul->addAction(actionShowFitDialog);
 
             cm.addSeparator();
+            if (gadgetsMenu)
+                cm.addMenu(gadgetsMenu);
+            if (dataMaskMenu)
+                cm.addMenu(dataMaskMenu);
+            if (curveMathMenu)
+                calcul->addMenu(curveMathMenu);
+            if (advFitMenu)
+                calcul->addMenu(advFitMenu);
+            if (peaksBaselineMenu)
+                calcul->addMenu(peaksBaselineMenu);
+            if (advSignalMenu)
+                calcul->addMenu(advSignalMenu);
+            if (graphStatsMenu)
+                calcul->addMenu(graphStatsMenu);
+            if (recalcMenu)
+                calcul->addMenu(recalcMenu);
             cm.addAction(actionPeakAnalyzerDialog);
             cm.addAction(actionPeakFitDialog);
             cm.addAction(actionColorPaletteEditor);
@@ -11363,12 +11798,16 @@ void ApplicationWindow::showDataSetDialog(const QString &whichFit)
 
 void ApplicationWindow::analyzeCurve(Graph *g, const QString &whichFit, const QString &curveTitle)
 {
-    if (whichFit == "fitLinear" || whichFit == "fitSigmoidal" || whichFit == "fitGauss"
-        || whichFit == "fitLorentz") {
+    if (whichFit == "fitLinear" || whichFit == "fitApparentLinear" || whichFit == "fitSigmoidal"
+        || whichFit == "fitGauss" || whichFit == "fitLorentz") {
         Fit *fitter = 0;
         if (whichFit == "fitLinear")
             fitter = new LinearFit(this, g);
-        else if (whichFit == "fitSigmoidal")
+        else if (whichFit == "fitApparentLinear") {
+            LinearFit *lf = new LinearFit(this, g);
+            lf->setApparentFit(true);
+            fitter = lf;
+        } else if (whichFit == "fitSigmoidal")
             fitter = new SigmoidalFit(this, g);
         else if (whichFit == "fitGauss")
             fitter = new GaussFit(this, g);
@@ -11376,7 +11815,7 @@ void ApplicationWindow::analyzeCurve(Graph *g, const QString &whichFit, const QS
             fitter = new LorentzFit(this, g);
 
         if (fitter->setDataFromCurve(curveTitle)) {
-            if (whichFit != "fitLinear")
+            if (whichFit != "fitLinear" && whichFit != "fitApparentLinear")
                 fitter->guessInitialValues();
 
             fitter->scaleErrors(fit_scale_errors);
@@ -11386,9 +11825,29 @@ void ApplicationWindow::analyzeCurve(Graph *g, const QString &whichFit, const QS
                 fitter->generateFunction(generateUniformFitPoints, 2);
             else
                 fitter->generateFunction(generateUniformFitPoints, fitPoints);
+
+            const QStringList curvesBefore = g->curvesList();
             fitter->fit();
             if (pasteFitResultsToPlot)
                 fitter->showLegend();
+
+            if (whichFit == "fitLinear"
+                && RecalcManager::instance(this)->recalcMode() != RecalcManager::Disabled) {
+                const QStringList curvesAfter = g->curvesList();
+                QString outCurveTitle;
+                for (int i = curvesAfter.size() - 1; i >= 0; --i) {
+                    if (!curvesBefore.contains(curvesAfter[i])) {
+                        outCurveTitle = curvesAfter[i];
+                        break;
+                    }
+                }
+                DataCurve *srcDc = dynamic_cast<DataCurve *>(g->curve(curveTitle));
+                if (srcDc && srcDc->table() && !outCurveTitle.isEmpty()) {
+                    RecalcManager::instance(this)->registerLink(
+                            this, g, srcDc->table(), curveTitle, outCurveTitle,
+                            RecalcManager::OpLinearFit);
+                }
+            }
             delete fitter;
         }
     } else if (whichFit == "differentiate") {
@@ -11452,6 +11911,10 @@ void ApplicationWindow::pickDataTool(QAction *action)
         movePoints();
     else if (action == btnRemovePoints)
         removePoints();
+    else if (action == btnMaskPoints)
+        maskDataPointsTool();
+    else if (action == btnUnmaskPoints)
+        unmaskDataPointsTool();
     else if (action == btnZoomIn)
         zoomIn();
     else if (action == btnZoomOut)
@@ -12256,6 +12719,186 @@ void ApplicationWindow::createActions()
     actionEditFunction = new QAction(tr("&Edit Function..."), this);
     connect(actionEditFunction, SIGNAL(triggered()), this, SLOT(showFunctionDialog()));
 
+    // Phase 3: OriginPro Interactive Gadgets
+    actionGadgetVerticalCursor = new QAction(tr("&Vertical Cursor (All Layers)"), this);
+    connect(actionGadgetVerticalCursor, SIGNAL(triggered()), this,
+            SLOT(attachVerticalCursorGadget()));
+
+    actionGadgetRegionStats = new QAction(tr("&Region Statistics (ROI)..."), this);
+    connect(actionGadgetRegionStats, SIGNAL(triggered()), this, SLOT(attachRegionStatsGadget()));
+
+    actionGadgetQuickFit = new QAction(tr("Quick &Fit (ROI)..."), this);
+    connect(actionGadgetQuickFit, SIGNAL(triggered()), this, SLOT(attachQuickFitGadget()));
+
+    actionGadgetQuickPeaks = new QAction(tr("Quick &Peaks (ROI)..."), this);
+    connect(actionGadgetQuickPeaks, SIGNAL(triggered()), this, SLOT(attachQuickPeaksGadget()));
+
+    actionGadgetQuickSigmoidal = new QAction(tr("Quick &Sigmoidal Fit (ROI)..."), this);
+    connect(actionGadgetQuickSigmoidal, SIGNAL(triggered()), this,
+            SLOT(attachQuickSigmoidalGadget()));
+
+    actionGadgetIntegrate = new QAction(tr("&Integrate (ROI)..."), this);
+    connect(actionGadgetIntegrate, SIGNAL(triggered()), this, SLOT(attachIntegrateGadget()));
+
+    actionGadgetInterpolate = new QAction(tr("In&terpolate (ROI)..."), this);
+    connect(actionGadgetInterpolate, SIGNAL(triggered()), this, SLOT(attachInterpolateGadget()));
+
+    actionGadgetFFT = new QAction(tr("FF&T Preview (ROI)..."), this);
+    connect(actionGadgetFFT, SIGNAL(triggered()), this, SLOT(attachFFTGadget()));
+
+    actionGadgetRiseTime = new QAction(tr("Rise &Time (Pro)..."), this);
+    connect(actionGadgetRiseTime, SIGNAL(triggered()), this, SLOT(attachRiseTimeGadget()));
+
+    actionGadgetCluster = new QAction(tr("&Cluster Selector (Pro)..."), this);
+    connect(actionGadgetCluster, SIGNAL(triggered()), this, SLOT(attachClusterGadget()));
+
+    actionGadgetClear = new QAction(tr("Clear Active &Gadget / ROI"), this);
+    connect(actionGadgetClear, SIGNAL(triggered()), this, SLOT(clearActiveGadget()));
+
+    // Phase 3: Non-Destructive Data Masking
+    actionMaskRegionROI = new QAction(tr("Mask &Region (ROI)"), this);
+    connect(actionMaskRegionROI, SIGNAL(triggered()), this, SLOT(maskRegionGadget()));
+
+    actionUnmaskRegionROI = new QAction(tr("Unmask Re&gion (ROI)"), this);
+    connect(actionUnmaskRegionROI, SIGNAL(triggered()), this, SLOT(unmaskRegionGadget()));
+
+    actionClearAllMasks = new QAction(tr("&Clear All Masks on Graph"), this);
+    connect(actionClearAllMasks, SIGNAL(triggered()), this, SLOT(clearAllMasksOnGraph()));
+
+    // Phase 3: Curve Mathematics
+    actionSimpleCurveMath = new QAction(tr("&Simple Curve Math (A +-*/ B)..."), this);
+    connect(actionSimpleCurveMath, SIGNAL(triggered()), this, SLOT(showSimpleCurveMathDialog()));
+
+    actionSubtractStraightLine = new QAction(tr("Su&btract Straight Line..."), this);
+    connect(actionSubtractStraightLine, SIGNAL(triggered()), this,
+            SLOT(showSubtractStraightLineDialog()));
+
+    actionAverageMultipleCurves =
+            new QAction(tr("&Average Multiple Curves (Mean \xC2\xB1 SD)..."), this);
+    connect(actionAverageMultipleCurves, SIGNAL(triggered()), this,
+            SLOT(showAverageMultipleCurvesDialog()));
+
+    actionNormalizeCurves = new QAction(tr("&Normalize Curves..."), this);
+    connect(actionNormalizeCurves, SIGNAL(triggered()), this, SLOT(showNormalizeCurvesDialog()));
+
+    actionCurveIntersections = new QAction(tr("Curve &Intersections && X/Y Lookup..."), this);
+    connect(actionCurveIntersections, SIGNAL(triggered()), this,
+            SLOT(showCurveIntersectionsDialog()));
+
+    actionPolygonLoopArea = new QAction(tr("Calculate &Polygon / Loop Area"), this);
+    connect(actionPolygonLoopArea, SIGNAL(triggered()), this, SLOT(calculatePolygonLoopArea()));
+
+    // Phase 3: Advanced Fitting, Surface Fit & Batch / 2D Peaks
+    actionFitApparentLinear = new QAction(tr("&Apparent Linear Fit (Log Axes)"), this);
+    connect(actionFitApparentLinear, SIGNAL(triggered()), this, SLOT(fitApparentLinear()));
+
+    actionFitYorkLinear = new QAction(tr("Linear Fit with X && Y Errors (&York)..."), this);
+    connect(actionFitYorkLinear, SIGNAL(triggered()), this, SLOT(showYorkLinearFitDialog()));
+
+    actionGlobalCurveFit = new QAction(tr("&Global Curve Fit (Shared Parameters)..."), this);
+    connect(actionGlobalCurveFit, SIGNAL(triggered()), this, SLOT(showGlobalCurveFitDialog()));
+
+    actionImplicitODRFit = new QAction(tr("&Implicit / ODR Curve Fit..."), this);
+    connect(actionImplicitODRFit, SIGNAL(triggered()), this, SLOT(showImplicitODRFitDialog()));
+
+    actionModelComparison = new QAction(tr("&Compare && Rank Fit Models (AIC/BIC)..."), this);
+    connect(actionModelComparison, SIGNAL(triggered()), this, SLOT(showModelComparisonDialog()));
+
+    actionSurfaceFit3D = new QAction(tr("3D &Surface Fit (XYZ / Matrix)..."), this);
+    connect(actionSurfaceFit3D, SIGNAL(triggered()), this, SLOT(showSurfaceFit3DDialog()));
+
+    actionBatchPeakAnalysis = new QAction(tr("&Batch Peak Analysis (All Curves)..."), this);
+    connect(actionBatchPeakAnalysis, SIGNAL(triggered()), this, SLOT(showBatchPeakAnalysisDialog()));
+
+    action2DPeakAnalysis = new QAction(tr("&2D Peak Analysis (Matrix / Image)..."), this);
+    connect(action2DPeakAnalysis, SIGNAL(triggered()), this, SLOT(show2DPeakAnalysisDialog()));
+
+    // Phase 3: Advanced Signal Processing & Smoothing
+    actionSmoothLOWESS = new QAction(tr("&LOWESS Smooth..."), this);
+    connect(actionSmoothLOWESS, SIGNAL(triggered()), this, SLOT(showSmoothLOWESSDialog()));
+
+    actionSmoothWhittaker = new QAction(tr("&Whittaker Smooth..."), this);
+    connect(actionSmoothWhittaker, SIGNAL(triggered()), this, SLOT(showSmoothWhittakerDialog()));
+
+    actionSmoothMedian = new QAction(tr("M&edian Filter Smooth..."), this);
+    connect(actionSmoothMedian, SIGNAL(triggered()), this, SLOT(showSmoothMedianDialog()));
+
+    actionIirDigitalFilter =
+            new QAction(tr("&IIR Digital Filter (Butterworth/Chebyshev/Bessel)..."), this);
+    connect(actionIirDigitalFilter, SIGNAL(triggered()), this, SLOT(showIirDigitalFilterDialog()));
+
+    actionStftSpectrogram = new QAction(tr("&Short-Time Fourier Transform (STFT)..."), this);
+    connect(actionStftSpectrogram, SIGNAL(triggered()), this, SLOT(showStftSpectrogramDialog()));
+
+    actionHilbertEnvelope = new QAction(tr("&Hilbert Transform (Envelope)..."), this);
+    connect(actionHilbertEnvelope, SIGNAL(triggered()), this, SLOT(showHilbertEnvelopeDialog()));
+
+    actionWaveletTransform = new QAction(tr("&Wavelet Transform (CWT / DWT Denoise)..."), this);
+    connect(actionWaveletTransform, SIGNAL(triggered()), this, SLOT(showWaveletTransformDialog()));
+
+    actionWelchPsdCoherence = new QAction(tr("Welch &PSD && Cross-Coherence..."), this);
+    connect(actionWelchPsdCoherence, SIGNAL(triggered()), this, SLOT(showWelchPsdCoherenceDialog()));
+
+    actionMatrixFFT2D = new QAction(tr("2D &FFT (Matrix)"), this);
+    connect(actionMatrixFFT2D, SIGNAL(triggered()), this, SLOT(runMatrixFFT2D()));
+
+    actionMatrixIFFT2D = new QAction(tr("2D &IFFT (Inverse Matrix FFT)"), this);
+    connect(actionMatrixIFFT2D, SIGNAL(triggered()), this, SLOT(runMatrixIFFT2D()));
+
+    // Phase 3: Graph Statistics
+    actionConfidenceEllipse = new QAction(tr("2D &Confidence / Prediction Ellipse..."), this);
+    connect(actionConfidenceEllipse, SIGNAL(triggered()), this,
+            SLOT(showConfidenceEllipseDialog()));
+
+    actionGroupComparison =
+            new QAction(tr("&t-Test / One-Way ANOVA + Significance Brackets..."), this);
+    connect(actionGroupComparison, SIGNAL(triggered()), this, SLOT(showGroupComparisonDialog()));
+
+    actionROCCurve = new QAction(tr("&ROC Curve (AUC)..."), this);
+    connect(actionROCCurve, SIGNAL(triggered()), this, SLOT(showROCCurveDialog()));
+
+    actionKaplanMeier = new QAction(tr("&Kaplan-Meier Survival Analysis..."), this);
+    connect(actionKaplanMeier, SIGNAL(triggered()), this, SLOT(showKaplanMeierDialog()));
+
+    actionPCABiplot = new QAction(tr("&Principal Component Analysis (PCA Biplot)..."), this);
+    connect(actionPCABiplot, SIGNAL(triggered()), this, SLOT(showPCABiplotDialog()));
+
+    // Phase 3: Dynamic Recalculation ("Green Lock") & Dialog Themes
+    recalcModeGroup = new QActionGroup(this);
+    recalcModeGroup->setExclusive(true);
+
+    actionRecalcAuto = new QAction(tr("&Auto Recalculate (Green Lock)"), this);
+    actionRecalcAuto->setCheckable(true);
+    actionRecalcAuto->setChecked(true);
+    actionRecalcAuto->setActionGroup(recalcModeGroup);
+    connect(actionRecalcAuto, SIGNAL(triggered()), this, SLOT(setRecalcModeAuto()));
+
+    actionRecalcManual = new QAction(tr("&Manual Recalculate"), this);
+    actionRecalcManual->setCheckable(true);
+    actionRecalcManual->setActionGroup(recalcModeGroup);
+    connect(actionRecalcManual, SIGNAL(triggered()), this, SLOT(setRecalcModeManual()));
+
+    actionRecalcDisabled = new QAction(tr("&Disable Recalculation"), this);
+    actionRecalcDisabled->setCheckable(true);
+    actionRecalcDisabled->setActionGroup(recalcModeGroup);
+    connect(actionRecalcDisabled, SIGNAL(triggered()), this, SLOT(setRecalcModeDisabled()));
+
+    actionRecalculateNow =
+            new QAction(QIcon(QPixmap(":/lock.xpm")), tr("&Recalculate Pending Links Now"), this);
+    actionRecalculateNow->setShortcut(tr("Ctrl+Shift+U"));
+    connect(actionRecalculateNow, SIGNAL(triggered()), this, SLOT(recalculatePendingLinksNow()));
+
+    actionRepeatLinearFitAll = new QAction(tr("Repeat &Linear Fit for All Curves"), this);
+    connect(actionRepeatLinearFitAll, SIGNAL(triggered()), this,
+            SLOT(repeatLinearFitForAllCurves()));
+
+    actionRepeatNormalizeAll = new QAction(tr("Repeat &Normalization for All Curves"), this);
+    connect(actionRepeatNormalizeAll, SIGNAL(triggered()), this,
+            SLOT(repeatNormalizationForAllCurves()));
+
+    actionManageDialogThemes = new QAction(tr("Manage Dialog &Themes..."), this);
+    connect(actionManageDialogThemes, SIGNAL(triggered()), this, SLOT(showManageDialogThemes()));
+
     actionCopyStatusBarText = new QAction(tr("&Copy status bar text"), this);
     connect(actionCopyStatusBarText, SIGNAL(triggered()), this, SLOT(copyStatusBarText()));
 }
@@ -12729,6 +13372,127 @@ void ApplicationWindow::translateActionsStrings()
     btnRemovePoints->setText(tr("Remove &Bad Data Points..."));
     btnRemovePoints->setShortcut(tr("Alt+B"));
     btnRemovePoints->setToolTip(tr("Remove data points"));
+
+    if (btnMaskPoints) {
+        btnMaskPoints->setText(tr("&Mask Data Points (Click)"));
+        btnMaskPoints->setShortcut(tr("Ctrl+Shift+M"));
+        btnMaskPoints->setToolTip(
+                tr("Mask data points on graph without deleting table values"));
+    }
+    if (btnUnmaskPoints) {
+        btnUnmaskPoints->setText(tr("&Unmask Data Points (Click)"));
+        btnUnmaskPoints->setShortcut(tr("Ctrl+Alt+U"));
+        btnUnmaskPoints->setToolTip(tr("Unmask previously masked data points on graph"));
+    }
+    if (actionMaskRegionROI)
+        actionMaskRegionROI->setText(tr("Mask &Region (ROI)"));
+    if (actionUnmaskRegionROI)
+        actionUnmaskRegionROI->setText(tr("Unmask Re&gion (ROI)"));
+    if (actionClearAllMasks)
+        actionClearAllMasks->setText(tr("&Clear All Masks on Graph"));
+
+    if (actionGadgetVerticalCursor)
+        actionGadgetVerticalCursor->setText(tr("&Vertical Cursor (All Layers)"));
+    if (actionGadgetRegionStats)
+        actionGadgetRegionStats->setText(tr("&Region Statistics (ROI)..."));
+    if (actionGadgetQuickFit)
+        actionGadgetQuickFit->setText(tr("Quick &Fit (ROI)..."));
+    if (actionGadgetQuickPeaks)
+        actionGadgetQuickPeaks->setText(tr("Quick &Peaks (ROI)..."));
+    if (actionGadgetQuickSigmoidal)
+        actionGadgetQuickSigmoidal->setText(tr("Quick &Sigmoidal Fit (ROI)..."));
+    if (actionGadgetIntegrate)
+        actionGadgetIntegrate->setText(tr("&Integrate (ROI)..."));
+    if (actionGadgetInterpolate)
+        actionGadgetInterpolate->setText(tr("In&terpolate (ROI)..."));
+    if (actionGadgetFFT)
+        actionGadgetFFT->setText(tr("FF&T Preview (ROI)..."));
+    if (actionGadgetRiseTime)
+        actionGadgetRiseTime->setText(tr("Rise &Time (Pro)..."));
+    if (actionGadgetCluster)
+        actionGadgetCluster->setText(tr("&Cluster Selector (Pro)..."));
+    if (actionGadgetClear)
+        actionGadgetClear->setText(tr("Clear Active &Gadget / ROI"));
+
+    if (actionSimpleCurveMath)
+        actionSimpleCurveMath->setText(tr("&Simple Curve Math (A +-*/ B)..."));
+    if (actionSubtractStraightLine)
+        actionSubtractStraightLine->setText(tr("Su&btract Straight Line..."));
+    if (actionAverageMultipleCurves)
+        actionAverageMultipleCurves->setText(tr("&Average Multiple Curves (Mean \xC2\xB1 SD)..."));
+    if (actionNormalizeCurves)
+        actionNormalizeCurves->setText(tr("&Normalize Curves..."));
+    if (actionCurveIntersections)
+        actionCurveIntersections->setText(tr("Curve &Intersections && X/Y Lookup..."));
+    if (actionPolygonLoopArea)
+        actionPolygonLoopArea->setText(tr("Calculate &Polygon / Loop Area"));
+
+    if (actionFitApparentLinear)
+        actionFitApparentLinear->setText(tr("&Apparent Linear Fit (Log Axes)"));
+    if (actionFitYorkLinear)
+        actionFitYorkLinear->setText(tr("Linear Fit with X && Y Errors (&York)..."));
+    if (actionGlobalCurveFit)
+        actionGlobalCurveFit->setText(tr("&Global Curve Fit (Shared Parameters)..."));
+    if (actionImplicitODRFit)
+        actionImplicitODRFit->setText(tr("&Implicit / ODR Curve Fit..."));
+    if (actionModelComparison)
+        actionModelComparison->setText(tr("&Compare && Rank Fit Models (AIC/BIC)..."));
+    if (actionSurfaceFit3D)
+        actionSurfaceFit3D->setText(tr("3D &Surface Fit (XYZ / Matrix)..."));
+    if (actionBatchPeakAnalysis)
+        actionBatchPeakAnalysis->setText(tr("&Batch Peak Analysis (All Curves)..."));
+    if (action2DPeakAnalysis)
+        action2DPeakAnalysis->setText(tr("&2D Peak Analysis (Matrix / Image)..."));
+
+    if (actionSmoothLOWESS)
+        actionSmoothLOWESS->setText(tr("&LOWESS Smooth..."));
+    if (actionSmoothWhittaker)
+        actionSmoothWhittaker->setText(tr("&Whittaker Smooth..."));
+    if (actionSmoothMedian)
+        actionSmoothMedian->setText(tr("M&edian Filter Smooth..."));
+    if (actionIirDigitalFilter)
+        actionIirDigitalFilter->setText(
+                tr("&IIR Digital Filter (Butterworth/Chebyshev/Bessel)..."));
+    if (actionStftSpectrogram)
+        actionStftSpectrogram->setText(tr("&Short-Time Fourier Transform (STFT)..."));
+    if (actionHilbertEnvelope)
+        actionHilbertEnvelope->setText(tr("&Hilbert Transform (Envelope)..."));
+    if (actionWaveletTransform)
+        actionWaveletTransform->setText(tr("&Wavelet Transform (CWT / DWT Denoise)..."));
+    if (actionWelchPsdCoherence)
+        actionWelchPsdCoherence->setText(tr("Welch &PSD && Cross-Coherence..."));
+    if (actionMatrixFFT2D)
+        actionMatrixFFT2D->setText(tr("2D &FFT (Matrix)"));
+    if (actionMatrixIFFT2D)
+        actionMatrixIFFT2D->setText(tr("2D &IFFT (Inverse Matrix FFT)"));
+
+    if (actionConfidenceEllipse)
+        actionConfidenceEllipse->setText(tr("2D &Confidence / Prediction Ellipse..."));
+    if (actionGroupComparison)
+        actionGroupComparison->setText(tr("&t-Test / One-Way ANOVA + Significance Brackets..."));
+    if (actionROCCurve)
+        actionROCCurve->setText(tr("&ROC Curve (AUC)..."));
+    if (actionKaplanMeier)
+        actionKaplanMeier->setText(tr("&Kaplan-Meier Survival Analysis..."));
+    if (actionPCABiplot)
+        actionPCABiplot->setText(tr("&Principal Component Analysis (PCA Biplot)..."));
+
+    if (actionRecalcAuto)
+        actionRecalcAuto->setText(tr("&Auto Recalculate (Green Lock)"));
+    if (actionRecalcManual)
+        actionRecalcManual->setText(tr("&Manual Recalculate"));
+    if (actionRecalcDisabled)
+        actionRecalcDisabled->setText(tr("&Disable Recalculation"));
+    if (actionRecalculateNow) {
+        actionRecalculateNow->setText(tr("&Recalculate Pending Links Now"));
+        actionRecalculateNow->setShortcut(tr("Ctrl+Shift+U"));
+    }
+    if (actionRepeatLinearFitAll)
+        actionRepeatLinearFitAll->setText(tr("Repeat &Linear Fit for All Curves"));
+    if (actionRepeatNormalizeAll)
+        actionRepeatNormalizeAll->setText(tr("Repeat &Normalization for All Curves"));
+    if (actionManageDialogThemes)
+        actionManageDialogThemes->setText(tr("Manage Dialog &Themes..."));
 
     actionAddText->setText(tr("Add &Text"));
     actionAddText->setToolTip(tr("Add Text"));
@@ -13316,7 +14080,21 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
         }
     }
     topCurveRow->addWidget(curveCombo, 1);
+    QPushButton *batchPeakBtn = new QPushButton(tr("Batch Peak Analysis (All Curves)..."), &dlg);
+    QPushButton *peak2DBtn = new QPushButton(tr("2D Peak Analysis (Matrix / Image)..."), &dlg);
+    topCurveRow->addWidget(batchPeakBtn);
+    topCurveRow->addWidget(peak2DBtn);
     mainLayout->addLayout(topCurveRow);
+
+    int subToolAction = 0;
+    QObject::connect(batchPeakBtn, &QPushButton::clicked, &dlg, [&]() {
+        subToolAction = 1;
+        dlg.reject();
+    });
+    QObject::connect(peak2DBtn, &QPushButton::clicked, &dlg, [&]() {
+        subToolAction = 2;
+        dlg.reject();
+    });
 
     QTabWidget *tabs = new QTabWidget(&dlg);
     mainLayout->addWidget(tabs, 1);
@@ -13349,8 +14127,83 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                            (int)MultiPeakFit::BaselineLinear);
     baselineCombo->addItem(tr("ALS / Moving Minimum Envelope (Curved XRD/Raman)"),
                            (int)MultiPeakFit::BaselineALS);
+    baselineCombo->addItem(tr("User Anchor Points (Spline)"),
+                           (int)MultiPeakFit::BaselineAnchors);
     baseForm->addRow(tr("Baseline Mode:"), baselineCombo);
+
+    QLineEdit *anchorEdit = new QLineEdit(baseGroup);
+    anchorEdit->setPlaceholderText("x1,y1; x2,y2; x3,y3; ...");
+    baseForm->addRow(tr("Anchor Points (x1,y1; x2,y2; ...):"), anchorEdit);
     baseVBox->addLayout(baseForm);
+
+    QHBoxLayout *anchorOptRow = new QHBoxLayout();
+    QCheckBox *anchorSplineCheck = new QCheckBox(tr("Cubic Spline Interpolation"), baseGroup);
+    anchorSplineCheck->setChecked(true);
+    QPushButton *autoSeedAnchorsBtn =
+            new QPushButton(tr("Auto-Seed Anchors from Local Minima"), baseGroup);
+    anchorOptRow->addWidget(anchorSplineCheck);
+    anchorOptRow->addWidget(autoSeedAnchorsBtn);
+    anchorOptRow->addStretch();
+    baseVBox->addLayout(anchorOptRow);
+
+    auto seedAnchorsFromCurve = [this, g, curveCombo, anchorEdit]() {
+        MultiPeakFit tmp(this, g, MultiPeakFit::Gauss, 1);
+        if (!tmp.setDataFromCurve(curveCombo->currentText()) || tmp.dataSize() < 2)
+            return;
+        const int n = tmp.dataSize();
+        const auto &px = tmp.x();
+        const auto &py = tmp.y();
+        const int segments = qMin(6, qMax(2, n / 8));
+        QStringList parts;
+        for (int s = 0; s < segments; ++s) {
+            int i0 = (s * n) / segments;
+            int i1 = ((s + 1) * n) / segments - 1;
+            if (i1 < i0)
+                i1 = i0;
+            int bestIdx = (s == 0) ? 0 : ((s == segments - 1) ? (n - 1) : i0);
+            double minY = py[bestIdx];
+            for (int i = i0; i <= i1; ++i) {
+                if (py[i] < minY) {
+                    minY = py[i];
+                    bestIdx = i;
+                }
+            }
+            parts << QString("%1,%2")
+                             .arg(px[bestIdx], 0, 'g', 6)
+                             .arg(py[bestIdx], 0, 'g', 6);
+        }
+        anchorEdit->setText(parts.join("; "));
+    };
+
+    auto parseAnchors = [anchorEdit]() -> QVector<QPointF> {
+        QVector<QPointF> pts;
+        const QString raw = anchorEdit->text().trimmed();
+        if (raw.isEmpty())
+            return pts;
+        const QStringList items = raw.split(QRegExp("[;\\n]+"), Qt::SkipEmptyParts);
+        for (const QString &item : items) {
+            const QStringList xy = item.trimmed().split(QRegExp("[,\\s]+"), Qt::SkipEmptyParts);
+            if (xy.size() >= 2) {
+                bool okX = false, okY = false;
+                const double xv = xy[0].toDouble(&okX);
+                const double yv = xy[1].toDouble(&okY);
+                if (okX && okY && std::isfinite(xv) && std::isfinite(yv))
+                    pts.append(QPointF(xv, yv));
+            }
+        }
+        return pts;
+    };
+
+    auto updateBaselineAnchorUi = [=]() {
+        const bool isAnchors =
+                (baselineCombo->currentData().toInt() == (int)MultiPeakFit::BaselineAnchors);
+        anchorEdit->setEnabled(isAnchors);
+        anchorSplineCheck->setEnabled(isAnchors);
+        autoSeedAnchorsBtn->setEnabled(isAnchors);
+        if (isAnchors && anchorEdit->text().trimmed().isEmpty())
+            seedAnchorsFromCurve();
+    };
+    updateBaselineAnchorUi();
 
     QHBoxLayout *baseBtnRow = new QHBoxLayout();
     QPushButton *previewBaselineBtn =
@@ -13396,6 +14249,10 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
     QPushButton *findPeaksBtn = new QPushButton(tr("Auto-Find Peaks"), detectGroup);
     countRow->addWidget(findPeaksBtn);
+
+    QPushButton *secondDerivPeaksBtn =
+            new QPushButton(tr("2nd Derivative (Hidden / Shoulder Peaks)"), detectGroup);
+    countRow->addWidget(secondDerivPeaksBtn);
 
     QLabel *detectedLabel = new QLabel(detectGroup);
     countRow->addWidget(detectedLabel);
@@ -13539,13 +14396,16 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     tabs->addTab(tabFitOutput, tr("3. Fit && Output"));
 
     // Populate Peak Table helper
-    auto refreshPeakTable = [this, g, curveCombo, profileCombo, baselineCombo, prominenceSpin,
-                             autoCountCheck, peaksSpin, detectedLabel, peakTable]() {
+    auto refreshPeakTable = [this, g, curveCombo, profileCombo, baselineCombo, anchorSplineCheck,
+                             parseAnchors, prominenceSpin, autoCountCheck, peaksSpin, detectedLabel,
+                             peakTable]() {
         MultiPeakFit previewFitter(
                 this, g, static_cast<MultiPeakFit::PeakProfile>(profileCombo->currentData().toInt()),
                 1);
-        previewFitter.setBaselineMode(
-                static_cast<MultiPeakFit::BaselineMode>(baselineCombo->currentData().toInt()));
+        const int bMode = baselineCombo->currentData().toInt();
+        previewFitter.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
+        if (bMode == (int)MultiPeakFit::BaselineAnchors)
+            previewFitter.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
         int est = 1;
         if (previewFitter.setDataFromCurve(curveCombo->currentText())) {
             if (autoCountCheck->isChecked()) {
@@ -13583,9 +14443,24 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     };
 
     QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [=](int) { refreshPeakTable(); });
+                     [=](int) {
+                         if (baselineCombo->currentData().toInt()
+                             == (int)MultiPeakFit::BaselineAnchors)
+                             seedAnchorsFromCurve();
+                         refreshPeakTable();
+                     });
     QObject::connect(baselineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [=](int) { refreshPeakTable(); });
+                     [=](int) {
+                         updateBaselineAnchorUi();
+                         refreshPeakTable();
+                     });
+    QObject::connect(autoSeedAnchorsBtn, &QPushButton::clicked, &dlg, [=]() {
+        seedAnchorsFromCurve();
+        refreshPeakTable();
+    });
+    QObject::connect(anchorEdit, &QLineEdit::editingFinished, &dlg, [=]() { refreshPeakTable(); });
+    QObject::connect(anchorSplineCheck, &QCheckBox::toggled, &dlg,
+                     [=](bool) { refreshPeakTable(); });
     QObject::connect(prominenceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
                      [=](double) { refreshPeakTable(); });
     QObject::connect(autoCountCheck, &QCheckBox::toggled, &dlg, [=](bool checked) {
@@ -13600,6 +14475,54 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QObject::connect(findPeaksBtn, &QPushButton::clicked, &dlg, [=]() {
         autoCountCheck->setChecked(true);
         refreshPeakTable();
+    });
+    QObject::connect(secondDerivPeaksBtn, &QPushButton::clicked, &dlg, [=]() {
+        MultiPeakFit sdFitter(
+                this, g,
+                static_cast<MultiPeakFit::PeakProfile>(profileCombo->currentData().toInt()), 1);
+        const int bMode = baselineCombo->currentData().toInt();
+        sdFitter.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
+        if (bMode == (int)MultiPeakFit::BaselineAnchors)
+            sdFitter.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
+        if (sdFitter.setDataFromCurve(curveCombo->currentText())) {
+            const QVector<double> sdCenters =
+                    sdFitter.detectPeaksSecondDerivative(9, prominenceSpin->value());
+            if (!sdCenters.isEmpty()) {
+                autoCountCheck->blockSignals(true);
+                autoCountCheck->setChecked(false);
+                autoCountCheck->blockSignals(false);
+                peaksSpin->blockSignals(true);
+                peaksSpin->setValue(qBound(1, sdCenters.size(), 20));
+                peaksSpin->blockSignals(false);
+
+                sdFitter.setNumPeaks(sdCenters.size());
+                std::vector<double> stdCenters(sdCenters.begin(), sdCenters.end());
+                sdFitter.seedPeaksFromCenters(stdCenters, prominenceSpin->value());
+                detectedLabel->setText(tr("(Detected: %1)").arg(sdCenters.size()));
+
+                const std::vector<MultiPeakFit::PeakSummaryRow> rows =
+                        sdFitter.initialPeakSummary();
+                peakTable->setRowCount(int(rows.size()));
+                for (int i = 0; i < int(rows.size()); ++i) {
+                    QTableWidgetItem *idxItem =
+                            new QTableWidgetItem(QString::number(rows[i].index));
+                    idxItem->setFlags(idxItem->flags() & ~Qt::ItemIsEditable);
+                    peakTable->setItem(i, 0, idxItem);
+                    peakTable->setItem(
+                            i, 1, new QTableWidgetItem(QString::number(rows[i].center, 'g', 6)));
+                    QTableWidgetItem *hItem =
+                            new QTableWidgetItem(QString::number(rows[i].height, 'g', 6));
+                    hItem->setFlags(hItem->flags() & ~Qt::ItemIsEditable);
+                    peakTable->setItem(i, 2, hItem);
+                    peakTable->setItem(
+                            i, 3, new QTableWidgetItem(QString::number(rows[i].fwhm, 'g', 6)));
+                    QTableWidgetItem *aItem =
+                            new QTableWidgetItem(QString::number(rows[i].area, 'g', 6));
+                    aItem->setFlags(aItem->flags() & ~Qt::ItemIsEditable);
+                    peakTable->setItem(i, 4, aItem);
+                }
+            }
+        }
     });
     QObject::connect(addPeakRowBtn, &QPushButton::clicked, &dlg, [=]() {
         autoCountCheck->setChecked(false);
@@ -13642,8 +14565,10 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     // Baseline Preview & Subtract actions on Tab 1
     QObject::connect(previewBaselineBtn, &QPushButton::clicked, &dlg, [=]() {
         MultiPeakFit bf(this, g, MultiPeakFit::Gauss, 1);
-        bf.setBaselineMode(
-                static_cast<MultiPeakFit::BaselineMode>(baselineCombo->currentData().toInt()));
+        const int bMode = baselineCombo->currentData().toInt();
+        bf.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
+        if (bMode == (int)MultiPeakFit::BaselineAnchors)
+            bf.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
         if (bf.setDataFromCurve(curveCombo->currentText())) {
             bf.insertBaselineCurve();
             g->replot();
@@ -13651,8 +14576,10 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     });
     QObject::connect(subtractBaselineBtn, &QPushButton::clicked, &dlg, [=]() {
         MultiPeakFit bf(this, g, MultiPeakFit::Gauss, 1);
-        bf.setBaselineMode(
-                static_cast<MultiPeakFit::BaselineMode>(baselineCombo->currentData().toInt()));
+        const int bMode = baselineCombo->currentData().toInt();
+        bf.setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(bMode));
+        if (bMode == (int)MultiPeakFit::BaselineAnchors)
+            bf.setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
         if (bf.setDataFromCurve(curveCombo->currentText())) {
             if (bf.subtractBaselineFromData()) {
                 // Also update underlying DataCurve table column if it is a DataCurve
@@ -13680,8 +14607,13 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     mainLayout->addWidget(buttonBox);
 
-    if (dlg.exec() != QDialog::Accepted)
+    if (dlg.exec() != QDialog::Accepted) {
+        if (subToolAction == 1)
+            MultiPeakFit::showBatchPeakDialog(this, g);
+        else if (subToolAction == 2)
+            GraphStatsAndSurfaceFit::show2DPeakDialog(this);
         return;
+    }
 
     const int goal = goalCombo->currentData().toInt();
     const int chosenProfile = profileCombo->currentData().toInt();
@@ -13718,6 +14650,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     fitter->setAsymmetryFactor(asymAlphaSpin->value());
     fitter->setTailFactor(tailTauSpin->value());
     fitter->setBaselineMode(static_cast<MultiPeakFit::BaselineMode>(baseMode));
+    if (baseMode == (int)MultiPeakFit::BaselineAnchors)
+        fitter->setBaselineAnchors(parseAnchors(), anchorSplineCheck->isChecked());
     fitter->enablePeakCurves(plotPeaksCheck->isChecked());
     fitter->setPeakCurvesColor(peakCurvesColor);
     fitter->scaleErrors(fit_scale_errors);
@@ -15914,4 +16848,652 @@ void ApplicationWindow::localeChanged()
 {
     foreach (QObject *obj, findChildren<QWidget *>())
         QApplication::postEvent(obj, new QEvent(QEvent::LocaleChange));
+}
+
+// ============================================================================
+// Phase 3: OriginPro Graph Analysis Parity (7 Domains) - UI Integration Slots
+// ============================================================================
+
+namespace {
+
+Graph *activeGraphForAnalysis(ApplicationWindow *app, QMdiArea &workspace, QAction *btnPointer,
+                              bool requireCurves = true)
+{
+    QWidget *w = workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return nullptr;
+
+    MultiLayer *plot = static_cast<MultiLayer *>(w);
+    if (plot->isEmpty()) {
+        QMessageBox::warning(app, ApplicationWindow::tr("Warning"),
+                             ApplicationWindow::tr("There are no plot layers available in this window!"));
+        if (btnPointer)
+            btnPointer->setChecked(true);
+        return nullptr;
+    }
+
+    Graph *g = static_cast<Graph *>(plot->activeGraph());
+    if (!g)
+        return nullptr;
+
+    if (g->isPiePlot()) {
+        QMessageBox::warning(
+                app, ApplicationWindow::tr("Warning"),
+                ApplicationWindow::tr("This functionality is not available for pie plots!"));
+        if (btnPointer)
+            btnPointer->setChecked(true);
+        return nullptr;
+    }
+
+    if (requireCurves && !g->validCurvesDataSize())
+        return nullptr;
+
+    return g;
+}
+
+Matrix *activeOrChosenMatrix(ApplicationWindow *app, QMdiArea &workspace)
+{
+    QWidget *w = workspace.activeSubWindow();
+    if (w && w->inherits("Matrix"))
+        return static_cast<Matrix *>(w);
+
+    QList<Matrix *> matrices;
+    QStringList names;
+    for (MyWidget *mw : app->windowsList()) {
+        if (mw && mw->inherits("Matrix")) {
+            matrices.append(static_cast<Matrix *>(mw));
+            names.append(mw->name());
+        }
+    }
+    if (matrices.isEmpty()) {
+        QMessageBox::information(
+                app, ApplicationWindow::tr("2D FFT / IFFT (Matrix)"),
+                ApplicationWindow::tr("Please create or activate a Matrix window first."));
+        return nullptr;
+    }
+    if (matrices.size() == 1)
+        return matrices.first();
+
+    bool ok = false;
+    QString chosen = QInputDialog::getItem(app, ApplicationWindow::tr("2D FFT / IFFT (Matrix)"),
+                                           ApplicationWindow::tr("Select Matrix:"), names, 0,
+                                           false, &ok);
+    if (!ok || chosen.isEmpty())
+        return nullptr;
+    int idx = names.indexOf(chosen);
+    return (idx >= 0 && idx < matrices.size()) ? matrices[idx] : nullptr;
+}
+
+} // anonymous namespace
+
+void ApplicationWindow::maskDataPointsTool()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+
+    if (btnMaskPoints) {
+        dataTools->blockSignals(true);
+        btnMaskPoints->setChecked(true);
+        dataTools->blockSignals(false);
+    }
+    g->setActiveTool(new DataPickerTool(g, this, DataPickerTool::Mask, d_status_info,
+                                        SLOT(setText(const QString &))));
+}
+
+void ApplicationWindow::unmaskDataPointsTool()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+
+    if (btnUnmaskPoints) {
+        dataTools->blockSignals(true);
+        btnUnmaskPoints->setChecked(true);
+        dataTools->blockSignals(false);
+    }
+    g->setActiveTool(new DataPickerTool(g, this, DataPickerTool::Unmask, d_status_info,
+                                        SLOT(setText(const QString &))));
+}
+
+void ApplicationWindow::maskRegionGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::MaskRegion);
+}
+
+void ApplicationWindow::unmaskRegionGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::UnmaskRegion);
+}
+
+void ApplicationWindow::clearAllMasksOnGraph()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
+    if (!g)
+        return;
+
+    int clearedCurves = 0;
+    for (int i = 0; i < g->curves(); ++i) {
+        DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(i));
+        if (dc) {
+            dc->clearMasks();
+            ++clearedCurves;
+        }
+    }
+    g->replot();
+    if (d_status_info && clearedCurves > 0)
+        d_status_info->setText(
+                tr("Cleared all masked points across %1 curve(s).").arg(clearedCurves));
+}
+
+void ApplicationWindow::attachVerticalCursorGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    VerticalCursorTool::attachCursor(this, g, true);
+}
+
+void ApplicationWindow::attachRegionStatsGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::RegionStats);
+}
+
+void ApplicationWindow::attachQuickFitGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::QuickFit);
+}
+
+void ApplicationWindow::attachQuickPeaksGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::QuickPeaks);
+}
+
+void ApplicationWindow::attachQuickSigmoidalGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::QuickSigmoidal);
+}
+
+void ApplicationWindow::attachIntegrateGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Integrate);
+}
+
+void ApplicationWindow::attachInterpolateGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Interpolate);
+}
+
+void ApplicationWindow::attachFFTGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::FFT);
+}
+
+void ApplicationWindow::attachRiseTimeGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::RiseTime);
+}
+
+void ApplicationWindow::attachClusterGadget()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+    if (btnPointer)
+        btnPointer->setChecked(true);
+    RoiGadgetTool::attachGadget(this, g, RoiGadgetTool::Cluster);
+}
+
+void ApplicationWindow::clearActiveGadget()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return;
+
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    for (QWidget *gw : ml->graphPtrs()) {
+        Graph *lg = static_cast<Graph *>(gw);
+        if (lg) {
+            RoiGadgetTool::clearGadget(lg);
+            lg->setActiveTool(nullptr);
+            lg->replot();
+        }
+    }
+    if (btnPointer)
+        btnPointer->setChecked(true);
+}
+
+void ApplicationWindow::showSimpleCurveMathDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showCurveMathDialog(this, g);
+}
+
+void ApplicationWindow::showSubtractStraightLineDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showSubtractLineDialog(this, g);
+}
+
+void ApplicationWindow::showAverageMultipleCurvesDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showAverageCurvesDialog(this, g);
+}
+
+void ApplicationWindow::showNormalizeCurvesDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showNormalizeDialog(this, g);
+}
+
+void ApplicationWindow::showCurveIntersectionsDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        CurveMathTools::showIntersectionLookupDialog(this, g);
+}
+
+void ApplicationWindow::calculatePolygonLoopArea()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+
+    QString targetCurve = g->selectedCurveTitle();
+    if (targetCurve.isEmpty()) {
+        const QStringList curves = g->analysableCurvesList();
+        if (curves.isEmpty())
+            return;
+        if (curves.size() == 1 || m_batch) {
+            targetCurve = curves.first();
+        } else {
+            bool ok = false;
+            targetCurve = QInputDialog::getItem(
+                    this, tr("Polygon / Hysteresis Loop Area & Arc Length"), tr("Target Curve:"),
+                    curves, 0, false, &ok);
+            if (!ok || targetCurve.isEmpty())
+                return;
+        }
+    }
+
+    const double areaAbs = CurveMathTools::polygonArea(g, targetCurve, false);
+    const double areaSigned = CurveMathTools::polygonArea(g, targetCurve, true);
+    const double arcLen = CurveMathTools::curveArcLength(g, targetCurve);
+
+    const QString report =
+            QString("[%1 - %2]\n"
+                    "  Curve: %3\n"
+                    "  Enclosed Polygon / Loop Area |A| = %4\n"
+                    "  Signed Shoelace Area         A   = %5\n"
+                    "  Total Curve Arc Length       L   = %6\n"
+                    "------------------------------------------------------------\n")
+                    .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
+                         tr("Polygon / Hysteresis Loop Area & Arc Length"), targetCurve,
+                         QString::number(areaAbs, 'g', fit_output_precision),
+                         QString::number(areaSigned, 'g', fit_output_precision),
+                         QString::number(arcLen, 'g', fit_output_precision));
+    updateLog(report);
+    if (d_status_info) {
+        d_status_info->setText(
+                QString("%1: |Area| = %2, Arc Length = %3")
+                        .arg(targetCurve, QString::number(areaAbs, 'g', 6),
+                             QString::number(arcLen, 'g', 6)));
+    }
+    if (!m_batch) {
+        QMessageBox::information(this, tr("Polygon / Hysteresis Loop Area & Arc Length"),
+                                 QString("%1: %2\n\n|Area| = %3\nSigned Area = %4\nArc Length = %5")
+                                         .arg(tr("Target Curve:"), targetCurve,
+                                              QString::number(areaAbs, 'g', fit_output_precision),
+                                              QString::number(areaSigned, 'g', fit_output_precision),
+                                              QString::number(arcLen, 'g', fit_output_precision)));
+    }
+}
+
+void ApplicationWindow::fitApparentLinear()
+{
+    analysis("fitApparentLinear");
+}
+
+void ApplicationWindow::showYorkLinearFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (!g)
+        return;
+
+    const QStringList curves = g->analysableCurvesList();
+    if (curves.isEmpty())
+        return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Linear Fit with X & Y Errors (York)..."));
+    dlg.setMinimumWidth(440);
+
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *curveCombo = new QComboBox(&dlg);
+    curveCombo->addItems(curves);
+    const QString selCurve = g->selectedCurveTitle();
+    if (!selCurve.isEmpty()) {
+        const int idx = curveCombo->findText(selCurve);
+        if (idx >= 0)
+            curveCombo->setCurrentIndex(idx);
+    }
+    form->addRow(tr("Target Curve:"), curveCombo);
+
+    QComboBox *xErrCombo = new QComboBox(&dlg);
+    QComboBox *yErrCombo = new QComboBox(&dlg);
+    form->addRow(tr("X Error Column (\xCF\x83x):"), xErrCombo);
+    form->addRow(tr("Y Error Column (\xCF\x83y):"), yErrCombo);
+
+    QCheckBox *confBandCheck = new QCheckBox(tr("Plot 95% Confidence Band"), &dlg);
+    QCheckBox *predBandCheck = new QCheckBox(tr("Plot 95% Prediction Band"), &dlg);
+    QCheckBox *summaryBoxCheck = new QCheckBox(tr("Insert Fit Summary Box on Graph"), &dlg);
+    summaryBoxCheck->setChecked(true);
+    form->addRow(QString(), confBandCheck);
+    form->addRow(QString(), predBandCheck);
+    form->addRow(QString(), summaryBoxCheck);
+    vbox->addLayout(form);
+
+    auto populateErrorCombos = [=]() {
+        xErrCombo->clear();
+        yErrCombo->clear();
+        xErrCombo->addItem(tr("<None / Unit Weights>"), QString());
+        yErrCombo->addItem(tr("<None / Unit Weights>"), QString());
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(curveCombo->currentText()));
+        if (dc && dc->table()) {
+            Table *t = dc->table();
+            for (int c = 0; c < t->numCols(); ++c) {
+                const QString fullColName = t->colName(c);
+                xErrCombo->addItem(fullColName, fullColName);
+                yErrCombo->addItem(fullColName, fullColName);
+                if (t->colPlotDesignation(c) == SciDAVis::xErr && xErrCombo->currentIndex() == 0)
+                    xErrCombo->setCurrentIndex(xErrCombo->count() - 1);
+                else if (t->colPlotDesignation(c) == SciDAVis::yErr
+                         && yErrCombo->currentIndex() == 0)
+                    yErrCombo->setCurrentIndex(yErrCombo->count() - 1);
+            }
+        }
+    };
+    QObject::connect(curveCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [=](int) { populateErrorCombos(); });
+    populateErrorCombos();
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    vbox->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    LinearFit *lf = new LinearFit(this, g);
+    lf->scaleErrors(fit_scale_errors);
+    lf->setOutputPrecision(fit_output_precision);
+    lf->generateFunction(generateUniformFitPoints, d_2_linear_fit_points ? 2 : fitPoints);
+    lf->enableConfidenceBand(confBandCheck->isChecked(), 0.95);
+    lf->enablePredictionBand(predBandCheck->isChecked(), 0.95);
+
+    if (lf->setDataFromCurve(curveCombo->currentText())) {
+        if (lf->fitWithXYErrors(xErrCombo->currentData().toString(),
+                                yErrCombo->currentData().toString())) {
+            if (pasteFitResultsToPlot)
+                lf->showLegend();
+            if (summaryBoxCheck->isChecked())
+                lf->insertFitSummaryBoxOnGraph();
+            g->replot();
+            emit modified();
+        }
+    }
+    delete lf;
+}
+
+void ApplicationWindow::showGlobalCurveFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        NonLinearFit::showGlobalFitDialog(this, g);
+}
+
+void ApplicationWindow::showImplicitODRFitDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        NonLinearFit::showImplicitFitDialog(this, g);
+}
+
+void ApplicationWindow::showModelComparisonDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        NonLinearFit::showModelComparisonDialog(this, g);
+}
+
+void ApplicationWindow::showSurfaceFit3DDialog()
+{
+    GraphStatsAndSurfaceFit::showSurfaceFitDialog(this);
+}
+
+void ApplicationWindow::showBatchPeakAnalysisDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        MultiPeakFit::showBatchPeakDialog(this, g);
+}
+
+void ApplicationWindow::show2DPeakAnalysisDialog()
+{
+    GraphStatsAndSurfaceFit::show2DPeakDialog(this);
+}
+
+void ApplicationWindow::showSmoothLOWESSDialog()
+{
+    showSmoothDialog(SmoothFilter::LOWESS);
+}
+
+void ApplicationWindow::showSmoothWhittakerDialog()
+{
+    showSmoothDialog(SmoothFilter::Whittaker);
+}
+
+void ApplicationWindow::showSmoothMedianDialog()
+{
+    showSmoothDialog(SmoothFilter::Median);
+}
+
+void ApplicationWindow::showIirDigitalFilterDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showIirFilterDialog(this, g);
+}
+
+void ApplicationWindow::showStftSpectrogramDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showStftDialog(this, g);
+}
+
+void ApplicationWindow::showHilbertEnvelopeDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showHilbertDialog(this, g);
+}
+
+void ApplicationWindow::showWaveletTransformDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showWaveletDialog(this, g);
+}
+
+void ApplicationWindow::showWelchPsdCoherenceDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        AdvancedSignalProc::showPsdCoherenceDialog(this, g);
+}
+
+void ApplicationWindow::runMatrixFFT2D()
+{
+    Matrix *mat = activeOrChosenMatrix(this, d_workspace);
+    if (mat)
+        AdvancedSignalProc::fft2D(this, mat, false, true);
+}
+
+void ApplicationWindow::runMatrixIFFT2D()
+{
+    Matrix *mat = activeOrChosenMatrix(this, d_workspace);
+    if (mat)
+        AdvancedSignalProc::fft2D(this, mat, true, true);
+}
+
+void ApplicationWindow::showConfidenceEllipseDialog()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        GraphStatsAndSurfaceFit::showConfidenceEllipseDialog(this, g);
+}
+
+void ApplicationWindow::showGroupComparisonDialog()
+{
+    Graph *g = nullptr;
+    QWidget *w = d_workspace.activeSubWindow();
+    if (w && w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        if (!ml->isEmpty())
+            g = static_cast<Graph *>(ml->activeGraph());
+    }
+    GraphStatsAndSurfaceFit::showGroupComparisonDialog(this, g);
+}
+
+void ApplicationWindow::showROCCurveDialog()
+{
+    GraphStatsAndSurfaceFit::showROCDialog(this);
+}
+
+void ApplicationWindow::showKaplanMeierDialog()
+{
+    GraphStatsAndSurfaceFit::showKaplanMeierDialog(this);
+}
+
+void ApplicationWindow::showPCABiplotDialog()
+{
+    GraphStatsAndSurfaceFit::showPCADialog(this);
+}
+
+void ApplicationWindow::setRecalcModeAuto()
+{
+    RecalcManager::instance(this)->setRecalcMode(RecalcManager::Auto);
+    syncRecalcMenuState();
+}
+
+void ApplicationWindow::setRecalcModeManual()
+{
+    RecalcManager::instance(this)->setRecalcMode(RecalcManager::Manual);
+    syncRecalcMenuState();
+}
+
+void ApplicationWindow::setRecalcModeDisabled()
+{
+    RecalcManager::instance(this)->setRecalcMode(RecalcManager::Disabled);
+    syncRecalcMenuState();
+}
+
+void ApplicationWindow::syncRecalcMenuState()
+{
+    const RecalcManager::RecalcMode mode = RecalcManager::instance(this)->recalcMode();
+    if (actionRecalcAuto)
+        actionRecalcAuto->setChecked(mode == RecalcManager::Auto);
+    if (actionRecalcManual)
+        actionRecalcManual->setChecked(mode == RecalcManager::Manual);
+    if (actionRecalcDisabled)
+        actionRecalcDisabled->setChecked(mode == RecalcManager::Disabled);
+}
+
+void ApplicationWindow::recalculatePendingLinksNow()
+{
+    const int updated = RecalcManager::instance(this)->recalculateAll();
+    if (d_status_info)
+        d_status_info->setText(tr("Recalculated %1 linked analysis output(s).").arg(updated));
+}
+
+void ApplicationWindow::repeatLinearFitForAllCurves()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        RecalcManager::repeatForAllCurves(this, g, RecalcManager::OpLinearFit);
+}
+
+void ApplicationWindow::repeatNormalizationForAllCurves()
+{
+    Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
+    if (g)
+        RecalcManager::repeatForAllCurves(this, g, RecalcManager::OpNormalize);
+}
+
+void ApplicationWindow::showManageDialogThemes()
+{
+    DialogThemeManager::showManageThemesDialog(this);
 }

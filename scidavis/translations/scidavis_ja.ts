@@ -4140,6 +4140,342 @@ Are you sure you want to continue?</source>
         <source>Run Peak Analyzer</source>
         <translation>ピーク解析を実行</translation>
     </message>
+    <message>
+        <source>&amp;Gadgets</source>
+        <translation>ガジェット(&amp;G)</translation>
+    </message>
+    <message>
+        <source>Gadgets</source>
+        <translation>ガジェット</translation>
+    </message>
+    <message>
+        <source>&amp;Vertical Cursor (All Layers)</source>
+        <translation>垂直カーソル (全レイヤ連動)(&amp;V)</translation>
+    </message>
+    <message>
+        <source>&amp;Region Statistics (ROI)...</source>
+        <translation>領域統計 (ROI)(&amp;R)...</translation>
+    </message>
+    <message>
+        <source>Quick &amp;Fit (ROI)...</source>
+        <translation>クイックフィット (ROI)(&amp;F)...</translation>
+    </message>
+    <message>
+        <source>Quick &amp;Peaks (ROI)...</source>
+        <translation>クイックピーク解析 (ROI)(&amp;P)...</translation>
+    </message>
+    <message>
+        <source>Quick &amp;Sigmoidal Fit (ROI)...</source>
+        <translation>クイックシグモイドフィット (ROI)(&amp;S)...</translation>
+    </message>
+    <message>
+        <source>&amp;Integrate (ROI)...</source>
+        <translation>数値積分 (ROI)(&amp;I)...</translation>
+    </message>
+    <message>
+        <source>In&amp;terpolate (ROI)...</source>
+        <translation>補間 (ROI)(&amp;T)...</translation>
+    </message>
+    <message>
+        <source>FF&amp;T Preview (ROI)...</source>
+        <translation>FFTプレビュー (ROI)(&amp;T)...</translation>
+    </message>
+    <message>
+        <source>Rise &amp;Time (Pro)...</source>
+        <translation>立ち上がり時間解析 (Pro)(&amp;T)...</translation>
+    </message>
+    <message>
+        <source>&amp;Cluster Selector (Pro)...</source>
+        <translation>クラスタ選択・統計 (Pro)(&amp;C)...</translation>
+    </message>
+    <message>
+        <source>Clear Active &amp;Gadget / ROI</source>
+        <translation>アクティブなガジェット/ROIを解除(&amp;G)</translation>
+    </message>
+    <message>
+        <source>OriginPro Interactive ROI Gadgets</source>
+        <translation>OriginPro インタラクティブROIガジェット</translation>
+    </message>
+    <message>
+        <source>Data &amp;Masking</source>
+        <translation>データマスク(&amp;M)</translation>
+    </message>
+    <message>
+        <source>&amp;Mask Data Points (Click)</source>
+        <translation>データ点をマスク (クリック)(&amp;M)</translation>
+    </message>
+    <message>
+        <source>&amp;Unmask Data Points (Click)</source>
+        <translation>データ点のマスク解除 (クリック)(&amp;U)</translation>
+    </message>
+    <message>
+        <source>Mask &amp;Region (ROI)</source>
+        <translation>矩形領域をマスク (ROI)(&amp;R)</translation>
+    </message>
+    <message>
+        <source>Unmask Re&amp;gion (ROI)</source>
+        <translation>矩形領域のマスク解除 (ROI)(&amp;G)</translation>
+    </message>
+    <message>
+        <source>&amp;Clear All Masks on Graph</source>
+        <translation>グラフ上の全マスクをクリア(&amp;C)</translation>
+    </message>
+    <message>
+        <source>Mask data points on graph without deleting table values</source>
+        <translation>テーブル値を削除せず非破壊でグラフ上のデータ点をマスクします</translation>
+    </message>
+    <message>
+        <source>Unmask previously masked data points on graph</source>
+        <translation>マスクされたデータ点のマスクを解除します</translation>
+    </message>
+    <message>
+        <source>&amp;Mathematics</source>
+        <translation>数学・曲線演算(&amp;M)</translation>
+    </message>
+    <message>
+        <source>&amp;Fitting</source>
+        <translation>フィット(&amp;F)</translation>
+    </message>
+    <message>
+        <source>&amp;Peaks and Baseline</source>
+        <translation>ピークとベースライン(&amp;P)</translation>
+    </message>
+    <message>
+        <source>Signal &amp;Processing</source>
+        <translation>信号処理(&amp;P)</translation>
+    </message>
+    <message>
+        <source>S&amp;tatistics</source>
+        <translation>グラフ統計解析(&amp;T)</translation>
+    </message>
+    <message>
+        <source>&amp;Recalculation &amp;&amp; Themes</source>
+        <translation>再計算とテーマ(&amp;R)</translation>
+    </message>
+    <message>
+        <source>&amp;Simple Curve Math (A +-*/ B)...</source>
+        <translation>単純曲線演算 (A +-*/ B)(&amp;S)...</translation>
+    </message>
+    <message>
+        <source>Su&amp;btract Straight Line...</source>
+        <translation>直線の減算(&amp;B)...</translation>
+    </message>
+    <message>
+        <source>&amp;Average Multiple Curves (Mean ± SD)...</source>
+        <translation>複数曲線の平均 (平均 ± SD)(&amp;A)...</translation>
+    </message>
+    <message>
+        <source>&amp;Normalize Curves...</source>
+        <translation>曲線の正規化(&amp;N)...</translation>
+    </message>
+    <message>
+        <source>Curve &amp;Intersections &amp;&amp; X/Y Lookup...</source>
+        <translation>曲線の交点・X/Y逆引き検索(&amp;I)...</translation>
+    </message>
+    <message>
+        <source>Calculate &amp;Polygon / Loop Area</source>
+        <translation>ポリゴン面積・曲線長を計算(&amp;P)</translation>
+    </message>
+    <message>
+        <source>Polygon / Hysteresis Loop Area &amp; Arc Length</source>
+        <translation>ポリゴン閉ループ面積・曲線長</translation>
+    </message>
+    <message>
+        <source>&amp;Apparent Linear Fit (Log Axes)</source>
+        <translation>見かけの線形フィット (対数軸)(&amp;A)</translation>
+    </message>
+    <message>
+        <source>Linear Fit with X &amp;&amp; Y Errors (&amp;York)...</source>
+        <translation>X・Y誤差付き線形フィット (York法)(&amp;Y)...</translation>
+    </message>
+    <message>
+        <source>Linear Fit with X &amp; Y Errors (York)...</source>
+        <translation>X・Y誤差付き線形フィット (York法)...</translation>
+    </message>
+    <message>
+        <source>&amp;Global Curve Fit (Shared Parameters)...</source>
+        <translation>グローバルフィット (共有パラメータ)(&amp;G)...</translation>
+    </message>
+    <message>
+        <source>&amp;Implicit / ODR Curve Fit...</source>
+        <translation>陰関数・直交距離回帰 (ODR) フィット(&amp;I)...</translation>
+    </message>
+    <message>
+        <source>&amp;Compare &amp;&amp; Rank Fit Models (AIC/BIC)...</source>
+        <translation>フィットモデル比較・AIC/BIC順位付け(&amp;C)...</translation>
+    </message>
+    <message>
+        <source>3D &amp;Surface Fit (XYZ / Matrix)...</source>
+        <translation>3D曲面フィット (XYZ / 行列)(&amp;S)...</translation>
+    </message>
+    <message>
+        <source>&amp;Batch Peak Analysis (All Curves)...</source>
+        <translation>バッチピーク解析 (全曲線一括)(&amp;B)...</translation>
+    </message>
+    <message>
+        <source>Batch Peak Analysis (All Curves)...</source>
+        <translation>バッチピーク解析 (全曲線一括)...</translation>
+    </message>
+    <message>
+        <source>&amp;2D Peak Analysis (Matrix / Image)...</source>
+        <translation>2Dピーク解析 (行列・画像)(&amp;2)...</translation>
+    </message>
+    <message>
+        <source>2D Peak Analysis (Matrix / Image)...</source>
+        <translation>2Dピーク解析 (行列・画像)...</translation>
+    </message>
+    <message>
+        <source>User Anchor Points (Spline)</source>
+        <translation>ユーザー指定アンカー点 (スプライン補間)</translation>
+    </message>
+    <message>
+        <source>Anchor Points (x1,y1; x2,y2; ...):</source>
+        <translation>アンカー座標 (x1,y1; x2,y2; ...):</translation>
+    </message>
+    <message>
+        <source>Auto-Seed Anchors from Local Minima</source>
+        <translation>極小値からアンカー点を自動抽出</translation>
+    </message>
+    <message>
+        <source>Cubic Spline Interpolation</source>
+        <translation>3次スプライン補間 (オフ時は折れ線)</translation>
+    </message>
+    <message>
+        <source>2nd Derivative (Hidden / Shoulder Peaks)</source>
+        <translation>2次微分法 (隠れピーク・ショルダー検出)</translation>
+    </message>
+    <message>
+        <source>&amp;LOWESS Smooth...</source>
+        <translation>LOWESS局所回帰平滑化(&amp;L)...</translation>
+    </message>
+    <message>
+        <source>&amp;Whittaker Smooth...</source>
+        <translation>Whittakerペナルティ付き平滑化(&amp;W)...</translation>
+    </message>
+    <message>
+        <source>M&amp;edian Filter Smooth...</source>
+        <translation>メディアンフィルタ平滑化(&amp;E)...</translation>
+    </message>
+    <message>
+        <source>&amp;IIR Digital Filter (Butterworth/Chebyshev/Bessel)...</source>
+        <translation>IIRデジタルフィルタ (Butterworth/Chebyshev/Bessel)(&amp;I)...</translation>
+    </message>
+    <message>
+        <source>&amp;Short-Time Fourier Transform (STFT)...</source>
+        <translation>短時間フーリエ変換 (STFTスペクトログラム)(&amp;S)...</translation>
+    </message>
+    <message>
+        <source>&amp;Hilbert Transform (Envelope)...</source>
+        <translation>ヒルベルト変換 (包絡線・瞬時位相)(&amp;H)...</translation>
+    </message>
+    <message>
+        <source>&amp;Wavelet Transform (CWT / DWT Denoise)...</source>
+        <translation>ウェーブレット変換 (CWT / DWTノイズ除去)(&amp;W)...</translation>
+    </message>
+    <message>
+        <source>Welch &amp;PSD &amp;&amp; Cross-Coherence...</source>
+        <translation>Welchパワースペクトル密度・コヒーレンス(&amp;P)...</translation>
+    </message>
+    <message>
+        <source>2D &amp;FFT (Matrix)</source>
+        <translation>2次元FFT (行列)(&amp;F)</translation>
+    </message>
+    <message>
+        <source>2D &amp;IFFT (Inverse Matrix FFT)</source>
+        <translation>2次元逆FFT (行列IFFT)(&amp;I)</translation>
+    </message>
+    <message>
+        <source>2D FFT / IFFT (Matrix)</source>
+        <translation>2次元FFT / IFFT (行列)</translation>
+    </message>
+    <message>
+        <source>2D &amp;Confidence / Prediction Ellipse...</source>
+        <translation>2D信頼楕円・予測楕円(&amp;C)...</translation>
+    </message>
+    <message>
+        <source>&amp;t-Test / One-Way ANOVA + Significance Brackets...</source>
+        <translation>t検定・一元配置分散分析 (有意差ブラケット描画)(&amp;T)...</translation>
+    </message>
+    <message>
+        <source>&amp;ROC Curve (AUC)...</source>
+        <translation>ROC曲線・AUC解析(&amp;R)...</translation>
+    </message>
+    <message>
+        <source>&amp;Kaplan-Meier Survival Analysis...</source>
+        <translation>Kaplan-Meier生存時間解析(&amp;K)...</translation>
+    </message>
+    <message>
+        <source>&amp;Principal Component Analysis (PCA Biplot)...</source>
+        <translation>主成分分析 (PCAバイプロット)(&amp;P)...</translation>
+    </message>
+    <message>
+        <source>&amp;Auto Recalculate (Green Lock)</source>
+        <translation>自動再計算 (グリーンロック)(&amp;A)</translation>
+    </message>
+    <message>
+        <source>&amp;Manual Recalculate</source>
+        <translation>手動再計算(&amp;M)</translation>
+    </message>
+    <message>
+        <source>&amp;Disable Recalculation</source>
+        <translation>再計算を無効化(&amp;D)</translation>
+    </message>
+    <message>
+        <source>&amp;Recalculate Pending Links Now</source>
+        <translation>保留中の再計算リンクを今すぐ更新(&amp;R)</translation>
+    </message>
+    <message>
+        <source>Repeat &amp;Linear Fit for All Curves</source>
+        <translation>全曲線に対して線形フィットを一括実行(&amp;L)</translation>
+    </message>
+    <message>
+        <source>Repeat &amp;Normalization for All Curves</source>
+        <translation>全曲線に対して正規化を一括実行(&amp;N)</translation>
+    </message>
+    <message>
+        <source>Manage Dialog &amp;Themes...</source>
+        <translation>ダイアログテーマの管理(&amp;T)...</translation>
+    </message>
+    <message>
+        <source>X Error Column (σx):</source>
+        <translation>X誤差列 (σx):</translation>
+    </message>
+    <message>
+        <source>Y Error Column (σy):</source>
+        <translation>Y誤差列 (σy):</translation>
+    </message>
+    <message>
+        <source>Plot 95% Confidence Band</source>
+        <translation>95%信頼帯 (Confidence Band) をプロット</translation>
+    </message>
+    <message>
+        <source>Plot 95% Prediction Band</source>
+        <translation>95%予測帯 (Prediction Band) をプロット</translation>
+    </message>
+    <message>
+        <source>Insert Fit Summary Box on Graph</source>
+        <translation>グラフ上にフィット結果表を挿入</translation>
+    </message>
+    <message>
+        <source>&lt;None / Unit Weights&gt;</source>
+        <translation>&lt;なし / 等重み&gt;</translation>
+    </message>
+    <message>
+        <source>Select Matrix:</source>
+        <translation>対象行列の選択:</translation>
+    </message>
+    <message>
+        <source>Please create or activate a Matrix window first.</source>
+        <translation>先に行列 (Matrix) ウィンドウを作成またはアクティブにしてください。</translation>
+    </message>
+    <message>
+        <source>Cleared all masked points across %1 curve(s).</source>
+        <translation>%1 本の曲線からすべてのマスクをクリアしました。</translation>
+    </message>
+    <message>
+        <source>Recalculated %1 linked analysis output(s).</source>
+        <translation>%1 件の解析リンクを再計算しました。</translation>
+    </message>
 </context>
 <context>
     <name>AsciiTableImportFilter</name>
