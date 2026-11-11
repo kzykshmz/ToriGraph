@@ -67,6 +67,8 @@ class QTranslator;
 class QAction;
 class QActionGroup;
 class QLineEdit;
+class QComboBox;
+class QCheckBox;
 class QTranslator;
 class QToolButton;
 class QShortcut;
@@ -420,6 +422,16 @@ public slots:
     void plotPie();
     void plotVectXYXY();
     void plotVectXYAM();
+    void plotDoubleY();
+    void plotYOffsetStack();
+    void plotViolin();
+    void plotPareto();
+    void plotQQ();
+    void plotTernary();
+    void showColorPaletteEditorDialog();
+    void applyColorPaletteByAction();
+    void applyAspectRatioByAction();
+    void setGraphKeepAspectRatio(bool keep);
     //@}
 
     //! \name Image Analysis
@@ -509,6 +521,12 @@ public slots:
     void renameListViewItem(const QString &oldName, const QString &newName);
     void setListViewDate(const QString &caption, const QString &date);
     void setListViewLabel(const QString &caption, const QString &label);
+    void filterExplorerWindows();
+    void setExplorerSearchText(const QString &text);
+    void setExplorerTypeFilter(int index);
+    void setTabbedWorkspaceView(bool tabbed);
+    void toggleTabbedWorkspaceView();
+    bool isTabbedWorkspaceView() const { return d_workspace.viewMode() == QMdiArea::TabbedView; }
     //@}
 
     void updateColNames(const QString &oldName, const QString &newName);
@@ -604,13 +622,16 @@ public slots:
     void fitMultiPeakPseudoVoigt();
     void fitMultiPeakPearsonVII();
     void showPeakFitDialog(int defaultProfile = 0);
+    void showPeakAnalyzerDialog(int defaultProfile = 0);
     void fitAutoPeakGauss();
     void fitAutoPeakLorentz();
     void fitAutoPeakPseudoVoigt();
     void runAutoPeakFit(int profile, int numPeaks = 0, bool autoCount = true,
                         bool plotPeakCurves = true, bool createSummary = true,
                         bool createResiduals = false, const QString &curveTitle = QString(),
-                        double prominence = 0.08, double voigtMu = 0.5, double pearsonM = 2.0);
+                        double prominence = 0.08, double voigtMu = 0.5, double pearsonM = 2.0,
+                        int baselineMode = 0, double asymAlpha = 1.0, double tailTau = 1.0,
+                        bool plotBaseline = false, bool integratePeaks = false);
     void copyGraphAsOleObject();
     //@}
 
@@ -800,6 +821,8 @@ public slots:
     void createLanguagesList();
     void switchToLanguage(int param);
     void switchToLanguage(const QString &locale);
+    void switchToJapanese();
+    void switchToEnglish();
 
     bool alreadyUsedName(const QString &label);
     bool projectHas2DPlots();
@@ -1198,9 +1221,27 @@ private:
     QAction *actionBoxPlot, *actionMultiPeakGauss, *actionMultiPeakLorentz;
     QAction *actionMultiPeakGaussAmp = nullptr, *actionMultiPeakPseudoVoigt = nullptr,
             *actionMultiPeakPearsonVII = nullptr;
-    QAction *actionPeakFitDialog = nullptr, *actionAutoPeakGauss = nullptr,
-            *actionAutoPeakLorentz = nullptr, *actionAutoPeakPseudoVoigt = nullptr;
+    QAction *actionPeakFitDialog = nullptr, *actionPeakAnalyzerDialog = nullptr,
+            *actionAutoPeakGauss = nullptr, *actionAutoPeakLorentz = nullptr,
+            *actionAutoPeakPseudoVoigt = nullptr;
     QAction *actionCopyGraphOle = nullptr;
+    QMenu *languageMenu = nullptr, *colorPaletteMenu = nullptr, *aspectRatioMenu = nullptr;
+    QAction *actionLangEnglish = nullptr, *actionLangJapanese = nullptr;
+    QAction *actionPlotDoubleY = nullptr, *actionPlotYOffsetStack = nullptr,
+            *actionPlotViolin = nullptr, *actionPlotPareto = nullptr,
+            *actionPlotQQ = nullptr, *actionPlotTernary = nullptr;
+    QAction *actionColorPaletteEditor = nullptr;
+    QAction *actionAspect1_1 = nullptr, *actionAspect4_3 = nullptr,
+            *actionAspect16_9 = nullptr, *actionAspect3_2 = nullptr,
+            *actionAspectCustom = nullptr, *actionKeepAspectRatio = nullptr;
+    QAction *actionTabbedWorkspaceView = nullptr;
+    QWidget *d_explorer_container = nullptr;
+    QLineEdit *d_explorer_search = nullptr;
+    QComboBox *d_explorer_type_filter = nullptr;
+    QCheckBox *d_explorer_subfolder_check = nullptr;
+    QToolButton *d_btn_explorer_new_folder = nullptr, *d_btn_explorer_new_table = nullptr,
+                *d_btn_explorer_new_graph = nullptr, *d_btn_tabbed_view = nullptr;
+    QTranslator *d_builtin_ja_translator = nullptr;
 #ifdef SEARCH_FOR_UPDATES
     QAction *actionCheckUpdates;
 #endif

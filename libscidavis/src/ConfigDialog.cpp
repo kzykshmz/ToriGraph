@@ -1542,6 +1542,8 @@ void ConfigDialog::insertLanguagesList()
     for (int i = 0; i < (int)locales.size(); i++) {
         if (locales[i] == "en")
             languages.push_back("English");
+        else if (locales[i] == "ja")
+            languages.push_back(QString::fromUtf8("日本語 (Japanese)"));
         else {
             QTranslator translator;
             translator.load("scidavis_" + locales[i], app->qmPath);

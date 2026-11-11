@@ -115,38 +115,44 @@ Folder *Folder::findSubfolder(const QString &s, bool caseSensitive, bool partial
 MyWidget *Folder::findWindow(const QString &s, bool windowNames, bool labels, bool caseSensitive,
                              bool partialMatch)
 {
-    Qt::CaseSensitivity cs = Qt::CaseSensitive;
-    if (!caseSensitive)
-        cs = Qt::CaseInsensitive;
-    MyWidget *w;
-    foreach (w, lstWindows) {
+    QList<MyWidget *> matches =
+            findWindows(s, windowNames, labels, caseSensitive, partialMatch, false);
+    return matches.isEmpty() ? nullptr : matches.first();
+}
+
+QList<MyWidget *> Folder::findWindows(const QString &s, bool windowNames, bool labels,
+                                      bool caseSensitive, bool partialMatch, bool recursive)
+{
+    QList<MyWidget *> result;
+    Qt::CaseSensitivity cs = caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
+    foreach (MyWidget *w, lstWindows) {
+        if (!w)
+            continue;
+        bool matched = false;
         if (windowNames) {
             QString name = w->name();
-            if (partialMatch && name.startsWith(s, cs))
-                return w;
-            else if (caseSensitive && name == s)
-                return w;
-            else {
-                QString text = s;
-                if (name == text.toLower())
-                    return w;
-            }
+            if (s.isEmpty() || (partialMatch && name.contains(s, cs))
+                || (!partialMatch && name.compare(s, cs) == 0))
+                matched = true;
         }
-
-        if (labels) {
+        if (!matched && labels) {
             QString label = w->windowLabel();
-            if (partialMatch && label.startsWith(s, cs))
-                return w;
-            else if (caseSensitive && label == s)
-                return w;
-            else {
-                QString text = s;
-                if (label == text.toLower())
-                    return w;
-            }
+            if (!label.isEmpty()
+                && ((partialMatch && label.contains(s, cs))
+                    || (!partialMatch && label.compare(s, cs) == 0)))
+                matched = true;
+        }
+        if (matched)
+            result.append(w);
+    }
+    if (recursive) {
+        foreach (Folder *sub, folders()) {
+            if (sub)
+                result.append(
+                        sub->findWindows(s, windowNames, labels, caseSensitive, partialMatch, true));
         }
     }
-    return 0;
+    return result;
 }
 
 MyWidget *Folder::window(const QString &name, const char *cls, bool recursive)

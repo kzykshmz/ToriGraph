@@ -103,6 +103,11 @@ public:
     MyWidget *findWindow(const QString &s, bool windowNames, bool labels, bool caseSensitive,
                          bool partialMatch);
 
+    //! List of all windows matching the search criteria
+    QList<MyWidget *> findWindows(const QString &s, bool windowNames = true, bool labels = true,
+                                  bool caseSensitive = false, bool partialMatch = true,
+                                  bool recursive = false);
+
     //! get a window by name
     /**
      * Returns the first window with given name that inherits class cls;
