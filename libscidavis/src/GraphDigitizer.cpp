@@ -9,6 +9,7 @@
 
 #include "ApplicationWindow.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "Legend.h"
 #include "MultiLayer.h"
 #include "Table.h"
@@ -68,7 +69,162 @@ enum class DigitizerToolMode {
     SetY1 = 2,
     SetY2 = 3,
     PickPoints = 4,
-    PickColorAutoTrace = 5
+    PickColorAutoTrace = 5,
+    SetTraceRoi = 6
+};
+
+void registerDigitizerTranslationsOnce()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("4x Magnifier Loupe"), QStringLiteral("4倍拡大ルーペ"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Set Trace ROI"), QStringLiteral("トレースROI範囲設定"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Clear ROI"), QStringLiteral("ROI解除"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Drag or click two corners on the image to define the Auto-Trace ROI box."),
+            QStringLiteral("画像上でドラッグまたは対角2点をクリックして自動トレースROI範囲を指定してください。"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Sub-pixel: (%1, %2)\nRGB: (%3, %4, %5)"),
+            QStringLiteral("サブピクセル: (%1, %2)\nRGB: (%3, %4, %5)"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Hover over image\nfor 4x zoom"),
+            QStringLiteral("画像上にカーソルを置くと\n4倍拡大表示します"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("ROI: Full Calibrated Area"),
+            QStringLiteral("ROI: キャリブレーション全域"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("ROI Active: (%1, %2) %3x%4 px"),
+            QStringLiteral("ROI有効: (%1, %2) %3x%4 px"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Graph Image Digitizer"),
+            QStringLiteral("グラフ画像デジタイザ"));
+}
+
+class DigitizerMagnifierLoupe : public QWidget
+{
+public:
+    explicit DigitizerMagnifierLoupe(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setFixedHeight(124);
+        setMinimumWidth(260);
+    }
+
+    void setImage(const QImage &img)
+    {
+        d_image = img;
+        update();
+    }
+
+    void setFocusPixel(const QPointF &pix)
+    {
+        d_focusPix = pix;
+        d_hasFocus = true;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.fillRect(rect(), QColor(246, 248, 252));
+
+        constexpr int kBox = 112;
+        constexpr double kZoom = 4.0;
+        const QRectF loupeRect(6.0, 0.5 * (height() - kBox), kBox, kBox);
+
+        p.fillRect(loupeRect, QColor(30, 34, 42));
+        if (!d_image.isNull() && d_hasFocus && d_image.width() > 0 && d_image.height() > 0) {
+            p.save();
+            p.setClipRect(loupeRect);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+
+            const double halfSpan = (0.5 * kBox) / kZoom;
+            const int ix0 = std::max(0, static_cast<int>(std::floor(d_focusPix.x() - halfSpan)) - 1);
+            const int iy0 = std::max(0, static_cast<int>(std::floor(d_focusPix.y() - halfSpan)) - 1);
+            const int ix1 = std::min(d_image.width() - 1,
+                                     static_cast<int>(std::ceil(d_focusPix.x() + halfSpan)) + 1);
+            const int iy1 = std::min(d_image.height() - 1,
+                                     static_cast<int>(std::ceil(d_focusPix.y() + halfSpan)) + 1);
+
+            if (ix1 >= ix0 && iy1 >= iy0) {
+                const QRect srcPatch(ix0, iy0, ix1 - ix0 + 1, iy1 - iy0 + 1);
+                const double dstLeft = loupeRect.center().x()
+                        + (static_cast<double>(ix0) - d_focusPix.x() - 0.5) * kZoom;
+                const double dstTop = loupeRect.center().y()
+                        + (static_cast<double>(iy0) - d_focusPix.y() - 0.5) * kZoom;
+                const QRectF dstPatch(dstLeft, dstTop, srcPatch.width() * kZoom,
+                                      srcPatch.height() * kZoom);
+                p.drawImage(dstPatch, d_image, QRectF(srcPatch));
+            }
+
+            // Crisp sub-pixel crosshair at exact center
+            const QPointF c = loupeRect.center();
+            p.setPen(QPen(QColor(255, 255, 255, 210), 2.5));
+            p.drawLine(QPointF(loupeRect.left(), c.y()), QPointF(loupeRect.right(), c.y()));
+            p.drawLine(QPointF(c.x(), loupeRect.top()), QPointF(c.x(), loupeRect.bottom()));
+            p.setPen(QPen(QColor(225, 35, 45), 1.2));
+            p.drawLine(QPointF(loupeRect.left(), c.y()), QPointF(loupeRect.right(), c.y()));
+            p.drawLine(QPointF(c.x(), loupeRect.top()), QPointF(c.x(), loupeRect.bottom()));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(QRectF(c.x() - 2.0, c.y() - 2.0, 4.0, 4.0));
+            p.restore();
+
+            p.setPen(QPen(QColor(95, 108, 128), 1.2));
+            p.drawRect(loupeRect);
+
+            const int sx = std::clamp(static_cast<int>(std::round(d_focusPix.x())), 0,
+                                      d_image.width() - 1);
+            const int sy = std::clamp(static_cast<int>(std::round(d_focusPix.y())), 0,
+                                      d_image.height() - 1);
+            const QColor pc = d_image.pixelColor(sx, sy);
+
+            const double infoLeft = loupeRect.right() + 10.0;
+            const QRectF swatchRect(infoLeft, loupeRect.top() + 4.0, 28.0, 18.0);
+            p.fillRect(swatchRect, pc);
+            p.setPen(QPen(QColor(80, 88, 100), 1));
+            p.drawRect(swatchRect);
+
+            p.setFont(QFont(QStringLiteral("Arial"), 9, QFont::Bold));
+            p.setPen(QColor(25, 55, 105));
+            p.drawText(QPointF(swatchRect.right() + 6.0, swatchRect.bottom() - 4.0),
+                       QStringLiteral("4x"));
+
+            p.setFont(QFont(QStringLiteral("Arial"), 8));
+            p.setPen(QColor(35, 40, 50));
+            const QRectF txtRect(infoLeft, swatchRect.bottom() + 6.0,
+                                 std::max(40.0, width() - infoLeft - 4.0),
+                                 loupeRect.height() - 28.0);
+            p.drawText(txtRect, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                       tr("Sub-pixel: (%1, %2)\nRGB: (%3, %4, %5)")
+                               .arg(d_focusPix.x(), 0, 'f', 2)
+                               .arg(d_focusPix.y(), 0, 'f', 2)
+                               .arg(pc.red())
+                               .arg(pc.green())
+                               .arg(pc.blue()));
+        } else {
+            p.setPen(QPen(QColor(150, 160, 175), 1));
+            p.drawRect(loupeRect);
+            p.setFont(QFont(QStringLiteral("Arial"), 8));
+            p.setPen(QColor(110, 120, 135));
+            const QRectF txtRect(loupeRect.right() + 10.0, loupeRect.top(),
+                                 std::max(40.0, width() - loupeRect.right() - 14.0),
+                                 loupeRect.height());
+            p.drawText(txtRect, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap,
+                       tr("Hover over image\nfor 4x zoom"));
+        }
+    }
+
+private:
+    QImage d_image;
+    QPointF d_focusPix;
+    bool d_hasFocus = false;
 };
 
 class DigitizerImageCanvas : public QWidget
@@ -107,8 +263,18 @@ public:
         update();
     }
 
+    void setTraceRoi(const QRect &roi)
+    {
+        d_traceRoi = roi;
+        update();
+    }
+
+    QRect traceRoi() const { return d_traceRoi; }
+
     std::function<void(const QPointF &, Qt::MouseButton)> onImageClicked;
     std::function<void(const QPointF &)> onImageHovered;
+    std::function<void(const QRect &)> onRoiDragged;
+    bool roiDragMode = false;
 
 protected:
     QRectF computeTargetImageRect() const
@@ -204,6 +370,19 @@ protected:
         if (d_hasY2)
             drawAnchor(d_cal.pixelY2, QStringLiteral("Y2"), QColor(20, 155, 85));
 
+        // Draw optional Auto-Trace ROI box
+        const QRect activeRoi = d_draggingRoi ? d_liveDragRoi : d_traceRoi;
+        if (activeRoi.isValid() && !activeRoi.isEmpty()) {
+            const QPointF tl = imagePixelToWidget(QPointF(activeRoi.left(), activeRoi.top()));
+            const QPointF br = imagePixelToWidget(QPointF(activeRoi.right(), activeRoi.bottom()));
+            const QRectF roiWidgetRect = QRectF(tl, br).normalized();
+            p.setPen(QPen(QColor(150, 40, 195), 1.8, Qt::DashLine));
+            p.setBrush(QColor(150, 40, 195, 26));
+            p.drawRect(roiWidgetRect);
+            p.setFont(QFont(QStringLiteral("Arial"), 8, QFont::Bold));
+            p.drawText(roiWidgetRect.topLeft() + QPointF(4.0, 12.0), QStringLiteral("ROI"));
+        }
+
         // Draw digitized points & polyline preview
         if (!d_pixelPts.isEmpty()) {
             p.setPen(QPen(QColor(220, 40, 45, 180), 1.5, Qt::SolidLine));
@@ -226,6 +405,15 @@ protected:
             return;
         bool inside = false;
         const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
+        if (inside && roiDragMode && ev->button() == Qt::LeftButton) {
+            d_draggingRoi = true;
+            d_dragStartPix = pix;
+            d_liveDragRoi = QRect(QPoint(static_cast<int>(std::round(pix.x())),
+                                         static_cast<int>(std::round(pix.y()))),
+                                  QSize(1, 1));
+            update();
+            return;
+        }
         if (inside && onImageClicked)
             onImageClicked(pix, ev->button());
     }
@@ -236,8 +424,35 @@ protected:
             return;
         bool inside = false;
         const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
+        if (d_draggingRoi) {
+            const QPoint p0(static_cast<int>(std::round(d_dragStartPix.x())),
+                            static_cast<int>(std::round(d_dragStartPix.y())));
+            const QPoint p1(static_cast<int>(std::round(pix.x())),
+                            static_cast<int>(std::round(pix.y())));
+            d_liveDragRoi = QRect(p0, p1).normalized();
+            update();
+        }
         if (inside && onImageHovered)
             onImageHovered(pix);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *ev) override
+    {
+        if (!d_draggingRoi || !ev || ev->button() != Qt::LeftButton)
+            return;
+        d_draggingRoi = false;
+        const QPointF pix = widgetToImagePixel(ev->localPos(), nullptr);
+        const QPoint p0(static_cast<int>(std::round(d_dragStartPix.x())),
+                        static_cast<int>(std::round(d_dragStartPix.y())));
+        const QPoint p1(static_cast<int>(std::round(pix.x())),
+                        static_cast<int>(std::round(pix.y())));
+        const QRect finalRoi = QRect(p0, p1).normalized();
+        if (finalRoi.width() >= 3 && finalRoi.height() >= 3) {
+            d_traceRoi = finalRoi;
+            if (onRoiDragged)
+                onRoiDragged(d_traceRoi);
+        }
+        update();
     }
 
 private:
@@ -248,6 +463,10 @@ private:
     bool d_hasY1 = false;
     bool d_hasY2 = false;
     QVector<QPointF> d_pixelPts;
+    QRect d_traceRoi;
+    bool d_draggingRoi = false;
+    QPointF d_dragStartPix;
+    QRect d_liveDragRoi;
 };
 
 class DigitizerDialog : public QDialog
@@ -256,8 +475,9 @@ public:
     DigitizerDialog(ApplicationWindow *app, const QString &initialPath)
         : QDialog(app), d_app(app)
     {
+        registerDigitizerTranslationsOnce();
         setWindowTitle(tr("Graph Image Digitizer"));
-        resize(980, 660);
+        resize(1020, 740);
 
         QVBoxLayout *rootLay = new QVBoxLayout(this);
 
@@ -283,6 +503,14 @@ public:
         sidePanel->setMinimumWidth(340);
         QVBoxLayout *sideLay = new QVBoxLayout(sidePanel);
         sideLay->setContentsMargins(6, 0, 0, 0);
+
+        // 0. 4x Magnifier Loupe for sub-pixel precision
+        QGroupBox *grpLoupe = new QGroupBox(tr("4x Magnifier Loupe"), sidePanel);
+        QVBoxLayout *loupeLay = new QVBoxLayout(grpLoupe);
+        loupeLay->setContentsMargins(4, 4, 4, 4);
+        d_loupe = new DigitizerMagnifierLoupe(grpLoupe);
+        loupeLay->addWidget(d_loupe);
+        sideLay->addWidget(grpLoupe);
 
         // 1. Axis Calibration Group
         QGroupBox *grpCal = new QGroupBox(tr("4-Point Axis Calibration"), sidePanel);
@@ -369,6 +597,16 @@ public:
         traceForm->addRow(tr("Sample Points:"), d_sbSamples);
         traceLay->addLayout(traceForm);
 
+        QHBoxLayout *roiRow = new QHBoxLayout();
+        QPushButton *btnSetRoi = new QPushButton(tr("Set Trace ROI"), grpTrace);
+        QPushButton *btnClearRoi = new QPushButton(tr("Clear ROI"), grpTrace);
+        roiRow->addWidget(btnSetRoi);
+        roiRow->addWidget(btnClearRoi);
+        traceLay->addLayout(roiRow);
+
+        d_lblRoiStatus = new QLabel(tr("ROI: Full Calibrated Area"), grpTrace);
+        traceLay->addWidget(d_lblRoiStatus);
+
         QHBoxLayout *editPtsRow = new QHBoxLayout();
         QPushButton *btnRemoveSel = new QPushButton(tr("Delete Selected Point"), grpTrace);
         QPushButton *btnClearPts = new QPushButton(tr("Clear Points"), grpTrace);
@@ -435,6 +673,18 @@ public:
                 [this]() { setMode(DigitizerToolMode::PickPoints); });
         connect(btnPickColor, &QPushButton::clicked, this,
                 [this]() { setMode(DigitizerToolMode::PickColorAutoTrace); });
+        connect(btnSetRoi, &QPushButton::clicked, this, [this]() {
+            d_hasRoiFirstCorner = false;
+            setMode(DigitizerToolMode::SetTraceRoi);
+        });
+        connect(btnClearRoi, &QPushButton::clicked, this, [this]() {
+            d_hasRoiFirstCorner = false;
+            d_canvas->setTraceRoi(QRect());
+            if (d_lblRoiStatus)
+                d_lblRoiStatus->setText(tr("ROI: Full Calibrated Area"));
+            if (d_mode == DigitizerToolMode::SetTraceRoi)
+                setMode(DigitizerToolMode::PickColorAutoTrace);
+        });
 
         auto onCalChanged = [this]() { refreshCalibrationAndPreview(); };
         connect(d_sbX1, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -479,12 +729,25 @@ public:
             handleCanvasClick(pix, btn);
         };
         d_canvas->onImageHovered = [this](const QPointF &pix) {
+            if (d_loupe)
+                d_loupe->setFocusPixel(pix);
             const QPointF dp = GraphDigitizer::mapPixelToData(pix, currentCalibration());
             d_lblCursorReadout->setText(tr("Pixel (%1, %2) -> Data (%3, %4)")
                                                 .arg(std::round(pix.x()))
                                                 .arg(std::round(pix.y()))
                                                 .arg(dp.x(), 0, 'g', 5)
                                                 .arg(dp.y(), 0, 'g', 5));
+        };
+        d_canvas->onRoiDragged = [this](const QRect &roi) {
+            d_hasRoiFirstCorner = false;
+            if (d_lblRoiStatus) {
+                d_lblRoiStatus->setText(tr("ROI Active: (%1, %2) %3x%4 px")
+                                                .arg(roi.x())
+                                                .arg(roi.y())
+                                                .arg(roi.width())
+                                                .arg(roi.height()));
+            }
+            setMode(DigitizerToolMode::PickColorAutoTrace);
         };
 
         if (!initialPath.trimmed().isEmpty())
@@ -514,6 +777,8 @@ private:
     void setMode(DigitizerToolMode m)
     {
         d_mode = m;
+        if (d_canvas)
+            d_canvas->roiDragMode = (m == DigitizerToolMode::SetTraceRoi);
         switch (m) {
         case DigitizerToolMode::SetX1:
             d_lblModeStatus->setText(tr("Click on the image to set X1 anchor."));
@@ -532,6 +797,10 @@ private:
             break;
         case DigitizerToolMode::PickColorAutoTrace:
             d_lblModeStatus->setText(tr("Click directly on a colored curve in the image to sample color & auto-trace."));
+            break;
+        case DigitizerToolMode::SetTraceRoi:
+            d_lblModeStatus->setText(
+                    tr("Drag or click two corners on the image to define the Auto-Trace ROI box."));
             break;
         }
     }
@@ -560,7 +829,13 @@ private:
         d_hasY1 = true;
         d_hasY2 = true;
         d_pixelPts.clear();
+        d_hasRoiFirstCorner = false;
+        d_canvas->setTraceRoi(QRect());
+        if (d_lblRoiStatus)
+            d_lblRoiStatus->setText(tr("ROI: Full Calibrated Area"));
         d_canvas->setImage(img);
+        if (d_loupe)
+            d_loupe->setImage(img);
         setMode(DigitizerToolMode::SetX1);
         refreshCalibrationAndPreview();
     }
@@ -611,6 +886,29 @@ private:
             setMode(DigitizerToolMode::PickPoints);
             return;
         }
+        case DigitizerToolMode::SetTraceRoi: {
+            const QPoint pt(static_cast<int>(std::round(pix.x())),
+                            static_cast<int>(std::round(pix.y())));
+            if (!d_hasRoiFirstCorner) {
+                d_roiFirstCorner = pt;
+                d_hasRoiFirstCorner = true;
+            } else {
+                const QRect roi = QRect(d_roiFirstCorner, pt).normalized();
+                d_hasRoiFirstCorner = false;
+                if (roi.width() >= 3 && roi.height() >= 3) {
+                    d_canvas->setTraceRoi(roi);
+                    if (d_lblRoiStatus) {
+                        d_lblRoiStatus->setText(tr("ROI Active: (%1, %2) %3x%4 px")
+                                                        .arg(roi.x())
+                                                        .arg(roi.y())
+                                                        .arg(roi.width())
+                                                        .arg(roi.height()));
+                    }
+                    setMode(DigitizerToolMode::PickColorAutoTrace);
+                }
+            }
+            return;
+        }
         }
         refreshCalibrationAndPreview();
     }
@@ -622,7 +920,8 @@ private:
             return;
         const GraphDigitizer::AxisCalibration cal = currentCalibration();
         const QVector<QPointF> tracedData = GraphDigitizer::autoTraceCurveByColor(
-                im, cal, d_targetColor, d_sbTol->value(), d_sbSamples->value());
+                im, cal, d_targetColor, d_sbTol->value(), d_sbSamples->value(),
+                d_canvas->traceRoi());
         d_pixelPts.clear();
         d_pixelPts.reserve(tracedData.size());
         for (const QPointF &dp : tracedData)
@@ -673,6 +972,7 @@ private:
 
     ApplicationWindow *d_app = nullptr;
     DigitizerImageCanvas *d_canvas = nullptr;
+    DigitizerMagnifierLoupe *d_loupe = nullptr;
     GraphDigitizer::AxisCalibration d_cal;
     bool d_hasX1 = false;
     bool d_hasX2 = false;
@@ -681,10 +981,13 @@ private:
     DigitizerToolMode d_mode = DigitizerToolMode::SetX1;
     QColor d_targetColor = QColor(220, 30, 30);
     QVector<QPointF> d_pixelPts;
+    bool d_hasRoiFirstCorner = false;
+    QPoint d_roiFirstCorner;
 
     QLabel *d_lblModeStatus = nullptr;
     QLabel *d_lblCursorReadout = nullptr;
     QLabel *d_lblColorSwatch = nullptr;
+    QLabel *d_lblRoiStatus = nullptr;
     QDoubleSpinBox *d_sbX1 = nullptr;
     QDoubleSpinBox *d_sbX2 = nullptr;
     QDoubleSpinBox *d_sbY1 = nullptr;
@@ -785,7 +1088,8 @@ QVector<QPointF> GraphDigitizer::autoTraceCurveByColor(const QImage &img,
                                                        const AxisCalibration &cal,
                                                        const QColor &targetColor,
                                                        int colorTolerance,
-                                                       int numSamplesX)
+                                                       int numSamplesX,
+                                                       const QRect &pixelRoi)
 {
     QVector<QPointF> out;
     if (img.isNull() || img.width() <= 0 || img.height() <= 0 || !targetColor.isValid())
@@ -811,6 +1115,16 @@ QVector<QPointF> GraphDigitizer::autoTraceCurveByColor(const QImage &img,
     if (yMaxCal - yMinCal >= 1.0) {
         yLo = std::clamp(static_cast<int>(std::floor(yMinCal)) - 2, 0, H - 1);
         yHi = std::clamp(static_cast<int>(std::ceil(yMaxCal)) + 2, 0, H - 1);
+    }
+
+    if (pixelRoi.isValid() && !pixelRoi.isEmpty()) {
+        const QRect rNorm = pixelRoi.normalized();
+        xMinPix = std::max(xMinPix, static_cast<double>(std::clamp(rNorm.left(), 0, W - 1)));
+        xMaxPix = std::min(xMaxPix, static_cast<double>(std::clamp(rNorm.right(), 0, W - 1)));
+        yLo = std::max(yLo, std::clamp(rNorm.top(), 0, H - 1));
+        yHi = std::min(yHi, std::clamp(rNorm.bottom(), 0, H - 1));
+        if (xMaxPix < xMinPix || yHi < yLo)
+            return out;
     }
 
     const int nSamples = std::max(2, numSamplesX);

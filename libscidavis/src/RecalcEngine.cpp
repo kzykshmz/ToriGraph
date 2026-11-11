@@ -6,13 +6,16 @@
  ***************************************************************************/
 #include "RecalcEngine.h"
 
+#include "AdvancedSignalProc.h"
 #include "ApplicationWindow.h"
 #include "Differentiation.h"
 #include "FunctionCurve.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "MultiLayer.h"
 #include "MultiPeakFit.h"
 #include "NonLinearFit.h"
+#include "PiecewiseAndRobustFit.h"
 #include "Plot.h"
 #include "PlotCurve.h"
 #include "PolynomialFit.h"
@@ -544,8 +547,13 @@ bool RecalcManager::executeLink(RecalcLink &link)
             hasSavedPen = true;
             if (auto *oldDc = dynamic_cast<DataCurve *>(oldOut)) {
                 Table *bt = oldDc->table();
-                if (bt && bt != srcTbl && bt != link.resultTable && app->hidden(bt))
+                const bool isAutoSignalTable =
+                        (link.op == OpIIRFilter || link.op == OpSavGolDeriv
+                         || link.op == OpWaveletDenoise);
+                if (bt && bt != srcTbl && bt != link.resultTable
+                    && (app->hidden(bt) || isAutoSignalTable)) {
                     orphanHiddenTable = bt;
+                }
             }
             g->removeCurve(link.outCurveTitle);
         }
@@ -689,6 +697,108 @@ bool RecalcManager::executeLink(RecalcLink &link)
         if (diff.error())
             return false;
         diff.run();
+        break;
+    }
+    case OpRobustFit: {
+        int method = link.params
+                             .value(QStringLiteral("method"),
+                                    int(PiecewiseAndRobustFit::TukeyBisquare))
+                             .toInt();
+        double tau = link.params.value(QStringLiteral("quantileTau"), 0.5).toDouble();
+        auto res = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
+                app, g, srcCurve,
+                static_cast<PiecewiseAndRobustFit::RobustMethod>(method), tau, false);
+        if (!res.converged || !res.fittedCurve)
+            return false;
+        fitParamNames = QStringList{ QStringLiteral("Intercept"), QStringLiteral("Slope") };
+        fitVals = { res.intercept, res.slope };
+        fitErrs = { res.interceptSE, res.slopeSE };
+        fitR2 = 0.0;
+        if (res.reportTable) {
+            if (!link.resultTable) {
+                link.resultTable = res.reportTable;
+            } else if (res.reportTable != link.resultTable) {
+                res.reportTable->askOnCloseEvent(false);
+                app->closeWindow(res.reportTable);
+            }
+        }
+        break;
+    }
+    case OpPiecewiseFit: {
+        int segments = std::clamp(
+                link.params
+                        .value(QStringLiteral("segments"),
+                               link.params.value(QStringLiteral("numSegments"), 2))
+                        .toInt(),
+                2, 3);
+        auto res = PiecewiseAndRobustFit::fitPiecewiseLinear(app, g, srcCurve, segments, false);
+        if (!res.converged || !res.fittedCurve)
+            return false;
+        fitParamNames.clear();
+        fitVals.clear();
+        fitParamNames << QStringLiteral("Intercept0");
+        fitVals.push_back(res.intercept0);
+        for (int i = 0; i < res.breakpointsX.size(); ++i) {
+            fitParamNames << QStringLiteral("BreakpointX%1").arg(i + 1);
+            fitVals.push_back(res.breakpointsX[i]);
+        }
+        for (int i = 0; i < res.slopes.size(); ++i) {
+            fitParamNames << QStringLiteral("Slope%1").arg(i + 1);
+            fitVals.push_back(res.slopes[i]);
+        }
+        fitErrs.assign(fitVals.size(), 0.0);
+        fitR2 = res.rSquare;
+        if (res.reportTable) {
+            if (!link.resultTable) {
+                link.resultTable = res.reportTable;
+            } else if (res.reportTable != link.resultTable) {
+                res.reportTable->askOnCloseEvent(false);
+                app->closeWindow(res.reportTable);
+            }
+        }
+        break;
+    }
+    case OpIIRFilter: {
+        int design = link.params
+                             .value(QStringLiteral("design"), int(AdvancedSignalProc::Butterworth))
+                             .toInt();
+        int pass = link.params.value(QStringLiteral("pass"), int(AdvancedSignalProc::LowPass))
+                           .toInt();
+        int order = std::clamp(link.params.value(QStringLiteral("order"), 4).toInt(), 1, 12);
+        double fLow = link.params.value(QStringLiteral("cutoffLowHz"), 10.0).toDouble();
+        double fHigh = link.params.value(QStringLiteral("cutoffHighHz"), 25.0).toDouble();
+        bool zeroPhase = link.params.value(QStringLiteral("zeroPhase"), true).toBool();
+        double rippleDb = link.params.value(QStringLiteral("rippleDb"), 1.0).toDouble();
+        if (!AdvancedSignalProc::iirFilter(
+                    app, g, srcCurve, static_cast<AdvancedSignalProc::IirDesign>(design),
+                    static_cast<AdvancedSignalProc::PassType>(pass), order, fLow, fHigh,
+                    zeroPhase, rippleDb)) {
+            return false;
+        }
+        break;
+    }
+    case OpSavGolDeriv: {
+        int derivOrder = std::clamp(link.params.value(QStringLiteral("derivOrder"), 1).toInt(), 1, 4);
+        int windowPoints = std::max(3, link.params.value(QStringLiteral("windowPoints"), 9).toInt());
+        int polyOrder = std::max(1, link.params.value(QStringLiteral("polyOrder"), 3).toInt());
+        if (!AdvancedSignalProc::savitzkyGolayDerivative(app, g, srcCurve, derivOrder, windowPoints,
+                                                         polyOrder)) {
+            return false;
+        }
+        break;
+    }
+    case OpWaveletDenoise: {
+        int wtype = link.params
+                            .value(QStringLiteral("wavelet"), int(AdvancedSignalProc::Daubechies4))
+                            .toInt();
+        int levels = std::clamp(link.params.value(QStringLiteral("levels"), 4).toInt(), 1, 10);
+        bool soft = link.params.value(QStringLiteral("softThreshold"), true).toBool();
+        double scale = link.params.value(QStringLiteral("thresholdScale"), 1.0).toDouble();
+        if (!AdvancedSignalProc::waveletDenoiseDWT(
+                    app, g, srcCurve, static_cast<AdvancedSignalProc::WaveletType>(wtype), levels,
+                    soft, scale)) {
+            return false;
+        }
         break;
     }
     }
@@ -937,6 +1047,73 @@ void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType 
             if (!diff.error()) {
                 diff.setColor(outColor);
                 diff.run();
+            }
+            break;
+        }
+        case OpRobustFit: {
+            int method = params.value(QStringLiteral("method"),
+                                      int(PiecewiseAndRobustFit::TukeyBisquare))
+                                 .toInt();
+            double tau = params.value(QStringLiteral("quantileTau"), 0.5).toDouble();
+            auto res = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
+                    effApp, g, srcTitle,
+                    static_cast<PiecewiseAndRobustFit::RobustMethod>(method), tau, false);
+            if (res.fittedCurve)
+                res.fittedCurve->setPen(QPen(outColor, 2));
+            break;
+        }
+        case OpPiecewiseFit: {
+            int segments = std::clamp(
+                    params.value(QStringLiteral("segments"),
+                                 params.value(QStringLiteral("numSegments"), 2))
+                            .toInt(),
+                    2, 3);
+            auto res = PiecewiseAndRobustFit::fitPiecewiseLinear(effApp, g, srcTitle, segments,
+                                                                 false);
+            if (res.fittedCurve)
+                res.fittedCurve->setPen(QPen(outColor, 2));
+            break;
+        }
+        case OpIIRFilter: {
+            int design = params.value(QStringLiteral("design"),
+                                      int(AdvancedSignalProc::Butterworth))
+                                 .toInt();
+            int pass = params.value(QStringLiteral("pass"), int(AdvancedSignalProc::LowPass))
+                               .toInt();
+            int order = std::clamp(params.value(QStringLiteral("order"), 4).toInt(), 1, 12);
+            double fLow = params.value(QStringLiteral("cutoffLowHz"), 10.0).toDouble();
+            double fHigh = params.value(QStringLiteral("cutoffHighHz"), 25.0).toDouble();
+            bool zeroPhase = params.value(QStringLiteral("zeroPhase"), true).toBool();
+            double rippleDb = params.value(QStringLiteral("rippleDb"), 1.0).toDouble();
+            if (QwtPlotCurve *fc = AdvancedSignalProc::iirFilter(
+                        effApp, g, srcTitle, static_cast<AdvancedSignalProc::IirDesign>(design),
+                        static_cast<AdvancedSignalProc::PassType>(pass), order, fLow, fHigh,
+                        zeroPhase, rippleDb)) {
+                fc->setPen(QPen(outColor, 2));
+            }
+            break;
+        }
+        case OpSavGolDeriv: {
+            int derivOrder = std::clamp(params.value(QStringLiteral("derivOrder"), 1).toInt(), 1, 4);
+            int windowPoints = std::max(3, params.value(QStringLiteral("windowPoints"), 9).toInt());
+            int polyOrder = std::max(1, params.value(QStringLiteral("polyOrder"), 3).toInt());
+            if (QwtPlotCurve *sc = AdvancedSignalProc::savitzkyGolayDerivative(
+                        effApp, g, srcTitle, derivOrder, windowPoints, polyOrder)) {
+                sc->setPen(QPen(outColor, 2));
+            }
+            break;
+        }
+        case OpWaveletDenoise: {
+            int wtype = params.value(QStringLiteral("wavelet"),
+                                     int(AdvancedSignalProc::Daubechies4))
+                                .toInt();
+            int levels = std::clamp(params.value(QStringLiteral("levels"), 4).toInt(), 1, 10);
+            bool soft = params.value(QStringLiteral("softThreshold"), true).toBool();
+            double scale = params.value(QStringLiteral("thresholdScale"), 1.0).toDouble();
+            if (QwtPlotCurve *wc = AdvancedSignalProc::waveletDenoiseDWT(
+                        effApp, g, srcTitle,
+                        static_cast<AdvancedSignalProc::WaveletType>(wtype), levels, soft, scale)) {
+                wc->setPen(QPen(outColor, 2));
             }
             break;
         }

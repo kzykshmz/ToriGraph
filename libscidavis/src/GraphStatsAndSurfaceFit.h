@@ -71,6 +71,46 @@ public:
         MultiLayer *interactionGraph = nullptr;
     };
 
+    struct WeibullPlotResult {
+        bool valid = false;
+        double modulusM = 0.0;        // shape beta / Weibull modulus m
+        double modulusMSE = 0.0;
+        double scaleSigma0 = 0.0;     // characteristic strength/life eta (63.2%)
+        double scaleSigma0SE = 0.0;
+        double b10Life = 0.0;
+        double b50Life = 0.0;
+        double rSquare = 0.0;
+        Table *reportTable = nullptr;
+        MultiLayer *weibullPlot = nullptr;
+    };
+    struct OutlierTestResult {
+        bool valid = false;
+        int n = 0;
+        QVector<int> outlierRows;
+        QVector<double> outlierValues;
+        double primaryStatistic = 0.0; // Grubbs G or Dixon Q
+        double criticalValue = 0.0;
+        double pValue = 1.0;
+        Table *reportTable = nullptr;
+    };
+    enum NonparamMethod { TestMannWhitneyU = 0, TestWilcoxonSignedRank = 1,
+                          TestKruskalWallisDunn = 2, TestAutoSmartSwitch = 3 };
+    struct NonparamResult {
+        bool valid = false;
+        QString chosenTestName;
+        double statistic = 0.0; // U, W, H, or F/t
+        double pValue = 1.0;
+        Table *reportTable = nullptr;
+    };
+    struct KMeansResult {
+        bool valid = false;
+        int k = 2;
+        double silhouetteScore = 0.0;
+        QVector<int> assignments;
+        Table *resultTable = nullptr;
+        MultiLayer *clusterPlot = nullptr;
+    };
+
     static SurfaceFitResult fitSurfaceXYZ(ApplicationWindow *app, Table *srcTable,
                                           const QString &xCol, const QString &yCol,
                                           const QString &zCol, SurfaceModel model = Gauss2D,
@@ -115,6 +155,32 @@ public:
                                             const QString &responseCol,
                                             bool plotInteraction = true);
 
+    static WeibullPlotResult plotWeibullProbability(ApplicationWindow *app, Table *srcTable,
+                                                    const QString &dataCol,
+                                                    const QString &censorCol = QString());
+    static OutlierTestResult runOutlierTest(ApplicationWindow *app, Table *srcTable,
+                                            const QString &colName,
+                                            int method = 0 /*0=Grubbs, 1=GeneralizedESD, 2=DixonQ*/,
+                                            double alpha = 0.05, int maxOutliers = 5,
+                                            bool maskDetectedOutliers = false);
+    static NonparamResult runNonparametricComparison(ApplicationWindow *app, Table *srcTable,
+                                                     const QStringList &colNames,
+                                                     NonparamMethod method = TestAutoSmartSwitch,
+                                                     Graph *annotateGraph = nullptr);
+    static MultiLayer *plotPairedComparison(ApplicationWindow *app, Table *srcTable,
+                                            const QString &beforeCol, const QString &afterCol,
+                                            bool useWilcoxon = false, double *pValueOut = nullptr);
+    static MultiLayer *plotCorrelationMatrixHeatmap(ApplicationWindow *app, Table *srcTable,
+                                                    const QStringList &colNames,
+                                                    bool spearmanRank = false,
+                                                    Matrix **corrMatrixOut = nullptr);
+    static KMeansResult runKMeansClustering(ApplicationWindow *app, Table *srcTable,
+                                            const QStringList &colNames, int k = 3,
+                                            bool plotClusters = true);
+    static MultiLayer *plotHierarchicalDendrogram(ApplicationWindow *app, Table *srcTable,
+                                                  const QStringList &colNames,
+                                                  int linkage = 0 /*0=Ward,1=Complete,2=Average*/);
+
     static void showSurfaceFitDialog(ApplicationWindow *app);
     static void show2DPeakDialog(ApplicationWindow *app);
     static void showConfidenceEllipseDialog(ApplicationWindow *app, Graph *g = nullptr);
@@ -125,6 +191,12 @@ public:
     static void showNormalityDialog(ApplicationWindow *app, Graph *g = nullptr);
     static void showBlandAltmanDialog(ApplicationWindow *app);
     static void showTwoWayANOVADialog(ApplicationWindow *app);
+    static void showWeibullDialog(ApplicationWindow *app);
+    static void showOutlierTestDialog(ApplicationWindow *app);
+    static void showNonparametricDialog(ApplicationWindow *app, Graph *g = nullptr);
+    static void showPairedComparisonDialog(ApplicationWindow *app);
+    static void showCorrelationMatrixDialog(ApplicationWindow *app);
+    static void showClusteringDialog(ApplicationWindow *app);
 };
 
 #endif // GRAPH_STATS_AND_SURFACE_FIT_H

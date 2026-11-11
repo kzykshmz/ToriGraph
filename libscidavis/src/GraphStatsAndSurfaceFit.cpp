@@ -10,6 +10,7 @@
 #include "ApplicationWindow.h"
 #include "ArrowMarker.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "Legend.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
@@ -18,11 +19,13 @@
 #include "PlotCurve.h"
 #include "QwtHistogram.h"
 #include "RecalcEngine.h"
+#include "Spectrogram.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
+#include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 
 #include <gsl/gsl_blas.h>
@@ -48,14 +51,17 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -3366,7 +3372,7 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
                                           Graph *histogramGraphToOverlay)
 {
     NormalityResult res;
-    if (!app || !srcTable)
+    if (!srcTable)
         return res;
 
     Column *col = resolveTableColumn(srcTable, colName);
@@ -3425,6 +3431,9 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
     double adP = 1.0;
     computeAndersonDarlingStephens(vals, mean, sd, res.andersonDarlingA2, adP);
     res.isNormalAt005 = (res.shapiroWilkP >= 0.05);
+
+    if (!app)
+        return res;
 
     // Create Normality Summary Table
     QString tblName =
@@ -4262,4 +4271,2766 @@ void GraphStatsAndSurfaceFit::showTwoWayANOVADialog(ApplicationWindow *app)
 
     runTwoWayANOVA(app, tables[tableCombo->currentIndex()], factorACombo->currentText(),
                    factorBCombo->currentText(), respCombo->currentText(), plotCheck->isChecked());
+}
+
+// ============================================================================
+// Phase 5: Weibull Probability Plot, Outlier Tests, Nonparametric Smart-Switch,
+//          Paired Plot, Correlation Matrix Heatmap, K-Means & Dendrogram
+// ============================================================================
+
+namespace {
+
+void registerPhase5StatsTranslationsOnce()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+                QString::fromUtf8(en), QString::fromUtf8(ja));
+    };
+    reg("Weibull Probability Plot", "ワイブル確率プロット");
+    reg("Weibull Probability Plot...", "ワイブル確率プロット...");
+    reg("Outlier Test (Grubbs / ESD / Dixon)", "外れ値検定 (Grubbs / ESD / Dixon)");
+    reg("Outlier Test (Grubbs / ESD / Dixon)...", "外れ値検定 (Grubbs / ESD / Dixon)...");
+    reg("Nonparametric & Smart-Switch Group Comparison", "ノンパラメトリック検定 / 自動切替群間比較");
+    reg("Nonparametric Tests (Mann-Whitney / Kruskal-Wallis / Auto)...",
+        "ノンパラメトリック検定 (Mann-Whitney / Kruskal-Wallis / 自動)...");
+    reg("Paired Comparison Plot (Before-After)", "対応のある前後比較プロット (Before-After)");
+    reg("Paired Comparison Plot (Before-After)...", "対応のある前後比較プロット (Before-After)...");
+    reg("Correlation Matrix Heatmap", "相関行列ヒートマップ");
+    reg("Correlation Matrix Heatmap...", "相関行列ヒートマップ...");
+    reg("Cluster Analysis (K-Means & Hierarchical Dendrogram)",
+        "クラスタ解析 (K-Means・階層型デンドログラム)");
+    reg("Clustering (K-Means / Dendrogram)...", "クラスタ解析 (K-Means / デンドログラム)...");
+    reg("Strength / Lifetime Column:", "強度 / 寿命データ列:");
+    reg("Right-Censoring Column (Optional):", "右側打ち切り列 (任意):");
+    reg("(None — Complete Failures)", "(なし — 全数破壊データ)");
+    reg("ln(Strength / Life)", "ln(強度 / 寿命)");
+    reg("Weibit ln(-ln(1 - F))", "ワイビット ln(-ln(1 - F))");
+    reg("Weibull Report", "ワイブル解析レポート");
+    reg("Outlier Detection Method:", "外れ値検出手法:");
+    reg("Two-Sided Grubbs' Test (Single Outlier)", "両側Grubbs検定 (単一外れ値)");
+    reg("Generalized ESD / Rosner Test (Up to k Outliers)", "一般化ESD / Rosner検定 (最大k個)");
+    reg("Dixon's Q Test (Small Sample Extreme)", "DixonのQ検定 (小標本極値)");
+    reg("Significance Level α:", "有意水準 α:");
+    reg("Max Outliers k (Generalized ESD):", "最大外れ値数 k (ESD):");
+    reg("Mask Detected Outliers in Source Worksheet", "検出された外れ値を元ワークシート上でマスクする");
+    reg("Outlier Test Report", "外れ値検定レポート");
+    reg("Test Method:", "検定手法:");
+    reg("Auto Smart-Switch (Shapiro-Wilk -> Parametric / Nonparametric)",
+        "自動スマート切替 (Shapiro-Wilk正規性判定 -> パラメトリック/ノンパラメトリック)");
+    reg("Mann-Whitney U Test (2 Independent Groups)", "Mann-Whitney U検定 (独立2群)");
+    reg("Wilcoxon Signed-Rank Test (2 Paired Columns)", "Wilcoxon符号付順位検定 (対応のある2群)");
+    reg("Kruskal-Wallis H + Holm-Dunn Post-Hoc", "Kruskal-Wallis H検定 + Holm補正Dunn多重比較");
+    reg("Draw Significance Brackets on Active Graph", "アクティブグラフに有意差ブラケットを描画");
+    reg("Nonparametric Comparison Summary", "ノンパラメトリック比較サマリー");
+    reg("Before Column:", "処理前列 (Before):");
+    reg("After Column:", "処理後列 (After):");
+    reg("Use Nonparametric Wilcoxon Signed-Rank (instead of Paired t)",
+        "対応のあるt検定の代わりにWilcoxon符号付順位検定を使用");
+    reg("Value", "測定値");
+    reg("Correlation Type:", "相関係数の種類:");
+    reg("Pearson Linear Correlation (r)", "Pearson積率相関係数 (r)");
+    reg("Spearman Rank Correlation (ρ)", "Spearman順位相関係数 (ρ)");
+    reg("Number of Clusters (k):", "クラスタ数 (k):");
+    reg("Create 2D Cluster Scatter Plot", "2Dクラスタ散布図を作成");
+    reg("K-Means Clustering", "K-Meansクラスタリング");
+    reg("Hierarchical Dendrogram", "階層型デンドログラム");
+    reg("Linkage Criterion:", "連結基準 (Linkage):");
+    reg("Ward's Minimum Variance", "Ward法 (最小分散)");
+    reg("Complete Linkage (Furthest Neighbor)", "完全連結法 (最遠隣)");
+    reg("Average Linkage (UPGMA)", "群平均法 (UPGMA)");
+    reg("Dissimilarity Height", "非類似度距離 (Height)");
+}
+
+void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double> &ranksOut,
+                             double &tieSumCubeMinusLinearOut)
+{
+    const size_t n = vals.size();
+    ranksOut.assign(n, 0.0);
+    tieSumCubeMinusLinearOut = 0.0;
+    if (n == 0)
+        return;
+
+    std::vector<size_t> order(n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](size_t a, size_t b) { return vals[a] < vals[b]; });
+
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i + 1;
+        while (j < n && std::fabs(vals[order[j]] - vals[order[i]]) <= 1e-14 * std::max(1.0, std::fabs(vals[order[i]])))
+            ++j;
+        const double avgRank = 0.5 * (static_cast<double>(i + 1) + static_cast<double>(j));
+        for (size_t k = i; k < j; ++k)
+            ranksOut[order[k]] = avgRank;
+        const double t = static_cast<double>(j - i);
+        if (t > 1.0)
+            tieSumCubeMinusLinearOut += (t * t * t - t);
+        i = j;
+    }
+}
+
+void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double yMaxAll,
+                             const std::vector<std::tuple<int, int, double>> &sigPairs)
+{
+    if (!annotateGraph || K < 2 || sigPairs.empty())
+        return;
+
+    const double ySpan = std::max(1e-6, yMaxAll - yMinAll);
+    std::vector<double> groupX(static_cast<size_t>(K));
+    for (int k = 0; k < K; ++k)
+        groupX[static_cast<size_t>(k)] = static_cast<double>(k + 1);
+
+    if (annotateGraph->curves() >= K) {
+        std::vector<double> curveMeans;
+        bool distinctMeans = true;
+        for (int k = 0; k < K; ++k) {
+            QwtPlotCurve *cv = annotateGraph->curve(k);
+            if (!cv || cv->dataSize() <= 0) {
+                distinctMeans = false;
+                break;
+            }
+            double sx = 0.0;
+            for (int i = 0; i < cv->dataSize(); ++i)
+                sx += cv->x(i);
+            const double mx = sx / static_cast<double>(cv->dataSize());
+            for (double prev : curveMeans) {
+                if (std::fabs(mx - prev) < 1e-6)
+                    distinctMeans = false;
+            }
+            curveMeans.push_back(mx);
+        }
+        if (distinctMeans && static_cast<int>(curveMeans.size()) == K)
+            groupX = curveMeans;
+    }
+
+    const double stepY = 0.11 * ySpan;
+    const double tickH = 0.032 * ySpan;
+    const double baseTop = yMaxAll + 0.08 * ySpan;
+    const double neededYMax = baseTop + static_cast<double>(sigPairs.size() + 1) * stepY;
+
+    const QwtScaleDiv *xDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::xBottom);
+    const QwtScaleDiv *yDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::yLeft);
+    const double xLo = std::min(xDiv ? xDiv->lowerBound() : 0.5, groupX.front() - 0.6);
+    const double xHi = std::max(xDiv ? xDiv->upperBound() : static_cast<double>(K) + 0.5,
+                                groupX.back() + 0.6);
+    const double yLo = std::min(yDiv ? yDiv->lowerBound() : (yMinAll - 0.1 * ySpan),
+                                yMinAll - 0.05 * ySpan);
+    const double yHi = std::max(yDiv ? yDiv->upperBound() : neededYMax, neededYMax);
+
+    annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi);
+    annotateGraph->setScale(QwtPlot::yLeft, yLo, yHi);
+    annotateGraph->replot();
+
+    const QColor bracketColor(30, 30, 30);
+    for (size_t b = 0; b < sigPairs.size(); ++b) {
+        const int gi = std::get<0>(sigPairs[b]);
+        const int gj = std::get<1>(sigPairs[b]);
+        const double pAdj = std::get<2>(sigPairs[b]);
+        const double xLeft = groupX[static_cast<size_t>(gi)];
+        const double xRight = groupX[static_cast<size_t>(gj)];
+        const double yBar = baseTop + static_cast<double>(b) * stepY;
+
+        addLineSegmentOnGraph(annotateGraph, xLeft, yBar - tickH, xLeft, yBar, bracketColor, 2);
+        addLineSegmentOnGraph(annotateGraph, xLeft, yBar, xRight, yBar, bracketColor, 2);
+        addLineSegmentOnGraph(annotateGraph, xRight, yBar, xRight, yBar - tickH, bracketColor, 2);
+        addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar + 0.42 * stepY,
+                            starRatingForP(pAdj), bracketColor, true, 1);
+    }
+    applyArialGraphFonts(annotateGraph);
+    annotateGraph->replot();
+}
+
+double dixonQ10CritTable(int n, int alphaIdx /*0:0.10, 1:0.05, 2:0.01*/)
+{
+    // Exact Rorabacher (1991) two-tailed / standard Dixon Q10 critical values for n = 3..30
+    static const double q90[28] = {
+        0.941, 0.765, 0.642, 0.560, 0.507, 0.468, 0.437, 0.412, 0.392, 0.376,
+        0.361, 0.349, 0.338, 0.329, 0.320, 0.313, 0.306, 0.300, 0.295, 0.290,
+        0.285, 0.281, 0.277, 0.273, 0.269, 0.266, 0.263, 0.260
+    };
+    static const double q95[28] = {
+        0.970, 0.829, 0.710, 0.625, 0.568, 0.526, 0.493, 0.466, 0.444, 0.426,
+        0.410, 0.396, 0.384, 0.374, 0.365, 0.356, 0.349, 0.342, 0.337, 0.331,
+        0.326, 0.321, 0.317, 0.312, 0.308, 0.305, 0.301, 0.298
+    };
+    static const double q99[28] = {
+        0.994, 0.926, 0.821, 0.740, 0.680, 0.634, 0.598, 0.568, 0.542, 0.522,
+        0.503, 0.488, 0.475, 0.463, 0.452, 0.442, 0.433, 0.425, 0.418, 0.411,
+        0.404, 0.399, 0.393, 0.388, 0.384, 0.380, 0.376, 0.372
+    };
+    const double *arr = (alphaIdx == 0) ? q90 : ((alphaIdx == 1) ? q95 : q99);
+    if (n <= 3)
+        return arr[0];
+    if (n <= 30)
+        return arr[n - 3];
+    return arr[27] * std::sqrt(std::log(30.0) / std::log(static_cast<double>(n)));
+}
+
+void evalDixonQCritAndP(int n, double qObs, double alpha, double &qCritOut, double &pValOut)
+{
+    const double c10 = dixonQ10CritTable(n, 0);
+    const double c05 = dixonQ10CritTable(n, 1);
+    const double c01 = dixonQ10CritTable(n, 2);
+
+    const double la = std::log(std::clamp(alpha, 1e-4, 0.50));
+    const double l10 = std::log(0.10);
+    const double l05 = std::log(0.05);
+    const double l01 = std::log(0.01);
+
+    if (alpha >= 0.05) {
+        const double t = (la - l10) / (l05 - l10);
+        qCritOut = std::clamp(c10 + t * (c05 - c10), 0.05, 0.9999);
+    } else {
+        const double t = (la - l05) / (l01 - l05);
+        qCritOut = std::clamp(c05 + t * (c01 - c05), 0.05, 0.9999);
+    }
+
+    if (qObs <= 0.0) {
+        pValOut = 1.0;
+    } else if (qObs < c10) {
+        pValOut = std::clamp(1.0 - 0.90 * (qObs / std::max(1e-9, c10)), 0.10, 1.0);
+    } else if (qObs <= c05) {
+        const double u = (qObs - c10) / std::max(1e-9, c05 - c10);
+        pValOut = std::exp(l10 + u * (l05 - l10));
+    } else if (qObs <= c01) {
+        const double u = (qObs - c05) / std::max(1e-9, c01 - c05);
+        pValOut = std::exp(l05 + u * (l01 - l05));
+    } else {
+        const double slope = (l01 - l05) / std::max(1e-6, c01 - c05);
+        pValOut = std::clamp(std::exp(std::max(-50.0, l01 + slope * (qObs - c01))), 0.0, 0.01);
+    }
+}
+
+void evalWilcoxonSignedRank(const std::vector<double> &diffs, double &wStatOut, double &pValOut)
+{
+    std::vector<double> absD;
+    std::vector<int> signs;
+    absD.reserve(diffs.size());
+    signs.reserve(diffs.size());
+    for (double d : diffs) {
+        if (std::isfinite(d) && std::fabs(d) > 1e-15) {
+            absD.push_back(std::fabs(d));
+            signs.push_back(d > 0.0 ? 1 : -1);
+        }
+    }
+    const size_t m = absD.size();
+    if (m == 0) {
+        wStatOut = 0.0;
+        pValOut = 1.0;
+        return;
+    }
+    std::vector<double> ranks;
+    double tieSum = 0.0;
+    computeMidRanksWithTies(absD, ranks, tieSum);
+
+    double wPlus = 0.0;
+    double wMinus = 0.0;
+    for (size_t i = 0; i < m; ++i) {
+        if (signs[i] > 0)
+            wPlus += ranks[i];
+        else
+            wMinus += ranks[i];
+    }
+    wStatOut = std::min(wPlus, wMinus);
+    const double dm = static_cast<double>(m);
+    const double mu = 0.25 * dm * (dm + 1.0);
+    const double varW = std::max(0.0, (dm * (dm + 1.0) * (2.0 * dm + 1.0) - 0.5 * tieSum) / 24.0);
+    if (varW <= 1e-30) {
+        pValOut = 1.0;
+        return;
+    }
+    const double z = std::max(0.0, std::fabs(wPlus - mu) - 0.5) / std::sqrt(varW);
+    pValOut = std::clamp(2.0 * gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
+}
+
+} // namespace
+
+GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullProbability(
+        ApplicationWindow *app, Table *srcTable, const QString &dataCol, const QString &censorCol)
+{
+    registerPhase5StatsTranslationsOnce();
+    WeibullPlotResult res;
+    if (!srcTable)
+        return res;
+
+    Column *cData = resolveTableColumn(srcTable, dataCol);
+    if (!cData)
+        return res;
+    Column *cCensor = censorCol.trimmed().isEmpty() ? nullptr
+                                                    : resolveTableColumn(srcTable, censorCol);
+
+    struct WeibItem {
+        double x = 0.0;
+        bool censored = false;
+    };
+    std::vector<WeibItem> items;
+    const int nRows = cData->rowCount();
+    items.reserve(static_cast<size_t>(std::max(0, nRows)));
+
+    for (int r = 0; r < nRows; ++r) {
+        if (cData->isInvalid(r) || cData->isMasked(r))
+            continue;
+        const double xv = cData->valueAt(r);
+        if (!std::isfinite(xv) || xv <= 0.0)
+            continue;
+        bool isCens = false;
+        if (cCensor && r < cCensor->rowCount() && !cCensor->isInvalid(r) && !cCensor->isMasked(r)) {
+            if (cCensor->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                isCens = (std::round(cCensor->valueAt(r)) != 0.0);
+            } else {
+                const QString s = cCensor->asStringColumn()->textAt(r).trimmed().toLower();
+                isCens = (s == QLatin1String("1") || s == QLatin1String("c")
+                          || s.startsWith(QLatin1String("cens"))
+                          || s.startsWith(QLatin1String("susp"))
+                          || s == QLatin1String("true"));
+            }
+        }
+        items.push_back({ xv, isCens });
+    }
+
+    // Safeguard if a status column marked 1=failed for every row
+    bool anyUncensored = false;
+    for (const WeibItem &it : items) {
+        if (!it.censored) {
+            anyUncensored = true;
+            break;
+        }
+    }
+    if (!anyUncensored) {
+        for (WeibItem &it : items)
+            it.censored = false;
+    }
+
+    if (items.size() < 2)
+        return res;
+
+    std::sort(items.begin(), items.end(), [](const WeibItem &a, const WeibItem &b) {
+        if (a.x != b.x)
+            return a.x < b.x;
+        return !a.censored && b.censored;
+    });
+
+    // Herd-Johnson / Benard median rank order numbers
+    const int nTotal = static_cast<int>(items.size());
+    std::vector<double> failX;
+    std::vector<double> failProb;
+    std::vector<double> uLnX;
+    std::vector<double> wWeibit;
+    failX.reserve(items.size());
+    failProb.reserve(items.size());
+    uLnX.reserve(items.size());
+    wWeibit.reserve(items.size());
+
+    double prevOrder = 0.0;
+    for (int idx = 0; idx < nTotal; ++idx) {
+        if (items[static_cast<size_t>(idx)].censored)
+            continue;
+        const double remainingPlusOne = static_cast<double>(1 + (nTotal - idx));
+        const double orderNum = prevOrder
+                + (static_cast<double>(nTotal + 1) - prevOrder) / remainingPlusOne;
+        prevOrder = orderNum;
+
+        const double F = std::clamp((orderNum - 0.3) / (static_cast<double>(nTotal) + 0.4),
+                                    1e-9, 1.0 - 1e-9);
+        const double xv = items[static_cast<size_t>(idx)].x;
+        failX.push_back(xv);
+        failProb.push_back(F);
+        uLnX.push_back(std::log(xv));
+        wWeibit.push_back(std::log(-std::log(1.0 - F)));
+    }
+
+    const int mFail = static_cast<int>(uLnX.size());
+    if (mFail < 2)
+        return res;
+
+    const double meanU = std::accumulate(uLnX.begin(), uLnX.end(), 0.0) / static_cast<double>(mFail);
+    const double meanW = std::accumulate(wWeibit.begin(), wWeibit.end(), 0.0) / static_cast<double>(mFail);
+
+    double suu = 0.0, suw = 0.0, sww = 0.0;
+    for (int i = 0; i < mFail; ++i) {
+        const double du = uLnX[static_cast<size_t>(i)] - meanU;
+        const double dw = wWeibit[static_cast<size_t>(i)] - meanW;
+        suu += du * du;
+        suw += du * dw;
+        sww += dw * dw;
+    }
+    if (suu <= 1e-30 || suw <= 0.0)
+        return res;
+
+    const double betaM = suw / suu;
+    const double interceptA = meanW - betaM * meanU;
+    double rss = 0.0;
+    for (int i = 0; i < mFail; ++i) {
+        const double err = wWeibit[static_cast<size_t>(i)]
+                - (interceptA + betaM * uLnX[static_cast<size_t>(i)]);
+        rss += err * err;
+    }
+    const double r2 = (sww > 1e-30) ? std::clamp(1.0 - rss / sww, 0.0, 1.0) : 1.0;
+    const double sResid = (mFail > 2) ? std::sqrt(std::max(0.0, rss / static_cast<double>(mFail - 2)))
+                                      : 0.0;
+    const double betaSE = (mFail > 2) ? (sResid / std::sqrt(suu)) : 0.0;
+
+    const double lnSigma0 = -interceptA / betaM;
+    const double sigma0 = std::exp(std::clamp(lnSigma0, -500.0, 500.0));
+    const double lnSigma0SE = (mFail > 2 && std::fabs(betaM) > 1e-30)
+            ? ((sResid / std::fabs(betaM))
+               * std::sqrt(1.0 / static_cast<double>(mFail)
+                           + ((lnSigma0 - meanU) * (lnSigma0 - meanU)) / suu))
+            : 0.0;
+
+    res.valid = true;
+    res.modulusM = betaM;
+    res.modulusMSE = betaSE;
+    res.scaleSigma0 = sigma0;
+    res.scaleSigma0SE = sigma0 * lnSigma0SE;
+    res.b10Life = sigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
+    res.b50Life = sigma0 * std::pow(std::log(2.0), 1.0 / betaM);
+    res.rSquare = r2;
+
+    if (!app)
+        return res;
+
+    const double tCrit = (mFail > 2)
+            ? gsl_cdf_tdist_Pinv(0.975, static_cast<double>(mFail - 2))
+            : 0.0;
+
+    const QString tblName = app->generateUniqueName(
+            srcTable->name() + QStringLiteral("_Weibull"), false);
+    Table *repTbl = app->newTable(mFail, 7, tblName, QObject::tr("Weibull Report"));
+    res.reportTable = repTbl;
+    if (!repTbl)
+        return res;
+
+    repTbl->setHeader(QStringList() << QStringLiteral("LnValue") << QStringLiteral("Strength_Life")
+                                    << QStringLiteral("FailureProb_Pct") << QStringLiteral("Weibit")
+                                    << QStringLiteral("WeibullFit") << QStringLiteral("CI95Lower")
+                                    << QStringLiteral("CI95Upper"));
+    for (int c = 0; c < 7; ++c)
+        repTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    repTbl->column(0)->setPlotDesignation(SciDAVis::X);
+    repTbl->column(1)->setPlotDesignation(SciDAVis::noDesignation);
+    repTbl->column(2)->setPlotDesignation(SciDAVis::noDesignation);
+    for (int c = 3; c <= 6; ++c)
+        repTbl->column(c)->setPlotDesignation(SciDAVis::Y);
+
+    for (int i = 0; i < mFail; ++i) {
+        const double uv = uLnX[static_cast<size_t>(i)];
+        const double wh = interceptA + betaM * uv;
+        const double hb = (mFail > 2)
+                ? (tCrit * sResid
+                   * std::sqrt(1.0 / static_cast<double>(mFail) + ((uv - meanU) * (uv - meanU)) / suu))
+                : 0.0;
+        repTbl->column(0)->setValueAt(i, uv);
+        repTbl->column(1)->setValueAt(i, failX[static_cast<size_t>(i)]);
+        repTbl->column(2)->setValueAt(i, 100.0 * failProb[static_cast<size_t>(i)]);
+        repTbl->column(3)->setValueAt(i, wWeibit[static_cast<size_t>(i)]);
+        repTbl->column(4)->setValueAt(i, wh);
+        repTbl->column(5)->setValueAt(i, wh - hb);
+        repTbl->column(6)->setValueAt(i, wh + hb);
+    }
+
+    MultiLayer *ml = app->newGraph(
+            app->generateUniqueName(QStringLiteral("WeibullPlot_") + srcTable->name(), false));
+    res.weibullPlot = ml;
+    if (ml) {
+        if (Graph *g = ml->activeGraph()) {
+            if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(3), Graph::Scatter, 0,
+                               mFail - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(25, 70, 145), 1.5));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 100, 190)),
+                                            QPen(QColor(15, 45, 100), 1.2), QSize(8, 8)));
+            }
+            if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(4), Graph::Line, 0,
+                               mFail - 1)) {
+                g->setCurvePen(g->curves() - 1, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
+            }
+            if (mFail > 2 && sResid > 0.0) {
+                const QPen ciPen(QColor(205, 35, 45, 175), 1.3, Qt::DashLine);
+                if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(5), Graph::Line, 0,
+                                   mFail - 1))
+                    g->setCurvePen(g->curves() - 1, ciPen);
+                if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(6), Graph::Line, 0,
+                                   mFail - 1))
+                    g->setCurvePen(g->curves() - 1, ciPen);
+            }
+
+            g->setXAxisTitle(QObject::tr("ln(Strength / Life)"));
+            g->setYAxisTitle(QObject::tr("Weibit ln(-ln(1 - F))"));
+            g->setTitle(QObject::tr("Weibull Probability Plot"));
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            applyArialGraphFonts(g);
+
+            const double uSpan = std::max(1e-6, uLnX.back() - uLnX.front());
+            const double wSpan = std::max(1e-6, wWeibit.back() - wWeibit.front());
+            const QString summary = QStringLiteral(
+                    "Modulus m = %1 ± %2\n"
+                    "Scale σ0 = %3 ± %4\n"
+                    "B10 = %5,  B50 = %6\n"
+                    "R² = %7  (N = %8)")
+                    .arg(res.modulusM, 0, 'f', 3)
+                    .arg(res.modulusMSE, 0, 'f', 3)
+                    .arg(res.scaleSigma0, 0, 'g', 5)
+                    .arg(res.scaleSigma0SE, 0, 'g', 4)
+                    .arg(res.b10Life, 0, 'g', 5)
+                    .arg(res.b50Life, 0, 'g', 5)
+                    .arg(res.rSquare, 0, 'f', 5)
+                    .arg(mFail);
+            addFramedBoxOnGraph(g, uLnX.front() + 0.05 * uSpan, wWeibit.back() - 0.05 * wSpan,
+                                summary);
+            g->setAutoScale();
+            g->replot();
+        }
+    }
+    return res;
+}
+
+GraphStatsAndSurfaceFit::OutlierTestResult GraphStatsAndSurfaceFit::runOutlierTest(
+        ApplicationWindow *app, Table *srcTable, const QString &colName, int method, double alpha,
+        int maxOutliers, bool maskDetectedOutliers)
+{
+    registerPhase5StatsTranslationsOnce();
+    OutlierTestResult res;
+    if (!srcTable)
+        return res;
+
+    Column *col = resolveTableColumn(srcTable, colName);
+    if (!col)
+        return res;
+
+    struct Obs {
+        int row = 0;
+        double val = 0.0;
+    };
+    std::vector<Obs> obs;
+    obs.reserve(static_cast<size_t>(std::max(0, col->rowCount())));
+    for (int r = 0; r < col->rowCount(); ++r) {
+        if (col->isInvalid(r) || col->isMasked(r))
+            continue;
+        const double v = col->valueAt(r);
+        if (std::isfinite(v))
+            obs.push_back({ r, v });
+    }
+
+    const int n = static_cast<int>(obs.size());
+    res.n = n;
+    if (n < 3)
+        return res;
+
+    const double sigAlpha = std::clamp(alpha, 1e-6, 0.50);
+    const int effMethod = std::clamp(method, 0, 2);
+
+    auto grubbsCritAndP = [](int m, double gObs, double a, double &gCrit, double &pVal) {
+        const double dm = static_cast<double>(m);
+        const double tc = gsl_cdf_tdist_Pinv(1.0 - a / (2.0 * dm), dm - 2.0);
+        gCrit = ((dm - 1.0) / std::sqrt(dm)) * std::sqrt((tc * tc) / (dm - 2.0 + tc * tc));
+        const double gMaxSq = ((dm - 1.0) * (dm - 1.0)) / dm;
+        if (gObs <= 0.0) {
+            pVal = 1.0;
+        } else if (gObs * gObs >= gMaxSq - 1e-14) {
+            pVal = 0.0;
+        } else {
+            const double tSq = ((dm - 2.0) * gObs * gObs) / (gMaxSq - gObs * gObs);
+            const double tVal = std::sqrt(std::max(0.0, tSq));
+            pVal = std::clamp(2.0 * dm * gsl_cdf_tdist_Q(tVal, dm - 2.0), 0.0, 1.0);
+        }
+    };
+
+    QString methodLabel;
+    if (effMethod == 0) {
+        methodLabel = QStringLiteral("Grubbs Two-Sided Test");
+        double mean = 0.0;
+        for (const Obs &o : obs)
+            mean += o.val;
+        mean /= static_cast<double>(n);
+
+        double ss = 0.0;
+        int bestIdx = 0;
+        double maxDev = -1.0;
+        for (int i = 0; i < n; ++i) {
+            const double dev = std::fabs(obs[static_cast<size_t>(i)].val - mean);
+            ss += dev * dev;
+            if (dev > maxDev) {
+                maxDev = dev;
+                bestIdx = i;
+            }
+        }
+        const double sd = std::sqrt(ss / static_cast<double>(n - 1));
+        if (sd <= 1e-30)
+            return res;
+
+        const double gStat = maxDev / sd;
+        double gCrit = 0.0, pVal = 1.0;
+        grubbsCritAndP(n, gStat, sigAlpha, gCrit, pVal);
+        res.valid = true;
+        res.primaryStatistic = gStat;
+        res.criticalValue = gCrit;
+        res.pValue = pVal;
+        if (gStat > gCrit) {
+            res.outlierRows.append(obs[static_cast<size_t>(bestIdx)].row);
+            res.outlierValues.append(obs[static_cast<size_t>(bestIdx)].val);
+        }
+    } else if (effMethod == 1) {
+        methodLabel = QStringLiteral("Generalized ESD (Rosner) Test");
+        const int rMax = std::clamp(maxOutliers, 1, std::max(1, (n - 3) / 2));
+        std::vector<Obs> pool = obs;
+        struct EsdStep {
+            Obs removed;
+            double rStat = 0.0;
+            double lambdaCrit = 0.0;
+            double stepP = 1.0;
+        };
+        std::vector<EsdStep> steps;
+        steps.reserve(static_cast<size_t>(rMax));
+
+        for (int k = 0; k < rMax && static_cast<int>(pool.size()) >= 3; ++k) {
+            const int m = static_cast<int>(pool.size());
+            double mean = 0.0;
+            for (const Obs &o : pool)
+                mean += o.val;
+            mean /= static_cast<double>(m);
+            double ss = 0.0;
+            int maxIdx = 0;
+            double maxDev = -1.0;
+            for (int i = 0; i < m; ++i) {
+                const double dev = std::fabs(pool[static_cast<size_t>(i)].val - mean);
+                ss += dev * dev;
+                if (dev > maxDev) {
+                    maxDev = dev;
+                    maxIdx = i;
+                }
+            }
+            const double sd = std::sqrt(ss / static_cast<double>(m - 1));
+            if (sd <= 1e-30)
+                break;
+
+            const double rStat = maxDev / sd;
+            double lam = 0.0, pStep = 1.0;
+            grubbsCritAndP(m, rStat, sigAlpha, lam, pStep);
+            steps.push_back({ pool[static_cast<size_t>(maxIdx)], rStat, lam, pStep });
+            pool.erase(pool.begin() + maxIdx);
+        }
+
+        if (steps.empty())
+            return res;
+
+        res.valid = true;
+        res.primaryStatistic = steps.front().rStat;
+        res.criticalValue = steps.front().lambdaCrit;
+        res.pValue = steps.front().stepP;
+
+        int numOut = 0;
+        for (int i = static_cast<int>(steps.size()) - 1; i >= 0; --i) {
+            if (steps[static_cast<size_t>(i)].rStat > steps[static_cast<size_t>(i)].lambdaCrit) {
+                numOut = i + 1;
+                break;
+            }
+        }
+        for (int i = 0; i < numOut; ++i) {
+            res.outlierRows.append(steps[static_cast<size_t>(i)].removed.row);
+            res.outlierValues.append(steps[static_cast<size_t>(i)].removed.val);
+        }
+    } else {
+        methodLabel = QStringLiteral("Dixon Q Test");
+        std::vector<Obs> sorted = obs;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const Obs &a, const Obs &b) { return a.val < b.val; });
+        const double span = sorted.back().val - sorted.front().val;
+        if (span <= 1e-30)
+            return res;
+
+        const double qLow = (sorted[1].val - sorted[0].val) / span;
+        const double qHigh = (sorted[static_cast<size_t>(n - 1)].val
+                              - sorted[static_cast<size_t>(n - 2)].val) / span;
+        const bool highExtreme = (qHigh >= qLow);
+        const double qStat = highExtreme ? qHigh : qLow;
+        const Obs cand = highExtreme ? sorted.back() : sorted.front();
+
+        double qCrit = 0.0, pVal = 1.0;
+        evalDixonQCritAndP(n, qStat, sigAlpha, qCrit, pVal);
+        res.valid = true;
+        res.primaryStatistic = qStat;
+        res.criticalValue = qCrit;
+        res.pValue = pVal;
+        if (qStat > qCrit) {
+            res.outlierRows.append(cand.row);
+            res.outlierValues.append(cand.val);
+        }
+    }
+
+    if (maskDetectedOutliers && !res.outlierRows.isEmpty()) {
+        for (int r : res.outlierRows)
+            col->setMasked(r, true);
+    }
+
+    if (!app)
+        return res;
+
+    const int nRepRows = 1 + res.outlierRows.size();
+    const QString tblName = app->generateUniqueName(
+            srcTable->name() + QStringLiteral("_Outliers"), false);
+    Table *repTbl = app->newTable(nRepRows, 6, tblName, QObject::tr("Outlier Test Report"));
+    res.reportTable = repTbl;
+    if (repTbl) {
+        repTbl->setHeader(QStringList() << QStringLiteral("Item") << QStringLiteral("Row_or_N")
+                                        << QStringLiteral("Value_or_Stat")
+                                        << QStringLiteral("CriticalValue")
+                                        << QStringLiteral("p_value")
+                                        << QStringLiteral("Decision"));
+        repTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 1; c <= 4; ++c)
+            repTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        repTbl->column(5)->setColumnMode(SciDAVis::ColumnMode::Text);
+
+        repTbl->column(0)->setTextAt(0, methodLabel);
+        repTbl->column(1)->setValueAt(0, static_cast<double>(n));
+        repTbl->column(2)->setValueAt(0, res.primaryStatistic);
+        repTbl->column(3)->setValueAt(0, res.criticalValue);
+        repTbl->column(4)->setValueAt(0, res.pValue);
+        repTbl->column(5)->setTextAt(0, res.outlierRows.isEmpty()
+                                                ? QStringLiteral("No Outliers")
+                                                : QStringLiteral("%1 Outlier(s)")
+                                                          .arg(res.outlierRows.size()));
+
+        for (int k = 0; k < res.outlierRows.size(); ++k) {
+            const int r = k + 1;
+            repTbl->column(0)->setTextAt(r, QStringLiteral("Outlier #%1").arg(k + 1));
+            repTbl->column(1)->setValueAt(r, static_cast<double>(res.outlierRows[k] + 1));
+            repTbl->column(2)->setValueAt(r, res.outlierValues[k]);
+            repTbl->column(3)->setValueAt(r, res.criticalValue);
+            repTbl->column(4)->setValueAt(r, res.pValue);
+            repTbl->column(5)->setTextAt(r, maskDetectedOutliers ? QStringLiteral("Masked")
+                                                                 : QStringLiteral("Detected"));
+        }
+    }
+    return res;
+}
+
+GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametricComparison(
+        ApplicationWindow *app, Table *srcTable, const QStringList &colNames,
+        NonparamMethod method, Graph *annotateGraph)
+{
+    registerPhase5StatsTranslationsOnce();
+    NonparamResult res;
+    if (!srcTable || colNames.size() < 2)
+        return res;
+
+    // Special paired path for Wilcoxon Signed-Rank
+    if (method == TestWilcoxonSignedRank) {
+        Column *cA = resolveTableColumn(srcTable, colNames[0]);
+        Column *cB = resolveTableColumn(srcTable, colNames[1]);
+        if (!cA || !cB)
+            return res;
+        std::vector<double> diffs;
+        std::vector<double> allVals;
+        const int nRows = std::min(cA->rowCount(), cB->rowCount());
+        for (int r = 0; r < nRows; ++r) {
+            if (cA->isInvalid(r) || cB->isInvalid(r) || cA->isMasked(r) || cB->isMasked(r))
+                continue;
+            const double va = cA->valueAt(r);
+            const double vb = cB->valueAt(r);
+            if (std::isfinite(va) && std::isfinite(vb)) {
+                diffs.push_back(vb - va);
+                allVals.push_back(va);
+                allVals.push_back(vb);
+            }
+        }
+        if (diffs.size() < 2)
+            return res;
+
+        double wStat = 0.0, pVal = 1.0;
+        evalWilcoxonSignedRank(diffs, wStat, pVal);
+        res.valid = true;
+        res.chosenTestName = QStringLiteral("Wilcoxon Signed-Rank");
+        res.statistic = wStat;
+        res.pValue = pVal;
+
+        if (app) {
+            const QString tblName = app->generateUniqueName(
+                    srcTable->name() + QStringLiteral("_Wilcoxon"), false);
+            Table *rep = app->newTable(1, 5, tblName,
+                                       QObject::tr("Nonparametric Comparison Summary"));
+            if (rep) {
+                rep->setHeader(QStringList() << QStringLiteral("Comparison")
+                                             << QStringLiteral("Test")
+                                             << QStringLiteral("Statistic")
+                                             << QStringLiteral("p_value")
+                                             << QStringLiteral("Significance"));
+                rep->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                rep->column(3)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                rep->column(4)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(0)->setTextAt(0, QStringLiteral("%1 vs %2")
+                                                     .arg(cA->name(), cB->name()));
+                rep->column(1)->setTextAt(0, res.chosenTestName);
+                rep->column(2)->setValueAt(0, wStat);
+                rep->column(3)->setValueAt(0, pVal);
+                rep->column(4)->setTextAt(0, starRatingForP(pVal));
+                res.reportTable = rep;
+            }
+        }
+        if (annotateGraph && !allVals.empty()) {
+            const auto mm = std::minmax_element(allVals.begin(), allVals.end());
+            annotateBracketsOnGraph(annotateGraph, 2, *mm.first, *mm.second,
+                                    { std::make_tuple(0, 1, pVal) });
+        }
+        return res;
+    }
+
+    struct GroupSample {
+        QString name;
+        std::vector<double> vals;
+        double mean = 0.0;
+        double var = 0.0;
+        double minV = 0.0;
+        double maxV = 0.0;
+    };
+    std::vector<GroupSample> groups;
+    for (const QString &cn : colNames) {
+        Column *col = resolveTableColumn(srcTable, cn);
+        if (!col)
+            continue;
+        GroupSample gs;
+        gs.name = col->name();
+        for (int r = 0; r < col->rowCount(); ++r) {
+            if (col->isInvalid(r) || col->isMasked(r))
+                continue;
+            const double v = col->valueAt(r);
+            if (std::isfinite(v))
+                gs.vals.push_back(v);
+        }
+        if (gs.vals.size() < 2)
+            continue;
+        gs.mean = std::accumulate(gs.vals.begin(), gs.vals.end(), 0.0)
+                / static_cast<double>(gs.vals.size());
+        double ss = 0.0;
+        gs.minV = gs.vals.front();
+        gs.maxV = gs.vals.front();
+        for (double v : gs.vals) {
+            const double d = v - gs.mean;
+            ss += d * d;
+            gs.minV = std::min(gs.minV, v);
+            gs.maxV = std::max(gs.maxV, v);
+        }
+        gs.var = ss / static_cast<double>(gs.vals.size() - 1);
+        groups.push_back(std::move(gs));
+    }
+
+    const int K = static_cast<int>(groups.size());
+    if (K < 2)
+        return res;
+
+    double yMinAll = groups.front().minV;
+    double yMaxAll = groups.front().maxV;
+    for (const GroupSample &gs : groups) {
+        yMinAll = std::min(yMinAll, gs.minV);
+        yMaxAll = std::max(yMaxAll, gs.maxV);
+    }
+
+    NonparamMethod effMethod = method;
+    if (method == TestAutoSmartSwitch) {
+        bool allNormal = true;
+        for (const GroupSample &gs : groups) {
+            const NormalityResult nr = runNormalityTest(nullptr, srcTable, gs.name, nullptr);
+            if (nr.n < 3 || nr.shapiroWilkP < 0.05) {
+                allNormal = false;
+                break;
+            }
+        }
+
+        if (allNormal) {
+            // Parametric delegation: Welch t-Test (K==2) or One-Way ANOVA + Tukey-Kramer (K>=3)
+            size_t totalN = 0;
+            double wSum = 0.0;
+            for (const GroupSample &gs : groups) {
+                totalN += gs.vals.size();
+                wSum += static_cast<double>(gs.vals.size()) * gs.mean;
+            }
+            const double grandMean = wSum / static_cast<double>(totalN);
+            double ssBetween = 0.0, ssWithin = 0.0;
+            for (const GroupSample &gs : groups) {
+                const double d = gs.mean - grandMean;
+                ssBetween += static_cast<double>(gs.vals.size()) * d * d;
+                ssWithin += static_cast<double>(gs.vals.size() - 1) * gs.var;
+            }
+            const double df1 = static_cast<double>(K - 1);
+            const double df2 = static_cast<double>(totalN - static_cast<size_t>(K));
+            const double msBetween = ssBetween / df1;
+            const double msWithin = (df2 > 0.0) ? (ssWithin / df2) : 0.0;
+
+            if (K == 2) {
+                const double n0 = static_cast<double>(groups[0].vals.size());
+                const double n1 = static_cast<double>(groups[1].vals.size());
+                const double v0 = groups[0].var / n0;
+                const double v1 = groups[1].var / n1;
+                const double vSum = v0 + v1;
+                double tStat = 0.0, pWelch = 1.0;
+                if (vSum > 1e-30) {
+                    tStat = (groups[0].mean - groups[1].mean) / std::sqrt(vSum);
+                    const double den = (v0 * v0) / (n0 - 1.0) + (v1 * v1) / (n1 - 1.0);
+                    const double dfW = (den > 1e-30) ? ((vSum * vSum) / den) : (n0 + n1 - 2.0);
+                    pWelch = std::clamp(2.0 * gsl_cdf_tdist_Q(std::fabs(tStat), dfW), 0.0, 1.0);
+                } else if (std::fabs(groups[0].mean - groups[1].mean) > 1e-30) {
+                    tStat = (groups[0].mean > groups[1].mean) ? 1e6 : -1e6;
+                    pWelch = 0.0;
+                }
+                res.valid = true;
+                res.chosenTestName = QStringLiteral("Welch t-Test (Auto Parametric)");
+                res.statistic = tStat;
+                res.pValue = pWelch;
+                if (app) {
+                    res.reportTable = runGroupComparisonAndAnnotate(
+                            app, srcTable, QStringList() << groups[0].name << groups[1].name,
+                            annotateGraph);
+                } else if (annotateGraph) {
+                    annotateBracketsOnGraph(annotateGraph, 2, yMinAll, yMaxAll,
+                                            { std::make_tuple(0, 1, pWelch) });
+                }
+                return res;
+            } else {
+                double fStat = 0.0, pAnova = 1.0;
+                if (msWithin > 1e-30) {
+                    fStat = msBetween / msWithin;
+                    pAnova = (fStat > 0.0 && df2 > 0.0) ? gsl_cdf_fdist_Q(fStat, df1, df2) : 1.0;
+                } else if (ssBetween > 1e-30) {
+                    fStat = 1e12;
+                    pAnova = 0.0;
+                }
+                res.valid = true;
+                res.chosenTestName = QStringLiteral("One-Way ANOVA + Tukey (Auto Parametric)");
+                res.statistic = fStat;
+                res.pValue = pAnova;
+                QStringList validNames;
+                for (const GroupSample &gs : groups)
+                    validNames << gs.name;
+                if (app)
+                    res.reportTable = runGroupComparisonAndAnnotate(app, srcTable, validNames,
+                                                                    annotateGraph);
+                return res;
+            }
+        }
+
+        effMethod = (K == 2) ? TestMannWhitneyU : TestKruskalWallisDunn;
+    }
+
+    if (effMethod == TestMannWhitneyU) {
+        const GroupSample &g0 = groups[0];
+        const GroupSample &g1 = groups[1];
+        const size_t n0 = g0.vals.size();
+        const size_t n1 = g1.vals.size();
+        std::vector<double> pooled;
+        pooled.reserve(n0 + n1);
+        pooled.insert(pooled.end(), g0.vals.begin(), g0.vals.end());
+        pooled.insert(pooled.end(), g1.vals.begin(), g1.vals.end());
+
+        std::vector<double> ranks;
+        double tieSum = 0.0;
+        computeMidRanksWithTies(pooled, ranks, tieSum);
+
+        double r0 = 0.0;
+        for (size_t i = 0; i < n0; ++i)
+            r0 += ranks[i];
+        const double dn0 = static_cast<double>(n0);
+        const double dn1 = static_cast<double>(n1);
+        const double dN = dn0 + dn1;
+        const double u0 = r0 - 0.5 * dn0 * (dn0 + 1.0);
+        const double u1 = dn0 * dn1 - u0;
+        const double uStat = std::min(u0, u1);
+        const double muU = 0.5 * dn0 * dn1;
+        const double varU = (dn0 * dn1 / 12.0)
+                * ((dN + 1.0) - tieSum / std::max(1.0, dN * (dN - 1.0)));
+        double pVal = 1.0;
+        if (varU > 1e-30) {
+            const double z = std::max(0.0, std::fabs(u0 - muU) - 0.5) / std::sqrt(varU);
+            pVal = std::clamp(2.0 * gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
+        }
+
+        res.valid = true;
+        res.chosenTestName = QStringLiteral("Mann-Whitney U");
+        res.statistic = uStat;
+        res.pValue = pVal;
+
+        if (app) {
+            const QString tblName = app->generateUniqueName(
+                    srcTable->name() + QStringLiteral("_MannWhitney"), false);
+            Table *rep = app->newTable(1, 5, tblName,
+                                       QObject::tr("Nonparametric Comparison Summary"));
+            if (rep) {
+                rep->setHeader(QStringList() << QStringLiteral("Comparison")
+                                             << QStringLiteral("Test")
+                                             << QStringLiteral("Statistic")
+                                             << QStringLiteral("p_value")
+                                             << QStringLiteral("Significance"));
+                rep->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                rep->column(3)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                rep->column(4)->setColumnMode(SciDAVis::ColumnMode::Text);
+                rep->column(0)->setTextAt(0, QStringLiteral("%1 vs %2").arg(g0.name, g1.name));
+                rep->column(1)->setTextAt(0, res.chosenTestName);
+                rep->column(2)->setValueAt(0, uStat);
+                rep->column(3)->setValueAt(0, pVal);
+                rep->column(4)->setTextAt(0, starRatingForP(pVal));
+                res.reportTable = rep;
+            }
+        }
+        if (annotateGraph) {
+            annotateBracketsOnGraph(
+                    annotateGraph, 2, std::min(g0.minV, g1.minV), std::max(g0.maxV, g1.maxV),
+                    { std::make_tuple(0, 1, pVal) });
+        }
+        return res;
+    }
+
+    // Kruskal-Wallis H + Holm-adjusted Dunn post-hoc
+    std::vector<double> pooled;
+    std::vector<int> grpOf;
+    for (int k = 0; k < K; ++k) {
+        for (double v : groups[static_cast<size_t>(k)].vals) {
+            pooled.push_back(v);
+            grpOf.push_back(k);
+        }
+    }
+    const size_t N = pooled.size();
+    if (N < 3)
+        return res;
+
+    std::vector<double> ranks;
+    double tieSum = 0.0;
+    computeMidRanksWithTies(pooled, ranks, tieSum);
+
+    std::vector<double> rankSums(static_cast<size_t>(K), 0.0);
+    for (size_t i = 0; i < N; ++i)
+        rankSums[static_cast<size_t>(grpOf[i])] += ranks[i];
+
+    const double dN = static_cast<double>(N);
+    double sumRkSqOverNk = 0.0;
+    for (int k = 0; k < K; ++k) {
+        const double nk = static_cast<double>(groups[static_cast<size_t>(k)].vals.size());
+        const double rk = rankSums[static_cast<size_t>(k)];
+        sumRkSqOverNk += (rk * rk) / nk;
+    }
+    const double hRaw = (12.0 / (dN * (dN + 1.0))) * sumRkSqOverNk - 3.0 * (dN + 1.0);
+    const double tieFactor = 1.0 - tieSum / std::max(1.0, dN * dN * dN - dN);
+    const double hStat = std::max(0.0, (tieFactor > 1e-12) ? (hRaw / tieFactor) : hRaw);
+    const double pKw = std::clamp(gsl_cdf_chisq_Q(hStat, static_cast<double>(K - 1)), 0.0, 1.0);
+
+    struct DunnPair {
+        int i = 0;
+        int j = 1;
+        QString label;
+        double zStat = 0.0;
+        double pRaw = 1.0;
+        double pAdj = 1.0;
+    };
+    std::vector<DunnPair> pairs;
+    const double dunnVarBase =
+            std::max(1e-12, (dN * (dN + 1.0)) / 12.0 - tieSum / (12.0 * std::max(1.0, dN - 1.0)));
+
+    for (int i = 0; i < K; ++i) {
+        for (int j = i + 1; j < K; ++j) {
+            const double ni = static_cast<double>(groups[static_cast<size_t>(i)].vals.size());
+            const double nj = static_cast<double>(groups[static_cast<size_t>(j)].vals.size());
+            const double meanRi = rankSums[static_cast<size_t>(i)] / ni;
+            const double meanRj = rankSums[static_cast<size_t>(j)] / nj;
+            const double se = std::sqrt(dunnVarBase * (1.0 / ni + 1.0 / nj));
+            const double z = (se > 1e-30) ? (std::fabs(meanRi - meanRj) / se) : 0.0;
+            const double pr = std::clamp(2.0 * gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
+            pairs.push_back({ i, j,
+                              QStringLiteral("%1 vs %2")
+                                      .arg(groups[static_cast<size_t>(i)].name,
+                                           groups[static_cast<size_t>(j)].name),
+                              z, pr, pr });
+        }
+    }
+
+    // Holm step-down adjustment
+    const size_t M = pairs.size();
+    if (M > 1) {
+        std::vector<size_t> order(M);
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](size_t a, size_t b) { return pairs[a].pRaw < pairs[b].pRaw; });
+        double runningMax = 0.0;
+        for (size_t r = 0; r < M; ++r) {
+            const size_t idx = order[r];
+            const double adj = std::min(1.0, pairs[idx].pRaw * static_cast<double>(M - r));
+            runningMax = std::max(runningMax, adj);
+            pairs[idx].pAdj = runningMax;
+        }
+    }
+
+    res.valid = true;
+    res.chosenTestName = QStringLiteral("Kruskal-Wallis H + Dunn");
+    res.statistic = hStat;
+    res.pValue = pKw;
+
+    if (app) {
+        const int nRep = 1 + static_cast<int>(pairs.size());
+        const QString tblName = app->generateUniqueName(
+                srcTable->name() + QStringLiteral("_KruskalDunn"), false);
+        Table *rep = app->newTable(nRep, 6, tblName,
+                                   QObject::tr("Nonparametric Comparison Summary"));
+        if (rep) {
+            rep->setHeader(QStringList() << QStringLiteral("Comparison") << QStringLiteral("Test")
+                                         << QStringLiteral("Statistic") << QStringLiteral("p_raw")
+                                         << QStringLiteral("p_adj")
+                                         << QStringLiteral("Significance"));
+            rep->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+            rep->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+            rep->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            rep->column(3)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            rep->column(4)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            rep->column(5)->setColumnMode(SciDAVis::ColumnMode::Text);
+
+            rep->column(0)->setTextAt(0, QStringLiteral("Omnibus (%1 Groups)").arg(K));
+            rep->column(1)->setTextAt(0, QStringLiteral("Kruskal-Wallis H"));
+            rep->column(2)->setValueAt(0, hStat);
+            rep->column(3)->setValueAt(0, pKw);
+            rep->column(4)->setValueAt(0, pKw);
+            rep->column(5)->setTextAt(0, starRatingForP(pKw));
+
+            for (size_t m = 0; m < M; ++m) {
+                const int r = static_cast<int>(m) + 1;
+                rep->column(0)->setTextAt(r, pairs[m].label);
+                rep->column(1)->setTextAt(r, QStringLiteral("Dunn (Holm)"));
+                rep->column(2)->setValueAt(r, pairs[m].zStat);
+                rep->column(3)->setValueAt(r, pairs[m].pRaw);
+                rep->column(4)->setValueAt(r, pairs[m].pAdj);
+                rep->column(5)->setTextAt(r, starRatingForP(pairs[m].pAdj));
+            }
+            res.reportTable = rep;
+        }
+    }
+
+    if (annotateGraph && !pairs.empty()) {
+        std::vector<std::tuple<int, int, double>> sigToDraw;
+        if (K == 2) {
+            sigToDraw.emplace_back(pairs[0].i, pairs[0].j, pairs[0].pAdj);
+        } else {
+            for (const DunnPair &dp : pairs) {
+                if (dp.pAdj < 0.05)
+                    sigToDraw.emplace_back(dp.i, dp.j, dp.pAdj);
+            }
+            if (sigToDraw.empty())
+                sigToDraw.emplace_back(pairs[0].i, pairs[0].j, pairs[0].pAdj);
+        }
+        annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw);
+    }
+
+    return res;
+}
+
+namespace {
+
+class CorrelationRasterData : public QwtRasterData
+{
+public:
+    CorrelationRasterData(int p, const std::vector<double> &vals)
+        : QwtRasterData(QwtDoubleRect(0.5, 0.5, static_cast<double>(p), static_cast<double>(p))),
+          d_p(p),
+          d_vals(vals)
+    {
+    }
+
+    QwtRasterData *copy() const override { return new CorrelationRasterData(*this); }
+
+    QwtDoubleInterval range() const override { return QwtDoubleInterval(-1.0, 1.0); }
+
+    QSize rasterHint(const QwtDoubleRect &) const override
+    {
+        return QSize(std::max(1, d_p), std::max(1, d_p));
+    }
+
+    double value(double x, double y) const override
+    {
+        if (d_p <= 0 || static_cast<int>(d_vals.size()) < d_p * d_p)
+            return 0.0;
+        const int col = std::clamp(static_cast<int>(std::floor(x - 0.5)), 0, d_p - 1);
+        const int rowFromBottom = std::clamp(static_cast<int>(std::floor(y - 0.5)), 0, d_p - 1);
+        const int row = d_p - 1 - rowFromBottom;
+        return d_vals[static_cast<size_t>(row * d_p + col)];
+    }
+
+private:
+    int d_p = 0;
+    std::vector<double> d_vals;
+};
+
+class DendrogramCurve : public DataCurve
+{
+public:
+    DendrogramCurve(Table *t, const QString &xColName, const QString &yColName, int startRow,
+                    int endRow)
+        : DataCurve(t, xColName, yColName, startRow, endRow)
+    {
+        setType(Graph::Line);
+        setStyle(QwtPlotCurve::Lines);
+        setPen(QPen(QColor(25, 65, 130), 1.8, Qt::SolidLine));
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    using DataCurve::draw;
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,
+              int to) const override
+    {
+        if (!painter || dataSize() < 4)
+            return;
+        if (to < 0)
+            to = dataSize() - 1;
+        from = std::max(0, (from / 4) * 4);
+        to = std::min(dataSize() - 1, to);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(pen());
+        for (int i = from; i + 3 <= to; i += 4) {
+            const QPointF p0(xMap.transform(x(i)), yMap.transform(y(i)));
+            const QPointF p1(xMap.transform(x(i + 1)), yMap.transform(y(i + 1)));
+            const QPointF p2(xMap.transform(x(i + 2)), yMap.transform(y(i + 2)));
+            const QPointF p3(xMap.transform(x(i + 3)), yMap.transform(y(i + 3)));
+            painter->drawLine(p0, p1);
+            painter->drawLine(p1, p2);
+            painter->drawLine(p2, p3);
+        }
+        painter->restore();
+    }
+};
+
+struct SplitMix64Rng {
+    uint64_t state = 0x9E3779B97F4A7C15ULL;
+    explicit SplitMix64Rng(uint64_t seed = 0x9E3779B97F4A7C15ULL) : state(seed) {}
+    uint64_t nextU64()
+    {
+        uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+    double nextUnit()
+    {
+        return static_cast<double>(nextU64() >> 11) * (1.0 / 9007199254740992.0);
+    }
+};
+
+} // namespace
+
+MultiLayer *GraphStatsAndSurfaceFit::plotPairedComparison(
+        ApplicationWindow *app, Table *srcTable, const QString &beforeCol, const QString &afterCol,
+        bool useWilcoxon, double *pValueOut)
+{
+    registerPhase5StatsTranslationsOnce();
+    if (pValueOut)
+        *pValueOut = 1.0;
+    if (!srcTable)
+        return nullptr;
+
+    Column *cBefore = resolveTableColumn(srcTable, beforeCol);
+    Column *cAfter = resolveTableColumn(srcTable, afterCol);
+    if (!cBefore || !cAfter)
+        return nullptr;
+
+    std::vector<double> bef, aft, diffs;
+    const int nRows = std::min(cBefore->rowCount(), cAfter->rowCount());
+    for (int r = 0; r < nRows; ++r) {
+        if (cBefore->isInvalid(r) || cAfter->isInvalid(r)
+            || cBefore->isMasked(r) || cAfter->isMasked(r))
+            continue;
+        const double vb = cBefore->valueAt(r);
+        const double va = cAfter->valueAt(r);
+        if (std::isfinite(vb) && std::isfinite(va)) {
+            bef.push_back(vb);
+            aft.push_back(va);
+            diffs.push_back(va - vb);
+        }
+    }
+
+    const int m = static_cast<int>(diffs.size());
+    if (m < 2)
+        return nullptr;
+
+    double pVal = 1.0;
+    double testStat = 0.0;
+    if (useWilcoxon) {
+        evalWilcoxonSignedRank(diffs, testStat, pVal);
+    } else {
+        const double meanD = std::accumulate(diffs.begin(), diffs.end(), 0.0) / static_cast<double>(m);
+        double ssD = 0.0;
+        for (double d : diffs)
+            ssD += (d - meanD) * (d - meanD);
+        const double sdD = std::sqrt(ssD / static_cast<double>(m - 1));
+        const double seD = sdD / std::sqrt(static_cast<double>(m));
+        if (seD > 1e-30) {
+            testStat = meanD / seD;
+            pVal = std::clamp(2.0 * gsl_cdf_tdist_Q(std::fabs(testStat), static_cast<double>(m - 1)),
+                              0.0, 1.0);
+        } else if (std::fabs(meanD) > 1e-30) {
+            testStat = (meanD > 0.0) ? 1e6 : -1e6;
+            pVal = 0.0;
+        }
+    }
+    if (pValueOut)
+        *pValueOut = pVal;
+    if (!app)
+        return nullptr;
+
+    const double meanB = std::accumulate(bef.begin(), bef.end(), 0.0) / static_cast<double>(m);
+    const double meanA = std::accumulate(aft.begin(), aft.end(), 0.0) / static_cast<double>(m);
+    double ssB = 0.0, ssA = 0.0;
+    double yMin = std::min(bef.front(), aft.front());
+    double yMax = std::max(bef.front(), aft.front());
+    for (int i = 0; i < m; ++i) {
+        ssB += (bef[static_cast<size_t>(i)] - meanB) * (bef[static_cast<size_t>(i)] - meanB);
+        ssA += (aft[static_cast<size_t>(i)] - meanA) * (aft[static_cast<size_t>(i)] - meanA);
+        yMin = std::min({ yMin, bef[static_cast<size_t>(i)], aft[static_cast<size_t>(i)] });
+        yMax = std::max({ yMax, bef[static_cast<size_t>(i)], aft[static_cast<size_t>(i)] });
+    }
+    const double seB = std::sqrt(ssB / (static_cast<double>(m) * static_cast<double>(m - 1)));
+    const double seA = std::sqrt(ssA / (static_cast<double>(m) * static_cast<double>(m - 1)));
+
+    const QString tblName = app->generateUniqueName(
+            srcTable->name() + QStringLiteral("_PairedData"), false);
+    Table *tbl = app->newTable(std::max(m, 2), 8, tblName,
+                               QObject::tr("Paired Comparison Plot (Before-After)"));
+    if (!tbl)
+        return nullptr;
+
+    tbl->setHeader(QStringList() << QStringLiteral("X_Before") << QStringLiteral("Before")
+                                 << QStringLiteral("X_After") << QStringLiteral("After")
+                                 << QStringLiteral("SummaryX") << QStringLiteral("MeanY")
+                                 << QStringLiteral("SE") << QStringLiteral("GroupLabel"));
+    for (int c = 0; c < 7; ++c)
+        tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    tbl->column(7)->setColumnMode(SciDAVis::ColumnMode::Text);
+    tbl->column(0)->setPlotDesignation(SciDAVis::X);
+    tbl->column(1)->setPlotDesignation(SciDAVis::Y);
+    tbl->column(2)->setPlotDesignation(SciDAVis::X);
+    tbl->column(3)->setPlotDesignation(SciDAVis::Y);
+    tbl->column(4)->setPlotDesignation(SciDAVis::X);
+    tbl->column(5)->setPlotDesignation(SciDAVis::Y);
+    tbl->column(6)->setPlotDesignation(SciDAVis::yErr);
+
+    for (int i = 0; i < m; ++i) {
+        tbl->column(0)->setValueAt(i, 1.0);
+        tbl->column(1)->setValueAt(i, bef[static_cast<size_t>(i)]);
+        tbl->column(2)->setValueAt(i, 2.0);
+        tbl->column(3)->setValueAt(i, aft[static_cast<size_t>(i)]);
+    }
+    tbl->column(4)->setValueAt(0, 0.86);
+    tbl->column(5)->setValueAt(0, meanB);
+    tbl->column(6)->setValueAt(0, seB);
+    tbl->column(7)->setTextAt(0, cBefore->name());
+
+    tbl->column(4)->setValueAt(1, 2.14);
+    tbl->column(5)->setValueAt(1, meanA);
+    tbl->column(6)->setValueAt(1, seA);
+    tbl->column(7)->setTextAt(1, cAfter->name());
+
+    MultiLayer *ml = app->newGraph(
+            app->generateUniqueName(QStringLiteral("PairedPlot_") + srcTable->name(), false));
+    if (!ml)
+        return nullptr;
+
+    if (Graph *g = ml->activeGraph()) {
+        for (int i = 0; i < m; ++i) {
+            addLineSegmentOnGraph(g, 1.0, bef[static_cast<size_t>(i)], 2.0,
+                                  aft[static_cast<size_t>(i)], QColor(125, 140, 165, 165), 1);
+        }
+        if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::Scatter, 0, m - 1)) {
+            const int idx = g->curves() - 1;
+            g->setCurveSymbol(idx,
+                              QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 100, 190)),
+                                        QPen(QColor(15, 50, 110), 1), QSize(7, 7)));
+        }
+        if (g->insertCurve(tbl, tbl->colName(2), tbl->colName(3), Graph::Scatter, 0, m - 1)) {
+            const int idx = g->curves() - 1;
+            g->setCurveSymbol(idx,
+                              QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(210, 50, 50)),
+                                        QPen(QColor(125, 20, 20), 1), QSize(7, 7)));
+        }
+        if (g->insertCurve(tbl, tbl->colName(4), tbl->colName(5), Graph::LineSymbols, 0, 1)) {
+            const int idx = g->curves() - 1;
+            g->setCurvePen(idx, QPen(QColor(20, 25, 35), 2.2, Qt::SolidLine));
+            g->setCurveSymbol(idx,
+                              QwtSymbol(QwtSymbol::Diamond, QBrush(QColor(20, 25, 35)),
+                                        QPen(QColor(20, 25, 35), 1), QSize(10, 10)));
+            g->addErrorBars(tbl->colName(4), tbl->colName(5), tbl, tbl->colName(6), 1, 2, 7,
+                            QColor(20, 25, 35), true, true, true);
+        }
+
+        const double ySpan = std::max(1e-6, yMax - yMin);
+        const double yBar = yMax + 0.12 * ySpan;
+        const double tickH = 0.035 * ySpan;
+        addLineSegmentOnGraph(g, 1.0, yBar - tickH, 1.0, yBar, QColor(25, 25, 25), 2);
+        addLineSegmentOnGraph(g, 1.0, yBar, 2.0, yBar, QColor(25, 25, 25), 2);
+        addLineSegmentOnGraph(g, 2.0, yBar, 2.0, yBar - tickH, QColor(25, 25, 25), 2);
+        const QString bracketTxt = QStringLiteral("%1 (%2, p = %3)")
+                .arg(starRatingForP(pVal))
+                .arg(useWilcoxon ? QStringLiteral("Wilcoxon") : QStringLiteral("Paired t"))
+                .arg(pVal, 0, 'g', 4);
+        addTextLabelOnGraph(g, 1.5, yBar + 0.06 * ySpan, bracketTxt, QColor(25, 25, 25), true, 0);
+
+        g->setLabelsTextFormat(Graph::Bottom, tbl->column(7), 0, 1);
+        g->setScale(QwtPlot::xBottom, 0.55, 2.45, 1.0);
+        g->setScale(QwtPlot::yLeft, yMin - 0.12 * ySpan, yMax + 0.28 * ySpan);
+        g->setXAxisTitle(QString());
+        g->setYAxisTitle(QObject::tr("Value"));
+        g->setTitle(QObject::tr("Paired Comparison Plot (Before-After)"));
+        if (g->legend())
+            g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
+        g->replot();
+    }
+    return ml;
+}
+
+MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
+        ApplicationWindow *app, Table *srcTable, const QStringList &colNames, bool spearmanRank,
+        Matrix **corrMatrixOut)
+{
+    registerPhase5StatsTranslationsOnce();
+    if (corrMatrixOut)
+        *corrMatrixOut = nullptr;
+    if (!app || !srcTable)
+        return nullptr;
+
+    std::vector<Column *> cols;
+    QStringList namesToUse = colNames;
+    if (namesToUse.isEmpty()) {
+        for (int c = 0; c < srcTable->numCols(); ++c) {
+            if (srcTable->column(c)
+                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                namesToUse << srcTable->column(c)->name();
+        }
+    }
+    for (const QString &cn : namesToUse) {
+        if (Column *c = resolveTableColumn(srcTable, cn))
+            cols.push_back(c);
+    }
+    const int P = static_cast<int>(cols.size());
+    if (P < 2)
+        return nullptr;
+
+    std::vector<double> rMat(static_cast<size_t>(P * P), 0.0);
+    std::vector<double> pMat(static_cast<size_t>(P * P), 1.0);
+    for (int d = 0; d < P; ++d) {
+        rMat[static_cast<size_t>(d * P + d)] = 1.0;
+        pMat[static_cast<size_t>(d * P + d)] = 0.0;
+    }
+
+    for (int i = 0; i < P; ++i) {
+        for (int j = i + 1; j < P; ++j) {
+            Column *ci = cols[static_cast<size_t>(i)];
+            Column *cj = cols[static_cast<size_t>(j)];
+            const int nRows = std::min(ci->rowCount(), cj->rowCount());
+            std::vector<double> xi, xj;
+            for (int r = 0; r < nRows; ++r) {
+                if (ci->isInvalid(r) || cj->isInvalid(r) || ci->isMasked(r) || cj->isMasked(r))
+                    continue;
+                const double vi = ci->valueAt(r);
+                const double vj = cj->valueAt(r);
+                if (std::isfinite(vi) && std::isfinite(vj)) {
+                    xi.push_back(vi);
+                    xj.push_back(vj);
+                }
+            }
+
+            double rVal = 0.0;
+            double pVal = 1.0;
+            if (xi.size() >= 2) {
+                if (spearmanRank) {
+                    std::vector<double> ri, rj;
+                    double t1 = 0.0, t2 = 0.0;
+                    computeMidRanksWithTies(xi, ri, t1);
+                    computeMidRanksWithTies(xj, rj, t2);
+                    xi.swap(ri);
+                    xj.swap(rj);
+                }
+                const double m = static_cast<double>(xi.size());
+                const double mi = std::accumulate(xi.begin(), xi.end(), 0.0) / m;
+                const double mj = std::accumulate(xj.begin(), xj.end(), 0.0) / m;
+                double sii = 0.0, sjj = 0.0, sij = 0.0;
+                for (size_t k = 0; k < xi.size(); ++k) {
+                    const double di = xi[k] - mi;
+                    const double dj = xj[k] - mj;
+                    sii += di * di;
+                    sjj += dj * dj;
+                    sij += di * dj;
+                }
+                if (sii > 1e-30 && sjj > 1e-30) {
+                    rVal = std::clamp(sij / std::sqrt(sii * sjj), -1.0, 1.0);
+                    if (xi.size() > 2) {
+                        const double oneMinusR2 = std::max(0.0, 1.0 - rVal * rVal);
+                        if (oneMinusR2 <= 1e-15) {
+                            pVal = 0.0;
+                        } else {
+                            const double tStat = std::fabs(rVal)
+                                    * std::sqrt((m - 2.0) / oneMinusR2);
+                            pVal = std::clamp(2.0 * gsl_cdf_tdist_Q(tStat, m - 2.0), 0.0, 1.0);
+                        }
+                    }
+                }
+            }
+            rMat[static_cast<size_t>(i * P + j)] = rVal;
+            rMat[static_cast<size_t>(j * P + i)] = rVal;
+            pMat[static_cast<size_t>(i * P + j)] = pVal;
+            pMat[static_cast<size_t>(j * P + i)] = pVal;
+        }
+    }
+
+    const QString matName = app->generateUniqueName(
+            srcTable->name() + (spearmanRank ? QStringLiteral("_SpearmanCorr")
+                                             : QStringLiteral("_PearsonCorr")),
+            false);
+    Matrix *corrMat = app->newMatrix(matName, P, P);
+    if (!corrMat)
+        return nullptr;
+
+    corrMat->setCoordinates(0.5, static_cast<double>(P) + 0.5, 0.5, static_cast<double>(P) + 0.5);
+    for (int i = 0; i < P; ++i) {
+        for (int j = 0; j < P; ++j)
+            corrMat->setCell(i, j, rMat[static_cast<size_t>(i * P + j)]);
+    }
+    if (corrMatrixOut)
+        *corrMatrixOut = corrMat;
+
+    MultiLayer *ml = app->plotSpectrogram(corrMat, Graph::ColorMap);
+    if (!ml)
+        return nullptr;
+
+    if (Graph *g = ml->activeGraph()) {
+        if (g->plotWidget()) {
+            const QwtPlotItemList items = g->plotWidget()->itemList();
+            for (QwtPlotItem *it : items) {
+                if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                    sp->setData(CorrelationRasterData(P, rMat));
+                    QwtLinearColorMap cmap(QColor(33, 102, 172), QColor(178, 24, 43));
+                    cmap.addColorStop(0.5, QColor(247, 247, 247));
+                    sp->setCustomColorMap(cmap);
+                    sp->showColorScale(QwtPlot::yRight, true);
+                    break;
+                }
+            }
+        }
+
+        Column *colLblX = new Column(QStringLiteral("VarX"), SciDAVis::ColumnMode::Text);
+        Column *colLblY = new Column(QStringLiteral("VarY"), SciDAVis::ColumnMode::Text);
+        for (int k = 0; k < P; ++k) {
+            colLblX->setTextAt(k, cols[static_cast<size_t>(k)]->name());
+            colLblY->setTextAt(k, cols[static_cast<size_t>(P - 1 - k)]->name());
+        }
+        const QString hidName = app->generateUniqueName(QStringLiteral("CorrAxisLabels"));
+        Table *lblTbl = app->newHiddenTable(hidName, QStringLiteral("Correlation Labels"),
+                                            QList<Column *>() << colLblX << colLblY);
+        if (lblTbl) {
+            g->setLabelsTextFormat(Graph::Bottom, colLblX, 0, P - 1);
+            g->setLabelsTextFormat(Graph::Left, colLblY, 0, P - 1);
+        }
+
+        g->setScale(QwtPlot::xBottom, 0.5, static_cast<double>(P) + 0.5, 1.0);
+        g->setScale(QwtPlot::yLeft, 0.5, static_cast<double>(P) + 0.5, 1.0);
+        g->setXAxisTitle(QString());
+        g->setYAxisTitle(QString());
+        g->setTitle(spearmanRank ? QObject::tr("Correlation Matrix Heatmap (Spearman ρ)")
+                                 : QObject::tr("Correlation Matrix Heatmap (Pearson r)"));
+
+        for (int i = 0; i < P; ++i) {
+            for (int j = 0; j < P; ++j) {
+                const double rv = rMat[static_cast<size_t>(i * P + j)];
+                const double pv = pMat[static_cast<size_t>(i * P + j)];
+                QString cellTxt = QString::number(rv, 'f', 2);
+                if (i != j && pv < 0.05)
+                    cellTxt += QStringLiteral("\n") + starRatingForP(pv);
+                const QColor txtCol = (std::fabs(rv) > 0.62) ? QColor(255, 255, 255)
+                                                             : QColor(20, 25, 35);
+                addTextLabelOnGraph(g, static_cast<double>(j) + 1.0,
+                                    static_cast<double>(P - i), cellTxt, txtCol, true,
+                                    (P > 6) ? -2 : -1);
+            }
+        }
+        applyArialGraphFonts(g);
+        g->replot();
+    }
+    return ml;
+}
+
+GraphStatsAndSurfaceFit::KMeansResult GraphStatsAndSurfaceFit::runKMeansClustering(
+        ApplicationWindow *app, Table *srcTable, const QStringList &colNames, int k,
+        bool plotClusters)
+{
+    registerPhase5StatsTranslationsOnce();
+    KMeansResult res;
+    if (!srcTable)
+        return res;
+
+    std::vector<Column *> cols;
+    QStringList namesToUse = colNames;
+    if (namesToUse.isEmpty()) {
+        for (int c = 0; c < srcTable->numCols(); ++c) {
+            if (srcTable->column(c)
+                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                namesToUse << srcTable->column(c)->name();
+        }
+    }
+    for (const QString &cn : namesToUse) {
+        if (Column *c = resolveTableColumn(srcTable, cn))
+            cols.push_back(c);
+    }
+    const int D = static_cast<int>(cols.size());
+    if (D < 1)
+        return res;
+
+    int maxRows = cols[0]->rowCount();
+    for (Column *c : cols)
+        maxRows = std::min(maxRows, c->rowCount());
+
+    std::vector<int> validRows;
+    std::vector<std::vector<double>> rawX;
+    for (int r = 0; r < maxRows; ++r) {
+        bool okRow = true;
+        std::vector<double> pt(static_cast<size_t>(D), 0.0);
+        for (int d = 0; d < D; ++d) {
+            Column *cd = cols[static_cast<size_t>(d)];
+            if (cd->isInvalid(r) || cd->isMasked(r)) {
+                okRow = false;
+                break;
+            }
+            const double v = cd->valueAt(r);
+            if (!std::isfinite(v)) {
+                okRow = false;
+                break;
+            }
+            pt[static_cast<size_t>(d)] = v;
+        }
+        if (okRow) {
+            validRows.push_back(r);
+            rawX.push_back(std::move(pt));
+        }
+    }
+
+    const int N = static_cast<int>(rawX.size());
+    if (N < 3)
+        return res;
+
+    const int K = std::clamp(k, 2, N - 1);
+    res.k = K;
+
+    // Standardize features
+    std::vector<double> featMean(static_cast<size_t>(D), 0.0);
+    std::vector<double> featSd(static_cast<size_t>(D), 1.0);
+    for (int d = 0; d < D; ++d) {
+        double s = 0.0;
+        for (int i = 0; i < N; ++i)
+            s += rawX[static_cast<size_t>(i)][static_cast<size_t>(d)];
+        featMean[static_cast<size_t>(d)] = s / static_cast<double>(N);
+        double ss = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const double dev =
+                    rawX[static_cast<size_t>(i)][static_cast<size_t>(d)] - featMean[static_cast<size_t>(d)];
+            ss += dev * dev;
+        }
+        const double sd = std::sqrt(ss / static_cast<double>(N - 1));
+        featSd[static_cast<size_t>(d)] = (sd > 1e-15) ? sd : 1.0;
+    }
+
+    std::vector<std::vector<double>> Z(static_cast<size_t>(N),
+                                       std::vector<double>(static_cast<size_t>(D), 0.0));
+    for (int i = 0; i < N; ++i) {
+        for (int d = 0; d < D; ++d) {
+            Z[static_cast<size_t>(i)][static_cast<size_t>(d)] =
+                    (rawX[static_cast<size_t>(i)][static_cast<size_t>(d)]
+                     - featMean[static_cast<size_t>(d)])
+                    / featSd[static_cast<size_t>(d)];
+        }
+    }
+
+    auto distSq = [&](const std::vector<double> &a, const std::vector<double> &b) {
+        double acc = 0.0;
+        for (int d = 0; d < D; ++d) {
+            const double diff = a[static_cast<size_t>(d)] - b[static_cast<size_t>(d)];
+            acc += diff * diff;
+        }
+        return acc;
+    };
+
+    // Deterministic multi-start K-Means++
+    SplitMix64Rng rng(0x9E3779B97F4A7C15ULL);
+    double bestWcss = std::numeric_limits<double>::max();
+    std::vector<int> bestAssign(static_cast<size_t>(N), 0);
+    std::vector<std::vector<double>> bestCenters(
+            static_cast<size_t>(K), std::vector<double>(static_cast<size_t>(D), 0.0));
+
+    constexpr int kRestarts = 12;
+    for (int restart = 0; restart < kRestarts; ++restart) {
+        std::vector<std::vector<double>> centers(
+                static_cast<size_t>(K), std::vector<double>(static_cast<size_t>(D), 0.0));
+        const int firstIdx = static_cast<int>(rng.nextU64() % static_cast<uint64_t>(N));
+        centers[0] = Z[static_cast<size_t>(firstIdx)];
+
+        std::vector<double> minD2(static_cast<size_t>(N), std::numeric_limits<double>::max());
+        for (int c = 1; c < K; ++c) {
+            double sumD2 = 0.0;
+            for (int i = 0; i < N; ++i) {
+                minD2[static_cast<size_t>(i)] =
+                        std::min(minD2[static_cast<size_t>(i)],
+                                 distSq(Z[static_cast<size_t>(i)], centers[static_cast<size_t>(c - 1)]));
+                sumD2 += minD2[static_cast<size_t>(i)];
+            }
+            int chosen = 0;
+            if (sumD2 > 1e-30) {
+                const double target = rng.nextUnit() * sumD2;
+                double cum = 0.0;
+                chosen = N - 1;
+                for (int i = 0; i < N; ++i) {
+                    cum += minD2[static_cast<size_t>(i)];
+                    if (cum >= target) {
+                        chosen = i;
+                        break;
+                    }
+                }
+            } else {
+                chosen = c % N;
+            }
+            centers[static_cast<size_t>(c)] = Z[static_cast<size_t>(chosen)];
+        }
+
+        std::vector<int> assign(static_cast<size_t>(N), -1);
+        for (int iter = 0; iter < 200; ++iter) {
+            bool changed = false;
+            for (int i = 0; i < N; ++i) {
+                int bestC = 0;
+                double bestD = distSq(Z[static_cast<size_t>(i)], centers[0]);
+                for (int c = 1; c < K; ++c) {
+                    const double d2 = distSq(Z[static_cast<size_t>(i)], centers[static_cast<size_t>(c)]);
+                    if (d2 < bestD) {
+                        bestD = d2;
+                        bestC = c;
+                    }
+                }
+                if (assign[static_cast<size_t>(i)] != bestC) {
+                    assign[static_cast<size_t>(i)] = bestC;
+                    changed = true;
+                }
+            }
+            if (!changed && iter > 0)
+                break;
+
+            std::vector<std::vector<double>> newCenters(
+                    static_cast<size_t>(K), std::vector<double>(static_cast<size_t>(D), 0.0));
+            std::vector<int> counts(static_cast<size_t>(K), 0);
+            for (int i = 0; i < N; ++i) {
+                const int c = assign[static_cast<size_t>(i)];
+                counts[static_cast<size_t>(c)]++;
+                for (int d = 0; d < D; ++d)
+                    newCenters[static_cast<size_t>(c)][static_cast<size_t>(d)] +=
+                            Z[static_cast<size_t>(i)][static_cast<size_t>(d)];
+            }
+            for (int c = 0; c < K; ++c) {
+                if (counts[static_cast<size_t>(c)] > 0) {
+                    for (int d = 0; d < D; ++d)
+                        newCenters[static_cast<size_t>(c)][static_cast<size_t>(d)] /=
+                                static_cast<double>(counts[static_cast<size_t>(c)]);
+                } else {
+                    // Rescue empty cluster with furthest sample
+                    int farIdx = 0;
+                    double farD = -1.0;
+                    for (int i = 0; i < N; ++i) {
+                        const double d2 = distSq(
+                                Z[static_cast<size_t>(i)],
+                                centers[static_cast<size_t>(assign[static_cast<size_t>(i)])]);
+                        if (d2 > farD) {
+                            farD = d2;
+                            farIdx = i;
+                        }
+                    }
+                    newCenters[static_cast<size_t>(c)] = Z[static_cast<size_t>(farIdx)];
+                }
+            }
+            centers.swap(newCenters);
+        }
+
+        double wcss = 0.0;
+        for (int i = 0; i < N; ++i)
+            wcss += distSq(Z[static_cast<size_t>(i)],
+                           centers[static_cast<size_t>(assign[static_cast<size_t>(i)])]);
+        if (wcss < bestWcss) {
+            bestWcss = wcss;
+            bestAssign = assign;
+            bestCenters = centers;
+        }
+    }
+
+    // Canonicalize cluster labels by first coordinate of centroid
+    std::vector<int> clusterOrder(static_cast<size_t>(K));
+    std::iota(clusterOrder.begin(), clusterOrder.end(), 0);
+    std::sort(clusterOrder.begin(), clusterOrder.end(),
+              [&](int a, int b) { return bestCenters[static_cast<size_t>(a)][0] < bestCenters[static_cast<size_t>(b)][0]; });
+    std::vector<int> remap(static_cast<size_t>(K), 0);
+    std::vector<std::vector<double>> orderedCenters(static_cast<size_t>(K));
+    for (int newId = 0; newId < K; ++newId) {
+        const int oldId = clusterOrder[static_cast<size_t>(newId)];
+        remap[static_cast<size_t>(oldId)] = newId;
+        orderedCenters[static_cast<size_t>(newId)] = bestCenters[static_cast<size_t>(oldId)];
+    }
+    for (int &cid : bestAssign)
+        cid = remap[static_cast<size_t>(cid)];
+
+    // Exact Silhouette score on standardized Euclidean distances
+    std::vector<double> silPoint(static_cast<size_t>(N), 0.0);
+    std::vector<int> cSizes(static_cast<size_t>(K), 0);
+    for (int cid : bestAssign)
+        cSizes[static_cast<size_t>(cid)]++;
+
+    for (int i = 0; i < N; ++i) {
+        const int ci = bestAssign[static_cast<size_t>(i)];
+        if (cSizes[static_cast<size_t>(ci)] <= 1) {
+            silPoint[static_cast<size_t>(i)] = 0.0;
+            continue;
+        }
+        std::vector<double> sumDistToC(static_cast<size_t>(K), 0.0);
+        for (int j = 0; j < N; ++j) {
+            if (i == j)
+                continue;
+            const double d = std::sqrt(distSq(Z[static_cast<size_t>(i)], Z[static_cast<size_t>(j)]));
+            sumDistToC[static_cast<size_t>(bestAssign[static_cast<size_t>(j)])] += d;
+        }
+        const double ai = sumDistToC[static_cast<size_t>(ci)]
+                / static_cast<double>(cSizes[static_cast<size_t>(ci)] - 1);
+        double bi = std::numeric_limits<double>::max();
+        for (int c = 0; c < K; ++c) {
+            if (c != ci && cSizes[static_cast<size_t>(c)] > 0) {
+                bi = std::min(bi,
+                              sumDistToC[static_cast<size_t>(c)]
+                                      / static_cast<double>(cSizes[static_cast<size_t>(c)]));
+            }
+        }
+        if (bi == std::numeric_limits<double>::max()) {
+            silPoint[static_cast<size_t>(i)] = 0.0;
+        } else {
+            const double denom = std::max(ai, bi);
+            silPoint[static_cast<size_t>(i)] = (denom > 1e-30) ? ((bi - ai) / denom) : 0.0;
+        }
+    }
+
+    res.valid = true;
+    res.silhouetteScore = std::accumulate(silPoint.begin(), silPoint.end(), 0.0)
+            / static_cast<double>(N);
+
+    const int assignLen = validRows.back() + 1;
+    res.assignments.fill(-1, assignLen);
+    for (int i = 0; i < N; ++i)
+        res.assignments[validRows[static_cast<size_t>(i)]] = bestAssign[static_cast<size_t>(i)];
+
+    if (!app)
+        return res;
+
+    const QString tblName = app->generateUniqueName(
+            srcTable->name() + QStringLiteral("_KMeans"), false);
+    const int nOutCols = D + 2;
+    Table *resTbl = app->newTable(N, nOutCols, tblName, QObject::tr("K-Means Clustering"));
+    res.resultTable = resTbl;
+    if (resTbl) {
+        QStringList hdr;
+        for (int d = 0; d < D; ++d)
+            hdr << cols[static_cast<size_t>(d)]->name();
+        hdr << QStringLiteral("Cluster") << QStringLiteral("Silhouette");
+        resTbl->setHeader(hdr);
+        for (int c = 0; c < nOutCols; ++c)
+            resTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        resTbl->column(0)->setPlotDesignation(SciDAVis::X);
+        if (D >= 2)
+            resTbl->column(1)->setPlotDesignation(SciDAVis::Y);
+
+        for (int i = 0; i < N; ++i) {
+            for (int d = 0; d < D; ++d)
+                resTbl->column(d)->setValueAt(
+                        i, rawX[static_cast<size_t>(i)][static_cast<size_t>(d)]);
+            resTbl->column(D)->setValueAt(
+                    i, static_cast<double>(bestAssign[static_cast<size_t>(i)] + 1));
+            resTbl->column(D + 1)->setValueAt(i, silPoint[static_cast<size_t>(i)]);
+        }
+    }
+
+    if (plotClusters) {
+        // Compute 2D coordinates (original X1,X2 for D==2; PCA PC1,PC2 for D>2)
+        std::vector<double> pX(static_cast<size_t>(N), 0.0);
+        std::vector<double> pY(static_cast<size_t>(N), 0.0);
+        std::vector<double> cX(static_cast<size_t>(K), 0.0);
+        std::vector<double> cY(static_cast<size_t>(K), 0.0);
+        QString xAxisLbl = cols[0]->name();
+        QString yAxisLbl = (D >= 2) ? cols[1]->name() : QStringLiteral("Index");
+
+        if (D == 1) {
+            for (int i = 0; i < N; ++i) {
+                pX[static_cast<size_t>(i)] = rawX[static_cast<size_t>(i)][0];
+                pY[static_cast<size_t>(i)] = static_cast<double>(i + 1);
+            }
+            for (int c = 0; c < K; ++c) {
+                cX[static_cast<size_t>(c)] =
+                        featMean[0] + orderedCenters[static_cast<size_t>(c)][0] * featSd[0];
+                cY[static_cast<size_t>(c)] = 0.5 * static_cast<double>(N + 1);
+            }
+        } else if (D == 2) {
+            for (int i = 0; i < N; ++i) {
+                pX[static_cast<size_t>(i)] = rawX[static_cast<size_t>(i)][0];
+                pY[static_cast<size_t>(i)] = rawX[static_cast<size_t>(i)][1];
+            }
+            for (int c = 0; c < K; ++c) {
+                cX[static_cast<size_t>(c)] =
+                        featMean[0] + orderedCenters[static_cast<size_t>(c)][0] * featSd[0];
+                cY[static_cast<size_t>(c)] =
+                        featMean[1] + orderedCenters[static_cast<size_t>(c)][1] * featSd[1];
+            }
+        } else {
+            gsl_matrix *covM = gsl_matrix_calloc(static_cast<size_t>(D), static_cast<size_t>(D));
+            for (int a = 0; a < D; ++a) {
+                for (int b = a; b < D; ++b) {
+                    double s = 0.0;
+                    for (int i = 0; i < N; ++i)
+                        s += Z[static_cast<size_t>(i)][static_cast<size_t>(a)]
+                                * Z[static_cast<size_t>(i)][static_cast<size_t>(b)];
+                    const double cv = s / static_cast<double>(N - 1);
+                    gsl_matrix_set(covM, static_cast<size_t>(a), static_cast<size_t>(b), cv);
+                    gsl_matrix_set(covM, static_cast<size_t>(b), static_cast<size_t>(a), cv);
+                }
+            }
+            gsl_vector *eval = gsl_vector_alloc(static_cast<size_t>(D));
+            gsl_matrix *evec = gsl_matrix_alloc(static_cast<size_t>(D), static_cast<size_t>(D));
+            gsl_eigen_symmv_workspace *ws = gsl_eigen_symmv_alloc(static_cast<size_t>(D));
+            if (covM && eval && evec && ws && gsl_eigen_symmv(covM, eval, evec, ws) == 0) {
+                gsl_eigen_symmv_sort(eval, evec, GSL_EIGEN_SORT_VAL_DESC);
+                for (int i = 0; i < N; ++i) {
+                    double u1 = 0.0, u2 = 0.0;
+                    for (int d = 0; d < D; ++d) {
+                        u1 += Z[static_cast<size_t>(i)][static_cast<size_t>(d)]
+                                * gsl_matrix_get(evec, static_cast<size_t>(d), 0);
+                        u2 += Z[static_cast<size_t>(i)][static_cast<size_t>(d)]
+                                * gsl_matrix_get(evec, static_cast<size_t>(d), 1);
+                    }
+                    pX[static_cast<size_t>(i)] = u1;
+                    pY[static_cast<size_t>(i)] = u2;
+                }
+                for (int c = 0; c < K; ++c) {
+                    double u1 = 0.0, u2 = 0.0;
+                    for (int d = 0; d < D; ++d) {
+                        u1 += orderedCenters[static_cast<size_t>(c)][static_cast<size_t>(d)]
+                                * gsl_matrix_get(evec, static_cast<size_t>(d), 0);
+                        u2 += orderedCenters[static_cast<size_t>(c)][static_cast<size_t>(d)]
+                                * gsl_matrix_get(evec, static_cast<size_t>(d), 1);
+                    }
+                    cX[static_cast<size_t>(c)] = u1;
+                    cY[static_cast<size_t>(c)] = u2;
+                }
+                xAxisLbl = QStringLiteral("PC1");
+                yAxisLbl = QStringLiteral("PC2");
+            }
+            if (ws)
+                gsl_eigen_symmv_free(ws);
+            if (evec)
+                gsl_matrix_free(evec);
+            if (eval)
+                gsl_vector_free(eval);
+            if (covM)
+                gsl_matrix_free(covM);
+        }
+
+        // Hidden plot table with 2*K cluster columns + 2 centroid columns
+        QList<Column *> plotCols;
+        std::vector<int> clusRows(static_cast<size_t>(K), 0);
+        for (int c = 0; c < K; ++c) {
+            Column *cx = new Column(QStringLiteral("C%1_X").arg(c + 1),
+                                    SciDAVis::ColumnMode::Numeric);
+            Column *cy = new Column(QStringLiteral("Cluster_%1").arg(c + 1),
+                                    SciDAVis::ColumnMode::Numeric);
+            cx->setPlotDesignation(SciDAVis::X);
+            cy->setPlotDesignation(SciDAVis::Y);
+            int rIdx = 0;
+            for (int i = 0; i < N; ++i) {
+                if (bestAssign[static_cast<size_t>(i)] == c) {
+                    cx->setValueAt(rIdx, pX[static_cast<size_t>(i)]);
+                    cy->setValueAt(rIdx, pY[static_cast<size_t>(i)]);
+                    ++rIdx;
+                }
+            }
+            clusRows[static_cast<size_t>(c)] = rIdx;
+            plotCols << cx << cy;
+        }
+        Column *centColX = new Column(QStringLiteral("Centroid_X"), SciDAVis::ColumnMode::Numeric);
+        Column *centColY = new Column(QStringLiteral("Centroids"), SciDAVis::ColumnMode::Numeric);
+        centColX->setPlotDesignation(SciDAVis::X);
+        centColY->setPlotDesignation(SciDAVis::Y);
+        for (int c = 0; c < K; ++c) {
+            centColX->setValueAt(c, cX[static_cast<size_t>(c)]);
+            centColY->setValueAt(c, cY[static_cast<size_t>(c)]);
+        }
+        plotCols << centColX << centColY;
+
+        const QString hidName = app->generateUniqueName(QStringLiteral("KMeansPlotData"));
+        Table *plotTbl = app->newHiddenTable(hidName, QStringLiteral("K-Means Plot Backing"),
+                                             plotCols);
+        MultiLayer *ml = app->newGraph(
+                app->generateUniqueName(QStringLiteral("KMeansPlot_") + srcTable->name(), false));
+        res.clusterPlot = ml;
+        if (ml && plotTbl) {
+            if (Graph *g = ml->activeGraph()) {
+                static const QColor kPalette[] = {
+                    QColor(31, 119, 180), QColor(214, 39, 40),  QColor(44, 160, 44),
+                    QColor(148, 103, 189), QColor(255, 127, 14), QColor(23, 190, 207),
+                    QColor(227, 119, 194), QColor(140, 86, 75)
+                };
+                static const QwtSymbol::Style kSymbols[] = {
+                    QwtSymbol::Ellipse,  QwtSymbol::Rect,      QwtSymbol::Triangle,
+                    QwtSymbol::Diamond,  QwtSymbol::UTriangle, QwtSymbol::DTriangle,
+                    QwtSymbol::Hexagon,  QwtSymbol::Star2
+                };
+
+                for (int c = 0; c < K; ++c) {
+                    const int cnt = clusRows[static_cast<size_t>(c)];
+                    if (cnt <= 0)
+                        continue;
+                    const QColor col = kPalette[c % 8];
+                    if (g->insertCurve(plotTbl, plotTbl->colName(2 * c),
+                                       plotTbl->colName(2 * c + 1), Graph::Scatter, 0, cnt - 1)) {
+                        const int idx = g->curves() - 1;
+                        g->setCurveSymbol(idx,
+                                          QwtSymbol(kSymbols[c % 8], QBrush(col),
+                                                    QPen(col.darker(130), 1.1), QSize(8, 8)));
+                    }
+                }
+                if (g->insertCurve(plotTbl, plotTbl->colName(2 * K), plotTbl->colName(2 * K + 1),
+                                   Graph::Scatter, 0, K - 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurveSymbol(idx,
+                                      QwtSymbol(QwtSymbol::Cross, QBrush(QColor(15, 15, 15)),
+                                                QPen(QColor(15, 15, 15), 2.4), QSize(13, 13)));
+                }
+
+                g->setXAxisTitle(xAxisLbl);
+                g->setYAxisTitle(yAxisLbl);
+                g->setTitle(QObject::tr("K-Means Clustering (k = %1, Silhouette = %2)")
+                                    .arg(K)
+                                    .arg(res.silhouetteScore, 0, 'f', 3));
+                if (g->legend())
+                    g->legend()->setText(g->legendText());
+                applyArialGraphFonts(g);
+                g->setAutoScale();
+                g->replot();
+            }
+        }
+    }
+
+    return res;
+}
+
+MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
+        ApplicationWindow *app, Table *srcTable, const QStringList &colNames, int linkage)
+{
+    registerPhase5StatsTranslationsOnce();
+    if (!app || !srcTable)
+        return nullptr;
+
+    std::vector<Column *> cols;
+    QStringList namesToUse = colNames;
+    if (namesToUse.isEmpty()) {
+        for (int c = 0; c < srcTable->numCols(); ++c) {
+            if (srcTable->column(c)
+                && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                namesToUse << srcTable->column(c)->name();
+        }
+    }
+    for (const QString &cn : namesToUse) {
+        if (Column *c = resolveTableColumn(srcTable, cn))
+            cols.push_back(c);
+    }
+    const int D = static_cast<int>(cols.size());
+    if (D < 1)
+        return nullptr;
+
+    int maxRows = cols[0]->rowCount();
+    for (Column *c : cols)
+        maxRows = std::min(maxRows, c->rowCount());
+
+    std::vector<int> validRows;
+    std::vector<std::vector<double>> rawX;
+    for (int r = 0; r < maxRows; ++r) {
+        bool okRow = true;
+        std::vector<double> pt(static_cast<size_t>(D), 0.0);
+        for (int d = 0; d < D; ++d) {
+            Column *cd = cols[static_cast<size_t>(d)];
+            if (cd->isInvalid(r) || cd->isMasked(r)) {
+                okRow = false;
+                break;
+            }
+            const double v = cd->valueAt(r);
+            if (!std::isfinite(v)) {
+                okRow = false;
+                break;
+            }
+            pt[static_cast<size_t>(d)] = v;
+        }
+        if (okRow) {
+            validRows.push_back(r);
+            rawX.push_back(std::move(pt));
+        }
+    }
+
+    const int N = static_cast<int>(rawX.size());
+    if (N < 2)
+        return nullptr;
+
+    // Standardize features
+    std::vector<double> meanF(static_cast<size_t>(D), 0.0);
+    std::vector<double> sdF(static_cast<size_t>(D), 1.0);
+    for (int d = 0; d < D; ++d) {
+        double s = 0.0;
+        for (int i = 0; i < N; ++i)
+            s += rawX[static_cast<size_t>(i)][static_cast<size_t>(d)];
+        meanF[static_cast<size_t>(d)] = s / static_cast<double>(N);
+        double ss = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const double dev =
+                    rawX[static_cast<size_t>(i)][static_cast<size_t>(d)] - meanF[static_cast<size_t>(d)];
+            ss += dev * dev;
+        }
+        const double sd = std::sqrt(ss / static_cast<double>(N - 1));
+        sdF[static_cast<size_t>(d)] = (sd > 1e-15) ? sd : 1.0;
+    }
+
+    const int effLinkage = std::clamp(linkage, 0, 2);
+    const int totalNodes = 2 * N - 1;
+    struct DendNode {
+        int left = -1;
+        int right = -1;
+        int count = 1;
+        double height = 0.0;
+        double xPos = 0.0;
+        bool active = false;
+    };
+    std::vector<DendNode> nodes(static_cast<size_t>(totalNodes));
+    for (int i = 0; i < N; ++i)
+        nodes[static_cast<size_t>(i)].active = true;
+
+    // Dissimilarity matrix across all 2*N-1 nodes (squared Euclidean for Ward, Euclidean otherwise)
+    std::vector<double> distMat(static_cast<size_t>(totalNodes * totalNodes), 0.0);
+    for (int i = 0; i < N; ++i) {
+        for (int j = i + 1; j < N; ++j) {
+            double d2 = 0.0;
+            for (int d = 0; d < D; ++d) {
+                const double diff = (rawX[static_cast<size_t>(i)][static_cast<size_t>(d)]
+                                     - rawX[static_cast<size_t>(j)][static_cast<size_t>(d)])
+                        / sdF[static_cast<size_t>(d)];
+                d2 += diff * diff;
+            }
+            const double val = (effLinkage == 0) ? d2 : std::sqrt(d2);
+            distMat[static_cast<size_t>(i * totalNodes + j)] = val;
+            distMat[static_cast<size_t>(j * totalNodes + i)] = val;
+        }
+    }
+
+    for (int step = 0; step < N - 1; ++step) {
+        int bestA = -1, bestB = -1;
+        double minD = std::numeric_limits<double>::max();
+        const int curMax = N + step;
+        for (int a = 0; a < curMax; ++a) {
+            if (!nodes[static_cast<size_t>(a)].active)
+                continue;
+            for (int b = a + 1; b < curMax; ++b) {
+                if (!nodes[static_cast<size_t>(b)].active)
+                    continue;
+                const double dab = distMat[static_cast<size_t>(a * totalNodes + b)];
+                if (dab < minD) {
+                    minD = dab;
+                    bestA = a;
+                    bestB = b;
+                }
+            }
+        }
+        if (bestA < 0 || bestB < 0)
+            break;
+
+        const int newNode = N + step;
+        const int nA = nodes[static_cast<size_t>(bestA)].count;
+        const int nB = nodes[static_cast<size_t>(bestB)].count;
+        const double rawHeight = (effLinkage == 0) ? std::sqrt(std::max(0.0, minD))
+                                                   : std::max(0.0, minD);
+        const double childMaxH = std::max(nodes[static_cast<size_t>(bestA)].height,
+                                          nodes[static_cast<size_t>(bestB)].height);
+
+        nodes[static_cast<size_t>(newNode)].left = bestA;
+        nodes[static_cast<size_t>(newNode)].right = bestB;
+        nodes[static_cast<size_t>(newNode)].count = nA + nB;
+        nodes[static_cast<size_t>(newNode)].height = std::max(rawHeight, childMaxH);
+        nodes[static_cast<size_t>(newNode)].active = true;
+        nodes[static_cast<size_t>(bestA)].active = false;
+        nodes[static_cast<size_t>(bestB)].active = false;
+
+        for (int c = 0; c < newNode; ++c) {
+            if (!nodes[static_cast<size_t>(c)].active)
+                continue;
+            const double dAC = distMat[static_cast<size_t>(bestA * totalNodes + c)];
+            const double dBC = distMat[static_cast<size_t>(bestB * totalNodes + c)];
+            const int nC = nodes[static_cast<size_t>(c)].count;
+            double dNew = 0.0;
+            if (effLinkage == 0) {
+                // Lance-Williams exact Ward update on squared distances
+                const double denom = static_cast<double>(nA + nB + nC);
+                dNew = ((static_cast<double>(nA + nC) * dAC)
+                        + (static_cast<double>(nB + nC) * dBC)
+                        - (static_cast<double>(nC) * minD))
+                        / denom;
+                dNew = std::max(0.0, dNew);
+            } else if (effLinkage == 1) {
+                dNew = std::max(dAC, dBC);
+            } else {
+                dNew = (static_cast<double>(nA) * dAC + static_cast<double>(nB) * dBC)
+                        / static_cast<double>(nA + nB);
+            }
+            distMat[static_cast<size_t>(newNode * totalNodes + c)] = dNew;
+            distMat[static_cast<size_t>(c * totalNodes + newNode)] = dNew;
+        }
+    }
+
+    // Crossing-free in-order leaf traversal
+    std::vector<int> leafOrder;
+    leafOrder.reserve(static_cast<size_t>(N));
+    auto assignCoords = [&](auto &self, int u) -> void {
+        if (u < 0)
+            return;
+        DendNode &nd = nodes[static_cast<size_t>(u)];
+        if (nd.left < 0 && nd.right < 0) {
+            leafOrder.push_back(u);
+            nd.xPos = static_cast<double>(leafOrder.size());
+            return;
+        }
+        self(self, nd.left);
+        self(self, nd.right);
+        nd.xPos = 0.5 * (nodes[static_cast<size_t>(nd.left)].xPos
+                         + nodes[static_cast<size_t>(nd.right)].xPos);
+    };
+    assignCoords(assignCoords, totalNodes - 1);
+
+    const int nSegPts = 4 * (N - 1);
+    Column *colSegX = new Column(QStringLiteral("DendX"), SciDAVis::ColumnMode::Numeric);
+    Column *colSegY = new Column(QStringLiteral("Dendrogram"), SciDAVis::ColumnMode::Numeric);
+    Column *colLeafLbl = new Column(QStringLiteral("LeafLabel"), SciDAVis::ColumnMode::Text);
+    colSegX->setPlotDesignation(SciDAVis::X);
+    colSegY->setPlotDesignation(SciDAVis::Y);
+
+    double maxHeight = 0.0;
+    for (int step = 0; step < N - 1; ++step) {
+        const DendNode &nd = nodes[static_cast<size_t>(N + step)];
+        const DendNode &lc = nodes[static_cast<size_t>(nd.left)];
+        const DendNode &rc = nodes[static_cast<size_t>(nd.right)];
+        const int base = 4 * step;
+        colSegX->setValueAt(base + 0, lc.xPos);
+        colSegY->setValueAt(base + 0, lc.height);
+        colSegX->setValueAt(base + 1, lc.xPos);
+        colSegY->setValueAt(base + 1, nd.height);
+        colSegX->setValueAt(base + 2, rc.xPos);
+        colSegY->setValueAt(base + 2, nd.height);
+        colSegX->setValueAt(base + 3, rc.xPos);
+        colSegY->setValueAt(base + 3, rc.height);
+        maxHeight = std::max(maxHeight, nd.height);
+    }
+
+    for (size_t k = 0; k < leafOrder.size(); ++k) {
+        const int origRow = validRows[static_cast<size_t>(leafOrder[k])];
+        colLeafLbl->setTextAt(static_cast<int>(k), QStringLiteral("#%1").arg(origRow + 1));
+    }
+
+    const QString hidName = app->generateUniqueName(QStringLiteral("DendrogramData"));
+    Table *backing = app->newHiddenTable(hidName, QStringLiteral("Dendrogram Segments"),
+                                         QList<Column *>() << colSegX << colSegY << colLeafLbl);
+    if (!backing)
+        return nullptr;
+
+    MultiLayer *ml = app->newGraph(
+            app->generateUniqueName(QStringLiteral("Dendrogram_") + srcTable->name(), false));
+    if (!ml)
+        return nullptr;
+
+    if (Graph *g = ml->activeGraph()) {
+        auto *dendCurve = new DendrogramCurve(backing, backing->colName(0), backing->colName(1), 0,
+                                              nSegPts - 1);
+        dendCurve->loadData();
+        g->insertPlotItem(dendCurve, Graph::Line);
+
+        if (N <= 40)
+            g->setLabelsTextFormat(Graph::Bottom, colLeafLbl, 0, N - 1);
+        g->setScale(QwtPlot::xBottom, 0.4, static_cast<double>(N) + 0.6, (N <= 30) ? 1.0 : 0.0);
+        g->setScale(QwtPlot::yLeft, 0.0, std::max(1e-6, maxHeight * 1.12));
+
+        const QString linkTitle = (effLinkage == 0)
+                ? QStringLiteral("Ward")
+                : ((effLinkage == 1) ? QStringLiteral("Complete") : QStringLiteral("Average"));
+        g->setXAxisTitle(QStringLiteral("Observation"));
+        g->setYAxisTitle(QObject::tr("Dissimilarity Height"));
+        g->setTitle(QObject::tr("Hierarchical Dendrogram (%1 Linkage)").arg(linkTitle));
+        if (g->legend())
+            g->legend()->setText(g->legendText());
+        applyArialGraphFonts(g);
+        g->replot();
+    }
+    return ml;
+}
+
+// ============================================================================
+// Phase 5 Interactive Statistical & Clustering Dialogs
+// ============================================================================
+
+void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Weibull Probability Plot"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+    QComboBox *cbData = new QComboBox(&dlg);
+    QComboBox *cbCensor = new QComboBox(&dlg);
+
+    auto refreshCols = [&]() {
+        cbData->clear();
+        cbCensor->clear();
+        cbCensor->addItem(QObject::tr("(None — Complete Failures)"), QString());
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c)->name();
+            cbData->addItem(cn);
+            cbCensor->addItem(cn, cn);
+        }
+    };
+    refreshCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshCols(); });
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Strength / Lifetime Column:"), cbData);
+    form->addRow(QObject::tr("Right-Censoring Column (Optional):"), cbCensor);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        plotWeibullProbability(app, tables[cbTable->currentIndex()], cbData->currentText(),
+                               cbCensor->currentData().toString());
+    }
+}
+
+void GraphStatsAndSurfaceFit::showOutlierTestDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Outlier Test (Grubbs / ESD / Dixon)"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+    QComboBox *cbCol = new QComboBox(&dlg);
+    auto refreshCols = [&]() {
+        cbCol->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c)
+            cbCol->addItem(t->column(c)->name());
+    };
+    refreshCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshCols(); });
+
+    QComboBox *cbMethod = new QComboBox(&dlg);
+    cbMethod->addItem(QObject::tr("Two-Sided Grubbs' Test (Single Outlier)"), 0);
+    cbMethod->addItem(QObject::tr("Generalized ESD / Rosner Test (Up to k Outliers)"), 1);
+    cbMethod->addItem(QObject::tr("Dixon's Q Test (Small Sample Extreme)"), 2);
+
+    QDoubleSpinBox *sbAlpha = new QDoubleSpinBox(&dlg);
+    sbAlpha->setRange(0.001, 0.25);
+    sbAlpha->setDecimals(3);
+    sbAlpha->setSingleStep(0.01);
+    sbAlpha->setValue(0.05);
+
+    QSpinBox *sbMaxK = new QSpinBox(&dlg);
+    sbMaxK->setRange(1, 50);
+    sbMaxK->setValue(5);
+    sbMaxK->setEnabled(false);
+    QObject::connect(cbMethod, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int idx) { sbMaxK->setEnabled(cbMethod->itemData(idx).toInt() == 1); });
+
+    QCheckBox *chkMask =
+            new QCheckBox(QObject::tr("Mask Detected Outliers in Source Worksheet"), &dlg);
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Data Column:"), cbCol);
+    form->addRow(QObject::tr("Outlier Detection Method:"), cbMethod);
+    form->addRow(QObject::tr("Significance Level α:"), sbAlpha);
+    form->addRow(QObject::tr("Max Outliers k (Generalized ESD):"), sbMaxK);
+    form->addRow(QString(), chkMask);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        runOutlierTest(app, tables[cbTable->currentIndex()], cbCol->currentText(),
+                       cbMethod->currentData().toInt(), sbAlpha->value(), sbMaxK->value(),
+                       chkMask->isChecked());
+    }
+}
+
+void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    Graph *targetG = resolveActiveGraph(app, g);
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Nonparametric & Smart-Switch Group Comparison"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+
+    QListWidget *colList = new QListWidget(&dlg);
+    colList->setSelectionMode(QAbstractItemView::MultiSelection);
+    auto populateCols = [&]() {
+        colList->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
+                it->setSelected(true);
+            }
+        }
+    };
+    populateCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { populateCols(); });
+
+    QComboBox *cbMethod = new QComboBox(&dlg);
+    cbMethod->addItem(
+            QObject::tr("Auto Smart-Switch (Shapiro-Wilk -> Parametric / Nonparametric)"),
+            static_cast<int>(TestAutoSmartSwitch));
+    cbMethod->addItem(QObject::tr("Mann-Whitney U Test (2 Independent Groups)"),
+                      static_cast<int>(TestMannWhitneyU));
+    cbMethod->addItem(QObject::tr("Wilcoxon Signed-Rank Test (2 Paired Columns)"),
+                      static_cast<int>(TestWilcoxonSignedRank));
+    cbMethod->addItem(QObject::tr("Kruskal-Wallis H + Holm-Dunn Post-Hoc"),
+                      static_cast<int>(TestKruskalWallisDunn));
+
+    QCheckBox *chkAnnotate =
+            new QCheckBox(QObject::tr("Draw Significance Brackets on Active Graph"), &dlg);
+    chkAnnotate->setChecked(targetG != nullptr);
+    chkAnnotate->setEnabled(targetG != nullptr);
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
+    form->addRow(QObject::tr("Test Method:"), cbMethod);
+    form->addRow(QString(), chkAnnotate);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QStringList selected;
+    for (QListWidgetItem *it : colList->selectedItems())
+        selected << it->text();
+    if (selected.size() < 2)
+        return;
+
+    runNonparametricComparison(app, tables[cbTable->currentIndex()], selected,
+                               static_cast<NonparamMethod>(cbMethod->currentData().toInt()),
+                               chkAnnotate->isChecked() ? targetG : nullptr);
+}
+
+void GraphStatsAndSurfaceFit::showPairedComparisonDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Paired Comparison Plot (Before-After)"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+
+    QComboBox *cbBefore = new QComboBox(&dlg);
+    QComboBox *cbAfter = new QComboBox(&dlg);
+    auto refreshCols = [&]() {
+        cbBefore->clear();
+        cbAfter->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c)->name();
+            cbBefore->addItem(cn);
+            cbAfter->addItem(cn);
+        }
+        if (t->numCols() >= 2)
+            cbAfter->setCurrentIndex(1);
+    };
+    refreshCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshCols(); });
+
+    QCheckBox *chkWilcoxon = new QCheckBox(
+            QObject::tr("Use Nonparametric Wilcoxon Signed-Rank (instead of Paired t)"), &dlg);
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Before Column:"), cbBefore);
+    form->addRow(QObject::tr("After Column:"), cbAfter);
+    form->addRow(QString(), chkWilcoxon);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        plotPairedComparison(app, tables[cbTable->currentIndex()], cbBefore->currentText(),
+                             cbAfter->currentText(), chkWilcoxon->isChecked());
+    }
+}
+
+void GraphStatsAndSurfaceFit::showCorrelationMatrixDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Correlation Matrix Heatmap"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+
+    QListWidget *colList = new QListWidget(&dlg);
+    colList->setSelectionMode(QAbstractItemView::MultiSelection);
+    auto populateCols = [&]() {
+        colList->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
+                it->setSelected(true);
+            }
+        }
+    };
+    populateCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { populateCols(); });
+
+    QComboBox *cbType = new QComboBox(&dlg);
+    cbType->addItem(QObject::tr("Pearson Linear Correlation (r)"), false);
+    cbType->addItem(QObject::tr("Spearman Rank Correlation (ρ)"), true);
+
+    form->addRow(QObject::tr("Source Table:"), cbTable);
+    form->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
+    form->addRow(QObject::tr("Correlation Type:"), cbType);
+    lay->addLayout(form);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QStringList selected;
+    for (QListWidgetItem *it : colList->selectedItems())
+        selected << it->text();
+    if (selected.size() < 2)
+        return;
+
+    plotCorrelationMatrixHeatmap(app, tables[cbTable->currentIndex()], selected,
+                                 cbType->currentData().toBool());
+}
+
+void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerPhase5StatsTranslationsOnce();
+    const QList<Table *> tables = allProjectTables(app);
+    if (tables.isEmpty())
+        return;
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Cluster Analysis (K-Means & Hierarchical Dendrogram)"));
+    QVBoxLayout *lay = new QVBoxLayout(&dlg);
+    QFormLayout *topForm = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *actTbl = resolveActiveTable(app);
+    for (Table *t : tables) {
+        cbTable->addItem(t->name());
+        if (t == actTbl)
+            cbTable->setCurrentIndex(cbTable->count() - 1);
+    }
+
+    QListWidget *colList = new QListWidget(&dlg);
+    colList->setSelectionMode(QAbstractItemView::MultiSelection);
+    auto populateCols = [&]() {
+        colList->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size())
+            return;
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
+                it->setSelected(true);
+            }
+        }
+    };
+    populateCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { populateCols(); });
+
+    topForm->addRow(QObject::tr("Source Table:"), cbTable);
+    topForm->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
+    lay->addLayout(topForm);
+
+    QTabWidget *tabs = new QTabWidget(&dlg);
+
+    // Tab 0: K-Means
+    QWidget *tabKM = new QWidget(&dlg);
+    QFormLayout *fKM = new QFormLayout(tabKM);
+    QSpinBox *sbK = new QSpinBox(tabKM);
+    sbK->setRange(2, 50);
+    sbK->setValue(3);
+    QCheckBox *chkPlotKM = new QCheckBox(QObject::tr("Create 2D Cluster Scatter Plot"), tabKM);
+    chkPlotKM->setChecked(true);
+    fKM->addRow(QObject::tr("Number of Clusters (k):"), sbK);
+    fKM->addRow(QString(), chkPlotKM);
+    tabs->addTab(tabKM, QObject::tr("K-Means Clustering"));
+
+    // Tab 1: Hierarchical Dendrogram
+    QWidget *tabHC = new QWidget(&dlg);
+    QFormLayout *fHC = new QFormLayout(tabHC);
+    QComboBox *cbLinkage = new QComboBox(tabHC);
+    cbLinkage->addItem(QObject::tr("Ward's Minimum Variance"), 0);
+    cbLinkage->addItem(QObject::tr("Complete Linkage (Furthest Neighbor)"), 1);
+    cbLinkage->addItem(QObject::tr("Average Linkage (UPGMA)"), 2);
+    fHC->addRow(QObject::tr("Linkage Criterion:"), cbLinkage);
+    tabs->addTab(tabHC, QObject::tr("Hierarchical Dendrogram"));
+
+    lay->addWidget(tabs);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QStringList selected;
+    for (QListWidgetItem *it : colList->selectedItems())
+        selected << it->text();
+    if (selected.isEmpty())
+        return;
+
+    if (tabs->currentIndex() == 0) {
+        runKMeansClustering(app, tables[cbTable->currentIndex()], selected, sbK->value(),
+                            chkPlotKM->isChecked());
+    } else {
+        plotHierarchicalDendrogram(app, tables[cbTable->currentIndex()], selected,
+                                   cbLinkage->currentData().toInt());
+    }
 }

@@ -10,6 +10,7 @@
 #ifndef CURVEMATHTOOLS_H
 #define CURVEMATHTOOLS_H
 
+#include <QColor>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
@@ -17,6 +18,7 @@
 
 class ApplicationWindow;
 class Graph;
+class MultiLayer;
 class QwtPlotCurve;
 class Table;
 
@@ -58,11 +60,48 @@ public:
     static double polygonArea(Graph *g, const QString &curveTitle, bool mathematicalSigned = false);
     static double curveArcLength(Graph *g, const QString &curveTitle);
 
+    struct ArrheniusResult {
+        bool valid = false;
+        double activationEnergyKJmol = 0.0;
+        double activationEnergyKJmolSE = 0.0;
+        double activationEnergyEV = 0.0;
+        double activationEnergyEVSE = 0.0;
+        double lnPreExponential = 0.0;
+        double rSquare = 0.0;
+        Table *dataTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
+    struct TaucResult {
+        bool valid = false;
+        double bandgapEV = 0.0;
+        double bandgapEVSE = 0.0;
+        double edgeSlope = 0.0;
+        double rSquare = 0.0;
+        Table *dataTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
+
+    static ArrheniusResult createArrheniusPlot(ApplicationWindow *app, Table *srcTable,
+                                               const QString &tempCol, const QString &rateCol,
+                                               bool tempInCelsius = false,
+                                               bool use1000OverT = true,
+                                               bool sigmaTimesT = false);
+    static TaucResult createTaucPlot(ApplicationWindow *app, Table *srcTable,
+                                     const QString &waveOrEnergyCol, const QString &alphaCol,
+                                     bool xIsWavelengthNm = true,
+                                     bool directAllowed = true /* true: (a*hv)^2, false: (a*hv)^0.5 */);
+    static QwtPlotCurve *fillBetweenCurves(ApplicationWindow *app, Graph *g,
+                                           const QString &curveA, const QString &curveB,
+                                           const QColor &fillColor = QColor(30, 102, 184, 55));
+
     static void showCurveMathDialog(ApplicationWindow *app, Graph *g);
     static void showSubtractLineDialog(ApplicationWindow *app, Graph *g);
     static void showAverageCurvesDialog(ApplicationWindow *app, Graph *g);
     static void showNormalizeDialog(ApplicationWindow *app, Graph *g);
     static void showIntersectionLookupDialog(ApplicationWindow *app, Graph *g);
+    static void showArrheniusDialog(ApplicationWindow *app);
+    static void showTaucDialog(ApplicationWindow *app);
+    static void showFillBetweenDialog(ApplicationWindow *app, Graph *g);
 };
 
 #endif // CURVEMATHTOOLS_H

@@ -10,18 +10,26 @@
 #include "CurveMathTools.h"
 
 #include "ApplicationWindow.h"
+#include "ArrowMarker.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
+#include "Legend.h"
+#include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
+#include <gsl/gsl_cdf.h>
+
 #include <qwt_plot_curve.h>
 #include <qwt_plot_marker.h>
+#include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -34,6 +42,10 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QLocale>
+#include <QMdiSubWindow>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -1282,4 +1294,1031 @@ void CurveMathTools::showIntersectionLookupDialog(ApplicationWindow *app, Graph 
     });
 
     dlg.exec();
+}
+
+// ============================================================================
+// Phase 5: Materials-Science Analyzers (Arrhenius, Tauc) & Fill Between Curves
+// ============================================================================
+
+namespace {
+
+void registerMatSciTranslationsOnce()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+                QString::fromUtf8(en), QString::fromUtf8(ja));
+    };
+    reg("Arrhenius Plot (Activation Energy)", "アレニウスプロット (活性化エネルギー)");
+    reg("Arrhenius Plot (Activation Energy)...", "アレニウスプロット (活性化エネルギー)...");
+    reg("Tauc Plot (Optical Bandgap)", "Taucプロット (光学バンドギャップ)");
+    reg("Tauc Plot (Optical Bandgap)...", "Taucプロット (光学バンドギャップ)...");
+    reg("Fill Area Between Curves", "2曲線間の領域塗りつぶし");
+    reg("Fill Area Between Curves...", "2曲線間の領域塗りつぶし...");
+    reg("Source Worksheet:", "入力ワークシート:");
+    reg("Temperature Column:", "温度データ列:");
+    reg("Rate / Conductivity Column:", "反応速度 / 導電率列:");
+    reg("Temperature in Celsius (°C -> +273.15 K)", "摂氏温度入力 (°C -> +273.15 K)");
+    reg("Plot vs. 1000 / T (K^-1)", "横軸を 1000 / T (K^-1) にする");
+    reg("Modified Arrhenius: ln(k * T) (Ionic Conductivity)", "修正アレニウス式: ln(k * T) (イオン伝導度等)");
+    reg("1000 / T (K^-1)", "1000 / T (K^-1)");
+    reg("1 / T (K^-1)", "1 / T (K^-1)");
+    reg("ln(k * T)", "ln(k * T)");
+    reg("ln(k)", "ln(k)");
+    reg("Wavelength / Energy Column:", "波長 / 光子エネルギー列:");
+    reg("Absorption Coefficient Column (α):", "吸収係数データ列 (α):");
+    reg("X Column Unit:", "X列の単位:");
+    reg("Wavelength λ (nm -> hν = 1239.84 / λ eV)", "波長 λ (nm -> hν = 1239.84 / λ eV)");
+    reg("Photon Energy hν (eV)", "光子エネルギー hν (eV)");
+    reg("Transition Type:", "光学遷移タイプ:");
+    reg("Direct Allowed: (αhν)^2", "直接許容遷移: (αhν)^2");
+    reg("Indirect Allowed: (αhν)^(1/2)", "間接許容遷移: (αhν)^(1/2)");
+    reg("Photon Energy hν (eV)", "光子エネルギー hν (eV)");
+    reg("(αhν)^2 ((eV/cm)^2)", "(αhν)^2 ((eV/cm)^2)");
+    reg("(αhν)^(1/2) ((eV/cm)^(1/2))", "(αhν)^(1/2) ((eV/cm)^(1/2))");
+    reg("First Curve (Boundary A):", "曲線A (境界1):");
+    reg("Second Curve (Boundary B):", "曲線B (境界2):");
+    reg("Fill Color & Opacity:", "塗りつぶし色・不透明度:");
+    reg("Choose Color...", "色を選択...");
+    reg("Fill Opacity (%):", "不透明度 (%):");
+    reg("No numeric worksheets are open.", "数値データを含むワークシートが開かれていません。");
+    reg("Please open a graph with at least two curves first.",
+        "2本以上の曲線を含むグラフを開いてください。");
+}
+
+Column *resolveMatSciColumn(Table *t, const QString &colSpec)
+{
+    if (!t || colSpec.trimmed().isEmpty())
+        return nullptr;
+    if (Column *c = t->column(colSpec))
+        return c;
+    const QString trimmed = colSpec.trimmed();
+    if (trimmed.startsWith(t->name() + "_")) {
+        if (Column *c = t->column(trimmed.mid(t->name().length() + 1)))
+            return c;
+    }
+    for (int i = 0; i < t->numCols(); ++i) {
+        Column *cand = t->column(i);
+        if (!cand)
+            continue;
+        if (cand->name().compare(trimmed, Qt::CaseInsensitive) == 0
+            || t->colName(i).compare(trimmed, Qt::CaseInsensitive) == 0)
+            return cand;
+    }
+    return nullptr;
+}
+
+QList<Table *> collectProjectTables(ApplicationWindow *app)
+{
+    QList<Table *> list;
+    if (!app)
+        return list;
+    for (MyWidget *w : app->windowsList()) {
+        if (w && w->inherits("Table"))
+            list.append(static_cast<Table *>(w));
+    }
+    return list;
+}
+
+Table *findActiveOrFirstTable(ApplicationWindow *app)
+{
+    if (!app)
+        return nullptr;
+    if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+        if (sub->inherits("Table"))
+            return static_cast<Table *>(sub);
+        if (QWidget *w = sub->widget()) {
+            if (w->inherits("Table"))
+                return static_cast<Table *>(w);
+        }
+    }
+    const QList<Table *> tbls = collectProjectTables(app);
+    return tbls.isEmpty() ? nullptr : tbls.first();
+}
+
+Graph *findActiveOrFirstGraph(ApplicationWindow *app, Graph *explicitGraph)
+{
+    if (explicitGraph)
+        return explicitGraph;
+    if (!app)
+        return nullptr;
+    if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+        if (sub->inherits("MultiLayer"))
+            return static_cast<MultiLayer *>(sub)->activeGraph();
+        if (QWidget *w = sub->widget()) {
+            if (w->inherits("MultiLayer"))
+                return static_cast<MultiLayer *>(w)->activeGraph();
+        }
+    }
+    for (MyWidget *w : app->windowsList()) {
+        if (w && w->inherits("MultiLayer")) {
+            if (Graph *g = static_cast<MultiLayer *>(w)->activeGraph())
+                return g;
+        }
+    }
+    return nullptr;
+}
+
+void applyArialToMatSciGraph(Graph *g)
+{
+    if (!g)
+        return;
+    g->initFonts(QFont(QStringLiteral("Arial"), 11, QFont::Bold),
+                 QFont(QStringLiteral("Arial"), 10));
+    g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    if (g->legend())
+        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
+    g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
+                             QFont(QStringLiteral("Arial"), 10),
+                             g->textMarkerDefaultColor(),
+                             g->textMarkerDefaultBackground());
+}
+
+Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text)
+{
+    if (!g)
+        return nullptr;
+    Legend *box = g->newLegend(text);
+    if (!box)
+        return nullptr;
+    box->setFrameStyle(Legend::Line);
+    box->setBackgroundColor(QColor(255, 255, 255, 232));
+    box->setTextColor(QColor(20, 30, 50));
+    box->setFont(QFont(QStringLiteral("Arial"), 9));
+    box->setOriginCoord(x, y);
+    return box;
+}
+
+class FilledPolygonDataCurve : public DataCurve
+{
+public:
+    FilledPolygonDataCurve(Table *t, const QString &xColName, const QString &yColName,
+                           int startRow, int endRow, const QColor &fillColor)
+        : DataCurve(t, xColName, yColName, startRow, endRow)
+    {
+        setType(Graph::Line);
+        setStyle(QwtPlotCurve::Lines);
+        QColor borderCol = fillColor;
+        borderCol.setAlpha(std::clamp(fillColor.alpha() + 90, 90, 220));
+        setPen(QPen(borderCol, 1.0, Qt::SolidLine));
+        setBrush(QBrush(fillColor));
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    using DataCurve::draw;
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              int from, int to) const override
+    {
+        if (!painter || dataSize() < 3)
+            return;
+        if (to < 0)
+            to = dataSize() - 1;
+        from = std::max(0, from);
+        to = std::min(dataSize() - 1, to);
+        if (to - from + 1 < 3)
+            return;
+
+        QPolygonF poly;
+        poly.reserve(to - from + 1);
+        for (int i = from; i <= to; ++i) {
+            const double xv = x(i);
+            const double yv = y(i);
+            if (std::isfinite(xv) && std::isfinite(yv))
+                poly.append(QPointF(xMap.transform(xv), yMap.transform(yv)));
+        }
+        if (poly.size() < 3)
+            return;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setBrush(brush());
+        painter->setPen(pen());
+        painter->drawPolygon(poly, Qt::OddEvenFill);
+        painter->restore();
+    }
+};
+
+} // namespace
+
+CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
+        ApplicationWindow *app, Table *srcTable, const QString &tempCol, const QString &rateCol,
+        bool tempInCelsius, bool use1000OverT, bool sigmaTimesT)
+{
+    registerMatSciTranslationsOnce();
+    ArrheniusResult res;
+    if (!srcTable)
+        return res;
+
+    Column *cTemp = resolveMatSciColumn(srcTable, tempCol);
+    Column *cRate = resolveMatSciColumn(srcTable, rateCol);
+    if (!cTemp || !cRate)
+        return res;
+
+    constexpr double kGasR = 8.314462618;       // J / (mol * K)
+    constexpr double kBoltzEV = 8.617333262e-5; // eV / K
+    const double scaleX = use1000OverT ? 1000.0 : 1.0;
+
+    struct ArrPt {
+        double x = 0.0;
+        double y = 0.0;
+        double tempK = 0.0;
+    };
+    std::vector<ArrPt> pts;
+    const int nRows = std::min(cTemp->rowCount(), cRate->rowCount());
+    pts.reserve(static_cast<size_t>(std::max(0, nRows)));
+
+    for (int r = 0; r < nRows; ++r) {
+        if (cTemp->isInvalid(r) || cRate->isInvalid(r)
+            || cTemp->isMasked(r) || cRate->isMasked(r))
+            continue;
+        const double rawT = cTemp->valueAt(r);
+        const double rawK = cRate->valueAt(r);
+        if (!std::isfinite(rawT) || !std::isfinite(rawK))
+            continue;
+        const double tK = tempInCelsius ? (rawT + 273.15) : rawT;
+        const double prod = sigmaTimesT ? (rawK * tK) : rawK;
+        if (tK <= 0.0 || prod <= 0.0)
+            continue;
+        pts.push_back({ scaleX / tK, std::log(prod), tK });
+    }
+
+    if (pts.size() < 2)
+        return res;
+
+    std::sort(pts.begin(), pts.end(),
+              [](const ArrPt &a, const ArrPt &b) { return a.x < b.x; });
+
+    const int n = static_cast<int>(pts.size());
+    double sumX = 0.0, sumY = 0.0;
+    for (const ArrPt &p : pts) {
+        sumX += p.x;
+        sumY += p.y;
+    }
+    const double meanX = sumX / static_cast<double>(n);
+    const double meanY = sumY / static_cast<double>(n);
+
+    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (const ArrPt &p : pts) {
+        const double dx = p.x - meanX;
+        const double dy = p.y - meanY;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+    }
+    if (sxx <= 1e-30)
+        return res;
+
+    const double slope = sxy / sxx;
+    const double intercept = meanY - slope * meanX;
+    double rss = 0.0;
+    for (const ArrPt &p : pts) {
+        const double e = p.y - (intercept + slope * p.x);
+        rss += e * e;
+    }
+    const double r2 = (syy > 1e-30) ? std::clamp(1.0 - rss / syy, 0.0, 1.0) : 1.0;
+    const double sResid = (n > 2) ? std::sqrt(std::max(0.0, rss / static_cast<double>(n - 2))) : 0.0;
+    const double slopeSE = (n > 2) ? (sResid / std::sqrt(sxx)) : 0.0;
+
+    res.valid = true;
+    res.activationEnergyKJmol = -slope * kGasR * scaleX / 1000.0;
+    res.activationEnergyKJmolSE = slopeSE * kGasR * scaleX / 1000.0;
+    res.activationEnergyEV = -slope * kBoltzEV * scaleX;
+    res.activationEnergyEVSE = slopeSE * kBoltzEV * scaleX;
+    res.lnPreExponential = intercept;
+    res.rSquare = r2;
+
+    if (!app)
+        return res;
+
+    const double tCrit = (n > 2) ? gsl_cdf_tdist_Pinv(0.975, static_cast<double>(n - 2)) : 0.0;
+    std::vector<double> colInvT(static_cast<size_t>(n));
+    std::vector<double> colTempK(static_cast<size_t>(n));
+    std::vector<double> colLnK(static_cast<size_t>(n));
+    std::vector<double> colFitY(static_cast<size_t>(n));
+    std::vector<double> colCiLo(static_cast<size_t>(n));
+    std::vector<double> colCiHi(static_cast<size_t>(n));
+
+    for (int i = 0; i < n; ++i) {
+        const double xv = pts[static_cast<size_t>(i)].x;
+        const double yh = intercept + slope * xv;
+        const double halfBand = (n > 2)
+                ? (tCrit * sResid
+                   * std::sqrt(1.0 / static_cast<double>(n)
+                               + ((xv - meanX) * (xv - meanX)) / sxx))
+                : 0.0;
+        colInvT[static_cast<size_t>(i)] = xv;
+        colTempK[static_cast<size_t>(i)] = pts[static_cast<size_t>(i)].tempK;
+        colLnK[static_cast<size_t>(i)] = pts[static_cast<size_t>(i)].y;
+        colFitY[static_cast<size_t>(i)] = yh;
+        colCiLo[static_cast<size_t>(i)] = yh - halfBand;
+        colCiHi[static_cast<size_t>(i)] = yh + halfBand;
+    }
+
+    const QString invHeader = use1000OverT ? QStringLiteral("Inv1000T") : QStringLiteral("InvT");
+    const QString lnHeader = sigmaTimesT ? QStringLiteral("LnKT") : QStringLiteral("LnK");
+    Table *tbl = createNumericTable(
+            app, QStringLiteral("ArrheniusData"),
+            QStringList() << invHeader << QStringLiteral("TempK") << lnHeader
+                          << QStringLiteral("LinearFit") << QStringLiteral("CI95Lower")
+                          << QStringLiteral("CI95Upper"),
+            QList<SciDAVis::PlotDesignation>()
+                    << SciDAVis::X << SciDAVis::noDesignation << SciDAVis::Y << SciDAVis::Y
+                    << SciDAVis::Y << SciDAVis::Y,
+            { colInvT, colTempK, colLnK, colFitY, colCiLo, colCiHi });
+    res.dataTable = tbl;
+    if (!tbl)
+        return res;
+
+    MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("ArrheniusPlot")));
+    res.plot = ml;
+    if (ml) {
+        if (Graph *g = ml->activeGraph()) {
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(2), Graph::Scatter, 0, n - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(25, 65, 135), 1.5));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 95, 185)),
+                                            QPen(QColor(15, 45, 95), 1.2), QSize(8, 8)));
+            }
+            insertStyledCurve(g, tbl, 0, 3, n, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
+            if (n > 2 && sResid > 0.0) {
+                const QPen ciPen(QColor(205, 35, 45, 175), 1.3, Qt::DashLine);
+                insertStyledCurve(g, tbl, 0, 4, n, ciPen);
+                insertStyledCurve(g, tbl, 0, 5, n, ciPen);
+            }
+
+            g->setXAxisTitle(use1000OverT ? QObject::tr("1000 / T (K^-1)")
+                                          : QObject::tr("1 / T (K^-1)"));
+            g->setYAxisTitle(sigmaTimesT ? QObject::tr("ln(k * T)") : QObject::tr("ln(k)"));
+            g->setTitle(QObject::tr("Arrhenius Plot (Activation Energy)"));
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            applyArialToMatSciGraph(g);
+
+            const double xSpan = std::max(1e-9, colInvT.back() - colInvT.front());
+            const auto yMM = std::minmax_element(colLnK.begin(), colLnK.end());
+            const double ySpan = std::max(1e-9, *yMM.second - *yMM.first);
+            const QString summary = QStringLiteral(
+                    "Ea = %1 ± %2 kJ/mol\n"
+                    "Ea = %3 ± %4 eV\n"
+                    "ln(A) = %5\n"
+                    "R² = %6")
+                    .arg(res.activationEnergyKJmol, 0, 'f', 3)
+                    .arg(res.activationEnergyKJmolSE, 0, 'f', 3)
+                    .arg(res.activationEnergyEV, 0, 'f', 4)
+                    .arg(res.activationEnergyEVSE, 0, 'f', 4)
+                    .arg(res.lnPreExponential, 0, 'f', 3)
+                    .arg(res.rSquare, 0, 'f', 5);
+            addMatSciCalloutBox(g, colInvT.front() + 0.06 * xSpan,
+                                *yMM.first + 0.32 * ySpan, summary);
+            g->setAutoScale();
+            g->replot();
+        }
+    }
+    return res;
+}
+
+CurveMathTools::TaucResult CurveMathTools::createTaucPlot(
+        ApplicationWindow *app, Table *srcTable, const QString &waveOrEnergyCol,
+        const QString &alphaCol, bool xIsWavelengthNm, bool directAllowed)
+{
+    registerMatSciTranslationsOnce();
+    TaucResult res;
+    if (!srcTable)
+        return res;
+
+    Column *cX = resolveMatSciColumn(srcTable, waveOrEnergyCol);
+    Column *cAlpha = resolveMatSciColumn(srcTable, alphaCol);
+    if (!cX || !cAlpha)
+        return res;
+
+    constexpr double kPlanckHcEvNm = 1239.84193;
+    std::vector<std::pair<double, double>> rawPts;
+    const int nRows = std::min(cX->rowCount(), cAlpha->rowCount());
+    rawPts.reserve(static_cast<size_t>(std::max(0, nRows)));
+
+    for (int r = 0; r < nRows; ++r) {
+        if (cX->isInvalid(r) || cAlpha->isInvalid(r)
+            || cX->isMasked(r) || cAlpha->isMasked(r))
+            continue;
+        const double xv = cX->valueAt(r);
+        const double av = cAlpha->valueAt(r);
+        if (!std::isfinite(xv) || !std::isfinite(av) || xv <= 0.0 || av < 0.0)
+            continue;
+        const double hv = xIsWavelengthNm ? (kPlanckHcEvNm / xv) : xv;
+        if (!std::isfinite(hv) || hv <= 0.0)
+            continue;
+        const double ahv = std::max(0.0, av * hv);
+        const double taucY = directAllowed ? (ahv * ahv) : std::sqrt(ahv);
+        if (std::isfinite(taucY))
+            rawPts.emplace_back(hv, taucY);
+    }
+
+    if (rawPts.size() < 4)
+        return res;
+
+    std::sort(rawPts.begin(), rawPts.end(),
+              [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
+                  return a.first < b.first;
+              });
+
+    // Merge near-duplicate photon energies
+    std::vector<double> E;
+    std::vector<double> Y;
+    E.reserve(rawPts.size());
+    Y.reserve(rawPts.size());
+    const double eSpanRaw = std::max(1e-6, rawPts.back().first - rawPts.front().first);
+    const double eEps = 1e-12 * eSpanRaw;
+    for (size_t i = 0; i < rawPts.size();) {
+        double sE = rawPts[i].first;
+        double sY = rawPts[i].second;
+        int cnt = 1;
+        size_t j = i + 1;
+        while (j < rawPts.size() && std::fabs(rawPts[j].first - rawPts[i].first) <= eEps) {
+            sE += rawPts[j].first;
+            sY += rawPts[j].second;
+            ++cnt;
+            ++j;
+        }
+        E.push_back(sE / cnt);
+        Y.push_back(sY / cnt);
+        i = j;
+    }
+
+    const int N = static_cast<int>(E.size());
+    if (N < 4)
+        return res;
+
+    const double yMax = *std::max_element(Y.begin(), Y.end());
+    if (yMax <= 0.0)
+        return res;
+
+    // Prefix sums for O(1) window OLS
+    std::vector<double> pE(static_cast<size_t>(N + 1), 0.0);
+    std::vector<double> pY(static_cast<size_t>(N + 1), 0.0);
+    std::vector<double> pEE(static_cast<size_t>(N + 1), 0.0);
+    std::vector<double> pYY(static_cast<size_t>(N + 1), 0.0);
+    std::vector<double> pEY(static_cast<size_t>(N + 1), 0.0);
+    for (int k = 0; k < N; ++k) {
+        const double ek = E[static_cast<size_t>(k)];
+        const double yk = Y[static_cast<size_t>(k)];
+        pE[static_cast<size_t>(k + 1)] = pE[static_cast<size_t>(k)] + ek;
+        pY[static_cast<size_t>(k + 1)] = pY[static_cast<size_t>(k)] + yk;
+        pEE[static_cast<size_t>(k + 1)] = pEE[static_cast<size_t>(k)] + ek * ek;
+        pYY[static_cast<size_t>(k + 1)] = pYY[static_cast<size_t>(k)] + yk * yk;
+        pEY[static_cast<size_t>(k + 1)] = pEY[static_cast<size_t>(k)] + ek * yk;
+    }
+
+    struct EdgeCandidate {
+        int i = 0;
+        int j = 0;
+        double a = 0.0;
+        double b = 0.0;
+        double r2 = 0.0;
+        double eg = 0.0;
+        double egSE = 0.0;
+        double yiNorm = 0.0;
+        double yjNorm = 0.0;
+    };
+
+    const int mMin = std::max(4, std::min(6, N / 6));
+    const int mMax = std::max(mMin, std::min(N, std::max(8, N / 2)));
+
+    auto collectCandidates = [&](double minYiFrac, double minRiseFrac) {
+        std::vector<EdgeCandidate> cands;
+        for (int i = 0; i < N; ++i) {
+            if (Y[static_cast<size_t>(i)] < minYiFrac * yMax)
+                continue;
+            for (int m = mMin; m <= mMax && i + m - 1 < N; ++m) {
+                const int j = i + m - 1;
+                if (Y[static_cast<size_t>(j)] - Y[static_cast<size_t>(i)] < minRiseFrac * yMax)
+                    continue;
+                const double s1 = static_cast<double>(m);
+                const double sumE = pE[static_cast<size_t>(j + 1)] - pE[static_cast<size_t>(i)];
+                const double sumY = pY[static_cast<size_t>(j + 1)] - pY[static_cast<size_t>(i)];
+                const double meanE = sumE / s1;
+                const double meanY = sumY / s1;
+                const double sEE = (pEE[static_cast<size_t>(j + 1)] - pEE[static_cast<size_t>(i)])
+                        - s1 * meanE * meanE;
+                const double sYY = (pYY[static_cast<size_t>(j + 1)] - pYY[static_cast<size_t>(i)])
+                        - s1 * meanY * meanY;
+                const double sEY = (pEY[static_cast<size_t>(j + 1)] - pEY[static_cast<size_t>(i)])
+                        - s1 * meanE * meanY;
+                if (sEE <= 1e-24 || sYY <= 1e-30 || sEY <= 0.0)
+                    continue;
+
+                const double b = sEY / sEE;
+                if (b <= 0.0)
+                    continue;
+                const double a = meanY - b * meanE;
+                const double eg = -a / b;
+                if (!std::isfinite(eg) || eg <= 0.0 || eg >= E[static_cast<size_t>(j)])
+                    continue;
+
+                const double rss = std::max(0.0, sYY - b * sEY);
+                const double r2 = std::clamp(1.0 - rss / sYY, 0.0, 1.0);
+                const double sResid = (m > 2)
+                        ? std::sqrt(rss / static_cast<double>(m - 2))
+                        : 0.0;
+                const double egSE = (m > 2 && std::fabs(b) > 1e-30)
+                        ? ((sResid / std::fabs(b))
+                           * std::sqrt(1.0 / s1 + ((eg - meanE) * (eg - meanE)) / sEE))
+                        : 0.0;
+
+                cands.push_back({ i, j, a, b, r2, eg, egSE,
+                                  Y[static_cast<size_t>(i)] / yMax,
+                                  Y[static_cast<size_t>(j)] / yMax });
+            }
+        }
+        return cands;
+    };
+
+    std::vector<EdgeCandidate> cands = collectCandidates(0.015, 0.06);
+    if (cands.empty())
+        cands = collectCandidates(0.002, 0.02);
+    if (cands.empty())
+        cands = collectCandidates(0.0, 0.0);
+    if (cands.empty())
+        return res;
+
+    double bRefMax = 0.0;
+    for (const EdgeCandidate &c : cands) {
+        if (c.r2 >= 0.90)
+            bRefMax = std::max(bRefMax, c.b);
+    }
+    if (bRefMax <= 0.0) {
+        for (const EdgeCandidate &c : cands)
+            bRefMax = std::max(bRefMax, c.b);
+    }
+
+    // Prefer absorption-onset / mid-edge windows before high-energy non-parabolic drift or saturation
+    std::vector<EdgeCandidate> onsetPool;
+    for (const EdgeCandidate &c : cands) {
+        if (c.b >= 0.25 * bRefMax && c.yiNorm <= 0.35 && c.yjNorm <= 0.80 && c.r2 >= 0.985)
+            onsetPool.push_back(c);
+    }
+    const std::vector<EdgeCandidate> &pool = onsetPool.empty() ? cands : onsetPool;
+
+    double bestPoolR2 = 0.0;
+    double maxPoolB = 0.0;
+    for (const EdgeCandidate &c : pool) {
+        bestPoolR2 = std::max(bestPoolR2, c.r2);
+        maxPoolB = std::max(maxPoolB, c.b);
+    }
+    const double r2Floor = std::max(0.90, bestPoolR2 - 0.005);
+
+    const EdgeCandidate *winner = &pool.front();
+    double bestScore = -1.0;
+    for (const EdgeCandidate &c : pool) {
+        if (c.r2 < r2Floor && bestPoolR2 >= 0.95)
+            continue;
+        const double slopeTerm = (maxPoolB > 0.0) ? std::sqrt(c.b / maxPoolB) : 1.0;
+        const double onsetWeight = 1.0 / (1.0 + 2.0 * c.yiNorm);
+        const double score = std::pow(c.r2, 8) * slopeTerm * onsetWeight;
+        if (score > bestScore) {
+            bestScore = score;
+            winner = &c;
+        }
+    }
+
+    res.valid = true;
+    res.bandgapEV = winner->eg;
+    res.bandgapEVSE = winner->egSE;
+    res.edgeSlope = winner->b;
+    res.rSquare = winner->r2;
+
+    if (!app)
+        return res;
+
+    // Build Tauc data + extrapolated tangent line table (extending down to (Eg, 0))
+    const double tanE1 = E[static_cast<size_t>(winner->j)];
+    const double tanY1 = winner->a + winner->b * tanE1;
+    std::vector<double> colHv = E;
+    std::vector<double> colTauc = Y;
+
+    Table *tbl = app->newTable(makeUniqueTableName(app, QStringLiteral("TaucData")),
+                               std::max(N, 2), 4);
+    res.dataTable = tbl;
+    if (!tbl)
+        return res;
+
+    tbl->setColName(0, QStringLiteral("PhotonEnergyEV"));
+    tbl->setColName(1, directAllowed ? QStringLiteral("TaucDirect") : QStringLiteral("TaucIndirect"));
+    tbl->setColName(2, QStringLiteral("TangentEV"));
+    tbl->setColName(3, QStringLiteral("TangentY"));
+    tbl->setColPlotDesignation(0, SciDAVis::X);
+    tbl->setColPlotDesignation(1, SciDAVis::Y);
+    tbl->setColPlotDesignation(2, SciDAVis::X);
+    tbl->setColPlotDesignation(3, SciDAVis::Y);
+
+    for (int r = 0; r < N; ++r) {
+        tbl->column(0)->setValueAt(r, colHv[static_cast<size_t>(r)]);
+        tbl->column(1)->setValueAt(r, colTauc[static_cast<size_t>(r)]);
+    }
+    tbl->column(2)->setValueAt(0, res.bandgapEV);
+    tbl->column(3)->setValueAt(0, 0.0);
+    tbl->column(2)->setValueAt(1, tanE1);
+    tbl->column(3)->setValueAt(1, std::max(0.0, tanY1));
+
+    MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TaucPlot")));
+    res.plot = ml;
+    if (ml) {
+        if (Graph *g = ml->activeGraph()) {
+            insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(25, 85, 165), 2.2, Qt::SolidLine));
+            insertStyledCurve(g, tbl, 2, 3, 2, QPen(QColor(215, 35, 40), 2.0, Qt::DashLine));
+
+            // Baseline Y = 0 reference marker
+            ArrowMarker baseLine;
+            const double xLo = std::min(colHv.front(), res.bandgapEV);
+            const double xHi = colHv.back();
+            baseLine.setStartPoint(xLo, 0.0);
+            baseLine.setEndPoint(xHi, 0.0);
+            baseLine.setBoundingRect(xLo, 0.0, xHi, 0.0);
+            baseLine.setColor(QColor(120, 130, 145));
+            baseLine.setWidth(1);
+            baseLine.setStyle(Qt::DotLine);
+            baseLine.drawStartArrow(false);
+            baseLine.drawEndArrow(false);
+            g->addArrow(&baseLine);
+
+            g->setXAxisTitle(QObject::tr("Photon Energy hν (eV)"));
+            g->setYAxisTitle(directAllowed ? QObject::tr("(αhν)^2 ((eV/cm)^2)")
+                                           : QObject::tr("(αhν)^(1/2) ((eV/cm)^(1/2))"));
+            g->setTitle(QObject::tr("Tauc Plot (Optical Bandgap)"));
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            applyArialToMatSciGraph(g);
+
+            const double eSpan = std::max(1e-6, xHi - xLo);
+            const QString summary = QStringLiteral(
+                    "Eg = %1 ± %2 eV (%3)\n"
+                    "Edge [%4 – %5 eV]\n"
+                    "R² = %6")
+                    .arg(res.bandgapEV, 0, 'f', 3)
+                    .arg(res.bandgapEVSE, 0, 'f', 3)
+                    .arg(directAllowed ? QStringLiteral("Direct") : QStringLiteral("Indirect"))
+                    .arg(E[static_cast<size_t>(winner->i)], 0, 'f', 2)
+                    .arg(E[static_cast<size_t>(winner->j)], 0, 'f', 2)
+                    .arg(res.rSquare, 0, 'f', 5);
+            addMatSciCalloutBox(g, xLo + 0.06 * eSpan, 0.72 * yMax, summary);
+            g->setAutoScale();
+            g->replot();
+        }
+    }
+    return res;
+}
+
+QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g,
+                                                const QString &curveA, const QString &curveB,
+                                                const QColor &fillColor)
+{
+    registerMatSciTranslationsOnce();
+    if (!app || !g)
+        return nullptr;
+
+    std::vector<double> xA, yA, xB, yB;
+    if (!extractUnmaskedCurvePoints(g, curveA, xA, yA, true, true)
+        || !extractUnmaskedCurvePoints(g, curveB, xB, yB, true, true))
+        return nullptr;
+    if (xA.size() < 2 || xB.size() < 2)
+        return nullptr;
+
+    const double ovLo = std::max(xA.front(), xB.front());
+    const double ovHi = std::min(xA.back(), xB.back());
+    const double xStart = (ovHi > ovLo) ? ovLo : std::min(xA.front(), xB.front());
+    const double xEnd = (ovHi > ovLo) ? ovHi : std::max(xA.back(), xB.back());
+    if (!(xEnd > xStart))
+        return nullptr;
+
+    // Collect union X knots + dense sampling + exact intersection X points
+    std::vector<double> knots;
+    knots.reserve(xA.size() + xB.size() + 128);
+    knots.push_back(xStart);
+    knots.push_back(xEnd);
+    for (double xv : xA) {
+        if (xv >= xStart && xv <= xEnd)
+            knots.push_back(xv);
+    }
+    for (double xv : xB) {
+        if (xv >= xStart && xv <= xEnd)
+            knots.push_back(xv);
+    }
+    constexpr int kMinDense = 100;
+    for (int k = 1; k < kMinDense; ++k)
+        knots.push_back(xStart + (xEnd - xStart) * static_cast<double>(k) / kMinDense);
+
+    std::sort(knots.begin(), knots.end());
+    const double dedupEps = 1e-12 * std::max(1.0, xEnd - xStart);
+    std::vector<double> baseGrid;
+    baseGrid.reserve(knots.size());
+    for (double xv : knots) {
+        if (baseGrid.empty() || xv - baseGrid.back() > dedupEps)
+            baseGrid.push_back(xv);
+    }
+    if (baseGrid.size() < 2)
+        return nullptr;
+
+    // Insert exact crossover roots where (yA - yB) changes sign
+    std::vector<double> xg;
+    std::vector<double> yAg;
+    std::vector<double> yBg;
+    xg.reserve(baseGrid.size() + 16);
+    yAg.reserve(baseGrid.size() + 16);
+    yBg.reserve(baseGrid.size() + 16);
+
+    for (size_t k = 0; k < baseGrid.size(); ++k) {
+        const double x0 = baseGrid[k];
+        const double a0 = interpLinearSorted(xA, yA, x0);
+        const double b0 = interpLinearSorted(xB, yB, x0);
+        xg.push_back(x0);
+        yAg.push_back(a0);
+        yBg.push_back(b0);
+
+        if (k + 1 < baseGrid.size()) {
+            const double x1 = baseGrid[k + 1];
+            const double a1 = interpLinearSorted(xA, yA, x1);
+            const double b1 = interpLinearSorted(xB, yB, x1);
+            const double d0 = a0 - b0;
+            const double d1 = a1 - b1;
+            if ((d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0)) {
+                const double t = d0 / (d0 - d1);
+                if (t > 1e-6 && t < 1.0 - 1e-6) {
+                    const double xc = x0 + t * (x1 - x0);
+                    const double yc = a0 + t * (a1 - a0);
+                    xg.push_back(xc);
+                    yAg.push_back(yc);
+                    yBg.push_back(yc);
+                }
+            }
+        }
+    }
+
+    const size_t m = xg.size();
+    std::vector<double> polyX;
+    std::vector<double> polyY;
+    polyX.reserve(2 * m + 1);
+    polyY.reserve(2 * m + 1);
+    for (size_t k = 0; k < m; ++k) {
+        polyX.push_back(xg[k]);
+        polyY.push_back(yAg[k]);
+    }
+    for (size_t k = m; k-- > 0;) {
+        polyX.push_back(xg[k]);
+        polyY.push_back(yBg[k]);
+    }
+    polyX.push_back(xg[0]);
+    polyY.push_back(yAg[0]);
+
+    Table *polyTbl = createNumericTable(
+            app, QStringLiteral("FillBetween"),
+            QStringList() << QStringLiteral("FillX") << QStringLiteral("FillY"),
+            QList<SciDAVis::PlotDesignation>() << SciDAVis::X << SciDAVis::Y,
+            { polyX, polyY });
+    if (!polyTbl)
+        return nullptr;
+
+    const int nPoly = static_cast<int>(polyX.size());
+    auto *fillCurve = new FilledPolygonDataCurve(
+            polyTbl, polyTbl->colName(0), polyTbl->colName(1), 0, nPoly - 1, fillColor);
+    fillCurve->loadData();
+    g->insertPlotItem(fillCurve, Graph::Line);
+    g->updatePlot();
+    return fillCurve;
+}
+
+void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerMatSciTranslationsOnce();
+    const QList<Table *> tables = collectProjectTables(app);
+    if (tables.isEmpty()) {
+        QMessageBox::information(app, QObject::tr("Arrhenius Plot (Activation Energy)"),
+                                 QObject::tr("No numeric worksheets are open."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Arrhenius Plot (Activation Energy)"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *activeTbl = findActiveOrFirstTable(app);
+    int initIdx = 0;
+    for (int i = 0; i < tables.size(); ++i) {
+        cbTable->addItem(tables[i]->name());
+        if (tables[i] == activeTbl)
+            initIdx = i;
+    }
+    cbTable->setCurrentIndex(initIdx);
+
+    QComboBox *cbTemp = new QComboBox(&dlg);
+    QComboBox *cbRate = new QComboBox(&dlg);
+    auto repopulateCols = [&](int tblIdx) {
+        cbTemp->clear();
+        cbRate->clear();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Table *t = tables[tblIdx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c) ? t->column(c)->name() : t->colLabel(c);
+            cbTemp->addItem(cn);
+            cbRate->addItem(cn);
+        }
+        if (cbRate->count() >= 2)
+            cbRate->setCurrentIndex(1);
+    };
+    repopulateCols(initIdx);
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     repopulateCols);
+
+    QCheckBox *chkCelsius =
+            new QCheckBox(QObject::tr("Temperature in Celsius (°C -> +273.15 K)"), &dlg);
+    QCheckBox *chk1000 = new QCheckBox(QObject::tr("Plot vs. 1000 / T (K^-1)"), &dlg);
+    chk1000->setChecked(true);
+    QCheckBox *chkSigmaT =
+            new QCheckBox(QObject::tr("Modified Arrhenius: ln(k * T) (Ionic Conductivity)"), &dlg);
+
+    form->addRow(QObject::tr("Source Worksheet:"), cbTable);
+    form->addRow(QObject::tr("Temperature Column:"), cbTemp);
+    form->addRow(QObject::tr("Rate / Conductivity Column:"), cbRate);
+    form->addRow(QString(), chkCelsius);
+    form->addRow(QString(), chk1000);
+    form->addRow(QString(), chkSigmaT);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int idx = cbTable->currentIndex();
+        if (idx >= 0 && idx < tables.size()) {
+            createArrheniusPlot(app, tables[idx], cbTemp->currentText(), cbRate->currentText(),
+                                chkCelsius->isChecked(), chk1000->isChecked(),
+                                chkSigmaT->isChecked());
+        }
+    }
+}
+
+void CurveMathTools::showTaucDialog(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    registerMatSciTranslationsOnce();
+    const QList<Table *> tables = collectProjectTables(app);
+    if (tables.isEmpty()) {
+        QMessageBox::information(app, QObject::tr("Tauc Plot (Optical Bandgap)"),
+                                 QObject::tr("No numeric worksheets are open."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Tauc Plot (Optical Bandgap)"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    Table *activeTbl = findActiveOrFirstTable(app);
+    int initIdx = 0;
+    for (int i = 0; i < tables.size(); ++i) {
+        cbTable->addItem(tables[i]->name());
+        if (tables[i] == activeTbl)
+            initIdx = i;
+    }
+    cbTable->setCurrentIndex(initIdx);
+
+    QComboBox *cbWave = new QComboBox(&dlg);
+    QComboBox *cbAlpha = new QComboBox(&dlg);
+    auto repopulateCols = [&](int tblIdx) {
+        cbWave->clear();
+        cbAlpha->clear();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Table *t = tables[tblIdx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString cn = t->column(c) ? t->column(c)->name() : t->colLabel(c);
+            cbWave->addItem(cn);
+            cbAlpha->addItem(cn);
+        }
+        if (cbAlpha->count() >= 2)
+            cbAlpha->setCurrentIndex(1);
+    };
+    repopulateCols(initIdx);
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     repopulateCols);
+
+    QComboBox *cbUnit = new QComboBox(&dlg);
+    cbUnit->addItem(QObject::tr("Wavelength λ (nm -> hν = 1239.84 / λ eV)"), true);
+    cbUnit->addItem(QObject::tr("Photon Energy hν (eV)"), false);
+
+    QComboBox *cbTransition = new QComboBox(&dlg);
+    cbTransition->addItem(QObject::tr("Direct Allowed: (αhν)^2"), true);
+    cbTransition->addItem(QObject::tr("Indirect Allowed: (αhν)^(1/2)"), false);
+
+    form->addRow(QObject::tr("Source Worksheet:"), cbTable);
+    form->addRow(QObject::tr("Wavelength / Energy Column:"), cbWave);
+    form->addRow(QObject::tr("Absorption Coefficient Column (α):"), cbAlpha);
+    form->addRow(QObject::tr("X Column Unit:"), cbUnit);
+    form->addRow(QObject::tr("Transition Type:"), cbTransition);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int idx = cbTable->currentIndex();
+        if (idx >= 0 && idx < tables.size()) {
+            createTaucPlot(app, tables[idx], cbWave->currentText(), cbAlpha->currentText(),
+                           cbUnit->currentData().toBool(), cbTransition->currentData().toBool());
+        }
+    }
+}
+
+void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
+{
+    if (!app)
+        return;
+    registerMatSciTranslationsOnce();
+    Graph *targetGraph = findActiveOrFirstGraph(app, g);
+    if (!targetGraph || targetGraph->analysableCurvesList().size() < 2) {
+        QMessageBox::information(
+                app, QObject::tr("Fill Area Between Curves"),
+                QObject::tr("Please open a graph with at least two curves first."));
+        return;
+    }
+
+    const QStringList curves = targetGraph->analysableCurvesList();
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Fill Area Between Curves"));
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbA = new QComboBox(&dlg);
+    QComboBox *cbB = new QComboBox(&dlg);
+    cbA->addItems(curves);
+    cbB->addItems(curves);
+    cbB->setCurrentIndex(1);
+
+    QColor chosenColor(30, 102, 184, 55);
+    QLabel *lblSwatch = new QLabel(&dlg);
+    lblSwatch->setFixedSize(36, 22);
+    auto updateSwatch = [&]() {
+        lblSwatch->setStyleSheet(
+                QStringLiteral("background-color: rgba(%1,%2,%3,%4); border: 1px solid #555;")
+                        .arg(chosenColor.red())
+                        .arg(chosenColor.green())
+                        .arg(chosenColor.blue())
+                        .arg(chosenColor.alpha()));
+    };
+    updateSwatch();
+
+    QPushButton *btnColor = new QPushButton(QObject::tr("Choose Color..."), &dlg);
+    QSpinBox *sbOpacity = new QSpinBox(&dlg);
+    sbOpacity->setRange(5, 100);
+    sbOpacity->setValue(std::clamp(static_cast<int>(std::round(chosenColor.alpha() * 100.0 / 255.0)),
+                                   5, 100));
+
+    QHBoxLayout *colorRow = new QHBoxLayout();
+    colorRow->addWidget(lblSwatch);
+    colorRow->addWidget(btnColor);
+
+    QObject::connect(btnColor, &QPushButton::clicked, &dlg, [&]() {
+        const QColor c = QColorDialog::getColor(chosenColor, &dlg,
+                                                QObject::tr("Fill Area Between Curves"));
+        if (c.isValid()) {
+            chosenColor.setRgb(c.red(), c.green(), c.blue(),
+                               std::clamp(sbOpacity->value() * 255 / 100, 10, 255));
+            updateSwatch();
+        }
+    });
+    QObject::connect(sbOpacity, QOverload<int>::of(&QSpinBox::valueChanged), &dlg, [&](int pct) {
+        chosenColor.setAlpha(std::clamp(pct * 255 / 100, 10, 255));
+        updateSwatch();
+    });
+
+    form->addRow(QObject::tr("First Curve (Boundary A):"), cbA);
+    form->addRow(QObject::tr("Second Curve (Boundary B):"), cbB);
+    form->addRow(QObject::tr("Fill Color & Opacity:"), colorRow);
+    form->addRow(QObject::tr("Fill Opacity (%):"), sbOpacity);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        fillBetweenCurves(app, targetGraph, cbA->currentText(), cbB->currentText(), chosenColor);
+    }
 }
