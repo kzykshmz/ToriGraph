@@ -31,16 +31,22 @@
 #include "GraphMiniToolbar.h"
 #include "PiecewiseAndRobustFit.h"
 #include "GraphDigitizer.h"
+#include "ImageExportDialog.h"
+#include "SelectionMoveResizer.h"
+#include "AssociationsDialog.h"
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
 #include <qwt_scale_div.h>
+#include <qwt_scale_map.h>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QPainter>
@@ -3179,8 +3185,1101 @@ int main(int argc, char **argv)
                    "GraphDigitizer extracted (X,Y) exceeded 1.0 pixel tolerance vs y = 0.5*x + 10");
     }
 
+    // =========================================================================
+    // 25. Suite 25: Exhaustive Codebase-Wide Japanese tr(...) Audit + Phase 4/5 Dialog Localization
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 25: Exhaustive Japanese tr(...) Dictionary & Phase 4/5 Menu/Dialog Audit...\n";
+
+        Table *t25 = mw->newTable(12, 2, "JaPhase5Tbl", "JaPhase5");
+        for (int r = 0; r < 12; ++r) {
+            t25->setCell(r, 0, double(r));
+            t25->setCell(r, 1, 2.0 * double(r) + 1.0);
+        }
+        MultiLayer *ml25 = mw->multilayerPlot(t25, QStringList() << "JaPhase5Tbl_2", Graph::LineSymbols);
+        CHECK_COND(ml25 != nullptr && ml25->activeGraph() != nullptr, "Failed to create ml25");
+        Graph *g25 = ml25->activeGraph();
+        if (!g25->legend())
+            g25->newLegend();
+
+        mw->switchToLanguage("ja");
+        CHECK_COND(mw->appLanguage == "ja", "Suite 25 failed to switch appLanguage to 'ja'");
+        std::cout << "[INFO] Japanese dictionary total curated entries = "
+                  << ToriGraphFullJapaneseTranslator::dictionarySize() << "\n";
+        CHECK_COND(ToriGraphFullJapaneseTranslator::dictionarySize() >= 3500,
+                   "Expected >= 3500 curated entries in ToriGraphFullJapaneseTranslator");
+
+        auto hasJaChars25 = [](const QString &s) -> bool {
+            for (int i = 0; i < s.size(); ++i) {
+                ushort u = s.at(i).unicode();
+                if ((u >= 0x3040 && u <= 0x30FF) || (u >= 0x4E00 && u <= 0x9FFF)
+                    || (u >= 0x3400 && u <= 0x4DBF)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        auto stripMnem25 = [](QString s) -> QString {
+            s.replace("&&", "\x01");
+            int idx = 0;
+            while ((idx = s.indexOf("(&", idx)) >= 0) {
+                if (idx + 3 < s.size() && s.at(idx + 3) == QChar(')'))
+                    s.remove(idx, 4);
+                else
+                    idx += 2;
+            }
+            s.remove('&');
+            s.replace('\x01', '&');
+            return s.trimmed();
+        };
+
+        const QSet<QString> universalTokens25 = {
+            "English", "English (&E)", "OK", "FFT", "IFFT", "2D", "3D",
+            "AIC", "BIC", "AIC/BIC", "PCA", "ROC", "CSV", "SVG", "PDF", "EPS", "EMF",
+            "ASCII", "TeX", "LaTeX", "LOWESS", "LOESS", "STFT", "IIR", "FIR",
+            "CWT", "DWT", "PSD", "MLR", "ANOVA", "Savitzky-Golay",
+            "X", "Y", "Z", "A", "B", "C", "R^2", "R²", "p", "t", "F",
+            "X=0", "Y=0"
+        };
+
+        auto isJaOrUniversal25 = [&](const QString &raw) -> bool {
+            QString clean = stripMnem25(raw);
+            if (clean.isEmpty() || hasJaChars25(clean) || universalTokens25.contains(clean))
+                return true;
+            for (int i = 0; i < clean.size(); ++i) {
+                ushort u = clean.at(i).unicode();
+                if ((u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z'))
+                    return false;
+            }
+            return true;
+        };
+
+        // 1. Representative strings across ALL Phase 4 & Phase 5 modules
+        const QStringList requiredJaLookupStrings = {
+            "Piecewise Linear Breakpoint Fit",
+            "Graph Image Digitizer",
+            "Normality Test (Shapiro-Wilk / KS / Anderson-Darling)",
+            "Delta Cursor",
+            "Delta Cursor (C1-C2)...",
+            "Arrhenius Plot (Activation Energy)",
+            "Arrhenius Plot (Activation Energy)...",
+            "Tauc Plot (Optical Bandgap)...",
+            "Weibull Probability Plot",
+            "Weibull Probability Plot...",
+            "Presentation Slide (28 pt Arial)",
+            "ISIJ Journal (85 mm, 600 DPI)",
+            "Nature / Science Compact (89 mm)",
+            "Duplicate (Batch Plotting)...",
+            "Copy Format",
+            "Paste Format",
+            "Long Name",
+            "Units",
+            "Axis Break",
+            "Enable Axis Break",
+            "Divide by Factor:",
+            "Reconstruct Legend",
+            "Linear Constraints:",
+            "Run Bootstrap CI",
+            "Binary Logistic Regression",
+            "Fill Area Between Curves...",
+            "Outlier Test (Grubbs / ESD / Dixon)...",
+            "Mann-Whitney U Test",
+            "Kruskal-Wallis ANOVA",
+            "Auto (Shapiro-Wilk Smart Switch)",
+            "Paired Comparison Plot (Before-After)...",
+            "Correlation Matrix Heatmap...",
+            "K-Means Clustering...",
+            "Hierarchical Cluster Dendrogram...",
+            "Waterfall / Stack Offset...",
+            "Reset Stack Offsets",
+            "Export DPI:",
+            "Transparency"
+        };
+
+        QStringList untranslated25;
+        for (const QString &srcEn : requiredJaLookupStrings) {
+            QString ja = ToriGraphFullJapaneseTranslator::lookupJapanese(srcEn);
+            if (ja.isEmpty() || !hasJaChars25(ja)) {
+                untranslated25 << QString("lookupJapanese('%1') -> '%2'").arg(srcEn, ja);
+            }
+        }
+
+        // 2. Audit MenuBar + Curve Context Menu + Marker Context Menu + Phase 5 Dialogs
+        int auditedCount25 = 0;
+        QSet<const QMenu *> seenMenus25;
+        std::function<void(QMenu *, const QString &)> auditMenu25 =
+                [&](QMenu *m, const QString &prefix) {
+            if (!m || seenMenus25.contains(m))
+                return;
+            if (prefix.contains(QString::fromUtf8("最近のプロジェクト"))
+                || prefix.contains("Recent Projects"))
+                return;
+            seenMenus25.insert(m);
+            if (!m->title().isEmpty()) {
+                ++auditedCount25;
+                if (!isJaOrUniversal25(m->title()))
+                    untranslated25 << QString("MenuTitle[%1]: '%2'").arg(prefix, m->title());
+            }
+            for (QAction *a : m->actions()) {
+                if (!a || a->isSeparator())
+                    continue;
+                if (a->menu()) {
+                    auditMenu25(a->menu(), prefix + "/" + stripMnem25(a->text()));
+                    continue;
+                }
+                QString tStr = a->text().trimmed();
+                if (tStr.isEmpty())
+                    continue;
+                QString stripped = stripMnem25(tStr);
+                int sp = stripped.indexOf(' ');
+                QString afterSp = (sp > 0) ? stripped.mid(sp + 1).trimmed() : stripped;
+                if (mw->alreadyUsedName(stripped) || mw->alreadyUsedName(afterSp)
+                    || g25->analysableCurvesList().contains(stripped)
+                    || QFile::exists(stripped))
+                    continue;
+                ++auditedCount25;
+                if (!isJaOrUniversal25(tStr))
+                    untranslated25 << QString("MenuAction[%1]: '%2'").arg(prefix, tStr);
+            }
+        };
+
+        Matrix *m25 = mw->newMatrix(4, 4);
+        for (MyWidget *wCtx : QList<MyWidget *>{ t25, m25, ml25 }) {
+            mw->activateSubWindow(wCtx);
+            mw->customMenu(wCtx);
+            for (QAction *topA : mw->menuBar()->actions()) {
+                if (topA && topA->menu())
+                    auditMenu25(topA->menu(), stripMnem25(topA->text()));
+            }
+        }
+        if (mw->gadgetsMenu)
+            auditMenu25(mw->gadgetsMenu, "GadgetsMenu");
+
+        int firstCurveKey = g25->curveKey(0);
+        if (QMenu *curveMenu = mw->showCurveContextMenuImpl(firstCurveKey)) {
+            auditMenu25(curveMenu, "CurveContextMenu");
+            delete curveMenu;
+        }
+
+        // Audit Phase 5 upgraded dialogs (AxesDialog, PlotDialog, FitDialog, ImageExportDialog, AssociationsDialog)
+        auto auditDlg25 = [&](QDialog *dlg, const QString &name) {
+            if (!dlg)
+                return;
+            if (!dlg->windowTitle().trimmed().isEmpty()) {
+                ++auditedCount25;
+                if (!isJaOrUniversal25(dlg->windowTitle()))
+                    untranslated25 << QString("%1.windowTitle: '%2'").arg(name, dlg->windowTitle());
+            }
+            for (QTabWidget *tw : dlg->findChildren<QTabWidget *>()) {
+                for (int i = 0; i < tw->count(); ++i) {
+                    ++auditedCount25;
+                    if (!isJaOrUniversal25(tw->tabText(i)))
+                        untranslated25 << QString("%1.Tab[%2]: '%3'").arg(name).arg(i).arg(tw->tabText(i));
+                }
+            }
+            for (QCheckBox *cb : dlg->findChildren<QCheckBox *>()) {
+                if (!cb->text().trimmed().isEmpty()) {
+                    ++auditedCount25;
+                    if (!isJaOrUniversal25(cb->text()))
+                        untranslated25 << QString("%1.CheckBox: '%2'").arg(name, cb->text());
+                }
+            }
+        };
+
+        {
+            AxesDialog axDlg;
+            axDlg.setGraph(g25);
+            auditDlg25(&axDlg, "AxesDialog");
+        }
+        {
+            PlotDialog plDlg(true, mw);
+            plDlg.initFonts(mw->plotTitleFont, mw->plotAxesFont, mw->plotNumbersFont, mw->plotLegendFont);
+            plDlg.setMultiLayer(ml25);
+            auditDlg25(&plDlg, "PlotDialog");
+        }
+        {
+            FitDialog ftDlg(mw);
+            ftDlg.setGraph(g25);
+            auditDlg25(&ftDlg, "FitDialog");
+        }
+        {
+            ImageExportDialog expDlg(mw, true, true);
+            auditDlg25(&expDlg, "ImageExportDialog");
+        }
+        {
+            AssociationsDialog assocDlg(mw);
+            assocDlg.setGraph(g25);
+            auditDlg25(&assocDlg, "AssociationsDialog");
+        }
+
+        if (!untranslated25.isEmpty()) {
+            std::cerr << "[WARN] Untranslated items in Suite 25 (" << untranslated25.size() << "):\n";
+            for (const QString &u : untranslated25)
+                std::cerr << "  - " << u.toUtf8().constData() << "\n";
+        }
+        std::cout << "[INFO] Suite 25 audited " << requiredJaLookupStrings.size()
+                  << " Phase 4/5 lookup strings + " << auditedCount25
+                  << " menu/context/dialog items, untranslated=" << untranslated25.size() << "\n";
+        CHECK_COND(untranslated25.isEmpty(),
+                   "Suite 25 found untranslated English strings in Phase 4/5 localization audit!");
+
+        mw->switchToLanguage("en");
+        CHECK_COND(mw->appLanguage == "en", "Failed to restore 'en' at end of Suite 25");
+    }
+
+    // =========================================================================
+    // 26. Suite 26: Worksheet Long Name & Units -> Auto Axis Title, Live F(x)= Auto-Recalc,
+    //               StylePresentationSlide28pt, Copy/Paste Format & Batch Plotting
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 26: Worksheet Long Name/Units, Live F(x)=, 28pt Slide Preset, Copy/Paste Format & Batch Plot...\n";
+
+        // 1. Worksheet Long Name & Units -> Automatic Graph Axis Titles in Arial
+        Table *tTensile = mw->newTable(21, 2, "TensileSpecA", "Tensile A");
+        tTensile->setColName(0, "Strain");
+        tTensile->setColPlotDesignation(0, SciDAVis::X);
+        tTensile->column(0)->setLongName("Nominal Strain");
+        tTensile->column(0)->setUnits("%");
+
+        tTensile->setColName(1, "Stress");
+        tTensile->setColPlotDesignation(1, SciDAVis::Y);
+        tTensile->column(1)->setLongName("Nominal Stress");
+        tTensile->column(1)->setUnits("MPa");
+
+        CHECK_COND(tTensile->column(0)->formattedAxisTitle(Column::UnitFormat::Paren) == "Nominal Strain (%)",
+                   "Column::formattedAxisTitle(Paren) mismatch for Strain (%)");
+        CHECK_COND(tTensile->column(1)->formattedAxisTitle(Column::UnitFormat::Paren) == "Nominal Stress (MPa)",
+                   "Column::formattedAxisTitle(Paren) mismatch for Stress (MPa)");
+        CHECK_COND(tTensile->column(1)->formattedAxisTitle(Column::UnitFormat::ISIJSlash) == "Nominal Stress / MPa",
+                   "Column::formattedAxisTitle(ISIJSlash) mismatch for Stress / MPa");
+
+        for (int r = 0; r < 21; ++r) {
+            double eps = double(r) * 0.5;
+            tTensile->setCell(r, 0, eps);
+            tTensile->setCell(r, 1, 520.0 * (1.0 - std::exp(-0.35 * eps)));
+        }
+
+        MultiLayer *mlTensile = mw->multilayerPlot(
+                tTensile, QStringList() << (tTensile->name() + "_Stress"), Graph::LineSymbols);
+        CHECK_COND(mlTensile != nullptr && mlTensile->activeGraph() != nullptr,
+                   "Failed to plot TensileSpecA");
+        Graph *gTensile = mlTensile->activeGraph();
+        QString xTitleAuto = gTensile->plotWidget()->axisTitle(QwtPlot::xBottom).text();
+        QString yTitleAuto = gTensile->plotWidget()->axisTitle(QwtPlot::yLeft).text();
+        std::cout << "[INFO] Auto Axis Titles: X='" << xTitleAuto.toStdString()
+                  << "', Y='" << yTitleAuto.toStdString() << "'\n";
+        CHECK_COND(xTitleAuto == "Nominal Strain (%)" && yTitleAuto == "Nominal Stress (MPa)",
+                   "multilayerPlot did not auto-populate Long Name (Units) on X/Y axes");
+        CHECK_COND(gTensile->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && gTensile->axisTitleFont(QwtPlot::yLeft).family() == "Arial",
+                   "Auto-populated axis titles did not preserve Arial font");
+
+        // 2. Live F(x)= Auto-Recalc without manual row selection
+        Table *tFx = mw->newTable(8, 2, "LiveFxTable", "Live F(x)=");
+        tFx->setColName(0, "A");
+        tFx->setColName(1, "B");
+        for (int r = 0; r < 8; ++r)
+            tFx->setCell(r, 0, double(r + 1)); // 1..8
+        tFx->deselectAll(); // 0 selected rows -> tests P0 recalculate() fix!
+        tFx->setCommand(1, "col(\"A\")*3.0");
+        CHECK_COND(tFx->recalculate(1, false), "Table::recalculate(1, false) failed with no selection");
+        CHECK_COND(std::fabs(tFx->cell(0, 1) - 3.0) < 1e-9
+                           && std::fabs(tFx->cell(5, 1) - 18.0) < 1e-9,
+                   "Initial col(\"A\")*3.0 values incorrect");
+
+        // Modify cell in col A WITHOUT calling recalculate() -> live auto-recalc!
+        tFx->setCell(0, 0, 100.0);
+        tFx->setCell(5, 0, 25.0);
+        QApplication::processEvents();
+        std::cout << "[INFO] Live F(x)= auto-recalc: row0=" << tFx->cell(0, 1)
+                  << " (exp 300), row5=" << tFx->cell(5, 1) << " (exp 75)\n";
+        CHECK_COND(std::fabs(tFx->cell(0, 1) - 300.0) < 1e-9
+                           && std::fabs(tFx->cell(5, 1) - 75.0) < 1e-9,
+                   "Formula column col(\"A\")*3.0 did not auto-recalculate when col A changed!");
+
+        // 3. Presentation Slide Preset (28 pt Arial Regular on BOTH axis titles & tick numbers, 1:1 frame)
+        mlTensile->show();
+        QApplication::processEvents();
+        mlTensile->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        QApplication::processEvents();
+
+        QFont slideXTitleFnt = gTensile->axisTitleFont(QwtPlot::xBottom);
+        QFont slideYTitleFnt = gTensile->axisTitleFont(QwtPlot::yLeft);
+        QFont slideXTickFnt = gTensile->axisFont(QwtPlot::xBottom);
+        QFont slideYTickFnt = gTensile->axisFont(QwtPlot::yLeft);
+        std::cout << "[INFO] StylePresentationSlide28pt: titleFont=" << slideXTitleFnt.family().toStdString()
+                  << " " << slideXTitleFnt.pointSize() << "pt bold=" << slideXTitleFnt.bold()
+                  << ", tickFont=" << slideXTickFnt.family().toStdString()
+                  << " " << slideXTickFnt.pointSize() << "pt bold=" << slideXTickFnt.bold() << "\n";
+        CHECK_COND(slideXTitleFnt.family() == "Arial" && slideXTitleFnt.pointSize() == 28 && !slideXTitleFnt.bold()
+                           && slideYTitleFnt.family() == "Arial" && slideYTitleFnt.pointSize() == 28 && !slideYTitleFnt.bold(),
+                   "StylePresentationSlide28pt axis title font is not Arial 28 pt Regular");
+        CHECK_COND(slideXTickFnt.family() == "Arial" && slideXTickFnt.pointSize() == 28 && !slideXTickFnt.bold()
+                           && slideYTickFnt.family() == "Arial" && slideYTickFnt.pointSize() == 28 && !slideYTickFnt.bold(),
+                   "StylePresentationSlide28pt tick number font is not Arial 28 pt Regular");
+        CHECK_COND(mlTensile->keepAspectRatio()
+                           && std::fabs(mlTensile->targetAspectRatio() - 1.0) < 1e-6,
+                   "StylePresentationSlide28pt did not lock 1:1 square aspect ratio");
+
+        // Add a ReferenceLine before Copy Format / Batch Clone
+        Graph::ReferenceLineSpec yieldRef;
+        yieldRef.orientation = 0;
+        yieldRef.value = 350.0;
+        yieldRef.label = "Yield";
+        gTensile->addReferenceLine(yieldRef);
+
+        // 4. Copy Graph Format -> Paste Graph Format onto a 2nd graph
+        MultiLayer *mlFmtTarget = mw->multilayerPlot(
+                tFx, QStringList() << (tFx->name() + "_B"), Graph::Line);
+        CHECK_COND(mlFmtTarget != nullptr && mlFmtTarget->activeGraph() != nullptr,
+                   "Failed to create mlFmtTarget");
+        mw->activateSubWindow(mlTensile);
+        mw->copyGraphFormat();
+        mw->activateSubWindow(mlFmtTarget);
+        mw->pasteGraphFormat();
+
+        Graph *gFmtTarget = mlFmtTarget->activeGraph();
+        CHECK_COND(gFmtTarget->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
+                           && gFmtTarget->axisTitleFont(QwtPlot::xBottom).pointSize() == 28
+                           && gFmtTarget->axisFont(QwtPlot::xBottom).pointSize() == 28
+                           && gFmtTarget->referenceLines().size() == 1,
+                   "copyGraphFormat -> pasteGraphFormat did not transfer 28pt Arial fonts & reference lines");
+
+        // 5. Batch Plotting (batchCloneGraphToTable) onto a 2nd Table
+        Table *tTensileB = mw->newTable(21, 2, "TensileSpecB", "Tensile B");
+        tTensileB->setColName(0, "Strain");
+        tTensileB->setColPlotDesignation(0, SciDAVis::X);
+        tTensileB->column(0)->setLongName("True Strain");
+        tTensileB->column(0)->setUnits("%");
+        tTensileB->setColName(1, "Stress");
+        tTensileB->setColPlotDesignation(1, SciDAVis::Y);
+        tTensileB->column(1)->setLongName("True Stress");
+        tTensileB->column(1)->setUnits("MPa");
+        for (int r = 0; r < 21; ++r) {
+            double eps = double(r) * 0.5;
+            tTensileB->setCell(r, 0, eps);
+            tTensileB->setCell(r, 1, 780.0 * (1.0 - std::exp(-0.4 * eps)));
+        }
+
+        MultiLayer *mlCloned = mw->batchCloneGraphToTable(mlTensile, tTensileB);
+        CHECK_COND(mlCloned != nullptr && mlCloned->activeGraph() != nullptr,
+                   "batchCloneGraphToTable returned null");
+        Graph *gCloned = mlCloned->activeGraph();
+        DataCurve *dcCloned = dynamic_cast<DataCurve *>(gCloned->curve(0));
+        CHECK_COND(dcCloned != nullptr && dcCloned->table() == tTensileB,
+                   "batchCloneGraphToTable did not rebind curve to tTensileB");
+        CHECK_COND(gCloned->axisFont(QwtPlot::xBottom).pointSize() == 28
+                           && gCloned->referenceLines().size() == 1
+                           && gCloned->plotWidget()->axisTitle(QwtPlot::xBottom).text() == "True Strain (%)"
+                           && gCloned->plotWidget()->axisTitle(QwtPlot::yLeft).text() == "True Stress (MPa)",
+                   "batchCloneGraphToTable did not preserve styling or update target Long Name (Units) titles");
+    }
+
+    // =========================================================================
+    // 27. Suite 27: Lossless .sciprj Project Save/Reload, High-DPI Export Metadata & Translucent EMF
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 27: Lossless .sciprj Save/Reload, 600 DPI Export Metadata & Translucent EMF...\n";
+
+        ApplicationWindow *projWriter = new ApplicationWindow();
+        projWriter->applyUserSettings();
+
+        Table *tSave = projWriter->newTable(20, 2, "PersistTable", "Persist");
+        tSave->setColName(0, "Time");
+        tSave->setColPlotDesignation(0, SciDAVis::X);
+        tSave->column(0)->setLongName("Aging Time");
+        tSave->column(0)->setUnits("ks");
+        tSave->setColName(1, "Hardness");
+        tSave->setColPlotDesignation(1, SciDAVis::Y);
+        tSave->column(1)->setLongName("Vickers Hardness");
+        tSave->column(1)->setUnits("HV");
+        for (int r = 0; r < 20; ++r) {
+            double x = double(r) * 5.0; // 0 .. 95
+            double y = 1200.0 + 800.0 * std::sin(0.1 * double(r)) + 40.0 * double(r);
+            tSave->setCell(r, 0, x);
+            tSave->setCell(r, 1, y);
+        }
+
+        MultiLayer *mlSave = projWriter->multilayerPlot(
+                tSave, QStringList() << "PersistTable_Hardness", Graph::LineSymbols);
+        CHECK_COND(mlSave != nullptr && mlSave->activeGraph() != nullptr, "Failed to create mlSave");
+        mlSave->setName("PersistGraph");
+        mlSave->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 600);
+        mlSave->applyAspectRatioPreset(1.0, true);
+
+        Graph *gMainSave = mlSave->activeGraph();
+        gMainSave->setScale(QwtPlot::xBottom, 0.0, 100.0);
+        gMainSave->setScale(QwtPlot::yLeft, 0.0, 3000.0);
+
+        Graph::ReferenceLineSpec refSave;
+        refSave.orientation = 0;
+        refSave.value = 1800.0;
+        refSave.label = "Target HV";
+        refSave.fillToAxis = true;
+        refSave.fillColor = QColor(30, 102, 184, 70);
+        gMainSave->addReferenceLine(refSave);
+
+        Graph::AxisBreakSpec brkSave;
+        brkSave.enabled = true;
+        brkSave.breakFrom = 15.0;
+        brkSave.breakTo = 80.0;
+        brkSave.positionPct = 0.50;
+        gMainSave->setAxisBreak(QwtPlot::xBottom, brkSave);
+
+        gMainSave->setTickLabelTransform(QwtPlot::yLeft, 1000.0, "", "k");
+
+        Graph *gLinkedSave = mlSave->addLinkedLayer(gMainSave, true, false, "x/3.6", "y");
+        Graph *gInsetSave = mlSave->addInsetLayer(gMainSave, QRectF(0.0, 1000.0, 15.0, 1000.0));
+        CHECK_COND(gLinkedSave != nullptr && gInsetSave != nullptr && mlSave->layersList().size() == 3,
+                   "Failed to add linked & inset layers to mlSave");
+
+        // Violin plot window in project
+        MultiLayer *mlVioSave = projWriter->multilayerPlot(
+                tSave, QStringList() << "PersistTable_Hardness", Graph::Box);
+        mlVioSave->setName("PersistViolin");
+        BoxCurve *bcSave = dynamic_cast<BoxCurve *>(mlVioSave->activeGraph()->curve(0));
+        CHECK_COND(bcSave != nullptr, "PersistViolin missing BoxCurve");
+        bcSave->setViolinMode(true);
+        bcSave->setShowDataPoints(true);
+
+        // 1. High-DPI (600 DPI) PNG & TIFF Export Metadata Verification
+        QString png600Path = QDir::tempPath() + "/torigraph_suite27_600dpi.png";
+        QString tif600Path = QDir::tempPath() + "/torigraph_suite27_600dpi.tif";
+        QFile::remove(png600Path);
+        QFile::remove(tif600Path);
+        mlSave->exportImage(png600Path, 100, false, 600);
+        mlSave->exportImage(tif600Path, 100, false, 600);
+
+        const int expectedDpm600 = qRound(600.0 / 0.0254); // 23622 dots/meter
+        QImage imgPng600(png600Path);
+        QImage imgTif600(tif600Path);
+        QFile::remove(png600Path);
+        QFile::remove(tif600Path);
+        std::cout << "[INFO] 600 DPI PNG: size=" << imgPng600.width() << "x" << imgPng600.height()
+                  << ", dpmX=" << imgPng600.dotsPerMeterX() << " (expected " << expectedDpm600 << ")\n";
+        std::cout << "[INFO] 600 DPI TIFF: size=" << imgTif600.width() << "x" << imgTif600.height()
+                  << ", dpmX=" << imgTif600.dotsPerMeterX() << "\n";
+        CHECK_COND(!imgPng600.isNull()
+                           && qAbs(imgPng600.dotsPerMeterX() - expectedDpm600) <= 2
+                           && qAbs(imgPng600.dotsPerMeterY() - expectedDpm600) <= 2
+                           && imgPng600.width() > 1500 && imgPng600.height() > 1500,
+                   "600 DPI PNG export metadata or scaled pixel dimensions mismatch");
+        CHECK_COND(!imgTif600.isNull()
+                           && qAbs(imgTif600.dotsPerMeterX() - expectedDpm600) <= 2
+                           && imgTif600.width() == imgPng600.width(),
+                   "600 DPI TIFF export metadata or dimensions mismatch");
+
+        // 2. Translucent EMF Rendering & Zoom-Independent extentHm
+        QVector<double> bx = { 0.0, 50.0, 100.0 };
+        QVector<double> byLo = { 600.0, 700.0, 800.0 };
+        QVector<double> byHi = { 1600.0, 1700.0, 1800.0 };
+        gMainSave->addShadedBand(bx, byLo, byHi, QColor(220, 50, 47, 80), "ConfidenceBand");
+
+        mlSave->setPageZoom(1.0);
+        OleRenderedGraph emfZ1 = SciDAVisEmf::renderMultiLayer(mlSave);
+        mlSave->setPageZoom(1.75);
+        OleRenderedGraph emfZ2 = SciDAVisEmf::renderMultiLayer(mlSave);
+        mlSave->setPageZoom(1.0);
+        std::cout << "[INFO] EMF extentHm at zoom=1.0: (" << emfZ1.extentHm.cx << ", " << emfZ1.extentHm.cy
+                  << "), zoom=1.75: (" << emfZ2.extentHm.cx << ", " << emfZ2.extentHm.cy << ")\n";
+        CHECK_COND(!emfZ1.emfBytes.isEmpty() && !emfZ2.emfBytes.isEmpty()
+                           && qAbs(emfZ1.extentHm.cx - emfZ2.extentHm.cx) <= 2
+                           && qAbs(emfZ1.extentHm.cy - emfZ2.extentHm.cy) <= 2,
+                   "SciDAVisEmf::renderMultiLayer extentHm was corrupted by pageZoom()!");
+
+        // Play back EMF onto a white 300x300 DIB section to verify non-opaque-black translucent rendering
+        HENHMETAFILE hEmf27 = SciDAVisEmf::createHemfFromBytes(emfZ1.emfBytes);
+        CHECK_COND(hEmf27 != nullptr, "createHemfFromBytes failed in Suite 27");
+        QImage emfPlayback(300, 300, QImage::Format_RGB32);
+        emfPlayback.fill(Qt::white);
+        {
+            HDC screenDc = GetDC(nullptr);
+            HDC memDc = CreateCompatibleDC(screenDc);
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = 300;
+            bmi.bmiHeader.biHeight = -300; // top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void *dibBits = nullptr;
+            HBITMAP hBmp = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+            HGDIOBJ oldObj = SelectObject(memDc, hBmp);
+            RECT playRect{ 0, 0, 300, 300 };
+            HBRUSH whiteBr = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
+            FillRect(memDc, &playRect, whiteBr);
+            PlayEnhMetaFile(memDc, hEmf27, &playRect);
+            GdiFlush();
+            if (dibBits) {
+                std::memcpy(emfPlayback.bits(), dibBits, 300 * 300 * 4);
+            }
+            SelectObject(memDc, oldObj);
+            DeleteObject(hBmp);
+            DeleteDC(memDc);
+            ReleaseDC(nullptr, screenDc);
+        }
+        DeleteEnhMetaFile(hEmf27);
+
+        int blackPixels = 0;
+        int pastelTranslucentPixels = 0;
+        for (int py = 0; py < 300; ++py) {
+            for (int px = 0; px < 300; ++px) {
+                QRgb c = emfPlayback.pixel(px, py);
+                int r = qRed(c), g = qGreen(c), b = qBlue(c);
+                if (r < 15 && g < 15 && b < 15)
+                    ++blackPixels;
+                // Alpha-blended blue/red band over white yields light pastel RGB (all channels > 140, not pure white)
+                if (r > 140 && g > 140 && b > 140 && (r < 250 || g < 250 || b < 250)
+                    && (qAbs(r - b) >= 8)) {
+                    ++pastelTranslucentPixels;
+                }
+            }
+        }
+        std::cout << "[INFO] EMF playback (300x300): blackPx=" << blackPixels
+                  << ", pastelTranslucentPx=" << pastelTranslucentPixels << "\n";
+        CHECK_COND(blackPixels < 15000 && pastelTranslucentPixels > 200,
+                   "EMF translucent ReferenceLine/ShadedBand rendered as opaque black or failed to alpha-blend!");
+
+        // 3. Save .sciprj to disk and reload into a fresh ApplicationWindow
+        QByteArray savedBytes = projWriter->saveProjectToByteArray();
+        CHECK_COND(!savedBytes.isEmpty(), "projWriter->saveProjectToByteArray() returned empty");
+        QString sciprjPath = QDir::tempPath() + "/torigraph_suite27_roundtrip.sciprj";
+        {
+            QFile f(sciprjPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "Failed to open temp .sciprj for writing");
+            f.write(savedBytes);
+            f.close();
+        }
+        projWriter->savedProject();
+        projWriter->setOleEmbeddedMode(true);
+        delete projWriter;
+
+        ApplicationWindow *projReader = new ApplicationWindow();
+        projReader->applyUserSettings();
+        bool loadedOk = projReader->loadProject(sciprjPath);
+        QFile::remove(sciprjPath);
+        CHECK_COND(loadedOk, "projReader->loadProject() failed on Phase 5 .sciprj");
+
+        Table *tReload = projReader->table("PersistTable");
+        CHECK_COND(tReload != nullptr, "Reloaded project missing PersistTable");
+        CHECK_COND(tReload->column(0)->longName() == "Aging Time"
+                           && tReload->column(0)->units() == "ks"
+                           && tReload->column(1)->longName() == "Vickers Hardness"
+                           && tReload->column(1)->units() == "HV",
+                   "Column Long Name / Units lost across .sciprj save/reload!");
+
+        MultiLayer *mlReload = qobject_cast<MultiLayer *>(projReader->window("PersistGraph"));
+        CHECK_COND(mlReload != nullptr, "Reloaded project missing PersistGraph");
+        std::cout << "[INFO] Reloaded PersistGraph: page=" << mlReload->pageWidthPhysical() << "x"
+                  << mlReload->pageHeightPhysical() << " unit=" << int(mlReload->pageUnit())
+                  << " dpi=" << mlReload->pageDpi()
+                  << " layers=" << mlReload->layersList().size() << "\n";
+        CHECK_COND(std::fabs(mlReload->pageWidthPhysical() - 85.0) < 1e-4
+                           && std::fabs(mlReload->pageHeightPhysical() - 85.0) < 1e-4
+                           && mlReload->pageUnit() == MultiLayer::UnitMm
+                           && mlReload->pageDpi() == 600
+                           && mlReload->keepAspectRatio()
+                           && mlReload->layersList().size() == 3,
+                   "MultiLayer physical page setup, aspect ratio, or 3 layers lost across .sciprj reload!");
+
+        Graph *gMainReload = mlReload->layersList().at(0);
+        Graph *gLinkedReload = mlReload->layersList().at(1);
+        CHECK_COND(gMainReload->referenceLines().size() == 1
+                           && std::fabs(gMainReload->referenceLines()[0].value - 1800.0) < 1e-4
+                           && gMainReload->referenceLines()[0].fillToAxis,
+                   "ReferenceLineSpec lost across .sciprj reload!");
+        CHECK_COND(gMainReload->axisBreak(QwtPlot::xBottom).enabled
+                           && std::fabs(gMainReload->axisBreak(QwtPlot::xBottom).breakFrom - 15.0) < 1e-4
+                           && std::fabs(gMainReload->axisBreak(QwtPlot::xBottom).breakTo - 80.0) < 1e-4,
+                   "AxisBreakSpec lost across .sciprj reload!");
+        CHECK_COND(std::fabs(gMainReload->tickDivideFactor(QwtPlot::yLeft) - 1000.0) < 1e-4
+                           && gMainReload->tickSuffix(QwtPlot::yLeft) == "k",
+                   "TickLabelTransform divideByFactor/suffix lost across .sciprj reload!");
+        CHECK_COND(gLinkedReload->linkedParentLayer() == gMainReload
+                           && gLinkedReload->xLinkExpr() == "x/3.6",
+                   "LinkedLayer parent pointer or formula lost across .sciprj reload!");
+
+        MultiLayer *mlVioReload = qobject_cast<MultiLayer *>(projReader->window("PersistViolin"));
+        CHECK_COND(mlVioReload != nullptr && mlVioReload->activeGraph() != nullptr,
+                   "Reloaded project missing PersistViolin");
+        BoxCurve *bcReload = dynamic_cast<BoxCurve *>(mlVioReload->activeGraph()->curve(0));
+        CHECK_COND(bcReload != nullptr && bcReload->violinMode() && bcReload->showDataPoints(),
+                   "BoxCurve violinMode / showDataPoints lost across .sciprj reload!");
+
+        projReader->savedProject();
+        projReader->setOleEmbeddedMode(true);
+        delete projReader;
+    }
+
+    // =========================================================================
+    // 28. Suite 28: Axis Breaks, Segment Curve Hit-Test, Immediate Arrow Nudging,
+    //               Multi-Column Legend & Non-Destructive Stack Offsets
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 28: Axis Breaks, Segment Hit-Test, Arrow Nudging, Multi-Col Legend & Stack Offsets...\n";
+
+        // 1. Axis Break piecewise coordinate transformation: [0..10] break [10..90] resume [90..100]
+        Table *tBrk = mw->newTable(2, 3, "BreakHitTable", "Sparse 2-pt");
+        tBrk->setColPlotDesignation(2, SciDAVis::Y);
+        tBrk->setCell(0, 0, 0.0);
+        tBrk->setCell(0, 1, 0.0);
+        tBrk->setCell(0, 2, 0.0);
+        tBrk->setCell(1, 0, 100.0);
+        tBrk->setCell(1, 1, 100.0);
+        tBrk->setCell(1, 2, 100.0);
+
+        MultiLayer *mlBrk = mw->multilayerPlot(
+                tBrk, QStringList() << "BreakHitTable_2" << "BreakHitTable_3", Graph::Line);
+        mlBrk->show();
+        mlBrk->resize(520, 520);
+        QApplication::processEvents();
+        Graph *gBrk = mlBrk->activeGraph();
+        gBrk->setScale(QwtPlot::xBottom, 0.0, 100.0);
+        gBrk->setScale(QwtPlot::yLeft, 0.0, 100.0);
+
+        Graph::AxisBreakSpec brk28;
+        brk28.enabled = true;
+        brk28.breakFrom = 10.0;
+        brk28.breakTo = 90.0;
+        brk28.positionPct = 0.50;
+        gBrk->setAxisBreak(QwtPlot::xBottom, brk28);
+        gBrk->replot();
+        QApplication::processEvents();
+
+        QwtScaleMap xMapBrk = gBrk->plotWidget()->canvasMap(QwtPlot::xBottom);
+        double px0 = xMapBrk.xTransform(0.0);
+        double px5 = xMapBrk.xTransform(5.0);
+        double px10 = xMapBrk.xTransform(10.0);
+        double px95 = xMapBrk.xTransform(95.0);
+        double px100 = xMapBrk.xTransform(100.0);
+        double pxMid = 0.5 * (px0 + px100);
+        std::cout << "[INFO] AxisBreak [0..10 // 90..100]: px0=" << px0 << ", px5=" << px5
+                  << ", px10=" << px10 << ", mid=" << pxMid << ", px95=" << px95
+                  << ", px100=" << px100 << "\n";
+        CHECK_COND(px5 < pxMid && px95 > pxMid
+                           && (px10 - px0) > 0.35 * (px100 - px0)
+                           && (px100 - px95) > 0.15 * (px100 - px0),
+                   "Graph::setAxisBreak piecewise scale transformation did not map [0..10] & [90..100] around midpoint");
+
+        // Clear axis break to test clean segment hit-testing on linear [0..100] x [0..100]
+        gBrk->clearAxisBreak(QwtPlot::xBottom);
+        gBrk->replot();
+        QApplication::processEvents();
+
+        // 2. Plot::closestCurve hitting midpoint (50, 50) of sparse 2-point line (0,0)->(100,100) while ignoring hidden curve
+        QwtPlotCurve *cVisible = gBrk->curve(0);
+        QwtPlotCurve *cHidden = gBrk->curve(1);
+        CHECK_COND(cVisible != nullptr && cHidden != nullptr, "Missing curves on gBrk");
+        cHidden->setVisible(false); // Hide curve 1 -> must be ignored even though it shares exact coordinates!
+        gBrk->replot();
+
+        int midX = gBrk->plotWidget()->canvasMap(QwtPlot::xBottom).transform(50.0);
+        int midY = gBrk->plotWidget()->canvasMap(QwtPlot::yLeft).transform(50.0);
+        int segDist = 9999;
+        int nearestPt = -1;
+        int hitCurveKey = gBrk->plotWidget()->closestCurve(midX, midY, segDist, nearestPt);
+        std::cout << "[INFO] Segment hit-test at midpoint (50,50): hitKey=" << hitCurveKey
+                  << ", dist=" << segDist << " px\n";
+        CHECK_COND(hitCurveKey > 0
+                           && gBrk->plotWidget()->curve(hitCurveKey) == cVisible
+                           && segDist <= 3,
+                   "Plot::closestCurve failed to hit sparse 2-point segment midpoint or hit hidden curve!");
+        cHidden->setVisible(true);
+
+        // 3. Immediate Arrow-Key Nudging via SelectionMoveResizer (commits without Enter!)
+        if (!gBrk->legend())
+            gBrk->newLegend();
+        Legend *leg28 = gBrk->legend();
+        leg28->setOrigin(QPoint(80, 60));
+        gBrk->replot();
+        QPoint posBeforeNudge = leg28->rect().topLeft();
+        {
+            SelectionMoveResizer nudger(leg28);
+            QKeyEvent keyRight(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            QCoreApplication::sendEvent(&nudger, &keyRight); // +2 px X
+            QKeyEvent keyShiftDown(QEvent::KeyPress, Qt::Key_Down, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&nudger, &keyShiftDown); // +10 px Y
+        }
+        QPoint posAfterNudge = leg28->rect().topLeft();
+        std::cout << "[INFO] Arrow nudge without Enter: before=(" << posBeforeNudge.x() << ","
+                  << posBeforeNudge.y() << "), after=(" << posAfterNudge.x() << ","
+                  << posAfterNudge.y() << ")\n";
+        CHECK_COND(posAfterNudge.x() == posBeforeNudge.x() + 2
+                           && posAfterNudge.y() == posBeforeNudge.y() + 10,
+                   "SelectionMoveResizer arrow-key nudging did not commit +2px/+10px immediately!");
+
+        // 4. Multi-Column Legend & reconstructLegend() (no duplicate legend boxes!)
+        leg28->setNumColumns(2);
+        CHECK_COND(leg28->numColumns() == 2, "Legend::setNumColumns(2) getter mismatch");
+        auto countLegends = [](Graph *g) {
+            int cnt = 0;
+            for (QwtPlotItem *it : g->plotWidget()->itemList()) {
+                if (dynamic_cast<Legend *>(it))
+                    ++cnt;
+            }
+            return cnt;
+        };
+        int legCountBefore = countLegends(gBrk);
+        gBrk->reconstructLegend();
+        gBrk->reconstructLegend();
+        int legCountAfter = countLegends(gBrk);
+        CHECK_COND(legCountBefore == 1 && legCountAfter == 1 && gBrk->legend()->numColumns() == 2,
+                   "Graph::reconstructLegend() created duplicate Legend items or lost numColumns!");
+
+        // 5. Non-destructive Waterfall / Stack Offsets & Reset
+        Table *tStk = mw->newTable(10, 4, "StackOffsetTbl", "3 Curves");
+        tStk->setColPlotDesignation(2, SciDAVis::Y);
+        tStk->setColPlotDesignation(3, SciDAVis::Y);
+        for (int r = 0; r < 10; ++r) {
+            tStk->setCell(r, 0, double(r));
+            tStk->setCell(r, 1, 10.0 + double(r)); // span = 9
+            tStk->setCell(r, 2, 10.0 + double(r));
+            tStk->setCell(r, 3, 10.0 + double(r));
+        }
+        MultiLayer *mlStk = mw->multilayerPlot(
+                tStk,
+                QStringList() << "StackOffsetTbl_2" << "StackOffsetTbl_3" << "StackOffsetTbl_4",
+                Graph::Line);
+        Graph *gStk = mlStk->activeGraph();
+        PlotCurve *pc0 = dynamic_cast<PlotCurve *>(gStk->curve(0));
+        PlotCurve *pc1 = dynamic_cast<PlotCurve *>(gStk->curve(1));
+        PlotCurve *pc2 = dynamic_cast<PlotCurve *>(gStk->curve(2));
+        CHECK_COND(pc0 && pc1 && pc2, "Missing PlotCurves on gStk");
+
+        gStk->setStackOffsets(0 /*Uniform*/, 50.0, 0.0, false);
+        std::cout << "[INFO] StackOffsets: dy0=" << pc0->stackOffsetY()
+                  << ", dy1=" << pc1->stackOffsetY() << ", dy2=" << pc2->stackOffsetY()
+                  << ", curve2.y(0)=" << pc2->y(0) << ", table.cell(0,3)=" << tStk->cell(0, 3) << "\n";
+        CHECK_COND(pc1->stackOffsetY() > 0.0 && pc2->stackOffsetY() > pc1->stackOffsetY()
+                           && pc2->y(0) > pc1->y(0)
+                           && std::fabs(tStk->cell(0, 3) - 10.0) < 1e-9,
+                   "Graph::setStackOffsets failed or mutated underlying Table data!");
+
+        gStk->resetStackOffsets();
+        CHECK_COND(std::fabs(pc1->stackOffsetY()) < 1e-9 && std::fabs(pc2->stackOffsetY()) < 1e-9
+                           && std::fabs(pc1->y(0) - 10.0) < 1e-9 && std::fabs(pc2->y(0) - 10.0) < 1e-9,
+                   "Graph::resetStackOffsets did not cleanly restore original curve Y coordinates!");
+    }
+
+    // =========================================================================
+    // 29. Suite 29: Delta Cursor C1-C2, Weighting Modes, Linear Constraints,
+    //               Bootstrap CI, Breakpoint SE & Binary Logistic Regression
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 29: Delta Cursor, Weighting/Constraints/Bootstrap CI, Breakpoint SE & Logistic Regression...\n";
+
+        // 1. DeltaCursorTool on y = 5*x + 1 (at x1=2, x2=6 -> dx=4, dy=20, slope=5, area=84)
+        //    and on y = 5*x - 3 (at x1=2, x2=6 -> dx=4, dy=20, slope=5, area=68)
+        Table *tDc = mw->newTable(21, 3, "DeltaCursorTbl", "Linear");
+        tDc->setColPlotDesignation(2, SciDAVis::Y);
+        for (int i = 0; i <= 20; ++i) {
+            double x = 0.5 * double(i); // 0 .. 10
+            tDc->setCell(i, 0, x);
+            tDc->setCell(i, 1, 5.0 * x + 1.0);
+            tDc->setCell(i, 2, 5.0 * x - 3.0);
+        }
+        MultiLayer *mlDc = mw->multilayerPlot(
+                tDc, QStringList() << "DeltaCursorTbl_2" << "DeltaCursorTbl_3", Graph::Line);
+        Graph *gDc = mlDc->activeGraph();
+        DeltaCursorTool *dcTool = DeltaCursorTool::attach(mw, gDc, DeltaCursorTool::SnapInterpolateCurve);
+        CHECK_COND(dcTool != nullptr && dcTool->rtti() == PlotToolInterface::DeltaCursor,
+                   "Failed to attach DeltaCursorTool");
+        dcTool->setTargetCurve("DeltaCursorTbl_2");
+        dcTool->setCursorPositions(2.0, 6.0);
+        auto ro1 = dcTool->currentReadout();
+        std::cout << "[INFO] DeltaCursor (y=5x+1, [2..6]): dx=" << ro1.dx << ", dy=" << ro1.dy
+                  << ", slope=" << ro1.slope << ", area=" << ro1.area << " (expected 4, 20, 5, 84)\n";
+        CHECK_COND(std::fabs(ro1.dx - 4.0) < 1e-9 && std::fabs(ro1.dy - 20.0) < 1e-9
+                           && std::fabs(ro1.slope - 5.0) < 1e-9 && std::fabs(ro1.area - 84.0) < 1e-6,
+                   "DeltaCursorTool readout mismatch on y = 5x + 1");
+
+        dcTool->setTargetCurve("DeltaCursorTbl_3");
+        dcTool->setCursorPositions(2.0, 6.0);
+        auto ro2 = dcTool->currentReadout();
+        CHECK_COND(std::fabs(ro2.dx - 4.0) < 1e-9 && std::fabs(ro2.dy - 20.0) < 1e-9
+                           && std::fabs(ro2.slope - 5.0) < 1e-9 && std::fabs(ro2.area - 68.0) < 1e-6,
+                   "DeltaCursorTool readout mismatch on y = 5x - 3 (area=68)");
+        gDc->setActiveTool(nullptr);
+
+        // 2. Fit Weighting Modes, Linear Equality Constraint ("A2=0.5*A1") & Bootstrap 95% CI
+        Table *tCon = mw->newTable(41, 2, "ConstrainedBootTbl", "Bi-Exp");
+        for (int i = 0; i <= 40; ++i) {
+            double x = double(i) * 0.8; // 0 .. 32
+            // True parameters: A1 = 120.0, A2 = 60.0 (= 0.5 * A1), y0 = 10.0 + tiny deterministic noise
+            double noise = 0.25 * std::sin(1.7 * double(i)) + 0.18 * std::cos(2.9 * double(i));
+            double y = 10.0 + 120.0 * std::exp(-x / 4.0) + 60.0 * std::exp(-x / 18.0) + noise;
+            tCon->setCell(i, 0, x);
+            tCon->setCell(i, 1, y);
+        }
+        MultiLayer *mlCon = mw->multilayerPlot(tCon, QStringList() << "ConstrainedBootTbl_2", Graph::Scatter);
+        Graph *gCon = mlCon->activeGraph();
+
+        {
+            // Perturb data slightly so unconstrained A2/A1 != 0.5, then verify constraint enforces A2 == 0.5*A1 exactly!
+            NonLinearFit *nlfCon = new NonLinearFit(mw, gCon);
+            nlfCon->setParametersList(QStringList() << "A1" << "A2" << "y0");
+            nlfCon->setFormula("y0 + A1*exp(-x/4.0) + A2*exp(-x/18.0)");
+            CHECK_COND(nlfCon->setDataFromCurve("ConstrainedBootTbl_2"), "nlfCon setDataFromCurve failed");
+            CHECK_COND(nlfCon->setWeightingMethod(Fit::WeightStatistical)
+                               && nlfCon->weightingMethod() == Fit::WeightStatistical,
+                       "Fit::setWeightingMethod(WeightStatistical) failed");
+            nlfCon->setWeightingMethod(Fit::WeightNone);
+            CHECK_COND(nlfCon->setLinearConstraintExpr("A2=0.5*A1"),
+                       "Fit::setLinearConstraintExpr(\"A2=0.5*A1\") returned false");
+            nlfCon->setInitialGuess(0, 90.0);
+            nlfCon->setInitialGuess(1, 45.0);
+            nlfCon->setInitialGuess(2, 8.0);
+            nlfCon->fit();
+            const auto &cRes = nlfCon->results();
+            std::cout << "[INFO] Constrained Fit (A2=0.5*A1): A1=" << cRes[0] << ", A2=" << cRes[1]
+                      << ", ratio=" << (cRes[1] / cRes[0]) << ", y0=" << cRes[2] << "\n";
+            CHECK_COND(std::fabs(cRes[1] - 0.5 * cRes[0]) < 1e-6
+                               && relErrWithin(cRes[0], 120.0, 0.02)
+                               && relErrWithin(cRes[2], 10.0, 0.05),
+                       "Fit::setLinearConstraintExpr(\"A2=0.5*A1\") was not satisfied or inaccurate");
+
+            // Unconstrained fit + 200-sample Nonparametric Bootstrap 95% CI
+            nlfCon->setLinearConstraintExpr("");
+            nlfCon->fit();
+            auto boot = nlfCon->runBootstrapCI(200, 0.95, 0);
+            std::cout << "[INFO] Bootstrap 95% CI (nSuccess=" << boot.nSuccess
+                      << "): A1 in [" << boot.ciLow.value(0) << ", " << boot.ciHigh.value(0)
+                      << "], A2 in [" << boot.ciLow.value(1) << ", " << boot.ciHigh.value(1)
+                      << "], y0 in [" << boot.ciLow.value(2) << ", " << boot.ciHigh.value(2) << "]\n";
+            CHECK_COND(boot.valid && boot.nSuccess >= 180 && boot.ciLow.size() == 3
+                               && boot.ciLow[0] < 120.0 && 120.0 < boot.ciHigh[0]
+                               && (boot.ciHigh[0] - boot.ciLow[0]) < 8.0
+                               && boot.ciLow[1] < 60.0 && 60.0 < boot.ciHigh[1]
+                               && boot.ciLow[2] < 10.0 && 10.0 < boot.ciHigh[2],
+                       "Fit::runBootstrapCI(200, 0.95) failed to return tight CIs containing true parameters");
+            delete nlfCon;
+        }
+
+        // 3. Piecewise Breakpoint Standard Error (breakpointsXSE > 0)
+        Table *tPwSe = mw->newTable(61, 2, "PiecewiseSETbl", "Noisy Bilinear");
+        for (int i = 0; i <= 60; ++i) {
+            double x = double(i); // 0 .. 60, breakpoint at x = 30
+            double noise = 0.25 * std::sin(2.3 * double(i));
+            double y = ((x <= 30.0) ? (3.0 * x) : (90.0 + 0.5 * (x - 30.0))) + noise;
+            tPwSe->setCell(i, 0, x);
+            tPwSe->setCell(i, 1, y);
+        }
+        MultiLayer *mlPwSe = mw->multilayerPlot(tPwSe, QStringList() << "PiecewiseSETbl_2", Graph::Scatter);
+        auto pwSeRes = PiecewiseAndRobustFit::fitPiecewiseLinear(
+                mw, mlPwSe->activeGraph(), "PiecewiseSETbl_2", 2, false);
+        std::cout << "[INFO] Piecewise Breakpoint SE: bp=" << pwSeRes.breakpointsX.value(0)
+                  << " +/- " << pwSeRes.breakpointsXSE.value(0) << "\n";
+        CHECK_COND(pwSeRes.converged && pwSeRes.breakpointsXSE.size() == 1
+                           && pwSeRes.breakpointsXSE[0] > 0.0 && pwSeRes.breakpointsXSE[0] < 2.0
+                           && std::fabs(pwSeRes.breakpointsX[0] - 30.0) < 0.5,
+                   "fitPiecewiseLinear breakpointsXSE missing or out of range");
+
+        // 4. Binary Logistic Regression recovering true log-odds slope (beta_0 = -3.0, beta_1 = 1.5)
+        const int nLogit = 160;
+        Table *tLogit = mw->newTable(nLogit, 2, "LogisticTbl", "Binary Outcome");
+        tLogit->setColName(0, "Dose");
+        tLogit->setColName(1, "Response");
+        auto halton29 = [](int index, int base) {
+            double f = 1.0, r = 0.0;
+            for (int k = index; k > 0; k /= base) {
+                f /= double(base);
+                r += f * double(k % base);
+            }
+            return r;
+        };
+        for (int i = 0; i < nLogit; ++i) {
+            double x = -1.0 + 6.0 * double(i) / double(nLogit - 1); // -1 .. +5 (centered around x0 = 2.0)
+            double pTrue = 1.0 / (1.0 + std::exp(-(-3.0 + 1.5 * x)));
+            int yBin = (halton29(i + 1, 2) < pTrue) ? 1 : 0;
+            tLogit->setCell(i, 0, x);
+            tLogit->setCell(i, 1, double(yBin));
+        }
+        auto logRes = PiecewiseAndRobustFit::runLogisticRegression(
+                mw, tLogit, "Response", QStringList() << "Dose", true);
+        std::cout << "[INFO] Logistic Regression: converged=" << logRes.converged
+                  << ", beta0=" << logRes.betas.value(0) << ", beta1=" << logRes.betas.value(1)
+                  << ", OR=" << logRes.oddsRatios.value(0) << ", lrP=" << logRes.lrPValue << "\n";
+        CHECK_COND(logRes.converged && logRes.betas.size() == 2 && logRes.oddsRatios.size() == 1
+                           && std::fabs(logRes.betas[1] - 1.5) < 0.35
+                           && std::fabs(logRes.oddsRatios[0] - std::exp(logRes.betas[1])) < 1e-6
+                           && logRes.lrPValue < 1e-6 && logRes.probGraph != nullptr,
+                   "runLogisticRegression failed to recover true log-odds slope or probability plot");
+    }
+
+    // =========================================================================
+    // 30. Suite 30: Arrhenius Ea, Tauc Bandgap Eg, Weibull Modulus m,
+    //               Grubbs Outlier, Smart-Switch Nonparametric & K-Means Clustering
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 30: Arrhenius Ea, Tauc Eg, Weibull m, Grubbs Outlier, Smart-Switch Nonparam & Clustering...\n";
+
+        // 1. Arrhenius Plot: k(T) = A * exp(-Ea / (R*T)) with Ea = 50.0 kJ/mol (~0.51821 eV)
+        const double R_gas = 8.314462618;
+        const double trueEa_J = 50000.0; // 50.0 kJ/mol
+        const double trueA = 2.5e7;
+        Table *tArr = mw->newTable(10, 2, "ArrheniusInputTbl", "Rate vs T");
+        tArr->setColName(0, "Temp_K");
+        tArr->setColName(1, "Rate_k");
+        for (int i = 0; i < 10; ++i) {
+            double T = 300.0 + 40.0 * double(i); // 300 .. 660 K
+            double k = trueA * std::exp(-trueEa_J / (R_gas * T));
+            tArr->setCell(i, 0, T);
+            tArr->setCell(i, 1, k);
+        }
+        auto arrRes = CurveMathTools::createArrheniusPlot(
+                mw, tArr, "Temp_K", "Rate_k", false /*Kelvin*/, true /*1000/T*/, false);
+        std::cout << "[INFO] Arrhenius Plot: Ea=" << arrRes.activationEnergyKJmol << " kJ/mol ("
+                  << arrRes.activationEnergyEV << " eV), R^2=" << arrRes.rSquare << "\n";
+        CHECK_COND(arrRes.valid && arrRes.plot != nullptr && arrRes.rSquare > 0.9999
+                           && std::fabs(arrRes.activationEnergyKJmol - 50.0) < 0.1
+                           && std::fabs(arrRes.activationEnergyEV - 0.5182) < 0.005,
+                   "createArrheniusPlot failed to recover Ea = 50.0 kJ/mol (0.5182 eV)");
+
+        // 2. Tauc Plot: Direct-gap semiconductor Eg = 3.20 eV (input wavelength nm)
+        const int nTauc = 80;
+        Table *tTauc = mw->newTable(nTauc, 2, "TaucInputTbl", "UV-Vis Absorption");
+        tTauc->setColName(0, "Wavelength_nm");
+        tTauc->setColName(1, "Alpha_cm1");
+        for (int i = 0; i < nTauc; ++i) {
+            // Span hv from 2.60 eV to 4.00 eV -> wavelength = 1239.84193 / hv
+            double hv = 2.60 + 1.40 * double(i) / double(nTauc - 1);
+            double lambdaNm = 1239.84193 / hv;
+            double alpha = (hv <= 3.20)
+                    ? (10.0 * std::exp((hv - 3.20) / 0.04)) // tiny Urbach sub-gap tail
+                    : (5.0e4 * std::sqrt(hv - 3.20) / hv);   // exact (alpha*hv)^2 = 2.5e9 * (hv - 3.20)
+            tTauc->setCell(i, 0, lambdaNm);
+            tTauc->setCell(i, 1, alpha);
+        }
+        auto taucRes = CurveMathTools::createTaucPlot(
+                mw, tTauc, "Wavelength_nm", "Alpha_cm1", true /*nm*/, true /*direct (a*hv)^2*/);
+        std::cout << "[INFO] Tauc Plot (Direct): Eg=" << taucRes.bandgapEV << " +/- "
+                  << taucRes.bandgapEVSE << " eV, R^2=" << taucRes.rSquare << "\n";
+        CHECK_COND(taucRes.valid && taucRes.plot != nullptr
+                           && std::fabs(taucRes.bandgapEV - 3.20) < 0.05,
+                   "createTaucPlot failed to recover direct optical bandgap Eg = 3.20 eV");
+
+        // 3. Weibull Probability Plot (m = 8.0, sigma_0 = 400.0 MPa)
+        const int nWb = 30;
+        Table *tWb = mw->newTable(nWb, 1, "WeibullStrengthTbl", "Ceramic Flexural Strength");
+        tWb->setColName(0, "Strength_MPa");
+        for (int i = 0; i < nWb; ++i) {
+            double rankF = (double(i + 1) - 0.3) / (double(nWb) + 0.4); // Benard median rank
+            double sigma = 400.0 * std::pow(-std::log(1.0 - rankF), 1.0 / 8.0);
+            tWb->setCell(i, 0, sigma);
+        }
+        auto wbRes = GraphStatsAndSurfaceFit::plotWeibullProbability(mw, tWb, "Strength_MPa");
+        std::cout << "[INFO] Weibull Plot: m=" << wbRes.modulusM << " (exp 8.0), sigma0="
+                  << wbRes.scaleSigma0 << " MPa (exp 400.0), R^2=" << wbRes.rSquare << "\n";
+        CHECK_COND(wbRes.valid && wbRes.weibullPlot != nullptr && wbRes.rSquare > 0.999
+                           && relErrWithin(wbRes.modulusM, 8.0, 0.02)
+                           && relErrWithin(wbRes.scaleSigma0, 400.0, 0.01),
+                   "plotWeibullProbability failed to recover m=8.0 and sigma0=400 MPa");
+
+        // 4. Grubbs Outlier Test detecting injected extreme outlier at row 12
+        Table *tOut = mw->newTable(25, 1, "OutlierInputTbl", "Grubbs Test");
+        tOut->setColName(0, "Measurement");
+        for (int i = 0; i < 25; ++i) {
+            double v = 100.0 + 1.2 * std::sin(1.7 * double(i));
+            if (i == 12)
+                v = 195.0; // clear outlier
+            tOut->setCell(i, 0, v);
+        }
+        auto outRes = GraphStatsAndSurfaceFit::runOutlierTest(
+                mw, tOut, "Measurement", 0 /*Grubbs*/, 0.05, 3, false);
+        std::cout << "[INFO] Grubbs Outlier Test: G=" << outRes.primaryStatistic
+                  << ", Gcrit=" << outRes.criticalValue << ", p=" << outRes.pValue
+                  << ", detectedRows=" << outRes.outlierRows.size() << "\n";
+        CHECK_COND(outRes.valid && outRes.outlierRows.contains(12) && outRes.pValue < 0.001,
+                   "runOutlierTest(Grubbs) failed to detect injected outlier at row 12");
+
+        // 5. Smart-Switch Nonparametric Comparison (TestAutoSmartSwitch):
+        //    - Gaussian 3 groups -> delegates to One-Way ANOVA
+        //    - Skewed/Bimodal 3 groups -> switches to Kruskal-Wallis H + Dunn
+        //    - Skewed/Bimodal 2 groups -> switches to Mann-Whitney U
+        const int nGrp = 30;
+        Table *tSmart = mw->newTable(nGrp, 6, "SmartSwitchTbl", "Parametric vs Nonparam");
+        tSmart->setColName(0, "Gauss1");
+        tSmart->setColName(1, "Gauss2");
+        tSmart->setColName(2, "Gauss3");
+        tSmart->setColName(3, "Skew1");
+        tSmart->setColName(4, "Skew2");
+        tSmart->setColName(5, "Skew3");
+        auto halton30 = [](int index, int base) {
+            double f = 1.0, r = 0.0;
+            for (int k = index; k > 0; k /= base) {
+                f /= double(base);
+                r += f * double(k % base);
+            }
+            return r;
+        };
+        for (int i = 0; i < nGrp; ++i) {
+            double u1 = std::max(1e-6, std::min(1.0 - 1e-6, halton30(i + 1, 2)));
+            double u2 = halton30(i + 1, 3);
+            double z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
+            tSmart->setCell(i, 0, 10.0 + 1.5 * z);
+            tSmart->setCell(i, 1, 15.0 + 1.5 * z);
+            tSmart->setCell(i, 2, 22.0 + 1.5 * z);
+
+            // Strongly skewed/heavy-tailed non-normal groups (Shapiro-Wilk p << 0.05)
+            double skBase = (i < 24) ? (0.2 * double(i % 4)) : (30.0 + 5.0 * double(i));
+            tSmart->setCell(i, 3, 1.0 + skBase);
+            tSmart->setCell(i, 4, 25.0 + skBase);
+            tSmart->setCell(i, 5, 80.0 + skBase);
+        }
+
+        auto npGauss = GraphStatsAndSurfaceFit::runNonparametricComparison(
+                mw, tSmart, QStringList() << "Gauss1" << "Gauss2" << "Gauss3",
+                GraphStatsAndSurfaceFit::TestAutoSmartSwitch);
+        auto npSkew3 = GraphStatsAndSurfaceFit::runNonparametricComparison(
+                mw, tSmart, QStringList() << "Skew1" << "Skew2" << "Skew3",
+                GraphStatsAndSurfaceFit::TestAutoSmartSwitch);
+        auto npSkew2 = GraphStatsAndSurfaceFit::runNonparametricComparison(
+                mw, tSmart, QStringList() << "Skew1" << "Skew3",
+                GraphStatsAndSurfaceFit::TestAutoSmartSwitch);
+
+        std::cout << "[INFO] SmartSwitch(Gaussian 3-grp): test='" << npGauss.chosenTestName.toStdString()
+                  << "', p=" << npGauss.pValue << "\n";
+        std::cout << "[INFO] SmartSwitch(Skewed 3-grp):   test='" << npSkew3.chosenTestName.toStdString()
+                  << "', p=" << npSkew3.pValue << "\n";
+        std::cout << "[INFO] SmartSwitch(Skewed 2-grp):   test='" << npSkew2.chosenTestName.toStdString()
+                  << "', p=" << npSkew2.pValue << "\n";
+        CHECK_COND(npGauss.valid && npGauss.chosenTestName.contains("ANOVA") && npGauss.pValue < 0.001,
+                   "TestAutoSmartSwitch did not select ANOVA on Gaussian groups");
+        CHECK_COND(npSkew3.valid && npSkew3.chosenTestName.contains("Kruskal") && npSkew3.pValue < 0.001,
+                   "TestAutoSmartSwitch did not select Kruskal-Wallis on 3 skewed groups");
+        CHECK_COND(npSkew2.valid && npSkew2.chosenTestName.contains("Mann-Whitney") && npSkew2.pValue < 0.001,
+                   "TestAutoSmartSwitch did not select Mann-Whitney U on 2 skewed groups");
+
+        // 6. Correlation Matrix Heatmap & K-Means Clustering (silhouetteScore > 0.7)
+        Matrix *corrMat = nullptr;
+        MultiLayer *mlCorr = GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
+                mw, tSmart, QStringList() << "Gauss1" << "Gauss2" << "Gauss3", false, &corrMat);
+        CHECK_COND(mlCorr != nullptr && corrMat != nullptr
+                           && std::fabs(corrMat->cell(0, 0) - 1.0) < 1e-6,
+                   "plotCorrelationMatrixHeatmap failed");
+
+        Table *tClust = mw->newTable(45, 2, "KMeansClustersTbl", "3 Well-Separated Clusters");
+        tClust->setColName(0, "FeatureX");
+        tClust->setColName(1, "FeatureY");
+        const double centers[3][2] = { { 0.0, 0.0 }, { 25.0, 0.0 }, { 12.5, 22.0 } };
+        for (int c = 0; c < 3; ++c) {
+            for (int j = 0; j < 15; ++j) {
+                int r = c * 15 + j;
+                tClust->setCell(r, 0, centers[c][0] + 0.6 * std::cos(double(j)));
+                tClust->setCell(r, 1, centers[c][1] + 0.6 * std::sin(double(j)));
+            }
+        }
+        auto kmRes = GraphStatsAndSurfaceFit::runKMeansClustering(
+                mw, tClust, QStringList() << "FeatureX" << "FeatureY", 3, true);
+        std::cout << "[INFO] K-Means (k=3): silhouetteScore=" << kmRes.silhouetteScore << "\n";
+        CHECK_COND(kmRes.valid && kmRes.assignments.size() == 45
+                           && kmRes.silhouetteScore > 0.7 && kmRes.clusterPlot != nullptr,
+                   "runKMeansClustering failed or silhouetteScore <= 0.7");
+    }
+
     mw->savedProject();
-    std::cout << "[PASS] All 24 ToriGraph OriginPro Parity, Japanese Localization, Arial Font, Page/Layer, Gadgets, Fitting, Signal, Stats, Digitizer, and OLE suites passed!\n";
+    std::cout << "[PASS] All 30 ToriGraph OriginPro Parity, Japanese Localization, Arial Font, Page/Layer, Persistence, Gadgets, Fitting, Materials-Science, Nonparametric Stats, and OLE suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");

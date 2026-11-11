@@ -23,6 +23,8 @@ public:
         : QPaintEngine(QPaintEngine::PrimitiveTransform
                        | QPaintEngine::PainterPaths
                        | QPaintEngine::Antialiasing
+                       | QPaintEngine::AlphaBlend
+                       | QPaintEngine::ConstantOpacity
                        | QPaintEngine::PaintOutsidePaintEvent),
           m_hdc(hdc),
           m_logicalPx(logicalPx),
@@ -38,6 +40,8 @@ public:
     {
         if (!m_hdc)
             return false;
+        m_hasClip = false;
+        m_opacity = 1.0;
         SetBkMode(m_hdc, TRANSPARENT);
         return true;
     }
@@ -46,6 +50,7 @@ public:
     {
         if (m_hdc)
             SelectClipRgn(m_hdc, nullptr);
+        m_hasClip = false;
         return true;
     }
 
@@ -63,9 +68,29 @@ public:
         };
     }
 
-    static COLORREF compositeColorOverWhite(const QColor &c)
+    RECT computeMappedPathBounds(const QPainterPath &path) const
     {
-        const int a = std::clamp(c.alpha(), 0, 255);
+        const QRectF br = path.boundingRect();
+        if (br.isEmpty())
+            return RECT{ 0, 0, 0, 0 };
+        const POINT c0 = mapPoint(br.topLeft());
+        const POINT c1 = mapPoint(br.topRight());
+        const POINT c2 = mapPoint(br.bottomRight());
+        const POINT c3 = mapPoint(br.bottomLeft());
+        LONG minX = std::min({ c0.x, c1.x, c2.x, c3.x }) - 1;
+        LONG minY = std::min({ c0.y, c1.y, c2.y, c3.y }) - 1;
+        LONG maxX = std::max({ c0.x, c1.x, c2.x, c3.x }) + 2;
+        LONG maxY = std::max({ c0.y, c1.y, c2.y, c3.y }) + 2;
+        minX = std::clamp(minX, 0L, static_cast<LONG>(m_targetPx.width()));
+        minY = std::clamp(minY, 0L, static_cast<LONG>(m_targetPx.height()));
+        maxX = std::clamp(maxX, 0L, static_cast<LONG>(m_targetPx.width()));
+        maxY = std::clamp(maxY, 0L, static_cast<LONG>(m_targetPx.height()));
+        return RECT{ minX, minY, maxX, maxY };
+    }
+
+    static COLORREF compositeColorOverWhite(const QColor &c, double opacity = 1.0)
+    {
+        const int a = std::clamp(static_cast<int>(std::lround(c.alpha() * opacity)), 0, 255);
         if (a >= 255)
             return RGB(c.red(), c.green(), c.blue());
         const int r = (c.red() * a + 255 * (255 - a) + 127) / 255;
@@ -74,28 +99,25 @@ public:
         return RGB(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
     }
 
-    bool alphaBlendClippedPath(const QColor &c) const
+    bool alphaBlendClippedPath(const QColor &c, int effectiveAlpha, const RECT &dstBox) const
     {
-        const int a = std::clamp(c.alpha(), 0, 255);
+        const int a = std::clamp(effectiveAlpha, 0, 255);
         if (a <= 0 || a >= 255 || !m_hdc)
             return false;
-
-        RECT clipBox{};
-        if (GetClipBox(m_hdc, &clipBox) == ERROR || clipBox.right <= clipBox.left
-            || clipBox.bottom <= clipBox.top) {
+        if (dstBox.right <= dstBox.left || dstBox.bottom <= dstBox.top)
             return false;
-        }
 
+        constexpr int kTileDim = 8;
         BITMAPINFO bmi{};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = 1;
-        bmi.bmiHeader.biHeight = -1;
+        bmi.bmiHeader.biWidth = kTileDim;
+        bmi.bmiHeader.biHeight = kTileDim; // positive bottom-up DIB for reliable EMF playback
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
         void *bits = nullptr;
-        HDC memDc = CreateCompatibleDC(m_hdc);
+        HDC memDc = CreateCompatibleDC(nullptr);
         if (!memDc)
             return false;
         HBITMAP hBmp = CreateDIBSection(memDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
@@ -107,10 +129,12 @@ public:
         }
 
         auto *px = static_cast<unsigned char *>(bits);
-        px[0] = static_cast<unsigned char>(c.blue());
-        px[1] = static_cast<unsigned char>(c.green());
-        px[2] = static_cast<unsigned char>(c.red());
-        px[3] = 255;
+        for (int i = 0; i < kTileDim * kTileDim; ++i) {
+            px[i * 4 + 0] = static_cast<unsigned char>(c.blue());
+            px[i * 4 + 1] = static_cast<unsigned char>(c.green());
+            px[i * 4 + 2] = static_cast<unsigned char>(c.red());
+            px[i * 4 + 3] = 255;
+        }
 
         HGDIOBJ oldBmp = SelectObject(memDc, hBmp);
         BLENDFUNCTION bf{};
@@ -119,10 +143,10 @@ public:
         bf.SourceConstantAlpha = static_cast<BYTE>(a);
         bf.AlphaFormat = 0;
 
-        const BOOL ok = GdiAlphaBlend(m_hdc, clipBox.left, clipBox.top,
-                                      clipBox.right - clipBox.left,
-                                      clipBox.bottom - clipBox.top,
-                                      memDc, 0, 0, 1, 1, bf);
+        const BOOL ok = GdiAlphaBlend(m_hdc, dstBox.left, dstBox.top,
+                                      dstBox.right - dstBox.left,
+                                      dstBox.bottom - dstBox.top,
+                                      memDc, 0, 0, kTileDim, kTileDim, bf);
         SelectObject(memDc, oldBmp);
         DeleteObject(hBmp);
         DeleteDC(memDc);
@@ -178,7 +202,7 @@ public:
         QColor c = m_pen.color();
         LOGBRUSH lb{};
         lb.lbStyle = BS_SOLID;
-        lb.lbColor = compositeColorOverWhite(c);
+        lb.lbColor = compositeColorOverWhite(c, m_opacity);
         lb.lbHatch = 0;
 
         HPEN hPen = ExtCreatePen(PS_GEOMETRIC | penStyle | capStyle | joinStyle, gdiWidth, &lb, 0, nullptr);
@@ -189,10 +213,11 @@ public:
 
     HBRUSH createCurrentBrush() const
     {
-        if (m_brush.style() == Qt::NoBrush || m_brush.color().alpha() == 0)
+        const int effAlpha = std::clamp(static_cast<int>(std::lround(m_brush.color().alpha() * m_opacity)), 0, 255);
+        if (m_brush.style() == Qt::NoBrush || effAlpha <= 0)
             return static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
         QColor c = m_brush.color();
-        return CreateSolidBrush(compositeColorOverWhite(c));
+        return CreateSolidBrush(compositeColorOverWhite(c, m_opacity));
     }
 
     static void deletePenIfCustom(HPEN pen)
@@ -207,15 +232,19 @@ public:
             DeleteObject(brush);
     }
 
-    void emitPathToGdi(const QPainterPath &path) const
+    void emitPathToGdi(const QPainterPath &path, bool closeFigures = false) const
     {
         BeginPath(m_hdc);
         const int count = path.elementCount();
+        bool hasSubpath = false;
         for (int i = 0; i < count; ++i) {
             const QPainterPath::Element &el = path.elementAt(i);
             if (el.type == QPainterPath::MoveToElement) {
+                if (closeFigures && hasSubpath)
+                    CloseFigure(m_hdc);
                 POINT p = mapPoint(QPointF(el.x, el.y));
                 MoveToEx(m_hdc, p.x, p.y, nullptr);
+                hasSubpath = true;
             } else if (el.type == QPainterPath::LineToElement) {
                 POINT p = mapPoint(QPointF(el.x, el.y));
                 LineTo(m_hdc, p.x, p.y);
@@ -231,6 +260,8 @@ public:
                 i += 2;
             }
         }
+        if (closeFigures && hasSubpath)
+            CloseFigure(m_hdc);
         EndPath(m_hdc);
     }
 
@@ -245,19 +276,24 @@ public:
             m_font = state.font();
         if (flags & DirtyTransform)
             m_transform = state.transform();
+        if (flags & DirtyOpacity)
+            m_opacity = state.opacity();
 
         if (flags & (DirtyClipEnabled | DirtyClipPath | DirtyClipRegion)) {
             if (!painter() || !painter()->hasClipping()) {
                 SelectClipRgn(m_hdc, nullptr);
+                m_hasClip = false;
             } else {
                 QTransform savedT = m_transform;
                 m_transform = painter()->transform();
                 QPainterPath clip = painter()->clipPath();
                 SelectClipRgn(m_hdc, nullptr);
+                m_hasClip = false;
                 if (!clip.isEmpty()) {
                     SetPolyFillMode(m_hdc, clip.fillRule() == Qt::WindingFill ? WINDING : ALTERNATE);
-                    emitPathToGdi(clip);
-                    SelectClipPath(m_hdc, RGN_COPY);
+                    emitPathToGdi(clip, true);
+                    if (SelectClipPath(m_hdc, RGN_COPY))
+                        m_hasClip = true;
                 }
                 m_transform = savedT;
             }
@@ -266,29 +302,34 @@ public:
 
     void drawPath(const QPainterPath &path) override
     {
-        if (path.isEmpty())
+        if (path.isEmpty() || m_opacity <= 0.0)
             return;
-        const bool hasBrush = (m_brush.style() != Qt::NoBrush && m_brush.color().alpha() > 0);
-        const bool hasPen = (m_pen.style() != Qt::NoPen && m_pen.color().alpha() > 0);
+        const int brushAlpha = std::clamp(static_cast<int>(std::lround(m_brush.color().alpha() * m_opacity)), 0, 255);
+        const int penAlpha = std::clamp(static_cast<int>(std::lround(m_pen.color().alpha() * m_opacity)), 0, 255);
+        const bool hasBrush = (m_brush.style() != Qt::NoBrush && brushAlpha > 0);
+        const bool hasPen = (m_pen.style() != Qt::NoPen && penAlpha > 0);
         if (!hasBrush && !hasPen)
             return;
 
         SetPolyFillMode(m_hdc, path.fillRule() == Qt::WindingFill ? WINDING : ALTERNATE);
-        const bool translucentBrush = hasBrush && m_brush.color().alpha() < 255;
+        const bool translucentBrush = hasBrush && brushAlpha < 255;
 
         if (translucentBrush) {
             bool blended = false;
+            const RECT dstBox = computeMappedPathBounds(path);
+            const int clipMode = m_hasClip ? RGN_AND : RGN_COPY;
             const int savedDc = SaveDC(m_hdc);
             if (savedDc != 0) {
-                emitPathToGdi(path);
-                if (SelectClipPath(m_hdc, RGN_AND))
-                    blended = alphaBlendClippedPath(m_brush.color());
+                SetPolyFillMode(m_hdc, path.fillRule() == Qt::WindingFill ? WINDING : ALTERNATE);
+                emitPathToGdi(path, true);
+                if (SelectClipPath(m_hdc, clipMode))
+                    blended = alphaBlendClippedPath(m_brush.color(), brushAlpha, dstBox);
                 RestoreDC(m_hdc, savedDc);
             }
             if (!blended) {
                 HBRUSH brush = createCurrentBrush();
                 HGDIOBJ oldBrush = SelectObject(m_hdc, brush);
-                emitPathToGdi(path);
+                emitPathToGdi(path, true);
                 FillPath(m_hdc);
                 SelectObject(m_hdc, oldBrush);
                 deleteBrushIfCustom(brush);
@@ -296,7 +337,7 @@ public:
             if (hasPen) {
                 HPEN pen = createCurrentPen();
                 HGDIOBJ oldPen = SelectObject(m_hdc, pen);
-                emitPathToGdi(path);
+                emitPathToGdi(path, false);
                 StrokePath(m_hdc);
                 SelectObject(m_hdc, oldPen);
                 deletePenIfCustom(pen);
@@ -328,10 +369,11 @@ public:
 
     void drawPolygon(const QPointF *points, int pointCount, PolygonDrawMode mode) override
     {
-        if (!points || pointCount < 2)
+        if (!points || pointCount < 2 || m_opacity <= 0.0)
             return;
+        const int brushAlpha = std::clamp(static_cast<int>(std::lround(m_brush.color().alpha() * m_opacity)), 0, 255);
         if (mode != PolylineMode && m_brush.style() != Qt::NoBrush
-            && m_brush.color().alpha() > 0 && m_brush.color().alpha() < 255) {
+            && brushAlpha > 0 && brushAlpha < 255) {
             QPainterPath path;
             path.setFillRule(mode == WindingMode ? Qt::WindingFill : Qt::OddEvenFill);
             path.moveTo(points[0]);
@@ -588,6 +630,8 @@ private:
     QBrush m_brush;
     QFont m_font;
     QTransform m_transform;
+    bool m_hasClip = false;
+    double m_opacity = 1.0;
 };
 
 class WinGdiEmfPaintDevice : public QPaintDevice

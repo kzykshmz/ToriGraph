@@ -19650,9 +19650,9 @@ MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *
             QStringList gLines;
             while (!ts.atEnd()) {
                 s = ts.readLine();
+                gLines << s;
                 if (s == "</graph>")
                     break;
-                gLines << s;
             }
             openGraph(this, cloned, remapGraphSpecLines(gLines));
         } else if (s.trimmed().startsWith("<Tori")) {
@@ -19673,7 +19673,7 @@ MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *
         lg->syncChildLinkedLayers();
         lg->replot();
     }
-    cloned->arrangeLayers(false, false);
+    cloned->finalizePhase5Restore();
     customMenu(cloned);
     activateSubWindow(cloned);
     emit modified();
