@@ -126,6 +126,8 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     hb2->addWidget(buttonApply);
     btnEditCurve = new QPushButton(tr("&Plot Associations..."));
     hb2->addWidget(btnEditCurve);
+    btnColorPalette = new QPushButton(tr("Color &Palette..."));
+    hb2->addWidget(btnColorPalette);
     hb2->addStretch();
     gl->addLayout(hb2, 1, 1);
 
@@ -136,6 +138,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(acceptParams()));
     connect(btnWorksheet, SIGNAL(clicked()), this, SLOT(showWorksheet()));
     connect(btnEditCurve, SIGNAL(clicked()), this, SLOT(editCurve()));
+    connect(btnColorPalette, SIGNAL(clicked()), this, SLOT(openColorPaletteEditor()));
     connect(listBox, SIGNAL(itemDoubleClicked(QTreeWidgetItem *, int)), this,
             SLOT(showPlotAssociations(QTreeWidgetItem *, int)));
     connect(listBox, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
@@ -600,6 +603,12 @@ void PlotDialog::initBoxPage()
     boxWidth->setRange(0, 100);
     boxWidth->setSingleStep(5);
     gl1->addWidget(boxWidth, 4, 1);
+
+    boxViolinMode = new QCheckBox(tr("Violin Plot (KDE Contour)"));
+    gl1->addWidget(boxViolinMode, 5, 0, 1, 2);
+
+    boxShowDataPoints = new QCheckBox(tr("Show Jittered Data Points"));
+    gl1->addWidget(boxShowDataPoints, 6, 0, 1, 2);
 
     QGroupBox *gb2 = new QGroupBox(tr("Whiskers"));
     QGridLayout *gl2 = new QGridLayout(gb2);
@@ -1646,6 +1655,9 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
                 whiskerCnt->setValue(b->whiskersRange());
             else
                 boxWhiskersCoef->setValue((int)b->whiskersRange());
+
+            boxViolinMode->setChecked(b->violinMode());
+            boxShowDataPoints->setChecked(b->showDataPoints());
         }
     }
 }
@@ -1907,11 +1919,33 @@ bool PlotDialog::acceptParams()
             else
                 b->setWhiskersRange(boxWhiskersRange->currentIndex(),
                                     (double)boxWhiskersCoef->value());
+
+            b->setViolinMode(boxViolinMode->isChecked());
+            b->setShowDataPoints(boxShowDataPoints->isChecked());
         }
     }
     graph->replot();
     graph->notifyChanges();
     return true;
+}
+
+void PlotDialog::openColorPaletteEditor()
+{
+    Graph *g = nullptr;
+    QTreeWidgetItem *it = listBox->currentItem();
+    if (it) {
+        if (it->type() == CurveTreeItem::PlotCurveTreeItem)
+            g = ((CurveTreeItem *)it)->graph();
+        else if (it->type() == LayerItem::LayerTreeItem)
+            g = ((LayerItem *)it)->graph();
+    }
+    if (!g && d_ml)
+        g = d_ml->activeGraph();
+
+    if (Graph::showColorPaletteEditor(this, g)) {
+        if (it && it->type() == CurveTreeItem::PlotCurveTreeItem)
+            setActiveCurve((CurveTreeItem *)it);
+    }
 }
 
 void PlotDialog::setAutomaticBinning()

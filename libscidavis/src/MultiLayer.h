@@ -98,7 +98,13 @@ public:
     bool printCropmarksEnabled() { return d_print_cropmarks; };
     void printCropmarks(bool on) { d_print_cropmarks = on; };
 
+    bool keepAspectRatio() const { return d_keep_aspect_ratio; }
+    double targetAspectRatio() const { return d_target_aspect_ratio; }
+
 public slots:
+    void setKeepAspectRatio(bool keep);
+    void setTargetAspectRatio(double ratio);
+    void applyAspectRatioPreset(double ratio, bool keepLocked = true);
     Graph *addLayer(int x = 0, int y = 0, int width = 0, int height = 0);
     void setLayersNumber(int n);
 
@@ -230,6 +236,8 @@ private:
     int l_canvas_width, l_canvas_height, hor_align, vert_align;
     bool addTextOn;
     bool d_scale_on_print, d_print_cropmarks;
+    bool d_keep_aspect_ratio;
+    double d_target_aspect_ratio;
 
     //! Used when adding text markers on new layers
     int defaultTextMarkerFrame;

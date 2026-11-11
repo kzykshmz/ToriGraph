@@ -43,6 +43,7 @@
 #include "PlotEnrichement.h"
 #include "Graph.h"
 #include "Plot.h"
+#include "MultiLayer.h"
 
 SelectionMoveResizer::SelectionMoveResizer(Legend *target) : QWidget(target->plot()->canvas())
 {
@@ -293,6 +294,12 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
     boundary_out = boundary_out.normalized();
     if (!d_widgets.isEmpty() && d_op != Move && d_bounding_rect.width() > 0
         && d_bounding_rect.height() > 0) {
+        MultiLayer *ml = nullptr;
+        for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
+            if ((ml = qobject_cast<MultiLayer *>(p)) != nullptr)
+                break;
+        }
+        const bool lockAspect = ml ? ml->keepAspectRatio() : true;
         int marginW = 0;
         int marginH = 0;
         double canvasAspect =
@@ -308,35 +315,50 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
                 }
             }
         }
+        if (ml && ml->targetAspectRatio() > 0.05)
+            canvasAspect = ml->targetAspectRatio();
+
         int newCW = qMax(50, boundary_out.width() - marginW);
         int newCH = qMax(50, boundary_out.height() - marginH);
-        if (d_op == Resize_E || d_op == Resize_W) {
-            newCH = qMax(50, qRound(newCW / canvasAspect));
-        } else if (d_op == Resize_N || d_op == Resize_S) {
-            newCW = qMax(50, qRound(newCH * canvasAspect));
-        } else {
-            if (qAbs(boundary_out.width() - d_bounding_rect.width())
-                >= qAbs(boundary_out.height() - d_bounding_rect.height())) {
+        if (lockAspect) {
+            if (d_op == Resize_E || d_op == Resize_W) {
                 newCH = qMax(50, qRound(newCW / canvasAspect));
-            } else {
+            } else if (d_op == Resize_N || d_op == Resize_S) {
                 newCW = qMax(50, qRound(newCH * canvasAspect));
+            } else {
+                if (qAbs(boundary_out.width() - d_bounding_rect.width())
+                    >= qAbs(boundary_out.height() - d_bounding_rect.height())) {
+                    newCH = qMax(50, qRound(newCW / canvasAspect));
+                } else {
+                    newCW = qMax(50, qRound(newCH * canvasAspect));
+                }
             }
+            const int newW = newCW + marginW;
+            const int newH = newCH + marginH;
+            int left = d_bounding_rect.left();
+            int top = d_bounding_rect.top();
+            if (d_op == Resize_W || d_op == Resize_NW || d_op == Resize_SW)
+                left = d_bounding_rect.right() - newW + 1;
+            else if (d_op == Resize_N || d_op == Resize_S)
+                left = d_bounding_rect.center().x() - newW / 2;
+
+            if (d_op == Resize_N || d_op == Resize_NW || d_op == Resize_NE)
+                top = d_bounding_rect.bottom() - newH + 1;
+            else if (d_op == Resize_E || d_op == Resize_W)
+                top = d_bounding_rect.center().y() - newH / 2;
+
+            boundary_out = QRect(left, top, newW, newH);
+        } else {
+            const int newW = newCW + marginW;
+            const int newH = newCH + marginH;
+            int left = boundary_out.left();
+            int top = boundary_out.top();
+            if (d_op == Resize_W || d_op == Resize_NW || d_op == Resize_SW)
+                left = d_bounding_rect.right() - newW + 1;
+            if (d_op == Resize_N || d_op == Resize_NW || d_op == Resize_NE)
+                top = d_bounding_rect.bottom() - newH + 1;
+            boundary_out = QRect(left, top, newW, newH);
         }
-        const int newW = newCW + marginW;
-        const int newH = newCH + marginH;
-        int left = d_bounding_rect.left();
-        int top = d_bounding_rect.top();
-        if (d_op == Resize_W || d_op == Resize_NW || d_op == Resize_SW)
-            left = d_bounding_rect.right() - newW + 1;
-        else if (d_op == Resize_N || d_op == Resize_S)
-            left = d_bounding_rect.center().x() - newW / 2;
-
-        if (d_op == Resize_N || d_op == Resize_NW || d_op == Resize_NE)
-            top = d_bounding_rect.bottom() - newH + 1;
-        else if (d_op == Resize_E || d_op == Resize_W)
-            top = d_bounding_rect.center().y() - newH / 2;
-
-        boundary_out = QRect(left, top, newW, newH);
     }
     if (in == d_bounding_rect)
         return boundary_out;

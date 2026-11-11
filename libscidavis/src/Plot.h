@@ -93,6 +93,8 @@ public:
 
     void print(QPainter *, const QRect &rect,
                const QwtPlotPrintFilter & = QwtPlotPrintFilter()) const override;
+    void updateLayout() override;
+    void replot() override;
 
     bool eventFilter(QObject *object, QEvent *e) override;
     void zoomAxisAroundPos(int axis, int pixelPos, double factor);

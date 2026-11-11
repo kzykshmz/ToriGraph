@@ -75,6 +75,12 @@ public:
     int whiskersRangeType() { return w_range; };
     void setWhiskersRange(int type, double coeff);
 
+    void setViolinMode(bool on) { d_violin_mode = on; }
+    bool violinMode() const { return d_violin_mode; }
+
+    void setShowDataPoints(bool on) { d_show_data_points = on; }
+    bool showDataPoints() const { return d_show_data_points; }
+
     virtual bool loadData();
 
 private:
@@ -89,6 +95,8 @@ private:
     QwtSymbol::Style min_style, max_style, mean_style, p99_style, p1_style;
     double b_coeff, w_coeff;
     int b_style, b_width, b_range, w_range;
+    bool d_violin_mode;
+    bool d_show_data_points;
 };
 
 //! Single array data (extension to QwtData)

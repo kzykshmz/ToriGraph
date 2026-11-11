@@ -1,4 +1,4 @@
-<TS language="en_US" version="2.1">
+<TS language="ja_JP" version="2.1">
 <context>
     <name>AbstractAspect</name>
     <message>
@@ -3990,7 +3990,155 @@ Are you sure you want to continue?</source>
         <location filename="../../libscidavis/src/ConfigDialog.cpp" line="1550" />
         <source>English</source>
         <comment>translate this to the language of the translation file, NOT to the meaning of English!</comment>
-        <translation>日本の</translation>
+        <translation>日本語 (Japanese)</translation>
+    </message>
+    <message>
+        <source>&amp;Language (言語)</source>
+        <translation>言語 / Language(&amp;L)</translation>
+    </message>
+    <message>
+        <source>日本語 (&amp;Japanese)</source>
+        <translation>日本語 (&amp;Japanese)</translation>
+    </message>
+    <message>
+        <source>&amp;English</source>
+        <translation>英語 (&amp;English)</translation>
+    </message>
+    <message>
+        <source>Peak &amp;Analyzer (OriginPro)...</source>
+        <translation>ピークアナライザ (OriginPro)(&amp;A)...</translation>
+    </message>
+    <message>
+        <source>&amp;Peak / Multi-Peak Fit...</source>
+        <translation>ピーク / マルチピークフィット(&amp;P)...</translation>
+    </message>
+    <message>
+        <source>Auto Peak Fit (&amp;Gaussian)</source>
+        <translation>自動ピークフィット (ガウス)(&amp;G)</translation>
+    </message>
+    <message>
+        <source>Auto Peak Fit (&amp;Lorentzian)</source>
+        <translation>自動ピークフィット (ローレンツ)(&amp;L)</translation>
+    </message>
+    <message>
+        <source>Auto Peak Fit (Pseudo-&amp;Voigt)</source>
+        <translation>自動ピークフィット (擬フォークト)(&amp;V)</translation>
+    </message>
+    <message>
+        <source>&amp;Double-Y Plot</source>
+        <translation>2軸 (Double-Y) プロット(&amp;D)</translation>
+    </message>
+    <message>
+        <source>&amp;Waterfall / Y-Offset Stack</source>
+        <translation>ウォーターフォール / Yオフセット積層(&amp;W)</translation>
+    </message>
+    <message>
+        <source>&amp;Violin Plot</source>
+        <translation>バイオリンプロット(&amp;V)</translation>
+    </message>
+    <message>
+        <source>Pa&amp;reto Chart</source>
+        <translation>パレート図(&amp;R)</translation>
+    </message>
+    <message>
+        <source>Normal &amp;Q-Q Plot</source>
+        <translation>正規 Q-Q プロット(&amp;Q)</translation>
+    </message>
+    <message>
+        <source>&amp;Ternary Plot (A-B-C)</source>
+        <translation>三角図 / 三元状態図 (A-B-C)(&amp;T)</translation>
+    </message>
+    <message>
+        <source>Color &amp;Palette Editor...</source>
+        <translation>カラーパレットエディタ(&amp;P)...</translation>
+    </message>
+    <message>
+        <source>Apply Color &amp;Palette</source>
+        <translation>カラーパレット適用(&amp;P)</translation>
+    </message>
+    <message>
+        <source>Graph &amp;Aspect Ratio</source>
+        <translation>グラフ縦横比 (アスペクト比)(&amp;A)</translation>
+    </message>
+    <message>
+        <source>&amp;1:1 (Square - ISIJ)</source>
+        <translation>&amp;1:1 (正方形 - 鉄と鋼 / ISIJ)</translation>
+    </message>
+    <message>
+        <source>&amp;4:3 (Standard)</source>
+        <translation>&amp;4:3 (標準)</translation>
+    </message>
+    <message>
+        <source>1&amp;6:9 (Widescreen)</source>
+        <translation>1&amp;6:9 (ワイド)</translation>
+    </message>
+    <message>
+        <source>&amp;3:2 (Classic)</source>
+        <translation>&amp;3:2 (クラシック)</translation>
+    </message>
+    <message>
+        <source>&amp;Custom Aspect Ratio...</source>
+        <translation>カスタム縦横比(&amp;C)...</translation>
+    </message>
+    <message>
+        <source>&amp;Keep Aspect Ratio on Resize</source>
+        <translation>リサイズ時に縦横比を固定(&amp;K)</translation>
+    </message>
+    <message>
+        <source>&amp;Tabbed Workspace View</source>
+        <translation>タブ形式ワークスペース表示(&amp;T)</translation>
+    </message>
+    <message>
+        <source>Search windows / labels...</source>
+        <translation>ウィンドウ名・ラベルで検索...</translation>
+    </message>
+    <message>
+        <source>All Windows</source>
+        <translation>すべてのウィンドウ</translation>
+    </message>
+    <message>
+        <source>Tables (Workbooks)</source>
+        <translation>テーブル (ワークブック)</translation>
+    </message>
+    <message>
+        <source>Graphs (2D/3D)</source>
+        <translation>グラフ (2D/3D)</translation>
+    </message>
+    <message>
+        <source>Matrices</source>
+        <translation>行列 (マトリックス)</translation>
+    </message>
+    <message>
+        <source>Notes / Scripts</source>
+        <translation>ノート / スクリプト</translation>
+    </message>
+    <message>
+        <source>Subfolders Only</source>
+        <translation>サブフォルダのみ</translation>
+    </message>
+    <message>
+        <source>Subfolders</source>
+        <translation>サブフォルダを含む</translation>
+    </message>
+    <message>
+        <source>Peak Analyzer (OriginPro)</source>
+        <translation>ピークアナライザ (OriginPro)</translation>
+    </message>
+    <message>
+        <source>1. Goal &amp;&amp; Baseline</source>
+        <translation>1. 目的とベースライン</translation>
+    </message>
+    <message>
+        <source>2. Find Peaks &amp;&amp; Peak List</source>
+        <translation>2. ピーク検出とピーク一覧</translation>
+    </message>
+    <message>
+        <source>3. Fit &amp;&amp; Output</source>
+        <translation>3. フィッティングと出力設定</translation>
+    </message>
+    <message>
+        <source>Run Peak Analyzer</source>
+        <translation>ピーク解析を実行</translation>
     </message>
 </context>
 <context>

@@ -73,6 +73,21 @@
 #include <QImageWriter>
 #include <QFileInfo>
 #include <QRegExp>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QComboBox>
+#include <QListWidget>
+#include <QPushButton>
+#include <QRadioButton>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QLabel>
+#include <QColorDialog>
+#include <QInputDialog>
+#include <QSettings>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -113,6 +128,7 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     ignoreResize = true;
     drawAxesBackbone = true;
     m_autoscale = true;
+    d_is_ternary = false;
     autoScaleFonts = false;
     hidden_size = QSize();
     d_antialiasing = true;
@@ -3409,15 +3425,23 @@ void Graph::updateVectorsLayout(int curve, const QColor &color, int width, int a
 
 void Graph::updatePlot()
 {
-    if (m_autoscale && !zoomOn() && d_active_tool == NULL) {
+    if (d_is_ternary) {
+        const double h = sqrt(3.0) / 2.0;
+        d_plot->setAxisScale(QwtPlot::xBottom, -0.14, 1.14, 0.2);
+        d_plot->setAxisScale(QwtPlot::yLeft, -0.12, h + 0.14, 0.2);
+        for (int i = 0; i < QwtPlot::axisCnt; i++)
+            d_plot->enableAxis(i, false);
+    } else if (m_autoscale && !zoomOn() && d_active_tool == NULL) {
         for (int i = 0; i < QwtPlot::axisCnt; i++)
             d_plot->setAxisAutoScale(i);
     }
 
     d_plot->replot();
     updateMarkersBoundingRect();
-    updateSecondaryAxis(QwtPlot::xTop);
-    updateSecondaryAxis(QwtPlot::yRight);
+    if (!d_is_ternary) {
+        updateSecondaryAxis(QwtPlot::xTop);
+        updateSecondaryAxis(QwtPlot::yRight);
+    }
 
     if (isPiePlot()) {
         QwtPieCurve *c = (QwtPieCurve *)curve(0);
@@ -4032,6 +4056,10 @@ void Graph::showIntensityTable()
 
 void Graph::updateMarkersBoundingRect()
 {
+    if (d_is_ternary) {
+        d_plot->replot();
+        return;
+    }
     for (int i = 0; i < (int)d_lines.size(); i++) {
         ArrowMarker *mrkL = (ArrowMarker *)d_plot->marker(d_lines[i]);
         if (mrkL)
@@ -5379,3 +5407,755 @@ void Graph::deselect()
     scalePicker->deselect();
     titlePicker->setSelected(false);
 }
+
+// ============================================================================
+// OriginPro Color Palette System & Interactive Palette Editor
+// ============================================================================
+
+namespace {
+static QMap<QString, QList<QColor>> &customPaletteMemoryStore()
+{
+    static QMap<QString, QList<QColor>> store;
+    return store;
+}
+
+static QList<QColor> hexListToColors(const QStringList &hexList)
+{
+    QList<QColor> out;
+    out.reserve(hexList.size());
+    for (const QString &h : hexList) {
+        QColor c(h.trimmed());
+        if (c.isValid())
+            out.append(c);
+    }
+    return out;
+}
+} // namespace
+
+QStringList Graph::builtInPaletteNames()
+{
+    return QStringList()
+            << "ISIJ / Origin Default"
+            << "Origin Classic"
+            << "Viridis"
+            << "Plasma"
+            << "Inferno"
+            << "CoolWarm"
+            << "Nature (NPG)"
+            << "Science (AAAS)"
+            << "Okabe-Ito (Colorblind Safe)"
+            << "Monochrome / Grayscale";
+}
+
+QStringList Graph::customPaletteNames()
+{
+    QStringList names = customPaletteMemoryStore().keys();
+    QSettings settings;
+    settings.beginGroup("CustomColorPalettes");
+    for (const QString &k : settings.childKeys()) {
+        if (!names.contains(k))
+            names.append(k);
+    }
+    settings.endGroup();
+    names.sort();
+    return names;
+}
+
+QStringList Graph::allPaletteNames()
+{
+    QStringList names = builtInPaletteNames();
+    for (const QString &custom : customPaletteNames()) {
+        if (!names.contains(custom))
+            names.append(custom);
+    }
+    return names;
+}
+
+QList<QColor> Graph::paletteColors(const QString &paletteName)
+{
+    const QString key = paletteName.trimmed();
+    if (key.compare("ISIJ / Origin Default", Qt::CaseInsensitive) == 0
+        || key.compare("Origin Default", Qt::CaseInsensitive) == 0
+        || key.compare("ISIJ", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                                 "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf" });
+    }
+    if (key.compare("Origin Classic", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#000000", "#ff0000", "#0000ff", "#008080", "#ff00ff",
+                                 "#808000", "#000080", "#800000", "#ff8000", "#800080" });
+    }
+    if (key.compare("Viridis", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#440154", "#482878", "#3e4989", "#31688e", "#26828e",
+                                 "#1f9e89", "#35b779", "#6ece58", "#b5de2b", "#fde725" });
+    }
+    if (key.compare("Plasma", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#0d0887", "#46039f", "#7201a8", "#9c179e", "#bd3786",
+                                 "#d8576b", "#ed7953", "#fb9f3a", "#fdca26", "#f0f921" });
+    }
+    if (key.compare("Inferno", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#000004", "#1b0c41", "#4a0c6b", "#781c6d", "#a52c60",
+                                 "#cf4446", "#ed6925", "#fb9b06", "#f7d13d", "#fcffa4" });
+    }
+    if (key.compare("CoolWarm", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#3b4cc0", "#5977e3", "#7b9ff9", "#9ebeff", "#c0d4f5",
+                                 "#f2cbb7", "#f7a889", "#e87a5f", "#c53334", "#b40426" });
+    }
+    if (key.compare("Nature (NPG)", Qt::CaseInsensitive) == 0
+        || key.compare("Nature", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#e64b35", "#4dbbd5", "#00a087", "#3c5488", "#f39b7f",
+                                 "#8491b4", "#91d1c2", "#dc0000", "#7e6148", "#b09c85" });
+    }
+    if (key.compare("Science (AAAS)", Qt::CaseInsensitive) == 0
+        || key.compare("Science", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#3b4992", "#ee0000", "#008b45", "#631879", "#008280",
+                                 "#bb0021", "#5f559b", "#a20056", "#808180", "#1b1919" });
+    }
+    if (key.compare("Okabe-Ito (Colorblind Safe)", Qt::CaseInsensitive) == 0
+        || key.compare("Okabe-Ito", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#0072b2", "#e69f00", "#009e73", "#d55e00",
+                                 "#cc79a7", "#56b4e9", "#f0e442", "#000000" });
+    }
+    if (key.compare("Monochrome / Grayscale", Qt::CaseInsensitive) == 0
+        || key.compare("Monochrome", Qt::CaseInsensitive) == 0
+        || key.compare("Grayscale", Qt::CaseInsensitive) == 0) {
+        return hexListToColors({ "#000000", "#252525", "#454545", "#636363",
+                                 "#7f7f7f", "#969696", "#bdbdbd", "#d9d9d9" });
+    }
+
+    auto &memStore = customPaletteMemoryStore();
+    if (memStore.contains(key))
+        return memStore.value(key);
+
+    QSettings settings;
+    settings.beginGroup("CustomColorPalettes");
+    if (settings.contains(key)) {
+        const QStringList hexList = settings.value(key).toStringList();
+        settings.endGroup();
+        QList<QColor> cols = hexListToColors(hexList);
+        if (!cols.isEmpty()) {
+            memStore.insert(key, cols);
+            return cols;
+        }
+    } else {
+        settings.endGroup();
+    }
+
+    // Fallback to ISIJ / Origin Default
+    return hexListToColors({ "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                             "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf" });
+}
+
+void Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors)
+{
+    const QString key = name.trimmed();
+    if (key.isEmpty() || colors.isEmpty())
+        return;
+
+    customPaletteMemoryStore().insert(key, colors);
+
+    QStringList hexList;
+    hexList.reserve(colors.size());
+    for (const QColor &c : colors) {
+        if (c.isValid())
+            hexList.append(c.name());
+    }
+    QSettings settings;
+    settings.beginGroup("CustomColorPalettes");
+    settings.setValue(key, hexList);
+    settings.endGroup();
+}
+
+void Graph::removeCustomPalette(const QString &name)
+{
+    const QString key = name.trimmed();
+    if (key.isEmpty())
+        return;
+
+    customPaletteMemoryStore().remove(key);
+    QSettings settings;
+    settings.beginGroup("CustomColorPalettes");
+    settings.remove(key);
+    settings.endGroup();
+}
+
+QList<QColor> Graph::interpolatePalette(const QList<QColor> &anchors, int count)
+{
+    QList<QColor> result;
+    if (count <= 0)
+        return result;
+
+    QList<QColor> validAnchors;
+    for (const QColor &c : anchors) {
+        if (c.isValid())
+            validAnchors.append(c);
+    }
+    if (validAnchors.isEmpty())
+        validAnchors = paletteColors("ISIJ / Origin Default");
+
+    result.reserve(count);
+    if (validAnchors.size() == 1 || count == 1) {
+        for (int i = 0; i < count; ++i)
+            result.append(validAnchors.first());
+        return result;
+    }
+
+    const int nSeg = validAnchors.size() - 1;
+    for (int i = 0; i < count; ++i) {
+        const double t = double(i) / double(count - 1);
+        const double pos = t * double(nSeg);
+        const int idx = qMin(int(std::floor(pos)), nSeg - 1);
+        const double frac = pos - double(idx);
+        const QColor &c0 = validAnchors[idx];
+        const QColor &c1 = validAnchors[idx + 1];
+
+        const int r = qBound(0, qRound((1.0 - frac) * c0.red() + frac * c1.red()), 255);
+        const int g = qBound(0, qRound((1.0 - frac) * c0.green() + frac * c1.green()), 255);
+        const int b = qBound(0, qRound((1.0 - frac) * c0.blue() + frac * c1.blue()), 255);
+        const int a = qBound(0, qRound((1.0 - frac) * c0.alpha() + frac * c1.alpha()), 255);
+        result.append(QColor(r, g, b, a));
+    }
+    return result;
+}
+
+void Graph::applyColorPalette(const QList<QColor> &colors, bool gradientMode, bool applyToSymbols)
+{
+    QList<QColor> validColors;
+    for (const QColor &c : colors) {
+        if (c.isValid())
+            validColors.append(c);
+    }
+    if (validColors.isEmpty() || n_curves <= 0)
+        return;
+
+    QList<int> targetIndices;
+    for (int i = 0; i < n_curves; ++i) {
+        if (c_type[i] == ErrorBars || c_type[i] == ColorMap || c_type[i] == GrayMap
+            || c_type[i] == ContourMap || c_type[i] == Pie)
+            continue;
+        QwtPlotCurve *c = curve(i);
+        if (c)
+            targetIndices.append(i);
+    }
+    if (targetIndices.isEmpty())
+        return;
+
+    const int m = targetIndices.size();
+    const QList<QColor> assignedColors = gradientMode ? interpolatePalette(validColors, m) : validColors;
+
+    for (int k = 0; k < m; ++k) {
+        const int idx = targetIndices[k];
+        QwtPlotCurve *c = curve(idx);
+        if (!c)
+            continue;
+
+        const QColor col = assignedColors[k % assignedColors.size()];
+        QPen pen = c->pen();
+        pen.setColor(col);
+        c->setPen(pen);
+
+        if (c_type[idx] == VectXYXY || c_type[idx] == VectXYAM) {
+            VectorCurve *vc = dynamic_cast<VectorCurve *>(c);
+            if (vc)
+                vc->setColor(col);
+        }
+
+        if (c->brush().style() != Qt::NoBrush) {
+            QBrush br = c->brush();
+            QColor fillCol = col;
+            if (br.color().alpha() < 255)
+                fillCol.setAlpha(br.color().alpha());
+            br.setColor(fillCol);
+            c->setBrush(br);
+        }
+
+        if (applyToSymbols) {
+            QwtSymbol sym = c->symbol();
+            QPen symPen = sym.pen();
+            symPen.setColor(col);
+            sym.setPen(symPen);
+            if (sym.brush().style() != Qt::NoBrush) {
+                QBrush symBrush = sym.brush();
+                symBrush.setColor(col);
+                sym.setBrush(symBrush);
+            }
+            c->setSymbol(sym);
+        }
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(c);
+        if (dc) {
+            for (DataCurve *eb : dc->errorBarsList()) {
+                QwtErrorPlotCurve *errCurve = dynamic_cast<QwtErrorPlotCurve *>(eb);
+                if (errCurve)
+                    errCurve->setColor(col);
+            }
+        }
+    }
+
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::applyColorPaletteByName(const QString &paletteName, bool gradientMode)
+{
+    const QList<QColor> cols = paletteColors(paletteName);
+    if (!cols.isEmpty())
+        applyColorPalette(cols, gradientMode, true);
+}
+
+bool Graph::showColorPaletteEditor(QWidget *parent, Graph *targetGraph)
+{
+    QDialog dlg(parent);
+    dlg.setWindowTitle(tr("OriginPro Color Palette & Gradient Editor"));
+    dlg.setMinimumSize(560, 480);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+
+    // 1. Preset / Custom Palette Selector Row
+    QGroupBox *presetGroup = new QGroupBox(tr("Color Palette Preset / Custom Palettes"), &dlg);
+    QHBoxLayout *presetLayout = new QHBoxLayout(presetGroup);
+    QComboBox *comboPalettes = new QComboBox(presetGroup);
+    comboPalettes->addItems(allPaletteNames());
+    QPushButton *btnSaveCustom = new QPushButton(tr("Save As Custom..."), presetGroup);
+    QPushButton *btnDeleteCustom = new QPushButton(tr("Delete Custom"), presetGroup);
+    presetLayout->addWidget(new QLabel(tr("Palette:"), presetGroup));
+    presetLayout->addWidget(comboPalettes, 1);
+    presetLayout->addWidget(btnSaveCustom);
+    presetLayout->addWidget(btnDeleteCustom);
+    mainLayout->addWidget(presetGroup);
+
+    // 2. Color List & Swatch Editor
+    QGroupBox *colorsGroup = new QGroupBox(tr("Palette Colors (Swatches & Hex Codes)"), &dlg);
+    QHBoxLayout *colorsLayout = new QHBoxLayout(colorsGroup);
+    QListWidget *colorListWidget = new QListWidget(colorsGroup);
+    colorListWidget->setIconSize(QSize(36, 18));
+
+    QVBoxLayout *colorBtnLayout = new QVBoxLayout();
+    QPushButton *btnAddColor = new QPushButton(tr("Add Color..."), colorsGroup);
+    QPushButton *btnEditColor = new QPushButton(tr("Edit Color..."), colorsGroup);
+    QPushButton *btnRemoveColor = new QPushButton(tr("Remove Color"), colorsGroup);
+    QPushButton *btnMoveUp = new QPushButton(tr("Move Up"), colorsGroup);
+    QPushButton *btnMoveDown = new QPushButton(tr("Move Down"), colorsGroup);
+    colorBtnLayout->addWidget(btnAddColor);
+    colorBtnLayout->addWidget(btnEditColor);
+    colorBtnLayout->addWidget(btnRemoveColor);
+    colorBtnLayout->addSpacing(6);
+    colorBtnLayout->addWidget(btnMoveUp);
+    colorBtnLayout->addWidget(btnMoveDown);
+    colorBtnLayout->addStretch();
+
+    colorsLayout->addWidget(colorListWidget, 1);
+    colorsLayout->addLayout(colorBtnLayout);
+    mainLayout->addWidget(colorsGroup, 1);
+
+    // 3. Gradient Generator Group
+    QGroupBox *gradGroup = new QGroupBox(tr("Gradient Generator"), &dlg);
+    QGridLayout *gradLayout = new QGridLayout(gradGroup);
+    ColorButton *btnStartColor = new ColorButton(gradGroup);
+    btnStartColor->setColor(QColor("#1f77b4"));
+    QCheckBox *chkMidColor = new QCheckBox(tr("Middle Color:"), gradGroup);
+    chkMidColor->setChecked(true);
+    ColorButton *btnMidColor = new ColorButton(gradGroup);
+    btnMidColor->setColor(QColor("#2ca02c"));
+    ColorButton *btnEndColor = new ColorButton(gradGroup);
+    btnEndColor->setColor(QColor("#d62728"));
+    QSpinBox *spinGradSteps = new QSpinBox(gradGroup);
+    spinGradSteps->setRange(2, 32);
+    spinGradSteps->setValue(10);
+    QPushButton *btnGenerateGrad = new QPushButton(tr("Generate Gradient"), gradGroup);
+
+    gradLayout->addWidget(new QLabel(tr("Start Color:"), gradGroup), 0, 0);
+    gradLayout->addWidget(btnStartColor, 0, 1);
+    gradLayout->addWidget(chkMidColor, 0, 2);
+    gradLayout->addWidget(btnMidColor, 0, 3);
+    gradLayout->addWidget(new QLabel(tr("End Color:"), gradGroup), 1, 0);
+    gradLayout->addWidget(btnEndColor, 1, 1);
+    gradLayout->addWidget(new QLabel(tr("Steps (2-32):"), gradGroup), 1, 2);
+    gradLayout->addWidget(spinGradSteps, 1, 3);
+    gradLayout->addWidget(btnGenerateGrad, 0, 4, 2, 1);
+    mainLayout->addWidget(gradGroup);
+
+    // 4. Application Mode Group
+    QGroupBox *modeGroup = new QGroupBox(tr("Application Mode"), &dlg);
+    QHBoxLayout *modeLayout = new QHBoxLayout(modeGroup);
+    QRadioButton *radioCycle = new QRadioButton(tr("Cycle Palette Colors"), modeGroup);
+    QRadioButton *radioGradient =
+            new QRadioButton(tr("Interpolate Gradient Across Curves"), modeGroup);
+    QCheckBox *chkSymbols = new QCheckBox(tr("Apply to Symbols"), modeGroup);
+    radioCycle->setChecked(true);
+    chkSymbols->setChecked(true);
+    modeLayout->addWidget(radioCycle);
+    modeLayout->addWidget(radioGradient);
+    modeLayout->addStretch();
+    modeLayout->addWidget(chkSymbols);
+    mainLayout->addWidget(modeGroup);
+
+    // 5. Dialog Action Buttons
+    QHBoxLayout *bottomLayout = new QHBoxLayout();
+    QPushButton *btnApplyGraph = new QPushButton(tr("Apply to Active Graph"), &dlg);
+    QPushButton *btnOk = new QPushButton(tr("OK"), &dlg);
+    QPushButton *btnCancel = new QPushButton(tr("Cancel"), &dlg);
+    btnOk->setDefault(true);
+    bottomLayout->addWidget(btnApplyGraph);
+    bottomLayout->addStretch();
+    bottomLayout->addWidget(btnOk);
+    bottomLayout->addWidget(btnCancel);
+    mainLayout->addLayout(bottomLayout);
+
+    auto makeSwatchIcon = [](const QColor &c) -> QIcon {
+        QPixmap pm(36, 18);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.fillRect(0, 0, 35, 17, c);
+        p.setPen(QColor("#303030"));
+        p.drawRect(0, 0, 35, 17);
+        p.end();
+        return QIcon(pm);
+    };
+
+    auto populateList = [&](const QList<QColor> &cols) {
+        colorListWidget->clear();
+        for (int i = 0; i < cols.size(); ++i) {
+            const QColor &c = cols[i];
+            QListWidgetItem *item = new QListWidgetItem(
+                    makeSwatchIcon(c),
+                    QString("#%1  %2").arg(i + 1, 2, 10, QChar('0')).arg(c.name().toUpper()));
+            item->setData(Qt::UserRole, c);
+            colorListWidget->addItem(item);
+        }
+        if (colorListWidget->count() > 0)
+            colorListWidget->setCurrentRow(0);
+    };
+
+    auto currentColorsFromList = [&]() -> QList<QColor> {
+        QList<QColor> cols;
+        for (int i = 0; i < colorListWidget->count(); ++i) {
+            QColor c = colorListWidget->item(i)->data(Qt::UserRole).value<QColor>();
+            if (c.isValid())
+                cols.append(c);
+        }
+        return cols;
+    };
+
+    auto renumberItems = [&]() {
+        for (int i = 0; i < colorListWidget->count(); ++i) {
+            QListWidgetItem *it = colorListWidget->item(i);
+            QColor c = it->data(Qt::UserRole).value<QColor>();
+            it->setIcon(makeSwatchIcon(c));
+            it->setText(QString("#%1  %2").arg(i + 1, 2, 10, QChar('0')).arg(c.name().toUpper()));
+        }
+    };
+
+    populateList(paletteColors(comboPalettes->currentText()));
+    btnDeleteCustom->setEnabled(!builtInPaletteNames().contains(comboPalettes->currentText()));
+
+    QObject::connect(comboPalettes, &QComboBox::currentTextChanged, &dlg, [&](const QString &name) {
+        if (name.isEmpty())
+            return;
+        populateList(paletteColors(name));
+        btnDeleteCustom->setEnabled(!builtInPaletteNames().contains(name));
+    });
+
+    QObject::connect(chkMidColor, &QCheckBox::toggled, btnMidColor, &QWidget::setEnabled);
+
+    QObject::connect(btnAddColor, &QPushButton::clicked, &dlg, [&]() {
+        QColor c = QColorDialog::getColor(QColor("#1f77b4"), &dlg, tr("Select Color"),
+                                          QColorDialog::DontUseNativeDialog);
+        if (!c.isValid())
+            return;
+        QListWidgetItem *item = new QListWidgetItem(makeSwatchIcon(c), c.name().toUpper());
+        item->setData(Qt::UserRole, c);
+        colorListWidget->addItem(item);
+        renumberItems();
+        colorListWidget->setCurrentItem(item);
+    });
+
+    auto editSelectedColor = [&]() {
+        QListWidgetItem *item = colorListWidget->currentItem();
+        if (!item)
+            return;
+        QColor initial = item->data(Qt::UserRole).value<QColor>();
+        QColor c = QColorDialog::getColor(initial, &dlg, tr("Edit Color"),
+                                          QColorDialog::DontUseNativeDialog);
+        if (!c.isValid())
+            return;
+        item->setData(Qt::UserRole, c);
+        renumberItems();
+    };
+
+    QObject::connect(btnEditColor, &QPushButton::clicked, &dlg, editSelectedColor);
+    QObject::connect(colorListWidget, &QListWidget::itemDoubleClicked, &dlg,
+                     [&](QListWidgetItem *) { editSelectedColor(); });
+
+    QObject::connect(btnRemoveColor, &QPushButton::clicked, &dlg, [&]() {
+        int row = colorListWidget->currentRow();
+        if (row < 0 || colorListWidget->count() <= 1)
+            return;
+        delete colorListWidget->takeItem(row);
+        renumberItems();
+    });
+
+    QObject::connect(btnMoveUp, &QPushButton::clicked, &dlg, [&]() {
+        int row = colorListWidget->currentRow();
+        if (row <= 0)
+            return;
+        QListWidgetItem *it = colorListWidget->takeItem(row);
+        colorListWidget->insertItem(row - 1, it);
+        colorListWidget->setCurrentRow(row - 1);
+        renumberItems();
+    });
+
+    QObject::connect(btnMoveDown, &QPushButton::clicked, &dlg, [&]() {
+        int row = colorListWidget->currentRow();
+        if (row < 0 || row >= colorListWidget->count() - 1)
+            return;
+        QListWidgetItem *it = colorListWidget->takeItem(row);
+        colorListWidget->insertItem(row + 1, it);
+        colorListWidget->setCurrentRow(row + 1);
+        renumberItems();
+    });
+
+    QObject::connect(btnGenerateGrad, &QPushButton::clicked, &dlg, [&]() {
+        QList<QColor> anchors;
+        anchors.append(btnStartColor->color());
+        if (chkMidColor->isChecked())
+            anchors.append(btnMidColor->color());
+        anchors.append(btnEndColor->color());
+        populateList(interpolatePalette(anchors, spinGradSteps->value()));
+    });
+
+    QObject::connect(btnSaveCustom, &QPushButton::clicked, &dlg, [&]() {
+        bool ok = false;
+        QString name = QInputDialog::getText(&dlg, tr("Save Custom Palette"),
+                                             tr("Custom Palette Name:"), QLineEdit::Normal,
+                                             tr("My Custom Palette"), &ok)
+                               .trimmed();
+        if (!ok || name.isEmpty())
+            return;
+        saveCustomPalette(name, currentColorsFromList());
+        comboPalettes->blockSignals(true);
+        comboPalettes->clear();
+        comboPalettes->addItems(allPaletteNames());
+        comboPalettes->setCurrentText(name);
+        comboPalettes->blockSignals(false);
+        btnDeleteCustom->setEnabled(!builtInPaletteNames().contains(name));
+    });
+
+    QObject::connect(btnDeleteCustom, &QPushButton::clicked, &dlg, [&]() {
+        const QString name = comboPalettes->currentText();
+        if (builtInPaletteNames().contains(name))
+            return;
+        removeCustomPalette(name);
+        comboPalettes->clear();
+        comboPalettes->addItems(allPaletteNames());
+    });
+
+    bool appliedAny = false;
+    auto applyToTarget = [&]() {
+        if (!targetGraph)
+            return;
+        QList<QColor> cols = currentColorsFromList();
+        if (!cols.isEmpty()) {
+            targetGraph->applyColorPalette(cols, radioGradient->isChecked(),
+                                           chkSymbols->isChecked());
+            appliedAny = true;
+        }
+    };
+
+    QObject::connect(btnApplyGraph, &QPushButton::clicked, &dlg, applyToTarget);
+    QObject::connect(btnOk, &QPushButton::clicked, &dlg, [&]() {
+        applyToTarget();
+        dlg.accept();
+    });
+    QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    const int res = dlg.exec();
+    return (res == QDialog::Accepted) || appliedAny;
+}
+
+// ============================================================================
+// OriginPro Plot Types Support (Waterfall Y-Offset Stack & Ternary Diagram)
+// ============================================================================
+
+void Graph::applyYOffsetStack(double offsetStep, bool autoOffset)
+{
+    QList<QwtPlotCurve *> visibleDataCurves;
+    for (int i = 0; i < n_curves; ++i) {
+        if (c_type[i] == ErrorBars || c_type[i] == Pie || c_type[i] == Box
+            || c_type[i] == ColorMap || c_type[i] == GrayMap || c_type[i] == ContourMap)
+            continue;
+        QwtPlotCurve *c = curve(i);
+        if (c && c->isVisible() && c->dataSize() > 0)
+            visibleDataCurves.append(c);
+    }
+
+    if (visibleDataCurves.size() < 2)
+        return;
+
+    double deltaY = offsetStep;
+    if (autoOffset && qAbs(offsetStep) <= 1e-15) {
+        double sumSpan = 0.0;
+        int validSpans = 0;
+        for (QwtPlotCurve *c : visibleDataCurves) {
+            const int n = c->dataSize();
+            if (n <= 0)
+                continue;
+            double minY = c->y(0);
+            double maxY = c->y(0);
+            for (int j = 1; j < n; ++j) {
+                const double yv = c->y(j);
+                if (yv < minY)
+                    minY = yv;
+                if (yv > maxY)
+                    maxY = yv;
+            }
+            sumSpan += (maxY - minY);
+            validSpans++;
+        }
+        const double avgSpan = (validSpans > 0) ? (sumSpan / double(validSpans)) : 0.0;
+        deltaY = (avgSpan > 1e-12) ? (0.8 * avgSpan) : 1.0;
+    }
+
+    for (int k = 1; k < visibleDataCurves.size(); ++k) {
+        QwtPlotCurve *c = visibleDataCurves[k];
+        const int n = c->dataSize();
+        const double yShift = double(k) * deltaY;
+        QVector<double> xVals(n);
+        QVector<double> yVals(n);
+        for (int j = 0; j < n; ++j) {
+            xVals[j] = c->x(j);
+            yVals[j] = c->y(j) + yShift;
+        }
+        c->setData(xVals.constData(), yVals.constData(), n);
+
+        DataCurve *dc = dynamic_cast<DataCurve *>(c);
+        if (dc) {
+            for (DataCurve *eb : dc->errorBarsList()) {
+                if (eb)
+                    eb->setData(xVals.constData(), yVals.constData(), n);
+            }
+        }
+    }
+
+    for (int axis = 0; axis < QwtPlot::axisCnt; ++axis)
+        d_plot->setAxisAutoScale(axis);
+    updatePlot();
+    emit modifiedGraph();
+}
+
+QPointF Graph::ternaryToCartesian(double a, double b, double c)
+{
+    const double sum = a + b + c;
+    const double h = std::sqrt(3.0) * 0.5;
+    if (qAbs(sum) <= 1e-15)
+        return QPointF(0.5, h / 3.0);
+
+    const double bn = b / sum;
+    const double cn = c / sum;
+    const double x = bn + 0.5 * cn;
+    const double y = h * cn;
+    return QPointF(x, y);
+}
+
+void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const QString &labelC)
+{
+    d_is_ternary = true;
+    m_autoscale = false;
+
+    const double h = std::sqrt(3.0) * 0.5; // ~0.8660254
+
+    // Hide rectangular axes and rectangular grids
+    if (grid()) {
+        grid()->enableX(false);
+        grid()->enableXMin(false);
+        grid()->enableY(false);
+        grid()->enableYMin(false);
+    }
+    drawCanvasFrame(false, 0);
+
+    setScale(QwtPlot::xBottom, -0.14, 1.14, 0.2, 6, 0, 0, false);
+    setScale(QwtPlot::yLeft, -0.12, h + 0.14, 0.2, 6, 0, 0, false);
+    for (int i = 0; i < QwtPlot::axisCnt; ++i)
+        enableAxis(i, false);
+    d_plot->replot();
+
+    auto addTernaryLine = [&](const QPointF &p1, const QPointF &p2, const QColor &col, int width,
+                              Qt::PenStyle penStyle) {
+        ArrowMarker *mrk = new ArrowMarker();
+        mrk->drawStartArrow(false);
+        mrk->drawEndArrow(false);
+        mrk->setColor(col);
+        mrk->setWidth(width);
+        mrk->setStyle(penStyle);
+        long id = d_plot->insertMarker(mrk);
+        d_lines.append(id);
+        mrk->setBoundingRect(p1.x(), p1.y(), p2.x(), p2.y());
+    };
+
+    auto addTernaryLabel = [&](double x, double y, const QString &text, int pointSize, bool bold,
+                               const QColor &col = QColor(Qt::black)) {
+        Legend *txt = new Legend(d_plot);
+        txt->setFrameStyle(Legend::None);
+        txt->setBackgroundColor(QColor(255, 255, 255, 0));
+        txt->setTextColor(col);
+        txt->setFont(QFont("Arial", pointSize, bold ? QFont::Bold : QFont::Normal));
+        txt->setText(text);
+        long id = d_plot->insertMarker(txt);
+        d_texts.append(id);
+        txt->setXValue(-999.0);
+        txt->setOriginCoord(x, y);
+    };
+
+    // 1. Interior 20%-step ternary grid lines & exterior ticks
+    const QColor gridColor("#b8b8b8");
+    const QColor tickColor(Qt::black);
+    for (int step = 1; step <= 4; ++step) {
+        const double f = 0.2 * double(step);
+        const QString pctText = QString::number(step * 20);
+
+        // Constant-A grid line: (f, 1-f, 0) -> (f, 0, 1-f)
+        addTernaryLine(ternaryToCartesian(f, 1.0 - f, 0.0), ternaryToCartesian(f, 0.0, 1.0 - f),
+                       gridColor, 1, Qt::DashLine);
+        // Constant-B grid line: (1-f, f, 0) -> (0, f, 1-f)
+        addTernaryLine(ternaryToCartesian(1.0 - f, f, 0.0), ternaryToCartesian(0.0, f, 1.0 - f),
+                       gridColor, 1, Qt::DashLine);
+        // Constant-C grid line: (1-f, 0, f) -> (0, 1-f, f)
+        addTernaryLine(ternaryToCartesian(1.0 - f, 0.0, f), ternaryToCartesian(0.0, 1.0 - f, f),
+                       gridColor, 1, Qt::DashLine);
+
+        // Ticks along Base AB (z = 0, x = f)
+        const QPointF basePt(f, 0.0);
+        addTernaryLine(basePt, QPointF(f, -0.022), tickColor, 1, Qt::SolidLine);
+        addTernaryLabel(f - 0.025, -0.032, pctText, 9, false, QColor("#333333"));
+
+        // Ticks along Right Edge BC (a = 0, b = 1-f, c = f)
+        const QPointF rightPt = ternaryToCartesian(0.0, 1.0 - f, f);
+        addTernaryLine(rightPt, QPointF(rightPt.x() + 0.020, rightPt.y() + 0.011), tickColor, 1,
+                       Qt::SolidLine);
+        addTernaryLabel(rightPt.x() + 0.028, rightPt.y() + 0.025, pctText, 9, false,
+                        QColor("#333333"));
+
+        // Ticks along Left Edge CA (a = 1-f, b = 0, c = f)
+        const QPointF leftPt = ternaryToCartesian(1.0 - f, 0.0, f);
+        addTernaryLine(leftPt, QPointF(leftPt.x() - 0.020, leftPt.y() + 0.011), tickColor, 1,
+                       Qt::SolidLine);
+        addTernaryLabel(leftPt.x() - 0.075, leftPt.y() + 0.025, pctText, 9, false,
+                        QColor("#333333"));
+    }
+
+    // 2. Equilateral triangle perimeter (A=(0,0), B=(1,0), C=(0.5, sqrt(3)/2))
+    const QPointF vA(0.0, 0.0);
+    const QPointF vB(1.0, 0.0);
+    const QPointF vC(0.5, h);
+    addTernaryLine(vA, vB, QColor(Qt::black), 2, Qt::SolidLine);
+    addTernaryLine(vB, vC, QColor(Qt::black), 2, Qt::SolidLine);
+    addTernaryLine(vC, vA, QColor(Qt::black), 2, Qt::SolidLine);
+
+    // 3. Vertex labels A (Bottom-Left), B (Bottom-Right), C (Top Apex)
+    addTernaryLabel(-0.09, -0.02, labelA.isEmpty() ? QString("A") : labelA, 12, true);
+    addTernaryLabel(1.02, -0.02, labelB.isEmpty() ? QString("B") : labelB, 12, true);
+    addTernaryLabel(0.46, h + 0.08, labelC.isEmpty() ? QString("C") : labelC, 12, true);
+
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
