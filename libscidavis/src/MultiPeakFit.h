@@ -37,7 +37,25 @@ class MultiPeakFit : public Fit
     Q_OBJECT
 
 public:
-    enum PeakProfile { Gauss = 0, Lorentz = 1, GaussAmp = 2, PseudoVoigt = 3, PearsonVII = 4 };
+    enum PeakProfile {
+        Gauss = 0,
+        Lorentz = 1,
+        GaussAmp = 2,
+        PseudoVoigt = 3,
+        PearsonVII = 4,
+        Voigt = 5,
+        BiGaussian = 6,
+        EMG = 7,
+        LogNormal = 8,
+        Asym2Sig = 9,
+        DoniachSunjic = 10
+    };
+    enum BaselineMode {
+        BaselineConstant = 0,
+        BaselineZero = 1,
+        BaselineLinear = 2,
+        BaselineALS = 3
+    };
     struct PeakSummaryRow
     {
         int index;
@@ -64,6 +82,21 @@ public:
     void setPearsonShape(double m);
     double pearsonShape() const { return d_pearson_m; }
 
+    void setAsymmetryFactor(double alpha);
+    double asymmetryFactor() const { return d_asym_alpha; }
+
+    void setTailFactor(double tau);
+    double tailFactor() const { return d_tail_tau; }
+
+    void setBaselineMode(BaselineMode mode);
+    BaselineMode baselineMode() const { return d_baseline_mode; }
+    std::vector<double> computeBaseline(const std::vector<double> &x,
+                                        const std::vector<double> &y) const;
+    std::vector<double> computeBaseline() const;
+    bool subtractBaselineFromData();
+    PlotCurve *insertBaselineCurve();
+    Table *integratePeaksToTable(const QString &tableName = QString());
+
     void enablePeakCurves(bool on) { generate_peak_curves = on; };
     void setPeakCurvesColor(QColor color) { d_peaks_color = color; };
 
@@ -79,6 +112,7 @@ public:
 
     Table *createPeakSummaryTable(const QString &tableName = QString());
     std::vector<PeakSummaryRow> computePeakSummary(const std::vector<double> &res) const;
+    std::vector<PeakSummaryRow> initialPeakSummary() const;
 
     void guessInitialValues() override;
 
@@ -107,6 +141,15 @@ private:
 
     //! The peak profile
     PeakProfile d_profile;
+
+    //! Baseline mode for Peak Analyzer
+    BaselineMode d_baseline_mode = BaselineConstant;
+
+    //! Tracks whether subtractBaselineFromData() was applied
+    bool d_baseline_subtracted = false;
+
+    //! Stores last computed baseline vector
+    std::vector<double> d_last_baseline;
 
     //! Stores last fitted results for summary table generation
     std::vector<double> d_last_results;

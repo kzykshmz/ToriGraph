@@ -240,6 +240,12 @@ void FitDialog::initEditPage()
     categoryBox->addItem(tr("Built-in"));
     categoryBox->addItem(tr("Basic"));
     categoryBox->addItem(tr("Plugins"));
+    categoryBox->addItem(tr("Peak Functions"));
+    categoryBox->addItem(tr("Exponential"));
+    categoryBox->addItem(tr("Sigmoidal / Growth"));
+    categoryBox->addItem(tr("Materials / Metallurgy / Physics"));
+    categoryBox->addItem(tr("Waveform / Periodic"));
+    categoryBox->addItem(tr("Power / Logarithmic / Rational / Polynomial"));
 
     gl1->addWidget(categoryBox, 1, 0);
     funcBox = new QListWidget();
@@ -659,10 +665,33 @@ void FitDialog::showFitPage()
     for (int i = 0; i < paramList.count(); i++)
         boxParams->item(i, 0)->setText(paramList[i]);
 
+    // Auto-populate smart initial parameter guesses from the active curve
+    if (d_graph && boxCurve && !boxCurve->currentText().isEmpty()) {
+        ApplicationWindow *app = (ApplicationWindow *)this->parent();
+        QString fnName = boxName->text().trimmed();
+        if ((categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4)
+            && funcBox->currentItem())
+            fnName = funcBox->currentItem()->text().trimmed();
+
+        NonLinearFit tmpFit(app, d_graph);
+        tmpFit.setParametersList(paramList);
+        tmpFit.setFormula(editBox->toPlainText().simplified());
+        if (tmpFit.setDataFromCurve(boxCurve->currentText())) {
+            tmpFit.guessBuiltInParameters(fnName);
+            for (int i = 0; i < paramList.count() && i < tmpFit.numParameters(); ++i) {
+                double val = tmpFit.initialGuess(i);
+                if (std::isfinite(val)) {
+                    boxParams->item(i, 1)->setText(
+                            QLocale().toString(val, 'g', boxPrecision->value()));
+                }
+            }
+        }
+    }
+
     // FIXME: this check is pretty ugly, should be changed to a more elegant way some time
     if (!boxUseBuiltIn->isChecked()
         || (boxUseBuiltIn->isChecked() && categoryBox->currentRow() != 3
-            && categoryBox->currentRow() != 1)) {
+            && categoryBox->currentRow() != 1 && categoryBox->currentRow() < 4)) {
         boxParams->showColumn(2);
 
         for (int i = 0; i < boxParams->rowCount(); i++) {
@@ -708,76 +737,22 @@ void FitDialog::setFunction(bool ok)
 
         if (categoryBox->currentRow() == 0 && d_user_function_params.size() > 0)
             boxParam->setText(d_user_function_params[funcBox->currentRow()]);
-        else if (categoryBox->currentRow() == 1) {
+        else if (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4) {
+            QString fn = funcBox->currentItem() ? funcBox->currentItem()->text() : QString();
             QStringList lst;
-            switch (funcBox->currentRow()) {
-            case 0:
-                lst << "A1"
-                    << "A2"
-                    << "x0"
-                    << "dx";
-                break;
-            case 1:
-                lst << "A"
-                    << "t"
-                    << "y0";
-                break;
-            case 2:
-                lst << "A"
-                    << "t"
-                    << "y0";
-                break;
-            case 3:
-                lst << "A1"
-                    << "t1"
-                    << "A2"
-                    << "t2"
-                    << "y0";
-                break;
-            case 4:
-                lst << "A1"
-                    << "t1"
-                    << "A2"
-                    << "t2"
-                    << "A3"
-                    << "t3"
-                    << "y0";
-                break;
-            case 5:
-                if (polynomOrderBox->value() > 1)
-                    lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
-                else
-                    lst << "y0"
-                        << "A"
-                        << "xc"
-                        << "w";
-                break;
-            case 6:
+            if ((fn == "Gauss" || fn == "Lorentz" || fn == "PseudoVoigt" || fn == "PearsonVII"
+                 || fn == "Voigt" || fn == "DoniachSunjic")
+                && polynomOrderBox->isVisible()) {
                 lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
-                break;
-            case 7:
+            } else if (fn == "GaussAmp" && polynomOrderBox->isVisible()
+                       && polynomOrderBox->value() > 1) {
                 lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
-                break;
-            case 8:
+            } else if (fn == "Polynomial") {
                 lst = PolynomialFit::generateParameterList(polynomOrderBox->value());
-                break;
-            case 9:
-            case 10:
-                lst = MultiPeakFit::generateParameterList(polynomOrderBox->value());
-                break;
-            case 11:
-                lst << "A"
-                    << "xc"
-                    << "w"
-                    << "mu"
-                    << "y0";
-                break;
-            case 12:
-                lst << "A"
-                    << "xc"
-                    << "w"
-                    << "y0";
-                break;
+            } else {
+                lst = NonLinearFit::builtInModelParameters(fn);
+                if (lst.isEmpty())
+                    lst << "A" << "xc" << "w" << "y0";
             }
             boxParam->setText(lst.join(", "));
         } else if (categoryBox->currentRow() == 3 && d_plugin_params.size() > 0)
@@ -874,6 +849,30 @@ void FitDialog::showFunctionsList(int category)
             boxUseBuiltIn->setEnabled(true);
         }
         break;
+
+    default: {
+        static const char *const kCats[] = {
+            "Peak Functions",
+            "Exponential",
+            "Sigmoidal / Growth",
+            "Materials / Metallurgy / Physics",
+            "Waveform / Periodic",
+            "Power / Logarithmic / Rational / Polynomial"
+        };
+        int catIdx = category - 4;
+        if (catIdx >= 0 && catIdx < 6) {
+            QString targetCat = QString::fromLatin1(kCats[catIdx]);
+            for (const QString &mName : NonLinearFit::builtInModelNames()) {
+                if (NonLinearFit::builtInModelCategory(mName) == targetCat)
+                    funcBox->addItem(mName);
+            }
+            boxUseBuiltIn->setText(tr("Fit using &built-in function"));
+            boxUseBuiltIn->show();
+            boxUseBuiltIn->setEnabled(true);
+            boxUseBuiltIn->setChecked(true);
+        }
+        break;
+    }
     }
     funcBox->blockSignals(false);
     funcBox->setCurrentRow(0);
@@ -950,23 +949,25 @@ void FitDialog::setBuiltInFunctionNames()
                               << "PearsonVII"
                               << "VoigtApprox"
                               << "LogNormal";
+    for (const QString &mName : NonLinearFit::builtInModelNames()) {
+        if (!d_built_in_function_names.contains(mName))
+            d_built_in_function_names << mName;
+    }
 }
 
 void FitDialog::setBuiltInFunctions()
 {
-    d_built_in_functions << "(A1-A2)/(1+exp((x-x0)/dx))+A2";
-    d_built_in_functions << "y0+A*exp(x/t)";
-    d_built_in_functions << "y0+A*exp(-x/t)";
-    d_built_in_functions << "y0+A1*exp(-x/t1)+A2*exp(-x/t2)";
-    d_built_in_functions << "y0+A1*exp(-x/t1)+A2*exp(-x/t2)+A3*exp(-x/t3)";
-    d_built_in_functions << "y0+A*exp(-(x-xc)*(x-xc)/(2*w*w))";
-    d_built_in_functions << "y0+A*sqrt(2/PI)/w*exp(-2*((x-xc)/w)^2)";
-    d_built_in_functions << "y0+2*A/PI*w/(4*(x-xc)^2+w^2)";
-    d_built_in_functions << "a0+a1*x+a2*x^2";
-    d_built_in_functions << "y0+A*(0.5*2/PI*w/(4*(x-xc)^2+w^2)+0.5*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
-    d_built_in_functions << "y0+A*(1+(sqrt(2)-1)*(2*(x-xc)/w)^2)^(-2)";
-    d_built_in_functions << "y0+A*(mu*2/PI*w/(4*(x-xc)^2+w^2)+(1-mu)*sqrt(4*ln(2))/(sqrt(PI)*w)*exp(-4*ln(2)*((x-xc)/w)^2))";
-    d_built_in_functions << "y0+A/(sqrt(2*PI)*w*x)*exp(-(ln(x/xc))^2/(2*w^2))";
+    d_built_in_functions.clear();
+    for (const QString &fn : d_built_in_function_names) {
+        if (fn == "Polynomial")
+            d_built_in_functions << "a0+a1*x+a2*x^2";
+        else if (fn == "PseudoVoigt")
+            d_built_in_functions << "y0+A*(0.5*2/PI*w/(4*(x-xc)^2+w^2)+0.5*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
+        else if (fn == "PearsonVII")
+            d_built_in_functions << "y0+A*(1+(sqrt(2)-1)*(2*(x-xc)/w)^2)^(-2)";
+        else
+            d_built_in_functions << NonLinearFit::builtInModelFormula(fn);
+    }
 }
 
 void FitDialog::showParseFunctions()
@@ -981,49 +982,58 @@ void FitDialog::showExpression(int function)
 
     if (categoryBox->currentRow() == 2) {
         explainBox->setText(MyParser::explainFunction(function));
-    } else if (categoryBox->currentRow() == 1) {
-        polynomOrderLabel->show();
-        polynomOrderBox->show();
+    } else if (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4) {
+        QString fn = funcBox->currentItem() ? funcBox->currentItem()->text() : QString();
+        polynomOrderLabel->hide();
+        polynomOrderBox->hide();
 
-        switch (funcBox->currentRow()) {
-        case 5: // GaussAmp
+        if (fn == "GaussAmp") {
             polynomOrderLabel->setText(tr("Peaks"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             if (polynomOrderBox->value() > 1)
                 explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
                                                                   MultiPeakFit::GaussAmp));
             else
-                explainBox->setText(d_built_in_functions[5]);
-            break;
-        case 6: // Gauss
+                explainBox->setText(NonLinearFit::builtInModelFormula("GaussAmp"));
+        } else if (fn == "Gauss") {
             polynomOrderLabel->setText(tr("Peaks"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             explainBox->setText(
                     MultiPeakFit::generateFormula(polynomOrderBox->value(), MultiPeakFit::Gauss));
-            break;
-        case 7: // Lorentz
+        } else if (fn == "Lorentz") {
             polynomOrderLabel->setText(tr("Peaks"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             explainBox->setText(
                     MultiPeakFit::generateFormula(polynomOrderBox->value(), MultiPeakFit::Lorentz));
-            break;
-        case 8: // Polynomial
+        } else if (fn == "Polynomial") {
             polynomOrderLabel->setText(tr("Polynomial Order"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             explainBox->setText(PolynomialFit::generateFormula(polynomOrderBox->value()));
-            break;
-        case 9: // PseudoVoigt
+        } else if (fn == "PseudoVoigt") {
             polynomOrderLabel->setText(tr("Peaks"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
                                                               MultiPeakFit::PseudoVoigt));
-            break;
-        case 10: // PearsonVII
+        } else if (fn == "PearsonVII" && categoryBox->currentRow() == 1) {
             polynomOrderLabel->setText(tr("Peaks"));
+            polynomOrderLabel->show();
+            polynomOrderBox->show();
             explainBox->setText(MultiPeakFit::generateFormula(polynomOrderBox->value(),
                                                               MultiPeakFit::PearsonVII));
-            break;
-        default:
-            polynomOrderLabel->hide();
-            polynomOrderBox->hide();
+        } else {
             polynomOrderBox->setValue(1);
-            if (function < d_built_in_functions.size())
-                explainBox->setText(d_built_in_functions[function]);
+            QString expr = NonLinearFit::builtInModelFormula(fn);
+            if (expr.isEmpty() && function < d_built_in_functions.size())
+                expr = d_built_in_functions[function];
+            explainBox->setText(expr);
+            QString desc = NonLinearFit::builtInModelDescription(fn);
+            if (!desc.isEmpty())
+                explainBox->setToolTip(desc);
         }
         setFunction(boxUseBuiltIn->isChecked());
     } else if (categoryBox->currentRow() == 0) {
@@ -1191,7 +1201,7 @@ void FitDialog::accept()
         d_fitter = 0;
     }
 
-    if (boxUseBuiltIn->isChecked() && categoryBox->currentRow() == 1)
+    if (boxUseBuiltIn->isChecked() && (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4))
         fitBuiltInFunction(funcBox->currentItem()->text(), paramsInit);
     else if (boxUseBuiltIn->isChecked() && categoryBox->currentRow() == 3) {
         d_fitter = new PluginFit(app, d_graph);
@@ -1278,21 +1288,19 @@ void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)
     else if (function == "PseudoVoigt")
         d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::PseudoVoigt,
                                     polynomOrderBox->value());
-    else if (function == "PearsonVII")
+    else if (function == "PearsonVII" && categoryBox->currentRow() == 1)
         d_fitter = new MultiPeakFit(app, d_graph, MultiPeakFit::PearsonVII,
                                     polynomOrderBox->value());
-    else if (function == "VoigtApprox") {
-        d_fitter = new NonLinearFit(app, d_graph);
-        ((NonLinearFit *)d_fitter)
-                ->setParametersList(QStringList() << "A" << "xc" << "w" << "mu" << "y0");
-        ((NonLinearFit *)d_fitter)->setFormula(d_built_in_functions[11]);
-    } else if (function == "LogNormal") {
-        d_fitter = new NonLinearFit(app, d_graph);
-        ((NonLinearFit *)d_fitter)
-                ->setParametersList(QStringList() << "A" << "xc" << "w" << "y0");
-        ((NonLinearFit *)d_fitter)->setFormula(d_built_in_functions[12]);
-    } else if (function == "Polynomial")
+    else if (function == "Polynomial")
         d_fitter = new PolynomialFit(app, d_graph, polynomOrderBox->value());
+    else {
+        NonLinearFit *nlf = new NonLinearFit(app, d_graph);
+        if (!nlf->setBuiltInModel(function)) {
+            nlf->setParametersList(QStringList() << "A" << "xc" << "w" << "y0");
+            nlf->setFormula(boxFunction->toPlainText());
+        }
+        d_fitter = nlf;
+    }
 
     if (function != "Polynomial" && d_fitter)
         d_fitter->setInitialGuesses(initVal);

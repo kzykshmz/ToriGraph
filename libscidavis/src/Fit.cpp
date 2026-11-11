@@ -724,12 +724,16 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     for (unsigned i = 0; i < d_x.size(); i++) {
         d_script->setDouble(d_x[i], "x");
+        double s = (i < d_y_errors.size() && d_y_errors[i] > 0.0) ? d_y_errors[i] : 1.0;
         for (unsigned j = 0; j < d_p; j++) {
+            double xj = gsl_vector_get(x, j);
+            double h = std::max(1e-8, 1e-6 * std::abs(xj));
             data.param = d_param_names[j];
-            gsl_deriv_central(&F, gsl_vector_get(x, j), 1e-8, &result, &abserr);
+            gsl_deriv_central(&F, xj, h, &result, &abserr);
+            d_script->setDouble(xj, d_param_names[j].toUtf8());
             if (!data.success)
                 return GSL_EINVAL;
-            gsl_matrix_set(J, i, j, result / d_y_errors[j]);
+            gsl_matrix_set(J, i, j, result / s);
         }
     }
     return GSL_SUCCESS;

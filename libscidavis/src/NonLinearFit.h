@@ -44,9 +44,20 @@ public:
     void setParametersList(const QStringList &lst);
     void setFormula(const QString &s);
 
+    bool setBuiltInModel(const QString &modelName);
+    void guessBuiltInParameters(const QString &modelName = QString());
+    void guessInitialValues() override;
+
+    static QStringList builtInModelNames();
+    static QString builtInModelFormula(const QString &modelName);
+    static QStringList builtInModelParameters(const QString &modelName);
+    static QString builtInModelCategory(const QString &modelName);
+    static QString builtInModelDescription(const QString &modelName);
+
 private:
     bool calculateFitCurveData(const std::vector<double> &, std::vector<double> &,
                                std::vector<double> &) override;
     void init();
+    QString d_model_name;
 };
 #endif

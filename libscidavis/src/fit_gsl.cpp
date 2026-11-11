@@ -1035,6 +1035,238 @@ int pearson7_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gs
     return GSL_SUCCESS;
 }
 
+double eval_origin_peak_profile(int profile, double A, double xc, double w, double x,
+                                double mu, double pearson_m, double asym_alpha, double tail_tau)
+{
+    double w_abs = fabs(w);
+    if (w_abs < 1e-15)
+        w_abs = 1e-15;
+    double diff = x - xc;
+
+    switch (profile) {
+    case 5: { // Voigt (Thompson-Cox-Hastings numerical approximation)
+        double d = (mu < 0.0) ? 0.0 : ((mu > 1.0) ? 1.0 : mu);
+        double eta = 1.36603 * d - 0.47719 * d * d + 0.11116 * d * d * d;
+        if (eta < 0.0)
+            eta = 0.0;
+        else if (eta > 1.0)
+            eta = 1.0;
+        const double kG = 4.0 * M_LN2;
+        const double cG = sqrt(kG / M_PI);
+        const double cL = 2.0 / M_PI;
+        double L = cL * w_abs / (4.0 * diff * diff + w_abs * w_abs);
+        double G = (cG / w_abs) * exp(-kG * diff * diff / (w_abs * w_abs));
+        return A * (eta * L + (1.0 - eta) * G);
+    }
+    case 6: { // BiGaussian (Asymmetric Bifurcated Gaussian)
+        double alpha = (asym_alpha > 0.05) ? asym_alpha : 1.5;
+        double halfW = (diff < 0.0) ? (w_abs / (1.0 + alpha)) : ((alpha * w_abs) / (1.0 + alpha));
+        if (halfW < 1e-15)
+            halfW = 1e-15;
+        return A * exp(-M_LN2 * diff * diff / (halfW * halfW));
+    }
+    case 7: { // EMG (Exponentially Modified Gaussian)
+        double tau = (tail_tau > 1e-6) ? tail_tau : 1.2;
+        double sigma = 0.5 * w_abs;
+        if (sigma < 1e-15)
+            sigma = 1e-15;
+        double z = (sigma / tau - diff / sigma) / M_SQRT2;
+        double gaussPart = exp(-0.5 * diff * diff / (sigma * sigma));
+        double erfcxPart = 0.0;
+        if (z > 25.0) {
+            double invZ2 = 1.0 / (z * z);
+            erfcxPart = (1.0 / (sqrt(M_PI) * z)) * (1.0 - 0.5 * invZ2 + 0.75 * invZ2 * invZ2);
+        } else if (z < -25.0) {
+            double arg = 0.5 * (sigma * sigma) / (tau * tau) - diff / tau;
+            if (arg > 700.0)
+                arg = 700.0;
+            return (A / (2.0 * tau)) * exp(arg) * erfc(z);
+        } else {
+            erfcxPart = exp(z * z) * erfc(z);
+        }
+        return (A / (2.0 * tau)) * gaussPart * erfcxPart;
+    }
+    case 8: { // LogNormal (Asymmetric Log-Normal around xc)
+        double asym = (fabs(asym_alpha) > 1e-4) ? fabs(asym_alpha) : 1.5;
+        double s = 1.0 + 2.0 * asym * diff / w_abs;
+        if (s <= 1e-12)
+            return 0.0;
+        double b = log(asym + sqrt(asym * asym + 1.0));
+        if (fabs(b) < 1e-12)
+            b = 1e-12;
+        double r = log(s) / b;
+        return A * exp(-M_LN2 * r * r);
+    }
+    case 9: { // Asym2Sig (Asymmetric Double Sigmoidal)
+        double alpha = (asym_alpha > 0.05) ? asym_alpha : 1.5;
+        double s1 = 0.25 * w_abs / (1.0 + alpha);
+        double s2 = 0.25 * alpha * w_abs / (1.0 + alpha);
+        if (s1 < 1e-15)
+            s1 = 1e-15;
+        if (s2 < 1e-15)
+            s2 = 1e-15;
+        double u1 = -(diff + 0.5 * w_abs) / s1;
+        double u2 = -(diff - 0.5 * w_abs) / s2;
+        if (u1 > 700.0)
+            u1 = 700.0;
+        else if (u1 < -700.0)
+            u1 = -700.0;
+        if (u2 > 700.0)
+            u2 = 700.0;
+        else if (u2 < -700.0)
+            u2 = -700.0;
+        double sig1 = 1.0 / (1.0 + exp(u1));
+        double sig2 = 1.0 - 1.0 / (1.0 + exp(u2));
+        return A * sig1 * sig2;
+    }
+    case 10: { // DoniachSunjic (XPS Asymmetric Peak)
+        double alpha = (asym_alpha > 0.85 || asym_alpha < 0.0) ? 0.15 : asym_alpha;
+        double u = 2.0 * diff / w_abs;
+        double num = cos(0.5 * M_PI * alpha + (1.0 - alpha) * atan(u));
+        double den = pow(1.0 + u * u, 0.5 * (1.0 - alpha));
+        return A * num / den;
+    }
+    default:
+        break;
+    }
+    (void)pearson_m;
+    return 0.0;
+}
+
+static int generic_origin_multi_peak_f(int profile, const gsl_vector *x, void *params, gsl_vector *f)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    double alpha = data->fit ? data->fit->peakAsymmetryParameter() : 1.5;
+    double tau = data->fit ? data->fit->peakTailParameter() : 1.2;
+
+    size_t peaks = (p - 1) / 3;
+    double offset = gsl_vector_get(x, p - 1);
+
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double aj = gsl_vector_get(x, 3 * j);
+            double xcj = gsl_vector_get(x, 3 * j + 1);
+            double wj = gsl_vector_get(x, 3 * j + 2);
+            res += eval_origin_peak_profile(profile, aj, xcj, wj, X[i], mu, m, alpha, tau);
+        }
+        gsl_vector_set(f, i, (res + offset - Y[i]) / sigma[i]);
+    }
+    return GSL_SUCCESS;
+}
+
+static double generic_origin_multi_peak_d(int profile, const gsl_vector *x, void *params)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *Y = data->Y;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    double alpha = data->fit ? data->fit->peakAsymmetryParameter() : 1.5;
+    double tau = data->fit ? data->fit->peakTailParameter() : 1.2;
+
+    size_t peaks = (p - 1) / 3;
+    double offset = gsl_vector_get(x, p - 1);
+    double val = 0.0;
+
+    for (size_t i = 0; i < n; i++) {
+        double res = 0.0;
+        for (size_t j = 0; j < peaks; j++) {
+            double aj = gsl_vector_get(x, 3 * j);
+            double xcj = gsl_vector_get(x, 3 * j + 1);
+            double wj = gsl_vector_get(x, 3 * j + 2);
+            res += eval_origin_peak_profile(profile, aj, xcj, wj, X[i], mu, m, alpha, tau);
+        }
+        double t = (res + offset - Y[i]) / sigma[i];
+        val += t * t;
+    }
+    return val;
+}
+
+static int generic_origin_multi_peak_df(int profile, const gsl_vector *x, void *params, gsl_matrix *J)
+{
+    struct FitData *data = (struct FitData *)params;
+    size_t n = data->n;
+    size_t p = data->p;
+    double *X = data->X;
+    double *sigma = data->sigma;
+    double mu = data->fit ? data->fit->voigtLorentzFraction() : 0.5;
+    double m = data->fit ? data->fit->pearsonShapeParameter() : 2.0;
+    double alpha = data->fit ? data->fit->peakAsymmetryParameter() : 1.5;
+    double tau = data->fit ? data->fit->peakTailParameter() : 1.2;
+
+    size_t peaks = (p - 1) / 3;
+
+    for (size_t i = 0; i < n; i++) {
+        double s = sigma[i];
+        double xi = X[i];
+        for (size_t j = 0; j < peaks; j++) {
+            double aj = gsl_vector_get(x, 3 * j);
+            double xcj = gsl_vector_get(x, 3 * j + 1);
+            double wj = gsl_vector_get(x, 3 * j + 2);
+            double w_abs = fabs(wj);
+            if (w_abs < 1e-12)
+                w_abs = 1e-12;
+
+            double phi = eval_origin_peak_profile(profile, 1.0, xcj, w_abs, xi, mu, m, alpha, tau);
+            double hc = 1e-6 * (w_abs > 1.0 ? w_abs : 1.0);
+            double hw = 1e-6 * (w_abs > 1e-4 ? w_abs : 1e-4);
+
+            double phi_cp = eval_origin_peak_profile(profile, 1.0, xcj + hc, w_abs, xi, mu, m, alpha, tau);
+            double phi_cm = eval_origin_peak_profile(profile, 1.0, xcj - hc, w_abs, xi, mu, m, alpha, tau);
+            double dY_dxc = aj * (phi_cp - phi_cm) / (2.0 * hc);
+
+            double phi_wp = eval_origin_peak_profile(profile, 1.0, xcj, w_abs + hw, xi, mu, m, alpha, tau);
+            double phi_wm = eval_origin_peak_profile(profile, 1.0, xcj, (w_abs > 2.0 * hw) ? (w_abs - hw) : (0.5 * w_abs), xi, mu, m, alpha, tau);
+            double dw_step = (w_abs + hw) - ((w_abs > 2.0 * hw) ? (w_abs - hw) : (0.5 * w_abs));
+            double dY_dw = aj * ((wj < 0.0) ? -1.0 : 1.0) * (phi_wp - phi_wm) / dw_step;
+
+            gsl_matrix_set(J, i, 3 * j, phi / s);
+            gsl_matrix_set(J, i, 3 * j + 1, dY_dxc / s);
+            gsl_matrix_set(J, i, 3 * j + 2, dY_dw / s);
+        }
+        gsl_matrix_set(J, i, p - 1, 1.0 / s);
+    }
+    return GSL_SUCCESS;
+}
+
+#define DEFINE_ORIGIN_MULTI_PEAK_FUNCS(prefix, prof_id)                                            \
+    int prefix##_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)                    \
+    {                                                                                              \
+        return generic_origin_multi_peak_f(prof_id, x, params, f);                                 \
+    }                                                                                              \
+    double prefix##_multi_peak_d(const gsl_vector *x, void *params)                                \
+    {                                                                                              \
+        return generic_origin_multi_peak_d(prof_id, x, params);                                    \
+    }                                                                                              \
+    int prefix##_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)                   \
+    {                                                                                              \
+        return generic_origin_multi_peak_df(prof_id, x, params, J);                                \
+    }                                                                                              \
+    int prefix##_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)   \
+    {                                                                                              \
+        generic_origin_multi_peak_f(prof_id, x, params, f);                                        \
+        generic_origin_multi_peak_df(prof_id, x, params, J);                                       \
+        return GSL_SUCCESS;                                                                        \
+    }
+
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(voigt, 5)
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(bigaussian, 6)
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(emg, 7)
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(lognormal, 8)
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(asym2sig, 9)
+DEFINE_ORIGIN_MULTI_PEAK_FUNCS(doniach_sunjic, 10)
+
 int user_f(const gsl_vector *x, void *params, gsl_vector *f)
 {
     return static_cast<struct FitData *>(params)->fit->evaluate_f(x, f);

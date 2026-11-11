@@ -79,6 +79,12 @@ public:
         d_initial_guesses_set = true;
     };
     void setInitialGuesses(double *x_init);
+    double initialGuess(int parIndex) const
+    {
+        if (d_param_init && parIndex >= 0 && unsigned(parIndex) < d_p)
+            return gsl_vector_get(d_param_init, parIndex);
+        return 0.0;
+    }
 
     virtual void guessInitialValues() {};
 
@@ -123,6 +129,8 @@ public:
 
     double voigtLorentzFraction() const { return d_voigt_mu; }
     double pearsonShapeParameter() const { return d_pearson_m; }
+    double peakAsymmetryParameter() const { return d_asym_alpha; }
+    double peakTailParameter() const { return d_tail_tau; }
 
     int evaluate_f(const gsl_vector *x, gsl_vector *f);
     double evaluate_d(const gsl_vector *x);
@@ -225,11 +233,17 @@ protected:
     //! Fitted Y values corresponding to d_x
     std::vector<double> d_y_fit;
 
-    //! Lorentz fraction mu in [0, 1] for Pseudo-Voigt profile (default 0.5)
+    //! Lorentz fraction mu in [0, 1] for Pseudo-Voigt / Voigt profile (default 0.5)
     double d_voigt_mu = 0.5;
 
     //! Shape parameter m for Pearson VII profile (default 2.0)
     double d_pearson_m = 2.0;
+
+    //! Asymmetry parameter alpha for BiGaussian / LogNormal / Asym2Sig / DoniachSunjic
+    double d_asym_alpha = 1.5;
+
+    //! Exponential tail parameter tau for EMG profile (default 1.2)
+    double d_tail_tau = 1.2;
 
     //! Script used to evaluate user-defined functions.
     std::unique_ptr<Script> d_script;

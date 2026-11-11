@@ -50,6 +50,8 @@ MultiPeakFit::MultiPeakFit(ApplicationWindow *parent, Graph *g, PeakProfile prof
     d_param_init = NULL;
     covar = NULL;
     d_peaks = 0;
+    if (d_profile == DoniachSunjic)
+        d_asym_alpha = 0.15;
 
     updateProfileFunctions();
     setNumPeaks(peaks);
@@ -91,12 +93,52 @@ void MultiPeakFit::updateProfileFunctions()
         d_fdf = pearson7_multi_peak_fdf;
         d_fsimplex = pearson7_multi_peak_d;
         break;
+    case Voigt:
+        d_f = voigt_multi_peak_f;
+        d_df = voigt_multi_peak_df;
+        d_fdf = voigt_multi_peak_fdf;
+        d_fsimplex = voigt_multi_peak_d;
+        break;
+    case BiGaussian:
+        d_f = bigaussian_multi_peak_f;
+        d_df = bigaussian_multi_peak_df;
+        d_fdf = bigaussian_multi_peak_fdf;
+        d_fsimplex = bigaussian_multi_peak_d;
+        break;
+    case EMG:
+        d_f = emg_multi_peak_f;
+        d_df = emg_multi_peak_df;
+        d_fdf = emg_multi_peak_fdf;
+        d_fsimplex = emg_multi_peak_d;
+        break;
+    case LogNormal:
+        d_f = lognormal_multi_peak_f;
+        d_df = lognormal_multi_peak_df;
+        d_fdf = lognormal_multi_peak_fdf;
+        d_fsimplex = lognormal_multi_peak_d;
+        break;
+    case Asym2Sig:
+        d_f = asym2sig_multi_peak_f;
+        d_df = asym2sig_multi_peak_df;
+        d_fdf = asym2sig_multi_peak_fdf;
+        d_fsimplex = asym2sig_multi_peak_d;
+        break;
+    case DoniachSunjic:
+        d_f = doniach_sunjic_multi_peak_f;
+        d_df = doniach_sunjic_multi_peak_df;
+        d_fdf = doniach_sunjic_multi_peak_fdf;
+        d_fsimplex = doniach_sunjic_multi_peak_d;
+        break;
     }
 }
 
 void MultiPeakFit::setPeakProfile(PeakProfile profile)
 {
     d_profile = profile;
+    if (d_profile == DoniachSunjic && d_asym_alpha >= 0.85)
+        d_asym_alpha = 0.15;
+    else if (d_profile != DoniachSunjic && d_asym_alpha < 0.3)
+        d_asym_alpha = 1.5;
     updateProfileFunctions();
     setNumPeaks(d_peaks > 0 ? d_peaks : 1);
 }
@@ -109,6 +151,24 @@ void MultiPeakFit::setLorentzFraction(double mu)
 void MultiPeakFit::setPearsonShape(double m)
 {
     d_pearson_m = std::max(0.55, m);
+}
+
+void MultiPeakFit::setAsymmetryFactor(double alpha)
+{
+    if (d_profile == DoniachSunjic)
+        d_asym_alpha = std::max(0.0, std::min(0.85, alpha));
+    else
+        d_asym_alpha = std::max(0.05, alpha);
+}
+
+void MultiPeakFit::setTailFactor(double tau)
+{
+    d_tail_tau = std::max(1e-4, tau);
+}
+
+void MultiPeakFit::setBaselineMode(BaselineMode mode)
+{
+    d_baseline_mode = mode;
 }
 
 void MultiPeakFit::setNumPeaks(int n)
@@ -129,6 +189,24 @@ void MultiPeakFit::setNumPeaks(int n)
         break;
     case PearsonVII:
         d_explanation = tr("PearsonVII Fit");
+        break;
+    case Voigt:
+        d_explanation = tr("Voigt Fit");
+        break;
+    case BiGaussian:
+        d_explanation = tr("BiGaussian Fit");
+        break;
+    case EMG:
+        d_explanation = tr("EMG Fit");
+        break;
+    case LogNormal:
+        d_explanation = tr("LogNormal Fit");
+        break;
+    case Asym2Sig:
+        d_explanation = tr("Asym2Sig Fit");
+        break;
+    case DoniachSunjic:
+        d_explanation = tr("DoniachSunjic Fit");
         break;
     }
     if (d_peaks > 1)
@@ -203,6 +281,18 @@ QString MultiPeakFit::generateFormula(int peaks, PeakProfile profile)
             return "y0+A*(0.5*2/PI*w/(4*(x-xc)^2+w^2)+0.5*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
         case PearsonVII:
             return "y0+A*(1+(sqrt(2)-1)*(2*(x-xc)/w)^2)^(-2)";
+        case Voigt:
+            return "y0+A*(0.5924*2/PI*w/(4*(x-xc)^2+w^2)+0.4076*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
+        case BiGaussian:
+            return "y0+((x<xc)?(A*exp(-ln(2)*((x-xc)/(0.4*w))^2)):(A*exp(-ln(2)*((x-xc)/(0.6*w))^2)))";
+        case EMG:
+            return "y0+(A/(2*1.2))*exp((0.5*w/1.2)^2/2-(x-xc)/1.2)*erfc((0.5*w/1.2-(x-xc)/(0.5*w))/sqrt(2))";
+        case LogNormal:
+            return "y0+((1+3*(x-xc)/w>0)?(A*exp(-ln(2)*(ln(1+3*(x-xc)/w)/ln(1.5+sqrt(3.25)))^2)):0)";
+        case Asym2Sig:
+            return "y0+A*(1/(1+exp(-(x-xc+w/2)/(0.1*w))))*(1-1/(1+exp(-(x-xc-w/2)/(0.15*w))))";
+        case DoniachSunjic:
+            return "y0+A*cos(PI*0.15/2+(1-0.15)*atan(2*(x-xc)/w))/(1+4*((x-xc)/w)^2)^((1-0.15)/2)";
         }
     }
 
@@ -237,6 +327,34 @@ QString MultiPeakFit::peakFormula(int peakIndex, PeakProfile profile)
         break;
     case PearsonVII:
         formula += "A" + index + "*(1+(sqrt(2)-1)*(2*(x-xc" + index + ")/w" + index + ")^2)^(-2)";
+        break;
+    case Voigt:
+        formula += "A" + index + "*(0.5924*2/PI*w" + index + "/(4*(x-xc" + index + ")^2+w" + index
+                + "^2)+0.4076*sqrt(4*ln(2)/PI)/w" + index + "*exp(-4*ln(2)*(x-xc" + index + ")^2/w"
+                + index + "^2))";
+        break;
+    case BiGaussian:
+        formula += "((x<xc" + index + ")?(A" + index + "*exp(-ln(2)*((x-xc" + index + ")/(0.4*w"
+                + index + "))^2)):(A" + index + "*exp(-ln(2)*((x-xc" + index + ")/(0.6*w" + index
+                + "))^2)))";
+        break;
+    case EMG:
+        formula += "(A" + index + "/(2*1.2))*exp((0.5*w" + index + "/1.2)^2/2-(x-xc" + index
+                + ")/1.2)*erfc((0.5*w" + index + "/1.2-(x-xc" + index + ")/(0.5*w" + index
+                + "))/sqrt(2))";
+        break;
+    case LogNormal:
+        formula += "((1+3*(x-xc" + index + ")/w" + index + ">0)?(A" + index
+                + "*exp(-ln(2)*(ln(1+3*(x-xc" + index + ")/w" + index
+                + ")/ln(1.5+sqrt(3.25)))^2)):0)";
+        break;
+    case Asym2Sig:
+        formula += "A" + index + "*(1/(1+exp(-(x-xc" + index + "+w" + index + "/2)/(0.1*w" + index
+                + "))))*(1-1/(1+exp(-(x-xc" + index + "-w" + index + "/2)/(0.15*w" + index + "))))";
+        break;
+    case DoniachSunjic:
+        formula += "A" + index + "*cos(PI*0.15/2+(1-0.15)*atan(2*(x-xc" + index + ")/w" + index
+                + "))/(1+4*((x-xc" + index + ")/w" + index + ")^2)^((1-0.15)/2)";
         break;
     }
     return formula;
@@ -348,7 +466,9 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
     double y_max = y_sorted.back();
     double y_p10 = y_sorted[std::min(n - 1, n / 10)];
     double y_ends = 0.5 * (d_y.front() + d_y.back());
-    double y0 = std::max(y_min, std::min(y_p10, y_ends));
+    double y0 = (d_baseline_subtracted || d_baseline_mode == BaselineZero)
+            ? 0.0
+            : std::max(y_min, std::min(y_p10, y_ends));
     double span = y_max - y0;
     if (span <= 0.0)
         span = std::max(1e-12, std::abs(y_max));
@@ -600,6 +720,97 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
             w_init = fwhm;
             A_init = H;
             break;
+        case Voigt: {
+            w_init = fwhm;
+            double d = std::max(0.0, std::min(1.0, d_voigt_mu));
+            double eta = std::max(0.0, std::min(1.0, 1.36603 * d - 0.47719 * d * d + 0.11116 * d * d * d));
+            double cG = std::sqrt(4.0 * M_LN2 / M_PI);
+            double cPeak = eta * M_2_PI + (1.0 - eta) * cG;
+            A_init = (H * w_init) / std::max(1e-12, cPeak);
+            break;
+        }
+        case BiGaussian:
+        case LogNormal:
+            w_init = fwhm;
+            A_init = H;
+            break;
+        case EMG: {
+            w_init = std::max(minW, fwhm / std::sqrt(2.0 * M_LN2));
+            for (int iter = 0; iter < 2; ++iter) {
+                double bestH = 1e-12, bestDx = 0.0;
+                double spanSearch = 3.0 * w_init + 4.0 * d_tail_tau;
+                const int nGrid = 121;
+                std::vector<double> gx(nGrid), gy(nGrid);
+                int maxG = 0;
+                for (int gi = 0; gi < nGrid; ++gi) {
+                    gx[gi] = -2.0 * w_init + (spanSearch + 2.0 * w_init) * double(gi) / double(nGrid - 1);
+                    gy[gi] = eval_origin_peak_profile(EMG, 1.0, 0.0, w_init, gx[gi],
+                                                      d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau);
+                    if (gy[gi] > bestH) {
+                        bestH = gy[gi];
+                        bestDx = gx[gi];
+                        maxG = gi;
+                    }
+                }
+                if (iter == 0 && bestH > 1e-12) {
+                    double halfH = 0.5 * bestH;
+                    double gl = gx.front(), gr = gx.back();
+                    for (int gi = maxG; gi > 0; --gi) {
+                        if (gy[gi - 1] <= halfH) {
+                            double f = (halfH - gy[gi - 1]) / std::max(1e-15, gy[gi] - gy[gi - 1]);
+                            gl = gx[gi - 1] + f * (gx[gi] - gx[gi - 1]);
+                            break;
+                        }
+                    }
+                    for (int gi = maxG; gi + 1 < nGrid; ++gi) {
+                        if (gy[gi + 1] <= halfH) {
+                            double f = (gy[gi] - halfH) / std::max(1e-15, gy[gi] - gy[gi + 1]);
+                            gr = gx[gi] + f * (gx[gi + 1] - gx[gi]);
+                            break;
+                        }
+                    }
+                    double fwhm1 = gr - gl;
+                    if (fwhm1 > 1e-9)
+                        w_init = std::max(minW, std::min(maxW, w_init * (fwhm / fwhm1)));
+                } else {
+                    xc -= bestDx;
+                    A_init = H / std::max(1e-12, bestH);
+                }
+            }
+            break;
+        }
+        case Asym2Sig: {
+            w_init = fwhm;
+            double bestH = 1e-12, bestDx = 0.0;
+            for (int gi = -40; gi <= 40; ++gi) {
+                double dx = (double(gi) / 40.0) * w_init;
+                double v = eval_origin_peak_profile(Asym2Sig, 1.0, 0.0, w_init, dx,
+                                                    d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau);
+                if (v > bestH) {
+                    bestH = v;
+                    bestDx = dx;
+                }
+            }
+            xc -= bestDx;
+            A_init = H / std::max(1e-12, bestH);
+            break;
+        }
+        case DoniachSunjic: {
+            w_init = fwhm;
+            double bestH = 1e-12, bestDx = 0.0;
+            for (int gi = -40; gi <= 40; ++gi) {
+                double dx = (double(gi) / 40.0) * w_init;
+                double v = eval_origin_peak_profile(DoniachSunjic, 1.0, 0.0, w_init, dx,
+                                                    d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau);
+                if (v > bestH) {
+                    bestH = v;
+                    bestDx = dx;
+                }
+            }
+            xc -= bestDx;
+            A_init = H / std::max(1e-12, bestH);
+            break;
+        }
         }
 
         gsl_vector_set(d_param_init, 3 * m, A_init);
@@ -664,6 +875,14 @@ double MultiPeakFit::evalPeakAt(const std::vector<double> &par, int peakIndex, d
         double u = 2.0 * diff / w;
         return A * std::pow(1.0 + cm * u * u, -m);
     }
+    case Voigt:
+    case BiGaussian:
+    case EMG:
+    case LogNormal:
+    case Asym2Sig:
+    case DoniachSunjic:
+        return eval_origin_peak_profile(int(d_profile), std::abs(A), xc, w, x,
+                                        d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau);
     }
     return 0.0;
 }
@@ -878,6 +1097,89 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
                     / (2.0 * std::sqrt(cm) * std::tgamma(m));
             break;
         }
+        case Voigt: {
+            area = rawA;
+            fwhm = w;
+            double d = std::max(0.0, std::min(1.0, d_voigt_mu));
+            double eta = std::max(0.0, std::min(1.0, 1.36603 * d - 0.47719 * d * d + 0.11116 * d * d * d));
+            double cG = std::sqrt(4.0 * M_LN2 / M_PI);
+            height = (rawA / w) * (eta * M_2_PI + (1.0 - eta) * cG);
+            break;
+        }
+        case BiGaussian:
+            height = rawA;
+            fwhm = w;
+            area = 0.5 * std::sqrt(M_PI / M_LN2) * rawA * w;
+            break;
+        case EMG: {
+            area = rawA;
+            double spanSearch = 3.0 * w + 4.0 * d_tail_tau;
+            const int nGrid = 121;
+            std::vector<double> gx(nGrid), gy(nGrid);
+            int maxG = 0;
+            height = 0.0;
+            for (int gi = 0; gi < nGrid; ++gi) {
+                gx[gi] = -2.0 * w + (spanSearch + 2.0 * w) * double(gi) / double(nGrid - 1);
+                gy[gi] = eval_origin_peak_profile(EMG, rawA, 0.0, w, gx[gi],
+                                                  d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau);
+                if (gy[gi] > height) {
+                    height = gy[gi];
+                    maxG = gi;
+                }
+            }
+            if (height > 1e-15) {
+                double halfH = 0.5 * height;
+                double gl = gx.front(), gr = gx.back();
+                for (int gi = maxG; gi > 0; --gi) {
+                    if (gy[gi - 1] <= halfH) {
+                        double f = (halfH - gy[gi - 1]) / std::max(1e-15, gy[gi] - gy[gi - 1]);
+                        gl = gx[gi - 1] + f * (gx[gi] - gx[gi - 1]);
+                        break;
+                    }
+                }
+                for (int gi = maxG; gi + 1 < nGrid; ++gi) {
+                    if (gy[gi + 1] <= halfH) {
+                        double f = (gy[gi] - halfH) / std::max(1e-15, gy[gi] - gy[gi + 1]);
+                        gr = gx[gi] + f * (gx[gi + 1] - gx[gi]);
+                        break;
+                    }
+                }
+                fwhm = std::max(1e-12, gr - gl);
+            } else {
+                fwhm = w * std::sqrt(2.0 * M_LN2);
+            }
+            break;
+        }
+        case LogNormal: {
+            height = rawA;
+            fwhm = w;
+            double asym = (std::abs(d_asym_alpha) > 1e-4) ? std::abs(d_asym_alpha) : 1.5;
+            double b = std::log(asym + std::sqrt(asym * asym + 1.0));
+            area = rawA * w * std::sqrt(M_PI / (4.0 * M_LN2)) * (b / asym)
+                    * std::exp((b * b) / (4.0 * M_LN2));
+            break;
+        }
+        case Asym2Sig:
+        case DoniachSunjic: {
+            fwhm = w;
+            height = 0.0;
+            area = 0.0;
+            const int nGrid = 161;
+            double x0_grid = -4.0 * w;
+            double step_g = (8.0 * w) / double(nGrid - 1);
+            double prev_v = 0.0;
+            for (int gi = 0; gi < nGrid; ++gi) {
+                double dx = x0_grid + gi * step_g;
+                double v = std::max(0.0, eval_origin_peak_profile(int(d_profile), rawA, 0.0, w, dx,
+                                                                  d_voigt_mu, d_pearson_m, d_asym_alpha, d_tail_tau));
+                if (v > height)
+                    height = v;
+                if (gi > 0)
+                    area += 0.5 * (prev_v + v) * step_g;
+                prev_v = v;
+            }
+            break;
+        }
         }
 
         rows[j].index = j + 1;
@@ -957,6 +1259,310 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
         t->column(5)->setValueAt(i, rows[i].areaPercent);
         t->column(6)->setValueAt(i, rows[i].baseline);
         t->column(7)->setValueAt(i, r2);
+    }
+
+    t->showNormal();
+    return t;
+}
+
+std::vector<MultiPeakFit::PeakSummaryRow> MultiPeakFit::initialPeakSummary() const
+{
+    if (!d_initial_guesses_set && !d_x.empty())
+        const_cast<MultiPeakFit *>(this)->autoDetectPeaks(d_peaks);
+    if (!d_param_init || d_p < unsigned(3 * d_peaks + 1))
+        return std::vector<PeakSummaryRow>();
+    std::vector<double> initVec(d_p);
+    for (unsigned i = 0; i < d_p; ++i)
+        initVec[i] = gsl_vector_get(d_param_init, i);
+    if (d_profile == Lorentz) {
+        for (int j = 0; j < d_peaks; ++j)
+            initVec[3 * j] *= M_PI_2;
+    }
+    return computePeakSummary(initVec);
+}
+
+std::vector<double> MultiPeakFit::computeBaseline(const std::vector<double> &x,
+                                                  const std::vector<double> &y) const
+{
+    const size_t n = x.size();
+    std::vector<double> base(n, 0.0);
+    if (n == 0 || y.size() != n)
+        return base;
+
+    switch (d_baseline_mode) {
+    case BaselineZero:
+        return base;
+    case BaselineConstant: {
+        std::vector<double> y_sorted = y;
+        std::sort(y_sorted.begin(), y_sorted.end());
+        double y_min = y_sorted.front();
+        double y_p10 = y_sorted[std::min(n - 1, n / 10)];
+        double y_ends = 0.5 * (y.front() + y.back());
+        double y0 = std::max(y_min, std::min(y_p10, y_ends));
+        std::fill(base.begin(), base.end(), y0);
+        return base;
+    }
+    case BaselineLinear: {
+        size_t k = std::min<size_t>(3, n);
+        double x1 = 0.0, y1 = 0.0, x2 = 0.0, y2 = 0.0;
+        for (size_t i = 0; i < k; ++i) {
+            x1 += x[i];
+            y1 += y[i];
+            x2 += x[n - 1 - i];
+            y2 += y[n - 1 - i];
+        }
+        x1 /= double(k);
+        y1 /= double(k);
+        x2 /= double(k);
+        y2 /= double(k);
+        double dx = x2 - x1;
+        for (size_t i = 0; i < n; ++i) {
+            if (std::abs(dx) > 1e-15)
+                base[i] = y1 + (y2 - y1) * ((x[i] - x1) / dx);
+            else
+                base[i] = 0.5 * (y1 + y2);
+        }
+        return base;
+    }
+    case BaselineALS: {
+        // Initial mild 3-point noise suppression
+        base = y;
+        if (n >= 3) {
+            for (size_t i = 1; i + 1 < n; ++i)
+                base[i] = 0.25 * y[i - 1] + 0.5 * y[i] + 0.25 * y[i + 1];
+        }
+        // Iterative SNIP / moving-chord minimum envelope
+        int maxW = std::max(3, int(n) / 4);
+        std::vector<double> tmp = base;
+        for (int p = maxW; p >= 1; --p) {
+            for (size_t i = size_t(p); i + size_t(p) < n; ++i) {
+                double chord = 0.5 * (base[i - p] + base[i + p]);
+                tmp[i] = std::min(base[i], chord);
+            }
+            base = tmp;
+        }
+        // Smooth interior with 5-point Gaussian filter
+        for (int pass = 0; pass < 3 && n >= 5; ++pass) {
+            tmp = base;
+            for (size_t i = 2; i + 2 < n; ++i) {
+                tmp[i] = (base[i - 2] + 4.0 * base[i - 1] + 6.0 * base[i] + 4.0 * base[i + 1]
+                          + base[i + 2])
+                        / 16.0;
+            }
+            base = tmp;
+        }
+        return base;
+    }
+    }
+    return base;
+}
+
+std::vector<double> MultiPeakFit::computeBaseline() const
+{
+    return computeBaseline(d_x, d_y);
+}
+
+bool MultiPeakFit::subtractBaselineFromData()
+{
+    if (d_x.empty() || d_y.size() != d_x.size())
+        return false;
+
+    d_last_baseline = computeBaseline(d_x, d_y);
+    if (d_last_baseline.size() != d_y.size())
+        return false;
+
+    for (size_t i = 0; i < d_y.size(); ++i)
+        d_y[i] -= d_last_baseline[i];
+
+    d_baseline_subtracted = true;
+    autoDetectPeaks(d_peaks);
+    if (d_param_init && d_p > 0)
+        gsl_vector_set(d_param_init, d_p - 1, 0.0);
+    if (d_results.size() >= d_p && d_p > 0)
+        d_results[d_p - 1] = 0.0;
+    return true;
+}
+
+PlotCurve *MultiPeakFit::insertBaselineCurve()
+{
+    if (!d_graph || d_x.empty() || d_y.size() != d_x.size())
+        return nullptr;
+
+    std::vector<double> base = (d_baseline_subtracted && d_last_baseline.size() == d_x.size())
+            ? d_last_baseline
+            : computeBaseline(d_x, d_y);
+    if (base.size() != d_x.size())
+        return nullptr;
+
+    QString title = d_graph->generateFunctionName(tr("Baseline"));
+    FunctionCurve *c =
+            new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal, title);
+    c->setPen(QPen(QColor("#1f77b4"), 2, Qt::DashLine));
+    c->setData(d_x.data(), base.data(), int(d_x.size()));
+    c->setRange(d_x.front(), d_x.back());
+    c->setFormula(tr("Baseline"));
+    d_graph->insertPlotItem(c, Graph::Line);
+    d_graph->addFitCurve(c);
+    d_graph->replot();
+    return c;
+}
+
+Table *MultiPeakFit::integratePeaksToTable(const QString &tableName)
+{
+    ApplicationWindow *app = (ApplicationWindow *)parent();
+    const size_t n = d_x.size();
+    if (!app || n < 3 || d_y.size() != n)
+        return nullptr;
+
+    if (!d_initial_guesses_set && d_last_results.empty())
+        autoDetectPeaks(d_peaks);
+
+    std::vector<double> base(n, 0.0);
+    if (!d_baseline_subtracted) {
+        if (d_baseline_mode == BaselineConstant && !d_last_results.empty()
+            && d_last_results.size() >= size_t(3 * d_peaks + 1)) {
+            std::fill(base.begin(), base.end(), d_last_results[3 * d_peaks]);
+        } else {
+            base = computeBaseline(d_x, d_y);
+        }
+    }
+
+    std::vector<double> y_net(n, 0.0);
+    for (size_t i = 0; i < n; ++i)
+        y_net[i] = std::max(0.0, d_y[i] - base[i]);
+
+    // Determine peak centers from fitted results or initial guesses
+    const std::vector<double> &parSrc = !d_last_results.empty() ? d_last_results : d_results;
+    std::vector<double> centers(d_peaks, 0.0);
+    for (int m = 0; m < d_peaks; ++m) {
+        if (parSrc.size() >= size_t(3 * d_peaks + 1) && parSrc[3 * m + 1] != 0.0)
+            centers[m] = parSrc[3 * m + 1];
+        else if (d_param_init && d_p >= unsigned(3 * d_peaks + 1))
+            centers[m] = gsl_vector_get(d_param_init, 3 * m + 1);
+        else
+            centers[m] = d_x[(size_t(m + 1) * n) / size_t(d_peaks + 1)];
+    }
+    std::sort(centers.begin(), centers.end());
+
+    std::vector<size_t> peakIdx(d_peaks, 0);
+    for (int m = 0; m < d_peaks; ++m) {
+        size_t bestI = 0;
+        double bestD = std::abs(d_x[0] - centers[m]);
+        for (size_t i = 1; i < n; ++i) {
+            double d = std::abs(d_x[i] - centers[m]);
+            if (d < bestD) {
+                bestD = d;
+                bestI = i;
+            }
+        }
+        peakIdx[m] = bestI;
+    }
+
+    // Partition data domain at valleys between adjacent peaks
+    std::vector<size_t> bounds(d_peaks + 1, 0);
+    bounds[0] = 0;
+    bounds[d_peaks] = n - 1;
+    for (int m = 1; m < d_peaks; ++m) {
+        size_t iL = peakIdx[m - 1];
+        size_t iR = std::max(iL, peakIdx[m]);
+        size_t valleyIdx = (iL + iR) / 2;
+        double minVal = y_net[valleyIdx];
+        for (size_t k = iL; k <= iR; ++k) {
+            if (y_net[k] < minVal) {
+                minVal = y_net[k];
+                valleyIdx = k;
+            }
+        }
+        bounds[m] = valleyIdx;
+    }
+
+    struct IntRow
+    {
+        int index;
+        double center;
+        double height;
+        double fwhm;
+        double area;
+        double areaPct;
+        double centroid;
+    };
+    std::vector<IntRow> rows(d_peaks);
+    double totalArea = 0.0;
+
+    for (int m = 0; m < d_peaks; ++m) {
+        size_t iStart = bounds[m];
+        size_t iEnd = bounds[m + 1];
+        if (iEnd <= iStart) {
+            iStart = 0;
+            iEnd = n - 1;
+        }
+        size_t maxIdx = peakIdx[m];
+        double maxH = y_net[maxIdx];
+        for (size_t i = iStart; i <= iEnd; ++i) {
+            if (y_net[i] > maxH) {
+                maxH = y_net[i];
+                maxIdx = i;
+            }
+        }
+        double xc = d_x[maxIdx];
+        double halfH = 0.5 * maxH;
+        double xL = d_x[iStart], xR = d_x[iEnd];
+        for (int k = int(maxIdx); k > int(iStart); --k) {
+            if (y_net[k - 1] <= halfH) {
+                double dy = y_net[k] - y_net[k - 1];
+                double f = (std::abs(dy) > 1e-15) ? ((halfH - y_net[k - 1]) / dy) : 0.5;
+                xL = d_x[k - 1] + std::max(0.0, std::min(1.0, f)) * (d_x[k] - d_x[k - 1]);
+                break;
+            }
+        }
+        for (size_t k = maxIdx; k < iEnd; ++k) {
+            if (y_net[k + 1] <= halfH) {
+                double dy = y_net[k] - y_net[k + 1];
+                double f = (std::abs(dy) > 1e-15) ? ((y_net[k] - halfH) / dy) : 0.5;
+                xR = d_x[k] + std::max(0.0, std::min(1.0, f)) * (d_x[k + 1] - d_x[k]);
+                break;
+            }
+        }
+        double fwhm = std::max(1e-9, std::abs(xR - xL));
+
+        double area = 0.0;
+        double moment1 = 0.0;
+        for (size_t i = iStart; i < iEnd; ++i) {
+            double dx = std::abs(d_x[i + 1] - d_x[i]);
+            double segArea = 0.5 * (y_net[i] + y_net[i + 1]) * dx;
+            double segMoment = 0.5 * (d_x[i] * y_net[i] + d_x[i + 1] * y_net[i + 1]) * dx;
+            area += segArea;
+            moment1 += segMoment;
+        }
+        double centroid = (area > 1e-15) ? (moment1 / area) : xc;
+
+        rows[m] = { m + 1, xc, maxH, fwhm, area, 0.0, centroid };
+        totalArea += area;
+    }
+
+    for (int m = 0; m < d_peaks; ++m)
+        rows[m].areaPct =
+                (totalArea > 1e-15) ? (100.0 * rows[m].area / totalArea) : (100.0 / d_peaks);
+
+    QString name = tableName.isEmpty() ? app->generateUniqueName(tr("PeakIntegration"))
+                                       : app->generateUniqueName(tableName, false);
+    Table *t = app->newTable(name, d_peaks, 7);
+    if (!t)
+        return nullptr;
+
+    t->setHeader(QStringList() << tr("Peak") << tr("Center") << tr("Height") << tr("FWHM")
+                               << tr("IntegratedArea") << tr("AreaPercent") << tr("Centroid"));
+    for (int col = 0; col < 7; ++col)
+        t->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+
+    for (int m = 0; m < d_peaks; ++m) {
+        t->column(0)->setValueAt(m, rows[m].index);
+        t->column(1)->setValueAt(m, rows[m].center);
+        t->column(2)->setValueAt(m, rows[m].height);
+        t->column(3)->setValueAt(m, rows[m].fwhm);
+        t->column(4)->setValueAt(m, rows[m].area);
+        t->column(5)->setValueAt(m, rows[m].areaPct);
+        t->column(6)->setValueAt(m, rows[m].centroid);
     }
 
     t->showNormal();

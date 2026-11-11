@@ -99,6 +99,39 @@ double pearson7_multi_peak_d(const gsl_vector *x, void *params);
 int pearson7_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
 int pearson7_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
 
+double eval_origin_peak_profile(int profile, double A, double xc, double w, double x,
+                                double mu, double pearson_m, double asym_alpha, double tail_tau);
+
+int voigt_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double voigt_multi_peak_d(const gsl_vector *x, void *params);
+int voigt_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int voigt_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int bigaussian_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double bigaussian_multi_peak_d(const gsl_vector *x, void *params);
+int bigaussian_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int bigaussian_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int emg_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double emg_multi_peak_d(const gsl_vector *x, void *params);
+int emg_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int emg_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int lognormal_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double lognormal_multi_peak_d(const gsl_vector *x, void *params);
+int lognormal_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int lognormal_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int asym2sig_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double asym2sig_multi_peak_d(const gsl_vector *x, void *params);
+int asym2sig_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int asym2sig_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
+int doniach_sunjic_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f);
+double doniach_sunjic_multi_peak_d(const gsl_vector *x, void *params);
+int doniach_sunjic_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J);
+int doniach_sunjic_multi_peak_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J);
+
 int user_f(const gsl_vector *x, void *params, gsl_vector *f);
 double user_d(const gsl_vector *x, void *params);
 int user_df(const gsl_vector *x, void *params, gsl_matrix *J);
