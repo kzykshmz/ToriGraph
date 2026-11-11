@@ -12,6 +12,16 @@
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
 #include "core/column/Column.h"
+#include "OriginGadgets.h"
+#include "DataPickerTool.h"
+#include "PolynomialFit.h"
+#include "CurveMathTools.h"
+#include "AdvancedSignalProc.h"
+#include "SmoothFilter.h"
+#include "GraphStatsAndSurfaceFit.h"
+#include "RecalcEngine.h"
+#include "Matrix.h"
+#include "FunctionCurve.h"
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
@@ -1101,7 +1111,1151 @@ int main(int argc, char **argv)
     CHECK_COND(clipData->QueryGetData(&fmtDib) == S_OK, "Clipboard missing CF_DIB");
 
     clipData.Reset();
-    std::cout << "[PASS] All OriginPro 2021 parity, Multi-Peak Fit, Table UX, and OLE tests passed!\n";
+
+    // =========================================================================
+    // 13. Interactive ROI Gadgets & Vertical Cursor (Domain 1)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 13: Interactive ROI Gadgets & Vertical Cursor...\n";
+        const int nGad = 101;
+        Table *gadTbl = mw->newTable("GadgetData", nGad, 3);
+        CHECK_COND(gadTbl != nullptr, "Failed to create GadgetData table");
+        gadTbl->setColName(0, "X");
+        gadTbl->setColPlotDesignation(0, SciDAVis::X);
+        gadTbl->setColName(1, "LinearRamp");
+        gadTbl->setColPlotDesignation(1, SciDAVis::Y);
+        gadTbl->setColName(2, "StepPulse");
+        gadTbl->setColPlotDesignation(2, SciDAVis::Y);
+        for (int r = 0; r < nGad; ++r) {
+            double x = double(r);
+            double yLin = 2.0 * x + 10.0; // exact line y = 2*x + 10
+            double yStep = (x <= 50.0) ? 0.0 : ((x >= 70.0) ? 100.0 : 5.0 * (x - 50.0));
+            gadTbl->setCell(r, 0, x);
+            gadTbl->setCell(r, 1, yLin);
+            gadTbl->setCell(r, 2, yStep);
+        }
+        QStringList gadCols;
+        gadCols << (gadTbl->name() + "_LinearRamp") << (gadTbl->name() + "_StepPulse");
+        MultiLayer *mlGad = mw->multilayerPlot(gadTbl, gadCols, Graph::LineSymbols);
+        CHECK_COND(mlGad != nullptr && mlGad->activeGraph() != nullptr, "Failed to create Gadget plot");
+        Graph *gGad = mlGad->activeGraph();
+        gGad->setScale(QwtPlot::xBottom, 0.0, 100.0);
+        gGad->setScale(QwtPlot::yLeft, -10.0, 220.0);
+        mlGad->show();
+        QApplication::processEvents();
+
+        const QString cLinTitle = gadTbl->name() + "_LinearRamp";
+        const QString cStepTitle = gadTbl->name() + "_StepPulse";
+
+        // RegionStats on x in [10, 30] -> y = 30..70 (21 points, exact mean = 50.0)
+        RoiGadgetTool *roi = RoiGadgetTool::attachGadget(mw, gGad, RoiGadgetTool::RegionStats);
+        CHECK_COND(roi != nullptr && roi->rtti() == PlotToolInterface::RoiGadget,
+                   "attachGadget(RegionStats) failed");
+        roi->setTargetCurve(cLinTitle);
+        roi->setRoiRect(QRectF(10.0, 0.0, 20.0, 120.0));
+        std::cout << "[INFO] ROI RegionStats [10..30]: mean=" << roi->primaryMetric()
+                  << ", sd=" << roi->secondaryMetric() << "\n";
+        CHECK_COND(relErrWithin(roi->primaryMetric(), 50.0, 1e-6),
+                   "RoiGadgetTool(RegionStats) mean mismatch on [10, 30]");
+
+        // Move ROI rectangle to [20, 40] -> y = 50..90 (exact mean = 70.0)
+        roi->setRoiRect(QRectF(20.0, 0.0, 20.0, 120.0));
+        std::cout << "[INFO] ROI RegionStats moved [20..40]: mean=" << roi->primaryMetric() << "\n";
+        CHECK_COND(relErrWithin(roi->primaryMetric(), 70.0, 1e-6),
+                   "RoiGadgetTool(RegionStats) mean did not update after moving ROI");
+
+        // QuickFit (FitLinear) on [10, 30] -> R^2 = 1.0, slope = 2.0
+        roi->setRoiRect(QRectF(10.0, 0.0, 20.0, 120.0));
+        roi->setGadgetMode(RoiGadgetTool::QuickFit);
+        roi->setQuickFitModel(RoiGadgetTool::FitLinear);
+        std::cout << "[INFO] ROI QuickFit(Linear): R^2=" << roi->primaryMetric()
+                  << ", slope=" << roi->secondaryMetric() << "\n";
+        CHECK_COND(roi->primaryMetric() > 0.999999 && relErrWithin(roi->secondaryMetric(), 2.0, 1e-5),
+                   "RoiGadgetTool(QuickFit) R^2 or slope mismatch");
+
+        // Integrate on [10, 30] -> integral_{10}^{30} (2x + 10) dx = 0.5*(30 + 70)*20 = 1000.0
+        roi->setGadgetMode(RoiGadgetTool::Integrate);
+        std::cout << "[INFO] ROI Integrate [10..30]: area=" << roi->primaryMetric() << "\n";
+        CHECK_COND(relErrWithin(roi->primaryMetric(), 1000.0, 1e-5),
+                   "RoiGadgetTool(Integrate) trapezoidal area mismatch");
+
+        // RiseTime on StepPulse (0 -> 100 ramp over x in [50, 70] -> 10%=52, 90%=68 -> riseTime = 16.0)
+        roi->setTargetCurve(cStepTitle);
+        roi->setRoiRect(QRectF(40.0, -5.0, 45.0, 115.0));
+        roi->setGadgetMode(RoiGadgetTool::RiseTime);
+        std::cout << "[INFO] ROI RiseTime [40..85]: 10-90% riseTime=" << roi->primaryMetric() << "\n";
+        CHECK_COND(relErrWithin(roi->primaryMetric(), 16.0, 1e-4),
+                   "RoiGadgetTool(RiseTime) 10-90% rise time mismatch");
+
+        // Cluster on LinearRamp for x in [10, 20], y in [25, 55] -> 11 points (x=10..20, y=30..50), meanY = 40.0
+        roi->setTargetCurve(cLinTitle);
+        roi->setRoiRect(QRectF(10.0, 25.0, 10.0, 30.0));
+        roi->setGadgetMode(RoiGadgetTool::Cluster);
+        std::cout << "[INFO] ROI Cluster [10..20]: count=" << roi->primaryMetric()
+                  << ", meanY=" << roi->secondaryMetric() << "\n";
+        CHECK_COND(std::fabs(roi->primaryMetric() - 11.0) < 1e-6
+                           && relErrWithin(roi->secondaryMetric(), 40.0, 1e-5),
+                   "RoiGadgetTool(Cluster) count or meanY mismatch");
+
+        Table *gadOut = roi->createOutputTable("RoiClusterSummary");
+        CHECK_COND(gadOut != nullptr && gadOut->numRows() >= 1,
+                   "RoiGadgetTool::createOutputTable failed");
+
+        // VerticalCursorTool synchronized readout & exact linear interpolation
+        VerticalCursorTool *vcur = VerticalCursorTool::attachCursor(mw, gGad, true);
+        CHECK_COND(vcur != nullptr && vcur->rtti() == PlotToolInterface::VerticalCursor,
+                   "VerticalCursorTool::attachCursor failed");
+        vcur->setCursorX(60.5);
+        QVector<QPair<QString, double>> ivals = vcur->interpolatedValues();
+        std::cout << "[INFO] VerticalCursor at X=60.5: curves=" << ivals.size() << "\n";
+        CHECK_COND(ivals.size() >= 2, "VerticalCursorTool::interpolatedValues missing curves");
+        bool foundLin = false, foundStep = false;
+        for (const auto &pr : ivals) {
+            if (pr.first.contains("LinearRamp")) {
+                foundLin = relErrWithin(pr.second, 2.0 * 60.5 + 10.0, 1e-6); // 131.0
+            } else if (pr.first.contains("StepPulse")) {
+                foundStep = relErrWithin(pr.second, 5.0 * (60.5 - 50.0), 1e-6); // 52.5
+            }
+        }
+        CHECK_COND(foundLin && foundStep,
+                   "VerticalCursorTool::interpolatedValues exact Y readout mismatch");
+        RoiGadgetTool::clearGadget(gGad);
+        CHECK_COND(gGad->activeTool() == nullptr, "RoiGadgetTool::clearGadget did not detach tool");
+    }
+
+    // =========================================================================
+    // 14. Non-Destructive Data Point Masking (Domain 1 / Filter Integration)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 14: Non-Destructive Data Point Masking...\n";
+        const int nMask = 21;
+        Table *maskTbl = mw->newTable("MaskData", nMask, 2);
+        maskTbl->setColName(0, "X");
+        maskTbl->setColPlotDesignation(0, SciDAVis::X);
+        maskTbl->setColName(1, "Y");
+        maskTbl->setColPlotDesignation(1, SciDAVis::Y);
+        for (int r = 0; r < nMask; ++r) {
+            double x = double(r);
+            maskTbl->setCell(r, 0, x);
+            maskTbl->setCell(r, 1, 3.5 * x - 4.0);
+        }
+        // Inject extreme outlier y = +9999 at row 10 (x = 10)
+        maskTbl->setCell(10, 1, 9999.0);
+
+        MultiLayer *mlMask = mw->multilayerPlot(
+                maskTbl, QStringList() << (maskTbl->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(mlMask != nullptr && mlMask->activeGraph() != nullptr,
+                   "Failed to create MaskData graph");
+        Graph *gMask = mlMask->activeGraph();
+        DataCurve *dcMask = dynamic_cast<DataCurve *>(gMask->curve(0));
+        CHECK_COND(dcMask != nullptr, "MaskData curve 0 is not a DataCurve");
+
+        // Unmasked LinearFit should be severely distorted by +9999 outlier
+        {
+            LinearFit lfRaw(mw, gMask, dcMask->title().text());
+            lfRaw.fit();
+            std::cout << "[INFO] Unmasked outlier LinearFit: R^2=" << lfRaw.rSquare()
+                      << ", slope=" << lfRaw.results()[1] << "\n";
+            CHECK_COND(lfRaw.rSquare() < 0.25, "Outlier +9999 did not distort unmasked LinearFit");
+        }
+
+        // Mask the outlier non-destructively via DataCurve::maskPoint
+        dcMask->maskPoint(10, true);
+        CHECK_COND(dcMask->isPointMasked(10) && dcMask->maskedPointCount() == 1,
+                   "DataCurve::maskPoint(10, true) did not mark point as masked");
+        CHECK_COND(std::fabs(maskTbl->cell(10, 1) - 9999.0) < 1e-9,
+                   "Masking destructively altered Table cell value instead of preserving 9999!");
+
+        LinearFit lfMasked(mw, gMask, dcMask->title().text());
+        lfMasked.fit();
+        std::cout << "[INFO] Masked outlier LinearFit: R^2=" << lfMasked.rSquare()
+                  << ", slope=" << lfMasked.results()[1]
+                  << ", intercept=" << lfMasked.results()[0]
+                  << ", tableCell(10,1)=" << maskTbl->cell(10, 1) << "\n";
+        CHECK_COND(lfMasked.rSquare() > 0.999999
+                           && relErrWithin(lfMasked.results()[1], 3.5, 1e-6)
+                           && relErrWithin(lfMasked.results()[0], -4.0, 1e-6)
+                           && std::fabs(maskTbl->cell(10, 1) - 9999.0) < 1e-9,
+                   "LinearFit on masked curve failed to recover exact slope/R^2 while keeping cell=9999");
+
+        dcMask->clearMasks();
+        CHECK_COND(!dcMask->isPointMasked(10) && dcMask->maskedPointCount() == 0
+                           && std::fabs(maskTbl->cell(10, 1) - 9999.0) < 1e-9,
+                   "DataCurve::clearMasks() failed or modified underlying Table cell");
+    }
+
+    // =========================================================================
+    // 15. Advanced Curve Fitting (Domain 2)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 15: Advanced Curve Fitting...\n";
+
+        // 15a. Parameter Fixing & Box Bounds on NonLinearFit & MultiPeakFit
+        {
+            Table *conTbl = mw->newTable("ConstrainedFitData", 41, 2);
+            conTbl->setColName(0, "X");
+            conTbl->setColPlotDesignation(0, SciDAVis::X);
+            conTbl->setColName(1, "Y");
+            conTbl->setColPlotDesignation(1, SciDAVis::Y);
+            for (int r = 0; r < 41; ++r) {
+                double x = r * 1.5;
+                // True unconstrained: y0 = 5, A = 100, t1 = 12
+                conTbl->setCell(r, 0, x);
+                conTbl->setCell(r, 1, 5.0 + 100.0 * std::exp(-x / 12.0));
+            }
+            MultiLayer *mlCon = mw->multilayerPlot(
+                    conTbl, QStringList() << (conTbl->name() + "_Y"), Graph::Scatter);
+            Graph *gCon = mlCon->activeGraph();
+            const QString cTitle = conTbl->name() + "_Y";
+
+            NonLinearFit nlf(mw, gCon, cTitle);
+            nlf.setParametersList(QStringList() << "y0" << "A" << "t1");
+            nlf.setFormula("y0 + A * exp(-x / t1)");
+            nlf.setInitialGuess(0, 8.0);
+            nlf.setInitialGuess(1, 95.0);
+            nlf.setInitialGuess(2, 18.0);
+            nlf.setParameterFixed(0, true);              // Fix y0 = 8.0
+            nlf.setParameterBounds(2, 15.0, 25.0);       // Box-bound t1 in [15, 25]
+            nlf.fit();
+            std::cout << "[INFO] Constrained NonLinearFit: y0(fixed=8)=" << nlf.results()[0]
+                      << ", A=" << nlf.results()[1] << ", t1(bounds 15..25)=" << nlf.results()[2] << "\n";
+            CHECK_COND(nlf.isParameterFixed(0) && std::fabs(nlf.results()[0] - 8.0) < 1e-9,
+                       "NonLinearFit::setParameterFixed did not hold y0 == 8.0");
+            CHECK_COND(nlf.results()[2] >= 14.999999 && nlf.results()[2] <= 25.000001,
+                       "NonLinearFit::setParameterBounds [15, 25] violated");
+
+            // MultiPeakFit fixing & bounds (Reuse PeakData curve 0: Gauss peaks at xc1=30, xc2=68, y0=5)
+            MultiLayer *mlMpfCon = mw->multilayerPlot(
+                    peakTable, QStringList() << (peakTable->name() + "_Gauss2"), Graph::Scatter);
+            Graph *gMpfCon = mlMpfCon->activeGraph();
+            MultiPeakFit mpfCon(mw, gMpfCon, MultiPeakFit::Gauss, 2);
+            CHECK_COND(mpfCon.setDataFromCurve(peakTable->name() + "_Gauss2"),
+                       "mpfCon.setDataFromCurve failed");
+            mpfCon.autoDetectPeaks(2);
+            mpfCon.setInitialGuess(6, 7.5);              // y0 index = 3*2 = 6
+            mpfCon.setParameterFixed(6, true);           // Fix y0 = 7.5
+            mpfCon.setInitialGuess(1, 32.5);             // xc1 index = 1
+            mpfCon.setParameterBounds(1, 31.5, 35.0);    // Bound xc1 >= 31.5 (true is 30.0)
+            mpfCon.fit();
+            std::cout << "[INFO] Constrained MultiPeakFit: y0(fixed=7.5)=" << mpfCon.results()[6]
+                      << ", xc1(bounds 31.5..35)=" << mpfCon.results()[1] << "\n";
+            CHECK_COND(std::fabs(mpfCon.results()[6] - 7.5) < 1e-8
+                               && mpfCon.results()[1] >= 31.499999
+                               && mpfCon.results()[1] <= 35.000001,
+                       "MultiPeakFit parameter fixing or box bounds violated");
+        }
+
+        // 15b. Confidence/Prediction Bands + AIC/BIC + Fit::compareModels
+        {
+            Table *bandTbl = mw->newTable("BandFitData", 31, 3);
+            bandTbl->setColName(0, "X");
+            bandTbl->setColPlotDesignation(0, SciDAVis::X);
+            bandTbl->setColName(1, "QuadNoisy");
+            bandTbl->setColPlotDesignation(1, SciDAVis::Y);
+            bandTbl->setColName(2, "ExpClean");
+            bandTbl->setColPlotDesignation(2, SciDAVis::Y);
+            for (int r = 0; r < 31; ++r) {
+                double x = r * 0.5; // 0..15
+                double jitter = 0.35 * std::sin(1.7 * r + 0.3);
+                bandTbl->setCell(r, 0, x);
+                bandTbl->setCell(r, 1, 2.0 + 1.5 * x + 0.4 * x * x + jitter);
+                bandTbl->setCell(r, 2, 5.0 + 80.0 * std::exp(-x / 4.0) + 0.05 * jitter);
+            }
+            MultiLayer *mlBand = mw->multilayerPlot(
+                    bandTbl, QStringList() << (bandTbl->name() + "_QuadNoisy"), Graph::Scatter);
+            Graph *gBand = mlBand->activeGraph();
+            QString qCurve = bandTbl->name() + "_QuadNoisy";
+
+            PolynomialFit pf(mw, gBand, qCurve, 2, false);
+            pf.enableConfidenceBand(true, 0.95);
+            pf.enablePredictionBand(true, 0.95);
+            pf.fit();
+
+            QwtPlotCurve *cConfUp = gBand->curve(qCurve + "_ConfUpper");
+            QwtPlotCurve *cConfLo = gBand->curve(qCurve + "_ConfLower");
+            QwtPlotCurve *cPredUp = gBand->curve(qCurve + "_PredUpper");
+            QwtPlotCurve *cPredLo = gBand->curve(qCurve + "_PredLower");
+            CHECK_COND(cConfUp && cConfLo && cPredUp && cPredLo,
+                       "Confidence or Prediction band curves were not generated on Graph");
+            int midIdx = cConfUp->dataSize() / 2;
+            double confSpan = cConfUp->y(midIdx) - cConfLo->y(midIdx);
+            double predSpan = cPredUp->y(midIdx) - cPredLo->y(midIdx);
+            std::cout << "[INFO] Poly2 Bands & Diagnostics: confSpan=" << confSpan
+                      << ", predSpan=" << predSpan << ", AIC=" << pf.aic()
+                      << ", BIC=" << pf.bic() << ", F=" << pf.anovaFValue() << "\n";
+            CHECK_COND(confSpan > 0.0 && predSpan > confSpan,
+                       "Prediction band must be strictly wider than Confidence band");
+            CHECK_COND(std::isfinite(pf.aic()) && std::isfinite(pf.bic())
+                               && pf.anovaFValue() > 100.0 && pf.anovaPValue() < 1e-6,
+                       "AIC/BIC/ANOVA diagnostics invalid");
+
+            MultiLayer *mlCmp = mw->multilayerPlot(
+                    bandTbl, QStringList() << (bandTbl->name() + "_ExpClean"), Graph::Scatter);
+            Graph *gCmp = mlCmp->activeGraph();
+            Table *cmpTbl = Fit::compareModels(
+                    mw, gCmp, bandTbl->name() + "_ExpClean",
+                    QStringList() << "ExpDec1" << "GaussAmp" << "Boltzmann");
+            CHECK_COND(cmpTbl != nullptr && cmpTbl->numRows() >= 3,
+                       "Fit::compareModels failed to produce ranked table");
+            std::cout << "[INFO] compareModels Rank #1 = "
+                      << cmpTbl->column(0)->textAt(0).toStdString()
+                      << ", AIC=" << cmpTbl->cell(0, 5)
+                      << ", Weight=" << cmpTbl->cell(0, 9) << "\n";
+            CHECK_COND(cmpTbl->column(0)->textAt(0).contains("ExpDec1", Qt::CaseInsensitive),
+                       "Fit::compareModels did not rank true ExpDec1 model #1 by AIC");
+        }
+
+        // 15c. York Linear Fit with X & Y Errors + Apparent Linear Fit on Log10 Axes
+        {
+            Table *yorkTbl = mw->newTable("YorkFitData", 12, 4);
+            yorkTbl->setColName(0, "X");
+            yorkTbl->setColPlotDesignation(0, SciDAVis::X);
+            yorkTbl->setColName(1, "Y");
+            yorkTbl->setColPlotDesignation(1, SciDAVis::Y);
+            yorkTbl->setColName(2, "sX");
+            yorkTbl->setColPlotDesignation(2, SciDAVis::xErr);
+            yorkTbl->setColName(3, "sY");
+            yorkTbl->setColPlotDesignation(3, SciDAVis::yErr);
+            for (int r = 0; r < 12; ++r) {
+                double x = 1.0 + r * 2.0;
+                double y = 2.5 * x + 3.0; // exact slope = 2.5, intercept = 3.0
+                double sx = 0.05, sy = 0.08;
+                if (r == 11) {
+                    // Huge uncertainty noisy point that pulls unweighted OLS off course
+                    y += 35.0;
+                    sx = 80.0;
+                    sy = 80.0;
+                }
+                yorkTbl->setCell(r, 0, x);
+                yorkTbl->setCell(r, 1, y);
+                yorkTbl->setCell(r, 2, sx);
+                yorkTbl->setCell(r, 3, sy);
+            }
+            MultiLayer *mlYork = mw->multilayerPlot(
+                    yorkTbl, QStringList() << (yorkTbl->name() + "_Y"), Graph::Scatter);
+            Graph *gYork = mlYork->activeGraph();
+            LinearFit lfYork(mw, gYork, yorkTbl->name() + "_Y");
+            CHECK_COND(lfYork.fitWithXYErrors("sX", "sY"), "LinearFit::fitWithXYErrors returned false");
+            std::cout << "[INFO] York Regression: slope=" << lfYork.yorkSlope()
+                      << " +/- " << lfYork.yorkSlopeError()
+                      << ", intercept=" << lfYork.yorkIntercept() << "\n";
+            CHECK_COND(relErrWithin(lfYork.yorkSlope(), 2.5, 0.01)
+                               && relErrWithin(lfYork.yorkIntercept(), 3.0, 0.02)
+                               && lfYork.yorkSlopeError() > 0.0,
+                       "York regression failed to recover exact weighted slope & intercept");
+
+            // Apparent Fit on Log10-Log10 axes: y = 10 * x^2 -> log10(y) = 1.0 + 2.0 * log10(x)
+            const double logXs[7] = { 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0 };
+            Table *appTbl = mw->newTable("ApparentLogData", 7, 2);
+            appTbl->setColName(0, "X");
+            appTbl->setColPlotDesignation(0, SciDAVis::X);
+            appTbl->setColName(1, "Y");
+            appTbl->setColPlotDesignation(1, SciDAVis::Y);
+            for (int r = 0; r < 7; ++r) {
+                appTbl->setCell(r, 0, logXs[r]);
+                appTbl->setCell(r, 1, 10.0 * logXs[r] * logXs[r]);
+            }
+            MultiLayer *mlApp = mw->multilayerPlot(
+                    appTbl, QStringList() << (appTbl->name() + "_Y"), Graph::Scatter);
+            Graph *gApp = mlApp->activeGraph();
+            gApp->setScale(QwtPlot::xBottom, 1.0, 100.0, 0.0, 5, 5, 1, false);
+            gApp->setScale(QwtPlot::yLeft, 10.0, 100000.0, 0.0, 5, 5, 1, false);
+            LinearFit lfApp(mw, gApp, appTbl->name() + "_Y");
+            lfApp.setApparentFit(true);
+            lfApp.fit();
+            std::cout << "[INFO] Apparent Log10 LinearFit: logInt=" << lfApp.results()[0]
+                      << ", logSlope=" << lfApp.results()[1] << ", R^2=" << lfApp.rSquare() << "\n";
+            CHECK_COND(relErrWithin(lfApp.results()[0], 1.0, 1e-4)
+                               && relErrWithin(lfApp.results()[1], 2.0, 1e-4)
+                               && lfApp.rSquare() > 0.99999,
+                       "Apparent LinearFit on Log10 axes failed to fit in log-transformed space");
+        }
+
+        // 15d. Global Curve Fit (shared decay constant) & Implicit ODR Fit (ellipse x^2/a^2 + y^2/b^2 - 1 = 0)
+        {
+            Table *globTbl = mw->newTable("GlobalFitData", 31, 3);
+            globTbl->setColName(0, "X");
+            globTbl->setColPlotDesignation(0, SciDAVis::X);
+            globTbl->setColName(1, "Decay1");
+            globTbl->setColPlotDesignation(1, SciDAVis::Y);
+            globTbl->setColName(2, "Decay2");
+            globTbl->setColPlotDesignation(2, SciDAVis::Y);
+            for (int r = 0; r < 31; ++r) {
+                double x = r * 2.0; // 0..60, shared tau = 18.0
+                globTbl->setCell(r, 0, x);
+                globTbl->setCell(r, 1, 2.0 + 100.0 * std::exp(-x / 18.0));
+                globTbl->setCell(r, 2, 10.0 + 250.0 * std::exp(-x / 18.0));
+            }
+            QStringList globCurves;
+            globCurves << (globTbl->name() + "_Decay1") << (globTbl->name() + "_Decay2");
+            MultiLayer *mlGlob = mw->multilayerPlot(globTbl, globCurves, Graph::Scatter);
+            Graph *gGlob = mlGlob->activeGraph();
+
+            NonLinearFit nlGlob(mw, gGlob, globCurves[0]);
+            nlGlob.setParametersList(QStringList() << "y0" << "A" << "t1");
+            nlGlob.setFormula("y0 + A * exp(-x / t1)");
+            nlGlob.setInitialGuess(0, 5.0);
+            nlGlob.setInitialGuess(1, 150.0);
+            nlGlob.setInitialGuess(2, 14.0);
+            Table *globSummary = nullptr;
+            QVector<bool> sharedFlags;
+            sharedFlags << false << false << true; // share t1 across both curves
+            CHECK_COND(nlGlob.fitGlobal(globCurves, sharedFlags, &globSummary) && globSummary != nullptr,
+                       "NonLinearFit::fitGlobal failed");
+            double tauCurve1 = globSummary->cell(2, 3);
+            double tauCurve2 = globSummary->cell(5, 3);
+            double ampCurve1 = globSummary->cell(1, 3);
+            double ampCurve2 = globSummary->cell(4, 3);
+            std::cout << "[INFO] Global Fit: A1=" << ampCurve1 << ", A2=" << ampCurve2
+                      << ", shared t1=(" << tauCurve1 << ", " << tauCurve2 << "), R^2="
+                      << nlGlob.rSquare() << "\n";
+            CHECK_COND(std::fabs(tauCurve1 - tauCurve2) < 1e-12
+                               && relErrWithin(tauCurve1, 18.0, 0.005)
+                               && relErrWithin(ampCurve1, 100.0, 0.005)
+                               && relErrWithin(ampCurve2, 250.0, 0.005),
+                       "NonLinearFit::fitGlobal did not recover shared decay constant & per-curve amplitudes");
+
+            // Implicit ODR Fit: ellipse x^2/a^2 + y^2/b^2 - 1 = 0 with true a = 6.0, b = 3.5
+            const int nEll = 36;
+            Table *odrTbl = mw->newTable("ImplicitEllipseData", nEll, 2);
+            odrTbl->setColName(0, "X");
+            odrTbl->setColPlotDesignation(0, SciDAVis::X);
+            odrTbl->setColName(1, "Y");
+            odrTbl->setColPlotDesignation(1, SciDAVis::Y);
+            for (int r = 0; r < nEll; ++r) {
+                double th = 2.0 * M_PI * double(r) / double(nEll);
+                odrTbl->setCell(r, 0, 6.0 * std::cos(th));
+                odrTbl->setCell(r, 1, 3.5 * std::sin(th));
+            }
+            MultiLayer *mlOdr = mw->multilayerPlot(
+                    odrTbl, QStringList() << (odrTbl->name() + "_Y"), Graph::Scatter);
+            Graph *gOdr = mlOdr->activeGraph();
+            NonLinearFit nlOdr(mw, gOdr, odrTbl->name() + "_Y");
+            CHECK_COND(nlOdr.fitImplicitODR("x^2/(a^2) + y^2/(b^2) - 1",
+                                            QStringList() << "a" << "b",
+                                            QVector<double>() << 4.8 << 2.6),
+                       "NonLinearFit::fitImplicitODR returned false");
+            double aFit = std::fabs(nlOdr.results()[0]);
+            double bFit = std::fabs(nlOdr.results()[1]);
+            std::cout << "[INFO] Implicit ODR Ellipse Fit: a=" << aFit << " (expected 6.0), b="
+                      << bFit << " (expected 3.5)\n";
+            CHECK_COND(relErrWithin(aFit, 6.0, 0.01) && relErrWithin(bFit, 3.5, 0.01),
+                       "fitImplicitODR failed to recover ellipse semi-axes a=6.0, b=3.5 within <1%");
+        }
+    }
+
+    // =========================================================================
+    // 16. Advanced Peak Analyzer (Domain 3)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 16: Advanced Peak Analyzer...\n";
+        const int nSpec = 201;
+        Table *paTbl = mw->newTable("AdvPeakData", nSpec, 5);
+        paTbl->setColName(0, "X");
+        paTbl->setColPlotDesignation(0, SciDAVis::X);
+        paTbl->setColName(1, "SplineBaseSpec");
+        paTbl->setColPlotDesignation(1, SciDAVis::Y);
+        paTbl->setColName(2, "ShoulderSpec");
+        paTbl->setColPlotDesignation(2, SciDAVis::Y);
+        paTbl->setColName(3, "DoubletMixed");
+        paTbl->setColPlotDesignation(3, SciDAVis::Y);
+        paTbl->setColName(4, "BatchSpec2");
+        paTbl->setColPlotDesignation(4, SciDAVis::Y);
+
+        auto cubicBase = [](double x) {
+            return 5.0 + 0.12 * x + 0.0015 * x * x - 0.000012 * x * x * x;
+        };
+        auto gaussArea = [](double x, double A, double xc, double w) {
+            return std::sqrt(2.0 / M_PI) * (A / w) * std::exp(-2.0 * (x - xc) * (x - xc) / (w * w));
+        };
+        auto lorentzArea = [](double x, double A, double xc, double fwhm) {
+            return (2.0 * A / M_PI) * fwhm / (4.0 * (x - xc) * (x - xc) + fwhm * fwhm);
+        };
+
+        // Mixed-profile spin-orbit doublet: Peak 0 = Gauss(A=300, xc=38, w=5 -> FWHM=5*sqrt(2*ln2)=5.88705),
+        // Peak 1 = Lorentz(Area = 0.5 * 300 = 150, xc = 38 + 14 = 52, shared FWHM = 5.8870501)
+        const double fwhmShared = 5.0 * std::sqrt(2.0 * std::log(2.0));
+        for (int r = 0; r < nSpec; ++r) {
+            double x = r * 0.5; // 0..100
+            paTbl->setCell(r, 0, x);
+            paTbl->setCell(r, 1, cubicBase(x) + gaussArea(x, 220.0, 30.0, 5.0)
+                                 + gaussArea(x, 320.0, 70.0, 6.0));
+            // Closely overlapping primary peak (xc=45, H=100) + hidden shoulder (xc=52.5, H=42)
+            double yShoulder = 100.0 * std::exp(-0.5 * std::pow((x - 45.0) / 3.5, 2.0))
+                               + 42.0 * std::exp(-0.5 * std::pow((x - 52.5) / 2.6, 2.0));
+            paTbl->setCell(r, 2, yShoulder);
+            paTbl->setCell(r, 3, 2.0 + gaussArea(x, 300.0, 38.0, 5.0)
+                                 + lorentzArea(x, 150.0, 52.0, fwhmShared));
+            paTbl->setCell(r, 4, 3.0 + 0.05 * x + gaussArea(x, 180.0, 28.0, 5.0)
+                                 + gaussArea(x, 260.0, 66.0, 5.5));
+        }
+
+        // 16a. BaselineAnchors cubic spline baseline subtraction & fit
+        MultiLayer *mlPA1 = mw->multilayerPlot(
+                paTbl, QStringList() << (paTbl->name() + "_SplineBaseSpec"), Graph::Line);
+        Graph *gPA1 = mlPA1->activeGraph();
+        MultiPeakFit mpfSpline(mw, gPA1, MultiPeakFit::Gauss, 2);
+        mpfSpline.setDataFromCurve(paTbl->name() + "_SplineBaseSpec");
+        mpfSpline.setBaselineMode(MultiPeakFit::BaselineAnchors);
+        QVector<QPointF> anchors;
+        for (double ax : { 0.0, 10.0, 50.0, 90.0, 100.0 })
+            anchors << QPointF(ax, cubicBase(ax));
+        mpfSpline.setBaselineAnchors(anchors, true);
+        std::vector<double> spBase = mpfSpline.computeBaseline();
+        CHECK_COND(spBase.size() == size_t(nSpec)
+                           && relErrWithin(spBase[60], cubicBase(30.0), 0.005)
+                           && relErrWithin(spBase[140], cubicBase(70.0), 0.005),
+                   "BaselineAnchors cubic spline baseline deviated from exact cubic polynomial");
+        CHECK_COND(mpfSpline.subtractBaselineFromData(), "BaselineAnchors subtractBaselineFromData failed");
+        mpfSpline.fit();
+        std::cout << "[INFO] BaselineAnchors Subtracted Fit: R^2=" << mpfSpline.rSquare()
+                  << ", A1=" << mpfSpline.results()[0] << ", A2=" << mpfSpline.results()[3] << "\n";
+        CHECK_COND(mpfSpline.rSquare() > 0.9999 && relErrWithin(mpfSpline.results()[0], 220.0, 0.02)
+                           && relErrWithin(mpfSpline.results()[3], 320.0, 0.02),
+                   "BaselineAnchors subtracted peak fit failed");
+
+        // 16b. 2nd-Derivative Hidden Shoulder Peak Detection
+        MultiLayer *mlPA2 = mw->multilayerPlot(
+                paTbl, QStringList() << (paTbl->name() + "_ShoulderSpec"), Graph::Line);
+        Graph *gPA2 = mlPA2->activeGraph();
+        MultiPeakFit mpfD2(mw, gPA2, MultiPeakFit::Gauss, 2);
+        mpfD2.setDataFromCurve(paTbl->name() + "_ShoulderSpec");
+        QVector<double> centersD2 = mpfD2.detectPeaksSecondDerivative(11, 0.10);
+        std::cout << "[INFO] 2nd-Derivative Detected Centers count=" << centersD2.size();
+        for (double c : centersD2)
+            std::cout << " " << c;
+        std::cout << "\n";
+        CHECK_COND(centersD2.size() == 2 && std::fabs(centersD2[0] - 45.0) < 1.2
+                           && std::fabs(centersD2[1] - 52.5) < 1.5,
+                   "detectPeaksSecondDerivative failed to resolve overlapping shoulder peak");
+
+        // 16c. Mixed Peak Profiles (Gauss + Lorentz) & Doublet Ratio/Offset Constraint
+        MultiLayer *mlPA3 = mw->multilayerPlot(
+                paTbl, QStringList() << (paTbl->name() + "_DoubletMixed"), Graph::Line);
+        Graph *gPA3 = mlPA3->activeGraph();
+        MultiPeakFit mpfDbl(mw, gPA3, MultiPeakFit::Gauss, 2);
+        mpfDbl.setDataFromCurve(paTbl->name() + "_DoubletMixed");
+        QVector<MultiPeakFit::PeakProfile> mixedProfs;
+        mixedProfs << MultiPeakFit::Gauss << MultiPeakFit::Lorentz;
+        mpfDbl.setPerPeakProfiles(mixedProfs);
+        mpfDbl.setInitialGuess(0, 270.0);
+        mpfDbl.setInitialGuess(1, 37.5);
+        mpfDbl.setInitialGuess(2, 4.6);
+        mpfDbl.setInitialGuess(6, 1.5);
+        mpfDbl.addPeakDoubletConstraint(1, 0, 0.5, 14.0, true);
+        mpfDbl.fit();
+        auto dblRows = mpfDbl.computePeakSummary(mpfDbl.results());
+        std::cout << "[INFO] Mixed-Profile Doublet Fit: R^2=" << mpfDbl.rSquare()
+                  << ", Peak1(xc=" << dblRows[0].center << ", Area=" << dblRows[0].area << ")"
+                  << ", Peak2(xc=" << dblRows[1].center << ", Area=" << dblRows[1].area << ")\n";
+        CHECK_COND(mpfDbl.rSquare() > 0.9999
+                           && relErrWithin(dblRows[0].area, 300.0, 0.01)
+                           && relErrWithin(dblRows[1].area, 150.0, 0.01)
+                           && std::fabs((dblRows[1].center - dblRows[0].center) - 14.0) < 1e-6,
+                   "Mixed-profile doublet constraint failed");
+
+        // 16d. Batch Peak Analysis across multiple curves
+        QStringList batchCurves;
+        batchCurves << (paTbl->name() + "_SplineBaseSpec") << (paTbl->name() + "_BatchSpec2");
+        MultiLayer *mlBatch = mw->multilayerPlot(paTbl, batchCurves, Graph::Line);
+        Table *batchTbl = MultiPeakFit::batchAnalyzeCurves(
+                mw, mlBatch->activeGraph(), batchCurves, MultiPeakFit::Gauss,
+                MultiPeakFit::BaselineALS);
+        CHECK_COND(batchTbl != nullptr && batchTbl->numRows() >= 4,
+                   "MultiPeakFit::batchAnalyzeCurves failed to analyze all peaks across curves");
+        std::cout << "[INFO] Batch Peak Analysis rows=" << batchTbl->numRows()
+                  << ", row0 R^2=" << batchTbl->cell(0, 8) << "\n";
+        CHECK_COND(batchTbl->cell(0, 8) > 0.99 && batchTbl->cell(batchTbl->numRows() - 1, 8) > 0.99,
+                   "Batch Peak Analysis produced poor R^2");
+    }
+
+    // =========================================================================
+    // 17. Curve Math & Advanced Signal Processing (Domains 4 & 5)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 17: Curve Math & Advanced Signal Processing...\n";
+
+        // 17a. CurveMathTools (simpleCurveMath on mismatched grids, averageMultipleCurves,
+        //      normalizeCurve, findCurveIntersections, polygonArea)
+        {
+            Table *cmTblA = mw->newTable("CurveMathA", 11, 2);
+            cmTblA->setColName(0, "XA");
+            cmTblA->setColPlotDesignation(0, SciDAVis::X);
+            cmTblA->setColName(1, "YA");
+            cmTblA->setColPlotDesignation(1, SciDAVis::Y);
+            for (int r = 0; r < 11; ++r) {
+                double x = r * 2.0; // coarse grid 0, 2, ..., 20
+                cmTblA->setCell(r, 0, x);
+                cmTblA->setCell(r, 1, 3.0 * x + 1.0);
+            }
+            Table *cmTblB = mw->newTable("CurveMathB", 21, 4);
+            cmTblB->setColName(0, "XB");
+            cmTblB->setColPlotDesignation(0, SciDAVis::X);
+            cmTblB->setColName(1, "YB");
+            cmTblB->setColPlotDesignation(1, SciDAVis::Y);
+            cmTblB->setColName(2, "Rep2");
+            cmTblB->setColPlotDesignation(2, SciDAVis::Y);
+            cmTblB->setColName(3, "Rep3");
+            cmTblB->setColPlotDesignation(3, SciDAVis::Y);
+            for (int r = 0; r < 21; ++r) {
+                double x = double(r); // fine grid 0, 1, ..., 20
+                cmTblB->setCell(r, 0, x);
+                cmTblB->setCell(r, 1, x + 5.0);
+                cmTblB->setCell(r, 2, x + 7.0);
+                cmTblB->setCell(r, 3, x + 9.0);
+            }
+            MultiLayer *mlCM = mw->multilayerPlot(
+                    cmTblA, QStringList() << (cmTblA->name() + "_YA"), Graph::Line);
+            Graph *gCM = mlCM->activeGraph();
+            gCM->insertCurve(cmTblB, cmTblB->colName(0), cmTblB->colName(1), Graph::Line);
+
+            QwtPlotCurve *sumCurve = CurveMathTools::simpleCurveMath(
+                    mw, gCM, cmTblA->name() + "_YA", cmTblB->name() + "_YB",
+                    CurveMathTools::Add, true);
+            CHECK_COND(sumCurve != nullptr && sumCurve->dataSize() >= 21,
+                       "CurveMathTools::simpleCurveMath(Add) failed on mismatched X grids");
+            double ySumAt10 = CurveMathTools::findYFromX(gCM, sumCurve->title().text(), 10.0);
+            std::cout << "[INFO] simpleCurveMath(Add) at x=10: " << ySumAt10 << " (expected 46)\n";
+            CHECK_COND(relErrWithin(ySumAt10, 46.0, 1e-5), "simpleCurveMath(Add) value mismatch");
+
+            // Average Multiple Curves (YB=x+5, Rep2=x+7, Rep3=x+9 -> Mean=x+7, SD=2.0)
+            MultiLayer *mlAvg = mw->multilayerPlot(
+                    cmTblB,
+                    QStringList() << (cmTblB->name() + "_YB") << (cmTblB->name() + "_Rep2")
+                                  << (cmTblB->name() + "_Rep3"),
+                    Graph::Line);
+            Graph *gAvg = mlAvg->activeGraph();
+            int curvesBeforeAvg = gAvg->curves();
+            Table *avgTbl = nullptr;
+            QwtPlotCurve *meanCurve = CurveMathTools::averageMultipleCurves(
+                    mw, gAvg,
+                    QStringList() << (cmTblB->name() + "_YB") << (cmTblB->name() + "_Rep2")
+                                  << (cmTblB->name() + "_Rep3"),
+                    41, true, &avgTbl);
+            CHECK_COND(meanCurve != nullptr && avgTbl != nullptr
+                               && gAvg->curves() >= curvesBeforeAvg + 3,
+                       "averageMultipleCurves did not add Mean + SD band curves");
+            double meanAt10 = CurveMathTools::findYFromX(gAvg, meanCurve->title().text(), 10.0);
+            CHECK_COND(relErrWithin(meanAt10, 17.0, 1e-4)
+                               && relErrWithin(avgTbl->cell(20, 2), 2.0, 1e-4),
+                       "averageMultipleCurves Mean or SD mismatch");
+
+            // Normalize Curve (Range0To1 and UnitArea)
+            QwtPlotCurve *norm01 = CurveMathTools::normalizeCurve(
+                    mw, gAvg, cmTblB->name() + "_YB", CurveMathTools::Range0To1);
+            CHECK_COND(norm01 != nullptr && std::fabs(norm01->minYValue() - 0.0) < 1e-6
+                               && std::fabs(norm01->maxYValue() - 1.0) < 1e-6,
+                       "normalizeCurve(Range0To1) failed");
+            QwtPlotCurve *normArea = CurveMathTools::normalizeCurve(
+                    mw, gAvg, cmTblB->name() + "_YB", CurveMathTools::UnitArea);
+            CHECK_COND(normArea != nullptr, "normalizeCurve(UnitArea) returned null");
+            double trapArea = 0.0;
+            for (int i = 0; i + 1 < normArea->dataSize(); ++i)
+                trapArea += 0.5 * (normArea->y(i) + normArea->y(i + 1))
+                            * (normArea->x(i + 1) - normArea->x(i));
+            CHECK_COND(relErrWithin(trapArea, 1.0, 1e-4),
+                       "normalizeCurve(UnitArea) integral is not 1.0");
+
+            // Curve Intersections & Closed Polygon Loop Area
+            Table *ixTbl = mw->newTable("IntersectPolyData", 5, 4);
+            ixTbl->setColName(0, "X");
+            ixTbl->setColPlotDesignation(0, SciDAVis::X);
+            ixTbl->setColName(1, "LineUp");
+            ixTbl->setColPlotDesignation(1, SciDAVis::Y);
+            ixTbl->setColName(2, "LineDown");
+            ixTbl->setColPlotDesignation(2, SciDAVis::Y);
+            ixTbl->setColName(3, "LoopY");
+            ixTbl->setColPlotDesignation(3, SciDAVis::Y);
+            for (int r = 0; r < 5; ++r) {
+                double x = r * 2.5; // 0..10
+                ixTbl->setCell(r, 0, x);
+                ixTbl->setCell(r, 1, x);
+                ixTbl->setCell(r, 2, 10.0 - x);
+                ixTbl->setCell(r, 3, 0.0);
+            }
+            MultiLayer *mlIx = mw->multilayerPlot(
+                    ixTbl, QStringList() << (ixTbl->name() + "_LineUp")
+                                         << (ixTbl->name() + "_LineDown"),
+                    Graph::Line);
+            Graph *gIx = mlIx->activeGraph();
+            QVector<QPointF> xpts = CurveMathTools::findCurveIntersections(
+                    gIx, ixTbl->name() + "_LineUp", ixTbl->name() + "_LineDown", true, mw);
+            CHECK_COND(xpts.size() == 1 && relErrWithin(xpts[0].x(), 5.0, 1e-6)
+                               && relErrWithin(xpts[0].y(), 5.0, 1e-6),
+                       "findCurveIntersections failed to locate exact (5, 5) crossing");
+
+            Table *loopTbl = mw->newTable("ClosedLoop", 5, 2);
+            loopTbl->setColName(0, "LX");
+            loopTbl->setColPlotDesignation(0, SciDAVis::X);
+            loopTbl->setColName(1, "LY");
+            loopTbl->setColPlotDesignation(1, SciDAVis::Y);
+            const double loopPts[5][2] = {
+                { 0.0, 0.0 }, { 4.0, 0.0 }, { 4.0, 3.0 }, { 0.0, 3.0 }, { 0.0, 0.0 }
+            };
+            for (int r = 0; r < 5; ++r) {
+                loopTbl->setCell(r, 0, loopPts[r][0]);
+                loopTbl->setCell(r, 1, loopPts[r][1]);
+            }
+            MultiLayer *mlLoop = mw->multilayerPlot(
+                    loopTbl, QStringList() << (loopTbl->name() + "_LY"), Graph::Line);
+            double polyA = CurveMathTools::polygonArea(
+                    mlLoop->activeGraph(), loopTbl->name() + "_LY", false);
+            std::cout << "[INFO] polygonArea of 4x3 rectangle = " << polyA << "\n";
+            CHECK_COND(relErrWithin(polyA, 12.0, 1e-6), "polygonArea exact Shoelace loop area mismatch");
+        }
+
+        // 17b. SmoothFilter (LOWESS & Whittaker) + AdvancedSignalProc (IIR, STFT, Hilbert, CWT, DWT, 2D FFT)
+        {
+            const int nSig = 512;
+            const double fs = 500.0;
+            const double dt = 1.0 / fs;
+            Table *sigTbl = mw->newTable("SignalProcData", nSig, 4);
+            sigTbl->setColName(0, "Time");
+            sigTbl->setColPlotDesignation(0, SciDAVis::X);
+            sigTbl->setColName(1, "TwoTone");
+            sigTbl->setColPlotDesignation(1, SciDAVis::Y);
+            sigTbl->setColName(2, "AMSignal");
+            sigTbl->setColPlotDesignation(2, SciDAVis::Y);
+            sigTbl->setColName(3, "NoisyWave");
+            sigTbl->setColPlotDesignation(3, SciDAVis::Y);
+
+            double noisyMse = 0.0;
+            for (int i = 0; i < nSig; ++i) {
+                double tVal = i * dt;
+                double cleanLow = std::sin(2.0 * M_PI * 5.0 * tVal);
+                double twoTone = cleanLow + 0.85 * std::sin(2.0 * M_PI * 120.0 * tVal);
+                double amEnv = 1.0 + 0.5 * std::cos(2.0 * M_PI * 3.0 * tVal);
+                double amSig = amEnv * std::cos(2.0 * M_PI * 60.0 * tVal);
+                // Deterministic high-frequency pseudo-Gaussian sum of incommensurate sines
+                double noise = 0.22 * (std::sin(37.3 * i + 0.1) + std::cos(71.9 * i + 1.2)
+                                       + std::sin(113.7 * i + 2.4)) / std::sqrt(1.5);
+                double cleanSmooth = std::sin(2.0 * M_PI * 2.0 * tVal)
+                                     + 0.5 * std::cos(2.0 * M_PI * 4.0 * tVal);
+                noisyMse += noise * noise;
+
+                sigTbl->setCell(i, 0, tVal);
+                sigTbl->setCell(i, 1, twoTone);
+                sigTbl->setCell(i, 2, amSig);
+                sigTbl->setCell(i, 3, cleanSmooth + noise);
+            }
+            noisyMse /= double(nSig);
+
+            MultiLayer *mlSig = mw->multilayerPlot(
+                    sigTbl,
+                    QStringList() << (sigTbl->name() + "_TwoTone")
+                                  << (sigTbl->name() + "_AMSignal")
+                                  << (sigTbl->name() + "_NoisyWave"),
+                    Graph::Line);
+            Graph *gSig = mlSig->activeGraph();
+
+            // SmoothFilter::LOWESS & SmoothFilter::Whittaker
+            int beforeSmooth = gSig->curves();
+            SmoothFilter sfLowess(mw, gSig, sigTbl->name() + "_NoisyWave", SmoothFilter::LOWESS);
+            sfLowess.setLowessSpan(0.08);
+            sfLowess.run();
+            CHECK_COND(gSig->curves() == beforeSmooth + 1, "SmoothFilter::LOWESS did not add curve");
+            QwtPlotCurve *cLowess = gSig->curve(gSig->curves() - 1);
+
+            SmoothFilter sfWhit(mw, gSig, sigTbl->name() + "_NoisyWave", SmoothFilter::Whittaker);
+            sfWhit.setWhittakerLambda(200.0);
+            sfWhit.run();
+            CHECK_COND(gSig->curves() == beforeSmooth + 2, "SmoothFilter::Whittaker did not add curve");
+            QwtPlotCurve *cWhit = gSig->curve(gSig->curves() - 1);
+
+            double mseLowess = 0.0, mseWhit = 0.0;
+            for (int i = 30; i < nSig - 30; ++i) {
+                double tVal = i * dt;
+                double clean = std::sin(2.0 * M_PI * 2.0 * tVal)
+                               + 0.5 * std::cos(2.0 * M_PI * 4.0 * tVal);
+                double dL = cLowess->y(i) - clean;
+                double dW = cWhit->y(i) - clean;
+                mseLowess += dL * dL;
+                mseWhit += dW * dW;
+            }
+            mseLowess /= double(nSig - 60);
+            mseWhit /= double(nSig - 60);
+            std::cout << "[INFO] Smoothing MSE: raw=" << noisyMse << ", LOWESS=" << mseLowess
+                      << ", Whittaker=" << mseWhit << "\n";
+            CHECK_COND(mseLowess < 0.35 * noisyMse && mseWhit < 0.35 * noisyMse,
+                       "LOWESS or Whittaker smoothing did not significantly reduce noise MSE");
+
+            // Zero-phase Butterworth LowPass IIR Filter (cutoff 25 Hz removes 120 Hz, preserves 5 Hz!)
+            QwtPlotCurve *cLp = AdvancedSignalProc::iirFilter(
+                    mw, gSig, sigTbl->name() + "_TwoTone", AdvancedSignalProc::Butterworth,
+                    AdvancedSignalProc::LowPass, 4, 25.0, 0.0, true);
+            CHECK_COND(cLp != nullptr && cLp->dataSize() == nSig, "iirFilter returned null/wrong size");
+            double rmsLpErr = 0.0;
+            for (int i = 75; i < nSig - 75; ++i) {
+                double clean5Hz = std::sin(2.0 * M_PI * 5.0 * (i * dt));
+                double e = cLp->y(i) - clean5Hz;
+                rmsLpErr += e * e;
+            }
+            rmsLpErr = std::sqrt(rmsLpErr / double(nSig - 150));
+            std::cout << "[INFO] Zero-phase Butterworth LP RMS error vs 5Hz sine = " << rmsLpErr << "\n";
+            CHECK_COND(rmsLpErr < 0.03,
+                       "Zero-phase Butterworth LP failed to remove 120Hz tone while preserving 5Hz sine");
+
+            // STFT Spectrogram Matrix
+            Matrix *stftMat = AdvancedSignalProc::computeSTFT(
+                    mw, gSig, sigTbl->name() + "_TwoTone", 64, 16, false);
+            CHECK_COND(stftMat != nullptr && stftMat->numRows() >= 16 && stftMat->numCols() >= 16,
+                       "AdvancedSignalProc::computeSTFT failed");
+
+            // Hilbert Envelope on AM Signal: envelope = 1.0 + 0.5*cos(2*pi*3*t)
+            QwtPlotCurve *cEnv = AdvancedSignalProc::hilbertEnvelope(
+                    mw, gSig, sigTbl->name() + "_AMSignal", false);
+            CHECK_COND(cEnv != nullptr && cEnv->dataSize() == nSig,
+                       "AdvancedSignalProc::hilbertEnvelope failed");
+            double rmsEnvErr = 0.0;
+            for (int i = 60; i < nSig - 60; ++i) {
+                double trueEnv = 1.0 + 0.5 * std::cos(2.0 * M_PI * 3.0 * (i * dt));
+                double e = cEnv->y(i) - trueEnv;
+                rmsEnvErr += e * e;
+            }
+            rmsEnvErr = std::sqrt(rmsEnvErr / double(nSig - 120));
+            std::cout << "[INFO] Hilbert AM Envelope RMS error = " << rmsEnvErr << "\n";
+            CHECK_COND(rmsEnvErr < 0.035, "Hilbert envelope failed to recover exact AM modulation");
+
+            // Continuous Wavelet Transform (Morlet CWT)
+            Matrix *cwtMat = AdvancedSignalProc::waveletCWT(
+                    mw, gSig, sigTbl->name() + "_TwoTone", 24, AdvancedSignalProc::Morlet, false);
+            CHECK_COND(cwtMat != nullptr && cwtMat->numRows() == 24 && cwtMat->numCols() == nSig,
+                       "AdvancedSignalProc::waveletCWT failed");
+
+            // Discrete Wavelet Denoising (Daubechies4 DWT SNR improvement check)
+            QwtPlotCurve *cDwt = AdvancedSignalProc::waveletDenoiseDWT(
+                    mw, gSig, sigTbl->name() + "_NoisyWave", AdvancedSignalProc::Daubechies4, 4,
+                    true, 1.0);
+            CHECK_COND(cDwt != nullptr && cDwt->dataSize() == nSig,
+                       "AdvancedSignalProc::waveletDenoiseDWT failed");
+            double dwtMse = 0.0;
+            for (int i = 20; i < nSig - 20; ++i) {
+                double tVal = i * dt;
+                double clean = std::sin(2.0 * M_PI * 2.0 * tVal)
+                               + 0.5 * std::cos(2.0 * M_PI * 4.0 * tVal);
+                double d = cDwt->y(i) - clean;
+                dwtMse += d * d;
+            }
+            dwtMse /= double(nSig - 40);
+            std::cout << "[INFO] DWT(db4) Denoise MSE: before=" << noisyMse
+                      << ", after=" << dwtMse << "\n";
+            CHECK_COND(dwtMse < 0.45 * noisyMse,
+                       "waveletDenoiseDWT did not improve SNR over noisy signal");
+
+            // 2D Matrix FFT
+            Matrix *srcMat2D = mw->newMatrix("Cosine2DMat", 32, 32);
+            for (int r = 0; r < 32; ++r)
+                for (int c = 0; c < 32; ++c)
+                    srcMat2D->setCell(r, c, std::cos(2.0 * M_PI * (3.0 * c / 32.0 + 5.0 * r / 32.0)));
+            Matrix *fftMat2D = AdvancedSignalProc::fft2D(mw, srcMat2D, false, true);
+            CHECK_COND(fftMat2D != nullptr && fftMat2D->numRows() == 32 && fftMat2D->numCols() == 32,
+                       "AdvancedSignalProc::fft2D failed");
+            double maxSpec2D = 0.0;
+            for (int r = 0; r < 32; ++r)
+                for (int c = 0; c < 32; ++c)
+                    maxSpec2D = std::max(maxSpec2D, fftMat2D->cell(r, c));
+            CHECK_COND(maxSpec2D > 100.0 && fftMat2D->cell(16, 16) < 0.05 * maxSpec2D,
+                       "fft2D centered magnitude spectrum missing sharp off-DC spatial frequency peak");
+        }
+    }
+
+    // =========================================================================
+    // 18. 3D Surface Fitting, 2D Peak Analysis, & Graph Statistics (Domain 6)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 18: 3D Surface Fit, 2D Peaks, & Graph Statistics...\n";
+
+        // 18a. fitSurfaceXYZ & fitSurfaceMatrix (Gauss2D) + analyze2DPeaks
+        {
+            const int side = 25;
+            Table *xyzTbl = mw->newTable("SurfXYZ", side * side, 3);
+            xyzTbl->setColName(0, "X");
+            xyzTbl->setColPlotDesignation(0, SciDAVis::X);
+            xyzTbl->setColName(1, "Y");
+            xyzTbl->setColPlotDesignation(1, SciDAVis::Y);
+            xyzTbl->setColName(2, "Z");
+            xyzTbl->setColPlotDesignation(2, SciDAVis::Z);
+
+            Matrix *surfMat = mw->newMatrix("SurfGaussMat", side, side);
+            surfMat->setCoordinates(-5.0, 5.0, -5.0, 5.0);
+
+            int rowIdx = 0;
+            for (int r = 0; r < side; ++r) {
+                double y = -5.0 + 10.0 * double(r) / double(side - 1);
+                for (int c = 0; c < side; ++c) {
+                    double x = -5.0 + 10.0 * double(c) / double(side - 1);
+                    double z = 2.0
+                               + 50.0 * std::exp(-0.5 * (std::pow((x - 1.2) / 1.1, 2.0)
+                                                         + std::pow((y + 0.8) / 1.6, 2.0)));
+                    xyzTbl->setCell(rowIdx, 0, x);
+                    xyzTbl->setCell(rowIdx, 1, y);
+                    xyzTbl->setCell(rowIdx, 2, z);
+                    surfMat->setCell(r, c, z);
+                    ++rowIdx;
+                }
+            }
+
+            auto resXYZ = GraphStatsAndSurfaceFit::fitSurfaceXYZ(
+                    mw, xyzTbl, "X", "Y", "Z", GraphStatsAndSurfaceFit::Gauss2D, QString(), 25);
+            std::cout << "[INFO] fitSurfaceXYZ(Gauss2D): converged=" << resXYZ.converged
+                      << ", R^2=" << resXYZ.rSquare << ", xc=" << resXYZ.params.value(2)
+                      << ", yc=" << resXYZ.params.value(3) << ", A=" << resXYZ.params.value(1) << "\n";
+            CHECK_COND(resXYZ.converged && resXYZ.rSquare > 0.9999
+                               && resXYZ.fittedMatrix != nullptr && resXYZ.paramTable != nullptr
+                               && relErrWithin(resXYZ.params[1], 50.0, 0.005)
+                               && std::fabs(resXYZ.params[2] - 1.2) < 0.02
+                               && std::fabs(resXYZ.params[3] - (-0.8)) < 0.02,
+                       "fitSurfaceXYZ(Gauss2D) failed to recover 2D Gaussian parameters");
+
+            auto resMat = GraphStatsAndSurfaceFit::fitSurfaceMatrix(
+                    mw, surfMat, GraphStatsAndSurfaceFit::Gauss2D);
+            double minSig = std::min(resMat.params.value(4), resMat.params.value(5));
+            double maxSig = std::max(resMat.params.value(4), resMat.params.value(5));
+            std::cout << "[INFO] fitSurfaceMatrix(Gauss2D): R^2=" << resMat.rSquare
+                      << ", sigmas=(" << minSig << ", " << maxSig << ")\n";
+            CHECK_COND(resMat.converged && resMat.rSquare > 0.9999
+                               && relErrWithin(minSig, 1.1, 0.01)
+                               && relErrWithin(maxSig, 1.6, 0.01),
+                       "fitSurfaceMatrix(Gauss2D) failed to recover widths");
+
+            // 2D Peak Analysis on 41x41 Matrix with 2 separated 2D Gaussian peaks
+            Matrix *pkMat2D = mw->newMatrix("TwoPeaks2DMat", 41, 41);
+            pkMat2D->setCoordinates(-10.0, 10.0, -10.0, 10.0);
+            for (int r = 0; r < 41; ++r) {
+                double y = -10.0 + 20.0 * double(r) / 40.0;
+                for (int c = 0; c < 41; ++c) {
+                    double x = -10.0 + 20.0 * double(c) / 40.0;
+                    double z = 1.5 + 0.05 * x
+                               + 80.0 * std::exp(-0.5 * ((x + 4.0) * (x + 4.0) / 1.44
+                                                         + (y + 3.0) * (y + 3.0) / 1.44))
+                               + 55.0 * std::exp(-0.5 * ((x - 4.5) * (x - 4.5) / 1.69
+                                                         + (y - 3.5) * (y - 3.5) / 1.69));
+                    pkMat2D->setCell(r, c, z);
+                }
+            }
+            Table *pk2DTbl = GraphStatsAndSurfaceFit::analyze2DPeaks(mw, pkMat2D, 5, 0.15);
+            CHECK_COND(pk2DTbl != nullptr && pk2DTbl->numRows() == 2,
+                       "analyze2DPeaks did not detect exactly 2 peaks");
+            std::cout << "[INFO] analyze2DPeaks: Peak1=(" << pk2DTbl->cell(0, 1) << ", "
+                      << pk2DTbl->cell(0, 2) << "), Peak2=(" << pk2DTbl->cell(1, 1) << ", "
+                      << pk2DTbl->cell(1, 2) << ")\n";
+            CHECK_COND(std::fabs(pk2DTbl->cell(0, 1) - (-4.0)) < 0.25
+                               && std::fabs(pk2DTbl->cell(0, 2) - (-3.0)) < 0.25
+                               && std::fabs(pk2DTbl->cell(1, 1) - 4.5) < 0.25
+                               && std::fabs(pk2DTbl->cell(1, 2) - 3.5) < 0.25,
+                       "analyze2DPeaks 2D peak center coordinates inaccurate");
+        }
+
+        // 18b. Confidence Ellipse, ANOVA + Significance Brackets, ROC Curve, Kaplan-Meier, PCA Biplot
+        {
+            // Confidence Ellipse
+            Table *ellTbl = mw->newTable("BivarData", 25, 2);
+            ellTbl->setColName(0, "X");
+            ellTbl->setColPlotDesignation(0, SciDAVis::X);
+            ellTbl->setColName(1, "Y");
+            ellTbl->setColPlotDesignation(1, SciDAVis::Y);
+            for (int r = 0; r < 25; ++r) {
+                double u = -2.0 + 4.0 * double(r) / 24.0;
+                double v = 0.6 * std::sin(2.1 * r);
+                ellTbl->setCell(r, 0, 10.0 + 2.0 * u);
+                ellTbl->setCell(r, 1, 20.0 + 1.4 * u + v);
+            }
+            MultiLayer *mlEll = mw->multilayerPlot(
+                    ellTbl, QStringList() << (ellTbl->name() + "_Y"), Graph::Scatter);
+            Graph *gEll = mlEll->activeGraph();
+            QwtPlotCurve *cEll = GraphStatsAndSurfaceFit::addConfidenceEllipse(
+                    mw, gEll, ellTbl->name() + "_Y", 0.95, false);
+            CHECK_COND(cEll != nullptr && cEll->dataSize() == 121
+                               && std::fabs(cEll->x(0) - cEll->x(120)) < 1e-6,
+                       "addConfidenceEllipse failed to plot closed 121-point 95% ellipse");
+
+            // One-Way ANOVA + Pairwise Significance Brackets on Graph
+            Table *grpTbl = mw->newTable("GroupAnovaData", 12, 3);
+            grpTbl->setColName(0, "Control");
+            grpTbl->setColName(1, "LowDose");
+            grpTbl->setColName(2, "HighDose");
+            for (int r = 0; r < 12; ++r) {
+                double spread = 0.5 * std::sin(1.9 * r);
+                grpTbl->setCell(r, 0, 10.0 + spread);
+                grpTbl->setCell(r, 1, 14.5 + spread);
+                grpTbl->setCell(r, 2, 26.0 + spread);
+            }
+            MultiLayer *mlGrp = mw->newGraph("AnovaBracketGraph");
+            Graph *gGrp = mlGrp->activeGraph();
+            int arrowsBefore = gGrp->lineMarkerKeys().size();
+            Table *anovaTbl = GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(
+                    mw, grpTbl, QStringList() << "Control" << "LowDose" << "HighDose", gGrp);
+            CHECK_COND(anovaTbl != nullptr && anovaTbl->numRows() == 4,
+                       "runGroupComparisonAndAnnotate failed");
+            double pAnova = anovaTbl->cell(0, 4);
+            QString sigStars = anovaTbl->column(7)->textAt(0);
+            std::cout << "[INFO] One-Way ANOVA: F=" << anovaTbl->cell(0, 1) << ", p=" << pAnova
+                      << " (" << sigStars.toStdString() << "), arrows added="
+                      << (gGrp->lineMarkerKeys().size() - arrowsBefore) << "\n";
+            CHECK_COND(pAnova < 1e-8 && sigStars == "***"
+                               && gGrp->lineMarkerKeys().size() >= arrowsBefore + 3,
+                       "ANOVA p-value or graph significance brackets missing");
+
+            // ROC Curve & AUC
+            Table *rocSrc = mw->newTable("RocInput", 30, 2);
+            rocSrc->setColName(0, "State");
+            rocSrc->setColName(1, "Score");
+            for (int r = 0; r < 30; ++r) {
+                int state = (r >= 15) ? 1 : 0;
+                double score = (state == 1 ? 2.5 : 0.5) + 0.6 * std::sin(1.3 * r);
+                rocSrc->setCell(r, 0, double(state));
+                rocSrc->setCell(r, 1, score);
+            }
+            double aucVal = 0.0;
+            MultiLayer *mlRoc = GraphStatsAndSurfaceFit::plotROCCurve(
+                    mw, rocSrc, "State", "Score", &aucVal);
+            std::cout << "[INFO] ROC Curve AUC = " << aucVal << "\n";
+            CHECK_COND(mlRoc != nullptr && mlRoc->activeGraph() != nullptr
+                               && aucVal > 0.95 && aucVal <= 1.0,
+                       "plotROCCurve failed or returned unexpected AUC");
+
+            // Kaplan-Meier Survival & Mantel-Cox Log-Rank p-value
+            Table *kmSrc = mw->newTable("KmInput", 24, 3);
+            kmSrc->setColName(0, "Time");
+            kmSrc->setColName(1, "Event");
+            kmSrc->setColName(2, "Group");
+            kmSrc->setColumnType(2, SciDAVis::ColumnMode::Text);
+            for (int r = 0; r < 12; ++r) {
+                kmSrc->setCell(r, 0, 2.0 + r * 0.8);      // Placebo: early events t = 2..10.8
+                kmSrc->setCell(r, 1, 1.0);
+                kmSrc->setText(r, 2, "Placebo");
+
+                kmSrc->setCell(12 + r, 0, 20.0 + r * 3.0); // Drug: much longer survival t = 20..53
+                kmSrc->setCell(12 + r, 1, (r % 3 == 0) ? 0.0 : 1.0);
+                kmSrc->setText(12 + r, 2, "Drug");
+            }
+            double logRankP = 1.0;
+            MultiLayer *mlKm = GraphStatsAndSurfaceFit::plotKaplanMeier(
+                    mw, kmSrc, "Time", "Event", "Group", &logRankP);
+            std::cout << "[INFO] Kaplan-Meier Log-Rank p = " << logRankP << "\n";
+            CHECK_COND(mlKm != nullptr && mlKm->activeGraph() != nullptr
+                               && mlKm->activeGraph()->curves() >= 2 && logRankP < 0.001,
+                       "plotKaplanMeier failed or Log-Rank p-value not significant");
+
+            // Principal Component Analysis (PCA) & Biplot
+            Table *pcaSrc = mw->newTable("PcaInput", 24, 4);
+            pcaSrc->setColName(0, "Var1");
+            pcaSrc->setColName(1, "Var2");
+            pcaSrc->setColName(2, "Var3");
+            pcaSrc->setColName(3, "Var4");
+            for (int r = 0; r < 24; ++r) {
+                double f1 = std::cos(0.45 * r);
+                double f2 = std::sin(0.73 * r);
+                pcaSrc->setCell(r, 0, 2.0 * f1 + 0.1 * f2);
+                pcaSrc->setCell(r, 1, 1.9 * f1 - 0.15 * f2);
+                pcaSrc->setCell(r, 2, 0.1 * f1 + 1.8 * f2);
+                pcaSrc->setCell(r, 3, -0.1 * f1 + 1.75 * f2);
+            }
+            Table *pcaScores = nullptr;
+            MultiLayer *mlPca = GraphStatsAndSurfaceFit::runPCAAndBiplot(
+                    mw, pcaSrc, QStringList() << "Var1" << "Var2" << "Var3" << "Var4", &pcaScores);
+            CHECK_COND(mlPca != nullptr && pcaScores != nullptr && mlPca->activeGraph() != nullptr,
+                       "runPCAAndBiplot failed");
+            double cumVarPC2 = pcaScores->cell(1, 5);
+            std::cout << "[INFO] PCA Biplot: PC1+PC2 cumulative variance = " << cumVarPC2
+                      << "%, loading arrows = " << mlPca->activeGraph()->lineMarkerKeys().size() << "\n";
+            CHECK_COND(cumVarPC2 > 98.0 && mlPca->activeGraph()->lineMarkerKeys().size() >= 4,
+                       "PCA Biplot cumulative variance or loading vectors invalid");
+        }
+    }
+
+    // =========================================================================
+    // 19. Dynamic Recalculation ("Green Lock"), Dialog Themes, & Bilingual Menus (Domain 7)
+    // =========================================================================
+    {
+        std::cout << "[INFO] Running Suite 19: Dynamic Recalculation, Themes, & Bilingual Menus...\n";
+
+        Table *recTbl = mw->newTable("LiveRecalcData", 11, 2);
+        recTbl->setColName(0, "X");
+        recTbl->setColPlotDesignation(0, SciDAVis::X);
+        recTbl->setColName(1, "Y");
+        recTbl->setColPlotDesignation(1, SciDAVis::Y);
+        for (int r = 0; r < 11; ++r) {
+            double x = double(r);
+            recTbl->setCell(r, 0, x);
+            recTbl->setCell(r, 1, 2.5 * x + 1.0); // initial slope = 2.5
+        }
+        MultiLayer *mlRec = mw->multilayerPlot(
+                recTbl, QStringList() << (recTbl->name() + "_Y"), Graph::Scatter);
+        Graph *gRec = mlRec->activeGraph();
+
+        RecalcManager *rm = RecalcManager::instance(mw);
+        CHECK_COND(rm != nullptr, "RecalcManager::instance returned null");
+        rm->setRecalcMode(RecalcManager::Auto);
+
+        int linkId = rm->registerLink(mw, gRec, recTbl, recTbl->name() + "_Y",
+                                      "LiveAutoLinearFit", RecalcManager::OpLinearFit);
+        CHECK_COND(linkId > 0 && rm->activeLinkCount(gRec) >= 1,
+                   "RecalcManager::registerLink failed");
+
+        QwtPlotCurve *fitBefore = gRec->curve("LiveAutoLinearFit");
+        CHECK_COND(fitBefore != nullptr && fitBefore->dataSize() >= 2,
+                   "Auto RecalcManager did not materialize initial LiveAutoLinearFit curve");
+        int lastPt = fitBefore->dataSize() - 1;
+        double slopeBefore = (fitBefore->y(lastPt) - fitBefore->y(0))
+                             / (fitBefore->x(lastPt) - fitBefore->x(0));
+        std::cout << "[INFO] Live Recalc initial slope = " << slopeBefore << "\n";
+        CHECK_COND(relErrWithin(slopeBefore, 2.5, 1e-5), "Initial live linear fit slope mismatch");
+
+        // Double all Y values in source Table WITHOUT manually invoking LinearFit or recalculateAll!
+        for (int r = 0; r < 11; ++r)
+            recTbl->setCell(r, 1, 2.0 * recTbl->cell(r, 1)); // new line: y = 5.0 * x + 2.0
+        QApplication::processEvents();
+
+        QwtPlotCurve *fitAfter = gRec->curve("LiveAutoLinearFit");
+        CHECK_COND(fitAfter != nullptr && fitAfter->dataSize() >= 2,
+                   "LiveAutoLinearFit curve missing after source Table update");
+        int lastPtAfter = fitAfter->dataSize() - 1;
+        double slopeAfter = (fitAfter->y(lastPtAfter) - fitAfter->y(0))
+                            / (fitAfter->x(lastPtAfter) - fitAfter->x(0));
+        std::cout << "[INFO] Live Recalc slope after doubling Y = " << slopeAfter
+                  << " (expected 5.0)\n";
+        CHECK_COND(relErrWithin(slopeAfter, 5.0, 1e-5) && !rm->hasDirtyLinks(gRec),
+                   "Auto RecalcManager did not automatically double fitted slope on Graph!");
+        rm->removeLinksForGraph(gRec);
+
+        // DialogThemeManager save / load / themeNames / delete round-trip
+        QVariantMap themeIn;
+        themeIn["model"] = QString("Boltzmann");
+        themeIn["tolerance"] = 1e-9;
+        themeIn["maxIterations"] = 600;
+        themeIn["confidenceBand"] = true;
+        DialogThemeManager::saveTheme("NonLinearFit", "OriginParityTheme", themeIn);
+        CHECK_COND(DialogThemeManager::themeNames("NonLinearFit").contains("OriginParityTheme"),
+                   "DialogThemeManager::themeNames missing saved theme");
+        QVariantMap themeOut = DialogThemeManager::loadTheme("NonLinearFit", "OriginParityTheme");
+        CHECK_COND(themeOut.value("model").toString() == "Boltzmann"
+                           && std::fabs(themeOut.value("tolerance").toDouble() - 1e-9) < 1e-15
+                           && themeOut.value("maxIterations").toInt() == 600
+                           && themeOut.value("confidenceBand").toBool() == true,
+                   "DialogThemeManager::loadTheme round-trip mismatch");
+        DialogThemeManager::deleteTheme("NonLinearFit", "OriginParityTheme");
+        CHECK_COND(!DialogThemeManager::themeNames("NonLinearFit").contains("OriginParityTheme"),
+                   "DialogThemeManager::deleteTheme did not remove theme");
+
+        // Bilingual Japanese menu verification (&Gadgets -> ガジェット(&G))
+        mw->switchToLanguage("ja");
+        QString jaGadgets = QApplication::translate("ApplicationWindow", "&Gadgets");
+        std::cout << "[INFO] Bilingual check (ja): tr(&Gadgets) = "
+                  << jaGadgets.toUtf8().constData() << "\n";
+        CHECK_COND(jaGadgets == QString::fromUtf8("ガジェット(&G)"),
+                   "switchToLanguage(\"ja\") did not translate &Gadgets to ガジェット(&G)");
+        if (mw->gadgetsMenu) {
+            CHECK_COND(mw->gadgetsMenu->title() == QString::fromUtf8("ガジェット(&G)"),
+                       "ApplicationWindow::gadgetsMenu title was not updated to ガジェット(&G)");
+        }
+        mw->switchToLanguage("en");
+        CHECK_COND(QApplication::translate("ApplicationWindow", "&Gadgets") == "&Gadgets",
+                   "switchToLanguage(\"en\") did not restore &Gadgets");
+    }
+
+    mw->savedProject();
+    std::cout << "[PASS] All 19 OriginPro 2021 Graph Analysis, Fitting, Signal, Stats, Gadgets, Recalc, and OLE suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
