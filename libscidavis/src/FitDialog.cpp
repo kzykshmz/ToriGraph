@@ -63,6 +63,8 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QApplication>
+#include <QRegularExpression>
+#include <QSet>
 #include <qwt_plot_curve.h>
 #include <stdio.h>
 #include <cmath>
@@ -731,25 +733,16 @@ void FitDialog::updateLivePreview()
         initVals[static_cast<size_t>(i)] = v;
     }
 
-    QString formula;
-    bool foundUf = false;
-    do {
-        foundUf = false;
-        for (int i = 0; i < d_user_function_names.count(); ++i) {
-            if (boxFunction->toPlainText().contains(d_user_function_names[i])) {
-                QStringList l = d_user_functions[i].split("=");
-                if (l.size() > 1) {
-                    formula += QString("%1=%2\n").arg(d_user_function_names[i], l[1]);
-                    foundUf = true;
-                }
-            }
-        }
-    } while (foundUf);
-    formula += boxFunction->toPlainText();
+    QString formula = expandUserFunctions(boxFunction->toPlainText(), d_user_function_names,
+                                          d_user_functions);
     for (int i = 0; i < d_built_in_function_names.count() && i < d_built_in_functions.count(); ++i) {
-        if (formula.contains(d_built_in_function_names[i])) {
-            formula.prepend(QString("%1=%2\n").arg(d_built_in_function_names[i],
-                                                   d_built_in_functions[i]));
+        const QString &biName = d_built_in_function_names[i];
+        if (biName.isEmpty())
+            continue;
+        QRegularExpression re(QStringLiteral("\\b") + QRegularExpression::escape(biName)
+                              + QStringLiteral("\\b"));
+        if (re.match(formula).hasMatch()) {
+            formula.prepend(QString("%1=%2\n").arg(biName, d_built_in_functions[i]));
         }
     }
     if (formula.trimmed().isEmpty()) {
@@ -879,7 +872,9 @@ void FitDialog::saveUserFunction()
         editBox->setFocus();
         return;
     }
-    if (editBox->toPlainText().contains(boxName->text())) {
+    QRegularExpression selfRe(QStringLiteral("\\b") + QRegularExpression::escape(boxName->text())
+                              + QStringLiteral("\\b"));
+    if (selfRe.match(editBox->toPlainText()).hasMatch()) {
         QMessageBox::critical(this, tr("Input function error"),
                               tr("You can't define functions recursively!"));
         editBox->setFocus();
@@ -1419,8 +1414,8 @@ void FitDialog::pasteFunctionName()
 void FitDialog::accept()
 {
     QString curve = boxCurve->currentText();
-    QStringList curvesList = d_graph->curvesList();
-    if (!curvesList.contains(curve)) {
+    QStringList curvesList = d_graph->analysableCurvesList();
+    if (!curvesList.contains(curve) && !d_graph->curvesList().contains(curve)) {
         QMessageBox::critical(
                 this, tr("Warning"),
                 tr("The curve <b> %1 </b> doesn't exist anymore! Operation aborted!").arg(curve));
@@ -1486,27 +1481,19 @@ void FitDialog::accept()
 
     QStringList parameters;
     double *paramsInit = new double[rows];
-    QString formula;
-
-    // recursively define variables for user functions used in formula
-    bool found_uf;
-    do {
-        found_uf = false;
-        for (i = 0; i < d_user_function_names.count(); i++)
-            if (boxFunction->toPlainText().contains(d_user_function_names[i])) {
-                QStringList l = d_user_functions[i].split("=");
-                formula += QString("%1=%2\n").arg(d_user_function_names[i]).arg(l[1]);
-                found_uf = true;
-            }
-    } while (found_uf);
-    formula += boxFunction->toPlainText();
+    QString formula = expandUserFunctions(boxFunction->toPlainText(), d_user_function_names,
+                                          d_user_functions);
 
     // define variables for builtin functions used in formula
-    for (i = 0; i < d_built_in_function_names.count(); i++)
-        if (formula.contains(d_built_in_function_names[i]))
-            formula.prepend(QString("%1=%2\n")
-                                    .arg(d_built_in_function_names[i])
-                                    .arg(d_built_in_functions[i]));
+    for (i = 0; i < d_built_in_function_names.count() && i < d_built_in_functions.count(); i++) {
+        const QString &biName = d_built_in_function_names[i];
+        if (biName.isEmpty())
+            continue;
+        QRegularExpression re(QStringLiteral("\\b") + QRegularExpression::escape(biName)
+                              + QStringLiteral("\\b"));
+        if (re.match(formula).hasMatch())
+            formula.prepend(QString("%1=%2\n").arg(biName, d_built_in_functions[i]));
+    }
 
     for (i = 0; i < rows; i++) {
         bool okVal = false;
@@ -1701,11 +1688,65 @@ void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)
         d_fitter->setInitialGuesses(initVal);
 }
 
+QString FitDialog::expandUserFunctions(const QString &rawFormula, const QStringList &names,
+                                       const QStringList &defs)
+{
+    QString formula = rawFormula;
+    const int n = qMin(names.size(), defs.size());
+    if (n <= 0 || formula.trimmed().isEmpty())
+        return formula;
+
+    auto extractRhs = [](const QString &def) -> QString {
+        for (int idx = 0; idx < def.size(); ++idx) {
+            if (def[idx] != QLatin1Char('='))
+                continue;
+            const QChar prev = (idx > 0) ? def[idx - 1] : QChar();
+            const QChar next = (idx + 1 < def.size()) ? def[idx + 1] : QChar();
+            if (prev == QLatin1Char('<') || prev == QLatin1Char('>') || prev == QLatin1Char('!')
+                || prev == QLatin1Char('=') || next == QLatin1Char('='))
+                continue;
+            return def.mid(idx + 1).trimmed();
+        }
+        return def.trimmed();
+    };
+
+    QSet<QString> expanded;
+    constexpr int kMaxDepth = 16;
+    for (int depth = 0; depth < kMaxDepth; ++depth) {
+        bool foundUf = false;
+        const QString snapshot = formula;
+        for (int i = 0; i < n; ++i) {
+            const QString name = names[i].trimmed();
+            if (name.isEmpty() || expanded.contains(name))
+                continue;
+            QRegularExpression re(QStringLiteral("\\b") + QRegularExpression::escape(name)
+                                  + QStringLiteral("\\b"));
+            if (re.match(snapshot).hasMatch()) {
+                const QString rhs = extractRhs(defs[i]);
+                if (!rhs.isEmpty()) {
+                    formula.prepend(QString("%1=%2\n").arg(name, rhs));
+                    expanded.insert(name);
+                    foundUf = true;
+                }
+            }
+        }
+        if (!foundUf)
+            break;
+    }
+    return formula;
+}
+
 bool FitDialog::containsUserFunctionName(const QString &function)
 {
-    foreach (QString fn, d_user_function_names)
-        if (!fn.isEmpty() && function.contains(fn))
+    for (const QString &fn : d_user_function_names) {
+        const QString trimmed = fn.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        QRegularExpression re(QStringLiteral("\\b") + QRegularExpression::escape(trimmed)
+                              + QStringLiteral("\\b"));
+        if (re.match(function).hasMatch())
             return true;
+    }
 
     return false;
 }
@@ -1804,7 +1845,7 @@ void FitDialog::deleteFitCurves()
 {
     d_graph->deleteFitCurves();
     boxCurve->clear();
-    boxCurve->addItems(d_graph->curvesList());
+    boxCurve->addItems(d_graph->analysableCurvesList());
 }
 
 void FitDialog::resetFunction()

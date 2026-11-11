@@ -28,13 +28,17 @@
 class ApplicationWindow;
 class DataCurve;
 class Graph;
+class Matrix;
 class MultiLayer;
 class QwtPlotCurve;
+class QwtPlotSpectrogram;
+class Spectrogram;
 class Table;
 
 class RoiOverlayItem;
 class VerticalCursorOverlayItem;
 class DeltaCursorOverlayItem;
+class ImageProfileOverlayItem;
 
 class RoiGadgetTool : public QObject, public PlotToolInterface
 {
@@ -281,6 +285,8 @@ public:
 
     void setCursorPositions(double x1, double x2);
     void setCursorPoints2D(double x1, double y1, double x2, double y2);
+    void setActiveCursor(int idx);
+    int activeCursor() const { return d_active_cursor; }
     void setHorizontalCrosshairEnabled(bool on);
     bool horizontalCrosshairEnabled() const { return d_horiz_crosshair; }
     void setSnapMode(SnapMode mode);
@@ -320,6 +326,9 @@ private:
     QPointer<ApplicationWindow> d_app;
     QPointer<Graph> d_graph_guard;
     SnapMode d_snap_mode = SnapInterpolateCurve;
+    int d_active_cursor = 1;
+    int d_snap_idx1 = -1;
+    int d_snap_idx2 = -1;
     bool d_horiz_crosshair = true;
     QString d_curve_title;
     double d_x1 = 0.0;
@@ -337,6 +346,80 @@ private:
     double d_drag_start_y1 = 0.0;
     double d_drag_start_x2 = 0.0;
     double d_drag_start_y2 = 0.0;
+};
+
+class ImageProfileGadgetTool : public QObject, public PlotToolInterface
+{
+    Q_OBJECT
+public:
+    ImageProfileGadgetTool(Graph *graph, ApplicationWindow *app = nullptr);
+    ~ImageProfileGadgetTool() override;
+    RTTI rtti() const override { return ImageProfileGadget; }
+
+    void setCrosshairPosition(double x, double y);
+    QPointF crosshairPosition() const { return QPointF(d_x0, d_y0); }
+    double currentZ() const { return d_z0; }
+    double horizontalFwhm() const { return d_horiz_fwhm; }
+    double verticalFwhm() const { return d_vert_fwhm; }
+    QVector<QPointF> horizontalProfile() const { return d_horiz_profile; }
+    QVector<QPointF> verticalProfile() const { return d_vert_profile; }
+    Table *extractProfilesToTableAndGraph(bool createGraph = true);
+
+    void setTargetSpectrogramIndex(int idx);
+    int targetSpectrogramIndex() const { return d_spec_index; }
+    QString readoutText() const { return d_readout_text; }
+    void stampCalloutOnGraph();
+
+    static ImageProfileGadgetTool *attach(Graph *g, ApplicationWindow *app = nullptr);
+
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
+private slots:
+    void onSourceMatrixModified();
+
+private:
+    friend class ImageProfileOverlayItem;
+
+    enum DragTarget {
+        DragNone = 0,
+        DragIntersection,
+        DragHorizontal,
+        DragVertical
+    };
+
+    QwtPlotSpectrogram *resolveTargetSpectrogram(Spectrogram **outSciSpec = nullptr) const;
+    QList<QwtPlotSpectrogram *> availableSpectrograms() const;
+    QRectF spectrogramDomainRect(QwtPlotSpectrogram *qwtSpec, Matrix *m) const;
+    void initDefaultPosition();
+    void recalculate();
+    DragTarget hitTestPixelPos(const QPoint &pos) const;
+    void updateCursorForPos(const QPoint &pos);
+    void showContextMenu(const QPoint &globalPos);
+
+    QPointer<ApplicationWindow> d_app;
+    QPointer<Graph> d_graph_guard;
+    QPointer<Matrix> d_connected_matrix;
+    int d_spec_index = 0;
+    double d_x0 = 0.0;
+    double d_y0 = 0.0;
+    double d_z0 = 0.0;
+    double d_horiz_min = 0.0;
+    double d_horiz_max = 0.0;
+    double d_horiz_peak_x = 0.0;
+    double d_horiz_fwhm = 0.0;
+    double d_horiz_fwhm_left = 0.0;
+    double d_horiz_fwhm_right = 0.0;
+    double d_vert_min = 0.0;
+    double d_vert_max = 0.0;
+    double d_vert_peak_y = 0.0;
+    double d_vert_fwhm = 0.0;
+    double d_vert_fwhm_left = 0.0;
+    double d_vert_fwhm_right = 0.0;
+    QVector<QPointF> d_horiz_profile;
+    QVector<QPointF> d_vert_profile;
+    QString d_readout_text;
+    ImageProfileOverlayItem *d_overlay_item = nullptr;
+    DragTarget d_drag_target = DragNone;
 };
 
 #endif // ORIGIN_GADGETS_H

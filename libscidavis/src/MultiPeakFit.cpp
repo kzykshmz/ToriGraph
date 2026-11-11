@@ -2139,12 +2139,12 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
     const size_t nPeakPar = static_cast<size_t>(3 * d_peaks);
     if (covar && chi_2 >= 0.0 && !d_x.empty() && covar->size1 >= nPeakPar + 1
         && covar->size2 >= nPeakPar + 1) {
-        const bool scaleCov = d_scale_errors || d_weighting_method == WeightDirect
-                || d_weighting_method == WeightProportional;
-        double covFactor = 1.0;
-        if (scaleCov) {
-            const double rChi2 = reducedChiSquare();
-            covFactor = (std::isfinite(rChi2) && rChi2 >= 0.0) ? rChi2 : 0.0;
+        double covFactor = effectiveCovarScale();
+        if (!d_scale_errors
+            && (d_weighting_method == WeightDirect || d_weighting_method == WeightProportional)) {
+            const int dof = int(d_x.size()) - effectiveFreeParameters();
+            if (dof > 0 && std::isfinite(chi_2) && chi_2 >= 0.0)
+                covFactor = chi_2 / double(dof);
         }
 
         auto userScale = [&](size_t idx) -> double {
