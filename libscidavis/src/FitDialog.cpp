@@ -59,9 +59,38 @@
 #include <QGroupBox>
 #include <QLibrary>
 #include <QLocale>
+#include <QDoubleSpinBox>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QApplication>
+#include <qwt_plot_curve.h>
 #include <stdio.h>
 #include <cmath>
 #include <limits>
+
+namespace {
+
+class FitPreviewCurveItem : public QwtPlotCurve
+{
+public:
+    explicit FitPreviewCurveItem(QwtPlotCurve **slotRef, const QString &title)
+        : QwtPlotCurve(title), d_slot_ref(slotRef)
+    {
+        setItemAttribute(QwtPlotItem::Legend, false);
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    ~FitPreviewCurveItem() override
+    {
+        if (d_slot_ref && *d_slot_ref == this)
+            *d_slot_ref = nullptr;
+    }
+
+private:
+    QwtPlotCurve **d_slot_ref = nullptr;
+};
+
+} // namespace
 
 #define CONFS(string) QString::number(QLocale().toDouble(string), 'g', boxPrecision->value())
 
@@ -75,6 +104,8 @@ FitDialog::FitDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
     d_user_function_params = QStringList();
 
     d_fitter = 0;
+    d_graph = 0;
+    d_src_table = 0;
 
     tw = new QStackedWidget();
 
@@ -93,6 +124,15 @@ FitDialog::FitDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
     funcBox->setCurrentRow(0);
 
     loadPlugins();
+}
+
+FitDialog::~FitDialog()
+{
+    clearPreviewCurve();
+    if (d_fitter) {
+        delete d_fitter;
+        d_fitter = 0;
+    }
 }
 
 void FitDialog::initFitPage()
@@ -150,6 +190,13 @@ void FitDialog::initFitPage()
     btnColor->setColor(QColor(Qt::red));
     gl1->addWidget(btnColor, 5, 1);
 
+    gl1->addWidget(new QLabel(tr("Linear Constraints")), 6, 0);
+    boxLinearConstraints = new QLineEdit();
+    boxLinearConstraints->setPlaceholderText(tr("e.g. w1=w2; A2=0.5*A1"));
+    boxLinearConstraints->setToolTip(
+            tr("Optional semicolon-separated linear equality constraints (e.g. w1=w2; A2=0.5*A1)"));
+    gl1->addWidget(boxLinearConstraints, 6, 1);
+
     QGroupBox *gb1 = new QGroupBox();
     gb1->setLayout(gl1);
 
@@ -181,12 +228,15 @@ void FitDialog::initFitPage()
     hbox1->addWidget(gb3);
 
     QHBoxLayout *hbox2 = new QHBoxLayout();
-    hbox2->addWidget(new QLabel(tr("Y Error Source")));
+    hbox2->addWidget(new QLabel(tr("Weighting / Y Error")));
     boxYErrorSource = new QComboBox();
-    boxYErrorSource->addItem(tr("Errors Unknown"));
-    boxYErrorSource->addItem(tr("Associated"));
-    boxYErrorSource->addItem(tr("Statistical (Poisson)"));
-    boxYErrorSource->addItem(tr("Arbitrary Dataset"));
+    boxYErrorSource->addItem(tr("No Weighting (Errors Unknown)"));
+    boxYErrorSource->addItem(tr("Instrumental (Associated Y Error)"));
+    boxYErrorSource->addItem(tr("Statistical (Poisson 1/|Y|)"));
+    boxYErrorSource->addItem(tr("Instrumental (Arbitrary Column)"));
+    boxYErrorSource->addItem(tr("Direct Weighting (w = col)"));
+    boxYErrorSource->addItem(tr("Proportional (w = 1/Y^2)"));
+    boxYErrorSource->addItem(tr("Variance (w = 1/s^2 col)"));
     hbox2->addWidget(boxYErrorSource);
     QGroupBox *gb4 = new QGroupBox();
     gb4->setLayout(hbox2);
@@ -206,6 +256,8 @@ void FitDialog::initFitPage()
     buttonOk = new QPushButton(tr("&Fit"));
     buttonOk->setDefault(true);
     hbox3->addWidget(buttonOk);
+    btnBootstrapCI = new QPushButton(tr("&Bootstrap CI..."));
+    hbox3->addWidget(btnBootstrapCI);
     buttonCancel1 = new QPushButton(tr("&Close"));
     hbox3->addWidget(buttonCancel1);
     buttonAdvanced = new QPushButton(tr("Custom &Output >>"));
@@ -213,9 +265,13 @@ void FitDialog::initFitPage()
     hbox3->addStretch();
 
     QHBoxLayout *hboxBands = new QHBoxLayout();
+    chkLivePreview = new QCheckBox(tr("Live Preview"));
+    chkLivePreview->setToolTip(
+            tr("Render a live dashed initial-guess curve on the graph as parameters change"));
     confBandBox = new QCheckBox(tr("95% Confidence Band"));
     predBandBox = new QCheckBox(tr("95% Prediction Band"));
     summaryOnGraphBox = new QCheckBox(tr("Summary Table on Graph"));
+    hboxBands->addWidget(chkLivePreview);
     hboxBands->addWidget(confBandBox);
     hboxBands->addWidget(predBandBox);
     hboxBands->addWidget(summaryOnGraphBox);
@@ -237,12 +293,19 @@ void FitDialog::initFitPage()
     connect(boxCurve, SIGNAL(activated(const QString &)), this,
             SLOT(activateCurve(const QString &)));
     connect(buttonOk, SIGNAL(clicked()), this, SLOT(accept()));
+    connect(btnBootstrapCI, SIGNAL(clicked()), this, SLOT(showBootstrapDialog()));
     connect(buttonCancel1, SIGNAL(clicked()), this, SLOT(close()));
     connect(buttonEdit, SIGNAL(clicked()), this, SLOT(showEditPage()));
     connect(btnDeleteFitCurves, SIGNAL(clicked()), this, SLOT(deleteFitCurves()));
     connect(boxYErrorSource, SIGNAL(activated(int)), this, SLOT(yErrorSourceChanged(int)));
     connect(buttonAdvanced, SIGNAL(clicked()), this, SLOT(showAdvancedPage()));
     connect(tableNamesBox, SIGNAL(activated(int)), this, SLOT(selectSrcTable(int)));
+    connect(chkLivePreview, SIGNAL(toggled(bool)), this, SLOT(updateLivePreview()));
+    connect(boxParams, SIGNAL(cellChanged(int, int)), this, SLOT(updateLivePreview()));
+    connect(boxFrom, SIGNAL(editingFinished()), this, SLOT(updateLivePreview()));
+    connect(boxTo, SIGNAL(editingFinished()), this, SLOT(updateLivePreview()));
+    connect(boxLinearConstraints, SIGNAL(textChanged(const QString &)), this,
+            SLOT(updateLivePreview()));
 
     setFocusProxy(boxFunction);
 }
@@ -411,6 +474,10 @@ void FitDialog::initAdvancedPage()
     gl2->addWidget(new QLabel(tr("Name: ")), 2, 1);
     covMatrixName = new QLineEdit(tr("CovMatrix"));
     gl2->addWidget(covMatrixName, 2, 2);
+    btnResidualPlot = new QPushButton(tr("&Residual Plot"));
+    btnResidualPlot->setToolTip(
+            tr("Create residual table (with Leverage & Cook's Distance) and residual plot window"));
+    gl2->addWidget(btnResidualPlot, 3, 0, 1, 3);
 
     scaleErrorsBox = new QCheckBox(tr("Scale Errors with sqrt(Chi^2/doF)"));
     scaleErrorsBox->setChecked(app->fit_scale_errors);
@@ -458,6 +525,7 @@ void FitDialog::initAdvancedPage()
 
     connect(btnParamTable, SIGNAL(clicked()), this, SLOT(showParametersTable()));
     connect(btnCovMatrix, SIGNAL(clicked()), this, SLOT(showCovarianceMatrix()));
+    connect(btnResidualPlot, SIGNAL(clicked()), this, SLOT(showResidualPlot()));
     connect(samePointsBtn, SIGNAL(toggled(bool)), this, SLOT(showPointsBox(bool)));
     connect(generatePointsBtn, SIGNAL(toggled(bool)), this, SLOT(showPointsBox(bool)));
     connect(buttonCancel3, SIGNAL(clicked()), this, SLOT(close()));
@@ -514,6 +582,232 @@ void FitDialog::showCovarianceMatrix()
     d_fitter->covarianceMatrix(matrixName);
 }
 
+void FitDialog::showResidualPlot()
+{
+    if (!d_fitter) {
+        QMessageBox::critical(this, tr("Error"), tr("Please perform a fit first and try again."));
+        return;
+    }
+    d_fitter->createResidualPlotWindow();
+}
+
+void FitDialog::showBootstrapDialog()
+{
+    if (!d_fitter) {
+        accept();
+        if (!d_fitter)
+            return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Bootstrap / Monte Carlo Confidence Intervals"));
+    dlg.setMinimumWidth(380);
+    QFormLayout *fl = new QFormLayout(&dlg);
+
+    QSpinBox *samplesSpin = new QSpinBox(&dlg);
+    samplesSpin->setRange(20, 5000);
+    samplesSpin->setSingleStep(50);
+    samplesSpin->setValue(300);
+
+    QDoubleSpinBox *confSpin = new QDoubleSpinBox(&dlg);
+    confSpin->setRange(50.0, 99.9);
+    confSpin->setDecimals(1);
+    confSpin->setSingleStep(1.0);
+    confSpin->setSuffix(QStringLiteral("%"));
+    confSpin->setValue(95.0);
+
+    QComboBox *modeCombo = new QComboBox(&dlg);
+    modeCombo->addItem(tr("Residual Resampling (Homoscedastic / Weighted)"));
+    modeCombo->addItem(tr("Wild Bootstrap (Heteroscedastic Rademacher)"));
+
+    fl->addRow(tr("Bootstrap Replicates:"), samplesSpin);
+    fl->addRow(tr("Confidence Level:"), confSpin);
+    fl->addRow(tr("Resampling Mode:"), modeCombo);
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    fl->addRow(btns);
+
+    if (dlg.exec() != QDialog::Accepted || !d_fitter)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    Fit::BootstrapResult boot = d_fitter->runBootstrapCI(
+            samplesSpin->value(), confSpin->value() / 100.0, modeCombo->currentIndex());
+    QApplication::restoreOverrideCursor();
+
+    if (!boot.valid) {
+        QMessageBox::warning(this, tr("Bootstrap Confidence Intervals"),
+                             tr("Bootstrap resampling failed to converge on enough replicates."));
+        return;
+    }
+
+    ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(this->parent());
+    if (app && app->writeFitResultsToLog) {
+        QString msg = QString("[%1 - %2 (%3 %4, %5% CI)]\n")
+                              .arg(tr("Bootstrap CI"), boxCurve->currentText(),
+                                   QString::number(boot.nSuccess), tr("replicates"),
+                                   QLocale().toString(confSpin->value(), 'f', 1));
+        for (int i = 0; i < boxParams->rowCount() && i < boot.meanParams.size(); ++i) {
+            QString pName = boxParams->item(i, 0) ? boxParams->item(i, 0)->text()
+                                                  : QString("p%1").arg(i + 1);
+            msg += QString("  %1: %2 = %3, %4 = %5, CI = [%6, %7]\n")
+                           .arg(pName, tr("Mean"),
+                                QLocale().toString(boot.meanParams[i], 'g', boxPrecision->value()),
+                                tr("SE"),
+                                QLocale().toString(boot.sdParams[i], 'g', boxPrecision->value()),
+                                QLocale().toString(boot.ciLow[i], 'g', boxPrecision->value()),
+                                QLocale().toString(boot.ciHigh[i], 'g', boxPrecision->value()));
+        }
+        app->updateLog(msg);
+    }
+}
+
+void FitDialog::clearPreviewCurve()
+{
+    if (d_preview_curve) {
+        d_preview_curve->detach();
+        delete d_preview_curve;
+        d_preview_curve = nullptr;
+        if (d_graph && d_graph->plotWidget())
+            d_graph->replot();
+    }
+}
+
+void FitDialog::updateLivePreview()
+{
+    if (!chkLivePreview || !chkLivePreview->isChecked() || !d_graph || !d_graph->plotWidget()
+        || !boxCurve || boxCurve->currentText().isEmpty()) {
+        clearPreviewCurve();
+        return;
+    }
+
+    const QString curveName = boxCurve->currentText();
+    QwtPlotCurve *targetCurve = d_graph->curve(curveName);
+    if (!targetCurve) {
+        clearPreviewCurve();
+        return;
+    }
+
+    const int rows = boxParams ? boxParams->rowCount() : 0;
+    if (rows <= 0) {
+        clearPreviewCurve();
+        return;
+    }
+
+    QStringList paramNames;
+    std::vector<double> initVals(static_cast<size_t>(rows), 1.0);
+    for (int i = 0; i < rows; ++i) {
+        if (!boxParams->item(i, 0) || !boxParams->item(i, 1)) {
+            clearPreviewCurve();
+            return;
+        }
+        paramNames << boxParams->item(i, 0)->text();
+        const QString valTxt = boxParams->item(i, 1)->text().trimmed();
+        if (valTxt.isEmpty()) {
+            clearPreviewCurve();
+            return;
+        }
+        bool ok = false;
+        double v = QLocale().toDouble(valTxt, &ok);
+        if (!ok)
+            v = valTxt.toDouble(&ok);
+        if (!ok) {
+            try {
+                MyParser parser;
+                parser.SetExpr(CONFS(valTxt));
+                v = parser.Eval();
+                ok = std::isfinite(v);
+            } catch (mu::ParserError &) {
+                ok = false;
+            }
+        }
+        if (!ok || !std::isfinite(v)) {
+            clearPreviewCurve();
+            return;
+        }
+        initVals[static_cast<size_t>(i)] = v;
+    }
+
+    QString formula;
+    bool foundUf = false;
+    do {
+        foundUf = false;
+        for (int i = 0; i < d_user_function_names.count(); ++i) {
+            if (boxFunction->toPlainText().contains(d_user_function_names[i])) {
+                QStringList l = d_user_functions[i].split("=");
+                if (l.size() > 1) {
+                    formula += QString("%1=%2\n").arg(d_user_function_names[i], l[1]);
+                    foundUf = true;
+                }
+            }
+        }
+    } while (foundUf);
+    formula += boxFunction->toPlainText();
+    for (int i = 0; i < d_built_in_function_names.count() && i < d_built_in_functions.count(); ++i) {
+        if (formula.contains(d_built_in_function_names[i])) {
+            formula.prepend(QString("%1=%2\n").arg(d_built_in_function_names[i],
+                                                   d_built_in_functions[i]));
+        }
+    }
+    if (formula.trimmed().isEmpty()) {
+        clearPreviewCurve();
+        return;
+    }
+
+    ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(this->parent());
+    if (!app)
+        return;
+
+    NonLinearFit previewFit(app, d_graph);
+    previewFit.setParametersList(paramNames);
+    previewFit.setFormula(formula);
+
+    bool okFrom = false, okTo = false;
+    double xStart = QLocale().toDouble(boxFrom->text(), &okFrom);
+    if (!okFrom)
+        xStart = boxFrom->text().toDouble(&okFrom);
+    double xEnd = QLocale().toDouble(boxTo->text(), &okTo);
+    if (!okTo)
+        xEnd = boxTo->text().toDouble(&okTo);
+
+    bool dataOk = (okFrom && okTo && xStart < xEnd)
+                          ? previewFit.setDataFromCurve(curveName, xStart, xEnd)
+                          : previewFit.setDataFromCurve(curveName);
+    if (!dataOk) {
+        clearPreviewCurve();
+        return;
+    }
+
+    for (int i = 0; i < rows; ++i) {
+        previewFit.setInitialGuess(i, initVals[static_cast<size_t>(i)]);
+        QCheckBox *cb = qobject_cast<QCheckBox *>(boxParams->cellWidget(i, 2));
+        if (cb && cb->isChecked())
+            previewFit.setParameterFixed(i, true);
+    }
+    if (boxLinearConstraints && !boxLinearConstraints->text().trimmed().isEmpty())
+        previewFit.setLinearConstraintExpr(boxLinearConstraints->text().trimmed());
+
+    std::vector<double> X, Y;
+    if (!previewFit.evaluatePreviewCurve(X, Y, 200) || X.size() < 2) {
+        clearPreviewCurve();
+        return;
+    }
+
+    if (!d_preview_curve) {
+        d_preview_curve = new FitPreviewCurveItem(&d_preview_curve, tr("InitialGuessPreview"));
+        d_preview_curve->attach(d_graph->plotWidget());
+    }
+    d_preview_curve->setAxis(targetCurve->xAxis(), targetCurve->yAxis());
+    QColor previewCol = btnColor ? btnColor->color() : QColor(30, 100, 220);
+    previewCol.setAlpha(200);
+    d_preview_curve->setPen(QPen(previewCol, 2, Qt::DashLine));
+    d_preview_curve->setData(X.data(), Y.data(), static_cast<int>(X.size()));
+    d_graph->replot();
+}
+
 void FitDialog::showPointsBox(bool)
 {
     if (generatePointsBtn->isChecked()) {
@@ -555,6 +849,7 @@ void FitDialog::activateCurve(const QString &curveName)
     d_graph->range(d_graph->curveIndex(curveName), start, end);
     boxFrom->setText(QLocale().toString(qMin(start, end), 'g', 15));
     boxTo->setText(QLocale().toString(qMax(start, end), 'g', 15));
+    updateLivePreview();
 }
 
 void FitDialog::saveUserFunction()
@@ -651,6 +946,7 @@ void FitDialog::removeUserFunction()
 
 void FitDialog::showFitPage()
 {
+    boxParams->blockSignals(true);
     int param_table_rows = boxParams->rowCount();
 
     QString par = boxParam->text().simplified();
@@ -748,12 +1044,15 @@ void FitDialog::showFitPage()
 
     boxFunction->setText(editBox->toPlainText().simplified());
     lblFunction->setText(boxName->text() + " (x, " + par + ")");
+    boxParams->blockSignals(false);
 
     tw->setCurrentWidget(fitPage);
+    updateLivePreview();
 }
 
 void FitDialog::showEditPage()
 {
+    clearPreviewCurve();
     tw->setCurrentWidget(editPage);
 }
 
@@ -1278,14 +1577,53 @@ void FitDialog::accept()
     }
     delete[] paramsInit;
 
-    if (!d_fitter->setDataFromCurve(curve, start, end)
-        || !d_fitter->setYErrorSource((Fit::ErrorSource)boxYErrorSource->currentIndex(),
-                                      tableNamesBox->currentText() + "_"
-                                              + colNamesBox->currentText())) {
+    if (!d_fitter->setDataFromCurve(curve, start, end)) {
         delete d_fitter;
         d_fitter = 0;
         return;
     }
+
+    const int weightIdx = boxYErrorSource->currentIndex();
+    const QString colFullName = tableNamesBox->currentText() + "_" + colNamesBox->currentText();
+    bool weightOk = false;
+    if (weightIdx >= 0 && weightIdx <= 3) {
+        weightOk = d_fitter->setYErrorSource((Fit::ErrorSource)weightIdx, colFullName);
+    } else if (weightIdx == 4) {
+        weightOk = d_fitter->setWeightingMethod(Fit::WeightDirect, colFullName);
+    } else if (weightIdx == 5) {
+        weightOk = d_fitter->setWeightingMethod(Fit::WeightProportional);
+    } else if (weightIdx == 6) {
+        weightOk = d_fitter->setWeightingMethod(Fit::WeightVariance, colFullName);
+    }
+    if (!weightOk) {
+        if (weightIdx == 4 || weightIdx == 6) {
+            QMessageBox::critical(this, tr("Weighting Error"),
+                                  tr("Could not read valid weight/variance values from column %1.")
+                                          .arg(colFullName));
+        }
+        delete d_fitter;
+        d_fitter = 0;
+        return;
+    }
+
+    if (boxLinearConstraints && !boxLinearConstraints->text().trimmed().isEmpty()) {
+        if (!d_fitter->setLinearConstraintExpr(boxLinearConstraints->text().trimmed())) {
+            QMessageBox::critical(
+                    this, tr("Linear Constraint Error"),
+                    tr("Invalid or inconsistent linear parameter constraint expression:\n%1")
+                            .arg(boxLinearConstraints->text().trimmed()));
+            delete d_fitter;
+            d_fitter = 0;
+            return;
+        }
+    }
+
+    if (chkLivePreview && chkLivePreview->isChecked()) {
+        chkLivePreview->blockSignals(true);
+        chkLivePreview->setChecked(false);
+        chkLivePreview->blockSignals(false);
+    }
+    clearPreviewCurve();
 
     d_fitter->setTolerance(eps);
     d_fitter->setAlgorithm((Fit::Algorithm)boxAlgorithm->currentIndex());
@@ -1306,8 +1644,10 @@ void FitDialog::accept()
         d_fitter->insertFitSummaryBoxOnGraph();
 
     auto res = d_fitter->results();
+    boxParams->blockSignals(true);
     for (i = 0; i < rows && size_t(i) < res.size(); i++)
         boxParams->item(i, 1)->setText(QLocale().toString(res[size_t(i)], 'g', boxPrecision->value()));
+    boxParams->blockSignals(false);
 }
 
 void FitDialog::fitBuiltInFunction(const QString &function, double *initVal)
@@ -1437,7 +1777,7 @@ void FitDialog::selectSrcTable(int tabnr)
 
 void FitDialog::yErrorSourceChanged(int index)
 {
-    if (index == Fit::CustomErrors) {
+    if (index == Fit::CustomErrors || index == 4 || index == 6) {
         tableNamesBox->setEnabled(true);
         colNamesBox->setEnabled(true);
     } else {
@@ -1448,6 +1788,7 @@ void FitDialog::yErrorSourceChanged(int index)
 
 void FitDialog::closeEvent(QCloseEvent *e)
 {
+    clearPreviewCurve();
     if (d_fitter && plotLabelBox->isChecked())
         d_fitter->showLegend();
 

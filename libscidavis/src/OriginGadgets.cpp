@@ -8,7 +8,9 @@
 #include "OriginGadgets.h"
 
 #include "ApplicationWindow.h"
+#include "FunctionCurve.h"
 #include "Graph.h"
+#include "Legend.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
 #include "Plot.h"
@@ -36,6 +38,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPaintDevice>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -48,6 +51,7 @@
 #include <gsl/gsl_multifit.h>
 #include <gsl/gsl_multifit_nlin.h>
 #include <gsl/gsl_spline.h>
+#include <gsl/gsl_version.h>
 
 #include <algorithm>
 #include <cmath>
@@ -88,6 +92,56 @@ static double computeR2(const std::vector<double> &yObs, const std::vector<doubl
     return r2;
 }
 
+static bool isExportingOrPrinting(const Graph *g, const QPainter *painter)
+{
+    if (g && g->property("isExporting").toBool())
+        return true;
+    if (!painter || !painter->device())
+        return false;
+    const int dt = painter->device()->devType();
+    if (dt == QInternal::Printer || dt == QInternal::Picture)
+        return true;
+    if (dt != QInternal::Widget && dt != QInternal::Pixmap && dt != QInternal::Image
+        && dt != QInternal::OpenGL)
+        return true;
+    return false;
+}
+
+static bool isAxisLog10(const Plot *plot, int axisId)
+{
+    if (!plot)
+        return false;
+    const QwtScaleMap sm = plot->canvasMap(axisId);
+    return sm.transformation() && sm.transformation()->type() == QwtScaleTransformation::Log10;
+}
+
+static void primaryAxesForGraph(Graph *g, int &xAxisOut, int &yAxisOut)
+{
+    xAxisOut = int(QwtPlot::xBottom);
+    yAxisOut = int(QwtPlot::yLeft);
+    if (!g)
+        return;
+    const QStringList analysable = g->analysableCurvesList();
+    for (const QString &name : analysable) {
+        if (QwtPlotCurve *c = g->curve(name)) {
+            if (c->isVisible()) {
+                xAxisOut = c->xAxis();
+                yAxisOut = c->yAxis();
+                return;
+            }
+        }
+    }
+    for (int i = 0; i < g->curves(); ++i) {
+        if (QwtPlotCurve *c = g->curve(i)) {
+            if (c->isVisible()) {
+                xAxisOut = c->xAxis();
+                yAxisOut = c->yAxis();
+                return;
+            }
+        }
+    }
+}
+
 static double estimateFwhm(const std::vector<double> &x, const std::vector<double> &y,
                            double yBase, int peakIdx)
 {
@@ -96,9 +150,10 @@ static double estimateFwhm(const std::vector<double> &x, const std::vector<doubl
         return (n >= 2) ? std::max(1e-9, (x.back() - x.front()) * 0.25) : 1.0;
 
     const double yTop = y[size_t(peakIdx)];
-    const double yHalf = yBase + 0.5 * (yTop - yBase);
-    if (yTop <= yBase)
+    const double diffTop = yTop - yBase;
+    if (std::fabs(diffTop) <= 1e-30)
         return std::max(1e-9, (x.back() - x.front()) * 0.25);
+    const double yHalf = yBase + 0.5 * diffTop;
 
     double xLeft = x.front();
     for (int i = peakIdx; i > 0; --i) {
@@ -257,10 +312,13 @@ static int nlFitFdf(const gsl_vector *params, void *userData, gsl_vector *f, gsl
 }
 
 static bool runLmSolver(int modelType, const std::vector<double> &x, const std::vector<double> &y,
-                        double xRef, std::vector<double> &pInOut)
+                        double xRef, std::vector<double> &pInOut,
+                        std::vector<double> *seOut = nullptr)
 {
     const size_t n = x.size();
     const size_t p = pInOut.size();
+    if (seOut)
+        seOut->assign(p, 0.0);
     if (n < p || p == 0)
         return false;
 
@@ -297,6 +355,27 @@ static bool runLmSolver(int modelType, const std::vector<double> &x, const std::
             const double v = gsl_vector_get(solver->x, j);
             if (std::isfinite(v))
                 pInOut[j] = v;
+        }
+        if (seOut) {
+            const double fnrm = gsl_blas_dnrm2(solver->f);
+            const double s2 = (n > p) ? ((fnrm * fnrm) / double(n - p)) : 0.0;
+            gsl_matrix *cov = gsl_matrix_alloc(p, p);
+#if GSL_MAJOR_VERSION < 2
+            gsl_multifit_covar(solver->J, 0.0, cov);
+#else
+            gsl_matrix *J = gsl_matrix_alloc(n, p);
+            if (gsl_multifit_fdfsolver_jac(solver, J) == GSL_SUCCESS)
+                gsl_multifit_covar(J, 0.0, cov);
+            else
+                gsl_matrix_set_zero(cov);
+            gsl_matrix_free(J);
+#endif
+            for (size_t j = 0; j < p; ++j) {
+                const double cjj = gsl_matrix_get(cov, j, j);
+                if (std::isfinite(cjj) && cjj > 0.0 && s2 > 0.0)
+                    (*seOut)[j] = std::sqrt(cjj * s2);
+            }
+            gsl_matrix_free(cov);
         }
     }
 
@@ -433,7 +512,8 @@ static double evalMatrixBilinear(Matrix *m, double x, double y)
 }
 
 static void evalSavitzkyGolayAtPoint(const std::vector<double> &ux, const std::vector<double> &uy,
-                                     double xQuery, double &dydxOut, double &d2ydx2Out)
+                                     double xQuery, int sgWindow, double &dydxOut,
+                                     double &d2ydx2Out)
 {
     dydxOut = 0.0;
     d2ydx2Out = 0.0;
@@ -462,7 +542,10 @@ static void evalSavitzkyGolayAtPoint(const std::vector<double> &ux, const std::v
                 : idxLo;
     }
 
-    const int W = std::min(m, 5);
+    int reqWin = std::max(3, sgWindow);
+    if (reqWin % 2 == 0)
+        ++reqWin;
+    const int W = std::min(m, reqWin);
     const int start = std::clamp(nearIdx - W / 2, 0, m - W);
     const int polyOrder = std::min(3, W - 1); // p=3 on 5 pts, p=2 on 3..4 pts -> exact for quadratics & cubics
     const int nCoeffs = polyOrder + 1;
@@ -553,27 +636,32 @@ public:
         painter->setClipRect(canvasRect);
         painter->setRenderHint(QPainter::Antialiasing, true);
 
-        // 1. Yellow translucent ROI rectangle
-        painter->setBrush(QColor(255, 235, 59, 55));
-        painter->setPen(QPen(QColor(210, 140, 0), 1.6, Qt::SolidLine));
+        const bool exporting = isExportingOrPrinting(d_owner->d_graph_guard, painter);
+
+        // 1. Yellow translucent ROI rectangle (publication-clean border on export, handles hidden)
+        painter->setBrush(QColor(255, 235, 59, exporting ? 35 : 55));
+        painter->setPen(
+                QPen(QColor(210, 140, 0), exporting ? 1.1 : 1.6, exporting ? Qt::DashLine : Qt::SolidLine));
         painter->drawRect(pxRect);
 
-        // 8 resize handles (corners + mid-edges)
-        const int hs = 3;
-        painter->setBrush(QColor(255, 255, 255, 230));
-        painter->setPen(QPen(QColor(180, 110, 0), 1.2));
-        const QPoint handleCenters[8] = {
-            pxRect.topLeft(),
-            pxRect.topRight(),
-            pxRect.bottomLeft(),
-            pxRect.bottomRight(),
-            QPoint(pxRect.center().x(), pxRect.top()),
-            QPoint(pxRect.center().x(), pxRect.bottom()),
-            QPoint(pxRect.left(), pxRect.center().y()),
-            QPoint(pxRect.right(), pxRect.center().y())
-        };
-        for (const QPoint &hc : handleCenters)
-            painter->drawRect(QRect(hc.x() - hs, hc.y() - hs, 2 * hs, 2 * hs));
+        // 8 resize handles (corners + mid-edges) — hidden during export/print
+        if (!exporting) {
+            const int hs = 3;
+            painter->setBrush(QColor(255, 255, 255, 230));
+            painter->setPen(QPen(QColor(180, 110, 0), 1.2));
+            const QPoint handleCenters[8] = {
+                pxRect.topLeft(),
+                pxRect.topRight(),
+                pxRect.bottomLeft(),
+                pxRect.bottomRight(),
+                QPoint(pxRect.center().x(), pxRect.top()),
+                QPoint(pxRect.center().x(), pxRect.bottom()),
+                QPoint(pxRect.left(), pxRect.center().y()),
+                QPoint(pxRect.right(), pxRect.center().y())
+            };
+            for (const QPoint &hc : handleCenters)
+                painter->drawRect(QRect(hc.x() - hs, hc.y() - hs, 2 * hs, 2 * hs));
+        }
 
         // 2. Mode-specific live graphics
         const RoiGadgetTool::GadgetMode mode = d_owner->d_mode;
@@ -610,14 +698,23 @@ public:
                 const int pkx = xMap.transform(pk.xc);
                 const int pky = yMap.transform(pk.yTop);
                 const int pkb = yMap.transform(pk.yBase);
-                painter->setPen(QPen(QColor(200, 30, 30, 170), 1.2, Qt::DotLine));
+                const bool isTrough = (pk.height < 0.0);
+                painter->setPen(QPen(isTrough ? QColor(20, 95, 195, 170) : QColor(200, 30, 30, 170),
+                                     1.2, Qt::DotLine));
                 painter->drawLine(pkx, pky, pkx, pkb);
 
                 QPolygon tri;
-                tri << QPoint(pkx, pky - 2) << QPoint(pkx - 5, pky - 11)
-                    << QPoint(pkx + 5, pky - 11);
-                painter->setBrush(QColor(220, 30, 30));
-                painter->setPen(QPen(QColor(130, 0, 0), 1.0));
+                if (isTrough) {
+                    tri << QPoint(pkx, pky + 2) << QPoint(pkx - 5, pky + 11)
+                        << QPoint(pkx + 5, pky + 11);
+                    painter->setBrush(QColor(25, 105, 210));
+                    painter->setPen(QPen(QColor(10, 50, 120), 1.0));
+                } else {
+                    tri << QPoint(pkx, pky - 2) << QPoint(pkx - 5, pky - 11)
+                        << QPoint(pkx + 5, pky - 11);
+                    painter->setBrush(QColor(220, 30, 30));
+                    painter->setPen(QPen(QColor(130, 0, 0), 1.0));
+                }
                 painter->drawPolygon(tri);
             }
         }
@@ -912,9 +1009,35 @@ void RoiGadgetTool::initDefaultRoi()
         yMax = 10.0;
     }
 
-    const double dx = xMax - xMin;
-    const double dy = yMax - yMin;
-    d_roi_rect = QRectF(xMin + 0.20 * dx, yMin + 0.08 * dy, 0.60 * dx, 0.84 * dy).normalized();
+    const bool logX = isAxisLog10(plot, xAxis);
+    const bool logY = isAxisLog10(plot, yAxis);
+
+    double rx1 = 0.0, rx2 = 1.0, ry1 = 0.0, ry2 = 1.0;
+    if (logX && xMax > 0.0) {
+        const double safeXMin = (xMin > 0.0) ? xMin : std::max(1e-100, xMax * 1e-4);
+        const double lxMin = std::log10(safeXMin);
+        const double lxMax = std::log10(xMax);
+        rx1 = std::pow(10.0, lxMin + 0.20 * (lxMax - lxMin));
+        rx2 = std::pow(10.0, lxMin + 0.80 * (lxMax - lxMin));
+    } else {
+        const double dx = xMax - xMin;
+        rx1 = xMin + 0.20 * dx;
+        rx2 = xMin + 0.80 * dx;
+    }
+
+    if (logY && yMax > 0.0) {
+        const double safeYMin = (yMin > 0.0) ? yMin : std::max(1e-100, yMax * 1e-4);
+        const double lyMin = std::log10(safeYMin);
+        const double lyMax = std::log10(yMax);
+        ry1 = std::pow(10.0, lyMin + 0.08 * (lyMax - lyMin));
+        ry2 = std::pow(10.0, lyMin + 0.92 * (lyMax - lyMin));
+    } else {
+        const double dy = yMax - yMin;
+        ry1 = yMin + 0.08 * dy;
+        ry2 = yMin + 0.92 * dy;
+    }
+
+    d_roi_rect = QRectF(QPointF(rx1, ry1), QPointF(rx2, ry2)).normalized();
 }
 
 QwtPlotCurve *RoiGadgetTool::resolveTargetCurve()
@@ -991,6 +1114,73 @@ void RoiGadgetTool::setQuickFitModel(QuickFitModel model)
     recalculate();
     if (d_graph_guard)
         d_graph_guard->replot();
+}
+
+void RoiGadgetTool::setIntegrateBaseline(IntegrateBaseline b)
+{
+    d_integrate_baseline = b;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void RoiGadgetTool::setDetectNegativePeaks(bool on)
+{
+    d_detect_negative_peaks = on;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void RoiGadgetTool::setSavGolWindow(int windowSize)
+{
+    int w = std::max(3, windowSize);
+    if (w % 2 == 0)
+        ++w;
+    d_sg_window = w;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void RoiGadgetTool::keepFittedCurveOnGraph()
+{
+    if (!d_graph_guard || d_overlay_curve_pts.size() < 2)
+        return;
+
+    const int nPts = d_overlay_curve_pts.size();
+    std::vector<double> xs(static_cast<size_t>(nPts)), ys(static_cast<size_t>(nPts));
+    for (int i = 0; i < nPts; ++i) {
+        xs[size_t(i)] = d_overlay_curve_pts[i].x();
+        ys[size_t(i)] = d_overlay_curve_pts[i].y();
+    }
+
+    QString curveName = QString("QuickFit_%1").arg(d_curve_title.isEmpty() ? "Curve" : d_curve_title);
+    if (d_app)
+        curveName = d_app->generateUniqueName(curveName + "_");
+
+    FunctionCurve *fc = new FunctionCurve(d_app, FunctionCurve::Normal, curveName);
+    fc->setPen(QPen(QColor(220, 20, 20), 2.0, Qt::SolidLine));
+    fc->setData(xs.data(), ys.data(), nPts);
+    fc->setRange(xs.front(), xs.back());
+    if (QwtPlotCurve *target = resolveTargetCurve())
+        fc->setAxis(target->xAxis(), target->yAxis());
+    d_graph_guard->insertPlotItem(fc, Graph::Line);
+    d_graph_guard->addFitCurve(fc);
+
+    if (!d_summary_text.isEmpty()) {
+        if (Legend *mrk = d_graph_guard->newLegend(d_summary_text)) {
+            mrk->setFont(QFont("Arial", 9));
+            mrk->setFrameStyle(Legend::Line);
+            mrk->setBackgroundColor(QColor(255, 255, 255, 235));
+            const QRectF roi = d_roi_rect.normalized();
+            mrk->setOriginCoord(roi.center().x(), roi.bottom() - 0.12 * roi.height());
+        }
+    }
+
+    d_graph_guard->replot();
+    if (d_app)
+        d_app->modifiedProject();
 }
 
 void RoiGadgetTool::setRoiRect(const QRectF &dataRect)
@@ -1533,6 +1723,26 @@ void RoiGadgetTool::recalculate()
         const int nGrid = 120;
         const double xStart = roi.left();
         const double xEnd = roi.right();
+        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+        const bool logX = isAxisLog10(plotPtr, curve->xAxis()) && xStart > 0.0 && xEnd > xStart;
+        const bool logY = isAxisLog10(plotPtr, curve->yAxis());
+        auto gridX = [&](int k) -> double {
+            const double t = double(k) / double(nGrid - 1);
+            if (logX) {
+                const double lx0 = std::log10(xStart);
+                const double lx1 = std::log10(xEnd);
+                return std::pow(10.0, lx0 + t * (lx1 - lx0));
+            }
+            return xStart + (xEnd - xStart) * t;
+        };
+        auto appendCurvePt = [&](double gx, double gy) {
+            if (!std::isfinite(gx) || !std::isfinite(gy))
+                return;
+            if (logY && gy <= 0.0)
+                gy = std::max(1e-100, minY > 0.0 ? minY * 0.1 : 1e-12);
+            d_overlay_curve_pts.append(QPointF(gx, gy));
+        };
+
         std::vector<double> yHat(n, meanY);
         QString modelLabel;
         QString paramLine;
@@ -1540,22 +1750,28 @@ void RoiGadgetTool::recalculate()
         if (d_fit_model == FitLinear && n >= 2) {
             double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, sumsq = 0.0;
             gsl_fit_linear(xv.data(), 1, yv.data(), 1, n, &c0, &c1, &cov00, &cov01, &cov11, &sumsq);
+            const double se0 = (n > 2 && cov00 > 0.0) ? std::sqrt(cov00) : 0.0;
+            const double se1 = (n > 2 && cov11 > 0.0) ? std::sqrt(cov11) : 0.0;
             for (size_t i = 0; i < n; ++i)
                 yHat[i] = c0 + c1 * xv[i];
             const double r2 = computeR2(yv, yHat);
             d_primary_metric = r2;
             d_secondary_metric = c1;
             modelLabel = "Linear";
-            paramLine = QString("Slope = %1, Int = %2")
-                                .arg(c1, 0, 'g', 6)
-                                .arg(c0, 0, 'g', 6);
+            paramLine = QString("Slope = %1 ± %2, Int = %3 ± %4")
+                                .arg(c1, 0, 'g', 5)
+                                .arg(se1, 0, 'g', 3)
+                                .arg(c0, 0, 'g', 5)
+                                .arg(se0, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("Slope"), c1)
+                             << qMakePair(QString("Slope_SE"), se1)
                              << qMakePair(QString("Intercept"), c0)
+                             << qMakePair(QString("Intercept_SE"), se0)
                              << qMakePair(QString("RSS"), sumsq);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
-                d_overlay_curve_pts.append(QPointF(gx, c0 + c1 * gx));
+                const double gx = gridX(k);
+                appendCurvePt(gx, c0 + c1 * gx);
             }
         } else if (d_fit_model == FitPoly2 && n >= 3) {
             gsl_matrix *X = gsl_matrix_alloc(n, 3);
@@ -1576,6 +1792,15 @@ void RoiGadgetTool::recalculate()
             const double c0 = gsl_vector_get(C, 0);
             const double c1 = gsl_vector_get(C, 1);
             const double c2 = gsl_vector_get(C, 2);
+            const double se0 = (n > 3 && gsl_matrix_get(cov, 0, 0) > 0.0)
+                    ? std::sqrt(gsl_matrix_get(cov, 0, 0))
+                    : 0.0;
+            const double se1 = (n > 3 && gsl_matrix_get(cov, 1, 1) > 0.0)
+                    ? std::sqrt(gsl_matrix_get(cov, 1, 1))
+                    : 0.0;
+            const double se2 = (n > 3 && gsl_matrix_get(cov, 2, 2) > 0.0)
+                    ? std::sqrt(gsl_matrix_get(cov, 2, 2))
+                    : 0.0;
             gsl_matrix_free(X);
             gsl_vector_free(Y);
             gsl_vector_free(C);
@@ -1587,52 +1812,67 @@ void RoiGadgetTool::recalculate()
             d_primary_metric = r2;
             d_secondary_metric = c2;
             modelLabel = "Poly2";
-            paramLine = QString("c2 = %1, c1 = %2, c0 = %3")
-                                .arg(c2, 0, 'g', 5)
-                                .arg(c1, 0, 'g', 5)
-                                .arg(c0, 0, 'g', 5);
+            paramLine = QString("c2 = %1 ± %2, c1 = %3 ± %4")
+                                .arg(c2, 0, 'g', 4)
+                                .arg(se2, 0, 'g', 3)
+                                .arg(c1, 0, 'g', 4)
+                                .arg(se1, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("c0"), c0)
+                             << qMakePair(QString("c0_SE"), se0)
                              << qMakePair(QString("c1"), c1)
-                             << qMakePair(QString("c2"), c2);
+                             << qMakePair(QString("c1_SE"), se1)
+                             << qMakePair(QString("c2"), c2)
+                             << qMakePair(QString("c2_SE"), se2);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
-                d_overlay_curve_pts.append(QPointF(gx, c0 + c1 * gx + c2 * gx * gx));
+                const double gx = gridX(k);
+                appendCurvePt(gx, c0 + c1 * gx + c2 * gx * gx);
             }
         } else if (d_fit_model == FitGauss && n >= 4) {
             const double fwhmGuess = estimateFwhm(xv, yv, minY, maxIdx);
-            const double wGuess = std::max(1e-9, fwhmGuess / std::sqrt(2.0 * std::log(2.0)));
+            const double kFwhm = std::sqrt(2.0 * std::log(2.0));
+            const double wGuess = std::max(1e-9, fwhmGuess / kFwhm);
             std::vector<double> p = { minY, std::max(1e-9, maxY - minY), xAtMax, wGuess };
-            runLmSolver(2, xv, yv, xv.front(), p);
+            std::vector<double> se;
+            runLmSolver(2, xv, yv, xv.front(), p, &se);
             p[3] = std::fabs(p[3]);
             for (size_t i = 0; i < n; ++i) {
                 const double u = (xv[i] - p[2]) / std::max(1e-12, p[3]);
                 yHat[i] = p[0] + p[1] * std::exp(std::max(-500.0, -2.0 * u * u));
             }
             const double r2 = computeR2(yv, yHat);
-            const double fwhm = p[3] * std::sqrt(2.0 * std::log(2.0));
+            const double fwhm = p[3] * kFwhm;
+            const double seXc = (se.size() > 2) ? se[2] : 0.0;
+            const double seFwhm = (se.size() > 3) ? (se[3] * kFwhm) : 0.0;
+            const double seAmp = (se.size() > 1) ? se[1] : 0.0;
+            const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // xc
             modelLabel = "Gauss";
-            paramLine = QString("xc = %1, FWHM = %2, A = %3")
-                                .arg(p[2], 0, 'g', 6)
-                                .arg(fwhm, 0, 'g', 5)
-                                .arg(p[1], 0, 'g', 5);
+            paramLine = QString("xc = %1 ± %2, FWHM = %3 ± %4")
+                                .arg(p[2], 0, 'g', 5)
+                                .arg(seXc, 0, 'g', 3)
+                                .arg(fwhm, 0, 'g', 4)
+                                .arg(seFwhm, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("xc"), p[2])
+                             << qMakePair(QString("xc_SE"), seXc)
                              << qMakePair(QString("FWHM"), fwhm)
+                             << qMakePair(QString("FWHM_SE"), seFwhm)
                              << qMakePair(QString("Amplitude"), p[1])
-                             << qMakePair(QString("y0"), p[0]);
+                             << qMakePair(QString("Amplitude_SE"), seAmp)
+                             << qMakePair(QString("y0"), p[0])
+                             << qMakePair(QString("y0_SE"), seY0);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
+                const double gx = gridX(k);
                 const double u = (gx - p[2]) / std::max(1e-12, p[3]);
-                d_overlay_curve_pts.append(
-                        QPointF(gx, p[0] + p[1] * std::exp(std::max(-500.0, -2.0 * u * u))));
+                appendCurvePt(gx, p[0] + p[1] * std::exp(std::max(-500.0, -2.0 * u * u)));
             }
         } else if (d_fit_model == FitLorentz && n >= 4) {
             const double fwhmGuess = estimateFwhm(xv, yv, minY, maxIdx);
             std::vector<double> p = { minY, std::max(1e-9, maxY - minY), xAtMax, fwhmGuess };
-            runLmSolver(3, xv, yv, xv.front(), p);
+            std::vector<double> se;
+            runLmSolver(3, xv, yv, xv.front(), p, &se);
             p[3] = std::fabs(p[3]);
             for (size_t i = 0; i < n; ++i) {
                 const double dx = xv[i] - p[2];
@@ -1640,50 +1880,66 @@ void RoiGadgetTool::recalculate()
                 yHat[i] = p[0] + p[1] * w2 / std::max(1e-30, 4.0 * dx * dx + w2);
             }
             const double r2 = computeR2(yv, yHat);
+            const double seXc = (se.size() > 2) ? se[2] : 0.0;
+            const double seFwhm = (se.size() > 3) ? se[3] : 0.0;
+            const double seH = (se.size() > 1) ? se[1] : 0.0;
+            const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // xc
             modelLabel = "Lorentz";
-            paramLine = QString("xc = %1, FWHM = %2, H = %3")
-                                .arg(p[2], 0, 'g', 6)
-                                .arg(p[3], 0, 'g', 5)
-                                .arg(p[1], 0, 'g', 5);
+            paramLine = QString("xc = %1 ± %2, FWHM = %3 ± %4")
+                                .arg(p[2], 0, 'g', 5)
+                                .arg(seXc, 0, 'g', 3)
+                                .arg(p[3], 0, 'g', 4)
+                                .arg(seFwhm, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("xc"), p[2])
+                             << qMakePair(QString("xc_SE"), seXc)
                              << qMakePair(QString("FWHM"), p[3])
+                             << qMakePair(QString("FWHM_SE"), seFwhm)
                              << qMakePair(QString("Height"), p[1])
-                             << qMakePair(QString("y0"), p[0]);
+                             << qMakePair(QString("Height_SE"), seH)
+                             << qMakePair(QString("y0"), p[0])
+                             << qMakePair(QString("y0_SE"), seY0);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
+                const double gx = gridX(k);
                 const double dx = gx - p[2];
                 const double w2 = p[3] * p[3];
-                d_overlay_curve_pts.append(
-                        QPointF(gx, p[0] + p[1] * w2 / std::max(1e-30, 4.0 * dx * dx + w2)));
+                appendCurvePt(gx, p[0] + p[1] * w2 / std::max(1e-30, 4.0 * dx * dx + w2));
             }
         } else if (d_fit_model == FitExpDec1 && n >= 3) {
             const double xRef = xv.front();
             const double span = std::max(1e-9, xv.back() - xv.front());
             std::vector<double> p = { yv.back(), yv.front() - yv.back(), span / 3.0 };
-            runLmSolver(4, xv, yv, xRef, p);
+            std::vector<double> se;
+            runLmSolver(4, xv, yv, xRef, p, &se);
             for (size_t i = 0; i < n; ++i) {
                 const double u = std::clamp((xv[i] - xRef) / p[2], -500.0, 500.0);
                 yHat[i] = p[0] + p[1] * std::exp(-u);
             }
             const double r2 = computeR2(yv, yHat);
+            const double seT1 = (se.size() > 2) ? se[2] : 0.0;
+            const double seA = (se.size() > 1) ? se[1] : 0.0;
+            const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // t1
             modelLabel = "ExpDec1";
-            paramLine = QString("t1 = %1, A = %2, y0 = %3")
-                                .arg(p[2], 0, 'g', 6)
-                                .arg(p[1], 0, 'g', 5)
-                                .arg(p[0], 0, 'g', 5);
+            paramLine = QString("t1 = %1 ± %2, A = %3 ± %4")
+                                .arg(p[2], 0, 'g', 5)
+                                .arg(seT1, 0, 'g', 3)
+                                .arg(p[1], 0, 'g', 4)
+                                .arg(seA, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("t1"), p[2])
+                             << qMakePair(QString("t1_SE"), seT1)
                              << qMakePair(QString("A"), p[1])
-                             << qMakePair(QString("y0"), p[0]);
+                             << qMakePair(QString("A_SE"), seA)
+                             << qMakePair(QString("y0"), p[0])
+                             << qMakePair(QString("y0_SE"), seY0);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
+                const double gx = gridX(k);
                 const double u = std::clamp((gx - xRef) / p[2], -500.0, 500.0);
-                d_overlay_curve_pts.append(QPointF(gx, p[0] + p[1] * std::exp(-u)));
+                appendCurvePt(gx, p[0] + p[1] * std::exp(-u));
             }
         } else if (d_fit_model == FitBoltzmann && n >= 4) {
             const double a1Guess = yv.front();
@@ -1702,27 +1958,38 @@ void RoiGadgetTool::recalculate()
             }
             const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
             std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
-            runLmSolver(5, xv, yv, xv.front(), p);
+            std::vector<double> se;
+            runLmSolver(5, xv, yv, xv.front(), p, &se);
             for (size_t i = 0; i < n; ++i) {
                 const double u = std::clamp((xv[i] - p[2]) / p[3], -500.0, 500.0);
                 yHat[i] = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
             }
             const double r2 = computeR2(yv, yHat);
+            const double seX0 = (se.size() > 2) ? se[2] : 0.0;
+            const double seDx = (se.size() > 3) ? se[3] : 0.0;
+            const double seA1 = (se.size() > 0) ? se[0] : 0.0;
+            const double seA2 = (se.size() > 1) ? se[1] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // x0
             modelLabel = "Boltzmann";
-            paramLine = QString("x0 = %1, dx = %2")
-                                .arg(p[2], 0, 'g', 6)
-                                .arg(p[3], 0, 'g', 5);
+            paramLine = QString("x0 = %1 ± %2, dx = %3 ± %4")
+                                .arg(p[2], 0, 'g', 5)
+                                .arg(seX0, 0, 'g', 3)
+                                .arg(p[3], 0, 'g', 4)
+                                .arg(seDx, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("x0"), p[2])
+                             << qMakePair(QString("x0_SE"), seX0)
                              << qMakePair(QString("dx"), p[3])
+                             << qMakePair(QString("dx_SE"), seDx)
                              << qMakePair(QString("A1"), p[0])
-                             << qMakePair(QString("A2"), p[1]);
+                             << qMakePair(QString("A1_SE"), seA1)
+                             << qMakePair(QString("A2"), p[1])
+                             << qMakePair(QString("A2_SE"), seA2);
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = xStart + (xEnd - xStart) * double(k) / double(nGrid - 1);
+                const double gx = gridX(k);
                 const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
-                d_overlay_curve_pts.append(QPointF(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u))));
+                appendCurvePt(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u)));
             }
         } else {
             d_summary_text = QString("Quick Fit [%1]\nNeed more points in ROI (N=%2)")
@@ -1742,7 +2009,9 @@ void RoiGadgetTool::recalculate()
     case QuickPeaks: {
         std::vector<double> sortedY = yv;
         std::sort(sortedY.begin(), sortedY.end());
-        const double yBase = sortedY[std::min(n - 1, n / 10)];
+        const double yBase = d_detect_negative_peaks
+                ? sortedY[std::min(n - 1, (9 * n) / 10)]
+                : sortedY[std::min(n - 1, n / 10)];
         d_has_baseline = true;
         d_baseline_y0 = yBase;
         d_baseline_y1 = yBase;
@@ -1753,7 +2022,9 @@ void RoiGadgetTool::recalculate()
                 ys[i] = 0.25 * yv[i - 1] + 0.5 * yv[i] + 0.25 * yv[i + 1];
         }
 
-        const double promThresh = std::max(1e-12, 0.08 * (maxY - yBase));
+        const double promThresh = d_detect_negative_peaks
+                ? std::max(1e-12, 0.08 * (yBase - minY))
+                : std::max(1e-12, 0.08 * (maxY - yBase));
         const int minSep = std::max(1, static_cast<int>(n / 25));
         struct Cand {
             int idx;
@@ -1761,13 +2032,23 @@ void RoiGadgetTool::recalculate()
         };
         std::vector<Cand> cands;
         for (int i = 1; i + 1 < static_cast<int>(n); ++i) {
-            const bool localMax = (ys[size_t(i)] >= ys[size_t(i - 1)]
-                                   && ys[size_t(i)] >= ys[size_t(i + 1)]
-                                   && (ys[size_t(i)] > ys[size_t(i - 1)]
-                                       || ys[size_t(i)] > ys[size_t(i + 1)]));
-            const double prom = yv[size_t(i)] - yBase;
-            if (localMax && prom >= promThresh)
-                cands.push_back({ i, prom });
+            if (d_detect_negative_peaks) {
+                const bool localMin = (ys[size_t(i)] <= ys[size_t(i - 1)]
+                                       && ys[size_t(i)] <= ys[size_t(i + 1)]
+                                       && (ys[size_t(i)] < ys[size_t(i - 1)]
+                                           || ys[size_t(i)] < ys[size_t(i + 1)]));
+                const double prom = yBase - yv[size_t(i)];
+                if (localMin && prom >= promThresh)
+                    cands.push_back({ i, prom });
+            } else {
+                const bool localMax = (ys[size_t(i)] >= ys[size_t(i - 1)]
+                                       && ys[size_t(i)] >= ys[size_t(i + 1)]
+                                       && (ys[size_t(i)] > ys[size_t(i - 1)]
+                                           || ys[size_t(i)] > ys[size_t(i + 1)]));
+                const double prom = yv[size_t(i)] - yBase;
+                if (localMax && prom >= promThresh)
+                    cands.push_back({ i, prom });
+            }
         }
         std::sort(cands.begin(), cands.end(),
                   [](const Cand &a, const Cand &b) { return a.prom > b.prom; });
@@ -1786,8 +2067,8 @@ void RoiGadgetTool::recalculate()
         }
         std::sort(chosenIdx.begin(), chosenIdx.end());
 
-        double maxPeakCenter = xAtMax;
-        double maxPeakHeight = -1.0;
+        double maxPeakCenter = d_detect_negative_peaks ? xAtMin : xAtMax;
+        double maxPeakMag = -1.0;
         for (int idx : chosenIdx) {
             DetectedPeak pk;
             pk.xc = xv[size_t(idx)];
@@ -1797,8 +2078,8 @@ void RoiGadgetTool::recalculate()
             pk.fwhm = estimateFwhm(xv, yv, yBase, idx);
             pk.area = 1.064467 * pk.height * pk.fwhm;
             d_detected_peaks.append(pk);
-            if (pk.height > maxPeakHeight) {
-                maxPeakHeight = pk.height;
+            if (std::fabs(pk.height) > maxPeakMag) {
+                maxPeakMag = std::fabs(pk.height);
                 maxPeakCenter = pk.xc;
             }
         }
@@ -1810,7 +2091,8 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Max_Peak_Center"), d_secondary_metric)
                          << qMakePair(QString("Baseline"), yBase);
 
-        d_summary_text = QString("Quick Peaks [%1]\nPeaks = %2, Max xc = %3\nBaseline = %4")
+        d_summary_text = QString("Quick %1 [%2]\nCount = %3, Main xc = %4\nBaseline = %5")
+                                 .arg(d_detect_negative_peaks ? tr("Troughs") : tr("Peaks"))
                                  .arg(curve->title().text())
                                  .arg(d_detected_peaks.size())
                                  .arg(d_secondary_metric, 0, 'g', 6)
@@ -1836,7 +2118,8 @@ void RoiGadgetTool::recalculate()
             }
             const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
             std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
-            runLmSolver(5, xv, yv, xv.front(), p);
+            std::vector<double> se;
+            runLmSolver(5, xv, yv, xv.front(), p, &se);
 
             std::vector<double> yHat(n);
             for (size_t i = 0; i < n; ++i) {
@@ -1844,20 +2127,34 @@ void RoiGadgetTool::recalculate()
                 yHat[i] = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
             }
             const double r2 = computeR2(yv, yHat);
+            const double seEc50 = (se.size() > 2) ? se[2] : 0.0;
             d_primary_metric = p[2]; // EC50
             d_secondary_metric = r2;
             d_ec50_x = p[2];
             d_ec50_y = 0.5 * (p[0] + p[1]);
             d_has_ec50_marker = true;
 
+            Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+            const bool logX = isAxisLog10(plotPtr, curve->xAxis()) && roi.left() > 0.0
+                    && roi.right() > roi.left();
+            const bool logY = isAxisLog10(plotPtr, curve->yAxis());
             const int nGrid = 120;
             for (int k = 0; k < nGrid; ++k) {
-                const double gx = roi.left() + roi.width() * double(k) / double(nGrid - 1);
+                const double t = double(k) / double(nGrid - 1);
+                const double gx = logX
+                        ? std::pow(10.0,
+                                   std::log10(roi.left())
+                                           + t * (std::log10(roi.right()) - std::log10(roi.left())))
+                        : (roi.left() + roi.width() * t);
                 const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
-                d_overlay_curve_pts.append(QPointF(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u))));
+                double gy = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
+                if (logY && gy <= 0.0)
+                    gy = std::max(1e-100, minY > 0.0 ? minY * 0.1 : 1e-12);
+                d_overlay_curve_pts.append(QPointF(gx, gy));
             }
 
             d_output_metrics << qMakePair(QString("EC50"), p[2])
+                             << qMakePair(QString("EC50_SE"), seEc50)
                              << qMakePair(QString("R2"), r2)
                              << qMakePair(QString("A1_Bottom"), p[0])
                              << qMakePair(QString("A2_Top"), p[1])
@@ -1877,32 +2174,99 @@ void RoiGadgetTool::recalculate()
     }
 
     case Integrate: {
-        double area = 0.0;
-        for (size_t i = 0; i + 1 < n; ++i)
-            area += 0.5 * (yv[i] + yv[i + 1]) * (xv[i + 1] - xv[i]);
+        const double xFront = xv.front();
+        const double xBack = xv.back();
+        const double yFront = yv.front();
+        const double yBack = yv.back();
+        const double xSpan = xBack - xFront;
 
-        const double fwhm = (n >= 3) ? estimateFwhm(xv, yv, minY, maxIdx) : 0.0;
+        auto evalBaseline = [&](double xVal) -> double {
+            if (d_integrate_baseline == BaseEndpointsLine) {
+                if (std::fabs(xSpan) <= 1e-30)
+                    return 0.5 * (yFront + yBack);
+                return yFront + ((yBack - yFront) / xSpan) * (xVal - xFront);
+            }
+            if (d_integrate_baseline == BaseRoiMin)
+                return minY;
+            return 0.0;
+        };
+
+        double area = 0.0;
+        double absArea = 0.0;
+        double absMomX = 0.0;
+        for (size_t i = 0; i + 1 < n; ++i) {
+            const double dx = xv[i + 1] - xv[i];
+            if (dx <= 0.0)
+                continue;
+            const double h0 = yv[i] - evalBaseline(xv[i]);
+            const double h1 = yv[i + 1] - evalBaseline(xv[i + 1]);
+            area += 0.5 * (h0 + h1) * dx;
+
+            if (h0 * h1 >= 0.0) {
+                const double a0 = std::fabs(h0);
+                const double a1 = std::fabs(h1);
+                const double segAbs = 0.5 * (a0 + a1) * dx;
+                absArea += segAbs;
+                const double denom = a0 + a1;
+                const double xSegCent = (denom > 1e-30)
+                        ? (xv[i] + dx * (a0 + 2.0 * a1) / (3.0 * denom))
+                        : (0.5 * (xv[i] + xv[i + 1]));
+                absMomX += xSegCent * segAbs;
+            } else {
+                const double a0 = std::fabs(h0);
+                const double a1 = std::fabs(h1);
+                const double tZero = a0 / std::max(1e-30, a0 + a1);
+                const double xZero = xv[i] + tZero * dx;
+                const double segAbsL = 0.5 * a0 * (xZero - xv[i]);
+                const double segAbsR = 0.5 * a1 * (xv[i + 1] - xZero);
+                absArea += segAbsL + segAbsR;
+                absMomX += ((2.0 * xv[i] + xZero) / 3.0) * segAbsL
+                        + ((xZero + 2.0 * xv[i + 1]) / 3.0) * segAbsR;
+            }
+        }
+
+        const double centroidX =
+                (absArea > 1e-30) ? (absMomX / absArea) : (0.5 * (xFront + xBack));
+        const double fwhm = (n >= 3) ? estimateFwhm(xv, yv, evalBaseline(xAtMax), maxIdx) : 0.0;
         d_primary_metric = area;
         d_secondary_metric = fwhm;
 
+        if (d_integrate_baseline != BaseYZero) {
+            d_has_baseline = true;
+            d_baseline_y0 = evalBaseline(roi.left());
+            d_baseline_y1 = evalBaseline(roi.right());
+        }
+
+        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+        const bool logY = isAxisLog10(plotPtr, curve->yAxis());
+        auto safePolyY = [&](double yVal) -> double {
+            if (logY && yVal <= 0.0)
+                return std::max(1e-100, minY > 0.0 ? minY * 0.5 : std::max(1e-12, roi.top()));
+            return yVal;
+        };
+
         if (n >= 2) {
             d_integrate_poly_pts.reserve(static_cast<int>(n) + 2);
-            d_integrate_poly_pts.append(QPointF(xv.front(), 0.0));
+            d_integrate_poly_pts.append(QPointF(xFront, safePolyY(evalBaseline(xFront))));
             for (size_t i = 0; i < n; ++i)
-                d_integrate_poly_pts.append(QPointF(xv[i], yv[i]));
-            d_integrate_poly_pts.append(QPointF(xv.back(), 0.0));
+                d_integrate_poly_pts.append(QPointF(xv[i], safePolyY(yv[i])));
+            d_integrate_poly_pts.append(QPointF(xBack, safePolyY(evalBaseline(xBack))));
         }
 
         d_output_metrics << qMakePair(QString("Area"), area)
+                         << qMakePair(QString("Absolute_Area"), absArea)
+                         << qMakePair(QString("Centroid_X"), centroidX)
                          << qMakePair(QString("FWHM"), fwhm)
-                         << qMakePair(QString("Peak_Height"), maxY)
+                         << qMakePair(QString("Peak_Height"), maxY - evalBaseline(xAtMax))
                          << qMakePair(QString("Peak_X"), xAtMax);
 
-        d_summary_text = QString("Integrate [%1]\nArea = %2\nFWHM = %3, Peak Y = %4")
-                                 .arg(curve->title().text())
-                                 .arg(area, 0, 'g', 6)
-                                 .arg(fwhm, 0, 'g', 6)
-                                 .arg(maxY, 0, 'g', 6);
+        d_summary_text =
+                QString("Integrate [%1]\nArea = %2, Abs Area = %3\nCentroid X = %4, FWHM = %5")
+                        .arg(curve->title().text())
+                        .arg(area, 0, 'g', 6)
+                        .arg(absArea, 0, 'g', 6)
+                        .arg(centroidX, 0, 'g', 6)
+                        .arg(fwhm, 0, 'g', 5);
         break;
     }
 
@@ -1920,7 +2284,12 @@ void RoiGadgetTool::recalculate()
             }
         }
 
-        const double xMid = std::clamp(0.5 * (roi.left() + roi.right()), ux.front(), ux.back());
+        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+        const bool logX = isAxisLog10(plotPtr, curve->xAxis()) && roi.left() > 0.0
+                && roi.right() > 0.0;
+        const double rawMid =
+                logX ? std::sqrt(roi.left() * roi.right()) : (0.5 * (roi.left() + roi.right()));
+        const double xMid = std::clamp(rawMid, ux.front(), ux.back());
         double midY = uy.front();
         double slope = 0.0;
 
@@ -2175,7 +2544,7 @@ void RoiGadgetTool::recalculate()
 
         for (size_t i = 0; i < n; ++i) {
             double d1 = 0.0, d2 = 0.0;
-            evalSavitzkyGolayAtPoint(ux, uy, xv[i], d1, d2);
+            evalSavitzkyGolayAtPoint(ux, uy, xv[i], d_sg_window, d1, d2);
             d_diff_rows.append({ xv[i], yv[i], d1, d2 });
 
             const double absD1 = std::fabs(d1);
@@ -2196,12 +2565,23 @@ void RoiGadgetTool::recalculate()
             maxAbsSlope = 0.0;
 
         d_diff_preview_pts.reserve(static_cast<int>(n));
+        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+        const bool logY = isAxisLog10(plotPtr, curve->yAxis()) && roi.top() > 0.0
+                && roi.bottom() > roi.top();
         const double yLoPreview = roi.top() + 0.12 * roi.height();
         const double ySpanPreview = 0.76 * roi.height();
         for (const auto &dr : d_diff_rows) {
-            double pyScaled = roi.center().y();
-            if (maxD1 > minD1 + 1e-30 && roi.height() > 0.0)
-                pyScaled = yLoPreview + ((dr.dydx - minD1) / (maxD1 - minD1)) * ySpanPreview;
+            double pyScaled = logY ? std::sqrt(roi.top() * roi.bottom()) : roi.center().y();
+            if (maxD1 > minD1 + 1e-30 && roi.height() > 0.0) {
+                const double frac = (dr.dydx - minD1) / (maxD1 - minD1);
+                if (logY) {
+                    const double ly0 = std::log10(roi.top());
+                    const double ly1 = std::log10(roi.bottom());
+                    pyScaled = std::pow(10.0, ly0 + (0.12 + 0.76 * frac) * (ly1 - ly0));
+                } else {
+                    pyScaled = yLoPreview + frac * ySpanPreview;
+                }
+            }
             d_diff_preview_pts.append(QPointF(dr.x, pyScaled));
         }
 
@@ -2216,10 +2596,12 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Signed_Slope_at_Max"), signedSlopeAtMax)
                          << qMakePair(QString("X_at_Max_Slope"), xAtMaxSlope)
                          << qMakePair(QString("Max_Abs_d2Y_dX2"), maxAbsD2)
-                         << qMakePair(QString("X_at_Max_d2Y_dX2"), xAtMaxD2);
+                         << qMakePair(QString("X_at_Max_d2Y_dX2"), xAtMaxD2)
+                         << qMakePair(QString("SG_Window"), double(d_sg_window));
 
         d_summary_text =
-                tr("Differentiate [%1]\nMax |dY/dX| = %2 at X = %3\nMax |d²Y/dX²| = %4")
+                tr("Differentiate (SG-%1) [%2]\nMax |dY/dX| = %3 at X = %4\nMax |d²Y/dX²| = %5")
+                        .arg(d_sg_window)
                         .arg(curve->title().text())
                         .arg(maxAbsSlope, 0, 'g', 6)
                         .arg(xAtMaxSlope, 0, 'g', 6)
@@ -2432,7 +2814,8 @@ void RoiGadgetTool::clearGadget(Graph *g)
     if (!g)
         return;
     if (g->activeTool()
-        && (g->activeTool()->rtti() == RoiGadget || g->activeTool()->rtti() == VerticalCursor)) {
+        && (g->activeTool()->rtti() == RoiGadget || g->activeTool()->rtti() == VerticalCursor
+            || g->activeTool()->rtti() == DeltaCursor)) {
         g->setActiveTool(nullptr);
     }
     g->replot();
@@ -2589,7 +2972,51 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         }
     }
 
+    QMenu *baseMenu = menu.addMenu(tr("Integrate Baseline"));
+    struct BaseItem {
+        IntegrateBaseline base;
+        const char *label;
+    };
+    const BaseItem baseItems[] = {
+        { BaseYZero, QT_TR_NOOP("Y = 0") },
+        { BaseEndpointsLine, QT_TR_NOOP("Straight Line (Endpoints)") },
+        { BaseRoiMin, QT_TR_NOOP("ROI Minimum") }
+    };
+    for (const auto &bi : baseItems) {
+        QAction *act = baseMenu->addAction(tr(bi.label));
+        act->setCheckable(true);
+        act->setChecked(d_integrate_baseline == bi.base);
+        connect(act, &QAction::triggered, this, [this, b = bi.base]() {
+            d_mode = Integrate;
+            setIntegrateBaseline(b);
+        });
+    }
+
+    QAction *actNegPeaks = menu.addAction(tr("Detect Negative Peaks (Troughs)"));
+    actNegPeaks->setCheckable(true);
+    actNegPeaks->setChecked(d_detect_negative_peaks);
+    connect(actNegPeaks, &QAction::triggered, this, [this](bool on) {
+        d_mode = QuickPeaks;
+        setDetectNegativePeaks(on);
+    });
+
+    QMenu *sgMenu = menu.addMenu(tr("Savitzky-Golay Window"));
+    const int sgWindows[] = { 5, 9, 15, 25 };
+    for (int w : sgWindows) {
+        QAction *act = sgMenu->addAction(tr("%1 Points").arg(w));
+        act->setCheckable(true);
+        act->setChecked(d_sg_window == w);
+        connect(act, &QAction::triggered, this, [this, w]() {
+            d_mode = Differentiate;
+            setSavGolWindow(w);
+        });
+    }
+
     menu.addSeparator();
+    if ((d_mode == QuickFit || d_mode == QuickSigmoidal) && d_overlay_curve_pts.size() >= 2) {
+        QAction *actKeepFit = menu.addAction(tr("Keep Fitted Curve on Graph"));
+        connect(actKeepFit, &QAction::triggered, this, [this]() { keepFittedCurveOnGraph(); });
+    }
     QAction *actOutTable = menu.addAction(tr("Output Results to Worksheet"));
     connect(actOutTable, &QAction::triggered, this, [this]() { createOutputTable(); });
 
@@ -2787,9 +3214,16 @@ bool RoiGadgetTool::eventFilter(QObject *obj, QEvent *event)
                 QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
             return true;
         } else if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right) {
-            const double step = ((ke->key() == Qt::Key_Right) ? 1.0 : -1.0) * 0.02
-                    * std::max(1e-9, d_roi_rect.width());
-            setRoiRect(d_roi_rect.translated(step, 0.0));
+            const double dir = (ke->key() == Qt::Key_Right) ? 1.0 : -1.0;
+            const QRectF roi = d_roi_rect.normalized();
+            if (isAxisLog10(plot, xAxis) && roi.left() > 0.0 && roi.right() > roi.left()) {
+                const double ratio = std::pow(roi.right() / roi.left(), dir * 0.02);
+                setRoiRect(QRectF(QPointF(roi.left() * ratio, roi.top()),
+                                  QPointF(roi.right() * ratio, roi.bottom())));
+            } else {
+                const double step = dir * 0.02 * std::max(1e-9, roi.width());
+                setRoiRect(roi.translated(step, 0.0));
+            }
             return true;
         }
         break;
@@ -2838,7 +3272,15 @@ public:
         if (!std::isfinite(cx))
             return;
 
-        const int px = xMap.transform(cx);
+        int primXAxis = int(QwtPlot::xBottom);
+        int primYAxis = int(QwtPlot::yLeft);
+        primaryAxesForGraph(d_layer_graph, primXAxis, primYAxis);
+        const QwtScaleMap &primXMap = d_layer_graph->plotWidget()
+                ? d_layer_graph->plotWidget()->canvasMap(primXAxis)
+                : xMap;
+
+        const int px = primXMap.transform(cx);
+        const bool exporting = isExportingOrPrinting(d_layer_graph, painter);
         painter->save();
         painter->setClipRect(canvasRect);
         painter->setRenderHint(QPainter::Antialiasing, true);
@@ -2847,12 +3289,14 @@ public:
         painter->setPen(QPen(QColor(215, 25, 28), 1.6, Qt::SolidLine));
         painter->drawLine(px, canvasRect.top(), px, canvasRect.bottom());
 
-        // Top & bottom small triangular cursor handles on canvas border
-        QPolygon topTri;
-        topTri << QPoint(px, canvasRect.top() + 7) << QPoint(px - 5, canvasRect.top())
-               << QPoint(px + 5, canvasRect.top());
-        painter->setBrush(QColor(215, 25, 28));
-        painter->drawPolygon(topTri);
+        // Top small triangular cursor handle on canvas border (hidden during export/print)
+        if (!exporting) {
+            QPolygon topTri;
+            topTri << QPoint(px, canvasRect.top() + 7) << QPoint(px - 5, canvasRect.top())
+                   << QPoint(px + 5, canvasRect.top());
+            painter->setBrush(QColor(215, 25, 28));
+            painter->drawPolygon(topTri);
+        }
 
         // Draw interpolated target rings on each visible curve in this layer
         const QVector<QPair<QString, double>> layerVals =
@@ -2862,15 +3306,19 @@ public:
 
         for (const auto &kv : layerVals) {
             QwtPlotCurve *c = d_layer_graph->curve(kv.first);
+            const QwtScaleMap &cxMap =
+                    (c && d_layer_graph->plotWidget()) ? d_layer_graph->plotWidget()->canvasMap(c->xAxis())
+                                                       : primXMap;
             const QwtScaleMap &cyMap =
                     (c && d_layer_graph->plotWidget()) ? d_layer_graph->plotWidget()->canvasMap(c->yAxis())
                                                        : yMap;
+            const int cpx = cxMap.transform(cx);
             const int py = cyMap.transform(kv.second);
             painter->setBrush(QColor(255, 255, 255, 220));
             painter->setPen(QPen(QColor(215, 25, 28), 2.0));
-            painter->drawEllipse(QPoint(px, py), 4, 4);
+            painter->drawEllipse(QPoint(cpx, py), 4, 4);
             painter->setBrush(QColor(215, 25, 28));
-            painter->drawEllipse(QPoint(px, py), 1, 1);
+            painter->drawEllipse(QPoint(cpx, py), 1, 1);
             tagLines << QString("%1: %2").arg(kv.first).arg(kv.second, 0, 'g', 6);
         }
 
@@ -2899,8 +3347,11 @@ VerticalCursorTool::VerticalCursorTool(ApplicationWindow *app, Graph *graph, boo
 {
     if (d_graph_guard && d_graph_guard->plotWidget()) {
         Plot *plot = d_graph_guard->plotWidget();
+        int xAxis = int(QwtPlot::xBottom);
+        int yAxis = int(QwtPlot::yLeft);
+        primaryAxesForGraph(d_graph_guard, xAxis, yAxis);
         double xMin = 0.0, xMax = 0.0;
-        if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(QwtPlot::xBottom)) {
+        if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(xAxis)) {
             xMin = std::min(xDiv->lowerBound(), xDiv->upperBound());
             xMax = std::max(xDiv->lowerBound(), xDiv->upperBound());
         }
@@ -2910,7 +3361,10 @@ VerticalCursorTool::VerticalCursorTool(ApplicationWindow *app, Graph *graph, boo
                 xMax = c->maxXValue();
             }
         }
-        d_cursor_x = 0.5 * (xMin + xMax);
+        if (isAxisLog10(plot, xAxis) && xMin > 0.0 && xMax > xMin)
+            d_cursor_x = std::sqrt(xMin * xMax);
+        else
+            d_cursor_x = 0.5 * (xMin + xMax);
     }
 
     rebuildOverlaysAndFilters();
@@ -3193,6 +3647,9 @@ bool VerticalCursorTool::eventFilter(QObject *obj, QEvent *event)
         return QObject::eventFilter(obj, event);
 
     Plot *plot = eventGraph->plotWidget();
+    int xAxis = int(QwtPlot::xBottom);
+    int yAxis = int(QwtPlot::yLeft);
+    primaryAxesForGraph(eventGraph, xAxis, yAxis);
 
     switch (event->type()) {
     case QEvent::ContextMenu: {
@@ -3208,7 +3665,7 @@ bool VerticalCursorTool::eventFilter(QObject *obj, QEvent *event)
             d_dragging = true;
             plot->canvas()->setFocus();
             plot->canvas()->setCursor(Qt::SplitHCursor);
-            setCursorX(plot->invTransform(QwtPlot::xBottom, me->pos().x()));
+            setCursorX(plot->invTransform(xAxis, me->pos().x()));
             me->accept();
             return true;
         }
@@ -3218,11 +3675,11 @@ bool VerticalCursorTool::eventFilter(QObject *obj, QEvent *event)
     case QEvent::MouseMove: {
         auto *me = static_cast<QMouseEvent *>(event);
         if (d_dragging && (me->buttons() & Qt::LeftButton)) {
-            setCursorX(plot->invTransform(QwtPlot::xBottom, me->pos().x()));
+            setCursorX(plot->invTransform(xAxis, me->pos().x()));
             me->accept();
             return true;
         } else {
-            const int cPx = plot->transform(QwtPlot::xBottom, d_cursor_x);
+            const int cPx = plot->transform(xAxis, d_cursor_x);
             if (std::abs(me->pos().x() - cPx) <= 6)
                 plot->canvas()->setCursor(Qt::SplitHCursor);
             else
@@ -3246,14 +3703,836 @@ bool VerticalCursorTool::eventFilter(QObject *obj, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right) {
             double xMin = 0.0, xMax = 1.0;
-            if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(QwtPlot::xBottom)) {
+            if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(xAxis)) {
                 xMin = std::min(xDiv->lowerBound(), xDiv->upperBound());
                 xMax = std::max(xDiv->lowerBound(), xDiv->upperBound());
             }
-            const double span = std::max(1e-9, xMax - xMin);
             const double frac = (ke->modifiers() & Qt::ShiftModifier) ? 0.05 : 0.01;
             const double dir = (ke->key() == Qt::Key_Right) ? 1.0 : -1.0;
-            setCursorX(d_cursor_x + dir * frac * span);
+            if (isAxisLog10(plot, xAxis) && xMin > 0.0 && xMax > xMin && d_cursor_x > 0.0) {
+                const double ratio = std::pow(xMax / xMin, dir * frac);
+                setCursorX(d_cursor_x * ratio);
+            } else {
+                const double span = std::max(1e-9, xMax - xMin);
+                setCursorX(d_cursor_x + dir * frac * span);
+            }
+            return true;
+        } else if (ke->key() == Qt::Key_Escape) {
+            QPointer<Graph> gPtr = d_graph_guard;
+            if (gPtr)
+                QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+            return true;
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+
+    return QObject::eventFilter(obj, event);
+}
+
+// ============================================================================
+// DeltaCursorOverlayItem — Dual Crosshair / Delta Cursor Overlay
+// ============================================================================
+
+class DeltaCursorOverlayItem : public QwtPlotItem
+{
+public:
+    explicit DeltaCursorOverlayItem(DeltaCursorTool *owner)
+        : QwtPlotItem(QwtText("OriginDeltaCursorOverlay")), d_owner(owner)
+    {
+        setZ(962.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    ~DeltaCursorOverlayItem() override
+    {
+        if (d_owner && d_owner->d_overlay_item == this)
+            d_owner->d_overlay_item = nullptr;
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 43; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_owner)
+            return;
+
+        const auto &ro = d_owner->d_readout;
+        if (!std::isfinite(ro.x1) || !std::isfinite(ro.x2))
+            return;
+
+        const int px1 = xMap.transform(ro.x1);
+        const int px2 = xMap.transform(ro.x2);
+        const int py1 = std::isfinite(ro.y1) ? yMap.transform(ro.y1) : canvasRect.center().y();
+        const int py2 = std::isfinite(ro.y2) ? yMap.transform(ro.y2) : canvasRect.center().y();
+        const bool exporting = isExportingOrPrinting(d_owner->d_graph_guard, painter);
+
+        painter->save();
+        painter->setClipRect(canvasRect);
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        // 1. Shaded span between C1 and C2
+        const int spanL = std::min(px1, px2);
+        const int spanR = std::max(px1, px2);
+        if (spanR > spanL) {
+            const QRect spanRect(spanL, canvasRect.top(), spanR - spanL, canvasRect.height());
+            painter->fillRect(spanRect, QColor(33, 150, 243, exporting ? 22 : 34));
+        }
+
+        if (d_owner->d_span_poly_pts.size() >= 3) {
+            QPolygonF polyPx;
+            polyPx.reserve(d_owner->d_span_poly_pts.size());
+            for (const QPointF &pt : d_owner->d_span_poly_pts)
+                polyPx.append(QPointF(xMap.transform(pt.x()), yMap.transform(pt.y())));
+            painter->setBrush(QColor(25, 118, 210, 48));
+            painter->setPen(Qt::NoPen);
+            painter->drawPolygon(polyPx);
+        }
+
+        const QColor colC1(25, 105, 210); // Solid blue
+        const QColor colC2(210, 30, 45);  // Solid crimson
+
+        // 2. Horizontal crosshairs when enabled (or in FreeScreenCrosshair mode)
+        if (d_owner->d_horiz_crosshair
+            || d_owner->d_snap_mode == DeltaCursorTool::FreeScreenCrosshair) {
+            painter->setPen(QPen(QColor(25, 105, 210, 170), 1.2, Qt::DashLine));
+            painter->drawLine(canvasRect.left(), py1, canvasRect.right(), py1);
+            painter->setPen(QPen(QColor(210, 30, 45, 170), 1.2, Qt::DashLine));
+            painter->drawLine(canvasRect.left(), py2, canvasRect.right(), py2);
+        }
+
+        // 3. Vertical cursor lines C1 (solid blue) and C2 (solid crimson)
+        painter->setPen(QPen(colC1, 1.8, Qt::SolidLine));
+        painter->drawLine(px1, canvasRect.top(), px1, canvasRect.bottom());
+
+        painter->setPen(QPen(colC2, 1.8, Qt::SolidLine));
+        painter->drawLine(px2, canvasRect.top(), px2, canvasRect.bottom());
+
+        // Interactive top handle triangles (hidden during export/print)
+        if (!exporting) {
+            QPolygon tri1;
+            tri1 << QPoint(px1, canvasRect.top() + 8) << QPoint(px1 - 5, canvasRect.top())
+                 << QPoint(px1 + 5, canvasRect.top());
+            painter->setBrush(colC1);
+            painter->setPen(Qt::NoPen);
+            painter->drawPolygon(tri1);
+
+            QPolygon tri2;
+            tri2 << QPoint(px2, canvasRect.top() + 8) << QPoint(px2 - 5, canvasRect.top())
+                 << QPoint(px2 + 5, canvasRect.top());
+            painter->setBrush(colC2);
+            painter->drawPolygon(tri2);
+        }
+
+        // 4. Target rings + C1 / C2 badges in Arial
+        painter->setBrush(QColor(255, 255, 255, 230));
+        painter->setPen(QPen(colC1, 2.0));
+        painter->drawEllipse(QPoint(px1, py1), 4, 4);
+        painter->setBrush(colC2);
+        painter->setPen(QPen(colC2, 2.0));
+        painter->setBrush(QColor(255, 255, 255, 230));
+        painter->drawEllipse(QPoint(px2, py2), 4, 4);
+
+        // Chord connecting (x1, y1) -> (x2, y2)
+        painter->setPen(QPen(QColor(70, 70, 70, 175), 1.2, Qt::DotLine));
+        painter->drawLine(px1, py1, px2, py2);
+
+        QFont tagFnt("Arial", 8, QFont::Bold);
+        painter->setFont(tagFnt);
+        const QFontMetrics tfm(tagFnt);
+        auto drawBadge = [&](int xPx, const QString &lbl, const QColor &col) {
+            const int bw = tfm.horizontalAdvance(lbl) + 8;
+            const int bh = tfm.height() + 2;
+            const int bx = std::clamp(xPx + 4, canvasRect.left() + 2, canvasRect.right() - bw - 2);
+            const int by = canvasRect.top() + 10;
+            const QRect r(bx, by, bw, bh);
+            painter->setBrush(col);
+            painter->setPen(Qt::NoPen);
+            painter->drawRoundedRect(r, 3.0, 3.0);
+            painter->setPen(Qt::white);
+            painter->drawText(r.left() + 4, r.top() + 1 + tfm.ascent(), lbl);
+        };
+        drawBadge(px1, QStringLiteral("C1"), colC1);
+        drawBadge(px2, QStringLiteral("C2"), colC2);
+
+        // 5. Arial readout box
+        const QPoint anchor(std::max(px1, px2), canvasRect.top() + 28);
+        drawReadoutBox(painter, canvasRect, anchor, d_owner->d_readout_text, QColor(25, 105, 210),
+                       QColor(255, 255, 255, 238), true);
+
+        painter->restore();
+    }
+
+    DeltaCursorTool *d_owner;
+};
+
+// ============================================================================
+// DeltaCursorTool Implementation
+// ============================================================================
+
+DeltaCursorTool::DeltaCursorTool(ApplicationWindow *app, Graph *graph, SnapMode mode)
+    : QObject(nullptr),
+      PlotToolInterface(graph),
+      d_app(app),
+      d_graph_guard(graph),
+      d_snap_mode(mode),
+      d_horiz_crosshair(true)
+{
+    if (d_graph_guard && d_graph_guard->plotWidget()) {
+        d_overlay_item = new DeltaCursorOverlayItem(this);
+        d_overlay_item->attach(d_graph_guard->plotWidget());
+        if (QwtPlotCanvas *canvas = d_graph_guard->plotWidget()->canvas()) {
+            canvas->setMouseTracking(true);
+            canvas->installEventFilter(this);
+            canvas->setFocus();
+        }
+    }
+    initDefaultPositions();
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+DeltaCursorTool::~DeltaCursorTool()
+{
+    if (d_graph_guard && d_graph_guard->plotWidget()) {
+        if (QwtPlotCanvas *canvas = d_graph_guard->plotWidget()->canvas()) {
+            canvas->removeEventFilter(this);
+            canvas->unsetCursor();
+        }
+    }
+    if (d_overlay_item) {
+        d_overlay_item->d_owner = nullptr;
+        d_overlay_item->detach();
+        delete d_overlay_item;
+        d_overlay_item = nullptr;
+    }
+}
+
+QwtPlotCurve *DeltaCursorTool::resolveTargetCurve()
+{
+    if (!d_graph_guard)
+        return nullptr;
+
+    QwtPlotCurve *chosen = nullptr;
+    if (!d_curve_title.isEmpty())
+        chosen = d_graph_guard->curve(d_curve_title);
+
+    if (!chosen) {
+        const QStringList analysable = d_graph_guard->analysableCurvesList();
+        for (const QString &name : analysable) {
+            QwtPlotCurve *c = d_graph_guard->curve(name);
+            if (c && c->isVisible() && c->dataSize() > 0) {
+                chosen = c;
+                d_curve_title = name;
+                break;
+            }
+        }
+    }
+
+    if (!chosen) {
+        for (int i = 0; i < d_graph_guard->curves(); ++i) {
+            QwtPlotCurve *c = d_graph_guard->curve(i);
+            if (c && c->isVisible() && c->dataSize() > 0) {
+                chosen = c;
+                d_curve_title = c->title().text();
+                break;
+            }
+        }
+    }
+
+    if (auto *dc = dynamic_cast<DataCurve *>(chosen)) {
+        if (dc->table()) {
+            connect(dc->table(), &Table::modifiedData, this,
+                    &DeltaCursorTool::onSourceTableModified, Qt::UniqueConnection);
+        }
+    }
+    if (chosen && d_overlay_item)
+        d_overlay_item->setAxis(chosen->xAxis(), chosen->yAxis());
+
+    return chosen;
+}
+
+void DeltaCursorTool::onSourceTableModified(Table *, const QString &)
+{
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::initDefaultPositions()
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()) {
+        d_x1 = 0.25;
+        d_x2 = 0.75;
+        d_y1 = 0.0;
+        d_y2 = 0.0;
+        return;
+    }
+
+    Plot *plot = d_graph_guard->plotWidget();
+    QwtPlotCurve *c = resolveTargetCurve();
+    const int xAxis = c ? c->xAxis() : int(QwtPlot::xBottom);
+    const int yAxis = c ? c->yAxis() : int(QwtPlot::yLeft);
+
+    double xMin = 0.0, xMax = 0.0, yMin = 0.0, yMax = 0.0;
+    if (const QwtScaleDiv *xDiv = plot->axisScaleDiv(xAxis)) {
+        xMin = std::min(xDiv->lowerBound(), xDiv->upperBound());
+        xMax = std::max(xDiv->lowerBound(), xDiv->upperBound());
+    }
+    if (const QwtScaleDiv *yDiv = plot->axisScaleDiv(yAxis)) {
+        yMin = std::min(yDiv->lowerBound(), yDiv->upperBound());
+        yMax = std::max(yDiv->lowerBound(), yDiv->upperBound());
+    }
+    if (c && c->dataSize() > 0) {
+        if (!(xMax > xMin)) {
+            xMin = c->minXValue();
+            xMax = c->maxXValue();
+        }
+        if (!(yMax > yMin)) {
+            yMin = c->minYValue();
+            yMax = c->maxYValue();
+        }
+    }
+    if (!(xMax > xMin)) {
+        xMin = 0.0;
+        xMax = 10.0;
+    }
+    if (!(yMax > yMin)) {
+        yMin = 0.0;
+        yMax = 10.0;
+    }
+
+    if (isAxisLog10(plot, xAxis) && xMax > 0.0) {
+        const double sxMin = (xMin > 0.0) ? xMin : std::max(1e-100, xMax * 1e-4);
+        const double lx0 = std::log10(sxMin);
+        const double lx1 = std::log10(xMax);
+        d_x1 = std::pow(10.0, lx0 + 0.30 * (lx1 - lx0));
+        d_x2 = std::pow(10.0, lx0 + 0.70 * (lx1 - lx0));
+    } else {
+        d_x1 = xMin + 0.30 * (xMax - xMin);
+        d_x2 = xMin + 0.70 * (xMax - xMin);
+    }
+
+    if (isAxisLog10(plot, yAxis) && yMax > 0.0) {
+        const double syMin = (yMin > 0.0) ? yMin : std::max(1e-100, yMax * 1e-4);
+        const double ly0 = std::log10(syMin);
+        const double ly1 = std::log10(yMax);
+        d_y1 = std::pow(10.0, ly0 + 0.35 * (ly1 - ly0));
+        d_y2 = std::pow(10.0, ly0 + 0.65 * (ly1 - ly0));
+    } else {
+        d_y1 = yMin + 0.35 * (yMax - yMin);
+        d_y2 = yMin + 0.65 * (yMax - yMin);
+    }
+}
+
+void DeltaCursorTool::setCursorPositions(double x1, double x2)
+{
+    if (!std::isfinite(x1) || !std::isfinite(x2))
+        return;
+    d_x1 = x1;
+    d_x2 = x2;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::setCursorPoints2D(double x1, double y1, double x2, double y2)
+{
+    if (!std::isfinite(x1) || !std::isfinite(y1) || !std::isfinite(x2) || !std::isfinite(y2))
+        return;
+    d_x1 = x1;
+    d_y1 = y1;
+    d_x2 = x2;
+    d_y2 = y2;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::setHorizontalCrosshairEnabled(bool on)
+{
+    d_horiz_crosshair = on;
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::setSnapMode(SnapMode mode)
+{
+    d_snap_mode = mode;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::setTargetCurve(const QString &curveTitle)
+{
+    d_curve_title = curveTitle;
+    recalculate();
+    if (d_graph_guard)
+        d_graph_guard->replot();
+}
+
+void DeltaCursorTool::recalculate()
+{
+    d_span_poly_pts.clear();
+    QwtPlotCurve *c = resolveTargetCurve();
+
+    std::vector<std::pair<double, double>> pts;
+    if (c && c->dataSize() > 0) {
+        const DataCurve *dc = dynamic_cast<const DataCurve *>(c);
+        const int n = c->dataSize();
+        pts.reserve(size_t(n));
+        for (int i = 0; i < n; ++i) {
+            if (dc && dc->isPointMasked(i))
+                continue;
+            const double px = c->x(i);
+            const double py = c->y(i);
+            if (std::isfinite(px) && std::isfinite(py))
+                pts.emplace_back(px, py);
+        }
+        std::stable_sort(pts.begin(), pts.end(),
+                         [](const auto &a, const auto &b) { return a.first < b.first; });
+    }
+
+    auto interpAt = [&](double xq) -> double {
+        if (pts.empty())
+            return 0.0;
+        if (pts.size() == 1 || xq <= pts.front().first)
+            return pts.front().second;
+        if (xq >= pts.back().first)
+            return pts.back().second;
+        auto it = std::lower_bound(pts.begin(), pts.end(), xq,
+                                   [](const auto &pt, double val) { return pt.first < val; });
+        if (it != pts.end() && std::fabs(it->first - xq) <= 1e-15)
+            return it->second;
+        const size_t idx = (it == pts.begin()) ? 0 : size_t(std::distance(pts.begin(), it) - 1);
+        const double x0 = pts[idx].first;
+        const double y0 = pts[idx].second;
+        const double x1 = pts[idx + 1].first;
+        const double y1 = pts[idx + 1].second;
+        const double dx = x1 - x0;
+        return (std::fabs(dx) > 1e-15) ? (y0 + ((xq - x0) / dx) * (y1 - y0)) : y0;
+    };
+
+    auto nearestPt = [&](double xq) -> std::pair<double, double> {
+        if (pts.empty())
+            return { xq, 0.0 };
+        size_t bestIdx = 0;
+        double bestDist = std::fabs(pts[0].first - xq);
+        for (size_t i = 1; i < pts.size(); ++i) {
+            const double d = std::fabs(pts[i].first - xq);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = i;
+            }
+        }
+        return pts[bestIdx];
+    };
+
+    double rx1 = d_x1, ry1 = d_y1, rx2 = d_x2, ry2 = d_y2;
+    if (!pts.empty()) {
+        if (d_snap_mode == SnapInterpolateCurve) {
+            ry1 = interpAt(rx1);
+            ry2 = interpAt(rx2);
+            d_y1 = ry1;
+            d_y2 = ry2;
+        } else if (d_snap_mode == SnapNearestPoint) {
+            const auto p1 = nearestPt(rx1);
+            const auto p2 = nearestPt(rx2);
+            rx1 = p1.first;
+            ry1 = p1.second;
+            rx2 = p2.first;
+            ry2 = p2.second;
+            d_x1 = rx1;
+            d_y1 = ry1;
+            d_x2 = rx2;
+            d_y2 = ry2;
+        }
+    }
+
+    d_readout.x1 = rx1;
+    d_readout.y1 = ry1;
+    d_readout.x2 = rx2;
+    d_readout.y2 = ry2;
+    d_readout.dx = rx2 - rx1;
+    d_readout.dy = ry2 - ry1;
+    d_readout.slope = (std::fabs(d_readout.dx) > 1e-30) ? (d_readout.dy / d_readout.dx) : 0.0;
+    d_readout.ratio = (std::fabs(ry1) > 1e-30) ? (ry2 / ry1) : 0.0;
+
+    const double xLo = std::min(rx1, rx2);
+    const double xHi = std::max(rx1, rx2);
+    if (!pts.empty()) {
+        std::vector<std::pair<double, double>> spanPts;
+        spanPts.reserve(pts.size() + 2);
+        const double yLo = interpAt(xLo);
+        const double yHi = interpAt(xHi);
+        spanPts.emplace_back(xLo, yLo);
+        for (const auto &pt : pts) {
+            if (pt.first > xLo + 1e-15 && pt.first < xHi - 1e-15)
+                spanPts.push_back(pt);
+        }
+        if (xHi > xLo + 1e-15)
+            spanPts.emplace_back(xHi, yHi);
+
+        double area = 0.0;
+        double y2Integral = 0.0;
+        double minY = spanPts.front().second;
+        double maxY = spanPts.front().second;
+        for (size_t i = 0; i < spanPts.size(); ++i) {
+            minY = std::min(minY, spanPts[i].second);
+            maxY = std::max(maxY, spanPts[i].second);
+            if (i + 1 < spanPts.size()) {
+                const double segDx = spanPts[i + 1].first - spanPts[i].first;
+                const double ya = spanPts[i].second;
+                const double yb = spanPts[i + 1].second;
+                if (segDx > 0.0) {
+                    area += 0.5 * (ya + yb) * segDx;
+                    y2Integral += (segDx / 3.0) * (ya * ya + ya * yb + yb * yb);
+                }
+            }
+        }
+        d_readout.area = area;
+        d_readout.rms = (xHi > xLo + 1e-30)
+                ? std::sqrt(std::max(0.0, y2Integral / (xHi - xLo)))
+                : std::fabs(0.5 * (ry1 + ry2));
+        d_readout.minY = minY;
+        d_readout.maxY = maxY;
+
+        Plot *plotPtr = d_graph_guard ? d_graph_guard->plotWidget() : nullptr;
+        const bool logY = c && isAxisLog10(plotPtr, c->yAxis());
+        const double baseY = logY ? std::max(1e-100, minY > 0.0 ? minY * 0.5 : 1e-12) : 0.0;
+        if (spanPts.size() >= 2) {
+            d_span_poly_pts.reserve(static_cast<int>(spanPts.size()) + 2);
+            d_span_poly_pts.append(QPointF(spanPts.front().first, baseY));
+            for (const auto &sp : spanPts)
+                d_span_poly_pts.append(QPointF(sp.first, logY ? std::max(1e-100, sp.second) : sp.second));
+            d_span_poly_pts.append(QPointF(spanPts.back().first, baseY));
+        }
+    } else {
+        d_readout.area = 0.5 * (ry1 + ry2) * (xHi - xLo);
+        d_readout.rms = std::sqrt(std::max(0.0, (ry1 * ry1 + ry1 * ry2 + ry2 * ry2) / 3.0));
+        d_readout.minY = std::min(ry1, ry2);
+        d_readout.maxY = std::max(ry1, ry2);
+    }
+
+    const QString titleLabel = d_curve_title.isEmpty() ? tr("Screen") : d_curve_title;
+    d_readout_text = tr("Delta Cursor [%1]\n"
+                        "C1: (%2, %3) | C2: (%4, %5)\n"
+                        "ΔX = %6, ΔY = %7, Slope = %8\n"
+                        "Area = %9, RMS = %10")
+                             .arg(titleLabel)
+                             .arg(d_readout.x1, 0, 'g', 6)
+                             .arg(d_readout.y1, 0, 'g', 6)
+                             .arg(d_readout.x2, 0, 'g', 6)
+                             .arg(d_readout.y2, 0, 'g', 6)
+                             .arg(d_readout.dx, 0, 'g', 6)
+                             .arg(d_readout.dy, 0, 'g', 6)
+                             .arg(d_readout.slope, 0, 'g', 6)
+                             .arg(d_readout.area, 0, 'g', 6)
+                             .arg(d_readout.rms, 0, 'g', 6);
+
+    if (d_app)
+        d_app->setStatusBarText(d_readout_text.simplified());
+}
+
+void DeltaCursorTool::stampCalloutOnGraph()
+{
+    if (!d_graph_guard)
+        return;
+
+    recalculate();
+    const QString callout = tr("ΔX = %1, ΔY = %2\nSlope = %3, Area = %4\nC1(%5, %6) -> C2(%7, %8)")
+                                    .arg(d_readout.dx, 0, 'g', 6)
+                                    .arg(d_readout.dy, 0, 'g', 6)
+                                    .arg(d_readout.slope, 0, 'g', 6)
+                                    .arg(d_readout.area, 0, 'g', 6)
+                                    .arg(d_readout.x1, 0, 'g', 5)
+                                    .arg(d_readout.y1, 0, 'g', 5)
+                                    .arg(d_readout.x2, 0, 'g', 5)
+                                    .arg(d_readout.y2, 0, 'g', 5);
+
+    if (Legend *mrk = d_graph_guard->newLegend(callout)) {
+        mrk->setFont(QFont("Arial", 9));
+        mrk->setFrameStyle(Legend::Line);
+        mrk->setBackgroundColor(QColor(255, 255, 255, 238));
+        mrk->setOriginCoord(0.5 * (d_readout.x1 + d_readout.x2), d_readout.maxY);
+        d_graph_guard->replot();
+        if (d_app)
+            d_app->modifiedProject();
+    }
+}
+
+Table *DeltaCursorTool::createReadoutTable()
+{
+    if (!d_app)
+        return nullptr;
+    recalculate();
+    const QString name = d_app->generateUniqueName("DeltaCursor");
+    Table *t = d_app->newTable(12, 2, name, tr("Delta Cursor Readout"));
+    if (!t)
+        return nullptr;
+    t->setColName(0, "Metric");
+    t->setColumnType(0, SciDAVis::ColumnMode::Text);
+    t->setColName(1, "Value");
+
+    const QPair<QString, double> rows[12] = {
+        { "X1", d_readout.x1 },       { "Y1", d_readout.y1 },
+        { "X2", d_readout.x2 },       { "Y2", d_readout.y2 },
+        { "Delta_X", d_readout.dx },  { "Delta_Y", d_readout.dy },
+        { "Slope", d_readout.slope }, { "Ratio_Y2_Y1", d_readout.ratio },
+        { "Area", d_readout.area },   { "RMS", d_readout.rms },
+        { "Min_Y", d_readout.minY },  { "Max_Y", d_readout.maxY }
+    };
+    for (int r = 0; r < 12; ++r) {
+        t->setText(r, 0, rows[r].first);
+        t->setCell(r, 1, rows[r].second);
+    }
+    return t;
+}
+
+DeltaCursorTool *DeltaCursorTool::attach(ApplicationWindow *app, Graph *g, SnapMode mode)
+{
+    if (!g)
+        return nullptr;
+    g->setActiveTool(nullptr);
+    DeltaCursorTool *tool = new DeltaCursorTool(app, g, mode);
+    g->setActiveTool(tool);
+    g->replot();
+    return tool;
+}
+
+DeltaCursorTool::DragTarget DeltaCursorTool::hitTestPixelPos(const QPoint &pos) const
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget())
+        return DragNone;
+
+    Plot *plot = d_graph_guard->plotWidget();
+    const int xAxis = d_overlay_item ? d_overlay_item->xAxis() : int(QwtPlot::xBottom);
+    const int px1 = plot->transform(xAxis, d_readout.x1);
+    const int px2 = plot->transform(xAxis, d_readout.x2);
+
+    const int d1 = std::abs(pos.x() - px1);
+    const int d2 = std::abs(pos.x() - px2);
+    const int tol = 7;
+    if (d1 <= tol && d1 <= d2)
+        return DragCursor1;
+    if (d2 <= tol)
+        return DragCursor2;
+    if (pos.x() > std::min(px1, px2) + tol && pos.x() < std::max(px1, px2) - tol)
+        return DragSpan;
+    return DragNone;
+}
+
+void DeltaCursorTool::updateCursorForPos(const QPoint &pos)
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget() || !d_graph_guard->plotWidget()->canvas())
+        return;
+    QWidget *canvas = d_graph_guard->plotWidget()->canvas();
+    switch (hitTestPixelPos(pos)) {
+    case DragCursor1:
+    case DragCursor2:
+        canvas->setCursor(d_snap_mode == FreeScreenCrosshair ? Qt::CrossCursor : Qt::SplitHCursor);
+        break;
+    case DragSpan:
+        canvas->setCursor(Qt::SizeAllCursor);
+        break;
+    default:
+        canvas->setCursor(Qt::CrossCursor);
+        break;
+    }
+}
+
+void DeltaCursorTool::showContextMenu(const QPoint &globalPos)
+{
+    if (!d_graph_guard)
+        return;
+
+    QMenu menu;
+    QAction *actSnapCurve = menu.addAction(tr("Snap to Curve"));
+    actSnapCurve->setCheckable(true);
+    actSnapCurve->setChecked(d_snap_mode == SnapInterpolateCurve);
+    connect(actSnapCurve, &QAction::triggered, this,
+            [this]() { setSnapMode(SnapInterpolateCurve); });
+
+    QAction *actSnapNearest = menu.addAction(tr("Nearest Point"));
+    actSnapNearest->setCheckable(true);
+    actSnapNearest->setChecked(d_snap_mode == SnapNearestPoint);
+    connect(actSnapNearest, &QAction::triggered, this, [this]() { setSnapMode(SnapNearestPoint); });
+
+    QAction *actFree = menu.addAction(tr("Free Crosshair"));
+    actFree->setCheckable(true);
+    actFree->setChecked(d_snap_mode == FreeScreenCrosshair);
+    connect(actFree, &QAction::triggered, this, [this]() { setSnapMode(FreeScreenCrosshair); });
+
+    menu.addSeparator();
+    QAction *actHoriz = menu.addAction(tr("Horizontal Crosshair"));
+    actHoriz->setCheckable(true);
+    actHoriz->setChecked(d_horiz_crosshair);
+    connect(actHoriz, &QAction::triggered, this,
+            [this](bool on) { setHorizontalCrosshairEnabled(on); });
+
+    const QStringList curveNames = d_graph_guard->analysableCurvesList();
+    if (!curveNames.isEmpty()) {
+        QMenu *curveMenu = menu.addMenu(tr("Target Curve"));
+        for (const QString &cn : curveNames) {
+            QAction *act = curveMenu->addAction(cn);
+            act->setCheckable(true);
+            act->setChecked(cn == d_curve_title);
+            connect(act, &QAction::triggered, this, [this, cn]() { setTargetCurve(cn); });
+        }
+    }
+
+    menu.addSeparator();
+    QAction *actStamp = menu.addAction(tr("Stamp ΔX/ΔY Callout on Graph"));
+    connect(actStamp, &QAction::triggered, this, [this]() { stampCalloutOnGraph(); });
+
+    QAction *actTable = menu.addAction(tr("Output Readout to Worksheet"));
+    connect(actTable, &QAction::triggered, this, [this]() { createReadoutTable(); });
+
+    QAction *actCopy = menu.addAction(tr("Copy Readout to Clipboard"));
+    connect(actCopy, &QAction::triggered, this,
+            [this]() { QApplication::clipboard()->setText(d_readout_text); });
+
+    menu.addSeparator();
+    QAction *actClose = menu.addAction(tr("Close Cursor"));
+    QPointer<Graph> gPtr = d_graph_guard;
+    connect(actClose, &QAction::triggered, this, [gPtr]() {
+        if (gPtr)
+            QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+    });
+
+    menu.exec(globalPos);
+}
+
+bool DeltaCursorTool::eventFilter(QObject *obj, QEvent *event)
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()
+        || obj != d_graph_guard->plotWidget()->canvas())
+        return QObject::eventFilter(obj, event);
+
+    Plot *plot = d_graph_guard->plotWidget();
+    const int xAxis = d_overlay_item ? d_overlay_item->xAxis() : int(QwtPlot::xBottom);
+    const int yAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
+
+    switch (event->type()) {
+    case QEvent::ContextMenu: {
+        auto *ce = static_cast<QContextMenuEvent *>(event);
+        showContextMenu(ce->globalPos());
+        ce->accept();
+        return true;
+    }
+
+    case QEvent::MouseButtonPress: {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::RightButton) {
+            showContextMenu(me->globalPos());
+            me->accept();
+            return true;
+        }
+        if (me->button() == Qt::LeftButton && !(me->modifiers() & Qt::AltModifier)) {
+            DragTarget hit = hitTestPixelPos(me->pos());
+            if (hit == DragNone) {
+                const int px1 = plot->transform(xAxis, d_readout.x1);
+                const int px2 = plot->transform(xAxis, d_readout.x2);
+                hit = (std::abs(me->pos().x() - px1) <= std::abs(me->pos().x() - px2))
+                        ? DragCursor1
+                        : DragCursor2;
+                const double nx = plot->invTransform(xAxis, me->pos().x());
+                const double ny = plot->invTransform(yAxis, me->pos().y());
+                if (hit == DragCursor1) {
+                    d_x1 = nx;
+                    if (d_snap_mode == FreeScreenCrosshair)
+                        d_y1 = ny;
+                } else {
+                    d_x2 = nx;
+                    if (d_snap_mode == FreeScreenCrosshair)
+                        d_y2 = ny;
+                }
+                recalculate();
+                d_graph_guard->replot();
+            }
+            d_drag_target = hit;
+            d_drag_start_pos = me->pos();
+            d_drag_start_x1 = d_readout.x1;
+            d_drag_start_y1 = d_readout.y1;
+            d_drag_start_x2 = d_readout.x2;
+            d_drag_start_y2 = d_readout.y2;
+            plot->canvas()->setFocus();
+            me->accept();
+            return true;
+        }
+        break;
+    }
+
+    case QEvent::MouseMove: {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (d_drag_target == DragNone) {
+            updateCursorForPos(me->pos());
+            return false;
+        }
+        if (!(me->buttons() & Qt::LeftButton)) {
+            d_drag_target = DragNone;
+            updateCursorForPos(me->pos());
+            return false;
+        }
+
+        if (d_drag_target == DragCursor1) {
+            d_x1 = plot->invTransform(xAxis, me->pos().x());
+            if (d_snap_mode == FreeScreenCrosshair)
+                d_y1 = plot->invTransform(yAxis, me->pos().y());
+        } else if (d_drag_target == DragCursor2) {
+            d_x2 = plot->invTransform(xAxis, me->pos().x());
+            if (d_snap_mode == FreeScreenCrosshair)
+                d_y2 = plot->invTransform(yAxis, me->pos().y());
+        } else if (d_drag_target == DragSpan) {
+            const QPoint delta = me->pos() - d_drag_start_pos;
+            const int px1Orig = plot->transform(xAxis, d_drag_start_x1);
+            const int px2Orig = plot->transform(xAxis, d_drag_start_x2);
+            d_x1 = plot->invTransform(xAxis, px1Orig + delta.x());
+            d_x2 = plot->invTransform(xAxis, px2Orig + delta.x());
+            if (d_snap_mode == FreeScreenCrosshair) {
+                const int py1Orig = plot->transform(yAxis, d_drag_start_y1);
+                const int py2Orig = plot->transform(yAxis, d_drag_start_y2);
+                d_y1 = plot->invTransform(yAxis, py1Orig + delta.y());
+                d_y2 = plot->invTransform(yAxis, py2Orig + delta.y());
+            }
+        }
+        recalculate();
+        d_graph_guard->replot();
+        me->accept();
+        return true;
+    }
+
+    case QEvent::MouseButtonRelease: {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (d_drag_target != DragNone && me->button() == Qt::LeftButton) {
+            d_drag_target = DragNone;
+            updateCursorForPos(me->pos());
+            me->accept();
+            return true;
+        }
+        break;
+    }
+
+    case QEvent::KeyPress: {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right) {
+            const double dir = (ke->key() == Qt::Key_Right) ? 1.0 : -1.0;
+            const double frac = (ke->modifiers() & Qt::ShiftModifier) ? 0.05 : 0.01;
+            const int px1 = plot->transform(xAxis, d_x1);
+            const int px2 = plot->transform(xAxis, d_x2);
+            const int stepPx = std::max(1, int(std::round(frac * std::max(100, plot->canvas()->width()))));
+            d_x1 = plot->invTransform(xAxis, px1 + int(dir) * stepPx);
+            d_x2 = plot->invTransform(xAxis, px2 + int(dir) * stepPx);
+            recalculate();
+            d_graph_guard->replot();
             return true;
         } else if (ke->key() == Qt::Key_Escape) {
             QPointer<Graph> gPtr = d_graph_guard;

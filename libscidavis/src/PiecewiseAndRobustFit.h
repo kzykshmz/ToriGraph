@@ -28,6 +28,7 @@ public:
         bool converged = false;
         int segments = 2;
         QVector<double> breakpointsX;
+        QVector<double> breakpointsXSE;
         QVector<double> breakpointsY;
         QVector<double> slopes;
         double intercept0 = 0.0;
@@ -76,6 +77,22 @@ public:
         MultiLayer *diagnosticGraph = nullptr;
     };
 
+    struct LogisticResult {
+        bool converged = false;
+        QVector<double> betas;      // beta_0, beta_1..beta_k
+        QVector<double> stdErrors;
+        QVector<double> waldZ;
+        QVector<double> pValues;
+        QVector<double> oddsRatios; // exp(beta_j) for j >= 1
+        double logLikelihood = 0.0;
+        double lrChi2 = 0.0;
+        double lrPValue = 1.0;
+        double mcFaddenR2 = 0.0;
+        double aic = 0.0;
+        Table *reportTable = nullptr;
+        MultiLayer *probGraph = nullptr;
+    };
+
     static PiecewiseResult fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
                                               const QString &curveTitle, int numSegments = 2,
                                               bool annotateGraph = true);
@@ -91,11 +108,16 @@ public:
                                                  const QString &yColName,
                                                  const QStringList &xColNames,
                                                  bool plotDiagnostics = true);
+    static LogisticResult runLogisticRegression(ApplicationWindow *app, Table *srcTable,
+                                                const QString &yBinaryCol,
+                                                const QStringList &xColNames,
+                                                bool plotProbCurve = true);
 
     static void showPiecewiseFitDialog(ApplicationWindow *app, Graph *g);
     static void showRobustFitDialog(ApplicationWindow *app, Graph *g);
     static void showCompareDatasetsDialog(ApplicationWindow *app, Graph *g);
     static void showMLRDialog(ApplicationWindow *app);
+    static void showLogisticRegressionDialog(ApplicationWindow *app);
 };
 
 #endif // PIECEWISE_AND_ROBUST_FIT_H

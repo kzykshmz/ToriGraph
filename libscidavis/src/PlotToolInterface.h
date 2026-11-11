@@ -66,8 +66,10 @@ public:
         RangeSelector,
         TranslateCurve,
         RoiGadget,
-        VerticalCursor
+        VerticalCursor,
+        DeltaCursor
     };
+    using RttiValues = RTTI;
     virtual RTTI rtti() const = 0;
 
     PlotToolInterface(Graph *graph) { d_graph = graph; }

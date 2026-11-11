@@ -31,6 +31,7 @@
 
 #include <QObject>
 #include <QMap>
+#include <QVector>
 
 #include "Filter.h"
 #include "Script.h"
@@ -59,6 +60,25 @@ public:
 
     enum Algorithm { ScaledLevenbergMarquardt, UnscaledLevenbergMarquardt, NelderMeadSimplex };
     enum ErrorSource { UnknownErrors, AssociatedErrors, PoissonErrors, CustomErrors };
+    enum WeightingMethod {
+        WeightNone = 0,
+        WeightInstrumental = 1,
+        WeightDirect = 2,
+        WeightStatistical = 3,
+        WeightProportional = 4,
+        WeightVariance = 5
+    };
+
+    struct BootstrapResult
+    {
+        bool valid = false;
+        int nSuccess = 0;
+        QVector<double> meanParams;
+        QVector<double> sdParams;
+        QVector<double> ciLow;
+        QVector<double> ciHigh;
+        Table *reportTable = nullptr;
+    };
 
     Fit(ApplicationWindow *parent, Graph *g = 0, QString name = QString());
     virtual ~Fit();
@@ -68,6 +88,15 @@ public:
 
     //! Sets the data set to be used as source of Y errors.
     bool setYErrorSource(ErrorSource err, const QString &colName = {}, bool fail_silently = false);
+    bool setWeightingMethod(WeightingMethod m, const QString &colName = QString());
+    WeightingMethod weightingMethod() const { return d_weighting_method; }
+
+    bool setLinearConstraintExpr(const QString &exprList);
+    QString linearConstraintExpr() const { return d_linear_constraint_expr; }
+
+    BootstrapResult runBootstrapCI(int nSamples = 300, double confLevel = 0.95,
+                                   int mode /*0=Residual,1=Wild*/ = 0);
+    bool evaluatePreviewCurve(std::vector<double> &X, std::vector<double> &Y, int nPoints = 200);
 
     void setDataCurve(int curve, double start, double end);
 
@@ -290,6 +319,10 @@ protected:
     std::vector<bool> d_param_bounded;
     std::vector<double> d_param_min;
     std::vector<double> d_param_max;
+
+    //! OriginPro weighting method and linear equality constraint expression
+    WeightingMethod d_weighting_method = WeightNone;
+    QString d_linear_constraint_expr;
 
     //! Confidence and prediction band flags and confidence levels
     bool d_conf_band = false;
