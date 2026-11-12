@@ -85,7 +85,8 @@ private slots:
 private:
     void clearButtons();
     QToolButton *addActionBtn(const QString &text, const QString &tooltip, const char *slotName,
-                              bool checkable = false, bool checked = false);
+                              bool checkable = false, bool checked = false,
+                              const QString &semanticIconId = QString());
     void addSeparatorLine();
     void showNearGlobalPos(const QPoint &globalPos);
     bool isLegendValid() const;

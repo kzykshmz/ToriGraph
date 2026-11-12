@@ -44,6 +44,7 @@
 #include "core/column/Column.h"
 
 class QWidget;
+class QFrame;
 class QLabel;
 class QToolButton;
 class LayerButton;
@@ -135,6 +136,13 @@ public:
 
     bool keepAspectRatio() const { return d_keep_aspect_ratio; }
     double targetAspectRatio() const { return d_target_aspect_ratio; }
+
+    QFrame *layerSwitcherPill() const { return d_layer_pill_frame; }
+    QToolButton *canvasStatusPill() const { return d_canvas_status_pill; }
+    void updateCanvasStatusPill();
+
+protected:
+    void changeEvent(QEvent *event) override;
 
 public slots:
     void setKeepAspectRatio(bool keep);
@@ -283,7 +291,9 @@ private:
 
     QWidgetList buttonsList, graphsList;
     QHBoxLayout *layerButtonsBox;
+    QFrame *d_layer_pill_frame = nullptr;
     QToolButton *d_add_layer_btn = nullptr;
+    QToolButton *d_canvas_status_pill = nullptr;
     QWidget *canvas;
 
     bool d_page_view_mode = false;
@@ -305,6 +315,8 @@ private:
 
     void syncChildOverlayAndInsetGeometries();
     void openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos);
+    void repositionCanvasStatusPill();
+    void openCanvasStatusQuickMenu();
 
     QPointer<SelectionMoveResizer> d_layers_selector;
 };

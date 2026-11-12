@@ -223,10 +223,55 @@ QwtPlotCurve *resolveSignalCurve(Graph *g, const QString &curveTitle)
             QwtPlotCurve *c = g->curve(i);
             if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
                 continue;
+            if (c->title().text() == curveTitle)
+                return c;
+        }
+
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(c)) {
+                if (Table *tbl = dc->table()) {
+                    const QString expected = tbl->name() + QStringLiteral("_") + curveTitle;
+                    if (dc->yColumnName() == expected || dc->yColumnName() == curveTitle)
+                        return c;
+                }
+            }
+        }
+
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                continue;
+            if (c->title().text().compare(curveTitle, Qt::CaseInsensitive) == 0)
+                return c;
+        }
+
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(c)) {
+                if (Table *tbl = dc->table()) {
+                    const QString expected = tbl->name() + QStringLiteral("_") + curveTitle;
+                    if (dc->yColumnName().compare(expected, Qt::CaseInsensitive) == 0
+                        || dc->yColumnName().compare(curveTitle, Qt::CaseInsensitive) == 0)
+                        return c;
+                }
+            }
+        }
+
+        const QString suffix = QStringLiteral("_") + curveTitle;
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                continue;
+            const auto *dc = dynamic_cast<const DataCurve *>(c);
+            if (dc && dc->table())
+                continue;
             const QString title = c->title().text();
-            if (title == curveTitle || title.endsWith("_" + curveTitle)
-                || title.compare(curveTitle, Qt::CaseInsensitive) == 0
-                || title.endsWith("_" + curveTitle, Qt::CaseInsensitive))
+            if (title.endsWith(suffix) || title.endsWith(suffix, Qt::CaseInsensitive))
                 return c;
         }
         return nullptr;

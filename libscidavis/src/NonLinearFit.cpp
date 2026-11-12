@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "NonLinearFit.h"
+#include "ApplicationWindow.h"
 #include "MyParser.h"
 #include "fit_gsl.h"
 #include "FunctionCurve.h"
@@ -36,6 +37,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -62,6 +64,16 @@
 using namespace std;
 
 namespace {
+
+bool isNonInteractiveFit(const QObject *parentObj, bool silent = false)
+{
+    if (silent)
+        return true;
+    if (qApp && qApp->property("torigraph_noninteractive").toBool())
+        return true;
+    const ApplicationWindow *app = dynamic_cast<const ApplicationWindow *>(parentObj);
+    return app && app->isHeadlessMode();
+}
 
 struct OriginModelSpec
 {
@@ -374,9 +386,11 @@ void NonLinearFit::setFormula(const QString &s)
 void NonLinearFit::setParametersList(const QStringList &lst)
 {
     if ((int)lst.count() < 1) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Fit Error"),
-                              tr("You must provide a list containing at least one parameter for "
-                                 "this type of fit. Operation aborted!"));
+        if (!isNonInteractiveFit(parent(), d_silent)) {
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Fit Error"),
+                                  tr("You must provide a list containing at least one parameter for "
+                                     "this type of fit. Operation aborted!"));
+        }
         d_init_err = true;
         return;
     }
@@ -602,10 +616,134 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
         return;
     }
 
-    // 3. Ludwik / Allometric2 / Swift
+    // 3a. Swift: K * (eps0 + x)^n (no additive y0 offset)
+    if (key.compare("Swift", Qt::CaseInsensitive) == 0) {
+        double ySum = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            ySum += d_y[i];
+        const double ySign = (ySum < 0.0) ? -1.0 : 1.0;
+
+        auto evalSwiftRss = [&](double pK, double pEps0, double pN) -> double {
+            if (!std::isfinite(pK) || !std::isfinite(pEps0) || !std::isfinite(pN))
+                return std::numeric_limits<double>::infinity();
+            double rss = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                const double z = pEps0 + d_x[i];
+                if (!(z > 0.0))
+                    return std::numeric_limits<double>::infinity();
+                const double zn = std::pow(z, pN);
+                if (!std::isfinite(zn))
+                    return std::numeric_limits<double>::infinity();
+                const double r = d_y[i] - pK * zn;
+                rss += r * r;
+            }
+            return std::isfinite(rss) ? rss : std::numeric_limits<double>::infinity();
+        };
+
+        const double minMargin = 1e-12 * std::max(1.0, std::abs(x_min));
+        double bestEps0 = std::max(-x_min + minMargin, 0.01 * std::max(1e-4, x_span));
+        double bestN = 0.25;
+        double bestK = ySign * std::max(1e-9, std::abs(y_max));
+        double bestRss = evalSwiftRss(bestK, bestEps0, bestN);
+
+        auto tryEps0 = [&](double candEps0) {
+            if (!std::isfinite(candEps0) || candEps0 <= -x_min + minMargin)
+                return;
+            std::vector<double> u, v;
+            u.reserve(n);
+            v.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+                const double z = candEps0 + d_x[i];
+                const double ys = ySign * d_y[i];
+                if (z > 1e-30 && ys > 1e-30) {
+                    u.push_back(std::log(z));
+                    v.push_back(std::log(ys));
+                }
+            }
+            auto testN = [&](double candN) {
+                if (!std::isfinite(candN))
+                    return;
+                candN = std::max(-12.0, std::min(12.0, candN));
+                double swy = 0.0, sww = 0.0;
+                for (size_t i = 0; i < n; ++i) {
+                    const double z = candEps0 + d_x[i];
+                    if (!(z > 0.0))
+                        return;
+                    const double w = std::pow(z, candN);
+                    if (!std::isfinite(w))
+                        return;
+                    swy += d_y[i] * w;
+                    sww += w * w;
+                }
+                if (sww > 1e-300 && std::isfinite(swy) && std::isfinite(sww)) {
+                    const double kOls = swy / sww;
+                    const double rss = evalSwiftRss(kOls, candEps0, candN);
+                    if (rss < bestRss) {
+                        bestRss = rss;
+                        bestK = kOls;
+                        bestEps0 = candEps0;
+                        bestN = candN;
+                    }
+                }
+            };
+
+            if (u.size() >= 2) {
+                double c = 0.0, m = 0.25;
+                linearRegression(u, v, c, m);
+                const double kLog = ySign * std::exp(std::max(-80.0, std::min(80.0, c)));
+                const double mClamp = std::max(-12.0, std::min(12.0, m));
+                const double rssLog = evalSwiftRss(kLog, candEps0, mClamp);
+                if (rssLog < bestRss) {
+                    bestRss = rssLog;
+                    bestK = kLog;
+                    bestEps0 = candEps0;
+                    bestN = mClamp;
+                }
+                testN(m);
+            } else {
+                const double nFallbacks[] = { 0.1, 0.25, 0.5, 1.0, 2.0 };
+                for (double nf : nFallbacks)
+                    testN(nf);
+            }
+        };
+
+        const double scale = std::max(std::max(1e-9, x_span),
+                                      std::max(std::abs(x_min), std::abs(x_max)));
+        const double logLo = std::log(1e-7 * scale);
+        const double logHi = std::log(50.0 * scale);
+        for (int g = 0; g < 96; ++g) {
+            const double delta = std::exp(logLo + (logHi - logLo) * (double(g) / 95.0));
+            tryEps0(-x_min + delta);
+        }
+        const double spanBase = std::max(0.0, -x_min);
+        const double fracGrid[] = { 1e-5, 1e-4, 5e-4, 1e-3, 2.5e-3, 5e-3, 0.01, 0.015, 0.02, 0.03,
+                                    0.05, 0.08, 0.12, 0.2,  0.35,   0.5,  0.75, 1.0,   2.0,  5.0 };
+        for (double frac : fracGrid)
+            tryEps0(spanBase + frac * x_span);
+        if (x_min > minMargin)
+            tryEps0(0.0);
+
+        double bestDelta = std::max(minMargin, bestEps0 + x_min);
+        for (int g = 0; g < 25; ++g) {
+            const double factor = std::pow(2.0, -1.0 + 2.0 * (double(g) / 24.0));
+            tryEps0(-x_min + bestDelta * factor);
+        }
+        bestDelta = std::max(minMargin, bestEps0 + x_min);
+        for (int g = 0; g < 21; ++g) {
+            const double factor = 0.85 + 0.30 * (double(g) / 20.0);
+            tryEps0(-x_min + bestDelta * factor);
+        }
+
+        setByName("K", bestK);
+        setByName("eps0", bestEps0);
+        setByName("n", bestN);
+        d_initial_guesses_set = true;
+        return;
+    }
+
+    // 3b. Ludwik / Allometric2
     if (key.compare("Ludwik", Qt::CaseInsensitive) == 0
-        || key.compare("Allometric2", Qt::CaseInsensitive) == 0
-        || key.compare("Swift", Qt::CaseInsensitive) == 0) {
+        || key.compare("Allometric2", Qt::CaseInsensitive) == 0) {
         double y0_g = y_front;
         std::vector<double> u, v;
         for (size_t i = 0; i < n; ++i) {
@@ -673,11 +811,104 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
         return;
     }
 
-    // 5. Gompertz / Richards / WeibullGrowth / MMF / Hill
+    // 5a. MMF (Morgan-Mercer-Flodin): (a*b + c*x^d) / (b + x^d)
+    if (key.compare("MMF", Qt::CaseInsensitive) == 0) {
+        double a_g = y_front;
+        double c_g = y_back;
+        if (std::abs(c_g - a_g) < 0.1 * y_span) {
+            a_g = (y_back >= y_front) ? y_min : y_max;
+            c_g = (y_back >= y_front) ? y_max : y_min;
+        }
+        double y_half = 0.5 * (a_g + c_g);
+        double x50 = std::max(1e-6, (x_mid > 0.0) ? x_mid : (0.5 * std::max(1e-6, x_max)));
+        for (size_t i = 0; i + 1 < n; ++i) {
+            if ((d_y[i] - y_half) * (d_y[i + 1] - y_half) <= 0.0) {
+                double dy = d_y[i + 1] - d_y[i];
+                double frac = (std::abs(dy) > 1e-15) ? ((y_half - d_y[i]) / dy) : 0.5;
+                double xc_cand = d_x[i] + std::max(0.0, std::min(1.0, frac)) * (d_x[i + 1] - d_x[i]);
+                if (xc_cand > 1e-12) {
+                    x50 = xc_cand;
+                    break;
+                }
+            }
+        }
+
+        double a_reg = a_g - 0.02 * (c_g - a_g);
+        double c_reg = c_g + 0.06 * (c_g - a_g);
+        double denom = c_reg - a_reg;
+        std::vector<double> u, v;
+        if (std::abs(denom) > 1e-12) {
+            for (size_t i = 0; i < n; ++i) {
+                if (d_x[i] <= 1e-12)
+                    continue;
+                double frac = (d_y[i] - a_reg) / denom;
+                if (frac > 0.04 && frac < 0.96) {
+                    u.push_back(std::log(d_x[i]));
+                    v.push_back(std::log(frac / (1.0 - frac)));
+                }
+            }
+        }
+
+        auto evalMmfRss = [&](double pa, double pb, double pc, double pd) -> double {
+            if (!std::isfinite(pb) || pb <= 1e-30 || !std::isfinite(pd) || pd <= 0.05)
+                return std::numeric_limits<double>::infinity();
+            double rss = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                double xi = std::max(0.0, d_x[i]);
+                double xd = (xi > 0.0) ? std::pow(xi, pd) : 0.0;
+                if (!std::isfinite(xd))
+                    return std::numeric_limits<double>::infinity();
+                double yhat = (pa * pb + pc * xd) / (pb + xd);
+                double r = d_y[i] - yhat;
+                rss += r * r;
+            }
+            return rss;
+        };
+
+        double bestA = a_g;
+        double bestD = 2.0;
+        double bestB = std::max(1e-12, std::pow(x50, bestD));
+        double bestC = c_g;
+        double bestRss = evalMmfRss(bestA, bestB, bestC, bestD);
+
+        auto tryCandidate = [&](double ca, double cb, double cc, double cd) {
+            double rss = evalMmfRss(ca, cb, cc, cd);
+            if (rss < bestRss) {
+                bestRss = rss;
+                bestA = ca;
+                bestB = cb;
+                bestC = cc;
+                bestD = cd;
+            }
+        };
+
+        if (u.size() >= 2) {
+            double intercept = 0.0, slope = 2.0;
+            linearRegression(u, v, intercept, slope);
+            double d_est = std::max(0.25, std::min(8.0, slope));
+            double b_est = std::exp(std::max(-40.0, std::min(40.0, -intercept)));
+            tryCandidate(a_reg, b_est, c_reg, d_est);
+            tryCandidate(a_g, b_est, c_g, d_est);
+        }
+        const double dGrid[] = { 0.75, 1.25, 2.0, 3.0, 4.0 };
+        for (double dc : dGrid) {
+            double bc = std::max(1e-12, std::pow(x50, dc));
+            tryCandidate(a_g, bc, c_g, dc);
+            tryCandidate(a_reg, bc, c_reg, dc);
+        }
+
+        setByName("a", bestA);
+        setByName("b", bestB);
+        setByName("c", bestC);
+        setByName("d", bestD);
+        d_initial_guesses_set = true;
+        return;
+    }
+
+    // 5b. Gompertz / Richards / WeibullGrowth / Hill
     if (key.compare("Gompertz", Qt::CaseInsensitive) == 0
         || key.compare("Richards", Qt::CaseInsensitive) == 0
         || key.compare("WeibullGrowth", Qt::CaseInsensitive) == 0
-        || key.compare("MMF", Qt::CaseInsensitive) == 0
         || key.compare("Hill", Qt::CaseInsensitive) == 0) {
         double y_half = 0.5 * (y_min + y_max);
         double x50 = std::max(1e-6, x_mid);
@@ -688,7 +919,7 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
             }
         }
         setByName("a", y_max);
-        setByName("b", (key.compare("MMF", Qt::CaseInsensitive) == 0) ? std::pow(std::max(1e-6, x50), 2.0) : y_min);
+        setByName("b", y_min);
         setByName("c", y_max);
         setByName("d", 2.0);
         setByName("xc", x50);
@@ -833,7 +1064,98 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
         return;
     }
 
-    // 13. Waveform / Periodic
+    // 13a. SineSq: y0 + A * (sin(PI * (x - xc) / w))^2
+    if (key.compare("SineSq", Qt::CaseInsensitive) == 0) {
+        double mean_y = std::accumulate(d_y.begin(), d_y.end(), 0.0) / double(n);
+        double y_mid = y_min + 0.5 * y_span;
+        int crossings = 0;
+        for (size_t i = 0; i + 1 < n; ++i) {
+            if ((d_y[i] - y_mid) * (d_y[i + 1] - y_mid) < 0.0)
+                crossings++;
+        }
+        double w_cross = (crossings >= 1) ? (2.0 * x_span / double(crossings)) : x_span;
+        double bestY0 = y_min;
+        double bestA = y_span;
+        double bestW = std::max(1e-9, w_cross);
+        double bestXc = xc_peak - 0.5 * bestW;
+
+        auto evalSineSqRss = [&](double py0, double pA, double pxc, double pw) -> double {
+            if (!std::isfinite(pw) || std::abs(pw) <= 1e-12)
+                return std::numeric_limits<double>::infinity();
+            double rss = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                double s = std::sin(M_PI * (d_x[i] - pxc) / pw);
+                double r = d_y[i] - (py0 + pA * s * s);
+                rss += r * r;
+            }
+            return rss;
+        };
+        double bestRss = evalSineSqRss(bestY0, bestA, bestXc, bestW);
+
+        std::vector<double> wCands;
+        const int maxK = std::min<int>(240, std::max<int>(40, int(n) * 2));
+        wCands.reserve(size_t(maxK + 45));
+        for (int m = 0; m <= 40; ++m)
+            wCands.push_back(bestW * (0.4 + 1.6 * double(m) / 40.0));
+        for (int k = 1; k <= maxK; ++k)
+            wCands.push_back(x_span / (0.25 * double(k)));
+
+        const double refX = (x_min <= 0.0 && x_max >= 0.0) ? 0.0 : x_min;
+        for (double wc : wCands) {
+            if (!std::isfinite(wc) || wc <= 1e-12)
+                continue;
+            const double omega = (2.0 * M_PI) / wc;
+            double mCos = 0.0, mSin = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                mCos += std::cos(omega * d_x[i]);
+                mSin += std::sin(omega * d_x[i]);
+            }
+            mCos /= double(n);
+            mSin /= double(n);
+
+            double scc = 0.0, sss = 0.0, scs = 0.0, scy = 0.0, ssy = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                double cc = std::cos(omega * d_x[i]) - mCos;
+                double ss = std::sin(omega * d_x[i]) - mSin;
+                double yc = d_y[i] - mean_y;
+                scc += cc * cc;
+                sss += ss * ss;
+                scs += cc * ss;
+                scy += cc * yc;
+                ssy += ss * yc;
+            }
+            double det = scc * sss - scs * scs;
+            if (det <= 1e-18)
+                continue;
+            double c1 = (sss * scy - scs * ssy) / det;
+            double c2 = (-scs * scy + scc * ssy) / det;
+            double c0 = mean_y - c1 * mCos - c2 * mSin;
+            double ampHalf = std::hypot(c1, c2);
+            double Ac = std::max(1e-9, 2.0 * ampHalf);
+            double y0c = c0 - ampHalf;
+            double phi = std::atan2(-c2, -c1);
+            double xcc = (phi / (2.0 * M_PI)) * wc;
+            xcc -= wc * std::floor((xcc - refX) / wc);
+
+            double rss = evalSineSqRss(y0c, Ac, xcc, wc);
+            if (rss < bestRss) {
+                bestRss = rss;
+                bestY0 = y0c;
+                bestA = Ac;
+                bestXc = xcc;
+                bestW = wc;
+            }
+        }
+
+        setByName("y0", bestY0);
+        setByName("A", bestA);
+        setByName("xc", bestXc);
+        setByName("w", bestW);
+        d_initial_guesses_set = true;
+        return;
+    }
+
+    // 13b. Waveform / Periodic
     if (key.startsWith("Sine", Qt::CaseInsensitive)
         || key.compare("GaussianEnvelopeCosine", Qt::CaseInsensitive) == 0) {
         double mean_y = std::accumulate(d_y.begin(), d_y.end(), 0.0) / double(n);
@@ -1957,7 +2279,7 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
 
 void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || isNonInteractiveFit(app))
         return;
     QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty()) {
@@ -2065,7 +2387,7 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
     }
 
     Table *summary = nullptr;
-    if (!fitter.fitGlobal(chosenCurves, sharedFlags, &summary)) {
+    if (!fitter.fitGlobal(chosenCurves, sharedFlags, &summary) && !isNonInteractiveFit(app)) {
         QMessageBox::warning(app, tr("Global Curve Fit"),
                              tr("Global nonlinear curve fit failed to converge."));
     }
@@ -2073,7 +2395,7 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
 
 void NonLinearFit::showImplicitFitDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || isNonInteractiveFit(app))
         return;
     QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty()) {
@@ -2123,7 +2445,7 @@ void NonLinearFit::showImplicitFitDialog(ApplicationWindow *app, Graph *g)
     NonLinearFit fitter(app, g, curveBox->currentText());
     if (fitter.fitImplicitODR(exprEdit->text(), pNames, initVals)) {
         fitter.parametersTable(app->generateUniqueName(tr("ImplicitODRParams")));
-    } else {
+    } else if (!isNonInteractiveFit(app)) {
         QMessageBox::warning(app, tr("Implicit / ODR Fit"),
                              tr("Implicit ODR curve fit failed. Check formula and initial guesses."));
     }
@@ -2131,7 +2453,7 @@ void NonLinearFit::showImplicitFitDialog(ApplicationWindow *app, Graph *g)
 
 void NonLinearFit::showModelComparisonDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || isNonInteractiveFit(app))
         return;
     QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty()) {

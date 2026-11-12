@@ -44,6 +44,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -58,6 +59,25 @@
 #include <numeric>
 
 using namespace std;
+
+namespace {
+
+bool isNonInteractiveFit(const QObject *parentObj, bool silent = false)
+{
+    if (silent)
+        return true;
+    if (qApp && qApp->property("torigraph_noninteractive").toBool())
+        return true;
+    const ApplicationWindow *app = dynamic_cast<const ApplicationWindow *>(parentObj);
+    return app && app->isHeadlessMode();
+}
+
+inline double effectiveDoniachAlpha(double alpha)
+{
+    return (!std::isfinite(alpha) || alpha < 0.0 || alpha >= 0.85) ? 0.15 : alpha;
+}
+
+} // namespace
 
 MultiPeakFit::MultiPeakFit(ApplicationWindow *parent, Graph *g, PeakProfile profile, int peaks)
     : Fit(parent, g), d_profile(profile)
@@ -220,7 +240,8 @@ double MultiPeakFit::peakTrueArea(PeakProfile prof, double rawA, double w) const
     }
     case Asym2Sig:
     case DoniachSunjic: {
-        double alphaEff = (prof == DoniachSunjic && d_asym_alpha >= 0.85) ? 0.15 : d_asym_alpha;
+        double alphaEff =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
         const int nGrid = 161;
         double x0_grid = -4.0 * wSafe;
         double step_g = (8.0 * wSafe) / double(nGrid - 1);
@@ -473,8 +494,8 @@ void MultiPeakFit::setPeakProfile(PeakProfile profile)
 {
     d_profile = profile;
     d_per_peak_profiles.clear();
-    if (d_profile == DoniachSunjic && d_asym_alpha >= 0.85)
-        d_asym_alpha = 0.15;
+    if (d_profile == DoniachSunjic)
+        d_asym_alpha = effectiveDoniachAlpha(d_asym_alpha);
     else if (d_profile != DoniachSunjic && d_asym_alpha < 0.3)
         d_asym_alpha = 1.5;
     updateProfileFunctions();
@@ -494,9 +515,9 @@ void MultiPeakFit::setPearsonShape(double m)
 void MultiPeakFit::setAsymmetryFactor(double alpha)
 {
     if (d_profile == DoniachSunjic)
-        d_asym_alpha = std::max(0.0, std::min(0.85, alpha));
+        d_asym_alpha = effectiveDoniachAlpha(alpha);
     else
-        d_asym_alpha = std::max(0.05, alpha);
+        d_asym_alpha = std::isfinite(alpha) ? std::max(0.05, alpha) : 1.5;
 }
 
 void MultiPeakFit::setTailFactor(double tau)
@@ -1053,7 +1074,8 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                                     double &AOut, double &wOut) {
         AOut = 1.0;
         wOut = fwhm;
-        double alphaEff = (prof == DoniachSunjic && d_asym_alpha >= 0.85) ? 0.15 : d_asym_alpha;
+        double alphaEff =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
         switch (prof) {
         case Gauss:
             wOut = fwhm / std::sqrt(2.0 * M_LN2);
@@ -1724,7 +1746,8 @@ double MultiPeakFit::evalPeakAt(const std::vector<double> &par, int peakIndex, d
     case LogNormal:
     case Asym2Sig:
     case DoniachSunjic: {
-        double alphaEff = (prof == DoniachSunjic && d_asym_alpha >= 0.85) ? 0.15 : d_asym_alpha;
+        double alphaEff =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
         return signA * eval_origin_peak_profile(int(prof), absA, xc, w, x,
                                                 d_voigt_mu, d_pearson_m, alphaEff, d_tail_tau);
     }
@@ -1834,7 +1857,7 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
 
     gsl_matrix *m = gsl_matrix_alloc(d_points, d_peaks);
     if (!m) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(app, d_silent))
             QMessageBox::warning(app, tr("Fit Error"),
                                  tr("Could not allocate enough memory for the fit curves!"));
         return;
@@ -1942,7 +1965,8 @@ void MultiPeakFit::evalSinglePeakMetrics(PeakProfile prof, double signedRawA, do
     const double sign = (d_negative_peaks_allowed && signedRawA < 0.0) ? -1.0 : 1.0;
     const double rawA = std::abs(signedRawA);
     const double wSafe = std::max(1e-15, std::abs(w));
-    const double alphaEff = (prof == DoniachSunjic && d_asym_alpha >= 0.85) ? 0.15 : d_asym_alpha;
+    const double alphaEff =
+            (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
 
     double fwhm = wSafe;
     double height = 0.0;
@@ -2540,7 +2564,7 @@ PlotCurve *MultiPeakFit::insertBaselineCurve()
     c->setPen(QPen(QColor("#1f77b4"), 2, Qt::DashLine));
     c->setData(d_x.data(), base.data(), int(d_x.size()));
     c->setRange(d_x.front(), d_x.back());
-    c->setFormula(tr("Baseline"));
+    c->setFormula(QString());
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->addFitCurve(c);
     d_graph->replot();
@@ -2832,7 +2856,7 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
 
 void MultiPeakFit::showBatchPeakDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || isNonInteractiveFit(app))
         return;
 
     QStringList curves = g->analysableCurvesList();

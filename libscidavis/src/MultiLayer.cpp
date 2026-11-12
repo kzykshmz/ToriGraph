@@ -58,6 +58,7 @@
 #include "EmfPaintDevice.h"
 #endif
 #include "Plot.h"
+#include "IconLoader.h"
 #include "Legend.h"
 #include "SelectionMoveResizer.h"
 #include "LayerDialog.h"
@@ -68,6 +69,7 @@
 
 #include <qwt_symbol.h>
 #include <QFile>
+#include <QFrame>
 #include <QRegularExpression>
 #include <QToolButton>
 #include <QMenu>
@@ -93,11 +95,12 @@ LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(tex
     setFixedSize(btn_size, btn_size);
     setFont(QFont("Arial", 9, QFont::Bold, false));
     setStyleSheet(
-            "QPushButton { background-color: #F0F2F5; color: #222222; border: 1px solid #B0B6BF; "
-            "border-radius: 2px; padding: 0px; margin: 1px; }"
-            "QPushButton:hover { background-color: #E2E7EE; border: 1px solid #7A869A; }"
-            "QPushButton:checked { background-color: #1E66B8; color: #FFFFFF; border: 1px solid "
-            "#144A86; }");
+            "QPushButton { background-color: transparent; color: #334155; "
+            "border: 1px solid transparent; border-radius: 5px; padding: 0px; margin: 0px; }"
+            "QPushButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
+            "border: 1px solid #BFDBFE; }"
+            "QPushButton:checked { background-color: #2563EB; color: #FFFFFF; "
+            "border: 1px solid #1D4ED8; }");
 }
 
 void LayerButton::mousePressEvent(QMouseEvent *event)
@@ -164,63 +167,90 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     d_page_bg_color = QColor(Qt::white);
 
     layerButtonsBox = new QHBoxLayout();
-    layerButtonsBox->setContentsMargins(2, 1, 2, 1);
+    layerButtonsBox->setContentsMargins(0, 0, 0, 0);
     layerButtonsBox->setSpacing(2);
-    QHBoxLayout *hbox = new QHBoxLayout();
-    hbox->setContentsMargins(2, 1, 2, 1);
-    hbox->setSpacing(2);
-    // add a zero width widget to reserve space for the layer's buttons
-    QWidget *strut = new QWidget();
-    strut->setFixedSize(0, LayerButton::btnSize());
-    hbox->addWidget(strut);
-    hbox->addLayout(layerButtonsBox);
 
-    d_add_layer_btn = new QToolButton();
-    d_add_layer_btn->setText("+");
+    QHBoxLayout *hbox = new QHBoxLayout();
+    hbox->setContentsMargins(6, 3, 6, 2);
+    hbox->setSpacing(4);
+
+    d_layer_pill_frame = new QFrame();
+    d_layer_pill_frame->setObjectName(QStringLiteral("MultiLayerPillContainer"));
+    d_layer_pill_frame->setStyleSheet(QStringLiteral(
+            "QFrame#MultiLayerPillContainer {"
+            "  background-color: #F8FAFC;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 7px;"
+            "}"));
+    QHBoxLayout *pillLayout = new QHBoxLayout(d_layer_pill_frame);
+    pillLayout->setContentsMargins(3, 2, 3, 2);
+    pillLayout->setSpacing(2);
+
+    QWidget *strut = new QWidget(d_layer_pill_frame);
+    strut->setFixedSize(0, LayerButton::btnSize());
+    pillLayout->addWidget(strut);
+    pillLayout->addLayout(layerButtonsBox);
+
+    d_add_layer_btn = new QToolButton(d_layer_pill_frame);
+    d_add_layer_btn->setText(QStringLiteral("+"));
     d_add_layer_btn->setToolTip(tr("Add Layer"));
     d_add_layer_btn->setFont(QFont("Arial", 10, QFont::Bold, false));
     d_add_layer_btn->setFixedSize(LayerButton::btnSize(), LayerButton::btnSize());
     d_add_layer_btn->setPopupMode(QToolButton::InstantPopup);
-    d_add_layer_btn->setStyleSheet(
-            "QToolButton { background-color: #F0F2F5; color: #1E66B8; border: 1px solid #B0B6BF; "
-            "border-radius: 2px; padding: 0px; margin: 1px; }"
-            "QToolButton:hover { background-color: #E2E7EE; border: 1px solid #1E66B8; }"
-            "QToolButton::menu-indicator { image: none; width: 0px; }");
+    d_add_layer_btn->setStyleSheet(QStringLiteral(
+            "QToolButton { background-color: #FFFFFF; color: #2563EB; "
+            "border: 1px solid #CBD5E1; border-radius: 5px; padding: 0px; margin: 0px; }"
+            "QToolButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
+            "border: 1px solid #2563EB; }"
+            "QToolButton::menu-indicator { image: none; width: 0px; }"));
     QMenu *addMenu = new QMenu(d_add_layer_btn);
-    addMenu->addAction(tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
-        addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
-    });
-    addMenu->addAction(tr("Add Right-Y Layer (Double-Y)"), this, [this]() {
-        Graph *g = addLinkedLayer(activeGraph(), true, false, QString("x"), QString("y"));
-        if (g && g->plotWidget()) {
-            g->enableAxis(QwtPlot::yRight, true);
-            g->enableAxis(QwtPlot::xTop, false);
-            g->setAxisBackboneVisible(QwtPlot::xTop, false);
-            g->setAxisBackboneVisible(QwtPlot::yRight, true);
-            if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
-                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-            g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
-            g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
-            g->plotWidget()->replot();
-        }
-    });
-    addMenu->addAction(tr("Add Zoom Inset Layer"), this, [this]() {
-        addInsetLayer(activeGraph());
-    });
-    addMenu->addSeparator();
-    addMenu->addAction(tr("Add Empty Layer"), this, [this]() {
-        Graph *g = addLayer();
-        if (g)
-            arrangeLayers(true, false);
-    });
-    addMenu->addAction(tr("Layer Management..."), this, [this]() {
-        LayerDialog dlg(this);
-        dlg.setMultiLayer(this);
-        dlg.exec();
-    });
-    addMenu->addAction(tr("Page Setup..."), this, [this]() { showPageSetupDialog(); });
+    auto populateAddLayerMenu = [this, addMenu]() {
+        addMenu->clear();
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                           tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
+            addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 18, false),
+                           tr("Add Right-Y Layer (Double-Y)"), this, [this]() {
+            Graph *g = addLinkedLayer(activeGraph(), true, false, QString("x"), QString("y"));
+            if (g && g->plotWidget()) {
+                g->enableAxis(QwtPlot::yRight, true);
+                g->enableAxis(QwtPlot::xTop, false);
+                g->setAxisBackboneVisible(QwtPlot::xTop, false);
+                g->setAxisBackboneVisible(QwtPlot::yRight, true);
+                if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                    sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                g->plotWidget()->replot();
+            }
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-inset"), 18, false),
+                           tr("Add Zoom Inset Layer"), this, [this]() {
+            addInsetLayer(activeGraph());
+        });
+        addMenu->addSeparator();
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-add"), 18, false),
+                           tr("Add Empty Layer"), this, [this]() {
+            Graph *g = addLayer();
+            if (g)
+                arrangeLayers(true, false);
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-arrange"), 18, false),
+                           tr("Layer Management..."), this, [this]() {
+            LayerDialog dlg(this);
+            dlg.setMultiLayer(this);
+            dlg.exec();
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 18, false),
+                           tr("Page Setup..."), this, [this]() { showPageSetupDialog(); });
+    };
+    populateAddLayerMenu();
+    connect(addMenu, &QMenu::aboutToShow, this, populateAddLayerMenu);
     d_add_layer_btn->setMenu(addMenu);
-    hbox->addWidget(d_add_layer_btn);
+    pillLayout->addWidget(d_add_layer_btn);
+
+    hbox->addWidget(d_layer_pill_frame);
     hbox->addStretch();
 
     canvas = new QWidget();
@@ -240,6 +270,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     layout->setMargin(0);
     layout->setSpacing(0);
     this->setWidget(d_main_widget);
+    d_main_widget->installEventFilter(this);
 
     d_main_widget->setAutoFillBackground(true);
     d_main_widget->setBackgroundRole(QPalette::Window);
@@ -247,9 +278,71 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     pal.setColor(QPalette::Window, QColor(Qt::white));
     d_main_widget->setPalette(pal);
 
+    // Non-exported Bottom-Right Interactive Canvas Status Pill (sibling of canvas)
+    d_canvas_status_pill = new QToolButton(d_main_widget);
+    d_canvas_status_pill->setObjectName(QStringLiteral("MultiLayerStatusPill"));
+    d_canvas_status_pill->setFocusPolicy(Qt::NoFocus);
+    d_canvas_status_pill->setCursor(Qt::PointingHandCursor);
+    d_canvas_status_pill->setPopupMode(QToolButton::InstantPopup);
+    d_canvas_status_pill->setStyleSheet(QStringLiteral(
+            "QToolButton#MultiLayerStatusPill {"
+            "  background-color: rgba(255, 255, 255, 235);"
+            "  color: #334155;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 11px;"
+            "  padding: 2px 10px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8pt;"
+            "  font-weight: 600;"
+            "  min-height: 20px;"
+            "}"
+            "QToolButton#MultiLayerStatusPill:hover {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #2563EB;"
+            "}"
+            "QToolButton#MultiLayerStatusPill::menu-indicator {"
+            "  image: none;"
+            "  width: 0px;"
+            "}"));
+    QMenu *statusMenu = new QMenu(d_canvas_status_pill);
+    auto populateStatusMenu = [this, statusMenu]() {
+        statusMenu->clear();
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-out"), 18, false),
+                              tr("Zoom 75%"), this, [this]() { setPageZoom(0.75); });
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-auto"), 18, false),
+                              tr("Zoom 100%"), this, [this]() { setPageZoom(1.0); });
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-in"), 18, false),
+                              tr("Zoom 125%"), this, [this]() { setPageZoom(1.25); });
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-in"), 18, false),
+                              tr("Zoom 150%"), this, [this]() { setPageZoom(1.5); });
+        statusMenu->addSeparator();
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("fit-page"), 18, false),
+                              tr("Fit Page to Layers"), this, [this]() { fitPageToLayers(); });
+        statusMenu->addSeparator();
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
+                              tr("ISIJ 85mm"), this,
+                              [this]() { applyStylePreset(StyleISIJJournal85mm); });
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
+                              tr("Slide 28pt"), this,
+                              [this]() { applyStylePreset(StylePresentationSlide28pt); });
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-nature"), 18, false),
+                              tr("Nature 89mm"), this,
+                              [this]() { applyStylePreset(StyleNatureCompact89mm); });
+        statusMenu->addSeparator();
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 18, false),
+                              tr("Page Setup..."), this, [this]() { showPageSetupDialog(); });
+    };
+    populateStatusMenu();
+    connect(statusMenu, &QMenu::aboutToShow, this, populateStatusMenu);
+    d_canvas_status_pill->setMenu(statusMenu);
+
+    connect(this, &MultiLayer::modifiedPlot, this, &MultiLayer::updateCanvasStatusPill);
+
     setMinimumSize(160, 160);
     setGeometry(QRect(0, 0, graph_width, graph_height));
     setFocusPolicy(Qt::StrongFocus);
+    updateCanvasStatusPill();
 
     if (QAbstractEventDispatcher *ed = QAbstractEventDispatcher::instance()) {
         connect(ed, &QAbstractEventDispatcher::awake, this, [this]() {
@@ -316,6 +409,7 @@ Graph *MultiLayer::addLayer(int x, int y, int width, int height)
     active_graph = g;
     g->show();
     connectLayer(g);
+    updateCanvasStatusPill();
     return g;
 }
 
@@ -333,6 +427,7 @@ void MultiLayer::activateGraph(LayerButton *button)
             button->setChecked(true);
         }
     }
+    updateCanvasStatusPill();
 }
 
 void MultiLayer::setActiveGraph(Graph *g)
@@ -356,6 +451,7 @@ void MultiLayer::setActiveGraph(Graph *g)
         else
             btn->setChecked(false);
     }
+    updateCanvasStatusPill();
 }
 
 void MultiLayer::contextMenuEvent(QContextMenuEvent *e)
@@ -425,7 +521,7 @@ void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scal
 
 void MultiLayer::confirmRemoveLayer()
 {
-    if (graphs > 1) {
+    if (graphs > 1 && !ApplicationWindow::isNonInteractiveContext(this)) {
         switch (QMessageBox::information(
                 this, tr("Guess best layout?"),
                 tr("Do you want ToriGraph to rearrange the remaining layers?"), tr("&Yes"),
@@ -465,6 +561,7 @@ void MultiLayer::removeLayer()
     for (i = 0; i < buttonsList.count(); i++) {
         btn = (LayerButton *)buttonsList.at(i);
         btn->setText(QString::number(i + 1));
+        btn->setToolTip(tr("Layer %1").arg(i + 1));
     }
 
     if (active_graph->zoomOn() || active_graph->activeTool())
@@ -480,6 +577,7 @@ void MultiLayer::removeLayer()
 
     if (graphs == 0) {
         active_graph = 0;
+        updateCanvasStatusPill();
         return;
     }
 
@@ -773,7 +871,8 @@ void MultiLayer::setRows(int r)
 void MultiLayer::exportToFile(const QString &fileName)
 {
     if (fileName.isEmpty()) {
-        QMessageBox::critical(0, tr("Error"), tr("Please provide a valid file name!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(0, tr("Error"), tr("Please provide a valid file name!"));
         return;
     }
 
@@ -789,7 +888,8 @@ void MultiLayer::exportToFile(const QString &fileName)
             }
         }
 #endif
-        QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
         return;
     }
 
@@ -809,7 +909,8 @@ void MultiLayer::exportToFile(const QString &fileName)
                 return;
             }
         }
-        QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
     }
 }
 
@@ -972,9 +1073,9 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         p.scale(double(targetSize.width()) / double(qMax(1, srcRect.width())),
                 double(targetSize.height()) / double(qMax(1, srcRect.height())));
         if (!transparent) {
-            p.fillRect(QRect(QPoint(0, 0), srcRect.size()),
-                       d_page_bg_color.isValid() ? QBrush(d_page_bg_color)
-                                                 : widget()->palette().brush(backgroundRole()));
+            const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
+            if (pageBg.alpha() > 0)
+                p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(pageBg));
         }
         for (int i = 0; i < (int)graphsList.count(); i++) {
             Graph *gr = (Graph *)graphsList.at(i);
@@ -1022,7 +1123,8 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
                               QPageSize pageSize, QPageLayout::Orientation orientation)
 {
     if (fileName.isEmpty()) {
-        QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
         return;
     }
 
@@ -1043,8 +1145,10 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
     printer.setOutputFileName(fileName);
     if (fileName.contains(".eps", Qt::CaseInsensitive)) {
 #if QT_VERSION >= 0x050000
-        QMessageBox::warning(this, tr("Warning"),
-                             tr("Output in postscript format is not available for Qt5, using PDF"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Warning"),
+                                 tr("Output in postscript format is not available for Qt5, using PDF"));
+        }
         printer.setOutputFormat(QPrinter::PdfFormat);
         printer.setOutputFileName(fileName + ".pdf");
 #else
@@ -1167,8 +1271,9 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
     painter.scale((double)size.width() / (double)rect.width(),
                   (double)size.height() / (double)rect.height());
 
-    painter.fillRect(QRect(QPoint(0, 0), rect.size()),
-                     widget()->palette().brush(backgroundRole()));
+    const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
+    if (pageBg.alpha() > 0)
+        painter.fillRect(QRect(QPoint(0, 0), rect.size()), QBrush(pageBg));
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -1196,6 +1301,7 @@ void MultiLayer::copyAllLayers()
     else
         layersRect = canvas->rect();
     QImage image(layersRect.size(), QImage::Format_ARGB32);
+    image.fill(d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white));
     exportPainter(image);
     QApplication::clipboard()->setImage(image);
 }
@@ -1397,6 +1503,12 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
         return false;
     } else if (e->type() == QEvent::Resize && object == (QObject *)canvas) {
         resizeLayers((const QResizeEvent *)e);
+        updateCanvasStatusPill();
+    } else if (e->type() == QEvent::Show && object == (QObject *)canvas) {
+        updateCanvasStatusPill();
+    } else if ((e->type() == QEvent::Resize || e->type() == QEvent::Show)
+               && object == (QObject *)widget()) {
+        repositionCanvasStatusPill();
     } else if (e->type() == QEvent::Paint && object == (QObject *)canvas && d_page_view_mode) {
         const bool ret = MyWidget::eventFilter(object, e);
         QPainter p(canvas);
@@ -1407,6 +1519,20 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
         return ret;
     }
     return MyWidget::eventFilter(object, e);
+}
+
+void MultiLayer::changeEvent(QEvent *event)
+{
+    MyWidget::changeEvent(event);
+    if (event && event->type() == QEvent::LanguageChange) {
+        if (d_add_layer_btn)
+            d_add_layer_btn->setToolTip(tr("Add Layer"));
+        for (int i = 0; i < buttonsList.count(); ++i) {
+            if (LayerButton *btn = qobject_cast<LayerButton *>(buttonsList.at(i)))
+                btn->setToolTip(tr("Layer %1").arg(i + 1));
+        }
+        updateCanvasStatusPill();
+    }
 }
 
 void MultiLayer::keyPressEvent(QKeyEvent *e)
@@ -1436,9 +1562,12 @@ void MultiLayer::keyPressEvent(QKeyEvent *e)
     }
 
     if (e->key() == Qt::Key_F11) {
-        emit showWindowContextMenu();
+        e->ignore();
+        MyWidget::keyPressEvent(e);
         return;
     }
+
+    MyWidget::keyPressEvent(e);
 }
 
 void MultiLayer::wheelEvent(QWheelEvent *e)
@@ -1820,6 +1949,7 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
         }
     }
     syncChildOverlayAndInsetGeometries();
+    updateCanvasStatusPill();
     show();
 }
 
@@ -1875,24 +2005,30 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
         activateGraph(btn);
 
     QMenu menu(this);
-    menu.addAction(tr("Layer Properties..."), this, [this]() { emit showPlotDialog(-1); });
-    menu.addAction(tr("Link Axes Scales..."), this, [this]() {
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-arrange"), 18, false),
+                   tr("Layer Properties..."), this, [this]() { emit showPlotDialog(-1); });
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                   tr("Link Axes Scales..."), this, [this]() {
         LayerDialog dlg(this);
         dlg.setMultiLayer(this);
         dlg.exec();
     });
     menu.addSeparator();
-    menu.addAction(tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                   tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
         addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
     });
-    menu.addAction(tr("Add Inset Layer"), this, [this]() { addInsetLayer(activeGraph()); });
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-inset"), 18, false),
+                   tr("Add Inset Layer"), this, [this]() { addInsetLayer(activeGraph()); });
     menu.addSeparator();
-    QAction *actRemove = menu.addAction(tr("Remove Layer"), this, [this]() {
-        if (graphs > 1)
-            confirmRemoveLayer();
-        else
-            removeLayer();
-    });
+    QAction *actRemove = menu.addAction(
+            IconLoader::duotoneIcon(QStringLiteral("delete"), 18, false),
+            tr("Remove Layer"), this, [this]() {
+                if (graphs > 1)
+                    confirmRemoveLayer();
+                else
+                    removeLayer();
+            });
     actRemove->setEnabled(graphs > 0);
     menu.exec(globalPos);
 }
@@ -2754,6 +2890,7 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         }
         if (canvas)
             canvas->update();
+        updateCanvasStatusPill();
         return true;
     }
 
@@ -2833,5 +2970,92 @@ void MultiLayer::finalizePhase5Restore()
     }
 
     syncChildOverlayAndInsetGeometries();
+    updateCanvasStatusPill();
+}
+
+void MultiLayer::updateCanvasStatusPill()
+{
+    if (!d_canvas_status_pill)
+        return;
+
+    double wDisp = d_page_width_val;
+    double hDisp = d_page_height_val;
+    QString unitStr = QStringLiteral("mm");
+    int decimals = 1;
+
+    switch (d_page_unit) {
+    case UnitPx: {
+        const double zoom = qMax(0.25, d_page_zoom);
+        const double unzoomedW = (canvas && canvas->width() >= 50)
+                ? (double(canvas->width()) / zoom)
+                : double(qMax(120, d_base_page_px.width()));
+        const double unzoomedH = (canvas && canvas->height() >= 50)
+                ? (double(canvas->height()) / zoom)
+                : double(qMax(120, d_base_page_px.height()));
+        wDisp = (unzoomedW / 96.0) * 25.4;
+        hDisp = (unzoomedH / 96.0) * 25.4;
+        unitStr = QStringLiteral("mm");
+        decimals = 1;
+        break;
+    }
+    case UnitMm:
+        unitStr = QStringLiteral("mm");
+        decimals = 1;
+        break;
+    case UnitCm:
+        unitStr = QStringLiteral("cm");
+        decimals = 2;
+        break;
+    case UnitInch:
+        unitStr = QStringLiteral("in");
+        decimals = 2;
+        break;
+    }
+
+    QString fontFam = QStringLiteral("Arial");
+    Graph *g = active_graph ? active_graph : layer(1);
+    if (g) {
+        const QString af = g->axisFont(QwtPlot::xBottom).family().trimmed();
+        if (!af.isEmpty())
+            fontFam = af;
+    }
+
+    const int zoomPct = qRound(d_page_zoom * 100.0);
+    const QString sep = QString(QChar(0x00B7));
+    const QString times = QString(QChar(0x00D7));
+    const QString statusText = QStringLiteral("%1 %2 %3 %4 %5 %6 DPI %5 %7 %5 %8%")
+                                       .arg(QString::number(wDisp, 'f', decimals), times,
+                                            QString::number(hDisp, 'f', decimals), unitStr, sep,
+                                            QString::number(d_page_dpi), fontFam,
+                                            QString::number(zoomPct));
+
+    d_canvas_status_pill->setText(statusText);
+    d_canvas_status_pill->setToolTip(
+            tr("Page Size, DPI, Font & Zoom — Click for Quick Presets"));
+    repositionCanvasStatusPill();
+}
+
+void MultiLayer::repositionCanvasStatusPill()
+{
+    if (!d_canvas_status_pill || !widget())
+        return;
+
+    const QSize hostSz = widget()->size();
+    const QSize refSz = (hostSz.width() >= 140 && hostSz.height() >= 90) ? hostSz : size();
+    d_canvas_status_pill->adjustSize();
+    const QSize pillSz =
+            d_canvas_status_pill->sizeHint().expandedTo(d_canvas_status_pill->minimumSizeHint());
+    const int pw = qMin(pillSz.width(), qMax(80, refSz.width() - 16));
+    const int ph = qMax(22, pillSz.height());
+    const int x = qMax(8, refSz.width() - pw - 10);
+    const int y = qMax(LayerButton::btnSize() + 8, refSz.height() - ph - 8);
+    d_canvas_status_pill->setGeometry(x, y, pw, ph);
+    d_canvas_status_pill->raise();
+}
+
+void MultiLayer::openCanvasStatusQuickMenu()
+{
+    if (d_canvas_status_pill && d_canvas_status_pill->menu())
+        d_canvas_status_pill->showMenu();
 }
 

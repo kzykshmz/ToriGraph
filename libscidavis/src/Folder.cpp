@@ -30,6 +30,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "Folder.h"
+#include "IconLoader.h"
 
 #include <qobject.h>
 #include <qdatetime.h>
@@ -208,9 +209,9 @@ FolderListItem::FolderListItem(FolderListItem *parent, Folder *f)
 void FolderListItem::setActive(bool o)
 {
     if (o)
-        setIcon(0, QIcon(QPixmap(":/folder_open.xpm")));
+        setIcon(0, IconLoader::duotoneIcon("folder-open"));
     else
-        setIcon(0, QIcon(QPixmap(":/folder_closed.xpm")));
+        setIcon(0, IconLoader::duotoneIcon("folder-closed"));
 
     setSelected(o);
 }
@@ -274,9 +275,9 @@ void FolderListView::startDrag(Qt::DropActions supportedActions)
 
     QPixmap pix;
     if (item->type() == FolderListItem::FolderType)
-        pix = QPixmap(":/folder_closed.xpm");
+        pix = IconLoader::duotonePixmap("folder-closed", 16);
     else
-        pix = item->icon(0).pixmap(QSize());
+        pix = item->icon(0).pixmap(QSize(16, 16));
 
     QDrag *drag = new QDrag(viewport());
     drag->setPixmap(pix);

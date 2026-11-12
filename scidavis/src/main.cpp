@@ -27,15 +27,22 @@
  *                                                                         *
  ***************************************************************************/
 #include "ApplicationWindow.h"
+#include "ModernUiTheme.h"
+#include "PythonAutomationServer.h"
 #ifdef Q_OS_WIN
 #include "OleServer.h"
 #endif
 
 #include <QAction>
 #include <QApplication>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QPointer>
+#include <QProcess>
 #include <QSplashScreen>
 #include <QTimer>
 
+#include <cstdio>
 #include <typeinfo>
 
 // The following stuff is for the doxygen title page
@@ -135,25 +142,38 @@ for him/herself.
 
 struct Application : public QApplication
 {
+    bool headless = false;
+
     Application(int &argc, char **argv) : QApplication(argc, argv) { }
 
-    // catch exception, and display their contents as modal dialogue
+    // catch exception, and display their contents as modal dialogue (or stderr in headless mode)
     bool notify(QObject *receiver, QEvent *event)
     {
         try {
             return QApplication::notify(receiver, event);
         } catch (const std::exception &e) {
-            QMessageBox::critical(0, tr("Error!"),
-                                  tr("Error ") + e.what() + tr(" sending event ")
-                                          + typeid(*event).name() + tr(" to object ")
-                                          + qPrintable(receiver->objectName()) + " \""
-                                          + typeid(*receiver).name() + "\"");
+            const QString msg = tr("Error ") + e.what() + tr(" sending event ")
+                    + typeid(*event).name() + tr(" to object ")
+                    + qPrintable(receiver ? receiver->objectName() : QString()) + " \""
+                    + (receiver ? typeid(*receiver).name() : "null") + "\"";
+            if (headless) {
+                std::fprintf(stderr, "%s\n", msg.toUtf8().constData());
+                std::fflush(stderr);
+            } else {
+                QMessageBox::critical(0, tr("Error!"), msg);
+            }
         } catch (...) // shouldn't happen...
         {
-            QMessageBox::critical(0, tr("Error!"),
-                                  tr("Error <unknown> sending event") + typeid(*event).name()
-                                          + tr(" to object ") + qPrintable(receiver->objectName())
-                                          + " \"" + typeid(*receiver).name() + "\"");
+            const QString msg = tr("Error <unknown> sending event") + typeid(*event).name()
+                    + tr(" to object ")
+                    + qPrintable(receiver ? receiver->objectName() : QString()) + " \""
+                    + (receiver ? typeid(*receiver).name() : "null") + "\"";
+            if (headless) {
+                std::fprintf(stderr, "%s\n", msg.toUtf8().constData());
+                std::fflush(stderr);
+            } else {
+                QMessageBox::critical(0, tr("Error!"), msg);
+            }
         }
         return false;
     }
@@ -161,20 +181,20 @@ struct Application : public QApplication
 
 int main(int argc, char **argv)
 {
-
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
     QCoreApplication::setOrganizationName("ToriGraph");
     QCoreApplication::setApplicationName("ToriGraph");
 
     Application app(argc, argv);
+    ModernUiTheme::applyModernTheme(&app);
 
 #ifdef __APPLE__
     // set python home to bundle specific directory
     setenv("PYTHONHOME",(QCoreApplication::applicationDirPath()+"/../Resources").toStdString().c_str(),true);
 #endif
-    
+
     ApplicationWindow::getSettings();
-    
+
     QStringList args = app.arguments();
     args.removeFirst(); // remove application name
 
@@ -191,7 +211,47 @@ int main(int argc, char **argv)
     SciDAVisOle::initializeOleServer(oleEmbedded);
 #endif
 
-    if ((args.count() == 1) && (args[0] == "-a" || args[0] == "--about")) {
+    bool headlessMode = false;
+    bool hasRpcPort = false;
+    quint16 rpcPort = 0;
+    QString rpcPortFile;
+    QString rpcPipeName;
+    QString runPythonScript;
+    QStringList runPythonExtraArgs;
+    QStringList filteredArgs;
+
+    for (int i = 0; i < args.count(); ++i) {
+        const QString &arg = args[i];
+        if (arg == QStringLiteral("--headless")) {
+            headlessMode = true;
+        } else if (arg == QStringLiteral("--rpc-port") && i + 1 < args.count()) {
+            hasRpcPort = true;
+            rpcPort = static_cast<quint16>(args[++i].toUInt());
+        } else if (arg.startsWith(QStringLiteral("--rpc-port="))) {
+            hasRpcPort = true;
+            rpcPort = static_cast<quint16>(arg.mid(11).toUInt());
+        } else if (arg == QStringLiteral("--rpc-port-file") && i + 1 < args.count()) {
+            rpcPortFile = args[++i];
+        } else if (arg.startsWith(QStringLiteral("--rpc-port-file="))) {
+            rpcPortFile = arg.mid(16);
+        } else if (arg == QStringLiteral("--rpc-pipe") && i + 1 < args.count()) {
+            rpcPipeName = args[++i];
+        } else if (arg.startsWith(QStringLiteral("--rpc-pipe="))) {
+            rpcPipeName = arg.mid(11);
+        } else if (arg == QStringLiteral("--run-python") && i + 1 < args.count()) {
+            runPythonScript = args[++i];
+        } else if (arg.startsWith(QStringLiteral("--run-python="))) {
+            runPythonScript = arg.mid(13);
+        } else {
+            filteredArgs.append(arg);
+        }
+    }
+
+    app.headless = headlessMode;
+    app.setProperty("torigraph_noninteractive", headlessMode || oleEmbedded);
+
+    if ((filteredArgs.count() == 1) && (filteredArgs[0] == "-a" || filteredArgs[0] == "--about")
+        && !headlessMode) {
         ApplicationWindow::about();
 #ifdef Q_OS_WIN
         SciDAVisOle::shutdownOleServer();
@@ -200,19 +260,133 @@ int main(int argc, char **argv)
     } else if (oleEmbedded) {
         app.setQuitOnLastWindowClosed(false);
     } else {
-        ApplicationWindow *mw = new ApplicationWindow;
+        if (headlessMode)
+            app.setQuitOnLastWindowClosed(false);
+
+        QPointer<ApplicationWindow> mw = new ApplicationWindow;
+        mw->setHeadlessMode(headlessMode);
         mw->applyUserSettings();
         mw->newTable();
         mw->activateSubWindow();
         mw->savedProject();
-#ifdef SEARCH_FOR_UPDATES
-        if (mw->autoSearchUpdates) {
-            mw->autoSearchUpdatesRequest = true;
-            mw->searchForUpdates();
+        mw->parseCommandLineArguments(filteredArgs);
+
+        ApplicationWindow *activeMw = mw.data();
+        if (!activeMw) {
+            for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                if (ApplicationWindow *cand = qobject_cast<ApplicationWindow *>(tlw)) {
+                    activeMw = cand;
+                    break;
+                }
+            }
         }
+
+        if (activeMw) {
+            activeMw->setHeadlessMode(headlessMode);
+            if (headlessMode && activeMw->isVisible())
+                activeMw->hide();
+
+            PythonAutomationServer *rpcServer = activeMw->pythonAutomationServer();
+            if (rpcServer) {
+                if (!rpcPipeName.isEmpty() && !hasRpcPort) {
+                    if (rpcServer->isTcpListening())
+                        rpcServer->stop();
+                    rpcServer->startLocalPipe(rpcPipeName);
+                } else {
+                    if (hasRpcPort || !rpcServer->isTcpListening())
+                        rpcServer->startTcp(hasRpcPort ? rpcPort : 0);
+                    if (!rpcPipeName.isEmpty())
+                        rpcServer->startLocalPipe(rpcPipeName);
+                }
+                if (!rpcPortFile.isEmpty())
+                    rpcServer->writeEndpointPortFile(rpcPortFile);
+                if (hasRpcPort || !rpcPortFile.isEmpty() || !rpcPipeName.isEmpty()
+                    || headlessMode || !runPythonScript.isEmpty()) {
+                    const QByteArray epLine = QByteArray("TORIGRAPH_RPC_ENDPOINT=")
+                            + rpcServer->endpointString().toUtf8() + '\n';
+                    std::fwrite(epLine.constData(), 1, static_cast<size_t>(epLine.size()), stdout);
+                    std::fflush(stdout);
+                }
+
+                if (!runPythonScript.isEmpty()) {
+                    const QString absScript = QFileInfo(runPythonScript).absoluteFilePath();
+                    QProcess *pyProc = rpcServer->startPythonScriptProcess(
+                            absScript, runPythonExtraArgs, activeMw);
+                    if (pyProc) {
+                        auto flushOut = [pyProc]() {
+                            const QByteArray outBytes = pyProc->readAllStandardOutput();
+                            if (!outBytes.isEmpty()) {
+                                std::fwrite(outBytes.constData(), 1,
+                                            static_cast<size_t>(outBytes.size()), stdout);
+                                std::fflush(stdout);
+                            }
+                        };
+                        auto flushErr = [pyProc]() {
+                            const QByteArray errBytes = pyProc->readAllStandardError();
+                            if (!errBytes.isEmpty()) {
+                                std::fwrite(errBytes.constData(), 1,
+                                            static_cast<size_t>(errBytes.size()), stderr);
+                                std::fflush(stderr);
+                            }
+                        };
+                        QObject::connect(pyProc, &QProcess::readyReadStandardOutput, pyProc,
+                                         flushOut);
+                        QObject::connect(pyProc, &QProcess::readyReadStandardError, pyProc,
+                                         flushErr);
+
+                        if (headlessMode) {
+                            QObject::connect(
+                                    pyProc,
+                                    QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                                    &app,
+                                    [&app, flushOut, flushErr](int exitCode,
+                                                               QProcess::ExitStatus status) {
+                                        flushOut();
+                                        flushErr();
+                                        const int rc =
+                                                (status == QProcess::NormalExit) ? exitCode : 1;
+                                        QTimer::singleShot(0, &app, [&app, rc]() { app.exit(rc); });
+                                    });
+                            QObject::connect(pyProc, &QProcess::errorOccurred, &app,
+                                             [&app, flushErr](QProcess::ProcessError err) {
+                                                 if (err == QProcess::FailedToStart) {
+                                                     flushErr();
+                                                     std::fprintf(stderr,
+                                                                  "Failed to start Python "
+                                                                  "interpreter for --run-python\n");
+                                                     std::fflush(stderr);
+                                                     QTimer::singleShot(
+                                                             0, &app, [&app]() { app.exit(1); });
+                                                 }
+                                             });
+                            if (pyProc->state() == QProcess::NotRunning) {
+                                flushOut();
+                                flushErr();
+                                const int rc = (pyProc->exitStatus() == QProcess::NormalExit
+                                                && pyProc->error() != QProcess::FailedToStart)
+                                        ? pyProc->exitCode()
+                                        : 1;
+                                QTimer::singleShot(0, &app, [&app, rc]() { app.exit(rc); });
+                            }
+                        }
+                    } else if (headlessMode) {
+                        QTimer::singleShot(0, &app, [&app]() { app.exit(1); });
+                    }
+                }
+            }
+
+#ifdef SEARCH_FOR_UPDATES
+            if (!headlessMode && !activeMw->isOleEmbeddedMode() && !activeMw->batchMode()
+                && runPythonScript.isEmpty() && activeMw->autoSearchUpdates) {
+                activeMw->autoSearchUpdatesRequest = true;
+                activeMw->searchForUpdates();
+            }
 #endif
-        mw->parseCommandLineArguments(args);
-        app.connect(&app, SIGNAL(lastWindowClosed()), &app, SLOT(quit()));
+        }
+
+        if (!headlessMode) {
+            app.connect(&app, SIGNAL(lastWindowClosed()), &app, SLOT(quit()));
+        }
     }
     int rc = app.exec();
 #ifdef Q_OS_WIN

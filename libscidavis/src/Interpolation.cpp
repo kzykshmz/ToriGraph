@@ -28,11 +28,15 @@
  ***************************************************************************/
 #include "Interpolation.h"
 
+#include <QApplication>
 #include <QMessageBox>
 
 #include <gsl/gsl_sort.h>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_interp.h>
+
+#include <algorithm>
+#include <cmath>
 
 Interpolation::Interpolation(ApplicationWindow *parent, Graph *g, const QString &curveTitle, int m)
     : Filter(parent, g)
@@ -52,9 +56,13 @@ Interpolation::Interpolation(ApplicationWindow *parent, Graph *g, const QString 
 void Interpolation::init(int m)
 {
     if (m < 0 || m > 2) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Unknown interpolation method. Valid values are: 0 - Linear, 1 - "
-                                 "Cubic, 2 - Akima."));
+        if (!isSilentOrNonInteractive()
+            && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Unknown interpolation method. Valid values are: 0 - Linear, "
+                                     "1 - Cubic, 2 - Akima."));
+        }
         d_init_err = true;
         return;
     }
@@ -74,34 +82,55 @@ void Interpolation::init(int m)
         break;
     }
     d_sort_data = true;
-    d_min_points = d_method + 3;
+    d_min_points = (d_method == Linear) ? 2 : (d_method + 3);
 }
 
 void Interpolation::setMethod(int m)
 {
+    const bool quiet = isSilentOrNonInteractive()
+            || (qApp && qApp->property("torigraph_noninteractive").toBool());
     if (m < 0 || m > 2) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Error"),
-                              tr("Unknown interpolation method, valid values are: 0 - Linear, 1 - "
-                                 "Cubic, 2 - Akima."));
+        if (!quiet) {
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Error"),
+                                  tr("Unknown interpolation method, valid values are: 0 - Linear, "
+                                     "1 - Cubic, 2 - Akima."));
+        }
         d_init_err = true;
         return;
     }
-    unsigned min_points = m + 3;
+    unsigned min_points = (m == Linear) ? 2u : static_cast<unsigned>(m + 3);
     if (d_x.size() < min_points) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("You need at least %1 points in order to perform this operation!")
-                                      .arg(min_points));
+        if (!quiet) {
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("You need at least %1 points in order to perform this "
+                                     "operation!")
+                                          .arg(min_points));
+        }
         d_init_err = true;
         return;
     }
     d_method = m;
-    d_min_points = min_points;
+    d_min_points = static_cast<int>(min_points);
 }
 
-void Interpolation::calculateOutputData(std::vector<double>& x, std::vector<double>&  y)
+void Interpolation::calculateOutputData(std::vector<double>& x, std::vector<double>& y)
 {
+    if (d_points <= 0 || d_x.size() < static_cast<size_t>(std::max(2, d_min_points))
+        || d_y.size() < d_x.size()) {
+        d_init_err = true;
+        return;
+    }
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        if (!std::isfinite(d_x[i]) || !std::isfinite(d_y[i])
+            || (i > 0 && !(d_x[i - 1] < d_x[i]))) {
+            d_init_err = true;
+            return;
+        }
+    }
+
     gsl_interp_accel *acc = gsl_interp_accel_alloc();
-    const gsl_interp_type *method = NULL;
+    const gsl_interp_type *method = nullptr;
     switch (d_method) {
     case 0:
         method = gsl_interp_linear;
@@ -112,32 +141,58 @@ void Interpolation::calculateOutputData(std::vector<double>& x, std::vector<doub
     case 2:
         method = gsl_interp_akima;
         break;
+    default:
+        method = gsl_interp_linear;
+        break;
     }
 
     gsl_spline *interp = gsl_spline_alloc(method, d_x.size());
-    gsl_spline_init(interp, d_x.data(), d_y.data(), d_x.size());
+    if (!interp || gsl_spline_init(interp, d_x.data(), d_y.data(), d_x.size()) != 0) {
+        if (interp)
+            gsl_spline_free(interp);
+        if (acc)
+            gsl_interp_accel_free(acc);
+        d_init_err = true;
+        return;
+    }
 
-    double step = (d_to - d_from) / (double)(d_points - 1);
+    const double xMin = d_x.front();
+    const double xMax = d_x.back();
+    const double step = (d_points > 1) ? ((d_to - d_from) / static_cast<double>(d_points - 1)) : 0.0;
     for (int j = 0; j < d_points; j++) {
-        x[j] = d_from + j * step;
-        y[j] = gsl_spline_eval(interp, x[j], acc);
+        const double rawX = (j == 0) ? d_from : ((j == d_points - 1) ? d_to : (d_from + j * step));
+        x[j] = rawX;
+        const double evalX = std::clamp(rawX, xMin, xMax);
+        y[j] = gsl_spline_eval(interp, evalX, acc);
     }
 
     gsl_spline_free(interp);
     gsl_interp_accel_free(acc);
 }
 
-bool Interpolation::isDataAcceptable()
+bool Interpolation::isDataAcceptable() const
 {
-    // GSL interpolation routines fail with division by zero on such data
-    for (unsigned i = 1; i < d_x.size(); i++)
-        if (d_x[i - 1] == d_x[i]) {
-            QMessageBox::critical((ApplicationWindow *)parent(),
-                                  tr("ToriGraph") + " - " + tr("Error"),
-                                  tr("Several data points have the same x value causing divisions "
-                                     "by zero, operation aborted!"));
+    if (!Filter::isDataAcceptable())
+        return false;
+
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        if (!std::isfinite(d_x[i]) || (i < d_y.size() && !std::isfinite(d_y[i])))
+            return false;
+    }
+
+    // GSL interpolation routines fail on duplicate or non-strictly-monotonic x values
+    for (size_t i = 1; i < d_x.size(); i++) {
+        if (!(d_x[i - 1] < d_x[i])) {
+            if (!isSilentOrNonInteractive()
+                && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+                QMessageBox::critical((ApplicationWindow *)parent(),
+                                      tr("ToriGraph") + " - " + tr("Error"),
+                                      tr("Several data points have the same x value causing divisions "
+                                         "by zero, operation aborted!"));
+            }
             return false;
         }
+    }
 
-    return Filter::isDataAcceptable();
+    return true;
 }

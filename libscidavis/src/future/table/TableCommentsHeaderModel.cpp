@@ -34,24 +34,26 @@
 TableCommentsHeaderModel::TableCommentsHeaderModel(TableModel *table_model, QObject *parent)
     : QAbstractTableModel(parent), d_table_model(table_model)
 {
-    connect(d_table_model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
-            SIGNAL(headerDataChanged(Qt::Orientation, int, int)));
-    connect(d_table_model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
-            SIGNAL(headerDataChanged(Qt::Orientation, int, int)));
-    connect(d_table_model, SIGNAL(columnsAboutToBeInserted(const QModelIndex &, int, int)), this,
-            SIGNAL(columnsAboutToBeInserted(const QModelIndex &, int, int)));
-    connect(d_table_model, SIGNAL(columnsAboutToBeRemoved(const QModelIndex &, int, int)), this,
-            SIGNAL(columnsAboutToBeRemoved(const QModelIndex &, int, int)));
-    connect(d_table_model, SIGNAL(columnsInserted(const QModelIndex &, int, int)), this,
-            SIGNAL(columnsInserted(const QModelIndex &, int, int)));
-    connect(d_table_model, SIGNAL(columnsRemoved(const QModelIndex &, int, int)), this,
-            SIGNAL(columnsRemoved(const QModelIndex &, int, int)));
+    if (d_table_model) {
+        connect(d_table_model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
+                SIGNAL(headerDataChanged(Qt::Orientation, int, int)));
+        connect(d_table_model, SIGNAL(columnsAboutToBeInserted(const QModelIndex &, int, int)), this,
+                SIGNAL(columnsAboutToBeInserted(const QModelIndex &, int, int)));
+        connect(d_table_model, SIGNAL(columnsAboutToBeRemoved(const QModelIndex &, int, int)), this,
+                SIGNAL(columnsAboutToBeRemoved(const QModelIndex &, int, int)));
+        connect(d_table_model, SIGNAL(columnsInserted(const QModelIndex &, int, int)), this,
+                SIGNAL(columnsInserted(const QModelIndex &, int, int)));
+        connect(d_table_model, SIGNAL(columnsRemoved(const QModelIndex &, int, int)), this,
+                SIGNAL(columnsRemoved(const QModelIndex &, int, int)));
+    }
 }
 
 TableCommentsHeaderModel::~TableCommentsHeaderModel() { }
 
 Qt::ItemFlags TableCommentsHeaderModel::flags(const QModelIndex &index) const
 {
+    if (!d_table_model)
+        return Qt::NoItemFlags;
     if (index.isValid())
         return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
     else
@@ -68,7 +70,7 @@ QVariant TableCommentsHeaderModel::data(const QModelIndex &index, int role) cons
 QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orientation,
                                               int role) const
 {
-    if (orientation != Qt::Horizontal || section < 0 || section >= columnCount())
+    if (!d_table_model || orientation != Qt::Horizontal || section < 0 || section >= columnCount())
         return QVariant();
 
     if (role != Qt::DisplayRole && role != Qt::ToolTipRole)
@@ -127,11 +129,11 @@ QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orien
 int TableCommentsHeaderModel::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    return d_table_model->rowCount();
+    return d_table_model ? d_table_model->rowCount() : 0;
 }
 
 int TableCommentsHeaderModel::columnCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    return d_table_model->columnCount();
+    return d_table_model ? d_table_model->columnCount() : 0;
 }

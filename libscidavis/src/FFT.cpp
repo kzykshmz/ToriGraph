@@ -32,11 +32,15 @@
 #include "ColorButton.h"
 #include "core/column/Column.h"
 
+#include <QApplication>
 #include <QMessageBox>
 #include <QLocale>
 
 #include <gsl/gsl_fft_complex.h>
 #include <gsl/gsl_fft_halfcomplex.h>
+
+#include <algorithm>
+#include <cmath>
 
 FFT::FFT(ApplicationWindow *parent, Table *t, const QString &realColName,
          const QString &imagColName)
@@ -50,6 +54,11 @@ FFT::FFT(ApplicationWindow *parent, Graph *g, const QString &curveTitle) : Filte
 {
     init();
     setDataFromCurve(curveTitle);
+    if (d_x.size() >= 2) {
+        const double dt = std::fabs(d_x[1] - d_x[0]);
+        if (std::isfinite(dt) && dt > 0.0)
+            d_sampling = dt;
+    }
     // intersperse 0 imaginary components
     std::vector<double> tmp(2 * d_x.size(), 0.0);
     for (size_t i = 0; i < d_x.size(); ++i)
@@ -70,6 +79,11 @@ void FFT::init()
 
 QList<Column *> FFT::fftTable()
 {
+    if (d_x.empty() || d_y.size() < 2 * d_x.size()) {
+        d_init_err = true;
+        return QList<Column *>();
+    }
+
     std::vector<double> amp;
 
     gsl_fft_complex_wavetable *wavetable = nullptr;
@@ -82,8 +96,11 @@ QList<Column *> FFT::fftTable()
         if ((nullptr == wavetable) || (nullptr == workspace))
             throw std::bad_alloc();
     } catch (const std::bad_alloc &) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!"));
+        if (!isSilentOrNonInteractive()
+            && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!"));
+        }
         if (nullptr != wavetable)
             gsl_fft_complex_wavetable_free(wavetable);
         if (nullptr != workspace)
@@ -92,7 +109,8 @@ QList<Column *> FFT::fftTable()
         return QList<Column *>();
     }
 
-    double df = 1.0 / (d_x.size() * d_sampling); // frequency sampling
+    const double safeSampling = (std::isfinite(d_sampling) && d_sampling > 0.0) ? d_sampling : 1.0;
+    double df = 1.0 / (static_cast<double>(d_x.size()) * safeSampling); // frequency sampling
     double aMax = 0.0; // max amplitude
     QList<Column *> columns;
     if (!d_inverse) {
@@ -107,22 +125,24 @@ QList<Column *> FFT::fftTable()
     gsl_fft_complex_workspace_free(workspace);
 
     if (d_shift_order) {
-        int n2 = d_x.size() / 2;
-        for (int i = 0u; i < d_x.size(); i++) {
-            d_x[i] = (i - n2) * df;
-            int j = i + d_x.size();
-            double aux = d_y[i];
-            d_y[i] = d_y[j];
-            d_y[j] = aux;
+        const size_t n = d_x.size();
+        const int n2 = static_cast<int>(n / 2);
+        for (size_t i = 0; i < n; i++)
+            d_x[i] = (static_cast<int>(i) - n2) * df;
+        if (n > 1) {
+            const size_t shiftPairs = (n + 1) / 2;
+            std::rotate(d_y.begin(),
+                        d_y.begin() + static_cast<std::ptrdiff_t>(2 * shiftPairs),
+                        d_y.begin() + static_cast<std::ptrdiff_t>(2 * n));
         }
     } else {
         for (size_t i = 0; i < d_x.size(); i++)
-            d_x[i] = i * df;
+            d_x[i] = static_cast<double>(i) * df;
     }
 
     for (size_t i = 0; i < d_x.size(); i++) {
         size_t i2 = 2 * i;
-        double a = sqrt(d_y[i2] * d_y[i2] + d_y[i2 + 1] * d_y[i2 + 1]);
+        double a = std::hypot(d_y[i2], d_y[i2 + 1]);
         amp[i] = a;
         if (a > aMax)
             aMax = a;
@@ -134,14 +154,16 @@ QList<Column *> FFT::fftTable()
     columns << new Column(tr("Angle"), SciDAVis::ColumnMode::Numeric);
     for (int i = 0; i < static_cast<int>(d_x.size()); i++) {
         int i2 = 2 * i;
+        const double re = d_y[i2];
+        const double im = d_y[i2 + 1];
         columns.at(0)->setValueAt(i, d_x[i]);
-        columns.at(1)->setValueAt(i, d_y[i2]);
-        columns.at(2)->setValueAt(i, d_y[i2 + 1]);
+        columns.at(1)->setValueAt(i, re);
+        columns.at(2)->setValueAt(i, im);
         if (d_normalize)
-            columns.at(3)->setValueAt(i, amp[i] / aMax);
+            columns.at(3)->setValueAt(i, (aMax > 0.0) ? (amp[i] / aMax) : 0.0);
         else
             columns.at(3)->setValueAt(i, amp[i]);
-        columns.at(4)->setValueAt(i, atan(d_y[i2 + 1] / d_y[i2]));
+        columns.at(4)->setValueAt(i, (re == 0.0 && im == 0.0) ? 0.0 : std::atan2(im, re));
     }
 
     columns.at(0)->setPlotDesignation(SciDAVis::X);
@@ -193,28 +215,53 @@ void FFT::setDataFromTable(Table *t, const QString &realColName, const QString &
     if (t && d_table != t)
         d_table = t;
 
+    if (!d_table) {
+        d_init_err = true;
+        return;
+    }
+
     d_real_col = d_table->colIndex(realColName);
+    if (d_real_col < 0) {
+        d_init_err = true;
+        return;
+    }
 
     if (!imagColName.isEmpty())
         d_imag_col = d_table->colIndex(imagColName);
 
     size_t rows = d_table->numRows();
-    int n2 = 2 * rows;
+    if (rows >= 2) {
+        const int xcol = d_table->colX(d_real_col);
+        if (xcol >= 0 && xcol != d_real_col && xcol != d_imag_col) {
+            if (Column *xc = d_table->column(xcol)) {
+                if (xc->columnMode() == SciDAVis::ColumnMode::Numeric && !xc->isInvalid(0)
+                    && !xc->isInvalid(1)) {
+                    const double dt = std::fabs(xc->valueAt(1) - xc->valueAt(0));
+                    if (std::isfinite(dt) && dt > 0.0)
+                        d_sampling = dt;
+                }
+            }
+        }
+    }
+
+    size_t n2 = 2 * rows;
     try {
-        d_y.resize(n2);
+        d_y.assign(n2, 0.0);
         d_x.resize(rows);
     } catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!\n")
-                                      + tr("Allocator returned: ") + e.what());
+        if (!isSilentOrNonInteractive()
+            && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!\n")
+                                          + tr("Allocator returned: ") + e.what());
+        }
         d_init_err = true;
         return;
     }
 
-    for (unsigned i = 0; i < d_x.size(); i++) {
-        int i2 = 2 * i;
-        d_y[i2] = d_table->cell(i, d_real_col);
-        if (d_imag_col >= 0)
-            d_y[i2 + 1] = d_table->cell(i, d_imag_col);
+    for (size_t i = 0; i < d_x.size(); i++) {
+        size_t i2 = 2 * i;
+        d_y[i2] = d_table->cell(static_cast<int>(i), d_real_col);
+        d_y[i2 + 1] = (d_imag_col >= 0) ? d_table->cell(static_cast<int>(i), d_imag_col) : 0.0;
     }
 }

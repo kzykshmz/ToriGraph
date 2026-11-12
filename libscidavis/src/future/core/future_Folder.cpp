@@ -31,6 +31,7 @@
 #include "core/future_Folder.h"
 #include "lib/XmlStreamReader.h"
 #include "core/column/Column.h"
+#include "IconLoader.h"
 
 #include <QIcon>
 #include <QApplication>
@@ -47,8 +48,10 @@ Folder::~Folder() { }
 QIcon Folder::icon() const
 {
     QIcon result;
-    result.addFile(":/folder_closed.xpm", QSize(), QIcon::Normal, QIcon::Off);
-    result.addFile(":/folder_open.xpm", QSize(), QIcon::Normal, QIcon::On);
+    result.addPixmap(IconLoader::duotonePixmap("folder-closed", 16), QIcon::Normal, QIcon::Off);
+    result.addPixmap(IconLoader::duotonePixmap("folder-closed", 24), QIcon::Normal, QIcon::Off);
+    result.addPixmap(IconLoader::duotonePixmap("folder-open", 16), QIcon::Normal, QIcon::On);
+    result.addPixmap(IconLoader::duotonePixmap("folder-open", 24), QIcon::Normal, QIcon::On);
     return result;
 }
 

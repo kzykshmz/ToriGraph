@@ -59,14 +59,18 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     if (!painter || dataSize() <= 0)
         return;
 
-    if (to < 0)
+    if (from < 0)
+        from = 0;
+    if (to < 0 || to >= dataSize())
         to = dataSize() - 1;
+    if (from > to)
+        return;
 
     painter->save();
     painter->setPen(QwtPlotCurve::pen());
     painter->setBrush(QwtPlotCurve::brush());
 
-    int dx, dy;
+    int dx = 0, dy = 0;
     double ref1, ref2;
     double bar_width = 0;
 
@@ -87,19 +91,29 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     }
 
     if (bar_style == Vertical) {
-        dx = abs(xMap.transform(x(from + 1)) - xMap.transform(x(from)));
-        for (int i = from + 2; i < to; i++) {
-            int min = abs(xMap.transform(x(i + 1)) - xMap.transform(x(i)));
-            if (min <= dx)
-                dx = min;
+        if (from + 1 < dataSize() && from < to) {
+            dx = abs(xMap.transform(x(from + 1)) - xMap.transform(x(from)));
+            for (int i = from + 2; i < to; i++) {
+                int min = abs(xMap.transform(x(i + 1)) - xMap.transform(x(i)));
+                if (min <= dx)
+                    dx = min;
+            }
+        } else {
+            const int spanPx = abs(xMap.transform(xMap.s2()) - xMap.transform(xMap.s1()));
+            dx = qMax(8, spanPx / 5);
         }
         bar_width = dx * (1 - bar_gap * 0.01);
     } else {
-        dy = abs(yMap.transform(y(from + 1)) - yMap.transform(y(from)));
-        for (int i = from + 2; i < to; i++) {
-            int min = abs(yMap.transform(y(i + 1)) - yMap.transform(y(i)));
-            if (min <= dy)
-                dy = min;
+        if (from + 1 < dataSize() && from < to) {
+            dy = abs(yMap.transform(y(from + 1)) - yMap.transform(y(from)));
+            for (int i = from + 2; i < to; i++) {
+                int min = abs(yMap.transform(y(i + 1)) - yMap.transform(y(i)));
+                if (min <= dy)
+                    dy = min;
+            }
+        } else {
+            const int spanPx = abs(yMap.transform(yMap.s2()) - yMap.transform(yMap.s1()));
+            dy = qMax(8, spanPx / 5);
         }
         bar_width = dy * (1 - bar_gap * 0.01);
     }
@@ -129,13 +143,19 @@ QwtDoubleRect QwtBarCurve::boundingRect() const
 {
     QwtDoubleRect rect = QwtPlotCurve::boundingRect();
     double n = (double)dataSize();
+    if (n <= 0.0)
+        return rect;
 
     if (bar_style == Vertical) {
         double dx = (rect.right() - rect.left()) / n;
+        if (dx <= 0.0)
+            dx = 0.5;
         rect.setLeft(rect.left() - dx);
         rect.setRight(rect.right() + dx);
     } else {
         double dy = (rect.bottom() - rect.top()) / n;
+        if (dy <= 0.0)
+            dy = 0.5;
         rect.setTop(rect.top() - dy);
         rect.setBottom(rect.bottom() + dy);
     }
@@ -161,6 +181,9 @@ void QwtBarCurve::setOffset(int offset)
 
 double QwtBarCurve::dataOffset()
 {
+    if (!plot() || dataSize() < 2)
+        return 0.0;
+
     if (bar_style == Vertical) {
         const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
         int dx = abs(xMap.transform(x(1)) - xMap.transform(x(0)));

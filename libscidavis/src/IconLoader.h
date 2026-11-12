@@ -1,11 +1,9 @@
 /***************************************************************************
-    File                 : iconloader.cpp
-    Project              : SciDAVis
+    File                 : IconLoader.h
+    Project              : ToriGraph / SciDAVis
     --------------------------------------------------------------------
     Copyright            : (C) 2016 by Arun Narayanankutty
-    Email                : n.arun.lifescience@gmail.com
-    Description          : Load icons
-
+    Description          : 2-Color Duotone Vector SVG Icon Engine
  ***************************************************************************/
 
 /***************************************************************************
@@ -30,22 +28,35 @@
 #ifndef ICONLOADER_H
 #define ICONLOADER_H
 
+#include <QColor>
 #include <QIcon>
+#include <QList>
+#include <QPixmap>
+#include <QString>
+#include <QStringList>
 
 class IconLoader
 {
 public:
+    enum IconMode { LightDark = 0, General = 1, Indiscriminate = 2 };
+
     static void init();
-    static QIcon load(const QString &name);
+    static QIcon load(const QString &name, const IconMode &iconMode = LightDark);
+
+    static QIcon duotoneIcon(const QString &semanticId, int baseSize = 24,
+                             bool darkSurface = false);
+    static QPixmap duotonePixmap(const QString &semanticId, int pxSize = 24, qreal dpr = 0.0,
+                                 bool darkSurface = false);
+    static QStringList registeredIconIds();
+    static QString resolveIconId(const QString &nameOrAlias);
+
     static int inline isLight(const QColor &col)
     {
-        // convert window background to a scale of darkness to choose which
-        // icons(light or dark) to load using something similer to
-        // http://stackoverflow.com/questions/12043187/
-        // how-to-check-if-hex-color-is-too-black
         return static_cast<int>(0.2126 * col.red() + 0.7152 * col.blue() + 0.0722 * col.green());
     }
+
     static int lumen_;
+    static int &lumi_;
 
 private:
     IconLoader() { }

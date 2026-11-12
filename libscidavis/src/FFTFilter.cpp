@@ -28,10 +28,14 @@
  ***************************************************************************/
 #include "FFTFilter.h"
 
+#include <QApplication>
 #include <QMessageBox>
 #include <QLocale>
 
 #include <gsl/gsl_fft_halfcomplex.h>
+
+#include <algorithm>
+#include <cmath>
 
 FFTFilter::FFTFilter(ApplicationWindow *parent, Graph *g, const QString &curveTitle, int m)
     : Filter(parent, g)
@@ -54,18 +58,40 @@ void FFTFilter::init(int m)
 {
     setObjectName(tr("FFT") + tr("Filtered"));
     setFilterType(m);
-    d_points = d_x.size();
+    d_points = static_cast<int>(d_x.size());
     d_offset = true;
     d_low_freq = 0;
     d_high_freq = 0;
+
+    bool valid = (d_x.size() >= 2 && d_x.size() == d_y.size());
+    if (valid) {
+        for (size_t i = 0; i < d_x.size(); ++i) {
+            if (!std::isfinite(d_x[i]) || !std::isfinite(d_y[i])) {
+                valid = false;
+                break;
+            }
+            if (i > 0 && d_x[i] < d_x[i - 1]) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid && !(d_x.back() > d_x.front()))
+            valid = false;
+    }
+    if (!valid)
+        d_init_err = true;
 }
 
 void FFTFilter::setFilterType(int type)
 {
     if (type < 1 || type > 4) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Unknown filter type. Valid values are: 1 - Low pass, 2 - High "
-                                 "Pass, 3 - Band Pass, 4 - Band block."));
+        if (!isSilentOrNonInteractive()
+            && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Unknown filter type. Valid values are: 1 - Low pass, 2 - High "
+                                     "Pass, 3 - Band Pass, 4 - Band block."));
+        }
         d_init_err = true;
         return;
     }
@@ -85,8 +111,12 @@ void FFTFilter::setBand(double lowFreq, double highFreq)
     if (d_filter_type < 3)
         return;
     else if (lowFreq == highFreq) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Please enter different values for the band limits."));
+        if (!isSilentOrNonInteractive()
+            && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Please enter different values for the band limits."));
+        }
         d_init_err = true;
         return;
     }
@@ -102,29 +132,66 @@ void FFTFilter::setBand(double lowFreq, double highFreq)
 
 void FFTFilter::calculateOutputData(std::vector<double>& x, std::vector<double>& y)
 {
-    // interpolate y to even spacing
-    double delta = double(d_x.back()- d_x.front()) / d_x.size();
-    double xi = d_x[0];
-
-    for (unsigned i = 0, j = 0; j < d_x.size() && xi <= d_x.back(); j++) {
-        x[j] = xi;
-        if (i < d_x.size() - 1)
-            y[j] = ((d_x[i + 1] - xi) * d_y[i] + (xi - d_x[i]) * d_y[i + 1])
-                    / (d_x[i + 1] - d_x[i]);
-        else
-            y[j] = d_y.back();
-
-        xi += delta;
-        while (i < d_x.size() && xi > d_x[i])
-            i++;
+    const size_t n = std::min({ d_x.size(), d_y.size(), x.size(), y.size() });
+    if (n < 2 || !std::isfinite(d_x.front()) || !std::isfinite(d_x[n - 1])
+        || !(d_x[n - 1] > d_x.front())) {
+        d_init_err = true;
+        const double xFill = (!d_x.empty() && std::isfinite(d_x.front())) ? d_x.front() : 0.0;
+        std::fill(x.begin(), x.end(), xFill);
+        std::fill(y.begin(), y.end(), 0.0);
+        return;
+    }
+    for (size_t k = 0; k < n; ++k) {
+        if (!std::isfinite(d_x[k]) || !std::isfinite(d_y[k])
+            || (k > 0 && d_x[k] < d_x[k - 1])) {
+            d_init_err = true;
+            std::fill(x.begin(), x.end(), d_x.front());
+            std::fill(y.begin(), y.end(), 0.0);
+            return;
+        }
     }
 
-    double df = 1.0 / (x.back()- x.front());
+    // interpolate y to even spacing across [d_x.front(), d_x[n - 1]]
+    const double xFront = d_x.front();
+    const double xBack = d_x[n - 1];
+    const double delta = (xBack - xFront) / static_cast<double>(n - 1);
 
-    gsl_fft_real_workspace *work = gsl_fft_real_workspace_alloc(d_x.size());
-    gsl_fft_real_wavetable *real = gsl_fft_real_wavetable_alloc(d_x.size());
+    size_t i = 1;
+    for (size_t j = 0; j < n; ++j) {
+        const double xi = (j == 0)
+                ? xFront
+                : ((j + 1 == n) ? xBack
+                                : std::clamp(xFront + static_cast<double>(j) * delta, xFront, xBack));
+        x[j] = xi;
+        if (xi <= xFront) {
+            y[j] = d_y.front();
+        } else if (xi >= xBack) {
+            y[j] = d_y[n - 1];
+        } else {
+            while (i + 1 < n && d_x[i] < xi)
+                ++i;
+            const double dx = d_x[i] - d_x[i - 1];
+            if (dx > 0.0)
+                y[j] = ((d_x[i] - xi) * d_y[i - 1] + (xi - d_x[i - 1]) * d_y[i]) / dx;
+            else
+                y[j] = d_y[i];
+        }
+    }
 
-    gsl_fft_real_transform(y.data(), 1, d_x.size(), real, work);
+    const double df = 1.0 / (static_cast<double>(n) * delta);
+
+    gsl_fft_real_workspace *work = gsl_fft_real_workspace_alloc(n);
+    gsl_fft_real_wavetable *real = gsl_fft_real_wavetable_alloc(n);
+    if (!work || !real) {
+        if (real)
+            gsl_fft_real_wavetable_free(real);
+        if (work)
+            gsl_fft_real_workspace_free(work);
+        d_init_err = true;
+        return;
+    }
+
+    gsl_fft_real_transform(y.data(), 1, n, real, work);
     gsl_fft_real_wavetable_free(real);
 
     d_explanation = QLocale().toString(d_low_freq) + " ";
@@ -135,21 +202,21 @@ void FFTFilter::calculateOutputData(std::vector<double>& x, std::vector<double>&
     switch ((int)d_filter_type) {
     case 1: // low pass
         d_explanation += tr("Low Pass FFT Filter");
-        for (int i = d_x.size() - 1; i >= 0 && ((i + 1) / 2) * df > d_low_freq; i--)
-            y[i] = 0;
+        for (int idx = static_cast<int>(n) - 1; idx >= 0 && ((idx + 1) / 2) * df > d_low_freq; idx--)
+            y[idx] = 0;
         break;
 
     case 2: // high pass
         d_explanation += tr("High Pass FFT Filter");
-        for (unsigned i = 0; i < d_x.size() && ((i + 1) / 2) * df < d_low_freq; i++)
-            y[i] = 0;
+        for (size_t idx = 0; idx < n && ((idx + 1) / 2) * df < d_low_freq; idx++)
+            y[idx] = 0;
         break;
 
     case 3: // band pass
         d_explanation += tr("Band Pass FFT Filter");
-        for (unsigned i = d_offset ? 1 : 0; i < d_x.size(); i++)
-            if ((((i + 1) / 2) * df <= d_low_freq) || (((i + 1) / 2) * df >= d_high_freq))
-                y[i] = 0;
+        for (size_t idx = d_offset ? 1 : 0; idx < n; idx++)
+            if ((((idx + 1) / 2) * df <= d_low_freq) || (((idx + 1) / 2) * df >= d_high_freq))
+                y[idx] = 0;
         break;
 
     case 4: // band block
@@ -158,14 +225,18 @@ void FFTFilter::calculateOutputData(std::vector<double>& x, std::vector<double>&
         if (!d_offset)
             y[0] = 0; // substract DC offset
 
-        for (unsigned i = 1; i < d_x.size(); i++)
-            if ((((i + 1) / 2) * df > d_low_freq) && (((i + 1) / 2) * df < d_high_freq))
-                y[i] = 0;
+        for (size_t idx = 1; idx < n; idx++)
+            if ((((idx + 1) / 2) * df > d_low_freq) && (((idx + 1) / 2) * df < d_high_freq))
+                y[idx] = 0;
         break;
     }
 
-    gsl_fft_halfcomplex_wavetable *hc = gsl_fft_halfcomplex_wavetable_alloc(d_x.size());
-    gsl_fft_halfcomplex_inverse(y.data(), 1, d_x.size(), hc, work);
-    gsl_fft_halfcomplex_wavetable_free(hc);
+    gsl_fft_halfcomplex_wavetable *hc = gsl_fft_halfcomplex_wavetable_alloc(n);
+    if (hc) {
+        gsl_fft_halfcomplex_inverse(y.data(), 1, n, hc, work);
+        gsl_fft_halfcomplex_wavetable_free(hc);
+    } else {
+        d_init_err = true;
+    }
     gsl_fft_real_workspace_free(work);
 }

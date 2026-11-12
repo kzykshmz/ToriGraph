@@ -52,6 +52,8 @@
 #include <QtDebug>
 #include <QMimeData>
 #include "ApplicationWindow.h"
+#include "IconLoader.h"
+#include "ModernUiTheme.h"
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
 #include <QRandomGenerator>
 #endif
@@ -160,7 +162,15 @@ Table::Table() : AbstractPart("temp"), d_table_private(*this)
     createActions();
 }
 
-Table::~Table() { }
+Table::~Table()
+{
+    if (d_view && !d_view->parentWidget()) {
+        TableView *detachedView = d_view.data();
+        d_view.clear();
+        detachedView->hide();
+        delete detachedView;
+    }
+}
 
 Column *Table::column(int index) const
 {
@@ -179,17 +189,32 @@ bool Table::setCurrentColumn(int index)
 
 Column *Table::column(const QString &name, bool legacy_kludge) const
 {
-    // TODO for 0.3.0: remove all name concatenation with _ in favor of Column * pointers
-    int pos = name.indexOf("_", Qt::CaseInsensitive);
-    QString label = name.right(name.length() - pos - 1);
-    QString prefixLabel = name.startsWith(this->name() + "_")
-            ? name.mid(this->name().length() + 1)
-            : label;
+    // Pass 1: exact column name match always wins (prevents "col_1" matching "1")
     for (int i = 0; i < columnCount(); i++) {
         Column *col = d_table_private.column(i);
-        if (col->name() == name
-            || (legacy_kludge && (col->name() == label || col->name() == prefixLabel)))
+        if (col && col->name() == name)
             return col;
+    }
+
+    // Pass 2: legacy "TableName_ColName" prefix stripping only when no exact match exists
+    if (legacy_kludge) {
+        if (!this->name().isEmpty() && name.startsWith(this->name() + QLatin1Char('_'))) {
+            const QString prefixStripped = name.mid(this->name().length() + 1);
+            for (int i = 0; i < columnCount(); i++) {
+                Column *col = d_table_private.column(i);
+                if (col && col->name() == prefixStripped)
+                    return col;
+            }
+        }
+        const int pos = name.indexOf(QLatin1Char('_'));
+        if (pos >= 0) {
+            const QString label = name.mid(pos + 1);
+            for (int i = 0; i < columnCount(); i++) {
+                Column *col = d_table_private.column(i);
+                if (col && col->name() == label)
+                    return col;
+            }
+        }
     }
 
     // OriginPro-compatible fallback for formula lookup (!legacy_kludge):
@@ -235,8 +260,6 @@ QWidget *Table::view()
 #ifndef LEGACY_CODE_0_2_x
     if (!d_view)
         setView(new TableView(this));
-#else
-    Q_ASSERT(d_view != NULL);
 #endif
     return d_view;
 }
@@ -1216,11 +1239,8 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->removeEventFilter(flt);
     menu->installEventFilter(flt);
 
+    ModernUiTheme::upgradeMenuIcons(menu);
     return true;
-
-    // TODO:
-    // Convert to Matrix
-    // Export
 }
 
 bool Table::fillProjectToolBar(QToolBar *bar)
@@ -1248,273 +1268,197 @@ QMenu *Table::createContextMenu() const
     // Do we need hiding of views (in addition to minimizing)? How do we avoid confusion with hiding
     // of Aspects? Activate ? Resize --> AbstractPart::createContextMenu()
 
+    ModernUiTheme::upgradeMenuIcons(menu);
     return menu;
 }
 
 void Table::createActions()
 {
-    QIcon *icon_temp;
-
     // selection related actions
-    action_cut_selection = new QAction(QIcon(QPixmap(":/cut.xpm")), tr("Cu&t"), this);
+    action_cut_selection = new QAction(IconLoader::duotoneIcon(":/cut.xpm"), tr("Cu&t"), this);
     actionManager()->addAction(action_cut_selection, "cut_selection");
 
-    action_copy_selection = new QAction(QIcon(QPixmap(":/copy.xpm")), tr("&Copy"), this);
+    action_copy_selection = new QAction(IconLoader::duotoneIcon(":/copy.xpm"), tr("&Copy"), this);
     actionManager()->addAction(action_copy_selection, "copy_selection");
 
-    action_paste_into_selection = new QAction(QIcon(QPixmap(":/paste.xpm")), tr("Past&e"), this);
+    action_paste_into_selection =
+            new QAction(IconLoader::duotoneIcon(":/paste.xpm"), tr("Past&e"), this);
     actionManager()->addAction(action_paste_into_selection, "paste_into_selection");
 
-	action_paste_into_selection_transposed =
-            new QAction(QIcon(QPixmap(":/paste.xpm")), tr("Paste transposed"), this);
+    action_paste_into_selection_transposed =
+            new QAction(IconLoader::duotoneIcon(":/paste.xpm"), tr("Paste transposed"), this);
     actionManager()->addAction(action_paste_into_selection_transposed, "paste_into_selection_transposed");
 #ifndef LEGACY_CODE_0_2_x
     action_mask_selection =
-            new QAction(QIcon(QPixmap(":/mask.xpm")), tr("&Mask", "mask selection"), this);
+            new QAction(IconLoader::duotoneIcon(":/mask.xpm"), tr("&Mask", "mask selection"), this);
     actionManager()->addAction(action_mask_selection, "mask_selection");
 
-    action_unmask_selection =
-            new QAction(QIcon(QPixmap(":/unmask.xpm")), tr("&Unmask", "unmask selection"), this);
+    action_unmask_selection = new QAction(IconLoader::duotoneIcon(":/unmask.xpm"),
+                                          tr("&Unmask", "unmask selection"), this);
     actionManager()->addAction(action_unmask_selection, "unmask_selection");
 #endif
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/fx.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/fx.png"));
-    action_set_formula = new QAction(*icon_temp, tr("Assign &Formula"), this);
+    action_set_formula =
+            new QAction(IconLoader::duotoneIcon(":/16x16/fx.png"), tr("Assign &Formula"), this);
     action_set_formula->setShortcut(tr("Alt+Q"));
     actionManager()->addAction(action_set_formula, "set_formula");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear.png"));
-    action_clear_selection = new QAction(*icon_temp, tr("Clea&r", "clear selection"), this);
+    action_clear_selection = new QAction(IconLoader::duotoneIcon(":/16x16/clear.png"),
+                                         tr("Clea&r", "clear selection"), this);
     actionManager()->addAction(action_clear_selection, "clear_selection");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/recalculate.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/recalculate.png"));
-    action_recalculate = new QAction(*icon_temp, tr("Recalculate"), this);
+    action_recalculate =
+            new QAction(IconLoader::duotoneIcon(":/16x16/recalculate.png"), tr("Recalculate"), this);
     action_recalculate->setShortcut(tr("Ctrl+Return"));
     actionManager()->addAction(action_recalculate, "recalculate");
-    delete icon_temp;
 
     action_fill_row_numbers =
-            new QAction(QIcon(QPixmap(":/rowNumbers.xpm")), tr("Row Numbers"), this);
+            new QAction(IconLoader::duotoneIcon("row-numbers"), tr("Row Numbers"), this);
     actionManager()->addAction(action_fill_row_numbers, "fill_row_numbers");
 
     action_fill_random =
-            new QAction(QIcon(QPixmap(":/randomNumbers.xpm")), tr("Random Values"), this);
+            new QAction(IconLoader::duotoneIcon("random-numbers"), tr("Random Values"), this);
     actionManager()->addAction(action_fill_random, "fill_random");
 
     // table related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/table_header.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/table_header.png"));
-    action_toggle_comments = new QAction(*icon_temp, tr("Show/Hide comments"),
-                                         this); // show/hide column comments
+    action_toggle_comments = new QAction(IconLoader::duotoneIcon(":/16x16/table_header.png"),
+                                         tr("Show/Hide comments"), this);
     actionManager()->addAction(action_toggle_comments, "toggle_comments");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/table_options.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/table_options.png"));
-    action_toggle_tabbar =
-            new QAction(*icon_temp, tr("Show/Hide Controls"), this); // show/hide control tabs
+    action_toggle_tabbar = new QAction(IconLoader::duotoneIcon(":/16x16/table_options.png"),
+                                       tr("Show/Hide Controls"), this);
     action_toggle_tabbar->setShortcut(tr("F12"));
     actionManager()->addAction(action_toggle_tabbar, "toggle_tabbar");
-    delete icon_temp;
 
-    action_formula_mode = new QAction(tr("Formula Edit Mode"), this);
+    action_formula_mode = new QAction(IconLoader::duotoneIcon(":/16x16/fx.png"),
+                                      tr("Formula Edit Mode"), this);
     action_formula_mode->setCheckable(true);
     actionManager()->addAction(action_formula_mode, "formula_mode");
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/select_all.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/select_all.png"));
-    action_select_all = new QAction(*icon_temp, tr("Select All"), this);
+    action_select_all =
+            new QAction(IconLoader::duotoneIcon(":/16x16/select_all.png"), tr("Select All"), this);
     actionManager()->addAction(action_select_all, "select_all");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/add_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/add_column.png"));
-    action_add_column = new QAction(*icon_temp, tr("&Add Column"), this);
+    action_add_column =
+            new QAction(IconLoader::duotoneIcon(":/16x16/add_column.png"), tr("&Add Column"), this);
     action_add_column->setToolTip(tr("append a new column to the table"));
     actionManager()->addAction(action_add_column, "add_column");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_table.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_table.png"));
-    action_clear_table = new QAction(*icon_temp, tr("Clear Table"), this);
+    action_clear_table = new QAction(IconLoader::duotoneIcon(":/16x16/clear_table.png"),
+                                     tr("Clear Table"), this);
     actionManager()->addAction(action_clear_table, "clear_table");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/TeX.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/TeX.png"));
-    action_export_to_TeX = new QAction(*icon_temp, tr("Export to TeX..."), this);
+    action_export_to_TeX =
+            new QAction(IconLoader::duotoneIcon(":/16x16/TeX.png"), tr("Export to TeX..."), this);
     actionManager()->addAction(action_export_to_TeX, "export_to_TeX");
-    delete icon_temp;
 
 #ifndef LEGACY_CODE_0_2_x
-    action_clear_masks = new QAction(QIcon(QPixmap(":/unmask.xpm")), tr("Clear Masks"), this);
+    action_clear_masks =
+            new QAction(IconLoader::duotoneIcon(":/unmask.xpm"), tr("Clear Masks"), this);
     actionManager()->addAction(action_clear_masks, "clear_masks");
 #endif
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/sort.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/sort.png"));
-    action_sort_table = new QAction(*icon_temp, tr("&Sort Table"), this);
+    action_sort_table =
+            new QAction(IconLoader::duotoneIcon(":/16x16/sort.png"), tr("&Sort Table"), this);
     actionManager()->addAction(action_sort_table, "sort_table");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/go_to_cell.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/go_to_cell.png"));
-    action_go_to_cell = new QAction(*icon_temp, tr("&Go to Cell"), this);
+    action_go_to_cell =
+            new QAction(IconLoader::duotoneIcon(":/16x16/go_to_cell.png"), tr("&Go to Cell"), this);
     action_go_to_cell->setShortcut(tr("Ctrl+Alt+G"));
     actionManager()->addAction(action_go_to_cell, "go_to_cell");
-    delete icon_temp;
 
-    action_dimensions_dialog =
-            new QAction(QIcon(QPixmap(":/resize.xpm")), tr("&Dimensions", "table size"), this);
+    action_dimensions_dialog = new QAction(IconLoader::duotoneIcon("table-dimensions"),
+                                           tr("&Dimensions", "table size"), this);
     action_dimensions_dialog->setToolTip(tr("change the table size"));
     actionManager()->addAction(action_dimensions_dialog, "dimensions_dialog");
 
     // column related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/insert_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/insert_column.png"));
-    action_insert_columns = new QAction(*icon_temp, tr("&Insert Empty Columns"), this);
+    action_insert_columns = new QAction(IconLoader::duotoneIcon(":/16x16/insert_column.png"),
+                                        tr("&Insert Empty Columns"), this);
     actionManager()->addAction(action_insert_columns, "insert_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/remove_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/remove_column.png"));
-    action_remove_columns = new QAction(*icon_temp, tr("Remo&ve Columns"), this);
+    action_remove_columns = new QAction(IconLoader::duotoneIcon(":/16x16/remove_column.png"),
+                                        tr("Remo&ve Columns"), this);
     actionManager()->addAction(action_remove_columns, "remove_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_column.png"));
-    action_clear_columns = new QAction(*icon_temp, tr("Clea&r Columns"), this);
+    action_clear_columns = new QAction(IconLoader::duotoneIcon(":/16x16/clear_column.png"),
+                                       tr("Clea&r Columns"), this);
     actionManager()->addAction(action_clear_columns, "clear_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/add_columns.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/add_columns.png"));
-    action_add_columns = new QAction(*icon_temp, tr("&Add Columns"), this);
+    action_add_columns = new QAction(IconLoader::duotoneIcon(":/16x16/add_columns.png"),
+                                     tr("&Add Columns"), this);
     actionManager()->addAction(action_add_columns, "add_columns");
-    delete icon_temp;
 
-    action_set_as_x = new QAction(QIcon(QPixmap()), tr("X", "plot designation"), this);
+    action_set_as_x = new QAction(IconLoader::duotoneIcon("set_as_x"), tr("X", "plot designation"), this);
     actionManager()->addAction(action_set_as_x, "set_as_x");
 
-    action_set_as_y = new QAction(QIcon(QPixmap()), tr("Y", "plot designation"), this);
+    action_set_as_y = new QAction(IconLoader::duotoneIcon("set_as_y"), tr("Y", "plot designation"), this);
     actionManager()->addAction(action_set_as_y, "set_as_y");
 
-    action_set_as_z = new QAction(QIcon(QPixmap()), tr("Z", "plot designation"), this);
+    action_set_as_z = new QAction(IconLoader::duotoneIcon("set_as_z"), tr("Z", "plot designation"), this);
     actionManager()->addAction(action_set_as_z, "set_as_z");
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/x_error.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/x_error.png"));
-    action_set_as_xerr = new QAction(*icon_temp, tr("X Error", "plot designation"), this);
+    action_set_as_xerr = new QAction(IconLoader::duotoneIcon(":/16x16/x_error.png"),
+                                     tr("X Error", "plot designation"), this);
     actionManager()->addAction(action_set_as_xerr, "set_as_xerr");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/y_error.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/y_error.png"));
-    action_set_as_yerr = new QAction(*icon_temp, tr("Y Error", "plot designation"), this);
+    action_set_as_yerr = new QAction(IconLoader::duotoneIcon(":/16x16/y_error.png"),
+                                     tr("Y Error", "plot designation"), this);
     actionManager()->addAction(action_set_as_yerr, "set_as_yerr");
-    delete icon_temp;
 
-    action_set_as_none = new QAction(QIcon(QPixmap()), tr("None", "plot designation"), this);
+    action_set_as_none =
+            new QAction(IconLoader::duotoneIcon("set_as_none"), tr("None", "plot designation"), this);
     actionManager()->addAction(action_set_as_none, "set_as_none");
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/normalize.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/normalize.png"));
-    action_normalize_columns = new QAction(*icon_temp, tr("&Normalize Columns"), this);
+    action_normalize_columns = new QAction(IconLoader::duotoneIcon(":/16x16/normalize.png"),
+                                           tr("&Normalize Columns"), this);
     actionManager()->addAction(action_normalize_columns, "normalize_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/normalize.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/normalize.png"));
-    action_normalize_selection = new QAction(*icon_temp, tr("&Normalize Selection"), this);
+    action_normalize_selection = new QAction(IconLoader::duotoneIcon(":/16x16/normalize.png"),
+                                             tr("&Normalize Selection"), this);
     actionManager()->addAction(action_normalize_selection, "normalize_selection");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/sort.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/sort.png"));
-    action_sort_columns = new QAction(*icon_temp, tr("&Sort Columns"), this);
+    action_sort_columns =
+            new QAction(IconLoader::duotoneIcon(":/16x16/sort.png"), tr("&Sort Columns"), this);
     actionManager()->addAction(action_sort_columns, "sort_columns");
-    delete icon_temp;
 
     action_statistics_columns =
-            new QAction(QIcon(QPixmap(":/col_stat.xpm")), tr("Column Statisti&cs"), this);
+            new QAction(IconLoader::duotoneIcon(":/col_stat.xpm"), tr("Column Statisti&cs"), this);
     action_statistics_columns->setToolTip(tr("statistics on columns"));
     actionManager()->addAction(action_statistics_columns, "statistics_columns");
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/column_format_type.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/column_format_type.png"));
-    action_type_format = new QAction(*icon_temp, tr("Change &Type && Format"), this);
+    action_type_format = new QAction(IconLoader::duotoneIcon(":/16x16/column_format_type.png"),
+                                     tr("Change &Type && Format"), this);
     action_type_format->setShortcut(tr("Ctrl+Alt+O"));
     actionManager()->addAction(action_type_format, "type_format");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/column_description.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/column_description.png"));
-    action_edit_description = new QAction(*icon_temp, tr("Edit Column &Description"), this);
+    action_edit_description = new QAction(IconLoader::duotoneIcon(":/16x16/column_description.png"),
+                                          tr("Edit Column &Description"), this);
     actionManager()->addAction(action_edit_description, "edit_description");
     action_edit_column_labels_formula = new QAction(
-            *icon_temp, tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."), this);
+            IconLoader::duotoneIcon(":/16x16/column_description.png"),
+            tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."), this);
     actionManager()->addAction(action_edit_column_labels_formula, "edit_column_labels_formula");
-    delete icon_temp;
 
     // row related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/insert_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/insert_row.png"));
-    action_insert_rows = new QAction(*icon_temp, tr("&Insert Empty Rows"), this);
+    action_insert_rows = new QAction(IconLoader::duotoneIcon(":/16x16/insert_row.png"),
+                                     tr("&Insert Empty Rows"), this);
     actionManager()->addAction(action_insert_rows, "insert_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/remove_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/remove_row.png"));
-    action_remove_rows = new QAction(*icon_temp, tr("Remo&ve Rows"), this);
+    action_remove_rows = new QAction(IconLoader::duotoneIcon(":/16x16/remove_row.png"),
+                                     tr("Remo&ve Rows"), this);
     actionManager()->addAction(action_remove_rows, "remove_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_row.png"));
-    action_clear_rows = new QAction(*icon_temp, tr("Clea&r Rows"), this);
+    action_clear_rows = new QAction(IconLoader::duotoneIcon(":/16x16/clear_row.png"),
+                                    tr("Clea&r Rows"), this);
     actionManager()->addAction(action_clear_rows, "clear_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/add_rows.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/add_rows.png"));
-    action_add_rows = new QAction(*icon_temp, tr("&Add Rows"), this);
+    action_add_rows =
+            new QAction(IconLoader::duotoneIcon(":/16x16/add_rows.png"), tr("&Add Rows"), this);
     actionManager()->addAction(action_add_rows, "add_rows");
-    delete icon_temp;
 
     action_statistics_rows =
-            new QAction(QIcon(QPixmap(":/stat_rows.xpm")), tr("Row Statisti&cs"), this);
+            new QAction(IconLoader::duotoneIcon(":/stat_rows.xpm"), tr("Row Statisti&cs"), this);
     action_statistics_rows->setToolTip(tr("statistics on rows"));
     actionManager()->addAction(action_statistics_rows, "statistics_rows");
 
@@ -1932,6 +1876,7 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
     menu->addAction(action_set_formula);
     menu->addAction(action_recalculate);
     menu->addSeparator();
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -1945,7 +1890,7 @@ QMenu *Table::createColumnMenu(QMenu *append_to)
     menu->addAction(action_edit_column_labels_formula);
     menu->addSeparator();
 
-    QMenu *submenu = new QMenu(tr("S&et Column(s) As"));
+    QMenu *submenu = new QMenu(tr("S&et Column(s) As"), menu);
     submenu->addAction(action_set_as_x);
     submenu->addAction(action_set_as_y);
     submenu->addAction(action_set_as_z);
@@ -1957,7 +1902,7 @@ QMenu *Table::createColumnMenu(QMenu *append_to)
     menu->addMenu(submenu);
     menu->addSeparator();
 
-    submenu = new QMenu(tr("Fi&ll Selection with"));
+    submenu = new QMenu(tr("Fi&ll Selection with"), menu);
     submenu->addAction(action_fill_row_numbers);
     submenu->addAction(action_fill_random);
     menu->addMenu(submenu);
@@ -1980,6 +1925,7 @@ QMenu *Table::createColumnMenu(QMenu *append_to)
     menu->addSeparator();
 
     menu->addAction(action_statistics_columns);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -2007,6 +1953,7 @@ QMenu *Table::createTableMenu(QMenu *append_to)
     menu->addAction(action_add_column);
     menu->addSeparator();
     menu->addAction(action_go_to_cell);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -2022,12 +1969,13 @@ QMenu *Table::createRowMenu(QMenu *append_to)
     menu->addAction(action_clear_rows);
     menu->addAction(action_add_rows);
     menu->addSeparator();
-    QMenu *submenu = new QMenu(tr("Fi&ll Selection with"));
+    QMenu *submenu = new QMenu(tr("Fi&ll Selection with"), menu);
     submenu->addAction(action_fill_row_numbers);
     submenu->addAction(action_fill_random);
     menu->addMenu(submenu);
     menu->addSeparator();
     menu->addAction(action_statistics_rows);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -2388,11 +2336,7 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
 
 QIcon Table::icon() const
 {
-    QIcon ico;
-    ico.addPixmap(QPixmap(":/16x16/table.png"));
-    ico.addPixmap(QPixmap(":/24x24/table.png"));
-    ico.addPixmap(QPixmap(":/32x32/table.png"));
-    return ico;
+    return IconLoader::duotoneIcon(":/worksheet.xpm");
 }
 
 QString Table::text(int row, int col)

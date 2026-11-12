@@ -34,6 +34,8 @@
 #include "matrixcommands.h"
 #include "lib/ActionManager.h"
 #include "lib/XmlStreamReader.h"
+#include "IconLoader.h"
+#include "ModernUiTheme.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -122,7 +124,12 @@ Matrix::Matrix() : AbstractPart("temp")
 
 Matrix::~Matrix()
 {
-    //  delete d_view.data();
+    if (d_view && !d_view->parentWidget()) {
+        MatrixView *detachedView = d_view.data();
+        d_view.clear();
+        detachedView->hide();
+        delete detachedView;
+    }
 }
 
 void Matrix::setView(MatrixView *view)
@@ -143,8 +150,6 @@ QWidget *Matrix::view()
                 SLOT(adjustTabBarAction(bool)));
         adjustTabBarAction(true);
     }
-#else
-    Q_ASSERT(d_view != NULL);
 #endif
     return d_view;
 }
@@ -522,7 +527,7 @@ QMenu *Matrix::createContextMenu() const
     menu->addSeparator();
 
     menu->addAction(action_duplicate);
-    // TODO menu->addAction( ....
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -537,6 +542,7 @@ QMenu *Matrix::createSelectionMenu(QMenu *append_to)
     menu->addAction(action_copy_selection);
     menu->addAction(action_paste_into_selection);
     menu->addAction(action_clear_selection);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -552,6 +558,7 @@ QMenu *Matrix::createColumnMenu(QMenu *append_to)
     menu->addAction(action_clear_columns);
     menu->addSeparator();
     menu->addAction(action_edit_coordinates);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -573,6 +580,7 @@ QMenu *Matrix::createMatrixMenu(QMenu *append_to)
     menu->addAction(action_edit_format);
     menu->addSeparator();
     menu->addAction(action_go_to_cell);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
@@ -588,166 +596,121 @@ QMenu *Matrix::createRowMenu(QMenu *append_to)
     menu->addAction(action_clear_rows);
     menu->addSeparator();
     menu->addAction(action_edit_coordinates);
+    ModernUiTheme::upgradeMenuIcons(menu);
 
     return menu;
 }
 
 void Matrix::createActions()
 {
-    QIcon *icon_temp;
-
     // selection related actions
-    action_cut_selection = new QAction(QIcon(QPixmap(":/cut.xpm")), tr("Cu&t"), this);
+    action_cut_selection = new QAction(IconLoader::duotoneIcon(":/cut.xpm"), tr("Cu&t"), this);
     actionManager()->addAction(action_cut_selection, "cut_selection");
 
-    action_copy_selection = new QAction(QIcon(QPixmap(":/copy.xpm")), tr("&Copy"), this);
+    action_copy_selection = new QAction(IconLoader::duotoneIcon(":/copy.xpm"), tr("&Copy"), this);
     actionManager()->addAction(action_copy_selection, "copy_selection");
 
-    action_paste_into_selection = new QAction(QIcon(QPixmap(":/paste.xpm")), tr("Past&e"), this);
+    action_paste_into_selection =
+            new QAction(IconLoader::duotoneIcon(":/paste.xpm"), tr("Past&e"), this);
     actionManager()->addAction(action_paste_into_selection, "paste_into_selection");
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear.png"));
-    action_clear_selection = new QAction(*icon_temp, tr("Clea&r", "clear selection"), this);
+    action_clear_selection = new QAction(IconLoader::duotoneIcon(":/16x16/clear.png"),
+                                         tr("Clea&r", "clear selection"), this);
     actionManager()->addAction(action_clear_selection, "clear_selection");
-    delete icon_temp;
 
     // matrix related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/fx.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/fx.png"));
-    action_set_formula = new QAction(*icon_temp, tr("Assign &Formula"), this);
+    action_set_formula =
+            new QAction(IconLoader::duotoneIcon(":/16x16/fx.png"), tr("Assign &Formula"), this);
     action_set_formula->setShortcut(tr("Alt+Q"));
     actionManager()->addAction(action_set_formula, "set_formula");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/recalculate.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/recalculate.png"));
-    action_recalculate = new QAction(*icon_temp, tr("Recalculate"), this);
+    action_recalculate =
+            new QAction(IconLoader::duotoneIcon(":/16x16/recalculate.png"), tr("Recalculate"), this);
     action_recalculate->setShortcut(tr("Ctrl+Return"));
     actionManager()->addAction(action_recalculate, "recalculate");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/table_options.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/table_options.png"));
-    action_toggle_tabbar =
-            new QAction(*icon_temp, tr("Show/Hide Controls"), this); // show/hide control tabs
+    action_toggle_tabbar = new QAction(IconLoader::duotoneIcon(":/16x16/table_options.png"),
+                                       tr("Show/Hide Controls"), this);
     action_toggle_tabbar->setShortcut(tr("F12"));
     actionManager()->addAction(action_toggle_tabbar, "toggle_tabbar");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/select_all.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/select_all.png"));
-    action_select_all = new QAction(*icon_temp, tr("Select All"), this);
+    action_select_all =
+            new QAction(IconLoader::duotoneIcon(":/16x16/select_all.png"), tr("Select All"), this);
     actionManager()->addAction(action_select_all, "select_all");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_table.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_table.png"));
-    action_clear_matrix = new QAction(*icon_temp, tr("Clear Matrix"), this);
+    action_clear_matrix = new QAction(IconLoader::duotoneIcon(":/16x16/clear_table.png"),
+                                      tr("Clear Matrix"), this);
     actionManager()->addAction(action_clear_matrix, "clear_matrix");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/go_to_cell.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/go_to_cell.png"));
-    action_go_to_cell = new QAction(*icon_temp, tr("&Go to Cell"), this);
+    action_go_to_cell =
+            new QAction(IconLoader::duotoneIcon(":/16x16/go_to_cell.png"), tr("&Go to Cell"), this);
     action_go_to_cell->setShortcut(tr("Ctrl+Alt+G"));
     actionManager()->addAction(action_go_to_cell, "go_to_cell");
-    delete icon_temp;
 
-    action_transpose = new QAction(tr("&Transpose"), this);
+    action_transpose = new QAction(IconLoader::duotoneIcon("matrix-transpose"), tr("&Transpose"), this);
     actionManager()->addAction(action_transpose, "transpose");
 
-    action_mirror_horizontally = new QAction(tr("Mirror &Horizontally"), this);
+    action_mirror_horizontally = new QAction(IconLoader::duotoneIcon("mirror_horizontally"),
+                                             tr("Mirror &Horizontally"), this);
     actionManager()->addAction(action_mirror_horizontally, "mirror_horizontally");
 
-    action_mirror_vertically = new QAction(tr("Mirror &Vertically"), this);
+    action_mirror_vertically = new QAction(IconLoader::duotoneIcon("mirror_vertically"),
+                                           tr("Mirror &Vertically"), this);
     actionManager()->addAction(action_mirror_vertically, "mirror_vertically");
 
-    action_import_image = new QAction(tr("&Import Image", "import image as matrix"), this);
+    action_import_image = new QAction(IconLoader::duotoneIcon("import_image"),
+                                      tr("&Import Image", "import image as matrix"), this);
     actionManager()->addAction(action_import_image, "import_image");
 
-    action_duplicate = new QAction(QIcon(QPixmap(":/duplicate.xpm")),
+    action_duplicate = new QAction(IconLoader::duotoneIcon(":/duplicate.xpm"),
                                    tr("&Duplicate", "duplicate matrix"), this);
     actionManager()->addAction(action_duplicate, "duplicate");
 
-    action_dimensions_dialog =
-            new QAction(QIcon(QPixmap(":/resize.xpm")), tr("&Dimensions", "matrix size"), this);
+    action_dimensions_dialog = new QAction(IconLoader::duotoneIcon("table-dimensions"),
+                                           tr("&Dimensions", "matrix size"), this);
     actionManager()->addAction(action_dimensions_dialog, "dimensions_dialog");
 
-    action_edit_coordinates = new QAction(tr("Set &Coordinates"), this);
+    action_edit_coordinates =
+            new QAction(IconLoader::duotoneIcon("edit_coordinates"), tr("Set &Coordinates"), this);
     actionManager()->addAction(action_edit_coordinates, "edit_coordinates");
 
-    action_edit_format = new QAction(tr("Set Display &Format"), this);
+    action_edit_format =
+            new QAction(IconLoader::duotoneIcon("edit_format"), tr("Set Display &Format"), this);
     actionManager()->addAction(action_edit_format, "edit_format");
 
     // column related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/insert_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/insert_column.png"));
-    action_insert_columns = new QAction(*icon_temp, tr("&Insert Empty Columns"), this);
+    action_insert_columns = new QAction(IconLoader::duotoneIcon(":/16x16/insert_column.png"),
+                                        tr("&Insert Empty Columns"), this);
     actionManager()->addAction(action_insert_columns, "insert_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/remove_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/remove_column.png"));
-    action_remove_columns = new QAction(*icon_temp, tr("Remo&ve Columns"), this);
+    action_remove_columns = new QAction(IconLoader::duotoneIcon(":/16x16/remove_column.png"),
+                                        tr("Remo&ve Columns"), this);
     actionManager()->addAction(action_remove_columns, "remove_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_column.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_column.png"));
-    action_clear_columns = new QAction(*icon_temp, tr("Clea&r Columns"), this);
+    action_clear_columns = new QAction(IconLoader::duotoneIcon(":/16x16/clear_column.png"),
+                                       tr("Clea&r Columns"), this);
     actionManager()->addAction(action_clear_columns, "clear_columns");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/add_columns.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/add_columns.png"));
-    action_add_columns = new QAction(*icon_temp, tr("&Add Columns"), this);
+    action_add_columns = new QAction(IconLoader::duotoneIcon(":/16x16/add_columns.png"),
+                                     tr("&Add Columns"), this);
     actionManager()->addAction(action_add_columns, "add_columns");
-    delete icon_temp;
 
     // row related actions
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/insert_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/insert_row.png"));
-    action_insert_rows = new QAction(*icon_temp, tr("&Insert Empty Rows"), this);
-    ;
+    action_insert_rows = new QAction(IconLoader::duotoneIcon(":/16x16/insert_row.png"),
+                                     tr("&Insert Empty Rows"), this);
     actionManager()->addAction(action_insert_rows, "insert_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/remove_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/remove_row.png"));
-    action_remove_rows = new QAction(*icon_temp, tr("Remo&ve Rows"), this);
-    ;
+    action_remove_rows = new QAction(IconLoader::duotoneIcon(":/16x16/remove_row.png"),
+                                     tr("Remo&ve Rows"), this);
     actionManager()->addAction(action_remove_rows, "remove_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/clear_row.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/clear_row.png"));
-    action_clear_rows = new QAction(*icon_temp, tr("Clea&r Rows"), this);
-    ;
+    action_clear_rows = new QAction(IconLoader::duotoneIcon(":/16x16/clear_row.png"),
+                                    tr("Clea&r Rows"), this);
     actionManager()->addAction(action_clear_rows, "clear_rows");
-    delete icon_temp;
 
-    icon_temp = new QIcon();
-    icon_temp->addPixmap(QPixmap(":/16x16/add_rows.png"));
-    icon_temp->addPixmap(QPixmap(":/32x32/add_rows.png"));
-    action_add_rows = new QAction(*icon_temp, tr("&Add Rows"), this);
-    ;
+    action_add_rows =
+            new QAction(IconLoader::duotoneIcon(":/16x16/add_rows.png"), tr("&Add Rows"), this);
     actionManager()->addAction(action_add_rows, "add_rows");
-    delete icon_temp;
 
     QPointer<Matrix> self(this);
     ensureMatrixLangFilter(this, [self]() {
@@ -922,6 +885,7 @@ bool Matrix::fillProjectMenu(QMenu *menu)
     menu->removeEventFilter(flt);
     menu->installEventFilter(flt);
 
+    ModernUiTheme::upgradeMenuIcons(menu);
     return true;
 
     // TODO:
@@ -1012,11 +976,7 @@ void Matrix::setPlotMenu(QMenu *menu)
 
 QIcon Matrix::icon() const
 {
-    QIcon ico;
-    ico.addPixmap(QPixmap(":/16x16/matrix.png"));
-    ico.addPixmap(QPixmap(":/24x24/matrix.png"));
-    ico.addPixmap(QPixmap(":/32x32/matrix.png"));
-    return ico;
+    return IconLoader::duotoneIcon(":/matrix.xpm");
 }
 
 QString Matrix::text(int row, int col)

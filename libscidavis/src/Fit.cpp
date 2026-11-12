@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "Fit.h"
+#include "ApplicationWindow.h"
 #include "fit_gsl.h"
 #include "Table.h"
 #include "Matrix.h"
@@ -68,6 +69,16 @@
 using namespace std;
 
 namespace {
+
+bool isNonInteractiveFit(const QObject *parentObj, bool silent = false)
+{
+    if (silent)
+        return true;
+    if (qApp && qApp->property("torigraph_noninteractive").toBool())
+        return true;
+    const ApplicationWindow *app = dynamic_cast<const ApplicationWindow *>(parentObj);
+    return app && app->isHeadlessMode();
+}
 
 struct AffineExpr
 {
@@ -1146,7 +1157,15 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             for (unsigned j = 0; j < d_p; ++j)
                 gsl_vector_set(ctx.x_full_buf, j, result[j]);
             gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
-            d_f(ctx.x_full_buf, &data, f_vec);
+            int evalSt = d_f(ctx.x_full_buf, &data, f_vec);
+            if (evalSt != GSL_SUCCESS) {
+                gsl_vector_free(f_vec);
+                chi_2 = -1.0;
+                iterations = 0;
+                status = evalSt;
+                result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+                return result;
+            }
             gsl_blas_ddot(f_vec, f_vec, &chi_2);
             d_y_fit.resize(d_x.size());
             for (size_t i = 0; i < d_x.size(); ++i)
@@ -1191,6 +1210,8 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         if (status) {
             gsl_multifit_fdfsolver_free(s);
             gsl_vector_free(u_init);
+            chi_2 = -1.0;
+            result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
             return result;
         }
 
@@ -1200,11 +1221,17 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
 
         for (iterations = 0; iterations < d_max_iterations; iterations++) {
             status = gsl_multifit_fdfsolver_iterate(s);
+            if (status) {
+                if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
+                    || status == GSL_ETOLG)
+                    status = GSL_SUCCESS;
+                break;
+            }
             int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
 
             bool phys_converged = (iterations >= 2);
             double dx_norm = gsl_blas_dnrm2(s->dx);
-            if (dx_norm == 0.0 && status == GSL_CONTINUE)
+            if (dx_norm == 0.0)
                 phys_converged = false;
             for (size_t k = 0; k < p_free; ++k) {
                 double pj_new = ctx.mapUtoP(k, gsl_vector_get(s->x, k));
@@ -1217,18 +1244,21 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 status = GSL_SUCCESS;
                 break;
             }
-            if (status) {
-                if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-                    || status == GSL_ETOLG)
-                    status = GSL_SUCCESS;
-                break;
-            }
             status = delta_status;
             if (status != GSL_CONTINUE)
                 break;
         }
         if (status == GSL_CONTINUE)
             status = GSL_SUCCESS;
+
+        if (status != GSL_SUCCESS) {
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            chi_2 = -1.0;
+            d_y_fit.clear();
+            result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+            return result;
+        }
 
         result = ctx.base_p;
         for (size_t k = 0; k < p_free; ++k) {
@@ -1275,21 +1305,146 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     status = gsl_multifit_fdfsolver_set(s, &f, d_param_init);
     if (status) {
         gsl_multifit_fdfsolver_free(s);
+        chi_2 = -1.0;
+        result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
         return result;
     }
 
     // iterate solver algorithm
     for (iterations = 0; iterations < d_max_iterations; iterations++) {
         status = gsl_multifit_fdfsolver_iterate(s);
+        if (status) {
+            if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
+                || status == GSL_ETOLG) {
+                status = GSL_SUCCESS;
+                break;
+            }
+            // If an aggressive unconstrained LM trial step crossed out of domain while s->x is
+            // valid, try damped Marquardt backtracking inside the domain before aborting.
+            bool recovered = false;
+            if ((status == GSL_EINVAL || status == GSL_EDOM) && d_f && d_df && d_p > 0) {
+                gsl_matrix *J_bt = gsl_matrix_alloc(d_x.size(), d_p);
+                gsl_vector *f_cur = gsl_vector_alloc(d_x.size());
+                if (d_f(s->x, &data, f_cur) == GSL_SUCCESS
+                    && d_df(s->x, &data, J_bt) == GSL_SUCCESS) {
+                    double curNorm2 = 0.0;
+                    gsl_blas_ddot(f_cur, f_cur, &curNorm2);
+                    std::vector<double> jtj(size_t(d_p) * size_t(d_p), 0.0);
+                    std::vector<double> gvec(size_t(d_p), 0.0);
+                    double maxGrad = 0.0;
+                    for (unsigned r = 0; r < d_x.size(); ++r) {
+                        const double fr = gsl_vector_get(f_cur, r);
+                        for (unsigned c1 = 0; c1 < d_p; ++c1) {
+                            const double j1 = gsl_matrix_get(J_bt, r, c1);
+                            gvec[c1] += j1 * fr;
+                            for (unsigned c2 = c1; c2 < d_p; ++c2)
+                                jtj[size_t(c1) * size_t(d_p) + c2] += j1 * gsl_matrix_get(J_bt, r, c2);
+                        }
+                    }
+                    for (unsigned c1 = 0; c1 < d_p; ++c1) {
+                        maxGrad = std::max(maxGrad, std::abs(gvec[c1]));
+                        for (unsigned c2 = 0; c2 < c1; ++c2)
+                            jtj[size_t(c1) * size_t(d_p) + c2] = jtj[size_t(c2) * size_t(d_p) + c1];
+                    }
+
+                    gsl_vector *x_try = gsl_vector_alloc(d_p);
+                    gsl_vector *f_try = gsl_vector_alloc(d_x.size());
+                    gsl_vector *dx_try = gsl_vector_alloc(d_p);
+                    for (int dampPow = -2; dampPow <= 10 && !recovered; ++dampPow) {
+                        const double lam = std::pow(10.0, double(dampPow));
+                        std::vector<double> A = jtj;
+                        std::vector<double> rhs(size_t(d_p), 0.0);
+                        for (unsigned c = 0; c < d_p; ++c) {
+                            rhs[c] = -gvec[c];
+                            const double diag = std::max(1e-12, A[size_t(c) * size_t(d_p) + c]);
+                            A[size_t(c) * size_t(d_p) + c] += lam * (diag + 1.0);
+                        }
+                        // Gaussian elimination with partial pivoting
+                        bool nonsingular = true;
+                        for (unsigned k = 0; k < d_p; ++k) {
+                            unsigned piv = k;
+                            double maxA = std::abs(A[size_t(k) * size_t(d_p) + k]);
+                            for (unsigned r = k + 1; r < d_p; ++r) {
+                                const double v = std::abs(A[size_t(r) * size_t(d_p) + k]);
+                                if (v > maxA) {
+                                    maxA = v;
+                                    piv = r;
+                                }
+                            }
+                            if (!(maxA > 1e-30)) {
+                                nonsingular = false;
+                                break;
+                            }
+                            if (piv != k) {
+                                for (unsigned c = k; c < d_p; ++c)
+                                    std::swap(A[size_t(k) * size_t(d_p) + c],
+                                              A[size_t(piv) * size_t(d_p) + c]);
+                                std::swap(rhs[k], rhs[piv]);
+                            }
+                            const double akk = A[size_t(k) * size_t(d_p) + k];
+                            for (unsigned r = k + 1; r < d_p; ++r) {
+                                const double factor = A[size_t(r) * size_t(d_p) + k] / akk;
+                                for (unsigned c = k + 1; c < d_p; ++c)
+                                    A[size_t(r) * size_t(d_p) + c] -=
+                                            factor * A[size_t(k) * size_t(d_p) + c];
+                                rhs[r] -= factor * rhs[k];
+                            }
+                        }
+                        if (!nonsingular)
+                            continue;
+                        std::vector<double> step(size_t(d_p), 0.0);
+                        for (int k = int(d_p) - 1; k >= 0; --k) {
+                            double sum = rhs[size_t(k)];
+                            for (unsigned c = unsigned(k) + 1; c < d_p; ++c)
+                                sum -= A[size_t(k) * size_t(d_p) + c] * step[c];
+                            step[size_t(k)] = sum / A[size_t(k) * size_t(d_p) + size_t(k)];
+                        }
+
+                        for (int bt = 0; bt < 16; ++bt) {
+                            const double alpha = std::ldexp(1.0, -bt);
+                            for (unsigned c = 0; c < d_p; ++c) {
+                                const double dxc = alpha * step[c];
+                                gsl_vector_set(dx_try, c, dxc);
+                                gsl_vector_set(x_try, c, gsl_vector_get(s->x, c) + dxc);
+                            }
+                            if (d_f(x_try, &data, f_try) == GSL_SUCCESS) {
+                                double tryNorm2 = 0.0;
+                                gsl_blas_ddot(f_try, f_try, &tryNorm2);
+                                if (std::isfinite(tryNorm2) && tryNorm2 < curNorm2) {
+                                    if (gsl_multifit_fdfsolver_set(s, &f, x_try) == GSL_SUCCESS) {
+                                        recovered = true;
+                                        if (gsl_multifit_test_delta(dx_try, x_try, d_tolerance,
+                                                                    d_tolerance)
+                                            == GSL_SUCCESS) {
+                                            status = GSL_SUCCESS;
+                                        } else {
+                                            status = GSL_CONTINUE;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    gsl_vector_free(dx_try);
+                    gsl_vector_free(f_try);
+                    gsl_vector_free(x_try);
+
+                    if (!recovered && std::isfinite(curNorm2)
+                        && maxGrad <= 1e-7 * (1.0 + std::sqrt(curNorm2))) {
+                        status = GSL_SUCCESS;
+                    }
+                }
+                gsl_vector_free(f_cur);
+                gsl_matrix_free(J_bt);
+            }
+            if (recovered && status == GSL_CONTINUE)
+                continue;
+            break;
+        }
         int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
         if (delta_status == GSL_SUCCESS) {
             status = GSL_SUCCESS;
-            break;
-        }
-        if (status) {
-            if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-                || status == GSL_ETOLG)
-                status = GSL_SUCCESS;
             break;
         }
         status = delta_status;
@@ -1299,10 +1454,30 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     if (status == GSL_CONTINUE)
         status = GSL_SUCCESS;
 
+    if (status != GSL_SUCCESS) {
+        gsl_multifit_fdfsolver_free(s);
+        chi_2 = -1.0;
+        d_y_fit.clear();
+        result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+        return result;
+    }
+
     // grab results
-    for (unsigned i = 0; i < d_p; i++)
+    bool allFinite = true;
+    for (unsigned i = 0; i < d_p; i++) {
         result[i] = gsl_vector_get(s->x, i);
+        if (!std::isfinite(result[i]))
+            allFinite = false;
+    }
     gsl_blas_ddot(s->f, s->f, &chi_2);
+    if (!allFinite || !std::isfinite(chi_2) || chi_2 < 0.0) {
+        gsl_multifit_fdfsolver_free(s);
+        status = GSL_EDOM;
+        chi_2 = -1.0;
+        d_y_fit.clear();
+        result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+        return result;
+    }
     d_y_fit.resize(d_x.size());
     for (size_t i = 0; i < d_x.size(); ++i)
         d_y_fit[i] = d_y[i] + gsl_vector_get(s->f, i) * d_y_errors[i];
@@ -1453,6 +1628,13 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             for (unsigned j = 0; j < d_p; ++j)
                 gsl_vector_set(ctx.x_full_buf, j, result[j]);
             chi_2 = d_fsimplex(ctx.x_full_buf, &data);
+            if (!std::isfinite(chi_2) || chi_2 < 0.0) {
+                chi_2 = -1.0;
+                iterations = 0;
+                status = GSL_EINVAL;
+                result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+                return result;
+            }
             if (d_f) {
                 gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
                 if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS) {
@@ -1473,7 +1655,14 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             for (unsigned j = 0; j < d_p; ++j)
                 gsl_vector_set(ctx.x_full_buf, j, ctx.base_p[j]);
             double cInit = d_fsimplex ? d_fsimplex(ctx.x_full_buf, &data) : 1.0;
-            if (std::isfinite(cInit) && cInit > 1.0)
+            if (!std::isfinite(cInit)) {
+                chi_2 = -1.0;
+                iterations = 0;
+                status = GSL_EINVAL;
+                result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+                return result;
+            }
+            if (cInit > 1.0)
                 initResNorm = std::sqrt(cInit);
         }
         registerDependentPenaltySlots(d_p, lc, boundedMask, loInternal, hiInternal, initResNorm,
@@ -1516,7 +1705,11 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
 
         double pureCost = d_fsimplex ? d_fsimplex(ctx.x_full_buf, &data) : s_min->fval;
         chi_2 = std::isfinite(pureCost) ? pureCost : s_min->fval;
-        if (d_f) {
+        if (!std::isfinite(chi_2) || chi_2 < 0.0) {
+            chi_2 = -1.0;
+            status = GSL_EINVAL;
+            result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+        } else if (d_f) {
             gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
             if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS) {
                 gsl_blas_ddot(f_vec, f_vec, &chi_2);
@@ -1527,13 +1720,24 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             gsl_vector_free(f_vec);
         }
         gsl_matrix_set_zero(covar);
-        if (d_df && d_df(ctx.x_full_buf, &data, ctx.J_full_buf) == GSL_SUCCESS)
+        if (status == GSL_SUCCESS && d_df && d_df(ctx.x_full_buf, &data, ctx.J_full_buf) == GSL_SUCCESS)
             ctx.populateFullCovariance(covar);
 
         gsl_multimin_fminimizer_free(s_min);
         gsl_vector_free(ss);
         gsl_vector_free(u_init);
         return result;
+    }
+
+    if (d_fsimplex) {
+        double cInit = d_fsimplex(d_param_init, &data);
+        if (!std::isfinite(cInit)) {
+            chi_2 = -1.0;
+            iterations = 0;
+            status = GSL_EINVAL;
+            result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+            return result;
+        }
     }
 
     gsl_multimin_function f;
@@ -1569,21 +1773,29 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
     for (unsigned i = 0; i < d_p; i++)
         result[i] = gsl_vector_get(s_min->x, i);
     chi_2 = s_min->fval;
-    if (d_f) {
-        gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
-        if (d_f(s_min->x, (void *)f.params, f_vec) == GSL_SUCCESS) {
-            d_y_fit.resize(d_x.size());
-            for (size_t i = 0; i < d_x.size(); ++i)
-                d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+    if (!std::isfinite(chi_2) || chi_2 < 0.0) {
+        chi_2 = -1.0;
+        status = GSL_EINVAL;
+        result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+    } else {
+        if (d_f) {
+            gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
+            if (d_f(s_min->x, (void *)f.params, f_vec) == GSL_SUCCESS) {
+                d_y_fit.resize(d_x.size());
+                for (size_t i = 0; i < d_x.size(); ++i)
+                    d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+            }
+            gsl_vector_free(f_vec);
         }
-        gsl_vector_free(f_vec);
+        gsl_matrix *J = gsl_matrix_alloc(d_x.size(), d_p);
+        if (d_df(s_min->x, (void *)f.params, J) == GSL_SUCCESS)
+            gsl_multifit_covar(J, 0.0, covar);
+        else
+            gsl_matrix_set_zero(covar);
+        gsl_matrix_free(J);
     }
-    gsl_matrix *J = gsl_matrix_alloc(d_x.size(), d_p);
-    d_df(s_min->x, (void *)f.params, J);
-    gsl_multifit_covar(J, 0.0, covar);
 
     // free previously allocated memory
-    gsl_matrix_free(J);
     gsl_multimin_fminimizer_free(s_min);
     gsl_vector_free(ss);
 
@@ -1704,6 +1916,8 @@ double Fit::effectiveCovarScale() const
 
 double Fit::reducedChiSquare() const
 {
+    if (!std::isfinite(chi_2) || chi_2 < 0.0)
+        return chi_2;
     int p_eff = effectiveFreeParameters();
     if (int(d_x.size()) <= p_eff)
         return chi_2;
@@ -1720,7 +1934,7 @@ double Fit::rss() const
         }
         return sum;
     }
-    return chi_2 >= 0.0 ? chi_2 : 0.0;
+    return (std::isfinite(chi_2) && chi_2 >= 0.0) ? chi_2 : 0.0;
 }
 
 double Fit::rSquare() const
@@ -1728,7 +1942,7 @@ double Fit::rSquare() const
     if (d_has_custom_r2)
         return d_custom_r2;
 
-    if (d_y.empty())
+    if (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0)
         return 0.0;
 
     double mean = 0.0, tss = 0.0, weights_sum = 0.0;
@@ -1756,6 +1970,8 @@ double Fit::rSquare() const
 
 double Fit::adjustedRSquare() const
 {
+    if (!d_has_custom_r2 && (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0))
+        return 0.0;
     double r2 = rSquare();
     int p_eff = effectiveFreeParameters();
     if (int(d_x.size()) <= p_eff || d_x.size() <= 1)
@@ -1812,10 +2028,10 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
     }
     catch (const std::bad_alloc& e)
     {
-        if (!fail_silently)
-         QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!\n")
-                                      + tr("Allocator returned: ") + e.what());
+        if (!fail_silently && !isNonInteractiveFit(parent(), d_silent))
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!\n")
+                                          + tr("Allocator returned: ") + e.what());
         d_init_err = true;
         return false;
     }
@@ -1846,7 +2062,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
             }
         }
         if (error) {
-            if (!fail_silently)
+            if (!fail_silently && !isNonInteractiveFit(parent(), d_silent))
                 QMessageBox::critical((ApplicationWindow *)parent(), tr("Error"),
                                       tr("The curve %1 has no associated Y error bars.")
                                               .arg(d_curve ? d_curve->title().text() : QString()));
@@ -1878,7 +2094,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
             return false;
 
         if (unsigned(t->numRows()) < d_y_errors.size()) {
-            if (!fail_silently)
+            if (!fail_silently && !isNonInteractiveFit(app, d_silent))
                 QMessageBox::critical(app, tr("Error"),
                                       tr("The column %1 has less points than the fitted data set. "
                                          "Please choose another column!")
@@ -1898,7 +2114,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
                     row = trRow;
             }
             if (row < 0 || row >= t->numRows()) {
-                if (!fail_silently && !d_silent)
+                if (!fail_silently && !isNonInteractiveFit(app, d_silent))
                     QMessageBox::critical(app, tr("Error"),
                                           tr("The column %1 has less points than the fitted data set. "
                                              "Please choose another column!")
@@ -2442,14 +2658,14 @@ void Fit::fit()
         return;
 
     if (d_x.empty()) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical((ApplicationWindow *)parent(), tr("Fit Error"),
                                   tr("You didn't specify a valid data set for this fit operation. "
                                      "Operation aborted!"));
         return;
     }
     if (!d_p) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(
                     (ApplicationWindow *)parent(), tr("Fit Error"),
                     tr("There are no parameters specified for this fit operation. Operation aborted!"));
@@ -2457,7 +2673,7 @@ void Fit::fit()
     }
     int minNeeded = std::max(1, effectiveFreeParameters());
     if (unsigned(minNeeded) > d_x.size()) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(
                     (ApplicationWindow *)parent(), tr("Fit Error"),
                     tr("You need at least %1 data points for this fit operation. Operation aborted!")
@@ -2465,7 +2681,7 @@ void Fit::fit()
         return;
     }
     if (d_formula.isEmpty()) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(
                     (ApplicationWindow *)parent(), tr("Fit Error"),
                     tr("You must specify a valid fit function first. Operation aborted!"));
@@ -2473,6 +2689,8 @@ void Fit::fit()
     }
 
     d_has_custom_r2 = false;
+    chi_2 = -1.0;
+    d_y_fit.clear();
     if (!d_all_guesses_set && unsigned(d_explicit_init_vals.size()) < d_p) {
         guessInitialValues();
         applyExplicitInitialGuesses();
@@ -2486,7 +2704,7 @@ void Fit::fit()
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
-    int status, iterations;
+    int status = GSL_EINVAL, iterations = 0;
     vector<double> par;
     d_script.reset(scriptEnv->newScript(d_formula, this, metaObject()->className()));
     connect(d_script.get(), SIGNAL(error(const QString &, const QString &, int)), this,
@@ -2497,8 +2715,16 @@ void Fit::fit()
     else
         par = fitGslMultifit(iterations, status);
 
+    if (status != GSL_SUCCESS || !std::isfinite(chi_2) || chi_2 < 0.0) {
+        chi_2 = -1.0;
+        d_y_fit.clear();
+        if (status == GSL_SUCCESS)
+            status = GSL_EINVAL;
+        par.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+    }
+
     storeCustomFitResults(par);
-    if (status == GSL_SUCCESS && !d_suppress_curve_output) {
+    if (status == GSL_SUCCESS && chi_2 >= 0.0 && !d_suppress_curve_output) {
         generateFitCurve(par);
         if (d_conf_band || d_pred_band)
             addConfidenceAndPredictionBands(par);
@@ -2514,7 +2740,7 @@ void Fit::fit()
 
 void Fit::scriptError(const QString &message, const QString &script_name, int line_number)
 {
-    if (!d_silent)
+    if (!isNonInteractiveFit(parent(), d_silent))
         QMessageBox::critical(qobject_cast<QWidget *>(parent()), tr("Input function error"),
                               QString("%1:%2\n").arg(script_name).arg(line_number) + message);
 }
@@ -2531,9 +2757,10 @@ int Fit::evaluate_f(const gsl_vector *x, gsl_vector *f)
         auto y = d_script->eval();
         if (y.isNull())
             return GSL_EINVAL;
-        gsl_vector_set(f, j, (y.toDouble(&success) - d_y[j]) / d_y_errors[j]);
-        if (!success)
+        double yVal = y.toDouble(&success);
+        if (!success || !std::isfinite(yVal))
             return GSL_EINVAL;
+        gsl_vector_set(f, j, (yVal - d_y[j]) / d_y_errors[j]);
     }
     return GSL_SUCCESS;
 }
@@ -2544,11 +2771,17 @@ double Fit::evaluate_d(const gsl_vector *x)
     for (unsigned i = 0; i < d_p; i++)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     for (unsigned j = 0; j < d_x.size(); j++) {
-        d_script->setDouble(d_x[j], "x");
-        bool success;
-        result += pow((d_script->eval().toDouble(&success) - d_y[j]) / d_y_errors[j], 2);
-        if (!success)
-            return GSL_EINVAL;
+        if (!d_script->setDouble(d_x[j], "x"))
+            return std::numeric_limits<double>::quiet_NaN();
+        bool success = false;
+        auto y = d_script->eval();
+        if (y.isNull())
+            return std::numeric_limits<double>::quiet_NaN();
+        double yVal = y.toDouble(&success);
+        if (!success || !std::isfinite(yVal))
+            return std::numeric_limits<double>::quiet_NaN();
+        double r = (yVal - d_y[j]) / d_y_errors[j];
+        result += r * r;
     }
     return result;
 }
@@ -2563,12 +2796,23 @@ typedef struct
 double Fit::evaluate_df_helper(double x, void *params)
 {
     DiffData *data = static_cast<DiffData *>(params);
-    data->script->setDouble(x, (data->param).toUtf8());
-    bool success;
-    double result = data->script->eval().toDouble(&success);
-    if (!success) {
+    if (!data->script->setDouble(x, (data->param).toUtf8())) {
         data->script->disconnect(SIGNAL(error(const QString &, const QString &, int)));
         data->success = false;
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    bool success = false;
+    QVariant v = data->script->eval();
+    if (v.isNull()) {
+        data->script->disconnect(SIGNAL(error(const QString &, const QString &, int)));
+        data->success = false;
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    double result = v.toDouble(&success);
+    if (!success || !std::isfinite(result)) {
+        data->script->disconnect(SIGNAL(error(const QString &, const QString &, int)));
+        data->success = false;
+        return std::numeric_limits<double>::quiet_NaN();
     }
     return result;
 }
@@ -2585,7 +2829,8 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
     for (unsigned i = 0; i < d_p; i++)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     for (unsigned i = 0; i < d_x.size(); i++) {
-        d_script->setDouble(d_x[i], "x");
+        if (!d_script->setDouble(d_x[i], "x"))
+            return GSL_EINVAL;
         double s = (i < d_y_errors.size() && d_y_errors[i] > 0.0) ? d_y_errors[i] : 1.0;
         for (unsigned j = 0; j < d_p; j++) {
             if (isParameterFixed(int(j))) {
@@ -2595,10 +2840,27 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
             double xj = gsl_vector_get(x, j);
             double h = std::max(1e-8, 1e-6 * std::abs(xj));
             data.param = d_param_names[j];
+            data.success = true;
             gsl_deriv_central(&F, xj, h, &result, &abserr);
+            if (!data.success || !std::isfinite(result)) {
+                data.success = true;
+                const double f0 = evaluate_df_helper(xj, &data);
+                if (data.success && std::isfinite(f0)) {
+                    data.success = true;
+                    const double fPlus = evaluate_df_helper(xj + h, &data);
+                    if (data.success && std::isfinite(fPlus)) {
+                        result = (fPlus - f0) / h;
+                    } else {
+                        data.success = true;
+                        const double fMinus = evaluate_df_helper(xj - h, &data);
+                        if (data.success && std::isfinite(fMinus))
+                            result = (f0 - fMinus) / h;
+                    }
+                }
+            }
             d_script->setDouble(xj, d_param_names[j].toUtf8());
-            if (!data.success)
-                return GSL_EINVAL;
+            if (!data.success || !std::isfinite(result))
+                return GSL_EDOM;
             gsl_matrix_set(J, i, j, result / s);
         }
     }
@@ -2617,7 +2879,7 @@ void Fit::generateFitCurve(const vector<double> &par)
     std::vector<double> Y(d_points);
 
     if (!calculateFitCurveData(par, X, Y)) {
-        if (!d_silent)
+        if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(0, tr("Fit failed"), tr("An error occurred during fit!"));
         return;
     }
@@ -3283,6 +3545,8 @@ double Fit::anovaFValue() const
 {
     int n = int(d_x.size());
     if (n <= 1 || d_y.empty())
+        return 0.0;
+    if ((!std::isfinite(chi_2) || chi_2 < 0.0) && d_y_fit.size() != d_y.size())
         return 0.0;
 
     double mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(n);

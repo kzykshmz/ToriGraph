@@ -28,6 +28,8 @@
  ***************************************************************************/
 #include "ConfigDialog.h"
 #include "ApplicationWindow.h"
+#include "AutoUpdater.h"
+#include "IconLoader.h"
 #include "MultiLayer.h"
 #include "Graph.h"
 #include "Matrix.h"
@@ -561,13 +563,38 @@ void ConfigDialog::initAppPage()
     boxUndoLimit->setValue(app->undoLimit);
     topBoxLayout->addWidget(boxUndoLimit, 5, 1);
 
-#ifdef SEARCH_FOR_UPDATES
-    boxSearchUpdates = new QCheckBox();
-    boxSearchUpdates->setChecked(app->autoSearchUpdates);
-    topBoxLayout->addWidget(boxSearchUpdates, 6, 0, 1, 2);
-#endif
+    topBoxLayout->setRowStretch(6, 1);
 
-    topBoxLayout->setRowStretch(7, 1);
+    groupBoxUpdates = new QGroupBox();
+    QVBoxLayout *updatesLayout = new QVBoxLayout(groupBoxUpdates);
+    updatesLayout->setSpacing(6);
+
+    boxSearchUpdates = new QCheckBox();
+#ifdef SEARCH_FOR_UPDATES
+    boxSearchUpdates->setChecked(app->autoSearchUpdates);
+#else
+    boxSearchUpdates->setChecked(
+            ApplicationWindow::getSettings().value("/General/AutoSearchUpdates", false).toBool());
+#endif
+    updatesLayout->addWidget(boxSearchUpdates);
+
+    boxUpdatePreRelease = new QCheckBox();
+    boxUpdatePreRelease->setChecked(ApplicationWindow::getSettings()
+                                            .value("AutoUpdate/IncludePreReleases", false)
+                                            .toBool());
+    updatesLayout->addWidget(boxUpdatePreRelease);
+
+    QHBoxLayout *updateBtnRow = new QHBoxLayout();
+    btnCheckUpdatesNow = new QPushButton();
+    btnCheckUpdatesNow->setIcon(IconLoader::duotoneIcon(QStringLiteral("update-check"), 20));
+    updateBtnRow->addWidget(btnCheckUpdatesNow);
+    updateBtnRow->addStretch(1);
+    updatesLayout->addLayout(updateBtnRow);
+
+    applicationLayout->addWidget(groupBoxUpdates);
+    applicationLayout->addStretch(1);
+
+    connect(btnCheckUpdatesNow, SIGNAL(clicked()), this, SLOT(checkForUpdatesFromDialog()));
 
     appTabWidget->addTab(application, QString());
 
@@ -827,11 +854,15 @@ void ConfigDialog::languageChange()
     itemsList->addItem(tr("3D Plots"));
     itemsList->addItem(tr("Fitting"));
     itemsList->setCurrentRow(0);
-    itemsList->item(0)->setIcon(QIcon(QPixmap(":/general.xpm")));
-    itemsList->item(1)->setIcon(QIcon(QPixmap(":/configTable.xpm")));
-    itemsList->item(2)->setIcon(QIcon(QPixmap(":/config_curves.xpm")));
-    itemsList->item(3)->setIcon(QIcon(QPixmap(":/3dplots.xpm")));
-    itemsList->item(4)->setIcon(QIcon(QPixmap(":/fit.xpm")));
+    auto pageIcon = [](const QString &semanticId, const char *fallbackXpm) -> QIcon {
+        const QIcon ico = IconLoader::duotoneIcon(semanticId, 32);
+        return ico.isNull() ? QIcon(QPixmap(QString::fromLatin1(fallbackXpm))) : ico;
+    };
+    itemsList->item(0)->setIcon(pageIcon(QStringLiteral("settings"), ":/general.xpm"));
+    itemsList->item(1)->setIcon(pageIcon(QStringLiteral("new-table"), ":/configTable.xpm"));
+    itemsList->item(2)->setIcon(pageIcon(QStringLiteral("plot-line-symbol"), ":/config_curves.xpm"));
+    itemsList->item(3)->setIcon(pageIcon(QStringLiteral("plot-3d-surface"), ":/3dplots.xpm"));
+    itemsList->item(4)->setIcon(pageIcon(QStringLiteral("fit-nonlinear"), ":/fit.xpm"));
     itemsList->setIconSize(QSize(32, 32));
     // calculate a sensible width for the items list
     // (default QListWidget size is 256 which looks too big)
@@ -928,9 +959,14 @@ void ConfigDialog::languageChange()
     lblPanels->setText(tr("Panels"));
     lblUndoLimit->setText(tr("Undo/Redo History limit"));
     boxSave->setText(tr("Save every"));
-#ifdef SEARCH_FOR_UPDATES
-    boxSearchUpdates->setText(tr("Check for new versions at startup"));
-#endif
+    if (groupBoxUpdates)
+        groupBoxUpdates->setTitle(tr("Software Updates"));
+    if (boxSearchUpdates)
+        boxSearchUpdates->setText(tr("Automatically check for updates on startup"));
+    if (boxUpdatePreRelease)
+        boxUpdatePreRelease->setText(tr("Include pre-release / beta versions"));
+    if (btnCheckUpdatesNow)
+        btnCheckUpdatesNow->setText(tr("Check for Updates Now..."));
     boxMinutes->setSuffix(tr(" minutes"));
     lblScriptingLanguage->setText(tr("Default scripting language"));
 
@@ -997,16 +1033,22 @@ void ConfigDialog::languageChange()
     lblSymbSize->setText(tr("Symbol size"));
 
     boxCurveStyle->clear();
-    boxCurveStyle->addItem(QPixmap(":/lPlot.xpm"), tr(" Line"));
-    boxCurveStyle->addItem(QPixmap(":/pPlot.xpm"), tr(" Scatter"));
-    boxCurveStyle->addItem(QPixmap(":/lpPlot.xpm"), tr(" Line + Symbol"));
-    boxCurveStyle->addItem(QPixmap(":/dropLines.xpm"), tr(" Vertical drop lines"));
-    boxCurveStyle->addItem(QPixmap(":/spline.xpm"), tr(" Spline"));
-    boxCurveStyle->addItem(QPixmap(":/vert_steps.xpm"), tr(" Vertical steps"));
-    boxCurveStyle->addItem(QPixmap(":/hor_steps.xpm"), tr(" Horizontal steps"));
-    boxCurveStyle->addItem(QPixmap(":/area.xpm"), tr(" Area"));
-    boxCurveStyle->addItem(QPixmap(":/vertBars.xpm"), tr(" Vertical Bars"));
-    boxCurveStyle->addItem(QPixmap(":/hBars.xpm"), tr(" Horizontal Bars"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/lPlot.xpm"), tr(" Line"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-scatter"), ":/pPlot.xpm"), tr(" Scatter"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line-symbol"), ":/lpPlot.xpm"),
+                           tr(" Line + Symbol"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars"), ":/dropLines.xpm"),
+                           tr(" Vertical drop lines"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-spline"), ":/spline.xpm"), tr(" Spline"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/vert_steps.xpm"),
+                           tr(" Vertical steps"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/hor_steps.xpm"),
+                           tr(" Horizontal steps"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-area"), ":/area.xpm"), tr(" Area"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars"), ":/vertBars.xpm"),
+                           tr(" Vertical Bars"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-hbar"), ":/hBars.xpm"),
+                           tr(" Horizontal Bars"));
 
     int style = app->defaultCurveStyle;
     if (style == Graph::Line)
@@ -1137,9 +1179,17 @@ void ConfigDialog::apply()
     app->changeAppFont(appFont);
     setFont(appFont);
     app->changeAppStyle(boxStyle->currentText());
+    if (boxSearchUpdates) {
 #ifdef SEARCH_FOR_UPDATES
-    app->autoSearchUpdates = boxSearchUpdates->isChecked();
+        app->autoSearchUpdates = boxSearchUpdates->isChecked();
 #endif
+        ApplicationWindow::getSettings().setValue("/General/AutoSearchUpdates",
+                                                  boxSearchUpdates->isChecked());
+    }
+    if (boxUpdatePreRelease) {
+        ApplicationWindow::getSettings().setValue("AutoUpdate/IncludePreReleases",
+                                                  boxUpdatePreRelease->isChecked());
+    }
     app->setSaveSettings(boxSave->isChecked(), boxMinutes->value());
     app->defaultScriptingLang = boxScriptingLanguage->currentText();
 
@@ -1610,4 +1660,37 @@ void ConfigDialog::updateDecSepPreview()
     boxSeparatorPreview->setText(
             tr("Preview:", "preview of the decimal separator") + " "
             + locale.toString(1000.1234567890123456, 'f', boxAppPrecision->value()));
+}
+
+void ConfigDialog::checkForUpdatesFromDialog()
+{
+    ApplicationWindow *app = (ApplicationWindow *)parentWidget();
+    if (!app)
+        return;
+
+    if (boxUpdatePreRelease) {
+        ApplicationWindow::getSettings().setValue("AutoUpdate/IncludePreReleases",
+                                                  boxUpdatePreRelease->isChecked());
+    }
+    if (boxSearchUpdates) {
+#ifdef SEARCH_FOR_UPDATES
+        app->autoSearchUpdates = boxSearchUpdates->isChecked();
+#endif
+        ApplicationWindow::getSettings().setValue("/General/AutoSearchUpdates",
+                                                  boxSearchUpdates->isChecked());
+    }
+
+#ifdef SEARCH_FOR_UPDATES
+    app->autoSearchUpdatesRequest = false;
+    app->searchForUpdates();
+#else
+    if (!QMetaObject::invokeMethod(app, "searchForUpdates")) {
+        AutoUpdater *updater = app->autoUpdater();
+        if (!updater)
+            updater = app->findChild<AutoUpdater *>();
+        if (!updater)
+            updater = new AutoUpdater(app, app);
+        updater->checkForUpdates(false);
+    }
+#endif
 }

@@ -29,6 +29,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "Table.h"
+#include "ApplicationWindow.h"
 #include "core/column/Column.h"
 #include "lib/Interval.h"
 #include "table/TableModel.h"
@@ -211,6 +212,8 @@ void Table::handleRowChange()
 {
     for (int i = 0; i < numCols(); i++)
         emit modifiedData(this, colName(i));
+    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+        autoRecalculateDependentColumns(-1, 0);
 }
 
 void Table::setBackgroundColor(const QColor &col)
@@ -655,33 +658,152 @@ bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool sil
     return true;
 }
 
+namespace {
+static ApplicationWindow *owningApplicationWindowForTable(const Table *tbl)
+{
+    const QObject *cur = tbl;
+    while (cur) {
+        if (const ApplicationWindow *aw = qobject_cast<const ApplicationWindow *>(cur))
+            return const_cast<ApplicationWindow *>(aw);
+        if (const QWidget *w = qobject_cast<const QWidget *>(cur)) {
+            if (ApplicationWindow *winAw = qobject_cast<ApplicationWindow *>(w->window()))
+                return winAw;
+        }
+        cur = cur->parent();
+    }
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw)) {
+            if (aw->windowsList().contains(const_cast<Table *>(tbl)))
+                return aw;
+        }
+    }
+    return nullptr;
+}
+
+static QVector<int> collectFormulaColumnIndices(Table *tbl, int skipFirstCol, int skipCount,
+                                                bool *outHasCrossTableRef = nullptr)
+{
+    if (outHasCrossTableRef)
+        *outHasCrossTableRef = false;
+    QVector<int> cols;
+    if (!tbl || !tbl->d_future_table)
+        return cols;
+    const int nCols = tbl->numCols();
+    for (int c = 0; c < nCols; ++c) {
+        if (skipCount > 0 && c >= skipFirstCol && c < skipFirstCol + skipCount)
+            continue;
+        Column *cp = tbl->column(c);
+        if (!cp || cp->formulaIntervals().isEmpty())
+            continue;
+        bool colHasFormula = false;
+        const QList<Interval<int>> ivs = cp->formulaIntervals();
+        for (const Interval<int> &iv : ivs) {
+            const QString f = cp->formula(iv.start()).trimmed();
+            if (!f.isEmpty()) {
+                colHasFormula = true;
+                if (outHasCrossTableRef
+                    && (f.contains(QLatin1Char('/'))
+                        || f.contains(QLatin1String("tablecol"), Qt::CaseInsensitive)
+                        || f.contains(QLatin1String("column__"), Qt::CaseInsensitive))) {
+                    *outHasCrossTableRef = true;
+                }
+            }
+        }
+        if (colHasFormula)
+            cols.push_back(c);
+    }
+    return cols;
+}
+
+static bool s_inCrossTableAutoRecalc = false;
+
+struct ScopedCrossTableRecalcGuard
+{
+    ScopedCrossTableRecalcGuard() { s_inCrossTableAutoRecalc = true; }
+    ~ScopedCrossTableRecalcGuard() { s_inCrossTableAutoRecalc = false; }
+};
+} // namespace
+
 void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCount)
 {
     if (!d_auto_recalc_formulas || d_in_auto_recalc || !d_future_table || !scriptEnv)
         return;
 
-    QVector<int> fCols;
-    const int nCols = numCols();
-    for (int c = 0; c < nCols; ++c) {
-        if (changedCount > 0 && c >= changedFirstCol && c < changedFirstCol + changedCount)
-            continue;
-        Column *cp = column(c);
-        if (cp && !cp->formulaIntervals().isEmpty()) {
-            const QString f = cp->formula(cp->formulaIntervals().first().start()).trimmed();
-            if (!f.isEmpty())
-                fCols.push_back(c);
+    const QVector<int> fCols = collectFormulaColumnIndices(this, changedFirstCol, changedCount);
+    if (!fCols.isEmpty()) {
+        d_in_auto_recalc = true;
+        const int maxPasses = qMin(fCols.size(), 4);
+        for (int pass = 0; pass < maxPasses; ++pass) {
+            bool passChanged = false;
+            QMetaObject::Connection conn = QObject::connect(
+                    d_future_table, &future::Table::dataChanged,
+                    [&passChanged](int, int, int, int) { passChanged = true; });
+            for (int idx = 0; idx < fCols.size(); ++idx)
+                recalculateColumnInternal(fCols[idx], false, true);
+            QObject::disconnect(conn);
+            if (!passChanged)
+                break;
         }
+        d_in_auto_recalc = false;
     }
-    if (fCols.isEmpty())
+
+    if (s_inCrossTableAutoRecalc)
         return;
 
-    d_in_auto_recalc = true;
-    const int maxPasses = qMin(fCols.size(), 4);
-    for (int pass = 0; pass < maxPasses; ++pass) {
-        for (int idx = 0; idx < fCols.size(); ++idx)
-            recalculateColumnInternal(fCols[idx], false, true);
+    ApplicationWindow *aw = owningApplicationWindowForTable(this);
+    if (!aw)
+        return;
+
+    QList<Table *> crossCandidates;
+    const QList<MyWidget *> winList = aw->windowsList();
+    for (MyWidget *mw : winList) {
+        if (!mw || mw == this || !mw->inherits("Table"))
+            continue;
+        Table *other = static_cast<Table *>(mw);
+        if (!other->autoRecalcFormulas() || other->d_in_auto_recalc || !other->d_future_table
+            || !other->scriptEnv)
+            continue;
+        bool hasCrossRef = false;
+        const QVector<int> otherCols = collectFormulaColumnIndices(other, -1, 0, &hasCrossRef);
+        if (!otherCols.isEmpty() && hasCrossRef)
+            crossCandidates.append(other);
     }
-    d_in_auto_recalc = false;
+
+    if (crossCandidates.isEmpty())
+        return;
+
+    ScopedCrossTableRecalcGuard crossGuard;
+    const int maxCrossPasses = qMin(crossCandidates.size() + 1, 6);
+    for (int pass = 0; pass < maxCrossPasses; ++pass) {
+        bool anyChangedInPass = false;
+        for (Table *other : crossCandidates) {
+            if (!other || other->d_in_auto_recalc || !other->d_future_table || !other->scriptEnv)
+                continue;
+            const QVector<int> otherCols = collectFormulaColumnIndices(other, -1, 0);
+            if (otherCols.isEmpty())
+                continue;
+            other->d_in_auto_recalc = true;
+            QMetaObject::Connection conn = QObject::connect(
+                    other->d_future_table, &future::Table::dataChanged,
+                    [&anyChangedInPass](int, int, int, int) { anyChangedInPass = true; });
+            const int innerPasses = qMin(otherCols.size(), 4);
+            for (int ip = 0; ip < innerPasses; ++ip) {
+                bool innerChanged = false;
+                QMetaObject::Connection innerConn = QObject::connect(
+                        other->d_future_table, &future::Table::dataChanged,
+                        [&innerChanged](int, int, int, int) { innerChanged = true; });
+                for (int idx = 0; idx < otherCols.size(); ++idx)
+                    other->recalculateColumnInternal(otherCols[idx], false, true);
+                QObject::disconnect(innerConn);
+                if (!innerChanged)
+                    break;
+            }
+            QObject::disconnect(conn);
+            other->d_in_auto_recalc = false;
+        }
+        if (!anyChangedInPass)
+            break;
+    }
 }
 
 QString Table::saveCommands()
@@ -1359,14 +1481,33 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
     QFile file(fname);
     if (!file.open(QIODevice::WriteOnly)) {
         QApplication::restoreOverrideCursor();
-        QMessageBox::critical(0, tr("ASCII Export Error"),
-                              tr("Could not write to file: <br><h4>") + fname
-                                      + tr("</h4><p>Please verify that you have the right to write "
-                                           "to this location!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::critical(0, tr("ASCII Export Error"),
+                                  tr("Could not write to file: <br><h4>") + fname
+                                          + tr("</h4><p>Please verify that you have the right to write "
+                                               "to this location!"));
+        }
         return false;
     }
 
     QTextStream out(&file);
+    out.setCodec("UTF-8");
+
+    auto quoteField = [&separator](const QString &raw) -> QString {
+        const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator))
+                || raw.contains(QLatin1Char('"'))
+                || raw.contains(QLatin1Char('\n'))
+                || raw.contains(QLatin1Char('\r'));
+        if (!needsQuotes)
+            return raw;
+        QString escaped = raw;
+        escaped.replace(QLatin1String("\""), QLatin1String("\"\""));
+        return QLatin1Char('"') + escaped + QLatin1Char('"');
+    };
+
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::OmitGroupSeparator);
+
     int i, j;
     int rows = numRows();
     int cols = numCols();
@@ -1392,30 +1533,30 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
         bottomRow = lastSelectedRow();
     }
 
-    if (withLabels) {
+    if (withLabels && ((!exportSelection && cols > 0) || (exportSelection && selectedCols > 0))) {
         QStringList header = colNames();
         QStringList ls = header.filter(QRegExp("\\D"));
         if (exportSelection) {
             for (i = 1; i < selectedCols; i++) {
                 if (ls.count() > 0)
-                    out << header[sCols[i]] + separator;
+                    out << quoteField(header[sCols[i]]) + separator;
                 else
-                    out << "C" + header[sCols[i]] + separator;
+                    out << quoteField("C" + header[sCols[i]]) + separator;
             }
 
             if (ls.count() > 0)
-                out << header[sCols[selectedCols]] + "\n";
+                out << quoteField(header[sCols[selectedCols]]) + "\n";
             else
-                out << "C" + header[sCols[selectedCols]] + "\n";
+                out << quoteField("C" + header[sCols[selectedCols]]) + "\n";
         } else {
             if (ls.count() > 0) {
                 for (j = 0; j < cols - 1; j++)
-                    out << header[j] + separator;
-                out << header[cols - 1] + "\n";
+                    out << quoteField(header[j]) + separator;
+                out << quoteField(header[cols - 1]) + "\n";
             } else {
                 for (j = 0; j < cols - 1; j++)
-                    out << "C" + header[j] + separator;
-                out << "C" + header[cols - 1] + "\n";
+                    out << quoteField("C" + header[j]) + separator;
+                out << quoteField("C" + header[cols - 1]) + "\n";
             }
         }
     } // finished writting labels
@@ -1438,7 +1579,16 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
                 first = false;
             else
                 out << separator;
-            out << col->asStringColumn()->textAt(i);
+            if (!col || col->isInvalid(i)) {
+                continue;
+            }
+            if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                const double val = col->valueAt(i);
+                if (std::isfinite(val))
+                    out << quoteField(cLoc.toString(val, 'g', 15));
+            } else {
+                out << quoteField(col->asStringColumn()->textAt(i));
+            }
         }
         out << "\n";
     }
@@ -1455,7 +1605,7 @@ void Table::customEvent(QEvent *e)
 
 void Table::closeEvent(QCloseEvent *e)
 {
-    if (askOnClose) {
+    if (askOnClose && !ApplicationWindow::isNonInteractiveContext(this)) {
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",

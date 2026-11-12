@@ -1,3 +1,4 @@
+#include <QByteArray>
 #include <qbitmap.h>
 #include "qwt3d_label.h"
 
@@ -18,7 +19,10 @@ Label::Label(const QString &family, int pointSize, int weight, bool italic)
 void Label::init(const QString &family, int pointSize, int weight, bool italic)
 {
     init();
-    font_ = QFont(family, pointSize, weight, italic);
+    const QString resolvedFamily =
+            family.trimmed().isEmpty() ? QStringLiteral("Arial") : family.trimmed();
+    const int resolvedSize = (pointSize > 0) ? pointSize : 12;
+    font_ = QFont(resolvedFamily, resolvedSize, weight, italic);
 }
 
 void Label::init()
@@ -28,7 +32,7 @@ void Label::init()
     pos_ = beg_;
     setColor(0, 0, 0);
     pm_ = QPixmap(0, 0);
-    font_ = QFont();
+    font_ = QFont(QStringLiteral("Arial"), 12);
     anchor_ = BottomLeft;
     gap_ = 0;
     flagforupdate_ = true;
@@ -41,7 +45,10 @@ void Label::useDeviceFonts(bool val)
 
 void Label::setFont(const QString &family, int pointSize, int weight, bool italic)
 {
-    font_ = QFont(family, pointSize, weight, italic);
+    const QString resolvedFamily =
+            family.trimmed().isEmpty() ? QStringLiteral("Arial") : family.trimmed();
+    const int resolvedSize = (pointSize > 0) ? pointSize : 12;
+    font_ = QFont(resolvedFamily, resolvedSize, weight, italic);
     flagforupdate_ = true;
 }
 
@@ -194,48 +201,76 @@ void Label::convert2screen()
 
 void Label::draw()
 {
+    if (text_.isEmpty()) {
+        beg_ = pos_;
+        end_ = pos_;
+        flagforupdate_ = false;
+        return;
+    }
+
     if (flagforupdate_) {
         update();
         flagforupdate_ = false;
     }
 
-    if (buf_.isNull())
+    if (!devicefonts_ && buf_.isNull())
         return;
 
-    GLboolean b;
-    GLint func;
-    GLdouble v;
+    GLboolean b = GL_FALSE;
+    GLint func = GL_ALWAYS;
+    GLdouble v = 0.0;
     glGetBooleanv(GL_ALPHA_TEST, &b);
     glGetIntegerv(GL_ALPHA_TEST_FUNC, &func);
     glGetDoublev(GL_ALPHA_TEST_REF, &v);
 
     glEnable(GL_ALPHA_TEST);
-    glAlphaFunc(GL_NOTEQUAL, 0.0);
+    glAlphaFunc(GL_NOTEQUAL, 0.0f);
 
     convert2screen();
     glRasterPos3d(beg_.x, beg_.y, beg_.z);
 
-    int w = tex_.width();
-    int h = tex_.height();
-
     if (devicefonts_) {
-        drawDeviceText(QWT3DLOCAL8BIT(text_), "Courier", font_.pointSize(), pos_, color, anchor_,
+        QString family = font_.family().trimmed();
+        if (family.isEmpty())
+            family = QStringLiteral("Arial");
+        int ptSize = font_.pointSize();
+        if (ptSize <= 0) {
+            if (font_.pointSizeF() > 0.0)
+                ptSize = qRound(font_.pointSizeF());
+            else if (font_.pixelSize() > 0)
+                ptSize = font_.pixelSize();
+            else
+                ptSize = 12;
+        }
+        const QByteArray utf8Text = text_.toUtf8();
+        const QByteArray utf8Family = family.toUtf8();
+        drawDeviceText(utf8Text.constData(), utf8Family.constData(), ptSize, pos_, color, anchor_,
                        gap_);
     } else {
+        int w = tex_.width();
+        int h = tex_.height();
         drawDevicePixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, tex_.bits());
         //    glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, tex_.bits());
     }
 
-    glAlphaFunc(func, v);
+    glAlphaFunc(static_cast<GLenum>(func), static_cast<GLclampf>(v));
     Enable(GL_ALPHA_TEST, b);
 }
 
 double Label::width() const
 {
-    return pm_.width();
+    if (pm_.width() > 0)
+        return pm_.width();
+    if (text_.isEmpty())
+        return 0.0;
+    return QFontMetrics(font_).size(Qwt3D::SingleLine, text_).width();
 }
 
 double Label::height() const
 {
-    return pm_.height();
+    if (pm_.height() > 0)
+        return pm_.height();
+    if (text_.isEmpty())
+        return 0.0;
+    return QFontMetrics(font_).size(Qwt3D::SingleLine, text_).height();
 }

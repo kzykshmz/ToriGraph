@@ -29,6 +29,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "MyWidget.h"
+#include "ApplicationWindow.h"
 #include "Folder.h"
 
 #include <QMessageBox>
@@ -74,7 +75,7 @@ void MyWidget::updateCaption()
 
 void MyWidget::closeEvent(QCloseEvent *e)
 {
-    if (askOnClose) {
+    if (askOnClose && !ApplicationWindow::isNonInteractiveContext(this)) {
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",

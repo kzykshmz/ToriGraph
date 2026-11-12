@@ -117,6 +117,7 @@ public slots:
 private slots:
     //! Update the decimal separator preview
     void updateDecSepPreview();
+    void checkForUpdatesFromDialog();
 
 private:
     void initPlotsPage();
@@ -179,6 +180,9 @@ private:
     QLabel *lblScriptingLanguage;
     QComboBox *boxScriptingLanguage;
     QCheckBox *boxAntialiasing, *boxAutoscale3DPlots, *boxTableComments;
+    QGroupBox *groupBoxUpdates = nullptr;
+    QCheckBox *boxUpdatePreRelease = nullptr;
+    QPushButton *btnCheckUpdatesNow = nullptr;
 };
 
 #endif // CONFIGDIALOG_H

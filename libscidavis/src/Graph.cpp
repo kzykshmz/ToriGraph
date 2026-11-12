@@ -55,6 +55,8 @@
 #include "RangeSelectorTool.h"
 #include "PlotCurve.h"
 #include "ApplicationWindow.h"
+#include "IconLoader.h"
+#include "ModernUiTheme.h"
 #include "core/column/Column.h"
 #include "MultiLayer.h"
 #include "EmfPaintDevice.h"
@@ -809,6 +811,18 @@ void Graph::setLabelsTextFormat(int axis, Table *table, const QString &columnNam
 {
     Column *col = 0;
     if (!table || !(col = table->column(columnName))) {
+        ApplicationWindow *aw = nullptr;
+        for (QObject *p = parent(); p && !aw; p = p->parent())
+            aw = qobject_cast<ApplicationWindow *>(p);
+        if (!aw) {
+            for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                if ((aw = qobject_cast<ApplicationWindow *>(tlw)) != nullptr)
+                    break;
+            }
+        }
+        if (aw && (aw->isHeadlessMode() || aw->isOleEmbeddedMode() || aw->batchMode()))
+            return;
+
         QMessageBox::critical(
                 this, tr("Internal Error"),
                 tr("<html>Failed to set axis labels on Graph %1. Maybe you're trying to open a "
@@ -851,8 +865,10 @@ void Graph::setLabelsDateTimeFormat(int axis, AxisType type, const QString &form
     QStringList list = formatInfo.split(";", QString::KeepEmptyParts);
 #endif
     if ((int)list.count() < 2 || list[1].isEmpty()) {
-        QMessageBox::critical(this, tr("Error"),
-                              tr("Couldn't change the axis type to the requested format!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::critical(this, tr("Error"),
+                                  tr("Couldn't change the axis type to the requested format!"));
+        }
         return;
     }
 
@@ -1414,16 +1430,14 @@ void Graph::refreshAutoAxisTitlesFromColumns()
             const QString desiredLabel = !colLong.isEmpty() ? colLong : colShort;
             const QString prevAuto = d_last_auto_curve_labels.value(ci);
 
-            const QString strippedTitle = [&]() {
-                QString st = dc->yColumnName();
-                const QString pfx = QString(t->name()) + "_";
-                if (st.startsWith(pfx) && st.length() > pfx.length())
-                    st = st.mid(pfx.length());
-                return st;
-            }();
+            const QString pfx = QString(t->name()) + "_";
+            const QString yColFull = dc->yColumnName();
+            const bool hasStrippedTitle =
+                    yColFull.startsWith(pfx) && yColFull.length() > pfx.length();
+            const QString strippedTitle = hasStrippedTitle ? yColFull.mid(pfx.length()) : QString();
 
-            if (currentLabel == colShort || currentLabel == strippedTitle
-                || currentLabel == dc->yColumnName()
+            if (currentLabel == colShort || (hasStrippedTitle && currentLabel == strippedTitle)
+                || (!colLong.isEmpty() && currentLabel == yColFull)
                 || (!prevAuto.isEmpty() && currentLabel == prevAuto)) {
                 d_last_auto_curve_labels[ci] = desiredLabel;
                 const QString updatedLine =
@@ -1688,7 +1702,8 @@ void Graph::copyImage()
 void Graph::exportToFile(const QString &fileName)
 {
     if (fileName.isEmpty()) {
-        QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
         return;
     }
 
@@ -1710,7 +1725,8 @@ void Graph::exportToFile(const QString &fileName)
                 return;
             }
         }
-        QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
     }
 }
 
@@ -1787,7 +1803,8 @@ void Graph::exportVector(const QString &fileName, int res, bool color, bool keep
                          QPageSize pageSize, QPageLayout::Orientation orientation)
 {
     if (fileName.isEmpty()) {
-        QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
         return;
     }
 
@@ -1800,8 +1817,10 @@ void Graph::exportVector(const QString &fileName, int res, bool color, bool keep
     printer.setOutputFileName(fileName);
     if (fileName.contains(".eps")) {
 #if QT_VERSION >= 0x050000
-        QMessageBox::warning(this, tr("Warning"),
-                             tr("Output in postscript format is not available for Qt5, using PDF"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Warning"),
+                                 tr("Output in postscript format is not available for Qt5, using PDF"));
+        }
         printer.setOutputFormat(QPrinter::PdfFormat);
         printer.setOutputFileName(fileName + ".pdf");
 #else
@@ -2261,7 +2280,13 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
             continue;
         DataCurve *c = static_cast<DataCurve *>(it);
         if (c->table() == w && (c->xColumnName() == colName || c->yColumnName() == colName)) {
-            auto colType = w->column(colName)->columnMode();
+            Column *changedCol = w ? w->column(colName) : nullptr;
+            if (!changedCol) {
+                if (c->updateData(w, colName))
+                    updated_curves++;
+                continue;
+            }
+            auto colType = changedCol->columnMode();
             AxisType atype;
             if (c->xColumnName() == colName) {
                 if (c->type() == HorizontalBars)
@@ -2842,10 +2867,19 @@ QString Graph::saveCurves()
                         + QString::number(static_cast<DataCurve *>(c)->endRow()) + "\t";
                 s += QString::number(c->isVisible()) + "\n";
                 if (c->type() == Function) {
+                    FunctionCurve *fc = static_cast<FunctionCurve *>(c);
                     s += "<formula>\n"
-                            + static_cast<FunctionCurve *>(c)->formulas().join(
+                            + fc->formulas().join(
                                       "\n</formula>\n<formula>\n")
                             + "\n</formula>\n";
+                    if (fc->dataSize() > 0 && fc->dataSize() <= 20000) {
+                        s += "<sampled_xy>\n";
+                        for (int k = 0; k < fc->dataSize(); ++k) {
+                            s += QString::number(fc->x(k), 'g', 15) + "\t"
+                                    + QString::number(fc->y(k), 'g', 15) + "\n";
+                        }
+                        s += "</sampled_xy>\n";
+                    }
                 }
             } else if (c->type() == ErrorBars) {
                 QwtErrorPlotCurve *er = (QwtErrorPlotCurve *)it;
@@ -3662,9 +3696,12 @@ bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int 
         plotBoxDiagram(w, names, startRow, endRow);
     else if (style == Histogram)
         plotHistogram(w, names, startRow, endRow);
-    else if (style == Graph::VectXYXY || style == Graph::VectXYAM)
+    else if (style == Graph::VectXYXY || style == Graph::VectXYAM) {
+        const int prevCurves = n_curves;
         plotVectorCurve(w, names, style, startRow, endRow);
-    else {
+        if (n_curves <= prevCurves)
+            return false;
+    } else {
         QStringList errorCurves, otherCurves;
         foreach (QString col, names) {
             int colIndex = w->colIndex(col);
@@ -3785,24 +3822,61 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
 void Graph::plotVectorCurve(Table *w, const QStringList &colList, int style, int startRow,
                             int endRow)
 {
-    if (colList.count() != 4)
+    if (!w || !w->d_future_table || colList.count() != 4)
         return;
+
+    auto resolveColIdx = [w](const QString &spec) -> int {
+        if (spec.isEmpty())
+            return -1;
+        const int numCols = w->numCols();
+        const QString tblPrefix = QString(w->name()) + QLatin1Char('_');
+        if (spec.startsWith(tblPrefix)) {
+            const QString shortName = spec.mid(tblPrefix.size());
+            for (int i = 0; i < numCols; ++i) {
+                if (const Column *col = w->column(i)) {
+                    if (col->name() == shortName)
+                        return i;
+                }
+            }
+        }
+        for (int i = 0; i < numCols; ++i) {
+            if (const Column *col = w->column(i)) {
+                if (col->name() == spec)
+                    return i;
+            }
+        }
+        const int fallback = w->colIndex(spec);
+        return (fallback >= 0 && fallback < numCols && w->column(fallback) != nullptr) ? fallback
+                                                                                       : -1;
+    };
+
+    QStringList canonicalCols;
+    canonicalCols.reserve(4);
+    for (int k = 0; k < 4; ++k) {
+        const int idx = resolveColIdx(colList[k]);
+        if (idx < 0)
+            return;
+        canonicalCols.append(w->colName(idx));
+    }
 
     if (endRow < 0)
         endRow = w->numRows() - 1;
 
     VectorCurve *v = 0;
     if (style == VectXYAM)
-        v = new VectorCurve(VectorCurve::XYAM, w, colList[0], colList[1], colList[2], colList[3],
-                            startRow, endRow);
+        v = new VectorCurve(VectorCurve::XYAM, w, canonicalCols[0], canonicalCols[1],
+                            canonicalCols[2], canonicalCols[3], startRow, endRow);
     else
-        v = new VectorCurve(VectorCurve::XYXY, w, colList[0], colList[1], colList[2], colList[3],
-                            startRow, endRow);
+        v = new VectorCurve(VectorCurve::XYXY, w, canonicalCols[0], canonicalCols[1],
+                            canonicalCols[2], canonicalCols[3], startRow, endRow);
 
     if (!v)
         return;
 
-    v->loadData();
+    if (!v->loadData()) {
+        delete v;
+        return;
+    }
     v->setStyle(QwtPlotCurve::NoCurve);
 
     c_type.resize(++n_curves);
@@ -3811,7 +3885,7 @@ void Graph::plotVectorCurve(Table *w, const QStringList &colList, int style, int
     c_keys.resize(n_curves);
     c_keys[n_curves - 1] = d_plot->insertCurve(v);
 
-    addLegendItem(colList[1]);
+    addLegendItem(canonicalCols[1]);
     updatePlot();
 }
 
@@ -4066,6 +4140,7 @@ void Graph::addLegendItem(const QString &colName)
                     const QString prefix = QString(dc->table()->name()) + "_";
                     if (label.startsWith(prefix) && label.length() > prefix.length())
                         label = label.mid(prefix.length());
+                    d_last_auto_curve_labels[n_curves - 1] = label;
                 }
             }
             QString text = mrk->text();
@@ -4206,9 +4281,11 @@ ImageMarker *Graph::addImage(ImageMarker *mrk)
 ImageMarker *Graph::addImage(const QString &fileName)
 {
     if (fileName.isEmpty() || !QFile::exists(fileName)) {
-        QMessageBox::warning(
-                0, tr("File open error"),
-                tr("Image file: <p><b> %1 </b><p>does not exist anymore!").arg(fileName));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(
+                    0, tr("File open error"),
+                    tr("Image file: <p><b> %1 </b><p>does not exist anymore!").arg(fileName));
+        }
         return 0;
     }
 
@@ -4237,8 +4314,10 @@ void Graph::insertImageMarker(const QStringList &lst, int fileVersion)
 {
     QString fn = lst[1];
     if (!QFile::exists(fn)) {
-        QMessageBox::warning(0, tr("File open error"),
-                             tr("Image file: <p><b> %1 </b><p>does not exist anymore!").arg(fn));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(0, tr("File open error"),
+                                 tr("Image file: <p><b> %1 </b><p>does not exist anymore!").arg(fn));
+        }
     } else {
         ImageMarker *mrk = new ImageMarker(fn);
         if (!mrk)
@@ -4378,15 +4457,46 @@ bool Graph::insertFunctionCurve(ApplicationWindow *parent, const QStringList &fu
         // SciDAVis 0.1.4 and 0.2.0 crash when trying to save a function curve;
         // thus, it's safe to assume every version from 0.1.5 on uses the new format,
         // even though 0.2.0 doesn't actually contain the revised code yet
+        if (curve.size() < 5)
+            return false;
         type = curve[0].toInt();
-        name = curve[1];
-        var = curve[2];
-        ranges += curve[3].toDouble();
-        ranges += curve[4].toDouble();
+        name = curve.mid(1, curve.size() - 4).join(",");
+        var = curve[curve.size() - 3];
+        ranges += curve[curve.size() - 2].toDouble();
+        ranges += curve[curve.size() - 1].toDouble();
 
-        formulas << func_spec[1];
+        if (func_spec.size() > 1)
+            formulas << func_spec[1];
+        else
+            formulas << QString();
         if (type != FunctionCurve::Normal)
-            formulas << func_spec[2];
+            formulas << (func_spec.size() > 2 ? func_spec[2] : QString());
+
+        FunctionCurve *c = new FunctionCurve(parent, (FunctionCurve::FunctionType)type, name);
+        c->setSuppressScriptErrors(true);
+        c->setPen(QPen(QColor(Qt::black), widthLine));
+        c->setRange(ranges[0], ranges[1]);
+        c->setFormulas(formulas);
+        c->setVariable(var);
+        if (!c->loadData(points)) {
+            delete c;
+            return false;
+        }
+        c->setSuppressScriptErrors(false);
+
+        c_type.resize(++n_curves);
+        c_type[n_curves - 1] = Line;
+
+        c_keys.resize(n_curves);
+        c_keys[n_curves - 1] = d_plot->insertCurve(c);
+
+        addLegendItem(c->legend());
+        auto ml = parent ? qobject_cast<MultiLayer *>(parent->d_workspace.activeSubWindow()) : nullptr;
+        if (ml && ml->status() != MyWidget::Minimized) {
+            updatePlot();
+            emit modifiedGraph();
+        }
+        return true;
 
     } else if (fileVersion < 87) {
         if (curve[0][0] == 'f') {
@@ -4963,6 +5073,8 @@ int Graph::curveType(int curveIndex)
 void Graph::showPlotErrorMessage(QWidget *parent, const QStringList &emptyColumns)
 {
     QApplication::restoreOverrideCursor();
+    if (ApplicationWindow::isNonInteractiveContext(parent))
+        return;
 
     int n = (int)emptyColumns.count();
     if (n > 1) {
@@ -4982,11 +5094,16 @@ void Graph::showPlotErrorMessage(QWidget *parent, const QStringList &emptyColumn
 void Graph::showTitleContextMenu()
 {
     QMenu titleMenu(this);
-    titleMenu.addAction(QPixmap(":/cut.xpm"), tr("&Cut"), this, SLOT(cutTitle()));
-    titleMenu.addAction(QPixmap(":/copy.xpm"), tr("&Copy"), this, SLOT(copyTitle()));
-    titleMenu.addAction(tr("&Delete"), this, SLOT(removeTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("cut")), tr("&Cut"), this,
+                        SLOT(cutTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("copy")), tr("&Copy"), this,
+                        SLOT(copyTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("delete")), tr("&Delete"), this,
+                        SLOT(removeTitle()));
     titleMenu.addSeparator();
-    titleMenu.addAction(tr("&Properties..."), this, SIGNAL(viewTitleDialog()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")), tr("&Properties..."),
+                        this, SIGNAL(viewTitleDialog()));
+    ModernUiTheme::upgradeMenuIcons(&titleMenu);
     titleMenu.exec(QCursor::pos());
 }
 
@@ -5028,28 +5145,36 @@ void Graph::showAxisTitleMenu(int axis)
     selectedAxis = axis;
 
     QMenu titleMenu(this);
-    titleMenu.addAction(QPixmap(":/cut.xpm"), tr("&Cut"), this, SLOT(cutAxisTitle()));
-    titleMenu.addAction(QPixmap(":/copy.xpm"), tr("&Copy"), this, SLOT(copyAxisTitle()));
-    titleMenu.addAction(tr("&Delete"), this, SLOT(removeAxisTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("cut")), tr("&Cut"), this,
+                        SLOT(cutAxisTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("copy")), tr("&Copy"), this,
+                        SLOT(copyAxisTitle()));
+    titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("delete")), tr("&Delete"), this,
+                        SLOT(removeAxisTitle()));
     titleMenu.addSeparator();
     switch (axis) {
     case QwtScaleDraw::BottomScale:
-        titleMenu.addAction(tr("&Properties..."), this, SIGNAL(xAxisTitleDblClicked()));
+        titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")),
+                            tr("&Properties..."), this, SIGNAL(xAxisTitleDblClicked()));
         break;
 
     case QwtScaleDraw::LeftScale:
-        titleMenu.addAction(tr("&Properties..."), this, SIGNAL(yAxisTitleDblClicked()));
+        titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")),
+                            tr("&Properties..."), this, SIGNAL(yAxisTitleDblClicked()));
         break;
 
     case QwtScaleDraw::TopScale:
-        titleMenu.addAction(tr("&Properties..."), this, SIGNAL(topAxisTitleDblClicked()));
+        titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")),
+                            tr("&Properties..."), this, SIGNAL(topAxisTitleDblClicked()));
         break;
 
     case QwtScaleDraw::RightScale:
-        titleMenu.addAction(tr("&Properties..."), this, SIGNAL(rightAxisTitleDblClicked()));
+        titleMenu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")),
+                            tr("&Properties..."), this, SIGNAL(rightAxisTitleDblClicked()));
         break;
     }
 
+    ModernUiTheme::upgradeMenuIcons(&titleMenu);
     titleMenu.exec(QCursor::pos());
 }
 
@@ -5058,12 +5183,15 @@ void Graph::showAxisContextMenu(int axis)
     selectedAxis = axis;
 
     QMenu menu(this);
-    menu.addAction(QPixmap(":/unzoom.xpm"), tr("&Rescale to show all"), this, SLOT(setAutoScale()),
-                   tr("Ctrl+Shift+R"));
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-auto")), tr("&Rescale to show all"),
+                   this, SLOT(setAutoScale()), tr("Ctrl+Shift+R"));
     menu.addSeparator();
-    menu.addAction(tr("&Hide axis"), this, SLOT(hideSelectedAxis()));
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("close")), tr("&Hide axis"), this,
+                   SLOT(hideSelectedAxis()));
 
-    QAction *gridsID = menu.addAction(tr("&Show grids"), this, SLOT(showGrids()));
+    QAction *gridsID = menu.addAction(IconLoader::duotoneIcon(QStringLiteral("axis-grid")),
+                                      tr("&Show grids"), this, SLOT(showGrids()));
+    gridsID->setCheckable(true);
     if (axis == QwtScaleDraw::LeftScale || axis == QwtScaleDraw::RightScale) {
         if (d_plot->grid()->yEnabled())
             gridsID->setChecked(true);
@@ -5073,8 +5201,11 @@ void Graph::showAxisContextMenu(int axis)
     }
 
     menu.addSeparator();
-    menu.addAction(tr("&Scale..."), this, SLOT(showScaleDialog()));
-    menu.addAction(tr("&Properties..."), this, SLOT(showAxisDialog()));
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("axis-scale")), tr("&Scale..."), this,
+                   SLOT(showScaleDialog()));
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("settings")), tr("&Properties..."), this,
+                   SLOT(showAxisDialog()));
+    ModernUiTheme::upgradeMenuIcons(&menu);
     menu.exec(QCursor::pos());
 }
 
@@ -5871,8 +6002,10 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
 bool Graph::validCurvesDataSize() const
 {
     if (!n_curves) {
-        QMessageBox::warning(const_cast<Graph *>(this), tr("Warning"),
-                             tr("There are no curves available on this plot!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(const_cast<Graph *>(this), tr("Warning"),
+                                 tr("There are no curves available on this plot!"));
+        }
         return false;
     } else {
         for (int i = 0; i < n_curves; i++) {
@@ -5883,9 +6016,11 @@ bool Graph::validCurvesDataSize() const
                     return true;
             }
         }
-        QMessageBox::warning(const_cast<Graph *>(this), tr("Error"),
-                             tr("There are no curves with more than two points on this plot. "
-                                "Operation aborted!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(const_cast<Graph *>(this), tr("Error"),
+                                 tr("There are no curves with more than two points on this plot. "
+                                    "Operation aborted!"));
+        }
         return false;
     }
 }
@@ -5964,32 +6099,178 @@ QString Graph::axisFormatInfo(int axis)
 
 void Graph::updateCurveNames(const QString &oldName, const QString &newName, bool updateTableName)
 {
+    if (oldName.isEmpty() || oldName == newName)
+        return;
+
+    struct ChangedCurveInfo
+    {
+        int curveIdx = -1;
+        QString prevTitle;
+        QString nextTitle;
+        QString oldShort;
+        QString newShort;
+        QString colLong;
+    };
+    QHash<int, ChangedCurveInfo> changedByOneBased;
+    QList<ChangedCurveInfo> changedList;
+
     // update plotted curves list
-    QList<int> keys = d_plot->curveKeys();
-    for (int i = 0; i < (int)keys.count(); i++) {
+    const QList<int> keys = d_plot->curveKeys();
+    for (int i = 0; i < keys.count(); i++) {
         QwtPlotItem *it = d_plot->plotItem(keys[i]);
-        if (!it)
-            continue;
-        if (it->rtti() != QwtPlotItem::Rtti_PlotCurve)
+        if (!it || it->rtti() != QwtPlotItem::Rtti_PlotCurve)
             continue;
 
         DataCurve *c = dynamic_cast<DataCurve *>(it);
-        if (c && c->plotAssociation().contains(oldName))
-            c->updateColumnNames(oldName, newName, updateTableName);
+        if (!c)
+            continue;
+
+        const QString prevTitle = c->title().text();
+        c->updateColumnNames(oldName, newName, updateTableName);
+        const QString nextTitle = c->title().text();
+        if (prevTitle != nextTitle) {
+            ChangedCurveInfo info;
+            info.curveIdx = curveIndex(c);
+            info.prevTitle = prevTitle;
+            info.nextTitle = nextTitle;
+            if (Table *tbl = c->table()) {
+                if (!updateTableName) {
+                    const QString tblPrefix = QString(tbl->name()) + QLatin1Char('_');
+                    if (prevTitle.startsWith(tblPrefix))
+                        info.oldShort = prevTitle.mid(tblPrefix.size());
+                    if (nextTitle.startsWith(tblPrefix))
+                        info.newShort = nextTitle.mid(tblPrefix.size());
+                }
+                const int yIdx = tbl->colIndex(nextTitle);
+                if (Column *yc = (yIdx >= 0 ? tbl->column(yIdx) : nullptr))
+                    info.colLong = yc->longName().trimmed();
+            }
+            changedList.append(info);
+            if (info.curveIdx >= 0)
+                changedByOneBased.insert(info.curveIdx + 1, info);
+        }
     }
 
-    if (legendMarkerID >= 0) { // update legend
-        Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
-        if (mrk) {
+    if (Legend *mrk = legend()) {
+        auto isIdentChar = [](QChar ch) -> bool {
+            return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+        };
+        auto replaceExactToken = [&](const QString &src, const QString &fromTok,
+                                     const QString &toTok) -> QString {
+            if (fromTok.isEmpty() || fromTok == toTok)
+                return src;
+            QString out;
+            out.reserve(src.size());
+            int pos = 0;
+            while (pos < src.size()) {
+                const int hit = src.indexOf(fromTok, pos);
+                if (hit < 0) {
+                    out.append(src.mid(pos));
+                    break;
+                }
+                const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
+                const int after = hit + fromTok.size();
+                const bool rightBoundary = (after >= src.size()) || !isIdentChar(src.at(after));
+                if (leftBoundary && rightBoundary) {
+                    out.append(src.mid(pos, hit - pos));
+                    out.append(toTok);
+                    pos = after;
+                } else {
+                    out.append(src.mid(pos, (hit - pos) + 1));
+                    pos = hit + 1;
+                }
+            }
+            return out;
+        };
+
+        const QString origText = mrk->text();
+        const bool trailingNewline = origText.endsWith(QLatin1Char('\n'));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            QStringList lst = mrk->text().split("\n", Qt::SkipEmptyParts);
+        QStringList lst = origText.split("\n", Qt::SkipEmptyParts);
 #else
-            QStringList lst = mrk->text().split("\n", QString::SkipEmptyParts);
+        QStringList lst = origText.split("\n", QString::SkipEmptyParts);
 #endif
-            lst.replaceInStrings(oldName, newName);
-            mrk->setText(lst.join("\n"));
-            d_plot->replot();
+        bool anyLegendChanged = false;
+        for (int li = 0; li < lst.size(); ++li) {
+            const QString line = lst[li];
+            int prefixEnd = -1;
+            int oneBased = -1;
+
+            const int cPos = line.indexOf(QStringLiteral("\\c{"));
+            if (cPos >= 0 && line.left(cPos).trimmed().isEmpty()) {
+                const int closeBrace = line.indexOf(QLatin1Char('}'), cPos + 3);
+                if (closeBrace > cPos + 3) {
+                    bool ok = false;
+                    const int parsed = line.mid(cPos + 3, closeBrace - (cPos + 3)).toInt(&ok);
+                    if (ok && parsed >= 1) {
+                        oneBased = parsed;
+                        prefixEnd = closeBrace + 1;
+                    }
+                }
+            } else {
+                const int lPos = line.indexOf(QStringLiteral("\\l("));
+                if (lPos >= 0 && line.left(lPos).trimmed().isEmpty()) {
+                    const int closeParen = line.indexOf(QLatin1Char(')'), lPos + 3);
+                    if (closeParen > lPos + 3) {
+                        bool ok = false;
+                        const int parsed = line.mid(lPos + 3, closeParen - (lPos + 3)).toInt(&ok);
+                        if (ok && parsed >= 1) {
+                            oneBased = parsed;
+                            prefixEnd = closeParen + 1;
+                        }
+                    }
+                }
+            }
+
+            if (oneBased >= 1 && prefixEnd > 0) {
+                if (!changedByOneBased.contains(oneBased))
+                    continue;
+
+                const ChangedCurveInfo &info = changedByOneBased.value(oneBased);
+                const QString cmdPrefix = line.left(prefixEnd);
+                const QString rest = line.mid(prefixEnd);
+                QString newRest = rest;
+
+                if (rest == info.prevTitle) {
+                    newRest = info.nextTitle;
+                } else if (!updateTableName && !info.oldShort.isEmpty() && rest == info.oldShort) {
+                    newRest = !info.colLong.isEmpty() ? info.colLong : info.newShort;
+                    if (info.curveIdx >= 0)
+                        d_last_auto_curve_labels[info.curveIdx] = newRest;
+                } else if (!updateTableName && !info.oldShort.isEmpty()
+                           && rest.trimmed() == info.oldShort) {
+                    const int idx = rest.indexOf(info.oldShort);
+                    const QString target = !info.colLong.isEmpty() ? info.colLong : info.newShort;
+                    newRest = rest.left(idx) + target + rest.mid(idx + info.oldShort.size());
+                } else {
+                    newRest = replaceExactToken(rest, info.prevTitle, info.nextTitle);
+                }
+
+                if (newRest != rest) {
+                    lst[li] = cmdPrefix + newRest;
+                    anyLegendChanged = true;
+                }
+            } else if (!changedList.isEmpty()) {
+                QString updated = line;
+                for (const ChangedCurveInfo &info : changedList)
+                    updated = replaceExactToken(updated, info.prevTitle, info.nextTitle);
+                if (updated != line) {
+                    lst[li] = updated;
+                    anyLegendChanged = true;
+                }
+            }
         }
+
+        if (anyLegendChanged) {
+            QString joined = lst.join("\n");
+            if (trailingNewline && !joined.isEmpty())
+                joined += QLatin1Char('\n');
+            mrk->setText(joined);
+        }
+        if (anyLegendChanged || !changedList.isEmpty())
+            d_plot->replot();
+    } else if (!changedList.isEmpty()) {
+        d_plot->replot();
     }
 }
 

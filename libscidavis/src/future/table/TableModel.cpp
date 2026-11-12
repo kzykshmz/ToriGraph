@@ -44,29 +44,34 @@ TableModel::TableModel(future::Table *table)
       d_read_only(false)
 #endif
 {
-    connect(d_table, SIGNAL(columnsAboutToBeInserted(int, QList<Column *>)), this,
-            SLOT(handleColumnsAboutToBeInserted(int, QList<Column *>)));
-    connect(d_table, SIGNAL(columnsInserted(int, int)), this,
-            SLOT(handleColumnsInserted(int, int)));
-    connect(d_table, SIGNAL(columnsAboutToBeRemoved(int, int)), this,
-            SLOT(handleColumnsAboutToBeRemoved(int, int)));
-    connect(d_table, SIGNAL(columnsRemoved(int, int)), this, SLOT(handleColumnsRemoved(int, int)));
-    connect(d_table, SIGNAL(rowsAboutToBeInserted(int, int)), this,
-            SLOT(handleRowsAboutToBeInserted(int, int)));
-    connect(d_table, SIGNAL(rowsInserted(int, int)), this, SLOT(handleRowsInserted(int, int)));
-    connect(d_table, SIGNAL(rowsAboutToBeRemoved(int, int)), this,
-            SLOT(handleRowsAboutToBeRemoved(int, int)));
-    connect(d_table, SIGNAL(rowsRemoved(int, int)), this, SLOT(handleRowsRemoved(int, int)));
-    connect(d_table, SIGNAL(dataChanged(int, int, int, int)), this,
-            SLOT(handleDataChanged(int, int, int, int)));
-    connect(d_table, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
-            SIGNAL(headerDataChanged(Qt::Orientation, int, int)));
+    if (d_table) {
+        connect(d_table, SIGNAL(columnsAboutToBeInserted(int, QList<Column *>)), this,
+                SLOT(handleColumnsAboutToBeInserted(int, QList<Column *>)));
+        connect(d_table, SIGNAL(columnsInserted(int, int)), this,
+                SLOT(handleColumnsInserted(int, int)));
+        connect(d_table, SIGNAL(columnsAboutToBeRemoved(int, int)), this,
+                SLOT(handleColumnsAboutToBeRemoved(int, int)));
+        connect(d_table, SIGNAL(columnsRemoved(int, int)), this,
+                SLOT(handleColumnsRemoved(int, int)));
+        connect(d_table, SIGNAL(rowsAboutToBeInserted(int, int)), this,
+                SLOT(handleRowsAboutToBeInserted(int, int)));
+        connect(d_table, SIGNAL(rowsInserted(int, int)), this, SLOT(handleRowsInserted(int, int)));
+        connect(d_table, SIGNAL(rowsAboutToBeRemoved(int, int)), this,
+                SLOT(handleRowsAboutToBeRemoved(int, int)));
+        connect(d_table, SIGNAL(rowsRemoved(int, int)), this, SLOT(handleRowsRemoved(int, int)));
+        connect(d_table, SIGNAL(dataChanged(int, int, int, int)), this,
+                SLOT(handleDataChanged(int, int, int, int)));
+        connect(d_table, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
+                SIGNAL(headerDataChanged(Qt::Orientation, int, int)));
+    }
 }
 
 TableModel::~TableModel() { }
 
 Qt::ItemFlags TableModel::flags(const QModelIndex &index) const
 {
+    if (!d_table)
+        return Qt::NoItemFlags;
 #ifdef LEGACY_CODE_0_2_x
     Qt::ItemFlags result = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
     if (!isReadOnly())
@@ -154,10 +159,12 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
         return false;
 
     int row = index.row();
+    Column *col_ptr = d_table->column(index.column());
+    if (!col_ptr)
+        return false;
 
     switch (role) {
     case Qt::EditRole: {
-        Column *col_ptr = d_table->column(index.column());
         // remark: the validity of the cell is determined by the input filter
         if (d_formula_mode)
             col_ptr->setFormula(row, value.toString());
@@ -166,11 +173,11 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
         return true;
     }
     case MaskingRole: {
-        d_table->column(index.column())->setMasked(row, value.toBool());
+        col_ptr->setMasked(row, value.toBool());
         return true;
     }
     case FormulaRole: {
-        d_table->column(index.column())->setFormula(row, value.toString());
+        col_ptr->setFormula(row, value.toString());
         return true;
     }
     }
@@ -178,8 +185,10 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
     return false;
 }
 
-QModelIndex TableModel::index(int row, int column, const QModelIndex &) const
+QModelIndex TableModel::index(int row, int column, const QModelIndex &parent) const
 {
+    if (parent.isValid() || !d_table || row < 0 || column < 0)
+        return QModelIndex();
     return createIndex(row, column);
 }
 

@@ -72,10 +72,12 @@ void SmoothFilter::init(int m)
 void SmoothFilter::setMethod(int m)
 {
     if (m < 1 || m > 6) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Unknown smooth filter. Valid values are: 1 - Savitzky-Golay, 2 - "
-                                 "FFT, 3 - Moving Window Average, 4 - LOWESS, 5 - Whittaker, "
-                                 "6 - Median."));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Unknown smooth filter. Valid values are: 1 - Savitzky-Golay, "
+                                     "2 - FFT, 3 - Moving Window Average, 4 - LOWESS, "
+                                     "5 - Whittaker, 6 - Median."));
         d_init_err = true;
         return;
     }
@@ -84,7 +86,12 @@ void SmoothFilter::setMethod(int m)
 
 void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<double>&  y)
 {
-    for (int i = 0; i < d_points; i++) {
+    const int nCopy = std::min({ d_points, static_cast<int>(d_x.size()),
+                                 static_cast<int>(d_y.size()), static_cast<int>(x.size()),
+                                 static_cast<int>(y.size()) });
+    if (nCopy <= 0)
+        return;
+    for (int i = 0; i < nCopy; i++) {
         x[i] = d_x[i];
         y[i] = d_y[i]; // filtering frequencies
     }
@@ -124,6 +131,10 @@ void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<doubl
 
 void SmoothFilter::smoothFFT(std::vector<double>& x, std::vector<double>&  y)
 {
+    if (d_x.size() < 2 || d_y.size() < 2 || x.size() < d_x.size() || y.size() < d_y.size()
+        || d_right_points <= 0 || x[1] == x[0])
+        return;
+
     gsl_fft_real_workspace *work = gsl_fft_real_workspace_alloc(d_x.size());
     gsl_fft_real_wavetable *real = gsl_fft_real_wavetable_alloc(d_x.size());
     gsl_fft_real_transform(y.data(), 1, d_y.size(), real, work); // FFT forward
@@ -146,34 +157,24 @@ void SmoothFilter::smoothFFT(std::vector<double>& x, std::vector<double>&  y)
 
 void SmoothFilter::smoothAverage(std::vector<double>&, std::vector<double>&  y)
 {
-    int p2 = d_right_points / 2;
-    double m = double(2 * p2 + 1);
-    double aux = 0.0;
-    std::vector<double> s(d_y.size());
+    const int n = static_cast<int>(y.size());
+    const int p2 = std::max(0, d_right_points / 2);
+    if (n <= 1 || p2 <= 0)
+        return;
 
-    s[0] = y[0];
-    for (int i = 1; i < p2; i++) {
-        aux = 0.0;
-        for (int j = -i; j <= i; j++)
-            aux += y[i + j];
-
-        s[i] = aux / (double)(2 * i + 1);
+    std::vector<double> s(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const int halfWin = std::min({ p2, i, n - 1 - i });
+        const int lo = (halfWin == p2) ? (i - p2) : std::max(0, i - std::max(halfWin, 0));
+        const int hi = (halfWin == p2) ? (i + p2) : std::min(n - 1, i + std::max(halfWin, 0));
+        // When window exceeds array length (2 * p2 >= n), use clamped signed bounds [max(0, i-p2)..min(n-1, i+p2)]
+        const int effLo = (2 * p2 >= n) ? std::max(0, i - p2) : lo;
+        const int effHi = (2 * p2 >= n) ? std::min(n - 1, i + p2) : hi;
+        double aux = 0.0;
+        for (int idx = effLo; idx <= effHi; ++idx)
+            aux += y[static_cast<size_t>(idx)];
+        s[static_cast<size_t>(i)] = aux / static_cast<double>(effHi - effLo + 1);
     }
-    for (unsigned i = p2; i < d_y.size() - p2; i++) {
-        aux = 0.0;
-        for (int j = -p2; j <= p2; j++)
-            aux += y[i + j];
-
-        s[i] = aux / m;
-    }
-    for (unsigned i = d_y.size() - p2; i < d_y.size() - 1; i++) {
-        aux = 0.0;
-        for (int j = (int)(i + 1 - d_y.size()); j < (int)(d_y.size() - i); j++)
-            aux += y[i + j];
-
-        s[i] = aux / (double)(2 * (d_y.size() - i - 1) + 1);
-    }
-    s.back() = y.back();
     y = std::move(s);
 }
 
@@ -264,28 +265,36 @@ void SmoothFilter::smoothSavGol(std::vector<double>&, std::vector<double>&  y_in
     int points = d_left_points + d_right_points + 1;
 
     if (points < d_polynom_order + 1) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("The polynomial order must be lower than the number of left "
-                                 "points plus the number of right points!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The polynomial order must be lower than the number of left "
+                                     "points plus the number of right points!"));
+        d_init_err = true;
         return;
     }
 
     if (y_inout.size() < unsigned(points)) {
-        QMessageBox::critical(
-                (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                tr("Tried to smooth over more points (left+right+1=%1) than given as input (%2).")
-                        .arg(points)
-                        .arg(y_inout.size()));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                    tr("Tried to smooth over more points (left+right+1=%1) than given as input (%2).")
+                            .arg(points)
+                            .arg(y_inout.size()));
+        d_init_err = true;
         return;
     }
 
     // Savitzky-Golay coefficient matrix, y' = H y
     gsl_matrix *h = gsl_matrix_alloc(points, points);
     if (int error = savitzkyGolayCoefficients(points, d_polynom_order, h)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Internal error in Savitzky-Golay algorithm.\n")
-                                      + gsl_strerror(error));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Internal error in Savitzky-Golay algorithm.\n")
+                                          + gsl_strerror(error));
         gsl_matrix_free(h);
+        d_init_err = true;
         return;
     }
 
@@ -347,9 +356,23 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
     int points = d_left_points + d_right_points + 1;
 
     if (points < d_polynom_order + 1) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("The polynomial order must be lower than the number of left "
-                                 "points plus the number of right points!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The polynomial order must be lower than the number of left "
+                                     "points plus the number of right points!"));
+        d_init_err = true;
+        return;
+    }
+
+    if (x_in.size() < unsigned(points) || y_inout.size() < unsigned(points)) {
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                    tr("Tried to smooth over more points (left+right+1=%1) than given as input (%2).")
+                            .arg(points)
+                            .arg(y_inout.size()));
+        d_init_err = true;
         return;
     }
 
@@ -387,20 +410,24 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
         gsl_vector_view y_slice = gsl_vector_view_array(y_inout.data() + offset, points);
 
         // compute QR decomposition of Vandermonde matrix
-        if (int error = gsl_linalg_QR_decomp(vandermonde, tau))
-            QMessageBox::critical(
-                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                    tr("Internal error in Savitzky-Golay algorithm: QR decomposition failed.\n")
-                            + gsl_strerror(error));
+        if (int error = gsl_linalg_QR_decomp(vandermonde, tau)) {
+            if (!isSilentOrNonInteractive())
+                QMessageBox::critical(
+                        (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                        tr("Internal error in Savitzky-Golay algorithm: QR decomposition failed.\n")
+                                + gsl_strerror(error));
+        }
         // least-squares-solve vandermonde*poly=y_slice using the QR decomposition now stored in
         // vandermonde and tau
         else if (int error =
-                         gsl_linalg_QR_lssolve(vandermonde, tau, &y_slice.vector, poly, residual))
-            QMessageBox::critical((ApplicationWindow *)parent(),
-                                  tr("ToriGraph") + " - " + tr("Error"),
-                                  tr("Internal error in Savitzky-Golay algorithm: least-squares "
-                                     "solution failed.\n")
-                                          + gsl_strerror(error));
+                         gsl_linalg_QR_lssolve(vandermonde, tau, &y_slice.vector, poly, residual)) {
+            if (!isSilentOrNonInteractive())
+                QMessageBox::critical((ApplicationWindow *)parent(),
+                                      tr("ToriGraph") + " - " + tr("Error"),
+                                      tr("Internal error in Savitzky-Golay algorithm: least-squares "
+                                         "solution failed.\n")
+                                              + gsl_strerror(error));
+        }
         else
             result[target_index] =
                     gsl_poly_eval(poly->data, d_polynom_order + 1, x_in[target_index]);
@@ -673,14 +700,18 @@ void SmoothFilter::setWhittakerLambda(double lambda)
 void SmoothFilter::setSmoothPoints(int points, int left_points)
 {
     if (points < 0 || left_points < 0) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("The number of points must be positive!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The number of points must be positive!"));
         d_init_err = true;
         return;
     } else if (d_method == SavitzkyGolay && d_polynom_order > points + left_points) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("The polynomial order must be lower than the number of left "
-                                 "points plus the number of right points!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The polynomial order must be lower than the number of left "
+                                     "points plus the number of right points!"));
         d_init_err = true;
         return;
     }
@@ -692,16 +723,20 @@ void SmoothFilter::setSmoothPoints(int points, int left_points)
 void SmoothFilter::setPolynomOrder(int order)
 {
     if (d_method != SavitzkyGolay) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Setting polynomial order is only available for Savitzky-Golay "
-                                 "smooth filters! Ignored option!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Setting polynomial order is only available for "
+                                     "Savitzky-Golay smooth filters! Ignored option!"));
         return;
     }
 
     if (order > d_right_points + d_left_points) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("The polynomial order must be lower than the number of left "
-                                 "points plus the number of right points!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The polynomial order must be lower than the number of left "
+                                     "points plus the number of right points!"));
         d_init_err = true;
         return;
     }

@@ -27,15 +27,108 @@
  *                                                                         *
  ***************************************************************************/
 #include "VectorCurve.h"
+#include "core/column/Column.h"
 
 #include <qwt_painter.h>
 #include <qwt_double_rect.h>
+#include <QDateTime>
 #include <QPainter>
 #include <QLocale>
+#include <cmath>
+
+namespace {
+
+int resolveVectorColIndex(Table *table, const QString &spec)
+{
+    if (!table || !table->d_future_table || spec.isEmpty())
+        return -1;
+
+    const int numCols = table->numCols();
+    const QString tblPrefix = QString(table->name()) + QLatin1Char('_');
+    if (spec.startsWith(tblPrefix)) {
+        const QString shortName = spec.mid(tblPrefix.size());
+        for (int i = 0; i < numCols; ++i) {
+            if (const Column *col = table->column(i)) {
+                if (col->name() == shortName)
+                    return i;
+            }
+        }
+    }
+
+    for (int i = 0; i < numCols; ++i) {
+        if (const Column *col = table->column(i)) {
+            if (col->name() == spec)
+                return i;
+        }
+    }
+
+    const int fallback = table->colIndex(spec);
+    if (fallback >= 0 && fallback < numCols && table->column(fallback) != nullptr)
+        return fallback;
+    return -1;
+}
+
+bool matchesVectorColName(Table *table, const QString &storedSpec, const QString &colName)
+{
+    if (storedSpec == colName)
+        return true;
+    if (!table || storedSpec.isEmpty() || colName.isEmpty())
+        return false;
+    const QString tblPrefix = QString(table->name()) + QLatin1Char('_');
+    if (colName.startsWith(tblPrefix) && storedSpec == colName.mid(tblPrefix.size()))
+        return true;
+    if (storedSpec.startsWith(tblPrefix) && storedSpec.mid(tblPrefix.size()) == colName)
+        return true;
+    return false;
+}
+
+bool extractFiniteVectorValue(const Column *col, int row, double &outVal)
+{
+    if (!col || row < 0 || row >= col->rowCount())
+        return false;
+    if (col->isInvalid(row) || col->isMasked(row))
+        return false;
+
+    switch (col->columnMode()) {
+    case SciDAVis::ColumnMode::Numeric: {
+        const double v = col->valueAt(row);
+        if (!std::isfinite(v))
+            return false;
+        outVal = v;
+        return true;
+    }
+    case SciDAVis::ColumnMode::Text: {
+        const QString txt = col->textAt(row).trimmed();
+        if (txt.isEmpty())
+            return false;
+        bool ok = false;
+        double v = QLocale().toDouble(txt, &ok);
+        if (!ok)
+            v = QLocale::c().toDouble(txt, &ok);
+        if (!ok || !std::isfinite(v))
+            return false;
+        outVal = v;
+        return true;
+    }
+    case SciDAVis::ColumnMode::DateTime:
+    case SciDAVis::ColumnMode::Month:
+    case SciDAVis::ColumnMode::Day: {
+        const QDateTime dt = col->dateTimeAt(row);
+        if (!dt.isValid())
+            return false;
+        outVal = dt.toMSecsSinceEpoch() / 86400000.0 + 2440587.5;
+        return std::isfinite(outVal);
+    }
+    default:
+        return false;
+    }
+}
+
+} // namespace
 
 VectorCurve::VectorCurve(VectorStyle style, Table *t, const QString &xColName, QString name,
                          const QString &endCol1, const QString &endCol2, int startRow, int endRow)
-    : DataCurve(t, xColName, name, startRow, endRow)
+    : DataCurve(t, xColName, name, startRow, endRow), vectorEnd(nullptr)
 {
     switch (style) {
     case XYXY:
@@ -57,13 +150,17 @@ VectorCurve::VectorCurve(VectorStyle style, Table *t, const QString &xColName, Q
 
 void VectorCurve::copy(const VectorCurve *vc)
 {
+    if (!vc || vc == this)
+        return;
+
     d_type = vc->type();
     filledArrow = vc->filledArrow;
     d_headLength = vc->d_headLength;
     d_headAngle = vc->d_headAngle;
     d_position = vc->d_position;
     pen = vc->pen;
-    vectorEnd = (QwtArrayData *)vc->vectorEnd->copy();
+    delete vectorEnd;
+    vectorEnd = vc->vectorEnd ? static_cast<QwtArrayData *>(vc->vectorEnd->copy()) : nullptr;
 }
 
 void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -77,6 +174,9 @@ void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
 
     QwtPlotCurve::draw(painter, xMap, yMap, from, to);
 
+    if (!vectorEnd || vectorEnd->size() == 0)
+        return;
+
     painter->save();
     painter->setPen(pen);
     drawVector(painter, xMap, yMap, from, to);
@@ -86,8 +186,17 @@ void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
 void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                              int from, int to) const
 {
+    if (!painter || !vectorEnd || dataSize() <= 0 || vectorEnd->size() == 0)
+        return;
+
+    const int maxIdx = qMin(dataSize(), static_cast<int>(vectorEnd->size())) - 1;
+    const int startIdx = qMax(0, from);
+    const int endIdx = (to < 0) ? maxIdx : qMin(to, maxIdx);
+    if (startIdx > endIdx)
+        return;
+
     if (d_type == Graph::VectXYAM) {
-        for (int i = from; i <= to; i++) {
+        for (int i = startIdx; i <= endIdx; i++) {
             const double x0 = x(i);
             const double y0 = y(i);
             const double angle = vectorEnd->x(i);
@@ -122,7 +231,7 @@ void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const Q
             drawArrowHead(painter, xs, ys, xe, ye);
         }
     } else {
-        for (int i = from; i <= to; i++) {
+        for (int i = startIdx; i <= endIdx; i++) {
             const int xs = xMap.transform(x(i));
             const int ys = yMap.transform(y(i));
             const int xe = xMap.transform(vectorEnd->x(i));
@@ -184,6 +293,7 @@ void VectorCurve::setVectorEnd(const QString &xColName, const QString &yColName)
 
 void VectorCurve::setVectorEnd(const QwtArray<double> &x, const QwtArray<double> &y)
 {
+    delete vectorEnd;
     vectorEnd = new QwtArrayData(x, y);
 }
 
@@ -229,12 +339,14 @@ void VectorCurve::fillArrowHead(bool fill)
 QwtDoubleRect VectorCurve::boundingRect() const
 {
     QwtDoubleRect rect = QwtPlotCurve::boundingRect();
+    if (!vectorEnd || dataSize() <= 0 || vectorEnd->size() == 0)
+        return rect;
 
     if (d_type == Graph::VectXYXY)
         rect |= vectorEnd->boundingRect();
     else {
-        int rows = abs(d_end_row - d_start_row) + 1;
-        for (int i = 0; i < rows; i++) {
+        const int count = qMin(dataSize(), static_cast<int>(vectorEnd->size()));
+        for (int i = 0; i < count; i++) {
             double x_i = x(i);
             double y_i = y(i);
             double angle = vectorEnd->x(i);
@@ -261,42 +373,47 @@ QwtDoubleRect VectorCurve::boundingRect() const
 void VectorCurve::updateColumnNames(const QString &oldName, const QString &newName,
                                     bool updateTableName)
 {
+    if (oldName.isEmpty() || oldName == newName)
+        return;
+
     if (updateTableName) {
-        QString s = title().text();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        QStringList lst = s.split("_", Qt::SkipEmptyParts);
-        if (lst[0] == oldName)
-            setTitle(newName + "_" + lst[1]);
+        if (d_table && d_table->name() != oldName && d_table->name() != newName)
+            return;
 
-        lst = d_x_column.split("_", Qt::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_x_column = newName + "_" + lst[1];
+        const QString prefix = oldName + QLatin1Char('_');
+        const QString curTitle = title().text();
+        if (curTitle.startsWith(prefix))
+            setTitle(newName + QLatin1Char('_') + curTitle.mid(prefix.size()));
 
-        lst = d_end_x_a.split("_", Qt::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_end_x_a = newName + "_" + lst[1];
+        if (d_x_column.startsWith(prefix))
+            d_x_column = newName + QLatin1Char('_') + d_x_column.mid(prefix.size());
 
-        lst = d_end_y_m.split("_", Qt::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_end_y_m = newName + "_" + lst[1];
-#else
-        QStringList lst = s.split("_", QString::SkipEmptyParts);
-        if (lst[0] == oldName)
-            setTitle(newName + "_" + lst[1]);
+        if (d_end_x_a.startsWith(prefix))
+            d_end_x_a = newName + QLatin1Char('_') + d_end_x_a.mid(prefix.size());
 
-        lst = d_x_column.split("_", QString::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_x_column = newName + "_" + lst[1];
-
-        lst = d_end_x_a.split("_", QString::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_end_x_a = newName + "_" + lst[1];
-
-        lst = d_end_y_m.split("_", QString::SkipEmptyParts);
-        if (lst[0] == oldName)
-            d_end_y_m = newName + "_" + lst[1];
-#endif
+        if (d_end_y_m.startsWith(prefix))
+            d_end_y_m = newName + QLatin1Char('_') + d_end_y_m.mid(prefix.size());
     } else {
+        if (d_table) {
+            const QString tblPrefix = QString(d_table->name()) + QLatin1Char('_');
+            if (!oldName.startsWith(tblPrefix) || !newName.startsWith(tblPrefix))
+                return;
+            const QString candOld = oldName.mid(tblPrefix.size());
+            const QString candNew = newName.mid(tblPrefix.size());
+            bool hasOld = false;
+            bool hasNew = false;
+            for (int i = 0; i < d_table->numCols(); ++i) {
+                if (const Column *col = d_table->column(i)) {
+                    if (col->name() == candOld)
+                        hasOld = true;
+                    if (col->name() == candNew)
+                        hasNew = true;
+                }
+            }
+            if (hasOld && !hasNew)
+                return;
+        }
+
         if (title().text() == oldName)
             setTitle(newName);
         if (d_x_column == oldName)
@@ -319,56 +436,103 @@ QString VectorCurve::plotAssociation()
 
 bool VectorCurve::updateData(Table *t, const QString &colName)
 {
-    if (d_table != t
-        || (colName != title().text() && d_x_column != colName && d_end_x_a != colName
-            && d_end_y_m != colName))
+    if (!t || d_table != t)
         return false;
 
-    return loadData();
+    if (!matchesVectorColName(t, title().text(), colName)
+        && !matchesVectorColName(t, d_x_column, colName)
+        && !matchesVectorColName(t, d_end_x_a, colName)
+        && !matchesVectorColName(t, d_end_y_m, colName))
+        return false;
+
+    loadData();
+    return true;
 }
 
 bool VectorCurve::loadData()
 {
-    int xcol = d_table->colIndex(d_x_column);
-    int ycol = d_table->colIndex(title().text());
-    int endXCol = d_table->colIndex(d_end_x_a);
-    int endYCol = d_table->colIndex(d_end_y_m);
-
-    int rows = abs(d_end_row - d_start_row) + 1;
-    QVector<double> X(rows), Y(rows), X2(rows), Y2(rows);
-    int size = 0;
-    for (int i = d_start_row; i <= d_end_row; i++) {
-        QString xval = d_table->text(i, xcol);
-        QString yval = d_table->text(i, ycol);
-        QString xend = d_table->text(i, endXCol);
-        QString yend = d_table->text(i, endYCol);
-        if (!xval.isEmpty() && !yval.isEmpty() && !xend.isEmpty() && !yend.isEmpty()) {
-            bool valid_data = true;
-            X[size] = QLocale().toDouble(xval, &valid_data);
-            if (!valid_data)
-                continue;
-            Y[size] = QLocale().toDouble(yval, &valid_data);
-            if (!valid_data)
-                continue;
-            X2[size] = QLocale().toDouble(xend, &valid_data);
-            if (!valid_data)
-                continue;
-            Y2[size] = QLocale().toDouble(yend, &valid_data);
-            if (valid_data)
-                size++;
+    auto clearInvalidData = [this]() {
+        delete vectorEnd;
+        vectorEnd = nullptr;
+        const double dummy = 0.0;
+        setData(&dummy, &dummy, 0);
+        foreach (DataCurve *c, d_error_bars) {
+            if (c)
+                c->setData(&dummy, &dummy, 0);
         }
+    };
+
+    if (!d_table || !d_table->d_future_table) {
+        clearInvalidData();
+        return false;
     }
 
-    if (!size)
+    const int xcol = resolveVectorColIndex(d_table, d_x_column);
+    const int ycol = resolveVectorColIndex(d_table, title().text());
+    const int endXCol = resolveVectorColIndex(d_table, d_end_x_a);
+    const int endYCol = resolveVectorColIndex(d_table, d_end_y_m);
+    if (xcol < 0 || ycol < 0 || endXCol < 0 || endYCol < 0) {
+        clearInvalidData();
         return false;
+    }
+
+    const Column *cX = d_table->column(xcol);
+    const Column *cY = d_table->column(ycol);
+    const Column *cEndX = d_table->column(endXCol);
+    const Column *cEndY = d_table->column(endYCol);
+    if (!cX || !cY || !cEndX || !cEndY) {
+        clearInvalidData();
+        return false;
+    }
+
+    const int totalRows = d_table->numRows();
+    if (totalRows <= 0) {
+        clearInvalidData();
+        return false;
+    }
+
+    const int startRow = qMax(0, d_start_row);
+    const int endRow = (d_end_row < 0) ? (totalRows - 1) : qMin(d_end_row, totalRows - 1);
+    if (startRow > endRow) {
+        clearInvalidData();
+        return false;
+    }
+
+    const int maxRows = endRow - startRow + 1;
+    QVector<double> X(maxRows), Y(maxRows), X2(maxRows), Y2(maxRows);
+    int size = 0;
+    for (int i = startRow; i <= endRow; ++i) {
+        double vx = 0.0, vy = 0.0, vx2 = 0.0, vy2 = 0.0;
+        if (!extractFiniteVectorValue(cX, i, vx))
+            continue;
+        if (!extractFiniteVectorValue(cY, i, vy))
+            continue;
+        if (!extractFiniteVectorValue(cEndX, i, vx2))
+            continue;
+        if (!extractFiniteVectorValue(cEndY, i, vy2))
+            continue;
+
+        X[size] = vx;
+        Y[size] = vy;
+        X2[size] = vx2;
+        Y2[size] = vy2;
+        ++size;
+    }
+
+    if (size <= 0) {
+        clearInvalidData();
+        return false;
+    }
 
     X.resize(size);
     Y.resize(size);
     X2.resize(size);
     Y2.resize(size);
     setData(X.data(), Y.data(), size);
-    foreach (DataCurve *c, d_error_bars)
-        c->setData(X.data(), Y.data(), size);
+    foreach (DataCurve *c, d_error_bars) {
+        if (c)
+            c->setData(X.data(), Y.data(), size);
+    }
     setVectorEnd(X2, Y2);
 
     return true;
@@ -377,4 +541,5 @@ bool VectorCurve::loadData()
 VectorCurve::~VectorCurve()
 {
     delete vectorEnd;
+    vectorEnd = nullptr;
 }

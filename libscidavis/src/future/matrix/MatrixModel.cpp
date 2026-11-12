@@ -36,29 +36,34 @@
 
 MatrixModel::MatrixModel(future::Matrix *matrix) : QAbstractItemModel(0), d_matrix(matrix)
 {
-    connect(d_matrix, SIGNAL(columnsAboutToBeInserted(int, int)), this,
-            SLOT(handleColumnsAboutToBeInserted(int, int)));
-    connect(d_matrix, SIGNAL(columnsInserted(int, int)), this,
-            SLOT(handleColumnsInserted(int, int)));
-    connect(d_matrix, SIGNAL(columnsAboutToBeRemoved(int, int)), this,
-            SLOT(handleColumnsAboutToBeRemoved(int, int)));
-    connect(d_matrix, SIGNAL(columnsRemoved(int, int)), this, SLOT(handleColumnsRemoved(int, int)));
-    connect(d_matrix, SIGNAL(rowsAboutToBeInserted(int, int)), this,
-            SLOT(handleRowsAboutToBeInserted(int, int)));
-    connect(d_matrix, SIGNAL(rowsInserted(int, int)), this, SLOT(handleRowsInserted(int, int)));
-    connect(d_matrix, SIGNAL(rowsAboutToBeRemoved(int, int)), this,
-            SLOT(handleRowsAboutToBeRemoved(int, int)));
-    connect(d_matrix, SIGNAL(rowsRemoved(int, int)), this, SLOT(handleRowsRemoved(int, int)));
-    connect(d_matrix, SIGNAL(dataChanged(int, int, int, int)), this,
-            SLOT(handleDataChanged(int, int, int, int)));
-    connect(d_matrix, SIGNAL(coordinatesChanged()), this, SLOT(handleCoordinatesChanged()));
-    connect(d_matrix, SIGNAL(formatChanged()), this, SLOT(handleFormatChanged()));
+    if (d_matrix) {
+        connect(d_matrix, SIGNAL(columnsAboutToBeInserted(int, int)), this,
+                SLOT(handleColumnsAboutToBeInserted(int, int)));
+        connect(d_matrix, SIGNAL(columnsInserted(int, int)), this,
+                SLOT(handleColumnsInserted(int, int)));
+        connect(d_matrix, SIGNAL(columnsAboutToBeRemoved(int, int)), this,
+                SLOT(handleColumnsAboutToBeRemoved(int, int)));
+        connect(d_matrix, SIGNAL(columnsRemoved(int, int)), this,
+                SLOT(handleColumnsRemoved(int, int)));
+        connect(d_matrix, SIGNAL(rowsAboutToBeInserted(int, int)), this,
+                SLOT(handleRowsAboutToBeInserted(int, int)));
+        connect(d_matrix, SIGNAL(rowsInserted(int, int)), this, SLOT(handleRowsInserted(int, int)));
+        connect(d_matrix, SIGNAL(rowsAboutToBeRemoved(int, int)), this,
+                SLOT(handleRowsAboutToBeRemoved(int, int)));
+        connect(d_matrix, SIGNAL(rowsRemoved(int, int)), this, SLOT(handleRowsRemoved(int, int)));
+        connect(d_matrix, SIGNAL(dataChanged(int, int, int, int)), this,
+                SLOT(handleDataChanged(int, int, int, int)));
+        connect(d_matrix, SIGNAL(coordinatesChanged()), this, SLOT(handleCoordinatesChanged()));
+        connect(d_matrix, SIGNAL(formatChanged()), this, SLOT(handleFormatChanged()));
+    }
 }
 
 MatrixModel::~MatrixModel() { }
 
 Qt::ItemFlags MatrixModel::flags(const QModelIndex &index) const
 {
+    if (!d_matrix)
+        return Qt::NoItemFlags;
     if (index.isValid())
         return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
     else
@@ -67,11 +72,13 @@ Qt::ItemFlags MatrixModel::flags(const QModelIndex &index) const
 
 QVariant MatrixModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid())
+    if (!index.isValid() || !d_matrix)
         return QVariant();
 
     int row = index.row();
     int col = index.column();
+    if (row < 0 || row >= d_matrix->rowCount() || col < 0 || col >= d_matrix->columnCount())
+        return QVariant();
 
     switch (role) {
     case Qt::ToolTipRole:
@@ -88,6 +95,8 @@ QVariant MatrixModel::data(const QModelIndex &index, int role) const
 
 QVariant MatrixModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
+    if (!d_matrix || section < 0)
+        return QVariant();
     QString result;
     switch (orientation) {
     case Qt::Horizontal:
@@ -133,19 +142,21 @@ QVariant MatrixModel::headerData(int section, Qt::Orientation orientation, int r
 
 int MatrixModel::rowCount(const QModelIndex &parent) const
 {
-    Q_UNUSED(parent)
+    if (parent.isValid() || !d_matrix)
+        return 0;
     return d_matrix->rowCount();
 }
 
 int MatrixModel::columnCount(const QModelIndex &parent) const
 {
-    Q_UNUSED(parent)
+    if (parent.isValid() || !d_matrix)
+        return 0;
     return d_matrix->columnCount();
 }
 
 bool MatrixModel::setData(const QModelIndex &index, const QVariant &value, int role)
 {
-    if (!index.isValid())
+    if (!index.isValid() || !d_matrix || !d_matrix->view())
         return false;
 
     int row = index.row();
@@ -160,7 +171,8 @@ bool MatrixModel::setData(const QModelIndex &index, const QVariant &value, int r
 
 QModelIndex MatrixModel::index(int row, int column, const QModelIndex &parent) const
 {
-    Q_UNUSED(parent)
+    if (parent.isValid() || !d_matrix || row < 0 || column < 0)
+        return QModelIndex();
     return createIndex(row, column);
 }
 
@@ -225,12 +237,19 @@ void MatrixModel::handleDataChanged(int top, int left, int bottom, int right)
 
 void MatrixModel::handleCoordinatesChanged()
 {
-    emit headerDataChanged(Qt::Horizontal, 0, columnCount() - 1);
-    emit headerDataChanged(Qt::Vertical, 0, rowCount() - 1);
+    if (!d_matrix)
+        return;
+    if (columnCount() > 0)
+        emit headerDataChanged(Qt::Horizontal, 0, columnCount() - 1);
+    if (rowCount() > 0)
+        emit headerDataChanged(Qt::Vertical, 0, rowCount() - 1);
 }
 
 void MatrixModel::handleFormatChanged()
 {
+    if (!d_matrix)
+        return;
     handleCoordinatesChanged();
-    handleDataChanged(0, 0, rowCount() - 1, columnCount() - 1);
+    if (rowCount() > 0 && columnCount() > 0)
+        handleDataChanged(0, 0, rowCount() - 1, columnCount() - 1);
 }

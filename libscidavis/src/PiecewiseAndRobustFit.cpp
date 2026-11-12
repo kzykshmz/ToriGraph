@@ -1948,13 +1948,14 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
 
         RawLogRow rr;
         rr.xRow = std::move(xr);
+        rr.yStr = yTxt;
         double yNumVal = 0.0;
-        if (readNumericCell(r, yCol, yNumVal)) {
+        if (yColumnPtr->columnMode() == SciDAVis::ColumnMode::Numeric
+            && readNumericCell(r, yCol, yNumVal)) {
             rr.yIsNum = true;
             rr.yNum = yNumVal;
         } else {
             rr.yIsNum = false;
-            rr.yStr = yTxt;
         }
         rawRows.push_back(std::move(rr));
     }
@@ -1962,7 +1963,7 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
     if (static_cast<int>(rawRows.size()) < p + 1)
         return res;
 
-    bool allNumericY = true;
+    bool allNumericY = (yColumnPtr->columnMode() == SciDAVis::ColumnMode::Numeric);
     for (const auto &rr : rawRows) {
         if (!rr.yIsNum) {
             allNumericY = false;
@@ -2002,37 +2003,46 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                 yBin[i] = (std::fabs(rawRows[i].yNum - hiVal) <= 1e-9) ? 1 : 0;
         }
     } else {
-        QStringList distinctLabels;
+        auto isPos = [](const QString &low) -> bool {
+            return low == QStringLiteral("1") || low == QStringLiteral("true")
+                    || low == QStringLiteral("yes") || low == QStringLiteral("pos")
+                    || low == QStringLiteral("positive") || low == QStringLiteral("case")
+                    || low == QStringLiteral("event") || low == QStringLiteral("disease")
+                    || low == QStringLiteral("treated") || low == QStringLiteral("pass")
+                    || low == QStringLiteral("\u967d\u6027");
+        };
+        auto isNeg = [](const QString &low) -> bool {
+            return low == QStringLiteral("0") || low == QStringLiteral("false")
+                    || low == QStringLiteral("no") || low == QStringLiteral("none")
+                    || low == QStringLiteral("neg") || low == QStringLiteral("negative")
+                    || low == QStringLiteral("control") || low == QStringLiteral("healthy")
+                    || low == QStringLiteral("normal") || low == QStringLiteral("\u9670\u6027");
+        };
+        QStringList levels;
         for (const auto &rr : rawRows) {
-            const QString key = rr.yIsNum ? QString::number(rr.yNum) : rr.yStr;
-            bool seen = false;
-            for (const QString &dl : distinctLabels) {
-                if (dl.compare(key, Qt::CaseInsensitive) == 0) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) {
-                distinctLabels << key;
-                if (distinctLabels.size() > 2)
+            if (!levels.contains(rr.yStr))
+                levels.append(rr.yStr);
+        }
+        if (levels.size() == 2) {
+            const QString &L0 = levels[0];
+            const QString &L1 = levels[1];
+            const QString low0 = L0.toLower();
+            const QString low1 = L1.toLower();
+            const bool p0 = isPos(low0), p1 = isPos(low1);
+            const bool n0 = isNeg(low0), n1 = isNeg(low1);
+            const QString posLevel = ((p0 && !p1) || (n1 && !n0)) ? L0 : L1;
+            for (size_t i = 0; i < rawRows.size(); ++i)
+                yBin[i] = (rawRows[i].yStr == posLevel) ? 1 : 0;
+        } else if (levels.size() > 2) {
+            for (const auto &rr : rawRows) {
+                const QString low = rr.yStr.toLower();
+                if (isPos(low) == isNeg(low))
                     return res;
             }
-        }
-        if (distinctLabels.size() != 2)
+            for (size_t i = 0; i < rawRows.size(); ++i)
+                yBin[i] = isPos(rawRows[i].yStr.toLower()) ? 1 : 0;
+        } else {
             return res;
-        distinctLabels.sort(Qt::CaseInsensitive);
-        QString posLabel = distinctLabels[1];
-        auto isPositiveToken = [](const QString &s) {
-            return s.compare(QStringLiteral("1"), Qt::CaseInsensitive) == 0
-                    || s.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0
-                    || s.compare(QStringLiteral("yes"), Qt::CaseInsensitive) == 0;
-        };
-        if (isPositiveToken(distinctLabels[0]) && !isPositiveToken(distinctLabels[1]))
-            posLabel = distinctLabels[0];
-
-        for (size_t i = 0; i < rawRows.size(); ++i) {
-            const QString key = rawRows[i].yIsNum ? QString::number(rawRows[i].yNum) : rawRows[i].yStr;
-            yBin[i] = (key.compare(posLabel, Qt::CaseInsensitive) == 0) ? 1 : 0;
         }
     }
 

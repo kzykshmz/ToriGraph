@@ -28,6 +28,8 @@
  ***************************************************************************/
 #include "ApplicationWindow.h"
 #include "AxesDialog.h"
+#include "IconLoader.h"
+#include "ModernUiTheme.h"
 #include "TextDialog.h"
 #include "Grid.h"
 #include "Plot.h"
@@ -75,10 +77,6 @@ AxesDialog::AxesDialog()
       xTopLabelsRotation(0),
       d_graph(nullptr)
 {
-    QPixmap image4(":/image4.xpm");
-    QPixmap image5(":/image5.xpm");
-    QPixmap image6(":/image6.xpm");
-    QPixmap image7(":/image7.xpm");
     setWindowTitle(tr("General Plot Options"));
 
     initScalesPage();
@@ -114,6 +112,8 @@ AxesDialog::AxesDialog()
     connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(updatePlot()));
     connect(&generalDialog, SIGNAL(currentChanged(int)), this, SLOT(pageChanged(int)));
+
+    ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
 void AxesDialog::initScalesPage()
@@ -186,17 +186,14 @@ void AxesDialog::initScalesPage()
 
     rightLayout->setRowStretch(3, 1);
 
-    QPixmap image0(":/bottom_scl.xpm");
-    QPixmap image1(":/left_scl.xpm");
-    QPixmap image2(":/top_scl.xpm");
-    QPixmap image3(":/right_scl.xpm");
+    const QIcon scaleIcon = IconLoader::duotoneIcon(QStringLiteral("axis-scale"));
 
     axesList = new QListWidget();
-    axesList->addItem(new QListWidgetItem(image0, tr("Bottom")));
-    axesList->addItem(new QListWidgetItem(image1, tr("Left")));
-    axesList->addItem(new QListWidgetItem(image2, tr("Top")));
-    axesList->addItem(new QListWidgetItem(image3, tr("Right")));
-    axesList->setIconSize(image0.size());
+    axesList->addItem(new QListWidgetItem(scaleIcon, tr("Bottom")));
+    axesList->addItem(new QListWidgetItem(scaleIcon, tr("Left")));
+    axesList->addItem(new QListWidgetItem(scaleIcon, tr("Top")));
+    axesList->addItem(new QListWidgetItem(scaleIcon, tr("Right")));
+    axesList->setIconSize(QSize(24, 24));
     axesList->setCurrentRow(-1);
 
     // calculate a sensible width for the items list
@@ -317,13 +314,12 @@ void AxesDialog::initGridPage()
     rightLayout->setRowStretch(6, 1);
     rightLayout->setColumnStretch(4, 1);
 
-    QPixmap image2(":/image2.xpm");
-    QPixmap image3(":/image3.xpm");
+    const QIcon gridIcon = IconLoader::duotoneIcon(QStringLiteral("axis-grid"));
 
     axesGridList = new QListWidget();
-    axesGridList->addItem(new QListWidgetItem(image3, tr("Horizontal")));
-    axesGridList->addItem(new QListWidgetItem(image2, tr("Vertical")));
-    axesGridList->setIconSize(image3.size());
+    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Horizontal")));
+    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Vertical")));
+    axesGridList->setIconSize(QSize(24, 24));
     axesGridList->setCurrentRow(-1);
 
     // calculate a sensible width for the items list
@@ -367,10 +363,7 @@ void AxesDialog::initGridPage()
 void AxesDialog::initAxesPage()
 {
     // axes page
-    QPixmap image4(":/image4.xpm");
-    QPixmap image5(":/image5.xpm");
-    QPixmap image6(":/image6.xpm");
-    QPixmap image7(":/image7.xpm");
+    const QIcon axisItemIcon = IconLoader::duotoneIcon(QStringLiteral("axis-ticks-in"));
 
     axesPage = new QWidget();
 
@@ -385,12 +378,11 @@ void AxesDialog::initAxesPage()
     boxAxisType->addItem(tr("Column Headings"), (int)Graph::AxisType::ColHeader);
 
     axesTitlesList = new QListWidget();
-    axesTitlesList->addItem(new QListWidgetItem(image4, tr("Bottom")));
-    axesTitlesList->addItem(new QListWidgetItem(image5, tr("Left")));
-    axesTitlesList->addItem(new QListWidgetItem(image6, tr("Top")));
-    axesTitlesList->addItem(new QListWidgetItem(image7, tr("Right")));
-    axesTitlesList->setIconSize(image6.size());
-    axesTitlesList->setMaximumWidth((int)(image6.width() * 1.5));
+    axesTitlesList->addItem(new QListWidgetItem(axisItemIcon, tr("Bottom")));
+    axesTitlesList->addItem(new QListWidgetItem(axisItemIcon, tr("Left")));
+    axesTitlesList->addItem(new QListWidgetItem(axisItemIcon, tr("Top")));
+    axesTitlesList->addItem(new QListWidgetItem(axisItemIcon, tr("Right")));
+    axesTitlesList->setIconSize(QSize(24, 24));
     axesTitlesList->setSizePolicy(QSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding));
     axesTitlesList->setCurrentRow(-1);
 
@@ -797,17 +789,14 @@ void AxesDialog::initAxisBreakPage()
 {
     axisBreakPage = new QWidget();
 
-    QPixmap image0(":/bottom_scl.xpm");
-    QPixmap image1(":/left_scl.xpm");
-    QPixmap image2(":/top_scl.xpm");
-    QPixmap image3(":/right_scl.xpm");
+    const QIcon scaleIcon = IconLoader::duotoneIcon(QStringLiteral("axis-scale"));
 
     axisBreakAxesList = new QListWidget();
-    axisBreakAxesList->addItem(new QListWidgetItem(image0, tr("Bottom")));
-    axisBreakAxesList->addItem(new QListWidgetItem(image1, tr("Left")));
-    axisBreakAxesList->addItem(new QListWidgetItem(image2, tr("Top")));
-    axisBreakAxesList->addItem(new QListWidgetItem(image3, tr("Right")));
-    axisBreakAxesList->setIconSize(image0.size());
+    axisBreakAxesList->addItem(new QListWidgetItem(scaleIcon, tr("Bottom")));
+    axisBreakAxesList->addItem(new QListWidgetItem(scaleIcon, tr("Left")));
+    axisBreakAxesList->addItem(new QListWidgetItem(scaleIcon, tr("Top")));
+    axisBreakAxesList->addItem(new QListWidgetItem(scaleIcon, tr("Right")));
+    axisBreakAxesList->setIconSize(QSize(24, 24));
     axisBreakAxesList->setCurrentRow(-1);
 
     QFontMetrics fm(axisBreakAxesList->font());

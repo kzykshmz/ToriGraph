@@ -40,6 +40,11 @@
 #include <QDockWidget>
 #include <QLocale>
 #include <QDate>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QTemporaryFile>
+#include <memory>
 #include "Matrix.h"
 #include "ColorButton.h"
 #include "MultiLayer.h"
@@ -82,27 +87,82 @@ QString posixTimeToString(time_t pt)
 }
 
 ImportOPJ::ImportOPJ(ApplicationWindow *app, const QString &filename, const QString &codec)
-    : mw(app), d_codec(nullptr)
+    : parse_error(-1), xoffset(0), mw(app), d_codec(nullptr)
 {
     setCodec(codec);
-    xoffset = 0;
     try {
-        mw->setStatusBarText(QObject::tr("Import start ..."));
-        OriginFile opj((const char *)filename.toLocal8Bit());
-        parse_error = opj.parse();
-        mw->setStatusBarText(
-                QObject::tr("... file parsed. Starting conversion to SciDAVis ..."));
-        importTables(opj);
-        importGraphs(opj);
-        importNotes(opj);
-        mw->setStatusBarText(QString());
-        if (filename.endsWith(".opj", Qt::CaseInsensitive))
-            createProjectTree(opj);
-        mw->showResults(opj.resultsLogString().c_str(), mw->logWindow.isVisible());
+        if (mw)
+            mw->setStatusBarText(QObject::tr("Import start ..."));
+        QByteArray localPath = filename.toLocal8Bit();
+        std::unique_ptr<QTemporaryFile> unicodeStaging;
+        if (QString::fromLocal8Bit(localPath) != filename) {
+            QFile srcFile(filename);
+            if (srcFile.open(QIODevice::ReadOnly)) {
+                const QString suffix = QFileInfo(filename).suffix();
+                unicodeStaging.reset(new QTemporaryFile(
+                        QDir::tempPath() + QLatin1String("/torigraph_opj_XXXXXX.")
+                        + (suffix.isEmpty() ? QStringLiteral("opj") : suffix)));
+                if (unicodeStaging->open()) {
+                    char copyBuf[16384];
+                    qint64 nRead = 0;
+                    while ((nRead = srcFile.read(copyBuf, sizeof(copyBuf))) > 0)
+                        unicodeStaging->write(copyBuf, nRead);
+                    unicodeStaging->flush();
+                    unicodeStaging->close();
+                    localPath = unicodeStaging->fileName().toLocal8Bit();
+                } else {
+                    unicodeStaging.reset();
+                }
+            }
+        }
+        OriginFile opj(localPath.constData());
+        const bool parsedOk = opj.parse();
+        if (!parsedOk) {
+            parse_error = -1;
+            if (mw)
+                mw->setStatusBarText(QString());
+            QApplication::restoreOverrideCursor();
+            if (!ApplicationWindow::isNonInteractiveContext(mw)) {
+                QMessageBox::critical(mw, QObject::tr("Origin Project Import Error"),
+                                      QObject::tr("Failed to parse Origin project file."));
+            }
+            return;
+        }
+        parse_error = 0;
+        if (mw) {
+            mw->setStatusBarText(
+                    QObject::tr("... file parsed. Starting conversion to SciDAVis ..."));
+            importTables(opj);
+            importGraphs(opj);
+            importNotes(opj);
+            mw->setStatusBarText(QString());
+            if (filename.endsWith(".opj", Qt::CaseInsensitive))
+                createProjectTree(opj);
+            mw->showResults(opj.resultsLogString().c_str(), mw->logWindow.isVisible());
+        }
     } catch (const std::logic_error &er) {
+        parse_error = -2;
+        if (mw)
+            mw->setStatusBarText(QString());
         QApplication::restoreOverrideCursor();
-        QMessageBox::critical(mw, QObject::tr("Origin Project Import Error"),
-                              QObject::tr(er.what()));
+        if (!ApplicationWindow::isNonInteractiveContext(mw)) {
+            QMessageBox::critical(mw, QObject::tr("Origin Project Import Error"),
+                                  QObject::tr(er.what()));
+        }
+    } catch (const std::exception &er) {
+        parse_error = -2;
+        if (mw)
+            mw->setStatusBarText(QString());
+        QApplication::restoreOverrideCursor();
+        if (!ApplicationWindow::isNonInteractiveContext(mw)) {
+            QMessageBox::critical(mw, QObject::tr("Origin Project Import Error"),
+                                  QString::fromUtf8(er.what()));
+        }
+    } catch (...) {
+        parse_error = -2;
+        if (mw)
+            mw->setStatusBarText(QString());
+        QApplication::restoreOverrideCursor();
     }
 }
 

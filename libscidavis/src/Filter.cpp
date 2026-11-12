@@ -64,20 +64,33 @@ void Filter::init()
     d_points = 100;
     d_max_iterations = 1000;
     d_curve = 0;
-    d_prec = ((ApplicationWindow *)parent())->fit_output_precision;
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    d_prec = app ? app->fit_output_precision : 13;
     d_init_err = false;
     d_sort_data = false;
     d_min_points = 2;
     d_explanation = objectName();
     d_graph = 0;
     d_table = 0;
+    d_silent = false;
+}
+
+bool Filter::isSilentOrNonInteractive() const
+{
+    if (d_silent)
+        return true;
+    if (const ApplicationWindow *app = qobject_cast<const ApplicationWindow *>(parent()))
+        return app->isHeadlessMode() || app->isOleEmbeddedMode() || app->batchMode();
+    return qApp && qApp->property("torigraph_noninteractive").toBool();
 }
 
 void Filter::setInterval(double from, double to)
 {
     if (!d_curve) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Please assign a curve first!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Please assign a curve first!"));
         return;
     }
     setDataFromCurve(d_curve->title().text(), from, to);
@@ -89,6 +102,10 @@ void Filter::setDataCurve(const int curve, double start, double end)
         qSwap(start, end);
 
     d_init_err = false;
+    if (!d_graph) {
+        d_init_err = true;
+        return;
+    }
     d_curve = d_graph->curve(curve);
     if ((nullptr == d_curve)|| (d_curve->rtti() != QwtPlotItem::Rtti_PlotCurve)) {
         d_init_err = true;
@@ -97,7 +114,7 @@ void Filter::setDataCurve(const int curve, double start, double end)
     QList<Graph::AxisType> axType = d_graph->axesType();
     for (const auto &type : axType)
         if (Graph::AxisType::Numeric != type) {
-            if (d_silent)
+            if (isSilentOrNonInteractive())
                 break;
             auto ret = QMessageBox::warning((ApplicationWindow *)parent(),
                                             tr("ToriGraph") + " - " + tr("Warning"),
@@ -145,9 +162,11 @@ void Filter::setDataCurve(const int curve, double start, double end)
         d_y.resize(d_indices.size());
     }
     catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!\n")
-                                      + tr("Allocator returned: ") + e.what());
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!\n")
+                                          + tr("Allocator returned: ") + e.what());
         d_init_err = true;
         return;
     }
@@ -180,8 +199,9 @@ bool Filter::isDataAcceptable() const
 {
 
     if (d_x.size() < unsigned(d_min_points)) {
-        if (!d_silent)
-            QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
                                   tr("You need at least %1 points in order to perform this operation!")
                                           .arg(d_min_points));
         return false;
@@ -192,8 +212,9 @@ bool Filter::isDataAcceptable() const
 int Filter::curveIndex(const QString &curveTitle, Graph *const g)
 {
     if (curveTitle.isEmpty()) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Filter Error"),
-                              tr("Please enter a valid curve name!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Filter Error"),
+                                  tr("Please enter a valid curve name!"));
         d_init_err = true;
         return -1;
     }
@@ -219,7 +240,7 @@ bool Filter::setDataFromCurve(const QString &curveTitle, Graph *const g)
 
     d_graph->range(index, d_from, d_to);
     setDataCurve(index, d_from, d_to);
-    return true;
+    return !d_init_err;
 }
 
 bool Filter::setDataFromCurve(const QString &curveTitle, const double from, const double to,
@@ -232,7 +253,7 @@ bool Filter::setDataFromCurve(const QString &curveTitle, const double from, cons
     }
 
     setDataCurve(index, from, to);
-    return true;
+    return !d_init_err;
 }
 
 void Filter::setColor(const QString &colorName)
@@ -243,10 +264,11 @@ void Filter::setColor(const QString &colorName)
     else if (colorName == "darkYellow")
         c = QColor(Qt::darkYellow);
     if (!ColorButton::isValidColor(c)) {
-        QMessageBox::critical(
-                (ApplicationWindow *)parent(), tr("Color Name Error"),
-                tr("The color name '%1' is not valid, a default color (red) will be used instead!")
-                        .arg(colorName));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("Color Name Error"),
+                    tr("The color name '%1' is not valid, a default color (red) will be used instead!")
+                            .arg(colorName));
         d_curveColor = ColorButton::color(1);
         return;
     }
@@ -267,16 +289,20 @@ void Filter::showLegend()
 
 bool Filter::run()
 {
-    if (d_init_err)
+    if (d_init_err || d_points <= 0 || d_x.size() < unsigned(qMax(1, d_min_points)))
         return false;
 
-    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool nonInteractive = isSilentOrNonInteractive();
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(Qt::WaitCursor);
 
     output(); // data analysis and output
-    ((ApplicationWindow *)parent())->updateLog(logInfo());
+    if (ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent()))
+        app->updateLog(logInfo());
 
-    QApplication::restoreOverrideCursor();
-    return true;
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
+    return !d_init_err;
 }
 
 void Filter::output()

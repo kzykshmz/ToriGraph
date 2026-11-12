@@ -27,15 +27,23 @@
  *                                                                         *
  ***************************************************************************/
 #include "FunctionCurve.h"
+#include "ApplicationWindow.h"
 
+#include <QApplication>
 #include <QMessageBox>
+#include <QScopedPointer>
+#include <cmath>
 
 // FIXME: While FunctionCurve itself supports arbitrary scripting
 // interpreters now, fit curves assume muParser in many formulas (using
 // "^" as power operator). Thus, simply having FunctionCurve honour the
 // application-wide scripting environment would break fit curve plotting.
 FunctionCurve::FunctionCurve(ApplicationWindow *parent, QString name)
-    : PlotCurve(name), scripted(ScriptingLangManager::newEnv("muParser", parent))
+    : PlotCurve(name),
+      scripted(ScriptingLangManager::newEnv("muParser", parent)),
+      d_function_type(Normal),
+      d_from(0.0),
+      d_to(0.0)
 {
     d_variable = "x";
     setType(Graph::Function);
@@ -44,7 +52,9 @@ FunctionCurve::FunctionCurve(ApplicationWindow *parent, QString name)
 FunctionCurve::FunctionCurve(ApplicationWindow *parent, const FunctionType &t, QString name)
     : PlotCurve(name),
       scripted(ScriptingLangManager::newEnv("muParser", parent)),
-      d_function_type(t)
+      d_function_type(t),
+      d_from(0.0),
+      d_to(0.0)
 {
     d_variable = "x";
     setType(Graph::Function);
@@ -67,15 +77,17 @@ void FunctionCurve::copy(FunctionCurve *f)
 
 QString FunctionCurve::legend() const
 {
+    if (d_function_type == Normal) {
+        const QString f0 = d_formulas.value(0).trimmed();
+        return f0.isEmpty() ? title().text() : (title().text() + ": " + d_formulas.value(0));
+    }
     QString label = title().text() + ": ";
-    if (d_function_type == Normal)
-        label += d_formulas[0];
-    else if (d_function_type == Parametric) {
-        label += "X(" + d_variable + ")=" + d_formulas[0];
-        label += ", Y(" + d_variable + ")=" + d_formulas[1];
+    if (d_function_type == Parametric) {
+        label += "X(" + d_variable + ")=" + d_formulas.value(0);
+        label += ", Y(" + d_variable + ")=" + d_formulas.value(1);
     } else if (d_function_type == Polar) {
-        label += "R(" + d_variable + ")=" + d_formulas[0];
-        label += ", Theta(" + d_variable + ")=" + d_formulas[1];
+        label += "R(" + d_variable + ")=" + d_formulas.value(0);
+        label += ", Theta(" + d_variable + ")=" + d_formulas.value(1);
     }
     return label;
 }
@@ -84,15 +96,34 @@ bool FunctionCurve::loadData(int points)
 {
     if (!points)
         points = dataSize();
+    if (points <= 0)
+        points = 100;
+
+    if (!scriptEnv)
+        return dataSize() > 0;
+
+    if (d_function_type == Normal) {
+        if (d_formulas.isEmpty() || d_formulas.at(0).trimmed().isEmpty())
+            return dataSize() > 0;
+    } else if (d_function_type == Parametric || d_function_type == Polar) {
+        if (d_formulas.size() < 2 || d_formulas.at(0).trimmed().isEmpty()
+            || d_formulas.at(1).trimmed().isEmpty())
+            return dataSize() > 0;
+    }
 
     double *X = new double[points];
     double *Y = new double[points];
-    double step = (d_to - d_from) / (double)(points - 1);
+    double step = (points > 1) ? ((d_to - d_from) / (double)(points - 1)) : 0.0;
 
     switch (d_function_type) {
     case Normal: {
-        Script *script = scriptEnv->newScript(d_formulas[0], 0, title().text());
-        QObject::connect(script, SIGNAL(error(const QString &, const QString &, int)), this,
+        QScopedPointer<Script> script(scriptEnv->newScript(d_formulas[0], 0, title().text()));
+        if (!script) {
+            delete[] X;
+            delete[] Y;
+            return dataSize() > 0;
+        }
+        QObject::connect(script.data(), SIGNAL(error(const QString &, const QString &, int)), this,
                          SLOT(scriptError(const QString &, const QString &, int)));
         int i;
         double x;
@@ -111,8 +142,13 @@ bool FunctionCurve::loadData(int points)
     }
     case Parametric:
     case Polar: {
-        Script *script_x = scriptEnv->newScript(d_formulas[0], 0, title().text());
-        Script *script_y = scriptEnv->newScript(d_formulas[1], 0, title().text());
+        QScopedPointer<Script> script_x(scriptEnv->newScript(d_formulas[0], 0, title().text()));
+        QScopedPointer<Script> script_y(scriptEnv->newScript(d_formulas[1], 0, title().text()));
+        if (!script_x || !script_y) {
+            delete[] X;
+            delete[] Y;
+            return dataSize() > 0;
+        }
         int i;
         double par;
         for (i = 0, par = d_from; i < points; i++, par += step) {
@@ -142,8 +178,21 @@ bool FunctionCurve::loadData(int points)
     return true;
 }
 
+void FunctionCurve::setSuppressScriptErrors(bool suppress)
+{
+    setProperty("_tg_suppress_script_err", suppress);
+}
+
 void FunctionCurve::scriptError(const QString &message, const QString &scriptName, int lineNumber)
 {
+    if (property("_tg_suppress_script_err").toBool())
+        return;
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw)) {
+            if (aw->isHeadlessMode() || aw->isOleEmbeddedMode() || aw->batchMode())
+                return;
+        }
+    }
     QMessageBox::critical(0, tr("Input function error"),
                           QString("%1:%2\n\n%3").arg(scriptName).arg(lineNumber).arg(message));
 }

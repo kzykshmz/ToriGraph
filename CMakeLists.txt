@@ -45,6 +45,7 @@ find_package( Qt5
   Gui
   Widgets
   Svg
+  Network
   PrintSupport
   Xml
   OpenGL

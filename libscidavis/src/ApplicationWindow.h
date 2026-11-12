@@ -95,6 +95,9 @@ class CurveRangeDialog;
 class Project;
 class AbstractAspect;
 class AxesDialog;
+class ModernRibbonBar;
+class AutoUpdater;
+class PythonAutomationServer;
 
 #ifndef TS_PATH
 #define TS_PATH (qApp->applicationDirPath() + "/translations")
@@ -177,7 +180,24 @@ public:
     // from ConfigDialog.
     void localeChanged();
 
+    ModernRibbonBar *modernRibbonBar() const { return d_modern_ribbon; }
+    AutoUpdater *autoUpdater() const { return d_auto_updater; }
+    PythonAutomationServer *pythonAutomationServer() const { return d_python_server; }
+
+    void setHeadlessMode(bool headless);
+    bool isHeadlessMode() const { return d_headless_mode; }
+
 public slots:
+    void openPythonConsole();
+    void runPythonScriptDialog();
+    void runPythonScriptFile(const QString &scriptPath);
+    void checkForUpdatesManual();
+    void toggleFocusHudMode();
+    void openCommandPalette();
+    void setWorkspaceLayoutTabbed();
+    void setWorkspaceLayoutSplit();
+    void setWorkspaceLayoutMdi();
+
     //! Copy the status bar text to the clipboard
     void copyStatusBarText();
     //! Show the context menu for the status bar
@@ -1050,8 +1070,10 @@ public slots:
     void saveFolder(Folder *folder, const QString &fn);
     void rawSaveFolder(Folder *folder, QIODevice *device);
     QByteArray saveProjectToByteArray();
-    void setOleEmbeddedMode(bool embedded) { d_ole_embedded = embedded; }
+    void setOleEmbeddedMode(bool embedded);
     bool isOleEmbeddedMode() const { return d_ole_embedded; }
+    bool isNonInteractive() const { return d_headless_mode || d_ole_embedded || m_batch; }
+    static bool isNonInteractiveContext(const QObject *context = nullptr);
     void setOleEmbeddedCallbacks(std::function<void()> onUpdate, std::function<void()> onClose)
     {
         d_ole_on_update = std::move(onUpdate);
@@ -1435,6 +1457,11 @@ private:
     QAction *actionCopyPageImage = nullptr, *actionGadgetImageProfile = nullptr,
             *actionMatrixFilter2D = nullptr, *actionFourierSelfDeconvolve = nullptr,
             *actionEISAnalyzer = nullptr, *actionPassingBablokDeming = nullptr;
+    QAction *actionToggleFocusHudMode = nullptr, *actionCommandPalette = nullptr;
+    QActionGroup *workspaceLayoutGroup = nullptr;
+    QAction *actionWorkspaceLayoutTabbed = nullptr, *actionWorkspaceLayoutSplit = nullptr,
+            *actionWorkspaceLayoutMdi = nullptr;
+    QAction *actionOpenPythonConsole = nullptr, *actionRunPythonScript = nullptr;
     QPointer<QDialog> d_active_peak_analyzer_dlg;
     QToolButton *d_btn_style_presets_popup = nullptr;
     QWidget *d_explorer_container = nullptr;
@@ -1497,6 +1524,11 @@ private:
     QLabel *d_status_info;
 
     Project *d_project;
+    QWidget *d_central_container = nullptr;
+    ModernRibbonBar *d_modern_ribbon = nullptr;
+    AutoUpdater *d_auto_updater = nullptr;
+    PythonAutomationServer *d_python_server = nullptr;
+    bool d_headless_mode = false;
     bool d_ole_embedded = false;
     std::function<void()> d_ole_on_update;
     std::function<void()> d_ole_on_close;

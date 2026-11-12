@@ -33,6 +33,7 @@
 #include <QAbstractItemModel>
 #include <QVector>
 #include <QColor>
+#include <QPointer>
 
 namespace future {
 class Matrix;
@@ -85,7 +86,7 @@ private slots:
     //@}
 
 private:
-    future::Matrix *d_matrix;
+    QPointer<future::Matrix> d_matrix;
 };
 
 #endif

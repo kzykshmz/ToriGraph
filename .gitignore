@@ -13,4 +13,7 @@ CMakeLists.txt.user*
 .deps/
 .tools/
 build/
+__pycache__/
+*.pyc
+*.pyo
 

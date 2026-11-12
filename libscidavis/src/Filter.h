@@ -88,10 +88,14 @@ public:
 
     bool error() { return d_init_err; };
 
+    void setSilent(bool silent) { d_silent = silent; }
+    bool isSilent() const { return d_silent; }
+
 private:
     void init();
 
 protected:
+    bool isSilentOrNonInteractive() const;
 
     //! returns either sorted or unsorted indices for data in range [start;end]
     template <typename T>

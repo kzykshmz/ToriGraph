@@ -32,6 +32,7 @@
 #define TABLECOMMENTSHEADERMODEL_H
 
 #include <QAbstractTableModel>
+#include <QPointer>
 #include "TableModel.h"
 
 //! Model class wrapping a TableModel to display column comments in a TableCommentsHeaderView
@@ -55,7 +56,7 @@ public:
     //@}
 
 private:
-    TableModel *d_table_model;
+    QPointer<TableModel> d_table_model;
 };
 
 #endif

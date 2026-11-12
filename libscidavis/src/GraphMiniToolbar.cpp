@@ -5,6 +5,7 @@
  ***************************************************************************/
 #include "GraphMiniToolbar.h"
 #include "Graph.h"
+#include "IconLoader.h"
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "Legend.h"
@@ -23,6 +24,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QScreen>
+#include <QSize>
 #include <QToolButton>
 
 #include <qwt_plot.h>
@@ -51,33 +53,34 @@ GraphMiniToolbar::GraphMiniToolbar(QWidget *parent)
     setStyleSheet(QStringLiteral(
             "QFrame#GraphMiniToolbar {"
             "  background-color: #FFFFFF;"
-            "  border: 1px solid #B0B7C3;"
-            "  border-radius: 4px;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 10px;"
             "}"
             "QToolButton {"
-            "  font-family: 'Arial';"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 8.5pt;"
-            "  font-weight: bold;"
-            "  color: #1F2937;"
+            "  font-weight: 600;"
+            "  color: #1E293B;"
             "  background-color: #F8FAFC;"
-            "  border: 1px solid #D1D5DB;"
-            "  border-radius: 3px;"
-            "  padding: 2px 5px;"
-            "  min-height: 20px;"
+            "  border: 1px solid #E2E8F0;"
+            "  border-radius: 6px;"
+            "  padding: 3px 7px;"
+            "  min-height: 22px;"
             "}"
             "QToolButton:hover {"
-            "  background-color: #EBF3FC;"
-            "  border-color: #1E66B8;"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border-color: #2563EB;"
             "}"
             "QToolButton:checked {"
-            "  background-color: #1E66B8;"
+            "  background-color: #2563EB;"
             "  color: #FFFFFF;"
-            "  border-color: #164E8F;"
+            "  border-color: #1D4ED8;"
             "}"));
 
     d_layout = new QHBoxLayout(this);
-    d_layout->setContentsMargins(4, 3, 4, 3);
-    d_layout->setSpacing(3);
+    d_layout->setContentsMargins(6, 5, 6, 5);
+    d_layout->setSpacing(4);
 }
 
 GraphMiniToolbar::~GraphMiniToolbar()
@@ -129,8 +132,27 @@ void GraphMiniToolbar::clearButtons()
     }
 }
 
+namespace {
+QIcon miniToolbarDuotoneIcon(const QString &semanticId, bool checkable)
+{
+    if (semanticId.isEmpty())
+        return QIcon();
+    QIcon ico = IconLoader::duotoneIcon(semanticId, 18, false);
+    if (checkable) {
+        const QPixmap onPx1x = IconLoader::duotonePixmap(semanticId, 16, 1.0, true);
+        const QPixmap onPx2x = IconLoader::duotonePixmap(semanticId, 16, 2.0, true);
+        if (!onPx1x.isNull())
+            ico.addPixmap(onPx1x, QIcon::Normal, QIcon::On);
+        if (!onPx2x.isNull())
+            ico.addPixmap(onPx2x, QIcon::Normal, QIcon::On);
+    }
+    return ico;
+}
+} // namespace
+
 QToolButton *GraphMiniToolbar::addActionBtn(const QString &text, const QString &tooltip,
-                                            const char *slotName, bool checkable, bool checked)
+                                            const char *slotName, bool checkable, bool checked,
+                                            const QString &semanticIconId)
 {
     QToolButton *btn = new QToolButton(this);
     btn->setText(text);
@@ -139,6 +161,15 @@ QToolButton *GraphMiniToolbar::addActionBtn(const QString &text, const QString &
     btn->setCheckable(checkable);
     if (checkable)
         btn->setChecked(checked);
+    if (!semanticIconId.isEmpty()) {
+        const QIcon ico = miniToolbarDuotoneIcon(semanticIconId, checkable);
+        if (!ico.isNull()) {
+            btn->setIcon(ico);
+            btn->setIconSize(QSize(16, 16));
+            btn->setToolButtonStyle(text.isEmpty() ? Qt::ToolButtonIconOnly
+                                                   : Qt::ToolButtonTextBesideIcon);
+        }
+    }
     connect(btn, SIGNAL(clicked()), this, slotName);
     d_layout->addWidget(btn);
     return btn;
@@ -149,7 +180,7 @@ void GraphMiniToolbar::addSeparatorLine()
     QFrame *sep = new QFrame(this);
     sep->setFrameShape(QFrame::VLine);
     sep->setFrameShadow(QFrame::Plain);
-    sep->setStyleSheet(QStringLiteral("color: #D8DEE9;"));
+    sep->setStyleSheet(QStringLiteral("color: #CBD5E1;"));
     sep->setFixedHeight(18);
     d_layout->addWidget(sep);
 }
@@ -203,38 +234,43 @@ void GraphMiniToolbar::popupForCurve(Graph *g, int curveIndex, const QPoint &glo
             addActionBtn(tr("Color"), tr("Select Color"), SLOT(onCurvePickColor()));
     QColor curCol = (c->style() != QwtPlotCurve::NoCurve) ? c->pen().color()
                                                           : c->symbol().pen().color();
-    QPixmap sw(12, 12);
-    sw.fill(curCol.isValid() ? curCol : QColor(Qt::black));
+    QPixmap sw(14, 14);
+    sw.fill(Qt::transparent);
     QPainter sp(&sw);
-    sp.setPen(QColor(90, 90, 90));
-    sp.drawRect(0, 0, 11, 11);
+    sp.setRenderHint(QPainter::Antialiasing, true);
+    sp.setBrush(curCol.isValid() ? curCol : QColor(Qt::black));
+    sp.setPen(QPen(QColor("#64748B"), 1.0));
+    sp.drawRoundedRect(QRectF(1.0, 1.0, 12.0, 12.0), 3.0, 3.0);
     sp.end();
     colorBtn->setIcon(QIcon(sw));
+    colorBtn->setIconSize(QSize(14, 14));
     colorBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
     addActionBtn(QStringLiteral("W-"), tr("Line width") + QStringLiteral(" -"),
-                 SLOT(onCurveLineWidthDec()));
+                 SLOT(onCurveLineWidthDec()), false, false, QStringLiteral("width-dec"));
     addActionBtn(QStringLiteral("W+"), tr("Line width") + QStringLiteral(" +"),
-                 SLOT(onCurveLineWidthInc()));
+                 SLOT(onCurveLineWidthInc()), false, false, QStringLiteral("width-inc"));
     addSeparatorLine();
     addActionBtn(QStringLiteral("S-"), tr("Symbol size") + QStringLiteral(" -"),
-                 SLOT(onCurveSymbolSizeDec()));
+                 SLOT(onCurveSymbolSizeDec()), false, false, QStringLiteral("plot-scatter"));
     addActionBtn(QStringLiteral("S+"), tr("Symbol size") + QStringLiteral(" +"),
-                 SLOT(onCurveSymbolSizeInc()));
+                 SLOT(onCurveSymbolSizeInc()), false, false, QStringLiteral("plot-scatter"));
     addSeparatorLine();
 
     const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
     const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
     addActionBtn(tr("Line"), tr("Line"), SLOT(onCurveStyleLine()), true,
-                 hasLine && !hasSym);
+                 hasLine && !hasSym, QStringLiteral("plot-line"));
     addActionBtn(tr("Scatter"), tr("Scatter"), SLOT(onCurveStyleScatter()), true,
-                 !hasLine && hasSym);
+                 !hasLine && hasSym, QStringLiteral("plot-scatter"));
     addActionBtn(QStringLiteral("L+S"), tr("Line + Symbol"), SLOT(onCurveStyleLineSymbol()), true,
-                 hasLine && hasSym);
+                 hasLine && hasSym, QStringLiteral("plot-line-symbol"));
     addSeparatorLine();
 
-    addActionBtn(tr("Error Bars"), tr("Error Bars"), SLOT(onCurveToggleErrorBars()));
-    addActionBtn(tr("Clear Masks"), tr("Clear Masks"), SLOT(onCurveClearMask()));
+    addActionBtn(tr("Error Bars"), tr("Error Bars"), SLOT(onCurveToggleErrorBars()),
+                 false, false, QStringLiteral("error-bars"));
+    addActionBtn(tr("Clear Masks"), tr("Clear Masks"), SLOT(onCurveClearMask()),
+                 false, false, QStringLiteral("clear-masks"));
 
     showNearGlobalPos(globalPos);
 }
@@ -279,16 +315,20 @@ void GraphMiniToolbar::popupForAxis(Graph *g, int qwtAxisId, const QPoint &globa
     bool oppVisible = g->isAxisBackboneVisible(oppAxis);
 
     addActionBtn(isLog ? tr("Log10") : tr("Linear"), tr("Scale"),
-                 SLOT(onAxisToggleLog()), true, isLog);
+                 SLOT(onAxisToggleLog()), true, isLog, QStringLiteral("axis-log"));
     addActionBtn(tr("Ticks In/Out"), tr("Ticks In/Out"),
-                 SLOT(onAxisToggleTicksInOut()), true, ticksIn);
+                 SLOT(onAxisToggleTicksInOut()), true, ticksIn, QStringLiteral("axis-ticks-in"));
     addActionBtn(tr("Opposite Axis Line"), tr("Opposite Axis Line"),
-                 SLOT(onAxisToggleOppositeLine()), true, oppVisible);
+                 SLOT(onAxisToggleOppositeLine()), true, oppVisible,
+                 QStringLiteral("frame-box-plain"));
     addSeparatorLine();
-    addActionBtn(tr("Mean Line"), tr("Add Mean Reference Line"), SLOT(onAxisAddMeanLine()));
+    addActionBtn(tr("Mean Line"), tr("Add Mean Reference Line"), SLOT(onAxisAddMeanLine()),
+                 false, false, QStringLiteral("axis-scale"));
     addSeparatorLine();
-    addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onAxisFontDec()));
-    addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onAxisFontInc()));
+    addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onAxisFontDec()),
+                 false, false, QStringLiteral("font-dec"));
+    addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onAxisFontInc()),
+                 false, false, QStringLiteral("font-inc"));
 
     showNearGlobalPos(globalPos);
 }
@@ -311,13 +351,16 @@ void GraphMiniToolbar::popupForCanvas(Graph *g, const QPoint &globalPos)
     const bool gridOn = grd && (grd->xEnabled() || grd->yEnabled());
 
     addActionBtn(tr("Box Frame"), tr("Box Frame"), SLOT(onCanvasToggleBoxFrame()),
-                 true, boxOn);
+                 true, boxOn, QStringLiteral("frame-box-inward"));
     addActionBtn(tr("Major Grid"), tr("Major Grid"), SLOT(onCanvasToggleMajorGrid()), true,
-                 gridOn);
+                 gridOn, QStringLiteral("axis-grid"));
     addSeparatorLine();
-    addActionBtn(tr("Rescale"), tr("Rescale to Show All"), SLOT(onCanvasRescaleAll()));
-    addActionBtn(QStringLiteral("1:1"), tr("1:1 (Square)"), SLOT(onCanvasAspectSquare()));
-    addActionBtn(tr("Fit Page"), tr("Fit Page to Layers"), SLOT(onCanvasFitPageToLayers()));
+    addActionBtn(tr("Rescale"), tr("Rescale to Show All"), SLOT(onCanvasRescaleAll()),
+                 false, false, QStringLiteral("zoom-auto"));
+    addActionBtn(QStringLiteral("1:1"), tr("1:1 (Square)"), SLOT(onCanvasAspectSquare()),
+                 false, false, QStringLiteral("page-setup"));
+    addActionBtn(tr("Fit Page"), tr("Fit Page to Layers"), SLOT(onCanvasFitPageToLayers()),
+                 false, false, QStringLiteral("fit-page"));
 
     if (g->multiLayerParent()) {
         addSeparatorLine();
@@ -326,20 +369,29 @@ void GraphMiniToolbar::popupForCanvas(Graph *g, const QPoint &globalPos)
         presetBtn->setToolTip(tr("Style Presets"));
         presetBtn->setFocusPolicy(Qt::NoFocus);
         presetBtn->setPopupMode(QToolButton::InstantPopup);
+        const QIcon presetIco = IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false);
+        if (!presetIco.isNull()) {
+            presetBtn->setIcon(presetIco);
+            presetBtn->setIconSize(QSize(16, 16));
+            presetBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        }
         QMenu *presetMenu = new QMenu(presetBtn);
         connect(presetMenu, &QMenu::aboutToShow, this, [this]() { d_in_modal_dialog = true; });
         connect(presetMenu, &QMenu::aboutToHide, this, [this]() { d_in_modal_dialog = false; });
-        presetMenu->addAction(tr("ISIJ Journal (85 mm, 600 DPI)"), this, [this]() {
+        presetMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
+                              tr("ISIJ Journal (85 mm, 600 DPI)"), this, [this]() {
             if (d_graph && d_graph->multiLayerParent())
                 d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
             hide();
         });
-        presetMenu->addAction(tr("Presentation Slide (28 pt Arial)"), this, [this]() {
+        presetMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
+                              tr("Presentation Slide (28 pt Arial)"), this, [this]() {
             if (d_graph && d_graph->multiLayerParent())
                 d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
             hide();
         });
-        presetMenu->addAction(tr("Nature / Science Compact (89 mm)"), this, [this]() {
+        presetMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-nature"), 18, false),
+                              tr("Nature / Science Compact (89 mm)"), this, [this]() {
             if (d_graph && d_graph->multiLayerParent())
                 d_graph->multiLayerParent()->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
             hide();
@@ -367,17 +419,21 @@ void GraphMiniToolbar::popupForLegend(Graph *g, Legend *legend, const QPoint &gl
     const bool transp = (legend->backgroundColor().alpha() == 0);
 
     addActionBtn(tr("Box Frame"), tr("Box Frame"), SLOT(onLegendToggleFrame()),
-                 true, framed);
+                 true, framed, QStringLiteral("frame-box-inward"));
     addActionBtn(tr("Transparent"), tr("Transparent Background"),
-                 SLOT(onLegendToggleTransparent()), true, transp);
+                 SLOT(onLegendToggleTransparent()), true, transp, QStringLiteral("legend"));
     addSeparatorLine();
-    addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onLegendFontDec()));
-    addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onLegendFontInc()));
+    addActionBtn(QStringLiteral("A-"), tr("Font") + QStringLiteral(" -"), SLOT(onLegendFontDec()),
+                 false, false, QStringLiteral("font-dec"));
+    addActionBtn(QStringLiteral("A+"), tr("Font") + QStringLiteral(" +"), SLOT(onLegendFontInc()),
+                 false, false, QStringLiteral("font-inc"));
     addSeparatorLine();
     const int nCols = qMax(1, legend->numColumns());
     const QString colLabel = QStringLiteral("%1C").arg(nCols);
-    addActionBtn(colLabel, tr("Horizontal Legend"), SLOT(onLegendCycleColumns()), true, nCols > 1);
-    addActionBtn(tr("Reconstruct Legend"), tr("Reconstruct Legend"), SLOT(onLegendReconstruct()));
+    addActionBtn(colLabel, tr("Horizontal Legend"), SLOT(onLegendCycleColumns()), true, nCols > 1,
+                 QStringLiteral("layer-arrange"));
+    addActionBtn(tr("Reconstruct Legend"), tr("Reconstruct Legend"), SLOT(onLegendReconstruct()),
+                 false, false, QStringLiteral("recalc-now"));
 
     showNearGlobalPos(globalPos);
 }
@@ -483,11 +539,13 @@ void GraphMiniToolbar::onCurvePickColor()
     c->setSymbol(sym);
 
     if (QToolButton *colorBtn = qobject_cast<QToolButton *>(sender())) {
-        QPixmap sw(12, 12);
-        sw.fill(chosen);
+        QPixmap sw(14, 14);
+        sw.fill(Qt::transparent);
         QPainter sp(&sw);
-        sp.setPen(QColor(90, 90, 90));
-        sp.drawRect(0, 0, 11, 11);
+        sp.setRenderHint(QPainter::Antialiasing, true);
+        sp.setBrush(chosen);
+        sp.setPen(QPen(QColor("#64748B"), 1.0));
+        sp.drawRoundedRect(QRectF(1.0, 1.0, 12.0, 12.0), 3.0, 3.0);
         sp.end();
         colorBtn->setIcon(QIcon(sw));
         adjustSize();

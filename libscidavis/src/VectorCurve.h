@@ -89,7 +89,7 @@ public:
     void updateColumnNames(const QString &oldName, const QString &newName, bool updateTableName);
 
 protected:
-    QwtArrayData *vectorEnd;
+    QwtArrayData *vectorEnd = nullptr;
     QPen pen;
     bool filledArrow;
     int d_headLength, d_headAngle, d_position;

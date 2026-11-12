@@ -37,6 +37,37 @@
 #include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 
+namespace {
+
+Column *resolveDataCurveColumn(Table *table, const QString &spec)
+{
+    if (!table || !table->d_future_table || spec.isEmpty())
+        return nullptr;
+
+    const int numCols = table->numCols();
+    const QString tblPrefix = QString(table->name()) + QLatin1Char('_');
+    if (spec.startsWith(tblPrefix)) {
+        const QString shortName = spec.mid(tblPrefix.size());
+        for (int i = 0; i < numCols; ++i) {
+            if (Column *col = table->column(i)) {
+                if (col->name() == shortName)
+                    return col;
+            }
+        }
+    }
+
+    for (int i = 0; i < numCols; ++i) {
+        if (Column *col = table->column(i)) {
+            if (col->name() == spec)
+                return col;
+        }
+    }
+
+    return table->column(spec);
+}
+
+} // namespace
+
 DataCurve::DataCurve(Table *t, const QString &xColName, const QString &name, int startRow,
                      int endRow)
     : PlotCurve(name), d_table(t), d_x_column(xColName), d_start_row(startRow), d_end_row(endRow)
@@ -61,6 +92,8 @@ void DataCurve::setRowRange(int startRow, int endRow)
 
 void DataCurve::setFullRange()
 {
+    if (!d_table)
+        return;
     d_start_row = 0;
     d_end_row = d_table->numRows() - 1;
 
@@ -72,7 +105,7 @@ void DataCurve::setFullRange()
 
 bool DataCurve::isFullRange()
 {
-    if (d_start_row != 0 || d_end_row != d_table->numRows() - 1)
+    if (!d_table || d_start_row != 0 || d_end_row != d_table->numRows() - 1)
         return false;
     else
         return true;
@@ -89,24 +122,41 @@ QString DataCurve::plotAssociation()
 void DataCurve::updateColumnNames(const QString &oldName, const QString &newName,
                                   bool updateTableName)
 {
-    if (updateTableName) {
-        QString s = title().text();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        QStringList lst = s.split("_", Qt::KeepEmptyParts);
-#else
-        QStringList lst = s.split("_", QString::KeepEmptyParts);
-#endif
-        if (lst.size() > 0 && lst[0] == oldName)
-            setTitle(newName + "_" + lst.mid(1).join("_"));
+    if (oldName.isEmpty() || oldName == newName)
+        return;
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        lst = d_x_column.split("_", Qt::KeepEmptyParts);
-#else
-        lst = d_x_column.split("_", QString::KeepEmptyParts);
-#endif
-        if (lst.size() > 0 && lst[0] == oldName)
-            d_x_column = newName + "_" + lst.mid(1).join("_");
+    if (updateTableName) {
+        if (d_table && d_table->name() != oldName && d_table->name() != newName)
+            return;
+
+        const QString prefix = oldName + QLatin1Char('_');
+        const QString curTitle = title().text();
+        if (curTitle.startsWith(prefix))
+            setTitle(newName + QLatin1Char('_') + curTitle.mid(prefix.size()));
+
+        if (d_x_column.startsWith(prefix))
+            d_x_column = newName + QLatin1Char('_') + d_x_column.mid(prefix.size());
     } else {
+        if (d_table) {
+            const QString tblPrefix = QString(d_table->name()) + QLatin1Char('_');
+            if (!oldName.startsWith(tblPrefix) || !newName.startsWith(tblPrefix))
+                return;
+            const QString candOld = oldName.mid(tblPrefix.size());
+            const QString candNew = newName.mid(tblPrefix.size());
+            bool hasOld = false;
+            bool hasNew = false;
+            for (int i = 0; i < d_table->numCols(); ++i) {
+                if (const Column *col = d_table->column(i)) {
+                    if (col->name() == candOld)
+                        hasOld = true;
+                    if (col->name() == candNew)
+                        hasNew = true;
+                }
+            }
+            if (hasOld && !hasNew)
+                return;
+        }
+
         if (title().text() == oldName)
             setTitle(newName);
         if (d_x_column == oldName)
@@ -228,8 +278,8 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
 
 bool DataCurve::loadData()
 {
-    Column *x_col_ptr = d_table->column(d_x_column);
-    Column *y_col_ptr = d_table->column(title().text());
+    Column *x_col_ptr = resolveDataCurveColumn(d_table, d_x_column);
+    Column *y_col_ptr = resolveDataCurveColumn(d_table, title().text());
     if (!x_col_ptr || !y_col_ptr) {
         remove();
         return false;
@@ -316,14 +366,10 @@ bool DataCurve::isPointMasked(int point) const
     const int row = tableRow(point);
     if (row < 0)
         return false;
-    Column *yCol = d_table->column(d_table->colIndex(title().text()));
-    if (!yCol)
-        yCol = d_table->column(title().text());
+    Column *yCol = resolveDataCurveColumn(d_table, title().text());
     if (yCol && yCol->isMasked(row))
         return true;
-    Column *xCol = d_table->column(d_table->colIndex(d_x_column));
-    if (!xCol)
-        xCol = d_table->column(d_x_column);
+    Column *xCol = resolveDataCurveColumn(d_table, d_x_column);
     if (xCol && xCol->isMasked(row))
         return true;
     return false;
@@ -336,17 +382,13 @@ void DataCurve::maskPoint(int point, bool mask)
     const int row = tableRow(point);
     if (row < 0)
         return;
-    Column *yCol = d_table->column(d_table->colIndex(title().text()));
-    if (!yCol)
-        yCol = d_table->column(title().text());
+    Column *yCol = resolveDataCurveColumn(d_table, title().text());
     if (!yCol)
         return;
 
     yCol->setMasked(row, mask);
     if (!mask) {
-        Column *xCol = d_table->column(d_table->colIndex(d_x_column));
-        if (!xCol)
-            xCol = d_table->column(d_x_column);
+        Column *xCol = resolveDataCurveColumn(d_table, d_x_column);
         if (xCol && xCol->isMasked(row))
             xCol->setMasked(row, false);
     }
@@ -365,14 +407,10 @@ int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
 {
     if (!d_table || dataSize() <= 0)
         return 0;
-    Column *yCol = d_table->column(d_table->colIndex(title().text()));
-    if (!yCol)
-        yCol = d_table->column(title().text());
+    Column *yCol = resolveDataCurveColumn(d_table, title().text());
     if (!yCol)
         return 0;
-    Column *xCol = d_table->column(d_table->colIndex(d_x_column));
-    if (!xCol)
-        xCol = d_table->column(d_x_column);
+    Column *xCol = resolveDataCurveColumn(d_table, d_x_column);
 
     const QRectF normRect = dataRect.normalized();
     int modifiedCount = 0;
@@ -411,9 +449,7 @@ void DataCurve::clearMasks()
 {
     if (!d_table)
         return;
-    Column *yCol = d_table->column(d_table->colIndex(title().text()));
-    if (!yCol)
-        yCol = d_table->column(title().text());
+    Column *yCol = resolveDataCurveColumn(d_table, title().text());
     if (!yCol)
         return;
 

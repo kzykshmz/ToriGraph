@@ -106,6 +106,10 @@ set( HEADERS
   "src/RecalcEngine.h"
   "src/I18nJapanese.h"
   "src/GraphMiniToolbar.h"
+  "src/ModernUiTheme.h"
+  "src/ModernRibbonAndHud.h"
+  "src/AutoUpdater.h"
+  "src/PythonAutomationServer.h"
   "src/PiecewiseAndRobustFit.h"
   "src/GraphDigitizer.h"
   "src/PlotEnrichement.h"
@@ -276,6 +280,10 @@ set( SRCS
   "src/RecalcEngine.cpp"
   "src/I18nJapanese.cpp"
   "src/GraphMiniToolbar.cpp"
+  "src/ModernUiTheme.cpp"
+  "src/ModernRibbonAndHud.cpp"
+  "src/AutoUpdater.cpp"
+  "src/PythonAutomationServer.cpp"
   "src/PiecewiseAndRobustFit.cpp"
   "src/GraphDigitizer.cpp"
   "src/PlotEnrichement.cpp"
@@ -385,9 +393,11 @@ target_link_libraries( libscidavis
   minigzip
   Qt5::Core
   Qt5::Gui
+  Qt5::Widgets
   Qt5::PrintSupport
   Qt5::OpenGL
   Qt5::Svg
+  Qt5::Network
   $<$<NOT:$<PLATFORM_ID:Windows>>:m>
   $<$<PLATFORM_ID:Windows>:ole32 oleaut32 uuid gdi32 user32 advapi32 shell32>
   )
@@ -422,6 +432,8 @@ target_compile_definitions( libscidavis PUBLIC
   LEGACY_CODE_0_2_x
   SCRIPTING_CONSOLE
   SCRIPTING_DIALOG
+  SEARCH_FOR_UPDATES
+  DOWNLOAD_LINKS
   )
 
 if( WIN32 )
@@ -485,10 +497,6 @@ if( SCRIPTING_PYTHON )
       PYTHONHOME=${PYTHONHOME}
       )
   endif()
-endif()
-
-if( SEARCH_FOR_UPDATE OR DOWNLOAD_LINKS )
-  target_link_libraries( libscidavis Qt5::Network )
 endif()
 
 target_include_directories( libscidavis PUBLIC

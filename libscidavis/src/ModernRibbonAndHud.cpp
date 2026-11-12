@@ -1,0 +1,3783 @@
+/***************************************************************************
+    File                 : ModernRibbonAndHud.cpp
+    Project              : ToriGraph
+    --------------------------------------------------------------------
+    Description          : Hybrid Modern Contextual Single-Row Slim Ribbon,
+                           Ctrl+K Command Palette, Split Workspace Controller,
+                           and F11 Non-Redundant 2-Stage Focus Canvas HUD
+ ***************************************************************************/
+
+/***************************************************************************
+ *                                                                         *
+ *  This program is free software; you can redistribute it and/or modify   *
+ *  it under the terms of the GNU General Public License as published by   *
+ *  the Free Software Foundation; either version 2 of the License, or      *
+ *  (at your option) any later version.                                    *
+ *                                                                         *
+ *  This program is distributed in the hope that it will be useful,        *
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of         *
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the          *
+ *  GNU General Public License for more details.                           *
+ *                                                                         *
+ *   You should have received a copy of the GNU General Public License     *
+ *   along with this program; if not, write to the Free Software           *
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor,                    *
+ *   Boston, MA  02110-1301  USA                                           *
+ *                                                                         *
+ ***************************************************************************/
+
+#include "ModernRibbonAndHud.h"
+
+#include <QAction>
+#include <QApplication>
+#include <QButtonGroup>
+#include <QComboBox>
+#include <QCursor>
+#include <QDockWidget>
+#include <QEvent>
+#include <QFileDialog>
+#include <QFontMetrics>
+#include <QGraphicsDropShadowEffect>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QLocale>
+#include <QMdiArea>
+#include <QMdiSubWindow>
+#include <QMenu>
+#include <QMetaObject>
+#include <QPainter>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QShowEvent>
+#include <QSignalBlocker>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QStyledItemDelegate>
+#include <QTabBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QToolBar>
+#include <QToolButton>
+#include <QVBoxLayout>
+#include <QWheelEvent>
+
+#include <algorithm>
+
+#include "ApplicationWindow.h"
+#include "Graph.h"
+#include "IconLoader.h"
+#include "Matrix.h"
+#include "MultiLayer.h"
+#include "MyWidget.h"
+#include "Note.h"
+#include "PlotCurve.h"
+#include "RecalcEngine.h"
+#include "Table.h"
+#include "Graph3D.h"
+#include "future/core/column/Column.h"
+
+namespace {
+
+enum PaletteItemRoles {
+    RoleEntryIndex = Qt::UserRole + 1,
+    RoleShortcutText = Qt::UserRole + 2,
+    RoleCategoryText = Qt::UserRole + 3
+};
+
+static QString cleanMnemonicText(const QString &raw)
+{
+    QString out;
+    out.reserve(raw.size());
+    for (int i = 0; i < raw.size(); ++i) {
+        if (raw.at(i) == QLatin1Char('&')) {
+            if (i + 1 < raw.size() && raw.at(i + 1) == QLatin1Char('&')) {
+                out.append(QLatin1Char('&'));
+                ++i;
+            }
+            continue;
+        }
+        out.append(raw.at(i));
+    }
+    return out.trimmed();
+}
+
+static Table *sourceTableFromMultiLayer(MultiLayer *ml,
+                                        const QSet<QObject *> &ignored = QSet<QObject *>())
+{
+    if (!ml)
+        return nullptr;
+
+    auto extractFromGraph = [&ignored](Graph *g) -> Table * {
+        if (!g || g->curves() <= 0)
+            return nullptr;
+        const int selIdx = g->selectedCurveIndex();
+        if (selIdx >= 0 && selIdx < g->curves()) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(selIdx))) {
+                if (dc->table() && !ignored.contains(dc->table()))
+                    return dc->table();
+            }
+        }
+        for (int i = 0; i < g->curves(); ++i) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(i))) {
+                if (dc->table() && !ignored.contains(dc->table()))
+                    return dc->table();
+            }
+        }
+        return nullptr;
+    };
+
+    if (Table *t = extractFromGraph(ml->activeGraph()))
+        return t;
+
+    const QList<Graph *> layers = ml->layersList();
+    for (Graph *g : layers) {
+        if (Table *t = extractFromGraph(g))
+            return t;
+    }
+    return nullptr;
+}
+
+static bool multiLayerUsesTable(MultiLayer *ml, Table *targetTable)
+{
+    if (!ml || !targetTable)
+        return false;
+    const QList<Graph *> layers = ml->layersList();
+    for (Graph *g : layers) {
+        if (!g)
+            continue;
+        for (int i = 0; i < g->curves(); ++i) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(i))) {
+                if (dc->table() == targetTable)
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+class CommandPaletteItemDelegate : public QStyledItemDelegate
+{
+public:
+    explicit CommandPaletteItemDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) { }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        Q_UNUSED(option);
+        Q_UNUSED(index);
+        return QSize(480, 38);
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect rowRect = option.rect.adjusted(4, 2, -4, -2);
+        const bool selected = (option.state & QStyle::State_Selected);
+        const bool hovered = (option.state & QStyle::State_MouseOver);
+
+        if (selected) {
+            painter->setPen(QPen(QColor(37, 99, 235, 90), 1.0));
+            painter->setBrush(QColor(239, 246, 255));
+            painter->drawRoundedRect(rowRect, 7.0, 7.0);
+        } else if (hovered) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(248, 250, 252));
+            painter->drawRoundedRect(rowRect, 7.0, 7.0);
+        }
+
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        const int iconPx = 20;
+        const QRect iconRect(rowRect.left() + 10,
+                             rowRect.top() + (rowRect.height() - iconPx) / 2, iconPx, iconPx);
+        if (!icon.isNull())
+            icon.paint(painter, iconRect, Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+
+        const QString shortcut = index.data(RoleShortcutText).toString();
+        const QString category = index.data(RoleCategoryText).toString();
+        const QString title = index.data(Qt::DisplayRole).toString();
+
+        int rightEdge = rowRect.right() - 10;
+        if (!shortcut.isEmpty()) {
+            QFont badgeFont(QStringLiteral("Segoe UI"), 8);
+            badgeFont.setWeight(QFont::DemiBold);
+            painter->setFont(badgeFont);
+            const QFontMetrics bfm(badgeFont);
+            const int bw = bfm.horizontalAdvance(shortcut) + 14;
+            const int bh = 20;
+            const QRect badgeRect(rightEdge - bw,
+                                  rowRect.top() + (rowRect.height() - bh) / 2, bw, bh);
+            painter->setPen(QPen(QColor(203, 213, 225), 1.0));
+            painter->setBrush(selected ? QColor(255, 255, 255) : QColor(241, 245, 249));
+            painter->drawRoundedRect(badgeRect, 5.0, 5.0);
+            painter->setPen(QColor(71, 85, 105));
+            painter->drawText(badgeRect, Qt::AlignCenter, shortcut);
+            rightEdge = badgeRect.left() - 8;
+        }
+
+        if (!category.isEmpty()) {
+            QFont catFont(QStringLiteral("Segoe UI"), 8);
+            painter->setFont(catFont);
+            const QFontMetrics cfm(catFont);
+            const int cw = qMin(130, cfm.horizontalAdvance(category) + 6);
+            const QRect catRect(rightEdge - cw, rowRect.top(), cw, rowRect.height());
+            painter->setPen(selected ? QColor(37, 99, 235) : QColor(100, 116, 139));
+            painter->drawText(catRect, Qt::AlignRight | Qt::AlignVCenter,
+                              cfm.elidedText(category, Qt::ElideRight, cw));
+            rightEdge = catRect.left() - 8;
+        }
+
+        QFont titleFont(QStringLiteral("Segoe UI"), 9);
+        titleFont.setWeight(selected ? QFont::DemiBold : QFont::Normal);
+        painter->setFont(titleFont);
+        painter->setPen(selected ? QColor(29, 78, 216) : QColor(15, 23, 42));
+        const int textLeft = iconRect.right() + 10;
+        const int availW = qMax(40, rightEdge - textLeft);
+        const QFontMetrics tfm(titleFont);
+        const QRect textRect(textLeft, rowRect.top(), availW, rowRect.height());
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          tfm.elidedText(title, Qt::ElideRight, availW));
+
+        painter->restore();
+    }
+};
+
+class RibbonHorizontalScrollArea : public QScrollArea
+{
+public:
+    explicit RibbonHorizontalScrollArea(QWidget *parent = nullptr) : QScrollArea(parent)
+    {
+        setFrameShape(QFrame::NoFrame);
+        setWidgetResizable(true);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void wheelEvent(QWheelEvent *event) override
+    {
+        if (QScrollBar *hbar = horizontalScrollBar()) {
+            const int delta = (event->angleDelta().x() != 0) ? event->angleDelta().x()
+                                                             : event->angleDelta().y();
+            if (delta != 0 && hbar->maximum() > hbar->minimum()) {
+                hbar->setValue(hbar->value() - (delta / 2));
+                event->accept();
+                return;
+            }
+        }
+        QScrollArea::wheelEvent(event);
+    }
+};
+
+} // namespace
+
+// ============================================================================
+// CommandPalettePopup
+// ============================================================================
+
+CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar *ribbon,
+                                         QWidget *parent)
+    : QDialog(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint),
+      d_app(app),
+      d_ribbon(ribbon)
+{
+    setObjectName(QStringLiteral("ToriCommandPalettePopup"));
+    setAttribute(Qt::WA_TranslucentBackground, false);
+    setModal(false);
+    setFixedSize(580, 410);
+
+    setStyleSheet(QStringLiteral(
+            "QDialog#ToriCommandPalettePopup {"
+            "  background-color: #FFFFFF;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 12px;"
+            "}"
+            "QLineEdit#CommandPaletteSearchEdit {"
+            "  background-color: #F8FAFC;"
+            "  color: #0F172A;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 8px;"
+            "  padding: 6px 10px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
+            "}"
+            "QLineEdit#CommandPaletteSearchEdit:focus {"
+            "  background-color: #FFFFFF;"
+            "  border: 1px solid #2563EB;"
+            "}"
+            "QListWidget#CommandPaletteList {"
+            "  background-color: #FFFFFF;"
+            "  border: none;"
+            "  outline: none;"
+            "}"
+            "QLabel#CommandPaletteHintLabel {"
+            "  color: #64748B;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8pt;"
+            "  padding: 2px 4px;"
+            "}"));
+
+    QVBoxLayout *rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(12, 12, 12, 10);
+    rootLayout->setSpacing(8);
+
+    QHBoxLayout *searchRow = new QHBoxLayout();
+    searchRow->setContentsMargins(0, 0, 0, 0);
+    searchRow->setSpacing(8);
+
+    QLabel *searchIconLbl = new QLabel(this);
+    searchIconLbl->setPixmap(
+            IconLoader::duotonePixmap(QStringLiteral("search-command"), 20, 0.0, false));
+    searchIconLbl->setFixedSize(22, 22);
+    searchIconLbl->setAlignment(Qt::AlignCenter);
+    searchRow->addWidget(searchIconLbl);
+
+    d_search_edit = new QLineEdit(this);
+    d_search_edit->setObjectName(QStringLiteral("CommandPaletteSearchEdit"));
+    d_search_edit->setClearButtonEnabled(true);
+    d_search_edit->installEventFilter(this);
+    searchRow->addWidget(d_search_edit, 1);
+
+    rootLayout->addLayout(searchRow);
+
+    d_list_widget = new QListWidget(this);
+    d_list_widget->setObjectName(QStringLiteral("CommandPaletteList"));
+    d_list_widget->setItemDelegate(new CommandPaletteItemDelegate(d_list_widget));
+    d_list_widget->setUniformItemSizes(true);
+    d_list_widget->setMouseTracking(true);
+    d_list_widget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    d_list_widget->installEventFilter(this);
+    rootLayout->addWidget(d_list_widget, 1);
+
+    d_hint_label = new QLabel(this);
+    d_hint_label->setObjectName(QStringLiteral("CommandPaletteHintLabel"));
+    rootLayout->addWidget(d_hint_label);
+
+    connect(d_search_edit, &QLineEdit::textChanged, this,
+            &CommandPalettePopup::rebuildFilteredList);
+    connect(d_list_widget, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
+        if (item)
+            executeItemAt(d_list_widget->row(item));
+    });
+    connect(d_list_widget, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+        if (item)
+            executeItemAt(d_list_widget->row(item));
+    });
+
+    retranslateUi();
+}
+
+CommandPalettePopup::~CommandPalettePopup() = default;
+
+void CommandPalettePopup::retranslateUi()
+{
+    setWindowTitle(tr("Command Palette"));
+    if (d_search_edit)
+        d_search_edit->setPlaceholderText(tr("Type a command, plot, fit, or preset..."));
+    if (d_hint_label)
+        d_hint_label->setText(tr("Up/Down to navigate  ·  Enter to run  ·  Esc to close"));
+    refreshCommands();
+}
+
+void CommandPalettePopup::refreshCommands()
+{
+    d_entries.clear();
+
+    auto addQuickEntry = [this](const QString &id, const QString &title, const QString &category,
+                                const QString &shortcut, const QString &keywords,
+                                const QString &iconId, std::function<void()> fn, int boost = 80) {
+        CommandEntry e;
+        e.id = id;
+        e.title = title;
+        e.category = category;
+        e.shortcutText = shortcut;
+        e.searchKey = (title + QLatin1Char(' ') + category + QLatin1Char(' ') + shortcut
+                       + QLatin1Char(' ') + keywords)
+                              .toLower();
+        e.iconId = iconId;
+        e.callback = std::move(fn);
+        e.priorityBoost = boost;
+        d_entries.append(std::move(e));
+    };
+
+    const QString catQuick = tr("Quick Preset");
+    const QString catWorkspace = tr("Workspace");
+    const QString catTools = tr("Tools");
+
+    addQuickEntry(
+            QStringLiteral("quick.isij85"), tr("ISIJ 85mm Journal Preset"), catQuick, QString(),
+            QStringLiteral("isij 85mm journal style preset 600dpi"),
+            QStringLiteral("preset-isij"),
+            [this]() {
+                if (d_app)
+                    d_app->applyStyleISIJJournal();
+            },
+            100);
+
+    addQuickEntry(
+            QStringLiteral("quick.slide28"), tr("Presentation Slide 28pt Preset"), catQuick,
+            QString(), QStringLiteral("slide 28pt presentation powerpoint style preset"),
+            QStringLiteral("preset-slide"),
+            [this]() {
+                if (d_app)
+                    d_app->applyStylePresentationSlide();
+            },
+            98);
+
+    addQuickEntry(
+            QStringLiteral("quick.nature89"), tr("Nature Compact 89mm Preset"), catQuick,
+            QString(), QStringLiteral("nature 89mm compact journal style preset"),
+            QStringLiteral("preset-nature"),
+            [this]() {
+                if (d_app)
+                    d_app->applyStyleNatureCompact();
+            },
+            96);
+
+    addQuickEntry(
+            QStringLiteral("quick.split_view"), tr("Split View (Table + Graph)"), catWorkspace,
+            QString(), QStringLiteral("split view side by side table graph workspace"),
+            QStringLiteral("split-view"),
+            [this]() {
+                if (d_ribbon)
+                    d_ribbon->setWorkspaceLayoutMode(ModernRibbonBar::LayoutSplitTableGraph);
+            },
+            94);
+
+    addQuickEntry(
+            QStringLiteral("quick.tabbed_view"), tr("Tabbed Workspace View"), catWorkspace,
+            QString(), QStringLiteral("tabbed tabs workspace view"), QStringLiteral("tab-view"),
+            [this]() {
+                if (d_ribbon)
+                    d_ribbon->setWorkspaceLayoutMode(ModernRibbonBar::LayoutTabbed);
+            },
+            90);
+
+    addQuickEntry(
+            QStringLiteral("quick.free_mdi"), tr("Free MDI Workspace View"), catWorkspace,
+            QString(), QStringLiteral("free mdi cascade subwindow workspace view"),
+            QStringLiteral("mdi-view"),
+            [this]() {
+                if (d_ribbon)
+                    d_ribbon->setWorkspaceLayoutMode(ModernRibbonBar::LayoutFreeMdi);
+            },
+            86);
+
+    addQuickEntry(
+            QStringLiteral("quick.focus_hud"), tr("Toggle Focus HUD Mode (F11)"), catWorkspace,
+            QStringLiteral("F11"), QStringLiteral("focus hud canvas fullscreen f11"),
+            QStringLiteral("focus-hud"),
+            [this]() {
+                if (d_ribbon)
+                    d_ribbon->toggleFocusHudMode();
+            },
+            92);
+
+    addQuickEntry(
+            QStringLiteral("quick.python_console"), tr("Open Python Console"), catTools,
+            QStringLiteral("F9"), QStringLiteral("python console repl script automation"),
+            QStringLiteral("python-console"),
+            [this]() {
+                if (d_ribbon)
+                    emit d_ribbon->openPythonConsoleRequested();
+            },
+            88);
+
+    addQuickEntry(
+            QStringLiteral("quick.python_run"), tr("Run Python Script..."), catTools, QString(),
+            QStringLiteral("run python script py file automation"), QStringLiteral("python-run"),
+            [this]() {
+                if (d_ribbon)
+                    emit d_ribbon->runPythonScriptRequested();
+            },
+            84);
+
+    addQuickEntry(
+            QStringLiteral("quick.check_updates"), tr("Check for Updates..."), catTools,
+            QString(), QStringLiteral("check updates github release version upgrade"),
+            QStringLiteral("update-check"),
+            [this]() {
+                if (d_ribbon)
+                    emit d_ribbon->checkForUpdatesRequested();
+            },
+            82);
+
+    addQuickEntry(
+            QStringLiteral("quick.switch_language"), tr("Switch Language (Japanese / English)"),
+            catTools, QString(), QStringLiteral("language japanese english i18n locale ja en"),
+            QStringLiteral("language-ja-en"),
+            [this]() {
+                if (!d_app)
+                    return;
+                if (d_app->appLanguage.startsWith(QLatin1String("ja"), Qt::CaseInsensitive))
+                    d_app->switchToEnglish();
+                else
+                    d_app->switchToJapanese();
+            },
+            85);
+
+    if (d_app) {
+        QSet<QString> seenTitles;
+        for (const CommandEntry &ce : d_entries)
+            seenTitles.insert(ce.title.toLower());
+
+        const QList<QAction *> actions = d_app->findChildren<QAction *>();
+        const QString catCommand = tr("Command");
+        for (QAction *act : actions) {
+            if (!act || act->isSeparator() || act->menu() != nullptr)
+                continue;
+            if (!act->isVisible() || !act->isEnabled())
+                continue;
+
+            const QString cleanTitle = cleanMnemonicText(act->text());
+            if (cleanTitle.isEmpty() || cleanTitle.size() <= 1)
+                continue;
+
+            const QString lowerTitle = cleanTitle.toLower();
+            if (seenTitles.contains(lowerTitle))
+                continue;
+            seenTitles.insert(lowerTitle);
+
+            CommandEntry e;
+            e.id = act->objectName();
+            e.title = cleanTitle;
+            e.category = catCommand;
+            e.shortcutText = act->shortcut().toString(QKeySequence::NativeText);
+            const QString tip = cleanMnemonicText(act->toolTip());
+            e.searchKey = (cleanTitle + QLatin1Char(' ') + tip + QLatin1Char(' ')
+                           + act->objectName() + QLatin1Char(' ') + e.shortcutText)
+                                  .toLower();
+            e.iconId = IconLoader::resolveIconId(
+                    act->objectName().isEmpty() ? cleanTitle : act->objectName());
+            e.action = act;
+            e.priorityBoost = 0;
+            d_entries.append(std::move(e));
+        }
+    }
+
+    rebuildFilteredList(d_search_edit ? d_search_edit->text() : QString());
+}
+
+void CommandPalettePopup::setFilterText(const QString &query)
+{
+    if (!d_search_edit)
+        return;
+    if (d_search_edit->text() == query)
+        rebuildFilteredList(query);
+    else
+        d_search_edit->setText(query);
+}
+
+QString CommandPalettePopup::filterText() const
+{
+    return d_search_edit ? d_search_edit->text() : QString();
+}
+
+int CommandPalettePopup::visibleCommandCount() const
+{
+    return d_list_widget ? d_list_widget->count() : 0;
+}
+
+int CommandPalettePopup::fuzzyMatchScore(const QString &needleLower, const CommandEntry &entry)
+{
+    if (needleLower.isEmpty())
+        return 100 + entry.priorityBoost;
+
+    const QString titleLower = entry.title.toLower();
+    if (titleLower == needleLower)
+        return 1200 + entry.priorityBoost;
+    if (titleLower.startsWith(needleLower))
+        return 900 + entry.priorityBoost;
+
+    const int subIdx = titleLower.indexOf(needleLower);
+    if (subIdx >= 0)
+        return 700 - qMin(120, subIdx * 3) + entry.priorityBoost;
+
+    const QStringList tokens = needleLower.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (tokens.size() > 1) {
+        bool allTokensFound = true;
+        int tokenBonus = 0;
+        for (const QString &tok : tokens) {
+            if (!entry.searchKey.contains(tok)) {
+                allTokensFound = false;
+                break;
+            }
+            if (titleLower.contains(tok))
+                tokenBonus += 40;
+        }
+        if (allTokensFound)
+            return 520 + tokenBonus + entry.priorityBoost;
+    }
+
+    if (entry.searchKey.contains(needleLower))
+        return 420 + entry.priorityBoost;
+
+    // Subsequence fuzzy match across titleLower
+    int pos = 0;
+    int streak = 0;
+    int score = 200;
+    for (int i = 0; i < needleLower.size(); ++i) {
+        const QChar ch = needleLower.at(i);
+        if (ch.isSpace())
+            continue;
+        const int found = titleLower.indexOf(ch, pos);
+        if (found < 0)
+            return -1;
+        if (found == pos) {
+            streak += 1;
+            score += 18 + streak * 6;
+        } else {
+            streak = 0;
+            score -= qMin(25, found - pos);
+        }
+        pos = found + 1;
+    }
+    return qMax(1, score + (entry.priorityBoost / 2));
+}
+
+void CommandPalettePopup::rebuildFilteredList(const QString &query)
+{
+    if (!d_list_widget)
+        return;
+
+    const QString needle = query.trimmed().toLower();
+    struct ScoredIdx
+    {
+        int index;
+        int score;
+    };
+    QVector<ScoredIdx> matches;
+    matches.reserve(d_entries.size());
+
+    for (int i = 0; i < d_entries.size(); ++i) {
+        const int sc = fuzzyMatchScore(needle, d_entries.at(i));
+        if (sc > 0)
+            matches.append({ i, sc });
+    }
+
+    std::stable_sort(matches.begin(), matches.end(),
+                     [](const ScoredIdx &a, const ScoredIdx &b) { return a.score > b.score; });
+
+    d_list_widget->clear();
+    d_visible_entry_indices.clear();
+
+    const int maxItems = qMin(matches.size(), 80);
+    d_visible_entry_indices.reserve(maxItems);
+    for (int i = 0; i < maxItems; ++i) {
+        const int entryIdx = matches.at(i).index;
+        const CommandEntry &ce = d_entries.at(entryIdx);
+        d_visible_entry_indices.append(entryIdx);
+
+        QIcon itemIcon = (!ce.iconId.isEmpty())
+                ? IconLoader::duotoneIcon(ce.iconId, 20, false)
+                : (ce.action ? ce.action->icon() : QIcon());
+        if (itemIcon.isNull())
+            itemIcon = IconLoader::duotoneIcon(QStringLiteral("search-command"), 20, false);
+
+        QListWidgetItem *item = new QListWidgetItem(itemIcon, ce.title, d_list_widget);
+        item->setData(RoleEntryIndex, entryIdx);
+        item->setData(RoleShortcutText, ce.shortcutText);
+        item->setData(RoleCategoryText, ce.category);
+    }
+
+    if (d_list_widget->count() > 0)
+        d_list_widget->setCurrentRow(0);
+}
+
+bool CommandPalettePopup::executeCurrentSelection()
+{
+    if (!d_list_widget || d_list_widget->count() <= 0)
+        return false;
+    const int row = qMax(0, d_list_widget->currentRow());
+    return executeItemAt(row);
+}
+
+bool CommandPalettePopup::executeItemAt(int row)
+{
+    if (row < 0 || row >= d_visible_entry_indices.size())
+        return false;
+
+    const int entryIdx = d_visible_entry_indices.at(row);
+    if (entryIdx < 0 || entryIdx >= d_entries.size())
+        return false;
+
+    const QPointer<QAction> act = d_entries.at(entryIdx).action;
+    const std::function<void()> cb = d_entries.at(entryIdx).callback;
+
+    hide();
+
+    if (cb) {
+        cb();
+        return true;
+    }
+    if (act && act->isEnabled()) {
+        act->trigger();
+        return true;
+    }
+    return false;
+}
+
+bool CommandPalettePopup::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event && event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if (watched == d_search_edit || watched == d_list_widget) {
+            if (ke->key() == Qt::Key_Down) {
+                if (d_list_widget && d_list_widget->count() > 0) {
+                    const int next = qMin(d_list_widget->count() - 1,
+                                          d_list_widget->currentRow() + 1);
+                    d_list_widget->setCurrentRow(next);
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_Up) {
+                if (d_list_widget && d_list_widget->count() > 0) {
+                    const int prev = qMax(0, d_list_widget->currentRow() - 1);
+                    d_list_widget->setCurrentRow(prev);
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                executeCurrentSelection();
+                return true;
+            }
+            if (ke->key() == Qt::Key_Escape) {
+                hide();
+                return true;
+            }
+        }
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
+void CommandPalettePopup::changeEvent(QEvent *event)
+{
+    QDialog::changeEvent(event);
+    if (event && event->type() == QEvent::LanguageChange)
+        retranslateUi();
+}
+
+void CommandPalettePopup::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    if (d_search_edit) {
+        d_search_edit->setFocus(Qt::PopupFocusReason);
+        d_search_edit->selectAll();
+    }
+}
+
+// ============================================================================
+// FocusTableDrawer
+// ============================================================================
+
+FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
+    : QFrame(parent), d_app(app)
+{
+    setObjectName(QStringLiteral("FocusTableDrawerCard"));
+    setFixedWidth(360);
+    setStyleSheet(QStringLiteral(
+            "QFrame#FocusTableDrawerCard {"
+            "  background-color: rgba(255, 255, 255, 247);"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 12px;"
+            "}"
+            "QLabel#FocusDrawerTitle {"
+            "  color: #0F172A;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 9.5pt;"
+            "  font-weight: 700;"
+            "}"
+            "QLabel#FocusDrawerEmpty {"
+            "  color: #64748B;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 9pt;"
+            "  padding: 12px;"
+            "}"
+            "QToolButton.FocusDrawerBtn {"
+            "  background-color: #F8FAFC;"
+            "  color: #1E293B;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 6px;"
+            "  padding: 3px 6px;"
+            "}"
+            "QToolButton.FocusDrawerBtn:hover {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #2563EB;"
+            "}"
+            "QTableWidget#FocusDrawerGrid {"
+            "  background-color: #FFFFFF;"
+            "  border: 1px solid #E2E8F0;"
+            "  border-radius: 8px;"
+            "  gridline-color: #E2E8F0;"
+            "  selection-background-color: #DBEAFE;"
+            "  selection-color: #0F172A;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.5pt;"
+            "}"));
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(10, 10, 10, 10);
+    mainLayout->setSpacing(8);
+
+    QHBoxLayout *headerRow = new QHBoxLayout();
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(6);
+
+    QLabel *iconLbl = new QLabel(this);
+    iconLbl->setPixmap(IconLoader::duotonePixmap(QStringLiteral("table-drawer"), 18, 0.0, false));
+    iconLbl->setFixedSize(20, 20);
+    headerRow->addWidget(iconLbl);
+
+    d_title_label = new QLabel(this);
+    d_title_label->setObjectName(QStringLiteral("FocusDrawerTitle"));
+    headerRow->addWidget(d_title_label, 1);
+
+    d_btn_new_table = new QToolButton(this);
+    d_btn_new_table->setProperty("class", QStringLiteral("FocusDrawerBtn"));
+    d_btn_new_table->setIcon(IconLoader::duotoneIcon(QStringLiteral("new-table"), 16, false));
+    d_btn_new_table->setCursor(Qt::PointingHandCursor);
+    headerRow->addWidget(d_btn_new_table);
+
+    d_btn_add_col = new QToolButton(this);
+    d_btn_add_col->setProperty("class", QStringLiteral("FocusDrawerBtn"));
+    d_btn_add_col->setIcon(IconLoader::duotoneIcon(QStringLiteral("add-column"), 16, false));
+    d_btn_add_col->setCursor(Qt::PointingHandCursor);
+    headerRow->addWidget(d_btn_add_col);
+
+    d_btn_close = new QToolButton(this);
+    d_btn_close->setProperty("class", QStringLiteral("FocusDrawerBtn"));
+    d_btn_close->setIcon(IconLoader::duotoneIcon(QStringLiteral("clear"), 16, false));
+    d_btn_close->setCursor(Qt::PointingHandCursor);
+    headerRow->addWidget(d_btn_close);
+
+    mainLayout->addLayout(headerRow);
+
+    d_table_combo = new QComboBox(this);
+    d_table_combo->setMinimumHeight(28);
+    mainLayout->addWidget(d_table_combo);
+
+    d_empty_label = new QLabel(this);
+    d_empty_label->setObjectName(QStringLiteral("FocusDrawerEmpty"));
+    d_empty_label->setAlignment(Qt::AlignCenter);
+    d_empty_label->setWordWrap(true);
+    mainLayout->addWidget(d_empty_label);
+
+    d_grid = new QTableWidget(this);
+    d_grid->setObjectName(QStringLiteral("FocusDrawerGrid"));
+    d_grid->setAlternatingRowColors(true);
+    d_grid->horizontalHeader()->setDefaultSectionSize(92);
+    d_grid->horizontalHeader()->setMinimumSectionSize(54);
+    d_grid->verticalHeader()->setDefaultSectionSize(24);
+    mainLayout->addWidget(d_grid, 1);
+
+    connect(d_btn_new_table, &QToolButton::clicked, this, [this]() {
+        if (d_shutting_down || !d_app)
+            return;
+        Table *t = d_app->newTable();
+        refreshTableList(false);
+        if (t)
+            setCurrentTable(t);
+    });
+
+    connect(d_btn_add_col, &QToolButton::clicked, this, [this]() {
+        if (d_shutting_down || !d_current_table)
+            return;
+        d_current_table->addCol(SciDAVis::Y);
+        syncGridFromTable();
+    });
+
+    connect(d_btn_close, &QToolButton::clicked, this, &FocusTableDrawer::closeDrawerRequested);
+
+    connect(d_table_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                if (d_shutting_down || d_syncing || !d_app || idx < 0)
+                    return;
+                const QString tblName = d_table_combo->itemData(idx).toString();
+                Table *target = d_app->table(tblName);
+                if (target && !d_dying_tables.contains(target))
+                    setCurrentTable(target);
+            });
+
+    connect(d_grid, &QTableWidget::cellChanged, this, &FocusTableDrawer::onGridCellChanged);
+
+    if (d_app) {
+        connect(&d_app->folders, &QObject::destroyed, this,
+                &FocusTableDrawer::prepareForAppShutdown);
+    }
+
+    retranslateUi();
+}
+
+FocusTableDrawer::~FocusTableDrawer()
+{
+    prepareForAppShutdown();
+}
+
+void FocusTableDrawer::prepareForAppShutdown()
+{
+    d_shutting_down = true;
+    d_syncing = true;
+
+    if (d_current_table) {
+        disconnect(d_current_table.data(), nullptr, this, nullptr);
+        d_current_table.clear();
+    }
+    d_dying_tables.clear();
+
+    if (d_grid)
+        disconnect(d_grid, nullptr, this, nullptr);
+    if (d_table_combo)
+        disconnect(d_table_combo, nullptr, this, nullptr);
+    if (d_btn_new_table)
+        disconnect(d_btn_new_table, nullptr, this, nullptr);
+    if (d_btn_add_col)
+        disconnect(d_btn_add_col, nullptr, this, nullptr);
+    if (d_btn_close)
+        disconnect(d_btn_close, nullptr, this, nullptr);
+
+    d_app.clear();
+}
+
+Table *FocusTableDrawer::currentTable() const
+{
+    return d_current_table.data();
+}
+
+void FocusTableDrawer::retranslateUi()
+{
+    if (d_shutting_down)
+        return;
+    if (d_title_label)
+        d_title_label->setText(tr("Linked Worksheet"));
+    if (d_btn_new_table)
+        d_btn_new_table->setToolTip(tr("New Table"));
+    if (d_btn_add_col)
+        d_btn_add_col->setToolTip(tr("Add Column"));
+    if (d_btn_close)
+        d_btn_close->setToolTip(tr("Close Worksheet Drawer"));
+    if (d_empty_label)
+        d_empty_label->setText(tr("No worksheet available in the current project."));
+    syncGridFromTable();
+}
+
+Table *FocusTableDrawer::detectPreferredTable(const QSet<QObject *> &ignoredObjects) const
+{
+    if (d_shutting_down || !d_app)
+        return nullptr;
+
+    QSet<QObject *> effectiveIgnored = ignoredObjects;
+    for (MyWidget *mw : d_app->hiddenWindows) {
+        if (mw)
+            effectiveIgnored.insert(mw);
+    }
+
+    auto isUsableTable = [this, &effectiveIgnored](Table *tbl) -> bool {
+        if (!tbl || effectiveIgnored.contains(tbl))
+            return false;
+        if (tbl->status() == MyWidget::Hidden)
+            return false;
+        if (tbl->name().startsWith(QLatin1String("RpcFitCurve")))
+            return false;
+        if (Folder *curFolder = d_app->currentFolder()) {
+            if (!curFolder->windowsList().contains(tbl))
+                return false;
+        }
+        return true;
+    };
+
+    QMdiSubWindow *activeSub = d_app->d_workspace.activeSubWindow();
+    if (activeSub && !effectiveIgnored.contains(activeSub)) {
+        if (Table *activeTbl = qobject_cast<Table *>(activeSub)) {
+            if (isUsableTable(activeTbl))
+                return activeTbl;
+        }
+        if (MultiLayer *activeMl = qobject_cast<MultiLayer *>(activeSub)) {
+            if (Table *srcTbl = sourceTableFromMultiLayer(activeMl, effectiveIgnored)) {
+                if (isUsableTable(srcTbl))
+                    return srcTbl;
+            }
+        }
+    }
+
+    const QList<QMdiSubWindow *> ordered =
+            d_app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+    for (int i = ordered.size() - 1; i >= 0; --i) {
+        QMdiSubWindow *sw = ordered.at(i);
+        if (!sw || effectiveIgnored.contains(sw))
+            continue;
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+            if (Folder *curFolder = d_app->currentFolder()) {
+                if (!curFolder->windowsList().contains(ml))
+                    continue;
+            }
+            if (Table *srcTbl = sourceTableFromMultiLayer(ml, effectiveIgnored)) {
+                if (isUsableTable(srcTbl))
+                    return srcTbl;
+            }
+        }
+    }
+    for (int i = ordered.size() - 1; i >= 0; --i) {
+        QMdiSubWindow *sw = ordered.at(i);
+        if (!sw || effectiveIgnored.contains(sw))
+            continue;
+        if (Table *tbl = qobject_cast<Table *>(sw)) {
+            if (isUsableTable(tbl))
+                return tbl;
+        }
+    }
+    return nullptr;
+}
+
+void FocusTableDrawer::refreshTableList(bool autoSelectActiveCurveTable)
+{
+    if (d_shutting_down)
+        return;
+    refreshTableListInternal(autoSelectActiveCurveTable, d_dying_tables);
+}
+
+void FocusTableDrawer::refreshTableListInternal(bool autoSelectActiveCurveTable,
+                                                const QSet<QObject *> &ignoredObjects)
+{
+    if (d_shutting_down || !d_table_combo)
+        return;
+
+    QVector<Table *> liveTables;
+    if (d_app) {
+        auto appendIfUserTable = [this, &ignoredObjects, &liveTables](MyWidget *mw) {
+            if (!mw || ignoredObjects.contains(mw))
+                return;
+            if (mw->status() == MyWidget::Hidden || d_app->hiddenWindows.contains(mw))
+                return;
+            if (Table *tbl = qobject_cast<Table *>(mw)) {
+                if (tbl->name().startsWith(QLatin1String("RpcFitCurve")))
+                    return;
+                if (!liveTables.contains(tbl))
+                    liveTables.append(tbl);
+            }
+        };
+
+        if (Folder *curFolder = d_app->currentFolder()) {
+            const QList<MyWidget *> folderWins = curFolder->windowsList();
+            for (MyWidget *mw : folderWins)
+                appendIfUserTable(mw);
+        }
+        const QList<QMdiSubWindow *> subs = d_app->d_workspace.subWindowList();
+        for (QMdiSubWindow *sw : subs)
+            appendIfUserTable(qobject_cast<MyWidget *>(sw));
+        for (MyWidget *mw : d_app->outWindows)
+            appendIfUserTable(mw);
+    }
+
+    Table *desired = nullptr;
+    if (autoSelectActiveCurveTable)
+        desired = detectPreferredTable(ignoredObjects);
+    if (!desired && d_current_table && !ignoredObjects.contains(d_current_table.data())
+        && liveTables.contains(d_current_table.data())) {
+        desired = d_current_table.data();
+    }
+    if (!desired && !liveTables.isEmpty())
+        desired = liveTables.first();
+
+    {
+        QSignalBlocker blocker(d_table_combo);
+        d_table_combo->clear();
+        int selectIdx = -1;
+        for (int i = 0; i < liveTables.size(); ++i) {
+            Table *t = liveTables.at(i);
+            const QString lbl = t->windowLabel().trimmed();
+            const QString disp = lbl.isEmpty()
+                    ? t->name()
+                    : QStringLiteral("%1 — %2").arg(t->name(), lbl);
+            d_table_combo->addItem(
+                    IconLoader::duotoneIcon(QStringLiteral("new-table"), 16, false), disp,
+                    t->name());
+            if (t == desired)
+                selectIdx = i;
+        }
+        if (selectIdx >= 0)
+            d_table_combo->setCurrentIndex(selectIdx);
+    }
+
+    setCurrentTable(desired);
+}
+
+void FocusTableDrawer::bindTableSignals(Table *table)
+{
+    if (d_shutting_down) {
+        if (d_current_table) {
+            disconnect(d_current_table.data(), nullptr, this, nullptr);
+            d_current_table.clear();
+        }
+        return;
+    }
+
+    if (d_current_table == table)
+        return;
+
+    if (d_current_table)
+        disconnect(d_current_table.data(), nullptr, this, nullptr);
+
+    d_current_table = table;
+
+    if (d_current_table) {
+        connect(d_current_table.data(), &QObject::destroyed, this,
+                &FocusTableDrawer::onCurrentTableDestroyed, Qt::UniqueConnection);
+        connect(d_current_table.data(), &Table::modifiedData, this,
+                [this](Table *, const QString &) {
+                    if (!d_shutting_down && !d_syncing)
+                        syncGridFromTable();
+                });
+        connect(d_current_table.data(), &Table::changedColHeader, this,
+                [this](const QString &, const QString &) {
+                    if (!d_shutting_down && !d_syncing)
+                        syncGridFromTable();
+                });
+        connect(d_current_table.data(), &Table::removedCol, this, [this](const QString &) {
+            if (!d_shutting_down && !d_syncing)
+                syncGridFromTable();
+        });
+    }
+}
+
+void FocusTableDrawer::setCurrentTable(Table *table)
+{
+    if (d_shutting_down)
+        return;
+
+    if (table && d_dying_tables.contains(table))
+        table = nullptr;
+
+    bindTableSignals(table);
+
+    if (d_table_combo && d_current_table) {
+        const int idx = d_table_combo->findData(d_current_table->name());
+        if (idx >= 0 && d_table_combo->currentIndex() != idx) {
+            QSignalBlocker blocker(d_table_combo);
+            d_table_combo->setCurrentIndex(idx);
+        }
+    }
+
+    if (d_btn_add_col)
+        d_btn_add_col->setEnabled(!d_current_table.isNull());
+
+    syncGridFromTable();
+}
+
+void FocusTableDrawer::onCurrentTableDestroyed(QObject *destroyedObj)
+{
+    if (d_shutting_down || !d_app) {
+        d_current_table.clear();
+        return;
+    }
+    if (destroyedObj)
+        d_dying_tables.insert(destroyedObj);
+    d_current_table.clear();
+    refreshTableListInternal(true, d_dying_tables);
+    if (destroyedObj)
+        d_dying_tables.remove(destroyedObj);
+}
+
+void FocusTableDrawer::syncGridFromTable()
+{
+    if (d_shutting_down || !d_grid || !d_empty_label)
+        return;
+
+    Table *tbl = d_current_table.data();
+    if (!tbl || d_dying_tables.contains(tbl)) {
+        QSignalBlocker blocker(d_grid);
+        d_grid->clear();
+        d_grid->setRowCount(0);
+        d_grid->setColumnCount(0);
+        d_grid->hide();
+        d_empty_label->show();
+        return;
+    }
+
+    d_empty_label->hide();
+    d_grid->show();
+
+    d_syncing = true;
+    QSignalBlocker blocker(d_grid);
+
+    const int rows = qMax(0, tbl->numRows());
+    const int cols = qMax(0, tbl->numCols());
+    d_grid->setRowCount(rows);
+    d_grid->setColumnCount(cols);
+
+    for (int c = 0; c < cols; ++c) {
+        QString roleTag;
+        switch (tbl->colPlotDesignation(c)) {
+        case SciDAVis::X:
+            roleTag = QStringLiteral("[X]");
+            break;
+        case SciDAVis::Y:
+            roleTag = QStringLiteral("[Y]");
+            break;
+        case SciDAVis::Z:
+            roleTag = QStringLiteral("[Z]");
+            break;
+        case SciDAVis::xErr:
+            roleTag = QStringLiteral("[dX]");
+            break;
+        case SciDAVis::yErr:
+            roleTag = QStringLiteral("[dY]");
+            break;
+        default:
+            break;
+        }
+        Column *colObj = tbl->column(c);
+        QString colFormula;
+        if (colObj && !colObj->formulaIntervals().isEmpty()) {
+            const Interval<int> iv = colObj->formulaIntervals().first();
+            colFormula = colObj->formula(iv.start()).trimmed();
+        }
+        const QString longName = tbl->colLongName(c).trimmed();
+        const QString units = tbl->colUnits(c).trimmed();
+        QString h = longName.isEmpty() ? tbl->colLabel(c) : longName;
+        if (!roleTag.isEmpty())
+            h += QLatin1Char(' ') + roleTag;
+        if (!colFormula.isEmpty())
+            h += QLatin1Char(' ') + tr("[fx]");
+        if (!units.isEmpty())
+            h += QStringLiteral("\n(%1)").arg(units);
+
+        QTableWidgetItem *hdrItem = new QTableWidgetItem(h);
+        if (!colFormula.isEmpty())
+            hdrItem->setToolTip(tr("Formula (read-only): %1").arg(colFormula));
+        d_grid->setHorizontalHeaderItem(c, hdrItem);
+    }
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            Column *colObj = tbl->column(c);
+            const QString cellFormula = colObj ? colObj->formula(r).trimmed() : QString();
+            const bool isFormulaCell = !cellFormula.isEmpty();
+            const QString val = tbl->text(r, c);
+            QTableWidgetItem *it = d_grid->item(r, c);
+            if (!it) {
+                it = new QTableWidgetItem(val);
+                d_grid->setItem(r, c, it);
+            } else if (it->text() != val) {
+                it->setText(val);
+            }
+
+            if (isFormulaCell) {
+                it->setFlags((it->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                             & ~Qt::ItemIsEditable);
+                it->setBackground(QColor(241, 245, 249));
+                it->setForeground(QColor(30, 64, 175));
+                it->setToolTip(tr("Formula (read-only): %1").arg(cellFormula));
+            } else {
+                it->setFlags(it->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable
+                             | Qt::ItemIsEditable);
+                it->setData(Qt::BackgroundRole, QVariant());
+                it->setData(Qt::ForegroundRole, QVariant());
+                it->setToolTip(QString());
+            }
+        }
+    }
+
+    d_syncing = false;
+}
+
+void FocusTableDrawer::onGridCellChanged(int row, int col)
+{
+    if (d_shutting_down || d_syncing || !d_current_table || !d_grid)
+        return;
+    QTableWidgetItem *it = d_grid->item(row, col);
+    if (!it || !(it->flags() & Qt::ItemIsEditable))
+        return;
+    setCellValueFromDrawer(row, col, it->text());
+}
+
+bool FocusTableDrawer::setCellValueFromDrawer(int row, int col, const QString &text)
+{
+    if (d_shutting_down)
+        return false;
+    Table *tbl = d_current_table.data();
+    if (!tbl || d_dying_tables.contains(tbl))
+        return false;
+    if (row < 0 || col < 0 || col >= tbl->numCols())
+        return false;
+    if (Column *colObj = tbl->column(col)) {
+        if (row < tbl->numRows() && !colObj->formula(row).trimmed().isEmpty())
+            return false;
+        if (row >= tbl->numRows() && !colObj->formulaIntervals().isEmpty()) {
+            const Interval<int> lastIv = colObj->formulaIntervals().last();
+            if (tbl->numRows() > 0 && lastIv.end() >= tbl->numRows() - 1
+                && !colObj->formula(lastIv.start()).trimmed().isEmpty()) {
+                return false;
+            }
+        }
+    }
+    if (row >= tbl->numRows())
+        tbl->setNumRows(row + 1);
+
+    d_syncing = true;
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty()) {
+        tbl->clearCell(row, col);
+    } else if (tbl->columnType(col) == SciDAVis::ColumnMode::Numeric) {
+        bool ok = false;
+        double numericVal = QLocale().toDouble(trimmed, &ok);
+        if (!ok)
+            numericVal = trimmed.toDouble(&ok);
+        if (ok)
+            tbl->setCell(row, col, numericVal);
+        else
+            tbl->setText(row, col, trimmed);
+    } else {
+        tbl->setText(row, col, text);
+    }
+    d_syncing = false;
+
+    syncGridFromTable();
+    return true;
+}
+
+void FocusTableDrawer::changeEvent(QEvent *event)
+{
+    QFrame::changeEvent(event);
+    if (event && event->type() == QEvent::LanguageChange)
+        retranslateUi();
+}
+
+// ============================================================================
+// FocusCanvasHudOverlay
+// ============================================================================
+
+FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbonBar *ribbon,
+                                             QWidget *viewportParent)
+    : QFrame(viewportParent), d_app(app), d_ribbon(ribbon), d_viewport(viewportParent)
+{
+    setObjectName(QStringLiteral("FocusCanvasDarkPill"));
+    setStyleSheet(QStringLiteral(
+            "QFrame#FocusCanvasDarkPill {"
+            "  background-color: rgba(15, 23, 42, 235);"
+            "  border: 1px solid rgba(148, 163, 184, 95);"
+            "  border-radius: 14px;"
+            "}"
+            "QFrame#FocusCanvasDarkPill QToolButton {"
+            "  background-color: transparent;"
+            "  color: #F8FAFC;"
+            "  border: 1px solid transparent;"
+            "  border-radius: 9px;"
+            "  padding: 4px 8px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 600;"
+            "}"
+            "QFrame#FocusCanvasDarkPill QToolButton:hover {"
+            "  background-color: rgba(59, 130, 246, 75);"
+            "  border: 1px solid rgba(96, 165, 250, 140);"
+            "  color: #FFFFFF;"
+            "}"
+            "QFrame#FocusCanvasDarkPill QToolButton::menu-indicator {"
+            "  image: none;"
+            "  width: 0px;"
+            "}"));
+
+    QHBoxLayout *pillLayout = new QHBoxLayout(this);
+    pillLayout->setContentsMargins(8, 4, 8, 4);
+    pillLayout->setSpacing(3);
+
+    auto makeDarkBtn = [this, pillLayout](const QString &iconId,
+                                          std::function<void()> onClick) -> QToolButton * {
+        QToolButton *btn = new QToolButton(this);
+        btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        btn->setIcon(IconLoader::duotoneIcon(iconId, 18, true));
+        btn->setIconSize(QSize(18, 18));
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setFocusPolicy(Qt::NoFocus);
+        if (onClick)
+            connect(btn, &QToolButton::clicked, this, std::move(onClick));
+        pillLayout->addWidget(btn);
+        return btn;
+    };
+
+    auto addPillSep = [this, pillLayout]() {
+        QFrame *sep = new QFrame(this);
+        sep->setFixedSize(1, 18);
+        sep->setStyleSheet(QStringLiteral("background-color: rgba(148, 163, 184, 75);"));
+        pillLayout->addWidget(sep);
+    };
+
+    d_btn_plot = makeDarkBtn(QStringLiteral("plot-line-symbol"), nullptr);
+    d_btn_plot->setPopupMode(QToolButton::InstantPopup);
+    d_plot_menu = new QMenu(d_btn_plot);
+    connect(d_plot_menu, &QMenu::aboutToShow, this, &FocusCanvasHudOverlay::populateQuickPlotMenu);
+    d_btn_plot->setMenu(d_plot_menu);
+
+    d_btn_peaks = makeDarkBtn(QStringLiteral("peak-analyzer"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->showPeakAnalyzerDialog(0);
+    });
+    d_btn_roi = makeDarkBtn(QStringLiteral("gadget-roi"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->attachRegionStatsGadget();
+    });
+    d_btn_profile2d = makeDarkBtn(QStringLiteral("gadget-profile-2d"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->attachImageProfileGadget();
+    });
+
+    addPillSep();
+
+    d_btn_isij = makeDarkBtn(QStringLiteral("preset-isij"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->applyStyleISIJJournal();
+    });
+    d_btn_slide = makeDarkBtn(QStringLiteral("preset-slide"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->applyStylePresentationSlide();
+    });
+    d_btn_ole = makeDarkBtn(QStringLiteral("copy-ole"), [this]() {
+        if (!d_shutting_down && d_app)
+            d_app->copyGraphAsOleObject();
+    });
+
+    addPillSep();
+
+    d_btn_palette = makeDarkBtn(QStringLiteral("search-command"), [this]() {
+        if (!d_shutting_down && d_ribbon)
+            d_ribbon->openCommandPalette();
+    });
+
+    const QString edgePillStyle = QStringLiteral(
+            "QToolButton {"
+            "  background-color: rgba(15, 23, 42, 230);"
+            "  color: #F8FAFC;"
+            "  border: 1px solid rgba(148, 163, 184, 95);"
+            "  border-radius: 12px;"
+            "  padding: 5px 11px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 600;"
+            "}"
+            "QToolButton:hover {"
+            "  background-color: rgba(37, 99, 235, 225);"
+            "  border: 1px solid #60A5FA;"
+            "  color: #FFFFFF;"
+            "}"
+            "QToolButton:checked {"
+            "  background-color: #2563EB;"
+            "  border: 1px solid #93C5FD;"
+            "  color: #FFFFFF;"
+            "}");
+
+    d_btn_worksheet = new QToolButton(viewportParent);
+    d_btn_worksheet->setObjectName(QStringLiteral("FocusHudWorksheetButton"));
+    d_btn_worksheet->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    d_btn_worksheet->setIcon(IconLoader::duotoneIcon(QStringLiteral("table-drawer"), 18, true));
+    d_btn_worksheet->setIconSize(QSize(18, 18));
+    d_btn_worksheet->setCheckable(true);
+    d_btn_worksheet->setCursor(Qt::PointingHandCursor);
+    d_btn_worksheet->setFocusPolicy(Qt::NoFocus);
+    d_btn_worksheet->setStyleSheet(edgePillStyle);
+
+    d_btn_exit_focus = new QToolButton(viewportParent);
+    d_btn_exit_focus->setObjectName(QStringLiteral("FocusHudExitButton"));
+    d_btn_exit_focus->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    d_btn_exit_focus->setIcon(IconLoader::duotoneIcon(QStringLiteral("exit-focus-hud"), 18, true));
+    d_btn_exit_focus->setIconSize(QSize(18, 18));
+    d_btn_exit_focus->setCursor(Qt::PointingHandCursor);
+    d_btn_exit_focus->setFocusPolicy(Qt::NoFocus);
+    d_btn_exit_focus->setStyleSheet(edgePillStyle);
+
+    d_table_drawer = new FocusTableDrawer(app, viewportParent);
+
+    connect(d_btn_worksheet.data(), &QToolButton::toggled, this,
+            &FocusCanvasHudOverlay::setTableDrawerVisible);
+    connect(d_table_drawer.data(), &FocusTableDrawer::closeDrawerRequested, this,
+            [this]() { setTableDrawerVisible(false); });
+    connect(d_btn_exit_focus.data(), &QToolButton::clicked, this, [this]() {
+        if (!d_shutting_down && d_ribbon)
+            d_ribbon->setFocusHudMode(false);
+    });
+
+    if (d_viewport)
+        d_viewport->installEventFilter(this);
+
+    hide();
+    d_btn_worksheet->hide();
+    d_btn_exit_focus->hide();
+    d_table_drawer->hide();
+
+    retranslateUi();
+}
+
+FocusCanvasHudOverlay::~FocusCanvasHudOverlay()
+{
+    prepareForAppShutdown();
+    if (d_btn_worksheet)
+        delete d_btn_worksheet.data();
+    if (d_btn_exit_focus)
+        delete d_btn_exit_focus.data();
+    if (d_table_drawer)
+        delete d_table_drawer.data();
+}
+
+void FocusCanvasHudOverlay::prepareForAppShutdown()
+{
+    d_shutting_down = true;
+    d_active = false;
+
+    if (d_viewport) {
+        d_viewport->removeEventFilter(this);
+        d_viewport.clear();
+    }
+    if (d_table_drawer) {
+        disconnect(d_table_drawer.data(), nullptr, this, nullptr);
+        d_table_drawer->prepareForAppShutdown();
+    }
+    if (d_btn_worksheet)
+        disconnect(d_btn_worksheet.data(), nullptr, this, nullptr);
+    if (d_btn_exit_focus)
+        disconnect(d_btn_exit_focus.data(), nullptr, this, nullptr);
+    if (d_plot_menu)
+        disconnect(d_plot_menu, nullptr, this, nullptr);
+
+    d_app.clear();
+    d_ribbon.clear();
+}
+
+FocusTableDrawer *FocusCanvasHudOverlay::tableDrawer() const
+{
+    return d_table_drawer.data();
+}
+
+QToolButton *FocusCanvasHudOverlay::worksheetToggleButton() const
+{
+    return d_btn_worksheet.data();
+}
+
+QToolButton *FocusCanvasHudOverlay::exitFocusButton() const
+{
+    return d_btn_exit_focus.data();
+}
+
+void FocusCanvasHudOverlay::populateQuickPlotMenu()
+{
+    if (d_shutting_down || !d_plot_menu)
+        return;
+    d_plot_menu->clear();
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-line"), 18, false),
+                           tr("Line"), this, [this]() {
+                               if (!d_shutting_down && d_ribbon)
+                                   d_ribbon->triggerPlot2D(Graph::Line);
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-scatter"), 18, false),
+                           tr("Scatter"), this, [this]() {
+                               if (!d_shutting_down && d_ribbon)
+                                   d_ribbon->triggerPlot2D(Graph::Scatter);
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 18, false),
+                           tr("Line + Symbol"), this, [this]() {
+                               if (!d_shutting_down && d_ribbon)
+                                   d_ribbon->triggerPlot2D(Graph::LineSymbols);
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-bars"), 18, false),
+                           tr("Bars"), this, [this]() {
+                               if (!d_shutting_down && d_ribbon)
+                                   d_ribbon->triggerPlot2D(Graph::VerticalBars);
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-box"), 18, false),
+                           tr("Box Plot"), this, [this]() {
+                               if (!d_shutting_down && d_ribbon)
+                                   d_ribbon->triggerPlot2D(Graph::Box);
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-violin"), 18, false),
+                           tr("Violin Plot"), this, [this]() {
+                               if (!d_shutting_down && d_app)
+                                   d_app->plotViolin();
+                           });
+    d_plot_menu->addSeparator();
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-heatmap"), 18, false),
+                           tr("Heatmap"), this, [this]() {
+                               if (!d_shutting_down && d_app)
+                                   d_app->plotColorMap();
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-contour"), 18, false),
+                           tr("Contour"), this, [this]() {
+                               if (!d_shutting_down && d_app)
+                                   d_app->plotContour();
+                           });
+    d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-3d-surface"), 18, false),
+                           tr("3D Surface"), this, [this]() {
+                               if (!d_shutting_down && d_app)
+                                   d_app->plot3DWireSurface();
+                           });
+}
+
+void FocusCanvasHudOverlay::retranslateUi()
+{
+    if (d_shutting_down)
+        return;
+    if (d_btn_plot) {
+        d_btn_plot->setText(tr("Plot"));
+        d_btn_plot->setToolTip(tr("Quick Plot from Active Worksheet"));
+    }
+    if (d_btn_peaks) {
+        d_btn_peaks->setText(tr("Peak Analyzer"));
+        d_btn_peaks->setToolTip(tr("Open Peak Analyzer & Deconvolution"));
+    }
+    if (d_btn_roi) {
+        d_btn_roi->setText(tr("ROI Gadget"));
+        d_btn_roi->setToolTip(tr("Attach Interactive ROI Statistics Gadget"));
+    }
+    if (d_btn_profile2d) {
+        d_btn_profile2d->setText(tr("2D Profile"));
+        d_btn_profile2d->setToolTip(tr("Attach Interactive 2D Image/Matrix Profile Gadget"));
+    }
+    if (d_btn_isij) {
+        d_btn_isij->setText(tr("ISIJ 85mm Preset"));
+        d_btn_isij->setToolTip(tr("Apply ISIJ 85mm Journal Style Preset (600 DPI, Arial)"));
+    }
+    if (d_btn_slide) {
+        d_btn_slide->setText(tr("Slide 28pt Preset"));
+        d_btn_slide->setToolTip(tr("Apply Presentation Slide 28pt Style Preset (Arial)"));
+    }
+    if (d_btn_ole) {
+        d_btn_ole->setText(tr("Copy OLE"));
+        d_btn_ole->setToolTip(tr("Copy Editable OLE Graph Object for PowerPoint"));
+    }
+    if (d_btn_palette) {
+        d_btn_palette->setText(tr("Search (Ctrl+K)"));
+        d_btn_palette->setToolTip(tr("Open Command Palette (Ctrl+K)"));
+    }
+    if (d_btn_worksheet) {
+        d_btn_worksheet->setText(tr("Worksheet"));
+        d_btn_worksheet->setToolTip(tr("Toggle Slide-Over Linked Worksheet Drawer"));
+    }
+    if (d_btn_exit_focus) {
+        d_btn_exit_focus->setText(tr("Exit Focus (F11)"));
+        d_btn_exit_focus->setToolTip(tr("Exit Focus HUD Mode and Restore Ribbon (F11)"));
+    }
+    if (d_table_drawer)
+        d_table_drawer->retranslateUi();
+
+    populateQuickPlotMenu();
+    if (d_active)
+        repositionOverlayWidgets();
+}
+
+void FocusCanvasHudOverlay::setOverlayActive(bool active)
+{
+    if (d_shutting_down) {
+        d_active = false;
+        return;
+    }
+    d_active = active;
+    if (!d_active) {
+        hide();
+        if (d_btn_worksheet) {
+            QSignalBlocker blocker(d_btn_worksheet.data());
+            d_btn_worksheet->setChecked(false);
+            d_btn_worksheet->hide();
+        }
+        if (d_btn_exit_focus)
+            d_btn_exit_focus->hide();
+        if (d_table_drawer)
+            d_table_drawer->hide();
+        return;
+    }
+
+    if (d_table_drawer)
+        d_table_drawer->refreshTableList(true);
+
+    show();
+    if (d_btn_worksheet)
+        d_btn_worksheet->show();
+    if (d_btn_exit_focus)
+        d_btn_exit_focus->show();
+
+    repositionOverlayWidgets();
+}
+
+void FocusCanvasHudOverlay::setTableDrawerVisible(bool visible)
+{
+    if (d_shutting_down)
+        return;
+    if (d_btn_worksheet && d_btn_worksheet->isChecked() != visible) {
+        QSignalBlocker blocker(d_btn_worksheet.data());
+        d_btn_worksheet->setChecked(visible);
+    }
+    if (!d_table_drawer)
+        return;
+
+    if (visible && d_active) {
+        d_table_drawer->refreshTableList(true);
+        d_table_drawer->show();
+        repositionOverlayWidgets();
+    } else {
+        d_table_drawer->hide();
+    }
+}
+
+bool FocusCanvasHudOverlay::isTableDrawerVisible() const
+{
+    return d_table_drawer && !d_table_drawer->isHidden();
+}
+
+void FocusCanvasHudOverlay::refreshActiveContext()
+{
+    if (d_shutting_down)
+        return;
+    if (d_active && d_table_drawer)
+        d_table_drawer->refreshTableList(true);
+}
+
+void FocusCanvasHudOverlay::repositionOverlayWidgets()
+{
+    if (d_shutting_down || !d_active)
+        return;
+
+    const QSize vpSz = (d_viewport && d_viewport->width() >= 160 && d_viewport->height() >= 100)
+            ? d_viewport->size()
+            : (d_app ? d_app->size() : QSize(1024, 720));
+
+    const int topY = 10;
+
+    if (d_btn_worksheet) {
+        d_btn_worksheet->adjustSize();
+        const QSize wsSz = d_btn_worksheet->sizeHint();
+        d_btn_worksheet->setGeometry(12, topY, qMax(100, wsSz.width()), qMax(32, wsSz.height()));
+        d_btn_worksheet->raise();
+    }
+
+    if (d_btn_exit_focus) {
+        d_btn_exit_focus->adjustSize();
+        const QSize exSz = d_btn_exit_focus->sizeHint();
+        const int ew = qMax(110, exSz.width());
+        const int eh = qMax(32, exSz.height());
+        d_btn_exit_focus->setGeometry(qMax(12, vpSz.width() - ew - 12), topY, ew, eh);
+        d_btn_exit_focus->raise();
+    }
+
+    adjustSize();
+    const QSize pillSz = sizeHint();
+    const int pw = qMin(pillSz.width(), qMax(240, vpSz.width() - 280));
+    const int ph = qMax(36, pillSz.height());
+    const int px = qMax(130, (vpSz.width() - pw) / 2);
+    setGeometry(px, topY, pw, ph);
+    raise();
+
+    if (d_table_drawer && !d_table_drawer->isHidden()) {
+        const int drawerTop = topY + ph + 10;
+        const int drawerH = qMax(200, vpSz.height() - drawerTop - 14);
+        d_table_drawer->setGeometry(12, drawerTop, 360, drawerH);
+        d_table_drawer->raise();
+    }
+}
+
+bool FocusCanvasHudOverlay::eventFilter(QObject *watched, QEvent *event)
+{
+    if (d_shutting_down)
+        return QFrame::eventFilter(watched, event);
+    if (d_active && watched == d_viewport && event) {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show
+            || event->type() == QEvent::ChildAdded) {
+            repositionOverlayWidgets();
+        }
+    }
+    return QFrame::eventFilter(watched, event);
+}
+
+void FocusCanvasHudOverlay::changeEvent(QEvent *event)
+{
+    QFrame::changeEvent(event);
+    if (event && event->type() == QEvent::LanguageChange)
+        retranslateUi();
+}
+
+// ============================================================================
+// ModernRibbonBar
+// ============================================================================
+
+ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
+    : QFrame(parent), d_app(app)
+{
+    setObjectName(QStringLiteral("ModernRibbonBarRoot"));
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setStyleSheet(QStringLiteral(
+            "QFrame#ModernRibbonBarRoot {"
+            "  background-color: #F8FAFC;"
+            "  border-bottom: 1px solid #CBD5E1;"
+            "}"
+            "QWidget#ModernRibbonTopStrip {"
+            "  background-color: #F1F5F9;"
+            "  border-bottom: 1px solid #E2E8F0;"
+            "}"
+            "QTabBar#ModernRibbonTabBar {"
+            "  background: transparent;"
+            "  border: none;"
+            "}"
+            "QTabBar#ModernRibbonTabBar::tab {"
+            "  background: transparent;"
+            "  color: #475569;"
+            "  border: 1px solid transparent;"
+            "  border-top-left-radius: 7px;"
+            "  border-top-right-radius: 7px;"
+            "  padding: 5px 11px;"
+            "  margin-right: 2px;"
+            "  margin-top: 3px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.8pt;"
+            "  font-weight: 600;"
+            "}"
+            "QTabBar#ModernRibbonTabBar::tab:hover {"
+            "  background-color: #E2E8F0;"
+            "  color: #0F172A;"
+            "}"
+            "QTabBar#ModernRibbonTabBar::tab:selected {"
+            "  background-color: #FFFFFF;"
+            "  color: #2563EB;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-bottom: 1px solid #FFFFFF;"
+            "}"
+            "QStackedWidget#ModernRibbonTabStack {"
+            "  background-color: #FFFFFF;"
+            "}"
+            "QToolButton.RibbonActionBtn {"
+            "  background-color: transparent;"
+            "  color: #1E293B;"
+            "  border: 1px solid transparent;"
+            "  border-radius: 6px;"
+            "  padding: 3px 7px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 500;"
+            "  min-height: 26px;"
+            "}"
+            "QToolButton.RibbonActionBtn:hover {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #BFDBFE;"
+            "}"
+            "QToolButton.RibbonActionBtn:checked {"
+            "  background-color: #DBEAFE;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #2563EB;"
+            "  font-weight: 600;"
+            "}"
+            "QToolButton.RibbonPresetBtn {"
+            "  background-color: #FFF7ED;"
+            "  color: #9A3412;"
+            "  border: 1px solid #FDBA74;"
+            "  border-radius: 7px;"
+            "  padding: 3px 9px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.5pt;"
+            "  font-weight: 700;"
+            "  min-height: 26px;"
+            "}"
+            "QToolButton.RibbonPresetBtn:hover {"
+            "  background-color: #FFEDD5;"
+            "  color: #7C2D12;"
+            "  border: 1px solid #EA580C;"
+            "}"
+            "QToolButton#RibbonCommandSearchPill {"
+            "  background-color: #FFFFFF;"
+            "  color: #475569;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 11px;"
+            "  padding: 2px 10px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8.3pt;"
+            "  font-weight: 600;"
+            "}"
+            "QToolButton#RibbonCommandSearchPill:hover {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #2563EB;"
+            "}"
+            "QToolButton.RibbonHeaderPill {"
+            "  background-color: #FFFFFF;"
+            "  color: #334155;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 6px;"
+            "  padding: 2px 7px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8pt;"
+            "  font-weight: 600;"
+            "}"
+            "QToolButton.RibbonHeaderPill:hover {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #93C5FD;"
+            "}"
+            "QToolButton.RibbonHeaderPill:checked {"
+            "  background-color: #2563EB;"
+            "  color: #FFFFFF;"
+            "  border: 1px solid #1D4ED8;"
+            "}"
+            "QLabel#RibbonContextBadge {"
+            "  background-color: #DBEAFE;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #93C5FD;"
+            "  border-radius: 10px;"
+            "  padding: 2px 10px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8pt;"
+            "  font-weight: 700;"
+            "}"
+            "QLabel.RibbonGroupCaption {"
+            "  color: #64748B;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 7.3pt;"
+            "  font-weight: 600;"
+            "}"));
+
+    QVBoxLayout *rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    // Top Header Row: 7 Contextual Tabs + Search Pill + Workspace Mode + Focus + Language + Context Badge
+    QWidget *topStrip = new QWidget(this);
+    topStrip->setObjectName(QStringLiteral("ModernRibbonTopStrip"));
+    QHBoxLayout *topLayout = new QHBoxLayout(topStrip);
+    topLayout->setContentsMargins(8, 2, 8, 0);
+    topLayout->setSpacing(6);
+
+    d_tab_bar = new QTabBar(topStrip);
+    d_tab_bar->setObjectName(QStringLiteral("ModernRibbonTabBar"));
+    d_tab_bar->setExpanding(false);
+    d_tab_bar->setDrawBase(false);
+    d_tab_bar->setUsesScrollButtons(true);
+    d_tab_bar->setFocusPolicy(Qt::NoFocus);
+    topLayout->addWidget(d_tab_bar, 1);
+
+    d_btn_cmd_palette = new QToolButton(topStrip);
+    d_btn_cmd_palette->setObjectName(QStringLiteral("RibbonCommandSearchPill"));
+    d_btn_cmd_palette->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    d_btn_cmd_palette->setIcon(IconLoader::duotoneIcon(QStringLiteral("search-command"), 16, false));
+    d_btn_cmd_palette->setIconSize(QSize(15, 15));
+    d_btn_cmd_palette->setCursor(Qt::PointingHandCursor);
+    d_btn_cmd_palette->setFocusPolicy(Qt::NoFocus);
+    connect(d_btn_cmd_palette, &QToolButton::clicked, this, &ModernRibbonBar::openCommandPalette);
+    topLayout->addWidget(d_btn_cmd_palette);
+
+    d_layout_btn_group = new QButtonGroup(this);
+    d_layout_btn_group->setExclusive(true);
+
+    auto makeHeaderPill = [topStrip](const QString &iconId, bool checkable) -> QToolButton * {
+        QToolButton *b = new QToolButton(topStrip);
+        b->setProperty("class", QStringLiteral("RibbonHeaderPill"));
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setIcon(IconLoader::duotoneIcon(iconId, 16, false));
+        b->setIconSize(QSize(14, 14));
+        b->setCheckable(checkable);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        return b;
+    };
+
+    d_btn_layout_tabbed = makeHeaderPill(QStringLiteral("tab-view"), true);
+    d_btn_layout_split = makeHeaderPill(QStringLiteral("split-view"), true);
+    d_btn_layout_mdi = makeHeaderPill(QStringLiteral("mdi-view"), true);
+
+    d_layout_btn_group->addButton(d_btn_layout_tabbed, int(LayoutTabbed));
+    d_layout_btn_group->addButton(d_btn_layout_split, int(LayoutSplitTableGraph));
+    d_layout_btn_group->addButton(d_btn_layout_mdi, int(LayoutFreeMdi));
+    d_btn_layout_tabbed->setChecked(true);
+
+    topLayout->addWidget(d_btn_layout_tabbed);
+    topLayout->addWidget(d_btn_layout_split);
+    topLayout->addWidget(d_btn_layout_mdi);
+
+    connect(d_layout_btn_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
+            [this](int modeId) { setWorkspaceLayoutMode(WorkspaceLayoutMode(modeId)); });
+
+    d_btn_focus_mode = makeHeaderPill(QStringLiteral("focus-hud"), false);
+    connect(d_btn_focus_mode, &QToolButton::clicked, this,
+            [this]() { setFocusHudMode(true); });
+    topLayout->addWidget(d_btn_focus_mode);
+
+    d_btn_lang_switch = makeHeaderPill(QStringLiteral("language-ja-en"), false);
+    connect(d_btn_lang_switch, &QToolButton::clicked, this, [this]() {
+        if (!d_app)
+            return;
+        if (d_app->appLanguage.startsWith(QLatin1String("ja"), Qt::CaseInsensitive))
+            d_app->switchToEnglish();
+        else
+            d_app->switchToJapanese();
+    });
+    topLayout->addWidget(d_btn_lang_switch);
+
+    d_context_pill = new QLabel(topStrip);
+    d_context_pill->setObjectName(QStringLiteral("RibbonContextBadge"));
+    d_context_pill->setAlignment(Qt::AlignCenter);
+    topLayout->addWidget(d_context_pill);
+
+    rootLayout->addWidget(topStrip);
+
+    // Single-Row Slim Contextual Action Strip
+    d_tab_stack = new QStackedWidget(this);
+    d_tab_stack->setObjectName(QStringLiteral("ModernRibbonTabStack"));
+    d_tab_stack->setFixedHeight(54);
+    rootLayout->addWidget(d_tab_stack);
+
+    connect(d_tab_bar, &QTabBar::currentChanged, d_tab_stack, &QStackedWidget::setCurrentIndex);
+
+    buildAllTabs();
+
+    if (d_app) {
+        connect(&d_app->folders, &QObject::destroyed, this,
+                [this]() { prepareForAppShutdown(); });
+
+        if (QWidget *vp = d_app->d_workspace.viewport()) {
+            vp->installEventFilter(this);
+            d_focus_hud_overlay = new FocusCanvasHudOverlay(d_app, this, vp);
+        }
+        d_layout_mode = d_app->isTabbedWorkspaceView() ? LayoutTabbed : LayoutFreeMdi;
+        if (QAbstractButton *b = d_layout_btn_group->button(int(d_layout_mode)))
+            b->setChecked(true);
+
+        connect(&d_app->d_workspace, &QMdiArea::subWindowActivated, this,
+                [this](QMdiSubWindow *sw) {
+                    if (d_shutting_down)
+                        return;
+                    updateActiveContext(qobject_cast<MyWidget *>(sw));
+                    if (d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry)
+                        applySplitWorkspaceGeometry();
+                });
+    }
+
+    retranslateUi();
+    updateActiveContext(d_app ? qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow())
+                              : nullptr);
+}
+
+ModernRibbonBar::~ModernRibbonBar()
+{
+    prepareForAppShutdown();
+}
+
+void ModernRibbonBar::prepareForAppShutdown()
+{
+    const bool wasShuttingDown = d_shutting_down;
+    d_shutting_down = true;
+    d_saved_focus_visibility.clear();
+    d_last_active_window.clear();
+
+    if (!wasShuttingDown && d_app) {
+        disconnect(&d_app->d_workspace, nullptr, this, nullptr);
+        if (QWidget *vp = d_app->d_workspace.viewport())
+            vp->removeEventFilter(this);
+    }
+
+    if (d_focus_hud_overlay) {
+        d_focus_hud_overlay->prepareForAppShutdown();
+        delete d_focus_hud_overlay.data();
+    }
+    if (d_command_palette)
+        delete d_command_palette.data();
+
+    d_app.clear();
+}
+
+QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
+{
+    RibbonHorizontalScrollArea *scroll = new RibbonHorizontalScrollArea(d_tab_stack);
+    QWidget *container = new QWidget(scroll);
+    container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
+    QHBoxLayout *row = new QHBoxLayout(container);
+    row->setContentsMargins(8, 3, 8, 3);
+    row->setSpacing(6);
+    scroll->setWidget(container);
+    if (outRowLayout)
+        *outRowLayout = row;
+    return scroll;
+}
+
+QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<QString()> titleFn,
+                                            QHBoxLayout **outBtnLayout, bool addDividerAfter)
+{
+    QWidget *grpWidget = new QWidget();
+    QVBoxLayout *vbox = new QVBoxLayout(grpWidget);
+    vbox->setContentsMargins(2, 0, 2, 0);
+    vbox->setSpacing(1);
+
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->setContentsMargins(0, 0, 0, 0);
+    btnRow->setSpacing(2);
+    vbox->addLayout(btnRow);
+
+    QLabel *cap = new QLabel(grpWidget);
+    cap->setProperty("class", QStringLiteral("RibbonGroupCaption"));
+    cap->setAlignment(Qt::AlignCenter);
+    vbox->addWidget(cap);
+
+    d_group_bindings.append({ cap, std::move(titleFn) });
+    pageRow->addWidget(grpWidget);
+
+    if (addDividerAfter) {
+        QFrame *div = new QFrame();
+        div->setFixedSize(1, 38);
+        div->setStyleSheet(QStringLiteral("background-color: #E2E8F0;"));
+        pageRow->addWidget(div);
+    }
+
+    if (outBtnLayout)
+        *outBtnLayout = btnRow;
+    return grpWidget;
+}
+
+QToolButton *ModernRibbonBar::addRibbonButton(QHBoxLayout *groupLayout, const QString &iconId,
+                                              std::function<QString()> textFn,
+                                              std::function<QString()> tooltipFn,
+                                              std::function<void()> onClicked, bool checkable,
+                                              bool accentPreset)
+{
+    QToolButton *btn = new QToolButton();
+    btn->setProperty("class",
+                     accentPreset ? QStringLiteral("RibbonPresetBtn")
+                                  : QStringLiteral("RibbonActionBtn"));
+    btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btn->setIcon(IconLoader::duotoneIcon(iconId, 20, false));
+    btn->setIconSize(QSize(18, 18));
+    btn->setCheckable(checkable);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFocusPolicy(Qt::NoFocus);
+
+    if (onClicked)
+        connect(btn, &QToolButton::clicked, this, std::move(onClicked));
+
+    groupLayout->addWidget(btn);
+    d_button_bindings.append(
+            { btn, iconId, std::move(textFn), std::move(tooltipFn), accentPreset });
+    return btn;
+}
+
+void ModernRibbonBar::buildAllTabs()
+{
+    auto addTabPage = [this](std::function<QString()> titleFn, QWidget *page) {
+        const int idx = d_tab_bar->addTab(QString());
+        Q_UNUSED(idx);
+        d_tab_stack->addWidget(page);
+        d_tab_title_fns.append(std::move(titleFn));
+    };
+
+    // ------------------------------------------------------------------------
+    // Tab 1: Home & Data
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gFile = nullptr;
+        QHBoxLayout *gCreate = nullptr;
+        QHBoxLayout *gRecalc = nullptr;
+        QHBoxLayout *gPanels = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Project"); }, &gFile, true);
+        addRibbonButton(
+                gFile, QStringLiteral("file-new"), [this]() { return tr("New Project"); },
+                [this]() { return tr("Create a New Project"); },
+                [this]() {
+                    if (d_app)
+                        d_app->newProject();
+                });
+        addRibbonButton(
+                gFile, QStringLiteral("file-open"), [this]() { return tr("Open"); },
+                [this]() { return tr("Open Project File"); },
+                [this]() {
+                    if (d_app)
+                        d_app->open();
+                });
+        addRibbonButton(
+                gFile, QStringLiteral("file-save"), [this]() { return tr("Save"); },
+                [this]() { return tr("Save Current Project"); },
+                [this]() {
+                    if (d_app)
+                        d_app->saveProject();
+                });
+        addRibbonButton(
+                gFile, QStringLiteral("import-csv"), [this]() { return tr("Import CSV"); },
+                [this]() { return tr("Import ASCII / CSV Data into Worksheet"); },
+                [this]() {
+                    if (d_app)
+                        d_app->importASCII();
+                });
+        addRibbonButton(
+                gFile, QStringLiteral("import-opj"), [this]() { return tr("Import OPJ"); },
+                [this]() { return tr("Import Origin OPJ Project"); },
+                [this]() { importOpjInteractive(); });
+
+        createRibbonGroup(row, [this]() { return tr("Create"); }, &gCreate, true);
+        addRibbonButton(
+                gCreate, QStringLiteral("new-table"), [this]() { return tr("New Table"); },
+                [this]() { return tr("Create New Worksheet Table"); },
+                [this]() {
+                    if (d_app)
+                        d_app->newTable();
+                });
+        addRibbonButton(
+                gCreate, QStringLiteral("new-matrix"), [this]() { return tr("New Matrix"); },
+                [this]() { return tr("Create New 2D Data Matrix"); },
+                [this]() {
+                    if (d_app)
+                        d_app->newMatrix();
+                });
+        addRibbonButton(
+                gCreate, QStringLiteral("new-graph"), [this]() { return tr("New Graph"); },
+                [this]() { return tr("Create New 2D Graph Window"); },
+                [this]() {
+                    if (d_app)
+                        d_app->newGraph();
+                });
+        addRibbonButton(
+                gCreate, QStringLiteral("add-column"), [this]() { return tr("Add Column"); },
+                [this]() { return tr("Append Y Column to Active Worksheet"); },
+                [this]() {
+                    if (d_app)
+                        d_app->addColToTable();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Recalculate"); }, &gRecalc, true);
+        d_btn_auto_recalc = addRibbonButton(
+                gRecalc, QStringLiteral("recalc-auto"), [this]() { return tr("Auto Recalc"); },
+                [this]() { return tr("Toggle Automatic Analysis Recalculation"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    if (d_btn_auto_recalc && d_btn_auto_recalc->isChecked())
+                        d_app->setRecalcModeAuto();
+                    else
+                        d_app->setRecalcModeManual();
+                    syncCheckableStates();
+                },
+                true);
+        addRibbonButton(
+                gRecalc, QStringLiteral("recalc-now"), [this]() { return tr("Recalculate Now"); },
+                [this]() { return tr("Recalculate Pending Analysis Links Now"); },
+                [this]() {
+                    if (d_app)
+                        d_app->recalculatePendingLinksNow();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Panels"); }, &gPanels, false);
+        d_btn_explorer = addRibbonButton(
+                gPanels, QStringLiteral("explorer"), [this]() { return tr("Explorer"); },
+                [this]() { return tr("Show or Hide Project Explorer Panel"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    d_app->explorerWindow.setVisible(d_app->explorerWindow.isHidden());
+                    syncCheckableStates();
+                },
+                true);
+        d_btn_results_log = addRibbonButton(
+                gPanels, QStringLiteral("log-window"), [this]() { return tr("Results Log"); },
+                [this]() { return tr("Show or Hide Results Log Panel"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    d_app->logWindow.setVisible(d_app->logWindow.isHidden());
+                    syncCheckableStates();
+                },
+                true);
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Home & Data"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 2: Plot 2D/3D
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *g2d = nullptr;
+        QHBoxLayout *g3d = nullptr;
+        QHBoxLayout *gLayer = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("2D Plots"); }, &g2d, true);
+        addRibbonButton(
+                g2d, QStringLiteral("plot-line"), [this]() { return tr("Line"); },
+                [this]() { return tr("Plot Line Graph"); },
+                [this]() { triggerPlot2D(Graph::Line); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-scatter"), [this]() { return tr("Scatter"); },
+                [this]() { return tr("Plot Scatter Graph"); },
+                [this]() { triggerPlot2D(Graph::Scatter); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-line-symbol"), [this]() { return tr("Line + Symbol"); },
+                [this]() { return tr("Plot Line and Symbol Graph"); },
+                [this]() { triggerPlot2D(Graph::LineSymbols); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-spline"), [this]() { return tr("Spline"); },
+                [this]() { return tr("Plot Cubic Spline Curve"); },
+                [this]() { triggerPlot2D(Graph::Spline); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-bars"), [this]() { return tr("Bars"); },
+                [this]() { return tr("Plot Vertical Bar Chart"); },
+                [this]() { triggerPlot2D(Graph::VerticalBars); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-box"), [this]() { return tr("Box Plot"); },
+                [this]() { return tr("Plot Statistical Box-and-Whisker Chart"); },
+                [this]() { triggerPlot2D(Graph::Box); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-violin"), [this]() { return tr("Violin Plot"); },
+                [this]() { return tr("Plot Kernel Density Violin Chart"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotViolin();
+                });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-histogram"), [this]() { return tr("Histogram"); },
+                [this]() { return tr("Plot Frequency Histogram"); },
+                [this]() { triggerPlot2D(Graph::Histogram); });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-double-y"), [this]() { return tr("Double-Y"); },
+                [this]() { return tr("Plot Dual Left/Right Y-Axis Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotDoubleY();
+                });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-waterfall"), [this]() { return tr("Waterfall"); },
+                [this]() { return tr("Plot Y-Offset Stacked Waterfall Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotYOffsetStack();
+                });
+        addRibbonButton(
+                g2d, QStringLiteral("plot-vectors"), [this]() { return tr("Vectors"); },
+                [this]() { return tr("Plot 2D Vector Field (XYXY)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotVectXYXY();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Matrix & 3D"); }, &g3d, true);
+        addRibbonButton(
+                g3d, QStringLiteral("plot-heatmap"), [this]() { return tr("Heatmap"); },
+                [this]() { return tr("Plot Matrix Color Map / Heatmap"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotColorMap();
+                });
+        addRibbonButton(
+                g3d, QStringLiteral("plot-contour"), [this]() { return tr("Contour"); },
+                [this]() { return tr("Plot Matrix Contour Lines"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotContour();
+                });
+        addRibbonButton(
+                g3d, QStringLiteral("plot-3d-surface"), [this]() { return tr("3D Surface"); },
+                [this]() { return tr("Plot 3D Surface Mesh"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plot3DWireSurface();
+                });
+        addRibbonButton(
+                g3d, QStringLiteral("plot-3d-bars"), [this]() { return tr("3D Bars"); },
+                [this]() { return tr("Plot 3D Bars"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plot3DBars();
+                });
+        addRibbonButton(
+                g3d, QStringLiteral("plot-3d-scatter"), [this]() { return tr("3D Scatter"); },
+                [this]() { return tr("Plot 3D Scatter Points"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plot3DScatter();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Layers"); }, &gLayer, false);
+        addRibbonButton(
+                gLayer, QStringLiteral("layer-linked"), [this]() { return tr("Linked Layer"); },
+                [this]() { return tr("Add Linked Top-X / Right-Y Layer"); },
+                [this]() {
+                    if (d_app)
+                        d_app->addLinkedTopRightLayer();
+                });
+        addRibbonButton(
+                gLayer, QStringLiteral("layer-inset"), [this]() { return tr("Zoom Inset"); },
+                [this]() { return tr("Add Magnified Zoom Inset Layer"); },
+                [this]() {
+                    if (d_app)
+                        d_app->addZoomInsetLayer();
+                });
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Plot 2D/3D"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 3: Peaks & Fit
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gPeaks = nullptr;
+        QHBoxLayout *gFit = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Peak Analysis"); }, &gPeaks, true);
+        addRibbonButton(
+                gPeaks, QStringLiteral("peak-analyzer"), [this]() { return tr("Peak Analyzer"); },
+                [this]() { return tr("Interactive Baseline & Multi-Peak Deconvolution"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPeakAnalyzerDialog(0);
+                });
+        addRibbonButton(
+                gPeaks, QStringLiteral("peak-voigt"), [this]() { return tr("Auto Voigt Peaks"); },
+                [this]() { return tr("Automatic Pseudo-Voigt Peak Detection & Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->fitAutoPeakPseudoVoigt();
+                });
+        addRibbonButton(
+                gPeaks, QStringLiteral("peak-batch"), [this]() { return tr("Batch Peaks"); },
+                [this]() { return tr("Batch Multi-Spectrum Peak Analysis"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showBatchPeakAnalysisDialog();
+                });
+        addRibbonButton(
+                gPeaks, QStringLiteral("peak-2d"), [this]() { return tr("2D Peaks"); },
+                [this]() { return tr("Matrix 2D Peak Detection & Fitting"); },
+                [this]() {
+                    if (d_app)
+                        d_app->show2DPeakAnalysisDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Curve Fitting"); }, &gFit, false);
+        addRibbonButton(
+                gFit, QStringLiteral("fit-linear"), [this]() { return tr("Linear Fit"); },
+                [this]() { return tr("Linear Regression Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->fitLinear();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-york"), [this]() { return tr("York XY Fit"); },
+                [this]() { return tr("York Linear Regression with Both X and Y Errors"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showYorkLinearFitDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-poly"), [this]() { return tr("Polynomial"); },
+                [this]() { return tr("Polynomial Regression Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFitPolynomDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-nonlinear"), [this]() { return tr("Nonlinear Fit"); },
+                [this]() { return tr("Nonlinear Curve Fit Wizard"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFitDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-global"), [this]() { return tr("Global Fit"); },
+                [this]() { return tr("Multi-Curve Global Fit with Shared Parameters"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showGlobalCurveFitDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-piecewise"), [this]() { return tr("Piecewise Fit"); },
+                [this]() { return tr("Piecewise Segmented Linear Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPiecewiseLinearFitDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-robust"), [this]() { return tr("Robust Fit"); },
+                [this]() { return tr("Huber / Bisquare Outlier-Resistant Robust Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showRobustLinearFitDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-logistic"), [this]() { return tr("Logistic Fit"); },
+                [this]() { return tr("Binary Logistic Regression"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showLogisticRegressionDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-surface-3d"), [this]() { return tr("3D Surface Fit"); },
+                [this]() { return tr("2D / 3D Surface Regression Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSurfaceFit3DDialog();
+                });
+        addRibbonButton(
+                gFit, QStringLiteral("fit-compare"), [this]() { return tr("Model Compare"); },
+                [this]() { return tr("Compare Candidate Fit Models (AIC / BIC / F-Test)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showModelComparisonDialog();
+                });
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Peaks & Fit"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 4: Gadgets & Signal
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gGadgets = nullptr;
+        QHBoxLayout *gMasks = nullptr;
+        QHBoxLayout *gSignal = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Interactive Gadgets"); }, &gGadgets, true);
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-roi"), [this]() { return tr("ROI Stats"); },
+                [this]() { return tr("Interactive Region-of-Interest Statistics Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachRegionStatsGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-integrate"), [this]() { return tr("Integrate"); },
+                [this]() { return tr("Interactive Peak / Curve Area Integration Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachIntegrateGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-quick-fit"), [this]() { return tr("Quick Fit"); },
+                [this]() { return tr("Interactive ROI Quick Fit Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachQuickFitGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-quick-peaks"),
+                [this]() { return tr("Quick Peaks"); },
+                [this]() { return tr("Interactive ROI Quick Peak Finder Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachQuickPeaksGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-cursor"),
+                [this]() { return tr("Vertical Cursor"); },
+                [this]() { return tr("Vertical Crosshair Curve Readout Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachVerticalCursorGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-delta"), [this]() { return tr("Delta Cursor"); },
+                [this]() { return tr("Dual-Cursor Delta X / Delta Y / Slope Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachDeltaCursorGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-profile-2d"),
+                [this]() { return tr("2D Profile"); },
+                [this]() { return tr("Interactive Heatmap Horizontal/Vertical Profile Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachImageProfileGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-diff"), [this]() { return tr("Differentiate"); },
+                [this]() { return tr("Interactive Derivative Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachDifferentiateGadget();
+                });
+        addRibbonButton(
+                gGadgets, QStringLiteral("gadget-clear"), [this]() { return tr("Clear Gadget"); },
+                [this]() { return tr("Remove Active Gadget from Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->clearActiveGadget();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Data Masks"); }, &gMasks, true);
+        addRibbonButton(
+                gMasks, QStringLiteral("mask-points"), [this]() { return tr("Mask Points"); },
+                [this]() { return tr("Mask Individual Outlier Data Points"); },
+                [this]() {
+                    if (d_app)
+                        d_app->maskDataPointsTool();
+                });
+        addRibbonButton(
+                gMasks, QStringLiteral("range-selector"), [this]() { return tr("Mask ROI"); },
+                [this]() { return tr("Mask Rectangular Data Region"); },
+                [this]() {
+                    if (d_app)
+                        d_app->maskRegionGadget();
+                });
+        addRibbonButton(
+                gMasks, QStringLiteral("clear-masks"), [this]() { return tr("Clear Masks"); },
+                [this]() { return tr("Clear All Data Masks on Active Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->clearAllMasksOnGraph();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Signal Processing"); }, &gSignal, false);
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-savgol"),
+                [this]() { return tr("Savitzky-Golay Smooth"); },
+                [this]() { return tr("Savitzky-Golay Smoothing & Derivative"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSavGolSmoothDerivativeDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-smooth"), [this]() { return tr("LOWESS Smooth"); },
+                [this]() { return tr("Locally Weighted Scatterplot Smoothing (LOWESS)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSmoothLOWESSDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-smooth"),
+                [this]() { return tr("Whittaker Smooth"); },
+                [this]() { return tr("Penalized Least-Squares Whittaker Smoothing"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSmoothWhittakerDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-fft"), [this]() { return tr("FFT Spectrum"); },
+                [this]() { return tr("Fast Fourier Transform (FFT)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFFTDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-iir"), [this]() { return tr("IIR Filter"); },
+                [this]() { return tr("Zero-Phase Butterworth / Chebyshev / Bessel IIR Filter"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showIirDigitalFilterDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-stft"),
+                [this]() { return tr("STFT Spectrogram"); },
+                [this]() { return tr("Short-Time Fourier Transform Spectrogram"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showStftSpectrogramDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-wavelet"),
+                [this]() { return tr("Wavelet Transform"); },
+                [this]() { return tr("Continuous & Discrete Wavelet Denoising / CWT"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showWaveletTransformDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-psd"), [this]() { return tr("Welch PSD"); },
+                [this]() { return tr("Welch Power Spectral Density & Coherence"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showWelchPsdCoherenceDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("signal-fsd"), [this]() { return tr("Deconvolve FSD"); },
+                [this]() { return tr("Fourier Self-Deconvolution (Resolution Enhancement)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFourierSelfDeconvolveDialog();
+                });
+        addRibbonButton(
+                gSignal, QStringLiteral("matrix-filter2d"),
+                [this]() { return tr("Matrix 2D Filter"); },
+                [this]() { return tr("2D Matrix Gaussian / Median / Detrend Filter"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showMatrixFilter2DDialog();
+                });
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Gadgets & Signal"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 5: Statistics & MatSci
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gStats = nullptr;
+        QHBoxLayout *gDomain = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Statistical Tests"); }, &gStats, true);
+        addRibbonButton(
+                gStats, QStringLiteral("stats-normality"),
+                [this]() { return tr("Normality Test"); },
+                [this]() { return tr("Shapiro-Wilk / Anderson-Darling Normality Test"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showNormalityTestDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-outlier"), [this]() { return tr("Outlier Test"); },
+                [this]() { return tr("Grubbs / Generalized ESD Outlier Detection"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showOutlierTestDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-anova"), [this]() { return tr("Group ANOVA"); },
+                [this]() { return tr("One-Way ANOVA & Tukey / Dunnett Post-Hoc Comparison"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showGroupComparisonDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-twoway"), [this]() { return tr("Two-Way ANOVA"); },
+                [this]() { return tr("Two-Way Factorial ANOVA & Interaction Plot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showTwoWayANOVAPlotDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-nonparam"), [this]() { return tr("Nonparametric"); },
+                [this]() { return tr("Mann-Whitney / Wilcoxon / Kruskal-Wallis Tests"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showNonparametricTestsDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-paired"), [this]() { return tr("Paired Plot"); },
+                [this]() { return tr("Paired Before-After Comparison Plot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPairedComparisonPlotDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-bland-altman"),
+                [this]() { return tr("Bland-Altman Plot"); },
+                [this]() { return tr("Bland-Altman Method Agreement Plot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showBlandAltmanPlotDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-bablok"),
+                [this]() { return tr("Passing-Bablok Fit"); },
+                [this]() { return tr("Passing-Bablok & Deming Method Comparison Regression"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPassingBablokDemingDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-weibull"), [this]() { return tr("Weibull Plot"); },
+                [this]() { return tr("2- and 3-Parameter Weibull Reliability Probability Plot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showWeibullPlotDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-survival"),
+                [this]() { return tr("Kaplan-Meier Survival"); },
+                [this]() { return tr("Kaplan-Meier Survival Curve & Log-Rank Test"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showKaplanMeierDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-roc"), [this]() { return tr("ROC Curve"); },
+                [this]() { return tr("Receiver Operating Characteristic (ROC) Curve & AUC"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showROCCurveDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-pca"), [this]() { return tr("PCA Biplot"); },
+                [this]() { return tr("Principal Component Analysis (PCA) & Biplot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPCABiplotDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-corr"), [this]() { return tr("Correlation"); },
+                [this]() { return tr("Pearson / Spearman Correlation Matrix Heatmap"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showCorrelationMatrixDialog();
+                });
+        addRibbonButton(
+                gStats, QStringLiteral("stats-cluster"), [this]() { return tr("Clustering"); },
+                [this]() { return tr("K-Means & Hierarchical Cluster Analysis"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showClusteringDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Materials & Domain"); }, &gDomain, false);
+        addRibbonButton(
+                gDomain, QStringLiteral("curvemath"), [this]() { return tr("Curve Math"); },
+                [this]() { return tr("Arithmetic Operations Between Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSimpleCurveMathDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("curve-fill"), [this]() { return tr("Fill Between"); },
+                [this]() { return tr("Shade Area Between Two Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFillBetweenCurvesDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius Plot"); },
+                [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showArrheniusPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("tauc"), [this]() { return tr("Tauc Bandgap"); },
+                [this]() { return tr("Tauc Optical Bandgap Extrapolation"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showTaucPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("eis-nyquist"), [this]() { return tr("EIS Analyzer"); },
+                [this]() { return tr("Electrochemical Impedance Spectroscopy Nyquist/Bode Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showEISAnalyzerDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("digitizer"), [this]() { return tr("Digitizer"); },
+                [this]() { return tr("Extract Numerical Data from Graph Image"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showGraphDigitizerDialog();
+                });
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Statistics & MatSci"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 6: Style & Export
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gPresets = nullptr;
+        QHBoxLayout *gFrame = nullptr;
+        QHBoxLayout *gFormat = nullptr;
+        QHBoxLayout *gExport = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Journal & Slide Presets"); }, &gPresets, true);
+        addRibbonButton(
+                gPresets, QStringLiteral("preset-isij"),
+                [this]() { return tr("ISIJ 85mm Preset"); },
+                [this]() { return tr("Apply ISIJ 1-Column 85x85 mm Journal Preset (600 DPI)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyStyleISIJJournal();
+                },
+                false, true);
+        addRibbonButton(
+                gPresets, QStringLiteral("preset-slide"),
+                [this]() { return tr("Slide 28pt Preset"); },
+                [this]() { return tr("Apply Presentation Slide 28pt Arial Preset"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyStylePresentationSlide();
+                },
+                false, true);
+        addRibbonButton(
+                gPresets, QStringLiteral("preset-nature"),
+                [this]() { return tr("Nature 89mm Preset"); },
+                [this]() { return tr("Apply Nature Compact 89mm Open-L Journal Preset"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyStyleNatureCompact();
+                },
+                false, true);
+
+        createRibbonGroup(row, [this]() { return tr("Frame & Page"); }, &gFrame, true);
+        addRibbonButton(
+                gFrame, QStringLiteral("frame-box-inward"), [this]() { return tr("Box Inward"); },
+                [this]() { return tr("Apply Full Box Frame with Inward Ticks"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyFrameBoxInward();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("frame-open-l"), [this]() { return tr("Open-L Frame"); },
+                [this]() { return tr("Apply Open Bottom-Left L-Frame"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyFrameOpenL();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("page-setup"), [this]() { return tr("Page Setup"); },
+                [this]() { return tr("Configure Physical Page Dimensions, Units & DPI"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPageSetupDialog();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Fit Page to Layers"); },
+                [this]() { return tr("Crop Page Tightly Around Plot Layers"); },
+                [this]() {
+                    if (d_app)
+                        d_app->fitPageToLayers();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("color-palette"), [this]() { return tr("Color Palette"); },
+                [this]() { return tr("Apply Publication Color Palette to Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showColorPaletteEditorDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Format & Batch"); }, &gFormat, true);
+        addRibbonButton(
+                gFormat, QStringLiteral("format-copy"), [this]() { return tr("Copy Format"); },
+                [this]() { return tr("Copy Visual Style & Axes Format of Active Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->copyGraphFormat();
+                });
+        addRibbonButton(
+                gFormat, QStringLiteral("format-paste"), [this]() { return tr("Paste Format"); },
+                [this]() { return tr("Paste Copied Visual Style onto Active Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->pasteGraphFormat();
+                });
+        addRibbonButton(
+                gFormat, QStringLiteral("batch-plot"), [this]() { return tr("Batch Plot"); },
+                [this]() { return tr("Clone Active Graph Template Across Multiple Worksheets"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showBatchPlotDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Export & PowerPoint"); }, &gExport, false);
+        addRibbonButton(
+                gExport, QStringLiteral("copy-ole"), [this]() { return tr("Copy OLE"); },
+                [this]() { return tr("Copy Editable OLE Graph Object for PowerPoint / Word"); },
+                [this]() {
+                    if (d_app)
+                        d_app->copyGraphAsOleObject();
+                });
+        addRibbonButton(
+                gExport, QStringLiteral("copy-page-image"),
+                [this]() { return tr("Copy High-DPI Image"); },
+                [this]() { return tr("Copy High-Resolution Bitmap of Graph Page to Clipboard"); },
+                [this]() {
+                    if (d_app)
+                        d_app->copyPageAsHighDpiImage();
+                });
+        addRibbonButton(
+                gExport, QStringLiteral("export-image"), [this]() { return tr("Export Graph"); },
+                [this]() { return tr("Export Graph to PNG / TIFF / SVG / EMF"); },
+                [this]() {
+                    if (d_app)
+                        d_app->exportGraph();
+                });
+        addRibbonButton(
+                gExport, QStringLiteral("export-pdf"), [this]() { return tr("Export PDF"); },
+                [this]() { return tr("Export Vector PDF Document"); },
+                [this]() {
+                    if (d_app)
+                        d_app->exportPDF();
+                });
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Style & Export"); }, page);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tab 7: Python & Tools
+    // ------------------------------------------------------------------------
+    {
+        QHBoxLayout *row = nullptr;
+        QWidget *page = createRibbonScrollPage(&row);
+        QHBoxLayout *gPython = nullptr;
+        QHBoxLayout *gSettings = nullptr;
+
+        createRibbonGroup(row, [this]() { return tr("Python Automation"); }, &gPython, true);
+        addRibbonButton(
+                gPython, QStringLiteral("python-console"),
+                [this]() { return tr("Python Console"); },
+                [this]() { return tr("Open Interactive In-Process Python Console"); },
+                [this]() { emit openPythonConsoleRequested(); });
+        addRibbonButton(
+                gPython, QStringLiteral("python-run"),
+                [this]() { return tr("Run Python Script"); },
+                [this]() { return tr("Select and Execute a .py Automation Script"); },
+                [this]() { emit runPythonScriptRequested(); });
+
+        createRibbonGroup(row, [this]() { return tr("Settings & Updates"); }, &gSettings, false);
+        addRibbonButton(
+                gSettings, QStringLiteral("settings"), [this]() { return tr("Preferences"); },
+                [this]() { return tr("Open Application Preferences Dialog"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPreferencesDialog();
+                });
+        addRibbonButton(
+                gSettings, QStringLiteral("update-check"),
+                [this]() { return tr("Check for Updates"); },
+                [this]() { return tr("Check GitHub Releases for New ToriGraph Versions"); },
+                [this]() { emit checkForUpdatesRequested(); });
+        d_btn_classic_toolbars = addRibbonButton(
+                gSettings, QStringLiteral("mdi-view"),
+                [this]() { return tr("Classic Toolbars"); },
+                [this]() { return tr("Show or Hide Legacy Classic Icon Toolbars"); },
+                [this]() { setClassicToolbarsVisible(!d_classic_toolbars_visible); }, true);
+
+        row->addStretch(1);
+        addTabPage([this]() { return tr("Python & Tools"); }, page);
+    }
+}
+
+void ModernRibbonBar::refreshButtonIcons()
+{
+    for (const RibbonButtonBinding &b : d_button_bindings) {
+        if (b.button && !b.iconId.isEmpty())
+            b.button->setIcon(IconLoader::duotoneIcon(b.iconId, 20, false));
+    }
+    if (d_btn_cmd_palette)
+        d_btn_cmd_palette->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("search-command"), 16, false));
+    if (d_btn_layout_tabbed)
+        d_btn_layout_tabbed->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("tab-view"), 16, false));
+    if (d_btn_layout_split)
+        d_btn_layout_split->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("split-view"), 16, false));
+    if (d_btn_layout_mdi)
+        d_btn_layout_mdi->setIcon(IconLoader::duotoneIcon(QStringLiteral("mdi-view"), 16, false));
+    if (d_btn_focus_mode)
+        d_btn_focus_mode->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("focus-hud"), 16, false));
+    if (d_btn_lang_switch)
+        d_btn_lang_switch->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("language-ja-en"), 16, false));
+}
+
+void ModernRibbonBar::retranslateUi()
+{
+    if (d_shutting_down)
+        return;
+
+    refreshButtonIcons();
+
+    if (d_tab_bar) {
+        for (int i = 0; i < d_tab_title_fns.size() && i < d_tab_bar->count(); ++i)
+            d_tab_bar->setTabText(i, d_tab_title_fns.at(i)());
+    }
+
+    for (const RibbonGroupBinding &gb : d_group_bindings) {
+        if (gb.captionLabel && gb.titleFn)
+            gb.captionLabel->setText(gb.titleFn());
+    }
+
+    for (const RibbonButtonBinding &bb : d_button_bindings) {
+        if (!bb.button)
+            continue;
+        if (bb.textFn)
+            bb.button->setText(bb.textFn());
+        if (bb.tooltipFn)
+            bb.button->setToolTip(bb.tooltipFn());
+    }
+
+    if (d_btn_cmd_palette) {
+        d_btn_cmd_palette->setText(tr("Search Commands (Ctrl+K)"));
+        d_btn_cmd_palette->setToolTip(tr("Open Fuzzy-Search Command Palette (Ctrl+K)"));
+    }
+    if (d_btn_layout_tabbed) {
+        d_btn_layout_tabbed->setText(tr("Tabbed"));
+        d_btn_layout_tabbed->setToolTip(tr("Tabbed Workspace View"));
+    }
+    if (d_btn_layout_split) {
+        d_btn_layout_split->setText(tr("Split View"));
+        d_btn_layout_split->setToolTip(tr("Side-by-Side Split View (40% Worksheet / 60% Graph)"));
+    }
+    if (d_btn_layout_mdi) {
+        d_btn_layout_mdi->setText(tr("Free MDI"));
+        d_btn_layout_mdi->setToolTip(tr("Free Subwindow MDI Arrangement"));
+    }
+    if (d_btn_focus_mode) {
+        d_btn_focus_mode->setText(tr("Focus (F11)"));
+        d_btn_focus_mode->setToolTip(tr("Enter Full-Canvas Focus HUD Mode (F11)"));
+    }
+    if (d_btn_lang_switch) {
+        d_btn_lang_switch->setText(tr("Language"));
+        d_btn_lang_switch->setToolTip(tr("Switch Interface Language (Japanese / English)"));
+    }
+
+    updateActiveContext(d_last_active_window.data());
+
+    if (d_command_palette)
+        d_command_palette->retranslateUi();
+    if (d_focus_hud_overlay)
+        d_focus_hud_overlay->retranslateUi();
+}
+
+void ModernRibbonBar::syncCheckableStates()
+{
+    if (d_shutting_down || !d_app)
+        return;
+
+    if (d_btn_auto_recalc) {
+        QSignalBlocker blocker(d_btn_auto_recalc);
+        const bool isAuto = (RecalcManager::instance(d_app)->recalcMode() == RecalcManager::Auto);
+        d_btn_auto_recalc->setChecked(isAuto);
+    }
+    if (d_btn_explorer) {
+        QSignalBlocker blocker(d_btn_explorer);
+        d_btn_explorer->setChecked(!d_app->explorerWindow.isHidden());
+    }
+    if (d_btn_results_log) {
+        QSignalBlocker blocker(d_btn_results_log);
+        d_btn_results_log->setChecked(!d_app->logWindow.isHidden());
+    }
+    if (d_btn_classic_toolbars) {
+        QSignalBlocker blocker(d_btn_classic_toolbars);
+        const bool anyClassicVisible =
+                (d_app->file_tools && !d_app->file_tools->isHidden())
+                || (d_app->edit_tools && !d_app->edit_tools->isHidden())
+                || (d_app->table_tools && !d_app->table_tools->isHidden())
+                || (d_app->plot_tools && !d_app->plot_tools->isHidden())
+                || (d_app->graph_tools && !d_app->graph_tools->isHidden())
+                || (d_app->matrix_plot_tools && !d_app->matrix_plot_tools->isHidden())
+                || (d_app->graph_3D_tools && !d_app->graph_3D_tools->isHidden());
+        d_classic_toolbars_visible = anyClassicVisible;
+        d_btn_classic_toolbars->setChecked(d_classic_toolbars_visible);
+    }
+}
+
+void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
+{
+    if (d_shutting_down)
+        return;
+
+    d_last_active_window = activeWindow;
+
+    if (d_context_pill) {
+        QString label;
+        QString pillStyle;
+        if (qobject_cast<Table *>(activeWindow)) {
+            label = tr("Worksheet");
+            pillStyle = QStringLiteral(
+                    "background-color: #DBEAFE; color: #1D4ED8; border: 1px solid #93C5FD;");
+        } else if (qobject_cast<MultiLayer *>(activeWindow)) {
+            label = tr("2D Graph");
+            pillStyle = QStringLiteral(
+                    "background-color: #E0E7FF; color: #3730A3; border: 1px solid #A5B4FC;");
+        } else if (qobject_cast<Graph3D *>(activeWindow)) {
+            label = tr("3D Graph");
+            pillStyle = QStringLiteral(
+                    "background-color: #EDE9FE; color: #5B21B6; border: 1px solid #C4B5FD;");
+        } else if (qobject_cast<Matrix *>(activeWindow)) {
+            label = tr("Matrix");
+            pillStyle = QStringLiteral(
+                    "background-color: #D1FAE5; color: #065F46; border: 1px solid #6EE7B7;");
+        } else if (qobject_cast<Note *>(activeWindow)) {
+            label = tr("Notes");
+            pillStyle = QStringLiteral(
+                    "background-color: #FEF3C7; color: #92400E; border: 1px solid #FCD34D;");
+        } else {
+            label = tr("Project");
+            pillStyle = QStringLiteral(
+                    "background-color: #E2E8F0; color: #334155; border: 1px solid #CBD5E1;");
+        }
+
+        d_context_pill->setText(label);
+        d_context_pill->setStyleSheet(
+                QStringLiteral("QLabel#RibbonContextBadge { %1 border-radius: 10px; "
+                               "padding: 2px 10px; font-family: 'Segoe UI', 'Yu Gothic UI', "
+                               "'Meiryo UI', sans-serif; font-size: 8pt; font-weight: 700; }")
+                        .arg(pillStyle));
+    }
+
+    syncCheckableStates();
+    if (d_focus_hud_overlay)
+        d_focus_hud_overlay->refreshActiveContext();
+}
+
+void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
+{
+    if (d_shutting_down)
+        return;
+
+    d_layout_mode = mode;
+
+    if (d_layout_btn_group) {
+        if (QAbstractButton *btn = d_layout_btn_group->button(int(mode))) {
+            QSignalBlocker blocker(d_layout_btn_group);
+            btn->setChecked(true);
+        }
+    }
+
+    if (d_app) {
+        d_updating_layout_mode = true;
+        auto unmaximizeCurrentFolderWindows = [this]() {
+            if (Folder *curFolder = d_app->currentFolder()) {
+                const QList<MyWidget *> folderWins = curFolder->windowsList();
+                for (MyWidget *mw : folderWins) {
+                    if (!mw || mw->status() == MyWidget::Hidden)
+                        continue;
+                    if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
+                        continue;
+                    if (mw->isHidden())
+                        continue;
+                    if (mw->isMaximized()) {
+                        mw->setWindowState(mw->windowState() & ~Qt::WindowMaximized);
+                        mw->showNormal();
+                    }
+                }
+            }
+        };
+
+        switch (mode) {
+        case LayoutTabbed:
+            d_app->setTabbedWorkspaceView(true);
+            d_app->d_workspace.setTabsClosable(true);
+            d_app->d_workspace.setTabsMovable(true);
+            break;
+
+        case LayoutSplitTableGraph:
+            d_app->setTabbedWorkspaceView(false);
+            unmaximizeCurrentFolderWindows();
+            applySplitWorkspaceGeometry();
+            break;
+
+        case LayoutFreeMdi:
+            d_app->setTabbedWorkspaceView(false);
+            unmaximizeCurrentFolderWindows();
+            break;
+        }
+        d_updating_layout_mode = false;
+    }
+
+    if (d_focus_hud_overlay && d_focus_hud_mode)
+        d_focus_hud_overlay->repositionOverlayWidgets();
+
+    emit workspaceLayoutModeChanged(mode);
+}
+
+void ModernRibbonBar::syncWorkspaceModeButtons(WorkspaceLayoutMode mode)
+{
+    if (d_shutting_down || d_updating_layout_mode || d_applying_split_geometry)
+        return;
+
+    d_layout_mode = mode;
+    if (d_layout_btn_group) {
+        if (QAbstractButton *btn = d_layout_btn_group->button(int(mode))) {
+            QSignalBlocker blocker(d_layout_btn_group);
+            btn->setChecked(true);
+        }
+    }
+}
+
+void ModernRibbonBar::syncWorkspaceModeButtons(bool tabbed)
+{
+    if (d_shutting_down || d_updating_layout_mode || d_applying_split_geometry)
+        return;
+
+    if (tabbed) {
+        syncWorkspaceModeButtons(LayoutTabbed);
+    } else if (d_layout_mode == LayoutTabbed) {
+        syncWorkspaceModeButtons(LayoutFreeMdi);
+    }
+}
+
+bool ModernRibbonBar::setWorkspaceLayoutModeByName(const QString &modeName)
+{
+    const QString m = modeName.trimmed().toLower();
+    if (m == QLatin1String("tabbed") || m == QLatin1String("tabs")) {
+        setWorkspaceLayoutMode(LayoutTabbed);
+        return true;
+    }
+    if (m == QLatin1String("split") || m == QLatin1String("split_table_graph")
+        || m == QLatin1String("split-view")) {
+        setWorkspaceLayoutMode(LayoutSplitTableGraph);
+        return true;
+    }
+    if (m == QLatin1String("mdi") || m == QLatin1String("free") || m == QLatin1String("free_mdi")
+        || m == QLatin1String("subwindow")) {
+        setWorkspaceLayoutMode(LayoutFreeMdi);
+        return true;
+    }
+    return false;
+}
+
+QString ModernRibbonBar::workspaceLayoutModeName() const
+{
+    switch (d_layout_mode) {
+    case LayoutTabbed:
+        return QStringLiteral("tabbed");
+    case LayoutSplitTableGraph:
+        return QStringLiteral("split");
+    case LayoutFreeMdi:
+        return QStringLiteral("mdi");
+    }
+    return QStringLiteral("tabbed");
+}
+
+void ModernRibbonBar::applySplitWorkspaceGeometry()
+{
+    if (d_shutting_down || !d_app || d_applying_split_geometry)
+        return;
+
+    d_applying_split_geometry = true;
+
+    if (d_app->d_workspace.viewMode() != QMdiArea::SubWindowView)
+        d_app->setTabbedWorkspaceView(false);
+
+    if (d_app->layout())
+        d_app->layout()->activate();
+
+    QWidget *vp = d_app->d_workspace.viewport();
+    QRect vpRect = vp ? vp->rect() : d_app->d_workspace.rect();
+    if (vpRect.width() < 120 || vpRect.height() < 80) {
+        const QSize fallback = d_app->size().expandedTo(QSize(800, 560));
+        vpRect = QRect(0, 0, qMax(320, fallback.width() - 16), qMax(240, fallback.height() - 110));
+    }
+
+    QSet<MyWidget *> eligibleWins;
+    if (Folder *curFolder = d_app->currentFolder()) {
+        const QList<MyWidget *> folderWins = curFolder->windowsList();
+        for (MyWidget *mw : folderWins) {
+            if (!mw || mw->status() == MyWidget::Hidden)
+                continue;
+            if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
+                continue;
+            if (mw->isHidden())
+                continue;
+            eligibleWins.insert(mw);
+        }
+    }
+
+    QMdiSubWindow *activeSub = d_app->d_workspace.activeSubWindow();
+    MyWidget *activeMw = qobject_cast<MyWidget *>(activeSub);
+    if (activeMw && !eligibleWins.contains(activeMw))
+        activeMw = nullptr;
+
+    const QList<QMdiSubWindow *> ordered =
+            d_app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+
+    Table *targetTable = qobject_cast<Table *>(activeMw);
+    MyWidget *targetPlot = qobject_cast<MultiLayer *>(activeMw);
+    if (!targetPlot)
+        targetPlot = qobject_cast<Graph3D *>(activeMw);
+
+    if (!targetTable && targetPlot) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(targetPlot)) {
+            if (Table *srcTbl = sourceTableFromMultiLayer(ml)) {
+                if (eligibleWins.contains(srcTbl))
+                    targetTable = srcTbl;
+            }
+        }
+    }
+
+    if (!targetTable) {
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            if (Table *t = qobject_cast<Table *>(ordered.at(i))) {
+                if (eligibleWins.contains(t)) {
+                    targetTable = t;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!targetPlot && targetTable) {
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(ordered.at(i))) {
+                if (eligibleWins.contains(ml) && multiLayerUsesTable(ml, targetTable)) {
+                    targetPlot = ml;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!targetPlot) {
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(ordered.at(i))) {
+                if (eligibleWins.contains(ml)) {
+                    targetPlot = ml;
+                    break;
+                }
+            }
+            if (Graph3D *g3 = qobject_cast<Graph3D *>(ordered.at(i))) {
+                if (eligibleWins.contains(g3)) {
+                    targetPlot = g3;
+                    break;
+                }
+            }
+        }
+    }
+
+    auto prepareTileWindow = [](MyWidget *w) {
+        if (!w || w->isHidden())
+            return;
+        if (w->isMaximized() || w->isMinimized()) {
+            w->setWindowState(w->windowState() & ~(Qt::WindowMaximized | Qt::WindowMinimized));
+            w->showNormal();
+        }
+    };
+
+    for (MyWidget *mw : eligibleWins) {
+        if (mw && mw != targetTable && mw != targetPlot && mw->isMaximized())
+            prepareTileWindow(mw);
+    }
+
+    const int leftW = qMax(120, qRound(vpRect.width() * 0.40));
+    const int rightW = qMax(120, vpRect.width() - leftW);
+    const int fullH = qMax(100, vpRect.height());
+
+    if (targetTable && targetPlot) {
+        prepareTileWindow(targetTable);
+        prepareTileWindow(targetPlot);
+        targetTable->setGeometry(0, 0, leftW, fullH);
+        targetPlot->setGeometry(leftW, 0, rightW, fullH);
+        if (activeMw == targetTable) {
+            targetPlot->raise();
+            targetTable->raise();
+        } else {
+            targetTable->raise();
+            targetPlot->raise();
+        }
+    } else if (targetTable) {
+        prepareTileWindow(targetTable);
+        targetTable->setGeometry(0, 0, leftW, fullH);
+        targetTable->raise();
+    } else if (targetPlot) {
+        prepareTileWindow(targetPlot);
+        targetPlot->setGeometry(leftW, 0, rightW, fullH);
+        targetPlot->raise();
+    }
+
+    if (activeMw && activeMw != targetTable && activeMw != targetPlot) {
+        prepareTileWindow(activeMw);
+        if (activeMw->width() < 120 || activeMw->height() < 90) {
+            const int fw = qBound(220, int(vpRect.width() * 0.55), qMax(220, vpRect.width() - 32));
+            const int fh = qBound(160, int(vpRect.height() * 0.60), qMax(160, vpRect.height() - 32));
+            activeMw->setGeometry(qMax(16, (vpRect.width() - fw) / 2),
+                                  qMax(16, (vpRect.height() - fh) / 2), fw, fh);
+        }
+        activeMw->raise();
+    }
+
+    d_applying_split_geometry = false;
+}
+
+void ModernRibbonBar::setFocusHudMode(bool enabled)
+{
+    if (d_shutting_down)
+        return;
+
+    const bool oleEmbedded = (d_app && d_app->isOleEmbeddedMode());
+    if (enabled && oleEmbedded)
+        return;
+
+    if (d_focus_hud_mode == enabled) {
+        if (oleEmbedded)
+            this->hide();
+        return;
+    }
+
+    d_focus_hud_mode = enabled;
+
+    if (enabled) {
+        d_saved_focus_visibility.clear();
+
+        if (d_app) {
+            const QList<QToolBar *> toolbars = d_app->findChildren<QToolBar *>();
+            for (QToolBar *tb : toolbars) {
+                if (!tb)
+                    continue;
+                d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(tb), !tb->isHidden()));
+                tb->hide();
+            }
+
+            const QList<QDockWidget *> docks = d_app->findChildren<QDockWidget *>();
+            for (QDockWidget *dw : docks) {
+                if (!dw)
+                    continue;
+                d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(dw), !dw->isHidden()));
+                dw->hide();
+            }
+
+            if (QStatusBar *sb = d_app->statusBar()) {
+                d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(sb), !sb->isHidden()));
+                sb->hide();
+            }
+        }
+
+        this->hide();
+
+        if (d_app) {
+            if (QWidget *cw = d_app->centralWidget()) {
+                if (cw->layout())
+                    cw->layout()->activate();
+            }
+            if (d_app->layout())
+                d_app->layout()->activate();
+        }
+
+        if (d_focus_hud_overlay)
+            d_focus_hud_overlay->setOverlayActive(true);
+    } else {
+        if (d_focus_hud_overlay)
+            d_focus_hud_overlay->setOverlayActive(false);
+
+        if (oleEmbedded) {
+            this->hide();
+            d_saved_focus_visibility.clear();
+        } else {
+            this->show();
+
+            for (const auto &saved : d_saved_focus_visibility) {
+                if (saved.first)
+                    saved.first->setVisible(saved.second);
+            }
+            d_saved_focus_visibility.clear();
+        }
+
+        if (d_app) {
+            if (QWidget *cw = d_app->centralWidget()) {
+                if (cw->layout())
+                    cw->layout()->activate();
+            }
+            if (d_app->layout())
+                d_app->layout()->activate();
+        }
+
+        if (!oleEmbedded)
+            syncCheckableStates();
+    }
+
+    if (!oleEmbedded && d_layout_mode == LayoutSplitTableGraph)
+        applySplitWorkspaceGeometry();
+
+    emit focusHudModeChanged(d_focus_hud_mode);
+}
+
+void ModernRibbonBar::setClassicToolbarsVisible(bool visible)
+{
+    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode()))
+        return;
+
+    d_classic_toolbars_visible = visible;
+    if (d_btn_classic_toolbars && d_btn_classic_toolbars->isChecked() != visible) {
+        QSignalBlocker blocker(d_btn_classic_toolbars);
+        d_btn_classic_toolbars->setChecked(visible);
+    }
+
+    if (d_app && !d_focus_hud_mode) {
+        QToolBar *legacyBars[] = { d_app->file_tools,        d_app->edit_tools,
+                                   d_app->table_tools,       d_app->plot_tools,
+                                   d_app->graph_tools,       d_app->matrix_plot_tools,
+                                   d_app->graph_3D_tools };
+        if (!visible) {
+            for (QToolBar *tb : legacyBars) {
+                if (tb)
+                    tb->hide();
+            }
+        } else {
+            if (d_app->file_tools)
+                d_app->file_tools->show();
+            if (d_app->edit_tools)
+                d_app->edit_tools->show();
+            d_app->customToolBars(
+                    qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow()));
+        }
+    }
+
+    emit classicToolbarsToggled(visible);
+}
+
+void ModernRibbonBar::triggerPlot2D(int curveType)
+{
+    if (d_shutting_down || !d_app)
+        return;
+
+    Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow());
+    if (!tbl && d_focus_hud_mode && d_focus_hud_overlay) {
+        if (d_focus_hud_overlay->isTableDrawerVisible() && d_focus_hud_overlay->tableDrawer()) {
+            tbl = d_focus_hud_overlay->tableDrawer()->currentTable();
+        } else if (MultiLayer *activeMl =
+                           qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
+            QSet<QObject *> ignored;
+            for (MyWidget *mw : d_app->hiddenWindows) {
+                if (mw)
+                    ignored.insert(mw);
+            }
+            if (Table *srcTbl = sourceTableFromMultiLayer(activeMl, ignored)) {
+                if (srcTbl->status() != MyWidget::Hidden
+                    && !srcTbl->name().startsWith(QLatin1String("RpcFitCurve"))
+                    && (!d_app->currentFolder()
+                        || d_app->currentFolder()->windowsList().contains(srcTbl))) {
+                    tbl = srcTbl;
+                }
+            }
+        }
+    }
+
+    if (tbl) {
+        const bool singleColPlot = (curveType == Graph::Histogram || curveType == Graph::Pie
+                                    || curveType == Graph::Box);
+        if (singleColPlot && tbl->selectedColumns().isEmpty()) {
+            const QStringList yCols = tbl->YColumns();
+            const QStringList allCols = tbl->columnsList();
+            const QStringList pick = !yCols.isEmpty()
+                    ? QStringList { yCols.first() }
+                    : (!allCols.isEmpty() ? QStringList { allCols.last() } : QStringList());
+            if (!pick.isEmpty()) {
+                d_app->multilayerPlot(tbl, pick, curveType);
+                if (d_layout_mode == LayoutSplitTableGraph)
+                    applySplitWorkspaceGeometry();
+                return;
+            }
+        } else if (!singleColPlot && tbl->selectedYColumns().isEmpty() && !tbl->noXColumn()) {
+            const QStringList yCols = tbl->YColumns();
+            if (!yCols.isEmpty()) {
+                d_app->multilayerPlot(tbl, yCols, curveType);
+                if (d_layout_mode == LayoutSplitTableGraph)
+                    applySplitWorkspaceGeometry();
+                return;
+            }
+        }
+    }
+
+    QMetaObject::invokeMethod(d_app, "selectPlotType", Qt::DirectConnection,
+                              Q_ARG(int, curveType));
+    if (d_layout_mode == LayoutSplitTableGraph)
+        applySplitWorkspaceGeometry();
+}
+
+void ModernRibbonBar::importOpjInteractive()
+{
+    if (d_shutting_down || !d_app)
+        return;
+    const QString fn = QFileDialog::getOpenFileName(
+            d_app, tr("Import Origin OPJ Project"), d_app->workingDir,
+            tr("Origin Projects (*.opj *.OPJ);;All Files (*)"));
+    if (!fn.isEmpty())
+        d_app->importOPJ(fn);
+}
+
+int ModernRibbonBar::tabCount() const
+{
+    return d_tab_bar ? d_tab_bar->count() : 0;
+}
+
+int ModernRibbonBar::currentTabIndex() const
+{
+    return d_tab_bar ? d_tab_bar->currentIndex() : -1;
+}
+
+void ModernRibbonBar::setCurrentTabIndex(int index)
+{
+    if (d_tab_bar && index >= 0 && index < d_tab_bar->count())
+        d_tab_bar->setCurrentIndex(index);
+}
+
+QString ModernRibbonBar::tabTitle(int index) const
+{
+    return (d_tab_bar && index >= 0 && index < d_tab_bar->count()) ? d_tab_bar->tabText(index)
+                                                                  : QString();
+}
+
+QString ModernRibbonBar::activeContextText() const
+{
+    return d_context_pill ? d_context_pill->text() : QString();
+}
+
+CommandPalettePopup *ModernRibbonBar::commandPalette()
+{
+    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode()))
+        return nullptr;
+    if (!d_command_palette)
+        d_command_palette = new CommandPalettePopup(d_app, this, d_app);
+    return d_command_palette.data();
+}
+
+FocusCanvasHudOverlay *ModernRibbonBar::focusHudOverlay() const
+{
+    return d_focus_hud_overlay.data();
+}
+
+FocusTableDrawer *ModernRibbonBar::focusTableDrawer() const
+{
+    return d_focus_hud_overlay ? d_focus_hud_overlay->tableDrawer() : nullptr;
+}
+
+void ModernRibbonBar::openCommandPalette()
+{
+    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode())) {
+        if (d_command_palette)
+            d_command_palette->hide();
+        return;
+    }
+
+    CommandPalettePopup *popup = commandPalette();
+    if (!popup)
+        return;
+
+    popup->refreshCommands();
+    popup->setFilterText(QString());
+
+    if (d_app) {
+        const QPoint topCenter = d_app->mapToGlobal(QPoint(d_app->width() / 2, 76));
+        int px = topCenter.x() - popup->width() / 2;
+        int py = topCenter.y();
+        if (QScreen *scr = d_app->screen()) {
+            const QRect avail = scr->availableGeometry();
+            px = qBound(avail.left() + 8, px, qMax(avail.left() + 8, avail.right() - popup->width() - 8));
+            py = qBound(avail.top() + 8, py, qMax(avail.top() + 8, avail.bottom() - popup->height() - 8));
+        }
+        popup->move(px, py);
+    }
+
+    popup->show();
+    popup->raise();
+    popup->activateWindow();
+}
+
+bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
+{
+    if (d_shutting_down)
+        return QFrame::eventFilter(watched, event);
+    if (d_app && watched == d_app->d_workspace.viewport() && event) {
+        if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph
+            && !d_applying_split_geometry) {
+            applySplitWorkspaceGeometry();
+        }
+    }
+    return QFrame::eventFilter(watched, event);
+}
+
+void ModernRibbonBar::changeEvent(QEvent *event)
+{
+    QFrame::changeEvent(event);
+    if (event && event->type() == QEvent::LanguageChange)
+        retranslateUi();
+}

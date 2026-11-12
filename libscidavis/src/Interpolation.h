@@ -48,7 +48,7 @@ public:
     void setMethod(InterpolationMethod m) { setMethod((int)m); };
 
 protected:
-    virtual bool isDataAcceptable();
+    bool isDataAcceptable() const override;
 
 private:
     void init(int m);

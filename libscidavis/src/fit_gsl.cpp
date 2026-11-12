@@ -1120,7 +1120,9 @@ double eval_origin_peak_profile(int profile, double A, double xc, double w, doub
         return A * sig1 * sig2;
     }
     case 10: { // DoniachSunjic (XPS Asymmetric Peak)
-        double alpha = (asym_alpha > 0.85 || asym_alpha < 0.0) ? 0.15 : asym_alpha;
+        double alpha = (!gsl_finite(asym_alpha) || asym_alpha >= 0.85 || asym_alpha < 0.0)
+                ? 0.15
+                : asym_alpha;
         double u = 2.0 * diff / w_abs;
         double num = cos(0.5 * M_PI * alpha + (1.0 - alpha) * atan(u));
         double den = pow(1.0 + u * u, 0.5 * (1.0 - alpha));
@@ -1284,9 +1286,10 @@ int user_df(const gsl_vector *x, void *params, gsl_matrix *J)
 
 int user_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
 {
-    user_f(x, params, f);
-    user_df(x, params, J);
-    return GSL_SUCCESS;
+    int st = user_f(x, params, f);
+    if (st != GSL_SUCCESS)
+        return st;
+    return user_df(x, params, J);
 }
 
 int boltzmann_f(const gsl_vector *x, void *params, gsl_vector *f)

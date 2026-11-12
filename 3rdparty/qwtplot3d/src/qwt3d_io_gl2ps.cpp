@@ -2,13 +2,36 @@
 #pragma warning(disable : 4786)
 #endif
 
+#include <stdio.h>
 #include <time.h>
+#include <cmath>
+#ifdef _WIN32
+#include <wchar.h>
+#endif
+#include <QByteArray>
+#include <QFile>
 #include "qwt3d_openglhelper.h"
 #include "gl2ps.h"
 #include "qwt3d_io_gl2ps.h"
 #include "qwt3d_plot.h"
 
 using namespace Qwt3D;
+
+namespace {
+
+FILE *openGl2psOutputFile(QString const &path)
+{
+    if (path.isEmpty())
+        return nullptr;
+#ifdef _WIN32
+    return _wfopen(reinterpret_cast<const wchar_t *>(path.utf16()), L"wb");
+#else
+    const QByteArray encoded = QFile::encodeName(path);
+    return fopen(encoded.constData(), "wb");
+#endif
+}
+
+} // namespace
 
 //! Provides a new VectorWriter object.
 IO::Functor *VectorWriter::clone() const
@@ -100,21 +123,38 @@ bool VectorWriter::setFormat(QString const &format)
 //! Performs actual output
 bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
 {
-    if (formaterror_)
+    if (formaterror_ || !plot)
         return false;
 
+    if (plot->width() <= 0 || plot->height() <= 0)
+        plot->resize(500, 400);
+
+    if (!plot->context()) {
+        (void)plot->grabFramebuffer();
+    }
     plot->makeCurrent();
+    plot->updateData();
 
     GLint bufsize = 0, state = GL2PS_OVERFLOW;
-    GLint viewport[4];
+    GLint viewport[4] = { 0, 0, 0, 0 };
 
     glGetIntegerv(GL_VIEWPORT, viewport);
+    if (viewport[2] <= 0 || viewport[3] <= 0) {
+        viewport[0] = 0;
+        viewport[1] = 0;
+        viewport[2] = (plot->width() > 0) ? plot->width() : 500;
+        viewport[3] = (plot->height() > 0) ? plot->height() : 400;
+        glViewport(0, 0, viewport[2], viewport[3]);
+    }
 
     GLint options = GL2PS_SIMPLE_LINE_OFFSET | GL2PS_SILENT | GL2PS_DRAW_BACKGROUND
             | GL2PS_OCCLUSION_CULL | GL2PS_BEST_ROOT;
 
-    if (compressed_)
+    if (compressed_
+        && !(gl2ps_format_ == GL2PS_SVG
+             && !fname.endsWith(QLatin1String(".svgz"), Qt::CaseInsensitive))) {
         options |= GL2PS_COMPRESS;
+    }
 
     switch (landscape_) {
     case VectorWriter::AUTO:
@@ -161,18 +201,24 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
             + QString::number(QWT3D_MINOR_VERSION) + "." + QString::number(QWT3D_PATCH_VERSION);
 
     QString producer = QString("QwtPlot3D ") + version + " (beta)";
+    const QByteArray utf8Producer = producer.toUtf8();
+    const QByteArray utf8Fname = fname.toUtf8();
 
-    FILE *fp = fopen(QWT3DLOCAL8BIT(fname), "wb");
+    FILE *fp = openGl2psOutputFile(fname);
     if (!fp) {
         Label::useDeviceFonts(false);
         return false;
     }
     while (state == GL2PS_OVERFLOW) {
+        if (bufsize > 0)
+            rewind(fp);
         bufsize += 2 * 1024 * 1024;
-        gl2psBeginPage("---", QWT3DLOCAL8BIT(producer), viewport, gl2ps_format_, sortmode, options,
-                       GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, QWT3DLOCAL8BIT(fname));
+        plot->makeCurrent();
+        gl2psBeginPage("---", utf8Producer.constData(), viewport, gl2ps_format_, sortmode, options,
+                       GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, utf8Fname.constData());
 
-        plot->grabFramebuffer();
+        (void)plot->grabFramebuffer();
+        plot->makeCurrent();
         state = gl2psEndPage();
     }
     fclose(fp);
@@ -180,8 +226,9 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
     // extra TeX file
     if (textmode_ == TEX) {
         QString fn = (texfname_.isEmpty()) ? fname + ".tex" : texfname_;
+        const QByteArray utf8TexFn = fn.toUtf8();
 
-        fp = fopen(QWT3DLOCAL8BIT(fn), "wb");
+        fp = openGl2psOutputFile(fn);
         if (!fp) {
             Label::useDeviceFonts(false);
             return false;
@@ -189,13 +236,18 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
         Label::useDeviceFonts(true);
         options &= ~GL2PS_NO_PIXMAP & ~GL2PS_NO_TEXT;
         state = GL2PS_OVERFLOW;
+        bufsize = 0;
         while (state == GL2PS_OVERFLOW) {
+            if (bufsize > 0)
+                rewind(fp);
             bufsize += 2 * 1024 * 1024;
-            gl2psBeginPage("---", QWT3DLOCAL8BIT(producer), viewport, GL2PS_TEX, sortmode, options,
-                           GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, QWT3DLOCAL8BIT(fn));
+            plot->makeCurrent();
+            gl2psBeginPage("---", utf8Producer.constData(), viewport, GL2PS_TEX, sortmode, options,
+                           GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, utf8TexFn.constData());
 
             plot->updateData();
-            plot->update();
+            (void)plot->grabFramebuffer();
+            plot->makeCurrent();
             state = gl2psEndPage();
         }
         fclose(fp);
@@ -203,7 +255,7 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
 
     Label::useDeviceFonts(false);
 
-    return true;
+    return (state != GL2PS_ERROR && state != GL2PS_UNINITIALIZED);
 }
 
 // moved
@@ -271,8 +323,11 @@ GLint Qwt3D::drawDevicePixels(GLsizei width, GLsizei height, GLenum format, GLen
 }
 
 GLint Qwt3D::drawDeviceText(const char *str, const char *fontname, int fontsize, Triple pos,
-                            RGBA /*rgba*/, ANCHOR align, double gap)
+                            RGBA rgba, ANCHOR align, double gap)
 {
+    if (!str || !*str)
+        return GL2PS_SUCCESS;
+
     double vp[3];
 
     World2ViewPort(vp[0], vp[1], vp[2], pos.x, pos.y, pos.z);
@@ -283,8 +338,8 @@ GLint Qwt3D::drawDeviceText(const char *str, const char *fontname, int fontsize,
     GLdouble bcol[4];
     glGetDoublev(GL_COLOR_CLEAR_VALUE, bcol);
 
-    //	glColor4d(color.r, color.g, color.b, color.a);
-    //		glClearColor(color.r, color.g, color.b, color.a);
+    const double alpha = (rgba.a > 0.0) ? rgba.a : 1.0;
+    glColor4d(rgba.r, rgba.g, rgba.b, alpha);
 
     GLint ret = GL2PS_SUCCESS;
 
@@ -332,10 +387,92 @@ GLint Qwt3D::drawDeviceText(const char *str, const char *fontname, int fontsize,
     ViewPort2World(vp[0], vp[1], vp[2], start.x, start.y, start.z);
     Triple adjpos(vp[0], vp[1], vp[2]);
 
+    GL2PSrgba textColor = {
+        static_cast<GLfloat>(rgba.r),
+        static_cast<GLfloat>(rgba.g),
+        static_cast<GLfloat>(rgba.b),
+        static_cast<GLfloat>(alpha)
+    };
+
     glRasterPos3d(adjpos.x, adjpos.y, adjpos.z);
-    ret = gl2psTextOpt(str, fontname, (int)fontsize, a, 0);
+    GLboolean rasterValid = GL_TRUE;
+    glGetBooleanv(GL_CURRENT_RASTER_POSITION_VALID, &rasterValid);
+    if (!rasterValid && std::isfinite(start.x) && std::isfinite(start.y)) {
+        GL2PSvertex forcedVert;
+        forcedVert.xyz[0] = static_cast<GLfloat>(start.x);
+        forcedVert.xyz[1] = static_cast<GLfloat>(start.y);
+        forcedVert.xyz[2] =
+                static_cast<GLfloat>(std::isfinite(start.z) ? qBound(0.0, start.z, 1.0) : 0.5);
+        forcedVert.rgba[0] = textColor[0];
+        forcedVert.rgba[1] = textColor[1];
+        forcedVert.rgba[2] = textColor[2];
+        forcedVert.rgba[3] = textColor[3];
+        gl2psForceRasterPos(&forcedVert);
+    }
+
+    const GLint fileFormat = gl2psGetFileFormat();
+    QByteArray svgEscapedText;
+    const char *outStr = str;
+    if (fileFormat == GL2PS_SVG) {
+        for (const char *p = str; *p != '\0'; ++p) {
+            switch (*p) {
+            case '&':
+                svgEscapedText.append("&amp;");
+                break;
+            case '<':
+                svgEscapedText.append("&lt;");
+                break;
+            case '>':
+                svgEscapedText.append("&gt;");
+                break;
+            default:
+                svgEscapedText.append(*p);
+                break;
+            }
+        }
+        outStr = svgEscapedText.constData();
+    }
+
+    QByteArray sanitizedFont;
+    const char *outFont = (fontname && *fontname) ? fontname : "Arial";
+    if (fileFormat == GL2PS_PDF) {
+        for (const char *p = outFont; *p != '\0'; ++p) {
+            if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
+                sanitizedFont.append(*p);
+        }
+        if (sanitizedFont.isEmpty())
+            sanitizedFont = QByteArrayLiteral("Arial");
+        outFont = sanitizedFont.constData();
+    } else if (fileFormat == GL2PS_SVG) {
+        for (const char *p = outFont; *p != '\0'; ++p) {
+            switch (*p) {
+            case '"':
+                sanitizedFont.append("&quot;");
+                break;
+            case '&':
+                sanitizedFont.append("&amp;");
+                break;
+            case '<':
+                sanitizedFont.append("&lt;");
+                break;
+            case '>':
+                sanitizedFont.append("&gt;");
+                break;
+            default:
+                sanitizedFont.append(*p);
+                break;
+            }
+        }
+        if (sanitizedFont.isEmpty())
+            sanitizedFont = QByteArrayLiteral("Arial");
+        outFont = sanitizedFont.constData();
+    }
+
+    const GLshort safeSize = static_cast<GLshort>((fontsize > 0) ? fontsize : 12);
+    ret = gl2psTextOptColor(outStr, outFont, safeSize, a, 0.0f, textColor);
     glColor4dv(fcol);
-    glClearColor(bcol[0], bcol[1], bcol[2], bcol[3]);
+    glClearColor(static_cast<GLclampf>(bcol[0]), static_cast<GLclampf>(bcol[1]),
+                 static_cast<GLclampf>(bcol[2]), static_cast<GLclampf>(bcol[3]));
     return ret;
 }
 

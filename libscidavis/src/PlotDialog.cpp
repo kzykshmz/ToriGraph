@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "ApplicationWindow.h"
 #include "PlotDialog.h"
+#include "IconLoader.h"
 #include "ColorButton.h"
 #include "PenWidget.h"
 #include "PatternBox.h"
@@ -1242,7 +1243,7 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
             ? tr("Page")
             : (tr("Page") + " (" + ml->name() + ")");
     QTreeWidgetItem *item = new QTreeWidgetItem(listBox, QStringList(pageLabel));
-    item->setIcon(0, QIcon(":/folder_open.xpm"));
+    item->setIcon(0, IconLoader::duotoneIcon("folder-open"));
     listBox->addTopLevelItem(item);
     item->setExpanded(true);
     listBox->setCurrentItem(item);
@@ -2572,9 +2573,9 @@ void PlotDialog::updateTreeWidgetItem(QTreeWidgetItem *item)
         return;
 
     if (item->isExpanded())
-        item->setIcon(0, QIcon(":/folder_open.xpm"));
+        item->setIcon(0, IconLoader::duotoneIcon("folder-open"));
     else
-        item->setIcon(0, QIcon(":/folder_closed.xpm"));
+        item->setIcon(0, IconLoader::duotoneIcon("folder-closed"));
 }
 
 void PlotDialog::updateBackgroundTransparency(int alpha)
@@ -2902,7 +2903,7 @@ void PlotDialog::closeEvent(QCloseEvent *e)
 LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
     : QTreeWidgetItem(parent, QStringList(s), LayerTreeItem), d_graph(g)
 {
-    setIcon(0, QPixmap(":/layer_disabled.xpm"));
+    setIcon(0, IconLoader::duotoneIcon(":/layer_disabled.xpm"));
     if (g)
         insertCurvesList();
 }
@@ -2910,9 +2911,9 @@ LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
 void LayerItem::setActive(bool on)
 {
     if (on)
-        setIcon(0, QPixmap(":/layer_enabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon(":/layer_enabled.xpm"));
     else
-        setIcon(0, QPixmap(":/layer_disabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon(":/layer_disabled.xpm"));
 }
 
 void LayerItem::insertCurvesList()
@@ -2948,15 +2949,15 @@ void LayerItem::insertCurvesList()
 CurveTreeItem::CurveTreeItem(const QwtPlotItem *curve, LayerItem *parent, const QString &s)
     : QTreeWidgetItem(parent, QStringList(s), PlotCurveTreeItem), d_curve(curve)
 {
-    setIcon(0, QPixmap(":/graph_disabled.xpm"));
+    setIcon(0, IconLoader::duotoneIcon(":/graph_disabled.xpm"));
 }
 
 void CurveTreeItem::setActive(bool on)
 {
     if (on)
-        setIcon(0, QPixmap(":/graph.xpm"));
+        setIcon(0, IconLoader::duotoneIcon(":/graph.xpm"));
     else
-        setIcon(0, QPixmap(":/graph_disabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon(":/graph_disabled.xpm"));
 }
 
 int CurveTreeItem::plotItemIndex()

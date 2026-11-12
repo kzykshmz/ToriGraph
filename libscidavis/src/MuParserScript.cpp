@@ -541,6 +541,8 @@ bool MuParserScript::translateLegacyFunctions(QString &input)
             }
         }
         arguments << currentArgument;
+        for (int argIdx = 0; argIdx < arguments.size(); ++argIdx)
+            arguments[argIdx] = arguments[argIdx].trimmed();
 
         // select replacement function call
         Table *table = qobject_cast<Table *>(Context);
@@ -585,7 +587,8 @@ bool MuParserScript::translateLegacyFunctions(QString &input)
                 compiled = Script::compileErr;
                 return false;
             }
-            if (arguments.at(1).startsWith("\"")) {
+            if (arguments.at(0).startsWith("\"") && arguments.at(0).endsWith("\"")
+                && arguments.at(1).startsWith("\"") && arguments.at(1).endsWith("\"")) {
                 // tablecol("table", "column") -> column("table/column")
                 // do escaping of path argument
                 QString tableArgument = arguments.at(0);

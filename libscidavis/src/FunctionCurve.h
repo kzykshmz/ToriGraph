@@ -65,6 +65,7 @@ public:
     QString legend() const;
 
     bool loadData(int points = 0);
+    void setSuppressScriptErrors(bool suppress);
 
 protected slots:
     void scriptError(const QString &message, const QString &scriptName, int lineNumber);

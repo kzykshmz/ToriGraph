@@ -59,13 +59,15 @@ Spectrogram::Spectrogram(Matrix *m)
     if (!m)
         return;
     setData(MatrixData(m));
-    double step = fabs(data().range().maxValue() - data().range().minValue()) / 5.0;
+    const QwtDoubleInterval zRange = data().range();
+    const int defaultLevels = 5;
+    const double step = fabs(zRange.maxValue() - zRange.minValue()) / (double)defaultLevels;
 
     QwtValueList contourLevels;
-    if (step > 0.0) {
-        for (double level = data().range().minValue() + step; level < data().range().maxValue();
-             level += step)
-            contourLevels += level;
+    if (step > 0.0 && std::isfinite(step)) {
+        const double zMin = qMin(zRange.minValue(), zRange.maxValue());
+        for (int i = 1; i < defaultLevels; ++i)
+            contourLevels += zMin + i * step;
     }
 
     setContourLevels(contourLevels);
@@ -225,12 +227,13 @@ void Spectrogram::setLevelsNumber(int levels)
     if (levels < 2)
         levels = 2;
     const QwtDoubleInterval zRange = effectiveValueRange();
-    double step = fabs(zRange.maxValue() - zRange.minValue()) / (double)levels;
+    const double step = fabs(zRange.maxValue() - zRange.minValue()) / (double)levels;
 
     QwtValueList contourLevels;
-    if (step > 0.0) {
-        for (double level = zRange.minValue() + step; level < zRange.maxValue(); level += step)
-            contourLevels += level;
+    if (step > 0.0 && std::isfinite(step)) {
+        const double zMin = qMin(zRange.minValue(), zRange.maxValue());
+        for (int i = 1; i < levels; ++i)
+            contourLevels += zMin + i * step;
     }
 
     setContourLevels(contourLevels);

@@ -34,6 +34,7 @@
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_multifit.h>
 #include <gsl/gsl_multifit_nlin.h>
+#include <gsl/gsl_sf_gamma.h>
 #include <gsl/gsl_version.h>
 
 #include <QAbstractItemView>
@@ -74,6 +75,13 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kFwhmFactor = 2.3548200450309493820231386529194; // 2 * sqrt(2 * ln(2))
+
+bool isNonInteractiveApp(const ApplicationWindow *app)
+{
+    if (qApp && qApp->property("torigraph_noninteractive").toBool())
+        return true;
+    return app && app->isHeadlessMode();
+}
 
 Column *resolveTableColumn(Table *t, const QString &colSpec)
 {
@@ -370,15 +378,27 @@ struct SurfaceEvalContext
     mutable double varY = 0.0;
     mutable std::vector<double> varParams;
     mutable bool parserReady = false;
+    mutable bool evalFailed = false;
+    mutable QString parserError;
 
     bool ensureParser() const
     {
         if (model != GraphStatsAndSurfaceFit::Custom2D)
             return true;
+        if (evalFailed)
+            return false;
         if (parserReady && parser)
             return true;
+        if (customExpr.trimmed().isEmpty()) {
+            parserError = QStringLiteral("Empty custom 2D formula");
+            evalFailed = true;
+            parserReady = false;
+            return false;
+        }
         parser = std::make_unique<MyParser>();
         varParams.assign(static_cast<size_t>(paramNames.size()), 1.0);
+        varX = !x.empty() ? x.front() : (0.5 * (xMin + xMax));
+        varY = !y.empty() ? y.front() : (0.5 * (yMin + yMax));
         try {
             parser->DefineVar(toString<mu::string_type>(QStringLiteral("x")), &varX);
             parser->DefineVar(toString<mu::string_type>(QStringLiteral("y")), &varY);
@@ -387,9 +407,17 @@ struct SurfaceEvalContext
                                   &varParams[static_cast<size_t>(j)]);
             }
             parser->SetExpr(customExpr);
+            (void)parser->Eval();
             parserReady = true;
             return true;
+        } catch (const mu::ParserError &e) {
+            parserError = QStringFromString(e.GetMsg());
+            evalFailed = true;
+            parserReady = false;
+            return false;
         } catch (...) {
+            parserError = QStringLiteral("Invalid custom 2D formula");
+            evalFailed = true;
             parserReady = false;
             return false;
         }
@@ -479,16 +507,20 @@ struct SurfaceEvalContext
 
         case GraphStatsAndSurfaceFit::Custom2D: {
             if (!ensureParser())
-                return 0.0;
+                return std::numeric_limits<double>::quiet_NaN();
             varX = px;
             varY = py;
             for (size_t j = 0; j < varParams.size(); ++j)
                 varParams[j] = p[j];
             try {
-                double val = parser->Eval();
-                return std::isfinite(val) ? val : 0.0;
+                return parser->Eval();
+            } catch (const mu::ParserError &e) {
+                parserError = QStringFromString(e.GetMsg());
+                evalFailed = true;
+                return std::numeric_limits<double>::quiet_NaN();
             } catch (...) {
-                return 0.0;
+                evalFailed = true;
+                return std::numeric_limits<double>::quiet_NaN();
             }
         }
         }
@@ -507,7 +539,7 @@ int surface_gsl_f(const gsl_vector *parVec, void *dataPtr, gsl_vector *fVec)
 
     for (size_t i = 0; i < n; ++i) {
         double zHat = ctx->evalPoint(ctx->x[i], ctx->y[i], par.data());
-        if (!std::isfinite(zHat))
+        if (ctx->evalFailed || !std::isfinite(zHat))
             return GSL_EDOM;
         gsl_vector_set(fVec, i, zHat - ctx->z[i]);
     }
@@ -528,12 +560,17 @@ int surface_gsl_df(const gsl_vector *parVec, void *dataPtr, gsl_matrix *J)
         const double h = std::max(1e-6, 1e-6 * std::abs(pj));
         par[j] = pj + h;
         std::vector<double> fPlus(n);
-        for (size_t i = 0; i < n; ++i)
+        for (size_t i = 0; i < n; ++i) {
             fPlus[i] = ctx->evalPoint(ctx->x[i], ctx->y[i], par.data());
+            if (ctx->evalFailed || !std::isfinite(fPlus[i]))
+                return GSL_EDOM;
+        }
 
         par[j] = pj - h;
         for (size_t i = 0; i < n; ++i) {
             double fMinus = ctx->evalPoint(ctx->x[i], ctx->y[i], par.data());
+            if (ctx->evalFailed || !std::isfinite(fMinus))
+                return GSL_EDOM;
             double deriv = (fPlus[i] - fMinus) / (2.0 * h);
             if (!std::isfinite(deriv))
                 deriv = 0.0;
@@ -805,6 +842,7 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     GraphStatsAndSurfaceFit::SurfaceFitResult out;
     if (!app || ctx.z.size() < 4)
         return out;
+    app->setProperty("torigraph_last_surface_fit_error", QVariant());
 
     std::vector<double> initParams;
     buildInitialSurfaceParameters(ctx, initParams);
@@ -812,8 +850,15 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     const size_t n = ctx.z.size();
     if (p == 0 || n < p)
         return out;
-    if (ctx.model == GraphStatsAndSurfaceFit::Custom2D && !ctx.ensureParser())
+    if (ctx.model == GraphStatsAndSurfaceFit::Custom2D && !ctx.ensureParser()) {
+        app->setProperty("torigraph_last_surface_fit_error",
+                         ctx.parserError.isEmpty() ? QStringLiteral("Invalid custom 2D formula")
+                                                   : ctx.parserError);
+        if (app->writeFitResultsToLog && !isNonInteractiveApp(app))
+            app->updateLog(QStringLiteral("[3D Surface Fit Error: ") + baseName
+                           + QStringLiteral("] ") + ctx.parserError + QStringLiteral("\n"));
         return out;
+    }
 
     gsl_multifit_function_fdf fdf;
     fdf.f = &surface_gsl_f;
@@ -834,15 +879,15 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     if (status == GSL_SUCCESS) {
         for (iter = 0; iter < 400; ++iter) {
             status = gsl_multifit_fdfsolver_iterate(solver);
-            int deltaStatus = gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8);
-            if (deltaStatus == GSL_SUCCESS) {
-                status = GSL_SUCCESS;
+            if (ctx.evalFailed) {
+                status = GSL_EDOM;
                 break;
             }
-            if (status != GSL_SUCCESS && status != GSL_CONTINUE) {
-                if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-                    || status == GSL_ETOLG)
-                    status = GSL_SUCCESS;
+            int deltaStatus = gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8);
+            if (status != GSL_SUCCESS && status != GSL_CONTINUE)
+                break;
+            if (deltaStatus == GSL_SUCCESS) {
+                status = GSL_SUCCESS;
                 break;
             }
         }
@@ -854,27 +899,71 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     for (size_t j = 0; j < p; ++j)
         bestP[j] = gsl_vector_get(solver->x, j);
 
+    double jacMaxAbs = 0.0;
     gsl_matrix *covar = gsl_matrix_alloc(p, p);
+    gsl_matrix_set_zero(covar);
+    if (status != GSL_EDOM && status != GSL_EINVAL && !ctx.evalFailed) {
 #if GSL_MAJOR_VERSION < 2
-    gsl_multifit_covar(solver->J, 1e-8, covar);
+        for (size_t r = 0; r < n; ++r) {
+            for (size_t c = 0; c < p; ++c) {
+                double jv = std::abs(gsl_matrix_get(solver->J, r, c));
+                if (std::isfinite(jv))
+                    jacMaxAbs = std::max(jacMaxAbs, jv);
+            }
+        }
+        gsl_multifit_covar(solver->J, 1e-8, covar);
 #else
-    {
         gsl_matrix *J = gsl_matrix_alloc(n, p);
         gsl_multifit_fdfsolver_jac(solver, J);
+        for (size_t r = 0; r < n; ++r) {
+            for (size_t c = 0; c < p; ++c) {
+                double jv = std::abs(gsl_matrix_get(J, r, c));
+                if (std::isfinite(jv))
+                    jacMaxAbs = std::max(jacMaxAbs, jv);
+            }
+        }
         gsl_multifit_covar(J, 1e-8, covar);
         gsl_matrix_free(J);
-    }
 #endif
+    }
 
     double rss = 0.0;
     const double meanZ = std::accumulate(ctx.z.begin(), ctx.z.end(), 0.0) / static_cast<double>(n);
     double tss = 0.0;
+    bool allEvalFinite = !ctx.evalFailed;
     for (size_t i = 0; i < n; ++i) {
         double zHat = ctx.evalPoint(ctx.x[i], ctx.y[i], bestP.data());
+        if (!std::isfinite(zHat) || ctx.evalFailed) {
+            allEvalFinite = false;
+            break;
+        }
         double r = ctx.z[i] - zHat;
         rss += r * r;
         double dz = ctx.z[i] - meanZ;
         tss += dz * dz;
+    }
+
+    if (!allEvalFinite || !std::isfinite(rss)) {
+        gsl_matrix_free(covar);
+        gsl_multifit_fdfsolver_free(solver);
+        gsl_vector_free(xInit);
+        app->setProperty("torigraph_last_surface_fit_error",
+                         ctx.parserError.isEmpty()
+                                 ? QStringLiteral("Surface formula evaluation failed")
+                                 : ctx.parserError);
+        out.converged = false;
+        out.rSquare = 0.0;
+        out.adjRSquare = 0.0;
+        return out;
+    }
+
+    const bool nonTrivialJacobian = (jacMaxAbs > 1e-30) || (rss <= 1e-24);
+    if ((status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
+         || status == GSL_ETOLG)
+        && nonTrivialJacobian) {
+        status = GSL_SUCCESS;
+    } else if (status == GSL_SUCCESS && !nonTrivialJacobian) {
+        status = GSL_ETOLG;
     }
 
     const double dof = (n > p) ? static_cast<double>(n - p) : 1.0;
@@ -883,7 +972,7 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     out.adjRSquare = (n > p && tss > 1e-30)
             ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
             : out.rSquare;
-    out.converged = (status == GSL_SUCCESS) || (out.rSquare > 0.99);
+    out.converged = nonTrivialJacobian && ((status == GSL_SUCCESS) || (out.rSquare > 0.99));
     out.paramNames = ctx.paramNames;
     out.params.resize(static_cast<int>(p));
     out.errors.resize(static_cast<int>(p));
@@ -1802,6 +1891,195 @@ QwtPlotCurve *GraphStatsAndSurfaceFit::addConfidenceEllipse(ApplicationWindow *a
     return ellipseCurve;
 }
 
+namespace {
+
+double stdNormalIntervalProb(double a, double b)
+{
+    if (b <= a)
+        return 0.0;
+    constexpr double kInvSqrt2 = 0.70710678118654752440084436210485;
+    if (a >= 0.0)
+        return std::max(0.0, 0.5 * (std::erfc(a * kInvSqrt2) - std::erfc(b * kInvSqrt2)));
+    if (b <= 0.0)
+        return std::max(0.0, 0.5 * (std::erfc(-b * kInvSqrt2) - std::erfc(-a * kInvSqrt2)));
+    if (std::abs(a) < 1.0 && std::abs(b) < 1.0)
+        return std::max(0.0, 0.5 * (std::erf(b * kInvSqrt2) - std::erf(a * kInvSqrt2)));
+    return std::clamp(1.0 - 0.5 * (std::erfc(b * kInvSqrt2) + std::erfc(-a * kInvSqrt2)), 0.0, 1.0);
+}
+
+double normalRangeSurvival(double w, int kGroups)
+{
+    if (!std::isfinite(w) || w <= 0.0)
+        return 1.0;
+    if (kGroups <= 1)
+        return 0.0;
+    if (kGroups == 2)
+        return std::clamp(std::erfc(0.5 * w), 0.0, 1.0);
+    if (w >= 20.0)
+        return 0.0;
+
+    constexpr double kInvSqrt2 = 0.70710678118654752440084436210485;
+    constexpr double kInvSqrt2Pi = 0.39894228040143267793994605993438;
+    constexpr int nSteps = 96;
+    const double zLo = -9.0;
+    const double zHi = 9.0;
+    const double h = (zHi - zLo) / static_cast<double>(nSteps);
+
+    auto integrand = [&](double z) -> double {
+        const double phi = kInvSqrt2Pi * std::exp(-0.5 * z * z);
+        const double A = 0.5 * std::erfc(z * kInvSqrt2);
+        const double B = 0.5 * std::erfc((z + w) * kInvSqrt2);
+        const double D = stdNormalIntervalProb(z, z + w);
+        double polySum = 0.0;
+        double powA = 1.0;
+        for (int r = 0; r <= kGroups - 2; ++r) {
+            polySum += powA * std::pow(D, kGroups - 2 - r);
+            powA *= A;
+        }
+        return phi * B * polySum;
+    };
+
+    double acc = integrand(zLo) + integrand(zHi);
+    for (int i = 1; i < nSteps; ++i) {
+        const double z = zLo + static_cast<double>(i) * h;
+        acc += ((i & 1) ? 4.0 : 2.0) * integrand(z);
+    }
+    return std::clamp(static_cast<double>(kGroups) * (h / 3.0) * acc, 0.0, 1.0);
+}
+
+double studentizedRangeUpperP(double q, int kGroups, double df)
+{
+    if (!std::isfinite(q) || q <= 0.0 || kGroups < 2 || !std::isfinite(df) || df <= 0.0)
+        return 1.0;
+    if (kGroups == 2)
+        return std::clamp(2.0 * gsl_cdf_tdist_Q(q / std::sqrt(2.0), df), 0.0, 1.0);
+    if (df > 10000.0)
+        return normalRangeSurvival(q, kGroups);
+
+    const double halfNu = 0.5 * df;
+    const double logNormConst =
+            std::log(2.0) + halfNu * std::log(halfNu) - gsl_sf_lngamma(halfNu);
+    const double sMode = (df > 1.0) ? std::sqrt((df - 1.0) / df) : 0.0;
+    const double sSpread = 12.0 / std::sqrt(std::max(0.5, 2.0 * df));
+    const double sLo = std::max(1e-6, sMode - sSpread);
+    const double sHi = std::max(sLo + 1.0, sMode + sSpread);
+
+    constexpr int nSteps = 96;
+    const double h = (sHi - sLo) / static_cast<double>(nSteps);
+
+    auto densityS = [&](double s) -> double {
+        const double lp = logNormConst + (df - 1.0) * std::log(s) - halfNu * s * s;
+        return (lp > -740.0) ? std::exp(lp) : 0.0;
+    };
+
+    double numAcc = 0.0;
+    double denAcc = 0.0;
+    for (int i = 0; i <= nSteps; ++i) {
+        const double wSimp = (i == 0 || i == nSteps) ? 1.0 : ((i & 1) ? 4.0 : 2.0);
+        const double s = sLo + static_cast<double>(i) * h;
+        const double gs = densityS(s);
+        if (gs > 0.0) {
+            numAcc += wSimp * gs * normalRangeSurvival(q * s, kGroups);
+            denAcc += wSimp * gs;
+        }
+    }
+    if (denAcc <= 0.0)
+        return normalRangeSurvival(q, kGroups);
+    return std::clamp(numAcc / denAcc, 0.0, 1.0);
+}
+
+double dunnettConditionalSurvival(double cs, const std::vector<double> &aVec,
+                                  const std::vector<double> &bVec)
+{
+    if (!std::isfinite(cs) || cs <= 0.0)
+        return 1.0;
+    if (aVec.empty())
+        return 0.0;
+    if (cs >= 20.0)
+        return 0.0;
+
+    constexpr double kInvSqrt2 = 0.70710678118654752440084436210485;
+    constexpr double kInvSqrt2Pi = 0.39894228040143267793994605993438;
+    constexpr int nSteps = 96;
+    const double zLo = -9.0;
+    const double zHi = 9.0;
+    const double h = (zHi - zLo) / static_cast<double>(nSteps);
+
+    auto integrand = [&](double z) -> double {
+        const double phi = kInvSqrt2Pi * std::exp(-0.5 * z * z);
+        double surv = 0.0;
+        for (size_t l = 0; l < aVec.size(); ++l) {
+            const double invA = 1.0 / aVec[l];
+            const double u1 = (cs + bVec[l] * z) * invA * kInvSqrt2;
+            const double u2 = (cs - bVec[l] * z) * invA * kInvSqrt2;
+            const double ql = std::clamp(0.5 * (std::erfc(u1) + std::erfc(u2)), 0.0, 1.0);
+            surv += (1.0 - surv) * ql;
+        }
+        return phi * surv;
+    };
+
+    double acc = integrand(zLo) + integrand(zHi);
+    for (int i = 1; i < nSteps; ++i) {
+        const double z = zLo + static_cast<double>(i) * h;
+        acc += ((i & 1) ? 4.0 : 2.0) * integrand(z);
+    }
+    return std::clamp((h / 3.0) * acc, 0.0, 1.0);
+}
+
+double dunnettTwoSidedUpperP(double absT, double df, const std::vector<double> &treatSizes,
+                             double nCtrl)
+{
+    if (!std::isfinite(absT) || absT <= 0.0 || !std::isfinite(df) || df <= 0.0 || nCtrl <= 0.0)
+        return 1.0;
+    if (treatSizes.size() <= 1)
+        return std::clamp(2.0 * gsl_cdf_tdist_Q(absT, df), 0.0, 1.0);
+
+    std::vector<double> aVec(treatSizes.size());
+    std::vector<double> bVec(treatSizes.size());
+    for (size_t l = 0; l < treatSizes.size(); ++l) {
+        const double nl = std::max(1.0, treatSizes[l]);
+        const double denom = nl + nCtrl;
+        bVec[l] = std::sqrt(nl / denom);
+        aVec[l] = std::sqrt(std::max(1e-12, nCtrl / denom));
+    }
+
+    if (df > 10000.0)
+        return dunnettConditionalSurvival(absT, aVec, bVec);
+
+    const double halfNu = 0.5 * df;
+    const double logNormConst =
+            std::log(2.0) + halfNu * std::log(halfNu) - gsl_sf_lngamma(halfNu);
+    const double sMode = (df > 1.0) ? std::sqrt((df - 1.0) / df) : 0.0;
+    const double sSpread = 12.0 / std::sqrt(std::max(0.5, 2.0 * df));
+    const double sLo = std::max(1e-6, sMode - sSpread);
+    const double sHi = std::max(sLo + 1.0, sMode + sSpread);
+
+    constexpr int nSteps = 96;
+    const double h = (sHi - sLo) / static_cast<double>(nSteps);
+
+    auto densityS = [&](double s) -> double {
+        const double lp = logNormConst + (df - 1.0) * std::log(s) - halfNu * s * s;
+        return (lp > -740.0) ? std::exp(lp) : 0.0;
+    };
+
+    double numAcc = 0.0;
+    double denAcc = 0.0;
+    for (int i = 0; i <= nSteps; ++i) {
+        const double wSimp = (i == 0 || i == nSteps) ? 1.0 : ((i & 1) ? 4.0 : 2.0);
+        const double s = sLo + static_cast<double>(i) * h;
+        const double gs = densityS(s);
+        if (gs > 0.0) {
+            numAcc += wSimp * gs * dunnettConditionalSurvival(absT * s, aVec, bVec);
+            denAcc += wSimp * gs;
+        }
+    }
+    if (denAcc <= 0.0)
+        return dunnettConditionalSurvival(absT, aVec, bVec);
+    return std::clamp(numAcc / denAcc, 0.0, 1.0);
+}
+
+} // namespace
+
 Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow *app,
                                                               Table *srcTable,
                                                               const QStringList &colNames,
@@ -1809,6 +2087,27 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
 {
     if (!app || !srcTable || colNames.size() < 2)
         return nullptr;
+
+    const QString posthocRaw =
+            srcTable->property("torigraph_anova_posthoc").toString().trimmed().toLower();
+    const QString controlRaw =
+            srcTable->property("torigraph_anova_control").toString().trimmed();
+
+    enum class PostHocMode { HolmWelch, TukeyHSD, GamesHowell, Dunnett };
+    PostHocMode posthocMode = PostHocMode::HolmWelch;
+    if (posthocRaw == QStringLiteral("tukey") || posthocRaw == QStringLiteral("tukey_hsd")
+        || posthocRaw == QStringLiteral("tukey_kramer")
+        || posthocRaw == QStringLiteral("tukey-kramer") || posthocRaw == QStringLiteral("hsd")) {
+        posthocMode = PostHocMode::TukeyHSD;
+    } else if (posthocRaw == QStringLiteral("games_howell")
+               || posthocRaw == QStringLiteral("games-howell")
+               || posthocRaw == QStringLiteral("gameshowell")
+               || posthocRaw == QStringLiteral("gh")) {
+        posthocMode = PostHocMode::GamesHowell;
+    } else if (posthocRaw == QStringLiteral("dunnett")
+               || posthocRaw == QStringLiteral("dunnetts")) {
+        posthocMode = PostHocMode::Dunnett;
+    }
 
     struct GroupData
     {
@@ -1886,68 +2185,189 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     const double etaSq =
             (ssBetween + ssWithin > 1e-30) ? (ssBetween / (ssBetween + ssWithin)) : 0.0;
 
-    // Pairwise Welch t-tests + Holm-Bonferroni multiplicity correction
+    // Post-hoc pairwise / vs-control comparisons
     struct PairResult
     {
         int i = 0;
         int j = 1;
         QString label;
-        double tStat = 0.0;
-        double dfWelch = 1.0;
+        double statVal = 0.0;
+        double dfNum = 1.0;
+        double dfDen = 1.0;
         double pRaw = 1.0;
         double pAdj = 1.0;
         double meanDiff = 0.0;
     };
     std::vector<PairResult> pairs;
-    for (int i = 0; i < K; ++i) {
-        for (int j = i + 1; j < K; ++j) {
+
+    if (posthocMode == PostHocMode::Dunnett) {
+        int ctrlIdx = 0;
+        if (!controlRaw.isEmpty()) {
+            bool matched = false;
+            for (int k = 0; k < K; ++k) {
+                if (groups[static_cast<size_t>(k)].label == controlRaw) {
+                    ctrlIdx = k;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                for (int k = 0; k < K; ++k) {
+                    if (groups[static_cast<size_t>(k)].label.compare(controlRaw,
+                                                                     Qt::CaseInsensitive)
+                        == 0) {
+                        ctrlIdx = k;
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+            if (!matched) {
+                if (Column *cCol = resolveTableColumn(srcTable, controlRaw)) {
+                    for (int k = 0; k < K; ++k) {
+                        if (groups[static_cast<size_t>(k)].label == cCol->name()) {
+                            ctrlIdx = k;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!matched) {
+                bool okIdx = false;
+                int parsedIdx = controlRaw.toInt(&okIdx);
+                if (okIdx) {
+                    if (parsedIdx >= 0 && parsedIdx < K)
+                        ctrlIdx = parsedIdx;
+                    else if (parsedIdx >= 1 && parsedIdx <= K)
+                        ctrlIdx = parsedIdx - 1;
+                }
+            }
+        }
+
+        const GroupData &gCtrl = groups[static_cast<size_t>(ctrlIdx)];
+        const double nCtrl = static_cast<double>(gCtrl.vals.size());
+        std::vector<double> treatSizes;
+        treatSizes.reserve(static_cast<size_t>(K - 1));
+        for (int k = 0; k < K; ++k) {
+            if (k != ctrlIdx)
+                treatSizes.push_back(static_cast<double>(groups[static_cast<size_t>(k)].vals.size()));
+        }
+
+        for (int i = 0; i < K; ++i) {
+            if (i == ctrlIdx)
+                continue;
             const GroupData &gi = groups[static_cast<size_t>(i)];
-            const GroupData &gj = groups[static_cast<size_t>(j)];
             const double ni = static_cast<double>(gi.vals.size());
-            const double nj = static_cast<double>(gj.vals.size());
-            const double vi = gi.var / ni;
-            const double vj = gj.var / nj;
-            const double vSum = vi + vj;
+            const double sePooled = std::sqrt(msWithin * (1.0 / ni + 1.0 / nCtrl));
 
             PairResult pr;
             pr.i = i;
-            pr.j = j;
-            pr.label = QStringLiteral("%1 vs %2").arg(gi.label, gj.label);
-            pr.meanDiff = gi.mean - gj.mean;
-            if (vSum > 1e-30) {
-                pr.tStat = pr.meanDiff / std::sqrt(vSum);
-                double denom = (vi * vi) / (ni - 1.0) + (vj * vj) / (nj - 1.0);
-                pr.dfWelch = (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
-                pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.tStat), pr.dfWelch), 0.0,
-                                     1.0);
+            pr.j = ctrlIdx;
+            pr.label = QStringLiteral("%1 vs %2").arg(gi.label, gCtrl.label);
+            pr.meanDiff = gi.mean - gCtrl.mean;
+            pr.dfNum = static_cast<double>(K - 1);
+            pr.dfDen = df2;
+            if (sePooled > 1e-30 && df2 > 0.0) {
+                pr.statVal = pr.meanDiff / sePooled;
+                pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), df2), 0.0, 1.0);
+                pr.pAdj = dunnettTwoSidedUpperP(std::abs(pr.statVal), df2, treatSizes, nCtrl);
             } else if (std::abs(pr.meanDiff) > 1e-30) {
-                pr.tStat = (pr.meanDiff > 0.0) ? 1e6 : -1e6;
-                pr.dfWelch = ni + nj - 2.0;
+                pr.statVal = (pr.meanDiff > 0.0) ? 1e6 : -1e6;
                 pr.pRaw = 0.0;
+                pr.pAdj = 0.0;
             }
-            pr.pAdj = pr.pRaw;
             pairs.push_back(pr);
         }
-    }
+    } else {
+        for (int i = 0; i < K; ++i) {
+            for (int j = i + 1; j < K; ++j) {
+                const GroupData &gi = groups[static_cast<size_t>(i)];
+                const GroupData &gj = groups[static_cast<size_t>(j)];
+                const double ni = static_cast<double>(gi.vals.size());
+                const double nj = static_cast<double>(gj.vals.size());
+                const double vi = gi.var / ni;
+                const double vj = gj.var / nj;
+                const double vSum = vi + vj;
 
-    // Holm-Bonferroni step-down adjustment across all pairs
-    const size_t M = pairs.size();
-    if (M > 1) {
-        std::vector<size_t> order(M);
-        std::iota(order.begin(), order.end(), 0);
-        std::sort(order.begin(), order.end(),
-                  [&](size_t a, size_t b) { return pairs[a].pRaw < pairs[b].pRaw; });
-        double runningMax = 0.0;
-        for (size_t rank = 0; rank < M; ++rank) {
-            size_t idx = order[rank];
-            double mult = static_cast<double>(M - rank);
-            double adj = std::min(1.0, pairs[idx].pRaw * mult);
-            runningMax = std::max(runningMax, adj);
-            pairs[idx].pAdj = runningMax;
+                PairResult pr;
+                pr.i = i;
+                pr.j = j;
+                pr.label = QStringLiteral("%1 vs %2").arg(gi.label, gj.label);
+                pr.meanDiff = gi.mean - gj.mean;
+
+                if (posthocMode == PostHocMode::TukeyHSD) {
+                    const double seQ = std::sqrt(0.5 * msWithin * (1.0 / ni + 1.0 / nj));
+                    pr.dfNum = static_cast<double>(K);
+                    pr.dfDen = df2;
+                    if (seQ > 1e-30 && df2 > 0.0) {
+                        pr.statVal = std::abs(pr.meanDiff) / seQ;
+                        const double tPooled = pr.statVal / std::sqrt(2.0);
+                        pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(tPooled, df2), 0.0, 1.0);
+                        pr.pAdj = studentizedRangeUpperP(pr.statVal, K, df2);
+                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                        pr.statVal = 1e6;
+                        pr.pRaw = 0.0;
+                        pr.pAdj = 0.0;
+                    }
+                } else if (posthocMode == PostHocMode::GamesHowell) {
+                    const double denom = (vi * vi) / (ni - 1.0) + (vj * vj) / (nj - 1.0);
+                    const double dfWelch =
+                            (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
+                    pr.dfNum = static_cast<double>(K);
+                    pr.dfDen = dfWelch;
+                    if (vSum > 1e-30 && dfWelch > 0.0) {
+                        const double seQ = std::sqrt(0.5 * vSum);
+                        pr.statVal = std::abs(pr.meanDiff) / seQ;
+                        const double tWelch = std::abs(pr.meanDiff) / std::sqrt(vSum);
+                        pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(tWelch, dfWelch), 0.0, 1.0);
+                        pr.pAdj = studentizedRangeUpperP(pr.statVal, K, dfWelch);
+                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                        pr.statVal = 1e6;
+                        pr.pRaw = 0.0;
+                        pr.pAdj = 0.0;
+                    }
+                } else {
+                    // Default: Welch t-test + Holm-Bonferroni step-down adjustment
+                    pr.dfDen = df2;
+                    if (vSum > 1e-30) {
+                        pr.statVal = pr.meanDiff / std::sqrt(vSum);
+                        const double denom = (vi * vi) / (ni - 1.0) + (vj * vj) / (nj - 1.0);
+                        pr.dfNum = (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
+                        pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), pr.dfNum),
+                                             0.0, 1.0);
+                    } else if (std::abs(pr.meanDiff) > 1e-30) {
+                        pr.statVal = (pr.meanDiff > 0.0) ? 1e6 : -1e6;
+                        pr.dfNum = ni + nj - 2.0;
+                        pr.pRaw = 0.0;
+                    } else {
+                        pr.dfNum = ni + nj - 2.0;
+                    }
+                    pr.pAdj = pr.pRaw;
+                }
+                pairs.push_back(pr);
+            }
+        }
+
+        if (posthocMode == PostHocMode::HolmWelch && pairs.size() > 1) {
+            const size_t mCount = pairs.size();
+            std::vector<size_t> order(mCount);
+            std::iota(order.begin(), order.end(), 0);
+            std::sort(order.begin(), order.end(),
+                      [&](size_t a, size_t b) { return pairs[a].pRaw < pairs[b].pRaw; });
+            double runningMax = 0.0;
+            for (size_t rank = 0; rank < mCount; ++rank) {
+                size_t idx = order[rank];
+                double mult = static_cast<double>(mCount - rank);
+                double adj = std::min(1.0, pairs[idx].pRaw * mult);
+                runningMax = std::max(runningMax, adj);
+                pairs[idx].pAdj = runningMax;
+            }
         }
     }
 
-    const int nRows = 1 + static_cast<int>(pairs.size());
+    const size_t M = pairs.size();
+    const int nRows = 1 + static_cast<int>(M);
     QString tblName =
             app->generateUniqueName(srcTable->name() + QStringLiteral("_GroupStats"), false);
     Table *resTbl =
@@ -1974,14 +2394,14 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     resTbl->column(6)->setValueAt(0, etaSq);
     resTbl->column(7)->setTextAt(0, starRatingForP(pAnova));
 
-    // Rows 1..M: Pairwise Welch t-test comparisons
+    // Rows 1..M: Post-hoc comparisons
     for (size_t m = 0; m < M; ++m) {
         const int r = static_cast<int>(m) + 1;
         const PairResult &pr = pairs[m];
         resTbl->column(0)->setTextAt(r, pr.label);
-        resTbl->column(1)->setValueAt(r, pr.tStat);
-        resTbl->column(2)->setValueAt(r, pr.dfWelch);
-        resTbl->column(3)->setValueAt(r, df2);
+        resTbl->column(1)->setValueAt(r, pr.statVal);
+        resTbl->column(2)->setValueAt(r, pr.dfNum);
+        resTbl->column(3)->setValueAt(r, pr.dfDen);
         resTbl->column(4)->setValueAt(r, pr.pRaw);
         resTbl->column(5)->setValueAt(r, pr.pAdj);
         resTbl->column(6)->setValueAt(r, pr.meanDiff);
@@ -1989,7 +2409,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     }
 
     // Annotate significance brackets on annotateGraph if provided
-    if (annotateGraph) {
+    if (annotateGraph && !pairs.empty()) {
         double yMinAll = groups.front().minV;
         double yMaxAll = groups.front().maxV;
         for (const GroupData &gd : groups) {
@@ -2026,9 +2446,9 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                 groupX = curveMeans;
         }
 
-        // Select pairs to annotate (for K==2 always annotate; for K>2 annotate significant or top pair)
+        // Select pairs to annotate (for 1 pair always annotate; otherwise annotate significant or top pair)
         std::vector<PairResult> toDraw;
-        if (K == 2) {
+        if (pairs.size() == 1) {
             toDraw.push_back(pairs.front());
         } else {
             for (const PairResult &pr : pairs) {
@@ -2061,8 +2481,10 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
         const QColor bracketColor(30, 30, 30);
         for (size_t b = 0; b < toDraw.size(); ++b) {
             const PairResult &pr = toDraw[b];
-            const double xLeft = groupX[static_cast<size_t>(pr.i)];
-            const double xRight = groupX[static_cast<size_t>(pr.j)];
+            const double xLeft =
+                    std::min(groupX[static_cast<size_t>(pr.i)], groupX[static_cast<size_t>(pr.j)]);
+            const double xRight =
+                    std::max(groupX[static_cast<size_t>(pr.i)], groupX[static_cast<size_t>(pr.j)]);
             const double yBar = baseTop + static_cast<double>(b) * stepY;
 
             // Left vertical tick, horizontal bracket bar, right vertical tick
@@ -2124,21 +2546,63 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
         for (size_t i = 0; i < rawStates.size(); ++i)
             obs.push_back({ rawStates[i] > midSt ? 1 : 0, rawScores[i] });
     } else {
+        struct RawTextObs
+        {
+            QString txt;
+            double score = 0.0;
+        };
+        std::vector<RawTextObs> rawObs;
+        QStringList levels;
+        auto isPos = [](const QString &low) -> bool {
+            return low == QStringLiteral("1") || low == QStringLiteral("true")
+                    || low == QStringLiteral("yes") || low == QStringLiteral("pos")
+                    || low == QStringLiteral("positive") || low == QStringLiteral("case")
+                    || low == QStringLiteral("event") || low == QStringLiteral("disease")
+                    || low == QStringLiteral("treated") || low == QStringLiteral("pass")
+                    || low == QStringLiteral("\u967d\u6027");
+        };
+        auto isNeg = [](const QString &low) -> bool {
+            return low == QStringLiteral("0") || low == QStringLiteral("false")
+                    || low == QStringLiteral("no") || low == QStringLiteral("none")
+                    || low == QStringLiteral("neg") || low == QStringLiteral("negative")
+                    || low == QStringLiteral("control") || low == QStringLiteral("healthy")
+                    || low == QStringLiteral("normal") || low == QStringLiteral("\u9670\u6027");
+        };
         for (int r = 0; r < nRows; ++r) {
             if (cState->isInvalid(r) || cState->isMasked(r))
                 continue;
             double sc = 0.0;
             if (!readNumericColumnCell(cScore, r, sc))
                 continue;
-            QString st = cState->asStringColumn()->textAt(r).trimmed().toLower();
-            if (st.isEmpty())
+            const QString txt = cState->textAt(r).trimmed();
+            if (txt.isEmpty())
                 continue;
-            int pos = (st == QStringLiteral("1") || st == QStringLiteral("true")
-                       || st == QStringLiteral("pos") || st == QStringLiteral("positive")
-                       || st == QStringLiteral("case") || st == QStringLiteral("yes"))
-                    ? 1
-                    : 0;
-            obs.push_back({ pos, sc });
+            if (!levels.contains(txt))
+                levels.append(txt);
+            rawObs.push_back({ txt, sc });
+        }
+        if (levels.size() == 2) {
+            const QString &L0 = levels[0];
+            const QString &L1 = levels[1];
+            const QString low0 = L0.toLower();
+            const QString low1 = L1.toLower();
+            const bool p0 = isPos(low0), p1 = isPos(low1);
+            const bool n0 = isNeg(low0), n1 = isNeg(low1);
+            const QString posLevel = ((p0 && !p1) || (n1 && !n0)) ? L0 : L1;
+            obs.reserve(rawObs.size());
+            for (const RawTextObs &ro : rawObs)
+                obs.push_back({ (ro.txt == posLevel) ? 1 : 0, ro.score });
+        } else if (levels.size() > 2) {
+            for (const RawTextObs &ro : rawObs) {
+                const QString low = ro.txt.toLower();
+                if (isPos(low) == isNeg(low))
+                    return nullptr;
+            }
+            obs.reserve(rawObs.size());
+            for (const RawTextObs &ro : rawObs)
+                obs.push_back({ isPos(ro.txt.toLower()) ? 1 : 0, ro.score });
+        } else {
+            return nullptr;
         }
     }
 
@@ -2859,7 +3323,7 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
 
 void GraphStatsAndSurfaceFit::showSurfaceFitDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
 
     QDialog dlg(app);
@@ -3036,7 +3500,7 @@ void GraphStatsAndSurfaceFit::showSurfaceFitDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::show2DPeakDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Matrix *> matrices = allProjectMatrices(app);
     if (matrices.isEmpty()) {
@@ -3097,7 +3561,7 @@ void GraphStatsAndSurfaceFit::show2DPeakDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showConfidenceEllipseDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     Graph *targetG = resolveActiveGraph(app, g);
     if (!targetG || targetG->curves() <= 0) {
@@ -3145,7 +3609,7 @@ void GraphStatsAndSurfaceFit::showConfidenceEllipseDialog(ApplicationWindow *app
 
 void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -3216,7 +3680,7 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
 
 void GraphStatsAndSurfaceFit::showROCDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -3276,7 +3740,7 @@ void GraphStatsAndSurfaceFit::showROCDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showKaplanMeierDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -3344,7 +3808,7 @@ void GraphStatsAndSurfaceFit::showKaplanMeierDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showPCADialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -4104,7 +4568,7 @@ GraphStatsAndSurfaceFit::runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
 
 void GraphStatsAndSurfaceFit::showNormalityDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -4170,7 +4634,7 @@ void GraphStatsAndSurfaceFit::showNormalityDialog(ApplicationWindow *app, Graph 
 
 void GraphStatsAndSurfaceFit::showBlandAltmanDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -4239,7 +4703,7 @@ void GraphStatsAndSurfaceFit::showBlandAltmanDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showTwoWayANOVADialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     QList<Table *> tables = allProjectTables(app);
     if (tables.isEmpty())
@@ -7280,7 +7744,7 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
 
 void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7364,7 +7828,7 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showPassingBablokDemingDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7447,7 +7911,7 @@ void GraphStatsAndSurfaceFit::showPassingBablokDemingDialog(ApplicationWindow *a
 
 void GraphStatsAndSurfaceFit::showOutlierTestDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7532,7 +7996,7 @@ void GraphStatsAndSurfaceFit::showOutlierTestDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7617,7 +8081,7 @@ void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Gr
 
 void GraphStatsAndSurfaceFit::showPairedComparisonDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7692,7 +8156,7 @@ void GraphStatsAndSurfaceFit::showPairedComparisonDialog(ApplicationWindow *app)
 
 void GraphStatsAndSurfaceFit::showCorrelationMatrixDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);
@@ -7761,7 +8225,7 @@ void GraphStatsAndSurfaceFit::showCorrelationMatrixDialog(ApplicationWindow *app
 
 void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || isNonInteractiveApp(app))
         return;
     registerPhase5StatsTranslationsOnce();
     const QList<Table *> tables = allProjectTables(app);

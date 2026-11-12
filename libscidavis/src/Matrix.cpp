@@ -29,6 +29,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "Matrix.h"
+#include "ApplicationWindow.h"
 #include "future/matrix/MatrixView.h"
 #include "ScriptEdit.h"
 
@@ -306,7 +307,8 @@ double Matrix::determinant()
     int cols = numCols();
 
     if (rows != cols) {
-        QMessageBox::critical(0, tr("Error"), tr("Calculation failed, the matrix is not square!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(0, tr("Error"), tr("Calculation failed, the matrix is not square!"));
         return GSL_POSINF;
     }
 
@@ -336,7 +338,8 @@ void Matrix::invert()
     int cols = numCols();
 
     if (rows != cols) {
-        QMessageBox::critical(0, tr("Error"), tr("Inversion failed, the matrix is not square!"));
+        if (!ApplicationWindow::isNonInteractiveContext(this))
+            QMessageBox::critical(0, tr("Error"), tr("Inversion failed, the matrix is not square!"));
         return;
     }
 
@@ -532,7 +535,7 @@ void Matrix::customEvent(QEvent *e)
 
 void Matrix::closeEvent(QCloseEvent *e)
 {
-    if (askOnClose) {
+    if (askOnClose && !ApplicationWindow::isNonInteractiveContext(this)) {
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",

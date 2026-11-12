@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torigraph"
+version = "2.4.0"
+description = "Pure-Python JSON-RPC 2.0 Automation SDK for ToriGraph scientific plotting & data analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-2.0-or-later" }
+authors = [
+    { name = "ToriGraph Project" }
+]
+keywords = ["torigraph", "scidavis", "plotting", "fitting", "spectroscopy", "materials-science", "automation"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["torigraph*"]
