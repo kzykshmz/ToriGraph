@@ -267,6 +267,7 @@ public:
 
     void setClassicToolbarsVisible(bool visible);
     bool areClassicToolbarsVisible() const { return d_classic_toolbars_visible; }
+    void syncCheckableStates();
 
     void triggerPlot2D(int curveType);
 
@@ -324,7 +325,6 @@ private:
                                  bool accentPreset = false);
     void buildAllTabs();
     void refreshButtonIcons();
-    void syncCheckableStates();
     void importOpjInteractive();
 
     QPointer<ApplicationWindow> d_app;

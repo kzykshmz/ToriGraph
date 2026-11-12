@@ -66,6 +66,19 @@ public:
     bool hasAxisBreakIndicator() const { return d_break_enabled; }
     double axisBreakValue() const { return d_break_value; }
 
+    void setColorBarBorder(bool enabled, int widthPx = 0, int penWidth = 1)
+    {
+        d_colorbar_border = enabled;
+        d_colorbar_width = qMax(0, widthPx);
+        d_colorbar_pen_width = qMax(1, penWidth);
+        invalidateCache();
+    }
+    bool hasColorBarBorder() const { return d_colorbar_border; }
+    int colorBarBorderWidth() const { return d_colorbar_width; }
+    int colorBarBorderPenWidth() const { return d_colorbar_pen_width; }
+
+    int extent(const QPen &pen, const QFont &font) const override;
+
     virtual QwtText label(double value) const
     {
         return QwtText(d_prefix + QLocale().toString(transformValue(value), d_fmt, d_prec)
@@ -97,6 +110,9 @@ private:
     QString d_suffix;
     bool d_break_enabled = false;
     double d_break_value = 0.0;
+    bool d_colorbar_border = false;
+    int d_colorbar_width = 0;
+    int d_colorbar_pen_width = 1;
 };
 
 class QwtTextScaleDraw : public ScaleDraw

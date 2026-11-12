@@ -58,7 +58,18 @@
 #include <QGridLayout>
 #include <QScrollArea>
 #include <QMenu>
+#include <QApplication>
+#include <QDrag>
+#include <QMimeData>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <algorithm>
 #include "ApplicationWindow.h"
+#include "MultiLayer.h"
 
 #ifndef LEGACY_CODE_0_2_x
 TableView::TableView(future::Table *table) : d_table(table)
@@ -185,6 +196,10 @@ void TableView::init()
     v_header->installEventFilter(this);
     d_horizontal_header->installEventFilter(this);
     d_view_widget->installEventFilter(this);
+    if (d_view_widget->viewport()) {
+        d_view_widget->viewport()->setMouseTracking(true);
+        d_view_widget->viewport()->installEventFilter(this);
+    }
 
     connect(d_model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), d_view_widget,
             SLOT(updateHeaderGeometry(Qt::Orientation, int, int)));
@@ -845,6 +860,210 @@ QList<Column *> TableView::selectedColumns(bool full)
     return list;
 }
 
+QList<int> TableView::selectedColumnIndices(bool full)
+{
+    QList<int> list;
+    if (d_table) {
+        int cols = d_table->columnCount();
+        for (int i = 0; i < cols; i++) {
+            if (isColumnSelected(i, full))
+                list << i;
+        }
+    }
+    return list;
+}
+
+QByteArray TableView::buildColumnMimePayload(future::Table *table, const QList<int> &colIndices,
+                                             int anchorCol)
+{
+    if (!table || table->columnCount() <= 0)
+        return QByteArray();
+
+    const int totalCols = table->columnCount();
+    QList<int> orderedCols;
+    for (int c : colIndices) {
+        if (c >= 0 && c < totalCols && !orderedCols.contains(c))
+            orderedCols.append(c);
+    }
+    if (orderedCols.isEmpty() && anchorCol >= 0 && anchorCol < totalCols)
+        orderedCols.append(anchorCol);
+    if (orderedCols.isEmpty())
+        return QByteArray();
+    std::sort(orderedCols.begin(), orderedCols.end());
+
+    QList<int> xCols;
+    QList<int> errCols;
+    QList<int> plotCols;
+    for (int c : orderedCols) {
+        Column *col = table->column(c);
+        if (!col)
+            continue;
+        const SciDAVis::PlotDesignation pd = col->plotDesignation();
+        if (pd == SciDAVis::X)
+            xCols.append(c);
+        else if (pd == SciDAVis::xErr || pd == SciDAVis::yErr)
+            errCols.append(c);
+        else
+            plotCols.append(c);
+    }
+
+    QString xColName;
+    QJsonArray xColumnsJson;
+    if (!plotCols.isEmpty()) {
+        if (xCols.size() == 1) {
+            if (Column *xc = table->column(xCols.first()))
+                xColName = xc->name();
+            for (int k = 0; k < plotCols.size(); ++k)
+                xColumnsJson.append(xColName);
+        } else {
+            for (int k = 0; k < plotCols.size(); ++k) {
+                int xi = table->colX(plotCols[k]);
+                if (xi < 0 || xi >= totalCols || xi == plotCols[k]) {
+                    if (!xCols.isEmpty())
+                        xi = xCols.first();
+                    else if (totalCols > 1 && plotCols[k] != 0)
+                        xi = 0;
+                    else if (totalCols > 1)
+                        xi = 1;
+                    else
+                        xi = 0;
+                }
+                QString curXName;
+                if (xi >= 0 && xi < totalCols && table->column(xi))
+                    curXName = table->column(xi)->name();
+                xColumnsJson.append(curXName);
+            }
+        }
+    } else {
+        plotCols = orderedCols;
+        errCols.clear();
+        for (int k = 0; k < plotCols.size(); ++k) {
+            int xi = table->colX(plotCols[k]);
+            if (xi == plotCols[k])
+                xi = -1;
+            if (xi < 0 && totalCols > 1 && plotCols[k] != 0)
+                xi = 0;
+            QString curXName;
+            if (xi >= 0 && xi < totalCols && table->column(xi))
+                curXName = table->column(xi)->name();
+            xColumnsJson.append(curXName);
+            if (k == 0 && plotCols.size() == 1)
+                xColName = curXName;
+        }
+    }
+
+    QJsonArray columnsJson;
+    for (int c : plotCols) {
+        if (Column *col = table->column(c))
+            columnsJson.append(col->name());
+    }
+    if (columnsJson.isEmpty())
+        return QByteArray();
+
+    QJsonArray errColumnsJson;
+    for (int c : errCols) {
+        if (Column *col = table->column(c))
+            errColumnsJson.append(col->name());
+    }
+
+    QJsonObject payload;
+    payload[QStringLiteral("table")] = table->name();
+    payload[QStringLiteral("x_column")] = xColName;
+    payload[QStringLiteral("x_columns")] = xColumnsJson;
+    payload[QStringLiteral("columns")] = columnsJson;
+    payload[QStringLiteral("err_columns")] = errColumnsJson;
+    return QJsonDocument(payload).toJson(QJsonDocument::Compact);
+}
+
+QByteArray TableView::buildSelectedColumnsMimePayload(int clickedCol)
+{
+    if (!d_table)
+        return QByteArray();
+    QList<int> cols = selectedColumnIndices(false);
+    if (clickedCol >= 0 && !cols.contains(clickedCol))
+        cols = QList<int> { clickedCol };
+    return buildColumnMimePayload(d_table, cols, clickedCol);
+}
+
+bool TableView::startColumnDrag(const QList<int> &explicitCols, int clickedCol, QWidget *dragSource)
+{
+    if (!d_table)
+        return false;
+
+    const QByteArray payloadBytes = explicitCols.isEmpty()
+            ? buildSelectedColumnsMimePayload(clickedCol)
+            : buildColumnMimePayload(d_table, explicitCols, clickedCol);
+    if (payloadBytes.isEmpty())
+        return false;
+
+    QMimeData *mime = new QMimeData();
+    mime->setData(QString::fromUtf8(MultiLayer::kColumnMimeType), payloadBytes);
+
+    QDrag *drag = new QDrag(dragSource ? dragSource : this);
+    drag->setMimeData(mime);
+
+    const QJsonObject obj = QJsonDocument::fromJson(payloadBytes).object();
+    const QJsonArray colsArr = obj.value(QStringLiteral("columns")).toArray();
+    if (!colsArr.isEmpty()) {
+        QString label = d_table->name() + QStringLiteral(": ") + colsArr.first().toString();
+        if (colsArr.size() > 1)
+            label += QStringLiteral(" (+%1)").arg(colsArr.size() - 1);
+        QFont badgeFont(QStringLiteral("Arial"), 9, QFont::DemiBold);
+        QFontMetrics fm(badgeFont);
+        const int padX = 10;
+        const int padY = 5;
+        const QSize badgeSize(qBound(64, fm.horizontalAdvance(label) + padX * 2, 280),
+                              fm.height() + padY * 2);
+        QPixmap badge(badgeSize);
+        badge.fill(Qt::transparent);
+        QPainter p(&badge);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setBrush(QColor(30, 64, 175, 230));
+        p.setPen(QPen(QColor(191, 219, 254), 1));
+        p.drawRoundedRect(badge.rect().adjusted(0, 0, -1, -1), 5.0, 5.0);
+        p.setFont(badgeFont);
+        p.setPen(Qt::white);
+        p.drawText(badge.rect().adjusted(padX, 0, -padX, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                   fm.elidedText(label, Qt::ElideRight, badgeSize.width() - padX * 2));
+        p.end();
+        drag->setPixmap(badge);
+        drag->setHotSpot(QPoint(12, badgeSize.height() / 2));
+    }
+
+    drag->exec(Qt::CopyAction);
+    return true;
+}
+
+bool TableView::isPointOnSelectionEdge(const QPoint &viewportPos)
+{
+    if (!d_table || !d_view_widget || !d_view_widget->viewport() || selectedColumnCount(false) <= 0)
+        return false;
+
+    const int c1 = firstSelectedColumn(false);
+    const int c2 = lastSelectedColumn(false);
+    const int r1 = firstSelectedRow(false);
+    const int r2 = lastSelectedRow(false);
+    if (c1 < 0 || c2 < c1 || r1 < 0 || r2 < r1)
+        return false;
+
+    const QRect vpRect = d_view_widget->viewport()->rect();
+    const int left = d_view_widget->columnViewportPosition(c1);
+    const int right = d_view_widget->columnViewportPosition(c2) + d_view_widget->columnWidth(c2) - 1;
+    const int top = d_view_widget->rowViewportPosition(r1);
+    const int bottom = d_view_widget->rowViewportPosition(r2) + d_view_widget->rowHeight(r2) - 1;
+    if (right < 0 || left > vpRect.right() || bottom < 0 || top > vpRect.bottom())
+        return false;
+
+    const QRect selRect(QPoint(left, top), QPoint(right, bottom));
+    const QRect outer = selRect.adjusted(-3, -3, 3, 3);
+    const QRect inner = selRect.adjusted(5, 5, -5, -5);
+    if (!outer.contains(viewportPos))
+        return false;
+    if (inner.isValid() && inner.contains(viewportPos))
+        return false;
+    return true;
+}
+
 int TableView::selectedRowCount(bool full)
 {
     int count = 0;
@@ -985,6 +1204,81 @@ void TableView::getCurrentCell(int *row, int *col)
 bool TableView::eventFilter(QObject *watched, QEvent *event)
 {
     QHeaderView *v_header = d_view_widget->verticalHeader();
+
+    if (d_view_widget && watched == d_view_widget->viewport()) {
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(event);
+            if (d_cell_drag_candidate && !d_cell_drag_started
+                && (me->buttons() & Qt::LeftButton)) {
+                if ((me->pos() - d_cell_drag_start_pos).manhattanLength()
+                    >= QApplication::startDragDistance()) {
+                    d_cell_drag_started = true;
+                    d_cell_drag_candidate = false;
+                    if (d_edge_hover_cursor) {
+                        d_view_widget->viewport()->unsetCursor();
+                        d_edge_hover_cursor = false;
+                    }
+                    QList<int> cols = selectedColumnIndices(false);
+                    if (cols.isEmpty() && d_cell_drag_col >= 0)
+                        cols.append(d_cell_drag_col);
+                    else if ((me->modifiers() & Qt::AltModifier) && d_cell_drag_col >= 0
+                             && !cols.contains(d_cell_drag_col))
+                        cols = QList<int> { d_cell_drag_col };
+                    startColumnDrag(cols, d_cell_drag_col, d_view_widget->viewport());
+                }
+                return true;
+            } else if (me->buttons() == Qt::NoButton) {
+                const bool onEdge = isPointOnSelectionEdge(me->pos());
+                if (onEdge != d_edge_hover_cursor) {
+                    d_edge_hover_cursor = onEdge;
+                    if (onEdge)
+                        d_view_widget->viewport()->setCursor(Qt::OpenHandCursor);
+                    else
+                        d_view_widget->viewport()->unsetCursor();
+                }
+            }
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(event);
+            d_cell_drag_candidate = false;
+            d_cell_drag_started = false;
+            d_cell_drag_was_edge = false;
+            if (me->button() == Qt::LeftButton && d_table) {
+                const QModelIndex idx = d_view_widget->indexAt(me->pos());
+                const bool altHeld = (me->modifiers() & Qt::AltModifier);
+                const bool edgeHit = !(me->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))
+                        && isPointOnSelectionEdge(me->pos());
+                if ((altHeld && (idx.isValid() || selectedColumnCount(false) > 0)) || edgeHit) {
+                    d_cell_drag_candidate = true;
+                    d_cell_drag_was_edge = edgeHit;
+                    d_cell_drag_start_pos = me->pos();
+                    d_cell_drag_col = idx.isValid() ? idx.column() : firstSelectedColumn(false);
+                    return true;
+                }
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton && (d_cell_drag_candidate || d_cell_drag_started)) {
+                const bool wasCandidateOnly = d_cell_drag_candidate && !d_cell_drag_started;
+                const bool wasEdge = d_cell_drag_was_edge;
+                d_cell_drag_candidate = false;
+                d_cell_drag_started = false;
+                d_cell_drag_was_edge = false;
+                if (wasCandidateOnly && wasEdge) {
+                    const QModelIndex idx = d_view_widget->indexAt(me->pos());
+                    if (idx.isValid()) {
+                        d_view_widget->clearSelection();
+                        d_view_widget->setCurrentIndex(idx);
+                    }
+                }
+                return true;
+            }
+        } else if (event->type() == QEvent::Leave) {
+            if (d_edge_hover_cursor) {
+                d_view_widget->viewport()->unsetCursor();
+                d_edge_hover_cursor = false;
+            }
+        }
+    }
 
     if (d_table && event->type() == QEvent::ContextMenu) {
         QContextMenuEvent *cm_event = static_cast<QContextMenuEvent *>(event);

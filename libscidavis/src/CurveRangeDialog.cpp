@@ -29,6 +29,8 @@
 #include "CurveRangeDialog.h"
 #include "PlotCurve.h"
 #include "Graph.h"
+#include "MultiLayer.h"
+#include "Plot.h"
 #include "Table.h"
 
 #include <QGroupBox>
@@ -38,7 +40,8 @@
 #include <QLabel>
 #include <QSpinBox>
 
-CurveRangeDialog::CurveRangeDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
+CurveRangeDialog::CurveRangeDialog(QWidget *parent, Qt::WindowFlags fl)
+    : QDialog(parent, fl), d_curve(nullptr)
 {
     setWindowTitle(tr("Plot range"));
 
@@ -77,36 +80,56 @@ CurveRangeDialog::CurveRangeDialog(QWidget *parent, Qt::WindowFlags fl) : QDialo
     connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
 }
 
+CurveRangeDialog::~CurveRangeDialog() = default;
+
 void CurveRangeDialog::accept()
 {
-    if (!d_curve)
+    if (!d_graph || !d_curve || (d_hadTable && !d_table) || !d_graph->plotWidget()
+        || !d_graph->plotWidget()->itemList().contains(d_curve)
+        || d_graph->curveIndex(d_curve) < 0
+        || d_curve->title().text() != d_curveTitle) {
+        close();
         return;
+    }
+
+    MultiLayer *ml = d_graph->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
 
     int start = boxStart->value() - 1;
     int end = boxEnd->value() - 1;
     d_curve->setRowRange(qMin(start, end), qMax(start, end));
     d_graph->updatePlot();
     d_graph->notifyChanges();
+    if (ml && !before.isEmpty())
+        ml->pushUndoSnapshot(tr("Change Curve Range"), before);
     close();
 }
 
 void CurveRangeDialog::setCurveToModify(Graph *g, int curve)
 {
-    if (!g)
+    d_graph = g;
+    d_curve = nullptr;
+    d_table = nullptr;
+    d_hadTable = false;
+    d_curveTitle.clear();
+    if (!d_graph || curve < 0 || curve >= d_graph->curves())
         return;
 
-    d_graph = g;
-    d_curve = (DataCurve *)d_graph->curve(curve);
+    d_curve = dynamic_cast<DataCurve *>(d_graph->curve(curve));
     if (!d_curve)
         return;
 
+    d_curveTitle = d_curve->title().text();
+
     Table *t = d_curve->table();
+    d_table = t;
+    d_hadTable = (t != nullptr);
     if (t) {
         boxStart->setMaximum(t->numRows());
         boxEnd->setMaximum(t->numRows());
     }
 
-    boxName->setText(d_curve->title().text());
+    boxName->setText(d_curveTitle);
     boxStart->setValue(d_curve->startRow() + 1);
     boxEnd->setValue(d_curve->endRow() + 1);
 }

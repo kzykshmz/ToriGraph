@@ -28,6 +28,7 @@
 
 #include "Spectrogram.h"
 #include "ColorButton.h"
+#include "ScaleDraw.h"
 #include <math.h>
 #include <qpen.h>
 #include <qmessagebox.h>
@@ -45,6 +46,7 @@ Spectrogram::Spectrogram()
       color_map(defaultColorMap()),
       d_base_custom_map(defaultColorMap())
 {
+    setRenderHint(QwtPlotItem::RenderAntialiased, true);
 }
 
 Spectrogram::Spectrogram(Matrix *m)
@@ -56,6 +58,7 @@ Spectrogram::Spectrogram(Matrix *m)
       color_map(defaultColorMap()),
       d_base_custom_map(defaultColorMap())
 {
+    setRenderHint(QwtPlotItem::RenderAntialiased, true);
     if (!m)
         return;
     setData(MatrixData(m));
@@ -111,10 +114,12 @@ void Spectrogram::enforceColorBarArialFont()
         return;
 
     QFont tickFont = plot->axisFont(color_axis);
-    if (tickFont.family() != QLatin1String("Arial")) {
+    if (tickFont.family() != QLatin1String("Arial")
+        || tickFont.hintingPreference() != QFont::PreferNoHinting) {
         tickFont.setFamily(QStringLiteral("Arial"));
         if (tickFont.pointSize() <= 0 && tickFont.pixelSize() <= 0)
             tickFont.setPointSize(10);
+        tickFont.setHintingPreference(QFont::PreferNoHinting);
         plot->setAxisFont(color_axis, tickFont);
     }
 
@@ -123,8 +128,10 @@ void Spectrogram::enforceColorBarArialFont()
         return;
 
     QFont wf = colorAxis->font();
-    if (wf.family() != QLatin1String("Arial")) {
+    if (wf.family() != QLatin1String("Arial")
+        || wf.hintingPreference() != QFont::PreferNoHinting) {
         wf.setFamily(QStringLiteral("Arial"));
+        wf.setHintingPreference(QFont::PreferNoHinting);
         colorAxis->setFont(wf);
     }
 
@@ -135,8 +142,25 @@ void Spectrogram::enforceColorBarArialFont()
     tf.setFamily(QStringLiteral("Arial"));
     if (tf.pointSize() <= 0 && tf.pixelSize() <= 0)
         tf.setPointSize(11);
+    tf.setHintingPreference(QFont::PreferNoHinting);
     t.setFont(tf);
     colorAxis->setTitle(t);
+
+    if (colorAxis->isColorBarEnabled()) {
+        colorAxis->setMargin(6);
+        colorAxis->setSpacing(0);
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
+            sd->enableComponent(QwtAbstractScaleDraw::Backbone, true);
+            sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+            sd->setMajorTicksStyle(ScaleDraw::Out);
+            sd->setMinorTicksStyle(ScaleDraw::None);
+            sd->setColorBarBorder(true, colorAxis->colorBarWidth(),
+                                  qMax(1, colorAxis->penWidth()));
+        }
+    } else if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
+        sd->setColorBarBorder(false, 0, 1);
+    }
 }
 
 void Spectrogram::syncColorScale()
@@ -171,6 +195,7 @@ void Spectrogram::setColorBarTitle(const QString &title)
     tf.setFamily(QStringLiteral("Arial"));
     if (tf.pointSize() <= 0 && tf.pixelSize() <= 0)
         tf.setPointSize(11);
+    tf.setHintingPreference(QFont::PreferNoHinting);
     t.setFont(tf);
     colorAxis->setTitle(t);
     enforceColorBarArialFont();
@@ -265,8 +290,12 @@ void Spectrogram::showColorScale(int axis, bool on)
     }
 
     QwtScaleWidget *colorAxis = plot->axisWidget(color_axis);
-    if (colorAxis)
+    if (colorAxis) {
         colorAxis->setColorBarEnabled(false);
+        colorAxis->setMargin(0);
+    }
+    if (ScaleDraw *oldSd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis)))
+        oldSd->setColorBarBorder(false, 0, 1);
 
     color_axis = axis;
 
@@ -304,6 +333,13 @@ void Spectrogram::showColorScale(int axis, bool on)
     plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
     colorAxis->setColorBarEnabled(on);
     colorAxis->setColorMap(zRange, colorMap());
+    colorAxis->setMargin(on ? 6 : 0);
+    if (on)
+        colorAxis->setSpacing(0);
+    if (ScaleDraw *newSd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
+        newSd->setColorBarBorder(on, colorAxis->colorBarWidth(),
+                                 qMax(1, colorAxis->penWidth()));
+    }
     if (on && !plot->axisEnabled(color_axis))
         plot->enableAxis(color_axis);
     enforceColorBarArialFont();
@@ -329,8 +365,14 @@ void Spectrogram::setColorBarWidth(int width)
         return;
 
     QwtScaleWidget *colorAxis = plot->axisWidget(color_axis);
-    if (colorAxis)
+    if (colorAxis) {
         colorAxis->setColorBarWidth(width);
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
+            sd->setColorBarBorder(colorAxis->isColorBarEnabled(), colorAxis->colorBarWidth(),
+                                  qMax(1, colorAxis->penWidth()));
+        }
+        plot->updateLayout();
+    }
 }
 
 Spectrogram *Spectrogram::copy()

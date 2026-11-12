@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "AssociationsDialog.h"
+#include "MultiLayer.h"
 #include "Table.h"
 #include "core/column/Column.h"
 #include "FunctionCurve.h"
@@ -36,6 +37,7 @@
 
 #include <QLabel>
 #include <QComboBox>
+#include <QPointer>
 #include <QSignalBlocker>
 #include <QListWidget>
 #include <QPushButton>
@@ -145,6 +147,9 @@ void AssociationsDialog::updateCurves()
     if (!graph)
         return;
 
+    QPointer<MultiLayer> mlGuard = graph->multiLayerParent();
+    const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
+
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
     for (int i = 0; i < associations->count(); i++)
@@ -152,6 +157,9 @@ void AssociationsDialog::updateCurves()
     graph->updatePlot();
 
     QApplication::restoreOverrideCursor();
+
+    if (mlGuard && !beforeSnap.isEmpty())
+        mlGuard->pushUndoSnapshot(tr("Plot Associations"), beforeSnap);
 }
 
 void AssociationsDialog::changePlotAssociation(int curve, const QString &text)
@@ -527,15 +535,30 @@ void AssociationsDialog::setGraph(Graph *g)
             continue;
 
         if (((DataCurve *)it)->type() != Graph::Function) {
-            QString s = ((DataCurve *)it)->plotAssociation();
-            QString table = ((DataCurve *)it)->table()->name();
-            plotAssociationsList << table + ": " + s.remove(table + "_");
+            DataCurve *dc = (DataCurve *)it;
+            if (!dc->table())
+                continue;
+            QString s = dc->plotAssociation();
+            QString table = dc->table()->name();
+            const QString prefix = table + QLatin1Char('_');
+            QStringList tokens = s.split(QLatin1Char(','));
+            for (int t = 0; t < tokens.size(); ++t) {
+                const QString trimmed = tokens[t].trimmed();
+                if (!table.isEmpty() && trimmed.startsWith(prefix))
+                    tokens[t] = trimmed.mid(prefix.length());
+                else
+                    tokens[t] = trimmed;
+            }
+            plotAssociationsList << table + ": " + tokens.join(QLatin1Char(','));
             dataCurvesList << i;
         }
     }
     associations->addItems(plotAssociationsList);
-    associations->setMaximumHeight((plotAssociationsList.count() + 1)
-                                   * associations->visualItemRect(associations->item(0)).height());
+    if (associations->count() > 0 && associations->item(0)) {
+        associations->setMaximumHeight(
+                (plotAssociationsList.count() + 1)
+                * associations->visualItemRect(associations->item(0)).height());
+    }
 }
 
 void AssociationsDialog::updatePlotAssociation(int row, int col)

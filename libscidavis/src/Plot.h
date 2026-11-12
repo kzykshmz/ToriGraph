@@ -102,6 +102,8 @@ public:
     bool hasVisibleItemOnAxis(int axis) const;
     void setHighlightedCurveKey(int key);
     int highlightedCurveKey() const { return d_highlighted_curve_key; }
+    static int scaleAlignmentToAxis(int alignment);
+    static bool isLog10ScaleEngine(const QwtScaleEngine *se);
 
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],

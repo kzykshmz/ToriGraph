@@ -27,11 +27,16 @@
  *                                                                         *
  ***************************************************************************/
 #include "ArrowMarker.h"
+#include "Graph.h"
 #include "LineDialog.h"
+#include "MultiLayer.h"
 
 #include <QPainter>
 #include <QMouseEvent>
 #include <QApplication>
+#include <QPointer>
+#include <QUndoStack>
+#include <QVariant>
 #include <cmath>
 
 #include <qwt_plot.h>
@@ -116,7 +121,8 @@ void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &
         p->restore();
     }
 
-    if (d_editable) {
+    const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
+    if (d_editable && (!g || (!g->isExporting() && !g->property("isExporting").toBool()))) {
         p->save();
         p->setPen(QPen(Qt::black, 1, Qt::SolidLine));
         QRect handler(QPoint(0, 0), QSize(10, 10));
@@ -384,51 +390,105 @@ void ArrowMarker::updateBoundingRect()
     d_rect.setBottom(yMap.invTransform(d_end.y()));
 }
 
+ArrowMarker::~ArrowMarker()
+{
+    restoreCursorIfNeeded();
+    if (d_editable && plot() && plot()->canvas())
+        plot()->canvas()->removeEventFilter(this);
+}
+
+void ArrowMarker::applyOverrideCursor()
+{
+    if (!d_cursor_overridden) {
+        QApplication::setOverrideCursor(QCursor(Qt::SizeAllCursor));
+        d_cursor_overridden = true;
+    }
+}
+
+void ArrowMarker::restoreCursorIfNeeded()
+{
+    if (d_cursor_overridden) {
+        d_cursor_overridden = false;
+        QApplication::restoreOverrideCursor();
+    }
+}
+
 void ArrowMarker::setEditable(bool yes)
 {
-    if (yes == d_editable)
+    if (yes == d_editable) {
+        if (!yes)
+            restoreCursorIfNeeded();
         return;
+    }
     if (yes) {
         d_editable = true;
-        plot()->canvas()->installEventFilter(this);
+        if (plot() && plot()->canvas())
+            plot()->canvas()->installEventFilter(this);
     } else {
         d_editable = false;
-        plot()->canvas()->removeEventFilter(this);
+        d_op = None;
+        setProperty("_dragMoved", false);
+        setProperty("_undoSnap", QString());
+        restoreCursorIfNeeded();
+        if (plot() && plot()->canvas())
+            plot()->canvas()->removeEventFilter(this);
     }
-    plot()->replot();
+    if (plot())
+        plot()->replot();
 }
 
 bool ArrowMarker::eventFilter(QObject *, QEvent *e)
 {
+    Graph *g = plot() ? qobject_cast<Graph *>(plot()->parent()) : nullptr;
+    MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+
     switch (e->type()) {
     case QEvent::MouseButtonPress: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
         if (me->button() != Qt::LeftButton)
             return false;
         QRect handler = QRect(QPoint(0, 0), QSize(10, 10));
         handler.moveCenter(startPoint());
         if (handler.contains(me->pos())) {
-            QApplication::changeOverrideCursor(QCursor(Qt::SizeAllCursor));
+            applyOverrideCursor();
             d_op = MoveStart;
+            setProperty("_pressPos", me->pos());
+            setProperty("_dragMoved", false);
+            setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
         }
         handler.moveCenter(endPoint());
         if (handler.contains(me->pos())) {
-            QApplication::changeOverrideCursor(QCursor(Qt::SizeAllCursor));
+            applyOverrideCursor();
             d_op = MoveEnd;
+            setProperty("_pressPos", me->pos());
+            setProperty("_dragMoved", false);
+            setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
         }
-        int d = width() + (int)floor(headLength() * tan(M_PI * headAngle() / 180.0) + 0.5);
+        constexpr double kPi = 3.141592653589793238462643;
+        const int d = qMax(6, width() + int(std::floor(headLength() * std::tan(kPi * headAngle() / 180.0) + 0.5)));
         if (dist(me->pos().x(), me->pos().y()) <= d) {
-            QApplication::changeOverrideCursor(QCursor(Qt::SizeAllCursor));
+            applyOverrideCursor();
             d_op = MoveBoth;
             d_op_startat = me->pos() - startPoint();
+            setProperty("_pressPos", me->pos());
+            setProperty("_dragMoved", false);
+            setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
         }
         return false;
     }
     case QEvent::MouseMove: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (d_op == None)
+            return false;
+        if (!property("_dragMoved").toBool()) {
+            const QPoint pressPos = property("_pressPos").toPoint();
+            if ((me->pos() - pressPos).manhattanLength() < QApplication::startDragDistance())
+                return true;
+            setProperty("_dragMoved", true);
+        }
         switch (d_op) {
         case MoveStart:
             setStartPoint(me->pos());
@@ -438,50 +498,80 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
             setEndPoint(me->pos());
             plot()->replot();
             return true;
-        case MoveBoth:
-            setEndPoint(endPoint() + me->pos() - d_op_startat - startPoint());
-            setStartPoint(me->pos() - d_op_startat);
+        case MoveBoth: {
+            const QPoint newStart = me->pos() - d_op_startat;
+            const QPoint delta = newStart - startPoint();
+            setEndPoint(endPoint() + delta);
+            setStartPoint(newStart);
             plot()->replot();
             return true;
+        }
         default:
             return false;
         }
     }
     case QEvent::MouseButtonRelease: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
-        switch (d_op) {
-        case MoveStart:
-            setStartPoint(me->pos());
-            plot()->replot();
-            d_op = None;
-            QApplication::restoreOverrideCursor();
-            return true;
-        case MoveEnd:
-            setEndPoint(me->pos());
-            plot()->replot();
-            d_op = None;
-            QApplication::restoreOverrideCursor();
-            return true;
-        case MoveBoth:
-            setXValue(plot()->invTransform(xAxis(), me->pos().x() - d_op_startat.x()));
-            setYValue(plot()->invTransform(yAxis(), me->pos().y() - d_op_startat.y()));
-            plot()->replot();
-            d_op = None;
-            QApplication::restoreOverrideCursor();
-            return true;
-        default:
-            d_op = None;
-            QApplication::restoreOverrideCursor();
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (d_op == None) {
+            restoreCursorIfNeeded();
             return false;
         }
+        const Operation finishedOp = d_op;
+        const bool moved = property("_dragMoved").toBool();
+        const QString beforeSnap = property("_undoSnap").toString();
+        d_op = None;
+        setProperty("_dragMoved", false);
+        setProperty("_undoSnap", QString());
+        restoreCursorIfNeeded();
+
+        if (moved) {
+            switch (finishedOp) {
+            case MoveStart:
+                setStartPoint(me->pos());
+                break;
+            case MoveEnd:
+                setEndPoint(me->pos());
+                break;
+            case MoveBoth: {
+                const QPoint newStart = me->pos() - d_op_startat;
+                const QPoint delta = newStart - startPoint();
+                setEndPoint(endPoint() + delta);
+                setStartPoint(newStart);
+                break;
+            }
+            default:
+                break;
+            }
+            if (plot())
+                plot()->replot();
+            if (g)
+                emit g->modifiedGraph();
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(Graph::tr("Move Arrow"), beforeSnap);
+        }
+        return true;
     }
     case QEvent::MouseButtonDblClick: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
-        if (me->button() != Qt::LeftButton)
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (me->button() != Qt::LeftButton || !plot())
             return false;
+        QPointer<MultiLayer> mlGuard(ml);
+        const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
+        QUndoStack *us = mlGuard ? mlGuard->undoStack() : nullptr;
+        const int countBefore = us ? us->count() : 0;
+        const int indexBefore = us ? us->index() : 0;
+
         LineDialog *ld = new LineDialog(this, plot()->window());
         ld->setAttribute(Qt::WA_DeleteOnClose);
         ld->exec();
+
+        if (mlGuard && !beforeSnap.isEmpty() && !mlGuard->isRestoringSnapshot()) {
+            QUndoStack *usAfter = mlGuard->undoStack();
+            const bool innerPushed = usAfter
+                    && (usAfter->count() != countBefore || usAfter->index() != indexBefore);
+            if (!innerPushed && mlGuard->captureUndoSnapshot() != beforeSnap)
+                mlGuard->pushUndoSnapshot(QObject::tr("Edit Annotation"), beforeSnap);
+        }
         return true;
     }
     default:

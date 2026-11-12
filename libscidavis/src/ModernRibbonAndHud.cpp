@@ -71,6 +71,7 @@
 
 #include "ApplicationWindow.h"
 #include "Graph.h"
+#include "GraphInspectorDock.h"
 #include "IconLoader.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
@@ -480,6 +481,18 @@ void CommandPalettePopup::refreshCommands()
                     d_ribbon->toggleFocusHudMode();
             },
             92);
+
+    addQuickEntry(
+            QStringLiteral("quick.graph_inspector"),
+            tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"), catWorkspace,
+            QStringLiteral("Ctrl+Shift+I"),
+            QStringLiteral("graph inspector dock object manager property sidebar rail ctrl+shift+i"),
+            QStringLiteral("table-drawer"),
+            [this]() {
+                if (d_app)
+                    d_app->toggleGraphInspectorDock();
+            },
+            93);
 
     addQuickEntry(
             QStringLiteral("quick.python_console"), tr("Open Python Console"), catTools,
@@ -2052,6 +2065,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
                 });
     }
 
+    this->installEventFilter(this);
+
     retranslateUi();
     updateActiveContext(d_app ? qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow())
                               : nullptr);
@@ -2285,6 +2300,17 @@ void ModernRibbonBar::buildAllTabs()
                     syncCheckableStates();
                 },
                 true);
+        QToolButton *btnHomeInspector = addRibbonButton(
+                gPanels, QStringLiteral("table-drawer"), [this]() { return tr("Inspector"); },
+                [this]() { return tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    d_app->toggleGraphInspectorDock();
+                    syncCheckableStates();
+                },
+                true);
+        btnHomeInspector->setObjectName(QStringLiteral("RibbonInspectorBtn"));
 
         row->addStretch(1);
         addTabPage([this]() { return tr("Home & Data"); }, page);
@@ -2943,12 +2969,37 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->fitPageToLayers();
                 });
         addRibbonButton(
+                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Square 70%"); },
+                [this]() { return tr("Apply 70% Square Inner Canvas Frame"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    if (MultiLayer *ml =
+                                qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
+                        const QString before = ml->captureUndoSnapshot();
+                        ml->applySquareCanvasFrame70Percent();
+                        ml->pushUndoSnapshot(tr("Apply 70% Square Canvas Frame"), before);
+                        d_app->modifiedProject();
+                    }
+                });
+        addRibbonButton(
                 gFrame, QStringLiteral("color-palette"), [this]() { return tr("Color Palette"); },
                 [this]() { return tr("Apply Publication Color Palette to Curves"); },
                 [this]() {
                     if (d_app)
                         d_app->showColorPaletteEditorDialog();
                 });
+        QToolButton *btnStyleInspector = addRibbonButton(
+                gFrame, QStringLiteral("table-drawer"), [this]() { return tr("Inspector"); },
+                [this]() { return tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    d_app->toggleGraphInspectorDock();
+                    syncCheckableStates();
+                },
+                true);
+        btnStyleInspector->setObjectName(QStringLiteral("RibbonInspectorBtn"));
 
         createRibbonGroup(row, [this]() { return tr("Format & Batch"); }, &gFormat, true);
         addRibbonButton(
@@ -3129,6 +3180,17 @@ void ModernRibbonBar::retranslateUi()
         d_btn_lang_switch->setToolTip(tr("Switch Interface Language (Japanese / English)"));
     }
 
+    if (width() > 0) {
+        const Qt::ToolButtonStyle hdrStyle =
+                (width() < 1100) ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+        QToolButton *hdrBtns[] = { d_btn_cmd_palette, d_btn_layout_tabbed, d_btn_layout_split,
+                                   d_btn_layout_mdi,  d_btn_focus_mode,    d_btn_lang_switch };
+        for (QToolButton *hb : hdrBtns) {
+            if (hb && hb->toolButtonStyle() != hdrStyle)
+                hb->setToolButtonStyle(hdrStyle);
+        }
+    }
+
     updateActiveContext(d_last_active_window.data());
 
     if (d_command_palette)
@@ -3167,6 +3229,17 @@ void ModernRibbonBar::syncCheckableStates()
                 || (d_app->graph_3D_tools && !d_app->graph_3D_tools->isHidden());
         d_classic_toolbars_visible = anyClassicVisible;
         d_btn_classic_toolbars->setChecked(d_classic_toolbars_visible);
+    }
+
+    const GraphInspectorDock *inspDock = d_app->graphInspectorDock();
+    const bool inspectorChecked = inspDock && !inspDock->isHidden() && !inspDock->isCollapsedRail();
+    const QList<QToolButton *> inspBtns =
+            findChildren<QToolButton *>(QStringLiteral("RibbonInspectorBtn"));
+    for (QToolButton *ib : inspBtns) {
+        if (!ib)
+            continue;
+        QSignalBlocker blocker(ib);
+        ib->setChecked(inspectorChecked);
     }
 }
 
@@ -3772,6 +3845,19 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
 {
     if (d_shutting_down)
         return QFrame::eventFilter(watched, event);
+    if (watched == this && event
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        if (width() > 0) {
+            const Qt::ToolButtonStyle hdrStyle =
+                    (width() < 1100) ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+            QToolButton *hdrBtns[] = { d_btn_cmd_palette, d_btn_layout_tabbed, d_btn_layout_split,
+                                       d_btn_layout_mdi,  d_btn_focus_mode,    d_btn_lang_switch };
+            for (QToolButton *hb : hdrBtns) {
+                if (hb && hb->toolButtonStyle() != hdrStyle)
+                    hb->setToolButtonStyle(hdrStyle);
+            }
+        }
+    }
     if (d_app && watched == d_app->d_workspace.viewport() && event) {
         if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph
             && !d_applying_split_geometry) {

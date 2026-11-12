@@ -2885,19 +2885,70 @@ void Fit::generateFitCurve(const vector<double> &par)
     }
 
     if (d_gen_function) {
-        insertFitFunctionCurve(objectName() + tr("Fit"), X, Y);
+        QString baseName = objectName().trimmed();
+        while (!baseName.isEmpty() && baseName.back().isDigit())
+            baseName.chop(1);
+        baseName = baseName.trimmed();
+        if (baseName.endsWith(QStringLiteral("実行")))
+            baseName.chop(2);
+        baseName = baseName.trimmed();
+        if (baseName.endsWith(QLatin1String("Fit")) && baseName.size() > 3
+            && baseName.at(baseName.size() - 4).isLower()) {
+            baseName.insert(baseName.size() - 3, QLatin1Char(' '));
+        }
+        if (baseName.isEmpty()) {
+            baseName = tr("Fit").trimmed();
+            if (baseName.endsWith(QStringLiteral("実行")))
+                baseName.chop(2);
+            baseName = baseName.trimmed();
+            if (baseName.isEmpty())
+                baseName = QStringLiteral("Fit");
+        } else if (!baseName.contains(QLatin1String("Fit"), Qt::CaseInsensitive)
+                   && !baseName.contains(QStringLiteral("フィット"))
+                   && !baseName.contains(QStringLiteral("フィッティング"))) {
+            QString fitSuffix = tr("Fit").trimmed();
+            if (fitSuffix.endsWith(QStringLiteral("実行")))
+                fitSuffix.chop(2);
+            fitSuffix = fitSuffix.trimmed();
+            if (fitSuffix.isEmpty())
+                fitSuffix = QStringLiteral("Fit");
+            const bool cjkJoin = (!baseName.isEmpty() && baseName.back().unicode() > 0x007F)
+                    || (!fitSuffix.isEmpty() && fitSuffix.at(0).unicode() > 0x007F);
+            baseName += cjkJoin ? fitSuffix : (QLatin1Char(' ') + fitSuffix);
+        }
+        insertFitFunctionCurve(baseName, X, Y);
         d_graph->replot();
-    } else
-        d_graph->addFitCurve(addResultCurve(X, Y));
+    } else {
+        QwtPlotCurve *rc = addResultCurve(X, Y);
+        const int axesLw =
+                (d_graph && d_graph->plotWidget()) ? d_graph->plotWidget()->axesLinewidth() : 1;
+        if (rc && rc->pen().width() <= 1 && axesLw > 1) {
+            QPen p = rc->pen();
+            p.setWidth(qMax(1, axesLw));
+            rc->setPen(p);
+        }
+        d_graph->addFitCurve(rc);
+        if (d_graph)
+            d_graph->replot();
+    }
 }
 
 void Fit::insertFitFunctionCurve(const QString &name, std::vector<double> &x,
                                  std::vector<double> &y, int penWidth)
 {
-    QString title = d_graph->generateFunctionName(name);
+    QString cleanBase = name.trimmed();
+    cleanBase.replace(QStringLiteral("フィット実行"), QStringLiteral("フィット"));
+    QString title = cleanBase;
+    if (d_graph && (title.isEmpty() || d_graph->curvesList().contains(title))) {
+        title = d_graph->generateFunctionName(
+                cleanBase.isEmpty() ? QStringLiteral("Fit") : (cleanBase + QLatin1Char(' ')));
+    }
+    const int axesLw =
+            (d_graph && d_graph->plotWidget()) ? d_graph->plotWidget()->axesLinewidth() : 1;
+    const int effWidth = (penWidth <= 1) ? qMax(penWidth, axesLw) : penWidth;
     FunctionCurve *c =
             new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal, title);
-    c->setPen(QPen(d_curveColor, penWidth));
+    c->setPen(QPen(d_curveColor, effWidth));
     // "Set data by copying x- and y-values from specified memory blocks."
     c->setData(x.data(), y.data(), d_points);
     c->setRange(d_x.front(), d_x.back());

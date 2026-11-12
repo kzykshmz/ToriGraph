@@ -26,6 +26,9 @@
  *   Boston, MA  02110-1301  USA                                           *
  *                                                                         *
  ***************************************************************************/
+#ifndef TITLE_PICKER_H
+#define TITLE_PICKER_H
+
 #include <QObject>
 
 class QwtPlot;
@@ -48,7 +51,9 @@ signals:
     void showTitleMenu();
 
 private:
-    bool eventFilter(QObject *, QEvent *);
+    bool eventFilter(QObject *, QEvent *) override;
     QwtTextLabel *title;
     bool d_selected;
 };
+
+#endif // TITLE_PICKER_H

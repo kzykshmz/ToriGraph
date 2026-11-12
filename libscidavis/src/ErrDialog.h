@@ -63,6 +63,8 @@ private:
     QGroupBox *groupBox1, *groupBox3;
     QButtonGroup *buttonGroup1, *buttonGroup2;
     QRadioButton *standardBox, *columnBox;
+    QRadioButton *adjacentColBox;
+    QRadioButton *standardErrorBox;
     QRadioButton *percentBox;
     QLineEdit *valueBox;
     QRadioButton *xErrBox;
@@ -70,6 +72,12 @@ private:
     QPushButton *buttonAdd;
     QPushButton *buttonCancel;
     QList<MyWidget *> *srcTables;
+
+    int findMatchingTableIndex(const QString &curveName, QString *outShortColName = nullptr) const;
+    void preselectBestErrorColumn(int tabnr);
+
+private slots:
+    void onCurveOrDirectionChanged();
 
 protected slots:
     //! Set all string in the current language

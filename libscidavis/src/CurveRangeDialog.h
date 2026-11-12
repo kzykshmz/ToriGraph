@@ -30,12 +30,15 @@
 #define CURVERANGEDIALOG_H
 
 #include <QDialog>
+#include <QPointer>
+#include <QString>
 
 class QPushButton;
 class QLabel;
 class QSpinBox;
 class Graph;
 class DataCurve;
+class Table;
 
 //! Curve range dialog
 class CurveRangeDialog : public QDialog
@@ -44,7 +47,7 @@ class CurveRangeDialog : public QDialog
 
 public:
     CurveRangeDialog(QWidget *parent = 0, Qt::WindowFlags fl = Qt::Widget);
-    ~CurveRangeDialog() {};
+    ~CurveRangeDialog();
 
     QPushButton *buttonOK;
     QPushButton *buttonCancel;
@@ -58,7 +61,10 @@ public slots:
 
 private:
     DataCurve *d_curve;
-    Graph *d_graph;
+    QString d_curveTitle;
+    QPointer<Graph> d_graph;
+    QPointer<Table> d_table;
+    bool d_hadTable = false;
 };
 
 #endif

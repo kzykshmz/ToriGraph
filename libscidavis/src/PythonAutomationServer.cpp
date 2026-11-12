@@ -75,6 +75,7 @@
 
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
+#include <qwt_plot_layout.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_engine.h>
 #include <qwt_symbol.h>
@@ -112,6 +113,7 @@
 #include <QLocalSocket>
 #include <QLocale>
 #include <QMdiSubWindow>
+#include <QMimeData>
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QNetworkAccessManager>
@@ -136,6 +138,7 @@
 #include <QTextDecoder>
 #include <QTextStream>
 #include <QTimer>
+#include <QUndoStack>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -900,21 +903,33 @@ void enforceArialGraphFonts(Graph *g)
     for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
         QFont nf = g->axisFont(ax);
         nf.setFamily(QStringLiteral("Arial"));
+        nf.setHintingPreference(QFont::PreferNoHinting);
         g->setAxisFont(ax, nf);
 
         QFont tf = g->axisTitleFont(ax);
         tf.setFamily(QStringLiteral("Arial"));
+        tf.setHintingPreference(QFont::PreferNoHinting);
         g->setAxisTitleFont(ax, tf);
     }
     if (Legend *leg = g->legend()) {
         QFont lf = leg->font();
         lf.setFamily(QStringLiteral("Arial"));
+        lf.setHintingPreference(QFont::PreferNoHinting);
         leg->setFont(lf);
+    }
+    for (int tid : g->textMarkerKeys()) {
+        if (Legend *tm = g->textMarker(tid)) {
+            QFont tmf = tm->font();
+            tmf.setFamily(QStringLiteral("Arial"));
+            tmf.setHintingPreference(QFont::PreferNoHinting);
+            tm->setFont(tmf);
+        }
     }
     if (g->plotWidget()) {
         QwtText t = g->plotWidget()->title();
         QFont f = t.font();
         f.setFamily(QStringLiteral("Arial"));
+        f.setHintingPreference(QFont::PreferNoHinting);
         t.setFont(f);
         g->plotWidget()->setTitle(t);
 
@@ -2525,6 +2540,110 @@ int parseAxisId(const QString &axisStr)
             QStringLiteral("Unknown axis '%1' (expected 'x'|'y'|'top'|'right').").arg(axisStr));
 }
 
+struct ScopedGraphUndoGuard
+{
+    MultiLayer *ml = nullptr;
+    QString label;
+    QString beforeSnap;
+    int countBefore = 0;
+    int indexBefore = 0;
+
+    ScopedGraphUndoGuard(MultiLayer *m, const QString &lbl) : ml(m), label(lbl)
+    {
+        if (ml && !ml->isRestoringSnapshot()) {
+            if (QUndoStack *us = ml->undoStack()) {
+                countBefore = us->count();
+                indexBefore = us->index();
+            }
+            beforeSnap = ml->captureUndoSnapshot();
+        }
+    }
+
+    void commit()
+    {
+        if (!ml || ml->isRestoringSnapshot() || beforeSnap.isEmpty())
+            return;
+        if (QUndoStack *us = ml->undoStack()) {
+            if (us->count() != countBefore || us->index() != indexBefore)
+                return;
+        }
+        ml->pushUndoSnapshot(label, beforeSnap);
+        beforeSnap.clear();
+    }
+};
+
+Graph::LegendAnchor parseLegendAnchor(const QString &posStr)
+{
+    QString s = posStr.trimmed().toLower();
+    s.replace(QLatin1Char('-'), QLatin1Char('_'));
+    s.replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (s == QStringLiteral("auto") || s == QStringLiteral("avoid_data")
+        || s == QStringLiteral("auto_avoid_data")) {
+        return Graph::LegendAutoAvoidData;
+    }
+    if (s == QStringLiteral("top_right"))
+        return Graph::LegendTopRight;
+    if (s == QStringLiteral("top_left"))
+        return Graph::LegendTopLeft;
+    if (s == QStringLiteral("bottom_right"))
+        return Graph::LegendBottomRight;
+    if (s == QStringLiteral("bottom_left"))
+        return Graph::LegendBottomLeft;
+    if (s == QStringLiteral("top_center"))
+        return Graph::LegendTopCenter;
+    if (s == QStringLiteral("bottom_center"))
+        return Graph::LegendBottomCenter;
+    if (s == QStringLiteral("outside_right"))
+        return Graph::LegendOutsideRight;
+    throwInvalidParams(
+            QStringLiteral(
+                    "Unknown legend position '%1' (expected 'auto'|'avoid_data'|'top_right'|'top_left'|'bottom_right'|'bottom_left'|'top_center'|'bottom_center'|'outside_right').")
+                    .arg(posStr));
+}
+
+Graph::SeriesStyleScheme parseSeriesStyleScheme(const QString &schemeStr,
+                                                QString *outCanonical = nullptr)
+{
+    QString s = schemeStr.trimmed().toLower();
+    s.replace(QLatin1Char('-'), QLatin1Char('_'));
+    s.replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (s == QStringLiteral("bw_hollow_filled") || s == QStringLiteral("bw")
+        || s == QStringLiteral("bw_2to3")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("bw_hollow_filled");
+        return Graph::SchemeBW2to3Group;
+    }
+    if (s == QStringLiteral("blue_red_hollow")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("blue_red_hollow");
+        return Graph::SchemeBlueFilledRedHollow;
+    }
+    if (s == QStringLiteral("muted_categorical")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("muted_categorical");
+        return Graph::SchemeMutedCategorical;
+    }
+    if (s == QStringLiteral("cool_to_warm") || s == QStringLiteral("step_colors")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("cool_to_warm");
+        return Graph::SchemeCoolToWarmStep;
+    }
+    if (s == QStringLiteral("viridis") || s == QStringLiteral("viridis_seq")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("viridis");
+        return Graph::SchemeViridisSequential;
+    }
+    if (s == QStringLiteral("origin") || s == QStringLiteral("origin_classic")) {
+        if (outCanonical)
+            *outCanonical = QStringLiteral("origin_classic");
+        return Graph::SchemeOriginClassic;
+    }
+    throwInvalidParams(
+            QStringLiteral(
+                    "Unknown series scheme '%1' (expected 'bw_hollow_filled'|'blue_red_hollow'|'muted_categorical'|'cool_to_warm'|'step_colors'|'viridis'|'viridis_seq'|'origin'|'origin_classic').")
+                    .arg(schemeStr));
+}
+
 Spectrogram::ColorMapPreset parseColorMapPreset(const QString &name, bool *outGrayScale = nullptr,
                                                 bool strict = false)
 {
@@ -2661,6 +2780,19 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
     info[QStringLiteral("keep_aspect_ratio")] = ml->keepAspectRatio();
     info[QStringLiteral("aspect_ratio")] = safeJsonDouble(ml->targetAspectRatio());
     info[QStringLiteral("background_color")] = ml->pageBackgroundColor().name(QColor::HexArgb);
+    info[QStringLiteral("can_undo")] = ml->undoStack() ? ml->undoStack()->canUndo() : false;
+    info[QStringLiteral("can_redo")] = ml->undoStack() ? ml->undoStack()->canRedo() : false;
+    {
+        QJsonObject plObj;
+        plObj[QStringLiteral("enabled")] = ml->hasPanelLabels();
+        plObj[QStringLiteral("placement")] =
+                (ml->panelLabelPlacement() == MultiLayer::PanelInsideTopLeft)
+                ? QStringLiteral("inside_top_left")
+                : QStringLiteral("outside_top_left");
+        plObj[QStringLiteral("pattern")] = ml->panelLabelPattern();
+        plObj[QStringLiteral("font_pt")] = ml->panelLabelFontPt();
+        info[QStringLiteral("panel_labels")] = plObj;
+    }
 
     const QList<Graph *> layers = ml->layersList();
     info[QStringLiteral("layer_count")] = layers.size();
@@ -2679,6 +2811,7 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
         lObj[QStringLiteral("antialiasing")] = g->antialiasing();
         lObj[QStringLiteral("is_ternary")] = g->isTernaryPlot();
         lObj[QStringLiteral("has_legend")] = (g->legend() != nullptr);
+        lObj[QStringLiteral("legend_visible")] = g->isLegendVisible();
         if (g->legend())
             lObj[QStringLiteral("legend_text")] = g->legend()->text();
 
@@ -2763,6 +2896,8 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
             cObj[QStringLiteral("line_style")] = int(c->pen().style());
             cObj[QStringLiteral("symbol_style")] = int(c->symbol().style());
             cObj[QStringLiteral("symbol_size")] = c->symbol().size().width();
+            cObj[QStringLiteral("symbol_hollow")] = Graph::isSymbolWhiteHollow(c->symbol());
+            cObj[QStringLiteral("visible")] = g->isCurveVisible(ci);
             if (auto *dc = dynamic_cast<DataCurve *>(c)) {
                 cObj[QStringLiteral("masked_points")] = dc->maskedPointCount();
                 cObj[QStringLiteral("x_column")] = dc->xColumnName();
@@ -2860,6 +2995,15 @@ QJsonObject serializeGraph3DInfo(Graph3D *g3d)
 // Headless format clipboard so graph.copy_format / graph.paste_format work even when window is hidden
 struct HeadlessFormatClipboard
 {
+    struct CurveFmt
+    {
+        QPen pen;
+        QBrush brush;
+        int curveStyle = QwtPlotCurve::Lines;
+        QwtSymbol symbol;
+        bool symbolHollow = false;
+    };
+
     bool valid = false;
     bool pageViewMode = false;
     MultiLayer::PageUnit pageUnit = MultiLayer::UnitPx;
@@ -2877,6 +3021,13 @@ struct HeadlessFormatClipboard
     QFont plotTitleFont;
     bool hasLegendFont = false;
     QFont legendFont;
+    QColor legendTextColor = QColor(Qt::black);
+    QColor legendBgColor = QColor(Qt::white);
+    int legendFrameStyle = 0;
+    int legendNumColumns = 1;
+    bool hasLegendNormPos = false;
+    double legendNormX = 0.0;
+    double legendNormY = 0.0;
     bool axisEnabled[4] = { true, false, true, false };
     bool backboneVis[4] = { true, true, true, true };
     int majTicks[4] = { ScaleDraw::Out, ScaleDraw::Out, ScaleDraw::Out, ScaleDraw::Out };
@@ -2884,6 +3035,7 @@ struct HeadlessFormatClipboard
     bool framed = false;
     int frameWidth = 1;
     QColor frameColor = QColor(Qt::black);
+    QVector<CurveFmt> curves;
 };
 
 HeadlessFormatClipboard &rpcFormatClipboard()
@@ -3408,6 +3560,8 @@ QStringList PythonAutomationServer::supportedMethods()
         QStringLiteral("app.get_language"),
         QStringLiteral("app.set_recalc_mode"),
         QStringLiteral("app.recalculate"),
+        QStringLiteral("app.undo"),
+        QStringLiteral("app.redo"),
         QStringLiteral("app.set_focus_hud"),
         QStringLiteral("app.get_focus_hud"),
         QStringLiteral("app.set_workspace_mode"),
@@ -3499,10 +3653,17 @@ QStringList PythonAutomationServer::supportedMethods()
         QStringLiteral("graph.add_shaded_band"),
         QStringLiteral("graph.set_grid"),
         QStringLiteral("graph.set_curve_style"),
+        QStringLiteral("graph.set_curve_visible"),
+        QStringLiteral("graph.move_curve"),
         QStringLiteral("graph.set_stack_offsets"),
+        QStringLiteral("graph.apply_series_scheme"),
         QStringLiteral("graph.apply_palette"),
         QStringLiteral("graph.set_colorbar"),
         QStringLiteral("graph.set_legend"),
+        QStringLiteral("graph.auto_place_legend"),
+        QStringLiteral("graph.set_panel_labels"),
+        QStringLiteral("graph.apply_square_frame"),
+        QStringLiteral("graph.drop_columns"),
         QStringLiteral("graph.add_text"),
         QStringLiteral("graph.add_arrow"),
         QStringLiteral("graph.mask_region"),
@@ -4321,6 +4482,102 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("updated_links")] = updatedLinks;
         outResult[QStringLiteral("tables_checked")] = allTables.size();
+        return true;
+    }
+
+    if (method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo")) {
+        const bool isUndo = (method == QStringLiteral("app.undo"));
+        const QString graphParam = params.value(QStringLiteral("graph")).toString().trimmed();
+        if (!graphParam.isEmpty()) {
+            MultiLayer *ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
+            QUndoStack *us = ml->undoStack();
+            if (us) {
+                if (isUndo) {
+                    if (us->canUndo())
+                        us->undo();
+                } else {
+                    if (us->canRedo())
+                        us->redo();
+                }
+            }
+            d_app->updateUndoRedoActionsForActiveWindow();
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("can_undo")] = us ? us->canUndo() : false;
+            outResult[QStringLiteral("can_redo")] = us ? us->canRedo() : false;
+            return true;
+        }
+
+        QUndoStack *projStack = nullptr;
+        for (MyWidget *w : d_app->windowsList()) {
+            if (!w)
+                continue;
+            if (w->inherits("Table")) {
+                auto *t = static_cast<Table *>(w);
+                if (t->d_future_table && t->d_future_table->undoStack()) {
+                    projStack = t->d_future_table->undoStack();
+                    break;
+                }
+            } else if (w->inherits("Matrix")) {
+                auto *m = static_cast<Matrix *>(w);
+                if (m->d_future_matrix && m->d_future_matrix->undoStack()) {
+                    projStack = m->d_future_matrix->undoStack();
+                    break;
+                }
+            }
+        }
+
+        QWidget *activeSub = d_app->d_workspace.activeSubWindow();
+        MultiLayer *activeMl =
+                (activeSub && activeSub->inherits("MultiLayer"))
+                        ? static_cast<MultiLayer *>(activeSub)
+                        : nullptr;
+        MultiLayer *fallbackMl =
+                resolveMultiLayer(d_app, QJsonObject(), QStringLiteral("graph"), false);
+
+        const int projIdxBefore = projStack ? projStack->index() : -1;
+        const int mlIdxBefore =
+                (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
+
+        if (isUndo)
+            d_app->undo();
+        else
+            d_app->redo();
+
+        const int projIdxAfter = projStack ? projStack->index() : -1;
+        const int mlIdxAfter =
+                (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
+
+        // In headless mode QMdiArea::activeSubWindow() may be null; fall back to most recent graph stack if project stack did not move
+        if (!activeSub && projIdxAfter == projIdxBefore && mlIdxAfter == mlIdxBefore
+            && fallbackMl && fallbackMl->undoStack()) {
+            QUndoStack *us = fallbackMl->undoStack();
+            if (isUndo && us->canUndo())
+                us->undo();
+            else if (!isUndo && us->canRedo())
+                us->redo();
+        }
+
+        d_app->updateUndoRedoActionsForActiveWindow();
+
+        bool canUndo = false;
+        bool canRedo = false;
+        if (activeMl && activeMl->undoStack()) {
+            canUndo = activeMl->undoStack()->canUndo();
+            canRedo = activeMl->undoStack()->canRedo();
+        } else {
+            if (projStack) {
+                canUndo = canUndo || projStack->canUndo();
+                canRedo = canRedo || projStack->canRedo();
+            }
+            if (!activeSub && fallbackMl && fallbackMl->undoStack()) {
+                canUndo = canUndo || fallbackMl->undoStack()->canUndo();
+                canRedo = canRedo || fallbackMl->undoStack()->canRedo();
+            }
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("can_undo")] = canUndo;
+        outResult[QStringLiteral("can_redo")] = canRedo;
         return true;
     }
 
@@ -5775,6 +6032,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int yIdx = resolveColumnIndex(t, params.value(QStringLiteral("y_col")), true);
         const int style = parsePlotStyle(params.value(QStringLiteral("style")).toString(),
                                          Graph::LineSymbols);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Curve"));
         bool ok = false;
         if (xIdx >= 0) {
             ok = g->insertCurve(t, fullColumnName(t, xIdx), fullColumnName(t, yIdx), style, 0,
@@ -5784,15 +6042,83 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (!ok)
             throwRpcRuntime(QStringLiteral("Failed to add curve to graph '%1'.").arg(ml->name()));
-        if (params.value(QStringLiteral("right_axis")).toBool(false) && g->curves() > 0) {
-            if (QwtPlotCurve *c = g->curve(g->curves() - 1)) {
-                c->setYAxis(QwtPlot::yRight);
-                g->enableAxis(QwtPlot::yRight, true);
+        if (g->curves() > 0) {
+            const int newIdx = g->curves() - 1;
+            int dataOrder = 0;
+            int inheritedLineW = d_app->defaultCurveLineWidth;
+            int inheritedSymSz = d_app->defaultSymbolSize;
+            bool foundRefStyle = false;
+            for (int ci = 0; ci < newIdx; ++ci) {
+                if (g->curveType(ci) != Graph::ErrorBars) {
+                    ++dataOrder;
+                    if (!foundRefStyle) {
+                        if (const QwtPlotCurve *ec = g->curve(ci)) {
+                            if (ec->pen().width() > 0)
+                                inheritedLineW = ec->pen().width();
+                            if (ec->symbol().size().width() > 0)
+                                inheritedSymSz = ec->symbol().size().width();
+                            foundRefStyle = true;
+                        }
+                    }
+                }
             }
+            if (!foundRefStyle && ml) {
+                for (Graph *og : ml->layersList()) {
+                    if (!og || og == g)
+                        continue;
+                    for (int ci = 0; ci < og->curves(); ++ci) {
+                        if (og->curveType(ci) != Graph::ErrorBars) {
+                            if (const QwtPlotCurve *ec = og->curve(ci)) {
+                                if (ec->pen().width() > 0)
+                                    inheritedLineW = ec->pen().width();
+                                if (ec->symbol().size().width() > 0)
+                                    inheritedSymSz = ec->symbol().size().width();
+                                foundRefStyle = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (foundRefStyle)
+                        break;
+                }
+            }
+            CurveLayout cl = g->initCurveLayout(style, dataOrder);
+            cl.lWidth = inheritedLineW;
+            cl.sSize = inheritedSymSz;
+            g->updateCurveLayout(newIdx, &cl);
         }
-        g->setAutoScale();
+        const bool addedRightY =
+                params.value(QStringLiteral("right_axis")).toBool(false) && g->curves() > 0;
+        QwtPlotCurve *addedCurve = (g->curves() > 0) ? g->curve(g->curves() - 1) : nullptr;
+        if (addedRightY && addedCurve) {
+            addedCurve->setYAxis(QwtPlot::yRight);
+            g->enableAxis(QwtPlot::yRight, true);
+        }
+        if (g->plotWidget()) {
+            bool anyLocked = false;
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                if (g->isAxisUserLocked(a))
+                    anyLocked = true;
+            }
+            if (!anyLocked) {
+                g->setAutoScale();
+            } else {
+                const int targetX = (addedCurve && addedCurve->xAxis() == QwtPlot::xTop)
+                        ? QwtPlot::xTop
+                        : QwtPlot::xBottom;
+                const int targetY = addedRightY ? QwtPlot::yRight : QwtPlot::yLeft;
+                if (!g->isAxisUserLocked(targetX))
+                    g->setAutoScaleAxis(targetX);
+                if (!g->isAxisUserLocked(targetY))
+                    g->setAutoScaleAxis(targetY);
+                g->updatePlot();
+            }
+        } else {
+            g->setAutoScale();
+        }
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -5802,8 +6128,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const QString title = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Remove Curve"));
+        if (d_app)
+            d_app->invalidateModelessGraphDialogs(ml);
         g->removeCurve(title);
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -5822,8 +6152,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QColor col = parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black));
         const int width = std::max(1, params.value(QStringLiteral("width")).toInt(1));
         const int cap = std::max(0, params.value(QStringLiteral("cap")).toInt(8));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Error Bars"));
         bool ok = g->addErrorBars(curveTitle, t, fullColumnName(t, errIdx), type, width, cap, col);
         g->replot();
+        if (ok)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = ok;
         outResult[QStringLiteral("graph")] = ml->name();
         return true;
@@ -6460,11 +6793,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int y = params.value(QStringLiteral("y")).toInt(0);
         const int w = params.value(QStringLiteral("width")).toInt(0);
         const int h = params.value(QStringLiteral("height")).toInt(0);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Layer"));
         Graph *g = ml->addLayer(x, y, w, h);
         enforceArialGraphFonts(g);
         if (params.value(QStringLiteral("arrange")).toBool(true) && w == 0 && h == 0)
             ml->arrangeLayers(true, false);
+        if (g)
+            undoGuard.commit();
         outResult = serializeGraphInfo(ml);
+        const int newIdx = std::max(0, ml->layers() - 1);
+        outResult[QStringLiteral("layer")] = newIdx;
+        outResult[QStringLiteral("layer_index")] = newIdx;
         outResult[QStringLiteral("ok")] = (g != nullptr);
         return true;
     }
@@ -6484,9 +6823,15 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QString yExpr = params.contains(QStringLiteral("y_formula"))
                 ? params.value(QStringLiteral("y_formula")).toString()
                 : QStringLiteral("y");
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Linked Layer"));
         Graph *childG = ml->addLinkedLayer(parentG, linkX, linkY, xExpr, yExpr);
         enforceArialGraphFonts(childG);
+        if (childG)
+            undoGuard.commit();
         outResult = serializeGraphInfo(ml);
+        const int newIdx = std::max(0, ml->layers() - 1);
+        outResult[QStringLiteral("layer")] = newIdx;
+        outResult[QStringLiteral("layer_index")] = newIdx;
         outResult[QStringLiteral("link_x")] = linkX;
         outResult[QStringLiteral("link_y")] = linkY;
         outResult[QStringLiteral("ok")] = (childG != nullptr);
@@ -6507,15 +6852,22 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             roi = QRectF(QPointF(std::min(xMin, xMax), std::min(yMin, yMax)),
                          QPointF(std::max(xMin, xMax), std::max(yMin, yMax)));
         }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Inset Layer"));
         Graph *insetG = ml->addInsetLayer(srcG, roi);
         enforceArialGraphFonts(insetG);
+        if (insetG)
+            undoGuard.commit();
         outResult = serializeGraphInfo(ml);
+        const int newIdx = std::max(0, ml->layers() - 1);
+        outResult[QStringLiteral("layer")] = newIdx;
+        outResult[QStringLiteral("layer_index")] = newIdx;
         outResult[QStringLiteral("ok")] = (insetG != nullptr);
         return true;
     }
 
     if (method == QStringLiteral("graph.arrange_layers")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Arrange Layers"));
         if (params.contains(QStringLiteral("rows")) && !params.value(QStringLiteral("rows")).isNull()) {
             const int r = params.value(QStringLiteral("rows")).toInt(0);
             if (r > 0)
@@ -6532,6 +6884,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                            params.value(QStringLiteral("col_gap")).toInt(ml->colsSpacing()));
         }
         ml->arrangeLayers(params.value(QStringLiteral("fit")).toBool(false), false);
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6545,6 +6898,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 ? parsePageUnit(params.value(QStringLiteral("unit")).toString())
                 : ml->pageUnit();
         const int dpi = std::max(72, params.value(QStringLiteral("dpi")).toInt(ml->pageDpi()));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Page Setup"));
         ml->setPageSizePhysical(w, h, unit, dpi);
         if (params.contains(QStringLiteral("page_view")))
             ml->setPageViewMode(params.value(QStringLiteral("page_view")).toBool(true));
@@ -6552,6 +6906,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             ml->setPageZoom(params.value(QStringLiteral("zoom")).toDouble(1.0));
         if (params.value(QStringLiteral("fit_layers")).toBool(true))
             ml->fitLayersToPage();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6560,7 +6915,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.fit_page_to_layers")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         const int margin = std::max(0, params.value(QStringLiteral("margin_px")).toInt(14));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Fit Page to Layers"));
         ml->fitPageToLayers(margin);
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6568,7 +6925,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.fit_layers_to_page")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Fit Layers to Page"));
         ml->fitLayersToPage();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6577,21 +6936,25 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.apply_style_preset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         const QString p = params.value(QStringLiteral("preset")).toString().trimmed().toLower();
+        MultiLayer::StylePreset stylePreset = MultiLayer::StyleISIJJournal85mm;
         if (p == QStringLiteral("isij_85mm") || p == QStringLiteral("isij")
             || p == QStringLiteral("journal")) {
-            ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+            stylePreset = MultiLayer::StyleISIJJournal85mm;
         } else if (p == QStringLiteral("slide_28pt") || p == QStringLiteral("slide")
                    || p == QStringLiteral("presentation")) {
-            ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+            stylePreset = MultiLayer::StylePresentationSlide28pt;
         } else if (p == QStringLiteral("nature_89mm") || p == QStringLiteral("nature")) {
-            ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
+            stylePreset = MultiLayer::StyleNatureCompact89mm;
         } else {
             throwInvalidParams(
                     QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
                             .arg(p));
         }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
+        ml->applyStylePreset(stylePreset);
         for (Graph *lg : ml->layersList())
             enforceArialGraphFonts(lg);
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6601,20 +6964,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const QString p = params.value(QStringLiteral("preset")).toString().trimmed().toLower();
+        Graph::FramePreset framePreset = Graph::FrameBoxInwardTicks;
         if (p == QStringLiteral("box_inward") || p == QStringLiteral("inward"))
-            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            framePreset = Graph::FrameBoxInwardTicks;
         else if (p == QStringLiteral("box_plain") || p == QStringLiteral("plain"))
-            g->applyFramePreset(Graph::FrameBoxPlainOpposite);
+            framePreset = Graph::FrameBoxPlainOpposite;
         else if (p == QStringLiteral("open_l") || p == QStringLiteral("l"))
-            g->applyFramePreset(Graph::FrameOpenL);
+            framePreset = Graph::FrameOpenL;
         else if (p == QStringLiteral("zero_crossed") || p == QStringLiteral("origin"))
-            g->applyFramePreset(Graph::FrameZeroCrossed);
+            framePreset = Graph::FrameZeroCrossed;
         else
             throwInvalidParams(
                     QStringLiteral("Unknown frame preset '%1' (expected 'box_inward'|'box_plain'|'open_l'|'zero_crossed').")
                             .arg(p));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Frame Preset"));
+        g->applyFramePreset(framePreset);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6628,6 +6995,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 : (params.contains(QStringLiteral("enabled"))
                            ? params.value(QStringLiteral("enabled")).toBool(true)
                            : true);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Aspect Ratio"));
         if (keep) {
             if (ratio > 0.0)
                 ml->applyAspectRatioPreset(ratio, true);
@@ -6637,6 +7005,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 ml->setTargetAspectRatio(ratio);
             ml->setKeepAspectRatio(false);
         }
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6648,6 +7017,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         d_app->copyGraphFormat();
 
         HeadlessFormatClipboard &clip = rpcFormatClipboard();
+        clip = HeadlessFormatClipboard();
         clip.valid = true;
         clip.pageViewMode = ml->pageViewMode();
         clip.pageUnit = ml->pageUnit();
@@ -6676,6 +7046,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (Legend *leg = g->legend()) {
                 clip.hasLegendFont = true;
                 clip.legendFont = leg->font();
+                if (clip.legendFont.family().isEmpty())
+                    clip.legendFont.setFamily(QStringLiteral("Arial"));
+                clip.legendTextColor = leg->textColor();
+                clip.legendBgColor = leg->backgroundColor();
+                clip.legendFrameStyle = leg->frameStyle();
+                clip.legendNumColumns = leg->numColumns();
+                if (g->plotWidget() && g->plotWidget()->canvas()) {
+                    const QRect cr = g->plotWidget()->canvas()->contentsRect();
+                    if (cr.width() > 4 && cr.height() > 4) {
+                        const QPoint tl = leg->rect().topLeft();
+                        clip.hasLegendNormPos = true;
+                        clip.legendNormX = double(tl.x() - cr.left()) / double(cr.width());
+                        clip.legendNormY = double(tl.y() - cr.top()) / double(cr.height());
+                    }
+                }
             } else {
                 clip.hasLegendFont = false;
             }
@@ -6691,6 +7076,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                 }
             }
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                QwtPlotCurve *c = g->curve(ci);
+                if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+                    || g->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                HeadlessFormatClipboard::CurveFmt cf;
+                cf.pen = c->pen();
+                cf.brush = c->brush();
+                cf.curveStyle = c->style();
+                cf.symbol = c->symbol();
+                cf.symbolHollow = Graph::isSymbolWhiteHollow(cf.symbol);
+                clip.curves.append(cf);
+            }
         }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("source")] = ml->name();
@@ -6699,6 +7097,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.paste_format")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Paste Graph Format"));
+        struct SuppressInnerUndoScope
+        {
+            MultiLayer *target = nullptr;
+            ~SuppressInnerUndoScope()
+            {
+                if (target)
+                    target->setProperty("_suppressInnerUndoPush", QVariant());
+            }
+        } suppressInner{ ml };
+        ml->setProperty("_suppressInnerUndoPush", true);
         d_app->activateSubWindow(ml);
         d_app->pasteGraphFormat();
 
@@ -6720,7 +7129,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     lg->plotWidget()->setTitle(t);
                 }
                 if (clip.hasLegendFont && lg->legend()) {
-                    lg->legend()->setFont(clip.legendFont);
+                    Legend *leg = lg->legend();
+                    leg->setFont(clip.legendFont);
+                    leg->setTextColor(clip.legendTextColor);
+                    leg->setBackgroundColor(clip.legendBgColor);
+                    leg->setFrameStyle(clip.legendFrameStyle);
+                    leg->setNumColumns(clip.legendNumColumns);
                 }
                 for (int ax = 0; ax < 4; ++ax) {
                     lg->enableAxis(ax, clip.axisEnabled[ax]);
@@ -6737,9 +7151,70 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         }
                     }
                 }
+                if (!clip.curves.isEmpty()) {
+                    int visIdx = 0;
+                    for (int ci = 0; ci < lg->curves(); ++ci) {
+                        QwtPlotCurve *c = lg->curve(ci);
+                        if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+                            || lg->curveType(ci) == Graph::ErrorBars)
+                            continue;
+                        const bool directMatch = (visIdx < clip.curves.size());
+                        const auto &cf =
+                                clip.curves[directMatch ? visIdx : (clip.curves.size() - 1)];
+                        if (directMatch) {
+                            lg->setCurveStyle(ci, cf.curveStyle);
+                            lg->setCurvePen(ci, cf.pen);
+                            lg->setCurveBrush(ci, cf.brush);
+                            lg->setCurveSymbol(ci, cf.symbol);
+                            if (cf.symbolHollow)
+                                lg->setCurveSymbolHollow(ci, true);
+                        } else {
+                            QPen p = c->pen();
+                            p.setWidthF(cf.pen.widthF());
+                            p.setStyle(cf.pen.style());
+                            p.setCapStyle(cf.pen.capStyle());
+                            p.setJoinStyle(cf.pen.joinStyle());
+                            lg->setCurvePen(ci, p);
+                            QwtSymbol s = c->symbol();
+                            if (cf.symbol.style() != QwtSymbol::NoSymbol
+                                && s.style() == QwtSymbol::NoSymbol)
+                                s.setStyle(cf.symbol.style());
+                            s.setSize(cf.symbol.size());
+                            QPen sp = s.pen();
+                            sp.setWidthF(cf.symbol.pen().widthF());
+                            s.setPen(sp);
+                            lg->setCurveSymbol(ci, s);
+                            if (cf.symbolHollow || Graph::isSymbolWhiteHollow(s))
+                                lg->setCurveSymbolHollow(ci, cf.symbolHollow);
+                        }
+                        ++visIdx;
+                    }
+                }
                 lg->replot();
             }
+            ml->arrangeLayers(false, false);
+            if (clip.hasLegendFont && clip.hasLegendNormPos) {
+                for (Graph *lg : ml->layersList()) {
+                    if (Legend *leg = lg->legend()) {
+                        if (lg->plotWidget() && lg->plotWidget()->canvas()) {
+                            lg->plotWidget()->updateLayout();
+                            const QRect cr = lg->plotWidget()->canvas()->contentsRect();
+                            if (cr.width() > 4 && cr.height() > 4) {
+                                const int nx =
+                                        cr.left() + qRound(clip.legendNormX * double(cr.width()));
+                                const int ny =
+                                        cr.top() + qRound(clip.legendNormY * double(cr.height()));
+                                leg->setOrigin(QPoint(nx, ny));
+                                lg->replot();
+                            }
+                        }
+                    }
+                }
+            }
         }
+        ml->setProperty("_suppressInnerUndoPush", QVariant());
+        suppressInner.target = nullptr;
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6776,6 +7251,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int ax = parseAxisId(params.contains(QStringLiteral("axis"))
                                            ? params.value(QStringLiteral("axis")).toString()
                                            : QStringLiteral("x"));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Axis"));
         if (params.contains(QStringLiteral("enabled")))
             g->enableAxis(ax, params.value(QStringLiteral("enabled")).toBool(true));
 
@@ -6794,7 +7270,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (params.contains(QStringLiteral("min")) || params.contains(QStringLiteral("max"))
             || params.contains(QStringLiteral("step")) || params.contains(QStringLiteral("scale"))
-            || params.contains(QStringLiteral("inverted"))) {
+            || params.contains(QStringLiteral("inverted"))
+            || params.contains(QStringLiteral("minor_ticks"))) {
             const double lo = params.value(QStringLiteral("min")).toDouble(curMin);
             const double hi = params.value(QStringLiteral("max")).toDouble(curMax);
             const double step = params.value(QStringLiteral("step")).toDouble(g->axisStep(ax));
@@ -6806,7 +7283,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             const bool inv = params.contains(QStringLiteral("inverted"))
                     ? params.value(QStringLiteral("inverted")).toBool(curInv)
                     : curInv;
-            g->setScale(ax, lo, hi, step, 5, 5, scaleType, inv);
+            const int majorTicks = plt ? std::max(4, plt->axisMaxMajor(ax)) : 8;
+            int minorTicks = (scaleType == 1) ? 8 : 1;
+            if (params.contains(QStringLiteral("minor_ticks"))
+                && !params.value(QStringLiteral("minor_ticks")).isNull()) {
+                minorTicks = std::max(0, params.value(QStringLiteral("minor_ticks")).toInt(minorTicks));
+            } else if (plt && scaleType == curScaleType) {
+                const int existingMinor = plt->axisMaxMinor(ax);
+                if (scaleType == 0 && existingMinor >= 0 && existingMinor <= 4)
+                    minorTicks = existingMinor;
+                else if (scaleType == 1 && existingMinor >= 1)
+                    minorTicks = existingMinor;
+            }
+            g->setScale(ax, lo, hi, step, majorTicks, minorTicks, scaleType, inv);
+            if (params.contains(QStringLiteral("min")) || params.contains(QStringLiteral("max")))
+                g->setAxisUserLocked(ax, true);
         }
 
         if (params.contains(QStringLiteral("title"))) {
@@ -6843,6 +7334,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             && !params.value(QStringLiteral("numbers_font_size")).isNull()) {
             nf.setPointSize(std::max(4, params.value(QStringLiteral("numbers_font_size")).toInt()));
         }
+        tf.setHintingPreference(QFont::PreferNoHinting);
+        nf.setHintingPreference(QFont::PreferNoHinting);
         g->setAxisTitleFont(ax, tf);
         g->setAxisFont(ax, nf);
 
@@ -6871,6 +7364,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             : g->tickSuffix(ax));
         }
         g->replot();
+        undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6885,6 +7379,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const bool enabled = params.contains(QStringLiteral("enabled"))
                 ? params.value(QStringLiteral("enabled")).toBool(true)
                 : true;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Axis Break"));
         if (!enabled) {
             g->clearAxisBreak(ax);
         } else {
@@ -6904,6 +7399,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             g->setAxisBreak(ax, spec);
         }
         g->replot();
+        undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -6930,8 +7426,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         spec.fillToAxis = params.value(QStringLiteral("fill_to_axis")).toBool(false);
         spec.fillColor = parseColorValue(params.value(QStringLiteral("fill_color")),
                                          QColor(30, 102, 184, 32));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Reference Line"));
         g->addReferenceLine(spec);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("reference_line_count")] = g->referenceLines().size();
         return true;
@@ -6976,8 +7474,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                          QColor(30, 102, 184, 55));
         if (params.contains(QStringLiteral("alpha")))
             fillCol.setAlpha(std::clamp(params.value(QStringLiteral("alpha")).toInt(55), 0, 255));
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Shaded Band"));
         g->addShadedBand(xv, yLo, yHi, fillCol, params.value(QStringLiteral("title")).toString());
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
@@ -6985,6 +7485,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.set_grid")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Grid"));
         Grid *grd = g->grid();
         if (grd) {
             if (params.contains(QStringLiteral("major_x")))
@@ -7019,6 +7520,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         }
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
@@ -7039,14 +7541,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         } else if (params.contains(QStringLiteral("curve"))
                    && !params.value(QStringLiteral("curve")).isNull()) {
-            const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-            cIdx = g->curveIndex(ct);
+            const QJsonValue cv = params.value(QStringLiteral("curve"));
+            if (cv.isDouble()) {
+                cIdx = parseStrictJsonInt(cv, QStringLiteral("curve"));
+                if (cIdx < 0 || cIdx >= g->curves()) {
+                    throwInvalidParams(
+                            QStringLiteral("curve index %1 out of range [0, %2).")
+                                    .arg(cIdx)
+                                    .arg(g->curves()));
+                }
+            } else {
+                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+                cIdx = g->curveIndex(ct);
+            }
         } else if (g->curves() > 0) {
             cIdx = 0;
         }
         QwtPlotCurve *c = (cIdx >= 0) ? g->curve(cIdx) : nullptr;
         if (!c)
             throwInvalidParams(QStringLiteral("Curve not found on graph '%1'.").arg(ml->name()));
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Change Curve Style"));
+        const bool wasHollow = Graph::isSymbolWhiteHollow(c->symbol());
 
         QPen pen = c->pen();
         QColor col = pen.color();
@@ -7066,7 +7582,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         g->setCurvePen(cIdx, pen);
 
         if (params.contains(QStringLiteral("symbol_type"))
-            || params.contains(QStringLiteral("symbol_size"))) {
+            || params.contains(QStringLiteral("symbol_size"))
+            || (params.contains(QStringLiteral("color"))
+                && c->symbol().style() != QwtSymbol::NoSymbol
+                && (wasHollow || params.contains(QStringLiteral("symbol_hollow"))
+                    || params.contains(QStringLiteral("symbol_fill"))))) {
             QwtSymbol sym = c->symbol();
             if (params.contains(QStringLiteral("symbol_type")))
                 sym.setStyle(parseQwtSymbolStyle(params.value(QStringLiteral("symbol_type")),
@@ -7079,11 +7599,36 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             sp.setColor(col);
             sym.setPen(sp);
             QBrush sb = sym.brush();
-            sb.setColor(col);
-            if (sb.style() == Qt::NoBrush && sym.style() != QwtSymbol::NoSymbol)
-                sb.setStyle(Qt::SolidPattern);
+            if (wasHollow) {
+                sb = QBrush(QColor(255, 255, 255), Qt::SolidPattern);
+            } else {
+                sb.setColor(col);
+                if (sb.style() == Qt::NoBrush && sym.style() != QwtSymbol::NoSymbol)
+                    sb.setStyle(Qt::SolidPattern);
+            }
             sym.setBrush(sb);
             g->setCurveSymbol(cIdx, sym);
+        }
+
+        const bool hasSymbolHollow = params.contains(QStringLiteral("symbol_hollow"))
+                && !params.value(QStringLiteral("symbol_hollow")).isNull();
+        const bool hasSymbolFill = params.contains(QStringLiteral("symbol_fill"))
+                && !params.value(QStringLiteral("symbol_fill")).isNull();
+        if (hasSymbolHollow || hasSymbolFill) {
+            bool wantHollow = false;
+            if (hasSymbolHollow) {
+                wantHollow = params.value(QStringLiteral("symbol_hollow")).toBool(false);
+            } else {
+                const QJsonValue sf = params.value(QStringLiteral("symbol_fill"));
+                if (sf.isBool()) {
+                    wantHollow = !sf.toBool(true);
+                } else if (sf.isString()) {
+                    const QString sfs = sf.toString().trimmed().toLower();
+                    wantHollow = (sfs == QStringLiteral("hollow") || sfs == QStringLiteral("white")
+                                  || sfs == QStringLiteral("none") || sfs == QStringLiteral("false"));
+                }
+            }
+            g->setCurveSymbolHollow(cIdx, wantHollow);
         }
 
         if (params.contains(QStringLiteral("fill_area"))) {
@@ -7123,9 +7668,129 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             g->setBarsGap(cIdx, gap, off);
         }
 
+        if (params.contains(QStringLiteral("y_axis"))
+            && !params.value(QStringLiteral("y_axis")).isNull()) {
+            const QString ya = params.value(QStringLiteral("y_axis")).toString().trimmed().toLower();
+            int targetYAxis = QwtPlot::yLeft;
+            if (ya == QStringLiteral("right") || ya == QStringLiteral("yright")
+                || ya == QStringLiteral("y2")) {
+                targetYAxis = QwtPlot::yRight;
+            } else if (ya == QStringLiteral("left") || ya == QStringLiteral("yleft")
+                       || ya == QStringLiteral("y") || ya == QStringLiteral("y1")) {
+                targetYAxis = QwtPlot::yLeft;
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("Unknown y_axis '%1' (expected 'left'|'right').")
+                                .arg(params.value(QStringLiteral("y_axis")).toString()));
+            }
+            c->setYAxis(targetYAxis);
+            if (targetYAxis == QwtPlot::yRight) {
+                g->enableAxis(QwtPlot::yRight, true);
+                if (Plot *plt = g->plotWidget()) {
+                    plt->enableAxis(QwtPlot::yRight, true);
+                    if (QwtScaleDraw *sd = plt->axisScaleDraw(QwtPlot::yRight)) {
+                        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                        sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+                        sd->enableComponent(QwtAbstractScaleDraw::Backbone, true);
+                    }
+                }
+                g->setAutoScaleAxis(QwtPlot::yRight);
+                g->setAutoScaleAxis(QwtPlot::yLeft);
+                enforceArialGraphFonts(g);
+            } else {
+                g->setAutoScaleAxis(QwtPlot::yLeft);
+            }
+        }
+
+        if (params.contains(QStringLiteral("visible"))
+            && !params.value(QStringLiteral("visible")).isNull()) {
+            g->showCurve(cIdx, params.value(QStringLiteral("visible")).toBool(true));
+        }
+
         g->replot();
+        undoGuard.commit();
+        c = g->curve(cIdx);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("curve_index")] = cIdx;
+        outResult[QStringLiteral("visible")] = g->isCurveVisible(cIdx);
+        outResult[QStringLiteral("symbol_hollow")] =
+                c ? Graph::isSymbolWhiteHollow(c->symbol()) : false;
+        outResult[QStringLiteral("y_axis")] =
+                (c && c->yAxis() == QwtPlot::yRight) ? QStringLiteral("right")
+                                                     : QStringLiteral("left");
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.set_curve_visible")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        int idx = -1;
+        if (params.contains(QStringLiteral("curve"))
+            && !params.value(QStringLiteral("curve")).isNull()) {
+            const QJsonValue cv = params.value(QStringLiteral("curve"));
+            if (cv.isDouble()) {
+                idx = parseStrictJsonInt(cv, QStringLiteral("curve"));
+            } else {
+                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+                idx = g->curveIndex(ct);
+            }
+        } else if (params.contains(QStringLiteral("curve_index"))
+                   && !params.value(QStringLiteral("curve_index")).isNull()) {
+            idx = parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
+                                     QStringLiteral("curve_index"));
+        } else if (g->curves() > 0) {
+            idx = 0;
+        }
+        if (idx < 0 || idx >= g->curves()) {
+            throwInvalidParams(
+                    QStringLiteral("Curve index %1 out of range [0, %2) on graph '%3'.")
+                            .arg(idx)
+                            .arg(g->curves())
+                            .arg(ml->name()));
+        }
+        const bool visible = params.contains(QStringLiteral("visible"))
+                ? params.value(QStringLiteral("visible")).toBool(true)
+                : true;
+        ScopedGraphUndoGuard undoGuard(
+                ml, visible ? QObject::tr("Show Curve") : QObject::tr("Hide Curve"));
+        g->showCurve(idx, visible);
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("curve_index")] = idx;
+        outResult[QStringLiteral("visible")] = g->isCurveVisible(idx);
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.move_curve")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        if (!params.contains(QStringLiteral("from_index"))
+            || params.value(QStringLiteral("from_index")).isNull()) {
+            throwInvalidParams(QStringLiteral("from_index is required."));
+        }
+        if (!params.contains(QStringLiteral("to_index"))
+            || params.value(QStringLiteral("to_index")).isNull()) {
+            throwInvalidParams(QStringLiteral("to_index is required."));
+        }
+        const int fromIdx = parseStrictJsonInt(params.value(QStringLiteral("from_index")),
+                                               QStringLiteral("from_index"));
+        const int toIdx = parseStrictJsonInt(params.value(QStringLiteral("to_index")),
+                                             QStringLiteral("to_index"));
+        if (fromIdx < 0 || fromIdx >= g->curves() || toIdx < 0 || toIdx >= g->curves()) {
+            throwInvalidParams(
+                    QStringLiteral("Curve index out of range [0, %1) (from=%2, to=%3).")
+                            .arg(g->curves())
+                            .arg(fromIdx)
+                            .arg(toIdx));
+        }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Move Curve"));
+        const bool moved = g->moveCurve(fromIdx, toIdx);
+        g->replot();
+        if (moved)
+            undoGuard.commit();
+        outResult[QStringLiteral("ok")] = moved;
+        outResult[QStringLiteral("curves")] = toJsonArray(g->plotItemsList());
         return true;
     }
 
@@ -7134,6 +7799,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Graph *g = resolveGraphLayer(ml, params);
         const QJsonValue modeVal = params.value(QStringLiteral("mode"));
         const QString modeStr = modeVal.toString().trimmed().toLower();
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Stack Offsets"));
         if (params.value(QStringLiteral("reset")).toBool(false)
             || modeStr == QStringLiteral("none") || modeStr == QStringLiteral("off")
             || modeStr == QStringLiteral("reset")) {
@@ -7155,8 +7821,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             g->setStackOffsets(mode, yGap, xGap, norm01);
         }
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.apply_series_scheme")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        const QString schemeStr = params.contains(QStringLiteral("scheme"))
+                ? params.value(QStringLiteral("scheme")).toString()
+                : QStringLiteral("bw_hollow_filled");
+        QString canonical;
+        const Graph::SeriesStyleScheme scheme = parseSeriesStyleScheme(schemeStr, &canonical);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Series Style Scheme"));
+        g->applySeriesStyleScheme(scheme);
+        enforceArialGraphFonts(g);
+        g->replot();
+        undoGuard.commit();
+        outResult = serializeGraphInfo(ml);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("scheme")] = canonical;
         return true;
     }
 
@@ -7164,6 +7850,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const bool grad = params.value(QStringLiteral("gradient")).toBool(false);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Color Palette"));
         if (params.value(QStringLiteral("colors")).isArray()) {
             QList<QColor> cols;
             for (const QJsonValue &cv : params.value(QStringLiteral("colors")).toArray())
@@ -7176,8 +7863,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             g->applyColorPaletteByName(palName, grad);
         }
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("gradient")] = grad;
         return true;
     }
 
@@ -7198,6 +7887,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(
                     QStringLiteral("No matrix spectrogram found on graph '%1'.").arg(ml->name()));
 
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Color Bar"));
         const bool hasPalette = params.contains(QStringLiteral("palette"))
                 && !params.value(QStringLiteral("palette")).isNull();
         const bool hasReverse = params.contains(QStringLiteral("reverse"))
@@ -7234,6 +7924,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         targetSpec->syncColorScale();
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -7242,42 +7933,295 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.set_legend")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const bool vis = params.contains(QStringLiteral("visible"))
-                ? params.value(QStringLiteral("visible")).toBool(true)
-                : true;
-        if (!vis) {
-            g->removeLegend();
-        } else {
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Legend"));
+
+        const bool hasVisible = params.contains(QStringLiteral("visible"))
+                && !params.value(QStringLiteral("visible")).isNull();
+        const bool vis = hasVisible ? params.value(QStringLiteral("visible")).toBool(true) : true;
+
+        const bool hasPosition = params.contains(QStringLiteral("position"))
+                && !params.value(QStringLiteral("position")).isNull()
+                && !params.value(QStringLiteral("position")).toString().trimmed().isEmpty();
+        Graph::LegendAnchor anchor = Graph::LegendAutoAvoidData;
+        if (hasPosition)
+            anchor = parseLegendAnchor(params.value(QStringLiteral("position")).toString());
+
+        if (vis || hasPosition) {
+            g->setLegendVisible(true);
             Legend *leg = g->legend();
             if (!leg)
                 leg = g->newLegend();
-            if (params.contains(QStringLiteral("text")))
-                leg->setText(params.value(QStringLiteral("text")).toString());
-            else if (params.value(QStringLiteral("reconstruct")).toBool(false))
-                g->reconstructLegend();
-            if (params.contains(QStringLiteral("columns")))
-                leg->setNumColumns(std::max(1, params.value(QStringLiteral("columns")).toInt(1)));
-            if (params.contains(QStringLiteral("frame")))
-                leg->setFrameStyle(params.value(QStringLiteral("frame")).toInt(0));
-            if (params.contains(QStringLiteral("x")) && params.contains(QStringLiteral("y")))
-                leg->setOriginCoord(params.value(QStringLiteral("x")).toDouble(),
-                                    params.value(QStringLiteral("y")).toDouble());
-            QFont lf = leg->font();
-            if (params.contains(QStringLiteral("font_family"))
-                && !params.value(QStringLiteral("font_family")).isNull()) {
-                const QString fam = params.value(QStringLiteral("font_family")).toString().trimmed();
-                if (!fam.isEmpty())
-                    lf.setFamily(fam);
-            } else if (lf.family().trimmed().isEmpty()) {
-                lf.setFamily(QStringLiteral("Arial"));
+            if (leg) {
+                if (params.contains(QStringLiteral("text"))
+                    && !params.value(QStringLiteral("text")).isNull()) {
+                    leg->setText(params.value(QStringLiteral("text")).toString());
+                } else if (params.value(QStringLiteral("reconstruct")).toBool(false)) {
+                    g->reconstructLegend();
+                    leg = g->legend();
+                }
+                if (leg) {
+                    if (params.contains(QStringLiteral("columns"))
+                        && !params.value(QStringLiteral("columns")).isNull()) {
+                        leg->setNumColumns(
+                                std::max(1, params.value(QStringLiteral("columns")).toInt(1)));
+                    }
+                    if (params.contains(QStringLiteral("frame"))
+                        && !params.value(QStringLiteral("frame")).isNull()) {
+                        leg->setFrameStyle(params.value(QStringLiteral("frame")).toInt(0));
+                    }
+                    if (params.contains(QStringLiteral("x"))
+                        && params.contains(QStringLiteral("y"))
+                        && !params.value(QStringLiteral("x")).isNull()
+                        && !params.value(QStringLiteral("y")).isNull()) {
+                        leg->setOriginCoord(params.value(QStringLiteral("x")).toDouble(),
+                                            params.value(QStringLiteral("y")).toDouble());
+                    }
+                    QFont lf = leg->font();
+                    if (params.contains(QStringLiteral("font_family"))
+                        && !params.value(QStringLiteral("font_family")).isNull()) {
+                        const QString fam =
+                                params.value(QStringLiteral("font_family")).toString().trimmed();
+                        if (!fam.isEmpty())
+                            lf.setFamily(fam);
+                    } else if (lf.family().trimmed().isEmpty()) {
+                        lf.setFamily(QStringLiteral("Arial"));
+                    }
+                    if (params.contains(QStringLiteral("font_size"))
+                        && !params.value(QStringLiteral("font_size")).isNull()) {
+                        lf.setPointSize(
+                                std::max(4, params.value(QStringLiteral("font_size")).toInt(10)));
+                    }
+                    leg->setFont(lf);
+                }
             }
-            if (params.contains(QStringLiteral("font_size")))
-                lf.setPointSize(std::max(4, params.value(QStringLiteral("font_size")).toInt(10)));
-            leg->setFont(lf);
         }
+
+        QString chosenAnchor;
+        double overlapScore = 0.0;
+        if (hasPosition) {
+            const int marginPx = params.contains(QStringLiteral("margin_px"))
+                    ? std::max(0, params.value(QStringLiteral("margin_px")).toInt(12))
+                    : 12;
+            chosenAnchor = g->placeLegendAnchor(anchor, &overlapScore, marginPx);
+        }
+
+        if (hasVisible && !vis)
+            g->setLegendVisible(false);
+
         g->replot();
+        undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("visible")] = g->isLegendVisible();
+        if (hasPosition) {
+            outResult[QStringLiteral("anchor")] = chosenAnchor;
+            outResult[QStringLiteral("overlap_score")] = safeJsonDouble(overlapScore);
+        }
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.auto_place_legend")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        const Graph::LegendAnchor anchor =
+                (params.contains(QStringLiteral("position"))
+                 && !params.value(QStringLiteral("position")).isNull()
+                 && !params.value(QStringLiteral("position")).toString().trimmed().isEmpty())
+                ? parseLegendAnchor(params.value(QStringLiteral("position")).toString())
+                : Graph::LegendAutoAvoidData;
+        const int marginPx =
+                (params.contains(QStringLiteral("margin_px"))
+                 && !params.value(QStringLiteral("margin_px")).isNull())
+                ? std::max(0,
+                           parseStrictJsonInt(params.value(QStringLiteral("margin_px")),
+                                              QStringLiteral("margin_px")))
+                : 12;
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Auto-Place Legend"));
+        g->setLegendVisible(true);
+        if (!g->legend())
+            g->newLegend();
+        if (Legend *leg = g->legend()) {
+            QFont lf = leg->font();
+            if (lf.family().trimmed().isEmpty()) {
+                lf.setFamily(QStringLiteral("Arial"));
+                leg->setFont(lf);
+            }
+        }
+        double score = 0.0;
+        const QString chosenAnchor = g->placeLegendAnchor(anchor, &score, marginPx);
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("anchor")] = chosenAnchor;
+        outResult[QStringLiteral("overlap_score")] = safeJsonDouble(score);
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.set_panel_labels")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        const bool enabled = params.contains(QStringLiteral("enabled"))
+                ? params.value(QStringLiteral("enabled")).toBool(true)
+                : true;
+        QString placementRaw =
+                (params.contains(QStringLiteral("placement"))
+                 && !params.value(QStringLiteral("placement")).isNull())
+                ? params.value(QStringLiteral("placement")).toString().trimmed().toLower()
+                : QStringLiteral("outside_top_left");
+        placementRaw.replace(QLatin1Char('-'), QLatin1Char('_'));
+        placementRaw.replace(QLatin1Char(' '), QLatin1Char('_'));
+        MultiLayer::PanelLabelPlacement placement = MultiLayer::PanelOutsideTopLeft;
+        if (placementRaw == QStringLiteral("outside_top_left")
+            || placementRaw == QStringLiteral("outside")) {
+            placement = MultiLayer::PanelOutsideTopLeft;
+        } else if (placementRaw == QStringLiteral("inside_top_left")
+                   || placementRaw == QStringLiteral("inside")) {
+            placement = MultiLayer::PanelInsideTopLeft;
+        } else {
+            throwInvalidParams(
+                    QStringLiteral(
+                            "Unknown panel label placement '%1' (expected 'outside_top_left'|'inside_top_left').")
+                            .arg(params.value(QStringLiteral("placement")).toString()));
+        }
+        const QString pattern =
+                (params.contains(QStringLiteral("pattern"))
+                 && !params.value(QStringLiteral("pattern")).isNull())
+                ? params.value(QStringLiteral("pattern")).toString()
+                : QStringLiteral("(%a)");
+        const int fontPt =
+                (params.contains(QStringLiteral("font_pt"))
+                 && !params.value(QStringLiteral("font_pt")).isNull())
+                ? std::max(0,
+                           parseStrictJsonInt(params.value(QStringLiteral("font_pt")),
+                                              QStringLiteral("font_pt")))
+                : 0;
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Panel Labels"));
+        ml->setPanelLabels(enabled, placement, pattern, fontPt);
+        for (Graph *lg : ml->layersList())
+            enforceArialGraphFonts(lg);
+        undoGuard.commit();
+        outResult = serializeGraphInfo(ml);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("enabled")] = ml->hasPanelLabels();
+        outResult[QStringLiteral("placement")] =
+                (ml->panelLabelPlacement() == MultiLayer::PanelInsideTopLeft)
+                ? QStringLiteral("inside_top_left")
+                : QStringLiteral("outside_top_left");
+        outResult[QStringLiteral("pattern")] = ml->panelLabelPattern();
+        outResult[QStringLiteral("font_pt")] = ml->panelLabelFontPt();
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.apply_square_frame")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Square Frame (70%)"));
+        ml->applySquareCanvasFrame70Percent();
+        Graph *g = resolveGraphLayer(ml, params, false);
+        int w = 0;
+        int h = 0;
+        if (g && g->plotWidget()) {
+            Plot *plt = g->plotWidget();
+            plt->updateLayout();
+            const QRect cr = plt->plotLayout() ? plt->plotLayout()->canvasRect() : QRect();
+            w = cr.width();
+            h = cr.height();
+            if ((w <= 0 || h <= 0) && plt->canvas()) {
+                w = plt->canvas()->width();
+                h = plt->canvas()->height();
+            }
+        }
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("width")] = w;
+        outResult[QStringLiteral("height")] = h;
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.drop_columns")) {
+        Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
+        QJsonArray colsParam;
+        if (params.value(QStringLiteral("columns")).isArray()) {
+            colsParam = params.value(QStringLiteral("columns")).toArray();
+        } else if (params.contains(QStringLiteral("columns"))
+                   && !params.value(QStringLiteral("columns")).isNull()) {
+            colsParam.append(params.value(QStringLiteral("columns")));
+        }
+        if (colsParam.isEmpty())
+            throwInvalidParams(QStringLiteral("columns must be a non-empty list of column names."));
+
+        QJsonArray shortCols;
+        QJsonArray fullCols;
+        QJsonArray colIndices;
+        for (const QJsonValue &cv : colsParam) {
+            const int cIdx = resolveColumnIndex(t, cv, true);
+            shortCols.append(t->colLabel(cIdx));
+            fullCols.append(t->colName(cIdx));
+            colIndices.append(cIdx);
+        }
+
+        QJsonObject payload;
+        payload[QStringLiteral("table")] = t->name();
+        payload[QStringLiteral("columns")] = shortCols;
+        payload[QStringLiteral("full_columns")] = fullCols;
+        payload[QStringLiteral("column_names")] = fullCols;
+        payload[QStringLiteral("column_indices")] = colIndices;
+
+        const QJsonValue xVal = params.value(QStringLiteral("x_column"));
+        if (!xVal.isUndefined() && !xVal.isNull()
+            && (xVal.isDouble() || !xVal.toString().trimmed().isEmpty())) {
+            const int xIdx = resolveColumnIndex(t, xVal, true);
+            payload[QStringLiteral("x_column")] = t->colLabel(xIdx);
+            payload[QStringLiteral("x_col")] = t->colLabel(xIdx);
+            payload[QStringLiteral("x_full_column")] = t->colName(xIdx);
+            payload[QStringLiteral("x_index")] = xIdx;
+        } else {
+            payload[QStringLiteral("x_column")] = QString();
+        }
+
+        const bool rightY = params.value(QStringLiteral("right_y")).toBool(false);
+        const bool replace = params.value(QStringLiteral("replace")).toBool(false);
+        payload[QStringLiteral("right_y")] = rightY;
+        payload[QStringLiteral("replace")] = replace;
+
+        MultiLayer *targetMl = nullptr;
+        Graph *targetGraph = nullptr;
+        const QString graphName = params.value(QStringLiteral("graph")).toString().trimmed();
+        if (!graphName.isEmpty()) {
+            targetMl = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
+            targetGraph = resolveGraphLayer(targetMl, params, true);
+        }
+
+        QSet<MyWidget *> beforeWindows;
+        for (MyWidget *w : d_app->windowsList()) {
+            if (w)
+                beforeWindows.insert(w);
+        }
+
+        QMimeData mimeData;
+        mimeData.setData(QString::fromUtf8(MultiLayer::kColumnMimeType),
+                         QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+        const int targetAxisId = rightY ? QwtPlot::yRight : -1;
+        const bool ok = d_app->handleColumnMimeDrop(&mimeData, targetMl, targetGraph,
+                                                    targetAxisId, replace);
+
+        MultiLayer *resMl = targetMl;
+        if (!resMl) {
+            for (MyWidget *w : d_app->windowsList()) {
+                if (w && !beforeWindows.contains(w) && w->inherits("MultiLayer"))
+                    resMl = static_cast<MultiLayer *>(w);
+            }
+            if (!resMl)
+                resMl = resolveMultiLayer(d_app, QJsonObject(), QStringLiteral("graph"), false);
+        }
+        if (resMl) {
+            for (Graph *lg : resMl->layersList())
+                enforceArialGraphFonts(lg);
+            outResult = serializeGraphInfo(resMl);
+            outResult[QStringLiteral("graph")] = resMl->name();
+        }
+        outResult[QStringLiteral("ok")] = ok;
         return true;
     }
 
@@ -7285,6 +8229,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const QString txt = params.value(QStringLiteral("text")).toString();
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Text"));
         auto *mrk = new Legend(g->plotWidget());
         mrk->setText(txt);
         QFont f(params.contains(QStringLiteral("font_family"))
@@ -7301,6 +8246,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         const long id = g->insertTextMarker(mrk);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("marker_id")] = static_cast<qint64>(id);
         return true;
@@ -7309,23 +8255,25 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.add_arrow")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        auto *arr = new ArrowMarker();
-        arr->setStartPoint(params.value(QStringLiteral("x1")).toDouble(0.0),
-                           params.value(QStringLiteral("y1")).toDouble(0.0));
-        arr->setEndPoint(params.value(QStringLiteral("x2")).toDouble(1.0),
-                         params.value(QStringLiteral("y2")).toDouble(1.0));
-        arr->setColor(parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black)));
-        arr->setWidth(std::max(1, params.value(QStringLiteral("width")).toInt(1)));
-        arr->setStyle(parsePenStyleValue(params.value(QStringLiteral("style")), Qt::SolidLine));
-        arr->drawStartArrow(params.value(QStringLiteral("start_arrow")).toBool(false));
-        arr->drawEndArrow(params.contains(QStringLiteral("end_arrow"))
-                                  ? params.value(QStringLiteral("end_arrow")).toBool(true)
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Arrow"));
+        ArrowMarker arr;
+        arr.setStartPoint(params.value(QStringLiteral("x1")).toDouble(0.0),
+                          params.value(QStringLiteral("y1")).toDouble(0.0));
+        arr.setEndPoint(params.value(QStringLiteral("x2")).toDouble(1.0),
+                        params.value(QStringLiteral("y2")).toDouble(1.0));
+        arr.setColor(parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black)));
+        arr.setWidth(std::max(1, params.value(QStringLiteral("width")).toInt(1)));
+        arr.setStyle(parsePenStyleValue(params.value(QStringLiteral("style")), Qt::SolidLine));
+        arr.drawStartArrow(params.value(QStringLiteral("start_arrow")).toBool(false));
+        arr.drawEndArrow(params.contains(QStringLiteral("end_arrow"))
+                                 ? params.value(QStringLiteral("end_arrow")).toBool(true)
+                                 : true);
+        arr.fillArrowHead(params.contains(QStringLiteral("filled"))
+                                  ? params.value(QStringLiteral("filled")).toBool(true)
                                   : true);
-        arr->fillArrowHead(params.contains(QStringLiteral("filled"))
-                                   ? params.value(QStringLiteral("filled")).toBool(true)
-                                   : true);
-        g->addArrow(arr);
+        g->addArrow(&arr);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         return true;
     }

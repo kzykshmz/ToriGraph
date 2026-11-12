@@ -136,12 +136,13 @@ static double computeR2(const std::vector<double> &yObs, const std::vector<doubl
 
 static bool isExportingOrPrinting(const Graph *g, const QPainter *painter)
 {
-    if (g && g->property("isExporting").toBool())
+    if (g && (g->isExporting() || g->property("isExporting").toBool()))
         return true;
     if (!painter || !painter->device())
         return false;
     const int dt = painter->device()->devType();
-    if (dt == QInternal::Printer || dt == QInternal::Picture)
+    if (dt == QInternal::CustomRaster || dt == QInternal::Printer
+        || dt == QInternal::Picture)
         return true;
     if (dt != QInternal::Widget && dt != QInternal::Pixmap && dt != QInternal::Image
         && dt != QInternal::OpenGL)
@@ -660,6 +661,11 @@ public:
     void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
               const QRect &canvasRect) const override
     {
+        const Graph *g = d_owner ? d_owner->d_graph_guard.data() : nullptr;
+        if (!g && plot())
+            g = qobject_cast<const Graph *>(plot()->parent());
+        if (isExportingOrPrinting(g, painter))
+            return;
         if (!painter || !d_owner)
             return;
 
@@ -1190,6 +1196,11 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
     if (!d_graph_guard || d_overlay_curve_pts.size() < 2)
         return;
 
+    if (!d_app)
+        d_app = resolveAppWindowFromGraph(d_graph_guard);
+    if (!d_app)
+        return;
+
     const int nPts = d_overlay_curve_pts.size();
     std::vector<double> xs(static_cast<size_t>(nPts)), ys(static_cast<size_t>(nPts));
     for (int i = 0; i < nPts; ++i) {
@@ -1197,18 +1208,72 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
         ys[size_t(i)] = d_overlay_curve_pts[i].y();
     }
 
-    QString curveName = QString("QuickFit_%1").arg(d_curve_title.isEmpty() ? "Curve" : d_curve_title);
-    if (d_app)
-        curveName = d_app->generateUniqueName(curveName + "_");
+    QwtPlotCurve *target = resolveTargetCurve();
+    const bool hasTarget = (target != nullptr);
+    const int targetXAxis = hasTarget ? target->xAxis() : int(QwtPlot::xBottom);
+    const int targetYAxis = hasTarget ? target->yAxis() : int(QwtPlot::yLeft);
+    const QString baseTitle = !d_curve_title.isEmpty()
+            ? d_curve_title
+            : (hasTarget && !target->title().text().isEmpty() ? target->title().text()
+                                                              : QStringLiteral("Curve"));
 
-    FunctionCurve *fc = new FunctionCurve(d_app, FunctionCurve::Normal, curveName);
-    fc->setPen(QPen(QColor(220, 20, 20), 2.0, Qt::SolidLine));
-    fc->setData(xs.data(), ys.data(), nPts);
-    fc->setRange(xs.front(), xs.back());
-    if (QwtPlotCurve *target = resolveTargetCurve())
-        fc->setAxis(target->xAxis(), target->yAxis());
-    d_graph_guard->insertPlotItem(fc, Graph::Line);
-    d_graph_guard->addFitCurve(fc);
+    MultiLayer *ml = d_graph_guard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+
+    QString uniqueTableName = d_app->generateUniqueName(QStringLiteral("GadgetFit_"));
+    uniqueTableName.replace(QLatin1Char(' '), QLatin1Char('_'));
+
+    QString sanitizedYName;
+    sanitizedYName.reserve(baseTitle.size() + 8);
+    for (const QChar &ch : baseTitle) {
+        if (ch.isLetterOrNumber() || ch == QLatin1Char('_'))
+            sanitizedYName.append(ch);
+        else if (!sanitizedYName.endsWith(QLatin1Char('_')))
+            sanitizedYName.append(QLatin1Char('_'));
+    }
+    while (sanitizedYName.startsWith(QLatin1Char('_')))
+        sanitizedYName.remove(0, 1);
+    while (sanitizedYName.endsWith(QLatin1Char('_')))
+        sanitizedYName.chop(1);
+    if (sanitizedYName.isEmpty()
+        || sanitizedYName.compare(QStringLiteral("X"), Qt::CaseInsensitive) == 0) {
+        sanitizedYName = QStringLiteral("FitY");
+    } else {
+        sanitizedYName = QStringLiteral("Fit_") + sanitizedYName;
+    }
+
+    const QString curveName = QStringLiteral("QuickFit_%1").arg(baseTitle);
+    Column *colX = new Column(QStringLiteral("X"), SciDAVis::ColumnMode::Numeric);
+    Column *colY = new Column(sanitizedYName, SciDAVis::ColumnMode::Numeric);
+    colX->setPlotDesignation(SciDAVis::X);
+    colY->setPlotDesignation(SciDAVis::Y);
+    for (int i = 0; i < nPts; ++i) {
+        colX->setValueAt(i, xs[size_t(i)]);
+        colY->setValueAt(i, ys[size_t(i)]);
+    }
+
+    Table *fitTbl = d_app->newHiddenTable(uniqueTableName, curveName,
+                                          QList<Column *>() << colX << colY);
+    if (!fitTbl) {
+        delete colX;
+        delete colY;
+        return;
+    }
+    fitTbl->setColPlotDesignation(0, SciDAVis::X);
+    fitTbl->setColName(0, QStringLiteral("X"));
+    fitTbl->setColPlotDesignation(1, SciDAVis::Y);
+    fitTbl->setColName(1, sanitizedYName);
+    d_app->hideWindow(fitTbl);
+
+    if (d_graph_guard->insertCurve(fitTbl, fitTbl->colName(0), fitTbl->colName(1), Graph::Line)) {
+        const int newIdx = d_graph_guard->curves() - 1;
+        if (QwtPlotCurve *added = (newIdx >= 0) ? d_graph_guard->curve(newIdx) : nullptr) {
+            if (hasTarget)
+                added->setAxis(targetXAxis, targetYAxis);
+            added->setPen(QPen(QColor(214, 39, 40), 2.0, Qt::SolidLine));
+            added->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+        }
+    }
 
     if (!d_summary_text.isEmpty()) {
         if (Legend *mrk = d_graph_guard->newLegend(d_summary_text)) {
@@ -1220,7 +1285,9 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
         }
     }
 
-    d_graph_guard->replot();
+    d_graph_guard->updatePlot();
+    if (ml && !beforeSnap.isEmpty())
+        ml->pushUndoSnapshot(tr("Keep Fitted Curve on Graph"), beforeSnap);
     if (d_app)
         d_app->modifiedProject();
 }
@@ -1669,12 +1736,17 @@ void RoiGadgetTool::recalculate()
     }
 
     if (pts.empty()) {
-        d_summary_text = QString("%1 [%2]\nNo unmasked points in ROI")
-                                 .arg(d_mode == UnmaskRegion ? tr("Unmask ROI") : tr("ROI Gadget"))
-                                 .arg(curve->title().text());
-        if (d_mode == UnmaskRegion)
-            d_summary_text = QString("Unmask ROI [%1]\n0 masked points in ROI")
-                                     .arg(curve->title().text());
+        if (d_mode == UnmaskRegion) {
+            d_summary_text = QString("%1 [%2]\n%3")
+                                     .arg(tr("Unmask ROI"))
+                                     .arg(curve->title().text())
+                                     .arg(tr("0 masked points in ROI"));
+        } else {
+            d_summary_text = QString("%1 [%2]\n%3")
+                                     .arg(tr("ROI Gadget"))
+                                     .arg(curve->title().text())
+                                     .arg(tr("No unmasked points in ROI"));
+        }
         d_recalculating = false;
         return;
     }
@@ -1707,7 +1779,7 @@ void RoiGadgetTool::recalculate()
         const QString titleLabel = (d_mode == Cluster)
                 ? tr("Cluster ROI")
                 : ((d_mode == MaskRegion) ? tr("Mask Region ROI") : tr("Unmask Region ROI"));
-        d_summary_text = QString("%1 [%2]\nN = %3, Mean Y = %4\nMean X = %5")
+        d_summary_text = tr("%1 [%2]\nN = %3, Mean Y = %4\nMean X = %5")
                                  .arg(titleLabel)
                                  .arg(curve->title().text())
                                  .arg(pts.size())
@@ -1782,12 +1854,17 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("X_at_Min"), xAtMin)
                          << qMakePair(QString("X_at_Max"), xAtMax);
 
-        d_summary_text = QString("Region Stats [%1] (N=%2)\nMean = %3, SD = %4\nMin = %5, Max = %6")
+        d_summary_text = QString("%1 [%2] (N=%3)\n%4 = %5, %6 = %7\n%8 = %9, %10 = %11")
+                                 .arg(tr("Region Stats"))
                                  .arg(curve->title().text())
                                  .arg(n)
+                                 .arg(tr("Mean"))
                                  .arg(meanY, 0, 'g', 6)
+                                 .arg(tr("SD"))
                                  .arg(sd, 0, 'g', 6)
+                                 .arg(tr("Min"))
                                  .arg(minY, 0, 'g', 6)
+                                 .arg(tr("Max"))
                                  .arg(maxY, 0, 'g', 6);
         break;
     }
@@ -1830,10 +1907,12 @@ void RoiGadgetTool::recalculate()
             const double r2 = computeR2(yv, yHat);
             d_primary_metric = r2;
             d_secondary_metric = c1;
-            modelLabel = "Linear";
-            paramLine = QString("Slope = %1 ± %2, Int = %3 ± %4")
+            modelLabel = tr("Linear");
+            paramLine = QString("%1 = %2 ± %3, %4 = %5 ± %6")
+                                .arg(tr("Slope"))
                                 .arg(c1, 0, 'g', 5)
                                 .arg(se1, 0, 'g', 3)
+                                .arg(tr("Intercept"))
                                 .arg(c0, 0, 'g', 5)
                                 .arg(se0, 0, 'g', 3);
             d_output_metrics << qMakePair(QString("R2"), r2)
@@ -1884,7 +1963,7 @@ void RoiGadgetTool::recalculate()
             const double r2 = computeR2(yv, yHat);
             d_primary_metric = r2;
             d_secondary_metric = c2;
-            modelLabel = "Poly2";
+            modelLabel = tr("Polynomial (Order 2)");
             paramLine = QString("c2 = %1 ± %2, c1 = %3 ± %4")
                                 .arg(c2, 0, 'g', 4)
                                 .arg(se2, 0, 'g', 3)
@@ -1921,7 +2000,7 @@ void RoiGadgetTool::recalculate()
             const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // xc
-            modelLabel = "Gauss";
+            modelLabel = tr("Gauss");
             paramLine = QString("xc = %1 ± %2, FWHM = %3 ± %4")
                                 .arg(p[2], 0, 'g', 5)
                                 .arg(seXc, 0, 'g', 3)
@@ -1959,7 +2038,7 @@ void RoiGadgetTool::recalculate()
             const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // xc
-            modelLabel = "Lorentz";
+            modelLabel = tr("Lorentz");
             paramLine = QString("xc = %1 ± %2, FWHM = %3 ± %4")
                                 .arg(p[2], 0, 'g', 5)
                                 .arg(seXc, 0, 'g', 3)
@@ -1996,7 +2075,7 @@ void RoiGadgetTool::recalculate()
             const double seY0 = (se.size() > 0) ? se[0] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // t1
-            modelLabel = "ExpDec1";
+            modelLabel = tr("Exponential Decay (ExpDec1)");
             paramLine = QString("t1 = %1 ± %2, A = %3 ± %4")
                                 .arg(p[2], 0, 'g', 5)
                                 .arg(seT1, 0, 'g', 3)
@@ -2044,7 +2123,7 @@ void RoiGadgetTool::recalculate()
             const double seA2 = (se.size() > 1) ? se[1] : 0.0;
             d_primary_metric = r2;
             d_secondary_metric = p[2]; // x0
-            modelLabel = "Boltzmann";
+            modelLabel = tr("Boltzmann Sigmoidal");
             paramLine = QString("x0 = %1 ± %2, dx = %3 ± %4")
                                 .arg(p[2], 0, 'g', 5)
                                 .arg(seX0, 0, 'g', 3)
@@ -2065,13 +2144,16 @@ void RoiGadgetTool::recalculate()
                 appendCurvePt(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u)));
             }
         } else {
-            d_summary_text = QString("Quick Fit [%1]\nNeed more points in ROI (N=%2)")
+            d_summary_text = QString("%1 [%2]\n%3 (N=%4)")
+                                     .arg(tr("Quick Fit"))
                                      .arg(curve->title().text())
+                                     .arg(tr("Need more points in ROI"))
                                      .arg(n);
             break;
         }
 
-        d_summary_text = QString("Quick Fit (%1) [%2]\nR² = %3\n%4")
+        d_summary_text = QString("%1 (%2) [%3]\nR² = %4\n%5")
+                                 .arg(tr("Quick Fit"))
                                  .arg(modelLabel)
                                  .arg(curve->title().text())
                                  .arg(d_primary_metric, 0, 'f', 5)
@@ -2164,11 +2246,15 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Max_Peak_Center"), d_secondary_metric)
                          << qMakePair(QString("Baseline"), yBase);
 
-        d_summary_text = QString("Quick %1 [%2]\nCount = %3, Main xc = %4\nBaseline = %5")
-                                 .arg(d_detect_negative_peaks ? tr("Troughs") : tr("Peaks"))
+        const QString peakHeader =
+                d_detect_negative_peaks ? tr("Quick Troughs") : tr("Quick Peaks");
+        d_summary_text = QString("%1 [%2]\n%3 = %4, xc = %5\n%6 = %7")
+                                 .arg(peakHeader)
                                  .arg(curve->title().text())
+                                 .arg(tr("Count"))
                                  .arg(d_detected_peaks.size())
                                  .arg(d_secondary_metric, 0, 'g', 6)
+                                 .arg(tr("Baseline"))
                                  .arg(yBase, 0, 'g', 5);
         break;
     }
@@ -2233,15 +2319,18 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("A2_Top"), p[1])
                              << qMakePair(QString("dx_SlopeWidth"), p[3]);
 
-            d_summary_text = QString("Quick Sigmoidal [%1]\nEC50 = %2, R² = %3\nA1 = %4, A2 = %5")
+            d_summary_text = QString("%1 [%2]\nEC50 = %3, R² = %4\nA1 = %5, A2 = %6")
+                                     .arg(tr("Quick Sigmoidal"))
                                      .arg(curve->title().text())
                                      .arg(p[2], 0, 'g', 6)
                                      .arg(r2, 0, 'f', 5)
                                      .arg(p[0], 0, 'g', 5)
                                      .arg(p[1], 0, 'g', 5);
         } else {
-            d_summary_text = QString("Quick Sigmoidal [%1]\nNeed >= 4 points in ROI")
-                                     .arg(curve->title().text());
+            d_summary_text = QString("%1 [%2]\n%3")
+                                     .arg(tr("Quick Sigmoidal"))
+                                     .arg(curve->title().text())
+                                     .arg(tr("Need >= 4 points in ROI"));
         }
         break;
     }
@@ -2337,10 +2426,14 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Peak_X"), xAtMax);
 
         d_summary_text =
-                QString("Integrate [%1]\nArea = %2, Abs Area = %3\nCentroid X = %4, FWHM = %5")
+                QString("%1 [%2]\n%3 = %4, %5 = %6\n%7 = %8, FWHM = %9")
+                        .arg(tr("Integrate"))
                         .arg(curve->title().text())
+                        .arg(tr("Area"))
                         .arg(area, 0, 'g', 6)
+                        .arg(tr("Abs Area"))
                         .arg(absArea, 0, 'g', 6)
+                        .arg(tr("Centroid X"))
                         .arg(centroidX, 0, 'g', 6)
                         .arg(fwhm, 0, 'g', 5);
         break;
@@ -2439,7 +2532,8 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Mid_Y"), midY)
                          << qMakePair(QString("dY_dX_Slope"), slope);
 
-        d_summary_text = QString("Interpolate [%1]\nX = %2 -> Y = %3\ndY/dX = %4")
+        d_summary_text = QString("%1 [%2]\nX = %3 -> Y = %4\ndY/dX = %5")
+                                 .arg(tr("Interpolate"))
                                  .arg(curve->title().text())
                                  .arg(xMid, 0, 'g', 6)
                                  .arg(midY, 0, 'g', 6)
@@ -2504,13 +2598,18 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("Sampling_dt"), dt)
                              << qMakePair(QString("Freq_Resolution_df"), df);
 
-            d_summary_text = QString("FFT Preview [%1]\nDom Freq = %2 Hz\nPeak Mag = %3")
+            d_summary_text = QString("%1 [%2]\n%3 = %4 Hz\n%5 = %6")
+                                     .arg(tr("FFT Preview"))
                                      .arg(curve->title().text())
+                                     .arg(tr("Dom Freq"))
                                      .arg(domFreq, 0, 'g', 6)
+                                     .arg(tr("Peak Mag"))
                                      .arg(peakMag, 0, 'g', 6);
         } else {
-            d_summary_text = QString("FFT Preview [%1]\nNeed >= 4 points in ROI")
-                                     .arg(curve->title().text());
+            d_summary_text = QString("%1 [%2]\n%3")
+                                     .arg(tr("FFT Preview"))
+                                     .arg(curve->title().text())
+                                     .arg(tr("Need >= 4 points in ROI"));
         }
         break;
     }
@@ -2602,9 +2701,12 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Threshold_10pct"), y10)
                          << qMakePair(QString("Threshold_90pct"), y90);
 
-        d_summary_text = QString("Rise Time [%1]\n10-90% Rise = %2\n90-10% Fall = %3")
+        d_summary_text = QString("%1 [%2]\n%3 = %4\n%5 = %6")
+                                 .arg(tr("Rise Time"))
                                  .arg(curve->title().text())
+                                 .arg(tr("10-90% Rise"))
                                  .arg(riseTime, 0, 'g', 6)
+                                 .arg(tr("90-10% Fall"))
                                  .arg(fallTime, 0, 'g', 6);
         break;
     }
@@ -2815,6 +2917,10 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
         t->setColName(1, "Y");
         t->setColName(2, "dY/dX");
         t->setColName(3, "d2Y/dX2");
+        t->setColComment(0, tr("X"));
+        t->setColComment(1, tr("Y"));
+        t->setColComment(2, tr("1st Derivative (dY/dX)"));
+        t->setColComment(3, tr("2nd Derivative (d2Y/dX2)"));
         t->setColPlotDesignation(0, SciDAVis::X);
         t->setColPlotDesignation(1, SciDAVis::Y);
         t->setColPlotDesignation(2, SciDAVis::Y);
@@ -2840,6 +2946,10 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
         t->setColumnType(1, SciDAVis::ColumnMode::Text);
         t->setColName(2, "X");
         t->setColName(3, "Y");
+        t->setColComment(0, tr("Curve A"));
+        t->setColComment(1, tr("Curve B"));
+        t->setColComment(2, tr("X"));
+        t->setColComment(3, tr("Y"));
         t->setColPlotDesignation(2, SciDAVis::X);
         t->setColPlotDesignation(3, SciDAVis::Y);
         for (int r = 0; r < d_intersections.size(); ++r) {
@@ -2862,6 +2972,11 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
         t->setColName(2, "Height");
         t->setColName(3, "FWHM");
         t->setColName(4, "Area");
+        t->setColComment(0, tr("Peak Index"));
+        t->setColComment(1, tr("Center X"));
+        t->setColComment(2, tr("Height"));
+        t->setColComment(3, tr("FWHM"));
+        t->setColComment(4, tr("Area"));
         t->setColPlotDesignation(1, SciDAVis::X);
         for (int r = 0; r < rows; ++r) {
             const auto &pk = d_detected_peaks[r];
@@ -2881,6 +2996,8 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
             return nullptr;
         t->setColName(0, "Frequency");
         t->setColName(1, "Magnitude");
+        t->setColComment(0, tr("Frequency"));
+        t->setColComment(1, tr("Magnitude"));
         t->setColPlotDesignation(0, SciDAVis::X);
         t->setColPlotDesignation(1, SciDAVis::Y);
         for (int r = 0; r < rows; ++r) {
@@ -2897,6 +3014,8 @@ Table *RoiGadgetTool::createOutputTable(const QString &tableName)
     t->setColName(0, "Metric");
     t->setColumnType(0, SciDAVis::ColumnMode::Text);
     t->setColName(1, "Value");
+    t->setColComment(0, tr("Metric"));
+    t->setColComment(1, tr("Value"));
     for (int r = 0; r < d_output_metrics.size(); ++r) {
         t->setText(r, 0, d_output_metrics[r].first);
         t->setCell(r, 1, d_output_metrics[r].second);
@@ -3397,6 +3516,11 @@ public:
     void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
               const QRect &canvasRect) const override
     {
+        const Graph *g = d_layer_graph ? d_layer_graph.data() : nullptr;
+        if (!g && plot())
+            g = qobject_cast<const Graph *>(plot()->parent());
+        if (isExportingOrPrinting(g, painter))
+            return;
         if (!painter || !d_owner || !d_layer_graph)
             return;
 
@@ -3743,6 +3867,9 @@ Table *VerticalCursorTool::createReadoutTable()
     t->setColumnType(0, SciDAVis::ColumnMode::Text);
     t->setColName(1, "X");
     t->setColName(2, "Interpolated_Y");
+    t->setColComment(0, tr("Curve"));
+    t->setColComment(1, tr("X"));
+    t->setColComment(2, tr("Interpolated Y"));
     t->setColPlotDesignation(1, SciDAVis::X);
     t->setColPlotDesignation(2, SciDAVis::Y);
     for (int i = 0; i < vals.size(); ++i) {
@@ -3917,6 +4044,11 @@ public:
     void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
               const QRect &canvasRect) const override
     {
+        const Graph *g = d_owner ? d_owner->d_graph_guard.data() : nullptr;
+        if (!g && plot())
+            g = qobject_cast<const Graph *>(plot()->parent());
+        if (isExportingOrPrinting(g, painter))
+            return;
         if (!painter || !d_owner)
             return;
 
@@ -4539,12 +4671,16 @@ void DeltaCursorTool::stampCalloutOnGraph()
                       .arg(d_readout.x2, 0, 'g', 5)
                       .arg(d_readout.y2, 0, 'g', 5);
 
+    MultiLayer *ml = d_graph_guard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     if (Legend *mrk = d_graph_guard->newLegend(callout)) {
         mrk->setFont(QFont("Arial", 9));
         mrk->setFrameStyle(Legend::Line);
         mrk->setBackgroundColor(QColor(255, 255, 255, 238));
         mrk->setOriginCoord(0.5 * (d_readout.x1 + d_readout.x2), d_readout.maxY);
         d_graph_guard->replot();
+        if (ml && !beforeSnap.isEmpty())
+            ml->pushUndoSnapshot(tr("Stamp Callout on Graph"), beforeSnap);
         if (d_app)
             d_app->modifiedProject();
     }
@@ -4967,6 +5103,11 @@ public:
     void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
               const QRect &canvasRect) const override
     {
+        const Graph *g = d_owner ? d_owner->d_graph_guard.data() : nullptr;
+        if (!g && plot())
+            g = qobject_cast<const Graph *>(plot()->parent());
+        if (isExportingOrPrinting(g, painter))
+            return;
         if (!painter || !d_owner)
             return;
 
@@ -5481,12 +5622,16 @@ void ImageProfileGadgetTool::stampCalloutOnGraph()
         return;
 
     recalculate();
+    MultiLayer *ml = d_graph_guard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     if (Legend *mrk = d_graph_guard->newLegend(d_readout_text)) {
         mrk->setFont(QFont("Arial", 9));
         mrk->setFrameStyle(Legend::Line);
         mrk->setBackgroundColor(QColor(255, 255, 255, 238));
         mrk->setOriginCoord(d_x0, d_y0);
         d_graph_guard->replot();
+        if (ml && !beforeSnap.isEmpty())
+            ml->pushUndoSnapshot(tr("Stamp Profile Readout on Graph"), beforeSnap);
         if (d_app)
             d_app->modifiedProject();
     }

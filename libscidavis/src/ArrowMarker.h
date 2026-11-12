@@ -45,6 +45,7 @@ class ArrowMarker : public QObject, public PlotEnrichement
 public:
     enum Operation { None, MoveStart, MoveEnd, MoveBoth };
     ArrowMarker();
+    ~ArrowMarker() override;
 
     //! Pixel coordinates of the start point
     QPoint startPoint() const;
@@ -132,6 +133,8 @@ public:
 private:
     void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap, const QRect &r) const;
     double theta(int xs, int ys, int xe, int ye) const;
+    void applyOverrideCursor();
+    void restoreCursorIfNeeded();
 
     //! Flag specifying if the start arrow is visible
     bool d_start_arrow;
@@ -171,5 +174,6 @@ private:
      * need to remember this bit.
      */
     QPoint d_op_startat;
+    bool d_cursor_overridden = false;
 };
 #endif

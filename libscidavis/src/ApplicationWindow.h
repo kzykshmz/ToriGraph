@@ -96,8 +96,10 @@ class Project;
 class AbstractAspect;
 class AxesDialog;
 class ModernRibbonBar;
+class GraphInspectorDock;
 class AutoUpdater;
 class PythonAutomationServer;
+class QMimeData;
 
 #ifndef TS_PATH
 #define TS_PATH (qApp->applicationDirPath() + "/translations")
@@ -181,6 +183,15 @@ public:
     void localeChanged();
 
     ModernRibbonBar *modernRibbonBar() const { return d_modern_ribbon; }
+    GraphInspectorDock *graphInspectorDock() const { return d_graph_inspector_dock; }
+    void toggleGraphInspectorDock();
+    void updateGraphInspectorResponsiveness();
+    void updateUndoRedoActionsForActiveWindow();
+    void invalidateModelessGraphDialogs(MultiLayer *ml);
+    void invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *excludeDlg);
+    bool handleColumnMimeDrop(const QMimeData *mimeData, MultiLayer *targetMl = nullptr,
+                              Graph *targetGraph = nullptr, int targetAxisId = -1,
+                              bool replaceExisting = false);
     AutoUpdater *autoUpdater() const { return d_auto_updater; }
     PythonAutomationServer *pythonAutomationServer() const { return d_python_server; }
 
@@ -1526,12 +1537,19 @@ private:
     Project *d_project;
     QWidget *d_central_container = nullptr;
     ModernRibbonBar *d_modern_ribbon = nullptr;
+    GraphInspectorDock *d_graph_inspector_dock = nullptr;
+    QAction *actionToggleGraphInspector = nullptr;
+    bool d_inspector_user_closed = false;
+    bool d_inspector_user_pinned = false;
     AutoUpdater *d_auto_updater = nullptr;
     PythonAutomationServer *d_python_server = nullptr;
     bool d_headless_mode = false;
     bool d_ole_embedded = false;
     std::function<void()> d_ole_on_update;
     std::function<void()> d_ole_on_close;
+
+    AxesDialog *openAxesDialogConfigured(const std::function<void(AxesDialog *)> &configure);
+    Plot3DDialog *openPlot3dDialogConfigured(const std::function<void(Plot3DDialog *)> &configure);
 
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);

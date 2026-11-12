@@ -95,10 +95,13 @@ public:
     void setNumColumns(int cols);
     int numColumns() const { return d_num_columns; }
 
+    int itemIndexAt(const QPoint &canvasPos) const;
+
+    void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap, const QRect &r) const;
+
 private:
     void computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVector<int> &cellX,
                             QVector<int> &cellCenterY, int &totalWidth, int &totalHeight) const;
-    void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap, const QRect &r) const;
 
     void drawFrame(QPainter *p, int type, const QRect &rect) const;
     void drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,

@@ -51,7 +51,11 @@
 #include <QToolBar>
 #include <QtDebug>
 #include <QMimeData>
+#include <QMdiSubWindow>
+#include <qwt_plot.h>
 #include "ApplicationWindow.h"
+#include "MultiLayer.h"
+#include "Graph.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
@@ -1881,11 +1885,94 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
     return menu;
 }
 
+namespace {
+ApplicationWindow *findTableAppWindow(QWidget *viewWidget)
+{
+    for (QWidget *w = viewWidget; w; w = w->parentWidget()) {
+        if (ApplicationWindow *app = qobject_cast<ApplicationWindow *>(w))
+            return app;
+    }
+    const QWidgetList topWidgets = QApplication::topLevelWidgets();
+    for (QWidget *w : topWidgets) {
+        if (ApplicationWindow *app = qobject_cast<ApplicationWindow *>(w))
+            return app;
+    }
+    return nullptr;
+}
+
+MultiLayer *findActiveOrRecentMultiLayer(ApplicationWindow *app)
+{
+    if (!app)
+        return nullptr;
+    if (QMdiSubWindow *act = app->d_workspace.activeSubWindow()) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(act))
+            return ml;
+    }
+    const QList<QMdiSubWindow *> history =
+            app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+    for (int i = history.size() - 1; i >= 0; --i) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(history.at(i)))
+            return ml;
+    }
+    const QList<MyWidget *> wins = app->windowsList();
+    for (int i = wins.size() - 1; i >= 0; --i) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(wins.at(i)))
+            return ml;
+    }
+    return nullptr;
+}
+} // namespace
+
 QMenu *Table::createColumnMenu(QMenu *append_to)
 {
     QMenu *menu = append_to;
     if (!menu)
         menu = new QMenu();
+
+    QAction *actAddActiveGraph = menu->addAction(tr("Add to Active Graph"));
+    QAction *actAddActiveGraphRightY = menu->addAction(tr("Add to Active Graph (Right Y)"));
+    menu->addSeparator();
+
+    QPointer<QAction> actLeftGuard(actAddActiveGraph);
+    QPointer<QAction> actRightGuard(actAddActiveGraphRightY);
+    auto updateAddToGraphState = [this, actLeftGuard, actRightGuard]() {
+        ApplicationWindow *app = findTableAppWindow(d_view);
+        MultiLayer *ml = findActiveOrRecentMultiLayer(app);
+        const bool canAdd = (app != nullptr && ml != nullptr && columnCount() > 0);
+        if (actLeftGuard)
+            actLeftGuard->setEnabled(canAdd);
+        if (actRightGuard)
+            actRightGuard->setEnabled(canAdd);
+    };
+    updateAddToGraphState();
+    QObject::connect(menu, &QMenu::aboutToShow, this, updateAddToGraphState);
+
+    auto triggerAddToActiveGraph = [this](bool rightY) {
+        ApplicationWindow *app = findTableAppWindow(d_view);
+        MultiLayer *targetMl = findActiveOrRecentMultiLayer(app);
+        if (!app || !targetMl || columnCount() <= 0)
+            return;
+
+        QList<int> cols = d_view ? d_view->selectedColumnIndices(false) : QList<int>();
+        const int curIdx = currentColumn() ? columnIndex(currentColumn()) : -1;
+        if (cols.isEmpty() && curIdx >= 0)
+            cols.append(curIdx);
+
+        const QByteArray payload = TableView::buildColumnMimePayload(this, cols, curIdx);
+        if (payload.isEmpty())
+            return;
+
+        QMimeData mimeData;
+        mimeData.setData(QString::fromUtf8(MultiLayer::kColumnMimeType), payload);
+        Graph *targetGraph =
+                targetMl->activeGraph() ? targetMl->activeGraph() : targetMl->layer(1);
+        const int targetAxisId = rightY ? QwtPlot::yRight : QwtPlot::yLeft;
+        app->handleColumnMimeDrop(&mimeData, targetMl, targetGraph, targetAxisId, false);
+    };
+    QObject::connect(actAddActiveGraph, &QAction::triggered, this,
+                     [triggerAddToActiveGraph]() { triggerAddToActiveGraph(false); });
+    QObject::connect(actAddActiveGraphRightY, &QAction::triggered, this,
+                     [triggerAddToActiveGraph]() { triggerAddToActiveGraph(true); });
 
     menu->addAction(action_edit_column_labels_formula);
     menu->addSeparator();

@@ -119,6 +119,7 @@
 #include "RecalcEngine.h"
 #include "I18nJapanese.h"
 #include "GraphMiniToolbar.h"
+#include "GraphInspectorDock.h"
 #include "ModernUiTheme.h"
 #include "ModernRibbonAndHud.h"
 #include "AutoUpdater.h"
@@ -185,6 +186,10 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QListWidget>
@@ -1121,6 +1126,211 @@ void registerApplicationWindowJapaneseStrings()
         add("Clear Anchors", "アンカーをクリア");
         add("Click on graph: add anchor (snaps to curve; Shift+Click for free Y) | Drag: move | Right-click / Delete: remove",
             "グラフをクリック: アンカー追加 (曲線へスナップ / Shift+クリックで自由Y配置) | ドラッグ: 移動 | 右クリック・Delete: 削除");
+
+        // Slice 2: OriginPro GraphInspectorDock, Per-MultiLayer Undo/Redo & Column Drop
+        add("Resize Page", "ページサイズ変更");
+        add("Link Right-Y Axis", "右Y軸リンクを追加");
+        add("Link Top-X Axis", "上X軸リンクを追加");
+        add("1:1 Linear Link (x)", "1:1 線形リンク (x)");
+        add("Arrhenius: K -> 1000/T", "アレニウス変換: K → 1000/T");
+        add("Arrhenius: °C -> 1000/T", "アレニウス変換: °C → 1000/T");
+        add("Inverse Arrhenius: 1000/T -> °C", "逆アレニウス変換: 1000/T → °C");
+        add("Temperature (°C)", "温度 (°C)");
+        add("Custom Formula...", "カスタム変換式...");
+        add("Link Top-X Formula", "上X軸の変換式設定");
+        add("Formula in terms of bottom X (variable 'x'):", "下X軸に対する変換式 (変数 'x'):");
+        add("Toggle Axis Visibility", "軸の表示切替");
+        add("Change Tick Direction", "目盛の向きを変更");
+        add("Toggle Axis Grid", "軸グリッドの表示切替");
+        add("Axis Tick Font Size", "目盛数字のフォントサイズ変更");
+        add("Change Curve Plot Style", "曲線のプロット形式を変更");
+        add("Select Series Color", "系列の色を選択");
+        add("Change Series Color", "系列の色を変更");
+        add("Change Line Pen Style", "線種を変更");
+        add("Change Symbol Shape", "記号形状を変更");
+        add("Assign Curve to Right-Y", "曲線を右Y軸に割当");
+        add("Apply Y-Offset Stack", "Yオフセット積上げを適用");
+        add("Place Legend", "凡例の配置を変更");
+        add("Change Legend Frame", "凡例枠を変更");
+        add("Edit Annotation Text", "注釈テキストを編集");
+        add("Edit Legend Header", "凡例ヘッダーを編集");
+        add("Change Legend Font Size", "凡例フォントサイズを変更");
+        add("(No Active Graph)", "(アクティブなグラフなし)");
+        add("Page: %1", "ページ: %1");
+        add("[Linked]", "[リンク]");
+        add("Curves (%1)", "曲線 (%1)");
+        add("Annotations (%1)", "注釈 (%1)");
+        add("Text: %1", "テキスト: %1");
+        add("Arrow %1", "矢印・線 %1");
+        add("Image: %1", "画像: %1");
+        add("Toggle Curve Visibility", "曲線の表示切替");
+        add("Toggle Legend Visibility", "凡例の表示切替");
+        add("Add Curve(s) to Layer", "レイヤーに曲線を追加");
+        add("Plot Style:", "プロット形式:");
+        add("Y Columns (multi-select):", "Y列 (複数選択可):");
+        add("Assign to Right-Y Axis", "右Y軸に割り当て");
+        add("Add Selected Curve(s)", "選択した曲線を追加");
+        add("(Default Table X)", "(表の既定X列)");
+        add("Add Curve(s)", "曲線を追加");
+        add("Reorder Curve", "曲線の順序変更");
+        add("Remove Legend", "凡例を削除");
+        add("Remove Annotation", "注釈を削除");
+        add("(No Curve Selected)", "(曲線未選択)");
+        add("Text Annotation", "テキスト注釈");
+        add("Graph Legend", "グラフ凡例");
+        add("Text:", "テキスト:");
+        add("Header:", "ヘッダー:");
+        add("Modify Axis Scale", "軸スケールを変更");
+        add("Set Axis Break", "軸の途中省略を設定");
+        add("Pin Inspector Open (Prevent Auto-Collapse)",
+            "インスペクタをピン留め固定 (自動折りたたみを抑止)");
+        add("Collapse to Icon Rail (Ctrl+Shift+I)", "アイコンレールへ折りたたむ (Ctrl+Shift+I)");
+        add("Expand Graph Inspector (Ctrl+Shift+I)", "グラフインスペクタを展開 (Ctrl+Shift+I)");
+        add("Page & Layer Properties", "ページ・レイヤー設定");
+        add("Axis Scale & Title Properties", "軸スケール・ラベル設定");
+        add("Curve & Series Style Properties", "曲線・系列スタイル設定");
+        add("Legend & Annotation Properties", "凡例・注釈設定");
+        add("+ Add", "＋ 追加");
+        add("Add Curve(s) from Worksheet", "ワークシートから曲線を追加");
+        add("Move Selected Curve Up", "選択した曲線を上へ移動");
+        add("Move Selected Curve Down", "選択した曲線を下へ移動");
+        add("Remove Selected Object", "選択したオブジェクトを削除");
+        add("Activate or create a 2D graph to inspect its layers, axes, curves, and legend.",
+            "2Dグラフを作成または選択すると、レイヤー・軸・曲線・凡例をここで直接編集できます。");
+        add("1-Click Publication & Slide Presets", "ワンクリック論文・スライドプリセット");
+        add("ISIJ Journal (85mm)", "ISIJ論文 (85mm)");
+        add("Presentation Slide (28pt)", "発表スライド (28pt)");
+        add("Page Size & View", "ページ寸法・表示");
+        add("DPI:", "解像度 (DPI):");
+        add("Print Page View", "印刷ページ表示");
+        add("Page Zoom:", "ページ倍率:");
+        add("Frame, Linked Axes & Panels", "枠・リンク軸・パネル番号");
+        add("+ Link Right-Y Axis", "+ 右Y軸リンク");
+        add("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (Arrhenius等)");
+        add("Clipboard & Export", "クリップボード・出力");
+        add("Show Selected Axis", "この軸を表示");
+        add("Scale & Axis Break", "スケール範囲・途中省略");
+        add("Min:", "最小:");
+        add("Max:", "最大:");
+        add("Step (0=Auto):", "刻み (0=自動):");
+        add("Scale:", "スケール:");
+        add("Axis Break (Omit Middle Range)", "軸の途中省略 (Break)");
+        add("Break Start:", "省略開始:");
+        add("Break End:", "省略終了:");
+        add("Ticks & Grids", "目盛・グリッド");
+        add("Ticks:", "目盛の向き:");
+        add("Axis Label & Font (Arial)", "軸ラベル・フォント (Arial)");
+        add("Enter axis label...", "軸ラベルを入力...");
+        add("Greek", "ギリシャ");
+        add("Insert Greek Symbol", "ギリシャ文字を挿入");
+        add("Append Scientific Unit", "単位を追記");
+        add("Label Size:", "ラベル pt:");
+        add("Tick Numbers:", "目盛数字 pt:");
+        add("Line Appearance", "線の外観");
+        add("Color:", "色:");
+        add("Line Width:", "線幅:");
+        add("Line Style:", "線種:");
+        add("Dash", "破線");
+        add("Symbol & Axis Binding", "記号・軸割当");
+        add("Shape:", "形状:");
+        add("Circle", "丸 (○/●)");
+        add("Cross (+)", "十字 (+)");
+        add("X-Cross (x)", "斜め十字 (×)");
+        add("Star", "星 (★)");
+        add("Symbol Size:", "記号サイズ:");
+        add("Quick Error Bars", "クイック誤差棒");
+        add("Adjacent Col", "隣接列");
+        add("Std Dev (SD)", "標準偏差 SD");
+        add("5%", "5%");
+        add("Group Series Style Scheme", "全曲線の配色・記号スキーム");
+        add("B/W (Filled / Hollow)", "白黒（塗り／白抜き）");
+        add("Cool -> Warm Step", "寒色→暖色ステップ");
+        add("Origin Default", "Origin既定");
+        add("Non-Destructive Y-Offset Stack", "非破壊 Yオフセット積上げ");
+        add("Vertical Gap:", "縦オフセット間隔:");
+        add("Stack Curves", "積上げ適用");
+        add("1-Click Legend Placement", "凡例のワンクリック配置");
+        add("Legend Frame & Typography (Arial)", "凡例枠・フォント設定 (Arial)");
+        add("Frame:", "枠スタイル:");
+        add("Borderless", "枠なし");
+        add("Black Box + White Fill", "黒枠＋白背景");
+        add("Columns:", "列数:");
+        add("Font Size:", "文字サイズ:");
+        add("&Graph Inspector Dock", "グラフインスペクタ(&G)");
+        add("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)",
+            "OriginPro風グラフインスペクタの表示/折りたたみ切替 (Ctrl+Shift+I)");
+        add("Apply Frame Preset", "枠プリセットを適用");
+        add("Apply ISIJ Style Preset", "ISIJ論文プリセットを適用");
+        add("Apply Presentation Slide Preset", "発表スライドプリセットを適用");
+        add("Apply Compact Journal Preset", "コンパクト論文プリセットを適用");
+        add("&Undo %1", "元に戻す: %1(&U)");
+        add("&Redo %1", "やり直し: %1(&R)");
+        add("Drop Error Bars", "誤差棒をドロップ追加");
+        add("Replace Plotted Columns", "プロット列を置換");
+        add("Drop Columns onto Graph", "列をグラフへドロップ追加");
+        add("Toggle Graph Inspector Dock (Ctrl+Shift+I)",
+            "グラフインスペクタの表示/折りたたみ切替 (Ctrl+Shift+I)");
+        add("Inspector", "インスペクタ");
+        add("Square 70%", "正方形枠 (70%)");
+        add("Apply 70% Square Inner Canvas Frame", "内側キャンバスを70%正方形枠に整える");
+        add("Apply 70% Square Canvas Frame", "70%正方形枠を適用");
+        add("Page Size, DPI, Font & Zoom — Click for Quick Presets",
+            "ページ寸法・DPI・フォント・表示倍率 — クリックでクイックプリセット");
+        add("Up/Down to navigate  ·  Enter to run  ·  Esc to close",
+            "↑/↓ で選択  ·  Enter で実行  ·  Esc で閉じる");
+        add(" [R-Y]", " [右Y]");
+        add("[R-Y]", "[右Y]");
+        add("Insert %1", "%1 を挿入");
+        add("Insert Common Unit", "よく使う単位を挿入");
+        add("\xCE\xB1 (alpha)", "\xCE\xB1 (アルファ)");
+        add("\xCE\xB2 (beta)", "\xCE\xB2 (ベータ)");
+        add("\xCE\xB3 (gamma)", "\xCE\xB3 (ガンマ)");
+        add("\xCE\xB4 (delta)", "\xCE\xB4 (デルタ)");
+        add("\xCE\x94 (Delta)", "\xCE\x94 (デルタ大)");
+        add("\xCE\xB5 (epsilon)", "\xCE\xB5 (イプシロン)");
+        add("\xCE\xB8 (theta)", "\xCE\xB8 (シータ)");
+        add("\xCE\xBB (lambda)", "\xCE\xBB (ラムダ)");
+        add("\xCE\xBC (mu)", "\xCE\xBC (ミュー)");
+        add("\xCF\x81 (rho)", "\xCF\x81 (ロー)");
+        add("\xCF\x83 (sigma)", "\xCF\x83 (シグマ)");
+        add("\xCF\x84 (tau)", "\xCF\x84 (タウ)");
+        add("\xCF\x86 (phi)", "\xCF\x86 (ファイ)");
+        add("\xCE\xA9 (Omega)", "\xCE\xA9 (オメガ)");
+        add("No unmasked points in ROI", "ROI内にマスク解除データ点がありません");
+        add("0 masked points in ROI", "ROI内のマスク点数: 0");
+        add("Region Stats", "領域統計");
+        add("Need more points in ROI", "ROI内のデータ点が不足しています");
+        add("Quick Fit", "クイックフィット");
+        add("Quick Sigmoidal", "クイックシグモイド");
+        add("Need >= 4 points in ROI", "ROI内に4点以上のデータが必要です");
+        add("FFT Preview", "FFTプレビュー");
+        add("Rise Time", "立ち上がり時間");
+        add("Change Curve Range", "曲線範囲の変更");
+        add("Keep Fitted Curve on Graph", "フィット曲線をグラフに保持");
+        add("Toggle Error Bars", "エラーバーの切替");
+        add("Header:", "ヘッダー:");
+        add("Fill Between Curves", "曲線間の塗りつぶし");
+        add("Auto Scale", "自動スケール");
+        add("Add Timestamp", "タイムスタンプを追加");
+        add("Paste Enrichment", "装飾の貼り付け");
+        add("Curve Full Range", "曲線の全範囲表示");
+        add("Modify Axis", "軸の変更");
+        add("Modify Axis Break", "軸ブレークの変更");
+        add("Add Shaded Band", "シェード帯を追加");
+        add("Modify Grid", "グリッドの変更");
+        add("Arrhenius: °C -> 1000/T", "アレニウス変換: °C -> 1000/T");
+        add("Inverse Arrhenius: 1000/T -> °C", "逆アレニウス変換: 1000/T -> °C");
+        add("Temperature (°C)", "温度 (°C)");
+        add("Reconstruct Legend", "凡例を再構成");
+        add("Quick Troughs", "クイック谷検出");
+        add("Abs Area", "絶対値面積");
+        add("Dom Freq", "主周波数");
+        add("Peak Mag", "ピーク振幅");
+        add("10-90% Rise", "10-90% 立ち上がり");
+        add("90-10% Fall", "90-10% 立ち下がり");
+        add("Stamp ΔX/ΔY Callout on Graph", "ΔX/ΔY 注釈をグラフに貼付");
+        add("Stamp Callout on Graph", "注釈をグラフに貼付");
+        add("Stamp Profile Readout on Graph", "プロファイル値をグラフに貼付");
     }
 }
 
@@ -1323,6 +1533,7 @@ ApplicationWindow::ApplicationWindow()
       lastModified(0),
       current_folder(new Folder(tr("UNTITLED"))),
       show_windows_policy(ActiveFolder),
+      d_file_version(SciDAVis::version()),
       appStyle(qApp->style()->objectName()),
       appFont(QFont()),
       projectname("untitled"),
@@ -1530,6 +1741,31 @@ ApplicationWindow::ApplicationWindow()
     consoleWindow.hide();
 #endif
 
+    d_graph_inspector_dock = new GraphInspectorDock(this, this);
+    addDockWidget(Qt::RightDockWidgetArea, d_graph_inspector_dock);
+    connect(d_graph_inspector_dock, &GraphInspectorDock::userPinToggled, this,
+            [this](bool pinned) {
+                d_inspector_user_pinned = pinned;
+                updateGraphInspectorResponsiveness();
+            });
+    connect(d_graph_inspector_dock, &GraphInspectorDock::closeRequestedByUser, this,
+            [this]() {
+                d_inspector_user_closed = true;
+                updateGraphInspectorResponsiveness();
+            });
+    connect(d_graph_inspector_dock, &GraphInspectorDock::collapsedStateChanged, this,
+            [this](bool) {
+                syncGraphPageAndToolbarMenuState();
+                if (d_modern_ribbon) {
+                    d_modern_ribbon->syncCheckableStates();
+                    if (!d_ole_embedded
+                        && d_modern_ribbon->workspaceLayoutMode()
+                                == ModernRibbonBar::LayoutSplitTableGraph) {
+                        d_modern_ribbon->applySplitWorkspaceGeometry();
+                    }
+                }
+            });
+
     // Needs to be done after initialization of dock windows,
     // because we now use QDockWidget::toggleViewAction()
     createActions();
@@ -1564,6 +1800,7 @@ ApplicationWindow::ApplicationWindow()
             QSignalBlocker blocker(actionToggleFocusHudMode);
             actionToggleFocusHudMode->setChecked(enabled);
         }
+        updateGraphInspectorResponsiveness();
     });
     connect(d_modern_ribbon, &ModernRibbonBar::workspaceLayoutModeChanged, this,
             [this](ModernRibbonBar::WorkspaceLayoutMode mode) {
@@ -1580,6 +1817,8 @@ ApplicationWindow::ApplicationWindow()
                     QSignalBlocker b(actionWorkspaceLayoutMdi);
                     actionWorkspaceLayoutMdi->setChecked(mode == ModernRibbonBar::LayoutFreeMdi);
                 }
+                updateGraphInspectorResponsiveness();
+                windowActivated(d_workspace.activeSubWindow());
             });
     connect(d_modern_ribbon, &ModernRibbonBar::openPythonConsoleRequested, this,
             &ApplicationWindow::openPythonConsole);
@@ -1739,10 +1978,30 @@ ApplicationWindow::ApplicationWindow()
     folders.setAcceptDrops(true);
     folders.setDefaultDropAction(Qt::MoveAction);
 
-    connect(d_project->undoStack(), SIGNAL(canUndoChanged(bool)), actionUndo,
-            SLOT(setEnabled(bool)));
-    connect(d_project->undoStack(), SIGNAL(canRedoChanged(bool)), actionRedo,
-            SLOT(setEnabled(bool)));
+    connect(d_project->undoStack(), &QUndoStack::canUndoChanged, this,
+            [this](bool) { updateUndoRedoActionsForActiveWindow(); });
+    connect(d_project->undoStack(), &QUndoStack::canRedoChanged, this,
+            [this](bool) { updateUndoRedoActionsForActiveWindow(); });
+    connect(d_project->undoStack(), &QUndoStack::indexChanged, this,
+            [this](int) { updateUndoRedoActionsForActiveWindow(); });
+
+    {
+        PeakAnchorEventFilter *winResizeFilter = new PeakAnchorEventFilter(this);
+        winResizeFilter->handler = [this](QObject *watched, QEvent *event) -> bool {
+            if (watched == this && event) {
+                const QEvent::Type et = event->type();
+                if (et == QEvent::Resize || et == QEvent::Show
+                    || et == QEvent::WindowStateChange) {
+                    updateGraphInspectorResponsiveness();
+                }
+            }
+            return false;
+        };
+        this->installEventFilter(winResizeFilter);
+    }
+
+    updateGraphInspectorResponsiveness();
+    updateUndoRedoActionsForActiveWindow();
 
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
@@ -2300,6 +2559,10 @@ void ApplicationWindow::insertTranslatedStrings()
 
     if (d_modern_ribbon)
         d_modern_ribbon->retranslateUi();
+    if (d_graph_inspector_dock)
+        d_graph_inspector_dock->retranslateUi();
+    if (GraphMiniToolbar *mtb = GraphMiniToolbar::instance())
+        mtb->retranslateUi();
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
@@ -2408,6 +2671,8 @@ void ApplicationWindow::initMainMenu()
         view->addAction(actionWorkspaceLayoutMdi);
     view->addSeparator();
     view->addAction(actionTabbedWorkspaceView);
+    if (actionToggleGraphInspector)
+        view->addAction(actionToggleGraphInspector);
     view->addAction(actionToggleMiniToolbar);
     connect(view, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
     view->addSeparator();
@@ -2507,6 +2772,8 @@ void ApplicationWindow::initMainMenu()
     graph->addAction(actionTogglePageView);
     graph->addMenu(stylePresetsMenu);
     graph->addMenu(framePresetsMenu);
+    if (actionToggleGraphInspector)
+        graph->addAction(actionToggleGraphInspector);
     graph->addAction(actionToggleMiniToolbar);
     graph->addSeparator();
     graph->addAction(actionCopyGraphFormat);
@@ -4089,9 +4356,12 @@ void ApplicationWindow::applyColorPaletteByAction()
         palName = act->text();
 
     if (d_workspace.activeSubWindow() && d_workspace.activeSubWindow()->inherits("MultiLayer")) {
-        Graph *g = static_cast<MultiLayer *>(d_workspace.activeSubWindow())->activeGraph();
+        MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+        Graph *g = ml->activeGraph();
         if (g) {
+            const QString before = ml->captureUndoSnapshot();
             g->applyColorPaletteByName(palName, false);
+            ml->pushUndoSnapshot(tr("Apply Color Palette"), before);
             emit modified();
         }
     }
@@ -4118,7 +4388,9 @@ void ApplicationWindow::applyAspectRatioByAction()
         if (!ok || ratio <= 0.0)
             return;
     }
+    const QString before = ml->captureUndoSnapshot();
     ml->applyAspectRatioPreset(ratio, true);
+    ml->pushUndoSnapshot(tr("Graph Aspect Ratio"), before);
     if (actionKeepAspectRatio)
         actionKeepAspectRatio->setChecked(ml->keepAspectRatio());
     emit modified();
@@ -4129,7 +4401,9 @@ void ApplicationWindow::setGraphKeepAspectRatio(bool keep)
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    const QString before = ml->captureUndoSnapshot();
     ml->setKeepAspectRatio(keep);
+    ml->pushUndoSnapshot(tr("Keep Aspect Ratio"), before);
     emit modified();
 }
 
@@ -6055,11 +6329,40 @@ Matrix *ApplicationWindow::matrix(const QString &name)
 
 void ApplicationWindow::windowActivated(QMdiSubWindow *w)
 {
+    if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
+        mt->cancelScheduledAndHide();
+
     if (d_modern_ribbon)
         d_modern_ribbon->updateActiveContext(qobject_cast<MyWidget *>(w));
 
-    if (!w || !w->inherits("MyWidget"))
+    MultiLayer *targetMl = qobject_cast<MultiLayer *>(w);
+    if (!targetMl && w && d_modern_ribbon
+        && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+        const QList<QMdiSubWindow *> history =
+                d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+        for (int i = history.size() - 1; i >= 0; --i) {
+            MultiLayer *cand = qobject_cast<MultiLayer *>(history.at(i));
+            if (!cand || hiddenWindows.contains(cand) || outWindows.contains(cand))
+                continue;
+            if (current_folder && cand->folder() && cand->folder() != current_folder)
+                continue;
+            if (cand->isVisible()) {
+                targetMl = cand;
+                break;
+            }
+        }
+    }
+
+    if (d_graph_inspector_dock)
+        d_graph_inspector_dock->setTargetMultiLayer(targetMl);
+
+    updateGraphInspectorResponsiveness();
+    updateUndoRedoActionsForActiveWindow();
+
+    if (!w || !w->inherits("MyWidget")) {
+        syncGraphPageAndToolbarMenuState();
         return;
+    }
 
     customToolBars((MyWidget *)w);
     customMenu((MyWidget *)w);
@@ -6067,6 +6370,8 @@ void ApplicationWindow::windowActivated(QMdiSubWindow *w)
     Folder *f = ((MyWidget *)w)->folder();
     if (f)
         f->setActiveWindow((MyWidget *)w);
+
+    syncGraphPageAndToolbarMenuState();
 }
 
 void ApplicationWindow::addErrorBars()
@@ -6118,12 +6423,13 @@ void ApplicationWindow::defineErrorBars(const QString &name, int type, const QSt
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
     Table *w = table(name);
-    if (!w) { // user defined function
+    if (!w || !w->d_future_table) { // user defined function
         if (!isNonInteractiveContext(this)) {
             QMessageBox::critical(
                     this, tr("Error bars error"),
@@ -6132,29 +6438,40 @@ void ApplicationWindow::defineErrorBars(const QString &name, int type, const QSt
         return;
     }
 
-    DataCurve *master_curve = (DataCurve *)g->curve(name);
+    DataCurve *master_curve = dynamic_cast<DataCurve *>(g->curve(name));
+    if (!master_curve)
+        return;
     QString xColName = master_curve->xColumnName();
     if (xColName.isEmpty())
         return;
 
-    Column *errors = new Column("1", SciDAVis::ColumnMode::Numeric);
-    Column *data;
-    if (direction == QwtErrorPlotCurve::Horizontal) {
-        errors->setPlotDesignation(SciDAVis::xErr);
-        data = w->d_future_table->column(xColName);
-    } else {
-        errors->setPlotDesignation(SciDAVis::yErr);
-        data = w->d_future_table->column(name);
-    }
+    const QString srcColName = (direction == QwtErrorPlotCurve::Horizontal) ? xColName : name;
+    const int srcColIdx = w->colIndex(srcColName);
+    Column *data = (srcColIdx >= 0) ? w->column(srcColIdx) : nullptr;
     if (!data)
         return;
 
-    int rows = data->rowCount();
+    const QString baseLabel = w->colLabel(srcColIdx)
+            + (direction == QwtErrorPlotCurve::Horizontal ? QStringLiteral("_xErr")
+                                                          : QStringLiteral("_yErr"));
+    QString uniqueColName = baseLabel;
+    int suffix = 2;
+    const QStringList existingCols = w->colNames();
+    while (existingCols.contains(uniqueColName)
+           || w->colIndex(QString(w->name()) + QStringLiteral("_") + uniqueColName) >= 0) {
+        uniqueColName = baseLabel + QStringLiteral("_") + QString::number(suffix++);
+    }
+
+    Column *errors = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
+    errors->setPlotDesignation(direction == QwtErrorPlotCurve::Horizontal ? SciDAVis::xErr
+                                                                          : SciDAVis::yErr);
+
+    const int rows = data->rowCount();
     if (type == 0) {
-        double fraction = percent.toDouble() / 100.0;
+        const double fraction = percent.toDouble() / 100.0;
         for (int i = 0; i < rows; i++)
-            errors->setValueAt(i, data->valueAt(i) * fraction);
-    } else if (type == 1) {
+            errors->setValueAt(i, std::abs(data->valueAt(i) * fraction));
+    } else if (type == 1 && rows > 0) {
         double average = 0.0;
         double dev = 0.0;
         for (int i = 0; i < rows; i++)
@@ -6166,8 +6483,16 @@ void ApplicationWindow::defineErrorBars(const QString &name, int type, const QSt
         for (int i = 0; i < rows; i++)
             errors->setValueAt(i, dev);
     }
+
+    const QString beforeSnap = ml->captureUndoSnapshot();
     w->d_future_table->addChild(errors);
-    g->addErrorBars(xColName, name, w, errors->name(), direction);
+    const QString fullErrColName = QString(w->name()) + QStringLiteral("_") + errors->name();
+    g->addErrorBars(xColName, name, w, fullErrColName, direction);
+    g->updatePlot();
+    ml->pushUndoSnapshot(tr("Add Error Bars"), beforeSnap);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
+    emit modified();
 }
 
 void ApplicationWindow::defineErrorBars(const QString &curveName, const QString &errColumnName,
@@ -6208,11 +6533,17 @@ void ApplicationWindow::defineErrorBars(const QString &curveName, const QString 
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString beforeSnap = ml->captureUndoSnapshot();
     g->addErrorBars(curveName, errTable, errColumnName, direction);
+    g->updatePlot();
+    ml->pushUndoSnapshot(tr("Add Error Bars"), beforeSnap);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
     emit modified();
 }
 
@@ -8498,8 +8829,7 @@ bool ApplicationWindow::saveProject()
 
     setWindowTitle("ToriGraph - " + projectname);
     savedProject();
-    actionUndo->setEnabled(false);
-    actionRedo->setEnabled(false);
+    updateUndoRedoActionsForActiveWindow();
 
     if (autoSave) {
         if (savingTimerId)
@@ -8747,8 +9077,11 @@ void ApplicationWindow::showCurvesDialog()
         QMessageBox::warning(this, tr("Error"),
                              tr("This functionality is not available for pie plots!"));
     } else {
+        MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
         CurvesDialog *crvDialog = new CurvesDialog(this);
         crvDialog->setAttribute(Qt::WA_DeleteOnClose);
+        crvDialog->setProperty("targetMultiLayerPtr",
+                               QVariant::fromValue(static_cast<QObject *>(ml)));
         crvDialog->setGraph(g);
         crvDialog->resize(d_add_curves_dialog_size);
         crvDialog->show();
@@ -8779,10 +9112,47 @@ void ApplicationWindow::showPlotAssociations(int curve)
 
     AssociationsDialog *ad = new AssociationsDialog(this, Qt::WindowStaysOnTopHint);
     ad->setAttribute(Qt::WA_DeleteOnClose);
+    ad->setProperty("targetMultiLayerPtr",
+                    QVariant::fromValue(static_cast<QObject *>(static_cast<MultiLayer *>(w))));
     ad->setGraph(g);
     ad->initTablesList(tableList(), curve);
     ad->exec();
 }
+
+namespace {
+struct ModalMultiLayerUndoHelper
+{
+    QPointer<MultiLayer> ml;
+    QString label;
+    QString beforeSnap;
+    int countBefore = 0;
+    int indexBefore = 0;
+
+    ModalMultiLayerUndoHelper(MultiLayer *target, const QString &undoLabel)
+        : ml(target), label(undoLabel)
+    {
+        if (ml && !ml->isRestoringSnapshot()) {
+            beforeSnap = ml->captureUndoSnapshot();
+            if (QUndoStack *us = ml->undoStack()) {
+                countBefore = us->count();
+                indexBefore = us->index();
+            }
+        }
+    }
+
+    void commitIfChanged()
+    {
+        if (!ml || beforeSnap.isEmpty() || ml->isRestoringSnapshot())
+            return;
+        if (QUndoStack *us = ml->undoStack()) {
+            if (us->count() != countBefore || us->index() != indexBefore)
+                return;
+        }
+        if (ml->captureUndoSnapshot() != beforeSnap)
+            ml->pushUndoSnapshot(label, beforeSnap);
+    }
+};
+} // namespace
 
 void ApplicationWindow::showTitleDialog()
 {
@@ -8793,8 +9163,10 @@ void ApplicationWindow::showTitleDialog()
         return;
 
     if (w->inherits("MultiLayer")) {
-        Graph *g = ((MultiLayer *)w)->activeGraph();
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        Graph *g = ml->activeGraph();
         if (g) {
+            ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Title"));
             TextDialog *td = new TextDialog(TextDialog::AxisTitle, this, Qt::Widget);
             td->setAttribute(Qt::WA_DeleteOnClose);
             connect(td, SIGNAL(changeFont(const QFont &)), g, SLOT(setTitleFont(const QFont &)));
@@ -8809,12 +9181,10 @@ void ApplicationWindow::showTitleDialog()
             td->setTextColor(t.color());
             td->setAlignment(t.renderFlags());
             td->exec();
+            undoHelper.commitIfChanged();
         }
     } else if (w->inherits("Graph3D")) {
-        Plot3DDialog *pd = (Plot3DDialog *)showPlot3dDialog();
-        if (pd)
-            pd->showTitleTab();
-        delete pd;
+        openPlot3dDialogConfigured([](Plot3DDialog *pd) { pd->showTitleTab(); });
     }
 }
 
@@ -8825,8 +9195,10 @@ void ApplicationWindow::showXAxisTitleDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Axis Title"));
         TextDialog *td = new TextDialog(TextDialog::AxisTitle, this, Qt::Widget);
         td->setAttribute(Qt::WA_DeleteOnClose);
         connect(td, SIGNAL(changeFont(const QFont &)), g, SLOT(setXAxisTitleFont(const QFont &)));
@@ -8842,6 +9214,7 @@ void ApplicationWindow::showXAxisTitleDialog()
         td->setAlignment(g->axisTitleAlignment(2));
         td->setWindowTitle(tr("X Axis Title"));
         td->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -8852,8 +9225,10 @@ void ApplicationWindow::showYAxisTitleDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Axis Title"));
         TextDialog *td = new TextDialog(TextDialog::AxisTitle, this, Qt::Widget);
         td->setAttribute(Qt::WA_DeleteOnClose);
         connect(td, SIGNAL(changeFont(const QFont &)), g, SLOT(setYAxisTitleFont(const QFont &)));
@@ -8869,6 +9244,7 @@ void ApplicationWindow::showYAxisTitleDialog()
         td->setAlignment(g->axisTitleAlignment(0));
         td->setWindowTitle(tr("Y Axis Title"));
         td->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -8879,8 +9255,10 @@ void ApplicationWindow::showRightAxisTitleDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Axis Title"));
         TextDialog *td = new TextDialog(TextDialog::AxisTitle, this, Qt::Widget);
         td->setAttribute(Qt::WA_DeleteOnClose);
         connect(td, SIGNAL(changeFont(const QFont &)), g,
@@ -8898,6 +9276,7 @@ void ApplicationWindow::showRightAxisTitleDialog()
         td->setAlignment(g->axisTitleAlignment(1));
         td->setWindowTitle(tr("Right Axis Title"));
         td->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -8908,8 +9287,10 @@ void ApplicationWindow::showTopAxisTitleDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Axis Title"));
         TextDialog *td = new TextDialog(TextDialog::AxisTitle, this, Qt::Widget);
         td->setAttribute(Qt::WA_DeleteOnClose);
         connect(td, SIGNAL(changeFont(const QFont &)), g, SLOT(setTopAxisTitleFont(const QFont &)));
@@ -8925,6 +9306,7 @@ void ApplicationWindow::showTopAxisTitleDialog()
         td->setAlignment(g->axisTitleAlignment(3));
         td->setWindowTitle(tr("Top Axis Title"));
         td->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -9174,9 +9556,38 @@ void ApplicationWindow::showGeneralPlotDialog()
     if (plot->inherits("MultiLayer") && ((MultiLayer *)plot)->layers())
         showPlotDialog();
     else if (plot->inherits("Graph3D")) {
-        if (auto gd = dynamic_cast<Plot3DDialog *>(showScaleDialog()))
-            gd->showGeneralTab();
+        openPlot3dDialogConfigured([](Plot3DDialog *gd) { gd->showGeneralTab(); });
     }
+}
+
+AxesDialog *ApplicationWindow::openAxesDialogConfigured(
+        const std::function<void(AxesDialog *)> &configure)
+{
+    if (isNonInteractiveContext(this))
+        return nullptr;
+    QWidget *w = d_workspace.activeSubWindow();
+    if (!w || !w->inherits("MultiLayer"))
+        return nullptr;
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    if (ml->isEmpty())
+        return nullptr;
+    Graph *g = ml->activeGraph();
+    if (!g)
+        return nullptr;
+
+    auto &ad = addChild<AxesDialog>();
+    ad.setAttribute(Qt::WA_DeleteOnClose, true);
+    connect(&ad, &QDialog::finished, &ad, &QObject::deleteLater);
+    ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+    ad.setGraph(g);
+    ad.setCurrentScale(QwtScaleDraw::BottomScale);
+    if (configure)
+        configure(&ad);
+    QPointer<AxesDialog> guard(&ad);
+    ad.exec();
+    if (guard && guard->isVisible() && configure)
+        configure(guard.data());
+    return guard.data();
 }
 
 void ApplicationWindow::showAxisDialog()
@@ -9186,17 +9597,15 @@ void ApplicationWindow::showAxisDialog()
         return;
 
     if (plot->inherits("MultiLayer") && ((MultiLayer *)plot)->layers()) {
-        if (auto gd = dynamic_cast<AxesDialog *>(showScaleDialog()))
-            gd->showAxesPage();
-    } else if (plot->inherits("Graph3D"))
-        if (auto gd = dynamic_cast<Plot3DDialog *>(showScaleDialog()))
-            gd->showAxisTab();
+        openAxesDialogConfigured([](AxesDialog *gd) { gd->showAxesPage(); });
+    } else if (plot->inherits("Graph3D")) {
+        openPlot3dDialogConfigured([](Plot3DDialog *gd) { gd->showAxisTab(); });
+    }
 }
 
 void ApplicationWindow::showGridDialog()
 {
-    if (auto gd = dynamic_cast<AxesDialog *>(showScaleDialog()))
-        gd->showGridPage();
+    openAxesDialogConfigured([](AxesDialog *gd) { gd->showGridPage(); });
 }
 
 QDialog *ApplicationWindow::showScaleDialog()
@@ -9208,14 +9617,7 @@ QDialog *ApplicationWindow::showScaleDialog()
         return 0;
 
     if (w->inherits("MultiLayer")) {
-        if (((MultiLayer *)w)->isEmpty())
-            return 0;
-
-        Graph *g = ((MultiLayer *)w)->activeGraph();
-        auto &ad = addChild<AxesDialog>();
-        ad.setGraph(g);
-        ad.exec();
-        return &ad;
+        return openAxesDialogConfigured(nullptr);
     } else if (w->inherits("Graph3D"))
         return showPlot3dDialog();
 
@@ -9224,37 +9626,34 @@ QDialog *ApplicationWindow::showScaleDialog()
 
 AxesDialog *ApplicationWindow::showScalePageFromAxisDialog(int axisPos)
 {
-    AxesDialog *gd = (AxesDialog *)showScaleDialog();
-    if (gd)
-        gd->setCurrentScale(axisPos);
-
-    return gd;
+    return openAxesDialogConfigured([axisPos](AxesDialog *gd) { gd->setCurrentScale(axisPos); });
 }
 
 AxesDialog *ApplicationWindow::showAxisPageFromAxisDialog(int axisPos)
 {
-    AxesDialog *gd = (AxesDialog *)showScaleDialog();
-    if (gd) {
+    return openAxesDialogConfigured([axisPos](AxesDialog *gd) {
         gd->showAxesPage();
         gd->setCurrentScale(axisPos);
-    }
-    return gd;
+    });
 }
 
-QDialog *ApplicationWindow::showPlot3dDialog()
+Plot3DDialog *ApplicationWindow::openPlot3dDialogConfigured(
+        const std::function<void(Plot3DDialog *)> &configure)
 {
     if (isNonInteractiveContext(this))
-        return 0;
+        return nullptr;
     if (d_workspace.activeSubWindow() && d_workspace.activeSubWindow()->inherits("Graph3D")) {
         Graph3D *g = (Graph3D *)d_workspace.activeSubWindow();
         if (!g->hasData()) {
             QApplication::restoreOverrideCursor();
             QMessageBox::warning(this, tr("Warning"),
                                  tr("Not available for empty 3D surface plots!"));
-            return 0;
+            return nullptr;
         }
 
         Plot3DDialog *pd = new Plot3DDialog(this);
+        pd->setAttribute(Qt::WA_DeleteOnClose, true);
+        connect(pd, &QDialog::finished, pd, &QObject::deleteLater);
         pd->setPlot(g);
 
         connect(pd,
@@ -9360,10 +9759,18 @@ QDialog *ApplicationWindow::showPlot3dDialog()
         else if (g->matrix())
             pd->customWorksheetBtn(tr("&Matrix"));
 
+        if (configure)
+            configure(pd);
+        QPointer<Plot3DDialog> guard(pd);
         pd->exec();
-        return pd;
-    } else
-        return 0;
+        return guard.data();
+    }
+    return nullptr;
+}
+
+QDialog *ApplicationWindow::showPlot3dDialog()
+{
+    return openPlot3dDialogConfigured(nullptr);
 }
 
 void ApplicationWindow::showPlotDialog(int curveKey)
@@ -9375,12 +9782,14 @@ void ApplicationWindow::showPlotDialog(int curveKey)
         return;
 
     if (w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
         PlotDialog *pd = new PlotDialog(d_extended_plot_dialog, this);
         pd->setAttribute(Qt::WA_DeleteOnClose);
-        pd->setMultiLayer((MultiLayer *)w);
+        pd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+        pd->setMultiLayer(ml);
         pd->insertColumnsList(columnsList());
         if (curveKey >= 0) {
-            Graph *g = ((MultiLayer *)w)->activeGraph();
+            Graph *g = ml->activeGraph();
             if (g)
                 pd->selectCurve(g->curveIndex(curveKey));
         }
@@ -9442,24 +9851,43 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
         QAction *actLine = plotTypeMenu->addAction(tr("&Line"));
         QAction *actScatter = plotTypeMenu->addAction(tr("&Scatter"));
         QAction *actLineSym = plotTypeMenu->addAction(tr("Line + &Symbol"));
-        connect(actLine, &QAction::triggered, this, [this, g, curveIdx]() {
-            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
-                g->setCurveType(curveIdx, Graph::Line);
-                g->updatePlot();
+        QPointer<Graph> gGuard(g);
+        connect(actLine, &QAction::triggered, this, [this, gGuard, curveIdx]() {
+            if (gGuard && curveIdx >= 0 && curveIdx < gGuard->curves()) {
+                MultiLayer *ml = gGuard->multiLayerParent();
+                const QString before = ml ? ml->captureUndoSnapshot() : QString();
+                if (ml)
+                    invalidateModelessGraphDialogs(ml);
+                gGuard->setCurveType(curveIdx, Graph::Line);
+                gGuard->updatePlot();
+                if (ml)
+                    ml->pushUndoSnapshot(tr("Change Plot Type"), before);
                 emit modified();
             }
         });
-        connect(actScatter, &QAction::triggered, this, [this, g, curveIdx]() {
-            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
-                g->setCurveType(curveIdx, Graph::Scatter);
-                g->updatePlot();
+        connect(actScatter, &QAction::triggered, this, [this, gGuard, curveIdx]() {
+            if (gGuard && curveIdx >= 0 && curveIdx < gGuard->curves()) {
+                MultiLayer *ml = gGuard->multiLayerParent();
+                const QString before = ml ? ml->captureUndoSnapshot() : QString();
+                if (ml)
+                    invalidateModelessGraphDialogs(ml);
+                gGuard->setCurveType(curveIdx, Graph::Scatter);
+                gGuard->updatePlot();
+                if (ml)
+                    ml->pushUndoSnapshot(tr("Change Plot Type"), before);
                 emit modified();
             }
         });
-        connect(actLineSym, &QAction::triggered, this, [this, g, curveIdx]() {
-            if (g && curveIdx >= 0 && curveIdx < g->curves()) {
-                g->setCurveType(curveIdx, Graph::LineSymbols);
-                g->updatePlot();
+        connect(actLineSym, &QAction::triggered, this, [this, gGuard, curveIdx]() {
+            if (gGuard && curveIdx >= 0 && curveIdx < gGuard->curves()) {
+                MultiLayer *ml = gGuard->multiLayerParent();
+                const QString before = ml ? ml->captureUndoSnapshot() : QString();
+                if (ml)
+                    invalidateModelessGraphDialogs(ml);
+                gGuard->setCurveType(curveIdx, Graph::LineSymbols);
+                gGuard->updatePlot();
+                if (ml)
+                    ml->pushUndoSnapshot(tr("Change Plot Type"), before);
                 emit modified();
             }
         });
@@ -9535,13 +9963,17 @@ void ApplicationWindow::showAllCurves()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString before = ml->captureUndoSnapshot();
     for (int i = 0; i < g->curves(); i++)
         g->showCurve(i);
     g->replot();
+    ml->pushUndoSnapshot(tr("Show All Curves"), before);
+    emit modified();
 }
 
 void ApplicationWindow::hideOtherCurves()
@@ -9549,16 +9981,20 @@ void ApplicationWindow::hideOtherCurves()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString before = ml->captureUndoSnapshot();
     int curveKey = actionHideOtherCurves->data().toInt();
     for (int i = 0; i < g->curves(); i++)
         g->showCurve(i, false);
 
     g->showCurve(g->curveIndex(curveKey));
     g->replot();
+    ml->pushUndoSnapshot(tr("Hide Other Curves"), before);
+    emit modified();
 }
 
 void ApplicationWindow::hideCurve()
@@ -9566,12 +10002,16 @@ void ApplicationWindow::hideCurve()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString before = ml->captureUndoSnapshot();
     int curveKey = actionHideCurve->data().toInt();
     g->showCurve(g->curveIndex(curveKey), false);
+    ml->pushUndoSnapshot(tr("Hide Curve"), before);
+    emit modified();
 }
 
 void ApplicationWindow::removeCurve()
@@ -9579,13 +10019,29 @@ void ApplicationWindow::removeCurve()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString before = ml->captureUndoSnapshot();
     int curveKey = actionRemoveCurve->data().toInt();
     g->removeCurve(g->curveIndex(curveKey));
     g->updatePlot();
+    for (QDialog *dlg : findChildren<QDialog *>()) {
+        if (!dlg || dlg->isModal())
+            continue;
+        if (qobject_cast<PlotDialog *>(dlg) || qobject_cast<CurveRangeDialog *>(dlg)
+            || qobject_cast<CurvesDialog *>(dlg) || qobject_cast<FunctionDialog *>(dlg)) {
+            const QVariant tp = dlg->property("targetMultiLayerPtr");
+            if (!tp.isValid() || tp.value<QObject *>() == static_cast<QObject *>(ml)) {
+                invalidateModelessGraphDialogs(ml);
+                break;
+            }
+        }
+    }
+    ml->pushUndoSnapshot(tr("Remove Curve"), before);
+    emit modified();
 }
 
 void ApplicationWindow::showCurveWorksheet(Graph *g, int curveIndex)
@@ -9688,7 +10144,9 @@ void ApplicationWindow::setAutoScale()
 
     Graph *g = (Graph *)plot->activeGraph();
     if (g) {
+        const QString before = plot->captureUndoSnapshot();
         g->setAutoScale();
+        plot->pushUndoSnapshot(tr("Autoscale Axes"), before);
         emit modified();
     }
 }
@@ -9909,12 +10367,14 @@ void ApplicationWindow::showExpDecayDialog(int type)
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g || !g->validCurvesDataSize())
         return;
 
     ExpDecayDialog *edd = new ExpDecayDialog(type, this);
     edd->setAttribute(Qt::WA_DeleteOnClose);
+    edd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     connect(g, SIGNAL(destroyed()), edd, SLOT(close()));
 
     edd->setGraph(g);
@@ -9955,6 +10415,7 @@ void ApplicationWindow::showFitDialog()
 
     FitDialog *fd = new FitDialog(this);
     fd->setAttribute(Qt::WA_DeleteOnClose);
+    fd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(plot)));
     connect(fd, SIGNAL(clearFunctionsList()), this, SLOT(clearFitFunctionsList()));
     connect(fd, SIGNAL(saveFunctionsList(const QStringList &)), this,
             SLOT(saveFitFunctionsList(const QStringList &)));
@@ -9973,10 +10434,12 @@ void ApplicationWindow::showFilterDialog(int filter)
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g && g->validCurvesDataSize()) {
         FilterDialog *fd = new FilterDialog(filter, this);
         fd->setAttribute(Qt::WA_DeleteOnClose);
+        fd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
         fd->setGraph(g);
         fd->exec();
     }
@@ -10012,15 +10475,19 @@ void ApplicationWindow::showFFTDialog()
 
     FFTDialog *sd = 0;
     if (w->inherits("MultiLayer")) {
-        Graph *g = ((MultiLayer *)w)->activeGraph();
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        Graph *g = ml->activeGraph();
         if (g && g->validCurvesDataSize()) {
             sd = new FFTDialog(FFTDialog::onGraph, this);
             sd->setAttribute(Qt::WA_DeleteOnClose);
+            sd->setProperty("targetMultiLayerPtr",
+                            QVariant::fromValue(static_cast<QObject *>(ml)));
             sd->setGraph(g);
         }
     } else if (w->inherits("Table")) {
         sd = new FFTDialog(FFTDialog::onTable, this);
         sd->setAttribute(Qt::WA_DeleteOnClose);
+        sd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(nullptr)));
         sd->setTable((Table *)w);
     }
 
@@ -10035,12 +10502,14 @@ void ApplicationWindow::showSmoothDialog(int m)
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g || !g->validCurvesDataSize())
         return;
 
     SmoothCurveDialog *sd = new SmoothCurveDialog(m, this);
     sd->setAttribute(Qt::WA_DeleteOnClose);
+    sd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     sd->setGraph(g);
     sd->exec();
 }
@@ -10067,12 +10536,14 @@ void ApplicationWindow::showInterpolationDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g || !g->validCurvesDataSize())
         return;
 
     InterpolationDialog *id = new InterpolationDialog(this);
     id->setAttribute(Qt::WA_DeleteOnClose);
+    id->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     connect(g, SIGNAL(destroyed()), id, SLOT(close()));
     id->setGraph(g);
     id->show();
@@ -10085,12 +10556,14 @@ void ApplicationWindow::showFitPolynomDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g || !g->validCurvesDataSize())
         return;
 
     PolynomFitDialog *pfd = new PolynomFitDialog(this);
     pfd->setAttribute(Qt::WA_DeleteOnClose);
+    pfd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     connect(g, SIGNAL(destroyed()), pfd, SLOT(close()));
     pfd->setGraph(g);
     pfd->show();
@@ -10117,12 +10590,14 @@ void ApplicationWindow::showIntegrationDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g || !g->validCurvesDataSize())
         return;
 
     IntDialog *id = new IntDialog(this);
     id->setAttribute(Qt::WA_DeleteOnClose);
+    id->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     connect(g, SIGNAL(destroyed()), id, SLOT(close()));
     id->setGraph(g);
     id->show();
@@ -10286,10 +10761,12 @@ void ApplicationWindow::newLegend()
 
     Graph *g = (Graph *)plot->activeGraph();
     if (g) {
+        const QString before = plot->captureUndoSnapshot();
         if (g->legend())
             g->reconstructLegend();
         else
             g->newLegend();
+        plot->pushUndoSnapshot(tr("New Legend"), before);
         emit modified();
     }
 }
@@ -10310,8 +10787,12 @@ void ApplicationWindow::addTimeStamp()
     }
 
     Graph *g = (Graph *)plot->activeGraph();
-    if (g)
+    if (g) {
+        const QString before = plot->captureUndoSnapshot();
         g->addTimeStamp();
+        plot->pushUndoSnapshot(tr("Add Time Stamp"), before);
+        emit modified();
+    }
 }
 
 void ApplicationWindow::disableAddText()
@@ -10397,8 +10878,11 @@ void ApplicationWindow::addImage()
         imagesDirPath = fi.absolutePath();
 
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+        const QString before = plot->captureUndoSnapshot();
         g->addImage(fn);
+        plot->pushUndoSnapshot(tr("Add Image"), before);
         QApplication::restoreOverrideCursor();
+        emit modified();
     }
 }
 
@@ -10457,12 +10941,14 @@ void ApplicationWindow::showImageDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
         ImageMarker *im = (ImageMarker *)g->selectedMarkerPtr();
         if (!im)
             return;
 
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Annotation"));
         ImageDialog *id = new ImageDialog(this);
         id->setAttribute(Qt::WA_DeleteOnClose);
         connect(id, SIGNAL(setGeometry(int, int, int, int)), g,
@@ -10471,6 +10957,7 @@ void ApplicationWindow::showImageDialog()
         id->setOrigin(im->origin());
         id->setSize(im->size());
         id->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -10490,6 +10977,7 @@ void ApplicationWindow::showLayerDialog()
 
     LayerDialog *id = new LayerDialog(this);
     id->setAttribute(Qt::WA_DeleteOnClose);
+    id->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(plot)));
     id->setMultiLayer(plot);
     id->exec();
 }
@@ -10504,6 +10992,7 @@ void ApplicationWindow::showPlotGeometryDialog()
     MultiLayer *plot = (MultiLayer *)d_workspace.activeSubWindow();
     Graph *g = plot->activeGraph();
     if (g) {
+        ModalMultiLayerUndoHelper undoHelper(plot, tr("Layer Geometry"));
         ImageDialog *id = new ImageDialog(this);
         id->setAttribute(Qt::WA_DeleteOnClose);
         connect(id, SIGNAL(setGeometry(int, int, int, int)), plot,
@@ -10513,6 +11002,7 @@ void ApplicationWindow::showPlotGeometryDialog()
         id->setOrigin(g->pos());
         id->setSize(g->plotWidget()->size());
         id->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -10523,12 +11013,15 @@ void ApplicationWindow::showTextDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
         Legend *m = (Legend *)g->selectedMarkerPtr();
         if (!m)
             return;
 
+        const QString undoLbl = (m == g->legend()) ? tr("Modify Legend") : tr("Edit Annotation");
+        ModalMultiLayerUndoHelper undoHelper(ml, undoLbl);
         TextDialog *td = new TextDialog(TextDialog::TextMarker, this, Qt::Widget);
         td->setAttribute(Qt::WA_DeleteOnClose);
         connect(td,
@@ -10546,6 +11039,7 @@ void ApplicationWindow::showTextDialog()
         td->setBackgroundType(m->frameStyle());
         td->setAngle(m->angle());
         td->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -10556,15 +11050,18 @@ void ApplicationWindow::showLineDialog()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (g) {
         ArrowMarker *lm = (ArrowMarker *)g->selectedMarkerPtr();
         if (!lm)
             return;
 
+        ModalMultiLayerUndoHelper undoHelper(ml, tr("Edit Annotation"));
         LineDialog *ld = new LineDialog(lm, this);
         ld->setAttribute(Qt::WA_DeleteOnClose);
         ld->exec();
+        undoHelper.commitIfChanged();
     }
 }
 
@@ -10591,14 +11088,22 @@ void ApplicationWindow::clearSelection()
     else if (m->inherits("Matrix"))
         ((Matrix *)m)->clearSelection();
     else if (m->inherits("MultiLayer")) {
-        Graph *g = ((MultiLayer *)m)->activeGraph();
+        MultiLayer *plot = static_cast<MultiLayer *>(m);
+        Graph *g = plot->activeGraph();
         if (!g)
             return;
 
-        if (g->titleSelected())
+        if (g->titleSelected()) {
+            ModalMultiLayerUndoHelper undoHelper(plot, tr("Clear Title"));
             g->removeTitle();
-        else if (g->markerSelected())
+            undoHelper.commitIfChanged();
+        } else if (g->markerSelected()) {
+            const bool isPrimaryLeg = (g->selectedMarkerPtr() == g->legend());
+            ModalMultiLayerUndoHelper undoHelper(
+                    plot, isPrimaryLeg ? tr("Remove Legend") : tr("Remove Annotation"));
             g->removeMarker();
+            undoHelper.commitIfChanged();
+        }
     } else if (m->inherits("Note"))
         ((Note *)m)->textWidget()->clear();
     emit modified();
@@ -10654,11 +11159,18 @@ void ApplicationWindow::cutSelection()
         if (!g)
             return;
         if (g->markerSelected()) {
+            const bool isPrimaryLeg = (g->selectedMarkerPtr() == g->legend());
+            ModalMultiLayerUndoHelper undoHelper(
+                    plot, isPrimaryLeg ? tr("Remove Legend") : tr("Cut Annotation"));
             copyMarker();
             g->removeMarker();
+            undoHelper.commitIfChanged();
         } else {
+            invalidateModelessGraphDialogs(plot);
+            ModalMultiLayerUndoHelper undoHelper(plot, tr("Cut Layer"));
             copyActiveLayer();
             plot->removeLayer();
+            undoHelper.commitIfChanged();
         }
     } else if (m->inherits("Note"))
         ((Note *)m)->textWidget()->cut();
@@ -10720,6 +11232,8 @@ void ApplicationWindow::pasteSelection()
         MultiLayer *plot = (MultiLayer *)m;
         if (!plot)
             return;
+        const QString before = plot->captureUndoSnapshot();
+        const int prevCount = plot->undoStack() ? plot->undoStack()->count() : 0;
         if (copiedLayer) {
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
@@ -10753,6 +11267,8 @@ void ApplicationWindow::pasteSelection()
                 g->setCopiedImageName(auxMrkFileName);
             g->pasteMarker();
         }
+        if (!plot->undoStack() || plot->undoStack()->count() == prevCount)
+            plot->pushUndoSnapshot(tr("Paste Selection"), before);
     }
     emit modified();
 }
@@ -10856,16 +11372,78 @@ MyWidget *ApplicationWindow::clone(MyWidget *w)
 
 void ApplicationWindow::undo()
 {
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-    d_project->undoStack()->undo();
-    QApplication::restoreOverrideCursor();
+    if (QWidget *fw = QApplication::focusWidget()) {
+        if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
+            if (!le->isReadOnly() && (le->isUndoAvailable() || le->isModified())) {
+                le->undo();
+                return;
+            }
+        } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
+            if (!te->isReadOnly() && te->document() && te->document()->isUndoAvailable()) {
+                te->undo();
+                return;
+            }
+        } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
+            if (!pte->isReadOnly() && pte->document() && pte->document()->isUndoAvailable()) {
+                pte->undo();
+                return;
+            }
+        }
+    }
+
+    QMdiSubWindow *sw = d_workspace.activeSubWindow();
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+        if (ml->undoStack() && ml->undoStack()->canUndo()) {
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            ml->undoStack()->undo();
+            QApplication::restoreOverrideCursor();
+        }
+    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
+        if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            d_project->undoStack()->undo();
+            QApplication::restoreOverrideCursor();
+        }
+    }
+    updateUndoRedoActionsForActiveWindow();
 }
 
 void ApplicationWindow::redo()
 {
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-    d_project->undoStack()->redo();
-    QApplication::restoreOverrideCursor();
+    if (QWidget *fw = QApplication::focusWidget()) {
+        if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
+            if (!le->isReadOnly() && le->isRedoAvailable()) {
+                le->redo();
+                return;
+            }
+        } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
+            if (!te->isReadOnly() && te->document() && te->document()->isRedoAvailable()) {
+                te->redo();
+                return;
+            }
+        } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
+            if (!pte->isReadOnly() && pte->document() && pte->document()->isRedoAvailable()) {
+                pte->redo();
+                return;
+            }
+        }
+    }
+
+    QMdiSubWindow *sw = d_workspace.activeSubWindow();
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+        if (ml->undoStack() && ml->undoStack()->canRedo()) {
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            ml->undoStack()->redo();
+            QApplication::restoreOverrideCursor();
+        }
+    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
+        if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            d_project->undoStack()->redo();
+            QApplication::restoreOverrideCursor();
+        }
+    }
+    updateUndoRedoActionsForActiveWindow();
 }
 
 bool ApplicationWindow::hidden(MyWidget *window)
@@ -11072,6 +11650,9 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
         }
     } else if (w->inherits("MultiLayer")) {
         MultiLayer *ml = (MultiLayer *)w;
+        invalidateModelessGraphDialogs(ml);
+        if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+            d_graph_inspector_dock->setTargetMultiLayer(nullptr);
         for (QWidget *gw : ml->graphPtrs()) {
             if (gw)
                 RecalcManager::instance(this)->removeLinksForGraph(static_cast<Graph *>(gw));
@@ -11086,6 +11667,9 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
         hiddenWindows.takeAt(hiddenWindows.indexOf(w));
     else if (outWindows.contains(w))
         outWindows.takeAt(outWindows.indexOf(w));
+
+    updateUndoRedoActionsForActiveWindow();
+    updateGraphInspectorResponsiveness();
 }
 
 void ApplicationWindow::closeWindow(MyWidget *window)
@@ -11306,8 +11890,8 @@ void ApplicationWindow::modifiedProject(MyWidget *w)
 {
     modifiedProject();
 
-    actionUndo->setEnabled(true);
     lastModified = w;
+    updateUndoRedoActionsForActiveWindow();
 }
 
 void ApplicationWindow::timerEvent(QTimerEvent *e)
@@ -11320,6 +11904,12 @@ void ApplicationWindow::timerEvent(QTimerEvent *e)
 
 void ApplicationWindow::dropEvent(QDropEvent *e)
 {
+    if (e && e->mimeData()
+        && e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
+        if (handleColumnMimeDrop(e->mimeData(), nullptr, nullptr, -1, false))
+            e->acceptProposedAction();
+        return;
+    }
     if (e->mimeData()->hasUrls()) {
         QStringList asciiFiles;
         QList<QUrl> urls = e->mimeData()->urls();
@@ -11357,6 +11947,11 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
 
 void ApplicationWindow::dragEnterEvent(QDragEnterEvent *e)
 {
+    if (e && e->mimeData()
+        && e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
+        e->acceptProposedAction();
+        return;
+    }
     if (e->source()) {
         e->ignore();
         return;
@@ -11619,19 +12214,20 @@ QStringList ApplicationWindow::dependingPlots(const QString &name)
 QStringList ApplicationWindow::multilayerDependencies(MyWidget *w)
 {
     QStringList tables;
-    MultiLayer *g = (MultiLayer *)w;
+    MultiLayer *g = qobject_cast<MultiLayer *>(w);
+    if (!g)
+        return tables;
     QWidgetList graphsList = g->graphPtrs();
     for (int i = 0; i < graphsList.count(); i++) {
-        Graph *ag = (Graph *)graphsList.at(i);
-        QStringList onPlot = ag->curvesList();
+        Graph *ag = qobject_cast<Graph *>(graphsList.at(i));
+        if (!ag)
+            continue;
+        const QStringList onPlot = ag->curvesList();
         for (int j = 0; j < onPlot.count(); j++) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            QStringList tl = onPlot[j].split("_", Qt::SkipEmptyParts);
-#else
-            QStringList tl = onPlot[j].split("_", QString::SkipEmptyParts);
-#endif
-            if (!tables.contains(tl[0]))
-                tables << tl[0];
+            if (Table *t = table(onPlot[j])) {
+                if (!tables.contains(t->name()))
+                    tables << t->name();
+            }
         }
     }
     return tables;
@@ -12188,12 +12784,16 @@ void ApplicationWindow::setCurveFullRange()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
     if (!g)
         return;
 
+    const QString before = ml->captureUndoSnapshot();
     int curveKey = actionCurveFullRange->data().toInt();
     g->setCurveFullRange(g->curveIndex(curveKey));
+    ml->pushUndoSnapshot(tr("Change Curve Range"), before);
+    emit modified();
 }
 
 void ApplicationWindow::showCurveRangeDialog()
@@ -12219,6 +12819,8 @@ CurveRangeDialog *ApplicationWindow::showCurveRangeDialog(Graph *g, int curve)
 
     CurveRangeDialog *crd = new CurveRangeDialog(this);
     crd->setAttribute(Qt::WA_DeleteOnClose);
+    if (MultiLayer *ml = g->multiLayerParent())
+        crd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     crd->setCurveToModify(g, curve);
     crd->show();
     return crd;
@@ -12248,6 +12850,8 @@ void ApplicationWindow::showFunctionDialog(Graph *g, int curve)
     FunctionDialog *fd = functionDialog();
     if (!fd)
         return;
+    if (MultiLayer *ml = g->multiLayerParent())
+        fd->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     fd->setWindowTitle(tr("Edit function"));
     fd->setCurveToModify(g, curve);
 }
@@ -12288,8 +12892,11 @@ void ApplicationWindow::addFunctionCurve()
     Graph *g = ((MultiLayer *)w)->activeGraph();
     if (g) {
         FunctionDialog *fd = functionDialog();
-        if (fd)
+        if (fd) {
+            fd->setProperty("targetMultiLayerPtr",
+                            QVariant::fromValue(static_cast<QObject *>(static_cast<MultiLayer *>(w))));
             fd->setGraph(g);
+        }
     }
 }
 
@@ -13869,26 +14476,44 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 curve[3] = remapRenamedTableRef(app->renamedTables, curve[3]);
                 curve[4] = remapRenamedTableRef(app->renamedTables, curve[4]);
             }
-            {
+            bool errAdded = false;
+            if (ag && curve.size() >= 11) {
                 ScopedDisableRenamedLookup guard;
                 Table *w = app->table(curve[3]);
                 Table *errTable = app->table(curve[4]);
                 if (w && errTable) {
-                    ag->addErrorBars(curve[2], curve[3], errTable, curve[4], curve[1].toInt(),
-                                     curve[5].toInt(), curve[6].toInt(), QColor(COLORVALUE(curve[7])),
-                                     curve[8].toInt(), curve[10].toInt(), curve[9].toInt());
+                    errAdded = ag->addErrorBars(curve[2], curve[3], errTable, curve[4],
+                                                curve[1].toInt(), curve[5].toInt(),
+                                                curve[6].toInt(), QColor(COLORVALUE(curve[7])),
+                                                curve[8].toInt(), curve[10].toInt(),
+                                                curve[9].toInt());
+                    if (errAdded) {
+                        if (QwtPlotCurve *errC = ag->curve(curveID)) {
+                            if (curve.size() >= 12) {
+                                errC->setVisible(curve[11].toInt() != 0);
+                            } else {
+                                QwtPlotCurve *masterC = ag->curve(curve[3]);
+                                errC->setVisible(masterC ? masterC->isVisible() : true);
+                            }
+                        }
+                        curveID++;
+                    }
                 }
             }
-            curveID++;
         } else if (s == "<spectrogram>") {
-            curveID++;
             QStringList lst;
-            while (s != "</spectrogram>") {
+            while (s != "</spectrogram>" && j + 1 < (int)list.count()) {
                 s = list[++j];
                 lst << s;
             }
-            lst.pop_back();
-            ag->restoreSpectrogram(app, lst);
+            if (!lst.isEmpty() && lst.last() == "</spectrogram>")
+                lst.pop_back();
+            if (ag) {
+                const int prevCurves = ag->curves();
+                ag->restoreSpectrogram(app, lst);
+                if (ag->curves() > prevCurves)
+                    curveID += (ag->curves() - prevCurves);
+            }
         } else if (s.left(6) == "scale\t") {
             QStringList scl = s.split("\t");
             scl.pop_front();
@@ -14061,7 +14686,9 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                     case Graph::AxisType::Txt: {
                         const QString colRef = remapRenamedTableRef(app->renamedTables, lst[1]);
                         ScopedDisableRenamedLookup guard;
-                        ag->setLabelsTextFormat(i, app->table(colRef), colRef);
+                        Table *lblTbl = app->table(colRef);
+                        if (lblTbl && lblTbl->colIndex(colRef) >= 0)
+                            ag->setLabelsTextFormat(i, lblTbl, colRef);
                         break;
                     }
                     case Graph::AxisType::ColHeader: {
@@ -14081,7 +14708,9 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                     case Graph::AxisType::Txt: {
                         const QString colRef = remapRenamedTableRef(app->renamedTables, fList[i + 1]);
                         ScopedDisableRenamedLookup guard;
-                        ag->setLabelsTextFormat(i, app->table(colRef), colRef);
+                        Table *lblTbl = app->table(colRef);
+                        if (lblTbl && lblTbl->colIndex(colRef) >= 0)
+                            ag->setLabelsTextFormat(i, lblTbl, colRef);
                         break;
                     }
                     case Graph::AxisType::ColHeader: {
@@ -14511,6 +15140,15 @@ void ApplicationWindow::connectMultilayerPlot(MultiLayer *g)
     connect(g, SIGNAL(createIntensityTable(const QString &)), this,
             SLOT(importImage(const QString &)));
     connect(g, SIGNAL(setPointerCursor()), this, SLOT(pickPointerCursor()));
+
+    if (QUndoStack *us = g->undoStack()) {
+        connect(us, &QUndoStack::canUndoChanged, this,
+                [this](bool) { updateUndoRedoActionsForActiveWindow(); });
+        connect(us, &QUndoStack::canRedoChanged, this,
+                [this](bool) { updateUndoRedoActionsForActiveWindow(); });
+        connect(us, &QUndoStack::indexChanged, this,
+                [this](int) { updateUndoRedoActionsForActiveWindow(); });
+    }
 
     g->askOnCloseEvent(confirmClosePlot2D);
 }
@@ -15489,6 +16127,19 @@ void ApplicationWindow::createActions()
     connect(actionToggleMiniToolbar, SIGNAL(toggled(bool)), this,
             SLOT(toggleGraphMiniToolbar(bool)));
 
+    actionToggleGraphInspector =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("inspector")),
+                        tr("&Graph Inspector Dock"), this);
+    actionToggleGraphInspector->setObjectName(QStringLiteral("actionToggleGraphInspector"));
+    actionToggleGraphInspector->setCheckable(true);
+    actionToggleGraphInspector->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I));
+    actionToggleGraphInspector->setShortcutContext(Qt::ApplicationShortcut);
+    actionToggleGraphInspector->setToolTip(
+            tr("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)"));
+    connect(actionToggleGraphInspector, &QAction::triggered, this,
+            [this](bool) { toggleGraphInspectorDock(); });
+    addAction(actionToggleGraphInspector);
+
     // Phase 4: Additional Gadgets
     actionGadgetDifferentiate = new QAction(tr("&Differentiate Gadget..."), this);
     connect(actionGadgetDifferentiate, SIGNAL(triggered()), this,
@@ -15787,7 +16438,7 @@ void ApplicationWindow::translateActionsStrings()
 
     actionLoad->setText(tr("&Import ASCII..."));
     actionLoad->setToolTip(tr("Import data file(s)"));
-    actionLoad->setShortcut(tr("Ctrl+Shift+I"));
+    actionLoad->setShortcut(tr("Ctrl+Alt+I"));
 
     actionUndo->setText(tr("&Undo"));
     actionUndo->setToolTip(tr("Undo changes"));
@@ -15798,6 +16449,7 @@ void ApplicationWindow::translateActionsStrings()
     actionRedo->setShortcuts(QList<QKeySequence>()
                              << QKeySequence(tr("Ctrl+Y"))
                              << QKeySequence(tr("Ctrl+Shift+Z")));
+    updateUndoRedoActionsForActiveWindow();
 
     actionCopyWindow->setText(tr("&Duplicate"));
     actionCopyWindow->setToolTip(tr("Duplicate window"));
@@ -16587,6 +17239,12 @@ void ApplicationWindow::translateActionsStrings()
         actionToggleFocusHudMode->setText(tr("&Focus HUD Mode"));
         actionToggleFocusHudMode->setToolTip(tr("Toggle Focus HUD Mode (F11)"));
     }
+    if (actionToggleGraphInspector) {
+        actionToggleGraphInspector->setText(tr("&Graph Inspector Dock"));
+        actionToggleGraphInspector->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I));
+        actionToggleGraphInspector->setToolTip(
+                tr("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)"));
+    }
     if (actionWorkspaceLayoutTabbed)
         actionWorkspaceLayoutTabbed->setText(tr("&Tabbed Workspace"));
     if (actionWorkspaceLayoutSplit)
@@ -17103,6 +17761,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QDialog *dlg = new QDialog(this, Qt::Window);
     dlg->setAttribute(Qt::WA_DeleteOnClose, true);
     dlg->setModal(false);
+    if (MultiLayer *ml = g->multiLayerParent())
+        dlg->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
     dlg->setWindowTitle(tr("Peak Analyzer (OriginPro)"));
     dlg->setMinimumSize(620, 540);
     d_active_peak_analyzer_dlg = dlg;
@@ -20411,6 +21071,8 @@ void ApplicationWindow::receivedVersionFile(QNetworkReply *netreply)
 void ApplicationWindow::setOleEmbeddedMode(bool embedded)
 {
     d_ole_embedded = embedded;
+    if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
+        mt->cancelScheduledAndHide();
     if (embedded) {
         if (d_python_server)
             d_python_server->stop();
@@ -20423,14 +21085,19 @@ void ApplicationWindow::setOleEmbeddedMode(bool embedded)
             actionToggleFocusHudMode->setEnabled(false);
         if (actionCommandPalette)
             actionCommandPalette->setEnabled(false);
+        if (actionToggleGraphInspector)
+            actionToggleGraphInspector->setEnabled(false);
     } else {
         if (actionToggleFocusHudMode)
             actionToggleFocusHudMode->setEnabled(true);
         if (actionCommandPalette)
             actionCommandPalette->setEnabled(true);
+        if (actionToggleGraphInspector)
+            actionToggleGraphInspector->setEnabled(true);
         if (d_modern_ribbon && !d_modern_ribbon->isFocusHudMode())
             d_modern_ribbon->show();
     }
+    updateGraphInspectorResponsiveness();
 }
 
 void ApplicationWindow::setHeadlessMode(bool headless)
@@ -20647,6 +21314,14 @@ void ApplicationWindow::fitFrameToLayer()
 
 ApplicationWindow::~ApplicationWindow()
 {
+    if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
+        mt->cancelScheduledAndHide();
+
+    if (d_graph_inspector_dock) {
+        d_graph_inspector_dock->setTargetMultiLayer(nullptr);
+        d_graph_inspector_dock->hide();
+    }
+
     if (d_python_server) {
         d_python_server->stop();
         delete d_python_server;
@@ -21060,7 +21735,12 @@ void ApplicationWindow::showHistory()
 {
     if (isNonInteractiveContext(this))
         return;
-    if (!d_project->undoStack())
+    QUndoStack *targetStack = d_project ? d_project->undoStack() : nullptr;
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow())) {
+        if (ml->undoStack())
+            targetStack = ml->undoStack();
+    }
+    if (!targetStack)
         return;
     QDialog dialog;
     QVBoxLayout layout(&dialog);
@@ -21072,8 +21752,8 @@ void ApplicationWindow::showHistory()
     QObject::connect(&button_box, SIGNAL(accepted()), &dialog, SLOT(accept()));
     QObject::connect(&button_box, SIGNAL(rejected()), &dialog, SLOT(reject()));
 
-    int index = d_project->undoStack()->index();
-    QUndoView undo_view(d_project->undoStack());
+    int index = targetStack->index();
+    QUndoView undo_view(targetStack);
 
     layout.addWidget(&undo_view);
     layout.addWidget(&button_box);
@@ -21082,7 +21762,7 @@ void ApplicationWindow::showHistory()
     if (dialog.exec() == QDialog::Accepted)
         return;
 
-    d_project->undoStack()->setIndex(index);
+    targetStack->setIndex(index);
 }
 
 QStringList ApplicationWindow::tableWindows()
@@ -21926,7 +22606,12 @@ void ApplicationWindow::showPageSetupDialog()
     QWidget *w = d_workspace.activeSubWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
-    static_cast<MultiLayer *>(w)->showPageSetupDialog();
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    const QString before = ml->captureUndoSnapshot();
+    const int prevCount = ml->undoStack() ? ml->undoStack()->count() : 0;
+    ml->showPageSetupDialog();
+    if (!ml->undoStack() || ml->undoStack()->count() == prevCount)
+        ml->pushUndoSnapshot(tr("Page Setup"), before);
     syncGraphPageAndToolbarMenuState();
     emit modified();
 }
@@ -21936,7 +22621,10 @@ void ApplicationWindow::fitPageToLayers()
     QWidget *w = d_workspace.activeSubWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
-    static_cast<MultiLayer *>(w)->fitPageToLayers();
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    const QString before = ml->captureUndoSnapshot();
+    ml->fitPageToLayers();
+    ml->pushUndoSnapshot(tr("Fit Page to Layers"), before);
     emit modified();
 }
 
@@ -21945,7 +22633,10 @@ void ApplicationWindow::fitLayersToPage()
     QWidget *w = d_workspace.activeSubWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
-    static_cast<MultiLayer *>(w)->fitLayersToPage();
+    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    const QString before = ml->captureUndoSnapshot();
+    ml->fitLayersToPage();
+    ml->pushUndoSnapshot(tr("Fit Layers to Page"), before);
     emit modified();
 }
 
@@ -21955,7 +22646,9 @@ void ApplicationWindow::togglePageViewMode()
     if (!w || !w->inherits("MultiLayer"))
         return;
     MultiLayer *ml = static_cast<MultiLayer *>(w);
+    const QString before = ml->captureUndoSnapshot();
     ml->setPageViewMode(!ml->pageViewMode());
+    ml->pushUndoSnapshot(tr("Toggle Page View"), before);
     syncGraphPageAndToolbarMenuState();
 }
 
@@ -21965,8 +22658,13 @@ void ApplicationWindow::addLinkedTopRightLayer()
     if (!w || !w->inherits("MultiLayer"))
         return;
     MultiLayer *ml = static_cast<MultiLayer *>(w);
-    if (ml->addLinkedLayer())
+    const QString before = ml->captureUndoSnapshot();
+    if (ml->addLinkedLayer()) {
+        ml->pushUndoSnapshot(tr("Add Linked Layer"), before);
+        if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+            d_graph_inspector_dock->setTargetMultiLayer(ml, true);
         emit modified();
+    }
 }
 
 void ApplicationWindow::addZoomInsetLayer()
@@ -21975,8 +22673,13 @@ void ApplicationWindow::addZoomInsetLayer()
     if (!w || !w->inherits("MultiLayer"))
         return;
     MultiLayer *ml = static_cast<MultiLayer *>(w);
-    if (ml->addInsetLayer())
+    const QString before = ml->captureUndoSnapshot();
+    if (ml->addInsetLayer()) {
+        ml->pushUndoSnapshot(tr("Add Inset Layer"), before);
+        if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+            d_graph_inspector_dock->setTargetMultiLayer(ml, true);
         emit modified();
+    }
 }
 
 void ApplicationWindow::applyFrameBoxInward()
@@ -21984,7 +22687,11 @@ void ApplicationWindow::applyFrameBoxInward()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
     if (!g)
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     g->applyFramePreset(Graph::FrameBoxInwardTicks);
+    if (ml)
+        ml->pushUndoSnapshot(tr("Apply Frame Preset"), before);
     emit modified();
 }
 
@@ -21993,7 +22700,11 @@ void ApplicationWindow::applyFrameBoxPlain()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
     if (!g)
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     g->applyFramePreset(Graph::FrameBoxPlainOpposite);
+    if (ml)
+        ml->pushUndoSnapshot(tr("Apply Frame Preset"), before);
     emit modified();
 }
 
@@ -22002,7 +22713,11 @@ void ApplicationWindow::applyFrameOpenL()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
     if (!g)
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     g->applyFramePreset(Graph::FrameOpenL);
+    if (ml)
+        ml->pushUndoSnapshot(tr("Apply Frame Preset"), before);
     emit modified();
 }
 
@@ -22011,7 +22726,11 @@ void ApplicationWindow::applyFrameZeroCrossed()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
     if (!g)
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     g->applyFramePreset(Graph::FrameZeroCrossed);
+    if (ml)
+        ml->pushUndoSnapshot(tr("Apply Frame Preset"), before);
     emit modified();
 }
 
@@ -22037,6 +22756,16 @@ void ApplicationWindow::syncGraphPageAndToolbarMenuState()
         actionTogglePageView->setChecked(pageViewOn);
         actionTogglePageView->blockSignals(false);
     }
+    if (actionToggleGraphInspector) {
+        const bool inspectorExpanded = d_graph_inspector_dock
+                && !d_graph_inspector_dock->isHidden()
+                && !d_graph_inspector_dock->isCollapsedRail();
+        actionToggleGraphInspector->blockSignals(true);
+        actionToggleGraphInspector->setChecked(inspectorExpanded);
+        actionToggleGraphInspector->blockSignals(false);
+    }
+    if (d_modern_ribbon)
+        d_modern_ribbon->syncCheckableStates();
 }
 
 void ApplicationWindow::attachDifferentiateGadget()
@@ -22177,6 +22906,7 @@ struct CopiedCurveFormatSpec
     QBrush brush;
     QwtPlotCurve::CurveStyle curveStyle = QwtPlotCurve::Lines;
     QwtSymbol symbol;
+    bool symbolHollow = false;
 };
 
 struct CopiedLayerFormatSpec
@@ -22236,6 +22966,9 @@ struct CopiedLayerFormatSpec
     QColor legendBgColor = QColor(Qt::white);
     int legendFrameStyle = 0;
     int legendNumColumns = 1;
+    bool hasLegendNormPos = false;
+    double legendNormX = 0.0;
+    double legendNormY = 0.0;
 
     QVector<CopiedCurveFormatSpec> curves;
     QVector<Graph::ReferenceLineSpec> referenceLines;
@@ -22343,6 +23076,15 @@ static CopiedLayerFormatSpec captureLayerFormat(Graph *g)
         spec.legendBgColor = leg->backgroundColor();
         spec.legendFrameStyle = leg->frameStyle();
         spec.legendNumColumns = leg->numColumns();
+        if (g->plotWidget() && g->plotWidget()->canvas()) {
+            const QRect cr = g->plotWidget()->canvas()->contentsRect();
+            if (cr.width() > 4 && cr.height() > 4) {
+                const QPoint tl = leg->rect().topLeft();
+                spec.hasLegendNormPos = true;
+                spec.legendNormX = double(tl.x() - cr.left()) / double(cr.width());
+                spec.legendNormY = double(tl.y() - cr.top()) / double(cr.height());
+            }
+        }
     }
 
     for (int i = 0; i < g->curves(); ++i) {
@@ -22355,11 +23097,28 @@ static CopiedLayerFormatSpec captureLayerFormat(Graph *g)
         cf.brush = c->brush();
         cf.curveStyle = c->style();
         cf.symbol = c->symbol();
+        cf.symbolHollow = Graph::isSymbolWhiteHollow(cf.symbol);
         spec.curves.append(cf);
     }
 
     spec.referenceLines = g->referenceLines();
     return spec;
+}
+
+static void applyLegendNormalizedPosition(Graph *dstG, const CopiedLayerFormatSpec &spec)
+{
+    if (!dstG || !spec.valid || !spec.hasLegend || !spec.hasLegendNormPos)
+        return;
+    Legend *leg = dstG->legend();
+    if (!leg || !dstG->plotWidget() || !dstG->plotWidget()->canvas())
+        return;
+    dstG->plotWidget()->updateLayout();
+    const QRect cr = dstG->plotWidget()->canvas()->contentsRect();
+    if (cr.width() > 4 && cr.height() > 4) {
+        const int nx = cr.left() + qRound(spec.legendNormX * double(cr.width()));
+        const int ny = cr.top() + qRound(spec.legendNormY * double(cr.height()));
+        leg->setOrigin(QPoint(nx, ny));
+    }
 }
 
 static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatSpec &spec)
@@ -22441,6 +23200,7 @@ static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatS
         leg->setBackgroundColor(spec.legendBgColor);
         leg->setFrameStyle(spec.legendFrameStyle);
         leg->setNumColumns(spec.legendNumColumns);
+        applyLegendNormalizedPosition(dstG, spec);
     }
 
     if (!spec.curves.isEmpty()) {
@@ -22454,9 +23214,12 @@ static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatS
             const CopiedCurveFormatSpec &cf =
                     spec.curves[directMatch ? visibleIdx : (spec.curves.size() - 1)];
             if (directMatch) {
+                dstG->setCurveStyle(i, cf.curveStyle);
                 dstG->setCurvePen(i, cf.pen);
                 dstG->setCurveBrush(i, cf.brush);
                 dstG->setCurveSymbol(i, cf.symbol);
+                if (cf.symbolHollow)
+                    dstG->setCurveSymbolHollow(i, true);
             } else {
                 QPen p = c->pen();
                 p.setWidthF(cf.pen.widthF());
@@ -22465,11 +23228,15 @@ static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatS
                 p.setJoinStyle(cf.pen.joinStyle());
                 dstG->setCurvePen(i, p);
                 QwtSymbol s = c->symbol();
+                if (cf.symbol.style() != QwtSymbol::NoSymbol && s.style() == QwtSymbol::NoSymbol)
+                    s.setStyle(cf.symbol.style());
                 s.setSize(cf.symbol.size());
                 QPen sp = s.pen();
                 sp.setWidthF(cf.symbol.pen().widthF());
                 s.setPen(sp);
                 dstG->setCurveSymbol(i, s);
+                if (cf.symbolHollow || Graph::isSymbolWhiteHollow(s))
+                    dstG->setCurveSymbolHollow(i, cf.symbolHollow);
             }
             ++visibleIdx;
         }
@@ -22532,6 +23299,8 @@ void ApplicationWindow::pasteGraphFormat()
     if (!dstMl || dstMl->isEmpty())
         return;
 
+    const bool suppressInnerUndo = dstMl->property("_suppressInnerUndoPush").toBool();
+    const QString before = suppressInnerUndo ? QString() : dstMl->captureUndoSnapshot();
     dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
                       s_copiedGraphFormat.topMargin, s_copiedGraphFormat.bottomMargin);
     dstMl->setSpacing(s_copiedGraphFormat.rowsSpacing, s_copiedGraphFormat.colsSpacing);
@@ -22554,10 +23323,21 @@ void ApplicationWindow::pasteGraphFormat()
                 ? s_copiedGraphFormat.allLayers[i]
                 : s_copiedGraphFormat.activeLayer;
         applyLayerFormatNonDestructive(dstLayers[i], lspec);
-        if (dstLayers[i]->legend())
-            dstLayers[i]->reconstructLegend();
     }
     dstMl->arrangeLayers(false, false);
+    for (int i = 0; i < dstLayers.size(); ++i) {
+        const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
+                ? s_copiedGraphFormat.allLayers[i]
+                : s_copiedGraphFormat.activeLayer;
+        if (lspec.hasLegend && lspec.hasLegendNormPos && dstLayers[i]->legend()) {
+            applyLegendNormalizedPosition(dstLayers[i], lspec);
+            dstLayers[i]->replot();
+        }
+    }
+    if (!suppressInnerUndo)
+        dstMl->pushUndoSnapshot(tr("Paste Graph Format"), before);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == dstMl)
+        d_graph_inspector_dock->setTargetMultiLayer(dstMl, true);
     emit modified();
     if (statusBar())
         statusBar()->showMessage(tr("Applied copied graph format to %1.").arg(dstMl->name()), 3000);
@@ -23025,7 +23805,9 @@ void ApplicationWindow::applyStyleISIJJournal()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
+    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+    ml->pushUndoSnapshot(tr("Apply ISIJ Style Preset"), before);
     emit modified();
 }
 
@@ -23035,7 +23817,9 @@ void ApplicationWindow::applyStylePresentationSlide()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
+    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+    ml->pushUndoSnapshot(tr("Apply Presentation Slide Preset"), before);
     emit modified();
 }
 
@@ -23045,7 +23829,9 @@ void ApplicationWindow::applyStyleNatureCompact()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
+    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
+    ml->pushUndoSnapshot(tr("Apply Compact Journal Preset"), before);
     emit modified();
 }
 
@@ -23094,6 +23880,8 @@ void ApplicationWindow::showStackOffsetsDialog()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);
     if (!g || !g->plotWidget())
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString beforeUndoSnap = ml ? ml->captureUndoSnapshot() : QString();
 
     QList<PlotCurve *> targetCurves;
     for (int i = 0; i < g->curves(); ++i) {
@@ -23506,6 +24294,8 @@ void ApplicationWindow::showStackOffsetsDialog()
         g->setProperty("stackAutoscale", finalAuto);
         g->setProperty("stackReverseOrder", finalRev);
         emit g->modifiedGraph();
+        if (ml)
+            ml->pushUndoSnapshot(tr("Waterfall / Y-Offset Stack"), beforeUndoSnap);
         emit modified();
     } else {
         restoreInitialSnapshot();
@@ -23522,12 +24312,16 @@ void ApplicationWindow::resetActiveGraphStackOffsets()
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, false);
     if (!g)
         return;
+    MultiLayer *ml = g->multiLayerParent();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     g->resetStackOffsets();
     g->setProperty("stackOffsetMode", 0);
     g->setProperty("yStackOffsetPercent", 0.0);
     g->setProperty("xStackOffsetPercent", 0.0);
     g->setProperty("normalizeStackZeroOne", false);
     g->setProperty("stackReverseOrder", false);
+    if (ml)
+        ml->pushUndoSnapshot(tr("Reset Stack Offsets"), before);
     emit modified();
 }
 
@@ -23642,4 +24436,581 @@ void ApplicationWindow::showClusteringDialog()
     if (isNonInteractiveContext(this))
         return;
     GraphStatsAndSurfaceFit::showClusteringDialog(this);
+}
+
+// ============================================================================
+// Slice 2: OriginPro GraphInspectorDock, Per-MultiLayer Undo/Redo & Column Drop
+// ============================================================================
+
+void ApplicationWindow::toggleGraphInspectorDock()
+{
+    if (!d_graph_inspector_dock || d_ole_embedded)
+        return;
+    if (d_modern_ribbon && d_modern_ribbon->isFocusHudMode())
+        return;
+
+    if (d_graph_inspector_dock->isHidden() || d_graph_inspector_dock->isCollapsedRail()) {
+        d_inspector_user_closed = false;
+        d_inspector_user_pinned = true;
+        d_graph_inspector_dock->setUserPinned(true);
+        d_graph_inspector_dock->show();
+        d_graph_inspector_dock->setCollapsedRail(false);
+    } else {
+        d_inspector_user_pinned = false;
+        d_graph_inspector_dock->setUserPinned(false);
+        d_graph_inspector_dock->setCollapsedRail(true);
+    }
+
+    if (d_modern_ribbon && !d_ole_embedded
+        && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+        d_modern_ribbon->applySplitWorkspaceGeometry();
+    }
+    syncGraphPageAndToolbarMenuState();
+}
+
+void ApplicationWindow::updateGraphInspectorResponsiveness()
+{
+    if (!d_graph_inspector_dock)
+        return;
+
+    const bool focusMode = (d_modern_ribbon && d_modern_ribbon->isFocusHudMode());
+    if (d_ole_embedded || focusMode || d_headless_mode) {
+        if (!d_graph_inspector_dock->isHidden())
+            d_graph_inspector_dock->hide();
+        syncGraphPageAndToolbarMenuState();
+        return;
+    }
+
+    if (d_inspector_user_closed) {
+        if (!d_graph_inspector_dock->isHidden())
+            d_graph_inspector_dock->hide();
+        syncGraphPageAndToolbarMenuState();
+        return;
+    }
+
+    if (d_graph_inspector_dock->isHidden())
+        d_graph_inspector_dock->show();
+
+    if (d_inspector_user_pinned) {
+        if (d_graph_inspector_dock->isCollapsedRail())
+            d_graph_inspector_dock->setCollapsedRail(false);
+        syncGraphPageAndToolbarMenuState();
+        return;
+    }
+
+    QMdiSubWindow *activeSw = d_workspace.activeSubWindow();
+    const bool isSplitLayout = d_modern_ribbon
+            && (d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph);
+    const bool activeIsGraph = (qobject_cast<MultiLayer *>(activeSw) != nullptr);
+    const bool hasSplitGraphTarget =
+            isSplitLayout && (d_graph_inspector_dock->targetMultiLayer() != nullptr);
+
+    // Hysteresis-free width measurement invariant to current dock expansion state
+    const int dockCurW = (!d_graph_inspector_dock->isHidden()) ? d_graph_inspector_dock->width() : 0;
+    const int totalAvailW = (d_central_container && d_central_container->width() > 100)
+            ? (d_central_container->width() + dockCurW)
+            : width();
+
+    bool shouldCollapse = false;
+    if (width() < 1080) {
+        shouldCollapse = true;
+    } else if (!activeIsGraph && !hasSplitGraphTarget) {
+        // Active window is Table / Matrix / Note / Graph3D / empty workspace without Split Graph
+        shouldCollapse = true;
+    } else if (isSplitLayout && totalAvailW < 1680) {
+        shouldCollapse = true;
+    }
+
+    if (d_graph_inspector_dock->isCollapsedRail() != shouldCollapse) {
+        d_graph_inspector_dock->setCollapsedRail(shouldCollapse);
+        if (isSplitLayout && d_modern_ribbon)
+            d_modern_ribbon->applySplitWorkspaceGeometry();
+    }
+    syncGraphPageAndToolbarMenuState();
+}
+
+void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
+{
+    if (!actionUndo || !actionRedo)
+        return;
+
+    bool canU = false;
+    bool canR = false;
+    QString undoText = tr("&Undo");
+    QString redoText = tr("&Redo");
+
+    QMdiSubWindow *sw = d_workspace.activeSubWindow();
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+        if (QUndoStack *us = ml->undoStack()) {
+            canU = us->canUndo();
+            canR = us->canRedo();
+            if (canU && !us->undoText().trimmed().isEmpty())
+                undoText = tr("&Undo %1").arg(us->undoText().trimmed());
+            if (canR && !us->redoText().trimmed().isEmpty())
+                redoText = tr("&Redo %1").arg(us->redoText().trimmed());
+        }
+    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
+        if (d_project && d_project->undoStack()) {
+            QUndoStack *us = d_project->undoStack();
+            canU = us->canUndo();
+            canR = us->canRedo();
+            if (canU && !us->undoText().trimmed().isEmpty())
+                undoText = tr("&Undo %1").arg(us->undoText().trimmed());
+            if (canR && !us->redoText().trimmed().isEmpty())
+                redoText = tr("&Redo %1").arg(us->redoText().trimmed());
+        }
+    }
+
+    actionUndo->setEnabled(canU);
+    actionRedo->setEnabled(canR);
+    actionUndo->setText(undoText);
+    actionRedo->setText(redoText);
+}
+
+void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml)
+{
+    invalidateModelessGraphDialogs(ml, nullptr);
+}
+
+void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *excludeDlg)
+{
+    if (!ml)
+        return;
+
+    const QWidgetList layerPtrs = ml->graphPtrs();
+    if (lastCopiedLayer && layerPtrs.contains(lastCopiedLayer)) {
+        lastCopiedLayer = nullptr;
+        copiedLayer = false;
+    }
+
+    if (d_active_peak_analyzer_dlg && d_active_peak_analyzer_dlg.data() != excludeDlg) {
+        const QVariant peakTargetVar = d_active_peak_analyzer_dlg->property("targetMultiLayerPtr");
+        const QObject *peakTargetObj =
+                peakTargetVar.isValid() ? peakTargetVar.value<QObject *>() : nullptr;
+        if (!peakTargetVar.isValid() || peakTargetObj == static_cast<QObject *>(ml)) {
+            d_active_peak_analyzer_dlg->blockSignals(true);
+            d_active_peak_analyzer_dlg->disconnect();
+            d_active_peak_analyzer_dlg->hide();
+            d_active_peak_analyzer_dlg->deleteLater();
+            d_active_peak_analyzer_dlg = nullptr;
+        }
+    }
+
+    const QList<QDialog *> childDialogs = findChildren<QDialog *>();
+    for (QDialog *dlg : childDialogs) {
+        if (!dlg || dlg == excludeDlg || dlg->isModal())
+            continue;
+        const QVariant targetVar = dlg->property("targetMultiLayerPtr");
+        bool shouldInvalidate = false;
+        if (targetVar.isValid()) {
+            shouldInvalidate = (targetVar.value<QObject *>() == static_cast<QObject *>(ml));
+        } else if (dlg->testAttribute(Qt::WA_DeleteOnClose)) {
+            shouldInvalidate = (qobject_cast<PlotDialog *>(dlg) != nullptr
+                                || qobject_cast<CurvesDialog *>(dlg) != nullptr
+                                || qobject_cast<CurveRangeDialog *>(dlg) != nullptr
+                                || qobject_cast<LayerDialog *>(dlg) != nullptr
+                                || qobject_cast<FitDialog *>(dlg) != nullptr
+                                || qobject_cast<FunctionDialog *>(dlg) != nullptr
+                                || qobject_cast<ExpDecayDialog *>(dlg) != nullptr
+                                || qobject_cast<InterpolationDialog *>(dlg) != nullptr
+                                || qobject_cast<PolynomFitDialog *>(dlg) != nullptr
+                                || qobject_cast<IntDialog *>(dlg) != nullptr
+                                || qobject_cast<SmoothCurveDialog *>(dlg) != nullptr
+                                || qobject_cast<FilterDialog *>(dlg) != nullptr
+                                || qobject_cast<FFTDialog *>(dlg) != nullptr);
+        }
+        if (shouldInvalidate) {
+            dlg->blockSignals(true);
+            dlg->disconnect();
+            dlg->hide();
+            dlg->deleteLater();
+        }
+    }
+}
+
+bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLayer *targetMl,
+                                             Graph *targetGraph, int targetAxisId,
+                                             bool replaceExisting)
+{
+    if (!mimeData || !mimeData->hasFormat(QLatin1String(MultiLayer::kColumnMimeType)))
+        return false;
+
+    QJsonParseError parseErr;
+    const QJsonDocument doc = QJsonDocument::fromJson(
+            mimeData->data(QLatin1String(MultiLayer::kColumnMimeType)), &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject())
+        return false;
+
+    const QJsonObject obj = doc.object();
+    const QString tblName = obj.value(QStringLiteral("table")).toString().trimmed();
+
+    Table *tbl = nullptr;
+    if (!tblName.isEmpty()) {
+        for (MyWidget *mw : windowsList()) {
+            if (Table *cand = qobject_cast<Table *>(mw)) {
+                if (cand->name() == tblName) {
+                    tbl = cand;
+                    break;
+                }
+            }
+        }
+        if (!tbl) {
+            for (MyWidget *hw : hiddenWindows) {
+                if (Table *cand = qobject_cast<Table *>(hw)) {
+                    if (cand->name() == tblName) {
+                        tbl = cand;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!tbl) {
+        const QJsonArray fullArr = obj.value(QStringLiteral("full_columns")).toArray();
+        if (!fullArr.isEmpty())
+            tbl = table(fullArr.first().toString());
+        if (!tbl) {
+            const QJsonArray colArr = obj.value(QStringLiteral("columns")).toArray();
+            if (!colArr.isEmpty())
+                tbl = table(colArr.first().toString());
+        }
+    }
+    if (!tbl || tbl->numCols() <= 0 || tbl->numRows() <= 0)
+        return false;
+
+    replaceExisting = replaceExisting || obj.value(QStringLiteral("replace")).toBool(false);
+    const bool useRightY = (targetAxisId == QwtPlot::yRight)
+            || obj.value(QStringLiteral("right_y")).toBool(false);
+
+    auto resolveColIdx = [tbl](const QString &rawRef) -> int {
+        const QString ref = rawRef.trimmed();
+        if (ref.isEmpty())
+            return -1;
+        for (int c = 0; c < tbl->numCols(); ++c) {
+            if (tbl->colLabel(c) == ref)
+                return c;
+        }
+        int idx = tbl->colIndex(ref);
+        if (idx >= 0 && idx < tbl->numCols())
+            return idx;
+        idx = tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + ref);
+        if (idx >= 0 && idx < tbl->numCols())
+            return idx;
+        return -1;
+    };
+
+    int xColIdx = -1;
+    if (obj.contains(QStringLiteral("x_index"))) {
+        const int xi = obj.value(QStringLiteral("x_index")).toInt(-1);
+        if (xi >= 0 && xi < tbl->numCols())
+            xColIdx = xi;
+    }
+    if (xColIdx < 0)
+        xColIdx = resolveColIdx(obj.value(QStringLiteral("x_full_column")).toString());
+    if (xColIdx < 0)
+        xColIdx = resolveColIdx(obj.value(QStringLiteral("x_column")).toString());
+    if (xColIdx < 0)
+        xColIdx = resolveColIdx(obj.value(QStringLiteral("x_col")).toString());
+
+    QVector<int> rawColIndices;
+    auto appendUniqueIdx = [](QVector<int> &vec, int idx) {
+        if (idx >= 0 && !vec.contains(idx))
+            vec.append(idx);
+    };
+
+    const QJsonArray colsArr = obj.value(QStringLiteral("columns")).toArray();
+    for (const QJsonValue &v : colsArr) {
+        if (v.isDouble())
+            appendUniqueIdx(rawColIndices, v.toInt(-1));
+        else
+            appendUniqueIdx(rawColIndices, resolveColIdx(v.toString()));
+    }
+    if (rawColIndices.isEmpty()) {
+        const QJsonArray fullArr = obj.value(QStringLiteral("full_columns")).toArray();
+        for (const QJsonValue &v : fullArr)
+            appendUniqueIdx(rawColIndices, resolveColIdx(v.toString()));
+    }
+    if (rawColIndices.isEmpty()) {
+        const QJsonArray namesArr = obj.value(QStringLiteral("column_names")).toArray();
+        for (const QJsonValue &v : namesArr)
+            appendUniqueIdx(rawColIndices, resolveColIdx(v.toString()));
+    }
+    if (rawColIndices.isEmpty()) {
+        const QJsonArray idxArr = obj.value(QStringLiteral("column_indices")).toArray();
+        for (const QJsonValue &v : idxArr) {
+            const int ci = v.toInt(-1);
+            if (ci >= 0 && ci < tbl->numCols())
+                appendUniqueIdx(rawColIndices, ci);
+        }
+    }
+
+    QVector<int> errColIndices;
+    const QJsonArray errArr = obj.value(QStringLiteral("err_columns")).toArray();
+    for (const QJsonValue &v : errArr)
+        appendUniqueIdx(errColIndices, resolveColIdx(v.toString()));
+
+    bool hasNonXPlotCol = false;
+    for (int ci : rawColIndices) {
+        const int desig = tbl->colPlotDesignation(ci);
+        if (desig != SciDAVis::X && desig != SciDAVis::xErr && desig != SciDAVis::yErr) {
+            hasNonXPlotCol = true;
+            break;
+        }
+    }
+
+    QVector<int> yColIndices;
+    for (int ci : rawColIndices) {
+        const int desig = tbl->colPlotDesignation(ci);
+        if ((desig == SciDAVis::xErr || desig == SciDAVis::yErr) && rawColIndices.size() > 1)
+            appendUniqueIdx(errColIndices, ci);
+        else if (desig == SciDAVis::X && hasNonXPlotCol && xColIdx < 0)
+            continue;
+        else
+            appendUniqueIdx(yColIndices, ci);
+    }
+
+    if (yColIndices.isEmpty() && errColIndices.isEmpty())
+        return false;
+
+    // Pure error-bar drop onto an existing graph layer
+    if (yColIndices.isEmpty() && !errColIndices.isEmpty() && targetMl && !replaceExisting) {
+        Graph *ag = targetGraph ? targetGraph : targetMl->activeGraph();
+        if (!ag)
+            ag = targetMl->layer(1);
+        if (ag && ag->curves() > 0) {
+            QString targetMaster;
+            for (int k = ag->curves() - 1; k >= 0; --k) {
+                if (auto *dc = dynamic_cast<DataCurve *>(ag->curve(k))) {
+                    if (!dynamic_cast<QwtErrorPlotCurve *>(dc) && dc->table() == tbl) {
+                        targetMaster = dc->title().text();
+                        break;
+                    }
+                }
+            }
+            if (targetMaster.isEmpty()) {
+                for (int k = ag->curves() - 1; k >= 0; --k) {
+                    if (auto *dc = dynamic_cast<DataCurve *>(ag->curve(k))) {
+                        if (!dynamic_cast<QwtErrorPlotCurve *>(dc)) {
+                            targetMaster = dc->title().text();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!targetMaster.isEmpty()) {
+                const QString before = targetMl->captureUndoSnapshot();
+                bool anyAdded = false;
+                for (int eIdx : errColIndices) {
+                    const QString errFull =
+                            QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(eIdx);
+                    const int dir = (tbl->colPlotDesignation(eIdx) == SciDAVis::xErr)
+                            ? QwtErrorPlotCurve::Horizontal
+                            : QwtErrorPlotCurve::Vertical;
+                    if (ag->addErrorBars(targetMaster, tbl, errFull, dir))
+                        anyAdded = true;
+                }
+                if (anyAdded) {
+                    ag->updatePlot();
+                    targetMl->pushUndoSnapshot(tr("Drop Error Bars"), before);
+                    if (d_graph_inspector_dock)
+                        d_graph_inspector_dock->setTargetMultiLayer(targetMl, true);
+                    emit modified();
+                    return true;
+                }
+            }
+        }
+        // Fallback: plot error columns as Y if no master curve exists
+        yColIndices = errColIndices;
+        errColIndices.clear();
+    }
+
+    if (yColIndices.isEmpty())
+        return false;
+
+    const QJsonArray xColsArr = obj.value(QStringLiteral("x_columns")).toArray();
+    const bool hasExplicitStyle = obj.contains(QStringLiteral("style"));
+    int style = hasExplicitStyle ? obj.value(QStringLiteral("style")).toInt(defaultCurveStyle)
+                                 : defaultCurveStyle;
+
+    bool createdNewGraph = false;
+    if (!targetMl) {
+        targetMl = new MultiLayer("", &d_workspace, nullptr);
+        targetMl->setAttribute(Qt::WA_DeleteOnClose);
+        initMultilayerPlot(targetMl, generateUniqueName(tr("Graph")));
+        targetGraph = targetMl->addLayer();
+        if (!targetGraph)
+            return false;
+        setPreferences(targetGraph);
+        polishGraph(targetGraph, style);
+        createdNewGraph = true;
+    } else {
+        if (!targetGraph)
+            targetGraph = targetMl->activeGraph() ? targetMl->activeGraph() : targetMl->layer(1);
+        if (!targetGraph) {
+            targetGraph = targetMl->addLayer();
+            if (!targetGraph)
+                return false;
+            setPreferences(targetGraph);
+        }
+    }
+
+    if (targetGraph->linkedParentLayer())
+        targetGraph = targetGraph->linkedParentLayer();
+
+    const QString beforeSnap = createdNewGraph ? QString() : targetMl->captureUndoSnapshot();
+
+    if (replaceExisting && !createdNewGraph) {
+        invalidateModelessGraphDialogs(targetMl);
+        for (int k = targetGraph->curves() - 1; k >= 0; --k)
+            targetGraph->removeCurve(k);
+    }
+
+    int inheritedLineWidth = defaultCurveLineWidth;
+    int inheritedSymSize = defaultSymbolSize;
+    if (!createdNewGraph && !replaceExisting && targetGraph) {
+        for (int ci = 0; ci < targetGraph->curves(); ++ci) {
+            const int ct = targetGraph->curveType(ci);
+            if (ct == Graph::Line || ct == Graph::Scatter || ct == Graph::LineSymbols
+                || ct == Graph::Spline || ct == Graph::VerticalSteps
+                || ct == Graph::HorizontalSteps) {
+                if (!hasExplicitStyle)
+                    style = ct;
+                if (const QwtPlotCurve *ec = targetGraph->curve(ci)) {
+                    if (ec->pen().width() > 0)
+                        inheritedLineWidth = ec->pen().width();
+                    if (ec->symbol().size().width() > 0)
+                        inheritedSymSize = ec->symbol().size().width();
+                }
+                break;
+            }
+        }
+    }
+
+    QStringList insertedFullCols;
+    for (int pos = 0; pos < yColIndices.size(); ++pos) {
+        const int yIdx = yColIndices[pos];
+        if (yIdx < 0 || yIdx >= tbl->numCols())
+            continue;
+        int curXIdx = xColIdx;
+        if (curXIdx < 0 && pos < xColsArr.size()) {
+            const QJsonValue &xv = xColsArr.at(pos);
+            curXIdx = xv.isDouble() ? xv.toInt(-1) : resolveColIdx(xv.toString());
+        }
+        if (curXIdx < 0 || curXIdx >= tbl->numCols())
+            curXIdx = tbl->colX(yIdx);
+        if (curXIdx < 0 || curXIdx >= tbl->numCols())
+            curXIdx = tbl->firstXCol();
+        if (curXIdx < 0 || curXIdx >= tbl->numCols()) {
+            curXIdx = (yColIndices.size() == 1 && yIdx == 0 && tbl->numCols() > 1) ? 1 : 0;
+        }
+        const QString curXFullCol =
+                QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(curXIdx);
+        const QString yFullCol = QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(yIdx);
+        if (!targetGraph->insertCurve(tbl, curXFullCol, yFullCol, style))
+            continue;
+
+        const int newCurveIdx = targetGraph->curves() - 1;
+        int dataCurveOrder = 0;
+        for (int ci = 0; ci < newCurveIdx; ++ci) {
+            if (targetGraph->curveType(ci) != Graph::ErrorBars)
+                ++dataCurveOrder;
+        }
+        CurveLayout cl = targetGraph->initCurveLayout(style, dataCurveOrder);
+        cl.sSize = inheritedSymSize;
+        cl.lWidth = inheritedLineWidth;
+        targetGraph->updateCurveLayout(newCurveIdx, &cl);
+
+        if (useRightY) {
+            if (QwtPlotCurve *cv = targetGraph->curve(newCurveIdx))
+                cv->setAxis(cv->xAxis(), QwtPlot::yRight);
+        }
+        insertedFullCols.append(yFullCol);
+    }
+
+    if (insertedFullCols.isEmpty())
+        return false;
+
+    if (useRightY && targetGraph->plotWidget()) {
+        targetGraph->enableAxis(QwtPlot::yRight, true);
+        QStringList tickLbls = targetGraph->enabledTickLabels();
+        if (tickLbls.size() > QwtPlot::yRight) {
+            tickLbls[QwtPlot::yRight] = QStringLiteral("1");
+            targetGraph->setEnabledTickLabels(tickLbls);
+        }
+        targetGraph->setAxisTicksLength(QwtPlot::yRight, ScaleDraw::In, ScaleDraw::In,
+                                        targetGraph->minorTickLength(),
+                                        targetGraph->majorTickLength());
+        QFont rf = targetGraph->axisTitleFont(QwtPlot::yRight);
+        rf.setFamily(QStringLiteral("Arial"));
+        targetGraph->setAxisTitleFont(QwtPlot::yRight, rf);
+        QFont rtf = targetGraph->axisFont(QwtPlot::yRight);
+        rtf.setFamily(QStringLiteral("Arial"));
+        targetGraph->setAxisFont(QwtPlot::yRight, rtf);
+    }
+
+    if (!errColIndices.isEmpty()) {
+        const QString masterCol = insertedFullCols.last();
+        for (int eIdx : errColIndices) {
+            if (eIdx < 0 || eIdx >= tbl->numCols())
+                continue;
+            const QString errFull =
+                    QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(eIdx);
+            const int dir = (tbl->colPlotDesignation(eIdx) == SciDAVis::xErr)
+                    ? QwtErrorPlotCurve::Horizontal
+                    : QwtErrorPlotCurve::Vertical;
+            targetGraph->addErrorBars(masterCol, tbl, errFull, dir);
+        }
+    }
+
+    if (createdNewGraph) {
+        targetGraph->newLegend();
+        applyWorksheetMetadataToGraph(targetGraph, tbl, insertedFullCols, style);
+        targetGraph->setAutoScale();
+        targetMl->arrangeLayers(false, false);
+        if (targetMl->undoStack())
+            targetMl->undoStack()->clear();
+        customMenu(targetMl);
+    } else {
+        if (replaceExisting || useRightY)
+            applyWorksheetMetadataToGraph(targetGraph, tbl, insertedFullCols, style);
+        else
+            targetGraph->refreshAutoAxisTitlesFromColumns();
+
+        if (targetGraph->legend())
+            targetGraph->reconstructLegend();
+        else
+            targetGraph->newLegend();
+
+        if (replaceExisting) {
+            targetGraph->setAutoScale();
+        } else {
+            if (useRightY) {
+                if (!targetGraph->isAxisUserLocked(QwtPlot::yRight))
+                    targetGraph->setAutoScaleAxis(QwtPlot::yRight);
+            } else {
+                if (!targetGraph->isAxisUserLocked(QwtPlot::yLeft))
+                    targetGraph->setAutoScaleAxis(QwtPlot::yLeft);
+            }
+            if (!targetGraph->isAxisUserLocked(QwtPlot::xBottom))
+                targetGraph->setAutoScaleAxis(QwtPlot::xBottom);
+        }
+        targetGraph->updatePlot();
+        targetGraph->replot();
+        targetMl->pushUndoSnapshot(
+                replaceExisting ? tr("Replace Plotted Columns") : tr("Drop Columns onto Graph"),
+                beforeSnap);
+    }
+
+    targetMl->setActiveGraph(targetGraph);
+    d_workspace.setActiveSubWindow(targetMl);
+    if (d_modern_ribbon && !d_ole_embedded
+        && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+        d_modern_ribbon->applySplitWorkspaceGeometry();
+    }
+    if (d_graph_inspector_dock)
+        d_graph_inspector_dock->setTargetMultiLayer(targetMl, true);
+    updateGraphInspectorResponsiveness();
+    updateUndoRedoActionsForActiveWindow();
+    emit modified();
+    return true;
 }

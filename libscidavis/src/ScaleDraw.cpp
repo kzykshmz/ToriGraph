@@ -34,6 +34,7 @@
 #include <QPainter>
 #include <cmath>
 
+#include <qwt_layout_metrics.h>
 #include <qwt_painter.h>
 #include <qwt_scale_map.h>
 #include <qwt_text.h>
@@ -57,7 +58,10 @@ ScaleDraw::ScaleDraw(const ScaleDraw &other, const QString &s)
       d_prefix(other.d_prefix),
       d_suffix(other.d_suffix),
       d_break_enabled(other.d_break_enabled),
-      d_break_value(other.d_break_value)
+      d_break_value(other.d_break_value),
+      d_colorbar_border(other.d_colorbar_border),
+      d_colorbar_width(other.d_colorbar_width),
+      d_colorbar_pen_width(other.d_colorbar_pen_width)
 {
     other.labelFormat(d_fmt, d_prec);
     invalidateCache();
@@ -153,8 +157,67 @@ void ScaleDraw::drawTick(QPainter *p, double value, int len) const
     QwtScaleDraw::drawTick(p, value, len);
 }
 
+int ScaleDraw::extent(const QPen &pen, const QFont &font) const
+{
+    const int ext = QwtScaleDraw::extent(pen, font);
+    if (d_colorbar_border) {
+        const QwtMetricsMap map = QwtPainter::metricsMap();
+        const int extra = map.isIdentity() ? 10 : map.screenToLayoutX(10);
+        return ext + extra;
+    }
+    return ext;
+}
+
+static int s_suppressScaleBackboneDepth = 0;
+
+void setToriSuppressScaleBackboneInPrint(bool suppress)
+{
+    if (suppress)
+        ++s_suppressScaleBackboneDepth;
+    else if (s_suppressScaleBackboneDepth > 0)
+        --s_suppressScaleBackboneDepth;
+}
+
 void ScaleDraw::drawBackbone(QPainter *painter) const
 {
+    if (d_colorbar_border && d_colorbar_width > 0 && painter && length() > 1) {
+        const QwtMetricsMap map = QwtPainter::metricsMap();
+        const int cbW = map.isIdentity() ? d_colorbar_width : map.screenToLayoutX(d_colorbar_width);
+        const int cbH = map.isIdentity() ? d_colorbar_width : map.screenToLayoutY(d_colorbar_width);
+        const int layoutPw =
+                map.isIdentity() ? d_colorbar_pen_width : map.screenToLayoutX(d_colorbar_pen_width);
+        const int pw = qMax(1, qMax(layoutPw, painter->pen().width()));
+        const QPoint p0 = pos();
+        const int len = length();
+
+        QRect cbRect;
+        switch (alignment()) {
+        case RightScale:
+            cbRect = QRect(QPoint(p0.x() - cbW, p0.y()), QPoint(p0.x(), p0.y() + len - 1));
+            break;
+        case LeftScale:
+            cbRect = QRect(QPoint(p0.x(), p0.y()), QPoint(p0.x() + cbW, p0.y() + len - 1));
+            break;
+        case TopScale:
+            cbRect = QRect(QPoint(p0.x(), p0.y()), QPoint(p0.x() + len - 1, p0.y() + cbH));
+            break;
+        case BottomScale:
+            cbRect = QRect(QPoint(p0.x(), p0.y() - cbH), QPoint(p0.x() + len - 1, p0.y()));
+            break;
+        }
+
+        painter->save();
+        painter->setPen(QPen(painter->pen().color(), pw, Qt::SolidLine, Qt::SquareCap,
+                             Qt::MiterJoin));
+        painter->setBrush(Qt::NoBrush);
+        QwtPainter::drawRect(painter, cbRect);
+        painter->restore();
+        return;
+    }
+
+    if (s_suppressScaleBackboneDepth > 0)
+        return;
+
     if (!d_break_enabled || !painter) {
         QwtScaleDraw::drawBackbone(painter);
         return;

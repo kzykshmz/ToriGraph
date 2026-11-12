@@ -1,0 +1,3879 @@
+/***************************************************************************
+    File                 : GraphInspectorDock.cpp
+    Project              : ToriGraph
+    --------------------------------------------------------------------
+    Copyright            : (C) 2026 ToriGraph Project
+    Description          : OriginPro-Style Non-Modal Object Manager &
+                           Context-Sensitive Live Property Inspector Dock
+ ***************************************************************************/
+
+/***************************************************************************
+ *                                                                         *
+ *  This program is free software; you can redistribute it and/or modify   *
+ *  it under the terms of the GNU General Public License as published by   *
+ *  the Free Software Foundation; either version 2 of the License, or      *
+ *  (at your option) any later version.                                    *
+ *                                                                         *
+ *  This program is distributed in the hope that it will be useful,        *
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of         *
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the          *
+ *  GNU General Public License for more details.                           *
+ *                                                                         *
+ *   You should have received a copy of the GNU General Public License     *
+ *   along with this program; if not, write to the Free Software           *
+ *   Foundation, Inc., 51 Franklin Street, Fifth Floor,                    *
+ *   Boston, MA  02110-1301  USA                                           *
+ *                                                                         *
+ ***************************************************************************/
+
+#include "GraphInspectorDock.h"
+
+#include "ApplicationWindow.h"
+#include "ArrowMarker.h"
+#include "FunctionCurve.h"
+#include "GraphMiniToolbar.h"
+#include "Grid.h"
+#include "IconLoader.h"
+#include "ImageMarker.h"
+#include "Legend.h"
+#include "ModernUiTheme.h"
+#include "MultiLayer.h"
+#include "Plot.h"
+#include "PlotCurve.h"
+#include "QwtErrorPlotCurve.h"
+#include "ScaleDraw.h"
+#include "SymbolBox.h"
+#include "Table.h"
+
+#include <QApplication>
+#include <QButtonGroup>
+#include <QCheckBox>
+#include <QCloseEvent>
+#include <QColorDialog>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDoubleSpinBox>
+#include <QEvent>
+#include <QFileInfo>
+#include <QFrame>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPalette>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QTimer>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QVBoxLayout>
+#include <QWidgetAction>
+
+#include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
+#include <qwt_scale_div.h>
+#include <qwt_scale_engine.h>
+#include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
+#include <qwt_symbol.h>
+
+#include <cmath>
+#include <limits>
+
+namespace {
+
+enum TreeItemRoles {
+    RoleSelKind = Qt::UserRole + 1,
+    RolePrimaryId = Qt::UserRole + 2,
+    RoleSecondaryId = Qt::UserRole + 3,
+    RoleLayerIndex = Qt::UserRole + 4,
+    RoleIsGroupHeader = Qt::UserRole + 5
+};
+
+constexpr int kMergePageDims = 3101;
+constexpr int kMergeAxisScale = 3201;
+constexpr int kMergeAxisBreak = 3202;
+constexpr int kMergeAxisTitle = 3203;
+constexpr int kMergeAxisTitlePt = 3204;
+constexpr int kMergeAxisTickPt = 3205;
+constexpr int kMergeCurveWidth = 3301;
+constexpr int kMergeSymSize = 3302;
+constexpr int kMergeLegendHeader = 3401;
+constexpr int kMergeLegendCols = 3402;
+constexpr int kMergeLegendFontPt = 3403;
+
+static bool isPaletteDark()
+{
+    const QColor win = QApplication::palette().color(QPalette::Window);
+    const double lum = 0.2126 * win.redF() + 0.7152 * win.greenF() + 0.0722 * win.blueF();
+    return lum < 0.45;
+}
+
+static QString friendlyCurveDisplayName(Graph *g, int curveIdx)
+{
+    if (!g || curveIdx < 0 || curveIdx >= g->curves())
+        return QString();
+    QwtPlotCurve *cv = g->curve(curveIdx);
+    if (!cv)
+        return QString::number(curveIdx + 1);
+
+    QString label = cv->title().text();
+    if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
+        if (Table *t = dc->table()) {
+            const int yIdx = t->colIndex(dc->yColumnName());
+            Column *yc = (yIdx >= 0) ? t->column(yIdx) : nullptr;
+            if (yc && !yc->longName().trimmed().isEmpty()) {
+                label = yc->longName().trimmed();
+            } else {
+                const QString pfx = QString(t->name()) + QStringLiteral("_");
+                if (label.startsWith(pfx) && label.size() > pfx.size())
+                    label = label.mid(pfx.size());
+            }
+        }
+    }
+    if (cv->yAxis() == QwtPlot::yRight)
+        label += QCoreApplication::translate("GraphInspectorDock", " [R-Y]");
+    return label;
+}
+
+static int resolveMasterCurveIndex(Graph *g, int curveIdx)
+{
+    if (g && curveIdx >= 0 && curveIdx < g->curves()) {
+        if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(g->curve(curveIdx))) {
+            if (DataCurve *mc = er->masterCurve()) {
+                const int mi = g->curveIndex(mc);
+                if (mi >= 0)
+                    return mi;
+            }
+        }
+    }
+    return curveIdx;
+}
+
+static int effectiveSelectedCurveIndex(Graph *g, bool fallbackToFirstDataCurve = true)
+{
+    if (!g)
+        return -1;
+    int ci = -1;
+    const Graph::GraphSelection sel = g->currentSelection();
+    if (sel.kind == Graph::GraphSelection::Curve
+        || sel.kind == Graph::GraphSelection::ErrorBars) {
+        ci = resolveMasterCurveIndex(g, sel.primaryId);
+    } else {
+        ci = resolveMasterCurveIndex(g, g->selectedCurveIndex());
+    }
+    if ((ci < 0 || ci >= g->curves() || g->curveType(ci) == Graph::ErrorBars)
+        && fallbackToFirstDataCurve && g->curves() > 0) {
+        for (int k = 0; k < g->curves(); ++k) {
+            if (g->curveType(k) != Graph::ErrorBars) {
+                ci = k;
+                break;
+            }
+        }
+    }
+    if (ci < 0 || ci >= g->curves() || g->curveType(ci) == Graph::ErrorBars)
+        return -1;
+    return ci;
+}
+
+static int findSmartAdjacentYErrColumn(Table *tbl, int colIdx)
+{
+    if (!tbl || colIdx < 0 || colIdx >= tbl->numCols())
+        return -1;
+    if (colIdx + 1 < tbl->numCols() && tbl->colPlotDesignation(colIdx + 1) == SciDAVis::yErr)
+        return colIdx + 1;
+
+    for (int c = colIdx + 1; c < tbl->numCols(); ++c) {
+        const int desig = tbl->colPlotDesignation(c);
+        if (desig == SciDAVis::Y)
+            break;
+        if (desig == SciDAVis::yErr)
+            return c;
+    }
+
+    bool hasAnyYErr = false;
+    for (int c = 0; c < tbl->numCols(); ++c) {
+        if (tbl->colPlotDesignation(c) == SciDAVis::yErr) {
+            hasAnyYErr = true;
+            break;
+        }
+    }
+    if (!hasAnyYErr && colIdx + 1 < tbl->numCols())
+        return colIdx + 1;
+    return -1;
+}
+
+static double physicalValueToMm(double val, MultiLayer::PageUnit unit)
+{
+    switch (unit) {
+    case MultiLayer::UnitPx:
+        return (val / 96.0) * 25.4;
+    case MultiLayer::UnitMm:
+        return val;
+    case MultiLayer::UnitCm:
+        return val * 10.0;
+    case MultiLayer::UnitInch:
+        return val * 25.4;
+    }
+    return val;
+}
+
+static bool isLegendEntryLine(const QString &line)
+{
+    const QString t = line.trimmed();
+    return t.startsWith(QStringLiteral("\\c{")) || t.startsWith(QStringLiteral("\\l("))
+            || t.startsWith(QStringLiteral("\\p{"));
+}
+
+static QLabel *makeSectionHeaderLabel(QWidget *parent)
+{
+    QLabel *lbl = new QLabel(parent);
+    lbl->setObjectName(QStringLiteral("InspectorSectionHeader"));
+    return lbl;
+}
+
+static void updateColorSwatchButton(QPushButton *btn, const QColor &c)
+{
+    if (!btn)
+        return;
+    const QColor safe = c.isValid() ? c : QColor(Qt::black);
+    QPixmap px(32, 14);
+    px.fill(Qt::transparent);
+    QPainter p(&px);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(QColor(120, 130, 145), 1.0));
+    p.setBrush(safe);
+    p.drawRoundedRect(QRectF(1.0, 1.0, 30.0, 12.0), 3.0, 3.0);
+    p.end();
+    btn->setIcon(QIcon(px));
+    btn->setIconSize(QSize(32, 14));
+    btn->setProperty("swatchColor", safe);
+}
+
+} // namespace
+
+GraphInspectorDock::GraphInspectorDock(ApplicationWindow *app, QWidget *parent)
+    : QDockWidget(parent), d_app(app)
+{
+    setObjectName(QStringLiteral("GraphInspectorDock"));
+    setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    setFeatures(QDockWidget::NoDockWidgetFeatures);
+
+    // Hide native OS title bar so our compact header & 32px vertical rail render seamlessly
+    QWidget *emptyTitle = new QWidget(this);
+    emptyTitle->setFixedHeight(0);
+    setTitleBarWidget(emptyTitle);
+
+    d_coalesce_refresh_timer = new QTimer(this);
+    d_coalesce_refresh_timer->setSingleShot(true);
+    d_coalesce_refresh_timer->setInterval(16);
+    connect(d_coalesce_refresh_timer, &QTimer::timeout, this, [this]() {
+        if (!d_target_ml || d_target_ml->isRestoringSnapshot())
+            return;
+        for (Graph *g : d_target_ml->layersList())
+            bindLayerSignals(g);
+        if (!d_syncing_props && !d_syncing_tree) {
+            refreshObjectTree();
+            syncInspectorFromSelection();
+        }
+    });
+
+    buildUi();
+    applyTheme();
+    retranslateUi();
+    setCollapsedRail(false);
+}
+
+GraphInspectorDock::~GraphInspectorDock() = default;
+
+Graph *GraphInspectorDock::activeLayer() const
+{
+    if (!d_target_ml)
+        return nullptr;
+    Graph *ag = d_target_ml->activeGraph();
+    return ag ? ag : d_target_ml->layer(1);
+}
+
+void GraphInspectorDock::changeEvent(QEvent *event)
+{
+    QDockWidget::changeEvent(event);
+    if (!event)
+        return;
+    if (event->type() == QEvent::LanguageChange) {
+        retranslateUi();
+        refreshAll();
+    } else if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+        applyTheme();
+        refreshObjectTree();
+    }
+}
+
+void GraphInspectorDock::closeEvent(QCloseEvent *event)
+{
+    if (event && event->spontaneous())
+        emit closeRequestedByUser();
+    QDockWidget::closeEvent(event);
+}
+
+void GraphInspectorDock::setUserPinned(bool pinned)
+{
+    if (d_user_pinned == pinned)
+        return;
+    d_user_pinned = pinned;
+    if (d_btn_pin) {
+        QSignalBlocker b(d_btn_pin);
+        d_btn_pin->setChecked(pinned);
+    }
+    emit userPinToggled(pinned);
+}
+
+void GraphInspectorDock::setCollapsedRail(bool collapsed)
+{
+    const bool changed = (d_collapsed_rail != collapsed);
+    d_collapsed_rail = collapsed;
+
+    if (d_mode_stack)
+        d_mode_stack->setCurrentIndex(collapsed ? 1 : 0);
+
+    if (collapsed) {
+        setMinimumWidth(32);
+        setMaximumWidth(32);
+        resize(32, height());
+        if (d_app) {
+            d_app->resizeDocks({ this }, { 32 }, Qt::Horizontal);
+        }
+    } else {
+        setMinimumWidth(240);
+        setMaximumWidth(330);
+        if (width() < 240 || width() > 330)
+            resize(268, height());
+        if (d_app) {
+            d_app->resizeDocks({ this }, { 268 }, Qt::Horizontal);
+        }
+    }
+
+    if (changed)
+        emit collapsedStateChanged(collapsed);
+}
+
+void GraphInspectorDock::switchToInspectorPage(InspectorPageIndex pageIdx)
+{
+    if (!d_prop_stack)
+        return;
+    const int idx = qBound(0, int(pageIdx), d_prop_stack->count() - 1);
+    d_prop_stack->setCurrentIndex(idx);
+    if (d_page_tab_group) {
+        if (QAbstractButton *btn = d_page_tab_group->button(idx)) {
+            QSignalBlocker b(btn);
+            btn->setChecked(true);
+        }
+    }
+}
+
+GraphInspectorDock::InspectorPageIndex GraphInspectorDock::currentInspectorPage() const
+{
+    if (!d_prop_stack)
+        return PageTabPageLayer;
+    return static_cast<InspectorPageIndex>(qBound(0, d_prop_stack->currentIndex(), 3));
+}
+
+void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
+{
+    if (d_target_ml == ml && !forceRefresh) {
+        syncInspectorFromSelection();
+        return;
+    }
+
+    if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
+        d_coalesce_refresh_timer->stop();
+
+    if (d_target_ml && d_target_ml != ml)
+        disconnect(d_target_ml, nullptr, this, nullptr);
+    for (const QPointer<Graph> &gPtr : d_bound_layers) {
+        if (gPtr)
+            disconnect(gPtr.data(), nullptr, this, nullptr);
+    }
+    d_bound_layers.clear();
+
+    d_target_ml = ml;
+    if (ml)
+        connectMultiLayerSignals(ml);
+
+    refreshAll();
+}
+
+void GraphInspectorDock::connectMultiLayerSignals(MultiLayer *ml)
+{
+    if (!ml)
+        return;
+    connect(ml, &MultiLayer::selectionChanged, this, &GraphInspectorDock::onGraphSelectionChanged,
+            Qt::UniqueConnection);
+    connect(ml, &MultiLayer::modifiedPlot, this, [this]() {
+        if (!d_target_ml || d_target_ml->isRestoringSnapshot())
+            return;
+        if (!d_syncing_props && !d_syncing_tree && d_coalesce_refresh_timer) {
+            if (!d_coalesce_refresh_timer->isActive())
+                d_coalesce_refresh_timer->start();
+        }
+    });
+    connect(ml, &QObject::destroyed, this, [this](QObject *) {
+        if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
+            d_coalesce_refresh_timer->stop();
+        d_target_ml = nullptr;
+        d_bound_layers.clear();
+        refreshAll();
+    });
+
+    for (Graph *g : ml->layersList())
+        bindLayerSignals(g);
+}
+
+void GraphInspectorDock::bindLayerSignals(Graph *g)
+{
+    if (!g)
+        return;
+    for (const QPointer<Graph> &existing : d_bound_layers) {
+        if (existing.data() == g)
+            return;
+    }
+    d_bound_layers.append(QPointer<Graph>(g));
+
+    connect(g, &Graph::curveOrderChanged, this, [this]() {
+        if (!d_syncing_tree)
+            refreshObjectTree();
+    });
+    connect(g, &Graph::curveVisibilityChanged, this, [this](int, bool) {
+        if (!d_syncing_tree)
+            refreshObjectTree();
+    });
+    connect(g, &Graph::selectedGraph, this, [this](Graph *) {
+        if (!d_syncing_tree && !d_syncing_props) {
+            refreshObjectTree();
+            syncInspectorFromSelection();
+        }
+    });
+}
+
+void GraphInspectorDock::buildUi()
+{
+    d_root_container = new QWidget(this);
+    d_root_container->setObjectName(QStringLiteral("InspectorRootContainer"));
+    QVBoxLayout *rootLayout = new QVBoxLayout(d_root_container);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    d_mode_stack = new QStackedWidget(d_root_container);
+    rootLayout->addWidget(d_mode_stack);
+
+    // =========================================================================
+    // Mode 0: Expanded Panel (268 px, min 240 px, max 330 px)
+    // =========================================================================
+    d_expanded_panel = new QWidget(d_mode_stack);
+    QVBoxLayout *expLayout = new QVBoxLayout(d_expanded_panel);
+    expLayout->setContentsMargins(0, 0, 0, 0);
+    expLayout->setSpacing(0);
+
+    d_header_bar = new QFrame(d_expanded_panel);
+    d_header_bar->setObjectName(QStringLiteral("InspectorHeaderBar"));
+    QHBoxLayout *hdrLayout = new QHBoxLayout(d_header_bar);
+    hdrLayout->setContentsMargins(8, 5, 6, 5);
+    hdrLayout->setSpacing(4);
+
+    d_header_title_lbl = new QLabel(d_header_bar);
+    d_header_title_lbl->setObjectName(QStringLiteral("InspectorHeaderTitle"));
+    hdrLayout->addWidget(d_header_title_lbl);
+
+    d_header_target_lbl = new QLabel(d_header_bar);
+    d_header_target_lbl->setObjectName(QStringLiteral("InspectorHeaderTarget"));
+    hdrLayout->addWidget(d_header_target_lbl, 1);
+
+    d_btn_pin = new QToolButton(d_header_bar);
+    d_btn_pin->setCheckable(true);
+    d_btn_pin->setAutoRaise(true);
+    d_btn_pin->setFixedSize(22, 22);
+    d_btn_pin->setIcon(IconLoader::duotoneIcon(QStringLiteral("lock"), 15));
+    connect(d_btn_pin, &QToolButton::toggled, this, [this](bool checked) {
+        d_user_pinned = checked;
+        emit userPinToggled(checked);
+    });
+    hdrLayout->addWidget(d_btn_pin);
+
+    d_btn_collapse = new QToolButton(d_header_bar);
+    d_btn_collapse->setAutoRaise(true);
+    d_btn_collapse->setFixedSize(22, 22);
+    d_btn_collapse->setText(QString::fromUtf8("\xC2\xBB")); // »
+    connect(d_btn_collapse, &QToolButton::clicked, this, [this]() {
+        setUserPinned(false);
+        setCollapsedRail(true);
+    });
+    hdrLayout->addWidget(d_btn_collapse);
+
+    expLayout->addWidget(d_header_bar);
+
+    // Vertical Splitter: Top Object Manager + Bottom Property Inspector
+    d_splitter = new QSplitter(Qt::Vertical, d_expanded_panel);
+    d_splitter->setChildrenCollapsible(false);
+    d_splitter->setHandleWidth(4);
+
+    // --- Top Pane: Object Manager ---
+    QWidget *topPane = new QWidget(d_splitter);
+    topPane->setMinimumHeight(135);
+    QVBoxLayout *topLayout = new QVBoxLayout(topPane);
+    topLayout->setContentsMargins(6, 4, 6, 4);
+    topLayout->setSpacing(4);
+
+    d_tree_header_strip = new QFrame(topPane);
+    QHBoxLayout *treeHdr = new QHBoxLayout(d_tree_header_strip);
+    treeHdr->setContentsMargins(2, 0, 2, 0);
+    treeHdr->setSpacing(3);
+
+    d_obj_mgr_title_lbl = new QLabel(d_tree_header_strip);
+    d_obj_mgr_title_lbl->setObjectName(QStringLiteral("InspectorSubTitle"));
+    treeHdr->addWidget(d_obj_mgr_title_lbl, 1);
+
+    auto makeTreeBtn = [&](const QString &txt, const QString &iconId) -> QToolButton * {
+        QToolButton *b = new QToolButton(d_tree_header_strip);
+        b->setAutoRaise(true);
+        b->setFixedHeight(22);
+        if (!iconId.isEmpty())
+            b->setIcon(IconLoader::duotoneIcon(iconId, 14));
+        if (!txt.isEmpty()) {
+            b->setText(txt);
+            b->setToolButtonStyle(iconId.isEmpty() ? Qt::ToolButtonTextOnly
+                                                   : Qt::ToolButtonTextBesideIcon);
+        }
+        return b;
+    };
+
+    d_btn_add_curve = makeTreeBtn(QString(), QStringLiteral("plus"));
+    d_btn_add_curve->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    connect(d_btn_add_curve, &QToolButton::clicked, this, &GraphInspectorDock::openAddCurvePopover);
+    treeHdr->addWidget(d_btn_add_curve);
+
+    d_btn_move_up = makeTreeBtn(QString::fromUtf8("\xE2\x96\xB2"), QString()); // ▲
+    d_btn_move_up->setFixedWidth(22);
+    connect(d_btn_move_up, &QToolButton::clicked, this, [this]() { moveSelectedCurve(-1); });
+    treeHdr->addWidget(d_btn_move_up);
+
+    d_btn_move_down = makeTreeBtn(QString::fromUtf8("\xE2\x96\xBC"), QString()); // ▼
+    d_btn_move_down->setFixedWidth(22);
+    connect(d_btn_move_down, &QToolButton::clicked, this, [this]() { moveSelectedCurve(+1); });
+    treeHdr->addWidget(d_btn_move_down);
+
+    d_btn_remove_obj = makeTreeBtn(QString::fromUtf8("\xE2\x88\x92"), QString()); // −
+    d_btn_remove_obj->setFixedWidth(22);
+    connect(d_btn_remove_obj, &QToolButton::clicked, this,
+            &GraphInspectorDock::removeSelectedObject);
+    treeHdr->addWidget(d_btn_remove_obj);
+
+    topLayout->addWidget(d_tree_header_strip);
+
+    d_object_tree = new QTreeWidget(topPane);
+    d_object_tree->setObjectName(QStringLiteral("GraphObjectManagerTree"));
+    d_object_tree->setHeaderHidden(true);
+    d_object_tree->setColumnCount(1);
+    d_object_tree->setIndentation(14);
+    d_object_tree->setUniformRowHeights(true);
+    d_object_tree->setIconSize(QSize(22, 14));
+    d_object_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(d_object_tree, &QTreeWidget::itemClicked, this,
+            &GraphInspectorDock::onTreeItemClicked);
+    connect(d_object_tree, &QTreeWidget::itemChanged, this,
+            &GraphInspectorDock::onTreeItemChanged);
+    topLayout->addWidget(d_object_tree, 1);
+
+    d_empty_hint_lbl = new QLabel(topPane);
+    d_empty_hint_lbl->setWordWrap(true);
+    d_empty_hint_lbl->setAlignment(Qt::AlignCenter);
+    d_empty_hint_lbl->hide();
+    topLayout->addWidget(d_empty_hint_lbl);
+
+    d_splitter->addWidget(topPane);
+
+    // --- Bottom Pane: Context Tabs + Scrollable Property Stack ---
+    QWidget *bottomPane = new QWidget(d_splitter);
+    bottomPane->setMinimumHeight(200);
+    QVBoxLayout *botLayout = new QVBoxLayout(bottomPane);
+    botLayout->setContentsMargins(0, 0, 0, 0);
+    botLayout->setSpacing(0);
+
+    d_tab_strip = new QFrame(bottomPane);
+    d_tab_strip->setObjectName(QStringLiteral("InspectorTabStrip"));
+    QHBoxLayout *tabRow = new QHBoxLayout(d_tab_strip);
+    tabRow->setContentsMargins(6, 3, 6, 3);
+    tabRow->setSpacing(3);
+
+    d_page_tab_group = new QButtonGroup(this);
+    d_page_tab_group->setExclusive(true);
+
+    auto makePageTabBtn = [&](int idx) -> QToolButton * {
+        QToolButton *b = new QToolButton(d_tab_strip);
+        b->setCheckable(true);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        b->setFixedHeight(24);
+        b->setObjectName(QStringLiteral("InspectorContextTabBtn"));
+        d_page_tab_group->addButton(b, idx);
+        tabRow->addWidget(b);
+        return b;
+    };
+
+    d_tab_btn_page = makePageTabBtn(PageTabPageLayer);
+    d_tab_btn_axis = makePageTabBtn(PageTabAxis);
+    d_tab_btn_curve = makePageTabBtn(PageTabCurve);
+    d_tab_btn_legend = makePageTabBtn(PageTabLegend);
+    d_tab_btn_page->setChecked(true);
+
+    connect(d_page_tab_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
+            [this](int idx) {
+                switchToInspectorPage(static_cast<InspectorPageIndex>(idx));
+                if (idx == PageTabPageLayer)
+                    syncPageLayerControls();
+                else if (idx == PageTabAxis)
+                    syncAxisControls();
+                else if (idx == PageTabCurve)
+                    syncCurveControls();
+                else if (idx == PageTabLegend)
+                    syncLegendControls();
+            });
+
+    botLayout->addWidget(d_tab_strip);
+
+    d_prop_scroll = new QScrollArea(bottomPane);
+    d_prop_scroll->setWidgetResizable(true);
+    d_prop_scroll->setFrameShape(QFrame::NoFrame);
+    d_prop_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    d_prop_stack = new QStackedWidget(d_prop_scroll);
+    d_prop_stack->addWidget(buildPageLayerInspector());
+    d_prop_stack->addWidget(buildAxisInspector());
+    d_prop_stack->addWidget(buildCurveInspector());
+    d_prop_stack->addWidget(buildLegendInspector());
+    d_prop_scroll->setWidget(d_prop_stack);
+
+    botLayout->addWidget(d_prop_scroll, 1);
+    d_splitter->addWidget(bottomPane);
+    d_splitter->setStretchFactor(0, 38);
+    d_splitter->setStretchFactor(1, 62);
+
+    expLayout->addWidget(d_splitter, 1);
+    d_mode_stack->addWidget(d_expanded_panel);
+
+    // =========================================================================
+    // Mode 1: Collapsed 32 px Vertical Icon Rail
+    // =========================================================================
+    d_rail_panel = new QFrame(d_mode_stack);
+    d_rail_panel->setObjectName(QStringLiteral("InspectorRailPanel"));
+    QVBoxLayout *railLayout = new QVBoxLayout(d_rail_panel);
+    railLayout->setContentsMargins(3, 6, 3, 6);
+    railLayout->setSpacing(6);
+
+    auto makeRailBtn = [&](const QString &iconId, const QString &fallbackText) -> QToolButton * {
+        QToolButton *b = new QToolButton(d_rail_panel);
+        b->setAutoRaise(true);
+        b->setFixedSize(26, 26);
+        if (!iconId.isEmpty()) {
+            b->setIcon(IconLoader::duotoneIcon(iconId, 16));
+            b->setIconSize(QSize(16, 16));
+        } else {
+            b->setText(fallbackText);
+        }
+        railLayout->addWidget(b, 0, Qt::AlignHCenter);
+        return b;
+    };
+
+    d_rail_expand_btn = makeRailBtn(QString(), QString::fromUtf8("\xC2\xAB")); // «
+    connect(d_rail_expand_btn, &QToolButton::clicked, this, [this]() {
+        setUserPinned(true);
+        setCollapsedRail(false);
+    });
+
+    QFrame *railSep = new QFrame(d_rail_panel);
+    railSep->setFrameShape(QFrame::HLine);
+    railSep->setFixedHeight(1);
+    railLayout->addWidget(railSep);
+
+    auto expandToTab = [this](InspectorPageIndex idx) {
+        setUserPinned(true);
+        setCollapsedRail(false);
+        switchToInspectorPage(idx);
+        syncInspectorFromSelection();
+    };
+
+    d_rail_page_btn = makeRailBtn(QStringLiteral("page-setup"), QString());
+    connect(d_rail_page_btn, &QToolButton::clicked, this,
+            [expandToTab]() { expandToTab(PageTabPageLayer); });
+
+    d_rail_axis_btn = makeRailBtn(QStringLiteral("axis-scale"), QString());
+    connect(d_rail_axis_btn, &QToolButton::clicked, this,
+            [expandToTab]() { expandToTab(PageTabAxis); });
+
+    d_rail_curve_btn = makeRailBtn(QStringLiteral("plot-line-symbol"), QString());
+    connect(d_rail_curve_btn, &QToolButton::clicked, this,
+            [expandToTab]() { expandToTab(PageTabCurve); });
+
+    d_rail_legend_btn = makeRailBtn(QStringLiteral("legend"), QString());
+    connect(d_rail_legend_btn, &QToolButton::clicked, this,
+            [expandToTab]() { expandToTab(PageTabLegend); });
+
+    railLayout->addStretch(1);
+    d_mode_stack->addWidget(d_rail_panel);
+
+    setWidget(d_root_container);
+}
+
+QWidget *GraphInspectorDock::buildPageLayerInspector()
+{
+    QWidget *page = new QWidget();
+    QVBoxLayout *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(8, 8, 8, 10);
+    lay->setSpacing(6);
+
+    // 1) Style Presets & 70% Square Frame
+    d_sec_presets_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_presets_lbl);
+
+    d_btn_preset_isij = new QPushButton(page);
+    d_btn_preset_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 15));
+    connect(d_btn_preset_isij, &QPushButton::clicked, this, [this]() {
+        if (!d_target_ml)
+            return;
+        d_target_ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        refreshAll();
+    });
+    lay->addWidget(d_btn_preset_isij);
+
+    d_btn_preset_slide28 = new QPushButton(page);
+    d_btn_preset_slide28->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 15));
+    connect(d_btn_preset_slide28, &QPushButton::clicked, this, [this]() {
+        if (!d_target_ml)
+            return;
+        d_target_ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        refreshAll();
+    });
+    lay->addWidget(d_btn_preset_slide28);
+
+    d_btn_square_frame70 = new QPushButton(page);
+    d_btn_square_frame70->setIcon(IconLoader::duotoneIcon(QStringLiteral("aspect-ratio"), 15));
+    connect(d_btn_square_frame70, &QPushButton::clicked, this, [this]() {
+        if (!d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->applySquareCanvasFrame70Percent();
+        d_target_ml->pushUndoSnapshot(tr("Square Frame (70%)"), before);
+        syncPageLayerControls();
+    });
+    lay->addWidget(d_btn_square_frame70);
+
+    // 2) Physical Page Size & Zoom
+    d_sec_page_size_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_page_size_lbl);
+
+    QGridLayout *sizeGrid = new QGridLayout();
+    sizeGrid->setContentsMargins(0, 0, 0, 0);
+    sizeGrid->setHorizontalSpacing(6);
+    sizeGrid->setVerticalSpacing(4);
+
+    d_lbl_page_w = new QLabel(page);
+    d_spin_page_w_mm = new QDoubleSpinBox(page);
+    d_spin_page_w_mm->setRange(20.0, 1000.0);
+    d_spin_page_w_mm->setDecimals(1);
+    d_spin_page_w_mm->setSingleStep(5.0);
+    d_spin_page_w_mm->setSuffix(QStringLiteral(" mm"));
+
+    d_lbl_page_h = new QLabel(page);
+    d_spin_page_h_mm = new QDoubleSpinBox(page);
+    d_spin_page_h_mm->setRange(20.0, 1000.0);
+    d_spin_page_h_mm->setDecimals(1);
+    d_spin_page_h_mm->setSingleStep(5.0);
+    d_spin_page_h_mm->setSuffix(QStringLiteral(" mm"));
+
+    d_lbl_page_dpi = new QLabel(page);
+    d_spin_page_dpi = new QSpinBox(page);
+    d_spin_page_dpi->setRange(72, 1200);
+    d_spin_page_dpi->setSingleStep(50);
+    d_spin_page_dpi->setValue(300);
+
+    sizeGrid->addWidget(d_lbl_page_w, 0, 0);
+    sizeGrid->addWidget(d_spin_page_w_mm, 0, 1);
+    sizeGrid->addWidget(d_lbl_page_h, 1, 0);
+    sizeGrid->addWidget(d_spin_page_h_mm, 1, 1);
+    sizeGrid->addWidget(d_lbl_page_dpi, 2, 0);
+    sizeGrid->addWidget(d_spin_page_dpi, 2, 1);
+
+    auto applyPageSize = [this]() {
+        if (d_syncing_props || !d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->setPageSizePhysical(d_spin_page_w_mm->value(), d_spin_page_h_mm->value(),
+                                         MultiLayer::UnitMm, d_spin_page_dpi->value());
+        d_target_ml->pushUndoSnapshot(tr("Resize Page"), before, kMergePageDims);
+    };
+    connect(d_spin_page_w_mm, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [applyPageSize](double) { applyPageSize(); });
+    connect(d_spin_page_h_mm, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [applyPageSize](double) { applyPageSize(); });
+    connect(d_spin_page_dpi, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [applyPageSize](int) { applyPageSize(); });
+
+    d_chk_page_view = new QCheckBox(page);
+    connect(d_chk_page_view, &QCheckBox::toggled, this, [this](bool checked) {
+        if (d_syncing_props || !d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->setPageViewMode(checked);
+        d_target_ml->pushUndoSnapshot(tr("Toggle Page View"), before);
+        if (d_app)
+            d_app->syncGraphPageAndToolbarMenuState();
+    });
+    sizeGrid->addWidget(d_chk_page_view, 3, 0, 1, 2);
+
+    d_lbl_page_zoom = new QLabel(page);
+    d_combo_page_zoom = new QComboBox(page);
+    const QList<int> zoomPcts = { 50, 75, 100, 125, 150, 200 };
+    for (int pct : zoomPcts)
+        d_combo_page_zoom->addItem(QStringLiteral("%1%").arg(pct), pct);
+    d_combo_page_zoom->setCurrentIndex(2); // 100%
+    connect(d_combo_page_zoom, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                if (d_syncing_props || !d_target_ml || idx < 0)
+                    return;
+                const int pct = d_combo_page_zoom->itemData(idx).toInt();
+                if (pct > 0) {
+                    const QString before = d_target_ml->captureUndoSnapshot();
+                    d_target_ml->setPageZoom(double(pct) / 100.0);
+                    d_target_ml->pushUndoSnapshot(tr("Page Zoom"), before, kMergePageDims);
+                }
+            });
+    sizeGrid->addWidget(d_lbl_page_zoom, 4, 0);
+    sizeGrid->addWidget(d_combo_page_zoom, 4, 1);
+    lay->addLayout(sizeGrid);
+
+    // 3) Frame, Linked Axes & Panel Labels
+    d_sec_layer_frame_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_layer_frame_lbl);
+
+    d_btn_box_inward = new QPushButton(page);
+    d_btn_box_inward->setIcon(IconLoader::duotoneIcon(QStringLiteral("frame-box"), 15));
+    connect(d_btn_box_inward, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->applyFramePreset(Graph::FrameBoxInwardTicks);
+        d_target_ml->pushUndoSnapshot(tr("Box Frame + Inward Ticks"), before);
+        syncAxisControls();
+    });
+    lay->addWidget(d_btn_box_inward);
+
+    d_btn_link_right_y = new QPushButton(page);
+    d_btn_link_right_y->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 15));
+    connect(d_btn_link_right_y, &QPushButton::clicked, this, [this]() {
+        Graph *parentLayer = activeLayer();
+        if (!d_target_ml || !parentLayer)
+            return;
+        if (parentLayer->linkedParentLayer())
+            parentLayer = parentLayer->linkedParentLayer();
+
+        Graph *existingChild = nullptr;
+        for (Graph *cand : d_target_ml->layersList()) {
+            if (!cand || cand->linkedParentLayer() != parentLayer || !cand->plotWidget())
+                continue;
+            Plot *cp = cand->plotWidget();
+            const QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop);
+            const QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight);
+            const bool topHasLabels = sdTop && sdTop->hasComponent(QwtAbstractScaleDraw::Labels);
+            const bool rightHasLabels =
+                    sdRight && sdRight->hasComponent(QwtAbstractScaleDraw::Labels);
+            if (cp->axisEnabled(QwtPlot::yRight)
+                && (!cp->axisEnabled(QwtPlot::xTop) || (rightHasLabels && !topHasLabels))) {
+                existingChild = cand;
+                break;
+            }
+        }
+
+        const QString before = d_target_ml->captureUndoSnapshot();
+        Graph *child = existingChild;
+        if (child) {
+            child->setLinkedParentLayer(parentLayer, 1, QStringLiteral("x"), 0,
+                                        QStringLiteral("y"));
+            d_target_ml->setActiveGraph(child);
+        } else {
+            child = d_target_ml->addLinkedLayer(parentLayer, true, false, QStringLiteral("x"),
+                                                QStringLiteral("y"));
+        }
+        if (child && child->plotWidget()) {
+            Plot *cp = child->plotWidget();
+            if (QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop))
+                sdTop->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            if (QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight))
+                sdRight->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            cp->setMajorTicksType(QwtPlot::xTop, ScaleDraw::None);
+            cp->setMinorTicksType(QwtPlot::xTop, ScaleDraw::None);
+            cp->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            cp->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            child->syncLinkedAxesFromParent();
+            d_target_ml->applySquareCanvasFrame70Percent();
+        }
+        d_target_ml->pushUndoSnapshot(tr("Link Right-Y Axis"), before);
+        refreshAll();
+    });
+    lay->addWidget(d_btn_link_right_y);
+
+    d_btn_link_top_x = new QToolButton(page);
+    d_btn_link_top_x->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d_btn_link_top_x->setPopupMode(QToolButton::InstantPopup);
+    d_btn_link_top_x->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    d_btn_link_top_x->setIcon(IconLoader::duotoneIcon(QStringLiteral("axis-scale"), 15));
+    d_menu_link_top_x = new QMenu(d_btn_link_top_x);
+    d_btn_link_top_x->setMenu(d_menu_link_top_x);
+
+    auto addTopXFormulaLink = [this](const QString &formula, const QString &defaultTitle) {
+        Graph *parentLayer = activeLayer();
+        const QString trimmedFormula = formula.trimmed();
+        if (!d_target_ml || !parentLayer || trimmedFormula.isEmpty())
+            return;
+        if (parentLayer->linkedParentLayer())
+            parentLayer = parentLayer->linkedParentLayer();
+        const QString before = d_target_ml->captureUndoSnapshot();
+
+        QString normExpr = trimmedFormula.toLower();
+        normExpr.remove(QLatin1Char(' '));
+        const bool singularAtZero = normExpr.contains(QStringLiteral("/x"))
+                || normExpr.contains(QStringLiteral("/(x)"));
+        const bool singularAtAbsZeroC = normExpr.contains(QStringLiteral("/(x+273.15)"));
+
+        if (Plot *pp = parentLayer->plotWidget()) {
+            if (singularAtZero || singularAtAbsZeroC) {
+                const double pole = singularAtZero ? 0.0 : -273.15;
+                if (const QwtScaleDiv *xDiv = pp->axisScaleDiv(QwtPlot::xBottom)) {
+                    const double rawLo = xDiv->lowerBound();
+                    const double rawHi = xDiv->upperBound();
+                    const double lo = qMin(rawLo, rawHi);
+                    const double hi = qMax(rawLo, rawHi);
+                    if (lo <= pole && hi > pole) {
+                        const double spanAbovePole = hi - pole;
+                        double clampedLo = pole
+                                + ((spanAbovePole >= 100.0) ? qMax(1.0, spanAbovePole * 0.05)
+                                                            : (0.1 * spanAbovePole));
+                        double minDataAbovePole = std::numeric_limits<double>::infinity();
+                        for (int ci = 0; ci < parentLayer->curves(); ++ci) {
+                            if (parentLayer->curveType(ci) == Graph::ErrorBars)
+                                continue;
+                            QwtPlotCurve *cv = parentLayer->curve(ci);
+                            if (!cv)
+                                continue;
+                            for (int p = 0; p < cv->dataSize(); ++p) {
+                                const double xv = cv->x(p);
+                                if (std::isfinite(xv) && xv > pole && xv < minDataAbovePole)
+                                    minDataAbovePole = xv;
+                            }
+                        }
+                        if (std::isfinite(minDataAbovePole) && minDataAbovePole < clampedLo) {
+                            clampedLo = pole + 0.9 * (minDataAbovePole - pole);
+                        }
+                        int scaleType = 0;
+                        bool inv = (rawLo > rawHi);
+                        if (const QwtScaleEngine *eng = pp->axisScaleEngine(QwtPlot::xBottom)) {
+                            inv = eng->testAttribute(QwtScaleEngine::Inverted);
+                            if (QwtScaleTransformation *xf = eng->transformation()) {
+                                if (xf->type() == QwtScaleTransformation::Log10)
+                                    scaleType = 1;
+                                delete xf;
+                            }
+                        }
+                        parentLayer->enableAutoscaling(false);
+                        parentLayer->setScale(QwtPlot::xBottom, clampedLo, hi,
+                                              parentLayer->axisStep(QwtPlot::xBottom),
+                                              pp->axisMaxMajor(QwtPlot::xBottom),
+                                              pp->axisMaxMinor(QwtPlot::xBottom), scaleType, inv);
+                    }
+                }
+            }
+            if (QwtScaleDraw *psdTop = pp->axisScaleDraw(QwtPlot::xTop))
+                psdTop->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            pp->setMajorTicksType(QwtPlot::xTop, ScaleDraw::None);
+            pp->setMinorTicksType(QwtPlot::xTop, ScaleDraw::None);
+        }
+
+        Graph *existingChild = nullptr;
+        for (Graph *cand : d_target_ml->layersList()) {
+            if (!cand || cand->linkedParentLayer() != parentLayer || !cand->plotWidget())
+                continue;
+            Plot *cp = cand->plotWidget();
+            const QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop);
+            const QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight);
+            const bool topHasLabels = sdTop && sdTop->hasComponent(QwtAbstractScaleDraw::Labels);
+            const bool rightHasLabels =
+                    sdRight && sdRight->hasComponent(QwtAbstractScaleDraw::Labels);
+            if (cp->axisEnabled(QwtPlot::xTop)
+                && (!cp->axisEnabled(QwtPlot::yRight) || topHasLabels || !rightHasLabels
+                    || cand->xLinkMode() == 2)) {
+                existingChild = cand;
+                break;
+            }
+        }
+
+        Graph *child = existingChild;
+        const int xMode =
+                (trimmedFormula.compare(QStringLiteral("x"), Qt::CaseInsensitive) == 0
+                 || trimmedFormula.compare(QStringLiteral("x1"), Qt::CaseInsensitive) == 0)
+                ? 1
+                : 2;
+        if (child) {
+            const int yMode = (child->yLinkMode() > 0) ? child->yLinkMode() : 1;
+            const QString yExpr = child->yLinkExpr().trimmed().isEmpty()
+                    ? QStringLiteral("y")
+                    : child->yLinkExpr();
+            child->setLinkedParentLayer(parentLayer, xMode, trimmedFormula, yMode, yExpr);
+            d_target_ml->setActiveGraph(child);
+        } else {
+            child = d_target_ml->addLinkedLayer(parentLayer, true, true, trimmedFormula,
+                                                QStringLiteral("y"));
+        }
+        if (child && child->plotWidget()) {
+            Plot *cp = child->plotWidget();
+            if (QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop))
+                sdTop->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            if (QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight))
+                sdRight->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            cp->setMajorTicksType(QwtPlot::xTop, ScaleDraw::In);
+            cp->setMinorTicksType(QwtPlot::xTop, ScaleDraw::In);
+            cp->setMajorTicksType(QwtPlot::yRight, ScaleDraw::None);
+            cp->setMinorTicksType(QwtPlot::yRight, ScaleDraw::None);
+            if (!defaultTitle.isEmpty()) {
+                QFont tf = parentLayer->axisTitleFont(QwtPlot::xBottom);
+                if (tf.family().trimmed().isEmpty())
+                    tf.setFamily(QStringLiteral("Arial"));
+                tf.setBold(false);
+                child->setAxisTitleFont(QwtPlot::xTop, tf);
+                child->setAxisTitleAuto(QwtPlot::xTop, false);
+                child->setTopAxisTitle(defaultTitle);
+            } else if (xMode == 1) {
+                child->setTopAxisTitle(QString());
+            }
+            child->syncLinkedAxesFromParent();
+            d_target_ml->applySquareCanvasFrame70Percent();
+        }
+        d_target_ml->pushUndoSnapshot(tr("Link Top-X Axis"), before);
+        refreshAll();
+    };
+
+    connect(d_menu_link_top_x, &QMenu::aboutToShow, this, [this, addTopXFormulaLink]() {
+        d_menu_link_top_x->clear();
+        d_menu_link_top_x->addAction(tr("1:1 Linear Link (x)"), this, [addTopXFormulaLink]() {
+            addTopXFormulaLink(QStringLiteral("x"), QString());
+        });
+        d_menu_link_top_x->addAction(
+                tr("Arrhenius: K -> 1000/T"), this, [addTopXFormulaLink]() {
+                    addTopXFormulaLink(QStringLiteral("1000.0/x"),
+                                       QStringLiteral("1000 / <i>T</i> (K<sup>-1</sup>)"));
+                });
+        d_menu_link_top_x->addAction(
+                tr("Arrhenius: °C -> 1000/T"), this, [addTopXFormulaLink]() {
+                    addTopXFormulaLink(QStringLiteral("1000.0/(x+273.15)"),
+                                       QStringLiteral("1000 / <i>T</i> (K<sup>-1</sup>)"));
+                });
+        d_menu_link_top_x->addAction(
+                tr("Inverse Arrhenius: 1000/T -> °C"), this, [this, addTopXFormulaLink]() {
+                    addTopXFormulaLink(QStringLiteral("(1000.0/x)-273.15"),
+                                       tr("Temperature (°C)"));
+                });
+        d_menu_link_top_x->addSeparator();
+        d_menu_link_top_x->addAction(tr("Custom Formula..."), this, [this, addTopXFormulaLink]() {
+            bool ok = false;
+            const QString expr = QInputDialog::getText(
+                    this, tr("Link Top-X Formula"),
+                    tr("Formula in terms of bottom X (variable 'x'):"), QLineEdit::Normal,
+                    QStringLiteral("1000.0/x"), &ok);
+            if (ok && !expr.trimmed().isEmpty())
+                addTopXFormulaLink(expr.trimmed(), QString());
+        });
+    });
+    lay->addWidget(d_btn_link_top_x);
+
+    QHBoxLayout *panelRow = new QHBoxLayout();
+    panelRow->setSpacing(4);
+    d_chk_panel_labels = new QCheckBox(page);
+    d_combo_panel_pos = new QComboBox(page);
+    d_combo_panel_pos->addItem(QString(), int(MultiLayer::PanelOutsideTopLeft));
+    d_combo_panel_pos->addItem(QString(), int(MultiLayer::PanelInsideTopLeft));
+    panelRow->addWidget(d_chk_panel_labels, 1);
+    panelRow->addWidget(d_combo_panel_pos);
+    lay->addLayout(panelRow);
+
+    auto applyPanelLabelsFromUi = [this]() {
+        if (d_syncing_props || !d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        const auto pos = static_cast<MultiLayer::PanelLabelPlacement>(
+                d_combo_panel_pos->currentData().toInt());
+        d_target_ml->setPanelLabels(d_chk_panel_labels->isChecked(), pos,
+                                    d_target_ml->panelLabelPattern(),
+                                    d_target_ml->panelLabelFontPt());
+        d_target_ml->pushUndoSnapshot(tr("Panel Labels (a), (b)"), before);
+    };
+    connect(d_chk_panel_labels, &QCheckBox::toggled, this,
+            [applyPanelLabelsFromUi](bool) { applyPanelLabelsFromUi(); });
+    connect(d_combo_panel_pos, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [applyPanelLabelsFromUi](int) { applyPanelLabelsFromUi(); });
+
+    // 4) Export & OLE Copy
+    d_sec_export_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_export_lbl);
+
+    QHBoxLayout *expBtnRow = new QHBoxLayout();
+    expBtnRow->setSpacing(6);
+    d_btn_copy_ole = new QPushButton(page);
+    d_btn_copy_ole->setIcon(IconLoader::duotoneIcon(QStringLiteral("copy-ole"), 15));
+    connect(d_btn_copy_ole, &QPushButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->copyGraphAsOleObject();
+    });
+    expBtnRow->addWidget(d_btn_copy_ole);
+
+    d_btn_export_img_pdf = new QPushButton(page);
+    d_btn_export_img_pdf->setIcon(IconLoader::duotoneIcon(QStringLiteral("export"), 15));
+    connect(d_btn_export_img_pdf, &QPushButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->exportGraph();
+    });
+    expBtnRow->addWidget(d_btn_export_img_pdf);
+    lay->addLayout(expBtnRow);
+
+    lay->addStretch(1);
+    return page;
+}
+
+QWidget *GraphInspectorDock::buildAxisInspector()
+{
+    QWidget *page = new QWidget();
+    QVBoxLayout *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(8, 8, 8, 10);
+    lay->setSpacing(6);
+
+    // Axis Selector [Bottom X] [Left Y] [Top X] [Right Y]
+    QHBoxLayout *axisSelRow = new QHBoxLayout();
+    axisSelRow->setSpacing(3);
+    d_axis_sel_group = new QButtonGroup(this);
+    d_axis_sel_group->setExclusive(true);
+
+    auto makeAxisBtn = [&](int qwtAxis) -> QToolButton * {
+        QToolButton *b = new QToolButton(page);
+        b->setCheckable(true);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        b->setFixedHeight(24);
+        b->setObjectName(QStringLiteral("InspectorAxisPillBtn"));
+        d_axis_sel_group->addButton(b, qwtAxis);
+        axisSelRow->addWidget(b);
+        return b;
+    };
+
+    d_btn_axis_bottom = makeAxisBtn(QwtPlot::xBottom);
+    d_btn_axis_left = makeAxisBtn(QwtPlot::yLeft);
+    d_btn_axis_top = makeAxisBtn(QwtPlot::xTop);
+    d_btn_axis_right = makeAxisBtn(QwtPlot::yRight);
+    d_btn_axis_bottom->setChecked(true);
+
+    connect(d_axis_sel_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
+            [this](int qwtAxis) {
+                d_active_axis = qBound(0, qwtAxis, 3);
+                if (Graph *g = activeLayer()) {
+                    GraphMiniToolbar::instance()->cancelScheduledAndHide();
+                    Graph::GraphSelection sel;
+                    sel.kind = Graph::GraphSelection::Axis;
+                    sel.primaryId = d_active_axis;
+                    g->setCurrentSelection(sel, false);
+                }
+                syncAxisControls();
+            });
+    lay->addLayout(axisSelRow);
+
+    d_chk_axis_visible = new QCheckBox(page);
+    connect(d_chk_axis_visible, &QCheckBox::toggled, this, [this](bool vis) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->enableAxis(d_active_axis, vis);
+        g->setAxisBackboneVisible(d_active_axis, vis);
+        g->replot();
+        d_target_ml->pushUndoSnapshot(tr("Toggle Axis Visibility"), before);
+        syncAxisControls();
+    });
+    lay->addWidget(d_chk_axis_visible);
+
+    // Range & Scale
+    d_sec_axis_range_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_axis_range_lbl);
+
+    QGridLayout *rngGrid = new QGridLayout();
+    rngGrid->setContentsMargins(0, 0, 0, 0);
+    rngGrid->setHorizontalSpacing(6);
+    rngGrid->setVerticalSpacing(4);
+
+    d_lbl_axis_min = new QLabel(page);
+    d_edit_axis_min = new QLineEdit(page);
+    d_lbl_axis_max = new QLabel(page);
+    d_edit_axis_max = new QLineEdit(page);
+    d_lbl_axis_step = new QLabel(page);
+    d_edit_axis_step = new QLineEdit(page);
+
+    rngGrid->addWidget(d_lbl_axis_min, 0, 0);
+    rngGrid->addWidget(d_edit_axis_min, 0, 1);
+    rngGrid->addWidget(d_lbl_axis_max, 1, 0);
+    rngGrid->addWidget(d_edit_axis_max, 1, 1);
+    rngGrid->addWidget(d_lbl_axis_step, 2, 0);
+    rngGrid->addWidget(d_edit_axis_step, 2, 1);
+
+    connect(d_edit_axis_min, &QLineEdit::editingFinished, this,
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+    connect(d_edit_axis_max, &QLineEdit::editingFinished, this,
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+    connect(d_edit_axis_step, &QLineEdit::editingFinished, this,
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+
+    d_btn_axis_autoscale = new QPushButton(page);
+    d_btn_axis_autoscale->setIcon(IconLoader::duotoneIcon(QStringLiteral("zoom-auto"), 14));
+    connect(d_btn_axis_autoscale, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setAxisUserLocked(d_active_axis, false);
+        g->setAutoScaleAxis(d_active_axis);
+        d_target_ml->pushUndoSnapshot(tr("Auto Range Axis"), before);
+        syncAxisControls();
+    });
+    rngGrid->addWidget(d_btn_axis_autoscale, 3, 0, 1, 2);
+
+    d_lbl_axis_scale_type = new QLabel(page);
+    d_combo_axis_scale = new QComboBox(page);
+    d_combo_axis_scale->addItem(QString(), 0); // Linear
+    d_combo_axis_scale->addItem(QString(), 1); // Log10
+    connect(d_combo_axis_scale, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) {
+                if (!d_syncing_props)
+                    applyAxisScaleFromUi(-1);
+            });
+    rngGrid->addWidget(d_lbl_axis_scale_type, 4, 0);
+    rngGrid->addWidget(d_combo_axis_scale, 4, 1);
+    lay->addLayout(rngGrid);
+
+    // Axis Break
+    d_chk_axis_break = new QCheckBox(page);
+    lay->addWidget(d_chk_axis_break);
+
+    QGridLayout *brkGrid = new QGridLayout();
+    brkGrid->setContentsMargins(0, 0, 0, 0);
+    brkGrid->setHorizontalSpacing(6);
+    brkGrid->setVerticalSpacing(4);
+    d_lbl_break_from = new QLabel(page);
+    d_edit_break_from = new QLineEdit(page);
+    d_lbl_break_to = new QLabel(page);
+    d_edit_break_to = new QLineEdit(page);
+    brkGrid->addWidget(d_lbl_break_from, 0, 0);
+    brkGrid->addWidget(d_edit_break_from, 0, 1);
+    brkGrid->addWidget(d_lbl_break_to, 1, 0);
+    brkGrid->addWidget(d_edit_break_to, 1, 1);
+    lay->addLayout(brkGrid);
+
+    connect(d_chk_axis_break, &QCheckBox::toggled, this, [this](bool on) {
+        d_edit_break_from->setEnabled(on);
+        d_edit_break_to->setEnabled(on);
+        if (!d_syncing_props)
+            applyAxisBreakFromUi();
+    });
+    connect(d_edit_break_from, &QLineEdit::editingFinished, this,
+            &GraphInspectorDock::applyAxisBreakFromUi);
+    connect(d_edit_break_to, &QLineEdit::editingFinished, this,
+            &GraphInspectorDock::applyAxisBreakFromUi);
+
+    // Ticks & Grids
+    d_sec_axis_ticks_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_axis_ticks_lbl);
+
+    QGridLayout *tickGrid = new QGridLayout();
+    tickGrid->setContentsMargins(0, 0, 0, 0);
+    tickGrid->setHorizontalSpacing(6);
+    tickGrid->setVerticalSpacing(4);
+
+    d_lbl_tick_dir = new QLabel(page);
+    d_combo_tick_dir = new QComboBox(page);
+    d_combo_tick_dir->addItem(QString(), int(ScaleDraw::In));
+    d_combo_tick_dir->addItem(QString(), int(ScaleDraw::Out));
+    d_combo_tick_dir->addItem(QString(), int(ScaleDraw::Both));
+    d_combo_tick_dir->addItem(QString(), int(ScaleDraw::None));
+    connect(d_combo_tick_dir, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g || idx < 0)
+                    return;
+                const int style = d_combo_tick_dir->itemData(idx).toInt();
+                const QString before = d_target_ml->captureUndoSnapshot();
+                g->setAxisTicksLength(d_active_axis, style, style, g->minorTickLength(),
+                                      g->majorTickLength());
+                g->replot();
+                d_target_ml->pushUndoSnapshot(tr("Change Tick Direction"), before);
+            });
+    tickGrid->addWidget(d_lbl_tick_dir, 0, 0);
+    tickGrid->addWidget(d_combo_tick_dir, 0, 1);
+
+    d_chk_major_grid = new QCheckBox(page);
+    d_chk_minor_grid = new QCheckBox(page);
+    auto applyGridToggle = [this]() {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g || !g->grid())
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        Grid *gr = g->grid();
+        const bool isX = (d_active_axis == QwtPlot::xBottom || d_active_axis == QwtPlot::xTop);
+        if (isX) {
+            gr->enableX(d_chk_major_grid->isChecked());
+            gr->enableXMin(d_chk_minor_grid->isChecked());
+        } else {
+            gr->enableY(d_chk_major_grid->isChecked());
+            gr->enableYMin(d_chk_minor_grid->isChecked());
+        }
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Toggle Axis Grid"), before);
+    };
+    connect(d_chk_major_grid, &QCheckBox::toggled, this,
+            [applyGridToggle](bool) { applyGridToggle(); });
+    connect(d_chk_minor_grid, &QCheckBox::toggled, this,
+            [applyGridToggle](bool) { applyGridToggle(); });
+
+    tickGrid->addWidget(d_chk_major_grid, 1, 0);
+    tickGrid->addWidget(d_chk_minor_grid, 1, 1);
+    lay->addLayout(tickGrid);
+
+    // Axis Title & Scientific Rich-Text Toolbar + Arial Font Sizes
+    d_sec_axis_title_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_axis_title_lbl);
+
+    d_edit_axis_title = new QLineEdit(page);
+    connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const QString nextText = d_edit_axis_title->text();
+        if (g->axisTitle(d_active_axis) == nextText)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setAxisTitleAuto(d_active_axis, false);
+        QFont f = g->axisTitleFont(d_active_axis);
+        if (f.family().trimmed().isEmpty())
+            f.setFamily(QStringLiteral("Arial"));
+        g->setAxisTitleFont(d_active_axis, f);
+        g->setAxisTitle(d_active_axis, nextText);
+        g->replot();
+        d_target_ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
+    });
+    lay->addWidget(d_edit_axis_title);
+
+    QHBoxLayout *fmtRow = new QHBoxLayout();
+    fmtRow->setSpacing(3);
+    auto makeFmtBtn = [&](const QString &label) -> QToolButton * {
+        QToolButton *b = new QToolButton(page);
+        b->setText(label);
+        b->setFixedHeight(23);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        fmtRow->addWidget(b);
+        return b;
+    };
+
+    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"));
+    QFont itFont = d_btn_fmt_italic->font();
+    itFont.setItalic(true);
+    itFont.setBold(true);
+    d_btn_fmt_italic->setFont(itFont);
+    connect(d_btn_fmt_italic, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<i>"), QStringLiteral("</i>"));
+    });
+
+    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82")); // X₂
+    connect(d_btn_fmt_sub, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>"));
+    });
+
+    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2")); // X²
+    connect(d_btn_fmt_sup, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>"));
+    });
+
+    d_btn_fmt_greek = makeFmtBtn(QString());
+    d_btn_fmt_greek->setPopupMode(QToolButton::InstantPopup);
+    d_menu_greek = new QMenu(d_btn_fmt_greek);
+    rebuildGreekSymbolMenu();
+    d_btn_fmt_greek->setMenu(d_menu_greek);
+
+    d_btn_fmt_unit = makeFmtBtn(QString());
+    d_btn_fmt_unit->setPopupMode(QToolButton::InstantPopup);
+    d_menu_units = new QMenu(d_btn_fmt_unit);
+    const QList<QPair<QString, QString>> unitList = {
+        { QStringLiteral("MPa"), QStringLiteral(" (MPa)") },
+        { QStringLiteral("GPa"), QStringLiteral(" (GPa)") },
+        { QStringLiteral("%"), QStringLiteral(" (%)") },
+        { QStringLiteral("K"), QStringLiteral(" (K)") },
+        { QString::fromUtf8("\xC2\xB0" "C"), QString::fromUtf8(" (\xC2\xB0" "C)") },
+        { QString::fromUtf8("s\xE2\x81\xBB\xC2\xB9"), QStringLiteral(" (s<sup>-1</sup>)") },
+        { QStringLiteral("mm"), QStringLiteral(" (mm)") },
+        { QString::fromUtf8("\xCE\xBC" "m"), QString::fromUtf8(" (\xCE\xBC" "m)") },
+        { QStringLiteral("nm"), QStringLiteral(" (nm)") },
+        { QStringLiteral("mass%"), QStringLiteral(" (mass%)") },
+        { QStringLiteral("at.%"), QStringLiteral(" (at.%)") },
+        { QStringLiteral("kJ/mol"), QStringLiteral(" (kJ/mol)") },
+        { QStringLiteral("eV"), QStringLiteral(" (eV)") }
+    };
+    for (const auto &pr : unitList) {
+        const QString tok = pr.second;
+        d_menu_units->addAction(pr.first, this, [this, tok]() { insertAxisTitleToken(tok); });
+    }
+    d_btn_fmt_unit->setMenu(d_menu_units);
+    lay->addLayout(fmtRow);
+
+    QGridLayout *fntGrid = new QGridLayout();
+    fntGrid->setContentsMargins(0, 0, 0, 0);
+    fntGrid->setHorizontalSpacing(6);
+    fntGrid->setVerticalSpacing(4);
+
+    d_lbl_title_pt = new QLabel(page);
+    d_spin_axis_title_pt = new QSpinBox(page);
+    d_spin_axis_title_pt->setRange(6, 72);
+    d_spin_axis_title_pt->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_axis_title_pt, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int pt) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g)
+                    return;
+                const QString before = d_target_ml->captureUndoSnapshot();
+                QFont f = g->axisTitleFont(d_active_axis);
+                if (f.family().trimmed().isEmpty())
+                    f.setFamily(QStringLiteral("Arial"));
+                f.setPointSize(pt);
+                g->setAxisTitleFont(d_active_axis, f);
+                g->replot();
+                d_target_ml->pushUndoSnapshot(tr("Axis Title Font Size"), before,
+                                              kMergeAxisTitlePt);
+            });
+
+    d_lbl_tick_pt = new QLabel(page);
+    d_spin_axis_tick_pt = new QSpinBox(page);
+    d_spin_axis_tick_pt->setRange(6, 72);
+    d_spin_axis_tick_pt->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_axis_tick_pt, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int pt) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g)
+                    return;
+                const QString before = d_target_ml->captureUndoSnapshot();
+                QFont f = g->axisFont(d_active_axis);
+                if (f.family().trimmed().isEmpty())
+                    f.setFamily(QStringLiteral("Arial"));
+                f.setPointSize(pt);
+                g->setAxisFont(d_active_axis, f);
+                g->replot();
+                d_target_ml->pushUndoSnapshot(tr("Axis Tick Font Size"), before, kMergeAxisTickPt);
+            });
+
+    fntGrid->addWidget(d_lbl_title_pt, 0, 0);
+    fntGrid->addWidget(d_spin_axis_title_pt, 0, 1);
+    fntGrid->addWidget(d_lbl_tick_pt, 1, 0);
+    fntGrid->addWidget(d_spin_axis_tick_pt, 1, 1);
+    lay->addLayout(fntGrid);
+
+    lay->addStretch(1);
+    return page;
+}
+
+QWidget *GraphInspectorDock::buildCurveInspector()
+{
+    QWidget *page = new QWidget();
+    QVBoxLayout *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(8, 8, 8, 10);
+    lay->setSpacing(6);
+
+    d_lbl_active_curve_name = new QLabel(page);
+    d_lbl_active_curve_name->setObjectName(QStringLiteral("InspectorSubTitle"));
+    d_lbl_active_curve_name->setWordWrap(true);
+    lay->addWidget(d_lbl_active_curve_name);
+
+    QGridLayout *styleGrid = new QGridLayout();
+    styleGrid->setContentsMargins(0, 0, 0, 0);
+    styleGrid->setHorizontalSpacing(6);
+    styleGrid->setVerticalSpacing(4);
+
+    d_lbl_plot_style = new QLabel(page);
+    d_combo_curve_style = new QComboBox(page);
+    d_combo_curve_style->addItem(QString(), int(Graph::Line));
+    d_combo_curve_style->addItem(QString(), int(Graph::Scatter));
+    d_combo_curve_style->addItem(QString(), int(Graph::LineSymbols));
+    d_combo_curve_style->addItem(QString(), int(Graph::VerticalBars));
+    d_combo_curve_style->addItem(QString(), int(Graph::HorizontalBars));
+    d_combo_curve_style->addItem(QString(), int(Graph::Area));
+    connect(d_combo_curve_style, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g || idx < 0)
+                    return;
+                const int ci = effectiveSelectedCurveIndex(g);
+                if (ci < 0 || ci >= g->curves())
+                    return;
+                QwtPlotCurve *cv = g->curve(ci);
+                if (!cv)
+                    return;
+
+                const auto targetType =
+                        static_cast<Graph::CurveType>(d_combo_curve_style->itemData(idx).toInt());
+                const QString before = d_target_ml->captureUndoSnapshot();
+                const QPen savedPen = cv->pen();
+                const QwtSymbol savedSym = cv->symbol();
+                const int savedYAxis = cv->yAxis();
+
+                int resolvedCi = ci;
+                if (Graph::canConvertTo(cv, targetType)) {
+                    if (d_app)
+                        d_app->invalidateModelessGraphDialogs(d_target_ml);
+                    int ebBefore = 0;
+                    if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
+                        const int oldType = g->curveType(ci);
+                        const bool barTransition =
+                                ((targetType == Graph::VerticalBars
+                                  || targetType == Graph::HorizontalBars)
+                                 != (oldType == Graph::VerticalBars
+                                     || oldType == Graph::HorizontalBars));
+                        if (barTransition) {
+                            for (DataCurve *eb : dc->errorBarsList()) {
+                                const int ebi = g->curveIndex(eb);
+                                if (ebi >= 0 && ebi < ci)
+                                    ++ebBefore;
+                            }
+                        }
+                    }
+                    g->setCurveType(ci, targetType, true);
+                    resolvedCi = qBound(0, ci - ebBefore, qMax(0, g->curves() - 1));
+                    Graph::GraphSelection sel;
+                    sel.kind = Graph::GraphSelection::Curve;
+                    sel.primaryId = resolvedCi;
+                    g->setCurrentSelection(sel, false);
+                    cv = g->curve(resolvedCi);
+                }
+                if (cv) {
+                    cv->setYAxis(savedYAxis);
+                    if (targetType == Graph::Line || targetType == Graph::LineSymbols
+                        || targetType == Graph::Area) {
+                        QPen p = savedPen;
+                        if (p.style() == Qt::NoPen)
+                            p.setStyle(Qt::SolidLine);
+                        if (p.width() <= 0)
+                            p.setWidth(2);
+                        cv->setPen(p);
+                    }
+                    if (targetType == Graph::Scatter || targetType == Graph::LineSymbols) {
+                        QwtSymbol s = savedSym;
+                        if (s.style() == QwtSymbol::NoSymbol) {
+                            const QColor col = savedPen.color().isValid() ? savedPen.color()
+                                                                          : QColor(Qt::black);
+                            s.setStyle(QwtSymbol::Ellipse);
+                            s.setSize(QSize(8, 8));
+                            s.setPen(QPen(col, qMax(1, savedPen.width())));
+                            s.setBrush(d_chk_sym_hollow->isChecked() ? QBrush(QColor(Qt::white))
+                                                                     : QBrush(col));
+                        }
+                        cv->setSymbol(s);
+                    } else if (targetType == Graph::Line) {
+                        QwtSymbol s = cv->symbol();
+                        s.setStyle(QwtSymbol::NoSymbol);
+                        cv->setSymbol(s);
+                    }
+                    if (targetType == Graph::Area) {
+                        QColor fillCol = cv->pen().color();
+                        fillCol.setAlpha(65);
+                        cv->setBrush(QBrush(fillCol));
+                    }
+                }
+                g->reconstructLegend();
+                g->updatePlot();
+                d_target_ml->pushUndoSnapshot(tr("Change Curve Plot Style"), before);
+                refreshObjectTree();
+                syncCurveControls();
+            });
+    styleGrid->addWidget(d_lbl_plot_style, 0, 0);
+    styleGrid->addWidget(d_combo_curve_style, 0, 1);
+    lay->addLayout(styleGrid);
+
+    // Line Appearance
+    d_sec_line_style_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_line_style_lbl);
+
+    QGridLayout *lineGrid = new QGridLayout();
+    lineGrid->setContentsMargins(0, 0, 0, 0);
+    lineGrid->setHorizontalSpacing(6);
+    lineGrid->setVerticalSpacing(4);
+
+    d_lbl_line_color = new QLabel(page);
+    d_btn_line_color = new QPushButton(page);
+    updateColorSwatchButton(d_btn_line_color, QColor(Qt::black));
+    connect(d_btn_line_color, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+        if (!cv)
+            return;
+        const bool hasLine =
+                (cv->style() != QwtPlotCurve::NoCurve && cv->pen().style() != Qt::NoPen);
+        const QColor cur = (hasLine && cv->pen().color().isValid()) ? cv->pen().color()
+                                                                    : cv->symbol().pen().color();
+        const QColor chosen = pickColorInteractive(this, cur, tr("Select Series Color"));
+        if (!chosen.isValid() || chosen == cur)
+            return;
+
+        const QString before = d_target_ml->captureUndoSnapshot();
+        QPen lp = cv->pen();
+        lp.setColor(chosen);
+        cv->setPen(lp);
+
+        QwtSymbol sym = cv->symbol();
+        const bool wasHollow = Graph::isSymbolWhiteHollow(sym);
+        QPen sp = sym.pen();
+        sp.setColor(chosen);
+        sym.setPen(sp);
+        if (wasHollow)
+            sym.setBrush(QBrush(QColor(Qt::white)));
+        else if (sym.brush().style() != Qt::NoBrush)
+            sym.setBrush(QBrush(chosen));
+        cv->setSymbol(sym);
+
+        if (cv->brush().style() != Qt::NoBrush) {
+            QColor areaCol = chosen;
+            areaCol.setAlpha(cv->brush().color().alpha() > 0 ? cv->brush().color().alpha() : 65);
+            cv->setBrush(QBrush(areaCol));
+        }
+        g->updatePlot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Series Color"), before);
+        refreshObjectTree();
+        syncCurveControls();
+    });
+
+    d_lbl_line_width = new QLabel(page);
+    d_spin_line_width = new QSpinBox(page);
+    d_spin_line_width->setRange(1, 16);
+    d_spin_line_width->setSuffix(QStringLiteral(" px"));
+    connect(d_spin_line_width, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int w) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+        if (!cv)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        QPen lp = cv->pen();
+        lp.setWidth(w);
+        cv->setPen(lp);
+        g->updatePlot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Line Width"), before, kMergeCurveWidth);
+        refreshObjectTree();
+    });
+
+    d_lbl_line_pen = new QLabel(page);
+    d_combo_line_pen = new QComboBox(page);
+    d_combo_line_pen->addItem(QString(), int(Qt::SolidLine));
+    d_combo_line_pen->addItem(QString(), int(Qt::DashLine));
+    d_combo_line_pen->addItem(QString(), int(Qt::DotLine));
+    d_combo_line_pen->addItem(QString(), int(Qt::DashDotLine));
+    d_combo_line_pen->addItem(QString(), int(Qt::NoPen));
+    connect(d_combo_line_pen, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g || idx < 0)
+                    return;
+                const int ci = effectiveSelectedCurveIndex(g);
+                QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+                if (!cv)
+                    return;
+                const auto ps = static_cast<Qt::PenStyle>(d_combo_line_pen->itemData(idx).toInt());
+                const QString before = d_target_ml->captureUndoSnapshot();
+                QPen lp = cv->pen();
+                lp.setStyle(ps);
+                cv->setPen(lp);
+                if (ps == Qt::NoPen)
+                    cv->setStyle(QwtPlotCurve::NoCurve);
+                else if (cv->style() == QwtPlotCurve::NoCurve)
+                    cv->setStyle(QwtPlotCurve::Lines);
+                g->updatePlot();
+                emit g->modifiedGraph();
+                d_target_ml->pushUndoSnapshot(tr("Change Line Pen Style"), before);
+                refreshObjectTree();
+            });
+
+    lineGrid->addWidget(d_lbl_line_color, 0, 0);
+    lineGrid->addWidget(d_btn_line_color, 0, 1);
+    lineGrid->addWidget(d_lbl_line_width, 1, 0);
+    lineGrid->addWidget(d_spin_line_width, 1, 1);
+    lineGrid->addWidget(d_lbl_line_pen, 2, 0);
+    lineGrid->addWidget(d_combo_line_pen, 2, 1);
+    lay->addLayout(lineGrid);
+
+    // Symbol Appearance & Hollow + Right-Y toggles
+    d_sec_symbol_style_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_symbol_style_lbl);
+
+    QGridLayout *symGrid = new QGridLayout();
+    symGrid->setContentsMargins(0, 0, 0, 0);
+    symGrid->setHorizontalSpacing(6);
+    symGrid->setVerticalSpacing(4);
+
+    d_lbl_sym_shape = new QLabel(page);
+    d_combo_sym_shape = new QComboBox(page);
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Ellipse));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Rect));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Diamond));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::UTriangle));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::DTriangle));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::LTriangle));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::RTriangle));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Cross));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::XCross));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Star1));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::Hexagon));
+    d_combo_sym_shape->addItem(QString(), int(QwtSymbol::NoSymbol));
+    connect(d_combo_sym_shape, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g || idx < 0)
+                    return;
+                const int ci = effectiveSelectedCurveIndex(g);
+                QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+                if (!cv)
+                    return;
+                const auto st =
+                        static_cast<QwtSymbol::Style>(d_combo_sym_shape->itemData(idx).toInt());
+                const QString before = d_target_ml->captureUndoSnapshot();
+                QwtSymbol sym = cv->symbol();
+                const bool hasLine =
+                        (cv->style() != QwtPlotCurve::NoCurve && cv->pen().style() != Qt::NoPen);
+                const QColor baseCol = (hasLine && cv->pen().color().isValid())
+                        ? cv->pen().color()
+                        : sym.pen().color();
+                sym.setStyle(st);
+                if (st != QwtSymbol::NoSymbol) {
+                    if (sym.size().width() <= 0)
+                        sym.setSize(QSize(d_spin_sym_size->value(), d_spin_sym_size->value()));
+                    QPen sp = sym.pen();
+                    if (!sp.color().isValid())
+                        sp.setColor(baseCol);
+                    if (sp.width() <= 0)
+                        sp.setWidth(qMax(1, cv->pen().width()));
+                    sym.setPen(sp);
+                    sym.setBrush(d_chk_sym_hollow->isChecked() ? QBrush(QColor(Qt::white))
+                                                               : QBrush(sp.color()));
+                }
+                cv->setSymbol(sym);
+                g->updatePlot();
+                emit g->modifiedGraph();
+                d_target_ml->pushUndoSnapshot(tr("Change Symbol Shape"), before);
+                refreshObjectTree();
+            });
+
+    d_lbl_sym_size = new QLabel(page);
+    d_spin_sym_size = new QSpinBox(page);
+    d_spin_sym_size->setRange(2, 36);
+    d_spin_sym_size->setValue(8);
+    d_spin_sym_size->setSuffix(QStringLiteral(" px"));
+    connect(d_spin_sym_size, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int sz) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+        if (!cv)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        QwtSymbol sym = cv->symbol();
+        sym.setSize(QSize(sz, sz));
+        cv->setSymbol(sym);
+        g->updatePlot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Symbol Size"), before, kMergeSymSize);
+        refreshObjectTree();
+    });
+
+    symGrid->addWidget(d_lbl_sym_shape, 0, 0);
+    symGrid->addWidget(d_combo_sym_shape, 0, 1);
+    symGrid->addWidget(d_lbl_sym_size, 1, 0);
+    symGrid->addWidget(d_spin_sym_size, 1, 1);
+    lay->addLayout(symGrid);
+
+    d_chk_sym_hollow = new QCheckBox(page);
+    connect(d_chk_sym_hollow, &QCheckBox::toggled, this, [this](bool hollow) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        if (ci < 0 || ci >= g->curves())
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setCurveSymbolHollow(ci, hollow);
+        d_target_ml->pushUndoSnapshot(tr("Toggle Hollow Symbol"), before);
+        refreshObjectTree();
+        syncCurveControls();
+    });
+    lay->addWidget(d_chk_sym_hollow);
+
+    d_chk_curve_right_y = new QCheckBox(page);
+    connect(d_chk_curve_right_y, &QCheckBox::toggled, this, [this](bool rightY) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+        if (!cv)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        const int targetAxis = rightY ? QwtPlot::yRight : QwtPlot::yLeft;
+        cv->setYAxis(targetAxis);
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
+            for (DataCurve *eb : dc->errorBarsList()) {
+                if (eb)
+                    eb->setYAxis(targetAxis);
+            }
+        }
+        if (rightY) {
+            g->enableAxis(QwtPlot::yRight, true);
+            g->setAxisBackboneVisible(QwtPlot::yRight, true);
+            if (Plot *pw = g->plotWidget()) {
+                if (QwtScaleDraw *sd = pw->axisScaleDraw(QwtPlot::yRight))
+                    sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                pw->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                pw->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            }
+        }
+        if (!g->isAxisUserLocked(targetAxis))
+            g->setAutoScaleAxis(targetAxis);
+        g->refreshAutoAxisTitlesFromColumns();
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Assign Curve to Right-Y"), before);
+        refreshObjectTree();
+        syncCurveControls();
+    });
+    lay->addWidget(d_chk_curve_right_y);
+
+    // Quick Error Bars
+    d_sec_err_bars_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_err_bars_lbl);
+
+    QHBoxLayout *errRow = new QHBoxLayout();
+    errRow->setSpacing(4);
+    d_btn_err_adjacent = new QPushButton(page);
+    d_btn_err_sd = new QPushButton(page);
+    d_btn_err_5pct = new QPushButton(page);
+    connect(d_btn_err_adjacent, &QPushButton::clicked, this,
+            [this]() { applyQuickErrorBars(0); });
+    connect(d_btn_err_sd, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(1); });
+    connect(d_btn_err_5pct, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(2); });
+    errRow->addWidget(d_btn_err_adjacent);
+    errRow->addWidget(d_btn_err_sd);
+    errRow->addWidget(d_btn_err_5pct);
+    lay->addLayout(errRow);
+
+    // Group Series Style Scheme
+    d_sec_series_scheme_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_series_scheme_lbl);
+
+    d_combo_series_scheme = new QComboBox(page);
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeBW2to3Group));
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeBlueFilledRedHollow));
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeMutedCategorical));
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeCoolToWarmStep));
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeViridisSequential));
+    d_combo_series_scheme->addItem(QString(), int(Graph::SchemeOriginClassic));
+    lay->addWidget(d_combo_series_scheme);
+
+    d_btn_apply_scheme_all = new QPushButton(page);
+    d_btn_apply_scheme_all->setIcon(IconLoader::duotoneIcon(QStringLiteral("palette"), 14));
+    connect(d_btn_apply_scheme_all, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const auto scheme =
+                static_cast<Graph::SeriesStyleScheme>(d_combo_series_scheme->currentData().toInt());
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->applySeriesStyleScheme(scheme);
+        d_target_ml->pushUndoSnapshot(tr("Apply Series Style Scheme"), before);
+        refreshObjectTree();
+        syncCurveControls();
+    });
+    lay->addWidget(d_btn_apply_scheme_all);
+
+    // Non-Destructive Y-Offset Stack
+    d_sec_y_stack_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_y_stack_lbl);
+
+    QHBoxLayout *stkGapRow = new QHBoxLayout();
+    d_lbl_stack_gap = new QLabel(page);
+    d_spin_stack_gap = new QDoubleSpinBox(page);
+    d_spin_stack_gap->setRange(0.0, 200.0);
+    d_spin_stack_gap->setDecimals(0);
+    d_spin_stack_gap->setSingleStep(5.0);
+    d_spin_stack_gap->setValue(15.0);
+    d_spin_stack_gap->setSuffix(QStringLiteral("%"));
+    stkGapRow->addWidget(d_lbl_stack_gap);
+    stkGapRow->addWidget(d_spin_stack_gap);
+    lay->addLayout(stkGapRow);
+
+    QHBoxLayout *stkBtnRow = new QHBoxLayout();
+    stkBtnRow->setSpacing(4);
+    d_btn_apply_stack = new QPushButton(page);
+    connect(d_btn_apply_stack, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setStackOffsets(1 /*AutoGap*/, d_spin_stack_gap->value(), 0.0, false);
+        d_target_ml->pushUndoSnapshot(tr("Apply Y-Offset Stack"), before);
+        syncAxisControls();
+    });
+    d_btn_reset_stack = new QPushButton(page);
+    connect(d_btn_reset_stack, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->resetStackOffsets();
+        d_target_ml->pushUndoSnapshot(tr("Reset Stack Offsets"), before);
+        syncAxisControls();
+    });
+    stkBtnRow->addWidget(d_btn_apply_stack);
+    stkBtnRow->addWidget(d_btn_reset_stack);
+    lay->addLayout(stkBtnRow);
+
+    lay->addStretch(1);
+    return page;
+}
+
+QWidget *GraphInspectorDock::buildLegendInspector()
+{
+    QWidget *page = new QWidget();
+    QVBoxLayout *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(8, 8, 8, 10);
+    lay->setSpacing(6);
+
+    d_lbl_legend_target = new QLabel(page);
+    d_lbl_legend_target->setObjectName(QStringLiteral("InspectorSubTitle"));
+    lay->addWidget(d_lbl_legend_target);
+
+    d_sec_legend_pos_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_legend_pos_lbl);
+
+    QGridLayout *snapGrid = new QGridLayout();
+    snapGrid->setContentsMargins(0, 0, 0, 0);
+    snapGrid->setHorizontalSpacing(4);
+    snapGrid->setVerticalSpacing(4);
+
+    auto makeSnapBtn = [&](Graph::LegendAnchor anchor, int row, int col) -> QPushButton * {
+        QPushButton *b = new QPushButton(page);
+        connect(b, &QPushButton::clicked, this, [this, anchor]() {
+            Graph *g = activeLayer();
+            if (!d_target_ml || !g)
+                return;
+            const QString before = d_target_ml->captureUndoSnapshot();
+            if (!g->hasLegend())
+                g->newLegend();
+            g->setLegendVisible(true);
+            g->placeLegendAnchor(anchor);
+            d_target_ml->pushUndoSnapshot(tr("Place Legend"), before);
+            refreshObjectTree();
+            syncLegendControls();
+        });
+        snapGrid->addWidget(b, row, col);
+        return b;
+    };
+
+    d_btn_leg_tl = makeSnapBtn(Graph::LegendTopLeft, 0, 0);
+    d_btn_leg_tc = makeSnapBtn(Graph::LegendTopCenter, 0, 1);
+    d_btn_leg_tr = makeSnapBtn(Graph::LegendTopRight, 0, 2);
+    d_btn_leg_bl = makeSnapBtn(Graph::LegendBottomLeft, 1, 0);
+    d_btn_leg_br = makeSnapBtn(Graph::LegendBottomRight, 1, 1);
+    d_btn_leg_out_r = makeSnapBtn(Graph::LegendOutsideRight, 1, 2);
+    lay->addLayout(snapGrid);
+
+    d_btn_leg_auto_avoid = new QPushButton(page);
+    d_btn_leg_auto_avoid->setIcon(IconLoader::duotoneIcon(QStringLiteral("legend"), 15));
+    connect(d_btn_leg_auto_avoid, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        if (!g->hasLegend())
+            g->newLegend();
+        g->setLegendVisible(true);
+        g->placeLegendAnchor(Graph::LegendAutoAvoidData);
+        d_target_ml->pushUndoSnapshot(tr("Place Legend in Empty Space"), before);
+        refreshObjectTree();
+        syncLegendControls();
+    });
+    lay->addWidget(d_btn_leg_auto_avoid);
+
+    d_btn_leg_rebuild = new QPushButton(page);
+    d_btn_leg_rebuild->setObjectName(QStringLiteral("InspectorRebuildLegendBtn"));
+    d_btn_leg_rebuild->setIcon(IconLoader::duotoneIcon(QStringLiteral("recalc-now"), 15));
+    connect(d_btn_leg_rebuild, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->reconstructLegend();
+        g->setLegendVisible(true);
+        g->replot();
+        d_target_ml->pushUndoSnapshot(tr("Reconstruct Legend"), before);
+        refreshObjectTree();
+        syncLegendControls();
+    });
+    lay->addWidget(d_btn_leg_rebuild);
+
+    d_sec_legend_style_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_legend_style_lbl);
+
+    QGridLayout *legGrid = new QGridLayout();
+    legGrid->setContentsMargins(0, 0, 0, 0);
+    legGrid->setHorizontalSpacing(6);
+    legGrid->setVerticalSpacing(4);
+
+    // Frame modes:
+    //  0 -> Borderless (Legend::None, transparent bg)
+    //  1 -> Black Box + White Fill (Legend::Line, solid white bg)
+    //  2 -> Transparent Background + Box (Legend::Line, transparent bg)
+    d_lbl_leg_frame = new QLabel(page);
+    d_combo_leg_frame = new QComboBox(page);
+    d_combo_leg_frame->addItem(QString(), 0);
+    d_combo_leg_frame->addItem(QString(), 1);
+    d_combo_leg_frame->addItem(QString(), 2);
+    connect(d_combo_leg_frame, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g || idx < 0)
+                    return;
+                Legend *target = nullptr;
+                const auto selKind = g->currentSelection().kind;
+                if (selKind == Graph::GraphSelection::TextAnnotation)
+                    target = g->textMarker(g->currentSelection().primaryId);
+                else if (selKind != Graph::GraphSelection::ArrowAnnotation
+                         && selKind != Graph::GraphSelection::ImageAnnotation)
+                    target = g->legend();
+                if (!target)
+                    return;
+
+                const int mode = d_combo_leg_frame->itemData(idx).toInt();
+                const QString before = d_target_ml->captureUndoSnapshot();
+                if (mode == 0) {
+                    target->setFrameStyle(Legend::None);
+                    target->setBackgroundColor(QColor(255, 255, 255, 0));
+                } else if (mode == 1) {
+                    target->setFrameStyle(Legend::Line);
+                    target->setBackgroundColor(QColor(255, 255, 255, 255));
+                } else {
+                    target->setFrameStyle(Legend::Line);
+                    target->setBackgroundColor(QColor(255, 255, 255, 0));
+                }
+                g->replot();
+                emit g->modifiedGraph();
+                d_target_ml->pushUndoSnapshot(tr("Change Legend Frame"), before);
+            });
+
+    d_lbl_leg_header = new QLabel(page);
+    d_edit_leg_header = new QLineEdit(page);
+    connect(d_edit_leg_header, &QLineEdit::editingFinished, this, [this]() {
+        if (d_syncing_props || !d_edit_leg_header || !d_edit_leg_header->isModified())
+            return;
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+
+        const auto selKind = g->currentSelection().kind;
+        Legend *leg = nullptr;
+        if (selKind == Graph::GraphSelection::TextAnnotation)
+            leg = g->textMarker(g->currentSelection().primaryId);
+        else if (selKind != Graph::GraphSelection::ArrowAnnotation
+                 && selKind != Graph::GraphSelection::ImageAnnotation)
+            leg = g->legend();
+
+        const bool isPrimaryLegend = (g && leg && leg == g->legend())
+                || (g && !leg && selKind == Graph::GraphSelection::LegendBox);
+
+        if (!isPrimaryLegend) {
+            if (!leg)
+                return;
+            QStringList lines = leg->text().split('\n');
+            if (lines.isEmpty())
+                lines.append(d_edit_leg_header->text());
+            else
+                lines[0] = d_edit_leg_header->text();
+            const QString nextTxt = lines.join('\n');
+            d_edit_leg_header->setModified(false);
+            if (leg->text() == nextTxt)
+                return;
+            const QString before = d_target_ml->captureUndoSnapshot();
+            leg->setText(nextTxt);
+            g->replot();
+            emit g->modifiedGraph();
+            d_target_ml->pushUndoSnapshot(tr("Edit Annotation Text"), before, kMergeLegendHeader);
+            refreshObjectTree();
+            return;
+        }
+
+        if (!g->hasLegend())
+            g->newLegend();
+        leg = g->legend();
+        if (!leg)
+            return;
+
+        QStringList lines = leg->text().split('\n');
+        while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
+            lines.removeLast();
+
+        const QString hdr = d_edit_leg_header->text().trimmed();
+        if (!lines.isEmpty() && !isLegendEntryLine(lines.first())) {
+            if (hdr.isEmpty())
+                lines.removeFirst();
+            else
+                lines[0] = hdr;
+        } else if (!hdr.isEmpty()) {
+            lines.prepend(hdr);
+        }
+
+        const QString updated = lines.join(QStringLiteral("\n"));
+        d_edit_leg_header->setModified(false);
+        if (leg->text() == updated)
+            return;
+
+        const QString before = d_target_ml->captureUndoSnapshot();
+        leg->setText(updated);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Edit Legend Header"), before, kMergeLegendHeader);
+    });
+
+    d_lbl_leg_cols = new QLabel(page);
+    d_spin_leg_cols = new QSpinBox(page);
+    d_spin_leg_cols->setRange(1, 4);
+    d_spin_leg_cols->setValue(1);
+    connect(d_spin_leg_cols, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int cols) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        Legend *leg = g->legend();
+        if (!leg)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        leg->setNumColumns(cols);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Legend Columns"), before, kMergeLegendCols);
+    });
+
+    d_lbl_leg_font_pt = new QLabel(page);
+    d_spin_leg_font_pt = new QSpinBox(page);
+    d_spin_leg_font_pt->setRange(6, 72);
+    d_spin_leg_font_pt->setValue(12);
+    d_spin_leg_font_pt->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_leg_font_pt, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int pt) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        Legend *target = nullptr;
+        const auto selKind = g->currentSelection().kind;
+        if (selKind == Graph::GraphSelection::TextAnnotation)
+            target = g->textMarker(g->currentSelection().primaryId);
+        else if (selKind != Graph::GraphSelection::ArrowAnnotation
+                 && selKind != Graph::GraphSelection::ImageAnnotation)
+            target = g->legend();
+        if (!target)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        QFont f = target->font();
+        if (f.family().trimmed().isEmpty())
+            f.setFamily(QStringLiteral("Arial"));
+        f.setPointSize(pt);
+        target->setFont(f);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Legend Font Size"), before, kMergeLegendFontPt);
+    });
+
+    legGrid->addWidget(d_lbl_leg_frame, 0, 0);
+    legGrid->addWidget(d_combo_leg_frame, 0, 1);
+    legGrid->addWidget(d_lbl_leg_header, 1, 0);
+    legGrid->addWidget(d_edit_leg_header, 1, 1);
+    legGrid->addWidget(d_lbl_leg_cols, 2, 0);
+    legGrid->addWidget(d_spin_leg_cols, 2, 1);
+    legGrid->addWidget(d_lbl_leg_font_pt, 3, 0);
+    legGrid->addWidget(d_spin_leg_font_pt, 3, 1);
+    lay->addLayout(legGrid);
+
+    lay->addStretch(1);
+    return page;
+}
+
+QIcon GraphInspectorDock::buildCurveSwatchIcon(Graph *g, int curveIndex)
+{
+    QPixmap px(22, 14);
+    px.fill(Qt::transparent);
+    if (!g || curveIndex < 0 || curveIndex >= g->curves())
+        return QIcon(px);
+
+    QwtPlotCurve *cv = g->curve(curveIndex);
+    if (!cv)
+        return QIcon(px);
+
+    QPainter p(&px);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QPen linePen = cv->pen();
+    const QwtSymbol sym = cv->symbol();
+    const bool hasLine = (cv->style() != QwtPlotCurve::NoCurve && linePen.style() != Qt::NoPen);
+    const QColor baseCol = (hasLine && linePen.color().isValid())
+            ? linePen.color()
+            : (sym.pen().color().isValid() ? sym.pen().color() : QColor(Qt::black));
+
+    if (cv->style() != QwtPlotCurve::NoCurve && linePen.style() != Qt::NoPen) {
+        QPen sp(baseCol, qBound(1, linePen.width(), 3), linePen.style());
+        p.setPen(sp);
+        p.drawLine(QPointF(1.0, 7.0), QPointF(21.0, 7.0));
+    }
+
+    if (sym.style() != QwtSymbol::NoSymbol) {
+        const bool hollow = Graph::isSymbolWhiteHollow(sym);
+        const QColor symBorder = sym.pen().color().isValid() ? sym.pen().color() : baseCol;
+        const QBrush symBrush = hollow
+                ? QBrush(QColor(Qt::white))
+                : ((sym.brush().style() != Qt::NoBrush && sym.brush().color().isValid())
+                           ? sym.brush()
+                           : QBrush(symBorder));
+        p.setPen(QPen(symBorder, 1.3));
+        p.setBrush(symBrush);
+
+        const QRectF r(7.5, 3.5, 7.0, 7.0);
+        switch (sym.style()) {
+        case QwtSymbol::Rect:
+            p.drawRect(r);
+            break;
+        case QwtSymbol::Diamond: {
+            QPolygonF poly;
+            poly << QPointF(11.0, 3.0) << QPointF(15.0, 7.0) << QPointF(11.0, 11.0)
+                 << QPointF(7.0, 7.0);
+            p.drawPolygon(poly);
+            break;
+        }
+        case QwtSymbol::UTriangle: {
+            QPolygonF poly;
+            poly << QPointF(11.0, 3.2) << QPointF(15.0, 10.6) << QPointF(7.0, 10.6);
+            p.drawPolygon(poly);
+            break;
+        }
+        case QwtSymbol::DTriangle: {
+            QPolygonF poly;
+            poly << QPointF(7.0, 3.4) << QPointF(15.0, 3.4) << QPointF(11.0, 10.8);
+            p.drawPolygon(poly);
+            break;
+        }
+        case QwtSymbol::Cross:
+            p.drawLine(QPointF(11.0, 3.2), QPointF(11.0, 10.8));
+            p.drawLine(QPointF(7.2, 7.0), QPointF(14.8, 7.0));
+            break;
+        case QwtSymbol::XCross:
+            p.drawLine(QPointF(7.5, 3.5), QPointF(14.5, 10.5));
+            p.drawLine(QPointF(14.5, 3.5), QPointF(7.5, 10.5));
+            break;
+        default:
+            p.drawEllipse(r);
+            break;
+        }
+    }
+    p.end();
+    return QIcon(px);
+}
+
+QColor GraphInspectorDock::pickColorInteractive(QWidget *parent, const QColor &initial,
+                                                const QString &title)
+{
+    if (ApplicationWindow::isNonInteractiveContext(parent))
+        return initial;
+    return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black), parent, title,
+                                  QColorDialog::ShowAlphaChannel);
+}
+
+void GraphInspectorDock::refreshAll()
+{
+    if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
+        d_coalesce_refresh_timer->stop();
+
+    const bool hasGraph = !d_target_ml.isNull();
+    if (d_header_target_lbl) {
+        d_header_target_lbl->setText(hasGraph ? d_target_ml->name() : tr("(No Active Graph)"));
+    }
+    if (d_prop_stack)
+        d_prop_stack->setEnabled(hasGraph);
+    if (d_tree_header_strip)
+        d_tree_header_strip->setEnabled(hasGraph);
+
+    refreshObjectTree();
+    syncInspectorFromSelection();
+}
+
+void GraphInspectorDock::refreshObjectTree()
+{
+    if (!d_object_tree)
+        return;
+
+    d_syncing_tree = true;
+    QSignalBlocker blocker(d_object_tree);
+    d_object_tree->clear();
+
+    if (!d_target_ml) {
+        d_object_tree->hide();
+        if (d_empty_hint_lbl)
+            d_empty_hint_lbl->show();
+        d_syncing_tree = false;
+        return;
+    }
+
+    if (d_empty_hint_lbl)
+        d_empty_hint_lbl->hide();
+    d_object_tree->show();
+
+    Graph *activeG = activeLayer();
+    const Graph::GraphSelection activeSel =
+            activeG ? activeG->currentSelection() : Graph::GraphSelection();
+    const int activeMasterCurveIdx =
+            (activeG && (activeSel.kind == Graph::GraphSelection::Curve
+                         || activeSel.kind == Graph::GraphSelection::ErrorBars))
+            ? resolveMasterCurveIndex(activeG, activeSel.primaryId)
+            : -1;
+
+    QTreeWidgetItem *pageItem = new QTreeWidgetItem(d_object_tree);
+    pageItem->setText(0, tr("Page: %1").arg(d_target_ml->name()));
+    pageItem->setIcon(0, IconLoader::duotoneIcon(QStringLiteral("page-setup"), 14));
+    pageItem->setData(0, RoleSelKind, int(Graph::GraphSelection::Page));
+    pageItem->setData(0, RoleLayerIndex, 0);
+    pageItem->setExpanded(true);
+
+    QTreeWidgetItem *itemToSelect = nullptr;
+    if (activeSel.kind == Graph::GraphSelection::Page)
+        itemToSelect = pageItem;
+
+    const QList<Graph *> layers = d_target_ml->layersList();
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *g = layers[li];
+        if (!g)
+            continue;
+        bindLayerSignals(g);
+
+        QString layerTitle = tr("Layer %1").arg(li + 1);
+        if (g->linkedParentLayer())
+            layerTitle += QStringLiteral(" ") + tr("[Linked]");
+        QTreeWidgetItem *layerItem = new QTreeWidgetItem(pageItem);
+        layerItem->setText(0, layerTitle);
+        layerItem->setIcon(0, IconLoader::duotoneIcon(QStringLiteral("layers"), 14));
+        layerItem->setData(0, RoleSelKind, int(Graph::GraphSelection::Layer));
+        layerItem->setData(0, RoleLayerIndex, li + 1);
+        layerItem->setExpanded(true);
+        if (g == activeG) {
+            QFont bf = layerItem->font(0);
+            bf.setBold(true);
+            layerItem->setFont(0, bf);
+            if (!itemToSelect
+                && (activeSel.kind == Graph::GraphSelection::None
+                    || activeSel.kind == Graph::GraphSelection::Layer)) {
+                itemToSelect = layerItem;
+            }
+        }
+
+        // Curves Group
+        int dataCurveCount = 0;
+        for (int c = 0; c < g->curves(); ++c) {
+            if (g->curveType(c) != Graph::ErrorBars)
+                ++dataCurveCount;
+        }
+        QTreeWidgetItem *curvesGroup = new QTreeWidgetItem(layerItem);
+        curvesGroup->setText(0, tr("Curves (%1)").arg(dataCurveCount));
+        curvesGroup->setData(0, RoleSelKind, int(Graph::GraphSelection::Curve));
+        curvesGroup->setData(0, RolePrimaryId, 0);
+        curvesGroup->setData(0, RoleLayerIndex, li + 1);
+        curvesGroup->setData(0, RoleIsGroupHeader, true);
+        curvesGroup->setExpanded(true);
+
+        for (int ci = 0; ci < g->curves(); ++ci) {
+            if (g->curveType(ci) == Graph::ErrorBars)
+                continue;
+            QTreeWidgetItem *cvItem = new QTreeWidgetItem(curvesGroup);
+            QString cvLabel = friendlyCurveDisplayName(g, ci);
+            const PlotCurve *pc = dynamic_cast<const PlotCurve *>(g->plotItem(ci));
+            if (g->curveType(ci) == Graph::Function || (pc && pc->type() == Graph::Function)
+                || dynamic_cast<const FunctionCurve *>(g->plotItem(ci)) != nullptr)
+                cvLabel += tr("  [fx]");
+            cvItem->setText(0, cvLabel);
+            cvItem->setIcon(0, buildCurveSwatchIcon(g, ci));
+            cvItem->setFlags(cvItem->flags() | Qt::ItemIsUserCheckable);
+            cvItem->setCheckState(0, g->isCurveVisible(ci) ? Qt::Checked : Qt::Unchecked);
+            cvItem->setData(0, RoleSelKind, int(Graph::GraphSelection::Curve));
+            cvItem->setData(0, RolePrimaryId, ci);
+            cvItem->setData(0, RoleLayerIndex, li + 1);
+            if (g == activeG && ci == activeMasterCurveIdx) {
+                itemToSelect = cvItem;
+            }
+        }
+
+        // Legend Item
+        QTreeWidgetItem *legItem = new QTreeWidgetItem(layerItem);
+        legItem->setText(0, tr("Legend"));
+        legItem->setIcon(0, IconLoader::duotoneIcon(QStringLiteral("legend"), 14));
+        legItem->setFlags(legItem->flags() | Qt::ItemIsUserCheckable);
+        const bool legVis = g->hasLegend() && g->isLegendVisible();
+        legItem->setCheckState(0, legVis ? Qt::Checked : Qt::Unchecked);
+        legItem->setData(0, RoleSelKind, int(Graph::GraphSelection::LegendBox));
+        legItem->setData(0, RoleLayerIndex, li + 1);
+        if (g == activeG && activeSel.kind == Graph::GraphSelection::LegendBox)
+            itemToSelect = legItem;
+
+        // Annotations (Text, Arrow, Image)
+        const Legend *mainLegend = g->legend();
+        QVector<int> textIds;
+        for (int tid : g->textMarkerKeys()) {
+            Legend *tm = g->textMarker(tid);
+            if (tm && tm != mainLegend)
+                textIds.append(tid);
+        }
+        const QVector<int> arrowIds = g->lineMarkerKeys();
+        const QVector<int> imageIds = g->imageMarkerKeys();
+        const int totalAnn = textIds.size() + arrowIds.size() + imageIds.size();
+
+        if (totalAnn > 0) {
+            QTreeWidgetItem *annGroup = new QTreeWidgetItem(layerItem);
+            annGroup->setText(0, tr("Annotations (%1)").arg(totalAnn));
+            annGroup->setData(0, RoleSelKind, int(Graph::GraphSelection::LegendBox));
+            annGroup->setData(0, RoleLayerIndex, li + 1);
+            annGroup->setData(0, RoleIsGroupHeader, true);
+            annGroup->setExpanded(true);
+
+            for (int tid : textIds) {
+                Legend *tm = g->textMarker(tid);
+                QString snippet = tm ? tm->text().simplified() : QString();
+                if (snippet.size() > 22)
+                    snippet = snippet.left(20) + QStringLiteral("...");
+                QTreeWidgetItem *tItem = new QTreeWidgetItem(annGroup);
+                tItem->setText(0, snippet.isEmpty() ? tr("Text")
+                                                    : tr("Text: %1").arg(snippet));
+                tItem->setData(0, RoleSelKind, int(Graph::GraphSelection::TextAnnotation));
+                tItem->setData(0, RolePrimaryId, tid);
+                tItem->setData(0, RoleLayerIndex, li + 1);
+                if (g == activeG && activeSel.kind == Graph::GraphSelection::TextAnnotation
+                    && activeSel.primaryId == tid) {
+                    itemToSelect = tItem;
+                }
+            }
+            for (int k = 0; k < arrowIds.size(); ++k) {
+                const int aid = arrowIds[k];
+                QTreeWidgetItem *aItem = new QTreeWidgetItem(annGroup);
+                aItem->setText(0, tr("Arrow %1").arg(k + 1));
+                aItem->setData(0, RoleSelKind, int(Graph::GraphSelection::ArrowAnnotation));
+                aItem->setData(0, RolePrimaryId, aid);
+                aItem->setData(0, RoleLayerIndex, li + 1);
+                if (g == activeG && activeSel.kind == Graph::GraphSelection::ArrowAnnotation
+                    && activeSel.primaryId == aid) {
+                    itemToSelect = aItem;
+                }
+            }
+            for (int k = 0; k < imageIds.size(); ++k) {
+                const int iid = imageIds[k];
+                ImageMarker *im = g->imageMarker(iid);
+                const QString base = im ? QFileInfo(im->fileName()).fileName() : QString();
+                QTreeWidgetItem *iItem = new QTreeWidgetItem(annGroup);
+                iItem->setText(0, base.isEmpty() ? tr("Image %1").arg(k + 1)
+                                                 : tr("Image: %1").arg(base));
+                iItem->setData(0, RoleSelKind, int(Graph::GraphSelection::ImageAnnotation));
+                iItem->setData(0, RolePrimaryId, iid);
+                iItem->setData(0, RoleLayerIndex, li + 1);
+                if (g == activeG && activeSel.kind == Graph::GraphSelection::ImageAnnotation
+                    && activeSel.primaryId == iid) {
+                    itemToSelect = iItem;
+                }
+            }
+        }
+    }
+
+    if (itemToSelect)
+        d_object_tree->setCurrentItem(itemToSelect);
+
+    d_syncing_tree = false;
+}
+
+void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
+{
+    if (d_syncing_tree || !item || !d_target_ml)
+        return;
+
+    GraphMiniToolbar::instance()->cancelScheduledAndHide();
+
+    const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
+    if (layerOneBased >= 1) {
+        if (Graph *targetG = d_target_ml->layer(layerOneBased)) {
+            if (d_target_ml->activeGraph() != targetG)
+                d_target_ml->setActiveGraph(targetG);
+        }
+    }
+
+    Graph *g = activeLayer();
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
+    const int primaryId = item->data(0, RolePrimaryId).toInt();
+    const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+
+    if (g && !isGroupHeader) {
+        Graph::GraphSelection sel;
+        sel.kind = kind;
+        sel.primaryId = primaryId;
+        g->setCurrentSelection(sel, false);
+    }
+
+    switch (kind) {
+    case Graph::GraphSelection::Page:
+    case Graph::GraphSelection::Layer:
+    case Graph::GraphSelection::PlotTitle:
+        switchToInspectorPage(PageTabPageLayer);
+        syncPageLayerControls();
+        break;
+    case Graph::GraphSelection::Axis:
+    case Graph::GraphSelection::AxisTitle:
+        d_active_axis = qBound(0, primaryId, 3);
+        switchToInspectorPage(PageTabAxis);
+        syncAxisControls();
+        break;
+    case Graph::GraphSelection::Curve:
+    case Graph::GraphSelection::ErrorBars:
+    case Graph::GraphSelection::Spectrogram:
+        switchToInspectorPage(PageTabCurve);
+        syncCurveControls();
+        break;
+    case Graph::GraphSelection::LegendBox:
+    case Graph::GraphSelection::TextAnnotation:
+    case Graph::GraphSelection::ArrowAnnotation:
+    case Graph::GraphSelection::ImageAnnotation:
+        switchToInspectorPage(PageTabLegend);
+        syncLegendControls();
+        break;
+    default:
+        syncInspectorFromSelection();
+        break;
+    }
+}
+
+void GraphInspectorDock::onTreeItemChanged(QTreeWidgetItem *item, int column)
+{
+    if (d_syncing_tree || column != 0 || !item || !d_target_ml)
+        return;
+
+    const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
+    Graph *g = (layerOneBased >= 1) ? d_target_ml->layer(layerOneBased) : activeLayer();
+    if (!g)
+        return;
+
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
+    const bool checked = (item->checkState(0) == Qt::Checked);
+
+    if (kind == Graph::GraphSelection::Curve && !item->data(0, RoleIsGroupHeader).toBool()) {
+        const int ci = item->data(0, RolePrimaryId).toInt();
+        if (ci >= 0 && ci < g->curves() && g->isCurveVisible(ci) != checked) {
+            const QString before = d_target_ml->captureUndoSnapshot();
+            g->showCurve(ci, checked);
+            d_target_ml->pushUndoSnapshot(tr("Toggle Curve Visibility"), before);
+        }
+    } else if (kind == Graph::GraphSelection::LegendBox) {
+        const QString before = d_target_ml->captureUndoSnapshot();
+        if (checked && !g->hasLegend())
+            g->newLegend();
+        g->setLegendVisible(checked);
+        d_target_ml->pushUndoSnapshot(tr("Toggle Legend Visibility"), before);
+        syncLegendControls();
+    }
+}
+
+void GraphInspectorDock::onGraphSelectionChanged(MultiLayer *page, Graph *layer,
+                                                 const Graph::GraphSelection &sel)
+{
+    if (page != d_target_ml)
+        return;
+    if (layer && d_target_ml && d_target_ml->activeGraph() != layer)
+        d_target_ml->setActiveGraph(layer);
+
+    if (sel.kind == Graph::GraphSelection::Axis || sel.kind == Graph::GraphSelection::AxisTitle)
+        d_active_axis = qBound(0, sel.primaryId, 3);
+
+    refreshObjectTree();
+    syncInspectorFromSelection();
+}
+
+void GraphInspectorDock::syncInspectorFromSelection()
+{
+    if (!d_target_ml)
+        return;
+
+    Graph *g = activeLayer();
+    const Graph::GraphSelection sel = g ? g->currentSelection() : Graph::GraphSelection();
+
+    switch (sel.kind) {
+    case Graph::GraphSelection::Axis:
+    case Graph::GraphSelection::AxisTitle:
+        d_active_axis = qBound(0, sel.primaryId, 3);
+        switchToInspectorPage(PageTabAxis);
+        break;
+    case Graph::GraphSelection::Curve:
+    case Graph::GraphSelection::ErrorBars:
+    case Graph::GraphSelection::Spectrogram:
+        switchToInspectorPage(PageTabCurve);
+        break;
+    case Graph::GraphSelection::LegendBox:
+    case Graph::GraphSelection::TextAnnotation:
+    case Graph::GraphSelection::ArrowAnnotation:
+    case Graph::GraphSelection::ImageAnnotation:
+        switchToInspectorPage(PageTabLegend);
+        break;
+    case Graph::GraphSelection::Page:
+    case Graph::GraphSelection::Layer:
+    case Graph::GraphSelection::PlotTitle:
+        switchToInspectorPage(PageTabPageLayer);
+        break;
+    case Graph::GraphSelection::None:
+        break;
+    }
+
+    syncPageLayerControls();
+    syncAxisControls();
+    syncCurveControls();
+    syncLegendControls();
+}
+
+void GraphInspectorDock::openAddCurvePopover()
+{
+    if (!d_app || !d_target_ml)
+        return;
+    Graph *g = activeLayer();
+    if (!g)
+        return;
+
+    QList<MyWidget *> *tblList = d_app->tableList();
+    QList<Table *> tables;
+    if (tblList) {
+        for (MyWidget *w : *tblList) {
+            if (Table *t = qobject_cast<Table *>(w))
+                tables.append(t);
+        }
+    }
+    if (tables.isEmpty())
+        return;
+
+    QMenu menu(this);
+    QWidget *panel = new QWidget(&menu);
+    panel->setMinimumWidth(260);
+    QVBoxLayout *v = new QVBoxLayout(panel);
+    v->setContentsMargins(10, 8, 10, 8);
+    v->setSpacing(6);
+
+    QLabel *hdr = new QLabel(tr("Add Curve(s) to Layer"), panel);
+    QFont hf = hdr->font();
+    hf.setBold(true);
+    hdr->setFont(hf);
+    v->addWidget(hdr);
+
+    QGridLayout *topGrid = new QGridLayout();
+    topGrid->setHorizontalSpacing(6);
+    topGrid->setVerticalSpacing(4);
+
+    topGrid->addWidget(new QLabel(tr("Table:"), panel), 0, 0);
+    QComboBox *comboTable = new QComboBox(panel);
+    int defaultTblIdx = 0;
+    if (g->curves() > 0) {
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(0))) {
+            const int found = tables.indexOf(dc->table());
+            if (found >= 0)
+                defaultTblIdx = found;
+        }
+    }
+    for (Table *t : tables)
+        comboTable->addItem(t->name());
+    comboTable->setCurrentIndex(defaultTblIdx);
+    topGrid->addWidget(comboTable, 0, 1);
+
+    topGrid->addWidget(new QLabel(tr("X Column:"), panel), 1, 0);
+    QComboBox *comboXCol = new QComboBox(panel);
+    topGrid->addWidget(comboXCol, 1, 1);
+
+    topGrid->addWidget(new QLabel(tr("Plot Style:"), panel), 2, 0);
+    QComboBox *comboStyle = new QComboBox(panel);
+    comboStyle->addItem(tr("Line + Symbol"), int(Graph::LineSymbols));
+    comboStyle->addItem(tr("Line"), int(Graph::Line));
+    comboStyle->addItem(tr("Scatter"), int(Graph::Scatter));
+    comboStyle->addItem(tr("Vertical Bars"), int(Graph::VerticalBars));
+    comboStyle->addItem(tr("Horizontal Bars"), int(Graph::HorizontalBars));
+    comboStyle->addItem(tr("Area"), int(Graph::Area));
+    topGrid->addWidget(comboStyle, 2, 1);
+    v->addLayout(topGrid);
+
+    v->addWidget(new QLabel(tr("Y Columns (multi-select):"), panel));
+    QListWidget *yChecklist = new QListWidget(panel);
+    yChecklist->setMinimumHeight(130);
+    yChecklist->setMaximumHeight(190);
+    v->addWidget(yChecklist);
+
+    QCheckBox *chkRightY = new QCheckBox(tr("Assign to Right-Y Axis"), panel);
+    v->addWidget(chkRightY);
+
+    QPushButton *btnAddNow = new QPushButton(tr("Add Selected Curve(s)"), panel);
+    v->addWidget(btnAddNow);
+
+    auto populateColumnsForTable = [&](int tblIdx) {
+        comboXCol->clear();
+        yChecklist->clear();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Table *t = tables[tblIdx];
+        comboXCol->addItem(tr("(Default Table X)"), QString());
+        for (int c = 0; c < t->numCols(); ++c) {
+            const QString colShort = t->colLabel(c);
+            const QString fullName = QString(t->name()) + QStringLiteral("_") + colShort;
+            const int desig = t->colPlotDesignation(c);
+            QString roleTag = QStringLiteral("[Y]");
+            if (desig == SciDAVis::X)
+                roleTag = QStringLiteral("[X]");
+            else if (desig == SciDAVis::Z)
+                roleTag = QStringLiteral("[Z]");
+            else if (desig == SciDAVis::xErr)
+                roleTag = QStringLiteral("[xEr]");
+            else if (desig == SciDAVis::yErr)
+                roleTag = QStringLiteral("[yEr]");
+            else if (desig == SciDAVis::noDesignation)
+                roleTag = QStringLiteral("[-]");
+
+            comboXCol->addItem(QStringLiteral("%1 %2").arg(colShort, roleTag), fullName);
+            if (desig != SciDAVis::X) {
+                QListWidgetItem *it =
+                        new QListWidgetItem(QStringLiteral("%1 %2").arg(colShort, roleTag),
+                                            yChecklist);
+                it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+                it->setCheckState(Qt::Unchecked);
+                it->setData(Qt::UserRole, fullName);
+            }
+        }
+    };
+
+    populateColumnsForTable(defaultTblIdx);
+    QObject::connect(comboTable, QOverload<int>::of(&QComboBox::currentIndexChanged), panel,
+                     populateColumnsForTable);
+
+    QPointer<MultiLayer> safeMl(d_target_ml);
+    QPointer<Graph> safeG(g);
+    QObject::connect(btnAddNow, &QPushButton::clicked, &menu, [&]() {
+        if (!safeMl || !safeG) {
+            menu.close();
+            return;
+        }
+        const int tblIdx = comboTable->currentIndex();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Table *t = tables[tblIdx];
+        const QString xOverride = comboXCol->currentData().toString();
+        const int plotStyle = comboStyle->currentData().toInt();
+        const bool toRightY = chkRightY->isChecked();
+
+        QStringList selectedYCols;
+        for (int i = 0; i < yChecklist->count(); ++i) {
+            QListWidgetItem *it = yChecklist->item(i);
+            if (it && it->checkState() == Qt::Checked)
+                selectedYCols.append(it->data(Qt::UserRole).toString());
+        }
+        if (selectedYCols.isEmpty())
+            return;
+
+        const QString before = safeMl->captureUndoSnapshot();
+        int addedCount = 0;
+        for (const QString &yFull : selectedYCols) {
+            const int prevCount = safeG->curves();
+            bool ok = false;
+            if (!xOverride.isEmpty())
+                ok = safeG->insertCurve(t, xOverride, yFull, plotStyle);
+            else
+                ok = safeG->insertCurve(t, yFull, plotStyle);
+            if (ok && safeG->curves() > prevCount) {
+                ++addedCount;
+                const int newIdx = safeG->curves() - 1;
+                CurveLayout cl = safeG->initCurveLayout(
+                        static_cast<Graph::CurveType>(plotStyle), safeG->curves());
+                if (d_app) {
+                    cl.sSize = d_app->defaultSymbolSize;
+                    cl.lWidth = d_app->defaultCurveLineWidth;
+                }
+                safeG->updateCurveLayout(newIdx, &cl);
+                if (toRightY) {
+                    if (QwtPlotCurve *cv = safeG->curve(newIdx))
+                        cv->setYAxis(QwtPlot::yRight);
+                }
+            }
+        }
+
+        if (addedCount > 0) {
+            if (toRightY) {
+                safeG->enableAxis(QwtPlot::yRight, true);
+                safeG->setAxisBackboneVisible(QwtPlot::yRight, true);
+                if (Plot *pw = safeG->plotWidget()) {
+                    if (QwtScaleDraw *sd = pw->axisScaleDraw(QwtPlot::yRight))
+                        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                    pw->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                    pw->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                }
+                if (!safeG->isAxisUserLocked(QwtPlot::yRight))
+                    safeG->setAutoScaleAxis(QwtPlot::yRight);
+            }
+            if (!safeG->isAxisUserLocked(QwtPlot::xBottom))
+                safeG->setAutoScaleAxis(QwtPlot::xBottom);
+            if (!toRightY && !safeG->isAxisUserLocked(QwtPlot::yLeft))
+                safeG->setAutoScaleAxis(QwtPlot::yLeft);
+            safeG->reconstructLegend();
+            safeG->refreshAutoAxisTitlesFromColumns();
+            safeG->updatePlot();
+            safeMl->pushUndoSnapshot(tr("Add Curve(s)"), before);
+        }
+        menu.close();
+        refreshAll();
+    });
+
+    QWidgetAction *wa = new QWidgetAction(&menu);
+    wa->setDefaultWidget(panel);
+    menu.addAction(wa);
+    menu.exec(d_btn_add_curve->mapToGlobal(QPoint(0, d_btn_add_curve->height() + 2)));
+}
+
+void GraphInspectorDock::moveSelectedCurve(int delta)
+{
+    if (!d_target_ml || !d_object_tree || delta == 0)
+        return;
+
+    Graph *g = activeLayer();
+    int curIdx = -1;
+    if (QTreeWidgetItem *cur = d_object_tree->currentItem()) {
+        if (!cur->data(0, RoleIsGroupHeader).toBool()) {
+            const auto kind =
+                    static_cast<Graph::GraphSelection::Kind>(cur->data(0, RoleSelKind).toInt());
+            if (kind == Graph::GraphSelection::Curve || kind == Graph::GraphSelection::ErrorBars) {
+                const int layerOneBased = cur->data(0, RoleLayerIndex).toInt();
+                if (layerOneBased >= 1) {
+                    if (Graph *lg = d_target_ml->layer(layerOneBased))
+                        g = lg;
+                }
+                curIdx = resolveMasterCurveIndex(g, cur->data(0, RolePrimaryId).toInt());
+            }
+        }
+    }
+    if (curIdx < 0 && g)
+        curIdx = effectiveSelectedCurveIndex(g, false);
+    if (!g || curIdx < 0 || curIdx >= g->curves() || g->curveType(curIdx) == Graph::ErrorBars)
+        return;
+
+    QVector<int> dataIndices;
+    for (int i = 0; i < g->curves(); ++i) {
+        if (g->curveType(i) != Graph::ErrorBars)
+            dataIndices.append(i);
+    }
+    const int pos = dataIndices.indexOf(curIdx);
+    if (pos < 0 || (delta < 0 && pos <= 0) || (delta > 0 && pos >= dataIndices.size() - 1))
+        return;
+
+    QwtPlotItem *movedCurvePtr = g->curve(curIdx);
+    if (!movedCurvePtr)
+        return;
+
+    const int neighborMasterIdx = dataIndices[pos + (delta < 0 ? -1 : 1)];
+    int toIdx = neighborMasterIdx;
+    if (delta > 0) {
+        while (toIdx + 1 < g->curves() && g->curveType(toIdx + 1) == Graph::ErrorBars) {
+            auto *er = dynamic_cast<QwtErrorPlotCurve *>(g->curve(toIdx + 1));
+            if (er && er->masterCurve() == movedCurvePtr)
+                break;
+            ++toIdx;
+        }
+    }
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    if (g->moveCurve(curIdx, toIdx)) {
+        const int newActualIdx = g->curveIndex(static_cast<QwtPlotCurve *>(movedCurvePtr));
+        Graph::GraphSelection sel;
+        sel.kind = Graph::GraphSelection::Curve;
+        sel.primaryId = (newActualIdx >= 0) ? newActualIdx : toIdx;
+        g->setCurrentSelection(sel, false);
+        d_target_ml->pushUndoSnapshot(tr("Reorder Curve"), before);
+        refreshObjectTree();
+        syncCurveControls();
+    }
+}
+
+void GraphInspectorDock::removeSelectedObject()
+{
+    if (!d_target_ml || !d_object_tree)
+        return;
+    QTreeWidgetItem *cur = d_object_tree->currentItem();
+    if (!cur || cur->data(0, RoleIsGroupHeader).toBool())
+        return;
+
+    const int layerOneBased = cur->data(0, RoleLayerIndex).toInt();
+    Graph *g = (layerOneBased >= 1) ? d_target_ml->layer(layerOneBased) : activeLayer();
+    if (!g)
+        return;
+
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(cur->data(0, RoleSelKind).toInt());
+    const int primaryId = cur->data(0, RolePrimaryId).toInt();
+
+    if (kind == Graph::GraphSelection::Curve || kind == Graph::GraphSelection::ErrorBars) {
+        const int ci = resolveMasterCurveIndex(g, primaryId);
+        if (ci >= 0 && ci < g->curves()) {
+            if (d_app && d_target_ml)
+                d_app->invalidateModelessGraphDialogs(d_target_ml);
+            const QString before = d_target_ml->captureUndoSnapshot();
+            g->removeCurve(ci);
+            g->reconstructLegend();
+            g->updatePlot();
+            d_target_ml->pushUndoSnapshot(tr("Remove Curve"), before);
+            refreshAll();
+        }
+    } else if (kind == Graph::GraphSelection::LegendBox) {
+        if (g->hasLegend()) {
+            const QString before = d_target_ml->captureUndoSnapshot();
+            g->removeLegend();
+            g->replot();
+            d_target_ml->pushUndoSnapshot(tr("Remove Legend"), before);
+            refreshAll();
+        }
+    } else if (kind == Graph::GraphSelection::TextAnnotation
+               || kind == Graph::GraphSelection::ArrowAnnotation
+               || kind == Graph::GraphSelection::ImageAnnotation) {
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setSelectedMarker(primaryId, false);
+        g->removeMarker();
+        g->replot();
+        d_target_ml->pushUndoSnapshot(tr("Remove Annotation"), before);
+        refreshAll();
+    } else if (kind == Graph::GraphSelection::Layer && d_target_ml->layers() > 1) {
+        if (d_app && d_target_ml)
+            d_app->invalidateModelessGraphDialogs(d_target_ml);
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->setActiveGraph(g);
+        d_target_ml->removeLayer();
+        d_target_ml->pushUndoSnapshot(tr("Remove Layer"), before);
+        refreshAll();
+    }
+}
+
+void GraphInspectorDock::syncPageLayerControls()
+{
+    if (!d_target_ml)
+        return;
+    d_syncing_props = true;
+
+    const double wMm =
+            physicalValueToMm(d_target_ml->pageWidthPhysical(), d_target_ml->pageUnit());
+    const double hMm =
+            physicalValueToMm(d_target_ml->pageHeightPhysical(), d_target_ml->pageUnit());
+
+    {
+        QSignalBlocker b1(d_spin_page_w_mm);
+        QSignalBlocker b2(d_spin_page_h_mm);
+        QSignalBlocker b3(d_spin_page_dpi);
+        QSignalBlocker b4(d_chk_page_view);
+        QSignalBlocker b5(d_combo_page_zoom);
+        QSignalBlocker b6(d_chk_panel_labels);
+        QSignalBlocker b7(d_combo_panel_pos);
+
+        d_spin_page_w_mm->setValue(wMm);
+        d_spin_page_h_mm->setValue(hMm);
+        d_spin_page_dpi->setValue(d_target_ml->pageDpi());
+        d_chk_page_view->setChecked(d_target_ml->pageViewMode());
+
+        const int curPct = qRound(d_target_ml->pageZoom() * 100.0);
+        int bestIdx = 2;
+        int bestDiff = 9999;
+        for (int i = 0; i < d_combo_page_zoom->count(); ++i) {
+            const int diff = qAbs(d_combo_page_zoom->itemData(i).toInt() - curPct);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestIdx = i;
+            }
+        }
+        d_combo_page_zoom->setCurrentIndex(bestIdx);
+
+        d_chk_panel_labels->setChecked(d_target_ml->hasPanelLabels());
+        const int pIdx = d_combo_panel_pos->findData(int(d_target_ml->panelLabelPlacement()));
+        if (pIdx >= 0)
+            d_combo_panel_pos->setCurrentIndex(pIdx);
+    }
+
+    d_syncing_props = false;
+}
+
+void GraphInspectorDock::syncAxisControls()
+{
+    Graph *g = activeLayer();
+    if (!g || !g->plotWidget())
+        return;
+
+    d_syncing_props = true;
+    const int ax = qBound(0, d_active_axis, 3);
+    Plot *pw = g->plotWidget();
+
+    if (d_axis_sel_group) {
+        if (QAbstractButton *ab = d_axis_sel_group->button(ax)) {
+            QSignalBlocker b(ab);
+            ab->setChecked(true);
+        }
+    }
+
+    {
+        QSignalBlocker bVis(d_chk_axis_visible);
+        QSignalBlocker bMin(d_edit_axis_min);
+        QSignalBlocker bMax(d_edit_axis_max);
+        QSignalBlocker bStep(d_edit_axis_step);
+        QSignalBlocker bScl(d_combo_axis_scale);
+        QSignalBlocker bBrk(d_chk_axis_break);
+        QSignalBlocker bBrkF(d_edit_break_from);
+        QSignalBlocker bBrkT(d_edit_break_to);
+        QSignalBlocker bTDir(d_combo_tick_dir);
+        QSignalBlocker bMajG(d_chk_major_grid);
+        QSignalBlocker bMinG(d_chk_minor_grid);
+        QSignalBlocker bTit(d_edit_axis_title);
+        QSignalBlocker bTitPt(d_spin_axis_title_pt);
+        QSignalBlocker bTckPt(d_spin_axis_tick_pt);
+
+        d_chk_axis_visible->setChecked(pw->axisEnabled(ax));
+
+        const QwtScaleDiv *scDiv = pw->axisScaleDiv(ax);
+        const double lo = scDiv ? qMin(scDiv->lowerBound(), scDiv->upperBound()) : 0.0;
+        const double hi = scDiv ? qMax(scDiv->lowerBound(), scDiv->upperBound()) : 1.0;
+        d_edit_axis_min->setText(QString::number(lo, 'g', 8));
+        d_edit_axis_max->setText(QString::number(hi, 'g', 8));
+        const double stp = g->axisStep(ax);
+        d_edit_axis_step->setText(stp > 0.0 ? QString::number(stp, 'g', 8) : QStringLiteral("0"));
+
+        bool isLog10 = false;
+        if (const QwtScaleEngine *eng = pw->axisScaleEngine(ax)) {
+            QwtScaleTransformation *xform = eng->transformation();
+            isLog10 = (xform && xform->type() == QwtScaleTransformation::Log10);
+            delete xform;
+        }
+        d_combo_axis_scale->setCurrentIndex(isLog10 ? 1 : 0);
+
+        const Graph::AxisBreakSpec brk = g->axisBreak(ax);
+        d_chk_axis_break->setChecked(brk.enabled);
+        d_edit_break_from->setEnabled(brk.enabled);
+        d_edit_break_to->setEnabled(brk.enabled);
+        const double span = hi - lo;
+        const double defFrom = brk.enabled ? brk.breakFrom : (lo + 0.35 * span);
+        const double defTo = brk.enabled ? brk.breakTo : (lo + 0.65 * span);
+        d_edit_break_from->setText(QString::number(defFrom, 'g', 6));
+        d_edit_break_to->setText(QString::number(defTo, 'g', 6));
+
+        int majStyle = int(ScaleDraw::In);
+        if (const ScaleDraw *sd = dynamic_cast<const ScaleDraw *>(pw->axisScaleDraw(ax)))
+            majStyle = sd->majorTicksStyle();
+        const int tdIdx = d_combo_tick_dir->findData(majStyle);
+        if (tdIdx >= 0)
+            d_combo_tick_dir->setCurrentIndex(tdIdx);
+
+        if (Grid *gr = g->grid()) {
+            const bool isX = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+            d_chk_major_grid->setChecked(isX ? gr->xEnabled() : gr->yEnabled());
+            d_chk_minor_grid->setChecked(isX ? gr->xMinEnabled() : gr->yMinEnabled());
+        }
+
+        d_edit_axis_title->setText(g->axisTitle(ax));
+        const QFont tf = g->axisTitleFont(ax);
+        d_spin_axis_title_pt->setValue(tf.pointSize() > 0 ? tf.pointSize() : 14);
+        const QFont nf = g->axisFont(ax);
+        d_spin_axis_tick_pt->setValue(nf.pointSize() > 0 ? nf.pointSize() : 12);
+    }
+
+    d_syncing_props = false;
+}
+
+void GraphInspectorDock::syncCurveControls()
+{
+    Graph *g = activeLayer();
+    if (!g)
+        return;
+
+    d_syncing_props = true;
+
+    const int ci = effectiveSelectedCurveIndex(g, true);
+    QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
+    const bool hasCurve = (cv != nullptr);
+
+    d_combo_curve_style->setEnabled(hasCurve);
+    d_btn_line_color->setEnabled(hasCurve);
+    d_spin_line_width->setEnabled(hasCurve);
+    d_combo_line_pen->setEnabled(hasCurve);
+    d_combo_sym_shape->setEnabled(hasCurve);
+    d_spin_sym_size->setEnabled(hasCurve);
+    d_chk_sym_hollow->setEnabled(hasCurve);
+    d_chk_curve_right_y->setEnabled(hasCurve);
+    d_btn_err_adjacent->setEnabled(hasCurve);
+    d_btn_err_sd->setEnabled(hasCurve);
+    d_btn_err_5pct->setEnabled(hasCurve);
+
+    if (!cv) {
+        d_lbl_active_curve_name->setText(tr("(No Curve Selected)"));
+        d_syncing_props = false;
+        return;
+    }
+
+    d_lbl_active_curve_name->setText(friendlyCurveDisplayName(g, ci));
+
+    {
+        QSignalBlocker b1(d_combo_curve_style);
+        QSignalBlocker b2(d_spin_line_width);
+        QSignalBlocker b3(d_combo_line_pen);
+        QSignalBlocker b4(d_combo_sym_shape);
+        QSignalBlocker b5(d_spin_sym_size);
+        QSignalBlocker b6(d_chk_sym_hollow);
+        QSignalBlocker b7(d_chk_curve_right_y);
+
+        const int ctIdx = d_combo_curve_style->findData(g->curveType(ci));
+        if (ctIdx >= 0)
+            d_combo_curve_style->setCurrentIndex(ctIdx);
+
+        const QPen lp = cv->pen();
+        const QwtSymbol sym = cv->symbol();
+        const bool hasLine = (cv->style() != QwtPlotCurve::NoCurve && lp.style() != Qt::NoPen);
+        const QColor col = (hasLine && lp.color().isValid()) ? lp.color() : sym.pen().color();
+        updateColorSwatchButton(d_btn_line_color, col);
+
+        d_spin_line_width->setValue(qMax(1, lp.width()));
+        const int penIdx = d_combo_line_pen->findData(int(lp.style()));
+        if (penIdx >= 0)
+            d_combo_line_pen->setCurrentIndex(penIdx);
+
+        const int symIdx = d_combo_sym_shape->findData(int(sym.style()));
+        if (symIdx >= 0)
+            d_combo_sym_shape->setCurrentIndex(symIdx);
+        d_spin_sym_size->setValue(sym.size().width() > 0 ? sym.size().width() : 8);
+        d_chk_sym_hollow->setChecked(Graph::isSymbolWhiteHollow(sym));
+        d_chk_curve_right_y->setChecked(cv->yAxis() == QwtPlot::yRight);
+    }
+
+    d_syncing_props = false;
+}
+
+void GraphInspectorDock::syncLegendControls()
+{
+    Graph *g = activeLayer();
+    if (!g)
+        return;
+
+    d_syncing_props = true;
+
+    const auto selKind = g->currentSelection().kind;
+    Legend *leg = nullptr;
+    if (selKind == Graph::GraphSelection::TextAnnotation)
+        leg = g->textMarker(g->currentSelection().primaryId);
+    else if (selKind != Graph::GraphSelection::ArrowAnnotation
+             && selKind != Graph::GraphSelection::ImageAnnotation)
+        leg = g->legend();
+
+    const bool isPrimaryLegend = (g && leg && leg == g->legend())
+            || (g && !leg && selKind == Graph::GraphSelection::LegendBox);
+    const bool isTextAnn = (selKind == Graph::GraphSelection::TextAnnotation);
+    const bool canEditMarker = isPrimaryLegend || (isTextAnn && leg != nullptr);
+
+    d_lbl_legend_target->setText(isPrimaryLegend ? tr("Graph Legend") : tr("Text Annotation"));
+    d_lbl_leg_header->setText(isPrimaryLegend ? tr("Header:") : tr("Text:"));
+
+    if (d_btn_leg_tl)
+        d_btn_leg_tl->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_tc)
+        d_btn_leg_tc->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_tr)
+        d_btn_leg_tr->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_bl)
+        d_btn_leg_bl->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_br)
+        d_btn_leg_br->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_out_r)
+        d_btn_leg_out_r->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_auto_avoid)
+        d_btn_leg_auto_avoid->setEnabled(isPrimaryLegend);
+    if (d_btn_leg_rebuild)
+        d_btn_leg_rebuild->setEnabled(isPrimaryLegend);
+    if (d_spin_leg_cols)
+        d_spin_leg_cols->setEnabled(isPrimaryLegend);
+    if (d_combo_leg_frame)
+        d_combo_leg_frame->setEnabled(canEditMarker);
+    if (d_edit_leg_header)
+        d_edit_leg_header->setEnabled(canEditMarker);
+    if (d_spin_leg_font_pt)
+        d_spin_leg_font_pt->setEnabled(canEditMarker);
+
+    if (leg) {
+        QSignalBlocker b1(d_combo_leg_frame);
+        QSignalBlocker b2(d_edit_leg_header);
+        QSignalBlocker b3(d_spin_leg_cols);
+        QSignalBlocker b4(d_spin_leg_font_pt);
+
+        int frameMode = 0;
+        if (leg->frameStyle() != Legend::None) {
+            frameMode = (leg->backgroundColor().alpha() > 10) ? 1 : 2;
+        }
+        const int fmIdx = d_combo_leg_frame->findData(frameMode);
+        if (fmIdx >= 0)
+            d_combo_leg_frame->setCurrentIndex(fmIdx);
+
+        if (!isPrimaryLegend) {
+            const QStringList lines = leg->text().split('\n');
+            d_edit_leg_header->setText(lines.isEmpty() ? QString() : lines.first());
+            d_edit_leg_header->setModified(false);
+        } else {
+            const QStringList lines = leg->text().split('\n');
+            if (!lines.isEmpty() && !lines.first().trimmed().isEmpty()
+                && !isLegendEntryLine(lines.first())) {
+                d_edit_leg_header->setText(lines.first().trimmed());
+            } else {
+                d_edit_leg_header->clear();
+            }
+            d_edit_leg_header->setModified(false);
+            d_spin_leg_cols->setValue(qBound(1, leg->numColumns(), 4));
+        }
+
+        const QFont lf = leg->font();
+        d_spin_leg_font_pt->setValue(lf.pointSize() > 0 ? lf.pointSize() : 12);
+    } else {
+        QSignalBlocker b(d_edit_leg_header);
+        d_edit_leg_header->clear();
+        d_edit_leg_header->setModified(false);
+    }
+
+    d_syncing_props = false;
+}
+
+void GraphInspectorDock::applyAxisScaleFromUi(int mergeId)
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g || !g->plotWidget())
+        return;
+
+    bool okMin = false, okMax = false, okStep = false;
+    double lo = d_edit_axis_min->text().trimmed().toDouble(&okMin);
+    double hi = d_edit_axis_max->text().trimmed().toDouble(&okMax);
+    double stp = d_edit_axis_step->text().trimmed().toDouble(&okStep);
+    if (!okMin || !okMax || !std::isfinite(lo) || !std::isfinite(hi))
+        return;
+    if (!okStep || !std::isfinite(stp) || stp < 0.0)
+        stp = 0.0;
+
+    const int scaleType = d_combo_axis_scale->currentData().toInt(); // 0=Linear, 1=Log10
+    if (scaleType == 1) {
+        if (lo <= 0.0 && hi <= 0.0) {
+            lo = 0.1;
+            hi = 100.0;
+        } else if (lo <= 0.0) {
+            lo = qMax(1e-6, hi * 1e-4);
+        }
+    }
+    if (qAbs(hi - lo) < 1e-30)
+        hi = lo + 1.0;
+
+    Plot *pw = g->plotWidget();
+    const QwtScaleEngine *eng = pw->axisScaleEngine(d_active_axis);
+    const bool inv = eng ? eng->testAttribute(QwtScaleEngine::Inverted) : false;
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    g->enableAutoscaling(false);
+    g->setScale(d_active_axis, lo, hi, stp, pw->axisMaxMajor(d_active_axis),
+                pw->axisMaxMinor(d_active_axis), scaleType, inv);
+    g->setAxisUserLocked(d_active_axis, true);
+    g->replot();
+    d_target_ml->pushUndoSnapshot(tr("Modify Axis Scale"), before, mergeId);
+    syncAxisControls();
+}
+
+void GraphInspectorDock::applyAxisBreakFromUi()
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g)
+        return;
+
+    const bool enabled = d_chk_axis_break->isChecked();
+    const QString before = d_target_ml->captureUndoSnapshot();
+    if (!enabled) {
+        g->clearAxisBreak(d_active_axis);
+        d_target_ml->pushUndoSnapshot(tr("Clear Axis Break"), before, kMergeAxisBreak);
+        syncAxisControls();
+        return;
+    }
+
+    bool okFrom = false, okTo = false;
+    const double bf = d_edit_break_from->text().trimmed().toDouble(&okFrom);
+    const double bt = d_edit_break_to->text().trimmed().toDouble(&okTo);
+    if (!okFrom || !okTo || !std::isfinite(bf) || !std::isfinite(bt) || qAbs(bt - bf) < 1e-12)
+        return;
+
+    Graph::AxisBreakSpec spec = g->axisBreak(d_active_axis);
+    spec.enabled = true;
+    spec.breakFrom = bf;
+    spec.breakTo = bt;
+    if (spec.positionPct < 0.10 || spec.positionPct > 0.90)
+        spec.positionPct = 0.50;
+    g->setAxisBreak(d_active_axis, spec);
+    d_target_ml->pushUndoSnapshot(tr("Set Axis Break"), before, kMergeAxisBreak);
+    syncAxisControls();
+}
+
+void GraphInspectorDock::applyAxisTitleMarkup(const QString &openTag, const QString &closeTag)
+{
+    if (!d_edit_axis_title)
+        return;
+    QString txt = d_edit_axis_title->text();
+    if (d_edit_axis_title->hasSelectedText()) {
+        const int start = d_edit_axis_title->selectionStart();
+        const QString sel = d_edit_axis_title->selectedText();
+        txt.replace(start, sel.length(), openTag + sel + closeTag);
+        d_edit_axis_title->setText(txt);
+    } else {
+        const int pos = d_edit_axis_title->cursorPosition();
+        txt.insert(pos, openTag + closeTag);
+        d_edit_axis_title->setText(txt);
+        d_edit_axis_title->setCursorPosition(pos + openTag.length());
+    }
+    emit d_edit_axis_title->editingFinished();
+}
+
+void GraphInspectorDock::insertAxisTitleToken(const QString &token)
+{
+    if (!d_edit_axis_title || token.isEmpty())
+        return;
+    QString txt = d_edit_axis_title->text();
+    const int pos = d_edit_axis_title->cursorPosition();
+    txt.insert(pos, token);
+    d_edit_axis_title->setText(txt);
+    d_edit_axis_title->setCursorPosition(pos + token.length());
+    emit d_edit_axis_title->editingFinished();
+}
+
+void GraphInspectorDock::rebuildGreekSymbolMenu()
+{
+    if (!d_menu_greek)
+        return;
+    d_menu_greek->clear();
+    const QList<QPair<QString, QString>> greekList = {
+        { tr("\xCE\xB1 (alpha)"), QString::fromUtf8("\xCE\xB1") },
+        { tr("\xCE\xB2 (beta)"), QString::fromUtf8("\xCE\xB2") },
+        { tr("\xCE\xB3 (gamma)"), QString::fromUtf8("\xCE\xB3") },
+        { tr("\xCE\xB4 (delta)"), QString::fromUtf8("\xCE\xB4") },
+        { tr("\xCE\x94 (Delta)"), QString::fromUtf8("\xCE\x94") },
+        { tr("\xCE\xB5 (epsilon)"), QString::fromUtf8("\xCE\xB5") },
+        { tr("\xCE\xB8 (theta)"), QString::fromUtf8("\xCE\xB8") },
+        { tr("\xCE\xBB (lambda)"), QString::fromUtf8("\xCE\xBB") },
+        { tr("\xCE\xBC (mu)"), QString::fromUtf8("\xCE\xBC") },
+        { tr("\xCF\x81 (rho)"), QString::fromUtf8("\xCF\x81") },
+        { tr("\xCF\x83 (sigma)"), QString::fromUtf8("\xCF\x83") },
+        { tr("\xCF\x84 (tau)"), QString::fromUtf8("\xCF\x84") },
+        { tr("\xCF\x86 (phi)"), QString::fromUtf8("\xCF\x86") },
+        { tr("\xCE\xA9 (Omega)"), QString::fromUtf8("\xCE\xA9") }
+    };
+    for (const auto &pr : greekList) {
+        const QString sym = pr.second;
+        d_menu_greek->addAction(pr.first, this, [this, sym]() { insertAxisTitleToken(sym); });
+    }
+}
+
+void GraphInspectorDock::applyQuickErrorBars(int mode)
+{
+    Graph *g = activeLayer();
+    if (!d_app || !d_target_ml || !g)
+        return;
+    const int ci = effectiveSelectedCurveIndex(g);
+    DataCurve *dc = (ci >= 0 && ci < g->curves()) ? dynamic_cast<DataCurve *>(g->curve(ci))
+                                                 : nullptr;
+    if (!dc || !dc->table() || !dc->table()->d_future_table) {
+        if (d_app && d_app->statusBar()) {
+            d_app->statusBar()->showMessage(
+                    tr("This feature is not available for user defined function curves!"), 4000);
+        }
+        syncCurveControls();
+        return;
+    }
+
+    Table *tbl = dc->table();
+    const QString curveName = dc->title().text();
+    MultiLayer *ml = g->multiLayerParent();
+    if (!ml)
+        ml = d_target_ml.data();
+
+    auto removeVerticalErrorBarsOnCurve = [&](DataCurve *master, const QString &onlyMatchingCol) -> int {
+        int removed = 0;
+        const QList<DataCurve *> errs = master->errorBarsList();
+        for (DataCurve *eb : errs) {
+            auto *er = dynamic_cast<QwtErrorPlotCurve *>(eb);
+            if (!er || er->direction() != QwtErrorPlotCurve::Vertical)
+                continue;
+            if (!onlyMatchingCol.isEmpty() && er->title().text() != onlyMatchingCol)
+                continue;
+            const int eIdx = g->curveIndex(er);
+            if (eIdx >= 0) {
+                if (d_app && ml)
+                    d_app->invalidateModelessGraphDialogs(ml);
+                g->removeCurve(eIdx);
+                ++removed;
+            }
+        }
+        return removed;
+    };
+
+    if (mode == 0) {
+        const int colIdx = tbl->colIndex(dc->yColumnName());
+        const int errColIdx = findSmartAdjacentYErrColumn(tbl, colIdx);
+        if (errColIdx < 0) {
+            if (d_app && d_app->statusBar()) {
+                d_app->statusBar()->showMessage(
+                        tr("No adjacent column exists to the right of the selected curve column."),
+                        4000);
+            }
+            syncCurveControls();
+            return;
+        }
+
+        const QString errFull =
+                QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(errColIdx);
+        const QString before = ml ? ml->captureUndoSnapshot() : QString();
+        bool changed = false;
+
+        if (removeVerticalErrorBarsOnCurve(dc, errFull) > 0) {
+            changed = true;
+        } else {
+            removeVerticalErrorBarsOnCurve(dc, QString());
+            if (g->addErrorBars(dc->xColumnName(), curveName, tbl, errFull,
+                                QwtErrorPlotCurve::Vertical)) {
+                changed = true;
+            }
+        }
+        if (changed) {
+            g->updatePlot();
+            if (ml)
+                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
+            refreshAll();
+        } else {
+            syncCurveControls();
+        }
+    } else if (mode == 1 || mode == 2) {
+        const QString xColName = dc->xColumnName();
+        const int srcColIdx = tbl->colIndex(dc->yColumnName());
+        Column *data = (srcColIdx >= 0) ? tbl->column(srcColIdx) : nullptr;
+        if (xColName.isEmpty() || !data) {
+            syncCurveControls();
+            return;
+        }
+
+        const QString baseLabel = tbl->colLabel(srcColIdx) + QStringLiteral("_yErr");
+        QString uniqueColName = baseLabel;
+        int suffix = 2;
+        const QStringList existingCols = tbl->colNames();
+        while (existingCols.contains(uniqueColName)
+               || tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + uniqueColName) >= 0) {
+            uniqueColName = baseLabel + QStringLiteral("_") + QString::number(suffix++);
+        }
+
+        Column *errors = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
+        errors->setPlotDesignation(SciDAVis::yErr);
+
+        const int rows = data->rowCount();
+        if (mode == 2) {
+            for (int i = 0; i < rows; ++i)
+                errors->setValueAt(i, std::abs(data->valueAt(i) * 0.05));
+        } else if (rows > 0) {
+            double average = 0.0;
+            for (int i = 0; i < rows; ++i)
+                average += data->valueAt(i);
+            average /= rows;
+            double dev = 0.0;
+            for (int i = 0; i < rows; ++i) {
+                const double d = data->valueAt(i) - average;
+                dev += d * d;
+            }
+            dev = std::sqrt(dev / rows);
+            for (int i = 0; i < rows; ++i)
+                errors->setValueAt(i, dev);
+        }
+
+        const QString before = ml ? ml->captureUndoSnapshot() : QString();
+        removeVerticalErrorBarsOnCurve(dc, QString());
+        tbl->d_future_table->addChild(errors);
+        const QString fullErrColName = QString(tbl->name()) + QStringLiteral("_") + errors->name();
+        const bool changed = g->addErrorBars(xColName, curveName, tbl, fullErrColName,
+                                             QwtErrorPlotCurve::Vertical);
+        if (changed) {
+            g->updatePlot();
+            if (ml)
+                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
+            if (d_app)
+                emit d_app->modified();
+            refreshAll();
+        } else {
+            syncCurveControls();
+        }
+    }
+}
+
+void GraphInspectorDock::applyTheme()
+{
+    static bool s_applying = false;
+    if (s_applying)
+        return;
+    s_applying = true;
+    const bool dark = isPaletteDark();
+    const QString bg = dark ? QStringLiteral("#1E222B") : QStringLiteral("#F8FAFC");
+    const QString hdrBg = dark ? QStringLiteral("#171A22") : QStringLiteral("#EEF2F6");
+    const QString cardBg = dark ? QStringLiteral("#252A36") : QStringLiteral("#FFFFFF");
+    const QString border = dark ? QStringLiteral("#333B4D") : QStringLiteral("#D8E0EA");
+    const QString fg = dark ? QStringLiteral("#E6ECF5") : QStringLiteral("#1E293B");
+    const QString subFg = dark ? QStringLiteral("#94A3B8") : QStringLiteral("#64748B");
+    const QString accent = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#0284C7");
+    const QString accentSoft = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#E0F2FE");
+
+    const QString qss = QStringLiteral(
+                                "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"
+                                "#InspectorHeaderBar, #InspectorRailPanel { background: %2; border-bottom: 1px solid %4; }"
+                                "#InspectorHeaderTitle { font-weight: 600; font-size: 12px; color: %5; }"
+                                "#InspectorHeaderTarget { font-size: 11px; color: %6; }"
+                                "#InspectorSubTitle { font-weight: 600; font-size: 11px; color: %5; }"
+                                "#InspectorSectionHeader { font-weight: 600; font-size: 11px; color: %7; padding-top: 4px; border-bottom: 1px solid %4; }"
+                                "#InspectorTabStrip { background: %2; border-top: 1px solid %4; border-bottom: 1px solid %4; }"
+                                "QToolButton#InspectorContextTabBtn, QToolButton#InspectorAxisPillBtn {"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 11px; padding: 2px 4px;"
+                                "}"
+                                "QToolButton#InspectorContextTabBtn:checked, QToolButton#InspectorAxisPillBtn:checked {"
+                                "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
+                                "}"
+                                "QTreeWidget#GraphObjectManagerTree {"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 11px;"
+                                "}"
+                                "QPushButton { font-size: 11px; padding: 4px 6px; }"
+                                "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 11px; }")
+                                .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft);
+
+    if (d_root_container && d_root_container->styleSheet() != qss)
+        d_root_container->setStyleSheet(qss);
+    s_applying = false;
+}
+
+void GraphInspectorDock::retranslateUi()
+{
+    setWindowTitle(tr("Graph Inspector"));
+
+    if (d_header_title_lbl)
+        d_header_title_lbl->setText(tr("Graph Inspector"));
+    if (d_btn_pin)
+        d_btn_pin->setToolTip(tr("Pin Inspector Open (Prevent Auto-Collapse)"));
+    if (d_btn_collapse)
+        d_btn_collapse->setToolTip(tr("Collapse to Icon Rail (Ctrl+Shift+I)"));
+
+    if (d_rail_expand_btn)
+        d_rail_expand_btn->setToolTip(tr("Expand Graph Inspector (Ctrl+Shift+I)"));
+    if (d_rail_page_btn)
+        d_rail_page_btn->setToolTip(tr("Page & Layer Properties"));
+    if (d_rail_axis_btn)
+        d_rail_axis_btn->setToolTip(tr("Axis Scale & Title Properties"));
+    if (d_rail_curve_btn)
+        d_rail_curve_btn->setToolTip(tr("Curve & Series Style Properties"));
+    if (d_rail_legend_btn)
+        d_rail_legend_btn->setToolTip(tr("Legend & Annotation Properties"));
+
+    if (d_obj_mgr_title_lbl)
+        d_obj_mgr_title_lbl->setText(tr("Object Manager"));
+    if (d_btn_add_curve) {
+        d_btn_add_curve->setText(tr("+ Add"));
+        d_btn_add_curve->setToolTip(tr("Add Curve(s) from Worksheet"));
+    }
+    if (d_btn_move_up)
+        d_btn_move_up->setToolTip(tr("Move Selected Curve Up"));
+    if (d_btn_move_down)
+        d_btn_move_down->setToolTip(tr("Move Selected Curve Down"));
+    if (d_btn_remove_obj)
+        d_btn_remove_obj->setToolTip(tr("Remove Selected Object"));
+    if (d_empty_hint_lbl)
+        d_empty_hint_lbl->setText(tr("Activate or create a 2D graph to inspect its layers, axes, curves, and legend."));
+
+    if (d_tab_btn_page)
+        d_tab_btn_page->setText(tr("Page"));
+    if (d_tab_btn_axis)
+        d_tab_btn_axis->setText(tr("Axis"));
+    if (d_tab_btn_curve)
+        d_tab_btn_curve->setText(tr("Curve"));
+    if (d_tab_btn_legend)
+        d_tab_btn_legend->setText(tr("Legend"));
+
+    // Page 0: Page / Layer
+    if (d_sec_presets_lbl)
+        d_sec_presets_lbl->setText(tr("1-Click Publication & Slide Presets"));
+    if (d_btn_preset_isij)
+        d_btn_preset_isij->setText(tr("ISIJ Journal (85mm)"));
+    if (d_btn_preset_slide28)
+        d_btn_preset_slide28->setText(tr("Presentation Slide (28pt)"));
+    if (d_btn_square_frame70)
+        d_btn_square_frame70->setText(tr("Square Frame (70%)"));
+
+    if (d_sec_page_size_lbl)
+        d_sec_page_size_lbl->setText(tr("Page Size & View"));
+    if (d_lbl_page_w)
+        d_lbl_page_w->setText(tr("Width:"));
+    if (d_lbl_page_h)
+        d_lbl_page_h->setText(tr("Height:"));
+    if (d_lbl_page_dpi)
+        d_lbl_page_dpi->setText(tr("DPI:"));
+    if (d_chk_page_view)
+        d_chk_page_view->setText(tr("Print Page View"));
+    if (d_lbl_page_zoom)
+        d_lbl_page_zoom->setText(tr("Page Zoom:"));
+
+    if (d_sec_layer_frame_lbl)
+        d_sec_layer_frame_lbl->setText(tr("Frame, Linked Axes & Panels"));
+    if (d_btn_box_inward)
+        d_btn_box_inward->setText(tr("Box Frame + Inward Ticks"));
+    if (d_btn_link_right_y)
+        d_btn_link_right_y->setText(tr("+ Link Right-Y Axis"));
+    if (d_btn_link_top_x)
+        d_btn_link_top_x->setText(tr("+ Link Top-X Axis (Arrhenius)"));
+    if (d_chk_panel_labels)
+        d_chk_panel_labels->setText(tr("Panel Labels (a), (b)"));
+    if (d_combo_panel_pos && d_combo_panel_pos->count() >= 2) {
+        d_combo_panel_pos->setItemText(0, tr("Outside Top-Left"));
+        d_combo_panel_pos->setItemText(1, tr("Inside Top-Left"));
+    }
+
+    if (d_sec_export_lbl)
+        d_sec_export_lbl->setText(tr("Clipboard & Export"));
+    if (d_btn_copy_ole)
+        d_btn_copy_ole->setText(tr("Copy OLE"));
+    if (d_btn_export_img_pdf)
+        d_btn_export_img_pdf->setText(tr("Export Image / PDF"));
+
+    // Page 1: Axis
+    if (d_btn_axis_bottom)
+        d_btn_axis_bottom->setText(tr("Bottom X"));
+    if (d_btn_axis_left)
+        d_btn_axis_left->setText(tr("Left Y"));
+    if (d_btn_axis_top)
+        d_btn_axis_top->setText(tr("Top X"));
+    if (d_btn_axis_right)
+        d_btn_axis_right->setText(tr("Right Y"));
+    if (d_chk_axis_visible)
+        d_chk_axis_visible->setText(tr("Show Selected Axis"));
+
+    if (d_sec_axis_range_lbl)
+        d_sec_axis_range_lbl->setText(tr("Scale & Axis Break"));
+    if (d_lbl_axis_min)
+        d_lbl_axis_min->setText(tr("Min:"));
+    if (d_lbl_axis_max)
+        d_lbl_axis_max->setText(tr("Max:"));
+    if (d_lbl_axis_step)
+        d_lbl_axis_step->setText(tr("Step (0=Auto):"));
+    if (d_btn_axis_autoscale)
+        d_btn_axis_autoscale->setText(tr("Auto Range"));
+    if (d_lbl_axis_scale_type)
+        d_lbl_axis_scale_type->setText(tr("Scale:"));
+    if (d_combo_axis_scale && d_combo_axis_scale->count() >= 2) {
+        d_combo_axis_scale->setItemText(0, tr("Linear"));
+        d_combo_axis_scale->setItemText(1, tr("Log10"));
+    }
+    if (d_chk_axis_break)
+        d_chk_axis_break->setText(tr("Axis Break (Omit Middle Range)"));
+    if (d_lbl_break_from)
+        d_lbl_break_from->setText(tr("Break Start:"));
+    if (d_lbl_break_to)
+        d_lbl_break_to->setText(tr("Break End:"));
+
+    if (d_sec_axis_ticks_lbl)
+        d_sec_axis_ticks_lbl->setText(tr("Ticks & Grids"));
+    if (d_lbl_tick_dir)
+        d_lbl_tick_dir->setText(tr("Ticks:"));
+    if (d_combo_tick_dir && d_combo_tick_dir->count() >= 4) {
+        d_combo_tick_dir->setItemText(0, tr("Inward"));
+        d_combo_tick_dir->setItemText(1, tr("Outward"));
+        d_combo_tick_dir->setItemText(2, tr("Both Sides"));
+        d_combo_tick_dir->setItemText(3, tr("None"));
+    }
+    if (d_chk_major_grid)
+        d_chk_major_grid->setText(tr("Major Grid"));
+    if (d_chk_minor_grid)
+        d_chk_minor_grid->setText(tr("Minor Grid"));
+
+    if (d_sec_axis_title_lbl)
+        d_sec_axis_title_lbl->setText(tr("Axis Label & Font (Arial)"));
+    if (d_edit_axis_title)
+        d_edit_axis_title->setPlaceholderText(tr("Enter axis label..."));
+    if (d_btn_fmt_italic)
+        d_btn_fmt_italic->setToolTip(tr("Italic (<i>...</i>)"));
+    if (d_btn_fmt_sub)
+        d_btn_fmt_sub->setToolTip(tr("Subscript (<sub>...</sub>)"));
+    if (d_btn_fmt_sup)
+        d_btn_fmt_sup->setToolTip(tr("Superscript (<sup>...</sup>)"));
+    if (d_btn_fmt_greek) {
+        d_btn_fmt_greek->setText(tr("Greek"));
+        d_btn_fmt_greek->setToolTip(tr("Insert Greek Symbol"));
+    }
+    rebuildGreekSymbolMenu();
+    if (d_btn_fmt_unit) {
+        d_btn_fmt_unit->setText(tr("Unit"));
+        d_btn_fmt_unit->setToolTip(tr("Append Scientific Unit"));
+    }
+    if (d_lbl_title_pt)
+        d_lbl_title_pt->setText(tr("Label Size:"));
+    if (d_lbl_tick_pt)
+        d_lbl_tick_pt->setText(tr("Tick Numbers:"));
+
+    // Page 2: Curve / Series
+    if (d_lbl_plot_style)
+        d_lbl_plot_style->setText(tr("Plot Style:"));
+    if (d_combo_curve_style && d_combo_curve_style->count() >= 6) {
+        d_combo_curve_style->setItemText(0, tr("Line"));
+        d_combo_curve_style->setItemText(1, tr("Scatter"));
+        d_combo_curve_style->setItemText(2, tr("Line + Symbol"));
+        d_combo_curve_style->setItemText(3, tr("Vertical Bars"));
+        d_combo_curve_style->setItemText(4, tr("Horizontal Bars"));
+        d_combo_curve_style->setItemText(5, tr("Area"));
+    }
+    if (d_sec_line_style_lbl)
+        d_sec_line_style_lbl->setText(tr("Line Appearance"));
+    if (d_lbl_line_color)
+        d_lbl_line_color->setText(tr("Color:"));
+    if (d_lbl_line_width)
+        d_lbl_line_width->setText(tr("Line Width:"));
+    if (d_lbl_line_pen)
+        d_lbl_line_pen->setText(tr("Line Style:"));
+    if (d_combo_line_pen && d_combo_line_pen->count() >= 5) {
+        d_combo_line_pen->setItemText(0, tr("Solid"));
+        d_combo_line_pen->setItemText(1, tr("Dash"));
+        d_combo_line_pen->setItemText(2, tr("Dot"));
+        d_combo_line_pen->setItemText(3, tr("Dash-Dot"));
+        d_combo_line_pen->setItemText(4, tr("None"));
+    }
+
+    if (d_sec_symbol_style_lbl)
+        d_sec_symbol_style_lbl->setText(tr("Symbol & Axis Binding"));
+    if (d_lbl_sym_shape)
+        d_lbl_sym_shape->setText(tr("Shape:"));
+    if (d_combo_sym_shape && d_combo_sym_shape->count() >= 12) {
+        d_combo_sym_shape->setItemText(0, tr("Circle"));
+        d_combo_sym_shape->setItemText(1, tr("Square"));
+        d_combo_sym_shape->setItemText(2, tr("Diamond"));
+        d_combo_sym_shape->setItemText(3, tr("Up Triangle"));
+        d_combo_sym_shape->setItemText(4, tr("Down Triangle"));
+        d_combo_sym_shape->setItemText(5, tr("Left Triangle"));
+        d_combo_sym_shape->setItemText(6, tr("Right Triangle"));
+        d_combo_sym_shape->setItemText(7, tr("Cross (+)"));
+        d_combo_sym_shape->setItemText(8, tr("X-Cross (x)"));
+        d_combo_sym_shape->setItemText(9, tr("Star"));
+        d_combo_sym_shape->setItemText(10, tr("Hexagon"));
+        d_combo_sym_shape->setItemText(11, tr("None"));
+    }
+    if (d_lbl_sym_size)
+        d_lbl_sym_size->setText(tr("Symbol Size:"));
+    if (d_spin_sym_size)
+        d_spin_sym_size->setSuffix(QStringLiteral(" px"));
+    if (d_chk_sym_hollow)
+        d_chk_sym_hollow->setText(tr("Hollow Symbol (White Fill)"));
+    if (d_chk_curve_right_y)
+        d_chk_curve_right_y->setText(tr("Assign to Right-Y Axis"));
+
+    if (d_sec_err_bars_lbl)
+        d_sec_err_bars_lbl->setText(tr("Quick Error Bars"));
+    if (d_btn_err_adjacent)
+        d_btn_err_adjacent->setText(tr("Adjacent Col"));
+    if (d_btn_err_sd)
+        d_btn_err_sd->setText(tr("Std Dev (SD)"));
+    if (d_btn_err_5pct)
+        d_btn_err_5pct->setText(tr("5%"));
+
+    if (d_sec_series_scheme_lbl)
+        d_sec_series_scheme_lbl->setText(tr("Group Series Style Scheme"));
+    if (d_combo_series_scheme && d_combo_series_scheme->count() >= 6) {
+        d_combo_series_scheme->setItemText(0, tr("B/W (Filled / Hollow)"));
+        d_combo_series_scheme->setItemText(1, tr("Blue Filled / Red Hollow"));
+        d_combo_series_scheme->setItemText(2, tr("Muted Categorical"));
+        d_combo_series_scheme->setItemText(3, tr("Cool -> Warm Step"));
+        d_combo_series_scheme->setItemText(4, tr("Viridis Sequential"));
+        d_combo_series_scheme->setItemText(5, tr("Origin Default"));
+    }
+    if (d_btn_apply_scheme_all)
+        d_btn_apply_scheme_all->setText(tr("Apply to All Curves"));
+
+    if (d_sec_y_stack_lbl)
+        d_sec_y_stack_lbl->setText(tr("Non-Destructive Y-Offset Stack"));
+    if (d_lbl_stack_gap)
+        d_lbl_stack_gap->setText(tr("Vertical Gap:"));
+    if (d_btn_apply_stack)
+        d_btn_apply_stack->setText(tr("Stack Curves"));
+    if (d_btn_reset_stack)
+        d_btn_reset_stack->setText(tr("Reset Offsets"));
+
+    // Page 3: Legend / Annotation
+    if (d_sec_legend_pos_lbl)
+        d_sec_legend_pos_lbl->setText(tr("1-Click Legend Placement"));
+    if (d_btn_leg_tl)
+        d_btn_leg_tl->setText(tr("Top-Left"));
+    if (d_btn_leg_tc)
+        d_btn_leg_tc->setText(tr("Top-Center"));
+    if (d_btn_leg_tr)
+        d_btn_leg_tr->setText(tr("Top-Right"));
+    if (d_btn_leg_bl)
+        d_btn_leg_bl->setText(tr("Bottom-Left"));
+    if (d_btn_leg_br)
+        d_btn_leg_br->setText(tr("Bottom-Right"));
+    if (d_btn_leg_out_r)
+        d_btn_leg_out_r->setText(tr("Outside Right"));
+    if (d_btn_leg_auto_avoid)
+        d_btn_leg_auto_avoid->setText(tr("Place in Empty Space (Avoid Data)"));
+    if (d_btn_leg_rebuild)
+        d_btn_leg_rebuild->setText(tr("Reconstruct Legend"));
+
+    if (d_sec_legend_style_lbl)
+        d_sec_legend_style_lbl->setText(tr("Legend Frame & Typography (Arial)"));
+    if (d_lbl_leg_frame)
+        d_lbl_leg_frame->setText(tr("Frame:"));
+    if (d_combo_leg_frame && d_combo_leg_frame->count() >= 3) {
+        d_combo_leg_frame->setItemText(0, tr("Borderless"));
+        d_combo_leg_frame->setItemText(1, tr("Black Box + White Fill"));
+        d_combo_leg_frame->setItemText(2, tr("Transparent Background"));
+    }
+    if (d_lbl_leg_header) {
+        Graph *g = activeLayer();
+        const bool isTextAnn =
+                (g && g->currentSelection().kind == Graph::GraphSelection::TextAnnotation);
+        d_lbl_leg_header->setText(isTextAnn ? tr("Text:") : tr("Header:"));
+    }
+    if (d_lbl_leg_cols)
+        d_lbl_leg_cols->setText(tr("Columns:"));
+    if (d_lbl_leg_font_pt)
+        d_lbl_leg_font_pt->setText(tr("Font Size:"));
+}

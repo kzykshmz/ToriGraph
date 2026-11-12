@@ -33,65 +33,223 @@
 #include "Legend.h"
 #include "ArrowMarker.h"
 #include "GraphMiniToolbar.h"
+#include "CanvasInlineTextEditor.h"
+#include "SelectionMoveResizer.h"
+#include "PlotCurve.h"
+#include "QwtErrorPlotCurve.h"
+#include "MultiLayer.h"
 
-#include <QVector>
+#include <QApplication>
+#include <QCoreApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QVector>
 
-#include <qwt_text_label.h>
+#include <cmath>
+
 #include <qwt_plot_canvas.h>
+#include <qwt_scale_map.h>
+#include <qwt_text_label.h>
 
 CanvasPicker::CanvasPicker(Graph *graph) : QObject(graph)
 {
     pointSelected = false;
-    d_editing_marker = 0;
+    d_editing_marker = nullptr;
+    d_forwarded_resizer = nullptr;
     d_left_click_pending = false;
 
     plotWidget = graph->plotWidget();
 
     QwtPlotCanvas *canvas = plotWidget->canvas();
+    canvas->setMouseTracking(true);
     canvas->installEventFilter(this);
+    plotWidget->installEventFilter(this);
 }
 
 bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
 {
-    QVector<int> images = plot()->imageMarkerKeys();
-    QVector<int> texts = plot()->textMarkerKeys();
-    QVector<int> lines = plot()->lineMarkerKeys();
+    Graph *g = plot();
+    if (!g || !plotWidget || !plotWidget->canvas())
+        return false;
 
-    if (object != (QObject *)plot()->plotWidget()->canvas())
+    QVector<int> images = g->imageMarkerKeys();
+    QVector<int> texts = g->textMarkerKeys();
+    QVector<int> lines = g->lineMarkerKeys();
+
+    if (object == plotWidget) {
+        QwtPlotCanvas *cv = plotWidget->canvas();
+        if (e->type() == QEvent::MouseMove && d_outer_legend_dragging) {
+            const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+            if (!(me->buttons() & Qt::LeftButton)) {
+                d_outer_legend_dragging = false;
+                d_outer_legend_moved = false;
+                d_outer_legend_key = -1;
+                d_outer_legend_undo_before.clear();
+                return false;
+            }
+            const QPoint canvasPos = me->pos() - cv->pos();
+            if (!d_outer_legend_moved) {
+                const int dragThresh = qMax(4, QApplication::startDragDistance());
+                if ((canvasPos - d_outer_legend_press_pos).manhattanLength() < dragThresh)
+                    return true;
+                d_outer_legend_moved = true;
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->hide();
+                if (MultiLayer *ml = g->multiLayerParent())
+                    d_outer_legend_undo_before = ml->captureUndoSnapshot();
+            }
+            Legend *leg = (d_outer_legend_key >= 0)
+                    ? dynamic_cast<Legend *>(plotWidget->marker(d_outer_legend_key))
+                    : nullptr;
+            if (leg) {
+                leg->setOrigin(d_outer_legend_orig_origin + (canvasPos - d_outer_legend_press_pos));
+                plotWidget->replot();
+                if (SelectionMoveResizer *sel = cv->findChild<SelectionMoveResizer *>())
+                    sel->recalcBoundingRect();
+            }
+            return true;
+        }
+
+        if (e->type() == QEvent::MouseButtonRelease && d_outer_legend_dragging) {
+            const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+            if (me->button() == Qt::LeftButton) {
+                const bool moved = d_outer_legend_moved;
+                const long legKey = d_outer_legend_key;
+                const QString beforeSnap = d_outer_legend_undo_before;
+                const QPoint canvasPos = me->pos() - cv->pos();
+                const QPoint targetOrigin =
+                        d_outer_legend_orig_origin + (canvasPos - d_outer_legend_press_pos);
+                d_outer_legend_dragging = false;
+                d_outer_legend_moved = false;
+                d_outer_legend_key = -1;
+                d_outer_legend_undo_before.clear();
+
+                Legend *leg = (legKey >= 0) ? dynamic_cast<Legend *>(plotWidget->marker(legKey))
+                                            : nullptr;
+                if (moved) {
+                    if (leg) {
+                        leg->setOrigin(targetOrigin);
+                        if (g->legend() == leg)
+                            plotWidget->setProperty("_toriLegendAnchor", QVariant());
+                        if (g->legend() == leg
+                            && plotWidget->property("_outsideRightMargin").toInt() > 0
+                            && leg->rect().right() <= cv->width()) {
+                            plotWidget->setProperty("_outsideRightMargin", 0);
+                            plotWidget->updateLayout();
+                            leg->setOrigin(targetOrigin);
+                        }
+                        plotWidget->replot();
+                        if (SelectionMoveResizer *sel = cv->findChild<SelectionMoveResizer *>())
+                            sel->recalcBoundingRect();
+                        emit g->modifiedGraph();
+                        if (MultiLayer *ml = g->multiLayerParent()) {
+                            if (!beforeSnap.isEmpty())
+                                ml->pushUndoSnapshot(tr("Move Object"), beforeSnap);
+                        }
+                    }
+                } else if (leg && g->legend() == leg && GraphMiniToolbar::isMiniToolbarEnabled()) {
+                    if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                        bar->popupForLegend(g, leg, me->globalPos());
+                }
+                return true;
+            }
+        }
+
+        if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick) {
+            const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+            const QPoint canvasPos = me->pos() - cv->pos();
+            if (!cv->rect().contains(canvasPos)) {
+                Legend *hitLeg = nullptr;
+                long hitKey = -1;
+                for (int k : texts) {
+                    Legend *m = g->textMarker(k);
+                    if (m && m->isVisible() && m->rect().contains(canvasPos)) {
+                        hitLeg = m;
+                        hitKey = k;
+                        if (g->legend() == m)
+                            break;
+                    }
+                }
+                if (hitLeg && hitKey >= 0) {
+                    if (e->type() == QEvent::MouseButtonPress) {
+                        emit selectPlot();
+                        disableEditing();
+                        g->setSelectedMarker(hitKey, false);
+                        const Graph::GraphSelection::Kind kind = (g->legend() == hitLeg)
+                                ? Graph::GraphSelection::LegendBox
+                                : Graph::GraphSelection::TextAnnotation;
+                        g->setCurrentSelection({ kind, int(hitKey), -1 });
+                        if (me->button() == Qt::RightButton) {
+                            d_outer_legend_dragging = false;
+                            emit showMarkerPopupMenu();
+                        } else if (me->button() == Qt::LeftButton) {
+                            d_outer_legend_dragging = true;
+                            d_outer_legend_moved = false;
+                            d_outer_legend_key = hitKey;
+                            d_outer_legend_press_pos = canvasPos;
+                            d_outer_legend_orig_origin = hitLeg->rect().topLeft();
+                            d_outer_legend_undo_before.clear();
+                        }
+                        return true;
+                    }
+                    if (e->type() == QEvent::MouseButtonDblClick
+                        && me->button() == Qt::LeftButton) {
+                        d_outer_legend_dragging = false;
+                        d_outer_legend_moved = false;
+                        d_outer_legend_key = -1;
+                        d_outer_legend_undo_before.clear();
+                        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                            bar->cancelScheduledAndHide();
+                        const int rowIdx =
+                                (g->legend() == hitLeg) ? hitLeg->itemIndexAt(canvasPos) : -1;
+                        const QRect localRect = hitLeg->rect();
+                        const QRect anchorGlobalRect(cv->mapToGlobal(localRect.topLeft()),
+                                                     localRect.size());
+                        CanvasInlineTextEditor::openForLegendOrText(g, hitKey, rowIdx,
+                                                                    anchorGlobalRect);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    if (object != static_cast<QObject *>(plotWidget->canvas()))
         return false;
 
     switch (e->type()) {
     case QEvent::MouseButtonPress: {
         emit selectPlot();
 
-        const QMouseEvent *me = (const QMouseEvent *)e;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        d_forwarded_resizer = nullptr;
 
+        const Qt::CursorShape curShape = plotWidget->canvas()->cursor().shape();
         if (me->button() == Qt::MiddleButton
-            || (me->button() == Qt::LeftButton && (me->modifiers() & Qt::AltModifier))) {
+            || (me->button() == Qt::LeftButton
+                && ((me->modifiers() & Qt::AltModifier) || curShape == Qt::OpenHandCursor
+                    || curShape == Qt::ClosedHandCursor))) {
             return false;
         }
 
-        if (me->button() == Qt::LeftButton && (plot()->drawLineActive())) {
+        if (me->button() == Qt::LeftButton && g->drawLineActive()) {
             startLinePoint = me->pos();
             return true;
         }
 
-        if (me->button() == Qt::LeftButton && plot()->drawTextActive()) {
+        if (me->button() == Qt::LeftButton && g->drawTextActive()) {
+            MultiLayer *ml = g->multiLayerParent();
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
             drawTextMarker(me->pos());
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(tr("Add Text Annotation"), beforeSnap);
             return true;
         }
 
-        if (me->button() == Qt::LeftButton && !plot()->zoomOn() && !plot()->activeTool()
-            && !plot()->rangeSelectorsEnabled() && !plot()->drawLineActive()
-            && !plot()->drawTextActive()) {
-            d_press_pos = me->pos();
-            d_left_click_pending = true;
-        } else {
+        if (!g->zoomOn() && !g->activeTool() && !g->rangeSelectorsEnabled()
+            && selectMarker(me)) {
             d_left_click_pending = false;
-        }
-
-        if (!plot()->zoomOn() && selectMarker(me)) {
             if (me->button() == Qt::RightButton)
                 emit showMarkerPopupMenu();
             return true;
@@ -99,65 +257,161 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
 
         if (d_editing_marker) {
             d_editing_marker->setEditable(false);
-            d_editing_marker = 0;
+            d_editing_marker = nullptr;
         }
 
-        if (plot()->markerSelected())
-            plot()->deselectMarker();
+        if (g->markerSelected())
+            g->deselectMarker();
+
+        if (g->zoomOn() || g->activeTool() || g->rangeSelectorsEnabled()) {
+            d_left_click_pending = false;
+            return !(me->modifiers() & Qt::ShiftModifier);
+        }
+
+        int dist = 999;
+        int point = -1;
+        int curveKey = g->isPiePlot()
+                ? -1
+                : plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
+        if (curveKey >= 0 && dist < 10) {
+            QwtPlotCurve *hitCurve = plotWidget->curve(curveKey);
+            if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(hitCurve)) {
+                if (DataCurve *mc = er->masterCurve()) {
+                    hitCurve = mc;
+                    const int mcIdx = g->curveIndex(mc);
+                    if (mcIdx >= 0)
+                        curveKey = g->curveKey(mcIdx);
+                }
+            }
+            const int cIdx = hitCurve ? g->curveIndex(hitCurve) : g->curveIndex(curveKey);
+            const Graph::GraphSelection::Kind kind =
+                    (cIdx >= 0 && g->curveType(cIdx) == Graph::ErrorBars)
+                    ? Graph::GraphSelection::ErrorBars
+                    : Graph::GraphSelection::Curve;
+            g->setCurrentSelection({ kind, cIdx, point });
+            if (hitCurve && point >= 0 && point < hitCurve->dataSize()) {
+                emit g->cursorInfo(QString("%1 [%2]: X=%3, Y=%4")
+                                           .arg(hitCurve->title().text())
+                                           .arg(point + 1)
+                                           .arg(hitCurve->x(point), 0, 'g', 6)
+                                           .arg(hitCurve->y(point), 0, 'g', 6));
+            }
+            if (me->button() == Qt::LeftButton && !(me->modifiers() & Qt::ShiftModifier)) {
+                d_press_pos = me->pos();
+                d_left_click_pending = true;
+            } else {
+                d_left_click_pending = false;
+            }
+        } else {
+            d_left_click_pending = false;
+            if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                bar->cancelScheduledAndHide();
+            if (me->button() == Qt::LeftButton) {
+                g->deselect();
+                g->setCurrentSelection({ Graph::GraphSelection::Layer, -1, -1 });
+            }
+        }
 
         return !(me->modifiers() & Qt::ShiftModifier);
     } break;
 
     case QEvent::MouseButtonDblClick: {
         d_left_click_pending = false;
+        d_forwarded_resizer = nullptr;
         if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
-            bar->hide();
+            bar->cancelScheduledAndHide();
 
-        const QMouseEvent *dblMe = (const QMouseEvent *)e;
+        const QMouseEvent *dblMe = static_cast<const QMouseEvent *>(e);
         if (dblMe->button() == Qt::MiddleButton)
             return false;
         if (d_editing_marker) {
             return d_editing_marker->eventFilter(plotWidget->canvas(), e);
-        } else if (plot()->selectedMarkerKey() >= 0) {
-            if (texts.contains(plot()->selectedMarkerKey())) {
+        }
+
+        long mrkKey = g->selectedMarkerKey();
+        if (mrkKey < 0 || !texts.contains(mrkKey)) {
+            for (int k : texts) {
+                Legend *m = g->textMarker(k);
+                if (m && m->isVisible() && m->rect().contains(dblMe->pos())) {
+                    mrkKey = k;
+                    break;
+                }
+            }
+        }
+        if (mrkKey >= 0) {
+            if (texts.contains(mrkKey)) {
+                Legend *leg = g->textMarker(mrkKey);
+                if (leg && leg->isVisible() && dblMe->button() == Qt::LeftButton) {
+                    const int rowIdx =
+                            (g->legend() == leg) ? leg->itemIndexAt(dblMe->pos()) : -1;
+                    const QRect localRect = leg->rect();
+                    const QRect anchorGlobalRect(
+                            plotWidget->canvas()->mapToGlobal(localRect.topLeft()),
+                            localRect.size());
+                    CanvasInlineTextEditor::openForLegendOrText(g, mrkKey, rowIdx,
+                                                                anchorGlobalRect);
+                    return true;
+                }
                 emit viewTextDialog();
                 return true;
-            } else if (lines.contains(plot()->selectedMarkerKey())) {
+            } else if (lines.contains(mrkKey)) {
                 emit viewLineDialog();
                 return true;
-            } else if (images.contains(plot()->selectedMarkerKey())) {
+            } else if (images.contains(mrkKey)) {
                 emit viewImageDialog();
                 return true;
             }
-        } else if (plot()->isPiePlot()) {
-            emit showPlotDialog(plot()->curveKey(0));
+        }
+
+        if (g->isPiePlot()) {
+            emit showPlotDialog(g->curveKey(0));
             return true;
         } else {
-            const QMouseEvent *me = (const QMouseEvent *)e;
-            int dist, point;
-            int curveKey = plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
-            if (dist < 10)
+            int dist = 999, point = -1;
+            int curveKey = plotWidget->closestCurve(dblMe->pos().x(), dblMe->pos().y(), dist, point);
+            if (curveKey >= 0 && dist < 10) {
+                if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(plotWidget->curve(curveKey))) {
+                    if (DataCurve *mc = er->masterCurve()) {
+                        const int mcIdx = g->curveIndex(mc);
+                        if (mcIdx >= 0)
+                            curveKey = g->curveKey(mcIdx);
+                    }
+                }
                 emit showPlotDialog(curveKey);
-            else
+            } else {
                 emit showPlotDialog(-1);
+            }
             return true;
         }
     } break;
 
     case QEvent::MouseMove: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (d_forwarded_resizer && (me->buttons() & Qt::LeftButton)) {
+            const QPoint localPos = d_forwarded_resizer->mapFrom(plotWidget->canvas(), me->pos());
+            QMouseEvent mappedMove(QEvent::MouseMove, localPos, me->windowPos(), me->screenPos(),
+                                   me->button(), me->buttons(), me->modifiers(), me->source());
+            QCoreApplication::sendEvent(d_forwarded_resizer, &mappedMove);
+            return true;
+        }
+
+        if (me->buttons() == Qt::NoButton) {
+            updatePassiveHoverReadout(me->pos());
+            return false;
+        }
+
         if ((me->buttons() & Qt::MiddleButton)
             || ((me->buttons() & Qt::LeftButton) && (me->modifiers() & Qt::AltModifier)))
             return false;
         if (me->buttons() != Qt::LeftButton)
             return false;
 
-        QPoint pos = me->pos();
+        const QPoint pos = me->pos();
         if (d_left_click_pending && (pos - d_press_pos).manhattanLength() > 5)
             d_left_click_pending = false;
 
-        if (plot()->drawLineActive()) {
-            drawLineMarker(pos, plot()->drawArrow());
+        if (g->drawLineActive()) {
+            drawLineMarker(pos, g->drawArrow());
             return true;
         }
 
@@ -165,10 +419,28 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
     } break;
 
     case QEvent::MouseButtonRelease: {
-        const QMouseEvent *me = (const QMouseEvent *)e;
-        Graph *g = plot();
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (d_forwarded_resizer) {
+            QPointer<SelectionMoveResizer> resizer = d_forwarded_resizer;
+            d_forwarded_resizer = nullptr;
+            d_left_click_pending = false;
+            if (resizer) {
+                const QPoint prevLegPos = g->legend() ? g->legend()->rect().topLeft() : QPoint();
+                const QPoint localPos = resizer->mapFrom(plotWidget->canvas(), me->pos());
+                QMouseEvent mappedRel(QEvent::MouseButtonRelease, localPos, me->windowPos(),
+                                      me->screenPos(), me->button(), me->buttons(), me->modifiers(),
+                                      me->source());
+                QCoreApplication::sendEvent(resizer, &mappedRel);
+                if (g->legend() && g->legend()->rect().topLeft() != prevLegPos)
+                    plotWidget->setProperty("_toriLegendAnchor", QVariant());
+            }
+            return true;
+        }
 
         if (g->drawLineActive()) {
+            MultiLayer *ml = g->multiLayerParent();
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+
             ArrowMarker mrk;
             mrk.attach(g->plotWidget());
             mrk.setStartPoint(startLinePoint);
@@ -186,6 +458,8 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             g->drawLine(false);
             mrk.detach();
             plotWidget->replot();
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(tr("Add Arrow"), beforeSnap);
 
             return true;
         }
@@ -194,42 +468,17 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
             if ((me->pos() - d_press_pos).manhattanLength() <= 5
                 && !g->zoomOn() && !g->activeTool() && !g->rangeSelectorsEnabled()
-                && !(me->modifiers() & Qt::ShiftModifier)) {
+                && !(me->modifiers() & Qt::ShiftModifier)
+                && !g->markerSelected() && !d_editing_marker && !g->isPiePlot()) {
                 GraphMiniToolbar *bar = GraphMiniToolbar::isMiniToolbarEnabled()
                         ? GraphMiniToolbar::instance()
                         : nullptr;
-                long selKey = g->selectedMarkerKey();
-                if (selKey >= 0 && texts.contains(selKey)) {
-                    plotWidget->setHighlightedCurveKey(-1);
-                    if (bar) {
-                        Legend *leg = dynamic_cast<Legend *>(plotWidget->marker(selKey));
-                        if (leg)
-                            bar->popupForLegend(g, leg, me->globalPos());
-                    }
-                } else if (!g->markerSelected() && !d_editing_marker && !g->isPiePlot()) {
-                    int dist = 999;
-                    int point = -1;
-                    int curveKey =
-                            plotWidget->closestCurve(me->pos().x(), me->pos().y(), dist, point);
-                    if (curveKey >= 0 && dist < 10) {
-                        plotWidget->setHighlightedCurveKey(curveKey);
-                        QwtPlotCurve *hitCurve = plotWidget->curve(curveKey);
-                        if (hitCurve && point >= 0 && point < hitCurve->dataSize()) {
-                            emit g->cursorInfo(
-                                    QString("%1 [%2]: X=%3, Y=%4")
-                                            .arg(hitCurve->title().text())
-                                            .arg(point + 1)
-                                            .arg(hitCurve->x(point), 0, 'g', 6)
-                                            .arg(hitCurve->y(point), 0, 'g', 6));
-                        }
-                        int cIdx = g->curveIndex(curveKey);
-                        if (bar && cIdx >= 0)
-                            bar->popupForCurve(g, cIdx, me->globalPos());
-                    } else {
-                        plotWidget->setHighlightedCurveKey(-1);
-                        if (bar)
-                            bar->popupForCanvas(g, me->globalPos());
-                    }
+                const Graph::GraphSelection sel = g->currentSelection();
+                if (bar
+                    && (sel.kind == Graph::GraphSelection::Curve
+                        || sel.kind == Graph::GraphSelection::ErrorBars)
+                    && sel.primaryId >= 0) {
+                    bar->popupForCurve(g, sel.primaryId, me->globalPos());
                 }
             }
         }
@@ -237,9 +486,27 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
     } break;
 
     case QEvent::KeyPress: {
-        int key = ((const QKeyEvent *)e)->key();
+        const int key = static_cast<const QKeyEvent *>(e)->key();
 
-        long selectedMarker = plot()->selectedMarkerKey();
+        if (key == Qt::Key_Escape) {
+            disableEditing();
+            g->deselect();
+            return true;
+        }
+        if (key == Qt::Key_Delete) {
+            if (g->markerSelected() || d_editing_marker) {
+                MultiLayer *ml = g->multiLayerParent();
+                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+                disableEditing();
+                g->removeMarker();
+                g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                if (ml && !beforeSnap.isEmpty())
+                    ml->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
+                return true;
+            }
+        }
+
+        const long selectedMarker = g->selectedMarkerKey();
         if (texts.contains(selectedMarker) && (key == Qt::Key_Enter || key == Qt::Key_Return)) {
             emit viewTextDialog();
             return true;
@@ -264,7 +531,98 @@ void CanvasPicker::disableEditing()
 {
     if (d_editing_marker) {
         d_editing_marker->setEditable(false);
-        d_editing_marker = 0;
+        d_editing_marker = nullptr;
+    }
+}
+
+void CanvasPicker::updatePassiveHoverReadout(const QPoint &canvasPos)
+{
+    Graph *g = plot();
+    if (!g || !plotWidget || g->activeTool() || g->zoomOn() || g->drawLineActive()
+        || g->drawTextActive() || g->isPiePlot())
+        return;
+
+    const QwtPlotCurve *bestCurve = nullptr;
+    int bestPoint = -1;
+    double bestDistSq = 14.0 * 14.0;
+
+    const int nCurves = g->curves();
+    for (int i = 0; i < nCurves; ++i) {
+        if (!g->isCurveVisible(i) || g->curveType(i) == Graph::ErrorBars)
+            continue;
+        const QwtPlotCurve *c = g->curve(i);
+        if (!c || !c->isVisible() || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+            continue;
+        const int nPts = c->dataSize();
+        if (nPts <= 0)
+            continue;
+
+        const DataCurve *dc = dynamic_cast<const DataCurve *>(c);
+        const QwtScaleMap xMap = plotWidget->canvasMap(c->xAxis());
+        const QwtScaleMap yMap = plotWidget->canvasMap(c->yAxis());
+        const int stride = (nPts > 20000) ? qMax(1, nPts / 10000) : 1;
+
+        int localBestIdx = -1;
+        double localBestDistSq = bestDistSq;
+        for (int p = 0; p < nPts; p += stride) {
+            if (dc && dc->isPointMasked(p))
+                continue;
+            const double vx = c->x(p);
+            const double vy = c->y(p);
+            if (!std::isfinite(vx) || !std::isfinite(vy))
+                continue;
+            const double dx = xMap.xTransform(vx) - canvasPos.x();
+            const double dy = yMap.xTransform(vy) - canvasPos.y();
+            const double d2 = dx * dx + dy * dy;
+            if (d2 <= localBestDistSq) {
+                localBestDistSq = d2;
+                localBestIdx = p;
+            }
+        }
+        if (stride > 1 && localBestIdx >= 0) {
+            const int p0 = qMax(0, localBestIdx - stride);
+            const int p1 = qMin(nPts - 1, localBestIdx + stride);
+            for (int p = p0; p <= p1; ++p) {
+                if (dc && dc->isPointMasked(p))
+                    continue;
+                const double vx = c->x(p);
+                const double vy = c->y(p);
+                if (!std::isfinite(vx) || !std::isfinite(vy))
+                    continue;
+                const double dx = xMap.xTransform(vx) - canvasPos.x();
+                const double dy = yMap.xTransform(vy) - canvasPos.y();
+                const double d2 = dx * dx + dy * dy;
+                if (d2 <= localBestDistSq) {
+                    localBestDistSq = d2;
+                    localBestIdx = p;
+                }
+            }
+        }
+        if (localBestIdx >= 0 && localBestDistSq <= bestDistSq) {
+            bestDistSq = localBestDistSq;
+            bestCurve = c;
+            bestPoint = localBestIdx;
+        }
+    }
+
+    if (bestCurve && bestPoint >= 0) {
+        emit g->cursorInfo(QString("%1 [%2]: X=%3, Y=%4")
+                                   .arg(bestCurve->title().text())
+                                   .arg(bestPoint + 1)
+                                   .arg(bestCurve->x(bestPoint), 0, 'g', 6)
+                                   .arg(bestCurve->y(bestPoint), 0, 'g', 6));
+    } else {
+        const int xAxis = (!plotWidget->axisEnabled(QwtPlot::xBottom)
+                           && plotWidget->axisEnabled(QwtPlot::xTop))
+                ? QwtPlot::xTop
+                : QwtPlot::xBottom;
+        const int yAxis = (!plotWidget->axisEnabled(QwtPlot::yLeft)
+                           && plotWidget->axisEnabled(QwtPlot::yRight))
+                ? QwtPlot::yRight
+                : QwtPlot::yLeft;
+        const double vx = plotWidget->invTransform(xAxis, canvasPos.x());
+        const double vy = plotWidget->invTransform(yAxis, canvasPos.y());
+        emit g->cursorInfo(QString("X=%1, Y=%2").arg(vx, 0, 'g', 6).arg(vy, 0, 'g', 6));
     }
 }
 
@@ -307,56 +665,92 @@ void CanvasPicker::drawLineMarker(const QPoint &point, bool endArrow)
 
 bool CanvasPicker::selectMarker(const QMouseEvent *e)
 {
+    Graph *g = plot();
+    if (!g || !plotWidget || !plotWidget->canvas())
+        return false;
+
     const QPoint point = e->pos();
-    foreach (long i, plot()->textMarkerKeys()) {
-        Legend *m = (Legend *)plotWidget->marker(i);
-        if (!m)
-            return false;
+    auto forwardPressToResizer = [&](const QMouseEvent *me) {
+        if (me->button() != Qt::LeftButton || (me->modifiers() & Qt::ShiftModifier))
+            return;
+        SelectionMoveResizer *resizer =
+                plotWidget->canvas()->findChild<SelectionMoveResizer *>();
+        if (!resizer)
+            return;
+        d_forwarded_resizer = resizer;
+        const QPoint localPos = resizer->mapFrom(plotWidget->canvas(), me->pos());
+        QMouseEvent mappedPress(QEvent::MouseButtonPress, localPos, me->windowPos(),
+                                me->screenPos(), me->button(), me->buttons(), me->modifiers(),
+                                me->source());
+        QCoreApplication::sendEvent(resizer, &mappedPress);
+    };
+
+    for (int i : g->textMarkerKeys()) {
+        Legend *m = static_cast<Legend *>(plotWidget->marker(i));
+        if (!m || !m->isVisible())
+            continue;
         if (m->rect().contains(point)) {
             if (d_editing_marker) {
                 d_editing_marker->setEditable(false);
-                d_editing_marker = 0;
+                d_editing_marker = nullptr;
             }
-            plot()->setSelectedMarker(i, e->modifiers() & Qt::ShiftModifier);
+            g->setSelectedMarker(i, e->modifiers() & Qt::ShiftModifier);
+            const Graph::GraphSelection::Kind kind = (g->legend() == m)
+                    ? Graph::GraphSelection::LegendBox
+                    : Graph::GraphSelection::TextAnnotation;
+            g->setCurrentSelection({ kind, i, -1 });
+            forwardPressToResizer(e);
             return true;
         }
     }
-    foreach (long i, plot()->imageMarkerKeys()) {
-        ImageMarker *m = (ImageMarker *)plotWidget->marker(i);
-        if (!m)
-            return false;
+    for (int i : g->imageMarkerKeys()) {
+        ImageMarker *m = static_cast<ImageMarker *>(plotWidget->marker(i));
+        if (!m || !m->isVisible())
+            continue;
         if (m->rect().contains(point)) {
             if (d_editing_marker) {
                 d_editing_marker->setEditable(false);
-                d_editing_marker = 0;
+                d_editing_marker = nullptr;
             }
-            plot()->setSelectedMarker(i, e->modifiers() & Qt::ShiftModifier);
+            g->setSelectedMarker(i, e->modifiers() & Qt::ShiftModifier);
+            g->setCurrentSelection({ Graph::GraphSelection::ImageAnnotation, i, -1 });
+            forwardPressToResizer(e);
             return true;
         }
     }
-    foreach (long i, plot()->lineMarkerKeys()) {
-        ArrowMarker *mrkL = (ArrowMarker *)plotWidget->marker(i);
-        if (!mrkL)
-            return false;
-        int d = mrkL->width()
-                + (int)floor(mrkL->headLength() * tan(M_PI * mrkL->headAngle() / 180.0) + 0.5);
-        double dist = mrkL->dist(point.x(), point.y());
+    constexpr double kPi = 3.141592653589793238462643;
+    for (int i : g->lineMarkerKeys()) {
+        ArrowMarker *mrkL = static_cast<ArrowMarker *>(plotWidget->marker(i));
+        if (!mrkL || !mrkL->isVisible())
+            continue;
+        const int d = qMax(
+                6,
+                mrkL->width()
+                        + int(std::floor(mrkL->headLength() * std::tan(kPi * mrkL->headAngle() / 180.0)
+                                         + 0.5)));
+        const double dist = mrkL->dist(point.x(), point.y());
         if (dist <= d) {
-            if (d_editing_marker) {
+            if (d_editing_marker && d_editing_marker != mrkL) {
                 d_editing_marker->setEditable(false);
-                d_editing_marker = 0;
+                d_editing_marker = nullptr;
             }
             if (e->modifiers() & Qt::ShiftModifier) {
-                plot()->setSelectedMarker(i, true);
+                g->setSelectedMarker(i, true);
+                g->setCurrentSelection({ Graph::GraphSelection::ArrowAnnotation, i, -1 });
+                forwardPressToResizer(e);
                 return true;
             } else if (e->button() == Qt::RightButton) {
                 mrkL->setEditable(false);
-                plot()->setSelectedMarker(i, false);
+                d_editing_marker = nullptr;
+                g->setSelectedMarker(i, false);
+                g->setCurrentSelection({ Graph::GraphSelection::ArrowAnnotation, i, -1 });
                 return true;
             }
-            plot()->deselectMarker();
+            g->deselectMarker();
             mrkL->setEditable(true);
             d_editing_marker = mrkL;
+            g->setCurrentSelection({ Graph::GraphSelection::ArrowAnnotation, i, -1 });
+            mrkL->eventFilter(plotWidget->canvas(), const_cast<QMouseEvent *>(e));
             return true;
         }
     }

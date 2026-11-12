@@ -30,9 +30,11 @@
 #ifndef TEXTFORMATBUTTONS_H
 #define TEXTFORMATBUTTONS_H
 
+#include <QPointer>
 #include <QWidget>
 class QTextEdit;
 class QPushButton;
+class QMenu;
 
 //! Widget with text format buttons (connected to a QTextEdit)
 class TextFormatButtons : public QWidget
@@ -50,7 +52,7 @@ public:
     void toggleCurveButton(bool enable);
 
 private:
-    QTextEdit *connectedTextEdit;
+    QPointer<QTextEdit> connectedTextEdit;
     QPushButton *buttonCurve;
     QPushButton *buttonSubscript;
     QPushButton *buttonSuperscript;
@@ -61,12 +63,23 @@ private:
     QPushButton *buttonBold;
     QPushButton *buttonItalics;
     QPushButton *buttonUnderline;
+    QPushButton *buttonUnits;
+    QMenu *unitsMenu;
     QPushButton *buttonSigma;
     QPushButton *buttonEpsilon;
-    QPushButton *buttonMu;
     QPushButton *buttonDelta;
-    QPushButton *buttonDegC;
-    QPushButton *buttonInvMm3;
+    QPushButton *buttonMu;
+    QPushButton *buttonTheta;
+    QPushButton *buttonLambda;
+    QPushButton *buttonAlpha;
+    QPushButton *buttonBeta;
+    QPushButton *buttonGamma;
+    QPushButton *buttonRho;
+    QPushButton *buttonOmega;
+    QPushButton *buttonDegree;
+    QPushButton *buttonPlusMinus;
+    QPushButton *buttonTimes;
+    QPushButton *buttonAngstrom;
 
     //! Internal function: format selected text with prefix and postfix
     void formatText(const QString &prefix, const QString &postfix);

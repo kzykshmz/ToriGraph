@@ -184,10 +184,14 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
 
 void TextDialog::apply()
 {
+    if (selectedFont.family().trimmed().isEmpty())
+        selectedFont.setFamily(QStringLiteral("Arial"));
+
     if (textType == TextDialog::AxisTitle) {
         emit changeAlignment(alignment());
         emit changeText(textEditBox->toPlainText());
         emit changeColor(colorBtn->color());
+        emit changeFont(selectedFont);
     } else {
         QColor c = backgroundBtn->color();
         c.setAlpha(boxBackgroundTransparency->value());
@@ -201,6 +205,9 @@ void TextDialog::setDefaultValues()
     ApplicationWindow *app = (ApplicationWindow *)this->parent();
     if (!app)
         return;
+
+    if (selectedFont.family().trimmed().isEmpty())
+        selectedFont.setFamily(QStringLiteral("Arial"));
 
     QColor c = backgroundBtn->color();
     c.setAlpha(boxBackgroundTransparency->value());
@@ -255,11 +262,14 @@ void TextDialog::setAlignment(int align)
 
 void TextDialog::customFont()
 {
-    bool okF;
+    bool okF = false;
     QFont fnt = QFontDialog::getFont(&okF, selectedFont, this);
-    if (okF && fnt != selectedFont) {
+    if (okF) {
+        if (fnt.family().trimmed().isEmpty())
+            fnt.setFamily(QStringLiteral("Arial"));
         selectedFont = fnt;
-        emit changeFont(fnt);
+        if (textEditBox)
+            textEditBox->setFont(selectedFont);
     }
 }
 
@@ -309,7 +319,11 @@ void TextDialog::setBackgroundColor(QColor c)
 
 void TextDialog::setFont(const QFont &fnt)
 {
-    selectedFont = fnt.family().trimmed().isEmpty() ? QFont(QStringLiteral("Arial"), 12) : fnt;
+    selectedFont = fnt;
+    if (selectedFont.family().trimmed().isEmpty())
+        selectedFont.setFamily(QStringLiteral("Arial"));
+    if (selectedFont.pointSize() <= 0 && selectedFont.pixelSize() <= 0)
+        selectedFont.setPointSize(12);
     if (textEditBox)
         textEditBox->setFont(selectedFont);
 }

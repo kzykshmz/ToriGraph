@@ -29,10 +29,26 @@
 
 #include "TableDoubleHeaderView.h"
 #include "TableCommentsHeaderModel.h"
+#include "table/TableView.h"
 #include <QApplication>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QItemSelection>
+#include <QItemSelectionModel>
 #include <QLayout>
+#include <QMouseEvent>
+#include <QTableView>
+
+namespace {
+TableView *findOwnerTableView(QWidget *w)
+{
+    for (QWidget *p = w ? w->parentWidget() : nullptr; p; p = p->parentWidget()) {
+        if (TableView *tv = qobject_cast<TableView *>(p))
+            return tv;
+    }
+    return nullptr;
+}
+} // namespace
 
 TableCommentsHeaderView::TableCommentsHeaderView(QWidget *parent)
     : QHeaderView(Qt::Horizontal, parent)
@@ -165,4 +181,120 @@ void TableDoubleHeaderView::sectionsInserted(const QModelIndex &parent, int logi
     d_slave->sectionsInserted(parent, logicalFirst, logicalLast);
     QHeaderView::sectionsInserted(parent, logicalFirst, logicalLast);
     Q_ASSERT(d_slave->count() == QHeaderView::count());
+}
+
+void TableDoubleHeaderView::mousePressEvent(QMouseEvent *event)
+{
+    d_drag_candidate = false;
+    d_drag_started = false;
+    d_pressed_logical_col = -1;
+    d_saved_selected_cols.clear();
+
+    if (event && event->button() == Qt::LeftButton) {
+        const int col = logicalIndexAt(event->pos());
+        bool onResizeGrip = (cursor().shape() == Qt::SplitHCursor);
+        if (!onResizeGrip && col >= 0) {
+            const int leftEdge = sectionViewportPosition(col);
+            const int rightEdge = leftEdge + sectionSize(col);
+            if (qAbs(event->pos().x() - leftEdge) <= 4 || qAbs(event->pos().x() - rightEdge) <= 4)
+                onResizeGrip = true;
+        }
+        if (!onResizeGrip && col >= 0) {
+            d_drag_candidate = true;
+            d_drag_start_pos = event->pos();
+            d_pressed_logical_col = col;
+            if (TableView *tv = findOwnerTableView(this))
+                d_saved_selected_cols = tv->selectedColumnIndices(false);
+        }
+    }
+
+    QHeaderView::mousePressEvent(event);
+}
+
+void TableDoubleHeaderView::mouseMoveEvent(QMouseEvent *event)
+{
+    if (event && d_drag_candidate && !d_drag_started && (event->buttons() & Qt::LeftButton)) {
+        const QPoint pos = event->pos();
+        const int dist = (pos - d_drag_start_pos).manhattanLength();
+        const bool verticalEscape = (pos.y() > height() + 4 || pos.y() < -4);
+        const bool modifierDrag =
+                (event->modifiers() & (Qt::AltModifier | Qt::ControlModifier))
+                && (dist >= QApplication::startDragDistance());
+
+        if (verticalEscape || modifierDrag) {
+            d_drag_started = true;
+            d_drag_candidate = false;
+            const int clickedCol = d_pressed_logical_col;
+            const QList<int> savedCols = d_saved_selected_cols;
+            const Qt::KeyboardModifiers mods = event->modifiers();
+
+            // Cleanly cancel QHeaderView's in-progress horizontal section move or drag-select
+            // at the original press position so horizontal reordering inside header stays intact.
+            QMouseEvent moveBackEv(QEvent::MouseMove, d_drag_start_pos,
+                                   mapToGlobal(d_drag_start_pos), Qt::NoButton, Qt::LeftButton,
+                                   Qt::NoModifier);
+            QHeaderView::mouseMoveEvent(&moveBackEv);
+            QMouseEvent releaseCancelEv(QEvent::MouseButtonRelease, d_drag_start_pos,
+                                        mapToGlobal(d_drag_start_pos), Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+            QHeaderView::mouseReleaseEvent(&releaseCancelEv);
+            if (viewport())
+                viewport()->update();
+            update();
+
+            if (TableView *tv = findOwnerTableView(this)) {
+                QList<int> dragCols;
+                if (savedCols.size() > 1 && savedCols.contains(clickedCol)) {
+                    dragCols = savedCols;
+                } else if ((mods & Qt::ControlModifier) && !savedCols.isEmpty()) {
+                    dragCols = savedCols;
+                    if (clickedCol >= 0 && !dragCols.contains(clickedCol))
+                        dragCols.append(clickedCol);
+                } else {
+                    dragCols = tv->selectedColumnIndices(false);
+                    if (dragCols.isEmpty() && clickedCol >= 0)
+                        dragCols.append(clickedCol);
+                }
+
+                // Restore multi-column selection in the QTableView if press collapsed it
+                if (dragCols.size() > 1) {
+                    if (QTableView *qtv = qobject_cast<QTableView *>(parentWidget())) {
+                        if (qtv->selectionModel() && qtv->model() && qtv->model()->rowCount() > 0) {
+                            const int lastRow = qtv->model()->rowCount() - 1;
+                            for (int c : dragCols) {
+                                if (c >= 0 && c < qtv->model()->columnCount()) {
+                                    QItemSelection colSel(qtv->model()->index(0, c),
+                                                          qtv->model()->index(lastRow, c));
+                                    qtv->selectionModel()->select(colSel,
+                                                                  QItemSelectionModel::Select);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                tv->startColumnDrag(dragCols, clickedCol, this);
+            }
+            return;
+        }
+    }
+
+    if (d_drag_started)
+        return;
+
+    QHeaderView::mouseMoveEvent(event);
+}
+
+void TableDoubleHeaderView::mouseReleaseEvent(QMouseEvent *event)
+{
+    const bool wasStarted = d_drag_started;
+    d_drag_candidate = false;
+    d_drag_started = false;
+    d_pressed_logical_col = -1;
+    d_saved_selected_cols.clear();
+
+    if (wasStarted)
+        return;
+
+    QHeaderView::mouseReleaseEvent(event);
 }

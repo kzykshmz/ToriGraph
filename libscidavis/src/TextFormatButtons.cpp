@@ -33,125 +33,206 @@
 #include <QTextEdit>
 #include <QPushButton>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QMenu>
+#include <QRegularExpression>
 #include <QString>
+
+namespace {
+QString sanitizeSymbolToArialUtf8(const QString &raw)
+{
+    QString out = raw;
+    // Replace legacy HTML entities with direct UTF-8 characters rendered natively in Arial
+    out.replace(QLatin1String("&sigma;"), QString(QChar(0x03C3)));
+    out.replace(QLatin1String("&epsilon;"), QString(QChar(0x03B5)));
+    out.replace(QLatin1String("&Delta;"), QString(QChar(0x0394)));
+    out.replace(QLatin1String("&mu;"), QString(QChar(0x03BC)));
+    out.replace(QLatin1String("&theta;"), QString(QChar(0x03B8)));
+    out.replace(QLatin1String("&lambda;"), QString(QChar(0x03BB)));
+    out.replace(QLatin1String("&alpha;"), QString(QChar(0x03B1)));
+    out.replace(QLatin1String("&beta;"), QString(QChar(0x03B2)));
+    out.replace(QLatin1String("&gamma;"), QString(QChar(0x03B3)));
+    out.replace(QLatin1String("&rho;"), QString(QChar(0x03C1)));
+    out.replace(QLatin1String("&omega;"), QString(QChar(0x03C9)));
+    out.replace(QLatin1String("&deg;"), QString(QChar(0x00B0)));
+    out.replace(QLatin1String("&plusmn;"), QString(QChar(0x00B1)));
+    out.replace(QLatin1String("&times;"), QString(QChar(0x00D7)));
+    out.replace(QLatin1String("&Aring;"), QString(QChar(0x00C5)));
+
+    // Strip any legacy <font face="Symbol">...</font> wrapper and map Symbol-encoded ASCII to UTF-8
+    static const QRegularExpression symFontRe(
+            QStringLiteral("<\\s*font[^>]*face\\s*=\\s*[\"']?Symbol[\"']?[^>]*>(.*?)<\\s*/\\s*font\\s*>"),
+            QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+    QRegularExpressionMatch match;
+    while ((match = symFontRe.match(out)).hasMatch()) {
+        const QString inner = match.captured(1);
+        QString mapped;
+        mapped.reserve(inner.size());
+        for (QChar ch : inner) {
+            ushort u = ch.unicode();
+            switch (u) {
+            case 'a': mapped += QChar(0x03B1); break;
+            case 'b': mapped += QChar(0x03B2); break;
+            case 'g': mapped += QChar(0x03B3); break;
+            case 'd': mapped += QChar(0x03B4); break;
+            case 'e': mapped += QChar(0x03B5); break;
+            case 'q': mapped += QChar(0x03B8); break;
+            case 'l': mapped += QChar(0x03BB); break;
+            case 'm': mapped += QChar(0x03BC); break;
+            case 'r': mapped += QChar(0x03C1); break;
+            case 's': mapped += QChar(0x03C3); break;
+            case 'w': mapped += QChar(0x03C9); break;
+            case 'D': mapped += QChar(0x0394); break;
+            case 'G': mapped += QChar(0x0393); break;
+            case 'L': mapped += QChar(0x039B); break;
+            case 'S': mapped += QChar(0x03A3); break;
+            case 'W': mapped += QChar(0x03A9); break;
+            default: mapped += ch; break;
+            }
+        }
+        out.replace(match.capturedStart(0), match.capturedLength(0), mapped);
+    }
+    return out;
+}
+} // namespace
 
 TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWidget(parent)
 {
     connectedTextEdit = textEdit;
 
-    QHBoxLayout *layout = new QHBoxLayout(this);
-    layout->setMargin(0);
-    layout->setSpacing(0);
-    layout->addStretch();
+    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(2);
 
-    QFont font = this->font();
-    font.setPointSize(14);
+    QHBoxLayout *row1 = new QHBoxLayout();
+    row1->setContentsMargins(0, 0, 0, 0);
+    row1->setSpacing(2);
 
-    buttonCurve = new QPushButton(IconLoader::duotoneIcon("plot-line-symbol"), QString());
-    buttonCurve->setMaximumWidth(40);
-    buttonCurve->setMinimumHeight(35);
-    buttonCurve->setFont(font);
-    layout->addWidget(buttonCurve);
+    QHBoxLayout *row2 = new QHBoxLayout();
+    row2->setContentsMargins(0, 0, 0, 0);
+    row2->setSpacing(2);
 
-    buttonSubscript = new QPushButton(IconLoader::duotoneIcon("text-subscript"), QString());
-    buttonSubscript->setMaximumWidth(40);
-    buttonSubscript->setMinimumHeight(35);
-    buttonSubscript->setFont(font);
-    layout->addWidget(buttonSubscript);
+    QFont arialBase(QStringLiteral("Arial"), 10);
 
-    buttonSuperscript = new QPushButton(IconLoader::duotoneIcon("text-superscript"), QString());
-    buttonSuperscript->setMaximumWidth(40);
-    buttonSuperscript->setMinimumHeight(35);
-    buttonSuperscript->setFont(font);
-    layout->addWidget(buttonSuperscript);
+    auto configCompactBtn = [&](QPushButton *btn, const QFont &f) {
+        btn->setFont(f);
+        btn->setFixedSize(28, 26);
+        btn->setAutoDefault(false);
+    };
 
-    buttonLowerGreek = new QPushButton(QString(QChar(0x3B1)));
-    buttonLowerGreek->setFont(font);
-    buttonLowerGreek->setMaximumWidth(40);
-    layout->addWidget(buttonLowerGreek);
+    buttonCurve = new QPushButton(IconLoader::duotoneIcon("plot-line-symbol"), QString(), this);
+    configCompactBtn(buttonCurve, arialBase);
+    row1->addWidget(buttonCurve);
 
-    buttonUpperGreek = new QPushButton(QString(QChar(0x393)));
-    buttonUpperGreek->setFont(font);
-    buttonUpperGreek->setMaximumWidth(40);
-    layout->addWidget(buttonUpperGreek);
+    QFont boldFont(QStringLiteral("Arial"), 10);
+    boldFont.setBold(true);
+    buttonBold = new QPushButton(tr("B", "Button bold"), this);
+    configCompactBtn(buttonBold, boldFont);
+    row1->addWidget(buttonBold);
 
-    buttonMathSymbols = new QPushButton(QString(QChar(0x222B)));
-    buttonMathSymbols->setFont(font);
-    buttonMathSymbols->setMaximumWidth(40);
-    layout->addWidget(buttonMathSymbols);
+    QFont italicFont(QStringLiteral("Arial"), 10);
+    italicFont.setItalic(true);
+    buttonItalics = new QPushButton(tr("It", "Button italics"), this);
+    configCompactBtn(buttonItalics, italicFont);
+    row1->addWidget(buttonItalics);
 
-    buttonArrowSymbols = new QPushButton(QString(QChar(0x2192)));
-    buttonArrowSymbols->setFont(font);
-    buttonArrowSymbols->setMaximumWidth(40);
-    layout->addWidget(buttonArrowSymbols);
+    QFont underlineFont(QStringLiteral("Arial"), 10);
+    underlineFont.setUnderline(true);
+    buttonUnderline = new QPushButton(tr("U", "Button underline"), this);
+    configCompactBtn(buttonUnderline, underlineFont);
+    row1->addWidget(buttonUnderline);
 
-    font = this->font();
-    font.setBold(true);
-    font.setPointSize(14);
+    buttonSubscript = new QPushButton(IconLoader::duotoneIcon("text-subscript"), QString(), this);
+    configCompactBtn(buttonSubscript, arialBase);
+    row1->addWidget(buttonSubscript);
 
-    buttonBold = new QPushButton(tr("B", "Button bold"));
-    buttonBold->setFont(font);
-    buttonBold->setMaximumWidth(40);
-    layout->addWidget(buttonBold);
+    buttonSuperscript =
+            new QPushButton(IconLoader::duotoneIcon("text-superscript"), QString(), this);
+    configCompactBtn(buttonSuperscript, arialBase);
+    row1->addWidget(buttonSuperscript);
 
-    font = this->font();
-    font.setItalic(true);
-    font.setPointSize(14);
+    buttonLowerGreek = new QPushButton(QString(QChar(0x03B1)), this);
+    configCompactBtn(buttonLowerGreek, arialBase);
+    row1->addWidget(buttonLowerGreek);
 
-    buttonItalics = new QPushButton(tr("It", "Button italics"));
-    buttonItalics->setFont(font);
-    buttonItalics->setMaximumWidth(40);
-    layout->addWidget(buttonItalics);
+    buttonUpperGreek = new QPushButton(QString(QChar(0x0393)), this);
+    configCompactBtn(buttonUpperGreek, arialBase);
+    row1->addWidget(buttonUpperGreek);
 
-    font = this->font();
-    font.setUnderline(true);
-    font.setPointSize(14);
+    buttonMathSymbols = new QPushButton(QString(QChar(0x222B)), this);
+    configCompactBtn(buttonMathSymbols, arialBase);
+    row1->addWidget(buttonMathSymbols);
 
-    buttonUnderline = new QPushButton(tr("U", "Button underline"));
-    buttonUnderline->setFont(font);
-    buttonUnderline->setMaximumWidth(40);
-    layout->addWidget(buttonUnderline);
+    buttonArrowSymbols = new QPushButton(QString(QChar(0x2192)), this);
+    configCompactBtn(buttonArrowSymbols, arialBase);
+    row1->addWidget(buttonArrowSymbols);
 
-    QFont sciFont = this->font();
-    sciFont.setPointSize(11);
+    buttonUnits = new QPushButton(tr("Units"), this);
+    buttonUnits->setFont(arialBase);
+    buttonUnits->setFixedHeight(26);
+    buttonUnits->setAutoDefault(false);
+    unitsMenu = new QMenu(buttonUnits);
+    unitsMenu->setFont(arialBase);
 
-    buttonSigma = new QPushButton(QString(QChar(0x03C3)));
-    buttonSigma->setFont(sciFont);
-    buttonSigma->setMaximumWidth(34);
-    buttonSigma->setToolTip(tr("Insert &sigma;"));
-    layout->addWidget(buttonSigma);
+    struct UnitEntry {
+        QString label;
+        QString insertText;
+    };
+    const UnitEntry unitEntries[] = {
+        { QStringLiteral("MPa"), QStringLiteral("MPa") },
+        { QStringLiteral("GPa"), QStringLiteral("GPa") },
+        { QStringLiteral("wt.%"), QStringLiteral("wt.%") },
+        { QStringLiteral("at.%"), QStringLiteral("at.%") },
+        { QStringLiteral("mass ppm"), QStringLiteral("mass ppm") },
+        { QStringLiteral("K"), QStringLiteral("K") },
+        { QString(QChar(0x00B0)) + QLatin1String("C"),
+          QString(QChar(0x00B0)) + QLatin1String("C") },
+        { QStringLiteral("s") + QChar(0x207B) + QChar(0x00B9),
+          QStringLiteral("s<sup>-1</sup>") },
+        { QStringLiteral("mm") + QChar(0x207B) + QChar(0x00B3),
+          QStringLiteral("mm<sup>-3</sup>") },
+        { QString(QChar(0x03BC)) + QLatin1String("m"),
+          QString(QChar(0x03BC)) + QLatin1String("m") },
+        { QStringLiteral("nm"), QStringLiteral("nm") },
+    };
+    for (const UnitEntry &ue : unitEntries) {
+        const QString textToInsert = ue.insertText;
+        unitsMenu->addAction(ue.label, this, [this, textToInsert]() { addSymbol(textToInsert); });
+    }
+    buttonUnits->setMenu(unitsMenu);
+    row1->addWidget(buttonUnits);
+    row1->addStretch(1);
 
-    buttonEpsilon = new QPushButton(QString(QChar(0x03B5)));
-    buttonEpsilon->setFont(sciFont);
-    buttonEpsilon->setMaximumWidth(34);
-    buttonEpsilon->setToolTip(tr("Insert &epsilon;"));
-    layout->addWidget(buttonEpsilon);
+    auto makeUtf8CharBtn = [&](QPushButton *&memberBtn, ushort codepoint) {
+        const QString chStr((QChar(codepoint)));
+        memberBtn = new QPushButton(chStr, this);
+        configCompactBtn(memberBtn, arialBase);
+        memberBtn->setToolTip(chStr);
+        row2->addWidget(memberBtn);
+        connect(memberBtn, &QPushButton::clicked, this, [this, chStr]() { addSymbol(chStr); });
+    };
 
-    buttonMu = new QPushButton(QString(QChar(0x03BC)));
-    buttonMu->setFont(sciFont);
-    buttonMu->setMaximumWidth(34);
-    buttonMu->setToolTip(tr("Insert &mu;"));
-    layout->addWidget(buttonMu);
+    // 15 direct UTF-8 Greek & scientific characters rendered natively in Arial:
+    // σ, ε, Δ, μ, θ, λ, α, β, γ, ρ, ω, °, ±, ×, Å
+    makeUtf8CharBtn(buttonSigma, 0x03C3);
+    makeUtf8CharBtn(buttonEpsilon, 0x03B5);
+    makeUtf8CharBtn(buttonDelta, 0x0394);
+    makeUtf8CharBtn(buttonMu, 0x03BC);
+    makeUtf8CharBtn(buttonTheta, 0x03B8);
+    makeUtf8CharBtn(buttonLambda, 0x03BB);
+    makeUtf8CharBtn(buttonAlpha, 0x03B1);
+    makeUtf8CharBtn(buttonBeta, 0x03B2);
+    makeUtf8CharBtn(buttonGamma, 0x03B3);
+    makeUtf8CharBtn(buttonRho, 0x03C1);
+    makeUtf8CharBtn(buttonOmega, 0x03C9);
+    makeUtf8CharBtn(buttonDegree, 0x00B0);
+    makeUtf8CharBtn(buttonPlusMinus, 0x00B1);
+    makeUtf8CharBtn(buttonTimes, 0x00D7);
+    makeUtf8CharBtn(buttonAngstrom, 0x00C5);
+    row2->addStretch(1);
 
-    buttonDelta = new QPushButton(QString(QChar(0x0394)));
-    buttonDelta->setFont(sciFont);
-    buttonDelta->setMaximumWidth(34);
-    buttonDelta->setToolTip(tr("Insert &Delta;"));
-    layout->addWidget(buttonDelta);
-
-    buttonDegC = new QPushButton(QString(QChar(0x00B0)) + "C");
-    buttonDegC->setFont(sciFont);
-    buttonDegC->setMaximumWidth(40);
-    buttonDegC->setToolTip(tr("Insert &deg;C"));
-    layout->addWidget(buttonDegC);
-
-    buttonInvMm3 = new QPushButton(QString("mm") + QChar(0x207B) + QChar(0x00B3));
-    buttonInvMm3->setFont(sciFont);
-    buttonInvMm3->setMaximumWidth(52);
-    buttonInvMm3->setToolTip(tr("Insert mm<sup>-3</sup>"));
-    layout->addWidget(buttonInvMm3);
-
-    layout->addStretch();
+    mainLayout->addLayout(row1);
+    mainLayout->addLayout(row2);
 
     connect(buttonCurve, SIGNAL(clicked()), this, SLOT(addCurve()));
     connect(buttonSuperscript, SIGNAL(clicked()), this, SLOT(addSuperscript()));
@@ -163,19 +244,14 @@ TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWi
     connect(buttonUpperGreek, SIGNAL(clicked()), this, SLOT(showUpperGreek()));
     connect(buttonMathSymbols, SIGNAL(clicked()), this, SLOT(showMathSymbols()));
     connect(buttonArrowSymbols, SIGNAL(clicked()), this, SLOT(showArrowSymbols()));
-    connect(buttonSigma, SIGNAL(clicked()), this, SLOT(addSigma()));
-    connect(buttonEpsilon, SIGNAL(clicked()), this, SLOT(addEpsilon()));
-    connect(buttonMu, SIGNAL(clicked()), this, SLOT(addMu()));
-    connect(buttonDelta, SIGNAL(clicked()), this, SLOT(addDelta()));
-    connect(buttonDegC, SIGNAL(clicked()), this, SLOT(addDegC()));
-    connect(buttonInvMm3, SIGNAL(clicked()), this, SLOT(addInvMm3()));
 }
 
 void TextFormatButtons::showLowerGreek()
 {
     SymbolDialog *greekLetters = new SymbolDialog(SymbolDialog::lowerGreek, this, Qt::Tool);
     greekLetters->setAttribute(Qt::WA_DeleteOnClose);
-    QFont f = connectedTextEdit->font();
+    QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
+    f.setFamily(QStringLiteral("Arial"));
     if (f.pointSize() < 14)
         f.setPointSize(14);
     greekLetters->setFont(f);
@@ -189,7 +265,8 @@ void TextFormatButtons::showUpperGreek()
 {
     SymbolDialog *greekLetters = new SymbolDialog(SymbolDialog::upperGreek, this, Qt::Tool);
     greekLetters->setAttribute(Qt::WA_DeleteOnClose);
-    QFont f = connectedTextEdit->font();
+    QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
+    f.setFamily(QStringLiteral("Arial"));
     if (f.pointSize() < 14)
         f.setPointSize(14);
     greekLetters->setFont(f);
@@ -203,7 +280,8 @@ void TextFormatButtons::showMathSymbols()
 {
     SymbolDialog *mathSymbols = new SymbolDialog(SymbolDialog::mathSymbols, this, Qt::Tool);
     mathSymbols->setAttribute(Qt::WA_DeleteOnClose);
-    QFont f = connectedTextEdit->font();
+    QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
+    f.setFamily(QStringLiteral("Arial"));
     if (f.pointSize() < 14)
         f.setPointSize(14);
     mathSymbols->setFont(f);
@@ -217,8 +295,8 @@ void TextFormatButtons::showArrowSymbols()
 {
     SymbolDialog *arrowSymbols = new SymbolDialog(SymbolDialog::arrowSymbols, this, Qt::Tool);
     arrowSymbols->setAttribute(Qt::WA_DeleteOnClose);
-    arrowSymbols->setFont(connectedTextEdit->font());
-    QFont f = connectedTextEdit->font();
+    QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
+    f.setFamily(QStringLiteral("Arial"));
     if (f.pointSize() < 14)
         f.setPointSize(14);
     arrowSymbols->setFont(f);
@@ -230,7 +308,10 @@ void TextFormatButtons::showArrowSymbols()
 
 void TextFormatButtons::addSymbol(const QString &letter)
 {
-    connectedTextEdit->textCursor().insertText(letter);
+    if (!connectedTextEdit)
+        return;
+    connectedTextEdit->textCursor().insertText(sanitizeSymbolToArialUtf8(letter));
+    connectedTextEdit->setFocus();
 }
 
 void TextFormatButtons::addCurve()
@@ -265,42 +346,38 @@ void TextFormatButtons::addSuperscript()
 
 void TextFormatButtons::addSigma()
 {
-    addSymbol("&sigma;");
-    connectedTextEdit->setFocus();
+    addSymbol(QString(QChar(0x03C3)));
 }
 
 void TextFormatButtons::addEpsilon()
 {
-    addSymbol("&epsilon;");
-    connectedTextEdit->setFocus();
+    addSymbol(QString(QChar(0x03B5)));
 }
 
 void TextFormatButtons::addMu()
 {
-    addSymbol("&mu;");
-    connectedTextEdit->setFocus();
+    addSymbol(QString(QChar(0x03BC)));
 }
 
 void TextFormatButtons::addDelta()
 {
-    addSymbol("&Delta;");
-    connectedTextEdit->setFocus();
+    addSymbol(QString(QChar(0x0394)));
 }
 
 void TextFormatButtons::addDegC()
 {
-    addSymbol("&deg;C");
-    connectedTextEdit->setFocus();
+    addSymbol(QString(QChar(0x00B0)) + QLatin1String("C"));
 }
 
 void TextFormatButtons::addInvMm3()
 {
-    addSymbol("mm<sup>-3</sup>");
-    connectedTextEdit->setFocus();
+    addSymbol(QStringLiteral("mm<sup>-3</sup>"));
 }
 
 void TextFormatButtons::formatText(const QString &prefix, const QString &postfix)
 {
+    if (!connectedTextEdit)
+        return;
     QTextCursor cursor = connectedTextEdit->textCursor();
     QString markedText = cursor.selectedText();
     cursor.insertText(prefix + markedText + postfix);

@@ -29,8 +29,13 @@
 
 #include "SelectionMoveResizer.h"
 
+#include <QApplication>
+#include <QContextMenuEvent>
+#include <QCoreApplication>
 #include <QPainter>
 #include <QMouseEvent>
+#include <QSet>
+#include <QVariant>
 
 #include <qwt_scale_map.h>
 #include <qwt_plot.h>
@@ -42,6 +47,7 @@
 #include "ImageMarker.h"
 #include "PlotEnrichement.h"
 #include "Graph.h"
+#include "GraphMiniToolbar.h"
 #include "Plot.h"
 #include "MultiLayer.h"
 
@@ -73,17 +79,24 @@ void SelectionMoveResizer::init()
     d_op = None;
     d_op_start = QPoint(0, 0);
     d_op_dp = QPoint(0, 0);
+    d_target_parent = parentWidget();
+    d_owning_graph = owningGraph();
 
-    setGeometry(0, 0, parentWidget()->width(), parentWidget()->height());
+    if (parentWidget()) {
+        setGeometry(0, 0, parentWidget()->width(), parentWidget()->height());
+        parentWidget()->installEventFilter(this);
+    }
     setMouseTracking(true);
-    parentWidget()->installEventFilter(this);
     show();
     setFocus();
 }
 
 SelectionMoveResizer::~SelectionMoveResizer()
 {
-    parentWidget()->removeEventFilter(this);
+    if (parentWidget())
+        parentWidget()->removeEventFilter(this);
+    if (d_target_parent && d_target_parent != parentWidget())
+        d_target_parent->removeEventFilter(this);
 }
 
 void SelectionMoveResizer::add(Legend *target)
@@ -371,22 +384,52 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
             QSize(qRound(in.width() * scale_x), qRound(in.height() * scale_y)));
 }
 
+bool SelectionMoveResizer::isLegendOnlySelection() const
+{
+    return !d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
+            && d_widgets.isEmpty();
+}
+
+Graph *SelectionMoveResizer::owningGraph() const
+{
+    for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
+        if (Graph *g = qobject_cast<Graph *>(p))
+            return g;
+    }
+    return nullptr;
+}
+
+MultiLayer *SelectionMoveResizer::owningMultiLayer() const
+{
+    for (QWidget *p = parentWidget(); p; p = p->parentWidget()) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(p))
+            return ml;
+    }
+    return nullptr;
+}
+
 void SelectionMoveResizer::operateOnTargets()
 {
+    QSet<QwtPlot *> plotsToReplot;
     foreach (Legend *i, d_legend_markers) {
+        if (!i)
+            continue;
         const QRect old_rect = i->rect();
         QRect new_rect = operateOn(old_rect);
         i->setOrigin(new_rect.topLeft());
-        if (!i->text().isEmpty() && d_op != Move && d_op != None
-            && new_rect.height() != old_rect.height()) {
-            QFont f = i->font();
-            const double basePt = (f.pointSizeF() > 0.0) ? f.pointSizeF() : double(f.pointSize());
-            f.setPointSize(qMax(
-                    4, qRound(basePt * double(new_rect.height()) / qMax(1, old_rect.height()))));
-            i->setFont(f);
+        if (QwtPlot *plt = i->plot()) {
+            if (plt->property("_outsideRightMargin").toInt() > 0 && plt->canvas()
+                && new_rect.right() <= plt->canvas()->width()) {
+                plt->setProperty("_outsideRightMargin", 0);
+                plt->updateLayout();
+                i->setOrigin(new_rect.topLeft());
+            }
+            plotsToReplot.insert(plt);
         }
     }
     foreach (ArrowMarker *i, d_line_markers) {
+        if (!i)
+            continue;
         QPoint p1 = i->startPoint();
         QPoint p2 = i->endPoint();
         QRect new_rect = operateOn(i->rect());
@@ -394,13 +437,21 @@ void SelectionMoveResizer::operateOnTargets()
                                 p1.y() < p2.y() ? new_rect.top() : new_rect.bottom()));
         i->setEndPoint(QPoint(p2.x() < p1.x() ? new_rect.left() : new_rect.right(),
                               p2.y() < p1.y() ? new_rect.top() : new_rect.bottom()));
+        if (i->plot())
+            plotsToReplot.insert(i->plot());
     }
     foreach (ImageMarker *i, d_image_markers) {
+        if (!i)
+            continue;
         QRect new_rect = operateOn(i->rect());
         i->setOrigin(new_rect.topLeft());
         i->setSize(new_rect.size());
+        if (i->plot())
+            plotsToReplot.insert(i->plot());
     }
     foreach (QWidget *i, d_widgets) {
+        if (!i)
+            continue;
         i->setGeometry(operateOn(i->geometry()));
         // ugly hack
         // see Graph::setIgnoreResizeEvents() and Graph::resizeEvent()
@@ -409,6 +460,10 @@ void SelectionMoveResizer::operateOnTargets()
             g->plotWidget()->resize(i->size());
             g->plotWidget()->updateLayout();
         }
+    }
+    for (QwtPlot *plt : plotsToReplot) {
+        if (plt)
+            plt->replot();
     }
     recalcBoundingRect();
 
@@ -420,8 +475,25 @@ void SelectionMoveResizer::operateOnTargets()
 
 void SelectionMoveResizer::paintEvent(QPaintEvent *e)
 {
+    if (Graph *g = owningGraph()) {
+        if (g->isExporting() || g->property("isExporting").toBool())
+            return;
+    }
+
     QPainter p(this);
     QRect drawn_rect = operateOn(d_bounding_rect);
+
+    if (isLegendOnlySelection()) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF frameRect = QRectF(drawn_rect).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, 210), 3.0, Qt::SolidLine));
+        p.drawRect(frameRect);
+        p.setPen(QPen(QColor(QStringLiteral("#2563EB")), 1.5, Qt::DashLine));
+        p.drawRect(frameRect);
+        e->accept();
+        return;
+    }
 
     QPen white_pen(Qt::white, 3, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
     p.setPen(white_pen);
@@ -438,54 +510,131 @@ void SelectionMoveResizer::paintEvent(QPaintEvent *e)
     e->accept();
 }
 
+SelectionMoveResizer::Operation SelectionMoveResizer::operateModeFor(const QPoint &pos) const
+{
+    if (!d_bounding_rect.isValid())
+        return None;
+    if (!isLegendOnlySelection()) {
+        for (int i = 0; i < 8; i++) {
+            if (handlerRect(d_bounding_rect, (Operation)i).contains(pos))
+                return (Operation)i;
+        }
+    }
+    if (d_bounding_rect.contains(pos))
+        return Move;
+    return None;
+}
+
 void SelectionMoveResizer::mousePressEvent(QMouseEvent *me)
 {
     if (me->button() == Qt::RightButton) {
-        // If one of the parents' event handlers deletes me, Qt crashes while trying to send the
-        // QContextMenuEvent.
-        me->accept();
+        const Operation hitOp = operateModeFor(me->pos());
+        if (hitOp != None) {
+            if (owningGraph()) {
+                me->accept();
+                emit targetsContextMenuRequested();
+            } else {
+                me->ignore();
+            }
+            return;
+        }
+        if (Graph *g = owningGraph()) {
+            QPointer<Graph> gGuard(g);
+            QPointer<QWidget> canvas(parentWidget());
+            QMouseEvent forwarded(QEvent::MouseButtonPress, me->pos(), me->windowPos(),
+                                  me->screenPos(), me->button(), me->buttons(), me->modifiers(),
+                                  me->source());
+            me->accept();
+            if (gGuard)
+                gGuard->deselectMarker();
+            if (canvas)
+                QCoreApplication::sendEvent(canvas.data(), &forwarded);
+            return;
+        }
+        me->ignore();
         return;
     }
-    if (me->button() != Qt::LeftButton || !d_bounding_rect.contains(me->pos())) {
+    const Operation hitOp = operateModeFor(me->pos());
+    if (me->button() != Qt::LeftButton || hitOp == None) {
         me->ignore();
         return;
     }
     d_op_start = me->pos();
-    d_op = Move;
-    for (int i = 0; i < 8; i++)
-        if (handlerRect(d_bounding_rect, (Operation)i).contains(d_op_start)) {
-            d_op = (Operation)i;
-            break;
-        }
+    d_op_dp = QPoint(0, 0);
+    d_drag_threshold_passed = false;
+    d_undo_before_snapshot.clear();
+    d_op = hitOp;
 
     me->accept();
 }
 
+void SelectionMoveResizer::contextMenuEvent(QContextMenuEvent *e)
+{
+    if (!isVisible() || !parentWidget()) {
+        if (d_owning_graph && d_owning_graph->selectedMarkerKey() < 0 && d_target_parent) {
+            QContextMenuEvent fwd(e->reason(), e->pos(), e->globalPos(), e->modifiers());
+            QCoreApplication::sendEvent(d_target_parent.data(), &fwd);
+        }
+        e->accept();
+        return;
+    }
+    if (operateModeFor(e->pos()) != None) {
+        if (owningGraph()) {
+            if (e->reason() == QContextMenuEvent::Keyboard)
+                emit targetsContextMenuRequested();
+            e->accept();
+        } else {
+            e->ignore();
+        }
+        return;
+    }
+    e->ignore();
+}
+
 void SelectionMoveResizer::mouseMoveEvent(QMouseEvent *me)
 {
-    if (d_op == None && d_bounding_rect.contains(me->pos()) && me->button() == Qt::LeftButton) {
+    if (d_op == None && d_bounding_rect.contains(me->pos()) && (me->buttons() & Qt::LeftButton)) {
         d_op = Move;
         d_op_start = me->pos();
+        d_op_dp = QPoint(0, 0);
+        d_drag_threshold_passed = false;
+        d_undo_before_snapshot.clear();
     }
     if (d_op == None || d_op_start == QPoint(-1, -1)) {
         if (d_bounding_rect.contains(me->pos())) {
             setCursor(Qt::SizeAllCursor);
-            if (handlerRect(d_bounding_rect, Resize_N).contains(me->pos())
-                || handlerRect(d_bounding_rect, Resize_S).contains(me->pos()))
-                setCursor(Qt::SizeVerCursor);
-            else if (handlerRect(d_bounding_rect, Resize_E).contains(me->pos())
-                     || handlerRect(d_bounding_rect, Resize_W).contains(me->pos()))
-                setCursor(Qt::SizeHorCursor);
-            else if (handlerRect(d_bounding_rect, Resize_NE).contains(me->pos())
-                     || handlerRect(d_bounding_rect, Resize_SW).contains(me->pos()))
-                setCursor(Qt::SizeBDiagCursor);
-            else if (handlerRect(d_bounding_rect, Resize_NW).contains(me->pos())
-                     || handlerRect(d_bounding_rect, Resize_SE).contains(me->pos()))
-                setCursor(Qt::SizeFDiagCursor);
+            if (!isLegendOnlySelection()) {
+                if (handlerRect(d_bounding_rect, Resize_N).contains(me->pos())
+                    || handlerRect(d_bounding_rect, Resize_S).contains(me->pos()))
+                    setCursor(Qt::SizeVerCursor);
+                else if (handlerRect(d_bounding_rect, Resize_E).contains(me->pos())
+                         || handlerRect(d_bounding_rect, Resize_W).contains(me->pos()))
+                    setCursor(Qt::SizeHorCursor);
+                else if (handlerRect(d_bounding_rect, Resize_NE).contains(me->pos())
+                         || handlerRect(d_bounding_rect, Resize_SW).contains(me->pos()))
+                    setCursor(Qt::SizeBDiagCursor);
+                else if (handlerRect(d_bounding_rect, Resize_NW).contains(me->pos())
+                         || handlerRect(d_bounding_rect, Resize_SE).contains(me->pos()))
+                    setCursor(Qt::SizeFDiagCursor);
+            }
         } else
             unsetCursor();
         return QWidget::mouseMoveEvent(me);
     }
+
+    if (!d_drag_threshold_passed) {
+        const int dragThresh = qMax(4, QApplication::startDragDistance());
+        if ((me->pos() - d_op_start).manhattanLength() < dragThresh) {
+            me->accept();
+            return;
+        }
+        d_drag_threshold_passed = true;
+        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+            bar->hide();
+        if (MultiLayer *ml = owningMultiLayer())
+            d_undo_before_snapshot = ml->captureUndoSnapshot();
+    }
+
     d_op_dp = me->pos() - d_op_start;
     repaint();
     me->accept();
@@ -493,6 +642,10 @@ void SelectionMoveResizer::mouseMoveEvent(QMouseEvent *me)
 
 void SelectionMoveResizer::mouseDoubleClickEvent(QMouseEvent *e)
 {
+    d_op = None;
+    d_drag_threshold_passed = false;
+    d_op_dp = QPoint(0, 0);
+    d_undo_before_snapshot.clear();
     e->ignore();
 }
 
@@ -501,9 +654,35 @@ void SelectionMoveResizer::mouseReleaseEvent(QMouseEvent *me)
     if (me->button() != Qt::LeftButton || d_op == None || d_op_start == QPoint(-1, -1))
         return QWidget::mouseReleaseEvent(me);
 
+    if (!d_drag_threshold_passed) {
+        d_op = None;
+        d_op_dp = QPoint(0, 0);
+        d_op_start = QPoint(0, 0);
+        d_undo_before_snapshot.clear();
+        if (d_legend_markers.size() == 1 && GraphMiniToolbar::isMiniToolbarEnabled()) {
+            if (Graph *g = owningGraph()) {
+                Legend *leg = d_legend_markers.first();
+                if (leg && g->legend() == leg) {
+                    if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                        bar->popupForLegend(g, leg, me->globalPos());
+                }
+            }
+        }
+        me->accept();
+        return;
+    }
+
+    const bool wasResize = (d_op != Move);
+    const QString beforeSnap = d_undo_before_snapshot;
+    d_drag_threshold_passed = false;
+    d_undo_before_snapshot.clear();
     d_op_dp = me->pos() - d_op_start;
     operateOnTargets();
     d_op = None;
+    if (MultiLayer *ml = owningMultiLayer()) {
+        if (!beforeSnap.isEmpty())
+            ml->pushUndoSnapshot(wasResize ? tr("Resize Object") : tr("Move Object"), beforeSnap);
+    }
     me->accept();
 }
 
@@ -520,10 +699,30 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         d_op = None;
         ke->accept();
         break;
-    case Qt::Key_Escape:
-        delete this;
+    case Qt::Key_Escape: {
+        if (Graph *g = owningGraph())
+            g->deselect();
+        else
+            delete this;
         ke->accept();
         return;
+    }
+    case Qt::Key_Delete: {
+        if (Graph *g = owningGraph()) {
+            if (g->markerSelected()) {
+                MultiLayer *ml = g->multiLayerParent();
+                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+                g->removeMarker();
+                g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                if (ml && !beforeSnap.isEmpty())
+                    ml->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
+                ke->accept();
+                return;
+            }
+        }
+        ke->ignore();
+        break;
+    }
     case Qt::Key_Left:
     case Qt::Key_Right:
     case Qt::Key_Up:
@@ -542,12 +741,16 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
             delta = QPoint(0, -step);
         else if (ke->key() == Qt::Key_Down)
             delta = QPoint(0, step);
+        MultiLayer *ml = owningMultiLayer();
+        const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
         d_op = Move;
         d_op_start = QPoint(0, 0);
         d_op_dp = delta;
         operateOnTargets();
         d_op = None;
         d_op_dp = QPoint(0, 0);
+        if (ml && !beforeSnap.isEmpty())
+            ml->pushUndoSnapshot(tr("Move Object"), beforeSnap, 702);
         repaint();
         ke->accept();
         break;

@@ -141,6 +141,52 @@ public:
         DateTime = 22
     };
     enum MarkerType { None = -1, Text = 0, Arrow = 1, Image = 2 };
+
+    struct GraphSelection {
+        enum Kind {
+            None = 0,
+            Page,
+            Layer,
+            Axis,
+            AxisTitle,
+            PlotTitle,
+            Curve,
+            ErrorBars,
+            Spectrogram,
+            LegendBox,
+            TextAnnotation,
+            ArrowAnnotation,
+            ImageAnnotation
+        };
+        Kind kind = None;
+        int primaryId = -1;
+        int secondaryId = -1;
+        bool operator==(const GraphSelection &o) const
+        {
+            return kind == o.kind && primaryId == o.primaryId && secondaryId == o.secondaryId;
+        }
+        bool operator!=(const GraphSelection &o) const { return !(*this == o); }
+    };
+
+    enum LegendAnchor {
+        LegendTopRight = 0,
+        LegendTopLeft = 1,
+        LegendBottomRight = 2,
+        LegendBottomLeft = 3,
+        LegendTopCenter = 4,
+        LegendBottomCenter = 5,
+        LegendOutsideRight = 6,
+        LegendAutoAvoidData = 7
+    };
+
+    enum SeriesStyleScheme {
+        SchemeBW2to3Group = 0,
+        SchemeBlueFilledRedHollow = 1,
+        SchemeMutedCategorical = 2,
+        SchemeCoolToWarmStep = 3,
+        SchemeViridisSequential = 4,
+        SchemeOriginClassic = 5
+    };
     enum CurveType {
         Line,
         Scatter,
@@ -484,7 +530,7 @@ public slots:
     void setRightAxisTitle(const QString &text);
     void setTopAxisTitle(const QString &text);
     void setAxisTitle(int axis, const QString &text);
-    QString axisTitle(int axis) { return d_plot->axisTitle(axis).text(); }
+    QString axisTitle(int axis) const;
     void refreshAutoAxisTitlesFromColumns();
     void setAxisTitleAuto(int axis, bool autoSync);
     bool isAxisTitleAuto(int axis) const;
@@ -713,6 +759,7 @@ public slots:
 
     void updateSecondaryAxis(int axis);
     void enableAutoscaling(bool yes) { m_autoscale = yes; };
+    bool autoscalingEnabled() const { return m_autoscale; }
 
     bool autoscaleFonts() { return autoScaleFonts; };
     void setAutoscaleFonts(bool yes) { autoScaleFonts = yes; };
@@ -801,6 +848,7 @@ public:
     void applyFramePreset(FramePreset preset);
     void setAxisBackboneVisible(int axis, bool visible);
     bool isAxisBackboneVisible(int axis) const;
+    bool hasColorScaleOnAxis(int axis) const;
     void addReferenceLine(const ReferenceLineSpec &spec);
     void setReferenceLines(const QVector<ReferenceLineSpec> &specs);
     QVector<ReferenceLineSpec> referenceLines() const;
@@ -848,12 +896,34 @@ public:
                          double xGapPct = 0.0, bool normalize01 = false);
     void resetStackOffsets();
 
+    GraphSelection currentSelection() const { return d_selection; }
+    void setCurrentSelection(const GraphSelection &sel, bool notify = true);
+    void updateSelectionOverlayGeometry();
+    bool isCurveVisible(int index) const;
+    bool moveCurve(int fromIndex, int toIndex);
+    void syncCurveZOrder();
+    void setAutoScaleAxis(int qwtAxisId);
+    bool isAxisUserLocked(int axis) const;
+    void setAxisUserLocked(int axis, bool locked);
+    void cancelInlineScaleEditor();
+    QString placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore = nullptr,
+                              int marginPx = 12);
+    void applySeriesStyleScheme(SeriesStyleScheme scheme);
+    static bool isSymbolWhiteHollow(const QwtSymbol &sym);
+    void setCurveSymbolHollow(int curveIndex, bool hollowWhite);
+    bool isLegendVisible() const;
+    void setLegendVisible(bool visible);
+    long activeMarkerID() const { return selectedMarker; }
+
     bool restorePhase5Tag(const QString &line);
     int pendingLinkedParentIndex() const { return d_pending_linked_parent_idx; }
     void clearPendingLinkedParentIndex() { d_pending_linked_parent_idx = -1; }
 
 signals:
     void selectedGraph(Graph *);
+    void selectionChanged(Graph *layer, const Graph::GraphSelection &sel);
+    void curveOrderChanged();
+    void curveVisibilityChanged(int index, bool visible);
     void closedGraph();
     void drawTextOff();
     void drawLineEnded(bool);
@@ -975,6 +1045,9 @@ private:
     Column::UnitFormat d_axis_unit_format = Column::UnitFormat::Paren;
     bool d_refreshing_auto_titles = false;
     mutable QMap<int, QString> d_last_auto_curve_labels;
+    GraphSelection d_selection;
+    QWidget *d_selection_overlay = nullptr;
+    bool d_legend_visible = true;
     QString resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const;
     bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
 };

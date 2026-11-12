@@ -27,10 +27,12 @@
  *                                                                         *
  ***************************************************************************/
 #include <QObject>
+#include <QPointer>
 #include "Plot.h"
 
 class Graph;
 class ArrowMarker;
+class SelectionMoveResizer;
 
 /**
  * \brief Handles parts of the user interaction for a Plot by registering itself as an event filter
@@ -56,6 +58,7 @@ public:
 private:
     void drawTextMarker(const QPoint &);
     void drawLineMarker(const QPoint &, bool endArrow);
+    void updatePassiveHoverReadout(const QPoint &canvasPos);
 
     //! Selects and highlights the marker at the given position.
     /**
@@ -97,6 +100,14 @@ private:
      * should be generalized. See ImageMarker for details.
      */
     ArrowMarker *d_editing_marker;
+    QPointer<SelectionMoveResizer> d_forwarded_resizer;
     QPoint d_press_pos;
     bool d_left_click_pending;
+
+    bool d_outer_legend_dragging = false;
+    bool d_outer_legend_moved = false;
+    long d_outer_legend_key = -1;
+    QPoint d_outer_legend_press_pos;
+    QPoint d_outer_legend_orig_origin;
+    QString d_outer_legend_undo_before;
 };

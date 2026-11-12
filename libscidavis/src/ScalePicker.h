@@ -26,9 +26,15 @@
  *   Boston, MA  02110-1301  USA                                           *
  *                                                                         *
  ***************************************************************************/
+#ifndef SCALE_PICKER_H
+#define SCALE_PICKER_H
+
 #include <QObject>
 #include <QPoint>
+#include <QPointer>
+#include <QString>
 
+class QLineEdit;
 class QRect;
 class QwtPlot;
 class QwtScaleWidget;
@@ -44,6 +50,7 @@ class ScalePicker : public QObject
     Q_OBJECT
 public:
     ScalePicker(QwtPlot *plot);
+    ~ScalePicker() override;
 
     //! Returns the bounding rectangle of a scale without the title.
     QRect scaleRect(const QwtScaleWidget *) const;
@@ -62,9 +69,10 @@ public:
 
     //! Return my parent casted to QwtPlot.
     QwtPlot *plot() { return (QwtPlot *)parent(); }
-    Graph *graph() { return (Graph *)(parent()->parent()); }
+    Graph *graph() { return parent() ? (Graph *)(parent()->parent()) : nullptr; }
 
     void deselect();
+    void cancelInlineScaleEditor();
 
     bool titleSelected() { return d_title_selected; };
     void selectTitle(QwtScaleWidget *scale, bool select = true);
@@ -115,11 +123,21 @@ signals:
     void topAxisTitleDblClicked();
 
 private:
-    bool eventFilter(QObject *, QEvent *);
+    enum class ScaleEndZone { None, LowPixelEnd, HighPixelEnd };
+
+    bool eventFilter(QObject *, QEvent *) override;
 
     void mouseDblClicked(const QwtScaleWidget *, const QPoint &);
     void mouseClicked(const QwtScaleWidget *scale, const QPoint &pos);
     void mouseRightClicked(const QwtScaleWidget *scale, const QPoint &pos);
+
+    ScaleEndZone hitTestNumericEndZone(const QwtScaleWidget *scale, const QPoint &pos,
+                                       int *outAxisId = nullptr,
+                                       bool *outIsMaxEnd = nullptr) const;
+    void openInlineScaleEditor(QwtScaleWidget *scale, int axisId, bool editMaxEnd);
+    bool commitInlineScaleEditor(bool openOppositeEnd);
+    void finishInlineScaleEditorOnDefocus();
+    void closeInlineScaleEditor();
 
     bool d_title_selected;
     bool d_labels_selected;
@@ -128,4 +146,15 @@ private:
     QPoint d_pan_last_pos;
     bool d_left_click_pending;
     bool d_axis_panning;
+    bool d_press_on_title = false;
+    QString d_pan_undo_snapshot;
+
+    QPointer<QLineEdit> d_inline_scale_edit;
+    QPointer<QwtScaleWidget> d_inline_edit_scale;
+    int d_inline_edit_axis = -1;
+    bool d_inline_edit_is_max = false;
+    bool d_inline_closing = false;
+    bool d_committing_inline_scale = false;
 };
+
+#endif // SCALE_PICKER_H

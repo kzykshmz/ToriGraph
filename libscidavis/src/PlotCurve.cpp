@@ -27,6 +27,8 @@
  *                                                                         *
  ***************************************************************************/
 #include "PlotCurve.h"
+#include "Graph.h"
+#include "Plot.h"
 #include "ScaleDraw.h"
 #include "core/column/Column.h"
 #include "core/datatypes/DateTime2StringFilter.h"
@@ -931,16 +933,153 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
             run.clear();
         };
 
+        const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
+        bool hasXBreak = false;
+        double xBf = 0.0, xBt = 0.0, xBrkPx = 0.0, xEps = 0.0;
+        bool hasYBreak = false;
+        double yBf = 0.0, yBt = 0.0, yBrkPx = 0.0, yEps = 0.0;
+        if (g) {
+            Graph::AxisBreakSpec xb = g->axisBreak(xAxis());
+            if (!xb.enabled && xAxis() == QwtPlot::xTop && !g->hasColorScaleOnAxis(QwtPlot::xTop))
+                xb = g->axisBreak(QwtPlot::xBottom);
+            if (xb.enabled && std::isfinite(xb.breakFrom) && std::isfinite(xb.breakTo)
+                && xb.breakFrom != xb.breakTo) {
+                hasXBreak = true;
+                xBf = qMin(xb.breakFrom, xb.breakTo);
+                xBt = qMax(xb.breakFrom, xb.breakTo);
+                xBrkPx = 0.5 * (xMap.xTransform(xBf) + xMap.xTransform(xBt));
+                xEps = 1e-12 * qMax(1.0, xBt - xBf);
+            }
+            Graph::AxisBreakSpec yb = g->axisBreak(yAxis());
+            if (!yb.enabled && yAxis() == QwtPlot::yRight
+                && !g->hasColorScaleOnAxis(QwtPlot::yRight))
+                yb = g->axisBreak(QwtPlot::yLeft);
+            if (yb.enabled && std::isfinite(yb.breakFrom) && std::isfinite(yb.breakTo)
+                && yb.breakFrom != yb.breakTo) {
+                hasYBreak = true;
+                yBf = qMin(yb.breakFrom, yb.breakTo);
+                yBt = qMax(yb.breakFrom, yb.breakTo);
+                yBrkPx = 0.5 * (yMap.xTransform(yBf) + yMap.xTransform(yBt));
+                yEps = 1e-12 * qMax(1.0, yBt - yBf);
+            }
+        }
+        const double halfGap = 4.5;
+
         QPolygonF run;
         run.reserve(qMin(4096, to - from + 1));
+        bool hasPrev = false;
+        double prevVx = 0.0, prevVy = 0.0;
+        QPointF prevPt;
         for (int i = from; i <= to; ++i) {
-            const double px = xMap.xTransform(x(i));
-            const double py = yMap.xTransform(y(i));
+            const double vx = x(i);
+            const double vy = y(i);
+            const double px = xMap.xTransform(vx);
+            const double py = yMap.xTransform(vy);
             if (!std::isfinite(px) || !std::isfinite(py)) {
                 flushRun(run);
+                hasPrev = false;
                 continue;
             }
+            if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
+                || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps)) {
+                flushRun(run);
+                hasPrev = false;
+                continue;
+            }
+
             const QPointF pt = clampExtremePoint(QPointF(px, py));
+            bool splitHandled = false;
+            if (hasPrev && hasXBreak) {
+                const bool straddlesX = (prevVx <= xBf + xEps && vx >= xBt - xEps)
+                        || (prevVx >= xBt - xEps && vx <= xBf + xEps);
+                const double loX = xBrkPx - halfGap;
+                const double hiX = xBrkPx + halfGap;
+                const double dx = pt.x() - prevPt.x();
+                if (straddlesX || (prevPt.x() <= loX && pt.x() >= hiX)
+                    || (prevPt.x() >= hiX && pt.x() <= loX)) {
+                    if (std::fabs(dx) > 1e-6 && ((prevPt.x() < loX && pt.x() > hiX)
+                                                 || (prevPt.x() > hiX && pt.x() < loX))) {
+                        const double edge1X = (dx > 0.0) ? loX : hiX;
+                        const double edge2X = (dx > 0.0) ? hiX : loX;
+                        const double t1 = qBound(0.0, (edge1X - prevPt.x()) / dx, 1.0);
+                        const double t2 = qBound(0.0, (edge2X - prevPt.x()) / dx, 1.0);
+                        const double dy = pt.y() - prevPt.y();
+                        run.append(clampExtremePoint(QPointF(edge1X, prevPt.y() + t1 * dy)));
+                        flushRun(run);
+                        run.append(clampExtremePoint(QPointF(edge2X, prevPt.y() + t2 * dy)));
+                    } else {
+                        flushRun(run);
+                    }
+                    splitHandled = true;
+                } else if (pt.x() > loX && pt.x() < hiX) {
+                    if (!run.isEmpty() && std::fabs(dx) > 1e-6
+                        && (prevPt.x() <= loX || prevPt.x() >= hiX)) {
+                        const double edge1X = (prevPt.x() <= loX) ? loX : hiX;
+                        const double t1 = qBound(0.0, (edge1X - prevPt.x()) / dx, 1.0);
+                        run.append(clampExtremePoint(
+                                QPointF(edge1X, prevPt.y() + t1 * (pt.y() - prevPt.y()))));
+                    }
+                    flushRun(run);
+                    prevVx = vx;
+                    prevVy = vy;
+                    prevPt = pt;
+                    hasPrev = true;
+                    continue;
+                } else if (prevPt.x() > loX && prevPt.x() < hiX && std::fabs(dx) > 1e-6
+                           && (pt.x() <= loX || pt.x() >= hiX)) {
+                    flushRun(run);
+                    const double edge2X = (pt.x() >= hiX) ? hiX : loX;
+                    const double t2 = qBound(0.0, (edge2X - prevPt.x()) / dx, 1.0);
+                    run.append(clampExtremePoint(
+                            QPointF(edge2X, prevPt.y() + t2 * (pt.y() - prevPt.y()))));
+                    splitHandled = true;
+                }
+            }
+            if (hasPrev && !splitHandled && hasYBreak) {
+                const bool straddlesY = (prevVy <= yBf + yEps && vy >= yBt - yEps)
+                        || (prevVy >= yBt - yEps && vy <= yBf + yEps);
+                const double loY = yBrkPx - halfGap;
+                const double hiY = yBrkPx + halfGap;
+                const double dy = pt.y() - prevPt.y();
+                if (straddlesY || (prevPt.y() <= loY && pt.y() >= hiY)
+                    || (prevPt.y() >= hiY && pt.y() <= loY)) {
+                    if (std::fabs(dy) > 1e-6 && ((prevPt.y() < loY && pt.y() > hiY)
+                                                 || (prevPt.y() > hiY && pt.y() < loY))) {
+                        const double edge1Y = (dy > 0.0) ? loY : hiY;
+                        const double edge2Y = (dy > 0.0) ? hiY : loY;
+                        const double t1 = qBound(0.0, (edge1Y - prevPt.y()) / dy, 1.0);
+                        const double t2 = qBound(0.0, (edge2Y - prevPt.y()) / dy, 1.0);
+                        const double dx = pt.x() - prevPt.x();
+                        run.append(clampExtremePoint(QPointF(prevPt.x() + t1 * dx, edge1Y)));
+                        flushRun(run);
+                        run.append(clampExtremePoint(QPointF(prevPt.x() + t2 * dx, edge2Y)));
+                    } else {
+                        flushRun(run);
+                    }
+                } else if (pt.y() > loY && pt.y() < hiY) {
+                    if (!run.isEmpty() && std::fabs(dy) > 1e-6
+                        && (prevPt.y() <= loY || prevPt.y() >= hiY)) {
+                        const double edge1Y = (prevPt.y() <= loY) ? loY : hiY;
+                        const double t1 = qBound(0.0, (edge1Y - prevPt.y()) / dy, 1.0);
+                        run.append(clampExtremePoint(
+                                QPointF(prevPt.x() + t1 * (pt.x() - prevPt.x()), edge1Y)));
+                    }
+                    flushRun(run);
+                    prevVx = vx;
+                    prevVy = vy;
+                    prevPt = pt;
+                    hasPrev = true;
+                    continue;
+                } else if (prevPt.y() > loY && prevPt.y() < hiY && std::fabs(dy) > 1e-6
+                           && (pt.y() <= loY || pt.y() >= hiY)) {
+                    flushRun(run);
+                    const double edge2Y = (pt.y() >= hiY) ? hiY : loY;
+                    const double t2 = qBound(0.0, (edge2Y - prevPt.y()) / dy, 1.0);
+                    run.append(clampExtremePoint(
+                            QPointF(prevPt.x() + t2 * (pt.x() - prevPt.x()), edge2Y)));
+                }
+            }
+
             if (decimateSubPixel && !run.isEmpty() && i < to) {
                 const double dx = pt.x() - run.last().x();
                 const double dy = pt.y() - run.last().y();
@@ -948,6 +1087,10 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
                     continue;
             }
             run.append(pt);
+            prevVx = vx;
+            prevVy = vy;
+            prevPt = pt;
+            hasPrev = true;
         }
         flushRun(run);
         break;
@@ -1055,15 +1198,65 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     if (w <= 0.0 || h <= 0.0)
         return;
 
+    const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
+    bool hasXBreak = false;
+    double xBf = 0.0, xBt = 0.0, xEps = 0.0;
+    bool hasYBreak = false;
+    double yBf = 0.0, yBt = 0.0, yEps = 0.0;
+    if (g) {
+        Graph::AxisBreakSpec xb = g->axisBreak(xAxis());
+        if (!xb.enabled && xAxis() == QwtPlot::xTop && !g->hasColorScaleOnAxis(QwtPlot::xTop))
+            xb = g->axisBreak(QwtPlot::xBottom);
+        if (xb.enabled && std::isfinite(xb.breakFrom) && std::isfinite(xb.breakTo)
+            && xb.breakFrom != xb.breakTo) {
+            hasXBreak = true;
+            xBf = qMin(xb.breakFrom, xb.breakTo);
+            xBt = qMax(xb.breakFrom, xb.breakTo);
+            xEps = 1e-12 * qMax(1.0, xBt - xBf);
+        }
+        Graph::AxisBreakSpec yb = g->axisBreak(yAxis());
+        if (!yb.enabled && yAxis() == QwtPlot::yRight && !g->hasColorScaleOnAxis(QwtPlot::yRight))
+            yb = g->axisBreak(QwtPlot::yLeft);
+        if (yb.enabled && std::isfinite(yb.breakFrom) && std::isfinite(yb.breakTo)
+            && yb.breakFrom != yb.breakTo) {
+            hasYBreak = true;
+            yBf = qMin(yb.breakFrom, yb.breakTo);
+            yBt = qMax(yb.breakFrom, yb.breakTo);
+            yEps = 1e-12 * qMax(1.0, yBt - yBf);
+        }
+    }
+
+    const bool hasCanvasBounds = d_canvas_rect.isValid() && d_canvas_rect.width() > 1.0
+            && d_canvas_rect.height() > 1.0;
+    const QRectF validCenterBox = hasCanvasBounds
+            ? QRectF(QPointF(d_canvas_rect.left() - 1.5, d_canvas_rect.top() - 1.5),
+                     QPointF(d_canvas_rect.right() + 0.5, d_canvas_rect.bottom() + 0.5))
+            : QRectF();
+    const bool expandClip = hasCanvasBounds && painter->hasClipping();
+    if (expandClip) {
+        painter->save();
+        const double symPenW = qMax(1.0, painter->pen().widthF());
+        const double padX = 0.5 * w + symPenW + 2.0;
+        const double padY = 0.5 * h + symPenW + 2.0;
+        painter->setClipRect(d_canvas_rect.adjusted(-padX, -padY, padX, padY));
+    }
+
     const bool decimateSubPixel = testPaintAttribute(PaintFiltered) && ((to - from) > 4000);
     QPointF lastDrawn(1e30, 1e30);
 
     for (int i = from; i <= to; ++i) {
-        const double cx = xMap.xTransform(x(i));
-        const double cy = yMap.xTransform(y(i));
+        const double vx = x(i);
+        const double vy = y(i);
+        if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
+            || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps))
+            continue;
+        const double cx = xMap.xTransform(vx);
+        const double cy = yMap.xTransform(vy);
         if (!std::isfinite(cx) || !std::isfinite(cy))
             continue;
         if (std::fabs(cx) > kMaxSafeCoord || std::fabs(cy) > kMaxSafeCoord)
+            continue;
+        if (hasCanvasBounds && !validCenterBox.contains(QPointF(cx, cy)))
             continue;
         if (decimateSubPixel && i > from && i < to) {
             const double dx = cx - lastDrawn.x();
@@ -1074,4 +1267,7 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         drawSymbolShapeF(painter, sym.style(), cx, cy, w, h);
         lastDrawn = QPointF(cx, cy);
     }
+
+    if (expandClip)
+        painter->restore();
 }

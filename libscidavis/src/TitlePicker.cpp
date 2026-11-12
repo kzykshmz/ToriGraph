@@ -27,10 +27,15 @@
  *                                                                         *
  ***************************************************************************/
 #include "TitlePicker.h"
+#include "CanvasInlineTextEditor.h"
+#include "Graph.h"
+#include "GraphMiniToolbar.h"
+#include "MultiLayer.h"
 
 #include <qwt_plot.h>
 #include <qwt_text_label.h>
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPen>
 
@@ -38,9 +43,11 @@ TitlePicker::TitlePicker(QwtPlot *plot) : QObject(plot)
 {
     d_selected = false;
     title = (QwtTextLabel *)plot->titleLabel();
-    title->setFocusPolicy(Qt::StrongFocus);
-    if (title)
+    if (title) {
+        title->setFocusPolicy(Qt::StrongFocus);
+        title->setMouseTracking(true);
         title->installEventFilter(this);
+    }
 }
 
 bool TitlePicker::eventFilter(QObject *object, QEvent *e)
@@ -48,14 +55,30 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
     if (object != (QObject *)title)
         return false;
 
+    Graph *g = parent() ? qobject_cast<Graph *>(parent()->parent()) : nullptr;
+
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::MouseButtonDblClick) {
-        emit doubleClicked();
-        d_selected = true;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (me->button() != Qt::LeftButton)
+            return false;
+        setSelected(true);
+        if (g && title) {
+            QRect trRect = title->textRect();
+            if (!trRect.isValid() || trRect.isEmpty())
+                trRect = title->rect();
+            const QRect globalRect(title->mapToGlobal(trRect.topLeft()), trRect.size());
+            CanvasInlineTextEditor::openForPlotTitle(g, globalRect);
+        } else {
+            emit doubleClicked();
+        }
         return true;
     }
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::MouseButtonPress) {
-        const QMouseEvent *me = (const QMouseEvent *)e;
+        const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+            bar->hide();
+        setSelected(true);
         emit clicked();
 
         if (me->button() == Qt::RightButton)
@@ -64,9 +87,20 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
     }
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::KeyPress) {
-        switch (((const QKeyEvent *)e)->key()) {
-        case Qt::Key_Delete:
+        const QKeyEvent *ke = static_cast<const QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Escape) {
+            if (g)
+                g->deselect();
+            else
+                setSelected(false);
+            return true;
+        }
+        if (ke->key() == Qt::Key_Delete) {
+            MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
             emit removeTitle();
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(tr("Remove Plot Title"), beforeSnap);
             return true;
         }
     }
@@ -76,16 +110,28 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
 
 void TitlePicker::setSelected(bool select)
 {
-    if (!title || d_selected == select)
+    if (!title)
+        return;
+
+    if (title->text().backgroundPen().style() != Qt::NoPen) {
+        QwtText cleanText = title->text();
+        cleanText.setBackgroundPen(QPen(Qt::NoPen));
+        if (QwtPlot *plt = qobject_cast<QwtPlot *>(parent()))
+            plt->setTitle(cleanText);
+    }
+
+    if (d_selected == select)
         return;
 
     d_selected = select;
 
-    QwtText text = title->text();
-    if (select)
-        text.setBackgroundPen(QPen(Qt::blue));
-    else
-        text.setBackgroundPen(QPen(Qt::NoPen));
-
-    ((QwtPlot *)parent())->setTitle(text);
+    if (Graph *g = parent() ? qobject_cast<Graph *>(parent()->parent()) : nullptr) {
+        if (select) {
+            if (g->currentSelection().kind != Graph::GraphSelection::PlotTitle)
+                g->setCurrentSelection({ Graph::GraphSelection::PlotTitle, -1, -1 });
+        } else {
+            if (g->currentSelection().kind == Graph::GraphSelection::PlotTitle)
+                g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+        }
+    }
 }

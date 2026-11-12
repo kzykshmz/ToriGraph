@@ -50,6 +50,11 @@ class QToolButton;
 class LayerButton;
 class SelectionMoveResizer;
 class ApplicationWindow;
+class QUndoStack;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDragLeaveEvent;
+class QDropEvent;
 
 /**
  * \brief An MDI window (MyWidget) managing one or more Graph objects.
@@ -140,6 +145,30 @@ public:
     QFrame *layerSwitcherPill() const { return d_layer_pill_frame; }
     QToolButton *canvasStatusPill() const { return d_canvas_status_pill; }
     void updateCanvasStatusPill();
+
+    enum PanelLabelPlacement { PanelOutsideTopLeft = 0, PanelInsideTopLeft = 1 };
+    static constexpr const char *kColumnMimeType = "application/x-torigraph-columns";
+
+    QUndoStack *undoStack() const { return d_undo_stack; }
+    bool isRestoringSnapshot() const { return d_is_restoring_snapshot; }
+    QString captureUndoSnapshot();
+    void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
+    bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
+                                int preferredActiveLayer = -1, bool restoreGeometry = false);
+
+    void setPanelLabels(bool enabled, PanelLabelPlacement placement = PanelOutsideTopLeft,
+                        const QString &pattern = QString("(%a)"), int fontPt = 0);
+    bool hasPanelLabels() const { return d_panel_labels_enabled; }
+    PanelLabelPlacement panelLabelPlacement() const { return d_panel_label_placement; }
+    QString panelLabelPattern() const { return d_panel_label_pattern; }
+    int panelLabelFontPt() const { return d_panel_label_font_pt; }
+    void applySquareCanvasFrame70Percent();
+    void notifyOleDirtyIfEmbedded();
+
+    void dragEnterEvent(QDragEnterEvent *e) override;
+    void dragMoveEvent(QDragMoveEvent *e) override;
+    void dragLeaveEvent(QDragLeaveEvent *e) override;
+    void dropEvent(QDropEvent *e) override;
 
 protected:
     void changeEvent(QEvent *event) override;
@@ -268,6 +297,7 @@ signals:
     void pasteMarker();
     void createIntensityTable(const QString &);
     void setPointerCursor();
+    void selectionChanged(MultiLayer *page, Graph *layer, const Graph::GraphSelection &sel);
 
 private:
     void resizeLayers(const QResizeEvent *re);
@@ -317,8 +347,18 @@ private:
     void openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos);
     void repositionCanvasStatusPill();
     void openCanvasStatusQuickMenu();
+    void openQuickLayerColumnsPopup();
+    void drawPanelLabels(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
 
     QPointer<SelectionMoveResizer> d_layers_selector;
+    QUndoStack *d_undo_stack = nullptr;
+    bool d_is_restoring_snapshot = false;
+    bool d_panel_labels_enabled = false;
+    PanelLabelPlacement d_panel_label_placement = PanelOutsideTopLeft;
+    QString d_panel_label_pattern = QString("(%a)");
+    int d_panel_label_font_pt = 0;
+    QWidget *d_drop_zone_overlay = nullptr;
+    QToolButton *d_quick_columns_btn = nullptr;
 };
 
 //! Button with layer number

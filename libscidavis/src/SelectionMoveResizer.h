@@ -32,13 +32,16 @@
 
 #include <QWidget>
 #include <QList>
+#include <QPointer>
 #include <QRect>
 
 class QPoint;
+class QContextMenuEvent;
 class QwtPlotMarker;
 class Legend;
 class ArrowMarker;
 class ImageMarker;
+class Graph;
 
 /*!\brief Handler for modifying one or more QWidget and/or QwtPlotMarker with mouse or keyboard.
  *
@@ -136,6 +139,8 @@ public slots:
 signals:
     //! Emitted when the targets are modified (moved or resized).
     void targetsChanged();
+    //! Emitted when the user requests a context menu on the selected target(s).
+    void targetsContextMenuRequested();
 
 protected:
     //! Available modes of operation.
@@ -182,12 +187,16 @@ protected:
     virtual void keyPressEvent(QKeyEvent *e);
     //! Ignore double-clicks so that they can be used by my parent.
     virtual void mouseDoubleClickEvent(QMouseEvent *e);
+    //! Handle context menu events safely on or off the selected target(s).
+    virtual void contextMenuEvent(QContextMenuEvent *e);
 
 private:
     //! Size of resize handle in pixels.
     static const int handler_size = 10;
     //! Return one of the rectangles to be filled for starting resize operations.
     static const QRect handlerRect(QRect rect, Operation op);
+    //! Hit-test operation mode (handle or Move) at pos, or None if outside.
+    Operation operateModeFor(const QPoint &pos) const;
     //! Apply operation specified by #d_op and #d_op_dp to in.
     QRect operateOn(const QRect in);
     //! Apply operation specified by #d_op and #d_op_dp to all targets.
@@ -213,6 +222,14 @@ private:
     QPoint d_op_start;
     //! Difference between current and start position during operation.
     QPoint d_op_dp;
+    bool d_drag_threshold_passed = false;
+    QString d_undo_before_snapshot;
+    QPointer<QWidget> d_target_parent;
+    QPointer<Graph> d_owning_graph;
+
+    bool isLegendOnlySelection() const;
+    Graph *owningGraph() const;
+    class MultiLayer *owningMultiLayer() const;
 
 private slots:
     //! A non-typesafe version of remvoveAll(QWidget*) needed for QObject::destroyed().

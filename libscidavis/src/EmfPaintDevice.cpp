@@ -1254,9 +1254,10 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
 
     QImage raster(dibSize, QImage::Format_ARGB32);
     raster.fill(Qt::white);
-    const int dpm = static_cast<int>(std::lround(double(kDibFallbackDpi) / 0.0254));
-    raster.setDotsPerMeterX(dpm);
-    raster.setDotsPerMeterY(dpm);
+    const int paintDpmX = static_cast<int>(std::lround(std::max(36.0, dpiX * zoom) / 0.0254));
+    const int paintDpmY = static_cast<int>(std::lround(std::max(36.0, dpiY * zoom) / 0.0254));
+    raster.setDotsPerMeterX(paintDpmX);
+    raster.setDotsPerMeterY(paintDpmY);
     {
         QPainter rp(&raster);
         rp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
@@ -1271,6 +1272,9 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
         }
         rp.end();
     }
+    const int dpm = static_cast<int>(std::lround(double(kDibFallbackDpi) / 0.0254));
+    raster.setDotsPerMeterX(dpm);
+    raster.setDotsPerMeterY(dpm);
 
     OleRenderedGraph out;
     out.pixelSize = pxSize;

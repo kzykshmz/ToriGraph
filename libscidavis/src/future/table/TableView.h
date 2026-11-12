@@ -130,6 +130,14 @@ public:
      * column is selected.
      */
     QList<Column *> selectedColumns(bool full = false);
+    //! Return indices of all selected columns in ascending order
+    QList<int> selectedColumnIndices(bool full = false);
+    //! Build structured UTF-8 JSON MIME payload for MultiLayer::kColumnMimeType
+    static QByteArray buildColumnMimePayload(future::Table *table, const QList<int> &colIndices,
+                                             int anchorCol = -1);
+    QByteArray buildSelectedColumnsMimePayload(int clickedCol = -1);
+    bool startColumnDrag(const QList<int> &explicitCols, int clickedCol = -1,
+                         QWidget *dragSource = nullptr);
     //! Return how many rows are (at least partly) selected
     /**
      * If full is true, this function only returns the number of fully
@@ -245,6 +253,14 @@ protected:
     QLabel *d_units_label = nullptr;
     QLineEdit *d_units_edit = nullptr;
     bool d_user_hid_comments = false;
+    bool d_cell_drag_candidate = false;
+    bool d_cell_drag_started = false;
+    bool d_cell_drag_was_edge = false;
+    bool d_edge_hover_cursor = false;
+    QPoint d_cell_drag_start_pos;
+    int d_cell_drag_col = -1;
+
+    bool isPointOnSelectionEdge(const QPoint &viewportPos);
 
     //! Initialization
     void init();

@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "CurvesDialog.h"
 #include "Graph.h"
+#include "MultiLayer.h"
 #include "Table.h"
 #include "Matrix.h"
 #include "FunctionCurve.h"
@@ -47,6 +48,7 @@
 #include <QShortcut>
 #include <QKeySequence>
 #include <QMenu>
+#include <QSignalBlocker>
 
 #include <QMessageBox>
 
@@ -120,6 +122,14 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     btnEditFunction->setEnabled(false);
     vl2->addWidget(btnEditFunction);
 
+    btnMoveUp = new QPushButton(tr("Move Up"));
+    btnMoveUp->setEnabled(false);
+    vl2->addWidget(btnMoveUp);
+
+    btnMoveDown = new QPushButton(tr("Move Down"));
+    btnMoveDown->setEnabled(false);
+    vl2->addWidget(btnMoveDown);
+
     btnOK = new QPushButton(tr("OK"));
     btnOK->setDefault(true);
     vl2->addWidget(btnOK);
@@ -137,16 +147,25 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     vl3->addLayout(hl);
     vl3->addLayout(gl);
 
+    QHBoxLayout *bottomChecks = new QHBoxLayout();
+    boxShowAllColumns = new QCheckBox(tr("Show all worksheet columns"));
+    boxShowAllColumns->setChecked(true);
+    bottomChecks->addWidget(boxShowAllColumns);
     boxShowCurrentFolder = new QCheckBox(tr("Show current &folder only"));
-    vl3->addWidget(boxShowCurrentFolder);
+    bottomChecks->addWidget(boxShowCurrentFolder);
+    bottomChecks->addStretch();
+    vl3->addLayout(bottomChecks);
 
     init();
 
     connect(boxShowCurrentFolder, SIGNAL(toggled(bool)), this, SLOT(showCurrentFolder(bool)));
+    connect(boxShowAllColumns, SIGNAL(toggled(bool)), this, SLOT(refreshAvailableColumns()));
     connect(boxShowRange, SIGNAL(toggled(bool)), this, SLOT(showCurveRange(bool)));
     connect(btnRange, SIGNAL(clicked()), this, SLOT(showCurveRangeDialog()));
     connect(btnAssociations, SIGNAL(clicked()), this, SLOT(showPlotAssociations()));
     connect(btnEditFunction, SIGNAL(clicked()), this, SLOT(showFunctionDialog()));
+    connect(btnMoveUp, SIGNAL(clicked()), this, SLOT(moveCurveUp()));
+    connect(btnMoveDown, SIGNAL(clicked()), this, SLOT(moveCurveDown()));
     connect(btnAdd, SIGNAL(clicked()), this, SLOT(addCurves()));
     connect(btnRemove, SIGNAL(clicked()), this, SLOT(removeCurves()));
     connect(btnOK, SIGNAL(clicked()), this, SLOT(close()));
@@ -165,9 +184,26 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 
 void CurvesDialog::showCurveBtn(int)
 {
-    QwtPlotItem *it = d_graph->plotItem(contents->currentRow());
-    if (!it)
+    if (!d_graph || !d_graphGuard) {
+        btnEditFunction->setEnabled(false);
+        btnAssociations->setEnabled(false);
+        btnRange->setEnabled(false);
+        btnMoveUp->setEnabled(false);
+        btnMoveDown->setEnabled(false);
         return;
+    }
+
+    const int row = contents->currentRow();
+    btnMoveUp->setEnabled(row > 0);
+    btnMoveDown->setEnabled(row >= 0 && row < contents->count() - 1);
+
+    QwtPlotItem *it = d_graphGuard->plotItem(row);
+    if (!it) {
+        btnEditFunction->setEnabled(false);
+        btnAssociations->setEnabled(false);
+        btnRange->setEnabled(false);
+        return;
+    }
 
     bool function = false;
     bool associations = false;
@@ -269,14 +305,9 @@ void CurvesDialog::init()
     ApplicationWindow *app = (ApplicationWindow *)this->parent();
     if (app) {
         bool currentFolderOnly = app->d_show_current_folder;
+        QSignalBlocker blocker(boxShowCurrentFolder);
         boxShowCurrentFolder->setChecked(currentFolderOnly);
         showCurrentFolder(currentFolderOnly);
-
-        QStringList matrices = app->matrixNames();
-        if (!matrices.isEmpty()) {
-            boxMatrixStyle->show();
-            available->addItems(matrices);
-        }
 
         int style = app->defaultCurveStyle;
         if (style == Graph::Line)
@@ -308,30 +339,49 @@ void CurvesDialog::init()
 void CurvesDialog::setGraph(Graph *graph)
 {
     d_graph = graph;
-    contents->addItems(d_graph->plotItemsList());
+    d_graphGuard = graph;
+    contents->clear();
+    if (d_graphGuard)
+        contents->addItems(d_graphGuard->plotItemsList());
     enableRemoveBtn();
     enableAddBtn();
+    showCurveBtn(contents->currentRow());
 }
 
 void CurvesDialog::addCurves()
 {
+    if (!d_graph || !d_graphGuard)
+        return;
+
+    MultiLayer *ml = d_graphGuard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+
     QStringList emptyColumns;
+    bool addedAny = false;
     QList<QListWidgetItem *> lst = available->selectedItems();
     for (int i = 0; i < lst.size(); ++i) {
         QString text = lst.at(i)->text();
         if (contents->findItems(text, Qt::MatchExactly).isEmpty()) {
             if (!addCurve(text))
                 emptyColumns << text;
+            else
+                addedAny = true;
         }
     }
-    d_graph->updatePlot();
+    d_graphGuard->updatePlot();
+    if (addedAny && ml)
+        ml->pushUndoSnapshot(tr("Add Curves"), beforeSnap);
     Graph::showPlotErrorMessage(this, emptyColumns);
 
     showCurveRange(boxShowRange->isChecked());
+    showCurveBtn(contents->currentRow());
 }
 
 bool CurvesDialog::addCurve(const QString &name)
 {
+    if (!d_graph || !d_graphGuard)
+        return false;
+
     ApplicationWindow *app = (ApplicationWindow *)this->parent();
     if (!app)
         return false;
@@ -344,26 +394,42 @@ bool CurvesDialog::addCurve(const QString &name)
 
         switch (boxMatrixStyle->currentIndex()) {
         case 0:
-            d_graph->plotSpectrogram(m, Graph::ColorMap);
+            d_graphGuard->plotSpectrogram(m, Graph::ColorMap);
             break;
         case 1:
-            d_graph->plotSpectrogram(m, Graph::ContourMap);
+            d_graphGuard->plotSpectrogram(m, Graph::ContourMap);
             break;
         case 2:
-            d_graph->plotSpectrogram(m, Graph::GrayMap);
+            d_graphGuard->plotSpectrogram(m, Graph::GrayMap);
             break;
         }
 
+        d_graphGuard->reconstructLegend();
         contents->addItem(name);
         return true;
     }
 
     int style = curveStyle();
     Table *t = app->table(name);
-    if (t && d_graph->insertCurve(t, name, style)) {
+    if (!t || t->numCols() <= 0)
+        return false;
+
+    const QString prefix = t->name() + "_";
+    const QString shortColName = name.startsWith(prefix) ? name.mid(prefix.length()) : name;
+    int ycol = t->colIndex(shortColName);
+    if (ycol < 0)
+        ycol = t->colIndex(name);
+    if (ycol < 0 || ycol >= t->numCols())
+        return false;
+
+    int xcol = t->colX(ycol);
+    if (xcol < 0 || xcol >= t->numCols())
+        xcol = 0;
+
+    if (d_graphGuard->insertCurve(t, t->colName(xcol), t->colName(ycol), style)) {
         CurveLayout cl = Graph::initCurveLayout();
         int color, symbol;
-        d_graph->guessUniqueCurveLayout(color, symbol);
+        d_graphGuard->guessUniqueCurveLayout(color, symbol);
 
         cl.lCol = color;
         cl.symCol = color;
@@ -391,7 +457,8 @@ bool CurvesDialog::addCurve(const QString &name)
         } else if (style == Graph::Spline)
             cl.connectType = 5;
 
-        d_graph->updateCurveLayout(d_graph->curves() - 1, &cl);
+        d_graphGuard->updateCurveLayout(d_graphGuard->curves() - 1, &cl);
+        d_graphGuard->reconstructLegend();
 
         contents->addItem(name);
         return true;
@@ -401,19 +468,91 @@ bool CurvesDialog::addCurve(const QString &name)
 
 void CurvesDialog::removeCurves()
 {
+    if (!d_graph || !d_graphGuard)
+        return;
+
     QList<QListWidgetItem *> lst = contents->selectedItems();
+    if (lst.isEmpty())
+        return;
+
+    MultiLayer *ml = d_graphGuard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentWidget());
+    if (!app)
+        app = qobject_cast<ApplicationWindow *>(window());
+    if (app && ml)
+        app->invalidateModelessGraphDialogs(ml, this);
+
     for (int i = 0; i < lst.size(); ++i) {
         QListWidgetItem *it = lst.at(i);
         QString s = it->text();
         if (boxShowRange->isChecked()) {
-            QStringList lst = s.split("[");
-            s = lst[0];
+            QStringList rangeParts = s.split("[");
+            s = rangeParts[0];
         }
-        d_graph->removeCurve(s);
+        d_graphGuard->removeCurve(s);
     }
 
+    d_graphGuard->reconstructLegend();
     showCurveRange(boxShowRange->isChecked());
-    d_graph->updatePlot();
+    d_graphGuard->updatePlot();
+    if (ml)
+        ml->pushUndoSnapshot(tr("Remove Curves"), beforeSnap);
+    showCurveBtn(contents->currentRow());
+}
+
+void CurvesDialog::moveCurveUp()
+{
+    moveSelectedCurveBy(-1);
+}
+
+void CurvesDialog::moveCurveDown()
+{
+    moveSelectedCurveBy(1);
+}
+
+void CurvesDialog::moveSelectedCurveBy(int delta)
+{
+    if (delta == 0 || !d_graph || !d_graphGuard)
+        return;
+
+    const int nCurves = d_graphGuard->curves();
+    const int fromIdx = contents->currentRow();
+    if (fromIdx < 0 || fromIdx >= nCurves)
+        return;
+
+    int toIdx = fromIdx + delta;
+    if (d_graphGuard->curveType(fromIdx) != Graph::ErrorBars) {
+        if (delta < 0) {
+            toIdx = fromIdx - 1;
+            while (toIdx > 0 && d_graphGuard->curveType(toIdx) == Graph::ErrorBars)
+                --toIdx;
+        } else {
+            toIdx = fromIdx + 1;
+            while (toIdx < nCurves && d_graphGuard->curveType(toIdx) == Graph::ErrorBars)
+                ++toIdx;
+            while (toIdx + 1 < nCurves && d_graphGuard->curveType(toIdx + 1) == Graph::ErrorBars)
+                ++toIdx;
+        }
+    }
+    if (toIdx < 0 || toIdx >= nCurves || toIdx == fromIdx)
+        return;
+
+    QwtPlotItem *movedItem = d_graphGuard->plotItem(fromIdx);
+    MultiLayer *ml = d_graphGuard->multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+    if (!d_graphGuard->moveCurve(fromIdx, toIdx))
+        return;
+
+    d_graphGuard->updatePlot();
+    showCurveRange(boxShowRange->isChecked());
+    int newRow = movedItem ? d_graphGuard->plotItemIndex(movedItem) : toIdx;
+    if (newRow < 0 || newRow >= contents->count())
+        newRow = qBound(0, toIdx, qMax(0, contents->count() - 1));
+    contents->setCurrentRow(newRow);
+    if (ml && !beforeSnap.isEmpty())
+        ml->pushUndoSnapshot(tr("Reorder Curve"), beforeSnap);
+    showCurveBtn(newRow);
 }
 
 void CurvesDialog::enableAddBtn()
@@ -424,6 +563,7 @@ void CurvesDialog::enableAddBtn()
 void CurvesDialog::enableRemoveBtn()
 {
     btnRemove->setEnabled(contents->count() > 0 && !contents->selectedItems().isEmpty());
+    showCurveBtn(contents->currentRow());
 }
 
 int CurvesDialog::curveStyle()
@@ -466,12 +606,15 @@ int CurvesDialog::curveStyle()
 
 void CurvesDialog::showCurveRange(bool on)
 {
+    if (!d_graph || !d_graphGuard)
+        return;
+
     int row = contents->currentRow();
     contents->clear();
     if (on) {
         QStringList lst = QStringList();
-        for (int i = 0; i < d_graph->curves(); i++) {
-            QwtPlotItem *it = d_graph->plotItem(i);
+        for (int i = 0; i < d_graphGuard->curves(); i++) {
+            QwtPlotItem *it = d_graphGuard->plotItem(i);
             if (!it)
                 continue;
 
@@ -485,7 +628,7 @@ void CurvesDialog::showCurveRange(bool on)
         }
         contents->addItems(lst);
     } else
-        contents->addItems(d_graph->plotItemsList());
+        contents->addItems(d_graphGuard->plotItemsList());
 
     contents->setCurrentRow(row);
     enableRemoveBtn();
@@ -494,6 +637,11 @@ void CurvesDialog::showCurveRange(bool on)
 void CurvesDialog::updateCurveRange()
 {
     showCurveRange(boxShowRange->isChecked());
+}
+
+void CurvesDialog::refreshAvailableColumns()
+{
+    showCurrentFolder(boxShowCurrentFolder ? boxShowCurrentFolder->isChecked() : false);
 }
 
 void CurvesDialog::showCurrentFolder(bool currentFolder)
@@ -505,6 +653,8 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
     app->d_show_current_folder = currentFolder;
     available->clear();
 
+    const bool showAll = boxShowAllColumns ? boxShowAllColumns->isChecked() : true;
+
     if (currentFolder) {
         Folder *f = app->currentFolder();
         if (f) {
@@ -515,14 +665,22 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
 
                 Table *t = (Table *)w;
                 for (int i = 0; i < t->numCols(); i++) {
-                    if (t->colPlotDesignation(i) == SciDAVis::Y)
+                    if (showAll || t->colPlotDesignation(i) == SciDAVis::Y)
                         columns << QString(t->name()) + "_" + t->colLabel(i);
                 }
             }
             available->addItems(columns);
         }
-    } else
-        available->addItems(app->columnsList(SciDAVis::Y));
+    } else {
+        available->addItems(showAll ? app->columnsList() : app->columnsList(SciDAVis::Y));
+    }
+
+    QStringList matrices = app->matrixNames();
+    if (!matrices.isEmpty()) {
+        boxMatrixStyle->show();
+        available->addItems(matrices);
+    }
+    enableAddBtn();
 }
 
 void CurvesDialog::closeEvent(QCloseEvent *e)

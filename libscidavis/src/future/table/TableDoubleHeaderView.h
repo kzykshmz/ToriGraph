@@ -31,7 +31,11 @@
 #define TABLEDOUBLEHEADERVIEW_H
 
 #include <QHeaderView>
+#include <QList>
+#include <QPoint>
 #include "TableModel.h"
+
+class QMouseEvent;
 
 //! Slave header for TableDoubleHeaderView
 /**
@@ -97,9 +101,17 @@ protected slots:
 
 protected:
     virtual void paintSection(QPainter *painter, const QRect &rect, int logicalIndex) const;
+    virtual void mousePressEvent(QMouseEvent *event) override;
+    virtual void mouseMoveEvent(QMouseEvent *event) override;
+    virtual void mouseReleaseEvent(QMouseEvent *event) override;
 
     //! Flag: show/high column comments
     bool d_show_comments;
+    bool d_drag_candidate = false;
+    bool d_drag_started = false;
+    QPoint d_drag_start_pos;
+    int d_pressed_logical_col = -1;
+    QList<int> d_saved_selected_cols;
 };
 
 #endif // #ifndef TABLEDOUBLEHEADERVIEW_H

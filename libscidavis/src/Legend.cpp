@@ -28,11 +28,14 @@
  ***************************************************************************/
 #include "Legend.h"
 #include "QwtPieCurve.h"
+#include "ScaleDraw.h"
 #include "VectorCurve.h"
 
+#include <QFontMetricsF>
 #include <QPainter>
 #include <QPolygon>
 #include <QMessageBox>
+#include <limits>
 
 #include <qwt_plot.h>
 #include <qwt_scale_widget.h>
@@ -42,26 +45,123 @@
 #include <qwt_layout_metrics.h>
 #include <qwt_symbol.h>
 
+namespace {
+static int extractLegendCurveIndex(const QString &line)
+{
+    if (line.contains("\\c{")) {
+        const int pos = line.indexOf("\\c{");
+        const int pos2 = line.indexOf('}', pos + 3);
+        if (pos >= 0 && pos2 > pos + 3) {
+            bool ok = false;
+            const int k = line.mid(pos + 3, pos2 - (pos + 3)).toInt(&ok);
+            if (ok && k >= 1)
+                return k - 1;
+        }
+    } else if (line.contains("\\l(")) {
+        const int pos = line.indexOf("\\l(");
+        const int pos2 = line.indexOf(')', pos + 3);
+        if (pos >= 0 && pos2 > pos + 3) {
+            bool ok = false;
+            const int k = line.mid(pos + 3, pos2 - (pos + 3)).toInt(&ok);
+            if (ok && k >= 1)
+                return k - 1;
+        }
+    }
+    return -1;
+}
+
+static QStringList splitRawLegendLines(const QString &rawText)
+{
+    QString norm = rawText;
+    norm.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    norm.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    while (norm.endsWith(QLatin1Char('\n')) && norm.size() > 1)
+        norm.chop(1);
+    if (norm == QLatin1String("\n"))
+        return QStringList{ QString() };
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    return norm.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+#else
+    return norm.split(QLatin1Char('\n'), QString::KeepEmptyParts);
+#endif
+}
+
+static QStringList filterVisibleLegendLines(Plot *plot, const QString &rawText,
+                                            QVector<int> *outRawIndices = nullptr)
+{
+    if (outRawIndices)
+        outRawIndices->clear();
+
+    const QString trimmed = rawText.trimmed();
+    if (trimmed.isEmpty()) {
+        if (outRawIndices)
+            outRawIndices->append(0);
+        return QStringList{ QString() };
+    }
+
+    Graph *g = plot ? qobject_cast<Graph *>(plot->parent()) : nullptr;
+    const QStringList allLines = splitRawLegendLines(rawText);
+    QStringList visible;
+    visible.reserve(allLines.size());
+    for (int i = 0; i < allLines.size(); ++i) {
+        const QString &line = allLines[i];
+        const int cv = extractLegendCurveIndex(line);
+        if (cv >= 0 && g && cv < g->curves()) {
+            QwtPlotItem *it = g->plotItem(cv);
+            if (it && !it->isVisible())
+                continue;
+        }
+        visible.append(line);
+        if (outRawIndices)
+            outRawIndices->append(i);
+    }
+    return visible;
+}
+
+static bool isCompactLegendFont(const QFont &fnt)
+{
+    const double pt = fnt.pointSizeF();
+    if (pt > 0.0)
+        return pt <= 9.5;
+    return QFontMetricsF(fnt).height() <= 16.0;
+}
+
+static int effectiveSampleGap(const QwtText *txt, int defaultHspace)
+{
+    if (txt && isCompactLegendFont(txt->font()))
+        return qMin(defaultHspace, 5);
+    return defaultHspace;
+}
+} // namespace
+
 Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0), d_num_columns(1)
 {
     d_text = new QwtText(QString(), QwtText::RichText);
-    d_text->setFont(QFont("Arial", 12, QFont::Normal, false));
+    QFont legFnt("Arial", 12, QFont::Normal, false);
+    legFnt.setHintingPreference(QFont::PreferNoHinting);
+    d_text->setFont(legFnt);
     d_text->setRenderFlags(Qt::AlignTop | Qt::AlignLeft);
     d_text->setBackgroundBrush(QBrush(Qt::NoBrush));
     d_text->setColor(Qt::black);
     d_text->setBackgroundPen(QPen(Qt::NoPen));
     d_text->setPaintAttribute(QwtText::PaintBackground);
 
-    hspace = 30;
-    left_margin = 10;
-    top_margin = 6;
+    hspace = 10;
+    left_margin = 6;
+    top_margin = 4;
     d_shadow_size_x = 5;
     d_shadow_size_y = 5;
 }
 
 void Legend::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
-                  const QRect &) const
+                  const QRect &canvasRect) const
 {
+    if (!d_text)
+        return;
+    const QString rawText = d_text->text();
+    if (!rawText.trimmed().isEmpty() && filterVisibleLegendLines(d_plot, rawText).isEmpty())
+        return;
+
     const int x = xMap.transform(xValue());
     const int y = yMap.transform(yValue());
 
@@ -70,14 +170,99 @@ void Legend::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
 
     const int symbolLineLength = symbolsMaxLineLength();
 
-    int width, height;
+    int width = 0, height = 0;
     QwtArray<long> heights = itemsHeight(map.deviceToLayoutY(y), symbolLineLength, width, height);
+    if (width <= 0 || height <= 0)
+        return;
 
-    QRect rs = QRect(map.deviceToLayout(QPoint(x, y)), QSize(width, height));
+    const bool intentionallyOutside = canvasRect.isValid()
+            && (x >= canvasRect.right() - 2 || y >= canvasRect.bottom() - 2
+                || x < canvasRect.left() - 2 || y < canvasRect.top() - 2);
+
+    int devX = x;
+    int devY = y;
+    if (!intentionallyOutside && d_frame == 0 && canvasRect.isValid()) {
+        Graph *g = d_plot ? qobject_cast<Graph *>(d_plot->parent()) : nullptr;
+        auto checkSdInward = [&](int axisId) -> bool {
+            if (!d_plot || !d_plot->axisEnabled(axisId))
+                return false;
+            const ScaleDraw *sd = dynamic_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axisId));
+            if (!sd)
+                return false;
+            return sd->majorTicksStyle() == ScaleDraw::In
+                    || sd->majorTicksStyle() == ScaleDraw::Both
+                    || sd->minorTicksStyle() == ScaleDraw::In
+                    || sd->minorTicksStyle() == ScaleDraw::Both;
+        };
+        auto sideHasInwardTicks = [&](int ax, int mirrorAx) -> bool {
+            if (g && g->hasColorScaleOnAxis(ax))
+                return g->axesBackbones() && checkSdInward(mirrorAx);
+            return checkSdInward(ax);
+        };
+
+        const int majLen = d_plot ? qMax(0, d_plot->majorTickLength()) : 8;
+        const int reqInL = (d_frame == None) ? qMax(2, majLen + 2 - left_margin)
+                                             : qMax(2, majLen + 3);
+        const int reqInR = (d_frame == None && d_num_columns <= 1)
+                ? qMax(2, majLen + 2)
+                : ((d_frame == None) ? qMax(2, majLen + 2 - (left_margin + 4))
+                                     : qMax(2, majLen + 3));
+        const int reqInT = (d_frame == None) ? qMax(2, majLen + 2 - top_margin)
+                                             : qMax(2, majLen + 3);
+        const int reqInB = (d_frame == None) ? qMax(2, majLen + 2 - top_margin)
+                                             : qMax(2, majLen + 3);
+        const int layInL = map.isIdentity() ? reqInL : map.screenToLayoutX(reqInL);
+        const int layInR = map.isIdentity() ? reqInR : map.screenToLayoutX(reqInR);
+        const int layInT = map.isIdentity() ? reqInT : map.screenToLayoutY(reqInT);
+        const int layInB = map.isIdentity() ? reqInB : map.screenToLayoutY(reqInB);
+        const int layPlainX = map.isIdentity() ? 2 : map.screenToLayoutX(2);
+        const int layPlainY = map.isIdentity() ? 2 : map.screenToLayoutY(2);
+
+        const int layClearL = sideHasInwardTicks(QwtPlot::yLeft, QwtPlot::yRight) ? layInL : layPlainX;
+        const int layClearR = sideHasInwardTicks(QwtPlot::yRight, QwtPlot::yLeft) ? layInR : layPlainX;
+        const int layClearT = sideHasInwardTicks(QwtPlot::xTop, QwtPlot::xBottom) ? layInT : layPlainY;
+        const int layClearB = sideHasInwardTicks(QwtPlot::xBottom, QwtPlot::xTop) ? layInB : layPlainY;
+
+        int clampWidth = width;
+        if (d_frame == None && d_num_columns <= 1) {
+            const int trailLayout = map.isIdentity() ? (left_margin + 8)
+                                                     : map.screenToLayoutX(left_margin + 8);
+            clampWidth = qMax(16, width - trailLayout);
+        }
+
+        const QPoint devZero = map.layoutToDevice(QPoint(0, 0));
+        const QPoint devSize = map.layoutToDevice(QPoint(clampWidth, height)) - devZero;
+        const QPoint devClearLT = map.layoutToDevice(QPoint(layClearL, layClearT)) - devZero;
+        const QPoint devClearRB = map.layoutToDevice(QPoint(layClearR, layClearB)) - devZero;
+
+        const int devW = qMax(1, devSize.x());
+        const int devH = qMax(1, devSize.y());
+        const int clearL = qMax(0, devClearLT.x());
+        const int clearT = qMax(0, devClearLT.y());
+        const int clearR = qMax(0, devClearRB.x());
+        const int clearB = qMax(0, devClearRB.y());
+
+        const int minX = canvasRect.left() + clearL;
+        const int maxX = qMax(minX, canvasRect.right() - devW - clearR);
+        const int minY = canvasRect.top() + clearT;
+        const int maxY = qMax(minY, canvasRect.bottom() - devH - clearB);
+
+        devX = qBound(minX, x, maxX);
+        devY = qBound(minY, y, maxY);
+        if (devY != y)
+            heights = itemsHeight(map.deviceToLayoutY(devY), symbolLineLength, width, height);
+    }
+
+    QRect rs = QRect(map.deviceToLayout(QPoint(devX, devY)), QSize(width, height));
+
+    p->save();
+    if (p->hasClipping() && intentionallyOutside)
+        p->setClipping(false);
 
     drawFrame(p, d_frame, rs);
     drawSymbols(p, rs, heights, symbolLineLength);
     drawLegends(p, rs, heights, symbolLineLength);
+    p->restore();
 }
 
 void Legend::setText(const QString &s)
@@ -109,10 +294,15 @@ QRect Legend::rect() const
     const int x = xMap.transform(xValue());
     const int y = yMap.transform(yValue());
 
-    int width, height;
+    if (d_text && !d_text->text().trimmed().isEmpty()
+        && filterVisibleLegendLines(d_plot, d_text->text()).isEmpty()) {
+        return QRect(QPoint(x, y), QSize(0, 0));
+    }
+
+    int width = 0, height = 0;
     itemsHeight(y, symbolsMaxLineLength(), width, height);
 
-    return QRect(QPoint(x, y), QSize(width - 1, height - 1));
+    return QRect(QPoint(x, y), QSize(qMax(0, width - 1), qMax(0, height - 1)));
 }
 
 QwtDoubleRect Legend::boundingRect() const
@@ -189,7 +379,9 @@ void Legend::setFont(const QFont &font)
     QFont resolved = font;
     if (resolved.family().trimmed().isEmpty())
         resolved.setFamily("Arial");
-    if (resolved == d_text->font())
+    resolved.setHintingPreference(QFont::PreferNoHinting);
+    if (resolved == d_text->font()
+        && resolved.hintingPreference() == d_text->font().hintingPreference())
         return;
 
     d_text->setFont(resolved);
@@ -210,21 +402,20 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     totalHeight = 0;
 
     const bool scatterOnly = isScatterOnly();
-    const int sampleOffset =
-            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
+    const bool compact = d_text && isCompactLegendFont(d_text->font());
+    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
+    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
 
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
+    const QString rawText = d_text ? d_text->text() : QString();
+    const QStringList titles = filterVisibleLegendLines(d_plot, rawText);
     const int n = titles.count();
     cellX.resize(n);
     cellCenterY.resize(n);
     if (n <= 0) {
-        totalWidth = 2 * left_margin;
-        totalHeight = 2 * top_margin;
+        if (rawText.trimmed().isEmpty()) {
+            totalWidth = 2 * left_margin;
+            totalHeight = 2 * top_margin;
+        }
         return;
     }
 
@@ -241,14 +432,12 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
             itemW = sampleOffset;
 
         QwtText aux(parse(str));
-        QSize size = aux.textSize(d_text->font());
-        if (!map.isIdentity()) {
-            int screen_width = map.layoutToScreenX(size.width());
-            screen_width -= 3;
-            screen_width *= 1.1;
-            size = QSize(map.screenToLayoutX(screen_width), size.height());
-        }
-        itemW += size.width();
+        aux.setFont(d_text->font());
+        const QSize size = aux.textSize();
+        const int screenW = map.isIdentity() ? size.width() : map.layoutToScreenX(size.width());
+        const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
+        const int padW = map.isIdentity() ? padScreen : map.screenToLayoutX(padScreen);
+        itemW += size.width() + padW;
         const int itemH = size.height();
         const int row = i / cols;
         const int col = i % cols;
@@ -281,14 +470,114 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     for (int r = 0; r < rows; ++r)
         sumH += rowHeights[r];
 
-    totalWidth = 2 * left_margin + sumW + (cols - 1) * colGap;
+    const int rightSafety = map.isIdentity() ? 4 : map.screenToLayoutX(4);
+    totalWidth = 2 * left_margin + sumW + (cols - 1) * colGap + rightSafety;
     totalHeight = 2 * top_margin + sumH;
+}
+
+int Legend::itemIndexAt(const QPoint &canvasPos) const
+{
+    if (!d_plot || !d_text)
+        return -1;
+
+    QVector<int> rawIndices;
+    const QStringList titles = filterVisibleLegendLines(d_plot, d_text->text(), &rawIndices);
+    const int n = titles.count();
+    if (n <= 0)
+        return -1;
+
+    const QwtScaleMap &xMap = d_plot->canvasMap(xAxis());
+    const QwtScaleMap &yMap = d_plot->canvasMap(yAxis());
+    const int baseX = xMap.transform(xValue());
+    const int baseY = yMap.transform(yValue());
+    const int symbolLineLength = symbolsMaxLineLength();
+    const bool scatterOnly = isScatterOnly();
+    const bool compact = d_text && isCompactLegendFont(d_text->font());
+    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
+    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
+
+    const int cols = qBound(1, d_num_columns, n);
+    const int rows = (n + cols - 1) / cols;
+    QVector<int> colWidths(cols, 0);
+    QVector<int> rowHeights(rows, 0);
+
+    for (int i = 0; i < n; ++i) {
+        const QString &str = titles[i];
+        int itemW = 0;
+        if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
+            itemW = sampleOffset;
+        QwtText aux(parse(str));
+        aux.setFont(d_text->font());
+        const QSize size = aux.textSize();
+        const int padW = qMax(6, qRound(0.03 * size.width()) + 4);
+        itemW += size.width() + padW;
+        const int itemH = qMax(1, size.height());
+        const int row = i / cols;
+        const int col = i % cols;
+        if (itemW > colWidths[col])
+            colWidths[col] = itemW;
+        if (itemH > rowHeights[row])
+            rowHeights[row] = itemH;
+    }
+
+    const int colGap = (cols > 1) ? (2 * left_margin + 6) : 0;
+    QVector<int> colOffsetX(cols, baseX + left_margin);
+    for (int c = 1; c < cols; ++c)
+        colOffsetX[c] = colOffsetX[c - 1] + colWidths[c - 1] + colGap;
+
+    QVector<int> rowOffsetY(rows, baseY + top_margin);
+    for (int r = 1; r < rows; ++r)
+        rowOffsetY[r] = rowOffsetY[r - 1] + rowHeights[r - 1];
+
+    int sumW = 0;
+    for (int c = 0; c < cols; ++c)
+        sumW += colWidths[c];
+    int sumH = 0;
+    for (int r = 0; r < rows; ++r)
+        sumH += rowHeights[r];
+
+    const QRect fullRect(baseX, baseY, 2 * left_margin + sumW + (cols - 1) * colGap,
+                         2 * top_margin + sumH);
+    if (!fullRect.adjusted(-4, -4, 4, 4).contains(canvasPos))
+        return -1;
+
+    int bestIdx = -1;
+    qint64 bestDist2 = std::numeric_limits<qint64>::max();
+    for (int i = 0; i < n; ++i) {
+        const int row = i / cols;
+        const int col = i % cols;
+        const QRect cellRect(colOffsetX[col] - left_margin / 2, rowOffsetY[row],
+                             colWidths[col] + left_margin, rowHeights[row]);
+        if (cellRect.contains(canvasPos))
+            return rawIndices[i];
+        const int dx = (canvasPos.x() < cellRect.left()) ? (cellRect.left() - canvasPos.x())
+                : (canvasPos.x() > cellRect.right())     ? (canvasPos.x() - cellRect.right())
+                                                         : 0;
+        const int dy = (canvasPos.y() < cellRect.top()) ? (cellRect.top() - canvasPos.y())
+                : (canvasPos.y() > cellRect.bottom())   ? (canvasPos.y() - cellRect.bottom())
+                                                        : 0;
+        const qint64 d2 = qint64(dx) * dx + qint64(dy) * dy;
+        if (d2 < bestDist2) {
+            bestDist2 = d2;
+            bestIdx = rawIndices[i];
+        }
+    }
+    return bestIdx;
 }
 
 void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const
 {
     p->save();
-    p->setPen(QPen(Qt::black, 1, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+    QPen framePen(Qt::black, 1, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+    const QwtMetricsMap map = QwtPainter::metricsMap();
+    if (!map.isIdentity()) {
+        const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
+        if (scale > 0.0)
+            framePen.setWidthF(scale);
+    } else {
+        framePen.setWidthF(1.0);
+    }
+    p->setPen(framePen);
     if (type == None)
         QwtPainter::fillRect(p, rect, d_text->backgroundBrush());
 
@@ -350,20 +639,17 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 {
     Graph *g = (Graph *)d_plot->parent();
     const bool scatterOnly = isScatterOnly();
+    const QwtMetricsMap map = QwtPainter::metricsMap();
 
-    int l = scatterOnly ? qMax(symbolLineLength, 14) : (symbolLineLength + 2 * left_margin);
+    const bool compact = d_text && isCompactLegendFont(d_text->font());
+    int l = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
     int dummyW = 0, dummyH = 0;
     computeCellsLayout(rect.x(), rect.y(), symbolLineLength, cellX, cellCenterY, dummyW, dummyH);
 
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
+    const QStringList titles = filterVisibleLegendLines(d_plot, d_text ? d_text->text() : QString());
 
     for (int i = 0; i < (int)titles.count(); i++) {
         const int w = (i < cellX.size()) ? cellX[i] : (rect.x() + left_margin);
@@ -394,15 +680,29 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     QPen pen = curve->pen();
 
                     p->save();
+                    if (curve->testRenderHint(QwtPlotItem::RenderAntialiased))
+                        p->setRenderHint(QPainter::Antialiasing, true);
 
                     if (curve->style() != 0) {
+                        qreal pw = pen.widthF();
+                        if (pw <= 0.0)
+                            pw = qMax(1, pen.width());
+                        if (!map.isIdentity() && !pen.isCosmetic()) {
+                            const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
+                            if (scale > 0.0)
+                                pw *= scale;
+                        }
+                        pen.setWidthF(pw);
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
                             QRect lr = QRect(w, cy - 4, l, 10);
                             p->setBrush(br);
                             QwtPainter::drawRect(p, lr);
-                        } else
-                            QwtPainter::drawLine(p, w, cy, w + l, cy);
+                        } else {
+                            const QPoint p1 = map.layoutToDevice(QPoint(w, cy), p);
+                            const QPoint p2 = map.layoutToDevice(QPoint(w + l, cy), p);
+                            p->drawLine(QPointF(p1), QPointF(p2));
+                        }
                     }
                     int symb_size = symb.size().width();
                     if (symb_size > 15)
@@ -444,20 +744,16 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
     const bool scatterOnly = isScatterOnly();
-    const int sampleOffset =
-            scatterOnly ? (qMax(symbolLineLength, 14) + 12) : (symbolLineLength + hspace);
+    const bool compact = d_text && isCompactLegendFont(d_text->font());
+    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
+    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
     int dummyW = 0, dummyH = 0;
     computeCellsLayout(rect.x(), rect.y(), symbolLineLength, cellX, cellCenterY, dummyW, dummyH);
 
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
+    const QStringList titles = filterVisibleLegendLines(d_plot, d_text ? d_text->text() : QString());
 
     for (int i = 0; i < (int)titles.count(); i++) {
         QString str = titles[i];
@@ -471,18 +767,13 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
         aux.setColor(d_text->color());
         aux.setRenderFlags(Qt::AlignLeft | Qt::AlignVCenter);
 
-        QSize size = aux.textSize();
-        // bug in Qwt; workaround in QwtText::textSize() only works for short texts.
-        // Thus, we work around the workaround.
+        const QSize size = aux.textSize();
         const QwtMetricsMap map = QwtPainter::metricsMap();
-        if (!map.isIdentity()) {
-            int screen_width = map.layoutToScreenX(size.width());
-            screen_width -= 3;
-            screen_width *= 1.1;
-            size = QSize(map.screenToLayoutX(screen_width), size.height());
-        }
+        const int screenW = map.isIdentity() ? size.width() : map.layoutToScreenX(size.width());
+        const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
+        const int padW = map.isIdentity() ? padScreen : map.screenToLayoutX(padScreen);
 
-        QRect tr = QRect(QPoint(x, cy - size.height() / 2), size);
+        QRect tr = QRect(QPoint(x, cy - size.height() / 2), QSize(size.width() + padW, size.height()));
         aux.draw(p, tr);
     }
 }
@@ -505,12 +796,7 @@ int Legend::symbolsMaxLineLength() const
     Graph *g = d_plot ? qobject_cast<Graph *>(d_plot->parent()) : nullptr;
 
     int maxL = 0;
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
+    const QStringList titles = filterVisibleLegendLines(d_plot, d_text ? d_text->text() : QString());
     for (int i = 0; i < (int)titles.count(); i++) {
         if ((titles[i].contains("\\c{") || titles[i].contains("\\l(")) && (int)cvs.size() > 0) {
             QString aux;
@@ -543,9 +829,20 @@ int Legend::symbolsMaxLineLength() const
         }
 
         if (titles[i].contains("\\p{"))
-            maxL = 10;
+            maxL = qMax(maxL, 16);
     }
-    return maxL;
+    const QFont fnt = d_text ? d_text->font() : QFont(QStringLiteral("Arial"), 12);
+    const bool compact = isCompactLegendFont(fnt);
+    if (isScatterOnly())
+        return qMax(maxL + (compact ? 2 : 0), compact ? 11 : 14);
+    if (compact) {
+        const int fontProportionalLen =
+                qBound(14, qRound(QFontMetricsF(fnt).height() * 1.05), 34);
+        return qBound(14, qMax(maxL + 6, fontProportionalLen), 34);
+    }
+    const int fontProportionalLen =
+            qBound(16, qRound(QFontMetricsF(fnt).height() * 1.45), 34);
+    return qBound(16, qMax(maxL + 8, fontProportionalLen), 34);
 }
 
 bool Legend::isScatterOnly() const
@@ -556,12 +853,7 @@ bool Legend::isScatterOnly() const
     Graph *g = qobject_cast<Graph *>(d_plot->parent());
     QList<int> cvs = d_plot->curveKeys();
 
-    QString text = d_text->text().trimmed();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList titles = text.split("\n", Qt::KeepEmptyParts);
-#else
-    QStringList titles = text.split("\n", QString::KeepEmptyParts);
-#endif
+    const QStringList titles = filterVisibleLegendLines(d_plot, d_text ? d_text->text() : QString());
 
     bool hasScatter = false;
     for (int i = 0; i < (int)titles.count(); i++) {

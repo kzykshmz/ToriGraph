@@ -30,6 +30,8 @@
 #define PLOTDIALOG_H
 
 #include <QDialog>
+#include <QPointer>
+#include <QSet>
 #include <QTreeWidgetItem>
 #include "MultiLayer.h"
 
@@ -94,6 +96,10 @@ private slots:
     void showAreaColor(bool show);
 
     void removeSelectedCurve();
+    void moveSelectedCurveUp();
+    void moveSelectedCurveDown();
+    void onTreeItemChanged(QTreeWidgetItem *item, int column);
+    void onHollowSymbolToggled(bool checked);
 
     /******* error bars options **************/
     void pickErrorBarsColor(QColor);
@@ -162,10 +168,23 @@ private:
     void initPiePage();
     void initPrintPage();
     void contextMenuEvent(QContextMenuEvent *e);
+    void connectTabDirtySignals(QWidget *tabPage);
+    void markTabDirty(QWidget *tabPage);
+    bool commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitAccept);
+    void moveSelectedCurveBy(int delta);
+    void shiftCurveBy(int delta) { moveSelectedCurveBy(delta); }
+    void updateCurveMoveButtons();
 
     QFont titleFont, legendFont, axesFont, numbersFont;
 
     MultiLayer *d_ml;
+    QPointer<MultiLayer> d_mlGuard;
+    bool d_loadingUi = false;
+    QSet<QWidget *> d_dirtyTabs;
+    QWidget *d_leftTreePanel = nullptr;
+    QPushButton *btnMoveCurveUp = nullptr;
+    QPushButton *btnMoveCurveDown = nullptr;
+    QCheckBox *boxHollowSymbol = nullptr;
     QStringList columnNames;
 
     QPushButton *btnTitle, *btnAxesLabels, *btnAxesNumbers, *btnLegend;
@@ -267,12 +286,14 @@ public:
     enum { LayerTreeItem = 1001 };
     LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s);
 
-    Graph *graph() { return d_graph; };
+    Graph *graph() const { return d_graphGuard ? d_graphGuard.data() : nullptr; };
     void setActive(bool select);
+    void rebuildCurvesList();
 
 protected:
     void insertCurvesList();
     Graph *d_graph;
+    QPointer<Graph> d_graphGuard;
 };
 
 /*****************************************************************************
@@ -287,12 +308,20 @@ public:
     enum { PlotCurveTreeItem = 1002 };
     CurveTreeItem(const QwtPlotItem *curve, LayerItem *parent, const QString &s);
 
-    Graph *graph() { return ((LayerItem *)parent())->graph(); };
+    Graph *graph() const
+    {
+        const LayerItem *li = dynamic_cast<const LayerItem *>(parent());
+        return li ? li->graph() : nullptr;
+    };
+    bool isCurveAlive() const;
     void setActive(bool on);
 
-    const QwtPlotItem *plotItem() { return d_curve; };
-    int plotItemType();
-    int plotItemIndex();
+    const QwtPlotItem *plotItem() const;
+    const QwtPlotItem *curve() const { return plotItem(); };
+    void updatePlotItemPointer(const QwtPlotItem *curve) { d_curve = curve; }
+    int plotItemType() const;
+    int plotItemIndex() const;
+    int plotItemStyle() const;
 
 protected:
     const QwtPlotItem *d_curve;

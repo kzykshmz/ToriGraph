@@ -36,6 +36,7 @@
 #include "AssociationsDialog.h"
 #include "Spectrogram.h"
 #include "ImageMarker.h"
+#include "CurveRangeDialog.h"
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
@@ -139,6 +140,7 @@ static int runSuite43Round3CriticRegressionGate(ApplicationWindow *mw);
 static int runSuite44Round4UnifiedRegressionGate(ApplicationWindow *mw);
 static int runSuite45Round5ZeroDefectGate(ApplicationWindow *mw);
 static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow *mw);
+static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -5284,7 +5286,10 @@ int main(int argc, char **argv)
     if (runSuite46OleAntialiasingAndSubpixelSmoothnessGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 46 ToriGraph OriginPro Parity, Phase 6 Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Round 2/3/4/5 Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 47 ToriGraph OriginPro Parity, Phase 6/7 Graph Inspector & Direct Canvas UX, Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -8882,5 +8887,958 @@ static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow 
     QApplication::processEvents();
 
     std::cout << "[INFO] Suite 46 OLE EMF+ Dual Anti-Aliasing & Sub-Pixel Curve Smoothness Gate passed!\n";
+    return 0;
+}
+
+#include "GraphInspectorDock.h"
+#include "CanvasInlineTextEditor.h"
+#include "ErrDialog.h"
+#include "ScalePicker.h"
+#include "ArrowMarker.h"
+#include "SelectionMoveResizer.h"
+#include "QwtErrorPlotCurve.h"
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFocusEvent>
+#include <QMenu>
+#include <QStackedWidget>
+#include <QTextEdit>
+#include <QUndoStack>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QTemporaryDir>
+
+namespace {
+
+struct Suite47AxesDialogProbe : public AxesDialog
+{
+    void stageCrossTabEditsAndAccept()
+    {
+        generalDialog.setCurrentWidget(scalesPage);
+        axesList->setCurrentRow(0); // Bottom X
+        boxStart->setText("-15");
+        boxEnd->setText("275");
+        // Switch row on Scales page without clicking Apply (used to wipe uncommitted edits!)
+        axesList->setCurrentRow(2); // Left Y
+        // Switch tab to Axes page and edit Bottom X title
+        generalDialog.setCurrentWidget(axesPage);
+        axesTitlesList->setCurrentRow(0); // Bottom X
+        if (boxAutoAxisTitle)
+            boxAutoAxisTitle->setChecked(false);
+        boxTitle->setText("True Strain, <i>&epsilon;</i> (%)");
+        accept();
+    }
+};
+
+static bool isUntranslatedAsciiUiLabel(const QString &raw)
+{
+    QString s = raw.trimmed();
+    s.remove('&');
+    if (s.isEmpty())
+        return false;
+    // If any CJK / Japanese / non-ASCII symbol >= 0x3000 is present, it is localized
+    for (const QChar &ch : s) {
+        if (ch.unicode() >= 0x3000)
+            return false;
+    }
+    // Universal scientific symbols / units / formatting tokens allowed identically in EN & JA
+    static const QSet<QString> kAllowedTokens = {
+        "X", "Y", "Z", "W", "H", "mm", "cm", "in", "px", "pt", "DPI", "%",
+        "I", "B", "U", "x_2", "x^2", "(a)", "(%a)", "100%", "50%", "75%", "125%", "150%", "200%",
+        "ISIJ (85 mm)", "Nature (89 mm)", "Log10", "Linear", "ToriGraph",
+        "α / μ / σ", "x₂", "x²", "°C", "μm", "MPa", "GPa", "mass%", "wt.ppm", "kJ/mol", "[fx]"
+    };
+    if (kAllowedTokens.contains(s))
+        return false;
+    // Check if there are >= 3 ASCII letters forming an English word (excluding dynamic window/curve names)
+    int alphaRun = 0;
+    int maxAlphaRun = 0;
+    for (const QChar &ch : s) {
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
+            ++alphaRun;
+            maxAlphaRun = std::max(maxAlphaRun, alphaRun);
+        } else {
+            alphaRun = 0;
+        }
+    }
+    return maxAlphaRun >= 3;
+}
+
+} // namespace
+
+static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 47: Phase 7 Graph Inspector Dock, Direct Canvas UX, Dialog Data-Loss Fixes, Column DnD, Per-MultiLayer Undo & Export Zero-Chrome Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 47");
+    QTemporaryDir tmpDir;
+    CHECK_COND(tmpDir.isValid(), "Failed to create QTemporaryDir in Suite 47");
+
+    ApplicationWindow *w47 = new ApplicationWindow();
+    w47->applyUserSettings();
+    w47->resize(1380, 880);
+    w47->show();
+    w47->switchToLanguage("ja");
+    QApplication::processEvents();
+
+    // =========================================================================
+    // 1. GraphInspectorDock Existence, Responsive Collapse & 100% Japanese Audit
+    // =========================================================================
+    GraphInspectorDock *dock = w47->graphInspectorDock();
+    CHECK_COND(dock != nullptr, "w47->graphInspectorDock() is null!");
+
+    Table *t47 = w47->newTable(8, 5, "Al_Zn_Mg_1", "Underscore Alloy Data");
+    CHECK_COND(t47 != nullptr, "Failed to create Al_Zn_Mg_1 table");
+    t47->setColName(0, "Strain");
+    t47->setColName(1, "Stress_T6");
+    t47->setColName(2, "Stress_Err");
+    t47->setColName(3, "Stress_RRA");
+    t47->setColName(4, "Hardness_HV");
+    t47->setColPlotDesignation(0, SciDAVis::X);
+    t47->setColPlotDesignation(1, SciDAVis::Y);
+    t47->setColPlotDesignation(2, SciDAVis::yErr);
+    t47->setColPlotDesignation(3, SciDAVis::Y);
+    t47->setColPlotDesignation(4, SciDAVis::Y);
+    for (int r = 0; r < 8; ++r) {
+        const double eps = double(r) * 2.5;
+        t47->setCell(r, 0, eps);
+        t47->setCell(r, 1, 420.0 + 18.0 * eps);
+        t47->setCell(r, 2, 8.0 + 0.4 * eps);
+        t47->setCell(r, 3, 380.0 + 15.0 * eps);
+        t47->setCell(r, 4, 165.0 + 2.0 * eps);
+    }
+
+    MultiLayer *ml47 = w47->multilayerPlot(
+            t47, QStringList() << "Al_Zn_Mg_1_Stress_T6" << "Al_Zn_Mg_1_Stress_RRA",
+            Graph::LineSymbols);
+    CHECK_COND(ml47 != nullptr && ml47->activeGraph() != nullptr, "Failed to create ml47");
+    ml47->setName("Phase7Graph1");
+    w47->activateSubWindow(ml47);
+    ml47->resize(620, 560);
+    ml47->show();
+    QApplication::processEvents();
+
+    Graph *g47 = ml47->activeGraph();
+    CHECK_COND(dock->targetMultiLayer() == ml47,
+               "GraphInspectorDock did not bind to active MultiLayer ml47!");
+
+    // Audit Japanese localization across all 4 Inspector pages & header/rail widgets
+    {
+        int jaAsciiMisses = 0;
+        auto checkText = [&](const QString &txt, const char *where) {
+            if (txt.contains("Phase7Graph1") || txt.contains("Al_Zn_Mg_1")
+                || txt.contains("Stress_") || txt.contains("Hardness_"))
+                return;
+            if (isUntranslatedAsciiUiLabel(txt)) {
+                ++jaAsciiMisses;
+                std::cerr << "[JA-MISS Suite47] " << where << ": '"
+                          << txt.toUtf8().constData() << "'\n";
+            }
+        };
+
+        for (int p = 0; p < 4; ++p) {
+            dock->switchToInspectorPage(static_cast<GraphInspectorDock::InspectorPageIndex>(p));
+            QApplication::processEvents();
+        }
+        for (QLabel *lbl : dock->findChildren<QLabel *>()) {
+            if (lbl)
+                checkText(lbl->text(), "GraphInspectorDock::QLabel");
+        }
+        for (QPushButton *pb : dock->findChildren<QPushButton *>()) {
+            if (pb) {
+                checkText(pb->text(), "GraphInspectorDock::QPushButton");
+                checkText(pb->toolTip(), "GraphInspectorDock::QPushButton::toolTip");
+            }
+        }
+        for (QCheckBox *cb : dock->findChildren<QCheckBox *>()) {
+            if (cb)
+                checkText(cb->text(), "GraphInspectorDock::QCheckBox");
+        }
+        for (QToolButton *tb : dock->findChildren<QToolButton *>()) {
+            if (tb) {
+                checkText(tb->text(), "GraphInspectorDock::QToolButton");
+                checkText(tb->toolTip(), "GraphInspectorDock::QToolButton::toolTip");
+            }
+        }
+        for (QComboBox *cmb : dock->findChildren<QComboBox *>()) {
+            if (!cmb)
+                continue;
+            for (int i = 0; i < cmb->count(); ++i)
+                checkText(cmb->itemText(i), "GraphInspectorDock::QComboBox::item");
+        }
+        for (QMenu *mnu : dock->findChildren<QMenu *>()) {
+            if (!mnu)
+                continue;
+            for (QAction *act : mnu->actions()) {
+                if (act && !act->isSeparator())
+                    checkText(act->text(), "GraphInspectorDock::QMenu::QAction");
+            }
+        }
+        CHECK_COND(jaAsciiMisses == 0,
+                   "GraphInspectorDock contains untranslated English ASCII UI strings in 'ja' mode!");
+    }
+
+    // Verify Responsive Collapse (< 1080 px width, LayoutSplitTableGraph, and OLE Embedded)
+    {
+        ModernRibbonBar *rib47 = w47->modernRibbonBar();
+        CHECK_COND(rib47 != nullptr, "rib47 is null");
+        rib47->setWorkspaceLayoutMode(ModernRibbonBar::LayoutTabbed);
+        w47->resize(1380, 880);
+        w47->updateGraphInspectorResponsiveness();
+        QApplication::processEvents();
+        CHECK_COND(dock->isVisible() && !dock->isCollapsedRail(),
+                   "GraphInspectorDock should be expanded at 1380px in LayoutTabbed!");
+
+        w47->resize(960, 760);
+        w47->updateGraphInspectorResponsiveness();
+        QApplication::processEvents();
+        CHECK_COND(dock->isCollapsedRail(),
+                   "GraphInspectorDock failed to auto-collapse to 32px rail below 1080px width!");
+
+        w47->resize(1380, 880);
+        w47->updateGraphInspectorResponsiveness();
+        QApplication::processEvents();
+        CHECK_COND(!dock->isCollapsedRail(),
+                   "GraphInspectorDock did not re-expand when mainWindow returned >= 1080px!");
+
+        rib47->setWorkspaceLayoutMode(ModernRibbonBar::LayoutSplitTableGraph);
+        w47->updateGraphInspectorResponsiveness();
+        QApplication::processEvents();
+        CHECK_COND(dock->isCollapsedRail(),
+                   "GraphInspectorDock failed to auto-collapse in LayoutSplitTableGraph!");
+
+        rib47->setWorkspaceLayoutMode(ModernRibbonBar::LayoutTabbed);
+        w47->activateSubWindow(ml47);
+        w47->updateGraphInspectorResponsiveness();
+        QApplication::processEvents();
+
+        ApplicationWindow *oleCheck = new ApplicationWindow();
+        oleCheck->setOleEmbeddedMode(true);
+        QApplication::processEvents();
+        CHECK_COND(oleCheck->graphInspectorDock() == nullptr
+                           || !oleCheck->graphInspectorDock()->isVisible(),
+                   "GraphInspectorDock MUST stay hidden in OLE embedded mode!");
+        oleCheck->savedProject();
+        delete oleCheck;
+    }
+
+    w47->switchToLanguage("en");
+    QApplication::processEvents();
+
+    // =========================================================================
+    // 2. Non-Destructive Curve Visibility (with ErrorBars) & Z-Order Reordering
+    // =========================================================================
+    {
+        CHECK_COND(g47->addErrorBars("Al_Zn_Mg_1_Stress_T6", t47, "Al_Zn_Mg_1_Stress_Err"),
+                   "Failed to add error bars to Al_Zn_Mg_1_Stress_T6");
+        CHECK_COND(g47->curves() == 3, "Expected 3 plot curves (2 data + 1 error bar)");
+        if (!g47->legend())
+            g47->newLegend();
+        g47->legend()->setText("\\c{1}Peak-Aged T6\n\\c{2}Over-Aged RRA");
+        g47->replot();
+
+        // Hide curve 0 -> curve 0 AND its attached error bar must hide non-destructively
+        g47->showCurve(0, false);
+        g47->replot();
+        CHECK_COND(!g47->isCurveVisible(0), "Curve 0 should be hidden after showCurve(0, false)");
+        bool errHiddenToo = true;
+        for (int i = 0; i < g47->curves(); ++i) {
+            if (auto *eb = dynamic_cast<QwtErrorPlotCurve *>(g47->curve(i))) {
+                if (eb->isVisible())
+                    errHiddenToo = false;
+            }
+        }
+        CHECK_COND(errHiddenToo, "Hiding master curve 0 did not hide attached QwtErrorPlotCurve!");
+
+        // Re-show curve 0 -> custom legend text "Peak-Aged T6" must still be intact!
+        g47->showCurve(0, true);
+        g47->replot();
+        CHECK_COND(g47->isCurveVisible(0) && g47->legend()->text().contains("Peak-Aged T6"),
+                   "Re-enabling curve 0 lost custom legend label 'Peak-Aged T6'!");
+
+        // Reorder curve 0 and curve 1 (the two data curves: find index of Stress_RRA)
+        const int rraIdxBefore = g47->curveIndex("Al_Zn_Mg_1_Stress_RRA");
+        CHECK_COND(rraIdxBefore > 0, "Expected Al_Zn_Mg_1_Stress_RRA at index > 0");
+        CHECK_COND(g47->moveCurve(rraIdxBefore, 0), "Graph::moveCurve(rraIdxBefore, 0) returned false");
+        CHECK_COND(g47->curve(0)->title().text() == "Al_Zn_Mg_1_Stress_RRA",
+                   "moveCurve did not move Al_Zn_Mg_1_Stress_RRA to index 0!");
+        const int t6IdxAfter = g47->curveIndex("Al_Zn_Mg_1_Stress_T6");
+        CHECK_COND(t6IdxAfter > 0 && g47->curve(t6IdxAfter)->z() > g47->curve(0)->z(),
+                   "moveCurve did not synchronize QwtPlotItem::z() draw order!");
+        // Restore original order
+        CHECK_COND(g47->moveCurve(0, t6IdxAfter), "Failed to move curve back to original order");
+    }
+
+    // =========================================================================
+    // 3. Direct Canvas Manipulation: 1-Motion Legend Drag, Arrow Delete vs Layer Delete,
+    //    Inline Scale Bound Editor (No MiniToolbar Flash!) & Inline Text Editor
+    // =========================================================================
+    {
+        QWidget *canvas = g47->plotWidget()->canvas();
+        CHECK_COND(canvas != nullptr && g47->legend() != nullptr, "Canvas or Legend null in Suite 47");
+        g47->legend()->setOrigin(QPoint(70, 50));
+        g47->replot();
+        QApplication::processEvents();
+
+        g47->deselectMarker();
+        QApplication::processEvents();
+        CHECK_COND(!g47->markerSelected(), "Precondition: Legend must start unselected");
+
+        const int initLegPt = g47->legend()->font().pointSize();
+        const QPoint initLegTopLeft = g47->legend()->rect().topLeft();
+        const QPoint pressPt = g47->legend()->rect().center();
+        const QPoint midPt(pressPt.x() + 12, pressPt.y() + 10);
+        const QPoint releasePt(pressPt.x() + 42, pressPt.y() + 28);
+
+        QMouseEvent evPress(QEvent::MouseButtonPress, pressPt, canvas->mapToGlobal(pressPt),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent evMove1(QEvent::MouseMove, midPt, canvas->mapToGlobal(midPt),
+                            Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent evMove2(QEvent::MouseMove, releasePt, canvas->mapToGlobal(releasePt),
+                            Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent evRel(QEvent::MouseButtonRelease, releasePt, canvas->mapToGlobal(releasePt),
+                          Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(canvas, &evPress);
+        QCoreApplication::sendEvent(canvas, &evMove1);
+        QCoreApplication::sendEvent(canvas, &evMove2);
+        QCoreApplication::sendEvent(canvas, &evRel);
+        QApplication::processEvents();
+
+        const QPoint movedLegTopLeft = g47->legend()->rect().topLeft();
+        CHECK_COND(movedLegTopLeft != initLegTopLeft,
+                   "1-motion click-and-drag on unselected Legend did NOT move it in one gesture!");
+        CHECK_COND(g47->legend()->font().pointSize() == initLegPt
+                           && g47->legend()->font().family() == "Arial",
+                   "Dragging Legend mutated its Arial font family or point size!");
+        g47->deselectMarker();
+
+        // ArrowMarker selection retention & safe deletion (must NOT delete Graph layer!)
+        ArrowMarker arr;
+        arr.setStartPoint(5.0, 460.0);
+        arr.setEndPoint(15.0, 620.0);
+        arr.setColor(Qt::black);
+        arr.setWidth(2);
+        arr.drawEndArrow(true);
+        const QString snapBeforeArrow = ml47->captureUndoSnapshot();
+        g47->addArrow(&arr);
+        ml47->pushUndoSnapshot("Add Arrow", snapBeforeArrow);
+        g47->replot();
+        g47->deselectMarker();
+        QApplication::processEvents();
+        CHECK_COND(g47->lineMarkerKeys().size() == 1, "Expected 1 ArrowMarker on g47");
+
+        ArrowMarker *insertedArr = g47->arrow(g47->lineMarkerKeys().first());
+        CHECK_COND(insertedArr != nullptr, "Inserted ArrowMarker lookup returned nullptr");
+        const QPoint arrMidPx = (insertedArr->startPoint() + insertedArr->endPoint()) / 2;
+        QMouseEvent arrClick(QEvent::MouseButtonPress, arrMidPx, canvas->mapToGlobal(arrMidPx),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent arrRel(QEvent::MouseButtonRelease, arrMidPx, canvas->mapToGlobal(arrMidPx),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(canvas, &arrClick);
+        QCoreApplication::sendEvent(canvas, &arrRel);
+        QApplication::processEvents();
+        CHECK_COND(g47->markerSelected() && g47->arrowMarkerSelected(),
+                   "Clicking ArrowMarker did not retain selectedMarker / arrowMarkerSelected()!");
+
+        const QString snapBeforeDelArr = ml47->captureUndoSnapshot();
+        g47->removeMarker();
+        ml47->pushUndoSnapshot("Remove Arrow", snapBeforeDelArr);
+        QApplication::processEvents();
+        CHECK_COND(ml47->layers() == 1 && g47->lineMarkerKeys().isEmpty(),
+                   "Removing selected ArrowMarker failed or deleted the Graph layer!");
+
+        // Undo removes deletion -> restores ArrowMarker!
+        w47->undo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(g47 != nullptr && g47->lineMarkerKeys().size() == 1,
+                   "Per-MultiLayer Undo failed to restore deleted ArrowMarker!");
+        // Clean up arrow via Undo of Add Arrow
+        w47->undo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(g47 != nullptr && g47->lineMarkerKeys().isEmpty(),
+                   "Second Undo failed to revert Add Arrow!");
+
+        // Inline Axis Max Scale Bound Editor via double-click on xBottom scale end
+        QwtScaleWidget *xBottomSw = g47->plotWidget()->axisWidget(QwtPlot::xBottom);
+        CHECK_COND(xBottomSw != nullptr, "xBottom QwtScaleWidget is null");
+        const QRect ticksRc = g47->scalePicker->scaleRect(xBottomSw);
+        const QPoint maxEndPt(ticksRc.right() - 8, ticksRc.center().y());
+        QMouseEvent dblScale(QEvent::MouseButtonDblClick, maxEndPt, xBottomSw->mapToGlobal(maxEndPt),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(xBottomSw, &dblScale);
+        QApplication::processEvents();
+
+        QLineEdit *inlineScaleEdit = xBottomSw->findChild<QLineEdit *>();
+        CHECK_COND(inlineScaleEdit != nullptr && inlineScaleEdit->isVisible(),
+                   "Double-clicking xBottom max tick end did not open inline scale QLineEdit!");
+        for (GraphMiniToolbar *mtb : w47->findChildren<GraphMiniToolbar *>()) {
+            CHECK_COND(!mtb->isVisible(),
+                       "GraphMiniToolbar flashed during axis double-click!");
+        }
+
+        inlineScaleEdit->setText("320");
+        QKeyEvent enterKey(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QCoreApplication::sendEvent(inlineScaleEdit, &enterKey);
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        const double xUpperAfterInline =
+                g47->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound();
+        CHECK_COND(std::fabs(xUpperAfterInline - 320.0) < 1e-6,
+                   "Inline scale QLineEdit Enter did not commit upperBound = 320.0!");
+
+        w47->undo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(std::fabs(g47->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound() - 320.0) > 1.0,
+                   "Undo did not revert inline scale bound edit!");
+
+        // Round 1 Regression: Inline Axis Scale Bound Editor MUST also commit on FocusOut (clicking away)
+        xBottomSw = g47->plotWidget()->axisWidget(QwtPlot::xBottom);
+        CHECK_COND(xBottomSw != nullptr, "xBottom QwtScaleWidget is null before FocusOut check");
+        QCoreApplication::sendEvent(xBottomSw, &dblScale);
+        QApplication::processEvents();
+        inlineScaleEdit = xBottomSw->findChild<QLineEdit *>();
+        CHECK_COND(inlineScaleEdit != nullptr && inlineScaleEdit->isVisible(),
+                   "Second double-click on xBottom max tick end did not open inline scale QLineEdit!");
+        inlineScaleEdit->setText("345");
+        QFocusEvent focusOutEv(QEvent::FocusOut, Qt::MouseFocusReason);
+        QCoreApplication::sendEvent(inlineScaleEdit, &focusOutEv);
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(std::fabs(g47->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound() - 345.0) < 1e-6,
+                   "Inline scale QLineEdit FocusOut discarded typed bound 345.0 instead of committing!");
+        w47->undo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+
+        // CanvasInlineTextEditor preserving \c{1} token & Arial font
+        if (!g47->legend())
+            g47->newLegend();
+        long legKey = -1;
+        if (g47->legend() && g47->plotWidget()) {
+            for (int mk : g47->plotWidget()->markerKeys()) {
+                if (g47->plotWidget()->marker(mk) == g47->legend()) {
+                    legKey = mk;
+                    break;
+                }
+            }
+        }
+        if (legKey >= 0) {
+            CanvasInlineTextEditor *inEd = CanvasInlineTextEditor::openForLegendOrText(
+                    g47, legKey, 0, QRect(200, 200, 120, 28));
+            CHECK_COND(inEd != nullptr, "CanvasInlineTextEditor::openForLegendOrText returned null");
+            QLineEdit *le = inEd->findChild<QLineEdit *>();
+            if (le) {
+                le->setText("T6 Peak-Aged (120 °C)");
+                QKeyEvent retEv(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QCoreApplication::sendEvent(le, &retEv);
+                QApplication::processEvents();
+                g47 = ml47->activeGraph();
+                CHECK_COND(g47->legend() != nullptr
+                                   && g47->legend()->text().contains("\\c{1}")
+                                   && g47->legend()->text().contains("T6 Peak-Aged")
+                                   && g47->legend()->font().family() == "Arial",
+                           "CanvasInlineTextEditor stripped \\c{1} symbol token or broke Arial font!");
+            }
+        }
+    }
+
+    // =========================================================================
+    // 4. Dialog Silent-Data-Loss Fixes (AxesDialog & PlotDialog) + Underscore ErrDialog
+    // =========================================================================
+    {
+        g47 = ml47->activeGraph();
+        Suite47AxesDialogProbe axProbe;
+        axProbe.setGraph(g47);
+        axProbe.stageCrossTabEditsAndAccept();
+        QApplication::processEvents();
+
+        g47 = ml47->activeGraph();
+        const double xMinAx = g47->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->lowerBound();
+        const double xMaxAx = g47->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound();
+        CHECK_COND(std::fabs(xMinAx - (-15.0)) < 1e-6 && std::fabs(xMaxAx - 275.0) < 1e-6,
+                   "AxesDialog silently lost Bottom scale edits when switching axis row & tab before OK!");
+        CHECK_COND(g47->axisTitle(QwtPlot::xBottom).contains("True Strain")
+                           && g47->axisTitleFont(QwtPlot::xBottom).family() == "Arial",
+                   "AxesDialog failed to commit Bottom axis title alongside scale edit or broke Arial!");
+
+        // PlotDialog cross-tab Line width + Hollow Symbol commit
+        PlotDialog pd(true, w47);
+        pd.initFonts(QFont("Arial", 14), QFont("Arial", 14), QFont("Arial", 12), QFont("Arial", 12));
+        pd.setMultiLayer(ml47);
+        pd.selectCurve(0);
+        QApplication::processEvents();
+
+        // Set curve 0 symbol to Ellipse first so hollow brush check applies to a visible symbol
+        g47->setCurveSymbol(0, QwtSymbol(QwtSymbol::Ellipse, QBrush(Qt::black),
+                                         QPen(Qt::black, 1), QSize(9, 9)));
+        pd.selectCurve(0);
+        QApplication::processEvents();
+
+        QTabWidget *pdTabs = pd.findChild<QTabWidget *>();
+        CHECK_COND(pdTabs != nullptr, "PlotDialog QTabWidget not found");
+        bool editedLineWidth = false;
+        bool checkedHollow = false;
+        for (int ti = 0; ti < pdTabs->count(); ++ti) {
+            QWidget *pg = pdTabs->widget(ti);
+            pdTabs->setCurrentIndex(ti);
+            QApplication::processEvents();
+            for (QCheckBox *cb : pg->findChildren<QCheckBox *>()) {
+                if (cb && cb->text().contains("Hollow", Qt::CaseInsensitive)) {
+                    cb->setChecked(true);
+                    checkedHollow = true;
+                }
+            }
+            if (!editedLineWidth && pg->findChildren<QCheckBox *>().isEmpty()) {
+                // Line tab has boxPenWidth spinbox
+                for (QSpinBox *sb : pg->findChildren<QSpinBox *>()) {
+                    if (sb && sb->minimum() >= 1 && sb->maximum() <= 100 && sb->value() <= 5) {
+                        sb->setValue(4);
+                        editedLineWidth = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // Leave currentWidget on the first tab (NOT Symbol tab!) and invoke acceptParams()
+        pdTabs->setCurrentIndex(0);
+        bool invokeOk = false;
+        QMetaObject::invokeMethod(&pd, "acceptParams", Qt::DirectConnection,
+                                  Q_RETURN_ARG(bool, invokeOk));
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(checkedHollow && Graph::isSymbolWhiteHollow(g47->curve(0)->symbol()),
+                   "PlotDialog lost Hollow Symbol (#FFFFFF) edit when OK was pressed from another tab!");
+
+        // Underscore Table Name ("Al_Zn_Mg_1") in ErrDialog
+        ErrDialog errDlg(w47);
+        errDlg.setSrcTables(w47->tableList());
+        errDlg.setCurveNames(g47->analysableCurvesList());
+        QApplication::processEvents();
+        bool foundStressErrCol = false;
+        for (QComboBox *cmb : errDlg.findChildren<QComboBox *>()) {
+            for (int i = 0; i < cmb->count(); ++i) {
+                if (cmb->itemText(i).contains("Stress_Err"))
+                    foundStressErrCol = true;
+            }
+        }
+        CHECK_COND(foundStressErrCol,
+                   "ErrDialog failed to populate columns for underscore-named table 'Al_Zn_Mg_1'!");
+    }
+
+    // =========================================================================
+    // 5. Worksheet Column MIME Drag-and-Drop + Per-MultiLayer Undo Stack Isolation
+    // =========================================================================
+    {
+        Table *bgTbl = w47->newTable(4, 2, "BgUndoIsolationTbl", "Background Worksheet");
+        CHECK_COND(bgTbl != nullptr, "Failed to create BgUndoIsolationTbl");
+        bgTbl->setCell(0, 0, 777.0);
+        CHECK_COND(std::fabs(bgTbl->cell(0, 0) - 777.0) < 1e-9, "bgTbl initial cell mismatch");
+
+        w47->activateSubWindow(ml47);
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        const int curvesBeforeDrop = g47->curves();
+
+        QMimeData *mime = new QMimeData();
+        QJsonObject payload;
+        payload["table"] = QStringLiteral("Al_Zn_Mg_1");
+        payload["columns"] = QJsonArray{ QStringLiteral("Hardness_HV") };
+        mime->setData(QLatin1String(MultiLayer::kColumnMimeType),
+                      QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+        const QPoint dropPos = ml47->rect().center();
+        QDragEnterEvent dragEnter(dropPos, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+        ml47->dragEnterEvent(&dragEnter);
+        CHECK_COND(dragEnter.isAccepted(),
+                   "MultiLayer::dragEnterEvent rejected application/x-torigraph-columns!");
+
+        QDropEvent dropEv(dropPos, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier);
+        ml47->dropEvent(&dropEv);
+        delete mime;
+        QApplication::processEvents();
+
+        g47 = ml47->activeGraph();
+        CHECK_COND(g47->curves() == curvesBeforeDrop + 1,
+                   "Dropping column MIME onto MultiLayer did not add Hardness_HV curve!");
+
+        // Undo while ml47 is active MUST revert the dropped curve WITHOUT touching bgTbl!
+        w47->undo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(g47->curves() == curvesBeforeDrop,
+                   "Undo after column MIME drop did not revert MultiLayer curve count!");
+        CHECK_COND(std::fabs(bgTbl->cell(0, 0) - 777.0) < 1e-9,
+                   "Ctrl+Z on active MultiLayer corrupted background Table cell!");
+
+        // Redo restores the dropped curve!
+        w47->redo();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        CHECK_COND(g47->curves() == curvesBeforeDrop + 1,
+                   "Redo did not re-apply column MIME drop on MultiLayer!");
+    }
+
+    // =========================================================================
+    // 6. Presets (70% Square Frame, Smart Legend, (a)(b) Panel Labels) &
+    //    100% Zero-Chrome Export + PowerPoint OLE Metafile Gate
+    // =========================================================================
+    {
+        ml47->applySquareCanvasFrame70Percent();
+        QApplication::processEvents();
+        g47 = ml47->activeGraph();
+        const QRect sqCanvas = g47->plotWidget()->plotLayout()->canvasRect();
+        CHECK_COND(std::abs(sqCanvas.width() - sqCanvas.height()) <= 2,
+                   "applySquareCanvasFrame70Percent did not produce a 1:1 square plot canvas!");
+
+        double overlapScore = -1.0;
+        const QString anchorChosen = g47->placeLegendAnchor(Graph::LegendAutoAvoidData, &overlapScore);
+        CHECK_COND(!anchorChosen.isEmpty() && overlapScore >= 0.0,
+                   "placeLegendAnchor(LegendAutoAvoidData) failed!");
+
+        ml47->setPanelLabels(true, MultiLayer::PanelOutsideTopLeft, "(%a)", 14);
+        CHECK_COND(ml47->hasPanelLabels(), "MultiLayer::setPanelLabels(true) getter mismatch");
+
+        // Dedicated pure-black-on-white graph with ALL interactive chrome active simultaneously
+        Table *tClean = w47->newTable(20, 2, "CleanExportTbl", "Zero Chrome Gate");
+        for (int r = 0; r < 20; ++r) {
+            const double x = double(r);
+            tClean->setCell(r, 0, x);
+            tClean->setCell(r, 1, 10.0 + 3.0 * x);
+        }
+        MultiLayer *mlClean = w47->multilayerPlot(
+                tClean, QStringList() << "CleanExportTbl_2", Graph::Line);
+        CHECK_COND(mlClean != nullptr && mlClean->activeGraph() != nullptr, "mlClean null");
+        mlClean->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+        Graph *gClean = mlClean->activeGraph();
+        gClean->setCurvePen(0, QPen(Qt::black, 2));
+        gClean->removeLegend();
+        gClean->setXAxisTitle("Strain (%)");
+        gClean->setYAxisTitle("Stress (MPa)");
+        gClean->replot();
+        mlClean->show();
+        QApplication::processEvents();
+
+        // Activate ALL 4 interactive chrome sources:
+        // (a) Curve selection halo (#2563EB)
+        gClean->plotWidget()->setHighlightedCurveKey(gClean->curveKey(0));
+        // (b) Axis title selection (used to mutate QwtText::setBackgroundPen(Qt::blue)!)
+        QwtScaleWidget *cleanBottomSw = gClean->plotWidget()->axisWidget(QwtPlot::xBottom);
+        if (cleanBottomSw)
+            gClean->scalePicker->selectTitle(cleanBottomSw, true);
+        // (c) Editable ArrowMarker (used to draw 10x10 black endpoint squares in print/EMF!)
+        ArrowMarker *cleanArr = new ArrowMarker();
+        cleanArr->setStartPoint(3.0, 25.0);
+        cleanArr->setEndPoint(12.0, 55.0);
+        cleanArr->setColor(Qt::black);
+        cleanArr->setWidth(1);
+        gClean->addArrow(cleanArr);
+        cleanArr->setEditable(true);
+        // (d) RoiGadgetTool (used to paint yellow/blue ROI box & HUD into exports!)
+        RoiGadgetTool *cleanRoi = RoiGadgetTool::attachGadget(w47, gClean, RoiGadgetTool::RegionStats);
+        CHECK_COND(cleanRoi != nullptr, "Failed to attach RoiGadgetTool on gClean");
+        cleanRoi->setRoiRect(QRectF(4.0, 15.0, 10.0, 45.0));
+        gClean->replot();
+        QApplication::processEvents();
+
+        auto countChromaticLeakPixels = [](const QImage &img) -> int {
+            int leaks = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                for (int x = 0; x < img.width(); ++x) {
+                    const QRgb p = img.pixel(x, y);
+                    const int r = qRed(p), g = qGreen(p), b = qBlue(p);
+                    // Pure black-on-white graph has r == g == b everywhere; any chromatic pixel
+                    // (blue #2563EB halo/border, Qt::blue frame, or yellow ROI shading) has max-min >= 35!
+                    const int chroma = std::max({ r, g, b }) - std::min({ r, g, b });
+                    if (chroma >= 35)
+                        ++leaks;
+                }
+            }
+            return leaks;
+        };
+
+        // Check 300-DPI PNG export
+        const QString cleanPngPath = tmpDir.filePath("suite47_zero_chrome.png");
+        mlClean->exportImage(cleanPngPath, -1, false, 300);
+        QImage exportedPng(cleanPngPath);
+        CHECK_COND(!exportedPng.isNull() && exportedPng.width() > 600,
+                   "Failed to export 300-DPI suite47_zero_chrome.png");
+        const int pngChromaLeaks = countChromaticLeakPixels(exportedPng);
+        std::cout << "[INFO] Suite 47 300-DPI PNG chromatic leak pixels = " << pngChromaLeaks << "\n";
+        CHECK_COND(pngChromaLeaks == 0,
+                   "Selection halo, blue title border, or ROI gadget leaked into exported PNG!");
+
+        // Check PowerPoint OLE EMF+ renderMultiLayer playback
+        OleRenderedGraph cleanOle = SciDAVisEmf::renderMultiLayer(mlClean);
+        HENHMETAFILE hCleanEmf = SciDAVisEmf::createHemfFromBytes(cleanOle.emfBytes);
+        CHECK_COND(hCleanEmf != nullptr, "createHemfFromBytes failed on mlClean");
+
+        const int playSide = 900;
+        QImage olePlayImg(playSide, playSide, QImage::Format_RGB32);
+        olePlayImg.fill(Qt::white);
+        {
+            HDC sdc = GetDC(nullptr);
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = playSide;
+            bmi.bmiHeader.biHeight = -playSide;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void *bits = nullptr;
+            HBITMAP hbm = CreateDIBSection(sdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HDC mdc = CreateCompatibleDC(sdc);
+            HGDIOBJ old = SelectObject(mdc, hbm);
+            if (bits) {
+                auto *px = static_cast<quint32 *>(bits);
+                for (int i = 0; i < playSide * playSide; ++i)
+                    px[i] = 0xFFFFFFFFu;
+                Gdiplus::Metafile mf(hCleanEmf, FALSE);
+                Gdiplus::Graphics gfx(mdc);
+                gfx.DrawImage(&mf, 0, 0, playSide, playSide);
+                GdiFlush();
+                std::memcpy(olePlayImg.bits(), bits, playSide * playSide * 4);
+            }
+            SelectObject(mdc, old);
+            DeleteObject(hbm);
+            DeleteDC(mdc);
+            ReleaseDC(nullptr, sdc);
+        }
+        DeleteEnhMetaFile(hCleanEmf);
+
+        const int oleChromaLeaks = countChromaticLeakPixels(olePlayImg);
+        std::cout << "[INFO] Suite 47 OLE EMF+ playback chromatic leak pixels = " << oleChromaLeaks << "\n";
+        CHECK_COND(oleChromaLeaks == 0,
+                   "Selection halo, blue title border, or ROI gadget leaked into PowerPoint OLE EMF+!");
+
+        RoiGadgetTool::clearGadget(gClean);
+        cleanArr->setEditable(false);
+
+        // Round 1 Regression A: RoiGadgetTool::keepFittedCurveOnGraph() must survive MultiLayer Undo/Redo
+        const int curvesBeforeKeepFit = gClean->curves();
+        RoiGadgetTool *fitRoi = RoiGadgetTool::attachGadget(w47, gClean, RoiGadgetTool::QuickFit);
+        CHECK_COND(fitRoi != nullptr, "Failed to attach QuickFit RoiGadgetTool");
+        fitRoi->setRoiRect(QRectF(2.0, 10.0, 14.0, 60.0));
+        fitRoi->keepFittedCurveOnGraph();
+        RoiGadgetTool::clearGadget(gClean);
+        QApplication::processEvents();
+        gClean = mlClean->activeGraph();
+        CHECK_COND(gClean->curves() == curvesBeforeKeepFit + 1,
+                   "keepFittedCurveOnGraph() did not add fitted DataCurve!");
+        // Perform an unrelated undoable edit on mlClean, then Undo it -> kept fit curve MUST survive!
+        const QString snapBeforeTitleEdit = mlClean->captureUndoSnapshot();
+        gClean->setXAxisTitle("Temporary Strain Label");
+        mlClean->pushUndoSnapshot("Edit X Title", snapBeforeTitleEdit);
+        w47->activateSubWindow(mlClean);
+        w47->undo();
+        QApplication::processEvents();
+        gClean = mlClean->activeGraph();
+        CHECK_COND(gClean != nullptr && gClean->curves() == curvesBeforeKeepFit + 1
+                           && gClean->curve(gClean->curves() - 1)->dataSize() >= 2,
+                   "Kept ROI fitted curve was wiped out when MultiLayer Undo restored snapshot!");
+
+        // Round 1 Regression B: Reciprocal Arrhenius FormulaLinkedScaleEngine on Top-X
+        gClean->setScale(QwtPlot::xBottom, 2.0, 3.5);
+        Graph *childTopX = mlClean->addLinkedLayer(gClean, true, false, "(1000/x)-273.15");
+        CHECK_COND(childTopX != nullptr && mlClean->activeGraph() == gClean,
+                   "addLinkedLayer failed or stole activeGraph() away from parent data layer!");
+        gClean->replot();
+        childTopX->replot();
+        QApplication::processEvents();
+        const double topLower = childTopX->plotWidget()->axisScaleDiv(QwtPlot::xTop)->lowerBound();
+        const double topUpper = childTopX->plotWidget()->axisScaleDiv(QwtPlot::xTop)->upperBound();
+        CHECK_COND(topLower > 200.0 && topUpper < 30.0 && topLower > topUpper,
+                   "Arrhenius linked Top-X (1000/x)-273.15 failed to invert bounds (left high T -> right low T)!");
+
+        // Round 2/2.5 Regression C: <ToriAxisLocks> preservation across MultiLayer Undo/Redo +
+        // safe ScalePicker::cancelInlineScaleEditor() when Undo fires mid-inline-edit!
+        gClean->setAxisUserLocked(QwtPlot::xBottom, true);
+        CHECK_COND(gClean->isAxisUserLocked(QwtPlot::xBottom), "setAxisUserLocked(xBottom, true) failed");
+        const QString snapWithAxisLock = mlClean->captureUndoSnapshot();
+        gClean->setYAxisTitle("Temp Stress Label");
+        mlClean->pushUndoSnapshot("Edit Y Title After Lock", snapWithAxisLock);
+
+        // Open an inline scale editor on gClean xBottom with unconfirmed text "9999", then Undo!
+        QwtScaleWidget *cleanSwX = gClean->plotWidget()->axisWidget(QwtPlot::xBottom);
+        if (cleanSwX && gClean->scalePicker) {
+            const QRect cleanTicksRc = gClean->scalePicker->scaleRect(cleanSwX);
+            const QPoint cleanMaxPt(cleanTicksRc.right() - 6, cleanTicksRc.center().y());
+            QMouseEvent dblClean(QEvent::MouseButtonDblClick, cleanMaxPt,
+                                 cleanSwX->mapToGlobal(cleanMaxPt), Qt::LeftButton,
+                                 Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(cleanSwX, &dblClean);
+            QApplication::processEvents();
+            if (QLineEdit *inEdClean = cleanSwX->findChild<QLineEdit *>())
+                inEdClean->setText("9999");
+        }
+        w47->activateSubWindow(mlClean);
+        w47->undo();
+        QApplication::processEvents();
+        gClean = mlClean->activeGraph();
+        CHECK_COND(gClean != nullptr && gClean->isAxisUserLocked(QwtPlot::xBottom),
+                   "<ToriAxisLocks> lost user axis lock across MultiLayer Undo!");
+        CHECK_COND(std::fabs(gClean->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound() - 3.5) < 1e-4,
+                   "Mid-edit Undo committed unconfirmed inline scale text '9999' instead of cancelling cleanly!");
+
+        // Round 2/2.5 Regression D: [関数] badge in JA mode + Japanese LinearFit naming without ASCII space
+        QList<double> fnRange;
+        fnRange << 2.0 << 3.5;
+        CHECK_COND(gClean->addFunctionCurve(w47, FunctionCurve::Normal,
+                                            QStringList() << "20.0*x", "x", fnRange, 50, "RefFunc"),
+                   "Failed to add FunctionCurve RefFunc to gClean");
+        w47->switchToLanguage("ja");
+        QApplication::processEvents();
+
+        bool sawFuncBadgeJa = false;
+        bool sawRawFuncBadgeEn = false;
+        if (auto *insp47 = w47->findChild<GraphInspectorDock *>()) {
+            insp47->setTargetMultiLayer(mlClean, true);
+            insp47->refreshAll();
+            QApplication::processEvents();
+            if (QTreeWidget *trw = insp47->objectTree()) {
+                std::function<void(QTreeWidgetItem *)> scanBadge = [&](QTreeWidgetItem *it) {
+                    if (!it)
+                        return;
+                    const QString txt = it->text(0);
+                    if (txt.contains(QString::fromUtf8("[関数]")))
+                        sawFuncBadgeJa = true;
+                    if (txt.contains("[Func]"))
+                        sawRawFuncBadgeEn = true;
+                    for (int ci = 0; ci < it->childCount(); ++ci)
+                        scanBadge(it->child(ci));
+                };
+                for (int ti = 0; ti < trw->topLevelItemCount(); ++ti)
+                    scanBadge(trw->topLevelItem(ti));
+            }
+        }
+        CHECK_COND(!sawRawFuncBadgeEn, "Untranslated '[Func]' badge leaked in Japanese mode!");
+        CHECK_COND(sawFuncBadgeJa, "GraphInspectorDock missing Japanese '[関数]' badge on FunctionCurve!");
+
+        LinearFit *jaLinFit = new LinearFit(w47, gClean, "CleanExportTbl_2");
+        jaLinFit->fit();
+        delete jaLinFit;
+        QApplication::processEvents();
+        bool sawCleanJaFitName = false;
+        for (int ci = 0; ci < gClean->curves(); ++ci) {
+            const QString ct = gClean->curve(ci)->title().text();
+            CHECK_COND(!ct.contains(QString::fromUtf8("線形 フィット")),
+                       "LinearFit inserted unwanted ASCII space in Japanese '線形 フィット'!");
+            if (ct.contains(QString::fromUtf8("線形フィット")))
+                sawCleanJaFitName = true;
+        }
+        CHECK_COND(sawCleanJaFitName, "LinearFit in Japanese mode did not produce '線形フィット' curve!");
+
+        w47->switchToLanguage("en");
+        QApplication::processEvents();
+
+        // Round 2 Regression E: PlotDialog switching between curves must NOT corrupt QComboBox item labels
+        {
+            PlotDialog pdComboCheck(true, w47);
+            pdComboCheck.initFonts(QFont("Arial", 14), QFont("Arial", 14), QFont("Arial", 12),
+                                   QFont("Arial", 12));
+            pdComboCheck.setMultiLayer(ml47);
+            pdComboCheck.selectCurve(0);
+            QApplication::processEvents();
+            pdComboCheck.selectCurve(1);
+            QApplication::processEvents();
+            pdComboCheck.selectCurve(0);
+            QApplication::processEvents();
+            for (QComboBox *cmb : pdComboCheck.findChildren<QComboBox *>()) {
+                QSet<QString> seenItems;
+                int dupColItems = 0;
+                for (int i = 0; i < cmb->count(); ++i) {
+                    const QString itemTxt = cmb->itemText(i);
+                    if (itemTxt.startsWith("Al_Zn_Mg_1_")) {
+                        if (seenItems.contains(itemTxt))
+                            ++dupColItems;
+                        seenItems.insert(itemTxt);
+                    }
+                }
+                CHECK_COND(dupColItems == 0,
+                           "PlotDialog::setActiveCurve corrupted QComboBox items with duplicate column names!");
+            }
+        }
+
+        // Round 3 Regression F: Graph::setCurveType polymorphic bar conversion on DataCurve fitted curves
+        // must NOT crash out-of-bounds on size()==1 or overwrite slot [1] on size()==2
+        gClean->deleteFitCurves();
+        CHECK_COND(gClean->fitCurvesList().isEmpty(),
+                   "deleteFitCurves() failed to clear initial FunctionCurve fit on gClean!");
+
+        LinearFit *dataFit0 = new LinearFit(w47, gClean, "CleanExportTbl_2");
+        dataFit0->generateFunction(false, 20);
+        dataFit0->fit();
+        delete dataFit0;
+        QApplication::processEvents();
+        CHECK_COND(gClean->fitCurvesList().size() == 1,
+                   "Expected exactly 1 DataCurve fitted curve on gClean!");
+        const int fitCurveIdx0 = gClean->curveIndex(gClean->fitCurvesList().at(0));
+        CHECK_COND(fitCurveIdx0 >= 0, "Failed to resolve fitted DataCurve index on gClean!");
+        gClean->setCurveType(fitCurveIdx0, Graph::VerticalBars, true);
+        CHECK_COND(gClean->curveType(fitCurveIdx0) == Graph::VerticalBars
+                           && gClean->fitCurvesList().size() == 1
+                           && gClean->fitCurvesList().at(0) == gClean->curve(fitCurveIdx0),
+                   "Graph::setCurveType(VerticalBars) corrupted d_fit_curves[0]!");
+        gClean->setCurveType(fitCurveIdx0, Graph::Line, true);
+        CHECK_COND(gClean->curveType(fitCurveIdx0) == Graph::Line
+                           && gClean->fitCurvesList().size() == 1
+                           && gClean->fitCurvesList().at(0) == gClean->curve(fitCurveIdx0),
+                   "Graph::setCurveType(Line) corrupted d_fit_curves[0]!");
+
+        LinearFit *dataFit1 = new LinearFit(w47, gClean, "CleanExportTbl_2");
+        dataFit1->generateFunction(false, 20);
+        dataFit1->fit();
+        delete dataFit1;
+        QApplication::processEvents();
+        CHECK_COND(gClean->fitCurvesList().size() == 2,
+                   "Expected 2 DataCurve fitted curves on gClean for two-fit precedence test!");
+        QwtPlotCurve *preservedFit1 = gClean->fitCurvesList().at(1);
+        gClean->setCurveType(fitCurveIdx0, Graph::VerticalBars, true);
+        CHECK_COND(gClean->fitCurvesList().at(0) == gClean->curve(fitCurveIdx0)
+                           && gClean->fitCurvesList().at(1) == preservedFit1,
+                   "Graph::setCurveType overwrote d_fit_curves[1] instead of replacing [0]!");
+        gClean->setCurveType(fitCurveIdx0, Graph::Line, true);
+        CHECK_COND(gClean->fitCurvesList().at(0) == gClean->curve(fitCurveIdx0)
+                           && gClean->fitCurvesList().at(1) == preservedFit1,
+                   "Graph::setCurveType restore overwrote d_fit_curves[1]!");
+
+        // Round 3 Regression G: invalidateModelessGraphDialogs(ml, excludeDlg) keeps excludeDlg
+        // alive while invalidating sibling CurveRangeDialog on polymorphic style switch
+        QPointer<CurveRangeDialog> crdGuard = new CurveRangeDialog(w47, Qt::Window);
+        crdGuard->setAttribute(Qt::WA_DeleteOnClose);
+        crdGuard->setProperty("targetMultiLayerPtr",
+                              QVariant::fromValue(static_cast<QObject *>(ml47)));
+        crdGuard->setCurveToModify(g47, 0);
+        crdGuard->show();
+        QPointer<PlotDialog> pdKeepGuard = new PlotDialog(true, w47, Qt::Window);
+        pdKeepGuard->setAttribute(Qt::WA_DeleteOnClose);
+        pdKeepGuard->setProperty("targetMultiLayerPtr",
+                                 QVariant::fromValue(static_cast<QObject *>(ml47)));
+        pdKeepGuard->initFonts(QFont("Arial", 14), QFont("Arial", 14), QFont("Arial", 12),
+                               QFont("Arial", 12));
+        pdKeepGuard->setMultiLayer(ml47);
+        pdKeepGuard->selectCurve(0);
+        pdKeepGuard->show();
+        QApplication::processEvents();
+
+        w47->invalidateModelessGraphDialogs(ml47, pdKeepGuard.data());
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QApplication::processEvents();
+        CHECK_COND(crdGuard.isNull(),
+                   "Sibling CurveRangeDialog was not invalidated by invalidateModelessGraphDialogs!");
+        CHECK_COND(!pdKeepGuard.isNull() && pdKeepGuard->isVisible(),
+                   "Excluded PlotDialog was wrongly destroyed by invalidateModelessGraphDialogs!");
+        delete pdKeepGuard.data();
+    }
+
+    w47->savedProject();
+    w47->setOleEmbeddedMode(true);
+    delete w47;
+    QApplication::processEvents();
+
+    std::cout << "[INFO] Suite 47 Phase 7 Graph Usability & Zero-Leak Gate passed!\n";
     return 0;
 }

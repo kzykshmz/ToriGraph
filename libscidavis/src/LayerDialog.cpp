@@ -41,6 +41,8 @@
 #include <QFontDialog>
 #include <QFont>
 #include <QMessageBox>
+#include <QPointer>
+#include <QSignalBlocker>
 #include <cmath>
 
 LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
@@ -82,7 +84,7 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     gl1->addWidget(customAspectBox, 4, 1);
     gl1->setRowStretch(5, 1);
 
-    QGroupBox *gb2 = new QGroupBox(tr("Alignement"));
+    QGroupBox *gb2 = new QGroupBox(tr("Alignment"));
     QGridLayout *gl2 = new QGridLayout(gb2);
     gl2->addWidget(new QLabel(tr("Horizontal")), 0, 0);
 
@@ -401,33 +403,12 @@ void LayerDialog::update()
 {
     if (!multi_layer)
         return;
+
     int graphs = layersBox->value();
-    int old_graphs = multi_layer->layers();
-    int dn = multi_layer->layers() - graphs;
-    if (dn > 0
-        && QMessageBox::question(0, tr("Delete Layers?"),
-                                 tr("You are about to delete %1 existing layers.").arg(dn) + "\n"
-                                         + tr("Are you sure you want to continue this operation?"),
-                                 tr("&Continue"), tr("&Cancel"), QString(), 0, 1))
-        return;
-
-    multi_layer->setLayersNumber(graphs);
-
-    if (!graphs)
-        return;
-
-    if (dn < 0) { // Customize new layers with user default settings
-        ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
-        if (app) {
-            for (int i = old_graphs + 1; i <= graphs; i++)
-                app->setPreferences(multi_layer->layer(i));
-        }
-    }
-
     int cols = boxX->value();
     int rows = boxY->value();
 
-    if (cols > graphs && !fitBox->isChecked()) {
+    if (graphs > 0 && cols > graphs && !fitBox->isChecked()) {
         QMessageBox::about(0, tr("Columns input error"),
                            tr("The number of columns you've entered is greater than the number of "
                               "graphs (%1)!")
@@ -436,13 +417,42 @@ void LayerDialog::update()
         return;
     }
 
-    if (rows > graphs && !fitBox->isChecked()) {
+    if (graphs > 0 && rows > graphs && !fitBox->isChecked()) {
         QMessageBox::about(
                 0, tr("Rows input error"),
                 tr("The number of rows you've entered is greater than the number of graphs (%1)!")
                         .arg(graphs));
         boxY->setFocus();
         return;
+    }
+
+    int old_graphs = multi_layer->layers();
+    int dn = old_graphs - graphs;
+    if (dn > 0
+        && QMessageBox::question(0, tr("Delete Layers?"),
+                                 tr("You are about to delete %1 existing layers.").arg(dn) + "\n"
+                                         + tr("Are you sure you want to continue this operation?"),
+                                 tr("&Continue"), tr("&Cancel"), QString(), 0, 1))
+        return;
+
+    QPointer<MultiLayer> mlGuard = multi_layer;
+    const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
+
+    multi_layer->setLayersNumber(graphs);
+
+    if (!graphs) {
+        refreshLayerSelectors();
+        if (mlGuard && !beforeSnap.isEmpty())
+            mlGuard->pushUndoSnapshot(tr("Arrange Layers"), beforeSnap);
+        return;
+    }
+
+    if (dn < 0) { // Customize new layers with user default settings
+        ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+        if (app) {
+            for (int i = old_graphs + 1; i <= graphs; i++)
+                app->setPreferences(multi_layer->layer(i));
+        }
     }
 
     if (!fitBox->isChecked()) {
@@ -453,9 +463,11 @@ void LayerDialog::update()
     multi_layer->setKeepAspectRatio(keepAspectBox->isChecked());
     if (GroupCanvasSize->isChecked()) {
         multi_layer->setLayerCanvasSize(boxCanvasWidth->value(), boxCanvasHeight->value());
-        if (boxCanvasWidth->value() > 0 && boxCanvasHeight->value() > 0)
+        if (boxCanvasWidth->value() > 0 && boxCanvasHeight->value() > 0) {
+            QSignalBlocker blocker(customAspectBox);
             customAspectBox->setValue((double)boxCanvasWidth->value()
                                       / (double)boxCanvasHeight->value());
+        }
     } else if (keepAspectBox->isChecked() && customAspectBox->value() > 0.05) {
         multi_layer->setTargetAspectRatio(customAspectBox->value());
     }
@@ -469,11 +481,15 @@ void LayerDialog::update()
     multi_layer->arrangeLayers(fitBox->isChecked(), GroupCanvasSize->isChecked());
 
     if (!GroupCanvasSize->isChecked()) { // show new layer canvas size
+        QSignalBlocker bW(boxCanvasWidth);
+        QSignalBlocker bH(boxCanvasHeight);
         boxCanvasWidth->setValue(multi_layer->layerCanvasSize().width());
         boxCanvasHeight->setValue(multi_layer->layerCanvasSize().height());
     }
 
     if (fitBox->isChecked()) { // show new grid settings
+        QSignalBlocker bX(boxX);
+        QSignalBlocker bY(boxY);
         boxX->setValue(multi_layer->getCols());
         boxY->setValue(multi_layer->getRows());
     }
@@ -499,6 +515,9 @@ void LayerDialog::update()
         }
     }
     refreshLayerSelectors();
+
+    if (mlGuard && !beforeSnap.isEmpty())
+        mlGuard->pushUndoSnapshot(tr("Arrange Layers"), beforeSnap);
 }
 
 void LayerDialog::accept()

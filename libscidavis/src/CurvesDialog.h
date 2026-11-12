@@ -30,6 +30,7 @@
 #define CURVESDIALOG_H
 
 #include <QDialog>
+#include <QPointer>
 
 class QComboBox;
 class QListWidget;
@@ -72,20 +73,27 @@ the graph contents list, depending on the selected item in this list:
     void showCurveRange(bool);
     void updateCurveRange();
     void showCurrentFolder(bool);
+    void moveCurveUp();
+    void moveCurveDown();
+    void refreshAvailableColumns();
 
 private:
     void closeEvent(QCloseEvent *);
 
     void init();
     bool addCurve(const QString &name);
+    void moveSelectedCurveBy(int delta);
     QSize sizeHint() const;
     void contextMenuEvent(QContextMenuEvent *);
 
     int defaultCurveLineWidth, defaultSymbolSize;
-    Graph *d_graph;
+    Graph *d_graph = nullptr;
+    QPointer<Graph> d_graphGuard;
 
     QPushButton *btnAdd;
     QPushButton *btnRemove;
+    QPushButton *btnMoveUp;
+    QPushButton *btnMoveDown;
     QPushButton *btnOK;
     QPushButton *btnCancel;
     QPushButton *btnAssociations;
@@ -97,6 +105,7 @@ private:
     QComboBox *boxMatrixStyle;
     QCheckBox *boxShowRange;
     QCheckBox *boxShowCurrentFolder;
+    QCheckBox *boxShowAllColumns;
 };
 
 #endif // CurvesDialog_H

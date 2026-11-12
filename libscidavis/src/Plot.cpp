@@ -29,9 +29,12 @@
 #include "Plot.h"
 #include "Graph.h"
 #include "Grid.h"
+#include "Legend.h"
+#include "MultiLayer.h"
 #include "ScaleDraw.h"
 #include "Spectrogram.h"
 #include "PlotCurve.h"
+#include "QwtErrorPlotCurve.h"
 
 #include <qwt_plot.h>
 #include <qwt_painter.h>
@@ -43,14 +46,26 @@
 #include <qwt_text_label.h>
 #include <qwt_symbol.h>
 
+#include <QAbstractSpinBox>
+#include <QApplication>
+#include <QLineEdit>
 #include <QPainter>
+#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QVariant>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 using namespace std;
+
+void setToriSuppressScaleBackboneInPrint(bool suppress);
+namespace {
+static double s_toriPrintDeviceScale = 1.0;
+} // namespace
 
 Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 {
@@ -68,8 +83,12 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     minTickLength = 5;
     majTickLength = 9;
 
-    const QFont defaultTickFont("Arial", 12, QFont::Normal, false);
-    const QFont defaultTitleFont("Arial", 14, QFont::Bold, false);
+    QFont defaultTickFont("Arial", 12, QFont::Normal, false);
+    defaultTickFont.setHintingPreference(QFont::PreferNoHinting);
+    QFont defaultTitleFont("Arial", 14, QFont::Bold, false);
+    defaultTitleFont.setHintingPreference(QFont::PreferNoHinting);
+    QFont defaultAxisTitleFont("Arial", 14, QFont::Normal, false);
+    defaultAxisTitleFont.setHintingPreference(QFont::PreferNoHinting);
     setFont(defaultTickFont);
     if (titleLabel()) {
         titleLabel()->setFont(defaultTitleFont);
@@ -81,12 +100,12 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     setGeometry(QRect(0, 0, 500, 500));
     {
         QwtText yTitle(tr("Y Axis Title"));
-        yTitle.setFont(defaultTitleFont);
+        yTitle.setFont(defaultAxisTitleFont);
         yTitle.setColor(Qt::black);
         setAxisTitle(QwtPlot::yLeft, yTitle);
 
         QwtText xTitle(tr("X Axis Title"));
-        xTitle.setFont(defaultTitleFont);
+        xTitle.setFont(defaultAxisTitleFont);
         xTitle.setColor(Qt::black);
         setAxisTitle(QwtPlot::xBottom, xTitle);
     }
@@ -112,7 +131,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 
             // the axis title color & Arial font must be initialized...
             QwtText title = scale->title();
-            title.setFont(defaultTitleFont);
+            title.setFont(defaultAxisTitleFont);
             title.setColor(Qt::black);
             scale->setTitle(title);
 
@@ -195,8 +214,13 @@ void Plot::printFrame(QPainter *painter, const QRect &rect) const
 {
     painter->save();
 
+    const Graph *g = qobject_cast<const Graph *>(parent());
+    const bool anyBreak = g
+            && (g->axisBreak(QwtPlot::yLeft).enabled || g->axisBreak(QwtPlot::yRight).enabled
+                || g->axisBreak(QwtPlot::xBottom).enabled || g->axisBreak(QwtPlot::xTop).enabled);
+
     int lw = lineWidth();
-    if (lw) {
+    if (lw && !anyBreak) {
         QColor color = palette().color(QPalette::Active, QPalette::WindowText);
         painter->setPen(QPen(color, lw, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
     } else
@@ -217,7 +241,8 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                      const QwtPlotPrintFilter &pfilter) const
 {
     Graph *g = qobject_cast<Graph *>(parent());
-    if (d_highlighted_curve_key >= 0 && (!g || !g->property("isExporting").toBool())) {
+    if (d_highlighted_curve_key >= 0
+        && (!g || (!g->isExporting() && !g->property("isExporting").toBool()))) {
         QwtPlotItem *hitItem = d_curves.value(d_highlighted_curve_key, nullptr);
         QwtPlotCurve *hc = dynamic_cast<QwtPlotCurve *>(hitItem);
         if (hc && hc->isVisible() && hc->dataSize() > 0) {
@@ -270,6 +295,108 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         if (!axisEnabled(i))
             continue;
 
+        if (i == QwtPlot::yRight && g && g->hasColorScaleOnAxis(QwtPlot::yRight)) {
+            if (g->axesBackbones() && axisEnabled(QwtPlot::yLeft)) {
+                ScaleDraw *leftSd = (ScaleDraw *)axisScaleDraw(QwtPlot::yLeft);
+                const int lMajType = leftSd ? leftSd->majorTicksStyle() : ScaleDraw::None;
+                const int lMinType = leftSd ? leftSd->minorTicksStyle() : ScaleDraw::None;
+                const bool lMin = (lMinType == ScaleDraw::In || lMinType == ScaleDraw::Both);
+                const bool lMaj = (lMajType == ScaleDraw::In || lMajType == ScaleDraw::Both);
+                const QwtScaleDiv *lScDiv = axisScaleDiv(QwtPlot::yLeft);
+                if ((lMin || lMaj) && lScDiv) {
+                    const QColor color = axisWidget(QwtPlot::yLeft)
+                            ? axisWidget(QwtPlot::yLeft)
+                                      ->palette()
+                                      .color(QPalette::Active, QPalette::WindowText)
+                            : Qt::black;
+                    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+                    const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
+                    const int effMinLen = qMax(1, qRound(double(minTickLength) * tickScale));
+                    const int effMajLen = qMax(1, qRound(double(majTickLength) * tickScale));
+                    painter->save();
+                    painter->setPen(QPen(color, tickPw, Qt::SolidLine));
+                    const int x = rect.right();
+                    const int low = rect.top() + (axisEnabled(QwtPlot::xTop) ? 1 : 0);
+                    const int high = rect.bottom() - (axisEnabled(QwtPlot::xBottom) ? 1 : 0);
+                    if (lMin) {
+                        const QwtValueList minTickList = lScDiv->ticks(QwtScaleDiv::MinorTick);
+                        for (int j = 0; j < (int)minTickList.count(); ++j) {
+                            const int y = map[QwtPlot::yLeft].transform(minTickList[j]);
+                            if (y >= low && y <= high)
+                                QwtPainter::drawLine(painter, x + 1, y, x - effMinLen, y);
+                        }
+                        const QwtValueList medTickList = lScDiv->ticks(QwtScaleDiv::MediumTick);
+                        for (int j = 0; j < (int)medTickList.count(); ++j) {
+                            const int y = map[QwtPlot::yLeft].transform(medTickList[j]);
+                            if (y >= low && y <= high)
+                                QwtPainter::drawLine(painter, x + 1, y, x - effMinLen, y);
+                        }
+                    }
+                    if (lMaj) {
+                        const QwtValueList majTickList = lScDiv->ticks(QwtScaleDiv::MajorTick);
+                        for (int j = 0; j < (int)majTickList.count(); ++j) {
+                            const int y = map[QwtPlot::yLeft].transform(majTickList[j]);
+                            if (y >= low && y <= high)
+                                QwtPainter::drawLine(painter, x + 1, y, x - effMajLen, y);
+                        }
+                    }
+                    painter->restore();
+                }
+            }
+            continue;
+        }
+
+        if (i == QwtPlot::xTop && g && g->hasColorScaleOnAxis(QwtPlot::xTop)) {
+            if (g->axesBackbones() && axisEnabled(QwtPlot::xBottom)) {
+                ScaleDraw *botSd = (ScaleDraw *)axisScaleDraw(QwtPlot::xBottom);
+                const int bMajType = botSd ? botSd->majorTicksStyle() : ScaleDraw::None;
+                const int bMinType = botSd ? botSd->minorTicksStyle() : ScaleDraw::None;
+                const bool bMin = (bMinType == ScaleDraw::In || bMinType == ScaleDraw::Both);
+                const bool bMaj = (bMajType == ScaleDraw::In || bMajType == ScaleDraw::Both);
+                const QwtScaleDiv *bScDiv = axisScaleDiv(QwtPlot::xBottom);
+                if ((bMin || bMaj) && bScDiv) {
+                    const QColor color = axisWidget(QwtPlot::xBottom)
+                            ? axisWidget(QwtPlot::xBottom)
+                                      ->palette()
+                                      .color(QPalette::Active, QPalette::WindowText)
+                            : Qt::black;
+                    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+                    const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
+                    const int effMinLen = qMax(1, qRound(double(minTickLength) * tickScale));
+                    const int effMajLen = qMax(1, qRound(double(majTickLength) * tickScale));
+                    painter->save();
+                    painter->setPen(QPen(color, tickPw, Qt::SolidLine));
+                    const int y = rect.top();
+                    const int low = rect.left() + (axisEnabled(QwtPlot::yLeft) ? 1 : 0);
+                    const int high = rect.right() - (axisEnabled(QwtPlot::yRight) ? 1 : 0);
+                    if (bMin) {
+                        const QwtValueList minTickList = bScDiv->ticks(QwtScaleDiv::MinorTick);
+                        for (int j = 0; j < (int)minTickList.count(); ++j) {
+                            const int x = map[QwtPlot::xBottom].transform(minTickList[j]);
+                            if (x >= low && x <= high)
+                                QwtPainter::drawLine(painter, x, y, x, y + effMinLen);
+                        }
+                        const QwtValueList medTickList = bScDiv->ticks(QwtScaleDiv::MediumTick);
+                        for (int j = 0; j < (int)medTickList.count(); ++j) {
+                            const int x = map[QwtPlot::xBottom].transform(medTickList[j]);
+                            if (x >= low && x <= high)
+                                QwtPainter::drawLine(painter, x, y, x, y + effMinLen);
+                        }
+                    }
+                    if (bMaj) {
+                        const QwtValueList majTickList = bScDiv->ticks(QwtScaleDiv::MajorTick);
+                        for (int j = 0; j < (int)majTickList.count(); ++j) {
+                            const int x = map[QwtPlot::xBottom].transform(majTickList[j]);
+                            if (x >= low && x <= high)
+                                QwtPainter::drawLine(painter, x, y, x, y + effMajLen);
+                        }
+                    }
+                    painter->restore();
+                }
+            }
+            continue;
+        }
+
         ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(i);
         int majorTicksType = sd->majorTicksStyle();
         int minorTicksType = sd->minorTicksStyle();
@@ -281,67 +408,85 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
             drawInwardTicks(painter, rect, map[i], i, min, maj);
     }
     if (g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones()) {
-        int apw2 = axesLinewidth() / 2;
+        const double devScale = qMax(1.0, s_toriPrintDeviceScale);
+        const double lw = qMax(1.0, double(axesLinewidth()) * devScale);
         bool clp = painter->hasClipping();
         painter->save();
         painter->setPen(QPen(canvas()->palette().color(QPalette::Active, QPalette::WindowText),
-                             axesLinewidth(), Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+                             lw, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+        painter->setBrush(Qt::NoBrush);
         painter->setClipping(false);
-        const QRect br = rect.adjusted(-(apw2 + 1), -(apw2 + 1), apw2, apw2);
+        const QRectF br = QRectF(rect).adjusted(-0.5 * lw, -0.5 * lw, 0.5 * lw, 0.5 * lw);
         const bool forceFrame = (pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales);
         const bool showLeft = g->isAxisBackboneVisible(QwtPlot::yLeft) || forceFrame;
         const bool showRight = g->isAxisBackboneVisible(QwtPlot::yRight) || forceFrame;
         const bool showBottom = g->isAxisBackboneVisible(QwtPlot::xBottom) || forceFrame;
         const bool showTop = g->isAxisBackboneVisible(QwtPlot::xTop) || forceFrame;
 
-        auto drawVEdge = [&](int xEdge, int axisId, int mirrorAxisId) {
+        QColor gapBg = canvasBackground();
+        if (!gapBg.isValid() || gapBg.alpha() == 0)
+            gapBg = canvas()->palette().color(QPalette::Window);
+        if (!gapBg.isValid() || gapBg.alpha() == 0)
+            gapBg = Qt::white;
+        const double eraseW = qMax(lw, double(canvas()->lineWidth()) * devScale) + 3.0 * devScale;
+        const double gap = 4.0 * devScale;
+        const double slashDx = 5.0 * devScale;
+        const double slashDy = 3.0 * devScale;
+
+        auto drawVEdge = [&](double xEdge, int axisId, int mirrorAxisId) {
             Graph::AxisBreakSpec brk = g->axisBreak(axisId);
             int mapAxis = axisId;
             if (!brk.enabled && !hasVisibleItemOnAxis(axisId) && g->axisBreak(mirrorAxisId).enabled) {
                 brk = g->axisBreak(mirrorAxisId);
                 mapAxis = mirrorAxisId;
             }
-            const int y0 = br.top();
-            const int y1 = br.bottom();
-            const int gap = 4;
+            const double y0 = br.top();
+            const double y1 = br.bottom();
             if (brk.enabled) {
-                const int brkPx = map[mapAxis].transform(brk.breakFrom);
-                if (brkPx > y0 + gap + 4 && brkPx < y1 - gap - 4) {
-                    painter->drawLine(QPoint(xEdge, y0), QPoint(xEdge, brkPx - gap));
-                    painter->drawLine(QPoint(xEdge, brkPx + gap), QPoint(xEdge, y1));
-                    painter->drawLine(QPoint(xEdge - 5, brkPx - gap + 3),
-                                      QPoint(xEdge + 5, brkPx - gap - 3));
-                    painter->drawLine(QPoint(xEdge - 5, brkPx + gap + 3),
-                                      QPoint(xEdge + 5, brkPx + gap - 3));
+                const double brkPx = map[mapAxis].xTransform(brk.breakFrom);
+                if (brkPx > y0 + gap + 4.0 * devScale && brkPx < y1 - gap - 4.0 * devScale) {
+                    painter->save();
+                    painter->setPen(QPen(gapBg, eraseW, Qt::SolidLine, Qt::FlatCap));
+                    painter->drawLine(QPointF(xEdge, brkPx - gap), QPointF(xEdge, brkPx + gap));
+                    painter->restore();
+                    painter->drawLine(QPointF(xEdge, y0), QPointF(xEdge, brkPx - gap));
+                    painter->drawLine(QPointF(xEdge, brkPx + gap), QPointF(xEdge, y1));
+                    painter->drawLine(QPointF(xEdge - slashDx, brkPx - gap + slashDy),
+                                      QPointF(xEdge + slashDx, brkPx - gap - slashDy));
+                    painter->drawLine(QPointF(xEdge - slashDx, brkPx + gap + slashDy),
+                                      QPointF(xEdge + slashDx, brkPx + gap - slashDy));
                     return;
                 }
             }
-            painter->drawLine(QPoint(xEdge, y0), QPoint(xEdge, y1));
+            painter->drawLine(QPointF(xEdge, y0), QPointF(xEdge, y1));
         };
 
-        auto drawHEdge = [&](int yEdge, int axisId, int mirrorAxisId) {
+        auto drawHEdge = [&](double yEdge, int axisId, int mirrorAxisId) {
             Graph::AxisBreakSpec brk = g->axisBreak(axisId);
             int mapAxis = axisId;
             if (!brk.enabled && !hasVisibleItemOnAxis(axisId) && g->axisBreak(mirrorAxisId).enabled) {
                 brk = g->axisBreak(mirrorAxisId);
                 mapAxis = mirrorAxisId;
             }
-            const int x0 = br.left();
-            const int x1 = br.right();
-            const int gap = 4;
+            const double x0 = br.left();
+            const double x1 = br.right();
             if (brk.enabled) {
-                const int brkPx = map[mapAxis].transform(brk.breakFrom);
-                if (brkPx > x0 + gap + 4 && brkPx < x1 - gap - 4) {
-                    painter->drawLine(QPoint(x0, yEdge), QPoint(brkPx - gap, yEdge));
-                    painter->drawLine(QPoint(brkPx + gap, yEdge), QPoint(x1, yEdge));
-                    painter->drawLine(QPoint(brkPx - gap - 3, yEdge + 5),
-                                      QPoint(brkPx - gap + 3, yEdge - 5));
-                    painter->drawLine(QPoint(brkPx + gap - 3, yEdge + 5),
-                                      QPoint(brkPx + gap + 3, yEdge - 5));
+                const double brkPx = map[mapAxis].xTransform(brk.breakFrom);
+                if (brkPx > x0 + gap + 4.0 * devScale && brkPx < x1 - gap - 4.0 * devScale) {
+                    painter->save();
+                    painter->setPen(QPen(gapBg, eraseW, Qt::SolidLine, Qt::FlatCap));
+                    painter->drawLine(QPointF(brkPx - gap, yEdge), QPointF(brkPx + gap, yEdge));
+                    painter->restore();
+                    painter->drawLine(QPointF(x0, yEdge), QPointF(brkPx - gap, yEdge));
+                    painter->drawLine(QPointF(brkPx + gap, yEdge), QPointF(x1, yEdge));
+                    painter->drawLine(QPointF(brkPx - gap - slashDy, yEdge + slashDx),
+                                      QPointF(brkPx - gap + slashDy, yEdge - slashDx));
+                    painter->drawLine(QPointF(brkPx + gap - slashDy, yEdge + slashDx),
+                                      QPointF(brkPx + gap + slashDy, yEdge - slashDx));
                     return;
                 }
             }
-            painter->drawLine(QPoint(x0, yEdge), QPoint(x1, yEdge));
+            painter->drawLine(QPointF(x0, yEdge), QPointF(x1, yEdge));
         };
 
         const bool anyBreak = g->axisBreak(QwtPlot::yLeft).enabled
@@ -377,8 +522,13 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
     QPalette pal = axisWidget(axis)->palette();
     QColor color = pal.color(QPalette::Active, QPalette::WindowText);
 
+    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+    const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
+    const int effMinTick = qMax(1, qRound(double(minTickLength) * tickScale));
+    const int effMajTick = qMax(1, qRound(double(majTickLength) * tickScale));
+
     painter->save();
-    painter->setPen(QPen(color, axesLinewidth(), Qt::SolidLine));
+    painter->setPen(QPen(color, tickPw, Qt::SolidLine));
 
     QwtScaleDiv *scDiv = (QwtScaleDiv *)axisScaleDiv(axis);
     const QwtValueList minTickList = scDiv->ticks(QwtScaleDiv::MinorTick);
@@ -404,12 +554,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x, y, x + minTickLength, y);
+                    QwtPainter::drawLine(painter, x, y, x + effMinTick, y);
             }
             for (j = 0; j < medTicks; j++) {
                 y = map.transform(medTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x, y, x + minTickLength, y);
+                    QwtPainter::drawLine(painter, x, y, x + effMinTick, y);
             }
         }
 
@@ -417,7 +567,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < majTicks; j++) {
                 y = map.transform(majTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x, y, x + majTickLength, y);
+                    QwtPainter::drawLine(painter, x, y, x + effMajTick, y);
             }
         }
         break;
@@ -434,12 +584,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x + 1, y, x - minTickLength, y);
+                    QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
             }
             for (j = 0; j < medTicks; j++) {
                 y = map.transform(medTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x + 1, y, x - minTickLength, y);
+                    QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
             }
         }
 
@@ -447,7 +597,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < majTicks; j++) {
                 y = map.transform(majTickList[j]);
                 if (y >= low && y <= high)
-                    QwtPainter::drawLine(painter, x + 1, y, x - majTickLength, y);
+                    QwtPainter::drawLine(painter, x + 1, y, x - effMajTick, y);
             }
         }
     } break;
@@ -464,12 +614,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - minTickLength);
+                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
             }
             for (j = 0; j < medTicks; j++) {
                 x = map.transform(medTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - minTickLength);
+                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
             }
         }
 
@@ -477,7 +627,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < majTicks; j++) {
                 x = map.transform(majTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - majTickLength);
+                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMajTick);
             }
         }
         break;
@@ -495,12 +645,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y, x, y + minTickLength);
+                    QwtPainter::drawLine(painter, x, y, x, y + effMinTick);
             }
             for (j = 0; j < medTicks; j++) {
                 x = map.transform(medTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y, x, y + minTickLength);
+                    QwtPainter::drawLine(painter, x, y, x, y + effMinTick);
             }
         }
 
@@ -508,7 +658,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
             for (j = 0; j < majTicks; j++) {
                 x = map.transform(majTickList[j]);
                 if (x >= low && x <= high)
-                    QwtPainter::drawLine(painter, x, y, x, y + majTickLength);
+                    QwtPainter::drawLine(painter, x, y, x, y + effMajTick);
             }
         }
         break;
@@ -593,8 +743,12 @@ void Plot::updateLayout()
         rightOverhang = qMax(rightOverhang, e + 6);
     }
     if (axisWidget(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)->scaleDraw()) {
-        const int minRightDim = qMax(20, rightOverhang - margin() + 2);
-        axisWidget(QwtPlot::yRight)->scaleDraw()->setMinimumExtent(minRightDim);
+        if (axisWidget(QwtPlot::yRight)->isColorBarEnabled()) {
+            axisWidget(QwtPlot::yRight)->scaleDraw()->setMinimumExtent(0);
+        } else {
+            const int minRightDim = qMax(20, rightOverhang - margin() + 2);
+            axisWidget(QwtPlot::yRight)->scaleDraw()->setMinimumExtent(minRightDim);
+        }
     }
 
     int topOverhang = 18;
@@ -609,8 +763,20 @@ void Plot::updateLayout()
         topOverhang = qMax(topOverhang, s + 4);
     }
     if (axisWidget(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)->scaleDraw()) {
-        const int minTopDim = qMax(8, topOverhang - margin() + 2);
-        axisWidget(QwtPlot::xTop)->scaleDraw()->setMinimumExtent(minTopDim);
+        if (axisWidget(QwtPlot::xTop)->isColorBarEnabled()) {
+            axisWidget(QwtPlot::xTop)->scaleDraw()->setMinimumExtent(0);
+        } else {
+            const int minTopDim = qMax(8, topOverhang - margin() + 2);
+            axisWidget(QwtPlot::xTop)->scaleDraw()->setMinimumExtent(minTopDim);
+        }
+    }
+
+    const int outsideRightMargin = property("_outsideRightMargin").toInt();
+    if (outsideRightMargin > 0) {
+        if (contentsMargins().right() != outsideRightMargin)
+            setContentsMargins(0, 0, outsideRightMargin, 0);
+    } else if (contentsMargins().right() != 0) {
+        setContentsMargins(0, 0, 0, 0);
     }
 
     QwtPlot::updateLayout();
@@ -619,6 +785,9 @@ void Plot::updateLayout()
         axisWidget(QwtPlot::xBottom)->clearMask();
     if (axisWidget(QwtPlot::xTop))
         axisWidget(QwtPlot::xTop)->clearMask();
+
+    if (Graph *g = qobject_cast<Graph *>(parent()))
+        g->updateSelectionOverlayGeometry();
 }
 
 void Plot::replot()
@@ -626,13 +795,15 @@ void Plot::replot()
     updateAxes();
     updateLayout();
     QwtPlot::replot();
+    if (property("_outsideRightMargin").toInt() > 0)
+        update();
 }
 
 void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFilter &pfilter) const
 {
     const_cast<Plot *>(this)->updateLayout();
     printFrame(painter, plotRect);
-    const int m = qMax(margin(), 14);
+    const int m = qMax(0, margin());
     int mLeft = m;
     int mTop = m;
     int mRight = m;
@@ -644,6 +815,9 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
             axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
         mRight = qMax(mRight, e + 6);
     }
+    const int outsideRightMargin = property("_outsideRightMargin").toInt();
+    if (outsideRightMargin > 0)
+        mRight += outsideRightMargin;
     if (!axisEnabled(QwtPlot::xTop) && title().isEmpty()) {
         int s = 0, e = 0;
         if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft))
@@ -651,10 +825,48 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
         mTop = qMax(mTop, s + 6);
     }
 
+    // QwtPlot::print() already subtracts plotLayout()->margin() (== m) on all 4 sides
+    // when PrintMargin is set in pfilter. Only pre-inset by extra overhang beyond m so
+    // exported canvasRect matches on-screen QwtPlot::updateLayout() 1:1.
+    const int baseM = (pfilter.options() & QwtPlotPrintFilter::PrintMargin) ? m : 0;
+    const int adjL = qMax(0, mLeft - baseM);
+    const int adjT = qMax(0, mTop - baseM);
+    const int adjR = qMax(0, mRight - baseM);
+    const int adjB = qMax(0, mBottom - baseM);
+
     const QRect innerRect =
-            (plotRect.width() > (mLeft + mRight) && plotRect.height() > (mTop + mBottom))
-            ? plotRect.adjusted(mLeft, mTop, -mRight, -mBottom)
+            (plotRect.width() > (adjL + adjR + 2 * baseM)
+             && plotRect.height() > (adjT + adjB + 2 * baseM))
+            ? plotRect.adjusted(adjL, adjT, -adjR, -adjB)
             : plotRect;
+
+    Graph *g = qobject_cast<Graph *>(parent());
+    const bool suppressScaleBackbone =
+            g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones();
+    const double savedScale = s_toriPrintDeviceScale;
+    double devScale = 1.0;
+    if (painter && painter->device() && logicalDpiX() > 0) {
+        const int devDpi = painter->device()->logicalDpiX();
+        if (devDpi > 0)
+            devScale = qMax(1.0, double(devDpi) / double(logicalDpiX()));
+    }
+    struct ScopedPrintFrameState {
+        bool suppress;
+        double prevScale;
+        ScopedPrintFrameState(bool sup, double prev, double cur) : suppress(sup), prevScale(prev)
+        {
+            s_toriPrintDeviceScale = cur;
+            if (suppress)
+                setToriSuppressScaleBackboneInPrint(true);
+        }
+        ~ScopedPrintFrameState()
+        {
+            if (suppress)
+                setToriSuppressScaleBackboneInPrint(false);
+            s_toriPrintDeviceScale = prevScale;
+        }
+    } frameGuard(suppressScaleBackbone, savedScale, devScale);
+
     QwtPlot::print(painter, innerRect, pfilter);
 }
 
@@ -710,7 +922,7 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
             continue;
 
         QwtPlotCurve *qc = dynamic_cast<QwtPlotCurve *>(item);
-        if (!qc)
+        if (!qc || !qc->isVisible())
             continue;
         PlotCurve *pc = dynamic_cast<PlotCurve *>(item);
         if (pc && pc->type() == Graph::ErrorBars)
@@ -768,6 +980,80 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
             }
         }
     }
+
+    if (dmin >= 100.0) {
+        auto segDistSq = [&](double ax, double ay, double bx, double by) -> double {
+            const double dx = bx - ax;
+            const double dy = by - ay;
+            const double len2 = dx * dx + dy * dy;
+            if (len2 > 1e-12) {
+                const double t = qBound(0.0, ((pxClick - ax) * dx + (pyClick - ay) * dy) / len2, 1.0);
+                const double projX = ax + t * dx;
+                const double projY = ay + t * dy;
+                return qwtSqr(pxClick - projX) + qwtSqr(pyClick - projY);
+            }
+            return qwtSqr(pxClick - ax) + qwtSqr(pyClick - ay);
+        };
+
+        for (QMap<int, QwtPlotItem *>::iterator iter = d_curves.begin(); iter != d_curves.end();
+             ++iter) {
+            QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(iter.value());
+            if (!er || !er->isVisible())
+                continue;
+            DataCurve *mc = er->masterCurve();
+            if (mc && !mc->isVisible())
+                continue;
+            const QwtScaleMap &xMap = map[er->xAxis()];
+            const QwtScaleMap &yMap = map[er->yAxis()];
+            const int n = er->dataSize();
+            const double halfCap = 0.5 * double(qMax(0, er->capLength()));
+            const bool isVert = (er->direction() == QwtErrorPlotCurve::Vertical);
+            for (int i = 0; i < n; ++i) {
+                if (mc && mc->isPointMasked(i))
+                    continue;
+                const double xv = er->x(i);
+                const double yv = er->y(i);
+                const double ev = std::fabs(er->errorValue(i));
+                if (!std::isfinite(xv) || !std::isfinite(yv) || !std::isfinite(ev) || ev <= 0.0)
+                    continue;
+                double d2 = 1.0e30;
+                if (isVert) {
+                    const double px = xMap.xTransform(xv);
+                    const double py1 = yMap.xTransform(er->minusSide() ? (yv - ev) : yv);
+                    const double py2 = yMap.xTransform(er->plusSide() ? (yv + ev) : yv);
+                    if (!std::isfinite(px) || !std::isfinite(py1) || !std::isfinite(py2))
+                        continue;
+                    d2 = segDistSq(px, py1, px, py2);
+                    if (halfCap > 0.5) {
+                        if (er->minusSide())
+                            d2 = qMin(d2, segDistSq(px - halfCap, py1, px + halfCap, py1));
+                        if (er->plusSide())
+                            d2 = qMin(d2, segDistSq(px - halfCap, py2, px + halfCap, py2));
+                    }
+                } else {
+                    const double py = yMap.xTransform(yv);
+                    const double px1 = xMap.xTransform(er->minusSide() ? (xv - ev) : xv);
+                    const double px2 = xMap.xTransform(er->plusSide() ? (xv + ev) : xv);
+                    if (!std::isfinite(py) || !std::isfinite(px1) || !std::isfinite(px2))
+                        continue;
+                    d2 = segDistSq(px1, py, px2, py);
+                    if (halfCap > 0.5) {
+                        if (er->minusSide())
+                            d2 = qMin(d2, segDistSq(px1, py - halfCap, px1, py + halfCap));
+                        if (er->plusSide())
+                            d2 = qMin(d2, segDistSq(px2, py - halfCap, px2, py + halfCap));
+                    }
+                }
+                if (d2 < dmin) {
+                    dmin = d2;
+                    const int mcKey = mc ? d_curves.key(mc, -1) : -1;
+                    key = (mcKey >= 0) ? mcKey : iter.key();
+                    point = i;
+                }
+            }
+        }
+    }
+
     dist = (key >= 0) ? int(std::sqrt(dmin)) : 99999;
     return key;
 }
@@ -933,6 +1219,28 @@ const QColor &Plot::paletteBackgroundColor() const
     return palette().color(QPalette::Window);
 }
 
+int Plot::scaleAlignmentToAxis(int alignment)
+{
+    switch (alignment) {
+    case QwtScaleDraw::BottomScale:
+        return QwtPlot::xBottom;
+    case QwtScaleDraw::TopScale:
+        return QwtPlot::xTop;
+    case QwtScaleDraw::LeftScale:
+        return QwtPlot::yLeft;
+    case QwtScaleDraw::RightScale:
+        return QwtPlot::yRight;
+    default:
+        return -1;
+    }
+}
+
+bool Plot::isLog10ScaleEngine(const QwtScaleEngine *se)
+{
+    std::unique_ptr<QwtScaleTransformation> xf(se ? se->transformation() : nullptr);
+    return xf && xf->type() == QwtScaleTransformation::Log10;
+}
+
 void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
 {
     if (!axisValid(axis))
@@ -951,8 +1259,45 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
         return;
 
     const QwtScaleMap map = canvasMap(axis);
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (g && g->axisBreak(axis).enabled) {
+        const Graph::AxisBreakSpec brk = g->axisBreak(axis);
+        const bool isLog = brk.log10Before && brk.log10After;
+        const double p1 = map.p1();
+        const double p2 = map.p2();
+        double frac = (std::fabs(p2 - p1) > 1.0)
+                ? qBound(0.0, (double(pixelPos) - p1) / (p2 - p1), 1.0)
+                : 0.5;
+        if (inverted)
+            frac = 1.0 - frac;
+        double newMin = minVal;
+        double newMax = maxVal;
+        if (isLog) {
+            if (minVal <= 0.0 || maxVal <= 0.0)
+                return;
+            const double logMin = std::log10(minVal);
+            const double logMax = std::log10(maxVal);
+            const double logCenter = logMin + frac * (logMax - logMin);
+            const double newLogMin = logCenter + (logMin - logCenter) * factor;
+            const double newLogMax = logCenter + (logMax - logCenter) * factor;
+            if (newLogMax - newLogMin < 1e-6 || newLogMin < -300.0 || newLogMax > 300.0)
+                return;
+            newMin = std::pow(10.0, newLogMin);
+            newMax = std::pow(10.0, newLogMax);
+        } else {
+            const double centerVal = minVal + frac * (maxVal - minVal);
+            newMin = centerVal + (minVal - centerVal) * factor;
+            newMax = centerVal + (maxVal - centerVal) * factor;
+            if (newMax - newMin <= 1e-15)
+                return;
+        }
+        g->setScale(axis, newMin, newMax, isLog ? 0.0 : g->axisStep(axis), axisMaxMajor(axis),
+                    axisMaxMinor(axis), isLog ? 1 : 0, inverted);
+        return;
+    }
+
     double centerVal = map.invTransform(pixelPos);
-    const bool isLog = (se->transformation()->type() == QwtScaleTransformation::Log10);
+    const bool isLog = isLog10ScaleEngine(se);
 
     double newMin = minVal;
     double newMax = maxVal;
@@ -1016,14 +1361,50 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
         return;
 
     const QwtScaleMap map = canvasMap(axis);
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (g && g->axisBreak(axis).enabled) {
+        const Graph::AxisBreakSpec brk = g->axisBreak(axis);
+        const bool isLog = brk.log10Before && brk.log10After;
+        const double p1 = map.p1();
+        const double p2 = map.p2();
+        if (std::fabs(p2 - p1) <= 1.0)
+            return;
+        double fracDelta = double(startPixel - endPixel) / (p2 - p1);
+        if (inverted)
+            fracDelta = -fracDelta;
+        double newMin = minVal;
+        double newMax = maxVal;
+        if (isLog) {
+            if (minVal <= 0.0 || maxVal <= 0.0)
+                return;
+            const double logMin = std::log10(minVal);
+            const double logMax = std::log10(maxVal);
+            const double logDelta = fracDelta * (logMax - logMin);
+            const double newLogMin = logMin + logDelta;
+            const double newLogMax = logMax + logDelta;
+            if (newLogMin < -300.0 || newLogMax > 300.0)
+                return;
+            newMin = std::pow(10.0, newLogMin);
+            newMax = std::pow(10.0, newLogMax);
+        } else {
+            const double delta = fracDelta * (maxVal - minVal);
+            if (!std::isfinite(delta))
+                return;
+            newMin = minVal + delta;
+            newMax = maxVal + delta;
+        }
+        g->setScale(axis, newMin, newMax, isLog ? 0.0 : g->axisStep(axis), axisMaxMajor(axis),
+                    axisMaxMinor(axis), isLog ? 1 : 0, inverted);
+        return;
+    }
+
     const double vStart = map.invTransform(startPixel);
     const double vEnd = map.invTransform(endPixel);
-    const bool isLog = (se->transformation()->type() == QwtScaleTransformation::Log10);
+    const bool isLog = isLog10ScaleEngine(se);
 
     double newMin = minVal;
     double newMax = maxVal;
     double step = 0.0;
-    Graph *g = qobject_cast<Graph *>(parent());
     if (g && !isLog)
         step = g->axisStep(axis);
 
@@ -1065,6 +1446,29 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
 bool Plot::eventFilter(QObject *object, QEvent *e)
 {
     Graph *g = qobject_cast<Graph *>(parent());
+
+    if (object == this && e->type() == QEvent::Paint) {
+        if (g && !g->isExporting() && g->isLegendVisible()) {
+            if (Legend *leg = g->legend()) {
+                if (canvas() && leg->isVisible() && leg->rect().right() > canvas()->width()) {
+                    QPainter p(this);
+                    p.translate(canvas()->pos());
+                    leg->draw(&p, canvasMap(leg->xAxis()), canvasMap(leg->yAxis()),
+                              canvas()->rect());
+                }
+            }
+        }
+        return false;
+    }
+
+    if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) {
+        if (QWidget *fw = QApplication::focusWidget()) {
+            if (qobject_cast<QLineEdit *>(fw) || qobject_cast<QTextEdit *>(fw)
+                || qobject_cast<QPlainTextEdit *>(fw) || qobject_cast<QAbstractSpinBox *>(fw)) {
+                return false;
+            }
+        }
+    }
 
     auto isSecondaryMirroringPrimary = [this](int primaryAxis, int secondaryAxis) -> bool {
         if (!axisEnabled(secondaryAxis) || hasVisibleItemOnAxis(secondaryAxis))
@@ -1130,10 +1534,15 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
 
         switch (e->type()) {
         case QEvent::Wheel: {
+            QWheelEvent *we = static_cast<QWheelEvent *>(e);
+            const Qt::KeyboardModifiers mods = we->modifiers();
+            if (mods & Qt::ControlModifier) {
+                we->ignore();
+                return false;
+            }
             if (g && (g->zoomOn() || g->activeTool()))
                 return QwtPlot::eventFilter(object, e);
 
-            QWheelEvent *we = static_cast<QWheelEvent *>(e);
             int delta = we->angleDelta().y();
             if (delta == 0)
                 delta = we->angleDelta().x();
@@ -1146,7 +1555,6 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
 #else
             const QPoint pos = we->pos();
 #endif
-            const Qt::KeyboardModifiers mods = we->modifiers();
             bool zoomX = true;
             bool zoomY = true;
             if (d_x_pressed && !d_y_pressed && !d_z_pressed) {
@@ -1161,10 +1569,13 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             } else if (mods & Qt::ShiftModifier) {
                 zoomX = true;
                 zoomY = false;
-            } else if (mods & (Qt::ControlModifier | Qt::AltModifier)) {
+            } else if (mods & Qt::AltModifier) {
                 zoomX = false;
                 zoomY = true;
             }
+
+            MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
 
             if (zoomX) {
                 const bool mirrorTop = isSecondaryMirroringPrimary(QwtPlot::xBottom, QwtPlot::xTop);
@@ -1179,12 +1590,15 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                     zoomAxisAroundPos(QwtPlot::yRight, pos.y(), factor);
             }
             if (g) {
+                g->enableAutoscaling(false);
                 g->syncChildLinkedLayers();
                 replot();
                 g->notifyChanges();
             } else {
                 replot();
             }
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(tr("Zoom Axes"), beforeSnap, 701);
             we->accept();
             return true;
         }
@@ -1194,6 +1608,8 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             if (me->button() == Qt::MiddleButton) {
                 d_is_panning = false;
                 canvas()->setCursor(d_space_pressed ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
                 if (g) {
                     g->setAutoScale();
                 } else {
@@ -1201,6 +1617,8 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                         setAxisAutoScale(a);
                     replot();
                 }
+                if (ml && !beforeSnap.isEmpty())
+                    ml->pushUndoSnapshot(tr("Autoscale Axes"), beforeSnap);
                 me->accept();
                 return true;
             }
@@ -1218,6 +1636,9 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                         && !g->drawTextActive()))) {
                 d_is_panning = true;
                 d_pan_last_pos = me->pos();
+                MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+                setProperty("_panUndoSnap", ml ? ml->captureUndoSnapshot() : QString());
+                setProperty("_panMoved", false);
                 canvas()->setCursor(Qt::ClosedHandCursor);
                 me->accept();
                 return true;
@@ -1231,24 +1652,39 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                 if (!(me->buttons() & (Qt::MiddleButton | Qt::LeftButton))) {
                     d_is_panning = false;
                     canvas()->setCursor(d_space_pressed ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                    const QString beforeSnap = property("_panUndoSnap").toString();
+                    if (property("_panMoved").toBool() && g) {
+                        if (MultiLayer *ml = g->multiLayerParent()) {
+                            if (!beforeSnap.isEmpty())
+                                ml->pushUndoSnapshot(tr("Pan Axes"), beforeSnap, 701);
+                        }
+                    }
+                    setProperty("_panUndoSnap", QString());
+                    setProperty("_panMoved", false);
                     return false;
                 }
                 const QPoint curPos = me->pos();
-                const bool mirrorTop = isSecondaryMirroringPrimary(QwtPlot::xBottom, QwtPlot::xTop);
-                const bool mirrorRight = isSecondaryMirroringPrimary(QwtPlot::yLeft, QwtPlot::yRight);
-                panAxisByPixels(QwtPlot::xBottom, d_pan_last_pos.x(), curPos.x());
-                if (hasVisibleItemOnAxis(QwtPlot::xTop) || mirrorTop)
-                    panAxisByPixels(QwtPlot::xTop, d_pan_last_pos.x(), curPos.x());
-                panAxisByPixels(QwtPlot::yLeft, d_pan_last_pos.y(), curPos.y());
-                if (hasVisibleItemOnAxis(QwtPlot::yRight) || mirrorRight)
-                    panAxisByPixels(QwtPlot::yRight, d_pan_last_pos.y(), curPos.y());
-                d_pan_last_pos = curPos;
-                if (g) {
-                    g->syncChildLinkedLayers();
-                    replot();
-                    g->notifyChanges();
-                } else {
-                    replot();
+                if (curPos != d_pan_last_pos) {
+                    setProperty("_panMoved", true);
+                    const bool mirrorTop =
+                            isSecondaryMirroringPrimary(QwtPlot::xBottom, QwtPlot::xTop);
+                    const bool mirrorRight =
+                            isSecondaryMirroringPrimary(QwtPlot::yLeft, QwtPlot::yRight);
+                    panAxisByPixels(QwtPlot::xBottom, d_pan_last_pos.x(), curPos.x());
+                    if (hasVisibleItemOnAxis(QwtPlot::xTop) || mirrorTop)
+                        panAxisByPixels(QwtPlot::xTop, d_pan_last_pos.x(), curPos.x());
+                    panAxisByPixels(QwtPlot::yLeft, d_pan_last_pos.y(), curPos.y());
+                    if (hasVisibleItemOnAxis(QwtPlot::yRight) || mirrorRight)
+                        panAxisByPixels(QwtPlot::yRight, d_pan_last_pos.y(), curPos.y());
+                    d_pan_last_pos = curPos;
+                    if (g) {
+                        g->enableAutoscaling(false);
+                        g->syncChildLinkedLayers();
+                        replot();
+                        g->notifyChanges();
+                    } else {
+                        replot();
+                    }
                 }
                 me->accept();
                 return true;
@@ -1262,6 +1698,15 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                 if (me->button() == Qt::MiddleButton || me->button() == Qt::LeftButton) {
                     d_is_panning = false;
                     canvas()->setCursor(d_space_pressed ? Qt::OpenHandCursor : Qt::ArrowCursor);
+                    const QString beforeSnap = property("_panUndoSnap").toString();
+                    if (property("_panMoved").toBool() && g) {
+                        if (MultiLayer *ml = g->multiLayerParent()) {
+                            if (!beforeSnap.isEmpty())
+                                ml->pushUndoSnapshot(tr("Pan Axes"), beforeSnap, 701);
+                        }
+                    }
+                    setProperty("_panUndoSnap", QString());
+                    setProperty("_panMoved", false);
                     me->accept();
                     return true;
                 }

@@ -957,6 +957,56 @@ class GraphProxy:
             "graph.apply_frame_preset", graph=self.name, preset=preset, layer=layer
         )
 
+    def apply_square_frame(self) -> Dict[str, Any]:
+        return self.session.call("graph.apply_square_frame", graph=self.name)
+
+    def set_panel_labels(
+        self,
+        enabled: bool = True,
+        placement: str = "outside_top_left",
+        pattern: str = "(%a)",
+        font_pt: int = 0,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.set_panel_labels",
+            graph=self.name,
+            enabled=enabled,
+            placement=placement,
+            pattern=pattern,
+            font_pt=int(font_pt),
+        )
+
+    def undo(self) -> Dict[str, Any]:
+        return self.session.call("app.undo", graph=self.name)
+
+    def redo(self) -> Dict[str, Any]:
+        return self.session.call("app.redo", graph=self.name)
+
+    def drop_columns(
+        self,
+        table: Union[str, TableProxy],
+        columns: Sequence[Union[int, str]],
+        x_column: Optional[Union[int, str]] = None,
+        right_y: bool = False,
+        replace: bool = False,
+        layer: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        col_list = (
+            [columns]
+            if isinstance(columns, (str, int))
+            else [c for c in columns]
+        )
+        return self.session.call(
+            "graph.drop_columns",
+            table=_name_of(table),
+            columns=col_list,
+            x_column=(x_column if x_column is not None else ""),
+            graph=self.name,
+            layer=(int(layer) if layer is not None else None),
+            right_y=bool(right_y),
+            replace=bool(replace),
+        )
+
     def set_aspect_ratio(
         self,
         enabled: bool = True,
@@ -1079,35 +1129,79 @@ class GraphProxy:
 
     def set_curve_style(
         self,
-        curve_index: int = 0,
+        curve_index: Optional[Union[int, str]] = 0,
         *,
+        curve: Optional[Union[int, str]] = None,
         color: Optional[str] = None,
         line_width: Optional[float] = None,
         line_style: Optional[str] = None,
         alpha: Optional[float] = None,
         symbol_type: Optional[str] = None,
         symbol_size: Optional[int] = None,
+        symbol_hollow: Optional[bool] = None,
+        symbol_fill: Optional[bool] = None,
+        visible: Optional[bool] = None,
+        y_axis: Optional[str] = None,
         fill_area: Optional[bool] = None,
         bar_gap: Optional[int] = None,
         bar_offset: Optional[int] = None,
         layer: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        resolved_idx: Optional[int] = None
+        resolved_curve: Optional[Union[int, str]] = curve
+        if isinstance(curve_index, str):
+            resolved_curve = curve_index
+        elif curve is None and curve_index is not None:
+            resolved_idx = int(curve_index)
         return self.session.call(
             "graph.set_curve_style",
             graph=self.name,
             layer=layer,
-            curve_index=curve_index,
+            curve_index=resolved_idx,
+            curve=resolved_curve,
             color=color,
             line_width=line_width,
             line_style=line_style,
             alpha=alpha,
             symbol_type=symbol_type,
             symbol_size=symbol_size,
+            symbol_hollow=symbol_hollow,
+            symbol_fill=symbol_fill,
+            visible=visible,
+            y_axis=y_axis,
             fill_area=fill_area,
             bar_gap=bar_gap,
             bar_offset=bar_offset,
             **kwargs,
+        )
+
+    def set_curve_visible(
+        self,
+        curve: Union[int, str] = 0,
+        visible: bool = True,
+        layer: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.set_curve_visible",
+            graph=self.name,
+            layer=layer,
+            curve=curve,
+            visible=bool(visible),
+        )
+
+    def move_curve(
+        self,
+        from_index: int,
+        to_index: int,
+        layer: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.move_curve",
+            graph=self.name,
+            layer=layer,
+            from_index=int(from_index),
+            to_index=int(to_index),
         )
 
     def set_stack_offsets(
@@ -1133,11 +1227,30 @@ class GraphProxy:
             reset=reset,
         )
 
-    def apply_palette(
-        self, palette: str = "okabe_ito", layer: Optional[int] = None
+    def apply_series_scheme(
+        self, scheme: str = "bw_hollow_filled", layer: Optional[int] = None
     ) -> Dict[str, Any]:
         return self.session.call(
-            "graph.apply_palette", graph=self.name, palette=palette, layer=layer
+            "graph.apply_series_scheme",
+            graph=self.name,
+            scheme=scheme,
+            layer=layer,
+        )
+
+    def apply_palette(
+        self,
+        palette: str = "okabe_ito",
+        layer: Optional[int] = None,
+        gradient: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.apply_palette",
+            graph=self.name,
+            palette=palette,
+            layer=layer,
+            gradient=gradient,
+            **kwargs,
         )
 
     def set_colorbar(
@@ -1162,8 +1275,35 @@ class GraphProxy:
             **kwargs,
         )
 
-    def set_legend(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.session.call("graph.set_legend", graph=self.name, **kwargs)
+    def set_legend(
+        self,
+        *,
+        position: Optional[str] = None,
+        visible: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.set_legend",
+            graph=self.name,
+            position=position,
+            visible=visible,
+            **kwargs,
+        )
+
+    def auto_place_legend(
+        self,
+        margin_px: int = 12,
+        layer: Optional[int] = None,
+        *,
+        position: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.auto_place_legend",
+            graph=self.name,
+            margin_px=int(margin_px),
+            layer=layer,
+            position=position,
+        )
 
     def add_text(
         self,
@@ -1563,6 +1703,40 @@ class Session:
     def recalculate(self) -> Dict[str, Any]:
         return self.call("app.recalculate")
 
+    def undo(self, graph: Optional[Union[str, GraphProxy]] = None) -> Dict[str, Any]:
+        return self.call("app.undo", graph=_name_of(graph))
+
+    def redo(self, graph: Optional[Union[str, GraphProxy]] = None) -> Dict[str, Any]:
+        return self.call("app.redo", graph=_name_of(graph))
+
+    def drop_columns(
+        self,
+        table: Union[str, TableProxy],
+        columns: Sequence[Union[int, str]],
+        x_column: Optional[Union[int, str]] = None,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        layer: int = 1,
+        right_y: bool = False,
+        replace: bool = False,
+    ) -> GraphProxy:
+        col_list = (
+            [columns]
+            if isinstance(columns, (str, int))
+            else [c for c in columns]
+        )
+        res = self.call(
+            "graph.drop_columns",
+            table=_name_of(table),
+            columns=col_list,
+            x_column=(x_column if x_column is not None else ""),
+            graph=(_name_of(graph) if graph is not None else ""),
+            layer=int(layer),
+            right_y=bool(right_y),
+            replace=bool(replace),
+        )
+        g_name = res.get("graph") or res.get("name") or (_name_of(graph) if graph is not None else "")
+        return GraphProxy(self, str(g_name))
+
     def set_focus_hud(self, enabled: bool) -> Dict[str, Any]:
         return self.call("app.set_focus_hud", enabled=enabled)
 
@@ -1600,14 +1774,25 @@ class Session:
     # ------------------------------------------------------------------
     def create_table(
         self,
-        rows: int = 30,
+        rows: Union[int, str] = 30,
         cols: Optional[int] = None,
         name: Optional[str] = None,
         *,
         col_names: Optional[Sequence[str]] = None,
         designations: Optional[Union[Sequence[str], Mapping[str, str]]] = None,
+        data: Optional[Mapping[str, Sequence[Any]]] = None,
         **kwargs: Any,
     ) -> TableProxy:
+        if isinstance(rows, str):
+            if name is None:
+                name = rows
+            rows = 30
+        if data is not None:
+            data_keys = list(data.keys())
+            if col_names is None:
+                col_names = data_keys
+            inferred_rows = max((len(v) for v in data.values()), default=1)
+            rows = max(1, inferred_rows) if cols is None else max(int(rows), inferred_rows)
         resolved_cols = (
             cols
             if cols is not None
@@ -1617,7 +1802,7 @@ class Session:
             resolved_cols = len(col_names)
         res = self.call(
             "table.create",
-            rows=rows,
+            rows=int(rows),
             cols=resolved_cols,
             name=name,
             col_names=(list(col_names) if col_names is not None else None),
@@ -1628,23 +1813,38 @@ class Session:
             ),
             **kwargs,
         )
-        return TableProxy(self, res["name"])
+        tbl = TableProxy(self, res["name"])
+        if data is not None:
+            for k, vals in data.items():
+                tbl.set_column(k, list(vals))
+        return tbl
 
     def create_matrix(
         self,
-        rows: int = 32,
+        rows: Union[int, str] = 32,
         cols: int = 32,
         name: Optional[str] = None,
         x_min: float = 0.0,
         x_max: float = 1.0,
         y_min: float = 0.0,
         y_max: float = 1.0,
+        *,
+        values: Optional[Sequence[Sequence[Optional[float]]]] = None,
+        data: Optional[Sequence[Sequence[Optional[float]]]] = None,
         **kwargs: Any,
     ) -> MatrixProxy:
+        if isinstance(rows, str):
+            if name is None:
+                name = rows
+            rows = 32
+        grid = values if values is not None else data
+        if grid is not None and len(grid) > 0:
+            rows = len(grid)
+            cols = len(grid[0]) if len(grid[0]) > 0 else 1
         res = self.call(
             "matrix.create",
-            rows=rows,
-            cols=cols,
+            rows=int(rows),
+            cols=int(cols),
             name=name,
             x_min=x_min,
             x_max=x_max,
@@ -1652,7 +1852,10 @@ class Session:
             y_max=y_max,
             **kwargs,
         )
-        return MatrixProxy(self, res["name"])
+        mat = MatrixProxy(self, res["name"])
+        if grid is not None:
+            mat.set_data(grid)
+        return mat
 
     # ------------------------------------------------------------------
     # 4. 2D / 3D / Matrix Plotting
@@ -1668,6 +1871,8 @@ class Session:
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        if graph_name is None and "name" in kwargs:
+            graph_name = kwargs.pop("name")
         res = self.call(
             "plot.xy",
             table=_name_of(table),

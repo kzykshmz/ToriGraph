@@ -32,6 +32,7 @@
 #include <QDialog>
 #include <QLabel>
 #include <QList>
+#include <QPointer>
 #include <QVector>
 #include <QTextEdit>
 #include <QTabWidget>
@@ -158,6 +159,9 @@ protected:
     QLineEdit *boxBreakFrom, *boxBreakTo, *boxBreakStepBefore, *boxBreakStepAfter;
     QDoubleSpinBox *boxBreakPositionPct;
     QComboBox *boxBreakTypeBefore, *boxBreakTypeAfter;
+    QPushButton *btnAutoRange;
+    QSpinBox *boxTitleFontSize;
+    QSpinBox *boxAxesFontSize;
 
 public slots:
     void setAxisType(int axis);
@@ -223,6 +227,10 @@ public slots:
     void onTitleTextEdited();
     void onAutoAxisTitleToggled(bool checked);
     void onAxisUnitFormatChanged(int index);
+    void autoRangeCurrentAxis();
+    void onTitleFontSizeChanged(int pt);
+    void onAxesFontSizeChanged(int pt);
+    void onAxesTitlesRowChanged(int row);
 
     //! Shows the dialog as a modal dialog
     /**
@@ -238,6 +246,100 @@ protected:
     void showAxis(int, Graph::AxisType, const QString &, bool, int, int, bool, const QColor &, int, int, int,
                   int, const QString &, const QColor &);
 
+    struct StagedScaleEdit
+    {
+        bool dirty = false;
+        QString start;
+        QString end;
+        QString step;
+        int unitIndex = 0;
+        bool useStep = true;
+        int majorValue = 5;
+        QString minorText;
+        int scaleType = 0;
+        bool inverted = false;
+    };
+
+    struct StagedGridEdit
+    {
+        bool dirty = false;
+        bool majorOn = true;
+        bool minorOn = false;
+        QColor colorMajor;
+        QColor colorMinor;
+        int typeMajor = 0;
+        int typeMinor = 0;
+        int widthMajor = 1;
+        int widthMinor = 1;
+    };
+
+    struct StagedAxisEdit
+    {
+        bool dirty = false;
+        bool showAxis = true;
+        bool showBackbone = true;
+        QString title;
+        bool autoTitle = true;
+        int unitDisplayMode = 0;
+        QFont titleFont;
+        bool titleFontDirty = false;
+        QFont axisFont;
+        bool axisFontDirty = false;
+        Graph::AxisType axisType = Graph::AxisType::Numeric;
+        QColor axisColor;
+        QColor axisNumColor;
+        int majTicksType = 0;
+        int minTicksType = 0;
+        int baseline = 0;
+        bool showLabels = true;
+        QString colName;
+        QString tableName;
+        int formatIndex = 0;
+        QString formatText;
+        int precision = 0;
+        int angle = 0;
+        bool showFormula = false;
+        QString formula;
+        QString divideFactor = QStringLiteral("1");
+        QString tickPrefix;
+        QString tickSuffix;
+    };
+
+    struct StagedBreakEdit
+    {
+        bool dirty = false;
+        bool enabled = false;
+        QString breakFrom;
+        QString breakTo;
+        double positionPct = 50.0;
+        QString stepBefore;
+        QString stepAfter;
+        int typeBefore = 0;
+        int typeAfter = 0;
+    };
+
+    void clearAllDirtyState();
+    void captureScaleRowFromUi(int row);
+    void captureGridRowFromUi(int row);
+    void captureAxisRowFromUi(int row);
+    void captureBreakRowFromUi(int row);
+    void markScaleDirty();
+    void markGridDirty();
+    void markAxisDirty();
+    void markFrameDirty();
+    void markBreakDirty();
+    bool commitScaleRow(int row);
+    void commitGridState();
+    bool commitAxisRow(int row);
+    void commitFrameState();
+    bool commitBreakRow(int row);
+    void ensureAxisRowStaged(int row);
+    void stageFramePreset(Graph::FramePreset preset);
+    QString previewAutoAxisTitle(int qwtAxis, Column::UnitFormat fmt) const;
+    Graph::ReferenceLineSpec buildRefLineSpecFromUi() const;
+    QString formatRefLineListLabel(const Graph::ReferenceLineSpec &sp) const;
+    void syncSelectedRefLineFromUi();
+
     QStringList tickLabelsOn, formatInfo;
     QStringList tablesList;
     QList<int> majTicks, minTicks,  axesBaseline;
@@ -247,8 +349,35 @@ protected:
     int xBottomLabelsRotation, xTopLabelsRotation;
 
     Graph *d_graph;
+    QPointer<Graph> d_graphGuard;
     //! Last selected tab
     QWidget *lastPage;
+
+    bool d_loadingUi = false;
+    int d_prevScaleRow = -1;
+    int d_prevGridRow = -1;
+    int d_prevAxisRow = -1;
+    int d_prevBreakRow = -1;
+    bool d_scalesTabDirty = false;
+    bool d_gridTabDirty = false;
+    bool d_axesTabDirty = false;
+    bool d_frameTabDirty = false;
+    bool d_refLinesTabDirty = false;
+    bool d_axisBreakTabDirty = false;
+    bool d_gridSharedDirty = false;
+    int d_stagedGridXAxisIdx = 0;
+    int d_stagedGridYAxisIdx = 0;
+    bool d_stagedGridXZero = false;
+    bool d_stagedGridYZero = false;
+    bool d_unitFormatDirty = false;
+    int d_stagedUnitFormatIdx = 0;
+    int d_stagedFramePreset = -1;
+    bool d_refControlsEdited = false;
+    QVector<Graph::ReferenceLineSpec> d_stagedRefLines;
+    StagedScaleEdit d_stagedScales[4];
+    StagedGridEdit d_stagedGrids[2];
+    StagedAxisEdit d_stagedAxes[4];
+    StagedBreakEdit d_stagedBreaks[4];
 };
 
 #endif
