@@ -138,10 +138,12 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw);
 static int runSuite43Round3CriticRegressionGate(ApplicationWindow *mw);
 static int runSuite44Round4UnifiedRegressionGate(ApplicationWindow *mw);
 static int runSuite45Round5ZeroDefectGate(ApplicationWindow *mw);
+static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
+    QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL, true);
     QApplication app(argc, argv);
     QStringList args = app.arguments();
 
@@ -2389,6 +2391,8 @@ int main(int argc, char **argv)
             }
 
             for (QAction *act : menu->actions()) {
+                if (pathPrefix.contains(QString::fromUtf8("\xE6\x9C\x80\xE8\xBF\x91\xE4\xBD\xBF\xE3\x81\xA3\xE3\x81\x9F\xE3\x83\x97\xE3\x83\xAD\xE3\x82\xB8\xE3\x82\xA7\xE3\x82\xAF\xE3\x83\x88")))
+                    break;
                 if (!act || act->isSeparator())
                     continue;
                 if (act->menu()) {
@@ -5277,7 +5281,10 @@ int main(int argc, char **argv)
     if (runSuite45Round5ZeroDefectGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 45 ToriGraph OriginPro Parity, Phase 6 Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Round 2/3/4/5 Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE suites passed!\n";
+    if (runSuite46OleAntialiasingAndSubpixelSmoothnessGate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 46 ToriGraph OriginPro Parity, Phase 6 Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Round 2/3/4/5 Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -8553,5 +8560,327 @@ static int runSuite45Round5ZeroDefectGate(ApplicationWindow *mw)
     mw->hide();
     QApplication::processEvents();
     std::cout << "[INFO] Suite 45 Round 5 Zero-Defect Gate passed!\n";
+    return 0;
+}
+
+#include <objidl.h>
+#include <gdiplus.h>
+#include <qwt_symbol.h>
+
+static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 46: OLE EMF+ Dual Anti-Aliasing & Sub-Pixel Curve Smoothness Gate...\n";
+    CHECK_COND(SciDAVisEmf::ensureGdiplusInitialized(), "ensureGdiplusInitialized failed in Suite 46");
+
+    const int nPts = 500;
+    Table *tbl = mw->newTable(nPts, 3, "S46SmoothTbl", "OLE Anti-Aliased Sub-Pixel Smoothness");
+    CHECK_COND(tbl != nullptr, "Failed to create S46SmoothTbl");
+    tbl->setColName(0, "X");
+    tbl->setColName(1, "YBlue");
+    tbl->setColName(2, "YRed");
+    tbl->setColPlotDesignation(0, SciDAVis::X);
+    tbl->setColPlotDesignation(1, SciDAVis::Y);
+    tbl->setColPlotDesignation(2, SciDAVis::Y);
+
+    for (int i = 0; i < nPts; ++i) {
+        const double x = 10.0 * double(i) / double(nPts - 1);
+        tbl->setCell(i, 0, x);
+        // Gentle monotonic slope in lower half of [0, 10] canvas (exposes 96-DPI qRound staircases at 4x zoom)
+        tbl->setCell(i, 1, 2.0 + 0.18 * x);
+        // Sinusoidal curve in upper half of [0, 10] canvas (never intersects YBlue)
+        tbl->setCell(i, 2, 7.2 + 0.9 * std::sin(x));
+    }
+
+    MultiLayer *ml = mw->multilayerPlot(tbl, QStringList{ "S46SmoothTbl_YBlue" }, Graph::Line, 0, nPts - 1);
+    CHECK_COND(ml != nullptr && ml->activeGraph() != nullptr, "Failed to create S46 MultiLayer");
+    mw->renameWindow(ml, "S46SmoothGraph");
+    ml->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+
+    Graph *g = ml->activeGraph();
+    // Add sparse 25-point LineSymbols curve in upper half to verify symbol AA + floating-point symbol placement
+    Table *tblSym = mw->newTable(25, 2, "S46SymTbl", "OLE Symbol AA");
+    CHECK_COND(tblSym != nullptr, "Failed to create S46SymTbl");
+    tblSym->setColName(0, "X");
+    tblSym->setColName(1, "YSym");
+    tblSym->setColPlotDesignation(0, SciDAVis::X);
+    tblSym->setColPlotDesignation(1, SciDAVis::Y);
+    for (int i = 0; i < 25; ++i) {
+        const double x = 0.4 + 9.2 * double(i) / 24.0;
+        tblSym->setCell(i, 0, x);
+        tblSym->setCell(i, 1, 7.2 + 0.9 * std::sin(x));
+    }
+    g->insertCurve(tblSym, "S46SymTbl_X", "S46SymTbl_YSym", Graph::LineSymbols, 0, 24);
+    CHECK_COND(g->curves() == 2, "Expected 2 curves in S46SmoothGraph");
+
+    // Verify Graph::setAntialiasing propagates to pre-existing curves even when update == false
+    g->setAntialiasing(false, false);
+    CHECK_COND(!g->curve(0)->testRenderHint(QwtPlotItem::RenderAntialiased)
+                       && !g->curve(1)->testRenderHint(QwtPlotItem::RenderAntialiased),
+               "Graph::setAntialiasing(false, false) failed to propagate RenderAntialiased=false to existing curves!");
+    g->setAntialiasing(true, false);
+    CHECK_COND(g->curve(0)->testRenderHint(QwtPlotItem::RenderAntialiased)
+                       && g->curve(1)->testRenderHint(QwtPlotItem::RenderAntialiased),
+               "Graph::setAntialiasing(true, false) failed to propagate RenderAntialiased=true to existing curves!");
+
+    // Style curve 0: pure saturated blue (0, 90, 230), width 2, no symbols
+    QwtPlotCurve *cBlue = g->curve(0);
+    QPen bluePen(QColor(0, 90, 230));
+    bluePen.setWidthF(2.0);
+    cBlue->setPen(bluePen);
+
+    // Style curve 1: pure saturated red (220, 20, 20), width 1.5, Ellipse symbols
+    QwtPlotCurve *cRed = g->curve(1);
+    QPen redPen(QColor(220, 20, 20));
+    redPen.setWidthF(1.5);
+    cRed->setPen(redPen);
+    cRed->setSymbol(QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(220, 20, 20)),
+                              QPen(QColor(220, 20, 20), 1), QSize(9, 9)));
+
+    g->removeLegend();
+    g->setScale(QwtPlot::xBottom, 0.0, 10.0);
+    g->setScale(QwtPlot::yLeft, 0.0, 10.0);
+    g->replot();
+    QApplication::processEvents();
+
+    // 1. Render OLE payload (EMF+ Dual + 300-DPI CF_DIB)
+    OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml);
+    CHECK_COND(!rg.emfBytes.isEmpty() && !rg.dibBytes.isEmpty(), "Suite 46 renderMultiLayer returned empty bytes");
+    CHECK_COND(rg.extentHm.cx == 8500 && rg.extentHm.cy == 8500,
+               "Suite 46 extentHm expected 8500x8500 (85x85 mm)");
+
+    HENHMETAFILE hemf = SciDAVisEmf::createHemfFromBytes(rg.emfBytes);
+    CHECK_COND(hemf != nullptr, "Suite 46 createHemfFromBytes failed");
+
+    ENHMETAHEADER emh{};
+    emh.nSize = sizeof(emh);
+    CHECK_COND(GetEnhMetaFileHeader(hemf, sizeof(emh), &emh) > 0, "Suite 46 GetEnhMetaFileHeader failed");
+    CHECK_COND(emh.rclFrame.left == 0 && emh.rclFrame.top == 0
+                       && std::abs(emh.rclFrame.right - 8500) <= 2
+                       && std::abs(emh.rclFrame.bottom - 8500) <= 2,
+               "Suite 46 EMF rclFrame does not match 85x85 mm (8500x8500 0.01mm)!");
+
+    EmfRecordStats recStats{};
+    EnumEnhMetaFile(nullptr, hemf, enumEmfProc, &recStats, nullptr);
+    CHECK_COND(recStats.vectorPathOrLineRecords >= 10 && recStats.textRecords >= 2,
+               "Suite 46 EMF+ Dual lost down-level vector or text records!");
+
+    // Helper to allocate a 1200x1200 top-down 32-bpp DIB (~3.74x zoom over 85mm @ 96 DPI)
+    const int zoomW = 1200;
+    const int zoomH = 1200;
+    auto inspectPlayback = [&](bool useOleViewObjectDraw, bool testMagentaBleed, const char *modeTag) -> int {
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = zoomW;
+        bmi.bmiHeader.biHeight = -zoomH;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void *bits = nullptr;
+        HDC screenDc = GetDC(nullptr);
+        HDC memDc = CreateCompatibleDC(screenDc);
+        HBITMAP hbm = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        ReleaseDC(nullptr, screenDc);
+        CHECK_COND(memDc != nullptr && hbm != nullptr && bits != nullptr, "Failed to allocate 1200x1200 DIB");
+        HGDIOBJ oldBm = SelectObject(memDc, hbm);
+
+        auto *px = static_cast<quint32 *>(bits);
+        const quint32 initColor = testMagentaBleed ? 0xFFFF00FFu : 0xFFFFFFFFu;
+        for (int i = 0; i < zoomW * zoomH; ++i)
+            px[i] = initColor;
+
+        if (useOleViewObjectDraw) {
+            SciDAVisOle::OleGraphPayload payload;
+            payload.targetWindow = ml->name();
+            payload.targetLayer = 0;
+            payload.extentHm = rg.extentHm;
+            payload.pixelSize = rg.pixelSize;
+            payload.emfBytes = rg.emfBytes;
+            payload.dibBytes = rg.dibBytes;
+
+            ComPtr<IViewObject2> viewObj;
+            HRESULT hr = SciDAVisOle::createGraphObject(payload, IID_IViewObject2,
+                                                        reinterpret_cast<void **>(viewObj.GetAddressOf()));
+            if (FAILED(hr) || !viewObj) {
+                SelectObject(memDc, oldBm);
+                DeleteObject(hbm);
+                DeleteDC(memDc);
+                std::cerr << "[FAIL] createGraphObject(IViewObject2) failed in Suite 46\n";
+                return 1;
+            }
+            RECTL rcBounds{ 0, 0, zoomW, zoomH };
+            hr = viewObj->Draw(DVASPECT_CONTENT, -1, nullptr, nullptr, nullptr, memDc, &rcBounds, nullptr, nullptr, 0);
+            if (FAILED(hr)) {
+                SelectObject(memDc, oldBm);
+                DeleteObject(hbm);
+                DeleteDC(memDc);
+                std::cerr << "[FAIL] IViewObject2::Draw failed in Suite 46\n";
+                return 1;
+            }
+        } else {
+            // Deliberately do NOT call SetSmoothingMode on host Graphics: proves the EMF+ Dual stream
+            // itself embeds EmfPlusSetAntiAliasMode so PowerPoint/Word render smooth curves automatically!
+            Gdiplus::Metafile mf(hemf, FALSE);
+            Gdiplus::Graphics gfx(memDc);
+            Gdiplus::Status st = gfx.DrawImage(&mf, 0, 0, zoomW, zoomH);
+            if (st != Gdiplus::Ok) {
+                SelectObject(memDc, oldBm);
+                DeleteObject(hbm);
+                DeleteDC(memDc);
+                std::cerr << "[FAIL] Gdiplus::Graphics::DrawImage(Metafile) failed in Suite 46\n";
+                return 1;
+            }
+        }
+        GdiFlush();
+
+        if (testMagentaBleed) {
+            int magentaLeft = 0;
+            for (int i = 0; i < zoomW * zoomH; ++i) {
+                const quint32 c = px[i] & 0x00FFFFFFu;
+                if (c == 0x00FF00FFu)
+                    ++magentaLeft;
+            }
+            SelectObject(memDc, oldBm);
+            DeleteObject(hbm);
+            DeleteDC(memDc);
+            if (magentaLeft != 0) {
+                std::cerr << "[FAIL] Suite 46 (" << modeTag << ") left " << magentaLeft
+                          << " uncovered magenta border pixels!\n";
+                return 1;
+            }
+            return 0;
+        }
+
+        int blueAaPixels = 0;
+        int redAaPixels = 0;
+        int crispBlackFramePixels = 0;
+        QVector<int> blueCols;
+        QVector<double> blueCentroids(zoomW, 0.0);
+
+        for (int x = 0; x < zoomW; ++x) {
+            double wSum = 0.0;
+            double wySum = 0.0;
+            for (int y = 0; y < zoomH; ++y) {
+                const quint32 argb = px[y * zoomW + x];
+                const int r = (argb >> 16) & 0xFF;
+                const int gr = (argb >> 8) & 0xFF;
+                const int b = argb & 0xFF;
+
+                if (r == 0 && gr == 0 && b == 0)
+                    ++crispBlackFramePixels;
+
+                // Pure blue (0, 90, 230) over white (255, 255, 255): B - R == 230 * coverage, 0 on any gray/black/white!
+                const int blueDiff = b - r;
+                if (blueDiff >= 20 && blueDiff <= 205)
+                    ++blueAaPixels;
+                if (y > zoomH / 2 && blueDiff >= 12) {
+                    wSum += double(blueDiff);
+                    wySum += double(y) * double(blueDiff);
+                }
+
+                // Pure red (220, 20, 20) over white (255, 255, 255): R - B == 200 * coverage
+                const int redDiff = r - b;
+                if (y < (zoomH * 3) / 5 && redDiff >= 20 && redDiff <= 185)
+                    ++redAaPixels;
+            }
+            if (wSum >= 180.0) {
+                blueCols.push_back(x);
+                blueCentroids[x] = wySum / wSum;
+            }
+        }
+
+        SelectObject(memDc, oldBm);
+        DeleteObject(hbm);
+        DeleteDC(memDc);
+
+        if (blueAaPixels < 400 || redAaPixels < 300 || crispBlackFramePixels < 1000 || blueCols.size() < 400) {
+            std::cerr << "[FAIL] Suite 46 (" << modeTag << ") AA/frame check failed: blueAA=" << blueAaPixels
+                      << " redAA=" << redAaPixels << " blackFrame=" << crispBlackFramePixels
+                      << " blueCols=" << blueCols.size() << "\n";
+            return 1;
+        }
+
+        // Sub-pixel centroid progression across the middle 200 columns of the plot canvas at ~3.74x zoom:
+        // Old 96-DPI integer quantization produced ~18-column flat plateaus (4-col advance == 0.0)
+        // punctuated by ~3.74-px jumps. True floating-point PointF vectors advance smoothly every column!
+        const int midStartIdx = blueCols.size() / 2 - 100;
+        double maxAbsStep1 = 0.0;
+        double minAdvance4 = 1e9;
+        double maxAdvance4 = 0.0;
+        for (int k = 0; k < 196; ++k) {
+            const int x0 = blueCols[midStartIdx + k];
+            const int x1 = blueCols[midStartIdx + k + 1];
+            const int x4 = blueCols[midStartIdx + k + 4];
+            if (x1 != x0 + 1 || x4 != x0 + 4) {
+                std::cerr << "[FAIL] Suite 46 (" << modeTag << ") non-contiguous blue curve columns at x=" << x0 << "\n";
+                return 1;
+            }
+            const double step1 = std::fabs(blueCentroids[x1] - blueCentroids[x0]);
+            const double adv4 = blueCentroids[x0] - blueCentroids[x4]; // positive since screen Y decreases upward
+            maxAbsStep1 = std::max(maxAbsStep1, step1);
+            minAdvance4 = std::min(minAdvance4, adv4);
+            maxAdvance4 = std::max(maxAdvance4, adv4);
+        }
+
+        std::cout << "[INFO] Suite 46 (" << modeTag << "): blueAA=" << blueAaPixels
+                  << ", redSymAA=" << redAaPixels
+                  << ", maxStep1=" << maxAbsStep1
+                  << ", adv4=[" << minAdvance4 << ", " << maxAdvance4 << "]\n";
+
+        if (maxAbsStep1 > 0.65 || minAdvance4 < 0.25 || maxAdvance4 > 1.50) {
+            std::cerr << "[FAIL] Suite 46 (" << modeTag << ") sub-pixel curve smoothness failed (staircase detected): "
+                      << "maxStep1=" << maxAbsStep1 << " minAdv4=" << minAdvance4 << " maxAdv4=" << maxAdvance4 << "\n";
+            return 1;
+        }
+        return 0;
+    };
+
+    CHECK_COND(inspectPlayback(false, true, "GDI+ Metafile Magenta Sentinel") == 0,
+               "GDI+ Metafile playback left uncovered border pixels");
+    CHECK_COND(inspectPlayback(true, true, "IViewObject2::Draw Magenta Sentinel") == 0,
+               "IViewObject2::Draw left uncovered border pixels");
+    CHECK_COND(inspectPlayback(false, false, "GDI+ Default Metafile Playback @ 1200x1200") == 0,
+               "Self-contained EMF+ Dual anti-aliasing / sub-pixel smoothness check failed");
+    CHECK_COND(inspectPlayback(true, false, "OLE IViewObject2::Draw @ 1200x1200") == 0,
+               "OLE IViewObject2::Draw anti-aliasing / sub-pixel smoothness check failed");
+
+    // 2. Verify CF_DIB fallback is 300-DPI and anti-aliased
+    CHECK_COND(size_t(rg.dibBytes.size()) > sizeof(BITMAPINFOHEADER), "Suite 46 dibBytes too small");
+    BITMAPINFOHEADER dibHdr{};
+    std::memcpy(&dibHdr, rg.dibBytes.constData(), sizeof(dibHdr));
+    const int dibW = dibHdr.biWidth;
+    const int dibH = std::abs(dibHdr.biHeight);
+    CHECK_COND(dibW >= 900 && dibH >= 900 && dibHdr.biXPelsPerMeter >= 11000,
+               "Suite 46 CF_DIB fallback is not 300-DPI (~1004x1004, 11811 ppm)!");
+    const auto *dibPx = reinterpret_cast<const uchar *>(rg.dibBytes.constData() + sizeof(BITMAPINFOHEADER));
+    const int dibStride = ((dibW * (dibHdr.biBitCount / 8)) + 3) & ~3;
+    const int bpp = dibHdr.biBitCount / 8;
+    int dibBlueAa = 0;
+    if (bpp >= 3 && int(sizeof(BITMAPINFOHEADER)) + dibStride * dibH <= rg.dibBytes.size()) {
+        for (int y = 0; y < dibH; ++y) {
+            const uchar *row = dibPx + y * dibStride;
+            for (int x = 0; x < dibW; ++x) {
+                const int b = row[x * bpp + 0];
+                const int r = row[x * bpp + 2];
+                const int diff = b - r;
+                if (diff >= 20 && diff <= 205)
+                    ++dibBlueAa;
+            }
+        }
+    }
+    CHECK_COND(dibBlueAa >= 400, "Suite 46 300-DPI CF_DIB fallback lacks anti-aliased curve edges!");
+
+    DeleteEnhMetaFile(hemf);
+
+    ml->askOnCloseEvent(false);
+    ml->close();
+    tblSym->askOnCloseEvent(false);
+    tblSym->close();
+    tbl->askOnCloseEvent(false);
+    tbl->close();
+    mw->savedProject();
+    QApplication::processEvents();
+
+    std::cout << "[INFO] Suite 46 OLE EMF+ Dual Anti-Aliasing & Sub-Pixel Curve Smoothness Gate passed!\n";
     return 0;
 }

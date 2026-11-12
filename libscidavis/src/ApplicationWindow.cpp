@@ -16829,14 +16829,23 @@ QList<MyWidget *> ApplicationWindow::windowsList()
 
 void ApplicationWindow::updateRecentProjectsList()
 {
+    for (int i = recentProjects.size() - 1; i >= 0; --i) {
+        const QString &entry = recentProjects.at(i);
+        if (entry.contains("torigraph_ole_", Qt::CaseInsensitive))
+            recentProjects.removeAt(i);
+    }
+
+    if (recent)
+        recent->clear();
+
     if (recentProjects.isEmpty())
         return;
 
     while ((int)recentProjects.size() > MaxRecentProjects)
         recentProjects.pop_back();
 
-    foreach (QAction *action, recent->actions())
-        action->deleteLater();
+    if (!recent)
+        return;
 
     for (int i = 0; i < (int)recentProjects.size(); i++)
         connect(recent->addAction("&" + QString::number(i + 1) + " " + recentProjects[i]),

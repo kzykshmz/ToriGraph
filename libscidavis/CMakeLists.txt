@@ -399,7 +399,7 @@ target_link_libraries( libscidavis
   Qt5::Svg
   Qt5::Network
   $<$<NOT:$<PLATFORM_ID:Windows>>:m>
-  $<$<PLATFORM_ID:Windows>:ole32 oleaut32 uuid gdi32 user32 advapi32 shell32>
+  $<$<PLATFORM_ID:Windows>:ole32 oleaut32 uuid gdi32 gdiplus user32 advapi32 shell32>
   )
 
 target_include_directories( libscidavis PUBLIC ${MUPARSER_INCLUDE_DIR} )

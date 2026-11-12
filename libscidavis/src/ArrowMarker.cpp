@@ -32,6 +32,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QApplication>
+#include <cmath>
 
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
@@ -55,57 +56,63 @@ ArrowMarker::ArrowMarker()
 void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                        const QRect &) const
 {
-    const int x0 = xMap.transform(d_rect.left());
-    const int y0 = yMap.transform(d_rect.top());
-    const int x1 = xMap.transform(d_rect.right());
-    const int y1 = yMap.transform(d_rect.bottom());
+    const double x0 = xMap.xTransform(d_rect.left());
+    const double y0 = yMap.xTransform(d_rect.top());
+    const double x1 = xMap.xTransform(d_rect.right());
+    const double y1 = yMap.xTransform(d_rect.bottom());
+    if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1))
+        return;
+
+    constexpr double kPi = 3.141592653589793238462643;
+    const double angleDeg = std::atan2(y1 - y0, x1 - x0) * (180.0 / kPi);
+    const double headHalfW = double(d_head_length) * std::tan(kPi * double(d_head_angle) / 180.0);
 
     p->save();
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        p->setRenderHint(QPainter::Antialiasing, true);
     QPen pen = linePen();
     p->setPen(pen);
 
     QBrush brush = QBrush(pen.color(), Qt::SolidPattern);
-    QwtPainter::drawLine(p, x0, y0, x1, y1);
+    p->drawLine(QPointF(x0, y0), QPointF(x1, y1));
     p->restore();
 
     if (d_end_arrow) {
         p->save();
-        p->translate(x1, y1);
-        const double t = theta(x0, y0, x1, y1);
-        p->rotate(-t);
+        if (testRenderHint(QwtPlotItem::RenderAntialiased))
+            p->setRenderHint(QPainter::Antialiasing, true);
+        p->translate(QPointF(x1, y1));
+        p->rotate(angleDeg);
 
-        QPolygon endArray(3);
-        endArray[0] = QPoint(0, 0);
+        QPolygonF endArray(3);
+        endArray[0] = QPointF(0.0, 0.0);
+        endArray[1] = QPointF(-double(d_head_length), headHalfW);
+        endArray[2] = QPointF(-double(d_head_length), -headHalfW);
 
-        int d = (int)floor(d_head_length * tan(M_PI * d_head_angle / 180.0) + 0.5);
-        endArray[1] = QPoint(-d_head_length, d);
-        endArray[2] = QPoint(-d_head_length, -d);
-
-        p->setPen(QPen(pen.color(), pen.width(), Qt::SolidLine));
+        p->setPen(QPen(pen.color(), pen.widthF(), Qt::SolidLine));
         if (d_fill_head)
             p->setBrush(brush);
 
-        QwtPainter::drawPolygon(p, endArray);
+        p->drawPolygon(endArray);
         p->restore();
     }
 
     if (d_start_arrow) {
         p->save();
-        p->translate(x0, y0);
-        const double t = theta(x0, y0, x1, y1);
-        p->rotate(-t);
+        if (testRenderHint(QwtPlotItem::RenderAntialiased))
+            p->setRenderHint(QPainter::Antialiasing, true);
+        p->translate(QPointF(x0, y0));
+        p->rotate(angleDeg);
 
-        QPolygon startArray(3);
-        startArray[0] = QPoint(0, 0);
+        QPolygonF startArray(3);
+        startArray[0] = QPointF(0.0, 0.0);
+        startArray[1] = QPointF(double(d_head_length), headHalfW);
+        startArray[2] = QPointF(double(d_head_length), -headHalfW);
 
-        int d = (int)floor(d_head_length * tan(M_PI * d_head_angle / 180.0) + 0.5);
-        startArray[1] = QPoint(d_head_length, d);
-        startArray[2] = QPoint(d_head_length, -d);
-
-        p->setPen(QPen(pen.color(), pen.width(), Qt::SolidLine));
+        p->setPen(QPen(pen.color(), pen.widthF(), Qt::SolidLine));
         if (d_fill_head)
             p->setBrush(brush);
-        QwtPainter::drawPolygon(p, startArray);
+        p->drawPolygon(startArray);
         p->restore();
     }
 

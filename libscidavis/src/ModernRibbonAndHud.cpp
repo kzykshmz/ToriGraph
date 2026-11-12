@@ -3455,8 +3455,14 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
     if (targetTable && targetPlot) {
         prepareTileWindow(targetTable);
         prepareTileWindow(targetPlot);
+        if (targetTable->minimumWidth() > leftW)
+            targetTable->setMinimumWidth(leftW);
         targetTable->setGeometry(0, 0, leftW, fullH);
-        targetPlot->setGeometry(leftW, 0, rightW, fullH);
+        const int actualLeftW = qBound(120, targetTable->geometry().width(), qMax(120, vpRect.width() - 120));
+        if (actualLeftW != targetTable->geometry().width())
+            targetTable->setGeometry(0, 0, actualLeftW, fullH);
+        const int actualRightW = qMax(120, vpRect.width() - actualLeftW);
+        targetPlot->setGeometry(actualLeftW, 0, actualRightW, fullH);
         if (activeMw == targetTable) {
             targetPlot->raise();
             targetTable->raise();

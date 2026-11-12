@@ -31,9 +31,14 @@
 #include "core/column/Column.h"
 #include "core/datatypes/DateTime2StringFilter.h"
 #include <QDateTime>
+#include <QLineF>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPolygonF>
 #include <cmath>
+#include <qwt_curve_fitter.h>
+#include <qwt_painter.h>
 #include <qwt_scale_map.h>
 #include <qwt_symbol.h>
 
@@ -520,16 +525,20 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
     const QPen maskPen(QColor(220, 30, 30), 2, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
     painter->setPen(maskPen);
     painter->setBrush(Qt::NoBrush);
-    const int r = qMax(5, symbol().size().width() / 2 + 2);
+    const double r = qMax(5.0, 0.5 * symbol().size().width() + 2.0);
 
     for (int i = startIdx; i <= endIdx; ++i) {
         if (!isPointMasked(i))
             continue;
-        const int px = xMap.transform(x(i));
-        const int py = yMap.transform(y(i));
-        painter->drawRect(QRect(px - r, py - r, 2 * r, 2 * r));
-        painter->drawLine(px - r + 1, py - r + 1, px + r - 1, py + r - 1);
-        painter->drawLine(px - r + 1, py + r - 1, px + r - 1, py - r + 1);
+        const double px = xMap.xTransform(x(i));
+        const double py = yMap.xTransform(y(i));
+        if (!std::isfinite(px) || !std::isfinite(py))
+            continue;
+        painter->drawRect(QRectF(px - r, py - r, 2.0 * r, 2.0 * r));
+        painter->drawLine(QPointF(px - r + 1.0, py - r + 1.0),
+                          QPointF(px + r - 1.0, py + r - 1.0));
+        painter->drawLine(QPointF(px - r + 1.0, py + r - 1.0),
+                          QPointF(px + r - 1.0, py - r + 1.0));
     }
     painter->restore();
 }
@@ -698,4 +707,371 @@ QwtDoubleRect PlotCurve::boundingRect() const
     double d_y_bottom = yMap.invTransform(y_bottom - margin);
 
     return QwtDoubleRect(d_x_left, d_y_top, qAbs(d_x_right - d_x_left), qAbs(d_y_bottom - d_y_top));
+}
+
+namespace {
+
+constexpr double kMaxSafeCoord = 30000.0;
+
+QPointF clampExtremePoint(const QPointF &pt)
+{
+    return QPointF(qBound(-kMaxSafeCoord, pt.x(), kMaxSafeCoord),
+                   qBound(-kMaxSafeCoord, pt.y(), kMaxSafeCoord));
+}
+
+void fillCurvePolygonF(QPainter *painter, const PlotCurve *curve, const QwtScaleMap &xMap,
+                       const QwtScaleMap &yMap, const QPolygonF &openPoly)
+{
+    if (!painter || !curve || curve->brush().style() == Qt::NoBrush || openPoly.size() < 2)
+        return;
+
+    QPolygonF closed = openPoly;
+    if (curve->curveType() == QwtPlotCurve::Xfy) {
+        const double refX = qBound(-kMaxSafeCoord, xMap.xTransform(curve->baseline()), kMaxSafeCoord);
+        closed.append(QPointF(refX, openPoly.last().y()));
+        closed.append(QPointF(refX, openPoly.first().y()));
+    } else {
+        const double refY = qBound(-kMaxSafeCoord, yMap.xTransform(curve->baseline()), kMaxSafeCoord);
+        closed.append(QPointF(openPoly.last().x(), refY));
+        closed.append(QPointF(openPoly.first().x(), refY));
+    }
+
+    QBrush b = curve->brush();
+    if (!b.color().isValid())
+        b.setColor(curve->pen().color());
+
+    painter->save();
+    painter->setPen(QPen(Qt::NoPen));
+    painter->setBrush(b);
+    painter->drawPolygon(closed);
+    painter->restore();
+}
+
+void drawSymbolShapeF(QPainter *painter, QwtSymbol::Style style, double cx, double cy, double w,
+                      double h)
+{
+    const double hw = 0.5 * w;
+    const double hh = 0.5 * h;
+    const QRectF r(cx - hw, cy - hh, w, h);
+
+    switch (style) {
+    case QwtSymbol::Ellipse:
+        painter->drawEllipse(r);
+        break;
+    case QwtSymbol::Rect:
+        painter->drawRect(r);
+        break;
+    case QwtSymbol::Diamond: {
+        QPolygonF pa(4);
+        pa[0] = QPointF(cx, r.top());
+        pa[1] = QPointF(r.right(), cy);
+        pa[2] = QPointF(cx, r.bottom());
+        pa[3] = QPointF(r.left(), cy);
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::Cross:
+        painter->drawLine(QPointF(cx, r.top()), QPointF(cx, r.bottom()));
+        painter->drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy));
+        break;
+    case QwtSymbol::XCross:
+        painter->drawLine(QPointF(r.left(), r.top()), QPointF(r.right(), r.bottom()));
+        painter->drawLine(QPointF(r.left(), r.bottom()), QPointF(r.right(), r.top()));
+        break;
+    case QwtSymbol::Triangle:
+    case QwtSymbol::UTriangle: {
+        QPolygonF pa(3);
+        pa[0] = QPointF(cx, r.top());
+        pa[1] = QPointF(r.right(), r.bottom());
+        pa[2] = QPointF(r.left(), r.bottom());
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::DTriangle: {
+        QPolygonF pa(3);
+        pa[0] = QPointF(r.left(), r.top());
+        pa[1] = QPointF(r.right(), r.top());
+        pa[2] = QPointF(cx, r.bottom());
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::RTriangle: {
+        QPolygonF pa(3);
+        pa[0] = QPointF(r.left(), r.top());
+        pa[1] = QPointF(r.right(), cy);
+        pa[2] = QPointF(r.left(), r.bottom());
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::LTriangle: {
+        QPolygonF pa(3);
+        pa[0] = QPointF(r.right(), r.top());
+        pa[1] = QPointF(r.left(), cy);
+        pa[2] = QPointF(r.right(), r.bottom());
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::HLine:
+        painter->drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy));
+        break;
+    case QwtSymbol::VLine:
+        painter->drawLine(QPointF(cx, r.top()), QPointF(cx, r.bottom()));
+        break;
+    case QwtSymbol::Star1: {
+        constexpr double kSqrt1_2 = 0.70710678118654752440;
+        const double dx = hw * kSqrt1_2;
+        const double dy = hh * kSqrt1_2;
+        painter->drawLine(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
+        painter->drawLine(QPointF(cx - dx, cy + dy), QPointF(cx + dx, cy - dy));
+        painter->drawLine(QPointF(cx, r.top()), QPointF(cx, r.bottom()));
+        painter->drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy));
+        break;
+    }
+    case QwtSymbol::Star2: {
+        const double side = 0.5 * w * (1.0 - 0.8660254037844386);
+        const double h4 = 0.25 * h;
+        const double h34 = 0.75 * h;
+        const double innerSpan = side + (w - 2.0 * side) / 3.0;
+        const double midSpan = side + (hw - side) / 3.0;
+
+        QPolygonF pa(12);
+        pa[0] = QPointF(cx, r.top());
+        pa[1] = QPointF(r.right() - innerSpan, r.top() + h4);
+        pa[2] = QPointF(r.right() - side, r.top() + h4);
+        pa[3] = QPointF(r.right() - midSpan, cy);
+        pa[4] = QPointF(r.right() - side, r.top() + h34);
+        pa[5] = QPointF(r.right() - innerSpan, r.top() + h34);
+        pa[6] = QPointF(cx, r.bottom());
+        pa[7] = QPointF(r.left() + innerSpan, r.top() + h34);
+        pa[8] = QPointF(r.left() + side, r.top() + h34);
+        pa[9] = QPointF(r.left() + midSpan, cy);
+        pa[10] = QPointF(r.left() + side, r.top() + h4);
+        pa[11] = QPointF(r.left() + innerSpan, r.top() + h4);
+        painter->drawPolygon(pa);
+        break;
+    }
+    case QwtSymbol::Hexagon: {
+        const double side = 0.5 * w * (1.0 - 0.8660254037844386);
+        const double h4 = 0.25 * h;
+        const double h34 = 0.75 * h;
+
+        QPolygonF pa(6);
+        pa[0] = QPointF(cx, r.top());
+        pa[1] = QPointF(r.right() - side, r.top() + h4);
+        pa[2] = QPointF(r.right() - side, r.top() + h34);
+        pa[3] = QPointF(cx, r.bottom());
+        pa[4] = QPointF(r.left() + side, r.top() + h34);
+        pa[5] = QPointF(r.left() + side, r.top() + h4);
+        painter->drawPolygon(pa);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+} // namespace
+
+void PlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                     const QRect &canvasRect) const
+{
+    const QRectF prev = d_canvas_rect;
+    d_canvas_rect = QRectF(canvasRect);
+    QwtPlotCurve::draw(painter, xMap, yMap, canvasRect);
+    d_canvas_rect = prev;
+}
+
+void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
+                          const QwtScaleMap &yMap, int from, int to) const
+{
+    if (!painter || dataSize() <= 0)
+        return;
+
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+    const int n = dataSize();
+    from = qMax(0, from);
+    to = (to < 0) ? (n - 1) : qMin(to, n - 1);
+    if (from > to)
+        return;
+
+    switch (style) {
+    case Lines: {
+        const bool isFitted = testCurveAttribute(Fitted) && (curveFitter() != nullptr);
+        if (isFitted) {
+            const DataCurve *dc = dynamic_cast<const DataCurve *>(this);
+            if (!dc || dc->maskedPointCount() == 0) {
+                from = 0;
+                to = n - 1;
+            }
+        }
+
+        const bool decimateSubPixel =
+                !isFitted && testPaintAttribute(PaintFiltered) && ((to - from) > 4000);
+
+        auto flushRun = [&](QPolygonF &run) {
+            if (run.isEmpty())
+                return;
+            if (isFitted && run.size() >= 2) {
+                QPolygonF fitted = curveFitter()->fitCurve(run);
+                if (!fitted.isEmpty()) {
+                    for (int k = 0; k < fitted.size(); ++k)
+                        fitted[k] = clampExtremePoint(fitted[k]);
+                    run.swap(fitted);
+                }
+            }
+            if (run.size() >= 2) {
+                painter->drawPolyline(run);
+                if (brush().style() != Qt::NoBrush)
+                    fillCurvePolygonF(painter, this, xMap, yMap, run);
+            } else if (run.size() == 1) {
+                painter->drawPoint(run[0]);
+            }
+            run.clear();
+        };
+
+        QPolygonF run;
+        run.reserve(qMin(4096, to - from + 1));
+        for (int i = from; i <= to; ++i) {
+            const double px = xMap.xTransform(x(i));
+            const double py = yMap.xTransform(y(i));
+            if (!std::isfinite(px) || !std::isfinite(py)) {
+                flushRun(run);
+                continue;
+            }
+            const QPointF pt = clampExtremePoint(QPointF(px, py));
+            if (decimateSubPixel && !run.isEmpty() && i < to) {
+                const double dx = pt.x() - run.last().x();
+                const double dy = pt.y() - run.last().y();
+                if (dx * dx + dy * dy < 4e-4)
+                    continue;
+            }
+            run.append(pt);
+        }
+        flushRun(run);
+        break;
+    }
+    case Sticks: {
+        const double x0 = qBound(-kMaxSafeCoord, xMap.xTransform(baseline()), kMaxSafeCoord);
+        const double y0 = qBound(-kMaxSafeCoord, yMap.xTransform(baseline()), kMaxSafeCoord);
+        QVector<QLineF> sticks;
+        sticks.reserve(to - from + 1);
+        for (int i = from; i <= to; ++i) {
+            const double px = xMap.xTransform(x(i));
+            const double py = yMap.xTransform(y(i));
+            if (!std::isfinite(px) || !std::isfinite(py))
+                continue;
+            const QPointF pt = clampExtremePoint(QPointF(px, py));
+            if (curveType() == Xfy)
+                sticks.append(QLineF(QPointF(x0, pt.y()), pt));
+            else
+                sticks.append(QLineF(QPointF(pt.x(), y0), pt));
+        }
+        if (!sticks.isEmpty())
+            painter->drawLines(sticks);
+        break;
+    }
+    case Steps: {
+        bool inverted = (curveType() == Yfx);
+        if (testCurveAttribute(Inverted))
+            inverted = !inverted;
+
+        auto flushStepRun = [&](QPolygonF &poly) {
+            if (poly.size() >= 2) {
+                painter->drawPolyline(poly);
+                if (brush().style() != Qt::NoBrush)
+                    fillCurvePolygonF(painter, this, xMap, yMap, poly);
+            } else if (poly.size() == 1) {
+                painter->drawPoint(poly[0]);
+            }
+            poly.clear();
+        };
+
+        QPolygonF poly;
+        poly.reserve(2 * (to - from) + 1);
+        for (int i = from; i <= to; ++i) {
+            const double px = xMap.xTransform(x(i));
+            const double py = yMap.xTransform(y(i));
+            if (!std::isfinite(px) || !std::isfinite(py)) {
+                flushStepRun(poly);
+                continue;
+            }
+            const QPointF pt = clampExtremePoint(QPointF(px, py));
+            if (!poly.isEmpty()) {
+                const QPointF prev = poly.last();
+                poly.append(inverted ? QPointF(prev.x(), pt.y()) : QPointF(pt.x(), prev.y()));
+            }
+            poly.append(pt);
+        }
+        flushStepRun(poly);
+        break;
+    }
+    case Dots: {
+        const bool doFill = (brush().style() != Qt::NoBrush);
+        QPolygonF pts;
+        pts.reserve(to - from + 1);
+        for (int i = from; i <= to; ++i) {
+            const double px = xMap.xTransform(x(i));
+            const double py = yMap.xTransform(y(i));
+            if (!std::isfinite(px) || !std::isfinite(py))
+                continue;
+            pts.append(clampExtremePoint(QPointF(px, py)));
+        }
+        if (!pts.isEmpty()) {
+            painter->drawPoints(pts);
+            if (doFill && pts.size() >= 2)
+                fillCurvePolygonF(painter, this, xMap, yMap, pts);
+        }
+        break;
+    }
+    case NoCurve:
+    default:
+        break;
+    }
+}
+
+void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtScaleMap &xMap,
+                            const QwtScaleMap &yMap, int from, int to) const
+{
+    if (!painter || dataSize() <= 0 || sym.style() == QwtSymbol::NoSymbol)
+        return;
+
+    const int n = dataSize();
+    from = qMax(0, from);
+    to = (to < 0) ? (n - 1) : qMin(to, n - 1);
+    if (from > to)
+        return;
+
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+    painter->setBrush(sym.brush());
+    painter->setPen(QwtPainter::scaledPen(sym.pen()));
+
+    const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
+    const double w = double(layoutSz.width());
+    const double h = double(layoutSz.height());
+    if (w <= 0.0 || h <= 0.0)
+        return;
+
+    const bool decimateSubPixel = testPaintAttribute(PaintFiltered) && ((to - from) > 4000);
+    QPointF lastDrawn(1e30, 1e30);
+
+    for (int i = from; i <= to; ++i) {
+        const double cx = xMap.xTransform(x(i));
+        const double cy = yMap.xTransform(y(i));
+        if (!std::isfinite(cx) || !std::isfinite(cy))
+            continue;
+        if (std::fabs(cx) > kMaxSafeCoord || std::fabs(cy) > kMaxSafeCoord)
+            continue;
+        if (decimateSubPixel && i > from && i < to) {
+            const double dx = cx - lastDrawn.x();
+            const double dy = cy - lastDrawn.y();
+            if (dx * dx + dy * dy < 0.04)
+                continue;
+        }
+        drawSymbolShapeF(painter, sym.style(), cx, cy, w, h);
+        lastDrawn = QPointF(cx, cy);
+    }
 }

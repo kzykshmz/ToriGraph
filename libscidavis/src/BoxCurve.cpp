@@ -154,15 +154,18 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         }
 
         if (kdeMaxDensity > 0.0) {
-            QPolygon violinPoly(2 * (nSteps + 1));
+            const double pxCenter = xMap.xTransform(x(0));
+            QPolygonF violinPoly(2 * (nSteps + 1));
             for (int k = 0; k <= nSteps; ++k) {
-                const int py = yMap.transform(yGrid[k]);
-                const int dx = qRound((densities[k] / kdeMaxDensity) * violin_hbw);
-                violinPoly[k] = QPoint(px - dx, py);
-                violinPoly[2 * nSteps + 1 - k] = QPoint(px + dx, py);
+                const double py = yMap.xTransform(yGrid[k]);
+                const double dx = (densities[k] / kdeMaxDensity) * double(violin_hbw);
+                violinPoly[k] = QPointF(pxCenter - dx, py);
+                violinPoly[2 * nSteps + 1 - k] = QPointF(pxCenter + dx, py);
             }
 
             painter->save();
+            if (testRenderHint(QwtPlotItem::RenderAntialiased))
+                painter->setRenderHint(QPainter::Antialiasing, true);
             QBrush vBrush = QwtPlotCurve::brush();
             if (vBrush.style() == Qt::NoBrush) {
                 QColor fillCol = QwtPlotCurve::pen().color();

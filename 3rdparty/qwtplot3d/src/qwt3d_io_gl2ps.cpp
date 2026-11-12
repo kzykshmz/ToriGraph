@@ -10,6 +10,10 @@
 #endif
 #include <QByteArray>
 #include <QFile>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QSurfaceFormat>
+#include <memory>
 #include "qwt3d_openglhelper.h"
 #include "gl2ps.h"
 #include "qwt3d_io_gl2ps.h"
@@ -129,11 +133,59 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
     if (plot->width() <= 0 || plot->height() <= 0)
         plot->resize(500, 400);
 
+    std::unique_ptr<QOffscreenSurface> offscreenSurface;
+    std::unique_ptr<QOpenGLContext> offscreenContext;
+    bool usingOffscreen = false;
+
     if (!plot->context()) {
         (void)plot->grabFramebuffer();
     }
-    plot->makeCurrent();
-    plot->updateData();
+    if (plot->context()) {
+        plot->makeCurrent();
+        if (!plot->initializedGL())
+            plot->initializeGL();
+        plot->updateData();
+    } else {
+        QSurfaceFormat fmt = QSurfaceFormat::defaultFormat();
+        fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
+        fmt.setDepthBufferSize(24);
+        offscreenSurface = std::make_unique<QOffscreenSurface>();
+        offscreenSurface->setFormat(fmt);
+        offscreenSurface->create();
+        offscreenContext = std::make_unique<QOpenGLContext>();
+        offscreenContext->setFormat(fmt);
+        if (!offscreenSurface->isValid() || !offscreenContext->create()
+            || !offscreenContext->makeCurrent(offscreenSurface.get())) {
+            return false;
+        }
+        usingOffscreen = true;
+        plot->initializeGL();
+        GLStateBewarer dt(GL_DEPTH_TEST, true);
+        GLStateBewarer ls(GL_LINE_SMOOTH, true);
+        plot->calculateHull();
+        SaveGlDeleteLists(plot->displaylists_p[Plot3D::DataObject], 1);
+        plot->displaylists_p[Plot3D::DataObject] = glGenLists(1);
+        glNewList(plot->displaylists_p[Plot3D::DataObject], GL_COMPILE);
+        plot->createEnrichments();
+        plot->createData();
+        glEndList();
+    }
+
+    auto makeActiveCurrent = [&]() {
+        if (usingOffscreen)
+            offscreenContext->makeCurrent(offscreenSurface.get());
+        else
+            plot->makeCurrent();
+    };
+    auto cleanupOffscreen = [&]() {
+        if (usingOffscreen && offscreenContext && offscreenSurface) {
+            offscreenContext->makeCurrent(offscreenSurface.get());
+            SaveGlDeleteLists(plot->displaylists_p[Plot3D::DataObject], 1);
+            plot->displaylists_p[Plot3D::DataObject] = 0;
+            plot->initializedGL_ = false;
+            offscreenContext->doneCurrent();
+        }
+    };
 
     GLint bufsize = 0, state = GL2PS_OVERFLOW;
     GLint viewport[4] = { 0, 0, 0, 0 };
@@ -146,6 +198,10 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
         viewport[3] = (plot->height() > 0) ? plot->height() : 400;
         glViewport(0, 0, viewport[2], viewport[3]);
     }
+    glClearColor(static_cast<GLclampf>(plot->bgcolor_.r),
+                 static_cast<GLclampf>(plot->bgcolor_.g),
+                 static_cast<GLclampf>(plot->bgcolor_.b),
+                 static_cast<GLclampf>(plot->bgcolor_.a));
 
     GLint options = GL2PS_SIMPLE_LINE_OFFSET | GL2PS_SILENT | GL2PS_DRAW_BACKGROUND
             | GL2PS_OCCLUSION_CULL | GL2PS_BEST_ROOT;
@@ -207,18 +263,24 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
     FILE *fp = openGl2psOutputFile(fname);
     if (!fp) {
         Label::useDeviceFonts(false);
+        cleanupOffscreen();
         return false;
     }
     while (state == GL2PS_OVERFLOW) {
         if (bufsize > 0)
             rewind(fp);
         bufsize += 2 * 1024 * 1024;
-        plot->makeCurrent();
+        makeActiveCurrent();
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glClearColor(static_cast<GLclampf>(plot->bgcolor_.r),
+                     static_cast<GLclampf>(plot->bgcolor_.g),
+                     static_cast<GLclampf>(plot->bgcolor_.b),
+                     static_cast<GLclampf>(plot->bgcolor_.a));
         gl2psBeginPage("---", utf8Producer.constData(), viewport, gl2ps_format_, sortmode, options,
                        GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, utf8Fname.constData());
 
-        (void)plot->grabFramebuffer();
-        plot->makeCurrent();
+        plot->paintGL();
+        glFlush();
         state = gl2psEndPage();
     }
     fclose(fp);
@@ -231,6 +293,7 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
         fp = openGl2psOutputFile(fn);
         if (!fp) {
             Label::useDeviceFonts(false);
+            cleanupOffscreen();
             return false;
         }
         Label::useDeviceFonts(true);
@@ -241,19 +304,20 @@ bool VectorWriter::operator()(Plot3D *plot, QString const &fname)
             if (bufsize > 0)
                 rewind(fp);
             bufsize += 2 * 1024 * 1024;
-            plot->makeCurrent();
+            makeActiveCurrent();
+            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
             gl2psBeginPage("---", utf8Producer.constData(), viewport, GL2PS_TEX, sortmode, options,
                            GL_RGBA, 0, NULL, 0, 0, 0, bufsize, fp, utf8TexFn.constData());
 
-            plot->updateData();
-            (void)plot->grabFramebuffer();
-            plot->makeCurrent();
+            plot->paintGL();
+            glFlush();
             state = gl2psEndPage();
         }
         fclose(fp);
     }
 
     Label::useDeviceFonts(false);
+    cleanupOffscreen();
 
     return (state != GL2PS_ERROR && state != GL2PS_UNINITIALIZED);
 }

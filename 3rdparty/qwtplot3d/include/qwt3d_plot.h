@@ -210,6 +210,7 @@ public Q_SLOTS:
     virtual bool save(QString const &fileName, QString const &format); //!<  Saves content
 
 protected:
+    friend class VectorWriter;
     typedef std::list<Qwt3D::Enrichment *> EnrichmentList;
     typedef EnrichmentList::iterator ELIT;
 

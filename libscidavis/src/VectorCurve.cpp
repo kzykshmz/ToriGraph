@@ -172,12 +172,14 @@ void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     if (to < 0)
         to = dataSize() - 1;
 
-    QwtPlotCurve::draw(painter, xMap, yMap, from, to);
+    PlotCurve::draw(painter, xMap, yMap, from, to);
 
     if (!vectorEnd || vectorEnd->size() == 0)
         return;
 
     painter->save();
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(pen);
     drawVector(painter, xMap, yMap, from, to);
     painter->restore();
@@ -195,6 +197,33 @@ void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const Q
     if (startIdx > endIdx)
         return;
 
+    constexpr double kPi = 3.14159265358979323846;
+    const double headHalfW = double(d_headLength) * std::tan(kPi * double(d_headAngle) / 180.0);
+
+    auto drawFloatingVector = [&](double xs, double ys, double xe, double ye) {
+        if (!std::isfinite(xs) || !std::isfinite(ys) || !std::isfinite(xe) || !std::isfinite(ye))
+            return;
+        painter->drawLine(QPointF(xs, ys), QPointF(xe, ye));
+        const double dx = xe - xs;
+        const double dy = ye - ys;
+        if (dx * dx + dy * dy <= 1e-12)
+            return;
+        const double angleDeg = std::atan2(dy, dx) * (180.0 / kPi);
+        painter->save();
+        painter->translate(QPointF(xe, ye));
+        painter->rotate(angleDeg);
+        QPolygonF headPoly(3);
+        headPoly[0] = QPointF(0.0, 0.0);
+        headPoly[1] = QPointF(-double(d_headLength), headHalfW);
+        headPoly[2] = QPointF(-double(d_headLength), -headHalfW);
+        if (filledArrow)
+            painter->setBrush(QBrush(pen.color(), Qt::SolidPattern));
+        else
+            painter->setBrush(Qt::NoBrush);
+        painter->drawPolygon(headPoly);
+        painter->restore();
+    };
+
     if (d_type == Graph::VectXYAM) {
         for (int i = startIdx; i <= endIdx; i++) {
             const double x0 = x(i);
@@ -202,42 +231,40 @@ void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const Q
             const double angle = vectorEnd->x(i);
             const double mag = vectorEnd->y(i);
 
-            int xs = 0, ys = 0, xe = 0, ye = 0;
+            double xs = 0.0, ys = 0.0, xe = 0.0, ye = 0.0;
             switch (d_position) {
             case Tail:
-                xs = xMap.transform(x0);
-                ys = yMap.transform(y0);
-                xe = xMap.transform(x0 + mag * cos(angle));
-                ye = yMap.transform(y0 + mag * sin(angle));
+                xs = xMap.xTransform(x0);
+                ys = yMap.xTransform(y0);
+                xe = xMap.xTransform(x0 + mag * cos(angle));
+                ye = yMap.xTransform(y0 + mag * sin(angle));
                 break;
 
             case Middle: {
                 double dxh = 0.5 * mag * cos(angle);
                 double dyh = 0.5 * mag * sin(angle);
-                xs = xMap.transform(x0 - dxh);
-                ys = yMap.transform(y0 - dyh);
-                xe = xMap.transform(x0 + dxh);
-                ye = yMap.transform(y0 + dyh);
+                xs = xMap.xTransform(x0 - dxh);
+                ys = yMap.xTransform(y0 - dyh);
+                xe = xMap.xTransform(x0 + dxh);
+                ye = yMap.xTransform(y0 + dyh);
             } break;
 
             case Head:
-                xs = xMap.transform(x0 - mag * cos(angle));
-                ys = yMap.transform(y0 - mag * sin(angle));
-                xe = xMap.transform(x0);
-                ye = yMap.transform(y0);
+                xs = xMap.xTransform(x0 - mag * cos(angle));
+                ys = yMap.xTransform(y0 - mag * sin(angle));
+                xe = xMap.xTransform(x0);
+                ye = yMap.xTransform(y0);
                 break;
             }
-            QwtPainter::drawLine(painter, xs, ys, xe, ye);
-            drawArrowHead(painter, xs, ys, xe, ye);
+            drawFloatingVector(xs, ys, xe, ye);
         }
     } else {
         for (int i = startIdx; i <= endIdx; i++) {
-            const int xs = xMap.transform(x(i));
-            const int ys = yMap.transform(y(i));
-            const int xe = xMap.transform(vectorEnd->x(i));
-            const int ye = yMap.transform(vectorEnd->y(i));
-            QwtPainter::drawLine(painter, xs, ys, xe, ye);
-            drawArrowHead(painter, xs, ys, xe, ye);
+            const double xs = xMap.xTransform(x(i));
+            const double ys = yMap.xTransform(y(i));
+            const double xe = xMap.xTransform(vectorEnd->x(i));
+            const double ye = yMap.xTransform(vectorEnd->y(i));
+            drawFloatingVector(xs, ys, xe, ye);
         }
     }
 }

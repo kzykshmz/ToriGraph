@@ -41,6 +41,13 @@ QByteArray hemfToBytes(HENHMETAFILE hemf);
 // Convert QImage to CF_DIB byte array (BITMAPINFOHEADER + pixels)
 QByteArray imageToDibBytes(const QImage &img);
 
+// Ensure GDI+ is initialized for the current process
+bool ensureGdiplusInitialized();
+
+// Render an enhanced metafile (EMF / EMF+ Dual) onto a raster/display HDC with GDI+ anti-aliasing.
+// Returns false if dc is a metafile DC or GDI+ rendering is unavailable (caller should fall back to PlayEnhMetaFile).
+bool drawHemfWithGdiplus(HDC dc, HENHMETAFILE hemf, const RECT &rc);
+
 } // namespace SciDAVisEmf
 
 #endif // Q_OS_WIN

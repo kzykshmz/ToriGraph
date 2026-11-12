@@ -57,9 +57,18 @@ public:
     bool stackNormalize01() const { return d_norm01; }
     void applyStackTransformToCurrentData();
 
-    QwtDoubleRect boundingRect() const;
+    using QwtPlotCurve::draw;
+    void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override;
+
+    QwtDoubleRect boundingRect() const override;
 
 protected:
+    void drawCurve(QPainter *p, int style, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                   int from, int to) const override;
+    void drawSymbols(QPainter *p, const QwtSymbol &symbol, const QwtScaleMap &xMap,
+                     const QwtScaleMap &yMap, int from, int to) const override;
+
     int d_type;
     double d_stack_dx;
     double d_stack_dy;
@@ -67,6 +76,7 @@ protected:
     double d_applied_dy;
     bool d_norm01;
     QVector<double> d_raw_y_backup;
+    mutable QRectF d_canvas_rect;
 };
 
 class DataCurve : public PlotCurve

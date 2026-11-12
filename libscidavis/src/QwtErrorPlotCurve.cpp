@@ -35,6 +35,7 @@
 
 #include <QPainter>
 #include <QLocale>
+#include <cmath>
 
 QwtErrorPlotCurve::QwtErrorPlotCurve(int orientation, Table *t, const QString &name)
     : DataCurve(t, QString(), name), d_master_curve(NULL)
@@ -87,13 +88,16 @@ void QwtErrorPlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const Q
 void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap,
                                       const QwtScaleMap &yMap, int from, int to) const
 {
-    int sh = 0;
-    // int sw = 0;
+    if (!d_master_curve)
+        return;
+
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+    double sh = 0.0;
     const QwtSymbol symbol = d_master_curve->symbol();
-    if (symbol.style() != QwtSymbol::NoSymbol) {
-        sh = symbol.size().height();
-        // sw = symbol.size().width();
-    }
+    if (symbol.style() != QwtSymbol::NoSymbol)
+        sh = double(symbol.size().height());
 
     double d_xOffset = 0.0;
     double d_yOffset = 0.0;
@@ -102,79 +106,84 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     else if (d_master_curve->type() == Graph::HorizontalBars)
         d_yOffset = ((QwtBarCurve *)d_master_curve)->dataOffset();
 
-    for (int i = from; i <= to; i++) {
-        const int xi = xMap.transform(x(i) + d_xOffset);
-        const int yi = yMap.transform(y(i) + d_yOffset);
+    const double halfCap = 0.5 * double(cap);
+    const double halfSym = 0.5 * sh;
+
+    for (int i = from; i <= to && i < err.size(); i++) {
+        const double xi = xMap.xTransform(x(i) + d_xOffset);
+        const double yi = yMap.xTransform(y(i) + d_yOffset);
+        if (!std::isfinite(xi) || !std::isfinite(yi))
+            continue;
 
         if (type == Vertical) {
-            int y_plus = yMap.transform(y(i) + err[i]);
-            int y_minus = yMap.transform(y(i) - err[i]);
-            bool y_minus_is_finite = true;
+            double y_plus = yMap.xTransform(y(i) + err[i]);
+            double y_minus = yMap.xTransform(y(i) - err[i]);
+            bool y_minus_is_finite = std::isfinite(y_minus);
 
             if (yMap.transformation()->type() == QwtScaleTransformation::Log10 && err[i] >= y(i)) {
-                y_minus = yMap.transform(qMin(yMap.s1(), yMap.s2()));
+                y_minus = yMap.xTransform(qMin(yMap.s1(), yMap.s2()));
                 y_minus_is_finite = false;
             }
+            if (!std::isfinite(y_plus) || !std::isfinite(y_minus))
+                continue;
 
-            // draw caps
             if (plus)
-                QwtPainter::drawLine(painter, xi - cap / 2, y_plus, xi + cap / 2, y_plus);
+                painter->drawLine(QPointF(xi - halfCap, y_plus), QPointF(xi + halfCap, y_plus));
             if (minus && y_minus_is_finite)
-                QwtPainter::drawLine(painter, xi - cap / 2, y_minus, xi + cap / 2, y_minus);
+                painter->drawLine(QPointF(xi - halfCap, y_minus), QPointF(xi + halfCap, y_minus));
 
-            // draw vertical line
             if (through) {
                 if (plus && minus)
-                    QwtPainter::drawLine(painter, xi, y_minus, xi, y_plus);
+                    painter->drawLine(QPointF(xi, y_minus), QPointF(xi, y_plus));
                 else if (plus)
-                    QwtPainter::drawLine(painter, xi, yi, xi, y_plus);
+                    painter->drawLine(QPointF(xi, yi), QPointF(xi, y_plus));
                 else if (minus)
-                    QwtPainter::drawLine(painter, xi, y_minus, xi, yi);
+                    painter->drawLine(QPointF(xi, y_minus), QPointF(xi, yi));
             } else if (y_plus <= y_minus) {
-                if (plus && y_plus < yi - sh / 2)
-                    QwtPainter::drawLine(painter, xi, yi - sh / 2, xi, y_plus);
-                if (minus && y_minus > yi + sh / 2)
-                    QwtPainter::drawLine(painter, xi, yi + sh / 2, xi, y_minus);
-            } else { // inverted scale
-                if (plus && y_plus > yi + sh / 2)
-                    QwtPainter::drawLine(painter, xi, yi + sh / 2, xi, y_plus);
-                if (minus && y_minus < yi - sh / 2)
-                    QwtPainter::drawLine(painter, xi, yi - sh / 2, xi, y_minus);
+                if (plus && y_plus < yi - halfSym)
+                    painter->drawLine(QPointF(xi, yi - halfSym), QPointF(xi, y_plus));
+                if (minus && y_minus > yi + halfSym)
+                    painter->drawLine(QPointF(xi, yi + halfSym), QPointF(xi, y_minus));
+            } else {
+                if (plus && y_plus > yi + halfSym)
+                    painter->drawLine(QPointF(xi, yi + halfSym), QPointF(xi, y_plus));
+                if (minus && y_minus < yi - halfSym)
+                    painter->drawLine(QPointF(xi, yi - halfSym), QPointF(xi, y_minus));
             }
         } else if (type == Horizontal) {
-            int x_plus = xMap.transform(x(i) + err[i]);
-            int x_minus = xMap.transform(x(i) - err[i]);
-            bool x_minus_is_finite = true;
+            double x_plus = xMap.xTransform(x(i) + err[i]);
+            double x_minus = xMap.xTransform(x(i) - err[i]);
+            bool x_minus_is_finite = std::isfinite(x_minus);
 
             if (xMap.transformation()->type() == QwtScaleTransformation::Log10 && err[i] >= x(i)) {
-                x_minus = xMap.transform(qMin(xMap.s1(), xMap.s2()));
+                x_minus = xMap.xTransform(qMin(xMap.s1(), xMap.s2()));
                 x_minus_is_finite = false;
             }
+            if (!std::isfinite(x_plus) || !std::isfinite(x_minus))
+                continue;
 
-            // draw caps
             if (plus)
-                QwtPainter::drawLine(painter, x_plus, yi - cap / 2, x_plus, yi + cap / 2);
+                painter->drawLine(QPointF(x_plus, yi - halfCap), QPointF(x_plus, yi + halfCap));
             if (minus && x_minus_is_finite)
-                QwtPainter::drawLine(painter, x_minus, yi - cap / 2, x_minus, yi + cap / 2);
+                painter->drawLine(QPointF(x_minus, yi - halfCap), QPointF(x_minus, yi + halfCap));
 
-            // draw vertical line
             if (through) {
                 if (plus && minus)
-                    QwtPainter::drawLine(painter, x_minus, yi, x_plus, yi);
+                    painter->drawLine(QPointF(x_minus, yi), QPointF(x_plus, yi));
                 else if (plus)
-                    QwtPainter::drawLine(painter, xi, yi, x_plus, yi);
+                    painter->drawLine(QPointF(xi, yi), QPointF(x_plus, yi));
                 else if (minus)
-                    QwtPainter::drawLine(painter, x_minus, yi, xi, yi);
+                    painter->drawLine(QPointF(x_minus, yi), QPointF(xi, yi));
             } else if (x_plus >= x_minus) {
-                if (plus && x_plus > xi + sh / 2)
-                    QwtPainter::drawLine(painter, xi + sh / 2, yi, x_plus, yi);
-                if (minus && x_minus < xi - sh / 2)
-                    QwtPainter::drawLine(painter, xi - sh / 2, yi, x_minus, yi);
-            } else { // inverted scale
-                if (plus && x_plus < xi - sh / 2)
-                    QwtPainter::drawLine(painter, xi - sh / 2, yi, x_plus, yi);
-                if (minus && x_minus > xi + sh / 2)
-                    QwtPainter::drawLine(painter, xi + sh / 2, yi, x_minus, yi);
+                if (plus && x_plus > xi + halfSym)
+                    painter->drawLine(QPointF(xi + halfSym, yi), QPointF(x_plus, yi));
+                if (minus && x_minus < xi - halfSym)
+                    painter->drawLine(QPointF(xi - halfSym, yi), QPointF(x_minus, yi));
+            } else {
+                if (plus && x_plus < xi - halfSym)
+                    painter->drawLine(QPointF(xi - halfSym, yi), QPointF(x_plus, yi));
+                if (minus && x_minus > xi + halfSym)
+                    painter->drawLine(QPointF(xi + halfSym, yi), QPointF(x_minus, yi));
             }
         }
     }

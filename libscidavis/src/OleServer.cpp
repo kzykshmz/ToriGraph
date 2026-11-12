@@ -182,8 +182,12 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
 
     std::unique_ptr<ApplicationWindow> mw(new ApplicationWindow());
     mw->applyUserSettings();
+    const QStringList prevRecent = mw->recentProjects;
     bool ok = mw->loadProject(tempPath);
     QFile::remove(tempPath);
+    mw->recentProjects = prevRecent;
+    mw->projectname = "untitled";
+    mw->updateRecentProjectsList();
     if (!ok) {
         mw->setOleEmbeddedMode(true);
         return nullptr;
@@ -1055,7 +1059,7 @@ public:
         if (!hemf)
             return E_FAIL;
         RECT rc{ b->left, b->top, b->right, b->bottom };
-        BOOL ok = PlayEnhMetaFile(dc, hemf, &rc);
+        BOOL ok = SciDAVisEmf::drawHemfWithGdiplus(dc, hemf, rc) ? TRUE : PlayEnhMetaFile(dc, hemf, &rc);
         DeleteEnhMetaFile(hemf);
         return ok ? S_OK : E_FAIL;
     }
