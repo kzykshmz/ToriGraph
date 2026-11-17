@@ -143,10 +143,17 @@ private:
 
     void applyAxisScaleFromUi(int mergeId = -1);
     void applyAxisBreakFromUi();
+    void applyTickFormatFromUi(int mergeId = -1);
+    void applyTickDivideFromUi();
     void applyAxisTitleMarkup(const QString &openTag, const QString &closeTag);
     void insertAxisTitleToken(const QString &token);
     void rebuildGreekSymbolMenu();
+    void rebuildUnitsSymbolMenu();
     void applyQuickErrorBars(int mode /*0=Adjacent, 1=SD, 2=5pct*/);
+    void matchRightYAxisColorToCurve();
+    void refreshPaletteSchemeCombo();
+    void applyGroupAutoStyleFromUi();
+    QVector<Graph *> targetLayersForScope() const;
 
     static QIcon buildCurveSwatchIcon(Graph *g, int curveIndex);
     static QColor pickColorInteractive(QWidget *parent, const QColor &initial, const QString &title);
@@ -160,27 +167,34 @@ private:
     bool d_user_pinned = false;
     bool d_syncing_tree = false;
     bool d_syncing_props = false;
+    bool d_scope_all_panels = false;
     int d_active_axis = QwtPlot::xBottom;
 
-    // Root containers (Expanded vs 32 px Rail)
+    // Root containers (Expanded vs 40 px Rail)
     QWidget *d_root_container = nullptr;
     QStackedWidget *d_mode_stack = nullptr;
     QWidget *d_expanded_panel = nullptr;
     QFrame *d_rail_panel = nullptr;
 
-    // Rail buttons (32 px width)
+    // Rail buttons (40 px width)
     QToolButton *d_rail_expand_btn = nullptr;
     QToolButton *d_rail_page_btn = nullptr;
     QToolButton *d_rail_axis_btn = nullptr;
     QToolButton *d_rail_curve_btn = nullptr;
     QToolButton *d_rail_legend_btn = nullptr;
 
-    // Expanded Header
+    // Expanded Header & Multi-Panel Scope Bar
     QFrame *d_header_bar = nullptr;
     QLabel *d_header_title_lbl = nullptr;
     QLabel *d_header_target_lbl = nullptr;
     QToolButton *d_btn_pin = nullptr;
     QToolButton *d_btn_collapse = nullptr;
+
+    QFrame *d_scope_strip = nullptr;
+    QLabel *d_lbl_scope = nullptr;
+    QButtonGroup *d_scope_group = nullptr;
+    QToolButton *d_btn_scope_active = nullptr;
+    QToolButton *d_btn_scope_all = nullptr;
 
     // Splitter: Top Object Manager + Bottom Inspector
     QSplitter *d_splitter = nullptr;
@@ -252,6 +266,9 @@ private:
     QPushButton *d_btn_axis_autoscale = nullptr;
     QLabel *d_lbl_axis_scale_type = nullptr;
     QComboBox *d_combo_axis_scale = nullptr;
+    QCheckBox *d_chk_axis_reverse = nullptr;
+    QLabel *d_lbl_minor_subdiv = nullptr;
+    QComboBox *d_combo_minor_subdiv = nullptr;
 
     QCheckBox *d_chk_axis_break = nullptr;
     QLabel *d_lbl_break_from = nullptr;
@@ -262,6 +279,12 @@ private:
     QLabel *d_sec_axis_ticks_lbl = nullptr;
     QLabel *d_lbl_tick_dir = nullptr;
     QComboBox *d_combo_tick_dir = nullptr;
+    QLabel *d_lbl_tick_format = nullptr;
+    QComboBox *d_combo_tick_format = nullptr;
+    QLabel *d_lbl_tick_prec = nullptr;
+    QSpinBox *d_spin_tick_prec = nullptr;
+    QLabel *d_lbl_tick_divide = nullptr;
+    QComboBox *d_combo_tick_divide = nullptr;
     QCheckBox *d_chk_major_grid = nullptr;
     QCheckBox *d_chk_minor_grid = nullptr;
 
@@ -274,13 +297,15 @@ private:
     QMenu *d_menu_greek = nullptr;
     QToolButton *d_btn_fmt_unit = nullptr;
     QMenu *d_menu_units = nullptr;
+    QCheckBox *d_chk_lock_all_axes_font = nullptr;
     QLabel *d_lbl_title_pt = nullptr;
     QSpinBox *d_spin_axis_title_pt = nullptr;
     QLabel *d_lbl_tick_pt = nullptr;
     QSpinBox *d_spin_axis_tick_pt = nullptr;
 
-    // --- Page 2: Curve / Series Controls ---
+    // --- Page 2: Curve / Series / ErrorBar / Heatmap Controls ---
     QLabel *d_lbl_active_curve_name = nullptr;
+    QWidget *d_curve_regular_wrap = nullptr;
     QLabel *d_lbl_plot_style = nullptr;
     QComboBox *d_combo_curve_style = nullptr;
 
@@ -291,6 +316,8 @@ private:
     QSpinBox *d_spin_line_width = nullptr;
     QLabel *d_lbl_line_pen = nullptr;
     QComboBox *d_combo_line_pen = nullptr;
+    QLabel *d_lbl_curve_opacity = nullptr;
+    QSpinBox *d_spin_curve_opacity = nullptr;
 
     QLabel *d_sec_symbol_style_lbl = nullptr;
     QLabel *d_lbl_sym_shape = nullptr;
@@ -298,15 +325,37 @@ private:
     QLabel *d_lbl_sym_size = nullptr;
     QSpinBox *d_spin_sym_size = nullptr;
     QCheckBox *d_chk_sym_hollow = nullptr;
+    QCheckBox *d_chk_link_sym_color = nullptr;
+    QWidget *d_sym_custom_colors_wrap = nullptr;
+    QLabel *d_lbl_sym_edge_color = nullptr;
+    QPushButton *d_btn_sym_edge_color = nullptr;
+    QLabel *d_lbl_sym_fill_color = nullptr;
+    QPushButton *d_btn_sym_fill_color = nullptr;
+    QLabel *d_lbl_sym_edge_width = nullptr;
+    QDoubleSpinBox *d_spin_sym_edge_width = nullptr;
     QCheckBox *d_chk_curve_right_y = nullptr;
+    QPushButton *d_btn_match_right_y_color = nullptr;
 
     QLabel *d_sec_err_bars_lbl = nullptr;
     QPushButton *d_btn_err_adjacent = nullptr;
     QPushButton *d_btn_err_sd = nullptr;
     QPushButton *d_btn_err_5pct = nullptr;
+    QWidget *d_err_style_wrap = nullptr;
+    QLabel *d_sec_err_style_lbl = nullptr;
+    QLabel *d_lbl_err_width = nullptr;
+    QSpinBox *d_spin_err_width = nullptr;
+    QLabel *d_lbl_err_cap = nullptr;
+    QSpinBox *d_spin_err_cap = nullptr;
+    QLabel *d_lbl_err_dir = nullptr;
+    QComboBox *d_combo_err_dir = nullptr;
+    QLabel *d_lbl_err_color = nullptr;
+    QPushButton *d_btn_err_color = nullptr;
+    QPushButton *d_btn_err_match_curve = nullptr;
 
     QLabel *d_sec_series_scheme_lbl = nullptr;
     QComboBox *d_combo_series_scheme = nullptr;
+    QCheckBox *d_chk_cycle_sym_shapes = nullptr;
+    QCheckBox *d_chk_paired_hollow = nullptr;
     QPushButton *d_btn_apply_scheme_all = nullptr;
 
     QLabel *d_sec_y_stack_lbl = nullptr;
@@ -314,6 +363,24 @@ private:
     QDoubleSpinBox *d_spin_stack_gap = nullptr;
     QPushButton *d_btn_apply_stack = nullptr;
     QPushButton *d_btn_reset_stack = nullptr;
+
+    // Spectrogram / Heatmap Color Scale Controls
+    QWidget *d_spectrogram_wrap = nullptr;
+    QLabel *d_sec_spec_lbl = nullptr;
+    QLabel *d_lbl_spec_cmap = nullptr;
+    QComboBox *d_combo_spec_cmap = nullptr;
+    QCheckBox *d_chk_spec_reverse = nullptr;
+    QCheckBox *d_chk_spec_colorbar = nullptr;
+    QLabel *d_lbl_spec_cb_width = nullptr;
+    QSpinBox *d_spin_spec_cb_width = nullptr;
+    QCheckBox *d_chk_spec_contours = nullptr;
+    QLabel *d_lbl_spec_levels = nullptr;
+    QSpinBox *d_spin_spec_levels = nullptr;
+    QCheckBox *d_chk_spec_custom_z = nullptr;
+    QLabel *d_lbl_spec_zmin = nullptr;
+    QLineEdit *d_edit_spec_zmin = nullptr;
+    QLabel *d_lbl_spec_zmax = nullptr;
+    QLineEdit *d_edit_spec_zmax = nullptr;
 
     // --- Page 3: Legend / Annotation Controls ---
     QLabel *d_lbl_legend_target = nullptr;

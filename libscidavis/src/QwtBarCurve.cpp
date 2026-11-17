@@ -188,28 +188,30 @@ double QwtBarCurve::dataOffset()
         const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
         int dx = abs(xMap.transform(x(1)) - xMap.transform(x(0)));
         double bar_width = dx * (1 - bar_gap * 0.01);
-        if (plot()->isVisible()) {
+        if (plot()->isVisible() && xMap.pDist() >= 2.0) {
             for (int i = 2; i < dataSize(); i++) {
                 int min = abs(xMap.transform(x(i)) - xMap.transform(x(i - 1)));
                 if (min <= dx)
                     dx = min;
             }
             int x1 = xMap.transform(minXValue()) + int(bar_offset * 0.01 * bar_width);
-            return xMap.invTransform(x1) - minXValue();
+            const double inv = xMap.invTransform(x1) - minXValue();
+            return std::isfinite(inv) ? inv : 0.0;
         } else
             return 0.5 * bar_offset * 0.01 * bar_width;
     } else {
         const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
         int dy = abs(yMap.transform(y(1)) - yMap.transform(y(0)));
         double bar_width = dy * (1 - bar_gap * 0.01);
-        if (plot()->isVisible()) {
+        if (plot()->isVisible() && yMap.pDist() >= 2.0) {
             for (int i = 2; i < dataSize(); i++) {
                 int min = abs(yMap.transform(y(i)) - yMap.transform(y(i - 1)));
                 if (min <= dy)
                     dy = min;
             }
             int y1 = yMap.transform(minYValue()) + int(bar_offset * 0.01 * bar_width);
-            return yMap.invTransform(y1) - minYValue();
+            const double inv = yMap.invTransform(y1) - minYValue();
+            return std::isfinite(inv) ? inv : 0.0;
         } else
             return 0.5 * bar_offset * 0.01 * bar_width;
     }

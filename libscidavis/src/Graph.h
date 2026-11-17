@@ -156,7 +156,8 @@ public:
             LegendBox,
             TextAnnotation,
             ArrowAnnotation,
-            ImageAnnotation
+            ImageAnnotation,
+            ReferenceLine
         };
         Kind kind = None;
         int primaryId = -1;
@@ -314,6 +315,8 @@ public slots:
      */
     void setCurveType(int curve, CurveType type, bool update = true);
     void setCurveFullRange(int curveIndex);
+    void setCurveAxes(int curveIndex, int xAxis, int yAxis);
+    QString resolvedAutoCurveLabel(int curveIndex) const;
 
     //! \name Output: Copy/Export/Print
     //@{
@@ -546,6 +549,9 @@ public slots:
 
     void setAxisFont(int axis, const QFont &fnt);
     QFont axisFont(int axis);
+    QFont axisNumbersFont(int axis) const;
+    QFont legendFont() const;
+    void syncAxisColorToCurve(int qwtAxis, int curveIndex);
     void initFonts(const QFont &scaleTitleFnt, const QFont &numbersFnt);
 
     QColor axisTitleColor(int axis);
@@ -854,6 +860,27 @@ public:
     QVector<ReferenceLineSpec> referenceLines() const;
     void clearReferenceLines();
     void updateStatReferenceLines();
+    int referenceLineAtCanvasPos(const QPoint &pos, int tolPx = 6) const;
+    void updateReferenceLine(int index, const ReferenceLineSpec &spec);
+    void removeReferenceLine(int index);
+    bool editReferenceLineDialog(int index);
+
+    struct AxisViewportState {
+        bool axisEnabled[4] = { false, false, false, false };
+        double lower[4] = { 0.0, 0.0, 0.0, 0.0 };
+        double upper[4] = { 0.0, 0.0, 0.0, 0.0 };
+        double userStep[4] = { 0.0, 0.0, 0.0, 0.0 };
+        int maxMajor[4] = { 5, 5, 5, 5 };
+        int maxMinor[4] = { 5, 5, 5, 5 };
+        bool isLog[4] = { false, false, false, false };
+        bool inverted[4] = { false, false, false, false };
+        bool userLocked[4] = { false, false, false, false };
+        bool autoscale = true;
+    };
+    void recordZoomHistorySnapshot();
+    bool stepZoomHistory(int delta);
+    bool handleEscapeKey();
+    bool cycleSelectableCurve(int step);
 
     void setLinkedParentLayer(Graph *parentLayer, int xLinkMode, const QString &xExpr,
                               int yLinkMode, const QString &yExpr);
@@ -1048,6 +1075,11 @@ private:
     GraphSelection d_selection;
     QWidget *d_selection_overlay = nullptr;
     bool d_legend_visible = true;
+    QVector<AxisViewportState> d_zoom_history;
+    int d_zoom_history_pos = 0;
+    bool d_applying_zoom_history = false;
+    AxisViewportState captureAxisViewportState() const;
+    void applyAxisViewportState(const AxisViewportState &st);
     QString resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const;
     bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
 };

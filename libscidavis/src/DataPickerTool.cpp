@@ -30,6 +30,7 @@
  ***************************************************************************/
 #include "DataPickerTool.h"
 #include "Graph.h"
+#include "MultiLayer.h"
 #include "Plot.h"
 #include "FunctionCurve.h"
 #include "PlotCurve.h"
@@ -56,6 +57,7 @@ DataPickerTool::DataPickerTool(Graph *graph, ApplicationWindow *app, Mode mode,
 {
     d_selected_curve = NULL;
 
+    d_selection_marker.setTitle(QStringLiteral("__tg_transient_ui_marker__"));
     d_selection_marker.setSymbol(QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(255, 255, 0, 128)),
                                            QPen(Qt::black, 2), QSize(20, 20)));
     d_selection_marker.setLineStyle(QwtPlotMarker::Cross);
@@ -101,8 +103,8 @@ void DataPickerTool::append(const QPoint &pos)
 {
     int dist, point_index;
     const int curve = d_graph->plotWidget()->closestCurve(pos.x(), pos.y(), dist, point_index);
-    const int pixelTol = (d_mode == Mask || d_mode == Unmask) ? 10 : 5;
-    if (curve <= 0 || dist >= pixelTol) {
+    const int pixelTol = 10;
+    if (curve < 0 || dist >= pixelTol) {
         setSelection(NULL, 0);
         return;
     }
@@ -149,6 +151,8 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
 
         if (dc && (d_mode == Mask || d_mode == Unmask)) {
             const bool doMask = (d_mode == Mask);
+            MultiLayer *ml = d_graph ? d_graph->multiLayerParent() : nullptr;
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
             dc->maskPoint(d_selected_point, doMask);
             const int xCol = t ? t->colIndex(dc->xColumnName()) : -1;
             const int yCol = t ? t->colIndex(d_selected_curve->title().text()) : -1;
@@ -166,6 +170,10 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
                                     .arg(row + 1)
                                     .arg(xStr)
                                     .arg(yStr));
+            if (ml && !beforeSnap.isEmpty()) {
+                ml->pushUndoSnapshot(doMask ? tr("Mask Data Point") : tr("Unmask Data Point"),
+                                     beforeSnap);
+            }
             if (d_app)
                 d_app->modifiedProject();
         } else if (t && row >= 0) {
@@ -224,6 +232,11 @@ bool DataPickerTool::keyEventFilter(QKeyEvent *ke)
 {
     const int delta = 5;
     switch (ke->key()) {
+    case Qt::Key_Escape:
+        if (d_graph && d_graph->handleEscapeKey())
+            return true;
+        return false;
+
     case Qt::Key_Enter:
     case Qt::Key_Return:
         if (d_selected_curve)

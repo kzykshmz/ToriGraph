@@ -35,6 +35,58 @@ set_target_properties( scidavis PROPERTIES OUTPUT_NAME "ToriGraph" )
 add_custom_command(TARGET scidavis POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/translations" COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QM_FILES} "${CMAKE_CURRENT_BINARY_DIR}/translations")
 if( WIN32 )
   add_custom_command(TARGET scidavis POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:scidavis>" "${CMAKE_CURRENT_BINARY_DIR}/scidavis.exe")
+  file(GLOB TORIGRAPH_RUNTIME_DLLS
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libomp.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libiomp5md.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/tbb12.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/zlib1.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/zlib.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/freetype.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/harfbuzz.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/graphite2.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/glib-2.0-0.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/intl-8.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/iconv.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/charset.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/pcre2-8.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/pcre2-16.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/icudt*.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/icuin*.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/icuuc*.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/liblzma.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libzstd.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/zstd.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libbz2.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libexpat.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/sqlite3.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/turbojpeg.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/jpeg8.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libpng16.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/gsl-28.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libcblas.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libblas.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/muparser.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libcrypto-3-x64.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libssl-3-x64.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/vcruntime140*.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/msvcp140*.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/vcomp140.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/concrt140.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Core_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Gui_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Widgets_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Svg_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Network_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5PrintSupport_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Xml_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5OpenGL_conda.dll"
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/Qt5Pdf_conda.dll"
+  )
+  if( TORIGRAPH_RUNTIME_DLLS )
+    add_custom_command(TARGET scidavis POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TORIGRAPH_RUNTIME_DLLS} "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+  endif()
 endif()
 
 if( WIN32 )
@@ -169,4 +221,9 @@ if( WIN32 )
   add_executable( scidavis_ole_test "src/ole_test.cpp" "${RESOURCES}" )
   target_link_libraries( scidavis_ole_test libscidavis )
   target_include_directories( scidavis_ole_test PRIVATE "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include" "${CMAKE_SOURCE_DIR}/libscidavis/src" )
+  if( TORIGRAPH_RUNTIME_DLLS )
+    add_custom_command(TARGET scidavis_ole_test POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TORIGRAPH_RUNTIME_DLLS} "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+  endif()
 endif()

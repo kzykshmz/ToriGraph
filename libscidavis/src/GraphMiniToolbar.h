@@ -44,6 +44,10 @@ public:
     void popupForAxis(Graph *g, int qwtAxisId, const QPoint &globalPos);
     void popupForCurve(Graph *g, int curveIndex, const QPoint &globalPos);
     void popupForLegend(Graph *g, Legend *legend, const QPoint &globalPos);
+    void showForLegend(Graph *g, Legend *legend, const QPoint &globalPos)
+    {
+        popupForLegend(g, legend, globalPos);
+    }
 
     void cancelScheduledAndHide();
     void retranslateUi();
@@ -58,6 +62,7 @@ private slots:
 
     // Curve actions
     void onCurvePickColor();
+    void onCurvePickSymbolShape();
     void onCurveLineWidthDec();
     void onCurveLineWidthInc();
     void onCurveSymbolSizeDec();
@@ -67,29 +72,36 @@ private slots:
     void onCurveStyleLineSymbol();
     void onCurveToggleHollowSymbol();
     void onCurveToggleRightY();
+    void onCurveMatchRightYColor();
     void onCurveToggleErrorBars();
     void onCurveClearMask();
 
     // Axis actions
     void onAxisAutoRange();
     void onAxisToggleLog();
+    void onAxisToggleReverse();
     void onAxisToggleTicksInOut();
     void onAxisToggleOppositeLine();
     void onAxisAddMeanLine();
     void onAxisFontDec();
     void onAxisFontInc();
 
-    // Canvas actions (kept for slot compatibility; popupForCanvas is a no-op)
+    // Layer / Canvas actions
     void onCanvasToggleBoxFrame();
+    void onCanvasSetBoxInward();
+    void onCanvasSetOpenL();
     void onCanvasToggleMajorGrid();
     void onCanvasRescaleAll();
     void onCanvasAspectSquare();
     void onCanvasFitPageToLayers();
 
-    // Legend actions
+    // Legend / Text annotation actions
     void onLegendAutoPlace();
+    void onLegendPickTextColor();
     void onLegendToggleFrame();
     void onLegendToggleTransparent();
+    void onLegendToggleSubscript();
+    void onLegendToggleSuperscript();
     void onLegendFontDec();
     void onLegendFontInc();
     void onLegendReconstruct();
@@ -114,8 +126,12 @@ private:
     void ensureEventFilterInstalled();
     void schedulePopup(const QPoint &globalPos);
     void showNearGlobalPos(const QPoint &globalPos);
+    QRect computeAvailableBounds(const QPoint &anchorGlobal) const;
+    void reclampToAvailableBounds();
     bool isLegendValid() const;
     void applyCurveLineSymbolMode(int mode);
+    void applyLegendMarkupToggle(const QString &openTag, const QString &closeTag,
+                                 const QString &undoLabel);
     void adjustAxisFont(int deltaPt);
     void adjustLegendFont(int deltaPt);
     QString beginGraphUndo() const;
@@ -131,6 +147,7 @@ private:
     int d_curve_index;
     Legend *d_legend;
     QPoint d_scheduled_global_pos;
+    QPoint d_last_anchor_global;
     QPoint d_press_origin_global;
     bool d_popup_pending;
     bool d_filter_installed;

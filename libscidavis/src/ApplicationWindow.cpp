@@ -176,7 +176,10 @@
 #include <QBuffer>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
+#include <QFontDatabase>
 #include <QFormLayout>
+#include <QSignalBlocker>
 #include <QGroupBox>
 #include <QComboBox>
 #include <QSpinBox>
@@ -201,6 +204,7 @@
 #include <qwt_symbol.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_scale_div.h>
+#include <qwt_scale_engine.h>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_errno.h>
 #ifdef Q_OS_WIN
@@ -373,13 +377,14 @@ void registerApplicationWindowJapaneseStrings()
         add("Note", "ノート");
         add("Notes", "ノート");
         add("Search windows (name / label)...", "ウィンドウ検索 (名前・ラベル)...");
-        add("All Windows", "すべて (All)");
-        add("Tables (Workbooks)", "テーブル (Workbooks)");
-        add("Graphs (2D/3D)", "グラフ (Graphs)");
-        add("Matrices", "行列 (Matrices)");
-        add("Notes / Scripts", "ノート (Notes)");
-        add("Subfolders Only", "サブフォルダのみ");
-        add("Subfolders", "サブフォルダ含む");
+        add("Search windows / labels...", "ウィンドウ検索...");
+        add("All Windows", "すべて");
+        add("Tables (Workbooks)", "テーブル");
+        add("Graphs (2D/3D)", "グラフ");
+        add("Matrices", "行列");
+        add("Notes / Scripts", "ノート");
+        add("Subfolders Only", "サブフォルダ");
+        add("Subfolders", "サブフォルダ");
         add("Tabbed View", "タブ表示");
         add("&Tabbed Workspace View", "タブ表示モード (Origin風)(&T)");
 
@@ -438,8 +443,11 @@ void registerApplicationWindowJapaneseStrings()
         add("&Pie", "円グラフ(&P)");
         add("Vectors XY&AM", "ベクトル図 XY&AM");
         add("Vectors &XYXY", "ベクトル図 &XYXY");
-        add("&Box Plot", "箱ひげ図 (Box Plot)(&B)");
-        add("&Violin Plot", "バイオリンプロット (Violin)(&V)");
+        add("&Box Plot", "箱ひげ図(&B)");
+        add("&Violin Plot", "バイオリン図(&V)");
+        add("Box Plot", "箱ひげ図");
+        add("Violin Plot", "バイオリン図");
+        add("Bar Chart", "棒グラフ");
         add("&Pareto Chart", "パレート図 (Pareto)(&P)");
         add("Normal &Q-Q Plot", "正規Q-Qプロット (Normal Q-Q)(&Q)");
         add("&Histogram", "ヒストグラム(&H)");
@@ -689,7 +697,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Matrix Plot", "行列プロット");
         add("3D Surface", "3D曲面");
         add("Undo/Redo History", "元に戻す/やり直し履歴");
-        add("Search windows / labels...", "ウィンドウ検索 (名前・ラベル)...");
+        add("Search windows / labels...", "ウィンドウ検索...");
         add("&Console", "スクリプトコンソール(&C)");
         add("New Folder", "新規フォルダ");
         add("New Table", "新規テーブル");
@@ -949,19 +957,21 @@ void registerApplicationWindowJapaneseStrings()
             "鉄と鋼 / ISIJ 1段組論文スタイルを適用 (85 mm, 600 DPI, 内向き目盛, Arial)");
         add("&Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)(&P)");
         add("Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)");
-        add("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)",
-            "高視認性プレゼンテーションスライド用スタイルを適用 (16:9, 28 pt Arial, 太線)");
+        add("Apply high-visibility presentation slide style (185\xC3\x97"
+            "185 mm, 28 pt Arial)",
+            "発表スライド用の高視認様式を適用 (185\xC3\x97"
+            "185 mm, 28 pt Arial)");
         add("&Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)(&N)");
         add("Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)");
         add("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)",
             "Nature / Science 1段組コンパクトスタイルを適用 (89 mm, L字枠, 8 pt Arial)");
 
         add("Copy &Format", "書式をコピー(&F)");
-        add("Copy Format", "書式をコピー");
+        add("Copy Format", "書式コピー");
         add("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)",
             "グラフ書式をコピー (フォント・軸・目盛・ページ寸法・線幅・基準線)");
         add("Paste &Format", "書式を貼り付け(&F)");
-        add("Paste Format", "書式を貼り付け");
+        add("Paste Format", "書式貼付");
         add("Paste copied graph format onto active graph", "コピーしたグラフ書式をアクティブグラフへ適用");
         add("Copied graph format from %1.", "%1 からグラフ書式をコピーしました。");
         add("Applied copied graph format to %1.", "%1 にグラフ書式を適用しました。");
@@ -1271,7 +1281,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Toggle Graph Inspector Dock (Ctrl+Shift+I)",
             "グラフインスペクタの表示/折りたたみ切替 (Ctrl+Shift+I)");
         add("Inspector", "インスペクタ");
-        add("Square 70%", "正方形枠 (70%)");
+        add("Square 70%", "正方形枠");
         add("Apply 70% Square Inner Canvas Frame", "内側キャンバスを70%正方形枠に整える");
         add("Apply 70% Square Canvas Frame", "70%正方形枠を適用");
         add("Page Size, DPI, Font & Zoom — Click for Quick Presets",
@@ -1331,8 +1341,191 @@ void registerApplicationWindowJapaneseStrings()
         add("Stamp ΔX/ΔY Callout on Graph", "ΔX/ΔY 注釈をグラフに貼付");
         add("Stamp Callout on Graph", "注釈をグラフに貼付");
         add("Stamp Profile Readout on Graph", "プロファイル値をグラフに貼付");
+
+        // Phase 8: Ribbon ToolBar, Worksheet Quick Bar, Smart Header, Scoped Format Paste & Merge Graphs
+        add("Modern Ribbon", "モダンリボン");
+        add("ISIJ 85mm", "ISIJ 85mm 様式");
+        add("28pt Slide", "28pt スライド");
+        add("Merge Graphs", "グラフ結合");
+        add("Merge Multiple Open Graph Windows into Multi-Panel Figure",
+            "複数のグラフウィンドウを1枚の複合パネル図に結合");
+        add("Paste Format &Special", "形式を選択して書式貼り付け(&S)");
+        add("Paste Format Special", "形式を選択して書式貼り付け");
+        add("Paste copied graph style (fonts, colors, symbols, frame & ticks) onto active graph",
+            "コピーしたグラフ書式（フォント・色・記号・枠・目盛り）を現在のグラフへ貼り付けます");
+        add("Paste &Fonts Only", "フォントのみ貼り付け(&F)");
+        add("Paste Fonts Only", "フォントのみ貼り付け");
+        add("Paste only font family, sizes, weights, and alignments onto active graph",
+            "フォント種類・サイズ・太さ・配置のみを現在のグラフへ貼り付けます");
+        add("Paste &Colors && Symbols Only", "色・記号のみ貼り付け(&C)");
+        add("Paste Colors & Symbols Only", "色・記号のみ貼り付け");
+        add("Paste only curve pens, symbol styles/sizes, and colors onto active graph",
+            "曲線の線種・色・記号スタイルとサイズのみを現在のグラフへ貼り付けます");
+        add("Paste &Axis Scales Only", "軸スケールのみ貼り付け(&A)");
+        add("Paste Axis Scales Only", "軸スケールのみ貼り付け");
+        add("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats",
+            "軸の最小/最大範囲・刻み幅・対数スケール・数値書式のみを貼り付けます");
+        add("Paste Format to &All Graphs in Folder", "フォルダ内の全グラフへ書式貼り付け(&A)");
+        add("Paste Format to All Graphs in Folder", "フォルダ内の全グラフへ書式貼り付け");
+        add("Apply copied graph format to every 2D graph window in the current folder",
+            "現在のフォルダ内のすべての2Dグラフへコピーした書式を一括適用します");
+        add("Paste Graph Format", "グラフ書式の貼り付け");
+        add("Paste Graph Format to Folder", "フォルダ内のグラフへ書式貼り付け");
+        add("Applied copied graph format to %1 graphs in folder.",
+            "フォルダ内の %1 個のグラフに書式を適用しました。");
+        add("&Merge Graph Windows...", "グラフウィンドウを結合(&M)...");
+        add("Merge Graph Windows...", "グラフウィンドウを結合...");
+        add("Merge Graph Windows", "グラフウィンドウを結合");
+        add("Merge 2 or more open graph windows into a publication multi-panel figure (a)(b)(c)(d)",
+            "複数の2Dグラフウィンドウを (a)(b)(c)(d) パネル付きの複合図に結合します");
+        add("At least two 2D graph windows are required to merge into a multi-panel figure.",
+            "複合パネル図に結合するには、少なくとも2つの2Dグラフウィンドウが必要です。");
+        add("Check and order the graph windows to merge into a new multi-panel page:",
+            "新しい複合パネル図に結合するグラフを選択し、順序を並べてください:");
+        add("Move Up", "上へ移動");
+        add("Move Down", "下へ移動");
+        add("Select All", "すべて選択");
+        add("Clear All", "選択解除");
+        add("Multi-Panel Layout && Publication Style", "複合パネル配置・論文様式");
+        add("Multi-Panel Layout & Publication Style", "複合パネル配置・論文様式");
+        add("Rows:", "行数:");
+        add("Grid Arrangement:", "グリッド配置:");
+        add("Keep Source Graph Styles", "元のグラフ様式を維持");
+        add("ISIJ 1-Column (85 mm width)", "ISIJ 1段組 (幅 85 mm)");
+        add("ISIJ 2-Column (175 mm width)", "ISIJ 2段組 (幅 175 mm)");
+        add("Style Preset:", "様式プリセット:");
+        add("Add panel labels (a), (b), (c)...", "パネル記号 (a), (b), (c)... を付与");
+        add("Outside Top-Left", "枠外 左上");
+        add("Inside Top-Left", "枠内 左上");
+        add("Panel Labels:", "パネル記号:");
+        add("Hide inner shared axis titles && tick labels", "内側の共有軸タイトル・目盛り数字を非表示");
+        add("Hide inner shared axis titles & tick labels", "内側の共有軸タイトル・目盛り数字を非表示");
+        add("Please select at least two graph windows to merge.",
+            "結合するグラフウィンドウを2つ以上選択してください。");
+        add("Apply high-visibility presentation slide style (185\xC3\x97"
+            "185 mm, 28 pt Arial)",
+            "発表スライド用の高視認様式を適用 (185\xC3\x97"
+            "185 mm, 28 pt Arial)");
+        add("Apply ISIJ International 1-column style (85\xC3\x97"
+            "85 mm, 600 DPI, Arial)",
+            "ISIJ International 1段組様式を適用 (85\xC3\x97"
+            "85 mm, 600 DPI, Arial)");
+        add("Remove Curve", "曲線を削除");
+        add("Clear Axis Title", "軸ラベルを消去");
+        add("Clear Title", "タイトルを消去");
+        add("Remove Reference Line", "基準線を削除");
+        add("Edit Annotation", "注釈を編集");
+        add("Legend &Properties...", "凡例のプロパティ(&P)...");
+        add("Legend Properties...", "凡例のプロパティ...");
+        add("Change Legend Columns", "凡例の列数を変更");
+        add("Edit &Text / Properties...", "テキスト編集・プロパティ(&T)...");
+        add("Edit Text / Properties...", "テキスト編集・プロパティ...");
+        add("Change Curve Plot Type", "曲線のプロット形式を変更");
+        add("Add Curves from Worksheet", "ワークシートから曲線を追加");
+        add("Added %1 column(s) from %2 to %3.", "%2 から %1 列を %3 へ追加しました。");
+        add("You need at least four columns for this operation!",
+            "この操作には少なくとも4つの列が必要です。");
+
+        // Worksheet Quick Bar & Multi-Line Column Header Metadata
+        add("Set selected column(s) as X (Abscissa)", "選択列を X（横軸）に設定");
+        add("Set selected column(s) as Y (Ordinate)", "選択列を Y（縦軸）に設定");
+        add("Set selected column(s) as Y Error", "選択列を Y誤差（±y誤差）に設定");
+        add("Set selected column(s) as X Error", "選択列を X誤差（±x誤差）に設定");
+        add("Set selected column(s) as Z", "選択列を Z に設定");
+        add("Label", "ラベル");
+        add("Set selected column(s) as Text Label", "選択列をテキストラベルに設定");
+        add("Disregard", "無視");
+        add("Set selected column(s) as Disregard (None)", "選択列をプロット対象外（無視）に設定");
+        add("Column formula (e.g. col(\"1\")*2) - Enter to apply",
+            "列の数式（例: col(\"1\")*2）— Enter で適用");
+        add("Enter formula for active column and press Enter to recalculate",
+            "現在の列の数式を入力し、Enter キーで再計算します");
+        add("Line+Sym", "線+記号");
+        add("Plot Line + Symbol graph (uses selected Y or all Y columns)",
+            "線＋記号グラフを作成（選択Y列、未選択時は全Y列）");
+        add("Scatter", "散布図");
+        add("Plot Scatter graph (uses selected Y or all Y columns)",
+            "散布図を作成（選択Y列、未選択時は全Y列）");
+        add("Line", "折れ線");
+        add("Plot Line graph (uses selected Y or all Y columns)",
+            "折れ線グラフを作成（選択Y列、未選択時は全Y列）");
+        add("+ Add to Graph", "+ グラフへ追加");
+        add("Add selected Y column(s) (or all Y columns) to most recent graph",
+            "選択Y列（未選択時は全Y列）を直近のグラフへ追加");
+        add("Column Props \xE2\x96\xB8", "列設定 \xE2\x96\xB8");
+        add("Toggle Column Description & Type Side Panel",
+            "列の説明・プロパティパネルの表示切替");
+        add("%1: set column plot designation", "%1: 列のプロット役割を変更");
+        add("Long Name:", "長い名前:");
+        add("Units:", "単位:");
+        add("Comments:", "コメント:");
+        add("Double-click header to edit Long Name, Units & F(x)=",
+            "ヘッダーをダブルクリックして長い名前・単位・F(x)= を編集");
+        add("Search", "検索");
+        add("Focus", "集中");
+        add("Tabs", "タブ");
+        add("Split", "分割");
+        add("Free View", "自由配置");
+        add("More", "他");
+        add("More column plot roles (\xC2\xB1xErr, Z, Label, Disregard)",
+            "その他の列役割（\xC2\xB1x誤差・Z・ラベル・無視）");
+        add("+ Add", "+追加");
+        add("Col Props", "列設定");
+        add("Panel View", "パネル表示");
+        add("28pt Slide", "28pt スライド");
+        add("[\xC2\xB1xErr]", "[\xC2\xB1x誤差]");
+        add("[\xC2\xB1yErr]", "[\xC2\xB1y誤差]");
+        add("\xC2\xB1xErr", "\xC2\xB1x誤差");
+        add("\xC2\xB1yErr", "\xC2\xB1y誤差");
+        add("Paste Layer", "レイヤーを貼り付け");
+        add("Add Layer", "レイヤーの追加");
+        add("Solid Line", "実線");
+        add("Square Symbol", "四角 (\xE2\x96\xA0)");
+        add("Box Inward", "四方枠");
+        add("Open-L Frame", "L字枠");
+        add("Trim Page", "余白調整");
+        add("Palette", "パレット");
+        add("Batch Plot", "一括作図");
+        add("Copy High-DPI Image", "画像コピー");
+        add("Export PDF", "PDF出力");
+        add("ISIJ 85mm Fig", "ISIJ 85mm図");
+        add("Nature 89mm Fig", "Nature 89mm図");
+        add("Size & DPI", "寸法・DPI");
     }
 }
+
+namespace {
+
+static void sanitizeUiTableFont(QFont &f)
+{
+    const QString fam = f.family().trimmed();
+    const bool isLegacyBitmapUiFont = fam.isEmpty()
+            || fam.compare(QLatin1String("MS UI Gothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS PGothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Gothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Shell Dlg"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Shell Dlg 2"), Qt::CaseInsensitive) == 0;
+    if (isLegacyBitmapUiFont) {
+        const QStringList families = QFontDatabase().families();
+        if (families.contains(QStringLiteral("Yu Gothic UI"), Qt::CaseInsensitive))
+            f.setFamily(QStringLiteral("Yu Gothic UI"));
+        else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
+            f.setFamily(QStringLiteral("Segoe UI"));
+    }
+    if (f.pointSize() <= 0 || f.pointSize() < 9)
+        f.setPointSize(9);
+    f.setStyleStrategy(QFont::PreferAntialias);
+}
+
+class ExplorerContainerWidget : public QWidget
+{
+public:
+    explicit ExplorerContainerWidget(QWidget *parent = nullptr) : QWidget(parent) { }
+    QSize sizeHint() const override { return QSize(255, 420); }
+    QSize minimumSizeHint() const override { return QSize(210, 140); }
+};
+
+} // namespace
 
 // Acklam's rational approximation for the standard normal inverse CDF \Phi^{-1}(p)
 double inverseStandardNormalCDF(double p)
@@ -1598,11 +1791,22 @@ ApplicationWindow::ApplicationWindow()
     connect(d_project, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
             SLOT(handleAspectDescriptionChanged(const AbstractAspect *)), Qt::UniqueConnection);
 
+    d_show_table_comments = true;
+    ::future::Table::setDefaultCommentVisibility(true);
+
+    setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+
     explorerWindow.setWindowTitle(tr("Project Explorer"));
     explorerWindow.setObjectName(
             "explorerWindow"); // this is needed for QMainWindow::restoreState()
-    explorerWindow.setMinimumHeight(150);
-    addDockWidget(Qt::BottomDockWidgetArea, &explorerWindow);
+    explorerWindow.setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea
+                                   | Qt::BottomDockWidgetArea);
+    explorerWindow.setMinimumWidth(220);
+    explorerWindow.setMinimumHeight(140);
+    addDockWidget(Qt::LeftDockWidgetArea, &explorerWindow);
 
     folders.setObjectName("folders");
     folders.setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -1655,25 +1859,27 @@ ApplicationWindow::ApplicationWindow()
     explorerSplitter->addWidget(&lv);
     explorerSplitter->setSizes(QList<int>() << 50 << 50);
 
-    d_explorer_container = new QWidget(&explorerWindow);
+    d_explorer_container = new ExplorerContainerWidget(&explorerWindow);
     QVBoxLayout *explorerMainLayout = new QVBoxLayout(d_explorer_container);
     explorerMainLayout->setContentsMargins(3, 3, 3, 3);
     explorerMainLayout->setSpacing(3);
 
-    QHBoxLayout *explorerBarLayout = new QHBoxLayout();
-    explorerBarLayout->setContentsMargins(0, 0, 0, 0);
-    explorerBarLayout->setSpacing(4);
+    d_explorer_bar_grid = new QGridLayout();
+    d_explorer_bar_grid->setContentsMargins(0, 0, 0, 0);
+    d_explorer_bar_grid->setHorizontalSpacing(4);
+    d_explorer_bar_grid->setVerticalSpacing(3);
 
     d_explorer_search = new QLineEdit(d_explorer_container);
     d_explorer_search->setObjectName("explorerSearchEdit");
+    d_explorer_search->setMinimumWidth(120);
     d_explorer_search->setClearButtonEnabled(true);
     d_explorer_search->setPlaceholderText(tr("Search windows (name / label)..."));
     connect(d_explorer_search, SIGNAL(textChanged(const QString &)), this,
             SLOT(filterExplorerWindows()));
-    explorerBarLayout->addWidget(d_explorer_search, 2);
 
     d_explorer_type_filter = new QComboBox(d_explorer_container);
     d_explorer_type_filter->setObjectName("explorerTypeFilterCombo");
+    d_explorer_type_filter->setMinimumWidth(72);
     d_explorer_type_filter->addItem(tr("All Windows"), QString("all"));
     d_explorer_type_filter->addItem(tr("Tables (Workbooks)"), QString("Table"));
     d_explorer_type_filter->addItem(tr("Graphs (2D/3D)"), QString("MultiLayer"));
@@ -1682,32 +1888,27 @@ ApplicationWindow::ApplicationWindow()
     d_explorer_type_filter->addItem(tr("Subfolders Only"), QString("Folder"));
     connect(d_explorer_type_filter, SIGNAL(currentIndexChanged(int)), this,
             SLOT(filterExplorerWindows()));
-    explorerBarLayout->addWidget(d_explorer_type_filter, 1);
 
     d_explorer_subfolder_check = new QCheckBox(tr("Subfolders"), d_explorer_container);
     d_explorer_subfolder_check->setObjectName("explorerSubfolderCheck");
     d_explorer_subfolder_check->setToolTip(tr("Include windows from subfolders in list"));
     connect(d_explorer_subfolder_check, SIGNAL(toggled(bool)), this,
             SLOT(filterExplorerWindows()));
-    explorerBarLayout->addWidget(d_explorer_subfolder_check);
 
     d_btn_explorer_new_folder = new QToolButton(d_explorer_container);
     d_btn_explorer_new_folder->setIcon(IconLoader::load(":/newfolder.xpm"));
     d_btn_explorer_new_folder->setToolTip(tr("New Folder"));
     connect(d_btn_explorer_new_folder, SIGNAL(clicked()), this, SLOT(addFolder()));
-    explorerBarLayout->addWidget(d_btn_explorer_new_folder);
 
     d_btn_explorer_new_table = new QToolButton(d_explorer_container);
     d_btn_explorer_new_table->setIcon(IconLoader::load(":/table.xpm"));
     d_btn_explorer_new_table->setToolTip(tr("New Table"));
     connect(d_btn_explorer_new_table, SIGNAL(clicked()), this, SLOT(newTable()));
-    explorerBarLayout->addWidget(d_btn_explorer_new_table);
 
     d_btn_explorer_new_graph = new QToolButton(d_explorer_container);
     d_btn_explorer_new_graph->setIcon(IconLoader::load(":/new_graph.xpm"));
     d_btn_explorer_new_graph->setToolTip(tr("New Graph"));
     connect(d_btn_explorer_new_graph, SIGNAL(clicked()), this, SLOT(newGraph()));
-    explorerBarLayout->addWidget(d_btn_explorer_new_graph);
 
     d_btn_tabbed_view = new QToolButton(d_explorer_container);
     d_btn_tabbed_view->setObjectName("explorerTabbedViewButton");
@@ -1715,17 +1916,26 @@ ApplicationWindow::ApplicationWindow()
     d_btn_tabbed_view->setCheckable(true);
     d_btn_tabbed_view->setToolTip(tr("Toggle OriginPro-style Tabbed Workspace View"));
     connect(d_btn_tabbed_view, SIGNAL(toggled(bool)), this, SLOT(setTabbedWorkspaceView(bool)));
-    explorerBarLayout->addWidget(d_btn_tabbed_view);
 
-    explorerMainLayout->addLayout(explorerBarLayout);
+    explorerMainLayout->addLayout(d_explorer_bar_grid);
     explorerMainLayout->addWidget(explorerSplitter, 1);
+
+    d_explorer_container->installEventFilter(this);
+    lv.installEventFilter(this);
+    connect(&explorerWindow, &QDockWidget::dockLocationChanged, this,
+            [this](Qt::DockWidgetArea) { updateExplorerAdaptiveLayout(); });
+    connect(&explorerWindow, &QDockWidget::topLevelChanged, this,
+            [this](bool) { updateExplorerAdaptiveLayout(); });
+    updateExplorerAdaptiveLayout();
 
     explorerWindow.setWidget(d_explorer_container);
     explorerWindow.hide();
 
     logWindow.setObjectName("logWindow"); // this is needed for QMainWindow::restoreState()
     logWindow.setWindowTitle(tr("Results Log"));
-    addDockWidget(Qt::TopDockWidgetArea, &logWindow);
+    logWindow.setAllowedAreas(Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea
+                              | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, &logWindow);
 
     results->setReadOnly(true);
 
@@ -1735,7 +1945,9 @@ ApplicationWindow::ApplicationWindow()
 #ifdef SCRIPTING_CONSOLE
     consoleWindow.setObjectName("consoleWindow"); // this is needed for QMainWindow::restoreState()
     consoleWindow.setWindowTitle(tr("Scripting Console"));
-    addDockWidget(Qt::TopDockWidgetArea, &consoleWindow);
+    consoleWindow.setAllowedAreas(Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea
+                                  | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, &consoleWindow);
     console.setReadOnly(true);
     consoleWindow.setWidget(&console);
     consoleWindow.hide();
@@ -1786,14 +1998,45 @@ ApplicationWindow::ApplicationWindow()
     setCentralWidget(d_central_container);
     setAcceptDrops(true);
 
+    d_ribbon_toolbar = new QToolBar(tr("Modern Ribbon"), this);
+    d_ribbon_toolbar->setObjectName(QStringLiteral("ModernRibbonToolBar"));
+    d_ribbon_toolbar->setMovable(false);
+    d_ribbon_toolbar->setFloatable(false);
+    d_ribbon_toolbar->setAllowedAreas(Qt::TopToolBarArea);
+    d_ribbon_toolbar->setContextMenuPolicy(Qt::PreventContextMenu);
+    if (d_ribbon_toolbar->layout()) {
+        d_ribbon_toolbar->layout()->setContentsMargins(0, 0, 0, 0);
+        d_ribbon_toolbar->layout()->setSpacing(0);
+    }
+    if (QAction *tva = d_ribbon_toolbar->toggleViewAction()) {
+        tva->setVisible(false);
+        tva->setEnabled(false);
+    }
+    if (file_tools) {
+        insertToolBar(file_tools, d_ribbon_toolbar);
+        insertToolBarBreak(file_tools);
+    } else {
+        addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
+        addToolBarBreak(Qt::TopToolBarArea);
+    }
+
+    d_modern_ribbon = new ModernRibbonBar(this, d_ribbon_toolbar);
+    d_ribbon_toolbar->addWidget(d_modern_ribbon);
+
     readSettings();
+    if (file_tools) {
+        insertToolBar(file_tools, d_ribbon_toolbar);
+        insertToolBarBreak(file_tools);
+    } else {
+        addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
+        addToolBarBreak(Qt::TopToolBarArea);
+    }
+    d_ribbon_toolbar->setVisible(!d_ole_embedded);
+    updateExplorerAdaptiveLayout();
     createLanguagesList();
 
     d_auto_updater = new AutoUpdater(this, this);
     d_python_server = new PythonAutomationServer(this, this);
-
-    d_modern_ribbon = new ModernRibbonBar(this, d_central_container);
-    centralLayout->insertWidget(0, d_modern_ribbon, 0);
 
     connect(d_modern_ribbon, &ModernRibbonBar::focusHudModeChanged, this, [this](bool enabled) {
         if (actionToggleFocusHudMode && actionToggleFocusHudMode->isChecked() != enabled) {
@@ -1936,8 +2179,11 @@ ApplicationWindow::ApplicationWindow()
                                                     ? ModernRibbonBar::LayoutTabbed
                                                     : ModernRibbonBar::LayoutFreeMdi);
     d_modern_ribbon->setClassicToolbarsVisible(false);
-    if (d_ole_embedded)
+    if (d_ole_embedded) {
         d_modern_ribbon->hide();
+        if (d_ribbon_toolbar)
+            d_ribbon_toolbar->hide();
+    }
 
     insertTranslatedStrings();
 
@@ -2008,16 +2254,19 @@ ApplicationWindow::ApplicationWindow()
 
 void ApplicationWindow::initFonts()
 {
+    sanitizeUiTableFont(appFont);
     tableTextFont = appFont;
     tableHeaderFont = appFont;
-    plotAxesFont = QFont("Arial", 14, QFont::Bold);
+    sanitizeUiTableFont(tableTextFont);
+    sanitizeUiTableFont(tableHeaderFont);
+    plotAxesFont = QFont("Arial", 14, QFont::Normal);
     plotNumbersFont = QFont("Arial", 12);
     plotLegendFont = QFont("Arial", 10);
-    plotTitleFont = QFont("Arial", 14, QFont::Bold);
+    plotTitleFont = QFont("Arial", 14, QFont::Normal);
 
-    plot3DAxesFont = QFont("Arial", 12, QFont::Bold);
+    plot3DAxesFont = QFont("Arial", 12, QFont::Normal);
     plot3DNumbersFont = QFont("Arial", 10);
-    plot3DTitleFont = QFont("Arial", 14, QFont::Bold);
+    plot3DTitleFont = QFont("Arial", 14, QFont::Normal);
 }
 
 void ApplicationWindow::applyUserSettings()
@@ -2374,6 +2623,18 @@ void ApplicationWindow::insertTranslatedStrings()
     if (projectname == "untitled")
         setWindowTitle(tr("ToriGraph - untitled"));
 
+    if (Folder *rf = projectFolder()) {
+        if (rf->name() == QLatin1String("UNTITLED")
+            || rf->name() == QString::fromUtf8("\xE7\x84\xA1\xE9\xA1\x8C")) {
+            const QString locRoot = tr("UNTITLED");
+            rf->setName(locRoot);
+            if (rf->folderListItem()) {
+                QSignalBlocker sbFolders(&folders);
+                rf->folderListItem()->setText(0, locRoot);
+            }
+        }
+    }
+
     if (folders.headerItem())
         folders.headerItem()->setText(0, tr("Folder"));
 
@@ -2407,6 +2668,10 @@ void ApplicationWindow::insertTranslatedStrings()
                 it->setText(1, tr("3D Graph"));
             it->setText(2, w->aspect());
         }
+    }
+    if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
+        lv.resizeColumnToContents(1);
+        lv.resizeColumnToContents(2);
     }
 
     explorerWindow.setWindowTitle(tr("Project Explorer"));
@@ -2458,8 +2723,15 @@ void ApplicationWindow::insertTranslatedStrings()
     matrix_plot_tools->setWindowTitle(tr("Matrix Plot"));
     graph_3D_tools->setWindowTitle(tr("3D Surface"));
     for (QToolBar *tb : findChildren<QToolBar *>()) {
-        if (tb && tb->parentWidget() == this && tb->toggleViewAction())
-            tb->toggleViewAction()->setText(tb->windowTitle());
+        if (!tb || tb->parentWidget() != this || !tb->toggleViewAction())
+            continue;
+        if (tb == d_ribbon_toolbar
+            || tb->objectName() == QLatin1String("ModernRibbonToolBar")) {
+            tb->toggleViewAction()->setVisible(false);
+            tb->toggleViewAction()->setEnabled(false);
+            continue;
+        }
+        tb->toggleViewAction()->setText(tb->windowTitle());
     }
 
     file->setTitle(tr("&File"));
@@ -2494,6 +2766,8 @@ void ApplicationWindow::insertTranslatedStrings()
         framePresetsMenu->setTitle(tr("&Frame Presets"));
     if (stylePresetsMenu)
         stylePresetsMenu->setTitle(tr("&Style Presets"));
+    if (pasteFormatSpecialMenu)
+        pasteFormatSpecialMenu->setTitle(tr("Paste Format &Special"));
     if (d_btn_style_presets_popup)
         d_btn_style_presets_popup->setToolTip(tr("1-Click Publication & Slide Style Presets"));
     if (languageMenu)
@@ -2563,6 +2837,7 @@ void ApplicationWindow::insertTranslatedStrings()
         d_graph_inspector_dock->retranslateUi();
     if (GraphMiniToolbar *mtb = GraphMiniToolbar::instance())
         mtb->retranslateUi();
+    updateExplorerAdaptiveLayout();
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
@@ -2633,10 +2908,26 @@ void ApplicationWindow::initMainMenu()
     edit->addAction(actionPasteSelection);
     edit->addAction(actionClearSelection);
     edit->addSeparator();
+    pasteFormatSpecialMenu = new QMenu(this);
+    pasteFormatSpecialMenu->setFont(appFont);
+    pasteFormatSpecialMenu->setTitle(tr("Paste Format &Special"));
+    if (actionPasteFormatFonts)
+        pasteFormatSpecialMenu->addAction(actionPasteFormatFonts);
+    if (actionPasteFormatColors)
+        pasteFormatSpecialMenu->addAction(actionPasteFormatColors);
+    if (actionPasteFormatScales)
+        pasteFormatSpecialMenu->addAction(actionPasteFormatScales);
+    pasteFormatSpecialMenu->addSeparator();
+    if (actionPasteFormatFolder)
+        pasteFormatSpecialMenu->addAction(actionPasteFormatFolder);
+
     edit->addAction(actionCopyGraphFormat);
     edit->addAction(actionPasteGraphFormat);
+    edit->addMenu(pasteFormatSpecialMenu);
     edit->addAction(actionCopyGraphOle);
     edit->addAction(actionCopyWindow);
+    if (actionMergeGraphs)
+        edit->addAction(actionMergeGraphs);
     edit->addAction(actionBatchPlot);
 
     edit->addSeparator();
@@ -2763,6 +3054,8 @@ void ApplicationWindow::initMainMenu()
     graph->addAction(actionAddLayer);
     graph->addAction(actionAddLinkedLayer);
     graph->addAction(actionAddInsetLayer);
+    if (actionMergeGraphs)
+        graph->addAction(actionMergeGraphs);
     graph->addAction(actionDeleteLayer);
     graph->addAction(actionShowLayerDialog);
     graph->addSeparator(); // page & frame presets section
@@ -2778,6 +3071,10 @@ void ApplicationWindow::initMainMenu()
     graph->addSeparator();
     graph->addAction(actionCopyGraphFormat);
     graph->addAction(actionPasteGraphFormat);
+    if (pasteFormatSpecialMenu)
+        graph->addMenu(pasteFormatSpecialMenu);
+    if (actionMergeGraphs)
+        graph->addAction(actionMergeGraphs);
     graph->addAction(actionBatchPlot);
     graph->addAction(actionWaterfallStackOffset);
     graph->addAction(actionResetStackOffsets);
@@ -3732,7 +4029,11 @@ void ApplicationWindow::plotPie()
 
     Table *table = static_cast<Table *>(d_workspace.activeSubWindow());
 
-    if (table->selectedColumns().count() != 1) {
+    QStringList s = table->selectedColumns();
+    if (s.isEmpty() && !table->YColumns().isEmpty())
+        s << table->YColumns().first();
+
+    if (s.count() != 1) {
         if (!isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Plot error"),
                                  tr("You must select exactly one column for plotting!"));
@@ -3747,11 +4048,9 @@ void ApplicationWindow::plotPie()
         return;
     }
 
-    QStringList s = table->selectedColumns();
-    if (s.count() > 0) {
-        multilayerPlot(table, s, Graph::Pie, table->firstSelectedRow(), table->lastSelectedRow());
-    } else if (!isNonInteractiveContext(this))
-        QMessageBox::warning(this, tr("Error"), tr("Please select a column to plot!"));
+    const int startRow = (table->selectedRowCount(false) >= 2) ? table->firstSelectedRow(false) : 0;
+    const int endRow = (table->selectedRowCount(false) >= 2) ? table->lastSelectedRow(false) : -1;
+    multilayerPlot(table, s, Graph::Pie, startRow, endRow);
 }
 
 void ApplicationWindow::plotVectXYXY()
@@ -3825,8 +4124,9 @@ void ApplicationWindow::plotDoubleY()
             }
             return;
         }
-        int startRow = t->firstSelectedRow();
-        int endRow = t->lastSelectedRow();
+        int startRow = (t->selectedRowCount(false) >= 2) ? t->firstSelectedRow(false) : 0;
+        int endRow = (t->selectedRowCount(false) >= 2) ? t->lastSelectedRow(false)
+                                                       : (t->numRows() - 1);
         if (startRow < 0 || endRow < startRow) {
             startRow = 0;
             endRow = t->numRows() - 1;
@@ -3855,9 +4155,26 @@ void ApplicationWindow::plotDoubleY()
 
     rightCurve->setYAxis(QwtPlot::yRight);
     g->enableAxis(QwtPlot::yRight, true);
-    if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight)) {
-        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-        sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+    {
+        QStringList tickLbls = g->enabledTickLabels();
+        if (tickLbls.size() > QwtPlot::yRight) {
+            tickLbls[QwtPlot::yRight] = QStringLiteral("1");
+            g->setEnabledTickLabels(tickLbls);
+        } else if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight)) {
+            sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+        }
+        int rMajType = ScaleDraw::In;
+        int rMinType = ScaleDraw::In;
+        if (Plot *pw = g->plotWidget()) {
+            const QList<int> majTypes = pw->getMajorTicksType();
+            const QList<int> minTypes = pw->getMinorTicksType();
+            if (majTypes.size() > QwtPlot::yLeft)
+                rMajType = majTypes[QwtPlot::yLeft];
+            if (minTypes.size() > QwtPlot::yLeft)
+                rMinType = minTypes[QwtPlot::yLeft];
+        }
+        g->setAxisTicksLength(QwtPlot::yRight, rMajType, rMinType, g->minorTickLength(),
+                              g->majorTickLength());
     }
     if (rightTitle.isEmpty()) {
         if (DataCurve *rdc = dynamic_cast<DataCurve *>(rightCurve)) {
@@ -3899,7 +4216,9 @@ void ApplicationWindow::plotDoubleY()
         }
     }
 
-    // Compute scale for Right Y axis from curves attached to yRight
+    g->setAutoScale();
+
+    // Compute padded scale for Right Y axis from curves attached to yRight
     double yMin = DBL_MAX, yMax = -DBL_MAX;
     for (int i = 0; i < g->curves(); ++i) {
         QwtPlotCurve *c = g->curve(i);
@@ -3921,7 +4240,7 @@ void ApplicationWindow::plotDoubleY()
             span = (std::abs(yMax) > 0.0) ? std::abs(yMax) * 0.1 : 1.0;
         g->setScale(QwtPlot::yRight, yMin - 0.05 * span, yMax + 0.05 * span);
     }
-    g->setAutoScale();
+    g->syncAxisColorToCurve(QwtPlot::yRight, 1);
     g->replot();
     emit modified();
 }
@@ -3936,7 +4255,16 @@ void ApplicationWindow::plotYOffsetStack()
         Table *t = static_cast<Table *>(w);
         if (!validFor2DPlot(t, Graph::Line))
             return;
-        QStringList cols = t->drawableColumnSelection();
+        QStringList cols = (t->selectedColumnCount(SciDAVis::Y) >= 1)
+                ? t->drawableColumnSelection()
+                : QStringList();
+        if (cols.isEmpty()) {
+            for (int ci = 0; ci < t->numCols(); ++ci) {
+                const SciDAVis::PlotDesignation pd = t->colPlotDesignation(ci);
+                if (pd == SciDAVis::Y || pd == SciDAVis::yErr || pd == SciDAVis::xErr)
+                    cols << t->colName(ci);
+            }
+        }
         if (cols.isEmpty()) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::warning(this, tr("Plot error"),
@@ -3944,8 +4272,9 @@ void ApplicationWindow::plotYOffsetStack()
             }
             return;
         }
-        MultiLayer *ml =
-                multilayerPlot(t, cols, Graph::Line, t->firstSelectedRow(), t->lastSelectedRow());
+        const int sr = (t->selectedRowCount(false) >= 2) ? t->firstSelectedRow(false) : 0;
+        const int er = (t->selectedRowCount(false) >= 2) ? t->lastSelectedRow(false) : -1;
+        MultiLayer *ml = multilayerPlot(t, cols, Graph::Line, sr, er);
         if (!ml)
             return;
         Graph *g = ml->activeGraph();
@@ -3982,6 +4311,10 @@ void ApplicationWindow::plotViolin()
         QStringList cols = t->selectedYColumns();
         if (cols.isEmpty())
             cols = t->selectedColumns();
+        if (cols.isEmpty())
+            cols = t->YColumns();
+        if (cols.isEmpty() && t->numCols() > 0)
+            cols << t->colName(t->numCols() - 1);
         if (cols.isEmpty()) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::warning(this, tr("Plot error"),
@@ -3989,8 +4322,9 @@ void ApplicationWindow::plotViolin()
             }
             return;
         }
-        int startRow = t->firstSelectedRow();
-        int endRow = t->lastSelectedRow();
+        int startRow = (t->selectedRowCount(false) >= 2) ? t->firstSelectedRow(false) : 0;
+        int endRow = (t->selectedRowCount(false) >= 2) ? t->lastSelectedRow(false)
+                                                       : (t->numRows() - 1);
         if (startRow < 0 || endRow < startRow) {
             startRow = 0;
             endRow = t->numRows() - 1;
@@ -4031,6 +4365,8 @@ void ApplicationWindow::plotPareto()
     QStringList selCols = srcTable->selectedYColumns();
     if (selCols.isEmpty())
         selCols = srcTable->selectedColumns();
+    if (selCols.isEmpty())
+        selCols = srcTable->YColumns();
     if (selCols.isEmpty()) {
         if (!isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Plot error"),
@@ -4043,8 +4379,9 @@ void ApplicationWindow::plotPareto()
     if (yCol < 0)
         return;
 
-    int startRow = srcTable->firstSelectedRow();
-    int endRow = srcTable->lastSelectedRow();
+    int startRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->firstSelectedRow(false) : 0;
+    int endRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->lastSelectedRow(false)
+                                                          : (srcTable->numRows() - 1);
     if (startRow < 0 || endRow < startRow) {
         startRow = 0;
         endRow = srcTable->numRows() - 1;
@@ -4149,6 +4486,8 @@ void ApplicationWindow::plotQQ()
     QStringList selCols = srcTable->selectedYColumns();
     if (selCols.isEmpty())
         selCols = srcTable->selectedColumns();
+    if (selCols.isEmpty())
+        selCols = srcTable->YColumns();
     if (selCols.isEmpty()) {
         if (!isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Plot error"),
@@ -4161,8 +4500,9 @@ void ApplicationWindow::plotQQ()
     if (yCol < 0)
         return;
 
-    int startRow = srcTable->firstSelectedRow();
-    int endRow = srcTable->lastSelectedRow();
+    int startRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->firstSelectedRow(false) : 0;
+    int endRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->lastSelectedRow(false)
+                                                          : (srcTable->numRows() - 1);
     if (startRow < 0 || endRow < startRow) {
         startRow = 0;
         endRow = srcTable->numRows() - 1;
@@ -4275,8 +4615,9 @@ void ApplicationWindow::plotTernary()
     if (colA < 0 || colB < 0 || colC < 0)
         return;
 
-    int startRow = srcTable->firstSelectedRow();
-    int endRow = srcTable->lastSelectedRow();
+    int startRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->firstSelectedRow(false) : 0;
+    int endRow = (srcTable->selectedRowCount(false) >= 2) ? srcTable->lastSelectedRow(false)
+                                                          : (srcTable->numRows() - 1);
     if (startRow < 0 || endRow < startRow) {
         startRow = 0;
         endRow = srcTable->numRows() - 1;
@@ -5360,7 +5701,8 @@ void ApplicationWindow::loadImage(const QString &fn)
     setListViewLabel(plot->name(), fn);
 
     plot->showNormal();
-    Graph *g = plot->addLayer(0, 0, plot->width(), plot->height());
+    const QSize cvSize = plot->canvasWidget() ? plot->canvasWidget()->size() : plot->size();
+    Graph *g = plot->addLayer(0, 0, cvSize.width(), cvSize.height());
 
     g->setTitle("");
     QVector<bool> axesOn(4);
@@ -5415,201 +5757,29 @@ MultiLayer *ApplicationWindow::newGraph(const QString &caption)
     return ml;
 }
 
-static void setGraphAxisTitlePreservingArial(Graph *ag, int qwtAxis, const QString &titleText)
-{
-    if (!ag)
-        return;
-    QFont af = ag->axisTitleFont(qwtAxis);
-    af.setFamily("Arial");
-    ag->setAxisTitle(qwtAxis, titleText);
-    ag->setAxisTitleFont(qwtAxis, af);
-}
-
 static void applyWorksheetMetadataToGraph(Graph *ag, Table *fallbackTable = nullptr,
                                           const QStringList &fallbackCols = QStringList(),
                                           int style = -1)
 {
+    Q_UNUSED(fallbackTable);
+    Q_UNUSED(fallbackCols);
+    Q_UNUSED(style);
     if (!ag || ag->isPiePlot() || ag->isTernaryPlot())
         return;
 
     // Ensure all 4 axis title fonts strictly keep "Arial"
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         QFont af = ag->axisTitleFont(a);
-        if (af.family() != "Arial") {
-            af.setFamily("Arial");
+        if (af.family() != QLatin1String("Arial")) {
+            af.setFamily(QStringLiteral("Arial"));
             ag->setAxisTitleFont(a, af);
         }
     }
 
-    QList<Column *> xCols;
-    QList<Column *> leftYCols;
-    QList<Column *> rightYCols;
-    Table *singleTable = nullptr;
-    bool multipleTables = false;
-    int detectedStyle = style;
-
-    for (int i = 0; i < ag->curves(); ++i) {
-        QwtPlotCurve *pc = ag->curve(i);
-        if (!pc || pc->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
-            continue;
-        const int cType = ag->curveType(i);
-        if (cType == Graph::ErrorBars)
-            continue;
-        if (detectedStyle < 0)
-            detectedStyle = cType;
-
-        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
-        if (!dc)
-            continue;
-        Table *t = dc->table() ? dc->table() : fallbackTable;
-        if (!t)
-            continue;
-        if (!singleTable)
-            singleTable = t;
-        else if (singleTable != t)
-            multipleTables = true;
-
-        const int xIdx = t->colIndex(dc->xColumnName());
-        const int yIdx = t->colIndex(dc->yColumnName());
-        if (Column *xc = (xIdx >= 0 ? t->column(xIdx) : nullptr)) {
-            if (!xCols.contains(xc))
-                xCols << xc;
-        }
-        if (Column *yc = (yIdx >= 0 ? t->column(yIdx) : nullptr)) {
-            if (pc->yAxis() == QwtPlot::yRight)
-                rightYCols << yc;
-            else
-                leftYCols << yc;
-        }
-    }
-
-    if (leftYCols.isEmpty() && fallbackTable && !fallbackCols.isEmpty()) {
-        if (!singleTable)
-            singleTable = fallbackTable;
-        for (const QString &colName : fallbackCols) {
-            const int yIdx = fallbackTable->colIndex(colName);
-            if (yIdx >= 0) {
-                if (Column *yc = fallbackTable->column(yIdx))
-                    leftYCols << yc;
-                const int xIdx = fallbackTable->colX(yIdx);
-                if (Column *xc = (xIdx >= 0 ? fallbackTable->column(xIdx) : nullptr)) {
-                    if (!xCols.contains(xc))
-                        xCols << xc;
-                }
-            }
-        }
-    }
-
-    auto cleanColAxisTitle = [](Column *col) -> QString {
-        if (!col)
-            return QString();
-        QString t = col->formattedAxisTitle().trimmed();
-        if (t.isEmpty())
-            t = col->name().trimmed();
-        return t;
-    };
-
-    auto resolveMultiColAxisTitle = [&](const QList<Column *> &cols) -> QString {
-        if (cols.isEmpty())
-            return QString();
-        if (cols.size() == 1)
-            return cleanColAxisTitle(cols.first());
-        const QString firstFull = cleanColAxisTitle(cols.first());
-        bool allSameFull = !firstFull.isEmpty();
-        const QString firstUnits = cols.first()->units().trimmed();
-        bool allSameNonEmptyUnits = !firstUnits.isEmpty();
-        for (int i = 1; i < cols.size(); ++i) {
-            if (cleanColAxisTitle(cols[i]) != firstFull)
-                allSameFull = false;
-            if (cols[i]->units().trimmed() != firstUnits)
-                allSameNonEmptyUnits = false;
-        }
-        if (allSameFull || allSameNonEmptyUnits)
-            return firstFull;
-        return QString();
-    };
-
-    if (detectedStyle == Graph::Histogram) {
-        const QString binAxisTitle = resolveMultiColAxisTitle(leftYCols);
-        if (!binAxisTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, binAxisTitle);
-    } else if (detectedStyle == Graph::Box) {
-        const QString boxValTitle = resolveMultiColAxisTitle(leftYCols);
-        if (!boxValTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, boxValTitle);
-    } else if (detectedStyle == Graph::HorizontalBars) {
-        const QString valTitle = resolveMultiColAxisTitle(leftYCols);
-        const QString catTitle = resolveMultiColAxisTitle(xCols);
-        if (!valTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, valTitle);
-        if (!catTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, catTitle);
-    } else {
-        const QString xTitle = resolveMultiColAxisTitle(xCols);
-        if (!xTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::xBottom, xTitle);
-        const QString yLeftTitle = resolveMultiColAxisTitle(leftYCols);
-        if (!yLeftTitle.isEmpty())
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::yLeft, yLeftTitle);
-        const QString yRightTitle = resolveMultiColAxisTitle(rightYCols);
-        if (!yRightTitle.isEmpty() && ag->plotWidget()->axisEnabled(QwtPlot::yRight))
-            setGraphAxisTitlePreservingArial(ag, QwtPlot::yRight, yRightTitle);
-    }
-
-    // Update initial legend cleanly when all curves come from a single Table
-    if (singleTable && !multipleTables && ag->legend()) {
+    ag->refreshAutoAxisTitlesFromColumns();
+    if (ag->legend())
         ag->reconstructLegend();
-        bool anyLongName = false;
-        QString firstNonEmptyLongName;
-        for (int i = 0; i < ag->curves(); ++i) {
-            if (ag->curveType(i) == Graph::ErrorBars)
-                continue;
-            DataCurve *dc = dynamic_cast<DataCurve *>(ag->curve(i));
-            if (!dc)
-                continue;
-            if (Column *yc = singleTable->column(singleTable->colIndex(dc->yColumnName()))) {
-                const QString ln = yc->longName().trimmed();
-                if (!ln.isEmpty()) {
-                    anyLongName = true;
-                    if (firstNonEmptyLongName.isEmpty())
-                        firstNonEmptyLongName = ln;
-                }
-            }
-        }
-        if (anyLongName && ag->legend() && !ag->legend()->text().contains(firstNonEmptyLongName)) {
-            QString legText;
-            for (int i = 0; i < ag->curves(); ++i) {
-                const QwtPlotCurve *c = ag->curve(i);
-                if (!c || c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
-                    || ag->curveType(i) == Graph::ErrorBars)
-                    continue;
-                legText += "\\c{" + QString::number(i + 1) + "}";
-                if (const FunctionCurve *fc = dynamic_cast<const FunctionCurve *>(c)) {
-                    legText += fc->legend();
-                } else if (DataCurve *dc = dynamic_cast<DataCurve *>(const_cast<QwtPlotCurve *>(c))) {
-                    QString lbl;
-                    if (Column *yc = singleTable->column(singleTable->colIndex(dc->yColumnName()))) {
-                        lbl = yc->longName().trimmed();
-                        if (lbl.isEmpty())
-                            lbl = yc->name().trimmed();
-                    }
-                    if (lbl.isEmpty()) {
-                        lbl = c->title().text();
-                        const QString pfx = QString(singleTable->name()) + "_";
-                        if (lbl.startsWith(pfx) && lbl.length() > pfx.length())
-                            lbl = lbl.mid(pfx.length());
-                    }
-                    legText += lbl;
-                } else {
-                    legText += c->title().text();
-                }
-                legText += "\n";
-            }
-            if (legText.endsWith('\n'))
-                legText.chop(1);
-            ag->legend()->setText(legText);
-        }
-    }
+    ag->updatePlot();
 }
 
 MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colList, int style,
@@ -5656,9 +5826,15 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
     case Graph::Pie:
     case Graph::Box:
         list = w->selectedColumns();
+        if (list.isEmpty())
+            list = w->YColumns();
+        if (list.isEmpty() && w->numCols() > 0)
+            list << w->colName(w->numCols() - 1);
         break;
     default:
         list = w->selectedYColumns();
+        if (list.isEmpty())
+            list = w->YColumns();
         break;
     }
 
@@ -7928,12 +8104,39 @@ void ApplicationWindow::readSettings()
 
     // restore dock windows and tool bars
     restoreState(settings.value("/DockWindows").toByteArray());
+    for (QDockWidget *dw : findChildren<QDockWidget *>()) {
+        if (!dw || dw->isFloating())
+            continue;
+        if (dockWidgetArea(dw) == Qt::TopDockWidgetArea) {
+            if (dw == &explorerWindow)
+                addDockWidget(Qt::LeftDockWidgetArea, dw);
+            else if (dw == d_graph_inspector_dock)
+                addDockWidget(Qt::RightDockWidgetArea, dw);
+            else
+                addDockWidget(Qt::BottomDockWidgetArea, dw);
+        }
+    }
+    setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+    if (d_ribbon_toolbar) {
+        if (file_tools) {
+            insertToolBar(file_tools, d_ribbon_toolbar);
+            insertToolBarBreak(file_tools);
+        } else {
+            addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
+            addToolBarBreak(Qt::TopToolBarArea);
+        }
+        d_ribbon_toolbar->setVisible(!d_ole_embedded);
+    }
     explorerSplitter->restoreState(settings.value("/ExplorerSplitter").toByteArray());
 
     QStringList applicationFont = settings.value("/Font").toStringList();
     if (applicationFont.size() == 4)
         appFont = QFont(applicationFont[0], applicationFont[1].toInt(), applicationFont[2].toInt(),
                         applicationFont[3].toInt());
+    sanitizeUiTableFont(appFont);
 
     settings.beginGroup("/Dialogs");
     d_extended_open_dialog = settings.value("/ExtendedOpenDialog", true).toBool();
@@ -8017,7 +8220,7 @@ void ApplicationWindow::readSettings()
 
     /* ---------------- group Tables --------------- */
     settings.beginGroup("/Tables");
-    d_show_table_comments = settings.value("/DisplayComments", false).toBool();
+    d_show_table_comments = settings.value("/DisplayComments", true).toBool();
     QStringList tableFonts = settings.value("/Fonts").toStringList();
     if (tableFonts.size() == 8) {
         tableTextFont = QFont(tableFonts[0], tableFonts[1].toInt(), tableFonts[2].toInt(),
@@ -8025,6 +8228,8 @@ void ApplicationWindow::readSettings()
         tableHeaderFont = QFont(tableFonts[4], tableFonts[5].toInt(), tableFonts[6].toInt(),
                                 tableFonts[7].toInt());
     }
+    sanitizeUiTableFont(tableTextFont);
+    sanitizeUiTableFont(tableHeaderFont);
 
     settings.beginGroup("/Colors");
     tableBkgdColor = QColor(COLORVALUE(settings.value("/Background", "#ffffffff").toString()));
@@ -8039,6 +8244,39 @@ void ApplicationWindow::readSettings()
     const int toriStyleVersion = settings.value("/ToriGraphStyleVersion", 0).toInt();
     const bool migrateToriGraphStyle = toriStyleVersion < 2;
     const bool migrateArialGraphFonts = toriStyleVersion < 3;
+    const bool migratePhase8DockAndWorksheet = toriStyleVersion < 4;
+    const bool migratePhase8CrispExplorer = toriStyleVersion < 5;
+    const bool migrateNonBoldGraphFonts = toriStyleVersion < 6;
+    if (migratePhase8DockAndWorksheet) {
+        d_show_table_comments = true;
+        setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+        setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+        setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+        setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+        if (!explorerWindow.isFloating()
+            && dockWidgetArea(&explorerWindow) == Qt::BottomDockWidgetArea) {
+            addDockWidget(Qt::LeftDockWidgetArea, &explorerWindow);
+            explorerSplitter->setOrientation(Qt::Vertical);
+            explorerSplitter->setSizes(QList<int>() << 140 << 260);
+        }
+        if (!logWindow.isFloating() && dockWidgetArea(&logWindow) == Qt::TopDockWidgetArea)
+            addDockWidget(Qt::BottomDockWidgetArea, &logWindow);
+#ifdef SCRIPTING_CONSOLE
+        if (!consoleWindow.isFloating()
+            && dockWidgetArea(&consoleWindow) == Qt::TopDockWidgetArea) {
+            addDockWidget(Qt::BottomDockWidgetArea, &consoleWindow);
+        }
+#endif
+    }
+    if (migratePhase8CrispExplorer) {
+        if (!explorerWindow.isFloating()
+            && (dockWidgetArea(&explorerWindow) == Qt::LeftDockWidgetArea
+                || dockWidgetArea(&explorerWindow) == Qt::RightDockWidgetArea)) {
+            resizeDocks({ &explorerWindow }, { 255 }, Qt::Horizontal);
+        }
+    }
+    ::future::Table::setDefaultCommentVisibility(d_show_table_comments);
+    updateExplorerAdaptiveLayout();
     auto sanitizePlotFontToArial = [migrateArialGraphFonts](QFont &f) {
         const QString fam = f.family().trimmed();
         const bool isWinUiFont = fam.isEmpty()
@@ -8082,6 +8320,12 @@ void ApplicationWindow::readSettings()
     sanitizePlotFontToArial(plotNumbersFont);
     sanitizePlotFontToArial(plotLegendFont);
     sanitizePlotFontToArial(plotTitleFont);
+    if (migrateNonBoldGraphFonts) {
+        plotAxesFont.setBold(false);
+        plotNumbersFont.setBold(false);
+        plotLegendFont.setBold(false);
+        plotTitleFont.setBold(false);
+    }
     settings.endGroup(); // General
 
     settings.beginGroup("/Curves");
@@ -8146,6 +8390,11 @@ void ApplicationWindow::readSettings()
     sanitizePlotFontToArial(plot3DTitleFont);
     sanitizePlotFontToArial(plot3DNumbersFont);
     sanitizePlotFontToArial(plot3DAxesFont);
+    if (migrateNonBoldGraphFonts) {
+        plot3DTitleFont.setBold(false);
+        plot3DNumbersFont.setBold(false);
+        plot3DAxesFont.setBold(false);
+    }
 
     settings.beginGroup("/Colors");
     plot3DColors << settings.value("/MaxData", "blue").toString();
@@ -8220,9 +8469,11 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/DecimalDigits", d_decimal_digits);
     settings.setValue("/DefaultNumericFormat", QChar(d_default_numeric_format));
 
-    settings.setValue("/ProjectWindow/Geometry", saveGeometry());
-    settings.setValue("/DockWindows", saveState());
-    settings.setValue("/ExplorerSplitter", explorerSplitter->saveState());
+    if (!d_ole_embedded && !(d_modern_ribbon && d_modern_ribbon->isFocusHudMode())) {
+        settings.setValue("/ProjectWindow/Geometry", saveGeometry());
+        settings.setValue("/DockWindows", saveState());
+        settings.setValue("/ExplorerSplitter", explorerSplitter->saveState());
+    }
 
     QStringList applicationFont;
     applicationFont << appFont.family();
@@ -8368,7 +8619,7 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/HeadFill", defaultArrowHeadFill);
     settings.setValue("/LineStyle", Graph::penStyleName(defaultArrowLineStyle));
     settings.endGroup(); // Arrows
-    settings.setValue("/ToriGraphStyleVersion", 3);
+    settings.setValue("/ToriGraphStyleVersion", 6);
     settings.endGroup();
     /* ----------------- end group 2D Plots -------- */
 
@@ -9925,9 +10176,36 @@ QMenu *ApplicationWindow::showCurveContextMenuImpl(int curveKey)
         curveMenu->addSeparator();
     }
 
+    int clickedTableRow = -1;
+    if (dc && g->plotWidget() && g->plotWidget()->canvas() && dc->dataSize() > 0) {
+        const QPoint canvasPos = g->plotWidget()->canvas()->mapFromGlobal(QCursor::pos());
+        const QwtScaleMap xMap = g->plotWidget()->canvasMap(dc->xAxis());
+        const QwtScaleMap yMap = g->plotWidget()->canvasMap(dc->yAxis());
+        double bestDistSq = 1e30;
+        int bestPt = -1;
+        for (int k = 0; k < int(dc->dataSize()); ++k) {
+            if (dc->isPointMasked(k))
+                continue;
+            const double xv = dc->x(k);
+            const double yv = dc->y(k);
+            if (!std::isfinite(xv) || !std::isfinite(yv))
+                continue;
+            const double dx = xMap.xTransform(xv) - double(canvasPos.x());
+            const double dy = yMap.xTransform(yv) - double(canvasPos.y());
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                bestPt = k;
+            }
+        }
+        if (bestPt >= 0)
+            clickedTableRow = dc->tableRow(bestPt);
+    }
+
     actionShowCurveWorksheet->setText(tr("Go to &Worksheet"));
     curveMenu->addAction(actionShowCurveWorksheet);
     actionShowCurveWorksheet->setData(curveKey);
+    actionShowCurveWorksheet->setProperty("_targetRow", clickedTableRow);
 
     curveMenu->addAction(actionShowCurvePlotDialog);
     actionShowCurvePlotDialog->setData(curveKey);
@@ -10063,10 +10341,35 @@ void ApplicationWindow::showCurveWorksheet(Graph *g, int curveIndex)
             m->setFocus();
         }
     } else if (PlotCurve *pc = dynamic_cast<PlotCurve *>(it)) {
-        if (pc->type() == Graph::Function)
+        int clickedRow = -1;
+        if (actionShowCurveWorksheet) {
+            const QVariant prop = actionShowCurveWorksheet->property("_targetRow");
+            if (prop.isValid())
+                clickedRow = prop.toInt();
+            actionShowCurveWorksheet->setProperty("_targetRow", -1);
+        }
+        if (pc->type() == Graph::Function) {
             g->createTable(pc);
-        else
-            showTable(it->title().text());
+        } else {
+            const QString colTitle = it->title().text();
+            showTable(colTitle);
+            DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+            Table *t = dc ? dc->table() : table(colTitle);
+            if (!t)
+                t = table(colTitle);
+            if (t) {
+                const int colIdx = t->colIndex(colTitle);
+                if (colIdx >= 0) {
+                    if (clickedRow >= 0 && clickedRow < t->numRows()) {
+                        t->deselectAll();
+                        t->setCellSelected(clickedRow, colIdx, true);
+                        t->goToCell(clickedRow, colIdx);
+                    } else if (dc && dc->startRow() > 0 && dc->startRow() < t->numRows()) {
+                        t->goToCell(dc->startRow(), colIdx);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -11103,6 +11406,38 @@ void ApplicationWindow::clearSelection()
                     plot, isPrimaryLeg ? tr("Remove Legend") : tr("Remove Annotation"));
             g->removeMarker();
             undoHelper.commitIfChanged();
+        } else {
+            const Graph::GraphSelection sel = g->currentSelection();
+            if (sel.kind == Graph::GraphSelection::Curve && sel.primaryId >= 0
+                && sel.primaryId < g->curves()) {
+                const QString before = plot->captureUndoSnapshot();
+                invalidateModelessGraphDialogs(plot);
+                g->removeCurve(sel.primaryId);
+                g->setCurrentSelection(Graph::GraphSelection(), true);
+                g->updatePlot();
+                plot->pushUndoSnapshot(tr("Remove Curve"), before);
+            } else if (sel.kind == Graph::GraphSelection::AxisTitle && sel.primaryId >= 0
+                       && sel.primaryId < 4) {
+                const QString before = plot->captureUndoSnapshot();
+                g->setAxisTitleAuto(sel.primaryId, false);
+                g->setAxisTitle(sel.primaryId, QString());
+                g->setCurrentSelection(Graph::GraphSelection(), true);
+                g->replot();
+                plot->pushUndoSnapshot(tr("Clear Axis Title"), before);
+            } else if (sel.kind == Graph::GraphSelection::PlotTitle) {
+                const QString before = plot->captureUndoSnapshot();
+                g->removeTitle();
+                g->setCurrentSelection(Graph::GraphSelection(), true);
+                g->replot();
+                plot->pushUndoSnapshot(tr("Clear Title"), before);
+            } else if (sel.kind == Graph::GraphSelection::ReferenceLine && sel.primaryId >= 0
+                       && sel.primaryId < g->referenceLines().size()) {
+                const QString before = plot->captureUndoSnapshot();
+                g->removeReferenceLine(sel.primaryId);
+                g->setCurrentSelection(Graph::GraphSelection(), true);
+                g->replot();
+                plot->pushUndoSnapshot(tr("Remove Reference Line"), before);
+            }
         }
     } else if (m->inherits("Note"))
         ((Note *)m)->textWidget()->clear();
@@ -11235,14 +11570,30 @@ void ApplicationWindow::pasteSelection()
         const QString before = plot->captureUndoSnapshot();
         const int prevCount = plot->undoStack() ? plot->undoStack()->count() : 0;
         if (copiedLayer) {
+            if (!lastCopiedLayer)
+                return;
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
             Graph *g = plot->addLayer();
             setPreferences(g);
             g->copy(this, lastCopiedLayer);
-            QPoint pos = plot->mapFromGlobal(QCursor::pos());
-            plot->setGraphGeometry(pos.x(), pos.y() - 20, lastCopiedLayer->width(),
-                                   lastCopiedLayer->height());
+            QWidget *cv = plot->canvasWidget();
+            QPoint pos =
+                    cv ? cv->mapFromGlobal(QCursor::pos()) : plot->mapFromGlobal(QCursor::pos());
+            const int lw = lastCopiedLayer->width();
+            const int lh = lastCopiedLayer->height();
+            int gx = pos.x();
+            int gy = pos.y() - 20;
+            if (cv && cv->width() > 0 && cv->height() > 0) {
+                const QRect cr = cv->rect();
+                gx = qBound(cr.left(), gx, qMax(cr.left(), cr.right() - lw + 1));
+                gy = qBound(cr.top(), gy, qMax(cr.top(), cr.bottom() - lh + 1));
+            } else {
+                gx = qMax(0, gx);
+                gy = qMax(0, gy);
+            }
+            plot->setGraphGeometry(gx, gy, lw, lh);
+            plot->pushUndoSnapshot(tr("Paste Layer"), before);
 
             QApplication::restoreOverrideCursor();
         } else {
@@ -11266,9 +11617,9 @@ void ApplicationWindow::pasteSelection()
             if (copiedMarkerType == Graph::Image)
                 g->setCopiedImageName(auxMrkFileName);
             g->pasteMarker();
+            if (!plot->undoStack() || plot->undoStack()->count() == prevCount)
+                plot->pushUndoSnapshot(tr("Paste Selection"), before);
         }
-        if (!plot->undoStack() || plot->undoStack()->count() == prevCount)
-            plot->pushUndoSnapshot(tr("Paste Selection"), before);
     }
     emit modified();
 }
@@ -11765,8 +12116,14 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return nullptr;
 
-    Graph *g = ((MultiLayer *)d_workspace.activeSubWindow())->activeGraph();
+    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml->activeGraph();
+    if (!g)
+        return nullptr;
     auto markerMenu = new QMenu(this);
+
+    const bool isPrimaryLegend =
+            (g->legend() != nullptr && g->selectedMarkerPtr() == g->legend());
 
     if (g->imageMarkerSelected()) {
         markerMenu->addAction(IconLoader::load(":/pixelProfile.xpm"),
@@ -11775,23 +12132,27 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
         markerMenu->addSeparator();
     }
 
-    markerMenu->addAction(IconLoader::load("edit-cut"), tr("&Cut"), this, SLOT(cutSelection()));
-    markerMenu->addAction(IconLoader::load("edit-copy"), tr("&Copy"), this, SLOT(copySelection()));
-    markerMenu->addAction(IconLoader::load(":/erase.xpm"), tr("&Delete"), this,
-                          SLOT(clearSelection()));
-    markerMenu->addSeparator();
-    if (g->arrowMarkerSelected())
+    if (g->arrowMarkerSelected()) {
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showLineDialog()));
-    else if (g->imageMarkerSelected())
+    } else if (g->imageMarkerSelected()) {
         markerMenu->addAction(tr("&Properties..."), this, SLOT(showImageDialog()));
-    else {
-        markerMenu->addAction(tr("&Properties..."), this, SLOT(showTextDialog()));
-        markerMenu->addAction(tr("&Reconstruct Legend (Ctrl+L)"), this, [this, g]() {
-            if (g) {
-                g->reconstructLegend();
-                emit modified();
-            }
-        });
+    } else if (isPrimaryLegend) {
+        markerMenu->addAction(tr("Legend &Properties..."), this, SLOT(showTextDialog()));
+        QPointer<MultiLayer> mlGuard(ml);
+        QPointer<Graph> gGuard(g);
+        markerMenu->addAction(tr("&Reconstruct Legend (Ctrl+L)"), this,
+                              [this, mlGuard, gGuard]() {
+                                  if (gGuard) {
+                                      const QString before = mlGuard
+                                              ? mlGuard->captureUndoSnapshot()
+                                              : QString();
+                                      gGuard->reconstructLegend();
+                                      if (mlGuard)
+                                          mlGuard->pushUndoSnapshot(tr("Reconstruct Legend"),
+                                                                    before);
+                                      emit modified();
+                                  }
+                              });
         if (Legend *leg = dynamic_cast<Legend *>(g->selectedMarkerPtr())) {
             QMenu *colMenu = markerMenu->addMenu(tr("Legend &Columns"));
             for (int ncols = 1; ncols <= 4; ++ncols) {
@@ -11800,25 +12161,32 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
                                      : tr("&%1 Columns (Horizontal)").arg(ncols));
                 actCol->setCheckable(true);
                 actCol->setChecked(leg->numColumns() == ncols);
-                connect(actCol, &QAction::triggered, this, [this, g, leg, ncols]() {
-                    if (leg && g) {
-                        leg->setNumColumns(ncols);
-                        g->replot();
+                connect(actCol, &QAction::triggered, this, [this, mlGuard, gGuard, ncols]() {
+                    if (gGuard && gGuard->legend()) {
+                        const QString before =
+                                mlGuard ? mlGuard->captureUndoSnapshot() : QString();
+                        gGuard->legend()->setNumColumns(ncols);
+                        gGuard->replot();
+                        if (mlGuard)
+                            mlGuard->pushUndoSnapshot(tr("Change Legend Columns"), before);
                         emit modified();
                     }
                 });
             }
         }
+    } else {
+        markerMenu->addAction(tr("Edit &Text / Properties..."), this, SLOT(showTextDialog()));
     }
 
     markerMenu->addSeparator();
-    markerMenu->addAction(actionPeakFitDialog);
-    markerMenu->addAction(actionAutoPeakGauss);
-    markerMenu->addAction(actionAutoPeakLorentz);
-    markerMenu->addAction(actionAutoPeakPseudoVoigt);
+    markerMenu->addAction(IconLoader::load("edit-cut"), tr("&Cut"), this, SLOT(cutSelection()));
+    markerMenu->addAction(IconLoader::load("edit-copy"), tr("&Copy"), this, SLOT(copySelection()));
+    markerMenu->addAction(IconLoader::load(":/erase.xpm"), tr("&Delete"), this,
+                          SLOT(clearSelection()));
     markerMenu->addSeparator();
     markerMenu->addAction(actionUnzoom);
     markerMenu->addAction(actionCopyGraphOle);
+    ModernUiTheme::upgradeMenuIcons(markerMenu);
 
     return markerMenu;
 }
@@ -12244,18 +12612,25 @@ void ApplicationWindow::showGraphContextMenu()
     if (w->inherits("MultiLayer")) {
         MultiLayer *plot = (MultiLayer *)w;
         QMenu cm(this);
-        QMenu *calcul = cm.addMenu(tr("Anal&yze"));
 
         Graph *ag = (Graph *)plot->activeGraph();
-        if (ag->isPiePlot())
+        if (ag && !ag->isPiePlot()) {
+            cm.addAction(actionUnzoom);
+            cm.addSeparator();
+        }
+
+        if (ag && ag->isPiePlot()) {
             cm.addAction(tr("Re&move Pie Curve"), ag, SLOT(removePie()));
-        else {
+        } else if (ag) {
             if (ag->visibleCurves() != ag->curves()) {
                 cm.addAction(actionShowAllCurves);
                 cm.addSeparator();
             }
             cm.addAction(actionShowCurvesDialog);
             cm.addAction(actionAddFunctionCurve);
+            cm.addSeparator();
+
+            QMenu *calcul = cm.addMenu(tr("Anal&yze"));
 
             QMenu *translate = calcul->addMenu(tr("&Translate"));
             translate->addAction(actionTranslateVert);
@@ -12313,19 +12688,8 @@ void ApplicationWindow::showGraphContextMenu()
             multiPeakMenu->addAction(actionMultiPeakPearsonVII);
 
             calcul->addSeparator();
-            calcul->addAction(actionPeakAnalyzerDialog);
-            calcul->addAction(actionPeakFitDialog);
-            calcul->addAction(actionAutoPeakGauss);
-            calcul->addAction(actionAutoPeakLorentz);
-            calcul->addAction(actionAutoPeakPseudoVoigt);
-            calcul->addSeparator();
             calcul->addAction(actionShowFitDialog);
-
-            cm.addSeparator();
-            if (gadgetsMenu)
-                cm.addMenu(gadgetsMenu);
-            if (dataMaskMenu)
-                cm.addMenu(dataMaskMenu);
+            calcul->addSeparator();
             if (curveMathMenu)
                 calcul->addMenu(curveMathMenu);
             if (advFitMenu)
@@ -12338,9 +12702,17 @@ void ApplicationWindow::showGraphContextMenu()
                 calcul->addMenu(graphStatsMenu);
             if (recalcMenu)
                 calcul->addMenu(recalcMenu);
-            cm.addAction(actionPeakAnalyzerDialog);
-            cm.addAction(actionPeakFitDialog);
-            cm.addAction(actionColorPaletteEditor);
+
+            if (gadgetsMenu)
+                cm.addMenu(gadgetsMenu);
+            if (dataMaskMenu)
+                cm.addMenu(dataMaskMenu);
+
+            cm.addSeparator();
+            if (stylePresetsMenu)
+                cm.addMenu(stylePresetsMenu);
+            if (framePresetsMenu)
+                cm.addMenu(framePresetsMenu);
             if (colorPaletteMenu)
                 cm.addMenu(colorPaletteMenu);
             if (aspectRatioMenu) {
@@ -12348,16 +12720,18 @@ void ApplicationWindow::showGraphContextMenu()
                     actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
                 cm.addMenu(aspectRatioMenu);
             }
-            if (stylePresetsMenu)
-                cm.addMenu(stylePresetsMenu);
-            if (framePresetsMenu)
-                cm.addMenu(framePresetsMenu);
+
+            cm.addSeparator();
             cm.addAction(actionCopyGraphFormat);
             cm.addAction(actionPasteGraphFormat);
+            if (pasteFormatSpecialMenu)
+                cm.addMenu(pasteFormatSpecialMenu);
+            if (actionMergeGraphs)
+                cm.addAction(actionMergeGraphs);
             cm.addAction(actionBatchPlot);
             cm.addAction(actionWaterfallStackOffset);
             cm.addAction(actionResetStackOffsets);
-            cm.addAction(actionUnzoom);
+            cm.addSeparator();
             cm.addAction(actionCopyPageImage);
             cm.addAction(actionCopyGraphOle);
         }
@@ -12401,6 +12775,7 @@ void ApplicationWindow::showGraphContextMenu()
         cm.addSeparator();
         cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
                      SLOT(confirmRemoveLayer()));
+        ModernUiTheme::upgradeMenuIcons(&cm);
         cm.exec(QCursor::pos());
     }
 }
@@ -12580,6 +12955,7 @@ void ApplicationWindow::showLayerButtonContextMenu()
         cm.addSeparator();
         cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
                      SLOT(confirmRemoveLayer()));
+        ModernUiTheme::upgradeMenuIcons(&cm);
         cm.exec(QCursor::pos());
     }
 }
@@ -13560,29 +13936,43 @@ void ApplicationWindow::addLayer()
     if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
         return;
 
-    MultiLayer *plot = (MultiLayer *)d_workspace.activeSubWindow();
+    QPointer<MultiLayer> plot = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (!plot)
+        return;
     if (isNonInteractiveContext(this)) {
+        const QString before = plot->captureUndoSnapshot();
         setPreferences(plot->addLayer());
         plot->arrangeLayers(true, false);
+        plot->pushUndoSnapshot(tr("Add Layer"), before);
+        emit modified();
         return;
     }
-    switch (QMessageBox::information(
+    const int choice = QMessageBox::information(
             this, tr("Guess best origin for the new layer?"),
             tr("Do you want ToriGraph to guess the best position for the new layer?\n Warning: this "
                "will rearrange existing layers!"),
-            tr("&Guess"), tr("&Top-left corner"), tr("&Cancel"), 0, 2)) {
+            tr("&Guess"), tr("&Top-left corner"), tr("&Cancel"), 0, 2);
+    if (!plot)
+        return;
+    switch (choice) {
     case 0: {
+        const QString before = plot->captureUndoSnapshot();
         setPreferences(plot->addLayer());
         plot->arrangeLayers(true, false);
+        plot->pushUndoSnapshot(tr("Add Layer"), before);
+        emit modified();
     } break;
 
-    case 1:
-        setPreferences(plot->addLayer(0, 0, plot->size().width(), plot->size().height()));
-        break;
+    case 1: {
+        const QString before = plot->captureUndoSnapshot();
+        const QSize cvSize = plot->canvasWidget() ? plot->canvasWidget()->size() : plot->size();
+        setPreferences(plot->addLayer(0, 0, cvSize.width(), cvSize.height()));
+        plot->pushUndoSnapshot(tr("Add Layer"), before);
+        emit modified();
+    } break;
 
     case 2:
         return;
-        break;
     }
 }
 
@@ -15432,59 +15822,73 @@ void ApplicationWindow::createActions()
     connect(d_plot_mapper, SIGNAL(mapped(int)), this, SLOT(selectPlotType(int)));
 
     actionPlotL = new QAction(QIcon(QPixmap(":/lPlot.xpm")), tr("&Line"), this);
+    actionPlotL->setObjectName(QStringLiteral("actionPlotL"));
     connect(actionPlotL, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotL, Graph::Line);
 
     actionPlotP = new QAction(QIcon(QPixmap(":/pPlot.xpm")), tr("&Scatter"), this);
+    actionPlotP->setObjectName(QStringLiteral("actionPlotP"));
     connect(actionPlotP, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotP, Graph::Scatter);
 
     actionPlotLP = new QAction(QIcon(QPixmap(":/lpPlot.xpm")), tr("Line + S&ymbol"), this);
+    actionPlotLP->setObjectName(QStringLiteral("actionPlotLP"));
     connect(actionPlotLP, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotLP, Graph::LineSymbols);
 
     actionPlotVerticalDropLines =
             new QAction(QIcon(QPixmap(":/dropLines.xpm")), tr("Vertical &Drop Lines"), this);
+    actionPlotVerticalDropLines->setObjectName(QStringLiteral("actionPlotVerticalDropLines"));
     connect(actionPlotVerticalDropLines, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotVerticalDropLines, Graph::VerticalDropLines);
 
     actionPlotSpline = new QAction(QIcon(QPixmap(":/spline.xpm")), tr("&Spline"), this);
+    actionPlotSpline->setObjectName(QStringLiteral("actionPlotSpline"));
     connect(actionPlotSpline, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotSpline, Graph::Spline);
 
     actionPlotHorSteps = new QAction(QPixmap(":/hor_steps.xpm"), tr("&Horizontal Steps"), this);
+    actionPlotHorSteps->setObjectName(QStringLiteral("actionPlotHorSteps"));
     connect(actionPlotHorSteps, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotHorSteps, Graph::HorizontalSteps);
 
     actionPlotVertSteps =
             new QAction(QIcon(QPixmap(":/vert_steps.xpm")), tr("&Vertical Steps"), this);
+    actionPlotVertSteps->setObjectName(QStringLiteral("actionPlotVertSteps"));
     connect(actionPlotVertSteps, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotVertSteps, Graph::VerticalSteps);
 
     actionPlotVerticalBars =
             new QAction(QIcon(QPixmap(":/vertBars.xpm")), tr("&Vertical Bars"), this);
+    actionPlotVerticalBars->setObjectName(QStringLiteral("actionPlotVerticalBars"));
     connect(actionPlotVerticalBars, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotVerticalBars, Graph::VerticalBars);
 
     actionPlotHorizontalBars =
             new QAction(QIcon(QPixmap(":/hBars.xpm")), tr("&Horizontal Bars"), this);
+    actionPlotHorizontalBars->setObjectName(QStringLiteral("actionPlotHorizontalBars"));
     connect(actionPlotHorizontalBars, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotHorizontalBars, Graph::HorizontalBars);
 
     actionPlotArea = new QAction(QIcon(QPixmap(":/area.xpm")), tr("&Area"), this);
+    actionPlotArea->setObjectName(QStringLiteral("actionPlotArea"));
     connect(actionPlotArea, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotArea, Graph::Area);
 
     actionPlotPie = new QAction(QIcon(QPixmap(":/pie.xpm")), tr("&Pie"), this);
+    actionPlotPie->setObjectName(QStringLiteral("actionPlotPie"));
     connect(actionPlotPie, SIGNAL(triggered()), this, SLOT(plotPie()));
 
     actionPlotVectXYAM = new QAction(QIcon(QPixmap(":/vectXYAM.xpm")), tr("Vectors XY&AM"), this);
+    actionPlotVectXYAM->setObjectName(QStringLiteral("actionPlotVectXYAM"));
     connect(actionPlotVectXYAM, SIGNAL(triggered()), this, SLOT(plotVectXYAM()));
 
     actionPlotVectXYXY = new QAction(QIcon(QPixmap(":/vectXYXY.xpm")), tr("Vectors &XYXY"), this);
+    actionPlotVectXYXY->setObjectName(QStringLiteral("actionPlotVectXYXY"));
     connect(actionPlotVectXYXY, SIGNAL(triggered()), this, SLOT(plotVectXYXY()));
 
     actionPlotHistogram = new QAction(QIcon(QPixmap(":/histogram.xpm")), tr("&Histogram"), this);
+    actionPlotHistogram->setObjectName(QStringLiteral("actionPlotHistogram"));
     connect(actionPlotHistogram, SIGNAL(triggered()), d_plot_mapper, SLOT(map()));
     d_plot_mapper->setMapping(actionPlotHistogram, Graph::Histogram);
 
@@ -16199,8 +16603,30 @@ void ApplicationWindow::createActions()
 
     actionPasteGraphFormat = new QAction(IconLoader::load("edit-paste"), tr("Paste &Format"), this);
     actionPasteGraphFormat->setShortcut(tr("Ctrl+Shift+V"));
-    actionPasteGraphFormat->setToolTip(tr("Paste copied graph format onto active graph"));
+    actionPasteGraphFormat->setToolTip(tr("Paste copied graph style (fonts, colors, symbols, frame & ticks) onto active graph"));
     connect(actionPasteGraphFormat, SIGNAL(triggered()), this, SLOT(pasteGraphFormat()));
+
+    actionPasteFormatFonts = new QAction(tr("Paste &Fonts Only"), this);
+    actionPasteFormatFonts->setToolTip(tr("Paste only font family, sizes, weights, and alignments onto active graph"));
+    connect(actionPasteFormatFonts, SIGNAL(triggered()), this, SLOT(pasteGraphFormatFontsOnly()));
+
+    actionPasteFormatColors = new QAction(tr("Paste &Colors && Symbols Only"), this);
+    actionPasteFormatColors->setToolTip(tr("Paste only curve pens, symbol styles/sizes, and colors onto active graph"));
+    connect(actionPasteFormatColors, SIGNAL(triggered()), this, SLOT(pasteGraphFormatColorsOnly()));
+
+    actionPasteFormatScales = new QAction(tr("Paste &Axis Scales Only"), this);
+    actionPasteFormatScales->setToolTip(tr("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats"));
+    connect(actionPasteFormatScales, SIGNAL(triggered()), this, SLOT(pasteGraphFormatAxisScalesOnly()));
+
+    actionPasteFormatFolder = new QAction(tr("Paste Format to &All Graphs in Folder"), this);
+    actionPasteFormatFolder->setToolTip(tr("Apply copied graph format to every 2D graph window in the current folder"));
+    connect(actionPasteFormatFolder, SIGNAL(triggered()), this, SLOT(pasteGraphFormatToFolder()));
+
+    actionMergeGraphs = new QAction(IconLoader::duotoneIcon(QStringLiteral("split-view"), 16, false),
+                                    tr("&Merge Graph Windows..."), this);
+    actionMergeGraphs->setObjectName(QStringLiteral("actionMergeGraphs"));
+    actionMergeGraphs->setToolTip(tr("Merge 2 or more open graph windows into a publication multi-panel figure (a)(b)(c)(d)"));
+    connect(actionMergeGraphs, SIGNAL(triggered()), this, SLOT(mergeOpenGraphsDialog()));
 
     actionBatchPlot = new QAction(QIcon(QPixmap(":/duplicate.xpm")), tr("Duplicate (&Batch Plotting)..."), this);
     actionBatchPlot->setToolTip(tr("Batch-clone graph across multiple worksheets or Y columns"));
@@ -16211,7 +16637,7 @@ void ApplicationWindow::createActions()
     connect(actionStyleISIJ, SIGNAL(triggered()), this, SLOT(applyStyleISIJJournal()));
 
     actionStyleSlide = new QAction(tr("&Presentation Slide (28 pt Arial)"), this);
-    actionStyleSlide->setToolTip(tr("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)"));
+    actionStyleSlide->setToolTip(tr("Apply high-visibility presentation slide style (185\xC3\x97" "185 mm, 28 pt Arial)"));
     connect(actionStyleSlide, SIGNAL(triggered()), this, SLOT(applyStylePresentationSlide()));
 
     actionStyleNature = new QAction(tr("&Nature / Science Compact (89 mm)"), this);
@@ -17044,6 +17470,31 @@ void ApplicationWindow::translateActionsStrings()
         actionBatchPlot->setToolTip(
                 tr("Batch-clone graph across multiple worksheets or Y columns"));
     }
+    if (actionPasteFormatFonts) {
+        actionPasteFormatFonts->setText(tr("Paste &Fonts Only"));
+        actionPasteFormatFonts->setToolTip(
+                tr("Paste only font family, sizes, weights, and alignments onto active graph"));
+    }
+    if (actionPasteFormatColors) {
+        actionPasteFormatColors->setText(tr("Paste &Colors && Symbols Only"));
+        actionPasteFormatColors->setToolTip(
+                tr("Paste only curve pens, symbol styles/sizes, and colors onto active graph"));
+    }
+    if (actionPasteFormatScales) {
+        actionPasteFormatScales->setText(tr("Paste &Axis Scales Only"));
+        actionPasteFormatScales->setToolTip(
+                tr("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats"));
+    }
+    if (actionPasteFormatFolder) {
+        actionPasteFormatFolder->setText(tr("Paste Format to &All Graphs in Folder"));
+        actionPasteFormatFolder->setToolTip(
+                tr("Apply copied graph format to every 2D graph window in the current folder"));
+    }
+    if (actionMergeGraphs) {
+        actionMergeGraphs->setText(tr("&Merge Graph Windows..."));
+        actionMergeGraphs->setToolTip(
+                tr("Merge 2 or more open graph windows into a publication multi-panel figure (a)(b)(c)(d)"));
+    }
     if (actionStyleISIJ) {
         actionStyleISIJ->setText(tr("&ISIJ Journal (85 mm, 600 DPI)"));
         actionStyleISIJ->setToolTip(
@@ -17052,7 +17503,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionStyleSlide) {
         actionStyleSlide->setText(tr("&Presentation Slide (28 pt Arial)"));
         actionStyleSlide->setToolTip(
-                tr("Apply high-visibility presentation slide style (16:9, 28 pt Arial, bold curves)"));
+                tr("Apply high-visibility presentation slide style (185\xC3\x97" "185 mm, 28 pt Arial)"));
     }
     if (actionStyleNature) {
         actionStyleNature->setText(tr("&Nature / Science Compact (89 mm)"));
@@ -17627,8 +18078,7 @@ void ApplicationWindow::copyGraphAsOleObject()
 
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
 #ifdef Q_OS_WIN
-    Graph *g = ml->activeGraph();
-    if (SciDAVisOle::copyGraphAsOle(this, ml, g))
+    if (SciDAVisOle::copyGraphAsOle(this, ml, nullptr))
         return;
 #endif
     ml->copyAllLayers();
@@ -17714,18 +18164,32 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     if (isNonInteractiveContext(this))
         return;
 
-    QWidget *w = d_workspace.activeSubWindow();
-    if (!w)
-        return;
+    QWidget *w = d_workspace.activeSubWindow() ? d_workspace.activeSubWindow()
+                                               : d_workspace.currentSubWindow();
 
     MultiLayer *plot = nullptr;
-    if (w->inherits("MultiLayer")) {
+    if (w && w->inherits("MultiLayer")) {
         plot = static_cast<MultiLayer *>(w);
-    } else if (w->inherits("Table")) {
+    } else if (w && w->inherits("Table")) {
         Table *t = static_cast<Table *>(w);
         QStringList cols = t->drawableColumnSelection();
         if (!cols.isEmpty())
             plot = multilayerPlot(t, cols, Graph::LineSymbols);
+    }
+    if (!plot) {
+        const QList<QMdiSubWindow *> swList = d_workspace.subWindowList();
+        for (int i = swList.size() - 1; i >= 0; --i) {
+            if (QMdiSubWindow *sw = swList.at(i)) {
+                if (sw->inherits("MultiLayer")) {
+                    MultiLayer *cand = static_cast<MultiLayer *>(sw);
+                    if (cand && !cand->isEmpty() && cand->activeGraph()
+                        && cand->activeGraph()->validCurvesDataSize()) {
+                        plot = cand;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     if (!plot)
@@ -18015,6 +18479,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
             if (!liveBaselineCurve) {
                 liveBaselineCurve = new QwtPlotCurve();
+                liveBaselineCurve->setTitle(QStringLiteral("__tg_transient_ui_preview__"));
                 liveBaselineCurve->setItemAttribute(QwtPlotItem::Legend, false);
                 liveBaselineCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
                 liveBaselineCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
@@ -18027,6 +18492,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
             if (!anchorMarkersCurve) {
                 anchorMarkersCurve = new QwtPlotCurve();
+                anchorMarkersCurve->setTitle(QStringLiteral("__tg_transient_ui_preview__"));
                 anchorMarkersCurve->setItemAttribute(QwtPlotItem::Legend, false);
                 anchorMarkersCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
                 anchorMarkersCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
@@ -18041,6 +18507,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
             if (!activeAnchorMarkerCurve) {
                 activeAnchorMarkerCurve = new QwtPlotCurve();
+                activeAnchorMarkerCurve->setTitle(QStringLiteral("__tg_transient_ui_preview__"));
                 activeAnchorMarkerCurve->setItemAttribute(QwtPlotItem::Legend, false);
                 activeAnchorMarkerCurve->setItemAttribute(QwtPlotItem::AutoScale, false);
                 activeAnchorMarkerCurve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
@@ -20806,6 +21273,10 @@ void ApplicationWindow::addListViewItem(MyWidget *w)
     it->setText(2, w->aspect());
     it->setText(3, w->birthDate());
     it->setText(4, w->windowLabel());
+    if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
+        lv.resizeColumnToContents(1);
+        lv.resizeColumnToContents(2);
+    }
 }
 
 void ApplicationWindow::windowProperties()
@@ -21081,6 +21552,8 @@ void ApplicationWindow::setOleEmbeddedMode(bool embedded)
             d_modern_ribbon->setClassicToolbarsVisible(false);
             d_modern_ribbon->hide();
         }
+        if (d_ribbon_toolbar)
+            d_ribbon_toolbar->hide();
         if (actionToggleFocusHudMode)
             actionToggleFocusHudMode->setEnabled(false);
         if (actionCommandPalette)
@@ -21094,7 +21567,10 @@ void ApplicationWindow::setOleEmbeddedMode(bool embedded)
             actionCommandPalette->setEnabled(true);
         if (actionToggleGraphInspector)
             actionToggleGraphInspector->setEnabled(true);
-        if (d_modern_ribbon && !d_modern_ribbon->isFocusHudMode())
+        const bool showRibbon = !d_modern_ribbon || !d_modern_ribbon->isFocusHudMode();
+        if (d_ribbon_toolbar)
+            d_ribbon_toolbar->setVisible(showRibbon);
+        if (d_modern_ribbon && showRibbon)
             d_modern_ribbon->show();
     }
     updateGraphInspectorResponsiveness();
@@ -21314,6 +21790,16 @@ void ApplicationWindow::fitFrameToLayer()
 
 ApplicationWindow::~ApplicationWindow()
 {
+    explorerWindow.disconnect(this);
+    if (d_explorer_container) {
+        d_explorer_container->removeEventFilter(this);
+        d_explorer_container = nullptr;
+        d_explorer_bar_grid = nullptr;
+    }
+    lv.removeEventFilter(this);
+    folders.setParent(nullptr);
+    lv.setParent(nullptr);
+
     if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
         mt->cancelScheduledAndHide();
 
@@ -21335,8 +21821,6 @@ ApplicationWindow::~ApplicationWindow()
 
     if (d_modern_ribbon) {
         d_modern_ribbon->prepareForAppShutdown();
-        if (d_central_container && d_central_container->layout())
-            d_central_container->layout()->removeWidget(d_modern_ribbon);
         delete d_modern_ribbon;
         d_modern_ribbon = nullptr;
     }
@@ -21450,11 +21934,150 @@ QMenu *ApplicationWindow::createToolbarsMenu()
     if (toolbars.size()) {
         menu = new QMenu(this);
         foreach (QToolBar *toolbar, toolbars) {
+            if (!toolbar || toolbar == d_ribbon_toolbar
+                || toolbar->objectName() == QLatin1String("ModernRibbonToolBar"))
+                continue;
             if (toolbar->parentWidget() == this)
                 menu->addAction(toolbar->toggleViewAction());
         }
     }
     return menu;
+}
+
+QMenu *ApplicationWindow::createPopupMenu()
+{
+    QMenu *menu = QMainWindow::createPopupMenu();
+    if (menu && d_ribbon_toolbar && d_ribbon_toolbar->toggleViewAction())
+        menu->removeAction(d_ribbon_toolbar->toggleViewAction());
+    return menu;
+}
+
+bool ApplicationWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event && watched == d_explorer_container && event->type() == QEvent::Show) {
+        if (!explorerWindow.isFloating()
+            && (dockWidgetArea(&explorerWindow) == Qt::LeftDockWidgetArea
+                || dockWidgetArea(&explorerWindow) == Qt::RightDockWidgetArea)
+            && explorerWindow.width() > 300) {
+            resizeDocks({ &explorerWindow }, { 255 }, Qt::Horizontal);
+        }
+    }
+    if (event && (watched == d_explorer_container || watched == &lv)) {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
+            updateExplorerAdaptiveLayout();
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void ApplicationWindow::updateExplorerAdaptiveLayout()
+{
+    if (!d_explorer_container || !d_explorer_bar_grid)
+        return;
+
+    const Qt::DockWidgetArea area = dockWidgetArea(&explorerWindow);
+    const int contW = d_explorer_container->width();
+    const bool sideDocked = !explorerWindow.isFloating()
+            && (area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea);
+    const bool verticalMode = sideDocked || (contW > 0 && contW < 420);
+
+    const QVariant prevModeVar = d_explorer_container->property("_verticalBarMode");
+    if (!prevModeVar.isValid() || prevModeVar.toBool() != verticalMode) {
+        d_explorer_container->setProperty("_verticalBarMode", verticalMode);
+
+        while (QLayoutItem *it = d_explorer_bar_grid->takeAt(0))
+            delete it;
+        for (int c = 0; c <= 6; ++c)
+            d_explorer_bar_grid->setColumnStretch(c, 0);
+
+        if (verticalMode) {
+            if (d_explorer_search) {
+                d_explorer_search->setMinimumWidth(90);
+                d_explorer_bar_grid->addWidget(d_explorer_search, 0, 0);
+            }
+            if (d_btn_explorer_new_folder) {
+                d_btn_explorer_new_folder->setFixedSize(24, 24);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_folder, 0, 1);
+            }
+            if (d_btn_explorer_new_table) {
+                d_btn_explorer_new_table->setFixedSize(24, 24);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_table, 0, 2);
+            }
+            if (d_btn_explorer_new_graph) {
+                d_btn_explorer_new_graph->setFixedSize(24, 24);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_graph, 0, 3);
+            }
+            if (d_explorer_type_filter) {
+                d_explorer_type_filter->setMinimumWidth(64);
+                d_explorer_type_filter->setSizeAdjustPolicy(
+                        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                d_explorer_bar_grid->addWidget(d_explorer_type_filter, 1, 0);
+            }
+            if (d_explorer_subfolder_check)
+                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 1, 1, 1, 3);
+            if (d_btn_tabbed_view)
+                d_btn_tabbed_view->hide();
+            d_explorer_bar_grid->setColumnStretch(0, 1);
+
+            if (explorerSplitter && explorerSplitter->orientation() != Qt::Vertical) {
+                explorerSplitter->setOrientation(Qt::Vertical);
+                const int totalH = qMax(300, explorerSplitter->height());
+                explorerSplitter->setSizes(QList<int>() << qRound(totalH * 0.35)
+                                                        << qRound(totalH * 0.65));
+            }
+        } else {
+            if (d_explorer_search) {
+                d_explorer_search->setMinimumWidth(120);
+                d_explorer_bar_grid->addWidget(d_explorer_search, 0, 0);
+            }
+            if (d_explorer_type_filter) {
+                d_explorer_type_filter->setMinimumWidth(72);
+                d_explorer_type_filter->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+                d_explorer_bar_grid->addWidget(d_explorer_type_filter, 0, 1);
+            }
+            if (d_explorer_subfolder_check)
+                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 0, 2);
+            if (d_btn_explorer_new_folder) {
+                d_btn_explorer_new_folder->setMinimumSize(0, 0);
+                d_btn_explorer_new_folder->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_folder, 0, 3);
+            }
+            if (d_btn_explorer_new_table) {
+                d_btn_explorer_new_table->setMinimumSize(0, 0);
+                d_btn_explorer_new_table->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_table, 0, 4);
+            }
+            if (d_btn_explorer_new_graph) {
+                d_btn_explorer_new_graph->setMinimumSize(0, 0);
+                d_btn_explorer_new_graph->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_graph, 0, 5);
+            }
+            if (d_btn_tabbed_view) {
+                d_explorer_bar_grid->addWidget(d_btn_tabbed_view, 0, 6);
+                d_btn_tabbed_view->show();
+            }
+            d_explorer_bar_grid->setColumnStretch(0, 2);
+            d_explorer_bar_grid->setColumnStretch(1, 1);
+
+            if (explorerSplitter && explorerSplitter->orientation() != Qt::Horizontal) {
+                explorerSplitter->setOrientation(Qt::Horizontal);
+                const int totalW = qMax(500, explorerSplitter->width());
+                explorerSplitter->setSizes(QList<int>() << qRound(totalW * 0.30)
+                                                        << qRound(totalW * 0.70));
+            }
+        }
+    }
+
+    if (lv.columnCount() >= 5) {
+        lv.setColumnHidden(2, false);
+        lv.setColumnHidden(3, verticalMode);
+        lv.setColumnHidden(4, verticalMode);
+        if (verticalMode) {
+            lv.resizeColumnToContents(1);
+            lv.resizeColumnToContents(2);
+            if (lv.columnWidth(0) < 85 || lv.columnWidth(0) > 145)
+                lv.setColumnWidth(0, 105);
+        }
+    }
 }
 
 void ApplicationWindow::setStatusBarText(const QString &text)
@@ -21613,22 +22236,44 @@ bool ApplicationWindow::validFor3DPlot(Table *table)
 
 bool ApplicationWindow::validFor2DPlot(Table *table, int type)
 {
+    if (!table)
+        return false;
+
     switch (type) {
     case Graph::Histogram:
     case Graph::Pie:
     case Graph::Box:
-        if (table->selectedColumnCount() < 1) {
+        if (table->selectedColumnCount() < 1 && table->YColumns().isEmpty()
+            && table->numCols() < 1) {
             if (!isNonInteractiveContext(this))
                 QMessageBox::warning(this, tr("Error"), tr("Please select a column to plot!"));
             return false;
         }
         break;
-    default:
-        if (table->selectedColumnCount(SciDAVis::Y) < 1) {
-            if (!isNonInteractiveContext(this))
-                QMessageBox::warning(this, tr("Error"), tr("Please select a Y column to plot!"));
+    case Graph::VectXYXY:
+    case Graph::VectXYAM:
+        if (table->numCols() < 4) {
+            if (!isNonInteractiveContext(this)) {
+                QMessageBox::critical(this, tr("Error"),
+                                      tr("You need at least four columns for this operation!"));
+            }
             return false;
-        } else if (table->numCols() < 2) {
+        } else if (table->noXColumn()) {
+            if (!isNonInteractiveContext(this)) {
+                QMessageBox::critical(this, tr("Error"),
+                                      tr("Please set a default X column for this table, first!"));
+            }
+            return false;
+        } else if (table->selectedColumnCount(SciDAVis::Y) < 2 && table->YColumns().size() < 2) {
+            if (!isNonInteractiveContext(this)) {
+                QMessageBox::warning(this, tr("Error"),
+                                     tr("Please select a Y column to plot!"));
+            }
+            return false;
+        }
+        break;
+    default:
+        if (table->numCols() < 2) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::critical(this, tr("Error"),
                                       tr("You need at least two columns for this operation!"));
@@ -21640,12 +22285,31 @@ bool ApplicationWindow::validFor2DPlot(Table *table, int type)
                                       tr("Please set a default X column for this table, first!"));
             }
             return false;
+        } else if (table->selectedColumnCount(SciDAVis::Y) < 1 && table->YColumns().isEmpty()) {
+            if (!isNonInteractiveContext(this))
+                QMessageBox::warning(this, tr("Error"), tr("Please select a Y column to plot!"));
+            return false;
         }
         break;
     }
 
     return true;
 }
+
+namespace {
+static QStringList collectAllDrawableColumnsInOrder(Table *table)
+{
+    QStringList cols;
+    if (!table)
+        return cols;
+    for (int i = 0; i < table->numCols(); ++i) {
+        const SciDAVis::PlotDesignation pd = table->colPlotDesignation(i);
+        if (pd == SciDAVis::Y || pd == SciDAVis::yErr || pd == SciDAVis::xErr)
+            cols << table->colName(i);
+    }
+    return cols;
+}
+} // namespace
 
 void ApplicationWindow::selectPlotType(int type)
 {
@@ -21654,17 +22318,30 @@ void ApplicationWindow::selectPlotType(int type)
 
     Table *table = qobject_cast<Table *>(d_workspace.activeSubWindow());
     if (table && validFor2DPlot(table, type)) {
+        const int startRow =
+                (table->selectedRowCount(false) >= 2) ? table->firstSelectedRow(false) : 0;
+        const int endRow =
+                (table->selectedRowCount(false) >= 2) ? table->lastSelectedRow(false) : -1;
+
         switch (type) {
         case Graph::Histogram:
         case Graph::Pie:
-        case Graph::Box:
-            multilayerPlot(table, table->selectedColumns(), (Graph::CurveType)type,
-                           table->firstSelectedRow(), table->lastSelectedRow());
+        case Graph::Box: {
+            QStringList cols = table->selectedColumns();
+            if (cols.isEmpty())
+                cols = table->YColumns();
+            if (cols.isEmpty() && table->numCols() > 0)
+                cols << table->colName(table->numCols() - 1);
+            multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
             break;
-        default:
-            multilayerPlot(table, table->drawableColumnSelection(), (Graph::CurveType)type,
-                           table->firstSelectedRow(), table->lastSelectedRow());
+        }
+        default: {
+            QStringList cols = (table->selectedColumnCount(SciDAVis::Y) >= 1)
+                    ? table->drawableColumnSelection()
+                    : collectAllDrawableColumnsInOrder(table);
+            multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
             break;
+        }
         }
         return;
     }
@@ -21672,9 +22349,95 @@ void ApplicationWindow::selectPlotType(int type)
     MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
     if (ml) {
         Graph *g = ml->activeGraph();
-        if (g->curves() > 0)
+        if (g && g->curves() > 0) {
+            const QString before = ml->captureUndoSnapshot();
             g->setCurveType(g->curves() - 1, (Graph::CurveType)type);
+            ml->pushUndoSnapshot(tr("Change Curve Plot Type"), before);
+        }
     }
+}
+
+MultiLayer *ApplicationWindow::addTableSelectionToActiveOrRecentGraph(Table *srcTable, int style)
+{
+    Table *table = srcTable ? srcTable : qobject_cast<Table *>(d_workspace.activeSubWindow());
+    if (!table)
+        return nullptr;
+
+    const int plotStyle = (style >= 0) ? style : defaultCurveStyle;
+    if (!validFor2DPlot(table, plotStyle))
+        return nullptr;
+
+    const int startRow = (table->selectedRowCount(false) >= 2) ? table->firstSelectedRow(false) : 0;
+    const int endRow = (table->selectedRowCount(false) >= 2) ? table->lastSelectedRow(false) : -1;
+
+    QStringList cols;
+    if (plotStyle == Graph::Histogram || plotStyle == Graph::Pie || plotStyle == Graph::Box) {
+        cols = table->selectedColumns();
+        if (cols.isEmpty())
+            cols = table->YColumns();
+        if (cols.isEmpty() && table->numCols() > 0)
+            cols << table->colName(table->numCols() - 1);
+    } else {
+        cols = (table->selectedColumnCount(SciDAVis::Y) >= 1)
+                ? table->drawableColumnSelection()
+                : collectAllDrawableColumnsInOrder(table);
+    }
+    if (cols.isEmpty())
+        return nullptr;
+
+    MultiLayer *targetMl = nullptr;
+    const QList<MyWidget *> folderWins =
+            current_folder ? current_folder->windowsList() : windowsList();
+    const QList<QMdiSubWindow *> hist = d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+    for (int i = hist.size() - 1; i >= 0; --i) {
+        MultiLayer *cand = qobject_cast<MultiLayer *>(hist.at(i));
+        if (cand && !cand->isEmpty() && folderWins.contains(cand)) {
+            targetMl = cand;
+            break;
+        }
+    }
+    if (!targetMl) {
+        for (int i = folderWins.size() - 1; i >= 0; --i) {
+            MyWidget *mw = folderWins.at(i);
+            if (mw && mw->inherits("MultiLayer")) {
+                MultiLayer *cand = static_cast<MultiLayer *>(mw);
+                if (!cand->isEmpty()) {
+                    targetMl = cand;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!targetMl || !targetMl->activeGraph() || targetMl->activeGraph()->isPiePlot())
+        return multilayerPlot(table, cols, plotStyle, startRow, endRow);
+
+    Graph *ag = targetMl->activeGraph();
+    const QString before = targetMl->captureUndoSnapshot();
+    invalidateModelessGraphDialogs(targetMl);
+    ag->insertCurvesList(table, cols, plotStyle, defaultCurveLineWidth, defaultSymbolSize, startRow,
+                         endRow);
+    if (ag->hasLegend())
+        ag->reconstructLegend();
+    else
+        ag->newLegend();
+    applyWorksheetMetadataToGraph(ag, table, cols, plotStyle);
+    ag->refreshAutoAxisTitlesFromColumns();
+    ag->setAutoScale();
+    ag->updatePlot();
+    targetMl->pushUndoSnapshot(tr("Add Curves from Worksheet"), before);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == targetMl)
+        d_graph_inspector_dock->setTargetMultiLayer(targetMl, true);
+    activateSubWindow(targetMl);
+    emit modified();
+    if (statusBar()) {
+        statusBar()->showMessage(
+                tr("Added %1 column(s) from %2 to %3.")
+                        .arg(cols.size())
+                        .arg(table->name(), targetMl->name()),
+                3000);
+    }
+    return targetMl;
 }
 
 void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int index)
@@ -22941,6 +23704,19 @@ struct CopiedLayerFormatSpec
     QString tickSuffixes[4];
     Graph::AxisBreakSpec axisBreaks[4];
 
+    bool hasAxisScale[4] = { false, false, false, false };
+    double scaleStart[4] = { 0.0, 0.0, 0.0, 0.0 };
+    double scaleEnd[4] = { 1.0, 1.0, 1.0, 1.0 };
+    double scaleStep[4] = { 0.0, 0.0, 0.0, 0.0 };
+    int scaleMaxMajor[4] = { 5, 5, 5, 5 };
+    int scaleMaxMinor[4] = { 5, 5, 5, 5 };
+    int scaleType[4] = { 0, 0, 0, 0 };
+    bool scaleInverted[4] = { false, false, false, false };
+    bool isNumericAxis[4] = { true, true, true, true };
+    int labelNumFormat[4] = { 0, 0, 0, 0 };
+    int labelNumPrecision[4] = { 6, 6, 6, 6 };
+    QStringList axisFormulas;
+
     bool framed = false;
     int canvasFrameWidth = 1;
     QColor canvasFrameColor = QColor(Qt::black);
@@ -23019,6 +23795,8 @@ static CopiedLayerFormatSpec captureLayerFormat(Graph *g)
 
     spec.enabledAxes = g->enabledAxes();
     spec.globalBackbones = g->axesBackbones();
+    const QList<Graph::AxisType> aTypes = g->axesType();
+    spec.axisFormulas = g->getAxesFormulas();
     for (int a = 0; a < 4; ++a) {
         spec.axisBackboneVisible[a] = g->isAxisBackboneVisible(a);
         spec.axisTitleFonts[a] = g->axisTitleFont(a);
@@ -23034,6 +23812,21 @@ static CopiedLayerFormatSpec captureLayerFormat(Graph *g)
         spec.tickPrefixes[a] = g->tickPrefix(a);
         spec.tickSuffixes[a] = g->tickSuffix(a);
         spec.axisBreaks[a] = g->axisBreak(a);
+        if (const QwtScaleDiv *scDiv = g->plotWidget()->axisScaleDiv(a)) {
+            spec.hasAxisScale[a] = true;
+            spec.scaleStart[a] = qMin(scDiv->lowerBound(), scDiv->upperBound());
+            spec.scaleEnd[a] = qMax(scDiv->lowerBound(), scDiv->upperBound());
+            spec.scaleStep[a] = g->axisStep(a);
+            spec.scaleMaxMajor[a] = g->plotWidget()->axisMaxMajor(a);
+            spec.scaleMaxMinor[a] = g->plotWidget()->axisMaxMinor(a);
+            const QwtScaleEngine *scEng = g->plotWidget()->axisScaleEngine(a);
+            spec.scaleType[a] = Plot::isLog10ScaleEngine(scEng) ? 1 : 0;
+            spec.scaleInverted[a] = scEng ? scEng->testAttribute(QwtScaleEngine::Inverted) : false;
+        }
+        spec.isNumericAxis[a] =
+                (a < aTypes.size()) ? (aTypes[a] == Graph::AxisType::Numeric) : true;
+        spec.labelNumFormat[a] = g->plotWidget()->axisLabelFormat(a);
+        spec.labelNumPrecision[a] = g->plotWidget()->axisLabelPrecision(a);
     }
     spec.axesColors = g->axesColors();
     spec.axesNumColors = g->axesNumColors();
@@ -23121,89 +23914,129 @@ static void applyLegendNormalizedPosition(Graph *dstG, const CopiedLayerFormatSp
     }
 }
 
-static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatSpec &spec)
+static void applyLayerFormatNonDestructive(
+        Graph *dstG, const CopiedLayerFormatSpec &spec,
+        int scopeFlags = ApplicationWindow::FormatDefaultSafe)
 {
     if (!dstG || !dstG->plotWidget() || !spec.valid)
         return;
 
-    dstG->setTitleFont(spec.titleFont);
-    dstG->setTitleColor(spec.titleColor);
-    dstG->setTitleAlignment(spec.titleAlign);
+    const bool doFonts = (scopeFlags & ApplicationWindow::FormatFonts) != 0;
+    const bool doColors = (scopeFlags & ApplicationWindow::FormatColorsAndSymbols) != 0;
+    const bool doFrame = (scopeFlags & ApplicationWindow::FormatFrameAndTicks) != 0;
+    const bool doScales = (scopeFlags & ApplicationWindow::FormatAxisScales) != 0;
+    const bool doBreaksRef = (scopeFlags & ApplicationWindow::FormatBreaksAndRefLines) != 0;
 
-    if (spec.enabledAxes.size() == 4)
-        dstG->enableAxes(spec.enabledAxes);
-    dstG->drawAxesBackbones(spec.globalBackbones);
-    dstG->setAxesLinewidth(spec.axesLinewidth);
+    if (doFonts) {
+        dstG->setTitleFont(spec.titleFont);
+        dstG->setTitleAlignment(spec.titleAlign);
+    }
+    if (doColors)
+        dstG->setTitleColor(spec.titleColor);
 
-    if (spec.axesColors.size() == 4)
-        dstG->setAxesColors(spec.axesColors);
-    if (spec.axesNumColors.size() == 4)
-        dstG->setAxesNumColors(spec.axesNumColors);
-    if (spec.enabledTickLabels.size() == 4)
-        dstG->setEnabledTickLabels(spec.enabledTickLabels);
-    if (spec.axesBaselines.size() == 4)
-        dstG->setAxesBaseline(spec.axesBaselines);
-
-    if (spec.majorTicksType.size() == 4)
-        dstG->setMajorTicksType(spec.majorTicksType);
-    if (spec.minorTicksType.size() == 4)
-        dstG->setMinorTicksType(spec.minorTicksType);
-    dstG->setTicksLength(spec.minorTickLength, spec.majorTickLength);
-
-    dstG->setYAxisTitleColor(spec.axisTitleColors[QwtPlot::yLeft]);
-    dstG->setRightAxisTitleColor(spec.axisTitleColors[QwtPlot::yRight]);
-    dstG->setXAxisTitleColor(spec.axisTitleColors[QwtPlot::xBottom]);
-    dstG->setTopAxisTitleColor(spec.axisTitleColors[QwtPlot::xTop]);
-
-    dstG->setYAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yLeft]);
-    dstG->setRightAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yRight]);
-    dstG->setXAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xBottom]);
-    dstG->setTopAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xTop]);
-
-    for (int a = 0; a < 4; ++a) {
-        dstG->setAxisTitleFont(a, spec.axisTitleFonts[a]);
-        dstG->setAxisFont(a, spec.axisTickFonts[a]);
-        dstG->setAxisBackboneVisible(a, spec.axisBackboneVisible[a]);
-        if (a == QwtPlot::xBottom || a == QwtPlot::xTop)
-            dstG->setAxisLabelRotation(a, spec.labelRotations[a]);
-        dstG->setTickLabelTransform(a, spec.tickDivideFactors[a], spec.tickPrefixes[a],
-                                    spec.tickSuffixes[a]);
-        if (spec.axisBreaks[a].enabled)
-            dstG->setAxisBreak(a, spec.axisBreaks[a]);
-        else
-            dstG->clearAxisBreak(a);
+    if (doFrame) {
+        if (spec.enabledAxes.size() == 4)
+            dstG->enableAxes(spec.enabledAxes);
+        dstG->drawAxesBackbones(spec.globalBackbones);
+        dstG->setAxesLinewidth(spec.axesLinewidth);
+        if (spec.enabledTickLabels.size() == 4)
+            dstG->setEnabledTickLabels(spec.enabledTickLabels);
+        if (spec.axesBaselines.size() == 4)
+            dstG->setAxesBaseline(spec.axesBaselines);
+        if (spec.majorTicksType.size() == 4)
+            dstG->setMajorTicksType(spec.majorTicksType);
+        if (spec.minorTicksType.size() == 4)
+            dstG->setMinorTicksType(spec.minorTicksType);
+        dstG->setTicksLength(spec.minorTickLength, spec.majorTickLength);
     }
 
-    dstG->drawCanvasFrame(spec.framed, spec.canvasFrameWidth, spec.canvasFrameColor);
-    dstG->setCanvasBackground(spec.canvasBackground);
-    dstG->setBackgroundColor(spec.backgroundColor);
-    dstG->setAntialiasing(spec.antialiasing, false);
+    if (doColors) {
+        if (spec.axesColors.size() == 4)
+            dstG->setAxesColors(spec.axesColors);
+        if (spec.axesNumColors.size() == 4)
+            dstG->setAxesNumColors(spec.axesNumColors);
+        dstG->setYAxisTitleColor(spec.axisTitleColors[QwtPlot::yLeft]);
+        dstG->setRightAxisTitleColor(spec.axisTitleColors[QwtPlot::yRight]);
+        dstG->setXAxisTitleColor(spec.axisTitleColors[QwtPlot::xBottom]);
+        dstG->setTopAxisTitleColor(spec.axisTitleColors[QwtPlot::xTop]);
+    }
 
-    if (spec.hasGrid && dstG->grid()) {
-        Grid *gr = dstG->grid();
-        gr->enableX(spec.gridXEnabled);
-        gr->enableY(spec.gridYEnabled);
-        gr->enableXMin(spec.gridXMinEnabled);
-        gr->enableYMin(spec.gridYMinEnabled);
-        gr->enableZeroLineX(spec.gridXZero);
-        gr->enableZeroLineY(spec.gridYZero);
-        gr->setMajPenX(spec.gridMajPenX);
-        gr->setMinPenX(spec.gridMinPenX);
-        gr->setMajPenY(spec.gridMajPenY);
-        gr->setMinPenY(spec.gridMinPenY);
+    if (doFonts) {
+        dstG->setYAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yLeft]);
+        dstG->setRightAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yRight]);
+        dstG->setXAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xBottom]);
+        dstG->setTopAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xTop]);
+    }
+
+    for (int a = 0; a < 4; ++a) {
+        if (doFonts) {
+            dstG->setAxisTitleFont(a, spec.axisTitleFonts[a]);
+            dstG->setAxisFont(a, spec.axisTickFonts[a]);
+            if (a == QwtPlot::xBottom || a == QwtPlot::xTop)
+                dstG->setAxisLabelRotation(a, spec.labelRotations[a]);
+        }
+        if (doFrame)
+            dstG->setAxisBackboneVisible(a, spec.axisBackboneVisible[a]);
+        if (doScales) {
+            dstG->setTickLabelTransform(a, spec.tickDivideFactors[a], spec.tickPrefixes[a],
+                                        spec.tickSuffixes[a]);
+            if (spec.isNumericAxis[a]
+                && dstG->axesType().value(a, Graph::AxisType::Numeric)
+                        == Graph::AxisType::Numeric) {
+                dstG->setLabelsNumericFormat(a, spec.labelNumFormat[a], spec.labelNumPrecision[a],
+                                             spec.axisFormulas.value(a));
+            }
+            if (spec.hasAxisScale[a] && !dstG->hasColorScaleOnAxis(a)) {
+                dstG->setScale(a, spec.scaleStart[a], spec.scaleEnd[a], spec.scaleStep[a],
+                               spec.scaleMaxMajor[a], spec.scaleMaxMinor[a], spec.scaleType[a],
+                               spec.scaleInverted[a]);
+            }
+        }
+        if (doBreaksRef) {
+            if (spec.axisBreaks[a].enabled)
+                dstG->setAxisBreak(a, spec.axisBreaks[a]);
+            else
+                dstG->clearAxisBreak(a);
+        }
+    }
+
+    if (doFrame) {
+        dstG->drawCanvasFrame(spec.framed, spec.canvasFrameWidth, spec.canvasFrameColor);
+        dstG->setCanvasBackground(spec.canvasBackground);
+        dstG->setBackgroundColor(spec.backgroundColor);
+        dstG->setAntialiasing(spec.antialiasing, false);
+
+        if (spec.hasGrid && dstG->grid()) {
+            Grid *gr = dstG->grid();
+            gr->enableX(spec.gridXEnabled);
+            gr->enableY(spec.gridYEnabled);
+            gr->enableXMin(spec.gridXMinEnabled);
+            gr->enableYMin(spec.gridYMinEnabled);
+            gr->enableZeroLineX(spec.gridXZero);
+            gr->enableZeroLineY(spec.gridYZero);
+            gr->setMajPenX(spec.gridMajPenX);
+            gr->setMinPenX(spec.gridMinPenX);
+            gr->setMajPenY(spec.gridMajPenY);
+            gr->setMinPenY(spec.gridMinPenY);
+        }
     }
 
     if (spec.hasLegend && dstG->legend()) {
         Legend *leg = dstG->legend();
-        leg->setFont(spec.legendFont);
-        leg->setTextColor(spec.legendTextColor);
-        leg->setBackgroundColor(spec.legendBgColor);
-        leg->setFrameStyle(spec.legendFrameStyle);
-        leg->setNumColumns(spec.legendNumColumns);
-        applyLegendNormalizedPosition(dstG, spec);
+        if (doFonts)
+            leg->setFont(spec.legendFont);
+        if (doColors) {
+            leg->setTextColor(spec.legendTextColor);
+            leg->setBackgroundColor(spec.legendBgColor);
+        }
+        if (doFrame) {
+            leg->setFrameStyle(spec.legendFrameStyle);
+            leg->setNumColumns(spec.legendNumColumns);
+            applyLegendNormalizedPosition(dstG, spec);
+        }
     }
 
-    if (!spec.curves.isEmpty()) {
+    if (doColors && !spec.curves.isEmpty()) {
         int visibleIdx = 0;
         for (int i = 0; i < dstG->curves(); ++i) {
             QwtPlotCurve *c = dstG->curve(i);
@@ -23242,8 +24075,10 @@ static void applyLayerFormatNonDestructive(Graph *dstG, const CopiedLayerFormatS
         }
     }
 
-    dstG->setReferenceLines(spec.referenceLines);
-    dstG->updateStatReferenceLines();
+    if (doBreaksRef) {
+        dstG->setReferenceLines(spec.referenceLines);
+        dstG->updateStatReferenceLines();
+    }
     dstG->replot();
 }
 
@@ -23292,6 +24127,11 @@ void ApplicationWindow::copyGraphFormat()
 
 void ApplicationWindow::pasteGraphFormat()
 {
+    pasteGraphFormatWithScope(FormatDefaultSafe);
+}
+
+void ApplicationWindow::pasteGraphFormatWithScope(int scopeFlags)
+{
     if (!s_copiedGraphFormat.valid)
         return;
     QWidget *w = d_workspace.activeSubWindow();
@@ -23299,41 +24139,59 @@ void ApplicationWindow::pasteGraphFormat()
     if (!dstMl || dstMl->isEmpty())
         return;
 
+    const QList<Graph *> dstLayers = dstMl->layersList();
+    const bool singleToSingle =
+            (s_copiedGraphFormat.allLayers.size() <= 1 && dstLayers.size() <= 1);
+    const bool explicitPageOnly = (scopeFlags == FormatPageDimensions);
+    const bool applyPageDims =
+            (scopeFlags & FormatPageDimensions) != 0 && (singleToSingle || explicitPageOnly);
+
     const bool suppressInnerUndo = dstMl->property("_suppressInnerUndoPush").toBool();
     const QString before = suppressInnerUndo ? QString() : dstMl->captureUndoSnapshot();
-    dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
-                      s_copiedGraphFormat.topMargin, s_copiedGraphFormat.bottomMargin);
-    dstMl->setSpacing(s_copiedGraphFormat.rowsSpacing, s_copiedGraphFormat.colsSpacing);
-    dstMl->setAlignement(s_copiedGraphFormat.horAlign, s_copiedGraphFormat.vertAlign);
-    dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
-    if (s_copiedGraphFormat.pageWidthPhysical > 0.0 && s_copiedGraphFormat.pageHeightPhysical > 0.0) {
-        dstMl->setPageSizePhysical(s_copiedGraphFormat.pageWidthPhysical,
-                                   s_copiedGraphFormat.pageHeightPhysical,
-                                   s_copiedGraphFormat.pageUnit, s_copiedGraphFormat.pageDpi);
-    }
-    dstMl->setPageViewMode(s_copiedGraphFormat.pageViewMode);
-    dstMl->setTargetAspectRatio(s_copiedGraphFormat.targetAspectRatio);
-    dstMl->setKeepAspectRatio(s_copiedGraphFormat.keepAspectRatio);
-    if (s_copiedGraphFormat.windowSize.isValid() && !dstMl->isMaximized())
-        dstMl->resize(s_copiedGraphFormat.windowSize);
 
-    QList<Graph *> dstLayers = dstMl->layersList();
-    for (int i = 0; i < dstLayers.size(); ++i) {
-        const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
-                ? s_copiedGraphFormat.allLayers[i]
-                : s_copiedGraphFormat.activeLayer;
-        applyLayerFormatNonDestructive(dstLayers[i], lspec);
+    if (applyPageDims) {
+        dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
+                          s_copiedGraphFormat.topMargin, s_copiedGraphFormat.bottomMargin);
+        dstMl->setSpacing(s_copiedGraphFormat.rowsSpacing, s_copiedGraphFormat.colsSpacing);
+        dstMl->setAlignement(s_copiedGraphFormat.horAlign, s_copiedGraphFormat.vertAlign);
+        dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
+        if (s_copiedGraphFormat.pageWidthPhysical > 0.0
+            && s_copiedGraphFormat.pageHeightPhysical > 0.0) {
+            dstMl->setPageSizePhysical(s_copiedGraphFormat.pageWidthPhysical,
+                                       s_copiedGraphFormat.pageHeightPhysical,
+                                       s_copiedGraphFormat.pageUnit, s_copiedGraphFormat.pageDpi);
+        }
+        dstMl->setPageViewMode(s_copiedGraphFormat.pageViewMode);
+        dstMl->setTargetAspectRatio(s_copiedGraphFormat.targetAspectRatio);
+        dstMl->setKeepAspectRatio(s_copiedGraphFormat.keepAspectRatio);
+        if (s_copiedGraphFormat.windowSize.isValid() && !dstMl->isMaximized())
+            dstMl->resize(s_copiedGraphFormat.windowSize);
+    } else if ((scopeFlags & FormatFrameAndTicks) != 0) {
+        dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
     }
-    dstMl->arrangeLayers(false, false);
+
     for (int i = 0; i < dstLayers.size(); ++i) {
         const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
                 ? s_copiedGraphFormat.allLayers[i]
                 : s_copiedGraphFormat.activeLayer;
-        if (lspec.hasLegend && lspec.hasLegendNormPos && dstLayers[i]->legend()) {
-            applyLegendNormalizedPosition(dstLayers[i], lspec);
-            dstLayers[i]->replot();
+        applyLayerFormatNonDestructive(dstLayers[i], lspec, scopeFlags);
+    }
+
+    if ((scopeFlags & (FormatFrameAndTicks | FormatFonts)) != 0 || applyPageDims) {
+        dstMl->arrangeLayers(false, false);
+        if ((scopeFlags & FormatFrameAndTicks) != 0) {
+            for (int i = 0; i < dstLayers.size(); ++i) {
+                const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
+                        ? s_copiedGraphFormat.allLayers[i]
+                        : s_copiedGraphFormat.activeLayer;
+                if (lspec.hasLegend && lspec.hasLegendNormPos && dstLayers[i]->legend()) {
+                    applyLegendNormalizedPosition(dstLayers[i], lspec);
+                    dstLayers[i]->replot();
+                }
+            }
         }
     }
+
     if (!suppressInnerUndo)
         dstMl->pushUndoSnapshot(tr("Paste Graph Format"), before);
     if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == dstMl)
@@ -23341,6 +24199,446 @@ void ApplicationWindow::pasteGraphFormat()
     emit modified();
     if (statusBar())
         statusBar()->showMessage(tr("Applied copied graph format to %1.").arg(dstMl->name()), 3000);
+}
+
+void ApplicationWindow::pasteGraphFormatFontsOnly()
+{
+    pasteGraphFormatWithScope(FormatFonts);
+}
+
+void ApplicationWindow::pasteGraphFormatColorsOnly()
+{
+    pasteGraphFormatWithScope(FormatColorsAndSymbols);
+}
+
+void ApplicationWindow::pasteGraphFormatAxisScalesOnly()
+{
+    pasteGraphFormatWithScope(FormatAxisScales);
+}
+
+void ApplicationWindow::pasteGraphFormatToFolder()
+{
+    if (!s_copiedGraphFormat.valid || !current_folder)
+        return;
+
+    QWidget *prevActive = d_workspace.activeSubWindow();
+    const QList<MyWidget *> folderWins = current_folder->windowsList();
+    int appliedCount = 0;
+    for (MyWidget *mw : folderWins) {
+        if (!mw || !mw->inherits("MultiLayer"))
+            continue;
+        MultiLayer *dstMl = static_cast<MultiLayer *>(mw);
+        if (dstMl->isEmpty())
+            continue;
+
+        const QList<Graph *> dstLayers = dstMl->layersList();
+        const bool singleToSingle =
+                (s_copiedGraphFormat.allLayers.size() <= 1 && dstLayers.size() <= 1);
+        const QString before = dstMl->captureUndoSnapshot();
+        if (singleToSingle) {
+            dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
+                              s_copiedGraphFormat.topMargin, s_copiedGraphFormat.bottomMargin);
+            dstMl->setSpacing(s_copiedGraphFormat.rowsSpacing, s_copiedGraphFormat.colsSpacing);
+            dstMl->setAlignement(s_copiedGraphFormat.horAlign, s_copiedGraphFormat.vertAlign);
+            dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
+            if (s_copiedGraphFormat.pageWidthPhysical > 0.0
+                && s_copiedGraphFormat.pageHeightPhysical > 0.0) {
+                dstMl->setPageSizePhysical(
+                        s_copiedGraphFormat.pageWidthPhysical,
+                        s_copiedGraphFormat.pageHeightPhysical, s_copiedGraphFormat.pageUnit,
+                        s_copiedGraphFormat.pageDpi);
+            }
+            dstMl->setPageViewMode(s_copiedGraphFormat.pageViewMode);
+            dstMl->setTargetAspectRatio(s_copiedGraphFormat.targetAspectRatio);
+            dstMl->setKeepAspectRatio(s_copiedGraphFormat.keepAspectRatio);
+            if (s_copiedGraphFormat.windowSize.isValid() && !dstMl->isMaximized())
+                dstMl->resize(s_copiedGraphFormat.windowSize);
+        } else {
+            dstMl->setPageBackgroundColor(s_copiedGraphFormat.pageBackgroundColor);
+        }
+
+        for (int i = 0; i < dstLayers.size(); ++i) {
+            const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
+                    ? s_copiedGraphFormat.allLayers[i]
+                    : s_copiedGraphFormat.activeLayer;
+            applyLayerFormatNonDestructive(dstLayers[i], lspec, FormatDefaultSafe);
+        }
+        dstMl->arrangeLayers(false, false);
+        for (int i = 0; i < dstLayers.size(); ++i) {
+            const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
+                    ? s_copiedGraphFormat.allLayers[i]
+                    : s_copiedGraphFormat.activeLayer;
+            if (lspec.hasLegend && lspec.hasLegendNormPos && dstLayers[i]->legend()) {
+                applyLegendNormalizedPosition(dstLayers[i], lspec);
+                dstLayers[i]->replot();
+            }
+        }
+        dstMl->pushUndoSnapshot(tr("Paste Graph Format to Folder"), before);
+        if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == dstMl)
+            d_graph_inspector_dock->setTargetMultiLayer(dstMl, true);
+        ++appliedCount;
+    }
+
+    if (prevActive) {
+        if (MyWidget *mw = qobject_cast<MyWidget *>(prevActive))
+            activateSubWindow(mw);
+    }
+    if (appliedCount > 0) {
+        emit modified();
+        if (statusBar()) {
+            statusBar()->showMessage(
+                    tr("Applied copied graph format to %1 graphs in folder.").arg(appliedCount),
+                    3500);
+        }
+    }
+}
+
+void ApplicationWindow::mergeOpenGraphsDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+
+    QList<MultiLayer *> allGraphs;
+    const QList<MyWidget *> folderWins =
+            current_folder ? current_folder->windowsList() : QList<MyWidget *>();
+    for (MyWidget *mw : folderWins) {
+        if (mw && mw->inherits("MultiLayer") && !static_cast<MultiLayer *>(mw)->isEmpty())
+            allGraphs.append(static_cast<MultiLayer *>(mw));
+    }
+    for (MyWidget *mw : windowsList()) {
+        if (mw && mw->inherits("MultiLayer") && !static_cast<MultiLayer *>(mw)->isEmpty()) {
+            MultiLayer *ml = static_cast<MultiLayer *>(mw);
+            if (!allGraphs.contains(ml))
+                allGraphs.append(ml);
+        }
+    }
+
+    if (allGraphs.size() < 2) {
+        QMessageBox::information(
+                this, tr("Merge Graph Windows"),
+                tr("At least two 2D graph windows are required to merge into a multi-panel figure."));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Merge Graph Windows"));
+    dlg.setMinimumWidth(480);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+
+    vbox->addWidget(new QLabel(
+            tr("Check and order the graph windows to merge into a new multi-panel page:"), &dlg));
+
+    QListWidget *graphList = new QListWidget(&dlg);
+    graphList->setDragDropMode(QAbstractItemView::InternalMove);
+    graphList->setSelectionMode(QAbstractItemView::SingleSelection);
+    for (int i = 0; i < allGraphs.size(); ++i) {
+        MultiLayer *ml = allGraphs[i];
+        const QString lbl = ml->windowLabel().isEmpty()
+                ? QString(ml->name())
+                : QString("%1 (%2)").arg(ml->name(), ml->windowLabel());
+        QListWidgetItem *it = new QListWidgetItem(lbl, graphList);
+        it->setData(Qt::UserRole, i);
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsDragEnabled);
+        it->setCheckState(Qt::Checked);
+    }
+    vbox->addWidget(graphList, 1);
+
+    QHBoxLayout *listBtns = new QHBoxLayout();
+    QPushButton *btnUp = new QPushButton(tr("Move Up"), &dlg);
+    QPushButton *btnDown = new QPushButton(tr("Move Down"), &dlg);
+    QPushButton *btnSelAll = new QPushButton(tr("Select All"), &dlg);
+    QPushButton *btnClrAll = new QPushButton(tr("Clear All"), &dlg);
+    listBtns->addWidget(btnUp);
+    listBtns->addWidget(btnDown);
+    listBtns->addStretch(1);
+    listBtns->addWidget(btnSelAll);
+    listBtns->addWidget(btnClrAll);
+    vbox->addLayout(listBtns);
+
+    QGroupBox *layoutGrp = new QGroupBox(tr("Multi-Panel Layout && Publication Style"), &dlg);
+    QFormLayout *form = new QFormLayout(layoutGrp);
+
+    auto computeDefaultGrid = [](int count, int &outRows, int &outCols) {
+        const int n = qMax(2, count);
+        if (n == 2) {
+            outRows = 1;
+            outCols = 2;
+        } else if (n == 3) {
+            outRows = 1;
+            outCols = 3;
+        } else if (n == 4) {
+            outRows = 2;
+            outCols = 2;
+        } else {
+            outCols = qMax(2, int(std::ceil(std::sqrt(double(n)))));
+            outRows = (n + outCols - 1) / outCols;
+        }
+    };
+
+    int initRows = 1, initCols = 2;
+    computeDefaultGrid(allGraphs.size(), initRows, initCols);
+
+    QWidget *gridSpinRow = new QWidget(layoutGrp);
+    QHBoxLayout *gridSpinLay = new QHBoxLayout(gridSpinRow);
+    gridSpinLay->setContentsMargins(0, 0, 0, 0);
+    QSpinBox *spinRows = new QSpinBox(gridSpinRow);
+    spinRows->setRange(1, 12);
+    spinRows->setValue(initRows);
+    QSpinBox *spinCols = new QSpinBox(gridSpinRow);
+    spinCols->setRange(1, 12);
+    spinCols->setValue(initCols);
+    gridSpinLay->addWidget(new QLabel(tr("Rows:"), gridSpinRow));
+    gridSpinLay->addWidget(spinRows);
+    gridSpinLay->addSpacing(8);
+    gridSpinLay->addWidget(new QLabel(tr("Columns:"), gridSpinRow));
+    gridSpinLay->addWidget(spinCols);
+    gridSpinLay->addStretch(1);
+    form->addRow(tr("Grid Arrangement:"), gridSpinRow);
+
+    QComboBox *presetCombo = new QComboBox(layoutGrp);
+    presetCombo->addItem(tr("Keep Source Graph Styles"));
+    presetCombo->addItem(tr("ISIJ 1-Column (85 mm width)"));
+    presetCombo->addItem(tr("ISIJ 2-Column (175 mm width)"));
+    presetCombo->addItem(tr("Presentation Slide (28 pt Arial)"));
+    presetCombo->setCurrentIndex(0);
+    form->addRow(tr("Style Preset:"), presetCombo);
+
+    QCheckBox *chkPanelLabels = new QCheckBox(tr("Add panel labels (a), (b), (c)..."), layoutGrp);
+    chkPanelLabels->setChecked(true);
+    QComboBox *panelPosCombo = new QComboBox(layoutGrp);
+    panelPosCombo->addItem(tr("Outside Top-Left"));
+    panelPosCombo->addItem(tr("Inside Top-Left"));
+    QWidget *panelRow = new QWidget(layoutGrp);
+    QHBoxLayout *panelLay = new QHBoxLayout(panelRow);
+    panelLay->setContentsMargins(0, 0, 0, 0);
+    panelLay->addWidget(chkPanelLabels);
+    panelLay->addWidget(panelPosCombo);
+    panelLay->addStretch(1);
+    form->addRow(tr("Panel Labels:"), panelRow);
+
+    QCheckBox *chkHideInner =
+            new QCheckBox(tr("Hide inner shared axis titles && tick labels"), layoutGrp);
+    chkHideInner->setChecked(false);
+    form->addRow(QString(), chkHideInner);
+
+    vbox->addWidget(layoutGrp);
+
+    bool userEditedGrid = false;
+    QObject::connect(spinRows, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { userEditedGrid = true; });
+    QObject::connect(spinCols, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { userEditedGrid = true; });
+
+    auto syncGridIfAuto = [&]() {
+        if (userEditedGrid)
+            return;
+        int checkedCount = 0;
+        for (int i = 0; i < graphList->count(); ++i) {
+            if (graphList->item(i)->checkState() == Qt::Checked)
+                ++checkedCount;
+        }
+        if (checkedCount >= 2) {
+            int r = 1, c = 2;
+            computeDefaultGrid(checkedCount, r, c);
+            QSignalBlocker b1(spinRows);
+            QSignalBlocker b2(spinCols);
+            spinRows->setValue(r);
+            spinCols->setValue(c);
+        }
+    };
+
+    QObject::connect(graphList, &QListWidget::itemChanged, &dlg,
+                     [&](QListWidgetItem *) { syncGridIfAuto(); });
+    QObject::connect(btnUp, &QPushButton::clicked, &dlg, [&]() {
+        const int row = graphList->currentRow();
+        if (row > 0) {
+            QListWidgetItem *it = graphList->takeItem(row);
+            graphList->insertItem(row - 1, it);
+            graphList->setCurrentRow(row - 1);
+        }
+    });
+    QObject::connect(btnDown, &QPushButton::clicked, &dlg, [&]() {
+        const int row = graphList->currentRow();
+        if (row >= 0 && row < graphList->count() - 1) {
+            QListWidgetItem *it = graphList->takeItem(row);
+            graphList->insertItem(row + 1, it);
+            graphList->setCurrentRow(row + 1);
+        }
+    });
+    QObject::connect(btnSelAll, &QPushButton::clicked, &dlg, [&]() {
+        for (int i = 0; i < graphList->count(); ++i)
+            graphList->item(i)->setCheckState(Qt::Checked);
+    });
+    QObject::connect(btnClrAll, &QPushButton::clicked, &dlg, [&]() {
+        for (int i = 0; i < graphList->count(); ++i)
+            graphList->item(i)->setCheckState(Qt::Unchecked);
+    });
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    vbox->addWidget(btns);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    QList<MultiLayer *> chosenGraphs;
+    for (int i = 0; i < graphList->count(); ++i) {
+        QListWidgetItem *it = graphList->item(i);
+        if (it && it->checkState() == Qt::Checked) {
+            const int idx = it->data(Qt::UserRole).toInt();
+            if (idx >= 0 && idx < allGraphs.size() && allGraphs[idx])
+                chosenGraphs.append(allGraphs[idx]);
+        }
+    }
+    if (chosenGraphs.size() < 2) {
+        QMessageBox::warning(this, tr("Merge Graph Windows"),
+                             tr("Please select at least two graph windows to merge."));
+        return;
+    }
+
+    int cols = qMax(1, spinCols->value());
+    int rows = qMax(1, spinRows->value());
+
+    const int savedFileVer = d_file_version;
+    d_file_version = SciDAVis::version();
+
+    MultiLayer *merged = multilayerPlot(generateUniqueName(tr("MergedGraph")));
+    if (!merged) {
+        d_file_version = savedFileVer;
+        return;
+    }
+
+    merged->blockSignals(true);
+    int primaryPanelCount = 0;
+    for (MultiLayer *srcMl : chosenGraphs) {
+        if (!srcMl || srcMl->isEmpty())
+            continue;
+        const int baseLayerIdx = merged->layers();
+        const QString mlSerialized = srcMl->saveToString("");
+        QTextStream ts(const_cast<QString *>(&mlSerialized), QIODevice::ReadOnly);
+        QString s;
+        while (!ts.atEnd()) {
+            s = ts.readLine();
+            if (s == "</multiLayer>")
+                break;
+            if (s.startsWith("<graph>")) {
+                QStringList gLines;
+                bool isChildLinked = false;
+                while (!ts.atEnd()) {
+                    s = ts.readLine();
+                    if (s.trimmed().startsWith("<ToriLinkedParent\t")) {
+                        isChildLinked = true;
+                        QStringList parts = s.trimmed().split('\t');
+                        if (parts.size() >= 2) {
+                            parts[1] = QString::number(parts[1].toInt() + baseLayerIdx);
+                            s = parts.join('\t');
+                        }
+                    }
+                    gLines << s;
+                    if (s == "</graph>")
+                        break;
+                }
+                openGraph(this, merged, gLines);
+                if (!isChildLinked)
+                    ++primaryPanelCount;
+            } else if (s.trimmed().startsWith("<ToriInset\t")) {
+                QStringList parts = s.trimmed().split('\t');
+                if (parts.size() >= 3) {
+                    parts[1] = QString::number(parts[1].toInt() + baseLayerIdx);
+                    parts[2] = QString::number(parts[2].toInt() + baseLayerIdx);
+                    merged->restorePhase5Tag(parts.join('\t'));
+                    if (primaryPanelCount > 0)
+                        --primaryPanelCount;
+                }
+            }
+        }
+    }
+    merged->finalizePhase5Restore();
+    merged->blockSignals(false);
+    d_file_version = savedFileVer;
+
+    if (rows * cols < primaryPanelCount)
+        rows = (primaryPanelCount + cols - 1) / cols;
+    merged->setCols(cols);
+    merged->setRows(rows);
+    merged->setMargins(10, 10, 10, 10);
+    merged->setSpacing(12, 14);
+
+    const int presetIdx = presetCombo->currentIndex();
+    if (presetIdx == 1) {
+        merged->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        const double hMm = qBound(50.0, 85.0 * double(rows) / double(cols), 260.0);
+        merged->setPageSizePhysical(85.0, hMm, MultiLayer::UnitMm, 600);
+        merged->setPageViewMode(true);
+    } else if (presetIdx == 2) {
+        merged->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        const double hMm = qBound(60.0, 175.0 * double(rows) / double(cols), 260.0);
+        merged->setPageSizePhysical(175.0, hMm, MultiLayer::UnitMm, 600);
+        merged->setPageViewMode(true);
+    } else if (presetIdx == 3) {
+        merged->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        const double wMm = (cols >= 2) ? (185.0 * qMin(cols, 2) * 0.85) : 185.0;
+        const double hMm = qBound(95.0, wMm * double(rows) / double(cols), 280.0);
+        merged->setPageSizePhysical(wMm, hMm, MultiLayer::UnitMm, 300);
+        merged->setPageViewMode(true);
+    } else {
+        const int winW = qBound(560, 420 * cols, 1280);
+        const int winH = qBound(420, 360 * rows, 960);
+        merged->resize(winW, winH);
+    }
+
+    if (chkHideInner->isChecked()) {
+        QList<Graph *> primaryPanels;
+        for (Graph *lg : merged->layersList()) {
+            if (lg && !lg->linkedParentLayer())
+                primaryPanels.append(lg);
+        }
+        for (int idx = 0; idx < primaryPanels.size(); ++idx) {
+            Graph *lg = primaryPanels[idx];
+            const int c = idx % cols;
+            if (c > 0 && !lg->hasColorScaleOnAxis(QwtPlot::yLeft)) {
+                QStringList tl = lg->enabledTickLabels();
+                if (tl.size() == 4) {
+                    tl[QwtPlot::yLeft] = QStringLiteral("0");
+                    lg->setEnabledTickLabels(tl);
+                }
+                lg->setAxisTitleAuto(QwtPlot::yLeft, false);
+                lg->setAxisTitle(QwtPlot::yLeft, QString());
+            }
+            if ((idx + cols) < primaryPanels.size()) {
+                QStringList tl = lg->enabledTickLabels();
+                if (tl.size() == 4) {
+                    tl[QwtPlot::xBottom] = QStringLiteral("0");
+                    lg->setEnabledTickLabels(tl);
+                }
+                lg->setAxisTitleAuto(QwtPlot::xBottom, false);
+                lg->setAxisTitle(QwtPlot::xBottom, QString());
+            }
+        }
+    }
+
+    merged->setPanelLabels(chkPanelLabels->isChecked(),
+                           panelPosCombo->currentIndex() == 1 ? MultiLayer::PanelInsideTopLeft
+                                                              : MultiLayer::PanelOutsideTopLeft,
+                           QStringLiteral("(%a)"), 0);
+
+    for (Graph *lg : merged->layersList()) {
+        if (!lg)
+            continue;
+        lg->updateStatReferenceLines();
+        lg->syncChildLinkedLayers();
+        lg->replot();
+    }
+    if (merged->pageViewMode())
+        merged->fitLayersToPage();
+    else
+        merged->arrangeLayers(false, false);
+
+    customMenu(merged);
+    activateSubWindow(merged);
+    emit modified();
 }
 
 MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *targetTable)
@@ -23805,9 +25103,9 @@ void ApplicationWindow::applyStyleISIJJournal()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
-    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
-    ml->pushUndoSnapshot(tr("Apply ISIJ Style Preset"), before);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
     emit modified();
 }
 
@@ -23817,9 +25115,9 @@ void ApplicationWindow::applyStylePresentationSlide()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
-    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
-    ml->pushUndoSnapshot(tr("Apply Presentation Slide Preset"), before);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
     emit modified();
 }
 
@@ -23829,9 +25127,9 @@ void ApplicationWindow::applyStyleNatureCompact()
     MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
     if (!ml)
         return;
-    const QString before = ml->captureUndoSnapshot();
     ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
-    ml->pushUndoSnapshot(tr("Apply Compact Journal Preset"), before);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
     emit modified();
 }
 
@@ -24927,8 +26225,15 @@ bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLay
         insertedFullCols.append(yFullCol);
     }
 
-    if (insertedFullCols.isEmpty())
+    if (insertedFullCols.isEmpty()) {
+        if (createdNewGraph && targetMl) {
+            targetMl->askOnCloseEvent(false);
+            closeWindow(targetMl);
+        } else if (replaceExisting && targetMl && !beforeSnap.isEmpty()) {
+            targetMl->restoreSnapshotInPlace(this, beforeSnap);
+        }
         return false;
+    }
 
     if (useRightY && targetGraph->plotWidget()) {
         targetGraph->enableAxis(QwtPlot::yRight, true);
@@ -24965,6 +26270,22 @@ bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLay
     if (createdNewGraph) {
         targetGraph->newLegend();
         applyWorksheetMetadataToGraph(targetGraph, tbl, insertedFullCols, style);
+        if (useRightY) {
+            int rightCurveCount = 0;
+            int rightCurveIdx = -1;
+            for (int ci = 0; ci < targetGraph->curves(); ++ci) {
+                if (targetGraph->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                if (const QwtPlotCurve *cv = targetGraph->curve(ci)) {
+                    if (cv->yAxis() == QwtPlot::yRight) {
+                        ++rightCurveCount;
+                        rightCurveIdx = ci;
+                    }
+                }
+            }
+            if (rightCurveCount == 1 && rightCurveIdx >= 0)
+                targetGraph->syncAxisColorToCurve(QwtPlot::yRight, rightCurveIdx);
+        }
         targetGraph->setAutoScale();
         targetMl->arrangeLayers(false, false);
         if (targetMl->undoStack())
@@ -24975,6 +26296,23 @@ bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLay
             applyWorksheetMetadataToGraph(targetGraph, tbl, insertedFullCols, style);
         else
             targetGraph->refreshAutoAxisTitlesFromColumns();
+
+        if (useRightY) {
+            int rightCurveCount = 0;
+            int rightCurveIdx = -1;
+            for (int ci = 0; ci < targetGraph->curves(); ++ci) {
+                if (targetGraph->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                if (const QwtPlotCurve *cv = targetGraph->curve(ci)) {
+                    if (cv->yAxis() == QwtPlot::yRight) {
+                        ++rightCurveCount;
+                        rightCurveIdx = ci;
+                    }
+                }
+            }
+            if (rightCurveCount == 1 && rightCurveIdx >= 0)
+                targetGraph->syncAxisColorToCurve(QwtPlot::yRight, rightCurveIdx);
+        }
 
         if (targetGraph->legend())
             targetGraph->reconstructLegend();

@@ -61,6 +61,8 @@
 #include "Plot.h"
 #include "IconLoader.h"
 #include "Legend.h"
+#include "ArrowMarker.h"
+#include "ImageMarker.h"
 #include "SelectionMoveResizer.h"
 #include "LayerDialog.h"
 #include "PlotCurve.h"
@@ -119,6 +121,11 @@ ApplicationWindow *findMultiLayerApp(QWidget *from)
 #include <QTreeWidget>
 #include <QHeaderView>
 #include <QScrollBar>
+#include <QScrollArea>
+#include <QMdiArea>
+#include <QSet>
+#include <QSignalBlocker>
+#include <QPainterPath>
 #include <cmath>
 
 #include <gsl/gsl_vector.h>
@@ -132,11 +139,13 @@ LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(tex
 
     setCheckable(true);
     setChecked(true);
-    setFixedSize(btn_size, btn_size);
+    setMinimumWidth(btn_size);
+    setFixedHeight(btn_size);
+    setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     setFont(QFont("Arial", 9, QFont::Bold, false));
     setStyleSheet(
             "QPushButton { background-color: transparent; color: #334155; "
-            "border: 1px solid transparent; border-radius: 5px; padding: 0px; margin: 0px; }"
+            "border: 1px solid transparent; border-radius: 5px; padding: 0px 5px; margin: 0px; }"
             "QPushButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
             "border: 1px solid #BFDBFE; }"
             "QPushButton:checked { background-color: #2563EB; color: #FFFFFF; "
@@ -159,6 +168,213 @@ void LayerButton::mouseDoubleClickEvent(QMouseEvent *)
 {
     emit showCurvesDialog();
 }
+
+namespace {
+
+class CustomPaintWidget : public QWidget
+{
+public:
+    std::function<void(QPainter &)> onPaint;
+    explicit CustomPaintWidget(QWidget *parent = nullptr) : QWidget(parent) {}
+
+protected:
+    void paintEvent(QPaintEvent *ev) override
+    {
+        QWidget::paintEvent(ev);
+        if (onPaint) {
+            QPainter p(this);
+            onPaint(p);
+        }
+    }
+};
+
+void syncMultiLayerPageHost(MultiLayer *ml, QWidget *mainWidget, QWidget *canvas,
+                            MultiLayer::PageUnit pageUnit, bool pageViewMode,
+                            const QSize &basePagePx, double pageZoom, const QColor &pageBgColor)
+{
+    Q_UNUSED(ml);
+    const QColor pageFill = pageBgColor.isValid() ? pageBgColor : QColor(Qt::white);
+    if (canvas) {
+        QPalette cpal = canvas->palette();
+        cpal.setColor(QPalette::Window, pageFill);
+        canvas->setPalette(cpal);
+        canvas->setAutoFillBackground(true);
+    }
+
+    if (!mainWidget)
+        return;
+
+    QScrollArea *canvasScroll =
+            mainWidget->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"));
+    QWidget *pageHost =
+            mainWidget->findChild<QWidget *>(QStringLiteral("MultiLayerPageHost"));
+    const bool freePixelMode =
+            (pageUnit == MultiLayer::UnitPx && !pageViewMode && qAbs(pageZoom - 1.0) <= 1e-4);
+
+    if (!canvasScroll || !pageHost) {
+        QPalette wpal = mainWidget->palette();
+        wpal.setColor(QPalette::Window,
+                      freePixelMode ? pageFill : QColor(QStringLiteral("#EAEEF3")));
+        mainWidget->setPalette(wpal);
+        return;
+    }
+
+    if (freePixelMode) {
+        canvasScroll->setWidgetResizable(true);
+        canvasScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        canvasScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+        QPalette hpal = pageHost->palette();
+        hpal.setColor(QPalette::Window, pageFill);
+        pageHost->setPalette(hpal);
+        pageHost->setAutoFillBackground(true);
+
+        if (QWidget *vp = canvasScroll->viewport()) {
+            QPalette vpal = vp->palette();
+            vpal.setColor(QPalette::Window, pageFill);
+            vp->setPalette(vpal);
+            vp->setAutoFillBackground(true);
+        }
+        QPalette wpal = mainWidget->palette();
+        wpal.setColor(QPalette::Window, pageFill);
+        mainWidget->setPalette(wpal);
+
+        pageHost->setMinimumSize(0, 0);
+        pageHost->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+
+        if (QWidget *vp = canvasScroll->viewport()) {
+            if (canvasScroll->isVisible() && vp->width() >= 80 && vp->height() >= 80
+                && pageHost->size() != vp->size()) {
+                pageHost->resize(vp->size());
+            }
+        }
+        if ((pageHost->width() < 80 || pageHost->height() < 80) && basePagePx.width() >= 80
+            && basePagePx.height() >= 80) {
+            pageHost->resize(basePagePx);
+        }
+        if (canvas && !pageHost->rect().isEmpty())
+            canvas->setGeometry(pageHost->rect());
+        pageHost->update();
+    } else {
+        const QSize effBase =
+                (basePagePx.isValid() && basePagePx.width() >= 50 && basePagePx.height() >= 50)
+                ? basePagePx
+                : QSize(520, 520);
+        const QSize targetCanvasSize(qMax(80, qRound(effBase.width() * pageZoom)),
+                                     qMax(80, qRound(effBase.height() * pageZoom)));
+        const int pad = 8;
+        const QColor deskBg(QStringLiteral("#EAEEF3"));
+
+        canvasScroll->setWidgetResizable(false);
+        canvasScroll->setAlignment(Qt::AlignCenter);
+        canvasScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        canvasScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+        QPalette hpal = pageHost->palette();
+        hpal.setColor(QPalette::Window, deskBg);
+        pageHost->setPalette(hpal);
+        pageHost->setAutoFillBackground(true);
+
+        if (QWidget *vp = canvasScroll->viewport()) {
+            QPalette vpal = vp->palette();
+            vpal.setColor(QPalette::Window, deskBg);
+            vp->setPalette(vpal);
+            vp->setAutoFillBackground(true);
+        }
+        QPalette wpal = mainWidget->palette();
+        wpal.setColor(QPalette::Window, deskBg);
+        mainWidget->setPalette(wpal);
+
+        pageHost->setFixedSize(targetCanvasSize.width() + 2 * pad,
+                               targetCanvasSize.height() + 2 * pad);
+        if (canvas)
+            canvas->setGeometry(pad, pad, targetCanvasSize.width(), targetCanvasSize.height());
+        pageHost->update();
+    }
+
+    if (canvas) {
+        if (QWidget *ov = pageHost->findChild<QWidget *>(
+                    QStringLiteral("MultiLayerPanelLabelOverlay"))) {
+            ov->setGeometry(canvas->geometry());
+        }
+        if (QWidget *dz = pageHost->findChild<QWidget *>(
+                    QStringLiteral("MultiLayerDropZoneOverlay"))) {
+            dz->setGeometry(canvas->geometry());
+        }
+    }
+}
+
+void resizeMultiLayerSubWindowForCanvas(MultiLayer *ml, QWidget *mainW, QFrame *pillFrame, int cw,
+                                        int ch, bool freePixelMode)
+{
+    if (!ml || ml->isMaximized() || ml->isMinimized())
+        return;
+    const int hostPad = freePixelMode ? 0 : 16;
+    const int topBarH = (pillFrame && !pillFrame->isHidden())
+            ? qMax(LayerButton::btnSize() + 4, pillFrame->sizeHint().height() + 6)
+            : (LayerButton::btnSize() + 4);
+    const int frameDW = (mainW && ml->width() > mainW->width() && mainW->width() >= 60)
+            ? qBound(0, ml->width() - mainW->width(), 32)
+            : 0;
+    const int frameDH = (mainW && ml->height() > mainW->height() && mainW->height() >= 60)
+            ? qBound(0, ml->height() - mainW->height(), 48)
+            : 0;
+    int wantW = cw + hostPad + frameDW;
+    int wantH = ch + hostPad + topBarH + frameDH;
+    if (ml->mdiArea() && ml->mdiArea()->viewport() && ml->mdiArea()->viewport()->isVisible()
+        && ml->mdiArea()->viewport()->width() >= 160
+        && ml->mdiArea()->viewport()->height() >= 160) {
+        wantW = qMin(wantW, ml->mdiArea()->viewport()->width());
+        wantH = qMin(wantH, ml->mdiArea()->viewport()->height());
+    }
+    ml->resize(wantW, wantH);
+}
+
+struct ScopedUnzoomForExport
+{
+    QPointer<MultiLayer> ml;
+    double prevZoom = 1.0;
+    QSize prevWinSize;
+    bool prevMlUpdates = true;
+    bool prevWidgetUpdates = true;
+    bool active = false;
+
+    explicit ScopedUnzoomForExport(MultiLayer *target) : ml(target)
+    {
+        if (ml && qAbs(ml->pageZoom() - 1.0) > 1e-4) {
+            prevZoom = ml->pageZoom();
+            prevWinSize = ml->size();
+            prevMlUpdates = ml->updatesEnabled();
+            ml->setUpdatesEnabled(false);
+            if (QWidget *w = ml->widget()) {
+                prevWidgetUpdates = w->updatesEnabled();
+                w->setUpdatesEnabled(false);
+            }
+            QSignalBlocker sb(ml);
+            ml->setPageZoom(1.0);
+            active = true;
+        }
+    }
+
+    ~ScopedUnzoomForExport()
+    {
+        if (active && ml) {
+            {
+                QSignalBlocker sb(ml);
+                ml->setPageZoom(prevZoom);
+                if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
+                    && ml->size() != prevWinSize) {
+                    ml->resize(prevWinSize);
+                }
+            }
+            if (QWidget *w = ml->widget())
+                w->setUpdatesEnabled(prevWidgetUpdates);
+            ml->setUpdatesEnabled(prevMlUpdates);
+        }
+    }
+};
+
+} // namespace
 
 MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name, Qt::WindowFlags f)
     : MyWidget(label, parent, name, f)
@@ -250,14 +466,35 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     QMenu *addMenu = new QMenu(d_add_layer_btn);
     auto populateAddLayerMenu = [this, addMenu]() {
         addMenu->clear();
-        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
-                           tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
-            const QString snap = captureUndoSnapshot();
-            addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
-            pushUndoSnapshot(tr("Add Linked Layer"), snap);
-        });
         addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 18, false),
-                           tr("Add Right-Y Layer (Double-Y)"), this, [this]() {
+                           tr("Enable Right-Y Axis on Active Layer (Double-Y)"), this, [this]() {
+            Graph *g = activeGraph() ? activeGraph() : layer(1);
+            if (!g || !g->plotWidget())
+                return;
+            const QString snap = captureUndoSnapshot();
+            g->enableAxis(QwtPlot::yRight, true);
+            g->setAxisBackboneVisible(QwtPlot::yRight, true);
+            if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            if (g->axisTitle(QwtPlot::yRight).trimmed().isEmpty()) {
+                g->setAxisTitleAuto(QwtPlot::yRight, true);
+                g->refreshAutoAxisTitlesFromColumns();
+            }
+            if (d_page_unit != UnitPx && d_keep_aspect_ratio
+                && qFuzzyCompare(d_target_aspect_ratio, 1.0)) {
+                applySquareCanvasFrame70Percent();
+            } else {
+                g->plotWidget()->updateLayout();
+                g->plotWidget()->replot();
+            }
+            refreshLayerButtonBadges();
+            emit modifiedPlot();
+            pushUndoSnapshot(tr("Enable Right-Y Axis"), snap);
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                           tr("Add Linked Overlay Layer (Twin-Axis)"), this, [this]() {
             const QString snap = captureUndoSnapshot();
             Graph *g = addLinkedLayer(activeGraph(), true, false, QString("x"), QString("y"));
             if (g && g->plotWidget()) {
@@ -270,13 +507,25 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
                 g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
                 g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
                 g->plotWidget()->replot();
+                setActiveGraph(g);
             }
-            pushUndoSnapshot(tr("Add Right-Y Layer"), snap);
+            refreshLayerButtonBadges();
+            pushUndoSnapshot(tr("Add Linked Layer"), snap);
+        });
+        addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                           tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
+            const QString snap = captureUndoSnapshot();
+            Graph *g = addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+            if (g)
+                setActiveGraph(g);
+            refreshLayerButtonBadges();
+            pushUndoSnapshot(tr("Add Linked Layer"), snap);
         });
         addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-inset"), 18, false),
                            tr("Add Zoom Inset Layer"), this, [this]() {
             const QString snap = captureUndoSnapshot();
             addInsetLayer(activeGraph());
+            refreshLayerButtonBadges();
             pushUndoSnapshot(tr("Add Inset Layer"), snap);
         });
         addMenu->addSeparator();
@@ -286,6 +535,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             Graph *g = addLayer();
             if (g)
                 arrangeLayers(true, false);
+            refreshLayerButtonBadges();
             pushUndoSnapshot(tr("Add Layer"), snap);
         });
         addMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("layer-arrange"), 18, false),
@@ -321,20 +571,109 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     hbox->addWidget(d_layer_pill_frame);
     hbox->addStretch();
 
-    canvas = new QWidget();
+    QWidget *d_main_widget = new QWidget();
+    QVBoxLayout *layout = new QVBoxLayout();
+    d_main_widget->setLayout(layout);
+
+    QScrollArea *canvasScroll = new QScrollArea(d_main_widget);
+    canvasScroll->setObjectName(QStringLiteral("MultiLayerCanvasScroll"));
+    canvasScroll->setFrameShape(QFrame::NoFrame);
+    canvasScroll->setAlignment(Qt::AlignCenter);
+    canvasScroll->setFocusPolicy(Qt::NoFocus);
+
+    CustomPaintWidget *pageHost = new CustomPaintWidget(canvasScroll);
+    pageHost->setObjectName(QStringLiteral("MultiLayerPageHost"));
+    pageHost->setAutoFillBackground(true);
+    pageHost->resize(graph_width, graph_height);
+    pageHost->onPaint = [this](QPainter &p) {
+        const bool freePixelMode =
+                (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+        if (!freePixelMode && canvas && canvas->isVisible()) {
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(QPen(QColor(QStringLiteral("#CBD5E1")), 1, Qt::SolidLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(canvas->geometry().adjusted(-1, -1, 0, 0));
+        }
+    };
+
+    canvas = new QWidget(pageHost);
+    canvas->setParent(pageHost);
     canvas->setAutoFillBackground(true);
     {
         QPalette cpal = canvas->palette();
         cpal.setColor(QPalette::Window, QColor("#FFFFFF"));
         canvas->setPalette(cpal);
     }
+    canvas->setGeometry(0, 0, graph_width, graph_height);
     canvas->installEventFilter(this);
 
-    QWidget *d_main_widget = new QWidget();
-    QVBoxLayout *layout = new QVBoxLayout();
-    d_main_widget->setLayout(layout);
+    // Sibling transparent overlay for on-screen panel (a),(b) labels (never a child of canvas!)
+    CustomPaintWidget *panelLabelOverlay = new CustomPaintWidget(pageHost);
+    panelLabelOverlay->setObjectName(QStringLiteral("MultiLayerPanelLabelOverlay"));
+    panelLabelOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    panelLabelOverlay->setAttribute(Qt::WA_NoSystemBackground, true);
+    panelLabelOverlay->hide();
+    panelLabelOverlay->onPaint = [this](QPainter &p) {
+        if (d_panel_labels_enabled || !d_inset_specs.isEmpty()) {
+            p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing, true);
+            drawInsetConnectors(&p, QPoint(0, 0));
+            drawPanelLabels(&p, QPoint(0, 0));
+        }
+    };
+
+    // Non-exported Drag-and-Drop Column Preview Overlay (sibling of canvas)
+    CustomPaintWidget *dropZoneOverlay = new CustomPaintWidget(pageHost);
+    d_drop_zone_overlay = dropZoneOverlay;
+    d_drop_zone_overlay->setObjectName(QStringLiteral("MultiLayerDropZoneOverlay"));
+    d_drop_zone_overlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    d_drop_zone_overlay->setAttribute(Qt::WA_NoSystemBackground, true);
+    d_drop_zone_overlay->hide();
+    dropZoneOverlay->onPaint = [this](QPainter &p) {
+        if (!d_drop_zone_overlay || !d_drop_zone_overlay->isVisible())
+            return;
+        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing, true);
+        const bool rightZone = d_drop_zone_overlay->property("rightYZone").toBool();
+        const QRect targetRect = d_drop_zone_overlay->property("targetRect").toRect();
+        const QRect zoneRect = targetRect.isValid() ? targetRect : d_drop_zone_overlay->rect();
+        const QColor accent(0x0F, 0x6C, 0xBD);
+        if (rightZone) {
+            const int stripW = qMin(44, qMax(24, zoneRect.width() / 5));
+            const QRect rightStrip(zoneRect.right() - stripW + 1, zoneRect.top(), stripW,
+                                   zoneRect.height());
+            p.fillRect(rightStrip, QColor(accent.red(), accent.green(), accent.blue(), 46));
+            p.setPen(QPen(accent, 2.0, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(rightStrip).adjusted(1.0, 1.0, -1.0, -1.0), 4.0, 4.0);
+        } else {
+            p.fillRect(zoneRect, QColor(accent.red(), accent.green(), accent.blue(), 22));
+            p.setPen(QPen(accent, 2.0, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(zoneRect).adjusted(2.0, 2.0, -2.0, -2.0), 6.0, 6.0);
+        }
+        const QString banner = d_drop_zone_overlay->property("bannerText").toString();
+        if (!banner.isEmpty()) {
+            QFont bf(QStringLiteral("Segoe UI"), 9, QFont::DemiBold);
+            p.setFont(bf);
+            const QFontMetrics fm(bf);
+            const int bw = qMin(d_drop_zone_overlay->width() - 16,
+                                fm.horizontalAdvance(banner) + 28);
+            const int bh = qMax(26, fm.height() + 10);
+            const QRect pillRect((d_drop_zone_overlay->width() - bw) / 2, 10, bw, bh);
+            p.setPen(QPen(accent.darker(115), 1.2));
+            p.setBrush(accent);
+            p.drawRoundedRect(pillRect, 13.0, 13.0);
+            p.setPen(Qt::white);
+            p.drawText(pillRect, Qt::AlignCenter, banner);
+        }
+    };
+
+    canvasScroll->setWidget(pageHost);
+    pageHost->installEventFilter(this);
+    if (canvasScroll->viewport())
+        canvasScroll->viewport()->installEventFilter(this);
+
     layout->addLayout(hbox);
-    layout->addWidget(canvas, 1);
+    layout->addWidget(canvasScroll, 1);
     layout->setMargin(0);
     layout->setSpacing(0);
     this->setWidget(d_main_widget);
@@ -346,23 +685,10 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     pal.setColor(QPalette::Window, QColor(Qt::white));
     d_main_widget->setPalette(pal);
 
-    // Sibling transparent overlay for on-screen panel (a),(b) labels (never a child of canvas!)
-    QWidget *panelLabelOverlay = new QWidget(d_main_widget);
-    panelLabelOverlay->setObjectName(QStringLiteral("MultiLayerPanelLabelOverlay"));
-    panelLabelOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    panelLabelOverlay->setAttribute(Qt::WA_NoSystemBackground, true);
-    panelLabelOverlay->hide();
-    panelLabelOverlay->installEventFilter(this);
+    syncMultiLayerPageHost(this, d_main_widget, canvas, d_page_unit, d_page_view_mode,
+                           d_base_page_px, d_page_zoom, d_page_bg_color);
 
-    // Non-exported Drag-and-Drop Column Preview Overlay (sibling of canvas)
-    d_drop_zone_overlay = new QWidget(d_main_widget);
-    d_drop_zone_overlay->setObjectName(QStringLiteral("MultiLayerDropZoneOverlay"));
-    d_drop_zone_overlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    d_drop_zone_overlay->setAttribute(Qt::WA_NoSystemBackground, true);
-    d_drop_zone_overlay->hide();
-    d_drop_zone_overlay->installEventFilter(this);
-
-    // Non-exported Bottom-Right Interactive Canvas Status Pill (sibling of canvas)
+    // Non-exported Bottom-Right Interactive Canvas Status Pill (floats on d_main_widget)
     d_canvas_status_pill = new QToolButton(d_main_widget);
     d_canvas_status_pill->setObjectName(QStringLiteral("MultiLayerStatusPill"));
     d_canvas_status_pill->setFocusPolicy(Qt::NoFocus);
@@ -561,8 +887,147 @@ Graph *MultiLayer::addLayer(int x, int y, int width, int height)
     active_graph = g;
     g->show();
     connectLayer(g);
+    enforceLayerZOrder();
+    refreshLayerButtonBadges();
     updateCanvasStatusPill();
     return g;
+}
+
+QList<Graph *> MultiLayer::orderedLayersForRender() const
+{
+    QList<Graph *> bases;
+    QList<Graph *> linkedOverlays;
+    QList<Graph *> insets;
+    bases.reserve(graphsList.count());
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr)
+            continue;
+        if (d_inset_specs.contains(gr))
+            insets.append(gr);
+        else if (gr->linkedParentLayer() != nullptr)
+            linkedOverlays.append(gr);
+        else
+            bases.append(gr);
+    }
+
+    QList<Graph *> ordered;
+    ordered.reserve(bases.size() + linkedOverlays.size() + insets.size());
+    ordered.append(bases);
+    ordered.append(linkedOverlays);
+    ordered.append(insets);
+    return ordered;
+}
+
+void MultiLayer::enforceLayerZOrder()
+{
+    Graph *activeBase = nullptr;
+    Graph *activeOverlay = nullptr;
+    Graph *activeInset = nullptr;
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr)
+            continue;
+        if (!gr->linkedParentLayer() && !d_inset_specs.contains(gr)) {
+            if (gr == active_graph)
+                activeBase = gr;
+            else
+                gr->raise();
+        }
+    }
+    if (activeBase)
+        activeBase->raise();
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr)
+            continue;
+        if (gr->linkedParentLayer() != nullptr && !d_inset_specs.contains(gr)) {
+            if (gr == active_graph)
+                activeOverlay = gr;
+            else
+                gr->raise();
+        }
+    }
+    if (activeOverlay)
+        activeOverlay->raise();
+
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr)
+            continue;
+        if (d_inset_specs.contains(gr)) {
+            if (gr == active_graph)
+                activeInset = gr;
+            else
+                gr->raise();
+        }
+    }
+    if (activeInset)
+        activeInset->raise();
+
+    if (d_layers_selector)
+        d_layers_selector->raise();
+}
+
+void MultiLayer::refreshLayerButtonBadges()
+{
+    for (int i = 0; i < buttonsList.count(); ++i) {
+        LayerButton *btn = qobject_cast<LayerButton *>(buttonsList.at(i));
+        if (!btn)
+            continue;
+        const int num = i + 1;
+        Graph *gr = (i < graphsList.count()) ? qobject_cast<Graph *>(graphsList.at(i)) : nullptr;
+        if (gr && d_inset_specs.contains(gr)) {
+            Graph *src = d_inset_specs[gr].sourceLayer.data();
+            const int srcNum = src ? (graphsList.indexOf(src) + 1) : 1;
+            btn->setText(QStringLiteral("%1\U0001F50D").arg(num));
+            btn->setToolTip(tr("Layer %1 — Zoom Inset of Layer %2 (drag to reposition)")
+                                    .arg(num)
+                                    .arg(qMax(1, srcNum)));
+        } else if (gr && gr->linkedParentLayer()) {
+            const int pNum = graphsList.indexOf(gr->linkedParentLayer()) + 1;
+            btn->setText(QStringLiteral("%1\U0001F517").arg(num));
+            btn->setToolTip(tr("Layer %1 — Linked Overlay of Layer %2 (Twin-Axis)")
+                                    .arg(num)
+                                    .arg(qMax(1, pNum)));
+        } else {
+            btn->setText(QString::number(num));
+            bool hasRightYLabels = false;
+            if (gr && gr->plotWidget() && gr->plotWidget()->axisEnabled(QwtPlot::yRight)) {
+                if (const QwtScaleDraw *sd = gr->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                    hasRightYLabels = sd->hasComponent(QwtAbstractScaleDraw::Labels);
+            }
+            if (hasRightYLabels)
+                btn->setToolTip(tr("Layer %1 — Primary Layer (Double-Y Active)").arg(num));
+            else
+                btn->setToolTip(tr("Layer %1 — Primary Layer").arg(num));
+        }
+        btn->updateGeometry();
+    }
+}
+
+void MultiLayer::syncCanvasOverlayVisibility()
+{
+    if (!widget())
+        return;
+    if (QWidget *ov = widget()->findChild<QWidget *>(
+                QStringLiteral("MultiLayerPanelLabelOverlay"))) {
+        const bool showOv = d_panel_labels_enabled || !d_inset_specs.isEmpty();
+        if (canvas)
+            ov->setGeometry(canvas->geometry());
+        ov->setVisible(showOv);
+        if (showOv) {
+            ov->raise();
+            if (d_drop_zone_overlay && d_drop_zone_overlay->isVisible())
+                d_drop_zone_overlay->raise();
+            if (d_canvas_status_pill)
+                d_canvas_status_pill->raise();
+        }
+        ov->update();
+    }
 }
 
 void MultiLayer::activateGraph(LayerButton *button)
@@ -575,17 +1040,21 @@ void MultiLayer::activateGraph(LayerButton *button)
         if (btn == button) {
             active_graph = (Graph *)graphsList.at(i);
             active_graph->setFocus();
-            active_graph->raise(); // raise layer on top of the layers stack
             button->setChecked(true);
         }
     }
+    enforceLayerZOrder();
     updateCanvasStatusPill();
 }
 
 void MultiLayer::setActiveGraph(Graph *g)
 {
-    if (!g || active_graph == g)
+    if (!g)
         return;
+    if (active_graph == g) {
+        enforceLayerZOrder();
+        return;
+    }
 
     active_graph = g;
     active_graph->setFocus();
@@ -593,7 +1062,7 @@ void MultiLayer::setActiveGraph(Graph *g)
     if (d_layers_selector)
         delete d_layers_selector;
 
-    active_graph->raise(); // raise layer on top of the layers stack
+    enforceLayerZOrder();
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -737,6 +1206,12 @@ void MultiLayer::removeLayer()
 
     int index = graphsList.indexOf(active_graph);
     d_inset_specs.remove(active_graph);
+    for (auto it = d_inset_specs.begin(); it != d_inset_specs.end();) {
+        if (it.value().sourceLayer.isNull() || it.value().sourceLayer.data() == active_graph)
+            it = d_inset_specs.erase(it);
+        else
+            ++it;
+    }
     if (index >= 0)
         graphsList.removeAt(index);
     Graph *closingGraph = active_graph;
@@ -750,6 +1225,8 @@ void MultiLayer::removeLayer()
 
     if (graphs == 0 || !active_graph) {
         active_graph = nullptr;
+        refreshLayerButtonBadges();
+        syncCanvasOverlayVisibility();
         updateCanvasStatusPill();
         return;
     }
@@ -764,6 +1241,9 @@ void MultiLayer::removeLayer()
         }
     }
 
+    enforceLayerZOrder();
+    refreshLayerButtonBadges();
+    syncCanvasOverlayVisibility();
     emit modifiedPlot();
 }
 
@@ -779,9 +1259,26 @@ void MultiLayer::setGraphGeometry(int x, int y, int w, int h)
 
 QSize MultiLayer::arrangeLayers(bool userSize)
 {
+    static thread_local QSet<const MultiLayer *> s_activeArrange;
+    if (s_activeArrange.contains(this))
+        return QSize(l_canvas_width, l_canvas_height);
+    struct ScopedArrangeGuard {
+        QSet<const MultiLayer *> &activeSet;
+        const MultiLayer *self;
+        ScopedArrangeGuard(QSet<const MultiLayer *> &s, const MultiLayer *m) : activeSet(s), self(m)
+        {
+            activeSet.insert(self);
+        }
+        ~ScopedArrangeGuard() { activeSet.remove(self); }
+    } arrangeGuard(s_activeArrange, this);
+
     if (isVisible() && widget() && widget()->layout())
         widget()->layout()->activate();
-    QRect rect = canvas->geometry();
+    if (d_page_unit != UnitPx || d_page_view_mode || qAbs(d_page_zoom - 1.0) > 1e-4) {
+        syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode,
+                               d_base_page_px, d_page_zoom, d_page_bg_color);
+    }
+    QRect rect = canvas ? canvas->rect() : QRect();
     if (rect.width() < 100 || rect.height() < 100) {
         rect = QRect(0, 0, qMax(200, width() - 16),
                      qMax(200, height() - LayerButton::btnSize() - 36));
@@ -1007,20 +1504,25 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
     }
 
     if (userSize) { // resize window
-        bool ignoreResize = active_graph->ignoresResizeEvents();
+        bool ignoreResize = active_graph ? active_graph->ignoresResizeEvents() : false;
         for (int i = 0; i < (int)graphsList.count(); i++) {
             Graph *gr = (Graph *)graphsList.at(i);
-            gr->setIgnoreResizeEvents(true);
+            if (gr)
+                gr->setIgnoreResizeEvents(true);
         }
 
         this->showNormal();
         QSize size = canvas->childrenRect().size();
-        this->resize(QSize(size.width() + right_margin,
-                           size.height() + bottom_margin + LayerButton::btnSize()));
+        const bool freePx =
+                (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+        resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
+                                           size.width() + right_margin,
+                                           size.height() + bottom_margin, freePx);
 
         for (int i = 0; i < (int)graphsList.count(); i++) {
             Graph *gr = (Graph *)graphsList.at(i);
-            gr->setIgnoreResizeEvents(ignoreResize);
+            if (gr)
+                gr->setIgnoreResizeEvents(ignoreResize);
         }
     }
 
@@ -1088,6 +1590,7 @@ void MultiLayer::exportToFile(const QString &fileName)
 
 QImage MultiLayer::copyPageAsImage(int dpi)
 {
+    ScopedUnzoomForExport unzoomGuard(this);
     const int effectiveDpi = qBound(36, dpi > 0 ? dpi : 300, 4800);
 
     QRect layersRect;
@@ -1100,11 +1603,21 @@ QImage MultiLayer::copyPageAsImage(int dpi)
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
         layersRect = (canvas && !canvas->rect().isEmpty()) ? canvas->rect() : QRect(0, 0, 520, 520);
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            layersRect = layersRect.united(lblRect);
+    }
 
     const bool hasPhysicalPage = (d_page_unit != UnitPx);
-    const QRect srcRect = (hasPhysicalPage || d_page_view_mode)
+    QRect srcRect = (hasPhysicalPage || d_page_view_mode)
             ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
             : layersRect;
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            srcRect = srcRect.united(lblRect);
+    }
 
     QSize targetSize;
     if (hasPhysicalPage) {
@@ -1141,12 +1654,21 @@ QImage MultiLayer::copyPageAsImage(int dpi)
         p.setFont(baseFnt);
         p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
                          | QPainter::SmoothPixmapTransform);
-        p.scale(double(targetSize.width()) / double(qMax(1, srcRect.width())),
-                double(targetSize.height()) / double(qMax(1, srcRect.height())));
+        const double sx = double(targetSize.width()) / double(qMax(1, srcRect.width()));
+        const double sy = double(targetSize.height()) / double(qMax(1, srcRect.height()));
+        if (hasPhysicalPage) {
+            const double s = qMin(sx, sy);
+            const double dx = 0.5 * (double(targetSize.width()) - double(srcRect.width()) * s);
+            const double dy = 0.5 * (double(targetSize.height()) - double(srcRect.height()) * s);
+            p.translate(dx, dy);
+            p.scale(s, s);
+        } else {
+            p.scale(sx, sy);
+        }
         if (d_page_bg_color.isValid() && d_page_bg_color.alpha() > 0)
             p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(d_page_bg_color));
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
+        const QList<Graph *> ordered = orderedLayersForRender();
+        for (Graph *gr : ordered) {
             if (!gr || !gr->plotWidget())
                 continue;
             Plot *myPlot = (Plot *)gr->plotWidget();
@@ -1154,6 +1676,7 @@ QImage MultiLayer::copyPageAsImage(int dpi)
             gr->exportPainter(p, false, QRect(pos, myPlot->size()));
         }
         p.setClipping(false);
+        drawInsetConnectors(&p, -srcRect.topLeft());
         drawPanelLabels(&p, -srcRect.topLeft());
         p.end();
     }
@@ -1175,6 +1698,8 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         return;
     }
 
+    ScopedUnzoomForExport unzoomGuard(this);
+
     QRect layersRect;
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -1185,11 +1710,21 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
         layersRect = canvas ? canvas->rect() : QRect(0, 0, 520, 520);
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            layersRect = layersRect.united(lblRect);
+    }
 
     const bool hasPhysicalPage = (d_page_unit != UnitPx);
-    const QRect srcRect = (hasPhysicalPage || d_page_view_mode)
+    QRect srcRect = (hasPhysicalPage || d_page_view_mode)
             ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
             : layersRect;
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            srcRect = srcRect.united(lblRect);
+    }
 
     const int effectiveDpi = (dpi > 0)
             ? qBound(36, dpi, 4800)
@@ -1250,15 +1785,24 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         p.setFont(baseFnt);
         p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
                          | QPainter::SmoothPixmapTransform);
-        p.scale(double(targetSize.width()) / double(qMax(1, srcRect.width())),
-                double(targetSize.height()) / double(qMax(1, srcRect.height())));
+        const double sx = double(targetSize.width()) / double(qMax(1, srcRect.width()));
+        const double sy = double(targetSize.height()) / double(qMax(1, srcRect.height()));
+        if (hasPhysicalPage) {
+            const double s = qMin(sx, sy);
+            const double dx = 0.5 * (double(targetSize.width()) - double(srcRect.width()) * s);
+            const double dy = 0.5 * (double(targetSize.height()) - double(srcRect.height()) * s);
+            p.translate(dx, dy);
+            p.scale(s, s);
+        } else {
+            p.scale(sx, sy);
+        }
         if (!transparent) {
             const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
             if (pageBg.alpha() > 0)
                 p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(pageBg));
         }
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
+        const QList<Graph *> ordered = orderedLayersForRender();
+        for (Graph *gr : ordered) {
             if (!gr || !gr->plotWidget())
                 continue;
             Plot *myPlot = (Plot *)gr->plotWidget();
@@ -1266,6 +1810,7 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
             gr->exportPainter(p, false, QRect(pos, myPlot->size()));
         }
         p.setClipping(false);
+        drawInsetConnectors(&p, -srcRect.topLeft());
         drawPanelLabels(&p, -srcRect.topLeft());
         p.end();
     }
@@ -1315,6 +1860,8 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
         return;
     }
 
+    ScopedUnzoomForExport unzoomGuard(this);
+
     QPrinter printer;
     printer.setDocName(this->name());
     printer.setCreator("ToriGraph");
@@ -1362,8 +1909,14 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
             const double wMm = qMax(5.0, toMm(d_page_width_val, d_page_unit));
             const double hMm = qMax(5.0, toMm(d_page_height_val, d_page_unit));
             printer.setPageSize(QPageSize(QSizeF(wMm, hMm), QPageSize::Millimeter));
-            if (canvas && !canvas->rect().isEmpty())
+            if (canvas && !canvas->rect().isEmpty()) {
                 srcRect = canvas->rect();
+                if (d_panel_labels_enabled) {
+                    const QRect lblRect = panelLabelsBoundingRect();
+                    if (!lblRect.isEmpty())
+                        srcRect = srcRect.united(lblRect);
+                }
+            }
         } else {
             QRect layersRect;
             for (int i = 0; i < (int)graphsList.count(); i++) {
@@ -1375,6 +1928,11 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
                 layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
             else
                 layersRect = canvas->rect();
+            if (d_panel_labels_enabled) {
+                const QRect lblRect = panelLabelsBoundingRect();
+                if (!lblRect.isEmpty())
+                    layersRect = layersRect.united(lblRect);
+            }
             const QSizeF ptSize(layersRect.width() * 72.0 / 96.0,
                                 layersRect.height() * 72.0 / 96.0);
             printer.setPageSize(QPageSize(ptSize, QPageSize::Point));
@@ -1391,6 +1949,7 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
 void MultiLayer::exportSVG(const QString &fname)
 {
 #if QT_VERSION >= 0x040300
+    ScopedUnzoomForExport unzoomGuard(this);
     QRect layersRect;
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -1401,12 +1960,25 @@ void MultiLayer::exportSVG(const QString &fname)
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
         layersRect = canvas->rect();
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            layersRect = layersRect.united(lblRect);
+    }
 
-    const QRect srcRect = (d_page_unit != UnitPx && canvas && !canvas->rect().isEmpty())
+    QRect srcRect = (d_page_unit != UnitPx && canvas && !canvas->rect().isEmpty())
             ? canvas->rect()
             : layersRect;
+    bool expandedBeyondCanvas = false;
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty() && !srcRect.contains(lblRect)) {
+            srcRect = srcRect.united(lblRect);
+            expandedBeyondCanvas = true;
+        }
+    }
     QSize svgPxSize = srcRect.size();
-    if (d_page_unit != UnitPx && d_base_page_px.isValid())
+    if (d_page_unit != UnitPx && d_base_page_px.isValid() && !expandedBeyondCanvas)
         svgPxSize = d_base_page_px;
 
     QSvgGenerator generator;
@@ -1444,6 +2016,11 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
         layersRect = canvas->rect();
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            layersRect = layersRect.united(lblRect);
+    }
 
     if (rect == QRect())
         rect = layersRect;
@@ -1454,15 +2031,15 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
         scaled.scale(size, Qt::KeepAspectRatio);
         size = scaled;
     }
-    painter.scale((double)size.width() / (double)rect.width(),
-                  (double)size.height() / (double)rect.height());
+    painter.scale((double)size.width() / (double)qMax(1, rect.width()),
+                  (double)size.height() / (double)qMax(1, rect.height()));
 
     const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
     if (pageBg.alpha() > 0)
         painter.fillRect(QRect(QPoint(0, 0), rect.size()), QBrush(pageBg));
 
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
+    const QList<Graph *> ordered = orderedLayersForRender();
+    for (Graph *gr : ordered) {
         if (!gr || !gr->plotWidget())
             continue;
         Plot *myPlot = (Plot *)gr->plotWidget();
@@ -1471,6 +2048,7 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
         gr->exportPainter(painter, false, QRect(pos, myPlot->size()));
     }
     painter.setClipping(false);
+    drawInsetConnectors(&painter, -rect.topLeft());
     drawPanelLabels(&painter, -rect.topLeft());
 }
 
@@ -1480,6 +2058,7 @@ void MultiLayer::copyAllLayers()
     if (SciDAVisOle::copyGraphAsOle(qobject_cast<ApplicationWindow *>(window()), this, nullptr))
         return;
 #endif
+    ScopedUnzoomForExport unzoomGuard(this);
     QRect layersRect;
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -1490,9 +2069,14 @@ void MultiLayer::copyAllLayers()
         layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
     else
         layersRect = canvas->rect();
+    if (d_panel_labels_enabled) {
+        const QRect lblRect = panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            layersRect = layersRect.united(lblRect);
+    }
     QImage image(layersRect.size(), QImage::Format_ARGB32);
     image.fill(d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white));
-    exportPainter(image);
+    exportPainter(image, false, layersRect);
     QApplication::clipboard()->setImage(image);
 }
 
@@ -1535,11 +2119,12 @@ void MultiLayer::printAllLayers(QPainter *painter)
     QRect pageRect = printer->pageLayout().fullRectPixels(printer->resolution());
     QRect cr = canvasRect; // cropmarks rectangle
 
+    const QList<Graph *> ordered = orderedLayersForRender();
     if (d_scale_on_print) {
         int margin = (int)((1 / 2.54) * printer->logicalDpiY()); // 1 cm margins
-        double scaleFactorX = (double)(pageRect.width() - 2 * margin) / (double)canvasRect.width();
+        double scaleFactorX = (double)(pageRect.width() - 2 * margin) / (double)qMax(1, canvasRect.width());
         double scaleFactorY =
-                (double)(pageRect.height() - 2 * margin) / (double)canvasRect.height();
+                (double)(pageRect.height() - 2 * margin) / (double)qMax(1, canvasRect.height());
 
         if (d_print_cropmarks) {
             cr.moveTo(QPoint(margin + int(cr.x() * scaleFactorX),
@@ -1548,8 +2133,9 @@ void MultiLayer::printAllLayers(QPainter *painter)
             cr.setHeight(int(cr.height() * scaleFactorX));
         }
 
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
+        for (Graph *gr : ordered) {
+            if (!gr || !gr->plotWidget())
+                continue;
             Plot *myPlot = gr->plotWidget();
 
             QPoint pos = gr->pos();
@@ -1561,6 +2147,14 @@ void MultiLayer::printAllLayers(QPainter *painter)
 
             gr->print(painter, QRect(pos, QSize(width, height)));
         }
+
+        painter->save();
+        painter->setClipping(false);
+        painter->translate(margin, margin);
+        painter->scale(scaleFactorX, scaleFactorY);
+        drawInsetConnectors(painter, QPoint(0, 0));
+        drawPanelLabels(painter, QPoint(0, 0));
+        painter->restore();
     } else {
         int x_margin = (pageRect.width() - canvasRect.width()) / 2;
         int y_margin = (pageRect.height() - canvasRect.height()) / 2;
@@ -1568,14 +2162,21 @@ void MultiLayer::printAllLayers(QPainter *painter)
         if (d_print_cropmarks)
             cr.moveTo(x_margin, y_margin);
 
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
+        for (Graph *gr : ordered) {
+            if (!gr || !gr->plotWidget())
+                continue;
             Plot *myPlot = (Plot *)gr->plotWidget();
 
             QPoint pos = gr->pos();
             pos = QPoint(x_margin + pos.x(), y_margin + pos.y());
             gr->print(painter, QRect(pos, myPlot->size()));
         }
+
+        painter->save();
+        painter->setClipping(false);
+        drawInsetConnectors(painter, QPoint(x_margin, y_margin));
+        drawPanelLabels(painter, QPoint(x_margin, y_margin));
+        painter->restore();
     }
     if (d_print_cropmarks) {
         cr.adjust(-1, -1, 2, 2);
@@ -1627,6 +2228,32 @@ void MultiLayer::setFonts(const QFont &titleFnt, const QFont &scaleFnt, const QF
     emit modifiedPlot();
 }
 
+void MultiLayer::installLayerEventFilters(Graph *g)
+{
+    if (!g)
+        return;
+    g->removeEventFilter(this);
+    g->installEventFilter(this);
+    if (Plot *pl = g->plotWidget()) {
+        pl->removeEventFilter(this);
+        pl->installEventFilter(this);
+        if (QWidget *cv = pl->canvas()) {
+            cv->removeEventFilter(this);
+            cv->installEventFilter(this);
+        }
+        if (QwtTextLabel *tl = pl->titleLabel()) {
+            tl->removeEventFilter(this);
+            tl->installEventFilter(this);
+        }
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (QwtScaleWidget *sw = pl->axisWidget(a)) {
+                sw->removeEventFilter(this);
+                sw->installEventFilter(this);
+            }
+        }
+    }
+}
+
 void MultiLayer::connectLayer(Graph *g)
 {
     connect(g, SIGNAL(drawLineEnded(bool)), this, SIGNAL(drawLineEnded(bool)));
@@ -1657,14 +2284,30 @@ void MultiLayer::connectLayer(Graph *g)
             [this](Graph *layer, const Graph::GraphSelection &sel) {
                 emit selectionChanged(this, layer, sel);
             });
-    connect(g, &Graph::modifiedGraph, this, [this]() {
-        if (d_panel_labels_enabled && widget()) {
-            if (QWidget *ov = widget()->findChild<QWidget *>(
-                        QStringLiteral("MultiLayerPanelLabelOverlay"))) {
-                ov->update();
+    QPointer<Graph> safeG(g);
+    connect(g, &Graph::modifiedGraph, this, [this, safeG]() {
+        if (safeG && d_inset_specs.contains(safeG.data()) && !d_syncing_inset_geometries
+            && !d_is_restoring_snapshot) {
+            if (Plot *inPlot = safeG->plotWidget()) {
+                const QwtScaleDiv *xsd = inPlot->axisScaleDiv(QwtPlot::xBottom);
+                const QwtScaleDiv *ysd = inPlot->axisScaleDiv(QwtPlot::yLeft);
+                if (xsd && ysd) {
+                    const double xLo = qMin(xsd->lowerBound(), xsd->upperBound());
+                    const double xHi = qMax(xsd->lowerBound(), xsd->upperBound());
+                    const double yLo = qMin(ysd->lowerBound(), ysd->upperBound());
+                    const double yHi = qMax(ysd->lowerBound(), ysd->upperBound());
+                    if (std::isfinite(xLo) && std::isfinite(xHi) && std::isfinite(yLo)
+                        && std::isfinite(yHi) && (xHi > xLo || yHi > yLo)) {
+                        d_inset_specs[safeG.data()].zoomDataRect =
+                                QRectF(QPointF(xLo, yLo), QPointF(xHi, yHi));
+                    }
+                }
             }
         }
+        refreshLayerButtonBadges();
+        syncCanvasOverlayVisibility();
     });
+    installLayerEventFilters(g);
 }
 
 void MultiLayer::addTextLayer(int f, const QFont &font, const QColor &textCol,
@@ -1704,8 +2347,304 @@ void MultiLayer::addTextLayer(const QPoint &pos)
     emit modifiedPlot();
 }
 
+namespace {
+
+Graph *owningLayerOfObject(QObject *obj, const QWidgetList &graphsList)
+{
+    for (QWidget *w = qobject_cast<QWidget *>(obj); w != nullptr; w = w->parentWidget()) {
+        if (Graph *g = qobject_cast<Graph *>(w)) {
+            if (graphsList.contains(g))
+                return g;
+        }
+    }
+    return nullptr;
+}
+
+bool graphHasInteractiveHitAtGlobal(Graph *g, const QPoint &globalPos,
+                                    QWidget **hitTargetOut = nullptr,
+                                    bool includeAxesAndTitle = true)
+{
+    if (!g || !g->isVisible())
+        return false;
+    Plot *pl = g->plotWidget();
+    if (!pl || !pl->isVisible())
+        return false;
+
+    if (includeAxesAndTitle) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (!pl->axisEnabled(a))
+                continue;
+            QwtScaleWidget *sw = pl->axisWidget(a);
+            if (!sw || !sw->isVisible())
+                continue;
+            const QPoint swLocal = sw->mapFromGlobal(globalPos);
+            if (sw->rect().contains(swLocal)) {
+                if (hitTargetOut)
+                    *hitTargetOut = sw;
+                return true;
+            }
+        }
+        if (QwtTextLabel *tl = pl->titleLabel()) {
+            if (tl->isVisible() && !pl->title().text().trimmed().isEmpty()) {
+                const QPoint tlLocal = tl->mapFromGlobal(globalPos);
+                if (tl->rect().contains(tlLocal)) {
+                    if (hitTargetOut)
+                        *hitTargetOut = tl;
+                    return true;
+                }
+            }
+        }
+    }
+
+    QWidget *cv = pl->canvas();
+    if (!cv || !cv->isVisible())
+        return false;
+    const QPoint cPos = cv->mapFromGlobal(globalPos);
+    if (!cv->rect().contains(cPos))
+        return false;
+
+    Legend *mainLeg = g->legend();
+    if (mainLeg && g->isLegendVisible() && mainLeg->rect().adjusted(-3, -3, 3, 3).contains(cPos)) {
+        if (hitTargetOut)
+            *hitTargetOut = cv;
+        return true;
+    }
+
+    const QVector<int> txtKeys = g->textMarkerKeys();
+    for (int id : txtKeys) {
+        Legend *mrk = g->textMarker(id);
+        if (!mrk)
+            continue;
+        if (mrk == mainLeg && !g->isLegendVisible())
+            continue;
+        if (mrk->rect().adjusted(-3, -3, 3, 3).contains(cPos)) {
+            if (hitTargetOut)
+                *hitTargetOut = cv;
+            return true;
+        }
+    }
+
+    const QVector<int> imgKeys = g->imageMarkerKeys();
+    for (int id : imgKeys) {
+        ImageMarker *im = g->imageMarker(id);
+        if (im && im->rect().adjusted(-3, -3, 3, 3).contains(cPos)) {
+            if (hitTargetOut)
+                *hitTargetOut = cv;
+            return true;
+        }
+    }
+
+    const QVector<int> lineKeys = g->lineMarkerKeys();
+    for (int id : lineKeys) {
+        ArrowMarker *am = g->arrow(id);
+        if (am && am->dist(cPos.x(), cPos.y()) < 10.0) {
+            if (hitTargetOut)
+                *hitTargetOut = cv;
+            return true;
+        }
+    }
+
+    if (g->referenceLineAtCanvasPos(cPos, 8) >= 0) {
+        if (hitTargetOut)
+            *hitTargetOut = cv;
+        return true;
+    }
+
+    int cDist = 999;
+    int cVtx = -1;
+    const int cKey = pl->closestCurveInteractive(cPos, cDist, cVtx);
+    if (cKey >= 0 && cDist < 10) {
+        if (hitTargetOut)
+            *hitTargetOut = cv;
+        return true;
+    }
+
+    return false;
+}
+
+} // namespace
+
 bool MultiLayer::eventFilter(QObject *object, QEvent *e)
 {
+    if (!e)
+        return false;
+
+    if (d_forwarding_mouse)
+        return MyWidget::eventFilter(object, e);
+
+    // Track user drag/resize on Zoom Inset layers so normGeo persists across layouts
+    if ((e->type() == QEvent::Move || e->type() == QEvent::Resize) && !d_syncing_inset_geometries
+        && !d_is_restoring_snapshot) {
+        if (Graph *gr = qobject_cast<Graph *>(object)) {
+            if (d_inset_specs.contains(gr)) {
+                Graph *srcLayer = d_inset_specs[gr].sourceLayer.data();
+                if (srcLayer && srcLayer->width() >= 20 && srcLayer->height() >= 20) {
+                    const QRect srcGeo = srcLayer->geometry();
+                    const QRect inGeo = gr->geometry();
+                    d_inset_specs[gr].normGeo =
+                            QRectF(double(inGeo.x() - srcGeo.x()) / double(srcGeo.width()),
+                                   double(inGeo.y() - srcGeo.y()) / double(srcGeo.height()),
+                                   double(inGeo.width()) / double(srcGeo.width()),
+                                   double(inGeo.height()) / double(srcGeo.height()));
+                    syncCanvasOverlayVisibility();
+                }
+            } else if (!d_inset_specs.isEmpty()) {
+                syncCanvasOverlayVisibility();
+            }
+        }
+    }
+
+    // Continue forwarding active mouse drag initiated through a transparent linked overlay
+    if (d_passthrough_source && object == d_passthrough_source.data()) {
+        if (e->type() == QEvent::MouseMove || e->type() == QEvent::MouseButtonRelease) {
+            const auto *me = static_cast<const QMouseEvent *>(e);
+            if (QWidget *dst = d_passthrough_target.data()) {
+                const QPoint globalPos = me->globalPos();
+                const QPoint dstLocal = dst->mapFromGlobal(globalPos);
+                const QPointF dstWinPos = dst->window()
+                        ? QPointF(dst->window()->mapFromGlobal(globalPos))
+                        : QPointF(dstLocal);
+                QMouseEvent fwd(e->type(), QPointF(dstLocal), dstWinPos, me->screenPos(),
+                                me->button(), me->buttons(), me->modifiers(), me->source());
+                d_forwarding_mouse = true;
+                QCoreApplication::sendEvent(dst, &fwd);
+                d_forwarding_mouse = false;
+                if (dst->testAttribute(Qt::WA_SetCursor))
+                    d_passthrough_source->setCursor(dst->cursor());
+            }
+            if (e->type() == QEvent::MouseButtonRelease && me->buttons() == Qt::NoButton) {
+                d_passthrough_source = nullptr;
+                d_passthrough_target = nullptr;
+            }
+            return true;
+        }
+    }
+
+    // Transparent linked twin-axis overlay click-through, hover-through & wheel-through
+    if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick
+        || e->type() == QEvent::MouseMove || e->type() == QEvent::Wheel) {
+        Graph *ownerLayer = owningLayerOfObject(object, graphsList);
+        if (ownerLayer && ownerLayer->linkedParentLayer() != nullptr
+            && !d_inset_specs.contains(ownerLayer) && !addTextOn) {
+            const bool overlayHasModalTool =
+                    (active_graph == ownerLayer
+                     && (ownerLayer->zoomOn() || ownerLayer->activeTool()
+                         || ownerLayer->drawTextActive() || ownerLayer->drawLineActive()));
+            if (!overlayHasModalTool) {
+                if (e->type() == QEvent::Wheel) {
+                    if (ownerLayer->plotWidget() && object == ownerLayer->plotWidget()->canvas()) {
+                        Graph *baseParent = ownerLayer->linkedParentLayer();
+                        if (baseParent && (active_graph == baseParent || ownerLayer->curves() == 0)
+                            && baseParent->plotWidget() && baseParent->plotWidget()->canvas()) {
+                            const auto *we = static_cast<const QWheelEvent *>(e);
+                            QWidget *baseCanvas = baseParent->plotWidget()->canvas();
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                            const QPoint globalPos = we->globalPosition().toPoint();
+                            const QPointF dstLocal(baseCanvas->mapFromGlobal(globalPos));
+                            QWheelEvent fwdWheel(dstLocal, we->globalPosition(), we->pixelDelta(),
+                                                 we->angleDelta(), we->buttons(), we->modifiers(),
+                                                 we->phase(), we->inverted(), we->source());
+#else
+                            const QPoint globalPos = we->globalPos();
+                            const QPoint dstLocal = baseCanvas->mapFromGlobal(globalPos);
+                            QWheelEvent fwdWheel(dstLocal, globalPos, we->pixelDelta(),
+                                                 we->angleDelta(), we->delta(), we->orientation(),
+                                                 we->buttons(), we->modifiers(), we->phase(),
+                                                 we->source(), we->inverted());
+#endif
+                            d_forwarding_mouse = true;
+                            QCoreApplication::sendEvent(baseCanvas, &fwdWheel);
+                            d_forwarding_mouse = false;
+                            return true;
+                        }
+                    }
+                } else {
+                    const auto *me = static_cast<const QMouseEvent *>(e);
+                    const bool isPassiveMove =
+                            (e->type() == QEvent::MouseMove && me->buttons() == Qt::NoButton);
+                    const bool isPressOrDbl = (e->type() == QEvent::MouseButtonPress
+                                               || e->type() == QEvent::MouseButtonDblClick);
+                    if (isPressOrDbl || isPassiveMove) {
+                        auto *srcWidget = qobject_cast<QWidget *>(object);
+                        const QPoint globalPos = me->globalPos();
+                        if (graphHasInteractiveHitAtGlobal(ownerLayer, globalPos, nullptr, true)) {
+                            if (Graph *pLayer = ownerLayer->linkedParentLayer()) {
+                                if (pLayer->plotWidget())
+                                    pLayer->plotWidget()->clearHoverPoint();
+                            }
+                            if (isPressOrDbl && active_graph != ownerLayer)
+                                setActiveGraph(ownerLayer);
+                        } else {
+                            QWidget *forwardTarget = nullptr;
+                            Graph *targetGraph = nullptr;
+                            int hop = 0;
+                            for (Graph *pLayer = ownerLayer->linkedParentLayer();
+                                 pLayer && hop < 4; pLayer = pLayer->linkedParentLayer(), ++hop) {
+                                QWidget *candTarget = nullptr;
+                                if (graphHasInteractiveHitAtGlobal(pLayer, globalPos, &candTarget,
+                                                                   true)
+                                    && candTarget) {
+                                    forwardTarget = candTarget;
+                                    targetGraph = pLayer;
+                                    break;
+                                }
+                            }
+                            if (!forwardTarget && ownerLayer->plotWidget()
+                                && object == ownerLayer->plotWidget()->canvas()) {
+                                Graph *baseParent = ownerLayer->linkedParentLayer();
+                                if (baseParent && active_graph == baseParent
+                                    && baseParent->plotWidget()
+                                    && baseParent->plotWidget()->canvas()) {
+                                    forwardTarget = baseParent->plotWidget()->canvas();
+                                    targetGraph = baseParent;
+                                }
+                            }
+                            if (forwardTarget && targetGraph) {
+                                if (ownerLayer->plotWidget())
+                                    ownerLayer->plotWidget()->clearHoverPoint();
+                                if (isPressOrDbl && active_graph != targetGraph)
+                                    setActiveGraph(targetGraph);
+                                if (e->type() == QEvent::MouseButtonPress && srcWidget) {
+                                    d_passthrough_source = srcWidget;
+                                    d_passthrough_target = forwardTarget;
+                                }
+                                const QPoint dstLocal = forwardTarget->mapFromGlobal(globalPos);
+                                const QPointF dstWinPos = forwardTarget->window()
+                                        ? QPointF(forwardTarget->window()->mapFromGlobal(globalPos))
+                                        : QPointF(dstLocal);
+                                QMouseEvent fwd(e->type(), QPointF(dstLocal), dstWinPos,
+                                                me->screenPos(), me->button(), me->buttons(),
+                                                me->modifiers(), me->source());
+                                d_forwarding_mouse = true;
+                                QCoreApplication::sendEvent(forwardTarget, &fwd);
+                                d_forwarding_mouse = false;
+                                if (isPassiveMove && srcWidget) {
+                                    if (forwardTarget->testAttribute(Qt::WA_SetCursor))
+                                        srcWidget->setCursor(forwardTarget->cursor());
+                                    else
+                                        srcWidget->unsetCursor();
+                                }
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (e->type() == QEvent::Wheel) {
+        const auto *we = static_cast<const QWheelEvent *>(e);
+        if ((we->modifiers() & Qt::ControlModifier) && we->angleDelta().y() != 0
+            && (object == (QObject *)canvas
+                || (object
+                    && (object->objectName() == QLatin1String("MultiLayerPageHost")
+                        || object->objectName() == QLatin1String("qt_scrollarea_viewport"))))) {
+            wheelEvent(const_cast<QWheelEvent *>(we));
+            return true;
+        }
+    }
+
     if (e->type() == QEvent::MouseButtonPress && object == (QObject *)canvas) {
         const QMouseEvent *me = (const QMouseEvent *)e;
         if (me->button() == Qt::LeftButton && addTextOn)
@@ -1717,64 +2656,19 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
         updateCanvasStatusPill();
     } else if (e->type() == QEvent::Show && object == (QObject *)canvas) {
         updateCanvasStatusPill();
-    } else if ((e->type() == QEvent::Resize || e->type() == QEvent::Show)
-               && object == (QObject *)widget()) {
+    } else if (e->type() == QEvent::Resize && object
+               && object->objectName() == QLatin1String("MultiLayerPageHost")) {
+        auto *ph = static_cast<QWidget *>(object);
+        const bool freePixelMode =
+                (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+        if (freePixelMode && canvas && !ph->rect().isEmpty())
+            canvas->setGeometry(ph->rect());
         repositionCanvasStatusPill();
-    } else if (e->type() == QEvent::Paint && object
-               && object->objectName() == QLatin1String("MultiLayerPanelLabelOverlay")) {
-        if (d_panel_labels_enabled) {
-            QPainter p(static_cast<QWidget *>(object));
-            p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing, true);
-            drawPanelLabels(&p, QPoint(0, 0));
-        }
-        return true;
-    } else if (e->type() == QEvent::Paint && object == (QObject *)d_drop_zone_overlay) {
-        if (d_drop_zone_overlay && d_drop_zone_overlay->isVisible()) {
-            QPainter p(d_drop_zone_overlay);
-            p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing, true);
-            const bool rightZone = d_drop_zone_overlay->property("rightYZone").toBool();
-            const QRect targetRect = d_drop_zone_overlay->property("targetRect").toRect();
-            const QRect zoneRect = targetRect.isValid() ? targetRect : d_drop_zone_overlay->rect();
-            const QColor accent(0x0F, 0x6C, 0xBD);
-            if (rightZone) {
-                const int stripW = qMin(44, qMax(24, zoneRect.width() / 5));
-                const QRect rightStrip(zoneRect.right() - stripW + 1, zoneRect.top(), stripW,
-                                       zoneRect.height());
-                p.fillRect(rightStrip, QColor(accent.red(), accent.green(), accent.blue(), 46));
-                p.setPen(QPen(accent, 2.0, Qt::DashLine));
-                p.setBrush(Qt::NoBrush);
-                p.drawRoundedRect(QRectF(rightStrip).adjusted(1.0, 1.0, -1.0, -1.0), 4.0, 4.0);
-            } else {
-                p.fillRect(zoneRect, QColor(accent.red(), accent.green(), accent.blue(), 22));
-                p.setPen(QPen(accent, 2.0, Qt::DashLine));
-                p.setBrush(Qt::NoBrush);
-                p.drawRoundedRect(QRectF(zoneRect).adjusted(2.0, 2.0, -2.0, -2.0), 6.0, 6.0);
-            }
-            const QString banner = d_drop_zone_overlay->property("bannerText").toString();
-            if (!banner.isEmpty()) {
-                QFont bf(QStringLiteral("Segoe UI"), 9, QFont::DemiBold);
-                p.setFont(bf);
-                const QFontMetrics fm(bf);
-                const int bw = qMin(d_drop_zone_overlay->width() - 16,
-                                    fm.horizontalAdvance(banner) + 28);
-                const int bh = qMax(26, fm.height() + 10);
-                const QRect pillRect((d_drop_zone_overlay->width() - bw) / 2, 10, bw, bh);
-                p.setPen(QPen(accent.darker(115), 1.2));
-                p.setBrush(accent);
-                p.drawRoundedRect(pillRect, 13.0, 13.0);
-                p.setPen(Qt::white);
-                p.drawText(pillRect, Qt::AlignCenter, banner);
-            }
-        }
-        return true;
-    } else if (e->type() == QEvent::Paint && object == (QObject *)canvas && d_page_view_mode) {
-        const bool ret = MyWidget::eventFilter(object, e);
-        QPainter p(canvas);
-        p.setRenderHint(QPainter::Antialiasing, false);
-        p.setPen(QPen(QColor("#B8BEC6"), 1, Qt::SolidLine));
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(canvas->rect().adjusted(0, 0, -1, -1));
-        return ret;
+    } else if ((e->type() == QEvent::Resize || e->type() == QEvent::Show)
+               && (object == (QObject *)widget()
+                   || (object
+                       && object->objectName() == QLatin1String("qt_scrollarea_viewport")))) {
+        repositionCanvasStatusPill();
     }
     return MyWidget::eventFilter(object, e);
 }
@@ -1789,10 +2683,7 @@ void MultiLayer::changeEvent(QEvent *event)
             d_quick_columns_btn->setText(tr("Columns") + QStringLiteral(" \u25BE"));
             d_quick_columns_btn->setToolTip(tr("Toggle Plotted Columns on Active Layer"));
         }
-        for (int i = 0; i < buttonsList.count(); ++i) {
-            if (LayerButton *btn = qobject_cast<LayerButton *>(buttonsList.at(i)))
-                btn->setToolTip(tr("Layer %1").arg(i + 1));
-        }
+        refreshLayerButtonBadges();
         updateCanvasStatusPill();
     }
 }
@@ -1834,65 +2725,19 @@ void MultiLayer::keyPressEvent(QKeyEvent *e)
 
 void MultiLayer::wheelEvent(QWheelEvent *e)
 {
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-
-    bool resize = false;
-    QPoint aux;
-    QSize intSize;
-    Graph *resize_graph = 0;
-    // Get the position of the mouse
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    int xMouse = e->position().x();
-    int yMouse = e->position().y();
-#else
-    int xMouse = e->x();
-    int yMouse = e->y();
-#endif
-    if (d_layers_selector != nullptr) {
-        for (int i = 0; i < (int)graphsList.count(); i++) {
-            Graph *gr = (Graph *)graphsList.at(i);
-            intSize = gr->plotWidget()->size();
-            aux = gr->pos();
-            if (xMouse > aux.x() && xMouse < (aux.x() + intSize.width())) {
-                if (yMouse > aux.y() && yMouse < (aux.y() + intSize.height())) {
-                    resize_graph = gr;
-                    resize = true;
-                }
-            }
-        }
-    }
-    if (!resize && (e->modifiers() & Qt::ControlModifier)) {
+    if (!e)
+        return;
+    if (e->modifiers() & Qt::ControlModifier) {
         const int dy = e->angleDelta().y();
         if (dy != 0) {
             const double factor = (dy > 0) ? 1.1 : (1.0 / 1.1);
             setPageZoom(d_page_zoom * factor);
+            emit modifiedPlot();
             e->accept();
+            return;
         }
-        QApplication::restoreOverrideCursor();
-        return;
     }
-    if (resize && d_layers_selector != nullptr
-        && (e->modifiers() == Qt::AltModifier || e->modifiers() == Qt::ControlModifier
-            || e->modifiers() == Qt::ShiftModifier)) {
-        intSize = resize_graph->plotWidget()->size();
-        int delta = (e->angleDelta().y() > 0) ? 5 : ((e->angleDelta().y() < 0) ? -5 : 0);
-        int deltaW = delta;
-        int deltaH = d_keep_aspect_ratio && d_target_aspect_ratio > 0.05
-                ? qRound(delta / d_target_aspect_ratio)
-                : delta;
-        if (delta != 0 && intSize.width() + deltaW >= 100 && intSize.height() + deltaH >= 100) {
-            intSize.rwidth() += deltaW;
-            intSize.rheight() += deltaH;
-        }
-
-        aux = resize_graph->pos();
-        resize_graph->setGeometry(QRect(QPoint(aux.x(), aux.y()), intSize));
-        resize_graph->plotWidget()->resize(intSize);
-        resize_graph->plotWidget()->updateLayout();
-
-        emit modifiedPlot();
-    }
-    QApplication::restoreOverrideCursor();
+    e->ignore();
 }
 
 bool MultiLayer::isEmpty()
@@ -1963,18 +2808,24 @@ QString MultiLayer::saveToString(const QString &geometry)
     }
     for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
         Graph *insetGr = it.key();
-        Graph *srcGr = it.value().first.data();
+        Graph *srcGr = it.value().sourceLayer.data();
         const int childIdx = graphsList.indexOf(insetGr);
         const int srcIdx = graphsList.indexOf(srcGr);
         if (childIdx >= 0 && srcIdx >= 0) {
-            const QRectF rel = it.value().second;
-            s += QString("<ToriInsetSpec child=\"%1\" source=\"%2\" x=\"%3\" y=\"%4\" w=\"%5\" h=\"%6\"/>\n")
+            const QRectF rel = it.value().normGeo;
+            const QRectF zr = it.value().zoomDataRect;
+            s += QString("<ToriInset\t%1\t%2\t%3\t%4\t%5\t%6\t%7\t%8\t%9\t%10\t%11\n")
                          .arg(childIdx)
                          .arg(srcIdx)
                          .arg(rel.x(), 0, 'g', 12)
                          .arg(rel.y(), 0, 'g', 12)
                          .arg(rel.width(), 0, 'g', 12)
-                         .arg(rel.height(), 0, 'g', 12);
+                         .arg(rel.height(), 0, 'g', 12)
+                         .arg(it.value().showConnectors ? 1 : 0)
+                         .arg(zr.x(), 0, 'g', 12)
+                         .arg(zr.y(), 0, 'g', 12)
+                         .arg(zr.width(), 0, 'g', 12)
+                         .arg(zr.height(), 0, 'g', 12);
         }
     }
     return s + "</multiLayer>\n";
@@ -1997,6 +2848,28 @@ QString MultiLayer::saveAsTemplate(const QString &geometryInfo)
         Graph *ag = (Graph *)graphsList.at(i);
         s += ag->saveToString(true);
     }
+    for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
+        Graph *insetGr = it.key();
+        Graph *srcGr = it.value().sourceLayer.data();
+        const int childIdx = graphsList.indexOf(insetGr);
+        const int srcIdx = graphsList.indexOf(srcGr);
+        if (childIdx >= 0 && srcIdx >= 0) {
+            const QRectF rel = it.value().normGeo;
+            const QRectF zr = it.value().zoomDataRect;
+            s += QString("<ToriInset\t%1\t%2\t%3\t%4\t%5\t%6\t%7\t%8\t%9\t%10\t%11\n")
+                         .arg(childIdx)
+                         .arg(srcIdx)
+                         .arg(rel.x(), 0, 'g', 12)
+                         .arg(rel.y(), 0, 'g', 12)
+                         .arg(rel.width(), 0, 'g', 12)
+                         .arg(rel.height(), 0, 'g', 12)
+                         .arg(it.value().showConnectors ? 1 : 0)
+                         .arg(zr.x(), 0, 'g', 12)
+                         .arg(zr.y(), 0, 'g', 12)
+                         .arg(zr.width(), 0, 'g', 12)
+                         .arg(zr.height(), 0, 'g', 12);
+        }
+    }
     return s + "</multiLayer>\n";
 }
 
@@ -2013,29 +2886,32 @@ void MultiLayer::mousePressEvent(QMouseEvent *e)
     }
     int margin = 5;
     QPoint pos = canvas->mapFrom(this, e->pos());
-    // iterate backwards, so layers on top are preferred for selection
-    QList<QWidget *>::iterator i = graphsList.end();
-    while (i != graphsList.begin()) {
-        --i;
-        QRect igeo = (*i)->frameGeometry();
+    // iterate backwards in Z-stack order, so layers on top are preferred for selection
+    const QList<Graph *> ordered = orderedLayersForRender();
+    for (int idx = ordered.size() - 1; idx >= 0; --idx) {
+        Graph *cand = ordered.at(idx);
+        if (!cand || !cand->isVisible())
+            continue;
+        QRect igeo = cand->frameGeometry();
         igeo.adjust(-margin, -margin, margin, margin);
         if (igeo.contains(pos)) {
             if (e->modifiers() & Qt::ShiftModifier) {
                 if (d_layers_selector)
-                    d_layers_selector->add(*i);
+                    d_layers_selector->add(cand);
                 else {
-                    d_layers_selector = new SelectionMoveResizer(*i);
+                    d_layers_selector = new SelectionMoveResizer(cand);
                     connect(d_layers_selector, SIGNAL(targetsChanged()), this,
                             SIGNAL(modifiedPlot()));
                 }
+                enforceLayerZOrder();
             } else {
-                setActiveGraph((Graph *)(*i));
-                active_graph->raise();
+                setActiveGraph(cand);
                 if (!d_layers_selector) {
-                    d_layers_selector = new SelectionMoveResizer(*i);
+                    d_layers_selector = new SelectionMoveResizer(cand);
                     connect(d_layers_selector, SIGNAL(targetsChanged()), this,
                             SIGNAL(modifiedPlot()));
                 }
+                enforceLayerZOrder();
             }
             return;
         }
@@ -2153,6 +3029,12 @@ void MultiLayer::setLayersNumber(int n)
                 if (g->zoomOn() || g->activeTool())
                     setPointerCursor();
                 d_inset_specs.remove(g);
+                for (auto it = d_inset_specs.begin(); it != d_inset_specs.end();) {
+                    if (it.value().sourceLayer.isNull() || it.value().sourceLayer.data() == g)
+                        it = d_inset_specs.erase(it);
+                    else
+                        ++it;
+                }
                 graphsList.removeLast();
                 g->setParent(nullptr);
                 g->close();
@@ -2161,6 +3043,8 @@ void MultiLayer::setLayersNumber(int n)
         graphs = n;
         if (!graphs) {
             active_graph = 0;
+            refreshLayerButtonBadges();
+            syncCanvasOverlayVisibility();
             return;
         }
 
@@ -2180,6 +3064,9 @@ void MultiLayer::setLayersNumber(int n)
             addLayer();
     }
 
+    enforceLayerZOrder();
+    refreshLayerButtonBadges();
+    syncCanvasOverlayVisibility();
     emit modifiedPlot();
 }
 
@@ -2208,8 +3095,10 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     d_panel_label_pattern = ml->d_panel_label_pattern;
     d_panel_label_font_pt = ml->d_panel_label_font_pt;
     setPageBackgroundColor(ml->d_page_bg_color);
-    if (ml->canvasWidget() && canvas)
-        canvas->resize(ml->canvasWidget()->size());
+    if (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4) {
+        if (ml->canvasWidget() && canvas)
+            canvas->resize(ml->canvasWidget()->size());
+    }
 
     QWidgetList srcGraphs = ml->graphPtrs();
     for (int i = 0; i < srcGraphs.count(); i++) {
@@ -2244,14 +3133,18 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
             }
         }
         if (ml->d_inset_specs.contains(srcG)) {
-            Graph *srcSource = ml->d_inset_specs[srcG].first.data();
+            Graph *srcSource = ml->d_inset_specs[srcG].sourceLayer.data();
             const int sIdx = srcGraphs.indexOf(srcSource);
             Graph *dstSource = (sIdx >= 0) ? (Graph *)graphsList.value(sIdx, nullptr) : nullptr;
-            if (dstSource)
-                d_inset_specs[dstG] = qMakePair(QPointer<Graph>(dstSource), ml->d_inset_specs[srcG].second);
+            if (dstSource) {
+                InsetSpec spec = ml->d_inset_specs[srcG];
+                spec.sourceLayer = QPointer<Graph>(dstSource);
+                d_inset_specs[dstG] = spec;
+            }
         }
     }
     syncChildOverlayAndInsetGeometries();
+    refreshLayerButtonBadges();
     updateCanvasStatusPill();
     show();
 }
@@ -2270,6 +3163,9 @@ bool MultiLayer::focusNextPrevChild(bool next)
 
 void MultiLayer::syncChildOverlayAndInsetGeometries()
 {
+    const bool prevSync = d_syncing_inset_geometries;
+    d_syncing_inset_geometries = true;
+
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
         if (!gr)
@@ -2307,33 +3203,45 @@ void MultiLayer::syncChildOverlayAndInsetGeometries()
                     cPlot->updateLayout();
                 }
             }
+            installLayerEventFilters(gr);
         } else if (d_inset_specs.contains(gr)) {
-            Graph *srcLayer = d_inset_specs[gr].first.data();
-            const QRectF rel = d_inset_specs[gr].second;
+            Graph *srcLayer = d_inset_specs[gr].sourceLayer.data();
+            const QRectF rel = d_inset_specs[gr].normGeo;
             if (srcLayer) {
                 const QRect srcGeo = srcLayer->geometry();
-                const int ix = srcGeo.x() + qRound(rel.x() * srcGeo.width());
-                const int iy = srcGeo.y() + qRound(rel.y() * srcGeo.height());
-                const int iw = qMax(40, qRound(rel.width() * srcGeo.width()));
-                const int ih = qMax(40, qRound(rel.height() * srcGeo.height()));
+                int iw = qMax(40, qRound(rel.width() * srcGeo.width()));
+                int ih = qMax(40, qRound(rel.height() * srcGeo.height()));
+                int ix = srcGeo.x() + qRound(rel.x() * srcGeo.width());
+                int iy = srcGeo.y() + qRound(rel.y() * srcGeo.height());
+                if (Plot *sPlot = srcLayer->plotWidget()) {
+                    sPlot->updateLayout();
+                    const QRect pCanvas =
+                            sPlot->plotLayout()->canvasRect().translated(srcLayer->pos());
+                    if (pCanvas.width() > 60 && pCanvas.height() > 60) {
+                        iw = qMin(iw, qMax(60, pCanvas.width() - 12));
+                        ih = qMin(ih, qMax(50, pCanvas.height() - 12));
+                        ix = qBound(pCanvas.left() + 6, ix,
+                                    qMax(pCanvas.left() + 6, pCanvas.right() - iw - 6));
+                        iy = qBound(pCanvas.top() + 6, iy,
+                                    qMax(pCanvas.top() + 6, pCanvas.bottom() - ih - 6));
+                    }
+                }
                 const QRect targetGeo(ix, iy, iw, ih);
                 if (gr->geometry() != targetGeo) {
                     gr->setGeometry(targetGeo);
-                    gr->plotWidget()->resize(targetGeo.size());
-                    gr->plotWidget()->updateLayout();
+                    if (gr->plotWidget()) {
+                        gr->plotWidget()->resize(targetGeo.size());
+                        gr->plotWidget()->updateLayout();
+                    }
                 }
-                gr->raise();
+                installLayerEventFilters(gr);
             }
         }
     }
-    if (widget()) {
-        if (QWidget *ov = widget()->findChild<QWidget *>(
-                    QStringLiteral("MultiLayerPanelLabelOverlay"))) {
-            ov->setVisible(d_panel_labels_enabled);
-            if (d_panel_labels_enabled)
-                ov->update();
-        }
-    }
+
+    d_syncing_inset_geometries = prevSync;
+    enforceLayerZOrder();
+    syncCanvasOverlayVisibility();
 }
 
 void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos)
@@ -2350,19 +3258,70 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
         LayerDialog dlg(this);
         dlg.setMultiLayer(this);
         dlg.exec();
+        refreshLayerButtonBadges();
         pushUndoSnapshot(tr("Link Axes Scales"), snap);
     });
     menu.addSeparator();
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 18, false),
+                   tr("Enable Right-Y Axis on Active Layer (Double-Y)"), this, [this]() {
+        Graph *g = activeGraph() ? activeGraph() : layer(1);
+        if (!g || !g->plotWidget())
+            return;
+        const QString snap = captureUndoSnapshot();
+        g->enableAxis(QwtPlot::yRight, true);
+        g->setAxisBackboneVisible(QwtPlot::yRight, true);
+        if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+            sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+        g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+        g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+        if (g->axisTitle(QwtPlot::yRight).trimmed().isEmpty()) {
+            g->setAxisTitleAuto(QwtPlot::yRight, true);
+            g->refreshAutoAxisTitlesFromColumns();
+        }
+        if (d_page_unit != UnitPx && d_keep_aspect_ratio
+            && qFuzzyCompare(d_target_aspect_ratio, 1.0)) {
+            applySquareCanvasFrame70Percent();
+        } else {
+            g->plotWidget()->updateLayout();
+            g->plotWidget()->replot();
+        }
+        refreshLayerButtonBadges();
+        emit modifiedPlot();
+        pushUndoSnapshot(tr("Enable Right-Y Axis"), snap);
+    });
+    menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
+                   tr("Add Linked Overlay Layer (Twin-Axis)"), this, [this]() {
+        const QString snap = captureUndoSnapshot();
+        Graph *g = addLinkedLayer(activeGraph(), true, false, QString("x"), QString("y"));
+        if (g && g->plotWidget()) {
+            g->enableAxis(QwtPlot::yRight, true);
+            g->enableAxis(QwtPlot::xTop, false);
+            g->setAxisBackboneVisible(QwtPlot::xTop, false);
+            g->setAxisBackboneVisible(QwtPlot::yRight, true);
+            if (QwtScaleDraw *sd = g->plotWidget()->axisScaleDraw(QwtPlot::yRight))
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            g->plotWidget()->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            g->plotWidget()->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            g->plotWidget()->replot();
+            setActiveGraph(g);
+        }
+        refreshLayerButtonBadges();
+        pushUndoSnapshot(tr("Add Linked Layer"), snap);
+    });
     menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
                    tr("Add Linked Top-X / Right-Y Layer"), this, [this]() {
         const QString snap = captureUndoSnapshot();
-        addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+        Graph *g = addLinkedLayer(activeGraph(), true, true, QString("x"), QString("y"));
+        if (g)
+            setActiveGraph(g);
+        refreshLayerButtonBadges();
         pushUndoSnapshot(tr("Add Linked Layer"), snap);
     });
     menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-inset"), 18, false),
-                   tr("Add Inset Layer"), this, [this]() {
+                   tr("Add Zoom Inset Layer"), this, [this]() {
         const QString snap = captureUndoSnapshot();
         addInsetLayer(activeGraph());
+        refreshLayerButtonBadges();
         pushUndoSnapshot(tr("Add Inset Layer"), snap);
     });
     menu.addSeparator();
@@ -2375,6 +3334,7 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
                     confirmRemoveLayer();
                 else if (graphs == 1)
                     removeLayer();
+                refreshLayerButtonBadges();
                 if (graphs != prevGraphs && graphs > 0)
                     pushUndoSnapshot(tr("Remove Layer"), snap);
             });
@@ -2384,12 +3344,14 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
 
 void MultiLayer::setPageViewMode(bool enabled)
 {
+    if (enabled && d_page_unit == UnitPx && canvas && canvas->width() >= 80
+        && canvas->height() >= 80) {
+        d_base_page_px = QSize(qMax(80, qRound(canvas->width() / d_page_zoom)),
+                               qMax(80, qRound(canvas->height() / d_page_zoom)));
+    }
     d_page_view_mode = enabled;
     setPageBackgroundColor(d_page_view_mode && !d_page_bg_color.isValid() ? QColor("#FFFFFF")
                                                                           : d_page_bg_color);
-    if (canvas)
-        canvas->update();
-    emit modifiedPlot();
 }
 
 bool MultiLayer::pageViewMode() const
@@ -2400,18 +3362,11 @@ bool MultiLayer::pageViewMode() const
 void MultiLayer::setPageBackgroundColor(const QColor &color)
 {
     d_page_bg_color = color.isValid() ? color : QColor("#FFFFFF");
-    if (canvas) {
-        QPalette cpal = canvas->palette();
-        cpal.setColor(QPalette::Window, d_page_bg_color);
-        canvas->setPalette(cpal);
-        canvas->setAutoFillBackground(true);
+    syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
+                           d_page_zoom, d_page_bg_color);
+    if (canvas)
         canvas->update();
-    }
-    if (widget()) {
-        QPalette wpal = widget()->palette();
-        wpal.setColor(QPalette::Window, d_page_view_mode ? QColor("#EAEEF3") : d_page_bg_color);
-        widget()->setPalette(wpal);
-    }
+    repositionCanvasStatusPill();
     emit modifiedPlot();
 }
 
@@ -2435,6 +3390,9 @@ void MultiLayer::setPageZoom(double factor)
     const QSize newCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
                               qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
 
+    const bool prevSync = d_syncing_inset_geometries;
+    d_syncing_inset_geometries = true;
+
     QVector<bool> savedIgnore(graphsList.count(), false);
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -2445,9 +3403,12 @@ void MultiLayer::setPageZoom(double factor)
     }
 
     lastSize = newCanvasSize;
-    if (canvas)
-        canvas->resize(newCanvasSize);
-    this->resize(newCanvasSize.width(), newCanvasSize.height() + LayerButton::btnSize() + 4);
+    syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
+                           d_page_zoom, d_page_bg_color);
+    const bool freePx =
+            (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+    resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame, newCanvasSize.width(),
+                                       newCanvasSize.height(), freePx);
 
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -2464,9 +3425,13 @@ void MultiLayer::setPageZoom(double factor)
     }
     l_canvas_width = qMax(50, qRound(l_canvas_width * ratio));
     l_canvas_height = qMax(50, qRound(l_canvas_height * ratio));
+    d_syncing_inset_geometries = prevSync;
+
     syncChildOverlayAndInsetGeometries();
     lastSize = canvas ? canvas->size() : newCanvasSize;
-    emit modifiedPlot();
+    repositionCanvasStatusPill();
+    updateCanvasStatusPill();
+    syncCanvasOverlayVisibility();
 }
 
 double MultiLayer::pageZoom() const
@@ -2525,9 +3490,12 @@ void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit
     }
 
     lastSize = targetCanvasSize;
-    if (canvas)
-        canvas->resize(targetCanvasSize);
-    this->resize(targetCanvasSize.width(), targetCanvasSize.height() + LayerButton::btnSize() + 4);
+    syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
+                           d_page_zoom, d_page_bg_color);
+    const bool freePx =
+            (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+    resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
+                                       targetCanvasSize.width(), targetCanvasSize.height(), freePx);
 
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -2538,6 +3506,7 @@ void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit
     if (graphs > 0)
         fitLayersToPage();
     lastSize = canvas ? canvas->size() : targetCanvasSize;
+    repositionCanvasStatusPill();
     emit modifiedPlot();
 }
 
@@ -2584,10 +3553,38 @@ void MultiLayer::fitPageToLayers(int marginPx)
 
     d_base_page_px = QSize(qMax(80, qRound(tightSize.width() / d_page_zoom)),
                            qMax(80, qRound(tightSize.height() / d_page_zoom)));
+    graph_width = d_base_page_px.width();
+    graph_height = d_base_page_px.height();
+    switch (d_page_unit) {
+    case UnitPx:
+        d_page_width_val = d_base_page_px.width();
+        d_page_height_val = d_base_page_px.height();
+        break;
+    case UnitMm:
+        d_page_width_val = (double(d_base_page_px.width()) / 96.0) * 25.4;
+        d_page_height_val = (double(d_base_page_px.height()) / 96.0) * 25.4;
+        break;
+    case UnitCm:
+        d_page_width_val = (double(d_base_page_px.width()) / 96.0) * 2.54;
+        d_page_height_val = (double(d_base_page_px.height()) / 96.0) * 2.54;
+        break;
+    case UnitInch:
+        d_page_width_val = double(d_base_page_px.width()) / 96.0;
+        d_page_height_val = double(d_base_page_px.height()) / 96.0;
+        break;
+    }
+
     lastSize = tightSize;
-    if (canvas)
-        canvas->resize(tightSize);
-    this->resize(tightSize.width(), tightSize.height() + LayerButton::btnSize() + 4);
+    syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
+                           d_page_zoom, d_page_bg_color);
+    if (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4) {
+        if (canvas)
+            canvas->resize(tightSize);
+    }
+    const bool freePx =
+            (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+    resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame, tightSize.width(),
+                                       tightSize.height(), freePx);
     lastSize = canvas ? canvas->size() : tightSize;
 
     for (int i = 0; i < graphsList.count(); ++i) {
@@ -2596,6 +3593,7 @@ void MultiLayer::fitPageToLayers(int marginPx)
             gr->setIgnoreResizeEvents(savedIgnore[i]);
     }
 
+    repositionCanvasStatusPill();
     emit modifiedPlot();
 }
 
@@ -2905,8 +3903,10 @@ Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
     const int yMode = classifyMode(linkY, yFormula, QString("y"), QString("y1"));
 
     child->setLinkedParentLayer(parentLayer, xMode, xFormula, yMode, yFormula);
+    installLayerEventFilters(child);
     setActiveGraph(parentLayer);
-    child->raise();
+    enforceLayerZOrder();
+    refreshLayerButtonBadges();
     emit modifiedPlot();
     return child;
 }
@@ -2917,6 +3917,118 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
         sourceLayer = active_graph ? active_graph : layer(1);
     if (!sourceLayer)
         return addLayer();
+
+    Plot *srcPlot = sourceLayer->plotWidget();
+
+    auto scanYInXWindow = [&](double xMin, double xMax, double &yMinOut, double &yMaxOut) -> bool {
+        bool hasY = false;
+        yMinOut = 0.0;
+        yMaxOut = 0.0;
+        auto considerY = [&](double yv) {
+            if (!std::isfinite(yv))
+                return;
+            if (!hasY) {
+                yMinOut = yMaxOut = yv;
+                hasY = true;
+            } else {
+                if (yv < yMinOut)
+                    yMinOut = yv;
+                if (yv > yMaxOut)
+                    yMaxOut = yv;
+            }
+        };
+        auto scanCurve = [&](int cIdx) {
+            if (cIdx < 0 || cIdx >= sourceLayer->curves())
+                return;
+            const int cType = sourceLayer->curveType(cIdx);
+            if (cType == Graph::ErrorBars || cType == Graph::Pie || cType == Graph::Box)
+                return;
+            QwtPlotCurve *cv = sourceLayer->curve(cIdx);
+            if (!cv || !cv->isVisible())
+                return;
+            const int n = cv->dataSize();
+            for (int k = 0; k < n; ++k) {
+                const double xv = cv->x(k);
+                const double yv = cv->y(k);
+                if (std::isfinite(xv) && xv >= xMin && xv <= xMax)
+                    considerY(yv);
+                if (k + 1 < n) {
+                    const double xNext = cv->x(k + 1);
+                    const double yNext = cv->y(k + 1);
+                    if (std::isfinite(xv) && std::isfinite(xNext) && std::isfinite(yv)
+                        && std::isfinite(yNext) && qAbs(xNext - xv) > 1e-18) {
+                        const double segLo = qMin(xv, xNext);
+                        const double segHi = qMax(xv, xNext);
+                        if (xMin >= segLo && xMin <= segHi) {
+                            const double t = (xMin - xv) / (xNext - xv);
+                            considerY(yv + t * (yNext - yv));
+                        }
+                        if (xMax >= segLo && xMax <= segHi) {
+                            const double t = (xMax - xv) / (xNext - xv);
+                            considerY(yv + t * (yNext - yv));
+                        }
+                    }
+                }
+            }
+            if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
+                for (DataCurve *ebBase : dc->errorBarsList()) {
+                    auto *eb = dynamic_cast<QwtErrorPlotCurve *>(ebBase);
+                    if (!eb || !eb->isVisible() || eb->direction() != QwtErrorPlotCurve::Vertical)
+                        continue;
+                    const int en = qMin(n, eb->dataSize());
+                    for (int k = 0; k < en; ++k) {
+                        const double xv = cv->x(k);
+                        const double yv = cv->y(k);
+                        const double ev = eb->errorValue(k);
+                        if (std::isfinite(xv) && xv >= xMin && xv <= xMax && std::isfinite(yv)
+                            && std::isfinite(ev)) {
+                            if (eb->minusSide())
+                                considerY(yv - ev);
+                            if (eb->plusSide())
+                                considerY(yv + ev);
+                        }
+                    }
+                }
+            }
+        };
+
+        const int selIdx = sourceLayer->selectedCurveIndex();
+        if (selIdx >= 0 && selIdx < sourceLayer->curves()
+            && sourceLayer->curveType(selIdx) != Graph::ErrorBars) {
+            scanCurve(selIdx);
+        }
+        if (!hasY) {
+            for (int k = 0; k < sourceLayer->curves(); ++k)
+                scanCurve(k);
+        }
+        return hasY;
+    };
+
+    auto fallbackAxisSubRange = [&](int axisId, double frac0, double frac1, double &loOut,
+                                    double &hiOut) {
+        double aLo = 0.0;
+        double aHi = 1.0;
+        if (srcPlot) {
+            if (const QwtScaleDiv *sd = srcPlot->axisScaleDiv(axisId)) {
+                aLo = qMin(sd->lowerBound(), sd->upperBound());
+                aHi = qMax(sd->lowerBound(), sd->upperBound());
+            }
+        }
+        if (!(aHi > aLo + 1e-15)) {
+            aLo = 0.0;
+            aHi = 1.0;
+        }
+        if (srcPlot && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(axisId)) && aLo > 0.0
+            && aHi > aLo) {
+            const double l0 = std::log10(aLo);
+            const double l1 = std::log10(aHi);
+            loOut = std::pow(10.0, l0 + frac0 * (l1 - l0));
+            hiOut = std::pow(10.0, l0 + frac1 * (l1 - l0));
+        } else {
+            loOut = aLo + frac0 * (aHi - aLo);
+            hiOut = aLo + frac1 * (aHi - aLo);
+        }
+    };
 
     QRectF effectiveRoi = roiDataRect;
     if (effectiveRoi.isEmpty()) {
@@ -2931,63 +4043,141 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
             const double xMax = qMax(x0, x1);
             if (xMax > xMin + 1e-15) {
                 double yMin = 0.0, yMax = 0.0;
-                bool hasY = false;
-                auto scanCurveY = [&](QwtPlotCurve *cv) {
-                    if (!cv)
-                        return;
-                    const int n = cv->dataSize();
-                    for (int k = 0; k < n; ++k) {
-                        const double xv = cv->x(k);
-                        const double yv = cv->y(k);
-                        if (xv >= xMin && xv <= xMax && std::isfinite(yv)) {
-                            if (!hasY) {
-                                yMin = yMax = yv;
-                                hasY = true;
-                            } else {
-                                if (yv < yMin)
-                                    yMin = yv;
-                                if (yv > yMax)
-                                    yMax = yv;
-                            }
-                        }
-                    }
-                };
-                const int selIdx = sourceLayer->selectedCurveIndex();
-                if (selIdx >= 0 && selIdx < sourceLayer->curves()) {
-                    scanCurveY(sourceLayer->curve(selIdx));
-                } else {
-                    for (int k = 0; k < sourceLayer->curves(); ++k)
-                        scanCurveY(sourceLayer->curve(k));
-                }
-                if (hasY) {
-                    const double padY = (yMax > yMin) ? 0.06 * (yMax - yMin)
+                if (scanYInXWindow(xMin, xMax, yMin, yMax)) {
+                    const double padY = (yMax > yMin) ? 0.08 * (yMax - yMin)
                                                       : (qAbs(yMax) * 0.05 + 1e-6);
                     effectiveRoi = QRectF(QPointF(xMin, yMin - padY), QPointF(xMax, yMax + padY));
                 } else {
-                    effectiveRoi = QRectF(xMin, 0.0, xMax - xMin, 0.0);
+                    double fy0 = 0.0, fy1 = 1.0;
+                    fallbackAxisSubRange(QwtPlot::yLeft, 0.30, 0.70, fy0, fy1);
+                    effectiveRoi = QRectF(QPointF(xMin, fy0), QPointF(xMax, fy1));
                 }
             }
+        }
+
+        // Default auto-zoom into central [30%..70%] data range when no active ROI is present
+        if (effectiveRoi.isEmpty()) {
+            double dataXMin = 0.0, dataXMax = 0.0;
+            bool hasDataX = false;
+            for (int k = 0; k < sourceLayer->curves(); ++k) {
+                const int cType = sourceLayer->curveType(k);
+                if (cType == Graph::ErrorBars || cType == Graph::Pie || cType == Graph::Box)
+                    continue;
+                QwtPlotCurve *cv = sourceLayer->curve(k);
+                if (!cv || !cv->isVisible())
+                    continue;
+                const int n = cv->dataSize();
+                for (int p = 0; p < n; ++p) {
+                    const double xv = cv->x(p);
+                    if (!std::isfinite(xv))
+                        continue;
+                    if (!hasDataX) {
+                        dataXMin = dataXMax = xv;
+                        hasDataX = true;
+                    } else {
+                        if (xv < dataXMin)
+                            dataXMin = xv;
+                        if (xv > dataXMax)
+                            dataXMax = xv;
+                    }
+                }
+            }
+
+            double zX0 = 0.0, zX1 = 1.0;
+            const bool logX = srcPlot
+                    && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(QwtPlot::xBottom));
+            if (hasDataX && dataXMax > dataXMin + 1e-15) {
+                if (logX && dataXMin > 0.0) {
+                    const double l0 = std::log10(dataXMin);
+                    const double l1 = std::log10(dataXMax);
+                    zX0 = std::pow(10.0, l0 + 0.30 * (l1 - l0));
+                    zX1 = std::pow(10.0, l0 + 0.70 * (l1 - l0));
+                } else {
+                    zX0 = dataXMin + 0.30 * (dataXMax - dataXMin);
+                    zX1 = dataXMin + 0.70 * (dataXMax - dataXMin);
+                }
+            } else {
+                fallbackAxisSubRange(QwtPlot::xBottom, 0.30, 0.70, zX0, zX1);
+            }
+
+            double yMin = 0.0, yMax = 0.0;
+            double zY0 = 0.0, zY1 = 1.0;
+            const bool logY = srcPlot
+                    && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(QwtPlot::yLeft));
+            if (scanYInXWindow(zX0, zX1, yMin, yMax)) {
+                if (logY && yMin > 0.0 && yMax > 0.0) {
+                    const double ly0 = std::log10(yMin);
+                    const double ly1 = std::log10(yMax);
+                    const double lSpan = qMax(0.05, ly1 - ly0);
+                    zY0 = std::pow(10.0, ly0 - 0.08 * lSpan);
+                    zY1 = std::pow(10.0, ly1 + 0.08 * lSpan);
+                } else {
+                    const double padY = (yMax > yMin + 1e-15) ? 0.08 * (yMax - yMin)
+                                                              : qMax(1e-6, qAbs(yMax) * 0.08);
+                    zY0 = yMin - padY;
+                    zY1 = yMax + padY;
+                }
+            } else {
+                fallbackAxisSubRange(QwtPlot::yLeft, 0.30, 0.70, zY0, zY1);
+            }
+            effectiveRoi = QRectF(QPointF(zX0, zY0), QPointF(zX1, zY1)).normalized();
         }
     }
 
     const QRect srcGeo = sourceLayer->geometry();
-    const int ix = srcGeo.x() + qRound(0.54 * srcGeo.width());
-    const int iy = srcGeo.y() + qRound(0.08 * srcGeo.height());
-    const int iw = qMax(40, qRound(0.38 * srcGeo.width()));
-    const int ih = qMax(40, qRound(0.38 * srcGeo.height()));
+    QRectF initialNormGeo(0.54, 0.08, 0.38, 0.38);
+    int iw = qMax(40, qRound(initialNormGeo.width() * srcGeo.width()));
+    int ih = qMax(40, qRound(initialNormGeo.height() * srcGeo.height()));
+    int ix = srcGeo.x() + qRound(initialNormGeo.x() * srcGeo.width());
+    int iy = srcGeo.y() + qRound(initialNormGeo.y() * srcGeo.height());
+    if (srcPlot) {
+        srcPlot->updateLayout();
+        const QRect pCanvas = srcPlot->plotLayout()->canvasRect().translated(srcGeo.topLeft());
+        if (pCanvas.width() > 60 && pCanvas.height() > 60) {
+            iw = qBound(60, qRound(0.42 * pCanvas.width()), qMax(60, pCanvas.width() - 12));
+            ih = qBound(50, qRound(0.42 * pCanvas.height()), qMax(50, pCanvas.height() - 12));
+            ix = qMax(pCanvas.left() + 6, pCanvas.right() - iw - 10);
+            iy = pCanvas.top() + 10;
+            iy = qBound(pCanvas.top() + 6, iy, qMax(pCanvas.top() + 6, pCanvas.bottom() - ih - 6));
+            if (srcGeo.width() >= 20 && srcGeo.height() >= 20) {
+                initialNormGeo = QRectF(double(ix - srcGeo.x()) / double(srcGeo.width()),
+                                        double(iy - srcGeo.y()) / double(srcGeo.height()),
+                                        double(iw) / double(srcGeo.width()),
+                                        double(ih) / double(srcGeo.height()));
+            }
+        }
+    }
+
+    const bool prevSync = d_syncing_inset_geometries;
+    d_syncing_inset_geometries = true;
 
     Graph *inset = addLayer(ix, iy, iw, ih);
-    if (!inset)
+    if (!inset) {
+        d_syncing_inset_geometries = prevSync;
         return nullptr;
+    }
 
-    d_inset_specs[inset] = qMakePair(QPointer<Graph>(sourceLayer), QRectF(0.54, 0.08, 0.38, 0.38));
+    InsetSpec spec;
+    spec.sourceLayer = QPointer<Graph>(sourceLayer);
+    spec.normGeo = initialNormGeo;
+    spec.zoomDataRect = effectiveRoi.normalized();
+    spec.showConnectors = true;
+    d_inset_specs[inset] = spec;
+
     inset->setIgnoreResizeEvents(true);
+    if (!effectiveRoi.isNull()
+        && (qAbs(effectiveRoi.width()) > 1e-15 || qAbs(effectiveRoi.height()) > 1e-15)) {
+        inset->enableAutoscaling(false);
+    }
     inset->removeLegend();
     inset->setTitle("");
-    inset->setBackgroundColor(QColor("#FFFFFF"));
+    inset->setBackgroundColor(QColor(255, 255, 255, 0));
     inset->setCanvasBackground(QColor("#FFFFFF"));
-    if (inset->plotWidget())
+    inset->setAutoFillBackground(false);
+    if (inset->plotWidget()) {
+        inset->plotWidget()->setAutoFillBackground(false);
         inset->plotWidget()->setMargin(4);
+    }
 
     for (int i = 0; i < sourceLayer->curves(); ++i) {
         QwtPlotItem *it = sourceLayer->plotItem(i);
@@ -3030,24 +4220,62 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
         }
     }
 
+    // Clone attached error bar curves onto the inset layer
+    for (int i = 0; i < sourceLayer->curves(); ++i) {
+        if (sourceLayer->curveType(i) != Graph::ErrorBars)
+            continue;
+        auto *srcErr = dynamic_cast<QwtErrorPlotCurve *>(sourceLayer->curve(i));
+        if (!srcErr || !srcErr->table() || !srcErr->masterCurve())
+            continue;
+        inset->addErrorBars(srcErr->masterCurve()->title().text(), srcErr->table(),
+                            srcErr->title().text(), srcErr->direction(), qMax(1, srcErr->width()),
+                            srcErr->capLength(), srcErr->color(), srcErr->throughSymbol(),
+                            srcErr->minusSide(), srcErr->plusSide());
+        if (QwtPlotCurve *dstErr = inset->curve(inset->curves() - 1))
+            dstErr->setVisible(srcErr->isVisible());
+    }
+
     inset->removeLegend();
+    const int srcTickPt = sourceLayer->axisFont(QwtPlot::yLeft).pointSize();
+    const int insetTickPt = (srcTickPt >= 20) ? qBound(12, srcTickPt / 2, 16) : 8;
+    QFont insetFont("Arial", insetTickPt, QFont::Normal, false);
+    insetFont.setHintingPreference(QFont::PreferNoHinting);
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        inset->setAxisTitleAuto(a, false);
         inset->setAxisTitle(a, QString());
-        inset->setAxisFont(a, QFont("Arial", 9, QFont::Normal, false));
-        inset->setAxisTitleFont(a, QFont("Arial", 9, QFont::Normal, false));
+        inset->setAxisFont(a, insetFont);
+        inset->setAxisTitleFont(a, insetFont);
     }
     inset->applyFramePreset(Graph::FrameBoxInwardTicks);
+    inset->setTicksLength(2, 4);
+    inset->setAxesLinewidth(1);
+
+    const int xScaleType = (srcPlot && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(QwtPlot::xBottom)))
+            ? 1
+            : 0;
+    const int yScaleType = (srcPlot && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(QwtPlot::yLeft)))
+            ? 1
+            : 0;
+    const bool xInv = srcPlot && srcPlot->axisScaleEngine(QwtPlot::xBottom)
+            && srcPlot->axisScaleEngine(QwtPlot::xBottom)->testAttribute(QwtScaleEngine::Inverted);
+    const bool yInv = srcPlot && srcPlot->axisScaleEngine(QwtPlot::yLeft)
+            && srcPlot->axisScaleEngine(QwtPlot::yLeft)->testAttribute(QwtScaleEngine::Inverted);
 
     if (!effectiveRoi.isNull()
         && (qAbs(effectiveRoi.width()) > 1e-15 || qAbs(effectiveRoi.height()) > 1e-15)) {
         inset->enableAutoscaling(false);
         if (qAbs(effectiveRoi.width()) > 1e-15) {
-            inset->setScale(QwtPlot::xBottom, qMin(effectiveRoi.left(), effectiveRoi.right()),
-                            qMax(effectiveRoi.left(), effectiveRoi.right()));
+            const double xLo = qMin(effectiveRoi.left(), effectiveRoi.right());
+            const double xHi = qMax(effectiveRoi.left(), effectiveRoi.right());
+            const int inXMaj = (iw < 150) ? 2 : 3;
+            inset->setScale(QwtPlot::xBottom, xLo, xHi, 0.0, inXMaj, 1, xScaleType, xInv);
+            inset->setScale(QwtPlot::xTop, xLo, xHi, 0.0, inXMaj, 1, xScaleType, xInv);
         }
         if (qAbs(effectiveRoi.height()) > 1e-15) {
-            inset->setScale(QwtPlot::yLeft, qMin(effectiveRoi.top(), effectiveRoi.bottom()),
-                            qMax(effectiveRoi.top(), effectiveRoi.bottom()));
+            const double yLo = qMin(effectiveRoi.top(), effectiveRoi.bottom());
+            const double yHi = qMax(effectiveRoi.top(), effectiveRoi.bottom());
+            inset->setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 3, 1, yScaleType, yInv);
+            inset->setScale(QwtPlot::yRight, yLo, yHi, 0.0, 3, 1, yScaleType, yInv);
         }
     } else {
         inset->setAutoScale();
@@ -3059,7 +4287,13 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
         inset->plotWidget()->updateLayout();
         inset->plotWidget()->replot();
     }
-    inset->raise();
+    d_inset_specs[inset].zoomDataRect = effectiveRoi.normalized();
+    d_syncing_inset_geometries = prevSync;
+
+    installLayerEventFilters(inset);
+    enforceLayerZOrder();
+    refreshLayerButtonBadges();
+    syncCanvasOverlayVisibility();
     emit modifiedPlot();
     return inset;
 }
@@ -3207,10 +4441,24 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             }
             gr->setBackgroundColor(QColor(Qt::white));
             gr->setCanvasBackground(QColor(Qt::white));
+        } else if (isInset) {
+            gr->setBackgroundColor(QColor(255, 255, 255, 0));
+            gr->setCanvasBackground(QColor(Qt::white));
+            gr->setAutoFillBackground(false);
+            if (gr->plotWidget()) {
+                gr->plotWidget()->setAutoFillBackground(false);
+                gr->plotWidget()->setMargin(4);
+            }
         }
 
-        gr->setAxesLinewidth(axisLw);
-        gr->changeTicksLength(minTickLen, majTickLen);
+        if (isInset) {
+            gr->setAxesLinewidth((preset == StylePresentationSlide28pt) ? 2 : 1);
+            gr->setTicksLength((preset == StylePresentationSlide28pt) ? 3 : 2,
+                               (preset == StylePresentationSlide28pt) ? 6 : 4);
+        } else {
+            gr->setAxesLinewidth(axisLw);
+            gr->changeTicksLength(minTickLen, majTickLen);
+        }
 
         QwtPlot *plot = gr->plotWidget();
         QwtText pTitle = plot->title();
@@ -3220,19 +4468,16 @@ void MultiLayer::applyStylePreset(StylePreset preset)
         pTitle.setFont(titleFnt);
         plot->setTitle(pTitle);
 
-        if (preset == StyleISIJJournal85mm) {
+        if (preset == StyleISIJJournal85mm && !isInset) {
             gr->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
             gr->refreshAutoAxisTitlesFromColumns();
         }
 
+        const int insetPt = (preset == StylePresentationSlide28pt) ? 14 : 8;
         for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-            QFont useTick = isInset
-                    ? QFont("Arial", qMax(6, tickFnt.pointSize() - 2), QFont::Normal, false)
-                    : tickFnt;
+            QFont useTick = isInset ? QFont("Arial", insetPt, QFont::Normal, false) : tickFnt;
             useTick.setHintingPreference(QFont::PreferNoHinting);
-            QFont useTitle = isInset
-                    ? QFont("Arial", qMax(7, titleFnt.pointSize() - 2), QFont::Normal, false)
-                    : titleFnt;
+            QFont useTitle = isInset ? QFont("Arial", insetPt, QFont::Normal, false) : titleFnt;
             useTitle.setHintingPreference(QFont::PreferNoHinting);
             gr->setAxisFont(a, useTick);
             gr->setAxisTitleFont(a, useTitle);
@@ -3250,15 +4495,38 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 static_cast<Spectrogram *>(it)->enforceColorBarArialFont();
         }
 
+        static const QRegularExpression kPanelLabelMarkerRx(
+                QStringLiteral("^\\s*\\(?[A-Za-z0-9]{1,2}\\)?\\.?\\s*$"));
         gr->setTextMarkerDefaults(legFrame, legFnt, QColor(Qt::black), legBg);
         const QVector<int> txtKeys = gr->textMarkerKeys();
         for (int k = 0; k < txtKeys.size(); ++k) {
             Legend *mrk = gr->textMarker(txtKeys[k]);
             if (!mrk)
                 continue;
-            const bool isCurveLegend = (mrk == gr->legend() || mrk->text().contains("\\c{")
-                                        || mrk->text().contains("\\p{"));
-            mrk->setFont(legFnt);
+            const QString rawMrkText = mrk->text();
+            const QString trimmedMrkText = rawMrkText.trimmed();
+            const bool isCurveLegend = (mrk == gr->legend()
+                                        || rawMrkText.contains(QLatin1String("\\c{"))
+                                        || rawMrkText.contains(QLatin1String("\\p{")));
+            const bool isPanelLabel = kPanelLabelMarkerRx.match(trimmedMrkText).hasMatch();
+            const bool isFitCallout = trimmedMrkText.contains(QStringLiteral("R\u00B2"))
+                    || trimmedMrkText.contains(QLatin1String("R^2"))
+                    || trimmedMrkText.contains(QLatin1String("Chi^2"))
+                    || (trimmedMrkText.contains(QLatin1Char('='))
+                        && trimmedMrkText.contains(QStringLiteral("\u00B1")));
+            const int curPt = mrk->font().pointSize();
+            const int maxAutoScalePt = (preset == StylePresentationSlide28pt) ? 14 : 12;
+            const bool shouldApplyLegFnt = isCurveLegend || isPanelLabel || isFitCallout
+                    || (curPt > 0 && curPt <= maxAutoScalePt);
+            if (shouldApplyLegFnt) {
+                mrk->setFont(legFnt);
+            } else {
+                QFont customFnt = mrk->font();
+                customFnt.setFamily(QStringLiteral("Arial"));
+                customFnt.setBold(false);
+                customFnt.setHintingPreference(QFont::PreferNoHinting);
+                mrk->setFont(customFnt);
+            }
             if (isCurveLegend || mrk->textColor().lightness() <= 200)
                 mrk->setTextColor(QColor(Qt::black));
             if (isCurveLegend) {
@@ -3292,14 +4560,20 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 c->setSymbol(sym);
             }
         }
-        if ((preset == StyleISIJJournal85mm || preset == StylePresentationSlide28pt)
+        if ((preset == StyleISIJJournal85mm || preset == StylePresentationSlide28pt || isInset)
             && !isLinkedOverlay && !gr->isTernaryPlot() && !gr->isPiePlot()) {
             plot->updateAxes();
             for (int a = 0; a < QwtPlot::axisCnt; ++a) {
                 if (gr->hasColorScaleOnAxis(a))
                     continue;
+                const int insetMaj =
+                        (a == QwtPlot::xBottom || a == QwtPlot::xTop) ? 2 : 3;
                 if ((a == QwtPlot::xTop || a == QwtPlot::yRight)
                     && !gr->plotWidget()->hasVisibleItemOnAxis(a)) {
+                    if (isInset) {
+                        plot->setAxisMaxMajor(a, insetMaj);
+                        plot->setAxisMaxMinor(a, 1);
+                    }
                     continue;
                 }
                 const QwtScaleEngine *se = plot->axisScaleEngine(a);
@@ -3308,11 +4582,13 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                     continue;
                 const bool isLog = Plot::isLog10ScaleEngine(se);
                 const bool isInv = se->testAttribute(QwtScaleEngine::Inverted);
-                const int targetMinTicks = isLog ? 8 : 1;
-                const int maxMinInt = isLog ? 9 : 2;
+                const int targetMinTicks = isInset ? 1 : (isLog ? 8 : 1);
+                const int maxMinInt = isInset ? 2 : (isLog ? 9 : 2);
                 const double lo = qMin(sd->lowerBound(), sd->upperBound());
                 const double hi = qMax(sd->lowerBound(), sd->upperBound());
                 const QwtValueList majTicks = sd->ticks(QwtScaleDiv::MajorTick);
+                if (isInset)
+                    plot->setAxisMaxMajor(a, insetMaj);
                 plot->setAxisMaxMinor(a, targetMinTicks);
 
                 if (gr->axisBreak(a).enabled) {
@@ -3323,12 +4599,33 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 if (!(hi > lo) || !std::isfinite(lo) || !std::isfinite(hi))
                     continue;
 
+                bool crowdedHorizTicks = false;
+                if (!isInset && !isLog && a == QwtPlot::xBottom && majTicks.size() > 5) {
+                    const QFontMetrics tfm(gr->axisFont(a));
+                    int sumLabelW = 0;
+                    for (int ti = 0; ti < majTicks.size(); ++ti) {
+                        const QString lbl = plot->axisScaleDraw(a)
+                                ? plot->axisScaleDraw(a)->label(majTicks[ti]).text()
+                                : QString::number(majTicks[ti], 'g', 6);
+                        sumLabelW += tfm.horizontalAdvance(lbl) + 8;
+                    }
+                    const int estCanvasW =
+                            (plot->plotLayout() && plot->plotLayout()->canvasRect().width() >= 80)
+                            ? plot->plotLayout()->canvasRect().width()
+                            : qMax(140, qRound(0.70 * qMax(160, canvas ? canvas->width() : 321)));
+                    if (sumLabelW > qRound(0.88 * double(estCanvasW)))
+                        crowdedHorizTicks = true;
+                }
+
                 int maj = plot->axisMaxMajor(a);
-                if (preset == StylePresentationSlide28pt)
-                    maj = qMin(maj, 5);
-                double step = gr->axisStep(a);
-                if (step <= 0.0 && !isLog && majTicks.size() >= 2) {
-                    if (!(preset == StylePresentationSlide28pt && majTicks.size() > 6))
+                if (isInset)
+                    maj = insetMaj;
+                else if (preset == StylePresentationSlide28pt || crowdedHorizTicks)
+                    maj = qMin(maj, crowdedHorizTicks ? 4 : 5);
+                double step = isInset ? 0.0 : gr->axisStep(a);
+                if (!isInset && step <= 0.0 && !isLog && majTicks.size() >= 2) {
+                    if (!((preset == StylePresentationSlide28pt && majTicks.size() > 6)
+                          || crowdedHorizTicks))
                         step = std::fabs(majTicks[1] - majTicks[0]);
                 }
 
@@ -3401,6 +4698,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
         gr->plotWidget()->updateLayout();
         gr->plotWidget()->replot();
     }
+    syncChildOverlayAndInsetGeometries();
     emit modifiedPlot();
     pushUndoSnapshot(undoLabel, beforeSnap);
 }
@@ -3463,15 +4761,16 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         d_base_page_px = QSize(qMax(120, qRound(pxW)), qMax(120, qRound(pxH)));
         graph_width = d_base_page_px.width();
         graph_height = d_base_page_px.height();
+        syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode,
+                               d_base_page_px, d_page_zoom, d_page_bg_color);
         if (d_page_unit != UnitPx || d_page_view_mode || qAbs(d_page_zoom - 1.0) > 1e-4) {
             const QSize targetCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
                                          qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
             lastSize = targetCanvasSize;
-            if (canvas)
-                canvas->resize(targetCanvasSize);
         }
         if (canvas)
             canvas->update();
+        repositionCanvasStatusPill();
         updateCanvasStatusPill();
         return true;
     }
@@ -3485,7 +4784,52 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         return true;
     }
 
-    if (trimmed.startsWith("<ToriInsetSpec")) {
+    if (trimmed.startsWith("<ToriInset\t")) {
+        const QStringList parts = trimmed.split(QLatin1Char('\t'));
+        if (parts.size() >= 7) {
+            auto cleanToken = [](QString tok) -> QString {
+                tok = tok.trimmed();
+                if (tok.endsWith(QLatin1String("/>")))
+                    tok.chop(2);
+                else if (tok.endsWith(QLatin1Char('>')))
+                    tok.chop(1);
+                return tok.trimmed();
+            };
+            PendingInsetSpec ps;
+            ps.childIdx = cleanToken(parts.at(1)).toInt();
+            ps.sourceIdx = cleanToken(parts.at(2)).toInt();
+            ps.relRect = QRectF(cleanToken(parts.at(3)).toDouble(),
+                                cleanToken(parts.at(4)).toDouble(),
+                                cleanToken(parts.at(5)).toDouble(),
+                                cleanToken(parts.at(6)).toDouble());
+            if (parts.size() >= 8)
+                ps.showConnectors = (cleanToken(parts.at(7)).toInt() != 0);
+            if (parts.size() >= 12) {
+                ps.zoomDataRect = QRectF(cleanToken(parts.at(8)).toDouble(),
+                                         cleanToken(parts.at(9)).toDouble(),
+                                         cleanToken(parts.at(10)).toDouble(),
+                                         cleanToken(parts.at(11)).toDouble());
+            }
+            if (ps.childIdx >= 0 && ps.sourceIdx >= 0) {
+                d_pending_inset_specs.append(ps);
+                if (ps.childIdx < graphsList.count() && ps.sourceIdx < graphsList.count()) {
+                    Graph *cGr = (Graph *)graphsList.at(ps.childIdx);
+                    Graph *sGr = (Graph *)graphsList.at(ps.sourceIdx);
+                    if (cGr && sGr && cGr != sGr) {
+                        InsetSpec spec;
+                        spec.sourceLayer = QPointer<Graph>(sGr);
+                        spec.normGeo = ps.relRect;
+                        spec.zoomDataRect = ps.zoomDataRect;
+                        spec.showConnectors = ps.showConnectors;
+                        d_inset_specs[cGr] = spec;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    if (trimmed.startsWith("<ToriInsetSpec") || trimmed.startsWith("<ToriInset ")) {
         const QMap<QString, QString> a = parseAttrs(trimmed);
         PendingInsetSpec ps;
         ps.childIdx = a.value("child", "-1").toInt();
@@ -3495,13 +4839,26 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
                             a.value("y", "0.08").toDouble(),
                             a.value("w", "0.38").toDouble(),
                             a.value("h", "0.38").toDouble());
+        ps.showConnectors = (a.value("connectors", "1").toInt() != 0);
+        if (a.contains("rx") && a.contains("ry") && a.contains("rw") && a.contains("rh")) {
+            ps.zoomDataRect = QRectF(a.value("rx", "0").toDouble(),
+                                     a.value("ry", "0").toDouble(),
+                                     a.value("rw", "0").toDouble(),
+                                     a.value("rh", "0").toDouble());
+        }
         if (ps.childIdx >= 0 && ps.sourceIdx >= 0) {
             d_pending_inset_specs.append(ps);
             if (ps.childIdx < graphsList.count() && ps.sourceIdx < graphsList.count()) {
                 Graph *cGr = (Graph *)graphsList.at(ps.childIdx);
                 Graph *sGr = (Graph *)graphsList.at(ps.sourceIdx);
-                if (cGr && sGr)
-                    d_inset_specs[cGr] = qMakePair(QPointer<Graph>(sGr), ps.relRect);
+                if (cGr && sGr && cGr != sGr) {
+                    InsetSpec spec;
+                    spec.sourceLayer = QPointer<Graph>(sGr);
+                    spec.normGeo = ps.relRect;
+                    spec.zoomDataRect = ps.zoomDataRect;
+                    spec.showConnectors = ps.showConnectors;
+                    d_inset_specs[cGr] = spec;
+                }
             }
         }
         return true;
@@ -3515,13 +4872,7 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         const QString pat = a.value("pattern", "(%a)");
         d_panel_label_pattern = pat.isEmpty() ? QStringLiteral("(%a)") : pat;
         d_panel_label_font_pt = qMax(0, a.value("fontPt", "0").toInt());
-        if (widget()) {
-            if (QWidget *ov = widget()->findChild<QWidget *>(
-                        QStringLiteral("MultiLayerPanelLabelOverlay"))) {
-                ov->setVisible(d_panel_labels_enabled);
-                ov->update();
-            }
-        }
+        syncCanvasOverlayVisibility();
         return true;
     }
 
@@ -3536,8 +4887,25 @@ void MultiLayer::finalizePhase5Restore()
             Graph *cGr = (Graph *)graphsList.at(ps.childIdx);
             Graph *sGr = (Graph *)graphsList.at(ps.sourceIdx);
             if (cGr && sGr && cGr != sGr) {
-                d_inset_specs[cGr] = qMakePair(QPointer<Graph>(sGr), ps.relRect);
+                InsetSpec spec;
+                spec.sourceLayer = QPointer<Graph>(sGr);
+                spec.normGeo = ps.relRect;
+                spec.showConnectors = ps.showConnectors;
+                spec.zoomDataRect = ps.zoomDataRect;
+                if (spec.zoomDataRect.isEmpty() && cGr->plotWidget()) {
+                    const QwtScaleDiv *xsd = cGr->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+                    const QwtScaleDiv *ysd = cGr->plotWidget()->axisScaleDiv(QwtPlot::yLeft);
+                    if (xsd && ysd) {
+                        const double xLo = qMin(xsd->lowerBound(), xsd->upperBound());
+                        const double xHi = qMax(xsd->lowerBound(), xsd->upperBound());
+                        const double yLo = qMin(ysd->lowerBound(), ysd->upperBound());
+                        const double yHi = qMax(ysd->lowerBound(), ysd->upperBound());
+                        spec.zoomDataRect = QRectF(QPointF(xLo, yLo), QPointF(xHi, yHi));
+                    }
+                }
+                d_inset_specs[cGr] = spec;
                 cGr->setIgnoreResizeEvents(true);
+                installLayerEventFilters(cGr);
             }
         }
     }
@@ -3563,13 +4931,15 @@ void MultiLayer::finalizePhase5Restore()
                 gr->setAttribute(Qt::WA_TranslucentBackground, true);
                 gr->setLinkedParentLayer(parentLayer, gr->xLinkMode(), gr->xLinkExpr(),
                                          gr->yLinkMode(), gr->yLinkExpr());
-                gr->raise();
+                installLayerEventFilters(gr);
             }
             gr->clearPendingLinkedParentIndex();
         }
     }
 
     syncChildOverlayAndInsetGeometries();
+    refreshLayerButtonBadges();
+    syncCanvasOverlayVisibility();
     updateCanvasStatusPill();
 }
 
@@ -3644,7 +5014,8 @@ void MultiLayer::repositionCanvasStatusPill()
         if (QWidget *ov = widget()->findChild<QWidget *>(
                     QStringLiteral("MultiLayerPanelLabelOverlay"))) {
             ov->setGeometry(canvas->geometry());
-            if (d_panel_labels_enabled) {
+            const bool showOv = d_panel_labels_enabled || !d_inset_specs.isEmpty();
+            if (showOv) {
                 ov->show();
                 ov->raise();
             } else {
@@ -3662,14 +5033,42 @@ void MultiLayer::repositionCanvasStatusPill()
 
     const QSize hostSz = widget()->size();
     const QSize refSz = (hostSz.width() >= 140 && hostSz.height() >= 90) ? hostSz : size();
+    bool anyExporting = property("isExporting").toBool();
+    if (!anyExporting) {
+        for (int i = 0; i < graphsList.count(); ++i) {
+            if (const Graph *gr = qobject_cast<const Graph *>(graphsList.at(i))) {
+                if (gr->isExporting()) {
+                    anyExporting = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (refSz.width() < 260 || refSz.height() < 200 || anyExporting
+        || d_canvas_status_pill->text().trimmed().isEmpty()) {
+        d_canvas_status_pill->hide();
+        return;
+    }
+
+    int sbRight = 0;
+    int sbBottom = 0;
+    if (QScrollArea *cs = widget()->findChild<QScrollArea *>(
+                QStringLiteral("MultiLayerCanvasScroll"))) {
+        if (cs->verticalScrollBar() && cs->verticalScrollBar()->isVisible())
+            sbRight = cs->verticalScrollBar()->width();
+        if (cs->horizontalScrollBar() && cs->horizontalScrollBar()->isVisible())
+            sbBottom = cs->horizontalScrollBar()->height();
+    }
     d_canvas_status_pill->adjustSize();
     const QSize pillSz =
             d_canvas_status_pill->sizeHint().expandedTo(d_canvas_status_pill->minimumSizeHint());
-    const int pw = qMin(pillSz.width(), qMax(80, refSz.width() - 16));
+    const int pw = qMin(pillSz.width(), qMax(80, refSz.width() - 16 - sbRight));
     const int ph = qMax(22, pillSz.height());
-    const int x = qMax(8, refSz.width() - pw - 10);
-    const int y = qMax(LayerButton::btnSize() + 8, refSz.height() - ph - 8);
+    const int x = qMax(8, refSz.width() - pw - 10 - sbRight);
+    const int y = qMax(LayerButton::btnSize() + 8, refSz.height() - ph - 8 - sbBottom);
     d_canvas_status_pill->setGeometry(x, y, pw, ph);
+    if (!d_canvas_status_pill->isVisible())
+        d_canvas_status_pill->show();
     d_canvas_status_pill->raise();
 }
 
@@ -4047,22 +5446,30 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
             }
         }
         lastSize = targetCanvasSz;
-        if (canvas->size() != targetCanvasSz)
-            canvas->resize(targetCanvasSz);
+        syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode,
+                               d_base_page_px, d_page_zoom, d_page_bg_color);
+        if (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4) {
+            if (canvas->size() != targetCanvasSz)
+                canvas->resize(targetCanvasSz);
+        }
         if (!restoreGeometry && !isMaximized() && parentWidget()) {
-            const QSize wantWin(targetCanvasSz.width(),
-                                targetCanvasSz.height() + LayerButton::btnSize() + 4);
-            if (d_page_unit != UnitPx || d_page_view_mode || qAbs(d_page_zoom - 1.0) > 1e-4) {
-                this->resize(wantWin);
+            const bool freePx =
+                    (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+            if (!freePx) {
+                resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
+                                                   targetCanvasSz.width(), targetCanvasSz.height(),
+                                                   false);
             } else {
-                const QSize unitPxWin =
-                        (savedNormalWinSz.width() >= 120 && savedNormalWinSz.height() >= 120)
-                        ? savedNormalWinSz
-                        : wantWin;
                 if (preservedWindowGeo.isValid() && this->pos() != preservedWindowGeo.topLeft())
                     this->move(preservedWindowGeo.topLeft());
-                if (this->size() != unitPxWin)
-                    this->resize(unitPxWin);
+                if (savedNormalWinSz.width() >= 120 && savedNormalWinSz.height() >= 120) {
+                    if (this->size() != savedNormalWinSz)
+                        this->resize(savedNormalWinSz);
+                } else {
+                    resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
+                                                       targetCanvasSz.width(),
+                                                       targetCanvasSz.height(), true);
+                }
             }
         }
         for (int k = 0; k < graphsList.count(); ++k) {
@@ -4134,19 +5541,104 @@ void MultiLayer::setPanelLabels(bool enabled, PanelLabelPlacement placement,
             arrangeLayers(false, false);
     }
 
-    if (widget()) {
-        if (QWidget *ov = widget()->findChild<QWidget *>(
-                    QStringLiteral("MultiLayerPanelLabelOverlay"))) {
-            if (canvas)
-                ov->setGeometry(canvas->geometry());
-            ov->setVisible(d_panel_labels_enabled);
-            if (d_panel_labels_enabled)
-                ov->raise();
-            ov->update();
-        }
-    }
+    syncCanvasOverlayVisibility();
     repositionCanvasStatusPill();
     emit modifiedPlot();
+}
+
+QRect MultiLayer::panelLabelsBoundingRect() const
+{
+    if (!d_panel_labels_enabled || graphsList.isEmpty())
+        return QRect();
+
+    QRect bounds;
+    int panelIdx = 0;
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr || !gr->plotWidget())
+            continue;
+        if (gr->linkedParentLayer() || d_inset_specs.contains(gr))
+            continue;
+
+        Plot *plot = gr->plotWidget();
+        plot->updateLayout();
+        const QRect innerCanvas = plot->plotLayout()->canvasRect().translated(gr->pos());
+        if (innerCanvas.width() < 20 || innerCanvas.height() < 20) {
+            ++panelIdx;
+            continue;
+        }
+
+        int pt = d_panel_label_font_pt;
+        if (pt <= 0) {
+            const int titlePt = gr->axisTitleFont(QwtPlot::yLeft).pointSize();
+            pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40) : 12;
+        }
+
+        QFont fnt(QStringLiteral("Arial"), pt, QFont::Normal, false);
+        fnt.setBold(false);
+        fnt.setHintingPreference(QFont::PreferNoHinting);
+        const QFontMetrics fm(fnt);
+        const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
+        const int textW = qMax(12, fm.horizontalAdvance(text));
+
+        int cx = innerCanvas.left() + 8;
+        int cy = innerCanvas.top() + 6 + fm.ascent();
+        if (d_panel_label_placement == PanelOutsideTopLeft) {
+            const int minOutsideDx = qMax(32, textW + 6);
+            cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
+            cy = innerCanvas.top() - 6;
+        } else if (d_panel_label_placement == PanelInsideTopLeft && !d_inset_specs.isEmpty()) {
+            const QRectF srcCanvasRectF(innerCanvas);
+            const QwtScaleMap xMap = plot->canvasMap(QwtPlot::xBottom);
+            const QwtScaleMap yMap = plot->canvasMap(QwtPlot::yLeft);
+            for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
+                Graph *inset = it.key();
+                const InsetSpec &spec = it.value();
+                if (!inset || inset->isHidden() || spec.sourceLayer.data() != gr)
+                    continue;
+                QRectF zoomData = spec.zoomDataRect;
+                if (Plot *inPlot = inset->plotWidget()) {
+                    const QwtScaleDiv *ixSd = inPlot->axisScaleDiv(QwtPlot::xBottom);
+                    const QwtScaleDiv *iySd = inPlot->axisScaleDiv(QwtPlot::yLeft);
+                    if (ixSd && iySd) {
+                        const double xLo = qMin(ixSd->lowerBound(), ixSd->upperBound());
+                        const double xHi = qMax(ixSd->lowerBound(), ixSd->upperBound());
+                        const double yLo = qMin(iySd->lowerBound(), iySd->upperBound());
+                        const double yHi = qMax(iySd->lowerBound(), iySd->upperBound());
+                        if (std::isfinite(xLo) && std::isfinite(xHi) && std::isfinite(yLo)
+                            && std::isfinite(yHi) && (xHi > xLo + 1e-15 || yHi > yLo + 1e-15)) {
+                            zoomData = QRectF(QPointF(xLo, yLo), QPointF(xHi, yHi));
+                        }
+                    }
+                }
+                if (zoomData.isEmpty() && qAbs(zoomData.width()) <= 1e-15
+                    && qAbs(zoomData.height()) <= 1e-15)
+                    continue;
+                const double rx0 = innerCanvas.left() + xMap.xTransform(zoomData.left());
+                const double rx1 = innerCanvas.left() + xMap.xTransform(zoomData.right());
+                const double ry0 = innerCanvas.top() + yMap.xTransform(zoomData.top());
+                const double ry1 = innerCanvas.top() + yMap.xTransform(zoomData.bottom());
+                if (!std::isfinite(rx0) || !std::isfinite(rx1) || !std::isfinite(ry0)
+                    || !std::isfinite(ry1))
+                    continue;
+                const QRectF rawRoi(QPointF(qMin(rx0, rx1), qMin(ry0, ry1)),
+                                    QPointF(qMax(rx0, rx1), qMax(ry0, ry1)));
+                const QRectF roiBox = rawRoi.intersected(srcCanvasRectF);
+                if (roiBox.width() < 2.0 || roiBox.height() < 2.0)
+                    continue;
+                const QRectF candBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
+                if (roiBox.intersects(candBox)) {
+                    cx = qMin(qRound(roiBox.right()) + 24,
+                              qMax(innerCanvas.left() + 8, innerCanvas.right() - textW - 6));
+                }
+            }
+        }
+
+        const QRect glyphBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
+        bounds = bounds.isEmpty() ? glyphBox : bounds.united(glyphBox);
+        ++panelIdx;
+    }
+    return bounds;
 }
 
 void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) const
@@ -4166,9 +5658,10 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
             continue;
 
         Plot *plot = gr->plotWidget();
-        plot->updateLayout();
-        const QRect innerRect = plot->plotLayout()->canvasRect().translated(gr->pos() + originOffset);
-        if (innerRect.width() < 20 || innerRect.height() < 20) {
+        if (painter->device() && painter->device()->devType() != QInternal::Widget)
+            plot->updateLayout();
+        const QRect innerCanvas = plot->plotLayout()->canvasRect().translated(gr->pos());
+        if (innerCanvas.width() < 20 || innerCanvas.height() < 20) {
             ++panelIdx;
             continue;
         }
@@ -4187,15 +5680,245 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
 
         const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
         const QFontMetrics fm(fnt);
+        const int textW = qMax(12, fm.horizontalAdvance(text));
 
-        int tx = innerRect.left() + 8;
-        int ty = innerRect.top() + 6 + fm.ascent();
+        int cx = innerCanvas.left() + 8;
+        int cy = innerCanvas.top() + 6 + fm.ascent();
         if (d_panel_label_placement == PanelOutsideTopLeft) {
-            tx = qMax(originOffset.x() + 3, gr->pos().x() + originOffset.x() + 2);
-            ty = qMax(originOffset.y() + fm.ascent() + 2, innerRect.top() - 5);
+            const int minOutsideDx = qMax(32, textW + 6);
+            cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
+            cy = innerCanvas.top() - 6;
+        } else if (d_panel_label_placement == PanelInsideTopLeft && !d_inset_specs.isEmpty()) {
+            const QRectF srcCanvasRectF(innerCanvas);
+            const QwtScaleMap xMap = plot->canvasMap(QwtPlot::xBottom);
+            const QwtScaleMap yMap = plot->canvasMap(QwtPlot::yLeft);
+            for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
+                Graph *inset = it.key();
+                const InsetSpec &spec = it.value();
+                if (!inset || inset->isHidden() || spec.sourceLayer.data() != gr)
+                    continue;
+                QRectF zoomData = spec.zoomDataRect;
+                if (Plot *inPlot = inset->plotWidget()) {
+                    const QwtScaleDiv *ixSd = inPlot->axisScaleDiv(QwtPlot::xBottom);
+                    const QwtScaleDiv *iySd = inPlot->axisScaleDiv(QwtPlot::yLeft);
+                    if (ixSd && iySd) {
+                        const double xLo = qMin(ixSd->lowerBound(), ixSd->upperBound());
+                        const double xHi = qMax(ixSd->lowerBound(), ixSd->upperBound());
+                        const double yLo = qMin(iySd->lowerBound(), iySd->upperBound());
+                        const double yHi = qMax(iySd->lowerBound(), iySd->upperBound());
+                        if (std::isfinite(xLo) && std::isfinite(xHi) && std::isfinite(yLo)
+                            && std::isfinite(yHi) && (xHi > xLo + 1e-15 || yHi > yLo + 1e-15)) {
+                            zoomData = QRectF(QPointF(xLo, yLo), QPointF(xHi, yHi));
+                        }
+                    }
+                }
+                if (zoomData.isEmpty() && qAbs(zoomData.width()) <= 1e-15
+                    && qAbs(zoomData.height()) <= 1e-15)
+                    continue;
+                const double rx0 = innerCanvas.left() + xMap.xTransform(zoomData.left());
+                const double rx1 = innerCanvas.left() + xMap.xTransform(zoomData.right());
+                const double ry0 = innerCanvas.top() + yMap.xTransform(zoomData.top());
+                const double ry1 = innerCanvas.top() + yMap.xTransform(zoomData.bottom());
+                if (!std::isfinite(rx0) || !std::isfinite(rx1) || !std::isfinite(ry0)
+                    || !std::isfinite(ry1))
+                    continue;
+                const QRectF rawRoi(QPointF(qMin(rx0, rx1), qMin(ry0, ry1)),
+                                    QPointF(qMax(rx0, rx1), qMax(ry0, ry1)));
+                const QRectF roiBox = rawRoi.intersected(srcCanvasRectF);
+                if (roiBox.width() < 2.0 || roiBox.height() < 2.0)
+                    continue;
+                const QRectF candBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
+                if (roiBox.intersects(candBox)) {
+                    cx = qMin(qRound(roiBox.right()) + 24,
+                              qMax(innerCanvas.left() + 8, innerCanvas.right() - textW - 6));
+                }
+            }
         }
+
+        const int tx = qMax(2, cx + originOffset.x());
+        const int ty = qMax(fm.ascent() + 2, cy + originOffset.y());
         painter->drawText(QPoint(tx, ty), text);
         ++panelIdx;
+    }
+
+    painter->restore();
+}
+
+void MultiLayer::drawInsetConnectors(QPainter *painter, const QPoint &originOffset) const
+{
+    if (d_inset_specs.isEmpty() || !painter)
+        return;
+
+    auto linesCrossBounded = [](const QLineF &a, const QLineF &b) -> bool {
+        QPointF ip;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        const QLineF::IntersectionType t = a.intersects(b, &ip);
+#else
+        const QLineF::IntersectionType t = a.intersect(b, &ip);
+#endif
+        if (t != QLineF::BoundedIntersection)
+            return false;
+        auto nearEndpoint = [](const QPointF &p, const QLineF &ln) {
+            return QLineF(p, ln.p1()).length() < 0.75 || QLineF(p, ln.p2()).length() < 0.75;
+        };
+        if (nearEndpoint(ip, a) && nearEndpoint(ip, b))
+            return false;
+        return true;
+    };
+
+    auto segmentHitsRectInterior = [&](const QLineF &seg, const QRectF &box) -> bool {
+        if (box.width() <= 3.0 || box.height() <= 3.0)
+            return false;
+        const QRectF inner = box.adjusted(1.0, 1.0, -1.0, -1.0);
+        if (inner.contains(seg.pointAt(0.25)) || inner.contains(seg.pointAt(0.5))
+            || inner.contains(seg.pointAt(0.75)))
+            return true;
+        const QPointF tl = inner.topLeft();
+        const QPointF tr = inner.topRight();
+        const QPointF br = inner.bottomRight();
+        const QPointF bl = inner.bottomLeft();
+        return linesCrossBounded(seg, QLineF(tl, tr)) || linesCrossBounded(seg, QLineF(tr, br))
+                || linesCrossBounded(seg, QLineF(br, bl)) || linesCrossBounded(seg, QLineF(bl, tl));
+    };
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    const QList<Graph *> ordered = orderedLayersForRender();
+    for (Graph *inset : ordered) {
+        if (!inset || !d_inset_specs.contains(inset) || inset->isHidden())
+            continue;
+        const InsetSpec &spec = d_inset_specs[inset];
+        if (!spec.showConnectors)
+            continue;
+        Graph *src = spec.sourceLayer.data();
+        if (!src || src == inset || src->isHidden())
+            continue;
+
+        Plot *srcPlot = src->plotWidget();
+        Plot *inPlot = inset->plotWidget();
+        if (!srcPlot || !inPlot)
+            continue;
+
+        if (painter->device() && painter->device()->devType() != QInternal::Widget) {
+            srcPlot->updateLayout();
+            inPlot->updateLayout();
+        }
+
+        const QRect srcCanvasLocal = srcPlot->plotLayout()->canvasRect();
+        const QRect inCanvasLocal = inPlot->plotLayout()->canvasRect();
+        if (srcCanvasLocal.width() < 12 || srcCanvasLocal.height() < 12
+            || inCanvasLocal.width() < 12 || inCanvasLocal.height() < 12)
+            continue;
+
+        QRectF zoomData = spec.zoomDataRect;
+        if (const QwtScaleDiv *ixSd = inPlot->axisScaleDiv(QwtPlot::xBottom)) {
+            if (const QwtScaleDiv *iySd = inPlot->axisScaleDiv(QwtPlot::yLeft)) {
+                const double xLo = qMin(ixSd->lowerBound(), ixSd->upperBound());
+                const double xHi = qMax(ixSd->lowerBound(), ixSd->upperBound());
+                const double yLo = qMin(iySd->lowerBound(), iySd->upperBound());
+                const double yHi = qMax(iySd->lowerBound(), iySd->upperBound());
+                if (std::isfinite(xLo) && std::isfinite(xHi) && std::isfinite(yLo)
+                    && std::isfinite(yHi) && (xHi > xLo + 1e-15 || yHi > yLo + 1e-15)) {
+                    zoomData = QRectF(QPointF(xLo, yLo), QPointF(xHi, yHi));
+                }
+            }
+        }
+        if (zoomData.isEmpty()
+            && qAbs(zoomData.width()) <= 1e-15 && qAbs(zoomData.height()) <= 1e-15)
+            continue;
+
+        const QPoint srcOrigin = src->pos() + srcCanvasLocal.topLeft() + originOffset;
+        const QRectF srcCanvasRectF(srcOrigin, srcCanvasLocal.size());
+        const QwtScaleMap xMap = srcPlot->canvasMap(QwtPlot::xBottom);
+        const QwtScaleMap yMap = srcPlot->canvasMap(QwtPlot::yLeft);
+
+        const double rx0 = srcOrigin.x() + xMap.xTransform(zoomData.left());
+        const double rx1 = srcOrigin.x() + xMap.xTransform(zoomData.right());
+        const double ry0 = srcOrigin.y() + yMap.xTransform(zoomData.top());
+        const double ry1 = srcOrigin.y() + yMap.xTransform(zoomData.bottom());
+        if (!std::isfinite(rx0) || !std::isfinite(rx1) || !std::isfinite(ry0) || !std::isfinite(ry1))
+            continue;
+
+        const QRectF rawRoi(QPointF(qMin(rx0, rx1), qMin(ry0, ry1)),
+                            QPointF(qMax(rx0, rx1), qMax(ry0, ry1)));
+        const QRectF roiBox = rawRoi.intersected(srcCanvasRectF);
+        if (roiBox.width() < 2.0 || roiBox.height() < 2.0)
+            continue;
+
+        const QRectF insetFrame(inCanvasLocal.translated(inset->pos() + originOffset));
+        const QRectF insetOuterGeo(inset->pos() + originOffset, inPlot->size());
+
+        // 1. Draw crisp 1 px source ROI rectangle on sourceLayer, masked under insetOuterGeo
+        painter->save();
+        QPainterPath roiClip;
+        roiClip.addRect(srcCanvasRectF.adjusted(-1.0, -1.0, 1.0, 1.0));
+        QPainterPath insetMask;
+        insetMask.addRect(insetOuterGeo);
+        painter->setClipPath(roiClip.subtracted(insetMask));
+        QPen roiPen(QColor(51, 65, 85, 230), 1.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+        roiPen.setCosmetic(false);
+        painter->setPen(roiPen);
+        painter->setBrush(QColor(37, 99, 235, 14));
+        painter->drawRect(roiBox);
+        painter->restore();
+
+        // 2. Select optimal non-crossing symmetric pair of dashed zoom leader lines
+        // Corner indices: 0 = TL, 1 = TR, 2 = BR, 3 = BL
+        const QPointF rC[4] = { roiBox.topLeft(), roiBox.topRight(), roiBox.bottomRight(),
+                                roiBox.bottomLeft() };
+        const QPointF iC[4] = { insetFrame.topLeft(), insetFrame.topRight(),
+                                insetFrame.bottomRight(), insetFrame.bottomLeft() };
+
+        struct CandidatePair {
+            int r1, i1, r2, i2;
+        };
+        static const CandidatePair kPairs[6] = {
+            { 1, 0, 2, 3 }, // Facing Right:  TR->TL, BR->BL
+            { 0, 1, 3, 2 }, // Facing Left:   TL->TR, BL->BR
+            { 0, 3, 1, 2 }, // Facing Above:  TL->BL, TR->BR
+            { 3, 0, 2, 1 }, // Facing Below:  BL->TL, BR->TR
+            { 0, 0, 2, 2 }, // Frustum NE/SW: TL->TL, BR->BR
+            { 3, 3, 1, 1 }  // Frustum NW/SE: BL->BL, TR->TR
+        };
+
+        int bestIdx = -1;
+        int bestHits = 999;
+        double bestLen = 1e30;
+        for (int p = 0; p < 6; ++p) {
+            const QLineF s1(rC[kPairs[p].r1], iC[kPairs[p].i1]);
+            const QLineF s2(rC[kPairs[p].r2], iC[kPairs[p].i2]);
+            if (linesCrossBounded(s1, s2))
+                continue;
+            const int hits = (segmentHitsRectInterior(s1, roiBox) ? 1 : 0)
+                    + (segmentHitsRectInterior(s1, insetFrame) ? 1 : 0)
+                    + (segmentHitsRectInterior(s2, roiBox) ? 1 : 0)
+                    + (segmentHitsRectInterior(s2, insetFrame) ? 1 : 0);
+            const double totalLen = s1.length() + s2.length();
+            if (hits < bestHits || (hits == bestHits && totalLen < bestLen)) {
+                bestHits = hits;
+                bestLen = totalLen;
+                bestIdx = p;
+            }
+        }
+
+        if (bestIdx >= 0) {
+            painter->save();
+            QPainterPath leaderClip;
+            const QRectF unionBound = srcCanvasRectF.united(insetOuterGeo).adjusted(-8, -8, 8, 8);
+            leaderClip.addRect(unionBound);
+            QPainterPath innerInsetMask;
+            innerInsetMask.addRect(insetFrame.adjusted(0.5, 0.5, -0.5, -0.5));
+            painter->setClipPath(leaderClip.subtracted(innerInsetMask));
+
+            QPen leaderPen(QColor(51, 65, 85, 205), 1.0, Qt::DashLine, Qt::FlatCap);
+            leaderPen.setDashPattern({ 4.0, 3.0 });
+            painter->setPen(leaderPen);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawLine(QLineF(rC[kPairs[bestIdx].r1], iC[kPairs[bestIdx].i1]));
+            painter->drawLine(QLineF(rC[kPairs[bestIdx].r2], iC[kPairs[bestIdx].i2]));
+            painter->restore();
+        }
     }
 
     painter->restore();
@@ -4221,6 +5944,10 @@ void MultiLayer::applySquareCanvasFrame70Percent()
 
     if (isVisible() && widget() && widget()->layout())
         widget()->layout()->activate();
+    if (d_page_unit != UnitPx || d_page_view_mode || qAbs(d_page_zoom - 1.0) > 1e-4) {
+        syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode,
+                               d_base_page_px, d_page_zoom, d_page_bg_color);
+    }
 
     QSize pageSz = (canvas && canvas->width() >= 100 && canvas->height() >= 100)
             ? canvas->size()
@@ -4235,8 +5962,23 @@ void MultiLayer::applySquareCanvasFrame70Percent()
     const int outerPad = qMax(4, qMin(left_margin, top_margin));
     const int gapX = (nCols > 1) ? qMax(6, colsSpace) : 0;
     const int gapY = (nRows > 1) ? qMax(6, rowsSpace) : 0;
-    const int panelTopExtra =
-            (d_panel_labels_enabled && d_panel_label_placement == PanelOutsideTopLeft) ? 20 : 0;
+    int panelTopExtra = 0;
+    if (d_panel_labels_enabled && d_panel_label_placement == PanelOutsideTopLeft) {
+        int maxLabelPt = (d_panel_label_font_pt > 0) ? d_panel_label_font_pt : 12;
+        if (d_panel_label_font_pt <= 0) {
+            for (Graph *gr : primaryGraphs) {
+                const int titlePt = gr->axisTitleFont(QwtPlot::yLeft).pointSize();
+                const int pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40)
+                                             : 12;
+                maxLabelPt = qMax(maxLabelPt, pt);
+            }
+        }
+        const QFont lblFont(QStringLiteral("Arial"), maxLabelPt, QFont::Normal, false);
+        panelTopExtra = qMax(20, QFontMetrics(lblFont).ascent() + 10);
+    }
+
+    const bool prevSync = d_syncing_inset_geometries;
+    d_syncing_inset_geometries = true;
 
     QVector<bool> savedIgnore(graphsList.count(), false);
     QVector<bool> savedAutoFonts(graphsList.count(), false);
@@ -4253,16 +5995,35 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                                                  double(pageSz.height()) / nRows)));
 
     auto capMultiPanelTicks = [&](int side) {
-        if (nRows < 2 && nCols < 2)
-            return;
-        const int capX = qBound(3, side / 36, 6);
-        const int capY = qBound(3, side / 28, 6);
+        const bool isMultiPanel = (nRows >= 2 || nCols >= 2);
+        const int capX = isMultiPanel ? qBound(3, side / 36, 6) : qBound(4, side / 42, 6);
+        const int capY = isMultiPanel ? qBound(3, side / 28, 6) : 10;
         for (Graph *gr : primaryGraphs) {
             Plot *pl = gr ? gr->plotWidget() : nullptr;
             if (!pl || gr->isTernaryPlot() || gr->isPiePlot())
                 continue;
+            bool singlePanelXCrowded = false;
+            if (!isMultiPanel && gr->axisStep(QwtPlot::xBottom) <= 0.0) {
+                if (const QwtScaleDiv *xsd = pl->axisScaleDiv(QwtPlot::xBottom)) {
+                    const QwtValueList mTicks = xsd->ticks(QwtScaleDiv::MajorTick);
+                    if (mTicks.size() > 5) {
+                        const QFontMetrics xfm(gr->axisFont(QwtPlot::xBottom));
+                        int sumW = 0;
+                        for (int ti = 0; ti < mTicks.size(); ++ti) {
+                            const QString lbl = pl->axisScaleDraw(QwtPlot::xBottom)
+                                    ? pl->axisScaleDraw(QwtPlot::xBottom)->label(mTicks[ti]).text()
+                                    : QString::number(mTicks[ti], 'g', 6);
+                            sumW += xfm.horizontalAdvance(lbl) + 8;
+                        }
+                        if (sumW > qRound(0.88 * double(side)))
+                            singlePanelXCrowded = true;
+                    }
+                }
+            }
+            if (!isMultiPanel && !singlePanelXCrowded)
+                continue;
             const int axesToCap[2] = { QwtPlot::xBottom, QwtPlot::yLeft };
-            const int caps[2] = { capX, capY };
+            const int caps[2] = { singlePanelXCrowded ? qBound(3, side / 48, 5) : capX, capY };
             bool changedAny = false;
             for (int ai = 0; ai < 2; ++ai) {
                 const int a = axesToCap[ai];
@@ -4528,6 +6289,7 @@ void MultiLayer::applySquareCanvasFrame70Percent()
     }
 
     syncChildOverlayAndInsetGeometries();
+    d_syncing_inset_geometries = prevSync;
 
     for (int i = 0; i < nPrimary; ++i) {
         Graph *gr = primaryGraphs.at(i);
@@ -4595,10 +6357,10 @@ void MultiLayer::openQuickLayerColumnsPopup()
     tree->setHeaderHidden(true);
     tree->setRootIsDecorated(true);
     tree->setIndentation(14);
-    tree->setMinimumSize(250, 220);
+    tree->setMinimumSize(280, 220);
     tree->setMaximumHeight(320);
 
-    auto roleBadge = [](int desig) -> QString {
+    auto roleBadge = [this](int desig) -> QString {
         switch (desig) {
         case SciDAVis::X:
             return QStringLiteral("[X]");
@@ -4607,11 +6369,11 @@ void MultiLayer::openQuickLayerColumnsPopup()
         case SciDAVis::Z:
             return QStringLiteral("[Z]");
         case SciDAVis::xErr:
-            return QStringLiteral("[xEr]");
+            return tr("[±xErr]");
         case SciDAVis::yErr:
-            return QStringLiteral("[yEr]");
+            return tr("[±yErr]");
         default:
-            return QObject::tr("[None]");
+            return tr("[None]");
         }
     };
 
@@ -4639,13 +6401,42 @@ void MultiLayer::openQuickLayerColumnsPopup()
             const int desig = t->colPlotDesignation(col);
             const QString colShort = t->colLabel(col);
             const QString fullCol = t->name() + QStringLiteral("_") + colShort;
-            const QString cmt = t->colComment(col).trimmed();
+            const QString longName = t->colLongName(col).trimmed();
+            const QString units = t->colUnits(col).trimmed();
+            const QString fullCmt = t->colComment(col).trimmed();
+            const QString cmtFirst = fullCmt.section(QLatin1Char('\n'), 0, 0).trimmed();
 
             auto *cItem = new QTreeWidgetItem(tItem);
             QString disp = QStringLiteral("%1 %2").arg(roleBadge(desig), colShort);
-            if (!cmt.isEmpty() && cmt != colShort)
-                disp += QStringLiteral(" — %1").arg(cmt.left(28));
+            QString meta;
+            if (!longName.isEmpty() && longName != colShort) {
+                meta = longName;
+                if (!units.isEmpty())
+                    meta += QStringLiteral(" [%1]").arg(units);
+                if (!cmtFirst.isEmpty() && cmtFirst != longName && cmtFirst != colShort)
+                    meta += QStringLiteral(" (%1)").arg(cmtFirst.left(24));
+            } else {
+                if (!units.isEmpty())
+                    meta = QStringLiteral("[%1]").arg(units);
+                if (!cmtFirst.isEmpty() && cmtFirst != colShort) {
+                    meta = meta.isEmpty() ? cmtFirst.left(28)
+                                          : (meta + QStringLiteral(" ") + cmtFirst.left(24));
+                }
+            }
+            if (!meta.isEmpty())
+                disp += QStringLiteral(" — %1").arg(meta.left(44));
             cItem->setText(0, disp);
+
+            QStringList tipLines;
+            tipLines << fullCol;
+            if (!longName.isEmpty())
+                tipLines << tr("Long Name: %1").arg(longName);
+            if (!units.isEmpty())
+                tipLines << tr("Units: %1").arg(units);
+            if (!fullCmt.isEmpty())
+                tipLines << tr("Comments: %1").arg(fullCmt);
+            cItem->setToolTip(0, tipLines.join(QLatin1Char('\n')));
+
             cItem->setData(0, Qt::UserRole, t->name());
             cItem->setData(0, Qt::UserRole + 1, col);
             cItem->setData(0, Qt::UserRole + 2, fullCol);
@@ -4726,6 +6517,18 @@ void MultiLayer::openQuickLayerColumnsPopup()
                             cl.sSize = safeApp->defaultSymbolSize;
                             cl.lWidth = safeApp->defaultCurveLineWidth;
                             safeGraph->updateCurveLayout(newIdx, &cl);
+                            if (Plot *pl = safeGraph->plotWidget()) {
+                                const int xAx = (!pl->axisEnabled(QwtPlot::xBottom)
+                                                 && pl->axisEnabled(QwtPlot::xTop))
+                                        ? QwtPlot::xTop
+                                        : QwtPlot::xBottom;
+                                const int yAx = (!pl->axisEnabled(QwtPlot::yLeft)
+                                                 && pl->axisEnabled(QwtPlot::yRight))
+                                        ? QwtPlot::yRight
+                                        : QwtPlot::yLeft;
+                                if (xAx != QwtPlot::xBottom || yAx != QwtPlot::yLeft)
+                                    safeGraph->setCurveAxes(newIdx, xAx, yAx);
+                            }
                         }
                     }
                 } else {
@@ -4743,6 +6546,7 @@ void MultiLayer::openQuickLayerColumnsPopup()
                 safeGraph->reconstructLegend();
                 safeGraph->replot();
                 safeGraph->notifyChanges();
+                refreshLayerButtonBadges();
                 pushUndoSnapshot(tr("Toggle Plotted Column"), beforeSnap);
                 if (GraphInspectorDock *dock = safeApp->graphInspectorDock())
                     dock->setTargetMultiLayer(this, true);
@@ -4755,6 +6559,71 @@ void MultiLayer::openQuickLayerColumnsPopup()
             : QCursor::pos();
     popup->move(anchorGlobal);
     popup->show();
+}
+
+Graph *MultiLayer::resolveColumnDropTarget(const QPoint &canvasPt, const QPoint &widgetPos,
+                                           bool &rightYZoneOut) const
+{
+    rightYZoneOut = false;
+
+    auto isPointInRightYZone = [this, &canvasPt, &widgetPos](Graph *g) -> bool {
+        if (!g)
+            return false;
+        const QRect gGeo = g->geometry();
+        if (canvasPt.x() >= gGeo.right() - 48)
+            return true;
+        if (Plot *pl = g->plotWidget()) {
+            if (QwtScaleWidget *swRight = pl->axisWidget(QwtPlot::yRight)) {
+                if (swRight->isVisible()) {
+                    const QPoint swPt = swRight->mapFromGlobal(mapToGlobal(widgetPos));
+                    if (swRight->rect().adjusted(-14, 0, 14, 0).contains(swPt))
+                        return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    Graph *targetGr = nullptr;
+    const QList<Graph *> ordered = orderedLayersForRender();
+    for (int i = ordered.size() - 1; i >= 0; --i) {
+        Graph *gr = ordered.at(i);
+        if (!gr || !gr->isVisible())
+            continue;
+        if (!gr->geometry().contains(canvasPt))
+            continue;
+
+        if (Graph *parentLayer = gr->linkedParentLayer()) {
+            Plot *cPlot = gr->plotWidget();
+            const bool childHasRightY = cPlot && cPlot->axisEnabled(QwtPlot::yRight);
+            const bool childHasLeftY = cPlot && cPlot->axisEnabled(QwtPlot::yLeft);
+            const bool inRightZone = isPointInRightYZone(gr) || isPointInRightYZone(parentLayer);
+            if (childHasRightY && (inRightZone || active_graph == gr)) {
+                targetGr = gr;
+                rightYZoneOut = inRightZone || !childHasLeftY;
+                return targetGr;
+            }
+            targetGr = parentLayer;
+            rightYZoneOut = inRightZone;
+            return targetGr;
+        }
+
+        targetGr = gr;
+        rightYZoneOut = isPointInRightYZone(gr);
+        return targetGr;
+    }
+
+    targetGr = active_graph ? active_graph : const_cast<MultiLayer *>(this)->layer(1);
+    if (targetGr) {
+        Plot *pl = targetGr->plotWidget();
+        const bool onlyRightY = pl && pl->axisEnabled(QwtPlot::yRight)
+                && !pl->axisEnabled(QwtPlot::yLeft);
+        rightYZoneOut = onlyRightY || isPointInRightYZone(targetGr);
+    } else {
+        const QRect fallbackRect = canvas ? canvas->rect() : rect();
+        rightYZoneOut = (canvasPt.x() >= fallbackRect.right() - 44);
+    }
+    return targetGr;
 }
 
 void MultiLayer::dragEnterEvent(QDragEnterEvent *e)
@@ -4776,31 +6645,10 @@ void MultiLayer::dragMoveEvent(QDragMoveEvent *e)
     }
 
     const QPoint canvasPt = canvas ? canvas->mapFrom(this, e->pos()) : e->pos();
-    Graph *targetGr = nullptr;
-    for (int i = graphsList.count() - 1; i >= 0; --i) {
-        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
-        if (!gr || !gr->isVisible())
-            continue;
-        if (gr->geometry().contains(canvasPt)) {
-            targetGr = gr->linkedParentLayer() ? gr->linkedParentLayer() : gr;
-            break;
-        }
-    }
-    if (!targetGr)
-        targetGr = activeGraph() ? activeGraph() : layer(1);
-
+    bool rightYZone = false;
+    Graph *targetGr = resolveColumnDropTarget(canvasPt, e->pos(), rightYZone);
     const QRect zoneRect = targetGr ? targetGr->geometry()
                                     : (canvas ? canvas->rect() : rect());
-    bool rightYZone = (canvasPt.x() >= zoneRect.right() - 44);
-    if (!rightYZone && targetGr && targetGr->plotWidget()) {
-        if (QwtScaleWidget *swRight = targetGr->plotWidget()->axisWidget(QwtPlot::yRight)) {
-            if (swRight->isVisible()) {
-                const QPoint swPt = swRight->mapFromGlobal(mapToGlobal(e->pos()));
-                if (swRight->rect().adjusted(-12, 0, 12, 0).contains(swPt))
-                    rightYZone = true;
-            }
-        }
-    }
 
     if (d_drop_zone_overlay && canvas) {
         d_drop_zone_overlay->setGeometry(canvas->geometry());
@@ -4838,37 +6686,16 @@ void MultiLayer::dropEvent(QDropEvent *e)
     }
 
     const QPoint canvasPt = canvas ? canvas->mapFrom(this, e->pos()) : e->pos();
-    Graph *targetGr = nullptr;
-    for (int i = graphsList.count() - 1; i >= 0; --i) {
-        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
-        if (!gr || !gr->isVisible())
-            continue;
-        if (gr->geometry().contains(canvasPt)) {
-            targetGr = gr->linkedParentLayer() ? gr->linkedParentLayer() : gr;
-            break;
-        }
-    }
-    if (!targetGr)
-        targetGr = activeGraph() ? activeGraph() : layer(1);
-
-    const QRect zoneRect = targetGr ? targetGr->geometry()
-                                    : (canvas ? canvas->rect() : rect());
-    bool rightYZone = (canvasPt.x() >= zoneRect.right() - 44);
-    if (!rightYZone && targetGr && targetGr->plotWidget()) {
-        if (QwtScaleWidget *swRight = targetGr->plotWidget()->axisWidget(QwtPlot::yRight)) {
-            if (swRight->isVisible()) {
-                const QPoint swPt = swRight->mapFromGlobal(mapToGlobal(e->pos()));
-                if (swRight->rect().adjusted(-12, 0, 12, 0).contains(swPt))
-                    rightYZone = true;
-            }
-        }
-    }
+    bool rightYZone = false;
+    Graph *targetGr = resolveColumnDropTarget(canvasPt, e->pos(), rightYZone);
 
     const int targetAxisId = rightYZone ? QwtPlot::yRight : QwtPlot::yLeft;
     const bool replaceExisting = (e->keyboardModifiers() & Qt::AltModifier);
     if (ApplicationWindow *app = findMultiLayerApp(this)) {
-        if (app->handleColumnMimeDrop(e->mimeData(), this, targetGr, targetAxisId, replaceExisting))
+        if (app->handleColumnMimeDrop(e->mimeData(), this, targetGr, targetAxisId, replaceExisting)) {
+            refreshLayerButtonBadges();
             e->acceptProposedAction();
+        }
     }
 }
 

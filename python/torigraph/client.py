@@ -966,14 +966,38 @@ class GraphProxy:
         placement: str = "outside_top_left",
         pattern: str = "(%a)",
         font_pt: int = 0,
+        *,
+        position: Optional[str] = None,
     ) -> Dict[str, Any]:
+        eff_placement = position if (position is not None and str(position).strip()) else placement
         return self.session.call(
             "graph.set_panel_labels",
             graph=self.name,
             enabled=enabled,
-            placement=placement,
+            placement=eff_placement,
             pattern=pattern,
             font_pt=int(font_pt),
+        )
+
+    def sync_axis_color(
+        self,
+        axis: str = "right",
+        curve: Optional[Union[int, str]] = None,
+        layer: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.sync_axis_color",
+            graph=self.name,
+            axis=axis,
+            curve=curve,
+            layer=layer,
+        )
+
+    def step_zoom_history(
+        self, delta: int = -1, layer: Optional[int] = None
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.step_zoom_history", graph=self.name, delta=int(delta), layer=layer
         )
 
     def undo(self) -> Dict[str, Any]:
@@ -1022,8 +1046,17 @@ class GraphProxy:
     def copy_format(self, layer: Optional[int] = None) -> Dict[str, Any]:
         return self.session.call("graph.copy_format", graph=self.name, layer=layer)
 
-    def paste_format(self, layer: Optional[int] = None) -> Dict[str, Any]:
-        return self.session.call("graph.paste_format", graph=self.name, layer=layer)
+    def paste_format(
+        self,
+        layer: Optional[int] = None,
+        scopes: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.paste_format",
+            graph=self.name,
+            layer=layer,
+            scopes=(list(scopes) if scopes is not None else None),
+        )
 
     def batch_clone(
         self, tables: Sequence[Union[str, TableProxy]], **kwargs: Any
@@ -2416,6 +2449,32 @@ class Session:
         return self.call("digitizer.extract", path=os.fspath(path), **kwargs)
 
     extract_digitizer = digitize
+
+    def merge_graphs(
+        self,
+        graphs: Sequence[Union[str, GraphProxy]],
+        rows: int = 0,
+        cols: int = 0,
+        **kwargs: Any,
+    ) -> GraphProxy:
+        g_names = [_name_of(g) for g in graphs if g is not None]
+        res = self.call(
+            "graph.merge_graphs",
+            graphs=g_names,
+            rows=(int(rows) if rows and rows > 0 else None),
+            cols=(int(cols) if cols and cols > 0 else None),
+            **kwargs,
+        )
+        return GraphProxy(self, str(res["name"]))
+
+    def grab_gui_diagnostic(
+        self, path: Optional[Union[str, os.PathLike[str]]] = None, **kwargs: Any
+    ) -> Dict[str, Any]:
+        return self.call(
+            "app.grab_gui_diagnostic",
+            path=(os.fspath(path) if path is not None else ""),
+            **kwargs,
+        )
 
 
 def _discover_torigraph_executable(

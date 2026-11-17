@@ -65,6 +65,7 @@
 #include <QPlainTextEdit>
 #include <QCheckBox>
 #include <QGroupBox>
+#include <QRegularExpression>
 #include <vector>
 #include <cmath>
 #include <iostream>
@@ -115,6 +116,7 @@ void Table::init()
         return;
 
     setMinimumSize(400, 300);
+    resize(580, 400);
     ui.gridLayout1->removeWidget(ui.formula_box);
     delete ui.formula_box;
     ui.formula_box = new ScriptEdit(scriptEnv, ui.formula_tab);
@@ -1200,6 +1202,62 @@ void Table::pasteSelection()
     bool hasTab = normalized.contains('\t');
     bool hasComma = !hasTab && normalized.contains(',');
 
+    auto isMissingToken = [](const QString &s) -> bool {
+        if (s.isEmpty() || s == "-" || s == "--" || s == "---")
+            return true;
+        if (s.compare("nan", Qt::CaseInsensitive) == 0
+            || s.compare("na", Qt::CaseInsensitive) == 0
+            || s.compare("n/a", Qt::CaseInsensitive) == 0
+            || s.compare("null", Qt::CaseInsensitive) == 0)
+            return true;
+        return false;
+    };
+
+    auto tryParseDouble = [](const QString &s, double &outVal) -> bool {
+        bool ok = false;
+        outVal = QLocale::c().toDouble(s, &ok);
+        if (ok)
+            return true;
+        outVal = QLocale().toDouble(s, &ok);
+        if (ok)
+            return true;
+        QString alt = s;
+        alt.replace(',', '.');
+        outVal = QLocale::c().toDouble(alt, &ok);
+        return ok;
+    };
+
+    bool keepSingleColumn = false;
+    if (!hasTab && !hasComma && lines.size() >= 2) {
+        const QString h0 = lines.at(0).trimmed();
+        double dummy0 = 0.0;
+        if (!h0.isEmpty() && !tryParseDouble(h0, dummy0)) {
+            int dataCheckStart = 1;
+            if (lines.size() >= 3) {
+                const QString h1 = lines.at(1).trimmed();
+                double dummy1 = 0.0;
+                if (!h1.isEmpty() && !tryParseDouble(h1, dummy1) && !isMissingToken(h1))
+                    dataCheckStart = 2;
+            }
+            bool allDataSingleToken = true;
+            bool anyDataNumeric = false;
+            for (int li = dataCheckStart; li < lines.size(); ++li) {
+                const QString tl = lines.at(li).trimmed();
+                if (tl.isEmpty())
+                    continue;
+                if (tl.contains(QRegularExpression(QStringLiteral("\\s")))) {
+                    allDataSingleToken = false;
+                    break;
+                }
+                double dv = 0.0;
+                if (tryParseDouble(tl, dv))
+                    anyDataNumeric = true;
+            }
+            if (allDataSingleToken && anyDataNumeric)
+                keepSingleColumn = true;
+        }
+    }
+
     QList<QStringList> grid;
     int maxCols = 0;
     for (const QString &line : lines) {
@@ -1216,6 +1274,8 @@ void Table::pasteSelection()
 #else
             rowCells = line.split(',', QString::KeepEmptyParts);
 #endif
+        } else if (keepSingleColumn) {
+            rowCells << line.trimmed();
         } else {
             QString trimmedLine = line.trimmed();
             if (trimmedLine.isEmpty()) {
@@ -1251,36 +1311,157 @@ void Table::pasteSelection()
     d_future_table->beginMacro(tr("%1: paste from clipboard").arg(name()));
 
     int neededCols = startCol + pastedCols;
-    int neededRows = startRow + pastedRows;
     if (neededCols > numCols())
         setNumCols(neededCols);
+
+    auto stripOuterUnitBrackets = [](const QString &raw) -> QString {
+        const QString s = raw.trimmed();
+        if (s.size() >= 2) {
+            if ((s.startsWith('(') && s.endsWith(')'))
+                || (s.startsWith('[') && s.endsWith(']'))
+                || (s.startsWith(QChar(0xFF08)) && s.endsWith(QChar(0xFF09)))
+                || (s.startsWith(QChar(0xFF3B)) && s.endsWith(QChar(0xFF3D)))) {
+                return s.mid(1, s.size() - 2).trimmed();
+            }
+        }
+        return s;
+    };
+
+    auto parseHeaderNameAndUnit = [](const QString &raw, QString &outName, QString &outUnit) {
+        const QString s = raw.trimmed();
+        outName = s;
+        outUnit.clear();
+        if (s.isEmpty())
+            return;
+
+        struct BracketPair {
+            QChar openCh;
+            QChar closeCh;
+        };
+        const BracketPair pairs[] = {
+            { QLatin1Char('('), QLatin1Char(')') },
+            { QLatin1Char('['), QLatin1Char(']') },
+            { QChar(0xFF08), QChar(0xFF09) },
+            { QChar(0xFF3B), QChar(0xFF3D) },
+        };
+        for (const BracketPair &bp : pairs) {
+            if (s.endsWith(bp.closeCh)) {
+                int depth = 0;
+                int matchOpen = -1;
+                for (int i = s.size() - 1; i >= 0; --i) {
+                    if (s.at(i) == bp.closeCh) {
+                        ++depth;
+                    } else if (s.at(i) == bp.openCh) {
+                        --depth;
+                        if (depth == 0) {
+                            matchOpen = i;
+                            break;
+                        }
+                    }
+                }
+                if (matchOpen > 0) {
+                    const QString candidateName = s.left(matchOpen).trimmed();
+                    const QString candidateUnit =
+                            s.mid(matchOpen + 1, s.size() - matchOpen - 2).trimmed();
+                    if (!candidateName.isEmpty() && !candidateUnit.isEmpty()) {
+                        outName = candidateName;
+                        outUnit = candidateUnit;
+                        return;
+                    }
+                }
+            }
+        }
+
+        static const QRegularExpression slashRe(
+                QStringLiteral("^(.+?)\\s+/\\s*([^/]+)$"));
+        const QRegularExpressionMatch m = slashRe.match(s);
+        if (m.hasMatch()) {
+            const QString candidateName = m.captured(1).trimmed();
+            const QString candidateUnit = m.captured(2).trimmed();
+            if (!candidateName.isEmpty() && !candidateUnit.isEmpty()) {
+                outName = candidateName;
+                outUnit = candidateUnit;
+            }
+        }
+    };
+
+    int dataStartRow = 0;
+    if (startRow == 0 && !formulaModeActive() && pastedRows >= 2) {
+        bool row0HasNonNumericHeaderOnNumCol = false;
+        bool row0HasNumericOnNumCol = false;
+        auto rowNumericStatsOnNumCols = [&](int rIdx, bool &anyNum, bool &anyNonNumText) {
+            anyNum = false;
+            anyNonNumText = false;
+            if (rIdx < 0 || rIdx >= pastedRows)
+                return;
+            for (int c = 0; c < pastedCols; ++c) {
+                Column *colPtr = column(startCol + c);
+                if (!colPtr || colPtr->columnMode() != SciDAVis::ColumnMode::Numeric)
+                    continue;
+                const QString token = (c < grid[rIdx].size()) ? grid[rIdx][c].trimmed() : QString();
+                if (token.isEmpty() || isMissingToken(token))
+                    continue;
+                double dv = 0.0;
+                if (tryParseDouble(token, dv) && !std::isnan(dv))
+                    anyNum = true;
+                else
+                    anyNonNumText = true;
+            }
+        };
+
+        rowNumericStatsOnNumCols(0, row0HasNumericOnNumCol, row0HasNonNumericHeaderOnNumCol);
+        if (row0HasNonNumericHeaderOnNumCol && !row0HasNumericOnNumCol) {
+            bool row1AnyNum = false;
+            bool row1AnyNonNum = false;
+            rowNumericStatsOnNumCols(1, row1AnyNum, row1AnyNonNum);
+            int headerRows = 0;
+            if (row1AnyNum) {
+                headerRows = 1;
+            } else if (pastedRows >= 3 && row1AnyNonNum && !row1AnyNum) {
+                bool row2AnyNum = false;
+                bool row2AnyNonNum = false;
+                rowNumericStatsOnNumCols(2, row2AnyNum, row2AnyNonNum);
+                if (row2AnyNum)
+                    headerRows = 2;
+            }
+
+            if (headerRows == 1 || headerRows == 2) {
+                for (int c = 0; c < pastedCols; ++c) {
+                    Column *colPtr = column(startCol + c);
+                    if (!colPtr)
+                        continue;
+                    const QString h0 = (c < grid[0].size()) ? grid[0][c].trimmed() : QString();
+                    if (headerRows == 1) {
+                        if (!h0.isEmpty()) {
+                            QString parsedName, parsedUnit;
+                            parseHeaderNameAndUnit(h0, parsedName, parsedUnit);
+                            colPtr->setLongName(parsedName);
+                            if (!parsedUnit.isEmpty())
+                                colPtr->setUnits(parsedUnit);
+                        }
+                    } else {
+                        const QString h1 = (c < grid[1].size()) ? grid[1][c].trimmed() : QString();
+                        QString name0, unit0;
+                        parseHeaderNameAndUnit(h0, name0, unit0);
+                        const QString unit1 = stripOuterUnitBrackets(h1);
+                        if (!h0.isEmpty())
+                            colPtr->setLongName((!unit1.isEmpty() && unit0.isEmpty()) ? h0 : name0);
+                        if (!unit1.isEmpty())
+                            colPtr->setUnits(unit1);
+                        else if (!unit0.isEmpty())
+                            colPtr->setUnits(unit0);
+                    }
+                }
+                showComments(true);
+                dataStartRow = headerRows;
+            }
+        }
+    }
+
+    const int dataRowCount = pastedRows - dataStartRow;
+    int neededRows = startRow + qMax(1, dataRowCount);
     if (neededRows > numRows())
         setNumRows(neededRows);
-
-    auto isMissingToken = [](const QString &s) -> bool {
-        if (s.isEmpty() || s == "-" || s == "--" || s == "---")
-            return true;
-        if (s.compare("nan", Qt::CaseInsensitive) == 0
-            || s.compare("na", Qt::CaseInsensitive) == 0
-            || s.compare("n/a", Qt::CaseInsensitive) == 0
-            || s.compare("null", Qt::CaseInsensitive) == 0)
-            return true;
-        return false;
-    };
-
-    auto tryParseDouble = [](const QString &s, double &outVal) -> bool {
-        bool ok = false;
-        outVal = QLocale::c().toDouble(s, &ok);
-        if (ok)
-            return true;
-        outVal = QLocale().toDouble(s, &ok);
-        if (ok)
-            return true;
-        QString alt = s;
-        alt.replace(',', '.');
-        outVal = QLocale::c().toDouble(alt, &ok);
-        return ok;
-    };
 
     for (int c = 0; c < pastedCols; ++c) {
         int targetCol = startCol + c;
@@ -1288,9 +1469,10 @@ void Table::pasteSelection()
         if (!colPtr)
             continue;
 
-        for (int r = 0; r < pastedRows; ++r) {
+        for (int r = 0; r < dataRowCount; ++r) {
             int targetRow = startRow + r;
-            QString cellStr = (c < grid[r].size()) ? grid[r][c] : QString();
+            const int srcRow = dataStartRow + r;
+            QString cellStr = (c < grid[srcRow].size()) ? grid[srcRow][c] : QString();
 
             if (formulaModeActive()) {
                 colPtr->setFormula(targetRow, cellStr);
@@ -1319,7 +1501,10 @@ void Table::pasteSelection()
     }
 
     deselectAll();
-    setCellsSelected(startRow, startCol, startRow + pastedRows - 1, startCol + pastedCols - 1, true);
+    if (dataRowCount > 0) {
+        setCellsSelected(startRow, startCol, startRow + dataRowCount - 1,
+                         startCol + pastedCols - 1, true);
+    }
     goToCell(startRow, startCol);
 
     d_future_table->endMacro();

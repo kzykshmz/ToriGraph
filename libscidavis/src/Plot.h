@@ -39,6 +39,7 @@
 #include <qwt_plot_marker.h>
 
 class Grid;
+class QTimer;
 
 //! Plot window class
 class Plot : public QwtPlot
@@ -58,6 +59,8 @@ public:
     void removeCurve(int index);
 
     int closestCurve(int xpos, int ypos, int &dist, int &point);
+    int closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestVertexOut) const;
+    int closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) const;
     QwtPlotCurve *curve(int index);
     QwtPlotItem *plotItem(int index) { return d_curves.value(index); };
     QMap<int, QwtPlotItem *> curves() { return d_curves; };
@@ -99,9 +102,19 @@ public:
     bool eventFilter(QObject *object, QEvent *e) override;
     void zoomAxisAroundPos(int axis, int pixelPos, double factor);
     void panAxisByPixels(int axis, int startPixel, int endPixel);
+    void syncMirrorAxisIfNeeded(int changedAxis);
+    bool isMirrorOppositeAxis(int primaryAxis, int secondaryAxis) const;
     bool hasVisibleItemOnAxis(int axis) const;
+    bool hasAnyItemOnAxis(int axis) const;
     void setHighlightedCurveKey(int key);
     int highlightedCurveKey() const { return d_highlighted_curve_key; }
+    void setHoverPoint(int curveKey, int pointIndex);
+    void clearHoverPoint();
+    int hoverCurveKey() const { return d_hover_curve_key; }
+    int hoverPointIndex() const { return d_hover_point_index; }
+    bool isZKeyPressed() const { return d_z_pressed; }
+    bool isSpaceKeyPressed() const { return d_space_pressed; }
+    void flushPendingWheelUndo();
     static int scaleAlignmentToAxis(int alignment);
     static bool isLog10ScaleEngine(const QwtScaleEngine *se);
 
@@ -124,6 +137,10 @@ protected:
     bool d_x_pressed;
     bool d_y_pressed;
     int d_highlighted_curve_key;
+    int d_hover_curve_key;
+    int d_hover_point_index;
+    QTimer *d_wheel_undo_timer;
+    QString d_pending_wheel_undo_snap;
     QPoint d_pan_last_pos;
 };
 #endif

@@ -33,11 +33,28 @@
 
 #include <QPainter>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QApplication>
 #include <QPointer>
 #include <QUndoStack>
 #include <QVariant>
 #include <cmath>
+
+namespace {
+QPoint snapArrowEndpointAngle45(const QPoint &anchor, const QPoint &target)
+{
+    const double dx = double(target.x() - anchor.x());
+    const double dy = double(target.y() - anchor.y());
+    const double len = std::hypot(dx, dy);
+    if (len < 1.0)
+        return target;
+    constexpr double kPi = 3.141592653589793238462643;
+    const double stepRad = kPi / 4.0; // 0 / 45 / 90 / 135 / 180 deg
+    const double snappedAngle = std::round(std::atan2(dy, dx) / stepRad) * stepRad;
+    return QPoint(anchor.x() + int(std::round(len * std::cos(snappedAngle))),
+                  anchor.y() + int(std::round(len * std::sin(snappedAngle))));
+}
+} // namespace
 
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
@@ -122,7 +139,8 @@ void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &
     }
 
     const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
-    if (d_editable && (!g || (!g->isExporting() && !g->property("isExporting").toBool()))) {
+    if (d_editable && (!g || (!g->isExporting() && !g->property("isExporting").toBool()))
+        && p && p->device() && p->device()->devType() == QInternal::Widget) {
         p->save();
         p->setPen(QPen(Qt::black, 1, Qt::SolidLine));
         QRect handler(QPoint(0, 0), QSize(10, 10));
@@ -393,8 +411,13 @@ void ArrowMarker::updateBoundingRect()
 ArrowMarker::~ArrowMarker()
 {
     restoreCursorIfNeeded();
-    if (d_editable && plot() && plot()->canvas())
-        plot()->canvas()->removeEventFilter(this);
+    if (d_editable && plot()) {
+        if (plot()->canvas())
+            plot()->canvas()->removeEventFilter(this);
+        plot()->removeEventFilter(this);
+        if (plot()->parent())
+            plot()->parent()->removeEventFilter(this);
+    }
 }
 
 void ArrowMarker::applyOverrideCursor()
@@ -422,25 +445,85 @@ void ArrowMarker::setEditable(bool yes)
     }
     if (yes) {
         d_editable = true;
-        if (plot() && plot()->canvas())
-            plot()->canvas()->installEventFilter(this);
+        if (plot()) {
+            if (plot()->canvas())
+                plot()->canvas()->installEventFilter(this);
+            plot()->installEventFilter(this);
+            if (plot()->parent())
+                plot()->parent()->installEventFilter(this);
+        }
     } else {
         d_editable = false;
         d_op = None;
         setProperty("_dragMoved", false);
         setProperty("_undoSnap", QString());
         restoreCursorIfNeeded();
-        if (plot() && plot()->canvas())
-            plot()->canvas()->removeEventFilter(this);
+        if (plot()) {
+            if (plot()->canvas())
+                plot()->canvas()->removeEventFilter(this);
+            plot()->removeEventFilter(this);
+            if (plot()->parent())
+                plot()->parent()->removeEventFilter(this);
+        }
     }
     if (plot())
         plot()->replot();
 }
 
-bool ArrowMarker::eventFilter(QObject *, QEvent *e)
+bool ArrowMarker::eventFilter(QObject *obj, QEvent *e)
 {
-    Graph *g = plot() ? qobject_cast<Graph *>(plot()->parent()) : nullptr;
+    if (!d_editable || !plot())
+        return false;
+    Graph *g = qobject_cast<Graph *>(plot()->parent());
     MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+
+    if (e->type() == QEvent::KeyPress) {
+        const QKeyEvent *ke = static_cast<const QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Escape && d_op != None) {
+            const QPoint origStart = property("_origStart").toPoint();
+            const QPoint origEnd = property("_origEnd").toPoint();
+            d_op = None;
+            setProperty("_dragMoved", false);
+            setProperty("_undoSnap", QString());
+            restoreCursorIfNeeded();
+            setStartPoint(origStart);
+            setEndPoint(origEnd);
+            plot()->replot();
+            return true;
+        }
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right
+            || ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down) {
+            int step = 2;
+            if (ke->modifiers() & Qt::ShiftModifier)
+                step = 10;
+            else if (ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
+                step = 1;
+            QPoint delta(0, 0);
+            if (ke->key() == Qt::Key_Left)
+                delta = QPoint(-step, 0);
+            else if (ke->key() == Qt::Key_Right)
+                delta = QPoint(step, 0);
+            else if (ke->key() == Qt::Key_Up)
+                delta = QPoint(0, -step);
+            else if (ke->key() == Qt::Key_Down)
+                delta = QPoint(0, step);
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+            const QPoint newStart = startPoint() + delta;
+            const QPoint newEnd = endPoint() + delta;
+            setStartPoint(newStart);
+            setEndPoint(newEnd);
+            plot()->replot();
+            if (g)
+                emit g->modifiedGraph();
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(Graph::tr("Move Arrow"), beforeSnap, 708);
+            return true;
+        }
+        return false;
+    }
+
+    if (obj != plot()->canvas())
+        return false;
 
     switch (e->type()) {
     case QEvent::MouseButtonPress: {
@@ -453,6 +536,8 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
             applyOverrideCursor();
             d_op = MoveStart;
             setProperty("_pressPos", me->pos());
+            setProperty("_origStart", startPoint());
+            setProperty("_origEnd", endPoint());
             setProperty("_dragMoved", false);
             setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
@@ -462,6 +547,8 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
             applyOverrideCursor();
             d_op = MoveEnd;
             setProperty("_pressPos", me->pos());
+            setProperty("_origStart", startPoint());
+            setProperty("_origEnd", endPoint());
             setProperty("_dragMoved", false);
             setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
@@ -473,6 +560,8 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
             d_op = MoveBoth;
             d_op_startat = me->pos() - startPoint();
             setProperty("_pressPos", me->pos());
+            setProperty("_origStart", startPoint());
+            setProperty("_origEnd", endPoint());
             setProperty("_dragMoved", false);
             setProperty("_undoSnap", ml ? ml->captureUndoSnapshot() : QString());
             return true;
@@ -490,14 +579,22 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
             setProperty("_dragMoved", true);
         }
         switch (d_op) {
-        case MoveStart:
-            setStartPoint(me->pos());
+        case MoveStart: {
+            const QPoint pt = (me->modifiers() & Qt::ShiftModifier)
+                    ? snapArrowEndpointAngle45(endPoint(), me->pos())
+                    : me->pos();
+            setStartPoint(pt);
             plot()->replot();
             return true;
-        case MoveEnd:
-            setEndPoint(me->pos());
+        }
+        case MoveEnd: {
+            const QPoint pt = (me->modifiers() & Qt::ShiftModifier)
+                    ? snapArrowEndpointAngle45(startPoint(), me->pos())
+                    : me->pos();
+            setEndPoint(pt);
             plot()->replot();
             return true;
+        }
         case MoveBoth: {
             const QPoint newStart = me->pos() - d_op_startat;
             const QPoint delta = newStart - startPoint();
@@ -526,12 +623,20 @@ bool ArrowMarker::eventFilter(QObject *, QEvent *e)
 
         if (moved) {
             switch (finishedOp) {
-            case MoveStart:
-                setStartPoint(me->pos());
+            case MoveStart: {
+                const QPoint pt = (me->modifiers() & Qt::ShiftModifier)
+                        ? snapArrowEndpointAngle45(endPoint(), me->pos())
+                        : me->pos();
+                setStartPoint(pt);
                 break;
-            case MoveEnd:
-                setEndPoint(me->pos());
+            }
+            case MoveEnd: {
+                const QPoint pt = (me->modifiers() & Qt::ShiftModifier)
+                        ? snapArrowEndpointAngle45(startPoint(), me->pos())
+                        : me->pos();
+                setEndPoint(pt);
                 break;
+            }
             case MoveBoth: {
                 const QPoint newStart = me->pos() - d_op_startat;
                 const QPoint delta = newStart - startPoint();

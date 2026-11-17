@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "CurvesDialog.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "MultiLayer.h"
 #include "Table.h"
 #include "Matrix.h"
@@ -52,8 +53,69 @@
 
 #include <QMessageBox>
 
+namespace {
+
+void registerCurvesDialogTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Line", "折れ線");
+    reg("Scatter", "散布図");
+    reg("Line + Symbol", "折れ線＋マーカー");
+    reg("Vertical drop lines", "垂直ドロップライン");
+    reg("Spline", "スプライン曲線");
+    reg("Vertical steps", "垂直ステップ");
+    reg("Horizontal steps", "水平ステップ");
+    reg("Area", "面グラフ");
+    reg("Vertical Bars", "縦棒グラフ");
+    reg("Horizontal Bars", "横棒グラフ");
+    reg("Long Name: %1", "ロングネーム: %1");
+    reg("Units: %1", "単位: %1");
+}
+
+QString formatAvailableColumnDisplay(Table *t, int colIdx, const QString &rawColName,
+                                     QString *outTooltip = nullptr)
+{
+    if (!t || colIdx < 0 || colIdx >= t->numCols()) {
+        if (outTooltip)
+            *outTooltip = rawColName;
+        return rawColName;
+    }
+    const QString shortCol = t->colLabel(colIdx);
+    const QString longName = t->colLongName(colIdx).trimmed();
+    const QString units = t->colUnits(colIdx).trimmed();
+    QString meta;
+    if (!longName.isEmpty() && longName != shortCol && !units.isEmpty())
+        meta = QStringLiteral(" [%1 (%2)]").arg(longName, units);
+    else if (!longName.isEmpty() && longName != shortCol)
+        meta = QStringLiteral(" [%1]").arg(longName);
+    else if (!units.isEmpty())
+        meta = QStringLiteral(" [(%1)]").arg(units);
+
+    const QString display = rawColName + meta;
+    if (outTooltip) {
+        QStringList tipLines;
+        tipLines << rawColName;
+        if (!longName.isEmpty())
+            tipLines << CurvesDialog::tr("Long Name: %1").arg(longName);
+        if (!units.isEmpty())
+            tipLines << CurvesDialog::tr("Units: %1").arg(units);
+        *outTooltip = tipLines.join(QLatin1Char('\n'));
+    }
+    return display;
+}
+
+} // namespace
+
 CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
+    registerCurvesDialogTranslations();
     setWindowTitle(tr("Add/Remove curves"));
     setSizeGripEnabled(true);
     setFocus();
@@ -62,16 +124,16 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 
     hl->addWidget(new QLabel(tr("New curves style")));
     boxStyle = new QComboBox();
-    boxStyle->addItem(IconLoader::duotoneIcon(":/lPlot.xpm"), tr(" Line"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/pPlot.xpm"), tr(" Scatter"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/lpPlot.xpm"), tr(" Line + Symbol"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/dropLines.xpm"), tr(" Vertical drop lines"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/spline.xpm"), tr(" Spline"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/vert_steps.xpm"), tr(" Vertical steps"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/hor_steps.xpm"), tr(" Horizontal steps"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/area.xpm"), tr(" Area"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/vertBars.xpm"), tr(" Vertical Bars"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/hBars.xpm"), tr(" Horizontal Bars"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/lPlot.xpm"), tr("Line"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/pPlot.xpm"), tr("Scatter"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/lpPlot.xpm"), tr("Line + Symbol"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/dropLines.xpm"), tr("Vertical drop lines"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/spline.xpm"), tr("Spline"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/vert_steps.xpm"), tr("Vertical steps"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/hor_steps.xpm"), tr("Horizontal steps"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/area.xpm"), tr("Area"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/vertBars.xpm"), tr("Vertical Bars"));
+    boxStyle->addItem(IconLoader::duotoneIcon(":/hBars.xpm"), tr("Horizontal Bars"));
     hl->addWidget(boxStyle);
 
     boxMatrixStyle = new QComboBox();
@@ -93,14 +155,14 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     QVBoxLayout *vl1 = new QVBoxLayout();
     btnAdd = new QPushButton();
     btnAdd->setIcon(IconLoader::duotoneIcon("curve-add"));
-    btnAdd->setFixedWidth(35);
-    btnAdd->setFixedHeight(30);
+    btnAdd->setIconSize(QSize(18, 18));
+    btnAdd->setFixedSize(40, 32);
     vl1->addWidget(btnAdd);
 
     btnRemove = new QPushButton();
     btnRemove->setIcon(IconLoader::duotoneIcon("curve-remove"));
-    btnRemove->setFixedWidth(35);
-    btnRemove->setFixedHeight(30);
+    btnRemove->setIconSize(QSize(18, 18));
+    btnRemove->setFixedSize(40, 32);
     vl1->addWidget(btnRemove);
     vl1->addStretch();
 
@@ -173,6 +235,8 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     connect(contents, SIGNAL(currentRowChanged(int)), this, SLOT(showCurveBtn(int)));
     connect(contents, SIGNAL(itemSelectionChanged()), this, SLOT(enableRemoveBtn()));
     connect(available, SIGNAL(itemSelectionChanged()), this, SLOT(enableAddBtn()));
+    connect(available, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem *) { addCurves(); });
 
     QShortcut *shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
     connect(shortcut, SIGNAL(activated()), this, SLOT(removeCurves()));
@@ -360,8 +424,19 @@ void CurvesDialog::addCurves()
     bool addedAny = false;
     QList<QListWidgetItem *> lst = available->selectedItems();
     for (int i = 0; i < lst.size(); ++i) {
-        QString text = lst.at(i)->text();
-        if (contents->findItems(text, Qt::MatchExactly).isEmpty()) {
+        const QString userCol = lst.at(i)->data(Qt::UserRole).toString();
+        const QString text = userCol.isEmpty() ? lst.at(i)->text() : userCol;
+        bool alreadyPlotted = !contents->findItems(text, Qt::MatchExactly).isEmpty();
+        if (!alreadyPlotted && boxShowRange && boxShowRange->isChecked()) {
+            const QString rangePrefix = text + QStringLiteral("[");
+            for (int row = 0; row < contents->count(); ++row) {
+                if (contents->item(row) && contents->item(row)->text().startsWith(rangePrefix)) {
+                    alreadyPlotted = true;
+                    break;
+                }
+            }
+        }
+        if (!alreadyPlotted) {
             if (!addCurve(text))
                 emptyColumns << text;
             else
@@ -655,30 +730,57 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
 
     const bool showAll = boxShowAllColumns ? boxShowAllColumns->isChecked() : true;
 
+    auto appendFormattedColItem = [this](Table *t, int colIdx, const QString &rawColName) {
+        QString tip;
+        const QString disp = formatAvailableColumnDisplay(t, colIdx, rawColName, &tip);
+        auto *item = new QListWidgetItem(disp, available);
+        item->setData(Qt::UserRole, rawColName);
+        item->setToolTip(tip);
+    };
+
     if (currentFolder) {
         Folder *f = app->currentFolder();
         if (f) {
-            QStringList columns;
             foreach (QWidget *w, f->windowsList()) {
                 if (!w->inherits("Table"))
                     continue;
 
                 Table *t = (Table *)w;
                 for (int i = 0; i < t->numCols(); i++) {
-                    if (showAll || t->colPlotDesignation(i) == SciDAVis::Y)
-                        columns << QString(t->name()) + "_" + t->colLabel(i);
+                    if (showAll || t->colPlotDesignation(i) == SciDAVis::Y) {
+                        const QString rawColName =
+                                QString(t->name()) + QStringLiteral("_") + t->colLabel(i);
+                        appendFormattedColItem(t, i, rawColName);
+                    }
                 }
             }
-            available->addItems(columns);
         }
     } else {
-        available->addItems(showAll ? app->columnsList() : app->columnsList(SciDAVis::Y));
+        const QStringList rawColumns =
+                showAll ? app->columnsList() : app->columnsList(SciDAVis::Y);
+        for (const QString &rawColName : rawColumns) {
+            Table *t = app->table(rawColName);
+            int colIdx = -1;
+            if (t) {
+                const QString prefix = QString(t->name()) + QStringLiteral("_");
+                const QString shortCol =
+                        rawColName.startsWith(prefix) ? rawColName.mid(prefix.length()) : rawColName;
+                colIdx = t->colIndex(shortCol);
+                if (colIdx < 0)
+                    colIdx = t->colIndex(rawColName);
+            }
+            appendFormattedColItem(t, colIdx, rawColName);
+        }
     }
 
     QStringList matrices = app->matrixNames();
     if (!matrices.isEmpty()) {
         boxMatrixStyle->show();
-        available->addItems(matrices);
+        for (const QString &matName : matrices) {
+            auto *item = new QListWidgetItem(matName, available);
+            item->setData(Qt::UserRole, matName);
+            item->setToolTip(matName);
+        }
     }
     enableAddBtn();
 }

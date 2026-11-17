@@ -55,6 +55,7 @@
 #include "lib/IntervalAttribute.h"
 
 class Column;
+class QFrame;
 namespace future {
 class Table;
 }
@@ -234,6 +235,12 @@ protected:
     virtual void changeEvent(QEvent *event);
     void retranslateStrings();
     void setColumnForControlTabs(int col);
+    void initWorksheetQuickBar(QWidget *parentWidget);
+    void syncQuickBarState();
+    void applyQuickColumnRole(int roleCode);
+    void applyQuickFormula();
+    void triggerQuickPlot(int curveStyle);
+    void triggerQuickAddToGraph();
 
     bool eventFilter(QObject *watched, QEvent *event);
 
@@ -246,12 +253,29 @@ protected:
     //! Button to toogle the visibility of #d_tool_box
     QToolButton *d_hide_button;
     QHBoxLayout *d_main_layout;
+    QFrame *d_quick_bar = nullptr;
+    QToolButton *d_btn_role_x = nullptr;
+    QToolButton *d_btn_role_y = nullptr;
+    QToolButton *d_btn_role_yerr = nullptr;
+    QToolButton *d_btn_role_xerr = nullptr;
+    QToolButton *d_btn_role_z = nullptr;
+    QToolButton *d_btn_role_label = nullptr;
+    QToolButton *d_btn_role_none = nullptr;
+    QLabel *d_lbl_quick_fx = nullptr;
+    QLineEdit *d_edit_quick_fx = nullptr;
+    QToolButton *d_btn_quick_plot_lp = nullptr;
+    QToolButton *d_btn_quick_plot_scatter = nullptr;
+    QToolButton *d_btn_quick_plot_line = nullptr;
+    QToolButton *d_btn_quick_add_graph = nullptr;
+    QToolButton *d_btn_quick_col_props = nullptr;
     TableDoubleHeaderView *d_horizontal_header;
     QPointer<future::Table> d_table;
     QLabel *d_long_name_label = nullptr;
     QLineEdit *d_long_name_edit = nullptr;
     QLabel *d_units_label = nullptr;
     QLineEdit *d_units_edit = nullptr;
+    bool d_updating_ui = false;
+    bool d_comment_dirty = false;
     bool d_user_hid_comments = false;
     bool d_cell_drag_candidate = false;
     bool d_cell_drag_started = false;

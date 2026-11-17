@@ -58,6 +58,10 @@ public:
     virtual void setModel(QAbstractItemModel *model);
     virtual QSize sizeHint() const override;
 
+protected:
+    virtual void paintSection(QPainter *painter, const QRect &rect,
+                              int logicalIndex) const override;
+
     friend class TableDoubleHeaderView; // access to paintSection (protected)
 };
 

@@ -71,16 +71,16 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
         return f;
     };
     plot3DColors = app->plot3DColors;
-    plot3DTitleFont = ensureGraphFont(app->plot3DTitleFont, 14, QFont::Bold);
+    plot3DTitleFont = ensureGraphFont(app->plot3DTitleFont, 14, QFont::Normal);
     plot3DNumbersFont = ensureGraphFont(app->plot3DNumbersFont, 10);
-    plot3DAxesFont = ensureGraphFont(app->plot3DAxesFont, 12, QFont::Bold);
+    plot3DAxesFont = ensureGraphFont(app->plot3DAxesFont, 12, QFont::Normal);
     textFont = app->tableTextFont;
     headerFont = app->tableHeaderFont;
     appFont = app->appFont;
-    axesFont = ensureGraphFont(app->plotAxesFont, 14, QFont::Bold);
+    axesFont = ensureGraphFont(app->plotAxesFont, 14, QFont::Normal);
     numbersFont = ensureGraphFont(app->plotNumbersFont, 12);
     legendFont = ensureGraphFont(app->plotLegendFont, 10);
-    titleFont = ensureGraphFont(app->plotTitleFont, 14, QFont::Bold);
+    titleFont = ensureGraphFont(app->plotTitleFont, 14, QFont::Normal);
 
     QPalette pal;
     pal.setColor(QPalette::Window, app->palette().color(QPalette::Window));

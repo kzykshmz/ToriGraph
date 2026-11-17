@@ -35,6 +35,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDockWidget>
+#include <QFontDatabase>
 #include <QHash>
 #include <QIcon>
 #include <QKeySequence>
@@ -377,6 +378,7 @@ static const ExactMapEntry kExactObjectNameMap[] = {
     { "actionstylenature", "preset-nature" },
     { "actioncopygraphformat", "format-copy" },
     { "actionpastegraphformat", "format-paste" },
+    { "actionmergegraphs", "split-view" },
     { "actionbatchplot", "batch-plot" },
     { "actionpagesetup", "page-setup" },
     { "actionfitpagetolayers", "fit-page" },
@@ -969,9 +971,13 @@ static bool hasSkippedAncestor(const QWidget *w)
         if (cls == QStringLiteral("MultiLayer") || cls == QStringLiteral("Graph")
             || cls == QStringLiteral("Plot") || cls == QStringLiteral("GraphMiniToolbar")
             || cls == QStringLiteral("ModernRibbonBar")
+            || cls == QStringLiteral("GraphInspectorDock")
             || cls == QStringLiteral("FocusCanvasHudOverlay")
             || cls == QStringLiteral("FocusTableDrawer") || cls == QStringLiteral("QTabBar")
             || cls == QStringLiteral("QLineEdit") || qobject_cast<const QAbstractSpinBox *>(p)
+            || obj == QStringLiteral("ModernRibbonToolBar")
+            || obj == QStringLiteral("GraphInspectorDock")
+            || obj == QStringLiteral("WorksheetQuickBar")
             || obj == QStringLiteral("MultiLayerPillContainer")) {
             return true;
         }
@@ -1035,6 +1041,27 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
 
     QStyle *fusionBase = QStyleFactory::create(QStringLiteral("Fusion"));
     app->setStyle(new ModernFluentProxyStyle(fusionBase));
+
+    // Upgrade legacy 1998 monochrome bitmap Japanese UI fonts (MS UI Gothic / MS PGothic) to crisp ClearType
+    {
+        QFont uiFont = app->font();
+        const QString fam = uiFont.family().trimmed();
+        if (fam.isEmpty() || fam.compare(QLatin1String("MS UI Gothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS PGothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Gothic"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Shell Dlg"), Qt::CaseInsensitive) == 0
+            || fam.compare(QLatin1String("MS Shell Dlg 2"), Qt::CaseInsensitive) == 0) {
+            const QStringList families = QFontDatabase().families();
+            if (families.contains(QStringLiteral("Yu Gothic UI"), Qt::CaseInsensitive))
+                uiFont.setFamily(QStringLiteral("Yu Gothic UI"));
+            else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
+                uiFont.setFamily(QStringLiteral("Segoe UI"));
+        }
+        if (uiFont.pointSize() <= 0 || uiFont.pointSize() < 9)
+            uiFont.setPointSize(9);
+        uiFont.setStyleStrategy(QFont::PreferAntialias);
+        app->setFont(uiFont);
+    }
 
     // Keep WindowText and Text pure black (#000000) and Base pure white (#FFFFFF) so legacy
     // QwtPlot / QwtScaleWidget / Graph COLORNAME() serialization and white export canvases stay
@@ -1153,6 +1180,17 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: transparent;"
             "  width: 6px;"
             "}"
+            "QToolBar#ModernRibbonToolBar {"
+            "  background: #F8FAFC;"
+            "  border: none;"
+            "  padding: 0px;"
+            "  margin: 0px;"
+            "  spacing: 0px;"
+            "}"
+            "QToolBar#ModernRibbonToolBar::handle {"
+            "  width: 0px;"
+            "  image: none;"
+            "}"
             "QToolButton {"
             "  background-color: transparent;"
             "  color: #1E293B;"
@@ -1184,7 +1222,10 @@ QString ModernUiTheme::modernStyleSheet()
             "  color: #1E293B;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
-            "  padding: 5px 12px;"
+            "  padding: 4px 10px;"
+            "}"
+            "QPushButton[compactBtn=\"true\"] {"
+            "  padding: 2px 4px;"
             "}"
             "QPushButton:hover {"
             "  background-color: #EFF6FF;"
@@ -1313,6 +1354,9 @@ QString ModernUiTheme::modernStyleSheet()
             "QHeaderView::section {"
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 9pt;"
+            "  font-weight: 600;"
             "  border-top: none;"
             "  border-left: none;"
             "  border-right: 1px solid #E2E8F0;"
@@ -1545,10 +1589,26 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
     // 1. Standardize classic QToolBar icon sizes to crisp 20x20 px
     const QList<QToolBar *> toolBars = rootWindow->findChildren<QToolBar *>();
     for (QToolBar *tb : toolBars) {
-        if (!tb || hasSkippedAncestor(tb))
+        if (!tb || tb->objectName() == QStringLiteral("ModernRibbonToolBar")
+            || hasSkippedAncestor(tb))
             continue;
         if (tb->iconSize().width() != 20)
             tb->setIconSize(QSize(20, 20));
+    }
+
+    // 1b. Mark narrow QPushButtons (<= 48 px max width, e.g. "<<", "+", "-") as compactBtn
+    const QList<QPushButton *> pushButtons = rootWindow->findChildren<QPushButton *>();
+    for (QPushButton *pb : pushButtons) {
+        if (!pb || hasSkippedAncestor(pb))
+            continue;
+        if (pb->maximumWidth() > 0 && pb->maximumWidth() <= 48
+            && !pb->property("compactBtn").toBool()) {
+            pb->setProperty("compactBtn", true);
+            if (QStyle *st = pb->style()) {
+                st->unpolish(pb);
+                st->polish(pb);
+            }
+        }
     }
 
     // 2. Collect all QActions across children, rootWindow actions, and menuBar trees
@@ -1560,6 +1620,19 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
     for (QAction *a : directActions)
         allActions.insert(a);
     const QList<QMenuBar *> menuBars = rootWindow->findChildren<QMenuBar *>();
+    const QList<QMenu *> directTopMenus =
+            rootWindow->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly);
+    for (QMenu *m : directTopMenus) {
+        if (!m)
+            continue;
+        for (QAction *sa : m->actions()) {
+            if (!sa)
+                continue;
+            allActions.insert(sa);
+            if (QMenu *sub2 = sa->menu())
+                collectMenuActionsRecursive(sub2, allActions);
+        }
+    }
     for (QMenuBar *mb : menuBars) {
         if (!mb)
             continue;
@@ -1580,12 +1653,27 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
             }
         }
     }
-    // Remove top-level QMenuBar bar-item actions from icon assignment so horizontal menubar labels stay clean
+    // Remove top-level QMenuBar bar-item actions and dynamic top-level QMenus (e.g. plot2D / 作図(P))
+    // from icon assignment and clear any prior icon so horizontal menubar labels always render as text!
+    for (QMenu *m : directTopMenus) {
+        if (!m)
+            continue;
+        if (QAction *ma = m->menuAction()) {
+            allActions.remove(ma);
+            if (!ma->icon().isNull())
+                ma->setIcon(QIcon());
+        }
+    }
     for (QMenuBar *mb : menuBars) {
         if (!mb)
             continue;
-        for (QAction *topAct : mb->actions())
+        for (QAction *topAct : mb->actions()) {
+            if (!topAct)
+                continue;
             allActions.remove(topAct);
+            if (!topAct->icon().isNull())
+                topAct->setIcon(QIcon());
+        }
     }
 
     for (QAction *action : allActions)
@@ -1609,6 +1697,11 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
         const QString existingIconName = btn->icon().name();
         if (existingIconName.endsWith(QStringLiteral(":dark")))
             continue;
+
+        if (btn->maximumWidth() > 0 && btn->maximumWidth() <= 48 && btn->icon().isNull()
+            && !btn->text().isEmpty()) {
+            continue;
+        }
 
         const QString semId = semanticIconForToolButton(btn);
         if (!semId.isEmpty()) {

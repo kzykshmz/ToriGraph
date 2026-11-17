@@ -249,6 +249,8 @@ public:
     explicit ModernRibbonBar(ApplicationWindow *app, QWidget *parent = nullptr);
     ~ModernRibbonBar() override;
 
+    QSize minimumSizeHint() const override;
+
     void prepareForAppShutdown();
     void retranslateUi();
     void updateActiveContext(MyWidget *activeWindow);
@@ -325,6 +327,8 @@ private:
                                  bool accentPreset = false);
     void buildAllTabs();
     void refreshButtonIcons();
+    void updateTabStackHeight();
+    void updateHeaderResponsiveness();
     void importOpjInteractive();
 
     QPointer<ApplicationWindow> d_app;
@@ -333,6 +337,8 @@ private:
     QTabBar *d_tab_bar = nullptr;
     QStackedWidget *d_tab_stack = nullptr;
 
+    QToolButton *d_btn_quick_isij = nullptr;
+    QToolButton *d_btn_quick_slide = nullptr;
     QToolButton *d_btn_cmd_palette = nullptr;
     QButtonGroup *d_layout_btn_group = nullptr;
     QToolButton *d_btn_layout_tabbed = nullptr;

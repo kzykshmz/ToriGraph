@@ -28,6 +28,8 @@
  ***************************************************************************/
 #include "LayerDialog.h"
 #include "ApplicationWindow.h"
+#include "Graph.h"
+#include "I18nJapanese.h"
 
 #include <QLayout>
 #include <QSpinBox>
@@ -45,9 +47,32 @@
 #include <QSignalBlocker>
 #include <cmath>
 
+namespace {
+
+void registerLayerDialogTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Collapse Inner Gaps (0-gap Stack/Grid)", "パネル間の隙間をゼロにする (0-gap スタック/グリッド)");
+    reg("Delete Non-Empty Layers?", "曲線を含むレイヤを削除しますか？");
+    reg("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\n"
+        "Are you sure you want to delete these layers and their curves?",
+        "削除対象の %2 レイヤのうち %1 レイヤに合計 %3 個のプロットが含まれています。\n"
+        "これらのレイヤと曲線を削除してもよろしいですか？");
+}
+
+} // namespace
+
 LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     : QDialog(parent, fl), multi_layer(nullptr)
 {
+    registerLayerDialogTranslations();
     setWindowTitle(tr("Arrange Layers"));
 
     QGroupBox *gb1 = new QGroupBox(tr("Layers"));
@@ -169,6 +194,41 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     boxBottomSpace->setSingleStep(5);
     boxBottomSpace->setSuffix(tr(" pixels"));
     gl4->addWidget(boxBottomSpace, 5, 1);
+
+    QCheckBox *collapseGapsBox =
+            new QCheckBox(tr("Collapse Inner Gaps (0-gap Stack/Grid)"), gb4);
+    collapseGapsBox->setObjectName(QStringLiteral("collapseInnerGapsCheck"));
+    collapseGapsBox->setProperty("prevColsGap", 5);
+    collapseGapsBox->setProperty("prevRowsGap", 5);
+    gl4->addWidget(collapseGapsBox, 6, 0, 1, 2);
+
+    connect(collapseGapsBox, &QCheckBox::toggled, this, [this, collapseGapsBox](bool checked) {
+        if (checked) {
+            if (boxColsGap->value() > 0)
+                collapseGapsBox->setProperty("prevColsGap", boxColsGap->value());
+            if (boxRowsGap->value() > 0)
+                collapseGapsBox->setProperty("prevRowsGap", boxRowsGap->value());
+            QSignalBlocker bc(boxColsGap);
+            QSignalBlocker br(boxRowsGap);
+            boxColsGap->setValue(0);
+            boxRowsGap->setValue(0);
+        } else {
+            const int prevC = qMax(5, collapseGapsBox->property("prevColsGap").toInt());
+            const int prevR = qMax(5, collapseGapsBox->property("prevRowsGap").toInt());
+            QSignalBlocker bc(boxColsGap);
+            QSignalBlocker br(boxRowsGap);
+            boxColsGap->setValue(prevC);
+            boxRowsGap->setValue(prevR);
+        }
+    });
+    auto syncCollapseCheck = [this, collapseGapsBox]() {
+        QSignalBlocker b(collapseGapsBox);
+        collapseGapsBox->setChecked(boxColsGap->value() == 0 && boxRowsGap->value() == 0);
+    };
+    connect(boxColsGap, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this,
+            [syncCollapseCheck](int) { syncCollapseCheck(); });
+    connect(boxRowsGap, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this,
+            [syncCollapseCheck](int) { syncCollapseCheck(); });
 
     QVBoxLayout *vbox1 = new QVBoxLayout();
     vbox1->addWidget(GroupGrid);
@@ -294,6 +354,15 @@ void LayerDialog::setMultiLayer(MultiLayer *g)
     boxY->setValue(g->getRows());
     boxColsGap->setValue(g->colsSpacing());
     boxRowsGap->setValue(g->rowsSpacing());
+    if (auto *collapseGapsBox =
+                findChild<QCheckBox *>(QStringLiteral("collapseInnerGapsCheck"))) {
+        QSignalBlocker b(collapseGapsBox);
+        if (g->colsSpacing() > 0)
+            collapseGapsBox->setProperty("prevColsGap", g->colsSpacing());
+        if (g->rowsSpacing() > 0)
+            collapseGapsBox->setProperty("prevRowsGap", g->rowsSpacing());
+        collapseGapsBox->setChecked(g->colsSpacing() == 0 && g->rowsSpacing() == 0);
+    }
     boxLeftSpace->setValue(g->leftMargin());
     boxRightSpace->setValue(g->rightMargin());
     boxTopSpace->setValue(g->topMargin());
@@ -401,6 +470,7 @@ void LayerDialog::onLinkModeChanged()
 
 void LayerDialog::update()
 {
+    setProperty("lastUpdateAborted", false);
     if (!multi_layer)
         return;
 
@@ -409,31 +479,56 @@ void LayerDialog::update()
     int rows = boxY->value();
 
     if (graphs > 0 && cols > graphs && !fitBox->isChecked()) {
-        QMessageBox::about(0, tr("Columns input error"),
+        QMessageBox::about(this, tr("Columns input error"),
                            tr("The number of columns you've entered is greater than the number of "
                               "graphs (%1)!")
                                    .arg(graphs));
         boxX->setFocus();
+        setProperty("lastUpdateAborted", true);
         return;
     }
 
     if (graphs > 0 && rows > graphs && !fitBox->isChecked()) {
         QMessageBox::about(
-                0, tr("Rows input error"),
+                this, tr("Rows input error"),
                 tr("The number of rows you've entered is greater than the number of graphs (%1)!")
                         .arg(graphs));
         boxY->setFocus();
+        setProperty("lastUpdateAborted", true);
         return;
     }
 
     int old_graphs = multi_layer->layers();
     int dn = old_graphs - graphs;
-    if (dn > 0
-        && QMessageBox::question(0, tr("Delete Layers?"),
-                                 tr("You are about to delete %1 existing layers.").arg(dn) + "\n"
-                                         + tr("Are you sure you want to continue this operation?"),
-                                 tr("&Continue"), tr("&Cancel"), QString(), 0, 1))
-        return;
+    if (dn > 0) {
+        int nonEmptyLayers = 0;
+        int totalItemsToDelete = 0;
+        for (int i = graphs + 1; i <= old_graphs; ++i) {
+            if (Graph *lg = multi_layer->layer(i)) {
+                const int itemCnt = qMax(lg->curves(), lg->plotItemsList().size());
+                if (itemCnt > 0) {
+                    ++nonEmptyLayers;
+                    totalItemsToDelete += itemCnt;
+                }
+            }
+        }
+        if (nonEmptyLayers > 0 && !ApplicationWindow::isNonInteractiveContext(this)) {
+            const QMessageBox::StandardButton ans = QMessageBox::question(
+                    this, tr("Delete Non-Empty Layers?"),
+                    tr("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\n"
+                       "Are you sure you want to delete these layers and their curves?")
+                            .arg(nonEmptyLayers)
+                            .arg(dn)
+                            .arg(totalItemsToDelete),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (ans != QMessageBox::Yes) {
+                QSignalBlocker b(layersBox);
+                layersBox->setValue(old_graphs);
+                setProperty("lastUpdateAborted", true);
+                return;
+            }
+        }
+    }
 
     QPointer<MultiLayer> mlGuard = multi_layer;
     const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
@@ -523,5 +618,6 @@ void LayerDialog::update()
 void LayerDialog::accept()
 {
     update();
-    close();
+    if (!property("lastUpdateAborted").toBool())
+        close();
 }

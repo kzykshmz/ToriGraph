@@ -1212,10 +1212,33 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
     const bool hasTarget = (target != nullptr);
     const int targetXAxis = hasTarget ? target->xAxis() : int(QwtPlot::xBottom);
     const int targetYAxis = hasTarget ? target->yAxis() : int(QwtPlot::yLeft);
-    const QString baseTitle = !d_curve_title.isEmpty()
-            ? d_curve_title
-            : (hasTarget && !target->title().text().isEmpty() ? target->title().text()
-                                                              : QStringLiteral("Curve"));
+    QString cleanBaseTitle;
+    if (hasTarget && d_graph_guard) {
+        const int tIdx = d_graph_guard->curveIndex(target);
+        if (tIdx >= 0)
+            cleanBaseTitle = d_graph_guard->resolvedAutoCurveLabel(tIdx).trimmed();
+    }
+    QString baseTitle = !cleanBaseTitle.isEmpty()
+            ? cleanBaseTitle
+            : (!d_curve_title.isEmpty()
+                       ? d_curve_title
+                       : (hasTarget && !target->title().text().isEmpty()
+                                  ? target->title().text()
+                                  : QStringLiteral("Curve")));
+    if (cleanBaseTitle.isEmpty()) {
+        if (DataCurve *tdc = dynamic_cast<DataCurve *>(target)) {
+            if (Table *ttbl = tdc->table()) {
+                const QString pfx = ttbl->objectName() + QLatin1Char('_');
+                if (baseTitle.startsWith(pfx))
+                    baseTitle = baseTitle.mid(pfx.length());
+            }
+        } else {
+            const int us = baseTitle.indexOf(QLatin1Char('_'));
+            if (us > 0
+                && baseTitle.left(us).startsWith(QStringLiteral("Table"), Qt::CaseInsensitive))
+                baseTitle = baseTitle.mid(us + 1);
+        }
+    }
 
     MultiLayer *ml = d_graph_guard->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -1247,6 +1270,20 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
     Column *colY = new Column(sanitizedYName, SciDAVis::ColumnMode::Numeric);
     colX->setPlotDesignation(SciDAVis::X);
     colY->setPlotDesignation(SciDAVis::Y);
+    if (DataCurve *tdc = dynamic_cast<DataCurve *>(target)) {
+        if (Table *ttbl = tdc->table()) {
+            const int txIdx = ttbl->colIndex(tdc->xColumnName());
+            const int tyIdx = ttbl->colIndex(tdc->yColumnName());
+            if (Column *txc = (txIdx >= 0 ? ttbl->column(txIdx) : nullptr)) {
+                colX->setLongName(txc->longName());
+                colX->setUnits(txc->units());
+            }
+            if (Column *tyc = (tyIdx >= 0 ? ttbl->column(tyIdx) : nullptr)) {
+                colY->setLongName(tyc->longName());
+                colY->setUnits(tyc->units());
+            }
+        }
+    }
     for (int i = 0; i < nPts; ++i) {
         colX->setValueAt(i, xs[size_t(i)]);
         colY->setValueAt(i, ys[size_t(i)]);
@@ -1265,19 +1302,32 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
     fitTbl->setColName(1, sanitizedYName);
     d_app->hideWindow(fitTbl);
 
+    const bool hadMainLegend = (d_graph_guard->legend() != nullptr);
+    const QString prevMainLegendText =
+            hadMainLegend ? d_graph_guard->legend()->text() : QString();
+
     if (d_graph_guard->insertCurve(fitTbl, fitTbl->colName(0), fitTbl->colName(1), Graph::Line)) {
         const int newIdx = d_graph_guard->curves() - 1;
         if (QwtPlotCurve *added = (newIdx >= 0) ? d_graph_guard->curve(newIdx) : nullptr) {
+            added->setItemAttribute(QwtPlotItem::Legend, false);
             if (hasTarget)
                 added->setAxis(targetXAxis, targetYAxis);
             added->setPen(QPen(QColor(214, 39, 40), 2.0, Qt::SolidLine));
             added->setRenderHint(QwtPlotItem::RenderAntialiased, true);
         }
+        if (!hadMainLegend) {
+            d_graph_guard->removeLegend();
+        } else if (Legend *mainLeg = d_graph_guard->legend()) {
+            mainLeg->setText(prevMainLegendText);
+        }
     }
 
     if (!d_summary_text.isEmpty()) {
         if (Legend *mrk = d_graph_guard->newLegend(d_summary_text)) {
-            mrk->setFont(QFont("Arial", 9));
+            const int fontPt = qMax(9, d_graph_guard->legendFont().pointSize());
+            QFont calloutFont(QStringLiteral("Arial"), fontPt, QFont::Normal);
+            calloutFont.setHintingPreference(QFont::PreferNoHinting);
+            mrk->setFont(calloutFont);
             mrk->setFrameStyle(Legend::Line);
             mrk->setBackgroundColor(QColor(255, 255, 255, 235));
             const QRectF roi = d_roi_rect.normalized();
@@ -1735,16 +1785,37 @@ void RoiGadgetTool::recalculate()
         pts.push_back({ px, py, i });
     }
 
+    QString curveDisplayLabel;
+    if (d_graph_guard) {
+        const int cIdx = d_graph_guard->curveIndex(curve);
+        if (cIdx >= 0)
+            curveDisplayLabel = d_graph_guard->resolvedAutoCurveLabel(cIdx).trimmed();
+    }
+    if (curveDisplayLabel.isEmpty()) {
+        curveDisplayLabel = curve->title().text().trimmed();
+        if (dc && dc->table()) {
+            const QString pfx = dc->table()->objectName() + QLatin1Char('_');
+            if (curveDisplayLabel.startsWith(pfx))
+                curveDisplayLabel = curveDisplayLabel.mid(pfx.length());
+        } else {
+            const int us = curveDisplayLabel.indexOf(QLatin1Char('_'));
+            if (us > 0
+                && curveDisplayLabel.left(us).startsWith(QStringLiteral("Table"),
+                                                         Qt::CaseInsensitive))
+                curveDisplayLabel = curveDisplayLabel.mid(us + 1);
+        }
+    }
+
     if (pts.empty()) {
         if (d_mode == UnmaskRegion) {
             d_summary_text = QString("%1 [%2]\n%3")
                                      .arg(tr("Unmask ROI"))
-                                     .arg(curve->title().text())
+                                     .arg(curveDisplayLabel)
                                      .arg(tr("0 masked points in ROI"));
         } else {
             d_summary_text = QString("%1 [%2]\n%3")
                                      .arg(tr("ROI Gadget"))
-                                     .arg(curve->title().text())
+                                     .arg(curveDisplayLabel)
                                      .arg(tr("No unmasked points in ROI"));
         }
         d_recalculating = false;
@@ -2146,17 +2217,17 @@ void RoiGadgetTool::recalculate()
         } else {
             d_summary_text = QString("%1 [%2]\n%3 (N=%4)")
                                      .arg(tr("Quick Fit"))
-                                     .arg(curve->title().text())
+                                     .arg(curveDisplayLabel)
                                      .arg(tr("Need more points in ROI"))
                                      .arg(n);
             break;
         }
 
-        d_summary_text = QString("%1 (%2) [%3]\nR² = %4\n%5")
-                                 .arg(tr("Quick Fit"))
+        d_summary_text = QString("%1 (%2)\n%3 = %4\n%5")
                                  .arg(modelLabel)
-                                 .arg(curve->title().text())
-                                 .arg(d_primary_metric, 0, 'f', 5)
+                                 .arg(curveDisplayLabel)
+                                 .arg(tr("R\u00B2"))
+                                 .arg(QLocale().toString(d_primary_metric, 'f', 4))
                                  .arg(paramLine);
         break;
     }

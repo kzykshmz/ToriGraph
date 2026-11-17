@@ -36,6 +36,7 @@
 
 class QLineEdit;
 class QRect;
+class QTimer;
 class QwtPlot;
 class QwtScaleWidget;
 class Graph;
@@ -73,6 +74,8 @@ public:
 
     void deselect();
     void cancelInlineScaleEditor();
+    bool hasActiveInlineScaleEditor() const { return !d_inline_scale_edit.isNull(); }
+    void flushPendingWheelUndo();
 
     bool titleSelected() { return d_title_selected; };
     void selectTitle(QwtScaleWidget *scale, bool select = true);
@@ -148,6 +151,8 @@ private:
     bool d_axis_panning;
     bool d_press_on_title = false;
     QString d_pan_undo_snapshot;
+    QTimer *d_wheel_undo_timer = nullptr;
+    QString d_pending_wheel_undo_snap;
 
     QPointer<QLineEdit> d_inline_scale_edit;
     QPointer<QwtScaleWidget> d_inline_edit_scale;

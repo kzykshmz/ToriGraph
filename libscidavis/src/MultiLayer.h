@@ -159,11 +159,15 @@ public:
     void setPanelLabels(bool enabled, PanelLabelPlacement placement = PanelOutsideTopLeft,
                         const QString &pattern = QString("(%a)"), int fontPt = 0);
     bool hasPanelLabels() const { return d_panel_labels_enabled; }
+    bool panelLabelsEnabled() const { return d_panel_labels_enabled; }
+    QRect panelLabelsBoundingRect() const;
     PanelLabelPlacement panelLabelPlacement() const { return d_panel_label_placement; }
     QString panelLabelPattern() const { return d_panel_label_pattern; }
     int panelLabelFontPt() const { return d_panel_label_font_pt; }
     void applySquareCanvasFrame70Percent();
     void notifyOleDirtyIfEmbedded();
+    void enforceLayerZOrder();
+    void refreshLayerButtonBadges();
 
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dragMoveEvent(QDragMoveEvent *e) override;
@@ -334,12 +338,21 @@ private:
     double d_page_height_val = 520.0;
     QSize d_base_page_px = QSize(520, 520);
     QColor d_page_bg_color = QColor(Qt::white);
-    QMap<Graph *, QPair<QPointer<Graph>, QRectF>> d_inset_specs;
+    struct InsetSpec
+    {
+        QPointer<Graph> sourceLayer;
+        QRectF normGeo = QRectF(0.54, 0.08, 0.38, 0.38);
+        QRectF zoomDataRect;
+        bool showConnectors = true;
+    };
+    QMap<Graph *, InsetSpec> d_inset_specs;
     struct PendingInsetSpec
     {
         int childIdx = -1;
         int sourceIdx = -1;
-        QRectF relRect;
+        QRectF relRect = QRectF(0.54, 0.08, 0.38, 0.38);
+        QRectF zoomDataRect;
+        bool showConnectors = true;
     };
     QVector<PendingInsetSpec> d_pending_inset_specs;
 
@@ -349,6 +362,17 @@ private:
     void openCanvasStatusQuickMenu();
     void openQuickLayerColumnsPopup();
     void drawPanelLabels(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
+    void drawInsetConnectors(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
+    void syncCanvasOverlayVisibility();
+    QList<Graph *> orderedLayersForRender() const;
+    Graph *resolveColumnDropTarget(const QPoint &canvasPt, const QPoint &widgetPos,
+                                   bool &rightYZoneOut) const;
+    void installLayerEventFilters(Graph *g);
+
+    bool d_syncing_inset_geometries = false;
+    bool d_forwarding_mouse = false;
+    QPointer<QWidget> d_passthrough_source;
+    QPointer<QWidget> d_passthrough_target;
 
     QPointer<SelectionMoveResizer> d_layers_selector;
     QUndoStack *d_undo_stack = nullptr;

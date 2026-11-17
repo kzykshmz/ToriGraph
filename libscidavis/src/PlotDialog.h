@@ -42,6 +42,7 @@ class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QSpinBox;
+class QSplitter;
 class QTabWidget;
 class QWidget;
 class QStringList;
@@ -74,6 +75,7 @@ public:
 
 public slots:
     void showAll(bool all);
+    void togglePage(bool all) { showAll(all); }
     void selectCurve(int index);
 
 private slots:
@@ -182,6 +184,7 @@ private:
     bool d_loadingUi = false;
     QSet<QWidget *> d_dirtyTabs;
     QWidget *d_leftTreePanel = nullptr;
+    QSplitter *d_mainSplitter = nullptr;
     QPushButton *btnMoveCurveUp = nullptr;
     QPushButton *btnMoveCurveDown = nullptr;
     QCheckBox *boxHollowSymbol = nullptr;

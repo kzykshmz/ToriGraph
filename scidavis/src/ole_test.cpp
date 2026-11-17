@@ -141,6 +141,7 @@ static int runSuite44Round4UnifiedRegressionGate(ApplicationWindow *mw);
 static int runSuite45Round5ZeroDefectGate(ApplicationWindow *mw);
 static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow *mw);
 static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *mw);
+static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -3563,8 +3564,11 @@ int main(int argc, char **argv)
         CHECK_COND(gFmtTarget->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
                            && gFmtTarget->axisTitleFont(QwtPlot::xBottom).pointSize() == 28
                            && gFmtTarget->axisFont(QwtPlot::xBottom).pointSize() == 28
-                           && gFmtTarget->referenceLines().size() == 1,
-                   "copyGraphFormat -> pasteGraphFormat did not transfer 28pt Arial fonts & reference lines");
+                           && gFmtTarget->referenceLines().isEmpty(),
+                   "copyGraphFormat -> safe pasteGraphFormat did not transfer 28pt Arial fonts cleanly");
+        mw->pasteGraphFormatWithScope(ApplicationWindow::FormatAll);
+        CHECK_COND(gFmtTarget->referenceLines().size() == 1,
+                   "pasteGraphFormatWithScope(FormatAll) did not transfer reference lines");
 
         // 5. Batch Plotting (batchCloneGraphToTable) onto a 2nd Table
         Table *tTensileB = mw->newTable(21, 2, "TensileSpecB", "Tensile B");
@@ -5289,7 +5293,10 @@ int main(int argc, char **argv)
     if (runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 47 ToriGraph OriginPro Parity, Phase 6/7 Graph Inspector & Direct Canvas UX, Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 48 ToriGraph OriginPro Parity, Phase 6/7/8 Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -8945,10 +8952,12 @@ static bool isUntranslatedAsciiUiLabel(const QString &raw)
     }
     // Universal scientific symbols / units / formatting tokens allowed identically in EN & JA
     static const QSet<QString> kAllowedTokens = {
-        "X", "Y", "Z", "W", "H", "mm", "cm", "in", "px", "pt", "DPI", "%",
+        "X", "Y", "Z", "W", "H", "mm", "cm", "in", "px", "pt", "DPI", "%", "K", "nm", "eV",
         "I", "B", "U", "x_2", "x^2", "(a)", "(%a)", "100%", "50%", "75%", "125%", "150%", "200%",
-        "ISIJ (85 mm)", "Nature (89 mm)", "Log10", "Linear", "ToriGraph",
-        "α / μ / σ", "x₂", "x²", "°C", "μm", "MPa", "GPa", "mass%", "wt.ppm", "kJ/mol", "[fx]"
+        "ISIJ", "ISIJ 85mm", "ISIJ (85 mm)", "Nature (89 mm)", "Log10", "Linear", "ToriGraph",
+        "Viridis", "Magma", "Inferno", "Plasma", "Cividis", "Jet",
+        "α / μ / σ", "x₂", "x²", "°C", "μm", "MPa", "GPa", "mass%", "at.%", "wt.ppm", "kJ/mol",
+        "[fx]", "s⁻¹", "10⁻⁴ s⁻¹", "mass ppm·s⁻¹", "σ (MPa)", "ε (%)", "dσ/dε (GPa)", "1000/T (K⁻¹)"
     };
     if (kAllowedTokens.contains(s))
         return false;
@@ -9840,5 +9849,204 @@ static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *m
     QApplication::processEvents();
 
     std::cout << "[INFO] Suite 47 Phase 7 Graph Usability & Zero-Leak Gate passed!\n";
+    return 0;
+}
+
+#include <QScrollArea>
+#include <QToolBar>
+
+static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 48: Phase 8 Full-Width Ribbon Dock Geometry, Zero-Clipped Group Captions, Worksheet Quick Bar & Paste Header Promotion, Catch-22 Metadata Legend, Zoom History, Safe Format Paste & Full-Page Multi-Panel OLE Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 48");
+
+    ApplicationWindow *w48 = new ApplicationWindow();
+    w48->applyUserSettings();
+    w48->resize(1380, 860);
+    w48->show();
+    w48->switchToLanguage("ja");
+    w48->explorerWindow.setFloating(false);
+    w48->addDockWidget(Qt::LeftDockWidgetArea, &w48->explorerWindow);
+    w48->explorerWindow.show();
+    for (int pass = 0; pass < 4; ++pass) {
+        QCoreApplication::sendPostedEvents();
+        QApplication::processEvents();
+    }
+
+    // 1. Dock Layout Below Full-Width Top Ribbon + Zero Clipped Group Captions Across All 7 Tabs
+    ModernRibbonBar *rib48 = w48->modernRibbonBar();
+    CHECK_COND(rib48 != nullptr && rib48->isVisible(), "ModernRibbonBar is null or hidden in Suite 48!");
+    QToolBar *ribTb = qobject_cast<QToolBar *>(rib48->parentWidget());
+    CHECK_COND(ribTb != nullptr && ribTb->isVisible(),
+               "ModernRibbonBar must be hosted inside full-width top QToolBar so docks sit below it!");
+
+    const int ribbonBotY = ribTb->mapTo(w48, QPoint(0, ribTb->height())).y();
+    const int explorerTopY = w48->explorerWindow.mapTo(w48, QPoint(0, 0)).y();
+    CHECK_COND(explorerTopY >= ribbonBotY - 1,
+               "explorerWindow dock intruded vertically into ModernRibbonBar row!");
+
+    GraphInspectorDock *insp48 = w48->graphInspectorDock();
+    if (insp48 && insp48->isVisible()) {
+        const int inspTopY = insp48->mapTo(w48, QPoint(0, 0)).y();
+        CHECK_COND(inspTopY >= ribbonBotY - 1,
+                   "GraphInspectorDock intruded vertically into ModernRibbonBar row!");
+    }
+
+    // Verify all 7 Ribbon tabs at both 1380px and narrow 1040px have 0 clipped RibbonGroupCaptions
+    for (int testW : { 1380, 1040 }) {
+        w48->resize(testW, 820);
+        for (int ti = 0; ti < rib48->tabCount(); ++ti) {
+            rib48->setCurrentTabIndex(ti);
+            for (int pass = 0; pass < 3; ++pass) {
+                QCoreApplication::sendPostedEvents();
+                QApplication::processEvents();
+            }
+            for (QLabel *lbl : rib48->findChildren<QLabel *>()) {
+                if (!lbl || !lbl->isVisible()
+                    || lbl->property("class").toString() != QStringLiteral("RibbonGroupCaption"))
+                    continue;
+                CHECK_COND(!lbl->text().trimmed().isEmpty(),
+                           "Empty RibbonGroupCaption text in Suite 48!");
+                CHECK_COND(lbl->height() + 1 >= lbl->fontMetrics().height(),
+                           "RibbonGroupCaption vertically clipped inside its QLabel height!");
+                for (QWidget *anc = lbl->parentWidget(); anc; anc = anc->parentWidget()) {
+                    if (auto *sa = qobject_cast<QScrollArea *>(anc)) {
+                        if (sa->viewport()) {
+                            const int botVp = lbl->mapTo(sa->viewport(), QPoint(0, lbl->height())).y();
+                            CHECK_COND(botVp <= sa->viewport()->height() + 1,
+                                       "RibbonGroupCaption clipped by QScrollArea viewport / scrollbar!");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    w48->resize(1380, 860);
+    QApplication::processEvents();
+
+    // 2. TableView Default Collapsed Side Panel + Worksheet Quick Bar + Smart Paste Header Promotion
+    Table *t48 = w48->newTable(6, 3, "Tensile_Sheet", "Al-Zn-Mg Tensile");
+    CHECK_COND(t48 != nullptr, "Failed to create Tensile_Sheet in Suite 48");
+    t48->show();
+    QApplication::processEvents();
+    CHECK_COND(!t48->isControlTabBarVisible(),
+               "TableView::isControlTabBarVisible() must default to collapsed (false) on new tables!");
+    CHECK_COND(t48->findChild<QWidget *>("WorksheetQuickBar") != nullptr,
+               "TableView missing #WorksheetQuickBar top toolbar!");
+
+    // Smart paste with Long Name + Units rows
+    if (QClipboard *cb = QApplication::clipboard()) {
+        cb->setText("Nominal strain\tNominal stress\tNominal stress\n"
+                    "%\tMPa\tMPa\n"
+                    "0.0\t0.0\t0.0\n"
+                    "2.0\t480.0\t472.0\n"
+                    "4.0\t518.0\t505.0\n");
+    }
+    t48->pasteSelection();
+    QApplication::processEvents();
+    CHECK_COND(t48->column(0)->longName().contains("Nominal strain")
+                       && t48->column(0)->units() == "%"
+                       && std::fabs(t48->cell(1, 1) - 480.0) < 1e-6,
+               "Table::pasteSelection failed to promote header/unit rows instead of inserting NaNs!");
+
+    // 3. Catch-22 Metadata Resolution: Shared Long Name -> Y-Axis Title; Distinct Comments -> Legend
+    t48->setColPlotDesignation(0, SciDAVis::X);
+    t48->setColPlotDesignation(1, SciDAVis::Y);
+    t48->setColPlotDesignation(2, SciDAVis::Y);
+    t48->column(1)->setComment("Uncharged");
+    t48->column(2)->setComment("H-charged");
+
+    MultiLayer *ml48 = w48->multilayerPlot(
+            t48, QStringList() << "Tensile_Sheet_2" << "Tensile_Sheet_3", Graph::LineSymbols);
+    CHECK_COND(ml48 != nullptr && ml48->activeGraph() != nullptr, "ml48 null in Suite 48");
+    Graph *g48 = ml48->activeGraph();
+    CHECK_COND(g48->axisTitle(QwtPlot::yLeft).contains("Nominal stress")
+                       && !g48->axisTitle(QwtPlot::yLeft).contains("Uncharged"),
+               "Auto Y-axis title failed to use shared Long Name cleanly!");
+    CHECK_COND(g48->legend() != nullptr
+                       && g48->legend()->text().contains("Uncharged")
+                       && g48->legend()->text().contains("H-charged"),
+               "Multi-curve Legend failed to disambiguate identical Long Names via Column Comments!");
+
+    // 4. Zoom History (Alt+Z / Shift+Alt+Z) & Right-Y Axis Color Sync
+    g48->setScale(QwtPlot::xBottom, 0.0, 5.0, 1.0);
+    g48->recordZoomHistorySnapshot();
+    g48->setScale(QwtPlot::xBottom, 1.0, 3.0, 0.5);
+    g48->recordZoomHistorySnapshot();
+    CHECK_COND(g48->stepZoomHistory(-1), "Graph::stepZoomHistory(-1) returned false!");
+    const QwtScaleDiv *divAfterUndo = g48->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+    CHECK_COND(divAfterUndo != nullptr && std::fabs(divAfterUndo->upperBound() - 5.0) < 1e-6,
+               "stepZoomHistory(-1) did not restore prior X scale [0..5]!");
+    CHECK_COND(g48->stepZoomHistory(+1), "Graph::stepZoomHistory(+1) returned false!");
+
+    g48->setCurvePen(1, QPen(QColor("#DC2626"), 2));
+    g48->syncAxisColorToCurve(QwtPlot::yRight, 1);
+    CHECK_COND(g48->axisColor(QwtPlot::yRight).name().compare("#dc2626", Qt::CaseInsensitive) == 0,
+               "Graph::syncAxisColorToCurve failed to color Right-Y axis!");
+
+    // 5. Safe Copy/Paste Format (Zero Foreign Axis-Break / Reference-Line Leak)
+    Graph::AxisBreakSpec brk;
+    brk.enabled = true;
+    brk.breakFrom = 1.5;
+    brk.breakTo = 2.5;
+    brk.positionPct = 0.5;
+    g48->setAxisBreak(QwtPlot::xBottom, brk);
+    Graph::ReferenceLineSpec rl;
+    rl.orientation = 0;
+    rl.value = 250.0;
+    rl.label = "Yield";
+    g48->addReferenceLine(rl);
+    ml48->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+
+    w48->activateSubWindow(ml48);
+    w48->copyGraphFormat();
+
+    MultiLayer *mlDst = w48->multilayerPlot(t48, QStringList() << "Tensile_Sheet_2", Graph::Line);
+    CHECK_COND(mlDst != nullptr && mlDst->activeGraph() != nullptr, "mlDst null in Suite 48");
+    w48->activateSubWindow(mlDst);
+    w48->pasteGraphFormat(); // FormatDefaultSafe
+    Graph *gDst = mlDst->activeGraph();
+    CHECK_COND(gDst->axisTitleFont(QwtPlot::xBottom).pointSize() == 28,
+               "pasteGraphFormat failed to copy 28pt Slide font size!");
+    CHECK_COND(!gDst->axisBreak(QwtPlot::xBottom).enabled,
+               "Default pasteGraphFormat leaked foreign Axis Break onto target graph!");
+    CHECK_COND(gDst->referenceLines().isEmpty(),
+               "Default pasteGraphFormat leaked foreign Reference Lines onto target graph!");
+
+    // 6. Full-Page Multi-Panel OLE EMF+ Rendering (ml, nullptr) Preserves All Panels & Labels
+    Graph *gSecond = mlDst->addLayer(0, 0, 200, 200);
+    CHECK_COND(gSecond != nullptr, "Failed to add second panel to mlDst");
+    gSecond->insertCurve(t48, "Tensile_Sheet_1", "Tensile_Sheet_3", Graph::Line);
+    mlDst->setRows(1);
+    mlDst->setCols(2);
+    mlDst->setPageSizePhysical(175.0, 85.0, MultiLayer::UnitMm, 300);
+    mlDst->setPageViewMode(true);
+    mlDst->fitLayersToPage();
+    mlDst->setPanelLabels(true, MultiLayer::PanelOutsideTopLeft, "(%a)", 12);
+
+    const OleRenderedGraph oleFull = SciDAVisEmf::renderMultiLayer(mlDst, nullptr);
+    const QByteArray &emfFull = oleFull.emfBytes;
+    CHECK_COND(emfFull.size() > 1024,
+               "Full-page multi-panel SciDAVisEmf::renderMultiLayer(mlDst, nullptr) produced empty EMF+!");
+    HENHMETAFILE hemf = SetEnhMetaFileBits(static_cast<UINT>(emfFull.size()),
+                                           reinterpret_cast<const BYTE *>(emfFull.constData()));
+    CHECK_COND(hemf != nullptr, "SetEnhMetaFileBits failed on multi-panel full-page EMF+!");
+    ENHMETAHEADER hdr{};
+    hdr.nSize = sizeof(hdr);
+    CHECK_COND(GetEnhMetaFileHeader(hemf, sizeof(hdr), &hdr) > 0,
+               "GetEnhMetaFileHeader failed on multi-panel EMF+!");
+    const double frameAspect = double(hdr.rclFrame.right - hdr.rclFrame.left)
+            / std::max(1.0, double(hdr.rclFrame.bottom - hdr.rclFrame.top));
+    DeleteEnhMetaFile(hemf);
+    CHECK_COND(frameAspect > 1.5,
+               "Full-page 175x85 mm 1x2 multi-panel EMF+ lost wide 2-panel aspect ratio!");
+
+    w48->savedProject();
+    w48->setOleEmbeddedMode(true);
+    delete w48;
+    QApplication::processEvents();
+
+    std::cout << "[INFO] Suite 48 Phase 8 Ribbon/Dock/Worksheet/Graph Ergonomics Gate passed!\n";
     return 0;
 }

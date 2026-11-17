@@ -69,54 +69,74 @@
 #include <QDateTime>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
+#include <QSplitter>
+#include <QFrame>
 #include <QTableWidget>
 
 PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     : QDialog(parent, fl),
-      titleFont("Arial", 14, QFont::Bold),
-      legendFont("Arial", 12),
-      axesFont("Arial", 12, QFont::Bold),
-      numbersFont("Arial", 12),
+      titleFont("Arial", 12, QFont::Normal),
+      legendFont("Arial", 12, QFont::Normal),
+      axesFont("Arial", 12, QFont::Normal),
+      numbersFont("Arial", 12, QFont::Normal),
       d_ml(0)
 {
+    Q_UNUSED(showExtended);
     setWindowTitle(tr("Plot details"));
+    setSizeGripEnabled(true);
+    setMinimumSize(780, 540);
+    resize(860, 580);
 
-    d_leftTreePanel = new QWidget();
+    d_leftTreePanel = new QWidget(this);
+    d_leftTreePanel->setMinimumWidth(210);
     QVBoxLayout *leftLayout = new QVBoxLayout(d_leftTreePanel);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(4);
+    leftLayout->setContentsMargins(0, 0, 4, 0);
+    leftLayout->setSpacing(6);
 
     listBox = new QTreeWidget();
     listBox->setColumnCount(1);
     listBox->header()->hide();
     listBox->setIndentation(15);
+    listBox->setMinimumWidth(205);
     leftLayout->addWidget(listBox, 1);
 
     QHBoxLayout *moveBtnLayout = new QHBoxLayout();
     moveBtnLayout->setContentsMargins(0, 0, 0, 0);
-    moveBtnLayout->setSpacing(4);
+    moveBtnLayout->setSpacing(6);
     btnMoveCurveUp = new QPushButton(tr("Move Up"));
     btnMoveCurveDown = new QPushButton(tr("Move Down"));
     btnMoveCurveUp->setEnabled(false);
     btnMoveCurveDown->setEnabled(false);
-    moveBtnLayout->addWidget(btnMoveCurveUp);
-    moveBtnLayout->addWidget(btnMoveCurveDown);
+    moveBtnLayout->addWidget(btnMoveCurveUp, 1);
+    moveBtnLayout->addWidget(btnMoveCurveDown, 1);
     leftLayout->addLayout(moveBtnLayout);
 
-    QGridLayout *gl = new QGridLayout(this);
-    gl->setSizeConstraint(QLayout::SetFixedSize);
-    gl->addWidget(d_leftTreePanel, 0, 0);
-
-    privateTabWidget = new QTabWidget();
-    gl->addWidget(privateTabWidget, 0, 1);
-
-    curvePlotTypeBox = new QWidget();
+    curvePlotTypeBox = new QWidget(d_leftTreePanel);
     QHBoxLayout *hb1 = new QHBoxLayout(curvePlotTypeBox);
+    hb1->setContentsMargins(0, 2, 0, 0);
+    hb1->setSpacing(6);
     hb1->addWidget(new QLabel(tr("Plot type")));
     boxPlotType = new QComboBox();
     boxPlotType->setEditable(false);
-    hb1->addWidget(boxPlotType);
-    gl->addWidget(curvePlotTypeBox, 1, 0);
+    boxPlotType->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    hb1->addWidget(boxPlotType, 1);
+    leftLayout->addWidget(curvePlotTypeBox);
+
+    privateTabWidget = new QTabWidget(this);
+    privateTabWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    d_mainSplitter = new QSplitter(Qt::Horizontal, this);
+    d_mainSplitter->setChildrenCollapsible(false);
+    d_mainSplitter->addWidget(d_leftTreePanel);
+    d_mainSplitter->addWidget(privateTabWidget);
+    d_mainSplitter->setStretchFactor(0, 0);
+    d_mainSplitter->setStretchFactor(1, 1);
+    d_mainSplitter->setSizes({ 235, 615 });
+
+    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(10, 10, 10, 10);
+    mainLayout->setSpacing(8);
+    mainLayout->addWidget(d_mainSplitter, 1);
 
     initAxesPage();
     initLinePage();
@@ -142,28 +162,40 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
 
     clearTabWidget();
 
+    QFrame *btnSep = new QFrame(this);
+    btnSep->setFrameShape(QFrame::HLine);
+    btnSep->setFrameShadow(QFrame::Sunken);
+    mainLayout->addWidget(btnSep);
+
     QHBoxLayout *hb2 = new QHBoxLayout();
-    btnMore = new QPushButton("&<<");
-    btnMore->setFixedWidth(30);
+    hb2->setContentsMargins(0, 2, 0, 0);
+    hb2->setSpacing(8);
+
+    // Keep hidden checked btnMore for legacy state checks while hiding cryptic 30px '<<' button
+    btnMore = new QPushButton(this);
     btnMore->setCheckable(true);
-    if (showExtended)
-        btnMore->toggle();
-    hb2->addWidget(btnMore);
+    btnMore->setChecked(true);
+    btnMore->hide();
+
     btnWorksheet = new QPushButton(tr("&Worksheet"));
+    btnEditCurve = new QPushButton(tr("&Plot Associations..."));
+    btnColorPalette = new QPushButton(tr("Color &Palette..."));
     hb2->addWidget(btnWorksheet);
+    hb2->addWidget(btnEditCurve);
+    hb2->addWidget(btnColorPalette);
+    hb2->addStretch(1);
+
     buttonOk = new QPushButton(tr("&OK"));
     buttonOk->setDefault(true);
-    hb2->addWidget(buttonOk);
-    buttonCancel = new QPushButton(tr("&Cancel"));
-    hb2->addWidget(buttonCancel);
+    buttonOk->setMinimumWidth(84);
     buttonApply = new QPushButton(tr("&Apply"));
+    buttonApply->setMinimumWidth(84);
+    buttonCancel = new QPushButton(tr("&Cancel"));
+    buttonCancel->setMinimumWidth(84);
+    hb2->addWidget(buttonOk);
     hb2->addWidget(buttonApply);
-    btnEditCurve = new QPushButton(tr("&Plot Associations..."));
-    hb2->addWidget(btnEditCurve);
-    btnColorPalette = new QPushButton(tr("Color &Palette..."));
-    hb2->addWidget(btnColorPalette);
-    hb2->addStretch();
-    gl->addLayout(hb2, 1, 1);
+    hb2->addWidget(buttonCancel);
+    mainLayout->addLayout(hb2);
 
     connect(btnMore, SIGNAL(toggled(bool)), this, SLOT(showAll(bool)));
 
@@ -189,27 +221,26 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
 
     QShortcut *shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
     connect(shortcut, SIGNAL(activated()), this, SLOT(removeSelectedCurve()));
+
+    togglePage(true);
 }
 
 void PlotDialog::showAll(bool all)
 {
-    if (all) {
-        if (d_leftTreePanel)
-            d_leftTreePanel->show();
+    Q_UNUSED(all);
+    if (btnMore) {
+        QSignalBlocker blockMore(btnMore);
+        btnMore->setChecked(true);
+        btnMore->hide();
+    }
+    if (d_leftTreePanel)
+        d_leftTreePanel->show();
+    if (listBox)
         listBox->show();
-        listBox->setFocus();
 
-        QTreeWidgetItem *item = listBox->currentItem();
-        if (item && item->type() == CurveTreeItem::PlotCurveTreeItem)
-            curvePlotTypeBox->show();
-
-        btnMore->setText("&>>");
-    } else {
-        if (d_leftTreePanel)
-            d_leftTreePanel->hide();
-        listBox->hide();
-        curvePlotTypeBox->hide();
-        btnMore->setText("&<<");
+    QTreeWidgetItem *item = listBox ? listBox->currentItem() : nullptr;
+    if (curvePlotTypeBox) {
+        curvePlotTypeBox->setVisible(item && item->type() == CurveTreeItem::PlotCurveTreeItem);
     }
 }
 
@@ -1626,10 +1657,12 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
             int plot_type = setPlotType(curveItem);
             if (plot_type >= 0)
                 insertTabs(plot_type);
-            if (!curvePlotTypeBox->isVisible() && btnMore->isChecked())
+            if (!curvePlotTypeBox->isVisible())
                 curvePlotTypeBox->show();
         } else {
             setPlotType(curveItem);
+            if (!curvePlotTypeBox->isVisible())
+                curvePlotTypeBox->show();
         }
     } else if (currentItem->type() == LayerItem::LayerTreeItem) {
         if (!previousItem || previousItem->type() != LayerItem::LayerTreeItem) {

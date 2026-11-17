@@ -233,8 +233,8 @@ void Graph3D::initPlot()
     titleCol = QColor(Qt::black);
     sp->setTitleColor(Qt2GL(titleCol));
 
-    titleFnt = QFont("Arial", 14);
-    titleFnt.setBold(true);
+    titleFnt = QFont("Arial", 14, QFont::Normal, false);
+    titleFnt.setBold(false);
 
     sp->setTitleFont(titleFnt.family(), titleFnt.pointSize(), titleFnt.weight(), titleFnt.italic());
 
@@ -254,8 +254,8 @@ void Graph3D::initPlot()
     sp->showColorLegend(legendOn);
     sp->legend()->setAutoScale(true);
     sp->legend()->setMajors(legendMajorTicks);
-    sp->legend()->setNumberFont(QFont("Arial", 10));
-    sp->legend()->setTitleFont("Arial", 10, QFont::Bold);
+    sp->legend()->setNumberFont(QFont("Arial", 10, QFont::Normal, false));
+    sp->legend()->setTitleFont("Arial", 10, QFont::Normal);
 
     labelsDist = 0;
 
@@ -317,8 +317,8 @@ void Graph3D::initCoord()
     labels << s;
 
     sp->setCoordinateStyle(BOX);
-    sp->coordinates()->setNumberFont(QFont("Arial", 12));
-    sp->coordinates()->setLabelFont(QFont("Arial", 12, QFont::Bold));
+    sp->coordinates()->setNumberFont(QFont("Arial", 12, QFont::Normal, false));
+    sp->coordinates()->setLabelFont(QFont("Arial", 12, QFont::Normal, false));
     sp->coordinates()->setAutoScale(false);
 }
 

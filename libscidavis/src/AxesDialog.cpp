@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "ApplicationWindow.h"
 #include "AxesDialog.h"
+#include "I18nJapanese.h"
 #include "MultiLayer.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
@@ -55,6 +56,7 @@
 #include <QMessageBox>
 #include <QFontDialog>
 #include <QDate>
+#include <QEvent>
 #include <QList>
 #include <QListWidget>
 #include <QSignalBlocker>
@@ -70,8 +72,79 @@
 #define M_PI 3.141592653589793238462643
 #endif
 
+namespace {
+
+void registerAxesDialogTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Horizontal Grid (Left/Right Y)", "水平グリッド (左・右 Y軸)");
+    reg("Vertical Grid (Bottom/Top X)", "垂直グリッド (下・上 X軸)");
+    reg("0 (None)", "0 (なし)");
+    reg("1 (2 subdivisions)", "1 (2分割)");
+    reg("2 (3 subdivisions)", "2 (3分割)");
+    reg("4 (5 subdivisions)", "4 (5分割)");
+    reg("8 (9 subdivisions)", "8 (9分割)");
+    reg("9 (10 subdivisions)", "9 (10分割)");
+    reg("14 (15 subdivisions)", "14 (15分割)");
+    reg("19 (20 subdivisions)", "19 (20分割)");
+    reg("Apply Tick & Axis Style to All 4 Axes", "目盛り・軸スタイルを4辺すべてに適用");
+    reg("Apply Tick && Axis Style to All 4 Axes", "目盛り・軸スタイルを4辺すべてに適用");
+}
+
+QStringList minorTickItemsForScale(bool isLog10)
+{
+    if (isLog10) {
+        return QStringList() << AxesDialog::tr("0 (None)")
+                             << AxesDialog::tr("2 (3 subdivisions)")
+                             << AxesDialog::tr("4 (5 subdivisions)")
+                             << AxesDialog::tr("8 (9 subdivisions)");
+    }
+    return QStringList() << AxesDialog::tr("0 (None)")
+                         << AxesDialog::tr("1 (2 subdivisions)")
+                         << AxesDialog::tr("4 (5 subdivisions)")
+                         << AxesDialog::tr("9 (10 subdivisions)")
+                         << AxesDialog::tr("14 (15 subdivisions)")
+                         << AxesDialog::tr("19 (20 subdivisions)");
+}
+
+int parseLeadingMinorInt(const QString &text, int fallback = 0)
+{
+    const QString token = text.trimmed().section(QLatin1Char(' '), 0, 0);
+    bool ok = false;
+    const int val = token.toInt(&ok);
+    return ok ? qMax(0, val) : fallback;
+}
+
+void selectOrSetMinorTickCombo(QComboBox *combo, int count)
+{
+    if (!combo)
+        return;
+    const int safeCount = qMax(0, count);
+    for (int i = 0; i < combo->count(); ++i) {
+        if (parseLeadingMinorInt(combo->itemText(i), -1) == safeCount) {
+            combo->setCurrentIndex(i);
+            return;
+        }
+    }
+    combo->setEditText(QString::number(safeCount));
+}
+
+} // namespace
+
 AxesDialog::AxesDialog()
-    : btnAutoRange(nullptr),
+    : buttonApplyAllAxes(nullptr),
+      axesList(nullptr),
+      axesGridList(nullptr),
+      axesTitlesList(nullptr),
+      axisBreakAxesList(nullptr),
+      btnAutoRange(nullptr),
       boxTitleFontSize(nullptr),
       boxAxesFontSize(nullptr),
       xBottomFont(QFont("Arial", 12, QFont::Normal, false)),
@@ -86,7 +159,9 @@ AxesDialog::AxesDialog()
       xTopLabelsRotation(0),
       d_graph(nullptr)
 {
+    registerAxesDialogTranslations();
     setWindowTitle(tr("General Plot Options"));
+    setSizeGripEnabled(true);
 
     initScalesPage();
     initGridPage();
@@ -94,21 +169,28 @@ AxesDialog::AxesDialog()
     initFramePage();
     initReferenceLinesPage();
     initAxisBreakPage();
+    updateSidebarListWidths();
 
     auto bottomButtons = new QHBoxLayout();
+    buttonApplyAllAxes = new QPushButton(tr("Apply Tick && Axis Style to All 4 Axes"));
+    buttonApplyAllAxes->setToolTip(tr("Apply Tick & Axis Style to All 4 Axes"));
+    bottomButtons->addWidget(buttonApplyAllAxes);
     bottomButtons->addStretch();
 
     buttonApply = new QPushButton();
     buttonApply->setText(tr("&Apply"));
+    buttonApply->setMinimumWidth(84);
     bottomButtons->addWidget(buttonApply);
 
     buttonOk = new QPushButton();
     buttonOk->setText(tr("&OK"));
     buttonOk->setDefault(true);
+    buttonOk->setMinimumWidth(84);
     bottomButtons->addWidget(buttonOk);
 
     buttonCancel = new QPushButton();
     buttonCancel->setText(tr("&Cancel"));
+    buttonCancel->setMinimumWidth(84);
     bottomButtons->addWidget(buttonCancel);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -117,12 +199,71 @@ AxesDialog::AxesDialog()
 
     lastPage = scalesPage;
 
+    connect(buttonApplyAllAxes, SIGNAL(clicked()), this, SLOT(applyTickAndAxisStyleToAllAxes()));
     connect(buttonOk, SIGNAL(clicked()), this, SLOT(accept()));
     connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(updatePlot()));
     connect(&generalDialog, SIGNAL(currentChanged(int)), this, SLOT(pageChanged(int)));
 
     ModernUiTheme::upgradeAllWindowIcons(this);
+}
+
+void AxesDialog::updateSidebarListWidths()
+{
+    for (QListWidget *lw : { axesList, axesGridList, axesTitlesList, axisBreakAxesList }) {
+        if (!lw)
+            continue;
+        QFontMetrics fm(lw->font());
+        int maxTextWidth = 48;
+        for (int i = 0; i < lw->count(); ++i) {
+            if (!lw->item(i))
+                continue;
+#if QT_VERSION < QT_VERSION_CHECK(5, 11, 0)
+            const int itemW = fm.width(lw->item(i)->text());
+#else
+            const int itemW = fm.horizontalAdvance(lw->item(i)->text());
+#endif
+            if (itemW > maxTextWidth)
+                maxTextWidth = itemW;
+        }
+        const int needed = lw->iconSize().width() + maxTextWidth + 56;
+        lw->setMinimumWidth(qMax(120, needed));
+        lw->setMaximumWidth(qMax(160, needed + 24));
+        lw->updateGeometry();
+    }
+}
+
+void AxesDialog::changeEvent(QEvent *event)
+{
+    QDialog::changeEvent(event);
+    if (!event)
+        return;
+    if (event->type() == QEvent::LanguageChange || event->type() == QEvent::FontChange) {
+        if (axesGridList && axesGridList->count() >= 2) {
+            axesGridList->item(0)->setText(tr("Horizontal Grid (Left/Right Y)"));
+            axesGridList->item(1)->setText(tr("Vertical Grid (Bottom/Top X)"));
+        }
+        for (QListWidget *lw : { axesList, axesTitlesList, axisBreakAxesList }) {
+            if (lw && lw->count() >= 4) {
+                lw->item(0)->setText(tr("Bottom"));
+                lw->item(1)->setText(tr("Left"));
+                lw->item(2)->setText(tr("Top"));
+                lw->item(3)->setText(tr("Right"));
+            }
+        }
+        if (buttonApplyAllAxes) {
+            buttonApplyAllAxes->setText(tr("Apply Tick && Axis Style to All 4 Axes"));
+            buttonApplyAllAxes->setToolTip(tr("Apply Tick & Axis Style to All 4 Axes"));
+        }
+        if (boxMinorValue && boxScaleType) {
+            const int curMinor = parseLeadingMinorInt(boxMinorValue->currentText(), 0);
+            QSignalBlocker b(boxMinorValue);
+            boxMinorValue->clear();
+            boxMinorValue->addItems(minorTickItemsForScale(boxScaleType->currentIndex() == 1));
+            selectOrSetMinorTickCombo(boxMinorValue, curMinor);
+        }
+        updateSidebarListWidths();
+    }
 }
 
 void AxesDialog::initScalesPage()
@@ -188,12 +329,7 @@ void AxesDialog::initScalesPage()
 
     boxMinorValue = new QComboBox();
     boxMinorValue->setEditable(true);
-    boxMinorValue->addItems(QStringList() << "0"
-                                          << "1"
-                                          << "4"
-                                          << "9"
-                                          << "14"
-                                          << "19");
+    boxMinorValue->addItems(minorTickItemsForScale(false));
     rightLayout->addWidget(boxMinorValue, 2, 1);
 
     rightLayout->setRowStretch(3, 1);
@@ -344,8 +480,8 @@ void AxesDialog::initGridPage()
     const QIcon gridIcon = IconLoader::duotoneIcon(QStringLiteral("axis-grid"));
 
     axesGridList = new QListWidget();
-    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Horizontal")));
-    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Vertical")));
+    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Horizontal Grid (Left/Right Y)")));
+    axesGridList->addItem(new QListWidgetItem(gridIcon, tr("Vertical Grid (Bottom/Top X)")));
     axesGridList->setIconSize(QSize(24, 24));
     axesGridList->setCurrentRow(-1);
 
@@ -2102,11 +2238,8 @@ void AxesDialog::updateScale()
         boxScaleType->setCurrentIndex(st.scaleType);
         btnInvert->setChecked(st.inverted);
         boxMinorValue->clear();
-        if (st.scaleType == 1)
-            boxMinorValue->addItems(QStringList() << "0" << "2" << "4" << "8");
-        else
-            boxMinorValue->addItems(QStringList() << "0" << "1" << "4" << "9" << "14" << "19");
-        boxMinorValue->setEditText(st.minorText);
+        boxMinorValue->addItems(minorTickItemsForScale(st.scaleType == 1));
+        selectOrSetMinorTickCombo(boxMinorValue, parseLeadingMinorInt(st.minorText, 0));
         d_loadingUi = prevLoading;
         return;
     }
@@ -2172,20 +2305,8 @@ void AxesDialog::updateScale()
     boxScaleType->setCurrentIndex(isLog10 ? 1 : 0);
 
     boxMinorValue->clear();
-    if (isLog10) // log scale
-        boxMinorValue->addItems(QStringList() << "0"
-                                              << "2"
-                                              << "4"
-                                              << "8");
-    else
-        boxMinorValue->addItems(QStringList() << "0"
-                                              << "1"
-                                              << "4"
-                                              << "9"
-                                              << "14"
-                                              << "19");
-
-    boxMinorValue->setEditText(QString::number(d_plot->axisMaxMinor(a)));
+    boxMinorValue->addItems(minorTickItemsForScale(isLog10));
+    selectOrSetMinorTickCombo(boxMinorValue, d_plot->axisMaxMinor(a));
     d_loadingUi = prevLoading;
 }
 
@@ -3185,27 +3306,31 @@ void AxesDialog::updateMinorTicksList(int scaleType)
     const bool prevLoading = d_loadingUi;
     d_loadingUi = true;
     QSignalBlocker b(boxMinorValue);
-    const QString prevText = boxMinorValue->currentText();
+    const int prevMinor = parseLeadingMinorInt(boxMinorValue->currentText(), -1);
     boxMinorValue->clear();
-    if (scaleType) // log scale
-        boxMinorValue->addItems(QStringList() << "0"
-                                              << "2"
-                                              << "4"
-                                              << "8");
-    else
-        boxMinorValue->addItems(QStringList() << "0"
-                                              << "1"
-                                              << "4"
-                                              << "9"
-                                              << "14"
-                                              << "19");
+    boxMinorValue->addItems(minorTickItemsForScale(scaleType != 0));
 
-    if (!prevText.isEmpty() && boxMinorValue->findText(prevText) >= 0) {
-        boxMinorValue->setEditText(prevText);
-    } else if (d_graph->plotWidget()) {
-        int a = Graph::mapToQwtAxis(axesList->currentRow());
-        boxMinorValue->setEditText(QString::number(d_graph->plotWidget()->axisMaxMinor(a)));
+    int targetMinor = prevMinor;
+    bool matchedInNewList = false;
+    if (prevMinor >= 0) {
+        for (int i = 0; i < boxMinorValue->count(); ++i) {
+            if (parseLeadingMinorInt(boxMinorValue->itemText(i), -1) == prevMinor) {
+                matchedInNewList = true;
+                break;
+            }
+        }
     }
+    if (!matchedInNewList) {
+        if (scaleType != 0) {
+            targetMinor = 8;
+        } else if (d_graph->plotWidget() && axesList && axesList->currentRow() >= 0) {
+            const int a = Graph::mapToQwtAxis(axesList->currentRow());
+            targetMinor = d_graph->plotWidget()->axisMaxMinor(a);
+        } else {
+            targetMinor = 4;
+        }
+    }
+    selectOrSetMinorTickCombo(boxMinorValue, targetMinor);
     d_loadingUi = prevLoading;
     markScaleDirty();
 }
@@ -3482,7 +3607,7 @@ void AxesDialog::captureScaleRowFromUi(int row)
     st.unitIndex = boxUnit->currentIndex();
     st.useStep = btnStep->isChecked();
     st.majorValue = boxMajorValue->value();
-    st.minorText = boxMinorValue->currentText();
+    st.minorText = QString::number(parseLeadingMinorInt(boxMinorValue->currentText(), 0));
     st.scaleType = boxScaleType->currentIndex();
     st.inverted = btnInvert->isChecked();
 }
@@ -3685,8 +3810,8 @@ bool AxesDialog::commitScaleRow(int row)
     }
 
     const Graph::AxisBreakSpec prevBrk = d_graph->axisBreak(a);
-    d_graph->setScale(a, start, end, stp, st.majorValue, st.minorText.toInt(), st.scaleType,
-                      st.inverted);
+    d_graph->setScale(a, start, end, stp, st.majorValue, parseLeadingMinorInt(st.minorText, 0),
+                      st.scaleType, st.inverted);
     d_graph->setAxisUserLocked(a, true);
     if (prevBrk.enabled) {
         const double lo = std::min(start, end);
@@ -3915,4 +4040,73 @@ bool AxesDialog::commitBreakRow(int row)
         return false;
     d_graph->setAxisBreak(qwtAxis, spec);
     return true;
+}
+
+void AxesDialog::applyTickAndAxisStyleToAllAxes()
+{
+    if (!d_graphGuard || !d_graph)
+        return;
+
+    int srcRow = 0;
+    if (generalDialog.currentWidget() == axesPage && axesTitlesList
+        && axesTitlesList->currentRow() >= 0 && axesTitlesList->currentRow() < 4) {
+        srcRow = axesTitlesList->currentRow();
+    } else if (generalDialog.currentWidget() == scalesPage && axesList
+               && axesList->currentRow() >= 0 && axesList->currentRow() < 4) {
+        srcRow = axesList->currentRow();
+    } else if (axesTitlesList && axesTitlesList->currentRow() >= 0
+               && axesTitlesList->currentRow() < 4) {
+        srcRow = axesTitlesList->currentRow();
+    }
+
+    for (int r = 0; r < 4; ++r)
+        ensureAxisRowStaged(r);
+
+    if (axesTitlesList && axesTitlesList->currentRow() == srcRow)
+        captureAxisRowFromUi(srcRow);
+
+    const StagedAxisEdit &src = d_stagedAxes[srcRow];
+    const int srcAxis = Graph::mapToQwtAxis(srcRow);
+
+    QFont srcTickFont = xBottomFont;
+    if (srcRow == 1)
+        srcTickFont = yLeftFont;
+    else if (srcRow == 2)
+        srcTickFont = xTopFont;
+    else if (srcRow == 3)
+        srcTickFont = yRightFont;
+    if (src.axisFontDirty)
+        srcTickFont = src.axisFont;
+    if (srcTickFont.family().trimmed().isEmpty())
+        srcTickFont.setFamily(QStringLiteral("Arial"));
+
+    QFont srcTitleFont = src.titleFontDirty ? src.titleFont : d_graph->axisTitleFont(srcAxis);
+    if (srcTitleFont.family().trimmed().isEmpty())
+        srcTitleFont.setFamily(QStringLiteral("Arial"));
+
+    xBottomFont = srcTickFont;
+    yLeftFont = srcTickFont;
+    xTopFont = srcTickFont;
+    yRightFont = srcTickFont;
+
+    for (int r = 0; r < 4; ++r) {
+        StagedAxisEdit &dst = d_stagedAxes[r];
+        if (src.showAxis && src.showBackbone) {
+            dst.showAxis = true;
+            dst.showBackbone = true;
+        }
+        dst.majTicksType = src.majTicksType;
+        dst.minTicksType = src.minTicksType;
+        dst.axisColor = src.axisColor;
+        dst.axisNumColor = src.axisNumColor;
+        dst.baseline = src.baseline;
+        dst.axisFont = srcTickFont;
+        dst.axisFontDirty = true;
+        dst.titleFont = srcTitleFont;
+        dst.titleFontDirty = true;
+        dst.dirty = true;
+    }
+
+    d_axesTabDirty = true;
+    updatePlot();
 }

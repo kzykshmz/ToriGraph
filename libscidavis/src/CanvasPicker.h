@@ -26,13 +26,19 @@
  *   Boston, MA  02110-1301  USA                                           *
  *                                                                         *
  ***************************************************************************/
+#ifndef CANVASPICKER_H
+#define CANVASPICKER_H
+
 #include <QObject>
 #include <QPointer>
+#include <QPoint>
 #include "Plot.h"
 
 class Graph;
 class ArrowMarker;
 class SelectionMoveResizer;
+class QRubberBand;
+class QTimer;
 
 /**
  * \brief Handles parts of the user interaction for a Plot by registering itself as an event filter
@@ -46,6 +52,7 @@ class CanvasPicker : public QObject
     Q_OBJECT
 public:
     CanvasPicker(Graph *plot);
+    ~CanvasPicker() override;
     virtual bool eventFilter(QObject *, QEvent *);
     void selectPoints(int n);
     void selectPeak(const QPoint &p);
@@ -54,11 +61,15 @@ public:
     /*!\brief Called by Graph::focusNextPrevChild ()
      */
     void disableEditing();
+    bool cancelActiveInteraction();
+    static void hidePassiveHoverTooltip();
 
 private:
     void drawTextMarker(const QPoint &);
     void drawLineMarker(const QPoint &, bool endArrow);
     void updatePassiveHoverReadout(const QPoint &canvasPos);
+    void updateHoverCursor(const QPoint &canvasPos);
+    void showPendingHoverTooltip();
 
     //! Selects and highlights the marker at the given position.
     /**
@@ -110,4 +121,22 @@ private:
     QPoint d_outer_legend_press_pos;
     QPoint d_outer_legend_orig_origin;
     QString d_outer_legend_undo_before;
+
+    QTimer *d_hover_dwell_timer = nullptr;
+    QPoint d_hover_last_canvas_pos;
+    int d_hover_pending_curve_key = -1;
+    int d_hover_pending_point = -1;
+
+    bool d_z_marquee_active = false;
+    QPoint d_z_marquee_origin;
+    QPointer<QRubberBand> d_z_marquee_band;
+
+    bool d_ref_line_dragging = false;
+    bool d_ref_line_moved = false;
+    int d_ref_line_index = -1;
+    double d_ref_line_orig_value = 0.0;
+    QString d_ref_line_orig_stat_mode;
+    QString d_ref_line_undo_before;
 };
+
+#endif // CANVASPICKER_H

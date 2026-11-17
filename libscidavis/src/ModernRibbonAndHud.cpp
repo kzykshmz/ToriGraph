@@ -444,6 +444,17 @@ void CommandPalettePopup::refreshCommands()
             96);
 
     addQuickEntry(
+            QStringLiteral("quick.merge_graphs"), tr("Merge Graph Windows..."), catWorkspace,
+            QString(),
+            QStringLiteral("merge graph windows multi panel figure a b c d combine layout"),
+            QStringLiteral("merge-graphs"),
+            [this]() {
+                if (d_app)
+                    d_app->mergeOpenGraphsDialog();
+            },
+            95);
+
+    addQuickEntry(
             QStringLiteral("quick.split_view"), tr("Split View (Table + Graph)"), catWorkspace,
             QString(), QStringLiteral("split view side by side table graph workspace"),
             QStringLiteral("split-view"),
@@ -1599,7 +1610,7 @@ void FocusCanvasHudOverlay::populateQuickPlotMenu()
                                    d_ribbon->triggerPlot2D(Graph::LineSymbols);
                            });
     d_plot_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("plot-bars"), 18, false),
-                           tr("Bars"), this, [this]() {
+                           tr("Bar Chart"), this, [this]() {
                                if (!d_shutting_down && d_ribbon)
                                    d_ribbon->triggerPlot2D(Graph::VerticalBars);
                            });
@@ -1821,6 +1832,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
 {
     setObjectName(QStringLiteral("ModernRibbonBarRoot"));
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setMinimumWidth(120);
     setStyleSheet(QStringLiteral(
             "QFrame#ModernRibbonBarRoot {"
             "  background-color: #F8FAFC;"
@@ -1840,11 +1852,11 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid transparent;"
             "  border-top-left-radius: 7px;"
             "  border-top-right-radius: 7px;"
-            "  padding: 5px 11px;"
-            "  margin-right: 2px;"
+            "  padding: 5px 8px;"
+            "  margin-right: 1px;"
             "  margin-top: 3px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8.8pt;"
+            "  font-size: 8.5pt;"
             "  font-weight: 600;"
             "}"
             "QTabBar#ModernRibbonTabBar::tab:hover {"
@@ -1860,16 +1872,39 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "QStackedWidget#ModernRibbonTabStack {"
             "  background-color: #FFFFFF;"
             "}"
+            "#ModernRibbonTabStack QScrollBar:horizontal {"
+            "  height: 6px;"
+            "  margin: 0px;"
+            "  background: #F1F5F9;"
+            "  border: none;"
+            "}"
+            "#ModernRibbonTabStack QScrollBar::handle:horizontal {"
+            "  background: #CBD5E1;"
+            "  border-radius: 3px;"
+            "  min-width: 24px;"
+            "  margin: 0px;"
+            "}"
+            "#ModernRibbonTabStack QScrollBar::handle:horizontal:hover {"
+            "  background: #94A3B8;"
+            "}"
+            "#ModernRibbonTabStack QScrollBar::add-line:horizontal,"
+            "#ModernRibbonTabStack QScrollBar::sub-line:horizontal,"
+            "#ModernRibbonTabStack QScrollBar::add-page:horizontal,"
+            "#ModernRibbonTabStack QScrollBar::sub-page:horizontal {"
+            "  width: 0px;"
+            "  height: 0px;"
+            "  background: none;"
+            "}"
             "QToolButton.RibbonActionBtn {"
             "  background-color: transparent;"
             "  color: #1E293B;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
-            "  padding: 3px 7px;"
+            "  padding: 3px 4px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8.5pt;"
+            "  font-size: 8.3pt;"
             "  font-weight: 500;"
-            "  min-height: 26px;"
+            "  min-height: 25px;"
             "}"
             "QToolButton.RibbonActionBtn:hover {"
             "  background-color: #EFF6FF;"
@@ -1887,13 +1922,28 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  color: #9A3412;"
             "  border: 1px solid #FDBA74;"
             "  border-radius: 7px;"
-            "  padding: 3px 9px;"
+            "  padding: 3px 7px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 8.5pt;"
             "  font-weight: 700;"
             "  min-height: 26px;"
             "}"
             "QToolButton.RibbonPresetBtn:hover {"
+            "  background-color: #FFEDD5;"
+            "  color: #7C2D12;"
+            "  border: 1px solid #EA580C;"
+            "}"
+            "QToolButton.RibbonQuickPresetPill {"
+            "  background-color: #FFF7ED;"
+            "  color: #9A3412;"
+            "  border: 1px solid #FDBA74;"
+            "  border-radius: 6px;"
+            "  padding: 2px 7px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 8pt;"
+            "  font-weight: 700;"
+            "}"
+            "QToolButton.RibbonQuickPresetPill:hover {"
             "  background-color: #FFEDD5;"
             "  color: #7C2D12;"
             "  border: 1px solid #EA580C;"
@@ -1944,30 +1994,59 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  font-weight: 700;"
             "}"
             "QLabel.RibbonGroupCaption {"
-            "  color: #64748B;"
+            "  color: #1E293B;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 7.3pt;"
+            "  font-size: 8.5pt;"
             "  font-weight: 600;"
+            "  padding: 1px 4px 2px 4px;"
             "}"));
 
     QVBoxLayout *rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    // Top Header Row: 7 Contextual Tabs + Search Pill + Workspace Mode + Focus + Language + Context Badge
+    // Top Header Row: 7 Contextual Tabs + Quick Presets + Search Pill + Workspace Mode + Focus + Language + Context Badge
     QWidget *topStrip = new QWidget(this);
     topStrip->setObjectName(QStringLiteral("ModernRibbonTopStrip"));
     QHBoxLayout *topLayout = new QHBoxLayout(topStrip);
-    topLayout->setContentsMargins(8, 2, 8, 0);
-    topLayout->setSpacing(6);
+    topLayout->setContentsMargins(6, 2, 6, 0);
+    topLayout->setSpacing(4);
 
     d_tab_bar = new QTabBar(topStrip);
     d_tab_bar->setObjectName(QStringLiteral("ModernRibbonTabBar"));
     d_tab_bar->setExpanding(false);
     d_tab_bar->setDrawBase(false);
     d_tab_bar->setUsesScrollButtons(true);
+    d_tab_bar->setMinimumWidth(80);
     d_tab_bar->setFocusPolicy(Qt::NoFocus);
     topLayout->addWidget(d_tab_bar, 1);
+
+    auto makeQuickPresetPill = [topStrip](const QString &iconId) -> QToolButton * {
+        QToolButton *b = new QToolButton(topStrip);
+        b->setProperty("class", QStringLiteral("RibbonQuickPresetPill"));
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setIcon(IconLoader::duotoneIcon(iconId, 16, false));
+        b->setIconSize(QSize(14, 14));
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        return b;
+    };
+
+    d_btn_quick_isij = makeQuickPresetPill(QStringLiteral("preset-isij"));
+    d_btn_quick_isij->setObjectName(QStringLiteral("RibbonQuickIsijBtn"));
+    connect(d_btn_quick_isij, &QToolButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->applyStyleISIJJournal();
+    });
+    topLayout->addWidget(d_btn_quick_isij);
+
+    d_btn_quick_slide = makeQuickPresetPill(QStringLiteral("preset-slide"));
+    d_btn_quick_slide->setObjectName(QStringLiteral("RibbonQuickSlideBtn"));
+    connect(d_btn_quick_slide, &QToolButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->applyStylePresentationSlide();
+    });
+    topLayout->addWidget(d_btn_quick_slide);
 
     d_btn_cmd_palette = new QToolButton(topStrip);
     d_btn_cmd_palette->setObjectName(QStringLiteral("RibbonCommandSearchPill"));
@@ -2029,6 +2108,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     d_context_pill = new QLabel(topStrip);
     d_context_pill->setObjectName(QStringLiteral("RibbonContextBadge"));
     d_context_pill->setAlignment(Qt::AlignCenter);
+    d_context_pill->setMinimumWidth(0);
+    d_context_pill->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     topLayout->addWidget(d_context_pill);
 
     rootLayout->addWidget(topStrip);
@@ -2036,12 +2117,16 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     // Single-Row Slim Contextual Action Strip
     d_tab_stack = new QStackedWidget(this);
     d_tab_stack->setObjectName(QStringLiteral("ModernRibbonTabStack"));
-    d_tab_stack->setFixedHeight(54);
     rootLayout->addWidget(d_tab_stack);
 
-    connect(d_tab_bar, &QTabBar::currentChanged, d_tab_stack, &QStackedWidget::setCurrentIndex);
+    connect(d_tab_bar, &QTabBar::currentChanged, this, [this](int idx) {
+        if (d_tab_stack)
+            d_tab_stack->setCurrentIndex(idx);
+        updateTabStackHeight();
+    });
 
     buildAllTabs();
+    updateTabStackHeight();
 
     if (d_app) {
         connect(&d_app->folders, &QObject::destroyed, this,
@@ -2077,6 +2162,215 @@ ModernRibbonBar::~ModernRibbonBar()
     prepareForAppShutdown();
 }
 
+QSize ModernRibbonBar::minimumSizeHint() const
+{
+    return QSize(120, sizeHint().height());
+}
+
+void ModernRibbonBar::updateTabStackHeight()
+{
+    if (d_shutting_down || !d_tab_stack)
+        return;
+
+    const int fmH = fontMetrics().height();
+    const int btnH = qMax(30, fmH + 14);
+    const int capH = qMax(20, fmH + 5);
+
+    int maxContentH = 0;
+    for (int i = 0; i < d_tab_stack->count(); ++i) {
+        if (QScrollArea *sa = qobject_cast<QScrollArea *>(d_tab_stack->widget(i))) {
+            if (QWidget *cw = sa->widget()) {
+                cw->ensurePolished();
+                if (cw->layout())
+                    cw->layout()->activate();
+                maxContentH = qMax(maxContentH,
+                                   qMax(cw->sizeHint().height(), cw->minimumSizeHint().height()));
+            }
+        }
+    }
+
+    const int baseH = qMax(80, qMax(btnH + capH + 18, maxContentH + 6));
+
+    bool hScrollActive = false;
+    if (QScrollArea *sa = qobject_cast<QScrollArea *>(d_tab_stack->currentWidget())) {
+        if (QScrollBar *hb = sa->horizontalScrollBar())
+            hScrollActive = hb->isVisible() || (hb->maximum() > hb->minimum());
+    }
+    const int targetH = hScrollActive ? qMax(88, baseH + 8) : baseH;
+    if (d_tab_stack->height() != targetH || d_tab_stack->minimumHeight() != targetH
+        || d_tab_stack->maximumHeight() != targetH) {
+        d_tab_stack->setFixedHeight(targetH);
+        if (layout())
+            layout()->activate();
+        updateGeometry();
+    }
+    if (QScrollArea *curSa = qobject_cast<QScrollArea *>(d_tab_stack->currentWidget())) {
+        if (QWidget *cw = curSa->widget()) {
+            if (cw->layout())
+                cw->layout()->activate();
+        }
+    }
+}
+
+void ModernRibbonBar::updateHeaderResponsiveness()
+{
+    if (d_shutting_down)
+        return;
+    const int w = width();
+    if (w <= 0)
+        return;
+
+    int tabsNeededW = 0;
+    if (d_tab_bar) {
+        d_tab_bar->ensurePolished();
+        for (int i = 0; i < d_tab_bar->count(); ++i)
+            tabsNeededW += d_tab_bar->tabRect(i).width() + 1;
+        if (d_tab_bar->count() > 0) {
+            const int spanW = d_tab_bar->tabRect(d_tab_bar->count() - 1).right()
+                    - d_tab_bar->tabRect(0).left() + 2;
+            tabsNeededW = qMax(tabsNeededW, spanW);
+        }
+        tabsNeededW = qMax(tabsNeededW, d_tab_bar->sizeHint().width());
+    }
+    if (tabsNeededW <= 0)
+        tabsNeededW = 560;
+
+    struct HeaderTier
+    {
+        bool showLang;
+        bool showQuick;
+        bool shortCmdFocus;
+        bool compactLayout;
+        bool modeIconOnly;
+        bool cmdIconOnly;
+        bool showCtx;
+    };
+
+    const HeaderTier kTiers[] = {
+        { true, true, false, false, false, false, true },   // Ultra-wide: full labels + language
+        { false, true, false, false, false, false, true },  // Wide: quick presets + full labels
+        { false, true, true, true, false, false, true },    // Quick presets + ultra-short text pills
+        { false, true, true, true, true, false, true },     // Quick presets + search pill + icon modes
+        { false, true, true, true, true, true, true },      // Quick presets + icon modes/search + ctx
+        { false, true, true, true, true, true, false },     // Quick presets + icon modes/search
+        { false, false, true, true, false, false, true },   // < tabsNeededW+500: short text pills
+        { false, false, true, true, true, false, true },    // Search pill + icon modes + ctx
+        { false, false, true, true, true, true, true },     // All icon-only + ctx
+        { false, false, true, true, true, true, false }     // Minimal icon-only fallback
+    };
+
+    auto applyButtonsForTier = [this](const HeaderTier &t) {
+        if (d_btn_cmd_palette) {
+            const QString wantCmd =
+                    t.shortCmdFocus ? tr("Search") : tr("Search Commands (Ctrl+K)");
+            if (d_btn_cmd_palette->text() != wantCmd)
+                d_btn_cmd_palette->setText(wantCmd);
+            const Qt::ToolButtonStyle searchStyle = t.cmdIconOnly
+                    ? Qt::ToolButtonIconOnly
+                    : Qt::ToolButtonTextBesideIcon;
+            if (d_btn_cmd_palette->toolButtonStyle() != searchStyle)
+                d_btn_cmd_palette->setToolButtonStyle(searchStyle);
+        }
+        if (d_btn_focus_mode) {
+            const QString wantFocus = t.shortCmdFocus ? tr("Focus") : tr("Focus (F11)");
+            if (d_btn_focus_mode->text() != wantFocus)
+                d_btn_focus_mode->setText(wantFocus);
+        }
+        if (d_btn_layout_tabbed) {
+            const QString wantTab = t.compactLayout ? tr("Tabs") : tr("Tabbed");
+            if (d_btn_layout_tabbed->text() != wantTab)
+                d_btn_layout_tabbed->setText(wantTab);
+        }
+        if (d_btn_layout_split) {
+            const QString wantSplit = t.compactLayout ? tr("Split") : tr("Split View");
+            if (d_btn_layout_split->text() != wantSplit)
+                d_btn_layout_split->setText(wantSplit);
+        }
+        if (d_btn_layout_mdi) {
+            const QString wantMdi = t.compactLayout ? tr("Free View") : tr("Free MDI");
+            if (d_btn_layout_mdi->text() != wantMdi)
+                d_btn_layout_mdi->setText(wantMdi);
+        }
+
+        const Qt::ToolButtonStyle pillStyle =
+                t.modeIconOnly ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+        QToolButton *modePills[] = { d_btn_layout_tabbed, d_btn_layout_split, d_btn_layout_mdi,
+                                     d_btn_focus_mode, d_btn_lang_switch };
+        for (QToolButton *hb : modePills) {
+            if (hb && hb->toolButtonStyle() != pillStyle)
+                hb->setToolButtonStyle(pillStyle);
+        }
+    };
+
+    auto measureTierRightW = [this](const HeaderTier &t) -> int {
+        int rw = 0;
+        auto addW = [&rw](QWidget *wgt, bool vis) {
+            if (!wgt || !vis)
+                return;
+            wgt->ensurePolished();
+            rw += wgt->sizeHint().width() + 4;
+        };
+        addW(d_btn_quick_isij, t.showQuick);
+        addW(d_btn_quick_slide, t.showQuick);
+        addW(d_btn_cmd_palette, true);
+        addW(d_btn_layout_tabbed, true);
+        addW(d_btn_layout_split, true);
+        addW(d_btn_layout_mdi, true);
+        addW(d_btn_focus_mode, true);
+        addW(d_btn_lang_switch, t.showLang);
+        addW(d_context_pill, t.showCtx);
+        return rw;
+    };
+
+    const int nTiers = static_cast<int>(sizeof(kTiers) / sizeof(kTiers[0]));
+    HeaderTier chosen = kTiers[nTiers - 1];
+    int chosenRightW = 0;
+    bool found = false;
+
+    for (int idx = 0; idx < nTiers; ++idx) {
+        const HeaderTier &cand = kTiers[idx];
+        if (cand.showLang && w < qMax(1620, tabsNeededW + 900))
+            continue;
+        if (cand.showQuick && w < tabsNeededW + 500)
+            continue;
+
+        applyButtonsForTier(cand);
+        const int rw = measureTierRightW(cand);
+        // Keep quick presets visible whenever w >= tabsNeededW + 520 (fallback to most compact quick tier idx == 5)
+        if (tabsNeededW + rw + 24 <= w || (idx == 5 && w >= tabsNeededW + 520)
+            || idx == nTiers - 1) {
+            chosen = cand;
+            chosenRightW = rw;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        applyButtonsForTier(chosen);
+        chosenRightW = measureTierRightW(chosen);
+    }
+
+    if (d_btn_lang_switch && d_btn_lang_switch->isVisible() != chosen.showLang)
+        d_btn_lang_switch->setVisible(chosen.showLang);
+    if (d_btn_quick_isij && d_btn_quick_isij->isVisible() != chosen.showQuick)
+        d_btn_quick_isij->setVisible(chosen.showQuick);
+    if (d_btn_quick_slide && d_btn_quick_slide->isVisible() != chosen.showQuick)
+        d_btn_quick_slide->setVisible(chosen.showQuick);
+    if (d_context_pill && d_context_pill->isVisible() != chosen.showCtx)
+        d_context_pill->setVisible(chosen.showCtx);
+
+    if (d_tab_bar) {
+        const int maxAvailTabW = qMax(360, qMax(w - 260, w - chosenRightW - 18));
+        const int wantMinTabW = qMin(tabsNeededW + 10, maxAvailTabW);
+        if (d_tab_bar->minimumWidth() != wantMinTabW)
+            d_tab_bar->setMinimumWidth(wantMinTabW);
+        if (QWidget *ts = d_tab_bar->parentWidget()) {
+            if (ts->layout())
+                ts->layout()->activate();
+        }
+    }
+}
+
 void ModernRibbonBar::prepareForAppShutdown()
 {
     const bool wasShuttingDown = d_shutting_down;
@@ -2106,9 +2400,13 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
     QWidget *container = new QWidget(scroll);
     container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
     QHBoxLayout *row = new QHBoxLayout(container);
-    row->setContentsMargins(8, 3, 8, 3);
-    row->setSpacing(6);
+    row->setContentsMargins(4, 2, 4, 2);
+    row->setSpacing(3);
     scroll->setWidget(container);
+    if (QScrollBar *hbar = scroll->horizontalScrollBar()) {
+        connect(hbar, &QScrollBar::rangeChanged, this,
+                [this](int, int) { updateTabStackHeight(); });
+    }
     if (outRowLayout)
         *outRowLayout = row;
     return scroll;
@@ -2119,8 +2417,8 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<
 {
     QWidget *grpWidget = new QWidget();
     QVBoxLayout *vbox = new QVBoxLayout(grpWidget);
-    vbox->setContentsMargins(2, 0, 2, 0);
-    vbox->setSpacing(1);
+    vbox->setContentsMargins(2, 2, 2, 2);
+    vbox->setSpacing(2);
 
     QHBoxLayout *btnRow = new QHBoxLayout();
     btnRow->setContentsMargins(0, 0, 0, 0);
@@ -2130,14 +2428,18 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<
     QLabel *cap = new QLabel(grpWidget);
     cap->setProperty("class", QStringLiteral("RibbonGroupCaption"));
     cap->setAlignment(Qt::AlignCenter);
+    const int capMinH = qMax(20, cap->fontMetrics().height() + 5);
+    cap->setMinimumHeight(capMinH);
+    cap->setFixedHeight(capMinH);
     vbox->addWidget(cap);
+    vbox->addStretch(1);
 
     d_group_bindings.append({ cap, std::move(titleFn) });
     pageRow->addWidget(grpWidget);
 
     if (addDividerAfter) {
         QFrame *div = new QFrame();
-        div->setFixedSize(1, 38);
+        div->setFixedSize(1, 50);
         div->setStyleSheet(QStringLiteral("background-color: #E2E8F0;"));
         pageRow->addWidget(div);
     }
@@ -2159,7 +2461,7 @@ QToolButton *ModernRibbonBar::addRibbonButton(QHBoxLayout *groupLayout, const QS
                                   : QStringLiteral("RibbonActionBtn"));
     btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     btn->setIcon(IconLoader::duotoneIcon(iconId, 20, false));
-    btn->setIconSize(QSize(18, 18));
+    btn->setIconSize(QSize(16, 16));
     btn->setCheckable(checkable);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setFocusPolicy(Qt::NoFocus);
@@ -2250,6 +2552,13 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->newGraph();
                 });
         addRibbonButton(
+                gCreate, QStringLiteral("split-view"), [this]() { return tr("Merge Graphs"); },
+                [this]() { return tr("Merge Multiple Open Graph Windows into Multi-Panel Figure"); },
+                [this]() {
+                    if (d_app)
+                        d_app->mergeOpenGraphsDialog();
+                });
+        addRibbonButton(
                 gCreate, QStringLiteral("add-column"), [this]() { return tr("Add Column"); },
                 [this]() { return tr("Append Y Column to Active Worksheet"); },
                 [this]() {
@@ -2279,7 +2588,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->recalculatePendingLinksNow();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Panels"); }, &gPanels, false);
+        createRibbonGroup(row, [this]() { return tr("Panel View"); }, &gPanels, false);
         d_btn_explorer = addRibbonButton(
                 gPanels, QStringLiteral("explorer"), [this]() { return tr("Explorer"); },
                 [this]() { return tr("Show or Hide Project Explorer Panel"); },
@@ -2344,7 +2653,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Plot Cubic Spline Curve"); },
                 [this]() { triggerPlot2D(Graph::Spline); });
         addRibbonButton(
-                g2d, QStringLiteral("plot-bars"), [this]() { return tr("Bars"); },
+                g2d, QStringLiteral("plot-bars"), [this]() { return tr("Bar Chart"); },
                 [this]() { return tr("Plot Vertical Bar Chart"); },
                 [this]() { triggerPlot2D(Graph::VerticalBars); });
         addRibbonButton(
@@ -2913,7 +3222,7 @@ void ModernRibbonBar::buildAllTabs()
         createRibbonGroup(row, [this]() { return tr("Journal & Slide Presets"); }, &gPresets, true);
         addRibbonButton(
                 gPresets, QStringLiteral("preset-isij"),
-                [this]() { return tr("ISIJ 85mm Preset"); },
+                [this]() { return tr("ISIJ 85mm Fig"); },
                 [this]() { return tr("Apply ISIJ 1-Column 85x85 mm Journal Preset (600 DPI)"); },
                 [this]() {
                     if (d_app)
@@ -2922,7 +3231,7 @@ void ModernRibbonBar::buildAllTabs()
                 false, true);
         addRibbonButton(
                 gPresets, QStringLiteral("preset-slide"),
-                [this]() { return tr("Slide 28pt Preset"); },
+                [this]() { return tr("28pt Slide"); },
                 [this]() { return tr("Apply Presentation Slide 28pt Arial Preset"); },
                 [this]() {
                     if (d_app)
@@ -2931,7 +3240,7 @@ void ModernRibbonBar::buildAllTabs()
                 false, true);
         addRibbonButton(
                 gPresets, QStringLiteral("preset-nature"),
-                [this]() { return tr("Nature 89mm Preset"); },
+                [this]() { return tr("Nature 89mm Fig"); },
                 [this]() { return tr("Apply Nature Compact 89mm Open-L Journal Preset"); },
                 [this]() {
                     if (d_app)
@@ -2939,92 +3248,7 @@ void ModernRibbonBar::buildAllTabs()
                 },
                 false, true);
 
-        createRibbonGroup(row, [this]() { return tr("Frame & Page"); }, &gFrame, true);
-        addRibbonButton(
-                gFrame, QStringLiteral("frame-box-inward"), [this]() { return tr("Box Inward"); },
-                [this]() { return tr("Apply Full Box Frame with Inward Ticks"); },
-                [this]() {
-                    if (d_app)
-                        d_app->applyFrameBoxInward();
-                });
-        addRibbonButton(
-                gFrame, QStringLiteral("frame-open-l"), [this]() { return tr("Open-L Frame"); },
-                [this]() { return tr("Apply Open Bottom-Left L-Frame"); },
-                [this]() {
-                    if (d_app)
-                        d_app->applyFrameOpenL();
-                });
-        addRibbonButton(
-                gFrame, QStringLiteral("page-setup"), [this]() { return tr("Page Setup"); },
-                [this]() { return tr("Configure Physical Page Dimensions, Units & DPI"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showPageSetupDialog();
-                });
-        addRibbonButton(
-                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Fit Page to Layers"); },
-                [this]() { return tr("Crop Page Tightly Around Plot Layers"); },
-                [this]() {
-                    if (d_app)
-                        d_app->fitPageToLayers();
-                });
-        addRibbonButton(
-                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Square 70%"); },
-                [this]() { return tr("Apply 70% Square Inner Canvas Frame"); },
-                [this]() {
-                    if (!d_app)
-                        return;
-                    if (MultiLayer *ml =
-                                qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
-                        const QString before = ml->captureUndoSnapshot();
-                        ml->applySquareCanvasFrame70Percent();
-                        ml->pushUndoSnapshot(tr("Apply 70% Square Canvas Frame"), before);
-                        d_app->modifiedProject();
-                    }
-                });
-        addRibbonButton(
-                gFrame, QStringLiteral("color-palette"), [this]() { return tr("Color Palette"); },
-                [this]() { return tr("Apply Publication Color Palette to Curves"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showColorPaletteEditorDialog();
-                });
-        QToolButton *btnStyleInspector = addRibbonButton(
-                gFrame, QStringLiteral("table-drawer"), [this]() { return tr("Inspector"); },
-                [this]() { return tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"); },
-                [this]() {
-                    if (!d_app)
-                        return;
-                    d_app->toggleGraphInspectorDock();
-                    syncCheckableStates();
-                },
-                true);
-        btnStyleInspector->setObjectName(QStringLiteral("RibbonInspectorBtn"));
-
-        createRibbonGroup(row, [this]() { return tr("Format & Batch"); }, &gFormat, true);
-        addRibbonButton(
-                gFormat, QStringLiteral("format-copy"), [this]() { return tr("Copy Format"); },
-                [this]() { return tr("Copy Visual Style & Axes Format of Active Graph"); },
-                [this]() {
-                    if (d_app)
-                        d_app->copyGraphFormat();
-                });
-        addRibbonButton(
-                gFormat, QStringLiteral("format-paste"), [this]() { return tr("Paste Format"); },
-                [this]() { return tr("Paste Copied Visual Style onto Active Graph"); },
-                [this]() {
-                    if (d_app)
-                        d_app->pasteGraphFormat();
-                });
-        addRibbonButton(
-                gFormat, QStringLiteral("batch-plot"), [this]() { return tr("Batch Plot"); },
-                [this]() { return tr("Clone Active Graph Template Across Multiple Worksheets"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showBatchPlotDialog();
-                });
-
-        createRibbonGroup(row, [this]() { return tr("Export & PowerPoint"); }, &gExport, false);
+        createRibbonGroup(row, [this]() { return tr("Export & PowerPoint"); }, &gExport, true);
         addRibbonButton(
                 gExport, QStringLiteral("copy-ole"), [this]() { return tr("Copy OLE"); },
                 [this]() { return tr("Copy Editable OLE Graph Object for PowerPoint / Word"); },
@@ -3053,6 +3277,80 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         d_app->exportPDF();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Frame & Page"); }, &gFrame, true);
+        addRibbonButton(
+                gFrame, QStringLiteral("frame-box-inward"), [this]() { return tr("Box Inward"); },
+                [this]() { return tr("Apply Full Box Frame with Inward Ticks"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyFrameBoxInward();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("frame-open-l"), [this]() { return tr("Open-L Frame"); },
+                [this]() { return tr("Apply Open Bottom-Left L-Frame"); },
+                [this]() {
+                    if (d_app)
+                        d_app->applyFrameOpenL();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("page-setup"), [this]() { return tr("Size & DPI"); },
+                [this]() { return tr("Configure Physical Page Dimensions, Units & DPI"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showPageSetupDialog();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Trim Page"); },
+                [this]() { return tr("Crop Page Tightly Around Plot Layers"); },
+                [this]() {
+                    if (d_app)
+                        d_app->fitPageToLayers();
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Square 70%"); },
+                [this]() { return tr("Apply 70% Square Inner Canvas Frame"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    if (MultiLayer *ml =
+                                qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
+                        const QString before = ml->captureUndoSnapshot();
+                        ml->applySquareCanvasFrame70Percent();
+                        ml->pushUndoSnapshot(tr("Apply 70% Square Canvas Frame"), before);
+                        d_app->modifiedProject();
+                    }
+                });
+        addRibbonButton(
+                gFrame, QStringLiteral("color-palette"), [this]() { return tr("Palette"); },
+                [this]() { return tr("Apply Publication Color Palette to Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showColorPaletteEditorDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Format & Batch"); }, &gFormat, false);
+        addRibbonButton(
+                gFormat, QStringLiteral("format-copy"), [this]() { return tr("Copy Format"); },
+                [this]() { return tr("Copy Visual Style & Axes Format of Active Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->copyGraphFormat();
+                });
+        addRibbonButton(
+                gFormat, QStringLiteral("format-paste"), [this]() { return tr("Paste Format"); },
+                [this]() { return tr("Paste Copied Visual Style onto Active Graph"); },
+                [this]() {
+                    if (d_app)
+                        d_app->pasteGraphFormat();
+                });
+        addRibbonButton(
+                gFormat, QStringLiteral("batch-plot"), [this]() { return tr("Batch Plot"); },
+                [this]() { return tr("Clone Active Graph Template Across Multiple Worksheets"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showBatchPlotDialog();
                 });
 
         row->addStretch(1);
@@ -3110,6 +3408,11 @@ void ModernRibbonBar::refreshButtonIcons()
         if (b.button && !b.iconId.isEmpty())
             b.button->setIcon(IconLoader::duotoneIcon(b.iconId, 20, false));
     }
+    if (d_btn_quick_isij)
+        d_btn_quick_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 16, false));
+    if (d_btn_quick_slide)
+        d_btn_quick_slide->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 16, false));
     if (d_btn_cmd_palette)
         d_btn_cmd_palette->setIcon(
                 IconLoader::duotoneIcon(QStringLiteral("search-command"), 16, false));
@@ -3141,11 +3444,6 @@ void ModernRibbonBar::retranslateUi()
             d_tab_bar->setTabText(i, d_tab_title_fns.at(i)());
     }
 
-    for (const RibbonGroupBinding &gb : d_group_bindings) {
-        if (gb.captionLabel && gb.titleFn)
-            gb.captionLabel->setText(gb.titleFn());
-    }
-
     for (const RibbonButtonBinding &bb : d_button_bindings) {
         if (!bb.button)
             continue;
@@ -3155,6 +3453,37 @@ void ModernRibbonBar::retranslateUi()
             bb.button->setToolTip(bb.tooltipFn());
     }
 
+    for (const RibbonGroupBinding &gb : d_group_bindings) {
+        if (gb.captionLabel && gb.titleFn) {
+            gb.captionLabel->ensurePolished();
+            gb.captionLabel->setText(gb.titleFn());
+            const int capMinH = qMax(20, gb.captionLabel->fontMetrics().height() + 5);
+            gb.captionLabel->setMinimumHeight(capMinH);
+            gb.captionLabel->setFixedHeight(capMinH);
+            if (QWidget *grpWidget = gb.captionLabel->parentWidget()) {
+                grpWidget->setMinimumWidth(0);
+                if (grpWidget->layout())
+                    grpWidget->layout()->activate();
+                const int capW =
+                        gb.captionLabel->fontMetrics().horizontalAdvance(gb.captionLabel->text())
+                        + 16;
+                grpWidget->setMinimumWidth(qMax(grpWidget->minimumSizeHint().width(), capW));
+            }
+        }
+    }
+
+    if (d_btn_quick_isij) {
+        d_btn_quick_isij->setText(tr("ISIJ 85mm"));
+        d_btn_quick_isij->setToolTip(
+                tr("Apply ISIJ International 1-column style (85\xC3\x97"
+                   "85 mm, 600 DPI, Arial)"));
+    }
+    if (d_btn_quick_slide) {
+        d_btn_quick_slide->setText(tr("28pt Slide"));
+        d_btn_quick_slide->setToolTip(
+                tr("Apply high-visibility presentation slide style (185\xC3\x97"
+                   "185 mm, 28 pt Arial)"));
+    }
     if (d_btn_cmd_palette) {
         d_btn_cmd_palette->setText(tr("Search Commands (Ctrl+K)"));
         d_btn_cmd_palette->setToolTip(tr("Open Fuzzy-Search Command Palette (Ctrl+K)"));
@@ -3180,23 +3509,15 @@ void ModernRibbonBar::retranslateUi()
         d_btn_lang_switch->setToolTip(tr("Switch Interface Language (Japanese / English)"));
     }
 
-    if (width() > 0) {
-        const Qt::ToolButtonStyle hdrStyle =
-                (width() < 1100) ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
-        QToolButton *hdrBtns[] = { d_btn_cmd_palette, d_btn_layout_tabbed, d_btn_layout_split,
-                                   d_btn_layout_mdi,  d_btn_focus_mode,    d_btn_lang_switch };
-        for (QToolButton *hb : hdrBtns) {
-            if (hb && hb->toolButtonStyle() != hdrStyle)
-                hb->setToolButtonStyle(hdrStyle);
-        }
-    }
-
     updateActiveContext(d_last_active_window.data());
 
     if (d_command_palette)
         d_command_palette->retranslateUi();
     if (d_focus_hud_overlay)
         d_focus_hud_overlay->retranslateUi();
+
+    updateHeaderResponsiveness();
+    updateTabStackHeight();
 }
 
 void ModernRibbonBar::syncCheckableStates()
@@ -3285,6 +3606,7 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
                                "padding: 2px 10px; font-family: 'Segoe UI', 'Yu Gothic UI', "
                                "'Meiryo UI', sans-serif; font-size: 8pt; font-weight: 700; }")
                         .arg(pillStyle));
+        updateHeaderResponsiveness();
     }
 
     syncCheckableStates();
@@ -3342,6 +3664,28 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
         case LayoutFreeMdi:
             d_app->setTabbedWorkspaceView(false);
             unmaximizeCurrentFolderWindows();
+            if (QScrollBar *hsb = d_app->d_workspace.horizontalScrollBar())
+                hsb->setValue(0);
+            if (QScrollBar *vsb = d_app->d_workspace.verticalScrollBar())
+                vsb->setValue(0);
+            if (Folder *curFolder = d_app->currentFolder()) {
+                int cascadeIdx = 0;
+                for (MyWidget *mw : curFolder->windowsList()) {
+                    if (!mw || mw->status() == MyWidget::Hidden || mw->isHidden())
+                        continue;
+                    if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
+                        continue;
+                    if (mw->x() < 8 || mw->y() < 8) {
+                        const int off = 12 + (cascadeIdx % 6) * 28;
+                        mw->move(qMax(off, mw->x()), qMax(off, mw->y()));
+                        ++cascadeIdx;
+                    }
+                }
+            }
+            if (QScrollBar *hsb = d_app->d_workspace.horizontalScrollBar())
+                hsb->setValue(0);
+            if (QScrollBar *vsb = d_app->d_workspace.verticalScrollBar())
+                vsb->setValue(0);
             break;
         }
         d_updating_layout_mode = false;
@@ -3577,8 +3921,11 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         return;
 
     if (d_focus_hud_mode == enabled) {
-        if (oleEmbedded)
+        if (oleEmbedded) {
+            if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
+                rtb->hide();
             this->hide();
+        }
         return;
     }
 
@@ -3588,9 +3935,11 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         d_saved_focus_visibility.clear();
 
         if (d_app) {
+            QToolBar *ribbonTb = d_app->modernRibbonToolBar();
             const QList<QToolBar *> toolbars = d_app->findChildren<QToolBar *>();
             for (QToolBar *tb : toolbars) {
-                if (!tb)
+                if (!tb || tb == ribbonTb
+                    || tb->objectName() == QStringLiteral("ModernRibbonToolBar"))
                     continue;
                 d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(tb), !tb->isHidden()));
                 tb->hide();
@@ -3610,7 +3959,9 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
             }
         }
 
-        this->hide();
+        if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
+            rtb->setVisible(!enabled && !oleEmbedded);
+        this->setVisible(!enabled && !oleEmbedded);
 
         if (d_app) {
             if (QWidget *cw = d_app->centralWidget()) {
@@ -3627,12 +3978,13 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         if (d_focus_hud_overlay)
             d_focus_hud_overlay->setOverlayActive(false);
 
+        if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
+            rtb->setVisible(!enabled && !oleEmbedded);
+        this->setVisible(!enabled && !oleEmbedded);
+
         if (oleEmbedded) {
-            this->hide();
             d_saved_focus_visibility.clear();
         } else {
-            this->show();
-
             for (const auto &saved : d_saved_focus_visibility) {
                 if (saved.first)
                     saved.first->setVisible(saved.second);
@@ -3681,12 +4033,33 @@ void ModernRibbonBar::setClassicToolbarsVisible(bool visible)
                     tb->hide();
             }
         } else {
-            if (d_app->file_tools)
+            if (d_app->file_tools) {
+                if (QToolBar *rtb = d_app->modernRibbonToolBar())
+                    d_app->insertToolBar(d_app->file_tools, rtb);
+                d_app->insertToolBarBreak(d_app->file_tools);
                 d_app->file_tools->show();
+            }
             if (d_app->edit_tools)
                 d_app->edit_tools->show();
-            d_app->customToolBars(
-                    qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow()));
+            MyWidget *aw = qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow());
+            d_app->customToolBars(aw);
+            if (qobject_cast<Table *>(aw)) {
+                if (d_app->table_tools)
+                    d_app->table_tools->show();
+                if (d_app->plot_tools)
+                    d_app->plot_tools->show();
+            } else if (qobject_cast<MultiLayer *>(aw)) {
+                if (d_app->graph_tools)
+                    d_app->graph_tools->show();
+                if (d_app->plot_tools)
+                    d_app->plot_tools->show();
+            } else if (qobject_cast<Matrix *>(aw)) {
+                if (d_app->matrix_plot_tools)
+                    d_app->matrix_plot_tools->show();
+            } else if (qobject_cast<Graph3D *>(aw)) {
+                if (d_app->graph_3D_tools)
+                    d_app->graph_3D_tools->show();
+            }
         }
     }
 
@@ -3847,16 +4220,8 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
         return QFrame::eventFilter(watched, event);
     if (watched == this && event
         && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
-        if (width() > 0) {
-            const Qt::ToolButtonStyle hdrStyle =
-                    (width() < 1100) ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
-            QToolButton *hdrBtns[] = { d_btn_cmd_palette, d_btn_layout_tabbed, d_btn_layout_split,
-                                       d_btn_layout_mdi,  d_btn_focus_mode,    d_btn_lang_switch };
-            for (QToolButton *hb : hdrBtns) {
-                if (hb && hb->toolButtonStyle() != hdrStyle)
-                    hb->setToolButtonStyle(hdrStyle);
-            }
-        }
+        updateHeaderResponsiveness();
+        updateTabStackHeight();
     }
     if (d_app && watched == d_app->d_workspace.viewport() && event) {
         if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph

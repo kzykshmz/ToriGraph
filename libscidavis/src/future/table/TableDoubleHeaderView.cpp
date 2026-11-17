@@ -37,6 +37,7 @@
 #include <QItemSelectionModel>
 #include <QLayout>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QTableView>
 
 namespace {
@@ -92,15 +93,64 @@ QSize TableCommentsHeaderView::sizeHint() const
             }
         }
     }
-    const int neededH = maxLines * (fm.lineSpacing() + 2) + 8;
-    if (neededH > base.height())
-        base.setHeight(neededH);
+    const int lineH = qMax(16, fm.height() + 3);
+    const int neededH = maxLines * lineH + 8;
+    base.setHeight(qMax(24, neededH));
     return base;
+}
+
+void TableCommentsHeaderView::paintSection(QPainter *painter, const QRect &rect,
+                                           int logicalIndex) const
+{
+    if (!painter || !rect.isValid())
+        return;
+
+    painter->save();
+    painter->setClipRect(rect);
+    painter->fillRect(rect, QColor(0xF8, 0xFA, 0xFC));
+    painter->setPen(QColor(0xE2, 0xE8, 0xF0));
+    painter->drawLine(rect.topRight(), rect.bottomRight());
+    painter->setPen(QColor(0xCB, 0xD5, 0xE1));
+    painter->drawLine(rect.bottomLeft(), rect.bottomRight());
+
+    const QAbstractItemModel *m = model();
+    const QString txt =
+            m ? m->headerData(logicalIndex, Qt::Horizontal, Qt::DisplayRole).toString() : QString();
+    if (!txt.isEmpty()) {
+        const QStringList lines = txt.split(QLatin1Char('\n'));
+        QFont baseFont = font();
+        const QFontMetrics baseFm(baseFont);
+        const int lineH = qMax(16, baseFm.height() + 3);
+        const QRect contentRect = rect.adjusted(6, 4, -5, -3);
+        int curY = contentRect.top();
+        for (int i = 0; i < lines.size(); ++i) {
+            if (curY >= contentRect.bottom())
+                break;
+            const QString &ln = lines.at(i);
+            QFont lineFont = baseFont;
+            QColor lineCol(0x0F, 0x17, 0x2A);
+            if (ln.startsWith(QLatin1String("F(x)="))) {
+                lineCol = QColor(0x1D, 0x4E, 0xD8);
+            } else if (ln.startsWith(QLatin1Char('[')) && ln.endsWith(QLatin1Char(']'))) {
+                lineCol = QColor(0x47, 0x55, 0x69);
+            } else if (i == 0) {
+                lineFont.setWeight(QFont::DemiBold);
+            }
+            painter->setFont(lineFont);
+            painter->setPen(lineCol);
+            const QFontMetrics lfm(lineFont);
+            const QRect lineRect(contentRect.left(), curY, qMax(8, contentRect.width()), lineH);
+            painter->drawText(lineRect, Qt::AlignLeft | Qt::AlignVCenter,
+                              lfm.elidedText(ln, Qt::ElideRight, lineRect.width()));
+            curY += lineH;
+        }
+    }
+    painter->restore();
 }
 
 TableDoubleHeaderView::TableDoubleHeaderView(QWidget *parent) : QHeaderView(Qt::Horizontal, parent)
 {
-    setDefaultAlignment(Qt::AlignLeft | Qt::AlignTop);
+    setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     d_slave = new TableCommentsHeaderView();
     d_slave->setDefaultAlignment(Qt::AlignLeft | Qt::AlignTop);
     d_show_comments = true;
@@ -114,7 +164,11 @@ TableDoubleHeaderView::~TableDoubleHeaderView()
 QSize TableDoubleHeaderView::sizeHint() const
 {
     QSize master_size, slave_size;
+    if (d_slave->font() != font())
+        d_slave->setFont(font());
     master_size = QHeaderView::sizeHint();
+    if (master_size.height() < 24)
+        master_size.setHeight(24);
     slave_size = d_slave->sizeHint();
     if (d_show_comments)
         master_size.setHeight(master_size.height() + slave_size.height());
@@ -133,12 +187,15 @@ void TableDoubleHeaderView::setModel(QAbstractItemModel *model)
 void TableDoubleHeaderView::paintSection(QPainter *painter, const QRect &rect,
                                          int logicalIndex) const
 {
+    if (d_slave->font() != font())
+        d_slave->setFont(font());
+    const int topH = qMax(24, QHeaderView::sizeHint().height());
     QRect master_rect = rect;
-    if (d_show_comments)
-        master_rect = rect.adjusted(0, 0, 0, -d_slave->sizeHint().height());
+    if (d_show_comments && rect.height() > topH)
+        master_rect = QRect(rect.left(), rect.top(), rect.width(), topH);
     QHeaderView::paintSection(painter, master_rect, logicalIndex);
-    if (d_show_comments && rect.height() > QHeaderView::sizeHint().height()) {
-        QRect slave_rect = rect.adjusted(0, QHeaderView::sizeHint().height(), 0, 0);
+    if (d_show_comments && rect.height() > topH) {
+        QRect slave_rect(rect.left(), rect.top() + topH, rect.width(), rect.height() - topH);
         d_slave->paintSection(painter, slave_rect, logicalIndex);
     }
 }
@@ -273,13 +330,19 @@ void TableDoubleHeaderView::mouseMoveEvent(QMouseEvent *event)
                     }
                 }
 
+                QPointer<TableDoubleHeaderView> self(this);
                 tv->startColumnDrag(dragCols, clickedCol, this);
+                if (!self)
+                    return;
+                d_drag_started = false;
+                d_pressed_logical_col = -1;
+                d_saved_selected_cols.clear();
             }
             return;
         }
     }
 
-    if (d_drag_started)
+    if (d_drag_started && (event->buttons() & Qt::LeftButton))
         return;
 
     QHeaderView::mouseMoveEvent(event);

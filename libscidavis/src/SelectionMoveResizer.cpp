@@ -700,8 +700,17 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         ke->accept();
         break;
     case Qt::Key_Escape: {
+        if (d_op != None) {
+            d_op = None;
+            d_op_dp = QPoint(0, 0);
+            d_drag_threshold_passed = false;
+            d_undo_before_snapshot.clear();
+            repaint();
+            ke->accept();
+            return;
+        }
         if (Graph *g = owningGraph())
-            g->deselect();
+            g->handleEscapeKey();
         else
             delete this;
         ke->accept();
@@ -730,7 +739,7 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         int step = 2;
         if (ke->modifiers() & Qt::ShiftModifier)
             step = 10;
-        else if (ke->modifiers() & Qt::ControlModifier)
+        else if (ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
             step = 1;
         QPoint delta(0, 0);
         if (ke->key() == Qt::Key_Left)

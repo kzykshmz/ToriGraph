@@ -92,7 +92,10 @@ protected:
     //! generate UI for the axis break page
     void initAxisBreakPage();
     void refreshGraphState();
+    void updateSidebarListWidths();
+    void changeEvent(QEvent *event) override;
 
+    QPushButton *buttonApplyAllAxes;
     QPushButton *buttonApply;
     QPushButton *buttonOk;
     QPushButton *buttonCancel;
@@ -231,6 +234,7 @@ public slots:
     void onTitleFontSizeChanged(int pt);
     void onAxesFontSizeChanged(int pt);
     void onAxesTitlesRowChanged(int row);
+    void applyTickAndAxisStyleToAllAxes();
 
     //! Shows the dialog as a modal dialog
     /**

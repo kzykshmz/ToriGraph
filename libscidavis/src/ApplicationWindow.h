@@ -183,6 +183,10 @@ public:
     void localeChanged();
 
     ModernRibbonBar *modernRibbonBar() const { return d_modern_ribbon; }
+    QToolBar *modernRibbonToolBar() const { return d_ribbon_toolbar; }
+    QMenu *createPopupMenu() override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    void updateExplorerAdaptiveLayout();
     GraphInspectorDock *graphInspectorDock() const { return d_graph_inspector_dock; }
     void toggleGraphInspectorDock();
     void updateGraphInspectorResponsiveness();
@@ -198,7 +202,21 @@ public:
     void setHeadlessMode(bool headless);
     bool isHeadlessMode() const { return d_headless_mode; }
 
+    enum GraphFormatScope {
+        FormatFonts = 0x01,
+        FormatColorsAndSymbols = 0x02,
+        FormatFrameAndTicks = 0x04,
+        FormatPageDimensions = 0x08,
+        FormatAxisScales = 0x10,
+        FormatBreaksAndRefLines = 0x20,
+        FormatDefaultSafe = FormatFonts | FormatColorsAndSymbols | FormatFrameAndTicks
+                | FormatPageDimensions,
+        FormatAll = 0x3F
+    };
+
 public slots:
+    void selectPlotType(int type);
+    MultiLayer *addTableSelectionToActiveOrRecentGraph(Table *srcTable = nullptr, int style = -1);
     void openPythonConsole();
     void runPythonScriptDialog();
     void runPythonScriptFile(const QString &scriptPath);
@@ -781,6 +799,12 @@ public slots:
     // Phase 5: OriginPro Format Copy/Paste, Batch Plotting, Style Presets, Delta Cursor, Waterfall & Domain Analysis
     void copyGraphFormat();
     void pasteGraphFormat();
+    void pasteGraphFormatWithScope(int scopeFlags);
+    void pasteGraphFormatFontsOnly();
+    void pasteGraphFormatColorsOnly();
+    void pasteGraphFormatAxisScalesOnly();
+    void pasteGraphFormatToFolder();
+    void mergeOpenGraphsDialog();
     MultiLayer *batchCloneGraphToTable(MultiLayer *srcMl, Table *targetTable);
     void showBatchPlotDialog();
     void applyStyleISIJJournal();
@@ -1287,6 +1311,7 @@ public:
     QMenu *recalcMenu = nullptr;
     QMenu *framePresetsMenu = nullptr;
     QMenu *stylePresetsMenu = nullptr;
+    QMenu *pasteFormatSpecialMenu = nullptr;
 
 protected:
     //! Show a context menu for the widget
@@ -1455,7 +1480,9 @@ private:
     QAction *actionNormalityTest = nullptr, *actionBlandAltman = nullptr,
             *actionTwoWayANOVA = nullptr, *actionGraphDigitizer = nullptr;
     QAction *actionCopyGraphFormat = nullptr, *actionPasteGraphFormat = nullptr,
-            *actionBatchPlot = nullptr;
+            *actionPasteFormatFonts = nullptr, *actionPasteFormatColors = nullptr,
+            *actionPasteFormatScales = nullptr, *actionPasteFormatFolder = nullptr,
+            *actionMergeGraphs = nullptr, *actionBatchPlot = nullptr;
     QAction *actionStyleISIJ = nullptr, *actionStyleSlide = nullptr,
             *actionStyleNature = nullptr;
     QAction *actionGadgetDeltaCursor = nullptr, *actionLogisticRegression = nullptr,
@@ -1476,6 +1503,7 @@ private:
     QPointer<QDialog> d_active_peak_analyzer_dlg;
     QToolButton *d_btn_style_presets_popup = nullptr;
     QWidget *d_explorer_container = nullptr;
+    QGridLayout *d_explorer_bar_grid = nullptr;
     QLineEdit *d_explorer_search = nullptr;
     QComboBox *d_explorer_type_filter = nullptr;
     QCheckBox *d_explorer_subfolder_check = nullptr;
@@ -1536,6 +1564,7 @@ private:
 
     Project *d_project;
     QWidget *d_central_container = nullptr;
+    QToolBar *d_ribbon_toolbar = nullptr;
     ModernRibbonBar *d_modern_ribbon = nullptr;
     GraphInspectorDock *d_graph_inspector_dock = nullptr;
     QAction *actionToggleGraphInspector = nullptr;
@@ -1558,13 +1587,6 @@ private slots:
      * See also: http://doc.trolltech.com/4.3/mainwindows-recentfiles-mainwindow-cpp.html
      */
     void setActiveWindowFromAction();
-    //! Manage plot type selection.
-    /**
-     * If the current window is a Table, generate a new graph from the selected data.
-     * If it is a Graph, change the plot type of the last curve.
-     * For everything else, do nothing.
-     */
-    void selectPlotType(int type);
 
     void handleAspectAdded(const AbstractAspect *aspect, int index);
     void handleAspectAboutToBeRemoved(const AbstractAspect *aspect, int index);

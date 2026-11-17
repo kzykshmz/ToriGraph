@@ -3644,45 +3644,71 @@ void Fit::insertFitSummaryBoxOnGraph()
     if (!d_graph)
         return;
 
-    QString curveName = d_curve ? d_curve->title().text() : objectName();
-    QString text = tr("Model") + ": " + objectName();
-    if (!d_formula.isEmpty())
-        text += " (" + d_formula + ")";
-    text += "\n" + tr("Dataset") + ": " + curveName + "\n";
-    text += "----------------------------------\n";
-
-    double chi2Dof = reducedChiSquare();
-    const double covScale = effectiveCovarScale();
-    for (unsigned i = 0; i < d_p && i < d_results.size(); ++i) {
-        QString pName = (int(i) < d_param_names.size()) ? d_param_names[int(i)]
-                                                        : QString("p%1").arg(i);
-        text += pName + " = " + QLocale().toString(d_results[i], 'g', d_prec);
-        if (isParameterFixed(int(i))) {
-            text += " (" + tr("fixed") + ")\n";
-        } else if (covar) {
-            double err = std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
-            text += " +/- " + QLocale().toString(err, 'g', d_prec) + "\n";
-        } else {
-            text += "\n";
+    QString curveLabel;
+    if (d_curve) {
+        const int cIdx = d_graph->curveIndex(d_curve);
+        if (cIdx >= 0)
+            curveLabel = d_graph->resolvedAutoCurveLabel(cIdx).trimmed();
+        if (curveLabel.isEmpty()) {
+            curveLabel = d_curve->title().text().trimmed();
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
+                if (Table *tbl = dc->table()) {
+                    const QString pfx = tbl->objectName() + QLatin1Char('_');
+                    if (curveLabel.startsWith(pfx))
+                        curveLabel = curveLabel.mid(pfx.length());
+                }
+            } else {
+                const int us = curveLabel.indexOf(QLatin1Char('_'));
+                if (us > 0
+                    && curveLabel.left(us).startsWith(QStringLiteral("Table"), Qt::CaseInsensitive))
+                    curveLabel = curveLabel.mid(us + 1);
+            }
         }
     }
-    text += "----------------------------------\n";
-    text += tr("Reduced Chi^2") + " = " + QLocale().toString(chi2Dof, 'g', d_prec) + "\n";
-    text += tr("R^2 (COD)") + " = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
-    text += tr("Adj. R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
-    text += "AIC = " + QLocale().toString(aic(), 'g', d_prec)
-            + ", BIC = " + QLocale().toString(bic(), 'g', d_prec) + "\n";
-    text += "ANOVA F = " + QLocale().toString(anovaFValue(), 'g', d_prec)
-            + " (p = " + QLocale().toString(anovaPValue(), 'g', 4) + ")";
+
+    QStringList lines;
+    if (!curveLabel.isEmpty())
+        lines << QStringLiteral("%1 (%2)").arg(objectName(), curveLabel);
+    else
+        lines << objectName();
+
+    lines << QStringLiteral("%1 = %2")
+                     .arg(tr("R\u00B2"), QLocale().toString(rSquare(), 'f', 4));
+
+    const int valPrec = qBound(3, d_prec, 5);
+    const int errPrec = qBound(2, d_prec - 1, 3);
+    const double covScale = effectiveCovarScale();
+    for (unsigned i = 0; i < d_p && i < d_results.size(); ++i) {
+        const QString pName = (int(i) < d_param_names.size())
+                ? d_param_names[int(i)]
+                : QStringLiteral("p%1").arg(i);
+        QString pLine = pName + QStringLiteral(" = ")
+                + QLocale().toString(d_results[i], 'g', valPrec);
+        if (isParameterFixed(int(i))) {
+            pLine += QStringLiteral(" (") + tr("fixed") + QStringLiteral(")");
+        } else if (covar) {
+            const double err = std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
+            if (std::isfinite(err))
+                pLine += QStringLiteral(" \u00B1 ") + QLocale().toString(err, 'g', errPrec);
+        }
+        lines << pLine;
+    }
+
+    const QString text = lines.join(QLatin1Char('\n'));
 
     Legend *mrk = d_graph->newLegend(text);
     if (mrk) {
-        mrk->setFont(QFont("Arial", 9));
+        const int fontPt = qMax(9, d_graph->legendFont().pointSize());
+        QFont calloutFont(QStringLiteral("Arial"), fontPt, QFont::Normal);
+        calloutFont.setHintingPreference(QFont::PreferNoHinting);
+        mrk->setFont(calloutFont);
+        mrk->setFrameStyle(Legend::Line);
+        mrk->setBackgroundColor(QColor(255, 255, 255, 235));
         if (d_graph->hasLegend()) {
             Legend *leg = d_graph->legend();
             if (leg && leg != mrk) {
-                QPoint p = leg->rect().bottomLeft();
-                mrk->setOrigin(QPoint(p.x(), p.y() + 20));
+                const QPoint p = leg->rect().bottomLeft();
+                mrk->setOrigin(QPoint(p.x(), p.y() + 14));
             }
         }
     }
@@ -3706,18 +3732,18 @@ MultiLayer *Fit::createResidualPlotWindow()
     if (!ml)
         return nullptr;
 
-    ml->setFonts(QFont("Arial", 11, QFont::Bold), QFont("Arial", 10, QFont::Bold),
-                 QFont("Arial", 9), QFont("Arial", 9));
+    ml->setFonts(QFont("Arial", 11, QFont::Normal), QFont("Arial", 10, QFont::Normal),
+                 QFont("Arial", 9, QFont::Normal), QFont("Arial", 9, QFont::Normal));
     Graph *rg = ml->activeGraph();
     if (rg) {
         QString srcTitle = d_curve ? d_curve->title().text() : objectName();
         rg->setTitle(tr("Residuals of %1 (%2)").arg(srcTitle, objectName()));
-        rg->setTitleFont(QFont("Arial", 11, QFont::Bold));
+        rg->setTitleFont(QFont("Arial", 11, QFont::Normal));
         rg->setXAxisTitle(tr("X"));
         rg->setYAxisTitle(tr("Residual (Y - Y_Fit)"));
-        rg->initFonts(QFont("Arial", 10, QFont::Bold), QFont("Arial", 9));
+        rg->initFonts(QFont("Arial", 10, QFont::Normal), QFont("Arial", 9, QFont::Normal));
         if (rg->legend())
-            rg->legend()->setFont(QFont("Arial", 9));
+            rg->legend()->setFont(QFont("Arial", 9, QFont::Normal));
         if (!d_x.empty()) {
             double xMin = *std::min_element(d_x.begin(), d_x.end());
             double xMax = *std::max_element(d_x.begin(), d_x.end());

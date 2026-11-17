@@ -52,6 +52,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVariant>
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -79,13 +80,19 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     d_x_pressed = false;
     d_y_pressed = false;
     d_highlighted_curve_key = -1;
+    d_hover_curve_key = -1;
+    d_hover_point_index = -1;
+    d_wheel_undo_timer = new QTimer(this);
+    d_wheel_undo_timer->setSingleShot(true);
+    d_wheel_undo_timer->setInterval(300);
+    connect(d_wheel_undo_timer, &QTimer::timeout, this, [this]() { flushPendingWheelUndo(); });
 
     minTickLength = 5;
     majTickLength = 9;
 
     QFont defaultTickFont("Arial", 12, QFont::Normal, false);
     defaultTickFont.setHintingPreference(QFont::PreferNoHinting);
-    QFont defaultTitleFont("Arial", 14, QFont::Bold, false);
+    QFont defaultTitleFont("Arial", 14, QFont::Normal, false);
     defaultTitleFont.setHintingPreference(QFont::PreferNoHinting);
     QFont defaultAxisTitleFont("Arial", 14, QFont::Normal, false);
     defaultAxisTitleFont.setHintingPreference(QFont::PreferNoHinting);
@@ -141,8 +148,8 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
             scale->setPalette(pal);
 
             ScaleDraw *sd = new ScaleDraw();
-            sd->setTickLength(QwtScaleDiv::MinorTick, 0);
-            sd->setTickLength(QwtScaleDiv::MediumTick, 0);
+            sd->setTickLength(QwtScaleDiv::MinorTick, minTickLength);
+            sd->setTickLength(QwtScaleDiv::MediumTick, minTickLength);
             sd->setTickLength(QwtScaleDiv::MajorTick, minTickLength);
             if (i == QwtPlot::yRight || i == QwtPlot::xTop) {
                 sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
@@ -241,8 +248,10 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                      const QwtPlotPrintFilter &pfilter) const
 {
     Graph *g = qobject_cast<Graph *>(parent());
-    if (d_highlighted_curve_key >= 0
-        && (!g || (!g->isExporting() && !g->property("isExporting").toBool()))) {
+    const bool isScreenWidgetPaint = painter && painter->device()
+            && painter->device()->devType() == QInternal::Widget
+            && (!g || (!g->isExporting() && !g->property("isExporting").toBool()));
+    if (d_highlighted_curve_key >= 0 && isScreenWidgetPaint) {
         QwtPlotItem *hitItem = d_curves.value(d_highlighted_curve_key, nullptr);
         QwtPlotCurve *hc = dynamic_cast<QwtPlotCurve *>(hitItem);
         if (hc && hc->isVisible() && hc->dataSize() > 0) {
@@ -508,6 +517,167 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         }
         painter->restore();
         painter->setClipping(clp);
+    }
+
+    if (g && !g->isExporting() && !g->property("isExporting").toBool() && painter
+        && painter->device() && painter->device()->devType() == QInternal::Widget) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setClipRect(rect.adjusted(-6, -6, 6, 6));
+
+        // 1. Optional subtle passive hover ring on hovered vertex
+        if (d_hover_curve_key >= 0 && d_hover_point_index >= 0) {
+            QwtPlotCurve *hovCurve =
+                    dynamic_cast<QwtPlotCurve *>(d_curves.value(d_hover_curve_key, nullptr));
+            const DataCurve *hovDc = dynamic_cast<const DataCurve *>(hovCurve);
+            if (hovCurve && hovCurve->isVisible() && d_hover_point_index < hovCurve->dataSize()
+                && !(hovDc && hovDc->isPointMasked(d_hover_point_index))) {
+                const double hx = map[hovCurve->xAxis()].xTransform(hovCurve->x(d_hover_point_index));
+                const double hy = map[hovCurve->yAxis()].xTransform(hovCurve->y(d_hover_point_index));
+                if (std::isfinite(hx) && std::isfinite(hy)
+                    && rect.adjusted(-4, -4, 4, 4).contains(QPoint(qRound(hx), qRound(hy)))) {
+                    QColor c = hovCurve->pen().color();
+                    if (!c.isValid() || c.alpha() == 0)
+                        c = hovCurve->symbol().pen().color();
+                    if (!c.isValid() || c.alpha() == 0)
+                        c = QColor(30, 102, 184);
+                    const double r = qMax(5.0, 0.5 * double(hovCurve->symbol().size().width()) + 3.0);
+                    painter->setBrush(Qt::NoBrush);
+                    painter->setPen(QPen(QColor(255, 255, 255, 220), 3.0));
+                    painter->drawEllipse(QPointF(hx, hy), r, r);
+                    QColor ring = c;
+                    ring.setAlpha(210);
+                    painter->setPen(QPen(ring, 1.5));
+                    painter->drawEllipse(QPointF(hx, hy), r, r);
+                }
+            }
+        }
+
+        // 2. OriginPro-style curve selection square handles (~10 sampled vertices) + vertex double-ring
+        const Graph::GraphSelection sel = g->currentSelection();
+        if ((sel.kind == Graph::GraphSelection::Curve
+             || sel.kind == Graph::GraphSelection::ErrorBars)
+            && sel.primaryId >= 0 && sel.primaryId < g->curves()) {
+            QwtPlotCurve *selCurve = g->curve(sel.primaryId);
+            if (QwtErrorPlotCurve *errC = dynamic_cast<QwtErrorPlotCurve *>(selCurve)) {
+                if (errC->masterCurve())
+                    selCurve = errC->masterCurve();
+            }
+            const DataCurve *selDc = dynamic_cast<const DataCurve *>(selCurve);
+            if (selCurve && selCurve->isVisible() && selCurve->dataSize() > 0) {
+                QColor accent = selCurve->pen().color();
+                if (!accent.isValid() || accent.alpha() == 0 || accent.lightness() > 235)
+                    accent = selCurve->symbol().pen().color();
+                if (!accent.isValid() || accent.alpha() == 0 || accent.lightness() > 235)
+                    accent = QColor(30, 102, 184);
+
+                const QwtScaleMap &xMap = map[selCurve->xAxis()];
+                const QwtScaleMap &yMap = map[selCurve->yAxis()];
+                const QRect visBox = rect.adjusted(-4, -4, 4, 4);
+                QVector<QPointF> visPts;
+                const int nPts = selCurve->dataSize();
+                visPts.reserve(qMin(nPts, 256));
+                const int stride = qMax(1, nPts / 500);
+                for (int idx = 0; idx < nPts; idx += stride) {
+                    if (selDc && selDc->isPointMasked(idx))
+                        continue;
+                    const double px = xMap.xTransform(selCurve->x(idx));
+                    const double py = yMap.xTransform(selCurve->y(idx));
+                    if (std::isfinite(px) && std::isfinite(py)
+                        && visBox.contains(QPoint(qRound(px), qRound(py)))) {
+                        visPts.append(QPointF(px, py));
+                    }
+                }
+                if (nPts > 1 && ((nPts - 1) % stride) != 0
+                    && !(selDc && selDc->isPointMasked(nPts - 1))) {
+                    const double px = xMap.xTransform(selCurve->x(nPts - 1));
+                    const double py = yMap.xTransform(selCurve->y(nPts - 1));
+                    if (std::isfinite(px) && std::isfinite(py)
+                        && visBox.contains(QPoint(qRound(px), qRound(py)))) {
+                        visPts.append(QPointF(px, py));
+                    }
+                }
+
+                const int maxHandles = 10;
+                const int m = visPts.size();
+                if (m > 0) {
+                    painter->setBrush(Qt::white);
+                    painter->setPen(QPen(accent, 1.3));
+                    const double hs = 2.5;
+                    if (m <= maxHandles) {
+                        for (const QPointF &pt : visPts)
+                            painter->drawRect(QRectF(pt.x() - hs, pt.y() - hs, 2.0 * hs, 2.0 * hs));
+                    } else {
+                        for (int h = 0; h < maxHandles; ++h) {
+                            const int k = qRound(double(h) * double(m - 1) / double(maxHandles - 1));
+                            const QPointF &pt = visPts[qBound(0, k, m - 1)];
+                            painter->drawRect(QRectF(pt.x() - hs, pt.y() - hs, 2.0 * hs, 2.0 * hs));
+                        }
+                    }
+                }
+
+                if (sel.secondaryId >= 0 && sel.secondaryId < nPts
+                    && !(selDc && selDc->isPointMasked(sel.secondaryId))) {
+                    const double vx = xMap.xTransform(selCurve->x(sel.secondaryId));
+                    const double vy = yMap.xTransform(selCurve->y(sel.secondaryId));
+                    if (std::isfinite(vx) && std::isfinite(vy)
+                        && visBox.contains(QPoint(qRound(vx), qRound(vy)))) {
+                        const double symR = 0.5 * double(selCurve->symbol().size().width());
+                        const double rInner = qMax(4.5, symR + 2.0);
+                        const double rOuter = rInner + 3.0;
+                        painter->setBrush(Qt::NoBrush);
+                        painter->setPen(QPen(QColor(255, 255, 255, 235), 3.0));
+                        painter->drawEllipse(QPointF(vx, vy), rInner, rInner);
+                        painter->setPen(QPen(accent, 1.8));
+                        painter->drawEllipse(QPointF(vx, vy), rInner, rInner);
+                        QColor outerCol = accent;
+                        outerCol.setAlpha(185);
+                        painter->setPen(QPen(outerCol, 1.2));
+                        painter->drawEllipse(QPointF(vx, vy), rOuter, rOuter);
+                    }
+                }
+            }
+        } else if (sel.kind == Graph::GraphSelection::ReferenceLine) {
+            const QVector<Graph::ReferenceLineSpec> refs = g->referenceLines();
+            if (sel.primaryId >= 0 && sel.primaryId < refs.size()) {
+                const Graph::ReferenceLineSpec &rspec = refs[sel.primaryId];
+                if (std::isfinite(rspec.value)) {
+                    QColor accent = rspec.color.isValid() ? rspec.color : QColor(30, 102, 184);
+                    QColor glow = accent;
+                    glow.setAlpha(60);
+                    const double hs = 3.0;
+                    if (rspec.orientation == 0) {
+                        const double yPx = map[QwtPlot::yLeft].xTransform(rspec.value);
+                        if (std::isfinite(yPx) && yPx >= rect.top() - 2 && yPx <= rect.bottom() + 2) {
+                            painter->setPen(QPen(glow, qMax(5.0, rspec.width + 4.0)));
+                            painter->drawLine(QPointF(rect.left(), yPx), QPointF(rect.right(), yPx));
+                            painter->setBrush(Qt::white);
+                            painter->setPen(QPen(accent, 1.4));
+                            const double xs[3] = { double(rect.left() + 5),
+                                                   0.5 * double(rect.left() + rect.right()),
+                                                   double(rect.right() - 5) };
+                            for (double xh : xs)
+                                painter->drawRect(QRectF(xh - hs, yPx - hs, 2.0 * hs, 2.0 * hs));
+                        }
+                    } else {
+                        const double xPx = map[QwtPlot::xBottom].xTransform(rspec.value);
+                        if (std::isfinite(xPx) && xPx >= rect.left() - 2 && xPx <= rect.right() + 2) {
+                            painter->setPen(QPen(glow, qMax(5.0, rspec.width + 4.0)));
+                            painter->drawLine(QPointF(xPx, rect.top()), QPointF(xPx, rect.bottom()));
+                            painter->setBrush(Qt::white);
+                            painter->setPen(QPen(accent, 1.4));
+                            const double ys[3] = { double(rect.top() + 5),
+                                                   0.5 * double(rect.top() + rect.bottom()),
+                                                   double(rect.bottom() - 5) };
+                            for (double yh : ys)
+                                painter->drawRect(QRectF(xPx - hs, yh - hs, 2.0 * hs, 2.0 * hs));
+                        }
+                    }
+                }
+            }
+        }
+
+        painter->restore();
     }
 }
 
@@ -895,6 +1065,23 @@ bool Plot::hasVisibleItemOnAxis(int axis) const
     return false;
 }
 
+bool Plot::hasAnyItemOnAxis(int axis) const
+{
+    for (auto it = d_curves.constBegin(); it != d_curves.constEnd(); ++it) {
+        const QwtPlotItem *item = it.value();
+        if (!item)
+            continue;
+        if (item->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+            Spectrogram *sp = const_cast<Spectrogram *>(static_cast<const Spectrogram *>(item));
+            if (sp->hasColorScale() && sp->colorScaleAxis() == axis)
+                return true;
+        }
+        if (item->xAxis() == axis || item->yAxis() == axis)
+            return true;
+    }
+    return false;
+}
+
 void Plot::setHighlightedCurveKey(int key)
 {
     if (d_highlighted_curve_key == key)
@@ -903,28 +1090,41 @@ void Plot::setHighlightedCurveKey(int key)
     replot();
 }
 
-int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
+void Plot::setHoverPoint(int curveKey, int pointIndex)
+{
+    if (d_hover_curve_key == curveKey && d_hover_point_index == pointIndex)
+        return;
+    d_hover_curve_key = curveKey;
+    d_hover_point_index = pointIndex;
+    if (canvas())
+        canvas()->update();
+}
+
+void Plot::clearHoverPoint()
+{
+    setHoverPoint(-1, -1);
+}
+
+int Plot::closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) const
 {
     QwtScaleMap map[QwtPlot::axisCnt];
     for (int axis = 0; axis < QwtPlot::axisCnt; axis++)
         map[axis] = canvasMap(axis);
 
-    double dmin = 1.0e10;
-    int key = -1;
-    point = -1;
-    const double pxClick = double(xpos);
-    const double pyClick = double(ypos);
+    double bestD2 = 1.0e30;
+    int bestKey = -1;
+    vertexOut = -1;
+    const double pxClick = double(pos.x());
+    const double pyClick = double(pos.y());
 
-    for (QMap<int, QwtPlotItem *>::iterator iter = d_curves.begin(); iter != d_curves.end();
-         ++iter) {
-        QwtPlotItem *item = iter.value();
+    for (auto iter = d_curves.constBegin(); iter != d_curves.constEnd(); ++iter) {
+        const QwtPlotItem *item = iter.value();
         if (!item || !item->isVisible() || item->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
             continue;
-
-        QwtPlotCurve *qc = dynamic_cast<QwtPlotCurve *>(item);
+        const QwtPlotCurve *qc = dynamic_cast<const QwtPlotCurve *>(item);
         if (!qc || !qc->isVisible())
             continue;
-        PlotCurve *pc = dynamic_cast<PlotCurve *>(item);
+        const PlotCurve *pc = dynamic_cast<const PlotCurve *>(item);
         if (pc && pc->type() == Graph::ErrorBars)
             continue;
 
@@ -932,62 +1132,104 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
         const QwtScaleMap &xMap = map[qc->xAxis()];
         const QwtScaleMap &yMap = map[qc->yAxis()];
         const int n = qc->dataSize();
-
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; ++i) {
             if (dc && dc->isPointMasked(i))
                 continue;
             const double cx = xMap.xTransform(qc->x(i)) - pxClick;
             const double cy = yMap.xTransform(qc->y(i)) - pyClick;
             if (!std::isfinite(cx) || !std::isfinite(cy))
                 continue;
-            const double f = qwtSqr(cx) + qwtSqr(cy);
-            if (f < dmin) {
-                dmin = f;
-                key = iter.key();
-                point = i;
-            }
-        }
-
-        if (qc->style() != QwtPlotCurve::NoCurve && n >= 2) {
-            for (int i = 0; i + 1 < n; i++) {
-                if (dc && (dc->isPointMasked(i) || dc->isPointMasked(i + 1)))
-                    continue;
-                const double ax = xMap.xTransform(qc->x(i));
-                const double ay = yMap.xTransform(qc->y(i));
-                const double bx = xMap.xTransform(qc->x(i + 1));
-                const double by = yMap.xTransform(qc->y(i + 1));
-                if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx)
-                    || !std::isfinite(by))
-                    continue;
-                const double dx = bx - ax;
-                const double dy = by - ay;
-                const double len2 = dx * dx + dy * dy;
-                double segDist2 = 0.0;
-                double t = 0.0;
-                if (len2 > 1e-12) {
-                    t = qBound(0.0, ((pxClick - ax) * dx + (pyClick - ay) * dy) / len2, 1.0);
-                    const double projX = ax + t * dx;
-                    const double projY = ay + t * dy;
-                    segDist2 = qwtSqr(pxClick - projX) + qwtSqr(pyClick - projY);
-                } else {
-                    segDist2 = qwtSqr(pxClick - ax) + qwtSqr(pyClick - ay);
-                }
-                if (segDist2 < dmin) {
-                    dmin = segDist2;
-                    key = iter.key();
-                    point = (t <= 0.5) ? i : (i + 1);
-                }
+            const double d2 = qwtSqr(cx) + qwtSqr(cy);
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestKey = iter.key();
+                vertexOut = i;
             }
         }
     }
 
-    if (dmin >= 100.0) {
+    distOut = (bestKey >= 0) ? int(std::sqrt(bestD2)) : 99999;
+    return bestKey;
+}
+
+int Plot::closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestVertexOut) const
+{
+    int vDist = 99999;
+    int vPoint = -1;
+    const int vKey = closestDataPoint(pos, vDist, vPoint);
+    if (vKey >= 0 && vDist < 10) {
+        distOut = vDist;
+        nearestVertexOut = vPoint;
+        return vKey;
+    }
+
+    QwtScaleMap map[QwtPlot::axisCnt];
+    for (int axis = 0; axis < QwtPlot::axisCnt; axis++)
+        map[axis] = canvasMap(axis);
+
+    double bestD2 = (vKey >= 0) ? qwtSqr(double(vDist)) : 1.0e30;
+    int bestKey = vKey;
+    nearestVertexOut = vPoint;
+    const double pxClick = double(pos.x());
+    const double pyClick = double(pos.y());
+
+    for (auto iter = d_curves.constBegin(); iter != d_curves.constEnd(); ++iter) {
+        const QwtPlotItem *item = iter.value();
+        if (!item || !item->isVisible() || item->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+            continue;
+        const QwtPlotCurve *qc = dynamic_cast<const QwtPlotCurve *>(item);
+        if (!qc || !qc->isVisible() || qc->style() == QwtPlotCurve::NoCurve)
+            continue;
+        const PlotCurve *pc = dynamic_cast<const PlotCurve *>(item);
+        if (pc && pc->type() == Graph::ErrorBars)
+            continue;
+
+        const DataCurve *dc = dynamic_cast<const DataCurve *>(item);
+        const QwtScaleMap &xMap = map[qc->xAxis()];
+        const QwtScaleMap &yMap = map[qc->yAxis()];
+        const int n = qc->dataSize();
+        if (n < 2)
+            continue;
+
+        for (int i = 0; i + 1 < n; ++i) {
+            if (dc && (dc->isPointMasked(i) || dc->isPointMasked(i + 1)))
+                continue;
+            const double ax = xMap.xTransform(qc->x(i));
+            const double ay = yMap.xTransform(qc->y(i));
+            const double bx = xMap.xTransform(qc->x(i + 1));
+            const double by = yMap.xTransform(qc->y(i + 1));
+            if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx)
+                || !std::isfinite(by))
+                continue;
+            const double dx = bx - ax;
+            const double dy = by - ay;
+            const double len2 = dx * dx + dy * dy;
+            double segDist2 = 0.0;
+            double t = 0.0;
+            if (len2 > 1e-12) {
+                t = qBound(0.0, ((pxClick - ax) * dx + (pyClick - ay) * dy) / len2, 1.0);
+                const double projX = ax + t * dx;
+                const double projY = ay + t * dy;
+                segDist2 = qwtSqr(pxClick - projX) + qwtSqr(pyClick - projY);
+            } else {
+                segDist2 = qwtSqr(pxClick - ax) + qwtSqr(pyClick - ay);
+            }
+            if (segDist2 < bestD2) {
+                bestD2 = segDist2;
+                bestKey = iter.key();
+                nearestVertexOut = (t <= 0.5) ? i : (i + 1);
+            }
+        }
+    }
+
+    if (bestD2 >= 100.0) {
         auto segDistSq = [&](double ax, double ay, double bx, double by) -> double {
             const double dx = bx - ax;
             const double dy = by - ay;
             const double len2 = dx * dx + dy * dy;
             if (len2 > 1e-12) {
-                const double t = qBound(0.0, ((pxClick - ax) * dx + (pyClick - ay) * dy) / len2, 1.0);
+                const double t =
+                        qBound(0.0, ((pxClick - ax) * dx + (pyClick - ay) * dy) / len2, 1.0);
                 const double projX = ax + t * dx;
                 const double projY = ay + t * dy;
                 return qwtSqr(pxClick - projX) + qwtSqr(pyClick - projY);
@@ -995,9 +1237,9 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
             return qwtSqr(pxClick - ax) + qwtSqr(pyClick - ay);
         };
 
-        for (QMap<int, QwtPlotItem *>::iterator iter = d_curves.begin(); iter != d_curves.end();
-             ++iter) {
-            QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(iter.value());
+        for (auto iter = d_curves.constBegin(); iter != d_curves.constEnd(); ++iter) {
+            QwtErrorPlotCurve *er =
+                    dynamic_cast<QwtErrorPlotCurve *>(const_cast<QwtPlotItem *>(iter.value()));
             if (!er || !er->isVisible())
                 continue;
             DataCurve *mc = er->masterCurve();
@@ -1044,18 +1286,23 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
                             d2 = qMin(d2, segDistSq(px2, py - halfCap, px2, py + halfCap));
                     }
                 }
-                if (d2 < dmin) {
-                    dmin = d2;
+                if (d2 < bestD2) {
+                    bestD2 = d2;
                     const int mcKey = mc ? d_curves.key(mc, -1) : -1;
-                    key = (mcKey >= 0) ? mcKey : iter.key();
-                    point = i;
+                    bestKey = (mcKey >= 0) ? mcKey : iter.key();
+                    nearestVertexOut = i;
                 }
             }
         }
     }
 
-    dist = (key >= 0) ? int(std::sqrt(dmin)) : 99999;
-    return key;
+    distOut = (bestKey >= 0) ? int(std::sqrt(bestD2)) : 99999;
+    return bestKey;
+}
+
+int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
+{
+    return closestCurveInteractive(QPoint(xpos, ypos), dist, point);
 }
 
 void Plot::removeMarker(int index)
@@ -1122,11 +1369,37 @@ QList<int> Plot::getMajorTicksType()
     return majorTicksType;
 }
 
+static void syncPlotScaleDrawTicksState(ScaleDraw *sd, int minTickLen, int majTickLen)
+{
+    if (!sd)
+        return;
+    const int majStyle = sd->majorTicksStyle();
+    const int minStyle = sd->minorTicksStyle();
+    if (majStyle == ScaleDraw::None && minStyle == ScaleDraw::None) {
+        sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
+    } else if (!sd->hasComponent(QwtAbstractScaleDraw::Labels)
+               && (majStyle == ScaleDraw::None || majStyle == ScaleDraw::In)
+               && (minStyle == ScaleDraw::None || minStyle == ScaleDraw::In)) {
+        sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
+    } else {
+        sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+    }
+    const int majLen = (majStyle == ScaleDraw::None || majStyle == ScaleDraw::In)
+            ? minTickLen
+            : majTickLen;
+    const int minLen = (minStyle == ScaleDraw::None) ? 0 : minTickLen;
+    sd->setTickLength(QwtScaleDiv::MinorTick, minLen);
+    sd->setTickLength(QwtScaleDiv::MediumTick, minLen);
+    sd->setTickLength(QwtScaleDiv::MajorTick, majLen);
+}
+
 void Plot::setMajorTicksType(int axis, int type)
 {
     ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
-    if (sd)
+    if (sd) {
         sd->setMajorTicksStyle((ScaleDraw::TicksStyle)type);
+        syncPlotScaleDrawTicksState(sd, minTickLength, majTickLength);
+    }
 }
 
 QList<int> Plot::getMinorTicksType()
@@ -1145,8 +1418,10 @@ QList<int> Plot::getMinorTicksType()
 void Plot::setMinorTicksType(int axis, int type)
 {
     ScaleDraw *sd = (ScaleDraw *)axisScaleDraw(axis);
-    if (sd)
+    if (sd) {
         sd->setMinorTicksStyle((ScaleDraw::TicksStyle)type);
+        syncPlotScaleDrawTicksState(sd, minTickLength, majTickLength);
+    }
 }
 
 int Plot::axisLabelFormat(int axis)
@@ -1241,6 +1516,65 @@ bool Plot::isLog10ScaleEngine(const QwtScaleEngine *se)
     return xf && xf->type() == QwtScaleTransformation::Log10;
 }
 
+bool Plot::isMirrorOppositeAxis(int primaryAxis, int secondaryAxis) const
+{
+    if (!axisValid(primaryAxis) || !axisValid(secondaryAxis))
+        return false;
+    if (!axisEnabled(primaryAxis) || !axisEnabled(secondaryAxis))
+        return false;
+    if (hasAnyItemOnAxis(secondaryAxis))
+        return false;
+    const Graph *g = qobject_cast<const Graph *>(parent());
+    if (g && g->hasColorScaleOnAxis(secondaryAxis))
+        return false;
+    const ScaleDraw *secSd = dynamic_cast<const ScaleDraw *>(axisScaleDraw(secondaryAxis));
+    if (!secSd)
+        return false;
+    if (secSd->hasComponent(QwtAbstractScaleDraw::Labels))
+        return false;
+    return (secSd->majorTicksStyle() != ScaleDraw::None
+            || secSd->minorTicksStyle() != ScaleDraw::None);
+}
+
+void Plot::syncMirrorAxisIfNeeded(int changedAxis)
+{
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (changedAxis == QwtPlot::xBottom && isMirrorOppositeAxis(QwtPlot::xBottom, QwtPlot::xTop)) {
+        if (g)
+            g->updateSecondaryAxis(QwtPlot::xTop);
+        else if (const QwtScaleDiv *div = axisScaleDiv(QwtPlot::xBottom))
+            setAxisScaleDiv(QwtPlot::xTop, *div);
+    } else if (changedAxis == QwtPlot::yLeft
+               && isMirrorOppositeAxis(QwtPlot::yLeft, QwtPlot::yRight)) {
+        if (g)
+            g->updateSecondaryAxis(QwtPlot::yRight);
+        else if (const QwtScaleDiv *div = axisScaleDiv(QwtPlot::yLeft))
+            setAxisScaleDiv(QwtPlot::yRight, *div);
+    } else if (changedAxis == QwtPlot::xTop
+               && isMirrorOppositeAxis(QwtPlot::xBottom, QwtPlot::xTop)) {
+        if (const QwtScaleDiv *div = axisScaleDiv(QwtPlot::xTop))
+            setAxisScaleDiv(QwtPlot::xBottom, *div);
+    } else if (changedAxis == QwtPlot::yRight
+               && isMirrorOppositeAxis(QwtPlot::yLeft, QwtPlot::yRight)) {
+        if (const QwtScaleDiv *div = axisScaleDiv(QwtPlot::yRight))
+            setAxisScaleDiv(QwtPlot::yLeft, *div);
+    }
+}
+
+void Plot::flushPendingWheelUndo()
+{
+    if (d_wheel_undo_timer && d_wheel_undo_timer->isActive())
+        d_wheel_undo_timer->stop();
+    if (d_pending_wheel_undo_snap.isEmpty())
+        return;
+    const QString snap = d_pending_wheel_undo_snap;
+    d_pending_wheel_undo_snap.clear();
+    if (Graph *g = qobject_cast<Graph *>(parent())) {
+        if (MultiLayer *ml = g->multiLayerParent())
+            ml->pushUndoSnapshot(tr("Zoom Axes"), snap);
+    }
+}
+
 void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
 {
     if (!axisValid(axis))
@@ -1260,9 +1594,13 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
 
     const QwtScaleMap map = canvasMap(axis);
     Graph *g = qobject_cast<Graph *>(parent());
-    if (g && g->axisBreak(axis).enabled) {
-        const Graph::AxisBreakSpec brk = g->axisBreak(axis);
-        const bool isLog = brk.log10Before && brk.log10After;
+    const bool hasBreak = (g && g->axisBreak(axis).enabled);
+    const Graph::AxisBreakSpec brk = hasBreak ? g->axisBreak(axis) : Graph::AxisBreakSpec();
+    const bool isLog = hasBreak ? (brk.log10Before && brk.log10After) : isLog10ScaleEngine(se);
+
+    double newMin = minVal;
+    double newMax = maxVal;
+    if (hasBreak) {
         const double p1 = map.p1();
         const double p2 = map.p2();
         double frac = (std::fabs(p2 - p1) > 1.0)
@@ -1270,8 +1608,6 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
                 : 0.5;
         if (inverted)
             frac = 1.0 - frac;
-        double newMin = minVal;
-        double newMax = maxVal;
         if (isLog) {
             if (minVal <= 0.0 || maxVal <= 0.0)
                 return;
@@ -1291,56 +1627,74 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
             if (newMax - newMin <= 1e-15)
                 return;
         }
-        g->setScale(axis, newMin, newMax, isLog ? 0.0 : g->axisStep(axis), axisMaxMajor(axis),
-                    axisMaxMinor(axis), isLog ? 1 : 0, inverted);
-        return;
+    } else {
+        double centerVal = map.invTransform(pixelPos);
+        if (isLog) {
+            if (minVal <= 0.0 || maxVal <= 0.0)
+                return;
+            if (centerVal <= 0.0 || !std::isfinite(centerVal))
+                centerVal = std::sqrt(minVal * maxVal);
+            centerVal = qBound(minVal, centerVal, maxVal);
+            const double logMin = std::log10(minVal);
+            const double logMax = std::log10(maxVal);
+            const double logCenter = std::log10(centerVal);
+            const double newLogMin = logCenter + (logMin - logCenter) * factor;
+            const double newLogMax = logCenter + (logMax - logCenter) * factor;
+            if (newLogMax - newLogMin < 1e-6 || newLogMin < -300.0 || newLogMax > 300.0)
+                return;
+            newMin = std::pow(10.0, newLogMin);
+            newMax = std::pow(10.0, newLogMax);
+        } else {
+            if (!std::isfinite(centerVal))
+                centerVal = 0.5 * (minVal + maxVal);
+            centerVal = qBound(minVal, centerVal, maxVal);
+            newMin = centerVal + (minVal - centerVal) * factor;
+            newMax = centerVal + (maxVal - centerVal) * factor;
+            if (newMax - newMin <= 1e-15)
+                return;
+        }
     }
 
-    double centerVal = map.invTransform(pixelPos);
-    const bool isLog = isLog10ScaleEngine(se);
-
-    double newMin = minVal;
-    double newMax = maxVal;
-    if (isLog) {
-        if (minVal <= 0.0 || maxVal <= 0.0)
-            return;
-        if (centerVal <= 0.0 || !std::isfinite(centerVal))
-            centerVal = std::sqrt(minVal * maxVal);
-        centerVal = qBound(minVal, centerVal, maxVal);
-        const double logMin = std::log10(minVal);
-        const double logMax = std::log10(maxVal);
-        const double logCenter = std::log10(centerVal);
-        const double newLogMin = logCenter + (logMin - logCenter) * factor;
-        const double newLogMax = logCenter + (logMax - logCenter) * factor;
-        if (newLogMax - newLogMin < 1e-6 || newLogMin < -300.0 || newLogMax > 300.0)
-            return;
-        newMin = std::pow(10.0, newLogMin);
-        newMax = std::pow(10.0, newLogMax);
-    } else {
-        if (!std::isfinite(centerVal))
-            centerVal = 0.5 * (minVal + maxVal);
-        centerVal = qBound(minVal, centerVal, maxVal);
-        newMin = centerVal + (minVal - centerVal) * factor;
-        newMax = centerVal + (maxVal - centerVal) * factor;
-        if (newMax - newMin <= 1e-15)
-            return;
+    double effStep = 0.0;
+    if (g && !isLog) {
+        const double userStep = g->axisStep(axis);
+        const double span = newMax - newMin;
+        if (userStep > 0.0 && span > 0.0) {
+            const double nMaj = span / userStep;
+            if (nMaj >= 1.5 && nMaj <= 25.0)
+                effStep = userStep;
+        }
     }
 
     int maxMajor = qMax(axisMaxMajor(axis), 2);
+    if (g && g->axisFont(axis).pointSize() >= 20 && hasBreak)
+        maxMajor = qMin(maxMajor, 5);
     int minorTicks = axisMaxMinor(axis);
     int maxMinIntervals = minorTicks;
     if (minorTicks == 1)
-        maxMinIntervals = 3;
+        maxMinIntervals = hasBreak ? 2 : 3;
     else if (minorTicks > 1)
         maxMinIntervals = minorTicks + 1;
 
-    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals);
+    // Never replace or destroy an installed PiecewiseBreakScaleEngine / BrokenScaleEngine!
+    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals, effStep);
     if (inverted) {
         se->setAttribute(QwtScaleEngine::Inverted);
         if (div.lowerBound() < div.upperBound())
             div.invert();
     }
     setAxisScaleDiv(axis, div);
+
+    if (hasBreak) {
+        const double bf = qMin(brk.breakFrom, brk.breakTo);
+        const double bt = qMax(brk.breakFrom, brk.breakTo);
+        const bool straddlesBreak = (bf > newMin && bt < newMax && bt > bf + 1e-15);
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axis)))
+            sd->setAxisBreakIndicator(straddlesBreak, bf);
+    }
+    if (g)
+        g->setAxisUserLocked(axis, true);
+    syncMirrorAxisIfNeeded(axis);
 }
 
 void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
@@ -1362,9 +1716,13 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
 
     const QwtScaleMap map = canvasMap(axis);
     Graph *g = qobject_cast<Graph *>(parent());
-    if (g && g->axisBreak(axis).enabled) {
-        const Graph::AxisBreakSpec brk = g->axisBreak(axis);
-        const bool isLog = brk.log10Before && brk.log10After;
+    const bool hasBreak = (g && g->axisBreak(axis).enabled);
+    const Graph::AxisBreakSpec brk = hasBreak ? g->axisBreak(axis) : Graph::AxisBreakSpec();
+    const bool isLog = hasBreak ? (brk.log10Before && brk.log10After) : isLog10ScaleEngine(se);
+
+    double newMin = minVal;
+    double newMax = maxVal;
+    if (hasBreak) {
         const double p1 = map.p1();
         const double p2 = map.p2();
         if (std::fabs(p2 - p1) <= 1.0)
@@ -1372,8 +1730,6 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
         double fracDelta = double(startPixel - endPixel) / (p2 - p1);
         if (inverted)
             fracDelta = -fracDelta;
-        double newMin = minVal;
-        double newMax = maxVal;
         if (isLog) {
             if (minVal <= 0.0 || maxVal <= 0.0)
                 return;
@@ -1393,54 +1749,67 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
             newMin = minVal + delta;
             newMax = maxVal + delta;
         }
-        g->setScale(axis, newMin, newMax, isLog ? 0.0 : g->axisStep(axis), axisMaxMajor(axis),
-                    axisMaxMinor(axis), isLog ? 1 : 0, inverted);
-        return;
+    } else {
+        const double vStart = map.invTransform(startPixel);
+        const double vEnd = map.invTransform(endPixel);
+        if (isLog) {
+            if (minVal <= 0.0 || maxVal <= 0.0 || vStart <= 0.0 || vEnd <= 0.0)
+                return;
+            const double logDelta = std::log10(vStart) - std::log10(vEnd);
+            const double newLogMin = std::log10(minVal) + logDelta;
+            const double newLogMax = std::log10(maxVal) + logDelta;
+            if (newLogMin < -300.0 || newLogMax > 300.0)
+                return;
+            newMin = std::pow(10.0, newLogMin);
+            newMax = std::pow(10.0, newLogMax);
+        } else {
+            const double delta = vStart - vEnd;
+            if (!std::isfinite(delta))
+                return;
+            newMin = minVal + delta;
+            newMax = maxVal + delta;
+        }
     }
 
-    const double vStart = map.invTransform(startPixel);
-    const double vEnd = map.invTransform(endPixel);
-    const bool isLog = isLog10ScaleEngine(se);
-
-    double newMin = minVal;
-    double newMax = maxVal;
-    double step = 0.0;
-    if (g && !isLog)
-        step = g->axisStep(axis);
-
-    if (isLog) {
-        if (minVal <= 0.0 || maxVal <= 0.0 || vStart <= 0.0 || vEnd <= 0.0)
-            return;
-        const double logDelta = std::log10(vStart) - std::log10(vEnd);
-        const double newLogMin = std::log10(minVal) + logDelta;
-        const double newLogMax = std::log10(maxVal) + logDelta;
-        if (newLogMin < -300.0 || newLogMax > 300.0)
-            return;
-        newMin = std::pow(10.0, newLogMin);
-        newMax = std::pow(10.0, newLogMax);
-    } else {
-        const double delta = vStart - vEnd;
-        if (!std::isfinite(delta))
-            return;
-        newMin = minVal + delta;
-        newMax = maxVal + delta;
+    double effStep = 0.0;
+    if (g && !isLog) {
+        const double userStep = g->axisStep(axis);
+        const double span = newMax - newMin;
+        if (userStep > 0.0 && span > 0.0) {
+            const double nMaj = span / userStep;
+            if (nMaj >= 1.5 && nMaj <= 25.0)
+                effStep = userStep;
+        }
     }
 
     int maxMajor = qMax(axisMaxMajor(axis), 2);
+    if (g && g->axisFont(axis).pointSize() >= 20 && hasBreak)
+        maxMajor = qMin(maxMajor, 5);
     int minorTicks = axisMaxMinor(axis);
     int maxMinIntervals = minorTicks;
     if (minorTicks == 1)
-        maxMinIntervals = 3;
+        maxMinIntervals = hasBreak ? 2 : 3;
     else if (minorTicks > 1)
         maxMinIntervals = minorTicks + 1;
 
-    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals, step);
+    QwtScaleDiv div = se->divideScale(newMin, newMax, maxMajor, maxMinIntervals, effStep);
     if (inverted) {
         se->setAttribute(QwtScaleEngine::Inverted);
         if (div.lowerBound() < div.upperBound())
             div.invert();
     }
     setAxisScaleDiv(axis, div);
+
+    if (hasBreak) {
+        const double bf = qMin(brk.breakFrom, brk.breakTo);
+        const double bt = qMax(brk.breakFrom, brk.breakTo);
+        const bool straddlesBreak = (bf > newMin && bt < newMax && bt > bf + 1e-15);
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axis)))
+            sd->setAxisBreakIndicator(straddlesBreak, bf);
+    }
+    if (g)
+        g->setAxisUserLocked(axis, true);
+    syncMirrorAxisIfNeeded(axis);
 }
 
 bool Plot::eventFilter(QObject *object, QEvent *e)
@@ -1470,36 +1839,62 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
         }
     }
 
-    auto isSecondaryMirroringPrimary = [this](int primaryAxis, int secondaryAxis) -> bool {
-        if (!axisEnabled(secondaryAxis) || hasVisibleItemOnAxis(secondaryAxis))
-            return false;
-        const QwtScaleDraw *secSd = axisScaleDraw(secondaryAxis);
-        if (secSd && secSd->hasComponent(QwtAbstractScaleDraw::Labels))
-            return false;
-        const QwtScaleDiv *divPrim = axisScaleDiv(primaryAxis);
-        const QwtScaleDiv *divSec = axisScaleDiv(secondaryAxis);
-        return divPrim && divSec
-                && qAbs(divPrim->lowerBound() - divSec->lowerBound()) <= 1e-12
-                && qAbs(divPrim->upperBound() - divSec->upperBound()) <= 1e-12;
-    };
-
     if (object == canvas() || object == this || object == parent()) {
         if (e->type() == QEvent::KeyPress) {
             QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+            const Qt::KeyboardModifiers mods = ke->modifiers();
+            if (ke->key() == Qt::Key_Z && (mods & Qt::AltModifier) && !(mods & Qt::ControlModifier)) {
+                d_z_pressed = false;
+                flushPendingWheelUndo();
+                if (g && g->stepZoomHistory((mods & Qt::ShiftModifier) ? +1 : -1)) {
+                    ke->accept();
+                    return true;
+                }
+            } else if (ke->key() == Qt::Key_Escape && mods == Qt::NoModifier) {
+                d_space_pressed = false;
+                d_z_pressed = false;
+                d_x_pressed = false;
+                d_y_pressed = false;
+                if (d_is_panning) {
+                    d_is_panning = false;
+                    setProperty("_panUndoSnap", QString());
+                    setProperty("_panMoved", false);
+                    if (canvas())
+                        canvas()->setCursor(Qt::ArrowCursor);
+                    ke->accept();
+                    return true;
+                }
+                if (g && g->handleEscapeKey()) {
+                    ke->accept();
+                    return true;
+                }
+            } else if ((ke->key() == Qt::Key_BracketLeft || ke->key() == Qt::Key_BracketRight)
+                       && (mods == Qt::NoModifier || mods == Qt::KeypadModifier)) {
+                if (g && g->cycleSelectableCurve(ke->key() == Qt::Key_BracketRight ? +1 : -1)) {
+                    ke->accept();
+                    return true;
+                }
+            }
+
             if (!ke->isAutoRepeat()) {
-                if (ke->key() == Qt::Key_Space) {
-                    d_space_pressed = true;
-                    if (!d_is_panning && canvas()
+                const bool pointerIdle = !d_is_panning && canvas()
                         && (!g
-                            || (!g->zoomOn() && !g->activeTool() && !g->drawLineActive()
-                                && !g->drawTextActive()))) {
+                            || (!g->zoomOn() && !g->activeTool() && !g->rangeSelectorsEnabled()
+                                && !g->drawLineActive() && !g->drawTextActive()));
+                if (ke->key() == Qt::Key_Space && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
+                    d_space_pressed = true;
+                    if (pointerIdle)
                         canvas()->setCursor(Qt::OpenHandCursor);
-                    }
-                } else if (ke->key() == Qt::Key_Z) {
+                } else if (ke->key() == Qt::Key_Z
+                           && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
                     d_z_pressed = true;
-                } else if (ke->key() == Qt::Key_X) {
+                    if (pointerIdle)
+                        canvas()->setCursor(Qt::CrossCursor);
+                } else if (ke->key() == Qt::Key_X
+                           && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
                     d_x_pressed = true;
-                } else if (ke->key() == Qt::Key_Y) {
+                } else if (ke->key() == Qt::Key_Y
+                           && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
                     d_y_pressed = true;
                 }
             }
@@ -1509,9 +1904,11 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                 if (ke->key() == Qt::Key_Space) {
                     d_space_pressed = false;
                     if (!d_is_panning && canvas())
-                        canvas()->setCursor(Qt::ArrowCursor);
+                        canvas()->setCursor(d_z_pressed ? Qt::CrossCursor : Qt::ArrowCursor);
                 } else if (ke->key() == Qt::Key_Z) {
                     d_z_pressed = false;
+                    if (!d_is_panning && canvas() && !d_space_pressed)
+                        canvas()->setCursor(Qt::ArrowCursor);
                 } else if (ke->key() == Qt::Key_X) {
                     d_x_pressed = false;
                 } else if (ke->key() == Qt::Key_Y) {
@@ -1523,6 +1920,8 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             d_z_pressed = false;
             d_x_pressed = false;
             d_y_pressed = false;
+            clearHoverPoint();
+            flushPendingWheelUndo();
             if (!d_is_panning && canvas())
                 canvas()->setCursor(Qt::ArrowCursor);
         }
@@ -1549,6 +1948,7 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             if (delta == 0)
                 return false;
 
+            clearHoverPoint();
             const double factor = (delta > 0) ? 0.85 : (1.0 / 0.85);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             const QPoint pos = we->position().toPoint();
@@ -1574,19 +1974,23 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                 zoomY = true;
             }
 
-            MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
-            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+            if (!d_wheel_undo_timer->isActive()) {
+                if (g) {
+                    g->recordZoomHistorySnapshot();
+                    if (MultiLayer *ml = g->multiLayerParent())
+                        d_pending_wheel_undo_snap = ml->captureUndoSnapshot();
+                }
+            }
+            d_wheel_undo_timer->start(300);
 
             if (zoomX) {
-                const bool mirrorTop = isSecondaryMirroringPrimary(QwtPlot::xBottom, QwtPlot::xTop);
                 zoomAxisAroundPos(QwtPlot::xBottom, pos.x(), factor);
-                if (hasVisibleItemOnAxis(QwtPlot::xTop) || mirrorTop)
+                if (hasVisibleItemOnAxis(QwtPlot::xTop))
                     zoomAxisAroundPos(QwtPlot::xTop, pos.x(), factor);
             }
             if (zoomY) {
-                const bool mirrorRight = isSecondaryMirroringPrimary(QwtPlot::yLeft, QwtPlot::yRight);
                 zoomAxisAroundPos(QwtPlot::yLeft, pos.y(), factor);
-                if (hasVisibleItemOnAxis(QwtPlot::yRight) || mirrorRight)
+                if (hasVisibleItemOnAxis(QwtPlot::yRight))
                     zoomAxisAroundPos(QwtPlot::yRight, pos.y(), factor);
             }
             if (g) {
@@ -1597,8 +2001,6 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             } else {
                 replot();
             }
-            if (ml && !beforeSnap.isEmpty())
-                ml->pushUndoSnapshot(tr("Zoom Axes"), beforeSnap, 701);
             we->accept();
             return true;
         }
@@ -1606,6 +2008,7 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
         case QEvent::MouseButtonDblClick: {
             QMouseEvent *me = static_cast<QMouseEvent *>(e);
             if (me->button() == Qt::MiddleButton) {
+                flushPendingWheelUndo();
                 d_is_panning = false;
                 canvas()->setCursor(d_space_pressed ? Qt::OpenHandCursor : Qt::ArrowCursor);
                 MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
@@ -1627,13 +2030,15 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
 
         case QEvent::MouseButtonPress: {
             QMouseEvent *me = static_cast<QMouseEvent *>(e);
+            clearHoverPoint();
             const bool isPanTrigger = (me->button() == Qt::MiddleButton)
-                    || (me->button() == Qt::LeftButton
+                    || (me->button() == Qt::LeftButton && !d_z_pressed
                         && ((me->modifiers() & Qt::AltModifier) || d_space_pressed));
             if (isPanTrigger
                 && (!g
                     || (!g->zoomOn() && !g->activeTool() && !g->drawLineActive()
                         && !g->drawTextActive()))) {
+                flushPendingWheelUndo();
                 d_is_panning = true;
                 d_pan_last_pos = me->pos();
                 MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
@@ -1665,16 +2070,14 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
                 }
                 const QPoint curPos = me->pos();
                 if (curPos != d_pan_last_pos) {
+                    if (!property("_panMoved").toBool() && g)
+                        g->recordZoomHistorySnapshot();
                     setProperty("_panMoved", true);
-                    const bool mirrorTop =
-                            isSecondaryMirroringPrimary(QwtPlot::xBottom, QwtPlot::xTop);
-                    const bool mirrorRight =
-                            isSecondaryMirroringPrimary(QwtPlot::yLeft, QwtPlot::yRight);
                     panAxisByPixels(QwtPlot::xBottom, d_pan_last_pos.x(), curPos.x());
-                    if (hasVisibleItemOnAxis(QwtPlot::xTop) || mirrorTop)
+                    if (hasVisibleItemOnAxis(QwtPlot::xTop))
                         panAxisByPixels(QwtPlot::xTop, d_pan_last_pos.x(), curPos.x());
                     panAxisByPixels(QwtPlot::yLeft, d_pan_last_pos.y(), curPos.y());
-                    if (hasVisibleItemOnAxis(QwtPlot::yRight) || mirrorRight)
+                    if (hasVisibleItemOnAxis(QwtPlot::yRight))
                         panAxisByPixels(QwtPlot::yRight, d_pan_last_pos.y(), curPos.y());
                     d_pan_last_pos = curPos;
                     if (g) {

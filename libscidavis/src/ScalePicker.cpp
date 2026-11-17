@@ -61,12 +61,31 @@ ScalePicker::ScalePicker(QwtPlot *plot)
       d_left_click_pending(false),
       d_axis_panning(false)
 {
+    d_wheel_undo_timer = new QTimer(this);
+    d_wheel_undo_timer->setSingleShot(true);
+    d_wheel_undo_timer->setInterval(300);
+    connect(d_wheel_undo_timer, &QTimer::timeout, this, [this]() { flushPendingWheelUndo(); });
     refresh();
 }
 
 ScalePicker::~ScalePicker()
 {
+    flushPendingWheelUndo();
     cancelInlineScaleEditor();
+}
+
+void ScalePicker::flushPendingWheelUndo()
+{
+    if (d_wheel_undo_timer && d_wheel_undo_timer->isActive())
+        d_wheel_undo_timer->stop();
+    if (d_pending_wheel_undo_snap.isEmpty())
+        return;
+    const QString snap = d_pending_wheel_undo_snap;
+    d_pending_wheel_undo_snap.clear();
+    if (Graph *g = graph()) {
+        if (MultiLayer *ml = g->multiLayerParent())
+            ml->pushUndoSnapshot(tr("Zoom Axis"), snap);
+    }
 }
 
 bool ScalePicker::eventFilter(QObject *object, QEvent *e)
@@ -121,21 +140,6 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         }
     };
 
-    auto shouldMirrorTwin = [](Plot *p, int axisId, int twinAxisId) -> bool {
-        if (!p || twinAxisId < 0 || !p->axisEnabled(twinAxisId))
-            return false;
-        if (p->hasVisibleItemOnAxis(twinAxisId))
-            return false;
-        const QwtScaleDraw *twinSd = p->axisScaleDraw(twinAxisId);
-        if (twinSd && twinSd->hasComponent(QwtAbstractScaleDraw::Labels))
-            return false;
-        const QwtScaleDiv *divMain = p->axisScaleDiv(axisId);
-        const QwtScaleDiv *divTwin = p->axisScaleDiv(twinAxisId);
-        return divMain && divTwin
-                && qAbs(divMain->lowerBound() - divTwin->lowerBound()) <= 1e-12
-                && qAbs(divMain->upperBound() - divTwin->upperBound()) <= 1e-12;
-    };
-
     if (e->type() == QEvent::Leave) {
         if (!d_axis_panning)
             scale->unsetCursor();
@@ -144,11 +148,31 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
 
     if (e->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+        const Qt::KeyboardModifiers mods = ke->modifiers();
+        if (ke->key() == Qt::Key_Z && (mods & Qt::AltModifier) && !(mods & Qt::ControlModifier)) {
+            flushPendingWheelUndo();
+            if (Graph *g = graph()) {
+                if (g->stepZoomHistory((mods & Qt::ShiftModifier) ? +1 : -1)) {
+                    ke->accept();
+                    return true;
+                }
+            }
+        }
         if (ke->key() == Qt::Key_Escape) {
-            if (Graph *g = graph())
-                g->deselect();
-            else
+            if (d_axis_panning) {
+                d_axis_panning = false;
+                d_left_click_pending = false;
+                d_press_on_title = false;
+                d_pan_undo_snapshot.clear();
+                scale->unsetCursor();
+                return true;
+            }
+            if (Graph *g = graph()) {
+                if (!g->handleEscapeKey())
+                    g->deselect();
+            } else {
                 deselect();
+            }
             return true;
         }
     }
@@ -157,6 +181,7 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
         if (me->button() != Qt::LeftButton)
             return false;
+        flushPendingWheelUndo();
         d_left_click_pending = false;
         d_axis_panning = false;
         d_press_on_title = false;
@@ -195,8 +220,14 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
             Plot *p = dynamic_cast<Plot *>(plot());
             Graph *g = graph();
             if (p && axisId >= 0) {
-                MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
-                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+                if (!d_wheel_undo_timer->isActive()) {
+                    if (g) {
+                        g->recordZoomHistorySnapshot();
+                        if (MultiLayer *ml = g->multiLayerParent())
+                            d_pending_wheel_undo_snap = ml->captureUndoSnapshot();
+                    }
+                }
+                d_wheel_undo_timer->start(300);
 
                 const QPoint canvasPos = p->canvas()
                         ? p->canvas()->mapFromGlobal(scale->mapToGlobal(pos))
@@ -204,13 +235,17 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
                 const int pixelCoord = (axisId == QwtPlot::yLeft || axisId == QwtPlot::yRight)
                         ? canvasPos.y()
                         : canvasPos.x();
-                const bool syncTwin = shouldMirrorTwin(p, axisId, twinAxisId);
-                p->zoomAxisAroundPos(axisId, pixelCoord, factor);
-                if (syncTwin)
-                    p->zoomAxisAroundPos(twinAxisId, pixelCoord, factor);
+                // If user wheels on an unlabeled ISIJ mirror opposite axis (xTop / yRight),
+                // drive the primary axis (xBottom / yLeft) and keep both synchronized!
+                int targetAxis = axisId;
+                if ((axisId == QwtPlot::xTop || axisId == QwtPlot::yRight) && twinAxisId >= 0
+                    && p->isMirrorOppositeAxis(twinAxisId, axisId)) {
+                    targetAxis = twinAxisId;
+                }
+                p->zoomAxisAroundPos(targetAxis, pixelCoord, factor);
                 if (g) {
-                    g->setAxisUserLocked(axisId, true);
-                    if (syncTwin && twinAxisId >= 0)
+                    g->setAxisUserLocked(targetAxis, true);
+                    if (twinAxisId >= 0 && p->isMirrorOppositeAxis(targetAxis, twinAxisId))
                         g->setAxisUserLocked(twinAxisId, true);
                     g->enableAutoscaling(false);
                     g->syncChildLinkedLayers();
@@ -219,8 +254,6 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
                 } else {
                     p->replot();
                 }
-                if (ml && !beforeSnap.isEmpty())
-                    ml->pushUndoSnapshot(tr("Zoom Axis"), beforeSnap, 701);
                 we->accept();
                 return true;
             }
@@ -293,10 +326,12 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         if (!d_press_on_title && (me->buttons() & (Qt::LeftButton | Qt::MiddleButton))) {
             const int dragThresh = qMax(4, QApplication::startDragDistance());
             if (!d_axis_panning && (me->pos() - d_press_pos).manhattanLength() >= dragThresh) {
+                flushPendingWheelUndo();
                 d_axis_panning = true;
                 d_left_click_pending = false;
                 scale->setCursor(Qt::ClosedHandCursor);
                 if (Graph *g = graph()) {
+                    g->recordZoomHistorySnapshot();
                     if (MultiLayer *ml = g->multiLayerParent())
                         d_pan_undo_snapshot = ml->captureUndoSnapshot();
                 }
@@ -323,13 +358,15 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
                             ? curCanvasPos.y()
                             : curCanvasPos.x();
                     if (prevCoord != curCoord) {
-                        const bool syncTwin = shouldMirrorTwin(p, axisId, twinAxisId);
-                        p->panAxisByPixels(axisId, prevCoord, curCoord);
-                        if (syncTwin)
-                            p->panAxisByPixels(twinAxisId, prevCoord, curCoord);
+                        int targetAxis = axisId;
+                        if ((axisId == QwtPlot::xTop || axisId == QwtPlot::yRight)
+                            && twinAxisId >= 0 && p->isMirrorOppositeAxis(twinAxisId, axisId)) {
+                            targetAxis = twinAxisId;
+                        }
+                        p->panAxisByPixels(targetAxis, prevCoord, curCoord);
                         if (g) {
-                            g->setAxisUserLocked(axisId, true);
-                            if (syncTwin && twinAxisId >= 0)
+                            g->setAxisUserLocked(targetAxis, true);
+                            if (twinAxisId >= 0 && p->isMirrorOppositeAxis(targetAxis, twinAxisId))
                                 g->setAxisUserLocked(twinAxisId, true);
                             g->enableAutoscaling(false);
                             g->syncChildLinkedLayers();

@@ -90,9 +90,12 @@ protected:
     void setActivePoint(int index);
 
 private:
+    int closestPointForCanvasX(int canvasX) const;
+
     QwtPlotMarker d_active_marker, d_inactive_marker;
     int d_active_point, d_inactive_point;
     QwtPlotCurve *d_selected_curve;
+    bool d_dragging_marker = false;
 };
 
 #endif // ifndef RANGE_SELECTOR_TOOL_H

@@ -688,27 +688,37 @@ void PlotCurve::applyStackTransformToCurrentData()
 QwtDoubleRect PlotCurve::boundingRect() const
 {
     QwtDoubleRect r = QwtPlotCurve::boundingRect();
-    if (symbol().style() == QwtSymbol::NoSymbol)
+    if (!r.isValid() || symbol().style() == QwtSymbol::NoSymbol || !plot())
         return r;
 
-    int margin = 1;
-    if (symbol().style() != QwtSymbol::NoSymbol)
-        margin += symbol().size().width();
+    int margin = 1 + symbol().size().width();
 
     const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
     const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
+    if (xMap.pDist() < 4.0 || yMap.pDist() < 4.0 || xMap.sDist() <= 0.0 || yMap.sDist() <= 0.0)
+        return r;
 
-    int x_right = xMap.transform(r.right());
-    double d_x_right = xMap.invTransform(x_right + margin);
-    int x_left = xMap.transform(r.left());
-    double d_x_left = xMap.invTransform(x_left - margin);
+    const double px_right = xMap.xTransform(r.right());
+    const double px_left = xMap.xTransform(r.left());
+    const double py_top = yMap.xTransform(r.top());
+    const double py_bottom = yMap.xTransform(r.bottom());
+    if (!std::isfinite(px_right) || !std::isfinite(px_left) || !std::isfinite(py_top)
+        || !std::isfinite(py_bottom))
+        return r;
 
-    int y_top = yMap.transform(r.top());
-    double d_y_top = yMap.invTransform(y_top + margin);
-    int y_bottom = yMap.transform(r.bottom());
-    double d_y_bottom = yMap.invTransform(y_bottom - margin);
+    const double d_x_right = xMap.invTransform(px_right + margin);
+    const double d_x_left = xMap.invTransform(px_left - margin);
+    const double d_y_top = yMap.invTransform(py_top + margin);
+    const double d_y_bottom = yMap.invTransform(py_bottom - margin);
+    if (!std::isfinite(d_x_right) || !std::isfinite(d_x_left) || !std::isfinite(d_y_top)
+        || !std::isfinite(d_y_bottom))
+        return r;
 
-    return QwtDoubleRect(d_x_left, d_y_top, qAbs(d_x_right - d_x_left), qAbs(d_y_bottom - d_y_top));
+    const double minX = qMin(d_x_left, d_x_right);
+    const double maxX = qMax(d_x_left, d_x_right);
+    const double minY = qMin(d_y_top, d_y_bottom);
+    const double maxY = qMax(d_y_top, d_y_bottom);
+    return QwtDoubleRect(minX, minY, maxX - minX, maxY - minY);
 }
 
 namespace {

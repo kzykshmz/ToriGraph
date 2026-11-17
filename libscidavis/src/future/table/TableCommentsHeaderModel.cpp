@@ -85,8 +85,15 @@ QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orien
     }
 
     const QString ln = col->longName().trimmed();
-    const QString u = col->units().trimmed();
-    const QString cmt = col->comment().trimmed();
+    QString u = col->units().trimmed();
+    if ((u.startsWith(QLatin1Char('[')) && u.endsWith(QLatin1Char(']')))
+        || (u.startsWith(QLatin1Char('(')) && u.endsWith(QLatin1Char(')')))
+        || (u.startsWith(QChar(0xFF08)) && u.endsWith(QChar(0xFF09)))) {
+        u = u.mid(1, u.length() - 2).trimmed();
+    }
+    QString cmt = col->comment().trimmed();
+    cmt.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    cmt.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     QString fx;
     const QList<Interval<int>> fIntervals = col->formulaIntervals();
     for (const Interval<int> &iv : fIntervals) {
@@ -98,6 +105,8 @@ QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orien
     }
     if (fx.isEmpty())
         fx = col->formula(0).trimmed();
+    fx.replace(QLatin1String("\r\n"), QLatin1String(" "));
+    fx.replace(QLatin1Char('\n'), QLatin1Char(' '));
 
     if (role == Qt::DisplayRole) {
         QStringList lines;
@@ -105,7 +114,7 @@ QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orien
             lines << ln;
         if (!u.isEmpty())
             lines << QString("[%1]").arg(u);
-        if (!cmt.isEmpty())
+        if (!cmt.isEmpty() && cmt != ln)
             lines << cmt;
         if (!fx.isEmpty())
             lines << QString("F(x)= %1").arg(fx);
