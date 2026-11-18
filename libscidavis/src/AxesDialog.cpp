@@ -63,6 +63,8 @@
 #include <QVector>
 #include <QGroupBox>
 #include <QRadioButton>
+#include <QToolButton>
+#include <QTextCursor>
 
 #include <qwt_plot.h>
 #include <qwt_scale_widget.h>
@@ -96,6 +98,9 @@ void registerAxesDialogTranslations()
     reg("19 (20 subdivisions)", "19 (20分割)");
     reg("Apply Tick & Axis Style to All 4 Axes", "目盛り・軸スタイルを4辺すべてに適用");
     reg("Apply Tick && Axis Style to All 4 Axes", "目盛り・軸スタイルを4辺すべてに適用");
+    reg("Insert Subscript (<sub>...</sub>)", "下付き文字を挿入 (<sub>...</sub>)");
+    reg("Insert Superscript (<sup>...</sup>)", "上付き文字を挿入 (<sup>...</sup>)");
+    reg("Insert Materials Science Symbol", "材料科学記号・単位を挿入");
 }
 
 QStringList minorTickItemsForScale(bool isLog10)
@@ -642,6 +647,76 @@ void AxesDialog::initAxesPage()
     hl->addStretch();
 
     labelBoxLayout->addLayout(hl);
+
+    {
+        QWidget *matSymBar = new QWidget(labelBox);
+        QHBoxLayout *msLay = new QHBoxLayout(matSymBar);
+        msLay->setContentsMargins(0, 1, 0, 1);
+        msLay->setSpacing(2);
+
+        struct MatSymSpec {
+            const char *label;
+            const char *insertText;
+            int mode; // 0 = literal, 1 = <sub>, 2 = <sup>
+        };
+        static const MatSymSpec kMatSyms[] = {
+            { "\xCF\x83", "\xCF\x83", 0 },         // σ
+            { "\xCE\xB5", "\xCE\xB5", 0 },         // ε
+            { "2\xCE\xB8", "2\xCE\xB8", 0 },       // 2θ
+            { "\xCE\xBCm", "\xCE\xBCm", 0 },       // μm
+            { "\xC2\xB0""C", "\xC2\xB0""C", 0 },   // °C
+            { "\xC3\x85", "\xC3\x85", 0 },         // Å
+            { "\xC2\xB1", "\xC2\xB1", 0 },         // ±
+            { "\xC2\xB0", "\xC2\xB0", 0 },         // °
+            { "cm\xE2\x81\xBB\xC2\xB9", "cm<sup>-1</sup>", 0 }, // cm⁻¹
+            { "x\xE2\x82\x82", "", 1 },            // x₂
+            { "x\xC2\xB2", "", 2 },                // x²
+        };
+        for (const auto &sp : kMatSyms) {
+            QToolButton *tb = new QToolButton(matSymBar);
+            tb->setText(QString::fromUtf8(sp.label));
+            tb->setAutoRaise(true);
+            tb->setFocusPolicy(Qt::NoFocus);
+            tb->setFixedHeight(21);
+            tb->setStyleSheet(QStringLiteral(
+                    "QToolButton { border: 1px solid #CBD5E1; border-radius: 3px;"
+                    " background: #F8FAFC; color: #1E293B; padding: 0px 4px; font-size: 8.5pt; }"
+                    "QToolButton:hover { background: #DBEAFE; border-color: #60A5FA; }"));
+            if (sp.mode == 1)
+                tb->setToolTip(tr("Insert Subscript (<sub>...</sub>)"));
+            else if (sp.mode == 2)
+                tb->setToolTip(tr("Insert Superscript (<sup>...</sup>)"));
+            else
+                tb->setToolTip(tr("Insert Materials Science Symbol"));
+            const QString ins = QString::fromUtf8(sp.insertText);
+            const int mode = sp.mode;
+            connect(tb, &QToolButton::clicked, this, [this, ins, mode]() {
+                if (!boxTitle)
+                    return;
+                QTextCursor tc = boxTitle->textCursor();
+                if (mode == 1 || mode == 2) {
+                    const QString openTag = (mode == 1) ? QStringLiteral("<sub>")
+                                                        : QStringLiteral("<sup>");
+                    const QString closeTag = (mode == 1) ? QStringLiteral("</sub>")
+                                                         : QStringLiteral("</sup>");
+                    if (tc.hasSelection()) {
+                        tc.insertText(openTag + tc.selectedText() + closeTag);
+                    } else {
+                        tc.insertText(openTag + closeTag);
+                        tc.movePosition(QTextCursor::Left, QTextCursor::MoveAnchor,
+                                        closeTag.length());
+                        boxTitle->setTextCursor(tc);
+                    }
+                } else {
+                    tc.insertText(ins);
+                }
+                boxTitle->setFocus();
+            });
+            msLay->addWidget(tb);
+        }
+        msLay->addStretch(1);
+        labelBoxLayout->addWidget(matSymBar);
+    }
 
     boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
     boxAutoAxisTitle->setChecked(true);

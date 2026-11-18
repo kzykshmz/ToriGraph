@@ -400,25 +400,77 @@ public:
         return blended != FALSE;
     }
 
+    bool drawPremulImageDual(const QImage &premul, Gdiplus::REAL fx, Gdiplus::REAL fy,
+                             Gdiplus::REAL fw, Gdiplus::REAL fh, int sca = 255) const
+    {
+        if (!m_gfx || premul.isNull() || fw <= 0.0f || fh <= 0.0f || sca <= 0)
+            return false;
+
+        QImage src = (premul.format() == QImage::Format_ARGB32_Premultiplied)
+                ? premul
+                : premul.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        if (src.isNull() || src.width() <= 0 || src.height() <= 0)
+            return false;
+
+        if (sca < 255) {
+            QImage faded(src.size(), QImage::Format_ARGB32_Premultiplied);
+            faded.fill(Qt::transparent);
+            QPainter ap(&faded);
+            ap.setOpacity(double(std::clamp(sca, 0, 255)) / 255.0);
+            ap.drawImage(0, 0, src);
+            ap.end();
+            src = faded;
+        }
+
+        bool okEmfPlus = false;
+        {
+            Gdiplus::Bitmap gdipBmp(src.width(), src.height(), src.bytesPerLine(),
+                                    PixelFormat32bppPARGB, const_cast<BYTE *>(src.constBits()));
+            if (gdipBmp.GetLastStatus() == Gdiplus::Ok) {
+                static const BYTE kBegTag[8] = { 'T', 'G', 'A', 'B', '_', 'B', 'E', 'G' };
+                static const BYTE kEndTag[8] = { 'T', 'G', 'A', 'B', '_', 'E', 'N', 'D' };
+                m_gfx->AddMetafileComment(kBegTag, 8);
+                const Gdiplus::PixelOffsetMode prevOffset = m_gfx->GetPixelOffsetMode();
+                m_gfx->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+                m_gfx->SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+                okEmfPlus = (m_gfx->DrawImage(&gdipBmp, Gdiplus::RectF(fx, fy, fw, fh))
+                             == Gdiplus::Ok);
+                m_gfx->SetPixelOffsetMode(prevOffset);
+                m_gfx->AddMetafileComment(kEndTag, 8);
+            }
+        }
+
+        const int dstX = static_cast<int>(std::lround(fx));
+        const int dstY = static_cast<int>(std::lround(fy));
+        const int dstW = std::max(1, static_cast<int>(std::lround(fw)));
+        const int dstH = std::max(1, static_cast<int>(std::lround(fh)));
+        const bool okGdi = alphaBlendPremulImageViaHdc(src, dstX, dstY, dstW, dstH, 255);
+        return okEmfPlus || okGdi;
+    }
+
     bool blendTranslucentPath(const QPainterPath &rawPath, const QPainterPath &devPath, bool doFill,
                               bool doStroke) const
     {
-        if ((!doFill && !doStroke) || !m_gfx)
+        if ((!doFill && !doStroke) || !m_gfx || devPath.elementCount() <= 0)
             return false;
 
-        QRectF br = devPath.boundingRect();
-        if (m_hasClip && !m_deviceClipPath.isEmpty())
-            br = br.intersected(m_deviceClipPath.boundingRect().adjusted(-2.0, -2.0, 2.0, 2.0));
-        if (br.isEmpty() && !doStroke)
+        const QRectF rawBr = devPath.boundingRect();
+        if (rawBr.isEmpty() && !doStroke)
             return false;
 
         const double pad = (doStroke ? computeDevicePenWidth() : 0.0) + 2.0;
+        QRectF br = rawBr.adjusted(-pad, -pad, pad, pad);
+        if (m_hasClip && !m_deviceClipPath.isEmpty())
+            br = br.intersected(m_deviceClipPath.boundingRect().adjusted(-2.0, -2.0, 2.0, 2.0));
+        if (br.isEmpty())
+            return false;
+
         const int maxTargetW = std::max(1, static_cast<int>(std::ceil(m_targetPxF.width())));
         const int maxTargetH = std::max(1, static_cast<int>(std::ceil(m_targetPxF.height())));
-        const int dstX = std::clamp(static_cast<int>(std::floor(br.left() - pad)), 0, maxTargetW);
-        const int dstY = std::clamp(static_cast<int>(std::floor(br.top() - pad)), 0, maxTargetH);
-        const int dstR = std::clamp(static_cast<int>(std::ceil(br.right() + pad)), 0, maxTargetW);
-        const int dstB = std::clamp(static_cast<int>(std::ceil(br.bottom() + pad)), 0, maxTargetH);
+        const int dstX = std::clamp(static_cast<int>(std::floor(br.left())), 0, maxTargetW);
+        const int dstY = std::clamp(static_cast<int>(std::floor(br.top())), 0, maxTargetH);
+        const int dstR = std::clamp(static_cast<int>(std::ceil(br.right())), 0, maxTargetW);
+        const int dstB = std::clamp(static_cast<int>(std::ceil(br.bottom())), 0, maxTargetH);
         const int dstW = dstR - dstX;
         const int dstH = dstB - dstY;
         if (dstW <= 0 || dstH <= 0)
@@ -466,7 +518,10 @@ public:
             tp.end();
         }
 
-        return alphaBlendPremulImageViaHdc(tile, dstX, dstY, dstW, dstH, 255);
+        return drawPremulImageDual(tile, static_cast<Gdiplus::REAL>(dstX),
+                                   static_cast<Gdiplus::REAL>(dstY),
+                                   static_cast<Gdiplus::REAL>(dstW),
+                                   static_cast<Gdiplus::REAL>(dstH), 255);
     }
 
     void updateState(const QPaintEngineState &state) override
@@ -954,11 +1009,7 @@ public:
 
         if (sub.hasAlphaChannel() || m_opacity < 1.0) {
             const QImage premul = sub.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-            const int dstX = static_cast<int>(std::lround(fx));
-            const int dstY = static_cast<int>(std::lround(fy));
-            const int dstW = std::max(1, static_cast<int>(std::lround(fw)));
-            const int dstH = std::max(1, static_cast<int>(std::lround(fh)));
-            if (alphaBlendPremulImageViaHdc(premul, dstX, dstY, dstW, dstH, sca))
+            if (drawPremulImageDual(premul, fx, fy, fw, fh, sca))
                 return;
         }
 
@@ -1095,6 +1146,90 @@ QByteArray hemfToBytes(HENHMETAFILE hemf)
     QByteArray bytes(static_cast<int>(sz), '\0');
     if (GetEnhMetaFileBits(hemf, sz, reinterpret_cast<LPBYTE>(bytes.data())) != sz)
         return {};
+
+    // Post-process EMF+ Dual stream in-place (preserving exact byte offsets, nBytes & nRecords):
+    //  1) Convert EmfPlusGetDC (0x4004, 12 bytes) -> EmfPlusComment (0x4003, 12 bytes) so EMF+
+    //     readers (PowerPoint, Word, GDI+ Metafile) never replay raw GDI EMR_ALPHABLEND as
+    //     unblended premultiplied RGB(205,205,205) and instead render true 32bpp EmfPlusDrawImage.
+    //  2) Neutralize any thresholded down-level GDI BitBlt/StretchDIBits auto-generated inside
+    //     [TGAB_BEG .. TGAB_END] so Win32 PlayEnhMetaFile renders only our exact EMR_ALPHABLEND.
+    if (bytes.size() >= static_cast<int>(sizeof(ENHMETAHEADER))) {
+        auto *raw = reinterpret_cast<BYTE *>(bytes.data());
+        const size_t totalLen = static_cast<size_t>(bytes.size());
+        size_t pos = 0;
+        bool inGdipAlphaDrawImage = false;
+
+        while (pos + 8 <= totalLen) {
+            uint32_t recType = 0;
+            uint32_t recSize = 0;
+            std::memcpy(&recType, raw + pos, 4);
+            std::memcpy(&recSize, raw + pos + 4, 4);
+            if (recSize < 8 || (recSize % 4) != 0 || pos + recSize > totalLen)
+                break;
+
+            if (recType == EMR_GDICOMMENT && recSize >= 16) {
+                uint32_t cbData = 0;
+                uint32_t sig = 0;
+                std::memcpy(&cbData, raw + pos + 8, 4);
+                std::memcpy(&sig, raw + pos + 12, 4);
+
+                if (cbData >= 8 && pos + 20 <= totalLen) {
+                    if (std::memcmp(raw + pos + 12, "TGAB_BEG", 8) == 0)
+                        inGdipAlphaDrawImage = true;
+                    else if (std::memcmp(raw + pos + 12, "TGAB_END", 8) == 0)
+                        inGdipAlphaDrawImage = false;
+                }
+
+                // 'EMF+' comment container (0x2B464D45)
+                if (sig == 0x2B464D45u && cbData >= 16) {
+                    const size_t empEnd = std::min<size_t>(pos + recSize, pos + 12 + cbData);
+                    size_t empOff = pos + 16;
+                    while (empOff + 12 <= empEnd) {
+                        uint16_t empType = 0;
+                        uint16_t empFlags = 0;
+                        uint32_t empSize = 0;
+                        uint32_t empDataSize = 0;
+                        std::memcpy(&empType, raw + empOff, 2);
+                        std::memcpy(&empFlags, raw + empOff + 2, 2);
+                        std::memcpy(&empSize, raw + empOff + 4, 4);
+                        std::memcpy(&empDataSize, raw + empOff + 8, 4);
+                        if (empSize < 12 || (empSize % 4) != 0 || empOff + empSize > empEnd)
+                            break;
+
+                        if (empType == 0x4003u && empDataSize >= 8
+                            && empOff + 20 <= empEnd) {
+                            if (std::memcmp(raw + empOff + 12, "TGAB_BEG", 8) == 0)
+                                inGdipAlphaDrawImage = true;
+                            else if (std::memcmp(raw + empOff + 12, "TGAB_END", 8) == 0)
+                                inGdipAlphaDrawImage = false;
+                        } else if (empType == 0x4004u && empSize == 12 && empDataSize == 0) {
+                            // EmfPlusGetDC -> EmfPlusComment (12-byte no-op)
+                            const uint16_t noopComment = 0x4003u;
+                            const uint16_t zeroFlags = 0u;
+                            std::memcpy(raw + empOff, &noopComment, 2);
+                            std::memcpy(raw + empOff + 2, &zeroFlags, 2);
+                        }
+                        empOff += empSize;
+                    }
+                }
+            } else if (inGdipAlphaDrawImage && recSize >= 12) {
+                if (recType == EMR_BITBLT || recType == EMR_STRETCHBLT
+                    || recType == EMR_MASKBLT || recType == EMR_PLGBLT
+                    || recType == EMR_SETDIBITSTODEVICE || recType == EMR_STRETCHDIBITS) {
+                    const uint32_t commentType = EMR_GDICOMMENT;
+                    const uint32_t cbData = recSize - 12;
+                    std::memcpy(raw + pos, &commentType, 4);
+                    std::memcpy(raw + pos + 8, &cbData, 4);
+                    std::memset(raw + pos + 12, 0, cbData);
+                }
+            }
+
+            if (recType == EMR_EOF)
+                break;
+            pos += recSize;
+        }
+    }
+
     return bytes;
 }
 

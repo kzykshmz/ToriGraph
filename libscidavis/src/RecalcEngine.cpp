@@ -326,6 +326,33 @@ void RecalcManager::setRecalcMode(RecalcMode mode)
         updateLockBadge(g);
 }
 
+int RecalcManager::findLinkIndexById(int id) const
+{
+    for (int i = 0; i < d_links.size(); ++i) {
+        if (d_links[i].id == id)
+            return i;
+    }
+    return -1;
+}
+
+bool RecalcManager::executeLinkById(int id)
+{
+    const int idx = findLinkIndexById(id);
+    if (idx < 0)
+        return false;
+    RecalcLink copy = d_links[idx];
+    if (!executeLink(copy))
+        return false;
+    const int postIdx = findLinkIndexById(id);
+    if (postIdx >= 0) {
+        d_links[postIdx].srcCurveTitle = copy.srcCurveTitle;
+        d_links[postIdx].outCurveTitle = copy.outCurveTitle;
+        d_links[postIdx].extraCurveTitles = copy.extraCurveTitles;
+        d_links[postIdx].resultTable = copy.resultTable;
+    }
+    return true;
+}
+
 int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTable,
                                 const QString &srcCurveTitle, const QString &outCurveTitle,
                                 OpType op, const QVariantMap &params, Table *resultTable)
@@ -335,6 +362,22 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
         d_app = effApp;
     if (!effApp || !g)
         return -1;
+
+    // Never reallocate or prune d_links re-entrantly while executeLink is running
+    if (d_recalculating) {
+        const QString resolvedSrc = resolveGraphCurveTitle(g, srcCurveTitle);
+        for (RecalcLink &existing : d_links) {
+            if (existing.graph == g && existing.op == op
+                && (existing.srcCurveTitle == resolvedSrc || existing.srcTable == srcTable)) {
+                if (!outCurveTitle.isEmpty())
+                    existing.outCurveTitle = outCurveTitle;
+                if (resultTable)
+                    existing.resultTable = resultTable;
+                return existing.id;
+            }
+        }
+        return 0;
+    }
 
     pruneDeadLinks();
 
@@ -358,12 +401,16 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
             Qt::UniqueConnection);
     connect(g, &QObject::destroyed, this, &RecalcManager::onGraphDestroyed, Qt::UniqueConnection);
 
+    QPointer<Graph> gGuard(g);
+
     // Update in place if an identical link already exists
-    for (RecalcLink &existing : d_links) {
+    for (int i = 0; i < d_links.size(); ++i) {
+        RecalcLink &existing = d_links[i];
         if (existing.graph == g && existing.srcTable == effSrcTable
             && existing.srcCurveTitle == resolvedSrc && existing.op == op
             && (effOut.isEmpty() || existing.outCurveTitle == effOut
                 || existing.desiredOutTitle == outCurveTitle)) {
+            const int existingId = existing.id;
             existing.app = effApp;
             existing.params = params;
             existing.resultTable = resultTable;
@@ -371,12 +418,14 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
                 existing.desiredOutTitle = outCurveTitle;
             if (!effOut.isEmpty())
                 existing.outCurveTitle = effOut;
-            if (d_mode == Auto && (existing.outCurveTitle.isEmpty()
-                                   || g->curve(existing.outCurveTitle) == nullptr)) {
-                executeLink(existing);
-            }
-            updateLockBadge(g);
-            return existing.id;
+            const bool needExec = (d_mode == Auto
+                                   && (existing.outCurveTitle.isEmpty()
+                                       || g->curve(existing.outCurveTitle) == nullptr));
+            if (needExec)
+                executeLinkById(existingId);
+            if (gGuard)
+                updateLockBadge(gGuard.data());
+            return existingId;
         }
     }
 
@@ -393,17 +442,18 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
     link.resultTable = resultTable;
     link.dirty = false;
 
+    const int newId = link.id;
+    const bool needExec =
+            (d_mode == Auto && (link.outCurveTitle.isEmpty() || g->curve(link.outCurveTitle) == nullptr));
     d_links.append(link);
-    RecalcLink &stored = d_links.last();
 
     // If caller registered a live link before running the operation, materialize the output curve immediately in Auto mode
-    if (d_mode == Auto
-        && (stored.outCurveTitle.isEmpty() || g->curve(stored.outCurveTitle) == nullptr)) {
-        executeLink(stored);
-    }
+    if (needExec)
+        executeLinkById(newId);
 
-    updateLockBadge(g);
-    return stored.id;
+    if (gGuard)
+        updateLockBadge(gGuard.data());
+    return newId;
 }
 
 void RecalcManager::removeLinksForGraph(Graph *g)
@@ -447,25 +497,40 @@ int RecalcManager::recalculateAll(Graph *filterGraph)
 
     pruneDeadLinks();
     int updated = 0;
-    QList<Graph *> touchedGraphs;
+    QVector<QPointer<Graph>> touchedGraphs;
+    QPointer<Graph> filterGuard(filterGraph);
 
-    for (RecalcLink &lnk : d_links) {
+    QVector<int> linkIds;
+    linkIds.reserve(d_links.size());
+    for (const RecalcLink &lnk : d_links) {
         if (!lnk.graph || !lnk.srcTable)
             continue;
         if (filterGraph && lnk.graph != filterGraph)
             continue;
-        if (executeLink(lnk)) {
-            lnk.dirty = false;
+        linkIds.append(lnk.id);
+    }
+
+    for (int id : linkIds) {
+        const int idx = findLinkIndexById(id);
+        if (idx < 0 || !d_links[idx].graph || !d_links[idx].srcTable)
+            continue;
+        QPointer<Graph> gPtr = d_links[idx].graph;
+        if (executeLinkById(id)) {
+            const int postIdx = findLinkIndexById(id);
+            if (postIdx >= 0)
+                d_links[postIdx].dirty = false;
             ++updated;
-            if (!touchedGraphs.contains(lnk.graph.data()))
-                touchedGraphs.append(lnk.graph.data());
+            if (gPtr && !touchedGraphs.contains(gPtr))
+                touchedGraphs.append(gPtr);
         }
     }
 
-    for (Graph *g : touchedGraphs)
-        updateLockBadge(g);
-    if (filterGraph && !touchedGraphs.contains(filterGraph))
-        updateLockBadge(filterGraph);
+    for (const QPointer<Graph> &g : touchedGraphs) {
+        if (g)
+            updateLockBadge(g.data());
+    }
+    if (filterGuard && !touchedGraphs.contains(filterGuard))
+        updateLockBadge(filterGuard.data());
 
     return updated;
 }
@@ -477,31 +542,48 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
 
     pruneDeadLinks();
 
-    QList<Graph *> touchedGraphs;
-    for (int i = 0; i < d_links.size(); ++i) {
-        if (d_links[i].srcTable != t || d_links[i].graph.isNull())
+    QVector<int> linkIds;
+    linkIds.reserve(d_links.size());
+    for (const RecalcLink &lnk : d_links) {
+        if (lnk.srcTable != t || lnk.graph.isNull() || lnk.resultTable == t)
             continue;
-        if (d_links[i].resultTable == t)
+        linkIds.append(lnk.id);
+    }
+
+    QVector<QPointer<Graph>> touchedGraphs;
+    for (int id : linkIds) {
+        const int idx = findLinkIndexById(id);
+        if (idx < 0 || d_links[idx].srcTable != t || d_links[idx].graph.isNull()
+            || d_links[idx].resultTable == t)
             continue;
 
-        Graph *g = d_links[i].graph.data();
-        if (!colName.isEmpty())
+        QPointer<Graph> g = d_links[idx].graph;
+        if (!colName.isEmpty() && g)
             g->updateCurvesData(t, colName);
 
+        const int curIdx = findLinkIndexById(id);
+        if (curIdx < 0 || !g)
+            continue;
+
         if (d_mode == Manual) {
-            d_links[i].dirty = true;
+            d_links[curIdx].dirty = true;
             if (!touchedGraphs.contains(g))
                 touchedGraphs.append(g);
         } else if (d_mode == Auto) {
-            if (executeLink(d_links[i]))
-                d_links[i].dirty = false;
-            if (!touchedGraphs.contains(g))
+            if (executeLinkById(id)) {
+                const int postIdx = findLinkIndexById(id);
+                if (postIdx >= 0)
+                    d_links[postIdx].dirty = false;
+            }
+            if (g && !touchedGraphs.contains(g))
                 touchedGraphs.append(g);
         }
     }
 
-    for (Graph *g : touchedGraphs)
-        updateLockBadge(g);
+    for (const QPointer<Graph> &g : touchedGraphs) {
+        if (g)
+            updateLockBadge(g.data());
+    }
 }
 
 void RecalcManager::onGraphDestroyed(QObject *obj)

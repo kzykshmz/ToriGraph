@@ -70,6 +70,7 @@
 #include <algorithm>
 
 #include "ApplicationWindow.h"
+#include "CurveMathTools.h"
 #include "Graph.h"
 #include "GraphInspectorDock.h"
 #include "IconLoader.h"
@@ -442,6 +443,20 @@ void CommandPalettePopup::refreshCommands()
                     d_app->applyStyleNatureCompact();
             },
             96);
+
+    addQuickEntry(
+            QStringLiteral("quick.tensile_yield"),
+            tr("Tensile / 0.2% Yield Analysis..."), catQuick, QString(),
+            QString::fromUtf8("tensile stress strain 0.2% offset yield proof youngs modulus uts "
+                              "\xE5\xBC\x95\xE5\xBC\xB5 \xE8\x80\x90\xE5\x8A\x9B "
+                              "\xE5\xBF\x9C\xE5\x8A\x9B \xE3\x81\xB2\xE3\x81\x9A\xE3\x81\xBF "
+                              "\xE3\x83\xA4\xE3\x83\xB3\xE3\x82\xB0\xE7\x8E\x87"),
+            QStringLiteral("curvemath"),
+            [this]() {
+                if (d_app)
+                    CurveMathTools::showTensileYieldDialog(d_app);
+            },
+            97);
 
     addQuickEntry(
             QStringLiteral("quick.merge_graphs"), tr("Merge Graph Windows..."), catWorkspace,
@@ -1900,7 +1915,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  color: #1E293B;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
-            "  padding: 3px 4px;"
+            "  padding: 2px 3px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 8.3pt;"
             "  font-weight: 500;"
@@ -2400,8 +2415,8 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
     QWidget *container = new QWidget(scroll);
     container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
     QHBoxLayout *row = new QHBoxLayout(container);
-    row->setContentsMargins(4, 2, 4, 2);
-    row->setSpacing(3);
+    row->setContentsMargins(3, 2, 3, 2);
+    row->setSpacing(2);
     scroll->setWidget(container);
     if (QScrollBar *hbar = scroll->horizontalScrollBar()) {
         connect(hbar, &QScrollBar::rangeChanged, this,
@@ -2422,7 +2437,7 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<
 
     QHBoxLayout *btnRow = new QHBoxLayout();
     btnRow->setContentsMargins(0, 0, 0, 0);
-    btnRow->setSpacing(2);
+    btnRow->setSpacing(1);
     vbox->addLayout(btnRow);
 
     QLabel *cap = new QLabel(grpWidget);
@@ -3048,15 +3063,69 @@ void ModernRibbonBar::buildAllTabs()
     }
 
     // ------------------------------------------------------------------------
-    // Tab 5: Statistics & MatSci
+    // Tab 5: Statistics & MatSci (Materials & Domain FIRST on the left)
     // ------------------------------------------------------------------------
     {
         QHBoxLayout *row = nullptr;
         QWidget *page = createRibbonScrollPage(&row);
-        QHBoxLayout *gStats = nullptr;
         QHBoxLayout *gDomain = nullptr;
+        QHBoxLayout *gStats = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Statistical Tests"); }, &gStats, true);
+        createRibbonGroup(row, [this]() { return tr("Materials & Domain"); }, &gDomain, true);
+        addRibbonButton(
+                gDomain, QStringLiteral("curvemath"),
+                [this]() { return tr("Tensile / 0.2% Yield"); },
+                [this]() {
+                    return tr("Tensile Stress-Strain: Young's Modulus E, 0.2% Proof Stress & UTS");
+                },
+                [this]() {
+                    if (d_app)
+                        CurveMathTools::showTensileYieldDialog(d_app);
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius Plot"); },
+                [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showArrheniusPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("tauc"), [this]() { return tr("Tauc Bandgap"); },
+                [this]() { return tr("Tauc Optical Bandgap Extrapolation"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showTaucPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("eis-nyquist"), [this]() { return tr("EIS Analyzer"); },
+                [this]() { return tr("Electrochemical Impedance Spectroscopy Nyquist/Bode Fit"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showEISAnalyzerDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("curvemath"), [this]() { return tr("Curve Math"); },
+                [this]() { return tr("Arithmetic Operations Between Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSimpleCurveMathDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("curve-fill"), [this]() { return tr("Fill Between"); },
+                [this]() { return tr("Shade Area Between Two Curves"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFillBetweenCurvesDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("digitizer"), [this]() { return tr("Digitizer"); },
+                [this]() { return tr("Extract Numerical Data from Graph Image"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showGraphDigitizerDialog();
+                });
+
+        createRibbonGroup(row, [this]() { return tr("Statistical Tests"); }, &gStats, false);
         addRibbonButton(
                 gStats, QStringLiteral("stats-normality"),
                 [this]() { return tr("Normality Test"); },
@@ -3158,50 +3227,6 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         d_app->showClusteringDialog();
-                });
-
-        createRibbonGroup(row, [this]() { return tr("Materials & Domain"); }, &gDomain, false);
-        addRibbonButton(
-                gDomain, QStringLiteral("curvemath"), [this]() { return tr("Curve Math"); },
-                [this]() { return tr("Arithmetic Operations Between Curves"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showSimpleCurveMathDialog();
-                });
-        addRibbonButton(
-                gDomain, QStringLiteral("curve-fill"), [this]() { return tr("Fill Between"); },
-                [this]() { return tr("Shade Area Between Two Curves"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showFillBetweenCurvesDialog();
-                });
-        addRibbonButton(
-                gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius Plot"); },
-                [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showArrheniusPlotDialog();
-                });
-        addRibbonButton(
-                gDomain, QStringLiteral("tauc"), [this]() { return tr("Tauc Bandgap"); },
-                [this]() { return tr("Tauc Optical Bandgap Extrapolation"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showTaucPlotDialog();
-                });
-        addRibbonButton(
-                gDomain, QStringLiteral("eis-nyquist"), [this]() { return tr("EIS Analyzer"); },
-                [this]() { return tr("Electrochemical Impedance Spectroscopy Nyquist/Bode Fit"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showEISAnalyzerDialog();
-                });
-        addRibbonButton(
-                gDomain, QStringLiteral("digitizer"), [this]() { return tr("Digitizer"); },
-                [this]() { return tr("Extract Numerical Data from Graph Image"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showGraphDigitizerDialog();
                 });
 
         row->addStretch(1);
@@ -3649,11 +3674,26 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
         };
 
         switch (mode) {
-        case LayoutTabbed:
+        case LayoutTabbed: {
             d_app->setTabbedWorkspaceView(true);
             d_app->d_workspace.setTabsClosable(true);
             d_app->d_workspace.setTabsMovable(true);
+            if (QTabBar *tb = d_app->d_workspace.findChild<QTabBar *>()) {
+                const QList<QMdiSubWindow *> creationOrder =
+                        d_app->d_workspace.subWindowList(QMdiArea::CreationOrder);
+                for (int i = 0; i < tb->count(); ++i) {
+                    MyWidget *mw = (i < creationOrder.size())
+                            ? qobject_cast<MyWidget *>(creationOrder.at(i))
+                            : nullptr;
+                    const bool hideTab = mw
+                            && (d_app->hiddenWindows.contains(mw)
+                                || d_app->outWindows.contains(mw)
+                                || mw->status() == MyWidget::Hidden);
+                    tb->setTabVisible(i, !hideTab);
+                }
+            }
             break;
+        }
 
         case LayoutSplitTableGraph:
             d_app->setTabbedWorkspaceView(false);

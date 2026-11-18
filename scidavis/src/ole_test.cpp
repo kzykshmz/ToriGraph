@@ -142,6 +142,7 @@ static int runSuite45Round5ZeroDefectGate(ApplicationWindow *mw);
 static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow *mw);
 static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *mw);
 static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(ApplicationWindow *mw);
+static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -2541,6 +2542,8 @@ int main(int argc, char **argv)
         }
         {
             bool auditedPeakDlg = false;
+            mw->activateSubWindow(mlJa);
+            QApplication::processEvents();
             mw->showPeakAnalyzerDialog(0);
             for (QDialog *d : mw->findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) {
                 if (d && d->isVisible()) {
@@ -5296,7 +5299,10 @@ int main(int argc, char **argv)
     if (runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 48 ToriGraph OriginPro Parity, Phase 6/7/8 Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, Duotone SVG Icons & Modern Fluent Theme, Hybrid Ribbon/Split/Palette/F11 Focus HUD, GitHub Auto-Updater, Python JSON-RPC 2.0 Automation, Critic & QA Regression Gates, Japanese Zero-Miss Localization, 2D/3D Arial Font, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite49PhaseBUxRenderMatSciAndApiGate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 49 ToriGraph OriginPro Parity, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -8957,7 +8963,8 @@ static bool isUntranslatedAsciiUiLabel(const QString &raw)
         "ISIJ", "ISIJ 85mm", "ISIJ (85 mm)", "Nature (89 mm)", "Log10", "Linear", "ToriGraph",
         "Viridis", "Magma", "Inferno", "Plasma", "Cividis", "Jet",
         "α / μ / σ", "x₂", "x²", "°C", "μm", "MPa", "GPa", "mass%", "at.%", "wt.ppm", "kJ/mol",
-        "[fx]", "s⁻¹", "10⁻⁴ s⁻¹", "mass ppm·s⁻¹", "σ (MPa)", "ε (%)", "dσ/dε (GPa)", "1000/T (K⁻¹)"
+        "[fx]", "s⁻¹", "10⁻⁴ s⁻¹", "mass ppm·s⁻¹", "σ (MPa)", "σ₀.₂ (MPa)", "2θ (deg.)",
+        "ε (%)", "dσ/dε (GPa)", "1000/T (K⁻¹)"
     };
     if (kAllowedTokens.contains(s))
         return false;
@@ -10048,5 +10055,820 @@ static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(Application
     QApplication::processEvents();
 
     std::cout << "[INFO] Suite 48 Phase 8 Ribbon/Dock/Worksheet/Graph Ergonomics Gate passed!\n";
+    return 0;
+}
+
+#include "ScaleDraw.h"
+#include "future/table/AsciiTableImportFilter.h"
+#include "future/table/future_Table.h"
+#include <QFileInfo>
+#include <QTextCodec>
+#include "ScriptEdit.h"
+
+static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 49: Phase B 600-DPI Curve Thickness & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Instron/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear 1/(x*x) Linked Scale & Comma-Free Ticks, Dual EMF+ Translucent Pill & .sciprj/Snapshot Legend+Tab Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 49");
+
+    QTemporaryDir tmpDir;
+    CHECK_COND(tmpDir.isValid(), "Failed to create QTemporaryDir in Suite 49");
+
+    ApplicationWindow *w49 = new ApplicationWindow();
+    w49->applyUserSettings();
+    w49->resize(1280, 820);
+    w49->show();
+    QApplication::processEvents();
+
+    // -------------------------------------------------------------------------
+    // 49a & 49b. 600-DPI MultiLayer::exportImage curve line thickness (> 5 px,
+    //            NOT 2px hairline) & lossless PNG (< 2 MB for 2008x2008), plus
+    //            MultiLayer::exportVector .pdf at res=600 (no double-scaling)
+    // -------------------------------------------------------------------------
+    {
+        Table *tExp = w49->newTable(21, 2, "Suite49ExportTbl", "600DPI Check");
+        CHECK_COND(tExp != nullptr, "Failed to create Suite49ExportTbl");
+        for (int i = 0; i <= 20; ++i) {
+            const double x = 0.5 * i; // 0 .. 10
+            tExp->setCell(i, 0, x);
+            tExp->setCell(i, 1, 5.0); // Horizontal line at Y = 5.0
+        }
+        MultiLayer *mlExp = w49->multilayerPlot(tExp, QStringList() << "Suite49ExportTbl_2", Graph::Line);
+        CHECK_COND(mlExp != nullptr && mlExp->activeGraph() != nullptr, "mlExp null in Suite 49");
+        mlExp->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+        mlExp->setPageViewMode(true);
+        mlExp->fitLayersToPage();
+        Graph *gExp = mlExp->activeGraph();
+        gExp->setScale(QwtPlot::xBottom, 0.0, 10.0, 2.0);
+        gExp->setScale(QwtPlot::yLeft, 0.0, 10.0, 2.0);
+        gExp->setCurvePen(0, QPen(QColor(0, 80, 220), 2));
+        gExp->replot();
+        QApplication::processEvents();
+
+        const QString png600Path = tmpDir.filePath("suite49_600dpi_isij85mm.png");
+        mlExp->exportImage(png600Path, 100, false, 600);
+        QFileInfo pngFi(png600Path);
+        CHECK_COND(pngFi.exists() && pngFi.size() > 4096,
+                   "Suite 49a: 600-DPI PNG export missing or empty!");
+        std::cout << "[INFO] Suite 49a: 2008x2008 600-DPI lossless PNG size = "
+                  << pngFi.size() << " bytes\n";
+        CHECK_COND(pngFi.size() < 2LL * 1024LL * 1024LL,
+                   "Suite 49a: 600-DPI PNG exceeded 2 MB (Z_NO_COMPRESSION bloat regression)!");
+
+        QImage img600(png600Path);
+        CHECK_COND(!img600.isNull() && std::abs(img600.width() - 2008) <= 2
+                           && std::abs(img600.height() - 2008) <= 2,
+                   "Suite 49a: 85x85 mm @ 600 DPI did not produce ~2008x2008 PNG!");
+
+        QVector<int> colStrokes;
+        const int xStart = int(img600.width() * 0.40);
+        const int xEnd = int(img600.width() * 0.60);
+        const int yStart = int(img600.height() * 0.20);
+        const int yEnd = int(img600.height() * 0.80);
+        for (int x = xStart; x <= xEnd; x += 4) {
+            int bluePx = 0;
+            for (int y = yStart; y <= yEnd; ++y) {
+                const QRgb c = img600.pixel(x, y);
+                if (qBlue(c) - qRed(c) >= 60)
+                    ++bluePx;
+            }
+            if (bluePx > 0)
+                colStrokes.push_back(bluePx);
+        }
+        CHECK_COND(!colStrokes.isEmpty(), "Suite 49a: failed to locate blue curve in 600-DPI PNG!");
+        std::sort(colStrokes.begin(), colStrokes.end());
+        const int medianStrokePx = colStrokes[colStrokes.size() / 2];
+        std::cout << "[INFO] Suite 49a: 600-DPI curve median stroke thickness = "
+                  << medianStrokePx << " px\n";
+        CHECK_COND(medianStrokePx > 5,
+                   "Suite 49a: 600-DPI curve rendered as <=5 px cosmetic hairline instead of scaled pen!");
+
+        // 49b. MultiLayer::exportVector .pdf at res=600
+        const QString pdf600Path = tmpDir.filePath("suite49_res600_isij85mm.pdf");
+        mlExp->exportVector(pdf600Path, 600, true, true);
+        QFile pdfFile(pdf600Path);
+        CHECK_COND(pdfFile.exists() && pdfFile.open(QIODevice::ReadOnly),
+                   "Suite 49b: MultiLayer::exportVector(.pdf, res=600) failed to create PDF!");
+        const QByteArray pdfBytes = pdfFile.readAll();
+        pdfFile.close();
+        std::cout << "[INFO] Suite 49b: res=600 vector PDF size = " << pdfBytes.size() << " bytes\n";
+        CHECK_COND(pdfBytes.size() > 1500 && pdfBytes.startsWith("%PDF-"),
+                   "Suite 49b: exported PDF is empty or lacks %PDF- header!");
+        QRegularExpression mediaBoxRe(
+                QStringLiteral("/MediaBox\\s*\\[\\s*0(?:\\.0+)?\\s+0(?:\\.0+)?\\s+([0-9.]+)\\s+([0-9.]+)\\s*\\]"));
+        const QString pdfLatin1 = QString::fromLatin1(pdfBytes.constData(), pdfBytes.size());
+        const QRegularExpressionMatch mbMatch = mediaBoxRe.match(pdfLatin1);
+        CHECK_COND(mbMatch.hasMatch(), "Suite 49b: PDF missing /MediaBox!");
+        const double mbW = mbMatch.captured(1).toDouble();
+        const double mbH = mbMatch.captured(2).toDouble();
+        // 85 mm = 240.945 pt; double-scaling blow-up would distort page size or coordinates
+        CHECK_COND(mbW > 225.0 && mbW < 258.0 && mbH > 225.0 && mbH < 258.0,
+                   "Suite 49b: PDF /MediaBox dimensions do not match 85x85 mm (~241x241 pt)!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 49c. AsciiTableImportFilter::splitHeaderNameAndUnits & importLabTextData
+    //      (Shift-JIS CSV, 2-row [Name + Units] Instron CSV, Rigaku .ras)
+    // -------------------------------------------------------------------------
+    {
+        QString shortN, longN, unitN;
+        AsciiTableImportFilter::splitHeaderNameAndUnits(
+                QString::fromUtf8("Nominal stress, \xCF\x83 (MPa)"), shortN, longN, unitN);
+        CHECK_COND(longN == QString::fromUtf8("Nominal stress, \xCF\x83")
+                           && unitN == QLatin1String("MPa")
+                           && !shortN.isEmpty() && !shortN.contains(' ') && !shortN.contains('('),
+                   "Suite 49c: splitHeaderNameAndUnits(\"Nominal stress, σ (MPa)\") failed!");
+
+        // Descriptive parens like "(H-charged)" must NOT be split as units
+        QString sDesc, lDesc, uDesc;
+        AsciiTableImportFilter::splitHeaderNameAndUnits(
+                QStringLiteral("Stress (H-charged)"), sDesc, lDesc, uDesc);
+        CHECK_COND(uDesc.isEmpty() && lDesc == QLatin1String("Stress (H-charged)"),
+                   "Suite 49c: splitHeaderNameAndUnits wrongly split '(H-charged)' as unit!");
+
+        // Round 2: ASCII micro-prefix unit "(um)" must be recognized as scientific unit
+        QString sUm, lUm, uUm;
+        AsciiTableImportFilter::splitHeaderNameAndUnits(
+                QStringLiteral("Displacement (um)"), sUm, lUm, uUm);
+        CHECK_COND(lUm == QLatin1String("Displacement") && uUm == QLatin1String("um"),
+                   "Suite 49c: splitHeaderNameAndUnits(\"Displacement (um)\") failed to extract units == \"um\"!");
+
+        // Shift-JIS Shimadzu CSV
+        QTextCodec *sjisCodec = QTextCodec::codecForName("Shift-JIS");
+        CHECK_COND(sjisCodec != nullptr, "Shift-JIS QTextCodec unavailable");
+        const QString sjisSrc = QString::fromUtf8(
+                "# Shimadzu Autograph Tensile\r\n"
+                "ひずみ (%),公称応力 (MPa)\r\n"
+                "0.0,0.0\r\n"
+                "0.2,485.5\r\n"
+                "2.0,532.0\r\n");
+        const QByteArray sjisBytes = sjisCodec->fromUnicode(sjisSrc);
+        std::unique_ptr<future::Table> sjisTbl(AsciiTableImportFilter::importLabTextData(
+                sjisBytes, "SjisTensile", "shimadzu_sjis.csv"));
+        CHECK_COND(sjisTbl != nullptr && sjisTbl->columnCount() == 2 && sjisTbl->rowCount() == 3,
+                   "Suite 49c: Shift-JIS CSV importLabTextData wrong dimensions!");
+        CHECK_COND(sjisTbl->column(0)->longName() == QString::fromUtf8("ひずみ")
+                           && sjisTbl->column(0)->units() == QLatin1String("%")
+                           && sjisTbl->column(1)->longName() == QString::fromUtf8("公称応力")
+                           && sjisTbl->column(1)->units() == QLatin1String("MPa")
+                           && std::fabs(sjisTbl->column(1)->valueAt(1) - 485.5) < 1e-6,
+                   "Suite 49c: Shift-JIS CSV metadata or cell values corrupted (Mojibake)!");
+
+        // 2-row [Name + Units] Instron CSV with Text specimen column & missing '--' sentinel
+        const QByteArray instronBytes =
+                "# Instron Bluehill Export\n"
+                "Specimen,Tensile strain,Tensile stress\n"
+                ",(%),(MPa)\n"
+                "SP-01,0.0,0.0\n"
+                "SP-01,0.25,492.5\n"
+                "SP-01,1.50,--\n";
+        std::unique_ptr<future::Table> insTbl(AsciiTableImportFilter::importLabTextData(
+                instronBytes, "InstronTensile", "instron_2row.csv"));
+        CHECK_COND(insTbl != nullptr && insTbl->columnCount() == 3 && insTbl->rowCount() == 3,
+                   "Suite 49c: 2-row Instron CSV failed auto unit-row promotion (rowCount != 3)!");
+        CHECK_COND(insTbl->column(0)->textAt(0) == QLatin1String("SP-01")
+                           && insTbl->column(1)->longName() == QLatin1String("Tensile strain")
+                           && insTbl->column(1)->units() == QLatin1String("%")
+                           && insTbl->column(2)->longName() == QLatin1String("Tensile stress")
+                           && insTbl->column(2)->units() == QLatin1String("MPa")
+                           && std::fabs(insTbl->column(2)->valueAt(1) - 492.5) < 1e-6
+                           && insTbl->column(2)->isInvalid(2),
+                   "Suite 49c: 2-row Instron CSV units, specimen ID, or '--' invalid cell failed!");
+
+        // Rigaku SmartLab .ras XRD file
+        const QByteArray rasBytes =
+                "*RAS_DATA_START\n"
+                "*RAS_HEADER_START\n"
+                "*MEAS_SCAN_UNIT_X \"deg.\"\n"
+                "*MEAS_SCAN_UNIT_Y \"cps\"\n"
+                "*RAS_HEADER_END\n"
+                "*RAS_INT_START\n"
+                "20.0000 125.0 1.0000\n"
+                "20.0200 1480.5 1.0000\n"
+                "20.0400 310.0 1.0000\n"
+                "*RAS_INT_END\n"
+                "*RAS_DATA_END\n";
+        std::unique_ptr<future::Table> rasTbl(AsciiTableImportFilter::importLabTextData(
+                rasBytes, "RigakuXrd", "al_zn_mg.ras"));
+        CHECK_COND(rasTbl != nullptr && rasTbl->columnCount() >= 2 && rasTbl->rowCount() == 3,
+                   "Suite 49c: Rigaku .ras importLabTextData wrong dimensions!");
+        CHECK_COND(rasTbl->column(0)->longName() == QString::fromUtf8("2\xCE\xB8")
+                           && rasTbl->column(0)->units() == QLatin1String("deg.")
+                           && rasTbl->column(1)->units() == QLatin1String("cps")
+                           && std::fabs(rasTbl->column(1)->valueAt(1) - 1480.5) < 1e-6,
+                   "Suite 49c: Rigaku .ras metadata or intensity values mismatch!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 49d. CurveMathTools::analyzeTensile (0.2% proof stress offsetYieldY,
+    //      youngsModulus, utsY) & createArrheniusPlot (100% Arial !bold(),
+    //      linked Top-X layer)
+    // -------------------------------------------------------------------------
+    {
+        // Analytical tensile curve: E = 70,000 MPa (700 MPa/%), elastic up to 0.60% (420 MPa),
+        // work-hardening crossing 0.2% offset line near ~490 MPa, UTS = 560 MPa at 8.0%
+        const QVector<double> epsPct = {
+            0.00, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60,
+            0.70, 0.80, 0.90, 1.00, 1.50, 2.50, 4.00, 6.00, 8.00, 10.00
+        };
+        const QVector<double> sigMPa = {
+            0.0,  70.0, 140.0, 210.0, 280.0, 350.0, 420.0,
+            458.0, 480.0, 492.0, 500.0, 518.0, 534.0, 548.0, 556.0, 560.0, 525.0
+        };
+        Table *tTen = w49->newTable(epsPct.size(), 2, "Suite49TensileTbl", "Al-7075-T6");
+        CHECK_COND(tTen != nullptr, "Failed to create Suite49TensileTbl");
+        tTen->column(0)->setLongName("Nominal strain");
+        tTen->column(0)->setUnits("%");
+        tTen->column(1)->setLongName("Nominal stress");
+        tTen->column(1)->setUnits("MPa");
+        for (int i = 0; i < epsPct.size(); ++i) {
+            tTen->setCell(i, 0, epsPct[i]);
+            tTen->setCell(i, 1, sigMPa[i]);
+        }
+        MultiLayer *mlTen = w49->multilayerPlot(
+                tTen, QStringList() << "Suite49TensileTbl_2", Graph::Line);
+        CHECK_COND(mlTen != nullptr && mlTen->activeGraph() != nullptr, "mlTen null in Suite 49d");
+        Graph *gTen = mlTen->activeGraph();
+
+        const double nanVal = std::numeric_limits<double>::quiet_NaN();
+        const CurveMathTools::TensileResult tres = CurveMathTools::analyzeTensile(
+                w49, gTen, QString(), 0.002, 1, nanVal, nanVal, true, true, true);
+        std::cout << "[INFO] Suite 49d Tensile: E=" << tres.youngsModulus
+                  << " MPa, Rp0.2=" << tres.offsetYieldY
+                  << " MPa @ " << tres.offsetYieldX
+                  << "%, UTS=" << tres.utsY << " MPa\n";
+        CHECK_COND(tres.valid, "Suite 49d: analyzeTensile returned valid == false!");
+        CHECK_COND(std::fabs(tres.youngsModulus - 70000.0) < 1500.0,
+                   "Suite 49d: analyzeTensile youngsModulus deviated from 70,000 MPa!");
+        // At 0.90% strain: offset line 700*(0.90 - 0.20) = 490 MPa vs curve 492 MPa -> crossing just above 0.90% (~493 MPa)
+        CHECK_COND(tres.offsetYieldY > 485.0 && tres.offsetYieldY < 502.0,
+                   "Suite 49d: analyzeTensile 0.2% proof stress offsetYieldY out of expected ~493 MPa range!");
+        CHECK_COND(std::fabs(tres.utsY - 560.0) < 1e-4,
+                   "Suite 49d: analyzeTensile utsY != 560.0 MPa!");
+        CHECK_COND(tres.stressUnit == QLatin1String("MPa"),
+                   "Suite 49d: analyzeTensile failed to populate stressUnit == \"MPa\"!");
+        CHECK_COND(tres.trueStressTable != nullptr && tres.trueStressTable->numRows() == 16,
+                   "Suite 49d: analyzeTensile TrueStressStrain table must stop at uniform elongation utsIdx (16 rows)!");
+
+        // Round 2: Purely linear-elastic brittle fracture curve (E = 300 GPa = 300,000 MPa,
+        // dropping vertically from 900 -> 0 MPa at x = 0.30..0.31%) must return valid == false!
+        const QVector<double> britEpsPct = { 0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.31 };
+        const QVector<double> britSigMPa = { 0.0, 150.0, 300.0, 450.0, 600.0, 750.0, 900.0, 0.0 };
+        Table *tBrit = w49->newTable(britEpsPct.size(), 2, "Suite49BrittleTbl", "SiC-Ceramic");
+        CHECK_COND(tBrit != nullptr, "Failed to create Suite49BrittleTbl");
+        tBrit->column(0)->setLongName("Strain");
+        tBrit->column(0)->setUnits("%");
+        tBrit->column(1)->setLongName("Stress");
+        tBrit->column(1)->setUnits("MPa");
+        for (int i = 0; i < britEpsPct.size(); ++i) {
+            tBrit->setCell(i, 0, britEpsPct[i]);
+            tBrit->setCell(i, 1, britSigMPa[i]);
+        }
+        MultiLayer *mlBrit = w49->multilayerPlot(
+                tBrit, QStringList() << "Suite49BrittleTbl_2", Graph::Line);
+        CHECK_COND(mlBrit != nullptr && mlBrit->activeGraph() != nullptr, "mlBrit null in Suite 49d");
+        const CurveMathTools::TensileResult britRes = CurveMathTools::analyzeTensile(
+                w49, mlBrit->activeGraph(), QString(), 0.002, 1, nanVal, nanVal, false, false, false);
+        std::cout << "[INFO] Suite 49d Brittle ceramic valid=" << britRes.valid
+                  << ", err='" << britRes.error.toStdString() << "'\n";
+        CHECK_COND(!britRes.valid && !britRes.error.isEmpty(),
+                   "Suite 49d: Purely linear-elastic brittle fracture curve falsely reported valid 0.2% proof stress!");
+
+        // Arrhenius plot: Ea = 50.0 kJ/mol, R = 8.314462618 J/(mol*K)
+        Table *tArr = w49->newTable(5, 2, "Suite49ArrTbl", "Diffusion");
+        CHECK_COND(tArr != nullptr, "Failed to create Suite49ArrTbl");
+        tArr->setColName(0, "T_K");
+        tArr->setColName(1, "Rate_k");
+        const double tempsK[5] = { 300.0, 325.0, 355.0, 390.0, 430.0 };
+        const double eaJ = 50000.0;
+        const double rGas = 8.314462618;
+        for (int i = 0; i < 5; ++i) {
+            tArr->setCell(i, 0, tempsK[i]);
+            tArr->setCell(i, 1, 1.0e8 * std::exp(-eaJ / (rGas * tempsK[i])));
+        }
+        const CurveMathTools::ArrheniusResult ares = CurveMathTools::createArrheniusPlot(
+                w49, tArr, "T_K", "Rate_k", false, true, false);
+        CHECK_COND(ares.valid && ares.plot != nullptr,
+                   "Suite 49d: createArrheniusPlot failed!");
+        CHECK_COND(std::fabs(ares.activationEnergyKJmol - 50.0) < 0.25,
+                   "Suite 49d: createArrheniusPlot Ea deviated from 50.0 kJ/mol!");
+        CHECK_COND(ares.plot->layers() >= 2,
+                   "Suite 49d: createArrheniusPlot missing linked Top-X temperature layer!");
+
+        bool sawTopLinked = false;
+        for (int li = 1; li <= ares.plot->layers(); ++li) {
+            Graph *gl = ares.plot->layer(li);
+            if (!gl || !gl->plotWidget())
+                continue;
+            if (li >= 2 && gl->plotWidget()->axisEnabled(QwtPlot::xTop))
+                sawTopLinked = true;
+            CHECK_COND(!gl->plotWidget()->title().font().bold(),
+                       "Suite 49d: Arrhenius plot title font is bold!");
+            for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
+                const QFont tf = gl->axisTitleFont(ax);
+                const QFont nf = gl->plotWidget()->axisFont(ax);
+                CHECK_COND(tf.family().compare("Arial", Qt::CaseInsensitive) == 0 && !tf.bold(),
+                           "Suite 49d: Arrhenius axis title font is not non-bold Arial!");
+                CHECK_COND(nf.family().compare("Arial", Qt::CaseInsensitive) == 0 && !nf.bold(),
+                           "Suite 49d: Arrhenius axis tick font is not non-bold Arial!");
+            }
+            if (Legend *lg = gl->legend()) {
+                CHECK_COND(lg->font().family().compare("Arial", Qt::CaseInsensitive) == 0
+                                   && !lg->font().bold(),
+                           "Suite 49d: Arrhenius legend font is not non-bold Arial!");
+            }
+        }
+        CHECK_COND(sawTopLinked,
+                   "Suite 49d: Arrhenius linked Top-X temperature axis not enabled on overlay layer!");
+
+        // Round 2: Raw createArrheniusPlot must align parent and topLayer canvasRect().top()
+        // within <= 2 px immediately without requiring isij_style()!
+        QApplication::processEvents();
+        Graph *arrParent = ares.plot->layer(1);
+        Graph *arrTopLayer = nullptr;
+        for (int li = 2; li <= ares.plot->layers(); ++li) {
+            Graph *cand = ares.plot->layer(li);
+            if (cand && cand->plotWidget() && cand->plotWidget()->axisEnabled(QwtPlot::xTop)) {
+                arrTopLayer = cand;
+                break;
+            }
+        }
+        CHECK_COND(arrParent != nullptr && arrTopLayer != nullptr,
+                   "Suite 49d: Missing arrParent or arrTopLayer for raw canvas alignment check!");
+        const int parentCanvasTopMl =
+                arrParent->plotWidget()->canvas()->mapTo(ares.plot->canvasWidget(), QPoint(0, 0)).y();
+        const int topLayerCanvasTopMl =
+                arrTopLayer->plotWidget()->canvas()->mapTo(ares.plot->canvasWidget(), QPoint(0, 0)).y();
+        const int topDeltaPx = std::abs(parentCanvasTopMl - topLayerCanvasTopMl);
+        std::cout << "[INFO] Suite 49d Raw Arrhenius canvasTop: parent=" << parentCanvasTopMl
+                  << ", topLayer=" << topLayerCanvasTopMl << ", delta=" << topDeltaPx << " px\n";
+        CHECK_COND(topDeltaPx <= 2,
+                   "Suite 49d: Raw createArrheniusPlot parent & topLayer canvasRect().top() misaligned (> 2 px)!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 49e. FormulaLinkedScaleEngine nonlinear 1.0/(x*x) tick spread (zero
+    //      left-edge pileup) & ScaleDraw comma-free labels ("1000", not "1,000")
+    // -------------------------------------------------------------------------
+    {
+        Table *tHp = w49->newTable(5, 2, "Suite49HallPetch", "Hall-Petch");
+        CHECK_COND(tHp != nullptr, "Failed to create Suite49HallPetch");
+        const double invSqrtD[5] = { 0.08, 0.15, 0.25, 0.35, 0.48 };
+        for (int i = 0; i < 5; ++i) {
+            tHp->setCell(i, 0, invSqrtD[i]);
+            tHp->setCell(i, 1, 120.0 + 650.0 * invSqrtD[i]);
+        }
+        MultiLayer *mlHp = w49->multilayerPlot(
+                tHp, QStringList() << "Suite49HallPetch_2", Graph::LineSymbols);
+        CHECK_COND(mlHp != nullptr && mlHp->activeGraph() != nullptr, "mlHp null in Suite 49e");
+        Graph *gHp = mlHp->activeGraph();
+        gHp->setScale(QwtPlot::xBottom, 0.05, 0.50, 0.10);
+        gHp->setScale(QwtPlot::yLeft, 0.0, 10000.0, 2000.0);
+        Graph *gHpTop = mlHp->addLinkedLayer(gHp, true, false, "1.0/(x*x)");
+        CHECK_COND(gHpTop != nullptr, "Suite 49e: addLinkedLayer(1.0/(x*x)) returned null!");
+        gHp->replot();
+        gHpTop->replot();
+        QApplication::processEvents();
+
+        const QwtScaleDiv *topDiv = gHpTop->plotWidget()->axisScaleDiv(QwtPlot::xTop);
+        CHECK_COND(topDiv != nullptr, "Suite 49e: Top-X scaleDiv null!");
+        const QwtValueList majTicks = topDiv->ticks(QwtScaleDiv::MajorTick);
+        CHECK_COND(majTicks.size() >= 3 && majTicks.size() <= 8,
+                   "Suite 49e: Nonlinear 1.0/(x*x) linked axis should select 3..8 major ticks!");
+
+        const QwtScaleMap topMap = gHpTop->plotWidget()->canvasMap(QwtPlot::xTop);
+        const double p1 = topMap.p1();
+        const double p2 = topMap.p2();
+        const double pSpan = std::fabs(p2 - p1);
+        CHECK_COND(pSpan > 50.0, "Suite 49e: Top-X canvas map span too small!");
+
+        QVector<double> normPos;
+        for (int i = 0; i < majTicks.size(); ++i) {
+            const double px = topMap.xTransform(majTicks[i]);
+            normPos.push_back((px - std::min(p1, p2)) / pSpan);
+        }
+        std::sort(normPos.begin(), normPos.end());
+        double minAdjGap = 1.0;
+        for (int i = 0; i + 1 < normPos.size(); ++i)
+            minAdjGap = std::min(minAdjGap, normPos[i + 1] - normPos[i]);
+        const double totalSpread = normPos.back() - normPos.front();
+        std::cout << "[INFO] Suite 49e: 1.0/(x*x) linked majorTicks=" << majTicks.size()
+                  << ", minAdjGap=" << minAdjGap << ", totalSpread=" << totalSpread << "\n";
+        CHECK_COND(minAdjGap >= 0.10 && totalSpread >= 0.35,
+                   "Suite 49e: Nonlinear 1.0/(x*x) linked ticks piled up at one edge!");
+
+        const ScaleDraw *ySd =
+                dynamic_cast<const ScaleDraw *>(gHp->plotWidget()->axisScaleDraw(QwtPlot::yLeft));
+        CHECK_COND(ySd != nullptr, "Suite 49e: yLeft ScaleDraw is null!");
+        const QString lbl1000 = ySd->label(1000.0).text();
+        const QString lbl10000 = ySd->label(10000.0).text();
+        CHECK_COND(lbl1000 == QLatin1String("1000") && lbl10000 == QLatin1String("10000")
+                           && !lbl1000.contains(',') && !lbl10000.contains(','),
+                   "Suite 49e: ScaleDraw emitted thousands commas or scientific flip on 1000/10000!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 49f. EmfPaintDevice translucent pill QColor(255, 255, 255, 205) played
+    //      back via GDI+ Graphics::DrawImage(Metafile*) -> near-white blended
+    //      background (NOT RGB(205,205,205) gray or black border) + PlayEnhMetaFile
+    // -------------------------------------------------------------------------
+    {
+        Table *tPill = w49->newTable(11, 3, "Suite49PillTbl", "PillCheck");
+        for (int i = 0; i <= 10; ++i) {
+            tPill->setCell(i, 0, double(i));
+            tPill->setCell(i, 1, 5.5); // Opaque red curve crossing behind lower part of pill
+            tPill->setCell(i, 2, 2.5); // Horizontal translucent curve (y1 == y2 == 2.5)
+        }
+        MultiLayer *mlPill = w49->multilayerPlot(
+                tPill, QStringList() << "Suite49PillTbl_2" << "Suite49PillTbl_3", Graph::Line);
+        CHECK_COND(mlPill != nullptr && mlPill->activeGraph() != nullptr, "mlPill null in Suite 49f");
+        mlPill->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+        mlPill->setPageViewMode(true);
+        mlPill->fitLayersToPage();
+        Graph *gPill = mlPill->activeGraph();
+        gPill->setScale(QwtPlot::xBottom, 0.0, 10.0, 2.0);
+        gPill->setScale(QwtPlot::yLeft, 0.0, 10.0, 2.0);
+        gPill->setCurvePen(0, QPen(QColor(220, 25, 25), 5));
+        gPill->setCurvePen(1, QPen(QColor(220, 38, 38, 195), 3));
+        if (gPill->legend())
+            gPill->removeLegend();
+
+        // Frameless translucent white pill QColor(255, 255, 255, 205) centered away from axes,
+        // using red text matching the red curve so zero neutral gray/black pixels exist unless
+        // EmfPaintDevice leaks premultiplied RGB(205,205,205) or a black frame pen!
+        Legend *pill = gPill->newLegend("Pill");
+        CHECK_COND(pill != nullptr, "Suite 49f: newLegend failed!");
+        pill->setFrameStyle(Legend::None);
+        pill->setBackgroundColor(QColor(255, 255, 255, 205));
+        pill->setTextColor(QColor(220, 25, 25));
+        pill->setFont(QFont("Arial", 11));
+        pill->setOriginCoord(3.8, 6.2);
+        gPill->replot();
+        QApplication::processEvents();
+
+        // Map pill canvas rect into MultiLayer page coordinates -> 900x900 playback coordinates
+        const QRect pillCanvasRc = pill->rect();
+        const QPoint canvasInMl =
+                gPill->plotWidget()->canvas()->mapTo(mlPill->canvasWidget(), QPoint(0, 0));
+        const QRect pillMlRc(pillCanvasRc.topLeft() + canvasInMl, pillCanvasRc.size());
+        const QSize mlCanvasSz = mlPill->canvasWidget()->size();
+        CHECK_COND(pillMlRc.width() > 20 && pillMlRc.height() > 10 && mlCanvasSz.width() > 100,
+                   "Suite 49f: invalid pill geometry on MultiLayer canvas!");
+
+        OleRenderedGraph pillOle = SciDAVisEmf::renderMultiLayer(mlPill);
+        HENHMETAFILE hPillEmf = SciDAVisEmf::createHemfFromBytes(pillOle.emfBytes);
+        CHECK_COND(hPillEmf != nullptr, "Suite 49f: createHemfFromBytes failed!");
+
+        const int playSide = 900;
+        auto playEmfSurface = [&](bool useGdiplus) -> QImage {
+            QImage out(playSide, playSide, QImage::Format_RGB32);
+            out.fill(Qt::white);
+            HDC sdc = GetDC(nullptr);
+            BITMAPINFO bmi{};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = playSide;
+            bmi.bmiHeader.biHeight = -playSide;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void *bits = nullptr;
+            HBITMAP hbm = CreateDIBSection(sdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HDC mdc = CreateCompatibleDC(sdc);
+            HGDIOBJ old = SelectObject(mdc, hbm);
+            if (bits) {
+                auto *px = static_cast<quint32 *>(bits);
+                for (int i = 0; i < playSide * playSide; ++i)
+                    px[i] = 0xFFFFFFFFu;
+                if (useGdiplus) {
+                    Gdiplus::Metafile mf(hPillEmf, FALSE);
+                    Gdiplus::Graphics gfx(mdc);
+                    gfx.DrawImage(&mf, 0, 0, playSide, playSide);
+                } else {
+                    RECT rcPlay{ 0, 0, playSide, playSide };
+                    PlayEnhMetaFile(mdc, hPillEmf, &rcPlay);
+                }
+                GdiFlush();
+                std::memcpy(out.bits(), bits, playSide * playSide * 4);
+            }
+            SelectObject(mdc, old);
+            DeleteObject(hbm);
+            DeleteDC(mdc);
+            ReleaseDC(nullptr, sdc);
+            return out;
+        };
+
+        const QImage gdiplusImg = playEmfSurface(true);
+        const QImage gdiImg = playEmfSurface(false);
+        DeleteEnhMetaFile(hPillEmf);
+
+        const double sx = double(playSide) / double(mlCanvasSz.width());
+        const double sy = double(playSide) / double(mlCanvasSz.height());
+        const QRect roi = QRect(qRound(pillMlRc.left() * sx) - 3,
+                                qRound(pillMlRc.top() * sy) - 3,
+                                qRound(pillMlRc.width() * sx) + 6,
+                                qRound(pillMlRc.height() * sy) + 6)
+                                  .intersected(QRect(0, 0, playSide, playSide));
+
+        int gray205Px = 0;
+        int darkBorderPx = 0;
+        int nearWhitePx = 0;
+        int pastelRedBlendPx = 0;
+        for (int y = roi.top(); y <= roi.bottom(); ++y) {
+            for (int x = roi.left(); x <= roi.right(); ++x) {
+                const QRgb c = gdiplusImg.pixel(x, y);
+                const int r = qRed(c), g = qGreen(c), b = qBlue(c);
+                const int maxC = std::max({ r, g, b });
+                const int minC = std::min({ r, g, b });
+                // Neutral gray plateau RGB(205,205,205) from unblended premultiplied bytes
+                if (maxC - minC <= 5 && r >= 188 && r <= 225)
+                    ++gray205Px;
+                // Unintended black/dark neutral border around frameless pill
+                if (maxC < 95)
+                    ++darkBorderPx;
+                if (r >= 250 && g >= 250 && b >= 250)
+                    ++nearWhitePx;
+                // Red line (220,25,25) attenuated beneath QColor(255,255,255,205) -> ~(248, 210, 210)
+                if (r >= 235 && g >= 180 && g <= 235 && (r - g) >= 12 && std::abs(g - b) <= 8)
+                    ++pastelRedBlendPx;
+            }
+        }
+        std::cout << "[INFO] Suite 49f GDI+ Metafile pill ROI: nearWhite=" << nearWhitePx
+                  << ", gray205=" << gray205Px << ", darkBorder=" << darkBorderPx
+                  << ", pastelRedBlend=" << pastelRedBlendPx << "\n";
+        CHECK_COND(gray205Px == 0,
+                   "Suite 49f: GDI+ Metafile rendered translucent pill as RGB(205,205,205) gray!");
+        CHECK_COND(darkBorderPx == 0,
+                   "Suite 49f: GDI+ Metafile drew unintended dark/black border around frameless pill!");
+        CHECK_COND(nearWhitePx > 200 && pastelRedBlendPx > 15,
+                   "Suite 49f: GDI+ Metafile failed near-white + translucent curve alpha blend!");
+
+        // Confirm down-level Win32 PlayEnhMetaFile also blends without RGB(205,205,205) gray fill
+        int gdiGray205 = 0;
+        for (int y = roi.top(); y <= roi.bottom(); ++y) {
+            for (int x = roi.left(); x <= roi.right(); ++x) {
+                const QRgb c = gdiImg.pixel(x, y);
+                const int r = qRed(c), g = qGreen(c), b = qBlue(c);
+                if (std::max({ r, g, b }) - std::min({ r, g, b }) <= 5 && r >= 188 && r <= 225)
+                    ++gdiGray205;
+            }
+        }
+        CHECK_COND(gdiGray205 == 0,
+                   "Suite 49f: Down-level PlayEnhMetaFile rendered RGB(205,205,205) gray pill!");
+
+        // Round 2: Horizontal translucent line (y1 == y2 == 2.5, QColor(220, 38, 38, 195))
+        // must NOT be dropped by empty rawBr intersection in EmfPaintDevice::blendTranslucentPath!
+        const QwtScaleMap xMapPill = gPill->plotWidget()->canvasMap(QwtPlot::xBottom);
+        const QwtScaleMap yMapPill = gPill->plotWidget()->canvasMap(QwtPlot::yLeft);
+        const int hLineX1 = qRound((canvasInMl.x() + xMapPill.transform(2.0)) * sx);
+        const int hLineX2 = qRound((canvasInMl.x() + xMapPill.transform(8.0)) * sx);
+        const int hLineY = qRound((canvasInMl.y() + yMapPill.transform(2.5)) * sy);
+        const QRect hLineRoi = QRect(std::min(hLineX1, hLineX2), hLineY - 8,
+                                     std::abs(hLineX2 - hLineX1), 17)
+                                       .intersected(QRect(0, 0, playSide, playSide));
+        int horizTransRedPx = 0;
+        for (int y = hLineRoi.top(); y <= hLineRoi.bottom(); ++y) {
+            for (int x = hLineRoi.left(); x <= hLineRoi.right(); ++x) {
+                const QRgb c = gdiplusImg.pixel(x, y);
+                const int r = qRed(c), g = qGreen(c), b = qBlue(c);
+                // QColor(220,38,38,195) over white blends to ~(228, 89, 89)
+                if (r >= 200 && g <= 185 && b <= 185 && (r - g) >= 50)
+                    ++horizTransRedPx;
+            }
+        }
+        std::cout << "[INFO] Suite 49f Horizontal translucent line (y1==y2) GDI+ red px = "
+                  << horizTransRedPx << "\n";
+        CHECK_COND(horizTransRedPx >= 150,
+                   "Suite 49f: Horizontal translucent line (y1==y2, alpha=195) dropped in GDI+ EMF playback!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 49g. .sciprj & restoreSnapshotInPlace / Undo with <text> containing
+    //      "Legend" and axis/plot/window titles containing '\t'
+    // -------------------------------------------------------------------------
+    {
+        ApplicationWindow *writer = new ApplicationWindow();
+        writer->applyUserSettings();
+        Table *tPrj = writer->newTable(4, 2, "Suite49PrjTbl", "Tab\tTable");
+        for (int i = 0; i < 4; ++i) {
+            tPrj->setCell(i, 0, double(i));
+            tPrj->setCell(i, 1, double(i * 10));
+        }
+        MultiLayer *mlPrj = writer->multilayerPlot(
+                tPrj, QStringList() << "Suite49PrjTbl_2", Graph::LineSymbols);
+        CHECK_COND(mlPrj != nullptr && mlPrj->activeGraph() != nullptr, "mlPrj null in Suite 49g");
+        mlPrj->setName("Suite49LegendTabGraph");
+        mlPrj->setWindowLabel("Tensile\tSummary");
+
+        Graph *gPrj = mlPrj->activeGraph();
+        gPrj->setTitle("Specimen A\tRT");
+        gPrj->setXAxisTitle("Nominal strain\t(%)");
+        gPrj->setYAxisTitle("Nominal stress\t(MPa)");
+        CHECK_COND(gPrj->legend() != nullptr && gPrj->legend()->text().contains("\\c{1}"),
+                   "Suite 49g: initial curve legend missing!");
+
+        Legend *noteWithLegendWord = gPrj->newLegend("See Legend in Table 1 for heat treatment");
+        CHECK_COND(noteWithLegendWord != nullptr, "Suite 49g: failed to add text marker!");
+
+        // 1) Snapshot / Undo round-trip in place
+        const QString snap49 = mlPrj->captureUndoSnapshot();
+        gPrj->setXAxisTitle("Overwritten X");
+        CHECK_COND(mlPrj->restoreSnapshotInPlace(writer, snap49),
+                   "Suite 49g: restoreSnapshotInPlace returned false!");
+        gPrj = mlPrj->activeGraph();
+        CHECK_COND(gPrj != nullptr, "Suite 49g: activeGraph null after restoreSnapshotInPlace!");
+
+        auto verifyGraphLegendAndTabs = [](MultiLayer *mlCheck, const char *ctx) -> bool {
+            if (!mlCheck || !mlCheck->activeGraph() || !mlCheck->activeGraph()->plotWidget()) {
+                std::cerr << "[FAIL] " << ctx << ": null MultiLayer/Graph\n";
+                return false;
+            }
+            Graph *gc = mlCheck->activeGraph();
+            if (mlCheck->windowLabel() != QLatin1String("Tensile Summary")) {
+                std::cerr << "[FAIL] " << ctx << ": windowLabel mismatch: '"
+                          << mlCheck->windowLabel().toStdString() << "'\n";
+                return false;
+            }
+            if (gc->plotWidget()->title().text() != QLatin1String("Specimen A\tRT")) {
+                std::cerr << "[FAIL] " << ctx << ": plotTitle lost '\\t': '"
+                          << gc->plotWidget()->title().text().toStdString() << "'\n";
+                return false;
+            }
+            if (gc->axisTitle(QwtPlot::xBottom) != QLatin1String("Nominal strain\t(%)")
+                || gc->axisTitle(QwtPlot::yLeft) != QLatin1String("Nominal stress\t(MPa)")) {
+                std::cerr << "[FAIL] " << ctx << ": axisTitle lost '\\t': X='"
+                          << gc->axisTitle(QwtPlot::xBottom).toStdString() << "' Y='"
+                          << gc->axisTitle(QwtPlot::yLeft).toStdString() << "'\n";
+                return false;
+            }
+            if (!gc->legend() || !gc->legend()->text().contains(QLatin1String("\\c{1}"))) {
+                std::cerr << "[FAIL] " << ctx
+                          << ": primary curve legend clobbered by <text> containing 'Legend'!\n";
+                return false;
+            }
+            bool foundNote = false;
+            for (QwtPlotItem *it : gc->plotWidget()->itemList()) {
+                if (auto *lg = dynamic_cast<Legend *>(it)) {
+                    if (lg != gc->legend()
+                        && lg->text().contains(QLatin1String("See Legend in Table 1"))) {
+                        foundNote = true;
+                        break;
+                    }
+                }
+            }
+            if (!foundNote) {
+                std::cerr << "[FAIL] " << ctx
+                          << ": <text> annotation containing 'Legend' lost on reload!\n";
+                return false;
+            }
+            return true;
+        };
+
+        CHECK_COND(verifyGraphLegendAndTabs(mlPrj, "Suite 49g restoreSnapshotInPlace"),
+                   "Suite 49g: restoreSnapshotInPlace corrupted <text> 'Legend' or '\\t' titles!");
+
+        // 2) Full .sciprj project serialization & reload round-trip
+        const QByteArray prjBytes = writer->saveProjectToByteArray();
+        const QString prjPath = tmpDir.filePath("suite49_legend_tab.sciprj");
+        {
+            QFile pf(prjPath);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 49g: failed to open temp .sciprj");
+            pf.write(prjBytes);
+            pf.close();
+        }
+        writer->savedProject();
+        writer->setOleEmbeddedMode(true);
+        delete writer;
+
+        ApplicationWindow *reader = new ApplicationWindow();
+        reader->applyUserSettings();
+        const bool okLoad = reader->loadProject(prjPath);
+        CHECK_COND(okLoad, "Suite 49g: loadProject failed on suite49_legend_tab.sciprj!");
+        MultiLayer *mlRel =
+                qobject_cast<MultiLayer *>(reader->window("Suite49LegendTabGraph"));
+        CHECK_COND(verifyGraphLegendAndTabs(mlRel, "Suite 49g .sciprj loadProject"),
+                   "Suite 49g: .sciprj reload corrupted <text> 'Legend' or '\\t' titles!");
+
+        reader->savedProject();
+        reader->setOleEmbeddedMode(true);
+        delete reader;
+    }
+
+    w49->savedProject();
+    w49->setOleEmbeddedMode(true);
+    delete w49;
+    QApplication::processEvents();
+
+    // -------------------------------------------------------------------------
+    // 49h. Round 3 [P2-CORE-R3-1]: tableMenu / matrixMenu child QMenu & QAction
+    //      count stability across repeated activations/language switches +
+    //      ScriptEdit runtime en <-> ja QAction retranslation
+    // -------------------------------------------------------------------------
+    {
+        mw->switchToLanguage("en");
+        ApplicationWindow *wMenu = new ApplicationWindow();
+        wMenu->applyUserSettings();
+        wMenu->show();
+        wMenu->switchToLanguage("en");
+        QApplication::processEvents();
+
+        Table *tMenuA = wMenu->newTable(4, 2, "Suite49MenuTblA", "A");
+        Table *tMenuB = wMenu->newTable(4, 2, "Suite49MenuTblB", "B");
+        Matrix *mMenuA = wMenu->newMatrix(4, 4);
+        CHECK_COND(tMenuA != nullptr && tMenuB != nullptr && mMenuA != nullptr,
+                   "Suite 49h: failed to create Table/Matrix windows!");
+
+        // Populate both tableMenu and matrixMenu once to establish steady-state baseline
+        wMenu->activateSubWindow(mMenuA);
+        wMenu->customMenu(mMenuA);
+        wMenu->activateSubWindow(tMenuA);
+        wMenu->customMenu(tMenuA);
+        QApplication::processEvents();
+
+        const int baseMenuCount = wMenu->findChildren<QMenu *>().size();
+        const int baseActionCount = wMenu->findChildren<QAction *>().size();
+
+        ScriptEdit *se = tMenuA->findChild<ScriptEdit *>();
+        CHECK_COND(se != nullptr, "Suite 49h: Table missing embedded ScriptEdit!");
+        const QList<QAction *> seActions = se->findChildren<QAction *>(QString(), Qt::FindDirectChildrenOnly);
+        CHECK_COND(seActions.size() >= 6, "Suite 49h: ScriptEdit missing context-menu QActions!");
+
+        bool sawEnExecute = false;
+        for (QAction *act : seActions) {
+            if (act && act->text() == QLatin1String("E&xecute"))
+                sawEnExecute = true;
+        }
+        CHECK_COND(sawEnExecute, "Suite 49h: ScriptEdit missing 'E&xecute' in English mode!");
+
+        // Cycle across Table/Matrix activations and en <-> ja switches 4 times
+        for (int cyc = 0; cyc < 4; ++cyc) {
+            wMenu->activateSubWindow(tMenuB);
+            wMenu->customMenu(tMenuB);
+            wMenu->switchToLanguage("ja");
+            wMenu->activateSubWindow(mMenuA);
+            wMenu->customMenu(mMenuA);
+            wMenu->activateSubWindow(tMenuA);
+            wMenu->customMenu(tMenuA);
+            if (cyc < 3)
+                wMenu->switchToLanguage("en");
+            QApplication::processEvents();
+        }
+
+        // Now in 'ja' with tMenuA active: verify zero leaked child QMenus / QActions
+        const int afterMenuCount = wMenu->findChildren<QMenu *>().size();
+        const int afterActionCount = wMenu->findChildren<QAction *>().size();
+        std::cout << "[INFO] Suite 49h Menu/Action stability: menus " << baseMenuCount << " -> "
+                  << afterMenuCount << ", actions " << baseActionCount << " -> " << afterActionCount
+                  << "\n";
+        CHECK_COND(afterMenuCount == baseMenuCount,
+                   "Suite 49h: tableMenu/matrixMenu leaked detached child QMenus across activations & language switches!");
+        CHECK_COND(afterActionCount == baseActionCount,
+                   "Suite 49h: QAction count grew across repeated Table/Matrix activations & language switches!");
+
+        // Verify ScriptEdit runtime en -> ja retranslation of all 6 context-menu QActions
+        const QStringList rawEnTexts = {
+            QStringLiteral("E&xecute"),
+            QStringLiteral("Execute &All"),
+            QStringLiteral("&Evaluate Expression"),
+            QStringLiteral("&Print"),
+            QStringLiteral("&Import"),
+            QStringLiteral("&Export")
+        };
+        int jaNonAsciiCount = 0;
+        for (QAction *act : seActions) {
+            if (!act)
+                continue;
+            const QString txt = act->text();
+            CHECK_COND(!rawEnTexts.contains(txt),
+                       "Suite 49h: ScriptEdit action stayed untranslated English after runtime switchToLanguage('ja')!");
+            bool hasNonAscii = false;
+            for (QChar ch : txt) {
+                if (ch.unicode() > 127) {
+                    hasNonAscii = true;
+                    break;
+                }
+            }
+            if (hasNonAscii)
+                ++jaNonAsciiCount;
+        }
+        CHECK_COND(jaNonAsciiCount >= 6,
+                   "Suite 49h: ScriptEdit did not retranslate all 6 actions into Japanese on QEvent::LanguageChange!");
+
+        // Switch back ja -> en and verify bidirectional restoration
+        wMenu->switchToLanguage("en");
+        QApplication::processEvents();
+        bool restoredEnExecute = false;
+        for (QAction *act : seActions) {
+            if (act && act->text() == QLatin1String("E&xecute"))
+                restoredEnExecute = true;
+        }
+        CHECK_COND(restoredEnExecute,
+                   "Suite 49h: ScriptEdit failed bidirectional ja -> en retranslation!");
+
+        wMenu->savedProject();
+        wMenu->setOleEmbeddedMode(true);
+        delete wMenu;
+        QApplication::processEvents();
+    }
+
+    std::cout << "[INFO] Suite 49 Phase B UX/Render/MatSci/API Regression Gate passed!\n";
     return 0;
 }

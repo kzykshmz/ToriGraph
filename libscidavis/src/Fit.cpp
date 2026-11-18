@@ -1838,8 +1838,11 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
                         const QString &plotName)
 {
     QDateTime dt = QDateTime::currentDateTime();
+    const QString curveTitle =
+            (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text()
+                                                                      : objectName();
     QString info = "[" + QLocale().toString(dt) + "\t" + tr("Plot") + ": ''" + plotName + "'']\n";
-    info += d_explanation + " " + tr("fit of dataset") + ": " + d_curve->title().text();
+    info += d_explanation + " " + tr("fit of dataset") + ": " + curveTitle;
     if (!d_formula.isEmpty())
         info += ", " + tr("using function") + ": " + d_formula + "\n";
     else
@@ -1873,8 +1876,10 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
         info += tr(" algorithm with tolerance = ") + QLocale().toString(d_tolerance) + "\n";
     }
 
-    info += tr("From x") + " = " + QLocale().toString(d_x[0], 'g', 15) + " " + tr("to x") + " = "
-            + QLocale().toString(d_x.back(), 'g', 15) + "\n";
+    if (!d_x.empty()) {
+        info += tr("From x") + " = " + QLocale().toString(d_x[0], 'g', 15) + " " + tr("to x")
+                + " = " + QLocale().toString(d_x.back(), 'g', 15) + "\n";
+    }
     double chi_2_dof = reducedChiSquare();
     const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p; i++) {
@@ -1992,16 +1997,31 @@ double Fit::pearsonR() const
             s_yy += dy * dy;
             s_ff += df * df;
         }
-        if (s_yy > 0.0 && s_ff > 0.0)
-            return s_yf / sqrt(s_yy * s_ff);
+        if (s_yy <= 0.0 || s_ff <= 0.0)
+            return std::numeric_limits<double>::quiet_NaN();
+        const double r = s_yf / std::sqrt(s_yy * s_ff);
+        return qBound(-1.0, r, 1.0);
     }
+    if (d_y.size() <= 1)
+        return std::numeric_limits<double>::quiet_NaN();
+    double mean_y = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
+    double s_yy = 0.0;
+    for (double yv : d_y) {
+        double dy = yv - mean_y;
+        s_yy += dy * dy;
+    }
+    if (s_yy <= 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
     double r2 = rSquare();
-    return r2 > 0.0 ? sqrt(r2) : 0.0;
+    return r2 > 0.0 ? qBound(-1.0, std::sqrt(r2), 1.0) : 0.0;
 }
 
 QString Fit::legendInfo()
 {
-    QString info = tr("Dataset") + ": " + d_curve->title().text() + "\n";
+    const QString curveTitle =
+            (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text()
+                                                                      : objectName();
+    QString info = tr("Dataset") + ": " + curveTitle + "\n";
     info += tr("Function") + ": " + d_formula + "\n\n";
 
     double chi_2_dof = reducedChiSquare();
@@ -2050,14 +2070,17 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
     case AssociatedErrors: {
         bool error = true;
         QwtErrorPlotCurve *er = 0;
-        if (d_curve && ((PlotCurve *)d_curve)->type() != Graph::Function) {
-            QList<DataCurve *> lst = ((DataCurve *)d_curve)->errorBarsList();
-            foreach (DataCurve *c, lst) {
-                er = (QwtErrorPlotCurve *)c;
-                if (!er->xErrors()) {
-                    d_y_error_dataset = er->title().text();
-                    error = false;
-                    break;
+        const bool curveAlive = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0);
+        if (curveAlive) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
+                QList<DataCurve *> lst = dc->errorBarsList();
+                foreach (DataCurve *c, lst) {
+                    er = (QwtErrorPlotCurve *)c;
+                    if (!er->xErrors()) {
+                        d_y_error_dataset = er->title().text();
+                        error = false;
+                        break;
+                    }
                 }
             }
         }
@@ -2065,7 +2088,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
             if (!fail_silently && !isNonInteractiveFit(parent(), d_silent))
                 QMessageBox::critical((ApplicationWindow *)parent(), tr("Error"),
                                       tr("The curve %1 has no associated Y error bars.")
-                                              .arg(d_curve ? d_curve->title().text() : QString()));
+                                              .arg(curveAlive ? d_curve->title().text() : QString()));
             return false;
         }
         if (er) {
@@ -2077,7 +2100,8 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
         break;
     }
     case PoissonErrors: {
-        d_y_error_dataset = d_curve ? d_curve->title().text() : QString();
+        const bool curveAlive = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0);
+        d_y_error_dataset = curveAlive ? d_curve->title().text() : QString();
         for (unsigned i = 0; i < d_y.size(); i++) {
             double yv = std::isfinite(d_y[i]) ? d_y[i] : 0.0;
             d_y_errors[i] = std::sqrt(std::max(std::abs(yv), 1.0));
@@ -2105,7 +2129,9 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
         d_y_error_dataset = colName;
 
         int col = t->colIndex(colName);
-        DataCurve *dc = dynamic_cast<DataCurve *>(d_curve);
+        DataCurve *dc = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+                ? dynamic_cast<DataCurve *>(d_curve)
+                : nullptr;
         for (unsigned i = 0; i < d_y_errors.size(); i++) {
             int row = int(d_indices[i]);
             if (dc && dc->table() == t) {
@@ -2144,7 +2170,9 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         if (col < 0 || unsigned(t->numRows()) < d_x.size())
             return false;
         valsOut.resize(d_x.size(), 1.0);
-        DataCurve *dc = dynamic_cast<DataCurve *>(d_curve);
+        DataCurve *dc = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+                ? dynamic_cast<DataCurve *>(d_curve)
+                : nullptr;
         for (size_t i = 0; i < d_x.size(); ++i) {
             int row = (i < d_indices.size()) ? int(d_indices[i]) : int(i);
             if (dc && dc->table() == t && i < d_indices.size()) {
@@ -2234,7 +2262,9 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         }
         sanitizePositiveErrorVector(d_y_errors);
         d_y_error_source = PoissonErrors;
-        d_y_error_dataset = d_curve ? d_curve->title().text() : QString();
+        d_y_error_dataset = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+                ? d_curve->title().text()
+                : QString();
         d_weighting_method = WeightStatistical;
         d_explicit_weighting = true;
         d_weighting_col.clear();
@@ -2258,7 +2288,9 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         }
         sanitizePositiveErrorVector(d_y_errors);
         d_y_error_source = CustomErrors;
-        d_y_error_dataset = d_curve ? d_curve->title().text() : QString();
+        d_y_error_dataset = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+                ? d_curve->title().text()
+                : QString();
         d_weighting_method = WeightProportional;
         d_explicit_weighting = true;
         d_weighting_col.clear();
@@ -2656,6 +2688,11 @@ void Fit::fit()
 {
     if (!d_graph || d_init_err)
         return;
+    if (d_curve && d_graph->curveIndex(d_curve) < 0) {
+        d_curve = nullptr;
+        d_init_err = true;
+        return;
+    }
 
     if (d_x.empty()) {
         if (!isNonInteractiveFit(parent(), d_silent))
@@ -2724,14 +2761,14 @@ void Fit::fit()
     }
 
     storeCustomFitResults(par);
-    if (status == GSL_SUCCESS && chi_2 >= 0.0 && !d_suppress_curve_output) {
+    if (status == GSL_SUCCESS && chi_2 >= 0.0 && !d_suppress_curve_output && d_graph) {
         generateFitCurve(par);
-        if (d_conf_band || d_pred_band)
+        if ((d_conf_band || d_pred_band) && d_graph)
             addConfidenceAndPredictionBands(par);
     }
 
-    ApplicationWindow *app = (ApplicationWindow *)parent();
-    if (app && app->writeFitResultsToLog && !d_silent)
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    if (app && app->writeFitResultsToLog && !d_silent && d_graph)
         app->updateLog(logFitInfo(d_results, iterations, status, d_graph->parentPlotName()));
     disconnect(d_script.get(), SIGNAL(error(const QString &, const QString &, int)), this,
                SLOT(scriptError(const QString &, const QString &, int)));
@@ -3548,7 +3585,9 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         d_graph->addFitCurve(c);
     };
 
-    QString baseName = d_curve ? d_curve->title().text() : objectName();
+    QString baseName =
+            (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text()
+                                                                      : objectName();
     if (d_conf_band) {
         insertBandCurve(baseName + "_ConfUpper", X_band, confUpper, QColor(Qt::red));
         insertBandCurve(baseName + "_ConfLower", X_band, confLower, QColor(Qt::red));
@@ -3647,21 +3686,23 @@ void Fit::insertFitSummaryBoxOnGraph()
     QString curveLabel;
     if (d_curve) {
         const int cIdx = d_graph->curveIndex(d_curve);
-        if (cIdx >= 0)
+        if (cIdx >= 0) {
             curveLabel = d_graph->resolvedAutoCurveLabel(cIdx).trimmed();
-        if (curveLabel.isEmpty()) {
-            curveLabel = d_curve->title().text().trimmed();
-            if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
-                if (Table *tbl = dc->table()) {
-                    const QString pfx = tbl->objectName() + QLatin1Char('_');
-                    if (curveLabel.startsWith(pfx))
-                        curveLabel = curveLabel.mid(pfx.length());
+            if (curveLabel.isEmpty()) {
+                curveLabel = d_curve->title().text().trimmed();
+                if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
+                    if (Table *tbl = dc->table()) {
+                        const QString pfx = tbl->objectName() + QLatin1Char('_');
+                        if (curveLabel.startsWith(pfx))
+                            curveLabel = curveLabel.mid(pfx.length());
+                    }
+                } else {
+                    const int us = curveLabel.indexOf(QLatin1Char('_'));
+                    if (us > 0
+                        && curveLabel.left(us).startsWith(QStringLiteral("Table"),
+                                                          Qt::CaseInsensitive))
+                        curveLabel = curveLabel.mid(us + 1);
                 }
-            } else {
-                const int us = curveLabel.indexOf(QLatin1Char('_'));
-                if (us > 0
-                    && curveLabel.left(us).startsWith(QStringLiteral("Table"), Qt::CaseInsensitive))
-                    curveLabel = curveLabel.mid(us + 1);
             }
         }
     }
@@ -3736,7 +3777,9 @@ MultiLayer *Fit::createResidualPlotWindow()
                  QFont("Arial", 9, QFont::Normal), QFont("Arial", 9, QFont::Normal));
     Graph *rg = ml->activeGraph();
     if (rg) {
-        QString srcTitle = d_curve ? d_curve->title().text() : objectName();
+        QString srcTitle = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+                ? d_curve->title().text()
+                : objectName();
         rg->setTitle(tr("Residuals of %1 (%2)").arg(srcTitle, objectName()));
         rg->setTitleFont(QFont("Arial", 11, QFont::Normal));
         rg->setXAxisTitle(tr("X"));

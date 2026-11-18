@@ -685,6 +685,20 @@ void PlotCurve::applyStackTransformToCurrentData()
     }
 }
 
+void PlotCurve::setSymbolSkip(int everyN)
+{
+    const int clamped = qMax(0, everyN);
+    if (d_symbol_skip == clamped)
+        return;
+    d_symbol_skip = clamped;
+    itemChanged();
+}
+
+int PlotCurve::symbolSkip() const
+{
+    return d_symbol_skip;
+}
+
 QwtDoubleRect PlotCurve::boundingRect() const
 {
     QwtDoubleRect r = QwtPlotCurve::boundingRect();
@@ -714,10 +728,19 @@ QwtDoubleRect PlotCurve::boundingRect() const
         || !std::isfinite(d_y_bottom))
         return r;
 
-    const double minX = qMin(d_x_left, d_x_right);
-    const double maxX = qMax(d_x_left, d_x_right);
-    const double minY = qMin(d_y_top, d_y_bottom);
-    const double maxY = qMax(d_y_top, d_y_bottom);
+    const double rawMinX = qMin(r.left(), r.right());
+    const double rawMaxX = qMax(r.left(), r.right());
+    const double rawMinY = qMin(r.top(), r.bottom());
+    const double rawMaxY = qMax(r.top(), r.bottom());
+
+    double minX = qMin(d_x_left, d_x_right);
+    double maxX = qMax(d_x_left, d_x_right);
+    double minY = qMin(d_y_top, d_y_bottom);
+    double maxY = qMax(d_y_top, d_y_bottom);
+    if (rawMinX >= 0.0 && rawMaxX > 0.0 && minX < 0.0)
+        minX = 0.0;
+    if (rawMinY >= 0.0 && rawMaxY > 0.0 && minY < 0.0)
+        minY = 0.0;
     return QwtDoubleRect(minX, minY, maxX - minX, maxY - minY);
 }
 
@@ -901,6 +924,14 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
 
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
+
+    QPen p = painter->pen();
+    if (p.style() != Qt::NoPen && p.isCosmetic()) {
+        p.setCosmetic(false);
+        if (p.widthF() <= 0.0)
+            p.setWidthF(qMax(1.0, double(pen().widthF())));
+        painter->setPen(p);
+    }
 
     const int n = dataSize();
     from = qMax(0, from);
@@ -1200,7 +1231,13 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         painter->setRenderHint(QPainter::Antialiasing, true);
 
     painter->setBrush(sym.brush());
-    painter->setPen(QwtPainter::scaledPen(sym.pen()));
+    QPen symPen = QwtPainter::scaledPen(sym.pen());
+    if (symPen.style() != Qt::NoPen && symPen.isCosmetic()) {
+        symPen.setCosmetic(false);
+        if (symPen.widthF() <= 0.0)
+            symPen.setWidthF(qMax(1.0, double(sym.pen().widthF())));
+    }
+    painter->setPen(symPen);
 
     const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
     const double w = double(layoutSz.width());
@@ -1249,6 +1286,74 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         const double padX = 0.5 * w + symPenW + 2.0;
         const double padY = 0.5 * h + symPenW + 2.0;
         painter->setClipRect(d_canvas_rect.adjusted(-padX, -padY, padX, padY));
+    }
+
+    const bool isLineSymbolsAuto = (d_symbol_skip == 0)
+            && (d_type == Graph::LineSymbols || style() != QwtPlotCurve::NoCurve)
+            && (d_type != Graph::Scatter);
+    const bool maySkip = (d_symbol_skip >= 2) || (isLineSymbolsAuto && n > 80);
+
+    if (maySkip) {
+        struct ValidSymPt {
+            double cx;
+            double cy;
+            bool inBox;
+        };
+        QVector<ValidSymPt> validPts;
+        validPts.reserve(to - from + 1);
+        int visCount = 0;
+        for (int i = from; i <= to; ++i) {
+            const double vx = x(i);
+            const double vy = y(i);
+            if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
+                || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps))
+                continue;
+            const double cx = xMap.xTransform(vx);
+            const double cy = yMap.xTransform(vy);
+            if (!std::isfinite(cx) || !std::isfinite(cy))
+                continue;
+            if (std::fabs(cx) > kMaxSafeCoord || std::fabs(cy) > kMaxSafeCoord)
+                continue;
+            const bool inBox = !hasCanvasBounds || validCenterBox.contains(QPointF(cx, cy));
+            if (inBox)
+                ++visCount;
+            validPts.append({ cx, cy, inBox });
+        }
+
+        const int totalValid = validPts.size();
+        if (d_symbol_skip >= 2) {
+            const int step = d_symbol_skip;
+            for (int k = 0; k < totalValid; ++k) {
+                if (k == 0 || k == totalValid - 1 || (k % step) == 0) {
+                    if (validPts[k].inBox)
+                        drawSymbolShapeF(painter, sym.style(), validPts[k].cx, validPts[k].cy, w, h);
+                }
+            }
+        } else {
+            int effSkip = 1;
+            if (hasCanvasBounds) {
+                const int targetMarkers =
+                        (d_canvas_rect.width() < 150.0) ? qBound(6, int(d_canvas_rect.width() / 14.0), 12) : 25;
+                if (visCount > 80 || (d_canvas_rect.width() < 150.0 && visCount > targetMarkers * 2))
+                    effSkip = qMax(1, visCount / targetMarkers);
+            } else if (totalValid > 80) {
+                effSkip = qMax(1, totalValid / 25);
+            }
+            int visOrd = 0;
+            for (int k = 0; k < totalValid; ++k) {
+                if (!validPts[k].inBox)
+                    continue;
+                if (effSkip <= 1 || visOrd == 0 || visOrd == visCount - 1
+                    || (visOrd % effSkip) == 0) {
+                    drawSymbolShapeF(painter, sym.style(), validPts[k].cx, validPts[k].cy, w, h);
+                }
+                ++visOrd;
+            }
+        }
+
+        if (expandClip)
+            painter->restore();
+        return;
     }
 
     const bool decimateSubPixel = testPaintAttribute(PaintFiltered) && ((to - from) > 4000);

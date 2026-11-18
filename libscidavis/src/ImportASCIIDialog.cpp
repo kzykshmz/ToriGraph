@@ -49,9 +49,9 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
 
     QStringList filters;
     filters << tr("All files") + " (*)";
+    filters << tr("Comma Separated Values") + " (*.CSV *.csv *.TSV *.tsv)";
     filters << tr("Text files") + " (*.TXT *.txt)";
-    filters << tr("Data files") + " (*.DAT *.dat)";
-    filters << tr("Comma Separated Values") + " (*.CSV *.csv)";
+    filters << tr("Data files") + " (*.DAT *.dat *.RAS *.ras)";
     setNameFilters(filters);
 
     setFileMode(QFileDialog::ExistingFiles);
@@ -60,13 +60,17 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
     d_import_mode->setEnabled(import_mode_enabled);
     setExtensionWidget(d_advanced_options);
 
-    // get rembered option values
+    // get remembered option values
     ApplicationWindow *app = (ApplicationWindow *)parent;
     d_strip_spaces->setChecked(app->strip_spaces);
     d_simplify_spaces->setChecked(app->simplify_spaces);
     d_ignored_lines->setValue(app->ignoredLines);
     d_rename_columns->setChecked(app->renameColumns);
     setColumnSeparator(app->columnSeparator);
+    if (app->d_ASCII_file_filter.contains(QLatin1String(".csv"), Qt::CaseInsensitive)
+        && app->columnSeparator == QLatin1String("\t")) {
+        setColumnSeparator(QStringLiteral(","));
+    }
 
     if (app->d_ASCII_import_locale.name() == QLocale::c().name())
         boxDecimalSeparator->setCurrentIndex(1);
@@ -78,6 +82,20 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
     d_convert_to_numeric->setChecked(app->d_convert_to_numeric);
 
     connect(d_import_mode, SIGNAL(currentIndexChanged(int)), this, SLOT(updateImportMode(int)));
+    connect(this, &QFileDialog::currentChanged, this, [this](const QString &path) {
+        if (path.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive))
+            setColumnSeparator(QStringLiteral(","));
+        else if (path.endsWith(QLatin1String(".tsv"), Qt::CaseInsensitive))
+            setColumnSeparator(QStringLiteral("\t"));
+        else if (path.endsWith(QLatin1String(".ras"), Qt::CaseInsensitive))
+            setColumnSeparator(QStringLiteral(" "));
+    });
+    connect(this, &QFileDialog::filterSelected, this, [this](const QString &flt) {
+        if (flt.contains(QLatin1String(".csv"), Qt::CaseInsensitive))
+            setColumnSeparator(QStringLiteral(","));
+        else if (flt.contains(QLatin1String(".tsv"), Qt::CaseInsensitive))
+            setColumnSeparator(QStringLiteral("\t"));
+    });
 }
 
 void ImportASCIIDialog::initAdvancedOptions()
@@ -173,18 +191,18 @@ void ImportASCIIDialog::initAdvancedOptions()
     d_simplify_spaces->setWhatsThis(help_simplify_spaces);
     d_simplify_spaces->setToolTip(help_simplify_spaces);
 
-    d_convert_to_numeric = new QCheckBox(tr("&Numeric data"));
-    advanced_layout->addWidget(d_convert_to_numeric, 3, 0, 1, 2);
-
-    advanced_layout->addWidget(new QLabel(tr("Decimal Separators")), 3, 1);
+    advanced_layout->addWidget(new QLabel(tr("Decimal Separators")), 3, 0);
     boxDecimalSeparator = new QComboBox();
     boxDecimalSeparator->addItem(tr("default") + " (" + QLocale().toString(1000.0, 'f', 1) + ")");
     boxDecimalSeparator->addItem(QLocale::c().toString(1000.0, 'f', 1));
     boxDecimalSeparator->addItem(QLocale(QLocale::German).toString(1000.0, 'f', 1));
     boxDecimalSeparator->addItem(QLocale(QLocale::French).toString(1000.0, 'f', 1));
+    advanced_layout->addWidget(boxDecimalSeparator, 3, 1);
+
+    d_convert_to_numeric = new QCheckBox(tr("&Numeric data"));
     connect(d_convert_to_numeric, SIGNAL(toggled(bool)), boxDecimalSeparator,
             SLOT(setEnabled(bool)));
-    advanced_layout->addWidget(boxDecimalSeparator, 3, 2);
+    advanced_layout->addWidget(d_convert_to_numeric, 3, 2, 1, 2);
 
     QHBoxLayout *meta_options_layout = new QHBoxLayout();
     d_remember_options = new QCheckBox(tr("Re&member the above options"));

@@ -255,6 +255,7 @@ private:
     QToolButton *d_btn_axis_top = nullptr;
     QToolButton *d_btn_axis_right = nullptr;
     QCheckBox *d_chk_axis_visible = nullptr;
+    QCheckBox *d_chk_tick_labels = nullptr;
 
     QLabel *d_sec_axis_range_lbl = nullptr;
     QLabel *d_lbl_axis_min = nullptr;
@@ -289,6 +290,8 @@ private:
     QCheckBox *d_chk_minor_grid = nullptr;
 
     QLabel *d_sec_axis_title_lbl = nullptr;
+    QLabel *d_lbl_unit_format = nullptr;
+    QComboBox *d_combo_unit_format = nullptr;
     QLineEdit *d_edit_axis_title = nullptr;
     QToolButton *d_btn_fmt_italic = nullptr;
     QToolButton *d_btn_fmt_sub = nullptr;
@@ -324,6 +327,8 @@ private:
     QComboBox *d_combo_sym_shape = nullptr;
     QLabel *d_lbl_sym_size = nullptr;
     QSpinBox *d_spin_sym_size = nullptr;
+    QLabel *d_lbl_sym_skip = nullptr;
+    QSpinBox *d_spin_sym_skip = nullptr;
     QCheckBox *d_chk_sym_hollow = nullptr;
     QCheckBox *d_chk_link_sym_color = nullptr;
     QWidget *d_sym_custom_colors_wrap = nullptr;
@@ -371,6 +376,9 @@ private:
     QComboBox *d_combo_spec_cmap = nullptr;
     QCheckBox *d_chk_spec_reverse = nullptr;
     QCheckBox *d_chk_spec_colorbar = nullptr;
+    QLabel *d_lbl_spec_cb_title = nullptr;
+    QLineEdit *d_edit_spec_cb_title = nullptr;
+    QWidget *d_spec_cb_sym_bar = nullptr;
     QLabel *d_lbl_spec_cb_width = nullptr;
     QSpinBox *d_spin_spec_cb_width = nullptr;
     QCheckBox *d_chk_spec_contours = nullptr;
@@ -399,6 +407,7 @@ private:
     QComboBox *d_combo_leg_frame = nullptr;
     QLabel *d_lbl_leg_header = nullptr;
     QLineEdit *d_edit_leg_header = nullptr;
+    QWidget *d_leg_sym_bar = nullptr;
     QLabel *d_lbl_leg_cols = nullptr;
     QSpinBox *d_spin_leg_cols = nullptr;
     QLabel *d_lbl_leg_font_pt = nullptr;

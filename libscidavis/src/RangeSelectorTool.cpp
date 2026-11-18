@@ -29,6 +29,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "RangeSelectorTool.h"
+#include "ApplicationWindow.h"
 #include "Graph.h"
 #include "Plot.h"
 #include "PlotCurve.h"
@@ -45,9 +46,12 @@
 
 RangeSelectorTool::RangeSelectorTool(Graph *graph, const QObject *status_target,
                                      const char *status_slot)
-    : QwtPlotPicker(graph->plotWidget()->canvas()), PlotToolInterface(graph)
+    : QwtPlotPicker(graph->plotWidget()->canvas()),
+      PlotToolInterface(graph),
+      d_active_point(0),
+      d_inactive_point(0),
+      d_selected_curve(NULL)
 {
-    d_selected_curve = NULL;
     const Graph::GraphSelection curSel = d_graph->currentSelection();
     if (curSel.kind == Graph::GraphSelection::Curve && curSel.primaryId >= 0) {
         QwtPlotCurve *selC = d_graph->curve(curSel.primaryId);
@@ -55,7 +59,7 @@ RangeSelectorTool::RangeSelectorTool(Graph *graph, const QObject *status_target,
             d_selected_curve = selC;
     }
     if (!d_selected_curve) {
-        for (int i = d_graph->curves(); i >= 0; --i) {
+        for (int i = d_graph->curves() - 1; i >= 0; --i) {
             d_selected_curve = d_graph->curve(i);
             if (d_selected_curve && d_selected_curve->rtti() == QwtPlotItem::Rtti_PlotCurve
                 && d_selected_curve->dataSize() > 0)
@@ -64,7 +68,10 @@ RangeSelectorTool::RangeSelectorTool(Graph *graph, const QObject *status_target,
         }
     }
     if (!d_selected_curve) {
-        QMessageBox::critical(d_graph, tr("Warning"), tr("All the curves on this plot are empty!"));
+        if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
+            QMessageBox::critical(d_graph, tr("Warning"),
+                                  tr("All the curves on this plot are empty!"));
+        }
         return;
     }
 
@@ -117,7 +124,7 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
     if (curve_key < 0 || dist >= 10) // 10 pixels tolerance
         return;
     QwtPlotCurve *curve = (QwtPlotCurve *)d_graph->plotWidget()->curve(curve_key);
-    if (!curve)
+    if (!curve || curve->dataSize() <= 0 || point < 0 || point >= curve->dataSize())
         return;
 
     if (curve == d_selected_curve)
@@ -127,6 +134,7 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
         double min_x = curve->data().boundingRect().left();
         double max_x = curve->data().boundingRect().right();
         int n = curve->dataSize();
+        d_inactive_point = (point == 0 && n > 1) ? (n - 1) : 0;
         double second_x;
         if (curve->x(point) == min_x)
             second_x = max_x;
@@ -160,7 +168,13 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
 
 void RangeSelectorTool::setSelectedCurve(QwtPlotCurve *curve)
 {
-    if (!curve || d_selected_curve == curve)
+    if (!curve || curve->dataSize() <= 0) {
+        d_selected_curve = NULL;
+        d_active_marker.detach();
+        d_inactive_marker.detach();
+        return;
+    }
+    if (d_selected_curve == curve)
         return;
     d_selected_curve = curve;
     d_active_point = 0;
@@ -173,13 +187,18 @@ void RangeSelectorTool::setSelectedCurve(QwtPlotCurve *curve)
                              d_selected_curve->y(d_active_point));
     d_inactive_marker.setValue(d_selected_curve->x(d_inactive_point),
                                d_selected_curve->y(d_inactive_point));
+    if (!d_active_marker.plot() && d_graph && d_graph->plotWidget())
+        d_active_marker.attach(d_graph->plotWidget());
+    if (!d_inactive_marker.plot() && d_graph && d_graph->plotWidget())
+        d_inactive_marker.attach(d_graph->plotWidget());
     emitStatusText();
     emit changed();
 }
 
 void RangeSelectorTool::setActivePoint(int point)
 {
-    if (point == d_active_point)
+    if (!d_selected_curve || point < 0 || point >= d_selected_curve->dataSize()
+        || point == d_active_point)
         return;
     d_active_point = point;
     d_active_marker.setValue(d_selected_curve->x(d_active_point),
@@ -190,7 +209,11 @@ void RangeSelectorTool::setActivePoint(int point)
 
 void RangeSelectorTool::emitStatusText()
 {
-    if (((PlotCurve *)d_selected_curve)->type() == Graph::Function) {
+    if (!d_selected_curve || d_active_point < 0 || d_active_point >= d_selected_curve->dataSize())
+        return;
+    const PlotCurve *pc = dynamic_cast<const PlotCurve *>(d_selected_curve);
+    DataCurve *dc = dynamic_cast<DataCurve *>(d_selected_curve);
+    if ((pc && pc->type() == Graph::Function) || !dc || !dc->table()) {
         emit statusText(
                 QString("%1 <=> %2[%3]: x=%4; y=%5")
                         .arg(d_active_marker.xValue() > d_inactive_marker.xValue() ? tr("Right")
@@ -200,11 +223,16 @@ void RangeSelectorTool::emitStatusText()
                         .arg(QLocale().toString(d_selected_curve->x(d_active_point), 'G', 15))
                         .arg(QLocale().toString(d_selected_curve->y(d_active_point), 'G', 15)));
     } else {
-        Table *t = ((DataCurve *)d_selected_curve)->table();
-        if (!t)
-            return;
-
-        int row = ((DataCurve *)d_selected_curve)->tableRow(d_active_point);
+        Table *t = dc->table();
+        int row = dc->tableRow(d_active_point);
+        int xCol = t->colIndex(dc->xColumnName());
+        int yCol = t->colIndex(d_selected_curve->title().text());
+        const QString xStr = (row >= 0 && xCol >= 0)
+                ? t->text(row, xCol)
+                : QLocale().toString(d_selected_curve->x(d_active_point), 'G', 15);
+        const QString yStr = (row >= 0 && yCol >= 0)
+                ? t->text(row, yCol)
+                : QLocale().toString(d_selected_curve->y(d_active_point), 'G', 15);
 
         emit statusText(
                 QString("%1 <=> %2[%3]: x=%4; y=%5")
@@ -212,14 +240,15 @@ void RangeSelectorTool::emitStatusText()
                                                                                    : tr("Left"))
                         .arg(d_selected_curve->title().text())
                         .arg(row + 1)
-                        .arg(t->text(row,
-                                     t->colIndex(((DataCurve *)d_selected_curve)->xColumnName())))
-                        .arg(t->text(row, t->colIndex(d_selected_curve->title().text()))));
+                        .arg(xStr)
+                        .arg(yStr));
     }
 }
 
 void RangeSelectorTool::switchActiveMarker()
 {
+    if (!d_selected_curve)
+        return;
     QwtDoublePoint tmp = d_active_marker.value();
     d_active_marker.setValue(d_inactive_marker.value());
     d_inactive_marker.setValue(tmp);
@@ -352,32 +381,48 @@ bool RangeSelectorTool::keyEventFilter(QKeyEvent *ke)
         return false;
     }
     case Qt::Key_Up: {
+        if (!d_graph || !d_selected_curve)
+            return false;
         int n_curves = d_graph->curves();
-        int start = d_graph->curveIndex(d_selected_curve) + 1;
-        for (int i = start; i < start + n_curves; ++i)
-            if (d_graph->curve(i % n_curves)->dataSize() > 0) {
-                setSelectedCurve(d_graph->curve(i % n_curves));
+        if (n_curves <= 0)
+            return true;
+        int curIdx = d_graph->curveIndex(d_selected_curve);
+        int start = (curIdx >= 0 ? curIdx : 0) + 1;
+        for (int i = start; i < start + n_curves; ++i) {
+            QwtPlotCurve *cand = d_graph->curve(i % n_curves);
+            if (cand && cand->dataSize() > 0) {
+                setSelectedCurve(cand);
                 break;
             }
+        }
         d_graph->plotWidget()->replot();
         return true;
     }
     case Qt::Key_Down: {
+        if (!d_graph || !d_selected_curve)
+            return false;
         int n_curves = d_graph->curves();
-        int start = d_graph->curveIndex(d_selected_curve) + n_curves - 1;
-        for (int i = start; i > start - n_curves; --i)
-            if (d_graph->curve(i % n_curves)->dataSize() > 0) {
-                setSelectedCurve(d_graph->curve(i % n_curves));
+        if (n_curves <= 0)
+            return true;
+        int curIdx = d_graph->curveIndex(d_selected_curve);
+        int start = (curIdx >= 0 ? curIdx : 0) + n_curves - 1;
+        for (int i = start; i > start - n_curves; --i) {
+            QwtPlotCurve *cand = d_graph->curve(i % n_curves);
+            if (cand && cand->dataSize() > 0) {
+                setSelectedCurve(cand);
                 break;
             }
+        }
         d_graph->plotWidget()->replot();
         return true;
     }
     case Qt::Key_Right:
     case Qt::Key_Plus: {
+        if (!d_selected_curve || d_selected_curve->dataSize() <= 0)
+            return true;
         if (ke->modifiers() & Qt::ControlModifier) {
             int n_points = d_selected_curve->dataSize();
-            setActivePoint((d_active_point + 1) % n_points);
+            setActivePoint((qMax(0, d_active_point) + 1) % n_points);
             d_graph->plotWidget()->replot();
         } else
             switchActiveMarker();
@@ -385,9 +430,11 @@ bool RangeSelectorTool::keyEventFilter(QKeyEvent *ke)
     }
     case Qt::Key_Left:
     case Qt::Key_Minus: {
+        if (!d_selected_curve || d_selected_curve->dataSize() <= 0)
+            return true;
         if (ke->modifiers() & Qt::ControlModifier) {
             int n_points = d_selected_curve->dataSize();
-            setActivePoint((d_active_point - 1 + n_points) % n_points);
+            setActivePoint((qMax(0, d_active_point) - 1 + n_points) % n_points);
             d_graph->plotWidget()->replot();
         } else
             switchActiveMarker();

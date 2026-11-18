@@ -79,11 +79,7 @@ public:
 
     int extent(const QPen &pen, const QFont &font) const override;
 
-    virtual QwtText label(double value) const
-    {
-        return QwtText(d_prefix + QLocale().toString(transformValue(value), d_fmt, d_prec)
-                       + d_suffix);
-    };
+    QwtText label(double value) const override;
 
     void labelFormat(char &f, int &prec) const;
     void setLabelFormat(char f, int prec);

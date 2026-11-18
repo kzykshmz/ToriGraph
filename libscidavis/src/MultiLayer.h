@@ -119,7 +119,14 @@ public:
     Graph *addLinkedLayer(Graph *parentLayer = nullptr, bool linkX = true, bool linkY = false,
                           const QString &xFormula = QString("x"),
                           const QString &yFormula = QString("y"));
-    Graph *addInsetLayer(Graph *sourceLayer = nullptr, const QRectF &roiDataRect = QRectF());
+    Graph *addInsetLayer(Graph *sourceLayer = nullptr, const QRectF &roiDataRect = QRectF(),
+                         bool showConnectors = true);
+    bool isInsetLayer(const Graph *g) const;
+    Graph *insetSourceLayer(const Graph *g) const;
+    QRectF insetNormGeo(const Graph *g) const;
+    QRectF insetZoomDataRect(const Graph *g) const;
+    bool insetShowConnectors(const Graph *g) const;
+    void setInsetShowConnectors(Graph *insetLayer, bool show);
 
     //! \name Event Handlers
     //@{

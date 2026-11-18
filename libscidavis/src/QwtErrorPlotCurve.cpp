@@ -94,6 +94,14 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
 
+    QPen p = painter->pen();
+    if (p.style() != Qt::NoPen && (p.isCosmetic() || p.widthF() <= 0.0)) {
+        p.setCosmetic(false);
+        if (p.widthF() <= 0.0)
+            p.setWidthF(qMax(1.0, double(pen().widthF())));
+        painter->setPen(p);
+    }
+
     double sh = 0.0;
     const QwtSymbol symbol = d_master_curve->symbol();
     if (symbol.style() != QwtSymbol::NoSymbol)

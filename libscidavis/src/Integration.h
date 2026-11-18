@@ -55,7 +55,7 @@ public:
     double result() { return d_result; }
 
 protected:
-    virtual bool isDataAcceptable();
+    bool isDataAcceptable() const override;
 
 private:
     void init();

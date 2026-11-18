@@ -170,12 +170,32 @@ QString Column::formattedAxisTitle(UnitFormat fmt) const
 {
     const QString ln = longName().trimmed();
     const QString base = ln.isEmpty() ? name() : ln;
-    const QString u = units().trimmed();
+    QString u = units().trimmed();
+    if (u.startsWith(QLatin1Char('(')) && u.endsWith(QLatin1Char(')')) && u.size() >= 3)
+        u = u.mid(1, u.size() - 2).trimmed();
     if (u.isEmpty())
         return base;
+
+    const QString uLower = u.toLower();
+    const bool isDimensionless = (u == QLatin1String("-") || u == QStringLiteral("\u2013")
+                                  || u == QStringLiteral("\u2014") || u == QStringLiteral("\u2212")
+                                  || uLower == QLatin1String("none")
+                                  || uLower == QLatin1String("dimensionless"));
+    if (isDimensionless)
+        return QString("%1 (-)").arg(base);
+
+    const bool isArbUnits = (uLower == QLatin1String("a.u.") || uLower == QLatin1String("a.u")
+                             || uLower == QLatin1String("au")
+                             || uLower == QLatin1String("arb. units")
+                             || uLower == QLatin1String("arb. unit")
+                             || uLower == QLatin1String("arb.units")
+                             || uLower == QLatin1String("arbitrary units"));
+
     if (fmt == UnitFormat::ISIJSlash) {
         if (u == QLatin1String("%"))
             return QString("%1 (%)").arg(base);
+        if (isArbUnits)
+            return QString("%1 (a.u.)").arg(base);
         return QString("%1 / %2").arg(base, u);
     }
     return QString("%1 (%2)").arg(base, u);

@@ -57,36 +57,41 @@ Filter::Filter(ApplicationWindow *parent, Table *t, QString name) : QObject(pare
     d_table = t;
 }
 
+Filter::~Filter() = default;
+
 void Filter::init()
 {
     d_curveColor = ColorButton::color(1);
     d_tolerance = 1e-4;
     d_points = 100;
     d_max_iterations = 1000;
-    d_curve = 0;
+    d_curve = nullptr;
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
     d_prec = app ? app->fit_output_precision : 13;
     d_init_err = false;
     d_sort_data = false;
     d_min_points = 2;
     d_explanation = objectName();
-    d_graph = 0;
-    d_table = 0;
+    d_graph = nullptr;
+    d_table = nullptr;
     d_silent = false;
 }
 
 bool Filter::isSilentOrNonInteractive() const
 {
-    if (d_silent)
+    if (d_silent || (qApp && qApp->property("torigraph_noninteractive").toBool()))
+        return true;
+    if (ApplicationWindow::isNonInteractiveContext(parent()))
         return true;
     if (const ApplicationWindow *app = qobject_cast<const ApplicationWindow *>(parent()))
         return app->isHeadlessMode() || app->isOleEmbeddedMode() || app->batchMode();
-    return qApp && qApp->property("torigraph_noninteractive").toBool();
+    return false;
 }
 
 void Filter::setInterval(double from, double to)
 {
-    if (!d_curve) {
+    if (!d_curve || (d_graph && d_graph->curveIndex(d_curve) < 0)) {
+        d_curve = nullptr;
         if (!isSilentOrNonInteractive())
             QMessageBox::critical((ApplicationWindow *)parent(),
                                   tr("ToriGraph") + " - " + tr("Error"),
@@ -154,6 +159,19 @@ void Filter::setDataCurve(const int curve, double start, double end)
                 d_indices.swap(unmasked);
             }
         }
+    }
+
+    // Filter out non-finite X/Y values so GSL routines never see NaN/Inf
+    {
+        std::vector<size_t> finiteIndices;
+        finiteIndices.reserve(d_indices.size());
+        for (size_t idx : d_indices) {
+            const double xv = d_curve->x(int(idx));
+            const double yv = d_curve->y(int(idx));
+            if (std::isfinite(xv) && std::isfinite(yv))
+                finiteIndices.push_back(idx);
+        }
+        d_indices.swap(finiteIndices);
     }
 
     try
@@ -278,11 +296,15 @@ void Filter::setColor(const QString &colorName)
 
 void Filter::showLegend()
 {
+    if (!d_graph)
+        return;
     Legend *mrk = d_graph->newLegend(legendInfo());
-    if (d_graph->hasLegend()) {
+    if (mrk && d_graph->hasLegend()) {
         Legend *legend = d_graph->legend();
-        QPoint p = legend->rect().bottomLeft();
-        mrk->setOrigin(QPoint(p.x(), p.y() + 20));
+        if (legend && legend != mrk) {
+            QPoint p = legend->rect().bottomLeft();
+            mrk->setOrigin(QPoint(p.x(), p.y() + 20));
+        }
     }
     d_graph->replot();
 }
@@ -320,24 +342,32 @@ void Filter::output()
 
 QwtPlotCurve *Filter::addResultCurve(const std::vector<double> &x, const std::vector<double> &y)
 {
-    ApplicationWindow *app = (ApplicationWindow *)parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    if (!app || !d_graph)
+        return nullptr;
+    const int nPts = qMin(d_points, qMin(int(x.size()), int(y.size())));
+    if (nPts <= 0)
+        return nullptr;
+
     const QString tableName = app->generateUniqueName(this->objectName());
     Column *xCol = new Column(tr("1", "filter table x column name"), SciDAVis::ColumnMode::Numeric);
     Column *yCol = new Column(tr("2", "filter table y column name"), SciDAVis::ColumnMode::Numeric);
     xCol->setPlotDesignation(SciDAVis::X);
     yCol->setPlotDesignation(SciDAVis::Y);
-    for (int i = 0; i < d_points; i++) {
-        xCol->setValueAt(i, x[i]);
-        yCol->setValueAt(i, y[i]);
+    for (int i = 0; i < nPts; i++) {
+        xCol->setValueAt(i, x[size_t(i)]);
+        yCol->setValueAt(i, y[size_t(i)]);
     }
+    const QString srcTitle =
+            (d_curve && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text() : objectName();
     // first set the values, then add the columns to the table, otherwise, we generate too many undo
     // commands
     Table *t = app->newHiddenTable(tableName,
-                                   d_explanation + " " + tr("of") + " " + d_curve->title().text(),
+                                   d_explanation + " " + tr("of") + " " + srcTitle,
                                    QList<Column *>() << xCol << yCol);
 
     DataCurve *c = new DataCurve(t, tableName + "_" + xCol->name(), tableName + "_" + yCol->name());
-    c->setData(x.data(), y.data(), d_points);
+    c->setData(x.data(), y.data(), nPts);
     c->setPen(QPen(d_curveColor, 1));
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->updatePlot();

@@ -33,8 +33,10 @@
 #include <QHeaderView>
 #include <QList>
 #include <QPoint>
+#include <QPointer>
 #include "TableModel.h"
 
+class QLineEdit;
 class QMouseEvent;
 
 //! Slave header for TableDoubleHeaderView
@@ -57,10 +59,15 @@ public:
 
     virtual void setModel(QAbstractItemModel *model);
     virtual QSize sizeHint() const override;
+    int subRowLineHeight() const;
+    int subRowCount() const;
+    bool anyColumnHasFormula() const;
 
 protected:
     virtual void paintSection(QPainter *painter, const QRect &rect,
                               int logicalIndex) const override;
+
+    TableModel *d_table_model = nullptr;
 
     friend class TableDoubleHeaderView; // access to paintSection (protected)
 };
@@ -93,6 +100,11 @@ public:
     void showComments(bool on = true);
     //! Return whether comments are show currently
     bool areCommentsShown() const;
+    int topHeaderHeight() const;
+    bool handleSubHeaderDoubleClick(const QPoint &pos);
+    void beginInlineSubHeaderEdit(int logicalCol, int subRow);
+    void commitInlineSubHeaderEdit();
+    void cancelInlineSubHeaderEdit();
 
 public slots:
     // adjust geometry and repaint header
@@ -108,6 +120,8 @@ protected:
     virtual void mousePressEvent(QMouseEvent *event) override;
     virtual void mouseMoveEvent(QMouseEvent *event) override;
     virtual void mouseReleaseEvent(QMouseEvent *event) override;
+    virtual void mouseDoubleClickEvent(QMouseEvent *event) override;
+    virtual bool eventFilter(QObject *watched, QEvent *event) override;
 
     //! Flag: show/high column comments
     bool d_show_comments;
@@ -116,6 +130,10 @@ protected:
     QPoint d_drag_start_pos;
     int d_pressed_logical_col = -1;
     QList<int> d_saved_selected_cols;
+    QPointer<QLineEdit> d_inline_editor;
+    int d_inline_col = -1;
+    int d_inline_subrow = -1;
+    bool d_committing_inline = false;
 };
 
 #endif // #ifndef TABLEDOUBLEHEADERVIEW_H

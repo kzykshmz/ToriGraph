@@ -31,7 +31,13 @@
 #define ASCII_TABLE_IMPORT_FILTER_H
 
 #include "core/AbstractImportFilter.h"
+#include <QByteArray>
 #include <QLocale>
+#include <QString>
+
+namespace future {
+class Table;
+}
 
 //! Import an ASCII file as Table.
 /**
@@ -66,6 +72,16 @@ public:
     virtual AbstractAspect *importAspect(QIODevice &input);
     virtual QStringList fileExtensions() const;
     virtual QString name() const { return QObject::tr("ASCII table"); }
+
+    static QString decodeLabTextAuto(const QByteArray &rawBytes,
+                                     const QString &encodingHint = QString());
+    static void splitHeaderNameAndUnits(const QString &rawHeader, QString &outShortName,
+                                        QString &outLongName, QString &outUnits);
+    static future::Table *importLabTextData(const QByteArray &rawBytes, const QString &tableName,
+                                            const QString &filePathHint = QString(),
+                                            const QString &separatorHint = QString(),
+                                            const QString &encodingHint = QString(),
+                                            int unitsRowHint = -1 /* -1=auto, 0=none, 1=row2 is units */);
 
     ACCESSOR(int, ignored_lines);
     Q_PROPERTY(int ignored_lines READ ignored_lines WRITE set_ignored_lines)

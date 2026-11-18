@@ -72,6 +72,7 @@ class TableViewWidget : public QTableView
 public:
     //! Constructor
     TableViewWidget(QWidget *parent = 0) : QTableView(parent) {};
+    using QTableView::sizeHintForColumn;
 
 protected:
     //! Overloaded function (cf. Qt documentation)
@@ -192,6 +193,7 @@ public:
 
     void setColumnWidth(int col, int width);
     int columnWidth(int col) const;
+    void autoExpandColumnWidthForHeader(int col, bool fitDataCellsToo = false);
     bool formulaModeActive() const;
 
 public slots:
@@ -274,6 +276,7 @@ protected:
     QLineEdit *d_long_name_edit = nullptr;
     QLabel *d_units_label = nullptr;
     QLineEdit *d_units_edit = nullptr;
+    QPointer<QWidget> d_last_desc_edit;
     bool d_updating_ui = false;
     bool d_comment_dirty = false;
     bool d_user_hid_comments = false;

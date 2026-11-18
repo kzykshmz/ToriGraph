@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -33,6 +34,44 @@ class RpcError(ToriGraphError):
         self.code = int(code)
         self.message = str(message)
         self.data = data
+        self.available: Optional[List[str]] = (
+            [str(x) for x in data["available"]]
+            if isinstance(data, Mapping) and isinstance(data.get("available"), (list, tuple))
+            else None
+        )
+
+
+ToriGraphRpcError = RpcError
+
+
+def _cleanup_spawned_session(
+    proc: Optional[subprocess.Popen[bytes]],
+    transport: Any,
+    cleanup_files: Sequence[str],
+) -> None:
+    """GC / explicit cleanup helper for spawned ToriGraph child processes and temp files."""
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            pass
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+        except Exception:
+            pass
+    for fpath in cleanup_files:
+        try:
+            if fpath and os.path.exists(fpath):
+                os.remove(fpath)
+        except OSError:
+            pass
 
 
 def _sanitize_for_json(value: Any) -> Any:
@@ -474,12 +513,14 @@ class TableProxy:
         return res
 
     set_column_data = set_column
+    set_col = set_column
 
     def get_column(self, col: Union[int, str]) -> List[Any]:
         res = self.session.call("table.get_column_data", table=self.name, col=col)
         return list(res.get("data", res.get("values", [])))
 
     get_column_data = get_column
+    get_col = get_column
 
     def set_data_dict(
         self,
@@ -668,6 +709,39 @@ class TableProxy:
         res = self.session.call("table.to_matrix", table=self.name, name=name)
         return MatrixProxy(self.session, res["name"])
 
+    def paste_tsv(
+        self,
+        text: Optional[str] = None,
+        *,
+        header: Optional[bool] = None,
+        separator: Optional[str] = None,
+        encoding: str = "auto",
+        units_row: Optional[Union[int, bool, str]] = None,
+        numeric: bool = True,
+        start_row: int = 0,
+        start_col: int = 0,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "table.paste_tsv",
+            table=self.name,
+            text=text,
+            header=header,
+            separator=separator,
+            encoding=encoding,
+            units_row=units_row,
+            numeric=numeric,
+            start_row=int(start_row),
+            start_col=int(start_col),
+            **kwargs,
+        )
+
+    def undo(self) -> Dict[str, Any]:
+        return self.session.call("app.undo", table=self.name)
+
+    def redo(self) -> Dict[str, Any]:
+        return self.session.call("app.redo", table=self.name)
+
 
 class MatrixProxy:
     """High-level proxy for a ToriGraph 2D Matrix window."""
@@ -797,6 +871,12 @@ class MatrixProxy:
     def plot_3d(self, style: str = "surface", **kwargs: Any) -> "GraphProxy":
         return self.session.plot_3d_matrix(self.name, style=style, **kwargs)
 
+    def undo(self) -> Dict[str, Any]:
+        return self.session.call("app.undo", matrix=self.name)
+
+    def redo(self) -> Dict[str, Any]:
+        return self.session.call("app.redo", matrix=self.name)
+
 
 class GraphProxy:
     """High-level proxy for a ToriGraph 2D MultiLayer or 3D Graph window."""
@@ -813,6 +893,44 @@ class GraphProxy:
 
     get_info = info
 
+    def inspect(
+        self,
+        *,
+        include_ticks: bool = True,
+        diagnose: bool = True,
+    ) -> Dict[str, Any]:
+        """Return full semantic + pixel-geometry snapshot and deterministic layout diagnostics."""
+        return self.session.call(
+            "graph.inspect",
+            graph=self.name,
+            include_ticks=bool(include_ticks),
+            diagnose=bool(diagnose),
+        )
+
+    def diagnose_layout(self) -> List[Dict[str, Any]]:
+        """Return deterministic layout warning dicts from `graph.inspect`."""
+        res = self.inspect(include_ticks=True, diagnose=True)
+        return list(res.get("warnings", []))
+
+    def set_title(
+        self,
+        title: str = "",
+        *,
+        font_size: Optional[int] = None,
+        color: Optional[str] = None,
+        layer: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.set_title",
+            graph=self.name,
+            title=title,
+            font_size=font_size,
+            color=color,
+            layer=layer,
+            **kwargs,
+        )
+
     def add_curve(
         self,
         table: Union[str, TableProxy],
@@ -821,6 +939,7 @@ class GraphProxy:
         style: str = "line_symbol",
         right_axis: bool = False,
         layer: Optional[int] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.session.call(
             "plot.add_curve",
@@ -831,6 +950,7 @@ class GraphProxy:
             style=style,
             right_axis=right_axis,
             layer=layer,
+            **kwargs,
         )
 
     def remove_curve(
@@ -861,6 +981,9 @@ class GraphProxy:
     def add_layer(self, **kwargs: Any) -> Dict[str, Any]:
         return self.session.call("graph.add_layer", graph=self.name, **kwargs)
 
+    def remove_layer(self, layer: int) -> Dict[str, Any]:
+        return self.session.call("graph.remove_layer", graph=self.name, layer=int(layer))
+
     def add_linked_layer(
         self,
         link_x: bool = True,
@@ -884,6 +1007,8 @@ class GraphProxy:
         x_max: float,
         y_min: float,
         y_max: float,
+        *,
+        show_connectors: bool = True,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.session.call(
@@ -893,6 +1018,7 @@ class GraphProxy:
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
+            show_connectors=show_connectors,
             **kwargs,
         )
 
@@ -1073,6 +1199,7 @@ class GraphProxy:
         layer: Optional[int] = None,
         min: Optional[float] = None,
         max: Optional[float] = None,
+        lim: Optional[Sequence[float]] = None,
         step: Optional[float] = None,
         scale: Optional[str] = None,
         title: Optional[str] = None,
@@ -1082,6 +1209,12 @@ class GraphProxy:
         numbers_font_size: Optional[int] = None,
         ticks_inward: Optional[bool] = None,
         show_backbone: Optional[bool] = None,
+        show_labels: Optional[bool] = None,
+        show_ticks: Optional[bool] = None,
+        unit_format: Optional[str] = None,
+        tick_format: Optional[Union[str, int]] = None,
+        precision: Optional[int] = None,
+        label_rotation: Optional[float] = None,
         divide_by: Optional[float] = None,
         prefix: Optional[str] = None,
         suffix: Optional[str] = None,
@@ -1096,6 +1229,7 @@ class GraphProxy:
             axis=axis,
             min=min,
             max=max,
+            lim=(list(lim) if lim is not None else None),
             step=step,
             scale=scale,
             title=title,
@@ -1105,6 +1239,12 @@ class GraphProxy:
             numbers_font_size=numbers_font_size,
             ticks_inward=ticks_inward,
             show_backbone=show_backbone,
+            show_labels=show_labels,
+            show_ticks=show_ticks,
+            unit_format=unit_format,
+            tick_format=tick_format,
+            precision=precision,
+            label_rotation=label_rotation,
             divide_by=divide_by,
             prefix=prefix,
             suffix=suffix,
@@ -1157,6 +1297,26 @@ class GraphProxy:
     def add_shaded_band(self, **kwargs: Any) -> Dict[str, Any]:
         return self.session.call("graph.add_shaded_band", graph=self.name, **kwargs)
 
+    def remove_reference_line(
+        self, index: int = 0, *, layer: Optional[int] = None
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.remove_reference_line",
+            graph=self.name,
+            index=int(index),
+            layer=layer,
+        )
+
+    def clear_reference_lines(
+        self, *, include_bands: bool = False, layer: Optional[int] = None
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.clear_reference_lines",
+            graph=self.name,
+            include_bands=bool(include_bands),
+            layer=layer,
+        )
+
     def set_grid(self, **kwargs: Any) -> Dict[str, Any]:
         return self.session.call("graph.set_grid", graph=self.name, **kwargs)
 
@@ -1167,10 +1327,18 @@ class GraphProxy:
         curve: Optional[Union[int, str]] = None,
         color: Optional[str] = None,
         line_width: Optional[float] = None,
+        linewidth: Optional[float] = None,
+        lw: Optional[float] = None,
         line_style: Optional[str] = None,
+        linestyle: Optional[str] = None,
+        ls: Optional[str] = None,
         alpha: Optional[float] = None,
         symbol_type: Optional[str] = None,
+        marker: Optional[str] = None,
         symbol_size: Optional[int] = None,
+        markersize: Optional[int] = None,
+        ms: Optional[int] = None,
+        symbol_skip: Optional[int] = None,
         symbol_hollow: Optional[bool] = None,
         symbol_fill: Optional[bool] = None,
         visible: Optional[bool] = None,
@@ -1178,6 +1346,7 @@ class GraphProxy:
         fill_area: Optional[bool] = None,
         bar_gap: Optional[int] = None,
         bar_offset: Optional[int] = None,
+        label: Optional[str] = None,
         layer: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
@@ -1195,10 +1364,18 @@ class GraphProxy:
             curve=resolved_curve,
             color=color,
             line_width=line_width,
+            linewidth=linewidth,
+            lw=lw,
             line_style=line_style,
+            linestyle=linestyle,
+            ls=ls,
             alpha=alpha,
             symbol_type=symbol_type,
+            marker=marker,
             symbol_size=symbol_size,
+            markersize=markersize,
+            ms=ms,
+            symbol_skip=symbol_skip,
             symbol_hollow=symbol_hollow,
             symbol_fill=symbol_fill,
             visible=visible,
@@ -1206,6 +1383,7 @@ class GraphProxy:
             fill_area=fill_area,
             bar_gap=bar_gap,
             bar_offset=bar_offset,
+            label=label,
             **kwargs,
         )
 
@@ -1261,13 +1439,17 @@ class GraphProxy:
         )
 
     def apply_series_scheme(
-        self, scheme: str = "bw_hollow_filled", layer: Optional[int] = None
+        self,
+        scheme: str = "bw_hollow_filled",
+        layer: Optional[int] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.session.call(
             "graph.apply_series_scheme",
             graph=self.name,
             scheme=scheme,
             layer=layer,
+            **kwargs,
         )
 
     def apply_palette(
@@ -1359,6 +1541,27 @@ class GraphProxy:
             y1=y1,
             x2=x2,
             y2=y2,
+            **kwargs,
+        )
+
+    def remove_marker(
+        self,
+        marker_id: Optional[int] = None,
+        *,
+        kind: Optional[str] = None,
+        index: Optional[int] = None,
+        clear_all: bool = False,
+        layer: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.remove_marker",
+            graph=self.name,
+            id=marker_id,
+            kind=kind,
+            index=index,
+            clear_all=bool(clear_all),
+            layer=layer,
             **kwargs,
         )
 
@@ -1511,6 +1714,37 @@ class GraphProxy:
     def clear_gadgets(self, gadget_type: str = "all") -> Dict[str, Any]:
         return self.session.call("gadget.clear", graph=self.name, type=gadget_type)
 
+    def analyze_tensile(
+        self,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        layer: Optional[int] = None,
+        offset: float = 0.002,
+        strain_in_percent: Optional[bool] = None,
+        elastic_min: Optional[float] = None,
+        elastic_max: Optional[float] = None,
+        plot_construction: bool = True,
+        add_callout: bool = True,
+        create_true_stress_table: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "curvemath.offset_yield",
+            graph=self.name,
+            layer=layer,
+            curve=curve,
+            offset=float(offset),
+            strain_in_percent=strain_in_percent,
+            elastic_min=elastic_min,
+            elastic_max=elastic_max,
+            plot_construction=bool(plot_construction),
+            add_callout=bool(add_callout),
+            create_true_stress_table=bool(create_true_stress_table),
+            **kwargs,
+        )
+
+    offset_yield = analyze_tensile
+
 
 class Session:
     """Connected ToriGraph JSON-RPC 2.0 Automation Session."""
@@ -1526,6 +1760,17 @@ class Session:
         self._cleanup_files = list(cleanup_files or [])
         self._next_id = 1
         self._closed = False
+        self._finalizer: Optional[weakref.finalize] = (
+            weakref.finalize(
+                self,
+                _cleanup_spawned_session,
+                self._process,
+                self._transport,
+                list(self._cleanup_files),
+            )
+            if (self._process is not None or bool(self._cleanup_files))
+            else None
+        )
 
         # Callable + dotted domain namespaces
         self.app = _NamespaceProxy(self, "app")
@@ -1561,28 +1806,13 @@ class Session:
         if self._closed:
             return
         self._closed = True
-        try:
-            self._transport.close()
-        finally:
-            if self._process is not None:
-                try:
-                    if self._process.poll() is None:
-                        self._process.terminate()
-                        try:
-                            self._process.wait(timeout=5.0)
-                        except subprocess.TimeoutExpired:
-                            self._process.kill()
-                            self._process.wait(timeout=2.0)
-                except Exception:
-                    pass
-                self._process = None
-            for fpath in self._cleanup_files:
-                try:
-                    if fpath and os.path.exists(fpath):
-                        os.remove(fpath)
-                except OSError:
-                    pass
-            self._cleanup_files.clear()
+        if self._finalizer is not None:
+            self._finalizer.detach()
+        proc = self._process
+        files = list(self._cleanup_files)
+        self._process = None
+        self._cleanup_files.clear()
+        _cleanup_spawned_session(proc, self._transport, files)
 
     def call(
         self,
@@ -1643,6 +1873,15 @@ class Session:
         res = self.call("app.supported_methods")
         return list(res.get("methods", []))
 
+    def describe_api(
+        self,
+        method: Optional[str] = None,
+        *,
+        domain: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return structured JSON-RPC 2.0 self-discovery catalog (all methods, by domain, or single method)."""
+        return self.call("app.describe_api", method=method, domain=domain)
+
     def new_project(self) -> Dict[str, Any]:
         return self.call("app.new_project")
 
@@ -1670,6 +1909,10 @@ class Session:
         header: bool = True,
         with_comments: bool = False,
         name: Optional[str] = None,
+        *,
+        encoding: str = "auto",
+        units_row: Optional[Union[int, bool, str]] = None,
+        numeric: bool = True,
         **kwargs: Any,
     ) -> TableProxy:
         res = self.call(
@@ -1680,6 +1923,40 @@ class Session:
             header=header,
             with_comments=with_comments,
             name=name,
+            encoding=encoding,
+            units_row=units_row,
+            numeric=numeric,
+            **kwargs,
+        )
+        return TableProxy(self, res["name"])
+
+    def paste_tsv(
+        self,
+        text: Optional[str] = None,
+        *,
+        table: Optional[Union[str, TableProxy]] = None,
+        name: Optional[str] = None,
+        header: Optional[bool] = None,
+        separator: Optional[str] = None,
+        encoding: str = "auto",
+        units_row: Optional[Union[int, bool, str]] = None,
+        numeric: bool = True,
+        start_row: int = 0,
+        start_col: int = 0,
+        **kwargs: Any,
+    ) -> TableProxy:
+        res = self.call(
+            "table.paste_tsv",
+            text=text,
+            table=_name_of(table),
+            name=name,
+            header=header,
+            separator=separator,
+            encoding=encoding,
+            units_row=units_row,
+            numeric=numeric,
+            start_row=int(start_row),
+            start_col=int(start_col),
             **kwargs,
         )
         return TableProxy(self, res["name"])
@@ -1736,11 +2013,55 @@ class Session:
     def recalculate(self) -> Dict[str, Any]:
         return self.call("app.recalculate")
 
-    def undo(self, graph: Optional[Union[str, GraphProxy]] = None) -> Dict[str, Any]:
-        return self.call("app.undo", graph=_name_of(graph))
+    def undo(
+        self,
+        window: Optional[Union[str, TableProxy, MatrixProxy, GraphProxy]] = None,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        matrix: Optional[Union[str, MatrixProxy]] = None,
+    ) -> Dict[str, Any]:
+        win_name: Optional[str] = None
+        if isinstance(window, GraphProxy) and graph is None:
+            graph = window
+        elif isinstance(window, TableProxy) and table is None:
+            table = window
+        elif isinstance(window, MatrixProxy) and matrix is None:
+            matrix = window
+        elif window is not None:
+            win_name = _name_of(window)
+        return self.call(
+            "app.undo",
+            window=win_name,
+            graph=_name_of(graph),
+            table=_name_of(table),
+            matrix=_name_of(matrix),
+        )
 
-    def redo(self, graph: Optional[Union[str, GraphProxy]] = None) -> Dict[str, Any]:
-        return self.call("app.redo", graph=_name_of(graph))
+    def redo(
+        self,
+        window: Optional[Union[str, TableProxy, MatrixProxy, GraphProxy]] = None,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        matrix: Optional[Union[str, MatrixProxy]] = None,
+    ) -> Dict[str, Any]:
+        win_name: Optional[str] = None
+        if isinstance(window, GraphProxy) and graph is None:
+            graph = window
+        elif isinstance(window, TableProxy) and table is None:
+            table = window
+        elif isinstance(window, MatrixProxy) and matrix is None:
+            matrix = window
+        elif window is not None:
+            win_name = _name_of(window)
+        return self.call(
+            "app.redo",
+            window=win_name,
+            graph=_name_of(graph),
+            table=_name_of(table),
+            matrix=_name_of(matrix),
+        )
 
     def drop_columns(
         self,
@@ -1748,7 +2069,7 @@ class Session:
         columns: Sequence[Union[int, str]],
         x_column: Optional[Union[int, str]] = None,
         graph: Optional[Union[str, GraphProxy]] = None,
-        layer: int = 1,
+        layer: Optional[int] = None,
         right_y: bool = False,
         replace: bool = False,
     ) -> GraphProxy:
@@ -1763,7 +2084,7 @@ class Session:
             columns=col_list,
             x_column=(x_column if x_column is not None else ""),
             graph=(_name_of(graph) if graph is not None else ""),
-            layer=int(layer),
+            layer=(int(layer) if layer is not None else None),
             right_y=bool(right_y),
             replace=bool(replace),
         )
@@ -2303,6 +2624,8 @@ class Session:
     def clear_gadgets(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("gadget.clear", **kwargs)
 
+    clear_gadget = clear_gadgets
+
     def smooth(self, method: str = "savgol", **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.smooth", method=method, **kwargs)
 
@@ -2324,6 +2647,8 @@ class Session:
     def envelope(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.envelope", **kwargs)
 
+    hilbert_envelope = envelope
+
     def wavelet_cwt(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.wavelet_cwt", **kwargs)
 
@@ -2342,8 +2667,13 @@ class Session:
     def fsd(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.fsd", **kwargs)
 
+    fourier_self_deconvolution = fsd
+
     def curve_eval(self, op: str = "-", **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.eval", op=op, **kwargs)
+
+    curve_math = curve_eval
+    eval_curves = curve_eval
 
     def average_curves(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.average_curves", **kwargs)
@@ -2351,8 +2681,21 @@ class Session:
     def normalize_curve(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.normalize", **kwargs)
 
-    def integrate_curve(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.integrate", **kwargs)
+    def integrate_curve(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        plot_curve: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "curvemath.integrate",
+            graph=_name_of(graph),
+            curve=curve,
+            plot_curve=bool(plot_curve),
+            **kwargs,
+        )
 
     def differentiate_curve(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.differentiate", **kwargs)
@@ -2363,8 +2706,13 @@ class Session:
     def subtract_line(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.subtract_line", **kwargs)
 
+    subtract_straight_line = subtract_line
+
     def intersections(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.intersections", **kwargs)
+
+    curve_intersections = intersections
+    find_intersections = intersections
 
     def lookup_xy(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.lookup_xy", **kwargs)
@@ -2375,11 +2723,51 @@ class Session:
     def fill_between(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.fill_between", **kwargs)
 
+    def analyze_tensile(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        offset: float = 0.002,
+        strain_in_percent: Optional[bool] = None,
+        elastic_min: Optional[float] = None,
+        elastic_max: Optional[float] = None,
+        plot_construction: bool = True,
+        add_callout: bool = True,
+        create_true_stress_table: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "curvemath.offset_yield",
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            x_col=x_col,
+            y_col=y_col,
+            offset=float(offset),
+            strain_in_percent=strain_in_percent,
+            elastic_min=elastic_min,
+            elastic_max=elastic_max,
+            plot_construction=bool(plot_construction),
+            add_callout=bool(add_callout),
+            create_true_stress_table=bool(create_true_stress_table),
+            **kwargs,
+        )
+
+    offset_yield = analyze_tensile
+
     def arrhenius(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.arrhenius", **kwargs)
 
+    arrhenius_plot = arrhenius
+
     def tauc(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.tauc", **kwargs)
+
+    tauc_bandgap = tauc
 
     def eis_fit(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.eis_fit", **kwargs)
@@ -2412,6 +2800,8 @@ class Session:
     def paired_plot(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.paired_plot", **kwargs)
 
+    paired_estimation_plot = paired_plot
+
     def bland_altman(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.bland_altman", **kwargs)
 
@@ -2430,6 +2820,7 @@ class Session:
         return self.call("stats.roc", **kwargs)
 
     roc_analysis = roc
+    roc_curve = roc
 
     def pca(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.pca", **kwargs)
@@ -2437,11 +2828,15 @@ class Session:
     def correlation(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.correlation", **kwargs)
 
+    correlation_matrix = correlation
+
     def clustering(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.clustering", **kwargs)
 
     def confidence_ellipse(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("stats.confidence_ellipse", **kwargs)
+
+    add_confidence_ellipse = confidence_ellipse
 
     def digitize(
         self, path: Union[str, os.PathLike[str]], **kwargs: Any
@@ -2449,6 +2844,7 @@ class Session:
         return self.call("digitizer.extract", path=os.fspath(path), **kwargs)
 
     extract_digitizer = digitize
+    digitize_image = digitize
 
     def merge_graphs(
         self,

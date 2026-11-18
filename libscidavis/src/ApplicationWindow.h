@@ -198,6 +198,8 @@ public:
                               bool replaceExisting = false);
     AutoUpdater *autoUpdater() const { return d_auto_updater; }
     PythonAutomationServer *pythonAutomationServer() const { return d_python_server; }
+    Project *project() const { return d_project; }
+    MyWidget *activeWindow() const;
 
     void setHeadlessMode(bool headless);
     bool isHeadlessMode() const { return d_headless_mode; }
@@ -813,6 +815,7 @@ public slots:
 
     void attachDeltaCursorGadget();
     void showLogisticRegressionDialog();
+    void showTensileYieldDialog();
     void showArrheniusPlotDialog();
     void showTaucPlotDialog();
     void showFillBetweenCurvesDialog();
@@ -1486,7 +1489,7 @@ private:
     QAction *actionStyleISIJ = nullptr, *actionStyleSlide = nullptr,
             *actionStyleNature = nullptr;
     QAction *actionGadgetDeltaCursor = nullptr, *actionLogisticRegression = nullptr,
-            *actionArrheniusPlot = nullptr, *actionTaucPlot = nullptr,
+            *actionTensileYield = nullptr, *actionArrheniusPlot = nullptr, *actionTaucPlot = nullptr,
             *actionFillBetweenCurves = nullptr, *actionWaterfallStackOffset = nullptr,
             *actionResetStackOffsets = nullptr;
     QAction *actionWeibullPlot = nullptr, *actionOutlierTest = nullptr,

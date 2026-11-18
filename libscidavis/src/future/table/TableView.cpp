@@ -72,6 +72,7 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSignalBlocker>
+#include <QTextCursor>
 #include <QMdiArea>
 #include <QMdiSubWindow>
 #include <algorithm>
@@ -82,6 +83,142 @@
 #include "Table.h"
 
 namespace {
+
+static QChar toUnicodeSubChar(QChar ch, bool *converted = nullptr)
+{
+    if (converted)
+        *converted = true;
+    switch (ch.unicode()) {
+    case '0': return QChar(0x2080);
+    case '1': return QChar(0x2081);
+    case '2': return QChar(0x2082);
+    case '3': return QChar(0x2083);
+    case '4': return QChar(0x2084);
+    case '5': return QChar(0x2085);
+    case '6': return QChar(0x2086);
+    case '7': return QChar(0x2087);
+    case '8': return QChar(0x2088);
+    case '9': return QChar(0x2089);
+    case '+': return QChar(0x208A);
+    case '-': return QChar(0x208B);
+    case '=': return QChar(0x208C);
+    case '(': return QChar(0x208D);
+    case ')': return QChar(0x208E);
+    case 'a': return QChar(0x2090);
+    case 'e': return QChar(0x2091);
+    case 'o': return QChar(0x2092);
+    case 'x': return QChar(0x2093);
+    case 'i': return QChar(0x1D62);
+    case 'r': return QChar(0x1D63);
+    case 'u': return QChar(0x1D64);
+    case 'v': return QChar(0x1D65);
+    case 'n': return QChar(0x2099);
+    default:
+        if (converted)
+            *converted = false;
+        return ch;
+    }
+}
+
+static QChar toUnicodeSupChar(QChar ch, bool *converted = nullptr)
+{
+    if (converted)
+        *converted = true;
+    switch (ch.unicode()) {
+    case '0': return QChar(0x2070);
+    case '1': return QChar(0x00B9);
+    case '2': return QChar(0x00B2);
+    case '3': return QChar(0x00B3);
+    case '4': return QChar(0x2074);
+    case '5': return QChar(0x2075);
+    case '6': return QChar(0x2076);
+    case '7': return QChar(0x2077);
+    case '8': return QChar(0x2078);
+    case '9': return QChar(0x2079);
+    case '+': return QChar(0x207A);
+    case '-': return QChar(0x207B);
+    case '=': return QChar(0x207C);
+    case '(': return QChar(0x207D);
+    case ')': return QChar(0x207E);
+    case 'n': return QChar(0x207F);
+    case 'i': return QChar(0x2071);
+    default:
+        if (converted)
+            *converted = false;
+        return ch;
+    }
+}
+
+static QString convertPlainRunToUnicodeSubSup(const QString &src, bool isSup)
+{
+    QString out;
+    out.reserve(src.size());
+    for (QChar ch : src)
+        out.append(isSup ? toUnicodeSupChar(ch) : toUnicodeSubChar(ch));
+    return out;
+}
+
+static void applyUnicodeSymbolOrSubSupToEditor(QWidget *target, const QString &literalSym,
+                                               int subSupMode /* 0=literal, 1=sub, 2=sup */)
+{
+    if (!target)
+        return;
+    if (QLineEdit *le = qobject_cast<QLineEdit *>(target)) {
+        if (subSupMode == 1 || subSupMode == 2) {
+            const bool isSup = (subSupMode == 2);
+            if (le->hasSelectedText()) {
+                const int start = le->selectionStart();
+                const QString sel = le->selectedText();
+                const QString conv = convertPlainRunToUnicodeSubSup(sel, isSup);
+                le->insert(conv);
+                le->setSelection(start, conv.length());
+            } else {
+                const QString cur = le->text();
+                const int pos = le->cursorPosition();
+                int runStart = pos;
+                while (runStart > 0) {
+                    bool ok = false;
+                    const QChar prev = cur.at(runStart - 1);
+                    if (isSup)
+                        toUnicodeSupChar(prev, &ok);
+                    else
+                        toUnicodeSubChar(prev, &ok);
+                    if (!ok && prev != QLatin1Char('.') && prev != QLatin1Char('/'))
+                        break;
+                    if ((prev == QLatin1Char('.') || prev == QLatin1Char('/'))
+                        && runStart == pos)
+                        break;
+                    --runStart;
+                }
+                if (runStart < pos) {
+                    const QString replaced =
+                            convertPlainRunToUnicodeSubSup(cur.mid(runStart, pos - runStart), isSup);
+                    le->setSelection(runStart, pos - runStart);
+                    le->insert(replaced);
+                } else {
+                    le->insert(isSup ? QString::fromUtf8("\xC2\xB2")
+                                     : QString::fromUtf8("\xE2\x82\x82"));
+                }
+            }
+        } else {
+            le->insert(literalSym);
+        }
+        le->setFocus();
+    } else if (QTextEdit *te = qobject_cast<QTextEdit *>(target)) {
+        QTextCursor tc = te->textCursor();
+        if (subSupMode == 1 || subSupMode == 2) {
+            const bool isSup = (subSupMode == 2);
+            if (tc.hasSelection())
+                tc.insertText(convertPlainRunToUnicodeSubSup(tc.selectedText(), isSup));
+            else
+                tc.insertText(isSup ? QString::fromUtf8("\xC2\xB2")
+                                    : QString::fromUtf8("\xE2\x82\x82"));
+        } else {
+            tc.insertText(literalSym);
+        }
+        te->setFocus();
+    }
+}
 
 enum WorksheetQuickRoleCode {
     QuickRoleNone = int(SciDAVis::noDesignation),
@@ -118,9 +255,9 @@ static ApplicationWindow *findOwningAppWindow(QWidget *w)
 
 static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, QToolButton *btnY,
                                            QToolButton *btnYErr, QToolButton *moreBtn,
-                                           QToolButton *btnLp, QToolButton *btnScatter,
-                                           QToolButton *btnAdd, QToolButton *btnColProps,
-                                           QLabel *lblFx)
+                                           QToolButton *btnLine, QToolButton *btnLp,
+                                           QToolButton *btnScatter, QToolButton *btnAdd,
+                                           QToolButton *btnColProps, QLabel *lblFx)
 {
     if (!quickBar)
         return;
@@ -136,9 +273,9 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
         const QFontMetrics fm(bf);
         const int textW = fm.horizontalAdvance(b->text());
         const int iconW = (st == Qt::ToolButtonTextBesideIcon && !b->icon().isNull())
-                ? (b->iconSize().width() + 6)
+                ? (b->iconSize().width() + 5)
                 : 0;
-        const int pad = (b->menu() != nullptr) ? 24 : 18;
+        const int pad = (b->menu() != nullptr) ? 20 : 14;
         return textW + iconW + pad;
     };
 
@@ -147,11 +284,13 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             + calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly)
             + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly)
-            + 29; // 4+4px margins + 5px separator + 8*2px spacing
-    const int totalBeside = fixedRowW + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
+            + 31; // 4+4px margins + 5px separator + 9*2px spacing
+    const int totalBeside = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
+            + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnAdd, Qt::ToolButtonTextBesideIcon);
-    const int totalTextOnly = fixedRowW + calcBtnWidth(btnLp, Qt::ToolButtonTextOnly)
+    const int totalTextOnly = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnLp, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnScatter, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnAdd, Qt::ToolButtonTextOnly);
 
@@ -159,15 +298,15 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     Qt::ToolButtonStyle plotStyle = Qt::ToolButtonIconOnly;
     if (barW <= 0) {
         plotStyle = Qt::ToolButtonIconOnly;
-    } else if (barW >= qMax(470, totalBeside + 6)) {
+    } else if (barW >= qMax(510, totalBeside + 6)) {
         plotStyle = Qt::ToolButtonTextBesideIcon;
-    } else if (barW >= qMax(405, totalTextOnly + 6)) {
+    } else if (barW >= qMax(435, totalTextOnly + 6)) {
         plotStyle = Qt::ToolButtonTextOnly;
     } else {
         plotStyle = Qt::ToolButtonIconOnly;
     }
 
-    QToolButton *plotBtns[] = { btnLp, btnScatter, btnAdd };
+    QToolButton *plotBtns[] = { btnLine, btnLp, btnScatter, btnAdd };
     for (QToolButton *pb : plotBtns) {
         if (pb && pb->toolButtonStyle() != plotStyle)
             pb->setToolButtonStyle(plotStyle);
@@ -179,8 +318,8 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
     }
 
-    QToolButton *visibleRow1[] = { btnX,   btnY,       btnYErr, moreBtn,
-                                   btnLp,  btnScatter, btnAdd,  btnColProps };
+    QToolButton *visibleRow1[] = { btnX,    btnY,   btnYErr,    moreBtn,     btnLine,
+                                   btnLp,   btnScatter, btnAdd, btnColProps };
     for (QToolButton *b : visibleRow1) {
         if (!b)
             continue;
@@ -298,6 +437,74 @@ void TableView::init()
         uLay->addWidget(d_units_label);
         uLay->addWidget(d_units_edit);
         ui.verticalLayout->insertWidget(3, uRow);
+
+        d_long_name_edit->installEventFilter(this);
+        d_units_edit->installEventFilter(this);
+        d_last_desc_edit = d_units_edit;
+
+        QWidget *symBar = new QWidget(ui.description_tab);
+        QGridLayout *symGrid = new QGridLayout(symBar);
+        symGrid->setContentsMargins(0, 1, 0, 1);
+        symGrid->setHorizontalSpacing(2);
+        symGrid->setVerticalSpacing(2);
+
+        struct WsSymSpec {
+            const char *label;
+            const char *insertText;
+            int subSupMode; // 0=literal, 1=sub, 2=sup
+            bool preferUnits;
+        };
+        static const WsSymSpec kWsSyms[] = {
+            { "\xCF\x83", "\xCF\x83", 0, false },                   // σ
+            { "\xCE\xB5", "\xCE\xB5", 0, false },                   // ε
+            { "2\xCE\xB8", "2\xCE\xB8", 0, false },                 // 2θ
+            { "\xCE\xBCm", "\xCE\xBCm", 0, true },                  // μm
+            { "\xC2\xB0""C", "\xC2\xB0""C", 0, true },              // °C
+            { "\xC3\x85", "\xC3\x85", 0, true },                    // Å
+            { "\xC2\xB1", "\xC2\xB1", 0, false },                   // ±
+            { "\xC2\xB0", "\xC2\xB0", 0, true },                    // °
+            { "cm\xE2\x81\xBB\xC2\xB9", "cm\xE2\x81\xBB\xC2\xB9", 0, true }, // cm⁻¹
+            { "x\xE2\x82\x82", "", 1, false },                      // x₂
+            { "x\xC2\xB2", "", 2, false },                          // x²
+        };
+        for (int si = 0; si < int(sizeof(kWsSyms) / sizeof(kWsSyms[0])); ++si) {
+            const auto &sp = kWsSyms[si];
+            QToolButton *tb = new QToolButton(symBar);
+            tb->setText(QString::fromUtf8(sp.label));
+            tb->setAutoRaise(true);
+            tb->setFocusPolicy(Qt::NoFocus);
+            tb->setFixedHeight(20);
+            tb->setStyleSheet(QStringLiteral(
+                    "QToolButton { border: 1px solid #CBD5E1; border-radius: 3px;"
+                    " background: #F8FAFC; color: #1E293B; padding: 0px 3px; font-size: 8.2pt; }"
+                    "QToolButton:hover { background: #DBEAFE; border-color: #60A5FA; }"));
+            if (sp.subSupMode == 1)
+                tb->setToolTip(tr("Unicode Subscript (select digits or insert \xE2\x82\x82)"));
+            else if (sp.subSupMode == 2)
+                tb->setToolTip(tr("Unicode Superscript (select digits or insert \xC2\xB2)"));
+            else
+                tb->setToolTip(tr("Insert Materials Science Symbol / Unit"));
+            const QString ins = QString::fromUtf8(sp.insertText);
+            const int mode = sp.subSupMode;
+            const bool prefUnits = sp.preferUnits;
+            connect(tb, &QToolButton::clicked, this, [this, ins, mode, prefUnits]() {
+                QWidget *target = nullptr;
+                QWidget *fw = QApplication::focusWidget();
+                if (fw == d_long_name_edit || fw == d_units_edit || fw == ui.comment_box)
+                    target = fw;
+                else if (d_last_desc_edit)
+                    target = d_last_desc_edit.data();
+                if (!target)
+                    target = prefUnits ? static_cast<QWidget *>(d_units_edit)
+                                       : static_cast<QWidget *>(d_long_name_edit);
+                applyUnicodeSymbolOrSubSupToEditor(target, ins, mode);
+                if (!d_updating_ui && (target == d_long_name_edit || target == d_units_edit))
+                    applyDescription();
+            });
+            symGrid->addWidget(tb, si / 6, si % 6);
+        }
+        symGrid->setColumnStretch(6, 1);
+        ui.verticalLayout->insertWidget(4, symBar);
     }
     QLabel *shortLabels[] = { ui.name_label,       ui.comment_label,
                               ui.type_label,       ui.format_label,
@@ -447,13 +654,58 @@ void TableView::rereadSectionSizes()
                SLOT(handleHorizontalSectionResized(int, int, int)));
 
     if (d_table) {
+        const int defaultW = future::Table::defaultColumnWidth();
         int cols = d_table->columnCount();
-        for (int i = 0; i < cols; i++)
-            d_horizontal_header->resizeSection(i, d_table->columnWidth(i));
+        for (int i = 0; i < cols; i++) {
+            const int storedW = d_table->columnWidth(i);
+            d_horizontal_header->resizeSection(i, storedW);
+            if (storedW <= defaultW)
+                autoExpandColumnWidthForHeader(i, false);
+        }
     }
 
     connect(d_horizontal_header, SIGNAL(sectionResized(int, int, int)), this,
             SLOT(handleHorizontalSectionResized(int, int, int)));
+}
+
+void TableView::autoExpandColumnWidthForHeader(int col, bool fitDataCellsToo)
+{
+    if (!d_table || !d_horizontal_header || !d_model || col < 0 || col >= d_table->columnCount())
+        return;
+
+    const Column *colPtr = d_table->column(col);
+    if (!colPtr)
+        return;
+
+    const QFont baseFont = d_horizontal_header->font();
+    const QFontMetrics fm(baseFont);
+    QFont boldFont = baseFont;
+    boldFont.setWeight(QFont::DemiBold);
+    const QFontMetrics boldFm(boldFont);
+
+    const QString topText = d_model->headerData(col, Qt::Horizontal, Qt::DisplayRole).toString();
+    int neededW = fm.horizontalAdvance(topText) + 38; // type icon + header padding
+
+    const QString ln = colPtr->longName().trimmed();
+    if (!ln.isEmpty())
+        neededW = qMax(neededW, boldFm.horizontalAdvance(ln) + 18);
+
+    const QString u = colPtr->units().trimmed();
+    if (!u.isEmpty())
+        neededW = qMax(neededW, fm.horizontalAdvance(QStringLiteral("[") + u + QStringLiteral("]")) + 18);
+
+    if (fitDataCellsToo && d_view_widget)
+        neededW = qMax(neededW, d_view_widget->sizeHintForColumn(col) + 14);
+
+    const int maxAutoW = fitDataCellsToo ? 320 : 220;
+    const int currentW = d_horizontal_header->sectionSize(col);
+    const int nextW = fitDataCellsToo ? qBound(future::Table::defaultColumnWidth(), neededW, maxAutoW)
+                                      : qMax(currentW, qMin(maxAutoW, neededW));
+    if (nextW != currentW) {
+        QSignalBlocker blockHdr(d_horizontal_header);
+        d_table->setColumnWidth(col, nextW);
+        d_horizontal_header->resizeSection(col, nextW);
+    }
 }
 
 void TableView::setColumnWidth(int col, int width)
@@ -810,19 +1062,20 @@ void TableView::handleAspectDescriptionChanged(const AbstractAspect *aspect)
         const Column *col = qobject_cast<const Column *>(aspect);
         if (!col || col->parentAspect() != static_cast<AbstractAspect *>(d_table))
             return;
-        ui.add_reference_combobox->setItemText(d_table->columnIndex(col),
-                                               "col(\"" + col->name() + "\")");
+        const int colIdx = d_table->columnIndex(col);
+        ui.add_reference_combobox->setItemText(colIdx, "col(\"" + col->name() + "\")");
         if (!areCommentsShown() && !d_user_hid_comments) {
             if (!col->longName().isEmpty() || !col->units().isEmpty()
                 || !col->comment().isEmpty() || !col->formulaIntervals().isEmpty()) {
                 showComments(true);
             }
         }
+        autoExpandColumnWidthForHeader(colIdx, false);
         if (d_horizontal_header)
             d_horizontal_header->refresh();
         if (!d_updating_ui && d_view_widget && d_view_widget->selectionModel()) {
             const int curCol = d_view_widget->selectionModel()->currentIndex().column();
-            if (curCol == d_table->columnIndex(col))
+            if (curCol == colIdx)
                 setColumnForControlTabs(curCol);
             else
                 syncQuickBarState();
@@ -836,8 +1089,9 @@ void TableView::handleAspectAdded(const AbstractAspect *aspect)
         const Column *col = qobject_cast<const Column *>(aspect);
         if (!col || col->parentAspect() != static_cast<AbstractAspect *>(d_table))
             return;
-        ui.add_reference_combobox->insertItem(d_table->indexOfChild(aspect),
-                                              "col(\"" + col->name() + "\")");
+        const int colIdx = d_table->indexOfChild(aspect);
+        ui.add_reference_combobox->insertItem(colIdx, "col(\"" + col->name() + "\")");
+        autoExpandColumnWidthForHeader(colIdx, false);
     }
 }
 
@@ -1565,6 +1819,10 @@ void TableView::getCurrentCell(int *row, int *col)
 
 bool TableView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (event && event->type() == QEvent::FocusIn
+        && (watched == d_long_name_edit || watched == d_units_edit || watched == ui.comment_box)) {
+        d_last_desc_edit = qobject_cast<QWidget *>(watched);
+    }
     if (ui.comment_box && watched == ui.comment_box && event->type() == QEvent::FocusOut) {
         if (d_comment_dirty && !d_updating_ui) {
             d_comment_dirty = false;
@@ -1662,9 +1920,9 @@ bool TableView::eventFilter(QObject *watched, QEvent *event)
                         QStringLiteral("WorksheetMoreRoleBtn"))
                             : nullptr;
         updateWorksheetQuickBarMetrics(d_quick_bar, d_btn_role_x, d_btn_role_y, d_btn_role_yerr,
-                                       moreBtn, d_btn_quick_plot_lp, d_btn_quick_plot_scatter,
-                                       d_btn_quick_add_graph, d_btn_quick_col_props,
-                                       d_lbl_quick_fx);
+                                       moreBtn, d_btn_quick_plot_line, d_btn_quick_plot_lp,
+                                       d_btn_quick_plot_scatter, d_btn_quick_add_graph,
+                                       d_btn_quick_col_props, d_lbl_quick_fx);
     }
 
     if (d_table && event->type() == QEvent::ContextMenu) {
@@ -1772,7 +2030,7 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1E293B;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 4px;"
-            "  padding: 1px 6px;"
+            "  padding: 1px 4px;"
             "  min-height: 20px;"
             "  max-height: 22px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
@@ -1794,7 +2052,7 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1D4ED8;"
             "  border: 1px solid #93C5FD;"
             "  border-radius: 4px;"
-            "  padding: 1px 6px;"
+            "  padding: 1px 4px;"
             "  min-height: 20px;"
             "  max-height: 22px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
@@ -1897,6 +2155,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
         return b;
     };
 
+    d_btn_quick_plot_line = makePlotBtn("wsPlotBtn");
+    connect(d_btn_quick_plot_line, &QToolButton::clicked, this,
+            [this]() { triggerQuickPlot(Graph::Line); });
+    qh1->addWidget(d_btn_quick_plot_line);
+
     d_btn_quick_plot_lp = makePlotBtn("wsPlotBtn");
     connect(d_btn_quick_plot_lp, &QToolButton::clicked, this,
             [this]() { triggerQuickPlot(Graph::LineSymbols); });
@@ -1906,11 +2169,6 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     connect(d_btn_quick_plot_scatter, &QToolButton::clicked, this,
             [this]() { triggerQuickPlot(Graph::Scatter); });
     qh1->addWidget(d_btn_quick_plot_scatter);
-
-    d_btn_quick_plot_line = makePlotBtn("wsPlotBtn");
-    connect(d_btn_quick_plot_line, &QToolButton::clicked, this,
-            [this]() { triggerQuickPlot(Graph::Line); });
-    d_btn_quick_plot_line->hide();
 
     d_btn_quick_add_graph = makePlotBtn("wsAddBtn");
     connect(d_btn_quick_add_graph, &QToolButton::clicked, this,
@@ -2076,8 +2334,9 @@ void TableView::syncQuickBarState()
     }
 
     updateWorksheetQuickBarMetrics(d_quick_bar, d_btn_role_x, d_btn_role_y, d_btn_role_yerr,
-                                   moreBtn, d_btn_quick_plot_lp, d_btn_quick_plot_scatter,
-                                   d_btn_quick_add_graph, d_btn_quick_col_props, d_lbl_quick_fx);
+                                   moreBtn, d_btn_quick_plot_line, d_btn_quick_plot_lp,
+                                   d_btn_quick_plot_scatter, d_btn_quick_add_graph,
+                                   d_btn_quick_col_props, d_lbl_quick_fx);
 }
 
 void TableView::applyQuickColumnRole(int roleCode)
@@ -2112,6 +2371,9 @@ void TableView::applyQuickColumnRole(int roleCode)
         }
     }
     d_table->endMacro();
+
+    for (int ci : colIndices)
+        autoExpandColumnWidthForHeader(ci, false);
 
     if (d_horizontal_header)
         d_horizontal_header->refresh();

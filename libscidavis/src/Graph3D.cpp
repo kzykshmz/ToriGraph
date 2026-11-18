@@ -618,8 +618,8 @@ void Graph3D::addData(Table *table, int xCol, int yCol, int zCol, int type)
     if (columns == 0)
         columns++;
 
-    Qwt3D::Triple **data = allocateData(columns, columns);
-    for (j = 0; j < columns; j++) {
+    Qwt3D::Triple **data = allocateData(columns, 2);
+    for (j = 0; j < 2; j++) {
         int k = 0;
         for (i = 0; i < r; i++) {
             if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !zColPtr->isInvalid(i)) {
@@ -634,7 +634,7 @@ void Graph3D::addData(Table *table, int xCol, int yCol, int zCol, int type)
     }
 
     sp->makeCurrent();
-    sp->loadFromData(data, columns, columns, false, false);
+    sp->loadFromData(data, columns, 2, false, false);
 
     double start, end;
     sp->coordinates()->axes[Z1].limits(start, end);
@@ -693,8 +693,8 @@ void Graph3D::addData(Table *table, int xCol, int yCol, int zCol, double xl, dou
     if (columns == 0)
         columns++;
 
-    Qwt3D::Triple **data = allocateData(columns, columns);
-    for (j = 0; j < columns; j++) {
+    Qwt3D::Triple **data = allocateData(columns, 2);
+    for (j = 0; j < 2; j++) {
         int k = 0;
         for (i = 0; i < r; i++) {
             if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !zColPtr->isInvalid(i)) {
@@ -714,7 +714,7 @@ void Graph3D::addData(Table *table, int xCol, int yCol, int zCol, double xl, dou
         }
     }
     sp->makeCurrent();
-    sp->loadFromData(data, columns, columns, false, false);
+    sp->loadFromData(data, columns, 2, false, false);
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     sp->legend()->setLimits(zl, zr);
     sp->legend()->setMajors(legendMajorTicks);
@@ -829,10 +829,10 @@ void Graph3D::updateDataXYZ(Table *table, int xCol, int yCol, int zCol)
         return;
     }
 
-    Qwt3D::Triple **data = allocateData(columns, columns);
+    Qwt3D::Triple **data = allocateData(columns, 2);
     gsl_vector *z = gsl_vector_alloc(columns);
 
-    for (j = 0; j < columns; j++) {
+    for (j = 0; j < 2; j++) {
         int k = 0;
         for (i = 0; i < r; i++) {
             if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !zColPtr->isInvalid(i)) {
@@ -854,7 +854,7 @@ void Graph3D::updateDataXYZ(Table *table, int xCol, int yCol, int zCol)
     sp->makeCurrent();
     resetNonEmptyStyle();
 
-    sp->loadFromData(data, columns, columns, false, false);
+    sp->loadFromData(data, columns, 2, false, false);
     sp->legend()->setLimits(minz, maxz);
     sp->legend()->setMajors(legendMajorTicks);
 
@@ -1652,8 +1652,8 @@ void Graph3D::updateScales(double xl, double xr, double yl, double yr, double zl
     if (columns == 0)
         columns++;
 
-    Qwt3D::Triple **data = allocateData(columns, columns);
-    for (j = 0; j < columns; j++) {
+    Qwt3D::Triple **data = allocateData(columns, 2);
+    for (j = 0; j < 2; j++) {
         int k = 0;
         for (i = 0; i < r; i++) {
             if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !zColPtr->isInvalid(i)) {
@@ -1673,7 +1673,7 @@ void Graph3D::updateScales(double xl, double xr, double yl, double yr, double zl
         }
     }
     sp->makeCurrent();
-    sp->loadFromData(data, columns, columns, false, false);
+    sp->loadFromData(data, columns, 2, false, false);
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     deleteData(data, columns);
 }
@@ -3012,6 +3012,8 @@ void Graph3D::changeTransparency(double t)
         return;
 
     alpha = t;
+    if (!sp || !sp->dataColor())
+        return;
 
     Qwt3D::StandardColor *color = (StandardColor *)sp->dataColor();
     color->setAlpha(t);
@@ -3028,6 +3030,8 @@ void Graph3D::setTransparency(double t)
         return;
 
     alpha = t;
+    if (!sp || !sp->dataColor())
+        return;
 
     Qwt3D::StandardColor *color = (StandardColor *)sp->dataColor();
     color->setAlpha(t);

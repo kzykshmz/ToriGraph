@@ -165,6 +165,11 @@ void Legend::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
     const int x = xMap.transform(xValue());
     const int y = yMap.transform(yValue());
 
+    const QwtMetricsMap savedMetricsMap = QwtPainter::metricsMap();
+    struct ScopedMetricsMapRestore {
+        QwtMetricsMap prev;
+        ~ScopedMetricsMapRestore() { QwtPainter::setMetricsMap(prev); }
+    } metricsGuard{ savedMetricsMap };
     QwtPainter::setMetricsMap(plot(), p->device());
     const QwtMetricsMap map = QwtPainter::metricsMap();
 
@@ -693,6 +698,8 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                                 pw *= scale;
                         }
                         pen.setWidthF(pw);
+                        if (pen.style() != Qt::NoPen && pen.isCosmetic())
+                            pen.setCosmetic(false);
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
                             QRect lr = QRect(w, cy - 4, l, 10);
@@ -704,13 +711,26 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             p->drawLine(QPointF(p1), QPointF(p2));
                         }
                     }
-                    int symb_size = symb.size().width();
-                    if (symb_size > 15)
-                        symb_size = 15;
-                    else if (symb_size < 3)
-                        symb_size = 3;
-                    symb.setSize(symb_size);
-                    symb.draw(p, w + l / 2, cy);
+                    if (symb.style() != QwtSymbol::NoSymbol) {
+                        int symb_size = symb.size().width();
+                        if (symb_size > 15)
+                            symb_size = 15;
+                        else if (symb_size < 3)
+                            symb_size = 3;
+                        QRect symRect;
+                        symRect.setSize(map.screenToLayout(QSize(symb_size, symb_size)));
+                        symRect.moveCenter(QPoint(w + l / 2, cy));
+
+                        p->setBrush(symb.brush());
+                        QPen symPen = QwtPainter::scaledPen(symb.pen());
+                        if (symPen.style() != Qt::NoPen && symPen.isCosmetic()) {
+                            symPen.setCosmetic(false);
+                            if (symPen.widthF() <= 0.0)
+                                symPen.setWidthF(qMax(1.0, double(symb.pen().widthF())));
+                        }
+                        p->setPen(symPen);
+                        symb.draw(p, symRect);
+                    }
                     p->restore();
                 }
             }

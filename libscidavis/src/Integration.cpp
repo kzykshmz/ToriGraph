@@ -71,9 +71,13 @@ void Integration::init()
 
 double Integration::trapezoid()
 {
+    if (d_x.empty() || d_y.size() != d_x.size())
+        return 0.0;
+
     double sum = 0.0;
-    vector<double> result(d_x.size());
-    int size = d_x.size() - 1;
+    vector<double> result;
+    result.reserve(d_x.size());
+    int size = int(d_x.size()) - 1;
     for (int i = 0; i < size; i++) {
         int j = i + 1;
         result.push_back(sum);
@@ -81,42 +85,47 @@ double Integration::trapezoid()
     }
 
     result.push_back(sum);
-    d_points = d_x.size();
+    d_points = int(d_x.size());
     addResultCurve(d_x, result);
     return sum;
 }
 
-bool Integration::isDataAcceptable()
+bool Integration::isDataAcceptable() const
 {
     switch (d_method) {
     case Linear:
-        break;
     case Cubic:
-        break;
     case Akima:
         break;
     default:
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Unknown interpolation method. Valid values are: 0 - Linear, 1 - "
-                                 "Cubic, 2 - Akima."));
-        d_init_err = true;
-        return true;
-    }
-    // GSL interpolation routines fail with division by zero on such data
-    for (unsigned i = 1; i < d_x.size(); i++)
-        if (d_x[i - 1] == d_x[i]) {
+        if (!isSilentOrNonInteractive())
             QMessageBox::critical((ApplicationWindow *)parent(),
                                   tr("ToriGraph") + " - " + tr("Error"),
-                                  tr("Several data points have the same x value causing divisions "
-                                     "by zero, operation aborted!"));
+                                  tr("Unknown interpolation method. Valid values are: 0 - Linear, "
+                                     "1 - Cubic, 2 - Akima."));
+        return false;
+    }
+    // GSL interpolation routines fail with division by zero on duplicate / non-increasing X values
+    for (unsigned i = 1; i < d_x.size(); i++) {
+        if (d_x[i - 1] >= d_x[i]) {
+            if (!isSilentOrNonInteractive())
+                QMessageBox::critical(
+                        (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                        tr("Several data points have the same x value causing divisions "
+                           "by zero, operation aborted!"));
             return false;
         }
+    }
 
     return Filter::isDataAcceptable();
 }
 
 QString Integration::logInfo()
 {
+    if (!d_graph) {
+        d_init_err = true;
+        return QString();
+    }
     const gsl_interp_type *method_t;
     QString method_name;
     switch (d_method) {
@@ -137,9 +146,11 @@ QString Integration::logInfo()
     }
 
     if (d_x.size() < gsl_interp_type_min_size(method_t)) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("You need at least %1 points in order to perform this operation!")
-                                      .arg(gsl_interp_type_min_size(method_t)));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                    tr("You need at least %1 points in order to perform this operation!")
+                            .arg(gsl_interp_type_min_size(method_t)));
         d_init_err = true;
         return QString("");
     }
@@ -147,9 +158,11 @@ QString Integration::logInfo()
     gsl_interp *interpolation = gsl_interp_alloc(method_t, d_x.size());
     gsl_interp_init(interpolation, d_x.data(), d_y.data(), d_x.size());
 
+    const QString srcTitle =
+            (d_curve && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text() : objectName();
     QString logInfo = "[" + QLocale().toString(QDateTime::currentDateTime()) + "\t" + tr("Plot")
             + ": ''" + d_graph->parentPlotName() + "'']\n";
-    logInfo += "\n" + tr("Numerical integration of") + ": " + d_curve->title().text()
+    logInfo += "\n" + tr("Numerical integration of") + ": " + srcTitle
             + tr(" using ") + method_name + tr("Interpolation") + "\n";
 
     ApplicationWindow *app = (ApplicationWindow *)parent();

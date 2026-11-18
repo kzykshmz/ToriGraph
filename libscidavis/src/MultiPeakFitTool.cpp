@@ -123,7 +123,12 @@ bool MultiPeakFitTool::eventFilter(QObject *obj, QEvent *event)
 
 void MultiPeakFitTool::selectPeak(QwtPlotCurve *curve, int point_index)
 {
-    if (!curve || (d_curve && d_curve != curve))
+    if (!curve || !d_graph || d_graph->curveIndex(curve) < 0 || point_index < 0
+        || point_index >= curve->dataSize())
+        return;
+    if (d_curve && d_graph->curveIndex(d_curve) < 0)
+        d_curve = nullptr;
+    if (d_curve && d_curve != curve)
         return;
     d_curve = curve;
 
@@ -168,6 +173,8 @@ void MultiPeakFitTool::finalize()
     if (d_graph && d_graph->plotWidget() && d_graph->plotWidget()->canvas())
         d_graph->plotWidget()->canvas()->releaseMouse();
 
+    if (d_curve && (!d_graph || d_graph->curveIndex(d_curve) < 0))
+        d_curve = nullptr;
     if (!d_curve && d_graph) {
         QString selectedTitle = d_graph->selectedCurveTitle();
         if (!selectedTitle.isEmpty())
@@ -176,7 +183,8 @@ void MultiPeakFitTool::finalize()
             d_curve = d_graph->curve(0);
     }
 
-    if (d_curve && d_fit && d_fit->setDataFromCurve(d_curve->title().text())) {
+    if (d_graph && d_curve && d_graph->curveIndex(d_curve) >= 0 && d_fit
+        && d_fit->setDataFromCurve(d_curve->title().text())) {
         QApplication::setOverrideCursor(Qt::WaitCursor);
         d_fit->seedPeaksFromCenters(d_picked_centers);
         d_fit->fit();

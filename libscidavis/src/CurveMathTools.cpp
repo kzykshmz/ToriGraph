@@ -19,9 +19,11 @@
 #include "PlotCurve.h"
 #include "Table.h"
 #include "core/column/Column.h"
+#include "core/datatypes/Double2StringFilter.h"
 
 #include <gsl/gsl_cdf.h>
 
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_marker.h>
 #include <qwt_scale_map.h>
@@ -284,6 +286,10 @@ Table *createNumericTable(ApplicationWindow *app, const QString &prefix,
             for (int r = 0; r < nRows; ++r)
                 vals[r] = colsData[static_cast<size_t>(c)][static_cast<size_t>(r)];
             colPtr->replaceValues(0, vals);
+            if (auto *d2s = qobject_cast<Double2StringFilter *>(colPtr->outputFilter())) {
+                d2s->setNumericFormat('g');
+                d2s->setNumDigits(6);
+            }
         } else {
             for (int r = 0; r < nRows; ++r)
                 t->setCell(r, c, colsData[static_cast<size_t>(c)][static_cast<size_t>(r)]);
@@ -1001,7 +1007,7 @@ double CurveMathTools::curveArcLength(Graph *g, const QString &curveTitle)
 
 void CurveMathTools::showCurveMathDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || ApplicationWindow::isNonInteractiveContext(app))
         return;
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
@@ -1048,7 +1054,7 @@ void CurveMathTools::showCurveMathDialog(ApplicationWindow *app, Graph *g)
 
 void CurveMathTools::showSubtractLineDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || ApplicationWindow::isNonInteractiveContext(app))
         return;
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
@@ -1117,7 +1123,7 @@ void CurveMathTools::showSubtractLineDialog(ApplicationWindow *app, Graph *g)
 
 void CurveMathTools::showAverageCurvesDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || ApplicationWindow::isNonInteractiveContext(app))
         return;
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
@@ -1165,7 +1171,7 @@ void CurveMathTools::showAverageCurvesDialog(ApplicationWindow *app, Graph *g)
 
 void CurveMathTools::showNormalizeDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || ApplicationWindow::isNonInteractiveContext(app))
         return;
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
@@ -1228,7 +1234,7 @@ void CurveMathTools::showNormalizeDialog(ApplicationWindow *app, Graph *g)
 
 void CurveMathTools::showIntersectionLookupDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app || !g)
+    if (!app || !g || ApplicationWindow::isNonInteractiveContext(app))
         return;
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
@@ -1415,6 +1421,48 @@ void registerMatSciTranslationsOnce()
         "3列以上の数値データ列 (周波数, Z', Z'') を含むワークシートを開いてください。");
     reg("EIS analysis requires at least 4 valid positive-frequency data points.",
         "EIS解析には有効な正の周波数データ点が4点以上必要です。");
+    reg("Measured", "実測値");
+    reg("Linear fit", "線形フィット");
+    reg("Tensile / 0.2% Proof Stress Analyzer", "引張試験・0.2%耐力解析");
+    reg("Tensile / 0.2% Yield", "引張・0.2%耐力");
+    reg("Tensile / 0.2% Yield...", "引張・0.2%耐力...");
+    reg("Data Source:", "データ入力元:");
+    reg("Active Graph Curve", "グラフ上の曲線");
+    reg("Worksheet Columns (Plot & Analyze)", "ワークシート列 (プロットして解析)");
+    reg("Target Graph:", "対象グラフ:");
+    reg("Stress-Strain Curve:", "応力-ひずみ曲線:");
+    reg("Strain Column (X):", "ひずみ列 (X):");
+    reg("Stress Column (Y):", "応力列 (Y):");
+    reg("Offset Proof Strain (%):", "オフセット耐力ひずみ (%):");
+    reg("Strain Unit:", "ひずみ単位:");
+    reg("Auto-detect (% or mm/mm)", "自動判定 (% または mm/mm)");
+    reg("Percent (%)", "パーセント (%)");
+    reg("Engineering Fraction (mm/mm)", "無次元比 (mm/mm)");
+    reg("Auto-detect linear-elastic region (max R²)", "線形弾性域を自動検出 (最大 R² 区間)");
+    reg("Elastic Strain Min:", "弾性域の最小ひずみ:");
+    reg("Elastic Strain Max:", "弾性域の最大ひずみ:");
+    reg("Plot 0.2% offset construction line & yield marker",
+        "オフセット補助線と耐力基準線をプロット");
+    reg("Add summary callout (σ0.2, E, UTS) on graph",
+        "グラフ内に解析結果ボックス (σ0.2, E, UTS) を表示");
+    reg("Generate True Stress - True Strain worksheet",
+        "真応力-真ひずみワークシートを生成");
+    reg("Please open a graph or numeric worksheet with stress-strain data first.",
+        "応力-ひずみデータを含むグラフまたはワークシートを先に開いてください。");
+    reg("No active graph found for tensile analysis.",
+        "引張解析の対象となるグラフが見つかりません。");
+    reg("Curve '%1' not found on graph.",
+        "曲線 '%1' がグラフ上に存在しません。");
+    reg("No data curves available on graph.",
+        "グラフ上に解析可能なデータ曲線がありません。");
+    reg("At least 4 valid data points are required for tensile analysis.",
+        "引張解析には有効なデータ点が4点以上必要です。");
+    reg("Tensile stress values must contain positive stress.",
+        "応力データには正の値が含まれている必要があります。");
+    reg("Could not determine a positive linear-elastic slope in the specified range.",
+        "指定範囲内で正のヤング率 (線形弾性勾配) を算出できませんでした。");
+    reg("Curve fractured before reaching the %1% offset yield line.",
+        "%1% オフセット耐力線に交差する前に破断しました。");
 }
 
 bool readMatSciCell(const Column *col, int row, double &val)
@@ -1533,16 +1581,18 @@ void applyArialToMatSciGraph(Graph *g)
 {
     if (!g)
         return;
-    const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Bold);
-    const QFont tickFnt(QStringLiteral("Arial"), 10);
+    const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Normal);
+    const QFont tickFnt(QStringLiteral("Arial"), 10, QFont::Normal);
     g->initFonts(titleFnt, tickFnt);
-    g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
-    g->setRightAxisTitleFont(titleFnt);
-    g->setAxisFont(QwtPlot::yRight, tickFnt);
+    g->setTitleFont(QFont(QStringLiteral("Arial"), 11, QFont::Normal));
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        g->setAxisTitleFont(a, titleFnt);
+        g->setAxisFont(a, tickFnt);
+    }
     if (g->legend())
-        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
+        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9, QFont::Normal));
     g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
-                             QFont(QStringLiteral("Arial"), 10),
+                             QFont(QStringLiteral("Arial"), 9, QFont::Normal),
                              g->textMarkerDefaultColor(),
                              g->textMarkerDefaultBackground());
 }
@@ -1554,11 +1604,43 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text)
     Legend *box = g->newLegend(text);
     if (!box)
         return nullptr;
+    const int basePt = (g->legend() ? g->legend()->font().pointSize() : 9);
+    QFont calloutFnt(QStringLiteral("Arial"), std::clamp(basePt, 8, 22), QFont::Normal);
+    calloutFnt.setBold(false);
     box->setFrameStyle(Legend::Line);
     box->setBackgroundColor(QColor(255, 255, 255, 232));
     box->setTextColor(QColor(20, 30, 50));
-    box->setFont(QFont(QStringLiteral("Arial"), 9));
+    box->setFont(calloutFnt);
     box->setOriginCoord(x, y);
+
+    if (Plot *pw = g->plotWidget()) {
+        g->replot();
+        if (QWidget *cv = pw->canvas()) {
+            const QRect cRect = cv->rect();
+            QRect bRect = box->rect();
+            const int pad = 6;
+            while (cRect.width() > 40 && bRect.width() > cRect.width() - 2 * pad
+                   && calloutFnt.pointSize() > 7) {
+                calloutFnt.setPointSize(calloutFnt.pointSize() - 1);
+                box->setFont(calloutFnt);
+                g->replot();
+                bRect = box->rect();
+            }
+            if (cRect.width() > 30 && cRect.height() > 30 && bRect.width() > 0
+                && bRect.height() > 0) {
+                const int maxLeft = std::max(pad, cRect.width() - bRect.width() - pad);
+                const int maxTop = std::max(pad, cRect.height() - bRect.height() - pad);
+                const int clampedPx = std::clamp(bRect.left(), pad, maxLeft);
+                const int clampedPy = std::clamp(bRect.top(), pad, maxTop);
+                if (clampedPx != bRect.left() || clampedPy != bRect.top()) {
+                    const double newX = pw->invTransform(QwtPlot::xBottom, clampedPx);
+                    const double newY = pw->invTransform(QwtPlot::yLeft, clampedPy);
+                    if (std::isfinite(newX) && std::isfinite(newY))
+                        box->setOriginCoord(newX, newY);
+                }
+            }
+        }
+    }
     return box;
 }
 
@@ -1689,10 +1771,35 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
     if (!tbl)
         return res;
 
+    if (Column *c0 = tbl->column(0)) {
+        c0->setLongName(use1000OverT ? QStringLiteral("1000 / <i>T</i>")
+                                     : QStringLiteral("1 / <i>T</i>"));
+        c0->setUnits(QStringLiteral("K<sup>-1</sup>"));
+    }
+    if (Column *c2 = tbl->column(2)) {
+        c2->setLongName(sigmaTimesT ? QStringLiteral("ln(<i>kT</i>)")
+                                    : QStringLiteral("ln <i>k</i>"));
+        c2->setComment(QObject::tr("Measured"));
+    }
+    if (Column *c3 = tbl->column(3))
+        c3->setComment(QObject::tr("Linear fit"));
+
     MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("ArrheniusPlot")));
     res.plot = ml;
     if (ml) {
         if (Graph *g = ml->activeGraph()) {
+            if (n > 2 && sResid > 0.0) {
+                QVector<double> vx(n), vyLo(n), vyHi(n);
+                for (int i = 0; i < n; ++i) {
+                    vx[i] = colInvT[static_cast<size_t>(i)];
+                    vyLo[i] = colCiLo[static_cast<size_t>(i)];
+                    vyHi[i] = colCiHi[static_cast<size_t>(i)];
+                }
+                if (QwtPlotItem *band = g->addShadedBand(vx, vyLo, vyHi, QColor(205, 35, 45, 38),
+                                                         QStringLiteral("95% CI"))) {
+                    band->setZ(1.0);
+                }
+            }
             if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(2), Graph::Scatter, 0, n - 1)) {
                 const int idx = g->curves() - 1;
                 g->setCurvePen(idx, QPen(QColor(25, 65, 135), 1.5));
@@ -1701,38 +1808,58 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
                                             QPen(QColor(15, 45, 95), 1.2), QSize(8, 8)));
             }
             insertStyledCurve(g, tbl, 0, 3, n, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
-            if (n > 2 && sResid > 0.0) {
-                const QPen ciPen(QColor(205, 35, 45, 175), 1.3, Qt::DashLine);
-                insertStyledCurve(g, tbl, 0, 4, n, ciPen);
-                insertStyledCurve(g, tbl, 0, 5, n, ciPen);
-            }
 
-            g->setXAxisTitle(use1000OverT ? QObject::tr("1000 / T (K^-1)")
-                                          : QObject::tr("1 / T (K^-1)"));
-            g->setYAxisTitle(sigmaTimesT ? QObject::tr("ln(k * T)") : QObject::tr("ln(k)"));
-            g->setTitle(QObject::tr("Arrhenius Plot (Activation Energy)"));
+            g->setXAxisTitle(use1000OverT ? QStringLiteral("1000 / <i>T</i> / K<sup>-1</sup>")
+                                          : QStringLiteral("1 / <i>T</i> / K<sup>-1</sup>"));
+            g->setYAxisTitle(sigmaTimesT ? QStringLiteral("ln(<i>kT</i>)")
+                                         : QStringLiteral("ln <i>k</i>"));
+            g->setTitle(QString());
             if (g->legend())
                 g->legend()->setText(g->legendText());
+            g->setAutoScale();
             applyArialToMatSciGraph(g);
+
+            // Attach linked Top-X temperature layer (T / K or T / °C) first and settle layout
+            // before placing legend & callout so parent and child canvasRects align 1:1
+            const QString topFormula = tempInCelsius
+                    ? (use1000OverT ? QStringLiteral("1000.0/x - 273.15")
+                                    : QStringLiteral("1.0/x - 273.15"))
+                    : (use1000OverT ? QStringLiteral("1000.0/x")
+                                    : QStringLiteral("1.0/x"));
+            Graph *topLayer =
+                    ml->addLinkedLayer(g, true, false, topFormula, QStringLiteral("y"));
+            if (topLayer) {
+                topLayer->setAxisTitle(QwtPlot::xTop,
+                                       tempInCelsius ? QStringLiteral("<i>T</i> / \u00B0C")
+                                                     : QStringLiteral("<i>T</i> / K"));
+                applyArialToMatSciGraph(topLayer);
+            }
+            ml->arrangeLayers(false, false);
+            g->syncChildLinkedLayers();
+            g->replot();
+            if (topLayer)
+                topLayer->replot();
+            ml->setActiveGraph(g);
+
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
 
             const double xSpan = std::max(1e-9, colInvT.back() - colInvT.front());
             const auto yMM = std::minmax_element(colLnK.begin(), colLnK.end());
             const double ySpan = std::max(1e-9, *yMM.second - *yMM.first);
             const QString summary = QStringLiteral(
-                    "Ea = %1 ± %2 kJ/mol\n"
-                    "Ea = %3 ± %4 eV\n"
-                    "ln(A) = %5\n"
-                    "R² = %6")
-                    .arg(res.activationEnergyKJmol, 0, 'f', 3)
-                    .arg(res.activationEnergyKJmolSE, 0, 'f', 3)
-                    .arg(res.activationEnergyEV, 0, 'f', 4)
-                    .arg(res.activationEnergyEVSE, 0, 'f', 4)
-                    .arg(res.lnPreExponential, 0, 'f', 3)
-                    .arg(res.rSquare, 0, 'f', 5);
-            addMatSciCalloutBox(g, colInvT.front() + 0.06 * xSpan,
-                                *yMM.first + 0.32 * ySpan, summary);
-            g->setAutoScale();
+                    "<i>E</i><sub>a</sub> = %1 \u00B1 %2 kJ mol<sup>-1</sup>\n"
+                    "(%3 eV), ln <i>A</i> = %4\n"
+                    "<i>R</i><sup>2</sup> = %5")
+                    .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                    .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
+                    .arg(res.activationEnergyEV, 0, 'f', 3)
+                    .arg(res.lnPreExponential, 0, 'f', 2)
+                    .arg(res.rSquare, 0, 'f', 4);
+            addMatSciCalloutBox(g, colInvT.front() + 0.05 * xSpan,
+                                *yMM.first + 0.28 * ySpan, summary);
             g->replot();
+            if (topLayer)
+                topLayer->replot();
         }
     }
     return res;
@@ -2003,27 +2130,28 @@ CurveMathTools::TaucResult CurveMathTools::createTaucPlot(
             baseLine.drawEndArrow(false);
             g->addArrow(&baseLine);
 
-            g->setXAxisTitle(QObject::tr("Photon Energy hν (eV)"));
-            g->setYAxisTitle(directAllowed ? QObject::tr("(αhν)^2 ((eV/cm)^2)")
-                                           : QObject::tr("(αhν)^(1/2) ((eV/cm)^(1/2))"));
-            g->setTitle(QObject::tr("Tauc Plot (Optical Bandgap)"));
+            g->setXAxisTitle(QStringLiteral("<i>h\u03BD</i> / eV"));
+            g->setYAxisTitle(directAllowed
+                                     ? QStringLiteral("(<i>\u03B1h\u03BD</i>)<sup>2</sup> / (eV cm<sup>-1</sup>)<sup>2</sup>")
+                                     : QStringLiteral("(<i>\u03B1h\u03BD</i>)<sup>1/2</sup> / (eV cm<sup>-1</sup>)<sup>1/2</sup>"));
+            g->setTitle(QString());
             if (g->legend())
                 g->legend()->setText(g->legendText());
+            g->setAutoScale();
             applyArialToMatSciGraph(g);
 
             const double eSpan = std::max(1e-6, xHi - xLo);
             const QString summary = QStringLiteral(
-                    "Eg = %1 ± %2 eV (%3)\n"
-                    "Edge [%4 – %5 eV]\n"
-                    "R² = %6")
+                    "<i>E</i><sub>g</sub> = %1 \u00B1 %2 eV (%3)\n"
+                    "Edge [%4 \u2013 %5 eV]\n"
+                    "<i>R</i><sup>2</sup> = %6")
                     .arg(res.bandgapEV, 0, 'f', 3)
                     .arg(res.bandgapEVSE, 0, 'f', 3)
                     .arg(directAllowed ? QStringLiteral("Direct") : QStringLiteral("Indirect"))
                     .arg(E[static_cast<size_t>(winner->i)], 0, 'f', 2)
                     .arg(E[static_cast<size_t>(winner->j)], 0, 'f', 2)
-                    .arg(res.rSquare, 0, 'f', 5);
-            addMatSciCalloutBox(g, xLo + 0.06 * eSpan, 0.72 * yMax, summary);
-            g->setAutoScale();
+                    .arg(res.rSquare, 0, 'f', 4);
+            addMatSciCalloutBox(g, xLo + 0.05 * eSpan, 0.72 * yMax, summary);
             g->replot();
         }
     }
@@ -2734,25 +2862,23 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
 
             gNyq->setScale(QwtPlot::xBottom, isoXStart, isoXEnd);
             gNyq->setScale(QwtPlot::yLeft, isoYStart, isoYEnd);
-            gNyq->setXAxisTitle(QObject::tr("Z' (Ω)"));
-            gNyq->setYAxisTitle(QObject::tr("-Z'' (Ω)"));
-            gNyq->setTitle(QObject::tr("EIS Nyquist Plot (Randles-CPE)"));
+            gNyq->setXAxisTitle(QStringLiteral("<i>Z</i>' / \u03A9"));
+            gNyq->setYAxisTitle(QStringLiteral("-<i>Z</i>'' / \u03A9"));
+            gNyq->setTitle(QString());
             if (gNyq->legend())
                 gNyq->legend()->setText(gNyq->legendText());
             applyArialToMatSciGraph(gNyq);
 
             const QString summary = QStringLiteral(
-                    "Rs = %1 Ω,  Rct = %2 Ω\n"
-                    "Q = %3 S·s^n,  n = %4\n"
-                    "Ceff = %5 F,  f_peak = %6 Hz\n"
-                    "RMSE = %7 Ω")
-                    .arg(res.rs, 0, 'g', 5)
-                    .arg(res.rct, 0, 'g', 5)
-                    .arg(res.qCpe, 0, 'e', 3)
-                    .arg(res.nCpe, 0, 'f', 4)
-                    .arg(res.cEff, 0, 'e', 3)
-                    .arg(res.fPeakHz, 0, 'g', 4)
-                    .arg(res.rmse, 0, 'g', 4);
+                    "<i>R</i><sub>s</sub> = %1 \u03A9,  <i>R</i><sub>ct</sub> = %2 \u03A9\n"
+                    "<i>Q</i> = %3 S s<sup><i>n</i></sup>,  <i>n</i> = %4\n"
+                    "<i>C</i><sub>eff</sub> = %5 F,  <i>f</i><sub>peak</sub> = %6 Hz")
+                    .arg(res.rs, 0, 'g', 4)
+                    .arg(res.rct, 0, 'g', 4)
+                    .arg(res.qCpe, 0, 'e', 2)
+                    .arg(res.nCpe, 0, 'f', 3)
+                    .arg(res.cEff, 0, 'e', 2)
+                    .arg(res.fPeakHz, 0, 'g', 4);
             addMatSciCalloutBox(gNyq, isoXStart + 0.05 * isoSpan,
                                 isoYStart + 0.93 * isoSpan, summary);
             gNyq->replot();
@@ -2811,10 +2937,10 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
                             *magMM.second + 0.15 * magSpan);
             gBode->setScale(QwtPlot::yRight, phLo, phHi);
 
-            gBode->setXAxisTitle(QObject::tr("log10(f / Hz)"));
-            gBode->setYAxisTitle(QObject::tr("log10(|Z| / Ω)"));
+            gBode->setXAxisTitle(QStringLiteral("log<sub>10</sub>(<i>f</i> / Hz)"));
+            gBode->setYAxisTitle(QStringLiteral("log<sub>10</sub>(|<i>Z</i>| / \u03A9)"));
             gBode->setRightAxisTitle(QObject::tr("Phase (°)"));
-            gBode->setTitle(QObject::tr("EIS Bode Plot (Impedance & Phase)"));
+            gBode->setTitle(QString());
             gBode->setYAxisTitleColor(QColor(25, 75, 155));
             gBode->setRightAxisTitleColor(QColor(195, 55, 30));
             if (gBode->legend())
@@ -2829,7 +2955,7 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
 
 void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
     const QList<Table *> tables = collectProjectTables(app);
@@ -2910,7 +3036,7 @@ void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
 
 void CurveMathTools::showTaucDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
     const QList<Table *> tables = collectProjectTables(app);
@@ -2990,7 +3116,7 @@ void CurveMathTools::showTaucDialog(ApplicationWindow *app)
 
 void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
 {
-    if (!app)
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
     Graph *targetGraph = findActiveOrFirstGraph(app, g);
@@ -3069,7 +3195,7 @@ void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
 
 void CurveMathTools::showEISAnalyzerDialog(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
     const QList<Table *> allTables = collectProjectTables(app);
@@ -3166,5 +3292,802 @@ void CurveMathTools::showEISAnalyzerDialog(ApplicationWindow *app)
                         QObject::tr("EIS analysis requires at least 4 valid positive-frequency data points."));
             }
         }
+    }
+}
+
+CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
+        ApplicationWindow *app, Graph *g, const QString &curveTitle,
+        double offsetFraction, int strainInPercentMode,
+        double elasticXMin, double elasticXMax,
+        bool plotConstruction, bool addCallout, bool createTrueStressTable)
+{
+    registerMatSciTranslationsOnce();
+    TensileResult res;
+    res.offsetFraction =
+            (std::isfinite(offsetFraction) && offsetFraction > 0.0) ? offsetFraction : 0.002;
+
+    Graph *targetGraph = findActiveOrFirstGraph(app, g);
+    if (!targetGraph) {
+        res.error = QObject::tr("No active graph found for tensile analysis.");
+        return res;
+    }
+    res.plot = targetGraph->multiLayerParent();
+
+    QwtPlotCurve *srcCurve = nullptr;
+    if (!curveTitle.trimmed().isEmpty()) {
+        srcCurve = resolveCurve(targetGraph, curveTitle);
+        if (!srcCurve) {
+            res.error = QObject::tr("Curve '%1' not found on graph.").arg(curveTitle);
+            return res;
+        }
+    } else {
+        const QList<QwtPlotCurve *> fitList = targetGraph->fitCurvesList();
+        const QStringList cands = targetGraph->analysableCurvesList();
+        for (const QString &cn : cands) {
+            QwtPlotCurve *cand = targetGraph->curve(cn);
+            if (!cand || fitList.contains(cand))
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(cand)) {
+                if (dc->table()
+                    && (dc->table()->objectName().startsWith(QStringLiteral("GadgetFit_"))
+                        || dc->table()->objectName().startsWith(QStringLiteral("RpcFitCurve")))) {
+                    continue;
+                }
+            }
+            srcCurve = cand;
+            break;
+        }
+        if (!srcCurve && targetGraph->curves() > 0)
+            srcCurve = targetGraph->curve(0);
+        if (!srcCurve) {
+            res.error = QObject::tr("No data curves available on graph.");
+            return res;
+        }
+    }
+
+    DataCurve *srcDc = dynamic_cast<DataCurve *>(srcCurve);
+    Table *srcTbl = srcDc ? srcDc->table() : nullptr;
+    Column *xCol = (srcTbl && srcDc) ? srcTbl->column(srcDc->xColumnName()) : nullptr;
+    Column *yCol = (srcTbl && srcDc) ? srcTbl->column(srcDc->yColumnName()) : nullptr;
+
+    struct TensilePt
+    {
+        double x = 0.0;
+        double y = 0.0;
+    };
+    std::vector<TensilePt> pts;
+    const int rawN = srcCurve->dataSize();
+    pts.reserve(static_cast<size_t>(std::max(0, rawN)));
+    for (int i = 0; i < rawN; ++i) {
+        if (srcDc && srcTbl) {
+            int row = srcDc->tableRow(i);
+            if (row < 0 && yCol && rawN == yCol->rowCount())
+                row = i;
+            if (row >= 0 && ((xCol && xCol->isMasked(row)) || (yCol && yCol->isMasked(row))))
+                continue;
+        }
+        const double xv = srcCurve->x(i);
+        const double yv = srcCurve->y(i);
+        if (std::isfinite(xv) && std::isfinite(yv))
+            pts.push_back({ xv, yv });
+    }
+
+    if (pts.size() < 4) {
+        res.error = QObject::tr("At least 4 valid data points are required for tensile analysis.");
+        return res;
+    }
+
+    // Find global peak stress (UTS) and fracture point
+    size_t utsIdx = 0;
+    double minX = pts.front().x;
+    double maxX = pts.front().x;
+    for (size_t i = 0; i < pts.size(); ++i) {
+        minX = std::min(minX, pts[i].x);
+        maxX = std::max(maxX, pts[i].x);
+        if (pts[i].y > pts[utsIdx].y)
+            utsIdx = i;
+    }
+    res.utsX = pts[utsIdx].x;
+    res.utsY = pts[utsIdx].y;
+    if (!(res.utsY > 0.0)) {
+        res.error = QObject::tr("Tensile stress values must contain positive stress.");
+        return res;
+    }
+
+    size_t fracIdx = pts.size() - 1;
+    for (size_t i = utsIdx + 1; i < pts.size(); ++i) {
+        if (pts[i].y <= 0.15 * res.utsY || pts[i].y < 0.5 * pts[i - 1].y) {
+            fracIdx = i - 1;
+            break;
+        }
+    }
+    res.fractureX = pts[fracIdx].x;
+    res.fractureY = pts[fracIdx].y;
+
+    // Auto-detect strain in % vs dimensionless fraction
+    bool strainInPercent = (maxX > 1.2);
+    if (strainInPercentMode == 1) {
+        strainInPercent = true;
+    } else if (strainInPercentMode == 0) {
+        strainInPercent = false;
+    } else {
+        const QString xUnit = xCol ? xCol->units().trimmed() : QString();
+        const QString xTitle = targetGraph->plotWidget()
+                ? targetGraph->plotWidget()->axisTitle(srcCurve->xAxis()).text()
+                : QString();
+        if (xUnit == QLatin1String("%")
+            || (xTitle.contains(QLatin1Char('%')) && !xTitle.contains(QLatin1String("wt%"), Qt::CaseInsensitive)
+                && !xTitle.contains(QLatin1String("at%"), Qt::CaseInsensitive))) {
+            strainInPercent = true;
+        } else if ((xUnit == QLatin1String("-") || xUnit == QStringLiteral("\u2014")
+                    || xUnit.compare(QLatin1String("mm/mm"), Qt::CaseInsensitive) == 0
+                    || xUnit.compare(QLatin1String("m/m"), Qt::CaseInsensitive) == 0
+                    || xTitle.contains(QLatin1String("(mm/mm)"), Qt::CaseInsensitive)
+                    || xTitle.contains(QLatin1String("(-)")))
+                   && maxX <= 1.2) {
+            strainInPercent = false;
+        }
+    }
+    res.strainInPercent = strainInPercent;
+
+    // Detect stress unit (default MPa)
+    QString stressUnit = yCol ? yCol->units().trimmed() : QString();
+    if (stressUnit.isEmpty() && targetGraph->plotWidget()) {
+        const QString yTitle = targetGraph->plotWidget()->axisTitle(srcCurve->yAxis()).text();
+        if (yTitle.contains(QLatin1String("GPa")))
+            stressUnit = QStringLiteral("GPa");
+        else if (yTitle.contains(QLatin1String("kPa")))
+            stressUnit = QStringLiteral("kPa");
+        else if (yTitle.contains(QLatin1String("MPa")))
+            stressUnit = QStringLiteral("MPa");
+        else if (yTitle.contains(QLatin1String("(Pa)")) || yTitle.contains(QLatin1String("[Pa]"))
+                 || yTitle.endsWith(QLatin1String("/ Pa")))
+            stressUnit = QStringLiteral("Pa");
+    }
+    if (stressUnit.isEmpty())
+        stressUnit = QStringLiteral("MPa");
+    res.stressUnit = stressUnit;
+
+    // Fit linear-elastic slope on rising branch [0 .. utsIdx]
+    const size_t nRise = std::max<size_t>(2, std::min(pts.size(), utsIdx + 1));
+
+    auto olsRange = [&](const std::vector<TensilePt> &sub, double &outSlope, double &outIntercept,
+                        double &outR2) -> bool {
+        const size_t m = sub.size();
+        if (m < 2)
+            return false;
+        double sx = 0.0, sy = 0.0;
+        for (const auto &p : sub) {
+            sx += p.x;
+            sy += p.y;
+        }
+        const double mx = sx / double(m);
+        const double my = sy / double(m);
+        double sxx = 0.0, sxy = 0.0, syy = 0.0;
+        for (const auto &p : sub) {
+            const double dx = p.x - mx;
+            const double dy = p.y - my;
+            sxx += dx * dx;
+            sxy += dx * dy;
+            syy += dy * dy;
+        }
+        if (sxx <= 1e-30 || sxy <= 0.0)
+            return false;
+        outSlope = sxy / sxx;
+        outIntercept = my - outSlope * mx;
+        const double rss = std::max(0.0, syy - outSlope * sxy);
+        outR2 = (syy > 1e-30) ? std::clamp(1.0 - rss / syy, 0.0, 1.0) : 1.0;
+        return std::isfinite(outSlope) && outSlope > 0.0;
+    };
+
+    bool hasElasticFit = false;
+    const bool manualRange = std::isfinite(elasticXMin) || std::isfinite(elasticXMax);
+    if (manualRange) {
+        double xLo = std::isfinite(elasticXMin) ? elasticXMin : minX;
+        double xHi = std::isfinite(elasticXMax) ? elasticXMax : pts[utsIdx].x;
+        if (xLo > xHi)
+            std::swap(xLo, xHi);
+        std::vector<TensilePt> sel;
+        for (size_t i = 0; i < nRise; ++i) {
+            if (pts[i].x >= xLo && pts[i].x <= xHi)
+                sel.push_back(pts[i]);
+        }
+        double b = 0.0, a = 0.0, r2 = 0.0;
+        if (olsRange(sel, b, a, r2)) {
+            res.elasticSlopeRaw = b;
+            res.elasticIntercept = a;
+            res.elasticR2 = r2;
+            res.elasticXMin = sel.front().x;
+            res.elasticXMax = sel.back().x;
+            hasElasticFit = true;
+        }
+    } else {
+        // Prefix sums on [0 .. nRise - 1] for fast sliding-window elastic discovery
+        std::vector<double> pX(nRise + 1, 0.0), pY(nRise + 1, 0.0);
+        std::vector<double> pXX(nRise + 1, 0.0), pYY(nRise + 1, 0.0), pXY(nRise + 1, 0.0);
+        for (size_t k = 0; k < nRise; ++k) {
+            const double xk = pts[k].x;
+            const double yk = pts[k].y;
+            pX[k + 1] = pX[k] + xk;
+            pY[k + 1] = pY[k] + yk;
+            pXX[k + 1] = pXX[k] + xk * xk;
+            pYY[k + 1] = pYY[k] + yk * yk;
+            pXY[k + 1] = pXY[k] + xk * yk;
+        }
+
+        struct ElasticCand
+        {
+            size_t i = 0;
+            size_t j = 1;
+            double b = 0.0;
+            double a = 0.0;
+            double r2 = 0.0;
+            double riseFrac = 0.0;
+            double yiFrac = 0.0;
+        };
+
+        const size_t minWin = (nRise >= 30) ? 5 : ((nRise >= 6) ? 3 : 2);
+        const size_t maxWin = std::max(minWin, std::min<size_t>(nRise, 250));
+        std::vector<ElasticCand> cands;
+
+        auto collectElasticWindows = [&](double maxStartFrac, double maxEndFrac,
+                                         double minRiseFrac) {
+            for (size_t i = 0; i + minWin - 1 < nRise; ++i) {
+                const double yiFrac = pts[i].y / res.utsY;
+                if (yiFrac < -0.05 || yiFrac > maxStartFrac)
+                    continue;
+                const size_t jEnd = std::min(nRise - 1, i + maxWin - 1);
+                for (size_t j = i + minWin - 1; j <= jEnd; ++j) {
+                    const double yjFrac = pts[j].y / res.utsY;
+                    if (yjFrac > maxEndFrac)
+                        break;
+                    const double riseFrac = (pts[j].y - pts[i].y) / res.utsY;
+                    if (riseFrac < minRiseFrac)
+                        continue;
+                    const double m = double(j - i + 1);
+                    const double mx = (pX[j + 1] - pX[i]) / m;
+                    const double my = (pY[j + 1] - pY[i]) / m;
+                    const double sxx = (pXX[j + 1] - pXX[i]) - m * mx * mx;
+                    const double syy = (pYY[j + 1] - pYY[i]) - m * my * my;
+                    const double sxy = (pXY[j + 1] - pXY[i]) - m * mx * my;
+                    if (sxx <= 1e-30 || syy <= 1e-30 || sxy <= 0.0)
+                        continue;
+                    const double b = sxy / sxx;
+                    const double a = my - b * mx;
+                    const double rss = std::max(0.0, syy - b * sxy);
+                    const double r2 = std::clamp(1.0 - rss / syy, 0.0, 1.0);
+                    cands.push_back({ i, j, b, a, r2, riseFrac, std::max(0.0, yiFrac) });
+                }
+            }
+        };
+
+        collectElasticWindows(0.28, 0.72, 0.18);
+        if (cands.empty())
+            collectElasticWindows(0.40, 0.90, 0.10);
+        if (cands.empty()) {
+            // Ultra-coarse fallback: first 2..3 points on rising branch
+            const size_t jFb = std::min<size_t>(nRise - 1, 2);
+            std::vector<TensilePt> sub(pts.begin(), pts.begin() + jFb + 1);
+            double b = 0.0, a = 0.0, r2 = 0.0;
+            if (olsRange(sub, b, a, r2)) {
+                res.elasticSlopeRaw = b;
+                res.elasticIntercept = a;
+                res.elasticR2 = r2;
+                res.elasticXMin = sub.front().x;
+                res.elasticXMax = sub.back().x;
+                hasElasticFit = true;
+            }
+        } else {
+            double bestR2 = 0.0;
+            for (const auto &c : cands)
+                bestR2 = std::max(bestR2, c.r2);
+            const double r2Gate = (bestR2 >= 0.998) ? (bestR2 - 0.0025)
+                    : (bestR2 >= 0.98)              ? (bestR2 - 0.008)
+                                                    : (bestR2 * 0.92);
+            double maxSlopeHighR2 = 0.0;
+            for (const auto &c : cands) {
+                if (c.r2 >= r2Gate)
+                    maxSlopeHighR2 = std::max(maxSlopeHighR2, c.b);
+            }
+
+            const ElasticCand *winner = &cands.front();
+            double bestScore = -1.0;
+            for (const auto &c : cands) {
+                if (c.r2 < r2Gate)
+                    continue;
+                if (maxSlopeHighR2 > 0.0 && c.b < 0.75 * maxSlopeHighR2)
+                    continue;
+                const double slopeTerm =
+                        (maxSlopeHighR2 > 0.0) ? std::pow(c.b / maxSlopeHighR2, 1.5) : 1.0;
+                const double spanTerm = std::pow(std::min(0.65, c.riseFrac), 0.35);
+                const double originTerm = 1.0 / (1.0 + 1.5 * c.yiFrac);
+                const double score = std::pow(c.r2, 12.0) * slopeTerm * spanTerm * originTerm;
+                if (score > bestScore) {
+                    bestScore = score;
+                    winner = &c;
+                }
+            }
+            res.elasticSlopeRaw = winner->b;
+            res.elasticIntercept = winner->a;
+            res.elasticR2 = winner->r2;
+            res.elasticXMin = pts[winner->i].x;
+            res.elasticXMax = pts[winner->j].x;
+            hasElasticFit = true;
+        }
+    }
+
+    if (!hasElasticFit || !(res.elasticSlopeRaw > 0.0)) {
+        res.error = QObject::tr(
+                "Could not determine a positive linear-elastic slope in the specified range.");
+        return res;
+    }
+
+    res.youngsModulus = strainInPercent ? (res.elasticSlopeRaw * 100.0) : res.elasticSlopeRaw;
+
+    // Intersect shifted offset line L(x) = elasticSlopeRaw * (x - (x0 + deltaX)) with curve segments
+    const double xSpanRise = std::max(1e-12, pts[utsIdx].x - minX);
+    double x0 = -res.elasticIntercept / res.elasticSlopeRaw;
+    x0 = std::clamp(x0, minX - 0.05 * xSpanRise, minX + 0.25 * xSpanRise);
+    if (std::fabs(x0) < 1e-6 * xSpanRise)
+        x0 = 0.0;
+
+    const double deltaX = strainInPercent ? (res.offsetFraction * 100.0) : res.offsetFraction;
+    const double xFoot = x0 + deltaX;
+
+    bool seenAboveOffsetLine = false;
+    bool foundYield = false;
+    for (size_t k = 0; k < fracIdx && k + 1 < pts.size(); ++k) {
+        // Never intersect the offset line with a discontinuous or post-UTS brittle fracture drop
+        if (pts[k].y > 0.0 && pts[k + 1].y < 0.5 * pts[k].y)
+            break;
+        if (k >= utsIdx && pts[k + 1].y < 0.75 * res.utsY
+            && (pts[k + 1].x - pts[k].x) < 0.25 * deltaX)
+            break;
+        const double l0 = res.elasticSlopeRaw * (pts[k].x - xFoot);
+        const double l1 = res.elasticSlopeRaw * (pts[k + 1].x - xFoot);
+        const double d0 = pts[k].y - l0;
+        const double d1 = pts[k + 1].y - l1;
+        if (pts[k].y > 0.05 * res.utsY && d0 > 0.0)
+            seenAboveOffsetLine = true;
+        if ((seenAboveOffsetLine || d0 >= 0.0) && d0 >= 0.0 && d1 <= 0.0
+            && pts[k + 1].x >= xFoot) {
+            const double denom = d0 - d1;
+            const double t = (std::fabs(denom) > 1e-30) ? std::clamp(d0 / denom, 0.0, 1.0) : 0.0;
+            res.offsetYieldX = pts[k].x + t * (pts[k + 1].x - pts[k].x);
+            res.offsetYieldY = pts[k].y + t * (pts[k + 1].y - pts[k].y);
+            if (res.offsetYieldY > 0.02 * res.utsY)
+                foundYield = true;
+            break;
+        }
+    }
+
+    if (!foundYield) {
+        res.valid = false;
+        res.offsetYieldX = std::numeric_limits<double>::quiet_NaN();
+        res.offsetYieldY = std::numeric_limits<double>::quiet_NaN();
+        res.error = QObject::tr("Curve fractured before reaching the %1% offset yield line.")
+                            .arg(res.offsetFraction * 100.0, 0, 'g', 4);
+        return res;
+    }
+
+    res.valid = true;
+
+    // Optional True Stress - True Strain worksheet (strictly up to uniform elongation utsIdx, prior to necking)
+    if (createTrueStressTable && app) {
+        std::vector<double> trueEps;
+        std::vector<double> trueSig;
+        std::vector<double> plasticEps;
+        const size_t nUniform = std::min(pts.size(), utsIdx + 1);
+        trueEps.reserve(nUniform);
+        trueSig.reserve(nUniform);
+        plasticEps.reserve(nUniform);
+        for (size_t i = 0; i <= utsIdx && i < pts.size(); ++i) {
+            const auto &p = pts[i];
+            const double eFrac = strainInPercent ? (p.x / 100.0) : p.x;
+            if (1.0 + eFrac <= 1e-9)
+                continue;
+            const double epsT = std::log(1.0 + eFrac);
+            const double sigT = p.y * (1.0 + eFrac);
+            const double epsP = std::max(0.0, epsT - (sigT / std::max(1e-12, res.youngsModulus)));
+            trueEps.push_back(epsT);
+            trueSig.push_back(sigT);
+            plasticEps.push_back(epsP);
+        }
+        if (!trueEps.empty()) {
+            Table *tTrue = createNumericTable(
+                    app, QStringLiteral("TrueStressStrain"),
+                    QStringList() << QStringLiteral("TrueStrain") << QStringLiteral("TrueStress")
+                                  << QStringLiteral("TruePlasticStrain"),
+                    QList<SciDAVis::PlotDesignation>()
+                            << SciDAVis::X << SciDAVis::Y << SciDAVis::noDesignation,
+                    { trueEps, trueSig, plasticEps });
+            if (tTrue) {
+                if (Column *c0 = tTrue->column(0)) {
+                    c0->setLongName(QStringLiteral("True strain, \u03B5"));
+                    c0->setUnits(QStringLiteral("-"));
+                }
+                if (Column *c1 = tTrue->column(1)) {
+                    c1->setLongName(QStringLiteral("True stress, \u03C3"));
+                    c1->setUnits(stressUnit);
+                }
+                if (Column *c2 = tTrue->column(2)) {
+                    c2->setLongName(QStringLiteral("True plastic strain, \u03B5<sub>p</sub>"));
+                    c2->setUnits(QStringLiteral("-"));
+                }
+                res.trueStressTable = tTrue;
+            }
+        }
+    }
+
+    const QString beforeSnap =
+            (res.plot && (plotConstruction || addCallout)) ? res.plot->captureUndoSnapshot()
+                                                           : QString();
+
+    const QString offsetPctStr = QString::number(res.offsetFraction * 100.0, 'g', 3);
+
+    // Check if existing graph labels are pure ASCII (avoid mixing Japanese legend onto all-English ISIJ plots)
+    bool graphHasCjk = false;
+    if (targetGraph->plotWidget()) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const QString at = targetGraph->plotWidget()->axisTitle(a).text();
+            for (QChar ch : at) {
+                if (ch.unicode() >= 0x3000) {
+                    graphHasCjk = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (plotConstruction && app) {
+        auto *colOX = new Column(QStringLiteral("OffsetStrain"), SciDAVis::ColumnMode::Numeric);
+        auto *colOY = new Column(QStringLiteral("OffsetStress"), SciDAVis::ColumnMode::Numeric);
+        colOX->setPlotDesignation(SciDAVis::X);
+        colOY->setPlotDesignation(SciDAVis::Y);
+        QVector<qreal> vx = { xFoot, res.offsetYieldX };
+        QVector<qreal> vy = { 0.0, res.offsetYieldY };
+        colOX->replaceValues(0, vx);
+        colOY->replaceValues(0, vy);
+        const QString legComment = graphHasCjk
+                ? QStringLiteral("%1% \u30AA\u30D5\u30BB\u30C3\u30C8\u7DDA").arg(offsetPctStr)
+                : QStringLiteral("%1% offset").arg(offsetPctStr);
+        colOY->setComment(legComment);
+
+        const QString hidName = app->generateUniqueName(QStringLiteral("GadgetFit_OffsetYield"));
+        Table *hidTbl = app->newHiddenTable(hidName, legComment, QList<Column *>() << colOX << colOY);
+        if (hidTbl) {
+            auto *cOff = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colOX->name(),
+                                       hidName + QStringLiteral("_") + colOY->name(), 0, 1);
+            cOff->setType(Graph::Line);
+            cOff->setStyle(QwtPlotCurve::Lines);
+            cOff->setPen(QPen(QColor(220, 38, 38), 1.8, Qt::DashLine));
+            cOff->loadData();
+            targetGraph->insertPlotItem(cOff, Graph::Line);
+            cOff->setAxis(srcCurve->xAxis(), srcCurve->yAxis());
+            targetGraph->addFitCurve(cOff);
+            res.constructionCurveTitle = cOff->title().text();
+        }
+
+        Graph::ReferenceLineSpec refSpec;
+        refSpec.orientation = 0; // Horizontal Y
+        refSpec.value = res.offsetYieldY;
+        refSpec.color = QColor(220, 38, 38, 195);
+        refSpec.style = Qt::DotLine;
+        refSpec.width = 1.3;
+        refSpec.label = addCallout
+                ? QString()
+                : QStringLiteral("\u03C3<sub>%1</sub> = %2 %3")
+                          .arg(offsetPctStr)
+                          .arg(res.offsetYieldY, 0, 'f', 1)
+                          .arg(stressUnit);
+        targetGraph->addReferenceLine(refSpec);
+    }
+
+    if (addCallout) {
+        QString eDisplay;
+        if (stressUnit == QLatin1String("MPa") && res.youngsModulus >= 1000.0) {
+            eDisplay = QStringLiteral("%1 GPa").arg(res.youngsModulus / 1000.0, 0, 'f', 1);
+        } else {
+            eDisplay = QStringLiteral("%1 %2").arg(res.youngsModulus, 0, 'g', 4).arg(stressUnit);
+        }
+        const QString callout = QStringLiteral(
+                "\u03C3<sub>%1</sub> = %2 %3\n"
+                "<i>E</i> = %4 (<i>R</i><sup>2</sup> = %5)\n"
+                "UTS = %6 %3")
+                .arg(offsetPctStr)
+                .arg(res.offsetYieldY, 0, 'f', 1)
+                .arg(stressUnit, eDisplay)
+                .arg(res.elasticR2, 0, 'f', 4)
+                .arg(res.utsY, 0, 'f', 1);
+
+        const double xSpanAll = std::max(1e-9, maxX - minX);
+        const double calloutX = std::min(minX + 0.52 * xSpanAll,
+                                         std::max(res.offsetYieldX + 0.06 * xSpanAll,
+                                                  minX + 0.28 * xSpanAll));
+        const double calloutY = 0.42 * res.utsY;
+        addMatSciCalloutBox(targetGraph, calloutX, calloutY, callout);
+    }
+
+    targetGraph->replot();
+    if (res.plot && !beforeSnap.isEmpty()) {
+        res.plot->pushUndoSnapshot(QObject::tr("Tensile / 0.2% Proof Stress Analyzer"),
+                                   beforeSnap);
+    }
+    if (app) {
+        app->updateLog(QStringLiteral(
+                "[%1] Tensile Analysis (%2): E = %3 %4 (R² = %5), σ_%6 = %7 %4 at %8%9, UTS = %10 %4\n")
+                .arg(QLocale().toString(QDateTime::currentDateTime()),
+                     srcCurve->title().text())
+                .arg(res.youngsModulus, 0, 'g', 5)
+                .arg(stressUnit)
+                .arg(res.elasticR2, 0, 'f', 5)
+                .arg(offsetPctStr)
+                .arg(res.offsetYieldY, 0, 'f', 2)
+                .arg(res.offsetYieldX, 0, 'g', 4)
+                .arg(strainInPercent ? QStringLiteral("%") : QString())
+                .arg(res.utsY, 0, 'f', 2));
+        app->modifiedProject();
+    }
+
+    return res;
+}
+
+void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
+{
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
+        return;
+    registerMatSciTranslationsOnce();
+
+    QList<Graph *> graphs;
+    Graph *activeG = findActiveOrFirstGraph(app, nullptr);
+    for (MyWidget *w : app->windowsList()) {
+        if (w && w->inherits("MultiLayer")) {
+            MultiLayer *ml = static_cast<MultiLayer *>(w);
+            if (Graph *g = ml->activeGraph()) {
+                if (!g->analysableCurvesList().isEmpty())
+                    graphs.append(g);
+            }
+        }
+    }
+
+    const QList<Table *> allTables = collectProjectTables(app);
+    QList<Table *> tables;
+    for (Table *t : allTables) {
+        int numCols = 0;
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (matSciColumnHasNumeric(t->column(c)))
+                ++numCols;
+        }
+        if (numCols >= 2)
+            tables.append(t);
+    }
+
+    if (graphs.isEmpty() && tables.isEmpty()) {
+        QMessageBox::information(
+                app, QObject::tr("Tensile / 0.2% Proof Stress Analyzer"),
+                QObject::tr("Please open a graph or numeric worksheet with stress-strain data first."));
+        return;
+    }
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Tensile / 0.2% Proof Stress Analyzer"));
+    dlg.setMinimumWidth(420);
+    QFormLayout *form = new QFormLayout();
+
+    QComboBox *cbSourceMode = new QComboBox(&dlg);
+    if (!graphs.isEmpty())
+        cbSourceMode->addItem(QObject::tr("Active Graph Curve"), 0);
+    if (!tables.isEmpty())
+        cbSourceMode->addItem(QObject::tr("Worksheet Columns (Plot & Analyze)"), 1);
+
+    // Prefer Graph mode if active window is a MultiLayer, else Table mode if active window is a Table
+    if (cbSourceMode->count() == 2) {
+        if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+            if (sub->inherits("Table") || (sub->widget() && sub->widget()->inherits("Table")))
+                cbSourceMode->setCurrentIndex(1);
+        }
+    }
+
+    QComboBox *cbGraph = new QComboBox(&dlg);
+    QComboBox *cbCurve = new QComboBox(&dlg);
+    int initGraphIdx = 0;
+    for (int i = 0; i < graphs.size(); ++i) {
+        MultiLayer *ml = graphs[i]->multiLayerParent();
+        cbGraph->addItem(ml ? ml->name() : graphs[i]->parentPlotName());
+        if (graphs[i] == activeG)
+            initGraphIdx = i;
+    }
+    if (!graphs.isEmpty())
+        cbGraph->setCurrentIndex(initGraphIdx);
+
+    auto repopulateCurves = [&](int gIdx) {
+        cbCurve->clear();
+        if (gIdx < 0 || gIdx >= graphs.size())
+            return;
+        cbCurve->addItems(graphs[gIdx]->analysableCurvesList());
+    };
+    repopulateCurves(initGraphIdx);
+    QObject::connect(cbGraph, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     repopulateCurves);
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    QComboBox *cbStrainCol = new QComboBox(&dlg);
+    QComboBox *cbStressCol = new QComboBox(&dlg);
+    Table *activeTbl = findActiveOrFirstTable(app);
+    int initTblIdx = 0;
+    for (int i = 0; i < tables.size(); ++i) {
+        cbTable->addItem(tables[i]->name());
+        if (tables[i] == activeTbl)
+            initTblIdx = i;
+    }
+    if (!tables.isEmpty())
+        cbTable->setCurrentIndex(initTblIdx);
+
+    auto repopulateTableCols = [&](int tIdx) {
+        cbStrainCol->clear();
+        cbStressCol->clear();
+        if (tIdx < 0 || tIdx >= tables.size())
+            return;
+        Table *t = tables[tIdx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!matSciColumnHasNumeric(col))
+                continue;
+            const QString cn = col ? col->name() : t->colLabel(c);
+            cbStrainCol->addItem(cn);
+            cbStressCol->addItem(cn);
+        }
+        if (cbStressCol->count() >= 2)
+            cbStressCol->setCurrentIndex(1);
+    };
+    repopulateTableCols(initTblIdx);
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     repopulateTableCols);
+
+    QLabel *lblGraph = new QLabel(QObject::tr("Target Graph:"), &dlg);
+    QLabel *lblCurve = new QLabel(QObject::tr("Stress-Strain Curve:"), &dlg);
+    QLabel *lblTable = new QLabel(QObject::tr("Source Worksheet:"), &dlg);
+    QLabel *lblStrainCol = new QLabel(QObject::tr("Strain Column (X):"), &dlg);
+    QLabel *lblStressCol = new QLabel(QObject::tr("Stress Column (Y):"), &dlg);
+
+    auto syncSourceVisibility = [&]() {
+        const bool fromTable = (cbSourceMode->currentData().toInt() == 1);
+        lblGraph->setVisible(!fromTable);
+        cbGraph->setVisible(!fromTable);
+        lblCurve->setVisible(!fromTable);
+        cbCurve->setVisible(!fromTable);
+        lblTable->setVisible(fromTable);
+        cbTable->setVisible(fromTable);
+        lblStrainCol->setVisible(fromTable);
+        cbStrainCol->setVisible(fromTable);
+        lblStressCol->setVisible(fromTable);
+        cbStressCol->setVisible(fromTable);
+    };
+    QObject::connect(cbSourceMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncSourceVisibility(); });
+
+    QDoubleSpinBox *sbOffsetPct = new QDoubleSpinBox(&dlg);
+    sbOffsetPct->setRange(0.01, 20.0);
+    sbOffsetPct->setDecimals(3);
+    sbOffsetPct->setSingleStep(0.05);
+    sbOffsetPct->setValue(0.200);
+    sbOffsetPct->setSuffix(QStringLiteral(" %"));
+
+    QComboBox *cbStrainUnit = new QComboBox(&dlg);
+    cbStrainUnit->addItem(QObject::tr("Auto-detect (% or mm/mm)"), -1);
+    cbStrainUnit->addItem(QObject::tr("Percent (%)"), 1);
+    cbStrainUnit->addItem(QObject::tr("Engineering Fraction (mm/mm)"), 0);
+
+    QCheckBox *chkAutoElastic =
+            new QCheckBox(QObject::tr("Auto-detect linear-elastic region (max R²)"), &dlg);
+    chkAutoElastic->setChecked(true);
+
+    QDoubleSpinBox *sbElasticMin = new QDoubleSpinBox(&dlg);
+    sbElasticMin->setRange(-1000.0, 10000.0);
+    sbElasticMin->setDecimals(5);
+    sbElasticMin->setValue(0.02);
+    sbElasticMin->setEnabled(false);
+
+    QDoubleSpinBox *sbElasticMax = new QDoubleSpinBox(&dlg);
+    sbElasticMax->setRange(-1000.0, 10000.0);
+    sbElasticMax->setDecimals(5);
+    sbElasticMax->setValue(0.30);
+    sbElasticMax->setEnabled(false);
+
+    QObject::connect(chkAutoElastic, &QCheckBox::toggled, &dlg, [&](bool autoOn) {
+        sbElasticMin->setEnabled(!autoOn);
+        sbElasticMax->setEnabled(!autoOn);
+    });
+
+    QCheckBox *chkPlotConstruct = new QCheckBox(
+            QObject::tr("Plot 0.2% offset construction line & yield marker"), &dlg);
+    chkPlotConstruct->setChecked(true);
+
+    QCheckBox *chkCallout =
+            new QCheckBox(QObject::tr("Add summary callout (σ0.2, E, UTS) on graph"), &dlg);
+    chkCallout->setChecked(true);
+
+    QCheckBox *chkTrueTable =
+            new QCheckBox(QObject::tr("Generate True Stress - True Strain worksheet"), &dlg);
+    chkTrueTable->setChecked(false);
+
+    if (cbSourceMode->count() > 1)
+        form->addRow(QObject::tr("Data Source:"), cbSourceMode);
+    form->addRow(lblGraph, cbGraph);
+    form->addRow(lblCurve, cbCurve);
+    form->addRow(lblTable, cbTable);
+    form->addRow(lblStrainCol, cbStrainCol);
+    form->addRow(lblStressCol, cbStressCol);
+    form->addRow(QObject::tr("Offset Proof Strain (%):"), sbOffsetPct);
+    form->addRow(QObject::tr("Strain Unit:"), cbStrainUnit);
+    form->addRow(QString(), chkAutoElastic);
+    form->addRow(QObject::tr("Elastic Strain Min:"), sbElasticMin);
+    form->addRow(QObject::tr("Elastic Strain Max:"), sbElasticMax);
+    form->addRow(QString(), chkPlotConstruct);
+    form->addRow(QString(), chkCallout);
+    form->addRow(QString(), chkTrueTable);
+    syncSourceVisibility();
+
+    QDialogButtonBox *btns =
+            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->addLayout(form);
+    vbox->addWidget(btns);
+    QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    Graph *chosenGraph = nullptr;
+    QString chosenCurve;
+    if (cbSourceMode->currentData().toInt() == 1) {
+        const int tIdx = cbTable->currentIndex();
+        if (tIdx < 0 || tIdx >= tables.size())
+            return;
+        Table *t = tables[tIdx];
+        const QString xName = cbStrainCol->currentText();
+        const QString yName = cbStressCol->currentText();
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
+        if (!ml || !ml->activeGraph())
+            return;
+        chosenGraph = ml->activeGraph();
+        const QString fullX = t->name() + QStringLiteral("_") + xName;
+        const QString fullY = t->name() + QStringLiteral("_") + yName;
+        if (chosenGraph->insertCurve(t, fullX, fullY, Graph::Line)) {
+            chosenGraph->setCurvePen(chosenGraph->curves() - 1,
+                                     QPen(QColor(29, 78, 216), 2.0, Qt::SolidLine));
+            chosenCurve = fullY;
+        }
+        chosenGraph->refreshAutoAxisTitlesFromColumns();
+        chosenGraph->setTitle(QString());
+        chosenGraph->setAutoScale();
+        applyArialToMatSciGraph(chosenGraph);
+        chosenGraph->replot();
+    } else {
+        const int gIdx = cbGraph->currentIndex();
+        if (gIdx < 0 || gIdx >= graphs.size())
+            return;
+        chosenGraph = graphs[gIdx];
+        chosenCurve = cbCurve->currentText();
+    }
+
+    const double eMin = chkAutoElastic->isChecked()
+            ? std::numeric_limits<double>::quiet_NaN()
+            : sbElasticMin->value();
+    const double eMax = chkAutoElastic->isChecked()
+            ? std::numeric_limits<double>::quiet_NaN()
+            : sbElasticMax->value();
+
+    const TensileResult trRes = analyzeTensile(
+            app, chosenGraph, chosenCurve, sbOffsetPct->value() / 100.0,
+            cbStrainUnit->currentData().toInt(), eMin, eMax,
+            chkPlotConstruct->isChecked(), chkCallout->isChecked(),
+            chkTrueTable->isChecked());
+    if (!trRes.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
+        QMessageBox::warning(app, QObject::tr("Tensile / 0.2% Proof Stress Analyzer"),
+                             trRes.error.isEmpty()
+                                     ? QObject::tr("Could not determine a positive linear-elastic slope in the specified range.")
+                                     : trRes.error);
     }
 }

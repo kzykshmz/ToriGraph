@@ -110,7 +110,11 @@ public:
     Table *integratePeaksToTable(const QString &tableName = QString());
 
     void enablePeakCurves(bool on) { generate_peak_curves = on; };
-    void setPeakCurvesColor(QColor color) { d_peaks_color = color; };
+    void setPeakCurvesColor(QColor color)
+    {
+        d_peaks_color = color;
+        d_custom_peaks_color = true;
+    };
 
     static QString generateFormula(int order, PeakProfile profile);
     static QStringList generateParameterList(int order);
@@ -188,6 +192,8 @@ private:
     static QString peakFormula(int peakIndex, PeakProfile profile);
     //! Inserts a peak function curve into the plot
     void insertPeakFunctionCurve(std::vector<double> &x, std::vector<double> &y, int peak);
+    std::vector<double> evaluateSubtractedBaselineOnGrid(const std::vector<double> &X) const;
+    QColor resolvedPeakComponentColor(int peakIndex) const;
     void storeCustomFitResults(const std::vector<double> &) override;
 
 private:
@@ -199,6 +205,7 @@ private:
 
     //! Color index for the peak curves
     QColor d_peaks_color;
+    bool d_custom_peaks_color = false;
 
     //! The peak profile
     PeakProfile d_profile;

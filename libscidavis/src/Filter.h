@@ -30,8 +30,11 @@
 #define FILTER_H
 
 #include <QObject>
+#include <QPointer>
+#include <cmath>
 
 #include "ApplicationWindow.h"
+#include "Graph.h"
 
 class QwtPlotCurve;
 class Graph;
@@ -45,7 +48,7 @@ class Filter : public QObject
 public:
     Filter(ApplicationWindow *parent, Table *t = 0, QString name = QString());
     Filter(ApplicationWindow *parent, Graph *g = 0, QString name = QString());
-    virtual ~Filter() {};
+    virtual ~Filter();
     //! Actually does the job. Should be reimplemented in derived classes.
     virtual bool run();
 
@@ -82,7 +85,7 @@ public:
     virtual QString legendInfo() { return QString(); };
 
     //! Returns the size of the fitted data set
-    int dataSize() { return d_x.size(); };
+    int dataSize() { return static_cast<int>(d_x.size()); };
     const std::vector<double> &x() const { return d_x; }
     const std::vector<double> &y() const { return d_y; }
 
@@ -126,7 +129,7 @@ protected:
     };
 
     //! The graph where the result curve should be displayed
-    Graph *d_graph;
+    QPointer<Graph> d_graph;
 
     //! A table source of data
     Table *d_table;
@@ -178,25 +181,39 @@ template <typename T>
 std::vector<size_t> Filter::getIndices(const std::vector<T>& data, const T start, const T end, const bool sorted)
 {
     std::vector<size_t> result;
-    if (data.empty() || end < start)
-            return result;
+    if (data.empty() || !(start <= end))
+        return result;
     if (sorted)
     {
-        std::vector<std::pair<T,size_t>> tData(data.size());
-        size_t ii=0;
-        std::generate(tData.begin(), tData.end(), [&](){ auto pair = std::make_pair(data[ii],ii); ++ii; return pair; });
-        std::sort(tData.begin(),tData.end(),[](const std::pair<T,size_t>& a, std::pair<T,size_t>& b){ return a.first < b.first;});
-        auto first = std::lower_bound(tData.cbegin(),tData.cend(),start,
-                                       [](const std::pair<T,size_t>& a, const T& value){return a.first < value;});
-        auto last  = std::upper_bound(tData.cbegin(),tData.cend(),end,
-                                       [](const T& value, const std::pair<T,size_t>& a){return value < a.first;});
-        std::transform(first,last,std::back_inserter(result),[](const std::pair<T,size_t>& a ){return a.second;});
+        std::vector<std::pair<T, size_t>> tData;
+        tData.reserve(data.size());
+        for (size_t ii = 0; ii < data.size(); ++ii) {
+            if (std::isfinite(static_cast<double>(data[ii])))
+                tData.emplace_back(data[ii], ii);
+        }
+        std::sort(tData.begin(), tData.end(),
+                  [](const std::pair<T, size_t>& a, const std::pair<T, size_t>& b) {
+                      return a.first < b.first;
+                  });
+        auto first = std::lower_bound(tData.cbegin(), tData.cend(), start,
+                                      [](const std::pair<T, size_t>& a, const T& value) {
+                                          return a.first < value;
+                                      });
+        auto last = std::upper_bound(tData.cbegin(), tData.cend(), end,
+                                     [](const T& value, const std::pair<T, size_t>& a) {
+                                         return value < a.first;
+                                     });
+        std::transform(first, last, std::back_inserter(result),
+                       [](const std::pair<T, size_t>& a) { return a.second; });
     }
     else
     {
-        for (size_t ii = 0; ii < data.size(); ++ii)
-            if ((start <= data[ii]) && (end >= data[ii]))
+        for (size_t ii = 0; ii < data.size(); ++ii) {
+            if (std::isfinite(static_cast<double>(data[ii]))
+                && (start <= data[ii]) && (end >= data[ii])) {
                 result.push_back(ii);
+            }
+        }
     }
     return result;
 }

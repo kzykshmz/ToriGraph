@@ -81,6 +81,8 @@ private:
         bool dirty = false;
     };
 
+    int findLinkIndexById(int id) const;
+    bool executeLinkById(int id);
     bool executeLink(RecalcLink &link);
     void pruneDeadLinks();
 

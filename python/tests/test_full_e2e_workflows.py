@@ -22,6 +22,7 @@ Exercises the live ToriGraph C++ engine over TCP JSON-RPC 2.0 via `import torigr
 
 from __future__ import annotations
 
+import gc
 import gzip
 import hashlib
 import http.server
@@ -2760,6 +2761,468 @@ def run_workflow_11_round5_zero_defect_gate(
     )
 
 
+def run_workflow_12_phase_b_api_sdk_gate(
+    runner: E2ERunner, app: tg.Session, tmp_dir: Path
+) -> None:
+    """Phase B Gate: API/SDK Bug Fixes, Self-Discovery, Layout Diagnostics, Lab CSV/TSV & Tensile 0.2% Proof Stress."""
+
+    def _w12_self_discovery_and_errors() -> None:
+        methods = app.supported_methods()
+        cat = app.describe_api()
+        assert cat.get("ok") is True and cat.get("count") == len(methods) and len(methods) >= 201, (
+            f"describe_api count mismatch vs supported_methods ({len(methods)}): {cat.get('count')}"
+        )
+        cat_names = [m["method"] for m in cat["methods"]]
+        assert set(cat_names) == set(methods), (
+            f"describe_api parity mismatch: diff={set(cat_names) ^ set(methods)}"
+        )
+
+        g_dom = app.describe_api(domain="graph")
+        assert g_dom.get("count", 0) >= 35 and all(
+            m["domain"] == "graph" and m["method"].startswith("graph.") for m in g_dom["methods"]
+        )
+        insp_spec = app.describe_api("graph.inspect")
+        assert (
+            insp_spec.get("method") == "graph.inspect"
+            and isinstance(insp_spec.get("params"), list)
+            and insp_spec.get("count") == 1
+            and isinstance(insp_spec.get("methods"), list)
+            and len(insp_spec["methods"]) == 1
+        ), f"Single-method describe_api shape mismatch: {insp_spec}"
+
+        # [P1-R2-5] Verify 100% of advertised sdk_method / sdk entries exist on Session / Proxy classes
+        cls_map = {
+            "Session": tg.Session,
+            "TableProxy": tg.TableProxy,
+            "MatrixProxy": tg.MatrixProxy,
+            "GraphProxy": tg.GraphProxy,
+        }
+        for entry in cat["methods"]:
+            sdk_sig = str(entry.get("sdk_method") or entry.get("sdk") or "")
+            if "." in sdk_sig:
+                cls_name, attr_part = sdk_sig.split(".", 1)
+                attr_name = attr_part.split("(", 1)[0].strip()
+                if cls_name in cls_map and attr_name:
+                    assert hasattr(cls_map[cls_name], attr_name), (
+                        f"Catalog method {entry['method']} advertises missing {cls_name}.{attr_name}"
+                    )
+
+        # Actionable -32602 errors with `available` list
+        app.new_project()
+        t_err = app.create_table(rows=4, cols=2, col_names=["Strain", "Stress"], name="ErrCheckTbl")
+        t_err.set_data_dict({"Strain": [0.0, 1.0, 2.0, 3.0], "Stress": [0.0, 10.0, 20.0, 30.0]})
+        try:
+            t_err.get_column("NonExistentCol")
+            raise AssertionError("Expected RpcError(-32602) on missing column")
+        except tg.RpcError as exc:
+            assert exc.code == -32602 and exc.available is not None and "Strain" in exc.available, (
+                f"Missing actionable available list on column lookup error: {exc.data}"
+            )
+
+        g_err = app.plot_xy(t_err, "Strain", "Stress", graph_name="ErrCheckGraph")
+        for bad_call in (
+            lambda: g_err.apply_palette("not_a_real_palette"),
+            lambda: g_err.set_curve_style(0, ls="not_a_linestyle"),
+            lambda: g_err.set_curve_style(0, marker="not_a_marker"),
+            lambda: g_err.set_axis(layer=1, min=0.0, max=5.0),  # strict 0-based: layer=1 out of range on 1-layer graph
+            lambda: app.close_window(""),
+            lambda: app.window_info(""),
+        ):
+            caught_32602 = False
+            try:
+                bad_call()
+            except tg.RpcError as exc:
+                caught_32602 = exc.code == -32602
+            assert caught_32602, "Expected strict RpcError(-32602) on invalid enum/layer/empty-name!"
+
+        # [P0-API-1] Modal dialog blocking (actionMergeGraphs + ellipsis + Japanese modal actions)
+        for modal_target in (
+            "actionMergeGraphs",
+            "mergeOpenGraphsDialog",
+            "ウィンドウを印刷",
+            "プロットウィザード...",
+            "エクスポート...",
+        ):
+            blocked = False
+            try:
+                app.trigger_action(modal_target)
+            except tg.RpcError as exc:
+                blocked = exc.code == -32602
+            assert blocked, f"Modal dialog target {modal_target!r} was not blocked with -32602!"
+
+    runner.check("12.1 Self-Discovery (`describe_api`), Actionable `-32602` & Modal Dialog Guard", _w12_self_discovery_and_errors)
+
+    def _w12_lab_csv_tsv_numeric_undo_gc() -> None:
+        app.new_project()
+
+        # [P2-API-1] Non-ASCII windowLabel + [P2-2] 'g'(6) default display format + [P0-API-2] set_cell NaN sentinels
+        t_jp = app.create_table(rows=4, cols=2, col_names=["X", "Y"], name="引張試験データ")
+        jp_winfo = app.window_info(t_jp)
+        assert "引張試験データ" in str(jp_winfo.get("label", "")), f"Non-ASCII label lost: {jp_winfo}"
+        meta0 = t_jp.get_meta(0)
+        assert meta0.get("numeric_format") == "g" and int(meta0.get("precision", 0)) == 6, (
+            f"Expected default 'g'(6) format on numeric column, got {meta0}"
+        )
+
+        t_jp.set_data_dict({"X": [1.0, 2.0, 3.0, 4.0], "Y": [10.0, 20.0, 30.0, 40.0]})
+        for sentinel in ("", "NaN", "-inf", "null", "none", "N/A", "-"):
+            t_jp.set_cell(1, "Y", sentinel)
+            assert t_jp.info()["columns"][1]["mode"] == "numeric", (
+                f"set_cell({sentinel!r}) flipped numeric column to text!"
+            )
+            assert t_jp.get_cell(1, "Y") is None, f"set_cell({sentinel!r}) did not mark cell invalid!"
+
+        # [P0-API-4] Headless Table & Matrix undo/redo
+        t_jp.set_cell(0, "Y", 10.0)
+        t_jp.set_cell(0, "Y", 777.0)
+        assert abs(float(t_jp.get_cell(0, "Y")) - 777.0) < 1e-9
+        t_jp.undo()
+        assert abs(float(t_jp.get_cell(0, "Y")) - 10.0) < 1e-9, "Table.undo() failed in headless mode!"
+        t_jp.redo()
+        assert abs(float(t_jp.get_cell(0, "Y")) - 777.0) < 1e-9, "Table.redo() failed in headless mode!"
+
+        m_ur = app.create_matrix(rows=2, cols=2, name="UndoMat")
+        m_ur.set_data([[1.0, 2.0], [3.0, 4.0]])
+        m_ur.set_data([[9.0, 8.0], [7.0, 6.0]])
+        m_ur.undo()
+        assert abs(float(m_ur.get_data()[0][0]) - 1.0) < 1e-9, "Matrix.undo() failed in headless mode!"
+        m_ur.redo()
+        assert abs(float(m_ur.get_data()[0][0]) - 9.0) < 1e-9, "Matrix.redo() failed in headless mode!"
+
+        # [P1-API-7] Matrix <-> Table NaN preservation & NaN determinant/invert rejection
+        m_nan = app.create_matrix(rows=2, cols=2, name="NanMat")
+        m_nan.set_data([[1.0, None], [3.0, 4.0]])
+        for bad_mat_op in (m_nan.determinant, m_nan.invert):
+            rejected_nan = False
+            try:
+                bad_mat_op()
+            except tg.RpcError as exc:
+                rejected_nan = exc.code == -32602
+            assert rejected_nan, "Matrix determinant/invert failed to reject NaN with -32602!"
+        t_from_m = m_nan.to_table(name="TblFromNanMat")
+        assert t_from_m.get_cell(0, 1) is None, f"matrix.to_table lost NaN cell: {t_from_m.get_data_dict()}"
+        m_back = t_from_m.to_matrix(name="MatBackFromNanTbl")
+        assert m_back.get_data()[0][1] is None, f"table.to_matrix lost invalid cell as NaN: {m_back.get_data()}"
+
+        # [P0-2] & [P2-2] Shift-JIS CSV + 2-row [Name, Units] Instron CSV + Rigaku .ras + paste_tsv
+        sjis_csv = tmp_dir / "shimadzu_sjis.csv"
+        sjis_text = (
+            "# 試験機: 島津製作所 AG-X\n"
+            "ひずみ (%),公称応力 (MPa)\n"
+            "0.00,0.0\n"
+            "0.10,205.5\n"
+            "0.20,-\n"
+            "0.30,465.2\n"
+        )
+        sjis_csv.write_bytes(sjis_text.encode("cp932"))
+        t_sjis = app.import_csv(sjis_csv, encoding="auto", name="ShimadzuSJIS")
+        sjis_cols = t_sjis.info()["columns"]
+        assert sjis_cols[0]["mode"] == "numeric" and sjis_cols[1]["mode"] == "numeric", sjis_cols
+        assert sjis_cols[0].get("units") == "%" and sjis_cols[1].get("units") == "MPa", sjis_cols
+        assert t_sjis.get_cell(2, 1) is None and abs(float(t_sjis.get_cell(3, 1)) - 465.2) < 1e-6
+
+        instron_csv = tmp_dir / "instron_2row.csv"
+        instron_csv.write_text(
+            "Extension,Load,Specimen_ID\n"
+            "mm,N,\n"
+            "0.0,0.0,SP-A1\n"
+            "0.5,125.4,SP-A1\n"
+            "1.0,250.8,SP-A1\n",
+            encoding="utf-8",
+        )
+        t_ins = app.import_csv(instron_csv, name="Instron2Row")
+        ins_info = t_ins.info()
+        assert ins_info["rows"] == 3, f"2-row units CSV row count mismatch: {ins_info}"
+        assert ins_info["columns"][0]["mode"] == "numeric" and ins_info["columns"][0]["units"] == "mm", ins_info
+        assert ins_info["columns"][1]["mode"] == "numeric" and ins_info["columns"][1]["units"] == "N", ins_info
+        assert ins_info["columns"][2]["mode"] == "text" and t_ins.get_cell(0, 2) == "SP-A1", ins_info
+
+        ras_path = tmp_dir / "rigaku_xrd.ras"
+        ras_path.write_text(
+            "*RAS_DATA_START\n"
+            "*RAS_HEADER_START\n"
+            '*MEAS_SCAN_UNIT_X "deg"\n'
+            '*MEAS_SCAN_UNIT_Y "cps"\n'
+            "*RAS_HEADER_END\n"
+            "*RAS_INT_START\n"
+            "20.00 120.0 1.0\n"
+            "20.05 340.0 1.0\n"
+            "20.10 980.0 1.0\n"
+            "*RAS_INT_END\n"
+            "*RAS_DATA_END\n",
+            encoding="utf-8",
+        )
+        t_ras = app.import_csv(ras_path, name="RigakuXRD")
+        assert t_ras.info()["rows"] == 3 and abs(float(t_ras.get_cell(2, 1)) - 980.0) < 1e-6
+
+        t_pasted = app.paste_tsv(
+            "Temperature / K\tRate [s^-1]\n300\t1.25e-4\n350\t8.50e-4\n",
+            name="PastedKineticTbl",
+        )
+        p_cols = t_pasted.info()["columns"]
+        assert p_cols[0]["units"] == "K" and p_cols[1]["units"] == "s^-1" and t_pasted.info()["rows"] == 2
+
+        # [P1-R2-3] Sub-block paste_tsv(start_row > 0) preserves first pasted row & paste_tsv handles *RAS_ text
+        t_sub = app.create_table(rows=2, cols=2, col_names=["Time", "Temp"], name="SubBlockPasteTbl")
+        t_sub.set_col("Time", [0.0, 1.0])
+        t_sub.set_col("Temp", [300.0, 310.0])
+        t_sub.paste_tsv("2.0\t320.0\n3.0\t330.0\n", start_row=2, start_col=0)
+        assert t_sub.get_col("Time") == [0.0, 1.0, 2.0, 3.0], f"Sub-block paste dropped row 0: {t_sub.get_data_dict()}"
+        assert t_sub.get_col("Temp") == [300.0, 310.0, 320.0, 330.0]
+
+        t_ras_paste = app.paste_tsv(ras_path.read_text(encoding="utf-8"), name="PastedRigakuRAS")
+        assert (
+            t_ras_paste.info()["rows"] == 3
+            and t_ras_paste.info()["columns"][0]["mode"] == "numeric"
+            and abs(float(t_ras_paste.get_cell(2, 1)) - 980.0) < 1e-6
+        ), f"paste_tsv failed on Rigaku .ras text: {t_ras_paste.info()}"
+
+        # [P0-API-6] weakref.finalize cleanup on unclosed Session
+        assert app._finalizer is not None and app._finalizer.alive is True
+        sub_sess = tg.launch(headless=True)
+        sub_proc = sub_sess.process
+        sub_files = list(sub_sess._cleanup_files)
+        assert sub_proc is not None and sub_proc.poll() is None
+        del sub_sess
+        gc.collect()
+        deadline = time.monotonic() + 6.0
+        while sub_proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert sub_proc.poll() is not None, "weakref.finalize did not terminate leaked ToriGraph process!"
+        assert all(not os.path.exists(fp) for fp in sub_files), f"Temp files leaked after GC: {sub_files}"
+
+    runner.check("12.2 Lab CSV/TSV/RAS Import, Sentinels, Headless Undo/Redo & GC Cleanup", _w12_lab_csv_tsv_numeric_undo_gc)
+
+    def _w12_inspect_diagnose_kwargs_lifecycle_tensile() -> None:
+        app.new_project()
+
+        # [P2-API-2] All-NaN plot rejection without leaking windows
+        t_allnan = app.create_table(rows=4, cols=2, col_names=["X", "Y"], name="AllNanPlotTbl")
+        t_allnan.set_data_dict({"X": [None, None, None, None], "Y": [None, None, None, None]})
+        wins0 = len(app.list_windows())
+        for fn_nan_plot in (
+            lambda: app.plot_xy(t_allnan, "X", "Y"),
+            lambda: app.plot_box(t_allnan, ["Y"]),
+            lambda: app.plot_pie(t_allnan, "Y"),
+        ):
+            got_err = False
+            try:
+                fn_nan_plot()
+            except tg.RpcError as exc:
+                got_err = exc.code == -32602
+            assert got_err, "All-NaN plot should raise RpcError(-32602)!"
+        assert len(app.list_windows()) == wins0, "All-NaN plot leaked empty Graph window!"
+
+        # Universal matplotlib kwargs + symbol_skip + inspect() + layout diagnostics
+        xs = [float(i) * 0.5 for i in range(1, 25)]
+        ys = [2.0 * x + 5.0 for x in xs]
+        t_kw = app.create_table(rows=len(xs), cols=2, col_names=["Time", "Signal"], name="KwargInspectTbl")
+        t_kw.set_data_dict({"Time": xs, "Signal": ys})
+        g_kw = app.plot_xy(
+            t_kw,
+            "Time",
+            "Signal",
+            style="line_symbol",
+            lw=2.0,
+            ls="--",
+            marker="s",
+            ms=7,
+            symbol_skip=3,
+            color="#D55E00",
+            xlabel="Time (s)",
+            ylabel="Signal (mV)",
+            xlim=[0.0, 13.0],
+            ylim=[0.0, 35.0],
+            title="Initial Title",
+            graph_name="KwargInspectGraph",
+        )
+        g_kw.apply_series_scheme("okabe_ito")
+        g_kw.set_curve_style(0, symbol_skip=3, lw=2.0, ls="--", marker="s", ms=7)
+
+        snap = g_kw.inspect()
+        assert snap.get("ok") is True and "page" in snap and "grid" in snap
+        lyr0 = snap["layers"][0]
+        assert len(lyr0["canvas_rect_px"]) == 4 and lyr0["canvas_rect_px"][2] > 20 and lyr0["canvas_rect_px"][3] > 20
+        assert lyr0["curves"][0]["symbol_skip"] == 3 and lyr0["curves"][0]["valid_points"] == len(xs)
+        assert len(lyr0["axes"]["x"]["major_ticks"]) >= 2
+
+        # Trigger deterministic layout warnings: CURVE_CLIPPED_BY_AXIS + DISABLED_AXIS_HAS_TITLE_OR_CURVE
+        g_kw.set_axis("y", lim=[100.0, 200.0])  # clips 100% of [7..29] data
+        g_kw.set_axis("right", title="Orphan Right Title", enabled=False)
+        warn_codes = {w["code"] for w in g_kw.diagnose_layout()}
+        assert "CURVE_CLIPPED_BY_AXIS" in warn_codes, f"Expected CURVE_CLIPPED_BY_AXIS in {warn_codes}"
+        assert "DISABLED_AXIS_HAS_TITLE_OR_CURVE" in warn_codes, (
+            f"Expected DISABLED_AXIS_HAS_TITLE_OR_CURVE in {warn_codes}"
+        )
+        # Fix both layout issues and verify those warnings clear
+        g_kw.set_axis("y", lim=[0.0, 35.0], show_labels=True, show_ticks=True, precision=1)
+        g_kw.set_axis("right", title="", enabled=False)
+        warn_codes_after = {w["code"] for w in g_kw.diagnose_layout()}
+        assert "CURVE_CLIPPED_BY_AXIS" not in warn_codes_after
+        assert "DISABLED_AXIS_HAS_TITLE_OR_CURVE" not in warn_codes_after
+
+        # Trigger NONPOSITIVE_DATA_ON_LOG_AXIS
+        t_neg = app.create_table(rows=4, cols=2, col_names=["X", "Y"], name="LogWarnTbl")
+        t_neg.set_data_dict({"X": [-2.0, -1.0, 1.0, 10.0], "Y": [1.0, 2.0, 3.0, 4.0]})
+        g_log = app.plot_xy(t_neg, "X", "Y")
+        g_log.set_axis("x", min=0.1, max=20.0, scale="log10")
+        assert "NONPOSITIVE_DATA_ON_LOG_AXIS" in {w["code"] for w in g_log.diagnose_layout()}
+
+        # English fit label hygiene ([P0-4]) + "Gaussian" alias on fit_nonlinear
+        fit_lin = app.fit_linear(graph=g_kw, fit_label="Linear Calibration")
+        assert fit_lin.get("ok") is True
+        kw_titles = [c["title"] for c in g_kw.inspect()["layers"][0]["curves"]]
+        assert any("Linear Calibration" in ct for ct in kw_titles), f"fit_label not applied: {kw_titles}"
+
+        xs_g = [-4.0 + 0.25 * i for i in range(33)]
+        ys_g = [1.0 + 15.0 * math.exp(-((x - 0.5) / 1.1) ** 2) for x in xs_g]
+        t_gau = app.create_table(rows=len(xs_g), cols=2, col_names=["X", "Y"], name="GaussianAliasTbl")
+        t_gau.set_data_dict({"X": xs_g, "Y": ys_g})
+        res_gau = app.fit_nonlinear(table=t_gau, x_col="X", y_col="Y", model="Gaussian")
+        assert res_gau.get("converged") is True and float(res_gau.get("r2", 0.0)) > 0.999
+
+        # Lifecycle RPCs: set_title, add_text/add_arrow + remove_marker, reference lines, inset, linked top axis, remove_layer, merge_graphs
+        g_kw.set_title("")
+        assert g_kw.inspect()["layers"][0]["title"] == ""
+        m_txt = g_kw.add_text("MarkerNote", x=2.0, y=10.0)
+        m_arr = g_kw.add_arrow(1.0, 5.0, 3.0, 15.0)
+        assert len(g_kw.inspect()["layers"][0]["text_markers"]) >= 1
+        assert len(g_kw.inspect()["layers"][0]["arrows"]) >= 1
+        g_kw.remove_marker(m_txt.get("id"))
+        g_kw.remove_marker(kind="arrow", index=0)
+        assert len(g_kw.inspect()["layers"][0]["text_markers"]) == 0
+        assert len(g_kw.inspect()["layers"][0]["arrows"]) == 0
+
+        g_kw.add_reference_line(value=15.0, orientation="horizontal", label="Ref15")
+        g_kw.add_reference_line(value=25.0, orientation="horizontal", label="Ref25")
+        assert len(g_kw.inspect()["layers"][0]["reference_lines"]) == 2
+        g_kw.remove_reference_line(0)
+        assert len(g_kw.inspect()["layers"][0]["reference_lines"]) == 1
+        g_kw.clear_reference_lines()
+        assert len(g_kw.inspect()["layers"][0]["reference_lines"]) == 0
+
+        ins_res = g_kw.add_inset(1.0, 4.0, 5.0, 15.0, show_connectors=False)
+        assert ins_res.get("inset_layer") == 1 and g_kw.inspect()["active_layer"] == 0
+        assert g_kw.inspect()["layers"][1]["inset_spec"]["show_connectors"] is False
+        g_kw.remove_layer(1)
+        assert g_kw.inspect()["layer_count"] == 1
+
+        # Linked overlay top-axis routing + merge_graphs layers array & <ToriLinkedLayer> preservation
+        g_lnk = app.plot_xy(t_kw, "Time", "Signal", graph_name="LinkedOverlaySrc")
+        g_lnk.add_linked_layer(link_x=True, right_y=False)
+        routed = g_lnk.set_axis("top", title="Linked Top Axis", enabled=True)
+        assert routed.get("layer") == 1
+        raw_merge = app.call("graph.merge_graphs", graphs=[g_kw.name, g_lnk.name], rows=1, cols=2)
+        assert isinstance(raw_merge.get("layers"), list) and len(raw_merge["layers"]) == 3, (
+            f"merge_graphs 'layers' must be QJsonArray list, got {type(raw_merge.get('layers'))}: {raw_merge}"
+        )
+
+        # drop_columns default layer=None on 1-layer graph + integrate_curve(plot_curve=False/True) + differentiate_curve
+        app.drop_columns(t_kw, ["Signal"], x_column="Time", graph=g_kw)
+        c_before_int = len(g_kw.info()["layers"][0]["curves"])
+        int_no_plot = app.integrate_curve(g_kw, 0, plot_curve=False)
+        assert int_no_plot.get("ok") is True and len(g_kw.info()["layers"][0]["curves"]) == c_before_int
+        int_with_plot = app.integrate_curve(g_kw, 0, plot_curve=True)
+        assert int_with_plot.get("ok") is True and int_with_plot.get("output_curve")
+        diff_res = app.differentiate_curve(graph=g_kw, curve=0)
+        assert diff_res.get("ok") and diff_res.get("graph") and diff_res.get("table") and diff_res.get("output_curve")
+
+        # Zero-variance ANOVA & flat-signal analyze_peaks guards ([P1-API-5])
+        t_zv = app.create_table(rows=4, cols=2, col_names=["G1", "G2"], name="ZeroVarAnovaTbl")
+        t_zv.set_data_dict({"G1": [10.0, 10.0, 10.0, 10.0], "G2": [20.0, 20.0, 20.0, 20.0]})
+        zv_aov = app.anova_oneway(table=t_zv, cols=["G1", "G2"])
+        assert zv_aov.get("ok") is True and zv_aov.get("p_value") == 0.0 and zv_aov.get("f_statistic") is None, zv_aov
+
+        t_flat = app.create_table(rows=20, cols=2, col_names=["X", "Y"], name="FlatSignalTbl")
+        t_flat.set_data_dict({"X": [float(i) for i in range(20)], "Y": [5.0 for _ in range(20)]})
+        flat_pk = app.analyze_peaks(table=t_flat, x_col="X", y_col="Y", num_peaks=2)
+        assert flat_pk.get("ok") is False and flat_pk.get("peak_count") == 0, flat_pk
+
+        # Materials Science Tensile 0.2% Offset Proof Stress (`g.analyze_tensile`)
+        # Exact piecewise elastic + plastic strain: eps = sig/E + eps_p, so at eps_p = 0.002, sigma_0.2 == 450.0 MPa!
+        e_true = 200000.0
+        eps_vals: List[float] = []
+        sig_vals: List[float] = []
+        for i in range(41):  # pure linear elastic 0 .. 400 MPa (R^2 = 1.0)
+            s = 10.0 * i
+            sig_vals.append(s)
+            eps_vals.append(s / e_true)
+        for i in range(1, 81):  # work hardening 402.5 .. 600 MPa; at sig=450, eps_p=0.002 exactly!
+            s = 400.0 + 2.5 * i
+            eps_p = 0.002 * (((s - 400.0) / 50.0) ** 2.5)
+            sig_vals.append(s)
+            eps_vals.append(s / e_true + eps_p)
+        t_ten = app.create_table(rows=len(eps_vals), cols=2, col_names=["Strain", "Stress"], name="Tensile02Tbl")
+        t_ten.set_data_dict(
+            {"Strain": eps_vals, "Stress": sig_vals},
+            units={"Strain": "-", "Stress": "MPa"},
+            long_names={"Strain": "Engineering Strain", "Stress": "Engineering Stress"},
+        )
+        g_ten = app.plot_xy(t_ten, "Strain", "Stress", style="line", graph_name="Tensile02Graph")
+        ten_res = g_ten.analyze_tensile(
+            offset=0.002,
+            strain_in_percent=False,
+            plot_construction=True,
+            add_callout=True,
+            create_true_stress_table=True,
+        )
+        assert ten_res.get("ok") is True, f"analyze_tensile failed: {ten_res}"
+        assert abs(float(ten_res["youngs_modulus"]) - e_true) / e_true < 0.03, f"E mismatch: {ten_res}"
+        assert abs(float(ten_res["youngs_modulus_gpa"]) - 200.0) < 6.0, f"E_GPa mismatch: {ten_res}"
+        assert abs(float(ten_res["offset_yield_stress"]) - 450.0) < 6.0, f"sigma_0.2 mismatch: {ten_res}"
+        assert float(ten_res["uts"]) > 450.0 and ten_res.get("true_stress_table"), ten_res
+        assert_graph_arial(app, g_ten.name, "Tensile 0.2% Proof Stress Graph")
+
+        # [P1-R2-2] GPa stress unit scaling in analyze_tensile (`youngs_modulus_gpa` ~ 200.0, not 0.2)
+        t_gpa = app.create_table(rows=len(eps_vals), cols=2, col_names=["Strain", "Stress"], name="TensileGpaTbl")
+        t_gpa.set_data_dict(
+            {"Strain": eps_vals, "Stress": [s / 1000.0 for s in sig_vals]},
+            units={"Strain": "-", "Stress": "GPa"},
+        )
+        g_gpa = app.plot_xy(t_gpa, "Strain", "Stress", style="line", graph_name="TensileGpaGraph")
+        gpa_res = g_gpa.analyze_tensile(offset=0.002, strain_in_percent=False)
+        assert abs(float(gpa_res["youngs_modulus"]) - 200.0) < 6.0 and abs(float(gpa_res["youngs_modulus_gpa"]) - 200.0) < 6.0, (
+            f"GPa unit scaling wrong in analyze_tensile: {gpa_res}"
+        )
+
+        # [P1-R2-1] Brittle fracture linear-elastic specimen with sudden load drop must reject 0.2% proof stress (-32602)
+        t_brit = app.create_table(rows=8, cols=2, col_names=["StrainPct", "StressMPa"], name="BrittleCeramicTbl")
+        t_brit.set_data_dict(
+            {
+                "StrainPct": [0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.31],
+                "StressMPa": [0.0, 150.0, 300.0, 450.0, 600.0, 750.0, 900.0, 0.0],
+            },
+            units={"StrainPct": "%", "StressMPa": "MPa"},
+        )
+        g_brit = app.plot_xy(t_brit, "StrainPct", "StressMPa", style="line")
+        brittle_rejected = False
+        try:
+            g_brit.analyze_tensile(offset=0.002, strain_in_percent=True)
+        except tg.RpcError as exc:
+            brittle_rejected = exc.code == -32602
+        assert brittle_rejected, "Brittle elastic fracture drop falsely produced a 0.2% proof stress!"
+
+        # [P1-R2-4] & [P2-MATSCI-R2-3] Masked DataCurve -> valid_points==0 + EMPTY_CURVE; apply_series_scheme(**kwargs) + inward show_ticks
+        t_msk = app.create_table(rows=4, cols=2, col_names=["X", "Y"], name="MaskedInspectTbl")
+        t_msk.set_data_dict({"X": [0.0, 1.0, 2.0, 3.0], "Y": [10.0, 20.0, 30.0, 40.0]})
+        g_msk = app.plot_xy(t_msk, "X", "Y", graph_name="MaskedInspectGraph")
+        g_msk.apply_series_scheme("okabe_ito", line_width=2.5)
+        g_msk.isij_style()
+        insp_inward = g_msk.inspect()["layers"][0]["axes"]
+        assert insp_inward["top"]["show_ticks"] is True and insp_inward["right"]["show_ticks"] is True, (
+            f"Inward top/right ticks reported show_ticks=False: {insp_inward}"
+        )
+        t_msk.mask_rows([0, 1, 2, 3], col="Y")
+        insp_masked = g_msk.inspect()
+        assert insp_masked["layers"][0]["curves"][0]["valid_points"] == 0, insp_masked["layers"][0]["curves"][0]
+        assert "EMPTY_CURVE" in set(insp_masked.get("warning_codes", [])), insp_masked.get("warnings")
+
+    runner.check(
+        "12.3 `graph.inspect` / `diagnose_layout`, Universal Kwargs, Lifecycle RPCs & Tensile `0.2%` Proof Stress",
+        _w12_inspect_diagnose_kwargs_lifecycle_tensile,
+    )
+
+
 def main() -> int:
     runner = E2ERunner()
     with tempfile.TemporaryDirectory(prefix="torigraph_e2e_") as tmp:
@@ -2780,6 +3243,7 @@ def main() -> int:
             run_workflow_9_round3_critic_regressions(runner, app, tmp_dir)
             run_workflow_10_round4_unified_regressions(runner, app, tmp_dir)
             run_workflow_11_round5_zero_defect_gate(runner, app, tmp_dir)
+            run_workflow_12_phase_b_api_sdk_gate(runner, app, tmp_dir)
         run_workflow_7_cli_run_python(runner, tmp_dir)
         run_workflow_8b_named_pipe_cli(runner, tmp_dir)
 

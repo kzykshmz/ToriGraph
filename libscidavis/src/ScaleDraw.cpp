@@ -32,12 +32,32 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QPainter>
+#include <QVector>
+#include <algorithm>
 #include <cmath>
 
 #include <qwt_layout_metrics.h>
 #include <qwt_painter.h>
 #include <qwt_scale_map.h>
 #include <qwt_text.h>
+
+namespace {
+
+void stripNegativeZeroString(QString &s)
+{
+    if (!s.startsWith(QLatin1Char('-')))
+        return;
+    for (int i = 1; i < s.size(); ++i) {
+        const QChar ch = s.at(i);
+        if (ch == QLatin1Char('e') || ch == QLatin1Char('E'))
+            break;
+        if (ch != QLatin1Char('0') && ch != QLatin1Char('.'))
+            return;
+    }
+    s.remove(0, 1);
+}
+
+} // namespace
 
 ScaleDraw::ScaleDraw(const QString &s)
     : formula_string(s),
@@ -139,6 +159,121 @@ void ScaleDraw::labelFormat(char &f, int &prec) const
     prec = d_prec;
 }
 
+QwtText ScaleDraw::label(double value) const
+{
+    double v = transformValue(value);
+    if (!std::isfinite(v))
+        return QwtText();
+
+    const QwtScaleDiv scDiv = scaleDiv();
+    const bool isLog10 = map().transformation()
+            && map().transformation()->type() == QwtScaleTransformation::Log10;
+    const double rawLo = qMin(scDiv.lowerBound(), scDiv.upperBound());
+    const double rawHi = qMax(scDiv.lowerBound(), scDiv.upperBound());
+    if (!isLog10 && rawLo <= 0.0 && rawHi >= 0.0) {
+        const double tLo = transformValue(rawLo);
+        const double tHi = transformValue(rawHi);
+        const double spanT = (std::isfinite(tLo) && std::isfinite(tHi))
+                ? std::fabs(tHi - tLo)
+                : std::fabs(rawHi - rawLo);
+        if (spanT > 0.0 && std::fabs(v) <= 1e-11 * spanT)
+            v = 0.0;
+    }
+
+    const QLocale cLoc = QLocale::c();
+    QString num;
+
+    if (d_fmt == 'f') {
+        num = cLoc.toString(v, 'f', qMax(0, d_prec));
+        stripNegativeZeroString(num);
+    } else if (d_fmt == 'e') {
+        if (v == 0.0)
+            v = 0.0;
+        num = cLoc.toString(v, 'e', qMax(0, d_prec));
+        stripNegativeZeroString(num);
+    } else {
+        bool formattedLinear = false;
+        if (!isLog10) {
+            const QwtValueList maj = scDiv.ticks(QwtScaleDiv::MajorTick);
+            if (maj.size() >= 2) {
+                QVector<double> tMaj;
+                tMaj.reserve(maj.size());
+                double maxAbsMaj = 0.0;
+                for (int i = 0; i < maj.size(); ++i) {
+                    double tv = transformValue(maj[i]);
+                    if (!std::isfinite(tv))
+                        continue;
+                    if (rawLo <= 0.0 && rawHi >= 0.0 && std::fabs(tv) <= 1e-12)
+                        tv = 0.0;
+                    tMaj.append(tv);
+                    maxAbsMaj = qMax(maxAbsMaj, std::fabs(tv));
+                }
+                std::sort(tMaj.begin(), tMaj.end());
+
+                bool uniformStep = (tMaj.size() >= 2);
+                if (uniformStep && !d_break_enabled && tMaj.size() >= 3) {
+                    double minDt = 1e300;
+                    double maxDt = 0.0;
+                    for (int i = 0; i + 1 < tMaj.size(); ++i) {
+                        const double dt = tMaj[i + 1] - tMaj[i];
+                        if (dt > 1e-300) {
+                            minDt = qMin(minDt, dt);
+                            maxDt = qMax(maxDt, dt);
+                        }
+                    }
+                    if (!(minDt < 1e290 && maxDt <= 1.03 * minDt))
+                        uniformStep = false;
+                }
+
+                if (uniformStep && maxAbsMaj >= 1e-4 && maxAbsMaj <= 99999.5) {
+                    int neededDec = -1;
+                    double pow10 = 1.0;
+                    const int maxDec = qMax(4, d_prec);
+                    for (int d = 0; d <= qMin(6, maxDec); ++d) {
+                        bool allExact = true;
+                        for (double tv : tMaj) {
+                            const double sc = tv * pow10;
+                            if (std::fabs(sc - std::round(sc)) > 1e-5 * qMax(1.0, std::fabs(sc))) {
+                                allExact = false;
+                                break;
+                            }
+                        }
+                        if (allExact) {
+                            const double vSc = v * pow10;
+                            if (std::fabs(vSc - std::round(vSc))
+                                <= 1e-4 * qMax(1.0, std::fabs(vSc))) {
+                                neededDec = d;
+                            }
+                            break;
+                        }
+                        pow10 *= 10.0;
+                    }
+                    if (neededDec >= 0) {
+                        num = cLoc.toString(v, 'f', neededDec);
+                        stripNegativeZeroString(num);
+                        formattedLinear = true;
+                    }
+                }
+            }
+        }
+
+        if (!formattedLinear) {
+            if (v == 0.0) {
+                num = QStringLiteral("0");
+            } else if (std::fabs(v) >= 1.0 && std::fabs(v) <= 99999.5
+                       && std::fabs(v - std::round(v)) <= 1e-7 * std::fabs(v)) {
+                num = cLoc.toString(std::round(v), 'f', 0);
+                stripNegativeZeroString(num);
+            } else {
+                num = cLoc.toString(v, 'g', qMax(1, d_prec));
+                stripNegativeZeroString(num);
+            }
+        }
+    }
+
+    return QwtText(d_prefix + num + d_suffix);
+}
+
 void ScaleDraw::drawTick(QPainter *p, double value, int len) const
 {
     QwtScaleDiv scDiv = scaleDiv();
@@ -162,7 +297,7 @@ int ScaleDraw::extent(const QPen &pen, const QFont &font) const
     const int ext = QwtScaleDraw::extent(pen, font);
     if (d_colorbar_border) {
         const QwtMetricsMap map = QwtPainter::metricsMap();
-        const int extra = map.isIdentity() ? 10 : map.screenToLayoutX(10);
+        const int extra = map.isIdentity() ? 6 : map.screenToLayoutX(6);
         return ext + extra;
     }
     return ext;
@@ -190,27 +325,31 @@ void ScaleDraw::drawBackbone(QPainter *painter) const
         const QPoint p0 = pos();
         const int len = length();
 
-        QRect cbRect;
+        QRectF cbBase;
         switch (alignment()) {
         case RightScale:
-            cbRect = QRect(QPoint(p0.x() - cbW, p0.y()), QPoint(p0.x(), p0.y() + len - 1));
+            cbBase = QRectF(double(p0.x() - cbW), double(p0.y()), double(cbW), double(len));
             break;
         case LeftScale:
-            cbRect = QRect(QPoint(p0.x(), p0.y()), QPoint(p0.x() + cbW, p0.y() + len - 1));
+            cbBase = QRectF(double(p0.x()), double(p0.y()), double(cbW), double(len));
             break;
         case TopScale:
-            cbRect = QRect(QPoint(p0.x(), p0.y()), QPoint(p0.x() + len - 1, p0.y() + cbH));
+            cbBase = QRectF(double(p0.x()), double(p0.y()), double(len), double(cbH));
             break;
         case BottomScale:
-            cbRect = QRect(QPoint(p0.x(), p0.y() - cbH), QPoint(p0.x() + len - 1, p0.y()));
+            cbBase = QRectF(double(p0.x()), double(p0.y() - cbH), double(len), double(cbH));
             break;
         }
 
+        const double pwF = double(pw);
+        const QRectF cbOutline = cbBase.adjusted(-0.5 * pwF, -0.5 * pwF, 0.5 * pwF, 0.5 * pwF);
+
         painter->save();
-        painter->setPen(QPen(painter->pen().color(), pw, Qt::SolidLine, Qt::SquareCap,
-                             Qt::MiterJoin));
+        QPen cbPen(painter->pen().color(), pwF, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+        cbPen.setCosmetic(false);
+        painter->setPen(cbPen);
         painter->setBrush(Qt::NoBrush);
-        QwtPainter::drawRect(painter, cbRect);
+        painter->drawRect(cbOutline);
         painter->restore();
         return;
     }
@@ -441,7 +580,7 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
     if (transformed == 0.0)
         return QwtText(prefix() + QString("0") + suffix());
 
-    QString txt = QLocale().toString(transformed, 'e', prec);
+    QString txt = QLocale::c().toString(transformed, 'e', prec);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList list = txt.split('e', Qt::SkipEmptyParts, Qt::CaseInsensitive);
 #else
@@ -451,7 +590,7 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
         return QwtText(prefix() + txt + suffix());
 
     bool okMant = false;
-    double mant = QLocale().toDouble(list[0], &okMant);
+    double mant = QLocale::c().toDouble(list[0], &okMant);
     if (!okMant)
         mant = list[0].toDouble(&okMant);
     if (okMant && mant == 0.0)

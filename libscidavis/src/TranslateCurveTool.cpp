@@ -45,7 +45,11 @@ using namespace std;
 
 TranslateCurveTool::TranslateCurveTool(Graph *graph, ApplicationWindow *app, Direction dir,
                                        const QObject *status_target, const char *status_slot)
-    : PlotToolInterface(graph), d_dir(dir), d_app(app)
+    : PlotToolInterface(graph),
+      d_dir(dir),
+      d_sub_tool(nullptr),
+      d_selected_curve(nullptr),
+      d_app(app)
 {
     if (status_target)
         connect(this, SIGNAL(statusText(const QString &)), status_target, status_slot);
@@ -59,11 +63,22 @@ TranslateCurveTool::TranslateCurveTool(Graph *graph, ApplicationWindow *app, Dir
             SLOT(selectCurvePoint(QwtPlotCurve *, int)));
 }
 
+TranslateCurveTool::~TranslateCurveTool()
+{
+    delete d_sub_tool;
+    d_sub_tool = nullptr;
+}
+
 void TranslateCurveTool::selectCurvePoint(QwtPlotCurve *curve, int point_index)
 {
+    if (!curve || !d_graph || d_graph->curveIndex(curve) < 0 || point_index < 0
+        || point_index >= curve->dataSize())
+        return;
+
     d_selected_curve = curve;
     d_curve_point = QwtDoublePoint(curve->x(point_index), curve->y(point_index));
     delete d_sub_tool;
+    d_sub_tool = nullptr;
 
     // Phase 2: select destination
     d_sub_tool = new ScreenPickerTool(d_graph, this, SIGNAL(statusText(const QString &)));
@@ -76,18 +91,23 @@ void TranslateCurveTool::selectCurvePoint(QwtPlotCurve *curve, int point_index)
 void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
 {
     delete d_sub_tool;
-    if (!d_selected_curve)
+    d_sub_tool = nullptr;
+    if (!d_graph || !d_selected_curve || d_graph->curveIndex(d_selected_curve) < 0) {
+        if (d_graph)
+            d_graph->setActiveTool(NULL);
         return;
+    }
 
     // Phase 3: execute the translation
 
     if (((PlotCurve *)d_selected_curve)->type() == Graph::Function) {
         if (d_dir == Horizontal) {
-            QMessageBox::warning(d_graph, tr("Warning"),
-                                 tr("This operation cannot be performed on function curves."));
+            if (!ApplicationWindow::isNonInteractiveContext(d_graph))
+                QMessageBox::warning(d_graph, tr("Warning"),
+                                     tr("This operation cannot be performed on function curves."));
         } else {
             FunctionCurve *func = (FunctionCurve *)d_selected_curve;
-            if (func->functionType() == FunctionCurve::Normal) {
+            if (func->functionType() == FunctionCurve::Normal && !func->formulas().isEmpty()) {
                 QString formula = func->formulas().first();
                 double d = point.y() - d_curve_point.y();
                 if (d > 0)
@@ -100,7 +120,11 @@ void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
         d_graph->setActiveTool(NULL);
         return;
     } else {
-        DataCurve *c = (DataCurve *)d_selected_curve;
+        DataCurve *c = dynamic_cast<DataCurve *>(d_selected_curve);
+        if (!c || !d_app) {
+            d_graph->setActiveTool(NULL);
+            return;
+        }
         double d;
         QString col_name;
         switch (d_dir) {
@@ -118,23 +142,33 @@ void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
             throw runtime_error("Invalid direction");
         }
         Table *tab = d_app->table(col_name);
-        if (!tab)
+        if (!tab) {
+            d_graph->setActiveTool(NULL);
             return;
+        }
         int col = tab->colIndex(col_name);
+        if (col < 0 || !tab->column(col)) {
+            d_graph->setActiveTool(NULL);
+            return;
+        }
         if (tab->columnType(col) != SciDAVis::ColumnMode::Numeric) {
-            QMessageBox::warning(d_graph, tr("Warning"),
-                                 tr("This operation cannot be performed on curves plotted from "
-                                    "columns having a non-numerical format."));
+            if (!ApplicationWindow::isNonInteractiveContext(d_graph))
+                QMessageBox::warning(d_graph, tr("Warning"),
+                                     tr("This operation cannot be performed on curves plotted from "
+                                        "columns having a non-numerical format."));
+            d_graph->setActiveTool(NULL);
             return;
         }
 
-        int row_start = c->tableRow(0);
-        int row_end = row_start + c->dataSize();
+        const int row_start = qMax(0, c->tableRow(0));
+        const int row_end = qMin(tab->column(col)->rowCount(), row_start + c->dataSize());
         for (int i = row_start; i < row_end; i++) {
-            if (!tab->column(col)->isInvalid(i))
+            const int ptIdx = i - row_start;
+            if (!tab->column(col)->isInvalid(i) && ptIdx >= 0 && ptIdx < d_selected_curve->dataSize())
                 tab->column(col)->setValueAt(
                         i,
-                        (d_dir == Horizontal ? d_selected_curve->x(i) : d_selected_curve->y(i))
+                        (d_dir == Horizontal ? d_selected_curve->x(ptIdx)
+                                             : d_selected_curve->y(ptIdx))
                                 + d);
         }
         d_app->updateCurves(tab, col_name);

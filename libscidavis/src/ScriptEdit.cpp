@@ -33,6 +33,7 @@
 #include "Note.h"
 
 #include <QAction>
+#include <QEvent>
 #include <QMenu>
 #include <QPrintDialog>
 #include <QPrinter>
@@ -91,6 +92,27 @@ ScriptEdit::ScriptEdit(ScriptingEnv *env, QWidget *parent, QString name)
             SLOT(handleContentsChange(int, int, int)));
 }
 
+void ScriptEdit::changeEvent(QEvent *e)
+{
+    if (e && e->type() == QEvent::LanguageChange) {
+        if (actionExecute)
+            actionExecute->setText(tr("E&xecute"));
+        if (actionExecuteAll)
+            actionExecuteAll->setText(tr("Execute &All"));
+        if (actionEval)
+            actionEval->setText(tr("&Evaluate Expression"));
+        if (actionPrint)
+            actionPrint->setText(tr("&Print"));
+        if (actionImport)
+            actionImport->setText(tr("&Import"));
+        if (actionExport)
+            actionExport->setText(tr("&Export"));
+        if (functionsMenu)
+            functionsMenu->setTitle(tr("&Functions"));
+    }
+    QTextEdit::changeEvent(e);
+}
+
 void ScriptEdit::customEvent(QEvent *e)
 {
     if (e->type() == SCRIPTING_CHANGE_EVENT) {
@@ -133,6 +155,7 @@ void ScriptEdit::contextMenuEvent(QContextMenuEvent *e)
         menu->addAction(actionAutoexec);
     }
 
+    qDeleteAll(functionsMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
     functionsMenu->clear();
     functionsMenu->setTearOffEnabled(true);
     QStringList flist = scriptEnv->mathFunctions();

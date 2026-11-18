@@ -66,6 +66,7 @@
 #include "SelectionMoveResizer.h"
 #include "LayerDialog.h"
 #include "PlotCurve.h"
+#include "FunctionCurve.h"
 #include "ColorButton.h"
 #include "ScaleDraw.h"
 #include "Spectrogram.h"
@@ -1307,6 +1308,10 @@ QSize MultiLayer::arrangeLayers(bool userSize)
     QVector<int> bottomHeights(nPrimary, 0);
     QVector<int> leftWidths(nPrimary, 0);
     QVector<int> rightWidths(nPrimary, 0);
+    QVector<int> reqTopHeights(nPrimary, 0);
+    QVector<int> reqBottomHeights(nPrimary, 0);
+    QVector<int> reqLeftWidths(nPrimary, 0);
+    QVector<int> reqRightWidths(nPrimary, 0);
     QVector<int> maxTopH(nRows, 0);
     QVector<int> maxBottomH(nRows, 0);
     QVector<int> maxLeftW(nCols, 0);
@@ -1330,19 +1335,42 @@ QSize MultiLayer::arrangeLayers(bool userSize)
         leftWidths[i] = leftWidth;
         rightWidths[i] = rightWidth;
 
+        int effTop = topHeight;
+        int effBottom = bottomHeight;
+        int effLeft = leftWidth;
+        int effRight = rightWidth;
+        for (int k = 0; k < graphsList.count(); ++k) {
+            Graph *ch = qobject_cast<Graph *>(graphsList.at(k));
+            if (!ch || ch->linkedParentLayer() != gr || !ch->plotWidget())
+                continue;
+            Plot *chPlot = ch->plotWidget();
+            chPlot->updateLayout();
+            const QRect chRect = chPlot->plotLayout()->canvasRect();
+            effTop = qMax(effTop, qMax(0, chRect.top()));
+            effBottom = qMax(effBottom,
+                             qMax(0, chPlot->height() - (chRect.top() + chRect.height())));
+            effLeft = qMax(effLeft, qMax(0, chRect.left()));
+            effRight = qMax(effRight,
+                            qMax(0, chPlot->width() - (chRect.left() + chRect.width())));
+        }
+        reqTopHeights[i] = effTop;
+        reqBottomHeights[i] = effBottom;
+        reqLeftWidths[i] = effLeft;
+        reqRightWidths[i] = effRight;
+
         int row = i / nCols;
         if (row >= nRows)
             row = nRows - 1;
         int col = i % nCols;
 
-        if (topHeight > maxTopH[row])
-            maxTopH[row] = topHeight;
-        if (bottomHeight > maxBottomH[row])
-            maxBottomH[row] = bottomHeight;
-        if (leftWidth > maxLeftW[col])
-            maxLeftW[col] = leftWidth;
-        if (rightWidth > maxRightW[col])
-            maxRightW[col] = rightWidth;
+        if (effTop > maxTopH[row])
+            maxTopH[row] = effTop;
+        if (effBottom > maxBottomH[row])
+            maxBottomH[row] = effBottom;
+        if (effLeft > maxLeftW[col])
+            maxLeftW[col] = effLeft;
+        if (effRight > maxRightW[col])
+            maxRightW[col] = effRight;
     }
 
     int sumMarginH = 0;
@@ -1416,12 +1444,16 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             x += maxLeftW[col] - leftWidths[i];
         else if (hor_align == Right)
             x += (maxLeftW[col] - leftWidths[i]) + (maxRightW[col] - rightWidths[i]);
+        else
+            x += qMax(0, reqLeftWidths[i] - leftWidths[i]);
 
         int y = top_margin + offsetY + row * rowsSpace + rowY[row];
         if (vert_align == VCenter)
             y += maxTopH[row] - topHeights[i];
         else if (vert_align == Bottom)
             y += (maxTopH[row] - topHeights[i]) + (maxBottomH[row] - bottomHeights[i]);
+        else
+            y += qMax(0, reqTopHeights[i] - topHeights[i]);
 
         Graph *gr = primaryGraphs.at(i);
         bool autoscaleFonts = false;
@@ -1836,7 +1868,8 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         || fileName.endsWith(".tiff", Qt::CaseInsensitive)) {
         writer.setCompression(1); // LZW
     }
-    if (quality >= 0)
+    const bool isPng = fileName.endsWith(".png", Qt::CaseInsensitive);
+    if (quality >= 0 && !(isPng && quality >= 95))
         writer.setQuality(quality);
     writer.write(image);
 }
@@ -1866,10 +1899,6 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
     printer.setDocName(this->name());
     printer.setCreator("ToriGraph");
     printer.setFullPage(true);
-    if (res > 0)
-        printer.setResolution(res);
-    else if (d_page_unit != UnitPx && d_page_dpi > 0)
-        printer.setResolution(d_page_dpi);
 
     printer.setOutputFileName(fileName);
     if (fileName.contains(".eps", Qt::CaseInsensitive)) {
@@ -1884,6 +1913,13 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
         printer.setOutputFormat(QPrinter::PostScriptFormat);
 #endif
     }
+
+    if (printer.outputFormat() == QPrinter::PdfFormat)
+        printer.setResolution(96);
+    else if (res > 0)
+        printer.setResolution(res);
+    else if (d_page_unit != UnitPx && d_page_dpi > 0)
+        printer.setResolution(d_page_dpi);
 
     if (color)
         printer.setColorMode(QPrinter::Color);
@@ -2756,7 +2792,12 @@ QString MultiLayer::saveToString(const QString &geometry)
     s += QString::number(rows) + "\t";
     s += birthDate() + "\n";
     s += geometry;
-    s += "WindowLabel\t" + windowLabel() + "\t" + QString::number(captionPolicy()) + "\n";
+    QString escWl = windowLabel();
+    escWl.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    escWl.replace(QLatin1String("\r"), QLatin1String("\n"));
+    escWl.replace(QLatin1String("\n"), QLatin1String("<br>"));
+    escWl.replace(QLatin1String("\t"), QLatin1String("&#9;"));
+    s += "WindowLabel\t" + escWl + "\t" + QString::number(captionPolicy()) + "\n";
     s += "Margins\t" + QString::number(left_margin) + "\t" + QString::number(right_margin) + "\t"
             + QString::number(top_margin) + "\t" + QString::number(bottom_margin) + "\n";
     s += "Spacing\t" + QString::number(rowsSpace) + "\t" + QString::number(colsSpace) + "\n";
@@ -2966,6 +3007,95 @@ void MultiLayer::setKeepAspectRatio(bool keep)
     emit modifiedPlot();
 }
 
+namespace {
+void clampGraphCalloutMarkersInCanvas(Graph *gr)
+{
+    if (!gr || gr->isPiePlot() || gr->isTernaryPlot())
+        return;
+    Plot *plot = gr->plotWidget();
+    if (!plot || !plot->canvas())
+        return;
+
+    plot->updateAxes();
+    plot->updateLayout();
+    const QRect layoutCRect = plot->plotLayout()->canvasRect();
+    const int cw = (plot->canvas()->width() > 20) ? plot->canvas()->width() : layoutCRect.width();
+    const int ch = (plot->canvas()->height() > 20) ? plot->canvas()->height() : layoutCRect.height();
+    if (cw < 40 || ch < 40)
+        return;
+
+    const QRect cRect(0, 0, cw, ch);
+    const QRect baseSafe = cRect.adjusted(6, 6, -6, -6);
+    if (baseSafe.width() < 20 || baseSafe.height() < 20)
+        return;
+
+    Legend *mainLeg = gr->legend();
+    const QVector<int> txtKeys = gr->textMarkerKeys();
+    bool changedAny = false;
+
+    for (int key : txtKeys) {
+        Legend *mrk = gr->textMarker(key);
+        if (!mrk || !mrk->isVisible() || mrk == mainLeg)
+            continue;
+        const QString rawTxt = mrk->text();
+        if (rawTxt.trimmed().isEmpty()
+            || rawTxt.contains(QLatin1String("\\c{"))
+            || rawTxt.contains(QLatin1String("\\p{"))
+            || rawTxt.contains(QLatin1String("\\l("))) {
+            continue;
+        }
+
+        QRect mr = mrk->rect();
+        if (mr.isEmpty())
+            continue;
+        if (!cRect.adjusted(-30, -30, 30, 30).contains(mr.topLeft())
+            && !mr.intersects(cRect.adjusted(-12, -12, 12, 12))) {
+            continue;
+        }
+
+        QFont fnt = mrk->font();
+        double pt = (fnt.pointSizeF() > 0.0) ? fnt.pointSizeF() : double(qMax(8, fnt.pointSize()));
+        const double minPt = (cw < 240) ? 6.5 : 8.0;
+        const int maxAllowedW = qMax(30, qRound(0.88 * double(cRect.width())));
+        const int maxAllowedH = qMax(24, qRound(0.85 * double(cRect.height())));
+        int guard = 0;
+        while ((mr.width() > maxAllowedW || mr.height() > maxAllowedH) && pt > minPt && guard < 24) {
+            pt = qMax(minPt, pt - (pt > 14.0 ? 1.5 : 0.5));
+            fnt.setPointSizeF(pt);
+            fnt.setFamily(QStringLiteral("Arial"));
+            fnt.setBold(false);
+            fnt.setHintingPreference(QFont::PreferNoHinting);
+            mrk->setFont(fnt);
+            mr = mrk->rect();
+            changedAny = true;
+            ++guard;
+        }
+
+        const int framePad = (mrk->frameStyle() != Legend::None)
+                ? qMax(6, plot->majorTickLength() + 2)
+                : 6;
+        const QRect safeRect = cRect.adjusted(framePad, framePad, -framePad, -framePad);
+        const int minX = safeRect.left();
+        const int minY = safeRect.top();
+        const int maxX = qMax(minX, safeRect.right() - mr.width());
+        const int maxY = qMax(minY, safeRect.bottom() - mr.height());
+        const int clampedX = qBound(minX, mr.left(), maxX);
+        const int clampedY = qBound(minY, mr.top(), maxY);
+        if (clampedX != mr.left() || clampedY != mr.top()) {
+            const QwtScaleMap &xMap = plot->canvasMap(mrk->xAxis());
+            const QwtScaleMap &yMap = plot->canvasMap(mrk->yAxis());
+            mrk->setOriginCoord(xMap.invTransform(clampedX), yMap.invTransform(clampedY));
+            changedAny = true;
+        }
+    }
+
+    if (changedAny) {
+        plot->updateLayout();
+        plot->replot();
+    }
+}
+} // namespace
+
 void MultiLayer::setTargetAspectRatio(double ratio)
 {
     if (ratio <= 0.05 || ratio > 20.0)
@@ -2979,6 +3109,11 @@ void MultiLayer::setTargetAspectRatio(double ratio)
         d_keep_aspect_ratio = true;
         arrangeLayers(false, false);
         d_keep_aspect_ratio = prevKeep;
+        for (int i = 0; i < graphsList.count(); ++i) {
+            Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+            if (gr && !gr->linkedParentLayer() && !d_inset_specs.contains(gr))
+                clampGraphCalloutMarkersInCanvas(gr);
+        }
     }
     emit modifiedPlot();
 }
@@ -3176,9 +3311,62 @@ void MultiLayer::syncChildOverlayAndInsetGeometries()
             if (!pPlot || !cPlot)
                 continue;
             pPlot->updateLayout();
-            const QRect pCanvas = pPlot->plotLayout()->canvasRect();
+            QRect pCanvas = pPlot->plotLayout()->canvasRect();
             if (pCanvas.width() >= 20 && pCanvas.height() >= 20) {
-                const QRect targetInner = pCanvas.translated(parentLayer->pos());
+                QRect targetInner = pCanvas.translated(parentLayer->pos());
+                if (!prevSync && !d_is_restoring_snapshot) {
+                    cPlot->updateLayout();
+                    const QRect cCanvas0 = cPlot->plotLayout()->canvasRect();
+                    const int cL0 = qMax(0, cCanvas0.left());
+                    const int cT0 = qMax(0, cCanvas0.top());
+                    const int cR0 =
+                            qMax(0, cPlot->width() - (cCanvas0.left() + cCanvas0.width()));
+                    const int cB0 =
+                            qMax(0, cPlot->height() - (cCanvas0.top() + cCanvas0.height()));
+                    QRect pGeo = parentLayer->geometry();
+                    int shiftTop = 0;
+                    if (targetInner.top() - cT0 < 4
+                        && pGeo.height() - (4 - (targetInner.top() - cT0)) >= 80) {
+                        shiftTop = 4 - (targetInner.top() - cT0);
+                    }
+                    int shiftLeft = 0;
+                    if (targetInner.left() - cL0 < 4
+                        && pGeo.width() - (4 - (targetInner.left() - cL0)) >= 80) {
+                        shiftLeft = 4 - (targetInner.left() - cL0);
+                    }
+                    int trimRight = 0;
+                    int trimBottom = 0;
+                    if (canvas && canvas->width() >= 140) {
+                        const int overR =
+                                (targetInner.left() + targetInner.width() + shiftLeft + cR0)
+                                - (canvas->width() - 4);
+                        if (overR > 0 && pGeo.width() - shiftLeft - overR >= 80)
+                            trimRight = overR;
+                    }
+                    if (canvas && canvas->height() >= 140) {
+                        const int overB =
+                                (targetInner.top() + targetInner.height() + shiftTop + cB0)
+                                - (canvas->height() - 4);
+                        if (overB > 0 && pGeo.height() - shiftTop - overB >= 80)
+                            trimBottom = overB;
+                    }
+                    if (shiftTop > 0 || shiftLeft > 0 || trimRight > 0 || trimBottom > 0) {
+                        const bool prevPIgnore = parentLayer->ignoresResizeEvents();
+                        const bool prevPAuto = parentLayer->autoscaleFonts();
+                        parentLayer->setIgnoreResizeEvents(true);
+                        parentLayer->setAutoscaleFonts(false);
+                        pGeo = QRect(pGeo.x() + shiftLeft, pGeo.y() + shiftTop,
+                                     pGeo.width() - shiftLeft - trimRight,
+                                     pGeo.height() - shiftTop - trimBottom);
+                        parentLayer->setGeometry(pGeo);
+                        pPlot->resize(pGeo.size());
+                        pPlot->updateLayout();
+                        parentLayer->setAutoscaleFonts(prevPAuto);
+                        parentLayer->setIgnoreResizeEvents(prevPIgnore);
+                        pCanvas = pPlot->plotLayout()->canvasRect();
+                        targetInner = pCanvas.translated(parentLayer->pos());
+                    }
+                }
                 for (int pass = 0; pass < 2; ++pass) {
                     cPlot->updateLayout();
                     const QRect cCanvas = cPlot->plotLayout()->canvasRect();
@@ -3881,6 +4069,10 @@ Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
             swRight->setSpacing(6);
     }
 
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        child->setAxisTitleAuto(a, false);
+    child->setAxisTitle(QwtPlot::xBottom, QString());
+    child->setAxisTitle(QwtPlot::yLeft, QString());
     child->setAxisTitle(QwtPlot::xTop, QString());
     child->setAxisTitle(QwtPlot::yRight, QString());
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
@@ -3903,6 +4095,7 @@ Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
     const int yMode = classifyMode(linkY, yFormula, QString("y"), QString("y1"));
 
     child->setLinkedParentLayer(parentLayer, xMode, xFormula, yMode, yFormula);
+    syncChildOverlayAndInsetGeometries();
     installLayerEventFilters(child);
     setActiveGraph(parentLayer);
     enforceLayerZOrder();
@@ -3911,7 +4104,57 @@ Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
     return child;
 }
 
-Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
+bool MultiLayer::isInsetLayer(const Graph *g) const
+{
+    return g && d_inset_specs.contains(const_cast<Graph *>(g));
+}
+
+Graph *MultiLayer::insetSourceLayer(const Graph *g) const
+{
+    if (!g)
+        return nullptr;
+    auto it = d_inset_specs.constFind(const_cast<Graph *>(g));
+    return (it != d_inset_specs.constEnd()) ? it.value().sourceLayer.data() : nullptr;
+}
+
+QRectF MultiLayer::insetNormGeo(const Graph *g) const
+{
+    if (!g)
+        return QRectF();
+    auto it = d_inset_specs.constFind(const_cast<Graph *>(g));
+    return (it != d_inset_specs.constEnd()) ? it.value().normGeo : QRectF();
+}
+
+QRectF MultiLayer::insetZoomDataRect(const Graph *g) const
+{
+    if (!g)
+        return QRectF();
+    auto it = d_inset_specs.constFind(const_cast<Graph *>(g));
+    return (it != d_inset_specs.constEnd()) ? it.value().zoomDataRect : QRectF();
+}
+
+bool MultiLayer::insetShowConnectors(const Graph *g) const
+{
+    if (!g)
+        return false;
+    auto it = d_inset_specs.constFind(const_cast<Graph *>(g));
+    return (it != d_inset_specs.constEnd()) ? it.value().showConnectors : false;
+}
+
+void MultiLayer::setInsetShowConnectors(Graph *insetLayer, bool show)
+{
+    if (!insetLayer || !d_inset_specs.contains(insetLayer))
+        return;
+    if (d_inset_specs[insetLayer].showConnectors == show)
+        return;
+    d_inset_specs[insetLayer].showConnectors = show;
+    if (canvas)
+        canvas->update();
+    update();
+    emit modifiedPlot();
+}
+
+Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, bool showConnectors)
 {
     if (!sourceLayer)
         sourceLayer = active_graph ? active_graph : layer(1);
@@ -4161,7 +4404,7 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
     spec.sourceLayer = QPointer<Graph>(sourceLayer);
     spec.normGeo = initialNormGeo;
     spec.zoomDataRect = effectiveRoi.normalized();
-    spec.showConnectors = true;
+    spec.showConnectors = showConnectors;
     d_inset_specs[inset] = spec;
 
     inset->setIgnoreResizeEvents(true);
@@ -4199,12 +4442,34 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
                 dstCurve->setSymbol(srcCurve->symbol());
                 dstCurve->setBrush(srcCurve->brush());
                 dstCurve->setStyle(srcCurve->style());
+                if (PlotCurve *dstPc = dynamic_cast<PlotCurve *>(dstCurve))
+                    dstPc->setSymbolSkip(dc->symbolSkip());
+            }
+        } else if (auto *srcFc = dynamic_cast<FunctionCurve *>(srcCurve)) {
+            const int n = srcFc->dataSize();
+            if (n > 0) {
+                auto *dstFc = new FunctionCurve(findMultiLayerApp(this), srcFc->functionType(),
+                                                srcFc->title().text());
+                dstFc->copy(srcFc);
+                QVector<double> xv(n), yv(n);
+                for (int j = 0; j < n; ++j) {
+                    xv[j] = srcFc->x(j);
+                    yv[j] = srcFc->y(j);
+                }
+                dstFc->setData(xv.constData(), yv.constData(), n);
+                dstFc->setPen(srcFc->pen());
+                dstFc->setSymbol(srcFc->symbol());
+                dstFc->setBrush(srcFc->brush());
+                dstFc->setStyle(srcFc->style());
+                dstFc->setSymbolSkip(srcFc->symbolSkip());
+                inset->insertPlotItem(dstFc, Graph::Function);
             }
         } else {
             const int n = srcCurve->dataSize();
             if (n > 0) {
+                const int safeType = (cType == Graph::Function) ? Graph::Line : cType;
                 PlotCurve *pc = new PlotCurve(srcCurve->title().text());
-                pc->setType(cType);
+                pc->setType(safeType);
                 QVector<double> xv(n), yv(n);
                 for (int j = 0; j < n; ++j) {
                     xv[j] = srcCurve->x(j);
@@ -4215,7 +4480,9 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
                 pc->setSymbol(srcCurve->symbol());
                 pc->setBrush(srcCurve->brush());
                 pc->setStyle(srcCurve->style());
-                inset->insertPlotItem(pc, cType);
+                if (PlotCurve *srcPc = dynamic_cast<PlotCurve *>(srcCurve))
+                    pc->setSymbolSkip(srcPc->symbolSkip());
+                inset->insertPlotItem(pc, safeType);
             }
         }
     }
@@ -4267,7 +4534,7 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
         if (qAbs(effectiveRoi.width()) > 1e-15) {
             const double xLo = qMin(effectiveRoi.left(), effectiveRoi.right());
             const double xHi = qMax(effectiveRoi.left(), effectiveRoi.right());
-            const int inXMaj = (iw < 150) ? 2 : 3;
+            const int inXMaj = (iw < 105) ? 2 : 3;
             inset->setScale(QwtPlot::xBottom, xLo, xHi, 0.0, inXMaj, 1, xScaleType, xInv);
             inset->setScale(QwtPlot::xTop, xLo, xHi, 0.0, inXMaj, 1, xScaleType, xInv);
         }
@@ -4291,6 +4558,7 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect)
     d_syncing_inset_geometries = prevSync;
 
     installLayerEventFilters(inset);
+    setActiveGraph(sourceLayer);
     enforceLayerZOrder();
     refreshLayerButtonBadges();
     syncCanvasOverlayVisibility();
@@ -4687,6 +4955,8 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             continue;
         const bool isInset = d_inset_specs.contains(gr);
         const bool isLinkedOverlay = (gr->linkedParentLayer() != nullptr);
+        if (!isInset && !isLinkedOverlay)
+            clampGraphCalloutMarkersInCanvas(gr);
         if (!isInset && !isLinkedOverlay && gr->hasLegend() && gr->isLegendVisible()) {
             const QVariant ancProp = gr->plotWidget()->property("_toriLegendAnchor");
             if (ancProp.isValid()) {
@@ -5416,7 +5686,10 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
             if (restoreGeometry && app)
                 app->restoreWindowGeometry(app, this, line);
         } else if (key == QLatin1String("WindowLabel") && f.size() >= 3) {
-            setWindowLabel(f.at(1));
+            QString wl = f.at(1);
+            wl.replace(QLatin1String("&#9;"), QLatin1String("\t"));
+            wl.replace(QLatin1String("<br>"), QLatin1String("\n"));
+            setWindowLabel(wl);
             setCaptionPolicy(static_cast<MyWidget::CaptionPolicy>(f.at(2).toInt()));
         } else if (key == QLatin1String("Margins") && f.size() >= 5) {
             setMargins(f.at(1).toInt(), f.at(2).toInt(), f.at(3).toInt(), f.at(4).toInt());
@@ -5551,7 +5824,50 @@ QRect MultiLayer::panelLabelsBoundingRect() const
     if (!d_panel_labels_enabled || graphsList.isEmpty())
         return QRect();
 
-    QRect bounds;
+    auto segIntersectsBox = [](const QLineF &seg, const QRectF &box) -> bool {
+        if (box.isEmpty())
+            return false;
+        const QRectF padBox = box.adjusted(-3.0, -3.0, 3.0, 3.0);
+        if (padBox.contains(seg.p1()) || padBox.contains(seg.p2())
+            || padBox.contains(seg.pointAt(0.5))) {
+            return true;
+        }
+        const QLineF edges[4] = {
+            QLineF(padBox.topLeft(), padBox.topRight()),
+            QLineF(padBox.topRight(), padBox.bottomRight()),
+            QLineF(padBox.bottomRight(), padBox.bottomLeft()),
+            QLineF(padBox.bottomLeft(), padBox.topLeft()),
+        };
+        for (const QLineF &e : edges) {
+            QPointF ip;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            if (seg.intersects(e, &ip) == QLineF::BoundedIntersection)
+                return true;
+#else
+            if (seg.intersect(e, &ip) == QLineF::BoundedIntersection)
+                return true;
+#endif
+        }
+        return false;
+    };
+
+    struct PanelInfo {
+        Graph *gr = nullptr;
+        QRect innerCanvas;
+        QFont fnt;
+        QString text;
+        int textW = 12;
+        int ascent = 10;
+        int descent = 3;
+        int height = 13;
+        int cx = 0;
+        int cy = 0;
+        int col = 0;
+        int row = 0;
+    };
+
+    QVector<PanelInfo> panels;
+    const int effCols = qMax(1, cols);
     int panelIdx = 0;
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
@@ -5581,23 +5897,73 @@ QRect MultiLayer::panelLabelsBoundingRect() const
         const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
         const int textW = qMax(12, fm.horizontalAdvance(text));
 
-        int cx = innerCanvas.left() + 8;
-        int cy = innerCanvas.top() + 6 + fm.ascent();
+        PanelInfo pi;
+        pi.gr = gr;
+        pi.innerCanvas = innerCanvas;
+        pi.fnt = fnt;
+        pi.text = text;
+        pi.textW = textW;
+        pi.ascent = fm.ascent();
+        pi.descent = fm.descent();
+        pi.height = fm.height();
+        pi.col = (effCols > 1) ? (panelIdx % effCols) : 0;
+        pi.row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
+        pi.cx = innerCanvas.left() + 8;
+        pi.cy = innerCanvas.top() + 6 + pi.ascent;
+
         if (d_panel_label_placement == PanelOutsideTopLeft) {
             const int minOutsideDx = qMax(32, textW + 6);
-            cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
-            cy = innerCanvas.top() - 6;
-        } else if (d_panel_label_placement == PanelInsideTopLeft && !d_inset_specs.isEmpty()) {
+            pi.cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
+            int baseCy = innerCanvas.top() - qMax(8, pi.descent + 4);
+            if (plot->axisEnabled(QwtPlot::yLeft)) {
+                const int yTitleSpan = plot->axisTitle(QwtPlot::yLeft)
+                                               .textSize(gr->axisTitleFont(QwtPlot::yLeft))
+                                               .width();
+                if (yTitleSpan > 0 && pi.cx + textW >= gr->pos().x() - 6) {
+                    const int yTitleTop = innerCanvas.center().y() - (yTitleSpan + 1) / 2;
+                    baseCy = qMin(baseCy, yTitleTop - qMax(6, pi.descent + 3));
+                }
+            }
+            if (plot->axisEnabled(QwtPlot::xTop) && plot->axisScaleDraw(QwtPlot::xTop)
+                && (plot->axisScaleDraw(QwtPlot::xTop)->hasComponent(QwtAbstractScaleDraw::Labels)
+                    || !gr->axisTitle(QwtPlot::xTop).trimmed().isEmpty())) {
+                baseCy = qMin(baseCy, gr->pos().y() - qMax(4, pi.descent + 2));
+            }
+            pi.cy = baseCy;
+        } else if (d_panel_label_placement == PanelInsideTopLeft) {
             const QRectF srcCanvasRectF(innerCanvas);
             const QwtScaleMap xMap = plot->canvasMap(QwtPlot::xBottom);
             const QwtScaleMap yMap = plot->canvasMap(QwtPlot::yLeft);
+            QVector<QRectF> avoidBoxes;
+            QVector<QLineF> avoidSegs;
+            if (gr->isLegendVisible()) {
+                if (Legend *leg = gr->legend()) {
+                    const QRect lr = leg->rect();
+                    if (!lr.isEmpty())
+                        avoidBoxes.append(QRectF(lr.translated(innerCanvas.topLeft())));
+                }
+            }
+            const QVector<int> txtKeys = gr->textMarkerKeys();
+            for (int tid : txtKeys) {
+                Legend *tm = gr->textMarker(tid);
+                if (!tm || !tm->isVisible() || tm == gr->legend())
+                    continue;
+                const QRect tr = tm->rect();
+                if (!tr.isEmpty())
+                    avoidBoxes.append(QRectF(tr.translated(innerCanvas.topLeft())));
+            }
             for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
                 Graph *inset = it.key();
                 const InsetSpec &spec = it.value();
                 if (!inset || inset->isHidden() || spec.sourceLayer.data() != gr)
                     continue;
+                Plot *inPlot = inset->plotWidget();
+                if (inPlot) {
+                    inPlot->updateLayout();
+                    avoidBoxes.append(QRectF(inset->pos(), inPlot->size()));
+                }
                 QRectF zoomData = spec.zoomDataRect;
-                if (Plot *inPlot = inset->plotWidget()) {
+                if (inPlot) {
                     const QwtScaleDiv *ixSd = inPlot->axisScaleDiv(QwtPlot::xBottom);
                     const QwtScaleDiv *iySd = inPlot->axisScaleDiv(QwtPlot::yLeft);
                     if (ixSd && iySd) {
@@ -5626,17 +5992,122 @@ QRect MultiLayer::panelLabelsBoundingRect() const
                 const QRectF roiBox = rawRoi.intersected(srcCanvasRectF);
                 if (roiBox.width() < 2.0 || roiBox.height() < 2.0)
                     continue;
-                const QRectF candBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
-                if (roiBox.intersects(candBox)) {
-                    cx = qMin(qRound(roiBox.right()) + 24,
-                              qMax(innerCanvas.left() + 8, innerCanvas.right() - textW - 6));
+                avoidBoxes.append(roiBox);
+
+                if (spec.showConnectors && inPlot) {
+                    const QRect inCanvasLocal = inPlot->plotLayout()->canvasRect();
+                    if (inCanvasLocal.width() >= 12 && inCanvasLocal.height() >= 12) {
+                        const QRectF insetFrame(inCanvasLocal.translated(inset->pos()));
+                        const QPointF rC[4] = { roiBox.topLeft(), roiBox.topRight(),
+                                                roiBox.bottomRight(), roiBox.bottomLeft() };
+                        const QPointF iC[4] = { insetFrame.topLeft(), insetFrame.topRight(),
+                                                insetFrame.bottomRight(), insetFrame.bottomLeft() };
+                        struct PairIdx { int r1, i1, r2, i2; };
+                        static const PairIdx kP[6] = { { 1, 0, 2, 3 }, { 0, 1, 3, 2 },
+                                                       { 0, 3, 1, 2 }, { 3, 0, 2, 1 },
+                                                       { 0, 0, 2, 2 }, { 3, 3, 1, 1 } };
+                        int bestP = 0;
+                        double bestScore = 1e30;
+                        for (int p = 0; p < 6; ++p) {
+                            const QLineF l1(rC[kP[p].r1], iC[kP[p].i1]);
+                            const QLineF l2(rC[kP[p].r2], iC[kP[p].i2]);
+                            QPointF ip;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                            if (l1.intersects(l2, &ip) == QLineF::BoundedIntersection
+                                && QLineF(ip, l1.p1()).length() > 0.75
+                                && QLineF(ip, l1.p2()).length() > 0.75)
+                                continue;
+#else
+                            if (l1.intersect(l2, &ip) == QLineF::BoundedIntersection
+                                && QLineF(ip, l1.p1()).length() > 0.75
+                                && QLineF(ip, l1.p2()).length() > 0.75)
+                                continue;
+#endif
+                            const int hits = (segIntersectsBox(l1, roiBox.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l1, insetFrame.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l2, roiBox.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l2, insetFrame.adjusted(2, 2, -2, -2)) ? 1 : 0);
+                            const double sc = hits * 1e6 + l1.length() + l2.length();
+                            if (sc < bestScore) {
+                                bestScore = sc;
+                                bestP = p;
+                            }
+                        }
+                        avoidSegs.append(QLineF(rC[kP[bestP].r1], iC[kP[bestP].i1]));
+                        avoidSegs.append(QLineF(rC[kP[bestP].r2], iC[kP[bestP].i2]));
+                    }
+                }
+            }
+
+            auto hitsAny = [&](int testCx, int testCy) -> bool {
+                const QRectF cBox(testCx - 4, testCy - pi.ascent - 4, textW + 8, pi.height + 8);
+                for (const QRectF &b : avoidBoxes) {
+                    if (b.intersects(cBox))
+                        return true;
+                }
+                for (const QLineF &sg : avoidSegs) {
+                    if (segIntersectsBox(sg, cBox))
+                        return true;
+                }
+                return false;
+            };
+
+            if (hitsAny(pi.cx, pi.cy)) {
+                bool placed = false;
+                const int minX = innerCanvas.left() + 8;
+                const int maxX = qMax(minX, innerCanvas.right() - textW - 8);
+                const int minY = innerCanvas.top() + 6 + pi.ascent;
+                const int maxY = qMax(minY, innerCanvas.bottom() - 8);
+                for (int tx = minX; tx <= maxX && !placed; tx += 12) {
+                    if (!hitsAny(tx, pi.cy)) {
+                        pi.cx = tx;
+                        placed = true;
+                    }
+                }
+                for (int ty = minY + 12; ty <= maxY && !placed; ty += 12) {
+                    if (!hitsAny(minX, ty)) {
+                        pi.cx = minX;
+                        pi.cy = ty;
+                        placed = true;
+                    }
+                }
+                for (int ty = minY; ty <= maxY && !placed; ty += 14) {
+                    for (int tx = minX; tx <= maxX && !placed; tx += 14) {
+                        if (!hitsAny(tx, ty)) {
+                            pi.cx = tx;
+                            pi.cy = ty;
+                            placed = true;
+                        }
+                    }
+                }
+                if (!placed && !hitsAny(maxX, maxY)) {
+                    pi.cx = maxX;
+                    pi.cy = maxY;
                 }
             }
         }
 
-        const QRect glyphBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
-        bounds = bounds.isEmpty() ? glyphBox : bounds.united(glyphBox);
+        panels.append(pi);
         ++panelIdx;
+    }
+
+    if (d_panel_label_placement == PanelOutsideTopLeft && panels.size() > 1) {
+        QMap<int, int> colMinCx;
+        QMap<int, int> rowMinCy;
+        for (const PanelInfo &pi : panels) {
+            colMinCx[pi.col] = colMinCx.contains(pi.col) ? qMin(colMinCx[pi.col], pi.cx) : pi.cx;
+            rowMinCy[pi.row] = rowMinCy.contains(pi.row) ? qMin(rowMinCy[pi.row], pi.cy) : pi.cy;
+        }
+        for (PanelInfo &pi : panels) {
+            pi.cx = colMinCx[pi.col];
+            pi.cy = rowMinCy[pi.row];
+        }
+    }
+
+    QRect bounds;
+    for (const PanelInfo &pi : panels) {
+        const QRect glyphBox(pi.cx - 4, pi.cy - pi.ascent - 4, pi.textW + 8, pi.height + 8);
+        bounds = bounds.isEmpty() ? glyphBox : bounds.united(glyphBox);
     }
     return bounds;
 }
@@ -5646,9 +6117,48 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
     if (!d_panel_labels_enabled || !painter || graphsList.isEmpty())
         return;
 
+    auto segIntersectsBox = [](const QLineF &seg, const QRectF &box) -> bool {
+        if (box.isEmpty())
+            return false;
+        const QRectF padBox = box.adjusted(-3.0, -3.0, 3.0, 3.0);
+        if (padBox.contains(seg.p1()) || padBox.contains(seg.p2())
+            || padBox.contains(seg.pointAt(0.5))) {
+            return true;
+        }
+        const QLineF edges[4] = {
+            QLineF(padBox.topLeft(), padBox.topRight()),
+            QLineF(padBox.topRight(), padBox.bottomRight()),
+            QLineF(padBox.bottomRight(), padBox.bottomLeft()),
+            QLineF(padBox.bottomLeft(), padBox.topLeft()),
+        };
+        for (const QLineF &e : edges) {
+            QPointF ip;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            if (seg.intersects(e, &ip) == QLineF::BoundedIntersection)
+                return true;
+#else
+            if (seg.intersect(e, &ip) == QLineF::BoundedIntersection)
+                return true;
+#endif
+        }
+        return false;
+    };
+
+    struct PanelDrawItem {
+        QFont fnt;
+        QString text;
+        int ascent = 10;
+        int cx = 0;
+        int cy = 0;
+        int col = 0;
+        int row = 0;
+    };
+
     painter->save();
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
+    QVector<PanelDrawItem> items;
+    const int effCols = qMax(1, cols);
     int panelIdx = 0;
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
@@ -5675,30 +6185,74 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
         QFont fnt(QStringLiteral("Arial"), pt, QFont::Normal, false);
         fnt.setBold(false);
         fnt.setHintingPreference(QFont::PreferNoHinting);
-        painter->setFont(fnt);
-        painter->setPen(QColor(Qt::black));
 
         const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
         const QFontMetrics fm(fnt);
         const int textW = qMax(12, fm.horizontalAdvance(text));
 
-        int cx = innerCanvas.left() + 8;
-        int cy = innerCanvas.top() + 6 + fm.ascent();
+        PanelDrawItem item;
+        item.fnt = fnt;
+        item.text = text;
+        item.ascent = fm.ascent();
+        item.col = (effCols > 1) ? (panelIdx % effCols) : 0;
+        item.row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
+        item.cx = innerCanvas.left() + 8;
+        item.cy = innerCanvas.top() + 6 + fm.ascent();
+
         if (d_panel_label_placement == PanelOutsideTopLeft) {
             const int minOutsideDx = qMax(32, textW + 6);
-            cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
-            cy = innerCanvas.top() - 6;
-        } else if (d_panel_label_placement == PanelInsideTopLeft && !d_inset_specs.isEmpty()) {
+            item.cx = qMin(gr->pos().x() + 2, innerCanvas.left() - minOutsideDx);
+            int baseCy = innerCanvas.top() - qMax(8, fm.descent() + 4);
+            if (plot->axisEnabled(QwtPlot::yLeft)) {
+                const int yTitleSpan = plot->axisTitle(QwtPlot::yLeft)
+                                               .textSize(gr->axisTitleFont(QwtPlot::yLeft))
+                                               .width();
+                if (yTitleSpan > 0 && item.cx + textW >= gr->pos().x() - 6) {
+                    const int yTitleTop = innerCanvas.center().y() - (yTitleSpan + 1) / 2;
+                    baseCy = qMin(baseCy, yTitleTop - qMax(6, fm.descent() + 3));
+                }
+            }
+            if (plot->axisEnabled(QwtPlot::xTop) && plot->axisScaleDraw(QwtPlot::xTop)
+                && (plot->axisScaleDraw(QwtPlot::xTop)->hasComponent(QwtAbstractScaleDraw::Labels)
+                    || !gr->axisTitle(QwtPlot::xTop).trimmed().isEmpty())) {
+                baseCy = qMin(baseCy, gr->pos().y() - qMax(4, fm.descent() + 2));
+            }
+            item.cy = baseCy;
+        } else if (d_panel_label_placement == PanelInsideTopLeft) {
             const QRectF srcCanvasRectF(innerCanvas);
             const QwtScaleMap xMap = plot->canvasMap(QwtPlot::xBottom);
             const QwtScaleMap yMap = plot->canvasMap(QwtPlot::yLeft);
+            QVector<QRectF> avoidBoxes;
+            QVector<QLineF> avoidSegs;
+            if (gr->isLegendVisible()) {
+                if (Legend *leg = gr->legend()) {
+                    const QRect lr = leg->rect();
+                    if (!lr.isEmpty())
+                        avoidBoxes.append(QRectF(lr.translated(innerCanvas.topLeft())));
+                }
+            }
+            const QVector<int> txtKeys = gr->textMarkerKeys();
+            for (int tid : txtKeys) {
+                Legend *tm = gr->textMarker(tid);
+                if (!tm || !tm->isVisible() || tm == gr->legend())
+                    continue;
+                const QRect tr = tm->rect();
+                if (!tr.isEmpty())
+                    avoidBoxes.append(QRectF(tr.translated(innerCanvas.topLeft())));
+            }
             for (auto it = d_inset_specs.constBegin(); it != d_inset_specs.constEnd(); ++it) {
                 Graph *inset = it.key();
                 const InsetSpec &spec = it.value();
                 if (!inset || inset->isHidden() || spec.sourceLayer.data() != gr)
                     continue;
+                Plot *inPlot = inset->plotWidget();
+                if (inPlot) {
+                    if (painter->device() && painter->device()->devType() != QInternal::Widget)
+                        inPlot->updateLayout();
+                    avoidBoxes.append(QRectF(inset->pos(), inPlot->size()));
+                }
                 QRectF zoomData = spec.zoomDataRect;
-                if (Plot *inPlot = inset->plotWidget()) {
+                if (inPlot) {
                     const QwtScaleDiv *ixSd = inPlot->axisScaleDiv(QwtPlot::xBottom);
                     const QwtScaleDiv *iySd = inPlot->axisScaleDiv(QwtPlot::yLeft);
                     if (ixSd && iySd) {
@@ -5727,18 +6281,124 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
                 const QRectF roiBox = rawRoi.intersected(srcCanvasRectF);
                 if (roiBox.width() < 2.0 || roiBox.height() < 2.0)
                     continue;
-                const QRectF candBox(cx - 4, cy - fm.ascent() - 4, textW + 8, fm.height() + 8);
-                if (roiBox.intersects(candBox)) {
-                    cx = qMin(qRound(roiBox.right()) + 24,
-                              qMax(innerCanvas.left() + 8, innerCanvas.right() - textW - 6));
+                avoidBoxes.append(roiBox);
+
+                if (spec.showConnectors && inPlot) {
+                    const QRect inCanvasLocal = inPlot->plotLayout()->canvasRect();
+                    if (inCanvasLocal.width() >= 12 && inCanvasLocal.height() >= 12) {
+                        const QRectF insetFrame(inCanvasLocal.translated(inset->pos()));
+                        const QPointF rC[4] = { roiBox.topLeft(), roiBox.topRight(),
+                                                roiBox.bottomRight(), roiBox.bottomLeft() };
+                        const QPointF iC[4] = { insetFrame.topLeft(), insetFrame.topRight(),
+                                                insetFrame.bottomRight(), insetFrame.bottomLeft() };
+                        struct PairIdx { int r1, i1, r2, i2; };
+                        static const PairIdx kP[6] = { { 1, 0, 2, 3 }, { 0, 1, 3, 2 },
+                                                       { 0, 3, 1, 2 }, { 3, 0, 2, 1 },
+                                                       { 0, 0, 2, 2 }, { 3, 3, 1, 1 } };
+                        int bestP = 0;
+                        double bestScore = 1e30;
+                        for (int p = 0; p < 6; ++p) {
+                            const QLineF l1(rC[kP[p].r1], iC[kP[p].i1]);
+                            const QLineF l2(rC[kP[p].r2], iC[kP[p].i2]);
+                            QPointF ip;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                            if (l1.intersects(l2, &ip) == QLineF::BoundedIntersection
+                                && QLineF(ip, l1.p1()).length() > 0.75
+                                && QLineF(ip, l1.p2()).length() > 0.75)
+                                continue;
+#else
+                            if (l1.intersect(l2, &ip) == QLineF::BoundedIntersection
+                                && QLineF(ip, l1.p1()).length() > 0.75
+                                && QLineF(ip, l1.p2()).length() > 0.75)
+                                continue;
+#endif
+                            const int hits = (segIntersectsBox(l1, roiBox.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l1, insetFrame.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l2, roiBox.adjusted(2, 2, -2, -2)) ? 1 : 0)
+                                    + (segIntersectsBox(l2, insetFrame.adjusted(2, 2, -2, -2)) ? 1 : 0);
+                            const double sc = hits * 1e6 + l1.length() + l2.length();
+                            if (sc < bestScore) {
+                                bestScore = sc;
+                                bestP = p;
+                            }
+                        }
+                        avoidSegs.append(QLineF(rC[kP[bestP].r1], iC[kP[bestP].i1]));
+                        avoidSegs.append(QLineF(rC[kP[bestP].r2], iC[kP[bestP].i2]));
+                    }
+                }
+            }
+
+            auto hitsAny = [&](int testCx, int testCy) -> bool {
+                const QRectF cBox(testCx - 4, testCy - fm.ascent() - 4, textW + 8, fm.height() + 8);
+                for (const QRectF &b : avoidBoxes) {
+                    if (b.intersects(cBox))
+                        return true;
+                }
+                for (const QLineF &sg : avoidSegs) {
+                    if (segIntersectsBox(sg, cBox))
+                        return true;
+                }
+                return false;
+            };
+
+            if (hitsAny(item.cx, item.cy)) {
+                bool placed = false;
+                const int minX = innerCanvas.left() + 8;
+                const int maxX = qMax(minX, innerCanvas.right() - textW - 8);
+                const int minY = innerCanvas.top() + 6 + fm.ascent();
+                const int maxY = qMax(minY, innerCanvas.bottom() - 8);
+                for (int tx = minX; tx <= maxX && !placed; tx += 12) {
+                    if (!hitsAny(tx, item.cy)) {
+                        item.cx = tx;
+                        placed = true;
+                    }
+                }
+                for (int ty = minY + 12; ty <= maxY && !placed; ty += 12) {
+                    if (!hitsAny(minX, ty)) {
+                        item.cx = minX;
+                        item.cy = ty;
+                        placed = true;
+                    }
+                }
+                for (int ty = minY; ty <= maxY && !placed; ty += 14) {
+                    for (int tx = minX; tx <= maxX && !placed; tx += 14) {
+                        if (!hitsAny(tx, ty)) {
+                            item.cx = tx;
+                            item.cy = ty;
+                            placed = true;
+                        }
+                    }
+                }
+                if (!placed && !hitsAny(maxX, maxY)) {
+                    item.cx = maxX;
+                    item.cy = maxY;
                 }
             }
         }
 
-        const int tx = qMax(2, cx + originOffset.x());
-        const int ty = qMax(fm.ascent() + 2, cy + originOffset.y());
-        painter->drawText(QPoint(tx, ty), text);
+        items.append(item);
         ++panelIdx;
+    }
+
+    if (d_panel_label_placement == PanelOutsideTopLeft && items.size() > 1) {
+        QMap<int, int> colMinCx;
+        QMap<int, int> rowMinCy;
+        for (const PanelDrawItem &it : items) {
+            colMinCx[it.col] = colMinCx.contains(it.col) ? qMin(colMinCx[it.col], it.cx) : it.cx;
+            rowMinCy[it.row] = rowMinCy.contains(it.row) ? qMin(rowMinCy[it.row], it.cy) : it.cy;
+        }
+        for (PanelDrawItem &it : items) {
+            it.cx = colMinCx[it.col];
+            it.cy = rowMinCy[it.row];
+        }
+    }
+
+    painter->setPen(QColor(Qt::black));
+    for (const PanelDrawItem &it : items) {
+        painter->setFont(it.fnt);
+        const int tx = qMax(2, it.cx + originOffset.x());
+        const int ty = qMax(it.ascent + 2, it.cy + originOffset.y());
+        painter->drawText(QPoint(tx, ty), it.text);
     }
 
     painter->restore();
@@ -5974,7 +6634,8 @@ void MultiLayer::applySquareCanvasFrame70Percent()
             }
         }
         const QFont lblFont(QStringLiteral("Arial"), maxLabelPt, QFont::Normal, false);
-        panelTopExtra = qMax(20, QFontMetrics(lblFont).ascent() + 10);
+        const QFontMetrics lfm(lblFont);
+        panelTopExtra = qMax(22, lfm.height() + 12);
     }
 
     const bool prevSync = d_syncing_inset_geometries;
@@ -5996,34 +6657,37 @@ void MultiLayer::applySquareCanvasFrame70Percent()
 
     auto capMultiPanelTicks = [&](int side) {
         const bool isMultiPanel = (nRows >= 2 || nCols >= 2);
-        const int capX = isMultiPanel ? qBound(3, side / 36, 6) : qBound(4, side / 42, 6);
+        const int capX = isMultiPanel ? qBound(3, side / 38, 6) : qBound(4, side / 42, 6);
         const int capY = isMultiPanel ? qBound(3, side / 28, 6) : 10;
         for (Graph *gr : primaryGraphs) {
             Plot *pl = gr ? gr->plotWidget() : nullptr;
             if (!pl || gr->isTernaryPlot() || gr->isPiePlot())
                 continue;
-            bool singlePanelXCrowded = false;
-            if (!isMultiPanel && gr->axisStep(QwtPlot::xBottom) <= 0.0) {
-                if (const QwtScaleDiv *xsd = pl->axisScaleDiv(QwtPlot::xBottom)) {
-                    const QwtValueList mTicks = xsd->ticks(QwtScaleDiv::MajorTick);
-                    if (mTicks.size() > 5) {
-                        const QFontMetrics xfm(gr->axisFont(QwtPlot::xBottom));
-                        int sumW = 0;
-                        for (int ti = 0; ti < mTicks.size(); ++ti) {
-                            const QString lbl = pl->axisScaleDraw(QwtPlot::xBottom)
-                                    ? pl->axisScaleDraw(QwtPlot::xBottom)->label(mTicks[ti]).text()
-                                    : QString::number(mTicks[ti], 'g', 6);
-                            sumW += xfm.horizontalAdvance(lbl) + 8;
-                        }
-                        if (sumW > qRound(0.88 * double(side)))
-                            singlePanelXCrowded = true;
+            bool xLabelsCrowded = false;
+            int safeXCaps = capX;
+            if (const QwtScaleDiv *xsd = pl->axisScaleDiv(QwtPlot::xBottom)) {
+                const QwtValueList mTicks = xsd->ticks(QwtScaleDiv::MajorTick);
+                if (mTicks.size() >= 3) {
+                    const QFontMetrics xfm(gr->axisFont(QwtPlot::xBottom));
+                    int sumW = 0;
+                    for (int ti = 0; ti < mTicks.size(); ++ti) {
+                        const QString lbl = pl->axisScaleDraw(QwtPlot::xBottom)
+                                ? pl->axisScaleDraw(QwtPlot::xBottom)->label(mTicks[ti]).text()
+                                : QString::number(mTicks[ti], 'g', 6);
+                        sumW += xfm.horizontalAdvance(lbl) + 8;
+                    }
+                    const double crowdThresh = (gr->axisStep(QwtPlot::xBottom) > 0.0) ? 0.90 : 0.82;
+                    if (sumW > qRound(crowdThresh * double(side))) {
+                        xLabelsCrowded = true;
+                        const int avgCell = qMax(22, (sumW / mTicks.size()) + 4);
+                        safeXCaps = qBound(2, qRound(0.80 * double(side) / double(avgCell)), 5);
                     }
                 }
             }
-            if (!isMultiPanel && !singlePanelXCrowded)
+            if (!isMultiPanel && !xLabelsCrowded)
                 continue;
             const int axesToCap[2] = { QwtPlot::xBottom, QwtPlot::yLeft };
-            const int caps[2] = { singlePanelXCrowded ? qBound(3, side / 48, 5) : capX, capY };
+            const int caps[2] = { xLabelsCrowded ? qMin(capX, safeXCaps) : capX, capY };
             bool changedAny = false;
             for (int ai = 0; ai < 2; ++ai) {
                 const int a = axesToCap[ai];
@@ -6037,12 +6701,13 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                     }
                     continue;
                 }
-                if (!gr->axisBreak(a).enabled && gr->axisStep(a) <= 0.0) {
+                const bool forceUnstepX = (a == QwtPlot::xBottom && xLabelsCrowded);
+                if (!gr->axisBreak(a).enabled && (gr->axisStep(a) <= 0.0 || forceUnstepX)) {
                     const QwtScaleEngine *se = pl->axisScaleEngine(a);
                     const QwtScaleDiv *sd = pl->axisScaleDiv(a);
                     if (se && sd && !Plot::isLog10ScaleEngine(se)
                         && (sd->ticks(QwtScaleDiv::MajorTick).size() > cap + 1
-                            || pl->axisMaxMajor(a) > cap)) {
+                            || pl->axisMaxMajor(a) > cap || forceUnstepX)) {
                         const double lo = qMin(sd->lowerBound(), sd->upperBound());
                         const double hi = qMax(sd->lowerBound(), sd->upperBound());
                         const bool isInv = se->testAttribute(QwtScaleEngine::Inverted);
@@ -6293,7 +6958,10 @@ void MultiLayer::applySquareCanvasFrame70Percent()
 
     for (int i = 0; i < nPrimary; ++i) {
         Graph *gr = primaryGraphs.at(i);
-        if (!gr || !gr->plotWidget() || !gr->legend() || !gr->isLegendVisible())
+        if (!gr || !gr->plotWidget())
+            continue;
+        clampGraphCalloutMarkersInCanvas(gr);
+        if (!gr->legend() || !gr->isLegendVisible())
             continue;
         const QVariant ancProp = gr->plotWidget()->property("_toriLegendAnchor");
         if (ancProp.isValid()) {

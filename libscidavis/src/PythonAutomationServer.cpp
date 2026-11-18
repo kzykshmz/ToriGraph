@@ -64,6 +64,7 @@
 #include "core/datatypes/Double2StringFilter.h"
 #include "lib/Interval.h"
 #include "matrix/future_Matrix.h"
+#include "table/AsciiTableImportFilter.h"
 #include "table/future_Table.h"
 
 #ifdef Q_OS_WIN
@@ -160,19 +161,42 @@
 
 namespace {
 
-// Custom domain exception carrying JSON-RPC error code
+// Custom domain exception carrying JSON-RPC error code and optional structured error.data
 struct RpcDispatchException : public std::runtime_error
 {
     int code;
-    RpcDispatchException(int c, const QString &msg)
-        : std::runtime_error(msg.toUtf8().constData()), code(c)
+    QJsonValue data;
+    RpcDispatchException(int c, const QString &msg, const QJsonValue &errData = QJsonValue())
+        : std::runtime_error(msg.toUtf8().constData()), code(c), data(errData)
     {
     }
 };
 
-[[noreturn]] void throwInvalidParams(const QString &msg)
+[[noreturn]] void throwInvalidParams(const QString &msg, const QJsonValue &errData = QJsonValue())
 {
-    throw RpcDispatchException(-32602, msg);
+    throw RpcDispatchException(-32602, msg, errData);
+}
+
+[[noreturn]] void throwInvalidParamsWithAvailable(const QString &msg,
+                                                  const QStringList &available,
+                                                  const QJsonObject &extraData = QJsonObject())
+{
+    QJsonArray availArr;
+    for (const QString &s : available)
+        availArr.append(s);
+    QJsonObject dataObj = extraData;
+    dataObj[QStringLiteral("available")] = availArr;
+    QString fullMsg = msg;
+    if (!available.isEmpty()) {
+        const QStringList preview = available.mid(0, 24);
+        QString joined = preview.join(QStringLiteral(", "));
+        if (available.size() > preview.size())
+            joined += QStringLiteral(", ...");
+        fullMsg += QStringLiteral(" Available: [%1]").arg(joined);
+    } else {
+        fullMsg += QStringLiteral(" Available: []");
+    }
+    throw RpcDispatchException(-32602, fullMsg, dataObj);
 }
 
 [[noreturn]] void throwRpcRuntime(const QString &msg)
@@ -568,25 +592,52 @@ QColor parseColorValue(const QJsonValue &val, const QColor &fallback = QColor(Qt
 
 Qt::PenStyle parsePenStyleValue(const QJsonValue &val, Qt::PenStyle fallback = Qt::SolidLine)
 {
-    if (val.isDouble()) {
-        int s = val.toInt(int(fallback));
+    if (val.isUndefined() || val.isNull())
+        return fallback;
+    if (val.isDouble() && !val.isBool()) {
+        const int s = parseStrictJsonInt(val, QStringLiteral("line_style"));
         if (s >= int(Qt::NoPen) && s <= int(Qt::DashDotDotLine))
             return static_cast<Qt::PenStyle>(s);
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("Unknown integer line_style %1.").arg(s),
+                { QStringLiteral("solid"), QStringLiteral("dash"), QStringLiteral("dot"),
+                  QStringLiteral("dashdot"), QStringLiteral("dashdotdot"),
+                  QStringLiteral("none") });
     }
     if (val.isString()) {
-        const QString s = val.toString().trimmed().toLower();
-        if (s == QStringLiteral("none") || s == QStringLiteral("nopen"))
+        const QString raw = val.toString().trimmed();
+        if (raw.isEmpty())
+            return fallback;
+        const QString s = raw.toLower();
+        if (s == QStringLiteral("none") || s == QStringLiteral("nopen")
+            || s == QStringLiteral("off") || s == QStringLiteral("blank"))
             return Qt::NoPen;
-        if (s == QStringLiteral("solid"))
+        if (s == QStringLiteral("-") || s == QStringLiteral("solid")
+            || s == QStringLiteral("solidline") || s == QStringLiteral("solid_line"))
             return Qt::SolidLine;
-        if (s == QStringLiteral("dash") || s == QStringLiteral("dashed"))
+        if (s == QStringLiteral("--") || s == QStringLiteral("dash")
+            || s == QStringLiteral("dashed") || s == QStringLiteral("dashline")
+            || s == QStringLiteral("dash_line"))
             return Qt::DashLine;
-        if (s == QStringLiteral("dot") || s == QStringLiteral("dotted"))
+        if (s == QStringLiteral(":") || s == QStringLiteral("dot") || s == QStringLiteral("dotted")
+            || s == QStringLiteral("dotline") || s == QStringLiteral("dot_line"))
             return Qt::DotLine;
-        if (s == QStringLiteral("dashdot") || s == QStringLiteral("dash_dot"))
+        if (s == QStringLiteral("-.") || s == QStringLiteral("dashdot")
+            || s == QStringLiteral("dash_dot") || s == QStringLiteral("dash-dot")
+            || s == QStringLiteral("dashdotline"))
             return Qt::DashDotLine;
-        if (s == QStringLiteral("dashdotdot") || s == QStringLiteral("dash_dot_dot"))
+        if (s == QStringLiteral("..-") || s == QStringLiteral("-..")
+            || s == QStringLiteral("dashdotdot") || s == QStringLiteral("dash_dot_dot")
+            || s == QStringLiteral("dash-dot-dot") || s == QStringLiteral("dashdotdotline"))
             return Qt::DashDotDotLine;
+        static const QStringList kPenStyles = {
+            QStringLiteral("-"),          QStringLiteral("--"),      QStringLiteral(":"),
+            QStringLiteral("-."),         QStringLiteral("solid"),   QStringLiteral("dash"),
+            QStringLiteral("dot"),        QStringLiteral("dashdot"), QStringLiteral("dashdotdot"),
+            QStringLiteral("none")
+        };
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("Unknown line style '%1'.").arg(raw), kPenStyles);
     }
     return fallback;
 }
@@ -594,41 +645,71 @@ Qt::PenStyle parsePenStyleValue(const QJsonValue &val, Qt::PenStyle fallback = Q
 QwtSymbol::Style parseQwtSymbolStyle(const QJsonValue &val,
                                      QwtSymbol::Style fallback = QwtSymbol::Ellipse)
 {
-    if (val.isDouble())
-        return static_cast<QwtSymbol::Style>(val.toInt(int(fallback)));
+    if (val.isUndefined() || val.isNull())
+        return fallback;
+    if (val.isDouble() && !val.isBool()) {
+        const int s = parseStrictJsonInt(val, QStringLiteral("marker"));
+        if (s >= int(QwtSymbol::NoSymbol) && s <= int(QwtSymbol::Hexagon))
+            return static_cast<QwtSymbol::Style>(s);
+        throwInvalidParams(QStringLiteral("Marker style code %1 out of range.").arg(s));
+    }
     if (val.isString()) {
-        const QString s = val.toString().trimmed().toLower();
-        if (s == QStringLiteral("none") || s == QStringLiteral("nosymbol"))
+        const QString raw = val.toString().trimmed();
+        if (raw.isEmpty())
+            return fallback;
+        const QString s = raw.toLower();
+        if (s == QStringLiteral("none") || s == QStringLiteral("nosymbol")
+            || s == QStringLiteral("no_symbol") || s == QStringLiteral("off"))
             return QwtSymbol::NoSymbol;
-        if (s == QStringLiteral("circle") || s == QStringLiteral("ellipse") || s == QStringLiteral("o"))
+        if (s == QStringLiteral("o") || s == QStringLiteral("circle")
+            || s == QStringLiteral("ellipse") || s == QStringLiteral("dot"))
             return QwtSymbol::Ellipse;
-        if (s == QStringLiteral("square") || s == QStringLiteral("rect") || s == QStringLiteral("box"))
+        if (s == QStringLiteral("s") || s == QStringLiteral("square") || s == QStringLiteral("rect")
+            || s == QStringLiteral("box"))
             return QwtSymbol::Rect;
-        if (s == QStringLiteral("diamond"))
+        if (s == QStringLiteral("d") || s == QStringLiteral("diamond")
+            || s == QStringLiteral("thin_diamond"))
             return QwtSymbol::Diamond;
-        if (s == QStringLiteral("triangle") || s == QStringLiteral("utriangle")
-            || s == QStringLiteral("up_triangle"))
+        if (s == QStringLiteral("^") || s == QStringLiteral("triangle")
+            || s == QStringLiteral("utriangle") || s == QStringLiteral("up_triangle")
+            || s == QStringLiteral("triangle_up"))
             return QwtSymbol::UTriangle;
-        if (s == QStringLiteral("dtriangle") || s == QStringLiteral("down_triangle"))
+        if (s == QStringLiteral("v") || s == QStringLiteral("dtriangle")
+            || s == QStringLiteral("down_triangle") || s == QStringLiteral("triangle_down"))
             return QwtSymbol::DTriangle;
-        if (s == QStringLiteral("ltriangle") || s == QStringLiteral("left_triangle"))
+        if (s == QStringLiteral("<") || s == QStringLiteral("ltriangle")
+            || s == QStringLiteral("left_triangle") || s == QStringLiteral("triangle_left"))
             return QwtSymbol::LTriangle;
-        if (s == QStringLiteral("rtriangle") || s == QStringLiteral("right_triangle"))
+        if (s == QStringLiteral(">") || s == QStringLiteral("rtriangle")
+            || s == QStringLiteral("right_triangle") || s == QStringLiteral("triangle_right"))
             return QwtSymbol::RTriangle;
-        if (s == QStringLiteral("cross") || s == QStringLiteral("+"))
+        if (s == QStringLiteral("+") || s == QStringLiteral("cross")
+            || s == QStringLiteral("plus"))
             return QwtSymbol::Cross;
-        if (s == QStringLiteral("xcross") || s == QStringLiteral("x"))
+        if (s == QStringLiteral("x") || s == QStringLiteral("xcross"))
             return QwtSymbol::XCross;
-        if (s == QStringLiteral("hline"))
+        if (s == QStringLiteral("_") || s == QStringLiteral("hline"))
             return QwtSymbol::HLine;
-        if (s == QStringLiteral("vline"))
+        if (s == QStringLiteral("|") || s == QStringLiteral("vline"))
             return QwtSymbol::VLine;
-        if (s == QStringLiteral("star") || s == QStringLiteral("star1"))
+        if (s == QStringLiteral("*") || s == QStringLiteral("star") || s == QStringLiteral("star1")
+            || s == QStringLiteral("asterisk"))
             return QwtSymbol::Star1;
         if (s == QStringLiteral("star2"))
             return QwtSymbol::Star2;
-        if (s == QStringLiteral("hexagon"))
+        if (s == QStringLiteral("h") || s == QStringLiteral("hexagon")
+            || s == QStringLiteral("hex"))
             return QwtSymbol::Hexagon;
+        static const QStringList kMarkerStyles = {
+            QStringLiteral("o"),      QStringLiteral("s"),       QStringLiteral("^"),
+            QStringLiteral("v"),      QStringLiteral("<"),       QStringLiteral(">"),
+            QStringLiteral("D"),      QStringLiteral("x"),       QStringLiteral("+"),
+            QStringLiteral("*"),      QStringLiteral("h"),       QStringLiteral("circle"),
+            QStringLiteral("square"), QStringLiteral("diamond"), QStringLiteral("triangle"),
+            QStringLiteral("none")
+        };
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("Unknown marker/symbol style '%1'.").arg(raw), kMarkerStyles);
     }
     return fallback;
 }
@@ -650,24 +731,39 @@ QString windowTypeString(MyWidget *w)
     return QString::fromLatin1(w->metaObject()->className());
 }
 
+QStringList collectWindowNames(ApplicationWindow *app, const char *inheritsClass = nullptr)
+{
+    QStringList out;
+    if (!app)
+        return out;
+    for (MyWidget *w : app->windowsList()) {
+        if (!w)
+            continue;
+        if (!inheritsClass || w->inherits(inheritsClass))
+            out.append(w->name());
+    }
+    return out;
+}
+
 MyWidget *findWindowByName(ApplicationWindow *app, const QString &name)
 {
     if (!app)
         return nullptr;
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty())
+        return nullptr;
     const QList<MyWidget *> windows = app->windowsList();
-    if (name.trimmed().isEmpty()) {
-        if (QWidget *act = app->d_workspace.activeSubWindow()) {
-            if (auto *mw = qobject_cast<MyWidget *>(act))
-                return mw;
-        }
-        return windows.isEmpty() ? nullptr : windows.last();
-    }
     for (MyWidget *w : windows) {
-        if (w && w->name() == name)
+        if (w && w->name() == trimmed)
             return w;
     }
     for (MyWidget *w : windows) {
-        if (w && w->name().compare(name, Qt::CaseInsensitive) == 0)
+        if (w && w->name().compare(trimmed, Qt::CaseInsensitive) == 0)
+            return w;
+    }
+    for (MyWidget *w : windows) {
+        if (w && !w->windowLabel().trimmed().isEmpty()
+            && w->windowLabel().trimmed() == trimmed)
             return w;
     }
     return nullptr;
@@ -688,8 +784,11 @@ Table *resolveTable(ApplicationWindow *app, const QJsonObject &params,
             if (mw->inherits("Table"))
                 return static_cast<Table *>(mw);
         }
-        if (required)
-            throwInvalidParams(QStringLiteral("Table not found: %1").arg(name));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Table not found: '%1'.").arg(name),
+                    collectWindowNames(app, "Table"));
+        }
         return nullptr;
     }
     if (QWidget *act = app->d_workspace.activeSubWindow()) {
@@ -701,8 +800,10 @@ Table *resolveTable(ApplicationWindow *app, const QJsonObject &params,
         if (windows[i] && windows[i]->inherits("Table"))
             return static_cast<Table *>(windows[i]);
     }
-    if (required)
-        throwInvalidParams(QStringLiteral("No Table window available."));
+    if (required) {
+        throwInvalidParamsWithAvailable(QStringLiteral("No Table window available."),
+                                        collectWindowNames(app, "Table"));
+    }
     return nullptr;
 }
 
@@ -721,8 +822,11 @@ Matrix *resolveMatrix(ApplicationWindow *app, const QJsonObject &params,
             if (mw->inherits("Matrix"))
                 return static_cast<Matrix *>(mw);
         }
-        if (required)
-            throwInvalidParams(QStringLiteral("Matrix not found: %1").arg(name));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Matrix not found: '%1'.").arg(name),
+                    collectWindowNames(app, "Matrix"));
+        }
         return nullptr;
     }
     if (QWidget *act = app->d_workspace.activeSubWindow()) {
@@ -734,8 +838,10 @@ Matrix *resolveMatrix(ApplicationWindow *app, const QJsonObject &params,
         if (windows[i] && windows[i]->inherits("Matrix"))
             return static_cast<Matrix *>(windows[i]);
     }
-    if (required)
-        throwInvalidParams(QStringLiteral("No Matrix window available."));
+    if (required) {
+        throwInvalidParamsWithAvailable(QStringLiteral("No Matrix window available."),
+                                        collectWindowNames(app, "Matrix"));
+    }
     return nullptr;
 }
 
@@ -754,8 +860,11 @@ MultiLayer *resolveMultiLayer(ApplicationWindow *app, const QJsonObject &params,
             if (mw->inherits("MultiLayer"))
                 return static_cast<MultiLayer *>(mw);
         }
-        if (required)
-            throwInvalidParams(QStringLiteral("MultiLayer graph not found: %1").arg(name));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("MultiLayer graph not found: '%1'.").arg(name),
+                    collectWindowNames(app, "MultiLayer"));
+        }
         return nullptr;
     }
     if (QWidget *act = app->d_workspace.activeSubWindow()) {
@@ -767,8 +876,11 @@ MultiLayer *resolveMultiLayer(ApplicationWindow *app, const QJsonObject &params,
         if (windows[i] && windows[i]->inherits("MultiLayer"))
             return static_cast<MultiLayer *>(windows[i]);
     }
-    if (required)
-        throwInvalidParams(QStringLiteral("No MultiLayer graph window available."));
+    if (required) {
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("No MultiLayer graph window available."),
+                collectWindowNames(app, "MultiLayer"));
+    }
     return nullptr;
 }
 
@@ -785,8 +897,11 @@ Graph3D *resolveGraph3D(ApplicationWindow *app, const QJsonObject &params,
             if (mw->inherits("Graph3D"))
                 return static_cast<Graph3D *>(mw);
         }
-        if (required)
-            throwInvalidParams(QStringLiteral("Graph3D window not found: %1").arg(name));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Graph3D window not found: '%1'.").arg(name),
+                    collectWindowNames(app, "Graph3D"));
+        }
         return nullptr;
     }
     if (QWidget *act = app->d_workspace.activeSubWindow()) {
@@ -798,8 +913,10 @@ Graph3D *resolveGraph3D(ApplicationWindow *app, const QJsonObject &params,
         if (windows[i] && windows[i]->inherits("Graph3D"))
             return static_cast<Graph3D *>(windows[i]);
     }
-    if (required)
-        throwInvalidParams(QStringLiteral("No Graph3D window available."));
+    if (required) {
+        throwInvalidParamsWithAvailable(QStringLiteral("No Graph3D window available."),
+                                        collectWindowNames(app, "Graph3D"));
+    }
     return nullptr;
 }
 
@@ -811,15 +928,23 @@ Graph *resolveGraphLayer(MultiLayer *ml, const QJsonObject &params, bool require
         return nullptr;
     }
     const QList<Graph *> layers = ml->layersList();
-    if (params.contains(QStringLiteral("layer")) && !params.value(QStringLiteral("layer")).isNull()) {
-        int idx = params.value(QStringLiteral("layer")).toInt(-1);
-        // Support 0-based index (0..N-1); if idx == layers.size() and 1-based was passed, clamp safely
+    if (params.contains(QStringLiteral("layer")) && !params.value(QStringLiteral("layer")).isNull()
+        && !params.value(QStringLiteral("layer")).isUndefined()) {
+        const int idx = parseStrictJsonInt(params.value(QStringLiteral("layer")),
+                                           QStringLiteral("layer"));
         if (idx >= 0 && idx < layers.size())
             return layers[idx];
-        if (idx >= 1 && idx <= layers.size())
-            return layers[idx - 1];
-        if (required)
-            throwInvalidParams(QStringLiteral("Layer index out of range: %1").arg(idx));
+        if (required) {
+            QStringList avail;
+            for (int i = 0; i < layers.size(); ++i)
+                avail.append(QString::number(i));
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("0-based layer index %1 out of range for graph '%2' (layer_count=%3).")
+                            .arg(idx)
+                            .arg(ml->name())
+                            .arg(layers.size()),
+                    avail);
+        }
         return nullptr;
     }
     if (Graph *act = ml->activeGraph())
@@ -838,19 +963,34 @@ int resolveColumnIndex(Table *t, const QJsonValue &colSpec, bool required = true
             throwInvalidParams(QStringLiteral("Table is null."));
         return -1;
     }
-    if (colSpec.isDouble()) {
-        int idx = colSpec.toInt(-1);
+    auto availColLabels = [&]() -> QStringList {
+        QStringList cols;
+        for (int c = 0; c < t->numCols(); ++c)
+            cols.append(t->colLabel(c));
+        return cols;
+    };
+    if (colSpec.isDouble() && !colSpec.isBool()) {
+        const int idx = parseStrictJsonInt(colSpec, QStringLiteral("col"));
         if (idx >= 0 && idx < t->numCols())
             return idx;
-        if (required)
-            throwInvalidParams(QStringLiteral("Column index out of range: %1").arg(idx));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Column index %1 out of range in table '%2' (cols=%3).")
+                            .arg(idx)
+                            .arg(t->name())
+                            .arg(t->numCols()),
+                    availColLabels());
+        }
         return -1;
     }
     if (colSpec.isString()) {
         const QString raw = colSpec.toString().trimmed();
         if (raw.isEmpty()) {
-            if (required)
-                throwInvalidParams(QStringLiteral("Column name is empty."));
+            if (required) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Column name is empty in table '%1'.").arg(t->name()),
+                        availColLabels());
+            }
             return -1;
         }
         // 1. Exact case-sensitive short column label match first (handles numeric labels like "0", "100")
@@ -885,13 +1025,18 @@ int resolveColumnIndex(Table *t, const QJsonValue &colSpec, bool required = true
         int asInt = raw.toInt(&okInt);
         if (okInt && asInt >= 0 && asInt < t->numCols())
             return asInt;
-        if (required)
-            throwInvalidParams(
-                    QStringLiteral("Column '%1' not found in table '%2'.").arg(raw, t->name()));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Column '%1' not found in table '%2'.").arg(raw, t->name()),
+                    availColLabels());
+        }
         return -1;
     }
-    if (required)
-        throwInvalidParams(QStringLiteral("Column specification must be an index or column name."));
+    if (required) {
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("Column specification must be a 0-based integer index or column name."),
+                availColLabels());
+    }
     return -1;
 }
 
@@ -986,12 +1131,17 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
     const QStringList dataCurves = g->analysableCurvesList();
     if (params.contains(key) && !params.value(key).isNull()) {
         const QJsonValue v = params.value(key);
-        if (v.isDouble()) {
-            int idx = v.toInt(-1);
+        if (v.isDouble() && !v.isBool()) {
+            const int idx = parseStrictJsonInt(v, key);
             if (idx >= 0 && idx < allCurves.size())
                 return allCurves[idx];
-            if (required)
-                throwInvalidParams(QStringLiteral("Curve index out of range: %1").arg(idx));
+            if (required) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Curve index %1 out of range (curve_count=%2).")
+                                .arg(idx)
+                                .arg(allCurves.size()),
+                        allCurves);
+            }
             return QString();
         }
         const QString want = v.toString().trimmed();
@@ -1035,18 +1185,26 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                     }
                 }
             }
-            if (required)
-                throwInvalidParams(QStringLiteral("Curve '%1' not found on graph.").arg(want));
+            if (required) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Curve '%1' not found on graph.").arg(want), allCurves);
+            }
             return QString();
         }
     }
     if (params.contains(QStringLiteral("curve_index"))
         && !params.value(QStringLiteral("curve_index")).isNull()) {
-        int idx = params.value(QStringLiteral("curve_index")).toInt(-1);
+        const int idx = parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
+                                           QStringLiteral("curve_index"));
         if (idx >= 0 && idx < allCurves.size())
             return allCurves[idx];
-        if (required)
-            throwInvalidParams(QStringLiteral("curve_index out of range: %1").arg(idx));
+        if (required) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("curve_index %1 out of range (curve_count=%2).")
+                            .arg(idx)
+                            .arg(allCurves.size()),
+                    allCurves);
+        }
         return QString();
     }
     if (!dataCurves.isEmpty())
@@ -1054,18 +1212,21 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
     if (!allCurves.isEmpty())
         return allCurves.first();
     if (required)
-        throwInvalidParams(QStringLiteral("Graph layer has no curves."));
+        throwInvalidParamsWithAvailable(QStringLiteral("Graph layer has no curves."), allCurves);
     return QString();
 }
 
 int parsePlotStyle(const QString &styleStr, int defaultStyle = Graph::LineSymbols)
 {
-    const QString s = styleStr.trimmed().toLower();
+    QString s = styleStr.trimmed().toLower();
+    s.replace(QLatin1Char('-'), QLatin1Char('_'));
+    s.replace(QLatin1Char(' '), QLatin1Char('_'));
     if (s.isEmpty())
         return defaultStyle;
     if (s == QStringLiteral("line") || s == QStringLiteral("lines"))
         return Graph::Line;
-    if (s == QStringLiteral("scatter") || s == QStringLiteral("symbols") || s == QStringLiteral("points"))
+    if (s == QStringLiteral("scatter") || s == QStringLiteral("symbols")
+        || s == QStringLiteral("points"))
         return Graph::Scatter;
     if (s == QStringLiteral("line_symbol") || s == QStringLiteral("linesymbols")
         || s == QStringLiteral("line_symbols"))
@@ -1073,7 +1234,8 @@ int parsePlotStyle(const QString &styleStr, int defaultStyle = Graph::LineSymbol
     if (s == QStringLiteral("spline"))
         return Graph::Spline;
     if (s == QStringLiteral("vertical_bars") || s == QStringLiteral("vbars")
-        || s == QStringLiteral("bars") || s == QStringLiteral("column"))
+        || s == QStringLiteral("bars") || s == QStringLiteral("column")
+        || s == QStringLiteral("columns"))
         return Graph::VerticalBars;
     if (s == QStringLiteral("horizontal_bars") || s == QStringLiteral("hbars")
         || s == QStringLiteral("bar"))
@@ -1081,7 +1243,7 @@ int parsePlotStyle(const QString &styleStr, int defaultStyle = Graph::LineSymbol
     if (s == QStringLiteral("area"))
         return Graph::Area;
     if (s == QStringLiteral("vertical_steps") || s == QStringLiteral("vsteps")
-        || s == QStringLiteral("steps"))
+        || s == QStringLiteral("steps") || s == QStringLiteral("step"))
         return Graph::VerticalSteps;
     if (s == QStringLiteral("horizontal_steps") || s == QStringLiteral("hsteps"))
         return Graph::HorizontalSteps;
@@ -1094,7 +1256,17 @@ int parsePlotStyle(const QString &styleStr, int defaultStyle = Graph::LineSymbol
         return Graph::Box;
     if (s == QStringLiteral("pie"))
         return Graph::Pie;
-    return defaultStyle;
+    static const QStringList kPlotStyles = {
+        QStringLiteral("line"),            QStringLiteral("scatter"),
+        QStringLiteral("line_symbol"),     QStringLiteral("spline"),
+        QStringLiteral("vertical_bars"),   QStringLiteral("horizontal_bars"),
+        QStringLiteral("area"),            QStringLiteral("vertical_steps"),
+        QStringLiteral("horizontal_steps"), QStringLiteral("drop_lines"),
+        QStringLiteral("histogram"),       QStringLiteral("box"),
+        QStringLiteral("pie")
+    };
+    throwInvalidParamsWithAvailable(
+            QStringLiteral("Unknown plot style '%1'.").arg(styleStr), kPlotStyles);
 }
 
 QString sanitizeWindowNameForSciDAVis(const QString &raw,
@@ -1163,20 +1335,38 @@ QString makeUniqueValidWindowName(ApplicationWindow *app, const QString &sanitiz
     return app->generateUniqueName(sanitizedBase + QStringLiteral("-"), false);
 }
 
+void applyDefaultNumericFormat6g(Table *t, int colIdx)
+{
+    if (!t || colIdx < 0 || colIdx >= t->numCols())
+        return;
+    Column *col = t->column(colIdx);
+    if (!col || col->columnMode() != SciDAVis::ColumnMode::Numeric)
+        return;
+    if (auto *f = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
+        f->setNumericFormat('g');
+        f->setNumDigits(6);
+    }
+}
+
 Table *createUniqueTableHeadless(ApplicationWindow *app, int rows, int cols, const QString &reqName)
 {
     rows = std::max(1, rows);
     cols = std::max(1, cols);
+    const QString trimmedReq = reqName.trimmed();
     QString finalName;
-    if (reqName.trimmed().isEmpty()) {
+    if (trimmedReq.isEmpty()) {
         finalName = app->generateUniqueName(QStringLiteral("Table"), true);
     } else {
-        const QString base = sanitizeWindowNameForSciDAVis(reqName, QStringLiteral("Table"), true);
+        const QString base = sanitizeWindowNameForSciDAVis(trimmedReq, QStringLiteral("Table"), true);
         finalName = makeUniqueValidWindowName(app, base, nullptr);
     }
     Table *t = app->newTable(rows, cols, finalName, QString());
     if (!t)
         throwRpcRuntime(QStringLiteral("Failed to create Table '%1'.").arg(finalName));
+    if (!trimmedReq.isEmpty() && trimmedReq != finalName)
+        t->setWindowLabel(trimmedReq);
+    for (int c = 0; c < t->numCols(); ++c)
+        applyDefaultNumericFormat6g(t, c);
     if (RecalcManager *rm = RecalcManager::instance(app))
         t->setAutoRecalcFormulas(rm->recalcMode() == RecalcManager::Auto);
     return t;
@@ -1186,16 +1376,19 @@ Matrix *createUniqueMatrixHeadless(ApplicationWindow *app, int rows, int cols, c
 {
     rows = std::max(1, rows);
     cols = std::max(1, cols);
+    const QString trimmedReq = reqName.trimmed();
     QString finalName;
-    if (reqName.trimmed().isEmpty()) {
+    if (trimmedReq.isEmpty()) {
         finalName = app->generateUniqueName(QStringLiteral("Matrix"), true);
     } else {
-        const QString base = sanitizeWindowNameForSciDAVis(reqName, QStringLiteral("Matrix"), true);
+        const QString base = sanitizeWindowNameForSciDAVis(trimmedReq, QStringLiteral("Matrix"), true);
         finalName = makeUniqueValidWindowName(app, base, nullptr);
     }
     Matrix *m = app->newMatrix(finalName, rows, cols);
     if (!m)
         throwRpcRuntime(QStringLiteral("Failed to create Matrix '%1'.").arg(finalName));
+    if (!trimmedReq.isEmpty() && trimmedReq != finalName)
+        m->setWindowLabel(trimmedReq);
     return m;
 }
 
@@ -1789,10 +1982,13 @@ QJsonObject PythonAutomationServer::handleRpcRequest(const QJsonObject &req)
     const bool hasId = req.contains(QStringLiteral("id"));
     const QJsonValue idVal = hasId ? req.value(QStringLiteral("id")) : QJsonValue::Null;
 
-    auto makeError = [&](int code, const QString &message) -> QJsonObject {
+    auto makeError = [&](int code, const QString &message,
+                         const QJsonValue &errData = QJsonValue()) -> QJsonObject {
         QJsonObject errObj;
         errObj[QStringLiteral("code")] = code;
         errObj[QStringLiteral("message")] = message;
+        if (!errData.isUndefined() && !errData.isNull())
+            errObj[QStringLiteral("data")] = errData;
 
         QJsonObject resp;
         resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
@@ -1838,7 +2034,7 @@ QJsonObject PythonAutomationServer::handleRpcRequest(const QJsonObject &req)
         emit rpcRequestHandled(method, false);
         if (!hasId)
             return QJsonObject();
-        return makeError(ex.code, QString::fromUtf8(ex.what()));
+        return makeError(ex.code, QString::fromUtf8(ex.what()), ex.data);
     } catch (const std::exception &ex) {
         emit rpcRequestHandled(method, false);
         if (!hasId)
@@ -2441,12 +2637,24 @@ double computeMatrixDeterminantHeadless(Matrix *m)
                         .arg(m->numRows())
                         .arg(m->numCols()));
 
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < n; ++c) {
+            const double v = m->cell(r, c);
+            if (!std::isfinite(v)) {
+                throwInvalidParams(
+                        QStringLiteral("Matrix '%1' contains non-finite value (NaN/Inf) at (%2, %3); determinant is undefined.")
+                                .arg(m->name())
+                                .arg(r)
+                                .arg(c));
+            }
+        }
+    }
+
     gsl_matrix *gm = gsl_matrix_alloc(size_t(n), size_t(n));
     gsl_permutation *perm = gsl_permutation_alloc(size_t(n));
     for (int r = 0; r < n; ++r) {
         for (int c = 0; c < n; ++c) {
-            const double v = m->cell(r, c);
-            gsl_matrix_set(gm, size_t(r), size_t(c), std::isfinite(v) ? v : 0.0);
+            gsl_matrix_set(gm, size_t(r), size_t(c), m->cell(r, c));
         }
     }
     int signum = 0;
@@ -2464,13 +2672,25 @@ void invertMatrixHeadless(ApplicationWindow *app, Matrix *m)
         throwInvalidParams(
                 QStringLiteral("Matrix '%1' must be square to invert.").arg(m->name()));
 
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < n; ++c) {
+            const double v = m->cell(r, c);
+            if (!std::isfinite(v)) {
+                throwInvalidParams(
+                        QStringLiteral("Matrix '%1' contains non-finite value (NaN/Inf) at (%2, %3) and cannot be inverted.")
+                                .arg(m->name())
+                                .arg(r)
+                                .arg(c));
+            }
+        }
+    }
+
     gsl_matrix *gm = gsl_matrix_alloc(size_t(n), size_t(n));
     gsl_matrix *inv = gsl_matrix_alloc(size_t(n), size_t(n));
     gsl_permutation *perm = gsl_permutation_alloc(size_t(n));
     for (int r = 0; r < n; ++r) {
         for (int c = 0; c < n; ++c) {
-            const double v = m->cell(r, c);
-            gsl_matrix_set(gm, size_t(r), size_t(c), std::isfinite(v) ? v : 0.0);
+            gsl_matrix_set(gm, size_t(r), size_t(c), m->cell(r, c));
         }
     }
     int signum = 0;
@@ -2644,10 +2864,14 @@ Graph::SeriesStyleScheme parseSeriesStyleScheme(const QString &schemeStr,
             *outCanonical = QStringLiteral("origin_classic");
         return Graph::SchemeOriginClassic;
     }
-    throwInvalidParams(
-            QStringLiteral(
-                    "Unknown series scheme '%1' (expected 'bw_hollow_filled'|'blue_red_hollow'|'muted_categorical'|'cool_to_warm'|'step_colors'|'viridis'|'viridis_seq'|'origin'|'origin_classic').")
-                    .arg(schemeStr));
+    static const QStringList kSchemes = {
+        QStringLiteral("bw_hollow_filled"), QStringLiteral("blue_red_hollow"),
+        QStringLiteral("muted_categorical"), QStringLiteral("cool_to_warm"),
+        QStringLiteral("viridis"), QStringLiteral("origin_classic"),
+        QStringLiteral("okabe_ito")
+    };
+    throwInvalidParamsWithAvailable(
+            QStringLiteral("Unknown series scheme '%1'.").arg(schemeStr), kSchemes);
 }
 
 Spectrogram::ColorMapPreset parseColorMapPreset(const QString &name, bool *outGrayScale = nullptr,
@@ -3504,8 +3728,18 @@ void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
         std::vector<double> yv(static_cast<size_t>(n));
         auto *colX = new Column(QStringLiteral("X"), SciDAVis::ColumnMode::Numeric);
         colX->setPlotDesignation(SciDAVis::X);
-        auto *colY = new Column(cleanTitle, SciDAVis::ColumnMode::Numeric);
+        QString colYShort = cleanTitle;
+        colYShort.replace(QRegularExpression(QStringLiteral("[\\s,;()\\[\\]/\\\\]+")),
+                          QStringLiteral("_"));
+        while (colYShort.startsWith(QLatin1Char('_')))
+            colYShort.remove(0, 1);
+        while (colYShort.endsWith(QLatin1Char('_')))
+            colYShort.chop(1);
+        if (colYShort.isEmpty())
+            colYShort = QStringLiteral("Y");
+        auto *colY = new Column(colYShort, SciDAVis::ColumnMode::Numeric);
         colY->setPlotDesignation(SciDAVis::Y);
+        colY->setComment(cleanTitle);
         for (int k = 0; k < n; ++k) {
             xv[static_cast<size_t>(k)] = fc->x(k);
             yv[static_cast<size_t>(k)] = fc->y(k);
@@ -3520,6 +3754,7 @@ void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
         const int savedXAxis = fc->xAxis();
         const int savedYAxis = fc->yAxis();
         const bool savedVis = fc->isVisible();
+        const int savedSymSkip = fc->symbolSkip();
 
         const QString tblName = app->generateUniqueName(QStringLiteral("RpcFitCurve"));
         Table *backing =
@@ -3530,6 +3765,8 @@ void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
             continue;
         }
 
+        // Preserve canonical "TableName_ColName" on DataCurve::title() so .sciprj <curve>
+        // serialization binds back to `backing` on reload without dropping the curve!
         auto *dc = new DataCurve(backing, tblName + QStringLiteral("_") + colX->name(),
                                  tblName + QStringLiteral("_") + colY->name(), 0, n - 1);
         dc->setData(xv.data(), yv.data(), n);
@@ -3539,13 +3776,1309 @@ void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
         dc->setStyle(savedStyle);
         dc->setAxis(savedXAxis, savedYAxis);
         dc->setVisible(savedVis);
+        dc->setSymbolSkip(savedSymSkip);
 
         g->removeCurve(i);
         g->insertPlotItem(dc, Graph::Line);
         g->addFitCurve(dc);
-        g->addLegendItem(cleanTitle);
         --i;
     }
+
+    if (Legend *leg = g->legend()) {
+        const QStringList rawLines = leg->text().split(QLatin1Char('\n'));
+        QStringList deduped;
+        QSet<int> seenCurveOneBased;
+        for (const QString &ln : rawLines) {
+            if (ln.startsWith(QStringLiteral("\\c{"))) {
+                const int cb = ln.indexOf(QLatin1Char('}'));
+                if (cb > 3) {
+                    bool ok = false;
+                    const int oneBased = ln.mid(3, cb - 3).toInt(&ok);
+                    if (ok) {
+                        if (seenCurveOneBased.contains(oneBased) || oneBased < 1
+                            || oneBased > g->curves()) {
+                            continue;
+                        }
+                        seenCurveOneBased.insert(oneBased);
+                    }
+                }
+            }
+            deduped.append(ln);
+        }
+        const QString joined = deduped.join(QLatin1Char('\n'));
+        if (joined != leg->text())
+            leg->setText(joined);
+    }
+}
+
+bool containsJapaneseChars(const QString &s)
+{
+    for (int i = 0; i < s.size(); ++i) {
+        const ushort u = s.at(i).unicode();
+        if ((u >= 0x3000 && u <= 0x30FF) || (u >= 0x3400 && u <= 0x9FFF)
+            || (u >= 0xF900 && u <= 0xFAFF) || (u >= 0xFF66 && u <= 0xFF9F)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool graphHasJapaneseContext(Graph *g, int upToCurveCount)
+{
+    if (!g)
+        return false;
+    Plot *plt = g->plotWidget();
+    bool anyLabel = false;
+    for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
+        if (plt && !plt->axisEnabled(ax))
+            continue;
+        const QString t = g->axisTitle(ax).trimmed();
+        if (!t.isEmpty()) {
+            anyLabel = true;
+            if (containsJapaneseChars(t))
+                return true;
+        }
+    }
+    const int lim = std::min(upToCurveCount, g->curves());
+    for (int ci = 0; ci < lim; ++ci) {
+        if (QwtPlotCurve *c = g->curve(ci)) {
+            const QString ct = c->title().text().trimmed();
+            if (!ct.isEmpty()) {
+                anyLabel = true;
+                if (containsJapaneseChars(ct))
+                    return true;
+            }
+        }
+    }
+    if (Legend *leg = g->legend()) {
+        const QStringList lines = leg->text().split(QLatin1Char('\n'));
+        for (const QString &ln : lines) {
+            if (ln.startsWith(QStringLiteral("\\c{"))) {
+                const int cb = ln.indexOf(QLatin1Char('}'));
+                if (cb > 3) {
+                    bool ok = false;
+                    const int oneBased = ln.mid(3, cb - 3).toInt(&ok);
+                    if (ok && oneBased >= 1 && oneBased <= lim) {
+                        const QString rest = ln.mid(cb + 1).trimmed();
+                        if (!rest.isEmpty()) {
+                            anyLabel = true;
+                            if (containsJapaneseChars(rest))
+                                return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return !anyLabel ? false : false;
+}
+
+QString translateJapaneseFitLabelToEnglish(QString s)
+{
+    if (!containsJapaneseChars(s))
+        return s;
+    s.replace(QStringLiteral("\u7dda\u5f62\u30d5\u30a3\u30c3\u30c8"), QStringLiteral("Linear Fit"));
+    s.replace(QStringLiteral("\u591a\u9805\u5f0f\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Polynomial Fit"));
+    s.replace(QStringLiteral("\u975e\u7dda\u5f62\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Nonlinear Fit"));
+    s.replace(QStringLiteral("\u30ac\u30a6\u30b9\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Gaussian Fit"));
+    s.replace(QStringLiteral("\u30ed\u30fc\u30ec\u30f3\u30c4\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Lorentzian Fit"));
+    s.replace(QStringLiteral("\u30de\u30eb\u30c1\u30d4\u30fc\u30af"), QStringLiteral("Multi-Peak "));
+    s.replace(QStringLiteral("\u5408\u8a08\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Fit Envelope"));
+    s.replace(QStringLiteral("\u5305\u7d61\u7dda"), QStringLiteral("Fit Envelope"));
+    s.replace(QStringLiteral("\u30d9\u30fc\u30b9\u30e9\u30a4\u30f3"), QStringLiteral("Baseline "));
+    s.replace(QStringLiteral("\u30d4\u30fc\u30af"), QStringLiteral("Peak "));
+    s.replace(QStringLiteral("\u30d5\u30a3\u30c3\u30c8"), QStringLiteral("Fit"));
+    return s.simplified();
+}
+
+void harmonizeFitCurveLabelsOnGraph(Graph *g, int curvesBefore, bool hadJapaneseBefore,
+                                    const QJsonObject &params)
+{
+    if (!g || g->curves() <= curvesBefore)
+        return;
+    QString explicitLabel = params.value(QStringLiteral("fit_label")).toString().trimmed();
+    if (explicitLabel.isEmpty())
+        explicitLabel = params.value(QStringLiteral("label")).toString().trimmed();
+
+    QHash<int, QString> legendLabelOverrides;
+    for (int ci = std::max(0, curvesBefore); ci < g->curves(); ++ci) {
+        QwtPlotCurve *c = g->curve(ci);
+        if (!c)
+            continue;
+        auto *dc = dynamic_cast<DataCurve *>(c);
+        if (!explicitLabel.isEmpty() && ci == g->curves() - 1) {
+            if (dc && dc->table()) {
+                const QString tName = dc->table()->name();
+                const QString yFull = dc->title().text();
+                const QString colShort = yFull.startsWith(tName + QLatin1Char('_'))
+                        ? yFull.mid(tName.size() + 1)
+                        : yFull;
+                if (Column *colY = dc->table()->column(colShort)) {
+                    colY->setComment(explicitLabel);
+                    QString safeCol = explicitLabel;
+                    safeCol.replace(QRegularExpression(QStringLiteral("[\\s,;()\\[\\]/\\\\]+")),
+                                    QStringLiteral("_"));
+                    if (!safeCol.isEmpty() && dc->table()->column(safeCol) == nullptr) {
+                        colY->setName(safeCol);
+                        dc->setTitle(tName + QStringLiteral("_") + colY->name());
+                    }
+                }
+            } else {
+                c->setTitle(explicitLabel);
+            }
+            legendLabelOverrides.insert(ci + 1, explicitLabel);
+        } else if (!hadJapaneseBefore) {
+            if (dc && dc->table()) {
+                const QString tName = dc->table()->name();
+                const QString yFull = dc->title().text();
+                const QString colShort = yFull.startsWith(tName + QLatin1Char('_'))
+                        ? yFull.mid(tName.size() + 1)
+                        : yFull;
+                if (Column *colY = dc->table()->column(colShort)) {
+                    const QString curCom = colY->comment();
+                    const QString engCom = translateJapaneseFitLabelToEnglish(curCom);
+                    if (engCom != curCom && !engCom.isEmpty())
+                        colY->setComment(engCom);
+                }
+            } else {
+                const QString curTitle = c->title().text();
+                const QString engTitle = translateJapaneseFitLabelToEnglish(curTitle);
+                if (engTitle != curTitle && !engTitle.isEmpty())
+                    c->setTitle(engTitle);
+            }
+        }
+    }
+
+    if (Legend *leg = g->legend()) {
+        QStringList lines = leg->text().split(QLatin1Char('\n'));
+        bool changed = false;
+        for (int li = 0; li < lines.size(); ++li) {
+            const QString &ln = lines[li];
+            if (!ln.startsWith(QStringLiteral("\\c{")))
+                continue;
+            const int cb = ln.indexOf(QLatin1Char('}'));
+            if (cb <= 3)
+                continue;
+            bool ok = false;
+            const int oneBased = ln.mid(3, cb - 3).toInt(&ok);
+            if (!ok || oneBased <= curvesBefore || oneBased > g->curves())
+                continue;
+            if (legendLabelOverrides.contains(oneBased)) {
+                const QString nextLn =
+                        QStringLiteral("\\c{%1}%2").arg(oneBased).arg(legendLabelOverrides[oneBased]);
+                if (nextLn != ln) {
+                    lines[li] = nextLn;
+                    changed = true;
+                }
+            } else if (!hadJapaneseBefore) {
+                const QString curLbl = ln.mid(cb + 1);
+                const QString engLbl = translateJapaneseFitLabelToEnglish(curLbl);
+                if (engLbl != curLbl) {
+                    lines[li] = QStringLiteral("\\c{%1}%2").arg(oneBased).arg(engLbl);
+                    changed = true;
+                }
+            }
+        }
+        if (changed)
+            leg->setText(lines.join(QLatin1Char('\n')));
+    }
+}
+
+QJsonArray rectToJsonArray(const QRect &r)
+{
+    QJsonArray a;
+    a.append(r.x());
+    a.append(r.y());
+    a.append(r.width());
+    a.append(r.height());
+    return a;
+}
+
+QJsonArray rectFToJsonArray(const QRectF &r)
+{
+    QJsonArray a;
+    a.append(safeJsonDouble(r.x()));
+    a.append(safeJsonDouble(r.y()));
+    a.append(safeJsonDouble(r.width()));
+    a.append(safeJsonDouble(r.height()));
+    return a;
+}
+
+QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnose)
+{
+    QJsonObject out;
+    out[QStringLiteral("ok")] = true;
+    out[QStringLiteral("name")] = ml->name();
+    out[QStringLiteral("label")] = ml->windowLabel();
+    out[QStringLiteral("type")] = QStringLiteral("MultiLayer");
+
+    const QList<Graph *> layers = ml->layersList();
+    for (Graph *lg : layers) {
+        if (lg && lg->plotWidget())
+            lg->plotWidget()->updateLayout();
+    }
+
+    struct ParsedInsetMeta
+    {
+        int sourceIdx = -1;
+        QRectF normRect;
+        bool showConnectors = true;
+        QRectF zoomDataRect;
+    };
+    QHash<int, ParsedInsetMeta> insetMap;
+    {
+        const QString savedMl = ml->saveToString(QString());
+        const QStringList mlLines = savedMl.split(QLatin1Char('\n'));
+        auto cleanTok = [](QString tok) -> QString {
+            tok = tok.trimmed();
+            if (tok.endsWith(QLatin1String("/>")))
+                tok.chop(2);
+            else if (tok.endsWith(QLatin1Char('>')))
+                tok.chop(1);
+            return tok.trimmed();
+        };
+        for (const QString &rawLn : mlLines) {
+            const QString ln = rawLn.trimmed();
+            if (ln.startsWith(QStringLiteral("<ToriInset\t"))) {
+                const QStringList parts = ln.split(QLatin1Char('\t'));
+                if (parts.size() >= 7) {
+                    const int childIdx = cleanTok(parts.at(1)).toInt();
+                    ParsedInsetMeta im;
+                    im.sourceIdx = cleanTok(parts.at(2)).toInt();
+                    im.normRect = QRectF(cleanTok(parts.at(3)).toDouble(),
+                                         cleanTok(parts.at(4)).toDouble(),
+                                         cleanTok(parts.at(5)).toDouble(),
+                                         cleanTok(parts.at(6)).toDouble());
+                    if (parts.size() >= 8)
+                        im.showConnectors = (cleanTok(parts.at(7)).toInt() != 0);
+                    if (parts.size() >= 12) {
+                        im.zoomDataRect = QRectF(cleanTok(parts.at(8)).toDouble(),
+                                                 cleanTok(parts.at(9)).toDouble(),
+                                                 cleanTok(parts.at(10)).toDouble(),
+                                                 cleanTok(parts.at(11)).toDouble());
+                    }
+                    if (childIdx >= 0)
+                        insetMap.insert(childIdx, im);
+                }
+            }
+        }
+    }
+
+    QJsonObject pageObj;
+    pageObj[QStringLiteral("width")] = safeJsonDouble(ml->pageWidthPhysical());
+    pageObj[QStringLiteral("height")] = safeJsonDouble(ml->pageHeightPhysical());
+    pageObj[QStringLiteral("unit")] = pageUnitToString(ml->pageUnit());
+    pageObj[QStringLiteral("dpi")] = ml->pageDpi();
+    const QWidget *canvasContainer = ml->canvasWidget() ? ml->canvasWidget() : ml;
+    pageObj[QStringLiteral("width_px")] = canvasContainer->width();
+    pageObj[QStringLiteral("height_px")] = canvasContainer->height();
+    pageObj[QStringLiteral("page_view_mode")] = ml->pageViewMode();
+    pageObj[QStringLiteral("zoom")] = safeJsonDouble(ml->pageZoom());
+    pageObj[QStringLiteral("keep_aspect_ratio")] = ml->keepAspectRatio();
+    pageObj[QStringLiteral("aspect_ratio")] = safeJsonDouble(ml->targetAspectRatio());
+    pageObj[QStringLiteral("background_color")] =
+            ml->pageBackgroundColor().name(QColor::HexArgb);
+    out[QStringLiteral("page")] = pageObj;
+
+    QJsonObject gridObj;
+    gridObj[QStringLiteral("rows")] = ml->getRows();
+    gridObj[QStringLiteral("cols")] = ml->getCols();
+    gridObj[QStringLiteral("row_spacing")] = ml->rowsSpacing();
+    gridObj[QStringLiteral("col_spacing")] = ml->colsSpacing();
+    QJsonObject marginsObj;
+    marginsObj[QStringLiteral("left")] = ml->leftMargin();
+    marginsObj[QStringLiteral("right")] = ml->rightMargin();
+    marginsObj[QStringLiteral("top")] = ml->topMargin();
+    marginsObj[QStringLiteral("bottom")] = ml->bottomMargin();
+    gridObj[QStringLiteral("margins")] = marginsObj;
+    QJsonObject plObj;
+    plObj[QStringLiteral("enabled")] = ml->hasPanelLabels();
+    plObj[QStringLiteral("placement")] =
+            (ml->panelLabelPlacement() == MultiLayer::PanelInsideTopLeft)
+            ? QStringLiteral("inside_top_left")
+            : QStringLiteral("outside_top_left");
+    plObj[QStringLiteral("pattern")] = ml->panelLabelPattern();
+    plObj[QStringLiteral("font_pt")] = ml->panelLabelFontPt();
+    gridObj[QStringLiteral("panel_labels")] = plObj;
+    out[QStringLiteral("grid")] = gridObj;
+
+    int activeIdx = -1;
+    for (int i = 0; i < layers.size(); ++i) {
+        if (layers[i] == ml->activeGraph()) {
+            activeIdx = i;
+            break;
+        }
+    }
+    out[QStringLiteral("active_layer")] = activeIdx;
+    out[QStringLiteral("layer_count")] = layers.size();
+
+    QJsonArray warningsArr;
+    QStringList warningCodes;
+    auto pushWarning = [&](const QString &code, const QString &severity, int layerIdx,
+                           const QString &msg, const QJsonObject &details = QJsonObject()) {
+        if (!diagnose)
+            return;
+        QJsonObject w;
+        w[QStringLiteral("code")] = code;
+        w[QStringLiteral("severity")] = severity;
+        w[QStringLiteral("layer")] = layerIdx;
+        w[QStringLiteral("message")] = msg;
+        if (!details.isEmpty())
+            w[QStringLiteral("details")] = details;
+        warningsArr.append(w);
+        if (!warningCodes.contains(code))
+            warningCodes.append(code);
+    };
+
+    bool allFontsArial = true;
+    QVector<QRect> primaryCanvasRects;
+    QVector<int> primaryLayerIndices;
+    QJsonArray layersArr;
+
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *g = layers[li];
+        if (!g)
+            continue;
+        Plot *plt = g->plotWidget();
+        if (plt)
+            plt->updateLayout();
+
+        const bool isInset = insetMap.contains(li);
+        const bool isLinked = (!isInset && g->linkedParentLayer() != nullptr);
+        const QString role = isInset
+                ? QStringLiteral("inset")
+                : (isLinked ? QStringLiteral("linked") : QStringLiteral("primary"));
+
+        const QRect layerRectPx = g->geometry();
+        QRect localCanvas(0, 0, g->width(), g->height());
+        QPoint pltPos(0, 0);
+        if (plt) {
+            pltPos = plt->pos();
+            if (plt->plotLayout() && plt->plotLayout()->canvasRect().isValid())
+                localCanvas = plt->plotLayout()->canvasRect();
+            else if (plt->canvas())
+                localCanvas = plt->canvas()->geometry();
+        }
+        const QRect canvasInMl(layerRectPx.x() + pltPos.x() + localCanvas.x(),
+                               layerRectPx.y() + pltPos.y() + localCanvas.y(),
+                               localCanvas.width(), localCanvas.height());
+        if (role == QStringLiteral("primary")) {
+            primaryCanvasRects.append(canvasInMl);
+            primaryLayerIndices.append(li);
+        }
+
+        QJsonObject lObj;
+        lObj[QStringLiteral("index")] = li;
+        lObj[QStringLiteral("is_active")] = (li == activeIdx);
+        lObj[QStringLiteral("role")] = role;
+        lObj[QStringLiteral("layer_rect_px")] = rectToJsonArray(layerRectPx);
+        lObj[QStringLiteral("canvas_rect_px")] = rectToJsonArray(canvasInMl);
+        lObj[QStringLiteral("framed")] = g->framed();
+        lObj[QStringLiteral("frame_width")] = g->canvasFrameWidth();
+
+        if (isLinked && g->linkedParentLayer()) {
+            QJsonObject linkObj;
+            linkObj[QStringLiteral("parent_layer")] = layers.indexOf(g->linkedParentLayer());
+            linkObj[QStringLiteral("x_mode")] = g->xLinkMode();
+            linkObj[QStringLiteral("x_expr")] = g->xLinkExpr();
+            linkObj[QStringLiteral("y_mode")] = g->yLinkMode();
+            linkObj[QStringLiteral("y_expr")] = g->yLinkExpr();
+            lObj[QStringLiteral("link_spec")] = linkObj;
+        } else {
+            lObj[QStringLiteral("link_spec")] = QJsonValue::Null;
+        }
+
+        if (isInset) {
+            const ParsedInsetMeta &im = insetMap[li];
+            QJsonObject insObj;
+            insObj[QStringLiteral("source_layer")] = im.sourceIdx;
+            insObj[QStringLiteral("norm_rect")] = rectFToJsonArray(im.normRect);
+            insObj[QStringLiteral("zoom_data_rect")] = rectFToJsonArray(im.zoomDataRect);
+            insObj[QStringLiteral("show_connectors")] = im.showConnectors;
+            lObj[QStringLiteral("inset_spec")] = insObj;
+        } else {
+            lObj[QStringLiteral("inset_spec")] = QJsonValue::Null;
+        }
+
+        if (plt) {
+            const QwtText titleTxt = plt->title();
+            lObj[QStringLiteral("title")] = titleTxt.text();
+            lObj[QStringLiteral("title_font_family")] = titleTxt.font().family();
+            lObj[QStringLiteral("title_font_size")] = titleTxt.font().pointSize();
+            if (!titleTxt.text().isEmpty()
+                && titleTxt.font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive)
+                        != 0) {
+                allFontsArial = false;
+            }
+        }
+
+        const QString propUnitFmt = plt
+                ? plt->property("_toriAxisUnitFormatStr").toString().trimmed()
+                : QString();
+        const QString layerUnitFmt = !propUnitFmt.isEmpty()
+                ? propUnitFmt
+                : ((g->axisUnitFormat() == Column::UnitFormat::ISIJSlash)
+                           ? QStringLiteral("slash")
+                           : QStringLiteral("paren"));
+
+        auto inspectOneAxis = [&](int qwtAxis, const QString &axisKey) -> QJsonObject {
+            QJsonObject ax = serializeAxisInfo(g, qwtAxis);
+            auto *sd = plt ? dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(qwtAxis)) : nullptr;
+            const bool enabled = plt ? plt->axisEnabled(qwtAxis) : false;
+            const bool showLabels =
+                    enabled && sd && sd->hasComponent(QwtAbstractScaleDraw::Labels);
+            const bool showTicks = enabled && sd
+                    && (sd->majorTicksStyle() != ScaleDraw::None
+                        || sd->minorTicksStyle() != ScaleDraw::None);
+            ax[QStringLiteral("show_labels")] = showLabels;
+            ax[QStringLiteral("show_ticks")] = showTicks;
+            ax[QStringLiteral("unit_format")] = layerUnitFmt;
+            const int fmtInt = plt ? plt->axisLabelFormat(qwtAxis) : 0;
+            QString fmtStr = QStringLiteral("auto");
+            if (fmtInt == 1)
+                fmtStr = QStringLiteral("f");
+            else if (fmtInt == 2)
+                fmtStr = QStringLiteral("e");
+            else if (fmtInt == 3)
+                fmtStr = QStringLiteral("superscript");
+            ax[QStringLiteral("tick_format")] = fmtStr;
+            ax[QStringLiteral("precision")] = plt ? plt->axisLabelPrecision(qwtAxis) : 6;
+            ax[QStringLiteral("label_rotation")] = g->labelsRotation(qwtAxis);
+
+            if (enabled) {
+                if (g->axisFont(qwtAxis).family().compare(QStringLiteral("Arial"),
+                                                          Qt::CaseInsensitive)
+                            != 0
+                    || g->axisTitleFont(qwtAxis).family().compare(QStringLiteral("Arial"),
+                                                                  Qt::CaseInsensitive)
+                            != 0) {
+                    allFontsArial = false;
+                }
+            } else {
+                const QString disabledTitle = g->axisTitle(qwtAxis).trimmed();
+                if (!disabledTitle.isEmpty()) {
+                    QJsonObject det;
+                    det[QStringLiteral("axis")] = axisKey;
+                    det[QStringLiteral("reason")] = QStringLiteral("disabled_axis_has_title");
+                    det[QStringLiteral("title")] = disabledTitle;
+                    pushWarning(
+                            QStringLiteral("DISABLED_AXIS_HAS_TITLE_OR_CURVE"),
+                            QStringLiteral("warning"), li,
+                            QStringLiteral("Layer %1 disabled axis '%2' has a non-empty title '%3'.")
+                                    .arg(li)
+                                    .arg(axisKey, disabledTitle),
+                            det);
+                }
+            }
+
+            if (includeTicks || diagnose) {
+                QJsonArray majArr;
+                QJsonArray lblArr;
+                struct TickBox
+                {
+                    double posPx;
+                    double halfSpanPx;
+                    QString text;
+                };
+                QVector<TickBox> tickBoxes;
+                if (plt && plt->axisScaleDiv(qwtAxis)) {
+                    const QwtScaleDiv *sdiv = plt->axisScaleDiv(qwtAxis);
+                    const double lo = std::min(sdiv->lowerBound(), sdiv->upperBound());
+                    const double hi = std::max(sdiv->lowerBound(), sdiv->upperBound());
+                    const double spanEps = std::max(1e-12, 1e-7 * std::abs(hi - lo));
+                    const QwtValueList majTicks = sdiv->ticks(QwtScaleDiv::MajorTick);
+                    const QFontMetrics fm(g->axisFont(qwtAxis));
+                    const int rotDeg = g->labelsRotation(qwtAxis);
+                    const double rotRad = std::abs(double(rotDeg)) * 3.14159265358979323846 / 180.0;
+                    const bool horizAxis =
+                            (qwtAxis == QwtPlot::xBottom || qwtAxis == QwtPlot::xTop);
+                    for (int ti = 0; ti < majTicks.size(); ++ti) {
+                        const double tv = majTicks[ti];
+                        if (!std::isfinite(tv) || tv < lo - spanEps || tv > hi + spanEps)
+                            continue;
+                        majArr.append(safeJsonDouble(tv));
+                        QString lblText;
+                        if (showLabels && sd)
+                            lblText = sd->label(tv).text().trimmed();
+                        lblArr.append(lblText);
+                        if (showLabels && !lblText.isEmpty()) {
+                            const double px = double(plt->transform(qwtAxis, tv));
+                            const double tw = double(fm.horizontalAdvance(lblText));
+                            const double th = double(fm.height());
+                            const double spanAlongAxis = horizAxis
+                                    ? (tw * std::cos(rotRad) + th * std::sin(rotRad))
+                                    : (th * std::cos(rotRad) + tw * std::sin(rotRad));
+                            tickBoxes.append({ px, 0.5 * spanAlongAxis, lblText });
+                        }
+                    }
+                }
+                if (includeTicks) {
+                    ax[QStringLiteral("major_ticks")] = majArr;
+                    ax[QStringLiteral("tick_labels")] = lblArr;
+                }
+                if (diagnose && tickBoxes.size() >= 2) {
+                    std::sort(tickBoxes.begin(), tickBoxes.end(),
+                              [](const TickBox &a, const TickBox &b) { return a.posPx < b.posPx; });
+                    for (int ti = 0; ti + 1 < tickBoxes.size(); ++ti) {
+                        const double gap = (tickBoxes[ti + 1].posPx - tickBoxes[ti + 1].halfSpanPx)
+                                - (tickBoxes[ti].posPx + tickBoxes[ti].halfSpanPx);
+                        if (gap < -1.5) {
+                            QJsonObject det;
+                            det[QStringLiteral("axis")] = axisKey;
+                            det[QStringLiteral("label_a")] = tickBoxes[ti].text;
+                            det[QStringLiteral("label_b")] = tickBoxes[ti + 1].text;
+                            det[QStringLiteral("overlap_px")] = safeJsonDouble(-gap);
+                            pushWarning(
+                                    QStringLiteral("TICK_LABEL_COLLISION"),
+                                    QStringLiteral("warning"), li,
+                                    QStringLiteral("Tick labels '%1' and '%2' collide on layer %3 axis '%4' (overlap %5 px).")
+                                            .arg(tickBoxes[ti].text, tickBoxes[ti + 1].text)
+                                            .arg(li)
+                                            .arg(axisKey, QString::number(-gap, 'f', 1)),
+                                    det);
+                            break;
+                        }
+                    }
+                }
+            }
+            return ax;
+        };
+
+        QJsonObject axesObj;
+        axesObj[QStringLiteral("x")] = inspectOneAxis(QwtPlot::xBottom, QStringLiteral("x"));
+        axesObj[QStringLiteral("y")] = inspectOneAxis(QwtPlot::yLeft, QStringLiteral("y"));
+        axesObj[QStringLiteral("top")] = inspectOneAxis(QwtPlot::xTop, QStringLiteral("top"));
+        axesObj[QStringLiteral("right")] = inspectOneAxis(QwtPlot::yRight, QStringLiteral("right"));
+        lObj[QStringLiteral("axes")] = axesObj;
+
+        Legend *leg = g->legend();
+        const bool legVis = g->isLegendVisible() && leg && !leg->text().trimmed().isEmpty();
+        const QRect legLocalRect = leg ? leg->rect() : QRect();
+        const QRect legInMl(canvasInMl.x() + legLocalRect.x(), canvasInMl.y() + legLocalRect.y(),
+                            legLocalRect.width(), legLocalRect.height());
+        int legendOverlapSamples = 0;
+
+        QJsonArray curvesArr;
+        for (int ci = 0; ci < g->curves(); ++ci) {
+            QwtPlotCurve *c = g->curve(ci);
+            if (!c)
+                continue;
+            const int cType = g->curveType(ci);
+            const bool isErrCurve = (cType == Graph::ErrorBars
+                                     || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr);
+            const bool vis = g->isCurveVisible(ci);
+            const int xAx = (c->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop : QwtPlot::xBottom;
+            const int yAx = (c->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
+            const QString xAxKey =
+                    (xAx == QwtPlot::xTop) ? QStringLiteral("top") : QStringLiteral("x");
+            const QString yAxKey =
+                    (yAx == QwtPlot::yRight) ? QStringLiteral("right") : QStringLiteral("y");
+
+            if (vis && !isErrCurve && plt) {
+                if (!plt->axisEnabled(xAx)) {
+                    QJsonObject det;
+                    det[QStringLiteral("axis")] = xAxKey;
+                    det[QStringLiteral("curve")] = c->title().text();
+                    det[QStringLiteral("reason")] = QStringLiteral("curve_on_disabled_axis");
+                    pushWarning(
+                            QStringLiteral("DISABLED_AXIS_HAS_TITLE_OR_CURVE"),
+                            QStringLiteral("warning"), li,
+                            QStringLiteral("Curve '%1' on layer %2 is mapped to disabled X axis '%3'.")
+                                    .arg(c->title().text())
+                                    .arg(li)
+                                    .arg(xAxKey),
+                            det);
+                }
+                if (!plt->axisEnabled(yAx)) {
+                    QJsonObject det;
+                    det[QStringLiteral("axis")] = yAxKey;
+                    det[QStringLiteral("curve")] = c->title().text();
+                    det[QStringLiteral("reason")] = QStringLiteral("curve_on_disabled_axis");
+                    pushWarning(
+                            QStringLiteral("DISABLED_AXIS_HAS_TITLE_OR_CURVE"),
+                            QStringLiteral("warning"), li,
+                            QStringLiteral("Curve '%1' on layer %2 is mapped to disabled Y axis '%3'.")
+                                    .arg(c->title().text())
+                                    .arg(li)
+                                    .arg(yAxKey),
+                            det);
+                }
+            }
+
+            const bool xIsLog = plt
+                    && (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(xAx))
+                        != nullptr);
+            const bool yIsLog = plt
+                    && (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(yAx))
+                        != nullptr);
+            double axXLo = -std::numeric_limits<double>::infinity();
+            double axXHi = std::numeric_limits<double>::infinity();
+            double axYLo = -std::numeric_limits<double>::infinity();
+            double axYHi = std::numeric_limits<double>::infinity();
+            if (plt && plt->axisScaleDiv(xAx)) {
+                axXLo = std::min(plt->axisScaleDiv(xAx)->lowerBound(),
+                                 plt->axisScaleDiv(xAx)->upperBound());
+                axXHi = std::max(plt->axisScaleDiv(xAx)->lowerBound(),
+                                 plt->axisScaleDiv(xAx)->upperBound());
+            }
+            if (plt && plt->axisScaleDiv(yAx)) {
+                axYLo = std::min(plt->axisScaleDiv(yAx)->lowerBound(),
+                                 plt->axisScaleDiv(yAx)->upperBound());
+                axYHi = std::max(plt->axisScaleDiv(yAx)->lowerBound(),
+                                 plt->axisScaleDiv(yAx)->upperBound());
+            }
+            const double xEps = std::isfinite(axXHi - axXLo)
+                    ? std::max(1e-12, 1e-6 * std::abs(axXHi - axXLo))
+                    : 0.0;
+            const double yEps = std::isfinite(axYHi - axYLo)
+                    ? std::max(1e-12, 1e-6 * std::abs(axYHi - axYLo))
+                    : 0.0;
+
+            const int nPts = static_cast<int>(c->dataSize());
+            auto *dc = dynamic_cast<DataCurve *>(c);
+            auto *pc = dynamic_cast<PlotCurve *>(c);
+            int validPts = 0;
+            int clippedPts = 0;
+            int nonPosX = 0;
+            int nonPosY = 0;
+            double xMin = std::numeric_limits<double>::infinity();
+            double xMax = -std::numeric_limits<double>::infinity();
+            double yMin = std::numeric_limits<double>::infinity();
+            double yMax = -std::numeric_limits<double>::infinity();
+
+            bool hasPrevPx = false;
+            QPoint prevPx;
+            for (int k = 0; k < nPts; ++k) {
+                if (dc && dc->isPointMasked(k)) {
+                    hasPrevPx = false;
+                    continue;
+                }
+                const double xv = c->x(k);
+                const double yv = c->y(k);
+                if (!std::isfinite(xv) || !std::isfinite(yv)) {
+                    hasPrevPx = false;
+                    continue;
+                }
+                ++validPts;
+                xMin = std::min(xMin, xv);
+                xMax = std::max(xMax, xv);
+                yMin = std::min(yMin, yv);
+                yMax = std::max(yMax, yv);
+                if (xv <= 0.0)
+                    ++nonPosX;
+                if (yv <= 0.0)
+                    ++nonPosY;
+                const bool outOfBounds = (xv < axXLo - xEps || xv > axXHi + xEps
+                                          || yv < axYLo - yEps || yv > axYHi + yEps
+                                          || (xIsLog && xv <= 0.0) || (yIsLog && yv <= 0.0));
+                if (outOfBounds)
+                    ++clippedPts;
+
+                if (vis && !isErrCurve && legVis && plt && legLocalRect.isValid()
+                    && !outOfBounds) {
+                    const QPoint curPx(plt->transform(xAx, xv), plt->transform(yAx, yv));
+                    if (legLocalRect.contains(curPx))
+                        ++legendOverlapSamples;
+                    if (hasPrevPx && c->style() != QwtPlotCurve::NoCurve) {
+                        for (int s = 1; s <= 7; ++s) {
+                            const double t = double(s) / 8.0;
+                            const QPoint midPx(
+                                    qRound((1.0 - t) * double(prevPx.x()) + t * double(curPx.x())),
+                                    qRound((1.0 - t) * double(prevPx.y()) + t * double(curPx.y())));
+                            if (legLocalRect.contains(midPx)) {
+                                ++legendOverlapSamples;
+                                break;
+                            }
+                        }
+                    }
+                    prevPx = curPx;
+                    hasPrevPx = true;
+                } else {
+                    hasPrevPx = false;
+                }
+            }
+
+            const double clippedFrac =
+                    (validPts > 0) ? (double(clippedPts) / double(validPts)) : 0.0;
+
+            if (vis && !isErrCurve) {
+                if (validPts == 0) {
+                    QJsonObject det;
+                    det[QStringLiteral("curve")] = c->title().text();
+                    det[QStringLiteral("curve_index")] = ci;
+                    pushWarning(QStringLiteral("EMPTY_CURVE"), QStringLiteral("warning"), li,
+                                QStringLiteral("Visible curve '%1' on layer %2 has 0 finite points.")
+                                        .arg(c->title().text())
+                                        .arg(li),
+                                det);
+                } else if ((role != QStringLiteral("inset") && clippedFrac > 0.02)
+                           || (role == QStringLiteral("inset") && clippedFrac >= 1.0)) {
+                    QJsonObject det;
+                    det[QStringLiteral("curve")] = c->title().text();
+                    det[QStringLiteral("clipped_fraction")] = safeJsonDouble(clippedFrac);
+                    det[QStringLiteral("clipped_points")] = clippedPts;
+                    det[QStringLiteral("valid_points")] = validPts;
+                    pushWarning(
+                            QStringLiteral("CURVE_CLIPPED_BY_AXIS"), QStringLiteral("warning"), li,
+                            QStringLiteral("Curve '%1' on layer %2 has %3/%4 points (%5%) clipped by axis bounds.")
+                                    .arg(c->title().text())
+                                    .arg(li)
+                                    .arg(clippedPts)
+                                    .arg(validPts)
+                                    .arg(QString::number(clippedFrac * 100.0, 'f', 1)),
+                            det);
+                }
+                if ((xIsLog && nonPosX > 0) || (yIsLog && nonPosY > 0)) {
+                    QJsonObject det;
+                    det[QStringLiteral("curve")] = c->title().text();
+                    det[QStringLiteral("nonpositive_x_points")] = xIsLog ? nonPosX : 0;
+                    det[QStringLiteral("nonpositive_y_points")] = yIsLog ? nonPosY : 0;
+                    pushWarning(
+                            QStringLiteral("NONPOSITIVE_DATA_ON_LOG_AXIS"),
+                            QStringLiteral("error"), li,
+                            QStringLiteral("Curve '%1' on layer %2 has non-positive data on a log10 axis.")
+                                    .arg(c->title().text())
+                                    .arg(li),
+                            det);
+                }
+            }
+
+            QJsonObject cObj;
+            cObj[QStringLiteral("index")] = ci;
+            cObj[QStringLiteral("title")] = c->title().text();
+            cObj[QStringLiteral("type")] = cType;
+            cObj[QStringLiteral("visible")] = vis;
+            cObj[QStringLiteral("x_axis")] = xAxKey;
+            cObj[QStringLiteral("y_axis")] = yAxKey;
+            cObj[QStringLiteral("points")] = nPts;
+            cObj[QStringLiteral("valid_points")] = validPts;
+            cObj[QStringLiteral("masked_points")] = dc ? dc->maskedPointCount() : 0;
+            cObj[QStringLiteral("nonpositive_x_points")] = nonPosX;
+            cObj[QStringLiteral("nonpositive_y_points")] = nonPosY;
+            cObj[QStringLiteral("clipped_fraction")] = safeJsonDouble(clippedFrac);
+            QJsonObject boundsObj;
+            boundsObj[QStringLiteral("x_min")] = safeJsonDouble(xMin);
+            boundsObj[QStringLiteral("x_max")] = safeJsonDouble(xMax);
+            boundsObj[QStringLiteral("y_min")] = safeJsonDouble(yMin);
+            boundsObj[QStringLiteral("y_max")] = safeJsonDouble(yMax);
+            cObj[QStringLiteral("data_bounds")] = boundsObj;
+            cObj[QStringLiteral("x_min")] = safeJsonDouble(xMin);
+            cObj[QStringLiteral("x_max")] = safeJsonDouble(xMax);
+            cObj[QStringLiteral("y_min")] = safeJsonDouble(yMin);
+            cObj[QStringLiteral("y_max")] = safeJsonDouble(yMax);
+            cObj[QStringLiteral("color")] = c->pen().color().name(QColor::HexRgb);
+            cObj[QStringLiteral("alpha")] = c->pen().color().alpha();
+            cObj[QStringLiteral("line_width")] =
+                    c->pen().widthF() > 0.0 ? c->pen().widthF() : double(c->pen().width());
+            cObj[QStringLiteral("line_style")] = int(c->pen().style());
+            cObj[QStringLiteral("symbol_style")] = int(c->symbol().style());
+            cObj[QStringLiteral("symbol_size")] = c->symbol().size().width();
+            cObj[QStringLiteral("symbol_hollow")] = Graph::isSymbolWhiteHollow(c->symbol());
+            cObj[QStringLiteral("symbol_skip")] = pc ? pc->symbolSkip() : 1;
+            if (dc) {
+                cObj[QStringLiteral("x_column")] = dc->xColumnName();
+                cObj[QStringLiteral("y_column")] = dc->yColumnName();
+                QJsonArray errArr;
+                for (DataCurve *ebBase : dc->errorBarsList()) {
+                    auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase);
+                    if (!ec)
+                        continue;
+                    QJsonObject eObj;
+                    eObj[QStringLiteral("direction")] = ec->xErrors() ? QStringLiteral("x")
+                                                                      : QStringLiteral("y");
+                    eObj[QStringLiteral("column")] = ec->yColumnName();
+                    eObj[QStringLiteral("color")] = ec->color().name(QColor::HexRgb);
+                    eObj[QStringLiteral("width")] = ec->width();
+                    eObj[QStringLiteral("cap_length")] = ec->capLength();
+                    eObj[QStringLiteral("plus")] = ec->plusSide();
+                    eObj[QStringLiteral("minus")] = ec->minusSide();
+                    eObj[QStringLiteral("through_symbol")] = ec->throughSymbol();
+                    errArr.append(eObj);
+                }
+                cObj[QStringLiteral("error_bars")] = errArr;
+            } else {
+                cObj[QStringLiteral("error_bars")] = QJsonArray();
+            }
+            curvesArr.append(cObj);
+        }
+        lObj[QStringLiteral("curves")] = curvesArr;
+        lObj[QStringLiteral("curve_count")] = curvesArr.size();
+
+        QJsonObject legObj;
+        legObj[QStringLiteral("visible")] = legVis;
+        legObj[QStringLiteral("has_legend")] = (leg != nullptr);
+        legObj[QStringLiteral("text")] = leg ? leg->text() : QString();
+        legObj[QStringLiteral("bbox_px")] =
+                (leg && legLocalRect.isValid()) ? rectToJsonArray(legInMl) : QJsonArray();
+        legObj[QStringLiteral("font_family")] = leg ? leg->font().family() : QStringLiteral("Arial");
+        legObj[QStringLiteral("font_size")] = leg ? leg->font().pointSize() : 0;
+        legObj[QStringLiteral("columns")] = leg ? leg->numColumns() : 1;
+        legObj[QStringLiteral("curve_overlap_points")] = legendOverlapSamples;
+        if (leg && leg->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
+            allFontsArial = false;
+        lObj[QStringLiteral("legend")] = legObj;
+
+        if (legVis && legendOverlapSamples > 0) {
+            QJsonObject det;
+            det[QStringLiteral("curve_overlap_points")] = legendOverlapSamples;
+            det[QStringLiteral("legend_bbox_px")] = rectToJsonArray(legInMl);
+            pushWarning(
+                    QStringLiteral("LEGEND_OVERLAPS_DATA"), QStringLiteral("warning"), li,
+                    QStringLiteral("Legend on layer %1 overlaps plotted curve geometry (%2 sample hits).")
+                            .arg(li)
+                            .arg(legendOverlapSamples),
+                    det);
+        }
+
+        const QVector<Graph::ReferenceLineSpec> refSpecs = g->referenceLines();
+        QJsonArray refArr;
+        for (int ri = 0; ri < refSpecs.size(); ++ri) {
+            const Graph::ReferenceLineSpec &rs = refSpecs[ri];
+            QJsonObject rObj;
+            rObj[QStringLiteral("index")] = ri;
+            rObj[QStringLiteral("orientation")] =
+                    (rs.orientation == 1) ? QStringLiteral("vertical")
+                                          : QStringLiteral("horizontal");
+            rObj[QStringLiteral("value")] = safeJsonDouble(rs.value);
+            rObj[QStringLiteral("label")] = rs.label;
+            rObj[QStringLiteral("stat_mode")] = rs.statMode;
+            rObj[QStringLiteral("color")] = rs.color.name(QColor::HexRgb);
+            rObj[QStringLiteral("width")] = safeJsonDouble(rs.width);
+            rObj[QStringLiteral("style")] = int(rs.style);
+            refArr.append(rObj);
+        }
+        lObj[QStringLiteral("reference_lines")] = refArr;
+
+        QJsonArray bandsArr;
+        {
+            const QString savedG = g->saveToString();
+            static const QRegularExpression rxBand(
+                    QStringLiteral("<ToriRefLine\\s+kind=\"band\"([^>]*)/>"));
+            static const QRegularExpression rxAttr(
+                    QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
+            auto it = rxBand.globalMatch(savedG);
+            int bi = 0;
+            while (it.hasNext()) {
+                const QString attrChunk = it.next().captured(1);
+                QMap<QString, QString> am;
+                auto ait = rxAttr.globalMatch(attrChunk);
+                while (ait.hasNext()) {
+                    const auto m = ait.next();
+                    am.insert(m.captured(1), m.captured(2));
+                }
+                const QStringList xs = am.value(QStringLiteral("x")).split(
+                        QLatin1Char(','), Qt::SkipEmptyParts);
+                QJsonObject bObj;
+                bObj[QStringLiteral("index")] = bi++;
+                bObj[QStringLiteral("color")] = am.value(QStringLiteral("color"));
+                bObj[QStringLiteral("label")] = am.value(QStringLiteral("title"));
+                bObj[QStringLiteral("points")] = xs.size();
+                bandsArr.append(bObj);
+            }
+        }
+        lObj[QStringLiteral("shaded_bands")] = bandsArr;
+
+        QJsonArray textArr;
+        const QVector<int> txtKeys = g->textMarkerKeys();
+        int tIdx = 0;
+        for (int tid : txtKeys) {
+            Legend *tm = g->textMarker(tid);
+            if (!tm || tm == leg)
+                continue;
+            const QRect tmLocal = tm->rect();
+            const QRect tmInMl(canvasInMl.x() + tmLocal.x(), canvasInMl.y() + tmLocal.y(),
+                               tmLocal.width(), tmLocal.height());
+            QJsonObject tObj;
+            tObj[QStringLiteral("id")] = tid;
+            tObj[QStringLiteral("index")] = tIdx++;
+            tObj[QStringLiteral("text")] = tm->text();
+            tObj[QStringLiteral("x")] = safeJsonDouble(tm->xValue());
+            tObj[QStringLiteral("y")] = safeJsonDouble(tm->yValue());
+            tObj[QStringLiteral("bbox_px")] = rectToJsonArray(tmInMl);
+            tObj[QStringLiteral("font_family")] = tm->font().family();
+            tObj[QStringLiteral("font_size")] = tm->font().pointSize();
+            tObj[QStringLiteral("color")] = tm->textColor().name(QColor::HexRgb);
+            tObj[QStringLiteral("angle")] = tm->angle();
+            if (tm->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
+                allFontsArial = false;
+            textArr.append(tObj);
+        }
+        lObj[QStringLiteral("text_markers")] = textArr;
+
+        QJsonArray arrowsArr;
+        const QVector<int> lineKeys = g->lineMarkerKeys();
+        for (int ai = 0; ai < lineKeys.size(); ++ai) {
+            const int aid = lineKeys[ai];
+            ArrowMarker *am = g->arrow(aid);
+            if (!am)
+                continue;
+            const QwtDoublePoint p1 = am->startPointCoord();
+            const QwtDoublePoint p2 = am->endPointCoord();
+            const QPoint px1 = am->startPoint();
+            const QPoint px2 = am->endPoint();
+            const QRect arLocal = QRect(QPoint(std::min(px1.x(), px2.x()),
+                                               std::min(px1.y(), px2.y())),
+                                        QPoint(std::max(px1.x(), px2.x()),
+                                               std::max(px1.y(), px2.y())))
+                                          .adjusted(-2, -2, 2, 2);
+            const QRect arInMl(canvasInMl.x() + arLocal.x(), canvasInMl.y() + arLocal.y(),
+                               arLocal.width(), arLocal.height());
+            QJsonObject aObj;
+            aObj[QStringLiteral("id")] = aid;
+            aObj[QStringLiteral("index")] = ai;
+            aObj[QStringLiteral("x1")] = safeJsonDouble(p1.x());
+            aObj[QStringLiteral("y1")] = safeJsonDouble(p1.y());
+            aObj[QStringLiteral("x2")] = safeJsonDouble(p2.x());
+            aObj[QStringLiteral("y2")] = safeJsonDouble(p2.y());
+            aObj[QStringLiteral("bbox_px")] = rectToJsonArray(arInMl);
+            aObj[QStringLiteral("start_arrow")] = am->hasStartArrow();
+            aObj[QStringLiteral("end_arrow")] = am->hasEndArrow();
+            aObj[QStringLiteral("color")] = am->color().name(QColor::HexRgb);
+            aObj[QStringLiteral("width")] = am->width();
+            aObj[QStringLiteral("style")] = int(am->style());
+            arrowsArr.append(aObj);
+        }
+        lObj[QStringLiteral("arrows")] = arrowsArr;
+
+        QJsonArray specsArr;
+        if (plt) {
+            const QwtPlotItemList &items = plt->itemList();
+            int si = 0;
+            for (QwtPlotItem *it : items) {
+                if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                    if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                        QJsonObject sObj;
+                        sObj[QStringLiteral("index")] = si++;
+                        sObj[QStringLiteral("matrix")] =
+                                sp->matrix() ? sp->matrix()->name() : QString();
+                        const QwtDoubleInterval zInt = sp->effectiveValueRange();
+                        sObj[QStringLiteral("z_min")] = safeJsonDouble(zInt.minValue());
+                        sObj[QStringLiteral("z_max")] = safeJsonDouble(zInt.maxValue());
+                        sObj[QStringLiteral("colorbar_visible")] = sp->hasColorScale();
+                        sObj[QStringLiteral("colorbar_title")] = sp->colorBarTitle();
+                        sObj[QStringLiteral("levels")] = sp->levels();
+                        specsArr.append(sObj);
+                    }
+                }
+            }
+        }
+        lObj[QStringLiteral("spectrograms")] = specsArr;
+
+        QJsonArray gadgetsArr;
+        if (PlotToolInterface *tool = g->activeTool()) {
+            QJsonObject gObj;
+            if (auto *roi = dynamic_cast<RoiGadgetTool *>(tool)) {
+                gObj[QStringLiteral("type")] = QStringLiteral("roi");
+                gObj[QStringLiteral("summary")] = roi->summaryText();
+                gObj[QStringLiteral("roi_rect")] = rectFToJsonArray(roi->roiRect());
+            } else if (auto *dcTool = dynamic_cast<DeltaCursorTool *>(tool)) {
+                gObj[QStringLiteral("type")] = QStringLiteral("delta_cursor");
+                gObj[QStringLiteral("readout")] = dcTool->readoutText();
+            } else if (auto *vcTool = dynamic_cast<VerticalCursorTool *>(tool)) {
+                gObj[QStringLiteral("type")] = QStringLiteral("vertical_cursor");
+                gObj[QStringLiteral("readout")] = vcTool->readoutText();
+            } else if (dynamic_cast<ImageProfileGadgetTool *>(tool)) {
+                gObj[QStringLiteral("type")] = QStringLiteral("image_profile");
+            }
+            if (!gObj.isEmpty())
+                gadgetsArr.append(gObj);
+        }
+        lObj[QStringLiteral("gadgets")] = gadgetsArr;
+
+        layersArr.append(lObj);
+    }
+
+    if (diagnose && primaryCanvasRects.size() >= 2) {
+        int minW = primaryCanvasRects[0].width(), maxW = primaryCanvasRects[0].width();
+        int minH = primaryCanvasRects[0].height(), maxH = primaryCanvasRects[0].height();
+        for (int i = 1; i < primaryCanvasRects.size(); ++i) {
+            minW = std::min(minW, primaryCanvasRects[i].width());
+            maxW = std::max(maxW, primaryCanvasRects[i].width());
+            minH = std::min(minH, primaryCanvasRects[i].height());
+            maxH = std::max(maxH, primaryCanvasRects[i].height());
+        }
+        if ((maxW - minW) > 4 || (maxH - minH) > 4) {
+            QJsonObject det;
+            det[QStringLiteral("min_canvas_width_px")] = minW;
+            det[QStringLiteral("max_canvas_width_px")] = maxW;
+            det[QStringLiteral("min_canvas_height_px")] = minH;
+            det[QStringLiteral("max_canvas_height_px")] = maxH;
+            pushWarning(
+                    QStringLiteral("PANEL_CANVAS_SIZE_MISMATCH"), QStringLiteral("warning"),
+                    primaryLayerIndices.first(),
+                    QStringLiteral("Multi-panel primary canvas sizes differ across panels (W: %1..%2 px, H: %3..%4 px).")
+                            .arg(minW)
+                            .arg(maxW)
+                            .arg(minH)
+                            .arg(maxH),
+                    det);
+        }
+    }
+
+    out[QStringLiteral("layers")] = layersArr;
+    out[QStringLiteral("all_fonts_arial")] = allFontsArial;
+    out[QStringLiteral("warnings")] = warningsArr;
+    out[QStringLiteral("warning_codes")] = toJsonArray(warningCodes);
+    out[QStringLiteral("warning_count")] = warningsArr.size();
+    out[QStringLiteral("healthy")] = warningsArr.isEmpty();
+    return out;
+}
+
+void closeAndDeleteEmptyPlot(ApplicationWindow *app, MultiLayer *ml)
+{
+    if (!ml)
+        return;
+    ml->askOnCloseEvent(false);
+    ml->hide();
+    ml->close();
+    if (app && ml->folder())
+        app->closeWindow(ml);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+int countFiniteUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx = -1)
+{
+    if (!t || colIdx < 0 || colIdx >= t->numCols())
+        return 0;
+    Column *yc = t->column(colIdx);
+    if (!yc || yc->columnMode() != SciDAVis::ColumnMode::Numeric)
+        return 0;
+    Column *xc = (optXIdx >= 0 && optXIdx < t->numCols()) ? t->column(optXIdx) : nullptr;
+    int count = 0;
+    for (int r = 0; r < t->numRows(); ++r) {
+        if (yc->isInvalid(r) || yc->isMasked(r) || !std::isfinite(yc->valueAt(r)))
+            continue;
+        if (xc && xc->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (xc->isInvalid(r) || xc->isMasked(r) || !std::isfinite(xc->valueAt(r)))
+                continue;
+        }
+        ++count;
+    }
+    return count;
+}
+
+void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
+                                 bool applyColor = true)
+{
+    if (!g || cIdx < 0 || cIdx >= g->curves())
+        return;
+    QwtPlotCurve *c = g->curve(cIdx);
+    if (!c)
+        return;
+
+    const bool wasHollow = Graph::isSymbolWhiteHollow(c->symbol());
+    QPen pen = c->pen();
+    QColor col = pen.color();
+    const bool hasColor = applyColor && params.contains(QStringLiteral("color"))
+            && !params.value(QStringLiteral("color")).isNull()
+            && !params.value(QStringLiteral("color")).toString().trimmed().isEmpty();
+    if (hasColor)
+        col = parseColorValue(params.value(QStringLiteral("color")), col);
+    if (params.contains(QStringLiteral("alpha")) && !params.value(QStringLiteral("alpha")).isNull()) {
+        const double rawA = params.value(QStringLiteral("alpha")).toDouble(255.0);
+        const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
+                                                      : std::clamp(int(rawA), 0, 255);
+        col.setAlpha(a255);
+    }
+    pen.setColor(col);
+
+    QJsonValue lwVal;
+    if (params.contains(QStringLiteral("line_width"))
+        && !params.value(QStringLiteral("line_width")).isNull())
+        lwVal = params.value(QStringLiteral("line_width"));
+    else if (params.contains(QStringLiteral("linewidth"))
+             && !params.value(QStringLiteral("linewidth")).isNull())
+        lwVal = params.value(QStringLiteral("linewidth"));
+    else if (params.contains(QStringLiteral("lw")) && !params.value(QStringLiteral("lw")).isNull())
+        lwVal = params.value(QStringLiteral("lw"));
+    if (!lwVal.isUndefined() && !lwVal.isNull())
+        pen.setWidthF(std::max(0.0, lwVal.toDouble(1.5)));
+
+    QJsonValue lsVal;
+    if (params.contains(QStringLiteral("line_style"))
+        && !params.value(QStringLiteral("line_style")).isNull())
+        lsVal = params.value(QStringLiteral("line_style"));
+    else if (params.contains(QStringLiteral("linestyle"))
+             && !params.value(QStringLiteral("linestyle")).isNull())
+        lsVal = params.value(QStringLiteral("linestyle"));
+    else if (params.contains(QStringLiteral("ls")) && !params.value(QStringLiteral("ls")).isNull())
+        lsVal = params.value(QStringLiteral("ls"));
+    if (!lsVal.isUndefined() && !lsVal.isNull())
+        pen.setStyle(parsePenStyleValue(lsVal, pen.style()));
+
+    if (hasColor || params.contains(QStringLiteral("alpha")) || !lwVal.isUndefined()
+        || !lsVal.isUndefined()) {
+        g->setCurvePen(cIdx, pen);
+    }
+
+    QJsonValue symTypeVal;
+    if (params.contains(QStringLiteral("symbol_type"))
+        && !params.value(QStringLiteral("symbol_type")).isNull())
+        symTypeVal = params.value(QStringLiteral("symbol_type"));
+    else if (params.contains(QStringLiteral("symbol_style"))
+             && !params.value(QStringLiteral("symbol_style")).isNull())
+        symTypeVal = params.value(QStringLiteral("symbol_style"));
+    else if (params.contains(QStringLiteral("marker"))
+             && !params.value(QStringLiteral("marker")).isNull())
+        symTypeVal = params.value(QStringLiteral("marker"));
+
+    QJsonValue symSizeVal;
+    if (params.contains(QStringLiteral("symbol_size"))
+        && !params.value(QStringLiteral("symbol_size")).isNull())
+        symSizeVal = params.value(QStringLiteral("symbol_size"));
+    else if (params.contains(QStringLiteral("markersize"))
+             && !params.value(QStringLiteral("markersize")).isNull())
+        symSizeVal = params.value(QStringLiteral("markersize"));
+    else if (params.contains(QStringLiteral("ms")) && !params.value(QStringLiteral("ms")).isNull())
+        symSizeVal = params.value(QStringLiteral("ms"));
+
+    if (!symTypeVal.isUndefined() || !symSizeVal.isUndefined()
+        || (hasColor && c->symbol().style() != QwtSymbol::NoSymbol)) {
+        QwtSymbol sym = c->symbol();
+        if (!symTypeVal.isUndefined() && !symTypeVal.isNull())
+            sym.setStyle(parseQwtSymbolStyle(symTypeVal, sym.style()));
+        if (!symSizeVal.isUndefined() && !symSizeVal.isNull()) {
+            const int sz = std::max(1, qRound(symSizeVal.toDouble(7.0)));
+            sym.setSize(sz, sz);
+        } else if (!symTypeVal.isUndefined() && sym.style() != QwtSymbol::NoSymbol
+                   && sym.size().width() <= 0) {
+            sym.setSize(7, 7);
+        }
+        QPen sp = sym.pen();
+        sp.setColor(col);
+        sym.setPen(sp);
+        QBrush sb = sym.brush();
+        if (wasHollow) {
+            sb = QBrush(QColor(255, 255, 255), Qt::SolidPattern);
+        } else {
+            sb.setColor(col);
+            if (sb.style() == Qt::NoBrush && sym.style() != QwtSymbol::NoSymbol)
+                sb.setStyle(Qt::SolidPattern);
+        }
+        sym.setBrush(sb);
+        g->setCurveSymbol(cIdx, sym);
+    }
+
+    const bool hasSymbolHollow = params.contains(QStringLiteral("symbol_hollow"))
+            && !params.value(QStringLiteral("symbol_hollow")).isNull();
+    const bool hasSymbolFill = params.contains(QStringLiteral("symbol_fill"))
+            && !params.value(QStringLiteral("symbol_fill")).isNull();
+    if (hasSymbolHollow || hasSymbolFill) {
+        bool wantHollow = false;
+        if (hasSymbolHollow) {
+            wantHollow = params.value(QStringLiteral("symbol_hollow")).toBool(false);
+        } else {
+            const QJsonValue sf = params.value(QStringLiteral("symbol_fill"));
+            if (sf.isBool()) {
+                wantHollow = !sf.toBool(true);
+            } else if (sf.isString()) {
+                const QString sfs = sf.toString().trimmed().toLower();
+                wantHollow = (sfs == QStringLiteral("hollow") || sfs == QStringLiteral("white")
+                              || sfs == QStringLiteral("none") || sfs == QStringLiteral("false"));
+            }
+        }
+        g->setCurveSymbolHollow(cIdx, wantHollow);
+    }
+
+    if (params.contains(QStringLiteral("symbol_skip"))
+        && !params.value(QStringLiteral("symbol_skip")).isNull()) {
+        const int skip = parseStrictJsonInt(params.value(QStringLiteral("symbol_skip")),
+                                            QStringLiteral("symbol_skip"));
+        if (skip < 1)
+            throwInvalidParams(QStringLiteral("Parameter 'symbol_skip' must be >= 1."));
+        if (auto *pc = dynamic_cast<PlotCurve *>(g->curve(cIdx)))
+            pc->setSymbolSkip(skip);
+    }
+
+    if (params.contains(QStringLiteral("label")) && !params.value(QStringLiteral("label")).isNull()) {
+        const QString customLbl = params.value(QStringLiteral("label")).toString().trimmed();
+        if (!customLbl.isEmpty()) {
+            if (QwtPlotCurve *cur = g->curve(cIdx))
+                cur->setTitle(customLbl);
+            if (Legend *leg = g->legend()) {
+                QStringList lines = leg->text().split(QLatin1Char('\n'));
+                const QString prefix = QStringLiteral("\\c{%1}").arg(cIdx + 1);
+                bool updated = false;
+                for (int li = 0; li < lines.size(); ++li) {
+                    if (lines[li].startsWith(prefix)) {
+                        lines[li] = prefix + customLbl;
+                        updated = true;
+                        break;
+                    }
+                }
+                if (updated)
+                    leg->setText(lines.join(QLatin1Char('\n')));
+            }
+        }
+    }
+}
+
+void applyPlotLevelConvenienceParams(Graph *g, const QJsonObject &params)
+{
+    if (!g)
+        return;
+    Plot *plt = g->plotWidget();
+    if (params.contains(QStringLiteral("title")) && !params.value(QStringLiteral("title")).isNull()) {
+        const QString titleTxt = params.value(QStringLiteral("title")).toString();
+        g->setTitle(titleTxt);
+        QFont tf(QStringLiteral("Arial"), 12, QFont::Normal, false);
+        tf.setHintingPreference(QFont::PreferNoHinting);
+        g->setTitleFont(tf);
+    }
+    const QString xLbl = params.contains(QStringLiteral("xlabel"))
+            ? params.value(QStringLiteral("xlabel")).toString()
+            : (params.contains(QStringLiteral("x_title"))
+                       ? params.value(QStringLiteral("x_title")).toString()
+                       : QString());
+    if (params.contains(QStringLiteral("xlabel")) || params.contains(QStringLiteral("x_title"))) {
+        g->setAxisTitleAuto(QwtPlot::xBottom, false);
+        g->setXAxisTitle(xLbl);
+    }
+    const QString yLbl = params.contains(QStringLiteral("ylabel"))
+            ? params.value(QStringLiteral("ylabel")).toString()
+            : (params.contains(QStringLiteral("y_title"))
+                       ? params.value(QStringLiteral("y_title")).toString()
+                       : QString());
+    if (params.contains(QStringLiteral("ylabel")) || params.contains(QStringLiteral("y_title"))) {
+        g->setAxisTitleAuto(QwtPlot::yLeft, false);
+        g->setYAxisTitle(yLbl);
+    }
+    auto applyLimArray = [&](int qwtAxis, const QString &key) {
+        if (!params.contains(key) || !params.value(key).isArray())
+            return;
+        const QJsonArray a = params.value(key).toArray();
+        if (a.size() != 2 || !a[0].isDouble() || !a[1].isDouble())
+            throwInvalidParams(
+                    QStringLiteral("Parameter '%1' must be a 2-element numeric [min, max] list.")
+                            .arg(key));
+        const double lo = a[0].toDouble();
+        const double hi = a[1].toDouble();
+        if (!std::isfinite(lo) || !std::isfinite(hi) || lo == hi)
+            throwInvalidParams(
+                    QStringLiteral("Parameter '%1' requires finite distinct [min, max].").arg(key));
+        const int maj = plt ? std::max(4, plt->axisMaxMajor(qwtAxis)) : 8;
+        const int scType = (plt
+                            && dynamic_cast<const QwtLog10ScaleEngine *>(
+                                    plt->axisScaleEngine(qwtAxis)))
+                ? 1
+                : 0;
+        if (scType == 1 && (lo <= 0.0 || hi <= 0.0))
+            throwInvalidParams(
+                    QStringLiteral("Parameter '%1' on log10 axis requires positive bounds (> 0).")
+                            .arg(key));
+        g->setScale(qwtAxis, std::min(lo, hi), std::max(lo, hi), g->axisStep(qwtAxis), maj,
+                    (scType == 1) ? 8 : 1, scType, lo > hi);
+        g->setAxisUserLocked(qwtAxis, true);
+    };
+    applyLimArray(QwtPlot::xBottom, QStringLiteral("xlim"));
+    applyLimArray(QwtPlot::yLeft, QStringLiteral("ylim"));
+    enforceArialGraphFonts(g);
+    g->replot();
 }
 
 void sanitizeAllProjectFunctionCurves(ApplicationWindow *app)
@@ -3567,219 +5100,1323 @@ void sanitizeAllProjectFunctionCurves(ApplicationWindow *app)
 // Method Introspection & Categories 1-5 Dispatch (app / table / matrix / plot / graph)
 // ============================================================================
 
+namespace {
+
+struct ApiMethodCatalogRow
+{
+    const char *method;
+    const char *domain;
+    const char *sdkMethod;
+    const char *summary;
+    const char *paramsSig;
+    const char *example;
+};
+
+static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
+    // 1. App / Project / GUI / Introspection
+    { "ping", "app", "Session.ping()", "Health check returning pong, endpoint, and server PID.", "",
+      "app.ping()" },
+    { "app.info", "app", "Session.info()",
+      "Return ToriGraph version, PID, language, active endpoint, window count, and method count.",
+      "", "app.info()" },
+    { "app.supported_methods", "app", "Session.supported_methods()",
+      "Return the complete ordered list of supported JSON-RPC 2.0 method names.", "",
+      "app.supported_methods()" },
+    { "app.describe_api", "app", "Session.describe_api(method=None, *, domain=None)",
+      "Self-discovery catalog returning structured schemas, parameter types/enums, and Python SDK examples for one method, a domain, or all methods.",
+      "method:str=''; domain:str=''", "app.describe_api(domain='graph')" },
+    { "app.new_project", "app", "Session.new_project()",
+      "Reset the workspace in-place to a clean empty project.", "", "app.new_project()" },
+    { "app.open_project", "app", "Session.open_project(path, *, append=False)",
+      "Open a .sciprj/.sciprj.gz project (or append it as a subfolder when append=True).",
+      "path:str*; append:bool=false", "app.open_project('study.sciprj')" },
+    { "app.save_project", "app", "Session.save_project(path, *, compress=False)",
+      "Save the current project to .sciprj or gzip-compressed .sciprj.gz.",
+      "path:str*; compress:bool=false", "app.save_project('study.sciprj')" },
+    { "app.import_csv", "app",
+      "Session.import_csv(path, *, separator=None, encoding='auto', header=True, units_row=None, skip_lines=0, numeric=True, name=None)",
+      "Import CSV/TSV/ASCII or Rigaku .ras data with UTF-8/UTF-16/Shift-JIS auto-decoding, RFC 4180 quotes, 2-row [Name, Units] auto-promotion, and 'Name (Unit)' header parsing.",
+      "path:str*; separator:str=''; encoding:str='auto'[auto|utf-8|shift_jis|utf-16]; header:bool=true; units_row:int|bool|null=null; skip_lines:int=0; strip_spaces:bool=true; simplify_spaces:bool=false; numeric:bool=true; with_comments:bool=false; name:str=''",
+      "t = app.import_csv('tensile_sjis.csv', encoding='auto')" },
+    { "app.import_opj", "app", "Session.import_opj(path, *, codec=None)",
+      "Import an Origin .opj/.opju project file into the workspace.",
+      "path:str*; codec:str=''", "app.import_opj('legacy.opj')" },
+    { "app.list_windows", "app", "Session.list_windows(window_type=None)",
+      "List open workspace windows (optionally filtered by Table, Matrix, MultiLayer, Graph3D, Note).",
+      "type:str=''", "app.list_windows('MultiLayer')" },
+    { "app.window_info", "app", "Session.window_info(name)",
+      "Return detailed serialized metadata for a named window.", "name:str*",
+      "app.window_info('Graph1')" },
+    { "app.activate_window", "app", "Session.activate_window(name)",
+      "Activate the specified MDI window by name.", "name:str*", "app.activate_window('Table1')" },
+    { "app.rename_window", "app", "Session.rename_window(name, new_name)",
+      "Rename an existing window (ASCII letters, digits, '-' and '_').",
+      "name:str*; new_name:str*", "app.rename_window('Table1', 'Tensile-Raw')" },
+    { "app.close_window", "app", "Session.close_window(name)",
+      "Close and delete a named window without confirmation prompts.", "name:str*",
+      "app.close_window('Table1')" },
+    { "app.clone_window", "app", "Session.clone_window(name, *, new_name=None)",
+      "Duplicate an existing Table, Matrix, or Graph window.",
+      "name:str*; new_name:str=''", "app.clone_window('Graph1', new_name='Graph1-Copy')" },
+    { "app.set_language", "app", "Session.set_language(lang)",
+      "Switch UI/translation language between Japanese ('ja') and English ('en').",
+      "language:str*[ja|en]", "app.set_language('en')" },
+    { "app.get_language", "app", "Session.get_language()",
+      "Return active application language ('ja' or 'en').", "", "app.get_language()" },
+    { "app.set_recalc_mode", "app", "Session.set_recalc_mode(mode)",
+      "Set column/analysis recalculation mode ('auto', 'manual', or 'disabled').",
+      "mode:str*[auto|manual|disabled]", "app.set_recalc_mode('auto')" },
+    { "app.recalculate", "app", "Session.recalculate()",
+      "Evaluate all dirty column formulas and registered analysis links.", "", "app.recalculate()" },
+    { "app.undo", "app", "Session.undo(window=None, *, graph=None, table=None, matrix=None)",
+      "Undo the last operation on a specified graph/table/matrix window or the most recently modified stack.",
+      "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.undo(table=tbl)" },
+    { "app.redo", "app", "Session.redo(window=None, *, graph=None, table=None, matrix=None)",
+      "Redo the last undone operation on a specified graph/table/matrix window or the most recently modified stack.",
+      "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.redo(table=tbl)" },
+    { "app.set_focus_hud", "app", "Session.set_focus_hud(enabled=None)",
+      "Enable, disable, or toggle the floating canvas Focus HUD.", "enabled:bool=true",
+      "app.set_focus_hud(False)" },
+    { "app.get_focus_hud", "app", "Session.get_focus_hud()",
+      "Query whether the Focus HUD is enabled.", "", "app.get_focus_hud()" },
+    { "app.set_workspace_mode", "app", "Session.set_workspace_mode(mode)",
+      "Switch workspace layout mode ('tabs', 'split', or 'mdi').",
+      "mode:str*[tabs|split|mdi]", "app.set_workspace_mode('tabs')" },
+    { "app.check_updates", "app", "Session.check_updates()",
+      "Check release feed metadata for available ToriGraph updates.", "", "app.check_updates()" },
+    { "app.list_actions", "app", "Session.list_actions(filter_text=None)",
+      "List registered QAction commands and shortcuts.", "filter:str=''",
+      "app.list_actions('grid')" },
+    { "app.trigger_action", "app", "Session.trigger_action(name, *, checked=None)",
+      "Trigger a non-modal QAction or 0-arg slot (interactive modal dialogs are safely blocked).",
+      "name:str*; checked:bool=null", "app.trigger_action('actionNextWindow')" },
+    { "app.grab_gui_diagnostic", "app", "Session.call('app.grab_gui_diagnostic', path=...)",
+      "Capture main-window screenshot and ribbon/dock geometry diagnostics.",
+      "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0",
+      "app.call('app.grab_gui_diagnostic', path='ui.png')" },
+
+    // 2. Worksheet (table.*)
+    { "table.create", "table", "Session.create_table(rows=30, cols=2, *, name=None, columns=None)",
+      "Create a new worksheet Table (numeric columns default to 'g' 6-digit display; non-ASCII names preserved in windowLabel).",
+      "rows:int=30; cols:int=2; name:str=''; columns:list=[]; designations:list|dict=null",
+      "tbl = app.create_table(rows=20, cols=2, name='Tensile')" },
+    { "table.get_info", "table", "TableProxy.info()",
+      "Return worksheet dimensions, column names, modes, plot designations, long names, and units.",
+      "table:str=''", "tbl.info()" },
+    { "table.resize", "table", "TableProxy.resize(rows=None, cols=None)",
+      "Resize worksheet row count and/or column count.",
+      "table:str=''; rows:int=null; cols:int=null", "tbl.resize(rows=100, cols=4)" },
+    { "table.add_column", "table",
+      "TableProxy.add_column(name=None, *, plot_designation='Y', mode='numeric', units=None, long_name=None, data=None)",
+      "Append a new column with optional metadata and initial values.",
+      "table:str=''; name:str=''; plot_designation:str='Y'[X|Y|Z|xErr|yErr|Label|None]; mode:str='numeric'[numeric|text|datetime]; units:str=''; long_name:str=''; data:list=null",
+      "tbl.add_column('TrueStress', units='MPa', data=[100.0, 210.0])" },
+    { "table.remove_column", "table", "TableProxy.remove_column(col)",
+      "Remove a column by 0-based index or name.", "table:str=''; col:int|str*",
+      "tbl.remove_column('TempCol')" },
+    { "table.set_column_data", "table",
+      "TableProxy.set_col(col, data, *, mode=None, units=None, long_name=None, plot_designation=None)",
+      "Write an array of numeric or text values (None/NaN stored as invalid cells) and optional metadata.",
+      "table:str=''; col:int|str*; data:list*; mode:str=''; units:str=''; long_name:str=''; plot_designation:str=''",
+      "tbl.set_col('Strain', [0.0, 0.2, 0.5], units='%', plot_designation='X')" },
+    { "table.get_column_data", "table", "TableProxy.get_col(col)",
+      "Read column values (null for invalid/NaN cells) and row mask flags.",
+      "table:str=''; col:int|str*", "vals = tbl.get_col('Stress')" },
+    { "table.set_data_dict", "table",
+      "TableProxy.set_data_dict(data, *, units=None, long_names=None, designations=None, comments=None)",
+      "Populate multiple named columns in one call with units, long_names, and plot designations.",
+      "table:str=''; data:dict*; units:dict=null; long_names:dict=null; comments:dict=null; designations:dict=null",
+      "tbl.set_data_dict({'Strain': [0, 1], 'Stress': [0, 210]}, units={'Strain': '%', 'Stress': 'MPa'})" },
+    { "table.paste_tsv", "table",
+      "TableProxy.paste_tsv(text=None, *, header=True, separator=None, units_row=None, start_row=0, start_col=0)",
+      "Paste TSV/CSV text (or system clipboard) into a worksheet with automatic separator, 2-row [Name, Units], and 'Name (Unit)' header promotion.",
+      "table:str=''; text:str=''; header:bool=true; separator:str=''; units_row:int|bool|null=null; start_row:int=0; start_col:int=0; name:str=''",
+      "tbl.paste_tsv('Strain (%)\\tStress (MPa)\\n0.0\\t0.0\\n0.2\\t410.0')" },
+    { "table.set_cell", "table", "TableProxy.set_cell(row, col, value)",
+      "Set a single cell value (None/'NaN'/'' on a numeric column clears the cell to NaN without flipping column mode to text).",
+      "table:str=''; row:int*; col:int|str*; value:float|str|null*",
+      "tbl.set_cell(0, 'Stress', 412.5)" },
+    { "table.get_cell", "table", "TableProxy.get_cell(row, col)",
+      "Read a single cell's value, formatted text, invalid flag, and mask state.",
+      "table:str=''; row:int*; col:int|str*", "tbl.get_cell(0, 'Stress')" },
+    { "table.set_column_meta", "table",
+      "TableProxy.set_meta(col, *, name=None, long_name=None, units=None, comment=None, plot_designation=None, mode=None)",
+      "Update column name, Long Name, Units, Comment, plot designation, mode, or numeric format.",
+      "table:str=''; col:int|str*; name:str=''; long_name:str=''; units:str=''; comment:str=''; plot_designation:str=''; mode:str=''",
+      "tbl.set_meta('Stress', long_name='Engineering Stress', units='MPa')" },
+    { "table.set_col_metadata", "table", "TableProxy.set_meta(col, ...)",
+      "Alias of table.set_column_meta.", "table:str=''; col:int|str*; long_name:str=''; units:str=''",
+      "tbl.set_meta(1, units='MPa')" },
+    { "table.get_column_meta", "table", "TableProxy.get_meta(col)",
+      "Return column metadata (name, mode, plot_designation, long_name, units, comment, formula).",
+      "table:str=''; col:int|str*", "tbl.get_meta('Stress')" },
+    { "table.set_formula", "table", "TableProxy.set_formula(col, formula, *, recalculate=True)",
+      "Assign a muParser column formula (e.g. 'col(\"Stress\")*(1+col(\"Strain\")/100)') and evaluate it.",
+      "table:str=''; col:int|str*; formula:str*; recalculate:bool=true",
+      "tbl.set_formula('TrueStress', 'col(\"Stress\")*(1+col(\"Strain\")/100)')" },
+    { "table.recalculate", "table", "TableProxy.recalculate(col=None)",
+      "Recalculate one or all formula columns in the worksheet.",
+      "table:str=''; col:int|str=null", "tbl.recalculate()" },
+    { "table.mask_rows", "table", "TableProxy.mask_rows(rows=None, *, col=None, start_row=None, end_row=None)",
+      "Mask outlier rows so fits and statistics exclude them without deleting data.",
+      "table:str=''; rows:list[int]=null; col:int|str=null; start_row:int=null; end_row:int=null",
+      "tbl.mask_rows([5, 6], col='Stress')" },
+    { "table.unmask_rows", "table", "TableProxy.unmask_rows(rows=None, *, col=None)",
+      "Unmask specified rows (or all rows if omitted).",
+      "table:str=''; rows:list[int]=null; col:int|str=null", "tbl.unmask_rows()" },
+    { "table.clear_masks", "table", "TableProxy.clear_masks(col=None)",
+      "Clear all row masks on one column or the entire table.",
+      "table:str=''; col:int|str=null", "tbl.clear_masks()" },
+    { "table.get_masked_rows", "table", "TableProxy.get_masked_rows(col=None)",
+      "Return 0-based indices of masked rows in a column.",
+      "table:str=''; col:int|str=null", "tbl.get_masked_rows('Stress')" },
+    { "table.sort", "table", "TableProxy.sort(by_col=0, *, ascending=True, only_column=False)",
+      "Sort the entire worksheet (or a single column) by a leading column.",
+      "table:str=''; by:int|str=0; ascending:bool=true; only_column:bool=false",
+      "tbl.sort('Strain', ascending=True)" },
+    { "table.column_stats", "table", "TableProxy.column_stats(col=None, *, ignore_masked=True)",
+      "Compute descriptive statistics (n, mean, sd, se, min, q1, median, q3, iqr, max, sum) per column.",
+      "table:str=''; col:int|str=null; ignore_masked:bool=true", "tbl.column_stats('Stress')" },
+    { "table.row_stats", "table", "TableProxy.row_stats(rows=None)",
+      "Compute descriptive statistics across numeric columns for each row.",
+      "table:str=''; rows:list[int]=null", "tbl.row_stats([0, 1, 2])" },
+    { "table.export_csv", "table", "TableProxy.export_csv(path, *, separator=',', header=True, with_comments=False)",
+      "Export worksheet contents to an RFC 4180 UTF-8 CSV or TSV file.",
+      "table:str=''; path:str*; separator:str=','; header:bool=true; with_comments:bool=false",
+      "tbl.export_csv('results.csv')" },
+    { "table.to_matrix", "table", "TableProxy.to_matrix(name=None)",
+      "Convert numeric worksheet cells into a Matrix window (preserving invalid cells as NaN).",
+      "table:str=''; name:str=''", "m = tbl.to_matrix('GridMat')" },
+
+    // 3. Matrix (matrix.*)
+    { "matrix.create", "matrix",
+      "Session.create_matrix(rows=32, cols=32, *, name=None, x_min=None, x_max=None, y_min=None, y_max=None)",
+      "Create a 2D numeric Matrix window with optional physical X/Y coordinate bounds.",
+      "rows:int=32; cols:int=32; name:str=''; x_min:float=null; x_max:float=null; y_min:float=null; y_max:float=null",
+      "m = app.create_matrix(64, 64, name='Field', x_min=-1, x_max=1, y_min=-1, y_max=1)" },
+    { "matrix.get_info", "matrix", "MatrixProxy.info()",
+      "Return matrix dimensions, physical coordinate bounds, and value range.",
+      "matrix:str=''", "m.info()" },
+    { "matrix.set_coordinates", "matrix", "MatrixProxy.set_coordinates(x_min, x_max, y_min, y_max)",
+      "Set physical X and Y coordinate bounds of the matrix.",
+      "matrix:str=''; x_min:float*; x_max:float*; y_min:float*; y_max:float*",
+      "m.set_coordinates(0.0, 10.0, 0.0, 10.0)" },
+    { "matrix.set_data", "matrix", "MatrixProxy.set_data(rows_2d)",
+      "Populate matrix cells from a 2D row-major array (null/NaN preserved as quiet_NaN).",
+      "matrix:str=''; data:list[list[float]]*", "m.set_data([[1.0, 2.0], [3.0, 4.0]])" },
+    { "matrix.get_data", "matrix", "MatrixProxy.get_data()",
+      "Read matrix cells as a 2D row-major array (null for NaN).", "matrix:str=''",
+      "grid = m.get_data()" },
+    { "matrix.set_formula", "matrix", "MatrixProxy.set_formula(formula)",
+      "Evaluate a muParser expression f(x, y, i, j) over all matrix cells.",
+      "matrix:str=''; formula:str*", "m.set_formula('exp(-(x*x+y*y))')" },
+    { "matrix.transpose", "matrix", "MatrixProxy.transpose()", "Transpose the matrix in-place.",
+      "matrix:str=''", "m.transpose()" },
+    { "matrix.invert", "matrix", "MatrixProxy.invert()",
+      "Invert a square non-singular finite matrix in-place (throws -32602 if non-square or NaN/Inf).",
+      "matrix:str=''", "m.invert()" },
+    { "matrix.determinant", "matrix", "MatrixProxy.determinant()",
+      "Compute the determinant of a square finite matrix (throws -32602 if non-square or NaN/Inf).",
+      "matrix:str=''", "det = m.determinant()" },
+    { "matrix.flip", "matrix", "MatrixProxy.flip(mode='h')",
+      "Mirror or rotate matrix ('h', 'v', 'rot90_cw', 'rot90_ccw').",
+      "matrix:str=''; mode:str*[h|v|rot90_cw|rot90_ccw]", "m.flip('h')" },
+    { "matrix.fft2d", "matrix", "MatrixProxy.fft2d(*, inverse=False, shift_center=True)",
+      "Compute 2D FFT (or inverse 2D FFT) returning a new Matrix.",
+      "matrix:str=''; inverse:bool=false; shift_center:bool=true", "spec = m.fft2d()" },
+    { "matrix.filter2d", "matrix",
+      "MatrixProxy.filter2d(method='gaussian', *, sigma=1.5, radius=1, in_place=False, plot_heatmap=False)",
+      "Apply 2D image/surface filter ('gaussian', 'median', 'laplacian', 'sobel', 'planar_tilt').",
+      "matrix:str=''; method:str='gaussian'[gaussian|median|laplacian|sobel|planar_tilt]; sigma:float=1.5; radius:int=1; in_place:bool=false; plot_heatmap:bool=false",
+      "m.filter2d('gaussian', sigma=1.2, in_place=True)" },
+    { "matrix.analyze_2d_peaks", "matrix",
+      "MatrixProxy.analyze_2d_peaks(*, max_peaks=10, prominence=0.1, graph=None)",
+      "Find 2D local maxima and fit 2D Gaussian centers, amplitudes, FWHMs, and volumes.",
+      "matrix:str=''; max_peaks:int=10; prominence:float=0.1; graph:str=''",
+      "pks = m.analyze_2d_peaks(max_peaks=5)" },
+    { "matrix.to_table", "matrix", "MatrixProxy.to_table(name=None)",
+      "Convert matrix into a numeric worksheet Table (preserving NaN cells as invalid).",
+      "matrix:str=''; name:str=''", "tbl = m.to_table('FromMat')" },
+
+    // 4. Plotting (plot.*)
+    { "plot.xy", "plot",
+      "Session.plot_xy(table, x_col=None, y_cols=None, *, style='line_symbol', graph_name=None, title=None, xlabel=None, ylabel=None, xlim=None, ylim=None, color=None, lw=None, ls=None, marker=None, ms=None, symbol_skip=None)",
+      "Create a 2D XY plot (line, scatter, line_symbol, spline, area, vertical_bars, steps, stem) with optional inline curve styling and axis/title kwargs.",
+      "table:str*; x_col:int|str=null; y_cols:list|str=null; style:str='line_symbol'[line|scatter|line_symbol|spline|vertical_bars|horizontal_bars|area|vertical_steps|horizontal_steps|drop_lines]; graph_name:str=''; title:str=''; xlabel:str=''; ylabel:str=''; xlim:list[float]=null; ylim:list[float]=null; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
+      "g = app.plot_xy(tbl, 'Strain', ['Stress'], style='line', lw=2.0, color='#0072B2')" },
+    { "plot.stacked_bars", "plot",
+      "Session.plot_stacked_bars(table, x_col=None, y_cols=None, *, horizontal=False, percent_100=False)",
+      "Create a stacked vertical or horizontal bar/column chart (optionally 100% normalized).",
+      "table:str*; x_col:int|str=null; y_cols:list*; horizontal:bool=false; percent_100:bool=false; graph_name:str=''",
+      "g = app.plot_stacked_bars(tbl, 'Sample', ['PhaseA', 'PhaseB'])" },
+    { "plot.add_curve", "plot",
+      "GraphProxy.add_curve(table, y_col, *, x_col=None, style='line_symbol', layer=None, right_axis=False, color=None, lw=None, ls=None, marker=None, ms=None, symbol_skip=None)",
+      "Add a data curve onto an existing graph layer (supports inline matplotlib style kwargs).",
+      "graph:str*; table:str*; y_col:int|str*; x_col:int|str=null; style:str='line_symbol'; layer:int=null; right_axis:bool=false; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
+      "g.add_curve(tbl, 'Stress_300C', x_col='Strain', ls='--', color='#D55E00')" },
+    { "plot.remove_curve", "plot", "GraphProxy.remove_curve(curve, *, layer=None)",
+      "Remove a curve from a graph layer by title or 0-based index.",
+      "graph:str*; curve:int|str*; layer:int=null", "g.remove_curve(0)" },
+    { "plot.add_error_bars", "plot",
+      "GraphProxy.add_error_bars(err_col, *, curve=None, table=None, direction='y', layer=None)",
+      "Attach X or Y error bars from a worksheet column to an existing curve.",
+      "graph:str*; err_col:int|str*; curve:int|str=null; table:str=''; direction:str='y'[x|y]; layer:int=null",
+      "g.add_error_bars('Stress_SD', curve='Stress')" },
+    { "plot.double_y", "plot",
+      "Session.plot_double_y(table, x_col, y_left_col, y_right_col, *, graph_name=None)",
+      "Create a dual-Y-axis plot with left and right Y curves.",
+      "table:str*; x_col:int|str*; y_left_col:int|str*; y_right_col:int|str*; graph_name:str=''",
+      "g = app.plot_double_y(tbl, 'Time', 'Temp', 'Load')" },
+    { "plot.waterfall", "plot", "Session.plot_waterfall(table, *, x_col=None, y_cols=None, offset_x=10, offset_y=20)",
+      "Create an offset waterfall multi-curve plot (e.g. XRD / Raman temperature series).",
+      "table:str*; x_col:int|str=null; y_cols:list=null; offset_x:float=10; offset_y:float=20",
+      "g = app.plot_waterfall(tbl, 'TwoTheta', ['300K', '500K', '700K'])" },
+    { "plot.histogram", "plot", "Session.plot_histogram(table, col, *, bins=None, graph_name=None)",
+      "Plot a frequency histogram from a numeric column.",
+      "table:str*; col:int|str*; bins:int=null; graph_name:str=''",
+      "g = app.plot_histogram(tbl, 'GrainSize_um', bins=20)" },
+    { "plot.box", "plot", "Session.plot_box(table, cols, *, graph_name=None)",
+      "Create a statistical box-and-whisker plot across one or more columns.",
+      "table:str*; cols:list*; graph_name:str=''", "g = app.plot_box(tbl, ['BatchA', 'BatchB'])" },
+    { "plot.violin", "plot", "Session.plot_violin(table, cols, *, graph_name=None)",
+      "Create a kernel-density violin plot across numeric columns.",
+      "table:str*; cols:list*; graph_name:str=''", "g = app.plot_violin(tbl, ['BatchA', 'BatchB'])" },
+    { "plot.pareto", "plot", "Session.plot_pareto(table, category_col, value_col)",
+      "Create a Pareto bar + cumulative percentage curve chart.",
+      "table:str*; category_col:int|str*; value_col:int|str*",
+      "g = app.plot_pareto(tbl, 'DefectType', 'Count')" },
+    { "plot.qq", "plot", "Session.plot_qq(table, col)",
+      "Create a Normal Q-Q probability plot for a numeric column.",
+      "table:str*; col:int|str*", "g = app.plot_qq(tbl, 'Strength')" },
+    { "plot.pie", "plot", "Session.plot_pie(table, col, *, label_col=None)",
+      "Create a 2D pie chart from positive numeric values.",
+      "table:str*; col:int|str*; label_col:int|str=null", "g = app.plot_pie(tbl, 'Fraction')" },
+    { "plot.vectors", "plot", "Session.plot_vectors(table, x_col, y_col, u_col, v_col, *, mode='xyxy')",
+      "Create a 2D vector field plot ('xyxy' endpoints or 'xyam' angle/magnitude).",
+      "table:str*; x_col:int|str*; y_col:int|str*; u_col:int|str*; v_col:int|str*; mode:str='xyxy'[xyxy|xyam]",
+      "g = app.plot_vectors(tbl, 'X', 'Y', 'X2', 'Y2', mode='xyxy')" },
+    { "plot.ternary", "plot", "Session.plot_ternary(table, a_col, b_col, c_col)",
+      "Create a ternary phase diagram from three compositional columns (A + B + C).",
+      "table:str*; a_col:int|str*; b_col:int|str*; c_col:int|str*",
+      "g = app.plot_ternary(tbl, 'Fe', 'Cr', 'Ni')" },
+    { "plot.function", "plot", "Session.plot_function(formula, *, x_min=0.0, x_max=10.0, points=200)",
+      "Plot an analytical 2D function f(x), parametric (x(t), y(t)), or polar r(t).",
+      "formula:str|list*; x_min:float=0.0; x_max:float=10.0; points:int=200; type:str='normal'[normal|parametric|polar]",
+      "g = app.plot_function('sin(x)/x', x_min=0.1, x_max=20.0)" },
+    { "plot.matrix", "plot", "Session.plot_matrix(matrix, *, style='colormap', palette='viridis')",
+      "Plot a 2D Matrix as a colormap heatmap, contour map, or image.",
+      "matrix:str*; style:str='colormap'[colormap|contour|gray|image]; palette:str='viridis'",
+      "g = app.plot_matrix(m, style='colormap', palette='viridis')" },
+    { "plot.3d_matrix", "plot", "Session.plot_3d_matrix(matrix, *, style='surface')",
+      "Create an interactive 3D surface/mesh/bars plot from a Matrix.",
+      "matrix:str*; style:str='surface'[surface|wireframe|hidden_line|bars|scatter]",
+      "g3 = app.plot_3d_matrix(m, style='surface')" },
+    { "plot.3d_xyz", "plot", "Session.plot_3d_xyz(table, x_col, y_col, z_col, *, style='scatter')",
+      "Create a 3D XYZ scatter, trajectory, or bar plot from three worksheet columns.",
+      "table:str*; x_col:int|str*; y_col:int|str*; z_col:int|str*; style:str='scatter'[scatter|trajectory|bars]",
+      "g3 = app.plot_3d_xyz(tbl, 'X', 'Y', 'Z')" },
+    { "plot.3d_function", "plot", "Session.plot_3d_function(formula, *, x_min=-5, x_max=5, y_min=-5, y_max=5)",
+      "Create a 3D analytical surface z = f(x, y).",
+      "formula:str*; x_min:float=-5; x_max:float=5; y_min:float=-5; y_max:float=5",
+      "g3 = app.plot_3d_function('sin(x)*cos(y)')" },
+
+    // 5. Graph Layout, Inspection, Styling & Export (graph.*)
+    { "graph.get_info", "graph", "GraphProxy.info()",
+      "Return semantic summary of graph page, layers, axes, curves, spectrograms, and reference lines.",
+      "graph:str=''", "g.info()" },
+    { "graph.inspect", "graph", "GraphProxy.inspect(*, include_ticks=True, diagnose=True)",
+      "Return full semantic + pixel geometry state (layer/canvas/legend/marker bboxes, rendered ticks, curve bounds/clipping, symbol_skip) and 7 deterministic layout warnings.",
+      "graph:str=''; include_ticks:bool=true; diagnose:bool=true",
+      "snap = g.inspect(); print(snap['warnings'])" },
+    { "graph.add_layer", "graph", "GraphProxy.add_layer(*, x=0, y=0, width=0, height=0)",
+      "Add a new 2D plot layer to a MultiLayer graph window (returns 0-based layer index).",
+      "graph:str=''; x:int=0; y:int=0; width:int=0; height:int=0", "idx = g.add_layer()" },
+    { "graph.remove_layer", "graph", "GraphProxy.remove_layer(layer)",
+      "Remove a 0-based layer from a MultiLayer graph (requires >= 2 layers).",
+      "graph:str=''; layer:int*", "g.remove_layer(1)" },
+    { "graph.add_linked_layer", "graph",
+      "GraphProxy.add_linked_layer(*, parent_layer=0, link_x=True, link_y=False, x_formula='x', y_formula='y')",
+      "Add a transparent linked secondary-axis overlay layer (e.g. top-X Celsius / 1000/T).",
+      "graph:str=''; parent_layer:int=0; link_x:bool=true; link_y:bool=false; x_formula:str='x'; y_formula:str='y'",
+      "g.add_linked_layer(link_x=True, x_formula='1000/x - 273.15')" },
+    { "graph.add_inset_layer", "graph",
+      "GraphProxy.add_inset(*, source_layer=0, x_min=None, x_max=None, y_min=None, y_max=None, rel_x=0.55, rel_y=0.10, rel_w=0.38, rel_h=0.38, show_connectors=True)",
+      "Add a zoomed inset layer over a parent ROI while keeping parent active_layer intact.",
+      "graph:str=''; source_layer:int=0; x_min:float=null; x_max:float=null; y_min:float=null; y_max:float=null; rel_x:float=0.55; rel_y:float=0.10; rel_w:float=0.38; rel_h:float=0.38; show_connectors:bool=true",
+      "g.add_inset(x_min=0.0, x_max=0.5, y_min=0.0, y_max=450.0, show_connectors=True)" },
+    { "graph.add_inset", "graph", "GraphProxy.add_inset(...)",
+      "Alias of graph.add_inset_layer.",
+      "graph:str=''; source_layer:int=0; x_min:float=null; x_max:float=null; y_min:float=null; y_max:float=null; show_connectors:bool=true",
+      "g.add_inset(x_min=0.0, x_max=0.5)" },
+    { "graph.arrange_layers", "graph",
+      "GraphProxy.arrange_layers(rows=1, cols=1, *, row_spacing=None, col_spacing=None, share_x=False, share_y=False)",
+      "Arrange primary layers into a rows x cols multi-panel grid.",
+      "graph:str=''; rows:int=1; cols:int=1; row_spacing:int=null; col_spacing:int=null; left_margin:int=null; right_margin:int=null; top_margin:int=null; bottom_margin:int=null; fit:bool=true",
+      "g.arrange_layers(rows=2, cols=2)" },
+    { "graph.merge_graphs", "graph",
+      "Session.merge_graphs(graphs, *, rows=0, cols=0, name=None, panel_labels=True)",
+      "Combine multiple open 2D MultiLayer graphs into a single multi-panel figure preserving linked overlays.",
+      "graphs:list[str]*; rows:int=0; cols:int=0; name:str=''; panel_labels:bool=true; close_sources:bool=false",
+      "merged = app.merge_graphs([g1, g2], rows=1, cols=2)" },
+    { "graph.set_page_size", "graph",
+      "GraphProxy.set_page_size(width, height, *, unit='mm', dpi=300, page_view=True, zoom=1.0)",
+      "Set physical journal figure dimensions (mm, cm, inch, or px) and export DPI.",
+      "graph:str=''; width:float*; height:float*; unit:str='mm'[mm|cm|inch|px]; dpi:int=300; page_view:bool=true; zoom:float=1.0",
+      "g.set_page_size(85, 65, unit='mm', dpi=600)" },
+    { "graph.fit_page_to_layers", "graph", "GraphProxy.fit_page_to_layers(margin_px=14)",
+      "Resize the page to tightly wrap all layers.", "graph:str=''; margin_px:int=14",
+      "g.fit_page_to_layers()" },
+    { "graph.fit_layers_to_page", "graph", "GraphProxy.fit_layers_to_page()",
+      "Refit all primary layers into the current physical page dimensions.", "graph:str=''",
+      "g.fit_layers_to_page()" },
+    { "graph.apply_style_preset", "graph", "GraphProxy.apply_style_preset(preset='isij_85mm')",
+      "Apply one-click journal/slide typography & sizing preset ('isij_85mm', 'nature_89mm', 'slide_28pt').",
+      "graph:str=''; preset:str='isij_85mm'[isij_85mm|nature_89mm|slide_28pt]",
+      "g.apply_style_preset('isij_85mm')" },
+    { "graph.apply_frame_preset", "graph", "GraphProxy.apply_frame_preset(preset='box_inward', *, layer=None)",
+      "Apply 4-wall box + inward ticks ('box_inward'), open L-axes ('open_l'), or 'top_right_off'.",
+      "graph:str=''; preset:str='box_inward'[box_inward|open_l|top_right_off]; layer:int=null",
+      "g.apply_frame_preset('box_inward')" },
+    { "graph.set_aspect_ratio", "graph", "GraphProxy.set_aspect_ratio(ratio=1.0, *, keep=True)",
+      "Lock or set target canvas width/height aspect ratio.",
+      "graph:str=''; ratio:float=1.0; keep:bool=true", "g.set_aspect_ratio(1.0, keep=True)" },
+    { "graph.copy_format", "graph", "GraphProxy.copy_format(layer=None)",
+      "Copy page, axis, frame, font, and curve style formatting to the RPC format clipboard.",
+      "graph:str=''; layer:int=null", "g.copy_format()" },
+    { "graph.paste_format", "graph", "GraphProxy.paste_format(layer=None)",
+      "Paste copied graph formatting onto another graph window.", "graph:str=''; layer:int=null",
+      "g2.paste_format()" },
+    { "graph.batch_clone", "graph", "GraphProxy.batch_clone(tables, *, x_col=None, y_cols=None)",
+      "Clone a formatted template graph across multiple data tables.",
+      "graph:str*; tables:list[str]*; x_col:int|str=null; y_cols:list=null",
+      "g.batch_clone(['Tbl2', 'Tbl3'])" },
+    { "graph.set_title", "graph", "GraphProxy.set_title(title='', *, font_size=None, color=None, layer=None)",
+      "Set or clear the layer plot title (enforcing non-bold Arial).",
+      "graph:str=''; title:str=''; font_size:int=null; color:str=''; layer:int=null",
+      "g.set_title('SUS304 Room-Temperature Tensile')" },
+    { "graph.set_axis", "graph",
+      "GraphProxy.set_axis(axis='x', *, title=None, min=None, max=None, lim=None, step=None, scale=None, show_labels=None, show_ticks=None, unit_format=None, tick_format=None, precision=None, label_rotation=None, layer=None)",
+      "Configure axis title, limits (min/max or lim), linear/log10 scale, tick/label visibility, unit format ('paren'|'slash'|'bracket'), numeric tick format, precision, and rotation.",
+      "graph:str=''; axis:str='x'[x|y|top|right]; title:str=null; min:float=null; max:float=null; lim:list[float]=null; step:float=null; scale:str=null[linear|log10]; inverted:bool=null; enabled:bool=null; show_labels:bool=null; show_ticks:bool=null; ticks_inward:bool=null; unit_format:str=null[paren|slash|bracket]; tick_format:str=null[auto|f|e|superscript]; precision:int=null; label_rotation:int=null; layer:int=null",
+      "g.set_axis('x', title='Strain (%)', lim=[0, 25], unit_format='paren')" },
+    { "graph.sync_axis_color", "graph", "GraphProxy.sync_axis_color(axis='right', *, curve=None, reset=False, layer=None)",
+      "Colorize an axis backbone, ticks, numbers, and title to match a curve (typical for double-Y plots).",
+      "graph:str=''; axis:str='right'[x|y|top|right]; curve:int|str=null; reset:bool=false; layer:int=null",
+      "g.sync_axis_color('right', curve=1)" },
+    { "graph.set_axis_break", "graph",
+      "GraphProxy.set_axis_break(axis='x', *, enabled=True, start=None, end=None, position_pct=50.0, layer=None)",
+      "Enable or disable a discontinuous scale break on an axis.",
+      "graph:str=''; axis:str='x'[x|y|top|right]; enabled:bool=true; start:float=null; end:float=null; position_pct:float=50.0; layer:int=null",
+      "g.set_axis_break('x', start=5.0, end=45.0)" },
+    { "graph.step_zoom_history", "graph", "GraphProxy.step_zoom_history(direction='back', *, layer=None)",
+      "Step backward or forward through interactive/RPC axis zoom history.",
+      "graph:str=''; direction:str='back'[back|forward]; layer:int=null",
+      "g.step_zoom_history('back')" },
+    { "graph.add_reference_line", "graph",
+      "GraphProxy.add_reference_line(*, orientation='horizontal', value=0.0, label='', color='#444444', style='dash', width=1.2, layer=None)",
+      "Add a horizontal or vertical constant/statistical reference line.",
+      "graph:str=''; orientation:str='horizontal'[horizontal|vertical]; value:float=0.0; stat_mode:str=''; label:str=''; color:str='#444444'; style:str='dash'[solid|dash|dot|dashdot]; width:float=1.2; layer:int=null",
+      "g.add_reference_line(orientation='horizontal', value=410.0, label='0.2% Proof Stress')" },
+    { "graph.remove_reference_line", "graph", "GraphProxy.remove_reference_line(index, *, layer=None)",
+      "Remove a single reference line by 0-based index from a layer.",
+      "graph:str=''; index:int*; layer:int=null", "g.remove_reference_line(0)" },
+    { "graph.clear_reference_lines", "graph", "GraphProxy.clear_reference_lines(*, layer=None)",
+      "Clear all reference lines on a graph layer.", "graph:str=''; layer:int=null",
+      "g.clear_reference_lines()" },
+    { "graph.add_shaded_band", "graph",
+      "GraphProxy.add_shaded_band(x, y_low, y_high, *, color='#4C78A8', alpha=55, label='', layer=None)",
+      "Add a translucent shaded confidence/tolerance band polygon.",
+      "graph:str=''; x:list[float]*; y_low:list[float]*; y_high:list[float]*; color:str='#4C78A8'; alpha:int=55; label:str=''; layer:int=null",
+      "g.add_shaded_band([0, 10], [95, 95], [105, 105], label='95% CI')" },
+    { "graph.set_grid", "graph", "GraphProxy.set_grid(*, x_major=False, y_major=False, x_minor=False, y_minor=False, layer=None)",
+      "Configure major and minor X/Y grid lines.",
+      "graph:str=''; x_major:bool=false; y_major:bool=false; x_minor:bool=false; y_minor:bool=false; color:str=''; layer:int=null",
+      "g.set_grid(x_major=True, y_major=True)" },
+    { "graph.set_curve_style", "graph",
+      "GraphProxy.set_curve_style(curve=0, *, color=None, line_width=None, lw=None, line_style=None, ls=None, symbol_style=None, marker=None, symbol_size=None, ms=None, symbol_hollow=None, symbol_skip=None, alpha=None, layer=None)",
+      "Set curve color, line width/style ('-','--',':','-.'), marker shape ('o','s','^','v','D','x','+','none'), size, hollow fill, and N-th symbol decimation (symbol_skip).",
+      "graph:str=''; curve:int|str=0; color:str=''; line_width:float=null; lw:float=null; line_style:str=null[-|--|:|-.|solid|dash|dot|dashdot|none]; ls:str=null; symbol_style:str=null[o|s|^|v|<|>|D|x|+|*|h|none]; marker:str=null; symbol_size:int=null; ms:int=null; symbol_hollow:bool=null; symbol_skip:int=null; alpha:int=null; layer:int=null",
+      "g.set_curve_style(0, color='#0072B2', lw=2.0, ls='-', marker='o', ms=6, symbol_skip=10)" },
+    { "graph.set_curve_visible", "graph", "GraphProxy.set_curve_visible(curve, visible=True, *, layer=None)",
+      "Show or hide a curve without deleting it.",
+      "graph:str=''; curve:int|str*; visible:bool=true; layer:int=null",
+      "g.set_curve_visible(0, False)" },
+    { "graph.move_curve", "graph", "GraphProxy.move_curve(curve, direction='up', *, layer=None)",
+      "Reorder curve Z-order ('up', 'down', 'top', 'bottom').",
+      "graph:str=''; curve:int|str*; direction:str='up'[up|down|top|bottom]; layer:int=null",
+      "g.move_curve(1, 'top')" },
+    { "graph.set_stack_offsets", "graph", "GraphProxy.set_stack_offsets(*, y_offset=0.0, x_offset=0.0, auto_waterfall=False, layer=None)",
+      "Apply vertical/horizontal stack offsets across curves (XRD / spectroscopy waterfall).",
+      "graph:str=''; y_offset:float=0.0; x_offset:float=0.0; auto_waterfall:bool=false; layer:int=null",
+      "g.set_stack_offsets(auto_waterfall=True)" },
+    { "graph.apply_series_scheme", "graph", "GraphProxy.apply_series_scheme(scheme='okabe_ito', *, group_size=2, layer=None)",
+      "Apply multi-curve publication styling scheme ('okabe_ito', 'bw_hollow_filled', 'blue_red_hollow', 'muted_categorical', 'cool_to_warm', 'viridis', 'origin_classic').",
+      "graph:str=''; scheme:str='okabe_ito'[okabe_ito|bw_hollow_filled|blue_red_hollow|muted_categorical|cool_to_warm|viridis|origin_classic]; group_size:int=2; layer:int=null",
+      "g.apply_series_scheme('okabe_ito')" },
+    { "graph.apply_palette", "graph", "GraphProxy.apply_palette(palette='Okabe-Ito', *, sequential=False, layer=None)",
+      "Apply a named colorblind-safe or journal color palette across curves.",
+      "graph:str=''; palette:str*[Okabe-Ito|Paul Tol Bright|Paul Tol Muted|ISIJ Monochrome|Nature NPG|Science AAAS|Viridis|Plasma|Inferno|Cividis|CoolWarm]; sequential:bool=false; layer:int=null",
+      "g.apply_palette('Okabe-Ito')" },
+    { "graph.set_colorbar", "graph",
+      "GraphProxy.set_colorbar(*, palette='viridis', z_min=None, z_max=None, title=None, levels=None, show_contour_lines=None, layer=None)",
+      "Configure spectrogram colormap, Z range, contour levels, and colorbar title.",
+      "graph:str=''; palette:str='viridis'[viridis|plasma|inferno|magma|cividis|jet|coolwarm|bwr|grayscale]; z_min:float=null; z_max:float=null; title:str=null; levels:int=null; show_contour_lines:bool=null; layer:int=null",
+      "g.set_colorbar(palette='viridis', title='Intensity (a.u.)')" },
+    { "graph.set_legend", "graph",
+      "GraphProxy.set_legend(*, visible=None, position=None, columns=None, font_size=None, frame=None, text=None, layer=None)",
+      "Configure legend visibility, anchor ('auto', 'top_right', 'top_left', 'bottom_right', 'bottom_left', 'outside_right'), columns, font size, and frame.",
+      "graph:str=''; visible:bool=null; position:str=null[auto|avoid_data|top_right|top_left|bottom_right|bottom_left|top_center|bottom_center|outside_right]; columns:int=null; font_size:int=null; frame:bool|int=null; text:str=null; layer:int=null",
+      "g.set_legend(position='auto', frame=False)" },
+    { "graph.auto_place_legend", "graph", "GraphProxy.auto_place_legend(layer=None)",
+      "Automatically place the legend at the lowest-density anchor avoiding plotted curves.",
+      "graph:str=''; layer:int=null", "g.auto_place_legend()" },
+    { "graph.set_panel_labels", "graph",
+      "GraphProxy.set_panel_labels(enabled=True, *, placement='outside_top_left', pattern='(%a)', font_pt=0)",
+      "Enable or configure automatic multi-panel labels (a), (b), (c)...",
+      "graph:str=''; enabled:bool=true; placement:str='outside_top_left'[outside_top_left|inside_top_left]; pattern:str='(%a)'; font_pt:int=0",
+      "g.set_panel_labels(True, pattern='(%a)')" },
+    { "graph.apply_square_frame", "graph", "GraphProxy.apply_square_frame()",
+      "Normalize primary plot canvases to the clean 70% square journal frame.", "graph:str=''",
+      "g.apply_square_frame()" },
+    { "graph.drop_columns", "graph", "Session.drop_columns(graph, table, cols, *, layer=None)",
+      "Plot worksheet columns onto an existing graph layer (equivalent to Explorer drag-and-drop).",
+      "graph:str*; table:str*; cols:list*; layer:int=null",
+      "app.drop_columns(g, tbl, ['Stress_2'])" },
+    { "graph.add_text", "graph",
+      "GraphProxy.add_text(text, x, y, *, font_size=11, color='#000000', frame=0, angle=0, layer=None)",
+      "Add an Arial text callout/annotation at data coordinates (x, y) returning marker id.",
+      "graph:str=''; text:str*; x:float*; y:float*; font_size:int=11; color:str='#000000'; frame:int=0; angle:int=0; layer:int=null",
+      "m = g.add_text('Yield Point', x=0.22, y=415.0)" },
+    { "graph.add_arrow", "graph",
+      "GraphProxy.add_arrow(x1, y1, x2, y2, *, color='#000000', width=1, end_arrow=True, start_arrow=False, layer=None)",
+      "Add a line/arrow marker between data coordinates (x1, y1) and (x2, y2) returning marker id.",
+      "graph:str=''; x1:float*; y1:float*; x2:float*; y2:float*; color:str='#000000'; width:int=1; style:str='solid'; end_arrow:bool=true; start_arrow:bool=false; layer:int=null",
+      "a = g.add_arrow(0.5, 450, 0.22, 412)" },
+    { "graph.remove_marker", "graph",
+      "GraphProxy.remove_marker(marker_id=None, *, kind=None, index=None, clear_all=False, layer=None)",
+      "Remove a text or arrow marker by marker_id, 0-based index (+ kind='text'|'arrow'), or clear_all=True.",
+      "graph:str=''; marker_id:int=null; kind:str=null[text|arrow]; index:int=null; all:bool=false; layer:int=null",
+      "g.remove_marker(m['id'])" },
+    { "graph.mask_region", "graph",
+      "GraphProxy.mask_region(x_min, x_max, *, y_min=None, y_max=None, curve=None, unmask=False, layer=None)",
+      "Mask (or unmask) data points falling inside a rectangular data ROI.",
+      "graph:str=''; x_min:float*; x_max:float*; y_min:float=null; y_max:float=null; curve:int|str=null; unmask:bool=false; layer:int=null",
+      "g.mask_region(4.8, 5.2)" },
+    { "graph.clear_masks", "graph", "GraphProxy.clear_masks(curve=None, *, layer=None)",
+      "Clear all masked points on one curve or all curves on a layer.",
+      "graph:str=''; curve:int|str=null; layer:int=null", "g.clear_masks()" },
+    { "graph.export", "graph", "GraphProxy.export(path, *, dpi=300, transparent=False)",
+      "Export 2D or 3D graph to PDF, SVG, EPS, EMF, PNG, or TIFF.",
+      "graph:str=''; path:str*; dpi:int=300; transparent:bool=false",
+      "g.export('figure1.pdf', dpi=600)" },
+    { "graph.copy_image", "graph", "GraphProxy.copy_image(dpi=300)",
+      "Copy rendered graph raster image to the system clipboard.", "graph:str=''; dpi:int=300",
+      "g.copy_image(dpi=300)" },
+    { "graph.copy_ole", "graph", "GraphProxy.copy_ole()",
+      "Place editable ToriGraph OLE object + vector EMF on Windows clipboard for Word/PowerPoint.",
+      "graph:str=''", "g.copy_ole()" },
+    { "graph.set_3d_options", "graph",
+      "GraphProxy.set_3d_options(*, title=None, x_rotation=None, y_rotation=None, z_rotation=None, zoom=None, orthogonal=None)",
+      "Configure 3D Graph camera angles, zoom, projection, resolution, and axes labels.",
+      "graph:str*; title:str=null; x_rotation:float=null; y_rotation:float=null; z_rotation:float=null; zoom:float=null; orthogonal:bool=null",
+      "g3.set_3d_options(x_rotation=30, z_rotation=45)" },
+
+    // 6. Curve Fitting & Peak Analysis (analysis.*)
+    { "analysis.list_fit_models", "analysis", "Session.list_fit_models(category=None)",
+      "List built-in Origin-class nonlinear fit models, formulas, and parameter names.",
+      "category:str=''", "app.list_fit_models()" },
+    { "analysis.fit_linear", "analysis",
+      "Session.fit_linear(*, graph=None, curve=None, table=None, x_col=None, y_col=None, x_min=None, x_max=None, plot_curve=True, fit_label=None)",
+      "Perform weighted/unweighted linear regression returning slope, intercept, errors, R2, Pearson r, and ANOVA p-value.",
+      "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; x_min:float=null; x_max:float=null; plot_curve:bool=true; fit_label:str=''",
+      "res = app.fit_linear(graph=g, x_min=0.0, x_max=0.2)" },
+    { "analysis.fit_york", "analysis", "Session.fit_york(table, x_col, y_col, x_err_col, y_err_col)",
+      "Perform York bivariate errors-in-variables linear regression.",
+      "table:str*; x_col:int|str*; y_col:int|str*; x_err_col:int|str*; y_err_col:int|str*",
+      "app.fit_york(tbl, 'X', 'Y', 'sX', 'sY')" },
+    { "analysis.fit_polynomial", "analysis",
+      "Session.fit_polynomial(*, order=2, graph=None, curve=None, table=None, x_col=None, y_col=None, plot_curve=True, fit_label=None)",
+      "Fit an N-th order polynomial returning coefficients, errors, R2, and optional fit curve.",
+      "order:int=2; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; plot_curve:bool=true; fit_label:str=''",
+      "res = app.fit_polynomial(graph=g, order=3)" },
+    { "analysis.fit_nonlinear", "analysis",
+      "Session.fit_nonlinear(*, model=None, formula=None, graph=None, curve=None, init_params=None, bounds=None, fixed=None, plot_curve=True, fit_label=None)",
+      "Fit a built-in nonlinear model ('Gauss'/'Gaussian', 'GaussAmp', 'Lorentz'/'Lorentzian', 'PseudoVoigt1', 'Boltzmann', 'Arrhenius', 'Hollomon', 'Voce', ...) or custom muParser formula.",
+      "model:str=''; formula:str=''; param_names:list=null; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; init_params:dict=null; bounds:dict=null; fixed:list=null; plot_curve:bool=true; fit_label:str=''",
+      "res = app.fit_nonlinear(graph=g, model='Gaussian')" },
+    { "analysis.fit_global", "analysis",
+      "Session.fit_global(*, graph=None, curves=None, model=None, formula=None, shared_params=None)",
+      "Simultaneously fit multiple curves sharing global physical parameters.",
+      "graph:str*; curves:list=null; model:str=''; formula:str=''; shared_params:list=null",
+      "app.fit_global(graph=g, model='Arrhenius', shared_params=['Ea'])" },
+    { "analysis.fit_piecewise", "analysis", "Session.fit_piecewise(*, segments=2, graph=None, curve=None)",
+      "Fit continuous piecewise-linear segments with automatic breakpoint optimization.",
+      "segments:int=2; graph:str=''; curve:int|str=null; table:str=''",
+      "app.fit_piecewise(graph=g, segments=2)" },
+    { "analysis.fit_robust", "analysis", "Session.fit_robust(*, method='huber', graph=None, curve=None)",
+      "Perform outlier-resistant linear regression ('huber', 'bisquare', 'theil_sen').",
+      "method:str='huber'[huber|bisquare|theil_sen]; graph:str=''; curve:int|str=null",
+      "app.fit_robust(graph=g, method='theil_sen')" },
+    { "analysis.fit_quantile", "analysis", "Session.fit_quantile(*, tau=0.5, graph=None, curve=None)",
+      "Perform quantile regression for conditional quantile tau in (0, 1).",
+      "tau:float=0.5; graph:str=''; curve:int|str=null", "app.fit_quantile(graph=g, tau=0.5)" },
+    { "analysis.fit_logistic", "analysis", "Session.fit_logistic(table, x_col, y_col)",
+      "Fit binary logistic regression P(Y=1|X) returning odds ratio, AUC, and p-values.",
+      "table:str*; x_col:int|str*; y_col:int|str*", "app.fit_logistic(tbl, 'Dose', 'Response')" },
+    { "analysis.fit_mlr", "analysis", "Session.fit_mlr(table, x_cols, y_col)",
+      "Fit multiple linear regression across multiple predictor columns with VIF diagnostics.",
+      "table:str*; x_cols:list*; y_col:int|str*", "app.fit_mlr(tbl, ['C_pct', 'Mn_pct'], 'UTS')" },
+    { "analysis.fit_implicit_odr", "analysis", "Session.fit_implicit_odr(table, x_col, y_col, *, model='circle')",
+      "Fit implicit geometric orthogonal distance regression ('circle', 'ellipse', or custom F(x,y)=0).",
+      "table:str*; x_col:int|str*; y_col:int|str*; model:str='circle'[circle|ellipse|custom]",
+      "app.fit_implicit_odr(tbl, 'X', 'Y', model='circle')" },
+    { "analysis.fit_surface_3d", "analysis", "Session.fit_surface_3d(*, matrix=None, model='gaussian2d')",
+      "Fit a 3D surface z = f(x, y) ('plane', 'paraboloid', 'gaussian2d', 'lorentzian2d', or custom).",
+      "matrix:str=''; table:str=''; model:str='gaussian2d'[plane|paraboloid|gaussian2d|lorentzian2d|custom]",
+      "app.fit_surface_3d(matrix=m, model='gaussian2d')" },
+    { "analysis.compare_models", "analysis", "Session.compare_models(*, models=..., graph=None, curve=None)",
+      "Rank candidate nonlinear models by AICc, BIC, and F-test.",
+      "models:list*; graph:str=''; curve:int|str=null",
+      "app.compare_models(graph=g, models=['Gauss', 'Lorentz', 'PseudoVoigt1'])" },
+    { "analysis.compare_datasets", "analysis", "Session.compare_datasets(*, graph=None, model='Gauss')",
+      "Test parameter invariance across multiple curves using nested global F-test.",
+      "graph:str*; model:str*; curves:list=null", "app.compare_datasets(graph=g, model='Gauss')" },
+    { "analysis.analyze_peaks", "analysis",
+      "Session.analyze_peaks(*, graph=None, curve=None, profile='PseudoVoigt', peak_count=None, baseline='als', plot_components=True)",
+      "Baseline-subtract and deconvolve multi-peak spectra (XRD, XPS, Raman, TDS) with baseline-aware component & envelope curves.",
+      "graph:str=''; curve:int|str=null; table:str=''; profile:str='PseudoVoigt'[Gauss|GaussAmp|Lorentz|PseudoVoigt|Voigt|PearsonVII|BiGaussian|EMG|LogNormal|DoniachSunjic]; peak_count:int=null; baseline:str='als'[none|constant|linear|als|anchors]; plot_components:bool=true",
+      "res = app.analyze_peaks(graph=g, profile='PseudoVoigt', baseline='als')" },
+    { "analysis.batch_peaks", "analysis", "Session.batch_peaks(table, x_col, y_cols, *, profile='PseudoVoigt')",
+      "Run automated peak deconvolution across a batch of Y columns.",
+      "table:str*; x_col:int|str*; y_cols:list*; profile:str='PseudoVoigt'; baseline:str='als'",
+      "app.batch_peaks(tbl, 'TwoTheta', ['S1', 'S2', 'S3'])" },
+
+    // 7. Interactive Gadgets (gadget.*)
+    { "gadget.attach", "gadget", "Session.attach_gadget(graph, gadget_type='roi_stats', *, x_min=None, x_max=None)",
+      "Attach an live ROI/cursor gadget ('roi_stats', 'quick_fit', 'quick_peaks', 'integrate', 'delta_cursor', 'vertical_cursor', 'image_profile').",
+      "graph:str*; type:str='roi_stats'; curve:int|str=null; x_min:float=null; x_max:float=null",
+      "app.attach_gadget(g, 'roi_stats', x_min=1.0, x_max=5.0)" },
+    { "gadget.set_roi", "gadget", "Session.set_gadget_roi(graph, *, x_min=None, x_max=None)",
+      "Move an active gadget's ROI or cursor coordinates and recalculate.",
+      "graph:str*; x_min:float=null; x_max:float=null; x1:float=null; x2:float=null",
+      "app.set_gadget_roi(g, x_min=2.0, x_max=6.0)" },
+    { "gadget.query", "gadget", "Session.query_gadget(graph, *, create_table=False)",
+      "Read live metrics from the active gadget on a graph.",
+      "graph:str*; create_table:bool=false", "app.query_gadget(g)" },
+    { "gadget.clear", "gadget", "Session.clear_gadget(graph)",
+      "Detach and remove the active gadget from a graph.", "graph:str*", "app.clear_gadget(g)" },
+
+    // 8. Signal Processing (signal.*)
+    { "signal.smooth", "signal", "Session.smooth(*, method='savgol', window=7, poly_order=2, graph=None, curve=None)",
+      "Smooth noisy curve data ('savgol', 'fft', 'average', 'median', 'lowess', 'whittaker', 'gaussian').",
+      "method:str='savgol'[savgol|fft|average|median|lowess|whittaker|gaussian]; window:int=7; poly_order:int=2; span:float=0.2; lambda:float=100.0; graph:str=''; curve:int|str=null",
+      "app.smooth(graph=g, method='savgol', window=9, poly_order=3)" },
+    { "signal.savgol_derivative", "signal", "Session.savgol_derivative(*, order=1, window=9, poly_order=3, graph=None)",
+      "Compute regularized Savitzky-Golay 1st/2nd/3rd derivative curve.",
+      "order:int=1; window:int=9; poly_order:int=3; graph:str=''; curve:int|str=null",
+      "app.savgol_derivative(graph=g, order=1, window=11)" },
+    { "signal.fft", "signal", "Session.fft(*, graph=None, table=None, sampling=None, inverse=False)",
+      "Compute 1D forward or inverse Fast Fourier Transform.",
+      "graph:str=''; curve:int|str=null; table:str=''; real_col:int|str=null; sampling:float=null; inverse:bool=false",
+      "app.fft(graph=g)" },
+    { "signal.fft_filter", "signal", "Session.fft_filter(*, filter_type='lowpass', cutoff=10.0, graph=None)",
+      "Apply FFT frequency-domain filter ('lowpass', 'highpass', 'bandpass', 'bandblock').",
+      "filter_type:str='lowpass'[lowpass|highpass|bandpass|bandblock]; cutoff:float*; high_cutoff:float=null; graph:str=''",
+      "app.fft_filter(graph=g, filter_type='lowpass', cutoff=50.0)" },
+    { "signal.iir_filter", "signal", "Session.iir_filter(*, design='butterworth', mode='lowpass', cutoff=10.0, order=4, graph=None)",
+      "Apply zero-phase forward-backward IIR digital filter (Butterworth/Bessel/Chebyshev).",
+      "design:str='butterworth'; mode:str='lowpass'; order:int=4; cutoff:float*; graph:str=''",
+      "app.iir_filter(graph=g, cutoff=25.0, order=4)" },
+    { "signal.stft", "signal", "Session.stft(*, window_size=64, overlap=32, graph=None)",
+      "Compute Short-Time Fourier Transform spectrogram matrix.",
+      "window_size:int=64; overlap:int=32; graph:str=''", "app.stft(graph=g, window_size=128)" },
+    { "signal.envelope", "signal", "Session.hilbert_envelope(*, graph=None, curve=None)",
+      "Compute upper/lower Hilbert analytic signal envelope.", "graph:str=''; curve:int|str=null",
+      "app.hilbert_envelope(graph=g)" },
+    { "signal.wavelet_cwt", "signal", "Session.wavelet_cwt(*, scales=32, graph=None)",
+      "Compute Morlet Continuous Wavelet Transform scalogram.", "scales:int=32; graph:str=''",
+      "app.wavelet_cwt(graph=g, scales=32)" },
+    { "signal.wavelet_denoise", "signal", "Session.wavelet_denoise(*, levels=4, graph=None)",
+      "Perform Haar/Daubechies wavelet soft-threshold denoising.", "levels:int=4; graph:str=''",
+      "app.wavelet_denoise(graph=g, levels=4)" },
+    { "signal.welch_psd", "signal", "Session.welch_psd(*, segment_len=128, graph=None)",
+      "Estimate power spectral density via Welch overlapped periodograms.",
+      "segment_len:int=128; graph:str=''", "app.welch_psd(graph=g)" },
+    { "signal.coherence", "signal", "Session.coherence(table, x_col, y1_col, y2_col)",
+      "Compute cross-correlation and magnitude-squared coherence between two signals.",
+      "table:str*; x_col:int|str*; y1_col:int|str*; y2_col:int|str*",
+      "app.coherence(tbl, 'Time', 'Sig1', 'Sig2')" },
+    { "signal.decimate", "signal", "Session.decimate(*, factor=4, graph=None)",
+      "Anti-aliased signal downsampling/decimation by an integer factor.",
+      "factor:int=4; graph:str=''", "app.decimate(graph=g, factor=5)" },
+    { "signal.fsd", "signal", "Session.fourier_self_deconvolution(*, gamma=2.0, smoothing=0.2, graph=None)",
+      "Resolution-enhancing Fourier Self-Deconvolution for overlapping IR/Raman bands.",
+      "gamma:float=2.0; smoothing:float=0.2; graph:str=''",
+      "app.fourier_self_deconvolution(graph=g, gamma=2.5)" },
+
+    // 9. Curve Math & Materials Science (curvemath.*)
+    { "curvemath.eval", "curvemath", "Session.curve_math(graph, curve_a, curve_b, *, op='sub')",
+      "Binary math (+, -, *, /) between two curves interpolated onto a common X grid.",
+      "graph:str*; curve_a:int|str*; curve_b:int|str*; op:str='sub'[add|sub|mul|div]",
+      "app.curve_math(g, 'Sample', 'Blank', op='sub')" },
+    { "curvemath.average_curves", "curvemath", "Session.average_curves(graph, *, curves=None, points=200)",
+      "Compute mean curve and +/- SD shaded band across replicate curves.",
+      "graph:str*; curves:list=null; points:int=200", "app.average_curves(g)" },
+    { "curvemath.normalize", "curvemath", "Session.normalize_curve(*, mode='minmax', graph=None, curve=None)",
+      "Normalize curve intensities ('max', 'minmax', 'area', 'zscore', 'ref_x').",
+      "mode:str='minmax'[max|minmax|area|zscore|ref_x]; ref_x:float=0.0; graph:str=''; curve:int|str=null",
+      "app.normalize_curve(graph=g, mode='max')" },
+    { "curvemath.integrate", "curvemath",
+      "Session.integrate_curve(*, graph=None, curve=None, x_min=None, x_max=None, method='linear', plot_curve=False)",
+      "Numerically integrate curve area over [x_min, x_max] (strictly distinct X; optional cumulative integral curve when plot_curve=True).",
+      "graph:str=''; curve:int|str=null; x_min:float=null; x_max:float=null; method:str='linear'[linear|cubic|akima]; plot_curve:bool=false",
+      "res = app.integrate_curve(graph=g, x_min=0.0, x_max=10.0)" },
+    { "curvemath.differentiate", "curvemath", "Session.differentiate_curve(*, graph=None, curve=None, x_min=None, x_max=None)",
+      "Compute central-difference derivative dY/dX (>= 4 valid points) returning new graph, table, and output_curve.",
+      "graph:str=''; curve:int|str=null; x_min:float=null; x_max:float=null",
+      "res = app.differentiate_curve(graph=g)" },
+    { "curvemath.interpolate", "curvemath",
+      "Session.interpolate_curve(*, method='spline', points=200, graph=None, curve=None)",
+      "Interpolate curve onto a uniform grid ('linear' >=2 pts, 'spline'/'cubic' >=4 pts, 'akima' >=5 pts).",
+      "method:str='spline'[linear|spline|akima]; points:int=200; x_min:float=null; x_max:float=null; graph:str=''; curve:int|str=null",
+      "app.interpolate_curve(graph=g, method='akima', points=300)" },
+    { "curvemath.subtract_line", "curvemath", "Session.subtract_straight_line(*, x1=..., y1=..., x2=..., y2=..., graph=None)",
+      "Subtract a two-point linear baseline from a curve.",
+      "x1:float*; y1:float*; x2:float*; y2:float*; graph:str=''; curve:int|str=null",
+      "app.subtract_straight_line(graph=g, x1=0, y1=10, x2=100, y2=15)" },
+    { "curvemath.intersections", "curvemath", "Session.curve_intersections(graph, curve_a, curve_b)",
+      "Find all (x, y) intersection points between two curves.",
+      "graph:str*; curve_a:int|str*; curve_b:int|str*",
+      "pts = app.curve_intersections(g, 0, 1)" },
+    { "curvemath.lookup_xy", "curvemath", "Session.lookup_xy(*, x=None, y=None, graph=None, curve=None)",
+      "Interpolate Y at given X (or solve all X roots where curve crosses Y).",
+      "x:float=null; y:float=null; graph:str=''; curve:int|str=null",
+      "app.lookup_xy(graph=g, x=0.2)" },
+    { "curvemath.polygon_area", "curvemath", "Session.polygon_area(*, graph=None, curve=None)",
+      "Compute enclosed hysteresis/cyclic loop polygon area via Shoelace theorem.",
+      "graph:str=''; curve:int|str=null", "app.polygon_area(graph=g)" },
+    { "curvemath.fill_between", "curvemath", "Session.fill_between(graph, curve_a, curve_b, *, color='#4C78A8', alpha=60)",
+      "Shade the region between two curves on a graph layer.",
+      "graph:str*; curve_a:int|str*; curve_b:int|str*; color:str='#4C78A8'; alpha:int=60",
+      "app.fill_between(g, 0, 1)" },
+    { "curvemath.offset_yield", "curvemath",
+      "Session.analyze_tensile(graph=None, curve=None, *, offset=0.002, strain_in_percent=None, elastic_min=None, elastic_max=None, plot_construction=True, add_callout=True, create_true_stress_table=False)",
+      "Materials science tensile test analyzer: Young's modulus E, elastic R2, 0.2% offset proof stress (sigma_0.2), UTS, fracture point, dashed offset construction line, and optional true stress-strain table.",
+      "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; offset:float=0.002; strain_in_percent:bool|null=null; elastic_min:float=null; elastic_max:float=null; plot_construction:bool=true; add_callout:bool=true; create_true_stress_table:bool=false",
+      "res = g.analyze_tensile(offset=0.002, plot_construction=True)" },
+    { "curvemath.arrhenius", "curvemath", "Session.arrhenius_plot(table, temp_col, rate_col, *, temp_in_celsius=False)",
+      "Build an Arrhenius plot (ln k vs 1000/T with linked top-T axis) and extract activation energy Ea.",
+      "table:str*; temp_col:int|str*; rate_col:int|str*; temp_in_celsius:bool=false",
+      "res = app.arrhenius_plot(tbl, 'Temp_K', 'Rate_k')" },
+    { "curvemath.tauc", "curvemath", "Session.tauc_bandgap(table, wavelength_Or_energy_col, alpha_col, *, direct=True)",
+      "Construct a Tauc optical bandgap plot and extrapolate Eg in eV.",
+      "table:str*; x_col:int|str*; y_col:int|str*; direct:bool=true; x_is_wavelength_nm:bool=false",
+      "res = app.tauc_bandgap(tbl, 'Energy_eV', 'Alpha', direct=True)" },
+    { "curvemath.eis_fit", "curvemath", "Session.eis_fit(table, freq_col, z_re_col, z_im_col, *, model='Randles')",
+      "Fit electrochemical impedance Nyquist data to Randles or Randles-Warburg equivalent circuits.",
+      "table:str*; freq_col:int|str*; z_re_col:int|str*; z_im_col:int|str*; model:str='Randles'[Randles|RandlesWarburg]",
+      "res = app.eis_fit(tbl, 'Freq', 'Z_re', 'Z_im')" },
+
+    // 10. Statistical Analysis (stats.*)
+    { "stats.normality", "stats", "Session.normality_test(table, col)",
+      "Run Shapiro-Wilk / Anderson-Darling / Kolmogorov-Smirnov normality tests.",
+      "table:str*; col:int|str*", "app.normality_test(tbl, 'Strength')" },
+    { "stats.outlier", "stats", "Session.outlier_test(table, col, *, alpha=0.05, mask_outliers=False)",
+      "Run Grubbs / Dixon Q outlier detection with optional automatic row masking.",
+      "table:str*; col:int|str*; alpha:float=0.05; mask_outliers:bool=false",
+      "app.outlier_test(tbl, 'Strength', mask_outliers=True)" },
+    { "stats.anova_oneway", "stats", "Session.anova_one_way(table, cols, *, posthoc='tukey')",
+      "Run one-way ANOVA with Tukey HSD / Bonferroni pairwise comparisons.",
+      "table:str*; cols:list*; posthoc:str='tukey'", "app.anova_one_way(tbl, ['A', 'B', 'C'])" },
+    { "stats.anova_twoway", "stats", "Session.anova_two_way(table, factor_a_col, factor_b_col, response_col)",
+      "Run balanced/unbalanced two-way ANOVA with interaction effect.",
+      "table:str*; factor_a_col:int|str*; factor_b_col:int|str*; response_col:int|str*",
+      "app.anova_two_way(tbl, 'Alloy', 'Temp', 'Yield')" },
+    { "stats.nonparametric", "stats", "Session.nonparametric_test(table, cols, *, test='mann_whitney')",
+      "Run Mann-Whitney U, Wilcoxon signed-rank, Kruskal-Wallis, or Friedman test.",
+      "table:str*; cols:list*; test:str='mann_whitney'[mann_whitney|wilcoxon|kruskal_wallis|friedman]",
+      "app.nonparametric_test(tbl, ['Before', 'After'], test='wilcoxon')" },
+    { "stats.paired_plot", "stats", "Session.paired_estimation_plot(table, col_a, col_b)",
+      "Create a Gardner-Altman paired estimation plot with mean difference CI.",
+      "table:str*; col_a:int|str*; col_b:int|str*",
+      "app.paired_estimation_plot(tbl, 'Pre', 'Post')" },
+    { "stats.bland_altman", "stats", "Session.bland_altman(table, col_a, col_b)",
+      "Create a Bland-Altman method-agreement plot with bias and +/-1.96 SD limits of agreement.",
+      "table:str*; col_a:int|str*; col_b:int|str*", "app.bland_altman(tbl, 'MethodA', 'MethodB')" },
+    { "stats.passing_bablok", "stats", "Session.passing_bablok(table, x_col, y_col)",
+      "Run Passing-Bablok / Deming method-comparison regression.",
+      "table:str*; x_col:int|str*; y_col:int|str*", "app.passing_bablok(tbl, 'Ref', 'Test')" },
+    { "stats.weibull", "stats", "Session.weibull_fit(table, col, *, three_param=False, plot=True)",
+      "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution (ceramics & fatigue).",
+      "table:str*; col:int|str*; three_param:bool=false; plot:bool=true",
+      "app.weibull_fit(tbl, 'FractureMPa', three_param=True)" },
+    { "stats.kaplan_meier", "stats", "Session.kaplan_meier(table, time_col, event_col, *, group_col=None)",
+      "Compute Kaplan-Meier survival curves and log-rank test.",
+      "table:str*; time_col:int|str*; event_col:int|str*; group_col:int|str=null",
+      "app.kaplan_meier(tbl, 'Cycles', 'Failed')" },
+    { "stats.roc", "stats", "Session.roc_curve(table, state_col, score_cols, *, plot=True)",
+      "Compute ROC curve, AUC, Hanley-McNeil SE, and Youden optimal threshold.",
+      "table:str*; state_col:int|str*; score_cols:list*; plot:bool=true",
+      "app.roc_curve(tbl, 'Class', ['Score'])" },
+    { "stats.pca", "stats", "Session.pca(table, cols, *, standardize=True, biplot=True)",
+      "Run Principal Component Analysis returning eigenvalues, explained variance, loadings, and scores.",
+      "table:str*; cols:list*; standardize:bool=true; biplot:bool=true",
+      "app.pca(tbl, ['F1', 'F2', 'F3', 'F4'])" },
+    { "stats.correlation", "stats", "Session.correlation_matrix(table, cols=None, *, method='pearson', plot_heatmap=False)",
+      "Compute Pearson or Spearman correlation & p-value matrix.",
+      "table:str*; cols:list=null; method:str='pearson'[pearson|spearman]; plot_heatmap:bool=false",
+      "app.correlation_matrix(tbl, method='pearson')" },
+    { "stats.clustering", "stats", "Session.clustering(table, cols, *, k=3, method='kmeans')",
+      "Perform K-Means or hierarchical clustering across numeric columns.",
+      "table:str*; cols:list*; k:int=3; method:str='kmeans'[kmeans|hierarchical]",
+      "app.clustering(tbl, ['X', 'Y'], k=3)" },
+    { "stats.confidence_ellipse", "stats", "Session.add_confidence_ellipse(graph, *, curve=None, level=0.95)",
+      "Add a bivariate covariance confidence/prediction ellipse onto a 2D scatter plot.",
+      "graph:str*; curve:int|str=null; level:float=0.95",
+      "app.add_confidence_ellipse(g, level=0.95)" },
+
+    // 11. Plot Digitizer (digitizer.*)
+    { "digitizer.extract", "digitizer",
+      "Session.digitize_image(image_path, *, cal_points=..., color=..., mode='auto_curve')",
+      "Calibrate axes on a bitmap figure image and extract calibrated (X, Y) curve data.",
+      "image_path:str*; cal_points:list*; color:str='#000000'; tolerance:int=45",
+      "app.digitize_image('paper_fig.png', cal_points=...)" }
+};
+
+static constexpr int kApiCatalogCount =
+        static_cast<int>(sizeof(kApiCatalogSpecs) / sizeof(kApiCatalogSpecs[0]));
+
+QJsonArray parseCompactParamsSignature(const char *sigCstr)
+{
+    QJsonArray arr;
+    const QString sig = QString::fromUtf8(sigCstr ? sigCstr : "").trimmed();
+    if (sig.isEmpty())
+        return arr;
+    const QStringList parts = sig.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const QString &rawPart : parts) {
+        const QString item = rawPart.trimmed();
+        const int colonPos = item.indexOf(QLatin1Char(':'));
+        if (colonPos <= 0)
+            continue;
+        const QString pName = item.left(colonPos).trimmed();
+        QString rest = item.mid(colonPos + 1).trimmed();
+
+        QStringList enumVals;
+        const int brOpen = rest.indexOf(QLatin1Char('['));
+        const int brClose = rest.lastIndexOf(QLatin1Char(']'));
+        if (brOpen >= 0 && brClose > brOpen) {
+            const QString inside = rest.mid(brOpen + 1, brClose - brOpen - 1);
+            if (inside.contains(QLatin1Char('|'))) {
+                enumVals = inside.split(QLatin1Char('|'), Qt::SkipEmptyParts);
+                rest.remove(brOpen, brClose - brOpen + 1);
+                rest = rest.trimmed();
+            }
+        }
+
+        bool required = false;
+        QString defStr;
+        bool hasDefault = false;
+        const int eqPos = rest.indexOf(QLatin1Char('='));
+        QString pType;
+        if (eqPos >= 0) {
+            pType = rest.left(eqPos).trimmed();
+            defStr = rest.mid(eqPos + 1).trimmed();
+            if (defStr.size() >= 2 && defStr.startsWith(QLatin1Char('\''))
+                && defStr.endsWith(QLatin1Char('\''))) {
+                defStr = defStr.mid(1, defStr.size() - 2);
+            }
+            hasDefault = true;
+        } else {
+            pType = rest;
+        }
+        if (pType.endsWith(QLatin1Char('*'))) {
+            required = true;
+            pType.chop(1);
+            pType = pType.trimmed();
+        }
+
+        QJsonObject pObj;
+        pObj[QStringLiteral("name")] = pName;
+        pObj[QStringLiteral("type")] = pType;
+        pObj[QStringLiteral("required")] = required;
+        if (hasDefault && !required) {
+            if (defStr == QStringLiteral("null"))
+                pObj[QStringLiteral("default")] = QJsonValue::Null;
+            else if (defStr == QStringLiteral("true"))
+                pObj[QStringLiteral("default")] = true;
+            else if (defStr == QStringLiteral("false"))
+                pObj[QStringLiteral("default")] = false;
+            else {
+                bool okInt = false;
+                const int iv = defStr.toInt(&okInt);
+                if (okInt) {
+                    pObj[QStringLiteral("default")] = iv;
+                } else {
+                    bool okDbl = false;
+                    const double dv = defStr.toDouble(&okDbl);
+                    if (okDbl && std::isfinite(dv))
+                        pObj[QStringLiteral("default")] = dv;
+                    else
+                        pObj[QStringLiteral("default")] = defStr;
+                }
+            }
+        }
+        if (!enumVals.isEmpty())
+            pObj[QStringLiteral("enum")] = toJsonArray(enumVals);
+        arr.append(pObj);
+    }
+    return arr;
+}
+
+QJsonObject serializeCatalogRow(const ApiMethodCatalogRow &row)
+{
+    QJsonObject m;
+    m[QStringLiteral("method")] = QString::fromUtf8(row.method);
+    m[QStringLiteral("domain")] = QString::fromUtf8(row.domain);
+    m[QStringLiteral("sdk_method")] = QString::fromUtf8(row.sdkMethod);
+    m[QStringLiteral("summary")] = QString::fromUtf8(row.summary);
+    m[QStringLiteral("params")] = parseCompactParamsSignature(row.paramsSig);
+    m[QStringLiteral("example")] = QString::fromUtf8(row.example);
+    return m;
+}
+
+} // namespace
+
 QStringList PythonAutomationServer::supportedMethods()
 {
-    return QStringList{
-        // Category 1: App / Project / GUI / Action Escape Hatch
-        QStringLiteral("ping"),
-        QStringLiteral("app.info"),
-        QStringLiteral("app.supported_methods"),
-        QStringLiteral("app.new_project"),
-        QStringLiteral("app.open_project"),
-        QStringLiteral("app.save_project"),
-        QStringLiteral("app.import_csv"),
-        QStringLiteral("app.import_opj"),
-        QStringLiteral("app.list_windows"),
-        QStringLiteral("app.window_info"),
-        QStringLiteral("app.activate_window"),
-        QStringLiteral("app.rename_window"),
-        QStringLiteral("app.close_window"),
-        QStringLiteral("app.clone_window"),
-        QStringLiteral("app.set_language"),
-        QStringLiteral("app.get_language"),
-        QStringLiteral("app.set_recalc_mode"),
-        QStringLiteral("app.recalculate"),
-        QStringLiteral("app.undo"),
-        QStringLiteral("app.redo"),
-        QStringLiteral("app.set_focus_hud"),
-        QStringLiteral("app.get_focus_hud"),
-        QStringLiteral("app.set_workspace_mode"),
-        QStringLiteral("app.check_updates"),
-        QStringLiteral("app.list_actions"),
-        QStringLiteral("app.trigger_action"),
-
-        // Category 2: Worksheet (table.*)
-        QStringLiteral("table.create"),
-        QStringLiteral("table.get_info"),
-        QStringLiteral("table.resize"),
-        QStringLiteral("table.add_column"),
-        QStringLiteral("table.remove_column"),
-        QStringLiteral("table.set_column_data"),
-        QStringLiteral("table.get_column_data"),
-        QStringLiteral("table.set_data_dict"),
-        QStringLiteral("table.set_cell"),
-        QStringLiteral("table.get_cell"),
-        QStringLiteral("table.set_column_meta"),
-        QStringLiteral("table.get_column_meta"),
-        QStringLiteral("table.set_formula"),
-        QStringLiteral("table.recalculate"),
-        QStringLiteral("table.mask_rows"),
-        QStringLiteral("table.unmask_rows"),
-        QStringLiteral("table.clear_masks"),
-        QStringLiteral("table.get_masked_rows"),
-        QStringLiteral("table.sort"),
-        QStringLiteral("table.column_stats"),
-        QStringLiteral("table.row_stats"),
-        QStringLiteral("table.export_csv"),
-        QStringLiteral("table.to_matrix"),
-
-        // Category 3: Matrix (matrix.*)
-        QStringLiteral("matrix.create"),
-        QStringLiteral("matrix.get_info"),
-        QStringLiteral("matrix.set_coordinates"),
-        QStringLiteral("matrix.set_data"),
-        QStringLiteral("matrix.get_data"),
-        QStringLiteral("matrix.set_formula"),
-        QStringLiteral("matrix.transpose"),
-        QStringLiteral("matrix.invert"),
-        QStringLiteral("matrix.determinant"),
-        QStringLiteral("matrix.flip"),
-        QStringLiteral("matrix.fft2d"),
-        QStringLiteral("matrix.filter2d"),
-        QStringLiteral("matrix.analyze_2d_peaks"),
-        QStringLiteral("matrix.to_table"),
-
-        // Category 4: 2D / 3D / Matrix Plotting (plot.*)
-        QStringLiteral("plot.xy"),
-        QStringLiteral("plot.stacked_bars"),
-        QStringLiteral("plot.add_curve"),
-        QStringLiteral("plot.remove_curve"),
-        QStringLiteral("plot.add_error_bars"),
-        QStringLiteral("plot.double_y"),
-        QStringLiteral("plot.waterfall"),
-        QStringLiteral("plot.histogram"),
-        QStringLiteral("plot.box"),
-        QStringLiteral("plot.violin"),
-        QStringLiteral("plot.pareto"),
-        QStringLiteral("plot.qq"),
-        QStringLiteral("plot.pie"),
-        QStringLiteral("plot.vectors"),
-        QStringLiteral("plot.ternary"),
-        QStringLiteral("plot.function"),
-        QStringLiteral("plot.matrix"),
-        QStringLiteral("plot.3d_matrix"),
-        QStringLiteral("plot.3d_xyz"),
-        QStringLiteral("plot.3d_function"),
-
-        // Category 5: Graph Page, Multi-Layer, Axes, Breaks, Frame, Style, Colorbar & Export (graph.*)
-        QStringLiteral("graph.get_info"),
-        QStringLiteral("graph.add_layer"),
-        QStringLiteral("graph.add_linked_layer"),
-        QStringLiteral("graph.add_inset_layer"),
-        QStringLiteral("graph.arrange_layers"),
-        QStringLiteral("graph.set_page_size"),
-        QStringLiteral("graph.fit_page_to_layers"),
-        QStringLiteral("graph.fit_layers_to_page"),
-        QStringLiteral("graph.apply_style_preset"),
-        QStringLiteral("graph.apply_frame_preset"),
-        QStringLiteral("graph.set_aspect_ratio"),
-        QStringLiteral("graph.copy_format"),
-        QStringLiteral("graph.paste_format"),
-        QStringLiteral("graph.batch_clone"),
-        QStringLiteral("graph.set_axis"),
-        QStringLiteral("graph.set_axis_break"),
-        QStringLiteral("graph.add_reference_line"),
-        QStringLiteral("graph.add_shaded_band"),
-        QStringLiteral("graph.set_grid"),
-        QStringLiteral("graph.set_curve_style"),
-        QStringLiteral("graph.set_curve_visible"),
-        QStringLiteral("graph.move_curve"),
-        QStringLiteral("graph.set_stack_offsets"),
-        QStringLiteral("graph.apply_series_scheme"),
-        QStringLiteral("graph.apply_palette"),
-        QStringLiteral("graph.set_colorbar"),
-        QStringLiteral("graph.set_legend"),
-        QStringLiteral("graph.auto_place_legend"),
-        QStringLiteral("graph.set_panel_labels"),
-        QStringLiteral("graph.apply_square_frame"),
-        QStringLiteral("graph.drop_columns"),
-        QStringLiteral("graph.add_text"),
-        QStringLiteral("graph.add_arrow"),
-        QStringLiteral("graph.mask_region"),
-        QStringLiteral("graph.clear_masks"),
-        QStringLiteral("graph.export"),
-        QStringLiteral("graph.copy_image"),
-        QStringLiteral("graph.copy_ole"),
-        QStringLiteral("graph.set_3d_options"),
-
-        // Category 6: All Curve Fitting & Peak Analysis (analysis.*)
-        QStringLiteral("analysis.list_fit_models"),
-        QStringLiteral("analysis.fit_linear"),
-        QStringLiteral("analysis.fit_york"),
-        QStringLiteral("analysis.fit_polynomial"),
-        QStringLiteral("analysis.fit_nonlinear"),
-        QStringLiteral("analysis.fit_global"),
-        QStringLiteral("analysis.fit_piecewise"),
-        QStringLiteral("analysis.fit_robust"),
-        QStringLiteral("analysis.fit_quantile"),
-        QStringLiteral("analysis.fit_logistic"),
-        QStringLiteral("analysis.fit_mlr"),
-        QStringLiteral("analysis.fit_implicit_odr"),
-        QStringLiteral("analysis.fit_surface_3d"),
-        QStringLiteral("analysis.compare_models"),
-        QStringLiteral("analysis.compare_datasets"),
-        QStringLiteral("analysis.analyze_peaks"),
-        QStringLiteral("analysis.batch_peaks"),
-
-        // Category 7: Gadgets, Signal Processing, Curve Math, MatSci, Stats & Digitizer
-        QStringLiteral("gadget.attach"),
-        QStringLiteral("gadget.set_roi"),
-        QStringLiteral("gadget.query"),
-        QStringLiteral("gadget.clear"),
-
-        QStringLiteral("signal.smooth"),
-        QStringLiteral("signal.savgol_derivative"),
-        QStringLiteral("signal.fft"),
-        QStringLiteral("signal.fft_filter"),
-        QStringLiteral("signal.iir_filter"),
-        QStringLiteral("signal.stft"),
-        QStringLiteral("signal.envelope"),
-        QStringLiteral("signal.wavelet_cwt"),
-        QStringLiteral("signal.wavelet_denoise"),
-        QStringLiteral("signal.welch_psd"),
-        QStringLiteral("signal.coherence"),
-        QStringLiteral("signal.decimate"),
-        QStringLiteral("signal.fsd"),
-
-        QStringLiteral("curvemath.eval"),
-        QStringLiteral("curvemath.average_curves"),
-        QStringLiteral("curvemath.normalize"),
-        QStringLiteral("curvemath.integrate"),
-        QStringLiteral("curvemath.differentiate"),
-        QStringLiteral("curvemath.interpolate"),
-        QStringLiteral("curvemath.subtract_line"),
-        QStringLiteral("curvemath.intersections"),
-        QStringLiteral("curvemath.lookup_xy"),
-        QStringLiteral("curvemath.polygon_area"),
-        QStringLiteral("curvemath.fill_between"),
-        QStringLiteral("curvemath.arrhenius"),
-        QStringLiteral("curvemath.tauc"),
-        QStringLiteral("curvemath.eis_fit"),
-
-        QStringLiteral("stats.normality"),
-        QStringLiteral("stats.outlier"),
-        QStringLiteral("stats.anova_oneway"),
-        QStringLiteral("stats.anova_twoway"),
-        QStringLiteral("stats.nonparametric"),
-        QStringLiteral("stats.paired_plot"),
-        QStringLiteral("stats.bland_altman"),
-        QStringLiteral("stats.passing_bablok"),
-        QStringLiteral("stats.weibull"),
-        QStringLiteral("stats.kaplan_meier"),
-        QStringLiteral("stats.roc"),
-        QStringLiteral("stats.pca"),
-        QStringLiteral("stats.correlation"),
-        QStringLiteral("stats.clustering"),
-        QStringLiteral("stats.confidence_ellipse"),
-
-        QStringLiteral("digitizer.extract")
-    };
+    QStringList out;
+    out.reserve(kApiCatalogCount);
+    for (int i = 0; i < kApiCatalogCount; ++i)
+        out.append(QString::fromUtf8(kApiCatalogSpecs[i].method));
+    return out;
 }
 
 namespace {
 
+struct ParsedCsvCell
+{
+    QString value;
+    bool quoted = false;
+};
+
+bool isMissingNumericSentinel(const QString &trimmed)
+{
+    if (trimmed.isEmpty())
+        return true;
+    const QString low = trimmed.toLower();
+    return low == QStringLiteral("-") || low == QStringLiteral("--") || low == QStringLiteral("---")
+            || low == QStringLiteral("n/a") || low == QStringLiteral("na")
+            || low == QStringLiteral("nan") || low == QStringLiteral("+nan")
+            || low == QStringLiteral("-nan") || low == QStringLiteral("inf")
+            || low == QStringLiteral("+inf") || low == QStringLiteral("-inf")
+            || low == QStringLiteral("null") || low == QStringLiteral("none");
+}
+
+QString autoDetectCsvSeparator(const QString &text, int startPos, const QString &fileHint)
+{
+    if (fileHint.endsWith(QStringLiteral(".tsv"), Qt::CaseInsensitive)
+        || fileHint.endsWith(QStringLiteral(".tab"), Qt::CaseInsensitive)) {
+        return QStringLiteral("\t");
+    }
+    const int len = text.size();
+    int p = std::max(0, startPos);
+    while (p < len) {
+        int lineEnd = p;
+        while (lineEnd < len && text[lineEnd] != QLatin1Char('\r')
+               && text[lineEnd] != QLatin1Char('\n')) {
+            ++lineEnd;
+        }
+        const QString line = text.mid(p, lineEnd - p);
+        if (!line.trimmed().isEmpty() && !line.trimmed().startsWith(QLatin1Char('#'))) {
+            bool inQuotes = false;
+            int commas = 0, tabs = 0, semis = 0;
+            for (int i = 0; i < line.size(); ++i) {
+                const QChar ch = line[i];
+                if (ch == QLatin1Char('"')) {
+                    inQuotes = !inQuotes;
+                } else if (!inQuotes) {
+                    if (ch == QLatin1Char(','))
+                        ++commas;
+                    else if (ch == QLatin1Char('\t'))
+                        ++tabs;
+                    else if (ch == QLatin1Char(';'))
+                        ++semis;
+                }
+            }
+            if (tabs > commas && tabs >= 1)
+                return QStringLiteral("\t");
+            if (commas >= 1)
+                return QStringLiteral(",");
+            if (semis >= 1)
+                return QStringLiteral(";");
+            break;
+        }
+        p = lineEnd;
+        if (p < len && text[p] == QLatin1Char('\r'))
+            ++p;
+        if (p < len && text[p] == QLatin1Char('\n'))
+            ++p;
+    }
+    return QStringLiteral(",");
+}
+
+QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text, int startPos,
+                                                             const QString &sep, bool stripSpaces,
+                                                             bool simplifySpaces, int &outMaxCols)
+{
+    QVector<QVector<ParsedCsvCell>> records;
+    outMaxCols = 0;
+    const int len = text.size();
+    const int sepLen = std::max(1, sep.size());
+    int pos = std::max(0, startPos);
+
+    // Skip leading '#' comment preamble lines before the first header/data row
+    while (pos < len) {
+        int probe = pos;
+        while (probe < len && (text[probe] == QLatin1Char(' ') || text[probe] == QLatin1Char('\t')))
+            ++probe;
+        if (probe < len && text[probe] == QLatin1Char('#')) {
+            while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n'))
+                ++pos;
+            if (pos < len && text[pos] == QLatin1Char('\r'))
+                ++pos;
+            if (pos < len && text[pos] == QLatin1Char('\n'))
+                ++pos;
+            continue;
+        }
+        break;
+    }
+
+    while (pos < len) {
+        QVector<ParsedCsvCell> row;
+        while (true) {
+            ParsedCsvCell cell;
+            const int fieldStart = pos;
+            if (stripSpaces) {
+                while (pos < len
+                       && (text[pos] == QLatin1Char(' ')
+                           || (sep != QStringLiteral("\t") && text[pos] == QLatin1Char('\t')))
+                       && text.midRef(pos, sepLen) != sep) {
+                    ++pos;
+                }
+            }
+            if (pos < len && text[pos] == QLatin1Char('"')) {
+                cell.quoted = true;
+                ++pos;
+                while (pos < len) {
+                    const QChar ch = text[pos];
+                    if (ch == QLatin1Char('"')) {
+                        if (pos + 1 < len && text[pos + 1] == QLatin1Char('"')) {
+                            cell.value.append(QLatin1Char('"'));
+                            pos += 2;
+                        } else {
+                            ++pos;
+                            break;
+                        }
+                    } else {
+                        cell.value.append(ch);
+                        ++pos;
+                    }
+                }
+                while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n')
+                       && text.midRef(pos, sepLen) != sep) {
+                    if (text[pos] != QLatin1Char(' ') && text[pos] != QLatin1Char('\t'))
+                        cell.value.append(text[pos]);
+                    ++pos;
+                }
+            } else {
+                pos = fieldStart;
+                const int rawStart = pos;
+                while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n')
+                       && text.midRef(pos, sepLen) != sep) {
+                    ++pos;
+                }
+                QString rawField = text.mid(rawStart, pos - rawStart);
+                if (simplifySpaces)
+                    rawField = rawField.simplified();
+                else if (stripSpaces)
+                    rawField = rawField.trimmed();
+                cell.value = rawField;
+            }
+            row.append(cell);
+
+            if (pos < len && text.midRef(pos, sepLen) == sep) {
+                pos += sepLen;
+                continue;
+            }
+            if (pos < len && text[pos] == QLatin1Char('\r')) {
+                ++pos;
+                if (pos < len && text[pos] == QLatin1Char('\n'))
+                    ++pos;
+            } else if (pos < len && text[pos] == QLatin1Char('\n')) {
+                ++pos;
+            }
+            break;
+        }
+        outMaxCols = std::max(outMaxCols, row.size());
+        records.append(row);
+    }
+
+    outMaxCols = std::max(1, outMaxCols);
+    while (!records.isEmpty() && outMaxCols > 1 && records.last().size() == 1
+           && !records.last()[0].quoted && records.last()[0].value.isEmpty()) {
+        records.removeLast();
+    }
+    return records;
+}
+
+bool looksLikeSecondRowUnits(const QVector<ParsedCsvCell> &candUnitRow,
+                             const QVector<ParsedCsvCell> &firstDataRow, int maxCols)
+{
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    int numericColsInDataRow = 0;
+    int nonEmptyUnitTokens = 0;
+    for (int c = 0; c < maxCols; ++c) {
+        const QString uTxt = (c < candUnitRow.size()) ? candUnitRow[c].value.trimmed() : QString();
+        const QString dTxt =
+                (c < firstDataRow.size()) ? firstDataRow[c].value.trimmed() : QString();
+        bool okData = false;
+        const double dv = cLoc.toDouble(dTxt, &okData);
+        if (okData && std::isfinite(dv)) {
+            ++numericColsInDataRow;
+            bool okUnitNum = false;
+            const double uv = cLoc.toDouble(uTxt, &okUnitNum);
+            if (okUnitNum && std::isfinite(uv))
+                return false; // Row 2 has numbers in numeric columns -> it's data, not units!
+        }
+        if (!uTxt.isEmpty()) {
+            if (uTxt.size() > 28)
+                return false;
+            ++nonEmptyUnitTokens;
+        }
+    }
+    return (numericColsInDataRow >= 1 && nonEmptyUnitTokens >= 1);
+}
+
+int parseUnitsRowHintParam(const QJsonObject &params)
+{
+    if (!params.contains(QStringLiteral("units_row"))
+        || params.value(QStringLiteral("units_row")).isNull()
+        || params.value(QStringLiteral("units_row")).isUndefined()) {
+        return -1; // auto
+    }
+    const QJsonValue v = params.value(QStringLiteral("units_row"));
+    if (v.isBool())
+        return v.toBool() ? 1 : 0;
+    if (v.isDouble()) {
+        const int iv = parseStrictJsonInt(v, QStringLiteral("units_row"));
+        return (iv <= 0) ? 0 : iv;
+    }
+    const QString s = v.toString().trimmed().toLower();
+    if (s == QStringLiteral("auto"))
+        return -1;
+    if (s == QStringLiteral("none") || s == QStringLiteral("false") || s == QStringLiteral("0"))
+        return 0;
+    if (s == QStringLiteral("true") || s == QStringLiteral("1"))
+        return 1;
+    return -1;
+}
+
+void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsvCell>> &records,
+                                       int maxCols, bool hasHeader, bool withComments,
+                                       int unitsRowHint, bool convertNumeric, int startRowOffset,
+                                       int startColOffset, bool assignDefaultPlotDesignations)
+{
+    QVector<ParsedCsvCell> headerRow;
+    QVector<ParsedCsvCell> unitsRowCells;
+    QVector<ParsedCsvCell> commentRow;
+    int dataStartIdx = 0;
+    if (hasHeader && !records.isEmpty()) {
+        headerRow = records[0];
+        dataStartIdx = 1;
+        if (!withComments) {
+            bool useRowAsUnits = false;
+            if (unitsRowHint >= 1 && dataStartIdx < records.size()) {
+                useRowAsUnits = true;
+            } else if (unitsRowHint < 0 && records.size() >= 3) {
+                useRowAsUnits = looksLikeSecondRowUnits(records[1], records[2], maxCols);
+            }
+            if (useRowAsUnits && dataStartIdx < records.size()) {
+                unitsRowCells = records[dataStartIdx];
+                ++dataStartIdx;
+            }
+        }
+    }
+    if (withComments && dataStartIdx < records.size()) {
+        commentRow = records[dataStartIdx];
+        ++dataStartIdx;
+    }
+
+    const int dataRowCount = std::max(0, records.size() - dataStartIdx);
+    const int neededCols = std::max(1, startColOffset + maxCols);
+    const int neededRows = std::max(1, startRowOffset + dataRowCount);
+    if (t->numCols() < neededCols) {
+        const int oldCols = t->numCols();
+        t->setNumCols(neededCols);
+        for (int nc = oldCols; nc < neededCols; ++nc)
+            applyDefaultNumericFormat6g(t, nc);
+    }
+    if (t->numRows() < neededRows)
+        t->setNumRows(neededRows);
+
+    if (hasHeader && !headerRow.isEmpty() && startRowOffset == 0) {
+        for (int c = 0; c < maxCols; ++c) {
+            t->setColName(startColOffset + c,
+                          QStringLiteral("__import_col_%1__").arg(startColOffset + c));
+        }
+    }
+
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+
+    for (int c = 0; c < maxCols; ++c) {
+        const int dstCol = startColOffset + c;
+        Column *col = t->column(dstCol);
+        if (!col)
+            continue;
+
+        bool useText = !convertNumeric;
+        bool anyQuoted = false;
+        bool anyFiniteNumber = false;
+        bool anyNonEmptySentinel = false;
+        QVector<qreal> parsedNums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
+        QVector<int> invalidRows;
+
+        if (convertNumeric) {
+            for (int r = 0; r < dataRowCount; ++r) {
+                const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                const QString valStr = (c < rec.size()) ? rec[c].value : QString();
+                const bool wasQuoted = (c < rec.size()) ? rec[c].quoted : false;
+                if (wasQuoted)
+                    anyQuoted = true;
+                const QString trimmed = valStr.trimmed();
+                if (trimmed.isEmpty()) {
+                    invalidRows.append(r);
+                    continue;
+                }
+                if (!wasQuoted && isMissingNumericSentinel(trimmed)) {
+                    invalidRows.append(r);
+                    anyNonEmptySentinel = true;
+                    continue;
+                }
+                bool okNum = false;
+                const double numVal = cLoc.toDouble(trimmed, &okNum);
+                if (okNum && std::isfinite(numVal)) {
+                    parsedNums[r] = numVal;
+                    anyFiniteNumber = true;
+                } else {
+                    useText = true;
+                    break;
+                }
+            }
+            if (!useText && !anyFiniteNumber && (anyQuoted || anyNonEmptySentinel))
+                useText = true;
+        }
+
+        if (useText) {
+            if (col->columnMode() != SciDAVis::ColumnMode::Text)
+                col->setColumnMode(SciDAVis::ColumnMode::Text);
+            if (dataRowCount > 0) {
+                QStringList texts;
+                texts.reserve(dataRowCount);
+                for (int r = 0; r < dataRowCount; ++r) {
+                    const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                    texts.append((c < rec.size()) ? rec[c].value : QString());
+                }
+                col->replaceTexts(startRowOffset, texts);
+            } else if (startRowOffset == 0) {
+                col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+            }
+        } else {
+            if (col->columnMode() != SciDAVis::ColumnMode::Numeric)
+                col->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            applyDefaultNumericFormat6g(t, dstCol);
+            if (dataRowCount > 0) {
+                if (startRowOffset == 0 && dataRowCount == t->numRows())
+                    col->clearValidity();
+                else
+                    col->setInvalid(Interval<int>(startRowOffset, startRowOffset + dataRowCount - 1),
+                                    false);
+                col->replaceValues(startRowOffset, parsedNums);
+                int k = 0;
+                while (k < invalidRows.size()) {
+                    const int startR = startRowOffset + invalidRows[k];
+                    int endR = startR;
+                    while (k + 1 < invalidRows.size()
+                           && (startRowOffset + invalidRows[k + 1]) == endR + 1) {
+                        endR = startRowOffset + invalidRows[++k];
+                    }
+                    col->setInvalid(Interval<int>(startR, endR), true);
+                    ++k;
+                }
+            } else if (startRowOffset == 0) {
+                col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+            }
+        }
+
+        if (hasHeader && !headerRow.isEmpty() && startRowOffset == 0) {
+            QString hdrName = (c < headerRow.size()) ? headerRow[c].value.trimmed() : QString();
+            if (hdrName.isEmpty())
+                hdrName = QString::number(dstCol + 1);
+
+            QString splitShort, splitLong, splitUnits;
+            AsciiTableImportFilter::splitHeaderNameAndUnits(hdrName, splitShort, splitLong,
+                                                            splitUnits);
+            QString rowUnit =
+                    (c < unitsRowCells.size()) ? unitsRowCells[c].value.trimmed() : QString();
+            if (rowUnit.size() >= 2
+                && ((rowUnit.startsWith(QLatin1Char('(')) && rowUnit.endsWith(QLatin1Char(')')))
+                    || (rowUnit.startsWith(QLatin1Char('['))
+                        && rowUnit.endsWith(QLatin1Char(']'))))) {
+                rowUnit = rowUnit.mid(1, rowUnit.size() - 2).trimmed();
+            }
+
+            if (!splitUnits.isEmpty()) {
+                QString candShort = !splitShort.isEmpty() ? splitShort : hdrName;
+                if (t->colNames().contains(candShort)) {
+                    for (int sfx = 2; sfx < 1000; ++sfx) {
+                        const QString alt = QStringLiteral("%1_%2").arg(candShort).arg(sfx);
+                        if (!t->colNames().contains(alt)) {
+                            candShort = alt;
+                            break;
+                        }
+                    }
+                }
+                t->setColName(dstCol, candShort);
+                t->setColLongName(dstCol, !splitLong.isEmpty() ? splitLong : candShort);
+                t->setColUnits(dstCol, !rowUnit.isEmpty() ? rowUnit : splitUnits);
+            } else {
+                QString candName = hdrName;
+                if (t->colNames().contains(candName)) {
+                    for (int sfx = 2; sfx < 1000; ++sfx) {
+                        const QString alt = QStringLiteral("%1_%2").arg(candName).arg(sfx);
+                        if (!t->colNames().contains(alt)) {
+                            candName = alt;
+                            break;
+                        }
+                    }
+                }
+                t->setColName(dstCol, candName);
+                if (!rowUnit.isEmpty()) {
+                    t->setColUnits(dstCol, rowUnit);
+                    if (t->colLongName(dstCol).trimmed().isEmpty())
+                        t->setColLongName(dstCol, hdrName);
+                }
+            }
+        }
+        if (withComments && startRowOffset == 0) {
+            const QString cmtStr = (c < commentRow.size()) ? commentRow[c].value : QString();
+            t->setColComment(dstCol, cmtStr);
+        }
+        if (assignDefaultPlotDesignations)
+            t->setColPlotDesignation(dstCol, (dstCol == 0) ? SciDAVis::X : SciDAVis::Y);
+    }
+}
+
 bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindow *d_app,
                                 bool &focusHudFallback, QString &workspaceModeFallback,
+                                QString &lastUndoDomain, QString &lastUndoGraph,
                                 const QString &method, const QJsonObject &params,
                                 QJsonObject &outResult)
 {
@@ -3798,6 +6435,58 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QStringList mList = PythonAutomationServer::supportedMethods();
         outResult[QStringLiteral("count")] = mList.size();
         outResult[QStringLiteral("methods")] = toJsonArray(mList);
+        return true;
+    }
+
+    if (method == QStringLiteral("app.describe_api")) {
+        const QString reqMethod = params.value(QStringLiteral("method")).toString().trimmed();
+        const QString reqDomain =
+                params.value(QStringLiteral("domain")).toString().trimmed().toLower();
+        QStringList allDomains;
+        for (int i = 0; i < kApiCatalogCount; ++i) {
+            const QString dom = QString::fromUtf8(kApiCatalogSpecs[i].domain);
+            if (!allDomains.contains(dom))
+                allDomains.append(dom);
+        }
+        if (!reqMethod.isEmpty()) {
+            for (int i = 0; i < kApiCatalogCount; ++i) {
+                if (reqMethod.compare(QString::fromUtf8(kApiCatalogSpecs[i].method),
+                                      Qt::CaseInsensitive)
+                    == 0) {
+                    const QJsonObject schema = serializeCatalogRow(kApiCatalogSpecs[i]);
+                    outResult = schema;
+                    outResult[QStringLiteral("ok")] = true;
+                    outResult[QStringLiteral("schema")] = schema;
+                    outResult[QStringLiteral("count")] = 1;
+                    QJsonArray singleArr;
+                    singleArr.append(schema);
+                    outResult[QStringLiteral("methods")] = singleArr;
+                    return true;
+                }
+            }
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown RPC method '%1'.").arg(reqMethod),
+                    PythonAutomationServer::supportedMethods());
+        }
+
+        if (!reqDomain.isEmpty() && !allDomains.contains(reqDomain)) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown RPC domain '%1'.").arg(reqDomain), allDomains);
+        }
+
+        QJsonArray methodsArr;
+        for (int i = 0; i < kApiCatalogCount; ++i) {
+            const QString dom = QString::fromUtf8(kApiCatalogSpecs[i].domain);
+            if (!reqDomain.isEmpty() && dom != reqDomain)
+                continue;
+            methodsArr.append(serializeCatalogRow(kApiCatalogSpecs[i]));
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("count")] = methodsArr.size();
+        outResult[QStringLiteral("domains")] = toJsonArray(allDomains);
+        if (!reqDomain.isEmpty())
+            outResult[QStringLiteral("domain")] = reqDomain;
+        outResult[QStringLiteral("methods")] = methodsArr;
         return true;
     }
 
@@ -3984,24 +6673,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QString path = params.value(QStringLiteral("path")).toString().trimmed();
         if (path.isEmpty() || !QFileInfo::exists(path) || !QFileInfo(path).isFile())
             throwInvalidParams(QStringLiteral("CSV/ASCII file does not exist: %1").arg(path));
-        QString sep = params.value(QStringLiteral("separator")).toString();
-        if (sep.isEmpty()) {
-            sep = path.endsWith(QStringLiteral(".tsv"), Qt::CaseInsensitive)
-                    ? QStringLiteral("\t")
-                    : QStringLiteral(",");
-        }
-        const int sepLen = sep.size();
-        const int ignoredLines = std::max(0, params.value(QStringLiteral("skip_lines")).toInt(0));
-        const bool hasHeader = params.contains(QStringLiteral("header"))
-                ? params.value(QStringLiteral("header")).toBool(true)
-                : true;
-        const bool stripSpaces = params.contains(QStringLiteral("strip_spaces"))
-                ? params.value(QStringLiteral("strip_spaces")).toBool(true)
-                : true;
-        const bool simplifySpaces = params.value(QStringLiteral("simplify_spaces")).toBool(false);
-        const bool convertNumeric = params.contains(QStringLiteral("numeric"))
-                ? params.value(QStringLiteral("numeric")).toBool(true)
-                : true;
 
         const QString absPath = QFileInfo(path).absoluteFilePath();
         QFile inFile(absPath);
@@ -4009,13 +6680,60 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwRpcRuntime(QStringLiteral("Failed to open CSV/ASCII file '%1': %2")
                                     .arg(absPath, inFile.errorString()));
         }
-        QByteArray rawBytes = inFile.readAll();
+        const QByteArray rawBytes = inFile.readAll();
         inFile.close();
-        if (rawBytes.startsWith("\xEF\xBB\xBF"))
-            rawBytes.remove(0, 3);
-        const QString text = QString::fromUtf8(rawBytes);
-        const int len = text.size();
 
+        const QString encodingParam = params.contains(QStringLiteral("encoding"))
+                ? params.value(QStringLiteral("encoding")).toString().trimmed()
+                : QStringLiteral("auto");
+        const QString encodingHint =
+                (encodingParam.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
+                ? QString()
+                : encodingParam;
+        const int unitsRowHint = parseUnitsRowHintParam(params);
+        const QString reqImportName = params.value(QStringLiteral("name")).toString();
+
+        // Rigaku .ras diffraction scan files
+        const bool isRasFile = absPath.endsWith(QStringLiteral(".ras"), Qt::CaseInsensitive)
+                || rawBytes.contains("*RAS_DATA_START") || rawBytes.contains("*RAS_INT_START");
+        if (isRasFile) {
+            std::unique_ptr<future::Table> rasFt(AsciiTableImportFilter::importLabTextData(
+                    rawBytes, QStringLiteral("RasImportTmp"), absPath,
+                    params.value(QStringLiteral("separator")).toString(), encodingHint,
+                    unitsRowHint));
+            if (!rasFt || rasFt->columnCount() <= 0)
+                throwRpcRuntime(
+                        QStringLiteral("Failed to parse Rigaku .ras data in '%1'.").arg(absPath));
+            const int nRows = std::max(1, rasFt->rowCount());
+            const int nCols = rasFt->columnCount();
+            Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
+            if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
+                t->setWindowLabel(absPath);
+            for (int c = 0; c < nCols; ++c)
+                t->setColName(c, QStringLiteral("__ras_col_%1__").arg(c));
+            for (int c = 0; c < nCols; ++c) {
+                Column *srcCol = rasFt->column(c);
+                Column *dstCol = t->column(c);
+                if (!srcCol || !dstCol)
+                    continue;
+                dstCol->setColumnMode(srcCol->columnMode());
+                dstCol->copy(srcCol);
+                t->setColName(c, srcCol->name().trimmed().isEmpty() ? QString::number(c + 1)
+                                                                    : srcCol->name());
+                t->setColLongName(c, srcCol->longName());
+                t->setColUnits(c, srcCol->units());
+                t->setColComment(c, srcCol->comment());
+                t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
+                applyDefaultNumericFormat6g(t, c);
+            }
+            outResult = serializeTableInfo(t);
+            outResult[QStringLiteral("ok")] = true;
+            return true;
+        }
+
+        const QString text = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
+        const int len = text.size();
+        const int ignoredLines = std::max(0, params.value(QStringLiteral("skip_lines")).toInt(0));
         int pos = 0;
         for (int skipped = 0; skipped < ignoredLines && pos < len; ++skipped) {
             while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n'))
@@ -4029,215 +6747,34 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         }
 
-        struct CsvCell
-        {
-            QString value;
-            bool quoted = false;
-        };
+        QString sep = params.value(QStringLiteral("separator")).toString();
+        if (sep.isEmpty() || sep.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
+            sep = autoDetectCsvSeparator(text, pos, absPath);
 
-        QVector<QVector<CsvCell>> records;
-        int maxCols = 0;
-        while (pos < len) {
-            QVector<CsvCell> row;
-            while (true) {
-                CsvCell cell;
-                const int fieldStart = pos;
-                if (stripSpaces) {
-                    while (pos < len
-                           && (text[pos] == QLatin1Char(' ')
-                               || (sep != QStringLiteral("\t") && text[pos] == QLatin1Char('\t')))
-                           && text.midRef(pos, sepLen) != sep) {
-                        ++pos;
-                    }
-                }
-                if (pos < len && text[pos] == QLatin1Char('"')) {
-                    cell.quoted = true;
-                    ++pos; // opening '"'
-                    while (pos < len) {
-                        const QChar ch = text[pos];
-                        if (ch == QLatin1Char('"')) {
-                            if (pos + 1 < len && text[pos + 1] == QLatin1Char('"')) {
-                                cell.value.append(QLatin1Char('"'));
-                                pos += 2;
-                            } else {
-                                ++pos; // closing '"'
-                                break;
-                            }
-                        } else {
-                            cell.value.append(ch);
-                            ++pos;
-                        }
-                    }
-                    while (pos < len && text[pos] != QLatin1Char('\r')
-                           && text[pos] != QLatin1Char('\n')
-                           && text.midRef(pos, sepLen) != sep) {
-                        if (text[pos] != QLatin1Char(' ') && text[pos] != QLatin1Char('\t'))
-                            cell.value.append(text[pos]);
-                        ++pos;
-                    }
-                } else {
-                    pos = fieldStart;
-                    const int rawStart = pos;
-                    while (pos < len && text[pos] != QLatin1Char('\r')
-                           && text[pos] != QLatin1Char('\n')
-                           && text.midRef(pos, sepLen) != sep) {
-                        ++pos;
-                    }
-                    QString rawField = text.mid(rawStart, pos - rawStart);
-                    if (simplifySpaces)
-                        rawField = rawField.simplified();
-                    else if (stripSpaces)
-                        rawField = rawField.trimmed();
-                    cell.value = rawField;
-                }
-                row.append(cell);
-
-                if (pos < len && text.midRef(pos, sepLen) == sep) {
-                    pos += sepLen;
-                    continue;
-                }
-                if (pos < len && text[pos] == QLatin1Char('\r')) {
-                    ++pos;
-                    if (pos < len && text[pos] == QLatin1Char('\n'))
-                        ++pos;
-                } else if (pos < len && text[pos] == QLatin1Char('\n')) {
-                    ++pos;
-                }
-                break;
-            }
-            maxCols = std::max(maxCols, row.size());
-            records.append(row);
-        }
-
-        maxCols = std::max(1, maxCols);
-        while (!records.isEmpty() && maxCols > 1 && records.last().size() == 1
-               && !records.last()[0].quoted && records.last()[0].value.isEmpty()) {
-            records.removeLast();
-        }
-
+        const bool hasHeader = params.contains(QStringLiteral("header"))
+                ? params.value(QStringLiteral("header")).toBool(true)
+                : true;
+        const bool stripSpaces = params.contains(QStringLiteral("strip_spaces"))
+                ? params.value(QStringLiteral("strip_spaces")).toBool(true)
+                : true;
+        const bool simplifySpaces = params.value(QStringLiteral("simplify_spaces")).toBool(false);
+        const bool convertNumeric = params.contains(QStringLiteral("numeric"))
+                ? params.value(QStringLiteral("numeric")).toBool(true)
+                : true;
         const bool withComments = params.contains(QStringLiteral("with_comments"))
                 ? params.value(QStringLiteral("with_comments")).toBool(false)
                 : params.value(QStringLiteral("comments")).toBool(false);
-        QVector<CsvCell> headerRow;
-        QVector<CsvCell> commentRow;
-        int dataStartIdx = 0;
-        if (hasHeader && !records.isEmpty()) {
-            headerRow = records[0];
-            dataStartIdx = 1;
-        }
-        if (withComments && dataStartIdx < records.size()) {
-            commentRow = records[dataStartIdx];
-            ++dataStartIdx;
-        }
-        const int dataRowCount = std::max(0, records.size() - dataStartIdx);
 
-        Table *t = createUniqueTableHeadless(
-                d_app, std::max(1, dataRowCount), maxCols,
-                params.value(QStringLiteral("name")).toString());
-        t->setWindowLabel(absPath);
+        int maxCols = 1;
+        const QVector<QVector<ParsedCsvCell>> records = parseDelimitedRecordsRfc4180(
+                text, pos, sep, stripSpaces, simplifySpaces, maxCols);
 
-        if (hasHeader && !headerRow.isEmpty()) {
-            for (int c = 0; c < maxCols; ++c)
-                t->setColName(c, QStringLiteral("__import_col_%1__").arg(c));
-        }
+        Table *t = createUniqueTableHeadless(d_app, 1, maxCols, reqImportName);
+        if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
+            t->setWindowLabel(absPath);
 
-        QLocale cLoc = QLocale::c();
-        cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
-
-        for (int c = 0; c < maxCols; ++c) {
-            Column *col = t->column(c);
-            if (!col)
-                continue;
-
-            bool useText = !convertNumeric;
-            bool anyQuoted = false;
-            bool anyFiniteNumber = false;
-            QVector<qreal> parsedNums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
-            QVector<int> invalidRows;
-
-            if (convertNumeric) {
-                for (int r = 0; r < dataRowCount; ++r) {
-                    const QVector<CsvCell> &rec = records[dataStartIdx + r];
-                    const QString valStr = (c < rec.size()) ? rec[c].value : QString();
-                    const bool wasQuoted = (c < rec.size()) ? rec[c].quoted : false;
-                    if (wasQuoted)
-                        anyQuoted = true;
-                    const QString trimmed = valStr.trimmed();
-                    if (trimmed.isEmpty()) {
-                        invalidRows.append(r);
-                        continue;
-                    }
-                    if (!wasQuoted
-                        && (trimmed.compare(QStringLiteral("nan"), Qt::CaseInsensitive) == 0
-                            || trimmed.compare(QStringLiteral("+nan"), Qt::CaseInsensitive) == 0
-                            || trimmed.compare(QStringLiteral("-nan"), Qt::CaseInsensitive) == 0
-                            || trimmed.compare(QStringLiteral("inf"), Qt::CaseInsensitive) == 0
-                            || trimmed.compare(QStringLiteral("+inf"), Qt::CaseInsensitive) == 0
-                            || trimmed.compare(QStringLiteral("-inf"), Qt::CaseInsensitive) == 0)) {
-                        invalidRows.append(r);
-                        continue;
-                    }
-                    bool okNum = false;
-                    const double numVal = cLoc.toDouble(trimmed, &okNum);
-                    if (okNum && std::isfinite(numVal)) {
-                        parsedNums[r] = numVal;
-                        anyFiniteNumber = true;
-                    } else {
-                        useText = true;
-                        break;
-                    }
-                }
-                if (!useText && anyQuoted && !anyFiniteNumber)
-                    useText = true;
-            }
-
-            if (useText) {
-                if (col->columnMode() != SciDAVis::ColumnMode::Text)
-                    col->setColumnMode(SciDAVis::ColumnMode::Text);
-                if (dataRowCount > 0) {
-                    QStringList texts;
-                    texts.reserve(dataRowCount);
-                    for (int r = 0; r < dataRowCount; ++r) {
-                        const QVector<CsvCell> &rec = records[dataStartIdx + r];
-                        texts.append((c < rec.size()) ? rec[c].value : QString());
-                    }
-                    col->replaceTexts(0, texts);
-                } else {
-                    col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
-                }
-            } else {
-                if (col->columnMode() != SciDAVis::ColumnMode::Numeric)
-                    col->setColumnMode(SciDAVis::ColumnMode::Numeric);
-                if (dataRowCount > 0) {
-                    col->clearValidity();
-                    col->replaceValues(0, parsedNums);
-                    int k = 0;
-                    while (k < invalidRows.size()) {
-                        const int startR = invalidRows[k];
-                        int endR = startR;
-                        while (k + 1 < invalidRows.size() && invalidRows[k + 1] == endR + 1) {
-                            endR = invalidRows[++k];
-                        }
-                        col->setInvalid(Interval<int>(startR, endR), true);
-                        ++k;
-                    }
-                } else {
-                    col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
-                }
-            }
-
-            if (hasHeader && !headerRow.isEmpty()) {
-                QString hdrName = (c < headerRow.size()) ? headerRow[c].value : QString();
-                if (hdrName.trimmed().isEmpty())
-                    hdrName = QString::number(c + 1);
-                t->setColName(c, hdrName);
-            }
-            if (withComments) {
-                const QString cmtStr = (c < commentRow.size()) ? commentRow[c].value : QString();
-                t->setColComment(c, cmtStr);
-            }
-            t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
-        }
+        populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, withComments,
+                                          unitsRowHint, convertNumeric, 0, 0, true);
 
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
@@ -4305,9 +6842,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("app.window_info")) {
         const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    collectWindowNames(d_app));
+        }
         MyWidget *w = findWindowByName(d_app, name);
-        if (!w)
-            throwInvalidParams(QStringLiteral("Window not found: %1").arg(name));
+        if (!w) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Window not found: '%1'.").arg(name), collectWindowNames(d_app));
+        }
         if (w->inherits("Table"))
             outResult = serializeTableInfo(static_cast<Table *>(w));
         else if (w->inherits("Matrix"))
@@ -4326,10 +6870,23 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("app.activate_window")) {
         const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    collectWindowNames(d_app));
+        }
         MyWidget *w = findWindowByName(d_app, name);
-        if (!w)
-            throwInvalidParams(QStringLiteral("Window not found: %1").arg(name));
+        if (!w) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Window not found: '%1'.").arg(name), collectWindowNames(d_app));
+        }
         d_app->activateSubWindow(w);
+        if (w->inherits("MultiLayer")) {
+            lastUndoDomain = QStringLiteral("graph");
+            lastUndoGraph = w->name();
+        } else if (w->inherits("Table") || w->inherits("Matrix")) {
+            lastUndoDomain = QStringLiteral("project");
+        }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("name")] = w->name();
         outResult[QStringLiteral("type")] = windowTypeString(w);
@@ -4339,11 +6896,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("app.rename_window")) {
         const QString oldName = params.value(QStringLiteral("name")).toString().trimmed();
         const QString newName = params.value(QStringLiteral("new_name")).toString().trimmed();
+        if (oldName.isEmpty()) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    collectWindowNames(d_app));
+        }
         if (newName.isEmpty())
             throwInvalidParams(QStringLiteral("new_name must not be empty."));
         MyWidget *w = findWindowByName(d_app, oldName);
-        if (!w)
-            throwInvalidParams(QStringLiteral("Window not found: %1").arg(oldName));
+        if (!w) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Window not found: '%1'.").arg(oldName),
+                    collectWindowNames(d_app));
+        }
         const QString prevWindowName = w->name();
         QString checkStr = newName;
         checkStr.replace(QLatin1Char('-'), QLatin1Char('_'));
@@ -4378,9 +6943,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("app.close_window")) {
         const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    collectWindowNames(d_app));
+        }
         MyWidget *w = findWindowByName(d_app, name);
-        if (!w)
-            throwInvalidParams(QStringLiteral("Window not found: %1").arg(name));
+        if (!w) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Window not found: '%1'.").arg(name), collectWindowNames(d_app));
+        }
         const QString closedName = w->name();
         w->askOnCloseEvent(false);
         w->hide();
@@ -4395,9 +6967,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("app.clone_window")) {
         const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty()) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    collectWindowNames(d_app));
+        }
         MyWidget *w = findWindowByName(d_app, name);
-        if (!w)
-            throwInvalidParams(QStringLiteral("Window not found: %1").arg(name));
+        if (!w) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Window not found: '%1'.").arg(name), collectWindowNames(d_app));
+        }
         MyWidget *cloned = d_app->clone(w);
         if (!cloned)
             throwRpcRuntime(QStringLiteral("Failed to clone window '%1'.").arg(w->name()));
@@ -4516,22 +7095,103 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo")) {
         const bool isUndo = (method == QStringLiteral("app.undo"));
+
+        auto refreshAfterProjectUndoRedo = [&]() {
+            for (MyWidget *w : d_app->windowsList()) {
+                if (!w)
+                    continue;
+                if (w->inherits("Table")) {
+                    auto *t = static_cast<Table *>(w);
+                    for (int c = 0; c < t->numCols(); ++c)
+                        d_app->updateCurves(t, fullColumnName(t, c));
+                } else if (w->inherits("Matrix")) {
+                    d_app->updateMatrixPlots(static_cast<Matrix *>(w));
+                }
+            }
+            d_app->refreshAllGraphsAutoAxisTitles();
+        };
+
         const QString graphParam = params.value(QStringLiteral("graph")).toString().trimmed();
+        const QString tableParam = params.value(QStringLiteral("table")).toString().trimmed();
+        const QString matrixParam = params.value(QStringLiteral("matrix")).toString().trimmed();
+        const QString windowParam = params.value(QStringLiteral("window")).toString().trimmed();
+
         if (!graphParam.isEmpty()) {
             MultiLayer *ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
             QUndoStack *us = ml->undoStack();
             if (us) {
-                if (isUndo) {
-                    if (us->canUndo())
-                        us->undo();
-                } else {
-                    if (us->canRedo())
-                        us->redo();
-                }
+                if (isUndo && us->canUndo())
+                    us->undo();
+                else if (!isUndo && us->canRedo())
+                    us->redo();
             }
             d_app->updateUndoRedoActionsForActiveWindow();
             outResult[QStringLiteral("ok")] = true;
             outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("window")] = ml->name();
+            outResult[QStringLiteral("can_undo")] = us ? us->canUndo() : false;
+            outResult[QStringLiteral("can_redo")] = us ? us->canRedo() : false;
+            return true;
+        }
+
+        if (!tableParam.isEmpty() || !matrixParam.isEmpty()) {
+            QUndoStack *us = nullptr;
+            QString winName;
+            if (!tableParam.isEmpty()) {
+                Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
+                winName = t->name();
+                us = t->d_future_table ? t->d_future_table->undoStack() : nullptr;
+            } else {
+                Matrix *m = resolveMatrix(d_app, params, QStringLiteral("matrix"), true);
+                winName = m->name();
+                us = m->d_future_matrix ? m->d_future_matrix->undoStack() : nullptr;
+            }
+            if (us) {
+                if (isUndo && us->canUndo())
+                    us->undo();
+                else if (!isUndo && us->canRedo())
+                    us->redo();
+                refreshAfterProjectUndoRedo();
+            }
+            d_app->updateUndoRedoActionsForActiveWindow();
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("window")] = winName;
+            outResult[QStringLiteral("can_undo")] = us ? us->canUndo() : false;
+            outResult[QStringLiteral("can_redo")] = us ? us->canRedo() : false;
+            return true;
+        }
+
+        if (!windowParam.isEmpty()) {
+            MyWidget *w = findWindowByName(d_app, windowParam);
+            if (!w) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Window not found: '%1'.").arg(windowParam),
+                        collectWindowNames(d_app));
+            }
+            QUndoStack *us = nullptr;
+            bool isProj = false;
+            if (w->inherits("MultiLayer")) {
+                us = static_cast<MultiLayer *>(w)->undoStack();
+            } else if (w->inherits("Table")) {
+                auto *t = static_cast<Table *>(w);
+                us = t->d_future_table ? t->d_future_table->undoStack() : nullptr;
+                isProj = true;
+            } else if (w->inherits("Matrix")) {
+                auto *m = static_cast<Matrix *>(w);
+                us = m->d_future_matrix ? m->d_future_matrix->undoStack() : nullptr;
+                isProj = true;
+            }
+            if (us) {
+                if (isUndo && us->canUndo())
+                    us->undo();
+                else if (!isUndo && us->canRedo())
+                    us->redo();
+                if (isProj)
+                    refreshAfterProjectUndoRedo();
+            }
+            d_app->updateUndoRedoActionsForActiveWindow();
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("window")] = w->name();
             outResult[QStringLiteral("can_undo")] = us ? us->canUndo() : false;
             outResult[QStringLiteral("can_redo")] = us ? us->canRedo() : false;
             return true;
@@ -4557,34 +7217,68 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         QWidget *activeSub = d_app->d_workspace.activeSubWindow();
-        MultiLayer *activeMl =
-                (activeSub && activeSub->inherits("MultiLayer"))
-                        ? static_cast<MultiLayer *>(activeSub)
-                        : nullptr;
-        MultiLayer *fallbackMl =
-                resolveMultiLayer(d_app, QJsonObject(), QStringLiteral("graph"), false);
+        MultiLayer *activeMl = (activeSub && activeSub->inherits("MultiLayer"))
+                ? static_cast<MultiLayer *>(activeSub)
+                : nullptr;
+        MultiLayer *fallbackMl = nullptr;
+        if (!lastUndoGraph.isEmpty()) {
+            if (MyWidget *mw = findWindowByName(d_app, lastUndoGraph)) {
+                if (mw->inherits("MultiLayer"))
+                    fallbackMl = static_cast<MultiLayer *>(mw);
+            }
+        }
+        if (!fallbackMl)
+            fallbackMl = resolveMultiLayer(d_app, QJsonObject(), QStringLiteral("graph"), false);
 
         const int projIdxBefore = projStack ? projStack->index() : -1;
         const int mlIdxBefore =
                 (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
 
-        if (isUndo)
-            d_app->undo();
-        else
-            d_app->redo();
+        if (activeSub) {
+            if (isUndo)
+                d_app->undo();
+            else
+                d_app->redo();
+        }
 
         const int projIdxAfter = projStack ? projStack->index() : -1;
         const int mlIdxAfter =
                 (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
 
-        // In headless mode QMdiArea::activeSubWindow() may be null; fall back to most recent graph stack if project stack did not move
-        if (!activeSub && projIdxAfter == projIdxBefore && mlIdxAfter == mlIdxBefore
-            && fallbackMl && fallbackMl->undoStack()) {
-            QUndoStack *us = fallbackMl->undoStack();
-            if (isUndo && us->canUndo())
-                us->undo();
-            else if (!isUndo && us->canRedo())
-                us->redo();
+        // In headless mode QMdiArea::activeSubWindow() is null; route to whichever undo stack
+        // (project Table/Matrix stack vs MultiLayer graph stack) was modified most recently.
+        if (!activeSub && projIdxAfter == projIdxBefore && mlIdxAfter == mlIdxBefore) {
+            auto tryStack = [&](QUndoStack *us, bool isProj) -> bool {
+                if (!us)
+                    return false;
+                if (isUndo && us->canUndo()) {
+                    us->undo();
+                    if (isProj)
+                        refreshAfterProjectUndoRedo();
+                    return true;
+                }
+                if (!isUndo && us->canRedo()) {
+                    us->redo();
+                    if (isProj)
+                        refreshAfterProjectUndoRedo();
+                    return true;
+                }
+                return false;
+            };
+
+            QUndoStack *mlStack = fallbackMl ? fallbackMl->undoStack() : nullptr;
+            if (lastUndoDomain == QStringLiteral("project")) {
+                if (!tryStack(projStack, true))
+                    tryStack(mlStack, false);
+            } else if (lastUndoDomain == QStringLiteral("graph")) {
+                if (!tryStack(mlStack, false))
+                    tryStack(projStack, true);
+            } else {
+                if (!tryStack(mlStack, false))
+                    tryStack(projStack, true);
+            }
+        } else if (projStack && projStack->index() != projIdxBefore) {
+            refreshAfterProjectUndoRedo();
         }
 
         d_app->updateUndoRedoActionsForActiveWindow();
@@ -4985,14 +7679,52 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 QStringLiteral("checkForUpdatesManual"),
                 QStringLiteral("actionCheckUpdates"),
                 QStringLiteral("searchForUpdates"),
+                QStringLiteral("actionMergeGraphs"),
+                QStringLiteral("mergeOpenGraphsDialog"),
+                QStringLiteral("actionImportASCII"),
+                QStringLiteral("actionShowLayerDialog"),
+                QStringLiteral("showLayerDialog"),
+                QStringLiteral("showScaleDialog"),
+                QStringLiteral("showAxisDialog"),
+                QStringLiteral("showPlotDialog"),
+                QStringLiteral("showCurvesDialog"),
+                QStringLiteral("showExportASCIIDialog"),
+                QStringLiteral("exportLayer"),
+                QStringLiteral("actionTensileYield"),
+                QStringLiteral("showTensileYieldDialog"),
             };
             if (kBlockedInteractiveTargets.contains(id))
                 return true;
-            if (id.isEmpty()
-                && (menuText.endsWith(QStringLiteral("..."))
-                    || menuText.endsWith(QStringLiteral("\u2026")))) {
+            QString strippedMenu = menuText.trimmed();
+            static const QRegularExpression rxMnemonic(
+                    QStringLiteral("\\s*\\([A-Za-z0-9]\\)\\s*$"));
+            strippedMenu.remove(rxMnemonic);
+            strippedMenu = strippedMenu.trimmed();
+            if (menuText.endsWith(QStringLiteral("..."))
+                || menuText.endsWith(QStringLiteral("\u2026"))
+                || strippedMenu.endsWith(QStringLiteral("..."))
+                || strippedMenu.endsWith(QStringLiteral("\u2026"))) {
                 return true;
             }
+            static const QSet<QString> kBlockedJapaneseModalLabels = {
+                QStringLiteral("\u30a6\u30a3\u30f3\u30c9\u30a6\u3092\u5370\u5237"),
+                QStringLiteral("\u5370\u5237"),
+                QStringLiteral("\u3059\u3079\u3066\u306e\u30d7\u30ed\u30c3\u30c8\u3092\u5370\u5237"),
+                QStringLiteral("\u30d7\u30ed\u30c3\u30c8\u30a6\u30a3\u30b6\u30fc\u30c9"),
+                QStringLiteral("\u30ec\u30a4\u30e4\u914d\u7f6e\u30fb\u30b5\u30a4\u30ba"),
+                QStringLiteral("\u30a8\u30af\u30b9\u30dd\u30fc\u30c8"),
+                QStringLiteral("\u3059\u3079\u3066\u306e\u30b0\u30e9\u30d5\u3092\u30a8\u30af\u30b9\u30dd\u30fc\u30c8"),
+                QStringLiteral("PDF\u3078\u30a8\u30af\u30b9\u30dd\u30fc\u30c8"),
+                QStringLiteral("\u30a4\u30f3\u30dd\u30fc\u30c8"),
+                QStringLiteral("ASCII\u8aad\u307f\u8fbc\u307f"),
+                QStringLiteral("\u30b0\u30e9\u30d5\u30a6\u30a3\u30f3\u30c9\u30a6\u3092\u7d50\u5408"),
+                QStringLiteral("\u30b5\u30a4\u30ba"),
+                QStringLiteral("\u30d7\u30ed\u30d1\u30c6\u30a3"),
+                QStringLiteral("\u540d\u524d\u3092\u5909\u66f4"),
+                QStringLiteral("\u691c\u7d22")
+            };
+            if (!strippedMenu.isEmpty() && kBlockedJapaneseModalLabels.contains(strippedMenu))
+                return true;
             return false;
         };
 
@@ -5007,7 +7739,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (act->objectName() == name || cleanTxt == name) {
                 if (nonInteractive
                     && isBlockedInteractiveDialogTarget(act->objectName(), cleanTxt)) {
-                    throwRpcRuntime(
+                    throwInvalidParams(
                             QStringLiteral("Interactive modal dialog action '%1' cannot be triggered headlessly via RPC; use the dedicated JSON-RPC method instead.")
                                     .arg(act->objectName().isEmpty() ? cleanTxt : act->objectName()));
                 }
@@ -5035,7 +7767,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 && (mm.methodType() == QMetaMethod::Slot
                     || mm.methodType() == QMetaMethod::Method)) {
                 if (nonInteractive && isBlockedInteractiveDialogTarget(name)) {
-                    throwRpcRuntime(
+                    throwInvalidParams(
                             QStringLiteral("Interactive modal dialog slot '%1' cannot be invoked headlessly via RPC; use the dedicated JSON-RPC method instead.")
                                     .arg(name));
                 }
@@ -5264,6 +7996,135 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("table.paste_tsv")) {
+        QString rawText;
+        if (params.contains(QStringLiteral("text")) && !params.value(QStringLiteral("text")).isNull()) {
+            rawText = params.value(QStringLiteral("text")).toString();
+        } else if (QClipboard *cb = QApplication::clipboard()) {
+            rawText = cb->text(QClipboard::Clipboard);
+        }
+        if (rawText.trimmed().isEmpty())
+            throwInvalidParams(QStringLiteral("table.paste_tsv requires non-empty 'text' (or clipboard text)."));
+
+        const int startRow = params.contains(QStringLiteral("start_row"))
+                ? std::max(0, parseStrictJsonInt(params.value(QStringLiteral("start_row")),
+                                                 QStringLiteral("start_row")))
+                : 0;
+        const int startCol = params.contains(QStringLiteral("start_col"))
+                ? std::max(0, parseStrictJsonInt(params.value(QStringLiteral("start_col")),
+                                                 QStringLiteral("start_col")))
+                : 0;
+        const bool hasHeader = params.contains(QStringLiteral("header"))
+                ? params.value(QStringLiteral("header")).toBool(true)
+                : (startRow == 0);
+        const bool convertNumeric = params.contains(QStringLiteral("numeric"))
+                ? params.value(QStringLiteral("numeric")).toBool(true)
+                : true;
+        const int unitsRowHint = parseUnitsRowHintParam(params);
+
+        if (startRow == 0 && startCol == 0
+            && (rawText.contains(QStringLiteral("*RAS_DATA_START"))
+                || rawText.contains(QStringLiteral("*RAS_INT_START")))) {
+            const QString encParam = params.value(QStringLiteral("encoding")).toString().trimmed();
+            const QString encHint =
+                    (encParam.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
+                    ? QString()
+                    : encParam;
+            std::unique_ptr<future::Table> rasFt(AsciiTableImportFilter::importLabTextData(
+                    rawText.toUtf8(), QStringLiteral("RasPasteTmp"), QStringLiteral("paste.ras"),
+                    params.value(QStringLiteral("separator")).toString(), encHint, unitsRowHint));
+            if (!rasFt || rasFt->columnCount() <= 0) {
+                throwInvalidParams(
+                        QStringLiteral("Failed to parse Rigaku .ras data in table.paste_tsv."));
+            }
+            const int nRows = std::max(1, rasFt->rowCount());
+            const int nCols = rasFt->columnCount();
+            Table *t = nullptr;
+            if ((params.contains(QStringLiteral("table"))
+                 && !params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+                || (params.contains(QStringLiteral("window"))
+                    && !params.value(QStringLiteral("window")).toString().trimmed().isEmpty())) {
+                t = resolveTable(d_app, params, QStringLiteral("table"), true);
+            } else if (!params.value(QStringLiteral("name")).toString().trimmed().isEmpty()
+                       || params.value(QStringLiteral("create_table")).toBool(false)) {
+                t = createUniqueTableHeadless(d_app, nRows, nCols,
+                                              params.value(QStringLiteral("name")).toString());
+            } else {
+                t = resolveTable(d_app, params, QStringLiteral("table"), false);
+                if (!t) {
+                    t = createUniqueTableHeadless(d_app, nRows, nCols,
+                                                  params.value(QStringLiteral("name")).toString());
+                }
+            }
+            if (t->numCols() < nCols)
+                t->setNumCols(nCols);
+            if (t->numRows() < nRows)
+                t->setNumRows(nRows);
+            for (int c = 0; c < nCols; ++c)
+                t->setColName(c, QStringLiteral("__ras_paste_col_%1__").arg(c));
+            for (int c = 0; c < nCols; ++c) {
+                Column *srcCol = rasFt->column(c);
+                Column *dstCol = t->column(c);
+                if (!srcCol || !dstCol)
+                    continue;
+                dstCol->setColumnMode(srcCol->columnMode());
+                dstCol->copy(srcCol);
+                t->setColName(c, srcCol->name().trimmed().isEmpty() ? QString::number(c + 1)
+                                                                    : srcCol->name());
+                t->setColLongName(c, srcCol->longName());
+                t->setColUnits(c, srcCol->units());
+                t->setColComment(c, srcCol->comment());
+                t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
+                applyDefaultNumericFormat6g(t, c);
+                d_app->updateCurves(t, fullColumnName(t, c));
+            }
+            d_app->refreshAllGraphsAutoAxisTitles();
+            outResult = serializeTableInfo(t);
+            outResult[QStringLiteral("ok")] = true;
+            return true;
+        }
+
+        QString sep = params.value(QStringLiteral("separator")).toString();
+        if (sep.isEmpty() || sep.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
+            sep = rawText.contains(QLatin1Char('\t'))
+                    ? QStringLiteral("\t")
+                    : autoDetectCsvSeparator(rawText, 0, QString());
+        }
+
+        int maxCols = 1;
+        const QVector<QVector<ParsedCsvCell>> records =
+                parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols);
+
+        Table *t = nullptr;
+        if ((params.contains(QStringLiteral("table"))
+             && !params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+            || (params.contains(QStringLiteral("window"))
+                && !params.value(QStringLiteral("window")).toString().trimmed().isEmpty())) {
+            t = resolveTable(d_app, params, QStringLiteral("table"), true);
+        } else if (!params.value(QStringLiteral("name")).toString().trimmed().isEmpty()
+                   || params.value(QStringLiteral("create_table")).toBool(false)) {
+            t = createUniqueTableHeadless(d_app, 1, std::max(1, startCol + maxCols),
+                                          params.value(QStringLiteral("name")).toString());
+        } else {
+            t = resolveTable(d_app, params, QStringLiteral("table"), false);
+            if (!t) {
+                t = createUniqueTableHeadless(d_app, 1, std::max(1, startCol + maxCols),
+                                              params.value(QStringLiteral("name")).toString());
+            }
+        }
+
+        const bool assignDesigs = (startRow == 0 && startCol == 0);
+        populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, false, unitsRowHint,
+                                          convertNumeric, startRow, startCol, assignDesigs);
+        for (int c = startCol; c < std::min(t->numCols(), startCol + maxCols); ++c)
+            d_app->updateCurves(t, fullColumnName(t, c));
+        d_app->refreshAllGraphsAutoAxisTitles();
+
+        outResult = serializeTableInfo(t);
+        outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
     if (method == QStringLiteral("table.set_cell")) {
         Table *t = resolveTable(d_app, params);
         const int row = params.value(QStringLiteral("row")).toInt(-1);
@@ -5280,14 +8141,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             col->setTextAt(row, val.isString() ? val.toString()
                                                : QString::number(val.toDouble(), 'g', 15));
         } else if (val.isString()) {
-            bool ok = false;
-            const double d = val.toString().toDouble(&ok);
-            if (ok && std::isfinite(d)) {
-                t->setCell(row, colIdx, d);
+            const QString sTrim = val.toString().trimmed();
+            if (isMissingNumericSentinel(sTrim)) {
+                t->clearCell(row, colIdx);
             } else {
-                if (col && col->columnMode() != SciDAVis::ColumnMode::Text)
-                    col->setColumnMode(SciDAVis::ColumnMode::Text);
-                t->setText(row, colIdx, val.toString());
+                bool ok = false;
+                const double d = sTrim.toDouble(&ok);
+                if (ok && std::isfinite(d)) {
+                    t->setCell(row, colIdx, d);
+                } else {
+                    if (col && col->columnMode() != SciDAVis::ColumnMode::Text)
+                        col->setColumnMode(SciDAVis::ColumnMode::Text);
+                    t->setText(row, colIdx, val.toString());
+                }
             }
         } else {
             const double d = jsonToDoubleOrNaN(val);
@@ -5678,14 +8544,15 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int cols = t->numCols();
         Matrix *m = createUniqueMatrixHeadless(
                 d_app, rows, cols, params.value(QStringLiteral("name")).toString());
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
         for (int c = 0; c < cols; ++c) {
             Column *col = t->column(c);
-            QVector<qreal> colVec(rows, 0.0);
+            QVector<qreal> colVec(rows, qNaN);
             for (int r = 0; r < rows; ++r) {
                 if (col && !col->isInvalid(r)
                     && col->columnMode() == SciDAVis::ColumnMode::Numeric) {
                     const double v = col->valueAt(r);
-                    colVec[r] = std::isfinite(v) ? v : 0.0;
+                    colVec[r] = std::isfinite(v) ? v : qNaN;
                 }
             }
             m->d_future_matrix->setColumnCells(c, 0, rows - 1, colVec);
@@ -5749,6 +8616,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (nRows <= 0 || nCols <= 0)
             throwInvalidParams(QStringLiteral("Matrix 'data' must be non-empty 2D array."));
+        m->d_future_matrix->beginMacro(
+                QObject::tr("%1: set cell values").arg(m->name()));
         if (m->numRows() != nRows || m->numCols() != nCols)
             m->setDimensions(nRows, nCols);
 
@@ -5763,6 +8632,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
             m->d_future_matrix->setColumnCells(c, 0, nRows - 1, colVec);
         }
+        m->d_future_matrix->endMacro();
         d_app->updateMatrixPlots(m);
         outResult = serializeMatrixInfo(m);
         outResult[QStringLiteral("ok")] = true;
@@ -5988,12 +8858,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int cols = m->numCols();
         Table *t = createUniqueTableHeadless(
                 d_app, rows, cols, params.value(QStringLiteral("name")).toString());
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
         for (int c = 0; c < cols; ++c) {
-            QVector<qreal> colVec(rows, 0.0);
-            for (int r = 0; r < rows; ++r)
-                colVec[r] = m->cell(r, c);
-            t->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
-            t->column(c)->replaceValues(0, colVec);
+            Column *col = t->column(c);
+            if (!col)
+                continue;
+            QVector<qreal> colVec(rows, qNaN);
+            QVector<int> invalidRows;
+            for (int r = 0; r < rows; ++r) {
+                const double v = m->cell(r, c);
+                if (std::isfinite(v)) {
+                    colVec[r] = v;
+                } else {
+                    colVec[r] = qNaN;
+                    invalidRows.append(r);
+                }
+            }
+            col->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            applyDefaultNumericFormat6g(t, c);
+            col->clearValidity();
+            col->replaceValues(0, colVec);
+            for (int ir : invalidRows)
+                col->setInvalid(ir, true);
             t->setColPlotDesignation(c, SciDAVis::Y);
         }
         outResult = serializeTableInfo(t);
@@ -6195,9 +9081,23 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         const int style = parsePlotStyle(params.value(QStringLiteral("style")).toString(),
                                          Graph::LineSymbols);
+        int totalFinitePts = 0;
+        for (int yi : yIdxs)
+            totalFinitePts += countFiniteUnmaskedInTableColumn(t, yi, xIdx);
+        if (totalFinitePts <= 0) {
+            throwInvalidParams(
+                    QStringLiteral("plot.xy requires at least 1 finite unmasked numeric point across the selected columns in table '%1'.")
+                            .arg(t->name()));
+        }
         MultiLayer *ml = d_app->multilayerPlot(t, yFullCols, style, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create 2D XY plot."));
+        if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            throwInvalidParams(
+                    QStringLiteral("plot.xy created 0 plottable curves from table '%1' (check for all-NaN or non-numeric columns).")
+                            .arg(t->name()));
+        }
 
         applyRequestedWindowName(d_app, ml, params);
 
@@ -6228,6 +9128,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                 }
             }
+            const bool applySingleColor = (g->curves() == 1);
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (g->curveType(ci) != Graph::ErrorBars)
+                    applyInlineCurveStyleParams(g, ci, params, applySingleColor);
+            }
             const QString xFull = (xIdx >= 0) ? fullColumnName(t, xIdx) : QString();
             if (params.contains(QStringLiteral("y_err_col"))
                 && !params.value(QStringLiteral("y_err_col")).isNull()) {
@@ -6244,8 +9149,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     g->addErrorBars(xFull, yFullCols.first(), t, fullColumnName(t, xeIdx), 0);
             }
             g->refreshAutoAxisTitlesFromColumns();
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -6316,6 +9220,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             cl.lWidth = inheritedLineW;
             cl.sSize = inheritedSymSz;
             g->updateCurveLayout(newIdx, &cl);
+            applyInlineCurveStyleParams(g, newIdx, params, true);
         }
         const bool addedRightY =
                 params.value(QStringLiteral("right_axis")).toBool(false) && g->curves() > 0;
@@ -6434,12 +9339,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         t->setColPlotDesignation(y1Idx, SciDAVis::Y);
         t->setColPlotDesignation(y2Idx, SciDAVis::Y);
+        if (countFiniteUnmaskedInTableColumn(t, y1Idx, xIdx) <= 0
+            || countFiniteUnmaskedInTableColumn(t, y2Idx, xIdx) <= 0) {
+            throwInvalidParams(
+                    QStringLiteral("plot.double_y requires at least 1 finite unmasked numeric point in both left and right Y columns."));
+        }
 
         QStringList cols;
         cols << fullColumnName(t, y1Idx) << fullColumnName(t, y2Idx);
         MultiLayer *ml = d_app->multilayerPlot(t, cols, Graph::LineSymbols, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Double-Y plot."));
+        if (!ml->activeGraph() || ml->activeGraph()->curves() < 2) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            throwInvalidParams(QStringLiteral("plot.double_y could not create two valid data curves."));
+        }
         Graph *g = ml->activeGraph();
         if (g && g->curves() >= 2) {
             QwtPlotCurve *cRight = g->curve(1);
@@ -6468,8 +9382,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 g->setScale(QwtPlot::yRight, yMin - 0.05 * span, yMax + 0.05 * span);
             }
             g->setAutoScale();
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -6484,32 +9397,44 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 : t->firstXCol();
         if (xIdx >= 0)
             t->setColPlotDesignation(xIdx, SciDAVis::X);
+        QVector<int> wfYIdxs;
         QStringList yCols;
         if (params.value(QStringLiteral("y_cols")).isArray()) {
             for (const QJsonValue &it : params.value(QStringLiteral("y_cols")).toArray()) {
                 const int yi = resolveColumnIndex(t, it, true);
                 t->setColPlotDesignation(yi, SciDAVis::Y);
+                wfYIdxs.append(yi);
                 yCols << fullColumnName(t, yi);
             }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
-                if (c != xIdx && t->colPlotDesignation(c) == SciDAVis::Y)
+                if (c != xIdx && t->colPlotDesignation(c) == SciDAVis::Y) {
+                    wfYIdxs.append(c);
                     yCols << fullColumnName(t, c);
+                }
             }
         }
         if (yCols.isEmpty())
             throwInvalidParams(QStringLiteral("Waterfall plot requires Y columns."));
+        int wfFinite = 0;
+        for (int yi : wfYIdxs)
+            wfFinite += countFiniteUnmaskedInTableColumn(t, yi, xIdx);
+        if (wfFinite <= 0)
+            throwInvalidParams(QStringLiteral("plot.waterfall requires at least 1 finite numeric point."));
         MultiLayer *ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create waterfall plot."));
+        if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            throwInvalidParams(QStringLiteral("plot.waterfall created 0 valid curves."));
+        }
         Graph *g = ml->activeGraph();
         if (g) {
             const double yGap = params.value(QStringLiteral("y_offset_pct")).toDouble(15.0);
             const double xGap = params.value(QStringLiteral("x_offset_pct")).toDouble(5.0);
             const bool norm01 = params.value(QStringLiteral("normalize")).toBool(false);
             g->setStackOffsets(1, yGap, xGap, norm01);
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -6520,25 +9445,49 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("plot.histogram") || method == QStringLiteral("plot.box")
         || method == QStringLiteral("plot.violin")) {
         Table *t = resolveTable(d_app, params);
+        QVector<int> statColIdxs;
         QStringList cols;
         if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &it : params.value(QStringLiteral("cols")).toArray())
-                cols << fullColumnName(t, resolveColumnIndex(t, it, true));
+            for (const QJsonValue &it : params.value(QStringLiteral("cols")).toArray()) {
+                const int ci = resolveColumnIndex(t, it, true);
+                statColIdxs.append(ci);
+                cols << fullColumnName(t, ci);
+            }
         } else if (params.contains(QStringLiteral("col"))) {
-            cols << fullColumnName(t, resolveColumnIndex(t, params.value(QStringLiteral("col")), true));
+            const int ci = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
+            statColIdxs.append(ci);
+            cols << fullColumnName(t, ci);
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
-                if (t->colPlotDesignation(c) == SciDAVis::Y)
+                if (t->colPlotDesignation(c) == SciDAVis::Y) {
+                    statColIdxs.append(c);
                     cols << fullColumnName(t, c);
+                }
             }
-            if (cols.isEmpty() && t->numCols() > 0)
+            if (cols.isEmpty() && t->numCols() > 0) {
+                statColIdxs.append(0);
                 cols << fullColumnName(t, 0);
+            }
+        }
+        int totalStatFinite = 0;
+        for (int ci : statColIdxs)
+            totalStatFinite += countFiniteUnmaskedInTableColumn(t, ci);
+        if (totalStatFinite <= 0) {
+            throwInvalidParams(
+                    QStringLiteral("%1 requires at least 1 finite unmasked numeric value in '%2'.")
+                            .arg(method, t->name()));
         }
         const int plotType = (method == QStringLiteral("plot.histogram")) ? Graph::Histogram
                                                                           : Graph::Box;
         MultiLayer *ml = d_app->multilayerPlot(t, cols, plotType, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create statistical plot."));
+        if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            throwInvalidParams(
+                    QStringLiteral("%1 created 0 curves from '%2' (check for all-NaN or non-numeric columns).")
+                            .arg(method, t->name()));
+        }
         Graph *g = ml->activeGraph();
         if (g) {
             if (method == QStringLiteral("plot.violin")) {
@@ -6550,8 +9499,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                 }
             }
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -6685,12 +9633,36 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int colIdx = params.contains(QStringLiteral("col"))
                 ? resolveColumnIndex(t, params.value(QStringLiteral("col")), true)
                 : ((t->numCols() >= 2) ? 1 : 0);
+        int posFinite = 0;
+        double pieSum = 0.0;
+        if (Column *pc = t->column(colIdx)) {
+            if (pc->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                for (int r = 0; r < t->numRows(); ++r) {
+                    if (!pc->isInvalid(r) && !pc->isMasked(r)) {
+                        const double v = pc->valueAt(r);
+                        if (std::isfinite(v) && v >= 0.0) {
+                            ++posFinite;
+                            pieSum += v;
+                        }
+                    }
+                }
+            }
+        }
+        if (posFinite <= 0 || pieSum <= 0.0) {
+            throwInvalidParams(
+                    QStringLiteral("plot.pie requires non-negative numeric values with positive sum in column '%1'.")
+                            .arg(t->colLabel(colIdx)));
+        }
         MultiLayer *ml = d_app->multilayerPlot(t, QStringList() << fullColumnName(t, colIdx),
                                                Graph::Pie, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Pie plot."));
+        if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            throwInvalidParams(QStringLiteral("plot.pie created 0 pie slices."));
+        }
         if (Graph *g = ml->activeGraph())
-            enforceArialGraphFonts(g);
+            applyPlotLevelConvenienceParams(g, params);
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -7026,6 +9998,41 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("graph.inspect")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        const bool includeTicks = params.contains(QStringLiteral("include_ticks"))
+                ? params.value(QStringLiteral("include_ticks")).toBool(true)
+                : true;
+        const bool diagnose = params.contains(QStringLiteral("diagnose"))
+                ? params.value(QStringLiteral("diagnose")).toBool(true)
+                : true;
+        outResult = inspectGraphDetailed(ml, includeTicks, diagnose);
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.remove_layer")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        if (!params.contains(QStringLiteral("layer"))
+            || params.value(QStringLiteral("layer")).isNull()) {
+            throwInvalidParams(QStringLiteral("graph.remove_layer requires 0-based 'layer' index."));
+        }
+        if (ml->layers() <= 1) {
+            throwInvalidParams(
+                    QStringLiteral("Cannot remove the last remaining layer of graph '%1'.")
+                            .arg(ml->name()));
+        }
+        Graph *targetG = resolveGraphLayer(ml, params, true);
+        const int removedIdx = ml->layersList().indexOf(targetG);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Remove Layer"));
+        ml->setActiveGraph(targetG);
+        ml->removeLayer();
+        undoGuard.commit();
+        outResult = serializeGraphInfo(ml);
+        outResult[QStringLiteral("removed_layer")] = removedIdx;
+        outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
     if (method == QStringLiteral("graph.add_layer")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         const int x = params.value(QStringLiteral("x")).toInt(0);
@@ -7080,11 +10087,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.add_inset_layer")
         || method == QStringLiteral("graph.add_inset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        Graph *srcG = resolveGraphLayer(ml, params, true);
+        QJsonObject srcParams = params;
+        if (params.contains(QStringLiteral("source_layer"))
+            && !params.value(QStringLiteral("source_layer")).isNull()) {
+            srcParams[QStringLiteral("layer")] = params.value(QStringLiteral("source_layer"));
+        }
+        Graph *srcG = resolveGraphLayer(ml, srcParams, true);
         QRectF roi;
         if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))
             && params.contains(QStringLiteral("y_min"))
-            && params.contains(QStringLiteral("y_max"))) {
+            && params.contains(QStringLiteral("y_max"))
+            && !params.value(QStringLiteral("x_min")).isNull()
+            && !params.value(QStringLiteral("x_max")).isNull()
+            && !params.value(QStringLiteral("y_min")).isNull()
+            && !params.value(QStringLiteral("y_max")).isNull()) {
             const double xMin = params.value(QStringLiteral("x_min")).toDouble();
             const double xMax = params.value(QStringLiteral("x_max")).toDouble();
             const double yMin = params.value(QStringLiteral("y_min")).toDouble();
@@ -7092,67 +10108,54 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             roi = QRectF(QPointF(std::min(xMin, xMax), std::min(yMin, yMax)),
                          QPointF(std::max(xMin, xMax), std::max(yMin, yMax)));
         }
+        const bool showConnectors = params.contains(QStringLiteral("show_connectors"))
+                ? params.value(QStringLiteral("show_connectors")).toBool(true)
+                : true;
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Inset Layer"));
-        Graph *insetG = ml->addInsetLayer(srcG, roi);
-        if (insetG && srcG && params.value(QStringLiteral("rect")).isArray()) {
-            const QJsonArray ra = params.value(QStringLiteral("rect")).toArray();
-            if (ra.size() >= 4) {
-                const double rx = ra[0].toDouble();
-                const double ry = ra[1].toDouble();
-                const double rw = ra[2].toDouble();
-                const double rh = ra[3].toDouble();
-                if (rw > 0.0 && rh > 0.0 && rw <= 1.5 && rh <= 1.5) {
-                    QRect cr = srcG->geometry();
-                    if (srcG->plotWidget()) {
-                        srcG->plotWidget()->updateLayout();
-                        const QRect layoutCr =
-                                srcG->plotWidget()->plotLayout()->canvasRect().translated(srcG->pos());
-                        if (layoutCr.width() > 40 && layoutCr.height() > 40) {
-                            cr = layoutCr;
-                        } else if (srcG->plotWidget()->canvas() && srcG->parentWidget()) {
-                            const QWidget *cv = srcG->plotWidget()->canvas();
-                            const QPoint tl = cv->mapTo(srcG->parentWidget(), QPoint(0, 0));
-                            if (cv->width() > 40 && cv->height() > 40)
-                                cr = QRect(tl, cv->size());
-                        }
+        Graph *insetG = ml->addInsetLayer(srcG, roi, showConnectors);
+        if (insetG)
+            ml->setInsetShowConnectors(insetG, showConnectors);
+        QJsonArray rectArr;
+        if (params.value(QStringLiteral("rect")).isArray()) {
+            rectArr = params.value(QStringLiteral("rect")).toArray();
+        } else if (params.contains(QStringLiteral("rel_x"))
+                   || params.contains(QStringLiteral("rel_y"))
+                   || params.contains(QStringLiteral("rel_w"))
+                   || params.contains(QStringLiteral("rel_h"))) {
+            rectArr.append(params.value(QStringLiteral("rel_x")).toDouble(0.54));
+            rectArr.append(params.value(QStringLiteral("rel_y")).toDouble(0.08));
+            rectArr.append(params.value(QStringLiteral("rel_w")).toDouble(0.38));
+            rectArr.append(params.value(QStringLiteral("rel_h")).toDouble(0.38));
+        }
+        if (insetG && srcG && rectArr.size() >= 4) {
+            const double rx = rectArr[0].toDouble();
+            const double ry = rectArr[1].toDouble();
+            const double rw = rectArr[2].toDouble();
+            const double rh = rectArr[3].toDouble();
+            if (rw > 0.0 && rh > 0.0 && rw <= 1.5 && rh <= 1.5) {
+                QRect cr = srcG->geometry();
+                if (srcG->plotWidget()) {
+                    srcG->plotWidget()->updateLayout();
+                    const QRect layoutCr =
+                            srcG->plotWidget()->plotLayout()->canvasRect().translated(srcG->pos());
+                    if (layoutCr.width() > 40 && layoutCr.height() > 40) {
+                        cr = layoutCr;
+                    } else if (srcG->plotWidget()->canvas() && srcG->parentWidget()) {
+                        const QWidget *cv = srcG->plotWidget()->canvas();
+                        const QPoint tl = cv->mapTo(srcG->parentWidget(), QPoint(0, 0));
+                        if (cv->width() > 40 && cv->height() > 40)
+                            cr = QRect(tl, cv->size());
                     }
-                    if (cr.width() > 40 && cr.height() > 40) {
-                        int iw = std::max(60, qRound(rw * double(cr.width())));
-                        int ih = std::max(50, qRound(rh * double(cr.height())));
-                        iw = std::min(iw, std::max(60, cr.width() - 12));
-                        ih = std::min(ih, std::max(50, cr.height() - 12));
-                        int ix = cr.left() + qRound(rx * double(cr.width()));
-                        int iy = cr.top() + qRound(ry * double(cr.height()));
-                        ix = qBound(cr.left() + 6, ix, std::max(cr.left() + 6, cr.right() - iw - 6));
-                        iy = qBound(cr.top() + 6, iy, std::max(cr.top() + 6, cr.bottom() - ih - 6));
-                        insetG->setGeometry(ix, iy, iw, ih);
-                        if (insetG->plotWidget()) {
-                            insetG->plotWidget()->resize(QSize(iw, ih));
-                            insetG->plotWidget()->updateLayout();
-                            insetG->plotWidget()->replot();
-                        }
-                        if (!insetG->isVisible()) {
-                            QResizeEvent syncEv(insetG->size(), insetG->size());
-                            QCoreApplication::sendEvent(insetG, &syncEv);
-                        }
-                        insetG->raise();
-                    }
-                } else if (rw > 1.5 && rh > 1.5) {
-                    int ix = qRound(rx);
-                    int iy = qRound(ry);
-                    int iw = std::max(60, qRound(rw));
-                    int ih = std::max(50, qRound(rh));
-                    if (srcG->plotWidget()) {
-                        srcG->plotWidget()->updateLayout();
-                        const QRect cr =
-                                srcG->plotWidget()->plotLayout()->canvasRect().translated(srcG->pos());
-                        if (cr.width() > 60 && cr.height() > 60) {
-                            iw = std::min(iw, std::max(60, cr.width() - 12));
-                            ih = std::min(ih, std::max(50, cr.height() - 12));
-                            ix = qBound(cr.left() + 6, ix, std::max(cr.left() + 6, cr.right() - iw - 6));
-                            iy = qBound(cr.top() + 6, iy, std::max(cr.top() + 6, cr.bottom() - ih - 6));
-                        }
-                    }
+                }
+                if (cr.width() > 40 && cr.height() > 40) {
+                    int iw = std::max(60, qRound(rw * double(cr.width())));
+                    int ih = std::max(50, qRound(rh * double(cr.height())));
+                    iw = std::min(iw, std::max(60, cr.width() - 12));
+                    ih = std::min(ih, std::max(50, cr.height() - 12));
+                    int ix = cr.left() + qRound(rx * double(cr.width()));
+                    int iy = cr.top() + qRound(ry * double(cr.height()));
+                    ix = qBound(cr.left() + 6, ix, std::max(cr.left() + 6, cr.right() - iw - 6));
+                    iy = qBound(cr.top() + 6, iy, std::max(cr.top() + 6, cr.bottom() - ih - 6));
                     insetG->setGeometry(ix, iy, iw, ih);
                     if (insetG->plotWidget()) {
                         insetG->plotWidget()->resize(QSize(iw, ih));
@@ -7165,15 +10168,78 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                     insetG->raise();
                 }
+            } else if (rw > 1.5 && rh > 1.5) {
+                int ix = qRound(rx);
+                int iy = qRound(ry);
+                int iw = std::max(60, qRound(rw));
+                int ih = std::max(50, qRound(rh));
+                if (srcG->plotWidget()) {
+                    srcG->plotWidget()->updateLayout();
+                    const QRect cr =
+                            srcG->plotWidget()->plotLayout()->canvasRect().translated(srcG->pos());
+                    if (cr.width() > 60 && cr.height() > 60) {
+                        iw = std::min(iw, std::max(60, cr.width() - 12));
+                        ih = std::min(ih, std::max(50, cr.height() - 12));
+                        ix = qBound(cr.left() + 6, ix, std::max(cr.left() + 6, cr.right() - iw - 6));
+                        iy = qBound(cr.top() + 6, iy, std::max(cr.top() + 6, cr.bottom() - ih - 6));
+                    }
+                }
+                insetG->setGeometry(ix, iy, iw, ih);
+                if (insetG->plotWidget()) {
+                    insetG->plotWidget()->resize(QSize(iw, ih));
+                    insetG->plotWidget()->updateLayout();
+                    insetG->plotWidget()->replot();
+                }
+                if (!insetG->isVisible()) {
+                    QResizeEvent syncEv(insetG->size(), insetG->size());
+                    QCoreApplication::sendEvent(insetG, &syncEv);
+                }
+                insetG->raise();
             }
         }
+        const QList<Graph *> curLayers = ml->layersList();
+        const int newIdx = insetG ? curLayers.indexOf(insetG) : std::max(0, ml->layers() - 1);
+        const int srcIdx = srcG ? curLayers.indexOf(srcG) : 0;
+        if (insetG && (!showConnectors || (rectArr.size() >= 4 && rectArr[2].toDouble() <= 1.5))) {
+            // Sync MultiLayer's internal InsetSpec (showConnectors + normGeo) via restorePhase5Tag
+            const QString savedMl = ml->saveToString(QString());
+            for (const QString &rawLn : savedMl.split(QLatin1Char('\n'))) {
+                const QString ln = rawLn.trimmed();
+                if (ln.startsWith(QStringLiteral("<ToriInset\t"))) {
+                    QStringList parts = ln.split(QLatin1Char('\t'));
+                    if (parts.size() >= 8 && parts[1].trimmed().toInt() == newIdx) {
+                        parts[2] = QString::number(std::max(0, srcIdx));
+                        if (rectArr.size() >= 4 && rectArr[2].toDouble() > 0.0
+                            && rectArr[2].toDouble() <= 1.5) {
+                            parts[3] = QString::number(rectArr[0].toDouble(), 'g', 8);
+                            parts[4] = QString::number(rectArr[1].toDouble(), 'g', 8);
+                            parts[5] = QString::number(rectArr[2].toDouble(), 'g', 8);
+                            parts[6] = QString::number(rectArr[3].toDouble(), 'g', 8);
+                        }
+                        QString p7 = parts[7].trimmed();
+                        const bool hasClosing = p7.endsWith(QLatin1String("/>"))
+                                || p7.endsWith(QLatin1Char('>'));
+                        parts[7] = QString::number(showConnectors ? 1 : 0)
+                                + ((parts.size() == 8 && hasClosing) ? QStringLiteral("/>")
+                                                                     : QString());
+                        ml->restorePhase5Tag(parts.join(QLatin1Char('\t')));
+                        ml->finalizePhase5Restore();
+                        break;
+                    }
+                }
+            }
+        }
+        // Keep activeGraph() on the source parent layer so subsequent add_reference_line / fit_* target layer 0
+        if (srcG)
+            ml->setActiveGraph(srcG);
         enforceArialGraphFonts(insetG);
         if (insetG)
             undoGuard.commit();
         outResult = serializeGraphInfo(ml);
-        const int newIdx = std::max(0, ml->layers() - 1);
+        outResult[QStringLiteral("inset_layer")] = newIdx;
         outResult[QStringLiteral("layer")] = newIdx;
         outResult[QStringLiteral("layer_index")] = newIdx;
+        outResult[QStringLiteral("show_connectors")] = showConnectors;
         outResult[QStringLiteral("ok")] = (insetG != nullptr);
         return true;
     }
@@ -7318,9 +10384,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     bool isChildLinked = false;
                     while (!ts.atEnd()) {
                         s = ts.readLine();
-                        if (s.trimmed().startsWith(QStringLiteral("<ToriLinkedParent\t"))) {
+                        const QString trimmedTag = s.trimmed();
+                        if (trimmedTag.startsWith(QStringLiteral("<ToriLinkedLayer"))) {
                             isChildLinked = true;
-                            QStringList parts = s.trimmed().split(QLatin1Char('\t'));
+                            static const QRegularExpression rxParentAttr(
+                                    QStringLiteral("parentIdx=\"(-?\\d+)\""));
+                            const QRegularExpressionMatch pm = rxParentAttr.match(s);
+                            if (pm.hasMatch()) {
+                                const int oldP = pm.captured(1).toInt();
+                                const int newP = (oldP >= 0) ? (oldP + baseLayerIdx) : oldP;
+                                s.replace(pm.capturedStart(0), pm.capturedLength(0),
+                                          QStringLiteral("parentIdx=\"%1\"").arg(newP));
+                            }
+                        } else if (trimmedTag.startsWith(QStringLiteral("<ToriLinkedParent\t"))) {
+                            isChildLinked = true;
+                            QStringList parts = trimmedTag.split(QLatin1Char('\t'));
                             if (parts.size() >= 2) {
                                 parts[1] = QString::number(parts[1].toInt() + baseLayerIdx);
                                 s = parts.join(QLatin1Char('\t'));
@@ -7438,7 +10516,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         applyRequestedWindowName(d_app, merged, params);
         outResult = serializeGraphInfo(merged);
         outResult[QStringLiteral("ok")] = true;
-        outResult[QStringLiteral("layers")] = merged->layers();
         outResult[QStringLiteral("primary_panels")] = primaryPanelCount;
         return true;
     }
@@ -7874,15 +10951,80 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("graph.set_title")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        const QString txt = params.contains(QStringLiteral("title"))
+                ? params.value(QStringLiteral("title")).toString()
+                : params.value(QStringLiteral("text")).toString();
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Set Plot Title"));
+        g->setTitle(txt);
+        int pt = 12;
+        if (g->plotWidget() && g->plotWidget()->title().font().pointSize() > 0)
+            pt = g->plotWidget()->title().font().pointSize();
+        if (params.contains(QStringLiteral("font_size"))
+            && !params.value(QStringLiteral("font_size")).isNull()) {
+            pt = std::max(4, parseStrictJsonInt(params.value(QStringLiteral("font_size")),
+                                                QStringLiteral("font_size")));
+        }
+        QFont tf(QStringLiteral("Arial"), pt, QFont::Normal, false);
+        tf.setHintingPreference(QFont::PreferNoHinting);
+        g->setTitleFont(tf);
+        if (params.contains(QStringLiteral("color"))
+            && !params.value(QStringLiteral("color")).isNull()) {
+            g->setTitleColor(
+                    parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black)));
+        }
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("title")] = txt;
+        return true;
+    }
+
     if (method == QStringLiteral("graph.set_axis")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const int ax = parseAxisId(params.contains(QStringLiteral("axis"))
                                            ? params.value(QStringLiteral("axis")).toString()
                                            : QStringLiteral("x"));
+
+        // Auto-route top/right axis calls (when layer is omitted) to a child linked overlay layer
+        const bool hasExplicitLayer = params.contains(QStringLiteral("layer"))
+                && !params.value(QStringLiteral("layer")).isNull();
+        if (!hasExplicitLayer && (ax == QwtPlot::xTop || ax == QwtPlot::yRight)) {
+            bool parentHasCurveOnAxis = false;
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (QwtPlotCurve *pc = g->curve(ci)) {
+                    if ((ax == QwtPlot::xTop && pc->xAxis() == QwtPlot::xTop)
+                        || (ax == QwtPlot::yRight && pc->yAxis() == QwtPlot::yRight)) {
+                        parentHasCurveOnAxis = true;
+                        break;
+                    }
+                }
+            }
+            if (!parentHasCurveOnAxis) {
+                for (Graph *cand : ml->layersList()) {
+                    if (!cand || cand->linkedParentLayer() != g)
+                        continue;
+                    if ((ax == QwtPlot::xTop && cand->xLinkMode() != 0)
+                        || (ax == QwtPlot::yRight
+                            && (cand->yLinkMode() != 0
+                                || (cand->plotWidget()
+                                    && cand->plotWidget()->axisEnabled(QwtPlot::yRight))))) {
+                        g = cand;
+                        break;
+                    }
+                }
+            }
+        }
+
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Axis"));
-        if (params.contains(QStringLiteral("enabled")))
+        if (params.contains(QStringLiteral("enabled"))
+            && !params.value(QStringLiteral("enabled")).isNull()) {
             g->enableAxis(ax, params.value(QStringLiteral("enabled")).toBool(true));
+        }
 
         Plot *plt = g->plotWidget();
         double curMin = 0.0, curMax = 1.0;
@@ -7897,25 +11039,73 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)))
                 curScaleType = 1;
         }
-        if (params.contains(QStringLiteral("min")) || params.contains(QStringLiteral("max"))
-            || params.contains(QStringLiteral("step")) || params.contains(QStringLiteral("scale"))
-            || params.contains(QStringLiteral("inverted"))
-            || params.contains(QStringLiteral("minor_ticks"))) {
-            const double lo = params.value(QStringLiteral("min")).toDouble(curMin);
-            const double hi = params.value(QStringLiteral("max")).toDouble(curMax);
-            const double step = params.value(QStringLiteral("step")).toDouble(g->axisStep(ax));
-            int scaleType = curScaleType;
-            if (params.contains(QStringLiteral("scale"))) {
-                const QString sc = params.value(QStringLiteral("scale")).toString().toLower();
-                scaleType = (sc == QStringLiteral("log10") || sc == QStringLiteral("log")) ? 1 : 0;
+
+        bool hasLim = false;
+        double limLo = curMin, limHi = curMax;
+        bool limInv = curInv;
+        if (params.contains(QStringLiteral("lim")) && !params.value(QStringLiteral("lim")).isNull()) {
+            if (!params.value(QStringLiteral("lim")).isArray()
+                || params.value(QStringLiteral("lim")).toArray().size() != 2) {
+                throwInvalidParams(
+                        QStringLiteral("Parameter 'lim' must be a 2-element numeric [min, max] list."));
             }
-            const bool inv = params.contains(QStringLiteral("inverted"))
-                    ? params.value(QStringLiteral("inverted")).toBool(curInv)
-                    : curInv;
+            const QJsonArray la = params.value(QStringLiteral("lim")).toArray();
+            if (!la[0].isDouble() || !la[1].isDouble())
+                throwInvalidParams(QStringLiteral("Parameter 'lim' elements must be numeric."));
+            const double raw0 = la[0].toDouble();
+            const double raw1 = la[1].toDouble();
+            if (!std::isfinite(raw0) || !std::isfinite(raw1) || raw0 == raw1)
+                throwInvalidParams(QStringLiteral("Parameter 'lim' requires finite distinct [min, max]."));
+            limLo = std::min(raw0, raw1);
+            limHi = std::max(raw0, raw1);
+            limInv = (raw0 > raw1);
+            hasLim = true;
+        }
+
+        const bool hasMin = params.contains(QStringLiteral("min"))
+                && !params.value(QStringLiteral("min")).isNull();
+        const bool hasMax = params.contains(QStringLiteral("max"))
+                && !params.value(QStringLiteral("max")).isNull();
+        const bool hasStep = params.contains(QStringLiteral("step"))
+                && !params.value(QStringLiteral("step")).isNull();
+        const bool hasScale = params.contains(QStringLiteral("scale"))
+                && !params.value(QStringLiteral("scale")).isNull();
+        const bool hasInverted = params.contains(QStringLiteral("inverted"))
+                && !params.value(QStringLiteral("inverted")).isNull();
+        const bool hasMinor = params.contains(QStringLiteral("minor_ticks"))
+                && !params.value(QStringLiteral("minor_ticks")).isNull();
+
+        if (hasLim || hasMin || hasMax || hasStep || hasScale || hasInverted || hasMinor) {
+            const double lo = hasMin ? params.value(QStringLiteral("min")).toDouble(curMin)
+                                     : (hasLim ? limLo : curMin);
+            const double hi = hasMax ? params.value(QStringLiteral("max")).toDouble(curMax)
+                                     : (hasLim ? limHi : curMax);
+            const double step = hasStep ? params.value(QStringLiteral("step")).toDouble(g->axisStep(ax))
+                                        : g->axisStep(ax);
+            int scaleType = curScaleType;
+            if (hasScale) {
+                const QString sc = params.value(QStringLiteral("scale")).toString().trimmed().toLower();
+                if (sc == QStringLiteral("linear") || sc == QStringLiteral("lin")) {
+                    scaleType = 0;
+                } else if (sc == QStringLiteral("log10") || sc == QStringLiteral("log")) {
+                    scaleType = 1;
+                } else if (!sc.isEmpty()) {
+                    throwInvalidParamsWithAvailable(
+                            QStringLiteral("Unknown axis scale '%1'.").arg(sc),
+                            { QStringLiteral("linear"), QStringLiteral("log10") });
+                }
+            }
+            if (scaleType == 1 && (lo <= 0.0 || hi <= 0.0)) {
+                throwInvalidParams(
+                        QStringLiteral("log10 axis scale requires strictly positive min and max (> 0), got [%1, %2].")
+                                .arg(lo)
+                                .arg(hi));
+            }
+            const bool inv = hasInverted ? params.value(QStringLiteral("inverted")).toBool(curInv)
+                                         : (hasLim ? limInv : curInv);
             const int majorTicks = plt ? std::max(4, plt->axisMaxMajor(ax)) : 8;
             int minorTicks = (scaleType == 1) ? 8 : 1;
-            if (params.contains(QStringLiteral("minor_ticks"))
-                && !params.value(QStringLiteral("minor_ticks")).isNull()) {
+            if (hasMinor) {
                 minorTicks = std::max(0, params.value(QStringLiteral("minor_ticks")).toInt(minorTicks));
             } else if (plt && scaleType == curScaleType) {
                 const int existingMinor = plt->axisMaxMinor(ax);
@@ -7925,11 +11115,57 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     minorTicks = existingMinor;
             }
             g->setScale(ax, lo, hi, step, majorTicks, minorTicks, scaleType, inv);
-            if (params.contains(QStringLiteral("min")) || params.contains(QStringLiteral("max")))
+            if (hasLim || hasMin || hasMax)
                 g->setAxisUserLocked(ax, true);
         }
 
-        if (params.contains(QStringLiteral("title"))) {
+        if (params.contains(QStringLiteral("unit_format"))
+            && !params.value(QStringLiteral("unit_format")).isNull()) {
+            const QString uf =
+                    params.value(QStringLiteral("unit_format")).toString().trimmed().toLower();
+            if (uf == QStringLiteral("paren") || uf == QStringLiteral("parentheses")
+                || uf == QStringLiteral("default")) {
+                if (plt)
+                    plt->setProperty("_toriAxisUnitFormatStr", QStringLiteral("paren"));
+                g->setAxisUnitFormat(Column::UnitFormat::Paren);
+            } else if (uf == QStringLiteral("slash") || uf == QStringLiteral("isij")
+                       || uf == QStringLiteral("isij_slash")) {
+                if (plt)
+                    plt->setProperty("_toriAxisUnitFormatStr", QStringLiteral("slash"));
+                g->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
+            } else if (uf == QStringLiteral("bracket") || uf == QStringLiteral("brackets")
+                       || uf == QStringLiteral("square")) {
+                if (plt)
+                    plt->setProperty("_toriAxisUnitFormatStr", QStringLiteral("bracket"));
+                for (int ci = 0; ci < g->curves(); ++ci) {
+                    auto *dc = dynamic_cast<DataCurve *>(g->curve(ci));
+                    if (!dc || !dc->table())
+                        continue;
+                    Table *ct = dc->table();
+                    const bool isX = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+                    const int colIdx = ct->colIndex(isX ? dc->xColumnName() : dc->yColumnName());
+                    if (Column *col = (colIdx >= 0 ? ct->column(colIdx) : nullptr)) {
+                        const QString base = !col->longName().trimmed().isEmpty()
+                                ? col->longName().trimmed()
+                                : col->name().trimmed();
+                        const QString u = col->units().trimmed();
+                        if (!base.isEmpty() && !u.isEmpty()) {
+                            g->setAxisTitleAuto(ax, false);
+                            g->setAxisTitle(ax, QStringLiteral("%1 [%2]").arg(base, u));
+                            break;
+                        }
+                    }
+                }
+            } else {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Unknown unit_format '%1'.").arg(uf),
+                        { QStringLiteral("paren"), QStringLiteral("slash"),
+                          QStringLiteral("bracket") });
+            }
+        }
+
+        if (params.contains(QStringLiteral("title"))
+            && !params.value(QStringLiteral("title")).isNull()) {
             g->setAxisTitleAuto(ax, false);
             g->setAxisTitle(ax, params.value(QStringLiteral("title")).toString());
         }
@@ -7968,7 +11204,90 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         g->setAxisTitleFont(ax, tf);
         g->setAxisFont(ax, nf);
 
-        if (params.contains(QStringLiteral("ticks_inward")) && plt) {
+        if ((params.contains(QStringLiteral("tick_format"))
+             && !params.value(QStringLiteral("tick_format")).isNull())
+            || (params.contains(QStringLiteral("precision"))
+                && !params.value(QStringLiteral("precision")).isNull())) {
+            int fmtCode = plt ? plt->axisLabelFormat(ax) : 0;
+            if (params.contains(QStringLiteral("tick_format"))
+                && !params.value(QStringLiteral("tick_format")).isNull()) {
+                const QJsonValue fv = params.value(QStringLiteral("tick_format"));
+                if (fv.isDouble()) {
+                    fmtCode = std::clamp(parseStrictJsonInt(fv, QStringLiteral("tick_format")), 0, 3);
+                } else {
+                    const QString fs = fv.toString().trimmed().toLower();
+                    if (fs == QStringLiteral("auto") || fs == QStringLiteral("automatic")
+                        || fs == QStringLiteral("g")) {
+                        fmtCode = 0;
+                    } else if (fs == QStringLiteral("f") || fs == QStringLiteral("decimal")
+                               || fs == QStringLiteral("fixed")) {
+                        fmtCode = 1;
+                    } else if (fs == QStringLiteral("e") || fs == QStringLiteral("scientific")
+                               || fs == QStringLiteral("exp")) {
+                        fmtCode = 2;
+                    } else if (fs == QStringLiteral("superscript")
+                               || fs == QStringLiteral("superscripts")
+                               || fs == QStringLiteral("power") || fs == QStringLiteral("10^x")) {
+                        fmtCode = 3;
+                    } else {
+                        throwInvalidParamsWithAvailable(
+                                QStringLiteral("Unknown tick_format '%1'.").arg(fs),
+                                { QStringLiteral("auto"), QStringLiteral("f"), QStringLiteral("e"),
+                                  QStringLiteral("superscript") });
+                    }
+                }
+            }
+            int prec = plt ? plt->axisLabelPrecision(ax) : 6;
+            if (params.contains(QStringLiteral("precision"))
+                && !params.value(QStringLiteral("precision")).isNull()) {
+                prec = std::clamp(
+                        parseStrictJsonInt(params.value(QStringLiteral("precision")),
+                                           QStringLiteral("precision")),
+                        0, 15);
+            }
+            const QStringList axFormulas = g->getAxesFormulas();
+            const QString curFormula = (ax >= 0 && ax < axFormulas.size()) ? axFormulas[ax] : QString();
+            g->setLabelsNumericFormat(ax, fmtCode, prec, curFormula);
+        }
+
+        if ((params.contains(QStringLiteral("label_rotation"))
+             && !params.value(QStringLiteral("label_rotation")).isNull())
+            || (params.contains(QStringLiteral("rotation"))
+                && !params.value(QStringLiteral("rotation")).isNull())) {
+            const QJsonValue rv = params.contains(QStringLiteral("label_rotation"))
+                    ? params.value(QStringLiteral("label_rotation"))
+                    : params.value(QStringLiteral("rotation"));
+            const int rot = std::clamp(qRound(rv.toDouble(0.0)), -90, 90);
+            g->setAxisLabelRotation(ax, rot);
+        }
+
+        if (params.contains(QStringLiteral("show_labels"))
+            && !params.value(QStringLiteral("show_labels")).isNull()) {
+            const bool showLbl = params.value(QStringLiteral("show_labels")).toBool(true);
+            if (showLbl && plt && !plt->axisEnabled(ax))
+                g->enableAxis(ax, true);
+            g->setTickLabelsOnAxis(ax, showLbl);
+        }
+
+        if (params.contains(QStringLiteral("show_ticks"))
+            && !params.value(QStringLiteral("show_ticks")).isNull() && plt) {
+            const bool showTks = params.value(QStringLiteral("show_ticks")).toBool(true);
+            if (showTks && !plt->axisEnabled(ax))
+                g->enableAxis(ax, true);
+            if (!showTks) {
+                plt->setMajorTicksType(ax, ScaleDraw::None);
+                plt->setMinorTicksType(ax, ScaleDraw::None);
+            } else {
+                const int ts = params.value(QStringLiteral("ticks_inward")).toBool(true)
+                        ? ScaleDraw::In
+                        : ScaleDraw::Out;
+                plt->setMajorTicksType(ax, ts);
+                plt->setMinorTicksType(ax, ts);
+            }
+        }
+
+        if (params.contains(QStringLiteral("ticks_inward"))
+            && !params.value(QStringLiteral("ticks_inward")).isNull() && plt) {
             if (auto *sd = dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(ax))) {
                 const auto ts = params.value(QStringLiteral("ticks_inward")).toBool()
                         ? ScaleDraw::In
@@ -7977,8 +11296,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 sd->setMinorTicksStyle(ts);
             }
         }
-        if (params.contains(QStringLiteral("show_backbone")))
+        if (params.contains(QStringLiteral("show_backbone"))
+            && !params.value(QStringLiteral("show_backbone")).isNull()) {
             g->setAxisBackboneVisible(ax, params.value(QStringLiteral("show_backbone")).toBool());
+        }
         if (params.contains(QStringLiteral("divide_by"))
             || params.contains(QStringLiteral("prefix"))
             || params.contains(QStringLiteral("suffix"))) {
@@ -7992,9 +11313,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             ? params.value(QStringLiteral("suffix")).toString()
                             : g->tickSuffix(ax));
         }
+        if (plt)
+            plt->updateLayout();
         g->replot();
         undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
+        outResult[QStringLiteral("layer")] = ml->layersList().indexOf(g);
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
@@ -8031,6 +11355,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("layer")] = ml->layersList().indexOf(g);
         return true;
     }
 
@@ -8060,7 +11386,53 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         g->replot();
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("index")] = std::max(0, g->referenceLines().size() - 1);
         outResult[QStringLiteral("reference_line_count")] = g->referenceLines().size();
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.remove_reference_line")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        if (!params.contains(QStringLiteral("index"))
+            || params.value(QStringLiteral("index")).isNull()) {
+            throwInvalidParams(
+                    QStringLiteral("graph.remove_reference_line requires 0-based 'index'."));
+        }
+        const int idx = parseStrictJsonInt(params.value(QStringLiteral("index")),
+                                           QStringLiteral("index"));
+        const int nRefs = g->referenceLines().size();
+        if (idx < 0 || idx >= nRefs) {
+            QStringList avail;
+            for (int i = 0; i < nRefs; ++i)
+                avail.append(QString::number(i));
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Reference line index %1 out of range (count=%2).")
+                            .arg(idx)
+                            .arg(nRefs),
+                    avail);
+        }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Remove Reference Line"));
+        g->removeReferenceLine(idx);
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("removed_index")] = idx;
+        outResult[QStringLiteral("reference_line_count")] = g->referenceLines().size();
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.clear_reference_lines")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        const int prevCount = g->referenceLines().size();
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Clear Reference Lines"));
+        g->clearReferenceLines();
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("removed")] = prevCount;
+        outResult[QStringLiteral("reference_line_count")] = 0;
         return true;
     }
 
@@ -8191,75 +11563,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(QStringLiteral("Curve not found on graph '%1'.").arg(ml->name()));
 
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Change Curve Style"));
-        const bool wasHollow = Graph::isSymbolWhiteHollow(c->symbol());
+        applyInlineCurveStyleParams(g, cIdx, params, true);
 
-        QPen pen = c->pen();
-        QColor col = pen.color();
-        if (params.contains(QStringLiteral("color")))
-            col = parseColorValue(params.value(QStringLiteral("color")), col);
-        if (params.contains(QStringLiteral("alpha"))) {
-            const double rawA = params.value(QStringLiteral("alpha")).toDouble(255.0);
-            const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
-                                                          : std::clamp(int(rawA), 0, 255);
-            col.setAlpha(a255);
-        }
-        pen.setColor(col);
-        if (params.contains(QStringLiteral("line_width")))
-            pen.setWidthF(std::max(0.0, params.value(QStringLiteral("line_width")).toDouble(1.5)));
-        if (params.contains(QStringLiteral("line_style")))
-            pen.setStyle(parsePenStyleValue(params.value(QStringLiteral("line_style")), pen.style()));
-        g->setCurvePen(cIdx, pen);
-
-        if (params.contains(QStringLiteral("symbol_type"))
-            || params.contains(QStringLiteral("symbol_size"))
-            || (params.contains(QStringLiteral("color"))
-                && c->symbol().style() != QwtSymbol::NoSymbol
-                && (wasHollow || params.contains(QStringLiteral("symbol_hollow"))
-                    || params.contains(QStringLiteral("symbol_fill"))))) {
-            QwtSymbol sym = c->symbol();
-            if (params.contains(QStringLiteral("symbol_type")))
-                sym.setStyle(parseQwtSymbolStyle(params.value(QStringLiteral("symbol_type")),
-                                                 sym.style()));
-            if (params.contains(QStringLiteral("symbol_size"))) {
-                const int sz = std::max(1, params.value(QStringLiteral("symbol_size")).toInt(7));
-                sym.setSize(sz, sz);
-            }
-            QPen sp = sym.pen();
-            sp.setColor(col);
-            sym.setPen(sp);
-            QBrush sb = sym.brush();
-            if (wasHollow) {
-                sb = QBrush(QColor(255, 255, 255), Qt::SolidPattern);
-            } else {
-                sb.setColor(col);
-                if (sb.style() == Qt::NoBrush && sym.style() != QwtSymbol::NoSymbol)
-                    sb.setStyle(Qt::SolidPattern);
-            }
-            sym.setBrush(sb);
-            g->setCurveSymbol(cIdx, sym);
-        }
-
-        const bool hasSymbolHollow = params.contains(QStringLiteral("symbol_hollow"))
-                && !params.value(QStringLiteral("symbol_hollow")).isNull();
-        const bool hasSymbolFill = params.contains(QStringLiteral("symbol_fill"))
-                && !params.value(QStringLiteral("symbol_fill")).isNull();
-        if (hasSymbolHollow || hasSymbolFill) {
-            bool wantHollow = false;
-            if (hasSymbolHollow) {
-                wantHollow = params.value(QStringLiteral("symbol_hollow")).toBool(false);
-            } else {
-                const QJsonValue sf = params.value(QStringLiteral("symbol_fill"));
-                if (sf.isBool()) {
-                    wantHollow = !sf.toBool(true);
-                } else if (sf.isString()) {
-                    const QString sfs = sf.toString().trimmed().toLower();
-                    wantHollow = (sfs == QStringLiteral("hollow") || sfs == QStringLiteral("white")
-                                  || sfs == QStringLiteral("none") || sfs == QStringLiteral("false"));
-                }
-            }
-            g->setCurveSymbolHollow(cIdx, wantHollow);
-        }
-
+        QColor col = c->pen().color();
         if (params.contains(QStringLiteral("fill_area"))) {
             if (params.value(QStringLiteral("fill_area")).toBool(false)) {
                 QColor fc = parseColorValue(params.value(QStringLiteral("fill_color")), col);
@@ -8462,10 +11768,32 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QString schemeStr = params.contains(QStringLiteral("scheme"))
                 ? params.value(QStringLiteral("scheme")).toString()
                 : QStringLiteral("bw_hollow_filled");
+        QString normScheme = schemeStr.trimmed().toLower();
+        normScheme.replace(QLatin1Char('-'), QLatin1Char('_'));
+        normScheme.replace(QLatin1Char(' '), QLatin1Char('_'));
+        if (normScheme == QStringLiteral("okabe_ito") || normScheme == QStringLiteral("okabe")) {
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Series Style Scheme"));
+            g->applyColorPaletteByName(QStringLiteral("Okabe-Ito"), false);
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (g->curveType(ci) != Graph::ErrorBars)
+                    applyInlineCurveStyleParams(g, ci, params, false);
+            }
+            enforceArialGraphFonts(g);
+            g->replot();
+            undoGuard.commit();
+            outResult = serializeGraphInfo(ml);
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("scheme")] = QStringLiteral("okabe_ito");
+            return true;
+        }
         QString canonical;
         const Graph::SeriesStyleScheme scheme = parseSeriesStyleScheme(schemeStr, &canonical);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Series Style Scheme"));
         g->applySeriesStyleScheme(scheme);
+        for (int ci = 0; ci < g->curves(); ++ci) {
+            if (g->curveType(ci) != Graph::ErrorBars)
+                applyInlineCurveStyleParams(g, ci, params, false);
+        }
         enforceArialGraphFonts(g);
         g->replot();
         undoGuard.commit();
@@ -8478,18 +11806,48 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.apply_palette")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const bool grad = params.value(QStringLiteral("gradient")).toBool(false);
+        const bool grad = params.value(QStringLiteral("gradient")).toBool(
+                params.value(QStringLiteral("sequential")).toBool(false));
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Color Palette"));
         if (params.value(QStringLiteral("colors")).isArray()) {
             QList<QColor> cols;
-            for (const QJsonValue &cv : params.value(QStringLiteral("colors")).toArray())
-                cols.append(parseColorValue(cv));
+            for (const QJsonValue &cv : params.value(QStringLiteral("colors")).toArray()) {
+                const QColor parsed = parseColorValue(cv, QColor());
+                if (!parsed.isValid()) {
+                    throwInvalidParams(
+                            QStringLiteral("Invalid color value '%1' in 'colors' array.")
+                                    .arg(cv.toString()));
+                }
+                cols.append(parsed);
+            }
+            if (cols.isEmpty())
+                throwInvalidParams(QStringLiteral("'colors' array must not be empty."));
             g->applyColorPalette(cols, grad, true);
         } else {
-            const QString palName = params.contains(QStringLiteral("palette"))
-                    ? params.value(QStringLiteral("palette")).toString()
+            const QString rawPal = params.contains(QStringLiteral("palette"))
+                    ? params.value(QStringLiteral("palette")).toString().trimmed()
                     : QStringLiteral("Okabe-Ito");
-            g->applyColorPaletteByName(palName, grad);
+            const QStringList allPals = Graph::allPaletteNames();
+            auto normKey = [](QString s) -> QString {
+                s = s.trimmed().toLower();
+                s.remove(QLatin1Char('-'));
+                s.remove(QLatin1Char('_'));
+                s.remove(QLatin1Char(' '));
+                return s;
+            };
+            QString matchedPal;
+            const QString wantNorm = normKey(rawPal);
+            for (const QString &cand : allPals) {
+                if (cand.compare(rawPal, Qt::CaseInsensitive) == 0 || normKey(cand) == wantNorm) {
+                    matchedPal = cand;
+                    break;
+                }
+            }
+            if (matchedPal.isEmpty()) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Unknown color palette '%1'.").arg(rawPal), allPals);
+            }
+            g->applyColorPaletteByName(matchedPal, grad);
         }
         g->replot();
         undoGuard.commit();
@@ -8880,6 +12238,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         g->replot();
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("id")] = static_cast<qint64>(id);
         outResult[QStringLiteral("marker_id")] = static_cast<qint64>(id);
         return true;
     }
@@ -8904,9 +12263,93 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                   ? params.value(QStringLiteral("filled")).toBool(true)
                                   : true);
         g->addArrow(&arr);
+        const QVector<int> lKeys = g->lineMarkerKeys();
+        const int newId = lKeys.isEmpty() ? -1 : lKeys.last();
         g->replot();
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("id")] = newId;
+        outResult[QStringLiteral("marker_id")] = newId;
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.remove_marker")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        Legend *leg = g->legend();
+
+        QVector<int> nonLegendTexts;
+        for (int tid : g->textMarkerKeys()) {
+            Legend *tm = g->textMarker(tid);
+            if (tm && tm != leg)
+                nonLegendTexts.append(tid);
+        }
+        const QVector<int> arrowIds = g->lineMarkerKeys();
+
+        const bool clearAll = params.value(QStringLiteral("all")).toBool(false)
+                || params.value(QStringLiteral("clear_all")).toBool(false);
+        if (clearAll) {
+            QVector<int> allToRemove = nonLegendTexts;
+            for (int aid : arrowIds)
+                allToRemove.append(aid);
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Clear Markers"));
+            for (int mid : allToRemove) {
+                g->setSelectedMarker(mid, false);
+                g->removeMarker();
+            }
+            g->replot();
+            undoGuard.commit();
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("removed")] = allToRemove.size();
+            return true;
+        }
+
+        int targetId = -1;
+        const QJsonValue idVal = params.contains(QStringLiteral("marker_id"))
+                ? params.value(QStringLiteral("marker_id"))
+                : params.value(QStringLiteral("id"));
+        if (!idVal.isUndefined() && !idVal.isNull()) {
+            const int wantId = parseStrictJsonInt(idVal, QStringLiteral("marker_id"));
+            if (nonLegendTexts.contains(wantId) || arrowIds.contains(wantId))
+                targetId = wantId;
+        } else if (params.contains(QStringLiteral("index"))
+                   && !params.value(QStringLiteral("index")).isNull()) {
+            const int idx = parseStrictJsonInt(params.value(QStringLiteral("index")),
+                                               QStringLiteral("index"));
+            const QString kind =
+                    params.value(QStringLiteral("kind")).toString().trimmed().toLower();
+            if (kind == QStringLiteral("arrow") || kind == QStringLiteral("line")) {
+                if (idx >= 0 && idx < arrowIds.size())
+                    targetId = arrowIds[idx];
+            } else if (kind == QStringLiteral("text")) {
+                if (idx >= 0 && idx < nonLegendTexts.size())
+                    targetId = nonLegendTexts[idx];
+            } else {
+                if (idx >= 0 && idx < nonLegendTexts.size())
+                    targetId = nonLegendTexts[idx];
+                else if (idx >= nonLegendTexts.size()
+                         && (idx - nonLegendTexts.size()) < arrowIds.size())
+                    targetId = arrowIds[idx - nonLegendTexts.size()];
+            }
+        }
+
+        if (targetId < 0) {
+            QStringList avail;
+            for (int tid : nonLegendTexts)
+                avail.append(QStringLiteral("text:%1").arg(tid));
+            for (int aid : arrowIds)
+                avail.append(QStringLiteral("arrow:%1").arg(aid));
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Marker not found on graph '%1'.").arg(ml->name()), avail);
+        }
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Remove Marker"));
+        g->setSelectedMarker(targetId, false);
+        g->removeMarker();
+        g->replot();
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("removed_id")] = targetId;
         return true;
     }
 
@@ -9548,8 +12991,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         if (params.value(QStringLiteral("pred_band")).toBool(false))
             lf.enablePredictionBand(true, confLevel);
 
+        const int curvesBefore = g->curves();
+        const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
         lf.fit();
         sanitizeGraphFunctionCurves(d_app, g);
+        harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
 
@@ -9617,10 +13063,13 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             throwInvalidParams(
                     QStringLiteral("Insufficient data for York fit on '%1'.").arg(curveTitle));
 
+        const int curvesBefore = g->curves();
+        const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
         const bool ok = lf.fitWithXYErrors(xErrFull, yErrFull);
         if (!ok)
             throwRpcRuntime(QStringLiteral("York XY-error regression failed to converge."));
         sanitizeGraphFunctionCurves(d_app, g);
+        harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
 
@@ -9662,8 +13111,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         if (params.value(QStringLiteral("pred_band")).toBool(false))
             pf.enablePredictionBand(true, confLevel);
 
+        const int curvesBefore = g->curves();
+        const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
         pf.fit();
         sanitizeGraphFunctionCurves(d_app, g);
+        harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
 
@@ -9701,11 +13153,31 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const QString modelName = params.value(QStringLiteral("model")).toString().trimmed();
         const QString customFormula = params.value(QStringLiteral("formula")).toString().trimmed();
-        bool customFormulaSyntaxOk = true;
+        QString resolvedBuiltInModel = modelName;
         if (!modelName.isEmpty()) {
-            if (!nlf.setBuiltInModel(modelName))
-                throwInvalidParams(
-                        QStringLiteral("Unknown built-in nonlinear fit model '%1'.").arg(modelName));
+            const QString mLow = modelName.toLower();
+            if (mLow == QStringLiteral("gaussian") || mLow == QStringLiteral("normal"))
+                resolvedBuiltInModel = QStringLiteral("Gauss");
+            else if (mLow == QStringLiteral("gaussianamp") || mLow == QStringLiteral("gaussian_amp")
+                     || mLow == QStringLiteral("gauss_amp"))
+                resolvedBuiltInModel = QStringLiteral("GaussAmp");
+            else if (mLow == QStringLiteral("lorentzian") || mLow == QStringLiteral("cauchy"))
+                resolvedBuiltInModel = QStringLiteral("Lorentz");
+            else if (mLow == QStringLiteral("sigmoidal") || mLow == QStringLiteral("sigmoid"))
+                resolvedBuiltInModel = QStringLiteral("Boltzmann");
+            else if (mLow == QStringLiteral("exponential") || mLow == QStringLiteral("expdecay")
+                     || mLow == QStringLiteral("exponential_decay"))
+                resolvedBuiltInModel = QStringLiteral("ExpDec1");
+            else if (mLow == QStringLiteral("exponential_growth"))
+                resolvedBuiltInModel = QStringLiteral("ExpGrow1");
+        }
+        bool customFormulaSyntaxOk = true;
+        if (!resolvedBuiltInModel.isEmpty()) {
+            if (!nlf.setBuiltInModel(resolvedBuiltInModel)) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Unknown built-in nonlinear fit model '%1'.").arg(modelName),
+                        NonLinearFit::builtInModelNames());
+            }
         } else if (!customFormula.isEmpty()) {
             QStringList pNames;
             for (const QJsonValue &pv : params.value(QStringLiteral("param_names")).toArray()) {
@@ -9742,21 +13214,23 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             throwInvalidParams(
                     QStringLiteral("Insufficient data on curve '%1' for nonlinear fit.").arg(curveTitle));
 
-        if (!modelName.isEmpty())
-            nlf.guessBuiltInParameters(modelName);
+        if (!resolvedBuiltInModel.isEmpty())
+            nlf.guessBuiltInParameters(resolvedBuiltInModel);
         else if (customFormulaSyntaxOk)
             nlf.guessInitialValues();
 
         const QStringList pNames = nlf.parameterNames();
         // Explicit initial guesses (dict by param name OR array by index)
-        if (params.contains(QStringLiteral("initial_values"))) {
-            const QJsonValue iv = params.value(QStringLiteral("initial_values"));
-            if (iv.isArray()) {
-                const QJsonArray ia = iv.toArray();
+        const QJsonValue initGuessVal = params.contains(QStringLiteral("initial_values"))
+                ? params.value(QStringLiteral("initial_values"))
+                : params.value(QStringLiteral("init_params"));
+        if (!initGuessVal.isUndefined() && !initGuessVal.isNull()) {
+            if (initGuessVal.isArray()) {
+                const QJsonArray ia = initGuessVal.toArray();
                 for (int i = 0; i < std::min(pNames.size(), ia.size()); ++i)
                     nlf.setInitialGuess(i, ia[i].toDouble());
-            } else if (iv.isObject()) {
-                const QJsonObject io = iv.toObject();
+            } else if (initGuessVal.isObject()) {
+                const QJsonObject io = initGuessVal.toObject();
                 for (int i = 0; i < pNames.size(); ++i) {
                     if (io.contains(pNames[i]))
                         nlf.setInitialGuess(i, io.value(pNames[i]).toDouble());
@@ -9855,9 +13329,12 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         else if (algo == QStringLiteral("lm_unscaled"))
             nlf.setAlgorithm(Fit::UnscaledLevenbergMarquardt);
 
+        const int curvesBefore = g->curves();
+        const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
         if (customFormulaSyntaxOk)
             nlf.fit();
         sanitizeGraphFunctionCurves(d_app, g);
+        harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
 
@@ -10843,6 +14320,32 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             }
         }
 
+        const int curvesBefore = g->curves();
+        const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
+        double rawYMin = std::numeric_limits<double>::infinity();
+        double rawYMax = -std::numeric_limits<double>::infinity();
+        for (double yv : mpf.y()) {
+            if (std::isfinite(yv)) {
+                rawYMin = std::min(rawYMin, yv);
+                rawYMax = std::max(rawYMax, yv);
+            }
+        }
+        const double rawYSpan =
+                (std::isfinite(rawYMax - rawYMin) && rawYMax >= rawYMin) ? (rawYMax - rawYMin) : 0.0;
+
+        if (rawYSpan <= 1e-12) {
+            outResult[QStringLiteral("ok")] = false;
+            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("curve")] = curveTitle;
+            outResult[QStringLiteral("peak_count")] = 0;
+            outResult[QStringLiteral("peaks")] = QJsonArray();
+            outResult[QStringLiteral("r2")] = QJsonValue::Null;
+            outResult[QStringLiteral("adj_r2")] = QJsonValue::Null;
+            outResult[QStringLiteral("chi2_dof")] = 0.0;
+            outResult[QStringLiteral("aic")] = QJsonValue::Null;
+            return true;
+        }
+
         mpf.fit();
         if (plotBase && plotFit)
             mpf.insertBaselineCurve();
@@ -10852,6 +14355,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         Table *residTbl = createResiduals ? mpf.createResidualsTable() : nullptr;
 
         sanitizeGraphFunctionCurves(d_app, g);
+        harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
 
@@ -10870,12 +14374,16 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         else
             shapeParamVal = mpf.asymmetryFactor();
 
+        const double ampEps = std::max(1e-12, 1e-6 * rawYSpan);
         const double r2 = mpf.rSquare();
         QJsonArray peaksArr;
+        int validIdx = 0;
         for (size_t i = 0; i < rows.size(); ++i) {
             const auto &r = rows[i];
+            if (!std::isfinite(r.height) || std::abs(r.height) <= ampEps)
+                continue;
             QJsonObject pObj;
-            pObj[QStringLiteral("index")] = static_cast<int>(i);
+            pObj[QStringLiteral("index")] = validIdx++;
             pObj[QStringLiteral("center")] = safeJsonDouble(r.center);
             pObj[QStringLiteral("center_se")] = safeJsonDouble(r.centerSE);
             pObj[QStringLiteral("amplitude")] = safeJsonDouble(r.height);
@@ -11914,24 +15422,109 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         Graph *g = nullptr;
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
-        requireCurveMinPoints(g, curveTitle, 2, QStringLiteral("curvemath.integrate"));
-        RpcIntegration integ(d_app, g);
-        bool okData = false;
-        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
+
+        const QString mStr = params.value(QStringLiteral("method")).toString().trimmed().toLower();
+        int integMethod = 0; // Linear
+        int minPts = 2;
+        if (mStr.isEmpty() || mStr == QStringLiteral("linear")
+            || mStr == QStringLiteral("trapezoid") || mStr == QStringLiteral("trapezoidal")) {
+            integMethod = 0;
+            minPts = 2;
+        } else if (mStr == QStringLiteral("cubic") || mStr == QStringLiteral("spline")) {
+            integMethod = 1;
+            minPts = 3;
+        } else if (mStr == QStringLiteral("akima")) {
+            integMethod = 2;
+            minPts = 5;
+        } else {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown integration method '%1'.").arg(mStr),
+                    { QStringLiteral("linear"), QStringLiteral("cubic"),
+                      QStringLiteral("akima") });
+        }
+
+        const bool hasRange = params.contains(QStringLiteral("x_min"))
+                && params.contains(QStringLiteral("x_max"))
+                && !params.value(QStringLiteral("x_min")).isNull()
+                && !params.value(QStringLiteral("x_max")).isNull();
+        double xMin = -std::numeric_limits<double>::infinity();
+        double xMax = std::numeric_limits<double>::infinity();
+        if (hasRange) {
+            xMin = params.value(QStringLiteral("x_min")).toDouble();
+            xMax = params.value(QStringLiteral("x_max")).toDouble();
             if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
                 throwInvalidParams(QStringLiteral("curvemath.integrate requires finite x_min < x_max."));
-            okData = integ.setDataFromCurve(curveTitle, xMin, xMax, g);
-        } else {
-            okData = integ.setDataFromCurve(curveTitle, g);
         }
-        if (!okData || integ.error())
-            throwInvalidParams(QStringLiteral("Insufficient curve data in range for integration on '%1'.")
-                                       .arg(curveTitle));
+
+        std::vector<double> xs, ys;
+        extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xs, ys);
+        std::vector<double> rangeX;
+        for (size_t i = 0; i < xs.size(); ++i) {
+            if (!hasRange || (xs[i] >= xMin && xs[i] <= xMax))
+                rangeX.push_back(xs[i]);
+        }
+        if (static_cast<int>(rangeX.size()) < minPts) {
+            throwInvalidParams(
+                    QStringLiteral("curvemath.integrate ('%1') requires at least %2 valid data points in range (got %3).")
+                            .arg(mStr.isEmpty() ? QStringLiteral("linear") : mStr)
+                            .arg(minPts)
+                            .arg(rangeX.size()));
+        }
+        std::sort(rangeX.begin(), rangeX.end());
+        for (size_t i = 1; i < rangeX.size(); ++i) {
+            if (!(rangeX[i] > rangeX[i - 1] + 1e-15)) {
+                throwInvalidParams(
+                        QStringLiteral("curvemath.integrate requires strictly distinct X values (duplicate X=%1 detected).")
+                                .arg(rangeX[i]));
+            }
+        }
+
+        const bool plotCurve = params.value(QStringLiteral("plot_curve")).toBool(false);
+        const int curvesBefore = g->curves();
+        Legend *leg = g->legend();
+        const QString legBefore = leg ? leg->text() : QString();
+
+        RpcIntegration integ(d_app, g);
+        bool okData = false;
+        if (hasRange)
+            okData = integ.setDataFromCurve(curveTitle, xMin, xMax, g);
+        else
+            okData = integ.setDataFromCurve(curveTitle, g);
+        if (!okData || integ.error()) {
+            throwInvalidParams(
+                    QStringLiteral("Insufficient curve data in range for integration on '%1'.")
+                            .arg(curveTitle));
+        }
+        integ.setMethod(static_cast<Integration::InterpolationMethod>(integMethod));
         const bool ok = integ.run();
-        outResult[QStringLiteral("ok")] = ok;
-        outResult[QStringLiteral("area")] = safeJsonDouble(integ.result());
+        const double areaVal = integ.result();
+
+        QString outCurveTitle;
+        if (!plotCurve) {
+            while (g->curves() > curvesBefore)
+                g->removeCurve(g->curves() - 1);
+            if (leg)
+                leg->setText(legBefore);
+            g->replot();
+        } else {
+            sanitizeGraphFunctionCurves(d_app, g);
+            enforceArialGraphFonts(g);
+            g->replot();
+            if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
+                outCurveTitle = g->curve(g->curves() - 1)->title().text();
+        }
+
+        if (!ok || !std::isfinite(areaVal)) {
+            throwInvalidParams(
+                    QStringLiteral("Integration failed to produce a finite area on curve '%1'.")
+                            .arg(curveTitle));
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("curve")] = curveTitle;
+        outResult[QStringLiteral("area")] = safeJsonDouble(areaVal);
+        if (plotCurve && !outCurveTitle.isEmpty())
+            outResult[QStringLiteral("output_curve")] = outCurveTitle;
         return true;
     }
 
@@ -11940,14 +15533,64 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         Graph *g = nullptr;
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
-        requireCurveMinPoints(g, curveTitle, 2, QStringLiteral("curvemath.differentiate"));
-        RpcDifferentiation diff(d_app, g);
-        if (!diff.setDataFromCurve(curveTitle, g) || diff.error())
+        int distinctX = 0;
+        requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("curvemath.differentiate"),
+                              &distinctX);
+        if (distinctX < 4) {
             throwInvalidParams(
-                    QStringLiteral("Insufficient curve data for differentiation on '%1'.")
+                    QStringLiteral("curvemath.differentiate requires at least 4 distinct X points (got %1).")
+                            .arg(distinctX));
+        }
+
+        const int winBefore = d_app->windowsList().size();
+        RpcDifferentiation diff(d_app, g);
+        bool okData = false;
+        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))
+            && !params.value(QStringLiteral("x_min")).isNull()
+            && !params.value(QStringLiteral("x_max")).isNull()) {
+            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
+            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
+            if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
+                throwInvalidParams(
+                        QStringLiteral("curvemath.differentiate requires finite x_min < x_max."));
+            okData = diff.setDataFromCurve(curveTitle, xMin, xMax, g);
+        } else {
+            okData = diff.setDataFromCurve(curveTitle, g);
+        }
+        if (!okData || diff.error()) {
+            throwInvalidParams(
+                    QStringLiteral("Insufficient curve data (requires >= 4 points) for differentiation on '%1'.")
                             .arg(curveTitle));
+        }
         const bool ok = diff.run();
-        outResult[QStringLiteral("ok")] = ok;
+        Table *derivTbl = nullptr;
+        MultiLayer *derivMl = nullptr;
+        const QList<MyWidget *> winsAfter = d_app->windowsList();
+        for (int i = std::max(0, winBefore); i < winsAfter.size(); ++i) {
+            MyWidget *w = winsAfter[i];
+            if (!w)
+                continue;
+            if (w->inherits("Table"))
+                derivTbl = static_cast<Table *>(w);
+            else if (w->inherits("MultiLayer"))
+                derivMl = static_cast<MultiLayer *>(w);
+        }
+        QString outCurve;
+        if (derivMl) {
+            for (Graph *lg : derivMl->layersList())
+                enforceArialGraphFonts(lg);
+            if (Graph *dg = derivMl->activeGraph()) {
+                if (dg->curves() > 0 && dg->curve(dg->curves() - 1))
+                    outCurve = dg->curve(dg->curves() - 1)->title().text();
+            }
+        }
+        outResult[QStringLiteral("ok")] = ok && (derivMl != nullptr || derivTbl != nullptr);
+        if (derivMl)
+            outResult[QStringLiteral("graph")] = derivMl->name();
+        if (derivTbl)
+            outResult[QStringLiteral("table")] = derivTbl->name();
+        if (!outCurve.isEmpty())
+            outResult[QStringLiteral("output_curve")] = outCurve;
         return true;
     }
 
@@ -12117,6 +15760,146 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QwtPlotCurve *fc = CurveMathTools::fillBetweenCurves(d_app, g, cA, cB, fillCol);
         g->replot();
         outResult[QStringLiteral("ok")] = (fc != nullptr);
+        return true;
+    }
+
+    if (method == QStringLiteral("curvemath.offset_yield")) {
+        MultiLayer *ml = nullptr;
+        Graph *g = nullptr;
+        QString curveTitle;
+        resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
+        requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("curvemath.offset_yield"));
+
+        double offsetFraction = 0.002;
+        if (params.contains(QStringLiteral("offset_percent"))
+            && !params.value(QStringLiteral("offset_percent")).isNull()) {
+            offsetFraction = params.value(QStringLiteral("offset_percent")).toDouble(0.2) / 100.0;
+        } else if (params.contains(QStringLiteral("offset"))
+                   && !params.value(QStringLiteral("offset")).isNull()) {
+            offsetFraction = params.value(QStringLiteral("offset")).toDouble(0.002);
+        }
+        if (!std::isfinite(offsetFraction) || offsetFraction <= 0.0 || offsetFraction >= 0.5) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter 'offset' must be a finite strain fraction in (0, 0.5), e.g. 0.002 for 0.2% proof stress."));
+        }
+
+        int strainMode = -1; // auto
+        if (params.contains(QStringLiteral("strain_in_percent"))
+            && !params.value(QStringLiteral("strain_in_percent")).isNull()) {
+            strainMode = params.value(QStringLiteral("strain_in_percent")).toBool(true) ? 1 : 0;
+        }
+
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
+        double elasticMin = qNaN;
+        double elasticMax = qNaN;
+        if (params.contains(QStringLiteral("elastic_min"))
+            && !params.value(QStringLiteral("elastic_min")).isNull()) {
+            elasticMin = params.value(QStringLiteral("elastic_min")).toDouble(qNaN);
+        } else if (params.contains(QStringLiteral("elastic_x_min"))
+                   && !params.value(QStringLiteral("elastic_x_min")).isNull()) {
+            elasticMin = params.value(QStringLiteral("elastic_x_min")).toDouble(qNaN);
+        }
+        if (params.contains(QStringLiteral("elastic_max"))
+            && !params.value(QStringLiteral("elastic_max")).isNull()) {
+            elasticMax = params.value(QStringLiteral("elastic_max")).toDouble(qNaN);
+        } else if (params.contains(QStringLiteral("elastic_x_max"))
+                   && !params.value(QStringLiteral("elastic_x_max")).isNull()) {
+            elasticMax = params.value(QStringLiteral("elastic_x_max")).toDouble(qNaN);
+        }
+        if (std::isfinite(elasticMin) && std::isfinite(elasticMax) && elasticMin >= elasticMax) {
+            throwInvalidParams(
+                    QStringLiteral("curvemath.offset_yield requires elastic_min < elastic_max."));
+        }
+
+        const bool plotConstruction = params.contains(QStringLiteral("plot_construction"))
+                ? params.value(QStringLiteral("plot_construction")).toBool(true)
+                : true;
+        const bool addCallout = params.contains(QStringLiteral("add_callout"))
+                ? params.value(QStringLiteral("add_callout")).toBool(true)
+                : true;
+        const bool createTrueTable =
+                params.value(QStringLiteral("create_true_stress_table")).toBool(false);
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Tensile 0.2% Proof Stress"));
+        const CurveMathTools::TensileResult tr = CurveMathTools::analyzeTensile(
+                d_app, g, curveTitle, offsetFraction, strainMode, elasticMin, elasticMax,
+                plotConstruction, addCallout, createTrueTable);
+        if (!tr.valid) {
+            throwInvalidParams(tr.error.isEmpty()
+                                       ? QStringLiteral("Tensile offset yield analysis failed on '%1'.")
+                                                 .arg(curveTitle)
+                                       : tr.error);
+        }
+        sanitizeGraphFunctionCurves(d_app, g);
+        enforceArialGraphFonts(g);
+        g->replot();
+        undoGuard.commit();
+
+        QString sUnit = tr.stressUnit.trimmed();
+        if (sUnit.isEmpty()) {
+            const int cIdx = g->curveIndex(curveTitle);
+            if (cIdx >= 0) {
+                if (auto *dcTen = dynamic_cast<DataCurve *>(g->curve(cIdx))) {
+                    if (Table *srcTbl = dcTen->table()) {
+                        const int yColIdx = srcTbl->colIndex(dcTen->yColumnName());
+                        if (yColIdx >= 0)
+                            sUnit = srcTbl->colUnits(yColIdx).trimmed();
+                    }
+                }
+            }
+        }
+        double eToGpaFactor = 1.0 / 1000.0; // default MPa -> GPa
+        if (sUnit.compare(QStringLiteral("GPa"), Qt::CaseInsensitive) == 0
+            || sUnit.contains(QStringLiteral("GPa"), Qt::CaseInsensitive)) {
+            eToGpaFactor = 1.0;
+        } else if (sUnit.compare(QStringLiteral("MPa"), Qt::CaseInsensitive) == 0
+                   || sUnit.contains(QStringLiteral("MPa"), Qt::CaseInsensitive)
+                   || sUnit.contains(QStringLiteral("N/mm"), Qt::CaseInsensitive)) {
+            eToGpaFactor = 1.0 / 1000.0;
+        } else if (sUnit.compare(QStringLiteral("kPa"), Qt::CaseInsensitive) == 0
+                   || sUnit.contains(QStringLiteral("kPa"), Qt::CaseInsensitive)) {
+            eToGpaFactor = 1.0e-6;
+        } else if (sUnit.compare(QStringLiteral("TPa"), Qt::CaseInsensitive) == 0
+                   || sUnit.contains(QStringLiteral("TPa"), Qt::CaseInsensitive)) {
+            eToGpaFactor = 1000.0;
+        } else if (sUnit.compare(QStringLiteral("Pa"), Qt::CaseInsensitive) == 0
+                   || sUnit.compare(QStringLiteral("N/m^2"), Qt::CaseInsensitive) == 0
+                   || sUnit.compare(QStringLiteral("N/m2"), Qt::CaseInsensitive) == 0) {
+            eToGpaFactor = 1.0e-9;
+        }
+
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("curve")] = curveTitle;
+        outResult[QStringLiteral("stress_unit")] =
+                sUnit.isEmpty() ? QStringLiteral("MPa") : sUnit;
+        outResult[QStringLiteral("youngs_modulus")] = safeJsonDouble(tr.youngsModulus);
+        outResult[QStringLiteral("youngs_modulus_gpa")] =
+                safeJsonDouble(tr.youngsModulus * eToGpaFactor);
+        outResult[QStringLiteral("elastic_slope")] = safeJsonDouble(tr.elasticSlopeRaw);
+        outResult[QStringLiteral("elastic_intercept")] = safeJsonDouble(tr.elasticIntercept);
+        outResult[QStringLiteral("r2_elastic")] = safeJsonDouble(tr.elasticR2);
+        outResult[QStringLiteral("elastic_r2")] = safeJsonDouble(tr.elasticR2);
+        outResult[QStringLiteral("elastic_x_min")] = safeJsonDouble(tr.elasticXMin);
+        outResult[QStringLiteral("elastic_x_max")] = safeJsonDouble(tr.elasticXMax);
+        outResult[QStringLiteral("offset")] = safeJsonDouble(tr.offsetFraction);
+        outResult[QStringLiteral("strain_in_percent")] = tr.strainInPercent;
+        outResult[QStringLiteral("offset_yield_x")] = safeJsonDouble(tr.offsetYieldX);
+        outResult[QStringLiteral("offset_yield_y")] = safeJsonDouble(tr.offsetYieldY);
+        outResult[QStringLiteral("offset_yield_strain")] = safeJsonDouble(tr.offsetYieldX);
+        outResult[QStringLiteral("offset_yield_stress")] = safeJsonDouble(tr.offsetYieldY);
+        outResult[QStringLiteral("proof_stress")] = safeJsonDouble(tr.offsetYieldY);
+        outResult[QStringLiteral("uts_x")] = safeJsonDouble(tr.utsX);
+        outResult[QStringLiteral("uts_y")] = safeJsonDouble(tr.utsY);
+        outResult[QStringLiteral("uts_strain")] = safeJsonDouble(tr.utsX);
+        outResult[QStringLiteral("uts")] = safeJsonDouble(tr.utsY);
+        outResult[QStringLiteral("fracture_x")] = safeJsonDouble(tr.fractureX);
+        outResult[QStringLiteral("fracture_y")] = safeJsonDouble(tr.fractureY);
+        outResult[QStringLiteral("fracture_strain")] = safeJsonDouble(tr.fractureX);
+        outResult[QStringLiteral("fracture_stress")] = safeJsonDouble(tr.fractureY);
+        outResult[QStringLiteral("construction_curve")] = tr.constructionCurveTitle;
+        if (tr.trueStressTable)
+            outResult[QStringLiteral("true_stress_table")] = tr.trueStressTable->name();
         return true;
     }
 
@@ -12459,9 +16242,17 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
         const double msw = (df2 > 0) ? (ssw / double(df2)) : 0.0;
         double fStat = 0.0, pVal = 1.0;
-        if (df1 > 0 && df2 > 0 && ssw > 0.0) {
-            fStat = (ssb / double(df1)) / msw;
-            pVal = gsl_cdf_fdist_Q(fStat, double(df1), double(df2));
+        if (df1 > 0 && df2 > 0) {
+            if (ssw > 0.0) {
+                fStat = (ssb / double(df1)) / msw;
+                pVal = gsl_cdf_fdist_Q(fStat, double(df1), double(df2));
+            } else if (ssb > 0.0) {
+                fStat = std::numeric_limits<double>::infinity();
+                pVal = 0.0;
+            } else {
+                fStat = 0.0;
+                pVal = 1.0;
+            }
         }
 
         // Studentized Range upper-tail probability P(Q_{k, nu} >= q) via Hartley-Tukey quadrature
@@ -13311,16 +17102,82 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
             return hookedRes;
     }
 
+    auto findProjUndoIdx = [&]() -> int {
+        if (!d_app)
+            return -1;
+        for (MyWidget *w : d_app->windowsList()) {
+            if (!w)
+                continue;
+            if (w->inherits("Table")) {
+                auto *t = static_cast<Table *>(w);
+                if (t->d_future_table && t->d_future_table->undoStack())
+                    return t->d_future_table->undoStack()->index();
+            } else if (w->inherits("Matrix")) {
+                auto *m = static_cast<Matrix *>(w);
+                if (m->d_future_matrix && m->d_future_matrix->undoStack())
+                    return m->d_future_matrix->undoStack()->index();
+            }
+        }
+        return -1;
+    };
+    const int projIdxBefore = findProjUndoIdx();
+
+    auto updateLastUndoTracking = [&](const QJsonObject &res) {
+        if (method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo"))
+            return;
+        if (method == QStringLiteral("app.new_project")
+            || method == QStringLiteral("app.open_project")) {
+            d_last_undo_domain.clear();
+            d_last_undo_graph.clear();
+            return;
+        }
+        const int projIdxAfter = findProjUndoIdx();
+        const bool isReadOnlyGraph = (method == QStringLiteral("graph.get_info")
+                                      || method == QStringLiteral("graph.inspect")
+                                      || method == QStringLiteral("graph.export")
+                                      || method == QStringLiteral("graph.copy_image")
+                                      || method == QStringLiteral("graph.copy_ole")
+                                      || method == QStringLiteral("gadget.query"));
+        if (!isReadOnlyGraph
+            && (method.startsWith(QStringLiteral("plot."))
+                || method.startsWith(QStringLiteral("graph."))
+                || (res.contains(QStringLiteral("graph"))
+                    && !res.value(QStringLiteral("graph")).toString().trimmed().isEmpty()))) {
+            d_last_undo_domain = QStringLiteral("graph");
+            const QString gName = res.value(QStringLiteral("graph")).toString().trimmed();
+            if (!gName.isEmpty())
+                d_last_undo_graph = gName;
+            else if (!params.value(QStringLiteral("graph")).toString().trimmed().isEmpty())
+                d_last_undo_graph = params.value(QStringLiteral("graph")).toString().trimmed();
+        } else if ((projIdxBefore >= 0 && projIdxAfter != projIdxBefore)
+                   || method.startsWith(QStringLiteral("table.set_"))
+                   || method == QStringLiteral("table.add_column")
+                   || method == QStringLiteral("table.remove_column")
+                   || method == QStringLiteral("table.resize")
+                   || method == QStringLiteral("table.paste_tsv")
+                   || method == QStringLiteral("matrix.set_data")
+                   || method == QStringLiteral("matrix.transpose")
+                   || method == QStringLiteral("matrix.invert")
+                   || method == QStringLiteral("matrix.flip")) {
+            d_last_undo_domain = QStringLiteral("project");
+        }
+    };
+
     QJsonObject result;
     if (dispatchCoreAndGraphMethod(this, d_app, d_focus_hud_fallback, d_workspace_mode_fallback,
-                                   method, params, result)) {
+                                   d_last_undo_domain, d_last_undo_graph, method, params,
+                                   result)) {
+        updateLastUndoTracking(result);
         return result;
     }
     if (dispatchAnalysisAndScienceMethod(d_app, method, params, result)) {
+        updateLastUndoTracking(result);
         return result;
     }
 
-    throw RpcDispatchException(-32601, QStringLiteral("Method not found: %1").arg(method));
+    QJsonObject errData;
+    errData[QStringLiteral("available")] = toJsonArray(supportedMethods());
+    throw RpcDispatchException(-32601, QStringLiteral("Method not found: %1").arg(method), errData);
 }
 
 

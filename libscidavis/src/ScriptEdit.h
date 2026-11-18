@@ -74,6 +74,7 @@ public slots:
     void updateIndentation();
 
 protected:
+    virtual void changeEvent(QEvent *e) override;
     virtual void contextMenuEvent(QContextMenuEvent *e);
     virtual void keyPressEvent(QKeyEvent *e);
 

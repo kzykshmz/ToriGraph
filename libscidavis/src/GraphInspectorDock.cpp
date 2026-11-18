@@ -71,6 +71,7 @@
 #include <QPalette>
 #include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -123,9 +124,148 @@ constexpr int kMergeErrWidth = 3305;
 constexpr int kMergeErrCap = 3306;
 constexpr int kMergeSpecCbWidth = 3307;
 constexpr int kMergeSpecLevels = 3308;
+constexpr int kMergeSymSkip = 3309;
+constexpr int kMergeSpecCbTitle = 3310;
 constexpr int kMergeLegendHeader = 3401;
 constexpr int kMergeLegendCols = 3402;
 constexpr int kMergeLegendFontPt = 3403;
+
+class ActivePageStackedWidget : public QStackedWidget
+{
+public:
+    explicit ActivePageStackedWidget(QWidget *parent = nullptr) : QStackedWidget(parent) { }
+
+    QSize sizeHint() const override
+    {
+        if (QWidget *w = currentWidget())
+            return w->sizeHint();
+        return QStackedWidget::sizeHint();
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        if (QWidget *w = currentWidget()) {
+            const QSize ms = w->minimumSizeHint();
+            return QSize(qMin(ms.width(), 220), ms.height());
+        }
+        return QStackedWidget::minimumSizeHint();
+    }
+};
+
+static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
+{
+    QWidget *wrap = new QWidget(parent);
+    QVBoxLayout *vlay = new QVBoxLayout(wrap);
+    vlay->setContentsMargins(0, 1, 0, 1);
+    vlay->setSpacing(2);
+
+    auto insertToken = [targetEdit](const QString &tok) {
+        if (!targetEdit || !targetEdit->isEnabled())
+            return;
+        if (targetEdit->hasSelectedText()) {
+            const int start = targetEdit->selectionStart();
+            const int len = targetEdit->selectedText().length();
+            QString txt = targetEdit->text();
+            txt.replace(start, len, tok);
+            targetEdit->setText(txt);
+            targetEdit->setCursorPosition(start + tok.length());
+        } else {
+            const int pos = targetEdit->cursorPosition();
+            QString txt = targetEdit->text();
+            txt.insert(pos, tok);
+            targetEdit->setText(txt);
+            targetEdit->setCursorPosition(pos + tok.length());
+        }
+        targetEdit->setModified(true);
+        targetEdit->setFocus();
+        emit targetEdit->editingFinished();
+    };
+
+    auto wrapMarkup = [targetEdit](const QString &openTag, const QString &closeTag) {
+        if (!targetEdit || !targetEdit->isEnabled())
+            return;
+        QString txt = targetEdit->text();
+        if (targetEdit->hasSelectedText()) {
+            const int start = targetEdit->selectionStart();
+            const QString sel = targetEdit->selectedText();
+            const QString rep = openTag + sel + closeTag;
+            txt.replace(start, sel.length(), rep);
+            targetEdit->setText(txt);
+            targetEdit->setSelection(start + openTag.length(), sel.length());
+        } else {
+            const int pos = targetEdit->cursorPosition();
+            txt.insert(pos, openTag + closeTag);
+            targetEdit->setText(txt);
+            targetEdit->setCursorPosition(pos + openTag.length());
+        }
+        targetEdit->setModified(true);
+        targetEdit->setFocus();
+        emit targetEdit->editingFinished();
+    };
+
+    auto makeBtn = [&](QHBoxLayout *row, const QString &label, const QString &tip) -> QToolButton * {
+        QToolButton *b = new QToolButton(wrap);
+        b->setText(label);
+        b->setToolTip(tip);
+        b->setFixedHeight(21);
+        b->setMinimumWidth(22);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        row->addWidget(b);
+        return b;
+    };
+
+    QHBoxLayout *row1 = new QHBoxLayout();
+    row1->setContentsMargins(0, 0, 0, 0);
+    row1->setSpacing(2);
+    const QList<QPair<QString, QString>> row1Toks = {
+        { QString::fromUtf8("\xCF\x83"), QString::fromUtf8("\xCF\x83") },
+        { QString::fromUtf8("\xCE\xB5"), QString::fromUtf8("\xCE\xB5") },
+        { QString::fromUtf8("2\xCE\xB8"), QString::fromUtf8("2\xCE\xB8") },
+        { QString::fromUtf8("\xCE\xBC" "m"), QString::fromUtf8("\xCE\xBC" "m") },
+        { QString::fromUtf8("\xC2\xB0" "C"), QString::fromUtf8("\xC2\xB0" "C") },
+        { QString::fromUtf8("\xC3\x85"), QString::fromUtf8("\xC3\x85") },
+    };
+    for (const auto &pr : row1Toks) {
+        QToolButton *b = makeBtn(row1, pr.first, QObject::tr("Insert %1").arg(pr.first));
+        const QString tok = pr.second;
+        QObject::connect(b, &QToolButton::clicked, wrap, [insertToken, tok]() { insertToken(tok); });
+    }
+    vlay->addLayout(row1);
+
+    QHBoxLayout *row2 = new QHBoxLayout();
+    row2->setContentsMargins(0, 0, 0, 0);
+    row2->setSpacing(2);
+    {
+        QToolButton *bPm = makeBtn(row2, QString::fromUtf8("\xC2\xB1"),
+                                   QObject::tr("Insert %1").arg(QString::fromUtf8("\xC2\xB1")));
+        QObject::connect(bPm, &QToolButton::clicked, wrap,
+                         [insertToken]() { insertToken(QString::fromUtf8("\xC2\xB1")); });
+        QToolButton *bDeg = makeBtn(row2, QString::fromUtf8("\xC2\xB0"),
+                                    QObject::tr("Insert %1").arg(QString::fromUtf8("\xC2\xB0")));
+        QObject::connect(bDeg, &QToolButton::clicked, wrap,
+                         [insertToken]() { insertToken(QString::fromUtf8("\xC2\xB0")); });
+        QToolButton *bCm = makeBtn(row2, QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9"),
+                                   QObject::tr("Insert %1").arg(QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9")));
+        QObject::connect(bCm, &QToolButton::clicked, wrap,
+                         [insertToken]() { insertToken(QStringLiteral("cm<sup>-1</sup>")); });
+        QToolButton *bSub = makeBtn(row2, QString::fromUtf8("x\xE2\x82\x82"),
+                                    QObject::tr("Subscript (<sub>...</sub>)"));
+        QObject::connect(bSub, &QToolButton::clicked, wrap,
+                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>")); });
+        QToolButton *bSup = makeBtn(row2, QString::fromUtf8("x\xC2\xB2"),
+                                    QObject::tr("Superscript (<sup>...</sup>)"));
+        QObject::connect(bSup, &QToolButton::clicked, wrap,
+                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>")); });
+        QToolButton *bIt = makeBtn(row2, QStringLiteral("I"), QObject::tr("Italic (<i>...</i>)"));
+        QFont itF = bIt->font();
+        itF.setItalic(true);
+        bIt->setFont(itF);
+        QObject::connect(bIt, &QToolButton::clicked, wrap,
+                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<i>"), QStringLiteral("</i>")); });
+    }
+    vlay->addLayout(row2);
+    return wrap;
+}
 
 static void registerInspectorExtraTranslations()
 {
@@ -232,6 +372,23 @@ static void registerInspectorExtraTranslations()
         reg("GrayScale", "グレースケール");
         reg("Blue-White-Red", "青-白-赤");
         reg("Cool-Warm", "クール-ウォーム");
+        reg("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (アレニウス等)");
+        reg("Show Tick Numbers", "目盛り数値を表示");
+        reg("Toggle Tick Numbers", "目盛り数値の表示切替");
+        reg("Unit Format:", "単位表記:");
+        reg("Unit Format", "単位表記");
+        reg("Name (Unit)", "量名 (単位)");
+        reg("Name / Unit (ISIJ)", "量名 / 単位 (ISIJ)");
+        reg("Name [Unit]", "量名 [単位]");
+        reg("Change Unit Format", "単位表記の変更");
+        reg("Symbol Skip:", "記号の間引き:");
+        reg("Symbol Skip", "記号の間引き");
+        reg("Every %1 pts (0 = Auto)", "%1点ごと (0 = 自動間引き)");
+        reg("Change Symbol Skip", "記号の間引き間隔変更");
+        reg("Colorbar Title:", "カラーバータイトル:");
+        reg("Colorbar Title", "カラーバータイトル");
+        reg("Enter colorbar title...", "カラーバータイトルを入力...");
+        reg("Edit Colorbar Title", "カラーバータイトルの編集");
     });
 }
 
@@ -603,12 +760,12 @@ void GraphInspectorDock::setCollapsedRail(bool collapsed)
             d_app->resizeDocks({ this }, { 48 }, Qt::Horizontal);
         }
     } else {
-        setMinimumWidth(240);
-        setMaximumWidth(330);
-        if (width() < 240 || width() > 330)
-            resize(268, height());
+        setMinimumWidth(252);
+        setMaximumWidth(360);
+        if (width() < 252 || width() > 360)
+            resize(288, height());
         if (d_app) {
-            d_app->resizeDocks({ this }, { 268 }, Qt::Horizontal);
+            d_app->resizeDocks({ this }, { 288 }, Qt::Horizontal);
         }
     }
 
@@ -622,6 +779,7 @@ void GraphInspectorDock::switchToInspectorPage(InspectorPageIndex pageIdx)
         return;
     const int idx = qBound(0, int(pageIdx), d_prop_stack->count() - 1);
     d_prop_stack->setCurrentIndex(idx);
+    d_prop_stack->updateGeometry();
     if (d_page_tab_group) {
         if (QAbstractButton *btn = d_page_tab_group->button(idx)) {
             QSignalBlocker b(btn);
@@ -936,7 +1094,7 @@ void GraphInspectorDock::buildUi()
     d_prop_scroll->setFrameShape(QFrame::NoFrame);
     d_prop_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-    d_prop_stack = new QStackedWidget(d_prop_scroll);
+    d_prop_stack = new ActivePageStackedWidget(d_prop_scroll);
     d_prop_stack->addWidget(buildPageLayerInspector());
     d_prop_stack->addWidget(buildAxisInspector());
     d_prop_stack->addWidget(buildCurveInspector());
@@ -1505,6 +1663,24 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     });
     lay->addWidget(d_chk_axis_visible);
 
+    d_chk_tick_labels = new QCheckBox(page);
+    connect(d_chk_tick_labels, &QCheckBox::toggled, this, [this](bool on) {
+        const QVector<Graph *> targets = targetLayersForScope();
+        if (d_syncing_props || !d_target_ml || targets.isEmpty())
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        for (Graph *lg : targets) {
+            if (!lg)
+                continue;
+            lg->setTickLabelsOnAxis(d_active_axis, on);
+            lg->replot();
+            emit lg->modifiedGraph();
+        }
+        d_target_ml->pushUndoSnapshot(tr("Toggle Tick Numbers"), before);
+        syncAxisControls();
+    });
+    lay->addWidget(d_chk_tick_labels);
+
     // Range & Scale
     d_sec_axis_range_lbl = makeSectionHeaderLabel(page);
     lay->addWidget(d_sec_axis_range_lbl);
@@ -1735,6 +1911,105 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     // Axis Title & Scientific Rich-Text Toolbar + Arial Font Sizes
     d_sec_axis_title_lbl = makeSectionHeaderLabel(page);
     lay->addWidget(d_sec_axis_title_lbl);
+
+    {
+        QHBoxLayout *ufRow = new QHBoxLayout();
+        ufRow->setContentsMargins(0, 0, 0, 0);
+        ufRow->setSpacing(6);
+        d_lbl_unit_format = new QLabel(page);
+        d_combo_unit_format = new QComboBox(page);
+        d_combo_unit_format->addItem(QString(), 0); // Name (Unit)
+        d_combo_unit_format->addItem(QString(), 1); // Name / Unit (ISIJ)
+        d_combo_unit_format->addItem(QString(), 2); // Name [Unit]
+        connect(d_combo_unit_format, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this](int idx) {
+                    const QVector<Graph *> targets = targetLayersForScope();
+                    if (d_syncing_props || !d_target_ml || targets.isEmpty() || idx < 0)
+                        return;
+                    const int mode = d_combo_unit_format->itemData(idx).toInt();
+                    const QString before = d_target_ml->captureUndoSnapshot();
+                    static const QRegularExpression rxParen(
+                            QStringLiteral("^(.*\\S)\\s+\\(([^()\\[\\]]+)\\)\\s*$"));
+                    static const QRegularExpression rxSlash(
+                            QStringLiteral("^(.*\\S)\\s+/\\s+([^/()\\[\\]]+)\\s*$"));
+                    static const QRegularExpression rxBracket(
+                            QStringLiteral("^(.*\\S)\\s+\\[([^\\[\\]()]+)\\]\\s*$"));
+                    auto rewriteManualTitle = [&](const QString &raw, int dstMode) -> QString {
+                        QString base, unit;
+                        QRegularExpressionMatch m = rxParen.match(raw);
+                        if (m.hasMatch()) {
+                            base = m.captured(1);
+                            unit = m.captured(2);
+                        } else if ((m = rxBracket.match(raw)).hasMatch()) {
+                            base = m.captured(1);
+                            unit = m.captured(2);
+                        } else if ((m = rxSlash.match(raw)).hasMatch()) {
+                            base = m.captured(1);
+                            unit = m.captured(2);
+                        } else {
+                            return raw;
+                        }
+                        const QString uTrim = unit.trimmed();
+                        if (dstMode == 1) {
+                            if (uTrim == QLatin1String("%") || uTrim == QLatin1String("-")
+                                || uTrim == QString::fromUtf8("\xE2\x80\x94")
+                                || uTrim.compare(QLatin1String("a.u."), Qt::CaseInsensitive) == 0
+                                || uTrim.compare(QLatin1String("arb. units"), Qt::CaseInsensitive)
+                                        == 0) {
+                                return base + QStringLiteral(" (") + uTrim + QStringLiteral(")");
+                            }
+                            return base + QStringLiteral(" / ") + uTrim;
+                        }
+                        if (dstMode == 2)
+                            return base + QStringLiteral(" [") + uTrim + QStringLiteral("]");
+                        return base + QStringLiteral(" (") + uTrim + QStringLiteral(")");
+                    };
+                    for (Graph *lg : targets) {
+                        if (!lg)
+                            continue;
+                        if (mode == 2) {
+                            lg->setProperty("_toriBracketUnitFmt", true);
+                            lg->setAxisUnitFormat(Column::UnitFormat::Paren);
+                            lg->refreshAutoAxisTitlesFromColumns();
+                            for (int a = 0; a < 4; ++a) {
+                                const QString cur = lg->axisTitle(a);
+                                const QString rew = rewriteManualTitle(cur, 2);
+                                if (rew != cur) {
+                                    const bool wasAuto = lg->isAxisTitleAuto(a);
+                                    lg->setAxisTitle(a, rew);
+                                    if (wasAuto)
+                                        lg->setProperty(QStringLiteral("_toriBracketAuto_%1").arg(a).toLatin1().constData(), true);
+                                }
+                            }
+                        } else {
+                            const bool wasBracket = lg->property("_toriBracketUnitFmt").toBool();
+                            lg->setProperty("_toriBracketUnitFmt", false);
+                            for (int a = 0; a < 4; ++a) {
+                                const QByteArray key = QStringLiteral("_toriBracketAuto_%1").arg(a).toLatin1();
+                                if (wasBracket && lg->property(key.constData()).toBool()) {
+                                    lg->setProperty(key.constData(), false);
+                                    lg->setAxisTitleAuto(a, true);
+                                } else if (!lg->isAxisTitleAuto(a)) {
+                                    const QString cur = lg->axisTitle(a);
+                                    const QString rew = rewriteManualTitle(cur, mode);
+                                    if (rew != cur)
+                                        lg->setAxisTitle(a, rew);
+                                }
+                            }
+                            lg->setAxisUnitFormat(mode == 1 ? Column::UnitFormat::ISIJSlash
+                                                            : Column::UnitFormat::Paren);
+                            lg->refreshAutoAxisTitlesFromColumns();
+                        }
+                        lg->replot();
+                        emit lg->modifiedGraph();
+                    }
+                    d_target_ml->pushUndoSnapshot(tr("Change Unit Format"), before);
+                    syncAxisControls();
+                });
+        ufRow->addWidget(d_lbl_unit_format);
+        ufRow->addWidget(d_combo_unit_format, 1);
+        lay->addLayout(ufRow);
+    }
 
     d_edit_axis_title = new QLineEdit(page);
     connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
@@ -2354,10 +2629,32 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         refreshObjectTree();
     });
 
+    d_lbl_sym_skip = new QLabel(d_curve_regular_wrap);
+    d_spin_sym_skip = new QSpinBox(d_curve_regular_wrap);
+    d_spin_sym_skip->setRange(0, 500);
+    d_spin_sym_skip->setValue(0);
+    connect(d_spin_sym_skip, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int skip) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const int ci = effectiveSelectedCurveIndex(g);
+        PlotCurve *pc =
+                (ci >= 0 && ci < g->curves()) ? dynamic_cast<PlotCurve *>(g->curve(ci)) : nullptr;
+        if (!pc || pc->symbolSkip() == skip)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        pc->setSymbolSkip(skip);
+        g->updatePlot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Symbol Skip"), before, kMergeSymSkip);
+    });
+
     symGrid->addWidget(d_lbl_sym_shape, 0, 0);
     symGrid->addWidget(d_combo_sym_shape, 0, 1);
     symGrid->addWidget(d_lbl_sym_size, 1, 0);
     symGrid->addWidget(d_spin_sym_size, 1, 1);
+    symGrid->addWidget(d_lbl_sym_skip, 2, 0);
+    symGrid->addWidget(d_spin_sym_skip, 2, 1);
     regLay->addLayout(symGrid);
 
     d_chk_sym_hollow = new QCheckBox(d_curve_regular_wrap);
@@ -2509,9 +2806,6 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         syncCurveControls();
     });
 
-    QHBoxLayout *rightYRow = new QHBoxLayout();
-    rightYRow->setContentsMargins(0, 0, 0, 0);
-    rightYRow->setSpacing(4);
     d_chk_curve_right_y = new QCheckBox(d_curve_regular_wrap);
     connect(d_chk_curve_right_y, &QCheckBox::toggled, this, [this](bool rightY) {
         Graph *g = activeLayer();
@@ -2553,9 +2847,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_btn_match_right_y_color->setIcon(IconLoader::duotoneIcon(QStringLiteral("palette"), 13));
     connect(d_btn_match_right_y_color, &QPushButton::clicked, this,
             &GraphInspectorDock::matchRightYAxisColorToCurve);
-    rightYRow->addWidget(d_chk_curve_right_y);
-    rightYRow->addWidget(d_btn_match_right_y_color, 1);
-    regLay->addLayout(rightYRow);
+    regLay->addWidget(d_chk_curve_right_y);
+    regLay->addWidget(d_btn_match_right_y_color);
 
     // Quick Error Bars + Live Error Bar Styling
     d_sec_err_bars_lbl = makeSectionHeaderLabel(d_curve_regular_wrap);
@@ -2858,6 +3151,28 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     });
     specGrid->addWidget(d_chk_spec_colorbar, 2, 0, 1, 2);
 
+    d_lbl_spec_cb_title = new QLabel(d_spectrogram_wrap);
+    d_edit_spec_cb_title = new QLineEdit(d_spectrogram_wrap);
+    connect(d_edit_spec_cb_title, &QLineEdit::editingFinished, this, [this]() {
+        Graph *g = activeLayer();
+        Spectrogram *sp = effectiveSelectedSpectrogram(g);
+        if (d_syncing_props || !d_target_ml || !g || !sp)
+            return;
+        const QString nextTitle = d_edit_spec_cb_title->text();
+        if (sp->colorBarTitle() == nextTitle)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        sp->setColorBarTitle(nextTitle);
+        sp->enforceColorBarArialFont();
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Edit Colorbar Title"), before, kMergeSpecCbTitle);
+    });
+    d_spec_cb_sym_bar = createMatSciRichTextBar(d_spectrogram_wrap, d_edit_spec_cb_title);
+    specGrid->addWidget(d_lbl_spec_cb_title, 3, 0);
+    specGrid->addWidget(d_edit_spec_cb_title, 3, 1);
+    specGrid->addWidget(d_spec_cb_sym_bar, 4, 0, 1, 2);
+
     d_lbl_spec_cb_width = new QLabel(d_spectrogram_wrap);
     d_spin_spec_cb_width = new QSpinBox(d_spectrogram_wrap);
     d_spin_spec_cb_width->setRange(6, 64);
@@ -2875,8 +3190,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
                 d_target_ml->pushUndoSnapshot(tr("Change Colorbar Width"), before,
                                               kMergeSpecCbWidth);
             });
-    specGrid->addWidget(d_lbl_spec_cb_width, 3, 0);
-    specGrid->addWidget(d_spin_spec_cb_width, 3, 1);
+    specGrid->addWidget(d_lbl_spec_cb_width, 5, 0);
+    specGrid->addWidget(d_spin_spec_cb_width, 5, 1);
 
     d_chk_spec_contours = new QCheckBox(d_spectrogram_wrap);
     connect(d_chk_spec_contours, &QCheckBox::toggled, this, [this](bool on) {
@@ -2891,7 +3206,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         d_target_ml->pushUndoSnapshot(tr("Toggle Contour Lines"), before);
         syncCurveControls();
     });
-    specGrid->addWidget(d_chk_spec_contours, 4, 0, 1, 2);
+    specGrid->addWidget(d_chk_spec_contours, 6, 0, 1, 2);
 
     d_lbl_spec_levels = new QLabel(d_spectrogram_wrap);
     d_spin_spec_levels = new QSpinBox(d_spectrogram_wrap);
@@ -2907,8 +3222,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         emit g->modifiedGraph();
         d_target_ml->pushUndoSnapshot(tr("Change Contour Levels"), before, kMergeSpecLevels);
     });
-    specGrid->addWidget(d_lbl_spec_levels, 5, 0);
-    specGrid->addWidget(d_spin_spec_levels, 5, 1);
+    specGrid->addWidget(d_lbl_spec_levels, 7, 0);
+    specGrid->addWidget(d_spin_spec_levels, 7, 1);
 
     d_chk_spec_custom_z = new QCheckBox(d_spectrogram_wrap);
     d_lbl_spec_zmin = new QLabel(d_spectrogram_wrap);
@@ -2944,11 +3259,11 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     connect(d_edit_spec_zmin, &QLineEdit::editingFinished, this, applySpecZRange);
     connect(d_edit_spec_zmax, &QLineEdit::editingFinished, this, applySpecZRange);
 
-    specGrid->addWidget(d_chk_spec_custom_z, 6, 0, 1, 2);
-    specGrid->addWidget(d_lbl_spec_zmin, 7, 0);
-    specGrid->addWidget(d_edit_spec_zmin, 7, 1);
-    specGrid->addWidget(d_lbl_spec_zmax, 8, 0);
-    specGrid->addWidget(d_edit_spec_zmax, 8, 1);
+    specGrid->addWidget(d_chk_spec_custom_z, 8, 0, 1, 2);
+    specGrid->addWidget(d_lbl_spec_zmin, 9, 0);
+    specGrid->addWidget(d_edit_spec_zmin, 9, 1);
+    specGrid->addWidget(d_lbl_spec_zmax, 10, 0);
+    specGrid->addWidget(d_edit_spec_zmax, 10, 1);
 
     specLay->addLayout(specGrid);
     d_spectrogram_wrap->hide();
@@ -3207,14 +3522,17 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         d_target_ml->pushUndoSnapshot(tr("Change Legend Font Size"), before, kMergeLegendFontPt);
     });
 
+    d_leg_sym_bar = createMatSciRichTextBar(page, d_edit_leg_header);
+
     legGrid->addWidget(d_lbl_leg_frame, 0, 0);
     legGrid->addWidget(d_combo_leg_frame, 0, 1);
     legGrid->addWidget(d_lbl_leg_header, 1, 0);
     legGrid->addWidget(d_edit_leg_header, 1, 1);
-    legGrid->addWidget(d_lbl_leg_cols, 2, 0);
-    legGrid->addWidget(d_spin_leg_cols, 2, 1);
-    legGrid->addWidget(d_lbl_leg_font_pt, 3, 0);
-    legGrid->addWidget(d_spin_leg_font_pt, 3, 1);
+    legGrid->addWidget(d_leg_sym_bar, 2, 0, 1, 2);
+    legGrid->addWidget(d_lbl_leg_cols, 3, 0);
+    legGrid->addWidget(d_spin_leg_cols, 3, 1);
+    legGrid->addWidget(d_lbl_leg_font_pt, 4, 0);
+    legGrid->addWidget(d_spin_leg_font_pt, 4, 1);
     lay->addLayout(legGrid);
 
     lay->addStretch(1);
@@ -3343,7 +3661,18 @@ void GraphInspectorDock::refreshAll()
 
     const bool hasGraph = !d_target_ml.isNull();
     if (d_header_target_lbl) {
-        d_header_target_lbl->setText(hasGraph ? d_target_ml->name() : tr("(No Active Graph)"));
+        if (!hasGraph) {
+            d_header_target_lbl->setText(tr("(No Active Graph)"));
+            d_header_target_lbl->setToolTip(QString());
+        } else {
+            const QString winLbl = d_target_ml->windowLabel().trimmed();
+            const QString winName = d_target_ml->name();
+            const bool useLbl = !winLbl.isEmpty() && winLbl != winName && winLbl.length() <= 48
+                    && !winLbl.contains(QLatin1Char('/')) && !winLbl.contains(QLatin1Char('\\'));
+            d_header_target_lbl->setText(useLbl ? winLbl : winName);
+            d_header_target_lbl->setToolTip(
+                    useLbl ? QStringLiteral("%1 (%2)").arg(winLbl, winName) : winName);
+        }
     }
     if (d_scope_strip) {
         const bool multiPanel = hasGraph && d_target_ml->layers() > 1;
@@ -4182,6 +4511,8 @@ void GraphInspectorDock::syncAxisControls()
 
     {
         QSignalBlocker bVis(d_chk_axis_visible);
+        QSignalBlocker bTickLbl(d_chk_tick_labels);
+        QSignalBlocker bUFmt(d_combo_unit_format);
         QSignalBlocker bMin(d_edit_axis_min);
         QSignalBlocker bMax(d_edit_axis_max);
         QSignalBlocker bStep(d_edit_axis_step);
@@ -4202,6 +4533,23 @@ void GraphInspectorDock::syncAxisControls()
         QSignalBlocker bTckPt(d_spin_axis_tick_pt);
 
         d_chk_axis_visible->setChecked(pw->axisEnabled(ax));
+        if (d_chk_tick_labels) {
+            d_chk_tick_labels->setChecked(g->hasTickLabelsOnAxis(ax));
+            d_chk_tick_labels->setEnabled(pw->axisEnabled(ax));
+        }
+        if (d_combo_unit_format) {
+            int ufMode = (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash) ? 1 : 0;
+            if (g->property("_toriBracketUnitFmt").toBool()) {
+                ufMode = 2;
+            } else {
+                const QString curTitle = g->axisTitle(ax).trimmed();
+                if (curTitle.endsWith(QLatin1Char(']')) && curTitle.contains(QLatin1String(" [")))
+                    ufMode = 2;
+            }
+            const int ufIdx = d_combo_unit_format->findData(ufMode);
+            if (ufIdx >= 0)
+                d_combo_unit_format->setCurrentIndex(ufIdx);
+        }
 
         const QwtScaleDiv *scDiv = pw->axisScaleDiv(ax);
         const double lo = scDiv ? qMin(scDiv->lowerBound(), scDiv->upperBound()) : 0.0;
@@ -4316,6 +4664,7 @@ void GraphInspectorDock::syncCurveControls()
         QSignalBlocker bs1(d_combo_spec_cmap);
         QSignalBlocker bs2(d_chk_spec_reverse);
         QSignalBlocker bs3(d_chk_spec_colorbar);
+        QSignalBlocker bsTitle(d_edit_spec_cb_title);
         QSignalBlocker bs4(d_spin_spec_cb_width);
         QSignalBlocker bs5(d_chk_spec_contours);
         QSignalBlocker bs6(d_spin_spec_levels);
@@ -4330,6 +4679,12 @@ void GraphInspectorDock::syncCurveControls()
 
         const bool hasCb = sp->hasColorScale();
         d_chk_spec_colorbar->setChecked(hasCb);
+        if (d_edit_spec_cb_title) {
+            d_edit_spec_cb_title->setEnabled(hasCb);
+            d_edit_spec_cb_title->setText(sp->colorBarTitle());
+        }
+        if (d_spec_cb_sym_bar)
+            d_spec_cb_sym_bar->setEnabled(hasCb);
         d_spin_spec_cb_width->setEnabled(hasCb);
         d_spin_spec_cb_width->setValue(qBound(6, sp->colorBarWidth(), 64));
 
@@ -4369,6 +4724,8 @@ void GraphInspectorDock::syncCurveControls()
         d_spin_curve_opacity->setEnabled(hasCurve);
     d_combo_sym_shape->setEnabled(hasCurve);
     d_spin_sym_size->setEnabled(hasCurve);
+    if (d_spin_sym_skip)
+        d_spin_sym_skip->setEnabled(hasCurve);
     d_chk_sym_hollow->setEnabled(hasCurve);
     if (d_chk_link_sym_color)
         d_chk_link_sym_color->setEnabled(hasCurve);
@@ -4425,6 +4782,11 @@ void GraphInspectorDock::syncCurveControls()
         if (symIdx >= 0)
             d_combo_sym_shape->setCurrentIndex(symIdx);
         d_spin_sym_size->setValue(sym.size().width() > 0 ? sym.size().width() : 8);
+        if (d_spin_sym_skip) {
+            QSignalBlocker bSkip(d_spin_sym_skip);
+            const PlotCurve *pc = dynamic_cast<const PlotCurve *>(cv);
+            d_spin_sym_skip->setValue(pc ? qBound(0, pc->symbolSkip(), 500) : 0);
+        }
         const bool isHollow = Graph::isSymbolWhiteHollow(sym);
         d_chk_sym_hollow->setChecked(isHollow);
 
@@ -4537,6 +4899,8 @@ void GraphInspectorDock::syncLegendControls()
         d_combo_leg_frame->setEnabled(canEditMarker);
     if (d_edit_leg_header)
         d_edit_leg_header->setEnabled(canEditMarker);
+    if (d_leg_sym_bar)
+        d_leg_sym_bar->setEnabled(canEditMarker);
     if (d_spin_leg_font_pt)
         d_spin_leg_font_pt->setEnabled(canEditMarker);
 
@@ -4812,6 +5176,8 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
 {
     if (!d_menu_units)
         return;
+    for (QMenu *sub : d_menu_units->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly))
+        delete sub;
     d_menu_units->clear();
 
     // 1) Materials-science symbols
@@ -4837,9 +5203,14 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
     d_menu_units->addSeparator();
     const QList<QPair<QString, QString>> journalTemplates = {
         { QString::fromUtf8("\xCF\x83 (MPa)"), QString::fromUtf8("\xCF\x83 (MPa)") },
+        { QString::fromUtf8("\xCF\x83\xE2\x82\x80.\xE2\x82\x82 (MPa)"),
+          QString::fromUtf8("\xCF\x83<sub>0.2</sub> (MPa)") },
         { QString::fromUtf8("\xCE\xB5 (%)"), QString::fromUtf8("\xCE\xB5 (%)") },
         { QString::fromUtf8("d\xCF\x83/d\xCE\xB5 (GPa)"),
           QString::fromUtf8("d\xCF\x83/d\xCE\xB5 (GPa)") },
+        { QString::fromUtf8("2\xCE\xB8 (deg.)"), QString::fromUtf8("2\xCE\xB8 (deg.)") },
+        { QString::fromUtf8("d\xE2\x81\xBB\xC2\xB9/\xC2\xB2 (\xCE\xBC" "m\xE2\x81\xBB\xC2\xB9/\xC2\xB2)"),
+          QString::fromUtf8("<i>d</i><sup>-1/2</sup> (\xCE\xBC" "m<sup>-1/2</sup>)") },
         { QString::fromUtf8("10\xE2\x81\xBB\xE2\x81\xB4 s\xE2\x81\xBB\xC2\xB9"),
           QStringLiteral("10<sup>-4</sup> s<sup>-1</sup>") },
         { QString::fromUtf8("mass ppm\xC2\xB7s\xE2\x81\xBB\xC2\xB9"),
@@ -4850,7 +5221,7 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
     for (int i = 0; i < journalTemplates.size(); ++i) {
         const QString disp = journalTemplates[i].first;
         const QString tmpl = journalTemplates[i].second;
-        const bool isUnitOnly = (i == 3 || i == 4);
+        const bool isUnitOnly = (i == 6 || i == 7);
         d_menu_units->addAction(disp, this, [this, tmpl, isUnitOnly]() {
             if (!d_edit_axis_title)
                 return;
@@ -4883,6 +5254,9 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
         { QStringLiteral("mm"), QStringLiteral(" (mm)") },
         { QString::fromUtf8("\xCE\xBC" "m"), QString::fromUtf8(" (\xCE\xBC" "m)") },
         { QStringLiteral("nm"), QStringLiteral(" (nm)") },
+        { QString::fromUtf8("\xC3\x85"), QString::fromUtf8(" (\xC3\x85)") },
+        { QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9"), QStringLiteral(" (cm<sup>-1</sup>)") },
+        { QStringLiteral("wt.ppm"), QStringLiteral(" (wt.ppm)") },
         { QStringLiteral("mass%"), QStringLiteral(" (mass%)") },
         { QStringLiteral("at.%"), QStringLiteral(" (at.%)") },
         { QStringLiteral("kJ/mol"), QStringLiteral(" (kJ/mol)") },
@@ -5414,6 +5788,8 @@ void GraphInspectorDock::retranslateUi()
         d_btn_axis_right->setText(tr("Right Y"));
     if (d_chk_axis_visible)
         d_chk_axis_visible->setText(tr("Show Selected Axis"));
+    if (d_chk_tick_labels)
+        d_chk_tick_labels->setText(tr("Show Tick Numbers"));
 
     if (d_sec_axis_range_lbl)
         d_sec_axis_range_lbl->setText(tr("Scale & Axis Break"));
@@ -5480,6 +5856,13 @@ void GraphInspectorDock::retranslateUi()
 
     if (d_sec_axis_title_lbl)
         d_sec_axis_title_lbl->setText(tr("Axis Label & Font (Arial)"));
+    if (d_lbl_unit_format)
+        d_lbl_unit_format->setText(tr("Unit Format:"));
+    if (d_combo_unit_format && d_combo_unit_format->count() >= 3) {
+        d_combo_unit_format->setItemText(0, tr("Name (Unit)"));
+        d_combo_unit_format->setItemText(1, tr("Name / Unit (ISIJ)"));
+        d_combo_unit_format->setItemText(2, tr("Name [Unit]"));
+    }
     if (d_edit_axis_title)
         d_edit_axis_title->setPlaceholderText(tr("Enter axis label..."));
     if (d_btn_fmt_italic)
@@ -5560,6 +5943,12 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_sym_size->setText(tr("Symbol Size:"));
     if (d_spin_sym_size)
         d_spin_sym_size->setSuffix(QStringLiteral(" px"));
+    if (d_lbl_sym_skip)
+        d_lbl_sym_skip->setText(tr("Symbol Skip:"));
+    if (d_spin_sym_skip) {
+        d_spin_sym_skip->setSpecialValueText(tr("Auto"));
+        d_spin_sym_skip->setToolTip(tr("Every %1 pts (0 = Auto)").arg(QStringLiteral("N")));
+    }
     if (d_chk_sym_hollow)
         d_chk_sym_hollow->setText(tr("Hollow Symbol (White Fill)"));
     if (d_chk_link_sym_color)
@@ -5629,6 +6018,10 @@ void GraphInspectorDock::retranslateUi()
         d_chk_spec_reverse->setText(tr("Reverse Colormap"));
     if (d_chk_spec_colorbar)
         d_chk_spec_colorbar->setText(tr("Show Colorbar"));
+    if (d_lbl_spec_cb_title)
+        d_lbl_spec_cb_title->setText(tr("Colorbar Title:"));
+    if (d_edit_spec_cb_title)
+        d_edit_spec_cb_title->setPlaceholderText(tr("Enter colorbar title..."));
     if (d_lbl_spec_cb_width)
         d_lbl_spec_cb_width->setText(tr("Colorbar Width:"));
     if (d_chk_spec_contours)

@@ -591,6 +591,8 @@ public slots:
 
     QStringList enabledTickLabels();
     void setEnabledTickLabels(const QStringList &list);
+    void setTickLabelsOnAxis(int axis, bool on);
+    bool hasTickLabelsOnAxis(int axis) const;
 
     void setAxesLinewidth(int width);
     //! used when opening a project file
@@ -1082,5 +1084,7 @@ private:
     void applyAxisViewportState(const AxisViewportState &st);
     QString resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const;
     bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
+    bool isAuxiliaryOrFitCurve(const QwtPlotCurve *pc, bool skipHiddenTables = true) const;
+    void applyZeroSnapOnAutoAxes();
 };
 #endif // GRAPH_H

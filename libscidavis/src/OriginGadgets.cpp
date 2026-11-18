@@ -5720,7 +5720,7 @@ Table *ImageProfileGadgetTool::extractProfilesToTableAndGraph(bool createGraph)
     const int nV = d_vert_profile.size();
     const int nRows = std::max({ 1, nH, nV });
 
-    const QString tblName = d_app->generateUniqueName(QStringLiteral("ImageProfile"), false);
+    const QString tblName = d_app->generateUniqueName(tr("ImageProfile"), false);
     Table *t = d_app->newTable(nRows, 4, tblName, tr("2D Cross-Section Line Profiles"));
     if (!t)
         return nullptr;
@@ -5757,10 +5757,10 @@ Table *ImageProfileGadgetTool::extractProfilesToTableAndGraph(bool createGraph)
 
     if (createGraph && (nH >= 2 || nV >= 2)) {
         MultiLayer *ml = d_app->newGraph(
-                d_app->generateUniqueName(QStringLiteral("ImageProfileGraph"), false));
+                d_app->generateUniqueName(tr("ImageProfileGraph"), false));
         if (ml) {
-            const QFont titleFnt("Arial", 10, QFont::Bold);
-            const QFont axisFnt("Arial", 9, QFont::Bold);
+            const QFont titleFnt("Arial", 10, QFont::Normal);
+            const QFont axisFnt("Arial", 9, QFont::Normal);
             const QFont numFnt("Arial", 9);
             const QFont legFnt("Arial", 9);
 

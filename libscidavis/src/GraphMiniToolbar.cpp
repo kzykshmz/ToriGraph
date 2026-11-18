@@ -1595,12 +1595,7 @@ void GraphMiniToolbar::onCurveToggleRightY()
     if (targetY == QwtPlot::yRight) {
         d_graph->enableAxis(QwtPlot::yRight, true);
         d_graph->setAxisBackboneVisible(QwtPlot::yRight, true);
-        if (Plot *p = d_graph->plotWidget()) {
-            if (QwtScaleWidget *sw = p->axisWidget(QwtPlot::yRight)) {
-                if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(sw->scaleDraw()))
-                    sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
-            }
-        }
+        d_graph->setTickLabelsOnAxis(QwtPlot::yRight, true);
     }
     d_graph->setAutoScaleAxis(targetY);
     d_graph->refreshAutoAxisTitlesFromColumns();

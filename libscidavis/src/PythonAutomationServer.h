@@ -106,6 +106,8 @@ private:
     CustomCommandHook d_custom_hook;
     bool d_focus_hud_fallback = false;
     QString d_workspace_mode_fallback = QStringLiteral("mdi");
+    QString d_last_undo_domain;
+    QString d_last_undo_graph;
 };
 
 class PythonConsoleDialog : public QDialog

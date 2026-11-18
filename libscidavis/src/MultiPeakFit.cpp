@@ -101,6 +101,8 @@ void MultiPeakFit::setDataCurve(int curve, double start, double end)
 {
     Fit::setDataCurve(curve, start, end);
     d_detected_2nd_deriv_centers.clear();
+    d_baseline_subtracted = false;
+    d_last_baseline.clear();
 }
 
 MultiPeakFit::PeakProfile MultiPeakFit::peakProfileAt(int peakIndex) const
@@ -1811,6 +1813,86 @@ double MultiPeakFit::fromInternalParameter(int index, double internalVal) const
     return internalVal;
 }
 
+std::vector<double>
+MultiPeakFit::evaluateSubtractedBaselineOnGrid(const std::vector<double> &X) const
+{
+    std::vector<double> out(X.size(), 0.0);
+    if (!d_baseline_subtracted || d_x.empty() || d_last_baseline.size() != d_x.size()
+        || X.empty()) {
+        return out;
+    }
+
+    const size_t n = d_x.size();
+    if (n == 1) {
+        std::fill(out.begin(), out.end(), d_last_baseline[0]);
+        return out;
+    }
+
+    // Fast exact match when output grid equals d_x
+    if (X.size() == n) {
+        bool identical = true;
+        for (size_t i = 0; i < n; ++i) {
+            if (X[i] != d_x[i]) {
+                identical = false;
+                break;
+            }
+        }
+        if (identical)
+            return d_last_baseline;
+    }
+
+    std::vector<std::pair<double, double>> knots(n);
+    for (size_t i = 0; i < n; ++i)
+        knots[i] = { d_x[i], d_last_baseline[i] };
+    std::stable_sort(knots.begin(), knots.end(),
+                     [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
+                         return a.first < b.first;
+                     });
+
+    for (size_t k = 0; k < X.size(); ++k) {
+        const double xq = X[k];
+        if (xq <= knots.front().first) {
+            out[k] = knots.front().second;
+            continue;
+        }
+        if (xq >= knots.back().first) {
+            out[k] = knots.back().second;
+            continue;
+        }
+        auto it = std::lower_bound(
+                knots.begin(), knots.end(), xq,
+                [](const std::pair<double, double> &p, double v) { return p.first < v; });
+        if (it == knots.begin()) {
+            out[k] = knots.front().second;
+        } else if (it != knots.end() && it->first == xq) {
+            out[k] = it->second;
+        } else {
+            const size_t hi = static_cast<size_t>(it - knots.begin());
+            const size_t lo = hi - 1;
+            const double dx = knots[hi].first - knots[lo].first;
+            const double t = (std::abs(dx) > 1e-300) ? ((xq - knots[lo].first) / dx) : 0.5;
+            out[k] = knots[lo].second + t * (knots[hi].second - knots[lo].second);
+        }
+    }
+    return out;
+}
+
+QColor MultiPeakFit::resolvedPeakComponentColor(int peakIndex) const
+{
+    if (d_custom_peaks_color || d_peaks <= 1)
+        return d_peaks_color;
+    static const QColor kPalette[] = {
+        QColor("#009E73"), // bluish green
+        QColor("#E69F00"), // amber
+        QColor("#56B4E9"), // sky blue
+        QColor("#CC79A7"), // reddish purple
+        QColor("#0072B2"), // ocean blue
+        QColor("#6A3D9A")  // deep violet
+    };
+    const int nPal = int(sizeof(kPalette) / sizeof(kPalette[0]));
+    return kPalette[std::max(0, peakIndex) % nPal];
+}
+
 void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<double> &y, int peak)
 {
     QStringList curves = d_graph->curvesList();
@@ -1828,20 +1910,30 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
 
     FunctionCurve *c =
             new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal, title);
-    c->setPen(QPen(d_peaks_color, 2, Qt::DashLine));
+    c->setPen(QPen(resolvedPeakComponentColor(peak), 2, Qt::DashLine));
     c->setData(x.data(), y.data(), d_points);
     c->setRange(d_x.front(), d_x.back());
 
-    QString formula;
-    for (int j = 0; j < 3; j++) {
-        int p = 3 * peak + j;
-        formula += QString("%1=%2\n").arg(d_param_names[p]).arg(d_results[p], 0, 'g', d_prec);
+    const bool hasSubBase = (d_baseline_subtracted && d_last_baseline.size() == d_x.size()
+                             && !d_last_baseline.empty());
+    if (hasSubBase && d_baseline_mode != BaselineConstant && d_baseline_mode != BaselineZero) {
+        // Non-constant subtracted baseline (Linear / ALS / Spline Anchors) is baked into (x, y)
+        c->setFormula(QString());
+    } else {
+        const double effY0 = d_results[d_p - 1]
+                + ((hasSubBase && d_baseline_mode == BaselineConstant) ? d_last_baseline.front()
+                                                                       : 0.0);
+        QString formula;
+        for (int j = 0; j < 3; j++) {
+            int p = 3 * peak + j;
+            formula += QString("%1=%2\n").arg(d_param_names[p]).arg(d_results[p], 0, 'g', d_prec);
+        }
+        formula += QString("%1=%2\n\ny0+%3")
+                           .arg(d_param_names[d_p - 1])
+                           .arg(effY0, 1, 'g', d_prec)
+                           .arg(peakFormula(peak + 1, peakProfileAt(peak)));
+        c->setFormula(formula);
     }
-    formula += QString("%1=%2\n\ny0+%3")
-                       .arg(d_param_names[d_p - 1])
-                       .arg(d_results[d_p - 1], 1, 'g', d_prec)
-                       .arg(peakFormula(peak + 1, peakProfileAt(peak)));
-    c->setFormula(formula);
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->addFitCurve(c);
 }
@@ -1853,7 +1945,10 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
 
     ApplicationWindow *app = (ApplicationWindow *)parent();
     if (!d_gen_function)
-        d_points = d_x.size();
+        d_points = int(d_x.size());
+
+    if (d_points <= 0 || d_x.empty())
+        return;
 
     gsl_matrix *m = gsl_matrix_alloc(d_points, d_peaks);
     if (!m) {
@@ -1872,24 +1967,56 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
     int i, j;
     int peaks_aux = generate_peak_curves ? d_peaks : 0;
 
-    if (d_gen_function) {
+    const bool nonAnalyticSubBaseline =
+            (d_baseline_subtracted && d_last_baseline.size() == d_x.size()
+             && !d_last_baseline.empty() && d_baseline_mode != BaselineZero
+             && d_baseline_mode != BaselineConstant);
+
+    if (d_gen_function && !nonAnalyticSubBaseline) {
         double step = (d_points > 1) ? ((d_x.back() - d_x.front()) / (d_points - 1)) : 0.0;
-        for (i = 0; i < d_points; i++) {
+        for (i = 0; i < d_points; i++)
             X[i] = d_x[0] + i * step;
+
+        const std::vector<double> baseGrid = evaluateSubtractedBaselineOnGrid(X);
+
+        for (i = 0; i < d_points; i++) {
+            const double baseVal = (size_t(i) < baseGrid.size()) ? baseGrid[size_t(i)] : 0.0;
             double yi = 0;
             for (j = 0; j < d_peaks; j++) {
                 double y_aux = evalPeakAt(effPar, j, X[i], false);
                 yi += y_aux;
-                y_aux += effPar[d_p - 1];
+                y_aux += effPar[d_p - 1] + baseVal;
                 gsl_matrix_set(m, i, j, y_aux);
             }
-            Y[i] = yi + effPar[d_p - 1]; // add offset
+            Y[i] = yi + effPar[d_p - 1] + baseVal;
         }
 
         if (d_peaks > 1)
             insertFitFunctionCurve(objectName() + tr("Fit"), X, Y, 2);
         else
             insertFitFunctionCurve(objectName() + tr("Fit"), X, Y);
+
+        if (d_baseline_subtracted && d_last_baseline.size() == d_x.size()
+            && !d_last_baseline.empty() && !d_graph->fitCurvesList().isEmpty()) {
+            if (auto *sumFc = dynamic_cast<FunctionCurve *>(d_graph->fitCurvesList().last())) {
+                if (d_baseline_mode == BaselineConstant) {
+                    const double effY0 = d_results[d_p - 1] + d_last_baseline.front();
+                    QString formula;
+                    for (unsigned p = 0; p + 1 < d_p; ++p) {
+                        formula += QString("%1=%2\n")
+                                           .arg(d_param_names[p])
+                                           .arg(d_results[p], 0, 'g', d_prec);
+                    }
+                    formula += QString("%1=%2\n\n%3")
+                                       .arg(d_param_names[d_p - 1])
+                                       .arg(effY0, 0, 'g', d_prec)
+                                       .arg(d_formula);
+                    sumFc->setFormula(formula);
+                } else if (d_baseline_mode != BaselineZero) {
+                    sumFc->setFormula(QString());
+                }
+            }
+        }
 
         if (generate_peak_curves) {
             for (i = 0; i < peaks_aux; i++) { // add the peak curves
@@ -1900,33 +2027,56 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
             }
         }
     } else {
-        QString tableName = app->generateUniqueName(tr("Fit"));
-        QString label = d_explanation + " " + tr("fit of") + " " + d_curve->title().text();
+        QString tableName = app->generateUniqueName(QStringLiteral("Fit"));
+        const QString srcTitle = (d_curve && d_graph->curveIndex(d_curve) >= 0)
+                ? d_curve->title().text()
+                : objectName();
+        QString label = d_explanation + " " + tr("fit of") + " " + srcTitle;
 
         QList<Column *> columns;
-        columns << new Column(tr("1", "multipeak fit table first column name"),
-                              SciDAVis::ColumnMode::Numeric);
-        for (i = 0; i < peaks_aux; i++)
-            columns << new Column(tr("peak%1").arg(QString::number(i + 1)),
-                                  SciDAVis::ColumnMode::Numeric);
-        columns << new Column(tr("2", "multipeak fit table last column name"),
-                              SciDAVis::ColumnMode::Numeric);
+        Column *colX = new Column(QStringLiteral("1"), SciDAVis::ColumnMode::Numeric);
+        colX->setPlotDesignation(SciDAVis::X);
+        columns << colX;
+        for (i = 0; i < peaks_aux; i++) {
+            Column *colPk = new Column(QStringLiteral("peak%1").arg(i + 1),
+                                       SciDAVis::ColumnMode::Numeric);
+            colPk->setPlotDesignation(SciDAVis::Y);
+            colPk->setComment(tr("Peak %1").arg(i + 1));
+            columns << colPk;
+        }
+        Column *colSum = new Column(QStringLiteral("2"), SciDAVis::ColumnMode::Numeric);
+        colSum->setPlotDesignation(SciDAVis::Y);
+        colSum->setComment((d_peaks > 1) ? tr("Multi-Peak Fit") : (objectName() + tr("Fit")));
+        columns << colSum;
         Table *t = app->newHiddenTable(tableName, label, columns);
+        if (t)
+            tableName = t->name();
+
+        if (d_gen_function) {
+            const double step =
+                    (d_points > 1) ? ((d_x.back() - d_x.front()) / (d_points - 1)) : 0.0;
+            for (i = 0; i < d_points; i++)
+                X[i] = d_x[0] + i * step;
+        } else {
+            for (i = 0; i < d_points; i++)
+                X[i] = d_x[i];
+        }
+        const std::vector<double> baseGrid = evaluateSubtractedBaselineOnGrid(X);
 
         for (i = 0; i < d_points; i++) {
-            X[i] = d_x[i];
             columns.at(0)->setValueAt(i, X[i]);
+            const double baseVal = (size_t(i) < baseGrid.size()) ? baseGrid[size_t(i)] : 0.0;
 
             double yi = 0;
             for (j = 0; j < d_peaks; j++) {
                 double y_aux = evalPeakAt(effPar, j, X[i], false);
                 yi += y_aux;
-                y_aux += effPar[d_p - 1];
+                y_aux += effPar[d_p - 1] + baseVal;
                 if (j < peaks_aux)
                     columns.at(j + 1)->setValueAt(i, y_aux);
                 gsl_matrix_set(m, i, j, y_aux);
             }
-            Y[i] = yi + effPar[d_p - 1]; // add offset
+            Y[i] = yi + effPar[d_p - 1] + baseVal;
             columns.at(peaks_aux + 1)->setValueAt(i, Y[i]);
         }
 
@@ -1945,9 +2095,9 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
                 for (j = 0; j < d_points; j++)
                     Y[j] = gsl_matrix_get(m, j, i);
 
-                label = tableName + "_" + tr("peak") + QString::number(i + 1);
+                label = tableName + "_" + columns.at(i + 1)->name();
                 c = new DataCurve(t, tableName + "_" + columns.at(0)->name(), label);
-                c->setPen(QPen(d_peaks_color, 1));
+                c->setPen(QPen(resolvedPeakComponentColor(i), 2, Qt::DashLine));
                 c->setData(X.data(), Y.data(), d_points);
                 d_graph->insertPlotItem(c, Graph::Line);
                 d_graph->addFitCurve(c);

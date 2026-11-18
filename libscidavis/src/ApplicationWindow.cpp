@@ -103,6 +103,7 @@
 #include "IconLoader.h"
 #include "core/Project.h"
 #include "core/column/Column.h"
+#include "core/datatypes/Double2StringFilter.h"
 #include "lib/XmlStreamReader.h"
 #include "table/future_Table.h"
 
@@ -133,6 +134,7 @@
 #include <algorithm>
 
 #include <QFileDialog>
+#include <QScopedPointer>
 #include <QInputDialog>
 #include <QProgressDialog>
 #include <QPrintDialog>
@@ -193,6 +195,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QListWidget>
@@ -231,6 +234,69 @@ void file_compress(const char *file, const char *mode);
 }
 
 namespace {
+
+static thread_local bool s_creating_hidden_table = false;
+
+static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    const QList<QMdiSubWindow *> creationOrder =
+            app->d_workspace.subWindowList(QMdiArea::CreationOrder);
+    for (QMdiSubWindow *sw : creationOrder) {
+        MyWidget *mw = qobject_cast<MyWidget *>(sw);
+        if (!mw)
+            continue;
+        if (app->hiddenWindows.contains(mw) || mw->status() == MyWidget::Hidden) {
+            if (!mw->isHidden())
+                mw->hide();
+        }
+    }
+    if (app->d_workspace.viewMode() != QMdiArea::TabbedView)
+        return;
+
+    if (MyWidget *curAw = qobject_cast<MyWidget *>(app->d_workspace.activeSubWindow())) {
+        if (app->hiddenWindows.contains(curAw) || app->outWindows.contains(curAw)
+            || curAw->status() == MyWidget::Hidden) {
+            MyWidget *fallback = nullptr;
+            const QList<QMdiSubWindow *> hist =
+                    app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+            for (int i = hist.size() - 1; i >= 0; --i) {
+                MyWidget *cand = qobject_cast<MyWidget *>(hist.at(i));
+                if (cand && cand != curAw && !app->hiddenWindows.contains(cand)
+                    && !app->outWindows.contains(cand) && cand->status() != MyWidget::Hidden) {
+                    fallback = cand;
+                    break;
+                }
+            }
+            app->d_workspace.setActiveSubWindow(fallback);
+        }
+    }
+
+    if (QTabBar *tb = app->d_workspace.findChild<QTabBar *>()) {
+        for (int i = 0; i < tb->count(); ++i) {
+            MyWidget *mw = (i < creationOrder.size())
+                    ? qobject_cast<MyWidget *>(creationOrder.at(i))
+                    : nullptr;
+            const bool hideTab = mw
+                    && (app->hiddenWindows.contains(mw) || app->outWindows.contains(mw)
+                        || mw->status() == MyWidget::Hidden);
+            tb->setTabVisible(i, !hideTab);
+        }
+    }
+}
+
+static void scheduleSyncWorkspaceHiddenTabs(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    syncWorkspaceHiddenTabs(app);
+    QPointer<ApplicationWindow> self(app);
+    QTimer::singleShot(0, app, [self]() {
+        if (self)
+            syncWorkspaceHiddenTabs(self.data());
+    });
+}
 
 bool compressFileGzipUnicode(const QString &fn)
 {
@@ -937,8 +1003,8 @@ void registerApplicationWindowJapaneseStrings()
             "正規性検定 (Shapiro-Wilk / KS / AD)(&N)...");
         add("Normality Test (Shapiro-Wilk / KS / AD)...",
             "正規性検定 (Shapiro-Wilk / KS / AD)...");
-        add("&Bland-Altman Method Comparison...", "Bland-Altman一致度比較プロット(&B)...");
-        add("Bland-Altman Method Comparison...", "Bland-Altman一致度比較プロット...");
+        add("&Bland-Altman Method Comparison...", "ブランド・アルトマン比較図(&B)...");
+        add("Bland-Altman Method Comparison...", "ブランド・アルトマン比較図...");
         add("T&wo-Way ANOVA && Interaction Plot...", "二元配置分散分析・交互作用プロット(&W)...");
         add("Two-Way ANOVA & Interaction Plot...", "二元配置分散分析・交互作用プロット...");
         add("&Digitizer (Extract Data from Image)...", "デジタイザ (画像からデータ抽出)(&D)...");
@@ -1110,13 +1176,13 @@ void registerApplicationWindowJapaneseStrings()
         add("EIS Nyquist & Bode Analyzer...",
             "EIS ナイキスト・ボード線図アナライザ...");
         add("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)",
-            "電気化学インピーダンス分光 (Nyquist・BodeプロットおよびRandles等価回路フィット)");
+            "電気化学インピーダンス分光 (ナイキスト・ボード線図およびランドルス等価回路フィット)");
         add("Passing-&Bablok && Deming Regression...",
-            "Passing-Bablok・Deming回帰 (測定法比較)(&B)...");
+            "パッシング・バブロック／デミング回帰 (測定法比較)(&B)...");
         add("Passing-Bablok & Deming Regression...",
-            "Passing-Bablok・Deming回帰 (測定法比較)...");
+            "パッシング・バブロック／デミング回帰 (測定法比較)...");
         add("Method-comparison regression with errors in both X and Y (Passing-Bablok & Deming)",
-            "X・Y両軸に誤差を含む測定法比較回帰 (Passing-Bablok法 / Deming回帰)");
+            "X・Y両軸に誤差を含む測定法比較回帰 (パッシング・バブロック／デミング回帰)");
         add("Interactive Waterfall / Spectra Stacker",
             "対話型ウォーターフォール / スペクトルスタック設定");
         add("Y Offset (%):", "Yオフセット (%):");
@@ -1216,7 +1282,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Page Zoom:", "ページ倍率:");
         add("Frame, Linked Axes & Panels", "枠・リンク軸・パネル番号");
         add("+ Link Right-Y Axis", "+ 右Y軸リンク");
-        add("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (Arrhenius等)");
+        add("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (アレニウス等)");
         add("Clipboard & Export", "クリップボード・出力");
         add("Show Selected Axis", "この軸を表示");
         add("Scale & Axis Break", "スケール範囲・途中省略");
@@ -1491,6 +1557,76 @@ void registerApplicationWindowJapaneseStrings()
         add("ISIJ 85mm Fig", "ISIJ 85mm図");
         add("Nature 89mm Fig", "Nature 89mm図");
         add("Size & DPI", "寸法・DPI");
+
+        // Phase B: Pure Japanese Materials Science, Inspector, Worksheet & MDI System Menu
+        add("Differentiate", "数値微分");
+        add("Two-Way ANOVA", "二元配置分散分析");
+        add("Group ANOVA", "分散分析");
+        add("Bland-Altman Plot", "ブランド・アルトマン比較図");
+        add("Bland-Altman Method Agreement Plot", "ブランド・アルトマン一致度比較図");
+        add("Passing-Bablok Fit", "パッシング・バブロック回帰");
+        add("Passing-Bablok & Deming Method Comparison Regression",
+            "パッシング・バブロック／デミング測定法比較回帰");
+        add("One-Way ANOVA & Tukey / Dunnett Post-Hoc Comparison",
+            "一元配置分散分析・多重比較検定");
+        add("Two-Way Factorial ANOVA & Interaction Plot",
+            "二元配置分散分析・交互作用プロット");
+
+        // QMdiSubWindow system menu strings
+        add("&Move", "移動(&M)");
+        add("Move", "移動");
+        add("Stay on &Top", "常に手前に表示(&T)");
+        add("Stay on Top", "常に手前に表示");
+        add("&Restore", "元のサイズに戻す(&R)");
+        add("Restore", "元のサイズに戻す");
+        add("&Size", "サイズ変更(&S)");
+        add("Size", "サイズ変更");
+        add("Mi&nimize", "最小化(&N)");
+        add("Minimize", "最小化");
+        add("Ma&ximize", "最大化(&X)");
+        add("Maximize", "最大化");
+        add("&Close", "閉じる(&C)");
+
+        // ImageProfile & Tensile / 0.2% Yield & Inspector & Worksheet
+        add("ImageProfile", "断面プロファイル");
+        add("ImageProfileGraph", "断面プロファイル図");
+        add("Tensile / 0.2% Yield", "引張・0.2%耐力");
+        add("Tensile / 0.2% Yield...", "引張・0.2%耐力...");
+        add("&Tensile / 0.2% Yield Analysis...", "引張・0.2%耐力解析(&T)...");
+        add("Tensile / 0.2% Yield Analysis...", "引張・0.2%耐力解析...");
+        add("Tensile / 0.2% Proof Stress Analyzer", "引張試験・0.2%耐力解析");
+        add("Tensile Stress-Strain: Young's Modulus E, 0.2% Proof Stress & UTS",
+            "引張応力-ひずみ解析: ヤング率 E・0.2%耐力・引張強さ (UTS)");
+        add("Tensile stress-strain analysis: Young's modulus E, 0.2% proof stress, UTS & True Stress-Strain",
+            "引張応力-ひずみ解析: ヤング率 E・0.2%耐力・引張強さ・真応力-真ひずみ変換");
+        add("Show Tick Numbers", "目盛り数値を表示");
+        add("Toggle Tick Numbers", "目盛り数値の表示切替");
+        add("Unit Format", "単位表記");
+        add("Unit Format:", "単位表記:");
+        add("Name (Unit)", "物理量名 (単位)");
+        add("Name / Unit (ISIJ)", "物理量名 / 単位 (ISIJ)");
+        add("Name [Unit]", "物理量名 [単位]");
+        add("Change Axis Unit Format", "軸の単位表記を変更");
+        add("Symbol Skip", "記号の間引き");
+        add("Symbol Skip:", "記号の間引き:");
+        add("Change Symbol Skip", "記号の間引き間隔を変更");
+        add("Colorbar Title", "カラーバータイトル");
+        add("Colorbar Title:", "カラーバータイトル:");
+        add("Change Colorbar Title", "カラーバータイトルを変更");
+        add("Insert Subscript (<sub>...</sub>)", "下付き文字を挿入 (<sub>...</sub>)");
+        add("Insert Superscript (<sup>...</sup>)", "上付き文字を挿入 (<sup>...</sup>)");
+        add("Insert Italic (<i>...</i>)", "斜体を挿入 (<i>...</i>)");
+        add("Insert Materials Science Symbol", "材料科学記号・単位を挿入");
+        add("Insert Materials Science Symbol / Unit", "材料科学記号・単位を挿入");
+        add("Unicode Subscript (select digits or insert \xE2\x82\x82)",
+            "Unicode下付き変換（選択数字を変換、未選択時は \xE2\x82\x82 を挿入）");
+        add("Unicode Superscript (select digits or insert \xC2\xB2)",
+            "Unicode上付き変換（選択数字を変換、未選択時は \xC2\xB2 を挿入）");
+        add("Long Name", "長い名前");
+        add("Units", "単位");
+        add("Comments", "コメント");
+        add("Units (e.g. MPa, %)", "単位 (例: MPa, %)");
+        add("Symbols:", "記号・単位:");
     }
 }
 
@@ -2805,11 +2941,44 @@ void ApplicationWindow::insertTranslatedStrings()
         recalcMenu->setTitle(tr("&Recalculation && Themes"));
 
     translateActionsStrings();
+    if (d_ribbon_toolbar)
+        d_ribbon_toolbar->setWindowTitle(tr("Modern Ribbon"));
 
     QEvent langChangeEvent(QEvent::LanguageChange);
     for (MyWidget *w : windowsList()) {
         if (!w)
             continue;
+        if (QMenu *sysMenu = w->systemMenu()) {
+            for (QAction *act : sysMenu->actions()) {
+                if (!act || act->isSeparator())
+                    continue;
+                QString srcEn = act->property("_toriSysMenuSourceEn").toString();
+                if (srcEn.isEmpty()) {
+                    const QString cur = act->text();
+                    if (cur == QString::fromUtf8("\xE5\x85\x83\xE3\x81\xAE\xE3\x82\xB5\xE3\x82\xA4\xE3\x82\xBA\xE3\x81\xAB\xE6\x88\xBB\xE3\x81\x99(&R)")
+                        || cur.endsWith(QLatin1String("(&R)")))
+                        srcEn = QStringLiteral("&Restore");
+                    else if (cur == QString::fromUtf8("\xE7\xA7\xBB\xE5\x8B\x95(&M)"))
+                        srcEn = QStringLiteral("&Move");
+                    else if (cur == QString::fromUtf8("\xE3\x82\xB5\xE3\x82\xA4\xE3\x82\xBA\xE5\xA4\x89\xE6\x9B\xB4(&S)")
+                             || cur == QString::fromUtf8("\xE3\x82\xB5\xE3\x82\xA4\xE3\x82\xBA(&S)"))
+                        srcEn = QStringLiteral("&Size");
+                    else if (cur == QString::fromUtf8("\xE6\x9C\x80\xE5\xB0\x8F\xE5\x8C\x96(&N)"))
+                        srcEn = QStringLiteral("Mi&nimize");
+                    else if (cur == QString::fromUtf8("\xE6\x9C\x80\xE5\xA4\xA7\xE5\x8C\x96(&X)"))
+                        srcEn = QStringLiteral("Ma&ximize");
+                    else if (cur == QString::fromUtf8("\xE5\xB8\xB8\xE3\x81\xAB\xE6\x89\x8B\xE5\x89\x8D\xE3\x81\xAB\xE8\xA1\xA8\xE7\xA4\xBA(&T)"))
+                        srcEn = QStringLiteral("Stay on &Top");
+                    else if (cur == QString::fromUtf8("\xE9\x96\x89\xE3\x81\x98\xE3\x82\x8B(&C)"))
+                        srcEn = QStringLiteral("&Close");
+                    else
+                        srcEn = cur;
+                    act->setProperty("_toriSysMenuSourceEn", srcEn);
+                }
+                act->setText(
+                        QCoreApplication::translate("QMdiSubWindow", srcEn.toUtf8().constData()));
+            }
+        }
         qApp->sendEvent(w, &langChangeEvent);
         if (w->inherits("Table")) {
             Table *tbl = static_cast<Table *>(w);
@@ -3194,6 +3363,7 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addAction(actionWaterfallStackOffset);
     curveMathMenu->addAction(actionResetStackOffsets);
     curveMathMenu->addSeparator();
+    curveMathMenu->addAction(actionTensileYield);
     curveMathMenu->addAction(actionArrheniusPlot);
     curveMathMenu->addAction(actionTaucPlot);
     curveMathMenu->addAction(actionEISAnalyzer);
@@ -3692,6 +3862,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
             exportPlot->setEnabled(false);
             // file->setItemEnabled (closeID,true);
 
+            qDeleteAll(tableMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
             tableMenu->clear();
             static_cast<Table *>(w)->d_future_table->fillProjectMenu(tableMenu);
             tableMenu->addSeparator();
@@ -3703,6 +3874,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
         } else if (w->inherits("Matrix")) {
             menuBar()->addMenu(plot3DMenu);
 
+            qDeleteAll(matrixMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
             matrixMenu->clear();
             static_cast<Matrix *>(w)->d_future_matrix->fillProjectMenu(matrixMenu);
             matrixMenu->addSeparator();
@@ -4887,6 +5059,7 @@ void ApplicationWindow::setTabbedWorkspaceView(bool tabbed)
     }
     if (d_modern_ribbon)
         d_modern_ribbon->syncWorkspaceModeButtons(tabbed);
+    scheduleSyncWorkspaceHiddenTabs(this);
 }
 
 void ApplicationWindow::toggleTabbedWorkspaceView()
@@ -6133,6 +6306,16 @@ Table *ApplicationWindow::newTable(int r, int c, const QString &name, const QStr
 Table *ApplicationWindow::newTable(const QString &name, const QString &legend,
                                    QList<Column *> columns)
 {
+    for (Column *col : columns) {
+        if (col && col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (auto *out = dynamic_cast<Double2StringFilter *>(col->outputFilter())) {
+                if (out->numericFormat() == 'f' && out->numDigits() == 14) {
+                    out->setNumericFormat('g');
+                    out->setNumDigits(6);
+                }
+            }
+        }
+    }
     Table *w = new Table(scriptEnv, 0, 0, legend, &d_workspace, 0);
     w->d_future_table->appendColumns(columns);
     w->setName(name);
@@ -6144,6 +6327,11 @@ Table *ApplicationWindow::newTable(const QString &name, const QString &legend,
 Table *ApplicationWindow::newHiddenTable(const QString &name, const QString &label,
                                          QList<Column *> columns)
 {
+    struct ScopedCreatingHidden {
+        bool prev;
+        ScopedCreatingHidden() : prev(s_creating_hidden_table) { s_creating_hidden_table = true; }
+        ~ScopedCreatingHidden() { s_creating_hidden_table = prev; }
+    } guard;
     auto w = newTable(name, label, columns);
     hideWindow(w);
     return w;
@@ -6156,7 +6344,10 @@ void ApplicationWindow::initTable(Table *w)
     current_folder->addWindow(w);
     w->setFolder(current_folder);
     addListViewItem(w);
-    w->showNormal();
+    if (s_creating_hidden_table)
+        w->setHidden();
+    else
+        w->showNormal();
 
     connectTable(w);
     customTable(w);
@@ -7002,15 +7193,16 @@ void ApplicationWindow::importASCII()
 {
     if (isNonInteractiveContext(this))
         return;
-    ImportASCIIDialog *import_dialog = new ImportASCIIDialog(
+    QScopedPointer<ImportASCIIDialog> import_dialog(new ImportASCIIDialog(
             d_workspace.currentSubWindow() && d_workspace.currentSubWindow()->inherits("Table"),
-            this, d_extended_import_ASCII_dialog);
+            this, d_extended_import_ASCII_dialog));
     import_dialog->setDirectory(asciiDirPath);
     import_dialog->selectNameFilter(d_ASCII_file_filter);
     if (import_dialog->exec() != QDialog::Accepted)
         return;
 
     asciiDirPath = import_dialog->directory().path();
+    d_ASCII_file_filter = import_dialog->selectedNameFilter();
     if (import_dialog->rememberOptions()) {
         columnSeparator = import_dialog->columnSeparator();
         ignoredLines = import_dialog->ignoredLines();
@@ -7046,6 +7238,47 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
         int dx = 0, dy = 0;
         QStringList sorted_files = files;
         sorted_files.sort();
+
+        Table *emptyInitialTable = nullptr;
+        if (projectname == QLatin1String("untitled")) {
+            const QList<MyWidget *> allWins = windowsList();
+            if (allWins.size() == 1) {
+                if (Table *cand = qobject_cast<Table *>(allWins.first())) {
+                    if (cand->d_future_table && cand->windowLabel().isEmpty()
+                        && dependingPlots(cand->name()).isEmpty() && cand->columnCount() <= 2) {
+                        bool untouched = true;
+                        for (int c = 0; c < cand->columnCount() && untouched; ++c) {
+                            Column *col = cand->column(c);
+                            if (!col || !col->longName().isEmpty() || !col->units().isEmpty()
+                                || !col->comment().isEmpty() || !col->formulaIntervals().isEmpty()) {
+                                untouched = false;
+                                break;
+                            }
+                            for (int r = 0; r < col->rowCount(); ++r) {
+                                if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                                    if (!col->isInvalid(r)) {
+                                        untouched = false;
+                                        break;
+                                    }
+                                } else if (!col->textAt(r).isEmpty()) {
+                                    untouched = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (untouched)
+                            emptyInitialTable = cand;
+                    }
+                }
+            }
+        }
+        if (emptyInitialTable && QFileInfo::exists(sorted_files.first())) {
+            emptyInitialTable->askOnCloseEvent(false);
+            if (emptyInitialTable->d_future_table)
+                emptyInitialTable->d_future_table->remove();
+            emptyInitialTable = nullptr;
+        }
+
         for (int i = 0; i < sorted_files.size(); i++) {
             Table *w = newTable(sorted_files[i], local_column_separator, local_ignored_lines,
                                 local_rename_columns, local_strip_spaces, local_simplify_spaces,
@@ -7661,8 +7894,11 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
             if (d_file_version > 71) {
                 QStringList lst = t.readLine().split("\t");
-                plot->setWindowLabel(lst[1]);
-                setListViewLabel(plot->name(), lst[1]);
+                const QString unescLbl = QString(lst.value(1))
+                                                 .replace(QLatin1String("&#9;"), QLatin1String("\t"))
+                                                 .replace(QLatin1String("<br>"), QLatin1String("\n"));
+                plot->setWindowLabel(unescLbl);
+                setListViewLabel(plot->name(), unescLbl);
                 if (lst.length() > 2) {
                     plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst[2].toInt());
                 } else {
@@ -8098,6 +8334,12 @@ void ApplicationWindow::readSettings()
 
     d_decimal_digits = settings.value("/DecimalDigits", 6).toInt();
     d_default_numeric_format = settings.value("/DefaultNumericFormat", 'g').toChar().toLatin1();
+    if (d_default_numeric_format == 'f' && d_decimal_digits == 14) {
+        d_default_numeric_format = 'g';
+        d_decimal_digits = 6;
+    }
+    settings.setValue("/DecimalDigits", d_decimal_digits);
+    settings.setValue("/DefaultNumericFormat", QChar(d_default_numeric_format));
 
     // restore geometry of main window
     restoreGeometry(settings.value("/ProjectWindow/Geometry").toByteArray());
@@ -8721,50 +8963,68 @@ void ApplicationWindow::exportGraph()
     else
         return;
 
-    ImageExportDialog *ied = new ImageExportDialog(this, plot2D != NULL, d_extended_export_dialog);
+    QScopedPointer<ImageExportDialog> ied(
+            new ImageExportDialog(this, plot2D != NULL, d_extended_export_dialog));
     ied->setDirectory(workingDir);
     ied->selectFilter(d_image_export_filter);
     if (ied->exec() != QDialog::Accepted)
         return;
     workingDir = ied->directory().path();
+    d_image_export_filter = ied->selectedNameFilter();
     if (ied->selectedFiles().isEmpty())
         return;
 
     QString selected_filter = ied->selectedNameFilter();
+    QString filter_suffix = selected_filter;
+    filter_suffix.remove('*');
     QString file_name = ied->selectedFiles()[0];
     QFileInfo file_info(file_name);
     if (!file_info.fileName().contains("."))
-        file_name.append(selected_filter.remove("*"));
+        file_name.append(filter_suffix);
 
-    QFile file(file_name);
-    if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::critical(this, tr("Export Error"),
-                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
-                                 "you have the right to write to this location!")
-                                      .arg(file_name));
-        return;
+    {
+        QFile file(file_name);
+        if (!file.open(QIODevice::WriteOnly)) {
+            QMessageBox::critical(this, tr("Export Error"),
+                                  tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                     "you have the right to write to this location!")
+                                          .arg(file_name));
+            return;
+        }
+        file.close();
     }
 
-    if (selected_filter.contains(".eps") || selected_filter.contains(".pdf")
-        || selected_filter.contains(".ps")) {
+    QString ext = QFileInfo(file_name).suffix().toLower();
+    if (ext.isEmpty())
+        ext = QString(filter_suffix).remove('.').trimmed().toLower();
+
+    if (ext == QLatin1String("emf")) {
+        if (plot2D)
+            plot2D->exportToFile(file_name);
+        else if (plot3D)
+            plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+    } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
+               || ext == QLatin1String("ps")) {
         if (plot3D)
-            plot3D->exportVector(file_name, selected_filter.remove(QRegularExpression("\\.")));
+            plot3D->exportVector(file_name, ext);
         else if (plot2D)
             plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
                                  ied->pageSize(), ied->pageOrientation());
-    } else if (selected_filter.contains(".svg")) {
+    } else if (ext == QLatin1String("svg")) {
         if (plot2D)
             plot2D->exportSVG(file_name);
-        else
+        else if (plot3D)
             plot3D->exportVector(file_name, "svg");
     } else {
         QList<QByteArray> list = QImageWriter::supportedImageFormats();
         for (int i = 0; i < (int)list.count(); i++) {
-            if (selected_filter.contains("." + (list[i]).toLower())) {
+            if (ext == QString::fromLatin1(list[i]).toLower()) {
                 if (plot2D)
-                    plot2D->exportImage(file_name, ied->quality());
+                    plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
+                                        ied->resolution());
                 else if (plot3D)
-                    plot3D->exportImage(file_name, ied->quality());
+                    plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+                break;
             }
         }
     }
@@ -8782,41 +9042,57 @@ void ApplicationWindow::exportLayer()
     if (!g)
         return;
 
-    ImageExportDialog *ied = new ImageExportDialog(this, g != NULL, d_extended_export_dialog);
+    QScopedPointer<ImageExportDialog> ied(
+            new ImageExportDialog(this, g != NULL, d_extended_export_dialog));
     ied->setDirectory(workingDir);
     ied->selectFilter(d_image_export_filter);
     if (ied->exec() != QDialog::Accepted)
         return;
     workingDir = ied->directory().path();
+    d_image_export_filter = ied->selectedNameFilter();
     if (ied->selectedFiles().isEmpty())
         return;
 
     QString selected_filter = ied->selectedNameFilter();
+    QString filter_suffix = selected_filter;
+    filter_suffix.remove('*');
     QString file_name = ied->selectedFiles()[0];
     QFileInfo file_info(file_name);
     if (!file_info.fileName().contains("."))
-        file_name.append(selected_filter.remove("*"));
+        file_name.append(filter_suffix);
 
-    QFile file(file_name);
-    if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::critical(this, tr("Export Error"),
-                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
-                                 "you have the right to write to this location!")
-                                      .arg(file_name));
-        return;
+    {
+        QFile file(file_name);
+        if (!file.open(QIODevice::WriteOnly)) {
+            QMessageBox::critical(this, tr("Export Error"),
+                                  tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                     "you have the right to write to this location!")
+                                          .arg(file_name));
+            return;
+        }
+        file.close();
     }
 
-    if (selected_filter.contains(".eps") || selected_filter.contains(".pdf")
-        || selected_filter.contains(".ps"))
+    QString ext = QFileInfo(file_name).suffix().toLower();
+    if (ext.isEmpty())
+        ext = QString(filter_suffix).remove('.').trimmed().toLower();
+
+    if (ext == QLatin1String("emf")) {
+        g->exportToFile(file_name);
+    } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
+               || ext == QLatin1String("ps")) {
         g->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
                         ied->pageSize(), ied->pageOrientation());
-    else if (selected_filter.contains(".svg"))
+    } else if (ext == QLatin1String("svg")) {
         g->exportSVG(file_name);
-    else {
+    } else {
         QList<QByteArray> list = QImageWriter::supportedImageFormats();
-        for (int i = 0; i < (int)list.count(); i++)
-            if (selected_filter.contains("." + (list[i]).toLower()))
-                g->exportImage(file_name, ied->quality());
+        for (int i = 0; i < (int)list.count(); i++) {
+            if (ext == QString::fromLatin1(list[i]).toLower()) {
+                g->exportImage(file_name, ied->quality(), ied->transparency(), ied->resolution());
+                break;
+            }
+        }
     }
 }
 
@@ -8824,7 +9100,8 @@ void ApplicationWindow::exportAllGraphs()
 {
     if (isNonInteractiveContext(this))
         return;
-    ImageExportDialog *ied = new ImageExportDialog(this, true, d_extended_export_dialog);
+    QScopedPointer<ImageExportDialog> ied(
+            new ImageExportDialog(this, true, d_extended_export_dialog));
     ied->setWindowTitle(tr("Choose a directory to export the graphs to"));
     QStringList tmp = ied->nameFilters();
     ied->setFileMode(QFileDialog::Directory);
@@ -8838,15 +9115,18 @@ void ApplicationWindow::exportAllGraphs()
     if (ied->exec() != QDialog::Accepted)
         return;
     workingDir = ied->directory().path();
+    d_image_export_filter = ied->selectedNameFilter();
     if (ied->selectedFiles().isEmpty())
         return;
 
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     QString output_dir = ied->selectedFiles()[0];
-    QString file_suffix = ied->selectedNameFilter();
-    file_suffix = file_suffix.toLower();
+    QString file_suffix = ied->selectedNameFilter().toLower();
     file_suffix.remove("*");
+    if (!file_suffix.isEmpty() && !file_suffix.startsWith('.'))
+        file_suffix.prepend('.');
+    const QString ext = QString(file_suffix).remove('.').trimmed().toLower();
 
     QList<MyWidget *> windows = windowsList();
     bool confirm_overwrite = true;
@@ -8876,53 +9156,66 @@ void ApplicationWindow::exportAllGraphs()
             continue;
 
         QString file_name = output_dir + "/" + w->objectName() + file_suffix;
-        QFile f(file_name);
-        if (f.exists() && confirm_overwrite && !isNonInteractiveContext(this)) {
-            QApplication::restoreOverrideCursor();
-            switch (QMessageBox::question(this, tr("Overwrite file?"),
-                                          tr("A file called: <p><b>%1</b><p>already exists. "
-                                             "Do you want to overwrite it?")
-                                                  .arg(file_name),
-                                          tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
-            case 1:
-                confirm_overwrite = false;
-                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-                break;
-            case 0:
-                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-                break;
-            case 2:
+        {
+            QFile f(file_name);
+            if (f.exists() && confirm_overwrite && !isNonInteractiveContext(this)) {
+                QApplication::restoreOverrideCursor();
+                switch (QMessageBox::question(this, tr("Overwrite file?"),
+                                              tr("A file called: <p><b>%1</b><p>already exists. "
+                                                 "Do you want to overwrite it?")
+                                                      .arg(file_name),
+                                              tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
+                case 1:
+                    confirm_overwrite = false;
+                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+                    break;
+                case 0:
+                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+                    break;
+                case 2:
+                    return;
+                }
+            }
+            if (!f.open(QIODevice::WriteOnly)) {
+                QApplication::restoreOverrideCursor();
+                if (!isNonInteractiveContext(this)) {
+                    QMessageBox::critical(
+                            this, tr("Export Error"),
+                            tr("Could not write to file: <br><h4>%1</h4><p>"
+                               "Please verify that you have the right to write to this location!")
+                                    .arg(file_name));
+                }
                 return;
             }
+            f.close();
         }
-        if (!f.open(QIODevice::WriteOnly)) {
-            QApplication::restoreOverrideCursor();
-            if (!isNonInteractiveContext(this)) {
-                QMessageBox::critical(
-                        this, tr("Export Error"),
-                        tr("Could not write to file: <br><h4>%1</h4><p>"
-                           "Please verify that you have the right to write to this location!")
-                                .arg(file_name));
-            }
-            return;
-        }
-        if (file_suffix.contains(".eps") || file_suffix.contains(".pdf")
-            || file_suffix.contains(".ps")) {
+        if (ext == QLatin1String("emf")) {
+            if (plot2D)
+                plot2D->exportToFile(file_name);
+            else if (plot3D)
+                plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+        } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
+                   || ext == QLatin1String("ps")) {
             if (plot3D)
-                plot3D->exportVector(file_name, file_suffix.remove("."));
+                plot3D->exportVector(file_name, ext);
             else if (plot2D)
-                plot2D->exportVector(file_name, ied->resolution(), ied->color());
-        } else if (file_suffix.contains(".svg")) {
+                plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
+                                     ied->pageSize(), ied->pageOrientation());
+        } else if (ext == QLatin1String("svg")) {
             if (plot2D)
                 plot2D->exportSVG(file_name);
+            else if (plot3D)
+                plot3D->exportVector(file_name, "svg");
         } else {
             QList<QByteArray> list = QImageWriter::supportedImageFormats();
             for (int i = 0; i < (int)list.count(); i++) {
-                if (file_suffix.contains("." + (list[i]).toLower())) {
+                if (ext == QString::fromLatin1(list[i]).toLower()) {
                     if (plot2D)
-                        plot2D->exportImage(file_name, ied->quality());
+                        plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
+                                            ied->resolution());
                     else if (plot3D)
-                        plot3D->exportImage(file_name, ied->quality());
+                        plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+                    break;
                 }
             }
         }
@@ -10613,7 +10906,11 @@ void ApplicationWindow::print()
 // print window from project explorer
 void ApplicationWindow::printWindow()
 {
-    WindowListItem *it = (WindowListItem *)lv.currentItem();
+    if (isNonInteractiveContext(this))
+        return;
+    WindowListItem *it = dynamic_cast<WindowListItem *>(lv.currentItem());
+    if (!it)
+        return;
     MyWidget *w = it->window();
     if (!w)
         return;
@@ -11721,78 +12018,131 @@ MyWidget *ApplicationWindow::clone(MyWidget *w)
     return nw;
 }
 
+MyWidget *ApplicationWindow::activeWindow() const
+{
+    if (QMdiSubWindow *sw = d_workspace.activeSubWindow()) {
+        if (MyWidget *mw = qobject_cast<MyWidget *>(sw))
+            return mw;
+    }
+    if (QMdiSubWindow *csw = d_workspace.currentSubWindow()) {
+        if (MyWidget *mw = qobject_cast<MyWidget *>(csw))
+            return mw;
+    }
+    auto isLiveRegisteredWindow = [this](MyWidget *cand) -> bool {
+        if (!cand)
+            return false;
+        if (d_workspace.subWindowList().contains(cand))
+            return true;
+        if (current_folder && current_folder->windowsList().contains(cand))
+            return true;
+        if (hiddenWindows.contains(cand) || outWindows.contains(cand))
+            return true;
+        return false;
+    };
+    if (current_folder) {
+        MyWidget *faw = current_folder->activeWindow();
+        if (isLiveRegisteredWindow(faw))
+            return faw;
+    }
+    if (isLiveRegisteredWindow(lastModified))
+        return lastModified;
+    return nullptr;
+}
+
 void ApplicationWindow::undo()
 {
-    if (QWidget *fw = QApplication::focusWidget()) {
-        if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
-            if (!le->isReadOnly() && (le->isUndoAvailable() || le->isModified())) {
-                le->undo();
-                return;
-            }
-        } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
-            if (!te->isReadOnly() && te->document() && te->document()->isUndoAvailable()) {
-                te->undo();
-                return;
-            }
-        } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
-            if (!pte->isReadOnly() && pte->document() && pte->document()->isUndoAvailable()) {
-                pte->undo();
-                return;
+    if (!isNonInteractiveContext(this)) {
+        if (QWidget *fw = QApplication::focusWidget()) {
+            if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
+                if (!le->isReadOnly() && (le->isUndoAvailable() || le->isModified())) {
+                    le->undo();
+                    return;
+                }
+            } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
+                if (!te->isReadOnly() && te->document() && te->document()->isUndoAvailable()) {
+                    te->undo();
+                    return;
+                }
+            } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
+                if (!pte->isReadOnly() && pte->document() && pte->document()->isUndoAvailable()) {
+                    pte->undo();
+                    return;
+                }
             }
         }
     }
 
-    QMdiSubWindow *sw = d_workspace.activeSubWindow();
-    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+    MyWidget *aw = activeWindow();
+    const bool nonInteractive = isNonInteractiveContext(this);
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canUndo()) {
-            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            if (!nonInteractive)
+                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
             ml->undoStack()->undo();
-            QApplication::restoreOverrideCursor();
-        }
-    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
-        if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
-            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            if (!nonInteractive)
+                QApplication::restoreOverrideCursor();
+        } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
+            if (!nonInteractive)
+                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
             d_project->undoStack()->undo();
-            QApplication::restoreOverrideCursor();
+            if (!nonInteractive)
+                QApplication::restoreOverrideCursor();
         }
+    } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
+        if (!nonInteractive)
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+        d_project->undoStack()->undo();
+        if (!nonInteractive)
+            QApplication::restoreOverrideCursor();
     }
     updateUndoRedoActionsForActiveWindow();
 }
 
 void ApplicationWindow::redo()
 {
-    if (QWidget *fw = QApplication::focusWidget()) {
-        if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
-            if (!le->isReadOnly() && le->isRedoAvailable()) {
-                le->redo();
-                return;
-            }
-        } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
-            if (!te->isReadOnly() && te->document() && te->document()->isRedoAvailable()) {
-                te->redo();
-                return;
-            }
-        } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
-            if (!pte->isReadOnly() && pte->document() && pte->document()->isRedoAvailable()) {
-                pte->redo();
-                return;
+    if (!isNonInteractiveContext(this)) {
+        if (QWidget *fw = QApplication::focusWidget()) {
+            if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
+                if (!le->isReadOnly() && le->isRedoAvailable()) {
+                    le->redo();
+                    return;
+                }
+            } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
+                if (!te->isReadOnly() && te->document() && te->document()->isRedoAvailable()) {
+                    te->redo();
+                    return;
+                }
+            } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
+                if (!pte->isReadOnly() && pte->document() && pte->document()->isRedoAvailable()) {
+                    pte->redo();
+                    return;
+                }
             }
         }
     }
 
-    QMdiSubWindow *sw = d_workspace.activeSubWindow();
-    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+    MyWidget *aw = activeWindow();
+    const bool nonInteractive = isNonInteractiveContext(this);
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canRedo()) {
-            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            if (!nonInteractive)
+                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
             ml->undoStack()->redo();
-            QApplication::restoreOverrideCursor();
-        }
-    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
-        if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
-            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            if (!nonInteractive)
+                QApplication::restoreOverrideCursor();
+        } else if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
+            if (!nonInteractive)
+                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
             d_project->undoStack()->redo();
-            QApplication::restoreOverrideCursor();
+            if (!nonInteractive)
+                QApplication::restoreOverrideCursor();
         }
+    } else if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
+        if (!nonInteractive)
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+        d_project->undoStack()->redo();
+        if (!nonInteractive)
+            QApplication::restoreOverrideCursor();
     }
     updateUndoRedoActionsForActiveWindow();
 }
@@ -11868,6 +12218,7 @@ void ApplicationWindow::hideWindow(MyWidget *w)
             }
         }
     }
+    scheduleSyncWorkspaceHiddenTabs(this);
     emit modified();
 }
 
@@ -11974,6 +12325,7 @@ void ApplicationWindow::updateWindowLists(MyWidget *w)
         d_workspace.addSubWindow(w);
         w->setAttribute(Qt::WA_DeleteOnClose);
     }
+    scheduleSyncWorkspaceHiddenTabs(this);
 }
 
 void ApplicationWindow::closeActiveWindow()
@@ -12018,6 +12370,13 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
         hiddenWindows.takeAt(hiddenWindows.indexOf(w));
     else if (outWindows.contains(w))
         outWindows.takeAt(outWindows.indexOf(w));
+
+    if (lastModified == w)
+        lastModified = nullptr;
+    if (w->folder() && w->folder()->activeWindow() == w)
+        w->folder()->setActiveWindow(nullptr);
+    if (current_folder && current_folder->activeWindow() == w)
+        current_folder->setActiveWindow(nullptr);
 
     updateUndoRedoActionsForActiveWindow();
     updateGraphInspectorResponsiveness();
@@ -12259,6 +12618,13 @@ void ApplicationWindow::modifiedProject(MyWidget *w)
     modifiedProject();
 
     lastModified = w;
+    if (w && !w->property("_tg_lastmod_hook").toBool()) {
+        w->setProperty("_tg_lastmod_hook", true);
+        connect(w, &QObject::destroyed, this, [this, w]() {
+            if (lastModified == w)
+                lastModified = nullptr;
+        });
+    }
     updateUndoRedoActionsForActiveWindow();
 }
 
@@ -14005,13 +14371,71 @@ Note *ApplicationWindow::openNote(ApplicationWindow *app, const QStringList &fli
     restoreWindowGeometry(app, w, flist[1]);
 
     lst = flist[2].split("\t");
-    w->setWindowLabel(lst[1]);
-    w->setCaptionPolicy((MyWidget::CaptionPolicy)lst[2].toInt());
-    app->setListViewLabel(w->name(), lst[1]);
+    const QString unescNoteLbl = QString(lst.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+    w->setWindowLabel(unescNoteLbl);
+    w->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
+    app->setListViewLabel(w->name(), unescNoteLbl);
     return w;
 }
 
 namespace {
+static bool stringContainsWhitespace(const QString &s)
+{
+    for (QChar ch : s) {
+        if (ch.isSpace())
+            return true;
+    }
+    return false;
+}
+
+static void sanitizeLoadedWindowName(ApplicationWindow *app, MyWidget *w, const QString &xmlName,
+                                     const QString &fallbackPrefix)
+{
+    if (!app || !w)
+        return;
+    const QString curName = w->name();
+    bool crossWindowCollision = false;
+    for (MyWidget *cand : app->windowsList()) {
+        if (cand && cand != w && cand->name() == curName) {
+            crossWindowCollision = true;
+            break;
+        }
+    }
+    for (MyWidget *hw : app->hiddenWindows) {
+        if (hw && hw != w && hw->name() == curName) {
+            crossWindowCollision = true;
+            break;
+        }
+    }
+    if (!stringContainsWhitespace(curName) && !crossWindowCollision)
+        return;
+
+    QString base = !xmlName.isEmpty() ? xmlName.trimmed() : curName.trimmed();
+    base.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    if (base.isEmpty())
+        base = fallbackPrefix;
+
+    auto isUsed = [&](const QString &candName) -> bool {
+        for (MyWidget *cand : app->windowsList()) {
+            if (cand && cand != w && cand->name() == candName)
+                return true;
+        }
+        for (MyWidget *hw : app->hiddenWindows) {
+            if (hw && hw != w && hw->name() == candName)
+                return true;
+        }
+        return false;
+    };
+
+    QString target = isUsed(base) ? app->generateUniqueName(base) : base;
+    target.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    w->setName(target);
+    int sfx = 2;
+    while (stringContainsWhitespace(w->name()) || isUsed(w->name())) {
+        w->setName(base + QStringLiteral("_") + QString::number(sfx++));
+    }
+}
+
 static QString remapRenamedTableRef(const QStringList &renamedTables, const QString &ref)
 {
     if (renamedTables.isEmpty() || ref.isEmpty())
@@ -14088,12 +14512,19 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         QStringList::const_iterator line = flist.begin();
 
         QStringList list = (*line).split("\t");
-        QString caption = list[0];
+        const QString rawCaption = list[0];
+        QString caption = rawCaption;
+        caption.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+        if (caption.isEmpty())
+            caption = QStringLiteral("Matrix");
         int rows = list[1].toInt();
         int cols = list[2].toInt();
 
         Matrix *w = app->newMatrix(caption, rows, cols);
-        app->setListViewDate(caption, list[3]);
+        sanitizeLoadedWindowName(app, w, caption, QStringLiteral("Matrix"));
+        if (!rawCaption.isEmpty() && w->name() != rawCaption)
+            app->renamedTables << rawCaption << w->name();
+        app->setListViewDate(w->name(), list[3]);
         w->setBirthDate(list[3]);
 
         for (line++; line != flist.end(); line++) {
@@ -14116,9 +14547,10 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
                 else
                     w->setTextFormat('e', fields[2].toInt());
             } else if (fields[0] == "WindowLabel") { // d_file_version > 71
-                w->setWindowLabel(fields[1]);
-                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields[2].toInt());
-                app->setListViewLabel(w->name(), fields[1]);
+                const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+                w->setWindowLabel(unescLbl);
+                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+                app->setListViewLabel(w->name(), unescLbl);
             } else if (fields[0] == "Coordinates") { // d_file_version > 81
                 w->setCoordinates(fields[1].toDouble(), fields[2].toDouble(), fields[3].toDouble(),
                                   fields[4].toDouble());
@@ -14183,15 +14615,7 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
                 QMessageBox::warning(this, tr("Project loading partly failed"), msg_text);
         }
 
-        bool crossWindowCollision = false;
-        for (MyWidget *cand : app->windowsList()) {
-            if (cand && cand != w && cand->name() == w->name()) {
-                crossWindowCollision = true;
-                break;
-            }
-        }
-        if (crossWindowCollision)
-            w->setName(app->generateUniqueName(w->name()));
+        sanitizeLoadedWindowName(app, w, xmlName, QStringLiteral("Matrix"));
 
         w->setObjectName(w->name());
         app->renameListViewItem(tempCap, w->name());
@@ -14234,12 +14658,19 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         QStringList::const_iterator line = flist.begin();
 
         QStringList list = (*line).split("\t");
-        QString caption = list[0];
+        const QString rawCaption = list[0];
+        QString caption = rawCaption;
+        caption.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+        if (caption.isEmpty())
+            caption = QStringLiteral("Table");
         int rows = list[1].toInt();
         int cols = list[2].toInt();
 
         Table *w = app->newTable(caption, rows, cols);
-        app->setListViewDate(caption, list[3]);
+        sanitizeLoadedWindowName(app, w, caption, QStringLiteral("Table"));
+        if (!rawCaption.isEmpty() && w->name() != rawCaption)
+            app->renamedTables << rawCaption << w->name();
+        app->setListViewDate(w->name(), list[3]);
         w->setBirthDate(list[3]);
 
         for (line++; line != flist.end(); line++) {
@@ -14276,9 +14707,10 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
                 fields.pop_front();
                 w->setColComments(fields);
             } else if (fields[0] == "WindowLabel") { // d_file_version > 71
-                w->setWindowLabel(fields[1]);
-                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields[2].toInt());
-                app->setListViewLabel(w->name(), fields[1]);
+                const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+                w->setWindowLabel(unescLbl);
+                w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+                app->setListViewLabel(w->name(), unescLbl);
             } else // <data> or values
                 break;
         }
@@ -14364,15 +14796,7 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
                 QMessageBox::warning(this, tr("Project loading partly failed"), msg_text);
         }
 
-        bool crossWindowCollision = false;
-        for (MyWidget *cand : app->windowsList()) {
-            if (cand && cand != w && cand->name() == w->name()) {
-                crossWindowCollision = true;
-                break;
-            }
-        }
-        if (crossWindowCollision)
-            w->setName(app->generateUniqueName(w->name()));
+        sanitizeLoadedWindowName(app, w, xmlName, QStringLiteral("Table"));
 
         w->setObjectName(w->name());
         app->renameListViewItem(tempCap, w->name());
@@ -14464,9 +14888,10 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
             fields.pop_front();
             w->setColComments(fields);
         } else if (fields[0] == "WindowLabel") { // d_file_version > 71
-            w->setWindowLabel(fields[1]);
-            w->setCaptionPolicy((MyWidget::CaptionPolicy)fields[2].toInt());
-            setListViewLabel(w->name(), fields[1]);
+            const QString unescLbl = QString(fields.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+            w->setWindowLabel(unescLbl);
+            w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
+            setListViewLabel(w->name(), unescLbl);
         }
     }
     return w;
@@ -14477,62 +14902,81 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 {
     Graph *ag = 0;
     int curveID = 0;
+    bool hasToriAutoscaleFonts = false;
     for (int j = 0; j < (int)list.count() - 1; j++) {
         QString s = list[j];
-        if (s.contains("ggeometry")) {
+        const QString trimmedLine = s.trimmed();
+        if (ag && trimmedLine.startsWith(QLatin1String("<Tori"))) {
+            if (trimmedLine.startsWith(QLatin1String("<ToriAutoscaleFonts")))
+                hasToriAutoscaleFonts = true;
+            ag->restorePhase5Tag(trimmedLine);
+            continue;
+        }
+        if (s.startsWith(QLatin1String("ggeometry\t"))) {
             QStringList fList = s.split("\t");
-            ag = (Graph *)plot->addLayer(fList[1].toInt(), fList[2].toInt(), fList[3].toInt(),
-                                         fList[4].toInt());
-            ag->blockSignals(true);
-            ag->enableAutoscaling(autoscale2DPlots);
-        } else if (s.left(10) == "Background") {
+            if (fList.size() >= 5) {
+                ag = (Graph *)plot->addLayer(fList[1].toInt(), fList[2].toInt(), fList[3].toInt(),
+                                             fList[4].toInt());
+                ag->blockSignals(true);
+                ag->enableAutoscaling(autoscale2DPlots);
+            }
+            continue;
+        }
+        if (!ag)
+            continue;
+        if (s.startsWith(QLatin1String("Background\t"))) {
             QStringList fList = s.split("\t");
-            QColor c = QColor(COLORVALUE(fList[1]));
-            if (fList.count() == 3)
-                c.setAlpha(fList[2].toInt());
-            ag->setBackgroundColor(c);
-        } else if (s.startsWith("Margin")) {
+            if (fList.size() >= 2) {
+                QColor c = QColor(COLORVALUE(fList[1]));
+                if (fList.count() == 3)
+                    c.setAlpha(fList[2].toInt());
+                ag->setBackgroundColor(c);
+            }
+        } else if (s.startsWith(QLatin1String("Margin\t"))) {
             QStringList fList = s.split("\t");
-            ag->plotWidget()->setMargin(fList[1].toInt());
-        } else if (s.startsWith("Border")) {
+            if (fList.size() >= 2)
+                ag->plotWidget()->setMargin(fList[1].toInt());
+        } else if (s.startsWith(QLatin1String("Border\t"))) {
             QStringList fList = s.split("\t");
-            ag->setFrame(fList[1].toInt(), QColor(COLORVALUE(fList[2])));
-        } else if (s.contains("EnabledAxes")) {
+            if (fList.size() >= 3)
+                ag->setFrame(fList[1].toInt(), QColor(COLORVALUE(fList[2])));
+        } else if (s.startsWith(QLatin1String("EnabledAxes\t"))) {
             QStringList fList = s.split("\t");
             ag->enableAxes(fList);
-        } else if (s.contains("AxesBaseline")) {
+        } else if (s.startsWith(QLatin1String("AxesBaseline\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList fList = s.split("\t", Qt::SkipEmptyParts);
 #else
             QStringList fList = s.split("\t", QString::SkipEmptyParts);
 #endif
             ag->setAxesBaseline(fList);
-        } else if (s.contains("EnabledTicks")) { // version < 0.8.6
+        } else if (s.startsWith(QLatin1String("EnabledTicks\t"))) { // version < 0.8.6
             QStringList fList = s.split("\t");
             fList.pop_front();
             fList.replaceInStrings("-1", "3");
             ag->setMajorTicksType(fList);
             ag->setMinorTicksType(fList);
-        } else if (s.contains("MajorTicks")) { // version >= 0.8.6
+        } else if (s.startsWith(QLatin1String("MajorTicks\t"))) { // version >= 0.8.6
             QStringList fList = s.split("\t");
             fList.pop_front();
             ag->setMajorTicksType(fList);
-        } else if (s.contains("MinorTicks")) { // version >= 0.8.6
+        } else if (s.startsWith(QLatin1String("MinorTicks\t"))) { // version >= 0.8.6
             QStringList fList = s.split("\t");
             fList.pop_front();
             ag->setMinorTicksType(fList);
-        } else if (s.contains("TicksLength")) {
+        } else if (s.startsWith(QLatin1String("TicksLength\t"))) {
             QStringList fList = s.split("\t");
-            ag->setTicksLength(fList[1].toInt(), fList[2].toInt());
-        } else if (s.contains("EnabledTickLabels")) {
+            if (fList.size() >= 3)
+                ag->setTicksLength(fList[1].toInt(), fList[2].toInt());
+        } else if (s.startsWith(QLatin1String("EnabledTickLabels\t"))) {
             QStringList fList = s.split("\t");
             fList.pop_front();
             ag->setEnabledTickLabels(fList);
-        } else if (s.contains("AxesColors")) {
+        } else if (s.startsWith(QLatin1String("AxesColors\t"))) {
             QStringList fList = s.split("\t");
             fList.pop_front();
             ag->setAxesColors(fList);
-        } else if (s.contains("AxesNumberColors")) {
+        } else if (s.startsWith(QLatin1String("AxesNumberColors\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList fList = s.split("\t", Qt::KeepEmptyParts);
 #else
@@ -14540,41 +14984,44 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 #endif
             fList.pop_front();
             ag->setAxesNumColors(fList);
-        } else if (s.left(5) == "grid\t") {
+        } else if (s.startsWith(QLatin1String("grid\t"))) {
             ag->plotWidget()->grid()->load(s.split("\t"));
-        } else if (s.startsWith("<Antialiasing>") && s.endsWith("</Antialiasing>")) {
+        } else if (s.startsWith(QLatin1String("<Antialiasing>"))
+                   && s.endsWith(QLatin1String("</Antialiasing>"))) {
             bool antialiasing = s.remove("<Antialiasing>").remove("</Antialiasing>").toInt();
             ag->setAntialiasing(antialiasing, false);
-        } else if (s.contains("PieCurve")) {
+        } else if (s.startsWith(QLatin1String("PieCurve\t"))) {
             QStringList curve = s.split("\t");
-            if (!app->renamedTables.isEmpty() && curve.size() > 1)
-                curve[1] = remapRenamedTableRef(app->renamedTables, curve[1]);
-            QPen pen = QPen(QColor(COLORVALUE(curve[3])), curve[2].toInt(),
-                            Graph::getPenStyle(curve[4]));
+            if (curve.size() >= 8) {
+                if (!app->renamedTables.isEmpty())
+                    curve[1] = remapRenamedTableRef(app->renamedTables, curve[1]);
+                QPen pen = QPen(QColor(COLORVALUE(curve[3])), curve[2].toInt(),
+                                Graph::getPenStyle(curve[4]));
 
-            Table *table = nullptr;
-            {
-                ScopedDisableRenamedLookup guard;
-                table = app->table(curve[1]);
-            }
-            if (table) {
-                int startRow = 0;
-                int endRow = table->numRows() - 1;
-                int first_color = curve[7].toInt();
-                bool visible = true;
-                if (d_file_version >= 90) {
-                    startRow = curve[8].toInt();
-                    endRow = curve[9].toInt();
-                    visible = ((curve.last() == "1") ? true : false);
+                Table *table = nullptr;
+                {
+                    ScopedDisableRenamedLookup guard;
+                    table = app->table(curve[1]);
                 }
+                if (table) {
+                    int startRow = 0;
+                    int endRow = table->numRows() - 1;
+                    int first_color = curve[7].toInt();
+                    bool visible = true;
+                    if (d_file_version >= 90 && curve.size() >= 10) {
+                        startRow = curve[8].toInt();
+                        endRow = curve[9].toInt();
+                        visible = ((curve.last() == "1") ? true : false);
+                    }
 
-                if (d_file_version <= 89)
-                    first_color = convertOldToNewColorIndex(first_color);
+                    if (d_file_version <= 89)
+                        first_color = convertOldToNewColorIndex(first_color);
 
-                ag->plotPie(table, curve[1], pen, curve[5].toInt(), curve[6].toInt(), first_color,
-                            startRow, endRow, visible);
+                    ag->plotPie(table, curve[1], pen, curve[5].toInt(), curve[6].toInt(),
+                                first_color, startRow, endRow, visible);
+                }
             }
-        } else if (s.left(6) == "curve\t") {
+        } else if (s.startsWith(QLatin1String("curve\t"))) {
             bool curve_loaded = false; // Graph::insertCurve may fail
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList curve = s.split("\t", Qt::KeepEmptyParts);
@@ -14747,12 +15194,14 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 if (curve_loaded)
                     curveID++;
             }
-        } else if (s.contains("FunctionCurve")) {
+        } else if (s.startsWith(QLatin1String("FunctionCurve\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList curve = s.split("\t", Qt::KeepEmptyParts);
 #else
             QStringList curve = s.split("\t", QString::KeepEmptyParts);
 #endif
+            if (curve.size() < 17)
+                continue;
             CurveLayout cl;
             cl.connectType = curve[6].toInt();
             cl.lCol = COLORUINT(curve[7]);
@@ -14855,7 +15304,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 if (ag->curve(curveID))
                     curveID++;
             }
-        } else if (s.contains("ErrorBars")) {
+        } else if (s.startsWith(QLatin1String("ErrorBars\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList curve = s.split("\t", Qt::SkipEmptyParts);
 #else
@@ -14929,55 +15378,66 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 ag->setScale(scl[0].toInt(), scl[1].toDouble(), scl[2].toDouble(),
                              scl[3].toDouble(), scl[4].toInt(), scl[5].toInt(), scl[6].toInt(),
                              bool(scl[7].toInt()));
-        } else if (s.contains("PlotTitle")) {
+        } else if (s.startsWith(QLatin1String("PlotTitle\t"))) {
             QStringList fList = s.split("\t");
-            ag->setTitle(fList[1]);
-            ag->setTitleColor(QColor(COLORVALUE(fList[2])));
-            ag->setTitleAlignment(fList[3].toInt());
-        } else if (s.contains("TitleFont")) {
+            if (fList.size() >= 4) {
+                ag->setTitle(QString(fList[1]).replace(QLatin1String("&#9;"), QLatin1String("\t")));
+                ag->setTitleColor(QColor(COLORVALUE(fList[2])));
+                ag->setTitleAlignment(fList[3].toInt());
+            }
+        } else if (s.startsWith(QLatin1String("TitleFont\t"))) {
             QStringList fList = s.split("\t");
-            QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
-            fnt.setUnderline(fList[5].toInt());
-            fnt.setStrikeOut(fList[6].toInt());
-            ag->setTitleFont(fnt);
-        } else if (s.contains("AxesTitles")) {
+            if (fList.size() >= 7) {
+                QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
+                fnt.setUnderline(fList[5].toInt());
+                fnt.setStrikeOut(fList[6].toInt());
+                ag->setTitleFont(fnt);
+            }
+        } else if (s.startsWith(QLatin1String("AxesTitles\t"))) {
             QStringList legend = s.split("\t");
             legend.pop_front();
             for (int i = 0; i < 4; i++) {
-                if (legend.count() > i)
-                    ag->setAxisTitle(Graph::mapToQwtAxis(i), legend[i]);
+                if (legend.count() > i) {
+                    ag->setAxisTitle(
+                            Graph::mapToQwtAxis(i),
+                            QString(legend[i]).replace(QLatin1String("&#9;"), QLatin1String("\t")));
+                }
             }
-        } else if (s.contains("AxesTitleColors")) {
+        } else if (s.startsWith(QLatin1String("AxesTitleColors\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList colors = s.split("\t", Qt::SkipEmptyParts);
 #else
             QStringList colors = s.split("\t", QString::SkipEmptyParts);
 #endif
             ag->setAxesTitleColor(colors);
-        } else if (s.contains("AxesTitleAlignment")) {
+        } else if (s.startsWith(QLatin1String("AxesTitleAlignment\t"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList align = s.split("\t", Qt::SkipEmptyParts);
 #else
             QStringList align = s.split("\t", QString::SkipEmptyParts);
 #endif
             ag->setAxesTitlesAlignment(align);
-        } else if (s.contains("ScaleFont")) {
+        } else if (s.startsWith(QLatin1String("ScaleFont")) && s.indexOf('\t') == 10) {
             QStringList fList = s.split("\t");
-            QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
-            fnt.setUnderline(fList[5].toInt());
-            fnt.setStrikeOut(fList[6].toInt());
+            if (fList.size() >= 7) {
+                QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
+                fnt.setUnderline(fList[5].toInt());
+                fnt.setStrikeOut(fList[6].toInt());
 
-            int axis = (fList[0].right(1)).toInt();
-            ag->setAxisTitleFont(axis, fnt);
-        } else if (s.contains("AxisFont")) {
+                int axis = (fList[0].right(1)).toInt();
+                ag->setAxisTitleFont(axis, fnt);
+            }
+        } else if (s.startsWith(QLatin1String("AxisFont")) && s.indexOf('\t') == 9) {
             QStringList fList = s.split("\t");
-            QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
-            fnt.setUnderline(fList[5].toInt());
-            fnt.setStrikeOut(fList[6].toInt());
+            if (fList.size() >= 7) {
+                QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
+                fnt.setUnderline(fList[5].toInt());
+                fnt.setStrikeOut(fList[6].toInt());
 
-            int axis = (fList[0].right(1)).toInt();
-            ag->setAxisFont(axis, fnt);
-        } else if (s.contains("AxesFormulas")) {
+                int axis = (fList[0].right(1)).toInt();
+                ag->setAxisFont(axis, fnt);
+            }
+        } else if (s.startsWith(QLatin1String("AxesFormulas\t"))) {
             QStringList fList = s.split("\t");
             fList.removeAll(fList.first());
             ag->setAxesFormulas(fList);
@@ -14988,68 +15448,78 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 formula += list[j] + "\n";
             formula.truncate(formula.length() - 1);
             ag->setAxisFormula(pos, formula);
-        } else if (s.contains("LabelsFormat")) {
+        } else if (s.startsWith(QLatin1String("LabelsFormat\t"))) {
             QStringList fList = s.split("\t");
             fList.pop_front();
             ag->setLabelsNumericFormat(fList);
-        } else if (s.contains("LabelsRotation")) {
+        } else if (s.startsWith(QLatin1String("LabelsRotation\t"))) {
             QStringList fList = s.split("\t");
-            ag->setAxisLabelRotation(QwtPlot::xBottom, fList[1].toInt());
-            ag->setAxisLabelRotation(QwtPlot::xTop, fList[2].toInt());
-        } else if (s.contains("DrawAxesBackbone")) {
+            if (fList.size() >= 3) {
+                ag->setAxisLabelRotation(QwtPlot::xBottom, fList[1].toInt());
+                ag->setAxisLabelRotation(QwtPlot::xTop, fList[2].toInt());
+            }
+        } else if (s.startsWith(QLatin1String("DrawAxesBackbone\t"))) {
             QStringList fList = s.split("\t");
-            ag->loadAxesOptions(fList[1]);
-        } else if (s.contains("AxesLineWidth")) {
+            if (fList.size() >= 2)
+                ag->loadAxesOptions(fList[1]);
+        } else if (s.startsWith(QLatin1String("AxesLineWidth\t"))) {
             QStringList fList = s.split("\t");
-            ag->loadAxesLinewidth(fList[1].toInt());
-        } else if (s.contains("CanvasFrame")) {
+            if (fList.size() >= 2)
+                ag->loadAxesLinewidth(fList[1].toInt());
+        } else if (s.startsWith(QLatin1String("CanvasFrame\t"))) {
             QStringList list = s.split("\t");
             ag->drawCanvasFrame(list);
-        } else if (s.contains("CanvasBackground")) {
+        } else if (s.startsWith(QLatin1String("CanvasBackground\t"))) {
             QStringList list = s.split("\t");
-            QColor c = QColor(COLORVALUE(list[1]));
-            if (list.count() == 3)
-                c.setAlpha(list[2].toInt());
-            ag->setCanvasBackground(c);
-        } else if (s.contains("Legend")) { // version <= 0.8.9
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            QStringList fList = s.split("\t", Qt::KeepEmptyParts);
-#else
-            QStringList fList = s.split("\t", QString::KeepEmptyParts);
-#endif
-            ag->insertLegend(fList, d_file_version);
-        } else if (s.startsWith("<legend>") && s.endsWith("</legend>")) {
+            if (list.size() >= 2) {
+                QColor c = QColor(COLORVALUE(list[1]));
+                if (list.count() == 3)
+                    c.setAlpha(list[2].toInt());
+                ag->setCanvasBackground(c);
+            }
+        } else if (s.startsWith(QLatin1String("<legend>"))
+                   && s.endsWith(QLatin1String("</legend>"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList fList = s.remove("</legend>").split("\t", Qt::KeepEmptyParts);
 #else
             QStringList fList = s.remove("</legend>").split("\t", QString::KeepEmptyParts);
 #endif
             ag->insertLegend(fList, d_file_version);
-        } else if (s.contains("textMarker")) { // version <= 0.8.9
+        } else if (s.startsWith(QLatin1String("Legend\t"))) { // version <= 0.8.9
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList fList = s.split("\t", Qt::KeepEmptyParts);
 #else
             QStringList fList = s.split("\t", QString::KeepEmptyParts);
 #endif
-            ag->insertTextMarker(fList, d_file_version);
-        } else if (s.startsWith("<text>") && s.endsWith("</text>")) {
+            ag->insertLegend(fList, d_file_version);
+        } else if (s.startsWith(QLatin1String("<text>"))
+                   && s.endsWith(QLatin1String("</text>"))) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
             QStringList fList = s.remove("</text>").split("\t", Qt::KeepEmptyParts);
 #else
             QStringList fList = s.remove("</text>").split("\t", QString::KeepEmptyParts);
 #endif
             ag->insertTextMarker(fList, d_file_version);
-        } else if (s.contains("lineMarker")) { // version <= 0.8.9
-            QStringList fList = s.split("\t");
-            ag->addArrow(fList, d_file_version);
-        } else if (s.startsWith("<line>") && s.endsWith("</line>")) {
+        } else if (s.startsWith(QLatin1String("textMarker\t"))) { // version <= 0.8.9
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            QStringList fList = s.split("\t", Qt::KeepEmptyParts);
+#else
+            QStringList fList = s.split("\t", QString::KeepEmptyParts);
+#endif
+            ag->insertTextMarker(fList, d_file_version);
+        } else if (s.startsWith(QLatin1String("<line>"))
+                   && s.endsWith(QLatin1String("</line>"))) {
             QStringList fList = s.remove("</line>").split("\t");
             ag->addArrow(fList, d_file_version);
-        } else if (s.contains("ImageMarker")
-                   || (s.startsWith("<image>") && s.endsWith("</image>"))) {
+        } else if (s.startsWith(QLatin1String("lineMarker\t"))) { // version <= 0.8.9
+            QStringList fList = s.split("\t");
+            ag->addArrow(fList, d_file_version);
+        } else if ((s.startsWith(QLatin1String("<image>"))
+                    && s.endsWith(QLatin1String("</image>")))
+                   || s.startsWith(QLatin1String("ImageMarker\t"))) {
             QStringList fList = s.remove("</image>").split("\t");
             ag->insertImageMarker(fList, d_file_version);
-        } else if (s.contains("AxisType")) {
+        } else if (s.startsWith(QLatin1String("AxisType\t"))) {
             QStringList fList = s.split("\t");
             if (fList.size() >= 5)
                 for (int i = 0; i < 4; i++) {
@@ -15071,7 +15541,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                     case Graph::AxisType::Time:
                     case Graph::AxisType::Date:
                     case Graph::AxisType::DateTime:
-                        ag->setLabelsDateTimeFormat(i, format, lst[1] + ";" + lst[2]);
+                        if (lst.size() >= 3)
+                            ag->setLabelsDateTimeFormat(i, format, lst[1] + ";" + lst[2]);
                         break;
                     case Graph::AxisType::Txt: {
                         const QString colRef = remapRenamedTableRef(app->renamedTables, lst[1]);
@@ -15087,9 +15558,11 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                         ag->setLabelsColHeaderFormat(i, app->table(tblRef));
                         break;
                     }
+                    default:
+                        break;
                     }
                 }
-        } else if (d_file_version < 69 && s.contains("AxesTickLabelsCol")) {
+        } else if (d_file_version < 69 && s.startsWith(QLatin1String("AxesTickLabelsCol\t"))) {
             QStringList fList = s.split("\t");
             if (fList.size() >= 5) {
                 const QList<Graph::AxisType> &axesTypes = ag->axesType();
@@ -15109,13 +15582,15 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                         ag->setLabelsColHeaderFormat(i, app->table(tblRef));
                         break;
                     }
+                    default:
+                        break;
                     }
                 }
             }
-        } else if (ag && s.trimmed().startsWith("<Tori")) {
-            ag->restorePhase5Tag(s.trimmed());
         }
     }
+    if (!ag)
+        return nullptr;
     ag->replot();
     if (ag->isPiePlot()) {
         QwtPieCurve *c = (QwtPieCurve *)ag->curve(0);
@@ -15125,7 +15600,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 
     ag->blockSignals(false);
     ag->setIgnoreResizeEvents(!app->autoResizeLayers);
-    ag->setAutoscaleFonts(app->autoScaleFonts);
+    if (!hasToriAutoscaleFonts)
+        ag->setAutoscaleFonts(app->autoScaleFonts);
     ag->setTextMarkerDefaults(app->legendFrameStyle, app->plotLegendFont, app->legendTextColor,
                               app->legendBackground);
     ag->setArrowDefaults(app->defaultArrowLineWidth, app->defaultArrowColor,
@@ -15290,9 +15766,10 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
     if (d_file_version > 71) {
         fList = lst[20].split(
                 "\t"); // using QString::SkipEmptyParts here causes a crash for empty window labels
-        plot->setWindowLabel(fList[1]);
-        plot->setCaptionPolicy((MyWidget::CaptionPolicy)fList[2].toInt());
-        app->setListViewLabel(plot->name(), fList[1]);
+        const QString unescLbl = QString(fList.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+        plot->setWindowLabel(unescLbl);
+        plot->setCaptionPolicy((MyWidget::CaptionPolicy)fList.value(2).toInt());
+        app->setListViewLabel(plot->name(), unescLbl);
     }
 
     if (d_file_version >= 88) {
@@ -16651,6 +17128,12 @@ void ApplicationWindow::createActions()
     actionLogisticRegression = new QAction(tr("Binary &Logistic Regression..."), this);
     connect(actionLogisticRegression, SIGNAL(triggered()), this, SLOT(showLogisticRegressionDialog()));
 
+    actionTensileYield = new QAction(tr("&Tensile / 0.2% Yield Analysis..."), this);
+    actionTensileYield->setObjectName(QStringLiteral("actionTensileYieldDialog"));
+    actionTensileYield->setToolTip(
+            tr("Tensile stress-strain analysis: Young's modulus E, 0.2% proof stress, UTS & True Stress-Strain"));
+    connect(actionTensileYield, SIGNAL(triggered()), this, SLOT(showTensileYieldDialog()));
+
     actionArrheniusPlot = new QAction(tr("&Arrhenius Plot (Activation Energy)..."), this);
     connect(actionArrheniusPlot, SIGNAL(triggered()), this, SLOT(showArrheniusPlotDialog()));
 
@@ -16793,6 +17276,297 @@ void ApplicationWindow::createActions()
     actionRunPythonScript->setObjectName(QStringLiteral("actionRunPythonScript"));
     actionRunPythonScript->setToolTip(tr("Select and Execute a .py Automation Script"));
     connect(actionRunPythonScript, SIGNAL(triggered()), this, SLOT(runPythonScriptDialog()));
+
+    // Ensure every QAction member has a deterministic objectName for RPC safety & inspection
+#define ASSIGN_ACT_OBJNAME(a)                                                                      \
+    do {                                                                                           \
+        if ((a) && (a)->objectName().isEmpty())                                                    \
+            (a)->setObjectName(QStringLiteral(#a));                                                \
+    } while (0)
+    ASSIGN_ACT_OBJNAME(actionCopyStatusBarText);
+    ASSIGN_ACT_OBJNAME(actionEditCurveRange);
+    ASSIGN_ACT_OBJNAME(actionCurveFullRange);
+    ASSIGN_ACT_OBJNAME(actionShowAllCurves);
+    ASSIGN_ACT_OBJNAME(actionHideCurve);
+    ASSIGN_ACT_OBJNAME(actionHideOtherCurves);
+    ASSIGN_ACT_OBJNAME(actionEditFunction);
+    ASSIGN_ACT_OBJNAME(actionRemoveCurve);
+    ASSIGN_ACT_OBJNAME(actionShowCurveWorksheet);
+    ASSIGN_ACT_OBJNAME(actionShowCurvePlotDialog);
+    ASSIGN_ACT_OBJNAME(actionNewProject);
+    ASSIGN_ACT_OBJNAME(actionNewNote);
+    ASSIGN_ACT_OBJNAME(actionNewTable);
+    ASSIGN_ACT_OBJNAME(actionNewFunctionPlot);
+    ASSIGN_ACT_OBJNAME(actionNewSurfacePlot);
+    ASSIGN_ACT_OBJNAME(actionNewMatrix);
+    ASSIGN_ACT_OBJNAME(actionNewGraph);
+    ASSIGN_ACT_OBJNAME(actionOpen);
+    ASSIGN_ACT_OBJNAME(actionLoadImage);
+    ASSIGN_ACT_OBJNAME(actionSaveProject);
+    ASSIGN_ACT_OBJNAME(actionSaveProjectAs);
+    ASSIGN_ACT_OBJNAME(actionImportImage);
+    ASSIGN_ACT_OBJNAME(actionLoad);
+    ASSIGN_ACT_OBJNAME(actionUndo);
+    ASSIGN_ACT_OBJNAME(actionRedo);
+    ASSIGN_ACT_OBJNAME(actionCopyWindow);
+    ASSIGN_ACT_OBJNAME(actionCutSelection);
+    ASSIGN_ACT_OBJNAME(actionCopySelection);
+    ASSIGN_ACT_OBJNAME(actionPasteSelection);
+    ASSIGN_ACT_OBJNAME(actionClearSelection);
+    ASSIGN_ACT_OBJNAME(locktoolbar);
+    ASSIGN_ACT_OBJNAME(actionShowExplorer);
+    ASSIGN_ACT_OBJNAME(actionShowLog);
+    ASSIGN_ACT_OBJNAME(actionAddLayer);
+    ASSIGN_ACT_OBJNAME(actionShowLayerDialog);
+    ASSIGN_ACT_OBJNAME(actionAutomaticLayout);
+    ASSIGN_ACT_OBJNAME(actionShowHistory);
+    ASSIGN_ACT_OBJNAME(actionExportGraph);
+    ASSIGN_ACT_OBJNAME(actionExportAllGraphs);
+    ASSIGN_ACT_OBJNAME(actionPrint);
+    ASSIGN_ACT_OBJNAME(actionPrintAllPlots);
+    ASSIGN_ACT_OBJNAME(actionShowExportASCIIDialog);
+    ASSIGN_ACT_OBJNAME(actionExportPDF);
+    ASSIGN_ACT_OBJNAME(actionCloseAllWindows);
+    ASSIGN_ACT_OBJNAME(actionClearLogInfo);
+    ASSIGN_ACT_OBJNAME(actionShowPlotWizard);
+    ASSIGN_ACT_OBJNAME(actionShowConfigureDialog);
+    ASSIGN_ACT_OBJNAME(actionShowCurvesDialog);
+    ASSIGN_ACT_OBJNAME(actionAddErrorBars);
+    ASSIGN_ACT_OBJNAME(actionAddFunctionCurve);
+    ASSIGN_ACT_OBJNAME(actionUnzoom);
+    ASSIGN_ACT_OBJNAME(actionNewLegend);
+    ASSIGN_ACT_OBJNAME(actionAddImage);
+    ASSIGN_ACT_OBJNAME(actionPlotStackedHistograms);
+    ASSIGN_ACT_OBJNAME(actionPlot2VerticalLayers);
+    ASSIGN_ACT_OBJNAME(actionPlot2HorizontalLayers);
+    ASSIGN_ACT_OBJNAME(actionPlot4Layers);
+    ASSIGN_ACT_OBJNAME(actionPlotStackedLayers);
+    ASSIGN_ACT_OBJNAME(actionPlot3DRibbon);
+    ASSIGN_ACT_OBJNAME(actionPlot3DBars);
+    ASSIGN_ACT_OBJNAME(actionPlot3DScatter);
+    ASSIGN_ACT_OBJNAME(actionPlot3DTrajectory);
+    ASSIGN_ACT_OBJNAME(actionShowColStatistics);
+    ASSIGN_ACT_OBJNAME(actionShowRowStatistics);
+    ASSIGN_ACT_OBJNAME(actionShowIntDialog);
+    ASSIGN_ACT_OBJNAME(actionDifferentiate);
+    ASSIGN_ACT_OBJNAME(actionFitLinear);
+    ASSIGN_ACT_OBJNAME(actionShowFitPolynomDialog);
+    ASSIGN_ACT_OBJNAME(actionShowExpDecayDialog);
+    ASSIGN_ACT_OBJNAME(actionShowTwoExpDecayDialog);
+    ASSIGN_ACT_OBJNAME(actionShowExpDecay3Dialog);
+    ASSIGN_ACT_OBJNAME(actionFitExpGrowth);
+    ASSIGN_ACT_OBJNAME(actionFitSigmoidal);
+    ASSIGN_ACT_OBJNAME(actionFitGauss);
+    ASSIGN_ACT_OBJNAME(actionFitLorentz);
+    ASSIGN_ACT_OBJNAME(actionShowFitDialog);
+    ASSIGN_ACT_OBJNAME(actionShowAxisDialog);
+    ASSIGN_ACT_OBJNAME(actionShowTitleDialog);
+    ASSIGN_ACT_OBJNAME(actionAbout);
+    ASSIGN_ACT_OBJNAME(actionShowHelp);
+#ifdef DYNAMIC_MANUAL_PATH
+    ASSIGN_ACT_OBJNAME(actionChooseHelpFolder);
+#endif
+    ASSIGN_ACT_OBJNAME(actionRename);
+    ASSIGN_ACT_OBJNAME(actionCloseWindow);
+    ASSIGN_ACT_OBJNAME(actionConvertTable);
+    ASSIGN_ACT_OBJNAME(actionDeleteLayer);
+    ASSIGN_ACT_OBJNAME(actionInterpolate);
+    ASSIGN_ACT_OBJNAME(actionResizeActiveWindow);
+    ASSIGN_ACT_OBJNAME(actionHideActiveWindow);
+    ASSIGN_ACT_OBJNAME(actionShowMoreWindows);
+    ASSIGN_ACT_OBJNAME(actionPixelLineProfile);
+    ASSIGN_ACT_OBJNAME(actionIntensityTable);
+    ASSIGN_ACT_OBJNAME(actionShowLineDialog);
+    ASSIGN_ACT_OBJNAME(actionShowImageDialog);
+    ASSIGN_ACT_OBJNAME(actionShowTextDialog);
+    ASSIGN_ACT_OBJNAME(actionActivateWindow);
+    ASSIGN_ACT_OBJNAME(actionMinimizeWindow);
+    ASSIGN_ACT_OBJNAME(actionMaximizeWindow);
+    ASSIGN_ACT_OBJNAME(actionResizeWindow);
+    ASSIGN_ACT_OBJNAME(actionPrintWindow);
+    ASSIGN_ACT_OBJNAME(actionShowPlotGeometryDialog);
+    ASSIGN_ACT_OBJNAME(actionEditSurfacePlot);
+    ASSIGN_ACT_OBJNAME(actionAdd3DData);
+    ASSIGN_ACT_OBJNAME(actionMatrixDeterminant);
+    ASSIGN_ACT_OBJNAME(actionConvertMatrix);
+    ASSIGN_ACT_OBJNAME(actionInvertMatrix);
+    ASSIGN_ACT_OBJNAME(actionPlot3DWireFrame);
+    ASSIGN_ACT_OBJNAME(actionPlot3DHiddenLine);
+    ASSIGN_ACT_OBJNAME(actionPlot3DPolygons);
+    ASSIGN_ACT_OBJNAME(actionPlot3DWireSurface);
+    ASSIGN_ACT_OBJNAME(actionColorMap);
+    ASSIGN_ACT_OBJNAME(actionContourMap);
+    ASSIGN_ACT_OBJNAME(actionGrayMap);
+    ASSIGN_ACT_OBJNAME(actionDeleteFitTables);
+    ASSIGN_ACT_OBJNAME(actionShowGridDialog);
+    ASSIGN_ACT_OBJNAME(actionTimeStamp);
+    ASSIGN_ACT_OBJNAME(actionSmoothSavGol);
+    ASSIGN_ACT_OBJNAME(actionSmoothFFT);
+    ASSIGN_ACT_OBJNAME(actionSmoothAverage);
+    ASSIGN_ACT_OBJNAME(actionFFT);
+    ASSIGN_ACT_OBJNAME(actionLowPassFilter);
+    ASSIGN_ACT_OBJNAME(actionHighPassFilter);
+    ASSIGN_ACT_OBJNAME(actionBandPassFilter);
+    ASSIGN_ACT_OBJNAME(actionBandBlockFilter);
+    ASSIGN_ACT_OBJNAME(actionConvolute);
+    ASSIGN_ACT_OBJNAME(actionDeconvolute);
+    ASSIGN_ACT_OBJNAME(actionCorrelate);
+    ASSIGN_ACT_OBJNAME(actionAutoCorrelate);
+    ASSIGN_ACT_OBJNAME(actionTranslateHor);
+    ASSIGN_ACT_OBJNAME(actionTranslateVert);
+    ASSIGN_ACT_OBJNAME(actionBoxPlot);
+    ASSIGN_ACT_OBJNAME(actionMultiPeakGauss);
+    ASSIGN_ACT_OBJNAME(actionMultiPeakLorentz);
+    ASSIGN_ACT_OBJNAME(actionMultiPeakGaussAmp);
+    ASSIGN_ACT_OBJNAME(actionMultiPeakPseudoVoigt);
+    ASSIGN_ACT_OBJNAME(actionMultiPeakPearsonVII);
+    ASSIGN_ACT_OBJNAME(actionPeakFitDialog);
+    ASSIGN_ACT_OBJNAME(actionPeakAnalyzerDialog);
+    ASSIGN_ACT_OBJNAME(actionAutoPeakGauss);
+    ASSIGN_ACT_OBJNAME(actionAutoPeakLorentz);
+    ASSIGN_ACT_OBJNAME(actionAutoPeakPseudoVoigt);
+    ASSIGN_ACT_OBJNAME(actionCopyGraphOle);
+    ASSIGN_ACT_OBJNAME(actionLangEnglish);
+    ASSIGN_ACT_OBJNAME(actionLangJapanese);
+    ASSIGN_ACT_OBJNAME(actionPlotDoubleY);
+    ASSIGN_ACT_OBJNAME(actionPlotYOffsetStack);
+    ASSIGN_ACT_OBJNAME(actionPlotViolin);
+    ASSIGN_ACT_OBJNAME(actionPlotPareto);
+    ASSIGN_ACT_OBJNAME(actionPlotQQ);
+    ASSIGN_ACT_OBJNAME(actionPlotTernary);
+    ASSIGN_ACT_OBJNAME(actionColorPaletteEditor);
+    ASSIGN_ACT_OBJNAME(actionAspect1_1);
+    ASSIGN_ACT_OBJNAME(actionAspect4_3);
+    ASSIGN_ACT_OBJNAME(actionAspect16_9);
+    ASSIGN_ACT_OBJNAME(actionAspect3_2);
+    ASSIGN_ACT_OBJNAME(actionAspectCustom);
+    ASSIGN_ACT_OBJNAME(actionKeepAspectRatio);
+    ASSIGN_ACT_OBJNAME(actionTabbedWorkspaceView);
+    ASSIGN_ACT_OBJNAME(actionGadgetVerticalCursor);
+    ASSIGN_ACT_OBJNAME(actionGadgetRegionStats);
+    ASSIGN_ACT_OBJNAME(actionGadgetQuickFit);
+    ASSIGN_ACT_OBJNAME(actionGadgetQuickPeaks);
+    ASSIGN_ACT_OBJNAME(actionGadgetQuickSigmoidal);
+    ASSIGN_ACT_OBJNAME(actionGadgetIntegrate);
+    ASSIGN_ACT_OBJNAME(actionGadgetInterpolate);
+    ASSIGN_ACT_OBJNAME(actionGadgetFFT);
+    ASSIGN_ACT_OBJNAME(actionGadgetRiseTime);
+    ASSIGN_ACT_OBJNAME(actionGadgetCluster);
+    ASSIGN_ACT_OBJNAME(actionGadgetClear);
+    ASSIGN_ACT_OBJNAME(actionMaskRegionROI);
+    ASSIGN_ACT_OBJNAME(actionUnmaskRegionROI);
+    ASSIGN_ACT_OBJNAME(actionClearAllMasks);
+    ASSIGN_ACT_OBJNAME(actionSimpleCurveMath);
+    ASSIGN_ACT_OBJNAME(actionSubtractStraightLine);
+    ASSIGN_ACT_OBJNAME(actionAverageMultipleCurves);
+    ASSIGN_ACT_OBJNAME(actionNormalizeCurves);
+    ASSIGN_ACT_OBJNAME(actionCurveIntersections);
+    ASSIGN_ACT_OBJNAME(actionPolygonLoopArea);
+    ASSIGN_ACT_OBJNAME(actionFitApparentLinear);
+    ASSIGN_ACT_OBJNAME(actionFitYorkLinear);
+    ASSIGN_ACT_OBJNAME(actionGlobalCurveFit);
+    ASSIGN_ACT_OBJNAME(actionImplicitODRFit);
+    ASSIGN_ACT_OBJNAME(actionModelComparison);
+    ASSIGN_ACT_OBJNAME(actionSurfaceFit3D);
+    ASSIGN_ACT_OBJNAME(actionBatchPeakAnalysis);
+    ASSIGN_ACT_OBJNAME(action2DPeakAnalysis);
+    ASSIGN_ACT_OBJNAME(actionSmoothLOWESS);
+    ASSIGN_ACT_OBJNAME(actionSmoothWhittaker);
+    ASSIGN_ACT_OBJNAME(actionSmoothMedian);
+    ASSIGN_ACT_OBJNAME(actionIirDigitalFilter);
+    ASSIGN_ACT_OBJNAME(actionStftSpectrogram);
+    ASSIGN_ACT_OBJNAME(actionHilbertEnvelope);
+    ASSIGN_ACT_OBJNAME(actionWaveletTransform);
+    ASSIGN_ACT_OBJNAME(actionWelchPsdCoherence);
+    ASSIGN_ACT_OBJNAME(actionMatrixFFT2D);
+    ASSIGN_ACT_OBJNAME(actionMatrixIFFT2D);
+    ASSIGN_ACT_OBJNAME(actionConfidenceEllipse);
+    ASSIGN_ACT_OBJNAME(actionGroupComparison);
+    ASSIGN_ACT_OBJNAME(actionROCCurve);
+    ASSIGN_ACT_OBJNAME(actionKaplanMeier);
+    ASSIGN_ACT_OBJNAME(actionPCABiplot);
+    ASSIGN_ACT_OBJNAME(actionRecalcAuto);
+    ASSIGN_ACT_OBJNAME(actionRecalcManual);
+    ASSIGN_ACT_OBJNAME(actionRecalcDisabled);
+    ASSIGN_ACT_OBJNAME(actionRecalculateNow);
+    ASSIGN_ACT_OBJNAME(actionRepeatLinearFitAll);
+    ASSIGN_ACT_OBJNAME(actionRepeatNormalizeAll);
+    ASSIGN_ACT_OBJNAME(actionManageDialogThemes);
+    ASSIGN_ACT_OBJNAME(actionPageSetup);
+    ASSIGN_ACT_OBJNAME(actionFitPageToLayers);
+    ASSIGN_ACT_OBJNAME(actionFitLayersToPage);
+    ASSIGN_ACT_OBJNAME(actionTogglePageView);
+    ASSIGN_ACT_OBJNAME(actionAddLinkedLayer);
+    ASSIGN_ACT_OBJNAME(actionAddInsetLayer);
+    ASSIGN_ACT_OBJNAME(actionFrameBoxInward);
+    ASSIGN_ACT_OBJNAME(actionFrameBoxPlain);
+    ASSIGN_ACT_OBJNAME(actionFrameOpenL);
+    ASSIGN_ACT_OBJNAME(actionFrameZeroCrossed);
+    ASSIGN_ACT_OBJNAME(actionToggleMiniToolbar);
+    ASSIGN_ACT_OBJNAME(actionGadgetDifferentiate);
+    ASSIGN_ACT_OBJNAME(actionGadgetIntersect);
+    ASSIGN_ACT_OBJNAME(actionGadgetIntegrate2D);
+    ASSIGN_ACT_OBJNAME(actionPiecewiseLinearFit);
+    ASSIGN_ACT_OBJNAME(actionRobustLinearFit);
+    ASSIGN_ACT_OBJNAME(actionCompareDatasetsFit);
+    ASSIGN_ACT_OBJNAME(actionMultipleLinearRegression);
+    ASSIGN_ACT_OBJNAME(actionSavGolSmoothDerivative);
+    ASSIGN_ACT_OBJNAME(actionPeakEnvelope);
+    ASSIGN_ACT_OBJNAME(actionDecimateResample);
+    ASSIGN_ACT_OBJNAME(actionNormalityTest);
+    ASSIGN_ACT_OBJNAME(actionBlandAltman);
+    ASSIGN_ACT_OBJNAME(actionTwoWayANOVA);
+    ASSIGN_ACT_OBJNAME(actionGraphDigitizer);
+    ASSIGN_ACT_OBJNAME(actionCopyGraphFormat);
+    ASSIGN_ACT_OBJNAME(actionPasteGraphFormat);
+    ASSIGN_ACT_OBJNAME(actionPasteFormatFonts);
+    ASSIGN_ACT_OBJNAME(actionPasteFormatColors);
+    ASSIGN_ACT_OBJNAME(actionPasteFormatScales);
+    ASSIGN_ACT_OBJNAME(actionPasteFormatFolder);
+    ASSIGN_ACT_OBJNAME(actionBatchPlot);
+    ASSIGN_ACT_OBJNAME(actionStyleISIJ);
+    ASSIGN_ACT_OBJNAME(actionStyleSlide);
+    ASSIGN_ACT_OBJNAME(actionStyleNature);
+    ASSIGN_ACT_OBJNAME(actionGadgetDeltaCursor);
+    ASSIGN_ACT_OBJNAME(actionLogisticRegression);
+    ASSIGN_ACT_OBJNAME(actionArrheniusPlot);
+    ASSIGN_ACT_OBJNAME(actionTaucPlot);
+    ASSIGN_ACT_OBJNAME(actionFillBetweenCurves);
+    ASSIGN_ACT_OBJNAME(actionWaterfallStackOffset);
+    ASSIGN_ACT_OBJNAME(actionResetStackOffsets);
+    ASSIGN_ACT_OBJNAME(actionWeibullPlot);
+    ASSIGN_ACT_OBJNAME(actionOutlierTest);
+    ASSIGN_ACT_OBJNAME(actionNonparametricTests);
+    ASSIGN_ACT_OBJNAME(actionPairedComparisonPlot);
+    ASSIGN_ACT_OBJNAME(actionCorrelationMatrix);
+    ASSIGN_ACT_OBJNAME(actionClustering);
+    ASSIGN_ACT_OBJNAME(actionCopyPageImage);
+    ASSIGN_ACT_OBJNAME(actionGadgetImageProfile);
+    ASSIGN_ACT_OBJNAME(actionMatrixFilter2D);
+    ASSIGN_ACT_OBJNAME(actionFourierSelfDeconvolve);
+    ASSIGN_ACT_OBJNAME(actionEISAnalyzer);
+    ASSIGN_ACT_OBJNAME(actionPassingBablokDeming);
+    ASSIGN_ACT_OBJNAME(actionHomePage);
+#ifdef DOWNLOAD_LINKS
+    ASSIGN_ACT_OBJNAME(actionDownloadManual);
+#endif
+    ASSIGN_ACT_OBJNAME(actionHelpForums);
+    ASSIGN_ACT_OBJNAME(actionHelpBugReports);
+    ASSIGN_ACT_OBJNAME(actionShowPlotDialog);
+    ASSIGN_ACT_OBJNAME(actionShowScaleDialog);
+    ASSIGN_ACT_OBJNAME(actionOpenTemplate);
+    ASSIGN_ACT_OBJNAME(actionSaveTemplate);
+    ASSIGN_ACT_OBJNAME(actionNextWindow);
+    ASSIGN_ACT_OBJNAME(actionPrevWindow);
+#ifdef SCRIPTING_DIALOG
+    ASSIGN_ACT_OBJNAME(actionScriptingLang);
+#endif
+    ASSIGN_ACT_OBJNAME(actionRestartScripting);
+    ASSIGN_ACT_OBJNAME(actionNoteExecute);
+    ASSIGN_ACT_OBJNAME(actionNoteExecuteAll);
+    ASSIGN_ACT_OBJNAME(actionNoteEvaluate);
+    ASSIGN_ACT_OBJNAME(actionSaveNote);
+#undef ASSIGN_ACT_OBJNAME
 
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
@@ -17517,6 +18291,11 @@ void ApplicationWindow::translateActionsStrings()
     }
     if (actionLogisticRegression)
         actionLogisticRegression->setText(tr("Binary &Logistic Regression..."));
+    if (actionTensileYield) {
+        actionTensileYield->setText(tr("&Tensile / 0.2% Yield Analysis..."));
+        actionTensileYield->setToolTip(
+                tr("Tensile stress-strain analysis: Young's modulus E, 0.2% proof stress, UTS & True Stress-Strain"));
+    }
     if (actionArrheniusPlot)
         actionArrheniusPlot->setText(tr("&Arrhenius Plot (Activation Energy)..."));
     if (actionTaucPlot)
@@ -20044,6 +20823,13 @@ void ApplicationWindow::appendProject(const QString &fn)
     if (fn.isEmpty())
         return;
 
+    struct ScopedRestoreFileVersion
+    {
+        int &ref;
+        int savedVal;
+        ~ScopedRestoreFileVersion() { ref = savedVal; }
+    } restoreFileVersionGuard { d_file_version, d_file_version };
+
     renamedTables.clear();
     QFile *file;
 
@@ -20319,9 +21105,12 @@ void ApplicationWindow::appendProject(const QString &fn)
 
                 if (d_file_version > 71) {
                     QStringList lst = t.readLine().split("\t");
-                    plot->setWindowLabel(lst[1]);
-                    setListViewLabel(plot->name(), lst[1]);
-                    plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst[2].toInt());
+                    const QString unescLbl = QString(lst.value(1))
+                                                     .replace(QLatin1String("&#9;"), QLatin1String("\t"))
+                                                     .replace(QLatin1String("<br>"), QLatin1String("\n"));
+                    plot->setWindowLabel(unescLbl);
+                    setListViewLabel(plot->name(), unescLbl);
+                    plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
                 }
 
                 if (d_file_version > 83) {
@@ -20390,8 +21179,24 @@ void ApplicationWindow::appendProject(const QString &fn)
     // keep caller's active folder after appending project
     changeFolder(cf, true);
     for (MyWidget *mw : windowsList()) {
-        if (mw)
-            mw->setProperty("torigraph_saved_active", QVariant());
+        if (!mw)
+            continue;
+        mw->setProperty("torigraph_saved_active", QVariant());
+        if ((mw->inherits("Table") || mw->inherits("Matrix")) && stringContainsWhitespace(mw->name())) {
+            const QString oldName = mw->name();
+            sanitizeLoadedWindowName(this, mw, oldName,
+                                     mw->inherits("Matrix") ? QStringLiteral("Matrix")
+                                                            : QStringLiteral("Table"));
+            const QString newName = mw->name();
+            if (newName != oldName) {
+                mw->setObjectName(newName);
+                renameListViewItem(oldName, newName);
+                if (mw->inherits("Table"))
+                    updateTableNames(oldName, newName);
+                else
+                    changeMatrixName(oldName, newName);
+            }
+        }
     }
     blockSignals(false);
     renamedTables = QStringList();
@@ -21232,6 +22037,7 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
         old_active_window->setStatus(old_active_window_state);
         oldFolder->setActiveWindow(old_active_window);
     }
+    scheduleSyncWorkspaceHiddenTabs(this);
 
     filterExplorerWindows();
     return true;
@@ -24528,9 +25334,24 @@ void ApplicationWindow::mergeOpenGraphsDialog()
                 bool isChildLinked = false;
                 while (!ts.atEnd()) {
                     s = ts.readLine();
-                    if (s.trimmed().startsWith("<ToriLinkedParent\t")) {
+                    const QString trimmedTag = s.trimmed();
+                    if (trimmedTag.startsWith(QLatin1String("<ToriLinkedLayer "))
+                        || trimmedTag.startsWith(QLatin1String("<ToriLinkedLayer\t"))) {
                         isChildLinked = true;
-                        QStringList parts = s.trimmed().split('\t');
+                        static const QRegularExpression rxParentIdx(
+                                QStringLiteral("parentIdx=\"(-?\\d+)\""));
+                        const QRegularExpressionMatch m = rxParentIdx.match(trimmedTag);
+                        if (m.hasMatch()) {
+                            const int oldIdx = m.captured(1).toInt();
+                            const int newIdx = (oldIdx >= 0) ? (oldIdx + baseLayerIdx) : oldIdx;
+                            QString updated = trimmedTag;
+                            updated.replace(m.capturedStart(1), m.capturedLength(1),
+                                            QString::number(newIdx));
+                            s = updated;
+                        }
+                    } else if (trimmedTag.startsWith(QLatin1String("<ToriLinkedParent\t"))) {
+                        isChildLinked = true;
+                        QStringList parts = trimmedTag.split('\t');
                         if (parts.size() >= 2) {
                             parts[1] = QString::number(parts[1].toInt() + baseLayerIdx);
                             s = parts.join('\t');
@@ -25146,6 +25967,13 @@ void ApplicationWindow::showLogisticRegressionDialog()
     if (isNonInteractiveContext(this))
         return;
     PiecewiseAndRobustFit::showLogisticRegressionDialog(this);
+}
+
+void ApplicationWindow::showTensileYieldDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showTensileYieldDialog(this);
 }
 
 void ApplicationWindow::showArrheniusPlotDialog()
@@ -25837,8 +26665,8 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
     QString undoText = tr("&Undo");
     QString redoText = tr("&Redo");
 
-    QMdiSubWindow *sw = d_workspace.activeSubWindow();
-    if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw)) {
+    MyWidget *aw = activeWindow();
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (QUndoStack *us = ml->undoStack()) {
             canU = us->canUndo();
             canR = us->canRedo();
@@ -25847,16 +26675,14 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
             if (canR && !us->redoText().trimmed().isEmpty())
                 redoText = tr("&Redo %1").arg(us->redoText().trimmed());
         }
-    } else if (sw && (sw->inherits("Table") || sw->inherits("Matrix"))) {
-        if (d_project && d_project->undoStack()) {
-            QUndoStack *us = d_project->undoStack();
-            canU = us->canUndo();
-            canR = us->canRedo();
-            if (canU && !us->undoText().trimmed().isEmpty())
-                undoText = tr("&Undo %1").arg(us->undoText().trimmed());
-            if (canR && !us->redoText().trimmed().isEmpty())
-                redoText = tr("&Redo %1").arg(us->redoText().trimmed());
-        }
+    } else if (d_project && d_project->undoStack()) {
+        QUndoStack *us = d_project->undoStack();
+        canU = us->canUndo();
+        canR = us->canRedo();
+        if (canU && !us->undoText().trimmed().isEmpty())
+            undoText = tr("&Undo %1").arg(us->undoText().trimmed());
+        if (canR && !us->redoText().trimmed().isEmpty())
+            redoText = tr("&Redo %1").arg(us->redoText().trimmed());
     }
 
     actionUndo->setEnabled(canU);

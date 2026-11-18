@@ -33,9 +33,50 @@
 #include <qpen.h>
 #include <qmessagebox.h>
 #include <QFont>
+#include <QRegularExpression>
 
+#include <qwt_plot_layout.h>
 #include <qwt_scale_widget.h>
 #include <qwt_text.h>
+
+namespace {
+
+QString unwrapColorBarTitleNoWrap(const QString &s)
+{
+    QString out = s;
+    const QString pre = QStringLiteral("<span style=\"white-space:nowrap;\">");
+    const QString suf = QStringLiteral("</span>");
+    while (out.startsWith(pre) && out.endsWith(suf) && out.size() >= pre.size() + suf.size())
+        out = out.mid(pre.size(), out.size() - pre.size() - suf.size());
+    return out;
+}
+
+QString wrapColorBarTitleNoWrap(const QString &raw)
+{
+    const QString clean = unwrapColorBarTitleNoWrap(raw);
+    if (clean.trimmed().isEmpty() || clean.contains(QLatin1Char('\n'))
+        || clean.contains(QLatin1String("<br"), Qt::CaseInsensitive)) {
+        return clean;
+    }
+    static const QRegularExpression kRichTagRx(
+            QStringLiteral("<\\s*(?:i|sub|sup|b|u|span|font)\\b"),
+            QRegularExpression::CaseInsensitiveOption);
+    if (clean.contains(kRichTagRx)) {
+        return QStringLiteral("<span style=\"white-space:nowrap;\">") + clean
+                + QStringLiteral("</span>");
+    }
+    if (clean.contains(QLatin1Char(' '))) {
+        QString esc = clean;
+        esc.replace(QLatin1String("&"), QLatin1String("&amp;"));
+        esc.replace(QLatin1String("<"), QLatin1String("&lt;"));
+        esc.replace(QLatin1String(">"), QLatin1String("&gt;"));
+        return QStringLiteral("<span style=\"white-space:nowrap;\">") + esc
+                + QStringLiteral("</span>");
+    }
+    return clean;
+}
+
+} // namespace
 
 Spectrogram::Spectrogram()
     : QwtPlotSpectrogram(),
@@ -136,10 +177,14 @@ void Spectrogram::enforceColorBarArialFont()
     }
 
     QwtText t = colorAxis->title();
-    if (!d_colorbar_title.isEmpty())
-        t.setText(d_colorbar_title);
+    const QString rawTitle = !d_colorbar_title.isEmpty()
+            ? d_colorbar_title
+            : unwrapColorBarTitleNoWrap(t.text());
+    if (!rawTitle.isEmpty())
+        t.setText(wrapColorBarTitleNoWrap(rawTitle));
     QFont tf = t.font();
     tf.setFamily(QStringLiteral("Arial"));
+    tf.setBold(false);
     if (tf.pointSize() <= 0 && tf.pixelSize() <= 0)
         tf.setPointSize(11);
     tf.setHintingPreference(QFont::PreferNoHinting);
@@ -147,8 +192,16 @@ void Spectrogram::enforceColorBarArialFont()
     colorAxis->setTitle(t);
 
     if (colorAxis->isColorBarEnabled()) {
-        colorAxis->setMargin(6);
-        colorAxis->setSpacing(0);
+        colorAxis->setMargin(4);
+        colorAxis->setSpacing(2);
+        colorAxis->setMinBorderDist(0, 0);
+        int sDist = 0, eDist = 0;
+        colorAxis->getBorderDistHint(sDist, eDist);
+        colorAxis->setBorderDist(sDist, eDist);
+        if (plot->plotLayout()) {
+            plot->plotLayout()->setAlignCanvasToScales(true);
+            plot->plotLayout()->setCanvasMargin(0);
+        }
         if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
             sd->enableComponent(QwtAbstractScaleDraw::Backbone, true);
             sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
@@ -182,7 +235,7 @@ void Spectrogram::syncColorScale()
 
 void Spectrogram::setColorBarTitle(const QString &title)
 {
-    d_colorbar_title = title;
+    d_colorbar_title = unwrapColorBarTitleNoWrap(title);
     QwtPlot *plot = this->plot();
     if (!plot || color_axis < 0 || color_axis >= QwtPlot::axisCnt)
         return;
@@ -190,9 +243,10 @@ void Spectrogram::setColorBarTitle(const QString &title)
     if (!colorAxis)
         return;
     QwtText t = colorAxis->title();
-    t.setText(title);
+    t.setText(wrapColorBarTitleNoWrap(d_colorbar_title));
     QFont tf = t.font();
     tf.setFamily(QStringLiteral("Arial"));
+    tf.setBold(false);
     if (tf.pointSize() <= 0 && tf.pixelSize() <= 0)
         tf.setPointSize(11);
     tf.setHintingPreference(QFont::PreferNoHinting);
@@ -333,9 +387,27 @@ void Spectrogram::showColorScale(int axis, bool on)
     plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
     colorAxis->setColorBarEnabled(on);
     colorAxis->setColorMap(zRange, colorMap());
-    colorAxis->setMargin(on ? 6 : 0);
-    if (on)
-        colorAxis->setSpacing(0);
+    colorAxis->setMargin(on ? 4 : 0);
+    if (on) {
+        colorAxis->setSpacing(2);
+        colorAxis->setMinBorderDist(0, 0);
+        if (plot->plotLayout()) {
+            plot->plotLayout()->setAlignCanvasToScales(true);
+            plot->plotLayout()->setCanvasMargin(0);
+        }
+    } else if (plot->plotLayout()) {
+        bool anyOtherColorBar = false;
+        for (QwtPlotItem *it : plot->itemList()) {
+            if (it && it != this && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (static_cast<Spectrogram *>(it)->hasColorScale()) {
+                    anyOtherColorBar = true;
+                    break;
+                }
+            }
+        }
+        if (!anyOtherColorBar)
+            plot->plotLayout()->setAlignCanvasToScales(false);
+    }
     if (ScaleDraw *newSd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
         newSd->setColorBarBorder(on, colorAxis->colorBarWidth(),
                                  qMax(1, colorAxis->penWidth()));

@@ -15,6 +15,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <limits>
 
 class ApplicationWindow;
 class Graph;
@@ -87,6 +88,28 @@ public:
         MultiLayer *nyquistPlot = nullptr;
         MultiLayer *bodePlot = nullptr;
     };
+    struct TensileResult {
+        bool valid = false;
+        QString error;
+        double youngsModulus = 0.0;
+        double elasticSlopeRaw = 0.0;
+        double elasticIntercept = 0.0;
+        double elasticR2 = 0.0;
+        double elasticXMin = 0.0;
+        double elasticXMax = 0.0;
+        double offsetFraction = 0.002;
+        double offsetYieldX = 0.0;
+        double offsetYieldY = 0.0;
+        double utsX = 0.0;
+        double utsY = 0.0;
+        double fractureX = 0.0;
+        double fractureY = 0.0;
+        bool strainInPercent = true;
+        QString stressUnit;
+        QString constructionCurveTitle;
+        Table *trueStressTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
 
     static ArrheniusResult createArrheniusPlot(ApplicationWindow *app, Table *srcTable,
                                                const QString &tempCol, const QString &rateCol,
@@ -104,6 +127,15 @@ public:
                                 const QString &freqCol, const QString &zRealCol,
                                 const QString &zImagCol, bool zImagAlreadyNegated = false,
                                 bool fitRandlesCPE = true);
+    static TensileResult analyzeTensile(ApplicationWindow *app, Graph *g,
+                                        const QString &curveTitle = QString(),
+                                        double offsetFraction = 0.002,
+                                        int strainInPercentMode = -1 /* -1=auto, 0=fraction, 1=percent */,
+                                        double elasticXMin = std::numeric_limits<double>::quiet_NaN(),
+                                        double elasticXMax = std::numeric_limits<double>::quiet_NaN(),
+                                        bool plotConstruction = true,
+                                        bool addCallout = true,
+                                        bool createTrueStressTable = false);
 
     static void showCurveMathDialog(ApplicationWindow *app, Graph *g);
     static void showSubtractLineDialog(ApplicationWindow *app, Graph *g);
@@ -114,6 +146,7 @@ public:
     static void showTaucDialog(ApplicationWindow *app);
     static void showFillBetweenDialog(ApplicationWindow *app, Graph *g);
     static void showEISAnalyzerDialog(ApplicationWindow *app);
+    static void showTensileYieldDialog(ApplicationWindow *app);
 };
 
 #endif // CURVEMATHTOOLS_H

@@ -45,10 +45,14 @@ public:
           d_stack_dy(0.0),
           d_applied_dx(0.0),
           d_applied_dy(0.0),
-          d_norm01(false) {};
+          d_norm01(false),
+          d_symbol_skip(0) {};
 
     int type() const { return d_type; };
     void setType(int t) { d_type = t; };
+
+    void setSymbolSkip(int everyN);
+    int symbolSkip() const;
 
     void setStackOffset(double dx, double dy);
     double stackOffsetX() const { return d_stack_dx; }
@@ -75,6 +79,7 @@ protected:
     double d_applied_dx;
     double d_applied_dy;
     bool d_norm01;
+    int d_symbol_skip;
     QVector<double> d_raw_y_backup;
     mutable QRectF d_canvas_rect;
 };

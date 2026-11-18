@@ -65,6 +65,8 @@
 #include <QPlainTextEdit>
 #include <QCheckBox>
 #include <QGroupBox>
+#include <QToolButton>
+#include <QTextCursor>
 #include <QRegularExpression>
 #include <vector>
 #include <cmath>
@@ -104,6 +106,19 @@ Table::Table(ScriptingEnv *env, int r, int c, const QString &label, QWidget *par
     : TableView(label, parent, name, f), scripted(env)
 {
     d_future_table = new future::Table(r, c, label);
+    if (d_future_table) {
+        for (int i = 0; i < d_future_table->columnCount(); ++i) {
+            Column *colPtr = d_future_table->column(i);
+            if (colPtr && colPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                if (auto *flt = dynamic_cast<Double2StringFilter *>(colPtr->outputFilter())) {
+                    if (flt->numericFormat() == 'f' && flt->numDigits() == 14) {
+                        flt->setNumericFormat('g');
+                        flt->setNumDigits(6);
+                    }
+                }
+            }
+        }
+    }
     init();
 }
 
@@ -1201,6 +1216,7 @@ void Table::pasteSelection()
 
     bool hasTab = normalized.contains('\t');
     bool hasComma = !hasTab && normalized.contains(',');
+    bool hasSemicolon = !hasTab && !hasComma && normalized.contains(';');
 
     auto isMissingToken = [](const QString &s) -> bool {
         if (s.isEmpty() || s == "-" || s == "--" || s == "---")
@@ -1227,8 +1243,34 @@ void Table::pasteSelection()
         return ok;
     };
 
+    // Strip leading '#' preamble lines above header/data (keep last '#' line if followed immediately by numeric row)
+    if (!formulaModeActive() && lines.size() >= 2 && lines.first().trimmed().startsWith(QLatin1Char('#'))) {
+        int hashCount = 0;
+        while (hashCount < lines.size() && lines.at(hashCount).trimmed().startsWith(QLatin1Char('#')))
+            ++hashCount;
+        if (hashCount < lines.size()) {
+            const QString firstNonHash = lines.at(hashCount).trimmed();
+            QString firstCell = firstNonHash;
+            if (hasTab)
+                firstCell = firstNonHash.section(QLatin1Char('\t'), 0, 0).trimmed();
+            else if (hasComma)
+                firstCell = firstNonHash.section(QLatin1Char(','), 0, 0).trimmed();
+            else if (hasSemicolon)
+                firstCell = firstNonHash.section(QLatin1Char(';'), 0, 0).trimmed();
+            double dv = 0.0;
+            if (tryParseDouble(firstCell, dv) && !std::isnan(dv)) {
+                lines = lines.mid(hashCount - 1);
+                lines[0] = lines[0].trimmed().mid(1).trimmed();
+            } else {
+                lines = lines.mid(hashCount);
+            }
+        }
+        if (lines.isEmpty())
+            return;
+    }
+
     bool keepSingleColumn = false;
-    if (!hasTab && !hasComma && lines.size() >= 2) {
+    if (!hasTab && !hasComma && !hasSemicolon && lines.size() >= 2) {
         const QString h0 = lines.at(0).trimmed();
         double dummy0 = 0.0;
         if (!h0.isEmpty() && !tryParseDouble(h0, dummy0)) {
@@ -1274,6 +1316,12 @@ void Table::pasteSelection()
 #else
             rowCells = line.split(',', QString::KeepEmptyParts);
 #endif
+        } else if (hasSemicolon) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            rowCells = line.split(';', Qt::KeepEmptyParts);
+#else
+            rowCells = line.split(';', QString::KeepEmptyParts);
+#endif
         } else if (keepSingleColumn) {
             rowCells << line.trimmed();
         } else {
@@ -1288,8 +1336,14 @@ void Table::pasteSelection()
 #endif
             }
         }
-        for (int i = 0; i < rowCells.size(); ++i)
-            rowCells[i] = rowCells[i].trimmed();
+        for (int i = 0; i < rowCells.size(); ++i) {
+            QString cell = rowCells[i].trimmed();
+            if (cell.size() >= 2 && cell.startsWith(QLatin1Char('"'))
+                && cell.endsWith(QLatin1Char('"'))) {
+                cell = cell.mid(1, cell.size() - 2).replace(QLatin1String("\"\""), QLatin1String("\"")).trimmed();
+            }
+            rowCells[i] = cell;
+        }
         maxCols = qMax(maxCols, rowCells.size());
         grid.append(rowCells);
     }
@@ -1327,64 +1381,6 @@ void Table::pasteSelection()
         return s;
     };
 
-    auto parseHeaderNameAndUnit = [](const QString &raw, QString &outName, QString &outUnit) {
-        const QString s = raw.trimmed();
-        outName = s;
-        outUnit.clear();
-        if (s.isEmpty())
-            return;
-
-        struct BracketPair {
-            QChar openCh;
-            QChar closeCh;
-        };
-        const BracketPair pairs[] = {
-            { QLatin1Char('('), QLatin1Char(')') },
-            { QLatin1Char('['), QLatin1Char(']') },
-            { QChar(0xFF08), QChar(0xFF09) },
-            { QChar(0xFF3B), QChar(0xFF3D) },
-        };
-        for (const BracketPair &bp : pairs) {
-            if (s.endsWith(bp.closeCh)) {
-                int depth = 0;
-                int matchOpen = -1;
-                for (int i = s.size() - 1; i >= 0; --i) {
-                    if (s.at(i) == bp.closeCh) {
-                        ++depth;
-                    } else if (s.at(i) == bp.openCh) {
-                        --depth;
-                        if (depth == 0) {
-                            matchOpen = i;
-                            break;
-                        }
-                    }
-                }
-                if (matchOpen > 0) {
-                    const QString candidateName = s.left(matchOpen).trimmed();
-                    const QString candidateUnit =
-                            s.mid(matchOpen + 1, s.size() - matchOpen - 2).trimmed();
-                    if (!candidateName.isEmpty() && !candidateUnit.isEmpty()) {
-                        outName = candidateName;
-                        outUnit = candidateUnit;
-                        return;
-                    }
-                }
-            }
-        }
-
-        static const QRegularExpression slashRe(
-                QStringLiteral("^(.+?)\\s+/\\s*([^/]+)$"));
-        const QRegularExpressionMatch m = slashRe.match(s);
-        if (m.hasMatch()) {
-            const QString candidateName = m.captured(1).trimmed();
-            const QString candidateUnit = m.captured(2).trimmed();
-            if (!candidateName.isEmpty() && !candidateUnit.isEmpty()) {
-                outName = candidateName;
-                outUnit = candidateUnit;
-            }
-        }
-    };
-
     int dataStartRow = 0;
     if (startRow == 0 && !formulaModeActive() && pastedRows >= 2) {
         bool row0HasNonNumericHeaderOnNumCol = false;
@@ -1417,11 +1413,20 @@ void Table::pasteSelection()
             int headerRows = 0;
             if (row1AnyNum) {
                 headerRows = 1;
-            } else if (pastedRows >= 3 && row1AnyNonNum && !row1AnyNum) {
+            } else if (pastedRows >= 3 && !row1AnyNum) {
+                bool row1HasUnitToken = row1AnyNonNum;
+                if (!row1HasUnitToken) {
+                    // Check if row 1 has '-' dimensionless unit markers while row 2 is numeric
+                    for (int c = 0; c < grid[1].size(); ++c) {
+                        const QString t1 = grid[1][c].trimmed();
+                        if (t1 == QLatin1String("-") || t1 == QStringLiteral("\u2014"))
+                            row1HasUnitToken = true;
+                    }
+                }
                 bool row2AnyNum = false;
                 bool row2AnyNonNum = false;
                 rowNumericStatsOnNumCols(2, row2AnyNum, row2AnyNonNum);
-                if (row2AnyNum)
+                if (row1HasUnitToken && row2AnyNum)
                     headerRows = 2;
             }
 
@@ -1433,24 +1438,29 @@ void Table::pasteSelection()
                     const QString h0 = (c < grid[0].size()) ? grid[0][c].trimmed() : QString();
                     if (headerRows == 1) {
                         if (!h0.isEmpty()) {
-                            QString parsedName, parsedUnit;
-                            parseHeaderNameAndUnit(h0, parsedName, parsedUnit);
-                            colPtr->setLongName(parsedName);
+                            QString shortName, parsedLongName, parsedUnit;
+                            AsciiTableImportFilter::splitHeaderNameAndUnits(
+                                    h0, shortName, parsedLongName, parsedUnit);
+                            colPtr->setLongName(parsedLongName.isEmpty() ? h0 : parsedLongName);
                             if (!parsedUnit.isEmpty())
                                 colPtr->setUnits(parsedUnit);
                         }
                     } else {
                         const QString h1 = (c < grid[1].size()) ? grid[1][c].trimmed() : QString();
-                        QString name0, unit0;
-                        parseHeaderNameAndUnit(h0, name0, unit0);
+                        QString short0, long0, unit0;
+                        AsciiTableImportFilter::splitHeaderNameAndUnits(h0, short0, long0, unit0);
                         const QString unit1 = stripOuterUnitBrackets(h1);
-                        if (!h0.isEmpty())
-                            colPtr->setLongName((!unit1.isEmpty() && unit0.isEmpty()) ? h0 : name0);
+                        if (!h0.isEmpty()) {
+                            colPtr->setLongName((!unit1.isEmpty() && unit0.isEmpty())
+                                                        ? h0
+                                                        : (long0.isEmpty() ? h0 : long0));
+                        }
                         if (!unit1.isEmpty())
                             colPtr->setUnits(unit1);
                         else if (!unit0.isEmpty())
                             colPtr->setUnits(unit0);
                     }
+                    autoExpandColumnWidthForHeader(startCol + c, false);
                 }
                 showComments(true);
                 dataStartRow = headerRows;
@@ -2125,7 +2135,9 @@ bool Table::eventFilter(QObject *watched, QEvent *event)
                && (watched == d_horizontal_header
                    || (d_horizontal_header && watched == d_horizontal_header->viewport()))) {
         QMouseEvent *me = static_cast<QMouseEvent *>(event);
-        int col = d_horizontal_header->logicalIndexAt(me->pos());
+        if (d_horizontal_header && d_horizontal_header->handleSubHeaderDoubleClick(me->pos()))
+            return true;
+        int col = d_horizontal_header ? d_horizontal_header->logicalIndexAt(me->pos()) : -1;
         if (col >= 0 && col < numCols()) {
             showColumnPropertiesDialog(col);
             return true;
@@ -2211,7 +2223,7 @@ bool Table::autoRecalcFormulas() const
 
 void Table::showColumnPropertiesDialog(int col)
 {
-    if (!d_future_table || numCols() <= 0)
+    if (!d_future_table || numCols() <= 0 || ApplicationWindow::isNonInteractiveContext(this))
         return;
     if (col < 0 || col >= numCols())
         col = firstSelectedColumn(false);
@@ -2222,6 +2234,7 @@ void Table::showColumnPropertiesDialog(int col)
     if (col < 0 || col >= numCols())
         col = 0;
 
+    QPointer<QWidget> lastMetaEdit;
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Column Properties"));
     dlg.setMinimumWidth(480);
@@ -2272,9 +2285,139 @@ void Table::showColumnPropertiesDialog(int col)
     QPlainTextEdit *editComments = new QPlainTextEdit(grpMeta);
     editComments->setFixedHeight(56);
 
+    QWidget *symBar = new QWidget(grpMeta);
+    lastMetaEdit = editLongName;
+    {
+        QHBoxLayout *symLay = new QHBoxLayout(symBar);
+        symLay->setContentsMargins(0, 0, 0, 0);
+        symLay->setSpacing(2);
+        auto trackFocus = [&](QWidget *w) {
+            QObject::connect(qApp, &QApplication::focusChanged, symBar,
+                             [w, &lastMetaEdit](QWidget *, QWidget *now) {
+                                 if (now == w)
+                                     lastMetaEdit = w;
+                             });
+        };
+        trackFocus(editLongName);
+        trackFocus(editUnits);
+        trackFocus(editComments);
+
+        auto toUniChar = [](QChar ch, bool isSup) -> QChar {
+            if (isSup) {
+                switch (ch.unicode()) {
+                case '0': return QChar(0x2070);
+                case '1': return QChar(0x00B9);
+                case '2': return QChar(0x00B2);
+                case '3': return QChar(0x00B3);
+                case '4': return QChar(0x2074);
+                case '5': return QChar(0x2075);
+                case '6': return QChar(0x2076);
+                case '7': return QChar(0x2077);
+                case '8': return QChar(0x2078);
+                case '9': return QChar(0x2079);
+                case '+': return QChar(0x207A);
+                case '-': return QChar(0x207B);
+                default: return ch;
+                }
+            }
+            switch (ch.unicode()) {
+            case '0': return QChar(0x2080);
+            case '1': return QChar(0x2081);
+            case '2': return QChar(0x2082);
+            case '3': return QChar(0x2083);
+            case '4': return QChar(0x2084);
+            case '5': return QChar(0x2085);
+            case '6': return QChar(0x2086);
+            case '7': return QChar(0x2087);
+            case '8': return QChar(0x2088);
+            case '9': return QChar(0x2089);
+            case '+': return QChar(0x208A);
+            case '-': return QChar(0x208B);
+            default: return ch;
+            }
+        };
+
+        struct DlgSymSpec {
+            const char *label;
+            const char *insertText;
+            int subSupMode;
+            bool preferUnits;
+        };
+        static const DlgSymSpec kDlgSyms[] = {
+            { "\xCF\x83", "\xCF\x83", 0, false },
+            { "\xCE\xB5", "\xCE\xB5", 0, false },
+            { "2\xCE\xB8", "2\xCE\xB8", 0, false },
+            { "\xCE\xBCm", "\xCE\xBCm", 0, true },
+            { "\xC2\xB0""C", "\xC2\xB0""C", 0, true },
+            { "\xC3\x85", "\xC3\x85", 0, true },
+            { "\xC2\xB1", "\xC2\xB1", 0, false },
+            { "\xC2\xB0", "\xC2\xB0", 0, true },
+            { "cm\xE2\x81\xBB\xC2\xB9", "cm\xE2\x81\xBB\xC2\xB9", 0, true },
+            { "x\xE2\x82\x82", "", 1, false },
+            { "x\xC2\xB2", "", 2, false },
+        };
+        for (const auto &sp : kDlgSyms) {
+            QToolButton *tb = new QToolButton(symBar);
+            tb->setText(QString::fromUtf8(sp.label));
+            tb->setAutoRaise(true);
+            tb->setFocusPolicy(Qt::NoFocus);
+            tb->setFixedHeight(21);
+            tb->setStyleSheet(QStringLiteral(
+                    "QToolButton { border: 1px solid #CBD5E1; border-radius: 3px;"
+                    " background: #F8FAFC; color: #1E293B; padding: 0px 4px; font-size: 8.5pt; }"
+                    "QToolButton:hover { background: #DBEAFE; border-color: #60A5FA; }"));
+            const QString ins = QString::fromUtf8(sp.insertText);
+            const int mode = sp.subSupMode;
+            const bool prefU = sp.preferUnits;
+            connect(tb, &QToolButton::clicked, &dlg,
+                    [editUnits, editLongName, &lastMetaEdit, ins, mode, prefU, toUniChar]() {
+                        QWidget *target = lastMetaEdit ? lastMetaEdit.data()
+                                                       : (prefU ? static_cast<QWidget *>(editUnits)
+                                                                : static_cast<QWidget *>(editLongName));
+                        if (QLineEdit *le = qobject_cast<QLineEdit *>(target)) {
+                            if (mode == 1 || mode == 2) {
+                                const bool isSup = (mode == 2);
+                                if (le->hasSelectedText()) {
+                                    QString conv;
+                                    for (QChar ch : le->selectedText())
+                                        conv.append(toUniChar(ch, isSup));
+                                    le->insert(conv);
+                                } else {
+                                    le->insert(isSup ? QString::fromUtf8("\xC2\xB2")
+                                                     : QString::fromUtf8("\xE2\x82\x82"));
+                                }
+                            } else {
+                                le->insert(ins);
+                            }
+                            le->setFocus();
+                        } else if (QPlainTextEdit *pe = qobject_cast<QPlainTextEdit *>(target)) {
+                            QTextCursor tc = pe->textCursor();
+                            if (mode == 1 || mode == 2) {
+                                const bool isSup = (mode == 2);
+                                if (tc.hasSelection()) {
+                                    QString conv;
+                                    for (QChar ch : tc.selectedText())
+                                        conv.append(toUniChar(ch, isSup));
+                                    tc.insertText(conv);
+                                } else {
+                                    tc.insertText(isSup ? QString::fromUtf8("\xC2\xB2")
+                                                        : QString::fromUtf8("\xE2\x82\x82"));
+                                }
+                            } else {
+                                tc.insertText(ins);
+                            }
+                            pe->setFocus();
+                        }
+                    });
+            symLay->addWidget(tb);
+        }
+        symLay->addStretch(1);
+    }
+
     metaForm->addRow(tr("Short Name:"), editShortName);
     metaForm->addRow(tr("Long Name:"), editLongName);
     metaForm->addRow(tr("Units:"), editUnits);
+    metaForm->addRow(tr("Symbols:"), symBar);
     metaForm->addRow(tr("Plot Designation:"), boxDesignation);
     metaForm->addRow(tr("Data Type:"), typeRowLay);
     metaForm->addRow(tr("Comments:"), editComments);
@@ -2403,6 +2546,7 @@ void Table::showColumnPropertiesDialog(int col)
             || !cp->comment().isEmpty() || !fx.isEmpty()) {
             showComments(true);
         }
+        autoExpandColumnWidthForHeader(currentCol, false);
         setColumnForControlTabs(currentCol);
         d_future_table->setCurrentColumn(currentCol);
         rebuildCombos();

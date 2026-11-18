@@ -885,35 +885,68 @@ void Plot::updateLayout()
         }
     }
 
+    Graph *g = qobject_cast<Graph *>(parent());
+    const bool isCompactPlot = (width() > 0 && width() < 180) || (height() > 0 && height() < 150)
+            || (g && g->multiLayerParent() && g->multiLayerParent()->isInsetLayer(g));
+
+    bool anyColorBar = false;
+    for (int axis = 0; axis < QwtPlot::axisCnt; ++axis) {
+        QwtScaleWidget *sw = axisWidget(axis);
+        if (axisEnabled(axis) && sw && sw->isColorBarEnabled()) {
+            anyColorBar = true;
+            break;
+        }
+    }
+    if (anyColorBar && plotLayout()) {
+        plotLayout()->setAlignCanvasToScales(true);
+        plotLayout()->setCanvasMargin(0);
+    }
+
     for (int axis = 0; axis < QwtPlot::axisCnt; ++axis) {
         QwtScaleWidget *sw = axisWidget(axis);
         if (!sw || !sw->scaleDraw())
             continue;
         if (sw->scaleDraw()->hasComponent(QwtAbstractScaleDraw::Labels)) {
-            if (axis == QwtPlot::xBottom)
-                sw->setMinBorderDist(10, 28);
-            int sDist = 0, eDist = 0;
-            sw->getBorderDistHint(sDist, eDist);
-            sw->setBorderDist(sDist, eDist);
+            if (sw->isColorBarEnabled()) {
+                sw->setMinBorderDist(0, 0);
+                int sDist = 0, eDist = 0;
+                sw->getBorderDistHint(sDist, eDist);
+                sw->setBorderDist(sDist, eDist);
+            } else if (isCompactPlot) {
+                if (axis == QwtPlot::xBottom)
+                    sw->setMinBorderDist(2, 4);
+                else
+                    sw->setMinBorderDist(0, 0);
+                int sDist = 0, eDist = 0;
+                sw->getBorderDistHint(sDist, eDist);
+                const int maxDist = (axis == QwtPlot::xBottom || axis == QwtPlot::xTop) ? 8 : 6;
+                sw->setBorderDist(qMin(sDist, maxDist), qMin(eDist, maxDist));
+            } else {
+                if (axis == QwtPlot::xBottom)
+                    sw->setMinBorderDist(10, 28);
+                int sDist = 0, eDist = 0;
+                sw->getBorderDistHint(sDist, eDist);
+                sw->setBorderDist(sDist, eDist);
+            }
         } else {
             sw->setMinBorderDist(0, 0);
             sw->setBorderDist(0, 0);
         }
     }
 
-    int rightOverhang = 30;
-    if (axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom)) {
+    int rightOverhang = isCompactPlot ? 0 : 30;
+    if (!isCompactPlot && axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom)) {
         int s = 0, e = 0;
         axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
         rightOverhang = qMax(rightOverhang, e + 6);
     }
-    if (axisEnabled(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)) {
+    if (!isCompactPlot && axisEnabled(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)) {
         int s = 0, e = 0;
         axisWidget(QwtPlot::xTop)->getBorderDistHint(s, e);
         rightOverhang = qMax(rightOverhang, e + 6);
     }
     if (axisWidget(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)->scaleDraw()) {
-        if (axisWidget(QwtPlot::yRight)->isColorBarEnabled()) {
+        if (axisWidget(QwtPlot::yRight)->isColorBarEnabled() || isCompactPlot) {
             axisWidget(QwtPlot::yRight)->scaleDraw()->setMinimumExtent(0);
         } else {
             const int minRightDim = qMax(20, rightOverhang - margin() + 2);
@@ -921,19 +954,19 @@ void Plot::updateLayout()
         }
     }
 
-    int topOverhang = 18;
-    if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft)) {
+    int topOverhang = isCompactPlot ? 0 : 18;
+    if (!isCompactPlot && axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft)) {
         int s = 0, e = 0;
         axisWidget(QwtPlot::yLeft)->getBorderDistHint(s, e);
         topOverhang = qMax(topOverhang, s + 4);
     }
-    if (axisEnabled(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)) {
+    if (!isCompactPlot && axisEnabled(QwtPlot::yRight) && axisWidget(QwtPlot::yRight)) {
         int s = 0, e = 0;
         axisWidget(QwtPlot::yRight)->getBorderDistHint(s, e);
         topOverhang = qMax(topOverhang, s + 4);
     }
     if (axisWidget(QwtPlot::xTop) && axisWidget(QwtPlot::xTop)->scaleDraw()) {
-        if (axisWidget(QwtPlot::xTop)->isColorBarEnabled()) {
+        if (axisWidget(QwtPlot::xTop)->isColorBarEnabled() || isCompactPlot) {
             axisWidget(QwtPlot::xTop)->scaleDraw()->setMinimumExtent(0);
         } else {
             const int minTopDim = qMax(8, topOverhang - margin() + 2);
@@ -956,7 +989,7 @@ void Plot::updateLayout()
     if (axisWidget(QwtPlot::xTop))
         axisWidget(QwtPlot::xTop)->clearMask();
 
-    if (Graph *g = qobject_cast<Graph *>(parent()))
+    if (g)
         g->updateSelectionOverlayGeometry();
 }
 
@@ -979,11 +1012,21 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
     int mRight = m;
     int mBottom = m;
 
+    Graph *g = qobject_cast<Graph *>(parent());
+    const bool isCompactPrint = (plotRect.width() > 0 && plotRect.width() < 180)
+            || (plotRect.height() > 0 && plotRect.height() < 150)
+            || (g && g->multiLayerParent() && g->multiLayerParent()->isInsetLayer(g));
+
     if (!axisEnabled(QwtPlot::yRight)) {
         int s = 0, e = 0;
         if (axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom))
             axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
-        mRight = qMax(mRight, e + 6);
+        if (isCompactPrint) {
+            e = qMin(e, 6);
+            mRight = qMax(mRight, e + 2);
+        } else {
+            mRight = qMax(mRight, e + 6);
+        }
     }
     const int outsideRightMargin = property("_outsideRightMargin").toInt();
     if (outsideRightMargin > 0)
@@ -992,7 +1035,12 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
         int s = 0, e = 0;
         if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft))
             axisWidget(QwtPlot::yLeft)->getBorderDistHint(s, e);
-        mTop = qMax(mTop, s + 6);
+        if (isCompactPrint) {
+            s = qMin(s, 6);
+            mTop = qMax(mTop, s + 2);
+        } else {
+            mTop = qMax(mTop, s + 6);
+        }
     }
 
     // QwtPlot::print() already subtracts plotLayout()->margin() (== m) on all 4 sides
@@ -1010,7 +1058,6 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
             ? plotRect.adjusted(adjL, adjT, -adjR, -adjB)
             : plotRect;
 
-    Graph *g = qobject_cast<Graph *>(parent());
     const bool suppressScaleBackbone =
             g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones();
     const double savedScale = s_toriPrintDeviceScale;
