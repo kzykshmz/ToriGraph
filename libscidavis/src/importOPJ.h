@@ -54,8 +54,12 @@ private:
     int translateOrigin2ScidavisLineStyle(int linestyle);
     QString parseOriginText(const QString &str);
     QString parseOriginTags(const QString &str);
+    QString resolveOriginLegendPlaceholders(const QString &str,
+                                            const Origin::GraphLayer &layer,
+                                            const QVector<int> &curveIdxMap) const;
     int parse_error;
     int xoffset;
+    int d_table_visible_count = 0;
     ApplicationWindow *mw;
     QTextCodec *d_codec; // the codec object is owned by Qt, this is actually a weak pointer.
 };

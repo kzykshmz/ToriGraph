@@ -1,0 +1,1480 @@
+"""Zero-COM Native OLE PowerPoint (.pptx) Deck Builder for ToriGraph.
+
+Generates and updates editable ``ToriGraph.Graph.1`` (CLSID ``{8E6B9541-3C74-4D28-A915-7D84E5A12001}``)
+OLE objects inside OpenXML ``.pptx`` presentations using ``python-pptx`` and Win32 ``ole32.dll``
+``StgCreateDocfile`` Structured Storage (with a pure-Python MS-CFB fallback on non-Windows hosts).
+
+Safety invariants:
+- ``POWERPNT.EXE`` / ``win32com`` is **never** spawned, attached, or touched.
+- The OS system clipboard is **never** opened or modified.
+- Importing this module uses 100% Python standard library; ``python-pptx`` is imported lazily.
+"""
+
+from __future__ import annotations
+
+import base64
+import ctypes
+import json
+import math
+import os
+import struct
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+if TYPE_CHECKING:
+    from .client import GraphProxy, Session
+
+TORIGRAPH_OLE_CLSID_STR = "{8E6B9541-3C74-4D28-A915-7D84E5A12001}"
+TORIGRAPH_OLE_PROG_ID = "ToriGraph.Graph.1"
+TORIGRAPH_ALT_PREFIX = "torigraph:"
+TORIGRAPH_SHAPE_PREFIX = "ToriGraphOLE:"
+
+EMU_PER_INCH = 914400
+EMU_PER_CM = 360000
+EMU_PER_MM = 36000
+
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+REL_OLE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject"
+REL_IMAGE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+CT_OLE_OBJECT = "application/vnd.openxmlformats-officedocument.oleObject"
+CT_EMF = "image/x-emf"
+
+_VALID_PER_SLIDE: Dict[int, Tuple[int, int]] = {
+    1: (1, 1),
+    2: (1, 2),
+    3: (1, 3),
+    4: (2, 2),
+    6: (2, 3),
+}
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+_CLSID_TORIGRAPH = _GUID(
+    0x8E6B9541,
+    0x3C74,
+    0x4D28,
+    (ctypes.c_ubyte * 8)(0xA9, 0x15, 0x7D, 0x84, 0xE5, 0xA1, 0x20, 0x01),
+)
+
+# Little-endian binary bytes of {8E6B9541-3C74-4D28-A915-7D84E5A12001}
+_CLSID_TORIGRAPH_BYTES = struct.pack(
+    "<IHH8B",
+    0x8E6B9541,
+    0x3C74,
+    0x4D28,
+    0xA9,
+    0x15,
+    0x7D,
+    0x84,
+    0xE5,
+    0xA1,
+    0x20,
+    0x01,
+)
+
+
+def _import_pptx() -> Tuple[Any, Any, Any, Any]:
+    """Lazily import python-pptx components."""
+    try:
+        import pptx  # type: ignore[import-not-found]
+        from pptx.opc.package import Part  # type: ignore[import-not-found]
+        from pptx.opc.packuri import PackURI  # type: ignore[import-not-found]
+        from pptx.oxml import parse_xml  # type: ignore[import-not-found]
+
+        return pptx, Part, PackURI, parse_xml
+    except ImportError as exc:
+        raise ImportError(
+            "Exporting PowerPoint decks requires 'python-pptx'. Install it via: pip install python-pptx"
+        ) from exc
+
+
+def parse_emf_dimensions(
+    emf_bytes: bytes,
+    fallback_width_mm: float = 85.0,
+    fallback_height_mm: float = 85.0,
+) -> Tuple[int, int, int, int]:
+    """Extract ``(width_hm, height_hm, width_px, height_px)`` from an EMF ENHMETAHEADER."""
+    w_hm_fb = max(500, int(round(max(10.0, float(fallback_width_mm)) * 100.0)))
+    h_hm_fb = max(500, int(round(max(10.0, float(fallback_height_mm)) * 100.0)))
+    w_px_fb = max(64, int(round(w_hm_fb * 96.0 / 2540.0)))
+    h_px_fb = max(64, int(round(h_hm_fb * 96.0 / 2540.0)))
+
+    if len(emf_bytes) >= 44:
+        rec_type, _, b_l, b_t, b_r, b_b, f_l, f_t, f_r, f_b = struct.unpack(
+            "<IIiiiiiiii", emf_bytes[:40]
+        )
+        sig = emf_bytes[40:44]
+        if rec_type == 1 and sig == b" EMF":
+            w_hm = f_r - f_l
+            h_hm = f_b - f_t
+            w_px = b_r - b_l
+            h_px = b_b - b_t
+            if w_hm > 0 and h_hm > 0:
+                if w_px <= 0 or h_px <= 0:
+                    w_px = max(64, int(round(w_hm * 96.0 / 2540.0)))
+                    h_px = max(64, int(round(h_hm * 96.0 / 2540.0)))
+                return int(w_hm), int(h_hm), int(w_px), int(h_px)
+            if w_px > 0 and h_px > 0:
+                return (
+                    max(500, int(round(w_px * 2540.0 / 96.0))),
+                    max(500, int(round(h_px * 2540.0 / 96.0))),
+                    int(w_px),
+                    int(h_px),
+                )
+    return w_hm_fb, h_hm_fb, w_px_fb, h_px_fb
+
+
+def _build_comp_obj_stream(user_type: str = "ToriGraph Graph", prog_id: str = TORIGRAPH_OLE_PROG_ID) -> bytes:
+    """Build a standard OLE2 \\x01CompObj stream (used by non-Windows CFB fallback)."""
+    # Header: version/byte-order (0xFFFE0001), OS version (0x00000A03), unused (-1), CLSID (16B)
+    ut_bytes = user_type.encode("ascii", errors="replace") + b"\x00"
+    fmt_bytes = b"Embed Source\x00"
+    prog_bytes = prog_id.encode("ascii", errors="replace") + b"\x00"
+    parts = [
+        struct.pack("<HHII", 0x0001, 0xFFFE, 0x00000A03, 0xFFFFFFFF),
+        _CLSID_TORIGRAPH_BYTES,
+        struct.pack("<I", len(ut_bytes)),
+        ut_bytes,
+        struct.pack("<I", len(fmt_bytes)),
+        fmt_bytes,
+        struct.pack("<I", len(prog_bytes)),
+        prog_bytes,
+        # Unicode marker (0x71B239F4) + UTF-16LE userType, clipFormat, progId
+        struct.pack("<I", 0x71B239F4),
+    ]
+    for s in (user_type, "Embed Source", prog_id):
+        u16 = (s + "\x00").encode("utf-16-le")
+        parts.append(struct.pack("<I", len(u16)))
+        parts.append(u16)
+    return b"".join(parts)
+
+
+def _cfb_name_key(name: str) -> Tuple[int, str]:
+    """MS-CFB red-black directory tree comparison key: (utf16_code_unit_length, uppercase_name)."""
+    return (len(name.encode("utf-16-le")) // 2, name.upper())
+
+
+def _build_cfb_pure_python(streams: Sequence[Tuple[str, bytes]], root_clsid: bytes) -> bytes:
+    """Pure-Python MS-CFB v3 (512-byte sector, regular-stream) builder for non-Windows hosts."""
+    SECTOR = 512
+    ENDOFCHAIN = 0xFFFFFFFE
+    FREESECT = 0xFFFFFFFF
+    FATSECT = 0xFFFFFFFD
+
+    # Sort streams by MS-CFB red-black ordering and build balanced BST over indices 1..N
+    sorted_streams = sorted(streams, key=lambda kv: _cfb_name_key(kv[0]))
+    n_streams = len(sorted_streams)
+
+    # Force regular (>= 4096 cutoff bypassed by setting miniStreamCutoffSize = 0 or padding?
+    # Note: MS-CFB spec fixes miniStreamCutoffSize == 4096! So streams < 4096 MUST live in MiniStream!)
+    MINI_CUTOFF = 4096
+    MINI_SECTOR = 64
+
+    mini_chunks = bytearray()
+    mini_fat: List[int] = []
+    regular_data = bytearray()
+    fat: List[int] = []
+
+    stream_meta: List[Tuple[str, int, int]] = []  # (name, start_sect, byte_len)
+
+    # Allocate regular streams (>= 4096 bytes) first
+    for name, data in sorted_streams:
+        if len(data) >= MINI_CUTOFF:
+            start_sec = len(fat)
+            n_sec = max(1, math.ceil(len(data) / SECTOR))
+            padded = data + b"\x00" * (n_sec * SECTOR - len(data))
+            regular_data.extend(padded)
+            for k in range(n_sec):
+                fat.append((start_sec + k + 1) if k + 1 < n_sec else ENDOFCHAIN)
+            stream_meta.append((name, start_sec, len(data)))
+        else:
+            if len(data) == 0:
+                stream_meta.append((name, ENDOFCHAIN, 0))
+            else:
+                m_start = len(mini_fat)
+                n_msec = math.ceil(len(data) / MINI_SECTOR)
+                padded_m = data + b"\x00" * (n_msec * MINI_SECTOR - len(data))
+                mini_chunks.extend(padded_m)
+                for k in range(n_msec):
+                    mini_fat.append((m_start + k + 1) if k + 1 < n_msec else ENDOFCHAIN)
+                stream_meta.append((name, m_start, len(data)))
+
+    # Place mini_chunks into regular sectors as Root Entry's stream
+    if mini_chunks:
+        root_start_sec = len(fat)
+        root_size = len(mini_chunks)
+        n_rsec = math.ceil(root_size / SECTOR)
+        regular_data.extend(mini_chunks + b"\x00" * (n_rsec * SECTOR - root_size))
+        for k in range(n_rsec):
+            fat.append((root_start_sec + k + 1) if k + 1 < n_rsec else ENDOFCHAIN)
+    else:
+        root_start_sec = ENDOFCHAIN
+        root_size = 0
+
+    # MiniFAT sectors
+    if mini_fat:
+        entries_per_sec = SECTOR // 4  # 128
+        n_mfat_sec = math.ceil(len(mini_fat) / entries_per_sec)
+        padded_mfat = mini_fat + [FREESECT] * (n_mfat_sec * entries_per_sec - len(mini_fat))
+        mfat_start_sec = len(fat)
+        regular_data.extend(struct.pack(f"<{len(padded_mfat)}I", *padded_mfat))
+        for k in range(n_mfat_sec):
+            fat.append((mfat_start_sec + k + 1) if k + 1 < n_mfat_sec else ENDOFCHAIN)
+    else:
+        mfat_start_sec = ENDOFCHAIN
+        n_mfat_sec = 0
+
+    # Build balanced BST over 1..n_streams for Directory Entries
+    def _build_bst(lo: int, hi: int) -> Tuple[int, Dict[int, Tuple[int, int]]]:
+        if lo > hi:
+            return 0xFFFFFFFF, {}
+        mid = (lo + hi) // 2
+        left_id, left_map = _build_bst(lo, mid - 1)
+        right_id, right_map = _build_bst(mid + 1, hi)
+        merged = {**left_map, **right_map, mid: (left_id, right_id)}
+        return mid, merged
+
+    root_child_id, tree_links = _build_bst(1, n_streams)
+
+    def _pack_dir_entry(
+        name: str,
+        obj_type: int,
+        color: int,
+        left_sib: int,
+        right_sib: int,
+        child_id: int,
+        clsid: bytes,
+        start_sec: int,
+        size: int,
+    ) -> bytes:
+        u16 = (name + "\x00").encode("utf-16-le")
+        if len(u16) > 64:
+            raise ValueError(f"CFB stream name too long: {name!r}")
+        name_buf = u16 + b"\x00" * (64 - len(u16))
+        return struct.pack(
+            "<64sHBBIII16sIQQIII",
+            name_buf,
+            len(u16),
+            obj_type,
+            color,
+            left_sib,
+            right_sib,
+            child_id,
+            clsid,
+            0,  # state bits
+            0,  # creation time
+            0,  # modified time
+            start_sec,
+            size & 0xFFFFFFFF,
+            0,
+        )
+
+    dir_bytes = bytearray()
+    # Entry 0: Root Entry
+    dir_bytes.extend(
+        _pack_dir_entry(
+            "Root Entry",
+            5,
+            0,  # black
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            root_child_id,
+            root_clsid,
+            root_start_sec,
+            root_size,
+        )
+    )
+    for idx1, (sname, sstart, ssize) in enumerate(stream_meta, start=1):
+        lsib, rsib = tree_links[idx1]
+        dir_bytes.extend(
+            _pack_dir_entry(
+                sname,
+                2,
+                1,  # red/black
+                lsib,
+                rsib,
+                0xFFFFFFFF,
+                b"\x00" * 16,
+                sstart,
+                ssize,
+            )
+        )
+    # Pad directory entries to multiple of 4 (512B / 128B = 4 entries per sector)
+    while (len(dir_bytes) % SECTOR) != 0:
+        dir_bytes.extend(b"\x00" * 64 + struct.pack("<HBBIII", 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF) + b"\x00" * 48)
+
+    dir_start_sec = len(fat)
+    n_dir_sec = len(dir_bytes) // SECTOR
+    regular_data.extend(dir_bytes)
+    for k in range(n_dir_sec):
+        fat.append((dir_start_sec + k + 1) if k + 1 < n_dir_sec else ENDOFCHAIN)
+
+    # Allocate FAT sectors (supports up to 109 FAT sectors = ~7 MB OLE object without DIFAT extension)
+    entries_per_fat = SECTOR // 4
+    n_fat_sec = 1
+    while (len(fat) + n_fat_sec) > n_fat_sec * entries_per_fat:
+        n_fat_sec += 1
+    if n_fat_sec > 109:
+        raise ValueError("OLE payload exceeds single-header DIFAT limit on non-Windows fallback.")
+
+    fat_start_sec = len(fat)
+    for _ in range(n_fat_sec):
+        fat.append(FATSECT)
+    padded_fat = fat + [FREESECT] * (n_fat_sec * entries_per_fat - len(fat))
+    regular_data.extend(struct.pack(f"<{len(padded_fat)}I", *padded_fat))
+
+    difat = [fat_start_sec + k for k in range(n_fat_sec)] + [FREESECT] * (109 - n_fat_sec)
+    header = struct.pack(
+        "<8s16sHHHHH6s9I109I",
+        b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1",
+        b"\x00" * 16,
+        0x003E,  # minor version
+        0x0003,  # major version 3 (512-byte sectors)
+        0xFFFE,  # little-endian
+        9,       # sector shift (2^9 = 512)
+        6,       # mini sector shift (2^6 = 64)
+        b"\x00" * 6,  # reserved
+        0,            # num dir sectors (0 for v3)
+        n_fat_sec,
+        dir_start_sec,
+        0,            # transaction sig
+        MINI_CUTOFF,
+        mfat_start_sec,
+        n_mfat_sec,
+        ENDOFCHAIN,   # first DIFAT sector
+        0,            # num DIFAT sectors
+        *difat,
+    )
+    return header + bytes(regular_data)
+
+
+def build_ole_compound_file(
+    out_bin_path: Union[str, os.PathLike[str]],
+    project_bytes: bytes,
+    emf_bytes: bytes,
+    target_window: str,
+    width_hm: int,
+    height_hm: int,
+    width_px: int,
+    height_px: int,
+) -> Path:
+    """Write a native ``ToriGraph.Graph.1`` OLE2 Compound File at ``out_bin_path``.
+
+    Contains:
+    - Root Storage CLSID ``{8E6B9541-3C74-4D28-A915-7D84E5A12001}``
+    - ``\\x01CompObj`` (Embed Source, ``ToriGraph Graph``)
+    - ``\\x01Ole`` (20-byte OLE 2.0 stream header)
+    - ``ToriGraphProject`` & ``SciDAVisProject`` (UTF-8 ``.sciprj`` XML bytes)
+    - ``SciDAVisMeta`` (JSON targetWindow & HIMETRIC/pixel geometry)
+    - ``SciDAVisEmf`` (vector Enhanced Metafile preview bytes)
+    """
+    dest = Path(os.fspath(out_bin_path))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    ole10_stream = struct.pack("<IIIII", 0x02000001, 0, 0, 0, 0)
+    meta_bytes = json.dumps(
+        {
+            "targetWindow": str(target_window),
+            "targetLayer": 0,
+            "widthHm": int(width_hm),
+            "heightHm": int(height_hm),
+            "widthPx": int(width_px),
+            "heightPx": int(height_px),
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    if os.name != "nt":
+        cfb_bytes = _build_cfb_pure_python(
+            [
+                ("\x01CompObj", _build_comp_obj_stream("ToriGraph Graph", TORIGRAPH_OLE_PROG_ID)),
+                ("\x01Ole", ole10_stream),
+                ("ToriGraphProject", project_bytes),
+                ("SciDAVisProject", project_bytes),
+                ("SciDAVisMeta", meta_bytes),
+                ("SciDAVisEmf", emf_bytes),
+            ],
+            _CLSID_TORIGRAPH_BYTES,
+        )
+        dest.write_bytes(cfb_bytes)
+        return dest
+
+    from ctypes import wintypes
+
+    ole32 = ctypes.WinDLL("ole32")
+    user32 = ctypes.WinDLL("user32")
+
+    co_init_ex = ole32.CoInitializeEx
+    co_init_ex.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    co_init_ex.restype = ctypes.c_long
+
+    stg_create = ole32.StgCreateDocfile
+    stg_create.argtypes = [
+        ctypes.c_wchar_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    stg_create.restype = ctypes.c_long
+
+    write_class_stg = ole32.WriteClassStg
+    write_class_stg.argtypes = [ctypes.c_void_p, ctypes.POINTER(_GUID)]
+    write_class_stg.restype = ctypes.c_long
+
+    reg_cf = user32.RegisterClipboardFormatW
+    reg_cf.argtypes = [ctypes.c_wchar_p]
+    reg_cf.restype = wintypes.UINT
+
+    write_fmt_ut = ole32.WriteFmtUserTypeStg
+    write_fmt_ut.argtypes = [ctypes.c_void_p, wintypes.WORD, ctypes.c_wchar_p]
+    write_fmt_ut.restype = ctypes.c_long
+
+    # COINIT_APARTMENTTHREADED = 0x2; ignore RPC_E_CHANGED_MODE (0x80010106) if already MTA
+    co_init_ex(None, 0x2)
+
+    STGM_CREATE = 0x00001000
+    STGM_READWRITE = 0x00000002
+    STGM_SHARE_EXCLUSIVE = 0x00000010
+    mode = STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE
+
+    stg_ptr = ctypes.c_void_p()
+    hr = stg_create(os.fspath(dest), mode, 0, ctypes.byref(stg_ptr))
+    if hr < 0 or not stg_ptr.value:
+        raise RuntimeError(f"StgCreateDocfile('{dest}') failed: HRESULT=0x{hr & 0xFFFFFFFF:08X}")
+
+    CreateStreamProto = ctypes.WINFUNCTYPE(
+        ctypes.c_long,
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    CommitStgProto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wintypes.DWORD)
+    ReleaseProto = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)
+    WriteStreamProto = ctypes.WINFUNCTYPE(
+        ctypes.c_long,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.POINTER(wintypes.ULONG),
+    )
+
+    try:
+        hr = write_class_stg(stg_ptr, ctypes.byref(_CLSID_TORIGRAPH))
+        if hr < 0:
+            raise RuntimeError(f"WriteClassStg failed: HRESULT=0x{hr & 0xFFFFFFFF:08X}")
+
+        cf_embed = reg_cf("Embed Source")
+        hr = write_fmt_ut(stg_ptr, wintypes.WORD(cf_embed & 0xFFFF), "ToriGraph Graph")
+        if hr < 0:
+            raise RuntimeError(f"WriteFmtUserTypeStg failed: HRESULT=0x{hr & 0xFFFFFFFF:08X}")
+
+        vtable_stg = ctypes.cast(
+            ctypes.cast(stg_ptr, ctypes.POINTER(ctypes.c_void_p))[0],
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        create_stream = CreateStreamProto(vtable_stg[3])
+        commit_stg = CommitStgProto(vtable_stg[9])
+
+        def _write_stream(stream_name: str, payload: bytes) -> None:
+            stm_ptr = ctypes.c_void_p()
+            hr_s = create_stream(stg_ptr, stream_name, mode, 0, 0, ctypes.byref(stm_ptr))
+            if hr_s < 0 or not stm_ptr.value:
+                raise RuntimeError(
+                    f"IStorage::CreateStream({stream_name!r}) failed: 0x{hr_s & 0xFFFFFFFF:08X}"
+                )
+            try:
+                vt_stm = ctypes.cast(
+                    ctypes.cast(stm_ptr, ctypes.POINTER(ctypes.c_void_p))[0],
+                    ctypes.POINTER(ctypes.c_void_p),
+                )
+                write_fn = WriteStreamProto(vt_stm[4])
+                if payload:
+                    buf = ctypes.create_string_buffer(payload, len(payload))
+                    written = wintypes.ULONG(0)
+                    hr_w = write_fn(stm_ptr, buf, len(payload), ctypes.byref(written))
+                    if hr_w < 0 or int(written.value) != len(payload):
+                        raise RuntimeError(
+                            f"IStream::Write({stream_name!r}) failed: 0x{hr_w & 0xFFFFFFFF:08X}"
+                        )
+            finally:
+                vt_stm = ctypes.cast(
+                    ctypes.cast(stm_ptr, ctypes.POINTER(ctypes.c_void_p))[0],
+                    ctypes.POINTER(ctypes.c_void_p),
+                )
+                ReleaseProto(vt_stm[2])(stm_ptr)
+
+        _write_stream("\x01Ole", ole10_stream)
+        _write_stream("ToriGraphProject", project_bytes)
+        _write_stream("SciDAVisProject", project_bytes)
+        _write_stream("SciDAVisMeta", meta_bytes)
+        _write_stream("SciDAVisEmf", emf_bytes)
+
+        hr_c = commit_stg(stg_ptr, 0)
+        if hr_c < 0:
+            raise RuntimeError(f"IStorage::Commit failed: HRESULT=0x{hr_c & 0xFFFFFFFF:08X}")
+    finally:
+        vtable_stg = ctypes.cast(
+            ctypes.cast(stg_ptr, ctypes.POINTER(ctypes.c_void_p))[0],
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        ReleaseProto(vtable_stg[2])(stg_ptr)
+
+    return dest
+
+
+def build_ole_compound_bytes(
+    project_bytes: bytes,
+    emf_bytes: bytes,
+    target_window: str,
+    width_hm: int,
+    height_hm: int,
+    width_px: int,
+    height_px: int,
+) -> bytes:
+    """Build and return in-memory bytes of a ``ToriGraph.Graph.1`` OLE2 Compound File."""
+    with tempfile.TemporaryDirectory(prefix="torigraph_ole_") as tmp:
+        bin_path = Path(tmp) / "torigraph_obj.bin"
+        build_ole_compound_file(
+            bin_path,
+            project_bytes=project_bytes,
+            emf_bytes=emf_bytes,
+            target_window=target_window,
+            width_hm=width_hm,
+            height_hm=height_hm,
+            width_px=width_px,
+            height_px=height_px,
+        )
+        return bin_path.read_bytes()
+
+
+def _extract_shape_xfrm_emu(el: Any) -> Optional[Tuple[int, int, int, int]]:
+    """Extract ``(left_emu, top_emu, width_emu, height_emu)`` from any PresentationML shape XML node."""
+    # 1. graphicFrame uses <p:xfrm>; 2. pic / sp / cxnSp use <p:spPr>/<a:xfrm>; 3. grpSp uses <p:grpSpPr>/<a:xfrm>
+    candidates: List[Any] = []
+    p_xfrm = el.find(f"{{{P_NS}}}xfrm")
+    if p_xfrm is not None:
+        candidates.append(p_xfrm)
+    sp_pr = el.find(f"{{{P_NS}}}spPr")
+    if sp_pr is not None:
+        a_xfrm = sp_pr.find(f"{{{A_NS}}}xfrm")
+        if a_xfrm is not None:
+            candidates.append(a_xfrm)
+    grp_pr = el.find(f"{{{P_NS}}}grpSpPr")
+    if grp_pr is not None:
+        g_xfrm = grp_pr.find(f"{{{A_NS}}}xfrm")
+        if g_xfrm is not None:
+            candidates.append(g_xfrm)
+    if not candidates:
+        candidates.extend(el.xpath(".//*[local-name()='xfrm']"))
+
+    for xf in candidates:
+        off = xf.find(f"{{{A_NS}}}off")
+        ext = xf.find(f"{{{A_NS}}}ext")
+        if off is not None and ext is not None:
+            try:
+                x = int(off.get("x", "0"))
+                y = int(off.get("y", "0"))
+                cx = int(ext.get("cx", "0"))
+                cy = int(ext.get("cy", "0"))
+                if cx > 0 and cy > 0:
+                    return x, y, cx, cy
+            except ValueError:
+                continue
+    return None
+
+
+def _collect_referenced_rids(root_el: Any) -> set[str]:
+    """Return all relationship IDs (r:id / r:embed / r:link) referenced inside ``root_el``."""
+    rids: set[str] = set()
+    for node in root_el.iter():
+        for attr_name in (f"{{{R_NS}}}id", f"{{{R_NS}}}embed", f"{{{R_NS}}}link"):
+            val = node.get(attr_name)
+            if val:
+                rids.add(val)
+    return rids
+
+
+def _drop_unreferenced_rels(slide_part: Any, sp_tree: Any, candidate_rids: set[str]) -> None:
+    """Garbage-collect slide relationships that are no longer referenced after replacing a shape."""
+    if not candidate_rids:
+        return
+    still_used = _collect_referenced_rids(sp_tree)
+    rels_dict = getattr(slide_part.rels, "_rels", None)
+    if isinstance(rels_dict, dict):
+        for rid in candidate_rids - still_used:
+            rels_dict.pop(rid, None)
+
+
+def _fit_aspect_inside_box(
+    box_left: int,
+    box_top: int,
+    box_w: int,
+    box_h: int,
+    aspect_w: float,
+    aspect_h: float,
+) -> Tuple[int, int, int, int]:
+    """Letterbox ``(aspect_w, aspect_h)`` proportionally centered inside ``(box_left, box_top, box_w, box_h)``."""
+    if aspect_w <= 0 or aspect_h <= 0 or box_w <= 0 or box_h <= 0:
+        return int(box_left), int(box_top), max(1, int(box_w)), max(1, int(box_h))
+    ratio = float(aspect_w) / float(aspect_h)
+    box_ratio = float(box_w) / float(box_h)
+    if ratio >= box_ratio:
+        w = box_w
+        h = max(1, int(round(box_w / ratio)))
+    else:
+        h = box_h
+        w = max(1, int(round(box_h * ratio)))
+    left = int(round(box_left + 0.5 * (box_w - w)))
+    top = int(round(box_top + 0.5 * (box_h - h)))
+    return left, top, int(w), int(h)
+
+
+def _xml_escape_attr(val: str) -> str:
+    return (
+        str(val)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _find_shape_element_on_slide(
+    sp_tree: Any,
+    *,
+    shape_name: Optional[str] = None,
+    graph_name: Optional[str] = None,
+) -> Optional[Any]:
+    """Locate a direct child shape of ``sp_tree`` matching ``shape_name`` or ToriGraph alt_text."""
+    target_alt = f"{TORIGRAPH_ALT_PREFIX}{graph_name}" if graph_name else None
+    target_ole_name = f"{TORIGRAPH_SHAPE_PREFIX}{graph_name}" if graph_name else None
+
+    for child in list(sp_tree):
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local in ("nvGrpSpPr", "grpSpPr"):
+            continue
+        # Only inspect top-level cNvPr of this shape (not nested preview <p:pic> inside <p:oleObj>)
+        cnv_list = child.xpath(
+            "./*[local-name()='nvSpPr' or local-name()='nvPicPr' or local-name()='nvGraphicFramePr' or local-name()='nvGrpSpPr' or local-name()='nvCxnSpPr']/*[local-name()='cNvPr']"
+        )
+        if not cnv_list:
+            continue
+        cnv = cnv_list[0]
+        nm = cnv.get("name", "")
+        descr = cnv.get("descr", "")
+        if shape_name is not None:
+            if nm == shape_name or descr == shape_name:
+                return child
+        elif graph_name is not None:
+            if descr == target_alt or nm == target_ole_name or nm == target_alt:
+                return child
+    return None
+
+
+def embed_ole_shape_on_slide(
+    prs: Any,
+    slide: Any,
+    *,
+    ole_bytes: bytes,
+    emf_bytes: bytes,
+    left_emu: int,
+    top_emu: int,
+    width_emu: int,
+    height_emu: int,
+    graph_name: str,
+    shape_name: Optional[str] = None,
+    prog_id: str = TORIGRAPH_OLE_PROG_ID,
+    replace_element: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Insert (or replace in-place at original Z-order) a native OLE ``<p:graphicFrame>`` on ``slide``."""
+    _, Part, PackURI, parse_xml = _import_pptx()
+    sp_tree = slide.shapes._spTree
+
+    insert_idx: Optional[int] = None
+    old_rids: set[str] = set()
+    if replace_element is not None and replace_element in sp_tree:
+        insert_idx = list(sp_tree).index(replace_element)
+        old_rids = _collect_referenced_rids(replace_element)
+        sp_tree.remove(replace_element)
+        _drop_unreferenced_rels(slide.part, sp_tree, old_rids)
+
+    pkg = prs.part.package
+    existing_uris = {str(p.partname) for p in pkg.iter_parts()}
+    ole_idx = 1
+    while f"/ppt/embeddings/oleObject{ole_idx}.bin" in existing_uris:
+        ole_idx += 1
+    img_idx = 1
+    while f"/ppt/media/image{img_idx}.emf" in existing_uris:
+        img_idx += 1
+
+    ole_uri = f"/ppt/embeddings/oleObject{ole_idx}.bin"
+    emf_uri = f"/ppt/media/image{img_idx}.emf"
+
+    ole_part = Part(PackURI(ole_uri), CT_OLE_OBJECT, pkg, ole_bytes)
+    emf_part = Part(PackURI(emf_uri), CT_EMF, pkg, emf_bytes)
+
+    r_id_ole = slide.part.relate_to(ole_part, REL_OLE)
+    r_id_img = slide.part.relate_to(emf_part, REL_IMAGE)
+
+    max_id = 1
+    for cnv in sp_tree.xpath(".//*[local-name()='cNvPr']"):
+        try:
+            max_id = max(max_id, int(cnv.get("id", "1")))
+        except ValueError:
+            pass
+    shape_id = max_id + 1
+    pic_id = max_id + 2
+
+    eff_name = shape_name or f"{TORIGRAPH_SHAPE_PREFIX}{graph_name}"
+    alt_text = f"{TORIGRAPH_ALT_PREFIX}{graph_name}"
+    esc_name = _xml_escape_attr(eff_name)
+    esc_alt = _xml_escape_attr(alt_text)
+    esc_prog = _xml_escape_attr(prog_id)
+
+    x_i = int(round(left_emu))
+    y_i = int(round(top_emu))
+    w_i = max(1, int(round(width_emu)))
+    h_i = max(1, int(round(height_emu)))
+
+    gf_xml = (
+        f'<p:graphicFrame xmlns:p="{P_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+        f"<p:nvGraphicFramePr>"
+        f'<p:cNvPr id="{shape_id}" name="{esc_name}" descr="{esc_alt}"/>'
+        f'<p:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></p:cNvGraphicFramePr>'
+        f"<p:nvPr/>"
+        f"</p:nvGraphicFramePr>"
+        f"<p:xfrm>"
+        f'<a:off x="{x_i}" y="{y_i}"/>'
+        f'<a:ext cx="{w_i}" cy="{h_i}"/>'
+        f"</p:xfrm>"
+        f"<a:graphic>"
+        f'<a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+        f'<p:oleObj name="ToriGraph Graph" r:id="{r_id_ole}" imgW="{w_i}" imgH="{h_i}" progId="{esc_prog}">'
+        f"<p:embed/>"
+        f"<p:pic>"
+        f"<p:nvPicPr>"
+        f'<p:cNvPr id="{pic_id}" name="{esc_name}_Preview" descr="{esc_alt}"/>'
+        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
+        f"<p:nvPr/>"
+        f"</p:nvPicPr>"
+        f"<p:blipFill>"
+        f'<a:blip r:embed="{r_id_img}"/>'
+        f"<a:stretch><a:fillRect/></a:stretch>"
+        f"</p:blipFill>"
+        f"<p:spPr>"
+        f"<a:xfrm>"
+        f'<a:off x="{x_i}" y="{y_i}"/>'
+        f'<a:ext cx="{w_i}" cy="{h_i}"/>'
+        f"</a:xfrm>"
+        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        f"</p:spPr>"
+        f"</p:pic>"
+        f"</p:oleObj>"
+        f"</a:graphicData>"
+        f"</a:graphic>"
+        f"</p:graphicFrame>"
+    )
+    gf_el = parse_xml(gf_xml)
+    if insert_idx is not None:
+        sp_tree.insert(insert_idx, gf_el)
+    else:
+        sp_tree.append(gf_el)
+
+    return {
+        "graph": graph_name,
+        "shape_name": eff_name,
+        "alt_text": alt_text,
+        "ole_part": ole_uri,
+        "emf_part": emf_uri,
+        "left_cm": round(x_i / EMU_PER_CM, 4),
+        "top_cm": round(y_i / EMU_PER_CM, 4),
+        "width_cm": round(w_i / EMU_PER_CM, 4),
+        "height_cm": round(h_i / EMU_PER_CM, 4),
+        "replaced": replace_element is not None,
+    }
+
+
+def _pick_blank_slide_layout(prs: Any) -> Any:
+    """Select the cleanest blank slide layout from ``prs.slide_layouts``."""
+    layouts = list(prs.slide_layouts)
+    if not layouts:
+        raise RuntimeError("Presentation contains zero slide layouts.")
+    for layout in layouts:
+        nm = str(getattr(layout, "name", "") or "").strip().lower()
+        if nm in ("blank", "白紙"):
+            return layout
+    # Prefer layout with zero placeholders
+    best = min(layouts, key=lambda ly: len(list(getattr(ly, "placeholders", []))))
+    return best
+
+
+def _add_clean_blank_slide(prs: Any, title_text: Optional[str] = None) -> Any:
+    """Append a blank slide (stripping inherited layout placeholders) and optional Arial slide title."""
+    pptx, _, _, _ = _import_pptx()
+    slide = prs.slides.add_slide(_pick_blank_slide_layout(prs))
+    sp_tree = slide.shapes._spTree
+    for child in list(sp_tree):
+        if child.xpath(".//*[local-name()='ph']"):
+            sp_tree.remove(child)
+
+    if title_text:
+        tb = slide.shapes.add_textbox(
+            int(round(1.2 * EMU_PER_CM)),
+            int(round(0.45 * EMU_PER_CM)),
+            max(1, int(prs.slide_width) - int(round(2.4 * EMU_PER_CM))),
+            int(round(1.3 * EMU_PER_CM)),
+        )
+        tf = tb.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = str(title_text)
+        run.font.name = "Arial"
+        run.font.bold = False
+        run.font.size = pptx.util.Pt(22)
+    return slide
+
+
+def _resolve_1based_slide(prs: Any, slide_spec: int) -> Tuple[Any, int]:
+    """Resolve slide specifier (1-based PowerPoint index, 0 as alias for 1, or negative from end)."""
+    n_slides = len(prs.slides)
+    if n_slides == 0:
+        raise IndexError("Target deck has 0 slides.")
+    idx_int = int(slide_spec)
+    if idx_int == 0:
+        idx0 = 0
+    elif idx_int > 0:
+        idx0 = idx_int - 1
+    else:
+        idx0 = n_slides + idx_int
+    if idx0 < 0 or idx0 >= n_slides:
+        raise IndexError(
+            f"Slide index {slide_spec} out of range for deck with {n_slides} slide(s) (1..{n_slides})."
+        )
+    return prs.slides[idx0], idx0 + 1
+
+
+def _parse_box_cm(
+    box: Sequence[float],
+    width_hm: int,
+    height_hm: int,
+) -> Tuple[int, int, int, int]:
+    """Convert ``box=(left_cm, top_cm, width_cm[, height_cm])`` into aspect-safe EMU coordinates."""
+    vals = [float(v) for v in box]
+    if len(vals) == 3:
+        l_cm, t_cm, w_cm = vals
+        if w_cm <= 0:
+            raise ValueError(f"box width_cm must be > 0, got {w_cm}.")
+        l_emu = int(round(l_cm * EMU_PER_CM))
+        t_emu = int(round(t_cm * EMU_PER_CM))
+        w_emu = int(round(w_cm * EMU_PER_CM))
+        h_emu = max(1, int(round(w_emu * (float(height_hm) / float(max(1, width_hm))))))
+        return l_emu, t_emu, w_emu, h_emu
+    if len(vals) == 4:
+        l_cm, t_cm, w_cm, h_cm = vals
+        if w_cm <= 0:
+            raise ValueError(f"box width_cm must be > 0, got {w_cm}.")
+        l_emu = int(round(l_cm * EMU_PER_CM))
+        t_emu = int(round(t_cm * EMU_PER_CM))
+        w_emu = int(round(w_cm * EMU_PER_CM))
+        if h_cm <= 0:
+            h_emu = max(1, int(round(w_emu * (float(height_hm) / float(max(1, width_hm))))))
+            return l_emu, t_emu, w_emu, h_emu
+        h_emu = int(round(h_cm * EMU_PER_CM))
+        return _fit_aspect_inside_box(l_emu, t_emu, w_emu, h_emu, width_hm, height_hm)
+    raise ValueError(
+        f"box must be (left_cm, top_cm, width_cm) or (left_cm, top_cm, width_cm, height_cm), got {box!r}."
+    )
+
+
+def _compute_grid_cell_emu(
+    slide_w: int,
+    slide_h: int,
+    n_rows: int,
+    n_cols: int,
+    cell_idx: int,
+    has_title: bool = False,
+) -> Tuple[int, int, int, int]:
+    """Compute cell ``(left_emu, top_emu, width_emu, height_emu)`` for ``per_slide`` grid layout."""
+    margin_x = int(round(1.35 * EMU_PER_CM))
+    margin_top = int(round((2.15 if has_title else 1.25) * EMU_PER_CM))
+    margin_bottom = int(round(1.15 * EMU_PER_CM))
+    gap_x = int(round(0.85 * EMU_PER_CM)) if n_cols > 1 else 0
+    gap_y = int(round(0.80 * EMU_PER_CM)) if n_rows > 1 else 0
+
+    usable_w = max(EMU_PER_CM, slide_w - 2 * margin_x - (n_cols - 1) * gap_x)
+    usable_h = max(EMU_PER_CM, slide_h - margin_top - margin_bottom - (n_rows - 1) * gap_y)
+
+    cell_w = usable_w // n_cols
+    cell_h = usable_h // n_rows
+    r = cell_idx // n_cols
+    c = cell_idx % n_cols
+    left = margin_x + c * (cell_w + gap_x)
+    top = margin_top + r * (cell_h + gap_y)
+    return left, top, cell_w, cell_h
+
+
+def _fetch_graph_ole_payload(
+    session: "Session",
+    graph_name: str,
+    *,
+    dpi: int,
+    tmp_dir: Path,
+    seq_idx: int,
+    cached_project_bytes: Optional[bytes],
+) -> Tuple[bytes, bytes, int, int, int, int, str, Optional[bytes]]:
+    """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, updated_cache)`` via RPC."""
+    from .client import RpcError
+
+    emf_tmp = tmp_dir / f"preview_{seq_idx}_{graph_name}.emf"
+    proj_bytes: Optional[bytes] = None
+    emf_bytes: Optional[bytes] = None
+    w_mm = 85.0
+    h_mm = 85.0
+    prog_id = TORIGRAPH_OLE_PROG_ID
+
+    skip_proj = cached_project_bytes is not None
+    try:
+        ole_res = session.call(
+            "graph.export_ole",
+            graph=graph_name,
+            emf_path=os.fspath(emf_tmp),
+            dpi=int(dpi),
+            include_base64=False,
+            skip_project_stream=bool(skip_proj),
+        )
+        if isinstance(ole_res, Mapping):
+            prog_id = str(ole_res.get("prog_id") or TORIGRAPH_OLE_PROG_ID)
+            if ole_res.get("width_mm"):
+                w_mm = float(ole_res["width_mm"])
+            if ole_res.get("height_mm"):
+                h_mm = float(ole_res["height_mm"])
+
+            xml_val = ole_res.get("sciprj_xml") or ole_res.get("project_xml")
+            if isinstance(xml_val, str) and xml_val:
+                proj_bytes = xml_val.encode("utf-8")
+            elif isinstance(ole_res.get("sciprj_base64"), str) and ole_res["sciprj_base64"]:
+                proj_bytes = base64.b64decode(ole_res["sciprj_base64"])
+
+            if emf_tmp.is_file() and emf_tmp.stat().st_size >= 44:
+                emf_bytes = emf_tmp.read_bytes()
+            elif ole_res.get("emf_path") and Path(str(ole_res["emf_path"])).is_file():
+                emf_bytes = Path(str(ole_res["emf_path"])).read_bytes()
+            elif isinstance(ole_res.get("emf_base64"), str) and ole_res["emf_base64"]:
+                emf_bytes = base64.b64decode(ole_res["emf_base64"])
+    except RpcError:
+        pass
+
+    if proj_bytes is None:
+        if cached_project_bytes is not None:
+            proj_bytes = cached_project_bytes
+        else:
+            sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
+            session.save_project(sciprj_tmp, compress=False)
+            proj_bytes = sciprj_tmp.read_bytes()
+            cached_project_bytes = proj_bytes
+    else:
+        cached_project_bytes = proj_bytes
+
+    if emf_bytes is None:
+        session.call("graph.export", graph=graph_name, path=os.fspath(emf_tmp), dpi=int(dpi))
+        emf_bytes = emf_tmp.read_bytes()
+
+    if len(emf_bytes) < 44 or emf_bytes[40:44] != b" EMF":
+        raise RuntimeError(f"Graph '{graph_name}' did not produce a valid Windows EMF preview.")
+
+    w_hm, h_hm, w_px, h_px = parse_emf_dimensions(
+        emf_bytes, fallback_width_mm=w_mm, fallback_height_mm=h_mm
+    )
+    return proj_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, cached_project_bytes
+
+
+def export_graphs_to_pptx(
+    session: "Session",
+    path: Union[str, os.PathLike[str]],
+    graphs: Optional[Union[str, "GraphProxy", Sequence[Union[str, "GraphProxy"]]]] = None,
+    *,
+    per_slide: int = 1,
+    deck: Optional[Union[str, os.PathLike[str]]] = None,
+    slide: Optional[int] = None,
+    box: Optional[Union[Sequence[float], Sequence[Sequence[float]]]] = None,
+    replace: Optional[Union[bool, str, Sequence[Any], Mapping[str, Any]]] = None,
+    dpi: int = 300,
+    overwrite: bool = False,
+    titles: Optional[Union[str, Sequence[str]]] = None,
+    preset: Optional[str] = None,
+    widescreen: bool = True,
+) -> Dict[str, Any]:
+    """Export one or more ToriGraph figures into a PowerPoint ``.pptx`` as editable native OLE objects.
+
+    Parameters
+    ----------
+    session:
+        Connected :class:`torigraph.Session`.
+    path:
+        Output ``.pptx`` file path.
+    graphs:
+        A graph name / :class:`GraphProxy`, a sequence of graphs, or ``None`` (all open graphs).
+    per_slide:
+        Automatic grid density when creating new slides: ``1``, ``2`` (1x2), ``3`` (1x3),
+        ``4`` (2x2), or ``6`` (2x3).
+    deck:
+        Optional existing ``.pptx`` template/deck to append to, overlay onto, or update.
+        Refuses ``path == deck`` unless ``overwrite=True``.
+    slide:
+        Optional 1-based target slide number in ``deck`` (``0`` is also accepted for Slide 1,
+        and negative numbers index from the end).
+    box:
+        Explicit figure placement ``(left_cm, top_cm, width_cm)`` (preserving aspect ratio) or
+        ``(left_cm, top_cm, width_cm, height_cm)``, or a per-graph list of boxes.
+    replace:
+        - ``[(2, "Picture 3"), ...]`` (or ``{graph_name: (slide_num, shape_name)}``): replace
+          named placeholder shapes on the specified 1-based slide(s), preserving Z-order and box.
+        - ``True``: idempotently update previously embedded ``alt_text="torigraph:<graph_name>"``
+          OLE shapes in-place (preserving user-resized slide geometry unless ``box`` is given).
+    dpi:
+        Target render resolution (36..2400).
+    overwrite:
+        Allow writing back to the exact same file when ``path == deck``.
+    titles:
+        Optional slide title (or per-slide sequence of titles) when generating new slides.
+    preset:
+        Optional style preset (e.g. ``"slide_28pt"``) applied to each graph before export.
+    widescreen:
+        Use 16:9 widescreen (``13.333 x 7.5 in``) when creating a brand-new deck.
+    """
+    pptx, _, _, _ = _import_pptx()
+
+    if int(per_slide) not in _VALID_PER_SLIDE:
+        raise ValueError(
+            f"Unsupported per_slide={per_slide!r}; expected one of {sorted(_VALID_PER_SLIDE)}."
+        )
+    per_slide_int = int(per_slide)
+
+    out_path = Path(os.fspath(path))
+    deck_path: Optional[Path] = Path(os.fspath(deck)) if deck is not None else None
+
+    if deck_path is not None:
+        if not deck_path.is_file():
+            raise FileNotFoundError(f"Template/source deck does not exist: {deck_path}")
+        if out_path.resolve() == deck_path.resolve() and not overwrite:
+            raise ValueError(
+                f"Safety check failed: output path '{out_path}' equals source deck '{deck_path}'. "
+                "Pass overwrite=True to update the source deck in-place, or specify a new output path."
+            )
+
+    # Resolve target graph names
+    if graphs is None:
+        graph_names = [
+            str(w["name"])
+            for w in session.list_windows()
+            if w.get("type") in ("MultiLayer", "Graph3D") and w.get("name")
+        ]
+    elif isinstance(graphs, str) or hasattr(graphs, "name"):
+        g_nm = graphs if isinstance(graphs, str) else str(graphs.name)
+        graph_names = [g_nm]
+    else:
+        graph_names = [
+            (g if isinstance(g, str) else str(g.name)) for g in graphs if g is not None
+        ]
+
+    if not graph_names:
+        raise ValueError("No graphs specified (and no open graph windows found in session).")
+
+    if preset:
+        for g_nm in graph_names:
+            session.call("graph.apply_style_preset", graph=g_nm, preset=str(preset))
+
+    # Normalize explicit per-graph boxes if provided
+    per_graph_boxes: Optional[List[Sequence[float]]] = None
+    single_box: Optional[Sequence[float]] = None
+    if box is not None:
+        box_seq = list(box)
+        if box_seq and isinstance(box_seq[0], (list, tuple)):
+            if len(box_seq) != len(graph_names):
+                raise ValueError(
+                    f"Length of box sequence ({len(box_seq)}) must match graphs ({len(graph_names)})."
+                )
+            per_graph_boxes = [list(b) for b in box_seq]  # type: ignore[arg-type]
+        else:
+            single_box = [float(x) for x in box_seq]  # type: ignore[arg-type]
+
+    # Normalize named-shape replace mapping if provided
+    named_replace_targets: Optional[List[Tuple[Optional[int], str]]] = None
+    auto_replace_alt = False
+    if isinstance(replace, bool):
+        auto_replace_alt = replace
+    elif isinstance(replace, str):
+        if replace.strip().lower() in ("true", "auto", "in_place", "inplace"):
+            auto_replace_alt = True
+        else:
+            if len(graph_names) != 1:
+                raise ValueError(
+                    "Single shape-name string in replace= requires exactly 1 graph; pass a list of (slide, shape_name)."
+                )
+            named_replace_targets = [(slide, replace)]
+    elif isinstance(replace, Mapping):
+        named_replace_targets = []
+        for g_nm in graph_names:
+            if g_nm not in replace:
+                raise KeyError(f"Graph '{g_nm}' missing from replace mapping {list(replace.keys())}.")
+            spec = replace[g_nm]
+            if isinstance(spec, (list, tuple)) and len(spec) == 2:
+                named_replace_targets.append((int(spec[0]), str(spec[1])))
+            else:
+                named_replace_targets.append((slide, str(spec)))
+    elif isinstance(replace, (list, tuple)):
+        if len(replace) != len(graph_names):
+            raise ValueError(
+                f"Length of replace targets ({len(replace)}) must match graphs ({len(graph_names)})."
+            )
+        named_replace_targets = []
+        for item in replace:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                named_replace_targets.append((int(item[0]), str(item[1])))
+            elif isinstance(item, str):
+                named_replace_targets.append((slide, item))
+            else:
+                raise ValueError(
+                    f"Invalid replace entry {item!r}; expected (slide_num, shape_name) tuple."
+                )
+
+    # Open existing deck or create new Presentation
+    if deck_path is not None:
+        prs = pptx.Presentation(os.fspath(deck_path))
+    elif (auto_replace_alt or named_replace_targets is not None or slide is not None) and out_path.is_file():
+        prs = pptx.Presentation(os.fspath(out_path))
+    else:
+        prs = pptx.Presentation()
+        if widescreen:
+            prs.slide_width = pptx.util.Inches(13.333)
+            prs.slide_height = pptx.util.Inches(7.5)
+        else:
+            prs.slide_width = pptx.util.Inches(10.0)
+            prs.slide_height = pptx.util.Inches(7.5)
+
+    slide_w = int(prs.slide_width)
+    slide_h = int(prs.slide_height)
+    n_rows, n_cols = _VALID_PER_SLIDE[per_slide_int]
+
+    title_list: Optional[List[str]] = None
+    if isinstance(titles, str):
+        title_list = [titles]
+    elif titles is not None:
+        title_list = [str(t) for t in titles]
+
+    placements: List[Dict[str, Any]] = []
+    touched_slides: set[int] = set()
+    replaced_count = 0
+    embedded_count = 0
+
+    with tempfile.TemporaryDirectory(prefix="torigraph_pptx_") as tmp:
+        tmp_dir = Path(tmp)
+        cached_proj: Optional[bytes] = None
+
+        # Pre-build OLE payloads for all requested graphs
+        built_items: List[Dict[str, Any]] = []
+        for idx, g_nm in enumerate(graph_names):
+            proj_b, emf_b, w_hm, h_hm, w_px, h_px, prog_id, cached_proj = _fetch_graph_ole_payload(
+                session,
+                g_nm,
+                dpi=dpi,
+                tmp_dir=tmp_dir,
+                seq_idx=idx,
+                cached_project_bytes=cached_proj,
+            )
+            ole_bin_path = tmp_dir / f"ole_{idx}_{g_nm}.bin"
+            build_ole_compound_file(
+                ole_bin_path,
+                project_bytes=proj_b,
+                emf_bytes=emf_b,
+                target_window=g_nm,
+                width_hm=w_hm,
+                height_hm=h_hm,
+                width_px=w_px,
+                height_px=h_px,
+            )
+            built_items.append(
+                {
+                    "graph_name": g_nm,
+                    "ole_bytes": ole_bin_path.read_bytes(),
+                    "emf_bytes": emf_b,
+                    "w_hm": w_hm,
+                    "h_hm": h_hm,
+                    "prog_id": prog_id,
+                }
+            )
+
+        # Mode A: Named-shape replacement `replace=[(2, "Picture 3"), ...]`
+        if named_replace_targets is not None:
+            for idx, (item, (target_snum, target_sname)) in enumerate(
+                zip(built_items, named_replace_targets)
+            ):
+                matched_slide = None
+                matched_snum = 0
+                matched_el = None
+                if target_snum is not None:
+                    cand_slide, cand_snum = _resolve_1based_slide(prs, target_snum)
+                    matched_el = _find_shape_element_on_slide(
+                        cand_slide.shapes._spTree, shape_name=target_sname
+                    )
+                    if matched_el is not None:
+                        matched_slide, matched_snum = cand_slide, cand_snum
+                else:
+                    for s_i, cand_slide in enumerate(prs.slides, start=1):
+                        el = _find_shape_element_on_slide(
+                            cand_slide.shapes._spTree, shape_name=target_sname
+                        )
+                        if el is not None:
+                            matched_slide, matched_snum, matched_el = cand_slide, s_i, el
+                            break
+
+                if matched_slide is None or matched_el is None:
+                    where = f"slide {target_snum}" if target_snum is not None else "presentation"
+                    raise KeyError(f"Target shape {target_sname!r} not found on {where}.")
+
+                cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                if cur_box is not None:
+                    l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                else:
+                    orig_xfrm = _extract_shape_xfrm_emu(matched_el)
+                    if orig_xfrm is not None:
+                        l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                            orig_xfrm[0],
+                            orig_xfrm[1],
+                            orig_xfrm[2],
+                            orig_xfrm[3],
+                            item["w_hm"],
+                            item["h_hm"],
+                        )
+                    else:
+                        c_l, c_t, c_w, c_h = _compute_grid_cell_emu(slide_w, slide_h, 1, 1, 0)
+                        l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                            c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                        )
+
+                # Keep target_sname on cNvPr.name AND write descr="torigraph:<graph>" so both
+                # repeated `replace=[(2, "Picture 3")]` AND `replace=True` stay 100% idempotent!
+                pl = embed_ole_shape_on_slide(
+                    prs,
+                    matched_slide,
+                    ole_bytes=item["ole_bytes"],
+                    emf_bytes=item["emf_bytes"],
+                    left_emu=l_e,
+                    top_emu=t_e,
+                    width_emu=w_e,
+                    height_emu=h_e,
+                    graph_name=item["graph_name"],
+                    shape_name=target_sname,
+                    prog_id=item["prog_id"],
+                    replace_element=matched_el,
+                )
+                pl["slide"] = matched_snum
+                placements.append(pl)
+                touched_slides.add(matched_snum)
+                replaced_count += 1
+                embedded_count += 1
+
+        else:
+            # Mode B / C: Idempotent `alt_text="torigraph:<graph>"` in-place update,
+            # explicit `slide=` overlay, or paginated `per_slide` new-slide grid!
+            pending_indices: List[int] = []
+            for idx, item in enumerate(built_items):
+                if auto_replace_alt and len(prs.slides) > 0:
+                    search_slides: List[Tuple[int, Any]] = []
+                    if slide is not None:
+                        s_obj, s_num = _resolve_1based_slide(prs, slide)
+                        search_slides.append((s_num, s_obj))
+                    else:
+                        search_slides = list(enumerate(prs.slides, start=1))
+
+                    found_pair: Optional[Tuple[int, Any, Any]] = None
+                    for s_num, s_obj in search_slides:
+                        el = _find_shape_element_on_slide(
+                            s_obj.shapes._spTree, graph_name=item["graph_name"]
+                        )
+                        if el is not None:
+                            found_pair = (s_num, s_obj, el)
+                            break
+
+                    if found_pair is not None:
+                        s_num, s_obj, existing_el = found_pair
+                        cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                        if cur_box is not None:
+                            l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                        else:
+                            orig_xfrm = _extract_shape_xfrm_emu(existing_el)
+                            if orig_xfrm is not None:
+                                ox, oy, ow, oh = orig_xfrm
+                                old_ar = float(ow) / float(max(1, oh))
+                                new_ar = float(item["w_hm"]) / float(max(1, item["h_hm"]))
+                                if abs(old_ar - new_ar) / max(1e-6, new_ar) <= 0.05:
+                                    l_e, t_e, w_e, h_e = ox, oy, ow, oh
+                                else:
+                                    l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                        ox, oy, ow, oh, item["w_hm"], item["h_hm"]
+                                    )
+                            else:
+                                c_l, c_t, c_w, c_h = _compute_grid_cell_emu(slide_w, slide_h, 1, 1, 0)
+                                l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                    c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                                )
+
+                        # Preserve existing cNvPr name if customized
+                        cnv_existing = existing_el.xpath(
+                            "./*[local-name()='nvGraphicFramePr' or local-name()='nvPicPr' or local-name()='nvSpPr']/*[local-name()='cNvPr']"
+                        )
+                        keep_name = (
+                            cnv_existing[0].get("name")
+                            if cnv_existing and cnv_existing[0].get("name")
+                            else None
+                        )
+                        pl = embed_ole_shape_on_slide(
+                            prs,
+                            s_obj,
+                            ole_bytes=item["ole_bytes"],
+                            emf_bytes=item["emf_bytes"],
+                            left_emu=l_e,
+                            top_emu=t_e,
+                            width_emu=w_e,
+                            height_emu=h_e,
+                            graph_name=item["graph_name"],
+                            shape_name=keep_name,
+                            prog_id=item["prog_id"],
+                            replace_element=existing_el,
+                        )
+                        pl["slide"] = s_num
+                        placements.append(pl)
+                        touched_slides.add(s_num)
+                        replaced_count += 1
+                        embedded_count += 1
+                        continue
+
+                pending_indices.append(idx)
+
+            # Place remaining graphs onto explicit `slide` OR newly appended `per_slide` slides
+            if pending_indices:
+                if slide is not None:
+                    if len(prs.slides) == 0 and int(slide) in (0, 1):
+                        s_obj = _add_clean_blank_slide(
+                            prs, title_list[0] if title_list else None
+                        )
+                        s_num = 1
+                    else:
+                        s_obj, s_num = _resolve_1based_slide(prs, slide)
+
+                    eff_rows, eff_cols = _VALID_PER_SLIDE.get(
+                        per_slide_int if len(pending_indices) <= per_slide_int else min(6, len(pending_indices)),
+                        (n_rows, n_cols),
+                    )
+                    for local_k, idx in enumerate(pending_indices):
+                        item = built_items[idx]
+                        cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                        if cur_box is not None:
+                            l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                        else:
+                            c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
+                                slide_w,
+                                slide_h,
+                                eff_rows,
+                                eff_cols,
+                                local_k % (eff_rows * eff_cols),
+                                has_title=bool(title_list),
+                            )
+                            l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                            )
+                        pl = embed_ole_shape_on_slide(
+                            prs,
+                            s_obj,
+                            ole_bytes=item["ole_bytes"],
+                            emf_bytes=item["emf_bytes"],
+                            left_emu=l_e,
+                            top_emu=t_e,
+                            width_emu=w_e,
+                            height_emu=h_e,
+                            graph_name=item["graph_name"],
+                            prog_id=item["prog_id"],
+                        )
+                        pl["slide"] = s_num
+                        placements.append(pl)
+                        touched_slides.add(s_num)
+                        embedded_count += 1
+                else:
+                    # Paginate across new slides with `per_slide` cells per slide
+                    for page_idx, start_k in enumerate(range(0, len(pending_indices), per_slide_int)):
+                        chunk = pending_indices[start_k : start_k + per_slide_int]
+                        s_title = (
+                            title_list[page_idx]
+                            if (title_list is not None and page_idx < len(title_list))
+                            else (title_list[0] if (title_list is not None and len(title_list) == 1 and page_idx == 0) else None)
+                        )
+                        s_obj = _add_clean_blank_slide(prs, s_title)
+                        s_num = len(prs.slides)
+                        for cell_k, idx in enumerate(chunk):
+                            item = built_items[idx]
+                            cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                            if cur_box is not None:
+                                l_e, t_e, w_e, h_e = _parse_box_cm(
+                                    cur_box, item["w_hm"], item["h_hm"]
+                                )
+                            else:
+                                c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
+                                    slide_w,
+                                    slide_h,
+                                    n_rows,
+                                    n_cols,
+                                    cell_k,
+                                    has_title=bool(s_title),
+                                )
+                                l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                    c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                                )
+                            pl = embed_ole_shape_on_slide(
+                                prs,
+                                s_obj,
+                                ole_bytes=item["ole_bytes"],
+                                emf_bytes=item["emf_bytes"],
+                                left_emu=l_e,
+                                top_emu=t_e,
+                                width_emu=w_e,
+                                height_emu=h_e,
+                                graph_name=item["graph_name"],
+                                prog_id=item["prog_id"],
+                            )
+                            pl["slide"] = s_num
+                            placements.append(pl)
+                            touched_slides.add(s_num)
+                            embedded_count += 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(os.fspath(out_path))
+
+    return {
+        "ok": True,
+        "path": os.fspath(out_path),
+        "graph_count": len(graph_names),
+        "graphs": graph_names,
+        "slide_count": len(prs.slides),
+        "slides_modified": sorted(touched_slides),
+        "embedded_count": embedded_count,
+        "replaced_count": replaced_count,
+        "clsid": TORIGRAPH_OLE_CLSID_STR,
+        "prog_id": TORIGRAPH_OLE_PROG_ID,
+        "placements": placements,
+    }

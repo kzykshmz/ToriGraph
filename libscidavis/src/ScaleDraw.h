@@ -30,6 +30,7 @@
 #define SCALES_H
 
 #include <QDateTime>
+#include <QLinearGradient>
 #include <QStringList>
 #include <QLocale>
 #include <QMap>
@@ -57,10 +58,14 @@ public:
     QString prefix() const { return d_prefix; }
     QString suffix() const { return d_suffix; }
 
-    void setAxisBreakIndicator(bool enabled, double breakValue = 0.0)
+    void setAxisBreakIndicator(bool enabled, double breakValue = 0.0, double breakTo = 0.0,
+                               bool logBefore = false, bool logAfter = false)
     {
         d_break_enabled = enabled;
         d_break_value = breakValue;
+        d_break_to = (breakTo != 0.0 || breakValue == 0.0) ? breakTo : breakValue;
+        d_break_log_before = enabled && logBefore;
+        d_break_log_after = enabled && logAfter;
         invalidateCache();
     }
     bool hasAxisBreakIndicator() const { return d_break_enabled; }
@@ -71,6 +76,13 @@ public:
         d_colorbar_border = enabled;
         d_colorbar_width = qMax(0, widthPx);
         d_colorbar_pen_width = qMax(1, penWidth);
+        if (!enabled)
+            d_colorbar_stops.clear();
+        invalidateCache();
+    }
+    void setColorBarGradient(const QGradientStops &stops)
+    {
+        d_colorbar_stops = stops;
         invalidateCache();
     }
     bool hasColorBarBorder() const { return d_colorbar_border; }
@@ -106,9 +118,13 @@ private:
     QString d_suffix;
     bool d_break_enabled = false;
     double d_break_value = 0.0;
+    double d_break_to = 0.0;
+    bool d_break_log_before = false;
+    bool d_break_log_after = false;
     bool d_colorbar_border = false;
     int d_colorbar_width = 0;
     int d_colorbar_pen_width = 1;
+    QGradientStops d_colorbar_stops;
 };
 
 class QwtTextScaleDraw : public ScaleDraw
@@ -123,9 +139,13 @@ public:
 
     QwtText label(double value) const;
 
-    QStringList labelsList() { return QStringList(labels.values()); }
-    QMap<int, QString> labelsMap() { return labels; }
-    void setLabelsMap(const QMap<int, QString> &list) { labels = list; }
+    QStringList labelsList() const { return QStringList(labels.values()); }
+    QMap<int, QString> labelsMap() const { return labels; }
+    void setLabelsMap(const QMap<int, QString> &list)
+    {
+        labels = list;
+        invalidateCache();
+    }
 
 private:
     QMap<int, QString> labels;

@@ -27,18 +27,24 @@
  *                                                                         *
  ***************************************************************************/
 #include "QwtBarCurve.h"
+#include "Plot.h"
 #include <QPainter>
+#include <cmath>
+#include <qwt_scale_map.h>
 
 QwtBarCurve::QwtBarCurve(BarStyle style, Table *t, const QString &xColName, const QString &name,
                          int startRow, int endRow)
     : DataCurve(t, xColName, name, startRow, endRow)
 {
     bar_offset = 0;
-    bar_gap = 0;
+    bar_gap = 30;
     bar_style = style;
+    d_stacked = false;
 
-    setPen(QPen(Qt::black, 1, Qt::SolidLine));
-    setBrush(QBrush(Qt::red));
+    QPen borderPen(Qt::black, 1, Qt::SolidLine);
+    borderPen.setCosmetic(false);
+    setPen(borderPen);
+    setBrush(QBrush(QColor(0, 114, 178)));
 
     if (bar_style == Vertical)
         setType(Graph::VerticalBars);
@@ -51,6 +57,7 @@ void QwtBarCurve::copy(const QwtBarCurve *b)
     bar_gap = b->bar_gap;
     bar_offset = b->bar_offset;
     bar_style = b->bar_style;
+    d_stacked = b->d_stacked;
 }
 
 void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -67,73 +74,85 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         return;
 
     painter->save();
-    painter->setPen(QwtPlotCurve::pen());
+    const double sc = Plot::printDeviceScale();
+    QPen barPen = QwtPlotCurve::pen();
+    if (barPen.style() != Qt::NoPen) {
+        barPen.setCosmetic(false);
+        barPen.setWidthF(qMax(1.0, barPen.widthF()) * sc);
+    }
+    painter->setPen(barPen);
     painter->setBrush(QwtPlotCurve::brush());
 
-    int dx = 0, dy = 0;
-    double ref1, ref2;
-    double bar_width = 0;
+    double dx = 0.0, dy = 0.0;
+    double bar_width = 0.0;
 
     if (bar_style == Vertical) {
-        ref1 = yMap.xTransform(1e-100); // smallest positive value for log scales
-        ref2 = ref1;
-        if (yMap.xTransform(yMap.s1()) < ref1)
-            ref1 = yMap.xTransform(yMap.s1());
-        if (yMap.xTransform(yMap.s2()) > ref2)
-            ref2 = yMap.xTransform(yMap.s2());
-    } else {
-        ref1 = xMap.xTransform(1e-100);
-        ref2 = ref1;
-        if (xMap.xTransform(xMap.s1()) > ref1)
-            ref1 = xMap.xTransform(xMap.s1());
-        if (xMap.xTransform(xMap.s2()) < ref2)
-            ref2 = xMap.xTransform(xMap.s2());
-    }
+        const bool isLogY = yMap.transformation()
+                && yMap.transformation()->type() == QwtScaleTransformation::Log10;
+        const double pyS1 = yMap.xTransform(yMap.s1());
+        const double pyS2 = yMap.xTransform(yMap.s2());
+        const double pyMin = qMin(pyS1, pyS2);
+        const double pyMax = qMax(pyS1, pyS2);
+        const double baseVal = isLogY ? qMax(1e-100, qMin(yMap.s1(), yMap.s2())) : 0.0;
+        const double basePy = qBound(pyMin, yMap.xTransform(baseVal), pyMax);
 
-    if (bar_style == Vertical) {
-        if (from + 1 < dataSize() && from < to) {
-            dx = abs(xMap.transform(x(from + 1)) - xMap.transform(x(from)));
-            for (int i = from + 2; i < to; i++) {
-                int min = abs(xMap.transform(x(i + 1)) - xMap.transform(x(i)));
-                if (min <= dx)
-                    dx = min;
+        if (dataSize() >= 2) {
+            dx = std::fabs(xMap.xTransform(x(1)) - xMap.xTransform(x(0)));
+            for (int i = 1; i + 1 < dataSize(); i++) {
+                const double step = std::fabs(xMap.xTransform(x(i + 1)) - xMap.xTransform(x(i)));
+                if (step > 1e-6 && (dx <= 1e-6 || step < dx))
+                    dx = step;
             }
-        } else {
-            const int spanPx = abs(xMap.transform(xMap.s2()) - xMap.transform(xMap.s1()));
-            dx = qMax(8, spanPx / 5);
         }
-        bar_width = dx * (1 - bar_gap * 0.01);
+        if (dx <= 1e-6) {
+            const double spanPx = std::fabs(xMap.xTransform(xMap.s2()) - xMap.xTransform(xMap.s1()));
+            dx = qMax(8.0 * sc, spanPx / 5.0);
+        }
+        bar_width = qMax(2.0 * sc, dx * (1.0 - bar_gap * 0.01));
+        const double half_width = (0.5 - bar_offset * 0.01) * bar_width;
+
+        for (int i = from; i <= to; i++) {
+            const double px = xMap.xTransform(x(i));
+            const double py = qBound(pyMin, yMap.xTransform(y(i)), pyMax);
+            if (!std::isfinite(px) || !std::isfinite(py))
+                continue;
+            const double top = qMin(py, basePy);
+            const double h = std::fabs(basePy - py);
+            painter->drawRect(QRectF(px - half_width, top, bar_width, qMax(0.5, h)));
+        }
     } else {
-        if (from + 1 < dataSize() && from < to) {
-            dy = abs(yMap.transform(y(from + 1)) - yMap.transform(y(from)));
-            for (int i = from + 2; i < to; i++) {
-                int min = abs(yMap.transform(y(i + 1)) - yMap.transform(y(i)));
-                if (min <= dy)
-                    dy = min;
+        const bool isLogX = xMap.transformation()
+                && xMap.transformation()->type() == QwtScaleTransformation::Log10;
+        const double pxS1 = xMap.xTransform(xMap.s1());
+        const double pxS2 = xMap.xTransform(xMap.s2());
+        const double pxMin = qMin(pxS1, pxS2);
+        const double pxMax = qMax(pxS1, pxS2);
+        const double baseVal = isLogX ? qMax(1e-100, qMin(xMap.s1(), xMap.s2())) : 0.0;
+        const double basePx = qBound(pxMin, xMap.xTransform(baseVal), pxMax);
+
+        if (dataSize() >= 2) {
+            dy = std::fabs(yMap.xTransform(y(1)) - yMap.xTransform(y(0)));
+            for (int i = 1; i + 1 < dataSize(); i++) {
+                const double step = std::fabs(yMap.xTransform(y(i + 1)) - yMap.xTransform(y(i)));
+                if (step > 1e-6 && (dy <= 1e-6 || step < dy))
+                    dy = step;
             }
-        } else {
-            const int spanPx = abs(yMap.transform(yMap.s2()) - yMap.transform(yMap.s1()));
-            dy = qMax(8, spanPx / 5);
         }
-        bar_width = dy * (1 - bar_gap * 0.01);
-    }
+        if (dy <= 1e-6) {
+            const double spanPx = std::fabs(yMap.xTransform(yMap.s2()) - yMap.xTransform(yMap.s1()));
+            dy = qMax(8.0 * sc, spanPx / 5.0);
+        }
+        bar_width = qMax(2.0 * sc, dy * (1.0 - bar_gap * 0.01));
+        const double half_width = (0.5 - bar_offset * 0.01) * bar_width;
 
-    const int half_width = int((0.5 - bar_offset * 0.01) * bar_width);
-    int bw1 = int(bar_width) + 1;
-    for (int i = from; i <= to; i++) {
-        const int px = xMap.transform(x(i));
-        const int py = yMap.transform(y(i));
-
-        if (bar_style == Vertical) {
-            if (y(i) < 0)
-                painter->drawRect(px - half_width, ref2, bw1, qRound(py - ref2));
-            else
-                painter->drawRect(px - half_width, py, bw1, qRound(ref1 - py + 1));
-        } else {
-            if (x(i) < 0)
-                painter->drawRect(px, py - half_width, qRound(ref2 - px), bw1);
-            else
-                painter->drawRect(ref1, py - half_width, qRound(px - ref1), bw1);
+        for (int i = from; i <= to; i++) {
+            const double px = qBound(pxMin, xMap.xTransform(x(i)), pxMax);
+            const double py = yMap.xTransform(y(i));
+            if (!std::isfinite(px) || !std::isfinite(py))
+                continue;
+            const double left = qMin(px, basePx);
+            const double w = std::fabs(px - basePx);
+            painter->drawRect(QRectF(left, py - half_width, qMax(0.5, w), bar_width));
         }
     }
     painter->restore();
@@ -147,17 +166,31 @@ QwtDoubleRect QwtBarCurve::boundingRect() const
         return rect;
 
     if (bar_style == Vertical) {
-        double dx = (rect.right() - rect.left()) / n;
-        if (dx <= 0.0)
-            dx = 0.5;
-        rect.setLeft(rect.left() - dx);
-        rect.setRight(rect.right() + dx);
+        double dx = (n > 1.0) ? ((rect.right() - rect.left()) / (n - 1.0)) : 1.0;
+        if (dx <= 0.0 || !std::isfinite(dx))
+            dx = 1.0;
+        rect.setLeft(rect.left() - 0.6 * dx);
+        rect.setRight(rect.right() + 0.6 * dx);
+        const bool yLog = plot() && Plot::isLog10ScaleEngine(plot()->axisScaleEngine(yAxis()));
+        if (!yLog) {
+            if (rect.top() > 0.0)
+                rect.setTop(0.0);
+            if (rect.bottom() < 0.0)
+                rect.setBottom(0.0);
+        }
     } else {
-        double dy = (rect.bottom() - rect.top()) / n;
-        if (dy <= 0.0)
-            dy = 0.5;
-        rect.setTop(rect.top() - dy);
-        rect.setBottom(rect.bottom() + dy);
+        double dy = (n > 1.0) ? ((rect.bottom() - rect.top()) / (n - 1.0)) : 1.0;
+        if (dy <= 0.0 || !std::isfinite(dy))
+            dy = 1.0;
+        rect.setTop(rect.top() - 0.6 * dy);
+        rect.setBottom(rect.bottom() + 0.6 * dy);
+        const bool xLog = plot() && Plot::isLog10ScaleEngine(plot()->axisScaleEngine(xAxis()));
+        if (!xLog) {
+            if (rect.left() > 0.0)
+                rect.setLeft(0.0);
+            if (rect.right() < 0.0)
+                rect.setRight(0.0);
+        }
     }
 
     return rect;
@@ -173,6 +206,10 @@ void QwtBarCurve::setGap(int gap)
 
 void QwtBarCurve::setOffset(int offset)
 {
+    if (d_stacked) {
+        bar_offset = 0;
+        return;
+    }
     if (bar_offset == offset)
         return;
 
@@ -181,38 +218,58 @@ void QwtBarCurve::setOffset(int offset)
 
 double QwtBarCurve::dataOffset()
 {
-    if (!plot() || dataSize() < 2)
+    if (!plot() || dataSize() < 1)
         return 0.0;
 
     if (bar_style == Vertical) {
-        const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
-        int dx = abs(xMap.transform(x(1)) - xMap.transform(x(0)));
-        double bar_width = dx * (1 - bar_gap * 0.01);
-        if (plot()->isVisible() && xMap.pDist() >= 2.0) {
+        QwtScaleMap xMap = plot()->canvasMap(xAxis());
+        if (xMap.pDist() < 2.0) {
+            const_cast<QwtPlot *>(plot())->updateLayout();
+            xMap = plot()->canvasMap(xAxis());
+        }
+        if (xMap.pDist() < 2.0)
+            return 0.0;
+
+        double dx = 0.0;
+        if (dataSize() >= 2) {
+            dx = std::fabs(xMap.xTransform(x(1)) - xMap.xTransform(x(0)));
             for (int i = 2; i < dataSize(); i++) {
-                int min = abs(xMap.transform(x(i)) - xMap.transform(x(i - 1)));
-                if (min <= dx)
-                    dx = min;
+                const double step = std::fabs(xMap.xTransform(x(i)) - xMap.xTransform(x(i - 1)));
+                if (step > 1e-6 && (dx <= 1e-6 || step < dx))
+                    dx = step;
             }
-            int x1 = xMap.transform(minXValue()) + int(bar_offset * 0.01 * bar_width);
-            const double inv = xMap.invTransform(x1) - minXValue();
-            return std::isfinite(inv) ? inv : 0.0;
-        } else
-            return 0.5 * bar_offset * 0.01 * bar_width;
+        }
+        if (dx <= 1e-6)
+            dx = std::fabs(xMap.xTransform(xMap.s2()) - xMap.xTransform(xMap.s1())) / 5.0;
+
+        const double bar_width = dx * (1.0 - bar_gap * 0.01);
+        const double x1 = xMap.xTransform(minXValue()) + bar_offset * 0.01 * bar_width;
+        const double inv = xMap.invTransform(x1) - minXValue();
+        return std::isfinite(inv) ? inv : 0.0;
     } else {
-        const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
-        int dy = abs(yMap.transform(y(1)) - yMap.transform(y(0)));
-        double bar_width = dy * (1 - bar_gap * 0.01);
-        if (plot()->isVisible() && yMap.pDist() >= 2.0) {
+        QwtScaleMap yMap = plot()->canvasMap(yAxis());
+        if (yMap.pDist() < 2.0) {
+            const_cast<QwtPlot *>(plot())->updateLayout();
+            yMap = plot()->canvasMap(yAxis());
+        }
+        if (yMap.pDist() < 2.0)
+            return 0.0;
+
+        double dy = 0.0;
+        if (dataSize() >= 2) {
+            dy = std::fabs(yMap.xTransform(y(1)) - yMap.xTransform(y(0)));
             for (int i = 2; i < dataSize(); i++) {
-                int min = abs(yMap.transform(y(i)) - yMap.transform(y(i - 1)));
-                if (min <= dy)
-                    dy = min;
+                const double step = std::fabs(yMap.xTransform(y(i)) - yMap.xTransform(y(i - 1)));
+                if (step > 1e-6 && (dy <= 1e-6 || step < dy))
+                    dy = step;
             }
-            int y1 = yMap.transform(minYValue()) + int(bar_offset * 0.01 * bar_width);
-            const double inv = yMap.invTransform(y1) - minYValue();
-            return std::isfinite(inv) ? inv : 0.0;
-        } else
-            return 0.5 * bar_offset * 0.01 * bar_width;
+        }
+        if (dy <= 1e-6)
+            dy = std::fabs(yMap.xTransform(yMap.s2()) - yMap.xTransform(yMap.s1())) / 5.0;
+
+        const double bar_width = dy * (1.0 - bar_gap * 0.01);
+        const double y1 = yMap.xTransform(minYValue()) + bar_offset * 0.01 * bar_width;
+        const double inv = yMap.invTransform(y1) - minYValue();
+        return std::isfinite(inv) ? inv : 0.0;
     }
 }

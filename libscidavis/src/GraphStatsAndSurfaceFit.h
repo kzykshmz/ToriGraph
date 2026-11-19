@@ -83,6 +83,11 @@ public:
         double b10Life = 0.0;
         double b50Life = 0.0;
         double rSquare = 0.0;
+        double mleModulusM = 0.0;
+        double mleModulusMSE = 0.0;
+        double mleScaleSigma0 = 0.0;
+        double mleScaleSigma0SE = 0.0;
+        bool usedMle = false;
         Table *reportTable = nullptr;
         MultiLayer *weibullPlot = nullptr;
     };
@@ -173,7 +178,9 @@ public:
             ApplicationWindow *app, Table *srcTable, const QString &dataCol,
             const QString &censorCol = QString(),
             int censorCoding = 0 /*0: 1=Failure/0=Censored (KM standard); 1: 0=Failure/1=Censored*/,
-            bool fitThreeParam = false);
+            bool fitThreeParam = false,
+            bool useMle = false,
+            bool createPlot = true);
     static PassingBablokDemingResult runPassingBablokDeming(
             ApplicationWindow *app, Table *srcTable, const QString &colXName,
             const QString &colYName, double errorVarianceRatioLambda = 1.0,

@@ -67,7 +67,9 @@
 #include <QGroupBox>
 #include <QToolButton>
 #include <QTextCursor>
+#include <QUndoStack>
 #include <QRegularExpression>
+#include <memory>
 #include <vector>
 #include <cmath>
 #include <iostream>
@@ -120,6 +122,41 @@ Table::Table(ScriptingEnv *env, int r, int c, const QString &label, QWidget *par
         }
     }
     init();
+}
+
+namespace {
+static int s_tableUndoRedoReplayDepth = 0;
+
+static bool isUndoStackInMacro(const QUndoStack *us)
+{
+    return us && us->count() > 0 && !us->canUndo() && !us->canRedo();
+}
+} // namespace
+
+Table::~Table()
+{
+    if (d_future_table && !d_future_table->parentAspect() && d_future_table->view() == this) {
+        future::Table *ft = d_future_table.data();
+        d_future_table.clear();
+        ft->setView(nullptr);
+        delete ft;
+    }
+}
+
+void Table::beginUndoRedoReplay()
+{
+    ++s_tableUndoRedoReplayDepth;
+}
+
+void Table::endUndoRedoReplay()
+{
+    if (s_tableUndoRedoReplayDepth > 0)
+        --s_tableUndoRedoReplayDepth;
+}
+
+bool Table::isUndoRedoReplaying()
+{
+    return s_tableUndoRedoReplayDepth > 0;
 }
 
 void Table::init()
@@ -202,8 +239,8 @@ void Table::handleColumnChange(int first, int count)
 {
     for (int i = first; i < first + count; i++)
         emit modifiedData(this, colName(i));
-    if (d_auto_recalc_formulas && !d_in_auto_recalc)
-        autoRecalculateDependentColumns(first, count);
+    if (d_auto_recalc_formulas && !d_in_auto_recalc && !isUndoRedoReplaying())
+        scheduleOrRunDependentRecalc(first, count);
 }
 
 void Table::handleColumnChange(int top, int left, int bottom, int right)
@@ -229,8 +266,8 @@ void Table::handleRowChange()
 {
     for (int i = 0; i < numCols(); i++)
         emit modifiedData(this, colName(i));
-    if (d_auto_recalc_formulas && !d_in_auto_recalc)
-        autoRecalculateDependentColumns(-1, 0);
+    if (d_auto_recalc_formulas && !d_in_auto_recalc && !isUndoRedoReplaying())
+        scheduleOrRunDependentRecalc(-1, 0);
 }
 
 void Table::setBackgroundColor(const QColor &col)
@@ -447,6 +484,9 @@ QString Table::saveColumnTypes()
 
 void Table::setCommands(const QStringList &com)
 {
+    if (!d_future_table)
+        return;
+    d_future_table->beginMacro(tr("%1: apply formula to column").arg(name()));
     const bool prevGuard = d_in_auto_recalc;
     d_in_auto_recalc = true;
     for (int i = 0; i < (int)com.size() && i < numCols(); i++) {
@@ -457,15 +497,17 @@ void Table::setCommands(const QStringList &com)
             column(i)->setFormula(Interval<int>(0, qMax(0, numRows() - 1)), trimmed);
     }
     d_in_auto_recalc = prevGuard;
-    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+    if (d_auto_recalc_formulas && !d_in_auto_recalc && !isUndoRedoReplaying())
         autoRecalculateDependentColumns(-1, 0);
+    d_future_table->endMacro();
 }
 
 void Table::setCommand(int col, const QString &com)
 {
     Column *c = column(col);
-    if (!c)
+    if (!c || !d_future_table)
         return;
+    d_future_table->beginMacro(tr("%1: apply formula to column").arg(name()));
     const QString trimmed = com.trimmed();
     const bool prevGuard = d_in_auto_recalc;
     d_in_auto_recalc = true;
@@ -474,12 +516,13 @@ void Table::setCommand(int col, const QString &com)
     else
         c->setFormula(Interval<int>(0, qMax(0, numRows() - 1)), trimmed);
     d_in_auto_recalc = prevGuard;
-    if (!trimmed.isEmpty() && d_auto_recalc_formulas && !d_in_auto_recalc) {
+    if (!trimmed.isEmpty() && d_auto_recalc_formulas && !d_in_auto_recalc && !isUndoRedoReplaying()) {
         d_in_auto_recalc = true;
         recalculateColumnInternal(col, false, true);
         d_in_auto_recalc = false;
         autoRecalculateDependentColumns(col, 1);
     }
+    d_future_table->endMacro();
 }
 
 void Table::setCommands(const QString &com)
@@ -575,6 +618,7 @@ bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool sil
             && tableRows > 0 && end_row < tableRows - 1
             && end_row >= qMax(0, col_ptr->rowCount() - 1)) {
             end_row = tableRows - 1;
+            col_ptr->setFormula(Interval<int>(0, end_row), formula);
         }
         if (tableRows > 0 && end_row >= tableRows)
             end_row = tableRows - 1;
@@ -741,9 +785,112 @@ struct ScopedCrossTableRecalcGuard
 };
 } // namespace
 
+void Table::scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount)
+{
+    if (!d_auto_recalc_formulas || d_in_auto_recalc || isUndoRedoReplaying() || !d_future_table
+        || !scriptEnv) {
+        return;
+    }
+
+    QUndoStack *us = d_future_table->undoStack();
+    if (!us || isUndoStackInMacro(us)) {
+        autoRecalculateDependentColumns(changedFirstCol, changedCount);
+        return;
+    }
+
+    // Signal arrived while no macro was open on QUndoStack: we are currently inside
+    // cmd->undo() (via us->undo()), cmd->redo() (via us->redo()), or cmd->redo() inside an
+    // unwrapped us->push(newCmd). Defer inspection until QUndoStack::indexChanged fires at
+    // the end of undo()/redo()/push() so undo()/redo() NEVER push a new QUndoCommand or wipe Redo!
+    if (d_pending_unwrapped_recalc) {
+        if (changedCount <= 0 || d_pending_recalc_col_count <= 0) {
+            d_pending_recalc_first_col = -1;
+            d_pending_recalc_col_count = 0;
+        } else {
+            const int lo = qMin(d_pending_recalc_first_col, changedFirstCol);
+            const int hi = qMax(d_pending_recalc_first_col + d_pending_recalc_col_count,
+                                changedFirstCol + changedCount);
+            d_pending_recalc_first_col = lo;
+            d_pending_recalc_col_count = hi - lo;
+        }
+        return;
+    }
+
+    // Quick check: if neither this table nor any cross-referenced table has formulas, skip connecting.
+    bool anyFormula = !collectFormulaColumnIndices(this, changedFirstCol, changedCount).isEmpty();
+    if (!anyFormula) {
+        if (ApplicationWindow *aw = owningApplicationWindowForTable(this)) {
+            for (MyWidget *mw : aw->windowsList()) {
+                if (mw && mw != this && mw->inherits("Table")) {
+                    bool hasCross = false;
+                    if (!collectFormulaColumnIndices(static_cast<Table *>(mw), -1, 0, &hasCross).isEmpty()
+                        && hasCross) {
+                        anyFormula = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!anyFormula)
+        return;
+
+    d_pending_unwrapped_recalc = true;
+    d_pending_recalc_first_col = changedFirstCol;
+    d_pending_recalc_col_count = changedCount;
+
+    const int preIdx = us->index();
+    const int preCount = us->count();
+    const QUndoCommand *preRedoCmd =
+            (preIdx >= 0 && preIdx < preCount) ? us->command(preIdx) : nullptr;
+    const QUndoCommand *preTopCmd =
+            (preIdx > 0 && preIdx <= preCount) ? us->command(preIdx - 1) : nullptr;
+
+    QPointer<Table> self(this);
+    QPointer<QUndoStack> stackPtr(us);
+    auto connHolder = std::make_shared<QMetaObject::Connection>();
+    *connHolder = QObject::connect(
+            us, &QUndoStack::indexChanged, this,
+            [self, stackPtr, preIdx, preRedoCmd, preTopCmd, connHolder](int newIdx) {
+                QObject::disconnect(*connHolder);
+                if (!self)
+                    return;
+                const int firstCol = self->d_pending_recalc_first_col;
+                const int colCnt = self->d_pending_recalc_col_count;
+                self->d_pending_unwrapped_recalc = false;
+                self->d_pending_recalc_first_col = -1;
+                self->d_pending_recalc_col_count = 0;
+
+                if (!stackPtr || Table::isUndoRedoReplaying() || !self->d_future_table)
+                    return;
+
+                // 1) Undo decreased index (note: when stack is at undoLimit, push keeps newIdx == preIdx
+                //    while shifting command pointers so command(newIdx - 1) != preTopCmd).
+                if (newIdx < preIdx)
+                    return;
+                if (newIdx == preIdx && newIdx > 0 && newIdx <= stackPtr->count()
+                    && stackPtr->command(newIdx - 1) == preTopCmd) {
+                    return;
+                }
+
+                // 2) Redo advanced over the exact pre-existing QUndoCommand* that was at preIdx.
+                if (newIdx > preIdx && preRedoCmd != nullptr && preIdx < stackPtr->count()
+                    && stackPtr->command(preIdx) == preRedoCmd) {
+                    return;
+                }
+
+                // 3) Genuine unwrapped forward push(newCmd) completed: recalculate dependent formulas cleanly.
+                self->d_future_table->beginMacro(
+                        Table::tr("%1: apply formula to column").arg(self->name()));
+                self->autoRecalculateDependentColumns(firstCol, colCnt);
+                self->d_future_table->endMacro();
+            });
+}
+
 void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCount)
 {
-    if (!d_auto_recalc_formulas || d_in_auto_recalc || !d_future_table || !scriptEnv)
+    if (!d_auto_recalc_formulas || d_in_auto_recalc || isUndoRedoReplaying() || !d_future_table
+        || !scriptEnv)
         return;
 
     const QVector<int> fCols = collectFormulaColumnIndices(this, changedFirstCol, changedCount);
@@ -954,15 +1101,14 @@ int Table::firstXCol()
 
 void Table::setColComment(int col, const QString &s)
 {
-    column(col)->setComment(s);
+    if (Column *c = column(col))
+        c->setComment(s);
 }
 
 void Table::setColName(int col, const QString &text)
 {
-    if (col < 0 || col >= numCols())
-        return;
-
-    column(col)->setName(text);
+    if (Column *c = column(col))
+        c->setName(text);
 }
 
 QStringList Table::selectedColumns()
@@ -1062,10 +1208,8 @@ int Table::selectedColsNumber()
 
 QString Table::colName(int col)
 { // returns the table name + horizontal header text
-    if (col < 0 || col >= numCols())
-        return QString();
-
-    return QString(name() + "_" + column(col)->name());
+    Column *c = column(col);
+    return c ? QString(name() + "_" + c->name()) : QString();
 }
 
 void Table::insertCols(int start, int count)
@@ -1096,10 +1240,12 @@ void Table::insertRow()
 void Table::addCol(SciDAVis::PlotDesignation pd)
 {
     if (d_future_table) {
+        d_future_table->beginMacro(tr("%1: add column").arg(name()));
         d_future_table->addColumn();
         column(d_future_table->columnCount() - 1)
                 ->setColumnMode(SciDAVis::ColumnMode::Numeric); // in case we ever change the default
         column(d_future_table->columnCount() - 1)->setPlotDesignation(pd);
+        d_future_table->endMacro();
     }
 }
 
@@ -1121,10 +1267,17 @@ void Table::clearCol()
 
 void Table::clearCell(int row, int col)
 {
-    column(col)->setTextAt(row, QString());
-    column(col)->setValueAt(row, 0.0);
-    column(col)->setDateTimeAt(row, QDateTime());
-    column(col)->setInvalid(row, true);
+    Column *colPtr = column(col);
+    if (!colPtr)
+        return;
+    if (d_future_table)
+        d_future_table->beginMacro(tr("%1: clear selected cell(s)").arg(name()));
+    colPtr->setTextAt(row, QString());
+    colPtr->setValueAt(row, 0.0);
+    colPtr->setDateTimeAt(row, QDateTime());
+    colPtr->setInvalid(row, true);
+    if (d_future_table)
+        d_future_table->endMacro();
 }
 
 void Table::deleteSelectedRows()
@@ -1528,9 +1681,14 @@ void Table::removeCol()
 
 void Table::removeCol(const QStringList &list)
 {
-    if (d_future_table) {
-        foreach (QString name, list)
-            d_future_table->removeColumns(colIndex(name), 1);
+    if (d_future_table && !list.isEmpty()) {
+        d_future_table->beginMacro(tr("%1: remove %2 column(s)").arg(name()).arg(list.size()));
+        foreach (QString colLabelName, list) {
+            const int idx = colIndex(colLabelName);
+            if (idx >= 0)
+                d_future_table->removeColumns(idx, 1);
+        }
+        d_future_table->endMacro();
     }
 }
 
@@ -1575,7 +1733,14 @@ double Table::cell(int row, int col)
 
 void Table::setCell(int row, int col, double val)
 {
-    column(col)->setValueAt(row, val);
+    Column *colPtr = column(col);
+    if (!colPtr)
+        return;
+    if (d_future_table)
+        d_future_table->beginMacro(tr("%1: change cell value(s)").arg(name()));
+    colPtr->setValueAt(row, val);
+    if (d_future_table)
+        d_future_table->endMacro();
 }
 
 QString Table::text(int row, int col)
@@ -1588,7 +1753,14 @@ QString Table::text(int row, int col)
 
 void Table::setText(int row, int col, const QString &text)
 {
-    column(col)->asStringColumn()->setTextAt(row, text);
+    Column *colPtr = column(col);
+    if (!colPtr)
+        return;
+    if (d_future_table)
+        d_future_table->beginMacro(tr("%1: change cell value(s)").arg(name()));
+    colPtr->asStringColumn()->setTextAt(row, text);
+    if (d_future_table)
+        d_future_table->endMacro();
 }
 
 void Table::importV0x0001XXHeader(QStringList header)
@@ -1657,7 +1829,7 @@ void Table::setHeader(QStringList header)
 
 int Table::colIndex(const QString &name)
 {
-    return d_future_table ? d_future_table->columnIndex(column(name)) : 0;
+    return d_future_table ? d_future_table->columnIndex(column(name)) : -1;
 }
 
 bool Table::noXColumn()
@@ -1805,11 +1977,18 @@ void Table::closeEvent(QCloseEvent *e)
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
                                          tr("Delete"), tr("Hide"), tr("Cancel"), 0, 2)) {
-        case 0:
+        case 0: {
             e->accept();
+            QPointer<Table> self(this);
+            QUndoStack *us = d_future_table ? d_future_table->undoStack() : nullptr;
             if (d_future_table)
                 d_future_table->remove();
+            if (us && !isUndoStackInMacro(us))
+                us->clear();
+            if (self)
+                self->deleteLater();
             return;
+        }
 
         case 1:
             e->ignore();
@@ -1822,8 +2001,14 @@ void Table::closeEvent(QCloseEvent *e)
         }
     } else {
         e->accept();
+        QPointer<Table> self(this);
+        QUndoStack *us = d_future_table ? d_future_table->undoStack() : nullptr;
         if (d_future_table)
             d_future_table->remove();
+        if (us && !isUndoStackInMacro(us))
+            us->clear();
+        if (self)
+            self->deleteLater();
         return;
     }
 }
@@ -1977,17 +2162,20 @@ QStringList Table::colNames()
 
 QString Table::colLabel(int col)
 {
-    return column(col)->name();
+    Column *c = column(col);
+    return c ? c->name() : QString();
 }
 
 SciDAVis::PlotDesignation Table::colPlotDesignation(int col)
 {
-    return column(col)->plotDesignation();
+    Column *c = column(col);
+    return c ? c->plotDesignation() : SciDAVis::noDesignation;
 }
 
 void Table::setColPlotDesignation(int col, SciDAVis::PlotDesignation d)
 {
-    column(col)->setPlotDesignation(d);
+    if (Column *c = column(col))
+        c->setPlotDesignation(d);
 }
 
 QList<int> Table::plotDesignations()
@@ -2010,33 +2198,39 @@ QList<SciDAVis::ColumnMode> Table::columnTypes()
 
 SciDAVis::ColumnMode Table::columnType(int col)
 {
-    return column(col)->columnMode();
+    Column *c = column(col);
+    return c ? c->columnMode() : SciDAVis::ColumnMode::Numeric;
 }
 
 void Table::setColumnTypes(QList<SciDAVis::ColumnMode> ctl)
 {
     if (!d_future_table)
         return;
-    Q_ASSERT(ctl.size() == d_future_table->columnCount());
-    for (int i = 0; i < d_future_table->columnCount(); i++)
-        column(i)->setColumnMode(ctl.at(i));
+    const int n = qMin(ctl.size(), d_future_table->columnCount());
+    for (int i = 0; i < n; i++) {
+        if (Column *c = column(i))
+            c->setColumnMode(ctl.at(i));
+    }
 }
 
 void Table::setColumnType(int col, SciDAVis::ColumnMode mode)
 {
-    column(col)->setColumnMode(mode);
+    if (Column *c = column(col))
+        c->setColumnMode(mode);
 }
 
 QString Table::columnFormat(int col)
 {
     // TODO: obsolete, remove in 0.3.0
     Column *col_ptr = column(col);
+    if (!col_ptr)
+        return QString();
     if (col_ptr->columnMode() != SciDAVis::ColumnMode::DateTime && col_ptr->columnMode() != SciDAVis::ColumnMode::Month
         && col_ptr->columnMode() != SciDAVis::ColumnMode::Day)
         return QString();
 
     DateTime2StringFilter *filter = static_cast<DateTime2StringFilter *>(col_ptr->outputFilter());
-    return filter->format();
+    return filter ? filter->format() : QString();
 }
 
 void Table::columnNumericFormat(int col)
@@ -2154,23 +2348,31 @@ int Table::verticalHeaderWidth()
 
 QString Table::colComment(int col)
 {
-    return column(col)->comment();
+    Column *c = column(col);
+    return c ? c->comment() : QString();
 }
 
 QStringList Table::colComments()
 {
     QStringList list;
-    if (d_future_table)
-        for (int i = 0; i < d_future_table->columnCount(); i++)
-            list << column(i)->comment();
+    if (d_future_table) {
+        for (int i = 0; i < d_future_table->columnCount(); i++) {
+            Column *c = column(i);
+            list << (c ? c->comment() : QString());
+        }
+    }
     return list;
 }
 
 void Table::setColComments(const QStringList &list)
 {
-    if (d_future_table)
-        for (int i = 0; i < d_future_table->columnCount(); i++)
-            column(i)->setComment(list.at(i));
+    if (d_future_table) {
+        const int n = qMin(list.size(), d_future_table->columnCount());
+        for (int i = 0; i < n; i++) {
+            if (Column *c = column(i))
+                c->setComment(list.at(i));
+        }
+    }
 }
 
 bool Table::commentsEnabled()
@@ -2606,12 +2808,18 @@ void Table::applyFormula()
     d_future_table->beginMacro(tr("%1: apply formula to column").arg(name()));
 
     QString formula = ui.formula_box->toPlainText();
-    for (int col = firstSelectedColumn(); col <= lastSelectedColumn(); col++) {
-        Column *col_ptr = column(col);
-        col_ptr->insertRows(col_ptr->rowCount(), rowCount() - col_ptr->rowCount());
-        col_ptr->setFormula(Interval<int>(0, rowCount() - 1), formula);
-        if (!recalculate(col, false))
-            break;
+    const int firstCol = firstSelectedColumn();
+    const int lastCol = lastSelectedColumn();
+    if (firstCol >= 0 && lastCol >= firstCol) {
+        for (int col = firstCol; col <= lastCol; col++) {
+            Column *col_ptr = column(col);
+            if (!col_ptr)
+                continue;
+            col_ptr->insertRows(col_ptr->rowCount(), rowCount() - col_ptr->rowCount());
+            col_ptr->setFormula(Interval<int>(0, rowCount() - 1), formula);
+            if (!recalculate(col, false))
+                break;
+        }
     }
 
     d_future_table->endMacro();
@@ -2657,29 +2865,35 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
     if (colIdx == -1)
         return;
 
+    const bool inUndoOrOutsideMacro = isUndoRedoReplaying()
+            || (d_future_table->undoStack() && !isUndoStackInMacro(d_future_table->undoStack()));
+
     if (d_stored_column_labels.contains(col)) {
         const QString old_name = d_stored_column_labels.take(col);
         const QString new_name = col->name();
         if (old_name != new_name) {
             emit changedColHeader(name() + "_" + old_name, name() + "_" + new_name);
 
-            const bool prevGuard = d_in_auto_recalc;
-            d_in_auto_recalc = true;
-            for (int i = 0; i < d_future_table->columnCount(); i++) {
-                QList<Interval<int>> formula_intervals = column(i)->formulaIntervals();
-                foreach (Interval<int> interval, formula_intervals) {
-                    QString formula = column(i)->formula(interval.start());
-                    if (formula.contains("\"" + old_name + "\"")) {
-                        formula.replace("\"" + old_name + "\"", "\"" + new_name + "\"");
-                        column(i)->setFormula(interval, formula);
+            if (!inUndoOrOutsideMacro) {
+                const bool prevGuard = d_in_auto_recalc;
+                d_in_auto_recalc = true;
+                for (int i = 0; i < d_future_table->columnCount(); i++) {
+                    QList<Interval<int>> formula_intervals = column(i)->formulaIntervals();
+                    foreach (Interval<int> interval, formula_intervals) {
+                        QString formula = column(i)->formula(interval.start());
+                        if (formula.contains("\"" + old_name + "\"")) {
+                            formula.replace("\"" + old_name + "\"", "\"" + new_name + "\"");
+                            column(i)->setFormula(interval, formula);
+                        }
                     }
                 }
+                d_in_auto_recalc = prevGuard;
             }
-            d_in_auto_recalc = prevGuard;
         }
     }
 
-    if (d_auto_recalc_formulas && !d_in_auto_recalc && !col->formulaIntervals().isEmpty()) {
+    if (!inUndoOrOutsideMacro && d_auto_recalc_formulas && !d_in_auto_recalc
+        && !col->formulaIntervals().isEmpty()) {
         d_in_auto_recalc = true;
         recalculateColumnInternal(colIdx, false, true);
         d_in_auto_recalc = false;

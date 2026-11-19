@@ -228,7 +228,7 @@ public slots:
     double yShift() { return sp->yShift(); };
     double zShift() { return sp->zShift(); };
 
-    double zoom() { return sp->zoom(); };
+    double zoom() { return (d_base_zoom > 1e-12) ? (sp->zoom() / d_base_zoom) : sp->zoom(); };
     void setZoom(double val);
     void updateZoom(double val);
 
@@ -388,6 +388,7 @@ private:
     Table *worksheet;
     Matrix *d_matrix;
     Qwt3D::PLOTSTYLE style_;
+    double d_base_zoom = 1.0;
 };
 
 //! Class for user defined functions

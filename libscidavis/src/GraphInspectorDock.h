@@ -129,6 +129,8 @@ private:
     void bindLayerSignals(Graph *g);
 
     void onTreeItemClicked(QTreeWidgetItem *item, int column);
+    void onTreeItemDoubleClicked(QTreeWidgetItem *item, int column);
+    void onObjectTreeContextMenu(const QPoint &pos);
     void onTreeItemChanged(QTreeWidgetItem *item, int column);
     void onGraphSelectionChanged(MultiLayer *page, Graph *layer, const Graph::GraphSelection &sel);
 
@@ -145,6 +147,8 @@ private:
     void applyAxisBreakFromUi();
     void applyTickFormatFromUi(int mergeId = -1);
     void applyTickDivideFromUi();
+    void refreshCategoryColumnCombo();
+    void applyCategoryColumnFromUi();
     void applyAxisTitleMarkup(const QString &openTag, const QString &closeTag);
     void insertAxisTitleToken(const QString &token);
     void rebuildGreekSymbolMenu();
@@ -286,6 +290,8 @@ private:
     QSpinBox *d_spin_tick_prec = nullptr;
     QLabel *d_lbl_tick_divide = nullptr;
     QComboBox *d_combo_tick_divide = nullptr;
+    QLabel *d_lbl_category_col = nullptr;
+    QComboBox *d_combo_category_col = nullptr;
     QCheckBox *d_chk_major_grid = nullptr;
     QCheckBox *d_chk_minor_grid = nullptr;
 

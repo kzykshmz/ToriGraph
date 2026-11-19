@@ -355,7 +355,7 @@ private:
     //@}
 
     QPointer<MatrixView> d_view;
-    Private *d_matrix_private;
+    Private *d_matrix_private = nullptr;
 };
 
 /**

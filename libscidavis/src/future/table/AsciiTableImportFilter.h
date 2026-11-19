@@ -82,6 +82,9 @@ public:
                                             const QString &separatorHint = QString(),
                                             const QString &encodingHint = QString(),
                                             int unitsRowHint = -1 /* -1=auto, 0=none, 1=row2 is units */);
+    static future::Table *importVaspTextData(const QByteArray &rawBytes, const QString &tableName,
+                                             const QString &filePathHint = QString(),
+                                             double *outFermiEV = nullptr);
 
     ACCESSOR(int, ignored_lines);
     Q_PROPERTY(int ignored_lines READ ignored_lines WRITE set_ignored_lines)

@@ -19,13 +19,18 @@
 #include "PlotCurve.h"
 #include "QwtHistogram.h"
 #include "RecalcEngine.h"
+#include "ScaleDraw.h"
 #include "Spectrogram.h"
 #include "Table.h"
 #include "core/column/Column.h"
 
 #include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
+#include <qwt_scale_div.h>
+#include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 
 #include <gsl/gsl_blas.h>
@@ -296,30 +301,37 @@ void applyArialGraphFonts(Graph *g)
 {
     if (!g)
         return;
-    const QFont titleFnt(QStringLiteral("Arial"), 11, QFont::Bold);
-    const QFont tickFnt(QStringLiteral("Arial"), 10);
-    g->initFonts(titleFnt, tickFnt);
-    g->setTitleFont(QFont(QStringLiteral("Arial"), 12, QFont::Bold));
+    auto normArial = [](QFont f, int fallbackPt) -> QFont {
+        const int pt = (f.pointSize() > 0) ? f.pointSize() : fallbackPt;
+        QFont out(QStringLiteral("Arial"), pt, QFont::Normal);
+        out.setBold(false);
+        out.setStyleStrategy(f.styleStrategy());
+        return out;
+    };
     if (g->plotWidget()) {
+        QwtText topT = g->plotWidget()->title();
+        topT.setFont(normArial(topT.font(), 11));
+        g->plotWidget()->setTitle(topT);
         for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
-            g->plotWidget()->setAxisFont(ax, tickFnt);
+            g->plotWidget()->setAxisFont(ax, normArial(g->plotWidget()->axisFont(ax), 10));
             QwtText axTitle = g->plotWidget()->axisTitle(ax);
-            axTitle.setFont(titleFnt);
+            axTitle.setFont(normArial(axTitle.font(), 11));
             g->plotWidget()->setAxisTitle(ax, axTitle);
         }
     }
     if (g->legend())
-        g->legend()->setFont(QFont(QStringLiteral("Arial"), 9));
+        g->legend()->setFont(normArial(g->legend()->font(), 9));
     g->setTextMarkerDefaults(g->textMarkerDefaultFrame(),
-                             QFont(QStringLiteral("Arial"), 10),
+                             normArial(g->defaultTextMarkerFont(), 9),
                              g->textMarkerDefaultColor(),
                              g->textMarkerDefaultBackground());
 }
 
 Legend *addTextLabelOnGraph(Graph *g, double x, double y, const QString &text,
-                            const QColor &color = QColor(20, 20, 20), bool bold = true,
+                            const QColor &color = QColor(20, 20, 20), bool bold = false,
                             int pointSizeDelta = 0)
 {
+    Q_UNUSED(bold);
     if (!g)
         return nullptr;
     Legend *lbl = g->newLegend(text);
@@ -333,10 +345,259 @@ Legend *addTextLabelOnGraph(Graph *g, double x, double y, const QString &text,
         ptSize = 10;
     if (pointSizeDelta != 0 && ptSize + pointSizeDelta >= 6)
         ptSize += pointSizeDelta;
-    QFont f(QStringLiteral("Arial"), ptSize, bold ? QFont::Bold : QFont::Normal);
+    QFont f(QStringLiteral("Arial"), ptSize, QFont::Normal);
+    f.setBold(false);
     lbl->setFont(f);
     lbl->setOriginCoord(x, y);
     return lbl;
+}
+
+double statsClipSegmentLengthInRect(double x0, double y0, double x1, double y1, const QRectF &r,
+                                    bool *outHit = nullptr)
+{
+    if (outHit)
+        *outHit = false;
+    double t0 = 0.0, t1 = 1.0;
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    auto clipTest = [&](double p, double q) -> bool {
+        if (std::fabs(p) <= 1e-12)
+            return q >= 0.0;
+        const double t = q / p;
+        if (p < 0.0) {
+            if (t > t1)
+                return false;
+            if (t > t0)
+                t0 = t;
+        } else {
+            if (t < t0)
+                return false;
+            if (t < t1)
+                t1 = t;
+        }
+        return true;
+    };
+    if (!clipTest(-dx, x0 - r.left()) || !clipTest(dx, r.right() - x0)
+        || !clipTest(-dy, y0 - r.top()) || !clipTest(dy, r.bottom() - y0)) {
+        return 0.0;
+    }
+    if (t1 < t0)
+        return 0.0;
+    if (outHit)
+        *outHit = true;
+    return std::hypot(dx * (t1 - t0), dy * (t1 - t0));
+}
+
+void placeStatsCalloutAutoAvoid(Graph *g, Legend *box, int marginPx = 14)
+{
+    if (!g || !box)
+        return;
+    Plot *pw = g->plotWidget();
+    if (!pw || !pw->canvas())
+        return;
+
+    g->replot();
+    QRect cRect = pw->canvas()->rect();
+    QRect bRect = box->rect();
+    const int majTickLen = std::max(0, g->majorTickLength());
+    const int pad = std::max({ 14, marginPx, majTickLen + 6 });
+    QFont fnt = box->font();
+    if (fnt.bold()) {
+        fnt.setBold(false);
+        box->setFont(fnt);
+    }
+    while (cRect.width() > 40 && bRect.width() > cRect.width() - 2 * pad && fnt.pointSize() > 7) {
+        fnt.setPointSize(fnt.pointSize() - 1);
+        box->setFont(fnt);
+        g->replot();
+        bRect = box->rect();
+    }
+
+    auto solvePlacement = [&](int &outBestL, int &outBestT, double &outBestScore) -> bool {
+        cRect = pw->canvas()->rect();
+        bRect = box->rect();
+        const int bw = bRect.width();
+        const int bh = bRect.height();
+        const int cw = cRect.width();
+        const int ch = cRect.height();
+        if (bw <= 0 || bh <= 0 || cw <= 2 * pad + 4 || ch <= 2 * pad + 4)
+            return false;
+
+        const int minL = pad;
+        const int maxL = std::max(minL, cw - bw - pad);
+        const int minT = pad;
+        const int maxT = std::max(minT, ch - bh - pad);
+
+        struct CandPos {
+            int left = 0;
+            int top = 0;
+            double prefPenalty = 0.0;
+        };
+        QVector<CandPos> cands;
+        cands.reserve(40);
+        cands.append({ minL, minT, 0.0 });
+        cands.append({ maxL, maxT, 0.1 });
+        cands.append({ minL, maxT, 0.2 });
+        cands.append({ maxL, minT, 0.3 });
+        cands.append({ maxL, (minT + maxT) / 2, 0.5 });
+        cands.append({ minL, (minT + maxT) / 2, 0.6 });
+        cands.append({ (minL + maxL) / 2, minT, 0.7 });
+        cands.append({ (minL + maxL) / 2, maxT, 0.8 });
+        for (int gy = 0; gy < 6; ++gy) {
+            for (int gx = 0; gx < 6; ++gx) {
+                const int lx = minL + qRound((maxL - minL) * (double(gx) / 5.0));
+                const int ty = minT + qRound((maxT - minT) * (double(gy) / 5.0));
+                cands.append({ lx, ty, 1.0 + 0.08 * std::min(gx, 5 - gx) + 0.08 * std::min(gy, 5 - gy) });
+            }
+        }
+
+        const Legend *mainLeg = (g->isLegendVisible() ? g->legend() : nullptr);
+        const QRectF legRect =
+                (mainLeg && mainLeg != box) ? QRectF(mainLeg->rect()).adjusted(-5, -5, 5, 5) : QRectF();
+
+        auto evalCost = [&](int lx, int ty) -> double {
+            double cost = 0.0;
+            const QRectF testBox(lx - 4.0, ty - 4.0, bw + 8.0, bh + 8.0);
+            if (legRect.isValid()) {
+                const QRectF inter = testBox.intersected(legRect);
+                if (!inter.isEmpty())
+                    cost += 200000.0 + inter.width() * inter.height() * 60.0;
+            }
+            for (int tid : g->textMarkerKeys()) {
+                Legend *tm = g->textMarker(tid);
+                if (!tm || tm == box || tm == mainLeg || !tm->isVisible())
+                    continue;
+                const QRectF inter = testBox.intersected(QRectF(tm->rect()).adjusted(-3, -3, 3, 3));
+                if (!inter.isEmpty())
+                    cost += 80000.0 + inter.width() * inter.height() * 30.0;
+            }
+            for (int aid : g->lineMarkerKeys()) {
+                ArrowMarker *am = g->arrow(aid);
+                if (!am)
+                    continue;
+                const QwtScaleMap xMap = pw->canvasMap(am->xAxis());
+                const QwtScaleMap yMap = pw->canvasMap(am->yAxis());
+                const QPointF sp = am->startPointCoord();
+                const QPointF ep = am->endPointCoord();
+                bool hit = false;
+                const double len = statsClipSegmentLengthInRect(
+                        xMap.xTransform(sp.x()), yMap.xTransform(sp.y()),
+                        xMap.xTransform(ep.x()), yMap.xTransform(ep.y()), testBox, &hit);
+                if (hit)
+                    cost += 60.0 + len * 3.5;
+            }
+            for (const Graph::ReferenceLineSpec &rl : g->referenceLines()) {
+                if (rl.orientation == 0) {
+                    const double py = pw->canvasMap(QwtPlot::yLeft).xTransform(rl.value);
+                    if (py >= testBox.top() && py <= testBox.bottom())
+                        cost += 4000.0;
+                } else {
+                    const double px = pw->canvasMap(QwtPlot::xBottom).xTransform(rl.value);
+                    if (px >= testBox.left() && px <= testBox.right())
+                        cost += 4000.0;
+                }
+            }
+            for (int i = 0; i < g->curves(); ++i) {
+                QwtPlotCurve *c = g->curve(i);
+                if (!c || !c->isVisible() || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                    continue;
+                const int nPts = c->dataSize();
+                if (nPts <= 0)
+                    continue;
+                const QwtScaleMap xMap = pw->canvasMap(c->xAxis());
+                const QwtScaleMap yMap = pw->canvasMap(c->yAxis());
+                const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
+                const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
+                const int stride = (nPts > 4000) ? std::max(1, nPts / 2000) : 1;
+                bool hasPrev = false;
+                double ppx = 0.0, ppy = 0.0;
+                for (int p = 0; p < nPts; p += stride) {
+                    const double vx = c->x(p), vy = c->y(p);
+                    if (!std::isfinite(vx) || !std::isfinite(vy)) {
+                        hasPrev = false;
+                        continue;
+                    }
+                    const double px = xMap.xTransform(vx);
+                    const double py = yMap.xTransform(vy);
+                    if (!std::isfinite(px) || !std::isfinite(py)) {
+                        hasPrev = false;
+                        continue;
+                    }
+                    if (hasSym && testBox.contains(QPointF(px, py)))
+                        cost += 90.0 * stride;
+                    if (hasLine && hasPrev) {
+                        bool hit = false;
+                        const double len = statsClipSegmentLengthInRect(ppx, ppy, px, py, testBox, &hit);
+                        if (hit)
+                            cost += (25.0 + len * 4.5) * stride;
+                    }
+                    ppx = px;
+                    ppy = py;
+                    hasPrev = true;
+                }
+            }
+            return cost;
+        };
+
+        outBestScore = std::numeric_limits<double>::infinity();
+        outBestL = std::clamp(bRect.left(), minL, maxL);
+        outBestT = std::clamp(bRect.top(), minT, maxT);
+        for (const CandPos &cp : cands) {
+            const double sc = evalCost(cp.left, cp.top) + cp.prefPenalty;
+            if (sc < outBestScore) {
+                outBestScore = sc;
+                outBestL = cp.left;
+                outBestT = cp.top;
+            }
+        }
+        return true;
+    };
+
+    int bestL = 0, bestT = 0;
+    double bestScore = 0.0;
+    if (!solvePlacement(bestL, bestT, bestScore))
+        return;
+
+    while (bestScore >= 25.0 && fnt.pointSize() > 7) {
+        fnt.setPointSize(fnt.pointSize() - 1);
+        box->setFont(fnt);
+        g->replot();
+        if (!solvePlacement(bestL, bestT, bestScore))
+            break;
+    }
+
+    const double newX = pw->invTransform(QwtPlot::xBottom, bestL);
+    const double newY = pw->invTransform(QwtPlot::yLeft, bestT);
+    if (std::isfinite(newX) && std::isfinite(newY))
+        box->setOriginCoord(newX, newY);
+}
+
+void attachStatsCalloutAutoAvoid(Graph *g, Legend *box, int marginPx = 14)
+{
+    if (!g || !box)
+        return;
+    placeStatsCalloutAutoAvoid(g, box, marginPx);
+    int markerId = -1;
+    for (int tid : g->textMarkerKeys()) {
+        if (g->textMarker(tid) == box) {
+            markerId = tid;
+            break;
+        }
+    }
+    if (markerId >= 0) {
+        auto guard = std::make_shared<bool>(false);
+        QPointer<Graph> gPtr(g);
+        QObject::connect(g, &Graph::modifiedGraph, g, [gPtr, markerId, marginPx, guard]() {
+            if (*guard || !gPtr)
+                return;
+            Legend *liveBox = gPtr->textMarker(markerId);
+            if (!liveBox || !liveBox->isVisible())
+                return;
+            *guard = true;
+            placeStatsCalloutAutoAvoid(gPtr.data(), liveBox, marginPx);
+            *guard = false;
+        });
+    }
 }
 
 Legend *addFramedBoxOnGraph(Graph *g, double x, double y, const QString &text,
@@ -347,13 +608,21 @@ Legend *addFramedBoxOnGraph(Graph *g, double x, double y, const QString &text,
     Legend *box = g->newLegend(text);
     if (!box)
         return nullptr;
+    const int basePt = (g->legend() && g->legend()->font().pointSize() > 0)
+            ? g->legend()->font().pointSize()
+            : ptSize;
+    QFont f(QStringLiteral("Arial"), std::clamp(basePt, 8, 22), QFont::Normal);
+    f.setBold(false);
     box->setFrameStyle(Legend::Line);
-    box->setBackgroundColor(QColor(255, 255, 255, 225));
+    box->setBackgroundColor(QColor(255, 255, 255, 232));
     box->setTextColor(textColor);
-    box->setFont(QFont(QStringLiteral("Arial"), ptSize));
+    box->setFont(f);
     box->setOriginCoord(x, y);
     return box;
 }
+
+void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double yMaxAll,
+                             const std::vector<std::tuple<int, int, double>> &sigPairs);
 
 // ============================================================================
 // 2D Surface Model Evaluation & Levenberg-Marquardt Solver
@@ -2416,89 +2685,20 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             yMinAll = std::min(yMinAll, gd.minV);
             yMaxAll = std::max(yMaxAll, gd.maxV);
         }
-        const double ySpan = std::max(1e-6, yMaxAll - yMinAll);
-
-        // Determine group X centers on annotateGraph (default 1.0, 2.0, ..., K for box/bar charts)
-        std::vector<double> groupX(static_cast<size_t>(K));
-        for (int k = 0; k < K; ++k)
-            groupX[static_cast<size_t>(k)] = static_cast<double>(k + 1);
-
-        if (annotateGraph->curves() >= K) {
-            std::vector<double> curveMeans;
-            bool distinctMeans = true;
-            for (int k = 0; k < K; ++k) {
-                QwtPlotCurve *cv = annotateGraph->curve(k);
-                if (!cv || cv->dataSize() <= 0) {
-                    distinctMeans = false;
-                    break;
-                }
-                double sx = 0.0;
-                for (int i = 0; i < cv->dataSize(); ++i)
-                    sx += cv->x(i);
-                double mx = sx / static_cast<double>(cv->dataSize());
-                for (double prev : curveMeans) {
-                    if (std::abs(mx - prev) < 1e-6)
-                        distinctMeans = false;
-                }
-                curveMeans.push_back(mx);
-            }
-            if (distinctMeans && static_cast<int>(curveMeans.size()) == K)
-                groupX = curveMeans;
-        }
 
         // Select pairs to annotate (for 1 pair always annotate; otherwise annotate significant or top pair)
-        std::vector<PairResult> toDraw;
+        std::vector<std::tuple<int, int, double>> sigToDraw;
         if (pairs.size() == 1) {
-            toDraw.push_back(pairs.front());
+            sigToDraw.emplace_back(pairs.front().i, pairs.front().j, pairs.front().pAdj);
         } else {
             for (const PairResult &pr : pairs) {
                 if (pr.pAdj < 0.05)
-                    toDraw.push_back(pr);
+                    sigToDraw.emplace_back(pr.i, pr.j, pr.pAdj);
             }
-            if (toDraw.empty())
-                toDraw.push_back(pairs.front());
+            if (sigToDraw.empty())
+                sigToDraw.emplace_back(pairs.front().i, pairs.front().j, pairs.front().pAdj);
         }
-
-        const double stepY = 0.11 * ySpan;
-        const double tickH = 0.032 * ySpan;
-        const double baseTop = yMaxAll + 0.08 * ySpan;
-        const double neededYMax =
-                baseTop + static_cast<double>(toDraw.size() + 1) * stepY;
-
-        const QwtScaleDiv *xDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::xBottom);
-        const QwtScaleDiv *yDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::yLeft);
-        double xLo = std::min(xDiv ? xDiv->lowerBound() : 0.5, groupX.front() - 0.6);
-        double xHi = std::max(xDiv ? xDiv->upperBound() : static_cast<double>(K) + 0.5,
-                              groupX.back() + 0.6);
-        double yLo = std::min(yDiv ? yDiv->lowerBound() : (yMinAll - 0.1 * ySpan),
-                              yMinAll - 0.05 * ySpan);
-        double yHi = std::max(yDiv ? yDiv->upperBound() : neededYMax, neededYMax);
-
-        annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi);
-        annotateGraph->setScale(QwtPlot::yLeft, yLo, yHi);
-        annotateGraph->replot();
-
-        const QColor bracketColor(30, 30, 30);
-        for (size_t b = 0; b < toDraw.size(); ++b) {
-            const PairResult &pr = toDraw[b];
-            const double xLeft =
-                    std::min(groupX[static_cast<size_t>(pr.i)], groupX[static_cast<size_t>(pr.j)]);
-            const double xRight =
-                    std::max(groupX[static_cast<size_t>(pr.i)], groupX[static_cast<size_t>(pr.j)]);
-            const double yBar = baseTop + static_cast<double>(b) * stepY;
-
-            // Left vertical tick, horizontal bracket bar, right vertical tick
-            addLineSegmentOnGraph(annotateGraph, xLeft, yBar - tickH, xLeft, yBar, bracketColor, 2);
-            addLineSegmentOnGraph(annotateGraph, xLeft, yBar, xRight, yBar, bracketColor, 2);
-            addLineSegmentOnGraph(annotateGraph, xRight, yBar, xRight, yBar - tickH, bracketColor,
-                                  2);
-
-            QString stars = starRatingForP(pr.pAdj);
-            addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar + 0.42 * stepY, stars,
-                                bracketColor, true, 1);
-        }
-        applyArialGraphFonts(annotateGraph);
-        annotateGraph->replot();
+        annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw);
     }
 
     return resTbl;
@@ -4057,8 +4257,11 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
 
         const double boxX = xDomainMin + 0.56 * (xDomainMax - xDomainMin);
         const double boxY = std::max(0.1, 0.88 * peakY);
-        addFramedBoxOnGraph(histogramGraphToOverlay, boxX, boxY, annot, QColor(20, 30, 50), 9);
+        Legend *normBox =
+                addFramedBoxOnGraph(histogramGraphToOverlay, boxX, boxY, annot, QColor(20, 30, 50), 9);
         applyArialGraphFonts(histogramGraphToOverlay);
+        if (normBox)
+            attachStatsCalloutAutoAvoid(histogramGraphToOverlay, normBox, 14);
         histogramGraphToOverlay->updatePlot();
     }
 
@@ -4875,6 +5078,11 @@ void registerPhase5StatsTranslationsOnce()
     reg("Create Method-Comparison Regression Plot", "測定法比較回帰プロットを作成");
     reg("Passing-Bablok & Deming Regression (%1 vs %2)", "Passing-Bablok / Deming回帰 (%1 vs %2)");
     reg("PB 95% CI", "PB 95%信頼帯");
+    reg("Parameter Estimator:", "パラメータ推定法:");
+    reg("Median Rank Regression (MRR — Benard)", "メジアンランク回帰法 (MRR — Benard近似)");
+    reg("Maximum Likelihood (MLE — JIS R 1625 / ISO 20501)",
+        "最尤推定法 (MLE — JIS R 1625 / ISO 20501)");
+    reg("Failure probability, <i>P</i><sub>f</sub> (%)", "破壊確率 <i>P</i><sub>f</sub> (%)");
 }
 
 void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double> &ranksOut,
@@ -4912,6 +5120,13 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     if (!annotateGraph || K < 2 || sigPairs.empty())
         return;
 
+    Plot *pw = annotateGraph->plotWidget();
+    if (!pw)
+        return;
+
+    applyArialGraphFonts(annotateGraph);
+    annotateGraph->replot();
+
     const double ySpan = std::max(1e-6, yMaxAll - yMinAll);
     std::vector<double> groupX(static_cast<size_t>(K));
     for (int k = 0; k < K; ++k)
@@ -4940,40 +5155,204 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
             groupX = curveMeans;
     }
 
-    const double stepY = 0.11 * ySpan;
-    const double tickH = 0.032 * ySpan;
-    const double baseTop = yMaxAll + 0.08 * ySpan;
-    const double neededYMax = baseTop + static_cast<double>(sigPairs.size() + 1) * stepY;
+    // Canonicalize each pair to (minIdx, maxIdx) and sort narrowest span -> widest span, then left -> right
+    std::vector<std::tuple<int, int, double>> orderedPairs;
+    orderedPairs.reserve(sigPairs.size());
+    for (const auto &tp : sigPairs) {
+        int a = std::clamp(std::get<0>(tp), 0, K - 1);
+        int b = std::clamp(std::get<1>(tp), 0, K - 1);
+        if (a == b)
+            continue;
+        if (a > b)
+            std::swap(a, b);
+        orderedPairs.emplace_back(a, b, std::get<2>(tp));
+    }
+    if (orderedPairs.empty())
+        return;
+    std::stable_sort(orderedPairs.begin(), orderedPairs.end(),
+                     [&](const std::tuple<int, int, double> &lhs,
+                         const std::tuple<int, int, double> &rhs) {
+                         const double spanL = std::fabs(groupX[size_t(std::get<1>(lhs))]
+                                                        - groupX[size_t(std::get<0>(lhs))]);
+                         const double spanR = std::fabs(groupX[size_t(std::get<1>(rhs))]
+                                                        - groupX[size_t(std::get<0>(rhs))]);
+                         if (std::fabs(spanL - spanR) > 1e-6)
+                             return spanL < spanR;
+                         return groupX[size_t(std::get<0>(lhs))]
+                                 < groupX[size_t(std::get<0>(rhs))];
+                     });
 
-    const QwtScaleDiv *xDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::xBottom);
-    const QwtScaleDiv *yDiv = annotateGraph->d_plot->axisScaleDiv(QwtPlot::yLeft);
-    const double xLo = std::min(xDiv ? xDiv->lowerBound() : 0.5, groupX.front() - 0.6);
-    const double xHi = std::max(xDiv ? xDiv->upperBound() : static_cast<double>(K) + 0.5,
-                                groupX.back() + 0.6);
-    const double yLo = std::min(yDiv ? yDiv->lowerBound() : (yMinAll - 0.1 * ySpan),
-                                yMinAll - 0.05 * ySpan);
-    const double yHi = std::max(yDiv ? yDiv->upperBound() : neededYMax, neededYMax);
+    int basePt = annotateGraph->defaultTextMarkerFont().pointSize();
+    if (basePt <= 0)
+        basePt = 10;
+    QFont starFont(QStringLiteral("Arial"), basePt, QFont::Normal);
+    starFont.setBold(false);
+    const QFontMetricsF starFm(starFont);
 
-    annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi);
+    const int canvasH = (pw->canvas() && pw->canvas()->height() >= 60) ? pw->canvas()->height() : 220;
+    const double minStepPx = starFm.height() + 11.0;
+    const double approxStepFrac =
+            minStepPx / std::max(40.0, double(canvasH) - minStepPx * (double(orderedPairs.size()) + 1.3));
+    const double stepY = std::max(0.145 * ySpan, std::min(0.46 * ySpan, approxStepFrac * ySpan));
+    const double tickH = 0.28 * stepY;
+    const double baseTop = yMaxAll + 0.10 * ySpan;
+    const double neededYMax =
+            baseTop + (static_cast<double>(orderedPairs.size()) + 1.05) * stepY;
+
+    const QwtScaleDiv *xDiv = pw->axisScaleDiv(QwtPlot::xBottom);
+    const QwtScaleDiv *yDiv = pw->axisScaleDiv(QwtPlot::yLeft);
+    const QList<Graph::AxisType> axTypes = annotateGraph->axesType();
+    const bool xIsTextCat = (QwtPlot::xBottom < axTypes.size()
+                             && axTypes[QwtPlot::xBottom] == Graph::AxisType::Txt);
+
+    const double curXLo = xDiv ? std::min(xDiv->lowerBound(), xDiv->upperBound()) : 0.5;
+    const double curXHi = xDiv ? std::max(xDiv->lowerBound(), xDiv->upperBound())
+                               : (static_cast<double>(K) + 0.5);
+    const double xLo = xIsTextCat ? std::min(curXLo, 0.5)
+                                  : std::min(curXLo, groupX.front() - 0.55);
+    const double xHi = xIsTextCat ? std::max(curXHi, static_cast<double>(K) + 0.5)
+                                  : std::max(curXHi, groupX.back() + 0.55);
+
+    const double curYLo = yDiv ? std::min(yDiv->lowerBound(), yDiv->upperBound())
+                               : (yMinAll - 0.05 * ySpan);
+    const double curYHi = yDiv ? std::max(yDiv->lowerBound(), yDiv->upperBound()) : neededYMax;
+    const double yLo = (curYLo == 0.0 && yMinAll >= 0.0)
+            ? 0.0
+            : std::min(curYLo, yMinAll - 0.05 * ySpan);
+    double yHi = std::max(curYHi, neededYMax);
+
+    if (xIsTextCat) {
+        annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi, 1.0, K + 2, 0);
+        pw->setMinorTicksType(QwtPlot::xBottom, ScaleDraw::None);
+    } else {
+        annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi);
+    }
     annotateGraph->setScale(QwtPlot::yLeft, yLo, yHi);
+    annotateGraph->setAxisUserLocked(QwtPlot::yLeft, true);
     annotateGraph->replot();
 
+    // Ensure topmost bracket label clears top spine (and inward ticks) by at least 12 px
+    {
+        const double topBarY =
+                baseTop + static_cast<double>(orderedPairs.size() - 1) * stepY;
+        const double topBarPx = pw->transform(QwtPlot::yLeft, topBarY);
+        const double estOriginTopPx = topBarPx - 4.0 - starFm.ascent() - 4.0;
+        if (estOriginTopPx < 12.0 && canvasH > 50) {
+            const double extraPx = 14.0 - estOriginTopPx;
+            const double pxToData = (yHi - yLo) / double(std::max(40, canvasH));
+            yHi += extraPx * pxToData * 1.30;
+            annotateGraph->setScale(QwtPlot::yLeft, yLo, yHi);
+            annotateGraph->setAxisUserLocked(QwtPlot::yLeft, true);
+            annotateGraph->replot();
+        }
+    }
+
+    struct BracketLabelBinding {
+        int markerId = -1;
+        double xMid = 0.0;
+        double yBar = 0.0;
+        QString stars;
+    };
+    QVector<BracketLabelBinding> bindings;
+    bindings.reserve(static_cast<int>(orderedPairs.size()));
+
     const QColor bracketColor(30, 30, 30);
-    for (size_t b = 0; b < sigPairs.size(); ++b) {
-        const int gi = std::get<0>(sigPairs[b]);
-        const int gj = std::get<1>(sigPairs[b]);
-        const double pAdj = std::get<2>(sigPairs[b]);
-        const double xLeft = groupX[static_cast<size_t>(gi)];
-        const double xRight = groupX[static_cast<size_t>(gj)];
+    for (size_t b = 0; b < orderedPairs.size(); ++b) {
+        const int gi = std::get<0>(orderedPairs[b]);
+        const int gj = std::get<1>(orderedPairs[b]);
+        const double pAdj = std::get<2>(orderedPairs[b]);
+        const double xLeft =
+                std::min(groupX[static_cast<size_t>(gi)], groupX[static_cast<size_t>(gj)]);
+        const double xRight =
+                std::max(groupX[static_cast<size_t>(gi)], groupX[static_cast<size_t>(gj)]);
         const double yBar = baseTop + static_cast<double>(b) * stepY;
 
-        addLineSegmentOnGraph(annotateGraph, xLeft, yBar - tickH, xLeft, yBar, bracketColor, 2);
-        addLineSegmentOnGraph(annotateGraph, xLeft, yBar, xRight, yBar, bracketColor, 2);
-        addLineSegmentOnGraph(annotateGraph, xRight, yBar, xRight, yBar - tickH, bracketColor, 2);
-        addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar + 0.42 * stepY,
-                            starRatingForP(pAdj), bracketColor, true, 1);
+        addLineSegmentOnGraph(annotateGraph, xLeft, yBar - tickH, xLeft, yBar, bracketColor, 1);
+        addLineSegmentOnGraph(annotateGraph, xLeft, yBar, xRight, yBar, bracketColor, 1);
+        addLineSegmentOnGraph(annotateGraph, xRight, yBar, xRight, yBar - tickH, bracketColor, 1);
+
+        const QString stars = starRatingForP(pAdj);
+        Legend *lbl = addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar, stars,
+                                          bracketColor, false, 0);
+        if (lbl) {
+            int foundId = -1;
+            for (int tid : annotateGraph->textMarkerKeys()) {
+                if (annotateGraph->textMarker(tid) == lbl) {
+                    foundId = tid;
+                    break;
+                }
+            }
+            if (foundId >= 0)
+                bindings.append({ foundId, 0.5 * (xLeft + xRight), yBar, stars });
+        }
     }
+
+    auto syncBracketLabels = [gPtr = QPointer<Graph>(annotateGraph), bindings]() {
+        if (!gPtr || !gPtr->plotWidget())
+            return;
+        Plot *plotW = gPtr->plotWidget();
+        const QwtScaleDiv *yd = plotW->axisScaleDiv(QwtPlot::yLeft);
+        if (yd && !bindings.isEmpty() && plotW->canvas() && plotW->canvas()->height() > 50) {
+            const BracketLabelBinding &topB = bindings.last();
+            if (Legend *topLbl = gPtr->textMarker(topB.markerId)) {
+                QFont tf = topLbl->font();
+                tf.setBold(false);
+                const QFontMetricsF tfm(tf);
+                const double topBarPx = plotW->transform(QwtPlot::yLeft, topB.yBar);
+                const double lift = (topB.stars == QLatin1String("ns")) ? 4.0 : 2.0;
+                const double neededTopPx = topBarPx - 4.0 - tfm.ascent() - lift;
+                if (neededTopPx < 10.0) {
+                    const double curLo = std::min(yd->lowerBound(), yd->upperBound());
+                    const double curHi = std::max(yd->lowerBound(), yd->upperBound());
+                    const double pxToData =
+                            (curHi - curLo) / double(std::max(40, plotW->canvas()->height()));
+                    gPtr->setScale(QwtPlot::yLeft, curLo,
+                                   curHi + (12.0 - neededTopPx) * pxToData * 1.25);
+                    gPtr->setAxisUserLocked(QwtPlot::yLeft, true);
+                    gPtr->replot();
+                }
+            }
+        }
+        for (const BracketLabelBinding &bb : bindings) {
+            Legend *lbl = gPtr->textMarker(bb.markerId);
+            if (!lbl)
+                continue;
+            QFont lf = lbl->font();
+            if (lf.bold()) {
+                lf.setBold(false);
+                lbl->setFont(lf);
+            }
+            const QFontMetricsF fm(lf);
+            const double textW = fm.horizontalAdvance(bb.stars);
+            const double xMidPx = plotW->transform(QwtPlot::xBottom, bb.xMid);
+            const double yBarPx = plotW->transform(QwtPlot::yLeft, bb.yBar);
+            const double originPxX = xMidPx - 6.0 - 0.5 * textW;
+            const double liftPx = (bb.stars == QLatin1String("ns")) ? 4.0 : 2.0;
+            const double originPxY = std::max(3.0, yBarPx - 4.0 - fm.ascent() - liftPx);
+            const double dataX = plotW->invTransform(QwtPlot::xBottom, qRound(originPxX));
+            const double dataY = plotW->invTransform(QwtPlot::yLeft, qRound(originPxY));
+            if (std::isfinite(dataX) && std::isfinite(dataY))
+                lbl->setOriginCoord(dataX, dataY);
+        }
+    };
+
     applyArialGraphFonts(annotateGraph);
+    syncBracketLabels();
+
+    if (!bindings.isEmpty()) {
+        auto guard = std::make_shared<bool>(false);
+        QObject::connect(annotateGraph, &Graph::modifiedGraph, annotateGraph,
+                         [syncBracketLabels, guard]() {
+                             if (*guard)
+                                 return;
+                             *guard = true;
+                             syncBracketLabels();
+                             *guard = false;
+                         });
+    }
+
+    if (annotateGraph->isLegendVisible() && annotateGraph->legend())
+        annotateGraph->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
     annotateGraph->replot();
 }
 
@@ -5080,11 +5459,78 @@ void evalWilcoxonSignedRank(const std::vector<double> &diffs, double &wStatOut, 
     pValOut = std::clamp(2.0 * gsl_cdf_ugaussian_Q(z), 0.0, 1.0);
 }
 
+class WeibullProbScaleDraw : public ScaleDraw
+{
+public:
+    explicit WeibullProbScaleDraw(const ScaleDraw &other) : ScaleDraw(other) {}
+    WeibullProbScaleDraw() : ScaleDraw() {}
+
+    QwtText label(double weibitVal) const override
+    {
+        if (!std::isfinite(weibitVal) || weibitVal < -25.0 || weibitVal > 6.0)
+            return QwtText();
+        const double pfPct = 100.0 * (1.0 - std::exp(-std::exp(weibitVal)));
+        if (!(pfPct > 0.0 && pfPct < 100.0))
+            return QwtText();
+        // Snap standard probability paper levels (1, 5, 10, 20, 50, 63.2, 90, 99%)
+        static const double kStdPct[] = { 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0,
+                                          50.0, 63.21205588, 80.0, 90.0, 95.0, 99.0, 99.9 };
+        static const char *kStdLbl[] = { "0.1", "0.5", "1",  "2",    "5",  "10", "20", "30",
+                                         "50",  "63.2", "80", "90",  "95", "99", "99.9" };
+        for (size_t k = 0; k < sizeof(kStdPct) / sizeof(kStdPct[0]); ++k) {
+            const double wTarget = std::log(-std::log(1.0 - 0.01 * kStdPct[k]));
+            if (std::fabs(weibitVal - wTarget) <= 1e-3)
+                return QwtText(QString::fromLatin1(kStdLbl[k]));
+        }
+        return QwtText(QString::number(pfPct, 'g', 3));
+    }
+};
+
+void syncWeibullProbRightAxis(Graph *parentG, Graph *linkedG)
+{
+    if (!parentG || !linkedG || !parentG->plotWidget() || !linkedG->plotWidget())
+        return;
+    Plot *pPlot = parentG->plotWidget();
+    Plot *cPlot = linkedG->plotWidget();
+    const QwtScaleDiv *yDiv = pPlot->axisScaleDiv(QwtPlot::yLeft);
+    if (!yDiv)
+        return;
+    const double wLo = std::min(yDiv->lowerBound(), yDiv->upperBound());
+    const double wHi = std::max(yDiv->lowerBound(), yDiv->upperBound());
+    if (!(wHi > wLo) || !std::isfinite(wLo) || !std::isfinite(wHi))
+        return;
+
+    // Keep 50% on minor ticks so '50' (-0.3665 weibits) never collides vertically with '63.2' (0.0 weibits)
+    static const double kMajorProbsPct[] = { 1.0, 5.0, 10.0, 20.0, 63.21205588, 90.0, 99.0 };
+    static const double kMinorProbsPct[] = { 0.5, 2.0, 3.0, 15.0, 30.0, 50.0, 80.0, 95.0 };
+
+    QwtValueList majTicks, minTicks, medTicks;
+    for (double pPct : kMajorProbsPct) {
+        const double w = std::log(-std::log(1.0 - 0.01 * pPct));
+        if (w >= wLo - 1e-6 && w <= wHi + 1e-6)
+            majTicks.append(w);
+    }
+    for (double pPct : kMinorProbsPct) {
+        const double w = std::log(-std::log(1.0 - 0.01 * pPct));
+        if (w >= wLo - 1e-6 && w <= wHi + 1e-6)
+            minTicks.append(w);
+    }
+    QwtValueList ticks[QwtScaleDiv::NTickTypes];
+    ticks[QwtScaleDiv::MinorTick] = minTicks;
+    ticks[QwtScaleDiv::MajorTick] = majTicks;
+    QwtScaleDiv rightDiv(wLo, wHi, ticks);
+    cPlot->setAxisScaleDiv(QwtPlot::yRight, rightDiv);
+    pPlot->setMajorTicksType(QwtPlot::yRight, ScaleDraw::None);
+    pPlot->setMinorTicksType(QwtPlot::yRight, ScaleDraw::None);
+    if (QwtScaleDraw *pSdR = pPlot->axisScaleDraw(QwtPlot::yRight))
+        pSdR->enableComponent(QwtAbstractScaleDraw::Labels, false);
+}
+
 } // namespace
 
 GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullProbability(
         ApplicationWindow *app, Table *srcTable, const QString &dataCol, const QString &censorCol,
-        int censorCoding, bool fitThreeParam)
+        int censorCoding, bool fitThreeParam, bool useMle, bool createPlot)
 {
     registerPhase5StatsTranslationsOnce();
     WeibullPlotResult res;
@@ -5347,7 +5793,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     const double sResid = hasSe
             ? std::sqrt(std::max(0.0, rss / static_cast<double>(residDf)))
             : 0.0;
-    const double betaSE = hasSe ? (sResid / std::sqrt(suu)) : 0.0;
+    double betaSE = hasSe ? (sResid / std::sqrt(suu)) : 0.0;
 
     const double lnSigma0 = -interceptA / betaM;
     const double sigma0 = std::exp(std::clamp(lnSigma0, -500.0, 500.0));
@@ -5357,15 +5803,124 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                            + ((lnSigma0 - meanU) * (lnSigma0 - meanU)) / suu))
             : 0.0;
 
+    // Right-censored Newton-Raphson Maximum Likelihood Estimator (JIS R 1625 / ISO 20501)
+    double mleM = betaM;
+    double mleMSE = betaSE;
+    double mleSigma0 = sigma0;
+    double mleSigma0SE = sigma0 * lnSigma0SE;
+    double mleVarInvM = 0.0, mleVarLnS0 = 0.0, mleCovLnS0InvM = 0.0;
+    bool mleConverged = false;
+    {
+        std::vector<double> allLnShifted;
+        allLnShifted.reserve(items.size());
+        double sumFailLn = 0.0;
+        double maxLnShifted = -std::numeric_limits<double>::infinity();
+        bool allShiftedPositive = true;
+        for (const WeibItem &it : items) {
+            const double sh = it.x - bestGamma;
+            if (!(sh > 0.0)) {
+                allShiftedPositive = false;
+                break;
+            }
+            const double lx = std::log(sh);
+            allLnShifted.push_back(lx);
+            maxLnShifted = std::max(maxLnShifted, lx);
+            if (!it.censored)
+                sumFailLn += lx;
+        }
+        if (allShiftedPositive && !allLnShifted.empty() && mFail >= 2) {
+            const double meanFailLn = sumFailLn / static_cast<double>(mFail);
+            double mCur = std::clamp(betaM, 0.05, 250.0);
+            for (int iter = 0; iter < 48; ++iter) {
+                double sumW = 0.0, sumWL = 0.0, sumWLL = 0.0;
+                for (double lx : allLnShifted) {
+                    const double w = std::exp(std::clamp(mCur * (lx - maxLnShifted), -700.0, 0.0));
+                    sumW += w;
+                    sumWL += w * lx;
+                    sumWLL += w * lx * lx;
+                }
+                if (sumW <= 1e-300)
+                    break;
+                const double ratioL = sumWL / sumW;
+                const double gVal = ratioL - (1.0 / mCur) - meanFailLn;
+                const double varL = std::max(0.0, (sumWLL / sumW) - ratioL * ratioL);
+                const double gDeriv = varL + 1.0 / (mCur * mCur);
+                if (gDeriv <= 1e-30)
+                    break;
+                double step = gVal / gDeriv;
+                // Guard step so mCur stays strictly positive
+                while (mCur - step <= 0.1 * mCur)
+                    step *= 0.5;
+                const double mNext = std::clamp(mCur - step, 1e-3, 1000.0);
+                mCur = mNext;
+                if (std::fabs(step) <= 1e-11 * mCur) {
+                    mleConverged = true;
+                    break;
+                }
+                if (iter >= 8 && std::fabs(gVal) <= 1e-9)
+                    mleConverged = true;
+            }
+            double sumW = 0.0;
+            for (double lx : allLnShifted)
+                sumW += std::exp(std::clamp(mCur * (lx - maxLnShifted), -700.0, 0.0));
+            if (sumW > 1e-300 && std::isfinite(mCur) && mCur > 0.0) {
+                const double lnS0Mle =
+                        maxLnShifted + std::log(sumW / static_cast<double>(mFail)) / mCur;
+                mleM = mCur;
+                mleSigma0 = std::exp(std::clamp(lnS0Mle, -500.0, 500.0));
+                mleConverged = true;
+
+                // Observed Fisher information matrix in (m, u0 = ln(sigma0)) -> exact asymptotic SEs
+                double sumZ2ExpZ = 0.0, sumZExpZ = 0.0;
+                for (double lx : allLnShifted) {
+                    const double z = mCur * (lx - lnS0Mle);
+                    const double ez = std::exp(std::clamp(z, -700.0, 500.0));
+                    sumZExpZ += z * ez;
+                    sumZ2ExpZ += z * z * ez;
+                }
+                const double rD = static_cast<double>(mFail);
+                const double iMM = (rD + sumZ2ExpZ) / (mCur * mCur);
+                const double iMU0 = -sumZExpZ; // d^2(-l)/(dm d(ln s0))
+                const double iU0U0 = rD * mCur * mCur;
+                const double detI = iMM * iU0U0 - iMU0 * iMU0;
+                if (detI > 1e-30 && std::isfinite(detI)) {
+                    const double varM = std::max(0.0, iU0U0 / detI);
+                    const double varU0 = std::max(0.0, iMM / detI);
+                    const double covMU0 = -iMU0 / detI;
+                    mleMSE = std::sqrt(varM);
+                    mleSigma0SE = mleSigma0 * std::sqrt(varU0);
+                    mleVarLnS0 = varU0;
+                    mleVarInvM = varM / std::pow(mCur, 4);
+                    mleCovLnS0InvM = -covMU0 / (mCur * mCur);
+                }
+            }
+        }
+    }
+
+    res.mleModulusM = mleM;
+    res.mleModulusMSE = mleMSE;
+    res.mleScaleSigma0 = mleSigma0;
+    res.mleScaleSigma0SE = mleSigma0SE;
+    res.usedMle = (useMle && mleConverged);
+
+    if (res.usedMle) {
+        betaM = mleM;
+        betaSE = mleMSE;
+        interceptA = -mleM * std::log(std::max(1e-300, mleSigma0));
+    }
+
+    const double effSigma0 = res.usedMle ? mleSigma0 : sigma0;
+    const double effSigma0SE = res.usedMle ? mleSigma0SE : (sigma0 * lnSigma0SE);
+
     res.valid = true;
     res.modulusM = betaM;
     res.modulusMSE = betaSE;
-    res.scaleSigma0 = sigma0;
-    res.scaleSigma0SE = sigma0 * lnSigma0SE;
+    res.scaleSigma0 = effSigma0;
+    res.scaleSigma0SE = effSigma0SE;
     res.thresholdGamma = bestGamma;
     res.threeParameter = usedThreeParam;
-    res.b10Life = bestGamma + sigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
-    res.b50Life = bestGamma + sigma0 * std::pow(std::log(2.0), 1.0 / betaM);
+    res.b10Life = bestGamma + effSigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
+    res.b50Life = bestGamma + effSigma0 * std::pow(std::log(2.0), 1.0 / betaM);
     res.rSquare = r2;
 
     if (!app)
@@ -5394,13 +5949,29 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     for (int c = 3; c <= 6; ++c)
         repTbl->column(c)->setPlotDesignation(SciDAVis::Y);
 
+    std::vector<double> ciLoVec(static_cast<size_t>(mFail), 0.0);
+    std::vector<double> ciHiVec(static_cast<size_t>(mFail), 0.0);
+    const double effLnS0 = std::log(std::max(1e-300, effSigma0));
     for (int i = 0; i < mFail; ++i) {
         const double uv = uLnX[static_cast<size_t>(i)];
         const double wh = interceptA + betaM * uv;
-        const double hb = hasSe
-                ? (tCrit * sResid
-                   * std::sqrt(1.0 / static_cast<double>(mFail) + ((uv - meanU) * (uv - meanU)) / suu))
-                : 0.0;
+        double hb = 0.0;
+        if (res.usedMle && mleVarLnS0 > 0.0) {
+            // Delta-method 95% confidence band on W(u) = m * (u - ln(sigma0))
+            const double du = uv - effLnS0;
+            const double varM = mleMSE * mleMSE;
+            const double covMU0 = -mleCovLnS0InvM * betaM * betaM;
+            const double varW = std::max(
+                    0.0, du * du * varM + betaM * betaM * mleVarLnS0 - 2.0 * du * betaM * covMU0);
+            hb = 1.959963984540054 * std::sqrt(varW);
+        } else if (hasSe) {
+            hb = tCrit * sResid
+                    * std::sqrt(1.0 / static_cast<double>(mFail)
+                                + ((uv - meanU) * (uv - meanU)) / suu);
+        }
+        ciLoVec[static_cast<size_t>(i)] = wh - hb;
+        ciHiVec[static_cast<size_t>(i)] = wh + hb;
+
         repTbl->column(0)->setValueAt(i, uv);
         repTbl->column(1)->setValueAt(i, failX[static_cast<size_t>(i)]);
         repTbl->column(2)->setValueAt(i, 100.0 * failProb[static_cast<size_t>(i)]);
@@ -5409,83 +5980,185 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
         repTbl->column(5)->setValueAt(i, wh - hb);
         repTbl->column(6)->setValueAt(i, wh + hb);
     }
+    if (Column *c3 = repTbl->column(3))
+        c3->setComment(QStringLiteral("Empirical"));
+    if (Column *c4 = repTbl->column(4))
+        c4->setComment(res.usedMle ? QStringLiteral("MLE fit") : QStringLiteral("MRR fit"));
+
+    if (!createPlot)
+        return res;
 
     MultiLayer *ml = app->newGraph(
             app->generateUniqueName(QStringLiteral("WeibullPlot_") + srcTable->name(), false));
     res.weibullPlot = ml;
     if (ml) {
         if (Graph *g = ml->activeGraph()) {
+            // Non-legend shaded 95% confidence band (replaces cluttered dashed CI curves)
+            if ((hasSe && sResid > 0.0) || (res.usedMle && mleVarLnS0 > 0.0)) {
+                QVector<double> vx(mFail), vyLo(mFail), vyHi(mFail);
+                for (int i = 0; i < mFail; ++i) {
+                    vx[i] = uLnX[static_cast<size_t>(i)];
+                    vyLo[i] = ciLoVec[static_cast<size_t>(i)];
+                    vyHi[i] = ciHiVec[static_cast<size_t>(i)];
+                }
+                if (QwtPlotItem *band =
+                            g->addShadedBand(vx, vyLo, vyHi, QColor(205, 35, 45, 38), QString())) {
+                    band->setZ(1.0);
+                    band->setItemAttribute(QwtPlotItem::Legend, false);
+                }
+            }
+
             if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(3), Graph::Scatter, 0,
                                mFail - 1)) {
                 const int idx = g->curves() - 1;
                 g->setCurvePen(idx, QPen(QColor(25, 70, 145), 1.5));
                 g->setCurveSymbol(idx,
                                   QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 100, 190)),
-                                            QPen(QColor(15, 45, 100), 1.2), QSize(8, 8)));
+                                            QPen(QColor(15, 45, 100), 1.2), QSize(7, 7)));
             }
             if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(4), Graph::Line, 0,
                                mFail - 1)) {
-                g->setCurvePen(g->curves() - 1, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
-            }
-            if (hasSe && sResid > 0.0) {
-                const QPen ciPen(QColor(205, 35, 45, 175), 1.3, Qt::DashLine);
-                if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(5), Graph::Line, 0,
-                                   mFail - 1))
-                    g->setCurvePen(g->curves() - 1, ciPen);
-                if (g->insertCurve(repTbl, repTbl->colName(0), repTbl->colName(6), Graph::Line, 0,
-                                   mFail - 1))
-                    g->setCurvePen(g->curves() - 1, ciPen);
+                g->setCurvePen(g->curves() - 1, QPen(QColor(205, 35, 45), 2.1, Qt::SolidLine));
             }
 
-            g->setXAxisTitle(usedThreeParam ? QObject::tr("ln(Strength / Life - γ)")
-                                            : QObject::tr("ln(Strength / Life)"));
-            g->setYAxisTitle(QObject::tr("Weibit ln(-ln(1 - F))"));
-            g->setTitle(usedThreeParam ? QObject::tr("3-Parameter Weibull Probability Plot")
-                                       : QObject::tr("Weibull Probability Plot"));
+            // Characteristic strength reference W = 0 (P_f = 63.2%)
+            Graph::ReferenceLineSpec wZeroRef;
+            wZeroRef.orientation = 0; // Horizontal Y
+            wZeroRef.value = 0.0;
+            wZeroRef.color = QColor(120, 130, 145, 180);
+            wZeroRef.style = Qt::DotLine;
+            wZeroRef.width = 1.1;
+            g->addReferenceLine(wZeroRef);
+
+            const double uSpan = std::max(0.08, uLnX.back() - uLnX.front());
+            const double xLo = uLnX.front() - 0.08 * uSpan;
+            const double xHi = uLnX.back() + 0.08 * uSpan;
+            const double wLo = std::min({ wWeibit.front() - 0.35, ciLoVec.front() - 0.15, -4.65 });
+            const double wHi = std::max({ wWeibit.back() + 0.30, ciHiVec.back() + 0.15, 1.60 });
+
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            const QString uStr = cData->units().trimmed();
+            if (usedThreeParam) {
+                g->setXAxisTitle(uStr.isEmpty()
+                                         ? QStringLiteral("ln(<i>\u03C3</i> \u2212 <i>\u03B3</i>)")
+                                         : QStringLiteral("ln((<i>\u03C3</i> \u2212 <i>\u03B3</i>) / %1)")
+                                                   .arg(uStr));
+            } else {
+                g->setXAxisTitle(uStr.isEmpty()
+                                         ? QStringLiteral("ln(<i>\u03C3</i>)")
+                                         : QStringLiteral("ln(<i>\u03C3</i> / %1)").arg(uStr));
+            }
+            g->setYAxisTitle(QStringLiteral("ln(\u2212ln(1 \u2212 <i>P</i><sub>f</sub>))"));
+            g->setTitle(QString());
             if (g->legend())
                 g->legend()->setText(g->legendText());
+            g->setScale(QwtPlot::xBottom, xLo, xHi);
+            g->setScale(QwtPlot::yLeft, wLo, wHi);
             applyArialGraphFonts(g);
 
-            const double uSpan = std::max(1e-6, uLnX.back() - uLnX.front());
-            const double wSpan = std::max(1e-6, wWeibit.back() - wWeibit.front());
+            // Linked Top-X Stress/Strength axis (exp(x) or gamma + exp(x)) & Right-Y P_f (%) axis
+            const QString topFormula = usedThreeParam
+                    ? QStringLiteral("%1 + exp(x)").arg(bestGamma, 0, 'g', 12)
+                    : QStringLiteral("exp(x)");
+            Graph *linked = ml->addLinkedLayer(g, true, false, topFormula, QString());
+            if (linked && linked->plotWidget()) {
+                const bool parenUnit =
+                        (uStr == QLatin1String("%") || uStr == QLatin1String("-")
+                         || uStr.compare(QLatin1String("a.u."), Qt::CaseInsensitive) == 0);
+                linked->setAxisTitle(
+                        QwtPlot::xTop,
+                        uStr.isEmpty()
+                                ? QStringLiteral("<i>\u03C3</i>")
+                                : (parenUnit ? QStringLiteral("<i>\u03C3</i> (%1)").arg(uStr)
+                                             : QStringLiteral("<i>\u03C3</i> / %1").arg(uStr)));
+                linked->enableAxis(QwtPlot::yRight, true);
+                linked->setAxisBackboneVisible(QwtPlot::yRight, true);
+                linked->setAxisTitle(
+                        QwtPlot::yRight,
+                        QObject::tr("Failure probability, <i>P</i><sub>f</sub> (%)"));
+                linked->setWeibullProbabilityAxis(QwtPlot::yRight, true);
+                Plot *cPlot = linked->plotWidget();
+                if (!linked->hasWeibullProbabilityAxis(QwtPlot::yRight)) {
+                    WeibullProbScaleDraw *probSd = nullptr;
+                    if (auto *origSd = dynamic_cast<ScaleDraw *>(cPlot->axisScaleDraw(QwtPlot::yRight)))
+                        probSd = new WeibullProbScaleDraw(*origSd);
+                    else
+                        probSd = new WeibullProbScaleDraw();
+                    probSd->setMajorTicksStyle(ScaleDraw::In);
+                    probSd->setMinorTicksStyle(ScaleDraw::In);
+                    probSd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                    cPlot->setAxisScaleDraw(QwtPlot::yRight, probSd);
+                }
+                cPlot->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                cPlot->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
+                applyArialGraphFonts(linked);
+                syncWeibullProbRightAxis(g, linked);
+
+                QPointer<Graph> pG(g);
+                QPointer<Graph> cG(linked);
+                QObject::connect(g, &Graph::modifiedGraph, linked, [pG, cG]() {
+                    if (pG && cG)
+                        syncWeibullProbRightAxis(pG.data(), cG.data());
+                });
+            }
+
+            ml->arrangeLayers(false, false);
+            g->syncChildLinkedLayers();
+            if (linked)
+                syncWeibullProbRightAxis(g, linked);
+            g->replot();
+            if (linked)
+                linked->replot();
+            ml->setActiveGraph(g);
+
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+
+            const QString estTag = res.usedMle ? QStringLiteral("MLE") : QStringLiteral("MRR");
             QString summary;
             if (usedThreeParam) {
                 summary = QStringLiteral(
-                        "Modulus m = %1 ± %2\n"
-                        "Scale η (σ0) = %3 ± %4\n"
-                        "Threshold γ = %5\n"
-                        "B10 = %6,  B50 = %7\n"
-                        "R² = %8  (Fail = %9, Cens = %10)")
-                        .arg(res.modulusM, 0, 'f', 3)
-                        .arg(res.modulusMSE, 0, 'f', 3)
-                        .arg(res.scaleSigma0, 0, 'g', 5)
-                        .arg(res.scaleSigma0SE, 0, 'g', 4)
-                        .arg(res.thresholdGamma, 0, 'g', 5)
-                        .arg(res.b10Life, 0, 'g', 5)
-                        .arg(res.b50Life, 0, 'g', 5)
-                        .arg(res.rSquare, 0, 'f', 5)
+                        "<i>m</i> (%1) = %2 \u00B1 %3\n"
+                        "<i>\u03C3</i><sub>0</sub> = %4 \u00B1 %5%11\n"
+                        "<i>\u03B3</i> = %6, <i>B</i><sub>10</sub> = %7\n"
+                        "<i>R</i><sup>2</sup> = %8 (<i>n</i> = %9, cens = %10)")
+                        .arg(estTag)
+                        .arg(res.modulusM, 0, 'f', 2)
+                        .arg(res.modulusMSE, 0, 'f', 2)
+                        .arg(res.scaleSigma0, 0, 'g', 4)
+                        .arg(res.scaleSigma0SE, 0, 'g', 3)
+                        .arg(res.thresholdGamma, 0, 'g', 4)
+                        .arg(res.b10Life, 0, 'g', 4)
+                        .arg(res.rSquare, 0, 'f', 4)
                         .arg(mFail)
-                        .arg(res.censoredCount);
+                        .arg(res.censoredCount)
+                        .arg(uStr.isEmpty() ? QString() : (QStringLiteral(" ") + uStr));
             } else {
                 summary = QStringLiteral(
-                        "Modulus m = %1 ± %2\n"
-                        "Scale σ0 = %3 ± %4\n"
-                        "B10 = %5,  B50 = %6\n"
-                        "R² = %7  (Fail = %8, Cens = %9)")
-                        .arg(res.modulusM, 0, 'f', 3)
-                        .arg(res.modulusMSE, 0, 'f', 3)
-                        .arg(res.scaleSigma0, 0, 'g', 5)
-                        .arg(res.scaleSigma0SE, 0, 'g', 4)
-                        .arg(res.b10Life, 0, 'g', 5)
-                        .arg(res.b50Life, 0, 'g', 5)
-                        .arg(res.rSquare, 0, 'f', 5)
+                        "<i>m</i> (%1) = %2 \u00B1 %3\n"
+                        "<i>\u03C3</i><sub>0</sub> = %4 \u00B1 %5%10\n"
+                        "<i>B</i><sub>10</sub> = %6, <i>B</i><sub>50</sub> = %7\n"
+                        "<i>R</i><sup>2</sup> = %8 (<i>n</i> = %9%11)")
+                        .arg(estTag)
+                        .arg(res.modulusM, 0, 'f', 2)
+                        .arg(res.modulusMSE, 0, 'f', 2)
+                        .arg(res.scaleSigma0, 0, 'g', 4)
+                        .arg(res.scaleSigma0SE, 0, 'g', 3)
+                        .arg(res.b10Life, 0, 'g', 4)
+                        .arg(res.b50Life, 0, 'g', 4)
+                        .arg(res.rSquare, 0, 'f', 4)
                         .arg(mFail)
-                        .arg(res.censoredCount);
+                        .arg(uStr.isEmpty() ? QString() : (QStringLiteral(" ") + uStr))
+                        .arg(res.censoredCount > 0
+                                     ? QStringLiteral(", cens = %1").arg(res.censoredCount)
+                                     : QString());
             }
-            addFramedBoxOnGraph(g, uLnX.front() + 0.05 * uSpan, wWeibit.back() - 0.05 * wSpan,
-                                summary);
-            g->setAutoScale();
+            if (Legend *callout = addFramedBoxOnGraph(
+                        g, xLo + 0.05 * (xHi - xLo), wHi - 0.12 * (wHi - wLo), summary)) {
+                attachStatsCalloutAutoAvoid(g, callout, 14);
+            }
             g->replot();
+            if (linked)
+                linked->replot();
         }
     }
     return res;
@@ -7720,16 +8393,19 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                                 .arg(lambda, 0, 'g', 4)
                                 .arg(demIntercept, 0, 'g', 4)
                                 .arg(demSlope, 0, 'g', 4);
-                addFramedBoxOnGraph(g, xLineMin + 0.03 * xSpan, allMaxY - 0.04 * ySpan, boxText);
-
                 g->setXAxisTitle(cX->name());
                 g->setYAxisTitle(cY->name());
-                g->setTitle(QObject::tr("Passing-Bablok & Deming Regression (%1 vs %2)")
-                                    .arg(cY->name(), cX->name()));
+                g->setTitle(QString());
                 if (g->legend())
                     g->legend()->setText(g->legendText());
                 applyArialGraphFonts(g);
                 g->setAutoScale();
+                g->replot();
+                g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+                if (Legend *pbBox = addFramedBoxOnGraph(
+                            g, xLineMin + 0.03 * xSpan, allMaxY - 0.04 * ySpan, boxText)) {
+                    attachStatsCalloutAutoAvoid(g, pbBox, 14);
+                }
                 g->replot();
             }
         }
@@ -7771,6 +8447,10 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     cbCensorCoding->addItem(QObject::tr("0 = Failure, 1 = Censored (Suspension)"), 1);
     cbCensorCoding->setEnabled(false);
 
+    QComboBox *cbEstimator = new QComboBox(&dlg);
+    cbEstimator->addItem(QObject::tr("Median Rank Regression (MRR — Benard)"), false);
+    cbEstimator->addItem(QObject::tr("Maximum Likelihood (MLE — JIS R 1625 / ISO 20501)"), true);
+
     QCheckBox *chkThreeParam =
             new QCheckBox(QObject::tr("3-Parameter Weibull (Estimate Threshold γ)"), &dlg);
 
@@ -7810,6 +8490,7 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     form->addRow(QObject::tr("Strength / Lifetime Column:"), cbData);
     form->addRow(QObject::tr("Right-Censoring Column (Optional):"), cbCensor);
     form->addRow(QObject::tr("Censoring Coding:"), cbCensorCoding);
+    form->addRow(QObject::tr("Parameter Estimator:"), cbEstimator);
     form->addRow(QString(), chkThreeParam);
     lay->addLayout(form);
 
@@ -7822,7 +8503,8 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     if (dlg.exec() == QDialog::Accepted) {
         plotWeibullProbability(app, tables[cbTable->currentIndex()], cbData->currentText(),
                                cbCensor->currentData().toString(),
-                               cbCensorCoding->currentData().toInt(), chkThreeParam->isChecked());
+                               cbCensorCoding->currentData().toInt(), chkThreeParam->isChecked(),
+                               cbEstimator->currentData().toBool(), true);
     }
 }
 

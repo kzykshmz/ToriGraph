@@ -56,6 +56,7 @@
 #include "ApplicationWindow.h"
 #include "MultiLayer.h"
 #include "Graph.h"
+#include "Table.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
@@ -2471,25 +2472,34 @@ void Table::handleDataChange(const AbstractColumn *col)
 {
     int index = columnIndex(static_cast<const Column *>(col));
     if (index != -1) {
-        if (col->rowCount() > rowCount())
-            setRowCount(col->rowCount());
-        emit dataChanged(0, index, col->rowCount() - 1, index);
+        if (col->rowCount() > rowCount()) {
+            if (!::Table::isUndoRedoReplaying())
+                setRowCount(col->rowCount());
+        }
+        const int lastRow = qMin(rowCount(), col->rowCount()) - 1;
+        if (lastRow >= 0)
+            emit dataChanged(0, index, lastRow, index);
     }
 }
 
 void Table::handleRowsAboutToBeInserted(const AbstractColumn *col, int before, int count)
 {
     int new_size = col->rowCount() + count;
-    if (before <= col->rowCount() && new_size > rowCount())
-        setRowCount(new_size);
+    if (before <= col->rowCount() && new_size > rowCount()) {
+        if (!::Table::isUndoRedoReplaying())
+            setRowCount(new_size);
+    }
 }
 
 void Table::handleRowsInserted(const AbstractColumn *col, int before, int count)
 {
     Q_UNUSED(count);
     int index = columnIndex(static_cast<const Column *>(col));
-    if (index != -1 && before <= col->rowCount())
-        emit dataChanged(before, index, col->rowCount() - 1, index);
+    if (index != -1 && before <= col->rowCount()) {
+        const int lastRow = qMin(rowCount(), col->rowCount()) - 1;
+        if (lastRow >= before)
+            emit dataChanged(before, index, lastRow, index);
+    }
 }
 
 void Table::handleRowsAboutToBeRemoved(const AbstractColumn *col, int first, int count)

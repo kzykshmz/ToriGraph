@@ -30,6 +30,8 @@
 #define SPECTROGRAM_H
 
 #include "Matrix.h"
+#include <QPointer>
+#include <QVector>
 #include <qwt_raster_data.h>
 #include <qwt_plot.h>
 #include <qwt_plot_spectrogram.h>
@@ -61,8 +63,9 @@ public:
     };
 
     Spectrogram *copy();
-    Matrix *matrix() { return d_matrix; };
-    const Matrix *matrix() const { return d_matrix; }
+    Matrix *matrix() { return d_matrix.data(); };
+    const Matrix *matrix() const { return d_matrix.data(); }
+    QPen contourPen(double level) const override;
 
     int levels() { return (int)contourLevels().size() + 1; };
     void setLevelsNumber(int levels);
@@ -108,8 +111,11 @@ public:
     ColorMapPolicy colorMapPolicy() { return color_map_policy; };
 
 protected:
-    //! Pointer to the source data matrix
-    Matrix *d_matrix;
+    void drawContourLines(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                          const QwtRasterData::ContourLines &lines) const override;
+
+    //! Guarded pointer to the source data matrix
+    QPointer<Matrix> d_matrix;
 
     //! Axis used to display the color scale
     int color_axis;
@@ -134,7 +140,6 @@ public:
                double customMax = 1.0)
         : QwtRasterData(m ? m->boundingRect() : QwtDoubleRect()),
           d_matrix(m),
-          d_m(nullptr),
           n_rows(m ? m->numRows() : 0),
           n_cols(m ? m->numCols() : 0),
           min_z(0.0),
@@ -142,7 +147,9 @@ public:
           dx(1.0),
           dy(1.0),
           x_start(0.0),
+          x_end(1.0),
           y_start(0.0),
+          y_end(1.0),
           d_use_custom_range(useCustomRange),
           d_custom_min(customMin),
           d_custom_max(customMax)
@@ -150,63 +157,63 @@ public:
         if (!d_matrix || n_rows <= 0 || n_cols <= 0)
             return;
 
-        d_m = new double *[n_rows];
-        for (int l = 0; l < n_rows; ++l)
-            d_m[l] = new double[n_cols];
+        d_data.resize(n_rows * n_cols);
 
         min_z = std::numeric_limits<double>::max();
         max_z = -std::numeric_limits<double>::max();
         bool anyFinite = false;
-        for (int i = 0; i < n_rows; i++)
+        for (int i = 0; i < n_rows; i++) {
+            const int rowOff = i * n_cols;
             for (int j = 0; j < n_cols; j++) {
-                // replace NaNs and Infs with average of neighbours
-                if (std::isfinite(d_matrix->cell(i, j))) {
-                    d_m[i][j] = d_matrix->cell(i, j);
+                double val = d_matrix->cell(i, j);
+                if (std::isfinite(val)) {
                     anyFinite = true;
                 } else {
-                    double av = 0;
+                    double av = 0.0;
                     unsigned cnt = 0;
-                    for (int ii = -1; ii <= 1; ii += 2)
-                        for (int jj = -1; jj <= 1; jj += 2)
-                            if (i + ii >= 0 && i + ii < n_rows && j + jj >= 0 && j + jj < n_cols
-                                && std::isfinite(d_matrix->cell(i + ii, j + jj))) {
-                                av += d_matrix->cell(i + ii, j + jj);
+                    for (int ii = -1; ii <= 1; ++ii) {
+                        for (int jj = -1; jj <= 1; ++jj) {
+                            if ((ii == 0 && jj == 0) || i + ii < 0 || i + ii >= n_rows
+                                || j + jj < 0 || j + jj >= n_cols)
+                                continue;
+                            const double nb = d_matrix->cell(i + ii, j + jj);
+                            if (std::isfinite(nb)) {
+                                av += nb;
                                 cnt++;
                             }
-                    if (cnt > 0)
-                        av /= cnt;
-                    d_m[i][j] = av;
+                        }
+                    }
+                    val = (cnt > 0) ? (av / double(cnt)) : 0.0;
                 }
-                min_z = std::min(min_z, d_m[i][j]);
-                max_z = std::max(max_z, d_m[i][j]);
+                d_data[rowOff + j] = val;
+                min_z = std::min(min_z, val);
+                max_z = std::max(max_z, val);
             }
+        }
         if (!anyFinite && min_z > max_z) {
             min_z = 0.0;
             max_z = 1.0;
         }
 
         x_start = d_matrix->xStart();
-        dx = (d_matrix->xEnd() - x_start) / (double)n_cols;
+        x_end = d_matrix->xEnd();
+        dx = (n_cols > 1) ? ((x_end - x_start) / double(n_cols - 1)) : (x_end - x_start);
 
         y_start = d_matrix->yStart();
-        dy = (d_matrix->yEnd() - y_start) / (double)n_rows;
+        y_end = d_matrix->yEnd();
+        dy = (n_rows > 1) ? ((y_end - y_start) / double(n_rows - 1)) : (y_end - y_start);
     }
 
-    ~MatrixData()
-    {
-        if (d_m) {
-            for (int i = 0; i < n_rows; i++)
-                delete[] d_m[i];
-            delete[] d_m;
-        }
-    };
+    MatrixData(const MatrixData &) = default;
+    MatrixData &operator=(const MatrixData &) = default;
+    ~MatrixData() override = default;
 
-    virtual QwtRasterData *copy() const
+    virtual QwtRasterData *copy() const override
     {
-        return new MatrixData(d_matrix, d_use_custom_range, d_custom_min, d_custom_max);
+        return new MatrixData(*this);
     }
 
-    virtual QwtDoubleInterval range() const
+    virtual QwtDoubleInterval range() const override
     {
         if (d_use_custom_range && std::isfinite(d_custom_min) && std::isfinite(d_custom_max)
             && d_custom_min < d_custom_max)
@@ -216,16 +223,19 @@ public:
 
     QwtDoubleInterval rawRange() const { return QwtDoubleInterval(min_z, max_z); }
 
-    virtual QSize rasterHint(const QwtDoubleRect &) const { return QSize(n_cols, n_rows); }
+    virtual QSize rasterHint(const QwtDoubleRect &) const override
+    {
+        return QSize(qBound(1, n_cols * 4, 1024), qBound(1, n_rows * 4, 1024));
+    }
 
-    virtual double value(double x, double y) const;
+    virtual double value(double x, double y) const override;
 
 private:
-    //! Pointer to the source data matrix
-    Matrix *d_matrix;
+    //! Guarded pointer to the source data matrix
+    QPointer<Matrix> d_matrix;
 
-    //! Vector used to store in memory the data from the source matrix window
-    double **d_m;
+    //! Implicitly-shared (COW) contiguous row-major cell buffer
+    QVector<double> d_data;
 
     //! Data size
     int n_rows, n_cols;
@@ -236,11 +246,9 @@ private:
     //! Data resolution in x(columns) and y(rows)
     double dx, dy;
 
-    //! X axis left value in the data matrix
-    double x_start;
-
-    //! Y axis bottom value in the data matrix
-    double y_start;
+    //! Matrix coordinate bounds
+    double x_start, x_end;
+    double y_start, y_end;
 
     bool d_use_custom_range = false;
     double d_custom_min = 0.0;

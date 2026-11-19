@@ -17,10 +17,14 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 #include <functional>
 
 class ApplicationWindow;
+class Graph;
+class MultiLayer;
+class MyWidget;
 class QCloseEvent;
 class QComboBox;
 class QEvent;
@@ -68,6 +72,9 @@ public:
     void setCustomCommandHook(CustomCommandHook hook);
 
     static QStringList supportedMethods();
+    static QString generatePythonScriptForWindow(ApplicationWindow *app, MyWidget *window,
+                                                 bool standalone = true,
+                                                 const QString &embedData = QStringLiteral("inline"));
 
     // Helpers for running external Python scripts connected to this server
     static QString resolvePythonExecutable();

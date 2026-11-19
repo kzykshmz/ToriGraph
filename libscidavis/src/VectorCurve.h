@@ -90,7 +90,6 @@ public:
 
 protected:
     QwtArrayData *vectorEnd = nullptr;
-    QPen pen;
     bool filledArrow;
     int d_headLength, d_headAngle, d_position;
 

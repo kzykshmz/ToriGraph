@@ -344,6 +344,71 @@ static QString unwrapNoWrapAxisTitle(const QString &s)
     return out;
 }
 
+static QString formatScientificMarkupTokens(const QString &input)
+{
+    const QString clean = unwrapNoWrapAxisTitle(input);
+    if (clean.trimmed().isEmpty()
+        || (!clean.contains(QLatin1Char('^')) && !clean.contains(QLatin1Char('_')))) {
+        return clean;
+    }
+
+    static const QRegularExpression kHtmlTagSplitRx(QStringLiteral("(<[^>]+>)"));
+    static const QRegularExpression kBracedSupRx(QStringLiteral("\\^\\{([^}]+)\\}"));
+    static const QRegularExpression kBracedSubRx(QStringLiteral("_\\{([^}]+)\\}"));
+    static const QRegularExpression kPlainSupRx(QStringLiteral(
+            "([A-Za-z0-9\\)\\]\\x{0370}-\\x{03FF}\\x{00B0}\\x{00C5}])\\^([+\\-\\x{2212}]?\\d+(?:[./]\\d+)?)"));
+    static const QRegularExpression kLog10SubRx(QStringLiteral("\\blog_10\\b"));
+    static const QRegularExpression kSingleSymSubRx(QStringLiteral(
+            "(?<![A-Za-z0-9\\x{0370}-\\x{03FF}])([A-Za-z\\x{0370}-\\x{03FF}])_([A-Za-z0-9+\\-]{1,4}(?:\\.\\d+)?)(?![A-Za-z0-9_])"));
+
+    QString out;
+    out.reserve(clean.size() + 24);
+    int subDepth = 0;
+    int supDepth = 0;
+    int pos = 0;
+    auto it = kHtmlTagSplitRx.globalMatch(clean);
+    auto transformChunk = [&](QString chunk) -> QString {
+        if (subDepth > 0 || supDepth > 0 || chunk.isEmpty())
+            return chunk;
+        chunk.replace(kBracedSupRx, QStringLiteral("<sup>\\1</sup>"));
+        chunk.replace(kBracedSubRx, QStringLiteral("<sub>\\1</sub>"));
+        chunk.replace(kPlainSupRx, QStringLiteral("\\1<sup>\\2</sup>"));
+        chunk.replace(kLog10SubRx, QStringLiteral("log<sub>10</sub>"));
+        chunk.replace(kSingleSymSubRx, QStringLiteral("\\1<sub>\\2</sub>"));
+        return chunk;
+    };
+
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        if (m.capturedStart() > pos)
+            out += transformChunk(clean.mid(pos, m.capturedStart() - pos));
+        const QString tag = m.captured(1);
+        const QString tagLower = tag.toLower();
+        if (tagLower.startsWith(QLatin1String("<sub")) && !tagLower.endsWith(QLatin1String("/>")))
+            ++subDepth;
+        else if (tagLower.startsWith(QLatin1String("</sub")) && subDepth > 0)
+            --subDepth;
+        else if (tagLower.startsWith(QLatin1String("<sup"))
+                 && !tagLower.endsWith(QLatin1String("/>")))
+            ++supDepth;
+        else if (tagLower.startsWith(QLatin1String("</sup")) && supDepth > 0)
+            --supDepth;
+        out += tag;
+        pos = m.capturedEnd();
+    }
+    if (pos < clean.size())
+        out += transformChunk(clean.mid(pos));
+    static const QRegularExpression kPostTagSubRx(
+            QStringLiteral("(</\\s*i\\s*>)_([A-Za-z0-9+\\-]{1,4}(?:\\.\\d+)?)(?![A-Za-z0-9_])"),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression kPostTagSupRx(
+            QStringLiteral("(</\\s*(?:i|sub)\\s*>)\\^([+\\-\\x{2212}]?\\d+(?:[./]\\d+)?)"),
+            QRegularExpression::CaseInsensitiveOption);
+    out.replace(kPostTagSubRx, QStringLiteral("\\1<sub>\\2</sub>"));
+    out.replace(kPostTagSupRx, QStringLiteral("\\1<sup>\\2</sup>"));
+    return out;
+}
+
 static QString wrapRichAxisTitleNoWrap(const QString &s)
 {
     const QString clean = unwrapNoWrapAxisTitle(s);
@@ -517,9 +582,13 @@ public:
         const int maj2 = qMax(1, qMax(2, maxMajSteps) - maj1);
 
         QwtScaleDiv div1;
-        if (d_spec.log10Before && lo > 0.0) {
+        const bool logBefore = d_spec.log10Before && lo > 0.0 && bf > lo;
+        if (logBefore) {
+            const double logSpan1 = std::log10(bf / lo);
+            const int majBefore = qMax(maj1, int(std::ceil(logSpan1)) + 2);
+            const int minBefore = (maxMinSteps >= 1) ? qMax(9, maxMinSteps) : 0;
             QwtLog10ScaleEngine le1;
-            div1 = le1.divideScale(lo, bf, maj1, maxMinSteps,
+            div1 = le1.divideScale(lo, bf, majBefore, minBefore,
                                    d_spec.stepBefore > 0.0 ? d_spec.stepBefore : 0.0);
         } else {
             QwtLinearScaleEngine le1;
@@ -530,9 +599,13 @@ public:
         }
 
         QwtScaleDiv div2;
-        if (d_spec.log10After && bt > 0.0) {
+        const bool logAfter = d_spec.log10After && bt > 0.0 && hi > bt;
+        if (logAfter) {
+            const double logSpan2 = std::log10(hi / bt);
+            const int majAfter = qMax(maj2, int(std::ceil(logSpan2)) + 2);
+            const int minAfter = (maxMinSteps >= 1) ? qMax(9, maxMinSteps) : 0;
             QwtLog10ScaleEngine le2;
-            div2 = le2.divideScale(bt, hi, maj2, maxMinSteps,
+            div2 = le2.divideScale(bt, hi, majAfter, minAfter,
                                    d_spec.stepAfter > 0.0 ? d_spec.stepAfter : 0.0);
         } else {
             QwtLinearScaleEngine le2;
@@ -542,17 +615,24 @@ public:
                 ensureLinearHalfStepMinorTicks(div2);
         }
 
-        const double guard1 = 0.04 * (bf - lo);
-        const double guard2 = 0.04 * (hi - bt);
+        const double maxAllowedBefore = logBefore
+                ? (bf * std::pow(10.0, -0.03 * std::log10(bf / lo)))
+                : (bf - 0.04 * (bf - lo));
+        const double minAllowedAfter = logAfter
+                ? (bt * std::pow(10.0, 0.03 * std::log10(hi / bt)))
+                : (bt + 0.04 * (hi - bt));
+        const double loEps = logBefore ? (lo * (1.0 - 1e-11)) : (lo - 1e-12 * (bf - lo));
+        const double hiEps = logAfter ? (hi * (1.0 + 1e-11)) : (hi + 1e-12 * (hi - bt));
+
         QwtValueList mergedTicks[QwtScaleDiv::NTickTypes];
         for (int tt = 0; tt < QwtScaleDiv::NTickTypes; ++tt) {
             const QwtScaleDiv::TickType tickType = static_cast<QwtScaleDiv::TickType>(tt);
             for (double v : div1.ticks(tickType)) {
-                if (v >= lo - 1e-12 * (bf - lo) && v <= bf - guard1)
+                if (v >= loEps && v <= maxAllowedBefore)
                     mergedTicks[tt].append(v);
             }
             for (double v : div2.ticks(tickType)) {
-                if (v >= bt + guard2 && v <= hi + 1e-12 * (hi - bt))
+                if (v >= minAllowedAfter && v <= hiEps)
                     mergedTicks[tt].append(v);
             }
         }
@@ -1544,7 +1624,11 @@ void Graph::setLabelsTextFormat(int axis, const Column *column, int startRow, in
     QwtTextScaleDraw *sd = new QwtTextScaleDraw(
             *static_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axis)), list);
     sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+    sd->setMinorTicksStyle(ScaleDraw::None);
     d_plot->setAxisScaleDraw(axis, sd);
+    d_plot->setAxisMaxMinor(axis, 0);
+    d_plot->setAxisMaxMajor(axis, qMax(8, list.size() + 2));
+    d_user_step[axis] = 1.0;
 }
 
 void Graph::setLabelsTextFormat(int axis, Table *table, const QString &columnName)
@@ -2272,7 +2356,7 @@ QString Graph::resolvedAutoCurveLabel(int curveIndex) const
     const QString myLong = yc->longName().trimmed();
     const QString myComment = firstNonEmptyCommentLine(yc->comment());
 
-    if (!myLong.isEmpty() && !myComment.isEmpty()) {
+    if (!myLong.isEmpty()) {
         int sameLongCount = 0;
         for (int j = 0; j < n_curves; ++j) {
             if (j < c_type.size() && c_type[j] == ErrorBars)
@@ -2285,24 +2369,31 @@ QString Graph::resolvedAutoCurveLabel(int curveIndex) const
             const DataCurve *odc = dynamic_cast<const DataCurve *>(opc);
             if (!odc || !odc->table())
                 continue;
-            const int oyIdx = odc->table()->colIndex(odc->yColumnName());
-            Column *oyc = (oyIdx >= 0) ? odc->table()->column(oyIdx) : nullptr;
+            Column *oxDummy = nullptr;
+            Column *oyc = nullptr;
+            odc->resolveColumns(oxDummy, oyc);
+            if (!oyc) {
+                const int oyIdx = odc->table()->colIndex(odc->yColumnName());
+                oyc = (oyIdx >= 0) ? odc->table()->column(oyIdx) : nullptr;
+            }
             if (oyc && oyc->longName().trimmed().compare(myLong, Qt::CaseInsensitive) == 0)
                 ++sameLongCount;
         }
         if (sameLongCount >= 2)
-            return myComment;
+            return !myComment.isEmpty() ? myComment : cleanShort;
 
-        const int ya = (c->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
-        QString curYPlain = unwrapNoWrapAxisTitle(axisTitle(ya)).trimmed();
-        if (curYPlain.startsWith(QLatin1String("<b>")) && curYPlain.endsWith(QLatin1String("</b>"))
-            && curYPlain.length() >= 7) {
-            curYPlain = curYPlain.mid(3, curYPlain.length() - 7).trimmed();
-        }
-        const QString autoY = resolvedAutoAxisTitle(ya, d_axis_unit_format).trimmed();
-        if (curYPlain.startsWith(myLong, Qt::CaseInsensitive)
-            || autoY.startsWith(myLong, Qt::CaseInsensitive)) {
-            return myComment;
+        if (!myComment.isEmpty()) {
+            const int ya = (c->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
+            QString curYPlain = unwrapNoWrapAxisTitle(axisTitle(ya)).trimmed();
+            if (curYPlain.startsWith(QLatin1String("<b>"))
+                && curYPlain.endsWith(QLatin1String("</b>")) && curYPlain.length() >= 7) {
+                curYPlain = curYPlain.mid(3, curYPlain.length() - 7).trimmed();
+            }
+            const QString autoY = resolvedAutoAxisTitle(ya, d_axis_unit_format).trimmed();
+            if (curYPlain.startsWith(myLong, Qt::CaseInsensitive)
+                || autoY.startsWith(myLong, Qt::CaseInsensitive)) {
+                return myComment;
+            }
         }
     }
 
@@ -2315,7 +2406,7 @@ QString Graph::resolvedAutoCurveLabel(int curveIndex) const
 
 QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
 {
-    if (axis < 0 || axis >= 4 || isPiePlot() || isTernaryPlot())
+    if (axis < 0 || axis >= 4 || isPiePlot() || isTernaryPlot() || isPolarPlot())
         return QString();
 
     bool hasNonHiddenDataCurve = false;
@@ -2466,8 +2557,22 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
         return QString();
     };
 
+    auto isSelfLabeledCategoryCols = [&](int catAxis, const QList<Column *> &cols) -> bool {
+        if (catAxis < 0 || catAxis >= axisType.size() || axisType[catAxis] != AxisType::Txt)
+            return false;
+        for (Column *col : cols) {
+            if (col && (!col->longName().trimmed().isEmpty() || !col->units().trimmed().isEmpty()))
+                return false;
+        }
+        return true;
+    };
+
     if (detectedStyle == Histogram) {
-        return (axis == QwtPlot::xBottom) ? resolveMultiCol(yLeftCols) : QString();
+        if (axis == QwtPlot::xBottom)
+            return resolveMultiCol(yLeftCols);
+        if (axis == QwtPlot::yLeft)
+            return tr("Counts");
+        return QString();
     }
     if (detectedStyle == Box) {
         return (axis == QwtPlot::yLeft) ? resolveMultiCol(yLeftCols) : QString();
@@ -2476,7 +2581,13 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
         if (axis == QwtPlot::xBottom)
             return resolveMultiCol(yLeftCols);
         if (axis == QwtPlot::yLeft)
-            return resolveMultiCol(xBottomCols);
+            return isSelfLabeledCategoryCols(QwtPlot::yLeft, xBottomCols)
+                    ? QString()
+                    : resolveMultiCol(xBottomCols);
+        return QString();
+    }
+    if (detectedStyle == VerticalBars && axis == QwtPlot::xBottom
+        && isSelfLabeledCategoryCols(QwtPlot::xBottom, xBottomCols)) {
         return QString();
     }
 
@@ -2520,9 +2631,9 @@ bool Graph::matchesAutoAxisTitleCandidate(int axis, const QString &text) const
         if (!dc || !dc->table())
             continue;
         Table *t = dc->table();
-        const QString colName = (axis == QwtPlot::xBottom || axis == QwtPlot::xTop)
-                ? dc->xColumnName()
-                : dc->yColumnName();
+        const bool isHorizBar = (dc->type() == HorizontalBars);
+        const bool isHorizAxis = (axis == QwtPlot::xBottom || axis == QwtPlot::xTop);
+        const QString colName = (isHorizAxis != isHorizBar) ? dc->xColumnName() : dc->yColumnName();
         const int idx = t->colIndex(colName);
         if (Column *col = (idx >= 0 ? t->column(idx) : nullptr)) {
             if (plain == col->name().trimmed() || plain == col->longName().trimmed()
@@ -2619,17 +2730,20 @@ void Graph::refreshAutoAxisTitlesFromColumns()
         Table *t = dc->table();
         const int xIdx = t->colIndex(dc->xColumnName());
         const int yIdx = t->colIndex(dc->yColumnName());
+        const int xa = (pc->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop : QwtPlot::xBottom;
+        const int ya = (pc->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
+        const bool isHorizBar = (dc->type() == HorizontalBars);
         if (Column *xc = (xIdx >= 0 ? t->column(xIdx) : nullptr)) {
-            const int xa = (pc->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop : QwtPlot::xBottom;
-            if (!axisCols[xa].contains(xc))
-                axisCols[xa] << xc;
+            const int targetAx = isHorizBar ? ya : xa;
+            if (!axisCols[targetAx].contains(xc))
+                axisCols[targetAx] << xc;
             if (!allGraphCols.contains(xc))
                 allGraphCols << xc;
         }
         if (Column *yc = (yIdx >= 0 ? t->column(yIdx) : nullptr)) {
-            const int ya = (pc->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
-            if (!axisCols[ya].contains(yc))
-                axisCols[ya] << yc;
+            const int targetAy = isHorizBar ? xa : ya;
+            if (!axisCols[targetAy].contains(yc))
+                axisCols[targetAy] << yc;
             if (!allGraphCols.contains(yc))
                 allGraphCols << yc;
         }
@@ -2650,8 +2764,11 @@ void Graph::refreshAutoAxisTitlesFromColumns()
             QString curPlain = unwrapNoWrapAxisTitle(axisTitle(a)).trimmed();
             if (curPlain.startsWith("<b>") && curPlain.endsWith("</b>") && curPlain.length() >= 7)
                 curPlain = curPlain.mid(3, curPlain.length() - 7).trimmed();
-            const bool shouldClearHijack = (axisCols[a].size() >= 2
-                                            && isSingleColumnHijackCandidate(axisCols[a], curPlain))
+            const bool shouldClearHijack = isAxisPlaceholderTitle(curPlain)
+                    || (axisCols[a].size() >= 2
+                        && isSingleColumnHijackCandidate(axisCols[a], curPlain))
+                    || (a < axisType.size() && axisType[a] == AxisType::Txt
+                        && isSingleColumnHijackCandidate(allGraphCols, curPlain))
                     || ((a == QwtPlot::yRight || a == QwtPlot::xTop) && axisCols[a].isEmpty()
                         && isSingleColumnHijackCandidate(allGraphCols, curPlain));
             if (shouldClearHijack && !curPlain.isEmpty()) {
@@ -2663,6 +2780,7 @@ void Graph::refreshAutoAxisTitlesFromColumns()
             continue;
         }
 
+        nextTitle = formatScientificMarkupTokens(nextTitle);
         const QString wrappedNext = wrapRichAxisTitleNoWrap(nextTitle);
         const QString curRawTitle = d_plot->axisTitle(a).text();
 
@@ -2728,12 +2846,29 @@ void Graph::refreshAutoAxisTitlesFromColumns()
                 || (!colLong.isEmpty() && currentLabel == colLong)
                 || (!colComment.isEmpty() && currentLabel == colComment)
                 || (!prevAuto.isEmpty() && currentLabel == prevAuto)) {
-                d_last_auto_curve_labels[ci] = desiredLabel;
-                const QString updatedLine =
-                        QStringLiteral("\\c{%1}%2").arg(oneBased).arg(desiredLabel);
-                if (lines[li] != updatedLine) {
-                    lines[li] = updatedLine;
-                    legChanged = true;
+                int availCw = 320;
+                if (d_plot && d_plot->plotLayout()
+                    && d_plot->plotLayout()->canvasRect().width() > 20) {
+                    availCw = d_plot->plotLayout()->canvasRect().width();
+                } else if (d_plot && d_plot->canvas() && d_plot->canvas()->width() > 20) {
+                    availCw = d_plot->canvas()->width();
+                }
+                QFont measureLegFnt = leg->font();
+                if (availCw < 260 && measureLegFnt.pointSize() > 9)
+                    measureLegFnt.setPointSize(9);
+                const bool desiredOverflowsCanvas =
+                        !currentLabel.trimmed().isEmpty()
+                        && desiredLabel.size() > currentLabel.trimmed().size()
+                        && (QFontMetrics(measureLegFnt).horizontalAdvance(desiredLabel) + 38
+                            > availCw);
+                if (!desiredOverflowsCanvas) {
+                    d_last_auto_curve_labels[ci] = desiredLabel;
+                    const QString updatedLine =
+                            QStringLiteral("\\c{%1}%2").arg(oneBased).arg(desiredLabel);
+                    if (lines[li] != updatedLine) {
+                        lines[li] = updatedLine;
+                        legChanged = true;
+                    }
                 }
             } else if (currentLabel == desiredLabel) {
                 d_last_auto_curve_labels[ci] = desiredLabel;
@@ -2756,6 +2891,7 @@ void Graph::setAxisTitle(int axis, const QString &text)
 {
     QString unesc = text;
     unesc.replace(QLatin1String("&#9;"), QLatin1String("\t"));
+    unesc.replace(QLatin1String("&#60;"), QLatin1String("<"));
     const QString rawInput = unwrapNoWrapAxisTitle(unesc);
     QString finalText = rawInput;
     if (axis >= 0 && axis < 4 && !d_refreshing_auto_titles) {
@@ -2834,8 +2970,14 @@ QStringList Graph::scalesTitles()
 
 void Graph::updateSecondaryAxis(int axis)
 {
-    if (hasColorScaleOnAxis(axis))
+    if (axis < 0 || axis >= QwtPlot::axisCnt || hasColorScaleOnAxis(axis))
         return;
+
+    if (d_weibull_prob_axis[axis] || !d_custom_tick_positions[axis].isEmpty()
+        || !d_custom_category_labels[axis].isEmpty()) {
+        syncCustomAndWeibullAxes();
+        return;
+    }
 
     for (int i = 0; i < n_curves; i++) {
         QwtPlotItem *it = plotItem(i);
@@ -2876,6 +3018,13 @@ void Graph::updateSecondaryAxis(int axis)
 
     d_plot->setAxisScaleEngine(axis, sc_engine);
     d_plot->setAxisScaleDiv(axis, *sd);
+
+    if (dynamic_cast<const QwtTextScaleDraw *>(d_plot->axisScaleDraw(a)) != nullptr) {
+        if (QwtScaleDraw *oppSd = d_plot->axisScaleDraw(axis))
+            oppSd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+        d_plot->setMinorTicksType(axis, ScaleDraw::None);
+        d_plot->setMajorTicksType(axis, ScaleDraw::None);
+    }
 
     if (ScaleDraw *mirrorSd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
         const double lo = sd ? qMin(sd->lowerBound(), sd->upperBound()) : 0.0;
@@ -3001,8 +3150,13 @@ void Graph::applyZeroSnapOnAutoAxes()
                 }
                 continue;
             }
+            Column *dcXCol = nullptr;
+            Column *dcYCol = nullptr;
+            const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+            if (dcHasMasks)
+                dc->resolveColumns(dcXCol, dcYCol);
             for (int k = 0; k < n; ++k) {
-                if (dc && dc->isPointMasked(k))
+                if (dcHasMasks && dc->isPointMaskedFast(k, dcXCol, dcYCol))
                     continue;
                 considerVal(isX ? cv->x(k) : cv->y(k));
             }
@@ -3039,6 +3193,27 @@ void Graph::setAutoScale()
 void Graph::setScale(int axis, double start, double end, double step, int majorTicks,
                      int minorTicks, int type, bool inverted)
 {
+    if (axis < 0 || axis >= QwtPlot::axisCnt || !std::isfinite(start) || !std::isfinite(end))
+        return;
+
+    constexpr double kMaxSafeScaleBound = 1.0e300;
+    constexpr double kClampedOverflowBound = 1.0e150;
+    if (std::fabs(start) > kMaxSafeScaleBound || std::fabs(end) > kMaxSafeScaleBound
+        || !std::isfinite(end - start)) {
+        start = qBound(-kClampedOverflowBound, start, kClampedOverflowBound);
+        end = qBound(-kClampedOverflowBound, end, kClampedOverflowBound);
+        if (std::fabs(end - start) < 1e-300) {
+            start -= 1.0;
+            end += 1.0;
+        }
+    }
+    if (!std::isfinite(step) || step < 0.0
+        || (step > 0.0 && std::fabs(end - start) / step > 2000.0)) {
+        step = 0.0;
+    }
+    majorTicks = qBound(1, majorTicks, 100);
+    minorTicks = qBound(0, minorTicks, 50);
+
     setToriAxisUserLocked(d_plot, axis, true);
     d_plot->setAxisScale(axis, inverted ? qMax(start, end) : qMin(start, end),
                          inverted ? qMin(start, end) : qMax(start, end), step);
@@ -3068,14 +3243,16 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     d_plot->setAxisScaleEngine(axis, sc_engine);
     d_plot->setAxisScaleDiv(axis, div);
 
-    if (type && axisType[axis] == AxisType::Numeric
-        && d_plot->axisLabelFormat(axis) == Plot::Automatic
-        && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
-        setLabelsNumericFormat(axis, Plot::Superscripts, 0, axesFormulas[axis]);
-    } else if (!type && axisType[axis] == AxisType::Numeric
-               && d_plot->axisLabelFormat(axis) == Plot::Superscripts
-               && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
-        setLabelsNumericFormat(axis, Plot::Automatic, 4, axesFormulas[axis]);
+    if (!d_weibull_prob_axis[axis] && d_custom_tick_positions[axis].isEmpty()) {
+        if (type && axisType[axis] == AxisType::Numeric
+            && d_plot->axisLabelFormat(axis) == Plot::Automatic
+            && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
+            setLabelsNumericFormat(axis, Plot::Superscripts, 0, axesFormulas[axis]);
+        } else if (!type && axisType[axis] == AxisType::Numeric
+                   && d_plot->axisLabelFormat(axis) == Plot::Superscripts
+                   && d_plot->axisScaleDraw(axis)->hasComponent(QwtAbstractScaleDraw::Labels)) {
+            setLabelsNumericFormat(axis, Plot::Automatic, 4, axesFormulas[axis]);
+        }
     }
 
     if (d_axis_breaks[axis].enabled) {
@@ -3098,21 +3275,29 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
                     msd->setAxisBreakIndicator(false, 0.0);
             }
         } else {
-            d_axis_breaks[axis].log10Before = isLog;
-            d_axis_breaks[axis].log10After = isLog;
+            if (isLog) {
+                d_axis_breaks[axis].log10Before = true;
+                d_axis_breaks[axis].log10After = true;
+            }
             int effMaj = majorTicks;
             if (axisFont(axis).pointSize() >= 20)
                 effMaj = qMin(effMaj, 5);
+            const int effMinIntervals =
+                    (d_axis_breaks[axis].log10Before || d_axis_breaks[axis].log10After)
+                    ? qMax(9, max_min_intervals)
+                    : max_min_intervals;
             PiecewiseBreakScaleEngine *brkEng = new PiecewiseBreakScaleEngine(d_axis_breaks[axis]);
-            QwtScaleDiv brkDiv = brkEng->divideScale(lo, hi, effMaj, max_min_intervals, step);
+            QwtScaleDiv brkDiv = brkEng->divideScale(lo, hi, effMaj, effMinIntervals, step);
             if (inverted) {
                 brkEng->setAttribute(QwtScaleEngine::Inverted);
                 brkDiv.invert();
             }
             d_plot->setAxisScaleEngine(axis, brkEng);
             d_plot->setAxisScaleDiv(axis, brkDiv);
-            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
-                sd->setAxisBreakIndicator(true, bf);
+            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+                sd->setAxisBreakIndicator(true, bf, bt, d_axis_breaks[axis].log10Before,
+                                          d_axis_breaks[axis].log10After);
+            }
         }
     }
 
@@ -3120,6 +3305,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     d_zoomer[1]->setZoomBase();
 
     d_user_step[axis] = step;
+    syncCustomAndWeibullAxes();
 
     if (axis == QwtPlot::xBottom || axis == QwtPlot::yLeft) {
         updateSecondaryAxis(QwtPlot::xTop);
@@ -3224,7 +3410,7 @@ void Graph::exportImage(const QString &fileName, int quality, bool transparent, 
 {
     if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
 #ifdef Q_OS_WIN
-        OleRenderedGraph emf = SciDAVisEmf::renderMultiLayer(multiLayerParent(), this);
+        OleRenderedGraph emf = SciDAVisEmf::renderMultiLayer(multiLayerParent(), this, false);
         if (!emf.emfBytes.isEmpty()) {
             QFile f(fileName);
             if (f.open(QIODevice::WriteOnly)) {
@@ -3654,6 +3840,7 @@ void Graph::setTitle(const QString &t)
 {
     QString cleanT = t;
     cleanT.replace(QLatin1String("&#9;"), QLatin1String("\t"));
+    cleanT.replace(QLatin1String("&#60;"), QLatin1String("<"));
     QwtText cur = d_plot->title();
     QFont f = cur.font();
     if (f.family().trimmed().isEmpty())
@@ -3800,9 +3987,12 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
             continue;
         if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
             continue;
-        if (static_cast<PlotCurve *>(it)->type() == Function)
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (!pc || pc->type() == Function)
             continue;
-        DataCurve *c = static_cast<DataCurve *>(it);
+        DataCurve *c = dynamic_cast<DataCurve *>(pc);
+        if (!c)
+            continue;
         if (c->table() == w && (c->xColumnName() == colName || c->yColumnName() == colName)) {
             Column *changedCol = w ? w->column(colName) : nullptr;
             if (!changedCol) {
@@ -3831,7 +4021,7 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                 to_remove << c;
             else if (c->updateData(w, colName))
                 updated_curves++;
-        } else if (((DataCurve *)it)->updateData(w, colName))
+        } else if (c->updateData(w, colName))
             updated_curves++;
     }
     foreach (PlotCurve *c, to_remove) {
@@ -4154,14 +4344,36 @@ QString Graph::saveAxesTitleColors()
     return s + "\n";
 }
 
+namespace {
+QString sanitizeProjectLineField(const QString &raw, bool newlineToBr)
+{
+    QString out = raw;
+    out.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    out.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    if (newlineToBr)
+        out.replace(QLatin1Char('\n'), QLatin1String("<br>"));
+    out.replace(QLatin1Char('\t'), QLatin1String("&#9;"));
+    static const char *const kProtectedTags[] = {
+        "<Tori",       "</graph>",  "<graph>",    "</multiLayer>", "<multiLayer>",
+        "</text>",     "<text>",    "</legend>",  "<legend>",      "</line>",
+        "</image>",    "</curve>",  "</formula>"
+    };
+    for (const char *tag : kProtectedTags) {
+        const QString qtag = QString::fromLatin1(tag);
+        if (out.contains(qtag, Qt::CaseInsensitive)) {
+            QRegularExpression rx(QRegularExpression::escape(qtag),
+                                  QRegularExpression::CaseInsensitiveOption);
+            out.replace(rx, QStringLiteral("&#60;") + qtag.mid(1));
+        }
+    }
+    return out;
+}
+} // namespace
+
 QString Graph::saveTitle()
 {
     QString s = "PlotTitle\t";
-    QString escTitle = d_plot->title().text();
-    escTitle.replace("\r\n", "\n");
-    escTitle.replace("\r", "\n");
-    escTitle.replace("\n", "<br>");
-    escTitle.replace("\t", "&#9;");
+    const QString escTitle = sanitizeProjectLineField(d_plot->title().text(), true);
     s += escTitle + "\t";
     s += COLORNAME(d_plot->title().color()) + "\t";
     s += QString::number(d_plot->title().renderFlags()) + "\n";
@@ -4187,16 +4399,11 @@ QString Graph::saveScaleTitles()
             a = 1;
             break;
         }
-        QString title = axisTitle(a);
-        if (!title.isEmpty()) {
-            title.replace("\r\n", "\n");
-            title.replace("\r", "\n");
-            title.replace("\n", "<br>");
-            title.replace("\t", "&#9;");
-            s += title + "\t";
-        } else {
+        const QString title = axisTitle(a);
+        if (!title.isEmpty())
+            s += sanitizeProjectLineField(title, true) + "\t";
+        else
             s += "\t";
-        }
     }
     return s + "\n";
 }
@@ -4562,7 +4769,10 @@ long Graph::insertTextMarker(const QStringList &list, int fileVersion)
         for (int i = 0; i < n - 14; i++)
             text += fList[14 + i] + "\n";
     }
-    mrk->setText(text.trimmed());
+    QString unescMarker = text.trimmed();
+    unescMarker.replace(QLatin1String("&#9;"), QLatin1String("\t"));
+    unescMarker.replace(QLatin1String("&#60;"), QLatin1String("<"));
+    mrk->setText(unescMarker);
     return key;
 }
 
@@ -4725,11 +4935,16 @@ QString Graph::saveMarkers()
         s += QString::number(mrk->angle()) + "\t";
         s += COLORNAME(mrk->backgroundColor()) + "\t";
         s += QString::number(mrk->backgroundColor().alpha()) + "\t";
+        QString normMrk = mrk->text();
+        normMrk.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+        normMrk.replace(QLatin1Char('\r'), QLatin1Char('\n'));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        QStringList textList = mrk->text().split("\n", Qt::KeepEmptyParts);
+        QStringList textList = normMrk.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
 #else
-        QStringList textList = mrk->text().split("\n", QString::KeepEmptyParts);
+        QStringList textList = normMrk.split(QLatin1Char('\n'), QString::KeepEmptyParts);
 #endif
+        for (QString &ln : textList)
+            ln = sanitizeProjectLineField(ln, false);
         s += textList.join("\t");
         if (d_texts[i] != legendMarkerID)
             s += "</text>\n";
@@ -4831,6 +5046,13 @@ CurveLayout Graph::initCurveLayout(int style, int curves)
     cl.symCol = color;
     cl.fillCol = color;
 
+    static const QColor kOkabeItoLayoutColors[8] = {
+        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
+        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
+        QColor(240, 228, 66),  QColor(110, 118, 129)
+    };
+    const QColor okCol = kOkabeItoLayoutColors[qMax(0, i) % 8];
+
     if (style == Graph::Line)
         cl.sType = 0;
     else if (style == Graph::VerticalDropLines)
@@ -4840,23 +5062,34 @@ CurveLayout Graph::initCurveLayout(int style, int curves)
         cl.sType = 0;
     } else if (style == Graph::Spline)
         cl.connectType = 5;
-    else if (curves && (style == Graph::VerticalBars || style == Graph::HorizontalBars)) {
+    else if (style == Graph::VerticalBars || style == Graph::HorizontalBars) {
         cl.filledArea = 1;
-        cl.lCol = 0; // black color pen
-        cl.aCol = i + 1;
+        cl.lWidth = 1;
+        cl.lCol = okCol.darker(140).rgba();
+        cl.aCol = okCol.rgba();
+        cl.fillCol = okCol.rgba();
+        cl.aStyle = 0;
         cl.sType = 0;
-        if (style == Graph::VerticalBars || style == Graph::HorizontalBars) {
-            QwtBarCurve *b = (QwtBarCurve *)curve(i);
-            if (b) {
-                b->setGap(qRound(100 * (1 - 1.0 / (double)curves)));
-                b->setOffset(-50 * (curves - 1) + i * 100);
+        const int effBarCount = qMax(1, curves);
+        QwtBarCurve *b = dynamic_cast<QwtBarCurve *>(curve(i));
+        if (b) {
+            if (b->isStacked() || effBarCount <= 1) {
+                b->setGap(35);
+                b->setOffset(0);
+            } else {
+                b->setGap(qBound(30, qRound(100.0 * (1.0 - 0.74 / double(effBarCount))), 92));
+                b->setOffset(qRound((double(i) - 0.5 * double(effBarCount - 1)) * 106.0));
             }
         }
     } else if (style == Graph::Histogram) {
         cl.filledArea = 1;
-        cl.lCol = i + 1; // start with red color pen
-        cl.aCol = i + 1; // start with red fill color
-        cl.aStyle = 4;
+        cl.lWidth = 1;
+        cl.lCol = okCol.darker(140).rgba();
+        QColor histFill = okCol;
+        histFill.setAlpha(165);
+        cl.aCol = histFill.rgba();
+        cl.fillCol = histFill.rgba();
+        cl.aStyle = 0;
         cl.sType = 0;
     } else if (style == Graph::Area) {
         cl.filledArea = 1;
@@ -4955,17 +5188,24 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
         if (fitIdx >= 0)
             d_fit_curves.replace(fitIdx, new_curve);
 
+        if (d_active_tool) {
+            if (DataPickerTool *dpt = dynamic_cast<DataPickerTool *>(d_active_tool)) {
+                if (dpt->selectedCurve() == old_curve)
+                    setActiveTool(NULL);
+            }
+        }
+        if (d_range_selector && old_curve == d_range_selector->selectedCurve())
+            d_range_selector->setSelectedCurve(new_curve);
+
         const long oldKey = c_keys[curve_index];
         const bool wasHighlighted = (d_plot->highlightedCurveKey() == oldKey);
         d_plot->removeCurve(oldKey);
+        old_curve = nullptr;
         c_keys[curve_index] = d_plot->insertCurve(new_curve);
         if (wasHighlighted)
             d_plot->setHighlightedCurveKey(c_keys[curve_index]);
         new_curve->setVisible(wasVisible);
         new_curve->loadData();
-
-        if (d_range_selector && old_curve == d_range_selector->selectedCurve())
-            d_range_selector->setSelectedCurve(new_curve);
     }
 
     c_type[curve_index] = type;
@@ -4979,10 +5219,10 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
 
 void Graph::updateCurveLayout(int index, const CurveLayout *cL)
 {
-    DataCurve *c = (DataCurve *)this->curve(index);
+    PlotCurve *c = dynamic_cast<PlotCurve *>(this->curve(index));
     if (!c)
         return;
-    if (c_type.isEmpty() || (int)c_type.size() < index)
+    if (index < 0 || c_type.isEmpty() || (int)c_type.size() <= index)
         return;
 
     QPen pen = QPen(ColorButton::color(cL->symCol), cL->penWidth, Qt::SolidLine);
@@ -5009,8 +5249,11 @@ void Graph::updateCurveLayout(int index, const CurveLayout *cL)
     c->setPen(pen);
 
     int style = c_type[index];
-    if (style == Scatter)
+    if (style == Scatter || style == VectXYXY || style == VectXYAM)
         c->setStyle(QwtPlotCurve::NoCurve);
+    else if (style == VerticalBars || style == HorizontalBars || style == Histogram || style == Box
+             || style == Pie)
+        c->setStyle(QwtPlotCurve::UserCurve);
     else if (style == Spline) {
         c->setStyle(QwtPlotCurve::Lines);
         c->setCurveAttribute(QwtPlotCurve::Fitted, true);
@@ -5112,6 +5355,12 @@ void Graph::plotPie(Table *w, const QString &name, const QPen &pen, int brush, i
 
     c_type.resize(n_curves);
     c_type[n_curves - 1] = Pie;
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        enableAxis(a, false);
+    drawAxesBackbones(false);
+    drawCanvasFrame(false, 0);
+    setFrame(0, Qt::black);
 }
 
 void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
@@ -5131,26 +5380,53 @@ void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
     scalePicker->refresh();
 
     d_plot->setTitle(QString());
-
-    static_cast<QwtPlotCanvas *>(d_plot->canvas())->setLineWidth(1);
+    drawCanvasFrame(false, 0);
+    setFrame(0, Qt::black);
 
     QVarLengthArray<double> Y(abs(endRow - startRow) + 1);
+    QStringList sliceNames;
+    int labelCol = -1;
+    for (int c = 0; c < w->numCols(); ++c) {
+        if (c == ycol || !w->column(c))
+            continue;
+        if (w->column(c)->columnMode() == SciDAVis::ColumnMode::Text
+            || w->colPlotDesignation(c) == SciDAVis::X) {
+            labelCol = c;
+            break;
+        }
+    }
+    Column *lblColPtr = (labelCol >= 0) ? w->column(labelCol) : nullptr;
+
     for (int row = startRow; row <= endRow && row < y_col_ptr->rowCount(); row++) {
-        if (!y_col_ptr->isInvalid(row)) {
+        if (!y_col_ptr->isInvalid(row) && !y_col_ptr->isMasked(row)) {
+            double val = 0.0;
             if (yColType == SciDAVis::ColumnMode::Text) {
                 QString yval = y_col_ptr->textAt(row);
                 bool valid_data = true;
-                Y[size] = QLocale().toDouble(yval, &valid_data);
+                val = QLocale().toDouble(yval, &valid_data);
                 if (!valid_data)
                     continue;
-            } else
-                Y[size] = y_col_ptr->valueAt(row);
+            } else {
+                val = y_col_ptr->valueAt(row);
+            }
+            if (!std::isfinite(val) || val <= 0.0)
+                continue;
 
-            sum += Y[size];
+            Y[size] = val;
+            sum += val;
+            QString sLbl;
+            if (lblColPtr && row < lblColPtr->rowCount() && !lblColPtr->isInvalid(row)) {
+                sLbl = (lblColPtr->columnMode() == SciDAVis::ColumnMode::Text)
+                        ? lblColPtr->textAt(row).trimmed()
+                        : QLocale::c().toString(lblColPtr->valueAt(row), 'g', 6);
+            }
+            if (sLbl.isEmpty())
+                sLbl = QString::number(size + 1);
+            sliceNames << sLbl;
             size++;
         }
     }
-    if (!size)
+    if (!size || sum <= 0.0)
         return;
     Y.resize(size);
 
@@ -5163,45 +5439,149 @@ void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
     c_type.resize(n_curves);
     c_type[n_curves - 1] = Pie;
 
-    // This has to be synced with QwtPieCurve::drawPie() for now... until we have a clean solution.
+    double maxPieVal = 1.0;
+    for (int i = 0; i < size; ++i) {
+        if (std::isfinite(Y[i]) && Y[i] > maxPieVal)
+            maxPieVal = Y[i];
+    }
+    m_autoscale = false;
+    setScale(QwtPlot::xBottom, -2.0 * maxPieVal, 3.0 * maxPieVal, 0.0, 5, 0, 0, false);
+    setScale(QwtPlot::yLeft, -1.2 * maxPieVal, 3.8 * maxPieVal, 0.0, 5, 0, 0, false);
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        enableAxis(a, false);
+    drawAxesBackbones(false);
+    drawCanvasFrame(false, 0);
+
+    d_plot->updateLayout();
     QRect canvas_rect = d_plot->plotLayout()->canvasRect();
-    float radius = 0.45 * qMin(canvas_rect.width(), canvas_rect.height());
+    if (canvas_rect.width() < 60 || canvas_rect.height() < 60)
+        canvas_rect = QRect(0, 0, 420, 420);
 
-    double PI = 4 * atan(1.0);
-    double angle = 90;
+    bool legendShowsPct = false;
+    int estLegW = 0;
+    int estLegH = 0;
+    if (legendMarkerID >= 0) {
+        Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
+        if (mrk) {
+            QString text;
+            for (int i = 0; i < size; i++) {
+                text += "\\p{" + QString::number(i + 1) + "} " + sliceNames.value(i) + "\n";
+            }
+            mrk->setText(text);
+            legendShowsPct = text.contains(QLatin1Char('%'));
+            QwtText qtLeg(text);
+            qtLeg.setFont(mrk->font());
+            const QSize lsz = qtLeg.textSize();
+            estLegW = lsz.width() + 28;
+            estLegH = lsz.height() + 10;
+        }
+    }
 
+    const bool hasVisPieLeg = (legendMarkerID >= 0) && isLegendVisible();
+    const bool topBandPieLeg =
+            hasVisPieLeg && (estLegW > int(0.34 * double(canvas_rect.width())));
+    double pieRadius = 0.285 * qMin(canvas_rect.width(), canvas_rect.height());
+    double pieCx = double(canvas_rect.center().x());
+    double pieCy = double(canvas_rect.center().y());
+    if (topBandPieLeg) {
+        const double legBottom =
+                qBound(0.08 * double(canvas_rect.height()), double(4 + estLegH),
+                       0.52 * double(canvas_rect.height()));
+        const double pad = 0.028 * double(canvas_rect.height());
+        const double availH =
+                qMax(0.20 * double(canvas_rect.height()),
+                     double(canvas_rect.height()) - legBottom - 2.0 * pad);
+        pieRadius = qMax(14.0,
+                         qMin((legendShowsPct ? 0.31 : 0.255) * double(canvas_rect.width()),
+                              (legendShowsPct ? 0.44 : 0.34) * availH));
+        pieCx = double(canvas_rect.center().x());
+        pieCy = double(canvas_rect.top()) + legBottom + pad + 0.5 * availH;
+    } else if (hasVisPieLeg) {
+        pieRadius = (legendShowsPct ? 0.285 : 0.24)
+                * qMin(canvas_rect.width(), canvas_rect.height());
+        pieCx = double(canvas_rect.left()) + 0.36 * double(canvas_rect.width());
+        pieCy = double(canvas_rect.top()) + 0.52 * double(canvas_rect.height());
+    }
+    const double radius = 1.22 * pieRadius;
+
+    const double PI = 4.0 * atan(1.0);
+    double angle = 90.0;
+    QFont pctFont(QStringLiteral("Arial"), 10, QFont::Normal, false);
+    pctFont.setBold(false);
+    pctFont.setHintingPreference(QFont::PreferNoHinting);
+
+    QVector<QRect> placedPctBoxes;
     for (int i = 0; i < size; i++) {
-        const double value = Y[i] / sum * 360;
-        double alabel = (angle - value * 0.5) * PI / 180.0;
+        const double pctVal = Y[i] / sum * 100.0;
+        const double value = Y[i] / sum * 360.0;
+        const double alabel = (angle - value * 0.5) * PI / 180.0;
+        const QString pctStr =
+                QLocale::c().toString(pctVal, 'f', 1) + QStringLiteral("%");
 
-        Legend *aux = new Legend(d_plot);
-        aux->setFrameStyle(0);
-        aux->setText(QString::number(Y[i] / sum * 100, 'g', 2) + "%");
+        if (!legendShowsPct) {
+            Legend *aux = new Legend(d_plot);
+            aux->setFrameStyle(0);
+            aux->setBackgroundColor(QColor(255, 255, 255, 0));
+            aux->setFont(pctFont);
+            aux->setText(pctStr);
 
-        int texts = d_texts.size();
-        d_texts.resize(++texts);
-        d_texts[texts - 1] = d_plot->insertMarker(aux);
+            int texts = d_texts.size();
+            d_texts.resize(++texts);
+            d_texts[texts - 1] = d_plot->insertMarker(aux);
 
-        aux->setOrigin(canvas_rect.center()
-                       + QPoint(int(radius * cos(alabel) - 0.5 * aux->rect().width()),
-                                int(-radius * sin(alabel) - 0.5 * aux->rect().height())));
+            QwtText qtPct(pctStr);
+            qtPct.setFont(pctFont);
+            const QSize pctSz = qtPct.textSize();
+            const int boxW = pctSz.width() + 8;
+            const int boxH = pctSz.height() + 4;
+            int ox = qBound(2, qRound(pieCx + radius * cos(alabel) - 0.5 * double(boxW)),
+                            qMax(2, canvas_rect.width() - boxW - 2));
+            int oy = qBound(2, qRound(pieCy - radius * sin(alabel) - 0.5 * double(boxH)),
+                            qMax(2, canvas_rect.height() - boxH - 2));
+            QRect candBox(ox, oy, boxW, boxH);
+            bool collides = false;
+            for (const QRect &prev : placedPctBoxes) {
+                if (candBox.intersects(prev)) {
+                    collides = true;
+                    break;
+                }
+            }
+            if (collides) {
+                const int dirY = (sin(alabel) >= 0.0) ? -1 : 1;
+                for (int step = 1; step <= 4 && collides; ++step) {
+                    const int tryY = qBound(2, oy + dirY * step * (boxH - 2),
+                                            qMax(2, canvas_rect.height() - boxH - 2));
+                    const QRect tryBox(ox, tryY, boxW, boxH);
+                    bool hitAny = false;
+                    for (const QRect &prev : placedPctBoxes) {
+                        if (tryBox.intersects(prev)) {
+                            hitAny = true;
+                            break;
+                        }
+                    }
+                    if (!hitAny) {
+                        oy = tryY;
+                        candBox = tryBox;
+                        collides = false;
+                    }
+                }
+            }
+            if (collides && pctVal < 6.0) {
+                aux->setText(QString());
+                aux->setVisible(false);
+            } else {
+                aux->setOrigin(QPoint(ox, oy));
+                placedPctBoxes.append(candBox);
+            }
+        }
 
         angle -= value;
     }
 
     if (legendMarkerID >= 0) {
         Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
-        if (mrk) {
-            QString text = "";
-            for (int i = 0; i < size; i++) {
-                text += "\\p{";
-                text += QString::number(i + 1);
-                text += "} ";
-                text += QString::number(i + 1);
-                text += "\n";
-            }
-            mrk->setText(text);
-        }
+        if (mrk)
+            placeLegendAnchor(topBandPieLeg ? LegendTopCenter : LegendTopRight);
     }
 
     d_plot->replot();
@@ -5233,11 +5613,19 @@ bool Graph::plotHistogram(Table *w, QStringList names, int startRow, int endRow)
 
         CurveLayout cl = initCurveLayout(Histogram, names.size());
         updateCurveLayout(n_curves - 1, &cl);
+        QBrush hb = c->brush();
+        QColor hc = hb.color();
+        hc.setAlpha(165);
+        hb.setColor(hc);
+        hb.setStyle(Qt::SolidPattern);
+        c->setBrush(hb);
 
         addLegendItem(col);
 
         success = true;
     }
+    if (success && !d_refreshing_auto_titles)
+        refreshAutoAxisTitlesFromColumns();
 
     return success;
 }
@@ -5377,10 +5765,75 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
     c_keys[n_curves - 1] = d_plot->insertCurve(c);
     syncCurveZOrder();
 
-    c->setPen(QPen(Qt::black, widthLine));
+    static const QColor kOkabeItoBarColors[8] = {
+        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
+        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
+        QColor(240, 228, 66),  QColor(110, 118, 129)
+    };
+    if (style == VerticalBars || style == HorizontalBars) {
+        QVector<QwtBarCurve *> allStyleBars;
+        QVector<QwtBarCurve *> groupedBars;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (bi < c_type.size() && c_type[bi] == style) {
+                if (QwtBarCurve *bc = dynamic_cast<QwtBarCurve *>(curve(bi))) {
+                    allStyleBars.append(bc);
+                    if (!bc->isStacked())
+                        groupedBars.append(bc);
+                    else
+                        bc->setOffset(0);
+                }
+            }
+        }
+        const int barIdx = qMax(0, allStyleBars.size() - 1);
+        const QColor fillCol = kOkabeItoBarColors[barIdx % 8];
+        QPen barPen(fillCol.darker(140), 1, Qt::SolidLine);
+        barPen.setCosmetic(false);
+        c->setPen(barPen);
+        c->setBrush(QBrush(fillCol, Qt::SolidPattern));
+
+        const int K = groupedBars.size();
+        for (int ord = 0; ord < K; ++ord) {
+            if (K <= 1) {
+                groupedBars[ord]->setGap(35);
+                groupedBars[ord]->setOffset(0);
+            } else {
+                groupedBars[ord]->setGap(
+                        qBound(30, qRound(100.0 * (1.0 - 0.74 / double(K))), 92));
+                groupedBars[ord]->setOffset(
+                        qRound((double(ord) - 0.5 * double(K - 1)) * 106.0));
+            }
+        }
+    } else {
+        c->setPen(QPen(Qt::black, widthLine));
+    }
 
     if (!c->loadData())
         return false;
+
+    if (style == HorizontalBars) {
+        bool anyHorizTextCurve = false;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (bi < c_type.size() && c_type[bi] != HorizontalBars && c_type[bi] != ErrorBars) {
+                if (DataCurve *odc = dynamic_cast<DataCurve *>(curve(bi))) {
+                    if (odc->table()) {
+                        Column *oxc = odc->table()->column(odc->xColumnName());
+                        if (oxc && oxc->columnMode() == SciDAVis::ColumnMode::Text)
+                            anyHorizTextCurve = true;
+                    }
+                }
+            }
+        }
+        if (!anyHorizTextCurve
+            && (axisType[QwtPlot::xBottom] == AxisType::Txt
+                || dynamic_cast<QwtTextScaleDraw *>(d_plot->axisScaleDraw(QwtPlot::xBottom)))) {
+            d_custom_category_labels[QwtPlot::xBottom].clear();
+            axesFormatInfo[QwtPlot::xBottom].clear();
+            setLabelsNumericFormat(QwtPlot::xBottom, Plot::Automatic, 4);
+            setToriAxisUserLocked(d_plot, QwtPlot::xBottom, false);
+            d_user_step[QwtPlot::xBottom] = 0.0;
+            d_plot->setAxisAutoScale(QwtPlot::xBottom);
+        }
+    }
 
     addLegendItem(yColName);
     if (!d_refreshing_auto_titles)
@@ -5519,6 +5972,16 @@ void Graph::plotVectorCurve(Table *w, const QStringList &colList, int style, int
     c_keys[n_curves - 1] = d_plot->insertCurve(v);
 
     addLegendItem(canonicalCols[1]);
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QString plainT = unwrapNoWrapAxisTitle(axisTitle(a)).trimmed();
+        if (isAxisPlaceholderTitle(plainT)) {
+            QwtText emptyT = d_plot->axisTitle(a);
+            emptyT.setText(QString());
+            d_plot->setAxisTitle(a, emptyT);
+        }
+    }
+    if (!d_refreshing_auto_titles)
+        refreshAutoAxisTitlesFromColumns();
     updatePlot();
 }
 
@@ -5547,29 +6010,128 @@ void Graph::updateVectorsLayout(int curve, const QColor &color, int width, int a
 void Graph::updatePlot()
 {
     if (d_is_ternary) {
-        const double h = sqrt(3.0) / 2.0;
-        d_plot->setAxisScale(QwtPlot::xBottom, -0.14, 1.14, 0.2);
-        d_plot->setAxisScale(QwtPlot::yLeft, -0.12, h + 0.14, 0.2);
+        d_plot->setAxisScale(QwtPlot::xBottom, -0.24, 1.24, 0.2);
+        d_plot->setAxisScale(QwtPlot::yLeft, -0.25, 1.23, 0.2);
         for (int i = 0; i < QwtPlot::axisCnt; i++)
             d_plot->enableAxis(i, false);
+        drawAxesBackbones(false);
+    } else if (d_is_polar) {
+        const double rMax = qMax(1e-6, d_polar_rmax);
+        const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
+        const int extraRows = qMax(0, nPolarRows - 1);
+        const double yLo = -1.44 * rMax;
+        const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
+        const double halfX = 0.5 * (yHi - yLo);
+        d_plot->setAxisScale(QwtPlot::xBottom, -halfX, halfX);
+        d_plot->setAxisScale(QwtPlot::yLeft, yLo, yHi);
+        for (int i = 0; i < QwtPlot::axisCnt; i++)
+            d_plot->enableAxis(i, false);
+        drawAxesBackbones(false);
     } else if (m_autoscale && !zoomOn() && d_active_tool == NULL) {
         for (int i = 0; i < QwtPlot::axisCnt; i++) {
-            if (!isToriAxisUserLocked(d_plot, i))
+            if (!isToriAxisUserLocked(d_plot, i) && !d_weibull_prob_axis[i]
+                && d_custom_tick_positions[i].isEmpty())
                 d_plot->setAxisAutoScale(i);
         }
         applyZeroSnapOnAutoAxes();
     }
 
+    // Lock discrete category axes (AxisType::Txt) to [minKey - 0.5, maxKey + 0.5, step = 1.0]
+    // (preserving explicit category headroom when user-locked) with 0 minor ticks.
+    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (const QwtTextScaleDraw *tsd =
+                        dynamic_cast<const QwtTextScaleDraw *>(d_plot->axisScaleDraw(a))) {
+                const QMap<int, QString> catMap = tsd->labelsMap();
+                if (!catMap.isEmpty() && !zoomOn()) {
+                    const double minKey = double(catMap.firstKey());
+                    const double maxKey = double(catMap.lastKey());
+                    double cLo = minKey - 0.5;
+                    double cHi = maxKey + 0.5;
+                    if (isToriAxisUserLocked(d_plot, a)) {
+                        if (const QwtScaleDiv *curDiv = d_plot->axisScaleDiv(a)) {
+                            const double curLo = qMin(curDiv->lowerBound(), curDiv->upperBound());
+                            const double curHi = qMax(curDiv->lowerBound(), curDiv->upperBound());
+                            if (std::isfinite(curLo) && std::isfinite(curHi) && curHi > curLo
+                                && curLo >= minKey - 1.5 && curLo <= minKey
+                                && curHi >= maxKey && curHi <= maxKey + 4.5) {
+                                cLo = qMin(cLo, curLo);
+                                cHi = qMax(cHi, curHi);
+                            }
+                        }
+                    }
+                    const bool isInvCat = d_plot->axisScaleEngine(a)
+                            && d_plot->axisScaleEngine(a)->testAttribute(
+                                    QwtScaleEngine::Inverted);
+                    QwtValueList catMaj;
+                    for (auto it = catMap.constBegin(); it != catMap.constEnd(); ++it)
+                        catMaj += double(it.key());
+                    QwtValueList emptyTicks;
+                    QwtValueList catTicks[QwtScaleDiv::NTickTypes];
+                    catTicks[QwtScaleDiv::MinorTick] = emptyTicks;
+                    catTicks[QwtScaleDiv::MediumTick] = emptyTicks;
+                    catTicks[QwtScaleDiv::MajorTick] = catMaj;
+                    QwtScaleEngine *catEng = new QwtLinearScaleEngine();
+                    QwtScaleDiv catDiv(cLo, cHi, catTicks);
+                    if (isInvCat) {
+                        catEng->setAttribute(QwtScaleEngine::Inverted);
+                        catDiv.invert();
+                    }
+                    d_plot->setAxisMaxMinor(a, 0);
+                    d_plot->setMinorTicksType(a, ScaleDraw::None);
+                    d_plot->setAxisMaxMajor(a, qMax(8, catMap.size() + 2));
+                    d_plot->setAxisScale(a, isInvCat ? cHi : cLo, isInvCat ? cLo : cHi, 1.0);
+                    d_plot->setAxisScaleEngine(a, catEng);
+                    d_plot->setAxisScaleDiv(a, catDiv);
+
+                    const int opp = (a == QwtPlot::xBottom) ? QwtPlot::xTop
+                            : (a == QwtPlot::yLeft)         ? QwtPlot::yRight
+                                                            : -1;
+                    if (opp >= 0 && !d_plot->hasVisibleItemOnAxis(opp)
+                        && !hasColorScaleOnAxis(opp) && !d_weibull_prob_axis[opp]
+                        && d_custom_tick_positions[opp].isEmpty()) {
+                        if (QwtScaleDraw *oppSd = d_plot->axisScaleDraw(opp))
+                            oppSd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+                        d_plot->setMinorTicksType(opp, ScaleDraw::None);
+                        d_plot->setMajorTicksType(opp, ScaleDraw::None);
+                    }
+                }
+            }
+        }
+    }
+
+    // Clamp extreme ±1e308 auto-scaled spans before QwtLinearScaleEngine::divideScale can spin
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QwtScaleDiv *sd = d_plot->axisScaleDiv(a);
+        if (!sd)
+            continue;
+        const double lo = sd->lowerBound();
+        const double hi = sd->upperBound();
+        if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(hi - lo)
+            || std::fabs(lo) > 1.0e300 || std::fabs(hi) > 1.0e300) {
+            const double cLo = std::isfinite(lo) ? qBound(-1.0e150, lo, 1.0e150) : -1.0;
+            const double cHi = std::isfinite(hi) ? qBound(-1.0e150, hi, 1.0e150) : 1.0;
+            d_plot->setAxisScale(a, cLo, (std::fabs(cHi - cLo) > 1e-300) ? cHi : (cLo + 1.0));
+        }
+    }
+
+    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+        syncCustomAndWeibullAxes();
+    }
+
     d_plot->replot();
     updateMarkersBoundingRect();
-    if (!d_is_ternary) {
+    if (!d_is_ternary && !d_is_polar) {
         updateSecondaryAxis(QwtPlot::xTop);
         updateSecondaryAxis(QwtPlot::yRight);
     }
 
     if (isPiePlot()) {
-        QwtPieCurve *c = (QwtPieCurve *)curve(0);
-        c->updateBoundingRect();
+        drawCanvasFrame(false, 0);
+        setFrame(0, Qt::black);
+        drawAxesBackbones(false);
+        if (QwtPieCurve *c = (QwtPieCurve *)curve(0))
+            c->updateBoundingRect();
     }
 
     d_plot->replot();
@@ -5618,9 +6180,27 @@ void Graph::updateScale()
 
 void Graph::setBarsGap(int curve, int gapPercent, int offset)
 {
-    QwtBarCurve *bars = (QwtBarCurve *)this->curve(curve);
+    QwtBarCurve *bars = dynamic_cast<QwtBarCurve *>(this->curve(curve));
     if (!bars)
         return;
+
+    if (bars->isStacked()) {
+        offset = 0;
+    } else if (std::abs(offset) > 10) {
+        int groupedCount = 0;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (QwtBarCurve *bc = dynamic_cast<QwtBarCurve *>(this->curve(bi))) {
+                if (!bc->isStacked() && bc->orientation() == bars->orientation())
+                    ++groupedCount;
+            }
+        }
+        if (groupedCount > 1 && gapPercent < 100 - qRound(88.0 / double(groupedCount))) {
+            gapPercent = qBound(
+                    25,
+                    100 - qRound((100.0 - double(qBound(0, gapPercent, 90))) / double(groupedCount)),
+                    94);
+        }
+    }
 
     if (bars->gap() == gapPercent && bars->offset() == offset)
         return;
@@ -5662,11 +6242,15 @@ void Graph::removeCurves(const QString &s)
 
         if (it->rtti() != QwtPlotItem::Rtti_PlotCurve)
             continue;
-        if (((PlotCurve *)it)->type() == Function)
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (!pc || pc->type() == Function)
+            continue;
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        if (!dc)
             continue;
 
-        if (((DataCurve *)it)->plotAssociation().contains(QRegExp("\\b" + QRegExp::escape(s) + "\\b"))
-            || ((DataCurve *)it)->plotAssociation().contains(QRegExp("\b" + s + "\b")))
+        if (dc->plotAssociation().contains(QRegExp("\\b" + QRegExp::escape(s) + "\\b"))
+            || dc->plotAssociation().contains(QRegExp("\b" + s + "\b")))
             removeCurve(i);
     }
     d_plot->replot();
@@ -5689,10 +6273,14 @@ void Graph::removeCurve(int index)
     removeLegendItem(index);
 
     if (it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
-        if (((PlotCurve *)it)->type() == ErrorBars)
-            ((QwtErrorPlotCurve *)it)->detachFromMasterCurve();
-        else if (((PlotCurve *)it)->type() != Function)
-            ((DataCurve *)it)->clearErrorBars();
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (pc && pc->type() == ErrorBars) {
+            if (QwtErrorPlotCurve *epc = dynamic_cast<QwtErrorPlotCurve *>(pc))
+                epc->detachFromMasterCurve();
+        } else if (pc && pc->type() != Function) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(pc))
+                dc->clearErrorBars();
+        }
 
         if (d_fit_curves.contains((QwtPlotCurve *)it)) {
             int i = d_fit_curves.indexOf((QwtPlotCurve *)it);
@@ -6109,7 +6697,11 @@ bool Graph::modifyFunctionCurve(ApplicationWindow *parent, int curve, int type,
     if (!c)
         return false;
 
-    if (c->functionType() == type && c->variable() == var && c->formulas() == formulas
+    QStringList effFormulas = formulas;
+    if (type == FunctionCurve::Polar && effFormulas.size() == 1)
+        effFormulas << (var.trimmed().isEmpty() ? QStringLiteral("t") : var.trimmed());
+
+    if (c->functionType() == type && c->variable() == var && c->formulas() == effFormulas
         && c->startRange() == ranges[0] && c->endRange() == ranges[1] && c->dataSize() == points)
         return true;
 
@@ -6118,12 +6710,28 @@ bool Graph::modifyFunctionCurve(ApplicationWindow *parent, int curve, int type,
 
     c->setFunctionType((FunctionCurve::FunctionType)type);
     c->setRange(ranges[0], ranges[1]);
-    c->setFormulas(formulas);
+    c->setFormulas(effFormulas);
     c->setVariable(var);
     if (!c->loadData(points)) {
         c->copy(&backup);
         c->loadData(points);
         return false;
+    }
+
+    if (type == FunctionCurve::Polar) {
+        double maxR = 0.0;
+        for (int k = 0; k < c->dataSize(); ++k) {
+            const double rk = std::hypot(c->x(k), c->y(k));
+            if (std::isfinite(rk) && rk > maxR)
+                maxR = rk;
+        }
+        setupPolarPlot(QVector<double>(), QVector<double>(), QString(), true);
+        if (maxR > 0.0) {
+            d_polar_rmax = qMax(d_polar_rmax, maxR);
+            const double rBound = 1.32 * d_polar_rmax;
+            setScale(QwtPlot::xBottom, -rBound, rBound, 0.0, 5, 0, 0, false);
+            setScale(QwtPlot::yLeft, -rBound, rBound, 0.0, 5, 0, 0, false);
+        }
     }
 
     if (legendMarkerID >= 0) { // update the legend marker
@@ -6169,27 +6777,67 @@ bool Graph::addFunctionCurve(ApplicationWindow *parent, int type, const QStringL
     else
         name = generateFunctionName();
 
+    QStringList effFormulas = formulas;
+    const QString effVar = var.trimmed().isEmpty() ? QStringLiteral("t") : var.trimmed();
+    if (type == FunctionCurve::Polar && effFormulas.size() == 1)
+        effFormulas << effVar;
+
     FunctionCurve *c = new FunctionCurve(parent, (FunctionCurve::FunctionType)type, name);
-    c->setPen(QPen(QColor(Qt::black), widthLine));
+    QPen fPen(QColor(0, 114, 178), qMax(2, widthLine));
+    fPen.setCosmetic(false);
+    c->setPen(fPen);
     c->setRange(ranges[0], ranges[1]);
-    c->setFormulas(formulas);
-    c->setVariable(var);
+    c->setFormulas(effFormulas);
+    c->setVariable(effVar);
     if (!c->loadData(points)) {
         delete c;
         return false;
     }
 
     c_type.resize(++n_curves);
-    c_type[n_curves - 1] = Line;
+    c_type[n_curves - 1] = Function;
 
     c_keys.resize(n_curves);
     c_keys[n_curves - 1] = d_plot->insertCurve(c);
 
-    addLegendItem(c->legend());
-    auto ml = qobject_cast<MultiLayer *>(parent->d_workspace.activeSubWindow());
-    if (ml &&  ml->status() != MyWidget::Minimized) {
-        updatePlot();
+    if (type == FunctionCurve::Polar) {
+        double maxR = 0.0;
+        for (int k = 0; k < c->dataSize(); ++k) {
+            const double rk = std::hypot(c->x(k), c->y(k));
+            if (std::isfinite(rk) && rk > maxR)
+                maxR = rk;
+        }
+        setupPolarPlot(QVector<double>(), QVector<double>(), QString(), true);
+        if (maxR > 0.0) {
+            double rLo = 0.0;
+            double rHi = maxR;
+            double rStep = 0.0;
+            QwtLinearScaleEngine rse;
+            rse.autoScale(4, rLo, rHi, rStep);
+            d_polar_rmax = qMax(d_polar_rmax, (rHi >= maxR && std::isfinite(rHi)) ? rHi : maxR);
+            const int extraRows = qMax(0, qMax(int(d_polar_series.size()), n_curves) - 1);
+            const double yLo = -1.44 * d_polar_rmax;
+            const double yHi = (1.64 + 0.36 * double(extraRows)) * d_polar_rmax;
+            const double halfX = 0.5 * (yHi - yLo);
+            setScale(QwtPlot::xBottom, -halfX, halfX, 0.0, 5, 0, 0, false);
+            setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
+        }
+    }
 
+    const QString legLabel = (type == FunctionCurve::Polar && !formulas.isEmpty())
+            ? QStringLiteral("r(%1) = %2").arg(effVar, formulas[0].trimmed())
+            : c->legend();
+    addLegendItem(legLabel);
+    if (type == FunctionCurve::Polar && hasLegend())
+        placeLegendAnchor(LegendTopRight);
+    if (parent) {
+        auto ml = qobject_cast<MultiLayer *>(parent->d_workspace.activeSubWindow());
+        if (!ml || ml->status() != MyWidget::Minimized) {
+            updatePlot();
+            emit modifiedGraph();
+        }
+    } else {
+        updatePlot();
         emit modifiedGraph();
     }
     return true;
@@ -6587,6 +7235,78 @@ QString Graph::saveToString(bool saveAsTemplate)
                          .arg(escAttr(d_ternary_labels[0]))
                          .arg(escAttr(d_ternary_labels[1]))
                          .arg(escAttr(d_ternary_labels[2]));
+        }
+
+        QStringList stackedBarIndices;
+        int stackedGap = 25;
+        int stackedOffset = 0;
+        bool haveStackedRef = false;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (const QwtBarCurve *bc = dynamic_cast<const QwtBarCurve *>(curve(bi))) {
+                if (bc->isStacked()) {
+                    stackedBarIndices << QString::number(bi);
+                    if (!haveStackedRef) {
+                        stackedGap = bc->gap();
+                        stackedOffset = bc->offset();
+                        haveStackedRef = true;
+                    }
+                }
+            }
+        }
+        if (!stackedBarIndices.isEmpty()) {
+            s += QString("<ToriStackedBars indices=\"%1\" gap=\"%2\" offset=\"%3\"/>\n")
+                         .arg(stackedBarIndices.join(","))
+                         .arg(stackedGap)
+                         .arg(stackedOffset);
+        }
+
+        for (int a = 0; a < 4; ++a) {
+            if (!d_custom_tick_positions[a].isEmpty()
+                && d_custom_tick_positions[a].size() == d_custom_tick_labels[a].size()) {
+                QStringList posStrs;
+                posStrs.reserve(d_custom_tick_positions[a].size());
+                for (double pv : d_custom_tick_positions[a])
+                    posStrs << QString::number(pv, 'g', 14);
+                s += QString("<ToriCategoryAxis axis=\"%1\" positions=\"%2\" labels=\"%3\" "
+                             "rot=\"%4\"/>\n")
+                             .arg(a)
+                             .arg(posStrs.join(","))
+                             .arg(escAttr(d_custom_tick_labels[a].join(QChar(0x1F))))
+                             .arg(QString::number(d_custom_tick_rotation[a], 'g', 8));
+            } else if (!d_custom_category_labels[a].isEmpty()) {
+                s += QString("<ToriCategoryAxis axis=\"%1\" labels=\"%2\"/>\n")
+                             .arg(a)
+                             .arg(escAttr(d_custom_category_labels[a].join(QChar(0x1F))));
+            }
+            if (d_weibull_prob_axis[a]) {
+                s += QString("<ToriWeibullAxis axis=\"%1\" enabled=\"1\"/>\n").arg(a);
+            }
+        }
+
+        if (d_is_polar) {
+            s += QString("<ToriPolarPlot enabled=\"1\" rmax=\"%1\"/>\n")
+                         .arg(QString::number(d_polar_rmax, 'g', 15));
+            if (!saveAsTemplate) {
+                for (const PolarSeriesSpec &ps : d_polar_series) {
+                    const int m = qMin(ps.x.size(), ps.y.size());
+                    if (m <= 0)
+                        continue;
+                    QStringList xs, ys;
+                    xs.reserve(m);
+                    ys.reserve(m);
+                    for (int k = 0; k < m; ++k) {
+                        xs << QString::number(ps.x[k], 'g', 12);
+                        ys << QString::number(ps.y[k], 'g', 12);
+                    }
+                    s += QString("<ToriPolarSeries label=\"%1\" color=\"%2\" width=\"%3\" "
+                                 "x=\"%4\" y=\"%5\"/>\n")
+                                 .arg(escAttr(ps.label))
+                                 .arg(ps.color.name(QColor::HexArgb))
+                                 .arg(QString::number(ps.width, 'g', 8))
+                                 .arg(xs.join(","))
+                                 .arg(ys.join(","));
+                }
+            }
         }
     }
 
@@ -7211,25 +7931,35 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
 
     for (i = 0; i < g->curves(); i++) {
         QwtPlotItem *it = (QwtPlotItem *)g->plotItem(i);
+        if (!it)
+            continue;
         if (it->rtti() == QwtPlotItem::Rtti_PlotCurve) {
-            DataCurve *cv = (DataCurve *)it;
-            int n = cv->dataSize();
-            int style = ((PlotCurve *)it)->type();
+            PlotCurve *srcPc = dynamic_cast<PlotCurve *>(it);
+            if (!srcPc)
+                continue;
+            DataCurve *cv = dynamic_cast<DataCurve *>(it);
+            int n = srcPc->dataSize();
+            int style = srcPc->type();
             QVector<double> x(n);
             QVector<double> y(n);
             for (int j = 0; j < n; j++) {
-                x[j] = cv->x(j);
-                y[j] = cv->y(j);
+                x[j] = srcPc->x(j);
+                y[j] = srcPc->y(j);
             }
 
-            PlotCurve *c = 0;
-            if (style == Pie) {
+            PlotCurve *c = nullptr;
+            if (style == Pie && cv) {
                 c = new QwtPieCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
                 ((QwtPieCurve *)c)->setRay(((QwtPieCurve *)cv)->ray());
                 ((QwtPieCurve *)c)->setFirstColor(((QwtPieCurve *)cv)->firstColor());
-            } else if (style == Function) {
-                c = new FunctionCurve(parent, cv->title().text());
-                static_cast<FunctionCurve *>(c)->copy(static_cast<FunctionCurve *>(it));
+            } else if (style == Function || !cv) {
+                if (FunctionCurve *fcSrc = dynamic_cast<FunctionCurve *>(it)) {
+                    c = new FunctionCurve(parent, srcPc->title().text());
+                    static_cast<FunctionCurve *>(c)->copy(fcSrc);
+                } else {
+                    c = new PlotCurve(srcPc->title().text());
+                    c->setType(Function);
+                }
             } else if (style == VerticalBars || style == HorizontalBars) {
                 c = new QwtBarCurve(((QwtBarCurve *)cv)->orientation(), cv->table(),
                                     cv->xColumnName(), cv->title().text(), cv->startRow(),
@@ -7258,49 +7988,55 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
             } else if (style == Box) {
                 c = new BoxCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
                 ((BoxCurve *)c)->copy((const BoxCurve *)cv);
-                QwtSingleArrayData dat(x[0], y, n);
-                c->setData(dat);
-            } else
+                if (n > 0) {
+                    QwtSingleArrayData dat(x[0], y, n);
+                    c->setData(dat);
+                }
+            } else {
                 c = new DataCurve(cv->table(), cv->xColumnName(), cv->title().text(),
                                   cv->startRow(), cv->endRow());
-
-            c_keys.resize(++n_curves);
-            c_keys[i] = d_plot->insertCurve(c);
-
-            c_type.resize(n_curves);
-            c_type[i] = g->curveType(i);
-
-            if (c_type[i] != Box && c_type[i] != ErrorBars)
-                c->setData(x.data(), y.data(), n);
-
-            c->setPen(cv->pen());
-            c->setBrush(cv->brush());
-            c->setStyle(cv->style());
-            c->setSymbol(cv->symbol());
-
-            if (cv->testCurveAttribute(QwtPlotCurve::Fitted))
-                c->setCurveAttribute(QwtPlotCurve::Fitted, true);
-            else if (cv->testCurveAttribute(QwtPlotCurve::Inverted))
-                c->setCurveAttribute(QwtPlotCurve::Inverted, true);
-
-            if (c && cv) {
-                c->setSymbolSkip(cv->symbolSkip());
-                if (c_type[i] != Box && c_type[i] != ErrorBars) {
-                    c->setStackNormalize01(cv->stackNormalize01());
-                    c->setStackOffset(cv->stackOffsetX(), cv->stackOffsetY());
-                }
             }
 
-            c->setAxis(cv->xAxis(), cv->yAxis());
-            c->setVisible(cv->isVisible());
+            if (!c)
+                continue;
+
+            const int dstIdx = n_curves;
+            c_keys.resize(++n_curves);
+            c_keys[dstIdx] = d_plot->insertCurve(c);
+
+            c_type.resize(n_curves);
+            c_type[dstIdx] = (!cv && style != Function) ? int(Function) : g->curveType(i);
+
+            if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars)
+                c->setData(x.data(), y.data(), n);
+
+            c->setPen(srcPc->pen());
+            c->setBrush(srcPc->brush());
+            c->setStyle(srcPc->style());
+            c->setSymbol(srcPc->symbol());
+
+            if (srcPc->testCurveAttribute(QwtPlotCurve::Fitted))
+                c->setCurveAttribute(QwtPlotCurve::Fitted, true);
+            else if (srcPc->testCurveAttribute(QwtPlotCurve::Inverted))
+                c->setCurveAttribute(QwtPlotCurve::Inverted, true);
+
+            c->setSymbolSkip(srcPc->symbolSkip());
+            if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars) {
+                c->setStackNormalize01(srcPc->stackNormalize01());
+                c->setStackOffset(srcPc->stackOffsetX(), srcPc->stackOffsetY());
+            }
+
+            c->setAxis(srcPc->xAxis(), srcPc->yAxis());
+            c->setVisible(srcPc->isVisible());
 
             QList<QwtPlotCurve *> lst = g->fitCurvesList();
             if (lst.contains((QwtPlotCurve *)it))
                 d_fit_curves << c;
         } else if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
             Spectrogram *sp = ((Spectrogram *)it)->copy();
+            const int dstIdx = n_curves;
             c_keys.resize(++n_curves);
-            c_keys[i] = d_plot->insertCurve(sp);
+            c_keys[dstIdx] = d_plot->insertCurve(sp);
 
             sp->showColorScale(((Spectrogram *)it)->colorScaleAxis(),
                                ((Spectrogram *)it)->hasColorScale());
@@ -7310,7 +8046,7 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
             sp->setVisible(it->isVisible());
 
             c_type.resize(n_curves);
-            c_type[i] = g->curveType(i);
+            c_type[dstIdx] = g->curveType(i);
         }
     }
 
@@ -7408,11 +8144,13 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         d_plot->setAxisScaleDiv(i, div);
 
         if (ScaleDraw *dstSd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(i))) {
-            if (d_axis_breaks[i].enabled || useMirrorBreak)
-                dstSd->setAxisBreakIndicator(true,
-                                             qMin(activeBreak.breakFrom, activeBreak.breakTo));
-            else
+            if (d_axis_breaks[i].enabled || useMirrorBreak) {
+                dstSd->setAxisBreakIndicator(true, qMin(activeBreak.breakFrom, activeBreak.breakTo),
+                                             qMax(activeBreak.breakFrom, activeBreak.breakTo),
+                                             activeBreak.log10Before, activeBreak.log10After);
+            } else {
                 dstSd->setAxisBreakIndicator(false, 0.0);
+            }
         }
     }
 
@@ -7465,6 +8203,49 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     d_is_ternary = g->d_is_ternary;
     for (int k = 0; k < 3; ++k)
         d_ternary_labels[k] = g->d_ternary_labels[k];
+    if (d_is_ternary)
+        setupTernaryPlot(d_ternary_labels[0], d_ternary_labels[1], d_ternary_labels[2]);
+
+    for (int bi = 0; bi < qMin(n_curves, g->curves()); ++bi) {
+        const QwtBarCurve *srcBc = dynamic_cast<const QwtBarCurve *>(g->curve(bi));
+        QwtBarCurve *dstBc = dynamic_cast<QwtBarCurve *>(curve(bi));
+        if (srcBc && dstBc && srcBc->isStacked()) {
+            dstBc->setStacked(true);
+            dstBc->setGap(srcBc->gap());
+            dstBc->setOffset(0);
+        }
+    }
+
+    m_autoscale = g->m_autoscale;
+    for (i = 0; i < QwtPlot::axisCnt; ++i)
+        setAxisUserLocked(i, g->isAxisUserLocked(i));
+
+    for (int a = 0; a < 4; ++a) {
+        if (!g->d_custom_tick_positions[a].isEmpty()) {
+            setCustomTickLabels(a, g->d_custom_tick_positions[a], g->d_custom_tick_labels[a],
+                                g->d_custom_tick_rotation[a]);
+        } else if (!g->d_custom_category_labels[a].isEmpty()) {
+            setCategoryLabels(a, g->d_custom_category_labels[a]);
+        }
+        if (g->d_weibull_prob_axis[a])
+            setWeibullProbabilityAxis(a, true);
+    }
+
+    if (g->d_is_polar) {
+        d_polar_rmax = g->d_polar_rmax;
+        setupPolarPlot(QVector<double>(), QVector<double>(), QString(), true);
+        d_polar_series = g->d_polar_series;
+        const double rMax = qMax(1e-6, d_polar_rmax);
+        const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
+        const int extraRows = qMax(0, nPolarRows - 1);
+        const double yLo = -1.44 * rMax;
+        const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
+        const double halfX = 0.5 * (yHi - yLo);
+        setScale(QwtPlot::xBottom, -halfX, halfX, 0.0, 5, 0, 0, false);
+        setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            enableAxis(a, false);
+    }
 
     d_legend_visible = g->d_legend_visible;
     if (Legend *leg = legend())
@@ -7474,55 +8255,112 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     if (g->d_plot && g->d_plot->property("_toriLegendAnchor").isValid())
         d_plot->setProperty("_toriLegendAnchor", g->d_plot->property("_toriLegendAnchor"));
 
-    m_autoscale = g->m_autoscale;
-    for (i = 0; i < QwtPlot::axisCnt; ++i)
-        setAxisUserLocked(i, g->isAxisUserLocked(i));
+    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+        updateSecondaryAxis(QwtPlot::xTop);
+        updateSecondaryAxis(QwtPlot::yRight);
+    }
 
     syncCurveZOrder();
     d_plot->replot();
 
     if (isPiePlot()) {
-        QwtPieCurve *c = (QwtPieCurve *)curve(0);
-        c->updateBoundingRect();
+        drawCanvasFrame(false, 0);
+        setFrame(0, Qt::black);
+        drawAxesBackbones(false);
+        if (QwtPieCurve *c = (QwtPieCurve *)curve(0))
+            c->updateBoundingRect();
     }
 }
 
 void Graph::plotBoxDiagram(Table *w, const QStringList &names, int startRow, int endRow)
 {
-    if (endRow < 0)
+    if (!w || names.isEmpty())
+        return;
+    if (endRow < 0 || endRow >= w->numRows())
         endRow = w->numRows() - 1;
 
+    static const QColor kOkabeItoBox[8] = {
+        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
+        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
+        QColor(240, 228, 66),  QColor(110, 118, 129)
+    };
+
+    const QString tblPrefix = QString(w->name()) + QLatin1Char('_');
+    QStringList catLabels;
+    catLabels.reserve(names.count());
+
+    int plottedOrd = 0;
     for (int j = 0; j < (int)names.count(); j++) {
+        Column *colPtr = w->column(names[j]);
+        if (!colPtr && names[j].startsWith(tblPrefix))
+            colPtr = w->column(names[j].mid(tblPrefix.size()));
+
         BoxCurve *c = new BoxCurve(w, names[j], startRow, endRow);
-        c->setData(QwtSingleArrayData(double(j + 1), QwtArray<double>(), 0));
+        c->setData(QwtSingleArrayData(double(plottedOrd + 1), QwtArray<double>(), 0));
         c->loadData();
+        if (c->dataSize() <= 0) {
+            delete c;
+            continue;
+        }
 
         c_keys.resize(++n_curves);
         c_keys[n_curves - 1] = d_plot->insertCurve(c);
         c_type.resize(n_curves);
         c_type[n_curves - 1] = Box;
 
-        c->setPen(QPen(ColorButton::color(j), 1));
-        c->setSymbol(QwtSymbol(QwtSymbol::NoSymbol, QBrush(), QPen(ColorButton::color(j), 1),
-                               QSize(7, 7)));
+        const QColor col = kOkabeItoBox[plottedOrd % 8];
+        QPen boxPen(col.darker(120), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+        boxPen.setCosmetic(false);
+        c->setPen(boxPen);
+        QColor fillTint = col;
+        fillTint.setAlpha(75);
+        c->setBrush(QBrush(fillTint, Qt::SolidPattern));
+        QPen symPen(col.darker(135), 1.4, Qt::SolidLine);
+        symPen.setCosmetic(false);
+        c->setSymbol(QwtSymbol(QwtSymbol::NoSymbol, QBrush(Qt::white, Qt::SolidPattern), symPen,
+                               QSize(8, 8)));
+
+        QString catName;
+        if (colPtr) {
+            catName = firstNonEmptyCommentLine(colPtr->comment());
+            if (catName.isEmpty())
+                catName = colPtr->name().trimmed();
+        }
+        if (catName.isEmpty()) {
+            catName = names[j];
+            if (catName.startsWith(tblPrefix))
+                catName = catName.mid(tblPrefix.size());
+        }
+        catLabels << catName;
+        ++plottedOrd;
     }
+
+    if (catLabels.isEmpty())
+        return;
+
+    syncCurveZOrder();
+    setCategoryLabels(QwtPlot::xBottom, catLabels);
+    if (QwtScaleDraw *topSd = d_plot->axisScaleDraw(QwtPlot::xTop))
+        topSd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+    d_plot->setMajorTicksType(QwtPlot::xTop, ScaleDraw::None);
+    d_plot->setMinorTicksType(QwtPlot::xTop, ScaleDraw::None);
+    axesFormatInfo[QwtPlot::xBottom] = w->name();
+    axesFormatInfo[QwtPlot::xTop] = w->name();
+
+    {
+        const QString curBotPlain = unwrapNoWrapAxisTitle(axisTitle(QwtPlot::xBottom)).trimmed();
+        if (isAxisPlaceholderTitle(curBotPlain)) {
+            QwtText emptyT = d_plot->axisTitle(QwtPlot::xBottom);
+            emptyT.setText(QString());
+            d_plot->setAxisTitle(QwtPlot::xBottom, emptyT);
+        }
+    }
+    if (!d_refreshing_auto_titles)
+        refreshAutoAxisTitlesFromColumns();
 
     Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
     if (mrk)
         mrk->setText(legendText());
-
-    axisType[QwtPlot::xBottom] = AxisType::ColHeader;
-    d_plot->setAxisScaleDraw(QwtPlot::xBottom, new QwtTextScaleDraw(w->selectedYLabels()));
-    d_plot->setAxisMaxMajor(QwtPlot::xBottom, names.count() + 1);
-    d_plot->setAxisMaxMinor(QwtPlot::xBottom, 0);
-
-    axisType[QwtPlot::xTop] = AxisType::ColHeader;
-    d_plot->setAxisScaleDraw(QwtPlot::xTop, new QwtTextScaleDraw(w->selectedYLabels()));
-    d_plot->setAxisMaxMajor(QwtPlot::xTop, names.count() + 1);
-    d_plot->setAxisMaxMinor(QwtPlot::xTop, 0);
-
-    axesFormatInfo[QwtPlot::xBottom] = w->name();
-    axesFormatInfo[QwtPlot::xTop] = w->name();
 }
 
 void Graph::setCurveStyle(int index, int s)
@@ -7803,11 +8641,18 @@ void Graph::plotSpectrogram(Matrix *m, CurveType type)
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         QFont tf = d_plot->axisFont(a);
         tf.setFamily(QStringLiteral("Arial"));
+        tf.setBold(false);
+        tf.setHintingPreference(QFont::PreferNoHinting);
         d_plot->setAxisFont(a, tf);
         QwtText tt = d_plot->axisTitle(a);
         QFont ttf = tt.font();
         ttf.setFamily(QStringLiteral("Arial"));
+        ttf.setBold(false);
+        ttf.setHintingPreference(QFont::PreferNoHinting);
         tt.setFont(ttf);
+        const QString plainT = unwrapNoWrapAxisTitle(tt.text()).trimmed();
+        if (isAxisPlaceholderTitle(plainT))
+            tt.setText(QString());
         d_plot->setAxisTitle(a, tt);
     }
     d_spectrogram->enforceColorBarArialFont();
@@ -8304,7 +9149,7 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
 
 void Graph::setCurveFullRange(int curveIndex)
 {
-    DataCurve *c = (DataCurve *)curve(curveIndex);
+    DataCurve *c = dynamic_cast<DataCurve *>(curve(curveIndex));
     if (c) {
         c->setFullRange();
         updatePlot();
@@ -8322,11 +9167,12 @@ DataCurve *Graph::masterCurve(QwtErrorPlotCurve *er)
         QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
         if (!it || it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
             continue;
-        if (((PlotCurve *)it)->type() == Function)
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (!pc || pc->type() == Function)
             continue;
-
-        if (((DataCurve *)it)->plotAssociation() == er->masterCurve()->plotAssociation())
-            return (DataCurve *)it;
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        if (dc && dc->plotAssociation() == er->masterCurve()->plotAssociation())
+            return dc;
     }
     return nullptr;
 }
@@ -8340,11 +9186,12 @@ DataCurve *Graph::masterCurve(const QString &xColName, const QString &yColName)
         QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
         if (!it || it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
             continue;
-        if (((PlotCurve *)it)->type() == Function)
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (!pc || pc->type() == Function)
             continue;
-
-        if (((DataCurve *)it)->plotAssociation() == master_curve)
-            return (DataCurve *)it;
+        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+        if (dc && dc->plotAssociation() == master_curve)
+            return dc;
     }
     return nullptr;
 }
@@ -9262,6 +10109,520 @@ void Graph::applyYOffsetStack(double offsetStep, bool autoOffset)
     emit modifiedGraph();
 }
 
+namespace {
+
+class TernaryDiagramItem : public QwtPlotItem
+{
+public:
+    explicit TernaryDiagramItem(const Graph *graph) : d_graph(graph)
+    {
+        setZ(12.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 44; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_graph)
+            return;
+
+        const double h = std::sqrt(3.0) * 0.5;
+        auto toScreen = [&](const QPointF &w) -> QPointF {
+            return QPointF(xMap.xTransform(w.x()), yMap.xTransform(w.y()));
+        };
+
+        const QPointF pA = toScreen(QPointF(0.0, 0.0));
+        const QPointF pB = toScreen(QPointF(1.0, 0.0));
+        const QPointF pC = toScreen(QPointF(0.5, h));
+        if (!std::isfinite(pA.x()) || !std::isfinite(pA.y()) || !std::isfinite(pB.x())
+            || !std::isfinite(pB.y()) || !std::isfinite(pC.x()) || !std::isfinite(pC.y()))
+            return;
+
+        const double sc = Plot::printDeviceScale();
+        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        tickFont.setFamily(QStringLiteral("Arial"));
+        tickFont.setBold(false);
+        tickFont.setWeight(QFont::Normal);
+        tickFont.setHintingPreference(QFont::PreferNoHinting);
+
+        QFont vertFont = const_cast<Graph *>(d_graph)->axisTitleFont(QwtPlot::xBottom);
+        vertFont.setFamily(QStringLiteral("Arial"));
+        vertFont.setBold(false);
+        vertFont.setWeight(QFont::Normal);
+        vertFont.setHintingPreference(QFont::PreferNoHinting);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+
+        // 1. Interior 20% dashed grid lines
+        QPen gridPen(QColor(184, 192, 204), 1.0 * sc, Qt::DashLine, Qt::FlatCap, Qt::MiterJoin);
+        gridPen.setCosmetic(false);
+        painter->setPen(gridPen);
+        for (int step = 1; step <= 4; ++step) {
+            const double f = 0.2 * double(step);
+            // Constant-A line: (f, 1-f, 0) -> (f, 0, 1-f)
+            painter->drawLine(toScreen(Graph::ternaryToCartesian(f, 1.0 - f, 0.0)),
+                              toScreen(Graph::ternaryToCartesian(f, 0.0, 1.0 - f)));
+            // Constant-B line: (1-f, f, 0) -> (0, f, 1-f)
+            painter->drawLine(toScreen(Graph::ternaryToCartesian(1.0 - f, f, 0.0)),
+                              toScreen(Graph::ternaryToCartesian(0.0, f, 1.0 - f)));
+            // Constant-C line: (1-f, 0, f) -> (0, 1-f, f)
+            painter->drawLine(toScreen(Graph::ternaryToCartesian(1.0 - f, 0.0, f)),
+                              toScreen(Graph::ternaryToCartesian(0.0, 1.0 - f, f)));
+        }
+
+        // 2. Exterior ticks & thermodynamically consistent tick labels:
+        //    - Base AB (left -> right): B% = 20, 40, 60, 80
+        //    - Right BC (bottom -> top): C% = 20, 40, 60, 80
+        //    - Left CA (bottom -> top): A% = 80, 60, 40, 20 (increases top -> bottom toward A=100% at vA!)
+        const double baseLw = qMax(
+                1.3,
+                double(d_graph->plotWidget() ? d_graph->plotWidget()->axesLinewidth() : 2));
+        QPen tickPen(QColor(Qt::black), baseLw * sc, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+        tickPen.setCosmetic(false);
+
+        const double tickLen = 6.5 * sc;
+        const double padPx = 3.5 * sc;
+        painter->setFont(tickFont);
+        const QFontMetricsF tfm(tickFont, painter->device());
+        const double tH = tfm.height();
+
+        for (int step = 1; step <= 4; ++step) {
+            const double f = 0.2 * double(step);
+            const QString bText = QString::number(step * 20);
+            const QString cText = QString::number(step * 20);
+            const QString aText = QString::number(100 - step * 20);
+
+            // Base AB tick (pointing down-left along constant-B or straight down)
+            const QPointF basePt = toScreen(QPointF(f, 0.0));
+            const QPointF baseTip(basePt.x(), basePt.y() + tickLen);
+            painter->setPen(tickPen);
+            painter->drawLine(basePt, baseTip);
+            const double bw = tfm.horizontalAdvance(bText) + 4.0 * sc;
+            painter->setPen(QColor(30, 41, 59));
+            painter->drawText(QRectF(baseTip.x() - 0.5 * bw, baseTip.y() + padPx, bw, tH),
+                              Qt::AlignHCenter | Qt::AlignTop | Qt::TextDontClip, bText);
+
+            // Right BC tick (outward normal (+sqrt(3)/2, -0.5) in screen coords -> (+0.866, -0.5))
+            const QPointF rightPt = toScreen(Graph::ternaryToCartesian(0.0, 1.0 - f, f));
+            const QPointF rightTip(rightPt.x() + 0.8660254 * tickLen,
+                                   rightPt.y() - 0.5 * tickLen);
+            painter->setPen(tickPen);
+            painter->drawLine(rightPt, rightTip);
+            const double cw = tfm.horizontalAdvance(cText) + 4.0 * sc;
+            painter->setPen(QColor(30, 41, 59));
+            painter->drawText(QRectF(rightTip.x() + padPx, rightTip.y() - 0.55 * tH, cw, tH),
+                              Qt::AlignLeft | Qt::AlignVCenter | Qt::TextDontClip, cText);
+
+            // Left CA tick (outward normal (-0.866, -0.5) in screen coords)
+            const QPointF leftPt = toScreen(Graph::ternaryToCartesian(1.0 - f, 0.0, f));
+            const QPointF leftTip(leftPt.x() - 0.8660254 * tickLen,
+                                  leftPt.y() - 0.5 * tickLen);
+            painter->setPen(tickPen);
+            painter->drawLine(leftPt, leftTip);
+            const double aw = tfm.horizontalAdvance(aText) + 4.0 * sc;
+            painter->setPen(QColor(30, 41, 59));
+            painter->drawText(QRectF(leftTip.x() - padPx - aw, leftTip.y() - 0.55 * tH, aw, tH),
+                              Qt::AlignRight | Qt::AlignVCenter | Qt::TextDontClip, aText);
+        }
+
+        // 3. Equilateral triangle outer frame
+        QPolygonF tri(3);
+        tri[0] = pA;
+        tri[1] = pB;
+        tri[2] = pC;
+        QPen borderPen(QColor(Qt::black), qMax(1.6, baseLw) * sc, Qt::SolidLine, Qt::SquareCap,
+                       Qt::MiterJoin);
+        borderPen.setCosmetic(false);
+        painter->setPen(borderPen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPolygon(tri);
+
+        // 4. Non-bold Arial vertex component labels with font-metrics clearance
+        painter->setFont(vertFont);
+        painter->setPen(QColor(Qt::black));
+        const QFontMetricsF vfm(vertFont, painter->device());
+        const double vH = vfm.height();
+
+        const QString lblA = d_graph->ternaryLabel(0);
+        const QString lblB = d_graph->ternaryLabel(1);
+        const QString lblC = d_graph->ternaryLabel(2);
+
+        const double wA = vfm.horizontalAdvance(lblA) + 8.0 * sc;
+        const double wB = vfm.horizontalAdvance(lblB) + 8.0 * sc;
+        const double wC = vfm.horizontalAdvance(lblC) + 8.0 * sc;
+        const double botVertY = qMax(pA.y(), pB.y()) + tickLen + padPx + 0.35 * tH;
+
+        const QRectF safeCanvas =
+                QRectF(canvasRect).adjusted(2.0 * sc, 2.0 * sc, -2.0 * sc, -2.0 * sc);
+        QRectF rectA(pA.x() - wA + 4.0 * sc, botVertY, wA, vH);
+        QRectF rectB(pB.x() - 4.0 * sc, botVertY, wB, vH);
+        QRectF rectC(pC.x() - 0.5 * wC, pC.y() - vH - 6.0 * sc, wC, vH);
+        if (safeCanvas.width() > wA + 4.0 * sc && safeCanvas.height() > vH + 4.0 * sc) {
+            if (rectA.left() < safeCanvas.left())
+                rectA.moveLeft(safeCanvas.left());
+            if (rectA.bottom() > safeCanvas.bottom())
+                rectA.moveBottom(safeCanvas.bottom());
+        }
+        if (safeCanvas.width() > wB + 4.0 * sc && safeCanvas.height() > vH + 4.0 * sc) {
+            if (rectB.right() > safeCanvas.right())
+                rectB.moveRight(safeCanvas.right());
+            if (rectB.bottom() > safeCanvas.bottom())
+                rectB.moveBottom(safeCanvas.bottom());
+        }
+        if (safeCanvas.width() > wC + 4.0 * sc && safeCanvas.height() > vH + 4.0 * sc) {
+            if (rectC.top() < safeCanvas.top())
+                rectC.moveTop(safeCanvas.top());
+            rectC.moveLeft(qBound(safeCanvas.left(), rectC.left(), safeCanvas.right() - wC));
+        }
+
+        painter->drawText(rectA, Qt::AlignRight | Qt::AlignTop | Qt::TextDontClip, lblA);
+        painter->drawText(rectB, Qt::AlignLeft | Qt::AlignTop | Qt::TextDontClip, lblB);
+        painter->drawText(rectC, Qt::AlignHCenter | Qt::AlignBottom | Qt::TextDontClip, lblC);
+
+        painter->restore();
+    }
+
+private:
+    const Graph *d_graph;
+};
+
+class PolarAxesItem : public QwtPlotItem
+{
+public:
+    explicit PolarAxesItem(const Graph *graph) : d_graph(graph)
+    {
+        setZ(12.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 45; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_graph)
+            return;
+
+        const double rMax = qMax(1e-6, d_graph->polarRadiusMax());
+        const double cx = xMap.xTransform(0.0);
+        const double cy = yMap.xTransform(0.0);
+        const double rxOuter = std::fabs(xMap.xTransform(rMax) - cx);
+        const double ryOuter = std::fabs(yMap.xTransform(rMax) - cy);
+        if (!std::isfinite(cx) || !std::isfinite(cy) || rxOuter < 6.0 || ryOuter < 6.0)
+            return;
+
+        const double sc = Plot::printDeviceScale();
+        const double baseLw = qMax(
+                1.3,
+                double(d_graph->plotWidget() ? d_graph->plotWidget()->axesLinewidth() : 2));
+
+        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        tickFont.setFamily(QStringLiteral("Arial"));
+        tickFont.setBold(false);
+        tickFont.setWeight(QFont::Normal);
+        tickFont.setHintingPreference(QFont::PreferNoHinting);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+
+        // 1. Radial concentric rings
+        QwtLinearScaleEngine rse;
+        const QwtScaleDiv rDiv = rse.divideScale(0.0, rMax, 4, 0);
+        const QwtValueList rMaj = rDiv.ticks(QwtScaleDiv::MajorTick);
+        QVector<double> rings;
+        for (double rv : rMaj) {
+            if (rv > 1e-9 * rMax && rv < rMax * (1.0 - 1e-4))
+                rings.append(rv);
+        }
+        if (rings.isEmpty()) {
+            rings << (0.25 * rMax) << (0.50 * rMax) << (0.75 * rMax);
+        }
+
+        QPen innerRingPen(QColor(203, 213, 225), 1.0 * sc, Qt::DashLine);
+        innerRingPen.setCosmetic(false);
+        painter->setPen(innerRingPen);
+        painter->setBrush(Qt::NoBrush);
+        for (double rv : rings) {
+            const double rx = std::fabs(xMap.xTransform(rv) - cx);
+            const double ry = std::fabs(yMap.xTransform(rv) - cy);
+            painter->drawEllipse(QPointF(cx, cy), rx, ry);
+        }
+
+        // 2. Angular spokes every 30 degrees (0..330)
+        constexpr double kPi = 3.14159265358979323846;
+        QPen spokePen(QColor(203, 213, 225), 0.95 * sc, Qt::SolidLine);
+        spokePen.setCosmetic(false);
+        painter->setPen(spokePen);
+        for (int deg = 0; deg < 360; deg += 30) {
+            const double rad = double(deg) * kPi / 180.0;
+            const double ex = xMap.xTransform(rMax * std::cos(rad));
+            const double ey = yMap.xTransform(rMax * std::sin(rad));
+            painter->drawLine(QPointF(cx, cy), QPointF(ex, ey));
+        }
+
+        // 3. Outer polar circle
+        QPen outerPen(QColor(15, 23, 42), qMax(1.5, baseLw) * sc, Qt::SolidLine);
+        outerPen.setCosmetic(false);
+        painter->setPen(outerPen);
+        painter->drawEllipse(QPointF(cx, cy), rxOuter, ryOuter);
+
+        // 4. Exterior degree labels (0°, 30°, ..., 330°) in non-bold Arial
+        painter->setFont(tickFont);
+        const QFontMetricsF fm(tickFont, painter->device());
+        const double lblH = fm.height();
+        const QRectF safePolarCanvas =
+                QRectF(canvasRect).adjusted(2.0 * sc, 2.0 * sc, -2.0 * sc, -2.0 * sc);
+        const double degPad = 5.5 * sc;
+        painter->setPen(QColor(15, 23, 42));
+        for (int deg = 0; deg < 360; deg += 30) {
+            const double rad = double(deg) * kPi / 180.0;
+            const double ux = std::cos(rad);
+            const double uy = -std::sin(rad); // screen Y points downward
+            const QString degStr = QString::number(deg) + QString::fromUtf8("\xC2\xB0");
+            const double tw = fm.horizontalAdvance(degStr) + 4.0 * sc;
+            const double anchorX = cx + (rxOuter + degPad + 0.5 * tw) * ux;
+            const double anchorY = cy + (ryOuter + degPad + 0.45 * lblH) * uy;
+            QRectF degRect(anchorX - 0.5 * tw, anchorY - 0.5 * lblH, tw, lblH);
+            if (safePolarCanvas.width() > tw + 4.0 * sc && safePolarCanvas.height() > lblH + 4.0 * sc) {
+                degRect.moveLeft(
+                        qBound(safePolarCanvas.left(), degRect.left(), safePolarCanvas.right() - tw));
+                degRect.moveTop(
+                        qBound(safePolarCanvas.top(), degRect.top(), safePolarCanvas.bottom() - lblH));
+            }
+            painter->drawText(degRect, Qt::AlignCenter | Qt::TextDontClip, degStr);
+        }
+
+        // Radial tick values & pills are rendered in PolarRadialLabelsItem (z = 165.0)
+        // so plotted polar curves and outer boundary ring never slice over tick digits.
+        painter->restore();
+    }
+
+private:
+    const Graph *d_graph;
+};
+
+class PolarRadialLabelsItem : public QwtPlotItem
+{
+public:
+    explicit PolarRadialLabelsItem(const Graph *graph) : d_graph(graph)
+    {
+        setZ(165.0);
+        setItemAttribute(QwtPlotItem::AutoScale, false);
+        setItemAttribute(QwtPlotItem::Legend, false);
+        setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+
+    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 46; }
+
+    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+              const QRect &canvasRect) const override
+    {
+        if (!painter || !d_graph || !d_graph->isPolarPlot())
+            return;
+
+        const double rMax = qMax(1e-6, d_graph->polarRadiusMax());
+        const double cx = xMap.xTransform(0.0);
+        const double cy = yMap.xTransform(0.0);
+        const double rxOuter = std::fabs(xMap.xTransform(rMax) - cx);
+        const double ryOuter = std::fabs(yMap.xTransform(rMax) - cy);
+        if (!std::isfinite(cx) || !std::isfinite(cy) || rxOuter < 6.0 || ryOuter < 6.0)
+            return;
+
+        const double sc = Plot::printDeviceScale();
+        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        tickFont.setFamily(QStringLiteral("Arial"));
+        tickFont.setBold(false);
+        tickFont.setWeight(QFont::Normal);
+        tickFont.setHintingPreference(QFont::PreferNoHinting);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+        painter->setFont(tickFont);
+
+        QwtLinearScaleEngine rse;
+        const QwtScaleDiv rDiv = rse.divideScale(0.0, rMax, 4, 0);
+        const QwtValueList rMaj = rDiv.ticks(QwtScaleDiv::MajorTick);
+        QVector<double> rings;
+        for (double rv : rMaj) {
+            if (rv > 1e-9 * rMax && rv < rMax * (1.0 - 1e-4))
+                rings.append(rv);
+        }
+        if (rings.isEmpty())
+            rings << (0.25 * rMax) << (0.50 * rMax) << (0.75 * rMax);
+
+        constexpr double kPi = 3.14159265358979323846;
+        const QFontMetricsF fm(tickFont, painter->device());
+        const double lblH = fm.height();
+        const double degPad = 5.5 * sc;
+        const QRectF safePolarCanvas =
+                QRectF(canvasRect).adjusted(2.0 * sc, 2.0 * sc, -2.0 * sc, -2.0 * sc);
+
+        auto degLabelBox = [&](int deg) -> QRectF {
+            const double rad = double(deg) * kPi / 180.0;
+            const double ux = std::cos(rad);
+            const double uy = -std::sin(rad);
+            const QString degStr = QString::number(deg) + QString::fromUtf8("\xC2\xB0");
+            const double tw = fm.horizontalAdvance(degStr) + 4.0 * sc;
+            const double ax = cx + (rxOuter + degPad + 0.5 * tw) * ux;
+            const double ay = cy + (ryOuter + degPad + 0.45 * lblH) * uy;
+            return QRectF(ax - 0.5 * tw, ay - 0.5 * lblH, tw, lblH);
+        };
+        const QRectF deg0Box = degLabelBox(0).adjusted(-1.5 * sc, -1.0 * sc, 1.5 * sc, 1.0 * sc);
+        const QRectF deg30Box = degLabelBox(30).adjusted(-1.5 * sc, -1.0 * sc, 1.5 * sc, 1.0 * sc);
+
+        const double rayRad = 15.0 * kPi / 180.0;
+        const double cosRay = std::cos(rayRad);
+        const double sinRay = std::sin(rayRad);
+        QVector<double> candRings = rings;
+        candRings.append(rMax);
+
+        struct RadialPillSpec
+        {
+            QRectF pill;
+            QString text;
+        };
+        QVector<RadialPillSpec> acceptedPills;
+        acceptedPills.reserve(candRings.size());
+        for (int ri = candRings.size() - 1; ri >= 0; --ri) {
+            const double rv = candRings[ri];
+            const QString rTxt = QLocale::c().toString(rv, 'g', 4);
+            const double rw = fm.horizontalAdvance(rTxt) + 3.6 * sc;
+            const double rh = lblH * 0.90;
+            double px = xMap.xTransform(rv * cosRay);
+            double py = yMap.xTransform(rv * sinRay);
+            QRectF pill(px - 0.5 * rw, py - 0.5 * rh, rw, rh);
+
+            if (ri == candRings.size() - 1) {
+                const double outPx = cx + (rxOuter + 0.52 * rw + 3.2 * sc) * cosRay;
+                const double outPy = cy - (ryOuter + 0.52 * rh + 3.2 * sc) * sinRay;
+                const QRectF outPill(outPx - 0.5 * rw, outPy - 0.5 * rh, rw, rh);
+                if (safePolarCanvas.contains(outPill) && !outPill.intersects(deg0Box)
+                    && !outPill.intersects(deg30Box)) {
+                    pill = outPill;
+                }
+            }
+
+            const QRectF padded = pill.adjusted(-1.8 * sc, -1.0 * sc, 1.8 * sc, 1.0 * sc);
+            bool overlapsAccepted = false;
+            for (const RadialPillSpec &acc : acceptedPills) {
+                if (padded.intersects(acc.pill)) {
+                    overlapsAccepted = true;
+                    break;
+                }
+            }
+            if (!overlapsAccepted)
+                acceptedPills.prepend({ pill, rTxt });
+        }
+
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 255, 255, 248));
+        for (const RadialPillSpec &rp : acceptedPills)
+            painter->drawRoundedRect(rp.pill, 2.0 * sc, 2.0 * sc);
+
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QColor(15, 23, 42));
+        for (const RadialPillSpec &rp : acceptedPills)
+            painter->drawText(rp.pill, Qt::AlignCenter | Qt::TextDontClip, rp.text);
+
+        painter->restore();
+    }
+
+private:
+    const Graph *d_graph;
+};
+
+class CustomPosTextScaleDraw : public ScaleDraw
+{
+public:
+    CustomPosTextScaleDraw(const QVector<double> &positions, const QStringList &labels)
+        : ScaleDraw(), d_positions(positions), d_labels(labels)
+    {
+    }
+    CustomPosTextScaleDraw(const ScaleDraw &other, const QVector<double> &positions,
+                           const QStringList &labels)
+        : ScaleDraw(other), d_positions(positions), d_labels(labels)
+    {
+    }
+
+    QwtText label(double value) const override
+    {
+        if (!std::isfinite(value) || d_positions.isEmpty())
+            return QwtText();
+        const QwtScaleDiv sc = scaleDiv();
+        const double span = std::fabs(sc.upperBound() - sc.lowerBound());
+        double tol = 1e-4 * qMax(1.0, span);
+        const int n = qMin(d_positions.size(), d_labels.size());
+        int bestIdx = -1;
+        double bestDist = 1e300;
+        for (int i = 0; i < n; ++i) {
+            const double d = std::fabs(value - d_positions[i]);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = i;
+            }
+            if (i > 0) {
+                const double gap = std::fabs(d_positions[i] - d_positions[i - 1]);
+                if (gap > 1e-12)
+                    tol = qMin(tol, 0.25 * gap);
+            }
+        }
+        if (bestIdx >= 0 && bestDist <= qMax(1e-7, tol))
+            return QwtText(d_labels[bestIdx]);
+        return QwtText();
+    }
+
+private:
+    QVector<double> d_positions;
+    QStringList d_labels;
+};
+
+class WeibullProbScaleDraw : public ScaleDraw
+{
+public:
+    WeibullProbScaleDraw() : ScaleDraw() { }
+    explicit WeibullProbScaleDraw(const ScaleDraw &other) : ScaleDraw(other) { }
+
+    QwtText label(double value) const override
+    {
+        if (!std::isfinite(value) || value < -15.0 || value > 4.0)
+            return QwtText();
+
+        struct CanonicalWeibullTick {
+            double pct;
+            const char *txt;
+        };
+        static const CanonicalWeibullTick kMaj[] = {
+            { 0.1, "0.1" },   { 1.0, "1" },     { 5.0, "5" },
+            { 10.0, "10" },   { 20.0, "20" },   { 63.21205588285577, "63.2" },
+            { 90.0, "90" },   { 99.0, "99" },   { 99.9, "99.9" }
+        };
+        for (const auto & item : kMaj) {
+            const double yRef = std::log(-std::log(1.0 - item.pct / 100.0));
+            if (std::fabs(value - yRef) <= 2.5e-3)
+                return QwtText(QString::fromLatin1(item.txt));
+        }
+        if (std::fabs(value - std::log(-std::log(1.0 - 0.632))) <= 2.5e-3)
+            return QwtText(QStringLiteral("63.2"));
+
+        const double p = 100.0 * (1.0 - std::exp(-std::exp(value)));
+        if (!(p > 0.0 && p < 100.0) || !std::isfinite(p))
+            return QwtText();
+        return QwtText(QLocale::c().toString(p, 'g', 3));
+    }
+};
+
+} // namespace
+
 QPointF Graph::ternaryToCartesian(double a, double b, double c)
 {
     const double sum = a + b + c;
@@ -9279,14 +10640,27 @@ QPointF Graph::ternaryToCartesian(double a, double b, double c)
 void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const QString &labelC)
 {
     d_is_ternary = true;
+    d_is_polar = false;
     d_ternary_labels[0] = labelA.isEmpty() ? QString("A") : labelA;
     d_ternary_labels[1] = labelB.isEmpty() ? QString("B") : labelB;
     d_ternary_labels[2] = labelC.isEmpty() ? QString("C") : labelC;
     m_autoscale = false;
 
-    const double h = std::sqrt(3.0) * 0.5; // ~0.8660254
+    if (d_polar_item) {
+        d_polar_item->detach();
+        delete d_polar_item;
+        d_polar_item = nullptr;
+    }
+    if (d_plot) {
+        const QwtPlotItemList items = d_plot->itemList();
+        for (QwtPlotItem *it : items) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotUserItem + 46) {
+                it->detach();
+                delete it;
+            }
+        }
+    }
 
-    // Hide rectangular axes and rectangular grids
     if (grid()) {
         grid()->enableX(false);
         grid()->enableXMin(false);
@@ -9294,89 +10668,550 @@ void Graph::setupTernaryPlot(const QString &labelA, const QString &labelB, const
         grid()->enableYMin(false);
     }
     drawCanvasFrame(false, 0);
+    drawAxesBackbones(false);
 
-    setScale(QwtPlot::xBottom, -0.14, 1.14, 0.2, 6, 0, 0, false);
-    setScale(QwtPlot::yLeft, -0.12, h + 0.14, 0.2, 6, 0, 0, false);
-    for (int i = 0; i < QwtPlot::axisCnt; ++i)
-        enableAxis(i, false);
-    d_plot->replot();
-
-    auto addTernaryLine = [&](const QPointF &p1, const QPointF &p2, const QColor &col, int width,
-                              Qt::PenStyle penStyle) {
-        ArrowMarker *mrk = new ArrowMarker();
-        mrk->drawStartArrow(false);
-        mrk->drawEndArrow(false);
-        mrk->setColor(col);
-        mrk->setWidth(width);
-        mrk->setStyle(penStyle);
-        long id = d_plot->insertMarker(mrk);
-        d_lines.append(id);
-        mrk->setBoundingRect(p1.x(), p1.y(), p2.x(), p2.y());
-    };
-
-    auto addTernaryLabel = [&](double x, double y, const QString &text, int pointSize, bool bold,
-                               const QColor &col = QColor(Qt::black)) {
-        Legend *txt = new Legend(d_plot);
-        txt->setFrameStyle(Legend::None);
-        txt->setBackgroundColor(QColor(255, 255, 255, 0));
-        txt->setTextColor(col);
-        txt->setFont(QFont("Arial", pointSize, bold ? QFont::Bold : QFont::Normal));
-        txt->setText(text);
-        long id = d_plot->insertMarker(txt);
-        d_texts.append(id);
-        txt->setXValue(-999.0);
-        txt->setOriginCoord(x, y);
-    };
-
-    // 1. Interior 20%-step ternary grid lines & exterior ticks
-    const QColor gridColor("#b8b8b8");
-    const QColor tickColor(Qt::black);
-    for (int step = 1; step <= 4; ++step) {
-        const double f = 0.2 * double(step);
-        const QString pctText = QString::number(step * 20);
-
-        // Constant-A grid line: (f, 1-f, 0) -> (f, 0, 1-f)
-        addTernaryLine(ternaryToCartesian(f, 1.0 - f, 0.0), ternaryToCartesian(f, 0.0, 1.0 - f),
-                       gridColor, 1, Qt::DashLine);
-        // Constant-B grid line: (1-f, f, 0) -> (0, f, 1-f)
-        addTernaryLine(ternaryToCartesian(1.0 - f, f, 0.0), ternaryToCartesian(0.0, f, 1.0 - f),
-                       gridColor, 1, Qt::DashLine);
-        // Constant-C grid line: (1-f, 0, f) -> (0, 1-f, f)
-        addTernaryLine(ternaryToCartesian(1.0 - f, 0.0, f), ternaryToCartesian(0.0, 1.0 - f, f),
-                       gridColor, 1, Qt::DashLine);
-
-        // Ticks along Base AB (z = 0, x = f)
-        const QPointF basePt(f, 0.0);
-        addTernaryLine(basePt, QPointF(f, -0.022), tickColor, 1, Qt::SolidLine);
-        addTernaryLabel(f - 0.025, -0.032, pctText, 9, false, QColor("#333333"));
-
-        // Ticks along Right Edge BC (a = 0, b = 1-f, c = f)
-        const QPointF rightPt = ternaryToCartesian(0.0, 1.0 - f, f);
-        addTernaryLine(rightPt, QPointF(rightPt.x() + 0.020, rightPt.y() + 0.011), tickColor, 1,
-                       Qt::SolidLine);
-        addTernaryLabel(rightPt.x() + 0.028, rightPt.y() + 0.025, pctText, 9, false,
-                        QColor("#333333"));
-
-        // Ticks along Left Edge CA (a = 1-f, b = 0, c = f)
-        const QPointF leftPt = ternaryToCartesian(1.0 - f, 0.0, f);
-        addTernaryLine(leftPt, QPointF(leftPt.x() - 0.020, leftPt.y() + 0.011), tickColor, 1,
-                       Qt::SolidLine);
-        addTernaryLabel(leftPt.x() - 0.075, leftPt.y() + 0.025, pctText, 9, false,
-                        QColor("#333333"));
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QString plainT = unwrapNoWrapAxisTitle(axisTitle(a)).trimmed();
+        if (isAxisPlaceholderTitle(plainT)) {
+            QwtText emptyT = d_plot->axisTitle(a);
+            emptyT.setText(QString());
+            d_plot->setAxisTitle(a, emptyT);
+        }
     }
 
-    // 2. Equilateral triangle perimeter (A=(0,0), B=(1,0), C=(0.5, sqrt(3)/2))
-    const QPointF vA(0.0, 0.0);
-    const QPointF vB(1.0, 0.0);
-    const QPointF vC(0.5, h);
-    addTernaryLine(vA, vB, QColor(Qt::black), 2, Qt::SolidLine);
-    addTernaryLine(vB, vC, QColor(Qt::black), 2, Qt::SolidLine);
-    addTernaryLine(vC, vA, QColor(Qt::black), 2, Qt::SolidLine);
+    // Equal 1.48 x 1.48 world span guarantees a strictly 60-degree equilateral triangle on 1:1 canvases
+    // with generous outer margin for long component titles (e.g. "Al (at.%)", "Zn (at.%)").
+    setScale(QwtPlot::xBottom, -0.24, 1.24, 0.2, 6, 0, 0, false);
+    setScale(QwtPlot::yLeft, -0.25, 1.23, 0.2, 6, 0, 0, false);
+    for (int i = 0; i < QwtPlot::axisCnt; ++i)
+        enableAxis(i, false);
 
-    // 3. Vertex labels A (Bottom-Left), B (Bottom-Right), C (Top Apex)
-    addTernaryLabel(-0.09, -0.02, labelA.isEmpty() ? QString("A") : labelA, 12, true);
-    addTernaryLabel(1.02, -0.02, labelB.isEmpty() ? QString("B") : labelB, 12, true);
-    addTernaryLabel(0.46, h + 0.08, labelC.isEmpty() ? QString("C") : labelC, 12, true);
+    if (!d_ternary_item) {
+        d_ternary_item = new TernaryDiagramItem(this);
+        d_ternary_item->attach(d_plot);
+    }
+
+    if (hasLegend()) {
+        if (n_curves == 1) {
+            if (Legend *leg = legend()) {
+                const QString lt = leg->text().trimmed();
+                if (lt.contains(QLatin1String("Ternary_Y"))
+                    || lt.endsWith(QLatin1String("}Y"))) {
+                    setLegendVisible(false);
+                }
+            }
+        }
+        if (isLegendVisible())
+            placeLegendAnchor(LegendTopRight);
+    }
+
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::setCategoryLabels(int axis, const QStringList &labels)
+{
+    if (!d_plot || axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    d_custom_category_labels[axis] = labels;
+    d_custom_tick_positions[axis].clear();
+    d_custom_tick_labels[axis].clear();
+    d_custom_tick_rotation[axis] = 0.0;
+    d_weibull_prob_axis[axis] = false;
+    if (labels.isEmpty())
+        return;
+
+    QMap<int, QString> map;
+    for (int i = 0; i < labels.size(); ++i)
+        map.insert(i + 1, labels[i]);
+
+    axisType[axis] = AxisType::Txt;
+    const ScaleDraw *prevSd = dynamic_cast<const ScaleDraw *>(d_plot->axisScaleDraw(axis));
+    QwtTextScaleDraw *tsd =
+            prevSd ? new QwtTextScaleDraw(*prevSd, map) : new QwtTextScaleDraw(map);
+    tsd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+    tsd->setMinorTicksStyle(ScaleDraw::None);
+    d_plot->setAxisScaleDraw(axis, tsd);
+
+    double cLo = 0.5;
+    double cHi = double(labels.size()) + 0.5;
+    if (isToriAxisUserLocked(d_plot, axis)) {
+        if (const QwtScaleDiv *curDiv = d_plot->axisScaleDiv(axis)) {
+            const double curLo = qMin(curDiv->lowerBound(), curDiv->upperBound());
+            const double curHi = qMax(curDiv->lowerBound(), curDiv->upperBound());
+            if (std::isfinite(curLo) && std::isfinite(curHi) && curHi > curLo
+                && curLo >= -1.0 && curLo <= 1.0
+                && curHi >= double(labels.size()) && curHi <= double(labels.size()) + 4.5) {
+                cLo = qMin(cLo, curLo);
+                cHi = qMax(cHi, curHi);
+            }
+        }
+    }
+    const bool isInv = d_plot->axisScaleEngine(axis)
+            && d_plot->axisScaleEngine(axis)->testAttribute(QwtScaleEngine::Inverted);
+    QwtValueList catMaj;
+    for (int i = 1; i <= labels.size(); ++i)
+        catMaj += double(i);
+    QwtValueList emptyTicks;
+    QwtValueList catTicks[QwtScaleDiv::NTickTypes];
+    catTicks[QwtScaleDiv::MinorTick] = emptyTicks;
+    catTicks[QwtScaleDiv::MediumTick] = emptyTicks;
+    catTicks[QwtScaleDiv::MajorTick] = catMaj;
+    QwtScaleEngine *catEng = new QwtLinearScaleEngine();
+    QwtScaleDiv catDiv(cLo, cHi, catTicks);
+    if (isInv) {
+        catEng->setAttribute(QwtScaleEngine::Inverted);
+        catDiv.invert();
+    }
+    d_user_step[axis] = 1.0;
+    d_plot->setAxisMaxMinor(axis, 0);
+    d_plot->setMinorTicksType(axis, ScaleDraw::None);
+    d_plot->setAxisMaxMajor(axis, qMax(8, labels.size() + 2));
+    d_plot->setAxisScale(axis, isInv ? cHi : cLo, isInv ? cLo : cHi, 1.0);
+    d_plot->setAxisScaleEngine(axis, catEng);
+    d_plot->setAxisScaleDiv(axis, catDiv);
+
+    const int opp = (axis == QwtPlot::xBottom) ? QwtPlot::xTop
+            : (axis == QwtPlot::yLeft)         ? QwtPlot::yRight
+                                               : -1;
+    if (opp >= 0 && !d_plot->hasVisibleItemOnAxis(opp) && !hasColorScaleOnAxis(opp)
+        && !d_weibull_prob_axis[opp] && d_custom_tick_positions[opp].isEmpty()) {
+        if (QwtScaleDraw *oppSd = d_plot->axisScaleDraw(opp))
+            oppSd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+        d_plot->setMinorTicksType(opp, ScaleDraw::None);
+        d_plot->setMajorTicksType(opp, ScaleDraw::None);
+    }
+
+    if (axis == QwtPlot::yLeft && n_curves > 0) {
+        bool allHorizBars = true;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (bi < c_type.size() && c_type[bi] != HorizontalBars && c_type[bi] != ErrorBars) {
+                allHorizBars = false;
+                break;
+            }
+        }
+        if (allHorizBars
+            && (axisType[QwtPlot::xBottom] == AxisType::Txt
+                || dynamic_cast<QwtTextScaleDraw *>(d_plot->axisScaleDraw(QwtPlot::xBottom)))) {
+            d_custom_category_labels[QwtPlot::xBottom].clear();
+            axesFormatInfo[QwtPlot::xBottom].clear();
+            setLabelsNumericFormat(QwtPlot::xBottom, Plot::Automatic, 4);
+            updateSecondaryAxis(QwtPlot::xTop);
+        }
+    }
+
+    const QString curPlain = unwrapNoWrapAxisTitle(axisTitle(axis)).trimmed();
+    if (isAxisPlaceholderTitle(curPlain)) {
+        QwtText emptyT = d_plot->axisTitle(axis);
+        emptyT.setText(QString());
+        d_plot->setAxisTitle(axis, emptyT);
+    }
+
+    d_plot->updateLayout();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+QStringList Graph::categoryLabels(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return QStringList();
+    if (!d_custom_tick_labels[axis].isEmpty())
+        return d_custom_tick_labels[axis];
+    if (!d_custom_category_labels[axis].isEmpty())
+        return d_custom_category_labels[axis];
+    if (d_plot) {
+        if (const QwtTextScaleDraw *tsd =
+                    dynamic_cast<const QwtTextScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+            return tsd->labelsList();
+        }
+    }
+    return QStringList();
+}
+
+void Graph::setCustomTickLabels(int axis, const QVector<double> &positions,
+                                const QStringList &labels, double rotationDeg)
+{
+    if (!d_plot || axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    const int m = qMin(positions.size(), labels.size());
+    d_custom_category_labels[axis].clear();
+    d_weibull_prob_axis[axis] = false;
+    d_custom_tick_positions[axis].clear();
+    d_custom_tick_labels[axis].clear();
+    d_custom_tick_rotation[axis] = std::isfinite(rotationDeg) ? rotationDeg : 0.0;
+
+    for (int i = 0; i < m; ++i) {
+        if (std::isfinite(positions[i])) {
+            d_custom_tick_positions[axis].append(positions[i]);
+            d_custom_tick_labels[axis].append(labels[i]);
+        }
+    }
+    if (d_custom_tick_positions[axis].isEmpty())
+        return;
+
+    axisType[axis] = AxisType::Numeric;
+    if (std::fabs(d_custom_tick_rotation[axis]) > 1e-6)
+        setAxisLabelRotation(axis, qRound(d_custom_tick_rotation[axis]));
+    else if (labelsRotation(axis) != 0)
+        setAxisLabelRotation(axis, 0);
+
+    syncCustomAndWeibullAxes();
+
+    const QString curPlain = unwrapNoWrapAxisTitle(axisTitle(axis)).trimmed();
+    if (isAxisPlaceholderTitle(curPlain)) {
+        QwtText emptyT = d_plot->axisTitle(axis);
+        emptyT.setText(QString());
+        d_plot->setAxisTitle(axis, emptyT);
+    }
+
+    d_plot->updateLayout();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::setWeibullProbabilityAxis(int axis, bool enabled)
+{
+    if (!d_plot || axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
+    d_weibull_prob_axis[axis] = enabled;
+    if (!enabled) {
+        setLabelsNumericFormat(axis, Plot::Automatic, 4, axesFormulas[axis]);
+        d_plot->updateLayout();
+        d_plot->replot();
+        emit modifiedGraph();
+        return;
+    }
+
+    d_custom_category_labels[axis].clear();
+    d_custom_tick_positions[axis].clear();
+    d_custom_tick_labels[axis].clear();
+
+    enableAxis(axis, true);
+    setAxisBackboneVisible(axis, true);
+    d_plot->setMajorTicksType(axis, ScaleDraw::In);
+    d_plot->setMinorTicksType(axis, ScaleDraw::In);
+
+    QFont nf = d_plot->axisFont(axis == QwtPlot::yRight ? QwtPlot::yLeft : axis);
+    nf.setFamily(QStringLiteral("Arial"));
+    nf.setBold(false);
+    nf.setWeight(QFont::Normal);
+    nf.setHintingPreference(QFont::PreferNoHinting);
+    d_plot->setAxisFont(axis, nf);
+
+    syncCustomAndWeibullAxes();
+
+    if (axis == QwtPlot::yRight) {
+        if (QwtScaleWidget *sw = d_plot->axisWidget(QwtPlot::yRight))
+            sw->setSpacing(6);
+    }
+
+    d_plot->updateLayout();
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+bool Graph::hasWeibullProbabilityAxis(int axis) const
+{
+    return (axis >= 0 && axis < 4) ? d_weibull_prob_axis[axis] : false;
+}
+
+void Graph::syncCustomAndWeibullAxes()
+{
+    if (!d_plot || d_is_ternary || d_is_polar || isPiePlot())
+        return;
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        if (!d_custom_tick_positions[a].isEmpty()
+            && d_custom_tick_positions[a].size() == d_custom_tick_labels[a].size()) {
+            const QVector<double> &pos = d_custom_tick_positions[a];
+            const QStringList &lbls = d_custom_tick_labels[a];
+            double minPos = pos.first();
+            double maxPos = pos.first();
+            QwtValueList maj;
+            for (double pv : pos) {
+                minPos = qMin(minPos, pv);
+                maxPos = qMax(maxPos, pv);
+                maj += pv;
+            }
+
+            const QwtScaleDiv *curDiv = d_plot->axisScaleDiv(a);
+            const bool isInv = d_plot->axisScaleEngine(a)
+                    && d_plot->axisScaleEngine(a)->testAttribute(QwtScaleEngine::Inverted);
+            double cLo = minPos;
+            double cHi = maxPos;
+            if (curDiv && isToriAxisUserLocked(d_plot, a)) {
+                const double dLo = qMin(curDiv->lowerBound(), curDiv->upperBound());
+                const double dHi = qMax(curDiv->lowerBound(), curDiv->upperBound());
+                if (std::isfinite(dLo) && std::isfinite(dHi) && dHi > dLo
+                    && dLo <= minPos + 1e-6 && dHi >= maxPos - 1e-6) {
+                    cLo = dLo;
+                    cHi = dHi;
+                }
+            }
+            if (!(cHi > cLo)) {
+                cLo = minPos - 0.5;
+                cHi = maxPos + 0.5;
+            } else if (!isToriAxisUserLocked(d_plot, a) && pos.size() >= 2
+                       && std::fabs(minPos - 1.0) <= 1e-6
+                       && std::fabs(maxPos - double(pos.size())) <= 1e-6) {
+                cLo = 0.5;
+                cHi = double(pos.size()) + 0.5;
+            }
+
+            if (!dynamic_cast<CustomPosTextScaleDraw *>(d_plot->axisScaleDraw(a))) {
+                const ScaleDraw *prevSd = dynamic_cast<const ScaleDraw *>(d_plot->axisScaleDraw(a));
+                CustomPosTextScaleDraw *csd = prevSd
+                        ? new CustomPosTextScaleDraw(*prevSd, pos, lbls)
+                        : new CustomPosTextScaleDraw(pos, lbls);
+                csd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                csd->setMinorTicksStyle(ScaleDraw::None);
+                d_plot->setAxisScaleDraw(a, csd);
+            } else if (QwtScaleDraw *sd = d_plot->axisScaleDraw(a)) {
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            }
+            if (std::fabs(d_custom_tick_rotation[a]) > 1e-6)
+                setAxisLabelRotation(a, qRound(d_custom_tick_rotation[a]));
+
+            QwtValueList emptyTicks;
+            QwtValueList ticks[QwtScaleDiv::NTickTypes];
+            ticks[QwtScaleDiv::MinorTick] = emptyTicks;
+            ticks[QwtScaleDiv::MediumTick] = emptyTicks;
+            ticks[QwtScaleDiv::MajorTick] = maj;
+            QwtScaleEngine *eng = new QwtLinearScaleEngine();
+            QwtScaleDiv div(cLo, cHi, ticks);
+            if (isInv) {
+                eng->setAttribute(QwtScaleEngine::Inverted);
+                div.invert();
+            }
+            setToriAxisUserLocked(d_plot, a, true);
+            d_plot->setAxisMaxMinor(a, 0);
+            d_plot->setMinorTicksType(a, ScaleDraw::None);
+            d_plot->setAxisMaxMajor(a, qMax(8, pos.size() + 2));
+            d_plot->setAxisScaleEngine(a, eng);
+            d_plot->setAxisScaleDiv(a, div);
+
+            const int opp = (a == QwtPlot::yLeft) ? QwtPlot::yRight
+                    : (a == QwtPlot::xBottom)     ? QwtPlot::xTop
+                                                  : -1;
+            if (opp >= 0 && d_plot->axisEnabled(opp) && !d_plot->hasVisibleItemOnAxis(opp)
+                && !hasColorScaleOnAxis(opp) && !d_weibull_prob_axis[opp]
+                && d_custom_tick_positions[opp].isEmpty()
+                && d_custom_category_labels[opp].isEmpty()) {
+                QwtScaleEngine *oppEng = new QwtLinearScaleEngine();
+                if (isInv)
+                    oppEng->setAttribute(QwtScaleEngine::Inverted);
+                d_plot->setAxisMaxMinor(opp, 0);
+                d_plot->setMinorTicksType(opp, ScaleDraw::None);
+                d_plot->setAxisScaleEngine(opp, oppEng);
+                d_plot->setAxisScaleDiv(opp, div);
+            }
+            continue;
+        }
+
+        if (d_weibull_prob_axis[a]) {
+            const Graph *srcG = linkedParentLayer() ? linkedParentLayer() : this;
+            const QwtPlot *srcPlot = (srcG && srcG->plotWidget()) ? srcG->plotWidget() : d_plot;
+            const int refAxis = (a == QwtPlot::yRight) ? QwtPlot::yLeft
+                    : (a == QwtPlot::xTop)             ? QwtPlot::xBottom
+                                                       : a;
+            const QwtScaleDiv *refDiv = srcPlot->axisScaleDiv(refAxis);
+            double lo = refDiv ? qMin(refDiv->lowerBound(), refDiv->upperBound()) : -5.0;
+            double hi = refDiv ? qMax(refDiv->lowerBound(), refDiv->upperBound()) : 2.0;
+            if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)
+                || (srcG != this && lo == 0.0 && hi == 1000.0)) {
+                lo = -5.0;
+                hi = 2.0;
+            }
+            const bool isInv = srcPlot->axisScaleEngine(refAxis)
+                    && srcPlot->axisScaleEngine(refAxis)->testAttribute(QwtScaleEngine::Inverted);
+
+            if (!dynamic_cast<WeibullProbScaleDraw *>(d_plot->axisScaleDraw(a))) {
+                const ScaleDraw *prevSd = dynamic_cast<const ScaleDraw *>(d_plot->axisScaleDraw(a));
+                WeibullProbScaleDraw *wsd =
+                        prevSd ? new WeibullProbScaleDraw(*prevSd) : new WeibullProbScaleDraw();
+                wsd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                wsd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+                wsd->enableComponent(QwtAbstractScaleDraw::Backbone, true);
+                wsd->setMajorTicksStyle(ScaleDraw::In);
+                wsd->setMinorTicksStyle(ScaleDraw::In);
+                d_plot->setAxisScaleDraw(a, wsd);
+            } else if (ScaleDraw *wsd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(a))) {
+                wsd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+                wsd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
+            }
+
+            static const double kMajPcts[] = {
+                0.1, 1.0, 5.0, 10.0, 20.0, 63.21205588285577, 90.0, 99.0
+            };
+            static const double kMinPcts[] = {
+                0.2, 0.5, 2.0, 3.0, 15.0, 30.0, 40.0, 50.0, 70.0, 80.0, 95.0, 98.0
+            };
+            const double eps = 1e-6 * (hi - lo);
+            QwtValueList majTicks, minTicks, emptyMed;
+            for (double p : kMajPcts) {
+                const double yv = std::log(-std::log(1.0 - p / 100.0));
+                if (yv >= lo - eps && yv <= hi + eps)
+                    majTicks += yv;
+            }
+            for (double p : kMinPcts) {
+                const double yv = std::log(-std::log(1.0 - p / 100.0));
+                if (yv >= lo - eps && yv <= hi + eps)
+                    minTicks += yv;
+            }
+
+            QwtValueList wTicks[QwtScaleDiv::NTickTypes];
+            wTicks[QwtScaleDiv::MinorTick] = minTicks;
+            wTicks[QwtScaleDiv::MediumTick] = emptyMed;
+            wTicks[QwtScaleDiv::MajorTick] = majTicks;
+            QwtScaleEngine *wEng = new QwtLinearScaleEngine();
+            QwtScaleDiv wDiv(lo, hi, wTicks);
+            if (isInv) {
+                wEng->setAttribute(QwtScaleEngine::Inverted);
+                wDiv.invert();
+            }
+            enableAxis(a, true);
+            d_plot->setMajorTicksType(a, ScaleDraw::In);
+            d_plot->setMinorTicksType(a, ScaleDraw::In);
+            d_plot->setAxisMaxMajor(a, qMax(8, majTicks.size() + 2));
+            d_plot->setAxisMaxMinor(a, 2);
+            d_plot->setAxisScaleEngine(a, wEng);
+            d_plot->setAxisScaleDiv(a, wDiv);
+        }
+    }
+}
+
+void Graph::setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double> &radius,
+                           const QString &seriesLabel, bool thetaInRadians)
+{
+    const bool alreadyPolar = d_is_polar;
+    d_is_polar = true;
+    d_is_ternary = false;
+    m_autoscale = false;
+
+    if (d_ternary_item) {
+        d_ternary_item->detach();
+        delete d_ternary_item;
+        d_ternary_item = nullptr;
+    }
+
+    if (grid()) {
+        grid()->enableX(false);
+        grid()->enableXMin(false);
+        grid()->enableY(false);
+        grid()->enableYMin(false);
+    }
+    drawCanvasFrame(false, 0);
+    drawAxesBackbones(false);
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QString plainT = unwrapNoWrapAxisTitle(axisTitle(a)).trimmed();
+        if (isAxisPlaceholderTitle(plainT)) {
+            QwtText emptyT = d_plot->axisTitle(a);
+            emptyT.setText(QString());
+            d_plot->setAxisTitle(a, emptyT);
+        }
+    }
+
+    const int n = qMin(thetaDeg.size(), radius.size());
+    QVector<double> pxVec, pyVec;
+    pxVec.reserve(n);
+    pyVec.reserve(n);
+    double maxR = alreadyPolar ? d_polar_rmax : 0.0;
+    constexpr double kPi = 3.14159265358979323846;
+
+    for (int i = 0; i < n; ++i) {
+        const double th = thetaDeg[i];
+        const double rv = radius[i];
+        if (!std::isfinite(th) || !std::isfinite(rv))
+            continue;
+        const double rad = thetaInRadians ? th : (th * kPi / 180.0);
+        pxVec.append(rv * std::cos(rad));
+        pyVec.append(rv * std::sin(rad));
+        maxR = qMax(maxR, std::fabs(rv));
+    }
+
+    if (maxR > 0.0) {
+        double rLo = 0.0;
+        double rHi = maxR;
+        double rStep = 0.0;
+        QwtLinearScaleEngine rse;
+        rse.autoScale(4, rLo, rHi, rStep);
+        d_polar_rmax = (rHi >= maxR && std::isfinite(rHi)) ? rHi : maxR;
+    } else if (!(d_polar_rmax > 0.0) || !std::isfinite(d_polar_rmax)) {
+        d_polar_rmax = 1.0;
+    }
+
+    if (!d_polar_item) {
+        d_polar_item = new PolarAxesItem(this);
+        d_polar_item->attach(d_plot);
+    }
+    if (d_plot) {
+        bool hasFgLabels = false;
+        for (QwtPlotItem *it : d_plot->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotUserItem + 46) {
+                hasFgLabels = true;
+                break;
+            }
+        }
+        if (!hasFgLabels) {
+            PolarRadialLabelsItem *fgLbls = new PolarRadialLabelsItem(this);
+            fgLbls->attach(d_plot);
+        }
+    }
+
+    if (!pxVec.isEmpty()) {
+        static const QColor kOkabeItoPolar[8] = {
+            QColor(0, 114, 178),   QColor(213, 94, 0),    QColor(0, 158, 115),
+            QColor(204, 121, 167), QColor(230, 159, 0),   QColor(86, 180, 233),
+            QColor(240, 228, 66),  QColor(110, 118, 129)
+        };
+        const int sIdx = d_polar_series.size();
+        const QColor col = kOkabeItoPolar[sIdx % 8];
+        const QString lbl = seriesLabel.trimmed().isEmpty()
+                ? tr("Polar %1").arg(sIdx + 1)
+                : seriesLabel.trimmed();
+
+        PlotCurve *pc = new PlotCurve(lbl);
+        pc->setType(Function);
+        pc->setData(pxVec.constData(), pyVec.constData(), pxVec.size());
+        QPen p(col, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setCosmetic(false);
+        pc->setPen(p);
+
+        c_type.resize(++n_curves);
+        c_type[n_curves - 1] = Function;
+        c_keys.resize(n_curves);
+        c_keys[n_curves - 1] = d_plot->insertCurve(pc);
+        syncCurveZOrder();
+
+        PolarSeriesSpec ps;
+        ps.x = pxVec;
+        ps.y = pyVec;
+        ps.label = lbl;
+        ps.color = col;
+        ps.width = 2.0;
+        d_polar_series.append(ps);
+
+        addLegendItem(lbl);
+    }
+
+    const double rMax = qMax(1e-6, d_polar_rmax);
+    const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
+    const int extraRows = qMax(0, nPolarRows - 1);
+    const double yLo = -1.44 * rMax;
+    const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
+    const double halfX = 0.5 * (yHi - yLo);
+    setScale(QwtPlot::xBottom, -halfX, halfX, 0.0, 5, 0, 0, false);
+    setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
+    for (int i = 0; i < QwtPlot::axisCnt; ++i)
+        enableAxis(i, false);
+
+    if (hasLegend())
+        placeLegendAnchor(LegendTopRight);
 
     d_plot->replot();
     emit modifiedGraph();
@@ -9483,7 +11318,7 @@ class OriginReferenceLineItem : public QwtPlotItem
 public:
     explicit OriginReferenceLineItem(const Graph *graph) : d_graph(graph)
     {
-        setZ(65.0);
+        setZ(18.0);
         setItemAttribute(QwtPlotItem::AutoScale, false);
         setItemAttribute(QwtPlotItem::Legend, false);
     }
@@ -9564,8 +11399,13 @@ public:
                 const QwtScaleMap cyMap = useDirectY ? yMap : pl->canvasMap(cv->yAxis());
                 const int n = cv->dataSize();
                 const int stride = qMax(1, n / 300);
+                Column *dcXCol = nullptr;
+                Column *dcYCol = nullptr;
+                const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+                if (dcHasMasks)
+                    dc->resolveColumns(dcXCol, dcYCol);
                 for (int k = 0; k < n; k += stride) {
-                    if (dc && dc->isPointMasked(k))
+                    if (dcHasMasks && dc->isPointMaskedFast(k, dcXCol, dcYCol))
                         continue;
                     const double rawPx = cxMap.xTransform(cv->x(k));
                     const double rawPy = cyMap.xTransform(cv->y(k));
@@ -9582,20 +11422,40 @@ public:
         }
 
         QVector<QRectF> avoidBoxes;
+        QVector<QRectF> textMaskBoxes;
         ::Legend *mainLeg = const_cast<Graph *>(d_graph)->legend();
-        if (d_graph->isLegendVisible() && mainLeg) {
+        if (d_graph->isLegendVisible() && mainLeg && !mainLeg->text().trimmed().isEmpty()) {
             const QRectF lb = mapWidgetCanvasRect(mainLeg->rect());
-            if (!lb.isEmpty())
+            if (!lb.isEmpty()) {
                 avoidBoxes.append(lb);
+                textMaskBoxes.append(lb.adjusted(-2.0 * sx, -1.5 * sy, 2.0 * sx, 1.5 * sy));
+            }
         }
         const QVector<int> txtKeys = const_cast<Graph *>(d_graph)->textMarkerKeys();
         for (int tid : txtKeys) {
             ::Legend *tm = const_cast<Graph *>(d_graph)->textMarker(tid);
-            if (!tm || !tm->isVisible() || tm == mainLeg)
+            if (!tm || !tm->isVisible() || tm == mainLeg || tm->text().trimmed().isEmpty())
                 continue;
             const QRectF tb = mapWidgetCanvasRect(tm->rect());
-            if (!tb.isEmpty())
+            if (!tb.isEmpty()) {
                 avoidBoxes.append(tb);
+                textMaskBoxes.append(tb.adjusted(-2.0 * sx, -1.5 * sy, 2.0 * sx, 1.5 * sy));
+            }
+        }
+        const QVector<int> lineKeys = const_cast<Graph *>(d_graph)->lineMarkerKeys();
+        for (int lid : lineKeys) {
+            ArrowMarker *am = const_cast<Graph *>(d_graph)->arrow(lid);
+            if (!am || !am->isVisible())
+                continue;
+            const double ax0 = xMap.xTransform(am->startPointCoord().x());
+            const double ay0 = yMap.xTransform(am->startPointCoord().y());
+            const double ax1 = xMap.xTransform(am->endPointCoord().x());
+            const double ay1 = yMap.xTransform(am->endPointCoord().y());
+            if (std::isfinite(ax0) && std::isfinite(ay0) && std::isfinite(ax1)
+                && std::isfinite(ay1)) {
+                avoidBoxes.append(QRectF(QPointF(qMin(ax0, ax1) - 5.0 * sx, qMin(ay0, ay1) - 5.0 * sy),
+                                         QPointF(qMax(ax0, ax1) + 5.0 * sx, qMax(ay0, ay1) + 5.0 * sy)));
+            }
         }
         if (MultiLayer *ml = d_graph->multiLayerParent()) {
             const QPoint myCanvasOrigin =
@@ -9675,17 +11535,62 @@ public:
             const double offY = 4.0 * sy;
             const double offX = 6.0 * sx;
 
+            const double devSc = Plot::printDeviceScale();
+            auto drawMaskedHLine = [&](double yPx) {
+                QVector<QPair<double, double>> spans;
+                spans.append(qMakePair(double(canvasRect.left()), double(canvasRect.right())));
+                for (const QRectF &mb : textMaskBoxes) {
+                    if (yPx < mb.top() || yPx > mb.bottom())
+                        continue;
+                    QVector<QPair<double, double>> next;
+                    for (const auto &sp : spans) {
+                        if (mb.right() <= sp.first || mb.left() >= sp.second) {
+                            next.append(sp);
+                        } else {
+                            if (mb.left() - sp.first > 1.5 * sx)
+                                next.append(qMakePair(sp.first, mb.left()));
+                            if (sp.second - mb.right() > 1.5 * sx)
+                                next.append(qMakePair(mb.right(), sp.second));
+                        }
+                    }
+                    spans.swap(next);
+                }
+                for (const auto &sp : spans)
+                    painter->drawLine(QPointF(sp.first, yPx), QPointF(sp.second, yPx));
+            };
+            auto drawMaskedVLine = [&](double xPx) {
+                QVector<QPair<double, double>> spans;
+                spans.append(qMakePair(double(canvasRect.top()), double(canvasRect.bottom())));
+                for (const QRectF &mb : textMaskBoxes) {
+                    if (xPx < mb.left() || xPx > mb.right())
+                        continue;
+                    QVector<QPair<double, double>> next;
+                    for (const auto &sp : spans) {
+                        if (mb.bottom() <= sp.first || mb.top() >= sp.second) {
+                            next.append(sp);
+                        } else {
+                            if (mb.top() - sp.first > 1.5 * sy)
+                                next.append(qMakePair(sp.first, mb.top()));
+                            if (sp.second - mb.bottom() > 1.5 * sy)
+                                next.append(qMakePair(mb.bottom(), sp.second));
+                        }
+                    }
+                    spans.swap(next);
+                }
+                for (const auto &sp : spans)
+                    painter->drawLine(QPointF(xPx, sp.first), QPointF(xPx, sp.second));
+            };
+
             if (spec.orientation == 0) {
                 if (logY && spec.value <= 0.0)
                     continue;
                 const double yPx = yMap.xTransform(spec.value);
                 if (std::isfinite(yPx) && yPx >= canvasRect.top() - 2
                     && yPx <= canvasRect.bottom() + 2) {
-                    QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
+                    QPen pen(spec.color, qMax(0.8, spec.width) * devSc, spec.style);
                     pen.setCosmetic(false);
                     painter->setPen(pen);
-                    painter->drawLine(QPointF(canvasRect.left(), yPx),
-                                      QPointF(canvasRect.right(), yPx));
+                    drawMaskedHLine(yPx);
 
                     if (!displayLabel.isEmpty()) {
                         double tw = 0.0, th = 0.0;
@@ -9738,11 +11643,10 @@ public:
                 const double xPx = xMap.xTransform(spec.value);
                 if (std::isfinite(xPx) && xPx >= canvasRect.left() - 2
                     && xPx <= canvasRect.right() + 2) {
-                    QPen pen(spec.color, qMax(0.5, spec.width), spec.style);
+                    QPen pen(spec.color, qMax(0.8, spec.width) * devSc, spec.style);
                     pen.setCosmetic(false);
                     painter->setPen(pen);
-                    painter->drawLine(QPointF(xPx, canvasRect.top()),
-                                      QPointF(xPx, canvasRect.bottom()));
+                    drawMaskedVLine(xPx);
 
                     if (!displayLabel.isEmpty()) {
                         double tw = 0.0, th = 0.0;
@@ -9858,11 +11762,26 @@ bool Graph::hasColorScaleOnAxis(int axis) const
 
 void Graph::applyFramePreset(FramePreset preset)
 {
+    if (isTernaryPlot() || isPolarPlot() || isPiePlot()) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a)
+            enableAxis(a, false);
+        drawAxesBackbones(false);
+        if (scalePicker)
+            scalePicker->refresh();
+        d_plot->replot();
+        emit modifiedGraph();
+        return;
+    }
+
     const bool rightIsColorBar = hasColorScaleOnAxis(QwtPlot::yRight);
     const bool topIsColorBar = hasColorScaleOnAxis(QwtPlot::xTop);
 
-    bool hasRightCurve = false;
-    bool hasTopCurve = false;
+    bool hasRightCurve = d_weibull_prob_axis[QwtPlot::yRight]
+            || !d_custom_tick_positions[QwtPlot::yRight].isEmpty()
+            || !d_custom_category_labels[QwtPlot::yRight].isEmpty();
+    bool hasTopCurve = d_weibull_prob_axis[QwtPlot::xTop]
+            || !d_custom_tick_positions[QwtPlot::xTop].isEmpty()
+            || !d_custom_category_labels[QwtPlot::xTop].isEmpty();
     for (int i = 0; i < n_curves; ++i) {
         QwtPlotItem *it = plotItem(i);
         if (!it)
@@ -10594,8 +12513,13 @@ void Graph::updateStatReferenceLines()
         QVector<double> vals;
         const int n = activeCurve->dataSize();
         vals.reserve(n);
+        Column *dcXCol = nullptr;
+        Column *dcYCol = nullptr;
+        const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+        if (dcHasMasks)
+            dc->resolveColumns(dcXCol, dcYCol);
         for (int j = 0; j < n; ++j) {
-            if (dc && dc->isPointMasked(j))
+            if (dcHasMasks && dc->isPointMaskedFast(j, dcXCol, dcYCol))
                 continue;
             const double v = (orientation == 0) ? activeCurve->y(j) : activeCurve->x(j);
             if (std::isfinite(v))
@@ -10913,6 +12837,7 @@ void Graph::syncLinkedAxesFromParent()
         }
     }
 
+    syncCustomAndWeibullAxes();
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
     alignLinkedChildCanvasToParent(this);
@@ -10939,6 +12864,7 @@ void Graph::syncChildLinkedLayers()
     for (Graph *g : allGraphs) {
         if (g && g != this && g->linkedParentLayer() == this) {
             g->syncLinkedAxesFromParent();
+            g->syncCustomAndWeibullAxes();
         }
     }
 }
@@ -11163,7 +13089,12 @@ void Graph::setAxisBreak(int axis, const AxisBreakSpec &spec)
     if (axisFont(axis).pointSize() >= 20)
         maj = qMin(maj, 5);
     const int minT = d_plot->axisMaxMinor(axis);
-    const int maxMinInt = (minT >= 1) ? (minT + 1) : 0;
+    int maxMinInt = (minT >= 1) ? (minT + 1) : 0;
+    if (norm.log10Before || norm.log10After) {
+        maxMinInt = qMax(9, maxMinInt);
+        if (minT < 8)
+            d_plot->setAxisMaxMinor(axis, 8);
+    }
 
     PiecewiseBreakScaleEngine *eng = new PiecewiseBreakScaleEngine(norm);
     QwtScaleDiv div = eng->divideScale(lo, hi, maj, maxMinInt, d_user_step[axis]);
@@ -11175,8 +13106,10 @@ void Graph::setAxisBreak(int axis, const AxisBreakSpec &spec)
     d_plot->setAxisScaleEngine(axis, eng);
     d_plot->setAxisScaleDiv(axis, div);
 
-    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
-        sd->setAxisBreakIndicator(true, norm.breakFrom);
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+        sd->setAxisBreakIndicator(true, norm.breakFrom, norm.breakTo, norm.log10Before,
+                                  norm.log10After);
+    }
 
     if (axis == QwtPlot::xBottom)
         updateSecondaryAxis(QwtPlot::xTop);
@@ -11339,10 +13272,15 @@ void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool norma
         PlotCurve *pc = targetCurves[k];
         DataCurve *dc = dynamic_cast<DataCurve *>(pc);
         const int n = pc->dataSize();
+        Column *dcXCol = nullptr;
+        Column *dcYCol = nullptr;
+        const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+        if (dcHasMasks)
+            dc->resolveColumns(dcXCol, dcYCol);
         bool first = true;
         double loX = 0.0, hiX = 0.0, loY = 0.0, hiY = 0.0;
         for (int j = 0; j < n; ++j) {
-            if (dc && dc->isPointMasked(j))
+            if (dcHasMasks && dc->isPointMaskedFast(j, dcXCol, dcYCol))
                 continue;
             const double xv = pc->x(j);
             const double yv = pc->y(j);
@@ -11419,8 +13357,13 @@ void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool norma
         for (PlotCurve *pc : targetCurves) {
             DataCurve *dc = dynamic_cast<DataCurve *>(pc);
             const int n = pc->dataSize();
+            Column *dcXCol = nullptr;
+            Column *dcYCol = nullptr;
+            const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+            if (dcHasMasks)
+                dc->resolveColumns(dcXCol, dcYCol);
             for (int j = 0; j < n; ++j) {
-                if (dc && dc->isPointMasked(j))
+                if (dcHasMasks && dc->isPointMaskedFast(j, dcXCol, dcYCol))
                     continue;
                 const double yv = pc->y(j);
                 if (std::isfinite(yv)) {
@@ -11730,8 +13673,143 @@ bool Graph::restorePhase5Tag(const QString &line)
             d_ternary_labels[1] = attrs.value("b");
         if (attrs.contains("c"))
             d_ternary_labels[2] = attrs.value("c");
-        if (d_is_ternary)
+        if (d_is_ternary) {
             m_autoscale = false;
+            if (!d_ternary_item) {
+                d_ternary_item = new TernaryDiagramItem(this);
+                d_ternary_item->attach(d_plot);
+            }
+            for (int a = 0; a < QwtPlot::axisCnt; ++a)
+                enableAxis(a, false);
+            drawAxesBackbones(false);
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriStackedBars")) {
+        const QStringList idxs = attrs.value("indices").split(',', Qt::SkipEmptyParts);
+        int savedGap = attrs.value("gap", "-1").toInt();
+        const int savedOffset = attrs.value("offset", "0").toInt();
+        if (savedGap < 0) {
+            for (const QString &tok : idxs) {
+                bool ok = false;
+                const int bi = tok.trimmed().toInt(&ok);
+                if (ok && bi >= 0 && bi < n_curves) {
+                    if (const QwtBarCurve *bc = dynamic_cast<const QwtBarCurve *>(curve(bi))) {
+                        savedGap = bc->gap();
+                        break;
+                    }
+                }
+            }
+            if (savedGap < 0)
+                savedGap = 30;
+        }
+        for (const QString &tok : idxs) {
+            bool ok = false;
+            const int bi = tok.trimmed().toInt(&ok);
+            if (ok && bi >= 0 && bi < n_curves) {
+                if (QwtBarCurve *bc = dynamic_cast<QwtBarCurve *>(curve(bi))) {
+                    bc->setStacked(true);
+                    setBarsGap(bi, savedGap, savedOffset);
+                }
+            }
+        }
+        if (d_plot)
+            d_plot->replot();
+        return true;
+    }
+
+    if (s.startsWith("<ToriWeibullAxis")) {
+        const int axis = attrs.value("axis", "-1").toInt();
+        const bool en = attrs.value("enabled", "1").toInt() != 0;
+        if (axis >= 0 && axis < 4)
+            setWeibullProbabilityAxis(axis, en);
+        return true;
+    }
+
+    if (s.startsWith("<ToriCategoryAxis")) {
+        const int axis = attrs.value("axis", "-1").toInt();
+        const QString rawLabels = attrs.value("labels");
+        const QString rawPositions = attrs.value("positions");
+        if (axis >= 0 && axis < 4 && !rawLabels.isEmpty()) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            const QStringList lbls = rawLabels.split(QChar(0x1F), Qt::KeepEmptyParts);
+#else
+            const QStringList lbls = rawLabels.split(QChar(0x1F), QString::KeepEmptyParts);
+#endif
+            if (!rawPositions.isEmpty()) {
+                const QStringList posStrs = rawPositions.split(',', Qt::SkipEmptyParts);
+                QVector<double> posVec;
+                posVec.reserve(posStrs.size());
+                for (const QString &ps : posStrs)
+                    posVec.append(ps.toDouble());
+                const double rot = attrs.value("rot", "0").toDouble();
+                setCustomTickLabels(axis, posVec, lbls, rot);
+            } else {
+                setCategoryLabels(axis, lbls);
+            }
+            if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+                updateSecondaryAxis(QwtPlot::xTop);
+                updateSecondaryAxis(QwtPlot::yRight);
+            }
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriPolarPlot")) {
+        const bool en = attrs.value("enabled", "1").toInt() != 0;
+        if (en) {
+            d_polar_rmax = qMax(1e-6, attrs.value("rmax", "1").toDouble());
+            setupPolarPlot(QVector<double>(), QVector<double>(), QString(), true);
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriPolarSeries")) {
+        const QStringList xs = attrs.value("x").split(',', Qt::SkipEmptyParts);
+        const QStringList ys = attrs.value("y").split(',', Qt::SkipEmptyParts);
+        const int m = qMin(xs.size(), ys.size());
+        if (m >= 1) {
+            PolarSeriesSpec ps;
+            ps.x.resize(m);
+            ps.y.resize(m);
+            for (int k = 0; k < m; ++k) {
+                ps.x[k] = xs[k].toDouble();
+                ps.y[k] = ys[k].toDouble();
+            }
+            ps.label = attrs.value("label", tr("Polar"));
+            ps.color = QColor(attrs.value("color", "#ff0072b2"));
+            if (!ps.color.isValid())
+                ps.color = QColor(0, 114, 178);
+            ps.width = qMax(1.0, attrs.value("width", "2").toDouble());
+
+            PlotCurve *pc = new PlotCurve(ps.label);
+            pc->setType(Function);
+            pc->setData(ps.x.constData(), ps.y.constData(), m);
+            QPen p(ps.color, ps.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setCosmetic(false);
+            pc->setPen(p);
+
+            c_type.resize(++n_curves);
+            c_type[n_curves - 1] = Function;
+            c_keys.resize(n_curves);
+            c_keys[n_curves - 1] = d_plot->insertCurve(pc);
+            syncCurveZOrder();
+            d_polar_series.append(ps);
+
+            const double rMax = qMax(1e-6, d_polar_rmax);
+            const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
+            const int extraRows = qMax(0, nPolarRows - 1);
+            const double yLo = -1.44 * rMax;
+            const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
+            const double halfX = 0.5 * (yHi - yLo);
+            setScale(QwtPlot::xBottom, -halfX, halfX, 0.0, 5, 0, 0, false);
+            setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
+            for (int a = 0; a < QwtPlot::axisCnt; ++a)
+                enableAxis(a, false);
+            if (hasLegend())
+                placeLegendAnchor(LegendTopRight);
+        }
         return true;
     }
 
@@ -11748,6 +13826,11 @@ bool Graph::restorePhase5Tag(const QString &line)
             m_autoscale = (attrs.value("autoscale").toInt() != 0);
             if (d_plot)
                 d_plot->setProperty("_toriRestoredAutoscale", true);
+        }
+        if (isPiePlot()) {
+            drawCanvasFrame(false, 0);
+            setFrame(0, Qt::black);
+            drawAxesBackbones(false);
         }
         return true;
     }
@@ -12578,7 +14661,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
     int ch = d_plot->canvas()->height();
 
     const int majLen = d_plot->majorTickLength();
-    const bool framelessSingleCol =
+    bool framelessSingleCol =
             (leg->frameStyle() == Legend::None && leg->numColumns() <= 1);
 
     int legW = 16;
@@ -12703,10 +14786,61 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
 
     recomputeLegendMetrics();
 
+    if (!isPiePlot() && leg->numColumns() > 1) {
+        const int estML = qMax(2, majLen - 4);
+        const int estMR = qMax(6, majLen + 5);
+        if (legW > qMax(24, cw - estML - estMR)) {
+            leg->setNumColumns(1);
+            framelessSingleCol = (leg->frameStyle() == Legend::None && leg->numColumns() <= 1);
+            d_plot->updateLayout();
+            recomputeLegendMetrics();
+        }
+    }
+    if (!isPiePlot() && !d_is_ternary && leg->numColumns() <= 1 && cw >= 60) {
+        const int maxFitLegW = qMax(36, cw - 10);
+        if (effLegW > maxFitLegW) {
+            QFont lf = leg->font();
+            double curPt = lf.pointSizeF();
+            if (curPt <= 0.0 && lf.pointSize() > 0)
+                curPt = double(lf.pointSize());
+            const double floorPt = (curPt > 14.0) ? 16.0 : 7.0;
+            while (effLegW > maxFitLegW && curPt > floorPt + 0.1) {
+                curPt = qMax(floorPt, curPt - ((curPt > 14.0) ? 1.0 : 0.5));
+                lf.setPointSizeF(curPt);
+                lf.setHintingPreference(QFont::PreferNoHinting);
+                leg->setFont(lf);
+                recomputeLegendMetrics();
+            }
+        }
+    }
+
+    if (isPiePlot()) {
+        if (leg->text().contains(QLatin1String("\\p{"))
+            && leg->text().contains(QLatin1Char('%'))) {
+            static const QRegularExpression kPiePctRx(
+                    QStringLiteral("^\\s*\\d+(?:\\.\\d+)?%\\s*$"));
+            for (int tid : d_texts) {
+                if (tid == legendMarkerID)
+                    continue;
+                Legend *tm = dynamic_cast<Legend *>(d_plot->marker(tid));
+                if (tm && kPiePctRx.match(tm->text()).hasMatch()) {
+                    tm->setText(QString());
+                    tm->setVisible(false);
+                }
+            }
+        }
+        if ((anchor == LegendTopRight || anchor == LegendAutoAvoidData)
+            && effLegW > int(0.34 * double(cw))) {
+            anchor = LegendTopCenter;
+            d_plot->setProperty("_toriLegendAnchor", int(anchor));
+        }
+    }
+
+    const bool framelessLeg = (leg->frameStyle() == Legend::None);
     const int mL = framelessSingleCol ? qMax(2, majLen - 4) : qMax(m, majLen + 4);
     const int mR = framelessSingleCol ? qMax(6, majLen + 5) : qMax(m, majLen + 4);
-    const int mT = framelessSingleCol ? qMax(2, majLen - 2) : qMax(m, majLen + 4);
-    const int mB = framelessSingleCol ? qMax(2, majLen - 1) : qMax(m, majLen + 4);
+    const int mT = isPiePlot() ? 4 : (framelessLeg ? qMax(3, majLen - 2) : qMax(m, majLen + 4));
+    const int mB = framelessLeg ? qMax(3, majLen - 1) : qMax(m, majLen + 4);
 
     auto originForInsideAnchor = [&](LegendAnchor a) -> QPoint {
         const int xLeft = mL;
@@ -12900,18 +15034,32 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
 
                 // 3. Bars / Histograms
                 if (ct == VerticalBars || ct == HorizontalBars || ct == Histogram) {
-                    double barHalfPx = 10.0;
+                    const QwtBarCurve *bc = dynamic_cast<const QwtBarCurve *>(c);
+                    double stepPx = 28.0;
                     if (nPts >= 2) {
                         const double p0 = (ct == HorizontalBars) ? yMap.xTransform(c->y(0))
                                                                  : xMap.xTransform(c->x(0));
                         const double p1 = (ct == HorizontalBars) ? yMap.xTransform(c->y(1))
                                                                  : xMap.xTransform(c->x(1));
-                        barHalfPx = qBound(4.0, 0.38 * std::fabs(p1 - p0), 40.0);
+                        stepPx = qMax(6.0, std::fabs(p1 - p0));
+                    } else {
+                        stepPx = qMax(12.0,
+                                      0.2 * std::fabs((ct == HorizontalBars) ? yMap.pDist()
+                                                                             : xMap.pDist()));
                     }
+                    const double gapFrac = bc ? (1.0 - double(bc->gap()) * 0.01) : 0.70;
+                    const double barW = qBound(3.0, stepPx * gapFrac, 120.0);
+                    const double shiftLeft =
+                            bc ? ((0.5 - double(bc->offset()) * 0.01) * barW) : (0.5 * barW);
                     const double basePx = (ct == HorizontalBars) ? xMap.xTransform(c->baseline())
                                                                  : yMap.xTransform(c->baseline());
+                    Column *barXCol = nullptr;
+                    Column *barYCol = nullptr;
+                    const bool barHasMasks = dc && dc->hasAnyMaskedPoints();
+                    if (barHasMasks)
+                        dc->resolveColumns(barXCol, barYCol);
                     for (int p = 0; p < nPts; ++p) {
-                        if (dc && dc->isPointMasked(p))
+                        if (barHasMasks && dc->isPointMaskedFast(p, barXCol, barYCol))
                             continue;
                         const double vx = c->x(p);
                         const double vy = c->y(p);
@@ -12921,17 +15069,17 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                         if (ct == HorizontalBars) {
                             const double py = yMap.xTransform(vy);
                             const double px = xMap.xTransform(vx);
-                            barRect = QRectF(qMin(basePx, px), py - barHalfPx,
-                                             std::fabs(px - basePx), 2.0 * barHalfPx);
+                            barRect = QRectF(qMin(basePx, px), py - shiftLeft,
+                                             std::fabs(px - basePx), barW);
                         } else {
                             const double px = xMap.xTransform(vx);
                             const double py = yMap.xTransform(vy);
-                            barRect = QRectF(px - barHalfPx, qMin(basePx, py), 2.0 * barHalfPx,
+                            barRect = QRectF(px - shiftLeft, qMin(basePx, py), barW,
                                              std::fabs(py - basePx));
                         }
                         const QRectF inter = box.intersected(barRect);
                         if (!inter.isEmpty())
-                            cost += 30.0 + inter.width() * inter.height() * 0.25;
+                            cost += 160.0 + inter.width() * inter.height() * 1.1;
                     }
                     continue;
                 }
@@ -12959,6 +15107,89 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     continue;
                 }
 
+                // 4b. Vector curves (shaft + arrowhead tip)
+                if (ct == VectXYXY || ct == VectXYAM) {
+                    VectorCurve *vc = dynamic_cast<VectorCurve *>(const_cast<QwtPlotCurve *>(c));
+                    Table *vt = vc ? vc->table() : nullptr;
+                    auto resolveVecCol = [vt](const QString &spec) -> Column * {
+                        if (!vt || spec.isEmpty())
+                            return nullptr;
+                        const QString pfx = QString(vt->name()) + QLatin1Char('_');
+                        if (spec.startsWith(pfx)) {
+                            const QString sh = spec.mid(pfx.size());
+                            for (int ci = 0; ci < vt->numCols(); ++ci) {
+                                if (Column *col = vt->column(ci)) {
+                                    if (col->name() == sh)
+                                        return col;
+                                }
+                            }
+                        }
+                        for (int ci = 0; ci < vt->numCols(); ++ci) {
+                            if (Column *col = vt->column(ci)) {
+                                if (col->name() == spec)
+                                    return col;
+                            }
+                        }
+                        const int fb = vt->colIndex(spec);
+                        return (fb >= 0 && fb < vt->numCols()) ? vt->column(fb) : nullptr;
+                    };
+                    Column *ec1 = vc ? resolveVecCol(vc->vectorEndXAColName()) : nullptr;
+                    Column *ec2 = vc ? resolveVecCol(vc->vectorEndYMColName()) : nullptr;
+                    const int vPos = vc ? vc->position() : int(VectorCurve::Tail);
+                    const double headPad =
+                            qMax(6.0, vc ? double(qMax(6, vc->headLength())) : 8.0);
+                    const QRectF shaftBox = box.adjusted(-3.0, -3.0, 3.0, 3.0);
+                    for (int p = 0; p < nPts; ++p) {
+                        const double x0 = c->x(p);
+                        const double y0 = c->y(p);
+                        if (!std::isfinite(x0) || !std::isfinite(y0))
+                            continue;
+                        double xs = xMap.xTransform(x0);
+                        double ys = yMap.xTransform(y0);
+                        double xe = xs;
+                        double ye = ys;
+                        const int r = vc ? vc->tableRow(p) : -1;
+                        if (ec1 && ec2 && r >= 0 && r < ec1->rowCount() && r < ec2->rowCount()
+                            && !ec1->isInvalid(r) && !ec2->isInvalid(r)) {
+                            const double v1 = ec1->valueAt(r);
+                            const double v2 = ec2->valueAt(r);
+                            if (std::isfinite(v1) && std::isfinite(v2)) {
+                                if (ct == VectXYAM) {
+                                    const double dx = v2 * std::cos(v1);
+                                    const double dy = v2 * std::sin(v1);
+                                    if (vPos == int(VectorCurve::Middle)) {
+                                        xs = xMap.xTransform(x0 - 0.5 * dx);
+                                        ys = yMap.xTransform(y0 - 0.5 * dy);
+                                        xe = xMap.xTransform(x0 + 0.5 * dx);
+                                        ye = yMap.xTransform(y0 + 0.5 * dy);
+                                    } else if (vPos == int(VectorCurve::Head)) {
+                                        xs = xMap.xTransform(x0 - dx);
+                                        ys = yMap.xTransform(y0 - dy);
+                                        xe = xMap.xTransform(x0);
+                                        ye = yMap.xTransform(y0);
+                                    } else {
+                                        xe = xMap.xTransform(x0 + dx);
+                                        ye = yMap.xTransform(y0 + dy);
+                                    }
+                                } else {
+                                    xe = xMap.xTransform(v1);
+                                    ye = yMap.xTransform(v2);
+                                }
+                            }
+                        }
+                        bool hit = false;
+                        const double clipLen =
+                                liangBarskyClippedLength(xs, ys, xe, ye, shaftBox, &hit);
+                        if (hit)
+                            cost += 120.0 + clipLen * 3.5;
+                        const QRectF tipBox(xe - headPad, ye - headPad, 2.0 * headPad,
+                                            2.0 * headPad);
+                        if (box.intersects(tipBox))
+                            cost += 220.0;
+                    }
+                    continue;
+                }
+
                 // 5. Standard 2D curve symbols + Liang-Barsky clipped curve segments
                 const bool hasSymbols =
                         (c->symbol().style() != QwtSymbol::NoSymbol || ct == Scatter);
@@ -12971,10 +15202,16 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                 const double penWeight = 1.4 + 0.35 * qMax(1, c->pen().width());
                 const int stride = (nPts > 6000) ? qMax(1, nPts / 3000) : 1;
 
+                Column *dcXCol = nullptr;
+                Column *dcYCol = nullptr;
+                const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+                if (dcHasMasks)
+                    dc->resolveColumns(dcXCol, dcYCol);
+
                 bool hasPrev = false;
                 double prevPx = 0.0, prevPy = 0.0;
                 for (int p = 0; p < nPts; p += stride) {
-                    if (dc && dc->isPointMasked(p)) {
+                    if (dcHasMasks && dc->isPointMaskedFast(p, dcXCol, dcYCol)) {
                         hasPrev = false;
                         continue;
                     }
@@ -13013,9 +15250,20 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     continue;
                 Legend *tm = dynamic_cast<Legend *>(lp->marker(tid));
                 if (tm && tm->isVisible()) {
-                    const QRectF inter = box.intersected(QRectF(tm->rect()));
+                    QRectF tmRect(tm->rect());
+                    if (tmRect.width() <= 2.0 || tmRect.height() <= 2.0) {
+                        const double tx = lp->canvasMap(tm->xAxis()).xTransform(tm->xValue());
+                        const double ty = lp->canvasMap(tm->yAxis()).xTransform(tm->yValue());
+                        QwtText qt(tm->text());
+                        qt.setFont(tm->font());
+                        const QSize tsz = qt.textSize();
+                        if (std::isfinite(tx) && std::isfinite(ty))
+                            tmRect = QRectF(tx, ty, qMax(8, tsz.width() + 8),
+                                            qMax(8, tsz.height() + 6));
+                    }
+                    const QRectF inter = box.intersected(tmRect);
                     if (!inter.isEmpty())
-                        cost += 200.0 + inter.width() * inter.height() * 0.5;
+                        cost += 380.0 + inter.width() * inter.height() * 1.2;
                 }
             }
             for (int iid : lg->d_images) {
@@ -13029,13 +15277,25 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             for (int lid : lg->d_lines) {
                 ArrowMarker *am = dynamic_cast<ArrowMarker *>(lp->marker(lid));
                 if (am && am->isVisible()) {
-                    const QPoint sPt = am->startPoint();
-                    const QPoint ePt = am->endPoint();
+                    const QwtDoublePoint sC = am->startPointCoord();
+                    const QwtDoublePoint eC = am->endPointCoord();
+                    double sx0 = lp->canvasMap(am->xAxis()).xTransform(sC.x());
+                    double sy0 = lp->canvasMap(am->yAxis()).xTransform(sC.y());
+                    double sx1 = lp->canvasMap(am->xAxis()).xTransform(eC.x());
+                    double sy1 = lp->canvasMap(am->yAxis()).xTransform(eC.y());
+                    if (!std::isfinite(sx0) || !std::isfinite(sy0) || !std::isfinite(sx1)
+                        || !std::isfinite(sy1)) {
+                        const QPoint sPt = am->startPoint();
+                        const QPoint ePt = am->endPoint();
+                        sx0 = sPt.x();
+                        sy0 = sPt.y();
+                        sx1 = ePt.x();
+                        sy1 = ePt.y();
+                    }
                     bool hit = false;
-                    const double clipLen = liangBarskyClippedLength(sPt.x(), sPt.y(), ePt.x(),
-                                                                    ePt.y(), box, &hit);
+                    const double clipLen = liangBarskyClippedLength(sx0, sy0, sx1, sy1, box, &hit);
                     if (hit)
-                        cost += 120.0 + clipLen * 3.0;
+                        cost += 450.0 + clipLen * 6.0;
                 }
             }
             for (const ReferenceLineSpec &rl : lg->d_ref_lines) {
@@ -13050,6 +15310,60 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                 }
                 if (hit)
                     cost += 35.0 + clipLen * 0.8;
+            }
+
+            if (lg->isTernaryPlot()) {
+                const QwtScaleMap txMap = lp->canvasMap(QwtPlot::xBottom);
+                const QwtScaleMap tyMap = lp->canvasMap(QwtPlot::yLeft);
+                const double th = std::sqrt(3.0) * 0.5;
+                const QPointF vA(txMap.xTransform(0.0), tyMap.xTransform(0.0));
+                const QPointF vB(txMap.xTransform(1.0), tyMap.xTransform(0.0));
+                const QPointF vC(txMap.xTransform(0.5), tyMap.xTransform(th));
+                const QPointF edges[3][2] = { { vA, vB }, { vB, vC }, { vC, vA } };
+                for (int ei = 0; ei < 3; ++ei) {
+                    bool hit = false;
+                    const double cl = liangBarskyClippedLength(edges[ei][0].x(), edges[ei][0].y(),
+                                                               edges[ei][1].x(), edges[ei][1].y(),
+                                                               box, &hit);
+                    if (hit)
+                        cost += 600.0 + cl * 5.0;
+                }
+                QPolygonF triPoly(3);
+                triPoly[0] = vA;
+                triPoly[1] = vB;
+                triPoly[2] = vC;
+                if (triPoly.containsPoint(box.center(), Qt::OddEvenFill))
+                    cost += 900.0;
+            } else if (lg->isPolarPlot()) {
+                const QwtScaleMap pxMap = lp->canvasMap(QwtPlot::xBottom);
+                const QwtScaleMap pyMap = lp->canvasMap(QwtPlot::yLeft);
+                const double pcx = pxMap.xTransform(0.0);
+                const double pcy = pyMap.xTransform(0.0);
+                const double pr = 1.24
+                        * std::fabs(pxMap.xTransform(lg->polarRadiusMax()) - pcx);
+                const double nearestX = qBound(box.left(), pcx, box.right());
+                const double nearestY = qBound(box.top(), pcy, box.bottom());
+                const double dist = std::hypot(nearestX - pcx, nearestY - pcy);
+                if (dist < pr)
+                    cost += 800.0 + (pr - dist) * 6.0;
+            } else if (lg->isPiePlot()) {
+                double pcx = 0.36 * double(cw);
+                double pcy = 0.52 * double(ch);
+                double pr = 1.25 * 0.285 * double(qMin(cw, ch));
+                if (effLegW > int(0.34 * double(cw))) {
+                    const double legBottom =
+                            qBound(0.08 * double(ch), double(4 + legH), 0.52 * double(ch));
+                    const double pad = 0.028 * double(ch);
+                    const double availH = qMax(0.20 * double(ch), double(ch) - legBottom - 2.0 * pad);
+                    pcx = 0.50 * double(cw);
+                    pcy = legBottom + pad + 0.5 * availH;
+                    pr = 1.05 * qMin(0.31 * double(cw), 0.44 * availH);
+                }
+                const double nearestX = qBound(box.left(), pcx, box.right());
+                const double nearestY = qBound(box.top(), pcy, box.bottom());
+                const double dist = std::hypot(nearestX - pcx, nearestY - pcy);
+                if (dist < pr)
+                    cost += 800.0 + (pr - dist) * 6.0;
             }
         }
 
@@ -13193,6 +15507,69 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         return evaluateCollisionScore(QRectF(ox, oy, legW, legH));
     };
 
+    auto ensureHorizBarCategoryHeadroom = [&]() -> bool {
+        if (d_is_ternary || d_is_polar || isPiePlot() || !d_plot->axisEnabled(QwtPlot::yLeft)
+            || d_axis_breaks[QwtPlot::yLeft].enabled) {
+            return false;
+        }
+        bool hasHorizBars = false;
+        for (int i = 0; i < n_curves && i < c_type.size(); ++i) {
+            if (c_type[i] == HorizontalBars) {
+                hasHorizBars = true;
+                break;
+            }
+        }
+        const QwtTextScaleDraw *yCatSd =
+                dynamic_cast<const QwtTextScaleDraw *>(d_plot->axisScaleDraw(QwtPlot::yLeft));
+        const QwtScaleDiv *yCatDiv = d_plot->axisScaleDiv(QwtPlot::yLeft);
+        const QwtScaleEngine *yCatEng = d_plot->axisScaleEngine(QwtPlot::yLeft);
+        if (!hasHorizBars || !yCatSd || !yCatDiv || !yCatEng
+            || yCatEng->testAttribute(QwtScaleEngine::Inverted)) {
+            return false;
+        }
+        const QMap<int, QString> catMap = yCatSd->labelsMap();
+        if (catMap.isEmpty())
+            return false;
+        const double minKey = double(catMap.firstKey());
+        const double maxKey = double(catMap.lastKey());
+        const double curLo =
+                qMin(minKey - 0.5, qMin(yCatDiv->lowerBound(), yCatDiv->upperBound()));
+        const double curHi =
+                qMax(maxKey + 0.5, qMax(yCatDiv->lowerBound(), yCatDiv->upperBound()));
+        const double topBarY = maxKey + 0.46;
+        const double frac =
+                qBound(0.14, double(legH + mT + 8) / double(qMax(60, ch)), 0.52);
+        const double neededCatHi =
+                qMin(maxKey + 4.2, (topBarY - frac * curLo) / (1.0 - frac));
+        if (neededCatHi <= curHi + 0.05)
+            return false;
+        QwtValueList catMaj;
+        for (auto it = catMap.constBegin(); it != catMap.constEnd(); ++it)
+            catMaj += double(it.key());
+        QwtValueList emptyTicks;
+        QwtValueList catTicks[QwtScaleDiv::NTickTypes];
+        catTicks[QwtScaleDiv::MinorTick] = emptyTicks;
+        catTicks[QwtScaleDiv::MediumTick] = emptyTicks;
+        catTicks[QwtScaleDiv::MajorTick] = catMaj;
+        QwtScaleEngine *newCatEng = new QwtLinearScaleEngine();
+        QwtScaleDiv newCatDiv(curLo, neededCatHi, catTicks);
+        setToriAxisUserLocked(d_plot, QwtPlot::yLeft, true);
+        d_plot->setAxisMaxMinor(QwtPlot::yLeft, 0);
+        d_plot->setMinorTicksType(QwtPlot::yLeft, ScaleDraw::None);
+        d_plot->setAxisMaxMajor(QwtPlot::yLeft, qMax(8, catMap.size() + 2));
+        d_plot->setAxisScale(QwtPlot::yLeft, curLo, neededCatHi, 1.0);
+        d_plot->setAxisScaleEngine(QwtPlot::yLeft, newCatEng);
+        d_plot->setAxisScaleDiv(QwtPlot::yLeft, newCatDiv);
+        updateSecondaryAxis(QwtPlot::yRight);
+        d_zoomer[0]->setZoomBase();
+        d_plot->replot();
+        d_plot->updateLayout();
+        cw = d_plot->canvas()->width();
+        ch = d_plot->canvas()->height();
+        syncChildLinkedLayers();
+        return true;
+    };
+
     LegendAnchor chosenAnchor = anchor;
     double chosenScore = 0.0;
     bool useGridOrigin = false;
@@ -13263,10 +15640,13 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
 
         scoreAllCandidates();
 
+        if (chosenScore > 35.0 && ensureHorizBarCategoryHeadroom())
+            scoreAllCandidates();
+
         // Smart Y-Headroom: when every inside candidate AND 17x17 grid pocket collides (> 35.0),
         // expand a linear non-inverted non-broken yLeft upper bound by ~22% (snapped up
         // to the current major step) so TopRight / TopLeft gets clean headroom above data.
-        if (chosenScore > 35.0 && !d_is_ternary && !isPiePlot()
+        if (chosenScore > 35.0 && !d_is_ternary && !d_is_polar && !isPiePlot()
             && d_plot->axisEnabled(QwtPlot::yLeft) && !d_axis_breaks[QwtPlot::yLeft].enabled
             && !isToriAxisUserLocked(d_plot, QwtPlot::yLeft)
             && d_user_step[QwtPlot::yLeft] <= 0.0) {
@@ -13366,8 +15746,15 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             }
         }
     } else {
-        const QPoint pt = originForInsideAnchor(chosenAnchor);
+        QPoint pt = originForInsideAnchor(chosenAnchor);
         chosenScore = evaluateOriginScore(pt.x(), pt.y());
+        if (chosenScore > 35.0
+            && (chosenAnchor == LegendTopRight || chosenAnchor == LegendTopLeft
+                || chosenAnchor == LegendTopCenter)
+            && ensureHorizBarCategoryHeadroom()) {
+            pt = originForInsideAnchor(chosenAnchor);
+            chosenScore = evaluateOriginScore(pt.x(), pt.y());
+        }
     }
 
     if (outOverlapScore)

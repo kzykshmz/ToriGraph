@@ -798,6 +798,11 @@ GraphInspectorDock::InspectorPageIndex GraphInspectorDock::currentInspectorPage(
 void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
 {
     if (d_target_ml == ml && !forceRefresh) {
+        if (d_header_target_lbl && ml) {
+            const QString winName = ml->name();
+            if (d_header_target_lbl->text() != winName)
+                d_header_target_lbl->setText(winName);
+        }
         syncInspectorFromSelection();
         return;
     }
@@ -824,6 +829,22 @@ void GraphInspectorDock::connectMultiLayerSignals(MultiLayer *ml)
 {
     if (!ml)
         return;
+    connect(ml, &QObject::objectNameChanged, this, [this](const QString &newName) {
+        if (!d_target_ml || newName.isEmpty())
+            return;
+        if (d_header_target_lbl) {
+            d_header_target_lbl->setText(newName);
+            const QString winLbl = d_target_ml->windowLabel().trimmed();
+            const bool hasExtraLbl = !winLbl.isEmpty() && winLbl != newName && winLbl.length() <= 48
+                    && !winLbl.contains(QLatin1Char('/')) && !winLbl.contains(QLatin1Char('\\'));
+            d_header_target_lbl->setToolTip(
+                    hasExtraLbl ? QStringLiteral("%1 — %2").arg(newName, winLbl) : newName);
+        }
+        if (d_object_tree && d_object_tree->topLevelItemCount() > 0) {
+            if (QTreeWidgetItem *pageItem = d_object_tree->topLevelItem(0))
+                pageItem->setText(0, tr("Page: %1").arg(newName));
+        }
+    });
     connect(ml, &MultiLayer::selectionChanged, this, &GraphInspectorDock::onGraphSelectionChanged,
             Qt::UniqueConnection);
     connect(ml, &MultiLayer::modifiedPlot, this, [this]() {
@@ -1027,8 +1048,13 @@ void GraphInspectorDock::buildUi()
     d_object_tree->setUniformRowHeights(true);
     d_object_tree->setIconSize(QSize(22, 14));
     d_object_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    d_object_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(d_object_tree, &QTreeWidget::itemClicked, this,
             &GraphInspectorDock::onTreeItemClicked);
+    connect(d_object_tree, &QTreeWidget::itemDoubleClicked, this,
+            &GraphInspectorDock::onTreeItemDoubleClicked);
+    connect(d_object_tree, &QTreeWidget::customContextMenuRequested, this,
+            &GraphInspectorDock::onObjectTreeContextMenu);
     connect(d_object_tree, &QTreeWidget::itemChanged, this,
             &GraphInspectorDock::onTreeItemChanged);
     topLayout->addWidget(d_object_tree, 1);
@@ -1875,6 +1901,15 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     tickGrid->addWidget(d_lbl_tick_divide, 3, 0);
     tickGrid->addWidget(d_combo_tick_divide, 3, 1);
 
+    d_lbl_category_col = new QLabel(page);
+    d_combo_category_col = new QComboBox(page);
+    connect(d_combo_category_col, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
+        if (!d_syncing_props)
+            applyCategoryColumnFromUi();
+    });
+    tickGrid->addWidget(d_lbl_category_col, 4, 0);
+    tickGrid->addWidget(d_combo_category_col, 4, 1);
+
     d_chk_major_grid = new QCheckBox(page);
     d_chk_minor_grid = new QCheckBox(page);
     auto applyGridToggle = [this]() {
@@ -1904,8 +1939,8 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     connect(d_chk_minor_grid, &QCheckBox::toggled, this,
             [applyGridToggle](bool) { applyGridToggle(); });
 
-    tickGrid->addWidget(d_chk_major_grid, 4, 0);
-    tickGrid->addWidget(d_chk_minor_grid, 4, 1);
+    tickGrid->addWidget(d_chk_major_grid, 5, 0);
+    tickGrid->addWidget(d_chk_minor_grid, 5, 1);
     lay->addLayout(tickGrid);
 
     // Axis Title & Scientific Rich-Text Toolbar + Arial Font Sizes
@@ -3667,11 +3702,11 @@ void GraphInspectorDock::refreshAll()
         } else {
             const QString winLbl = d_target_ml->windowLabel().trimmed();
             const QString winName = d_target_ml->name();
-            const bool useLbl = !winLbl.isEmpty() && winLbl != winName && winLbl.length() <= 48
+            const bool hasExtraLbl = !winLbl.isEmpty() && winLbl != winName && winLbl.length() <= 48
                     && !winLbl.contains(QLatin1Char('/')) && !winLbl.contains(QLatin1Char('\\'));
-            d_header_target_lbl->setText(useLbl ? winLbl : winName);
+            d_header_target_lbl->setText(winName);
             d_header_target_lbl->setToolTip(
-                    useLbl ? QStringLiteral("%1 (%2)").arg(winLbl, winName) : winName);
+                    hasExtraLbl ? QStringLiteral("%1 — %2").arg(winName, winLbl) : winName);
         }
     }
     if (d_scope_strip) {
@@ -3998,6 +4033,140 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     }
 }
 
+void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int column)
+{
+    if (d_syncing_tree || !item || !d_target_ml || !d_app
+        || ApplicationWindow::isNonInteractiveContext(d_app)) {
+        return;
+    }
+    onTreeItemClicked(item, column);
+
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
+    const int primaryId = item->data(0, RolePrimaryId).toInt();
+    const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+
+    switch (kind) {
+    case Graph::GraphSelection::Page:
+    case Graph::GraphSelection::Layer:
+        d_app->showGeneralPlotDialog();
+        break;
+    case Graph::GraphSelection::Axis:
+    case Graph::GraphSelection::AxisTitle:
+        d_app->showScaleDialog();
+        break;
+    case Graph::GraphSelection::Curve:
+    case Graph::GraphSelection::ErrorBars:
+    case Graph::GraphSelection::Spectrogram:
+        if (!isGroupHeader)
+            d_app->showPlotDialog(primaryId);
+        else
+            d_app->showCurvesDialog();
+        break;
+    default:
+        break;
+    }
+}
+
+void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
+{
+    if (!d_object_tree || !d_target_ml || !d_app
+        || ApplicationWindow::isNonInteractiveContext(d_app)) {
+        return;
+    }
+
+    QTreeWidgetItem *item = d_object_tree->itemAt(pos);
+    if (!item)
+        return;
+
+    d_object_tree->setCurrentItem(item);
+    onTreeItemClicked(item, 0);
+
+    Graph *g = activeLayer();
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
+    const int primaryId = item->data(0, RolePrimaryId).toInt();
+    const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+
+    QMenu menu(this);
+    if (!isGroupHeader && (item->flags() & Qt::ItemIsUserCheckable)) {
+        const bool isVis = (item->checkState(0) == Qt::Checked);
+        QAction *actVis = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("eye"), 14),
+                isVis ? tr("Hide Object") : tr("Show Object"));
+        connect(actVis, &QAction::triggered, this, [item, isVis]() {
+            item->setCheckState(0, isVis ? Qt::Unchecked : Qt::Checked);
+        });
+    }
+
+    if (!isGroupHeader
+        && (kind == Graph::GraphSelection::Curve || kind == Graph::GraphSelection::ErrorBars
+            || kind == Graph::GraphSelection::Spectrogram)) {
+        QAction *actEdit = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
+                tr("Edit Curve Style..."));
+        connect(actEdit, &QAction::triggered, this, [this, primaryId]() {
+            if (d_app)
+                d_app->showPlotDialog(primaryId);
+        });
+    } else if (kind == Graph::GraphSelection::Page || kind == Graph::GraphSelection::Layer) {
+        QAction *actProp = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
+                tr("Layer / Plot Properties..."));
+        connect(actProp, &QAction::triggered, this, [this]() {
+            if (d_app)
+                d_app->showGeneralPlotDialog();
+        });
+    }
+
+    QAction *actAdd = menu.addAction(
+            IconLoader::duotoneIcon(QStringLiteral("plus"), 14),
+            tr("Add Curve(s)..."));
+    connect(actAdd, &QAction::triggered, this, &GraphInspectorDock::openAddCurvePopover);
+
+    if (g && (kind == Graph::GraphSelection::LegendBox || kind == Graph::GraphSelection::Layer)) {
+        QAction *actAutoLeg = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("legend"), 14),
+                tr("Auto-Place Legend"));
+        connect(actAutoLeg, &QAction::triggered, this, [this, g]() {
+            if (!d_target_ml || !g)
+                return;
+            const QString before = d_target_ml->captureUndoSnapshot();
+            if (!g->hasLegend())
+                g->newLegend();
+            g->setLegendVisible(true);
+            g->autoPlaceLegend();
+            g->replot();
+            d_target_ml->pushUndoSnapshot(tr("Auto-Place Legend"), before);
+            refreshAll();
+        });
+    }
+
+    if (!isGroupHeader && kind == Graph::GraphSelection::Curve) {
+        menu.addSeparator();
+        QAction *actUp = menu.addAction(tr("Move Curve Up"));
+        connect(actUp, &QAction::triggered, this, [this]() { moveSelectedCurve(-1); });
+        QAction *actDown = menu.addAction(tr("Move Curve Down"));
+        connect(actDown, &QAction::triggered, this, [this]() { moveSelectedCurve(+1); });
+    }
+
+    if (!isGroupHeader
+        && (kind == Graph::GraphSelection::Curve || kind == Graph::GraphSelection::ErrorBars
+            || kind == Graph::GraphSelection::LegendBox
+            || kind == Graph::GraphSelection::TextAnnotation
+            || kind == Graph::GraphSelection::ArrowAnnotation
+            || kind == Graph::GraphSelection::ImageAnnotation)) {
+        menu.addSeparator();
+        QAction *actRem = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("delete"), 14),
+                tr("Remove Object"));
+        connect(actRem, &QAction::triggered, this, &GraphInspectorDock::removeSelectedObject);
+    }
+
+    if (!menu.isEmpty())
+        menu.exec(d_object_tree->viewport()->mapToGlobal(pos));
+}
+
 void GraphInspectorDock::onTreeItemChanged(QTreeWidgetItem *item, int column)
 {
     if (d_syncing_tree || column != 0 || !item || !d_target_ml)
@@ -4111,8 +4280,13 @@ void GraphInspectorDock::openAddCurvePopover()
     QVector<QPointer<Table>> tables;
     if (tblList) {
         for (MyWidget *w : *tblList) {
-            if (Table *t = qobject_cast<Table *>(w))
+            if (!w || w->status() == MyWidget::Hidden || d_app->hiddenWindows.contains(w))
+                continue;
+            if (Table *t = qobject_cast<Table *>(w)) {
+                if (t->name().startsWith(QLatin1String("RpcFitCurve")))
+                    continue;
                 tables.append(QPointer<Table>(t));
+            }
         }
     }
     if (tables.isEmpty())
@@ -4526,6 +4700,7 @@ void GraphInspectorDock::syncAxisControls()
         QSignalBlocker bTFmt(d_combo_tick_format);
         QSignalBlocker bTPrec(d_spin_tick_prec);
         QSignalBlocker bTDiv(d_combo_tick_divide);
+        QSignalBlocker bCat(d_combo_category_col);
         QSignalBlocker bMajG(d_chk_major_grid);
         QSignalBlocker bMinG(d_chk_minor_grid);
         QSignalBlocker bTit(d_edit_axis_title);
@@ -4624,6 +4799,7 @@ void GraphInspectorDock::syncAxisControls()
             else
                 d_combo_tick_divide->setEditText(divTxt);
         }
+        refreshCategoryColumnCombo();
 
         if (Grid *gr = g->grid()) {
             const bool isX = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
@@ -4758,9 +4934,38 @@ void GraphInspectorDock::syncCurveControls()
         QSignalBlocker bEdgeW(d_spin_sym_edge_width);
         QSignalBlocker b7(d_chk_curve_right_y);
 
-        const int ctIdx = d_combo_curve_style->findData(g->curveType(ci));
-        if (ctIdx >= 0)
+        while (d_combo_curve_style->count() > 10)
+            d_combo_curve_style->removeItem(10);
+        const int cType = g->curveType(ci);
+        const int ctIdx = d_combo_curve_style->findData(cType);
+        const bool canConvertStandard =
+                (ctIdx >= 0 && !g->isPolarPlot() && !g->isTernaryPlot()
+                 && (cType == Graph::Line || Graph::canConvertTo(cv, Graph::Line)));
+        if (canConvertStandard) {
+            d_combo_curve_style->setEnabled(true);
             d_combo_curve_style->setCurrentIndex(ctIdx);
+        } else {
+            QString specLabel;
+            if (g->isPolarPlot())
+                specLabel = tr("Polar");
+            else if (g->isTernaryPlot())
+                specLabel = tr("Ternary Plot");
+            else if (cType == Graph::Histogram)
+                specLabel = tr("Histogram");
+            else if (cType == Graph::Box)
+                specLabel = tr("Box Plot");
+            else if (cType == Graph::Pie)
+                specLabel = tr("Pie");
+            else if (cType == Graph::VectXYXY || cType == Graph::VectXYAM)
+                specLabel = tr("Vectors");
+            else if (cType == Graph::ErrorBars)
+                specLabel = tr("Error Bars");
+            else
+                specLabel = tr("Function");
+            d_combo_curve_style->addItem(specLabel, cType);
+            d_combo_curve_style->setCurrentIndex(10);
+            d_combo_curve_style->setEnabled(false);
+        }
 
         const QPen lp = cv->pen();
         const QwtSymbol sym = cv->symbol();
@@ -5112,6 +5317,129 @@ void GraphInspectorDock::applyTickDivideFromUi()
         emit lg->modifiedGraph();
     }
     d_target_ml->pushUndoSnapshot(tr("Change Tick Divide Factor"), before);
+}
+
+void GraphInspectorDock::refreshCategoryColumnCombo()
+{
+    if (!d_combo_category_col)
+        return;
+
+    QSignalBlocker blocker(d_combo_category_col);
+    d_combo_category_col->clear();
+    d_combo_category_col->addItem(tr("(Numeric Ticks)"), QString());
+
+    Graph *g = activeLayer();
+    QString currentFmtInfo;
+    if (g && d_active_axis >= 0 && d_active_axis < 4) {
+        const QList<Graph::AxisType> types = g->axesType();
+        if (d_active_axis < types.size() && types[d_active_axis] == Graph::AxisType::Txt)
+            currentFmtInfo = g->axisFormatInfo(d_active_axis).trimmed();
+    }
+
+    int selectedIdx = 0;
+    if (d_app) {
+        QList<MyWidget *> windows = d_app->windowsList();
+        for (MyWidget *w : windows) {
+            Table *tbl = qobject_cast<Table *>(w);
+            if (!tbl || tbl->status() == MyWidget::Hidden)
+                continue;
+            if (d_app->hiddenWindows.contains(tbl))
+                continue;
+            if (tbl->name().startsWith(QLatin1String("RpcFitCurve")))
+                continue;
+            const int nCols = tbl->numCols();
+            for (int c = 0; c < nCols; ++c) {
+                const QString shortCol = tbl->colLabel(c);
+                const QString fullCol = tbl->name() + QLatin1Char('_') + shortCol;
+                QString display = fullCol;
+                if (Column *colPtr = tbl->column(c)) {
+                    if (colPtr->columnMode() == SciDAVis::ColumnMode::Text)
+                        display += QStringLiteral(" [Text]");
+                }
+                const int itemIdx = d_combo_category_col->count();
+                d_combo_category_col->addItem(display, fullCol);
+                if (!currentFmtInfo.isEmpty() && fullCol == currentFmtInfo)
+                    selectedIdx = itemIdx;
+            }
+        }
+    }
+
+    if (selectedIdx == 0 && g && !g->categoryLabels(d_active_axis).isEmpty()) {
+        const QStringList cats = g->categoryLabels(d_active_axis);
+        const QString customLabel =
+                tr("Custom (%1 labels)").arg(cats.size());
+        d_combo_category_col->addItem(customLabel, QStringLiteral("__custom__"));
+        selectedIdx = d_combo_category_col->count() - 1;
+    }
+
+    d_combo_category_col->setCurrentIndex(selectedIdx);
+}
+
+void GraphInspectorDock::applyCategoryColumnFromUi()
+{
+    const QVector<Graph *> targets = targetLayersForScope();
+    if (d_syncing_props || !d_target_ml || targets.isEmpty() || !d_combo_category_col || !d_app)
+        return;
+
+    const QString fullCol = d_combo_category_col->currentData().toString();
+    if (fullCol == QLatin1String("__custom__"))
+        return;
+
+    Table *srcTable = nullptr;
+    Column *srcCol = nullptr;
+    QString shortColName;
+    QStringList labels;
+
+    if (!fullCol.isEmpty()) {
+        srcTable = d_app->table(fullCol);
+        if (!srcTable) {
+            const int us = fullCol.lastIndexOf(QLatin1Char('_'));
+            if (us > 0)
+                srcTable = d_app->table(fullCol.left(us));
+        }
+        if (!srcTable)
+            return;
+        const QString prefix = srcTable->name() + QLatin1Char('_');
+        shortColName = fullCol.startsWith(prefix) ? fullCol.mid(prefix.size()) : fullCol;
+        const int colIdx = srcTable->colIndex(fullCol);
+        srcCol = (colIdx >= 0) ? srcTable->column(colIdx) : srcTable->column(shortColName);
+        if (!srcCol)
+            return;
+
+        int lastNonEmpty = -1;
+        const int nRows = srcCol->rowCount();
+        for (int r = 0; r < nRows; ++r) {
+            const QString txt = srcTable->text(r, srcTable->colIndex(srcCol->name())).trimmed();
+            if (!txt.isEmpty())
+                lastNonEmpty = r;
+        }
+        for (int r = 0; r <= lastNonEmpty; ++r) {
+            QString txt;
+            if (srcCol->columnMode() == SciDAVis::ColumnMode::Text)
+                txt = srcCol->textAt(r).trimmed();
+            else
+                txt = srcTable->text(r, srcTable->colIndex(srcCol->name())).trimmed();
+            labels.append(txt);
+        }
+    }
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    for (Graph *lg : targets) {
+        if (!lg)
+            continue;
+        if (fullCol.isEmpty()) {
+            lg->setCategoryLabels(d_active_axis, QStringList());
+            const QString formula = lg->getAxesFormulas().value(d_active_axis);
+            lg->setLabelsNumericFormat(d_active_axis, Plot::Automatic, 6, formula);
+        } else if (srcTable && srcCol) {
+            lg->setLabelsTextFormat(d_active_axis, srcCol, 0, qMax(0, labels.size() - 1));
+            if (!labels.isEmpty())
+                lg->setCategoryLabels(d_active_axis, labels);
+        }
+        lg->replot();
+        emit lg->modifiedGraph();
+    }
+    d_target_ml->pushUndoSnapshot(tr("Change Category Labels"), before);
 }
 
 void GraphInspectorDock::applyAxisTitleMarkup(const QString &openTag, const QString &closeTag)
@@ -5524,24 +5852,30 @@ void GraphInspectorDock::applyQuickErrorBars(int mode)
         const QString xColName = dc->xColumnName();
         const int srcColIdx = tbl->colIndex(dc->yColumnName());
         Column *data = (srcColIdx >= 0) ? tbl->column(srcColIdx) : nullptr;
-        if (xColName.isEmpty() || !data) {
+        if (xColName.isEmpty() || !data || !tbl->d_future_table) {
             syncCurveControls();
             return;
         }
 
-        const QString baseLabel = tbl->colLabel(srcColIdx) + QStringLiteral("_yErr");
-        QString uniqueColName = baseLabel;
-        int suffix = 2;
-        const QStringList existingCols = tbl->colNames();
-        while (existingCols.contains(uniqueColName)
-               || tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + uniqueColName) >= 0) {
-            uniqueColName = baseLabel + QStringLiteral("_") + QString::number(suffix++);
+        const QString detColName = tbl->colLabel(srcColIdx)
+                + (mode == 2 ? QStringLiteral("_5pct_yErr") : QStringLiteral("_SD_yErr"));
+        const QString detFullName = QString(tbl->name()) + QStringLiteral("_") + detColName;
+
+        // Repeat click on the active quick error-bar mode toggles it OFF cleanly!
+        const QString before = ml ? ml->captureUndoSnapshot() : QString();
+        if (removeVerticalErrorBarsOnCurve(dc, detFullName) > 0) {
+            g->updatePlot();
+            if (ml)
+                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
+            if (d_app)
+                emit d_app->modified();
+            refreshAll();
+            return;
         }
 
-        Column *errCol = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
-        errCol->setPlotDesignation(SciDAVis::yErr);
-
         const int rows = data->rowCount();
+        QVector<qreal> errVals(qMax(0, rows), 0.0);
+        QVector<bool> errValid(qMax(0, rows), false);
         if (rows > 0) {
             const int r0 = qMax(0, dc->startRow());
             const int r1 = (dc->endRow() >= 0) ? qMin(rows - 1, dc->endRow()) : (rows - 1);
@@ -5563,8 +5897,10 @@ void GraphInspectorDock::applyQuickErrorBars(int mode)
                         continue;
                     }
                     const double v = data->valueAt(i);
-                    if (std::isfinite(v))
-                        errCol->setValueAt(i, std::abs(v * 0.05));
+                    if (std::isfinite(v)) {
+                        errVals[i] = std::abs(v * 0.05);
+                        errValid[i] = true;
+                    }
                 }
             } else {
                 QVector<int> validRows;
@@ -5593,14 +5929,50 @@ void GraphInspectorDock::applyQuickErrorBars(int mode)
                     }
                     sdVal = std::sqrt(sqSum / double(validCount - 1));
                 }
-                for (int idx : validRows)
-                    errCol->setValueAt(idx, sdVal);
+                for (int idx : validRows) {
+                    errVals[idx] = sdVal;
+                    errValid[idx] = true;
+                }
             }
         }
 
-        const QString before = ml ? ml->captureUndoSnapshot() : QString();
         removeVerticalErrorBarsOnCurve(dc, QString());
-        tbl->d_future_table->addChild(errCol);
+
+        int existingErrIdx = tbl->colIndex(detFullName);
+        if (existingErrIdx < 0)
+            existingErrIdx = tbl->colIndex(detColName);
+        Column *errCol = (existingErrIdx >= 0) ? tbl->column(existingErrIdx) : nullptr;
+        if (errCol && errCol->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            tbl->d_future_table->beginMacro(tr("%1: change cell value(s)").arg(tbl->name()));
+            errCol->setPlotDesignation(SciDAVis::yErr);
+            if (!errVals.isEmpty()) {
+                errCol->replaceValues(0, errVals);
+                for (int r = 0; r < rows; ++r) {
+                    if (!errValid[r])
+                        errCol->setInvalid(r, true);
+                }
+            }
+            tbl->d_future_table->endMacro();
+        } else {
+            QString uniqueColName = detColName;
+            int suffix = 2;
+            const QStringList existingCols = tbl->colNames();
+            while (existingCols.contains(uniqueColName)
+                   || tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + uniqueColName) >= 0) {
+                uniqueColName = detColName + QStringLiteral("_") + QString::number(suffix++);
+            }
+            errCol = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
+            errCol->setPlotDesignation(SciDAVis::yErr);
+            if (!errVals.isEmpty()) {
+                errCol->replaceValues(0, errVals);
+                for (int r = 0; r < rows; ++r) {
+                    if (!errValid[r])
+                        errCol->setInvalid(r, true);
+                }
+            }
+            tbl->d_future_table->addChild(errCol);
+        }
+
         const QString fullErrColName = QString(tbl->name()) + QStringLiteral("_") + errCol->name();
         const bool changed = g->addErrorBars(xColName, curveName, tbl, fullErrColName,
                                              QwtErrorPlotCurve::Vertical);
@@ -5849,6 +6221,9 @@ void GraphInspectorDock::retranslateUi()
         d_spin_tick_prec->setSpecialValueText(tr("Auto"));
     if (d_lbl_tick_divide)
         d_lbl_tick_divide->setText(tr("Divide by:"));
+    if (d_lbl_category_col)
+        d_lbl_category_col->setText(tr("Categories:"));
+    refreshCategoryColumnCombo();
     if (d_chk_major_grid)
         d_chk_major_grid->setText(tr("Major Grid"));
     if (d_chk_minor_grid)
@@ -5902,6 +6277,8 @@ void GraphInspectorDock::retranslateUi()
         d_combo_curve_style->setItemText(7, tr("Vertical Bars"));
         d_combo_curve_style->setItemText(8, tr("Horizontal Bars"));
         d_combo_curve_style->setItemText(9, tr("Area"));
+        if (d_combo_curve_style->count() > 10)
+            syncCurveControls();
     }
     if (d_sec_line_style_lbl)
         d_sec_line_style_lbl->setText(tr("Line Appearance"));

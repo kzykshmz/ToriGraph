@@ -64,6 +64,14 @@
 #include <qwt_text_label.h>
 
 namespace {
+const Plot *s_lastHoverPlot = nullptr;
+QPoint s_lastHoverPos(-99999, -99999);
+int s_lastHoverKey = -1;
+int s_lastHoverDist = 99999;
+int s_lastHoverPt = -1;
+} // namespace
+
+namespace {
 class PassiveDataHoverTooltip : public QFrame
 {
 public:
@@ -761,6 +769,7 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
         if (me->buttons() == Qt::NoButton) {
             updatePassiveHoverReadout(me->pos());
             updateHoverCursor(me->pos());
+            s_lastHoverPlot = nullptr;
             return false;
         }
 
@@ -1120,7 +1129,16 @@ void CanvasPicker::updateHoverCursor(const QPoint &canvasPos)
     // Reference lines vs curves
     int vDist = 999;
     int vPt = -1;
-    const int vKey = g->isPiePlot() ? -1 : plotWidget->closestDataPoint(canvasPos, vDist, vPt);
+    int vKey = -1;
+    if (!g->isPiePlot()) {
+        if (s_lastHoverPlot == plotWidget && s_lastHoverPos == canvasPos) {
+            vKey = s_lastHoverKey;
+            vDist = s_lastHoverDist;
+            vPt = s_lastHoverPt;
+        } else {
+            vKey = plotWidget->closestDataPoint(canvasPos, vDist, vPt);
+        }
+    }
     if (!(vKey >= 0 && vDist < 5)) {
         const int refIdx = g->referenceLineAtCanvasPos(canvasPos, 6);
         if (refIdx >= 0 && refIdx < g->referenceLines().size()) {
@@ -1131,6 +1149,10 @@ void CanvasPicker::updateHoverCursor(const QPoint &canvasPos)
     }
 
     if (!g->isPiePlot()) {
+        if (vKey >= 0 && vDist < 10) {
+            cv->setCursor(Qt::PointingHandCursor);
+            return;
+        }
         int cDist = 999;
         int cPt = -1;
         const int cKey = plotWidget->closestCurveInteractive(canvasPos, cDist, cPt);
@@ -1241,6 +1263,11 @@ void CanvasPicker::updatePassiveHoverReadout(const QPoint &canvasPos)
     int vDist = 99999;
     int bestPoint = -1;
     const int bestKey = plotWidget->closestDataPoint(canvasPos, vDist, bestPoint);
+    s_lastHoverPlot = plotWidget;
+    s_lastHoverPos = canvasPos;
+    s_lastHoverKey = bestKey;
+    s_lastHoverDist = vDist;
+    s_lastHoverPt = bestPoint;
     const QwtPlotCurve *bestCurve = (bestKey >= 0) ? plotWidget->curve(bestKey) : nullptr;
 
     if (bestCurve && bestPoint >= 0 && vDist <= 14) {

@@ -45,6 +45,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -56,7 +57,15 @@ QStringList AsciiTableImportFilter::fileExtensions() const
                          << "csv"
                          << "tsv"
                          << "dat"
-                         << "ras";
+                         << "ras"
+                         << "xy"
+                         << "xye"
+                         << "asc"
+                         << "chi"
+                         << "uxd"
+                         << "mpt"
+                         << "dta"
+                         << "tab";
 }
 
 namespace {
@@ -90,9 +99,57 @@ bool isMissingNumericToken(const QString &trimmed, bool wasQuoted)
     return false;
 }
 
+bool tryParseAsciiDoubleSpan(const QChar *ptr, int len, double &outVal)
+{
+    if (!ptr || len <= 0 || len > 60)
+        return false;
+    char buf[64];
+    int outIdx = 0;
+    int startIdx = 0;
+    if (ptr[0] == QLatin1Char('+'))
+        startIdx = 1;
+    if (startIdx >= len)
+        return false;
+    for (int i = startIdx; i < len; ++i) {
+        const ushort u = ptr[i].unicode();
+        if (u >= 0x80 || u == ' ' || u == '\t')
+            return false;
+        buf[outIdx++] = static_cast<char>(u);
+    }
+    double val = 0.0;
+    const auto res = std::from_chars(buf, buf + outIdx, val);
+    if (res.ec == std::errc() && res.ptr == buf + outIdx && std::isfinite(val)) {
+        outVal = val;
+        return true;
+    }
+    return false;
+}
+
+bool isMissingNumericSpan(const QChar *ptr, int len, bool wasQuoted)
+{
+    if (len <= 0)
+        return true;
+    if (len <= 3) {
+        if (len == 1
+            && (ptr[0] == QLatin1Char('-') || ptr[0] == QChar(0x2014) || ptr[0] == QChar(0x2013)))
+            return true;
+        if (len == 2 && ptr[0] == QLatin1Char('-') && ptr[1] == QLatin1Char('-'))
+            return true;
+        if (len == 3 && ptr[0] == QLatin1Char('-') && ptr[1] == QLatin1Char('-')
+            && ptr[2] == QLatin1Char('-'))
+            return true;
+    }
+    if (len <= 5) {
+        return isMissingNumericToken(QString(ptr, len), wasQuoted);
+    }
+    return false;
+}
+
 bool tryParseLabDouble(const QString &trimmed, const QLocale &primaryLoc, bool useCustomLocale,
                        double &outVal)
 {
+    if (!useCustomLocale && tryParseAsciiDoubleSpan(trimmed.constData(), trimmed.size(), outVal))
+        return true;
     QLocale cLoc = QLocale::c();
     cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
     bool ok = false;
@@ -105,6 +162,14 @@ bool tryParseLabDouble(const QString &trimmed, const QLocale &primaryLoc, bool u
         return true;
     outVal = cLoc.toDouble(trimmed, &ok);
     return ok && std::isfinite(outVal);
+}
+
+bool tryParseLabDoubleSpan(const QChar *ptr, int len, const QLocale &primaryLoc,
+                           bool useCustomLocale, double &outVal)
+{
+    if (!useCustomLocale && tryParseAsciiDoubleSpan(ptr, len, outVal))
+        return true;
+    return tryParseLabDouble(QString(ptr, len), primaryLoc, useCustomLocale, outVal);
 }
 
 bool isPureNumberString(const QString &s)
@@ -595,6 +660,630 @@ void parseDelimitedRecordsFast(const QString &text, int startPos, const QString 
     }
 }
 
+future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &effTableName,
+                                        const QString &filePathHint, double *outFermiEV)
+{
+    if (outFermiEV)
+        *outFermiEV = 0.0;
+    if (decoded.isEmpty())
+        return nullptr;
+
+    const QString baseName = QFileInfo(filePathHint).fileName();
+    const bool nameIsDoscar = baseName.startsWith(QLatin1String("DOSCAR"), Qt::CaseInsensitive);
+    const bool nameIsEigenval = baseName.startsWith(QLatin1String("EIGENVAL"), Qt::CaseInsensitive);
+
+    const QChar *buf = decoded.constData();
+    const int len = decoded.size();
+    int pos = 0;
+
+    auto readLineTrimmed = [&]() -> QString {
+        if (pos >= len)
+            return QString();
+        int lineEnd = pos;
+        while (lineEnd < len && buf[lineEnd] != QLatin1Char('\r') && buf[lineEnd] != QLatin1Char('\n'))
+            ++lineEnd;
+        QString out(buf + pos, lineEnd - pos);
+        pos = lineEnd;
+        if (pos < len && buf[pos] == QLatin1Char('\r')) {
+            ++pos;
+            if (pos < len && buf[pos] == QLatin1Char('\n'))
+                ++pos;
+        } else if (pos < len && buf[pos] == QLatin1Char('\n')) {
+            ++pos;
+        }
+        return out.trimmed();
+    };
+
+    auto splitDoubles = [](const QString &line, QVector<double> &valsOut) -> bool {
+        valsOut.clear();
+        const QChar *p = line.constData();
+        const int n = line.size();
+        int i = 0;
+        while (i < n) {
+            while (i < n && (p[i] == QLatin1Char(' ') || p[i] == QLatin1Char('\t')))
+                ++i;
+            if (i >= n)
+                break;
+            const int s = i;
+            while (i < n && p[i] != QLatin1Char(' ') && p[i] != QLatin1Char('\t'))
+                ++i;
+            double v = 0.0;
+            if (!tryParseAsciiDoubleSpan(p + s, i - s, v))
+                return false;
+            valsOut.append(v);
+        }
+        return !valsOut.isEmpty();
+    };
+
+    QString ln0;
+    while (pos < len) {
+        ln0 = readLineTrimmed();
+        if (!ln0.isEmpty())
+            break;
+    }
+    if (ln0.isEmpty())
+        return nullptr;
+    const QString ln1 = readLineTrimmed();
+    const QString ln2 = readLineTrimmed();
+    const QString ln3 = readLineTrimmed();
+    const QString ln4 = readLineTrimmed(); // SYSTEM title
+    const QString ln5 = readLineTrimmed();
+
+    QVector<double> v0, v1, v2, v5;
+    if (!splitDoubles(ln0, v0) || v0.size() < 4 || !splitDoubles(ln1, v1) || v1.size() < 4
+        || !splitDoubles(ln2, v2) || !splitDoubles(ln5, v5)) {
+        return nullptr;
+    }
+    const bool hasCarTag = (ln3.compare(QLatin1String("CAR"), Qt::CaseInsensitive) == 0
+                            || ln3.startsWith(QLatin1String("CAR"), Qt::CaseInsensitive)
+                            || ln3 == QLatin1String("0") || ln3 == QLatin1String("1"));
+    if (!hasCarTag && !nameIsDoscar && !nameIsEigenval)
+        return nullptr;
+
+    auto attachStdDisplayFormat = [](Column *col) {
+        if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
+            d2s->setNumericFormat('g');
+            d2s->setNumDigits(6);
+        }
+    };
+
+    // 1. VASP DOSCAR: line 5 has 5 tokens <EMAX> <EMIN> <NEDOS> <EFERMI> <WEIGHT>
+    if ((v5.size() == 5 && !nameIsEigenval) || nameIsDoscar) {
+        if (v5.size() < 5)
+            return nullptr;
+        const int nedos = static_cast<int>(std::llround(v5[2]));
+        const double efermi = v5[3];
+        if (nedos < 2 || nedos > 200000)
+            return nullptr;
+        if (outFermiEV)
+            *outFermiEV = efermi;
+
+        QVector<QVector<double>> totalRows;
+        totalRows.reserve(nedos);
+        int totCols = 0;
+        for (int r = 0; r < nedos && pos < len; ++r) {
+            const QString dl = readLineTrimmed();
+            if (dl.isEmpty()) {
+                --r;
+                continue;
+            }
+            QVector<double> rowVals;
+            if (!splitDoubles(dl, rowVals) || rowVals.size() < 3)
+                break;
+            totCols = std::max(totCols, rowVals.size());
+            totalRows.append(std::move(rowVals));
+        }
+        const int nActual = totalRows.size();
+        if (nActual < 2)
+            return nullptr;
+        const bool spinPol = (totCols >= 5);
+
+        // Optional site-projected PDOS blocks (summed over ions into s, p, d channels)
+        bool hasPdos = false;
+        QVector<double> sUp(nActual, 0.0), pUp(nActual, 0.0), dUp(nActual, 0.0);
+        QVector<double> sDw(nActual, 0.0), pDw(nActual, 0.0), dDw(nActual, 0.0);
+        while (pos < len) {
+            const QString hdr = readLineTrimmed();
+            if (hdr.isEmpty())
+                continue;
+            QVector<double> hv;
+            if (!splitDoubles(hdr, hv) || hv.size() != 5
+                || static_cast<int>(std::llround(hv[2])) != nedos) {
+                break;
+            }
+            for (int r = 0; r < nedos && pos < len; ++r) {
+                const QString pl = readLineTrimmed();
+                QVector<double> pv;
+                if (!splitDoubles(pl, pv) || r >= nActual)
+                    continue;
+                if (!spinPol) {
+                    if (pv.size() == 4) {
+                        sUp[r] += pv[1];
+                        pUp[r] += pv[2];
+                        dUp[r] += pv[3];
+                        hasPdos = true;
+                    } else if (pv.size() >= 10) {
+                        sUp[r] += pv[1];
+                        pUp[r] += pv[2] + pv[3] + pv[4];
+                        for (int k = 5; k < std::min(10, pv.size()); ++k)
+                            dUp[r] += pv[k];
+                        hasPdos = true;
+                    }
+                } else {
+                    if (pv.size() == 7) {
+                        sUp[r] += pv[1];
+                        sDw[r] += std::fabs(pv[2]);
+                        pUp[r] += pv[3];
+                        pDw[r] += std::fabs(pv[4]);
+                        dUp[r] += pv[5];
+                        dDw[r] += std::fabs(pv[6]);
+                        hasPdos = true;
+                    } else if (pv.size() >= 19) {
+                        sUp[r] += pv[1];
+                        sDw[r] += std::fabs(pv[2]);
+                        pUp[r] += pv[3] + pv[5] + pv[7];
+                        pDw[r] += std::fabs(pv[4]) + std::fabs(pv[6]) + std::fabs(pv[8]);
+                        for (int k = 9; k + 1 < std::min(19, pv.size()); k += 2) {
+                            dUp[r] += pv[k];
+                            dDw[r] += std::fabs(pv[k + 1]);
+                        }
+                        hasPdos = true;
+                    }
+                }
+            }
+        }
+
+        auto makeCol = [&](const QString &shortNm, const QString &longNm, const QString &unit,
+                           SciDAVis::PlotDesignation pd, const QVector<double> &src) -> Column * {
+            std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nActual, 0.0));
+            for (int r = 0; r < nActual; ++r)
+                (*vec)[r] = src[r];
+            Column *c = new Column(shortNm, std::move(vec), IntervalAttribute<bool>());
+            c->setLongName(longNm);
+            c->setUnits(unit);
+            c->setPlotDesignation(pd);
+            attachStdDisplayFormat(c);
+            return c;
+        };
+
+        QVector<double> eRaw(nActual), dos1(nActual), dos2(nActual);
+        for (int r = 0; r < nActual; ++r) {
+            eRaw[r] = totalRows[r][0];
+            dos1[r] = totalRows[r][1];
+            if (spinPol && totalRows[r].size() >= 3)
+                dos2[r] = std::fabs(totalRows[r][2]);
+        }
+
+        QList<Column *> cols;
+        Column *cE = makeCol(QStringLiteral("Energy"), QStringLiteral("Energy, E"),
+                             QStringLiteral("eV"), SciDAVis::X, eRaw);
+        cE->setComment(QStringLiteral("VASP_EFERMI=%1").arg(efermi, 0, 'g', 10));
+        cols << cE;
+
+        if (!spinPol) {
+            cols << makeCol(QStringLiteral("DOS_Total"), QStringLiteral("Total DOS"),
+                            QStringLiteral("states/eV"), SciDAVis::Y, dos1);
+            if (hasPdos) {
+                cols << makeCol(QStringLiteral("PDOS_s"), QStringLiteral("s-PDOS"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, sUp);
+                cols << makeCol(QStringLiteral("PDOS_p"), QStringLiteral("p-PDOS"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, pUp);
+                cols << makeCol(QStringLiteral("PDOS_d"), QStringLiteral("d-PDOS"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, dUp);
+            }
+        } else {
+            cols << makeCol(QStringLiteral("DOS_up"), QStringLiteral("Total DOS (Spin \u2191)"),
+                            QStringLiteral("states/eV"), SciDAVis::Y, dos1);
+            cols << makeCol(QStringLiteral("DOS_down"), QStringLiteral("Total DOS (Spin \u2193)"),
+                            QStringLiteral("states/eV"), SciDAVis::Y, dos2);
+            if (hasPdos) {
+                cols << makeCol(QStringLiteral("PDOS_s_up"), QStringLiteral("s (Spin \u2191)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, sUp);
+                cols << makeCol(QStringLiteral("PDOS_p_up"), QStringLiteral("p (Spin \u2191)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, pUp);
+                cols << makeCol(QStringLiteral("PDOS_d_up"), QStringLiteral("d (Spin \u2191)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, dUp);
+                cols << makeCol(QStringLiteral("PDOS_s_dw"), QStringLiteral("s (Spin \u2193)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, sDw);
+                cols << makeCol(QStringLiteral("PDOS_p_dw"), QStringLiteral("p (Spin \u2193)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, pDw);
+                cols << makeCol(QStringLiteral("PDOS_d_dw"), QStringLiteral("d (Spin \u2193)"),
+                                QStringLiteral("states/eV"), SciDAVis::Y, dDw);
+            }
+        }
+
+        future::Table *result = new future::Table(0, 0, effTableName);
+        if (!ln4.isEmpty())
+            result->setComment(ln4);
+        result->appendColumns(cols);
+        return result;
+    }
+
+    // 2. VASP EIGENVAL: line 5 has 3 tokens <NELECT> <NKPTS> <NBANDS>
+    if ((v5.size() == 3 && !nameIsDoscar) || nameIsEigenval) {
+        if (v5.size() < 3)
+            return nullptr;
+        const double nelect = v5[0];
+        const int nkpts = static_cast<int>(std::llround(v5[1]));
+        const int nbands = static_cast<int>(std::llround(v5[2]));
+        const int ispin = std::clamp(static_cast<int>(std::llround(v0[3])), 1, 2);
+        if (nkpts < 1 || nkpts > 50000 || nbands < 1 || nbands > 2048)
+            return nullptr;
+
+        QVector<double> kx(nkpts, 0.0), ky(nkpts, 0.0), kz(nkpts, 0.0), kDist(nkpts, 0.0);
+        QVector<QVector<double>> bandsUp(nbands, QVector<double>(nkpts, 0.0));
+        QVector<QVector<double>> bandsDw(ispin == 2 ? nbands : 0, QVector<double>(nkpts, 0.0));
+
+        bool hasOcc = false;
+        double maxOccEnergy = -std::numeric_limits<double>::infinity();
+        int actualK = 0;
+
+        for (int k = 0; k < nkpts && pos < len; ++k) {
+            QString khdr;
+            while (pos < len) {
+                khdr = readLineTrimmed();
+                if (!khdr.isEmpty())
+                    break;
+            }
+            QVector<double> kv;
+            if (!splitDoubles(khdr, kv) || kv.size() < 4)
+                break;
+            kx[k] = kv[0];
+            ky[k] = kv[1];
+            kz[k] = kv[2];
+            if (k > 0) {
+                const double dx = kx[k] - kx[k - 1];
+                const double dy = ky[k] - ky[k - 1];
+                const double dz = kz[k] - kz[k - 1];
+                const double dk = std::sqrt(dx * dx + dy * dy + dz * dz);
+                kDist[k] = kDist[k - 1] + ((dk > 0.5) ? 0.0 : dk);
+            }
+            for (int b = 0; b < nbands && pos < len; ++b) {
+                const QString bl = readLineTrimmed();
+                if (bl.isEmpty()) {
+                    --b;
+                    continue;
+                }
+                QVector<double> bv;
+                if (!splitDoubles(bl, bv) || bv.size() < 2)
+                    break;
+                bandsUp[b][k] = bv[1];
+                if (ispin == 2 && bv.size() >= 3) {
+                    bandsDw[b][k] = bv[2];
+                    if (bv.size() >= 5) {
+                        hasOcc = true;
+                        if (bv[3] >= 0.5)
+                            maxOccEnergy = std::max(maxOccEnergy, bv[1]);
+                        if (bv[4] >= 0.5)
+                            maxOccEnergy = std::max(maxOccEnergy, bv[2]);
+                    }
+                } else if (ispin == 1 && bv.size() >= 3) {
+                    hasOcc = true;
+                    if (bv[2] >= 0.5)
+                        maxOccEnergy = std::max(maxOccEnergy, bv[1]);
+                }
+            }
+            ++actualK;
+        }
+        if (actualK < 1)
+            return nullptr;
+
+        double estFermi = 0.0;
+        if (hasOcc && std::isfinite(maxOccEnergy)) {
+            estFermi = maxOccEnergy;
+        } else {
+            const int occBandIdx = std::clamp(static_cast<int>(std::floor(nelect / 2.0)) - 1, 0,
+                                              nbands - 1);
+            double vbm = -std::numeric_limits<double>::infinity();
+            for (int k = 0; k < actualK; ++k)
+                vbm = std::max(vbm, bandsUp[occBandIdx][k]);
+            if (std::isfinite(vbm))
+                estFermi = vbm;
+        }
+        if (outFermiEV)
+            *outFermiEV = estFermi;
+
+        QList<Column *> cols;
+        auto appendVecCol = [&](const QString &nm, const QString &lnm, const QString &u,
+                                SciDAVis::PlotDesignation pd, const QVector<double> &src) -> Column * {
+            std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(actualK, 0.0));
+            for (int k = 0; k < actualK; ++k)
+                (*vec)[k] = src[k];
+            Column *c = new Column(nm, std::move(vec), IntervalAttribute<bool>());
+            c->setLongName(lnm);
+            c->setUnits(u);
+            c->setPlotDesignation(pd);
+            attachStdDisplayFormat(c);
+            cols << c;
+            return c;
+        };
+
+        Column *cK = appendVecCol(QStringLiteral("k_dist"), QStringLiteral("Wavevector, k"),
+                                  QString(), SciDAVis::X, kDist);
+        cK->setComment(QStringLiteral("VASP_EFERMI=%1").arg(estFermi, 0, 'g', 10));
+
+        for (int b = 0; b < nbands; ++b) {
+            appendVecCol(QStringLiteral("Band_%1").arg(b + 1),
+                         QStringLiteral("Band %1").arg(b + 1), QStringLiteral("eV"),
+                         SciDAVis::Y, bandsUp[b]);
+        }
+        if (ispin == 2) {
+            for (int b = 0; b < nbands; ++b) {
+                appendVecCol(QStringLiteral("Band_%1_dw").arg(b + 1),
+                             QStringLiteral("Band %1 (\u2193)").arg(b + 1), QStringLiteral("eV"),
+                             SciDAVis::Y, bandsDw[b]);
+            }
+        }
+
+        future::Table *result = new future::Table(0, 0, effTableName);
+        if (!ln4.isEmpty())
+            result->setComment(ln4);
+        result->appendColumns(cols);
+        return result;
+    }
+
+    return nullptr;
+}
+
+struct ZeroCopyCellSpan
+{
+    const QChar *ptr = nullptr;
+    int len = 0;
+    QString unescaped;
+    bool quoted = false;
+    bool usesUnescaped = false;
+
+    QString toQString(bool trimSpaces, bool simplifySpaces) const
+    {
+        if (usesUnescaped)
+            return unescaped;
+        if (!ptr || len <= 0)
+            return QString();
+        QString s(ptr, len);
+        if (!quoted) {
+            if (simplifySpaces)
+                return s.simplified();
+            if (trimSpaces)
+                return s.trimmed();
+        }
+        return s;
+    }
+
+    void trimmedView(const QChar *&outPtr, int &outLen) const
+    {
+        if (usesUnescaped) {
+            outPtr = unescaped.constData();
+            outLen = unescaped.size();
+        } else {
+            outPtr = ptr;
+            outLen = len;
+        }
+        if (!outPtr || outLen <= 0) {
+            outLen = 0;
+            return;
+        }
+        int s = 0;
+        int e = outLen;
+        while (s < e && outPtr[s].isSpace())
+            ++s;
+        while (e > s && outPtr[e - 1].isSpace())
+            --e;
+        outPtr += s;
+        outLen = e - s;
+    }
+};
+
+// Reads one logical CSV/whitespace record starting at `ioPos`, advancing `ioPos` to the next line.
+// Returns false at EOF (`ioPos >= len`). Sets `outSkipRow = true` for blank or '#'-comment lines.
+bool readNextRecordSpans(const QChar *buf, int len, int &ioPos, const QString &effSep,
+                         bool whitespaceDelim, bool trimSpaces, bool simplifySpaces,
+                         QVector<ZeroCopyCellSpan> &outRow, bool &outSkipRow)
+{
+    outRow.resize(0);
+    outSkipRow = false;
+    if (ioPos >= len)
+        return false;
+
+    if (whitespaceDelim) {
+        int lineEnd = ioPos;
+        while (lineEnd < len && buf[lineEnd] != QLatin1Char('\r')
+               && buf[lineEnd] != QLatin1Char('\n')) {
+            ++lineEnd;
+        }
+        int p = ioPos;
+        while (p < lineEnd && (buf[p] == QLatin1Char(' ') || buf[p] == QLatin1Char('\t')))
+            ++p;
+        if (p >= lineEnd || buf[p] == QLatin1Char('#')) {
+            outSkipRow = true;
+        } else {
+            while (p < lineEnd) {
+                while (p < lineEnd && (buf[p] == QLatin1Char(' ') || buf[p] == QLatin1Char('\t')))
+                    ++p;
+                if (p >= lineEnd)
+                    break;
+                ZeroCopyCellSpan cell;
+                if (buf[p] == QLatin1Char('"')) {
+                    cell.quoted = true;
+                    ++p;
+                    const int qStart = p;
+                    bool hasEsc = false;
+                    while (p < lineEnd) {
+                        if (buf[p] == QLatin1Char('"')) {
+                            if (p + 1 < lineEnd && buf[p + 1] == QLatin1Char('"')) {
+                                hasEsc = true;
+                                p += 2;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            ++p;
+                        }
+                    }
+                    const int qEnd = p;
+                    if (p < lineEnd && buf[p] == QLatin1Char('"'))
+                        ++p;
+                    if (!hasEsc) {
+                        cell.ptr = buf + qStart;
+                        cell.len = qEnd - qStart;
+                    } else {
+                        cell.usesUnescaped = true;
+                        cell.unescaped.reserve(qEnd - qStart);
+                        for (int k = qStart; k < qEnd; ++k) {
+                            if (buf[k] == QLatin1Char('"') && k + 1 < qEnd
+                                && buf[k + 1] == QLatin1Char('"')) {
+                                cell.unescaped.append(QLatin1Char('"'));
+                                ++k;
+                            } else {
+                                cell.unescaped.append(buf[k]);
+                            }
+                        }
+                    }
+                } else {
+                    const int tokStart = p;
+                    while (p < lineEnd && buf[p] != QLatin1Char(' ') && buf[p] != QLatin1Char('\t'))
+                        ++p;
+                    cell.ptr = buf + tokStart;
+                    cell.len = p - tokStart;
+                }
+                outRow.append(std::move(cell));
+            }
+            if (outRow.isEmpty())
+                outSkipRow = true;
+        }
+        ioPos = lineEnd;
+        if (ioPos < len && buf[ioPos] == QLatin1Char('\r')) {
+            ++ioPos;
+            if (ioPos < len && buf[ioPos] == QLatin1Char('\n'))
+                ++ioPos;
+        } else if (ioPos < len && buf[ioPos] == QLatin1Char('\n')) {
+            ++ioPos;
+        }
+        return true;
+    }
+
+    const int sepLen = effSep.size();
+    const QChar sepFirst = effSep.at(0);
+    auto matchesSepAt = [&](int idx) -> bool {
+        if (idx + sepLen > len || buf[idx] != sepFirst)
+            return false;
+        for (int k = 1; k < sepLen; ++k) {
+            if (buf[idx + k] != effSep.at(k))
+                return false;
+        }
+        return true;
+    };
+
+    int pos = ioPos;
+    while (true) {
+        ZeroCopyCellSpan cell;
+        const int fieldStart = pos;
+        int scanPos = pos;
+        if (trimSpaces || simplifySpaces) {
+            while (scanPos < len
+                   && (buf[scanPos] == QLatin1Char(' ')
+                       || (effSep != QLatin1String("\t") && buf[scanPos] == QLatin1Char('\t')))
+                   && !matchesSepAt(scanPos)) {
+                ++scanPos;
+            }
+        }
+
+        if (scanPos < len && buf[scanPos] == QLatin1Char('"')) {
+            cell.quoted = true;
+            pos = scanPos + 1;
+            const int qStart = pos;
+            bool hasEsc = false;
+            while (pos < len) {
+                const QChar ch = buf[pos];
+                if (ch == QLatin1Char('"')) {
+                    if (pos + 1 < len && buf[pos + 1] == QLatin1Char('"')) {
+                        hasEsc = true;
+                        pos += 2;
+                    } else {
+                        break;
+                    }
+                } else {
+                    ++pos;
+                }
+            }
+            const int qEnd = pos;
+            if (pos < len && buf[pos] == QLatin1Char('"'))
+                ++pos;
+            bool hasTrailing = false;
+            int trailStart = pos;
+            while (pos < len && buf[pos] != QLatin1Char('\r') && buf[pos] != QLatin1Char('\n')
+                   && !matchesSepAt(pos)) {
+                if (buf[pos] != QLatin1Char(' ') && buf[pos] != QLatin1Char('\t'))
+                    hasTrailing = true;
+                ++pos;
+            }
+            if (!hasEsc && !hasTrailing) {
+                cell.ptr = buf + qStart;
+                cell.len = qEnd - qStart;
+            } else {
+                cell.usesUnescaped = true;
+                cell.unescaped.reserve((qEnd - qStart) + (pos - trailStart));
+                for (int k = qStart; k < qEnd; ++k) {
+                    if (buf[k] == QLatin1Char('"') && k + 1 < qEnd
+                        && buf[k + 1] == QLatin1Char('"')) {
+                        cell.unescaped.append(QLatin1Char('"'));
+                        ++k;
+                    } else {
+                        cell.unescaped.append(buf[k]);
+                    }
+                }
+                for (int k = trailStart; k < pos; ++k) {
+                    if (buf[k] != QLatin1Char(' ') && buf[k] != QLatin1Char('\t'))
+                        cell.unescaped.append(buf[k]);
+                }
+            }
+        } else {
+            pos = fieldStart;
+            int rawStart = pos;
+            while (pos < len && buf[pos] != QLatin1Char('\r') && buf[pos] != QLatin1Char('\n')
+                   && !matchesSepAt(pos)) {
+                ++pos;
+            }
+            int rawEnd = pos;
+            if (trimSpaces || simplifySpaces) {
+                while (rawStart < rawEnd && buf[rawStart].isSpace())
+                    ++rawStart;
+                while (rawEnd > rawStart && buf[rawEnd - 1].isSpace())
+                    --rawEnd;
+            }
+            cell.ptr = buf + rawStart;
+            cell.len = rawEnd - rawStart;
+        }
+        outRow.append(std::move(cell));
+
+        if (pos < len && matchesSepAt(pos)) {
+            pos += sepLen;
+            continue;
+        }
+        if (pos < len && buf[pos] == QLatin1Char('\r')) {
+            ++pos;
+            if (pos < len && buf[pos] == QLatin1Char('\n'))
+                ++pos;
+        } else if (pos < len && buf[pos] == QLatin1Char('\n')) {
+            ++pos;
+        }
+        break;
+    }
+
+    ioPos = pos;
+    if (outRow.isEmpty()) {
+        outSkipRow = true;
+    } else if (!outRow[0].quoted) {
+        const QChar *p0 = nullptr;
+        int n0 = 0;
+        outRow[0].trimmedView(p0, n0);
+        if (outRow.size() == 1 && n0 == 0)
+            outSkipRow = true;
+        else if (n0 > 0 && p0[0] == QLatin1Char('#'))
+            outSkipRow = true;
+    }
+    return true;
+}
+
 future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QString &tableName,
                                          const QString &filePathHint, const QString &separatorHint,
                                          const QString &encodingHint, int unitsRowHint,
@@ -605,6 +1294,55 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 {
     const QString effTableName =
             tableName.trimmed().isEmpty() ? QObject::tr("Table") : tableName.trimmed();
+    if (rawBytes.isEmpty())
+        return new future::Table(0, 0, effTableName);
+
+    // Reject binary image / archive / raster magic headers (e.g. Sun Raster 0x59A66A95) & non-UTF16 NUL-byte blobs
+    {
+        const int nBytes = rawBytes.size();
+        const unsigned char *u = reinterpret_cast<const unsigned char *>(rawBytes.constData());
+        if (nBytes >= 4) {
+            if ((u[0] == 0x59 && u[1] == 0xA6 && u[2] == 0x6A && u[3] == 0x95) // Sun Raster BE
+                || (u[0] == 0x95 && u[1] == 0x6A && u[2] == 0xA6 && u[3] == 0x59) // Sun Raster LE
+                || (u[0] == 0x89 && u[1] == 'P' && u[2] == 'N' && u[3] == 'G')
+                || (u[0] == '%' && u[1] == 'P' && u[2] == 'D' && u[3] == 'F')
+                || (u[0] == 'P' && u[1] == 'K' && u[2] == 0x03 && u[3] == 0x04)
+                || (u[0] == 0xD0 && u[1] == 0xCF && u[2] == 0x11 && u[3] == 0xE0)
+                || (u[0] == 'C' && u[1] == 'P' && u[2] == 'Y' && (u[3] == 'A' || u[3] == 'U'))) {
+                return nullptr;
+            }
+        }
+        const bool hasUtf16Bom = (nBytes >= 2
+                                  && ((u[0] == 0xFF && u[1] == 0xFE)
+                                      || (u[0] == 0xFE && u[1] == 0xFF)));
+        if (!hasUtf16Bom) {
+            const int checkBytes = std::min(nBytes, 4096);
+            int nulCount = 0;
+            for (int i = 0; i < checkBytes; ++i) {
+                if (u[i] == 0)
+                    ++nulCount;
+            }
+            if (nulCount > 0) {
+                bool validBomlessUtf16 = false;
+                if (nBytes >= 4 && (nBytes % 2 == 0)) {
+                    const int samplePairs = std::min(nBytes / 2, 256);
+                    int evenZeros = 0, oddZeros = 0;
+                    for (int p = 0; p < samplePairs; ++p) {
+                        if (u[2 * p] == 0)
+                            ++evenZeros;
+                        if (u[2 * p + 1] == 0)
+                            ++oddZeros;
+                    }
+                    validBomlessUtf16 =
+                            (oddZeros > samplePairs / 2 && evenZeros == 0)
+                            || (evenZeros > samplePairs / 2 && oddZeros == 0);
+                }
+                if (!validBomlessUtf16)
+                    return nullptr;
+            }
+        }
+    }
+
     const QString decoded = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
     if (decoded.isEmpty())
         return new future::Table(0, 0, effTableName);
@@ -688,6 +1426,14 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         return result;
     }
 
+    // 1b. Specialized VASP DOSCAR & EIGENVAL parser
+    if (ignoredLines == 0) {
+        if (future::Table *vaspTbl =
+                    tryParseVaspTextInternal(decoded, effTableName, filePathHint, nullptr)) {
+            return vaspTbl;
+        }
+    }
+
     // 2. Advance past explicit ignoredLines
     const QChar *buf = decoded.constData();
     const int len = decoded.size();
@@ -764,15 +1510,22 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     else if (effSep == QLatin1String("\\s"))
         effSep = QStringLiteral(" ");
 
+    const bool isXrdAsciiExt =
+            filePathHint.endsWith(QLatin1String(".xy"), Qt::CaseInsensitive)
+            || filePathHint.endsWith(QLatin1String(".xye"), Qt::CaseInsensitive)
+            || filePathHint.endsWith(QLatin1String(".asc"), Qt::CaseInsensitive)
+            || filePathHint.endsWith(QLatin1String(".chi"), Qt::CaseInsensitive)
+            || filePathHint.endsWith(QLatin1String(".uxd"), Qt::CaseInsensitive);
+
     bool whitespaceDelim = false;
     if (effSep.isEmpty() || effSep.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0) {
         effSep = detectDelimiterFromSampleLines(sampleLines, filePathHint);
         if (effSep == QLatin1String(" "))
             whitespaceDelim = true;
-    } else if (effSep == QLatin1String(" ") && simplifySpaces) {
+    } else if (effSep == QLatin1String(" ") && (simplifySpaces || autoFixTabOnCsv || isXrdAsciiExt)) {
         whitespaceDelim = true;
     } else if (autoFixTabOnCsv && effSep == QLatin1String("\t") && !sampleLines.isEmpty()) {
-        // Auto-recover when GUI default "\t" is used on a comma/semicolon CSV file with 0 tabs
+        // Auto-recover when GUI default "\t" is used on comma/semicolon/whitespace files with 0 tabs
         bool anyTab = false;
         for (const QString &ln : sampleLines) {
             if (ln.contains(QLatin1Char('\t'))) {
@@ -786,43 +1539,58 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             if (detected == QLatin1String(",") || detected == QLatin1String(";")) {
                 if (isCsvExt || sampleLines.size() >= 2)
                     effSep = detected;
+            } else if (detected == QLatin1String(" ")) {
+                effSep = detected;
+                whitespaceDelim = true;
             }
         }
     }
+    const QString normSep = effSep.isEmpty() ? QStringLiteral(",") : effSep;
 
-    QVector<QVector<LabCsvCell>> records;
+    // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
+    QVector<QVector<LabCsvCell>> previewRecords;
+    previewRecords.reserve(16);
+    QVector<int> previewLineStartOffsets;
+    previewLineStartOffsets.reserve(17);
+    QVector<ZeroCopyCellSpan> rowSpans;
+    rowSpans.reserve(16);
+    int scanPos = pos;
     int maxCols = 0;
-    parseDelimitedRecordsFast(decoded, pos, effSep, whitespaceDelim, trimSpaces, simplifySpaces,
-                              records, maxCols);
 
-    // Strip trailing empty lines or mid-file '#' comment lines
-    for (int r = records.size() - 1; r >= 0; --r) {
-        const auto &row = records[r];
-        if (row.isEmpty()) {
-            records.removeAt(r);
-            continue;
+    while (scanPos < len && previewRecords.size() < 16) {
+        const int rowStartOffset = scanPos;
+        bool skipRow = false;
+        if (!readNextRecordSpans(buf, len, scanPos, normSep, whitespaceDelim, trimSpaces,
+                                 simplifySpaces, rowSpans, skipRow)) {
+            break;
         }
-        if (row.size() == 1 && !row[0].quoted && row[0].value.trimmed().isEmpty()) {
-            records.removeAt(r);
+        if (skipRow)
             continue;
-        }
-        const QString firstTrim = row[0].value.trimmed();
-        if (!row[0].quoted && firstTrim.startsWith(QLatin1Char('#'))) {
-            records.removeAt(r);
-            continue;
-        }
+        previewLineStartOffsets.append(rowStartOffset);
+        QVector<LabCsvCell> rec;
+        rec.reserve(rowSpans.size());
+        for (const ZeroCopyCellSpan &sp : rowSpans)
+            rec.append({ sp.toQString(trimSpaces, simplifySpaces), sp.quoted });
+        maxCols = std::max(maxCols, rec.size());
+        previewRecords.append(std::move(rec));
     }
+    previewLineStartOffsets.append(scanPos);
 
-    maxCols = 0;
-    for (const auto &row : records)
-        maxCols = std::max(maxCols, row.size());
-    maxCols = std::max(1, maxCols);
+    if (previewRecords.isEmpty())
+        return new future::Table(0, 0, effTableName);
+
+    const bool useCustomLoc =
+            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
+    QLocale primaryLoc = numericLocale;
+    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
 
     // Check if '# col1, col2' right above numeric row 0 was actually the column header line
-    if (firstRowNamesColumns && !lastHashCommentBody.isEmpty() && !records.isEmpty()
+    bool prependedHashHeader = false;
+    QVector<LabCsvCell> headerRow;
+    if (firstRowNamesColumns && !lastHashCommentBody.isEmpty() && !previewRecords.isEmpty()
         && maxCols >= 2) {
         bool row0AllNumeric = true;
-        for (const LabCsvCell &c0 : records[0]) {
+        for (const LabCsvCell &c0 : previewRecords[0]) {
             if (!isPureNumberString(c0.value)) {
                 row0AllNumeric = false;
                 break;
@@ -831,44 +1599,79 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         if (row0AllNumeric) {
             QVector<QVector<LabCsvCell>> hashRows;
             int hashCols = 0;
-            parseDelimitedRecordsFast(lastHashCommentBody, 0, effSep, whitespaceDelim, true,
+            parseDelimitedRecordsFast(lastHashCommentBody, 0, normSep, whitespaceDelim, true,
                                       simplifySpaces, hashRows, hashCols);
-            if (hashRows.size() == 1 && hashRows[0].size() == records[0].size()) {
+            if (hashRows.size() == 1 && hashRows[0].size() == previewRecords[0].size()) {
                 bool anyNonNumericHdr = false;
                 for (const LabCsvCell &hc : hashRows[0]) {
                     if (!hc.value.trimmed().isEmpty() && !isPureNumberString(hc.value))
                         anyNonNumericHdr = true;
                 }
-                if (anyNonNumericHdr)
-                    records.prepend(hashRows[0]);
+                if (anyNonNumericHdr) {
+                    headerRow = hashRows[0];
+                    prependedHashHeader = true;
+                }
             }
         }
     }
 
-    const bool useCustomLoc =
-            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
-    QLocale primaryLoc = numericLocale;
-    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    // Auto-detect headerless numeric files (e.g. .xy/.asc XRD or numeric tables where row 0 is pure float data)
+    bool effectiveFirstRowNames = firstRowNamesColumns;
+    int fileHeaderLinesConsumed = 0;
 
-    QVector<LabCsvCell> headerRow;
-    QVector<LabCsvCell> unitsRow;
-    int dataStartIdx = 0;
-
-    if (firstRowNamesColumns && !records.isEmpty()) {
-        // Guard: if firstRowNamesColumns is true, verify row 0 isn't purely numeric data when user didn't provide headers?
-        // Note: SciDAVis standard honors firstRowNamesColumns=true explicitly when set.
-        headerRow = records[0];
-        dataStartIdx = 1;
+    if (firstRowNamesColumns && !prependedHashHeader && !previewRecords.isEmpty()) {
+        bool treatRow0AsData = false;
+        if (previewRecords.size() >= 2 && previewRecords[0].size() >= 2
+            && previewRecords[0].size() == previewRecords[1].size()) {
+            bool allRow0Num = true;
+            bool allRow1Num = true;
+            bool anyFloatMarkerInRow0 = false;
+            for (const LabCsvCell &c0 : previewRecords[0]) {
+                const QString t = c0.value.trimmed();
+                double dv = 0.0;
+                if (c0.quoted || t.isEmpty()
+                    || !tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
+                    allRow0Num = false;
+                    break;
+                }
+                if (t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
+                    || t.contains(QLatin1Char('E')) || t.startsWith(QLatin1Char('-'))) {
+                    anyFloatMarkerInRow0 = true;
+                }
+            }
+            if (allRow0Num) {
+                for (const LabCsvCell &c1 : previewRecords[1]) {
+                    const QString t = c1.value.trimmed();
+                    double dv = 0.0;
+                    if (c1.quoted || t.isEmpty()
+                        || !tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
+                        allRow1Num = false;
+                        break;
+                    }
+                }
+            }
+            if (allRow0Num && allRow1Num && (isXrdAsciiExt || anyFloatMarkerInRow0))
+                treatRow0AsData = true;
+        }
+        if (treatRow0AsData) {
+            effectiveFirstRowNames = false;
+            fileHeaderLinesConsumed = 0;
+        } else {
+            headerRow = previewRecords[0];
+            fileHeaderLinesConsumed = 1;
+        }
     }
 
-    // 4. 2-Row [Name row + Units row] auto-detection (Instron / Shimadzu / Zwick CSVs)
-    if (firstRowNamesColumns && dataStartIdx == 1 && unitsRowHint != 0) {
-        if (unitsRowHint == 1 && records.size() >= 2) {
-            unitsRow = records[1];
-            dataStartIdx = 2;
-        } else if (unitsRowHint < 0 && records.size() >= 3) {
-            const QVector<LabCsvCell> &candUnits = records[1];
-            const int checkEnd = std::min(records.size(), 14);
+    QVector<LabCsvCell> unitsRow;
+    // 2-Row [Name row + Units row] auto-detection (Instron / Shimadzu / Zwick CSVs)
+    if (effectiveFirstRowNames && unitsRowHint != 0) {
+        const int candUnitIdx = fileHeaderLinesConsumed;
+        if (unitsRowHint == 1 && previewRecords.size() > candUnitIdx) {
+            unitsRow = previewRecords[candUnitIdx];
+            ++fileHeaderLinesConsumed;
+        } else if (unitsRowHint < 0 && previewRecords.size() > candUnitIdx + 1) {
+            const QVector<LabCsvCell> &candUnits = previewRecords[candUnitIdx];
+            const int checkEnd = std::min(previewRecords.size(), 14);
             int numericDataCols = 0;
             bool row2HasNumberInNumericCol = false;
             bool row2AllValidUnitsInNumericCols = true;
@@ -877,10 +1680,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             for (int c = 0; c < maxCols; ++c) {
                 bool colHasFinite = false;
                 bool colAllNumeric = true;
-                for (int r = 2; r < checkEnd; ++r) {
-                    const QString s =
-                            (c < records[r].size()) ? records[r][c].value.trimmed() : QString();
-                    const bool q = (c < records[r].size()) ? records[r][c].quoted : false;
+                for (int r = candUnitIdx + 1; r < checkEnd; ++r) {
+                    const QString s = (c < previewRecords[r].size())
+                            ? previewRecords[r][c].value.trimmed()
+                            : QString();
+                    const bool q =
+                            (c < previewRecords[r].size()) ? previewRecords[r][c].quoted : false;
                     if (isMissingNumericToken(s, q))
                         continue;
                     double dv = 0.0;
@@ -913,14 +1718,150 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             if (numericDataCols >= 1 && !row2HasNumberInNumericCol
                 && row2AllValidUnitsInNumericCols && recognizedUnitTokens >= 1) {
                 unitsRow = candUnits;
-                dataStartIdx = 2;
+                ++fileHeaderLinesConsumed;
             }
         }
     }
 
-    const int dataRowCount = std::max(0, records.size() - dataStartIdx);
+    // Determine exact character offset of first data row and count remaining rows without allocating QStrings
+    const int dataStartPos = previewLineStartOffsets[std::min(
+            fileHeaderLinesConsumed, previewLineStartOffsets.size() - 1)];
+    int dataRowCount = std::max(0, previewRecords.size() - fileHeaderLinesConsumed);
+    {
+        int countPos = scanPos;
+        while (countPos < len) {
+            bool skipRow = false;
+            if (!readNextRecordSpans(buf, len, countPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipRow)) {
+                break;
+            }
+            if (skipRow)
+                continue;
+            maxCols = std::max(maxCols, rowSpans.size());
+            ++dataRowCount;
+        }
+    }
+    maxCols = std::max(1, maxCols);
 
-    // 5. Build typed Columns with metadata & 'g' (6-digit) display formatting
+    // 5. Stream directly into pre-allocated column buffers (0 intermediate Cell matrix!)
+    std::vector<std::unique_ptr<QVector<qreal>>> numVecs(static_cast<size_t>(maxCols));
+    QVector<IntervalAttribute<bool>> invalidAttrs(maxCols);
+    QVector<int> runInvalidStart(maxCols, -1);
+    QVector<bool> useText(maxCols, !convertToNumeric);
+    QVector<bool> needsTextBackfill(maxCols, false);
+    QVector<bool> anyQuoted(maxCols, false);
+    QVector<bool> anyFiniteNumber(maxCols, false);
+    std::vector<std::unique_ptr<QStringList>> strVecs(static_cast<size_t>(maxCols));
+
+    for (int c = 0; c < maxCols; ++c) {
+        if (!useText[c]) {
+            numVecs[static_cast<size_t>(c)].reset(
+                    new QVector<qreal>(dataRowCount, std::numeric_limits<double>::quiet_NaN()));
+        } else {
+            strVecs[static_cast<size_t>(c)].reset(new QStringList());
+            strVecs[static_cast<size_t>(c)]->reserve(dataRowCount);
+        }
+    }
+
+    {
+        int streamPos = dataStartPos;
+        int r = 0;
+        while (streamPos < len && r < dataRowCount) {
+            bool skipRow = false;
+            if (!readNextRecordSpans(buf, len, streamPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipRow)) {
+                break;
+            }
+            if (skipRow)
+                continue;
+
+            const int recCols = rowSpans.size();
+            for (int c = 0; c < maxCols; ++c) {
+                if (useText[c]) {
+                    if (!needsTextBackfill[c] && strVecs[static_cast<size_t>(c)]) {
+                        strVecs[static_cast<size_t>(c)]->append(
+                                (c < recCols) ? rowSpans[c].toQString(trimSpaces, simplifySpaces)
+                                              : QString());
+                    }
+                    continue;
+                }
+
+                const bool hasCell = (c < recCols);
+                const bool wasQuoted = hasCell ? rowSpans[c].quoted : false;
+                if (wasQuoted)
+                    anyQuoted[c] = true;
+
+                const QChar *tPtr = nullptr;
+                int tLen = 0;
+                if (hasCell)
+                    rowSpans[c].trimmedView(tPtr, tLen);
+
+                if (!hasCell || isMissingNumericSpan(tPtr, tLen, wasQuoted)) {
+                    if (runInvalidStart[c] < 0)
+                        runInvalidStart[c] = r;
+                    continue;
+                }
+                if (runInvalidStart[c] >= 0) {
+                    invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], r - 1), true);
+                    runInvalidStart[c] = -1;
+                }
+
+                double numVal = 0.0;
+                if (tryParseLabDoubleSpan(tPtr, tLen, primaryLoc, useCustomLoc, numVal)) {
+                    (*numVecs[static_cast<size_t>(c)])[r] = numVal;
+                    anyFiniteNumber[c] = true;
+                } else {
+                    useText[c] = true;
+                    needsTextBackfill[c] = true;
+                    numVecs[static_cast<size_t>(c)].reset();
+                }
+            }
+            ++r;
+        }
+    }
+
+    bool anyBackfill = false;
+    for (int c = 0; c < maxCols; ++c) {
+        if (!useText[c]) {
+            if (runInvalidStart[c] >= 0)
+                invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], dataRowCount - 1), true);
+            if (anyQuoted[c] && !anyFiniteNumber[c]) {
+                useText[c] = true;
+                needsTextBackfill[c] = true;
+                numVecs[static_cast<size_t>(c)].reset();
+            }
+        }
+        if (needsTextBackfill[c]) {
+            anyBackfill = true;
+            strVecs[static_cast<size_t>(c)].reset(new QStringList());
+            strVecs[static_cast<size_t>(c)]->reserve(dataRowCount);
+        }
+    }
+
+    if (anyBackfill) {
+        int streamPos = dataStartPos;
+        int r = 0;
+        while (streamPos < len && r < dataRowCount) {
+            bool skipRow = false;
+            if (!readNextRecordSpans(buf, len, streamPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipRow)) {
+                break;
+            }
+            if (skipRow)
+                continue;
+            const int recCols = rowSpans.size();
+            for (int c = 0; c < maxCols; ++c) {
+                if (!needsTextBackfill[c])
+                    continue;
+                strVecs[static_cast<size_t>(c)]->append(
+                        (c < recCols) ? rowSpans[c].toQString(trimSpaces, simplifySpaces)
+                                      : QString());
+            }
+            ++r;
+        }
+    }
+
+    // 6. Build typed Columns with metadata & 'g' (6-digit) display formatting
     QSet<QString> usedShortNames;
     auto makeUniqueShort = [&](const QString &desired, int colIdx) -> QString {
         QString base = desired.trimmed();
@@ -944,9 +1885,34 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         QString longName;
         QString units;
 
-        if (firstRowNamesColumns && !headerRow.isEmpty()) {
+        if (effectiveFirstRowNames && !headerRow.isEmpty()) {
             const QString rawHdr = (c < headerRow.size()) ? headerRow[c].value : QString();
             AsciiTableImportFilter::splitHeaderNameAndUnits(rawHdr, shortName, longName, units);
+        } else if (!effectiveFirstRowNames) {
+            if (isXrdAsciiExt) {
+                if (c == 0) {
+                    shortName = QStringLiteral("TwoTheta");
+                    longName = QStringLiteral("2\u03B8");
+                    units = QStringLiteral("deg");
+                } else if (c == 1) {
+                    shortName = QStringLiteral("Intensity");
+                    longName = QStringLiteral("Intensity");
+                    units = QStringLiteral("counts");
+                } else if (c == 2) {
+                    shortName = QStringLiteral("Error");
+                    longName = QStringLiteral("\u03C3_I");
+                    units = QStringLiteral("counts");
+                } else {
+                    shortName = QStringLiteral("Y%1").arg(c);
+                }
+            } else if (maxCols >= 2) {
+                if (c == 0)
+                    shortName = QStringLiteral("X");
+                else if (c == 1)
+                    shortName = QStringLiteral("Y");
+                else
+                    shortName = QStringLiteral("Y%1").arg(c);
+            }
         }
         if (!unitsRow.isEmpty() && c < unitsRow.size()) {
             const QString u2 = cleanPromotedUnitCell(unitsRow[c].value);
@@ -957,58 +1923,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
         shortName = makeUniqueShort(shortName, c);
 
-        bool useText = !convertToNumeric;
-        bool anyQuoted = false;
-        bool anyFiniteNumber = false;
-        std::unique_ptr<QVector<qreal>> numVec(
-                new QVector<qreal>(dataRowCount, std::numeric_limits<double>::quiet_NaN()));
-        IntervalAttribute<bool> invalidAttr;
-
-        if (convertToNumeric) {
-            int runInvalidStart = -1;
-            for (int r = 0; r < dataRowCount; ++r) {
-                const QVector<LabCsvCell> &rec = records[dataStartIdx + r];
-                const QString valStr = (c < rec.size()) ? rec[c].value : QString();
-                const bool wasQuoted = (c < rec.size()) ? rec[c].quoted : false;
-                if (wasQuoted)
-                    anyQuoted = true;
-                const QString trimmed = valStr.trimmed();
-                if (isMissingNumericToken(trimmed, wasQuoted)) {
-                    if (runInvalidStart < 0)
-                        runInvalidStart = r;
-                    continue;
-                }
-                if (runInvalidStart >= 0) {
-                    invalidAttr.setValue(Interval<int>(runInvalidStart, r - 1), true);
-                    runInvalidStart = -1;
-                }
-                double numVal = 0.0;
-                if (tryParseLabDouble(trimmed, primaryLoc, useCustomLoc, numVal)) {
-                    (*numVec)[r] = numVal;
-                    anyFiniteNumber = true;
-                } else {
-                    useText = true;
-                    break;
-                }
-            }
-            if (!useText && runInvalidStart >= 0)
-                invalidAttr.setValue(Interval<int>(runInvalidStart, dataRowCount - 1), true);
-            if (!useText && anyQuoted && !anyFiniteNumber)
-                useText = true;
-        }
-
         Column *col = nullptr;
-        if (useText) {
-            std::unique_ptr<QStringList> strVec(new QStringList());
-            strVec->reserve(dataRowCount);
-            for (int r = 0; r < dataRowCount; ++r) {
-                const QVector<LabCsvCell> &rec = records[dataStartIdx + r];
-                strVec->append((c < rec.size()) ? rec[c].value : QString());
-            }
-            col = new Column(shortName, std::move(strVec), IntervalAttribute<bool>());
+        if (useText[c]) {
+            if (!strVecs[static_cast<size_t>(c)])
+                strVecs[static_cast<size_t>(c)].reset(new QStringList());
+            col = new Column(shortName, std::move(strVecs[static_cast<size_t>(c)]),
+                             IntervalAttribute<bool>());
             colIsNumeric[c] = false;
         } else {
-            col = new Column(shortName, std::move(numVec), invalidAttr);
+            col = new Column(shortName, std::move(numVecs[static_cast<size_t>(c)]),
+                             invalidAttrs[c]);
             if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
                 d2s->setNumericFormat('g');
                 d2s->setNumDigits(6);
@@ -1024,8 +1948,15 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         cols << col;
     }
 
-    // Assign sensible X / Y plot designations (if col 0 is Text Specimen IDs in a >=3-col table, make col 1 X!)
-    if (maxCols >= 3 && !colIsNumeric[0] && colIsNumeric[1] && colIsNumeric[2]) {
+    // Assign sensible X / Y / yErr plot designations
+    if (!effectiveFirstRowNames && isXrdAsciiExt && maxCols >= 3 && colIsNumeric[0]
+        && colIsNumeric[1] && colIsNumeric[2]) {
+        cols[0]->setPlotDesignation(SciDAVis::X);
+        cols[1]->setPlotDesignation(SciDAVis::Y);
+        cols[2]->setPlotDesignation(SciDAVis::yErr);
+        for (int c = 3; c < maxCols; ++c)
+            cols[c]->setPlotDesignation(SciDAVis::Y);
+    } else if (maxCols >= 3 && !colIsNumeric[0] && colIsNumeric[1] && colIsNumeric[2]) {
         cols[0]->setPlotDesignation(SciDAVis::noDesignation);
         cols[1]->setPlotDesignation(SciDAVis::X);
         for (int c = 2; c < maxCols; ++c)
@@ -1263,6 +2194,19 @@ future::Table *AsciiTableImportFilter::importLabTextData(const QByteArray &rawBy
                                      true /*firstRowNamesColumns*/, true /*trimSpaces*/,
                                      false /*simplifySpaces*/, true /*convertToNumeric*/,
                                      QLocale::c(), true /*autoFixTabOnCsv*/);
+}
+
+future::Table *AsciiTableImportFilter::importVaspTextData(const QByteArray &rawBytes,
+                                                          const QString &tableName,
+                                                          const QString &filePathHint,
+                                                          double *outFermiEV)
+{
+    if (outFermiEV)
+        *outFermiEV = 0.0;
+    const QString effTableName =
+            tableName.trimmed().isEmpty() ? QStringLiteral("VASPData") : tableName.trimmed();
+    const QString decoded = decodeLabTextAuto(rawBytes, QString());
+    return tryParseVaspTextInternal(decoded, effTableName, filePathHint, outFermiEV);
 }
 
 AbstractAspect *AsciiTableImportFilter::importAspect(QIODevice &input)

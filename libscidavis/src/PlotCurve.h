@@ -114,6 +114,11 @@ public:
     int tableRow(int point) const;
 
     bool isPointMasked(int point) const;
+    bool hasAnyMaskedPoints() const;
+    void resolveColumns(Column *&xColOut, Column *&yColOut) const;
+    bool isPointMaskedFast(int point, const Column *xCol, const Column *yCol) const;
+    bool hasGapBefore(int point) const;
+    const QVector<int> &gapBeforeIndices() const { return d_gap_before_indices; }
     void maskPoint(int point, bool mask = true);
     int maskRegion(const QRectF &dataRect, bool mask = true);
     void clearMasks();
@@ -188,6 +193,7 @@ private:
      * and has to store it like this.
      */
     mutable QVector<int> d_index_to_row;
+    mutable QVector<int> d_gap_before_indices;
     bool validCurveType();
 };
 #endif

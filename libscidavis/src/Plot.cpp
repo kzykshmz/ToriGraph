@@ -68,6 +68,11 @@ namespace {
 static double s_toriPrintDeviceScale = 1.0;
 } // namespace
 
+double Plot::printDeviceScale()
+{
+    return qMax(1.0, s_toriPrintDeviceScale);
+}
+
 Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 {
     setAutoReplot(false);
@@ -251,10 +256,26 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
     const bool isScreenWidgetPaint = painter && painter->device()
             && painter->device()->devType() == QInternal::Widget
             && (!g || (!g->isExporting() && !g->property("isExporting").toBool()));
+    auto isNonVertexSpecialtyCurve = [](const QwtPlotCurve *c) -> bool {
+        if (!c)
+            return false;
+        if (c->style() == QwtPlotCurve::UserCurve)
+            return true;
+        if (const PlotCurve *pc = dynamic_cast<const PlotCurve *>(c)) {
+            const int t = pc->type();
+            if (t == Graph::VerticalBars || t == Graph::HorizontalBars || t == Graph::Histogram
+                || t == Graph::Box || t == Graph::Pie || t == Graph::VectXYXY
+                || t == Graph::VectXYAM || t == Graph::ErrorBars) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     if (d_highlighted_curve_key >= 0 && isScreenWidgetPaint) {
         QwtPlotItem *hitItem = d_curves.value(d_highlighted_curve_key, nullptr);
         QwtPlotCurve *hc = dynamic_cast<QwtPlotCurve *>(hitItem);
-        if (hc && hc->isVisible() && hc->dataSize() > 0) {
+        if (hc && !isNonVertexSpecialtyCurve(hc) && hc->isVisible() && hc->dataSize() > 0) {
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing, true);
             painter->setClipRect(rect);
@@ -265,14 +286,25 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
             const QwtScaleMap &xMap = map[hc->xAxis()];
             const QwtScaleMap &yMap = map[hc->yAxis()];
             const DataCurve *dc = dynamic_cast<const DataCurve *>(hc);
+            Column *hcXCol = nullptr;
+            Column *hcYCol = nullptr;
+            const bool hcHasMasks = dc && dc->hasAnyMaskedPoints();
+            if (hcHasMasks)
+                dc->resolveColumns(hcXCol, hcYCol);
             if (hc->style() != QwtPlotCurve::NoCurve && hc->dataSize() >= 2) {
                 QPolygonF poly;
-                for (int i = 0; i < hc->dataSize(); ++i) {
-                    if (dc && dc->isPointMasked(i)) {
+                const int hcStride = qMax(1, hc->dataSize() / 4000);
+                for (int i = 0; i < hc->dataSize(); i += hcStride) {
+                    if (hcHasMasks && dc->isPointMaskedFast(i, hcXCol, hcYCol)) {
                         if (poly.size() >= 2)
                             painter->drawPolyline(poly);
                         poly.clear();
                         continue;
+                    }
+                    if (dc && dc->hasGapBefore(i)) {
+                        if (poly.size() >= 2)
+                            painter->drawPolyline(poly);
+                        poly.clear();
                     }
                     const double px = xMap.xTransform(hc->x(i));
                     const double py = yMap.xTransform(hc->y(i));
@@ -285,8 +317,9 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                 painter->setBrush(haloCol);
                 painter->setPen(Qt::NoPen);
                 const double r = qMax(6.0, 0.5 * hc->symbol().size().width() + 4.0);
-                for (int i = 0; i < hc->dataSize(); ++i) {
-                    if (dc && dc->isPointMasked(i))
+                const int hcStride = qMax(1, hc->dataSize() / 2000);
+                for (int i = 0; i < hc->dataSize(); i += hcStride) {
+                    if (hcHasMasks && dc->isPointMaskedFast(i, hcXCol, hcYCol))
                         continue;
                     const double px = xMap.xTransform(hc->x(i));
                     const double py = yMap.xTransform(hc->y(i));
@@ -416,7 +449,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         if (min || maj)
             drawInwardTicks(painter, rect, map[i], i, min, maj);
     }
-    if (g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones()) {
+    if (g && !g->isTernaryPlot() && !g->isPolarPlot() && !g->isPiePlot() && g->axesBackbones()) {
         const double devScale = qMax(1.0, s_toriPrintDeviceScale);
         const double lw = qMax(1.0, double(axesLinewidth()) * devScale);
         bool clp = painter->hasClipping();
@@ -530,7 +563,8 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
             QwtPlotCurve *hovCurve =
                     dynamic_cast<QwtPlotCurve *>(d_curves.value(d_hover_curve_key, nullptr));
             const DataCurve *hovDc = dynamic_cast<const DataCurve *>(hovCurve);
-            if (hovCurve && hovCurve->isVisible() && d_hover_point_index < hovCurve->dataSize()
+            if (hovCurve && !isNonVertexSpecialtyCurve(hovCurve) && hovCurve->isVisible()
+                && d_hover_point_index < hovCurve->dataSize()
                 && !(hovDc && hovDc->isPointMasked(d_hover_point_index))) {
                 const double hx = map[hovCurve->xAxis()].xTransform(hovCurve->x(d_hover_point_index));
                 const double hy = map[hovCurve->yAxis()].xTransform(hovCurve->y(d_hover_point_index));
@@ -564,7 +598,8 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                     selCurve = errC->masterCurve();
             }
             const DataCurve *selDc = dynamic_cast<const DataCurve *>(selCurve);
-            if (selCurve && selCurve->isVisible() && selCurve->dataSize() > 0) {
+            if (selCurve && !isNonVertexSpecialtyCurve(selCurve) && selCurve->isVisible()
+                && selCurve->dataSize() > 0) {
                 QColor accent = selCurve->pen().color();
                 if (!accent.isValid() || accent.alpha() == 0 || accent.lightness() > 235)
                     accent = selCurve->symbol().pen().color();
@@ -578,8 +613,13 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                 const int nPts = selCurve->dataSize();
                 visPts.reserve(qMin(nPts, 256));
                 const int stride = qMax(1, nPts / 500);
+                Column *selXCol = nullptr;
+                Column *selYCol = nullptr;
+                const bool selHasMasks = selDc && selDc->hasAnyMaskedPoints();
+                if (selHasMasks)
+                    selDc->resolveColumns(selXCol, selYCol);
                 for (int idx = 0; idx < nPts; idx += stride) {
-                    if (selDc && selDc->isPointMasked(idx))
+                    if (selHasMasks && selDc->isPointMaskedFast(idx, selXCol, selYCol))
                         continue;
                     const double px = xMap.xTransform(selCurve->x(idx));
                     const double py = yMap.xTransform(selCurve->y(idx));
@@ -589,7 +629,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                     }
                 }
                 if (nPts > 1 && ((nPts - 1) % stride) != 0
-                    && !(selDc && selDc->isPointMasked(nPts - 1))) {
+                    && !(selHasMasks && selDc->isPointMaskedFast(nPts - 1, selXCol, selYCol))) {
                     const double px = xMap.xTransform(selCurve->x(nPts - 1));
                     const double py = yMap.xTransform(selCurve->y(nPts - 1));
                     if (std::isfinite(px) && std::isfinite(py)
@@ -697,6 +737,41 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
     const int effMinTick = qMax(1, qRound(double(minTickLength) * tickScale));
     const int effMajTick = qMax(1, qRound(double(majTickLength) * tickScale));
 
+    QVector<QRect> framedCalloutBoxes;
+    if (const Graph *g = qobject_cast<const Graph *>(parent())) {
+        Graph *mg = const_cast<Graph *>(g);
+        const int cw = (canvas() && canvas()->width() > 0) ? canvas()->width() : qMax(1, rect.width());
+        const int ch = (canvas() && canvas()->height() > 0) ? canvas()->height() : qMax(1, rect.height());
+        const double sx = double(qMax(1, rect.width())) / double(qMax(1, cw));
+        const double sy = double(qMax(1, rect.height())) / double(qMax(1, ch));
+        const QVector<int> tKeys = mg->textMarkerKeys();
+        for (int tid : tKeys) {
+            Legend *tm = mg->textMarker(tid);
+            if (!tm || !tm->isVisible() || tm->frameStyle() == Legend::None
+                || tm->text().trimmed().isEmpty()) {
+                continue;
+            }
+            const QRect wr = tm->rect();
+            if (!wr.isEmpty()) {
+                framedCalloutBoxes.append(QRect(rect.left() + qRound(wr.left() * sx) - 1,
+                                                rect.top() + qRound(wr.top() * sy) - 1,
+                                                qRound(wr.width() * sx) + 2,
+                                                qRound(wr.height() * sy) + 2));
+            }
+        }
+    }
+    auto hitsFramedCallout = [&](int lx0, int ly0, int lx1, int ly1) -> bool {
+        if (framedCalloutBoxes.isEmpty())
+            return false;
+        const QRect segBox(QPoint(qMin(lx0, lx1), qMin(ly0, ly1)),
+                           QPoint(qMax(lx0, lx1), qMax(ly0, ly1)));
+        for (const QRect &cb : framedCalloutBoxes) {
+            if (cb.intersects(segBox))
+                return true;
+        }
+        return false;
+    };
+
     painter->save();
     painter->setPen(QPen(color, tickPw, Qt::SolidLine));
 
@@ -723,12 +798,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x + effMinTick, y))
                     QwtPainter::drawLine(painter, x, y, x + effMinTick, y);
             }
             for (j = 0; j < medTicks; j++) {
                 y = map.transform(medTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x + effMinTick, y))
                     QwtPainter::drawLine(painter, x, y, x + effMinTick, y);
             }
         }
@@ -736,7 +811,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 y = map.transform(majTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x + effMajTick, y))
                     QwtPainter::drawLine(painter, x, y, x + effMajTick, y);
             }
         }
@@ -753,12 +828,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMinTick, y))
                     QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
             }
             for (j = 0; j < medTicks; j++) {
                 y = map.transform(medTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMinTick, y))
                     QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
             }
         }
@@ -766,7 +841,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 y = map.transform(majTickList[j]);
-                if (y >= low && y <= high)
+                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMajTick, y))
                     QwtPainter::drawLine(painter, x + 1, y, x - effMajTick, y);
             }
         }
@@ -783,12 +858,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMinTick))
                     QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
             }
             for (j = 0; j < medTicks; j++) {
                 x = map.transform(medTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMinTick))
                     QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
             }
         }
@@ -796,7 +871,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 x = map.transform(majTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMajTick))
                     QwtPainter::drawLine(painter, x, y + 1, x, y - effMajTick);
             }
         }
@@ -814,12 +889,12 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y + effMinTick))
                     QwtPainter::drawLine(painter, x, y, x, y + effMinTick);
             }
             for (j = 0; j < medTicks; j++) {
                 x = map.transform(medTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y + effMinTick))
                     QwtPainter::drawLine(painter, x, y, x, y + effMinTick);
             }
         }
@@ -827,7 +902,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 x = map.transform(majTickList[j]);
-                if (x >= low && x <= high)
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y + effMajTick))
                     QwtPainter::drawLine(painter, x, y, x, y + effMajTick);
             }
         }
@@ -1059,7 +1134,7 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
             : plotRect;
 
     const bool suppressScaleBackbone =
-            g && !g->isTernaryPlot() && !g->isPiePlot() && g->axesBackbones();
+            g && !g->isTernaryPlot() && !g->isPolarPlot() && !g->isPiePlot() && g->axesBackbones();
     const double savedScale = s_toriPrintDeviceScale;
     double devScale = 1.0;
     if (painter && painter->device() && logicalDpiX() > 0) {
@@ -1176,15 +1251,22 @@ int Plot::closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) cons
             continue;
 
         const DataCurve *dc = dynamic_cast<const DataCurve *>(item);
+        Column *xCol = nullptr;
+        Column *yCol = nullptr;
+        const bool hasMasks = dc && dc->hasAnyMaskedPoints();
+        if (hasMasks)
+            dc->resolveColumns(xCol, yCol);
         const QwtScaleMap &xMap = map[qc->xAxis()];
         const QwtScaleMap &yMap = map[qc->yAxis()];
         const int n = qc->dataSize();
         for (int i = 0; i < n; ++i) {
-            if (dc && dc->isPointMasked(i))
+            if (hasMasks && dc->isPointMaskedFast(i, xCol, yCol))
                 continue;
             const double cx = xMap.xTransform(qc->x(i)) - pxClick;
+            if (!std::isfinite(cx) || cx * cx >= bestD2)
+                continue;
             const double cy = yMap.xTransform(qc->y(i)) - pyClick;
-            if (!std::isfinite(cx) || !std::isfinite(cy))
+            if (!std::isfinite(cy))
                 continue;
             const double d2 = qwtSqr(cx) + qwtSqr(cy);
             if (d2 < bestD2) {
@@ -1232,6 +1314,12 @@ int Plot::closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestV
             continue;
 
         const DataCurve *dc = dynamic_cast<const DataCurve *>(item);
+        Column *xCol = nullptr;
+        Column *yCol = nullptr;
+        const bool hasMasks = dc && dc->hasAnyMaskedPoints();
+        if (hasMasks)
+            dc->resolveColumns(xCol, yCol);
+        const bool hasGaps = dc && !dc->gapBeforeIndices().isEmpty();
         const QwtScaleMap &xMap = map[qc->xAxis()];
         const QwtScaleMap &yMap = map[qc->yAxis()];
         const int n = qc->dataSize();
@@ -1239,14 +1327,23 @@ int Plot::closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestV
             continue;
 
         for (int i = 0; i + 1 < n; ++i) {
-            if (dc && (dc->isPointMasked(i) || dc->isPointMasked(i + 1)))
+            if (hasMasks
+                && (dc->isPointMaskedFast(i, xCol, yCol)
+                    || dc->isPointMaskedFast(i + 1, xCol, yCol)))
+                continue;
+            if (hasGaps && dc->hasGapBefore(i + 1))
                 continue;
             const double ax = xMap.xTransform(qc->x(i));
-            const double ay = yMap.xTransform(qc->y(i));
             const double bx = xMap.xTransform(qc->x(i + 1));
+            if (!std::isfinite(ax) || !std::isfinite(bx))
+                continue;
+            const double minX = qMin(ax, bx) - pxClick;
+            const double maxX = pxClick - qMax(ax, bx);
+            if ((minX > 0.0 && minX * minX >= bestD2) || (maxX > 0.0 && maxX * maxX >= bestD2))
+                continue;
+            const double ay = yMap.xTransform(qc->y(i));
             const double by = yMap.xTransform(qc->y(i + 1));
-            if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx)
-                || !std::isfinite(by))
+            if (!std::isfinite(ay) || !std::isfinite(by))
                 continue;
             const double dx = bx - ax;
             const double dy = by - ay;
@@ -1297,8 +1394,13 @@ int Plot::closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestV
             const int n = er->dataSize();
             const double halfCap = 0.5 * double(qMax(0, er->capLength()));
             const bool isVert = (er->direction() == QwtErrorPlotCurve::Vertical);
+            Column *mcXCol = nullptr;
+            Column *mcYCol = nullptr;
+            const bool mcHasMasks = mc && mc->hasAnyMaskedPoints();
+            if (mcHasMasks)
+                mc->resolveColumns(mcXCol, mcYCol);
             for (int i = 0; i < n; ++i) {
-                if (mc && mc->isPointMasked(i))
+                if (mcHasMasks && mc->isPointMaskedFast(i, mcXCol, mcYCol))
                     continue;
                 const double xv = er->x(i);
                 const double yv = er->y(i);
@@ -1386,9 +1488,13 @@ int Plot::insertCurve(QwtPlotItem *c)
 
 void Plot::removeCurve(int index)
 {
-    QwtPlotItem *c = d_curves[index];
-    if (!c)
+    if (!d_curves.contains(index))
         return;
+    QwtPlotItem *c = d_curves.value(index, nullptr);
+    if (!c) {
+        d_curves.remove(index);
+        return;
+    }
 
     if (c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
         Spectrogram *sp = (Spectrogram *)c;
@@ -1401,6 +1507,7 @@ void Plot::removeCurve(int index)
         d_highlighted_curve_key = -1;
     c->detach();
     d_curves.remove(index);
+    delete c;
 }
 
 QList<int> Plot::getMajorTicksType()

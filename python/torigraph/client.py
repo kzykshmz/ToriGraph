@@ -74,21 +74,522 @@ def _cleanup_spawned_session(
             pass
 
 
-def _sanitize_for_json(value: Any) -> Any:
-    """Recursively convert NaN/Inf -> None, Path -> str, proxies -> name, and duck-typed arrays -> list."""
+def _is_missing_scalar(value: Any) -> bool:
+    """Detect None, NaN/Inf floats, and duck-typed pandas/numpy NA/NaT scalars without imports."""
+    if value is None:
+        return True
+    if isinstance(value, float) and not math.isfinite(value):
+        return True
+    tname = type(value).__name__
+    if tname in ("NAType", "NaTType"):
+        return True
+    tmod = getattr(type(value), "__module__", "")
+    if tmod.startswith(("pandas", "numpy")) and str(value) in ("NaT", "<NA>"):
+        return True
+    return False
+
+
+def _coerce_scalar(value: Any) -> Any:
+    """Convert scalar values (including numpy scalars, NA/NaN/Inf, Path, dates) to JSON-safe Python types."""
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, os.PathLike):
         return os.fspath(value)
+    if _is_missing_scalar(value):
+        return None
+    if hasattr(value, "item") and callable(value.item) and not isinstance(value, (bytes, bytearray)):
+        try:
+            # 0-D or scalar numpy/generic objects
+            if not hasattr(value, "ndim") or int(getattr(value, "ndim", 0)) == 0:
+                return _coerce_scalar(value.item())
+        except Exception:
+            pass
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    return value
+
+
+def _is_ndarray_like(obj: Any) -> bool:
+    """Duck-typed check for numpy.ndarray (or compatible N-dimensional array) with zero imports."""
+    if isinstance(obj, (str, bytes, bytearray, Mapping)):
+        return False
+    return (
+        hasattr(obj, "ndim")
+        and hasattr(obj, "shape")
+        and (hasattr(obj, "tolist") or hasattr(obj, "__array_interface__"))
+        and not hasattr(obj, "columns")
+    )
+
+
+def _is_polars_dataframe(obj: Any) -> bool:
+    if isinstance(obj, Mapping):
+        return False
+    tmod = getattr(type(obj), "__module__", "")
+    if tmod.startswith("polars") and hasattr(obj, "columns") and hasattr(obj, "to_dict"):
+        return True
+    return hasattr(obj, "columns") and hasattr(obj, "schema") and hasattr(obj, "to_dict") and hasattr(obj, "get_columns")
+
+
+def _is_pandas_dataframe(obj: Any) -> bool:
+    if isinstance(obj, Mapping) or _is_polars_dataframe(obj):
+        return False
+    return hasattr(obj, "columns") and hasattr(obj, "index") and hasattr(obj, "iloc")
+
+
+def _is_dataframe_like(obj: Any) -> bool:
+    return _is_pandas_dataframe(obj) or _is_polars_dataframe(obj)
+
+
+def _is_1d_series_or_array(obj: Any) -> bool:
+    if isinstance(obj, (str, bytes, bytearray, Mapping)) or _is_dataframe_like(obj):
+        return False
+    if hasattr(obj, "to_list") and callable(obj.to_list):
+        return True
+    if _is_ndarray_like(obj):
+        return int(obj.ndim) == 1
+    return False
+
+
+def _extract_series_attrs(seq: Any) -> Dict[str, str]:
+    """Extract optional 'name', 'units', 'long_name', 'comment' from a pandas/polars Series."""
+    out: Dict[str, str] = {}
+    sname = getattr(seq, "name", None)
+    if isinstance(sname, str) and sname.strip():
+        out["name"] = sname
+    attrs = getattr(seq, "attrs", None)
+    if isinstance(attrs, Mapping):
+        for key in ("units", "unit", "long_name", "comment"):
+            val = attrs.get(key)
+            if isinstance(val, str) and val:
+                out["units" if key == "unit" else key] = val
+    return out
+
+
+def _coerce_1d_sequence(seq: Any) -> List[Any]:
+    """Convert any 1D iterable, numpy ndarray, pandas Series, or polars Series to a sanitized Python list."""
+    if isinstance(seq, (str, bytes, bytearray)):
+        raise TypeError(f"Expected 1D sequence of column values, got {type(seq).__name__}.")
+    if hasattr(seq, "to_list") and callable(seq.to_list) and not _is_dataframe_like(seq):
+        raw = seq.to_list()
+    elif _is_ndarray_like(seq):
+        ndim = int(seq.ndim)
+        if ndim == 1:
+            raw = seq.tolist()
+        elif ndim == 2 and int(seq.shape[1]) == 1:
+            raw = [row[0] for row in seq.tolist()]
+        else:
+            raise ValueError(f"Column values expect a 1D array, got shape {tuple(seq.shape)}.")
+    elif hasattr(seq, "tolist") and callable(seq.tolist) and not _is_dataframe_like(seq):
+        raw = seq.tolist()
+    elif isinstance(seq, (list, tuple)):
+        raw = seq
+    else:
+        raw = list(seq)
+    return [_coerce_scalar(v) for v in raw]
+
+
+def _coerce_tabular_input(
+    data: Any,
+    col_names: Optional[Sequence[str]] = None,
+    *,
+    include_index: Optional[bool] = None,
+) -> Tuple[
+    Dict[str, List[Any]],
+    List[str],
+    Dict[str, str],
+    Dict[str, str],
+    Dict[str, str],
+    Dict[str, str],
+]:
+    """Coerce DataFrame / ndarray / Mapping into ``(cols_dict, col_order, units, long_names, comments, designations)``."""
+    units: Dict[str, str] = {}
+    long_names: Dict[str, str] = {}
+    comments: Dict[str, str] = {}
+    designations: Dict[str, str] = {}
+
+    # 1. Polars DataFrame
+    if _is_polars_dataframe(data):
+        as_dict = data.to_dict(as_series=False)
+        raw_cols = [str(c) for c in data.columns]
+        cols_dict = {str(k): [_coerce_scalar(v) for v in vals] for k, vals in as_dict.items()}
+        if col_names is not None:
+            override = [str(c) for c in col_names]
+            if len(override) == len(raw_cols) and set(override) != set(raw_cols):
+                cols_dict = {override[i]: cols_dict[raw_cols[i]] for i in range(len(raw_cols))}
+            ordered = override
+        else:
+            ordered = raw_cols
+        return cols_dict, ordered, units, long_names, comments, designations
+
+    # 2. Pandas DataFrame
+    if _is_pandas_dataframe(data):
+        cols_dict = {}
+        ordered: List[str] = []
+        idx = getattr(data, "index", None)
+        idx_name = getattr(idx, "name", None)
+        use_index = (
+            bool(include_index)
+            if include_index is not None
+            else (idx is not None and idx_name is not None and bool(str(idx_name).strip()))
+        )
+        if use_index and idx is not None:
+            iname = str(idx_name).strip() if (idx_name is not None and str(idx_name).strip()) else "Index"
+            ordered.append(iname)
+            cols_dict[iname] = _coerce_1d_sequence(idx)
+            designations[iname] = "X"
+
+        for col in data.columns:
+            cname = str(col)
+            ser = data[col]
+            ordered.append(cname)
+            cols_dict[cname] = _coerce_1d_sequence(ser)
+            s_attrs = _extract_series_attrs(ser)
+            if "units" in s_attrs:
+                units[cname] = s_attrs["units"]
+            if "long_name" in s_attrs:
+                long_names[cname] = s_attrs["long_name"]
+            if "comment" in s_attrs:
+                comments[cname] = s_attrs["comment"]
+
+        attrs = getattr(data, "attrs", None)
+        if isinstance(attrs, Mapping):
+            if isinstance(attrs.get("units"), Mapping):
+                for k, v in attrs["units"].items():
+                    if v is not None and str(v) != "":
+                        units[str(k)] = str(v)
+            if isinstance(attrs.get("long_names"), Mapping):
+                for k, v in attrs["long_names"].items():
+                    if v is not None and str(v) != "":
+                        long_names[str(k)] = str(v)
+            if isinstance(attrs.get("comments"), Mapping):
+                for k, v in attrs["comments"].items():
+                    if v is not None and str(v) != "":
+                        comments[str(k)] = str(v)
+            if isinstance(attrs.get("designations"), Mapping):
+                for k, v in attrs["designations"].items():
+                    if v is not None and str(v) != "":
+                        designations[str(k)] = str(v)
+
+        if col_names is not None:
+            override = [str(c) for c in col_names]
+            if len(override) == len(ordered) and set(override) != set(ordered):
+                old_ordered = list(ordered)
+                cols_dict = {override[i]: cols_dict[old_ordered[i]] for i in range(len(old_ordered))}
+                units = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in units.items()}
+                long_names = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in long_names.items()}
+                comments = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in comments.items()}
+                designations = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in designations.items()}
+            ordered = override
+        return cols_dict, ordered, units, long_names, comments, designations
+
+    # 3. Mapping[str, Sequence | ndarray | Series]
+    if isinstance(data, Mapping):
+        cols_dict = {}
+        for k, val in data.items():
+            ck = str(k)
+            cols_dict[ck] = _coerce_1d_sequence(val)
+            s_attrs = _extract_series_attrs(val)
+            if "units" in s_attrs:
+                units[ck] = s_attrs["units"]
+            if "long_name" in s_attrs:
+                long_names[ck] = s_attrs["long_name"]
+            if "comment" in s_attrs:
+                comments[ck] = s_attrs["comment"]
+        ordered = [str(c) for c in col_names] if col_names is not None else list(cols_dict.keys())
+        return cols_dict, ordered, units, long_names, comments, designations
+
+    # 4. NumPy ndarray (structured, 1D, or 2D)
+    if _is_ndarray_like(data):
+        dtype_names = getattr(getattr(data, "dtype", None), "names", None)
+        if dtype_names:
+            raw_fields = [str(fn) for fn in dtype_names]
+            cols_dict = {fn: _coerce_1d_sequence(data[fn]) for fn in raw_fields}
+            ordered = [str(c) for c in col_names] if col_names is not None else raw_fields
+            return cols_dict, ordered, units, long_names, comments, designations
+
+        ndim = int(data.ndim)
+        if ndim == 1:
+            cname = str(col_names[0]) if col_names else "Y"
+            return {cname: _coerce_1d_sequence(data)}, [cname], units, long_names, comments, designations
+        if ndim == 2:
+            n_rows, n_cols = int(data.shape[0]), int(data.shape[1])
+            raw_2d = data.tolist()
+            if col_names is not None and len(col_names) == n_cols:
+                names = [str(c) for c in col_names]
+            elif n_cols == 1:
+                names = ["Y"]
+            elif n_cols == 2:
+                names = ["X", "Y"]
+            else:
+                names = ["X"] + [f"Y{j}" for j in range(1, n_cols)]
+            cols_dict = {
+                names[j]: [_coerce_scalar(raw_2d[r][j]) for r in range(n_rows)]
+                for j in range(n_cols)
+            }
+            if n_cols >= 2:
+                designations[names[0]] = "X"
+            return cols_dict, names, units, long_names, comments, designations
+        raise ValueError(f"Tabular data expects a 1D or 2D array, got shape {tuple(data.shape)}.")
+
+    raise TypeError(
+        f"Unsupported tabular data type {type(data).__name__!r}; expected dict, DataFrame, or 1D/2D ndarray."
+    )
+
+
+def _coerce_2d_matrix(data: Any) -> List[List[Optional[float]]]:
+    """Coerce a 2D nested sequence, numpy.ndarray, or DataFrame into row-major ``List[List[Optional[float]]]``."""
+    def _to_cell(v: Any) -> Optional[float]:
+        sv = _coerce_scalar(v)
+        if sv is None:
+            return None
+        try:
+            fv = float(sv)
+            return fv if math.isfinite(fv) else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Matrix cell must be numeric or None/NaN, got {v!r}.") from exc
+
+    if _is_polars_dataframe(data):
+        cols = [data[c].to_list() for c in data.columns]
+        if not cols:
+            return []
+        n_r = len(cols[0])
+        return [[_to_cell(cols[c][r]) for c in range(len(cols))] for r in range(n_r)]
+
+    if _is_pandas_dataframe(data):
+        raw_vals = data.to_numpy().tolist() if hasattr(data, "to_numpy") else [list(row) for _, row in data.iterrows()]
+        return [[_to_cell(v) for v in row] for row in raw_vals]
+
+    if _is_ndarray_like(data):
+        ndim = int(data.ndim)
+        if ndim != 2:
+            raise ValueError(f"Matrix expects a 2D array, got shape {tuple(data.shape)}.")
+        return [[_to_cell(v) for v in row] for row in data.tolist()]
+
+    rows_list = list(data)
+    return [[_to_cell(v) for v in row] for row in rows_list]
+
+
+class BatchStepRef:
+    """Lazy pipeline reference token resolving to ``$steps[i].<field>`` inside ``app.batch``."""
+
+    def __init__(self, step_index: int, path: str = "") -> None:
+        self._idx = int(step_index)
+        self._path = str(path)
+
+    def __getattr__(self, attr: str) -> "BatchStepRef":
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        sub = f"{self._path}.{attr}" if self._path else attr
+        return BatchStepRef(self._idx, sub)
+
+    def __getitem__(self, key: Union[int, str]) -> "BatchStepRef":
+        if isinstance(key, int):
+            sub = f"{self._path}[{key}]"
+        else:
+            sub = f"{self._path}.{key}" if self._path else str(key)
+        return BatchStepRef(self._idx, sub)
+
+    def to_token(self) -> str:
+        return f"$steps[{self._idx}].{self._path}" if self._path else f"$steps[{self._idx}]"
+
+    def __str__(self) -> str:
+        return self.to_token()
+
+    def __repr__(self) -> str:
+        return f"BatchStepRef({self.to_token()!r})"
+
+
+class _BatchRecordedResult(dict):
+    """Placeholder result dict returned by ``Session.call`` while recording inside ``with app.batch():``."""
+
+    def __init__(self, step_index: int, method: str, params: Mapping[str, Any]) -> None:
+        name_token = f"$steps[{step_index}].name"
+        super().__init__(ok=True, name=name_token, _batch_step=step_index, _method=method)
+        self._step_index = int(step_index)
+        self._method = str(method)
+        self._params = dict(params)
+        if method.startswith("plot.") or method.startswith("graph."):
+            super().__setitem__("graph", name_token)
+
+    def __getitem__(self, key: str) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return f"$steps[{self._step_index}].{key}"
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if key in ("name", "graph", "table", "matrix"):
+            return f"$steps[{self._step_index}].{key}"
+        return default
+
+
+class BatchContext:
+    """Context manager & builder for atomic single-round-trip ``app.batch`` pipelines."""
+
+    def __init__(
+        self,
+        session: "Session",
+        *,
+        stop_on_error: bool = True,
+        atomic: bool = True,
+        defer_replot: bool = True,
+        raise_on_error: bool = True,
+    ) -> None:
+        self.session = session
+        self.stop_on_error = bool(stop_on_error)
+        self.atomic = bool(atomic)
+        self.defer_replot = bool(defer_replot)
+        self.raise_on_error = bool(raise_on_error)
+        self.commands: List[Dict[str, Any]] = []
+        self.result: Optional[Dict[str, Any]] = None
+        self.response: Optional[Dict[str, Any]] = None
+        self.results: List[Any] = []
+        self.ok: Optional[bool] = None
+        self.rolled_back: bool = False
+        self._prev_batch: Optional["BatchContext"] = None
+        self._pending_proxies: List[Tuple[int, str, "weakref.ReferenceType[Any]"]] = []
+
+    def _record_raw(self, method: str, params: Dict[str, Any]) -> _BatchRecordedResult:
+        idx = len(self.commands)
+        self.commands.append({"method": str(method), "params": params})
+        return _BatchRecordedResult(idx, method, params)
+
+    def _register_proxy(self, proxy: Any, token_name: str) -> None:
+        if token_name.startswith("$steps[") and "]." in token_name:
+            body = token_name[len("$steps[") :]
+            idx_s, field = body.split("].", 1)
+            if idx_s.isdigit():
+                self._pending_proxies.append((int(idx_s), field, weakref.ref(proxy)))
+
+    def add(
+        self,
+        method: str,
+        params: Optional[Mapping[str, Any]] = None,
+        /,
+        **kwargs: Any,
+    ) -> BatchStepRef:
+        """Explicitly append a command to the batch and return a :class:`BatchStepRef`."""
+        merged: Dict[str, Any] = {}
+        if params is not None:
+            merged.update(_sanitize_for_json(dict(params)))
+        if kwargs:
+            merged.update(_clean_kwargs(kwargs))
+        idx = len(self.commands)
+        self.commands.append({"method": str(method), "params": merged})
+        return BatchStepRef(idx)
+
+    call = add
+
+    def execute(self) -> Dict[str, Any]:
+        """Flush recorded commands to ToriGraph in a single ``app.batch`` RPC call."""
+        if not self.commands:
+            empty_res: Dict[str, Any] = {
+                "ok": True,
+                "completed": 0,
+                "total": 0,
+                "rolled_back": False,
+                "results": [],
+            }
+            self.result = empty_res
+            self.response = empty_res
+            self.results = []
+            self.ok = True
+            self.rolled_back = False
+            return empty_res
+
+        prev = self.session._active_batch
+        self.session._active_batch = None
+        try:
+            res = self.session.call(
+                "app.batch",
+                commands=list(self.commands),
+                stop_on_error=self.stop_on_error,
+                atomic=self.atomic,
+                defer_replot=self.defer_replot,
+            )
+        finally:
+            self.session._active_batch = prev
+
+        self.result = res
+        self.response = res
+        step_results = res.get("results")
+        self.results = list(step_results) if isinstance(step_results, list) else []
+        self.ok = bool(res.get("ok", True))
+        self.rolled_back = bool(res.get("rolled_back", False))
+
+        # Patch recorded proxy .name attributes from server step results
+        if self.ok and self.results:
+            for step_idx, field, pref in self._pending_proxies:
+                obj = pref()
+                if obj is not None and 0 <= step_idx < len(self.results):
+                    sres = self.results[step_idx]
+                    if isinstance(sres, Mapping):
+                        resolved = sres.get(field) or sres.get("name") or sres.get("graph")
+                        if isinstance(resolved, str) and resolved:
+                            obj.name = resolved
+
+        if not self.ok and self.raise_on_error:
+            err_info = res.get("error")
+            if isinstance(err_info, Mapping):
+                code = int(err_info.get("code", -32000))
+                msg = str(err_info.get("message", "Batch step failed"))
+            else:
+                code = -32000
+                msg = str(err_info or "Batch execution failed")
+            raise RpcError(code, msg, data=res)
+
+        return res
+
+    def __enter__(self) -> "BatchContext":
+        self._prev_batch = self.session._active_batch
+        self.session._active_batch = self
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.session._active_batch = self._prev_batch
+        self._prev_batch = None
+        if exc_type is None and self.commands:
+            self.execute()
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    """Recursively convert NaN/Inf -> None, Path -> str, proxies -> name, and duck-typed arrays -> list."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, BatchStepRef):
+        return value.to_token()
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    if _is_missing_scalar(value):
+        return None
     if isinstance(value, (TableProxy, MatrixProxy, GraphProxy)):
         return value.name
+    if hasattr(value, "item") and callable(value.item) and not isinstance(value, (bytes, bytearray)):
+        if not hasattr(value, "ndim") or int(getattr(value, "ndim", 0)) == 0:
+            try:
+                return _sanitize_for_json(value.item())
+            except Exception:
+                pass
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
     if isinstance(value, Mapping):
         return {str(k): _sanitize_for_json(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_sanitize_for_json(v) for v in value]
-    if hasattr(value, "tolist") and callable(value.tolist):
+    if hasattr(value, "to_list") and callable(value.to_list) and not _is_dataframe_like(value):
+        return _sanitize_for_json(value.to_list())
+    if hasattr(value, "tolist") and callable(value.tolist) and not _is_dataframe_like(value):
         return _sanitize_for_json(value.tolist())
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
         return [_sanitize_for_json(v) for v in value]
@@ -100,9 +601,11 @@ def _clean_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return {k: _sanitize_for_json(v) for k, v in kwargs.items() if v is not None}
 
 
-def _name_of(obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", None]) -> Optional[str]:
+def _name_of(obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", BatchStepRef, None]) -> Optional[str]:
     if obj is None:
         return None
+    if isinstance(obj, BatchStepRef):
+        return obj.to_token()
     if isinstance(obj, str):
         return obj
     if hasattr(obj, "name"):
@@ -457,6 +960,8 @@ class TableProxy:
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
         self.name = str(name)
+        if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
+            session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
     def __repr__(self) -> str:
         return f"TableProxy(name={self.name!r})"
@@ -477,13 +982,22 @@ class TableProxy:
         data: Optional[Iterable[Any]] = None,
         **meta_kwargs: Any,
     ) -> Dict[str, Any]:
+        coerced_data: Optional[List[Any]] = None
+        if data is not None:
+            s_attrs = _extract_series_attrs(data)
+            if name is None and "name" in s_attrs:
+                name = s_attrs["name"]
+            for mkey in ("units", "long_name", "comment"):
+                if mkey in s_attrs and meta_kwargs.get(mkey) is None:
+                    meta_kwargs[mkey] = s_attrs[mkey]
+            coerced_data = _coerce_1d_sequence(data)
         return self.session.call(
             "table.add_column",
             table=self.name,
             name=name,
             plot_designation=plot_designation,
             mode=mode,
-            data=(list(data) if data is not None else None),
+            data=coerced_data,
             **meta_kwargs,
         )
 
@@ -502,11 +1016,15 @@ class TableProxy:
         seq = data if data is not None else values
         if seq is None:
             raise ValueError("Provide column 'values' (or 'data') iterable.")
+        s_attrs = _extract_series_attrs(seq)
+        for mkey in ("units", "long_name", "comment"):
+            if mkey in s_attrs and meta_kwargs.get(mkey) is None:
+                meta_kwargs[mkey] = s_attrs[mkey]
         res = self.session.call(
             "table.set_column_data",
             table=self.name,
             col=col,
-            data=list(seq),
+            data=_coerce_1d_sequence(seq),
             mode=mode,
             **meta_kwargs,
         )
@@ -515,8 +1033,27 @@ class TableProxy:
     set_column_data = set_column
     set_col = set_column
 
-    def get_column(self, col: Union[int, str]) -> List[Any]:
-        res = self.session.call("table.get_column_data", table=self.name, col=col)
+    def get_column(
+        self,
+        col: Union[int, str],
+        *,
+        compact: bool = False,
+        include_masked: bool = True,
+        start_row: Optional[int] = None,
+        end_row: Optional[int] = None,
+    ) -> List[Any]:
+        eff_inc_mask: Optional[bool] = (
+            False if not include_masked else (None if compact else True)
+        )
+        res = self.session.call(
+            "table.get_column_data",
+            table=self.name,
+            col=col,
+            compact=(True if compact else None),
+            include_masked=eff_inc_mask,
+            start_row=start_row,
+            end_row=end_row,
+        )
         return list(res.get("data", res.get("values", [])))
 
     get_column_data = get_column
@@ -524,30 +1061,42 @@ class TableProxy:
 
     def set_data_dict(
         self,
-        data: Mapping[str, Iterable[Any]],
+        data: Any,
         meta: Optional[Mapping[str, Mapping[str, Any]]] = None,
         units: Optional[Mapping[str, str]] = None,
         long_names: Optional[Mapping[str, str]] = None,
         comments: Optional[Mapping[str, str]] = None,
         designations: Optional[Mapping[str, str]] = None,
         column_order: Optional[Sequence[str]] = None,
+        *,
+        columns: Optional[Sequence[str]] = None,
+        include_index: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        payload_data = {str(k): list(v) for k, v in data.items()}
-        ordered = (
-            [str(k) for k in column_order]
-            if column_order is not None
-            else list(payload_data.keys())
-        )
+        req_order = column_order if column_order is not None else columns
+        (
+            payload_data,
+            ordered,
+            inf_units,
+            inf_long_names,
+            inf_comments,
+            inf_designations,
+        ) = _coerce_tabular_input(data, col_names=req_order, include_index=include_index)
+
+        merged_units = {**inf_units, **(dict(units) if units is not None else {})} or None
+        merged_long_names = {**inf_long_names, **(dict(long_names) if long_names is not None else {})} or None
+        merged_comments = {**inf_comments, **(dict(comments) if comments is not None else {})} or None
+        merged_designations = {**inf_designations, **(dict(designations) if designations is not None else {})} or None
+
         return self.session.call(
             "table.set_data_dict",
             table=self.name,
             data=payload_data,
             column_order=ordered,
             meta=meta,
-            units=units,
-            long_names=long_names,
-            comments=comments,
-            designations=designations,
+            units=merged_units,
+            long_names=merged_long_names,
+            comments=merged_comments,
+            designations=merged_designations,
         )
 
     def get_data_dict(
@@ -574,9 +1123,87 @@ class TableProxy:
 
     to_dict = get_data_dict
 
+    def to_dataframe(
+        self,
+        backend: str = "auto",
+        *,
+        columns: Optional[Sequence[Union[int, str]]] = None,
+    ) -> Any:
+        """Export worksheet columns to a ``pandas.DataFrame``, ``polars.DataFrame``, ``np.ndarray``, or ``dict``.
+
+        When returning a ``pandas.DataFrame``, ``df.attrs['units']`` and ``df.attrs['long_names']``
+        are populated so round-tripping back via ``create_table(df)`` / ``set_data_dict(df)`` is lossless.
+        """
+        b = str(backend).strip().lower()
+        col_dict = self.get_data_dict(columns=columns)
+        if b == "dict":
+            return col_dict
+        if b == "numpy":
+            return self.to_numpy(columns=columns)
+
+        info = self.info()
+        cols_meta = info.get("columns", [])
+        units_map = {
+            str(c["name"]): str(c["units"])
+            for c in cols_meta
+            if "name" in c and c.get("units")
+            and (columns is None or str(c["name"]) in col_dict)
+        }
+        long_names_map = {
+            str(c["name"]): str(c["long_name"])
+            for c in cols_meta
+            if "name" in c and c.get("long_name")
+            and (columns is None or str(c["name"]) in col_dict)
+        }
+
+        if b in ("auto", "pandas", "pd"):
+            try:
+                import pandas as pd  # type: ignore[import-not-found]
+
+                df = pd.DataFrame(col_dict)
+                df.attrs["units"] = units_map
+                df.attrs["long_names"] = long_names_map
+                df.attrs["table_name"] = self.name
+                return df
+            except ImportError:
+                if b in ("pandas", "pd"):
+                    raise
+
+        if b in ("auto", "polars", "pl"):
+            try:
+                import polars as pl  # type: ignore[import-not-found]
+
+                return pl.DataFrame(col_dict)
+            except ImportError:
+                if b in ("polars", "pl"):
+                    raise
+
+        raise ImportError(
+            f"Requested DataFrame backend {backend!r} is not installed. "
+            "Install 'pandas' or 'polars', or call tbl.get_data_dict()."
+        )
+
+    def to_numpy(
+        self,
+        columns: Optional[Sequence[Union[int, str]]] = None,
+        *,
+        dtype: Any = float,
+    ) -> Any:
+        """Export numeric worksheet columns as a 2D ``numpy.ndarray`` (converting invalid cells to ``np.nan``)."""
+        import numpy as np  # type: ignore[import-not-found]
+
+        col_dict = self.get_data_dict(columns=columns)
+        if not col_dict:
+            return np.empty((0, 0), dtype=dtype)
+        arr_cols = [
+            [(np.nan if v is None else v) for v in col_vals]
+            for col_vals in col_dict.values()
+        ]
+        return np.column_stack(arr_cols).astype(dtype, copy=False)
+
     def set_cell(self, row: int, col: Union[int, str], value: Any) -> Dict[str, Any]:
         return self.session.call(
-            "table.set_cell", table=self.name, row=int(row), col=col, value=value
+            "table.set_cell", table=self.name, row=int(row), col=col, value=_coerce_scalar(value)
         )
 
     def get_cell(self, row: int, col: Union[int, str]) -> Any:
@@ -592,6 +1219,7 @@ class TableProxy:
         units: Optional[str] = None,
         comment: Optional[str] = None,
         plot_designation: Optional[str] = None,
+        mode: Optional[str] = None,
         numeric_format: Optional[str] = None,
         precision: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -604,6 +1232,7 @@ class TableProxy:
             units=units,
             comment=comment,
             plot_designation=plot_designation,
+            mode=mode,
             numeric_format=numeric_format,
             precision=precision,
         )
@@ -626,14 +1255,30 @@ class TableProxy:
             recalculate=recalculate,
         )
 
-    def recalculate(self) -> Dict[str, Any]:
-        return self.session.call("table.recalculate", table=self.name)
+    def recalculate(self, col: Optional[Union[int, str]] = None) -> Dict[str, Any]:
+        return self.session.call("table.recalculate", table=self.name, col=col)
 
     def mask_rows(
-        self, rows: Union[int, Sequence[int]], col: Optional[Union[int, str]] = None
+        self,
+        rows: Optional[Union[int, Sequence[int]]] = None,
+        col: Optional[Union[int, str]] = None,
+        *,
+        start_row: Optional[int] = None,
+        end_row: Optional[int] = None,
     ) -> Dict[str, Any]:
-        row_list = [int(rows)] if isinstance(rows, int) else [int(r) for r in rows]
-        return self.session.call("table.mask_rows", table=self.name, rows=row_list, col=col)
+        row_list = (
+            None
+            if rows is None
+            else ([int(rows)] if isinstance(rows, int) else [int(r) for r in rows])
+        )
+        return self.session.call(
+            "table.mask_rows",
+            table=self.name,
+            rows=row_list,
+            col=col,
+            start_row=start_row,
+            end_row=end_row,
+        )
 
     def unmask_rows(
         self,
@@ -682,8 +1327,20 @@ class TableProxy:
 
     column_stats = stats
 
-    def row_stats(self, rows: Optional[Sequence[int]] = None) -> Dict[str, Any]:
-        return self.session.call("table.row_stats", table=self.name, rows=rows)
+    def row_stats(
+        self,
+        rows: Optional[Sequence[int]] = None,
+        *,
+        start_row: Optional[int] = None,
+        end_row: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "table.row_stats",
+            table=self.name,
+            rows=([int(r) for r in rows] if rows is not None else None),
+            start_row=start_row,
+            end_row=end_row,
+        )
 
     def export_csv(
         self,
@@ -749,6 +1406,8 @@ class MatrixProxy:
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
         self.name = str(name)
+        if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
+            session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
     def __repr__(self) -> str:
         return f"MatrixProxy(name={self.name!r})"
@@ -770,12 +1429,26 @@ class MatrixProxy:
             y_max=y_max,
         )
 
-    def set_data(self, data: Sequence[Sequence[Optional[float]]]) -> Dict[str, Any]:
-        return self.session.call("matrix.set_data", matrix=self.name, data=data)
+    def set_data(self, data: Any = None, *, rows_2d: Any = None) -> Dict[str, Any]:
+        src = rows_2d if rows_2d is not None else data
+        if src is None:
+            raise ValueError("Provide 2D matrix 'data' (or 'rows_2d').")
+        coerced = _coerce_2d_matrix(src)
+        return self.session.call("matrix.set_data", matrix=self.name, data=coerced)
 
     def get_data(self) -> List[List[Optional[float]]]:
         res = self.session.call("matrix.get_data", matrix=self.name)
         return list(res.get("data", []))
+
+    def to_numpy(self, *, dtype: Any = float) -> Any:
+        """Return matrix cells as a 2D ``numpy.ndarray`` (converting ``None`` cells to ``np.nan``)."""
+        import numpy as np  # type: ignore[import-not-found]
+
+        grid = self.get_data()
+        if not grid:
+            return np.empty((0, 0), dtype=dtype)
+        clean = [[(np.nan if v is None else v) for v in row] for row in grid]
+        return np.asarray(clean, dtype=dtype)
 
     def set_formula(self, formula: str) -> Dict[str, Any]:
         return self.session.call("matrix.set_formula", matrix=self.name, formula=formula)
@@ -884,9 +1557,26 @@ class GraphProxy:
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
         self.name = str(name)
+        if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
+            session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
     def __repr__(self) -> str:
         return f"GraphProxy(name={self.name!r})"
+
+    def call(
+        self,
+        _method: Optional[str] = None,
+        _params: Optional[Mapping[str, Any]] = None,
+        /,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Invoke a JSON-RPC method defaulting ``graph=self.name`` when not already supplied."""
+        has_graph = ("graph" in kwargs and kwargs["graph"] is not None) or (
+            _params is not None and "graph" in _params and _params["graph"] is not None
+        )
+        if not has_graph:
+            kwargs["graph"] = self.name
+        return self.session.call(_method, _params, **kwargs)
 
     def info(self) -> Dict[str, Any]:
         return self.session.call("graph.get_info", graph=self.name)
@@ -912,6 +1602,24 @@ class GraphProxy:
         res = self.inspect(include_ticks=True, diagnose=True)
         return list(res.get("warnings", []))
 
+    def auto_layout(
+        self,
+        *,
+        pad_fraction: float = 0.05,
+        allow_outside_legend: bool = True,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Deterministically resolve axis, clipping, panel, tick-collision, and legend/callout overlaps."""
+        return self.session.call(
+            "graph.auto_layout",
+            graph=self.name,
+            pad_fraction=float(pad_fraction),
+            allow_outside_legend=bool(allow_outside_legend),
+            **kwargs,
+        )
+
+    fix_layout = auto_layout
+
     def set_title(
         self,
         title: str = "",
@@ -933,7 +1641,7 @@ class GraphProxy:
 
     def add_curve(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         y_col: Union[int, str],
         x_col: Optional[Union[int, str]] = None,
         style: str = "line_symbol",
@@ -941,10 +1649,11 @@ class GraphProxy:
         layer: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        tbl_ref = self.session._ensure_table_ref(table)
         return self.session.call(
             "plot.add_curve",
             graph=self.name,
-            table=_name_of(table),
+            table=tbl_ref,
             x_col=x_col,
             y_col=y_col,
             style=style,
@@ -962,19 +1671,33 @@ class GraphProxy:
 
     def add_error_bars(
         self,
-        table: Union[str, TableProxy],
-        curve: Union[int, str],
-        err_col: Union[int, str],
+        table_or_err_col: Optional[Union[str, int, TableProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        err_col: Optional[Union[int, str]] = None,
         direction: str = "y",
+        *,
+        table: Optional[Union[str, TableProxy]] = None,
+        layer: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        if err_col is not None:
+            resolved_table = _name_of(table_or_err_col) if table_or_err_col is not None else _name_of(table)  # type: ignore[arg-type]
+            resolved_curve = curve
+            resolved_err: Union[int, str] = err_col
+        else:
+            if table_or_err_col is None or isinstance(table_or_err_col, TableProxy):
+                raise ValueError("Specify 'err_col' column name or index.")
+            resolved_err = table_or_err_col
+            resolved_curve = curve
+            resolved_table = _name_of(table)
         return self.session.call(
             "plot.add_error_bars",
             graph=self.name,
-            table=_name_of(table),
-            curve=curve,
-            err_col=err_col,
+            table=resolved_table,
+            curve=resolved_curve,
+            err_col=resolved_err,
             direction=direction,
+            layer=layer,
             **kwargs,
         )
 
@@ -1003,10 +1726,10 @@ class GraphProxy:
 
     def add_inset(
         self,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
+        x_min: Optional[float] = None,
+        x_max: Optional[float] = None,
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
         *,
         show_connectors: bool = True,
         **kwargs: Any,
@@ -1056,8 +1779,10 @@ class GraphProxy:
             **kwargs,
         )
 
-    def fit_page_to_layers(self) -> Dict[str, Any]:
-        return self.session.call("graph.fit_page_to_layers", graph=self.name)
+    def fit_page_to_layers(self, margin_px: Optional[int] = None) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.fit_page_to_layers", graph=self.name, margin_px=margin_px
+        )
 
     def fit_layers_to_page(self) -> Dict[str, Any]:
         return self.session.call("graph.fit_layers_to_page", graph=self.name)
@@ -1110,18 +1835,43 @@ class GraphProxy:
         axis: str = "right",
         curve: Optional[Union[int, str]] = None,
         layer: Optional[int] = None,
+        *,
+        reset: Optional[bool] = None,
     ) -> Dict[str, Any]:
         return self.session.call(
             "graph.sync_axis_color",
             graph=self.name,
             axis=axis,
             curve=curve,
+            reset=reset,
             layer=layer,
         )
 
     def step_zoom_history(
-        self, delta: int = -1, layer: Optional[int] = None
+        self,
+        delta: Union[int, str] = -1,
+        layer: Optional[int] = None,
+        *,
+        direction: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if direction is not None:
+            resolved_delta = 1 if str(direction).strip().lower() in ("forward", "next", "redo", "+1") else -1
+            return self.session.call(
+                "graph.step_zoom_history",
+                graph=self.name,
+                delta=resolved_delta,
+                direction=direction,
+                layer=layer,
+            )
+        if isinstance(delta, str):
+            resolved_delta = 1 if delta.strip().lower() in ("forward", "next", "redo", "+1") else -1
+            return self.session.call(
+                "graph.step_zoom_history",
+                graph=self.name,
+                delta=resolved_delta,
+                direction=delta,
+                layer=layer,
+            )
         return self.session.call(
             "graph.step_zoom_history", graph=self.name, delta=int(delta), layer=layer
         )
@@ -1159,14 +1909,19 @@ class GraphProxy:
 
     def set_aspect_ratio(
         self,
-        enabled: bool = True,
+        enabled: Union[bool, float] = True,
         ratio: float = 1.0,
         *,
         keep: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        use_keep = enabled if keep is None else keep
+        if isinstance(enabled, (int, float)) and not isinstance(enabled, bool):
+            eff_ratio = float(enabled)
+            use_keep = True if keep is None else bool(keep)
+        else:
+            eff_ratio = float(ratio)
+            use_keep = bool(enabled) if keep is None else bool(keep)
         return self.session.call(
-            "graph.set_aspect_ratio", graph=self.name, keep=use_keep, ratio=ratio
+            "graph.set_aspect_ratio", graph=self.name, keep=use_keep, ratio=eff_ratio
         )
 
     def copy_format(self, layer: Optional[int] = None) -> Dict[str, Any]:
@@ -1203,10 +1958,12 @@ class GraphProxy:
         step: Optional[float] = None,
         scale: Optional[str] = None,
         title: Optional[str] = None,
+        categories: Optional[Sequence[str]] = None,
         font_family: Optional[str] = None,
         font_size: Optional[int] = None,
         title_font_size: Optional[int] = None,
         numbers_font_size: Optional[int] = None,
+        tick_font_size: Optional[int] = None,
         ticks_inward: Optional[bool] = None,
         show_backbone: Optional[bool] = None,
         show_labels: Optional[bool] = None,
@@ -1233,10 +1990,12 @@ class GraphProxy:
             step=step,
             scale=scale,
             title=title,
+            categories=([str(c) for c in _coerce_1d_sequence(categories)] if categories is not None else None),
             font_family=font_family,
             font_size=font_size,
             title_font_size=title_font_size,
             numbers_font_size=numbers_font_size,
+            tick_font_size=tick_font_size,
             ticks_inward=ticks_inward,
             show_backbone=show_backbone,
             show_labels=show_labels,
@@ -1253,6 +2012,44 @@ class GraphProxy:
             **kwargs,
         )
 
+    def set_category_labels(
+        self,
+        axis_or_labels: Optional[Union[str, Sequence[Any]]] = None,
+        labels_arg: Optional[Sequence[Any]] = None,
+        *,
+        axis: Optional[str] = None,
+        labels: Optional[Sequence[Any]] = None,
+        layer: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Assign explicit text category labels on an axis (`('x', labels)` or `(labels, axis='x')`)."""
+        resolved_axis = "x"
+        resolved_labels: Optional[Sequence[Any]] = labels
+
+        if isinstance(axis_or_labels, str):
+            resolved_axis = axis_or_labels
+            if labels_arg is not None:
+                resolved_labels = labels_arg
+        elif axis_or_labels is not None:
+            resolved_labels = axis_or_labels
+            if isinstance(labels_arg, str):
+                resolved_axis = labels_arg
+
+        if axis is not None:
+            resolved_axis = axis
+        if resolved_labels is None:
+            raise ValueError("Provide category 'labels' sequence.")
+
+        str_labels = ["" if v is None else str(v) for v in _coerce_1d_sequence(resolved_labels)]
+        return self.session.call(
+            "graph.set_category_labels",
+            graph=self.name,
+            axis=resolved_axis,
+            labels=str_labels,
+            layer=layer,
+            **kwargs,
+        )
+
     def set_axis_break(
         self,
         axis: str = "x",
@@ -1261,6 +2058,7 @@ class GraphProxy:
         start: Optional[float] = None,
         end: Optional[float] = None,
         position_pct: float = 0.5,
+        log_before: Optional[bool] = None,
         log_after: Optional[bool] = None,
         layer: Optional[int] = None,
         **kwargs: Any,
@@ -1274,6 +2072,7 @@ class GraphProxy:
             start=start,
             end=end,
             position_pct=position_pct,
+            log_before=log_before,
             log_after=log_after,
             **kwargs,
         )
@@ -1294,8 +2093,24 @@ class GraphProxy:
             **kwargs,
         )
 
-    def add_shaded_band(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.session.call("graph.add_shaded_band", graph=self.name, **kwargs)
+    def add_shaded_band(
+        self,
+        x: Optional[Sequence[float]] = None,
+        y_low: Optional[Sequence[float]] = None,
+        y_high: Optional[Sequence[float]] = None,
+        *,
+        label: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.session.call(
+            "graph.add_shaded_band",
+            graph=self.name,
+            x=(_coerce_1d_sequence(x) if x is not None else None),
+            y_low=(_coerce_1d_sequence(y_low) if y_low is not None else None),
+            y_high=(_coerce_1d_sequence(y_high) if y_high is not None else None),
+            label=label,
+            **kwargs,
+        )
 
     def remove_reference_line(
         self, index: int = 0, *, layer: Optional[int] = None
@@ -1334,6 +2149,7 @@ class GraphProxy:
         ls: Optional[str] = None,
         alpha: Optional[float] = None,
         symbol_type: Optional[str] = None,
+        symbol_style: Optional[str] = None,
         marker: Optional[str] = None,
         symbol_size: Optional[int] = None,
         markersize: Optional[int] = None,
@@ -1356,6 +2172,7 @@ class GraphProxy:
             resolved_curve = curve_index
         elif curve is None and curve_index is not None:
             resolved_idx = int(curve_index)
+        eff_sym = symbol_type if symbol_type is not None else symbol_style
         return self.session.call(
             "graph.set_curve_style",
             graph=self.name,
@@ -1370,7 +2187,7 @@ class GraphProxy:
             linestyle=linestyle,
             ls=ls,
             alpha=alpha,
-            symbol_type=symbol_type,
+            symbol_type=eff_sym,
             marker=marker,
             symbol_size=symbol_size,
             markersize=markersize,
@@ -1403,16 +2220,44 @@ class GraphProxy:
 
     def move_curve(
         self,
-        from_index: int,
-        to_index: int,
+        from_index_or_curve: Optional[Union[int, str]] = None,
+        to_index_or_direction: Union[int, str] = "up",
         layer: Optional[int] = None,
+        *,
+        curve: Optional[Union[int, str]] = None,
+        direction: Optional[str] = None,
+        from_index: Optional[int] = None,
+        to_index: Optional[int] = None,
     ) -> Dict[str, Any]:
+        target = (
+            curve
+            if curve is not None
+            else (from_index if from_index is not None else from_index_or_curve)
+        )
+        if target is None:
+            raise ValueError("Provide 'curve' (or 'from_index') to move.")
+        if to_index is not None or (
+            direction is None
+            and isinstance(to_index_or_direction, int)
+            and not isinstance(to_index_or_direction, bool)
+            and isinstance(target, int)
+            and not isinstance(target, bool)
+        ):
+            dest_idx = int(to_index if to_index is not None else to_index_or_direction)
+            return self.session.call(
+                "graph.move_curve",
+                graph=self.name,
+                layer=layer,
+                from_index=int(target),
+                to_index=dest_idx,
+            )
+        eff_dir = direction if direction is not None else str(to_index_or_direction)
         return self.session.call(
             "graph.move_curve",
             graph=self.name,
             layer=layer,
-            from_index=int(from_index),
-            to_index=int(to_index),
+            curve=target,
+            direction=eff_dir,
         )
 
     def set_stack_offsets(
@@ -1423,19 +2268,29 @@ class GraphProxy:
         normalize: bool = False,
         layer: Optional[int] = None,
         *,
+        y_offset: Optional[float] = None,
+        x_offset: Optional[float] = None,
+        auto_waterfall: Optional[bool] = None,
         y_gap_pct: Optional[float] = None,
         x_gap_pct: Optional[float] = None,
         reset: bool = False,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
+        eff_y = y_offset if y_offset is not None else (y_offset_pct if y_gap_pct is None else y_gap_pct)
+        eff_x = x_offset if x_offset is not None else (x_offset_pct if x_gap_pct is None else x_gap_pct)
         return self.session.call(
             "graph.set_stack_offsets",
             graph=self.name,
             layer=layer,
             mode=mode,
-            y_gap_pct=(y_offset_pct if y_gap_pct is None else y_gap_pct),
-            x_gap_pct=(x_offset_pct if x_gap_pct is None else x_gap_pct),
+            y_gap_pct=eff_y,
+            x_gap_pct=eff_x,
+            y_offset=y_offset,
+            x_offset=x_offset,
+            auto_waterfall=auto_waterfall,
             normalize=normalize,
             reset=reset,
+            **kwargs,
         )
 
     def apply_series_scheme(
@@ -1495,6 +2350,12 @@ class GraphProxy:
         *,
         position: Optional[str] = None,
         visible: Optional[bool] = None,
+        columns: Optional[int] = None,
+        font_size: Optional[int] = None,
+        frame: Optional[Union[bool, int]] = None,
+        framed: Optional[Union[bool, int]] = None,
+        text: Optional[str] = None,
+        layer: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.session.call(
@@ -1502,6 +2363,12 @@ class GraphProxy:
             graph=self.name,
             position=position,
             visible=visible,
+            columns=columns,
+            font_size=font_size,
+            frame=frame,
+            framed=framed,
+            text=text,
+            layer=layer,
             **kwargs,
         )
 
@@ -1569,8 +2436,8 @@ class GraphProxy:
         self,
         x_min: float,
         x_max: float,
-        y_min: float,
-        y_max: float,
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
         curve: Optional[Union[int, str]] = None,
         unmask: bool = False,
         *,
@@ -1612,6 +2479,98 @@ class GraphProxy:
             path=os.fspath(path),
             dpi=dpi,
             transparent=transparent,
+            **kwargs,
+        )
+
+    def export_ole(
+        self,
+        emf_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        dpi: int = 300,
+        include_base64: Optional[bool] = None,
+        skip_project_stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Export embedded ToriGraph OLE payload metadata + vector EMF preview."""
+        return self.session.call(
+            "graph.export_ole",
+            graph=self.name,
+            emf_path=(os.fspath(emf_path) if emf_path is not None else None),
+            dpi=int(dpi),
+            include_base64=include_base64,
+            skip_project_stream=skip_project_stream,
+            **kwargs,
+        )
+
+    def to_python(
+        self,
+        output_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        standalone: bool = True,
+        embed_data: str = "inline",
+        path: Optional[Union[str, os.PathLike[str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Generate a reproducible Python script dict for this graph (`graph.to_python`)."""
+        out_p = output_path if output_path is not None else path
+        out_str = os.fspath(out_p) if out_p is not None else None
+        res = self.session.call(
+            "graph.to_python",
+            graph=self.name,
+            standalone=bool(standalone),
+            embed_data=str(embed_data),
+            output_path=out_str,
+            **kwargs,
+        )
+        script_txt = str(res.get("script") or res.get("code") or "")
+        if out_str and script_txt and not os.path.isfile(out_str):
+            Path(out_str).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_str).write_text(script_txt, encoding="utf-8")
+        return res
+
+    def to_python_script(
+        self,
+        output_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        standalone: bool = True,
+        embed_data: str = "inline",
+        path: Optional[Union[str, os.PathLike[str]]] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Return a standalone or console-ready ``import torigraph as tg`` Python script string."""
+        res = self.to_python(
+            output_path=output_path,
+            standalone=standalone,
+            embed_data=embed_data,
+            path=path,
+            **kwargs,
+        )
+        return str(res.get("script") or res.get("code") or "")
+
+    def to_pptx(
+        self,
+        path: Union[str, os.PathLike[str]],
+        *,
+        per_slide: int = 1,
+        deck: Optional[Union[str, os.PathLike[str]]] = None,
+        slide: Optional[int] = None,
+        box: Optional[Sequence[float]] = None,
+        replace: Optional[Union[bool, str, Sequence[Any], Mapping[str, Any]]] = None,
+        dpi: int = 300,
+        overwrite: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Embed this graph into a PowerPoint ``.pptx`` deck as a zero-COM native OLE object."""
+        return self.session.to_pptx(
+            path,
+            [self],
+            per_slide=per_slide,
+            deck=deck,
+            slide=slide,
+            box=box,
+            replace=replace,
+            dpi=dpi,
+            overwrite=overwrite,
             **kwargs,
         )
 
@@ -1689,6 +2648,8 @@ class GraphProxy:
             **kwargs,
         )
 
+    set_options = set_3d_options
+
     def attach_gadget(self, gadget_type: str = "roi_stats", **kwargs: Any) -> Dict[str, Any]:
         return self.session.call(
             "gadget.attach", graph=self.name, type=gadget_type, **kwargs
@@ -1713,6 +2674,8 @@ class GraphProxy:
 
     def clear_gadgets(self, gadget_type: str = "all") -> Dict[str, Any]:
         return self.session.call("gadget.clear", graph=self.name, type=gadget_type)
+
+    clear_gadget = clear_gadgets
 
     def analyze_tensile(
         self,
@@ -1745,6 +2708,77 @@ class GraphProxy:
 
     offset_yield = analyze_tensile
 
+    def analyze_work_hardening(
+        self,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        smooth_window: int = 11,
+        create_plot: bool = True,
+        plot_mode: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Compute Kocks-Mecking work-hardening rate (d sigma_t / d eps_t) & Considere necking point."""
+        return self.session.analyze_work_hardening(
+            graph=self.name,
+            curve=curve,
+            smooth_window=smooth_window,
+            create_plot=create_plot,
+            plot_mode=plot_mode,
+            **kwargs,
+        )
+
+    kocks_mecking = analyze_work_hardening
+
+    def analyze_xrd(
+        self,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        wavelength: float = 1.540598,
+        xray_energy_kev: Optional[float] = None,
+        instr_fwhm: float = 0.05,
+        scherrer_k: float = 0.90,
+        crystal_system: str = "fcc",
+        c_over_a: Optional[float] = None,
+        strip_kalpha2: bool = False,
+        add_top_d_axis: bool = True,
+        create_wh_plot: bool = True,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run Bragg d-spacing, Scherrer crystallite size, and Williamson-Hall microstrain analysis."""
+        return self.session.analyze_xrd(
+            graph=self.name,
+            curve=curve,
+            wavelength=wavelength,
+            xray_energy_kev=xray_energy_kev,
+            instr_fwhm=instr_fwhm,
+            scherrer_k=scherrer_k,
+            crystal_system=crystal_system,
+            c_over_a=c_over_a,
+            strip_kalpha2=strip_kalpha2,
+            add_top_d_axis=add_top_d_axis,
+            create_wh_plot=create_wh_plot,
+            **kwargs,
+        )
+
+    xrd_analyze = analyze_xrd
+
+    def bragg_convert(
+        self,
+        *,
+        wavelength: float = 1.540598,
+        xray_energy_kev: Optional[float] = None,
+        mode: str = "d_spacing",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Convert XRD 2-theta axis/curve to Bragg d-spacing or scattering vector Q."""
+        return self.session.bragg_convert(
+            graph=self.name,
+            wavelength=wavelength,
+            xray_energy_kev=xray_energy_kev,
+            mode=mode,
+            **kwargs,
+        )
+
 
 class Session:
     """Connected ToriGraph JSON-RPC 2.0 Automation Session."""
@@ -1760,6 +2794,7 @@ class Session:
         self._cleanup_files = list(cleanup_files or [])
         self._next_id = 1
         self._closed = False
+        self._active_batch: Optional[BatchContext] = None
         self._finalizer: Optional[weakref.finalize] = (
             weakref.finalize(
                 self,
@@ -1816,7 +2851,7 @@ class Session:
 
     def call(
         self,
-        _method: str,
+        _method: Optional[str] = None,
         _params: Optional[Mapping[str, Any]] = None,
         /,
         **kwargs: Any,
@@ -1825,11 +2860,20 @@ class Session:
         if self._closed:
             raise TransportError("Session is already closed.")
 
+        if _method is None:
+            kw_method = kwargs.pop("method", None)
+            if not kw_method:
+                raise ValueError("Specify JSON-RPC 'method' name.")
+            _method = str(kw_method)
+
         merged: Dict[str, Any] = {}
         if _params is not None:
             merged.update(_sanitize_for_json(dict(_params)))
         if kwargs:
             merged.update(_clean_kwargs(kwargs))
+
+        if self._active_batch is not None and _method != "app.batch":
+            return self._active_batch._record_raw(_method, merged)
 
         req_id = self._next_id
         self._next_id += 1
@@ -1860,8 +2904,51 @@ class Session:
         result = resp.get("result")
         return result if isinstance(result, dict) else {"value": result}
 
+    def batch(
+        self,
+        commands: Optional[Sequence[Mapping[str, Any]]] = None,
+        *,
+        stop_on_error: bool = True,
+        atomic: bool = True,
+        defer_replot: bool = True,
+        raise_on_error: bool = True,
+    ) -> Any:
+        """Execute a command list via ``app.batch`` OR enter a recording ``with app.batch() as b:`` block."""
+        if commands is not None:
+            return self.call(
+                "app.batch",
+                commands=[dict(c) for c in commands],
+                stop_on_error=bool(stop_on_error),
+                atomic=bool(atomic),
+                defer_replot=bool(defer_replot),
+            )
+        return BatchContext(
+            self,
+            stop_on_error=stop_on_error,
+            atomic=atomic,
+            defer_replot=defer_replot,
+            raise_on_error=raise_on_error,
+        )
+
+    def _ensure_table_ref(
+        self,
+        obj: Any,
+        *,
+        name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a table name/proxy OR materialize an inline DataFrame/ndarray/dict into a worksheet."""
+        if obj is None:
+            return None
+        if isinstance(obj, BatchStepRef):
+            return obj.to_token()
+        if isinstance(obj, (str, TableProxy)):
+            return _name_of(obj)
+        if _is_dataframe_like(obj) or isinstance(obj, Mapping) or _is_ndarray_like(obj):
+            return self.create_table(obj, name=name).name
+        return _name_of(obj)
+
     # ------------------------------------------------------------------
-    # 1. App / Project / Window / Action / Update
+    # 1. App / Project / Window / Action / Sample Datasets / Batch
     # ------------------------------------------------------------------
     def ping(self) -> Dict[str, Any]:
         return self.call("ping")
@@ -1881,6 +2968,35 @@ class Session:
     ) -> Dict[str, Any]:
         """Return structured JSON-RPC 2.0 self-discovery catalog (all methods, by domain, or single method)."""
         return self.call("app.describe_api", method=method, domain=domain)
+
+    def list_sample_datasets(
+        self, category: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List built-in self-contained materials science sample datasets."""
+        res = self.call("app.list_sample_datasets", category=category)
+        return list(res.get("datasets", res.get("samples", [])))
+
+    def load_sample_dataset(
+        self,
+        dataset_id: Optional[str] = None,
+        *,
+        id: Optional[str] = None,  # noqa: A002
+        name: Optional[str] = None,
+        auto_plot: bool = True,
+        plot: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Load a built-in materials science sample dataset (and optionally auto-plot it)."""
+        resolved_id = dataset_id or id or name
+        if not resolved_id:
+            raise ValueError("Specify sample dataset 'dataset_id' (or 'id').")
+        do_plot = auto_plot if plot is None else bool(plot)
+        return self.call(
+            "app.load_sample_dataset",
+            id=str(resolved_id),
+            auto_plot=bool(do_plot),
+            **kwargs,
+        )
 
     def new_project(self) -> Dict[str, Any]:
         return self.call("app.new_project")
@@ -1906,7 +3022,7 @@ class Session:
         path: Union[str, os.PathLike[str]],
         separator: Optional[str] = None,
         skip_lines: int = 0,
-        header: bool = True,
+        header: Optional[bool] = None,
         with_comments: bool = False,
         name: Optional[str] = None,
         *,
@@ -1962,9 +3078,9 @@ class Session:
         return TableProxy(self, res["name"])
 
     def import_opj(
-        self, path: Union[str, os.PathLike[str]], codec: str = ""
+        self, path: Union[str, os.PathLike[str]], codec: Optional[str] = ""
     ) -> Dict[str, Any]:
-        return self.call("app.import_opj", path=os.fspath(path), codec=codec)
+        return self.call("app.import_opj", path=os.fspath(path), codec=(codec or ""))
 
     def list_windows(self, window_type: Optional[str] = None) -> List[Dict[str, Any]]:
         res = self.call("app.list_windows", type=window_type)
@@ -1981,11 +3097,20 @@ class Session:
         return self.call("app.activate_window", name=_name_of(name))
 
     def rename_window(
-        self, name: Union[str, TableProxy, MatrixProxy, GraphProxy], new_name: str
+        self,
+        name: Optional[Union[str, TableProxy, MatrixProxy, GraphProxy]] = None,
+        new_name: Optional[str] = None,
+        *,
+        old_name: Optional[Union[str, TableProxy, MatrixProxy, GraphProxy]] = None,
     ) -> Dict[str, Any]:
-        res = self.call("app.rename_window", name=_name_of(name), new_name=new_name)
-        if isinstance(name, (TableProxy, MatrixProxy, GraphProxy)) and res.get("name"):
-            name.name = str(res["name"])
+        target = name if name is not None else old_name
+        if target is None or new_name is None:
+            raise ValueError("Provide window 'name' (or 'old_name') and 'new_name'.")
+        res = self.call("app.rename_window", name=_name_of(target), new_name=new_name)
+        if isinstance(target, (TableProxy, MatrixProxy, GraphProxy)) and res.get("name"):
+            target.name = str(res["name"])
+            if self._active_batch is not None and target.name.startswith("$steps["):
+                self._active_batch._register_proxy(target, target.name)
         return res
 
     def close_window(
@@ -2000,8 +3125,16 @@ class Session:
     ) -> Dict[str, Any]:
         return self.call("app.clone_window", name=_name_of(name), new_name=new_name)
 
-    def set_language(self, language: str) -> Dict[str, Any]:
-        return self.call("app.set_language", language=language)
+    def set_language(
+        self,
+        language: Optional[str] = None,
+        *,
+        lang: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        eff_lang = lang if lang is not None else language
+        if eff_lang is None:
+            raise ValueError("Provide target UI 'language' (e.g. 'ja' or 'en').")
+        return self.call("app.set_language", language=str(eff_lang))
 
     def get_language(self) -> str:
         res = self.call("app.get_language")
@@ -2065,33 +3198,52 @@ class Session:
 
     def drop_columns(
         self,
-        table: Union[str, TableProxy],
-        columns: Sequence[Union[int, str]],
-        x_column: Optional[Union[int, str]] = None,
+        table: Optional[Union[str, TableProxy, GraphProxy]] = None,
+        columns: Optional[Union[str, TableProxy, Sequence[Union[int, str]]]] = None,
+        x_column: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         graph: Optional[Union[str, GraphProxy]] = None,
         layer: Optional[int] = None,
         right_y: bool = False,
         replace: bool = False,
+        *,
+        cols: Optional[Sequence[Union[int, str]]] = None,
     ) -> GraphProxy:
+        # Support both (table, columns, ..., graph=g) and describe_api (graph, table, cols)
+        if isinstance(table, GraphProxy) or (
+            graph is None
+            and isinstance(columns, (TableProxy, str))
+            and (x_column is not None or cols is not None)
+            and not isinstance(columns, (list, tuple))
+        ):
+            eff_graph: Optional[Union[str, GraphProxy]] = table  # type: ignore[assignment]
+            eff_table: Union[str, TableProxy] = columns  # type: ignore[assignment]
+            raw_cols = cols if cols is not None else x_column
+            eff_x_col: Optional[Union[int, str]] = None
+        else:
+            eff_graph = graph
+            eff_table = table  # type: ignore[assignment]
+            raw_cols = cols if cols is not None else columns
+            eff_x_col = x_column if isinstance(x_column, (int, str)) else None
+
         col_list = (
-            [columns]
-            if isinstance(columns, (str, int))
-            else [c for c in columns]
+            [raw_cols]
+            if isinstance(raw_cols, (str, int))
+            else [c for c in (raw_cols or [])]
         )
         res = self.call(
             "graph.drop_columns",
-            table=_name_of(table),
+            table=_name_of(eff_table),
             columns=col_list,
-            x_column=(x_column if x_column is not None else ""),
-            graph=(_name_of(graph) if graph is not None else ""),
+            x_column=(eff_x_col if eff_x_col is not None else ""),
+            graph=(_name_of(eff_graph) if eff_graph is not None else ""),
             layer=(int(layer) if layer is not None else None),
             right_y=bool(right_y),
             replace=bool(replace),
         )
-        g_name = res.get("graph") or res.get("name") or (_name_of(graph) if graph is not None else "")
+        g_name = res.get("graph") or res.get("name") or (_name_of(eff_graph) if eff_graph is not None else "")
         return GraphProxy(self, str(g_name))
 
-    def set_focus_hud(self, enabled: bool) -> Dict[str, Any]:
+    def set_focus_hud(self, enabled: Optional[bool] = True) -> Dict[str, Any]:
         return self.call("app.set_focus_hud", enabled=enabled)
 
     def get_focus_hud(self) -> bool:
@@ -2114,8 +3266,14 @@ class Session:
             **kwargs,
         )
 
-    def list_actions(self, filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        res = self.call("app.list_actions", filter=filter)
+    def list_actions(
+        self,
+        filter: Optional[str] = None,  # noqa: A002
+        *,
+        filter_text: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        eff_filter = filter_text if filter_text is not None else filter
+        res = self.call("app.list_actions", filter=eff_filter)
         return list(res.get("actions", []))
 
     def trigger_action(
@@ -2124,115 +3282,242 @@ class Session:
         return self.call("app.trigger_action", name=name, checked=checked, **kwargs)
 
     # ------------------------------------------------------------------
-    # 2 & 3. Table & Matrix Creation
+    # 2 & 3. Table & Matrix Creation (with NumPy / Pandas / Polars Adapter)
     # ------------------------------------------------------------------
     def create_table(
         self,
-        rows: Union[int, str] = 30,
+        rows: Any = 30,
         cols: Optional[int] = None,
         name: Optional[str] = None,
         *,
         col_names: Optional[Sequence[str]] = None,
+        columns: Optional[Sequence[str]] = None,
         designations: Optional[Union[Sequence[str], Mapping[str, str]]] = None,
-        data: Optional[Mapping[str, Sequence[Any]]] = None,
+        data: Optional[Any] = None,
+        units: Optional[Mapping[str, str]] = None,
+        long_names: Optional[Mapping[str, str]] = None,
+        comments: Optional[Mapping[str, str]] = None,
+        include_index: Optional[bool] = None,
         **kwargs: Any,
     ) -> TableProxy:
+        eff_col_names = col_names if col_names is not None else columns
+
+        # Allow passing DataFrame / ndarray / dict directly as first positional argument
+        if not isinstance(rows, (int, str)) or isinstance(rows, bool):
+            if _is_dataframe_like(rows) or isinstance(rows, Mapping) or _is_ndarray_like(rows):
+                if data is not None:
+                    raise ValueError("Specify tabular 'data' either positionally or via data=..., not both.")
+                data = rows
+                rows = 30
+
         if isinstance(rows, str):
             if name is None:
                 name = rows
             rows = 30
+
+        coerced_payload: Optional[Dict[str, List[Any]]] = None
+        inf_units: Dict[str, str] = {}
+        inf_long_names: Dict[str, str] = {}
+        inf_comments: Dict[str, str] = {}
+        inf_desig: Dict[str, str] = {}
+
         if data is not None:
-            data_keys = list(data.keys())
-            if col_names is None:
-                col_names = data_keys
-            inferred_rows = max((len(v) for v in data.values()), default=1)
+            (
+                coerced_payload,
+                ordered_cols,
+                inf_units,
+                inf_long_names,
+                inf_comments,
+                inf_desig,
+            ) = _coerce_tabular_input(
+                data, col_names=eff_col_names, include_index=include_index
+            )
+            eff_col_names = ordered_cols
+            inferred_rows = max((len(v) for v in coerced_payload.values()), default=1)
             rows = max(1, inferred_rows) if cols is None else max(int(rows), inferred_rows)
+
         resolved_cols = (
-            cols
+            int(cols)
             if cols is not None
-            else (max(1, len(col_names)) if col_names is not None else 2)
+            else (max(1, len(eff_col_names)) if eff_col_names is not None else 2)
         )
-        if col_names is not None and resolved_cols > 0 and len(col_names) > resolved_cols:
-            resolved_cols = len(col_names)
+        if eff_col_names is not None and resolved_cols > 0 and len(eff_col_names) > resolved_cols:
+            resolved_cols = len(eff_col_names)
+
+        eff_designations: Any = None
+        if designations is not None:
+            eff_designations = (
+                dict(designations)
+                if isinstance(designations, Mapping)
+                else list(designations)
+            )
+        elif inf_desig:
+            eff_designations = dict(inf_desig)
+
         res = self.call(
             "table.create",
             rows=int(rows),
             cols=resolved_cols,
             name=name,
-            col_names=(list(col_names) if col_names is not None else None),
-            designations=(
-                dict(designations)
-                if isinstance(designations, Mapping)
-                else (list(designations) if designations is not None else None)
-            ),
+            col_names=(list(eff_col_names) if eff_col_names is not None else None),
+            designations=eff_designations,
             **kwargs,
         )
         tbl = TableProxy(self, res["name"])
-        if data is not None:
-            for k, vals in data.items():
-                tbl.set_column(k, list(vals))
+        if coerced_payload is not None:
+            merged_units = {**inf_units, **(dict(units) if units is not None else {})} or None
+            merged_long = {**inf_long_names, **(dict(long_names) if long_names is not None else {})} or None
+            merged_comm = {**inf_comments, **(dict(comments) if comments is not None else {})} or None
+            merged_desig = (
+                dict(designations)
+                if isinstance(designations, Mapping)
+                else (dict(inf_desig) if inf_desig else None)
+            )
+            self.call(
+                "table.set_data_dict",
+                table=tbl.name,
+                data=coerced_payload,
+                column_order=list(eff_col_names) if eff_col_names is not None else list(coerced_payload.keys()),
+                units=merged_units,
+                long_names=merged_long,
+                comments=merged_comm,
+                designations=merged_desig,
+            )
+        elif units or long_names or comments:
+            names_for_meta = list(eff_col_names) if eff_col_names is not None else []
+            all_meta_cols = list(
+                dict.fromkeys(
+                    names_for_meta
+                    + list((units or {}).keys())
+                    + list((long_names or {}).keys())
+                    + list((comments or {}).keys())
+                )
+            )
+            for cname in all_meta_cols:
+                tbl.set_meta(
+                    cname,
+                    units=(units or {}).get(cname),
+                    long_name=(long_names or {}).get(cname),
+                    comment=(comments or {}).get(cname),
+                )
         return tbl
 
     def create_matrix(
         self,
-        rows: Union[int, str] = 32,
+        rows: Any = 32,
         cols: int = 32,
         name: Optional[str] = None,
-        x_min: float = 0.0,
-        x_max: float = 1.0,
-        y_min: float = 0.0,
-        y_max: float = 1.0,
+        x_min: Optional[float] = 0.0,
+        x_max: Optional[float] = 1.0,
+        y_min: Optional[float] = 0.0,
+        y_max: Optional[float] = 1.0,
         *,
-        values: Optional[Sequence[Sequence[Optional[float]]]] = None,
-        data: Optional[Sequence[Sequence[Optional[float]]]] = None,
+        values: Optional[Any] = None,
+        data: Optional[Any] = None,
         **kwargs: Any,
     ) -> MatrixProxy:
+        grid_in = values if values is not None else data
+        if not isinstance(rows, (int, str)) or isinstance(rows, bool):
+            if _is_ndarray_like(rows) or _is_dataframe_like(rows) or isinstance(rows, (list, tuple)):
+                grid_in = rows
+                rows = 32
+
         if isinstance(rows, str):
             if name is None:
                 name = rows
             rows = 32
-        grid = values if values is not None else data
-        if grid is not None and len(grid) > 0:
-            rows = len(grid)
-            cols = len(grid[0]) if len(grid[0]) > 0 else 1
+
+        coerced_grid: Optional[List[List[Optional[float]]]] = None
+        if grid_in is not None:
+            coerced_grid = _coerce_2d_matrix(grid_in)
+            if len(coerced_grid) > 0:
+                rows = len(coerced_grid)
+                cols = len(coerced_grid[0]) if len(coerced_grid[0]) > 0 else 1
+
         res = self.call(
             "matrix.create",
             rows=int(rows),
             cols=int(cols),
             name=name,
-            x_min=x_min,
-            x_max=x_max,
-            y_min=y_min,
-            y_max=y_max,
+            x_min=(0.0 if x_min is None else x_min),
+            x_max=(1.0 if x_max is None else x_max),
+            y_min=(0.0 if y_min is None else y_min),
+            y_max=(1.0 if y_max is None else y_max),
             **kwargs,
         )
         mat = MatrixProxy(self, res["name"])
-        if grid is not None:
-            mat.set_data(grid)
+        if coerced_grid is not None:
+            self.call("matrix.set_data", matrix=mat.name, data=coerced_grid)
         return mat
 
     # ------------------------------------------------------------------
-    # 4. 2D / 3D / Matrix Plotting
+    # 4. 2D / 3D / Matrix / Specialty Plotting
     # ------------------------------------------------------------------
     def plot_xy(
         self,
-        table: Union[str, TableProxy],
-        x_col: Optional[Union[int, str]] = None,
-        y_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        table: Any,
+        x_col: Optional[Any] = None,
+        y_cols: Optional[Any] = None,
         y_err_col: Optional[Union[int, str]] = None,
         x_err_col: Optional[Union[int, str]] = None,
         style: str = "line_symbol",
         graph_name: Optional[str] = None,
+        *,
+        y_err_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> GraphProxy:
         if graph_name is None and "name" in kwargs:
             graph_name = kwargs.pop("name")
+
+        # Support direct 2-array plotting: app.plot_xy(x_1d, y_1d, ...)
+        is_x_seq = (
+            _is_1d_series_or_array(table)
+            or (isinstance(table, (list, tuple)) and len(table) > 0 and not isinstance(table[0], (list, tuple)))
+        )
+        is_y_seq = (
+            x_col is not None
+            and not isinstance(x_col, (int, str, bool))
+            and (
+                _is_1d_series_or_array(x_col)
+                or isinstance(x_col, (list, tuple))
+            )
+        )
+        if is_x_seq and is_y_seq:
+            x_attrs = _extract_series_attrs(table)
+            y_attrs = _extract_series_attrs(x_col)
+            xn = x_attrs.get("name", "X")
+            yn = y_attrs.get("name", "Y")
+            if yn == xn:
+                yn = f"{yn}_2"
+            tbl_auto = self.create_table(
+                {xn: table, yn: x_col},
+                designations={xn: "X", yn: "Y"},
+            )
+            eff_table_ref: Optional[str] = tbl_auto.name
+            eff_x_col: Optional[Any] = xn
+            eff_y_cols: Optional[Any] = [yn]
+        elif _is_dataframe_like(table) or isinstance(table, Mapping) or _is_ndarray_like(table):
+            tbl_auto = self.create_table(table)
+            eff_table_ref = tbl_auto.name
+            eff_x_col = x_col
+            eff_y_cols = y_cols
+        else:
+            eff_table_ref = _name_of(table)
+            eff_x_col = x_col
+            eff_y_cols = y_cols
+
+        norm_y_errs: Optional[List[Union[int, str]]] = (
+            None
+            if y_err_cols is None
+            else ([y_err_cols] if isinstance(y_err_cols, (int, str)) else list(y_err_cols))
+        )
         res = self.call(
             "plot.xy",
-            table=_name_of(table),
-            x_col=x_col,
-            y_cols=y_cols,
+            table=eff_table_ref,
+            x_col=eff_x_col,
+            y_cols=eff_y_cols,
             y_err_col=y_err_col,
+            y_err_cols=norm_y_errs,
             x_err_col=x_err_col,
             style=style,
             graph_name=graph_name,
@@ -2240,23 +3525,104 @@ class Session:
         )
         return GraphProxy(self, res["name"])
 
+    def plot_bars(
+        self,
+        table: Union[str, TableProxy, Any],
+        x_col: Optional[Union[int, str]] = None,
+        y_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        y_err_col: Optional[Union[int, str]] = None,
+        *,
+        y_err_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        horizontal: bool = False,
+        stacked: bool = False,
+        percent_100: bool = False,
+        bar_gap: Optional[int] = None,
+        graph_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> GraphProxy:
+        """Create a single, grouped, stacked, or 100%-normalized categorical/numeric bar chart."""
+        if stacked or percent_100:
+            norm_y: Optional[Sequence[Union[int, str]]] = (
+                None
+                if y_cols is None
+                else ([y_cols] if isinstance(y_cols, (int, str)) else list(y_cols))
+            )
+            return self.plot_stacked_bars(
+                table,
+                x_col=x_col,
+                y_cols=norm_y,
+                horizontal=horizontal,
+                bar_gap=(25 if bar_gap is None else int(bar_gap)),
+                graph_name=graph_name,
+                percent_100=percent_100,
+                **kwargs,
+            )
+        bar_style = "horizontal_bars" if horizontal else "vertical_bars"
+        return self.plot_xy(
+            table,
+            x_col=x_col,
+            y_cols=y_cols,
+            y_err_col=y_err_col,
+            y_err_cols=y_err_cols,
+            style=bar_style,
+            bar_gap=bar_gap,
+            graph_name=graph_name,
+            **kwargs,
+        )
+
     def plot_stacked_bars(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         x_col: Optional[Union[int, str]] = None,
         y_cols: Optional[Sequence[Union[int, str]]] = None,
         horizontal: bool = False,
         bar_gap: int = 25,
         graph_name: Optional[str] = None,
+        *,
+        percent_100: bool = False,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.stacked_bars",
-            table=_name_of(table),
+            table=tbl_ref,
             x_col=x_col,
-            y_cols=(list(y_cols) if y_cols is not None else None),
-            horizontal=horizontal,
+            y_cols=(
+                [y_cols]
+                if isinstance(y_cols, (int, str))
+                else (list(y_cols) if y_cols is not None else None)
+            ),
+            horizontal=bool(horizontal),
+            percent_100=bool(percent_100),
             bar_gap=bar_gap,
+            graph_name=graph_name,
+            **kwargs,
+        )
+        return GraphProxy(self, res["name"])
+
+    def plot_polar(
+        self,
+        table: Union[str, TableProxy, Any],
+        theta_col: Union[int, str] = 0,
+        r_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        *,
+        theta_in_radians: bool = False,
+        degrees: Optional[bool] = None,
+        graph_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> GraphProxy:
+        """Create a 2D polar / radar coordinate plot (`plot.polar`)."""
+        tbl_ref = self._ensure_table_ref(table)
+        in_rad = (not bool(degrees)) if degrees is not None else bool(theta_in_radians)
+        norm_r: Optional[List[Union[int, str]]] = None
+        if r_cols is not None:
+            norm_r = [r_cols] if isinstance(r_cols, (int, str)) else list(r_cols)
+        res = self.call(
+            "plot.polar",
+            table=tbl_ref,
+            theta_col=theta_col,
+            r_cols=norm_r,
+            theta_in_radians=in_rad,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2264,19 +3630,25 @@ class Session:
 
     def plot_double_y(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         x_col: Optional[Union[int, str]] = None,
         y1_col: Optional[Union[int, str]] = None,
         y2_col: Optional[Union[int, str]] = None,
         graph_name: Optional[str] = None,
+        *,
+        y_left_col: Optional[Union[int, str]] = None,
+        y_right_col: Optional[Union[int, str]] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
+        eff_y1 = y1_col if y1_col is not None else y_left_col
+        eff_y2 = y2_col if y2_col is not None else y_right_col
         res = self.call(
             "plot.double_y",
-            table=_name_of(table),
+            table=tbl_ref,
             x_col=x_col,
-            y1_col=y1_col,
-            y2_col=y2_col,
+            y1_col=eff_y1,
+            y2_col=eff_y2,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2284,22 +3656,28 @@ class Session:
 
     def plot_waterfall(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         x_col: Optional[Union[int, str]] = None,
         y_cols: Optional[Sequence[Union[int, str]]] = None,
         y_offset_pct: float = 15.0,
-        x_offset_pct: float = 5.0,
+        x_offset_pct: float = 0.0,
         normalize: bool = False,
         graph_name: Optional[str] = None,
+        *,
+        offset_x: Optional[float] = None,
+        offset_y: Optional[float] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
+        eff_x_off = offset_x if offset_x is not None else x_offset_pct
+        eff_y_off = offset_y if offset_y is not None else y_offset_pct
         res = self.call(
             "plot.waterfall",
-            table=_name_of(table),
+            table=tbl_ref,
             x_col=x_col,
             y_cols=y_cols,
-            y_offset_pct=y_offset_pct,
-            x_offset_pct=x_offset_pct,
+            y_offset_pct=eff_y_off,
+            x_offset_pct=eff_x_off,
             normalize=normalize,
             graph_name=graph_name,
             **kwargs,
@@ -2308,31 +3686,59 @@ class Session:
 
     def plot_histogram(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         graph_name: Optional[str] = None,
+        *,
+        stacked: Optional[bool] = None,
+        bins: Optional[int] = None,
+        bin_size: Optional[float] = None,
+        bin_min: Optional[float] = None,
+        bin_max: Optional[float] = None,
+        overlay_pdf: Optional[Union[bool, str]] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         key = "cols" if isinstance(cols, (list, tuple)) else "col"
-        params = {"table": _name_of(table), **kwargs}
+        params: Dict[str, Any] = {"table": tbl_ref, **kwargs}
         if graph_name is not None:
             params["graph_name"] = graph_name
         if cols is not None:
             params[key] = cols
+        if stacked is not None:
+            params["stacked"] = stacked
+        if bins is not None:
+            params["bins"] = bins
+        if bin_size is not None:
+            params["bin_size"] = bin_size
+        if bin_min is not None:
+            params["bin_min"] = bin_min
+        if bin_max is not None:
+            params["bin_max"] = bin_max
+        if overlay_pdf is not None:
+            params["overlay_pdf"] = overlay_pdf
         res = self.call("plot.histogram", params)
         return GraphProxy(self, res["name"])
 
     def plot_box(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         cols: Optional[Sequence[Union[int, str]]] = None,
         graph_name: Optional[str] = None,
+        *,
+        notched: Optional[bool] = None,
+        whisker_mode: Optional[str] = None,
+        show_points: Optional[bool] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.box",
-            table=_name_of(table),
+            table=tbl_ref,
             cols=cols,
+            notched=notched,
+            whisker_mode=whisker_mode,
+            show_points=show_points,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2340,15 +3746,16 @@ class Session:
 
     def plot_violin(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         cols: Optional[Sequence[Union[int, str]]] = None,
         show_points: bool = True,
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.violin",
-            table=_name_of(table),
+            table=tbl_ref,
             cols=cols,
             show_points=show_points,
             graph_name=graph_name,
@@ -2358,15 +3765,27 @@ class Session:
 
     def plot_pareto(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         col: Optional[Union[int, str]] = None,
+        value_col: Optional[Union[int, str]] = None,
+        *,
+        category_col: Optional[Union[int, str]] = None,
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
+        if value_col is not None:
+            eff_cat = category_col if category_col is not None else col
+            eff_val: Optional[Union[int, str]] = value_col
+        else:
+            eff_cat = category_col
+            eff_val = col
         res = self.call(
             "plot.pareto",
-            table=_name_of(table),
-            col=col,
+            table=tbl_ref,
+            col=eff_val,
+            value_col=eff_val,
+            category_col=eff_cat,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2374,14 +3793,15 @@ class Session:
 
     def plot_qq(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         col: Optional[Union[int, str]] = None,
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.qq",
-            table=_name_of(table),
+            table=tbl_ref,
             col=col,
             graph_name=graph_name,
             **kwargs,
@@ -2390,15 +3810,19 @@ class Session:
 
     def plot_pie(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         col: Optional[Union[int, str]] = None,
         graph_name: Optional[str] = None,
+        *,
+        label_col: Optional[Union[int, str]] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.pie",
-            table=_name_of(table),
+            table=tbl_ref,
             col=col,
+            label_col=label_col,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2406,17 +3830,34 @@ class Session:
 
     def plot_vectors(
         self,
-        table: Union[str, TableProxy],
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        table: Union[str, TableProxy, Any],
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        u_col: Optional[Union[int, str]] = None,
+        v_col: Optional[Union[int, str]] = None,
+        *,
+        x_col: Optional[Union[int, str]] = None,
         mode: str = "xyxy",
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
+        eff_mode = mode
+        resolved_cols: Optional[List[Union[int, str]]] = None
+        if isinstance(cols, (list, tuple)):
+            resolved_cols = list(cols)
+            if isinstance(y_col, str) and u_col is None and v_col is None and y_col.lower() in ("xyxy", "xyam"):
+                eff_mode = y_col
+        elif cols is not None and y_col is not None and u_col is not None and v_col is not None:
+            resolved_cols = [cols, y_col, u_col, v_col]
+        elif x_col is not None and y_col is not None and u_col is not None and v_col is not None:
+            resolved_cols = [x_col, y_col, u_col, v_col]
+
         res = self.call(
             "plot.vectors",
-            table=_name_of(table),
-            cols=cols,
-            mode=mode,
+            table=tbl_ref,
+            cols=resolved_cols,
+            mode=eff_mode,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2424,7 +3865,7 @@ class Session:
 
     def plot_ternary(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         a_col: Union[int, str] = 0,
         b_col: Union[int, str] = 1,
         c_col: Union[int, str] = 2,
@@ -2433,10 +3874,11 @@ class Session:
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         chosen_cols = list(cols) if cols is not None else [a_col, b_col, c_col]
         res = self.call(
             "plot.ternary",
-            table=_name_of(table),
+            table=tbl_ref,
             cols=chosen_cols,
             graph_name=graph_name,
             **kwargs,
@@ -2445,19 +3887,24 @@ class Session:
 
     def plot_function(
         self,
-        formula: str,
+        formula: Union[str, Sequence[str]],
         x_min: float = 0.0,
         x_max: float = 10.0,
         points: int = 200,
         graph_name: Optional[str] = None,
+        *,
+        type: Optional[str] = None,  # noqa: A002
+        variable: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
         res = self.call(
             "plot.function",
-            formula=formula,
+            formula=(list(formula) if isinstance(formula, (list, tuple)) else formula),
             x_min=x_min,
             x_max=x_max,
             points=points,
+            type=type,
+            variable=variable,
             graph_name=graph_name,
             **kwargs,
         )
@@ -2479,6 +3926,15 @@ class Session:
         )
         return GraphProxy(self, res["name"])
 
+    def plot_heatmap(
+        self,
+        matrix: Union[str, MatrixProxy],
+        style: str = "colormap",
+        graph_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> GraphProxy:
+        return self.plot_matrix(matrix, style=style, graph_name=graph_name, **kwargs)
+
     def plot_3d_matrix(
         self,
         matrix: Union[str, MatrixProxy],
@@ -2497,7 +3953,7 @@ class Session:
 
     def plot_3d_xyz(
         self,
-        table: Union[str, TableProxy],
+        table: Union[str, TableProxy, Any],
         x_col: Union[int, str] = 0,
         y_col: Union[int, str] = 1,
         z_col: Union[int, str] = 2,
@@ -2505,9 +3961,10 @@ class Session:
         graph_name: Optional[str] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        tbl_ref = self._ensure_table_ref(table)
         res = self.call(
             "plot.3d_xyz",
-            table=_name_of(table),
+            table=tbl_ref,
             x_col=x_col,
             y_col=y_col,
             z_col=z_col,
@@ -2540,17 +3997,177 @@ class Session:
         return GraphProxy(self, res["name"])
 
     # ------------------------------------------------------------------
+    # 5. Graph Layout, Code Export & PowerPoint Native OLE Deck (`to_pptx`)
+    # ------------------------------------------------------------------
+    def auto_layout(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        *,
+        pad_fraction: float = 0.05,
+        allow_outside_legend: bool = True,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "graph.auto_layout",
+            graph=_name_of(graph),
+            pad_fraction=float(pad_fraction),
+            allow_outside_legend=bool(allow_outside_legend),
+            **kwargs,
+        )
+
+    fix_layout = auto_layout
+
+    def set_category_labels(
+        self,
+        graph: Union[str, GraphProxy],
+        axis_or_labels: Union[str, Sequence[Any]] = "x",
+        labels: Optional[Sequence[Any]] = None,
+        *,
+        layer: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return GraphProxy(self, str(_name_of(graph))).set_category_labels(
+            axis_or_labels, labels, layer=layer, **kwargs
+        )
+
+    def export_ole(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        emf_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        dpi: int = 300,
+        include_base64: Optional[bool] = None,
+        skip_project_stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "graph.export_ole",
+            graph=_name_of(graph),
+            emf_path=(os.fspath(emf_path) if emf_path is not None else None),
+            dpi=int(dpi),
+            include_base64=include_base64,
+            skip_project_stream=skip_project_stream,
+            **kwargs,
+        )
+
+    def to_python(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        output_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        standalone: bool = True,
+        embed_data: str = "inline",
+        path: Optional[Union[str, os.PathLike[str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        out_p = output_path if output_path is not None else path
+        out_str = os.fspath(out_p) if out_p is not None else None
+        res = self.call(
+            "graph.to_python",
+            graph=_name_of(graph),
+            standalone=bool(standalone),
+            embed_data=str(embed_data),
+            output_path=out_str,
+            **kwargs,
+        )
+        script_txt = str(res.get("script") or res.get("code") or "")
+        if out_str and script_txt and not os.path.isfile(out_str):
+            Path(out_str).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_str).write_text(script_txt, encoding="utf-8")
+        return res
+
+    def to_python_script(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        output_path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        standalone: bool = True,
+        embed_data: str = "inline",
+        path: Optional[Union[str, os.PathLike[str]]] = None,
+        **kwargs: Any,
+    ) -> str:
+        res = self.to_python(
+            graph=graph,
+            output_path=output_path,
+            standalone=standalone,
+            embed_data=embed_data,
+            path=path,
+            **kwargs,
+        )
+        return str(res.get("script") or res.get("code") or "")
+
+    export_python_script = to_python_script
+
+    def to_pptx(
+        self,
+        path: Union[str, os.PathLike[str]],
+        graphs: Optional[Union[str, GraphProxy, Sequence[Union[str, GraphProxy]]]] = None,
+        *,
+        per_slide: int = 1,
+        deck: Optional[Union[str, os.PathLike[str]]] = None,
+        slide: Optional[int] = None,
+        box: Optional[Union[Sequence[float], Sequence[Sequence[float]]]] = None,
+        replace: Optional[Union[bool, str, Sequence[Any], Mapping[str, Any]]] = None,
+        dpi: int = 300,
+        overwrite: bool = False,
+        titles: Optional[Union[str, Sequence[str]]] = None,
+        preset: Optional[str] = None,
+        widescreen: bool = True,
+    ) -> Dict[str, Any]:
+        """Export graphs into a PowerPoint ``.pptx`` deck as editable native ``ToriGraph.Graph.1`` OLE objects.
+
+        Uses OpenXML (``python-pptx``) + Win32 ``ole32.dll`` ``StgCreateDocfile`` with zero COM
+        process activation (``POWERPNT.EXE`` is never spawned or touched) and zero clipboard use.
+        """
+        from .pptx import export_graphs_to_pptx
+
+        return export_graphs_to_pptx(
+            self,
+            path=path,
+            graphs=graphs,
+            per_slide=per_slide,
+            deck=deck,
+            slide=slide,
+            box=box,
+            replace=replace,
+            dpi=dpi,
+            overwrite=overwrite,
+            titles=titles,
+            preset=preset,
+            widescreen=widescreen,
+        )
+
+    # ------------------------------------------------------------------
     # 6. Curve Fitting & Peak Analysis
     # ------------------------------------------------------------------
-    def list_fit_models(self) -> List[Dict[str, Any]]:
-        res = self.call("analysis.list_fit_models")
+    def list_fit_models(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        res = self.call("analysis.list_fit_models", category=category)
         return list(res.get("models", []))
 
     def fit_linear(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_linear", **kwargs)
 
-    def fit_york(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.fit_york", **kwargs)
+    def fit_york(
+        self,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        x_err_col: Optional[Union[int, str]] = None,
+        y_err_col: Optional[Union[int, str]] = None,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "analysis.fit_york",
+            table=_name_of(table),
+            x_col=x_col,
+            y_col=y_col,
+            x_err_col=x_err_col,
+            y_err_col=y_err_col,
+            graph=_name_of(graph),
+            **kwargs,
+        )
 
     def fit_polynomial(self, order: int = 2, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_polynomial", order=order, **kwargs)
@@ -2570,29 +4187,78 @@ class Session:
     def fit_quantile(self, tau: float = 0.5, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_quantile", tau=tau, **kwargs)
 
-    def fit_logistic(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.fit_logistic", **kwargs)
+    def fit_logistic(
+        self,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        *,
+        x_cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        eff_x_cols = (
+            list(x_cols)
+            if x_cols is not None
+            else ([x_col] if x_col is not None else None)
+        )
+        return self.call(
+            "analysis.fit_logistic",
+            table=_name_of(table),
+            x_col=x_col,
+            x_cols=eff_x_cols,
+            y_col=y_col,
+            **kwargs,
+        )
 
-    def fit_mlr(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.fit_mlr", **kwargs)
+    def fit_mlr(
+        self,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_cols: Optional[Sequence[Union[int, str]]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "analysis.fit_mlr",
+            table=_name_of(table),
+            x_cols=(list(x_cols) if x_cols is not None else None),
+            y_col=y_col,
+            **kwargs,
+        )
 
     def fit_implicit_odr(
         self,
-        shape: Optional[str] = None,
+        shape: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
         *,
+        table: Optional[Union[str, TableProxy]] = None,
         model: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        # Support both (shape="ellipse", graph=...) and (table, x_col, y_col, *, model="circle")
+        eff_table = table
+        eff_shape: Optional[str] = None
+        if isinstance(shape, TableProxy) or (x_col is not None and y_col is not None and table is None):
+            eff_table = shape
+        elif isinstance(shape, str):
+            eff_shape = shape
         chosen_model = (
             model
             if model is not None
             else (
-                shape
-                if shape is not None
+                eff_shape
+                if eff_shape is not None
                 else ("custom" if kwargs.get("formula") else "circle")
             )
         )
-        return self.call("analysis.fit_implicit_odr", model=chosen_model, **kwargs)
+        return self.call(
+            "analysis.fit_implicit_odr",
+            table=_name_of(eff_table),
+            x_col=x_col,
+            y_col=y_col,
+            model=chosen_model,
+            **kwargs,
+        )
 
     def fit_surface_3d(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_surface_3d", **kwargs)
@@ -2606,23 +4272,55 @@ class Session:
     def analyze_peaks(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.analyze_peaks", **kwargs)
 
-    def batch_peaks(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.batch_peaks", **kwargs)
+    def batch_peaks(
+        self,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "analysis.batch_peaks",
+            table=_name_of(table),
+            x_col=x_col,
+            y_cols=(list(y_cols) if y_cols is not None else None),
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # 7. Gadgets, Signal Processing, Curve Math, MatSci, Statistics & Digitizer
     # ------------------------------------------------------------------
-    def attach_gadget(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("gadget.attach", **kwargs)
+    def attach_gadget(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        gadget_type: Optional[str] = None,
+        *,
+        type: Optional[str] = None,  # noqa: A002
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        eff_type = type if type is not None else (gadget_type if gadget_type is not None else "roi_stats")
+        return self.call("gadget.attach", graph=_name_of(graph), type=eff_type, **kwargs)
 
-    def set_gadget_roi(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("gadget.set_roi", **kwargs)
+    def set_gadget_roi(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call("gadget.set_roi", graph=_name_of(graph), **kwargs)
 
-    def query_gadget(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("gadget.query", **kwargs)
+    def query_gadget(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call("gadget.query", graph=_name_of(graph), **kwargs)
 
-    def clear_gadgets(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("gadget.clear", **kwargs)
+    def clear_gadgets(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call("gadget.clear", graph=_name_of(graph), **kwargs)
 
     clear_gadget = clear_gadgets
 
@@ -2658,8 +4356,22 @@ class Session:
     def welch_psd(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.welch_psd", **kwargs)
 
-    def coherence(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("signal.coherence", **kwargs)
+    def coherence(
+        self,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y1_col: Optional[Union[int, str]] = None,
+        y2_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "signal.coherence",
+            table=_name_of(table),
+            x_col=x_col,
+            y1_col=y1_col,
+            y2_col=y2_col,
+            **kwargs,
+        )
 
     def decimate(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.decimate", **kwargs)
@@ -2669,14 +4381,54 @@ class Session:
 
     fourier_self_deconvolution = fsd
 
-    def curve_eval(self, op: str = "-", **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.eval", op=op, **kwargs)
+    def curve_eval(
+        self,
+        graph_or_op: Optional[Union[str, GraphProxy]] = None,
+        curve_a: Optional[Union[int, str]] = None,
+        curve_b: Optional[Union[int, str]] = None,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        op: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        # Support both curve_eval(op="-", graph=..., curve_a=..., curve_b=...)
+        # and curve_math(g, 'Sample', 'Blank', op='sub')
+        if curve_a is not None or curve_b is not None or isinstance(graph_or_op, GraphProxy):
+            eff_graph = graph if graph is not None else graph_or_op
+            eff_op = op if op is not None else "-"
+        elif isinstance(graph_or_op, str) and graph_or_op in ("+", "-", "*", "/", "add", "sub", "mul", "div", "subtract", "multiply", "divide"):
+            eff_graph = graph
+            eff_op = op if op is not None else graph_or_op
+        else:
+            eff_graph = graph if graph is not None else graph_or_op
+            eff_op = op if op is not None else "-"
+        return self.call(
+            "curvemath.eval",
+            graph=_name_of(eff_graph),
+            curve_a=curve_a,
+            curve_b=curve_b,
+            op=eff_op,
+            **kwargs,
+        )
 
     curve_math = curve_eval
     eval_curves = curve_eval
 
-    def average_curves(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.average_curves", **kwargs)
+    def average_curves(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        *,
+        curves: Optional[Sequence[Union[int, str]]] = None,
+        points: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "curvemath.average_curves",
+            graph=_name_of(graph),
+            curves=(list(curves) if curves is not None else None),
+            points=points,
+            **kwargs,
+        )
 
     def normalize_curve(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.normalize", **kwargs)
@@ -2708,8 +4460,20 @@ class Session:
 
     subtract_straight_line = subtract_line
 
-    def intersections(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.intersections", **kwargs)
+    def intersections(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve_a: Optional[Union[int, str]] = None,
+        curve_b: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "curvemath.intersections",
+            graph=_name_of(graph),
+            curve_a=curve_a,
+            curve_b=curve_b,
+            **kwargs,
+        )
 
     curve_intersections = intersections
     find_intersections = intersections
@@ -2720,9 +4484,24 @@ class Session:
     def polygon_area(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.polygon_area", **kwargs)
 
-    def fill_between(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.fill_between", **kwargs)
+    def fill_between(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve_a: Optional[Union[int, str]] = None,
+        curve_b: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "curvemath.fill_between",
+            graph=_name_of(graph),
+            curve_a=curve_a,
+            curve_b=curve_b,
+            **kwargs,
+        )
 
+    # ------------------------------------------------------------------
+    # Materials Science & Electronic Structure Workbench (`curvemath.*`)
+    # ------------------------------------------------------------------
     def analyze_tensile(
         self,
         graph: Optional[Union[str, GraphProxy]] = None,
@@ -2759,89 +4538,586 @@ class Session:
 
     offset_yield = analyze_tensile
 
-    def arrhenius(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.arrhenius", **kwargs)
+    def analyze_work_hardening(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        table: Optional[Union[str, TableProxy]] = None,
+        smooth_window: int = 11,
+        create_plot: bool = True,
+        plot_mode: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Compute Kocks-Mecking work-hardening rate (d sigma_t / d eps_t) & Considere necking criterion."""
+        return self.call(
+            "curvemath.kocks_mecking",
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            smooth_window=int(smooth_window),
+            create_plot=bool(create_plot),
+            plot_mode=plot_mode,
+            **kwargs,
+        )
+
+    kocks_mecking = analyze_work_hardening
+
+    def analyze_kissinger(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        rate_col: Optional[Union[int, str]] = None,
+        temp_col: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        *,
+        heating_rates: Optional[Sequence[Any]] = None,
+        peak_temps: Optional[Sequence[float]] = None,
+        rate_in_k_per_hour: bool = False,
+        temp_in_celsius: bool = True,
+        top_axis_in_celsius: bool = True,
+        temp_min: Optional[float] = None,
+        temp_max: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run Kissinger thermal desorption / DSC activation energy analysis (`curvemath.kissinger`)."""
+        eff_rates = heating_rates
+        eff_table_ref: Optional[str] = None
+        if isinstance(table, (list, tuple)) and eff_rates is None:
+            eff_rates = table
+        elif table is not None:
+            eff_table_ref = self._ensure_table_ref(table)
+
+        return self.call(
+            "curvemath.kissinger",
+            table=eff_table_ref,
+            rate_col=rate_col,
+            temp_col=temp_col,
+            heating_rates=(list(eff_rates) if eff_rates is not None else None),
+            peak_temps=(list(peak_temps) if peak_temps is not None else None),
+            rate_in_k_per_hour=bool(rate_in_k_per_hour),
+            temp_in_celsius=bool(temp_in_celsius),
+            top_axis_in_celsius=bool(top_axis_in_celsius),
+            temp_min=temp_min,
+            temp_max=temp_max,
+            **kwargs,
+        )
+
+    kissinger = analyze_kissinger
+    kissinger_plot = analyze_kissinger
+
+    def analyze_xrd(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        *,
+        wavelength: float = 1.540598,
+        xray_energy_kev: Optional[float] = None,
+        instr_fwhm: float = 0.05,
+        scherrer_k: float = 0.90,
+        crystal_system: str = "fcc",
+        c_over_a: Optional[float] = None,
+        strip_kalpha2: bool = False,
+        add_top_d_axis: bool = True,
+        create_wh_plot: bool = True,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run XRD Bragg d-spacing, Scherrer crystallite size, and Williamson-Hall microstrain analysis."""
+        return self.call(
+            "curvemath.xrd_analyze",
+            graph=_name_of(graph),
+            curve=curve,
+            wavelength=float(wavelength),
+            xray_energy_kev=xray_energy_kev,
+            instr_fwhm=float(instr_fwhm),
+            scherrer_k=float(scherrer_k),
+            crystal_system=str(crystal_system),
+            c_over_a=c_over_a,
+            strip_kalpha2=bool(strip_kalpha2),
+            add_top_d_axis=bool(add_top_d_axis),
+            create_wh_plot=bool(create_wh_plot),
+            **kwargs,
+        )
+
+    xrd_analyze = analyze_xrd
+
+    def bragg_convert(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        *,
+        wavelength: float = 1.540598,
+        xray_energy_kev: Optional[float] = None,
+        mode: str = "d_spacing",
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Convert XRD 2-theta axis/curve to Bragg d-spacing (`mode='d_spacing'`) or Q (`mode='q'`)."""
+        return self.call(
+            "curvemath.bragg_convert",
+            graph=_name_of(graph),
+            wavelength=float(wavelength),
+            xray_energy_kev=xray_energy_kev,
+            mode=str(mode),
+            **kwargs,
+        )
+
+    def plot_vasp_dos(
+        self,
+        table: Optional[Union[str, TableProxy, os.PathLike[str], Any]] = None,
+        energy_col: Optional[Union[int, str]] = None,
+        dos_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        *,
+        doscar_path: Optional[Union[str, os.PathLike[str]]] = None,
+        down_dos_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        fermi_energy: float = 0.0,
+        vertical_energy: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Plot VASP / DFT total or projected Density of States (`curvemath.vasp_dos`)."""
+        eff_doscar: Optional[str] = os.fspath(doscar_path) if doscar_path is not None else None
+        eff_table: Optional[str] = None
+        if table is not None:
+            if eff_doscar is None and (
+                isinstance(table, os.PathLike)
+                or (
+                    isinstance(table, str)
+                    and (os.path.isfile(table) or "/" in table or "\\" in table)
+                )
+            ):
+                eff_doscar = os.fspath(table)
+            else:
+                eff_table = self._ensure_table_ref(table)
+
+        norm_dos: Optional[List[Union[int, str]]] = None
+        if dos_cols is not None:
+            norm_dos = [dos_cols] if isinstance(dos_cols, (int, str)) else list(dos_cols)
+        norm_down: Optional[List[Union[int, str]]] = None
+        if down_dos_cols is not None:
+            norm_down = [down_dos_cols] if isinstance(down_dos_cols, (int, str)) else list(down_dos_cols)
+
+        return self.call(
+            "curvemath.vasp_dos",
+            table=eff_table,
+            doscar_path=eff_doscar,
+            energy_col=energy_col,
+            dos_cols=norm_dos,
+            down_dos_cols=norm_down,
+            fermi_energy=float(fermi_energy),
+            vertical_energy=bool(vertical_energy),
+            **kwargs,
+        )
+
+    vasp_dos = plot_vasp_dos
+    plot_dos = plot_vasp_dos
+
+    def plot_vasp_bands(
+        self,
+        table: Optional[Union[str, TableProxy, os.PathLike[str], Any]] = None,
+        k_col: Optional[Union[int, str]] = None,
+        band_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        *,
+        eigenval_path: Optional[Union[str, os.PathLike[str]]] = None,
+        k_ticks: Optional[Sequence[Any]] = None,
+        k_labels: Optional[Sequence[str]] = None,
+        fermi_energy: float = 0.0,
+        e_min: float = -6.0,
+        e_max: float = 6.0,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Plot VASP / DFT electronic band structure with high-symmetry k-ticks (`curvemath.vasp_bands`)."""
+        eff_eigenval: Optional[str] = os.fspath(eigenval_path) if eigenval_path is not None else None
+        eff_table: Optional[str] = None
+        if table is not None:
+            if eff_eigenval is None and (
+                isinstance(table, os.PathLike)
+                or (
+                    isinstance(table, str)
+                    and (os.path.isfile(table) or "/" in table or "\\" in table)
+                )
+            ):
+                eff_eigenval = os.fspath(table)
+            else:
+                eff_table = self._ensure_table_ref(table)
+
+        norm_bands: Optional[List[Union[int, str]]] = None
+        if band_cols is not None:
+            norm_bands = [band_cols] if isinstance(band_cols, (int, str)) else list(band_cols)
+
+        eff_kticks: Optional[List[float]] = None
+        eff_klabels: Optional[List[str]] = [str(lbl) for lbl in k_labels] if k_labels is not None else None
+        if k_ticks is not None:
+            kt_list = list(k_ticks)
+            if kt_list and isinstance(kt_list[0], (list, tuple)) and len(kt_list[0]) >= 2:
+                eff_kticks = [float(pair[0]) for pair in kt_list]
+                if eff_klabels is None:
+                    eff_klabels = [str(pair[1]) for pair in kt_list]
+            else:
+                eff_kticks = [float(x) for x in _coerce_1d_sequence(kt_list)]
+
+        return self.call(
+            "curvemath.vasp_bands",
+            table=eff_table,
+            eigenval_path=eff_eigenval,
+            k_col=k_col,
+            band_cols=norm_bands,
+            k_ticks=eff_kticks,
+            k_labels=eff_klabels,
+            fermi_energy=float(fermi_energy),
+            e_min=float(e_min),
+            e_max=float(e_max),
+            **kwargs,
+        )
+
+    vasp_bands = plot_vasp_bands
+    plot_bands = plot_vasp_bands
+
+    def plot_vasp_band_dos(self, **kwargs: Any) -> Dict[str, Any]:
+        """Plot coupled 2-panel Band Structure + vertical-energy DOS figure."""
+        return self.call("curvemath.vasp_band_dos", **kwargs)
+
+    vasp_band_dos = plot_vasp_band_dos
+    plot_band_dos = plot_vasp_band_dos
+
+    def arrhenius(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        temp_col: Optional[Union[int, str]] = None,
+        rate_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "curvemath.arrhenius",
+            table=tbl_ref,
+            temp_col=temp_col,
+            rate_col=rate_col,
+            **kwargs,
+        )
 
     arrhenius_plot = arrhenius
 
-    def tauc(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.tauc", **kwargs)
+    def tauc(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        alpha_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "curvemath.tauc",
+            table=tbl_ref,
+            x_col=x_col,
+            alpha_col=alpha_col,
+            **kwargs,
+        )
 
     tauc_bandgap = tauc
 
-    def eis_fit(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("curvemath.eis_fit", **kwargs)
+    def eis_fit(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        freq_col: Optional[Union[int, str]] = None,
+        z_re_col: Optional[Union[int, str]] = None,
+        z_im_col: Optional[Union[int, str]] = None,
+        *,
+        z_real_col: Optional[Union[int, str]] = None,
+        z_imag_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        eff_re = z_real_col if z_real_col is not None else z_re_col
+        eff_im = z_imag_col if z_imag_col is not None else z_im_col
+        return self.call(
+            "curvemath.eis_fit",
+            table=tbl_ref,
+            freq_col=freq_col,
+            z_real_col=eff_re,
+            z_imag_col=eff_im,
+            **kwargs,
+        )
 
-    def normality(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.normality", **kwargs)
+    # ------------------------------------------------------------------
+    # Statistics (`stats.*`) & Digitizer
+    # ------------------------------------------------------------------
+    def normality(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call("stats.normality", table=tbl_ref, col=col, **kwargs)
 
     normality_test = normality
 
-    def outlier(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.outlier", **kwargs)
+    def outlier(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call("stats.outlier", table=tbl_ref, col=col, **kwargs)
 
     outlier_test = outlier
 
-    def anova_oneway(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.anova_oneway", **kwargs)
+    def anova_oneway(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.anova_oneway",
+            table=tbl_ref,
+            cols=(list(cols) if cols is not None else None),
+            **kwargs,
+        )
 
     anova_one_way = anova_oneway
 
-    def anova_twoway(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.anova_twoway", **kwargs)
+    def anova_twoway(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        factor_a: Optional[Union[int, str]] = None,
+        factor_b: Optional[Union[int, str]] = None,
+        response: Optional[Union[int, str]] = None,
+        *,
+        factor_a_col: Optional[Union[int, str]] = None,
+        factor_b_col: Optional[Union[int, str]] = None,
+        response_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        eff_a = factor_a if factor_a is not None else factor_a_col
+        eff_b = factor_b if factor_b is not None else factor_b_col
+        eff_r = response if response is not None else response_col
+        return self.call(
+            "stats.anova_twoway",
+            table=tbl_ref,
+            factor_a=eff_a,
+            factor_b=eff_b,
+            response=eff_r,
+            **kwargs,
+        )
 
     anova_two_way = anova_twoway
 
-    def nonparametric(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.nonparametric", **kwargs)
+    def nonparametric(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        cols: Optional[Sequence[Union[int, str]]] = None,
+        *,
+        test: Optional[str] = None,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        add_brackets: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.nonparametric",
+            table=tbl_ref,
+            cols=(list(cols) if cols is not None else None),
+            test=test,
+            graph=_name_of(graph),
+            add_brackets=add_brackets,
+            **kwargs,
+        )
 
     nonparametric_test = nonparametric
 
-    def paired_plot(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.paired_plot", **kwargs)
+    def paired_plot(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col_a: Optional[Union[int, str]] = None,
+        col_b: Optional[Union[int, str]] = None,
+        *,
+        before_col: Optional[Union[int, str]] = None,
+        after_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        eff_a = before_col if before_col is not None else col_a
+        eff_b = after_col if after_col is not None else col_b
+        return self.call(
+            "stats.paired_plot",
+            table=tbl_ref,
+            before_col=eff_a,
+            after_col=eff_b,
+            col_a=eff_a,
+            col_b=eff_b,
+            **kwargs,
+        )
 
     paired_estimation_plot = paired_plot
 
-    def bland_altman(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.bland_altman", **kwargs)
+    def bland_altman(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col_a: Optional[Union[int, str]] = None,
+        col_b: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.bland_altman",
+            table=tbl_ref,
+            col_a=col_a,
+            col_b=col_b,
+            **kwargs,
+        )
 
-    def passing_bablok(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.passing_bablok", **kwargs)
+    def passing_bablok(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.passing_bablok",
+            table=tbl_ref,
+            x_col=x_col,
+            y_col=y_col,
+            **kwargs,
+        )
 
-    def weibull(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.weibull", **kwargs)
+    def weibull(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col: Optional[Union[int, str]] = None,
+        *,
+        censor_col: Optional[Union[int, str]] = None,
+        three_param: Optional[bool] = None,
+        mle: Optional[bool] = None,
+        plot: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.weibull",
+            table=tbl_ref,
+            col=col,
+            censor_col=censor_col,
+            three_param=three_param,
+            mle=mle,
+            plot=plot,
+            **kwargs,
+        )
 
     weibull_fit = weibull
 
-    def kaplan_meier(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.kaplan_meier", **kwargs)
+    def kaplan_meier(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        time_col: Optional[Union[int, str]] = None,
+        event_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.kaplan_meier",
+            table=tbl_ref,
+            time_col=time_col,
+            event_col=event_col,
+            **kwargs,
+        )
 
-    def roc(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.roc", **kwargs)
+    def roc(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        state_col: Optional[Union[int, str]] = None,
+        score_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        *,
+        score_col: Optional[Union[int, str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        eff_score_col = score_col
+        eff_score_cols: Optional[List[Union[int, str]]] = None
+        if score_cols is not None:
+            if isinstance(score_cols, (int, str)):
+                eff_score_col = eff_score_col if eff_score_col is not None else score_cols
+            else:
+                eff_score_cols = list(score_cols)
+                if eff_score_col is None and len(eff_score_cols) == 1:
+                    eff_score_col = eff_score_cols[0]
+        return self.call(
+            "stats.roc",
+            table=tbl_ref,
+            state_col=state_col,
+            score_col=eff_score_col,
+            score_cols=eff_score_cols,
+            **kwargs,
+        )
 
     roc_analysis = roc
     roc_curve = roc
 
-    def pca(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.pca", **kwargs)
+    def pca(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.pca",
+            table=tbl_ref,
+            cols=(list(cols) if cols is not None else None),
+            **kwargs,
+        )
 
-    def correlation(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.correlation", **kwargs)
+    def correlation(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.correlation",
+            table=tbl_ref,
+            cols=(list(cols) if cols is not None else None),
+            **kwargs,
+        )
 
     correlation_matrix = correlation
 
-    def clustering(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.clustering", **kwargs)
+    def clustering(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        cols: Optional[Sequence[Union[int, str]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.clustering",
+            table=tbl_ref,
+            cols=(list(cols) if cols is not None else None),
+            **kwargs,
+        )
 
-    def confidence_ellipse(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("stats.confidence_ellipse", **kwargs)
+    def confidence_ellipse(
+        self,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        return self.call("stats.confidence_ellipse", graph=_name_of(graph), **kwargs)
 
     add_confidence_ellipse = confidence_ellipse
 
     def digitize(
-        self, path: Union[str, os.PathLike[str]], **kwargs: Any
+        self,
+        path: Optional[Union[str, os.PathLike[str]]] = None,
+        *,
+        image_path: Optional[Union[str, os.PathLike[str]]] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
-        return self.call("digitizer.extract", path=os.fspath(path), **kwargs)
+        eff_path = path if path is not None else image_path
+        if eff_path is None:
+            raise ValueError("Provide 'path' (or 'image_path') to image file.")
+        return self.call("digitizer.extract", path=os.fspath(eff_path), **kwargs)
 
     extract_digitizer = digitize
     digitize_image = digitize
@@ -2927,6 +5203,28 @@ def connect(endpoint: Optional[str] = None, timeout: float = 30.0) -> Session:
     session = Session(transport)
     session.ping()
     return session
+
+
+def connect_or_launch(
+    endpoint: Optional[str] = None,
+    *,
+    exe_path: Optional[Union[str, os.PathLike[str]]] = None,
+    headless: bool = True,
+    language: str = "ja",
+    timeout: float = 30.0,
+    extra_args: Optional[Sequence[str]] = None,
+) -> Session:
+    """Connect to ``endpoint`` / ``TORIGRAPH_RPC_ENDPOINT`` if available, else launch headless ``ToriGraph``."""
+    resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
+    if resolved:
+        return connect(resolved, timeout=timeout)
+    return launch(
+        exe_path=exe_path,
+        headless=headless,
+        language=language,
+        timeout=timeout,
+        extra_args=extra_args,
+    )
 
 
 def launch(

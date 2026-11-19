@@ -19,6 +19,7 @@
 
 class ApplicationWindow;
 class Graph;
+class Matrix;
 class MultiLayer;
 class QwtPlotCurve;
 class Table;
@@ -147,6 +148,116 @@ public:
     static void showFillBetweenDialog(ApplicationWindow *app, Graph *g);
     static void showEISAnalyzerDialog(ApplicationWindow *app);
     static void showTensileYieldDialog(ApplicationWindow *app);
+
+    struct SampleDatasetInfo {
+        QString id;
+        QString title;
+        QString category;
+        QString description;
+    };
+    static QVector<SampleDatasetInfo> listSampleDatasets();
+    static MultiLayer *loadSampleDataset(ApplicationWindow *app, const QString &datasetId,
+                                         bool autoPlot = true, Table **outTable = nullptr,
+                                         Matrix **outMatrix = nullptr);
+    static void showSampleGalleryDialog(ApplicationWindow *app);
+
+    struct KissingerResult {
+        bool valid = false;
+        QString error;
+        double activationEnergyKJmol = 0.0;
+        double activationEnergyKJmolSE = 0.0;
+        double activationEnergyEV = 0.0;
+        double activationEnergyEVSE = 0.0;
+        double preExponentialSInv = 0.0;
+        double slope = 0.0;
+        double intercept = 0.0;
+        double rSquare = 0.0;
+        QVector<double> heatingRatesKmin;
+        QVector<double> peakTempsK;
+        Table *resultTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
+    static KissingerResult analyzeKissinger(ApplicationWindow *app,
+                                            const QVector<double> &heatingRates,
+                                            const QVector<double> &peakTemps,
+                                            bool rateInKPerHour = false,
+                                            bool tempInCelsius = true,
+                                            bool topAxisInCelsius = true);
+    static void showKissingerDialog(ApplicationWindow *app);
+
+    struct WorkHardeningResult {
+        bool valid = false;
+        QString error;
+        double considereTrueStrain = 0.0;
+        double considereTrueStress = 0.0;
+        double considereEngStrainPct = 0.0;
+        double hollomonK = 0.0;
+        double hollomonN = 0.0;
+        double voceSigmaS = 0.0;
+        Table *resultTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
+    static WorkHardeningResult analyzeWorkHardening(ApplicationWindow *app, Graph *g,
+                                                    const QString &curveTitle = QString(),
+                                                    int smoothWindow = 11,
+                                                    bool createPlot = true,
+                                                    bool kocksMeckingPlot = false);
+    static void showWorkHardeningDialog(ApplicationWindow *app);
+
+    struct XRDPeakEntry {
+        double twoThetaDeg = 0.0;
+        double dSpacingAngstrom = 0.0;
+        double fwhmDeg = 0.0;
+        double intensity = 0.0;
+        double scherrerSizeNm = 0.0;
+        QString hklLabel;
+    };
+    struct XRDAnalysisResult {
+        bool valid = false;
+        QString error;
+        double wavelengthAngstrom = 1.540598;
+        double meanScherrerSizeNm = 0.0;
+        double whSizeNm = 0.0;
+        double whMicrostrain = 0.0;
+        double whRSquare = 0.0;
+        double latticeParamAngstrom = 0.0;
+        QVector<XRDPeakEntry> peaks;
+        Table *peakTable = nullptr;
+        MultiLayer *whPlot = nullptr;
+    };
+    static XRDAnalysisResult analyzeXRD(ApplicationWindow *app, Graph *g,
+                                        const QString &curveTitle = QString(),
+                                        double wavelengthAngstrom = 1.540598,
+                                        double instrFwhmDeg = 0.05,
+                                        double scherrerK = 0.90,
+                                        const QString &crystalSystem = QStringLiteral("fcc"),
+                                        bool stripKAlpha2 = false,
+                                        bool addTopDSpacingAxis = true,
+                                        bool createWilliamsonHallPlot = true,
+                                        double cOverA = 1.633);
+    static void showXRDAnalyzerDialog(ApplicationWindow *app);
+
+    struct VaspPlotResult {
+        bool valid = false;
+        QString error;
+        double fermiEnergyEV = 0.0;
+        double bandgapEV = 0.0;
+        double dBandCenterEV = std::numeric_limits<double>::quiet_NaN();
+        Table *dataTable = nullptr;
+        MultiLayer *plot = nullptr;
+    };
+    static VaspPlotResult plotVaspDos(ApplicationWindow *app, Table *srcTable,
+                                      const QString &energyCol, const QStringList &dosCols,
+                                      const QStringList &downDosCols = QStringList(),
+                                      double fermiEnergyEV = 0.0,
+                                      bool verticalEnergyAxis = false);
+    static VaspPlotResult plotVaspBands(ApplicationWindow *app, Table *srcTable,
+                                        const QString &kDistCol, const QStringList &bandCols,
+                                        const QVector<double> &kTickPositions = QVector<double>(),
+                                        const QStringList &kTickLabels = QStringList(),
+                                        double fermiEnergyEV = 0.0,
+                                        double energyMinEV = -6.0, double energyMaxEV = 6.0);
+    static void showVaspPlotterDialog(ApplicationWindow *app);
 };
 
 #endif // CURVEMATHTOOLS_H

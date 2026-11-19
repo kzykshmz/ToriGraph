@@ -267,7 +267,7 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             return 0;
         b->ensurePolished();
         if (st == Qt::ToolButtonIconOnly)
-            return b->iconSize().width() + 10;
+            return b->iconSize().width() + 8;
         QFont bf = b->font();
         bf.setBold(true);
         const QFontMetrics fm(bf);
@@ -275,16 +275,38 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
         const int iconW = (st == Qt::ToolButtonTextBesideIcon && !b->icon().isNull())
                 ? (b->iconSize().width() + 5)
                 : 0;
-        const int pad = (b->menu() != nullptr) ? 20 : 14;
+        const int pad = (b->menu() != nullptr) ? 26 : 12;
         return textW + iconW + pad;
     };
 
+    const int barW = quickBar->width();
+    const bool ultraCompact = (barW > 0 && barW < 340);
+    const bool narrowSplitCompact = (barW > 0 && barW < 265);
+
+    if (btnYErr && btnYErr->isHidden() != ultraCompact)
+        btnYErr->setVisible(!ultraCompact);
+    if (btnLp && btnLp->isHidden() != narrowSplitCompact)
+        btnLp->setVisible(!narrowSplitCompact);
+    if (btnScatter && btnScatter->isHidden() != narrowSplitCompact)
+        btnScatter->setVisible(!narrowSplitCompact);
+    if (moreBtn && moreBtn->menu()) {
+        for (QAction *act : moreBtn->menu()->actions()) {
+            if (act && act->data().toInt() == int(SciDAVis::yErr))
+                act->setVisible(ultraCompact);
+        }
+    }
+
+    const Qt::ToolButtonStyle colPropsStyle =
+            ultraCompact ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextOnly;
+    if (btnColProps && btnColProps->toolButtonStyle() != colPropsStyle)
+        btnColProps->setToolButtonStyle(colPropsStyle);
+
     const int fixedRowW = calcBtnWidth(btnX, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnY, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly)
+            + (ultraCompact ? 0 : calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly))
             + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly)
-            + 31; // 4+4px margins + 5px separator + 9*2px spacing
+            + calcBtnWidth(btnColProps, colPropsStyle)
+            + (ultraCompact ? 27 : 31);
     const int totalBeside = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
@@ -294,9 +316,8 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             + calcBtnWidth(btnScatter, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnAdd, Qt::ToolButtonTextOnly);
 
-    const int barW = quickBar->width();
     Qt::ToolButtonStyle plotStyle = Qt::ToolButtonIconOnly;
-    if (barW <= 0) {
+    if (barW <= 0 || ultraCompact) {
         plotStyle = Qt::ToolButtonIconOnly;
     } else if (barW >= qMax(510, totalBeside + 6)) {
         plotStyle = Qt::ToolButtonTextBesideIcon;
@@ -312,7 +333,7 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             pb->setToolButtonStyle(plotStyle);
     }
 
-    QToolButton *textOnlyBtns[] = { btnX, btnY, btnYErr, moreBtn, btnColProps };
+    QToolButton *textOnlyBtns[] = { btnX, btnY, btnYErr, moreBtn };
     for (QToolButton *tb : textOnlyBtns) {
         if (tb && tb->toolButtonStyle() != Qt::ToolButtonTextOnly)
             tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -321,7 +342,7 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     QToolButton *visibleRow1[] = { btnX,    btnY,   btnYErr,    moreBtn,     btnLine,
                                    btnLp,   btnScatter, btnAdd, btnColProps };
     for (QToolButton *b : visibleRow1) {
-        if (!b)
+        if (!b || b->isHidden())
             continue;
         const int minW = calcBtnWidth(b, b->toolButtonStyle());
         b->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
@@ -395,7 +416,30 @@ void TableView::init()
     int defaultRowHeight = settings.value("DefaultRowHeight", 20).toInt();
     settings.endGroup();
     d_view_widget->verticalHeader()->setDefaultSectionSize(defaultRowHeight);
+    auto syncVerticalHeaderPerfMode = [this]() {
+        if (!d_view_widget || !d_view_widget->verticalHeader() || !d_model)
+            return;
+        QHeaderView *vh = d_view_widget->verticalHeader();
+        const QHeaderView::ResizeMode wantMode =
+                (d_model->rowCount() > 10000) ? QHeaderView::Fixed : QHeaderView::Interactive;
+        if (vh->count() == 0 || vh->sectionResizeMode(0) != wantMode)
+            vh->setSectionResizeMode(wantMode);
+    };
+    if (d_model && d_model->rowCount() > 10000)
+        d_view_widget->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     d_view_widget->setModel(d_model);
+    syncVerticalHeaderPerfMode();
+    if (d_model) {
+        connect(d_model, &QAbstractItemModel::rowsInserted, this,
+                [syncVerticalHeaderPerfMode](const QModelIndex &, int, int) {
+                    syncVerticalHeaderPerfMode();
+                });
+        connect(d_model, &QAbstractItemModel::rowsRemoved, this,
+                [syncVerticalHeaderPerfMode](const QModelIndex &, int, int) {
+                    syncVerticalHeaderPerfMode();
+                });
+        connect(d_model, &QAbstractItemModel::modelReset, this, syncVerticalHeaderPerfMode);
+    }
     connect(d_view_widget, SIGNAL(advanceCell()), this, SLOT(advanceCell()));
     d_main_layout->addWidget(d_view_widget);
 
@@ -830,6 +874,9 @@ void TableView::retranslateStrings()
                 tr("Add selected Y column(s) (or all Y columns) to most recent graph"));
     }
     if (d_btn_quick_col_props) {
+        d_btn_quick_col_props->setIcon(
+                IconLoader::duotoneIcon(QStringLiteral("settings"), 14, false));
+        d_btn_quick_col_props->setIconSize(QSize(14, 14));
         d_btn_quick_col_props->setText(tr("Col Props"));
         d_btn_quick_col_props->setToolTip(tr("Toggle Column Description & Type Side Panel"));
     }
@@ -841,7 +888,9 @@ void TableView::retranslateStrings()
             if (QMenu *m = moreBtn->menu()) {
                 for (QAction *act : m->actions()) {
                     const int rc = act->data().toInt();
-                    if (rc == QuickRoleXErr)
+                    if (rc == QuickRoleYErr)
+                        act->setText(tr("\xC2\xB1yErr"));
+                    else if (rc == QuickRoleXErr)
                         act->setText(tr("\xC2\xB1xErr"));
                     else if (rc == QuickRoleZ)
                         act->setText(QStringLiteral("Z"));
@@ -2124,11 +2173,14 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     moreRoleBtn->setCursor(Qt::PointingHandCursor);
     moreRoleBtn->setProperty("wsRoleBtn", true);
     QMenu *moreMenu = new QMenu(moreRoleBtn);
-    const int secondaryRoles[] = { QuickRoleXErr, QuickRoleZ, QuickRoleLabel, QuickRoleNone };
+    const int secondaryRoles[] = { QuickRoleYErr, QuickRoleXErr, QuickRoleZ, QuickRoleLabel,
+                                   QuickRoleNone };
     for (int rc : secondaryRoles) {
         QAction *act = moreMenu->addAction(QString());
         act->setCheckable(true);
         act->setData(rc);
+        if (rc == QuickRoleYErr)
+            act->setVisible(false);
         connect(act, &QAction::triggered, this, [this, rc]() { applyQuickColumnRole(rc); });
     }
     moreRoleBtn->setMenu(moreMenu);
@@ -2308,13 +2360,17 @@ void TableView::syncQuickBarState()
     QToolButton *moreBtn = d_quick_bar->findChild<QToolButton *>(
             QStringLiteral("WorksheetMoreRoleBtn"));
     if (moreBtn) {
-        const bool isSecondary = (unifiedRole == QuickRoleXErr || unifiedRole == QuickRoleZ
+        const bool yErrFolded = (d_btn_role_yerr && d_btn_role_yerr->isHidden());
+        const bool isSecondary = ((yErrFolded && unifiedRole == QuickRoleYErr)
+                                  || unifiedRole == QuickRoleXErr || unifiedRole == QuickRoleZ
                                   || unifiedRole == QuickRoleLabel || unifiedRole == QuickRoleNone);
         setCheckedBlocked(moreBtn, isSecondary);
 
         const QString arrowSuffix = QString::fromUtf8(" \xE2\x96\xBE");
         QString moreText = tr("More") + arrowSuffix;
-        if (unifiedRole == QuickRoleXErr)
+        if (yErrFolded && unifiedRole == QuickRoleYErr)
+            moreText = tr("\xC2\xB1yErr") + arrowSuffix;
+        else if (unifiedRole == QuickRoleXErr)
             moreText = tr("\xC2\xB1xErr") + arrowSuffix;
         else if (unifiedRole == QuickRoleZ)
             moreText = QStringLiteral("Z") + arrowSuffix;

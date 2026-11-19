@@ -51,6 +51,7 @@
 #include "PolynomialFit.h"
 #include "QwtBarCurve.h"
 #include "QwtErrorPlotCurve.h"
+#include "QwtHistogram.h"
 #include "QwtPieCurve.h"
 #include "RecalcEngine.h"
 #include "ScaleDraw.h"
@@ -70,6 +71,7 @@
 #ifdef Q_OS_WIN
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
+#include <ole2.h>
 #endif
 
 #ifdef ORIGIN_IMPORT
@@ -85,6 +87,7 @@
 #include <qwt_symbol.h>
 
 #include <gsl/gsl_cdf.h>
+#include <gsl/gsl_errno.h>
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_permutation.h>
@@ -92,11 +95,13 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
@@ -153,10 +158,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -304,6 +311,12 @@ public:
     {
         d_silent = true;
     }
+    RpcInterpolation(ApplicationWindow *app, Graph *g, const QString &curveTitle, double start,
+                     double end, int m)
+        : Interpolation(app, g, curveTitle, start, end, m)
+    {
+        d_silent = true;
+    }
 };
 
 QJsonValue safeJsonDouble(double v)
@@ -385,6 +398,406 @@ int parseStrictPositiveInt(const QJsonObject &params, const QString &key, int de
     return v;
 }
 
+QString sanitizeUtf16Surrogates(const QString &in)
+{
+    bool needsFix = false;
+    for (int i = 0; i < in.size(); ++i) {
+        const QChar ch = in.at(i);
+        if (ch.isHighSurrogate()) {
+            if (i + 1 < in.size() && in.at(i + 1).isLowSurrogate()) {
+                ++i;
+            } else {
+                needsFix = true;
+                break;
+            }
+        } else if (ch.isLowSurrogate()) {
+            needsFix = true;
+            break;
+        }
+    }
+    if (!needsFix)
+        return in;
+
+    QString out;
+    out.reserve(in.size());
+    for (int i = 0; i < in.size(); ++i) {
+        const QChar ch = in.at(i);
+        if (ch.isHighSurrogate()) {
+            if (i + 1 < in.size() && in.at(i + 1).isLowSurrogate()) {
+                out.append(ch);
+                out.append(in.at(i + 1));
+                ++i;
+            } else {
+                out.append(QChar::ReplacementCharacter);
+            }
+        } else if (ch.isLowSurrogate()) {
+            out.append(QChar::ReplacementCharacter);
+        } else {
+            out.append(ch);
+        }
+    }
+    return out;
+}
+
+QJsonValue sanitizeJsonValueSurrogates(const QJsonValue &v)
+{
+    if (v.isString())
+        return QJsonValue(sanitizeUtf16Surrogates(v.toString()));
+    if (v.isArray()) {
+        const QJsonArray src = v.toArray();
+        QJsonArray dst;
+        for (const QJsonValue &it : src)
+            dst.append(sanitizeJsonValueSurrogates(it));
+        return dst;
+    }
+    if (v.isObject()) {
+        const QJsonObject src = v.toObject();
+        QJsonObject dst;
+        for (auto it = src.begin(); it != src.end(); ++it)
+            dst.insert(sanitizeUtf16Surrogates(it.key()), sanitizeJsonValueSurrogates(it.value()));
+        return dst;
+    }
+    return v;
+}
+
+QString optionalJsonString(const QJsonObject &params, const QString &key,
+                           const QString &defaultVal = QString())
+{
+    if (!params.contains(key) || params.value(key).isUndefined() || params.value(key).isNull())
+        return defaultVal;
+    const QJsonValue v = params.value(key);
+    if (!v.isString()) {
+        throwInvalidParams(
+                QStringLiteral("Parameter '%1' must be a string.").arg(key));
+    }
+    return sanitizeUtf16Surrogates(v.toString());
+}
+
+bool optionalJsonBool(const QJsonObject &params, const QString &key, bool defaultVal)
+{
+    if (!params.contains(key) || params.value(key).isUndefined() || params.value(key).isNull())
+        return defaultVal;
+    const QJsonValue v = params.value(key);
+    if (v.isBool())
+        return v.toBool();
+    if (v.isDouble()) {
+        const double d = v.toDouble();
+        if (d == 0.0)
+            return false;
+        if (d == 1.0)
+            return true;
+    }
+    if (v.isString()) {
+        const QString s = v.toString().trimmed().toLower();
+        if (s == QStringLiteral("true") || s == QStringLiteral("1") || s == QStringLiteral("yes")
+            || s == QStringLiteral("on"))
+            return true;
+        if (s == QStringLiteral("false") || s == QStringLiteral("0") || s == QStringLiteral("no")
+            || s == QStringLiteral("off"))
+            return false;
+    }
+    throwInvalidParams(QStringLiteral("Parameter '%1' must be a boolean.").arg(key));
+}
+
+int parseBoundedInt(const QJsonObject &params, const QString &key, int defaultVal, int minVal,
+                    int maxVal)
+{
+    if (!params.contains(key) || params.value(key).isUndefined() || params.value(key).isNull())
+        return defaultVal;
+    const int v = parseStrictJsonInt(params.value(key), key);
+    if (v < minVal || v > maxVal) {
+        throwInvalidParams(
+                QStringLiteral("Parameter '%1' must be in [%2, %3], got %4.")
+                        .arg(key)
+                        .arg(minVal)
+                        .arg(maxVal)
+                        .arg(v));
+    }
+    return v;
+}
+
+double parseFiniteCoordDouble(const QJsonValue &val, const QString &paramName,
+                              double absCap = 1e300)
+{
+    if (!val.isDouble() || val.isBool()) {
+        throwInvalidParams(
+                QStringLiteral("Parameter '%1' must be a finite number.").arg(paramName));
+    }
+    const double d = val.toDouble();
+    if (!std::isfinite(d) || std::abs(d) > absCap) {
+        throwInvalidParams(
+                QStringLiteral("Parameter '%1' is non-finite or exceeds numeric domain (|val| <= %2).")
+                        .arg(paramName)
+                        .arg(absCap, 0, 'e', 1));
+    }
+    return d;
+}
+
+double optionalJsonFiniteDouble(const QJsonObject &params, const QString &key, double defaultVal,
+                                double absCap = 1e300)
+{
+    if (!params.contains(key) || params.value(key).isUndefined() || params.value(key).isNull())
+        return defaultVal;
+    return parseFiniteCoordDouble(params.value(key), key, absCap);
+}
+
+void validateFiniteCoordRange(double lo, double hi, const QString &label, double step = 0.0,
+                              int maxTicks = 2000, double absCap = 1e300)
+{
+    if (!std::isfinite(lo) || !std::isfinite(hi) || std::abs(lo) > absCap
+        || std::abs(hi) > absCap) {
+        throwInvalidParams(
+                QStringLiteral("%1 bounds must be finite and within [-%2, +%2].")
+                        .arg(label)
+                        .arg(absCap, 0, 'e', 1));
+    }
+    const double span = hi - lo;
+    if (!std::isfinite(span) || lo == hi) {
+        throwInvalidParams(
+                QStringLiteral("%1 requires distinct, non-overflowing bounds [min, max].")
+                        .arg(label));
+    }
+    if (step < 0.0 || !std::isfinite(step)) {
+        throwInvalidParams(
+                QStringLiteral("%1 step must be >= 0 and finite.").arg(label));
+    }
+    if (step > 0.0) {
+        const double ticks = std::abs(span) / step;
+        if (!std::isfinite(ticks) || ticks > double(maxTicks)) {
+            throwInvalidParams(
+                    QStringLiteral("%1 step (%2) produces > %3 major ticks across span %4.")
+                            .arg(label)
+                            .arg(step, 0, 'g', 6)
+                            .arg(maxTicks)
+                            .arg(std::abs(span), 0, 'g', 6));
+        }
+    }
+}
+
+// Batch execution state for app.batch coalesced undo snapshots & deferred replot
+struct BatchExecutionContext
+{
+    bool active = false;
+    bool deferReplot = false;
+    int recursionDepth = 0;
+    QVector<QPointer<Graph>> dirtyGraphs;
+    QVector<QPointer<MultiLayer>> dirtyMultiLayers;
+    QVector<QPointer<MultiLayer>> snapshottedMultiLayers;
+    QVector<QPair<QPointer<MultiLayer>, QString>> preBatchGraphSnaps;
+
+    void markDirtyGraph(Graph *g)
+    {
+        if (!g)
+            return;
+        for (const QPointer<Graph> &p : dirtyGraphs) {
+            if (p.data() == g)
+                return;
+        }
+        dirtyGraphs.append(QPointer<Graph>(g));
+    }
+
+    void markDirtyMultiLayer(MultiLayer *ml)
+    {
+        if (!ml)
+            return;
+        for (const QPointer<MultiLayer> &p : dirtyMultiLayers) {
+            if (p.data() == ml)
+                return;
+        }
+        dirtyMultiLayers.append(QPointer<MultiLayer>(ml));
+    }
+
+    bool hasSnapshotted(MultiLayer *ml) const
+    {
+        if (!ml)
+            return false;
+        for (const QPointer<MultiLayer> &p : snapshottedMultiLayers) {
+            if (p.data() == ml)
+                return true;
+        }
+        return false;
+    }
+
+    void markSnapshotted(MultiLayer *ml, const QString &initialSnap = QString())
+    {
+        if (!ml || hasSnapshotted(ml))
+            return;
+        snapshottedMultiLayers.append(QPointer<MultiLayer>(ml));
+        if (!initialSnap.isEmpty())
+            preBatchGraphSnaps.append(qMakePair(QPointer<MultiLayer>(ml), initialSnap));
+    }
+};
+
+BatchExecutionContext &rpcBatchContext()
+{
+    static BatchExecutionContext s_ctx;
+    return s_ctx;
+}
+
+// C++17 SFINAE trait dispatchers for w1 / w2 contracts
+template <typename B, typename = void>
+struct HasBarCurveSetStacked : std::false_type {};
+template <typename B>
+struct HasBarCurveSetStacked<B, std::void_t<decltype(std::declval<B *>()->setStacked(true))>>
+    : std::true_type {};
+
+template <typename B = QwtBarCurve>
+void invokeBarCurveSetStacked(B *bc, bool on)
+{
+    if (!bc)
+        return;
+    if constexpr (HasBarCurveSetStacked<B>::value)
+        bc->setStacked(on);
+}
+
+template <typename CM, typename = void>
+struct HasWorkHardening6Args : std::false_type {};
+template <typename CM>
+struct HasWorkHardening6Args<
+        CM, std::void_t<decltype(CM::analyzeWorkHardening(
+                    static_cast<ApplicationWindow *>(nullptr), static_cast<Graph *>(nullptr),
+                    QString(), 11, true, false))>>
+    : std::true_type {};
+
+template <typename CM = CurveMathTools>
+CurveMathTools::WorkHardeningResult invokeAnalyzeWorkHardening(ApplicationWindow *app, Graph *g,
+                                                               const QString &curveTitle,
+                                                               int smoothWin, bool createPlot,
+                                                               bool kmMode)
+{
+    if constexpr (HasWorkHardening6Args<CM>::value)
+        return CM::analyzeWorkHardening(app, g, curveTitle, smoothWin, createPlot, kmMode);
+    else
+        return CM::analyzeWorkHardening(app, g, curveTitle, smoothWin, createPlot);
+}
+
+template <typename CM, typename = void>
+struct HasAnalyzeXrd11Args : std::false_type {};
+template <typename CM>
+struct HasAnalyzeXrd11Args<
+        CM, std::void_t<decltype(CM::analyzeXRD(
+                    static_cast<ApplicationWindow *>(nullptr), static_cast<Graph *>(nullptr),
+                    QString(), 1.540598, 0.05, 0.90, QString(), false, true, true, 1.633))>>
+    : std::true_type {};
+
+template <typename CM = CurveMathTools>
+CurveMathTools::XRDAnalysisResult invokeAnalyzeXrd(ApplicationWindow *app, Graph *g,
+                                                   const QString &curveTitle, double wavelength,
+                                                   double instrFwhm, double scherrerK,
+                                                   const QString &crystalSys, bool stripKa2,
+                                                   bool addTopD, bool createWh, double cOverA)
+{
+    if constexpr (HasAnalyzeXrd11Args<CM>::value) {
+        return CM::analyzeXRD(app, g, curveTitle, wavelength, instrFwhm, scherrerK, crystalSys,
+                              stripKa2, addTopD, createWh, cOverA);
+    } else {
+        return CM::analyzeXRD(app, g, curveTitle, wavelength, instrFwhm, scherrerK, crystalSys,
+                              stripKa2, addTopD, createWh);
+    }
+}
+template <typename G, typename = void>
+struct HasGraphSetCategoryLabels : std::false_type {};
+template <typename G>
+struct HasGraphSetCategoryLabels<
+        G, std::void_t<decltype(std::declval<G *>()->setCategoryLabels(0, QStringList()))>>
+    : std::true_type {};
+
+template <typename G, typename = void>
+struct HasGraphCategoryLabels : std::false_type {};
+template <typename G>
+struct HasGraphCategoryLabels<G, std::void_t<decltype(std::declval<const G *>()->categoryLabels(0))>>
+    : std::true_type {};
+
+template <typename G, typename = void>
+struct HasGraphSetupPolarPlot : std::false_type {};
+template <typename G>
+struct HasGraphSetupPolarPlot<
+        G, std::void_t<decltype(std::declval<G *>()->setupPolarPlot(
+                   QVector<double>(), QVector<double>(), QString(), false))>>
+    : std::true_type {};
+
+template <typename G, typename = void>
+struct HasGraphIsPolarPlot : std::false_type {};
+template <typename G>
+struct HasGraphIsPolarPlot<G, std::void_t<decltype(std::declval<const G *>()->isPolarPlot())>>
+    : std::true_type {};
+
+template <typename G, typename = void>
+struct HasGraphShadedBandCount : std::false_type {};
+template <typename G>
+struct HasGraphShadedBandCount<G, std::void_t<decltype(std::declval<const G *>()->shadedBandCount())>>
+    : std::true_type {};
+
+template <typename G = Graph>
+void invokeGraphSetCategoryLabels(ApplicationWindow *app, G *g, int qwtAxis,
+                                  const QStringList &labels)
+{
+    if (!g)
+        return;
+    g->setProperty(QStringLiteral("_toriCatLabels_%1").arg(qwtAxis).toLatin1().constData(), labels);
+    if constexpr (HasGraphSetCategoryLabels<G>::value) {
+        g->setCategoryLabels(qwtAxis, labels);
+    } else {
+        if (!app || labels.isEmpty())
+            return;
+        auto *colTxt = new Column(QStringLiteral("Cat"), SciDAVis::ColumnMode::Text);
+        colTxt->setPlotDesignation(SciDAVis::X);
+        colTxt->replaceTexts(0, labels);
+        const QString tblName = app->generateUniqueName(QStringLiteral("RpcCategoryAxis"));
+        Table *backing = app->newHiddenTable(tblName, QStringLiteral("CategoryLabels"),
+                                             QList<Column *>() << colTxt);
+        if (!backing) {
+            delete colTxt;
+            return;
+        }
+        g->setLabelsTextFormat(qwtAxis, backing, tblName + QStringLiteral("_") + colTxt->name());
+        const int n = labels.size();
+        g->setScale(qwtAxis, 0.5, double(n) + 0.5, 1.0, std::min(std::max(n + 2, 4), 32), 0, 0,
+                    false);
+    }
+}
+
+template <typename G = Graph>
+QStringList invokeGraphCategoryLabels(const G *g, int qwtAxis)
+{
+    if (!g)
+        return QStringList();
+    if constexpr (HasGraphCategoryLabels<G>::value) {
+        const QStringList direct = g->categoryLabels(qwtAxis);
+        if (!direct.isEmpty())
+            return direct;
+    }
+    const QVariant prop =
+            g->property(QStringLiteral("_toriCatLabels_%1").arg(qwtAxis).toLatin1().constData());
+    if (prop.isValid())
+        return prop.toStringList();
+    return QStringList();
+}
+
+template <typename G = Graph>
+int invokeGraphShadedBandCount(const G *g)
+{
+    if (!g)
+        return 0;
+    if constexpr (HasGraphShadedBandCount<G>::value) {
+        return g->shadedBandCount();
+    } else {
+        return -1;
+    }
+}
+
+template <typename G = Graph>
+bool invokeGraphIsPolarPlot(const G *g)
+{
+    if (!g)
+        return false;
+    if constexpr (HasGraphIsPolarPlot<G>::value) {
+        if (g->isPolarPlot())
+            return true;
+    }
+    return g->property("_toriIsPolarPlot").toBool();
+}
+
 int countValidCurvePoints(QwtPlotCurve *c, int *distinctXOut = nullptr)
 {
     if (distinctXOut)
@@ -392,13 +805,18 @@ int countValidCurvePoints(QwtPlotCurve *c, int *distinctXOut = nullptr)
     if (!c)
         return 0;
     const auto *dc = dynamic_cast<const DataCurve *>(c);
+    const bool checkMasks = (dc != nullptr) && dc->hasAnyMaskedPoints();
+    Column *maskXCol = nullptr;
+    Column *maskYCol = nullptr;
+    if (checkMasks)
+        dc->resolveColumns(maskXCol, maskYCol);
     const int n = static_cast<int>(c->dataSize());
     int valid = 0;
     std::vector<double> xs;
     if (distinctXOut && n > 0)
         xs.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        if (dc && dc->isPointMasked(i))
+        if (checkMasks && dc->isPointMaskedFast(i, maskXCol, maskYCol))
             continue;
         const double xv = c->x(i);
         const double yv = c->y(i);
@@ -430,10 +848,15 @@ void extractValidUnmaskedCurveXY(QwtPlotCurve *c, std::vector<double> &xs, std::
     const int n = static_cast<int>(c->dataSize());
     if (n <= 0)
         return;
+    const bool checkMasks = (dc != nullptr) && dc->hasAnyMaskedPoints();
+    Column *maskXCol = nullptr;
+    Column *maskYCol = nullptr;
+    if (checkMasks)
+        dc->resolveColumns(maskXCol, maskYCol);
     xs.reserve(static_cast<size_t>(n));
     ys.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        if (dc && dc->isPointMasked(i))
+        if (checkMasks && dc->isPointMaskedFast(i, maskXCol, maskYCol))
             continue;
         const double xv = c->x(i);
         const double yv = c->y(i);
@@ -468,6 +891,8 @@ bool checkMuParserExprValid(const QString &expr, const QStringList &varNames,
         return false;
     }
     static const QRegularExpression identRx(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    static const QRegularExpression assignRx(
+            QStringLiteral("^([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+)$"));
     QStringList uniqueVars;
     for (const QString &rawVar : varNames) {
         const QString v = rawVar.trimmed();
@@ -479,15 +904,66 @@ bool checkMuParserExprValid(const QString &expr, const QStringList &varNames,
         if (!uniqueVars.contains(v))
             uniqueVars.append(v);
     }
+
+    QStringList nonEmptyLines;
+    const QStringList rawLines = trimmed.split(QLatin1Char('\n'));
+    for (QString ln : rawLines) {
+        const int hashIdx = ln.indexOf(QLatin1Char('#'));
+        if (hashIdx >= 0)
+            ln = ln.left(hashIdx);
+        ln = ln.trimmed();
+        if (!ln.isEmpty())
+            nonEmptyLines.append(ln);
+    }
+    if (nonEmptyLines.isEmpty()) {
+        if (errMsgOut)
+            *errMsgOut = QStringLiteral("Formula expression is empty.");
+        return false;
+    }
+
     try {
         MyParser parser;
-        std::vector<double> vals(static_cast<size_t>(uniqueVars.size()), 0.5);
+        std::deque<double> varStorage;
+        QHash<QString, double *> boundVars;
         for (int i = 0; i < uniqueVars.size(); ++i) {
-            vals[static_cast<size_t>(i)] = 0.5 + 0.13 * static_cast<double>(i);
-            parser.DefineVar(toString<mu::string_type>(uniqueVars[i]),
-                             &vals[static_cast<size_t>(i)]);
+            varStorage.push_back(0.5 + 0.13 * static_cast<double>(i));
+            double *ptr = &varStorage.back();
+            parser.DefineVar(toString<mu::string_type>(uniqueVars[i]), ptr);
+            boundVars.insert(uniqueVars[i], ptr);
         }
-        parser.SetExpr(trimmed);
+        for (int li = 0; li + 1 < nonEmptyLines.size(); ++li) {
+            const QString &stmt = nonEmptyLines[li];
+            const QRegularExpressionMatch m = assignRx.match(stmt);
+            if (!m.hasMatch() || m.captured(2).trimmed().startsWith(QLatin1Char('='))) {
+                if (errMsgOut) {
+                    *errMsgOut = QStringLiteral(
+                                         "Leading formula line '%1' must be a 'param = expr' assignment.")
+                                         .arg(stmt);
+                }
+                return false;
+            }
+            const QString lhs = m.captured(1).trimmed();
+            const QString rhs = m.captured(2).trimmed();
+            parser.SetExpr(rhs);
+            const double cVal = parser.Eval();
+            if (!std::isfinite(cVal)) {
+                if (errMsgOut) {
+                    *errMsgOut = QStringLiteral(
+                                         "Parameter assignment '%1' evaluated to non-finite value.")
+                                         .arg(lhs);
+                }
+                return false;
+            }
+            if (boundVars.contains(lhs)) {
+                *boundVars[lhs] = cVal;
+            } else {
+                varStorage.push_back(cVal);
+                double *ptr = &varStorage.back();
+                parser.DefineVar(toString<mu::string_type>(lhs), ptr);
+                boundVars.insert(lhs, ptr);
+            }
+        }
+        parser.SetExpr(nonEmptyLines.last());
         (void)parser.Eval();
         return true;
     } catch (const mu::ParserError &e) {
@@ -573,21 +1049,37 @@ QByteArray gzipCompressBytes(const QByteArray &raw)
 
 QColor parseColorValue(const QJsonValue &val, const QColor &fallback = QColor(Qt::black))
 {
+    if (val.isUndefined() || val.isNull())
+        return fallback;
     if (val.isString()) {
-        QColor c(val.toString().trimmed());
+        const QString s = val.toString().trimmed();
+        if (s.isEmpty())
+            return fallback;
+        QColor c(s);
         if (c.isValid())
             return c;
-    } else if (val.isArray()) {
-        QJsonArray a = val.toArray();
-        if (a.size() >= 3) {
-            int r = std::clamp(a[0].toInt(0), 0, 255);
-            int g = std::clamp(a[1].toInt(0), 0, 255);
-            int b = std::clamp(a[2].toInt(0), 0, 255);
-            int al = (a.size() >= 4) ? std::clamp(a[3].toInt(255), 0, 255) : 255;
-            return QColor(r, g, b, al);
-        }
+        throwInvalidParams(QStringLiteral("Invalid color specification '%1'.").arg(s));
     }
-    return fallback;
+    if (val.isArray()) {
+        const QJsonArray a = val.toArray();
+        if (a.size() < 3 || a.size() > 4) {
+            throwInvalidParams(
+                    QStringLiteral("Color array must have 3 ([r, g, b]) or 4 ([r, g, b, a]) numeric elements."));
+        }
+        for (int i = 0; i < a.size(); ++i) {
+            if (!a[i].isDouble() || a[i].isBool() || !std::isfinite(a[i].toDouble())) {
+                throwInvalidParams(
+                        QStringLiteral("Color array elements must be finite numbers in [0, 255]."));
+            }
+        }
+        const int r = std::clamp(qRound(a[0].toDouble()), 0, 255);
+        const int g = std::clamp(qRound(a[1].toDouble()), 0, 255);
+        const int b = std::clamp(qRound(a[2].toDouble()), 0, 255);
+        const int al = (a.size() >= 4) ? std::clamp(qRound(a[3].toDouble()), 0, 255) : 255;
+        return QColor(r, g, b, al);
+    }
+    throwInvalidParams(
+            QStringLiteral("Color parameter must be a color string or [r, g, b] array."));
 }
 
 Qt::PenStyle parsePenStyleValue(const QJsonValue &val, Qt::PenStyle fallback = Qt::SolidLine)
@@ -639,7 +1131,7 @@ Qt::PenStyle parsePenStyleValue(const QJsonValue &val, Qt::PenStyle fallback = Q
         throwInvalidParamsWithAvailable(
                 QStringLiteral("Unknown line style '%1'.").arg(raw), kPenStyles);
     }
-    return fallback;
+    throwInvalidParams(QStringLiteral("Line style must be a string or integer code."));
 }
 
 QwtSymbol::Style parseQwtSymbolStyle(const QJsonValue &val,
@@ -711,7 +1203,7 @@ QwtSymbol::Style parseQwtSymbolStyle(const QJsonValue &val,
         throwInvalidParamsWithAvailable(
                 QStringLiteral("Unknown marker/symbol style '%1'.").arg(raw), kMarkerStyles);
     }
-    return fallback;
+    throwInvalidParams(QStringLiteral("Marker/symbol style must be a string or integer code."));
 }
 
 QString windowTypeString(MyWidget *w)
@@ -766,6 +1258,21 @@ MyWidget *findWindowByName(ApplicationWindow *app, const QString &name)
             && w->windowLabel().trimmed() == trimmed)
             return w;
     }
+    for (MyWidget *w : windows) {
+        if (w && !w->windowLabel().trimmed().isEmpty()
+            && w->windowLabel().trimmed().compare(trimmed, Qt::CaseInsensitive) == 0)
+            return w;
+    }
+    QString hyphenNorm = trimmed;
+    hyphenNorm.replace(QLatin1Char('_'), QLatin1Char('-'));
+    if (hyphenNorm != trimmed) {
+        for (MyWidget *w : windows) {
+            if (w && (w->name() == hyphenNorm
+                      || w->name().compare(hyphenNorm, Qt::CaseInsensitive) == 0)) {
+                return w;
+            }
+        }
+    }
     return nullptr;
 }
 
@@ -774,9 +1281,9 @@ Table *resolveTable(ApplicationWindow *app, const QJsonObject &params,
 {
     if (!app)
         throwRpcRuntime(QStringLiteral("ApplicationWindow is null."));
-    QString name = params.value(key).toString().trimmed();
+    QString name = optionalJsonString(params, key).trimmed();
     if (name.isEmpty() && key != QStringLiteral("name"))
-        name = params.value(QStringLiteral("window")).toString().trimmed();
+        name = optionalJsonString(params, QStringLiteral("window")).trimmed();
     if (!name.isEmpty()) {
         if (Table *t = app->table(name))
             return t;
@@ -812,9 +1319,9 @@ Matrix *resolveMatrix(ApplicationWindow *app, const QJsonObject &params,
 {
     if (!app)
         throwRpcRuntime(QStringLiteral("ApplicationWindow is null."));
-    QString name = params.value(key).toString().trimmed();
+    QString name = optionalJsonString(params, key).trimmed();
     if (name.isEmpty() && key != QStringLiteral("name"))
-        name = params.value(QStringLiteral("window")).toString().trimmed();
+        name = optionalJsonString(params, QStringLiteral("window")).trimmed();
     if (!name.isEmpty()) {
         if (Matrix *m = app->matrix(name))
             return m;
@@ -850,11 +1357,11 @@ MultiLayer *resolveMultiLayer(ApplicationWindow *app, const QJsonObject &params,
 {
     if (!app)
         throwRpcRuntime(QStringLiteral("ApplicationWindow is null."));
-    QString name = params.value(key).toString().trimmed();
+    QString name = optionalJsonString(params, key).trimmed();
     if (name.isEmpty())
-        name = params.value(QStringLiteral("graph_name")).toString().trimmed();
+        name = optionalJsonString(params, QStringLiteral("graph_name")).trimmed();
     if (name.isEmpty() && key != QStringLiteral("name"))
-        name = params.value(QStringLiteral("window")).toString().trimmed();
+        name = optionalJsonString(params, QStringLiteral("window")).trimmed();
     if (!name.isEmpty()) {
         if (MyWidget *mw = findWindowByName(app, name)) {
             if (mw->inherits("MultiLayer"))
@@ -889,9 +1396,9 @@ Graph3D *resolveGraph3D(ApplicationWindow *app, const QJsonObject &params,
 {
     if (!app)
         throwRpcRuntime(QStringLiteral("ApplicationWindow is null."));
-    QString name = params.value(key).toString().trimmed();
+    QString name = optionalJsonString(params, key).trimmed();
     if (name.isEmpty())
-        name = params.value(QStringLiteral("window")).toString().trimmed();
+        name = optionalJsonString(params, QStringLiteral("window")).trimmed();
     if (!name.isEmpty()) {
         if (MyWidget *mw = findWindowByName(app, name)) {
             if (mw->inherits("Graph3D"))
@@ -1051,20 +1558,30 @@ void enforceArialGraphFonts(Graph *g)
 {
     if (!g)
         return;
+    BatchExecutionContext &bctx = rpcBatchContext();
+    if (bctx.active && bctx.deferReplot) {
+        bctx.markDirtyGraph(g);
+        if (MultiLayer *ml = g->multiLayerParent())
+            bctx.markDirtyMultiLayer(ml);
+        return;
+    }
     for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
         QFont nf = g->axisFont(ax);
         nf.setFamily(QStringLiteral("Arial"));
+        nf.setBold(false);
         nf.setHintingPreference(QFont::PreferNoHinting);
         g->setAxisFont(ax, nf);
 
         QFont tf = g->axisTitleFont(ax);
         tf.setFamily(QStringLiteral("Arial"));
+        tf.setBold(false);
         tf.setHintingPreference(QFont::PreferNoHinting);
         g->setAxisTitleFont(ax, tf);
     }
     if (Legend *leg = g->legend()) {
         QFont lf = leg->font();
         lf.setFamily(QStringLiteral("Arial"));
+        lf.setBold(false);
         lf.setHintingPreference(QFont::PreferNoHinting);
         leg->setFont(lf);
     }
@@ -1080,6 +1597,7 @@ void enforceArialGraphFonts(Graph *g)
         QwtText t = g->plotWidget()->title();
         QFont f = t.font();
         f.setFamily(QStringLiteral("Arial"));
+        f.setBold(false);
         f.setHintingPreference(QFont::PreferNoHinting);
         t.setFont(f);
         g->plotWidget()->setTitle(t);
@@ -1094,28 +1612,47 @@ void enforceArialGraphFonts(Graph *g)
     }
 }
 
+void replotGraphOrDefer(Graph *g)
+{
+    if (!g)
+        return;
+    BatchExecutionContext &bctx = rpcBatchContext();
+    if (bctx.active && bctx.deferReplot) {
+        bctx.markDirtyGraph(g);
+        if (MultiLayer *ml = g->multiLayerParent())
+            bctx.markDirtyMultiLayer(ml);
+        return;
+    }
+    g->replot();
+}
+
 void enforceArialGraph3DFonts(Graph3D *g3d)
 {
     if (!g3d)
         return;
     QFont xf = g3d->xAxisLabelFont();
     xf.setFamily(QStringLiteral("Arial"));
+    xf.setBold(false);
     g3d->setXAxisLabelFont(xf);
 
     QFont yf = g3d->yAxisLabelFont();
     yf.setFamily(QStringLiteral("Arial"));
+    yf.setBold(false);
     g3d->setYAxisLabelFont(yf);
 
     QFont zf = g3d->zAxisLabelFont();
     zf.setFamily(QStringLiteral("Arial"));
+    zf.setBold(false);
     g3d->setZAxisLabelFont(zf);
 
     QFont nf = g3d->numbersFont();
     nf.setFamily(QStringLiteral("Arial"));
+    nf.setBold(false);
     g3d->setNumbersFont(nf);
 
     QFont tf = g3d->titleFont();
     tf.setFamily(QStringLiteral("Arial"));
+    tf.setBold(false);
     g3d->setTitleFont(tf);
 }
 
@@ -1143,6 +1680,11 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                         allCurves);
             }
             return QString();
+        }
+        if (!v.isString()) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter '%1' must be a 0-based curve index or curve name.")
+                            .arg(key));
         }
         const QString want = v.toString().trimmed();
         if (!want.isEmpty()) {
@@ -1273,7 +1815,7 @@ QString sanitizeWindowNameForSciDAVis(const QString &raw,
                                       const QString &fallbackPrefix = QStringLiteral("Win"),
                                       bool preserveUnderscores = false)
 {
-    QString s = raw.trimmed();
+    QString s = sanitizeUtf16Surrogates(raw).trimmed();
     if (!preserveUnderscores) {
         s.replace(QLatin1Char('-'), QLatin1Char('_'));
         s.replace(QRegExp(QStringLiteral("\\W+")), QStringLiteral("_"));
@@ -1611,6 +2153,7 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
 PythonAutomationServer::PythonAutomationServer(ApplicationWindow *app, QObject *parent)
     : QObject(parent), d_app(app)
 {
+    gsl_set_error_handler_off();
 }
 
 PythonAutomationServer::~PythonAutomationServer()
@@ -1815,12 +2358,29 @@ void PythonAutomationServer::onNewTcpConnection()
 
 void PythonAutomationServer::onTcpReadyRead()
 {
+    static constexpr int kMaxRpcFrameBytes = 64 * 1024 * 1024;
     auto *sock = qobject_cast<QTcpSocket *>(sender());
     if (!sock || !d_tcp_buffers.contains(sock))
         return;
 
     QByteArray &buf = d_tcp_buffers[sock];
-    buf.append(sock->readAll());
+    const QByteArray incoming = sock->readAll();
+    if (qint64(buf.size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
+        buf.clear();
+        QJsonObject errObj;
+        errObj[QStringLiteral("code")] = -32600;
+        errObj[QStringLiteral("message")] =
+                QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
+        QJsonObject resp;
+        resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+        resp[QStringLiteral("id")] = QJsonValue::Null;
+        resp[QStringLiteral("error")] = errObj;
+        sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
+        sock->flush();
+        sock->disconnectFromHost();
+        return;
+    }
+    buf.append(incoming);
 
     while (true) {
         if (!d_tcp_buffers.contains(sock))
@@ -1869,12 +2429,29 @@ void PythonAutomationServer::onNewLocalConnection()
 
 void PythonAutomationServer::onLocalReadyRead()
 {
+    static constexpr int kMaxRpcFrameBytes = 64 * 1024 * 1024;
     auto *sock = qobject_cast<QLocalSocket *>(sender());
     if (!sock || !d_local_buffers.contains(sock))
         return;
 
     QByteArray &buf = d_local_buffers[sock];
-    buf.append(sock->readAll());
+    const QByteArray incoming = sock->readAll();
+    if (qint64(buf.size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
+        buf.clear();
+        QJsonObject errObj;
+        errObj[QStringLiteral("code")] = -32600;
+        errObj[QStringLiteral("message")] =
+                QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
+        QJsonObject resp;
+        resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+        resp[QStringLiteral("id")] = QJsonValue::Null;
+        resp[QStringLiteral("error")] = errObj;
+        sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
+        sock->flush();
+        sock->disconnectFromServer();
+        return;
+    }
+    buf.append(incoming);
 
     while (true) {
         if (!d_local_buffers.contains(sock))
@@ -1911,6 +2488,18 @@ void PythonAutomationServer::onLocalDisconnected()
 
 QByteArray PythonAutomationServer::handleRpcLine(const QByteArray &line)
 {
+    static constexpr int kMaxRpcFrameBytes = 64 * 1024 * 1024;
+    if (line.size() > kMaxRpcFrameBytes) {
+        QJsonObject errObj;
+        errObj[QStringLiteral("code")] = -32600;
+        errObj[QStringLiteral("message")] =
+                QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
+        QJsonObject resp;
+        resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+        resp[QStringLiteral("id")] = QJsonValue::Null;
+        resp[QStringLiteral("error")] = errObj;
+        return QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n";
+    }
     QJsonParseError parseErr;
     const QJsonDocument doc = QJsonDocument::fromJson(line, &parseErr);
     if (parseErr.error != QJsonParseError::NoError) {
@@ -1980,7 +2569,20 @@ QByteArray PythonAutomationServer::handleRpcLine(const QByteArray &line)
 QJsonObject PythonAutomationServer::handleRpcRequest(const QJsonObject &req)
 {
     const bool hasId = req.contains(QStringLiteral("id"));
-    const QJsonValue idVal = hasId ? req.value(QStringLiteral("id")) : QJsonValue::Null;
+    QJsonValue idVal = hasId ? req.value(QStringLiteral("id")) : QJsonValue::Null;
+    bool validId = true;
+    if (hasId) {
+        if (idVal.isNull()) {
+            validId = true;
+        } else if (idVal.isString()) {
+            idVal = sanitizeUtf16Surrogates(idVal.toString());
+        } else if (idVal.isDouble() && !idVal.isBool() && std::isfinite(idVal.toDouble())) {
+            validId = true;
+        } else {
+            validId = false;
+            idVal = QJsonValue::Null;
+        }
+    }
 
     auto makeError = [&](int code, const QString &message,
                          const QJsonValue &errData = QJsonValue()) -> QJsonObject {
@@ -1997,11 +2599,25 @@ QJsonObject PythonAutomationServer::handleRpcRequest(const QJsonObject &req)
         return resp;
     };
 
+    if (!validId) {
+        return makeError(-32600,
+                         QStringLiteral("Invalid Request: 'id' must be string, number, or null."));
+    }
+
+    if (req.contains(QStringLiteral("jsonrpc"))) {
+        const QJsonValue jv = req.value(QStringLiteral("jsonrpc"));
+        if (!jv.isString() || jv.toString() != QStringLiteral("2.0")) {
+            return makeError(-32600,
+                             QStringLiteral("Invalid Request: 'jsonrpc' must be '2.0'."));
+        }
+    }
+
     if (!req.value(QStringLiteral("method")).isString()) {
         return makeError(-32600, QStringLiteral("Invalid Request: missing string 'method'."));
     }
 
-    const QString method = req.value(QStringLiteral("method")).toString().trimmed();
+    const QString method =
+            sanitizeUtf16Surrogates(req.value(QStringLiteral("method")).toString()).trimmed();
     if (method.isEmpty()) {
         return makeError(-32600, QStringLiteral("Invalid Request: empty 'method'."));
     }
@@ -2010,12 +2626,9 @@ QJsonObject PythonAutomationServer::handleRpcRequest(const QJsonObject &req)
     if (req.contains(QStringLiteral("params")) && !req.value(QStringLiteral("params")).isNull()) {
         const QJsonValue pv = req.value(QStringLiteral("params"));
         if (pv.isObject()) {
-            params = pv.toObject();
-        } else if (pv.isArray()) {
-            params[QStringLiteral("_args")] = pv.toArray();
+            params = sanitizeJsonValueSurrogates(pv).toObject();
         } else {
-            return makeError(-32602,
-                             QStringLiteral("Invalid params: 'params' must be object or array."));
+            return makeError(-32602, QStringLiteral("Invalid params: params must be a JSON object."));
         }
     }
 
@@ -2156,18 +2769,20 @@ QString extractCurrentVersionClean()
 
 QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
 {
-    QString feedUrl = params.value(QStringLiteral("feed_url")).toString().trimmed();
+    QString feedUrl = optionalJsonString(params, QStringLiteral("feed_url")).trimmed();
     if (feedUrl.isEmpty())
-        feedUrl = params.value(QStringLiteral("url")).toString().trimmed();
+        feedUrl = optionalJsonString(params, QStringLiteral("url")).trimmed();
     if (feedUrl.isEmpty())
         feedUrl = qEnvironmentVariable("TORIGRAPH_UPDATE_FEED_URL").trimmed();
     if (feedUrl.isEmpty()) {
         feedUrl = QStringLiteral("https://api.github.com/repos/kzykshmz/ToriGraph/releases/latest");
     }
 
-    const bool includePrerelease = params.value(QStringLiteral("include_prerelease")).toBool(false);
-    const QString currentVer = params.contains(QStringLiteral("current_version"))
-            ? params.value(QStringLiteral("current_version")).toString().trimmed()
+    const bool includePrerelease =
+            optionalJsonBool(params, QStringLiteral("include_prerelease"), false);
+    const QString currentVer = (params.contains(QStringLiteral("current_version"))
+                                && !params.value(QStringLiteral("current_version")).isNull())
+            ? optionalJsonString(params, QStringLiteral("current_version")).trimmed()
             : extractCurrentVersionClean();
 
     QByteArray rawPayload;
@@ -2197,8 +2812,8 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
         QEventLoop loop;
         QTimer timer;
         timer.setSingleShot(true);
-        const int timeoutMs = std::clamp(params.value(QStringLiteral("timeout_ms")).toInt(10000),
-                                         500, 60000);
+        const int timeoutMs =
+                parseBoundedInt(params, QStringLiteral("timeout_ms"), 10000, 500, 60000);
         QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         timer.start(timeoutMs);
@@ -2523,46 +3138,280 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
     }
 }
 
+class ColumnLongNameUnitsUndoCmd final : public QUndoCommand
+{
+public:
+    ColumnLongNameUnitsUndoCmd(Table *tbl, Column *col, int colIdx, const QString &oldLong,
+                               const QString &newLong, const QString &oldUnits,
+                               const QString &newUnits)
+        : QUndoCommand(QStringLiteral("Set Column Metadata")),
+          d_tbl(tbl),
+          d_col(col),
+          d_col_idx(colIdx),
+          d_old_long(oldLong),
+          d_new_long(newLong),
+          d_old_units(oldUnits),
+          d_new_units(newUnits)
+    {
+    }
+
+    void applyState(const QString &ln, const QString &un)
+    {
+        Column *c = d_col.data();
+        if (!c && d_tbl && d_col_idx >= 0 && d_col_idx < d_tbl->numCols())
+            c = d_tbl->column(d_col_idx);
+        if (!c)
+            return;
+        c->setLongName(ln);
+        c->setUnits(un);
+        if (d_tbl && d_col_idx >= 0 && d_col_idx < d_tbl->numCols()
+            && d_tbl->column(d_col_idx) == c) {
+            d_tbl->setColLongName(d_col_idx, ln);
+            d_tbl->setColUnits(d_col_idx, un);
+            d_tbl->update();
+        }
+    }
+
+    void redo() override { applyState(d_new_long, d_new_units); }
+    void undo() override { applyState(d_old_long, d_old_units); }
+
+private:
+    QPointer<Table> d_tbl;
+    QPointer<Column> d_col;
+    int d_col_idx = -1;
+    QString d_old_long;
+    QString d_new_long;
+    QString d_old_units;
+    QString d_new_units;
+};
+
+void applyHorizontalBarCategoryHeadroom(Graph *g, int nRows, int nSeries)
+{
+    if (!g || !g->plotWidget() || nRows < 1)
+        return;
+    Plot *plt = g->plotWidget();
+    const int legRows = std::max(1, (std::max(1, nSeries) + 1) / 2);
+    const double topFrac = std::min(0.45, 0.13 * double(legRows) + 0.03);
+    const double topPadCats =
+            (nSeries >= 2) ? std::max(1.55, 0.45 + double(nRows) * topFrac / (1.0 - topFrac))
+                           : 0.60;
+    const double cLo = 0.45;
+    const double cHi = double(nRows) + topPadCats;
+    const bool isInv = plt->axisScaleEngine(QwtPlot::yLeft)
+            && plt->axisScaleEngine(QwtPlot::yLeft)->testAttribute(QwtScaleEngine::Inverted);
+    g->setScale(QwtPlot::yLeft, cLo, cHi, 1.0, std::min(std::max(nRows + 2, 4), 32), 0, 0, isInv);
+    g->setAxisUserLocked(QwtPlot::yLeft, true);
+
+    QwtValueList catMaj;
+    for (int i = 1; i <= nRows; ++i)
+        catMaj += double(i);
+    QwtValueList emptyTicks;
+    QwtValueList catTicks[QwtScaleDiv::NTickTypes];
+    catTicks[QwtScaleDiv::MinorTick] = emptyTicks;
+    catTicks[QwtScaleDiv::MediumTick] = emptyTicks;
+    catTicks[QwtScaleDiv::MajorTick] = catMaj;
+    auto *catEng = new QwtLinearScaleEngine();
+    QwtScaleDiv catDiv(cLo, cHi, catTicks);
+    if (isInv) {
+        catEng->setAttribute(QwtScaleEngine::Inverted);
+        catDiv.invert();
+    }
+    plt->setAxisMaxMinor(QwtPlot::yLeft, 0);
+    plt->setMinorTicksType(QwtPlot::yLeft, ScaleDraw::None);
+    plt->setAxisScaleEngine(QwtPlot::yLeft, catEng);
+    plt->setAxisScaleDiv(QwtPlot::yLeft, catDiv);
+    plt->updateLayout();
+}
+
 void applyColumnMetadataObject(Table *t, int colIdx, const QJsonObject &meta)
 {
     Column *col = t->column(colIdx);
     if (!col)
         return;
 
-    if (meta.contains(QStringLiteral("name")) && meta.value(QStringLiteral("name")).isString()) {
-        const QString newName = meta.value(QStringLiteral("name")).toString().trimmed();
-        if (!newName.isEmpty())
-            t->setColName(colIdx, newName);
+    // 1. Validate all metadata parameters upfront before opening any QUndoStack macro.
+    bool hasNewName = false;
+    QString newName;
+    if (meta.contains(QStringLiteral("name")) && !meta.value(QStringLiteral("name")).isNull()) {
+        newName = optionalJsonString(meta, QStringLiteral("name")).trimmed();
+        hasNewName = !newName.isEmpty() && (newName != t->colLabel(colIdx));
     }
-    if (meta.contains(QStringLiteral("long_name")))
-        t->setColLongName(colIdx, meta.value(QStringLiteral("long_name")).toString());
-    if (meta.contains(QStringLiteral("units")))
-        t->setColUnits(colIdx, meta.value(QStringLiteral("units")).toString());
-    if (meta.contains(QStringLiteral("comment")))
-        t->setColComment(colIdx, meta.value(QStringLiteral("comment")).toString());
-    if (meta.contains(QStringLiteral("plot_designation"))) {
-        const QString pdStr = meta.value(QStringLiteral("plot_designation")).toString().trimmed();
-        if (pdStr.compare(QStringLiteral("label"), Qt::CaseInsensitive) == 0
-            && col->columnMode() != SciDAVis::ColumnMode::Text) {
-            col->setColumnMode(SciDAVis::ColumnMode::Text);
+
+    const QString oldLong = t->colLongName(colIdx);
+    QString newLong = oldLong;
+    bool hasNewLong = false;
+    if (meta.contains(QStringLiteral("long_name"))
+        && !meta.value(QStringLiteral("long_name")).isNull()) {
+        newLong = optionalJsonString(meta, QStringLiteral("long_name"));
+        hasNewLong = (newLong != oldLong);
+    }
+
+    const QString oldUnits = t->colUnits(colIdx);
+    QString newUnits = oldUnits;
+    bool hasNewUnits = false;
+    if (meta.contains(QStringLiteral("units")) && !meta.value(QStringLiteral("units")).isNull()) {
+        newUnits = optionalJsonString(meta, QStringLiteral("units"));
+        hasNewUnits = (newUnits != oldUnits);
+    }
+
+    const QString oldComment = t->colComment(colIdx);
+    QString newComment = oldComment;
+    bool hasNewComment = false;
+    if (meta.contains(QStringLiteral("comment"))
+        && !meta.value(QStringLiteral("comment")).isNull()) {
+        newComment = optionalJsonString(meta, QStringLiteral("comment"));
+        hasNewComment = (newComment != oldComment);
+    }
+
+    bool hasNewMode = false;
+    SciDAVis::ColumnMode targetMode = col->columnMode();
+    if (meta.contains(QStringLiteral("mode")) && !meta.value(QStringLiteral("mode")).isNull()) {
+        const QString mStr = optionalJsonString(meta, QStringLiteral("mode")).trimmed().toLower();
+        if (mStr == QStringLiteral("text") || mStr == QStringLiteral("string")) {
+            targetMode = SciDAVis::ColumnMode::Text;
+            hasNewMode = (col->columnMode() != targetMode);
+        } else if (mStr == QStringLiteral("numeric") || mStr == QStringLiteral("double")
+                   || mStr == QStringLiteral("float") || mStr == QStringLiteral("number")) {
+            targetMode = SciDAVis::ColumnMode::Numeric;
+            hasNewMode = (col->columnMode() != targetMode);
+        } else if (mStr == QStringLiteral("datetime") || mStr == QStringLiteral("date")
+                   || mStr == QStringLiteral("time")) {
+            targetMode = SciDAVis::ColumnMode::DateTime;
+            hasNewMode = (col->columnMode() != targetMode);
+        } else if (mStr == QStringLiteral("month")) {
+            targetMode = SciDAVis::ColumnMode::Month;
+            hasNewMode = (col->columnMode() != targetMode);
+        } else if (mStr == QStringLiteral("day")) {
+            targetMode = SciDAVis::ColumnMode::Day;
+            hasNewMode = (col->columnMode() != targetMode);
+        } else if (!mStr.isEmpty()) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown column mode '%1' (expected numeric|text|datetime|month|day).")
+                            .arg(mStr));
         }
-        t->setColPlotDesignation(colIdx, parsePlotDesignation(pdStr, t->colPlotDesignation(colIdx)));
     }
+
+    bool hasNewPd = false;
+    bool forceLabelTextMode = false;
+    SciDAVis::PlotDesignation targetPd = t->colPlotDesignation(colIdx);
+    if (meta.contains(QStringLiteral("plot_designation"))
+        && !meta.value(QStringLiteral("plot_designation")).isNull()) {
+        const QString pdStr =
+                optionalJsonString(meta, QStringLiteral("plot_designation")).trimmed();
+        if (!pdStr.isEmpty()) {
+            const QString pdLower = pdStr.toLower();
+            const bool validPd = (pdLower == QStringLiteral("x") || pdLower == QStringLiteral("y")
+                                  || pdLower == QStringLiteral("z")
+                                  || pdLower == QStringLiteral("xerr")
+                                  || pdLower == QStringLiteral("x_err")
+                                  || pdLower == QStringLiteral("dx")
+                                  || pdLower == QStringLiteral("yerr")
+                                  || pdLower == QStringLiteral("y_err")
+                                  || pdLower == QStringLiteral("dy")
+                                  || pdLower == QStringLiteral("label")
+                                  || pdLower == QStringLiteral("none")
+                                  || pdLower == QStringLiteral("disregard")
+                                  || pdLower == QStringLiteral("nodesignation"));
+            if (!validPd) {
+                throwInvalidParams(
+                        QStringLiteral("Unknown plot_designation '%1' (expected X|Y|Z|xErr|yErr|Label|None).")
+                                .arg(pdStr));
+            }
+            if (pdLower == QStringLiteral("label")
+                && (hasNewMode ? targetMode : col->columnMode()) != SciDAVis::ColumnMode::Text) {
+                forceLabelTextMode = true;
+            }
+            targetPd = parsePlotDesignation(pdStr, t->colPlotDesignation(colIdx));
+            hasNewPd = (targetPd != t->colPlotDesignation(colIdx)) || forceLabelTextMode;
+        }
+    }
+
+    bool hasNewNumFmt = false;
+    char newNumFmtChar = 'g';
+    bool hasNewPrec = false;
+    int newPrecVal = 6;
     if (meta.contains(QStringLiteral("numeric_format"))
         || meta.contains(QStringLiteral("precision"))) {
-        if (auto *f = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
-            if (meta.contains(QStringLiteral("numeric_format"))) {
-                const QString fmt =
-                        meta.value(QStringLiteral("numeric_format")).toString().trimmed();
-                if (!fmt.isEmpty()) {
-                    const char fc = fmt.at(0).toLatin1();
-                    if (fc == 'f' || fc == 'e' || fc == 'E' || fc == 'g' || fc == 'G')
-                        f->setNumericFormat(fc);
+        if (meta.contains(QStringLiteral("numeric_format"))
+            && !meta.value(QStringLiteral("numeric_format")).isNull()) {
+            const QString fmt =
+                    optionalJsonString(meta, QStringLiteral("numeric_format")).trimmed();
+            if (!fmt.isEmpty()) {
+                const char fc = fmt.at(0).toLatin1();
+                if (fc == 'f' || fc == 'e' || fc == 'E' || fc == 'g' || fc == 'G') {
+                    newNumFmtChar = fc;
+                    hasNewNumFmt = true;
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Unsupported numeric_format '%1' (expected f|e|E|g|G).")
+                                    .arg(fmt));
                 }
             }
-            if (meta.contains(QStringLiteral("precision"))) {
-                f->setNumDigits(std::clamp(meta.value(QStringLiteral("precision")).toInt(6), 0, 16));
-            }
+        }
+        if (meta.contains(QStringLiteral("precision"))
+            && !meta.value(QStringLiteral("precision")).isNull()) {
+            newPrecVal = parseBoundedInt(meta, QStringLiteral("precision"), 6, 0, 16);
+            hasNewPrec = true;
+        }
+    }
+
+    const bool anyMetaMutation = hasNewName || hasNewLong || hasNewUnits || hasNewComment
+            || hasNewMode || hasNewPd || hasNewNumFmt || hasNewPrec;
+    if (!anyMetaMutation)
+        return;
+
+    struct ScopedMetaUndoMacro
+    {
+        future::Table *ft = nullptr;
+        ScopedMetaUndoMacro(future::Table *f, const QString &lbl) : ft(f)
+        {
+            if (ft && ft->undoStack())
+                ft->beginMacro(lbl);
+            else
+                ft = nullptr;
+        }
+        ~ScopedMetaUndoMacro()
+        {
+            if (ft)
+                ft->endMacro();
+        }
+    } metaMacro(t->d_future_table, QStringLiteral("Set Column Metadata"));
+
+    if (hasNewName)
+        t->setColName(colIdx, newName);
+
+    if (hasNewLong || hasNewUnits) {
+        QUndoStack *us = t->d_future_table ? t->d_future_table->undoStack() : nullptr;
+        if (us) {
+            us->push(new ColumnLongNameUnitsUndoCmd(t, col, colIdx, oldLong, newLong, oldUnits,
+                                                    newUnits));
+        } else {
+            if (hasNewLong)
+                t->setColLongName(colIdx, newLong);
+            if (hasNewUnits)
+                t->setColUnits(colIdx, newUnits);
+        }
+    }
+
+    if (hasNewComment)
+        t->setColComment(colIdx, newComment);
+
+    if (hasNewMode && col->columnMode() != targetMode)
+        col->setColumnMode(targetMode);
+
+    if (hasNewPd) {
+        if (forceLabelTextMode && col->columnMode() != SciDAVis::ColumnMode::Text)
+            col->setColumnMode(SciDAVis::ColumnMode::Text);
+        if (t->colPlotDesignation(colIdx) != targetPd)
+            t->setColPlotDesignation(colIdx, targetPd);
+    }
+
+    if (hasNewNumFmt || hasNewPrec) {
+        if (auto *f = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
+            if (hasNewNumFmt && f->numericFormat() != newNumFmtChar)
+                f->setNumericFormat(newNumFmtChar);
+            if (hasNewPrec && f->numDigits() != newPrecVal)
+                f->setNumDigits(newPrecVal);
         }
     }
 }
@@ -2627,92 +3476,184 @@ QJsonObject computeNumericStatsJson(std::vector<double> vals)
     return res;
 }
 
-double computeMatrixDeterminantHeadless(Matrix *m)
+// Pure-C++ partial-pivoting LU decomposition (eliminates GSL 0xC0000005 segfault on zero/singular matrices)
+struct PureLuResult
+{
+    int n = 0;
+    std::vector<double> lu;
+    std::vector<int> piv;
+    int signum = 1;
+    double norm1 = 0.0;
+    bool singular = false;
+};
+
+PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
 {
     const int n = m->numRows();
-    if (n <= 0 || n != m->numCols())
+    if (n <= 0 || n != m->numCols()) {
         throwInvalidParams(
-                QStringLiteral("Matrix '%1' must be square (%2x%3).")
+                QStringLiteral("Matrix '%1' must be square (%2x%3) for %4.")
                         .arg(m->name())
                         .arg(m->numRows())
-                        .arg(m->numCols()));
+                        .arg(m->numCols())
+                        .arg(opLabel));
+    }
+    if (n > 4096) {
+        throwInvalidParams(
+                QStringLiteral("Matrix '%1' (%2x%2) exceeds maximum %3 dimension (4096).")
+                        .arg(m->name())
+                        .arg(n)
+                        .arg(opLabel));
+    }
 
-    for (int r = 0; r < n; ++r) {
-        for (int c = 0; c < n; ++c) {
+    PureLuResult res;
+    res.n = n;
+    res.lu.resize(size_t(n) * size_t(n), 0.0);
+    res.piv.resize(size_t(n));
+    for (int i = 0; i < n; ++i)
+        res.piv[size_t(i)] = i;
+
+    for (int c = 0; c < n; ++c) {
+        double colAbsSum = 0.0;
+        for (int r = 0; r < n; ++r) {
             const double v = m->cell(r, c);
-            if (!std::isfinite(v)) {
+            if (!std::isfinite(v) || std::abs(v) > 1e300) {
                 throwInvalidParams(
-                        QStringLiteral("Matrix '%1' contains non-finite value (NaN/Inf) at (%2, %3); determinant is undefined.")
+                        QStringLiteral("Matrix '%1' contains non-finite or out-of-domain value at (%2, %3).")
                                 .arg(m->name())
                                 .arg(r)
                                 .arg(c));
             }
+            res.lu[size_t(r) * size_t(n) + size_t(c)] = v;
+            colAbsSum += std::abs(v);
         }
+        res.norm1 = std::max(res.norm1, colAbsSum);
     }
 
-    gsl_matrix *gm = gsl_matrix_alloc(size_t(n), size_t(n));
-    gsl_permutation *perm = gsl_permutation_alloc(size_t(n));
-    for (int r = 0; r < n; ++r) {
-        for (int c = 0; c < n; ++c) {
-            gsl_matrix_set(gm, size_t(r), size_t(c), m->cell(r, c));
+    if (res.norm1 == 0.0) {
+        res.singular = true;
+        return res;
+    }
+
+    const double pivTol = std::numeric_limits<double>::epsilon() * res.norm1;
+    for (int k = 0; k < n; ++k) {
+        int pivRow = k;
+        double maxAbs = std::abs(res.lu[size_t(k) * size_t(n) + size_t(k)]);
+        for (int i = k + 1; i < n; ++i) {
+            const double cand = std::abs(res.lu[size_t(i) * size_t(n) + size_t(k)]);
+            if (cand > maxAbs) {
+                maxAbs = cand;
+                pivRow = i;
+            }
+        }
+        if (maxAbs <= pivTol || !std::isfinite(maxAbs)) {
+            res.singular = true;
+            return res;
+        }
+        if (pivRow != k) {
+            for (int j = 0; j < n; ++j) {
+                std::swap(res.lu[size_t(k) * size_t(n) + size_t(j)],
+                          res.lu[size_t(pivRow) * size_t(n) + size_t(j)]);
+            }
+            std::swap(res.piv[size_t(k)], res.piv[size_t(pivRow)]);
+            res.signum = -res.signum;
+        }
+        const double diag = res.lu[size_t(k) * size_t(n) + size_t(k)];
+        for (int i = k + 1; i < n; ++i) {
+            const double mult = res.lu[size_t(i) * size_t(n) + size_t(k)] / diag;
+            res.lu[size_t(i) * size_t(n) + size_t(k)] = mult;
+            for (int j = k + 1; j < n; ++j) {
+                res.lu[size_t(i) * size_t(n) + size_t(j)] -=
+                        mult * res.lu[size_t(k) * size_t(n) + size_t(j)];
+            }
         }
     }
-    int signum = 0;
-    gsl_linalg_LU_decomp(gm, perm, &signum);
-    const double det = gsl_linalg_LU_det(gm, signum);
-    gsl_permutation_free(perm);
-    gsl_matrix_free(gm);
+    return res;
+}
+
+double computeMatrixDeterminantHeadless(Matrix *m)
+{
+    const PureLuResult lu = factorizeSquareMatrixPureLu(m, QStringLiteral("determinant"));
+    if (lu.singular)
+        return 0.0;
+    double det = double(lu.signum);
+    for (int i = 0; i < lu.n; ++i)
+        det *= lu.lu[size_t(i) * size_t(lu.n) + size_t(i)];
+    if (!std::isfinite(det)) {
+        throwRpcRuntime(
+                QStringLiteral("Matrix '%1' determinant overflowed IEEE-754 double range.")
+                        .arg(m->name()));
+    }
     return det;
 }
 
 void invertMatrixHeadless(ApplicationWindow *app, Matrix *m)
 {
-    const int n = m->numRows();
-    if (n <= 0 || n != m->numCols())
-        throwInvalidParams(
-                QStringLiteral("Matrix '%1' must be square to invert.").arg(m->name()));
-
-    for (int r = 0; r < n; ++r) {
-        for (int c = 0; c < n; ++c) {
-            const double v = m->cell(r, c);
-            if (!std::isfinite(v)) {
-                throwInvalidParams(
-                        QStringLiteral("Matrix '%1' contains non-finite value (NaN/Inf) at (%2, %3) and cannot be inverted.")
-                                .arg(m->name())
-                                .arg(r)
-                                .arg(c));
-            }
-        }
+    const PureLuResult lu = factorizeSquareMatrixPureLu(m, QStringLiteral("invert"));
+    const int n = lu.n;
+    if (lu.singular) {
+        throwRpcRuntime(
+                QStringLiteral("Matrix '%1' is singular and cannot be inverted.").arg(m->name()));
     }
 
-    gsl_matrix *gm = gsl_matrix_alloc(size_t(n), size_t(n));
-    gsl_matrix *inv = gsl_matrix_alloc(size_t(n), size_t(n));
-    gsl_permutation *perm = gsl_permutation_alloc(size_t(n));
-    for (int r = 0; r < n; ++r) {
-        for (int c = 0; c < n; ++c) {
-            gsl_matrix_set(gm, size_t(r), size_t(c), m->cell(r, c));
+    std::vector<double> inv(size_t(n) * size_t(n), 0.0);
+    std::vector<double> x(size_t(n), 0.0);
+    double invNorm1 = 0.0;
+
+    for (int col = 0; col < n; ++col) {
+        for (int i = 0; i < n; ++i)
+            x[size_t(i)] = (lu.piv[size_t(i)] == col) ? 1.0 : 0.0;
+        for (int i = 0; i < n; ++i) {
+            double s = x[size_t(i)];
+            for (int j = 0; j < i; ++j)
+                s -= lu.lu[size_t(i) * size_t(n) + size_t(j)] * x[size_t(j)];
+            x[size_t(i)] = s;
         }
-    }
-    int signum = 0;
-    gsl_linalg_LU_decomp(gm, perm, &signum);
-    const double det = gsl_linalg_LU_det(gm, signum);
-    if (!std::isfinite(det) || std::abs(det) < 1e-300) {
-        gsl_permutation_free(perm);
-        gsl_matrix_free(inv);
-        gsl_matrix_free(gm);
-        throwRpcRuntime(QStringLiteral("Matrix '%1' is singular and cannot be inverted.")
+        for (int i = n - 1; i >= 0; --i) {
+            double s = x[size_t(i)];
+            for (int j = i + 1; j < n; ++j)
+                s -= lu.lu[size_t(i) * size_t(n) + size_t(j)] * x[size_t(j)];
+            const double diag = lu.lu[size_t(i) * size_t(n) + size_t(i)];
+            if (diag == 0.0 || !std::isfinite(s / diag)) {
+                throwRpcRuntime(
+                        QStringLiteral("Matrix '%1' is singular and cannot be inverted.")
                                 .arg(m->name()));
+            }
+            x[size_t(i)] = s / diag;
+        }
+        double colAbsSum = 0.0;
+        for (int i = 0; i < n; ++i) {
+            if (!std::isfinite(x[size_t(i)])) {
+                throwRpcRuntime(
+                        QStringLiteral("Matrix '%1' is singular or ill-conditioned and cannot be inverted.")
+                                .arg(m->name()));
+            }
+            inv[size_t(i) * size_t(n) + size_t(col)] = x[size_t(i)];
+            colAbsSum += std::abs(x[size_t(i)]);
+        }
+        invNorm1 = std::max(invNorm1, colAbsSum);
     }
-    gsl_linalg_LU_invert(gm, perm, inv);
+
+    const double rcond = (lu.norm1 > 0.0 && invNorm1 > 0.0 && std::isfinite(invNorm1))
+            ? (1.0 / (lu.norm1 * invNorm1))
+            : 0.0;
+    if (!std::isfinite(rcond) || rcond < 1e-13 * double(n)) {
+        throwRpcRuntime(
+                QStringLiteral("Matrix '%1' is singular or numerically rank-deficient (rcond=%2) and cannot be inverted.")
+                        .arg(m->name())
+                        .arg(rcond, 0, 'e', 2));
+    }
+
+    if (m->d_future_matrix)
+        m->d_future_matrix->beginMacro(QObject::tr("%1: invert").arg(m->name()));
     for (int c = 0; c < n; ++c) {
         QVector<qreal> colVec(n);
         for (int r = 0; r < n; ++r)
-            colVec[r] = gsl_matrix_get(inv, size_t(r), size_t(c));
+            colVec[r] = inv[size_t(r) * size_t(n) + size_t(c)];
         m->d_future_matrix->setColumnCells(c, 0, n - 1, colVec);
     }
-    gsl_permutation_free(perm);
-    gsl_matrix_free(inv);
-    gsl_matrix_free(gm);
+    if (m->d_future_matrix)
+        m->d_future_matrix->endMacro();
     if (app)
         app->updateMatrixPlots(m);
 }
@@ -2742,13 +3683,21 @@ QString pageUnitToString(MultiLayer::PageUnit u)
 MultiLayer::PageUnit parsePageUnit(const QString &s)
 {
     const QString u = s.trimmed().toLower();
-    if (u == QStringLiteral("mm") || u == QStringLiteral("millimeter"))
+    if (u.isEmpty() || u == QStringLiteral("px") || u == QStringLiteral("pixel")
+        || u == QStringLiteral("pixels"))
+        return MultiLayer::UnitPx;
+    if (u == QStringLiteral("mm") || u == QStringLiteral("millimeter")
+        || u == QStringLiteral("millimeters"))
         return MultiLayer::UnitMm;
-    if (u == QStringLiteral("cm") || u == QStringLiteral("centimeter"))
+    if (u == QStringLiteral("cm") || u == QStringLiteral("centimeter")
+        || u == QStringLiteral("centimeters"))
         return MultiLayer::UnitCm;
     if (u == QStringLiteral("in") || u == QStringLiteral("inch") || u == QStringLiteral("inches"))
         return MultiLayer::UnitInch;
-    return MultiLayer::UnitPx;
+    throwInvalidParamsWithAvailable(
+            QStringLiteral("Unknown page size unit '%1'.").arg(s),
+            { QStringLiteral("px"), QStringLiteral("mm"), QStringLiteral("cm"),
+              QStringLiteral("inch") });
 }
 
 int parseAxisId(const QString &axisStr)
@@ -2773,11 +3722,28 @@ struct ScopedGraphUndoGuard
     QString beforeSnap;
     int countBefore = 0;
     int indexBefore = 0;
+    bool macroOpened = false;
 
-    ScopedGraphUndoGuard(MultiLayer *m, const QString &lbl) : ml(m), label(lbl)
+    ScopedGraphUndoGuard(MultiLayer *m, const QString &lbl, bool wrapMacro = false)
+        : ml(m), label(lbl)
     {
         if (ml && !ml->isRestoringSnapshot()) {
+            BatchExecutionContext &bctx = rpcBatchContext();
+            if (bctx.active) {
+                bctx.markDirtyMultiLayer(ml);
+                if (!bctx.hasSnapshotted(ml)) {
+                    const QString initSnap = ml->captureUndoSnapshot();
+                    if (QUndoStack *us = ml->undoStack())
+                        us->beginMacro(QStringLiteral("Batch Operations"));
+                    bctx.markSnapshotted(ml, initSnap);
+                }
+                return;
+            }
             if (QUndoStack *us = ml->undoStack()) {
+                if (wrapMacro) {
+                    us->beginMacro(label);
+                    macroOpened = true;
+                }
                 countBefore = us->count();
                 indexBefore = us->index();
             }
@@ -2785,9 +3751,47 @@ struct ScopedGraphUndoGuard
         }
     }
 
+    ~ScopedGraphUndoGuard()
+    {
+        if (macroOpened && ml) {
+            if (QUndoStack *us = ml->undoStack())
+                us->endMacro();
+            macroOpened = false;
+        }
+    }
+
+    void checkpointBeforeSubPush()
+    {
+        if (!macroOpened || !ml || ml->isRestoringSnapshot() || beforeSnap.isEmpty())
+            return;
+        ml->pushUndoSnapshot(label, beforeSnap);
+    }
+
+    void checkpointAfterSubPush()
+    {
+        if (!macroOpened || !ml || ml->isRestoringSnapshot())
+            return;
+        beforeSnap = ml->captureUndoSnapshot();
+    }
+
     void commit()
     {
-        if (!ml || ml->isRestoringSnapshot() || beforeSnap.isEmpty())
+        if (!ml || ml->isRestoringSnapshot())
+            return;
+        if (rpcBatchContext().active) {
+            beforeSnap.clear();
+            return;
+        }
+        if (macroOpened) {
+            if (!beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(label, beforeSnap);
+            if (QUndoStack *us = ml->undoStack())
+                us->endMacro();
+            macroOpened = false;
+            beforeSnap.clear();
+            return;
+        }
+        if (beforeSnap.isEmpty())
             return;
         if (QUndoStack *us = ml->undoStack()) {
             if (us->count() != countBefore || us->index() != indexBefore)
@@ -2919,11 +3923,11 @@ void applyRequestedWindowName(ApplicationWindow *app, MyWidget *w, const QJsonOb
         return;
     QString req;
     if (!explicitKey.isEmpty()) {
-        req = params.value(explicitKey).toString().trimmed();
+        req = optionalJsonString(params, explicitKey).trimmed();
     } else {
-        req = params.value(QStringLiteral("graph_name")).toString().trimmed();
+        req = optionalJsonString(params, QStringLiteral("graph_name")).trimmed();
         if (req.isEmpty())
-            req = params.value(QStringLiteral("name")).toString().trimmed();
+            req = optionalJsonString(params, QStringLiteral("name")).trimmed();
     }
     if (req.isEmpty())
         return;
@@ -4105,6 +5109,27 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
     plObj[QStringLiteral("pattern")] = ml->panelLabelPattern();
     plObj[QStringLiteral("font_pt")] = ml->panelLabelFontPt();
     gridObj[QStringLiteral("panel_labels")] = plObj;
+    if (!layers.isEmpty() && layers.first()) {
+        Graph *gFirst = layers.first();
+        out[QStringLiteral("is_polar")] = invokeGraphIsPolarPlot(gFirst);
+        out[QStringLiteral("is_ternary")] = gFirst->isTernaryPlot();
+        out[QStringLiteral("is_pie")] = gFirst->isPiePlot();
+        if (Grid *gr0 = gFirst->grid()) {
+            gridObj[QStringLiteral("x_major")] = gr0->xEnabled();
+            gridObj[QStringLiteral("y_major")] = gr0->yEnabled();
+            gridObj[QStringLiteral("x_minor")] = gr0->xMinEnabled();
+            gridObj[QStringLiteral("y_minor")] = gr0->yMinEnabled();
+        } else {
+            gridObj[QStringLiteral("x_major")] = false;
+            gridObj[QStringLiteral("y_major")] = false;
+            gridObj[QStringLiteral("x_minor")] = false;
+            gridObj[QStringLiteral("y_minor")] = false;
+        }
+    } else {
+        out[QStringLiteral("is_polar")] = false;
+        out[QStringLiteral("is_ternary")] = false;
+        out[QStringLiteral("is_pie")] = false;
+    }
     out[QStringLiteral("grid")] = gridObj;
 
     int activeIdx = -1;
@@ -4172,10 +5197,33 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             primaryLayerIndices.append(li);
         }
 
+        const bool isPolarLayer = invokeGraphIsPolarPlot(g);
+        const bool isTernaryLayer = g->isTernaryPlot();
+        const bool isPieLayer = g->isPiePlot();
+        const bool isNonCartesian = isPolarLayer || isTernaryLayer || isPieLayer;
+
         QJsonObject lObj;
         lObj[QStringLiteral("index")] = li;
         lObj[QStringLiteral("is_active")] = (li == activeIdx);
         lObj[QStringLiteral("role")] = role;
+        lObj[QStringLiteral("is_polar")] = isPolarLayer;
+        lObj[QStringLiteral("is_ternary")] = isTernaryLayer;
+        lObj[QStringLiteral("is_pie")] = isPieLayer;
+        {
+            QJsonObject lGridObj;
+            if (Grid *lgr = g->grid()) {
+                lGridObj[QStringLiteral("x_major")] = lgr->xEnabled();
+                lGridObj[QStringLiteral("y_major")] = lgr->yEnabled();
+                lGridObj[QStringLiteral("x_minor")] = lgr->xMinEnabled();
+                lGridObj[QStringLiteral("y_minor")] = lgr->yMinEnabled();
+            } else {
+                lGridObj[QStringLiteral("x_major")] = false;
+                lGridObj[QStringLiteral("y_major")] = false;
+                lGridObj[QStringLiteral("x_minor")] = false;
+                lGridObj[QStringLiteral("y_minor")] = false;
+            }
+            lObj[QStringLiteral("grid")] = lGridObj;
+        }
         lObj[QStringLiteral("layer_rect_px")] = rectToJsonArray(layerRectPx);
         lObj[QStringLiteral("canvas_rect_px")] = rectToJsonArray(canvasInMl);
         lObj[QStringLiteral("framed")] = g->framed();
@@ -4228,15 +5276,18 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
 
         auto inspectOneAxis = [&](int qwtAxis, const QString &axisKey) -> QJsonObject {
             QJsonObject ax = serializeAxisInfo(g, qwtAxis);
-            auto *sd = plt ? dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(qwtAxis)) : nullptr;
+            QwtScaleDraw *qwtSd = plt ? plt->axisScaleDraw(qwtAxis) : nullptr;
+            auto *sd = dynamic_cast<ScaleDraw *>(qwtSd);
             const bool enabled = plt ? plt->axisEnabled(qwtAxis) : false;
             const bool showLabels =
-                    enabled && sd && sd->hasComponent(QwtAbstractScaleDraw::Labels);
-            const bool showTicks = enabled && sd
-                    && (sd->majorTicksStyle() != ScaleDraw::None
-                        || sd->minorTicksStyle() != ScaleDraw::None);
+                    enabled && qwtSd && qwtSd->hasComponent(QwtAbstractScaleDraw::Labels);
+            const bool showTicks = enabled && qwtSd
+                    && (sd ? (sd->majorTicksStyle() != ScaleDraw::None
+                              || sd->minorTicksStyle() != ScaleDraw::None)
+                           : qwtSd->hasComponent(QwtAbstractScaleDraw::Ticks));
             ax[QStringLiteral("show_labels")] = showLabels;
             ax[QStringLiteral("show_ticks")] = showTicks;
+            ax[QStringLiteral("is_weibull_probability")] = g->hasWeibullProbabilityAxis(qwtAxis);
             ax[QStringLiteral("unit_format")] = layerUnitFmt;
             const int fmtInt = plt ? plt->axisLabelFormat(qwtAxis) : 0;
             QString fmtStr = QStringLiteral("auto");
@@ -4259,7 +5310,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                             != 0) {
                     allFontsArial = false;
                 }
-            } else {
+            } else if (!isNonCartesian) {
                 const QString disabledTitle = g->axisTitle(qwtAxis).trimmed();
                 if (!disabledTitle.isEmpty()) {
                     QJsonObject det;
@@ -4303,8 +5354,8 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                             continue;
                         majArr.append(safeJsonDouble(tv));
                         QString lblText;
-                        if (showLabels && sd)
-                            lblText = sd->label(tv).text().trimmed();
+                        if (showLabels && qwtSd)
+                            lblText = qwtSd->label(tv).text().trimmed();
                         lblArr.append(lblText);
                         if (showLabels && !lblText.isEmpty()) {
                             const double px = double(plt->transform(qwtAxis, tv));
@@ -4321,7 +5372,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                     ax[QStringLiteral("major_ticks")] = majArr;
                     ax[QStringLiteral("tick_labels")] = lblArr;
                 }
-                if (diagnose && tickBoxes.size() >= 2) {
+                if (diagnose && !isNonCartesian && tickBoxes.size() >= 2) {
                     std::sort(tickBoxes.begin(), tickBoxes.end(),
                               [](const TickBox &a, const TickBox &b) { return a.posPx < b.posPx; });
                     for (int ti = 0; ti + 1 < tickBoxes.size(); ++ti) {
@@ -4379,7 +5430,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             const QString yAxKey =
                     (yAx == QwtPlot::yRight) ? QStringLiteral("right") : QStringLiteral("y");
 
-            if (vis && !isErrCurve && plt) {
+            if (vis && !isErrCurve && !isNonCartesian && plt) {
                 if (!plt->axisEnabled(xAx)) {
                     QJsonObject det;
                     det[QStringLiteral("axis")] = xAxKey;
@@ -4442,6 +5493,16 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             const int nPts = static_cast<int>(c->dataSize());
             auto *dc = dynamic_cast<DataCurve *>(c);
             auto *pc = dynamic_cast<PlotCurve *>(c);
+            const bool checkMasks = (dc != nullptr) && dc->hasAnyMaskedPoints();
+            Column *maskXCol = nullptr;
+            Column *maskYCol = nullptr;
+            if (checkMasks)
+                dc->resolveColumns(maskXCol, maskYCol);
+            const bool checkLegOverlap =
+                    vis && !isErrCurve && legVis && plt && legLocalRect.isValid();
+            const QwtScaleMap xMap = checkLegOverlap ? plt->canvasMap(xAx) : QwtScaleMap();
+            const QwtScaleMap yMap = checkLegOverlap ? plt->canvasMap(yAx) : QwtScaleMap();
+            const bool hasLineSegs = (c->style() != QwtPlotCurve::NoCurve);
             int validPts = 0;
             int clippedPts = 0;
             int nonPosX = 0;
@@ -4454,7 +5515,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             bool hasPrevPx = false;
             QPoint prevPx;
             for (int k = 0; k < nPts; ++k) {
-                if (dc && dc->isPointMasked(k)) {
+                if (checkMasks && dc->isPointMaskedFast(k, maskXCol, maskYCol)) {
                     hasPrevPx = false;
                     continue;
                 }
@@ -4479,12 +5540,15 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                 if (outOfBounds)
                     ++clippedPts;
 
-                if (vis && !isErrCurve && legVis && plt && legLocalRect.isValid()
-                    && !outOfBounds) {
-                    const QPoint curPx(plt->transform(xAx, xv), plt->transform(yAx, yv));
+                if (checkLegOverlap && !outOfBounds) {
+                    const QPoint curPx(xMap.transform(xv), yMap.transform(yv));
                     if (legLocalRect.contains(curPx))
                         ++legendOverlapSamples;
-                    if (hasPrevPx && c->style() != QwtPlotCurve::NoCurve) {
+                    if (hasPrevPx && hasLineSegs
+                        && std::max(prevPx.x(), curPx.x()) >= legLocalRect.left()
+                        && std::min(prevPx.x(), curPx.x()) <= legLocalRect.right()
+                        && std::max(prevPx.y(), curPx.y()) >= legLocalRect.top()
+                        && std::min(prevPx.y(), curPx.y()) <= legLocalRect.bottom()) {
                         for (int s = 1; s <= 7; ++s) {
                             const double t = double(s) / 8.0;
                             const QPoint midPx(
@@ -4516,8 +5580,9 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                                         .arg(c->title().text())
                                         .arg(li),
                                 det);
-                } else if ((role != QStringLiteral("inset") && clippedFrac > 0.02)
-                           || (role == QStringLiteral("inset") && clippedFrac >= 1.0)) {
+                } else if (!isNonCartesian
+                           && ((role != QStringLiteral("inset") && clippedFrac > 0.02)
+                               || (role == QStringLiteral("inset") && clippedFrac >= 1.0))) {
                     QJsonObject det;
                     det[QStringLiteral("curve")] = c->title().text();
                     det[QStringLiteral("clipped_fraction")] = safeJsonDouble(clippedFrac);
@@ -4579,7 +5644,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             cObj[QStringLiteral("symbol_style")] = int(c->symbol().style());
             cObj[QStringLiteral("symbol_size")] = c->symbol().size().width();
             cObj[QStringLiteral("symbol_hollow")] = Graph::isSymbolWhiteHollow(c->symbol());
-            cObj[QStringLiteral("symbol_skip")] = pc ? pc->symbolSkip() : 1;
+            cObj[QStringLiteral("symbol_skip")] = pc ? std::max(1, pc->symbolSkip()) : 1;
             if (dc) {
                 cObj[QStringLiteral("x_column")] = dc->xColumnName();
                 cObj[QStringLiteral("y_column")] = dc->yColumnName();
@@ -4656,21 +5721,28 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
 
         QJsonArray bandsArr;
         {
+            const int directBandCount = invokeGraphShadedBandCount(g);
             const QString savedG = g->saveToString();
-            static const QRegularExpression rxBand(
-                    QStringLiteral("<ToriRefLine\\s+kind=\"band\"([^>]*)/>"));
+            const QStringList savedLines = savedG.split(QLatin1Char('\n'));
             static const QRegularExpression rxAttr(
                     QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
-            auto it = rxBand.globalMatch(savedG);
             int bi = 0;
-            while (it.hasNext()) {
-                const QString attrChunk = it.next().captured(1);
+            for (const QString &rawLn : savedLines) {
+                const QString ln = rawLn.trimmed();
+                if (!ln.startsWith(QStringLiteral("<ToriRefLine")) || !ln.endsWith(QStringLiteral("/>")))
+                    continue;
+                if (!ln.contains(QStringLiteral("kind=\"band\"")))
+                    continue;
                 QMap<QString, QString> am;
-                auto ait = rxAttr.globalMatch(attrChunk);
+                auto ait = rxAttr.globalMatch(ln);
                 while (ait.hasNext()) {
                     const auto m = ait.next();
                     am.insert(m.captured(1), m.captured(2));
                 }
+                if (am.value(QStringLiteral("kind")) != QStringLiteral("band"))
+                    continue;
+                if (directBandCount >= 0 && bi >= directBandCount)
+                    break;
                 const QStringList xs = am.value(QStringLiteral("x")).split(
                         QLatin1Char(','), Qt::SkipEmptyParts);
                 QJsonObject bObj;
@@ -4680,8 +5752,17 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                 bObj[QStringLiteral("points")] = xs.size();
                 bandsArr.append(bObj);
             }
+            while (directBandCount > bandsArr.size()) {
+                QJsonObject bObj;
+                bObj[QStringLiteral("index")] = bandsArr.size();
+                bObj[QStringLiteral("color")] = QString();
+                bObj[QStringLiteral("label")] = QString();
+                bObj[QStringLiteral("points")] = 0;
+                bandsArr.append(bObj);
+            }
         }
         lObj[QStringLiteral("shaded_bands")] = bandsArr;
+        lObj[QStringLiteral("shaded_band_count")] = bandsArr.size();
 
         QJsonArray textArr;
         const QVector<int> txtKeys = g->textMarkerKeys();
@@ -4695,7 +5776,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
                                tmLocal.width(), tmLocal.height());
             QJsonObject tObj;
             tObj[QStringLiteral("id")] = tid;
-            tObj[QStringLiteral("index")] = tIdx++;
+            tObj[QStringLiteral("index")] = tIdx;
             tObj[QStringLiteral("text")] = tm->text();
             tObj[QStringLiteral("x")] = safeJsonDouble(tm->xValue());
             tObj[QStringLiteral("y")] = safeJsonDouble(tm->yValue());
@@ -4706,6 +5787,169 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             tObj[QStringLiteral("angle")] = tm->angle();
             if (tm->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
                 allFontsArial = false;
+
+            if (diagnose && tm->isVisible() && tmLocal.isValid() && !tm->text().trimmed().isEmpty()) {
+                static const QRegularExpression kOutsidePanelBadgeRx(
+                        QStringLiteral("^\\s*\\([A-Za-z0-9]{1,2}\\)\\s*$"));
+                const int canvasW = (plt && plt->canvas() && plt->canvas()->width() > 4)
+                        ? plt->canvas()->width()
+                        : localCanvas.width();
+                const int canvasH = (plt && plt->canvas() && plt->canvas()->height() > 4)
+                        ? plt->canvas()->height()
+                        : localCanvas.height();
+                const QRect safeCanvasLocal(1, 1, std::max(1, canvasW - 2),
+                                            std::max(1, canvasH - 2));
+                const bool isOutsidePanelBadge =
+                        kOutsidePanelBadgeRx.match(tm->text().trimmed()).hasMatch()
+                        && (tmLocal.left() < 0 || tmLocal.top() < 0);
+                if (!isNonCartesian && canvasW >= 20 && canvasH >= 20 && !isOutsidePanelBadge
+                    && !safeCanvasLocal.contains(tmLocal)) {
+                    QJsonObject det;
+                    det[QStringLiteral("marker_id")] = tid;
+                    det[QStringLiteral("marker_index")] = tIdx;
+                    det[QStringLiteral("text")] = tm->text();
+                    det[QStringLiteral("callout_bbox_px")] = rectToJsonArray(tmInMl);
+                    det[QStringLiteral("canvas_bbox_px")] = rectToJsonArray(canvasInMl);
+                    pushWarning(
+                            QStringLiteral("CALLOUT_CLIPPED_BY_CANVAS"),
+                            QStringLiteral("warning"), li,
+                            QStringLiteral("Text callout '%1' on layer %2 extends outside the plot canvas bounds.")
+                                    .arg(tm->text().simplified().left(40))
+                                    .arg(li),
+                            det);
+                }
+                if (legVis && legLocalRect.isValid() && tmLocal.intersects(legLocalRect)) {
+                    QJsonObject det;
+                    det[QStringLiteral("marker_id")] = tid;
+                    det[QStringLiteral("marker_index")] = tIdx;
+                    det[QStringLiteral("text")] = tm->text();
+                    det[QStringLiteral("callout_bbox_px")] = rectToJsonArray(tmInMl);
+                    det[QStringLiteral("legend_bbox_px")] = rectToJsonArray(legInMl);
+                    pushWarning(
+                            QStringLiteral("CALLOUT_OVERLAPS_LEGEND"), QStringLiteral("warning"),
+                            li,
+                            QStringLiteral("Text callout '%1' on layer %2 overlaps the legend box.")
+                                    .arg(tm->text().simplified().left(40))
+                                    .arg(li),
+                            det);
+                }
+                if (plt) {
+                    int calloutHits = 0;
+                    for (int ci2 = 0; ci2 < g->curves(); ++ci2) {
+                        QwtPlotCurve *c2 = g->curve(ci2);
+                        if (!c2 || !g->isCurveVisible(ci2))
+                            continue;
+                        if (g->curveType(ci2) == Graph::ErrorBars
+                            || dynamic_cast<QwtErrorPlotCurve *>(c2) != nullptr)
+                            continue;
+                        const int xAx2 =
+                                (c2->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop : QwtPlot::xBottom;
+                        const int yAx2 =
+                                (c2->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
+                        const QwtScaleMap xMap2 = plt->canvasMap(xAx2);
+                        const QwtScaleMap yMap2 = plt->canvasMap(yAx2);
+                        auto *dc2 = dynamic_cast<DataCurve *>(c2);
+                        const bool checkMasks2 = (dc2 != nullptr) && dc2->hasAnyMaskedPoints();
+                        Column *maskXCol2 = nullptr;
+                        Column *maskYCol2 = nullptr;
+                        if (checkMasks2)
+                            dc2->resolveColumns(maskXCol2, maskYCol2);
+                        const QList<DataCurve *> errList2 = dc2 ? dc2->errorBarsList()
+                                                                : QList<DataCurve *>();
+                        const bool hasErr2 = !errList2.isEmpty();
+                        const bool hasLineSegs2 = (c2->style() != QwtPlotCurve::NoCurve);
+                        const QRect padTm = tmLocal.adjusted(-3, -3, 3, 3);
+                        const int n2 = static_cast<int>(c2->dataSize());
+                        bool hasPrev2 = false;
+                        QPoint prev2;
+                        for (int k2 = 0; k2 < n2; ++k2) {
+                            if (checkMasks2 && dc2->isPointMaskedFast(k2, maskXCol2, maskYCol2)) {
+                                hasPrev2 = false;
+                                continue;
+                            }
+                            const double xv2 = c2->x(k2);
+                            const double yv2 = c2->y(k2);
+                            if (!std::isfinite(xv2) || !std::isfinite(yv2)) {
+                                hasPrev2 = false;
+                                continue;
+                            }
+                            const QPoint cur2(xMap2.transform(xv2), yMap2.transform(yv2));
+                            if (padTm.contains(cur2))
+                                ++calloutHits;
+                            if (hasErr2) {
+                                for (DataCurve *ebBase2 : errList2) {
+                                    auto *ec2 = dynamic_cast<QwtErrorPlotCurve *>(ebBase2);
+                                    if (!ec2 || k2 >= ec2->dataSize())
+                                        continue;
+                                    const double ev2 = std::abs(ec2->errorValue(k2));
+                                    if (!std::isfinite(ev2) || ev2 <= 0.0)
+                                        continue;
+                                    const int halfCap = std::max(3, ec2->capLength() / 2);
+                                    if (ec2->xErrors()) {
+                                        const int pxLo = xMap2.transform(
+                                                ec2->minusSide() ? (xv2 - ev2) : xv2);
+                                        const int pxHi = xMap2.transform(
+                                                ec2->plusSide() ? (xv2 + ev2) : xv2);
+                                        const QRect ebBox(std::min(pxLo, pxHi), cur2.y() - halfCap,
+                                                          std::max(1, std::abs(pxHi - pxLo)),
+                                                          2 * halfCap + 1);
+                                        if (padTm.intersects(ebBox))
+                                            ++calloutHits;
+                                    } else {
+                                        const int pyLo = yMap2.transform(
+                                                ec2->minusSide() ? (yv2 - ev2) : yv2);
+                                        const int pyHi = yMap2.transform(
+                                                ec2->plusSide() ? (yv2 + ev2) : yv2);
+                                        const QRect ebBox(cur2.x() - halfCap, std::min(pyLo, pyHi),
+                                                          2 * halfCap + 1,
+                                                          std::max(1, std::abs(pyHi - pyLo)));
+                                        if (padTm.intersects(ebBox))
+                                            ++calloutHits;
+                                    }
+                                }
+                            }
+                            if (hasPrev2 && hasLineSegs2
+                                && std::max(prev2.x(), cur2.x()) >= tmLocal.left()
+                                && std::min(prev2.x(), cur2.x()) <= tmLocal.right()
+                                && std::max(prev2.y(), cur2.y()) >= tmLocal.top()
+                                && std::min(prev2.y(), cur2.y()) <= tmLocal.bottom()) {
+                                for (int s = 1; s <= 7; ++s) {
+                                    const double t = double(s) / 8.0;
+                                    const QPoint mid2(
+                                            qRound((1.0 - t) * double(prev2.x())
+                                                   + t * double(cur2.x())),
+                                            qRound((1.0 - t) * double(prev2.y())
+                                                   + t * double(cur2.y())));
+                                    if (tmLocal.contains(mid2)) {
+                                        ++calloutHits;
+                                        break;
+                                    }
+                                }
+                            }
+                            prev2 = cur2;
+                            hasPrev2 = true;
+                        }
+                    }
+                    tObj[QStringLiteral("curve_overlap_points")] = calloutHits;
+                    if (calloutHits > 0) {
+                        QJsonObject det;
+                        det[QStringLiteral("marker_id")] = tid;
+                        det[QStringLiteral("marker_index")] = tIdx;
+                        det[QStringLiteral("text")] = tm->text();
+                        det[QStringLiteral("curve_overlap_points")] = calloutHits;
+                        det[QStringLiteral("callout_bbox_px")] = rectToJsonArray(tmInMl);
+                        pushWarning(
+                                QStringLiteral("CALLOUT_OVERLAPS_DATA"),
+                                QStringLiteral("warning"), li,
+                                QStringLiteral("Text callout '%1' on layer %2 overlaps plotted curve geometry (%3 sample hits).")
+                                        .arg(tm->text().simplified().left(40))
+                                        .arg(li)
+                                        .arg(calloutHits),
+                                det);
+                    }
+                }
+            }
+            ++tIdx;
             textArr.append(tObj);
         }
         lObj[QStringLiteral("text_markers")] = textArr;
@@ -4876,11 +6120,14 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
     QColor col = pen.color();
     const bool hasColor = applyColor && params.contains(QStringLiteral("color"))
             && !params.value(QStringLiteral("color")).isNull()
-            && !params.value(QStringLiteral("color")).toString().trimmed().isEmpty();
+            && !(params.value(QStringLiteral("color")).isString()
+                 && params.value(QStringLiteral("color")).toString().trimmed().isEmpty());
     if (hasColor)
         col = parseColorValue(params.value(QStringLiteral("color")), col);
     if (params.contains(QStringLiteral("alpha")) && !params.value(QStringLiteral("alpha")).isNull()) {
-        const double rawA = params.value(QStringLiteral("alpha")).toDouble(255.0);
+        const double rawA =
+                parseFiniteCoordDouble(params.value(QStringLiteral("alpha")),
+                                       QStringLiteral("alpha"));
         const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
                                                       : std::clamp(int(rawA), 0, 255);
         col.setAlpha(a255);
@@ -4897,7 +6144,7 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
     else if (params.contains(QStringLiteral("lw")) && !params.value(QStringLiteral("lw")).isNull())
         lwVal = params.value(QStringLiteral("lw"));
     if (!lwVal.isUndefined() && !lwVal.isNull())
-        pen.setWidthF(std::max(0.0, lwVal.toDouble(1.5)));
+        pen.setWidthF(std::max(0.0, parseFiniteCoordDouble(lwVal, QStringLiteral("line_width"))));
 
     QJsonValue lsVal;
     if (params.contains(QStringLiteral("line_style"))
@@ -4943,7 +6190,9 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
         if (!symTypeVal.isUndefined() && !symTypeVal.isNull())
             sym.setStyle(parseQwtSymbolStyle(symTypeVal, sym.style()));
         if (!symSizeVal.isUndefined() && !symSizeVal.isNull()) {
-            const int sz = std::max(1, qRound(symSizeVal.toDouble(7.0)));
+            const int sz = std::clamp(
+                    qRound(parseFiniteCoordDouble(symSizeVal, QStringLiteral("symbol_size"))), 1,
+                    200);
             sym.setSize(sz, sz);
         } else if (!symTypeVal.isUndefined() && sym.style() != QwtSymbol::NoSymbol
                    && sym.size().width() <= 0) {
@@ -4971,7 +6220,7 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
     if (hasSymbolHollow || hasSymbolFill) {
         bool wantHollow = false;
         if (hasSymbolHollow) {
-            wantHollow = params.value(QStringLiteral("symbol_hollow")).toBool(false);
+            wantHollow = optionalJsonBool(params, QStringLiteral("symbol_hollow"), false);
         } else {
             const QJsonValue sf = params.value(QStringLiteral("symbol_fill"));
             if (sf.isBool()) {
@@ -4980,6 +6229,9 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
                 const QString sfs = sf.toString().trimmed().toLower();
                 wantHollow = (sfs == QStringLiteral("hollow") || sfs == QStringLiteral("white")
                               || sfs == QStringLiteral("none") || sfs == QStringLiteral("false"));
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("Parameter 'symbol_fill' must be a boolean or string."));
             }
         }
         g->setCurveSymbolHollow(cIdx, wantHollow);
@@ -4987,16 +6239,13 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
 
     if (params.contains(QStringLiteral("symbol_skip"))
         && !params.value(QStringLiteral("symbol_skip")).isNull()) {
-        const int skip = parseStrictJsonInt(params.value(QStringLiteral("symbol_skip")),
-                                            QStringLiteral("symbol_skip"));
-        if (skip < 1)
-            throwInvalidParams(QStringLiteral("Parameter 'symbol_skip' must be >= 1."));
+        const int skip = parseBoundedInt(params, QStringLiteral("symbol_skip"), 1, 0, 100000);
         if (auto *pc = dynamic_cast<PlotCurve *>(g->curve(cIdx)))
-            pc->setSymbolSkip(skip);
+            pc->setSymbolSkip(skip == 0 ? 1 : skip);
     }
 
     if (params.contains(QStringLiteral("label")) && !params.value(QStringLiteral("label")).isNull()) {
-        const QString customLbl = params.value(QStringLiteral("label")).toString().trimmed();
+        const QString customLbl = optionalJsonString(params, QStringLiteral("label")).trimmed();
         if (!customLbl.isEmpty()) {
             if (QwtPlotCurve *cur = g->curve(cIdx))
                 cur->setTitle(customLbl);
@@ -5024,43 +6273,49 @@ void applyPlotLevelConvenienceParams(Graph *g, const QJsonObject &params)
         return;
     Plot *plt = g->plotWidget();
     if (params.contains(QStringLiteral("title")) && !params.value(QStringLiteral("title")).isNull()) {
-        const QString titleTxt = params.value(QStringLiteral("title")).toString();
+        const QString titleTxt = optionalJsonString(params, QStringLiteral("title"));
         g->setTitle(titleTxt);
         QFont tf(QStringLiteral("Arial"), 12, QFont::Normal, false);
         tf.setHintingPreference(QFont::PreferNoHinting);
         g->setTitleFont(tf);
     }
-    const QString xLbl = params.contains(QStringLiteral("xlabel"))
-            ? params.value(QStringLiteral("xlabel")).toString()
-            : (params.contains(QStringLiteral("x_title"))
-                       ? params.value(QStringLiteral("x_title")).toString()
-                       : QString());
-    if (params.contains(QStringLiteral("xlabel")) || params.contains(QStringLiteral("x_title"))) {
+    const bool hasXLabel =
+            params.contains(QStringLiteral("xlabel")) && !params.value(QStringLiteral("xlabel")).isNull();
+    const bool hasXTitle =
+            params.contains(QStringLiteral("x_title")) && !params.value(QStringLiteral("x_title")).isNull();
+    if (hasXLabel || hasXTitle) {
+        const QString xLbl = hasXLabel ? optionalJsonString(params, QStringLiteral("xlabel"))
+                                       : optionalJsonString(params, QStringLiteral("x_title"));
         g->setAxisTitleAuto(QwtPlot::xBottom, false);
         g->setXAxisTitle(xLbl);
     }
-    const QString yLbl = params.contains(QStringLiteral("ylabel"))
-            ? params.value(QStringLiteral("ylabel")).toString()
-            : (params.contains(QStringLiteral("y_title"))
-                       ? params.value(QStringLiteral("y_title")).toString()
-                       : QString());
-    if (params.contains(QStringLiteral("ylabel")) || params.contains(QStringLiteral("y_title"))) {
+    const bool hasYLabel =
+            params.contains(QStringLiteral("ylabel")) && !params.value(QStringLiteral("ylabel")).isNull();
+    const bool hasYTitle =
+            params.contains(QStringLiteral("y_title")) && !params.value(QStringLiteral("y_title")).isNull();
+    if (hasYLabel || hasYTitle) {
+        const QString yLbl = hasYLabel ? optionalJsonString(params, QStringLiteral("ylabel"))
+                                       : optionalJsonString(params, QStringLiteral("y_title"));
         g->setAxisTitleAuto(QwtPlot::yLeft, false);
         g->setYAxisTitle(yLbl);
     }
     auto applyLimArray = [&](int qwtAxis, const QString &key) {
-        if (!params.contains(key) || !params.value(key).isArray())
+        if (!params.contains(key) || params.value(key).isNull() || params.value(key).isUndefined())
             return;
+        if (!params.value(key).isArray()) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter '%1' must be a 2-element numeric [min, max] list.")
+                            .arg(key));
+        }
         const QJsonArray a = params.value(key).toArray();
         if (a.size() != 2 || !a[0].isDouble() || !a[1].isDouble())
             throwInvalidParams(
                     QStringLiteral("Parameter '%1' must be a 2-element numeric [min, max] list.")
                             .arg(key));
-        const double lo = a[0].toDouble();
-        const double hi = a[1].toDouble();
-        if (!std::isfinite(lo) || !std::isfinite(hi) || lo == hi)
-            throwInvalidParams(
-                    QStringLiteral("Parameter '%1' requires finite distinct [min, max].").arg(key));
+        const double lo = parseFiniteCoordDouble(a[0], key);
+        const double hi = parseFiniteCoordDouble(a[1], key);
+        validateFiniteCoordRange(lo, hi, QStringLiteral("Parameter '%1'").arg(key),
+                                 g->axisStep(qwtAxis));
         const int maj = plt ? std::max(4, plt->axisMaxMajor(qwtAxis)) : 8;
         const int scType = (plt
                             && dynamic_cast<const QwtLog10ScaleEngine *>(
@@ -5078,7 +6333,7 @@ void applyPlotLevelConvenienceParams(Graph *g, const QJsonObject &params)
     applyLimArray(QwtPlot::xBottom, QStringLiteral("xlim"));
     applyLimArray(QwtPlot::yLeft, QStringLiteral("ylim"));
     enforceArialGraphFonts(g);
-    g->replot();
+    replotGraphOrDefer(g);
 }
 
 void sanitizeAllProjectFunctionCurves(ApplicationWindow *app)
@@ -5127,6 +6382,11 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "method:str=''; domain:str=''", "app.describe_api(domain='graph')" },
     { "app.new_project", "app", "Session.new_project()",
       "Reset the workspace in-place to a clean empty project.", "", "app.new_project()" },
+    { "app.batch", "app",
+      "Session.batch(*, atomic=True, stop_on_error=True, defer_replot=True)",
+      "Execute an atomic pipeline of RPC commands with '$prev.<key>' and '$steps[k].<key>' token interpolation, coalesced undo/replot, and automatic workspace rollback on error.",
+      "commands:list[dict]*; stop_on_error:bool=true; atomic:bool=true; defer_replot:bool=true",
+      "with app.batch(atomic=True) as b:\n    t = app.create_table(rows=10, cols=2)" },
     { "app.open_project", "app", "Session.open_project(path, *, append=False)",
       "Open a .sciprj/.sciprj.gz project (or append it as a subfolder when append=True).",
       "path:str*; append:bool=false", "app.open_project('study.sciprj')" },
@@ -5135,12 +6395,20 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "path:str*; compress:bool=false", "app.save_project('study.sciprj')" },
     { "app.import_csv", "app",
       "Session.import_csv(path, *, separator=None, encoding='auto', header=True, units_row=None, skip_lines=0, numeric=True, name=None)",
-      "Import CSV/TSV/ASCII or Rigaku .ras data with UTF-8/UTF-16/Shift-JIS auto-decoding, RFC 4180 quotes, 2-row [Name, Units] auto-promotion, and 'Name (Unit)' header parsing.",
+      "Import CSV/TSV/ASCII, headerless .xy/.xye, or Rigaku .ras data with UTF-8/UTF-16/Shift-JIS auto-decoding, RFC 4180 quotes, 2-row [Name, Units] auto-promotion, and 'Name (Unit)' header parsing.",
       "path:str*; separator:str=''; encoding:str='auto'[auto|utf-8|shift_jis|utf-16]; header:bool=true; units_row:int|bool|null=null; skip_lines:int=0; strip_spaces:bool=true; simplify_spaces:bool=false; numeric:bool=true; with_comments:bool=false; name:str=''",
       "t = app.import_csv('tensile_sjis.csv', encoding='auto')" },
     { "app.import_opj", "app", "Session.import_opj(path, *, codec=None)",
-      "Import an Origin .opj/.opju project file into the workspace.",
+      "Import an Origin .opj project file into the workspace (detects Origin 2018+ CPYU .opju with clear guidance).",
       "path:str*; codec:str=''", "app.import_opj('legacy.opj')" },
+    { "app.list_sample_datasets", "app", "Session.list_sample_datasets(category=None)",
+      "List built-in curated Materials Science & physics sample datasets (Arrhenius, DP980 tensile, FCC Cu XRD, TiO2 Tauc, LiFePO4 EIS, DSC Kissinger, Si bands).",
+      "category:str=''", "app.list_sample_datasets()" },
+    { "app.load_sample_dataset", "app",
+      "Session.load_sample_dataset(dataset_id='fe_c_arrhenius', *, auto_plot=True, preset=None)",
+      "Load a built-in curated scientific sample dataset into a worksheet/matrix and optionally create a publication-styled plot.",
+      "id:str='fe_c_arrhenius'; auto_plot:bool=true; preset:str=''",
+      "res = app.load_sample_dataset('dp980_tensile', auto_plot=True)" },
     { "app.list_windows", "app", "Session.list_windows(window_type=None)",
       "List open workspace windows (optionally filtered by Table, Matrix, MultiLayer, Graph3D, Note).",
       "type:str=''", "app.list_windows('MultiLayer')" },
@@ -5149,18 +6417,18 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "app.window_info('Graph1')" },
     { "app.activate_window", "app", "Session.activate_window(name)",
       "Activate the specified MDI window by name.", "name:str*", "app.activate_window('Table1')" },
-    { "app.rename_window", "app", "Session.rename_window(name, new_name)",
+    { "app.rename_window", "app", "Session.rename_window(name, new_name, *, old_name=None)",
       "Rename an existing window (ASCII letters, digits, '-' and '_').",
-      "name:str*; new_name:str*", "app.rename_window('Table1', 'Tensile-Raw')" },
+      "name:str=''; old_name:str=''; new_name:str*", "app.rename_window('Table1', 'Tensile-Raw')" },
     { "app.close_window", "app", "Session.close_window(name)",
       "Close and delete a named window without confirmation prompts.", "name:str*",
       "app.close_window('Table1')" },
     { "app.clone_window", "app", "Session.clone_window(name, *, new_name=None)",
       "Duplicate an existing Table, Matrix, or Graph window.",
       "name:str*; new_name:str=''", "app.clone_window('Graph1', new_name='Graph1-Copy')" },
-    { "app.set_language", "app", "Session.set_language(lang)",
+    { "app.set_language", "app", "Session.set_language(language=None, *, lang=None)",
       "Switch UI/translation language between Japanese ('ja') and English ('en').",
-      "language:str*[ja|en]", "app.set_language('en')" },
+      "language:str='ja'[ja|en]; lang:str=''", "app.set_language('en')" },
     { "app.get_language", "app", "Session.get_language()",
       "Return active application language ('ja' or 'en').", "", "app.get_language()" },
     { "app.set_recalc_mode", "app", "Session.set_recalc_mode(mode)",
@@ -5190,7 +6458,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.trigger_action", "app", "Session.trigger_action(name, *, checked=None)",
       "Trigger a non-modal QAction or 0-arg slot (interactive modal dialogs are safely blocked).",
       "name:str*; checked:bool=null", "app.trigger_action('actionNextWindow')" },
-    { "app.grab_gui_diagnostic", "app", "Session.call('app.grab_gui_diagnostic', path=...)",
+    { "app.grab_gui_diagnostic", "app", "Session.call(method='app.grab_gui_diagnostic', path='')",
       "Capture main-window screenshot and ribbon/dock geometry diagnostics.",
       "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0",
       "app.call('app.grab_gui_diagnostic', path='ui.png')" },
@@ -5219,9 +6487,11 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Write an array of numeric or text values (None/NaN stored as invalid cells) and optional metadata.",
       "table:str=''; col:int|str*; data:list*; mode:str=''; units:str=''; long_name:str=''; plot_designation:str=''",
       "tbl.set_col('Strain', [0.0, 0.2, 0.5], units='%', plot_designation='X')" },
-    { "table.get_column_data", "table", "TableProxy.get_col(col)",
-      "Read column values (null for invalid/NaN cells) and row mask flags.",
-      "table:str=''; col:int|str*", "vals = tbl.get_col('Stress')" },
+    { "table.get_column_data", "table",
+      "TableProxy.get_col(col, *, compact=False, include_masked=True)",
+      "Read column values (null for invalid/NaN cells) and sparse/dense row mask metadata.",
+      "table:str=''; col:int|str*; compact:bool=false; include_masked:bool=true",
+      "vals = tbl.get_col('Stress')" },
     { "table.set_data_dict", "table",
       "TableProxy.set_data_dict(data, *, units=None, long_names=None, designations=None, comments=None)",
       "Populate multiple named columns in one call with units, long_names, and plot designations.",
@@ -5230,7 +6500,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "table.paste_tsv", "table",
       "TableProxy.paste_tsv(text=None, *, header=True, separator=None, units_row=None, start_row=0, start_col=0)",
       "Paste TSV/CSV text (or system clipboard) into a worksheet with automatic separator, 2-row [Name, Units], and 'Name (Unit)' header promotion.",
-      "table:str=''; text:str=''; header:bool=true; separator:str=''; units_row:int|bool|null=null; start_row:int=0; start_col:int=0; name:str=''",
+      "table:str=''; text:str=''; tsv:str=''; header:bool=true; separator:str=''; units_row:int|bool|null=null; start_row:int=0; start_col:int=0; name:str=''",
       "tbl.paste_tsv('Strain (%)\\tStress (MPa)\\n0.0\\t0.0\\n0.2\\t410.0')" },
     { "table.set_cell", "table", "TableProxy.set_cell(row, col, value)",
       "Set a single cell value (None/'NaN'/'' on a numeric column clears the cell to NaN without flipping column mode to text).",
@@ -5244,8 +6514,10 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Update column name, Long Name, Units, Comment, plot designation, mode, or numeric format.",
       "table:str=''; col:int|str*; name:str=''; long_name:str=''; units:str=''; comment:str=''; plot_designation:str=''; mode:str=''",
       "tbl.set_meta('Stress', long_name='Engineering Stress', units='MPa')" },
-    { "table.set_col_metadata", "table", "TableProxy.set_meta(col, ...)",
-      "Alias of table.set_column_meta.", "table:str=''; col:int|str*; long_name:str=''; units:str=''",
+    { "table.set_col_metadata", "table",
+      "TableProxy.set_meta(col, *, long_name=None, units=None)",
+      "Alias of table.set_column_meta.",
+      "table:str=''; col:int|str*; name:str=''; long_name:str=''; units:str=''; comment:str=''; plot_designation:str=''; mode:str=''",
       "tbl.set_meta(1, units='MPa')" },
     { "table.get_column_meta", "table", "TableProxy.get_meta(col)",
       "Return column metadata (name, mode, plot_designation, long_name, units, comment, formula).",
@@ -5277,9 +6549,11 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "table.column_stats", "table", "TableProxy.column_stats(col=None, *, ignore_masked=True)",
       "Compute descriptive statistics (n, mean, sd, se, min, q1, median, q3, iqr, max, sum) per column.",
       "table:str=''; col:int|str=null; ignore_masked:bool=true", "tbl.column_stats('Stress')" },
-    { "table.row_stats", "table", "TableProxy.row_stats(rows=None)",
+    { "table.row_stats", "table",
+      "TableProxy.row_stats(rows=None, *, start_row=None, end_row=None)",
       "Compute descriptive statistics across numeric columns for each row.",
-      "table:str=''; rows:list[int]=null", "tbl.row_stats([0, 1, 2])" },
+      "table:str=''; rows:list[int]=null; start_row:int=null; end_row:int=null",
+      "tbl.row_stats([0, 1, 2])" },
     { "table.export_csv", "table", "TableProxy.export_csv(path, *, separator=',', header=True, with_comments=False)",
       "Export worksheet contents to an RFC 4180 UTF-8 CSV or TSV file.",
       "table:str=''; path:str*; separator:str=','; header:bool=true; with_comments:bool=false",
@@ -5340,82 +6614,101 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
 
     // 4. Plotting (plot.*)
     { "plot.xy", "plot",
-      "Session.plot_xy(table, x_col=None, y_cols=None, *, style='line_symbol', graph_name=None, title=None, xlabel=None, ylabel=None, xlim=None, ylim=None, color=None, lw=None, ls=None, marker=None, ms=None, symbol_skip=None)",
-      "Create a 2D XY plot (line, scatter, line_symbol, spline, area, vertical_bars, steps, stem) with optional inline curve styling and axis/title kwargs.",
-      "table:str*; x_col:int|str=null; y_cols:list|str=null; style:str='line_symbol'[line|scatter|line_symbol|spline|vertical_bars|horizontal_bars|area|vertical_steps|horizontal_steps|drop_lines]; graph_name:str=''; title:str=''; xlabel:str=''; ylabel:str=''; xlim:list[float]=null; ylim:list[float]=null; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
+      "Session.plot_xy(table=None, x_col=None, y_cols=None, *, style='line_symbol', y_err_cols=None, graph_name=None, title=None, xlabel=None, ylabel=None, xlim=None, ylim=None, color=None, lw=None, ls=None, marker=None, ms=None, symbol_skip=None)",
+      "Create a 2D XY plot (line, scatter, line_symbol, spline, area, vertical_bars, steps, stem; auto-applies category labels when X column is text) with optional per-series error bars and inline curve styling.",
+      "table:str=''; x_col:int|str=null; y_cols:list|str=null; y_err_col:int|str=null; y_err_cols:list=null; style:str='line_symbol'[line|scatter|line_symbol|spline|vertical_bars|horizontal_bars|area|vertical_steps|horizontal_steps|drop_lines]; bar_gap:int=null; graph_name:str=''; title:str=''; xlabel:str=''; ylabel:str=''; xlim:list[float]=null; ylim:list[float]=null; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
       "g = app.plot_xy(tbl, 'Strain', ['Stress'], style='line', lw=2.0, color='#0072B2')" },
     { "plot.stacked_bars", "plot",
-      "Session.plot_stacked_bars(table, x_col=None, y_cols=None, *, horizontal=False, percent_100=False)",
-      "Create a stacked vertical or horizontal bar/column chart (optionally 100% normalized).",
-      "table:str*; x_col:int|str=null; y_cols:list*; horizontal:bool=false; percent_100:bool=false; graph_name:str=''",
-      "g = app.plot_stacked_bars(tbl, 'Sample', ['PhaseA', 'PhaseB'])" },
+      "Session.plot_stacked_bars(table=None, x_col=None, y_cols=None, *, horizontal=False, percent_100=False)",
+      "Create a stacked vertical or horizontal bar/column chart (supports text category X columns and percent_100=True 0..100% normalization).",
+      "table:str=''; x_col:int|str=null; y_cols:list=null; horizontal:bool=false; percent_100:bool=false; graph_name:str=''",
+      "g = app.plot_stacked_bars(tbl, 'Sample', ['PhaseA', 'PhaseB'], percent_100=True)" },
     { "plot.add_curve", "plot",
       "GraphProxy.add_curve(table, y_col, *, x_col=None, style='line_symbol', layer=None, right_axis=False, color=None, lw=None, ls=None, marker=None, ms=None, symbol_skip=None)",
       "Add a data curve onto an existing graph layer (supports inline matplotlib style kwargs).",
-      "graph:str*; table:str*; y_col:int|str*; x_col:int|str=null; style:str='line_symbol'; layer:int=null; right_axis:bool=false; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
+      "graph:str=''; table:str=''; y_col:int|str*; x_col:int|str=null; style:str='line_symbol'; layer:int=null; right_axis:bool=false; color:str=''; lw:float=null; ls:str=''; marker:str=''; ms:int=null; symbol_skip:int=null",
       "g.add_curve(tbl, 'Stress_300C', x_col='Strain', ls='--', color='#D55E00')" },
-    { "plot.remove_curve", "plot", "GraphProxy.remove_curve(curve, *, layer=None)",
+    { "plot.remove_curve", "plot", "GraphProxy.remove_curve(curve=0, *, layer=None)",
       "Remove a curve from a graph layer by title or 0-based index.",
-      "graph:str*; curve:int|str*; layer:int=null", "g.remove_curve(0)" },
+      "graph:str=''; curve:int|str=0; layer:int=null", "g.remove_curve(0)" },
     { "plot.add_error_bars", "plot",
       "GraphProxy.add_error_bars(err_col, *, curve=None, table=None, direction='y', layer=None)",
       "Attach X or Y error bars from a worksheet column to an existing curve.",
-      "graph:str*; err_col:int|str*; curve:int|str=null; table:str=''; direction:str='y'[x|y]; layer:int=null",
+      "graph:str=''; err_col:int|str*; curve:int|str=null; table:str=''; direction:str='y'[x|y]; layer:int=null",
       "g.add_error_bars('Stress_SD', curve='Stress')" },
     { "plot.double_y", "plot",
-      "Session.plot_double_y(table, x_col, y_left_col, y_right_col, *, graph_name=None)",
+      "Session.plot_double_y(table=None, x_col=None, y_left_col=None, y_right_col=None, *, graph_name=None)",
       "Create a dual-Y-axis plot with left and right Y curves.",
-      "table:str*; x_col:int|str*; y_left_col:int|str*; y_right_col:int|str*; graph_name:str=''",
+      "table:str=''; x_col:int|str=null; y_left_col:int|str=null; y_right_col:int|str=null; graph_name:str=''",
       "g = app.plot_double_y(tbl, 'Time', 'Temp', 'Load')" },
-    { "plot.waterfall", "plot", "Session.plot_waterfall(table, *, x_col=None, y_cols=None, offset_x=10, offset_y=20)",
-      "Create an offset waterfall multi-curve plot (e.g. XRD / Raman temperature series).",
-      "table:str*; x_col:int|str=null; y_cols:list=null; offset_x:float=10; offset_y:float=20",
-      "g = app.plot_waterfall(tbl, 'TwoTheta', ['300K', '500K', '700K'])" },
-    { "plot.histogram", "plot", "Session.plot_histogram(table, col, *, bins=None, graph_name=None)",
-      "Plot a frequency histogram from a numeric column.",
-      "table:str*; col:int|str*; bins:int=null; graph_name:str=''",
-      "g = app.plot_histogram(tbl, 'GrainSize_um', bins=20)" },
-    { "plot.box", "plot", "Session.plot_box(table, cols, *, graph_name=None)",
+    { "plot.waterfall", "plot",
+      "Session.plot_waterfall(table=None, *, x_col=None, y_cols=None, offset_x=0.0, offset_y=15.0)",
+      "Create an offset waterfall multi-curve plot (e.g. XRD / Raman temperature series, top-to-bottom legend order).",
+      "table:str=''; x_col:int|str=null; y_cols:list=null; offset_x:float=0.0; offset_y:float=15.0; x_offset_pct:float=0.0; y_offset_pct:float=15.0; normalize:bool=false; graph_name:str=''",
+      "g = app.plot_waterfall(tbl, x_col='TwoTheta', y_cols=['300K', '500K', '700K'])" },
+    { "plot.histogram", "plot",
+      "Session.plot_histogram(table=None, col=None, *, bins=None, bin_size=None, stacked=False, overlay_pdf=False, graph_name=None)",
+      "Plot a frequency histogram from one or more numeric columns with optional custom bins, stacked panels, and Normal PDF overlay.",
+      "table:str=''; col:int|str=null; cols:list=null; bins:int=null; bin_size:float=null; bin_min:float=null; bin_max:float=null; stacked:bool=false; overlay_pdf:bool|str=false; graph_name:str=''",
+      "g = app.plot_histogram(tbl, 'GrainSize_um', bins=20, overlay_pdf=True)" },
+    { "plot.box", "plot",
+      "Session.plot_box(table=None, cols=None, *, notched=False, whisker_mode='1.5iqr', show_points=False, graph_name=None)",
       "Create a statistical box-and-whisker plot across one or more columns.",
-      "table:str*; cols:list*; graph_name:str=''", "g = app.plot_box(tbl, ['BatchA', 'BatchB'])" },
-    { "plot.violin", "plot", "Session.plot_violin(table, cols, *, graph_name=None)",
+      "table:str=''; cols:list=null; notched:bool=false; whisker_mode:str='1.5iqr'[1.5iqr|sd|se|minmax|p5_95]; show_points:bool=false; graph_name:str=''",
+      "g = app.plot_box(tbl, ['BatchA', 'BatchB'])" },
+    { "plot.violin", "plot",
+      "Session.plot_violin(table=None, cols=None, *, show_points=False, graph_name=None)",
       "Create a kernel-density violin plot across numeric columns.",
-      "table:str*; cols:list*; graph_name:str=''", "g = app.plot_violin(tbl, ['BatchA', 'BatchB'])" },
-    { "plot.pareto", "plot", "Session.plot_pareto(table, category_col, value_col)",
-      "Create a Pareto bar + cumulative percentage curve chart.",
-      "table:str*; category_col:int|str*; value_col:int|str*",
+      "table:str=''; cols:list=null; show_points:bool=false; graph_name:str=''",
+      "g = app.plot_violin(tbl, ['BatchA', 'BatchB'])" },
+    { "plot.pareto", "plot",
+      "Session.plot_pareto(table=None, category_col=None, value_col=None, *, graph_name=None)",
+      "Create a sorted Pareto bar + cumulative percentage curve chart with category X labels.",
+      "table:str=''; category_col:int|str=null; value_col:int|str=null; graph_name:str=''",
       "g = app.plot_pareto(tbl, 'DefectType', 'Count')" },
-    { "plot.qq", "plot", "Session.plot_qq(table, col)",
+    { "plot.qq", "plot", "Session.plot_qq(table=None, col=None, *, graph_name=None)",
       "Create a Normal Q-Q probability plot for a numeric column.",
-      "table:str*; col:int|str*", "g = app.plot_qq(tbl, 'Strength')" },
-    { "plot.pie", "plot", "Session.plot_pie(table, col, *, label_col=None)",
+      "table:str=''; col:int|str=null; graph_name:str=''", "g = app.plot_qq(tbl, 'Strength')" },
+    { "plot.pie", "plot", "Session.plot_pie(table=None, col=None, *, label_col=None, graph_name=None)",
       "Create a 2D pie chart from positive numeric values.",
-      "table:str*; col:int|str*; label_col:int|str=null", "g = app.plot_pie(tbl, 'Fraction')" },
-    { "plot.vectors", "plot", "Session.plot_vectors(table, x_col, y_col, u_col, v_col, *, mode='xyxy')",
+      "table:str=''; col:int|str=null; label_col:int|str=null; graph_name:str=''",
+      "g = app.plot_pie(tbl, 'Fraction')" },
+    { "plot.vectors", "plot",
+      "Session.plot_vectors(table=None, x_col=None, y_col=None, u_col=None, v_col=None, *, mode='xyxy')",
       "Create a 2D vector field plot ('xyxy' endpoints or 'xyam' angle/magnitude).",
-      "table:str*; x_col:int|str*; y_col:int|str*; u_col:int|str*; v_col:int|str*; mode:str='xyxy'[xyxy|xyam]",
+      "table:str=''; x_col:int|str=null; y_col:int|str=null; u_col:int|str=null; v_col:int|str=null; mode:str='xyxy'[xyxy|xyam]; color:str=''; lw:float=null; head_length:int=null; head_angle:int=null; graph_name:str=''",
       "g = app.plot_vectors(tbl, 'X', 'Y', 'X2', 'Y2', mode='xyxy')" },
-    { "plot.ternary", "plot", "Session.plot_ternary(table, a_col, b_col, c_col)",
+    { "plot.ternary", "plot",
+      "Session.plot_ternary(table=None, a_col=None, b_col=None, c_col=None, *, graph_name=None)",
       "Create a ternary phase diagram from three compositional columns (A + B + C).",
-      "table:str*; a_col:int|str*; b_col:int|str*; c_col:int|str*",
+      "table:str=''; a_col:int|str=null; b_col:int|str=null; c_col:int|str=null; graph_name:str=''",
       "g = app.plot_ternary(tbl, 'Fe', 'Cr', 'Ni')" },
-    { "plot.function", "plot", "Session.plot_function(formula, *, x_min=0.0, x_max=10.0, points=200)",
-      "Plot an analytical 2D function f(x), parametric (x(t), y(t)), or polar r(t).",
-      "formula:str|list*; x_min:float=0.0; x_max:float=10.0; points:int=200; type:str='normal'[normal|parametric|polar]",
+    { "plot.polar", "plot",
+      "Session.plot_polar(table=None, theta_col=0, r_cols=None, *, theta_in_radians=False, graph_name=None)",
+      "Create a 2D polar coordinate plot (theta, r) with circular radial & angular grid rings.",
+      "table:str=''; theta_col:int|str=null; r_col:int|str=null; r_cols:list=null; theta:list[float]=null; r:list[float]=null; theta_in_radians:bool=false; radians:bool=false; style:str='line_symbol'; color:str=''; lw:float=null; graph_name:str=''",
+      "g = app.plot_polar(tbl, 'Angle_deg', 'Gain')" },
+    { "plot.function", "plot",
+      "Session.plot_function(formula, *, x_min=0.0, x_max=10.0, points=200, type='normal')",
+      "Plot an analytical 2D function f(x), parametric [x(t), y(t)], or polar r(t).",
+      "formula:str|list*; x_min:float=0.0; x_max:float=10.0; points:int=200; type:str='normal'[normal|parametric|polar]; variable:str='x'; graph:str=''; graph_name:str=''",
       "g = app.plot_function('sin(x)/x', x_min=0.1, x_max=20.0)" },
-    { "plot.matrix", "plot", "Session.plot_matrix(matrix, *, style='colormap', palette='viridis')",
-      "Plot a 2D Matrix as a colormap heatmap, contour map, or image.",
-      "matrix:str*; style:str='colormap'[colormap|contour|gray|image]; palette:str='viridis'",
+    { "plot.matrix", "plot",
+      "Session.plot_matrix(matrix=None, *, style='colormap', palette='viridis', colormap=None, levels=None)",
+      "Plot a 2D Matrix as a colormap heatmap, contour map, or grayscale image.",
+      "matrix:str=''; style:str='colormap'[colormap|contour|gray|image]; palette:str='viridis'; colormap:str=''; levels:int=null; use_colormap_pen:bool=null; show_colorbar:bool=true; colorbar_title:str=''; graph_name:str=''",
       "g = app.plot_matrix(m, style='colormap', palette='viridis')" },
-    { "plot.3d_matrix", "plot", "Session.plot_3d_matrix(matrix, *, style='surface')",
+    { "plot.3d_matrix", "plot", "Session.plot_3d_matrix(matrix=None, *, style='surface')",
       "Create an interactive 3D surface/mesh/bars plot from a Matrix.",
-      "matrix:str*; style:str='surface'[surface|wireframe|hidden_line|bars|scatter]",
+      "matrix:str=''; style:str='surface'[surface|wireframe|hidden_line|bars|scatter]",
       "g3 = app.plot_3d_matrix(m, style='surface')" },
-    { "plot.3d_xyz", "plot", "Session.plot_3d_xyz(table, x_col, y_col, z_col, *, style='scatter')",
-      "Create a 3D XYZ scatter, trajectory, or bar plot from three worksheet columns.",
-      "table:str*; x_col:int|str*; y_col:int|str*; z_col:int|str*; style:str='scatter'[scatter|trajectory|bars]",
+    { "plot.3d_xyz", "plot",
+      "Session.plot_3d_xyz(table=None, x_col=None, y_col=None, z_col=None, *, style='scatter')",
+      "Create a 3D XYZ scatter, trajectory, bar, or ribbon plot from worksheet columns.",
+      "table:str=''; x_col:int|str=null; y_col:int|str=null; z_col:int|str=null; style:str='scatter'[scatter|trajectory|bars|ribbon]",
       "g3 = app.plot_3d_xyz(tbl, 'X', 'Y', 'Z')" },
-    { "plot.3d_function", "plot", "Session.plot_3d_function(formula, *, x_min=-5, x_max=5, y_min=-5, y_max=5)",
+    { "plot.3d_function", "plot",
+      "Session.plot_3d_function(formula, *, x_min=-5, x_max=5, y_min=-5, y_max=5)",
       "Create a 3D analytical surface z = f(x, y).",
       "formula:str*; x_min:float=-5; x_max:float=5; y_min:float=-5; y_max:float=5",
       "g3 = app.plot_3d_function('sin(x)*cos(y)')" },
@@ -5444,14 +6737,15 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Add a zoomed inset layer over a parent ROI while keeping parent active_layer intact.",
       "graph:str=''; source_layer:int=0; x_min:float=null; x_max:float=null; y_min:float=null; y_max:float=null; rel_x:float=0.55; rel_y:float=0.10; rel_w:float=0.38; rel_h:float=0.38; show_connectors:bool=true",
       "g.add_inset(x_min=0.0, x_max=0.5, y_min=0.0, y_max=450.0, show_connectors=True)" },
-    { "graph.add_inset", "graph", "GraphProxy.add_inset(...)",
+    { "graph.add_inset", "graph",
+      "GraphProxy.add_inset(*, source_layer=0, x_min=None, x_max=None, y_min=None, y_max=None, show_connectors=True)",
       "Alias of graph.add_inset_layer.",
       "graph:str=''; source_layer:int=0; x_min:float=null; x_max:float=null; y_min:float=null; y_max:float=null; show_connectors:bool=true",
       "g.add_inset(x_min=0.0, x_max=0.5)" },
     { "graph.arrange_layers", "graph",
       "GraphProxy.arrange_layers(rows=1, cols=1, *, row_spacing=None, col_spacing=None, share_x=False, share_y=False)",
       "Arrange primary layers into a rows x cols multi-panel grid.",
-      "graph:str=''; rows:int=1; cols:int=1; row_spacing:int=null; col_spacing:int=null; left_margin:int=null; right_margin:int=null; top_margin:int=null; bottom_margin:int=null; fit:bool=true",
+      "graph:str=''; rows:int=1; cols:int=1; row_spacing:int=null; col_spacing:int=null; left_margin:int=null; right_margin:int=null; top_margin:int=null; bottom_margin:int=null; share_x:bool=false; share_y:bool=false; fit:bool=false",
       "g.arrange_layers(rows=2, cols=2)" },
     { "graph.merge_graphs", "graph",
       "Session.merge_graphs(graphs, *, rows=0, cols=0, name=None, panel_labels=True)",
@@ -5474,8 +6768,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; preset:str='isij_85mm'[isij_85mm|nature_89mm|slide_28pt]",
       "g.apply_style_preset('isij_85mm')" },
     { "graph.apply_frame_preset", "graph", "GraphProxy.apply_frame_preset(preset='box_inward', *, layer=None)",
-      "Apply 4-wall box + inward ticks ('box_inward'), open L-axes ('open_l'), or 'top_right_off'.",
-      "graph:str=''; preset:str='box_inward'[box_inward|open_l|top_right_off]; layer:int=null",
+      "Apply 4-wall box + inward ticks ('box_inward'/'box'), plain box ('box_plain'), open L-axes ('open_l'/'top_right_off'), or origin-crossed ('zero_crossed').",
+      "graph:str=''; preset:str='box_inward'[box_inward|box|box_plain|open_l|top_right_off|zero_crossed]; layer:int=null",
       "g.apply_frame_preset('box_inward')" },
     { "graph.set_aspect_ratio", "graph", "GraphProxy.set_aspect_ratio(ratio=1.0, *, keep=True)",
       "Lock or set target canvas width/height aspect ratio.",
@@ -5488,25 +6782,30 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "g2.paste_format()" },
     { "graph.batch_clone", "graph", "GraphProxy.batch_clone(tables, *, x_col=None, y_cols=None)",
       "Clone a formatted template graph across multiple data tables.",
-      "graph:str*; tables:list[str]*; x_col:int|str=null; y_cols:list=null",
+      "graph:str=''; tables:list[str]*; x_col:int|str=null; y_cols:list=null",
       "g.batch_clone(['Tbl2', 'Tbl3'])" },
     { "graph.set_title", "graph", "GraphProxy.set_title(title='', *, font_size=None, color=None, layer=None)",
       "Set or clear the layer plot title (enforcing non-bold Arial).",
       "graph:str=''; title:str=''; font_size:int=null; color:str=''; layer:int=null",
       "g.set_title('SUS304 Room-Temperature Tensile')" },
     { "graph.set_axis", "graph",
-      "GraphProxy.set_axis(axis='x', *, title=None, min=None, max=None, lim=None, step=None, scale=None, show_labels=None, show_ticks=None, unit_format=None, tick_format=None, precision=None, label_rotation=None, layer=None)",
-      "Configure axis title, limits (min/max or lim), linear/log10 scale, tick/label visibility, unit format ('paren'|'slash'|'bracket'), numeric tick format, precision, and rotation.",
-      "graph:str=''; axis:str='x'[x|y|top|right]; title:str=null; min:float=null; max:float=null; lim:list[float]=null; step:float=null; scale:str=null[linear|log10]; inverted:bool=null; enabled:bool=null; show_labels:bool=null; show_ticks:bool=null; ticks_inward:bool=null; unit_format:str=null[paren|slash|bracket]; tick_format:str=null[auto|f|e|superscript]; precision:int=null; label_rotation:int=null; layer:int=null",
+      "GraphProxy.set_axis(axis='x', *, title=None, min=None, max=None, lim=None, step=None, scale=None, title_font_size=None, numbers_font_size=None, show_labels=None, show_ticks=None, ticks_inward=None, unit_format=None, tick_format=None, precision=None, label_rotation=None, categories=None, layer=None)",
+      "Configure axis title, limits (min/max or lim), linear/log10 scale, title/tick font sizes, tick/label visibility, unit format ('paren'|'slash'|'bracket'), numeric tick format, precision, rotation, and category labels.",
+      "graph:str=''; axis:str='x'[x|y|top|right]; title:str=null; min:float=null; max:float=null; lim:list[float]=null; step:float=null; minor_ticks:int=null; scale:str=null[linear|log10]; inverted:bool=null; enabled:bool=null; backbone_visible:bool=null; show_backbone:bool=null; color:str=null; axis_color:str=null; title_color:str=null; numbers_color:str=null; font_family:str=null; font_size:int=null; title_font_size:int=null; tick_font_size:int=null; numbers_font_size:int=null; show_labels:bool=null; show_ticks:bool=null; ticks_inward:bool=null; unit_format:str=null[paren|slash|bracket]; tick_format:str|int=null[auto|f|e|superscript]; precision:int=null; label_rotation:float=null; rotation:float=null; categories:list[str]=null; layer:int=null",
       "g.set_axis('x', title='Strain (%)', lim=[0, 25], unit_format='paren')" },
+    { "graph.set_category_labels", "graph",
+      "GraphProxy.set_category_labels(labels, *, axis='x', layer=None)",
+      "Assign discrete text category tick labels at integer coordinates 1..N on a graph axis.",
+      "graph:str=''; axis:str='x'[x|y|top|right]; labels:list[str]*; layer:int=null",
+      "g.set_category_labels(['SUS304', 'DP980', 'Ti-6Al-4V'], axis='x')" },
     { "graph.sync_axis_color", "graph", "GraphProxy.sync_axis_color(axis='right', *, curve=None, reset=False, layer=None)",
       "Colorize an axis backbone, ticks, numbers, and title to match a curve (typical for double-Y plots).",
       "graph:str=''; axis:str='right'[x|y|top|right]; curve:int|str=null; reset:bool=false; layer:int=null",
       "g.sync_axis_color('right', curve=1)" },
     { "graph.set_axis_break", "graph",
-      "GraphProxy.set_axis_break(axis='x', *, enabled=True, start=None, end=None, position_pct=50.0, layer=None)",
+      "GraphProxy.set_axis_break(axis='x', *, enabled=True, start=None, end=None, position_pct=50.0, log_before=None, log_after=None, layer=None)",
       "Enable or disable a discontinuous scale break on an axis.",
-      "graph:str=''; axis:str='x'[x|y|top|right]; enabled:bool=true; start:float=null; end:float=null; position_pct:float=50.0; layer:int=null",
+      "graph:str=''; axis:str='x'[x|y|top|right]; enabled:bool=true; start:float=null; end:float=null; position_pct:float=50.0; log_before:bool=null; log_after:bool=null; layer:int=null",
       "g.set_axis_break('x', start=5.0, end=45.0)" },
     { "graph.step_zoom_history", "graph", "GraphProxy.step_zoom_history(direction='back', *, layer=None)",
       "Step backward or forward through interactive/RPC axis zoom history.",
@@ -5526,7 +6825,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "graph.add_shaded_band", "graph",
       "GraphProxy.add_shaded_band(x, y_low, y_high, *, color='#4C78A8', alpha=55, label='', layer=None)",
       "Add a translucent shaded confidence/tolerance band polygon.",
-      "graph:str=''; x:list[float]*; y_low:list[float]*; y_high:list[float]*; color:str='#4C78A8'; alpha:int=55; label:str=''; layer:int=null",
+      "graph:str=''; x:list[float]*; y_low:list[float]*; y_high:list[float]*; color:str='#4C78A8'; alpha:float=55; label:str=''; layer:int=null",
       "g.add_shaded_band([0, 10], [95, 95], [105, 105], label='95% CI')" },
     { "graph.set_grid", "graph", "GraphProxy.set_grid(*, x_major=False, y_major=False, x_minor=False, y_minor=False, layer=None)",
       "Configure major and minor X/Y grid lines.",
@@ -5535,7 +6834,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "graph.set_curve_style", "graph",
       "GraphProxy.set_curve_style(curve=0, *, color=None, line_width=None, lw=None, line_style=None, ls=None, symbol_style=None, marker=None, symbol_size=None, ms=None, symbol_hollow=None, symbol_skip=None, alpha=None, layer=None)",
       "Set curve color, line width/style ('-','--',':','-.'), marker shape ('o','s','^','v','D','x','+','none'), size, hollow fill, and N-th symbol decimation (symbol_skip).",
-      "graph:str=''; curve:int|str=0; color:str=''; line_width:float=null; lw:float=null; line_style:str=null[-|--|:|-.|solid|dash|dot|dashdot|none]; ls:str=null; symbol_style:str=null[o|s|^|v|<|>|D|x|+|*|h|none]; marker:str=null; symbol_size:int=null; ms:int=null; symbol_hollow:bool=null; symbol_skip:int=null; alpha:int=null; layer:int=null",
+      "graph:str=''; curve:int|str=0; color:str=''; line_width:float=null; lw:float=null; line_style:str|int=null[-|--|:|-.|solid|dash|dot|dashdot|none]; ls:str|int=null; symbol_style:str|int=null[o|s|^|v|<|>|D|x|+|*|h|none]; marker:str|int=null; symbol_size:float=null; ms:float=null; symbol_hollow:bool=null; symbol_skip:int=null; alpha:float=null; layer:int=null",
       "g.set_curve_style(0, color='#0072B2', lw=2.0, ls='-', marker='o', ms=6, symbol_skip=10)" },
     { "graph.set_curve_visible", "graph", "GraphProxy.set_curve_visible(curve, visible=True, *, layer=None)",
       "Show or hide a curve without deleting it.",
@@ -5553,19 +6852,20 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Apply multi-curve publication styling scheme ('okabe_ito', 'bw_hollow_filled', 'blue_red_hollow', 'muted_categorical', 'cool_to_warm', 'viridis', 'origin_classic').",
       "graph:str=''; scheme:str='okabe_ito'[okabe_ito|bw_hollow_filled|blue_red_hollow|muted_categorical|cool_to_warm|viridis|origin_classic]; group_size:int=2; layer:int=null",
       "g.apply_series_scheme('okabe_ito')" },
-    { "graph.apply_palette", "graph", "GraphProxy.apply_palette(palette='Okabe-Ito', *, sequential=False, layer=None)",
+    { "graph.apply_palette", "graph",
+      "GraphProxy.apply_palette(palette='okabe_ito', *, sequential=False, apply_to_symbols=True, layer=None)",
       "Apply a named colorblind-safe or journal color palette across curves.",
-      "graph:str=''; palette:str*[Okabe-Ito|Paul Tol Bright|Paul Tol Muted|ISIJ Monochrome|Nature NPG|Science AAAS|Viridis|Plasma|Inferno|Cividis|CoolWarm]; sequential:bool=false; layer:int=null",
-      "g.apply_palette('Okabe-Ito')" },
+      "graph:str=''; palette:str='okabe_ito'[okabe_ito|Okabe-Ito|Paul Tol Bright|Paul Tol Muted|ISIJ Monochrome|Nature NPG|Science AAAS|Viridis|Plasma|Inferno|Cividis|CoolWarm]; sequential:bool=false; apply_to_symbols:bool=true; layer:int=null",
+      "g.apply_palette('okabe_ito')" },
     { "graph.set_colorbar", "graph",
-      "GraphProxy.set_colorbar(*, palette='viridis', z_min=None, z_max=None, title=None, levels=None, show_contour_lines=None, layer=None)",
-      "Configure spectrogram colormap, Z range, contour levels, and colorbar title.",
-      "graph:str=''; palette:str='viridis'[viridis|plasma|inferno|magma|cividis|jet|coolwarm|bwr|grayscale]; z_min:float=null; z_max:float=null; title:str=null; levels:int=null; show_contour_lines:bool=null; layer:int=null",
+      "GraphProxy.set_colorbar(*, palette='viridis', z_min=None, z_max=None, title=None, levels=None, show_contour_lines=None, use_colormap_pen=None, layer=None)",
+      "Configure spectrogram colormap, Z range, contour levels, colormap contour pen, and colorbar title.",
+      "graph:str=''; palette:str='viridis'[viridis|plasma|inferno|magma|cividis|jet|coolwarm|bwr|grayscale]; z_min:float=null; z_max:float=null; title:str=null; levels:int=null; show_contour_lines:bool=null; use_colormap_pen:bool=null; layer:int=null",
       "g.set_colorbar(palette='viridis', title='Intensity (a.u.)')" },
     { "graph.set_legend", "graph",
-      "GraphProxy.set_legend(*, visible=None, position=None, columns=None, font_size=None, frame=None, text=None, layer=None)",
+      "GraphProxy.set_legend(*, visible=None, position=None, columns=None, font_size=None, frame=None, framed=None, text=None, layer=None)",
       "Configure legend visibility, anchor ('auto', 'top_right', 'top_left', 'bottom_right', 'bottom_left', 'outside_right'), columns, font size, and frame.",
-      "graph:str=''; visible:bool=null; position:str=null[auto|avoid_data|top_right|top_left|bottom_right|bottom_left|top_center|bottom_center|outside_right]; columns:int=null; font_size:int=null; frame:bool|int=null; text:str=null; layer:int=null",
+      "graph:str=''; visible:bool=null; position:str=null[auto|avoid_data|top_right|top_left|bottom_right|bottom_left|top_center|bottom_center|outside_right]; columns:int=null; font_size:int=null; frame:bool|int=null; framed:bool|int=null; x:float=null; y:float=null; text:str=null; layer:int=null",
       "g.set_legend(position='auto', frame=False)" },
     { "graph.auto_place_legend", "graph", "GraphProxy.auto_place_legend(layer=None)",
       "Automatically place the legend at the lowest-density anchor avoiding plotted curves.",
@@ -5580,26 +6880,26 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "g.apply_square_frame()" },
     { "graph.drop_columns", "graph", "Session.drop_columns(graph, table, cols, *, layer=None)",
       "Plot worksheet columns onto an existing graph layer (equivalent to Explorer drag-and-drop).",
-      "graph:str*; table:str*; cols:list*; layer:int=null",
+      "graph:str=''; table:str=''; cols:list*; layer:int=null",
       "app.drop_columns(g, tbl, ['Stress_2'])" },
     { "graph.add_text", "graph",
       "GraphProxy.add_text(text, x, y, *, font_size=11, color='#000000', frame=0, angle=0, layer=None)",
       "Add an Arial text callout/annotation at data coordinates (x, y) returning marker id.",
-      "graph:str=''; text:str*; x:float*; y:float*; font_size:int=11; color:str='#000000'; frame:int=0; angle:int=0; layer:int=null",
+      "graph:str=''; text:str*; x:float=0.0; y:float=0.0; font_size:int=11; color:str='#000000'; frame:bool|int=0; angle:float=0; layer:int=null",
       "m = g.add_text('Yield Point', x=0.22, y=415.0)" },
     { "graph.add_arrow", "graph",
-      "GraphProxy.add_arrow(x1, y1, x2, y2, *, color='#000000', width=1, end_arrow=True, start_arrow=False, layer=None)",
+      "GraphProxy.add_arrow(x1, y1, x2, y2, *, color='#000000', width=1.0, end_arrow=True, start_arrow=False, head_length=9, head_angle=28, layer=None)",
       "Add a line/arrow marker between data coordinates (x1, y1) and (x2, y2) returning marker id.",
-      "graph:str=''; x1:float*; y1:float*; x2:float*; y2:float*; color:str='#000000'; width:int=1; style:str='solid'; end_arrow:bool=true; start_arrow:bool=false; layer:int=null",
+      "graph:str=''; x1:float*; y1:float*; x2:float*; y2:float*; color:str='#000000'; width:float=1.0; style:str='solid'; end_arrow:bool=true; start_arrow:bool=false; head_length:int=9; head_angle:int=28; layer:int=null",
       "a = g.add_arrow(0.5, 450, 0.22, 412)" },
     { "graph.remove_marker", "graph",
       "GraphProxy.remove_marker(marker_id=None, *, kind=None, index=None, clear_all=False, layer=None)",
-      "Remove a text or arrow marker by marker_id, 0-based index (+ kind='text'|'arrow'), or clear_all=True.",
-      "graph:str=''; marker_id:int=null; kind:str=null[text|arrow]; index:int=null; all:bool=false; layer:int=null",
+      "Remove a text or arrow marker by marker_id, 0-based index (+ kind='text'|'arrow'|'line'|'all'), or clear_all=True.",
+      "graph:str=''; marker_id:int=null; kind:str=null[text|arrow|line|all]; index:int=null; all:bool=false; layer:int=null",
       "g.remove_marker(m['id'])" },
     { "graph.mask_region", "graph",
       "GraphProxy.mask_region(x_min, x_max, *, y_min=None, y_max=None, curve=None, unmask=False, layer=None)",
-      "Mask (or unmask) data points falling inside a rectangular data ROI.",
+      "Mask (or unmask) data points falling inside a rectangular data ROI (optional y_min/y_max default to full Y span).",
       "graph:str=''; x_min:float*; x_max:float*; y_min:float=null; y_max:float=null; curve:int|str=null; unmask:bool=false; layer:int=null",
       "g.mask_region(4.8, 5.2)" },
     { "graph.clear_masks", "graph", "GraphProxy.clear_masks(curve=None, *, layer=None)",
@@ -5607,18 +6907,38 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str=null; layer:int=null", "g.clear_masks()" },
     { "graph.export", "graph", "GraphProxy.export(path, *, dpi=300, transparent=False)",
       "Export 2D or 3D graph to PDF, SVG, EPS, EMF, PNG, or TIFF.",
-      "graph:str=''; path:str*; dpi:int=300; transparent:bool=false",
+      "graph:str=''; path:str*; dpi:int=300; transparent:bool=false; format:str=''",
       "g.export('figure1.pdf', dpi=600)" },
     { "graph.copy_image", "graph", "GraphProxy.copy_image(dpi=300)",
       "Copy rendered graph raster image to the system clipboard.", "graph:str=''; dpi:int=300",
       "g.copy_image(dpi=300)" },
     { "graph.copy_ole", "graph", "GraphProxy.copy_ole()",
       "Place editable ToriGraph OLE object + vector EMF on Windows clipboard for Word/PowerPoint.",
-      "graph:str=''", "g.copy_ole()" },
+      "graph:str=''; active_layer_only:bool=false", "g.copy_ole()" },
+    { "graph.export_ole", "graph",
+      "GraphProxy.export_ole(*, emf_path=None, ole_path=None, dpi=300, active_layer_only=False, include_base64=True, skip_project_stream=False)",
+      "Export editable ToriGraph OLE Compound Document (.bin), crisp vector EMF preview, .sciprj XML, and physical dimensions (mm/hm) for zero-COM PowerPoint (.pptx) embedding.",
+      "graph:str=''; emf_path:str=''; ole_path:str=''; dpi:int=300; active_layer_only:bool=false; include_base64:bool=true; skip_project_stream:bool=false",
+      "pkg = g.export_ole(dpi=300)" },
+    { "graph.auto_layout", "graph",
+      "GraphProxy.auto_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
+      "Deterministic 5-stage self-healing layout solver fixing disabled axes, clipped curves, multi-panel canvas mismatch, tick collisions, and legend/callout overlaps.",
+      "graph:str=''; pad_fraction:float=0.05; allow_page_resize:bool=true; allow_tick_rotation:bool=true; allow_outside_legend:bool=true; max_passes:int=3; dry_run:bool=false",
+      "res = g.auto_layout()" },
+    { "graph.fix_layout", "graph",
+      "GraphProxy.fix_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
+      "Alias of graph.auto_layout.",
+      "graph:str=''; pad_fraction:float=0.05; allow_page_resize:bool=true; allow_tick_rotation:bool=true; allow_outside_legend:bool=true; max_passes:int=3; dry_run:bool=false",
+      "res = g.fix_layout()" },
+    { "graph.to_python", "graph",
+      "GraphProxy.to_python_script(path=None, *, embed_data='inline', standalone=True)",
+      "Generate a clean, runnable 'import torigraph as tg' Python script reproducing the target graph's data, styles, axes, layers, insets, reference lines, and annotations.",
+      "graph:str=''; embed_data:str='inline'[inline|csv|reference]; standalone:bool=true; path:str=''",
+      "code = g.to_python_script(embed_data='inline', standalone=True)" },
     { "graph.set_3d_options", "graph",
       "GraphProxy.set_3d_options(*, title=None, x_rotation=None, y_rotation=None, z_rotation=None, zoom=None, orthogonal=None)",
       "Configure 3D Graph camera angles, zoom, projection, resolution, and axes labels.",
-      "graph:str*; title:str=null; x_rotation:float=null; y_rotation:float=null; z_rotation:float=null; zoom:float=null; orthogonal:bool=null",
+      "graph:str=''; title:str=null; x_rotation:float=null; y_rotation:float=null; z_rotation:float=null; zoom:float=null; orthogonal:bool=null; resolution:int=null",
       "g3.set_3d_options(x_rotation=30, z_rotation=45)" },
 
     // 6. Curve Fitting & Peak Analysis (analysis.*)
@@ -5630,9 +6950,10 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Perform weighted/unweighted linear regression returning slope, intercept, errors, R2, Pearson r, and ANOVA p-value.",
       "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; x_min:float=null; x_max:float=null; plot_curve:bool=true; fit_label:str=''",
       "res = app.fit_linear(graph=g, x_min=0.0, x_max=0.2)" },
-    { "analysis.fit_york", "analysis", "Session.fit_york(table, x_col, y_col, x_err_col, y_err_col)",
+    { "analysis.fit_york", "analysis",
+      "Session.fit_york(table=None, x_col=None, y_col=None, x_err_col=None, y_err_col=None)",
       "Perform York bivariate errors-in-variables linear regression.",
-      "table:str*; x_col:int|str*; y_col:int|str*; x_err_col:int|str*; y_err_col:int|str*",
+      "graph:str=''; table:str=''; x_col:int|str=null; y_col:int|str=null; x_err_col:int|str=''; y_err_col:int|str=''",
       "app.fit_york(tbl, 'X', 'Y', 'sX', 'sY')" },
     { "analysis.fit_polynomial", "analysis",
       "Session.fit_polynomial(*, order=2, graph=None, curve=None, table=None, x_col=None, y_col=None, plot_curve=True, fit_label=None)",
@@ -5640,14 +6961,14 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "order:int=2; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; plot_curve:bool=true; fit_label:str=''",
       "res = app.fit_polynomial(graph=g, order=3)" },
     { "analysis.fit_nonlinear", "analysis",
-      "Session.fit_nonlinear(*, model=None, formula=None, graph=None, curve=None, init_params=None, bounds=None, fixed=None, plot_curve=True, fit_label=None)",
-      "Fit a built-in nonlinear model ('Gauss'/'Gaussian', 'GaussAmp', 'Lorentz'/'Lorentzian', 'PseudoVoigt1', 'Boltzmann', 'Arrhenius', 'Hollomon', 'Voce', ...) or custom muParser formula.",
-      "model:str=''; formula:str=''; param_names:list=null; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; init_params:dict=null; bounds:dict=null; fixed:list=null; plot_curve:bool=true; fit_label:str=''",
+      "Session.fit_nonlinear(*, model=None, formula=None, graph=None, curve=None, init_params=None, bounds=None, fixed=None, max_iter=1000, plot_curve=True, fit_label=None)",
+      "Fit a built-in nonlinear model ('Gauss'/'Gaussian', 'GaussAmp', 'Lorentz'/'Lorentzian', 'PseudoVoigt1', 'Boltzmann', 'Arrhenius', 'Hollomon', 'Voce') or custom muParser formula.",
+      "model:str=''; formula:str=''; param_names:list=null; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; init_params:dict=null; bounds:dict=null; fixed:list=null; max_iter:int=1000; tolerance:float=1e-7; points:int=200; plot_curve:bool=true; fit_label:str=''",
       "res = app.fit_nonlinear(graph=g, model='Gaussian')" },
     { "analysis.fit_global", "analysis",
-      "Session.fit_global(*, graph=None, curves=None, model=None, formula=None, shared_params=None)",
+      "Session.fit_global(*, graph=None, curves=None, model=None, formula=None, shared_params=None, max_iter=200)",
       "Simultaneously fit multiple curves sharing global physical parameters.",
-      "graph:str*; curves:list=null; model:str=''; formula:str=''; shared_params:list=null",
+      "graph:str=''; curves:list=null; model:str=''; formula:str=''; param_names:list=null; shared_params:list=null; max_iter:int=200; tolerance:float=0.0001",
       "app.fit_global(graph=g, model='Arrhenius', shared_params=['Ea'])" },
     { "analysis.fit_piecewise", "analysis", "Session.fit_piecewise(*, segments=2, graph=None, curve=None)",
       "Fit continuous piecewise-linear segments with automatic breakpoint optimization.",
@@ -5660,56 +6981,59 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "analysis.fit_quantile", "analysis", "Session.fit_quantile(*, tau=0.5, graph=None, curve=None)",
       "Perform quantile regression for conditional quantile tau in (0, 1).",
       "tau:float=0.5; graph:str=''; curve:int|str=null", "app.fit_quantile(graph=g, tau=0.5)" },
-    { "analysis.fit_logistic", "analysis", "Session.fit_logistic(table, x_col, y_col)",
+    { "analysis.fit_logistic", "analysis", "Session.fit_logistic(table=None, x_col=None, y_col=None)",
       "Fit binary logistic regression P(Y=1|X) returning odds ratio, AUC, and p-values.",
-      "table:str*; x_col:int|str*; y_col:int|str*", "app.fit_logistic(tbl, 'Dose', 'Response')" },
-    { "analysis.fit_mlr", "analysis", "Session.fit_mlr(table, x_cols, y_col)",
+      "table:str=''; x_col:int|str=null; y_col:int|str*", "app.fit_logistic(tbl, 'Dose', 'Response')" },
+    { "analysis.fit_mlr", "analysis", "Session.fit_mlr(table=None, x_cols=None, y_col=None)",
       "Fit multiple linear regression across multiple predictor columns with VIF diagnostics.",
-      "table:str*; x_cols:list*; y_col:int|str*", "app.fit_mlr(tbl, ['C_pct', 'Mn_pct'], 'UTS')" },
-    { "analysis.fit_implicit_odr", "analysis", "Session.fit_implicit_odr(table, x_col, y_col, *, model='circle')",
+      "table:str=''; x_cols:list=null; y_col:int|str*", "app.fit_mlr(tbl, ['C_pct', 'Mn_pct'], 'UTS')" },
+    { "analysis.fit_implicit_odr", "analysis",
+      "Session.fit_implicit_odr(table=None, x_col=None, y_col=None, *, model='circle')",
       "Fit implicit geometric orthogonal distance regression ('circle', 'ellipse', or custom F(x,y)=0).",
-      "table:str*; x_col:int|str*; y_col:int|str*; model:str='circle'[circle|ellipse|custom]",
+      "graph:str=''; table:str=''; x_col:int|str=null; y_col:int|str=null; model:str='circle'[circle|ellipse|superellipse|custom]",
       "app.fit_implicit_odr(tbl, 'X', 'Y', model='circle')" },
     { "analysis.fit_surface_3d", "analysis", "Session.fit_surface_3d(*, matrix=None, model='gaussian2d')",
       "Fit a 3D surface z = f(x, y) ('plane', 'paraboloid', 'gaussian2d', 'lorentzian2d', or custom).",
       "matrix:str=''; table:str=''; model:str='gaussian2d'[plane|paraboloid|gaussian2d|lorentzian2d|custom]",
       "app.fit_surface_3d(matrix=m, model='gaussian2d')" },
-    { "analysis.compare_models", "analysis", "Session.compare_models(*, models=..., graph=None, curve=None)",
+    { "analysis.compare_models", "analysis",
+      "Session.compare_models(*, models=None, graph=None, curve=None)",
       "Rank candidate nonlinear models by AICc, BIC, and F-test.",
-      "models:list*; graph:str=''; curve:int|str=null",
+      "models:list=null; graph:str=''; curve:int|str=null",
       "app.compare_models(graph=g, models=['Gauss', 'Lorentz', 'PseudoVoigt1'])" },
-    { "analysis.compare_datasets", "analysis", "Session.compare_datasets(*, graph=None, model='Gauss')",
+    { "analysis.compare_datasets", "analysis", "Session.compare_datasets(*, graph=None, model='ExpDec1')",
       "Test parameter invariance across multiple curves using nested global F-test.",
-      "graph:str*; model:str*; curves:list=null", "app.compare_datasets(graph=g, model='Gauss')" },
+      "graph:str=''; model:str='ExpDec1'; curves:list=null", "app.compare_datasets(graph=g, model='Gauss')" },
     { "analysis.analyze_peaks", "analysis",
       "Session.analyze_peaks(*, graph=None, curve=None, profile='PseudoVoigt', peak_count=None, baseline='als', plot_components=True)",
       "Baseline-subtract and deconvolve multi-peak spectra (XRD, XPS, Raman, TDS) with baseline-aware component & envelope curves.",
       "graph:str=''; curve:int|str=null; table:str=''; profile:str='PseudoVoigt'[Gauss|GaussAmp|Lorentz|PseudoVoigt|Voigt|PearsonVII|BiGaussian|EMG|LogNormal|DoniachSunjic]; peak_count:int=null; baseline:str='als'[none|constant|linear|als|anchors]; plot_components:bool=true",
       "res = app.analyze_peaks(graph=g, profile='PseudoVoigt', baseline='als')" },
-    { "analysis.batch_peaks", "analysis", "Session.batch_peaks(table, x_col, y_cols, *, profile='PseudoVoigt')",
+    { "analysis.batch_peaks", "analysis",
+      "Session.batch_peaks(table=None, x_col=None, y_cols=None, *, profile='PseudoVoigt')",
       "Run automated peak deconvolution across a batch of Y columns.",
-      "table:str*; x_col:int|str*; y_cols:list*; profile:str='PseudoVoigt'; baseline:str='als'",
+      "graph:str=''; table:str=''; x_col:int|str=null; y_cols:list=null; profile:str='PseudoVoigt'; baseline:str='als'",
       "app.batch_peaks(tbl, 'TwoTheta', ['S1', 'S2', 'S3'])" },
 
     // 7. Interactive Gadgets (gadget.*)
-    { "gadget.attach", "gadget", "Session.attach_gadget(graph, gadget_type='roi_stats', *, x_min=None, x_max=None)",
-      "Attach an live ROI/cursor gadget ('roi_stats', 'quick_fit', 'quick_peaks', 'integrate', 'delta_cursor', 'vertical_cursor', 'image_profile').",
-      "graph:str*; type:str='roi_stats'; curve:int|str=null; x_min:float=null; x_max:float=null",
+    { "gadget.attach", "gadget", "Session.attach_gadget(graph=None, gadget_type='roi_stats', *, x_min=None, x_max=None)",
+      "Attach a live ROI/cursor gadget ('roi_stats', 'quick_fit', 'quick_peaks', 'integrate', 'delta_cursor', 'vertical_cursor', 'image_profile').",
+      "graph:str=''; type:str='roi_stats'; curve:int|str=null; x_min:float=null; x_max:float=null",
       "app.attach_gadget(g, 'roi_stats', x_min=1.0, x_max=5.0)" },
-    { "gadget.set_roi", "gadget", "Session.set_gadget_roi(graph, *, x_min=None, x_max=None)",
+    { "gadget.set_roi", "gadget", "Session.set_gadget_roi(graph=None, *, x_min=None, x_max=None)",
       "Move an active gadget's ROI or cursor coordinates and recalculate.",
-      "graph:str*; x_min:float=null; x_max:float=null; x1:float=null; x2:float=null",
+      "graph:str=''; x_min:float=null; x_max:float=null; x1:float=null; x2:float=null",
       "app.set_gadget_roi(g, x_min=2.0, x_max=6.0)" },
-    { "gadget.query", "gadget", "Session.query_gadget(graph, *, create_table=False)",
+    { "gadget.query", "gadget", "Session.query_gadget(graph=None, *, create_table=False)",
       "Read live metrics from the active gadget on a graph.",
-      "graph:str*; create_table:bool=false", "app.query_gadget(g)" },
-    { "gadget.clear", "gadget", "Session.clear_gadget(graph)",
-      "Detach and remove the active gadget from a graph.", "graph:str*", "app.clear_gadget(g)" },
+      "graph:str=''; create_table:bool=false", "app.query_gadget(g)" },
+    { "gadget.clear", "gadget", "Session.clear_gadget(graph=None)",
+      "Detach and remove the active gadget from a graph.", "graph:str=''", "app.clear_gadget(g)" },
 
     // 8. Signal Processing (signal.*)
     { "signal.smooth", "signal", "Session.smooth(*, method='savgol', window=7, poly_order=2, graph=None, curve=None)",
       "Smooth noisy curve data ('savgol', 'fft', 'average', 'median', 'lowess', 'whittaker', 'gaussian').",
-      "method:str='savgol'[savgol|fft|average|median|lowess|whittaker|gaussian]; window:int=7; poly_order:int=2; span:float=0.2; lambda:float=100.0; graph:str=''; curve:int|str=null",
+      "method:str='savgol'[savgol|fft|average|median|lowess|whittaker|gaussian]; window:int=7; poly_order:int=2; span:float=0.2; lambda:float=100.0; sigma:float=null; graph:str=''; curve:int|str=null",
       "app.smooth(graph=g, method='savgol', window=9, poly_order=3)" },
     { "signal.savgol_derivative", "signal", "Session.savgol_derivative(*, order=1, window=9, poly_order=3, graph=None)",
       "Compute regularized Savitzky-Golay 1st/2nd/3rd derivative curve.",
@@ -5719,22 +7043,23 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Compute 1D forward or inverse Fast Fourier Transform.",
       "graph:str=''; curve:int|str=null; table:str=''; real_col:int|str=null; sampling:float=null; inverse:bool=false",
       "app.fft(graph=g)" },
-    { "signal.fft_filter", "signal", "Session.fft_filter(*, filter_type='lowpass', cutoff=10.0, graph=None)",
+    { "signal.fft_filter", "signal", "Session.fft_filter(*, filter_type='lowpass', cutoff=1.0, graph=None)",
       "Apply FFT frequency-domain filter ('lowpass', 'highpass', 'bandpass', 'bandblock').",
-      "filter_type:str='lowpass'[lowpass|highpass|bandpass|bandblock]; cutoff:float*; high_cutoff:float=null; graph:str=''",
+      "filter_type:str='lowpass'[lowpass|highpass|bandpass|bandblock]; cutoff:float=1.0; high_cutoff:float=null; graph:str=''",
       "app.fft_filter(graph=g, filter_type='lowpass', cutoff=50.0)" },
     { "signal.iir_filter", "signal", "Session.iir_filter(*, design='butterworth', mode='lowpass', cutoff=10.0, order=4, graph=None)",
       "Apply zero-phase forward-backward IIR digital filter (Butterworth/Bessel/Chebyshev).",
-      "design:str='butterworth'; mode:str='lowpass'; order:int=4; cutoff:float*; graph:str=''",
+      "design:str='butterworth'[butterworth|chebyshev1|bessel]; mode:str='lowpass'[lowpass|highpass|bandpass|bandstop]; order:int=4; cutoff:float=10.0; graph:str=''",
       "app.iir_filter(graph=g, cutoff=25.0, order=4)" },
     { "signal.stft", "signal", "Session.stft(*, window_size=64, overlap=32, graph=None)",
       "Compute Short-Time Fourier Transform spectrogram matrix.",
-      "window_size:int=64; overlap:int=32; graph:str=''", "app.stft(graph=g, window_size=128)" },
+      "window_size:int=64; overlap:int=32; hop_size:int=null; graph:str=''", "app.stft(graph=g, window_size=128)" },
     { "signal.envelope", "signal", "Session.hilbert_envelope(*, graph=None, curve=None)",
       "Compute upper/lower Hilbert analytic signal envelope.", "graph:str=''; curve:int|str=null",
       "app.hilbert_envelope(graph=g)" },
     { "signal.wavelet_cwt", "signal", "Session.wavelet_cwt(*, scales=32, graph=None)",
-      "Compute Morlet Continuous Wavelet Transform scalogram.", "scales:int=32; graph:str=''",
+      "Compute Morlet Continuous Wavelet Transform scalogram.",
+      "scales:int=32; wavelet:str='morlet'[morlet|ricker]; graph:str=''",
       "app.wavelet_cwt(graph=g, scales=32)" },
     { "signal.wavelet_denoise", "signal", "Session.wavelet_denoise(*, levels=4, graph=None)",
       "Perform Haar/Daubechies wavelet soft-threshold denoising.", "levels:int=4; graph:str=''",
@@ -5742,26 +7067,27 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "signal.welch_psd", "signal", "Session.welch_psd(*, segment_len=128, graph=None)",
       "Estimate power spectral density via Welch overlapped periodograms.",
       "segment_len:int=128; graph:str=''", "app.welch_psd(graph=g)" },
-    { "signal.coherence", "signal", "Session.coherence(table, x_col, y1_col, y2_col)",
-      "Compute cross-correlation and magnitude-squared coherence between two signals.",
-      "table:str*; x_col:int|str*; y1_col:int|str*; y2_col:int|str*",
+    { "signal.coherence", "signal",
+      "Session.coherence(table=None, x_col=None, y1_col=None, y2_col=None, *, graph=None, curve_a=None, curve_b=None, segment_len=128)",
+      "Compute cross-correlation and magnitude-squared coherence between two signals (from table columns or graph curves).",
+      "table:str=''; x_col:int|str=null; y1_col:int|str=null; y2_col:int|str=null; graph:str=''; curve_a:int|str=null; curve_b:int|str=null; segment_len:int=128",
       "app.coherence(tbl, 'Time', 'Sig1', 'Sig2')" },
     { "signal.decimate", "signal", "Session.decimate(*, factor=4, graph=None)",
       "Anti-aliased signal downsampling/decimation by an integer factor.",
       "factor:int=4; graph:str=''", "app.decimate(graph=g, factor=5)" },
-    { "signal.fsd", "signal", "Session.fourier_self_deconvolution(*, gamma=2.0, smoothing=0.2, graph=None)",
+    { "signal.fsd", "signal", "Session.fourier_self_deconvolution(*, gamma=5.0, smoothing=0.2, graph=None)",
       "Resolution-enhancing Fourier Self-Deconvolution for overlapping IR/Raman bands.",
-      "gamma:float=2.0; smoothing:float=0.2; graph:str=''",
+      "gamma:float=5.0; smoothing:float=0.2; graph:str=''",
       "app.fourier_self_deconvolution(graph=g, gamma=2.5)" },
 
     // 9. Curve Math & Materials Science (curvemath.*)
-    { "curvemath.eval", "curvemath", "Session.curve_math(graph, curve_a, curve_b, *, op='sub')",
+    { "curvemath.eval", "curvemath", "Session.curve_math(graph=None, curve_a=0, curve_b=1, *, op='sub')",
       "Binary math (+, -, *, /) between two curves interpolated onto a common X grid.",
-      "graph:str*; curve_a:int|str*; curve_b:int|str*; op:str='sub'[add|sub|mul|div]",
+      "graph:str=''; curve_a:int|str=0; curve_b:int|str=1; op:str='sub'[add|sub|mul|div]",
       "app.curve_math(g, 'Sample', 'Blank', op='sub')" },
-    { "curvemath.average_curves", "curvemath", "Session.average_curves(graph, *, curves=None, points=200)",
+    { "curvemath.average_curves", "curvemath", "Session.average_curves(graph=None, *, curves=None, points=200)",
       "Compute mean curve and +/- SD shaded band across replicate curves.",
-      "graph:str*; curves:list=null; points:int=200", "app.average_curves(g)" },
+      "graph:str=''; curves:list=null; points:int=200; sd_band:bool=true", "app.average_curves(g)" },
     { "curvemath.normalize", "curvemath", "Session.normalize_curve(*, mode='minmax', graph=None, curve=None)",
       "Normalize curve intensities ('max', 'minmax', 'area', 'zscore', 'ref_x').",
       "mode:str='minmax'[max|minmax|area|zscore|ref_x]; ref_x:float=0.0; graph:str=''; curve:int|str=null",
@@ -5776,17 +7102,18 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str=null; x_min:float=null; x_max:float=null",
       "res = app.differentiate_curve(graph=g)" },
     { "curvemath.interpolate", "curvemath",
-      "Session.interpolate_curve(*, method='spline', points=200, graph=None, curve=None)",
+      "Session.interpolate_curve(*, method='spline', points=200, x_min=None, x_max=None, graph=None, curve=None)",
       "Interpolate curve onto a uniform grid ('linear' >=2 pts, 'spline'/'cubic' >=4 pts, 'akima' >=5 pts).",
       "method:str='spline'[linear|spline|akima]; points:int=200; x_min:float=null; x_max:float=null; graph:str=''; curve:int|str=null",
       "app.interpolate_curve(graph=g, method='akima', points=300)" },
-    { "curvemath.subtract_line", "curvemath", "Session.subtract_straight_line(*, x1=..., y1=..., x2=..., y2=..., graph=None)",
+    { "curvemath.subtract_line", "curvemath",
+      "Session.subtract_straight_line(*, x1=0.0, y1=0.0, x2=1.0, y2=0.0, graph=None)",
       "Subtract a two-point linear baseline from a curve.",
-      "x1:float*; y1:float*; x2:float*; y2:float*; graph:str=''; curve:int|str=null",
+      "x1:float*; y1:float*; x2:float*; y2:float*; graph:str=''; curve:int|str=null; in_place:bool=false",
       "app.subtract_straight_line(graph=g, x1=0, y1=10, x2=100, y2=15)" },
-    { "curvemath.intersections", "curvemath", "Session.curve_intersections(graph, curve_a, curve_b)",
+    { "curvemath.intersections", "curvemath", "Session.curve_intersections(graph=None, curve_a=0, curve_b=1)",
       "Find all (x, y) intersection points between two curves.",
-      "graph:str*; curve_a:int|str*; curve_b:int|str*",
+      "graph:str=''; curve_a:int|str=0; curve_b:int|str=1; mark:bool=true",
       "pts = app.curve_intersections(g, 0, 1)" },
     { "curvemath.lookup_xy", "curvemath", "Session.lookup_xy(*, x=None, y=None, graph=None, curve=None)",
       "Interpolate Y at given X (or solve all X roots where curve crosses Y).",
@@ -5795,92 +7122,136 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "curvemath.polygon_area", "curvemath", "Session.polygon_area(*, graph=None, curve=None)",
       "Compute enclosed hysteresis/cyclic loop polygon area via Shoelace theorem.",
       "graph:str=''; curve:int|str=null", "app.polygon_area(graph=g)" },
-    { "curvemath.fill_between", "curvemath", "Session.fill_between(graph, curve_a, curve_b, *, color='#4C78A8', alpha=60)",
+    { "curvemath.fill_between", "curvemath",
+      "Session.fill_between(graph=None, curve_a=0, curve_b=1, *, color='#4C78A8', alpha=55)",
       "Shade the region between two curves on a graph layer.",
-      "graph:str*; curve_a:int|str*; curve_b:int|str*; color:str='#4C78A8'; alpha:int=60",
+      "graph:str=''; curve_a:int|str=0; curve_b:int|str=1; color:str='#4C78A8'; alpha:float=55",
       "app.fill_between(g, 0, 1)" },
     { "curvemath.offset_yield", "curvemath",
       "Session.analyze_tensile(graph=None, curve=None, *, offset=0.002, strain_in_percent=None, elastic_min=None, elastic_max=None, plot_construction=True, add_callout=True, create_true_stress_table=False)",
       "Materials science tensile test analyzer: Young's modulus E, elastic R2, 0.2% offset proof stress (sigma_0.2), UTS, fracture point, dashed offset construction line, and optional true stress-strain table.",
       "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; offset:float=0.002; strain_in_percent:bool|null=null; elastic_min:float=null; elastic_max:float=null; plot_construction:bool=true; add_callout:bool=true; create_true_stress_table:bool=false",
       "res = g.analyze_tensile(offset=0.002, plot_construction=True)" },
-    { "curvemath.arrhenius", "curvemath", "Session.arrhenius_plot(table, temp_col, rate_col, *, temp_in_celsius=False)",
+    { "curvemath.arrhenius", "curvemath",
+      "Session.arrhenius_plot(table=None, temp_col=0, rate_col=1, *, temp_in_celsius=False)",
       "Build an Arrhenius plot (ln k vs 1000/T with linked top-T axis) and extract activation energy Ea.",
-      "table:str*; temp_col:int|str*; rate_col:int|str*; temp_in_celsius:bool=false",
+      "table:str=''; temp_col:int|str=0; rate_col:int|str=1; temp_in_celsius:bool=false; use_1000_over_t:bool=true",
       "res = app.arrhenius_plot(tbl, 'Temp_K', 'Rate_k')" },
-    { "curvemath.tauc", "curvemath", "Session.tauc_bandgap(table, wavelength_Or_energy_col, alpha_col, *, direct=True)",
+    { "curvemath.tauc", "curvemath",
+      "Session.tauc_bandgap(table=None, x_col=0, y_col=1, *, direct=True, x_is_wavelength_nm=True)",
       "Construct a Tauc optical bandgap plot and extrapolate Eg in eV.",
-      "table:str*; x_col:int|str*; y_col:int|str*; direct:bool=true; x_is_wavelength_nm:bool=false",
-      "res = app.tauc_bandgap(tbl, 'Energy_eV', 'Alpha', direct=True)" },
-    { "curvemath.eis_fit", "curvemath", "Session.eis_fit(table, freq_col, z_re_col, z_im_col, *, model='Randles')",
-      "Fit electrochemical impedance Nyquist data to Randles or Randles-Warburg equivalent circuits.",
-      "table:str*; freq_col:int|str*; z_re_col:int|str*; z_im_col:int|str*; model:str='Randles'[Randles|RandlesWarburg]",
+      "table:str=''; x_col:int|str=0; y_col:int|str=1; direct:bool=true; x_is_wavelength_nm:bool=true",
+      "res = app.tauc_bandgap(tbl, 'Energy_eV', 'Alpha', direct=True, x_is_wavelength_nm=False)" },
+    { "curvemath.eis_fit", "curvemath",
+      "Session.eis_fit(table=None, freq_col=0, z_re_col=1, z_im_col=2, *, model='Randles_CPE')",
+      "Fit electrochemical impedance Nyquist & Bode data to Randles or Randles-CPE equivalent circuits.",
+      "table:str=''; freq_col:int|str=0; z_re_col:int|str=1; z_im_col:int|str=2; model:str='Randles_CPE'[Randles|Randles_CPE|RandlesWarburg]",
       "res = app.eis_fit(tbl, 'Freq', 'Z_re', 'Z_im')" },
+    { "curvemath.kissinger", "curvemath",
+      "Session.analyze_kissinger(table=None, rate_col=None, temp_col=None, *, heating_rates=None, peak_temps=None, rate_in_k_per_hour=False, temp_in_celsius=True, top_axis_in_celsius=True, temp_min=None, temp_max=None)",
+      "Kissinger DSC/TDS thermal activation analysis (ln(beta/Tp^2) vs 1000/Tp with linked top Celsius axis and optional [temp_min, temp_max] peak window) returning Ea in kJ/mol and eV.",
+      "heating_rates:list[float]=null; peak_temps:list[float]=null; y_cols:list=null; table:str=''; rate_col:int|str=0; temp_col:int|str|list=1; rate_in_k_per_hour:bool=false; temp_in_celsius:bool=true; top_axis_in_celsius:bool=true; top_axis_celsius:bool=true; temp_min:float=null; temp_max:float=null; plot:bool=true",
+      "res = app.analyze_kissinger(heating_rates=[5, 10, 20, 40], peak_temps=[285, 298, 312, 327])" },
+    { "curvemath.kocks_mecking", "curvemath",
+      "Session.kocks_mecking(*, graph=None, curve=None, table=None, smooth_window=11, create_plot=True, plot_mode='considere')",
+      "Kocks-Mecking work-hardening rate (theta = d_sigma_t / d_epsilon_t vs true strain or Stage-III true stress), Considere necking instability, Hollomon (K, n), and Voce saturation stress.",
+      "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; smooth_window:int=11; create_plot:bool=true; plot_mode:str='considere'[considere|kocks_mecking]",
+      "res = app.kocks_mecking(graph=g, smooth_window=11)" },
+    { "curvemath.xrd_analyze", "curvemath",
+      "Session.xrd_analyze(*, graph=None, curve=None, wavelength=1.540598, crystal_system='fcc', c_over_a=1.633, strip_kalpha2=False)",
+      "Automated powder XRD analyzer: Rachinger K-alpha2 stripping, Scherrer crystallite size, Williamson-Hall microstrain, FCC/BCC/SC/HCP (hkl) indexing, lattice parameter a (and c), and linked top d-spacing axis.",
+      "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; wavelength:float=1.540598; xray_energy_kev:float=null; radiation:str=''; instr_fwhm:float=0.05; scherrer_k:float=0.90; crystal_system:str='fcc'[fcc|bcc|sc|hcp|none]; c_over_a:float=1.633; strip_kalpha2:bool=false; add_top_d_axis:bool=true; create_wh_plot:bool=true",
+      "res = app.xrd_analyze(graph=g, crystal_system='fcc')" },
+    { "curvemath.bragg_convert", "curvemath",
+      "Session.bragg_convert(*, mode='2theta_to_d', wavelength=1.540598, values=None, table=None, col=0, graph=None)",
+      "Convert diffraction coordinates between 2theta (deg), d-spacing (Angstrom), and scattering vector q (Angstrom^-1) on arrays, worksheet columns, or linked top axes.",
+      "mode:str='2theta_to_d'[2theta_to_d|d_to_2theta|2theta_to_q|q_to_2theta|d_to_q|q_to_d]; wavelength:float=1.540598; xray_energy_kev:float=null; radiation:str=''; values:list[float]=null; table:str=''; col:int|str=0; out_col:str=''; graph:str=''; add_top_axis:bool=false",
+      "res = app.bragg_convert(mode='2theta_to_d', values=[43.32, 50.45, 74.13])" },
+    { "curvemath.vasp_dos", "curvemath",
+      "Session.plot_vasp_dos(table=None, energy_col=0, dos_cols=None, *, doscar_path=None, down_dos_cols=None, fermi_energy=0.0, vertical_energy=False)",
+      "Plot spin-resolved or total VASP electronic Density of States (E - E_F, Fermi reference line, bandgap & d-band center).",
+      "table:str=''; doscar_path:str=''; energy_col:int|str=0; dos_cols:list=null; down_dos_cols:list=null; fermi_energy:float=0.0; vertical_energy:bool=false",
+      "res = app.plot_vasp_dos(tbl, 'Energy', ['TDOS'], fermi_energy=5.42)" },
+    { "curvemath.vasp_bands", "curvemath",
+      "Session.plot_vasp_bands(table=None, k_col=0, band_cols=None, *, eigenval_path=None, k_ticks=None, k_labels=None, fermi_energy=0.0, e_min=-6.0, e_max=6.0)",
+      "Plot VASP electronic band structure with high-symmetry k-point dividers, Gamma symbol formatting, Fermi level, and bandgap extraction.",
+      "table:str=''; eigenval_path:str=''; k_col:int|str=0; band_cols:list=null; k_ticks:list[float]=null; k_labels:list[str]=null; fermi_energy:float=0.0; e_min:float=-6.0; e_max:float=6.0",
+      "res = app.plot_vasp_bands(tbl, 'k_dist', k_ticks=[0.0, 1.0, 1.8], k_labels=['L', 'G', 'X'])" },
 
     // 10. Statistical Analysis (stats.*)
-    { "stats.normality", "stats", "Session.normality_test(table, col)",
+    { "stats.normality", "stats", "Session.normality_test(table=None, col=0)",
       "Run Shapiro-Wilk / Anderson-Darling / Kolmogorov-Smirnov normality tests.",
-      "table:str*; col:int|str*", "app.normality_test(tbl, 'Strength')" },
-    { "stats.outlier", "stats", "Session.outlier_test(table, col, *, alpha=0.05, mask_outliers=False)",
-      "Run Grubbs / Dixon Q outlier detection with optional automatic row masking.",
-      "table:str*; col:int|str*; alpha:float=0.05; mask_outliers:bool=false",
+      "table:str=''; col:int|str=0; graph:str=''", "app.normality_test(tbl, 'Strength')" },
+    { "stats.outlier", "stats",
+      "Session.outlier_test(table=None, col=0, *, method='grubbs', alpha=0.05, mask_outliers=False)",
+      "Run Grubbs / GESD / Dixon Q outlier detection with optional automatic row masking.",
+      "table:str=''; col:int|str=0; method:str='grubbs'[grubbs|gesd|dixon]; alpha:float=0.05; max_outliers:int=5; mask_outliers:bool=false",
       "app.outlier_test(tbl, 'Strength', mask_outliers=True)" },
-    { "stats.anova_oneway", "stats", "Session.anova_one_way(table, cols, *, posthoc='tukey')",
-      "Run one-way ANOVA with Tukey HSD / Bonferroni pairwise comparisons.",
-      "table:str*; cols:list*; posthoc:str='tukey'", "app.anova_one_way(tbl, ['A', 'B', 'C'])" },
-    { "stats.anova_twoway", "stats", "Session.anova_two_way(table, factor_a_col, factor_b_col, response_col)",
+    { "stats.anova_oneway", "stats", "Session.anova_one_way(table=None, cols=None, *, posthoc='tukey', graph=None, add_brackets=None)",
+      "Run one-way ANOVA with Tukey HSD / Holm / Games-Howell / Dunnett pairwise comparisons and optional significance brackets.",
+      "table:str=''; cols:list=null; posthoc:str='tukey'[holm|tukey|games_howell|dunnett]; control:int|str=null; graph:str=''; add_brackets:bool=null",
+      "app.anova_one_way(tbl, ['A', 'B', 'C'])" },
+    { "stats.anova_twoway", "stats",
+      "Session.anova_two_way(table=None, factor_a_col=0, factor_b_col=1, response_col=2, *, plot=True)",
       "Run balanced/unbalanced two-way ANOVA with interaction effect.",
-      "table:str*; factor_a_col:int|str*; factor_b_col:int|str*; response_col:int|str*",
+      "table:str=''; factor_a_col:int|str=0; factor_b_col:int|str=1; response_col:int|str=2; plot:bool=true",
       "app.anova_two_way(tbl, 'Alloy', 'Temp', 'Yield')" },
-    { "stats.nonparametric", "stats", "Session.nonparametric_test(table, cols, *, test='mann_whitney')",
-      "Run Mann-Whitney U, Wilcoxon signed-rank, Kruskal-Wallis, or Friedman test.",
-      "table:str*; cols:list*; test:str='mann_whitney'[mann_whitney|wilcoxon|kruskal_wallis|friedman]",
+    { "stats.nonparametric", "stats",
+      "Session.nonparametric_test(table=None, cols=None, *, test='mann_whitney', graph=None, add_brackets=None)",
+      "Run Mann-Whitney U, Wilcoxon signed-rank, Kruskal-Wallis (+ Dunn post-hoc brackets), or Friedman test.",
+      "table:str=''; cols:list=null; test:str='mann_whitney'[mann_whitney|wilcoxon|kruskal_wallis|friedman]; graph:str=''; add_brackets:bool=null",
       "app.nonparametric_test(tbl, ['Before', 'After'], test='wilcoxon')" },
-    { "stats.paired_plot", "stats", "Session.paired_estimation_plot(table, col_a, col_b)",
+    { "stats.paired_plot", "stats", "Session.paired_estimation_plot(table=None, col_a=0, col_b=1)",
       "Create a Gardner-Altman paired estimation plot with mean difference CI.",
-      "table:str*; col_a:int|str*; col_b:int|str*",
+      "table:str=''; col_a:int|str=0; col_b:int|str=1; wilcoxon:bool=false",
       "app.paired_estimation_plot(tbl, 'Pre', 'Post')" },
-    { "stats.bland_altman", "stats", "Session.bland_altman(table, col_a, col_b)",
+    { "stats.bland_altman", "stats", "Session.bland_altman(table=None, col_a=0, col_b=1)",
       "Create a Bland-Altman method-agreement plot with bias and +/-1.96 SD limits of agreement.",
-      "table:str*; col_a:int|str*; col_b:int|str*", "app.bland_altman(tbl, 'MethodA', 'MethodB')" },
-    { "stats.passing_bablok", "stats", "Session.passing_bablok(table, x_col, y_col)",
+      "table:str=''; col_a:int|str=0; col_b:int|str=1", "app.bland_altman(tbl, 'MethodA', 'MethodB')" },
+    { "stats.passing_bablok", "stats", "Session.passing_bablok(table=None, x_col=0, y_col=1)",
       "Run Passing-Bablok / Deming method-comparison regression.",
-      "table:str*; x_col:int|str*; y_col:int|str*", "app.passing_bablok(tbl, 'Ref', 'Test')" },
-    { "stats.weibull", "stats", "Session.weibull_fit(table, col, *, three_param=False, plot=True)",
-      "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution (ceramics & fatigue).",
-      "table:str*; col:int|str*; three_param:bool=false; plot:bool=true",
+      "table:str=''; x_col:int|str=0; y_col:int|str=1; lambda:float=1.0; plot:bool=true",
+      "app.passing_bablok(tbl, 'Ref', 'Test')" },
+    { "stats.weibull", "stats", "Session.weibull_fit(table=None, col=0, *, censor_col=None, three_param=False, mle=False, plot=True)",
+      "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution via rank regression or right-censored MLE (ceramics & fatigue).",
+      "table:str=''; col:int|str=0; censor_col:int|str=null; censor_coding:int=0; three_param:bool=false; mle:bool=false; plot:bool=true",
       "app.weibull_fit(tbl, 'FractureMPa', three_param=True)" },
-    { "stats.kaplan_meier", "stats", "Session.kaplan_meier(table, time_col, event_col, *, group_col=None)",
+    { "stats.kaplan_meier", "stats",
+      "Session.kaplan_meier(table=None, time_col=0, event_col=1, *, group_col=None)",
       "Compute Kaplan-Meier survival curves and log-rank test.",
-      "table:str*; time_col:int|str*; event_col:int|str*; group_col:int|str=null",
+      "table:str=''; time_col:int|str=0; event_col:int|str=1; group_col:int|str=null",
       "app.kaplan_meier(tbl, 'Cycles', 'Failed')" },
-    { "stats.roc", "stats", "Session.roc_curve(table, state_col, score_cols, *, plot=True)",
+    { "stats.roc", "stats",
+      "Session.roc_curve(table=None, state_col=0, score_cols=None, *, plot=True)",
       "Compute ROC curve, AUC, Hanley-McNeil SE, and Youden optimal threshold.",
-      "table:str*; state_col:int|str*; score_cols:list*; plot:bool=true",
+      "table:str=''; state_col:int|str=0; score_cols:list=null; score_col:int|str=null; plot:bool=true",
       "app.roc_curve(tbl, 'Class', ['Score'])" },
-    { "stats.pca", "stats", "Session.pca(table, cols, *, standardize=True, biplot=True)",
+    { "stats.pca", "stats", "Session.pca(table=None, cols=None, *, standardize=True, biplot=True)",
       "Run Principal Component Analysis returning eigenvalues, explained variance, loadings, and scores.",
-      "table:str*; cols:list*; standardize:bool=true; biplot:bool=true",
+      "table:str=''; cols:list=null; standardize:bool=true; biplot:bool=true",
       "app.pca(tbl, ['F1', 'F2', 'F3', 'F4'])" },
-    { "stats.correlation", "stats", "Session.correlation_matrix(table, cols=None, *, method='pearson', plot_heatmap=False)",
+    { "stats.correlation", "stats",
+      "Session.correlation_matrix(table=None, cols=None, *, method='pearson', plot_heatmap=True)",
       "Compute Pearson or Spearman correlation & p-value matrix.",
-      "table:str*; cols:list=null; method:str='pearson'[pearson|spearman]; plot_heatmap:bool=false",
+      "table:str=''; cols:list=null; method:str='pearson'[pearson|spearman]; plot_heatmap:bool=true",
       "app.correlation_matrix(tbl, method='pearson')" },
-    { "stats.clustering", "stats", "Session.clustering(table, cols, *, k=3, method='kmeans')",
+    { "stats.clustering", "stats",
+      "Session.clustering(table=None, cols=None, *, k=3, method='kmeans', linkage='ward')",
       "Perform K-Means or hierarchical clustering across numeric columns.",
-      "table:str*; cols:list*; k:int=3; method:str='kmeans'[kmeans|hierarchical]",
+      "table:str=''; cols:list=null; k:int=3; method:str='kmeans'[kmeans|hierarchical]; linkage:str='ward'[ward|complete|average]; plot:bool=true",
       "app.clustering(tbl, ['X', 'Y'], k=3)" },
-    { "stats.confidence_ellipse", "stats", "Session.add_confidence_ellipse(graph, *, curve=None, level=0.95)",
+    { "stats.confidence_ellipse", "stats",
+      "Session.add_confidence_ellipse(graph=None, *, curve=None, level=0.95, prediction=False)",
       "Add a bivariate covariance confidence/prediction ellipse onto a 2D scatter plot.",
-      "graph:str*; curve:int|str=null; level:float=0.95",
+      "graph:str=''; curve:int|str=null; level:float=0.95; prediction:bool=false",
       "app.add_confidence_ellipse(g, level=0.95)" },
 
     // 11. Plot Digitizer (digitizer.*)
     { "digitizer.extract", "digitizer",
-      "Session.digitize_image(image_path, *, cal_points=..., color=..., mode='auto_curve')",
-      "Calibrate axes on a bitmap figure image and extract calibrated (X, Y) curve data.",
-      "image_path:str*; cal_points:list*; color:str='#000000'; tolerance:int=45",
-      "app.digitize_image('paper_fig.png', cal_points=...)" }
+      "Session.digitize_image(image_path, *, cal_points=None, color='#DC1E1E', tolerance=50, mode='auto_curve')",
+      "Calibrate axes on a bitmap figure image (4 axis points, 3 L-axis points [Origin, X2, Y2], or 2 corners) and extract calibrated (X, Y) curve data.",
+      "image_path:str*; cal_points:list=null; color:str='#DC1E1E'; tolerance:int=50; samples:int=100; mode:str='auto_curve'[auto_curve]; plot:bool=false; table_name:str=''",
+      "app.digitize_image('paper_fig.png', cal_points=[[50, 350, 0.0], [450, 350, 10.0], [50, 350, 0.0], [50, 50, 100.0]])" }
 };
 
 static constexpr int kApiCatalogCount =
@@ -5980,6 +7351,166 @@ QJsonObject serializeCatalogRow(const ApiMethodCatalogRow &row)
     return m;
 }
 
+void validateParamsAgainstCatalogSchema(const QString &method, const QJsonObject &params)
+{
+    if (params.isEmpty())
+        return;
+
+    static const QHash<QString, QHash<QString, QString>> s_schemaMap = []() {
+        QHash<QString, QHash<QString, QString>> out;
+        out.reserve(kApiCatalogCount);
+        for (int i = 0; i < kApiCatalogCount; ++i) {
+            const QString mName = QString::fromUtf8(kApiCatalogSpecs[i].method);
+            const QJsonArray pArr = parseCompactParamsSignature(kApiCatalogSpecs[i].paramsSig);
+            QHash<QString, QString> pMap;
+            for (const QJsonValue &pv : pArr) {
+                const QJsonObject po = pv.toObject();
+                const QString pn = po.value(QStringLiteral("name")).toString();
+                const QString pt = po.value(QStringLiteral("type")).toString().trimmed().toLower();
+                if (!pn.isEmpty() && !pt.isEmpty())
+                    pMap.insert(pn, pt);
+            }
+            out.insert(mName, pMap);
+        }
+        return out;
+    }();
+
+    const auto mIt = s_schemaMap.constFind(method);
+    if (mIt == s_schemaMap.constEnd())
+        return;
+    const QHash<QString, QString> &methodParams = mIt.value();
+
+    auto isBoolLiteralWord = [](const QString &raw) -> bool {
+        const QString s = raw.trimmed().toLower();
+        return s == QStringLiteral("true") || s == QStringLiteral("1")
+                || s == QStringLiteral("yes") || s == QStringLiteral("on")
+                || s == QStringLiteral("false") || s == QStringLiteral("0")
+                || s == QStringLiteral("no") || s == QStringLiteral("off");
+    };
+
+    auto isColorParamName = [](const QString &pn) -> bool {
+        return pn == QStringLiteral("color") || pn.endsWith(QStringLiteral("_color"));
+    };
+
+    auto isSingleStringListShorthand = [](const QString &pn) -> bool {
+        return pn == QStringLiteral("cols") || pn == QStringLiteral("y_cols")
+                || pn == QStringLiteral("x_cols") || pn == QStringLiteral("r_cols")
+                || pn == QStringLiteral("dos_cols") || pn == QStringLiteral("down_dos_cols")
+                || pn == QStringLiteral("band_cols") || pn == QStringLiteral("score_cols")
+                || pn == QStringLiteral("curves") || pn == QStringLiteral("models")
+                || pn == QStringLiteral("tables") || pn == QStringLiteral("graphs")
+                || pn == QStringLiteral("shared_params");
+    };
+
+    auto isSingleIntIndexListShorthand = [](const QString &pn) -> bool {
+        return pn == QStringLiteral("cols") || pn == QStringLiteral("y_cols")
+                || pn == QStringLiteral("x_cols") || pn == QStringLiteral("r_cols")
+                || pn == QStringLiteral("dos_cols") || pn == QStringLiteral("down_dos_cols")
+                || pn == QStringLiteral("band_cols") || pn == QStringLiteral("score_cols")
+                || pn == QStringLiteral("curves");
+    };
+
+    auto isJsonExactInt = [](const QJsonValue &v) -> bool {
+        if (!v.isDouble() || v.isBool())
+            return false;
+        const double d = v.toDouble();
+        return std::isfinite(d) && std::floor(d) == d
+                && d >= double(std::numeric_limits<int>::min())
+                && d <= double(std::numeric_limits<int>::max());
+    };
+
+    for (auto it = params.constBegin(); it != params.constEnd(); ++it) {
+        const QJsonValue &val = it.value();
+        if (val.isNull() || val.isUndefined())
+            continue;
+        const QString &pName = it.key();
+        const auto pIt = methodParams.constFind(pName);
+        if (pIt == methodParams.constEnd())
+            continue;
+        const QString &typeSpec = pIt.value();
+        if (typeSpec.isEmpty() || typeSpec.contains(QStringLiteral("any")))
+            continue;
+
+        const QStringList tokens = typeSpec.split(QLatin1Char('|'), Qt::SkipEmptyParts);
+        const bool unionHasInt = typeSpec.contains(QStringLiteral("int"));
+        const bool unionHasStr = typeSpec.contains(QStringLiteral("str"));
+        bool matched = false;
+        for (const QString &rawTok : tokens) {
+            const QString tok = rawTok.trimmed();
+            if (tok == QStringLiteral("null")) {
+                if (val.isNull()) {
+                    matched = true;
+                    break;
+                }
+            } else if (tok == QStringLiteral("str") || tok == QStringLiteral("string")) {
+                if (val.isString()) {
+                    matched = true;
+                    break;
+                }
+                if (isColorParamName(pName) && val.isArray()) {
+                    const QJsonArray ca = val.toArray();
+                    if (ca.size() >= 3 && ca.size() <= 4) {
+                        matched = true;
+                        break;
+                    }
+                }
+            } else if (tok == QStringLiteral("bool") || tok == QStringLiteral("boolean")) {
+                if (val.isBool()) {
+                    matched = true;
+                    break;
+                }
+                if (!unionHasInt && val.isDouble() && !val.isBool()) {
+                    const double d = val.toDouble();
+                    if (d == 0.0 || d == 1.0) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!unionHasStr && val.isString() && isBoolLiteralWord(val.toString())) {
+                    matched = true;
+                    break;
+                }
+            } else if (tok == QStringLiteral("int") || tok == QStringLiteral("integer")) {
+                if (val.isDouble() && !val.isBool()) {
+                    const double d = val.toDouble();
+                    if (std::isfinite(d) && std::floor(d) == d
+                        && d >= double(std::numeric_limits<int>::min())
+                        && d <= double(std::numeric_limits<int>::max())) {
+                        matched = true;
+                        break;
+                    }
+                }
+            } else if (tok == QStringLiteral("float") || tok == QStringLiteral("number")
+                       || tok == QStringLiteral("double")) {
+                if (val.isDouble() && !val.isBool() && std::isfinite(val.toDouble())) {
+                    matched = true;
+                    break;
+                }
+            } else if (tok.startsWith(QStringLiteral("list"))
+                       || tok.startsWith(QStringLiteral("array"))) {
+                if (val.isArray()
+                    || (isSingleStringListShorthand(pName) && val.isString())
+                    || (isSingleIntIndexListShorthand(pName) && isJsonExactInt(val))) {
+                    matched = true;
+                    break;
+                }
+            } else if (tok.startsWith(QStringLiteral("dict"))
+                       || tok.startsWith(QStringLiteral("object"))) {
+                if (val.isObject()) {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+
+        if (!matched) {
+            throwInvalidParams(
+                    QStringLiteral("Invalid type for parameter '%1' in '%2' (expected %3).")
+                            .arg(pName, method, typeSpec));
+        }
+    }
+}
+
 } // namespace
 
 QStringList PythonAutomationServer::supportedMethods()
@@ -6012,12 +7543,19 @@ bool isMissingNumericSentinel(const QString &trimmed)
             || low == QStringLiteral("null") || low == QStringLiteral("none");
 }
 
-QString autoDetectCsvSeparator(const QString &text, int startPos, const QString &fileHint)
+QString autoDetectCsvSeparator(const QString &text, int startPos, const QString &fileHint,
+                               bool *outWhitespace = nullptr)
 {
+    if (outWhitespace)
+        *outWhitespace = false;
     if (fileHint.endsWith(QStringLiteral(".tsv"), Qt::CaseInsensitive)
         || fileHint.endsWith(QStringLiteral(".tab"), Qt::CaseInsensitive)) {
         return QStringLiteral("\t");
     }
+    const bool isSpaceExt = fileHint.endsWith(QStringLiteral(".xy"), Qt::CaseInsensitive)
+            || fileHint.endsWith(QStringLiteral(".xye"), Qt::CaseInsensitive)
+            || fileHint.endsWith(QStringLiteral(".dat"), Qt::CaseInsensitive)
+            || fileHint.endsWith(QStringLiteral(".asc"), Qt::CaseInsensitive);
     const int len = text.size();
     int p = std::max(0, startPos);
     while (p < len) {
@@ -6027,13 +7565,17 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
             ++lineEnd;
         }
         const QString line = text.mid(p, lineEnd - p);
-        if (!line.trimmed().isEmpty() && !line.trimmed().startsWith(QLatin1Char('#'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))
+            && !trimmed.startsWith(QLatin1Char(';')) && !trimmed.startsWith(QLatin1Char('!'))) {
             bool inQuotes = false;
-            int commas = 0, tabs = 0, semis = 0;
-            for (int i = 0; i < line.size(); ++i) {
-                const QChar ch = line[i];
+            int commas = 0, tabs = 0, semis = 0, spaces = 0;
+            bool prevSpace = false;
+            for (int i = 0; i < trimmed.size(); ++i) {
+                const QChar ch = trimmed[i];
                 if (ch == QLatin1Char('"')) {
                     inQuotes = !inQuotes;
+                    prevSpace = false;
                 } else if (!inQuotes) {
                     if (ch == QLatin1Char(','))
                         ++commas;
@@ -6041,6 +7583,13 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
                         ++tabs;
                     else if (ch == QLatin1Char(';'))
                         ++semis;
+                    else if (ch == QLatin1Char(' ')) {
+                        if (!prevSpace)
+                            ++spaces;
+                        prevSpace = true;
+                        continue;
+                    }
+                    prevSpace = false;
                 }
             }
             if (tabs > commas && tabs >= 1)
@@ -6049,6 +7598,11 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
                 return QStringLiteral(",");
             if (semis >= 1)
                 return QStringLiteral(";");
+            if (spaces >= 1 || isSpaceExt) {
+                if (outWhitespace)
+                    *outWhitespace = true;
+                return QStringLiteral(" ");
+            }
             break;
         }
         p = lineEnd;
@@ -6056,6 +7610,11 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
             ++p;
         if (p < len && text[p] == QLatin1Char('\n'))
             ++p;
+    }
+    if (isSpaceExt) {
+        if (outWhitespace)
+            *outWhitespace = true;
+        return QStringLiteral(" ");
     }
     return QStringLiteral(",");
 }
@@ -6206,16 +7765,28 @@ int parseUnitsRowHintParam(const QJsonObject &params)
         return v.toBool() ? 1 : 0;
     if (v.isDouble()) {
         const int iv = parseStrictJsonInt(v, QStringLiteral("units_row"));
-        return (iv <= 0) ? 0 : iv;
+        if (iv < -1 || iv > 2) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter 'units_row' integer must be in [-1, 2], got %1.")
+                            .arg(iv));
+        }
+        return iv;
     }
-    const QString s = v.toString().trimmed().toLower();
-    if (s == QStringLiteral("auto"))
-        return -1;
-    if (s == QStringLiteral("none") || s == QStringLiteral("false") || s == QStringLiteral("0"))
-        return 0;
-    if (s == QStringLiteral("true") || s == QStringLiteral("1"))
-        return 1;
-    return -1;
+    if (v.isString()) {
+        const QString s = v.toString().trimmed().toLower();
+        if (s == QStringLiteral("auto"))
+            return -1;
+        if (s == QStringLiteral("none") || s == QStringLiteral("false")
+            || s == QStringLiteral("0"))
+            return 0;
+        if (s == QStringLiteral("true") || s == QStringLiteral("1"))
+            return 1;
+        throwInvalidParams(
+                QStringLiteral("Unsupported 'units_row' string '%1' (expected 'auto'|'none'|'true'|'false').")
+                        .arg(v.toString()));
+    }
+    throwInvalidParams(
+            QStringLiteral("Parameter 'units_row' must be a boolean, integer, or string."));
 }
 
 void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsvCell>> &records,
@@ -6414,6 +7985,2733 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
     }
 }
 
+// ============================================================================
+// Next-Gen AI-Agent Autonomy Engines:
+//   1. app.batch ($prev / $steps[k] token substitution & atomic rollback)
+//   2. graph.auto_layout (5-stage deterministic self-healing layout solver)
+//   3. graph.to_python / generatePythonScriptForWindow (reproducible codegen)
+// ============================================================================
+
+QJsonValue extractBatchPathValue(const QJsonValue &root, const QString &rawPath, int stepIdx,
+                                 const QString &fullToken)
+{
+    QJsonValue cur = root;
+    QString rem = rawPath.trimmed();
+    while (!rem.isEmpty()) {
+        if (rem.startsWith(QLatin1Char('.')))
+            rem.remove(0, 1);
+        if (rem.isEmpty())
+            break;
+        if (rem.startsWith(QLatin1Char('['))) {
+            const int closeBr = rem.indexOf(QLatin1Char(']'));
+            if (closeBr <= 1) {
+                throwInvalidParams(
+                        QStringLiteral("Step %1 invalid array index syntax in token '%2'.")
+                                .arg(stepIdx)
+                                .arg(fullToken));
+            }
+            const QString inside = rem.mid(1, closeBr - 1).trimmed();
+            bool okIdx = false;
+            const int arrIdx = inside.toInt(&okIdx);
+            if (okIdx && cur.isArray()) {
+                const QJsonArray arr = cur.toArray();
+                if (arrIdx < 0 || arrIdx >= arr.size()) {
+                    throwInvalidParams(
+                            QStringLiteral("Step %1 token '%2' index %3 out of bounds (size=%4).")
+                                    .arg(stepIdx)
+                                    .arg(fullToken)
+                                    .arg(arrIdx)
+                                    .arg(arr.size()));
+                }
+                cur = arr.at(arrIdx);
+            } else if (cur.isObject()) {
+                QString key = inside;
+                if (key.size() >= 2
+                    && ((key.startsWith(QLatin1Char('\'')) && key.endsWith(QLatin1Char('\'')))
+                        || (key.startsWith(QLatin1Char('"')) && key.endsWith(QLatin1Char('"'))))) {
+                    key = key.mid(1, key.size() - 2);
+                }
+                const QJsonObject obj = cur.toObject();
+                if (!obj.contains(key)) {
+                    throwInvalidParams(
+                            QStringLiteral("Step %1 token '%2' missing key '%3'.")
+                                    .arg(stepIdx)
+                                    .arg(fullToken, key));
+                }
+                cur = obj.value(key);
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("Step %1 token '%2' cannot index non-container value.")
+                                .arg(stepIdx)
+                                .arg(fullToken));
+            }
+            rem = rem.mid(closeBr + 1);
+        } else {
+            int nextSep = -1;
+            for (int i = 0; i < rem.size(); ++i) {
+                if (rem[i] == QLatin1Char('.') || rem[i] == QLatin1Char('[')) {
+                    nextSep = i;
+                    break;
+                }
+            }
+            const QString key = (nextSep >= 0) ? rem.left(nextSep) : rem;
+            if (!cur.isObject()) {
+                throwInvalidParams(
+                        QStringLiteral("Step %1 token '%2' cannot access field '%3' on non-object.")
+                                .arg(stepIdx)
+                                .arg(fullToken, key));
+            }
+            const QJsonObject obj = cur.toObject();
+            if (!obj.contains(key)) {
+                throwInvalidParams(
+                        QStringLiteral("Step %1 token '%2' missing field '%3'.")
+                                .arg(stepIdx)
+                                .arg(fullToken, key));
+            }
+            cur = obj.value(key);
+            rem = (nextSep >= 0) ? rem.mid(nextSep) : QString();
+        }
+    }
+    return cur;
+}
+
+QJsonValue resolveSingleBatchToken(const QString &token, const QVector<QJsonObject> &results,
+                                   int curStepIdx)
+{
+    static const QRegularExpression rxExact(
+            QStringLiteral("^\\$(?:(prev)|steps\\[(\\d+)\\])((?:\\.[A-Za-z0-9_\\-]+|\\[[^\\]]+\\])*)$"));
+    const QRegularExpressionMatch m = rxExact.match(token);
+    if (!m.hasMatch())
+        return QJsonValue(token);
+    int refIdx = -1;
+    if (!m.captured(1).isEmpty()) {
+        if (curStepIdx <= 0) {
+            throwInvalidParams(
+                    QStringLiteral("Step 0 cannot reference '$prev' in token '%1'.").arg(token));
+        }
+        refIdx = curStepIdx - 1;
+    } else {
+        refIdx = m.captured(2).toInt();
+        if (refIdx < 0 || refIdx >= curStepIdx || refIdx >= results.size()) {
+            throwInvalidParams(
+                    QStringLiteral("Step %1 references invalid or future '$steps[%2]' in '%3'.")
+                            .arg(curStepIdx)
+                            .arg(refIdx)
+                            .arg(token));
+        }
+    }
+    const QString path = m.captured(3);
+    if (path.isEmpty())
+        return results[refIdx];
+    return extractBatchPathValue(results[refIdx], path, curStepIdx, token);
+}
+
+QString batchScalarToString(const QJsonValue &v)
+{
+    if (v.isString())
+        return v.toString();
+    if (v.isBool())
+        return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (v.isDouble()) {
+        const double d = v.toDouble();
+        if (std::isfinite(d) && std::floor(d) == d && std::abs(d) < 9.0e15)
+            return QString::number(static_cast<qint64>(d));
+        return QString::number(d, 'g', 15);
+    }
+    if (v.isNull() || v.isUndefined())
+        return QString();
+    if (v.isArray())
+        return QString::fromUtf8(QJsonDocument(v.toArray()).toJson(QJsonDocument::Compact));
+    if (v.isObject())
+        return QString::fromUtf8(QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact));
+    return QString();
+}
+
+QJsonValue resolveBatchValueTokens(const QJsonValue &val, const QVector<QJsonObject> &results,
+                                   int curStepIdx)
+{
+    if (val.isString()) {
+        const QString s = val.toString();
+        if (!s.contains(QLatin1Char('$')))
+            return val;
+        static const QRegularExpression rxFull(
+                QStringLiteral("^\\$(?:prev|steps\\[\\d+\\])(?:\\.[A-Za-z0-9_\\-]+|\\[[^\\]]+\\])*$"));
+        if (rxFull.match(s).hasMatch())
+            return resolveSingleBatchToken(s, results, curStepIdx);
+
+        static const QRegularExpression rxInline(
+                QStringLiteral("\\$(?:prev|steps\\[\\d+\\])(?:\\.[A-Za-z0-9_\\-]+|\\[[^\\]]+\\])*"));
+        QString out;
+        int lastEnd = 0;
+        auto it = rxInline.globalMatch(s);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            out.append(s.mid(lastEnd, m.capturedStart(0) - lastEnd));
+            const QJsonValue resolved =
+                    resolveSingleBatchToken(m.captured(0), results, curStepIdx);
+            out.append(batchScalarToString(resolved));
+            lastEnd = m.capturedEnd(0);
+        }
+        out.append(s.mid(lastEnd));
+        return QJsonValue(out);
+    }
+    if (val.isArray()) {
+        const QJsonArray inArr = val.toArray();
+        QJsonArray outArr;
+        for (const QJsonValue &item : inArr)
+            outArr.append(resolveBatchValueTokens(item, results, curStepIdx));
+        return outArr;
+    }
+    if (val.isObject()) {
+        const QJsonObject inObj = val.toObject();
+        QJsonObject outObj;
+        for (auto it = inObj.begin(); it != inObj.end(); ++it)
+            outObj.insert(it.key(), resolveBatchValueTokens(it.value(), results, curStepIdx));
+        return outObj;
+    }
+    return val;
+}
+
+double niceCeilAxisStep(double rawStep)
+{
+    if (!std::isfinite(rawStep) || rawStep <= 0.0)
+        return 1.0;
+    const double exp10 = std::floor(std::log10(rawStep));
+    const double base = std::pow(10.0, exp10);
+    const double frac = rawStep / base;
+    if (frac <= 1.0)
+        return 1.0 * base;
+    if (frac <= 2.0)
+        return 2.0 * base;
+    if (frac <= 2.5)
+        return 2.5 * base;
+    if (frac <= 5.0)
+        return 5.0 * base;
+    return 10.0 * base;
+}
+
+bool isPinnedPeakOrBracketCallout(const QString &rawText)
+{
+    const QString trimmed = rawText.trimmed();
+    if (trimmed.isEmpty() || trimmed.contains(QLatin1Char('\n')))
+        return false;
+    static const QRegularExpression rxHtmlTags(QStringLiteral("<[^>]+>"));
+    QString plain = trimmed;
+    plain.remove(rxHtmlTags);
+    plain = plain.trimmed();
+    if (plain.isEmpty() || plain.size() > 16)
+        return false;
+    static const QRegularExpression rxMiller(QStringLiteral(
+            "^(?:[A-Za-z\\x{0391}-\\x{03C9}]{1,3}\\s*[-_]?)?[\\(\\{\\[][0-9\\-\\x{2212}\\x{0304}\\x{0305}hkliHKLIuvtwUVTW\\s,]{2,10}[\\)\\}\\]]$"));
+    static const QRegularExpression rxSig(QStringLiteral("^(?:\\*{1,4}|ns|NS)$"));
+    return rxMiller.match(plain).hasMatch() || rxSig.match(plain).hasMatch();
+}
+
+int findSafeHtmlSplitPos(const QString &txt)
+{
+    const int n = txt.size();
+    if (n < 12)
+        return -1;
+    const int mid = n / 2;
+    QVector<bool> insideTag(n, false);
+    bool inTag = false;
+    for (int i = 0; i < n; ++i) {
+        if (txt[i] == QLatin1Char('<'))
+            inTag = true;
+        insideTag[i] = inTag;
+        if (txt[i] == QLatin1Char('>'))
+            inTag = false;
+    }
+    static const char *const kBreakTokens[] = { " = ", ", ", "; ", " - " };
+    for (const char *tok : kBreakTokens) {
+        const QString qtok = QString::fromLatin1(tok);
+        int bestPos = -1;
+        int bestDist = n;
+        int pos = txt.indexOf(qtok);
+        while (pos >= 0) {
+            const int splitAfter = pos + qtok.size();
+            if (pos >= 4 && splitAfter <= n - 4 && !insideTag[pos]) {
+                const int d = std::abs(splitAfter - mid);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestPos = splitAfter;
+                }
+            }
+            pos = txt.indexOf(qtok, pos + 1);
+        }
+        if (bestPos > 0)
+            return bestPos;
+    }
+    int bestSpace = -1;
+    int bestSpaceDist = n;
+    for (int i = 4; i < n - 4; ++i) {
+        if (!insideTag[i] && txt[i].isSpace()) {
+            const int d = std::abs(i - mid);
+            if (d < bestSpaceDist) {
+                bestSpaceDist = d;
+                bestSpace = i;
+            }
+        }
+    }
+    return bestSpace;
+}
+
+bool fitWideCalloutToCanvas(Graph *g, Plot *plt, Legend *tm, int maxAllowedWidthPx)
+{
+    if (!g || !plt || !tm || maxAllowedWidthPx < 36)
+        return false;
+    if (tm->rect().width() <= maxAllowedWidthPx)
+        return false;
+
+    const int axisPt = g->axisTitleFont(QwtPlot::yLeft).pointSize();
+    const double minPt = (axisPt >= 20) ? 14.0 : 7.5;
+    QFont f = tm->font();
+    const double origPt = (f.pointSizeF() > 0.0) ? f.pointSizeF()
+                                                 : double(std::max(8, f.pointSize()));
+    double curPt = origPt;
+    bool changed = false;
+
+    while (tm->rect().width() > maxAllowedWidthPx && curPt - 0.5 >= minPt - 1e-6) {
+        curPt = std::max(minPt, curPt - 0.5);
+        f.setPointSizeF(curPt);
+        f.setBold(false);
+        f.setWeight(QFont::Normal);
+        f.setHintingPreference(QFont::PreferNoHinting);
+        tm->setFont(f);
+        g->replot();
+        plt->updateLayout();
+        changed = true;
+    }
+
+    if (tm->rect().width() > maxAllowedWidthPx && !tm->text().contains(QLatin1Char('\n'))) {
+        const QString raw = tm->text().trimmed();
+        const int sp = findSafeHtmlSplitPos(raw);
+        if (sp > 0 && sp < raw.size()) {
+            const QString wrapped =
+                    raw.left(sp).trimmed() + QLatin1Char('\n') + raw.mid(sp).trimmed();
+            // Restore reasonable readable font size before re-checking wrapped width
+            curPt = std::max(minPt, std::min(origPt, (axisPt >= 20) ? 18.0 : 9.5));
+            f.setPointSizeF(curPt);
+            tm->setFont(f);
+            tm->setText(wrapped);
+            g->replot();
+            plt->updateLayout();
+            changed = true;
+            while (tm->rect().width() > maxAllowedWidthPx && curPt - 0.5 >= minPt - 1e-6) {
+                curPt = std::max(minPt, curPt - 0.5);
+                f.setPointSizeF(curPt);
+                tm->setFont(f);
+                g->replot();
+                plt->updateLayout();
+            }
+        }
+    }
+    return changed;
+}
+
+QJsonObject runAutoLayoutSolver(ApplicationWindow *app, MultiLayer *ml, const QJsonObject &params)
+{
+    const double padFraction = std::clamp(
+            optionalJsonFiniteDouble(params, QStringLiteral("pad_fraction"), 0.05, 1.0), 0.0, 0.25);
+    const bool allowPageResize = optionalJsonBool(params, QStringLiteral("allow_page_resize"), true);
+    const bool allowTickRotation =
+            optionalJsonBool(params, QStringLiteral("allow_tick_rotation"), true);
+    const bool allowOutsideLegend =
+            optionalJsonBool(params, QStringLiteral("allow_outside_legend"), true);
+    const int maxPasses = parseBoundedInt(params, QStringLiteral("max_passes"), 3, 1, 5);
+    const bool dryRun = optionalJsonBool(params, QStringLiteral("dry_run"), false);
+
+    for (Graph *lg : ml->layersList()) {
+        if (lg) {
+            enforceArialGraphFonts(lg);
+            lg->replot();
+        }
+    }
+
+    const QJsonObject beforeSnap = inspectGraphDetailed(ml, true, true);
+    const QJsonArray beforeWarnings = beforeSnap.value(QStringLiteral("warnings")).toArray();
+    const QJsonArray beforeCodes = beforeSnap.value(QStringLiteral("warning_codes")).toArray();
+
+    const QString dryBeforeXml = dryRun ? ml->saveToString(QString()) : QString();
+    std::unique_ptr<ScopedGraphUndoGuard> undoGuard;
+    if (!dryRun) {
+        undoGuard = std::make_unique<ScopedGraphUndoGuard>(
+                ml, QObject::tr("Auto-Heal Graph Layout"), true);
+    }
+
+    QStringList actionsTaken;
+    int passesExecuted = 0;
+
+    auto countCalloutCurveHits = [](Plot *plt, Graph *g, const QRect &rectPx) -> int {
+        if (!plt || !g || !rectPx.isValid())
+            return 0;
+        const QRect padRect = rectPx.adjusted(-4, -4, 4, 4);
+        int hits = 0;
+        for (int ci = 0; ci < g->curves(); ++ci) {
+            QwtPlotCurve *c = g->curve(ci);
+            if (!c || !g->isCurveVisible(ci) || g->curveType(ci) == Graph::ErrorBars
+                || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr) {
+                continue;
+            }
+            const int xAx = (c->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop : QwtPlot::xBottom;
+            const int yAx = (c->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight : QwtPlot::yLeft;
+            const QwtScaleMap xMap = plt->canvasMap(xAx);
+            const QwtScaleMap yMap = plt->canvasMap(yAx);
+            auto *dc = dynamic_cast<DataCurve *>(c);
+            const bool checkMasks = (dc != nullptr) && dc->hasAnyMaskedPoints();
+            Column *maskXCol = nullptr;
+            Column *maskYCol = nullptr;
+            if (checkMasks)
+                dc->resolveColumns(maskXCol, maskYCol);
+            const QList<DataCurve *> errList = dc ? dc->errorBarsList() : QList<DataCurve *>();
+            const bool hasErr = !errList.isEmpty();
+            const bool hasLineSegs = (c->style() != QwtPlotCurve::NoCurve);
+            const int n = static_cast<int>(c->dataSize());
+            bool hasPrev = false;
+            QPoint prevPt;
+            for (int k = 0; k < n; ++k) {
+                if (checkMasks && dc->isPointMaskedFast(k, maskXCol, maskYCol)) {
+                    hasPrev = false;
+                    continue;
+                }
+                const double xv = c->x(k);
+                const double yv = c->y(k);
+                if (!std::isfinite(xv) || !std::isfinite(yv)) {
+                    hasPrev = false;
+                    continue;
+                }
+                const QPoint curPt(xMap.transform(xv), yMap.transform(yv));
+                if (padRect.contains(curPt))
+                    ++hits;
+                if (hasErr) {
+                    for (DataCurve *ebBase : errList) {
+                        auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase);
+                        if (!ec || k >= ec->dataSize())
+                            continue;
+                        const double ev = std::abs(ec->errorValue(k));
+                        if (!std::isfinite(ev) || ev <= 0.0)
+                            continue;
+                        const int halfCap = std::max(3, ec->capLength() / 2);
+                        if (ec->xErrors()) {
+                            const int pxLo = xMap.transform(ec->minusSide() ? (xv - ev) : xv);
+                            const int pxHi = xMap.transform(ec->plusSide() ? (xv + ev) : xv);
+                            const QRect ebBox(std::min(pxLo, pxHi), curPt.y() - halfCap,
+                                              std::max(1, std::abs(pxHi - pxLo)), 2 * halfCap + 1);
+                            if (padRect.intersects(ebBox))
+                                ++hits;
+                        } else {
+                            const int pyLo = yMap.transform(ec->minusSide() ? (yv - ev) : yv);
+                            const int pyHi = yMap.transform(ec->plusSide() ? (yv + ev) : yv);
+                            const QRect ebBox(curPt.x() - halfCap, std::min(pyLo, pyHi),
+                                              2 * halfCap + 1, std::max(1, std::abs(pyHi - pyLo)));
+                            if (padRect.intersects(ebBox))
+                                ++hits;
+                        }
+                    }
+                }
+                if (hasPrev && hasLineSegs
+                    && std::max(prevPt.x(), curPt.x()) >= padRect.left()
+                    && std::min(prevPt.x(), curPt.x()) <= padRect.right()
+                    && std::max(prevPt.y(), curPt.y()) >= padRect.top()
+                    && std::min(prevPt.y(), curPt.y()) <= padRect.bottom()) {
+                    for (int s = 1; s <= 7; ++s) {
+                        const double t = double(s) / 8.0;
+                        const QPoint midPt(
+                                qRound((1.0 - t) * double(prevPt.x()) + t * double(curPt.x())),
+                                qRound((1.0 - t) * double(prevPt.y()) + t * double(curPt.y())));
+                        if (padRect.contains(midPt)) {
+                            ++hits;
+                            break;
+                        }
+                    }
+                }
+                prevPt = curPt;
+                hasPrev = true;
+            }
+        }
+        const QwtScaleMap refXMap = plt->canvasMap(QwtPlot::xBottom);
+        const QwtScaleMap refYMap = plt->canvasMap(QwtPlot::yLeft);
+        for (const Graph::ReferenceLineSpec &rl : g->referenceLines()) {
+            if (!rl.statMode.isEmpty() || !std::isfinite(rl.value))
+                continue;
+            if (rl.orientation == 1) {
+                const int rx = refXMap.transform(rl.value);
+                if (rx >= padRect.left() && rx <= padRect.right())
+                    hits += 3;
+            } else {
+                const int ry = refYMap.transform(rl.value);
+                if (ry >= padRect.top() && ry <= padRect.bottom())
+                    hits += 3;
+            }
+        }
+        return hits;
+    };
+
+    for (int pass = 0; pass < maxPasses; ++pass) {
+        const QJsonObject curSnap = inspectGraphDetailed(ml, true, true);
+        const QJsonArray curWarnings = curSnap.value(QStringLiteral("warnings")).toArray();
+        if (curWarnings.isEmpty())
+            break;
+        ++passesExecuted;
+
+        const QList<Graph *> layers = ml->layersList();
+        QVector<int> primaryIndices;
+        for (int li = 0; li < layers.size(); ++li) {
+            Graph *lg = layers[li];
+            if (lg && !lg->linkedParentLayer() && !ml->isInsetLayer(lg))
+                primaryIndices.append(li);
+        }
+        const int nPrimary = primaryIndices.size();
+
+        auto hasWarnCode = [&](const QString &code, int targetLayer = -1) -> bool {
+            for (const QJsonValue &wv : curWarnings) {
+                const QJsonObject wo = wv.toObject();
+                if (wo.value(QStringLiteral("code")).toString() == code
+                    && (targetLayer < 0 || wo.value(QStringLiteral("layer")).toInt() == targetLayer)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // Stage 1: DISABLED_AXIS_HAS_TITLE_OR_CURVE
+        if (hasWarnCode(QStringLiteral("DISABLED_AXIS_HAS_TITLE_OR_CURVE"))) {
+            static const int kAxes[4] = { QwtPlot::xBottom, QwtPlot::yLeft, QwtPlot::xTop,
+                                          QwtPlot::yRight };
+            static const char *const kAxNames[4] = { "x", "y", "top", "right" };
+            for (int li = 0; li < layers.size(); ++li) {
+                Graph *g = layers[li];
+                Plot *plt = g ? g->plotWidget() : nullptr;
+                if (!g || !plt || invokeGraphIsPolarPlot(g) || g->isTernaryPlot() || g->isPiePlot())
+                    continue;
+                for (int ai = 0; ai < 4; ++ai) {
+                    const int ax = kAxes[ai];
+                    if (plt->axisEnabled(ax))
+                        continue;
+                    int boundCurves = 0;
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        QwtPlotCurve *c = g->curve(ci);
+                        if (!c || !g->isCurveVisible(ci) || g->curveType(ci) == Graph::ErrorBars)
+                            continue;
+                        if (c->xAxis() == ax || c->yAxis() == ax)
+                            ++boundCurves;
+                    }
+                    if (boundCurves > 0) {
+                        g->enableAxis(ax, true);
+                        g->setTickLabelsOnAxis(ax, true);
+                        actionsTaken.append(
+                                QStringLiteral("Enabled axis '%1' on layer %2 for %3 bound curve(s)")
+                                        .arg(QLatin1String(kAxNames[ai]))
+                                        .arg(li)
+                                        .arg(boundCurves));
+                    } else if (!g->linkedParentLayer() && !g->axisTitle(ax).trimmed().isEmpty()) {
+                        g->setAxisTitleAuto(ax, false);
+                        g->setAxisTitle(ax, QString());
+                        actionsTaken.append(
+                                QStringLiteral("Cleared orphan title on disabled axis '%1' of layer %2")
+                                        .arg(QLatin1String(kAxNames[ai]))
+                                        .arg(li));
+                    }
+                }
+                g->replot();
+            }
+        }
+
+        // Stage 2: CURVE_CLIPPED_BY_AXIS (expand axis envelope on non-inset layers)
+        for (int li = 0; li < layers.size(); ++li) {
+            Graph *g = layers[li];
+            Plot *plt = g ? g->plotWidget() : nullptr;
+            if (!g || !plt || ml->isInsetLayer(g) || invokeGraphIsPolarPlot(g)
+                || g->isTernaryPlot() || g->isPiePlot()
+                || !hasWarnCode(QStringLiteral("CURVE_CLIPPED_BY_AXIS"), li)) {
+                continue;
+            }
+            static const int kAxes[4] = { QwtPlot::xBottom, QwtPlot::yLeft, QwtPlot::xTop,
+                                          QwtPlot::yRight };
+            static const char *const kAxNames[4] = { "x", "y", "top", "right" };
+            for (int ai = 0; ai < 4; ++ai) {
+                const int ax = kAxes[ai];
+                const bool isX = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+                const bool isLog =
+                        (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax))
+                         != nullptr);
+                double dMin = std::numeric_limits<double>::infinity();
+                double dMax = -std::numeric_limits<double>::infinity();
+                int countPts = 0;
+
+                for (int ci = 0; ci < g->curves(); ++ci) {
+                    QwtPlotCurve *c = g->curve(ci);
+                    if (!c || !g->isCurveVisible(ci) || g->curveType(ci) == Graph::ErrorBars
+                        || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr) {
+                        continue;
+                    }
+                    const int cAx = isX ? ((c->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop
+                                                                         : QwtPlot::xBottom)
+                                        : ((c->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight
+                                                                           : QwtPlot::yLeft);
+                    if (cAx != ax)
+                        continue;
+                    auto *dc = dynamic_cast<DataCurve *>(c);
+                    const bool checkMasks = (dc != nullptr) && dc->hasAnyMaskedPoints();
+                    Column *maskXCol = nullptr;
+                    Column *maskYCol = nullptr;
+                    if (checkMasks)
+                        dc->resolveColumns(maskXCol, maskYCol);
+                    QVector<QwtErrorPlotCurve *> errCurves;
+                    if (dc) {
+                        for (DataCurve *eb : dc->errorBarsList()) {
+                            if (auto *ec = dynamic_cast<QwtErrorPlotCurve *>(eb)) {
+                                if (ec->xErrors() == isX)
+                                    errCurves.append(ec);
+                            }
+                        }
+                    }
+                    const int n = static_cast<int>(c->dataSize());
+                    for (int k = 0; k < n; ++k) {
+                        if (checkMasks && dc->isPointMaskedFast(k, maskXCol, maskYCol))
+                            continue;
+                        const double v = isX ? c->x(k) : c->y(k);
+                        if (!std::isfinite(v) || std::abs(v) > 1e300)
+                            continue;
+                        if (isLog && v <= 0.0)
+                            continue;
+                        double loV = v;
+                        double hiV = v;
+                        for (QwtErrorPlotCurve *ec : errCurves) {
+                            if (k < ec->dataSize()) {
+                                const double ev = std::abs(ec->errorValue(k));
+                                if (std::isfinite(ev)) {
+                                    if (!isLog || v - ev > 0.0)
+                                        loV = std::min(loV, v - ev);
+                                    hiV = std::max(hiV, v + ev);
+                                }
+                            }
+                        }
+                        dMin = std::min(dMin, loV);
+                        dMax = std::max(dMax, hiV);
+                        ++countPts;
+                    }
+                }
+                if (countPts <= 0 || !std::isfinite(dMax - dMin))
+                    continue;
+
+                for (const auto &rl : g->referenceLines()) {
+                    const bool rlIsX = (rl.orientation == 1);
+                    if (rlIsX == isX && rl.statMode.isEmpty() && std::isfinite(rl.value)
+                        && (!isLog || rl.value > 0.0)) {
+                        dMin = std::min(dMin, rl.value);
+                        dMax = std::max(dMax, rl.value);
+                    }
+                }
+
+                const QwtScaleDiv *sdiv = plt->axisScaleDiv(ax);
+                const double rawLo = sdiv ? sdiv->lowerBound() : dMin;
+                const double rawHi = sdiv ? sdiv->upperBound() : dMax;
+                const bool inv = (rawLo > rawHi);
+                const double curLo = std::min(rawLo, rawHi);
+                const double curHi = std::max(rawLo, rawHi);
+                if (dMin >= curLo && dMax <= curHi)
+                    continue;
+
+                double newLo = curLo;
+                double newHi = curHi;
+                if (isLog) {
+                    const double logSpan =
+                            std::max(1.0, std::log10(std::max(dMax, dMin * 10.0)) - std::log10(dMin));
+                    const double factor = std::pow(10.0, padFraction * logSpan);
+                    newLo = std::max(1e-300, std::min(curLo > 0.0 ? curLo : dMin, dMin / factor));
+                    newHi = std::max(curHi, dMax * factor);
+                } else {
+                    const double span = (dMax > dMin)
+                            ? (dMax - dMin)
+                            : std::max(1.0, std::abs(dMax) * 0.1);
+                    if (curLo == 0.0 && dMin >= 0.0 && dMin <= 0.08 * span)
+                        newLo = 0.0;
+                    else
+                        newLo = std::min(curLo, dMin - padFraction * span);
+                    newHi = std::max(curHi, dMax + padFraction * span);
+                }
+                if (std::isfinite(newHi - newLo) && newHi > newLo) {
+                    const int maj = std::max(4, plt->axisMaxMajor(ax));
+                    const int minT = isLog ? 8 : std::max(1, plt->axisMaxMinor(ax));
+                    g->setScale(ax, newLo, newHi, 0.0, maj, minT, isLog ? 1 : 0, inv);
+                    actionsTaken.append(
+                            QStringLiteral("Expanded layer %1 axis '%2' scale to [%3, %4]")
+                                    .arg(li)
+                                    .arg(QLatin1String(kAxNames[ai]))
+                                    .arg(newLo, 0, 'g', 5)
+                                    .arg(newHi, 0, 'g', 5));
+                }
+            }
+            g->syncChildLinkedLayers();
+            g->replot();
+        }
+
+        // Stage 3: PANEL_CANVAS_SIZE_MISMATCH & cramped multi-panel page/title normalization
+        if (nPrimary >= 2) {
+            int rows = std::max(1, ml->getRows());
+            int cols = std::max(1, ml->getCols());
+            if (rows * cols < nPrimary) {
+                cols = std::max(2, int(std::ceil(std::sqrt(double(nPrimary)))));
+                rows = (nPrimary + cols - 1) / cols;
+            }
+            bool didStage3ResizeOrSync = hasWarnCode(QStringLiteral("PANEL_CANVAS_SIZE_MISMATCH"));
+            if (allowPageResize
+                && (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx)) {
+                const MultiLayer::PageUnit u = (ml->pageUnit() != MultiLayer::UnitPx)
+                        ? ml->pageUnit()
+                        : MultiLayer::UnitMm;
+                const double toMm = (u == MultiLayer::UnitInch)
+                        ? 25.4
+                        : ((u == MultiLayer::UnitCm) ? 10.0 : 1.0);
+                const double curWMm = ml->pageWidthPhysical() * toMm;
+                const double curHMm = ml->pageHeightPhysical() * toMm;
+                const double minWMm = (cols == 2) ? 175.0 : std::min(210.0, double(cols) * 80.0);
+                const double minHMm = double(rows) * 80.0;
+                if (curWMm < minWMm - 1.0 || curHMm < minHMm - 1.0) {
+                    const double nextWMm = std::max(curWMm, minWMm);
+                    const double nextHMm = std::max(curHMm, minHMm);
+                    ml->setPageSizePhysical(nextWMm / toMm, nextHMm / toMm, u, ml->pageDpi());
+                    didStage3ResizeOrSync = true;
+                    actionsTaken.append(
+                            QStringLiteral("Resized multi-panel page to %1 x %2 mm for %3x%4 grid")
+                                    .arg(nextWMm, 0, 'f', 0)
+                                    .arg(nextHMm, 0, 'f', 0)
+                                    .arg(rows)
+                                    .arg(cols));
+                }
+            }
+            if (didStage3ResizeOrSync) {
+                // Harmonize axis font sizes across primary panels so Qwt border widths match
+                Graph *refG = layers[primaryIndices.first()];
+                for (int pi : primaryIndices) {
+                    Graph *pg = layers[pi];
+                    if (!pg || pg == refG)
+                        continue;
+                    for (int ax = 0; ax < 4; ++ax) {
+                        pg->setAxisFont(ax, refG->axisFont(ax));
+                        pg->setAxisTitleFont(ax, refG->axisTitleFont(ax));
+                    }
+                }
+                ml->setRows(rows);
+                ml->setCols(cols);
+                if (undoGuard)
+                    undoGuard->checkpointBeforeSubPush();
+                ml->arrangeLayers(false, false);
+                if (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx)
+                    ml->fitLayersToPage();
+                if (undoGuard)
+                    undoGuard->checkpointAfterSubPush();
+                actionsTaken.append(
+                        QStringLiteral("Synchronized %1x%2 multi-panel canvas sizes")
+                                .arg(rows)
+                                .arg(cols));
+            }
+            // Step down axisTitleFont (>= 8 pt floor, harmonized across primary panels) if wider than panelSpanPx - 12
+            static const QRegularExpression htmlTagStripRx(QStringLiteral("<[^>]*>"));
+            bool shrunkAnyTitle = false;
+            for (int ax = 0; ax < 4; ++ax) {
+                const bool horizAx = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+                int minTargetPt = 999;
+                bool axisNeedsShrink = false;
+                for (int pi : primaryIndices) {
+                    Graph *pg = layers[pi];
+                    Plot *pplt = pg ? pg->plotWidget() : nullptr;
+                    if (!pg || !pplt || !pplt->axisEnabled(ax))
+                        continue;
+                    QString plainTitle = pg->axisTitle(ax);
+                    plainTitle.remove(htmlTagStripRx);
+                    plainTitle = plainTitle.simplified();
+                    if (plainTitle.isEmpty())
+                        continue;
+                    pplt->updateLayout();
+                    const QRect cr = pplt->plotLayout() ? pplt->plotLayout()->canvasRect()
+                                                        : QRect(0, 0, pg->width(), pg->height());
+                    const int spanPx = std::max(40, (horizAx ? cr.width() : cr.height()) - 12);
+                    QFont tf = pg->axisTitleFont(ax);
+                    tf.setFamily(QStringLiteral("Arial"));
+                    const int startPt = std::max(8, tf.pointSize());
+                    int pt = startPt;
+                    while (pt > 8 && QFontMetrics(tf).horizontalAdvance(plainTitle) > spanPx) {
+                        --pt;
+                        tf.setPointSize(pt);
+                    }
+                    if (pt < startPt) {
+                        axisNeedsShrink = true;
+                        minTargetPt = std::min(minTargetPt, pt);
+                    }
+                }
+                if (axisNeedsShrink && minTargetPt >= 8 && minTargetPt < 999) {
+                    for (int pi : primaryIndices) {
+                        Graph *pg = layers[pi];
+                        if (!pg)
+                            continue;
+                        QFont tf = pg->axisTitleFont(ax);
+                        tf.setFamily(QStringLiteral("Arial"));
+                        tf.setBold(false);
+                        tf.setPointSize(minTargetPt);
+                        pg->setAxisTitleFont(ax, tf);
+                        pg->replot();
+                    }
+                    shrunkAnyTitle = true;
+                    const char *axLbl = (ax == QwtPlot::xBottom) ? "x"
+                            : (ax == QwtPlot::xTop)              ? "top"
+                            : (ax == QwtPlot::yRight)            ? "right"
+                                                                 : "y";
+                    actionsTaken.append(
+                            QStringLiteral("Reduced multi-panel axis '%1' title font to %2 pt")
+                                    .arg(QLatin1String(axLbl))
+                                    .arg(minTargetPt));
+                }
+            }
+            if (shrunkAnyTitle && (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx))
+                ml->fitLayersToPage();
+        }
+
+        // Stage 4: TICK_LABEL_COLLISION (4-rung escalation ladder)
+        {
+            const QJsonObject midSnap = inspectGraphDetailed(ml, true, true);
+            const QJsonArray midWarnings = midSnap.value(QStringLiteral("warnings")).toArray();
+            for (const QJsonValue &wv : midWarnings) {
+                const QJsonObject wo = wv.toObject();
+                if (wo.value(QStringLiteral("code")).toString()
+                    != QStringLiteral("TICK_LABEL_COLLISION")) {
+                    continue;
+                }
+                const int li = wo.value(QStringLiteral("layer")).toInt(-1);
+                const QString axisKey =
+                        wo.value(QStringLiteral("details")).toObject().value(QStringLiteral("axis")).toString();
+                if (li < 0 || li >= layers.size() || !layers[li])
+                    continue;
+                Graph *g = layers[li];
+                Plot *plt = g->plotWidget();
+                if (!plt)
+                    continue;
+                const int ax = parseAxisId(axisKey);
+                const bool horiz = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+                const QStringList catLabels = invokeGraphCategoryLabels(g, ax);
+                const QList<Graph::AxisType> aTypes = g->axesType();
+                const bool isCatAxis = !catLabels.isEmpty()
+                        || (ax >= 0 && ax < aTypes.size() && aTypes[ax] == Graph::AxisType::Txt);
+
+                // Rung 4a: Category axis -> rotate -35 deg first instead of dropping category labels
+                if (isCatAxis && horiz && allowTickRotation && g->labelsRotation(ax) == 0
+                    && catLabels.size() <= 16) {
+                    g->setAxisLabelRotation(ax, -35);
+                    g->replot();
+                    actionsTaken.append(
+                            QStringLiteral("Rotated category tick labels -35 deg on layer %1 axis '%2'")
+                                    .arg(li)
+                                    .arg(axisKey));
+                    continue;
+                }
+
+                const QwtScaleDiv *sdiv = plt->axisScaleDiv(ax);
+                auto *sd = dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(ax));
+                const bool isLog =
+                        (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax))
+                         != nullptr);
+                if (sdiv && !isLog && !isCatAxis) {
+                    const double rawLo = sdiv->lowerBound();
+                    const double rawHi = sdiv->upperBound();
+                    const bool inv = (rawLo > rawHi);
+                    const double lo = std::min(rawLo, rawHi);
+                    const double hi = std::max(rawLo, rawHi);
+                    const double span = hi - lo;
+                    if (std::isfinite(span) && span > 0.0) {
+                        plt->updateLayout();
+                        const QRect cr = plt->plotLayout() ? plt->plotLayout()->canvasRect()
+                                                           : QRect(0, 0, g->width(), g->height());
+                        const double axisLenPx =
+                                std::max(60.0, double(horiz ? cr.width() : cr.height()));
+                        const QFontMetrics fm(g->axisFont(ax));
+                        int maxLblPx = 24;
+                        int maxChars = 0;
+                        for (double tv : sdiv->ticks(QwtScaleDiv::MajorTick)) {
+                            const QString txt = sd ? sd->label(tv).text().trimmed()
+                                                   : QString::number(tv, 'g', 6);
+                            maxChars = std::max(maxChars, txt.size());
+                            maxLblPx = std::max(maxLblPx,
+                                                horiz ? fm.horizontalAdvance(txt) : fm.height());
+                        }
+                        if (maxChars >= 7
+                            && (std::abs(hi) >= 1e4 || std::abs(lo) >= 1e4
+                                || (hi != 0.0 && std::abs(hi) <= 1e-3))
+                            && plt->axisLabelFormat(ax) == 0) {
+                            const QStringList axFormulas = g->getAxesFormulas();
+                            const QString curF = (ax >= 0 && ax < axFormulas.size())
+                                    ? axFormulas[ax]
+                                    : QString();
+                            g->setLabelsNumericFormat(ax, 2 /*'e'*/, 1, curF);
+                            actionsTaken.append(
+                                    QStringLiteral("Switched layer %1 axis '%2' to compact scientific format")
+                                            .arg(li)
+                                            .arg(axisKey));
+                        }
+                        const int maxIntervals =
+                                std::max(2, int(std::floor(axisLenPx / double(maxLblPx + 12))));
+                        const double curStep = g->axisStep(ax);
+                        const double minStep = span / double(maxIntervals);
+                        const double nextStep = niceCeilAxisStep(
+                                (curStep > 0.0 && minStep <= curStep) ? (curStep * 1.6) : minStep);
+                        if (std::isfinite(nextStep) && nextStep > 0.0 && nextStep < span * 0.95) {
+                            g->setScale(ax, lo, hi, nextStep, std::max(2, maxIntervals), 1, 0, inv);
+                            g->replot();
+                            actionsTaken.append(
+                                    QStringLiteral("Coarsened layer %1 axis '%2' major step to %3")
+                                            .arg(li)
+                                            .arg(axisKey)
+                                            .arg(nextStep, 0, 'g', 5));
+                        }
+                    }
+                }
+
+                // Re-check if still colliding on this axis -> Rung 4c (rotate) / Rung 4d (font -1pt)
+                const QJsonObject postStepSnap = inspectGraphDetailed(ml, true, true);
+                bool stillCollides = false;
+                for (const QJsonValue &w2 : postStepSnap.value(QStringLiteral("warnings")).toArray()) {
+                    const QJsonObject wo2 = w2.toObject();
+                    if (wo2.value(QStringLiteral("code")).toString()
+                                == QStringLiteral("TICK_LABEL_COLLISION")
+                        && wo2.value(QStringLiteral("layer")).toInt(-1) == li
+                        && wo2.value(QStringLiteral("details"))
+                                   .toObject()
+                                   .value(QStringLiteral("axis"))
+                                   .toString()
+                                == axisKey) {
+                        stillCollides = true;
+                        break;
+                    }
+                }
+                if (stillCollides && horiz && allowTickRotation && std::abs(g->labelsRotation(ax)) < 35) {
+                    g->setAxisLabelRotation(ax, -35);
+                    g->replot();
+                    actionsTaken.append(
+                            QStringLiteral("Rotated tick labels -35 deg on layer %1 axis '%2'")
+                                    .arg(li)
+                                    .arg(axisKey));
+                } else if (stillCollides && g->axisFont(ax).pointSize() > 7) {
+                    QFont nf = g->axisFont(ax);
+                    nf.setFamily(QStringLiteral("Arial"));
+                    nf.setBold(false);
+                    nf.setPointSize(std::max(7, nf.pointSize() - 1));
+                    g->setAxisFont(ax, nf);
+                    g->replot();
+                    actionsTaken.append(
+                            QStringLiteral("Reduced tick font to %1 pt on layer %2 axis '%3'")
+                                    .arg(nf.pointSize())
+                                    .arg(li)
+                                    .arg(axisKey));
+                }
+                if ((ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx)
+                    && nPrimary >= 2) {
+                    ml->fitLayersToPage();
+                }
+            }
+        }
+
+        // Stage 5: LEGEND_OVERLAPS_DATA + CALLOUT_OVERLAPS_LEGEND / CALLOUT_OVERLAPS_DATA
+        {
+            const QJsonObject legSnap = inspectGraphDetailed(ml, true, true);
+            const QJsonArray legWarnings = legSnap.value(QStringLiteral("warnings")).toArray();
+            for (int li = 0; li < layers.size(); ++li) {
+                Graph *g = layers[li];
+                Plot *plt = g ? g->plotWidget() : nullptr;
+                if (!g || !plt || invokeGraphIsPolarPlot(g) || g->isTernaryPlot() || g->isPiePlot())
+                    continue;
+
+                bool legOverlaps = false;
+                bool calloutOverlaps = false;
+                for (const QJsonValue &wv : legWarnings) {
+                    const QJsonObject wo = wv.toObject();
+                    if (wo.value(QStringLiteral("layer")).toInt(-1) != li)
+                        continue;
+                    const QString c = wo.value(QStringLiteral("code")).toString();
+                    if (c == QStringLiteral("LEGEND_OVERLAPS_DATA"))
+                        legOverlaps = true;
+                    else if (c == QStringLiteral("CALLOUT_OVERLAPS_LEGEND")
+                             || c == QStringLiteral("CALLOUT_OVERLAPS_DATA")
+                             || c == QStringLiteral("CALLOUT_CLIPPED_BY_CANVAS"))
+                        calloutOverlaps = true;
+                }
+
+                struct ScopedCalloutHideGuard
+                {
+                    QVector<QPair<Legend *, bool>> saved;
+                    explicit ScopedCalloutHideGuard(Graph *gr)
+                    {
+                        if (!gr)
+                            return;
+                        Legend *mainLeg = gr->legend();
+                        for (int tid : gr->textMarkerKeys()) {
+                            Legend *tm = gr->textMarker(tid);
+                            if (tm && tm != mainLeg && tm->isVisible()
+                                && !isPinnedPeakOrBracketCallout(tm->text())) {
+                                saved.append(qMakePair(tm, true));
+                                tm->setVisible(false);
+                            }
+                        }
+                    }
+                    void restore()
+                    {
+                        for (const auto &p : saved) {
+                            if (p.first)
+                                p.first->setVisible(p.second);
+                        }
+                        saved.clear();
+                    }
+                    ~ScopedCalloutHideGuard() { restore(); }
+                };
+
+                auto expandLinearYHeadroom = [&](double frac) -> bool {
+                    bool hasSpec = false;
+                    for (QwtPlotItem *it : plt->itemList()) {
+                        if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                            hasSpec = true;
+                            break;
+                        }
+                    }
+                    if (hasSpec)
+                        return false;
+                    bool added = false;
+                    const bool yLog = (dynamic_cast<const QwtLog10ScaleEngine *>(
+                                               plt->axisScaleEngine(QwtPlot::yLeft))
+                                       != nullptr);
+                    const QwtScaleDiv *ysd = plt->axisScaleDiv(QwtPlot::yLeft);
+                    if (!yLog && ysd && ysd->lowerBound() < ysd->upperBound()) {
+                        const double yLo = ysd->lowerBound();
+                        const double yHi = ysd->upperBound();
+                        const double ySpan = yHi - yLo;
+                        if (std::isfinite(ySpan) && ySpan > 0.0) {
+                            g->setScale(QwtPlot::yLeft, yLo, yHi + frac * ySpan, 0.0,
+                                        std::max(4, plt->axisMaxMajor(QwtPlot::yLeft)), 1, 0,
+                                        false);
+                            added = true;
+                        }
+                    }
+                    if (plt->axisEnabled(QwtPlot::yRight)) {
+                        bool hasRightCurves = false;
+                        for (int ci = 0; ci < g->curves(); ++ci) {
+                            QwtPlotCurve *c = g->curve(ci);
+                            if (c && g->isCurveVisible(ci)
+                                && g->curveType(ci) != Graph::ErrorBars
+                                && c->yAxis() == QwtPlot::yRight) {
+                                hasRightCurves = true;
+                                break;
+                            }
+                        }
+                        const bool yrLog = (dynamic_cast<const QwtLog10ScaleEngine *>(
+                                                    plt->axisScaleEngine(QwtPlot::yRight))
+                                            != nullptr);
+                        const QwtScaleDiv *yrsd = plt->axisScaleDiv(QwtPlot::yRight);
+                        if (hasRightCurves && !yrLog && yrsd
+                            && yrsd->lowerBound() < yrsd->upperBound()) {
+                            const double yrLo = yrsd->lowerBound();
+                            const double yrHi = yrsd->upperBound();
+                            const double yrSpan = yrHi - yrLo;
+                            if (std::isfinite(yrSpan) && yrSpan > 0.0) {
+                                g->setScale(QwtPlot::yRight, yrLo, yrHi + frac * yrSpan, 0.0,
+                                            std::max(4, plt->axisMaxMajor(QwtPlot::yRight)), 1, 0,
+                                            false);
+                                added = true;
+                            }
+                        }
+                    }
+                    if (added)
+                        g->syncChildLinkedLayers();
+                    return added;
+                };
+
+                if (legOverlaps && g->isLegendVisible() && g->legend()) {
+                    Legend *leg = g->legend();
+                    double score = 0.0;
+                    {
+                        // Temporarily hide movable callouts so legend claims top headroom first;
+                        // callouts pack cleanly around legRect immediately afterward!
+                        ScopedCalloutHideGuard hideGuard(g);
+                        // Rung 5a: Auto-place across internal candidate anchors
+                        const QString anchor1 =
+                                g->placeLegendAnchor(Graph::LegendAutoAvoidData, &score, 12);
+                        g->replot();
+
+                        const QString kWarningsKey = QStringLiteral("warnings");
+                        const QString kLayerKey = QStringLiteral("layer");
+                        const QString kCodeKey = QStringLiteral("code");
+                        const QString kLegOverlapCode = QStringLiteral("LEGEND_OVERLAPS_DATA");
+                        auto checkStillLegOverlap = [&]() -> bool {
+                            const QJsonObject chk = inspectGraphDetailed(ml, false, true);
+                            for (const QJsonValue &cw : chk.value(kWarningsKey).toArray()) {
+                                const QJsonObject co = cw.toObject();
+                                if (co.value(kLayerKey).toInt(-1) == li
+                                    && co.value(kCodeKey).toString() == kLegOverlapCode) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        };
+
+                        if (!checkStillLegOverlap()) {
+                            actionsTaken.append(
+                                    QStringLiteral("Relocated legend on layer %1 to '%2'")
+                                            .arg(li)
+                                            .arg(anchor1));
+                        } else {
+                            // Rung 5b: Compact 2-column legend if >= 3 curves
+                            const QRect cr = plt->plotLayout()
+                                    ? plt->plotLayout()->canvasRect()
+                                    : QRect(0, 0, g->width(), g->height());
+                            if (g->curves() >= 3 && leg->numColumns() == 1
+                                && leg->rect().width() * 17 < cr.width() * 10) {
+                                leg->setNumColumns(2);
+                                g->placeLegendAnchor(Graph::LegendAutoAvoidData, &score, 10);
+                                g->replot();
+                                actionsTaken.append(
+                                        QStringLiteral("Switched legend on layer %1 to 2 columns")
+                                                .arg(li));
+                            }
+                            // Rung 5c: +28% Y-axis top headroom on linear non-inverted non-spectrogram layer
+                            if (checkStillLegOverlap()) {
+                                if (expandLinearYHeadroom(0.28)) {
+                                    g->placeLegendAnchor(Graph::LegendAutoAvoidData, &score, 10);
+                                    g->replot();
+                                    actionsTaken.append(
+                                            QStringLiteral("Added +28% Y-axis headroom on layer %1 for legend")
+                                                    .arg(li));
+                                }
+                            }
+                            // Rung 5d: Single-panel outside_right fallback (NEVER on nPrimary >= 2, and guard Dual-Y narrow canvas!)
+                            if (checkStillLegOverlap() && allowOutsideLegend && nPrimary == 1) {
+                                const bool hasDualY = plt->axisEnabled(QwtPlot::yRight);
+                                bool allowOutsideHere = true;
+                                if (hasDualY) {
+                                    if (allowPageResize
+                                        && (ml->pageViewMode()
+                                            || ml->pageUnit() != MultiLayer::UnitPx)) {
+                                        const MultiLayer::PageUnit u =
+                                                (ml->pageUnit() != MultiLayer::UnitPx)
+                                                ? ml->pageUnit()
+                                                : MultiLayer::UnitMm;
+                                        const double toMm = (u == MultiLayer::UnitInch)
+                                                ? 25.4
+                                                : ((u == MultiLayer::UnitCm) ? 10.0 : 1.0);
+                                        const double curWMm = ml->pageWidthPhysical() * toMm;
+                                        const double curHMm = ml->pageHeightPhysical() * toMm;
+                                        if (curWMm < 130.0) {
+                                            ml->setPageSizePhysical((curWMm + 35.0) / toMm,
+                                                                    curHMm / toMm, u,
+                                                                    ml->pageDpi());
+                                            ml->fitLayersToPage();
+                                        }
+                                    } else {
+                                        plt->updateLayout();
+                                        const int curCw = plt->canvas() ? plt->canvas()->width()
+                                                                        : g->width();
+                                        if (curCw - leg->rect().width() - 20 < 145)
+                                            allowOutsideHere = false;
+                                    }
+                                }
+                                if (allowOutsideHere) {
+                                    g->placeLegendAnchor(Graph::LegendOutsideRight, &score, 12);
+                                    if (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx)
+                                        ml->fitLayersToPage();
+                                    g->replot();
+                                    plt->updateLayout();
+                                    const int postCw =
+                                            plt->canvas() ? plt->canvas()->width() : g->width();
+                                    if (hasDualY && postCw < 140) {
+                                        g->placeLegendAnchor(Graph::LegendAutoAvoidData, &score,
+                                                             10);
+                                        if (ml->pageViewMode()
+                                            || ml->pageUnit() != MultiLayer::UnitPx)
+                                            ml->fitLayersToPage();
+                                        g->replot();
+                                    } else {
+                                        actionsTaken.append(
+                                                QStringLiteral("Moved legend outside_right on single-panel layer %1")
+                                                        .arg(li));
+                                    }
+                                }
+                            }
+                        }
+                        hideGuard.restore();
+                    }
+                    g->replot();
+                }
+
+                // Re-check callout overlaps / clipping / tick-margin violations after legend placement
+                plt->updateLayout();
+                const int majTickLen = std::max(4, plt->majorTickLength());
+                const int spinePad = std::max(14, majTickLen + 6);
+                const QRect chkCanvasRect = plt->canvas()
+                        ? QRect(0, 0, plt->canvas()->width(), plt->canvas()->height())
+                        : QRect(0, 0, g->width(), g->height());
+                static const QRegularExpression kOutsideBadgeCheckRx(
+                        QStringLiteral("^\\s*\\([A-Za-z0-9]{1,2}\\)\\s*$"));
+                Legend *legAfter = g->legend();
+                const bool legVisAfter = g->isLegendVisible() && legAfter
+                        && !legAfter->text().trimmed().isEmpty();
+                const QRect legRectAfter = legVisAfter ? legAfter->rect() : QRect();
+                if (!calloutOverlaps) {
+                    QVector<QRect> seenCallouts;
+                    for (int tid : g->textMarkerKeys()) {
+                        Legend *tm = g->textMarker(tid);
+                        if (!tm || tm == legAfter || !tm->isVisible()
+                            || tm->text().trimmed().isEmpty()) {
+                            continue;
+                        }
+                        const QRect r = tm->rect();
+                        const bool isOutsideBadge =
+                                kOutsideBadgeCheckRx.match(tm->text().trimmed()).hasMatch()
+                                && (r.left() < 0 || r.top() < 0);
+                        if (isOutsideBadge)
+                            continue;
+                        const bool isPinned = isPinnedPeakOrBracketCallout(tm->text());
+                        const int reqPadX = isPinned ? 3 : ((tm->frameStyle() != 0) ? spinePad : 4);
+                        const int reqPadY = isPinned ? 4 : ((tm->frameStyle() != 0) ? spinePad : 4);
+                        const QRect safeInset(
+                                reqPadX, reqPadY,
+                                std::max(1, chkCanvasRect.width() - 2 * reqPadX),
+                                std::max(1, chkCanvasRect.height() - 2 * reqPadY));
+                        if (!safeInset.contains(r)
+                            || (legVisAfter && r.adjusted(-2, -2, 2, 2).intersects(legRectAfter))
+                            || countCalloutCurveHits(plt, g, r) > 0) {
+                            calloutOverlaps = true;
+                            break;
+                        }
+                        for (const QRect &prevR : seenCallouts) {
+                            if (r.adjusted(-2, -2, 2, 2).intersects(prevR)) {
+                                calloutOverlaps = true;
+                                break;
+                            }
+                        }
+                        if (calloutOverlaps)
+                            break;
+                        seenCallouts.append(r);
+                    }
+                }
+
+                if (calloutOverlaps) {
+                    plt->updateLayout();
+                    QRect canvasRect = plt->canvas()
+                            ? QRect(0, 0, plt->canvas()->width(), plt->canvas()->height())
+                            : QRect(0, 0, g->width(), g->height());
+                    Legend *leg = g->legend();
+                    bool legVis =
+                            g->isLegendVisible() && leg && !leg->text().trimmed().isEmpty();
+                    QRect legRect = legVis ? leg->rect() : QRect();
+                    QVector<QRect> placedCalloutRects;
+                    bool addedCalloutHeadroom = false;
+
+                    for (int tid : g->textMarkerKeys()) {
+                        Legend *tm = g->textMarker(tid);
+                        if (!tm || tm == leg || !tm->isVisible() || tm->text().trimmed().isEmpty())
+                            continue;
+                        QRect curRect = tm->rect();
+                        const bool isOutsideBadge =
+                                kOutsideBadgeCheckRx.match(tm->text().trimmed()).hasMatch()
+                                && (curRect.left() < 0 || curRect.top() < 0);
+                        if (isOutsideBadge)
+                            continue;
+
+                        const bool isPinnedX = isPinnedPeakOrBracketCallout(tm->text());
+                        if (!isPinnedX) {
+                            const int maxAvailW = std::max(36, canvasRect.width() - 2 * spinePad);
+                            if (curRect.width() > maxAvailW
+                                && fitWideCalloutToCanvas(g, plt, tm, maxAvailW)) {
+                                curRect = tm->rect();
+                                actionsTaken.append(
+                                        QStringLiteral("Auto-fitted wide text callout '%1' on layer %2")
+                                                .arg(tm->text().simplified().left(24))
+                                                .arg(li));
+                            }
+                        }
+
+                        const int w = std::max(12, curRect.width());
+                        const int h = std::max(10, curRect.height());
+                        int tightW = w;
+                        if (isPinnedX && tm->frameStyle() == Legend::None) {
+                            static const QRegularExpression rxStripHtml(QStringLiteral("<[^>]+>"));
+                            QString plainPin = tm->text();
+                            plainPin.remove(rxStripHtml);
+                            plainPin = plainPin.trimmed();
+                            const int advW = QFontMetrics(tm->font()).horizontalAdvance(plainPin);
+                            if (advW > 0)
+                                tightW = std::clamp(advW + 7, 12, w);
+                        }
+                        const int padX = isPinnedX
+                                ? 4
+                                : ((canvasRect.width() - w >= 2 * spinePad)
+                                           ? spinePad
+                                           : std::max(2, (canvasRect.width() - w) / 2));
+                        const int padTop = (canvasRect.height() - h >= 2 * spinePad)
+                                ? spinePad
+                                : std::max(2, (canvasRect.height() - h) / 2);
+                        const int padBot = isPinnedX ? 4 : padTop;
+                        const QRect safeMarginRect(
+                                padX, padTop,
+                                std::max(1, canvasRect.width() - 2 * padX),
+                                std::max(1, canvasRect.height() - padTop - padBot));
+
+                        const QRect curHitRect(curRect.x(), curRect.y(), tightW, h);
+                        int sibHits = 0;
+                        for (const QRect &otherR : placedCalloutRects) {
+                            if (curHitRect.adjusted(-5, -4, 5, 4).intersects(otherR))
+                                sibHits += 100;
+                        }
+                        const int clipPenalty = safeMarginRect.contains(curRect) ? 0 : 500;
+                        int curHits = countCalloutCurveHits(plt, g, curHitRect)
+                                + ((legVis && curHitRect.adjusted(-2, -2, 2, 2).intersects(legRect))
+                                           ? 100
+                                           : 0)
+                                + sibHits + clipPenalty;
+                        if (curHits <= 0) {
+                            placedCalloutRects.append(curHitRect);
+                            continue;
+                        }
+
+                        auto searchCalloutPocket = [&](QPoint &outOrigin, int &outHits) {
+                            const int minX = padX;
+                            const int maxX = std::max(minX, canvasRect.width() - w - padX);
+                            const int minY = padTop;
+                            const int maxY = std::max(minY, canvasRect.height() - h - padBot);
+
+                            const int anchorX = std::clamp(curRect.x(), minX, maxX);
+                            const int anchorY = std::clamp(curRect.y(), minY, maxY);
+                            outOrigin = QPoint(anchorX, anchorY);
+                            const QRect clampedInit(outOrigin, QSize(tightW, h));
+                            int initHits = countCalloutCurveHits(plt, g, clampedInit);
+                            if (legVis && clampedInit.adjusted(-4, -4, 4, 4).intersects(legRect))
+                                initHits += 100;
+                            for (const QRect &otherR : placedCalloutRects) {
+                                if (clampedInit.adjusted(-3, -3, 3, 3).intersects(otherR))
+                                    initHits += 100;
+                            }
+                            outHits = initHits;
+                            int bestCost = initHits * 10000
+                                    + std::abs(outOrigin.x() - anchorX) * (isPinnedX ? 50 : 1)
+                                    + std::abs(outOrigin.y() - curRect.y());
+                            if (initHits == 0 && outOrigin == curRect.topLeft())
+                                return;
+
+                            QVector<QPoint> candidates;
+                            if (isPinnedX) {
+                                // Crystallographic (hkl) peak labels & significance stars:
+                                // keep X anchored over the peak (within <= 6 px of clamped anchorX) and lift vertically!
+                                static const int kPinDx[5] = { 0, -3, 3, -6, 6 };
+                                for (int dy = 0; dy >= -canvasRect.height(); dy -= 6) {
+                                    for (int dx : kPinDx)
+                                        candidates.append(QPoint(anchorX + dx, curRect.y() + dy));
+                                }
+                                for (int dy = 6; dy <= 18; dy += 6) {
+                                    for (int dx : kPinDx)
+                                        candidates.append(QPoint(anchorX + dx, curRect.y() + dy));
+                                }
+                            } else {
+                                static const int kOffsets[12][2] = {
+                                    { 0, -28 },  { 0, 28 },   { 28, -24 }, { -28, -24 },
+                                    { 28, 24 },  { -28, 24 }, { 0, -52 },  { 0, 52 },
+                                    { 56, 0 },   { -56, 0 },  { 56, -44 }, { -56, -44 }
+                                };
+                                for (const auto &off : kOffsets)
+                                    candidates.append(curRect.topLeft() + QPoint(off[0], off[1]));
+                                for (int gy = 0; gy < 5; ++gy) {
+                                    for (int gx = 0; gx < 5; ++gx) {
+                                        const int cx = minX
+                                                + gx * std::max(4, (maxX - minX) / 4);
+                                        const int cy = minY
+                                                + gy * std::max(4, (maxY - minY) / 4);
+                                        candidates.append(QPoint(cx, cy));
+                                    }
+                                }
+                            }
+
+                            for (const QPoint &pt : candidates) {
+                                const int clampedX = std::clamp(pt.x(), minX, maxX);
+                                const int clampedY = std::clamp(pt.y(), minY, maxY);
+                                if (isPinnedX && std::abs(clampedX - anchorX) > 8)
+                                    continue;
+                                const QRect candRect(clampedX, clampedY, tightW, h);
+                                if (legVis && candRect.adjusted(-4, -4, 4, 4).intersects(legRect))
+                                    continue;
+                                bool hitsSibling = false;
+                                for (const QRect &otherR : placedCalloutRects) {
+                                    if (candRect.adjusted(-5, -4, 5, 4).intersects(otherR)) {
+                                        hitsSibling = true;
+                                        break;
+                                    }
+                                }
+                                if (hitsSibling)
+                                    continue;
+                                const int hits = countCalloutCurveHits(plt, g, candRect);
+                                const int dxAbs = std::abs(candRect.x() - anchorX);
+                                const int dyAbs = std::abs(candRect.y() - curRect.y());
+                                const int dist = isPinnedX ? (dxAbs * 50 + dyAbs) : (dxAbs + dyAbs);
+                                const int cost = hits * 10000 + dist;
+                                if (cost < bestCost) {
+                                    bestCost = cost;
+                                    outHits = hits;
+                                    outOrigin = candRect.topLeft();
+                                    if (hits == 0 && !isPinnedX && dist <= 80)
+                                        break;
+                                    if (hits == 0 && isPinnedX && dxAbs == 0)
+                                        break;
+                                }
+                            }
+                        };
+
+                        QPoint bestOrigin = curRect.topLeft();
+                        int bestHits = curHits;
+                        searchCalloutPocket(bestOrigin, bestHits);
+
+                        // Dual-Y / dense canvas / tall XRD peak headroom escalation
+                        if (bestHits > 0 && !addedCalloutHeadroom) {
+                            if (expandLinearYHeadroom(isPinnedX ? 0.26 : 0.22)) {
+                                addedCalloutHeadroom = true;
+                                if (legVis && g->property("_outsideRightMargin").toInt() <= 0) {
+                                    ScopedCalloutHideGuard hg(g);
+                                    double sc = 0.0;
+                                    g->placeLegendAnchor(Graph::LegendAutoAvoidData, &sc, 10);
+                                }
+                                g->replot();
+                                plt->updateLayout();
+                                canvasRect = plt->canvas()
+                                        ? QRect(0, 0, plt->canvas()->width(),
+                                                plt->canvas()->height())
+                                        : QRect(0, 0, g->width(), g->height());
+                                legVis = g->isLegendVisible() && leg
+                                        && !leg->text().trimmed().isEmpty();
+                                legRect = legVis ? leg->rect() : QRect();
+                                curRect = tm->rect();
+                                placedCalloutRects.clear();
+                                for (int prevTid : g->textMarkerKeys()) {
+                                    if (prevTid == tid)
+                                        break;
+                                    Legend *prevTm = g->textMarker(prevTid);
+                                    if (prevTm && prevTm != leg && prevTm->isVisible()
+                                        && !prevTm->text().trimmed().isEmpty()) {
+                                        QRect pr = prevTm->rect();
+                                        if (isPinnedPeakOrBracketCallout(prevTm->text())
+                                            && prevTm->frameStyle() == Legend::None) {
+                                            static const QRegularExpression rxStripHtmlPrev(
+                                                    QStringLiteral("<[^>]+>"));
+                                            QString pPlain = prevTm->text();
+                                            pPlain.remove(rxStripHtmlPrev);
+                                            const int pAdv = QFontMetrics(prevTm->font())
+                                                                     .horizontalAdvance(pPlain.trimmed());
+                                            if (pAdv > 0)
+                                                pr.setWidth(std::clamp(pAdv + 12, 12, pr.width()));
+                                        }
+                                        placedCalloutRects.append(pr);
+                                    }
+                                }
+                                searchCalloutPocket(bestOrigin, bestHits);
+                                actionsTaken.append(
+                                        QStringLiteral("Added Y-axis headroom on layer %1 for callout clearance")
+                                                .arg(li));
+                            }
+                        }
+
+                        if (bestOrigin != curRect.topLeft()) {
+                            const int xAxM = (tm->xAxis() == QwtPlot::xTop) ? QwtPlot::xTop
+                                                                            : QwtPlot::xBottom;
+                            const int yAxM = (tm->yAxis() == QwtPlot::yRight) ? QwtPlot::yRight
+                                                                              : QwtPlot::yLeft;
+                            const double newX = plt->invTransform(xAxM, bestOrigin.x());
+                            const double newY = plt->invTransform(yAxM, bestOrigin.y());
+                            if (std::isfinite(newX) && std::isfinite(newY)) {
+                                tm->setOriginCoord(newX, newY);
+                                g->replot();
+                                plt->updateLayout();
+                                actionsTaken.append(
+                                        QStringLiteral("Relocated overlapping text callout '%1' on layer %2")
+                                                .arg(tm->text().simplified().left(24))
+                                                .arg(li));
+                            }
+                        }
+                        QRect finalR = tm->rect();
+                        if (isPinnedX && tm->frameStyle() == Legend::None)
+                            finalR.setWidth(std::clamp(tightW, 12, std::max(12, finalR.width())));
+                        placedCalloutRects.append(finalR);
+                    }
+                }
+            }
+        }
+    }
+
+    for (Graph *lg : ml->layersList()) {
+        if (lg) {
+            enforceArialGraphFonts(lg);
+            lg->replot();
+        }
+    }
+
+    const QJsonObject afterSnap = inspectGraphDetailed(ml, true, true);
+    const QJsonArray afterWarnings = afterSnap.value(QStringLiteral("warnings")).toArray();
+    const QJsonArray afterCodes = afterSnap.value(QStringLiteral("warning_codes")).toArray();
+
+    if (dryRun) {
+        ml->restoreSnapshotInPlace(app, dryBeforeXml);
+    } else if (undoGuard && !actionsTaken.isEmpty()) {
+        undoGuard->commit();
+    }
+
+    QJsonObject res;
+    res[QStringLiteral("ok")] = true;
+    res[QStringLiteral("graph")] = ml->name();
+    res[QStringLiteral("dry_run")] = dryRun;
+    res[QStringLiteral("passes")] = passesExecuted;
+    res[QStringLiteral("healthy")] = afterWarnings.isEmpty();
+    res[QStringLiteral("before_warning_count")] = beforeWarnings.size();
+    res[QStringLiteral("after_warning_count")] = afterWarnings.size();
+    res[QStringLiteral("before_warnings")] = beforeWarnings;
+    res[QStringLiteral("after_warnings")] = afterWarnings;
+    res[QStringLiteral("before_warning_codes")] = beforeCodes;
+    res[QStringLiteral("after_warning_codes")] = afterCodes;
+    res[QStringLiteral("actions_taken")] = toJsonArray(actionsTaken);
+    res[QStringLiteral("actions")] = toJsonArray(actionsTaken);
+    return res;
+}
+
+QString pyEscapeStr(const QString &raw)
+{
+    const QString s = sanitizeUtf16Surrogates(raw);
+    QString out;
+    out.reserve(s.size() + 8);
+    out.append(QLatin1Char('\''));
+    for (int i = 0; i < s.size(); ++i) {
+        const ushort u = s.at(i).unicode();
+        if (u == '\\')
+            out.append(QStringLiteral("\\\\"));
+        else if (u == '\'')
+            out.append(QStringLiteral("\\'"));
+        else if (u == '\n')
+            out.append(QStringLiteral("\\n"));
+        else if (u == '\r')
+            out.append(QStringLiteral("\\r"));
+        else if (u == '\t')
+            out.append(QStringLiteral("\\t"));
+        else if (u < 0x20)
+            out.append(QStringLiteral("\\x%1").arg(u, 2, 16, QLatin1Char('0')));
+        else
+            out.append(s.at(i));
+    }
+    out.append(QLatin1Char('\''));
+    return out;
+}
+
+QString pyFormatNum(double v)
+{
+    if (!std::isfinite(v))
+        return QStringLiteral("None");
+    if (v == 0.0)
+        return QStringLiteral("0.0");
+    return QString::number(v, 'g', 12);
+}
+
+QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, bool standalone,
+                                     const QString &embedDataRaw, const QString &csvSidecarDir,
+                                     QStringList *outTables, QStringList *outMatrices)
+{
+    if (outTables)
+        outTables->clear();
+    if (outMatrices)
+        outMatrices->clear();
+    if (!app || !window)
+        return QString();
+
+    QString embedMode = embedDataRaw.trimmed().toLower();
+    if (embedMode.isEmpty())
+        embedMode = QStringLiteral("inline");
+
+    QVector<Table *> refTables;
+    QVector<Matrix *> refMatrices;
+    auto addTableRef = [&](Table *t) {
+        if (t && !refTables.contains(t)) {
+            refTables.append(t);
+            if (outTables)
+                outTables->append(t->name());
+        }
+    };
+    auto addMatrixRef = [&](Matrix *m) {
+        if (m && !refMatrices.contains(m)) {
+            refMatrices.append(m);
+            if (outMatrices)
+                outMatrices->append(m->name());
+        }
+    };
+
+    if (window->inherits("Table")) {
+        addTableRef(static_cast<Table *>(window));
+    } else if (window->inherits("Matrix")) {
+        addMatrixRef(static_cast<Matrix *>(window));
+    } else if (window->inherits("Graph3D")) {
+        auto *g3d = static_cast<Graph3D *>(window);
+        if (g3d->matrix())
+            addMatrixRef(g3d->matrix());
+        if (g3d->getTable())
+            addTableRef(g3d->getTable());
+    } else if (window->inherits("MultiLayer")) {
+        auto *ml = static_cast<MultiLayer *>(window);
+        for (Graph *lg : ml->layersList()) {
+            if (!lg)
+                continue;
+            for (int ci = 0; ci < lg->curves(); ++ci) {
+                if (auto *dc = dynamic_cast<DataCurve *>(lg->curve(ci))) {
+                    addTableRef(dc->table());
+                    for (DataCurve *eb : dc->errorBarsList()) {
+                        if (eb)
+                            addTableRef(eb->table());
+                    }
+                }
+            }
+            if (lg->plotWidget()) {
+                for (QwtPlotItem *it : lg->plotWidget()->itemList()) {
+                    if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                        if (auto *sp = dynamic_cast<Spectrogram *>(it))
+                            addMatrixRef(sp->matrix());
+                    }
+                }
+            }
+        }
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("# Auto-generated reproducible ToriGraph script");
+    lines << QStringLiteral("import torigraph as tg");
+    lines << QString();
+    if (standalone) {
+        lines << QStringLiteral("app = tg.connect()");
+        lines << QString();
+    }
+
+    QHash<Table *, QString> tblVarMap;
+    for (int ti = 0; ti < refTables.size(); ++ti) {
+        Table *t = refTables[ti];
+        const QString varName =
+                (refTables.size() == 1) ? QStringLiteral("tbl")
+                                        : QStringLiteral("tbl_%1").arg(ti + 1);
+        tblVarMap.insert(t, varName);
+
+        if (embedMode == QStringLiteral("reference")) {
+            lines << QStringLiteral("%1 = app.table(%2)").arg(varName, pyEscapeStr(t->name()));
+            continue;
+        }
+        if (embedMode == QStringLiteral("csv")) {
+            const QString csvName = QStringLiteral("%1.csv").arg(t->name());
+            QString csvRefPath = csvName;
+            if (!csvSidecarDir.isEmpty()) {
+                const QString fullCsv = QDir(csvSidecarDir).filePath(csvName);
+                t->exportASCII(fullCsv, QStringLiteral(","), true, false);
+                csvRefPath = fullCsv;
+            }
+            lines << QStringLiteral("%1 = app.import_csv(%2, name=%3)")
+                             .arg(varName, pyEscapeStr(csvRefPath), pyEscapeStr(t->name()));
+            continue;
+        }
+
+        // Inline data emission
+        lines << QStringLiteral("%1 = app.create_table(rows=%2, cols=%3, name=%4)")
+                         .arg(varName)
+                         .arg(t->numRows())
+                         .arg(t->numCols())
+                         .arg(pyEscapeStr(t->name()));
+        QStringList dataEntries, unitEntries, longEntries, desigEntries;
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            const QString cLbl = t->colLabel(c);
+            QStringList vals;
+            const int nR = t->numRows();
+            for (int r = 0; r < nR; ++r) {
+                if (!col || col->isInvalid(r)) {
+                    vals << QStringLiteral("None");
+                } else if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    vals << pyFormatNum(col->valueAt(r));
+                } else {
+                    vals << pyEscapeStr(col->textAt(r));
+                }
+            }
+            dataEntries << QStringLiteral("        %1: [%2]").arg(pyEscapeStr(cLbl),
+                                                                  vals.join(QStringLiteral(", ")));
+            if (!t->colUnits(c).trimmed().isEmpty()) {
+                unitEntries << QStringLiteral("%1: %2").arg(pyEscapeStr(cLbl),
+                                                            pyEscapeStr(t->colUnits(c).trimmed()));
+            }
+            if (!t->colLongName(c).trimmed().isEmpty()) {
+                longEntries << QStringLiteral("%1: %2").arg(
+                        pyEscapeStr(cLbl), pyEscapeStr(t->colLongName(c).trimmed()));
+            }
+            const int pd = t->colPlotDesignation(c);
+            if (pd == SciDAVis::X)
+                desigEntries << QStringLiteral("%1: 'X'").arg(pyEscapeStr(cLbl));
+            else if (pd == SciDAVis::Y)
+                desigEntries << QStringLiteral("%1: 'Y'").arg(pyEscapeStr(cLbl));
+            else if (pd == SciDAVis::Z)
+                desigEntries << QStringLiteral("%1: 'Z'").arg(pyEscapeStr(cLbl));
+            else if (pd == SciDAVis::xErr)
+                desigEntries << QStringLiteral("%1: 'xErr'").arg(pyEscapeStr(cLbl));
+            else if (pd == SciDAVis::yErr)
+                desigEntries << QStringLiteral("%1: 'yErr'").arg(pyEscapeStr(cLbl));
+        }
+        lines << QStringLiteral("%1.set_data_dict(").arg(varName);
+        lines << QStringLiteral("    {\n%1\n    },").arg(dataEntries.join(QStringLiteral(",\n")));
+        if (!unitEntries.isEmpty())
+            lines << QStringLiteral("    units={%1},").arg(unitEntries.join(QStringLiteral(", ")));
+        if (!longEntries.isEmpty()) {
+            lines << QStringLiteral("    long_names={%1},")
+                             .arg(longEntries.join(QStringLiteral(", ")));
+        }
+        if (!desigEntries.isEmpty()) {
+            lines << QStringLiteral("    designations={%1},")
+                             .arg(desigEntries.join(QStringLiteral(", ")));
+        }
+        lines << QStringLiteral(")");
+
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!col)
+                continue;
+            const QString fStr = col->formula(0).trimmed();
+            if (!fStr.isEmpty()) {
+                lines << QStringLiteral("%1.set_formula(%2, %3)")
+                                 .arg(varName, pyEscapeStr(t->colLabel(c)), pyEscapeStr(fStr));
+            }
+            QStringList maskedIdx;
+            for (int r = 0; r < t->numRows(); ++r) {
+                if (col->isMasked(r))
+                    maskedIdx << QString::number(r);
+            }
+            if (!maskedIdx.isEmpty()) {
+                lines << QStringLiteral("%1.mask_rows([%2], col=%3)")
+                                 .arg(varName, maskedIdx.join(QStringLiteral(", ")),
+                                      pyEscapeStr(t->colLabel(c)));
+            }
+        }
+        lines << QString();
+    }
+
+    QHash<Matrix *, QString> matVarMap;
+    for (int mi = 0; mi < refMatrices.size(); ++mi) {
+        Matrix *m = refMatrices[mi];
+        const QString varName =
+                (refMatrices.size() == 1) ? QStringLiteral("mat")
+                                          : QStringLiteral("mat_%1").arg(mi + 1);
+        matVarMap.insert(m, varName);
+        if (embedMode == QStringLiteral("reference")) {
+            lines << QStringLiteral("%1 = app.matrix(%2)").arg(varName, pyEscapeStr(m->name()));
+            continue;
+        }
+        lines << QStringLiteral(
+                         "%1 = app.create_matrix(rows=%2, cols=%3, name=%4, x_min=%5, x_max=%6, y_min=%7, y_max=%8)")
+                         .arg(varName)
+                         .arg(m->numRows())
+                         .arg(m->numCols())
+                         .arg(pyEscapeStr(m->name()))
+                         .arg(pyFormatNum(m->xStart()))
+                         .arg(pyFormatNum(m->xEnd()))
+                         .arg(pyFormatNum(m->yStart()))
+                         .arg(pyFormatNum(m->yEnd()));
+        if (!m->formula().trimmed().isEmpty()) {
+            lines << QStringLiteral("%1.set_formula(%2)")
+                             .arg(varName, pyEscapeStr(m->formula().trimmed()));
+        } else {
+            QStringList rowLiterals;
+            for (int r = 0; r < m->numRows(); ++r) {
+                QStringList cellLiterals;
+                for (int c = 0; c < m->numCols(); ++c)
+                    cellLiterals << pyFormatNum(m->cell(r, c));
+                rowLiterals << QStringLiteral("    [%1]").arg(
+                        cellLiterals.join(QStringLiteral(", ")));
+            }
+            lines << QStringLiteral("%1.set_data([\n%2\n])")
+                             .arg(varName, rowLiterals.join(QStringLiteral(",\n")));
+        }
+        lines << QString();
+    }
+
+    if (window->inherits("Graph3D")) {
+        auto *g3d = static_cast<Graph3D *>(window);
+        if (g3d->matrix() && matVarMap.contains(g3d->matrix())) {
+            lines << QStringLiteral("g3 = app.plot_3d_matrix(%1.name)")
+                             .arg(matVarMap.value(g3d->matrix()));
+        } else if (g3d->getTable() && tblVarMap.contains(g3d->getTable())) {
+            Table *t3 = g3d->getTable();
+            const QString c0 = (t3->numCols() > 0) ? t3->colLabel(0) : QStringLiteral("1");
+            const QString c1 = (t3->numCols() > 1) ? t3->colLabel(1) : c0;
+            const QString c2 = (t3->numCols() > 2) ? t3->colLabel(2) : c1;
+            lines << QStringLiteral("g3 = app.plot_3d_xyz(%1.name, %2, %3, %4)")
+                             .arg(tblVarMap.value(t3), pyEscapeStr(c0), pyEscapeStr(c1),
+                                  pyEscapeStr(c2));
+        } else if (!g3d->formula().trimmed().isEmpty()) {
+            lines << QStringLiteral(
+                             "g3 = app.plot_3d_function(%1, x_min=%2, x_max=%3, y_min=%4, y_max=%5)")
+                             .arg(pyEscapeStr(g3d->formula().trimmed()),
+                                  pyFormatNum(g3d->xStart()), pyFormatNum(g3d->xStop()),
+                                  pyFormatNum(g3d->yStart()), pyFormatNum(g3d->yStop()));
+        }
+        lines << QStringLiteral(
+                         "g3.set_3d_options(title=%1, x_rotation=%2, y_rotation=%3, z_rotation=%4, orthogonal=%5)")
+                         .arg(pyEscapeStr(g3d->plotTitle()), pyFormatNum(g3d->xRotation()),
+                              pyFormatNum(g3d->yRotation()), pyFormatNum(g3d->zRotation()),
+                              g3d->isOrthogonal() ? QStringLiteral("True")
+                                                  : QStringLiteral("False"));
+        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+    }
+
+    if (!window->inherits("MultiLayer"))
+        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+
+    auto *ml = static_cast<MultiLayer *>(window);
+    const QList<Graph *> layers = ml->layersList();
+    if (layers.isEmpty())
+        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+
+    auto curveStyleStr = [](Graph *lg, int ci) -> QString {
+        const int ct = lg->curveType(ci);
+        if (ct == Graph::Line)
+            return QStringLiteral("line");
+        if (ct == Graph::Scatter)
+            return QStringLiteral("scatter");
+        if (ct == Graph::Spline)
+            return QStringLiteral("spline");
+        if (ct == Graph::VerticalBars)
+            return QStringLiteral("vertical_bars");
+        if (ct == Graph::HorizontalBars)
+            return QStringLiteral("horizontal_bars");
+        if (ct == Graph::Area)
+            return QStringLiteral("area");
+        if (ct == Graph::VerticalSteps)
+            return QStringLiteral("vertical_steps");
+        if (ct == Graph::HorizontalSteps)
+            return QStringLiteral("horizontal_steps");
+        if (ct == Graph::VerticalDropLines)
+            return QStringLiteral("drop_lines");
+        return QStringLiteral("line_symbol");
+    };
+
+    auto penStyleStr = [](Qt::PenStyle ps) -> QString {
+        if (ps == Qt::NoPen)
+            return QStringLiteral("none");
+        if (ps == Qt::DashLine)
+            return QStringLiteral("--");
+        if (ps == Qt::DotLine)
+            return QStringLiteral(":");
+        if (ps == Qt::DashDotLine || ps == Qt::DashDotDotLine)
+            return QStringLiteral("-.");
+        return QStringLiteral("-");
+    };
+
+    auto symStyleStr = [](QwtSymbol::Style st) -> QString {
+        switch (st) {
+        case QwtSymbol::Ellipse:
+            return QStringLiteral("o");
+        case QwtSymbol::Rect:
+            return QStringLiteral("s");
+        case QwtSymbol::UTriangle:
+        case QwtSymbol::Triangle:
+            return QStringLiteral("^");
+        case QwtSymbol::DTriangle:
+            return QStringLiteral("v");
+        case QwtSymbol::LTriangle:
+            return QStringLiteral("<");
+        case QwtSymbol::RTriangle:
+            return QStringLiteral(">");
+        case QwtSymbol::Diamond:
+            return QStringLiteral("D");
+        case QwtSymbol::Cross:
+            return QStringLiteral("+");
+        case QwtSymbol::XCross:
+            return QStringLiteral("x");
+        case QwtSymbol::Star1:
+        case QwtSymbol::Star2:
+            return QStringLiteral("*");
+        case QwtSymbol::Hexagon:
+            return QStringLiteral("h");
+        default:
+            return QStringLiteral("none");
+        }
+    };
+
+    // Emit Layer 0 base plot
+    Graph *g0 = layers.first();
+    bool emittedBasePlot = false;
+    bool l0HandledAllCurves = false;
+    int firstEmittedCurveOnL0 = -1;
+    QSet<int> preCreatedPrimaryLayers;
+    QSet<QPair<int, int>> preHandledLayerCurves;
+    if (g0 && g0->plotWidget()) {
+        for (QwtPlotItem *it : g0->plotWidget()->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                    if (sp->matrix() && matVarMap.contains(sp->matrix())) {
+                        lines << QStringLiteral("g = app.plot_matrix(%1.name, graph_name=%2)")
+                                         .arg(matVarMap.value(sp->matrix()),
+                                              pyEscapeStr(ml->name()));
+                        const QwtDoubleInterval zInt = sp->effectiveValueRange();
+                        lines << QStringLiteral(
+                                         "g.set_colorbar(z_min=%1, z_max=%2, title=%3, levels=%4)")
+                                         .arg(pyFormatNum(zInt.minValue()),
+                                              pyFormatNum(zInt.maxValue()),
+                                              pyEscapeStr(sp->colorBarTitle()))
+                                         .arg(sp->levels());
+                        emittedBasePlot = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!emittedBasePlot && g0 && g0->isTernaryPlot()) {
+        QString lblA = QStringLiteral("A");
+        QString lblB = QStringLiteral("B");
+        QString lblC = QStringLiteral("C");
+        {
+            const QString savedG0 = g0->saveToString();
+            static const QRegularExpression rxAttrT(
+                    QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
+            for (const QString &rawLn : savedG0.split(QLatin1Char('\n'))) {
+                const QString ln = rawLn.trimmed();
+                if (!ln.startsWith(QStringLiteral("<ToriTernary")))
+                    continue;
+                auto ait = rxAttrT.globalMatch(ln);
+                while (ait.hasNext()) {
+                    const auto m = ait.next();
+                    if (m.captured(1) == QStringLiteral("a") && !m.captured(2).isEmpty())
+                        lblA = m.captured(2);
+                    else if (m.captured(1) == QStringLiteral("b") && !m.captured(2).isEmpty())
+                        lblB = m.captured(2);
+                    else if (m.captured(1) == QStringLiteral("c") && !m.captured(2).isEmpty())
+                        lblC = m.captured(2);
+                }
+            }
+            if (lblB == lblA)
+                lblB = lblB + QStringLiteral("_B");
+            if (lblC == lblA || lblC == lblB)
+                lblC = lblC + QStringLiteral("_C");
+        }
+        QStringList aVals, bVals, cVals;
+        const double invH = 2.0 / std::sqrt(3.0);
+        for (int ci = 0; ci < g0->curves(); ++ci) {
+            QwtPlotCurve *c = g0->curve(ci);
+            if (!c || g0->curveType(ci) == Graph::ErrorBars)
+                continue;
+            auto *dc = dynamic_cast<DataCurve *>(c);
+            const bool checkMasksT = (dc != nullptr) && dc->hasAnyMaskedPoints();
+            Column *maskXColT = nullptr;
+            Column *maskYColT = nullptr;
+            if (checkMasksT)
+                dc->resolveColumns(maskXColT, maskYColT);
+            for (int k = 0; k < static_cast<int>(c->dataSize()); ++k) {
+                if (checkMasksT && dc->isPointMaskedFast(k, maskXColT, maskYColT))
+                    continue;
+                const double xv = c->x(k);
+                const double yv = c->y(k);
+                if (!std::isfinite(xv) || !std::isfinite(yv))
+                    continue;
+                const double cn = yv * invH;
+                const double bn = xv - 0.5 * cn;
+                const double an = 1.0 - bn - cn;
+                aVals << pyFormatNum(100.0 * an);
+                bVals << pyFormatNum(100.0 * bn);
+                cVals << pyFormatNum(100.0 * cn);
+            }
+            break;
+        }
+        if (!aVals.isEmpty()) {
+            lines << QStringLiteral("_tbl_tern = app.create_table(rows=%1, cols=3, name='TernaryComp')")
+                             .arg(aVals.size());
+            lines << QStringLiteral("_tbl_tern.set_data_dict({%1: [%2], %3: [%4], %5: [%6]})")
+                             .arg(pyEscapeStr(lblA), aVals.join(QStringLiteral(", ")),
+                                  pyEscapeStr(lblB), bVals.join(QStringLiteral(", ")),
+                                  pyEscapeStr(lblC), cVals.join(QStringLiteral(", ")));
+            lines << QStringLiteral("g = app.plot_ternary(_tbl_tern.name, %1, %2, %3, graph_name=%4)")
+                             .arg(pyEscapeStr(lblA), pyEscapeStr(lblB), pyEscapeStr(lblC),
+                                  pyEscapeStr(ml->name()));
+            emittedBasePlot = true;
+            l0HandledAllCurves = true;
+        }
+    }
+    if (!emittedBasePlot && g0 && invokeGraphIsPolarPlot(g0)) {
+        // Check if Curve 0 is an analytical FunctionCurve::Polar first
+        FunctionCurve *fc0 = (g0->curves() > 0) ? dynamic_cast<FunctionCurve *>(g0->curve(0))
+                                                : nullptr;
+        if (!fc0) {
+            QStringList thVals;
+            QStringList rColEntries;
+            QStringList rColNames;
+            int maxLen = 0;
+            constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+            for (int ci = 0; ci < g0->curves(); ++ci) {
+                QwtPlotCurve *c = g0->curve(ci);
+                if (!c || g0->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                QStringList curR, curTh;
+                for (int k = 0; k < static_cast<int>(c->dataSize()); ++k) {
+                    const double xv = c->x(k);
+                    const double yv = c->y(k);
+                    if (!std::isfinite(xv) || !std::isfinite(yv))
+                        continue;
+                    const double rv = std::hypot(xv, yv);
+                    double deg = std::atan2(yv, xv) * kRadToDeg;
+                    if (deg < -1e-9)
+                        deg += 360.0;
+                    curTh << pyFormatNum(deg);
+                    curR << pyFormatNum(rv);
+                }
+                if (curR.isEmpty())
+                    continue;
+                if (thVals.isEmpty()) {
+                    thVals = curTh;
+                    maxLen = thVals.size();
+                } else {
+                    while (curR.size() < maxLen)
+                        curR << QStringLiteral("None");
+                    while (curR.size() > maxLen)
+                        curR.removeLast();
+                }
+                QString rName = c->title().text().trimmed();
+                if (rName.isEmpty() || rName == QStringLiteral("Theta")
+                    || rColNames.contains(rName)) {
+                    rName = QStringLiteral("R_%1").arg(rColNames.size() + 1);
+                }
+                rColNames << rName;
+                rColEntries << QStringLiteral("%1: [%2]").arg(
+                        pyEscapeStr(rName), curR.join(QStringLiteral(", ")));
+            }
+            if (!thVals.isEmpty() && !rColNames.isEmpty()) {
+                QStringList qRNames;
+                for (const QString &rn : rColNames)
+                    qRNames << pyEscapeStr(rn);
+                lines << QStringLiteral("_tbl_polar = app.create_table(rows=%1, cols=%2, name='PolarData')")
+                                 .arg(maxLen)
+                                 .arg(1 + rColNames.size());
+                lines << QStringLiteral("_tbl_polar.set_data_dict({'Theta': [%1], %2})")
+                                 .arg(thVals.join(QStringLiteral(", ")),
+                                      rColEntries.join(QStringLiteral(", ")));
+                lines << QStringLiteral(
+                                 "g = app.plot_polar(_tbl_polar.name, theta_col='Theta', r_cols=[%1], theta_in_radians=False, graph_name=%2)")
+                                 .arg(qRNames.join(QStringLiteral(", ")), pyEscapeStr(ml->name()));
+                emittedBasePlot = true;
+                l0HandledAllCurves = true;
+            }
+        }
+    }
+    if (!emittedBasePlot && g0 && g0->isPiePlot()) {
+        for (int ci = 0; ci < g0->curves(); ++ci) {
+            auto *dc = dynamic_cast<DataCurve *>(g0->curve(ci));
+            Table *ct = dc ? dc->table() : nullptr;
+            const int yIdx = ct ? ct->colIndex(dc->yColumnName()) : -1;
+            if (ct && tblVarMap.contains(ct) && yIdx >= 0) {
+                int lblIdx = -1;
+                for (int c = 0; c < ct->numCols(); ++c) {
+                    if (c != yIdx && ct->column(c)
+                        && ct->column(c)->columnMode() == SciDAVis::ColumnMode::Text) {
+                        lblIdx = c;
+                        break;
+                    }
+                }
+                const QString lblKw = (lblIdx >= 0)
+                        ? QStringLiteral(", label_col=%1").arg(pyEscapeStr(ct->colLabel(lblIdx)))
+                        : QString();
+                lines << QStringLiteral("g = app.plot_pie(%1.name, col=%2%3, graph_name=%4)")
+                                 .arg(tblVarMap.value(ct), pyEscapeStr(ct->colLabel(yIdx)), lblKw,
+                                      pyEscapeStr(ml->name()));
+                emittedBasePlot = true;
+                l0HandledAllCurves = true;
+                break;
+            }
+        }
+    }
+    if (!emittedBasePlot && g0) {
+        BoxCurve *bc0 = nullptr;
+        for (int ci = 0; ci < g0->curves(); ++ci) {
+            if (auto *bc = dynamic_cast<BoxCurve *>(g0->curve(ci))) {
+                bc0 = bc;
+                break;
+            }
+        }
+        Table *ctBox = bc0 ? bc0->table() : nullptr;
+        if (bc0 && ctBox && tblVarMap.contains(ctBox)) {
+            QStringList qBoxCols;
+            for (int ci = 0; ci < g0->curves(); ++ci) {
+                if (auto *bc = dynamic_cast<BoxCurve *>(g0->curve(ci))) {
+                    if (bc->table() == ctBox) {
+                        const int yIdx = ctBox->colIndex(bc->yColumnName());
+                        if (yIdx >= 0)
+                            qBoxCols << pyEscapeStr(ctBox->colLabel(yIdx));
+                    }
+                }
+            }
+            if (!qBoxCols.isEmpty()) {
+                if (bc0->violinMode()) {
+                    lines << QStringLiteral(
+                                     "g = app.plot_violin(%1.name, cols=[%2], show_points=%3, graph_name=%4)")
+                                     .arg(tblVarMap.value(ctBox),
+                                          qBoxCols.join(QStringLiteral(", ")),
+                                          bc0->showDataPoints() ? QStringLiteral("True")
+                                                                : QStringLiteral("False"),
+                                          pyEscapeStr(ml->name()));
+                } else {
+                    QString wExtra;
+                    const int wType = bc0->whiskersRangeType();
+                    if (wType == BoxCurve::MinMax)
+                        wExtra = QStringLiteral(", whisker_mode='minmax'");
+                    else if (wType == BoxCurve::SD)
+                        wExtra = QStringLiteral(", whisker_mode='sd'");
+                    else if (wType == BoxCurve::SE)
+                        wExtra = QStringLiteral(", whisker_mode='se'");
+                    else if (wType == BoxCurve::r5_95)
+                        wExtra = QStringLiteral(", whisker_mode='p5_95'");
+                    lines << QStringLiteral(
+                                     "g = app.plot_box(%1.name, cols=[%2], notched=%3, show_points=%4%5, graph_name=%6)")
+                                     .arg(tblVarMap.value(ctBox),
+                                          qBoxCols.join(QStringLiteral(", ")),
+                                          (bc0->boxStyle() == BoxCurve::Notch)
+                                                  ? QStringLiteral("True")
+                                                  : QStringLiteral("False"),
+                                          bc0->showDataPoints() ? QStringLiteral("True")
+                                                                : QStringLiteral("False"),
+                                          wExtra, pyEscapeStr(ml->name()));
+                }
+                emittedBasePlot = true;
+                l0HandledAllCurves = true;
+            }
+        }
+    }
+    if (!emittedBasePlot && g0) {
+        QwtHistogram *hc0 = nullptr;
+        for (int ci = 0; ci < g0->curves(); ++ci) {
+            if (auto *hc = dynamic_cast<QwtHistogram *>(g0->curve(ci))) {
+                hc0 = hc;
+                break;
+            }
+        }
+        Table *ctHist = hc0 ? hc0->table() : nullptr;
+        if (hc0 && ctHist && tblVarMap.contains(ctHist)) {
+            QVector<int> primLayerIdxs;
+            for (int li = 0; li < layers.size(); ++li) {
+                Graph *lg = layers[li];
+                if (lg && !ml->isInsetLayer(lg) && !lg->linkedParentLayer())
+                    primLayerIdxs.append(li);
+            }
+            int l0HistCount = 0;
+            for (int ci = 0; ci < g0->curves(); ++ci) {
+                if (dynamic_cast<QwtHistogram *>(g0->curve(ci)))
+                    ++l0HistCount;
+            }
+            bool isMultiPanelStackedHist = (primLayerIdxs.size() >= 2 && l0HistCount == 1);
+            QStringList stackedHistCols;
+            QVector<QPair<int, int>> stackedHistPairs;
+            for (int pLi : primLayerIdxs) {
+                if (!isMultiPanelStackedHist)
+                    break;
+                Graph *pLg = layers[pLi];
+                int panelHists = 0;
+                int panelHistCi = -1;
+                QwtHistogram *panelHc = nullptr;
+                for (int ci = 0; ci < pLg->curves(); ++ci) {
+                    if (auto *hc = dynamic_cast<QwtHistogram *>(pLg->curve(ci))) {
+                        ++panelHists;
+                        panelHistCi = ci;
+                        panelHc = hc;
+                    }
+                }
+                const int yIdx = (panelHists == 1 && panelHc && panelHc->table() == ctHist)
+                        ? ctHist->colIndex(panelHc->yColumnName())
+                        : -1;
+                if (yIdx < 0) {
+                    isMultiPanelStackedHist = false;
+                    break;
+                }
+                stackedHistCols << pyEscapeStr(ctHist->colLabel(yIdx));
+                stackedHistPairs.append(qMakePair(pLi, panelHistCi));
+            }
+            QString binKw;
+            if (!hc0->autoBinning() && hc0->binSize() > 0.0 && std::isfinite(hc0->binSize())) {
+                binKw = QStringLiteral(", bin_size=%1, bin_min=%2, bin_max=%3")
+                                .arg(pyFormatNum(hc0->binSize()), pyFormatNum(hc0->begin()),
+                                     pyFormatNum(hc0->end()));
+            }
+            if (isMultiPanelStackedHist && stackedHistCols.size() >= 2) {
+                lines << QStringLiteral(
+                                 "g = app.plot_histogram(%1.name, cols=[%2], stacked=True%3, graph_name=%4)")
+                                 .arg(tblVarMap.value(ctHist),
+                                      stackedHistCols.join(QStringLiteral(", ")), binKw,
+                                      pyEscapeStr(ml->name()));
+                for (int pLi : primLayerIdxs)
+                    preCreatedPrimaryLayers.insert(pLi);
+                for (const auto &pr : stackedHistPairs)
+                    preHandledLayerCurves.insert(pr);
+                emittedBasePlot = true;
+            } else {
+                QStringList qHistCols;
+                for (int ci = 0; ci < g0->curves(); ++ci) {
+                    if (auto *hc = dynamic_cast<QwtHistogram *>(g0->curve(ci))) {
+                        if (hc->table() == ctHist) {
+                            const int yIdx = ctHist->colIndex(hc->yColumnName());
+                            if (yIdx >= 0) {
+                                qHistCols << pyEscapeStr(ctHist->colLabel(yIdx));
+                                preHandledLayerCurves.insert(qMakePair(0, ci));
+                            }
+                        }
+                    }
+                }
+                if (!qHistCols.isEmpty()) {
+                    const QString colsArg = (qHistCols.size() == 1)
+                            ? qHistCols.first()
+                            : QStringLiteral("[%1]").arg(qHistCols.join(QStringLiteral(", ")));
+                    lines << QStringLiteral("g = app.plot_histogram(%1.name, cols=%2%3, graph_name=%4)")
+                                     .arg(tblVarMap.value(ctHist), colsArg, binKw,
+                                          pyEscapeStr(ml->name()));
+                    emittedBasePlot = true;
+                }
+            }
+        }
+    }
+    if (!emittedBasePlot && g0) {
+        for (int ci = 0; ci < g0->curves(); ++ci) {
+            if (g0->curveType(ci) == Graph::ErrorBars)
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(g0->curve(ci))) {
+                Table *ct = dc->table();
+                const int xIdx = ct ? ct->colIndex(dc->xColumnName()) : -1;
+                const int yIdx = ct ? ct->colIndex(dc->yColumnName()) : -1;
+                if (ct && tblVarMap.contains(ct) && xIdx >= 0 && yIdx >= 0) {
+                    const QString xLbl = ct->colLabel(xIdx);
+                    const QString yLbl = ct->colLabel(yIdx);
+                    lines << QStringLiteral(
+                                     "g = app.plot_xy(%1.name, x_col=%2, y_cols=[%3], style=%4, graph_name=%5)")
+                                     .arg(tblVarMap.value(ct), pyEscapeStr(xLbl),
+                                          pyEscapeStr(yLbl), pyEscapeStr(curveStyleStr(g0, ci)),
+                                          pyEscapeStr(ml->name()));
+                    emittedBasePlot = true;
+                    firstEmittedCurveOnL0 = ci;
+                    break;
+                }
+            } else if (auto *fc = dynamic_cast<FunctionCurve *>(g0->curve(ci))) {
+                const QStringList fList = fc->formulas();
+                if (!fList.isEmpty()) {
+                    const QString tStr = (fc->functionType() == FunctionCurve::Polar)
+                            ? QStringLiteral("polar")
+                            : ((fc->functionType() == FunctionCurve::Parametric)
+                                       ? QStringLiteral("parametric")
+                                       : QStringLiteral("normal"));
+                    QString fArg = (fList.size() == 1)
+                            ? pyEscapeStr(fList.first())
+                            : QStringLiteral("[%1, %2]").arg(pyEscapeStr(fList[0]),
+                                                             pyEscapeStr(fList[1]));
+                    const QString vStr = fc->variable().trimmed().isEmpty()
+                            ? QStringLiteral("x")
+                            : fc->variable().trimmed();
+                    lines << QStringLiteral(
+                                     "g = app.plot_function(%1, x_min=%2, x_max=%3, points=%4, type=%5, variable=%6, graph_name=%7)")
+                                     .arg(fArg, pyFormatNum(fc->startRange()),
+                                          pyFormatNum(fc->endRange()))
+                                     .arg(std::max(2, static_cast<int>(fc->dataSize())))
+                                     .arg(pyEscapeStr(tStr), pyEscapeStr(vStr),
+                                          pyEscapeStr(ml->name()));
+                    emittedBasePlot = true;
+                    firstEmittedCurveOnL0 = ci;
+                    break;
+                }
+            }
+        }
+    }
+    if (!emittedBasePlot) {
+        lines << QStringLiteral("g = app.plot_function('0', x_min=0.0, x_max=1.0, graph_name=%1)")
+                         .arg(pyEscapeStr(ml->name()));
+        lines << QStringLiteral("g.remove_curve(0)");
+    }
+
+    bool wantStackedHistSquareFrame = false;
+    if (preCreatedPrimaryLayers.size() >= 2) {
+        bool allSquarePanels =
+                (ml->keepAspectRatio() && std::abs(ml->targetAspectRatio() - 1.0) <= 0.05);
+        if (!allSquarePanels) {
+            allSquarePanels = true;
+            for (int pLi : preCreatedPrimaryLayers) {
+                Graph *pLg = (pLi >= 0 && pLi < layers.size()) ? layers[pLi] : nullptr;
+                Plot *pPlt = pLg ? pLg->plotWidget() : nullptr;
+                if (!pPlt || !pPlt->plotLayout()) {
+                    allSquarePanels = false;
+                    break;
+                }
+                pPlt->updateLayout();
+                const QRect cr = pPlt->plotLayout()->canvasRect();
+                if (cr.width() < 20 || cr.height() < 20
+                    || std::abs(cr.width() - cr.height()) > 4) {
+                    allSquarePanels = false;
+                    break;
+                }
+            }
+        }
+        wantStackedHistSquareFrame = allSquarePanels;
+    }
+
+    if (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx) {
+        lines << QStringLiteral("g.set_page_size(%1, %2, unit=%3, dpi=%4, page_view=%5)")
+                         .arg(pyFormatNum(ml->pageWidthPhysical()),
+                              pyFormatNum(ml->pageHeightPhysical()),
+                              pyEscapeStr(pageUnitToString(ml->pageUnit())))
+                         .arg(ml->pageDpi())
+                         .arg(ml->pageViewMode() ? QStringLiteral("True")
+                                                 : QStringLiteral("False"));
+    }
+    if (wantStackedHistSquareFrame)
+        lines << QStringLiteral("g.apply_square_frame()");
+
+    // Create additional layers (primary, linked, inset)
+    int nPrimaryLayers = 0;
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *lg = layers[li];
+        if (!lg)
+            continue;
+        const bool isInset = ml->isInsetLayer(lg);
+        const bool isLinked = (!isInset && lg->linkedParentLayer() != nullptr);
+        if (!isInset && !isLinked)
+            ++nPrimaryLayers;
+        if (li == 0)
+            continue;
+        if (isLinked) {
+            const int pIdx = std::max(0, layers.indexOf(lg->linkedParentLayer()));
+            lines << QStringLiteral(
+                             "g.add_linked_layer(parent_layer=%1, link_x=%2, link_y=%3, x_formula=%4, y_formula=%5)")
+                             .arg(pIdx)
+                             .arg(lg->xLinkMode() != 0 ? QStringLiteral("True")
+                                                       : QStringLiteral("False"))
+                             .arg(lg->yLinkMode() != 0 ? QStringLiteral("True")
+                                                       : QStringLiteral("False"))
+                             .arg(pyEscapeStr(lg->xLinkExpr()), pyEscapeStr(lg->yLinkExpr()));
+        } else if (isInset) {
+            const int srcIdx = std::max(0, layers.indexOf(ml->insetSourceLayer(lg)));
+            const QRectF nr = ml->insetNormGeo(lg);
+            const QRectF zr = ml->insetZoomDataRect(lg);
+            if (zr.isValid() && zr.width() > 0.0 && zr.height() > 0.0) {
+                lines << QStringLiteral(
+                                 "g.add_inset(source_layer=%1, x_min=%2, x_max=%3, y_min=%4, y_max=%5, rel_x=%6, rel_y=%7, rel_w=%8, rel_h=%9, show_connectors=%10)")
+                                 .arg(srcIdx)
+                                 .arg(pyFormatNum(zr.left()), pyFormatNum(zr.right()),
+                                      pyFormatNum(zr.top()), pyFormatNum(zr.bottom()),
+                                      pyFormatNum(nr.x()), pyFormatNum(nr.y()),
+                                      pyFormatNum(nr.width()), pyFormatNum(nr.height()),
+                                      ml->insetShowConnectors(lg) ? QStringLiteral("True")
+                                                                  : QStringLiteral("False"));
+            } else {
+                lines << QStringLiteral(
+                                 "g.add_inset(source_layer=%1, rel_x=%2, rel_y=%3, rel_w=%4, rel_h=%5, show_connectors=%6)")
+                                 .arg(srcIdx)
+                                 .arg(pyFormatNum(nr.x()), pyFormatNum(nr.y()),
+                                      pyFormatNum(nr.width()), pyFormatNum(nr.height()),
+                                      ml->insetShowConnectors(lg) ? QStringLiteral("True")
+                                                                  : QStringLiteral("False"));
+            }
+        } else if (!preCreatedPrimaryLayers.contains(li)) {
+            lines << QStringLiteral("g.add_layer()");
+        }
+    }
+
+    if (nPrimaryLayers >= 2) {
+        if (preCreatedPrimaryLayers.size() < nPrimaryLayers) {
+            lines << QStringLiteral("g.arrange_layers(rows=%1, cols=%2, fit=False)")
+                             .arg(std::max(1, ml->getRows()))
+                             .arg(std::max(1, ml->getCols()));
+        }
+        if (ml->hasPanelLabels()) {
+            const QString plStr =
+                    (ml->panelLabelPlacement() == MultiLayer::PanelInsideTopLeft)
+                    ? QStringLiteral("inside_top_left")
+                    : QStringLiteral("outside_top_left");
+            lines << QStringLiteral("g.set_panel_labels(True, placement=%1, pattern=%2)")
+                             .arg(pyEscapeStr(plStr), pyEscapeStr(ml->panelLabelPattern()));
+        }
+    }
+
+    // Per-layer curves, styles, error bars, axes, reference lines, shaded bands, annotations
+    const QJsonObject fullInspect = inspectGraphDetailed(ml, false, false);
+    const QJsonArray inspectLayers = fullInspect.value(QStringLiteral("layers")).toArray();
+
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *lg = layers[li];
+        Plot *plt = lg ? lg->plotWidget() : nullptr;
+        if (!lg || !plt)
+            continue;
+        const bool isInset = ml->isInsetLayer(lg);
+        const bool isNonCartesianLayer =
+                invokeGraphIsPolarPlot(lg) || lg->isTernaryPlot() || lg->isPiePlot();
+        const QString layerKw =
+                (layers.size() > 1) ? QStringLiteral(", layer=%1").arg(li) : QString();
+
+        // Additional curves on this layer (skip inset auto-cloned curves)
+        int nonErrIdx = 0;
+        if (!isInset) {
+            for (int ci = 0; ci < lg->curves(); ++ci) {
+                QwtPlotCurve *c = lg->curve(ci);
+                if (!c || lg->curveType(ci) == Graph::ErrorBars
+                    || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr) {
+                    continue;
+                }
+                const bool isSpecialtySingleCol = lg->isPiePlot()
+                        || lg->curveType(ci) == Graph::Pie || lg->curveType(ci) == Graph::Box
+                        || lg->curveType(ci) == Graph::Histogram
+                        || dynamic_cast<QwtPieCurve *>(c) != nullptr
+                        || dynamic_cast<BoxCurve *>(c) != nullptr
+                        || dynamic_cast<QwtHistogram *>(c) != nullptr;
+                auto *dc = dynamic_cast<DataCurve *>(c);
+                auto *fc = dynamic_cast<FunctionCurve *>(c);
+                auto *pc = dynamic_cast<PlotCurve *>(c);
+                bool curvePresent = (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
+                        || preHandledLayerCurves.contains(qMakePair(li, ci));
+                if (!curvePresent) {
+                    if (dc && dc->table() && tblVarMap.contains(dc->table())) {
+                        Table *ct = dc->table();
+                        const int xIdx = ct->colIndex(dc->xColumnName());
+                        const int yIdx = ct->colIndex(dc->yColumnName());
+                        if (xIdx >= 0 && yIdx >= 0) {
+                            const QString xLbl = ct->colLabel(xIdx);
+                            const QString yLbl = ct->colLabel(yIdx);
+                            const bool rightY = (c->yAxis() == QwtPlot::yRight);
+                            lines << QStringLiteral(
+                                             "g.add_curve(%1.name, %2, x_col=%3, style=%4, right_axis=%5%6)")
+                                             .arg(tblVarMap.value(ct), pyEscapeStr(yLbl),
+                                                  pyEscapeStr(xLbl),
+                                                  pyEscapeStr(curveStyleStr(lg, ci)),
+                                                  rightY ? QStringLiteral("True")
+                                                         : QStringLiteral("False"),
+                                                  layerKw);
+                            curvePresent = true;
+                        }
+                    } else if (fc && !fc->formulas().isEmpty()) {
+                        const QStringList fList = fc->formulas();
+                        const QString tStr = (fc->functionType() == FunctionCurve::Polar)
+                                ? QStringLiteral("polar")
+                                : ((fc->functionType() == FunctionCurve::Parametric)
+                                           ? QStringLiteral("parametric")
+                                           : QStringLiteral("normal"));
+                        const QString fArg = (fList.size() == 1)
+                                ? pyEscapeStr(fList.first())
+                                : QStringLiteral("[%1, %2]").arg(pyEscapeStr(fList[0]),
+                                                                 pyEscapeStr(fList[1]));
+                        const QString vStr = fc->variable().trimmed().isEmpty()
+                                ? QStringLiteral("x")
+                                : fc->variable().trimmed();
+                        lines << QStringLiteral(
+                                         "app.call('plot.function', graph=g.name, layer=%1, formula=%2, variable=%3, x_min=%4, x_max=%5, points=%6, type=%7, title=%8)")
+                                         .arg(li)
+                                         .arg(fArg, pyEscapeStr(vStr),
+                                              pyFormatNum(fc->startRange()),
+                                              pyFormatNum(fc->endRange()))
+                                         .arg(std::max(2, static_cast<int>(fc->dataSize())))
+                                         .arg(pyEscapeStr(tStr), pyEscapeStr(c->title().text()));
+                        curvePresent = true;
+                    }
+                }
+                if (!curvePresent)
+                    continue;
+                if (isSpecialtySingleCol) {
+                    ++nonErrIdx;
+                    continue;
+                }
+
+                const double lw = c->pen().widthF() > 0.0 ? c->pen().widthF()
+                                                          : double(std::max(1, c->pen().width()));
+                const int skip = pc ? std::max(1, pc->symbolSkip()) : 1;
+                lines << QStringLiteral(
+                                 "g.set_curve_style(%1, color=%2, lw=%3, ls=%4, marker=%5, ms=%6, symbol_hollow=%7, symbol_skip=%8%9)")
+                                 .arg(nonErrIdx)
+                                 .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
+                                      pyFormatNum(lw), pyEscapeStr(penStyleStr(c->pen().style())),
+                                      pyEscapeStr(symStyleStr(c->symbol().style())))
+                                 .arg(std::max(1, c->symbol().size().width()))
+                                 .arg(Graph::isSymbolWhiteHollow(c->symbol())
+                                              ? QStringLiteral("True")
+                                              : QStringLiteral("False"))
+                                 .arg(skip)
+                                 .arg(layerKw);
+                if (!lg->isCurveVisible(ci)) {
+                    lines << QStringLiteral("g.set_curve_visible(%1, False%2)")
+                                     .arg(nonErrIdx)
+                                     .arg(layerKw);
+                }
+                if (dc) {
+                    for (DataCurve *ebBase : dc->errorBarsList()) {
+                        if (auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase)) {
+                            if (ec->table() && tblVarMap.contains(ec->table())) {
+                                Table *et = ec->table();
+                                const int eIdx = et->colIndex(ec->yColumnName());
+                                if (eIdx >= 0) {
+                                    const QString eLbl = et->colLabel(eIdx);
+                                    const QString dir = ec->xErrors() ? QStringLiteral("x")
+                                                                      : QStringLiteral("y");
+                                    lines << QStringLiteral(
+                                                     "g.add_error_bars(%1, curve=%2, table=%3.name, direction=%4%5)")
+                                                     .arg(pyEscapeStr(eLbl))
+                                                     .arg(nonErrIdx)
+                                                     .arg(tblVarMap.value(et), pyEscapeStr(dir),
+                                                          layerKw);
+                                }
+                            }
+                        }
+                    }
+                }
+                ++nonErrIdx;
+            }
+        }
+
+        if (!plt->title().text().trimmed().isEmpty()) {
+            lines << QStringLiteral("g.set_title(%1, font_size=%2%3)")
+                             .arg(pyEscapeStr(plt->title().text()))
+                             .arg(std::max(8, plt->title().font().pointSize()))
+                             .arg(layerKw);
+        }
+
+        // Axes & category labels & breaks (skip hidden Cartesian scaffolding on Polar/Ternary/Pie)
+        // Pass 1: emit all g.set_axis(...) and g.set_category_labels(...) calls BEFORE Pass 2
+        // (g.set_axis_break(...)), so g.set_axis('right', ...) / g.set_axis('top', ...) never
+        // clobbers a synced opposite-axis PiecewiseBreakScaleEngine.
+        static const int kAxes[4] = { QwtPlot::xBottom, QwtPlot::yLeft, QwtPlot::xTop,
+                                      QwtPlot::yRight };
+        static const char *const kAxNames[4] = { "x", "y", "top", "right" };
+        const QList<int> majTickStyles = plt->getMajorTicksType();
+        for (int ai = 0; !isNonCartesianLayer && ai < 4; ++ai) {
+            const int ax = kAxes[ai];
+            const bool enabled = plt->axisEnabled(ax);
+            if (!enabled && (ax == QwtPlot::xTop || ax == QwtPlot::yRight))
+                continue;
+            const QwtScaleDiv *sdiv = plt->axisScaleDiv(ax);
+            if (!sdiv)
+                continue;
+            const double rawLo = sdiv->lowerBound();
+            const double rawHi = sdiv->upperBound();
+            const double lo = std::min(rawLo, rawHi);
+            const double hi = std::max(rawLo, rawHi);
+            if (!std::isfinite(hi - lo) || hi <= lo)
+                continue;
+            const bool isLog =
+                    (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr);
+            const bool inv = (rawLo > rawHi);
+            const QStringList cats = invokeGraphCategoryLabels(lg, ax);
+            const Graph::AxisBreakSpec brk = lg->axisBreak(ax);
+            QString axArgs = QStringLiteral("min=%1, max=%2, scale=%3, enabled=%4")
+                                     .arg(pyFormatNum(lo), pyFormatNum(hi),
+                                          pyEscapeStr(isLog ? QStringLiteral("log10")
+                                                            : QStringLiteral("linear")),
+                                          enabled ? QStringLiteral("True")
+                                                  : QStringLiteral("False"));
+            if (inv)
+                axArgs += QStringLiteral(", inverted=True");
+            double effStep = lg->axisStep(ax);
+            if (effStep <= 0.0 && !isLog && !brk.enabled && cats.isEmpty()
+                && !lg->hasWeibullProbabilityAxis(ax)) {
+                const QwtValueList majTicks = sdiv->ticks(QwtScaleDiv::MajorTick);
+                if (majTicks.size() >= 2) {
+                    const double d0 = std::abs(majTicks[1] - majTicks[0]);
+                    bool uniform = (d0 > 0.0 && std::isfinite(d0) && (hi - lo) / d0 <= 200.0);
+                    for (int ti = 2; uniform && ti < majTicks.size(); ++ti) {
+                        const double di = std::abs(majTicks[ti] - majTicks[ti - 1]);
+                        if (std::abs(di - d0) > 1e-4 * std::max(1.0, d0))
+                            uniform = false;
+                    }
+                    if (uniform)
+                        effStep = d0;
+                }
+            }
+            if (effStep > 0.0)
+                axArgs += QStringLiteral(", step=%1").arg(pyFormatNum(effStep));
+            const QString tTxt = lg->axisTitle(ax);
+            if (!tTxt.isEmpty())
+                axArgs += QStringLiteral(", title=%1").arg(pyEscapeStr(tTxt));
+            const int titlePt = lg->axisTitleFont(ax).pointSize();
+            if (titlePt >= 4)
+                axArgs += QStringLiteral(", title_font_size=%1").arg(titlePt);
+            const int tickPt = plt->axisFont(ax).pointSize();
+            if (tickPt >= 4)
+                axArgs += QStringLiteral(", tick_font_size=%1").arg(tickPt);
+            if (enabled && !lg->hasTickLabelsOnAxis(ax))
+                axArgs += QStringLiteral(", show_labels=False");
+            const int majStyle = majTickStyles.value(ax, int(ScaleDraw::Out));
+            if (majStyle == int(ScaleDraw::None)) {
+                axArgs += QStringLiteral(", show_ticks=False");
+            } else {
+                axArgs += QStringLiteral(", ticks_inward=%1")
+                                  .arg(majStyle == int(ScaleDraw::In) ? QStringLiteral("True")
+                                                                      : QStringLiteral("False"));
+            }
+            if (lg->labelsRotation(ax) != 0)
+                axArgs += QStringLiteral(", label_rotation=%1").arg(lg->labelsRotation(ax));
+            lines << QStringLiteral("g.set_axis(%1, %2%3)")
+                             .arg(pyEscapeStr(QLatin1String(kAxNames[ai])), axArgs, layerKw);
+
+            if (!cats.isEmpty()) {
+                QStringList qCats;
+                for (const QString &cs : cats)
+                    qCats << pyEscapeStr(cs);
+                lines << QStringLiteral("g.set_category_labels([%1], axis=%2%3)")
+                                 .arg(qCats.join(QStringLiteral(", ")),
+                                      pyEscapeStr(QLatin1String(kAxNames[ai])), layerKw);
+            }
+        }
+        // Pass 2: emit axis breaks AFTER all g.set_axis(...) calls
+        for (int ai = 0; !isNonCartesianLayer && ai < 4; ++ai) {
+            const int ax = kAxes[ai];
+            const Graph::AxisBreakSpec brk = lg->axisBreak(ax);
+            if (brk.enabled) {
+                lines << QStringLiteral(
+                                 "g.set_axis_break(%1, enabled=True, start=%2, end=%3, position_pct=%4, log_before=%5, log_after=%6%7)")
+                                 .arg(pyEscapeStr(QLatin1String(kAxNames[ai])),
+                                      pyFormatNum(brk.breakFrom), pyFormatNum(brk.breakTo),
+                                      pyFormatNum(brk.positionPct * 100.0),
+                                      brk.log10Before ? QStringLiteral("True")
+                                                      : QStringLiteral("False"),
+                                      brk.log10After ? QStringLiteral("True")
+                                                     : QStringLiteral("False"),
+                                      layerKw);
+            }
+        }
+
+        if (Grid *grid = lg->grid()) {
+            if (!isNonCartesianLayer
+                && (grid->xEnabled() || grid->yEnabled() || grid->xMinEnabled()
+                    || grid->yMinEnabled())) {
+                lines << QStringLiteral(
+                                 "g.set_grid(x_major=%1, y_major=%2, x_minor=%3, y_minor=%4%5)")
+                                 .arg(grid->xEnabled() ? QStringLiteral("True")
+                                                       : QStringLiteral("False"),
+                                      grid->yEnabled() ? QStringLiteral("True")
+                                                       : QStringLiteral("False"),
+                                      grid->xMinEnabled() ? QStringLiteral("True")
+                                                          : QStringLiteral("False"),
+                                      grid->yMinEnabled() ? QStringLiteral("True")
+                                                          : QStringLiteral("False"),
+                                      layerKw);
+            }
+        }
+
+        // Reference lines
+        for (const Graph::ReferenceLineSpec &rs : lg->referenceLines()) {
+            const QString orient = (rs.orientation == 1) ? QStringLiteral("vertical")
+                                                         : QStringLiteral("horizontal");
+            lines << QStringLiteral(
+                             "g.add_reference_line(orientation=%1, value=%2, label=%3, color=%4, width=%5%6)")
+                             .arg(pyEscapeStr(orient), pyFormatNum(rs.value),
+                                  pyEscapeStr(rs.label),
+                                  pyEscapeStr(rs.color.name(QColor::HexRgb)),
+                                  pyFormatNum(rs.width), layerKw);
+        }
+
+        // Shaded bands (parsed cleanly from Graph::saveToString line-anchored <ToriRefLine kind="band">)
+        {
+            const QString savedG = lg->saveToString();
+            static const QRegularExpression rxAttr(
+                    QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
+            for (const QString &rawLn : savedG.split(QLatin1Char('\n'))) {
+                const QString ln = rawLn.trimmed();
+                if (!ln.startsWith(QStringLiteral("<ToriRefLine"))
+                    || !ln.contains(QStringLiteral("kind=\"band\""))) {
+                    continue;
+                }
+                QMap<QString, QString> am;
+                auto ait = rxAttr.globalMatch(ln);
+                while (ait.hasNext()) {
+                    const auto m = ait.next();
+                    am.insert(m.captured(1), m.captured(2));
+                }
+                if (am.value(QStringLiteral("kind")) != QStringLiteral("band"))
+                    continue;
+                const QString xCsv = am.value(QStringLiteral("x"));
+                const QString y1Csv = am.contains(QStringLiteral("yLow"))
+                        ? am.value(QStringLiteral("yLow"))
+                        : am.value(QStringLiteral("y1"));
+                const QString y2Csv = am.contains(QStringLiteral("yHigh"))
+                        ? am.value(QStringLiteral("yHigh"))
+                        : am.value(QStringLiteral("y2"));
+                if (!xCsv.isEmpty() && !y1Csv.isEmpty() && !y2Csv.isEmpty()) {
+                    const QColor bc(am.value(QStringLiteral("color")));
+                    lines << QStringLiteral(
+                                     "g.add_shaded_band([%1], [%2], [%3], color=%4, alpha=%5, label=%6%7)")
+                                     .arg(xCsv, y1Csv, y2Csv,
+                                          pyEscapeStr(bc.isValid() ? bc.name(QColor::HexRgb)
+                                                                   : QStringLiteral("#4C78A8")))
+                                     .arg(bc.isValid() ? bc.alpha() : 55)
+                                     .arg(pyEscapeStr(am.value(QStringLiteral("title"))), layerKw);
+                }
+            }
+        }
+
+        // Legend visibility & styling
+        Legend *leg = lg->legend();
+        if (!lg->isLegendVisible()) {
+            lines << QStringLiteral("g.set_legend(visible=False%1)").arg(layerKw);
+        } else if (leg) {
+            const int legPt = std::max(6, leg->font().pointSize());
+            const bool legFramed = (leg->frameStyle() != 0);
+            QString legExtra;
+            if (leg->numColumns() > 1)
+                legExtra += QStringLiteral(", columns=%1").arg(leg->numColumns());
+            if (lg->property("_outsideRightMargin").toInt() > 0) {
+                legExtra += QStringLiteral(", position='outside_right'");
+            } else if (lg->isPiePlot()) {
+                legExtra += QStringLiteral(", position='top_center'");
+                if (!leg->text().trimmed().isEmpty())
+                    legExtra += QStringLiteral(", text=%1").arg(pyEscapeStr(leg->text()));
+            } else if (invokeGraphIsPolarPlot(lg)) {
+                legExtra += QStringLiteral(", position='top_right'");
+            } else if (std::isfinite(leg->xValue()) && std::isfinite(leg->yValue())) {
+                legExtra += QStringLiteral(", x=%1, y=%2")
+                                    .arg(pyFormatNum(leg->xValue()), pyFormatNum(leg->yValue()));
+            }
+            if (!lg->isPiePlot() && preHandledLayerCurves.contains(qMakePair(li, 0))
+                && lg->curves() >= 2 && !leg->text().trimmed().isEmpty()) {
+                legExtra += QStringLiteral(", text=%1").arg(pyEscapeStr(leg->text()));
+            }
+            lines << QStringLiteral("g.set_legend(visible=True, font_size=%1, framed=%2%3%4)")
+                             .arg(legPt)
+                             .arg(legFramed ? QStringLiteral("True") : QStringLiteral("False"))
+                             .arg(legExtra, layerKw);
+        }
+
+        // Text callouts & arrows
+        for (int tid : lg->textMarkerKeys()) {
+            Legend *tm = lg->textMarker(tid);
+            if (!tm || tm == leg || tm->text().trimmed().isEmpty())
+                continue;
+            lines << QStringLiteral(
+                             "g.add_text(%1, %2, %3, font_size=%4, color=%5, frame=%6, angle=%7%8)")
+                             .arg(pyEscapeStr(tm->text()), pyFormatNum(tm->xValue()),
+                                  pyFormatNum(tm->yValue()))
+                             .arg(std::max(6, tm->font().pointSize()))
+                             .arg(pyEscapeStr(tm->textColor().name(QColor::HexRgb)))
+                             .arg(tm->frameStyle())
+                             .arg(tm->angle())
+                             .arg(layerKw);
+        }
+        for (int aid : lg->lineMarkerKeys()) {
+            ArrowMarker *am = lg->arrow(aid);
+            if (!am)
+                continue;
+            const QwtDoublePoint p1 = am->startPointCoord();
+            const QwtDoublePoint p2 = am->endPointCoord();
+            lines << QStringLiteral(
+                             "g.add_arrow(%1, %2, %3, %4, color=%5, width=%6, end_arrow=%7, start_arrow=%8%9)")
+                             .arg(pyFormatNum(p1.x()), pyFormatNum(p1.y()), pyFormatNum(p2.x()),
+                                  pyFormatNum(p2.y()),
+                                  pyEscapeStr(am->color().name(QColor::HexRgb)))
+                             .arg(std::max(1, am->width()))
+                             .arg(am->hasEndArrow() ? QStringLiteral("True")
+                                                    : QStringLiteral("False"),
+                                  am->hasStartArrow() ? QStringLiteral("True")
+                                                      : QStringLiteral("False"),
+                                  layerKw);
+        }
+        Q_UNUSED(inspectLayers)
+    }
+    if (wantStackedHistSquareFrame)
+        lines << QStringLiteral("g.apply_square_frame()");
+
+    return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+}
+
+bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &method,
+                                      const QJsonObject &params, QJsonObject &outResult);
+
 bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindow *d_app,
                                 bool &focusHudFallback, QString &workspaceModeFallback,
                                 QString &lastUndoDomain, QString &lastUndoGraph,
@@ -6439,9 +10737,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.describe_api")) {
-        const QString reqMethod = params.value(QStringLiteral("method")).toString().trimmed();
+        const QString reqMethod = optionalJsonString(params, QStringLiteral("method")).trimmed();
         const QString reqDomain =
-                params.value(QStringLiteral("domain")).toString().trimmed().toLower();
+                optionalJsonString(params, QStringLiteral("domain")).trimmed().toLower();
         QStringList allDomains;
         for (int i = 0; i < kApiCatalogCount; ++i) {
             const QString dom = QString::fromUtf8(kApiCatalogSpecs[i].domain);
@@ -6516,13 +10814,368 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("app.batch")) {
+        const QJsonValue cmdsVal = params.contains(QStringLiteral("commands"))
+                ? params.value(QStringLiteral("commands"))
+                : params.value(QStringLiteral("steps"));
+        if (!cmdsVal.isArray()) {
+            throwInvalidParams(
+                    QStringLiteral("app.batch requires a 'commands' (or 'steps') array of {\"method\", \"params\"} dicts."));
+        }
+        const QJsonArray cmdsArr = cmdsVal.toArray();
+        const int totalSteps = cmdsArr.size();
+        if (totalSteps > 5000) {
+            throwInvalidParams(
+                    QStringLiteral("app.batch supports at most 5,000 commands per batch (got %1).")
+                            .arg(totalSteps));
+        }
+        const bool stopOnError = optionalJsonBool(params, QStringLiteral("stop_on_error"), true);
+        const bool atomic = optionalJsonBool(params, QStringLiteral("atomic"), true);
+        const bool deferReplot = optionalJsonBool(params, QStringLiteral("defer_replot"), true);
+
+        BatchExecutionContext &bctx = rpcBatchContext();
+        if (bctx.recursionDepth >= 2) {
+            throwInvalidParams(
+                    QStringLiteral("Nested app.batch recursion depth exceeded (maximum depth 2)."));
+        }
+        if (totalSteps == 0) {
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("completed")] = 0;
+            outResult[QStringLiteral("total")] = 0;
+            outResult[QStringLiteral("rolled_back")] = false;
+            outResult[QStringLiteral("elapsed_ms")] = 0.0;
+            outResult[QStringLiteral("results")] = QJsonArray();
+            outResult[QStringLiteral("failed_index")] = QJsonValue::Null;
+            outResult[QStringLiteral("error")] = QJsonValue::Null;
+            return true;
+        }
+
+        bool graphOnlyFastSnapshot = atomic && (bctx.recursionDepth == 0);
+        for (int i = 0; i < totalSteps; ++i) {
+            if (!cmdsArr[i].isObject()) {
+                throwInvalidParams(
+                        QStringLiteral("app.batch step %1 must be a JSON object.").arg(i));
+            }
+            const QJsonObject stepObj = cmdsArr[i].toObject();
+            const QString sm = optionalJsonString(stepObj, QStringLiteral("method")).trimmed();
+            if (sm.isEmpty()) {
+                throwInvalidParams(
+                        QStringLiteral("app.batch step %1 missing non-empty 'method' string.")
+                                .arg(i));
+            }
+            if (stepObj.contains(QStringLiteral("params"))
+                && !stepObj.value(QStringLiteral("params")).isNull()
+                && !stepObj.value(QStringLiteral("params")).isObject()) {
+                throwInvalidParams(
+                        QStringLiteral("app.batch step %1 'params' must be a JSON object.").arg(i));
+            }
+            if (!(sm.startsWith(QStringLiteral("graph."))
+                  || sm.startsWith(QStringLiteral("gadget.")))
+                || sm == QStringLiteral("graph.merge_graphs")
+                || sm == QStringLiteral("graph.batch_clone")
+                || sm == QStringLiteral("graph.drop_columns")) {
+                graphOnlyFastSnapshot = false;
+            }
+        }
+
+        // Capture pre-batch atomic snapshot (two-tier: fast MultiLayer XML vs full .sciprj bytes)
+        QHash<MultiLayer *, QString> fastMlSnapshots;
+        QHash<MultiLayer *, int> fastMlUndoIdx;
+        QByteArray fullWorkspaceSnapshot;
+        bool hadUntouchedSingleTable = false;
+        QString untouchedTblName;
+        int untouchedTblRows = 30;
+        int untouchedTblCols = 2;
+        const QString savedProjName = d_app->projectname;
+        const QStringList savedRecent = d_app->recentProjects;
+        QString savedActiveWinName;
+        if (QWidget *actW = d_app->d_workspace.activeSubWindow()) {
+            if (auto *mw = qobject_cast<MyWidget *>(actW))
+                savedActiveWinName = mw->name();
+        }
+        if (atomic && bctx.recursionDepth == 0) {
+            if (graphOnlyFastSnapshot) {
+                for (MyWidget *w : d_app->windowsList()) {
+                    if (w && w->inherits("MultiLayer")) {
+                        auto *ml = static_cast<MultiLayer *>(w);
+                        fastMlSnapshots.insert(ml, ml->saveToString(QString()));
+                        fastMlUndoIdx.insert(ml, ml->undoStack() ? ml->undoStack()->index() : -1);
+                    }
+                }
+            } else {
+                const QList<MyWidget *> curWins = d_app->windowsList();
+                if (curWins.isEmpty()) {
+                    // Empty workspace fast path: 0-byte snapshot, resetProjectInPlaceHeadless rolls back in <1ms
+                } else if (curWins.size() == 1 && curWins.first()
+                           && curWins.first()->inherits("Table")) {
+                    auto *t0 = static_cast<Table *>(curWins.first());
+                    bool untouched = (t0->numRows() <= 100 && t0->numCols() <= 16
+                                      && (!t0->d_future_table || !t0->d_future_table->undoStack()
+                                          || t0->d_future_table->undoStack()->index() == 0));
+                    for (int c = 0; untouched && c < t0->numCols(); ++c) {
+                        Column *col = t0->column(c);
+                        if (!col || !col->formula(0).trimmed().isEmpty()
+                            || !col->longName().trimmed().isEmpty()
+                            || !col->units().trimmed().isEmpty()) {
+                            untouched = false;
+                            break;
+                        }
+                        for (int r = 0; r < t0->numRows(); ++r) {
+                            if (!col->isInvalid(r) || col->isMasked(r)) {
+                                untouched = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (untouched) {
+                        hadUntouchedSingleTable = true;
+                        untouchedTblName = t0->name();
+                        untouchedTblRows = t0->numRows();
+                        untouchedTblCols = t0->numCols();
+                    } else {
+                        sanitizeAllProjectFunctionCurves(d_app);
+                        fullWorkspaceSnapshot = d_app->saveProjectToByteArray();
+                    }
+                } else {
+                    sanitizeAllProjectFunctionCurves(d_app);
+                    fullWorkspaceSnapshot = d_app->saveProjectToByteArray();
+                }
+            }
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+
+        struct ScopedBatchActivation
+        {
+            BatchExecutionContext &ctx;
+            bool prevActive;
+            bool prevDefer;
+            ScopedBatchActivation(BatchExecutionContext &c, bool defer)
+                : ctx(c), prevActive(c.active), prevDefer(c.deferReplot)
+            {
+                ctx.active = true;
+                ctx.deferReplot = defer;
+                ++ctx.recursionDepth;
+            }
+            ~ScopedBatchActivation()
+            {
+                --ctx.recursionDepth;
+                ctx.active = prevActive;
+                ctx.deferReplot = prevDefer;
+                if (ctx.recursionDepth <= 0) {
+                    ctx.recursionDepth = 0;
+                    for (const auto &pr : ctx.preBatchGraphSnaps) {
+                        if (MultiLayer *ml = pr.first.data()) {
+                            if (QUndoStack *us = ml->undoStack())
+                                us->endMacro();
+                        }
+                    }
+                    ctx.preBatchGraphSnaps.clear();
+                    ctx.dirtyGraphs.clear();
+                    ctx.dirtyMultiLayers.clear();
+                    ctx.snapshottedMultiLayers.clear();
+                }
+            }
+        } batchScope(bctx, deferReplot);
+
+        QVector<QJsonObject> stepResultsVec;
+        stepResultsVec.reserve(totalSteps);
+        QJsonArray resultsJsonArr;
+        int completedCount = 0;
+        int failedIndex = -1;
+        QJsonObject firstErrorObj;
+
+        for (int i = 0; i < totalSteps; ++i) {
+            const QJsonObject stepObj = cmdsArr[i].toObject();
+            const QString stepMethod = stepObj.value(QStringLiteral("method")).toString().trimmed();
+            const QJsonObject rawStepParams =
+                    stepObj.value(QStringLiteral("params")).toObject();
+
+            try {
+                const QJsonObject resolvedParams =
+                        resolveBatchValueTokens(rawStepParams, stepResultsVec, i).toObject();
+                validateParamsAgainstCatalogSchema(stepMethod, resolvedParams);
+                QJsonObject stepRes;
+                if (!dispatchCoreAndGraphMethod(server, d_app, focusHudFallback,
+                                                workspaceModeFallback, lastUndoDomain,
+                                                lastUndoGraph, stepMethod, resolvedParams, stepRes)
+                    && !dispatchAnalysisAndScienceMethod(d_app, stepMethod, resolvedParams,
+                                                         stepRes)) {
+                    QJsonObject errData;
+                    errData[QStringLiteral("available")] =
+                            toJsonArray(PythonAutomationServer::supportedMethods());
+                    throw RpcDispatchException(
+                            -32601, QStringLiteral("Method not found: %1").arg(stepMethod),
+                            errData);
+                }
+                if (!stepRes.contains(QStringLiteral("ok")))
+                    stepRes[QStringLiteral("ok")] = true;
+                stepResultsVec.append(stepRes);
+                resultsJsonArr.append(stepRes);
+                ++completedCount;
+            } catch (const RpcDispatchException &ex) {
+                QJsonObject errEntry;
+                errEntry[QStringLiteral("code")] = ex.code;
+                errEntry[QStringLiteral("message")] = QString::fromUtf8(ex.what());
+                errEntry[QStringLiteral("step_index")] = i;
+                errEntry[QStringLiteral("step_method")] = stepMethod;
+                if (!ex.data.isUndefined() && !ex.data.isNull())
+                    errEntry[QStringLiteral("data")] = ex.data;
+
+                if (failedIndex < 0) {
+                    failedIndex = i;
+                    firstErrorObj = errEntry;
+                }
+                QJsonObject failStepRes;
+                failStepRes[QStringLiteral("ok")] = false;
+                failStepRes[QStringLiteral("error")] = errEntry;
+                stepResultsVec.append(failStepRes);
+                resultsJsonArr.append(failStepRes);
+
+                if (stopOnError || atomic)
+                    break;
+            } catch (const std::exception &ex) {
+                QJsonObject errEntry;
+                errEntry[QStringLiteral("code")] = -32603;
+                errEntry[QStringLiteral("message")] = QString::fromUtf8(ex.what());
+                errEntry[QStringLiteral("step_index")] = i;
+                errEntry[QStringLiteral("step_method")] = stepMethod;
+                if (failedIndex < 0) {
+                    failedIndex = i;
+                    firstErrorObj = errEntry;
+                }
+                QJsonObject failStepRes;
+                failStepRes[QStringLiteral("ok")] = false;
+                failStepRes[QStringLiteral("error")] = errEntry;
+                stepResultsVec.append(failStepRes);
+                resultsJsonArr.append(failStepRes);
+                if (stopOnError || atomic)
+                    break;
+            }
+        }
+
+        bool rolledBack = false;
+        if (failedIndex >= 0 && atomic && bctx.recursionDepth == 1) {
+            const auto openSnaps = bctx.preBatchGraphSnaps;
+            bctx.preBatchGraphSnaps.clear();
+            bctx.active = false;
+            bctx.deferReplot = false;
+            bctx.dirtyGraphs.clear();
+            bctx.dirtyMultiLayers.clear();
+            bctx.snapshottedMultiLayers.clear();
+            for (const auto &pr : openSnaps) {
+                if (MultiLayer *ml = pr.first.data()) {
+                    if (QUndoStack *us = ml->undoStack())
+                        us->endMacro();
+                }
+            }
+
+            if (graphOnlyFastSnapshot) {
+                for (auto it = fastMlSnapshots.begin(); it != fastMlSnapshots.end(); ++it) {
+                    MultiLayer *ml = it.key();
+                    if (!ml || !d_app->windowsList().contains(ml))
+                        continue;
+                    ml->restoreSnapshotInPlace(d_app, it.value());
+                    if (ml->undoStack() && fastMlUndoIdx.contains(ml)) {
+                        const int wantIdx = fastMlUndoIdx.value(ml);
+                        if (wantIdx >= 0 && ml->undoStack()->index() > wantIdx)
+                            ml->undoStack()->setIndex(wantIdx);
+                    }
+                }
+                rolledBack = true;
+            } else {
+                resetProjectInPlaceHeadless(d_app);
+                if (hadUntouchedSingleTable) {
+                    createUniqueTableHeadless(d_app, untouchedTblRows, untouchedTblCols,
+                                              untouchedTblName);
+                } else if (!fullWorkspaceSnapshot.isEmpty()) {
+                    QTemporaryFile tmpProj(
+                            QDir::temp().filePath(QStringLiteral("torigraph_batch_rb_XXXXXX.sciprj")));
+                    if (tmpProj.open()) {
+                        const QString tmpPath = tmpProj.fileName();
+                        tmpProj.write(fullWorkspaceSnapshot);
+                        tmpProj.flush();
+                        tmpProj.close();
+                        (void)d_app->loadProject(tmpPath);
+                        QFile::remove(tmpPath);
+                    }
+                }
+                d_app->recentProjects = savedRecent;
+                d_app->projectname = savedProjName;
+                d_app->updateRecentProjectsList();
+                if (!savedActiveWinName.isEmpty()) {
+                    if (MyWidget *aw = findWindowByName(d_app, savedActiveWinName))
+                        d_app->activateSubWindow(aw);
+                }
+                rolledBack = true;
+            }
+        } else if (bctx.recursionDepth == 1) {
+            // Flush coalesced font enforcement, layout arrangement, replots, and final Undo snapshots once at commit
+            const QVector<QPointer<Graph>> graphsToFlush = bctx.dirtyGraphs;
+            const QVector<QPointer<MultiLayer>> mlsToFlush = bctx.dirtyMultiLayers;
+            const auto snapsToCommit = bctx.preBatchGraphSnaps;
+            bctx.preBatchGraphSnaps.clear();
+            bctx.active = false;
+            bctx.deferReplot = false;
+            bctx.dirtyGraphs.clear();
+            bctx.dirtyMultiLayers.clear();
+            bctx.snapshottedMultiLayers.clear();
+            for (const QPointer<Graph> &gp : graphsToFlush) {
+                if (Graph *g = gp.data()) {
+                    enforceArialGraphFonts(g);
+                    g->replot();
+                }
+            }
+            for (const QPointer<MultiLayer> &mlp : mlsToFlush) {
+                if (MultiLayer *ml = mlp.data()) {
+                    if (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx)
+                        ml->fitLayersToPage();
+                }
+            }
+            for (const auto &pr : snapsToCommit) {
+                if (MultiLayer *ml = pr.first.data()) {
+                    if (d_app->windowsList().contains(ml))
+                        ml->pushUndoSnapshot(QStringLiteral("Batch Operations"), pr.second);
+                    if (QUndoStack *us = ml->undoStack())
+                        us->endMacro();
+                }
+            }
+        }
+
+        const double elapsedMs = double(timer.nsecsElapsed()) / 1.0e6;
+        outResult[QStringLiteral("ok")] = (failedIndex < 0);
+        outResult[QStringLiteral("completed")] = completedCount;
+        outResult[QStringLiteral("total")] = totalSteps;
+        outResult[QStringLiteral("rolled_back")] = rolledBack;
+        outResult[QStringLiteral("elapsed_ms")] = safeJsonDouble(elapsedMs);
+        outResult[QStringLiteral("results")] = resultsJsonArr;
+        outResult[QStringLiteral("failed_index")] =
+                (failedIndex >= 0) ? QJsonValue(failedIndex) : QJsonValue::Null;
+        outResult[QStringLiteral("error")] =
+                (failedIndex >= 0) ? QJsonValue(firstErrorObj) : QJsonValue::Null;
+        return true;
+    }
+
     if (method == QStringLiteral("app.open_project")) {
-        const QString path = params.value(QStringLiteral("path")).toString().trimmed();
+        const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
         const QFileInfo pfi(path);
         if (path.isEmpty() || !pfi.exists() || !pfi.isFile())
             throwInvalidParams(QStringLiteral("Project file does not exist: %1").arg(path));
         const QString absPath = pfi.absoluteFilePath();
-        const bool append = params.value(QStringLiteral("append")).toBool(false);
+        {
+            QFile preCheck(absPath);
+            if (preCheck.open(QIODevice::ReadOnly)) {
+                const QByteArray head16 = preCheck.read(16);
+                preCheck.close();
+                if (head16.startsWith("CPYU")) {
+                    throwRpcRuntime(
+                            QStringLiteral("Origin 2018+ '.opju' format (CPYU header) detected in '%1'; please save as '.opj' or export ASCII/CSV in Origin.")
+                                    .arg(path));
+                }
+            }
+        }
+        const bool append = optionalJsonBool(params, QStringLiteral("append"), false);
         if (append) {
             QFile hdrFile(absPath);
             if (!hdrFile.open(QIODevice::ReadOnly)) {
@@ -6594,7 +11247,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.save_project")) {
-        QString path = params.value(QStringLiteral("path")).toString().trimmed();
+        QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
         if (path.isEmpty())
             path = d_app->projectname;
         if (path.isEmpty() || path == QStringLiteral("untitled"))
@@ -6614,7 +11267,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             QDir().mkpath(fi.dir().absolutePath());
         const QString absPath = fi.absoluteFilePath();
         const bool compress = absPath.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive)
-                || params.value(QStringLiteral("compress")).toBool(false);
+                || optionalJsonBool(params, QStringLiteral("compress"), false);
         const QString finalPath = (compress && !absPath.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive))
                 ? (absPath + QStringLiteral(".gz"))
                 : absPath;
@@ -6670,7 +11323,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.import_csv")) {
-        const QString path = params.value(QStringLiteral("path")).toString().trimmed();
+        const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
         if (path.isEmpty() || !QFileInfo::exists(path) || !QFileInfo(path).isFile())
             throwInvalidParams(QStringLiteral("CSV/ASCII file does not exist: %1").arg(path));
 
@@ -6684,14 +11337,83 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         inFile.close();
 
         const QString encodingParam = params.contains(QStringLiteral("encoding"))
-                ? params.value(QStringLiteral("encoding")).toString().trimmed()
+                ? optionalJsonString(params, QStringLiteral("encoding"), QStringLiteral("auto")).trimmed()
                 : QStringLiteral("auto");
+        {
+            const QString encLow = encodingParam.toLower();
+            static const QSet<QString> kValidEncodings = {
+                QStringLiteral(""),           QStringLiteral("auto"),
+                QStringLiteral("utf-8"),      QStringLiteral("utf8"),
+                QStringLiteral("utf-16"),     QStringLiteral("utf16"),
+                QStringLiteral("utf-16le"),   QStringLiteral("utf-16be"),
+                QStringLiteral("shift_jis"),  QStringLiteral("shift-jis"),
+                QStringLiteral("sjis"),       QStringLiteral("cp932"),
+                QStringLiteral("ms932"),      QStringLiteral("euc-jp"),
+                QStringLiteral("euc_jp"),     QStringLiteral("iso-2022-jp"),
+                QStringLiteral("latin1"),     QStringLiteral("iso-8859-1"),
+                QStringLiteral("cp1252"),     QStringLiteral("windows-1252"),
+                QStringLiteral("ascii"),      QStringLiteral("gbk"),
+                QStringLiteral("gb18030"),    QStringLiteral("big5")
+            };
+            if (!kValidEncodings.contains(encLow)
+                && QTextCodec::codecForName(encodingParam.toLatin1()) == nullptr) {
+                throwInvalidParams(
+                        QStringLiteral("Unsupported text encoding '%1' (expected 'auto'|'utf-8'|'utf-16'|'shift_jis'|'cp932'|'euc-jp'|'latin1'|'iso-8859-1').")
+                                .arg(encodingParam));
+            }
+        }
         const QString encodingHint =
                 (encodingParam.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
                 ? QString()
                 : encodingParam;
         const int unitsRowHint = parseUnitsRowHintParam(params);
-        const QString reqImportName = params.value(QStringLiteral("name")).toString();
+        const QString reqImportName = optionalJsonString(params, QStringLiteral("name"));
+
+        // Reject Sun Raster magic and non-UTF-16 NUL-byte binary payloads with -32602 (0 tables created)
+        if (rawBytes.size() >= 4) {
+            const unsigned char b0 = static_cast<unsigned char>(rawBytes[0]);
+            const unsigned char b1 = static_cast<unsigned char>(rawBytes[1]);
+            const unsigned char b2 = static_cast<unsigned char>(rawBytes[2]);
+            const unsigned char b3 = static_cast<unsigned char>(rawBytes[3]);
+            if ((b0 == 0x59 && b1 == 0xA6 && b2 == 0x6A && b3 == 0x95)
+                || (b0 == 0x95 && b1 == 0x6A && b2 == 0xA6 && b3 == 0x59)) {
+                throwInvalidParams(
+                        QStringLiteral("Binary Sun Raster image '%1' cannot be imported as ASCII/CSV.")
+                                .arg(absPath));
+            }
+        }
+        if (rawBytes.contains('\0')) {
+            const bool hasUtf16Bom = rawBytes.size() >= 2
+                    && ((static_cast<unsigned char>(rawBytes[0]) == 0xFF
+                         && static_cast<unsigned char>(rawBytes[1]) == 0xFE)
+                        || (static_cast<unsigned char>(rawBytes[0]) == 0xFE
+                            && static_cast<unsigned char>(rawBytes[1]) == 0xFF));
+            const bool explicitUtf16 =
+                    encodingHint.startsWith(QStringLiteral("utf-16"), Qt::CaseInsensitive)
+                    || encodingHint.startsWith(QStringLiteral("utf16"), Qt::CaseInsensitive);
+            bool bomlessUtf16 = false;
+            if (!hasUtf16Bom && !explicitUtf16 && encodingHint.isEmpty() && rawBytes.size() >= 4
+                && (rawBytes.size() % 2 == 0)) {
+                const auto *uptr = reinterpret_cast<const unsigned char *>(rawBytes.constData());
+                const int samplePairs = std::min(rawBytes.size() / 2, 256);
+                int evenZeros = 0, oddZeros = 0;
+                for (int p = 0; p < samplePairs; ++p) {
+                    if (uptr[2 * p] == 0)
+                        ++evenZeros;
+                    if (uptr[2 * p + 1] == 0)
+                        ++oddZeros;
+                }
+                if ((oddZeros > samplePairs / 2 && evenZeros == 0)
+                    || (evenZeros > samplePairs / 2 && oddZeros == 0)) {
+                    bomlessUtf16 = true;
+                }
+            }
+            if (!hasUtf16Bom && !explicitUtf16 && !bomlessUtf16) {
+                throwInvalidParams(
+                        QStringLiteral("Binary file '%1' contains NUL bytes and cannot be imported as ASCII/CSV.")
+                                .arg(absPath));
+            }
+        }
 
         // Rigaku .ras diffraction scan files
         const bool isRasFile = absPath.endsWith(QStringLiteral(".ras"), Qt::CaseInsensitive)
@@ -6699,10 +11421,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (isRasFile) {
             std::unique_ptr<future::Table> rasFt(AsciiTableImportFilter::importLabTextData(
                     rawBytes, QStringLiteral("RasImportTmp"), absPath,
-                    params.value(QStringLiteral("separator")).toString(), encodingHint,
+                    optionalJsonString(params, QStringLiteral("separator")), encodingHint,
                     unitsRowHint));
             if (!rasFt || rasFt->columnCount() <= 0)
-                throwRpcRuntime(
+                throwInvalidParams(
                         QStringLiteral("Failed to parse Rigaku .ras data in '%1'.").arg(absPath));
             const int nRows = std::max(1, rasFt->rowCount());
             const int nCols = rasFt->columnCount();
@@ -6731,43 +11453,146 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return true;
         }
 
-        const QString text = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
-        const int len = text.size();
-        const int ignoredLines = std::max(0, params.value(QStringLiteral("skip_lines")).toInt(0));
-        int pos = 0;
-        for (int skipped = 0; skipped < ignoredLines && pos < len; ++skipped) {
-            while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n'))
-                ++pos;
-            if (pos < len && text[pos] == QLatin1Char('\r')) {
-                ++pos;
-                if (pos < len && text[pos] == QLatin1Char('\n'))
-                    ++pos;
-            } else if (pos < len && text[pos] == QLatin1Char('\n')) {
-                ++pos;
+        // VASP DOSCAR / EIGENVAL scientific files
+        const QString baseUpper = QFileInfo(absPath).fileName().toUpper();
+        if (baseUpper.startsWith(QStringLiteral("DOSCAR"))
+            || baseUpper.startsWith(QStringLiteral("EIGENVAL"))) {
+            double fermiEV = std::numeric_limits<double>::quiet_NaN();
+            std::unique_ptr<future::Table> vaspFt(AsciiTableImportFilter::importVaspTextData(
+                    rawBytes, QStringLiteral("VaspImportTmp"), absPath, &fermiEV));
+            if (vaspFt && vaspFt->columnCount() > 0 && vaspFt->rowCount() > 0) {
+                const int nRows = std::max(1, vaspFt->rowCount());
+                const int nCols = vaspFt->columnCount();
+                if (nCols > 4096 || nRows > 5000000
+                    || qint64(nCols) * qint64(nRows) > 25000000LL) {
+                    throwInvalidParams(
+                            QStringLiteral("Imported VASP table dimensions (%1x%2) exceed limits.")
+                                    .arg(nRows)
+                                    .arg(nCols));
+                }
+                Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
+                if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
+                    t->setWindowLabel(absPath);
+                for (int c = 0; c < nCols; ++c)
+                    t->setColName(c, QStringLiteral("__vasp_col_%1__").arg(c));
+                for (int c = 0; c < nCols; ++c) {
+                    Column *srcCol = vaspFt->column(c);
+                    Column *dstCol = t->column(c);
+                    if (!srcCol || !dstCol)
+                        continue;
+                    dstCol->setColumnMode(srcCol->columnMode());
+                    dstCol->copy(srcCol);
+                    t->setColName(c, srcCol->name().trimmed().isEmpty() ? QString::number(c + 1)
+                                                                        : srcCol->name());
+                    t->setColLongName(c, srcCol->longName());
+                    t->setColUnits(c, srcCol->units());
+                    t->setColComment(c, srcCol->comment());
+                    t->setColPlotDesignation(c, srcCol->plotDesignation());
+                    applyDefaultNumericFormat6g(t, c);
+                }
+                outResult = serializeTableInfo(t);
+                if (std::isfinite(fermiEV))
+                    outResult[QStringLiteral("fermi_energy_ev")] = fermiEV;
+                outResult[QStringLiteral("ok")] = true;
+                return true;
             }
         }
 
-        QString sep = params.value(QStringLiteral("separator")).toString();
-        if (sep.isEmpty() || sep.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
-            sep = autoDetectCsvSeparator(text, pos, absPath);
+        QString text = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
+        const int ignoredLines = parseBoundedInt(params, QStringLiteral("skip_lines"), 0, 0, 1000000);
+        int pos = 0;
+        {
+            const int len0 = text.size();
+            for (int skipped = 0; skipped < ignoredLines && pos < len0; ++skipped) {
+                while (pos < len0 && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n'))
+                    ++pos;
+                if (pos < len0 && text[pos] == QLatin1Char('\r')) {
+                    ++pos;
+                    if (pos < len0 && text[pos] == QLatin1Char('\n'))
+                        ++pos;
+                } else if (pos < len0 && text[pos] == QLatin1Char('\n')) {
+                    ++pos;
+                }
+            }
+        }
 
-        const bool hasHeader = params.contains(QStringLiteral("header"))
-                ? params.value(QStringLiteral("header")).toBool(true)
-                : true;
-        const bool stripSpaces = params.contains(QStringLiteral("strip_spaces"))
-                ? params.value(QStringLiteral("strip_spaces")).toBool(true)
-                : true;
-        const bool simplifySpaces = params.value(QStringLiteral("simplify_spaces")).toBool(false);
-        const bool convertNumeric = params.contains(QStringLiteral("numeric"))
-                ? params.value(QStringLiteral("numeric")).toBool(true)
-                : true;
+        bool autoWhitespaceSep = false;
+        QString sep = optionalJsonString(params, QStringLiteral("separator"));
+        if (sep.isEmpty() || sep.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
+            sep = autoDetectCsvSeparator(text, pos, absPath, &autoWhitespaceSep);
+        } else if (sep.compare(QStringLiteral("space"), Qt::CaseInsensitive) == 0
+                   || sep.compare(QStringLiteral("whitespace"), Qt::CaseInsensitive) == 0
+                   || sep == QStringLiteral(" ")) {
+            sep = QStringLiteral(" ");
+            autoWhitespaceSep = true;
+        }
+
+        if (autoWhitespaceSep && sep == QStringLiteral(" ")) {
+            // Collapse runs of spaces/tabs outside quotes on non-comment lines so multi-space .xy/.dat aligns cleanly
+            const QString tail = text.mid(pos);
+            const QStringList rawLines = tail.split(QRegularExpression(QStringLiteral("\\r?\\n")));
+            QStringList normLines;
+            normLines.reserve(rawLines.size());
+            for (const QString &ln : rawLines) {
+                const QString tr = ln.trimmed();
+                if (tr.isEmpty() || tr.startsWith(QLatin1Char('#'))
+                    || tr.startsWith(QLatin1Char(';')) || tr.startsWith(QLatin1Char('!'))) {
+                    if (tr.startsWith(QLatin1Char(';')) || tr.startsWith(QLatin1Char('!')))
+                        normLines.append(QLatin1Char('#') + tr.mid(1));
+                    else if (!tr.isEmpty())
+                        normLines.append(tr);
+                    continue;
+                }
+                normLines.append(tr.simplified());
+            }
+            text = normLines.join(QLatin1Char('\n'));
+            pos = 0;
+        }
+
+        const bool stripSpaces = optionalJsonBool(params, QStringLiteral("strip_spaces"), true);
+        const bool simplifySpaces = optionalJsonBool(params, QStringLiteral("simplify_spaces"), false);
+        const bool convertNumeric = optionalJsonBool(params, QStringLiteral("numeric"), true);
         const bool withComments = params.contains(QStringLiteral("with_comments"))
-                ? params.value(QStringLiteral("with_comments")).toBool(false)
-                : params.value(QStringLiteral("comments")).toBool(false);
+                ? optionalJsonBool(params, QStringLiteral("with_comments"), false)
+                : optionalJsonBool(params, QStringLiteral("comments"), false);
 
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records = parseDelimitedRecordsRfc4180(
                 text, pos, sep, stripSpaces, simplifySpaces, maxCols);
+
+        bool hasHeader = true;
+        if (params.contains(QStringLiteral("header")) && !params.value(QStringLiteral("header")).isNull()) {
+            hasHeader = optionalJsonBool(params, QStringLiteral("header"), true);
+        } else if (!records.isEmpty()) {
+            // Auto-detect headerless numeric files (.xy, .xye, .dat, etc.): if every non-empty cell in row 0 is numeric, row 0 is data!
+            QLocale cLoc = QLocale::c();
+            cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+            int numTokens = 0;
+            bool allRow0Numeric = true;
+            for (const ParsedCsvCell &cell : records[0]) {
+                const QString tok = cell.value.trimmed();
+                if (tok.isEmpty())
+                    continue;
+                bool okN = false;
+                const double dv = cLoc.toDouble(tok, &okN);
+                if (!cell.quoted && okN && std::isfinite(dv)) {
+                    ++numTokens;
+                } else {
+                    allRow0Numeric = false;
+                    break;
+                }
+            }
+            if (allRow0Numeric && numTokens >= 1)
+                hasHeader = false;
+        }
+
+        if (maxCols > 4096 || records.size() > 5000000
+            || qint64(maxCols) * qint64(std::max(1, records.size())) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("Imported table dimensions (%1x%2) exceed limits (max 5,000,000 rows, 4,096 cols, 25,000,000 cells).")
+                            .arg(records.size())
+                            .arg(maxCols));
+        }
 
         Table *t = createUniqueTableHeadless(d_app, 1, maxCols, reqImportName);
         if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
@@ -6776,13 +11601,34 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, withComments,
                                           unitsRowHint, convertNumeric, 0, 0, true);
 
+        if (!hasHeader
+            && (absPath.endsWith(QStringLiteral(".xy"), Qt::CaseInsensitive)
+                || absPath.endsWith(QStringLiteral(".xye"), Qt::CaseInsensitive))) {
+            if (t->numCols() >= 1) {
+                t->setColName(0, QStringLiteral("TwoTheta"));
+                t->setColLongName(0, QStringLiteral("2Theta"));
+                t->setColUnits(0, QStringLiteral("deg"));
+                t->setColPlotDesignation(0, SciDAVis::X);
+            }
+            if (t->numCols() >= 2) {
+                t->setColName(1, QStringLiteral("Intensity"));
+                t->setColLongName(1, QStringLiteral("Intensity"));
+                t->setColUnits(1, QStringLiteral("counts"));
+                t->setColPlotDesignation(1, SciDAVis::Y);
+            }
+            if (t->numCols() >= 3) {
+                t->setColName(2, QStringLiteral("Error"));
+                t->setColPlotDesignation(2, SciDAVis::yErr);
+            }
+        }
+
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
 
     if (method == QStringLiteral("app.import_opj")) {
-        const QString path = params.value(QStringLiteral("path")).toString().trimmed();
+        const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
         const QFileInfo opjFi(path);
         if (path.isEmpty() || !opjFi.exists() || !opjFi.isFile())
             throwInvalidParams(QStringLiteral("OPJ file does not exist: %1").arg(path));
@@ -6794,13 +11640,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         const QByteArray opjMagic = opjCheck.read(16);
         opjCheck.close();
+        if (opjMagic.startsWith("CPYU")) {
+            throwRpcRuntime(
+                    QStringLiteral("Origin 2018+ '.opju' format (CPYU header) detected in '%1'; please save as '.opj' or export ASCII/CSV in Origin.")
+                            .arg(path));
+        }
         if (opjMagic.size() < 4 || !opjMagic.startsWith("CPYA")) {
             throwRpcRuntime(
                     QStringLiteral("Invalid or corrupt Origin OPJ file '%1' (missing CPYA header).")
                             .arg(path));
         }
         const int beforeCount = d_app->windowsList().size();
-        const QString codec = params.value(QStringLiteral("codec")).toString().trimmed();
+        const QString codec = optionalJsonString(params, QStringLiteral("codec")).trimmed();
         ImportOPJ importer(d_app, opjFi.absoluteFilePath(), codec);
         if (importer.error() != 0) {
             throwRpcRuntime(
@@ -6820,7 +11671,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.list_windows")) {
-        const QString filterType = params.value(QStringLiteral("type")).toString().trimmed();
+        const QString filterType = optionalJsonString(params, QStringLiteral("type")).trimmed();
         QJsonArray arr;
         for (MyWidget *w : d_app->windowsList()) {
             if (!w)
@@ -6841,7 +11692,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.window_info")) {
-        const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = !optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                : optionalJsonString(params, QStringLiteral("window")).trimmed();
         if (name.isEmpty()) {
             throwInvalidParamsWithAvailable(
                     QStringLiteral("Parameter 'name' must be a non-empty window name."),
@@ -6869,7 +11722,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.activate_window")) {
-        const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = !optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                : optionalJsonString(params, QStringLiteral("window")).trimmed();
         if (name.isEmpty()) {
             throwInvalidParamsWithAvailable(
                     QStringLiteral("Parameter 'name' must be a non-empty window name."),
@@ -6894,11 +11749,15 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.rename_window")) {
-        const QString oldName = params.value(QStringLiteral("name")).toString().trimmed();
-        const QString newName = params.value(QStringLiteral("new_name")).toString().trimmed();
+        const QString oldName = !optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                : (!optionalJsonString(params, QStringLiteral("old_name")).trimmed().isEmpty()
+                           ? optionalJsonString(params, QStringLiteral("old_name")).trimmed()
+                           : optionalJsonString(params, QStringLiteral("window")).trimmed());
+        const QString newName = optionalJsonString(params, QStringLiteral("new_name")).trimmed();
         if (oldName.isEmpty()) {
             throwInvalidParamsWithAvailable(
-                    QStringLiteral("Parameter 'name' must be a non-empty window name."),
+                    QStringLiteral("Parameter 'name' (or 'old_name') must be a non-empty window name."),
                     collectWindowNames(d_app));
         }
         if (newName.isEmpty())
@@ -6942,7 +11801,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.close_window")) {
-        const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = !optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                : optionalJsonString(params, QStringLiteral("window")).trimmed();
         if (name.isEmpty()) {
             throwInvalidParamsWithAvailable(
                     QStringLiteral("Parameter 'name' must be a non-empty window name."),
@@ -6954,19 +11815,27 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     QStringLiteral("Window not found: '%1'.").arg(name), collectWindowNames(d_app));
         }
         const QString closedName = w->name();
+        QPointer<MyWidget> wg(w);
         w->askOnCloseEvent(false);
         w->hide();
         w->close();
-        if (w->folder())
-            d_app->closeWindow(w);
+        if (wg && wg->folder())
+            d_app->closeWindow(wg.data());
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        if (wg) {
+            wg->hide();
+            wg->setParent(nullptr);
+            delete wg.data();
+        }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("closed")] = closedName;
         return true;
     }
 
     if (method == QStringLiteral("app.clone_window")) {
-        const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = !optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                : optionalJsonString(params, QStringLiteral("window")).trimmed();
         if (name.isEmpty()) {
             throwInvalidParamsWithAvailable(
                     QStringLiteral("Parameter 'name' must be a non-empty window name."),
@@ -6988,9 +11857,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.set_language")) {
-        QString lang = params.value(QStringLiteral("language")).toString().trimmed().toLower();
+        QString lang = optionalJsonString(params, QStringLiteral("language")).trimmed().toLower();
         if (lang.isEmpty())
-            lang = params.value(QStringLiteral("lang")).toString().trimmed().toLower();
+            lang = optionalJsonString(params, QStringLiteral("lang")).trimmed().toLower();
         if (lang != QStringLiteral("ja") && lang != QStringLiteral("en"))
             throwInvalidParams(
                     QStringLiteral("Unsupported language '%1' (expected 'ja' or 'en').").arg(lang));
@@ -7006,7 +11875,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.set_recalc_mode")) {
-        const QString m = params.value(QStringLiteral("mode")).toString().trimmed().toLower();
+        const QString m = optionalJsonString(params, QStringLiteral("mode")).trimmed().toLower();
         RecalcManager *rm = RecalcManager::instance(d_app);
         bool autoMode = false;
         if (m == QStringLiteral("auto")) {
@@ -7030,6 +11899,80 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("mode")] = m;
+        return true;
+    }
+
+    if (method == QStringLiteral("app.list_sample_datasets")) {
+        const QString reqCat = optionalJsonString(params, QStringLiteral("category")).trimmed();
+        const QVector<CurveMathTools::SampleDatasetInfo> allSets =
+                CurveMathTools::listSampleDatasets();
+        QJsonArray arr;
+        for (const auto &ds : allSets) {
+            if (!reqCat.isEmpty() && ds.category.compare(reqCat, Qt::CaseInsensitive) != 0
+                && !ds.category.contains(reqCat, Qt::CaseInsensitive)) {
+                continue;
+            }
+            QJsonObject dObj;
+            dObj[QStringLiteral("id")] = ds.id;
+            dObj[QStringLiteral("name")] = ds.id;
+            dObj[QStringLiteral("title")] = ds.title;
+            dObj[QStringLiteral("category")] = ds.category;
+            dObj[QStringLiteral("description")] = ds.description;
+            arr.append(dObj);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("count")] = arr.size();
+        outResult[QStringLiteral("datasets")] = arr;
+        return true;
+    }
+
+    if (method == QStringLiteral("app.load_sample_dataset")) {
+        QString dsId = !optionalJsonString(params, QStringLiteral("id")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("id")).trimmed()
+                : (!optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                           ? optionalJsonString(params, QStringLiteral("name")).trimmed()
+                           : optionalJsonString(params, QStringLiteral("dataset")).trimmed());
+        const QVector<CurveMathTools::SampleDatasetInfo> allSets =
+                CurveMathTools::listSampleDatasets();
+        if (dsId.isEmpty() && !allSets.isEmpty())
+            dsId = allSets.first().id;
+        const bool autoPlot = params.contains(QStringLiteral("auto_plot"))
+                ? optionalJsonBool(params, QStringLiteral("auto_plot"), true)
+                : optionalJsonBool(params, QStringLiteral("plot"), true);
+        Table *outTbl = nullptr;
+        Matrix *outMat = nullptr;
+        MultiLayer *ml =
+                CurveMathTools::loadSampleDataset(d_app, dsId, autoPlot, &outTbl, &outMat);
+        if (!ml && !outTbl && !outMat) {
+            QStringList availIds;
+            for (const auto &ds : allSets)
+                availIds << ds.id;
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown sample dataset '%1'.").arg(dsId), availIds);
+        }
+        const QString preset = optionalJsonString(params, QStringLiteral("preset"))
+                                       .trimmed()
+                                       .toLower();
+        if (ml) {
+            if (preset == QStringLiteral("isij_85mm") || preset == QStringLiteral("isij"))
+                ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+            else if (preset == QStringLiteral("nature_89mm") || preset == QStringLiteral("nature"))
+                ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
+            else if (preset == QStringLiteral("slide_28pt") || preset == QStringLiteral("slide"))
+                ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+            for (Graph *lg : ml->layersList()) {
+                enforceArialGraphFonts(lg);
+                replotGraphOrDefer(lg);
+            }
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("id")] = dsId;
+        if (outTbl)
+            outResult[QStringLiteral("table")] = outTbl->name();
+        if (outMat)
+            outResult[QStringLiteral("matrix")] = outMat->name();
+        if (ml)
+            outResult[QStringLiteral("graph")] = ml->name();
         return true;
     }
 
@@ -7096,6 +12039,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo")) {
         const bool isUndo = (method == QStringLiteral("app.undo"));
 
+        struct ScopedTableReplayGuard
+        {
+            ScopedTableReplayGuard() { Table::beginUndoRedoReplay(); }
+            ~ScopedTableReplayGuard() { Table::endUndoRedoReplay(); }
+        };
+
         auto refreshAfterProjectUndoRedo = [&]() {
             for (MyWidget *w : d_app->windowsList()) {
                 if (!w)
@@ -7111,15 +12060,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             d_app->refreshAllGraphsAutoAxisTitles();
         };
 
-        const QString graphParam = params.value(QStringLiteral("graph")).toString().trimmed();
-        const QString tableParam = params.value(QStringLiteral("table")).toString().trimmed();
-        const QString matrixParam = params.value(QStringLiteral("matrix")).toString().trimmed();
-        const QString windowParam = params.value(QStringLiteral("window")).toString().trimmed();
+        const QString graphParam = optionalJsonString(params, QStringLiteral("graph")).trimmed();
+        const QString tableParam = optionalJsonString(params, QStringLiteral("table")).trimmed();
+        const QString matrixParam = optionalJsonString(params, QStringLiteral("matrix")).trimmed();
+        const QString windowParam = optionalJsonString(params, QStringLiteral("window")).trimmed();
 
         if (!graphParam.isEmpty()) {
             MultiLayer *ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
             QUndoStack *us = ml->undoStack();
             if (us) {
+                ScopedTableReplayGuard replayGuard;
                 if (isUndo && us->canUndo())
                     us->undo();
                 else if (!isUndo && us->canRedo())
@@ -7147,10 +12097,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 us = m->d_future_matrix ? m->d_future_matrix->undoStack() : nullptr;
             }
             if (us) {
-                if (isUndo && us->canUndo())
-                    us->undo();
-                else if (!isUndo && us->canRedo())
-                    us->redo();
+                {
+                    ScopedTableReplayGuard replayGuard;
+                    if (isUndo && us->canUndo())
+                        us->undo();
+                    else if (!isUndo && us->canRedo())
+                        us->redo();
+                }
                 refreshAfterProjectUndoRedo();
             }
             d_app->updateUndoRedoActionsForActiveWindow();
@@ -7182,10 +12135,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 isProj = true;
             }
             if (us) {
-                if (isUndo && us->canUndo())
-                    us->undo();
-                else if (!isUndo && us->canRedo())
-                    us->redo();
+                {
+                    ScopedTableReplayGuard replayGuard;
+                    if (isUndo && us->canUndo())
+                        us->undo();
+                    else if (!isUndo && us->canRedo())
+                        us->redo();
+                }
                 if (isProj)
                     refreshAfterProjectUndoRedo();
             }
@@ -7235,6 +12191,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
 
         if (activeSub) {
+            ScopedTableReplayGuard replayGuard;
             if (isUndo)
                 d_app->undo();
             else
@@ -7252,13 +12209,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 if (!us)
                     return false;
                 if (isUndo && us->canUndo()) {
-                    us->undo();
+                    {
+                        ScopedTableReplayGuard replayGuard;
+                        us->undo();
+                    }
                     if (isProj)
                         refreshAfterProjectUndoRedo();
                     return true;
                 }
                 if (!isUndo && us->canRedo()) {
-                    us->redo();
+                    {
+                        ScopedTableReplayGuard replayGuard;
+                        us->redo();
+                    }
                     if (isProj)
                         refreshAfterProjectUndoRedo();
                     return true;
@@ -7305,22 +12268,34 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.set_focus_hud")) {
+        const bool currentState = d_app->modernRibbonBar()
+                ? d_app->modernRibbonBar()->isFocusHudMode()
+                : focusHudFallback;
         const bool enabled = params.contains(QStringLiteral("enabled"))
-                ? params.value(QStringLiteral("enabled")).toBool()
-                : !focusHudFallback;
+                ? optionalJsonBool(params, QStringLiteral("enabled"), !currentState)
+                : !currentState;
         focusHudFallback = enabled;
+        if (ModernRibbonBar *rib = d_app->modernRibbonBar())
+            rib->setFocusHudMode(enabled);
         outResult[QStringLiteral("ok")] = true;
-        outResult[QStringLiteral("enabled")] = focusHudFallback;
+        outResult[QStringLiteral("enabled")] = d_app->modernRibbonBar()
+                ? d_app->modernRibbonBar()->isFocusHudMode()
+                : focusHudFallback;
         return true;
     }
 
     if (method == QStringLiteral("app.get_focus_hud")) {
-        outResult[QStringLiteral("enabled")] = focusHudFallback;
+        const bool cur = d_app->modernRibbonBar()
+                ? d_app->modernRibbonBar()->isFocusHudMode()
+                : focusHudFallback;
+        focusHudFallback = cur;
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("enabled")] = cur;
         return true;
     }
 
     if (method == QStringLiteral("app.set_workspace_mode")) {
-        const QString mode = params.value(QStringLiteral("mode")).toString().trimmed().toLower();
+        const QString mode = optionalJsonString(params, QStringLiteral("mode")).trimmed().toLower();
         if (mode == QStringLiteral("tabs") || mode == QStringLiteral("tabbed")) {
             if (d_app->modernRibbonBar())
                 d_app->modernRibbonBar()->setWorkspaceLayoutMode(ModernRibbonBar::LayoutTabbed);
@@ -7353,10 +12328,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.grab_gui_diagnostic")) {
-        const QString path = params.value(QStringLiteral("path")).toString().trimmed();
-        const int reqW = params.value(QStringLiteral("width")).toInt(0);
-        const int reqH = params.value(QStringLiteral("height")).toInt(0);
-        if (reqW > 200 && reqH > 200) {
+        const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
+        const int reqW = parseBoundedInt(params, QStringLiteral("width"), 0, 0, 16384);
+        const int reqH = parseBoundedInt(params, QStringLiteral("height"), 0, 0, 16384);
+        if ((reqW > 0 && reqW < 64) || (reqH > 0 && reqH < 64)) {
+            throwInvalidParams(
+                    QStringLiteral("Diagnostic capture dimensions must be 0 (current size) or in [64, 16384]."));
+        }
+        if (reqW >= 64 && reqH >= 64) {
             if (d_app->isMaximized() || d_app->isFullScreen())
                 d_app->showNormal();
             d_app->resize(reqW, reqH);
@@ -7366,9 +12345,23 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             d_app->show();
 
         ModernRibbonBar *rib = d_app->modernRibbonBar();
-        if (params.contains(QStringLiteral("workspace_mode"))) {
+        if (rib && params.contains(QStringLiteral("focus_hud"))
+            && !params.value(QStringLiteral("focus_hud")).isNull()) {
+            const bool fh = optionalJsonBool(params, QStringLiteral("focus_hud"), false);
+            rib->setFocusHudMode(fh);
+            focusHudFallback = fh;
+        }
+        if (params.contains(QStringLiteral("workspace_mode"))
+            && !params.value(QStringLiteral("workspace_mode")).isNull()) {
             const QString wm =
-                    params.value(QStringLiteral("workspace_mode")).toString().trimmed().toLower();
+                    optionalJsonString(params, QStringLiteral("workspace_mode")).trimmed().toLower();
+            if (wm != QStringLiteral("tabs") && wm != QStringLiteral("tabbed")
+                && wm != QStringLiteral("split") && wm != QStringLiteral("mdi")
+                && wm != QStringLiteral("free") && !wm.isEmpty()) {
+                throwInvalidParams(
+                        QStringLiteral("Invalid workspace_mode '%1' (expected 'tabs'|'split'|'mdi').")
+                                .arg(wm));
+            }
             if (rib) {
                 if (wm == QStringLiteral("tabs") || wm == QStringLiteral("tabbed"))
                     rib->setWorkspaceLayoutMode(ModernRibbonBar::LayoutTabbed);
@@ -7380,9 +12373,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         bool dockedLeftOrRight = false;
-        if (params.contains(QStringLiteral("dock_explorer"))) {
+        if (params.contains(QStringLiteral("dock_explorer"))
+            && !params.value(QStringLiteral("dock_explorer")).isNull()) {
             const QString area =
-                    params.value(QStringLiteral("dock_explorer")).toString().trimmed().toLower();
+                    optionalJsonString(params, QStringLiteral("dock_explorer")).trimmed().toLower();
+            if (!area.isEmpty() && area != QStringLiteral("left") && area != QStringLiteral("right")
+                && area != QStringLiteral("bottom")) {
+                throwInvalidParams(
+                        QStringLiteral("Invalid dock_explorer '%1' (expected 'left'|'right'|'bottom').")
+                                .arg(area));
+            }
             d_app->explorerWindow.setFloating(false);
             if (area == QStringLiteral("right")) {
                 d_app->addDockWidget(Qt::RightDockWidgetArea, &d_app->explorerWindow);
@@ -7394,27 +12394,45 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 dockedLeftOrRight = true;
             }
             if (!params.contains(QStringLiteral("show_explorer"))
-                || params.value(QStringLiteral("show_explorer")).toBool(true)) {
+                || optionalJsonBool(params, QStringLiteral("show_explorer"), true)) {
                 d_app->explorerWindow.show();
             }
         }
-        if (params.contains(QStringLiteral("show_explorer")))
-            d_app->explorerWindow.setVisible(params.value(QStringLiteral("show_explorer")).toBool(true));
+        if (params.contains(QStringLiteral("show_explorer"))
+            && !params.value(QStringLiteral("show_explorer")).isNull()) {
+            d_app->explorerWindow.setVisible(
+                    optionalJsonBool(params, QStringLiteral("show_explorer"), true));
+        }
+
+        if (params.contains(QStringLiteral("focus_table_drawer"))
+            && !params.value(QStringLiteral("focus_table_drawer")).isNull()) {
+            const bool ftd = optionalJsonBool(params, QStringLiteral("focus_table_drawer"), false);
+            if (auto *hud = d_app->findChild<FocusCanvasHudOverlay *>())
+                hud->setTableDrawerVisible(ftd);
+        }
 
         GraphInspectorDock *insp = d_app->findChild<GraphInspectorDock *>();
         if (insp && params.contains(QStringLiteral("expand_inspector"))) {
-            const bool exp = params.value(QStringLiteral("expand_inspector")).toBool(false);
+            const bool exp = optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
             if (exp)
                 insp->show();
             insp->setCollapsedRail(!exp);
         }
+        if (insp && params.contains(QStringLiteral("inspector_tab"))
+            && !params.value(QStringLiteral("inspector_tab")).isNull()) {
+            const int itab = parseBoundedInt(params, QStringLiteral("inspector_tab"), 0, 0, 3);
+            insp->switchToInspectorPage(
+                    static_cast<GraphInspectorDock::InspectorPageIndex>(itab));
+        }
 
         if (d_app->explorerWindow.isVisible() && !d_app->explorerWindow.isFloating()) {
-            if (params.contains(QStringLiteral("explorer_width"))) {
-                const int explicitW =
-                        std::clamp(params.value(QStringLiteral("explorer_width")).toInt(240), 140,
-                                   std::max(180, d_app->width() - 200));
-                d_app->resizeDocks({ &d_app->explorerWindow }, { explicitW }, Qt::Horizontal);
+            if (params.contains(QStringLiteral("explorer_width"))
+                && !params.value(QStringLiteral("explorer_width")).isNull()) {
+                const int explicitW = parseBoundedInt(
+                        params, QStringLiteral("explorer_width"), 240, 60, 4096);
+                d_app->resizeDocks({ &d_app->explorerWindow },
+                                   { std::clamp(explicitW, 140, std::max(180, d_app->width() - 200)) },
+                                   Qt::Horizontal);
             } else if (dockedLeftOrRight) {
                 const int expW = qBound(220, int(d_app->width() * 0.22), 265);
                 d_app->resizeDocks({ &d_app->explorerWindow }, { expW }, Qt::Horizontal);
@@ -7422,9 +12440,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         int targetTab = rib ? rib->currentTabIndex() : 0;
-        if (rib && params.contains(QStringLiteral("ribbon_tab")))
-            targetTab = std::clamp(params.value(QStringLiteral("ribbon_tab")).toInt(0), 0,
-                                   std::max(0, rib->tabCount() - 1));
+        if (rib && params.contains(QStringLiteral("ribbon_tab"))
+            && !params.value(QStringLiteral("ribbon_tab")).isNull()) {
+            targetTab = parseBoundedInt(params, QStringLiteral("ribbon_tab"), 0, 0,
+                                        std::max(0, rib->tabCount() - 1));
+        }
         if (rib)
             rib->setCurrentTabIndex(targetTab);
 
@@ -7440,7 +12460,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QJsonArray clippedDetails;
         if (rib && rib->isVisible()) {
             const bool checkAllTabs =
-                    params.value(QStringLiteral("check_all_tabs")).toBool(true);
+                    optionalJsonBool(params, QStringLiteral("check_all_tabs"), true);
             const int tabStart = checkAllTabs ? 0 : targetTab;
             const int tabEnd = checkAllTabs ? (rib->tabCount() - 1) : targetTab;
             for (int ti = tabStart; ti <= tabEnd; ++ti) {
@@ -7493,6 +12513,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 rib->setCurrentTabIndex(targetTab);
                 pumpLayoutEvents();
             }
+        }
+        if (insp && params.contains(QStringLiteral("expand_inspector"))
+            && !params.value(QStringLiteral("expand_inspector")).isNull()) {
+            const bool exp = optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
+            if (exp)
+                insp->show();
+            insp->setCollapsedRail(!exp);
+            if (params.contains(QStringLiteral("inspector_tab"))
+                && !params.value(QStringLiteral("inspector_tab")).isNull()) {
+                const int itab = parseBoundedInt(params, QStringLiteral("inspector_tab"), 0, 0, 3);
+                insp->switchToInspectorPage(
+                        static_cast<GraphInspectorDock::InspectorPageIndex>(itab));
+            }
+            QApplication::processEvents();
         }
 
         int ribbonBottomY = 0;
@@ -7547,7 +12581,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.list_actions")) {
-        const QString query = params.value(QStringLiteral("filter")).toString().trimmed();
+        const QString query = optionalJsonString(params, QStringLiteral("filter")).trimmed();
         const QList<QAction *> actions = d_app->findChildren<QAction *>();
         QJsonArray arr;
         for (QAction *act : actions) {
@@ -7575,7 +12609,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.trigger_action")) {
-        const QString name = params.value(QStringLiteral("name")).toString().trimmed();
+        const QString name = optionalJsonString(params, QStringLiteral("name")).trimmed();
         if (name.isEmpty())
             throwInvalidParams(QStringLiteral("Action or slot 'name' is required."));
 
@@ -7743,11 +12777,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             QStringLiteral("Interactive modal dialog action '%1' cannot be triggered headlessly via RPC; use the dedicated JSON-RPC method instead.")
                                     .arg(act->objectName().isEmpty() ? cleanTxt : act->objectName()));
                 }
-                if (params.contains(QStringLiteral("checked")) && act->isCheckable()) {
-                    const bool want = params.value(QStringLiteral("checked")).toBool();
+                if (params.contains(QStringLiteral("checked"))
+                    && !params.value(QStringLiteral("checked")).isNull() && act->isCheckable()) {
+                    const bool want = optionalJsonBool(params, QStringLiteral("checked"), false);
                     if (act->isChecked() != want)
                         act->trigger();
                 } else {
+                    if (params.contains(QStringLiteral("checked"))
+                        && !params.value(QStringLiteral("checked")).isNull()) {
+                        (void)optionalJsonBool(params, QStringLiteral("checked"), false);
+                    }
                     act->trigger();
                 }
                 outResult[QStringLiteral("ok")] = true;
@@ -7785,16 +12824,62 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     // 2. Worksheet (table.*)
     // ------------------------------------------------------------------------
     if (method == QStringLiteral("table.create")) {
-        const int rows = parseStrictPositiveInt(params, QStringLiteral("rows"), 30);
-        const int cols = parseStrictPositiveInt(params, QStringLiteral("cols"), 2);
-        const QString reqName = params.value(QStringLiteral("name")).toString();
+        const int rows = parseBoundedInt(params, QStringLiteral("rows"), 30, 1, 5000000);
+        const int cols = parseBoundedInt(params, QStringLiteral("cols"), 2, 1, 4096);
+        if (qint64(rows) * qint64(cols) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.create total cells (%1x%2) exceeds limit (25,000,000).")
+                            .arg(rows)
+                            .arg(cols));
+        }
+        const QString reqName = optionalJsonString(params, QStringLiteral("name"));
+        if (params.contains(QStringLiteral("columns"))
+            && !params.value(QStringLiteral("columns")).isNull()) {
+            if (!params.value(QStringLiteral("columns")).isArray())
+                throwInvalidParams(QStringLiteral("Parameter 'columns' must be a list."));
+            for (const QJsonValue &cv : params.value(QStringLiteral("columns")).toArray()) {
+                if (!cv.isString() && !cv.isObject()) {
+                    throwInvalidParams(
+                            QStringLiteral("Each entry in 'columns' must be a column name string or metadata object."));
+                }
+            }
+        }
+        if (params.contains(QStringLiteral("col_names"))
+            && !params.value(QStringLiteral("col_names")).isNull()) {
+            if (!params.value(QStringLiteral("col_names")).isArray())
+                throwInvalidParams(QStringLiteral("Parameter 'col_names' must be a list of strings."));
+            for (const QJsonValue &nv : params.value(QStringLiteral("col_names")).toArray()) {
+                if (!nv.isString())
+                    throwInvalidParams(QStringLiteral("Each entry in 'col_names' must be a string."));
+            }
+        }
+        if (params.contains(QStringLiteral("designations"))
+            && !params.value(QStringLiteral("designations")).isNull()) {
+            const QJsonValue dv = params.value(QStringLiteral("designations"));
+            if (!dv.isArray() && !dv.isObject()) {
+                throwInvalidParams(
+                        QStringLiteral("Parameter 'designations' must be a list or object mapping column -> designation."));
+            }
+            if (dv.isArray()) {
+                for (const QJsonValue &item : dv.toArray()) {
+                    if (!item.isString())
+                        throwInvalidParams(QStringLiteral("Each designation in 'designations' must be a string."));
+                }
+            } else {
+                const QJsonObject dObj = dv.toObject();
+                for (auto it = dObj.begin(); it != dObj.end(); ++it) {
+                    if (!it.value().isString())
+                        throwInvalidParams(QStringLiteral("Each designation in 'designations' must be a string."));
+                }
+            }
+        }
         Table *t = createUniqueTableHeadless(d_app, rows, cols, reqName);
         if (params.contains(QStringLiteral("columns"))
             && params.value(QStringLiteral("columns")).isArray()) {
             const QJsonArray cArr = params.value(QStringLiteral("columns")).toArray();
             for (int c = 0; c < std::min(cols, cArr.size()); ++c) {
                 if (cArr[c].isString())
-                    t->setColName(c, cArr[c].toString());
+                    t->setColName(c, sanitizeUtf16Surrogates(cArr[c].toString()));
                 else if (cArr[c].isObject())
                     applyColumnMetadataObject(t, c, cArr[c].toObject());
             }
@@ -7803,29 +12888,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             && params.value(QStringLiteral("col_names")).isArray()) {
             const QJsonArray nArr = params.value(QStringLiteral("col_names")).toArray();
             for (int c = 0; c < std::min(cols, nArr.size()); ++c) {
-                const QString nm = nArr[c].toString().trimmed();
+                const QString nm = sanitizeUtf16Surrogates(nArr[c].toString()).trimmed();
                 if (!nm.isEmpty())
                     t->setColName(c, nm);
             }
         }
-        if (params.contains(QStringLiteral("designations"))) {
+        if (params.contains(QStringLiteral("designations"))
+            && !params.value(QStringLiteral("designations")).isNull()) {
             const QJsonValue dv = params.value(QStringLiteral("designations"));
             if (dv.isArray()) {
                 const QJsonArray dArr = dv.toArray();
                 for (int c = 0; c < std::min(cols, dArr.size()); ++c) {
                     QJsonObject mo;
-                    mo[QStringLiteral("plot_designation")] = dArr[c].toString();
+                    mo[QStringLiteral("plot_designation")] = dArr[c];
                     applyColumnMetadataObject(t, c, mo);
                 }
             } else if (dv.isObject()) {
                 const QJsonObject dObj = dv.toObject();
                 for (auto it = dObj.begin(); it != dObj.end(); ++it) {
-                    const int c = resolveColumnIndex(t, QJsonValue(it.key()), false);
-                    if (c >= 0) {
-                        QJsonObject mo;
-                        mo[QStringLiteral("plot_designation")] = it.value().toString();
-                        applyColumnMetadataObject(t, c, mo);
-                    }
+                    const int c = resolveColumnIndex(t, QJsonValue(it.key()), true);
+                    QJsonObject mo;
+                    mo[QStringLiteral("plot_designation")] = it.value();
+                    applyColumnMetadataObject(t, c, mo);
                 }
             }
         }
@@ -7842,10 +12926,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("table.resize")) {
         Table *t = resolveTable(d_app, params);
-        if (params.contains(QStringLiteral("rows")) && !params.value(QStringLiteral("rows")).isNull())
-            t->setNumRows(parseStrictPositiveInt(params, QStringLiteral("rows"), t->numRows()));
-        if (params.contains(QStringLiteral("cols")) && !params.value(QStringLiteral("cols")).isNull())
-            t->setNumCols(parseStrictPositiveInt(params, QStringLiteral("cols"), t->numCols()));
+        const int nextRows = (params.contains(QStringLiteral("rows"))
+                              && !params.value(QStringLiteral("rows")).isNull())
+                ? parseBoundedInt(params, QStringLiteral("rows"), t->numRows(), 1, 5000000)
+                : t->numRows();
+        const int nextCols = (params.contains(QStringLiteral("cols"))
+                              && !params.value(QStringLiteral("cols")).isNull())
+                ? parseBoundedInt(params, QStringLiteral("cols"), t->numCols(), 1, 4096)
+                : t->numCols();
+        if (qint64(nextRows) * qint64(nextCols) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.resize total cells (%1x%2) exceeds limit (25,000,000).")
+                            .arg(nextRows)
+                            .arg(nextCols));
+        }
+        if (nextRows != t->numRows())
+            t->setNumRows(nextRows);
+        if (nextCols != t->numCols())
+            t->setNumCols(nextCols);
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -7853,17 +12951,53 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("table.add_column")) {
         Table *t = resolveTable(d_app, params);
-        const SciDAVis::PlotDesignation pd = parsePlotDesignation(
-                params.value(QStringLiteral("plot_designation")).toString(), SciDAVis::Y);
-        t->addCol(pd);
-        const int newIdx = t->numCols() - 1;
-        applyColumnMetadataObject(t, newIdx, params);
+        if (t->numCols() >= 4096
+            || qint64(t->numRows()) * qint64(t->numCols() + 1) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.add_column exceeds column/cell limit (max 4,096 cols, 25,000,000 cells)."));
+        }
+        (void)optionalJsonString(params, QStringLiteral("name"));
+        (void)optionalJsonString(params, QStringLiteral("long_name"));
+        (void)optionalJsonString(params, QStringLiteral("units"));
+        (void)optionalJsonString(params, QStringLiteral("comment"));
+        const QString modeStr = optionalJsonString(params, QStringLiteral("mode")).trimmed();
+        const QString pdRaw =
+                optionalJsonString(params, QStringLiteral("plot_designation")).trimmed();
+        const SciDAVis::PlotDesignation pd = parsePlotDesignation(pdRaw, SciDAVis::Y);
         const QJsonValue initData = params.contains(QStringLiteral("data"))
                 ? params.value(QStringLiteral("data"))
                 : params.value(QStringLiteral("values"));
+        if (!initData.isUndefined() && !initData.isNull()) {
+            if (!initData.isArray())
+                throwInvalidParams(QStringLiteral("'data' (or 'values') must be a JSON array."));
+            const QJsonArray initArr = initData.toArray();
+            if (initArr.size() > 5000000
+                || qint64(std::max(t->numRows(), initArr.size())) * qint64(t->numCols() + 1)
+                        > 25000000LL) {
+                throwInvalidParams(
+                        QStringLiteral("Column array size exceeds 5,000,000 rows / 25,000,000 cells."));
+            }
+        }
+        struct ScopedFutureTableMacro
+        {
+            future::Table *ft = nullptr;
+            ScopedFutureTableMacro(future::Table *f, const QString &lbl) : ft(f)
+            {
+                if (ft)
+                    ft->beginMacro(lbl);
+            }
+            ~ScopedFutureTableMacro()
+            {
+                if (ft)
+                    ft->endMacro();
+            }
+        } addColMacro(t->d_future_table, QStringLiteral("Add Column"));
+
+        t->addCol(pd);
+        const int newIdx = t->numCols() - 1;
+        applyColumnMetadataObject(t, newIdx, params);
         if (initData.isArray()) {
-            writeBulkColumnArray(t, newIdx, initData.toArray(),
-                                 params.value(QStringLiteral("mode")).toString());
+            writeBulkColumnArray(t, newIdx, initData.toArray(), modeStr);
         }
         outResult = serializeColumnMeta(t, newIdx);
         outResult[QStringLiteral("table")] = t->name();
@@ -7892,7 +13026,29 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (!rawData.isArray())
             throwInvalidParams(QStringLiteral("'data' (or 'values') must be a JSON array."));
         const QJsonArray arr = rawData.toArray();
-        writeBulkColumnArray(t, idx, arr, params.value(QStringLiteral("mode")).toString());
+        if (arr.size() > 5000000
+            || qint64(std::max(t->numRows(), arr.size())) * qint64(t->numCols()) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("Column data length (%1) exceeds limits (max 5,000,000 rows, 25,000,000 cells).")
+                            .arg(arr.size()));
+        }
+        struct ScopedSetColDataMacro
+        {
+            future::Table *ft = nullptr;
+            ScopedSetColDataMacro(future::Table *f, const QString &lbl) : ft(f)
+            {
+                if (ft && ft->undoStack())
+                    ft->beginMacro(lbl);
+                else
+                    ft = nullptr;
+            }
+            ~ScopedSetColDataMacro()
+            {
+                if (ft)
+                    ft->endMacro();
+            }
+        } setColMacro(t->d_future_table, QStringLiteral("Set Column Data"));
+        writeBulkColumnArray(t, idx, arr, optionalJsonString(params, QStringLiteral("mode")));
         applyColumnMetadataObject(t, idx, params);
         d_app->updateCurves(t, fullColumnName(t, idx));
         outResult = serializeColumnMeta(t, idx);
@@ -7906,24 +13062,43 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int idx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
         Column *col = t->column(idx);
         const int n = t->numRows();
+        const int startRow = parseBoundedInt(params, QStringLiteral("start_row"), 0, 0,
+                                             std::max(0, n - 1));
+        const int endRow = parseBoundedInt(params, QStringLiteral("end_row"),
+                                           std::max(0, n - 1), 0, std::max(0, n - 1));
+        const int r0 = (n > 0) ? std::min(startRow, endRow) : 0;
+        const int r1 = (n > 0) ? std::max(startRow, endRow) : -1;
+        const bool compact = optionalJsonBool(params, QStringLiteral("compact"), false);
+        const bool includeMaskArray =
+                optionalJsonBool(params, QStringLiteral("include_masked"), !compact);
+        const bool isNumericCol = col && col->columnMode() == SciDAVis::ColumnMode::Numeric;
         QJsonArray dataArr;
         QJsonArray maskArr;
-        for (int r = 0; r < n; ++r) {
-            maskArr.append(col ? col->isMasked(r) : false);
+        QJsonArray maskedRowsArr;
+        for (int r = r0; r <= r1; ++r) {
+            const bool isM = col ? col->isMasked(r) : false;
+            if (isM)
+                maskedRowsArr.append(r);
+            if (includeMaskArray)
+                maskArr.append(isM);
             if (!col || col->isInvalid(r)) {
                 dataArr.append(QJsonValue::Null);
-            } else if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            } else if (isNumericCol) {
                 dataArr.append(safeJsonDouble(col->valueAt(r)));
             } else {
                 dataArr.append(col->textAt(r));
             }
         }
         outResult = serializeColumnMeta(t, idx);
+        outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("table")] = t->name();
         outResult[QStringLiteral("rows")] = n;
         outResult[QStringLiteral("data")] = dataArr;
-        outResult[QStringLiteral("values")] = dataArr;
-        outResult[QStringLiteral("masked")] = maskArr;
+        if (!compact)
+            outResult[QStringLiteral("values")] = dataArr;
+        if (includeMaskArray)
+            outResult[QStringLiteral("masked")] = maskArr;
+        outResult[QStringLiteral("masked_rows")] = maskedRowsArr;
         return true;
     }
 
@@ -7949,6 +13124,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         for (const QString &k : keys) {
             if (dataDict.value(k).isArray())
                 maxRows = std::max(maxRows, dataDict.value(k).toArray().size());
+        }
+        if (keys.size() > 4096 || maxRows > 5000000
+            || qint64(keys.size()) * qint64(maxRows) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.set_data_dict dimensions (%1x%2) exceed limits (max 5,000,000 rows, 4,096 cols, 25,000,000 cells).")
+                            .arg(maxRows)
+                            .arg(keys.size()));
         }
 
         Table *t = resolveTable(d_app, params, QStringLiteral("table"), false);
@@ -7999,61 +13181,65 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("table.paste_tsv")) {
         QString rawText;
         if (params.contains(QStringLiteral("text")) && !params.value(QStringLiteral("text")).isNull()) {
-            rawText = params.value(QStringLiteral("text")).toString();
+            rawText = optionalJsonString(params, QStringLiteral("text"));
+        } else if (params.contains(QStringLiteral("tsv"))
+                   && !params.value(QStringLiteral("tsv")).isNull()) {
+            rawText = optionalJsonString(params, QStringLiteral("tsv"));
         } else if (QClipboard *cb = QApplication::clipboard()) {
             rawText = cb->text(QClipboard::Clipboard);
         }
         if (rawText.trimmed().isEmpty())
-            throwInvalidParams(QStringLiteral("table.paste_tsv requires non-empty 'text' (or clipboard text)."));
+            throwInvalidParams(
+                    QStringLiteral("table.paste_tsv requires non-empty 'text'/'tsv' (or clipboard text)."));
 
-        const int startRow = params.contains(QStringLiteral("start_row"))
-                ? std::max(0, parseStrictJsonInt(params.value(QStringLiteral("start_row")),
-                                                 QStringLiteral("start_row")))
-                : 0;
-        const int startCol = params.contains(QStringLiteral("start_col"))
-                ? std::max(0, parseStrictJsonInt(params.value(QStringLiteral("start_col")),
-                                                 QStringLiteral("start_col")))
-                : 0;
+        const int startRow = parseBoundedInt(params, QStringLiteral("start_row"), 0, 0, 4999999);
+        const int startCol = parseBoundedInt(params, QStringLiteral("start_col"), 0, 0, 4095);
         const bool hasHeader = params.contains(QStringLiteral("header"))
-                ? params.value(QStringLiteral("header")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("header"), true)
                 : (startRow == 0);
         const bool convertNumeric = params.contains(QStringLiteral("numeric"))
-                ? params.value(QStringLiteral("numeric")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("numeric"), true)
                 : true;
         const int unitsRowHint = parseUnitsRowHintParam(params);
 
         if (startRow == 0 && startCol == 0
             && (rawText.contains(QStringLiteral("*RAS_DATA_START"))
                 || rawText.contains(QStringLiteral("*RAS_INT_START")))) {
-            const QString encParam = params.value(QStringLiteral("encoding")).toString().trimmed();
+            const QString encParam = optionalJsonString(params, QStringLiteral("encoding")).trimmed();
             const QString encHint =
                     (encParam.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
                     ? QString()
                     : encParam;
             std::unique_ptr<future::Table> rasFt(AsciiTableImportFilter::importLabTextData(
                     rawText.toUtf8(), QStringLiteral("RasPasteTmp"), QStringLiteral("paste.ras"),
-                    params.value(QStringLiteral("separator")).toString(), encHint, unitsRowHint));
+                    optionalJsonString(params, QStringLiteral("separator")), encHint, unitsRowHint));
             if (!rasFt || rasFt->columnCount() <= 0) {
                 throwInvalidParams(
                         QStringLiteral("Failed to parse Rigaku .ras data in table.paste_tsv."));
             }
             const int nRows = std::max(1, rasFt->rowCount());
             const int nCols = rasFt->columnCount();
+            if (nRows > 5000000 || nCols > 4096 || qint64(nRows) * qint64(nCols) > 25000000LL) {
+                throwInvalidParams(
+                        QStringLiteral("Rigaku .ras data (%1x%2) exceeds worksheet cell limit (25,000,000).")
+                                .arg(nRows)
+                                .arg(nCols));
+            }
             Table *t = nullptr;
             if ((params.contains(QStringLiteral("table"))
-                 && !params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+                 && !optionalJsonString(params, QStringLiteral("table")).trimmed().isEmpty())
                 || (params.contains(QStringLiteral("window"))
-                    && !params.value(QStringLiteral("window")).toString().trimmed().isEmpty())) {
+                    && !optionalJsonString(params, QStringLiteral("window")).trimmed().isEmpty())) {
                 t = resolveTable(d_app, params, QStringLiteral("table"), true);
-            } else if (!params.value(QStringLiteral("name")).toString().trimmed().isEmpty()
-                       || params.value(QStringLiteral("create_table")).toBool(false)) {
+            } else if (!optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                       || optionalJsonBool(params, QStringLiteral("create_table"), false)) {
                 t = createUniqueTableHeadless(d_app, nRows, nCols,
-                                              params.value(QStringLiteral("name")).toString());
+                                              optionalJsonString(params, QStringLiteral("name")));
             } else {
                 t = resolveTable(d_app, params, QStringLiteral("table"), false);
                 if (!t) {
                     t = createUniqueTableHeadless(d_app, nRows, nCols,
-                                                  params.value(QStringLiteral("name")).toString());
+                                                  optionalJsonString(params, QStringLiteral("name")));
                 }
             }
             if (t->numCols() < nCols)
@@ -8084,7 +13270,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return true;
         }
 
-        QString sep = params.value(QStringLiteral("separator")).toString();
+        QString sep = optionalJsonString(params, QStringLiteral("separator"));
         if (sep.isEmpty() || sep.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0) {
             sep = rawText.contains(QLatin1Char('\t'))
                     ? QStringLiteral("\t")
@@ -8094,23 +13280,42 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records =
                 parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols);
+        const qint64 dataRowSpan = std::max<qint64>(1, records.size());
+        const qint64 reqEndRows = qint64(startRow) + dataRowSpan;
+        const qint64 reqEndCols = qint64(startCol) + std::max<qint64>(1, maxCols);
+        if (reqEndRows > 5000000LL || reqEndCols > 4096LL
+            || reqEndRows * reqEndCols > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.paste_tsv target bounds (%1 rows x %2 cols) exceed limits (max 5,000,000 rows, 4,096 cols, 25,000,000 cells).")
+                            .arg(reqEndRows)
+                            .arg(reqEndCols));
+        }
 
         Table *t = nullptr;
         if ((params.contains(QStringLiteral("table"))
-             && !params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+             && !optionalJsonString(params, QStringLiteral("table")).trimmed().isEmpty())
             || (params.contains(QStringLiteral("window"))
-                && !params.value(QStringLiteral("window")).toString().trimmed().isEmpty())) {
+                && !optionalJsonString(params, QStringLiteral("window")).trimmed().isEmpty())) {
             t = resolveTable(d_app, params, QStringLiteral("table"), true);
-        } else if (!params.value(QStringLiteral("name")).toString().trimmed().isEmpty()
-                   || params.value(QStringLiteral("create_table")).toBool(false)) {
-            t = createUniqueTableHeadless(d_app, 1, std::max(1, startCol + maxCols),
-                                          params.value(QStringLiteral("name")).toString());
+        } else if (!optionalJsonString(params, QStringLiteral("name")).trimmed().isEmpty()
+                   || optionalJsonBool(params, QStringLiteral("create_table"), false)) {
+            t = createUniqueTableHeadless(d_app, 1, int(reqEndCols),
+                                          optionalJsonString(params, QStringLiteral("name")));
         } else {
             t = resolveTable(d_app, params, QStringLiteral("table"), false);
             if (!t) {
-                t = createUniqueTableHeadless(d_app, 1, std::max(1, startCol + maxCols),
-                                              params.value(QStringLiteral("name")).toString());
+                t = createUniqueTableHeadless(d_app, 1, int(reqEndCols),
+                                              optionalJsonString(params, QStringLiteral("name")));
             }
+        }
+        const qint64 finalRows = std::max<qint64>(t ? t->numRows() : 1, reqEndRows);
+        const qint64 finalCols = std::max<qint64>(t ? t->numCols() : 1, reqEndCols);
+        if (finalRows > 5000000LL || finalCols > 4096LL || finalRows * finalCols > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.paste_tsv resulting worksheet (%1x%2 = %3 cells) exceeds 25,000,000 total cell limit.")
+                            .arg(finalRows)
+                            .arg(finalCols)
+                            .arg(finalRows * finalCols));
         }
 
         const bool assignDesigs = (startRow == 0 && startCol == 0);
@@ -8127,10 +13332,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("table.set_cell")) {
         Table *t = resolveTable(d_app, params);
-        const int row = params.value(QStringLiteral("row")).toInt(-1);
+        if (!params.contains(QStringLiteral("row")) || params.value(QStringLiteral("row")).isNull())
+            throwInvalidParams(QStringLiteral("Parameter 'row' is required."));
+        const int row = parseBoundedInt(params, QStringLiteral("row"), 0, 0, 4999999);
         const int colIdx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
-        if (row < 0)
-            throwInvalidParams(QStringLiteral("Row index must be >= 0."));
+        if (qint64(std::max(t->numRows(), row + 1)) * qint64(t->numCols()) > 25000000LL) {
+            throwInvalidParams(
+                    QStringLiteral("Row %1 exceeds 25,000,000 total worksheet cells.").arg(row));
+        }
         if (row >= t->numRows())
             t->setNumRows(row + 1);
         Column *col = t->column(colIdx);
@@ -8169,7 +13378,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("table.get_cell")) {
         Table *t = resolveTable(d_app, params);
-        const int row = params.value(QStringLiteral("row")).toInt(-1);
+        if (!params.contains(QStringLiteral("row")) || params.value(QStringLiteral("row")).isNull())
+            throwInvalidParams(QStringLiteral("Parameter 'row' is required."));
+        const int row = parseStrictJsonInt(params.value(QStringLiteral("row")),
+                                           QStringLiteral("row"));
         const int colIdx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
         if (row < 0 || row >= t->numRows())
             throwInvalidParams(QStringLiteral("Row index out of range: %1").arg(row));
@@ -8210,11 +13422,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("table.set_formula")) {
         Table *t = resolveTable(d_app, params);
         const int colIdx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
-        const QString formula = params.value(QStringLiteral("formula")).toString();
+        const QString formula = optionalJsonString(params, QStringLiteral("formula"));
         t->setCommand(colIdx, formula);
-        const bool doRecalc = params.contains(QStringLiteral("recalculate"))
-                ? params.value(QStringLiteral("recalculate")).toBool(true)
-                : true;
+        const bool doRecalc = optionalJsonBool(params, QStringLiteral("recalculate"), true);
         bool okRecalc = true;
         if (doRecalc && !formula.trimmed().isEmpty()) {
             okRecalc = t->recalculate(colIdx, false);
@@ -8277,15 +13487,35 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             for (int r = 0; r < t->numRows(); ++r)
                 rowsToChange.append(r);
         }
+        bool macroStarted = false;
+        int actualChanged = 0;
+        QSet<int> dirtyCols;
         for (int c : targetCols) {
             if (Column *col = t->column(c)) {
-                for (int r : rowsToChange)
-                    col->setMasked(r, maskFlag);
-                d_app->updateCurves(t, fullColumnName(t, c));
+                bool colChanged = false;
+                for (int r : rowsToChange) {
+                    if (col->isMasked(r) != maskFlag) {
+                        if (!macroStarted && t->d_future_table) {
+                            t->d_future_table->beginMacro(
+                                    QStringLiteral("%1: mask").arg(t->name()));
+                            macroStarted = true;
+                        }
+                        col->setMasked(r, maskFlag);
+                        colChanged = true;
+                        ++actualChanged;
+                    }
+                }
+                if (colChanged)
+                    dirtyCols.insert(c);
             }
         }
+        if (macroStarted && t->d_future_table)
+            t->d_future_table->endMacro();
+        for (int c : dirtyCols)
+            d_app->updateCurves(t, fullColumnName(t, c));
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("modified_rows")] = rowsToChange.size();
+        outResult[QStringLiteral("changed_cells")] = actualChanged;
         return true;
     }
 
@@ -8293,15 +13523,51 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Table *t = resolveTable(d_app, params);
         if (params.contains(QStringLiteral("col")) && !params.value(QStringLiteral("col")).isNull()) {
             const int c = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
-            if (t->column(c))
-                t->column(c)->clearMasks();
+            if (Column *col = t->column(c)) {
+                bool anyMasked = false;
+                for (int r = 0; r < t->numRows(); ++r) {
+                    if (col->isMasked(r)) {
+                        anyMasked = true;
+                        break;
+                    }
+                }
+                if (anyMasked) {
+                    if (t->d_future_table)
+                        t->d_future_table->beginMacro(
+                                QStringLiteral("%1: clear masks").arg(t->name()));
+                    col->clearMasks();
+                    if (t->d_future_table)
+                        t->d_future_table->endMacro();
+                }
+            }
             d_app->updateCurves(t, fullColumnName(t, c));
         } else {
+            bool macroStarted = false;
+            QVector<int> clearedCols;
             for (int c = 0; c < t->numCols(); ++c) {
-                if (t->column(c))
-                    t->column(c)->clearMasks();
-                d_app->updateCurves(t, fullColumnName(t, c));
+                if (Column *col = t->column(c)) {
+                    bool anyMasked = false;
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (col->isMasked(r)) {
+                            anyMasked = true;
+                            break;
+                        }
+                    }
+                    if (anyMasked) {
+                        if (!macroStarted && t->d_future_table) {
+                            t->d_future_table->beginMacro(
+                                    QStringLiteral("%1: clear masks").arg(t->name()));
+                            macroStarted = true;
+                        }
+                        col->clearMasks();
+                        clearedCols.append(c);
+                    }
+                }
             }
+            if (macroStarted && t->d_future_table)
+                t->d_future_table->endMacro();
+            for (int c : clearedCols)
+                d_app->updateCurves(t, fullColumnName(t, c));
         }
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -8404,10 +13670,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QVector<int> targetRows;
         if (params.value(QStringLiteral("rows")).isArray()) {
             for (const QJsonValue &rv : params.value(QStringLiteral("rows")).toArray()) {
-                const int r = rv.toInt(-1);
+                const int r = parseStrictJsonInt(rv, QStringLiteral("rows"));
                 if (r >= 0 && r < t->numRows())
                     targetRows.append(r);
             }
+        } else if (params.contains(QStringLiteral("start_row"))
+                   || params.contains(QStringLiteral("end_row"))) {
+            const int r0 = parseBoundedInt(params, QStringLiteral("start_row"), 0, 0,
+                                           std::max(0, t->numRows() - 1));
+            const int r1 = parseBoundedInt(params, QStringLiteral("end_row"),
+                                           std::max(0, t->numRows() - 1), 0,
+                                           std::max(0, t->numRows() - 1));
+            for (int r = std::min(r0, r1); r <= std::max(r0, r1); ++r)
+                targetRows.append(r);
         } else {
             for (int r = 0; r < t->numRows(); ++r)
                 targetRows.append(r);
@@ -8542,8 +13817,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Table *t = resolveTable(d_app, params);
         const int rows = t->numRows();
         const int cols = t->numCols();
+        if (rows > 4096 || cols > 4096 || qint64(rows) * qint64(cols) > 16777216LL) {
+            throwInvalidParams(
+                    QStringLiteral("table.to_matrix dimensions (%1x%2) exceed matrix limits (max 4,096x4,096).")
+                            .arg(rows)
+                            .arg(cols));
+        }
         Matrix *m = createUniqueMatrixHeadless(
-                d_app, rows, cols, params.value(QStringLiteral("name")).toString());
+                d_app, rows, cols, optionalJsonString(params, QStringLiteral("name")));
         const double qNaN = std::numeric_limits<double>::quiet_NaN();
         for (int c = 0; c < cols; ++c) {
             Column *col = t->column(c);
@@ -8566,19 +13847,31 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     // 3. Matrix (matrix.*)
     // ------------------------------------------------------------------------
     if (method == QStringLiteral("matrix.create")) {
-        const int rows = parseStrictPositiveInt(params, QStringLiteral("rows"), 32);
-        const int cols = parseStrictPositiveInt(params, QStringLiteral("cols"), 32);
-        Matrix *m = createUniqueMatrixHeadless(
-                d_app, rows, cols, params.value(QStringLiteral("name")).toString());
-        if (params.contains(QStringLiteral("x_min")) || params.contains(QStringLiteral("x_max"))
-            || params.contains(QStringLiteral("y_min"))
-            || params.contains(QStringLiteral("y_max"))) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble(m->xStart());
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble(m->xEnd());
-            const double yMin = params.value(QStringLiteral("y_min")).toDouble(m->yStart());
-            const double yMax = params.value(QStringLiteral("y_max")).toDouble(m->yEnd());
-            m->setCoordinates(xMin, xMax, yMin, yMax);
+        const int rows = parseBoundedInt(params, QStringLiteral("rows"), 32, 1, 4096);
+        const int cols = parseBoundedInt(params, QStringLiteral("cols"), 32, 1, 4096);
+        if (qint64(rows) * qint64(cols) > 16777216LL) {
+            throwInvalidParams(
+                    QStringLiteral("matrix.create total cells (%1x%2) exceeds limit (16,777,216).")
+                            .arg(rows)
+                            .arg(cols));
         }
+        double xMin = 1.0, xMax = 10.0, yMin = 1.0, yMax = 10.0;
+        const bool hasCoords = params.contains(QStringLiteral("x_min"))
+                || params.contains(QStringLiteral("x_max"))
+                || params.contains(QStringLiteral("y_min"))
+                || params.contains(QStringLiteral("y_max"));
+        if (hasCoords) {
+            xMin = optionalJsonFiniteDouble(params, QStringLiteral("x_min"), 1.0);
+            xMax = optionalJsonFiniteDouble(params, QStringLiteral("x_max"), 10.0);
+            yMin = optionalJsonFiniteDouble(params, QStringLiteral("y_min"), 1.0);
+            yMax = optionalJsonFiniteDouble(params, QStringLiteral("y_max"), 10.0);
+            validateFiniteCoordRange(xMin, xMax, QStringLiteral("Matrix X coordinates"));
+            validateFiniteCoordRange(yMin, yMax, QStringLiteral("Matrix Y coordinates"));
+        }
+        Matrix *m = createUniqueMatrixHeadless(
+                d_app, rows, cols, optionalJsonString(params, QStringLiteral("name")));
+        if (hasCoords)
+            m->setCoordinates(xMin, xMax, yMin, yMax);
         outResult = serializeMatrixInfo(m);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -8592,10 +13885,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("matrix.set_coordinates")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const double xMin = params.value(QStringLiteral("x_min")).toDouble(m->xStart());
-        const double xMax = params.value(QStringLiteral("x_max")).toDouble(m->xEnd());
-        const double yMin = params.value(QStringLiteral("y_min")).toDouble(m->yStart());
-        const double yMax = params.value(QStringLiteral("y_max")).toDouble(m->yEnd());
+        const double xMin = optionalJsonFiniteDouble(params, QStringLiteral("x_min"), m->xStart());
+        const double xMax = optionalJsonFiniteDouble(params, QStringLiteral("x_max"), m->xEnd());
+        const double yMin = optionalJsonFiniteDouble(params, QStringLiteral("y_min"), m->yStart());
+        const double yMax = optionalJsonFiniteDouble(params, QStringLiteral("y_max"), m->yEnd());
+        validateFiniteCoordRange(xMin, xMax, QStringLiteral("Matrix X coordinates"));
+        validateFiniteCoordRange(yMin, yMax, QStringLiteral("Matrix Y coordinates"));
         m->setCoordinates(xMin, xMax, yMin, yMax);
         d_app->updateMatrixPlots(m);
         outResult = serializeMatrixInfo(m);
@@ -8611,27 +13906,36 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int nRows = rowsArr.size();
         int nCols = 0;
         for (const QJsonValue &rv : rowsArr) {
-            if (rv.isArray())
-                nCols = std::max(nCols, rv.toArray().size());
+            if (!rv.isArray())
+                throwInvalidParams(QStringLiteral("Each row in matrix 'data' must be a JSON array."));
+            nCols = std::max(nCols, rv.toArray().size());
         }
         if (nRows <= 0 || nCols <= 0)
             throwInvalidParams(QStringLiteral("Matrix 'data' must be non-empty 2D array."));
+        if (nRows > 4096 || nCols > 4096 || qint64(nRows) * qint64(nCols) > 16777216LL) {
+            throwInvalidParams(
+                    QStringLiteral("Matrix 'data' (%1x%2) exceeds limits (max 4,096x4,096).")
+                            .arg(nRows)
+                            .arg(nCols));
+        }
+
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
+        QVector<QVector<qreal>> colBuffers(nCols, QVector<qreal>(nRows, qNaN));
+        for (int r = 0; r < nRows; ++r) {
+            const QJsonArray rArr = rowsArr[r].toArray();
+            const int rowLen = rArr.size();
+            for (int c = 0; c < rowLen; ++c) {
+                const double d = jsonToDoubleOrNaN(rArr[c]);
+                colBuffers[c][r] = (std::isfinite(d) && std::abs(d) <= 1e300) ? d : qNaN;
+            }
+        }
+
         m->d_future_matrix->beginMacro(
                 QObject::tr("%1: set cell values").arg(m->name()));
         if (m->numRows() != nRows || m->numCols() != nCols)
             m->setDimensions(nRows, nCols);
-
-        for (int c = 0; c < nCols; ++c) {
-            QVector<qreal> colVec(nRows, 0.0);
-            for (int r = 0; r < nRows; ++r) {
-                const QJsonArray rArr = rowsArr[r].toArray();
-                if (c < rArr.size()) {
-                    const double d = jsonToDoubleOrNaN(rArr[c]);
-                    colVec[r] = std::isfinite(d) ? d : std::numeric_limits<double>::quiet_NaN();
-                }
-            }
-            m->d_future_matrix->setColumnCells(c, 0, nRows - 1, colVec);
-        }
+        for (int c = 0; c < nCols; ++c)
+            m->d_future_matrix->setColumnCells(c, 0, nRows - 1, colBuffers[c]);
         m->d_future_matrix->endMacro();
         d_app->updateMatrixPlots(m);
         outResult = serializeMatrixInfo(m);
@@ -8657,7 +13961,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("matrix.set_formula")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const QString formula = params.value(QStringLiteral("formula")).toString();
+        const QString formula = optionalJsonString(params, QStringLiteral("formula")).trimmed();
+        if (formula.isEmpty())
+            throwInvalidParams(QStringLiteral("Parameter 'formula' must be a non-empty expression."));
+        validateMuParserExprOrThrow(
+                formula,
+                { QStringLiteral("i"), QStringLiteral("j"), QStringLiteral("x"),
+                  QStringLiteral("y"), QStringLiteral("row"), QStringLiteral("col") },
+                QStringLiteral("matrix.set_formula"));
+        struct ScopedMatrixFormulaMacro
+        {
+            future::Matrix *fm = nullptr;
+            ScopedMatrixFormulaMacro(future::Matrix *f, const QString &lbl) : fm(f)
+            {
+                if (fm)
+                    fm->beginMacro(lbl);
+            }
+            ~ScopedMatrixFormulaMacro()
+            {
+                if (fm)
+                    fm->endMacro();
+            }
+        } formulaMacro(m->d_future_matrix, QStringLiteral("Set Matrix Formula"));
         m->setFormula(formula);
         if (m->d_future_matrix)
             m->d_future_matrix->selectAll();
@@ -8737,9 +14062,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("matrix.filter2d")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const QString fStr = params.value(QStringLiteral("method")).toString().trimmed().toLower();
+        const QString fStr =
+                optionalJsonString(params, QStringLiteral("method"), QStringLiteral("gaussian"))
+                        .trimmed()
+                        .toLower();
         AdvancedSignalProc::MatrixFilter2DMethod fm = AdvancedSignalProc::FilterGaussian2D;
-        if (fStr == QStringLiteral("gaussian") || fStr == QStringLiteral("gauss"))
+        if (fStr.isEmpty() || fStr == QStringLiteral("gaussian")
+            || fStr == QStringLiteral("gauss"))
             fm = AdvancedSignalProc::FilterGaussian2D;
         else if (fStr == QStringLiteral("median"))
             fm = AdvancedSignalProc::FilterMedian2D;
@@ -8756,11 +14085,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             .arg(fStr));
 
         const double sigma = params.contains(QStringLiteral("sigma"))
-                ? params.value(QStringLiteral("sigma")).toDouble(1.5)
-                : params.value(QStringLiteral("param")).toDouble(1.5);
-        const int radius = std::max(1, params.value(QStringLiteral("radius")).toInt(1));
-        const bool inPlace = params.value(QStringLiteral("in_place")).toBool(false);
-        const bool plotHeatmap = params.value(QStringLiteral("plot_heatmap")).toBool(false);
+                ? optionalJsonFiniteDouble(params, QStringLiteral("sigma"), 1.5, 1000.0)
+                : optionalJsonFiniteDouble(params, QStringLiteral("param"), 1.5, 1000.0);
+        if (sigma <= 0.0)
+            throwInvalidParams(QStringLiteral("matrix.filter2d 'sigma' must be > 0."));
+        const int radius = parseBoundedInt(params, QStringLiteral("radius"), 1, 1, 64);
+        const bool inPlace = optionalJsonBool(params, QStringLiteral("in_place"), false);
+        const bool plotHeatmap = optionalJsonBool(params, QStringLiteral("plot_heatmap"), false);
         Matrix *outM = AdvancedSignalProc::filterMatrix2D(d_app, m, fm, sigma, radius, inPlace,
                                                           plotHeatmap);
         if (!outM)
@@ -8772,7 +14103,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("matrix.analyze_2d_peaks")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const int maxPeaks = parseStrictPositiveInt(params, QStringLiteral("max_peaks"), 10);
+        const int maxPeaks = parseBoundedInt(params, QStringLiteral("max_peaks"), 10, 1, 10000);
         double zMin = 0.0, zMax = 0.0;
         m->range(&zMin, &zMax);
         const double zSpan = std::max(1e-12, zMax - zMin);
@@ -8949,7 +14280,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(QStringLiteral("No Y columns specified or available in table '%1'.")
                                        .arg(t->name()));
 
-        const QString styleRaw = params.value(QStringLiteral("style")).toString().trimmed().toLower();
+        const QString styleRaw = optionalJsonString(params, QStringLiteral("style")).trimmed().toLower();
         const bool isStackedBars = (method == QStringLiteral("plot.stacked_bars"))
                 || styleRaw == QStringLiteral("stacked_bars")
                 || styleRaw == QStringLiteral("stacked_bar")
@@ -8959,27 +14290,60 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 || styleRaw == QStringLiteral("stacked_horizontal_bars")
                 || styleRaw == QStringLiteral("stacked_hbars");
 
+        // Validate numeric column domain (|val| <= 1e300, non-overflowing span) before plotting
+        auto checkColNumericDomain = [&](int cIdx, const QString &roleLbl) {
+            if (cIdx < 0 || cIdx >= t->numCols())
+                return;
+            Column *col = t->column(cIdx);
+            if (!col || col->columnMode() != SciDAVis::ColumnMode::Numeric)
+                return;
+            double vMin = std::numeric_limits<double>::infinity();
+            double vMax = -std::numeric_limits<double>::infinity();
+            for (int r = 0; r < t->numRows(); ++r) {
+                if (col->isInvalid(r) || col->isMasked(r))
+                    continue;
+                const double v = col->valueAt(r);
+                if (!std::isfinite(v))
+                    continue;
+                if (std::abs(v) > 1e300) {
+                    throwInvalidParams(
+                            QStringLiteral("%1 column '%2' contains extreme value (%3) exceeding |val| <= 1e300.")
+                                    .arg(roleLbl, t->colLabel(cIdx))
+                                    .arg(v, 0, 'e', 2));
+                }
+                vMin = std::min(vMin, v);
+                vMax = std::max(vMax, v);
+            }
+            if (vMin <= vMax && !std::isfinite(vMax - vMin)) {
+                throwInvalidParams(
+                        QStringLiteral("%1 column '%2' span [min, max] overflows IEEE-754 double.")
+                                .arg(roleLbl, t->colLabel(cIdx)));
+            }
+        };
+        checkColNumericDomain(xIdx, QStringLiteral("X"));
+        for (int yi : yIdxs)
+            checkColNumericDomain(yi, QStringLiteral("Y"));
+
         if (isStackedBars) {
             const int nRows = t->numRows();
             if (nRows < 1)
                 throwInvalidParams(QStringLiteral("Stacked bar plot requires at least 1 row."));
-            int barGap = 25;
-            if (params.contains(QStringLiteral("bar_gap"))
-                && !params.value(QStringLiteral("bar_gap")).isNull()) {
-                barGap = parseStrictJsonInt(params.value(QStringLiteral("bar_gap")),
-                                            QStringLiteral("bar_gap"));
-                if (barGap < 0 || barGap >= 100)
-                    throwInvalidParams(QStringLiteral("bar_gap must be in [0, 99]."));
-            }
-            int barOffset = 0;
-            if (params.contains(QStringLiteral("bar_offset"))
-                && !params.value(QStringLiteral("bar_offset")).isNull()) {
-                barOffset = parseStrictJsonInt(params.value(QStringLiteral("bar_offset")),
-                                               QStringLiteral("bar_offset"));
-            }
+            const int barGap = parseBoundedInt(params, QStringLiteral("bar_gap"), 25, 0, 99);
+            const int barOffset = parseBoundedInt(params, QStringLiteral("bar_offset"), 0, -500, 500);
             const bool horiz = styleRaw.contains(QStringLiteral("horiz"))
                     || styleRaw == QStringLiteral("stacked_hbars")
-                    || params.value(QStringLiteral("horizontal")).toBool(false);
+                    || optionalJsonBool(params, QStringLiteral("horizontal"), false);
+            const bool percent100 = params.contains(QStringLiteral("percent_100"))
+                    ? optionalJsonBool(params, QStringLiteral("percent_100"), false)
+                    : (params.contains(QStringLiteral("percent"))
+                               ? optionalJsonBool(params, QStringLiteral("percent"), false)
+                               : optionalJsonBool(params, QStringLiteral("normalize_100"), false));
+
+            Column *xColObj = (xIdx >= 0) ? t->column(xIdx) : nullptr;
+            const bool isTextX = xColObj && xColObj->columnMode() != SciDAVis::ColumnMode::Numeric;
+            QStringList catLabels;
+            if (isTextX)
+                catLabels.reserve(nRows);
 
             const int K = yIdxs.size();
             QList<Column *> stCols;
@@ -8987,10 +14351,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             colX->setPlotDesignation(SciDAVis::X);
             for (int r = 0; r < nRows; ++r) {
                 double xv = double(r + 1);
-                if (xIdx >= 0 && t->column(xIdx) && !t->column(xIdx)->isInvalid(r)) {
-                    const double cand = t->cell(r, xIdx);
+                if (xColObj && !isTextX && !xColObj->isInvalid(r)) {
+                    const double cand = xColObj->valueAt(r);
                     if (std::isfinite(cand))
                         xv = cand;
+                } else if (isTextX) {
+                    const QString txt = xColObj->textAt(r).trimmed();
+                    catLabels.append(txt.isEmpty() ? QString::number(r + 1) : txt);
                 }
                 colX->setValueAt(r, xv);
             }
@@ -9003,20 +14370,30 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     lbl = QStringLiteral("Series_%1").arg(k + 1);
                 cumCols[k] = new Column(lbl, SciDAVis::ColumnMode::Numeric);
                 cumCols[k]->setPlotDesignation(SciDAVis::Y);
+                cumCols[k]->setComment(lbl);
                 stCols << cumCols[k];
             }
 
+            double maxPosCum = 0.0;
+            double minNegCum = 0.0;
             for (int r = 0; r < nRows; ++r) {
-                double posCum = 0.0;
-                double negCum = 0.0;
+                QVector<double> rowVals(K, 0.0);
+                double rowAbsSum = 0.0;
                 for (int k = 0; k < K; ++k) {
-                    double yv = 0.0;
                     if (t->column(yIdxs[k]) && !t->column(yIdxs[k])->isInvalid(r)
                         && !t->column(yIdxs[k])->isMasked(r)) {
                         const double cand = t->cell(r, yIdxs[k]);
                         if (std::isfinite(cand))
-                            yv = cand;
+                            rowVals[k] = cand;
                     }
+                    rowAbsSum += std::abs(rowVals[k]);
+                }
+                double posCum = 0.0;
+                double negCum = 0.0;
+                for (int k = 0; k < K; ++k) {
+                    const double yv = percent100
+                            ? ((rowAbsSum > 0.0) ? (rowVals[k] / rowAbsSum * 100.0) : 0.0)
+                            : rowVals[k];
                     if (yv >= 0.0) {
                         posCum += yv;
                         cumCols[k]->setValueAt(r, posCum);
@@ -9025,6 +14402,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         cumCols[k]->setValueAt(r, negCum);
                     }
                 }
+                maxPosCum = std::max(maxPosCum, posCum);
+                minNegCum = std::min(minNegCum, negCum);
             }
 
             const QString stTblName = d_app->generateUniqueName(QStringLiteral("StackedBars"));
@@ -9053,27 +14432,134 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     const QColor fillCol(QString::fromLatin1(kOkabeIto[k % 8]));
                     g->setCurvePen(ci, QPen(QColor(Qt::black), 0.8, Qt::SolidLine));
                     g->setCurveBrush(ci, QBrush(fillCol, Qt::SolidPattern));
-                    g->setBarsGap(ci, barGap, barOffset);
                 }
             }
-            if (xIdx >= 0 && t->column(xIdx)) {
-                const QString xt = t->column(xIdx)->formattedAxisTitle().trimmed();
-                if (!xt.isEmpty())
-                    g->setAxisTitle(horiz ? QwtPlot::yLeft : QwtPlot::xBottom, xt);
+            // Mark every bar segment as stacked and reset gap/offset across ALL segments AFTER insertion
+            // (because each insertCurve auto-staggers previously inserted bar curves).
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (auto *bc = dynamic_cast<QwtBarCurve *>(g->curve(ci)))
+                    invokeBarCurveSetStacked(bc, true);
+                g->setBarsGap(ci, barGap, barOffset);
             }
-            if (!yIdxs.isEmpty() && t->column(yIdxs.first())) {
-                const QString yt = t->column(yIdxs.first())->formattedAxisTitle().trimmed();
-                if (!yt.isEmpty())
-                    g->setAxisTitle(horiz ? QwtPlot::xBottom : QwtPlot::yLeft, yt);
+
+            const int catAxis = horiz ? QwtPlot::yLeft : QwtPlot::xBottom;
+            const int valAxis = horiz ? QwtPlot::xBottom : QwtPlot::yLeft;
+
+            if (isTextX && !catLabels.isEmpty())
+                invokeGraphSetCategoryLabels(d_app, g, catAxis, catLabels);
+
+            if (xColObj) {
+                const QString xt = xColObj->formattedAxisTitle().trimmed();
+                if (!xt.isEmpty()) {
+                    g->setAxisTitleAuto(catAxis, false);
+                    g->setAxisTitle(catAxis, xt);
+                }
             }
+            if (percent100) {
+                g->setAxisTitleAuto(valAxis, false);
+                g->setAxisTitle(valAxis, QStringLiteral("Percentage (%)"));
+            } else if (!yIdxs.isEmpty() && t->column(yIdxs.first())) {
+                QString yt;
+                if (K == 1) {
+                    yt = t->column(yIdxs.first())->formattedAxisTitle().trimmed();
+                } else {
+                    const QString u0 = t->colUnits(yIdxs.first()).trimmed();
+                    yt = u0.isEmpty() ? QStringLiteral("Value")
+                                      : QStringLiteral("Value (%1)").arg(u0);
+                }
+                if (!yt.isEmpty()) {
+                    g->setAxisTitleAuto(valAxis, false);
+                    g->setAxisTitle(valAxis, yt);
+                }
+            }
+
             g->reconstructLegend();
+            if (Legend *leg = g->legend()) {
+                QStringList legLines;
+                for (int k = K - 1; k >= 0; --k) {
+                    const int curveOneBased = K - k; // curve index (K-1-k) + 1
+                    QString sLbl = t->colLongName(yIdxs[k]).trimmed();
+                    if (sLbl.isEmpty())
+                        sLbl = t->colLabel(yIdxs[k]).trimmed();
+                    legLines.append(QStringLiteral("\\c{%1}%2").arg(curveOneBased).arg(sLbl));
+                }
+                if (!horiz)
+                    std::reverse(legLines.begin(), legLines.end());
+                leg->setText(legLines.join(QLatin1Char('\n')));
+            }
+
             g->setAutoScale();
-            enforceArialGraphFonts(g);
-            g->replot();
+            if (horiz) {
+                if (Legend *leg = g->legend()) {
+                    if (K >= 2)
+                        leg->setNumColumns(2);
+                }
+                if (isTextX && nRows >= 1) {
+                    applyHorizontalBarCategoryHeadroom(g, nRows, K);
+                } else if (K >= 2 && g->plotWidget()) {
+                    if (const QwtScaleDiv *ysd = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft)) {
+                        const double yLo = std::min(ysd->lowerBound(), ysd->upperBound());
+                        const double yHi = std::max(ysd->lowerBound(), ysd->upperBound());
+                        const int legRows = std::max(1, (K + 1) / 2);
+                        const double topFrac = std::min(0.45, 0.13 * double(legRows) + 0.03);
+                        const double span = std::max(1.0, yHi - yLo);
+                        g->setScale(QwtPlot::yLeft, yLo, yHi + span * topFrac / (1.0 - topFrac));
+                        g->setAxisUserLocked(QwtPlot::yLeft, true);
+                    }
+                }
+            } else if (isTextX && nRows >= 1) {
+                g->setScale(catAxis, 0.5, double(nRows) + 0.5, 1.0,
+                            std::min(std::max(nRows + 2, 4), 32), 0, 0, false);
+            }
+            if (percent100) {
+                const double lo = (minNegCum < 0.0) ? -100.0 : 0.0;
+                const double hiHeadroom = horiz ? 108.0 : 136.0;
+                g->setScale(valAxis, lo, hiHeadroom, 20.0, 7, 0, 0, false);
+                g->setAxisUserLocked(valAxis, true);
+                QVector<double> pctPos;
+                QStringList pctLbls;
+                for (int pv = (minNegCum < 0.0 ? -100 : 0); pv <= 100; pv += 20) {
+                    pctPos.append(double(pv));
+                    pctLbls.append(QString::number(pv));
+                }
+                g->setCustomTickLabels(valAxis, pctPos, pctLbls);
+                if (!horiz && K >= 3) {
+                    if (Legend *leg = g->legend())
+                        leg->setNumColumns(2);
+                }
+                if (!params.contains(QStringLiteral("legend_pos"))
+                    && !params.contains(QStringLiteral("legend"))) {
+                    double legSc = 0.0;
+                    g->placeLegendAnchor(Graph::LegendTopRight, &legSc, horiz ? 4 : 6);
+                }
+            } else {
+                if (!horiz && K >= 3) {
+                    if (Legend *leg = g->legend())
+                        leg->setNumColumns(2);
+                }
+                if (!horiz && maxPosCum > 0.0) {
+                    const double lo = (minNegCum < 0.0) ? (minNegCum * 1.12) : 0.0;
+                    const double hi =
+                            maxPosCum * (1.18 + 0.08 * double(std::min(K, 6)));
+                    g->setScale(valAxis, lo, hi);
+                    g->setAxisUserLocked(valAxis, true);
+                } else if (horiz && maxPosCum > 0.0) {
+                    const double lo = (minNegCum < 0.0) ? (minNegCum * 1.12) : 0.0;
+                    const double hi = maxPosCum * 1.12;
+                    g->setScale(valAxis, lo, hi);
+                    g->setAxisUserLocked(valAxis, true);
+                }
+                if (!params.contains(QStringLiteral("legend_pos"))
+                    && !params.contains(QStringLiteral("legend"))) {
+                    g->autoPlaceLegend();
+                }
+            }
+            applyPlotLevelConvenienceParams(g, params);
             applyRequestedWindowName(d_app, ml, params);
 
             outResult = serializeGraphInfo(ml);
             outResult[QStringLiteral("stacked")] = true;
+            outResult[QStringLiteral("percent_100")] = percent100;
             outResult[QStringLiteral("bar_gap")] = barGap;
             outResult[QStringLiteral("ok")] = true;
             return true;
@@ -9121,10 +14607,29 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     barOffset = parseStrictJsonInt(params.value(QStringLiteral("bar_offset")),
                                                    QStringLiteral("bar_offset"));
                 }
+                int nBarSeries = 0;
                 for (int ci = 0; ci < g->curves(); ++ci) {
-                    if (auto *bc = dynamic_cast<QwtBarCurve *>(g->curve(ci))) {
-                        g->setBarsGap(ci, hasGap ? barGap : bc->gap(),
-                                      hasOff ? barOffset : bc->offset());
+                    if (dynamic_cast<QwtBarCurve *>(g->curve(ci)))
+                        ++nBarSeries;
+                }
+                if (hasGap && !hasOff && nBarSeries > 1) {
+                    const int perBarGap = std::clamp(
+                            qRound(100.0 - (100.0 - double(barGap)) / double(nBarSeries)), 10, 92);
+                    int bIdx = 0;
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        if (dynamic_cast<QwtBarCurve *>(g->curve(ci))) {
+                            const int symOff =
+                                    qRound((double(bIdx) - 0.5 * double(nBarSeries - 1)) * 106.0);
+                            g->setBarsGap(ci, perBarGap, symOff);
+                            ++bIdx;
+                        }
+                    }
+                } else {
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        if (auto *bc = dynamic_cast<QwtBarCurve *>(g->curve(ci))) {
+                            g->setBarsGap(ci, hasGap ? barGap : bc->gap(),
+                                          hasOff ? barOffset : bc->offset());
+                        }
                     }
                 }
             }
@@ -9134,13 +14639,44 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     applyInlineCurveStyleParams(g, ci, params, applySingleColor);
             }
             const QString xFull = (xIdx >= 0) ? fullColumnName(t, xIdx) : QString();
-            if (params.contains(QStringLiteral("y_err_col"))
-                && !params.value(QStringLiteral("y_err_col")).isNull()) {
-                const int yeIdx = resolveColumnIndex(t, params.value(QStringLiteral("y_err_col")), true);
-                if (!xFull.isEmpty())
-                    g->addErrorBars(xFull, yFullCols.first(), t, fullColumnName(t, yeIdx), 1);
-                else
-                    g->addErrorBars(yFullCols.first(), t, fullColumnName(t, yeIdx), 1);
+            const int valErrDir = (style == Graph::HorizontalBars) ? 0 : 1;
+            if (params.value(QStringLiteral("y_err_cols")).isArray()) {
+                const QJsonArray errArr = params.value(QStringLiteral("y_err_cols")).toArray();
+                const int nErr = std::min(yFullCols.size(), errArr.size());
+                for (int k = 0; k < nErr; ++k) {
+                    if (errArr[k].isNull() || errArr[k].isUndefined())
+                        continue;
+                    const int yeIdx = resolveColumnIndex(t, errArr[k], true);
+                    if (!xFull.isEmpty())
+                        g->addErrorBars(xFull, yFullCols[k], t, fullColumnName(t, yeIdx), valErrDir);
+                    else
+                        g->addErrorBars(yFullCols[k], t, fullColumnName(t, yeIdx), valErrDir);
+                }
+            } else if (params.contains(QStringLiteral("y_err_col"))
+                       && !params.value(QStringLiteral("y_err_col")).isNull()) {
+                const QJsonValue yev = params.value(QStringLiteral("y_err_col"));
+                if (yev.isArray()) {
+                    const QJsonArray errArr = yev.toArray();
+                    const int nErr = std::min(yFullCols.size(), errArr.size());
+                    for (int k = 0; k < nErr; ++k) {
+                        if (errArr[k].isNull() || errArr[k].isUndefined())
+                            continue;
+                        const int yeIdx = resolveColumnIndex(t, errArr[k], true);
+                        if (!xFull.isEmpty())
+                            g->addErrorBars(xFull, yFullCols[k], t, fullColumnName(t, yeIdx),
+                                            valErrDir);
+                        else
+                            g->addErrorBars(yFullCols[k], t, fullColumnName(t, yeIdx), valErrDir);
+                    }
+                } else {
+                    const int yeIdx = resolveColumnIndex(t, yev, true);
+                    for (const QString &yFull : yFullCols) {
+                        if (!xFull.isEmpty())
+                            g->addErrorBars(xFull, yFull, t, fullColumnName(t, yeIdx), valErrDir);
+                        else
+                            g->addErrorBars(yFull, t, fullColumnName(t, yeIdx), valErrDir);
+                    }
+                }
             }
             if (params.contains(QStringLiteral("x_err_col"))
                 && !params.value(QStringLiteral("x_err_col")).isNull()) {
@@ -9149,6 +14685,116 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     g->addErrorBars(xFull, yFullCols.first(), t, fullColumnName(t, xeIdx), 0);
             }
             g->refreshAutoAxisTitlesFromColumns();
+            if (xIdx >= 0 && t->column(xIdx)
+                && t->column(xIdx)->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                QStringList cats;
+                cats.reserve(t->numRows());
+                for (int r = 0; r < t->numRows(); ++r)
+                    cats.append(t->column(xIdx)->textAt(r).trimmed());
+                if (style == Graph::HorizontalBars) {
+                    invokeGraphSetCategoryLabels(d_app, g, QwtPlot::yLeft, cats);
+                    applyHorizontalBarCategoryHeadroom(g, cats.size(), yIdxs.size());
+                    if (yIdxs.size() > 1) {
+                        if (Legend *leg = g->legend())
+                            leg->setNumColumns(2);
+                    }
+                    g->setLabelsNumericFormat(QwtPlot::xBottom, 0, 6, QString());
+                    double vMin = 0.0;
+                    double vMax = 0.0;
+                    for (int yi : yIdxs) {
+                        Column *yc = t->column(yi);
+                        if (!yc || yc->columnMode() != SciDAVis::ColumnMode::Numeric)
+                            continue;
+                        for (int r = 0; r < t->numRows(); ++r) {
+                            if (yc->isInvalid(r) || yc->isMasked(r))
+                                continue;
+                            const double v = yc->valueAt(r);
+                            if (std::isfinite(v)) {
+                                vMin = std::min(vMin, v);
+                                vMax = std::max(vMax, v);
+                            }
+                        }
+                    }
+                    for (int ci = 0; ci < g->curves(); ++ci) {
+                        if (auto *eb = dynamic_cast<QwtErrorPlotCurve *>(g->curve(ci))) {
+                            for (int p = 0; p < eb->dataSize(); ++p) {
+                                const double bx = eb->x(p);
+                                const double ev = std::abs(eb->errorValue(p));
+                                if (std::isfinite(bx) && std::isfinite(ev)) {
+                                    vMin = std::min(vMin, bx - ev);
+                                    vMax = std::max(vMax, bx + ev);
+                                }
+                            }
+                        }
+                    }
+                    const double span = (vMax > vMin) ? (vMax - vMin) : 1.0;
+                    const double loX = (vMin < 0.0) ? (vMin - 0.08 * span) : 0.0;
+                    const double hiX = (vMax > 0.0) ? (vMax + 0.14 * span) : (loX + 1.0);
+                    g->setScale(QwtPlot::xBottom, loX, hiX);
+                    g->setAxisUserLocked(QwtPlot::xBottom, true);
+                    const QString catTitle = t->column(xIdx)->formattedAxisTitle().trimmed();
+                    const QString valTitle = (!yIdxs.isEmpty() && t->column(yIdxs.first()))
+                            ? t->column(yIdxs.first())->formattedAxisTitle().trimmed()
+                            : QString();
+                    g->setAxisTitleAuto(QwtPlot::yLeft, false);
+                    g->setYAxisTitle(catTitle);
+                    g->setAxisTitleAuto(QwtPlot::xBottom, false);
+                    g->setXAxisTitle(valTitle);
+                } else {
+                    invokeGraphSetCategoryLabels(d_app, g, QwtPlot::xBottom, cats);
+                }
+            } else if (style == Graph::HorizontalBars && yIdxs.size() > 1) {
+                if (Legend *leg = g->legend())
+                    leg->setNumColumns(2);
+                if (g->plotWidget()) {
+                    if (const QwtScaleDiv *ysd = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft)) {
+                        const double yLo = std::min(ysd->lowerBound(), ysd->upperBound());
+                        const double yHi = std::max(ysd->lowerBound(), ysd->upperBound());
+                        const int legRows = std::max(1, (yIdxs.size() + 1) / 2);
+                        const double topFrac = std::min(0.45, 0.13 * double(legRows) + 0.03);
+                        const double span = std::max(1.0, yHi - yLo);
+                        g->setScale(QwtPlot::yLeft, yLo, yHi + span * topFrac / (1.0 - topFrac));
+                        g->setAxisUserLocked(QwtPlot::yLeft, true);
+                    }
+                }
+                double vMin = 0.0;
+                double vMax = 0.0;
+                for (int yi : yIdxs) {
+                    Column *yc = t->column(yi);
+                    if (!yc || yc->columnMode() != SciDAVis::ColumnMode::Numeric)
+                        continue;
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (yc->isInvalid(r) || yc->isMasked(r))
+                            continue;
+                        const double v = yc->valueAt(r);
+                        if (std::isfinite(v)) {
+                            vMin = std::min(vMin, v);
+                            vMax = std::max(vMax, v);
+                        }
+                    }
+                }
+                for (int ci = 0; ci < g->curves(); ++ci) {
+                    if (auto *eb = dynamic_cast<QwtErrorPlotCurve *>(g->curve(ci))) {
+                        for (int p = 0; p < eb->dataSize(); ++p) {
+                            const double bx = eb->x(p);
+                            const double ev = std::abs(eb->errorValue(p));
+                            if (std::isfinite(bx) && std::isfinite(ev)) {
+                                vMin = std::min(vMin, bx - ev);
+                                vMax = std::max(vMax, bx + ev);
+                            }
+                        }
+                    }
+                }
+                if (vMax > 0.0) {
+                    const double loX = (vMin < 0.0) ? (vMin * 1.10) : 0.0;
+                    g->setScale(QwtPlot::xBottom, loX, vMax * 1.14);
+                    g->setAxisUserLocked(QwtPlot::xBottom, true);
+                }
+            }
+            if ((style == Graph::HorizontalBars || style == Graph::VerticalBars)
+                && yIdxs.size() > 1) {
+                g->autoPlaceLegend();
+            }
             applyPlotLevelConvenienceParams(g, params);
         }
         outResult = serializeGraphInfo(ml);
@@ -9280,8 +14926,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Table *t = resolveTable(d_app, params);
         const QString curveTitle = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
         const int errIdx = resolveColumnIndex(t, params.value(QStringLiteral("err_col")), true);
-        const QString dirStr = params.value(QStringLiteral("direction")).toString().toLower();
-        const int type = (dirStr == QStringLiteral("x") || dirStr == QStringLiteral("horizontal"))
+        const QString dirStr = optionalJsonString(params, QStringLiteral("direction")).trimmed().toLower();
+        if (!dirStr.isEmpty() && dirStr != QStringLiteral("y")
+            && dirStr != QStringLiteral("vertical") && dirStr != QStringLiteral("v")
+            && dirStr != QStringLiteral("x") && dirStr != QStringLiteral("horizontal")
+            && dirStr != QStringLiteral("h")) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown error-bar direction '%1'.").arg(dirStr),
+                    { QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("horizontal"),
+                      QStringLiteral("vertical") });
+        }
+        const int type = (dirStr == QStringLiteral("x") || dirStr == QStringLiteral("horizontal")
+                          || dirStr == QStringLiteral("h"))
                 ? 0
                 : 1;
         const QColor col = parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black));
@@ -9311,12 +14967,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         } else if (xIdx >= 0) {
             t->setColPlotDesignation(xIdx, SciDAVis::X);
         }
-        const QJsonValue y1Param = params.contains(QStringLiteral("y1_col"))
-                ? params.value(QStringLiteral("y1_col"))
-                : params.value(QStringLiteral("y_left"));
-        const QJsonValue y2Param = params.contains(QStringLiteral("y2_col"))
-                ? params.value(QStringLiteral("y2_col"))
-                : params.value(QStringLiteral("y_right"));
+        const QJsonValue y1Param = params.contains(QStringLiteral("y_left_col"))
+                ? params.value(QStringLiteral("y_left_col"))
+                : (params.contains(QStringLiteral("y1_col"))
+                           ? params.value(QStringLiteral("y1_col"))
+                           : params.value(QStringLiteral("y_left")));
+        const QJsonValue y2Param = params.contains(QStringLiteral("y_right_col"))
+                ? params.value(QStringLiteral("y_right_col"))
+                : (params.contains(QStringLiteral("y2_col"))
+                           ? params.value(QStringLiteral("y2_col"))
+                           : params.value(QStringLiteral("y_right")));
         int y1Idx = (!y1Param.isUndefined() && !y1Param.isNull())
                 ? resolveColumnIndex(t, y1Param, true)
                 : -1;
@@ -9430,10 +15090,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         Graph *g = ml->activeGraph();
         if (g) {
-            const double yGap = params.value(QStringLiteral("y_offset_pct")).toDouble(15.0);
-            const double xGap = params.value(QStringLiteral("x_offset_pct")).toDouble(5.0);
-            const bool norm01 = params.value(QStringLiteral("normalize")).toBool(false);
+            const double yGap = params.contains(QStringLiteral("y_offset_pct"))
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("y_offset_pct"), 15.0, 1000.0)
+                    : optionalJsonFiniteDouble(params, QStringLiteral("offset_y"), 15.0, 1000.0);
+            const double xGap = params.contains(QStringLiteral("x_offset_pct"))
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("x_offset_pct"), 0.0, 1000.0)
+                    : optionalJsonFiniteDouble(params, QStringLiteral("offset_x"), 0.0, 1000.0);
+            const bool norm01 = optionalJsonBool(params, QStringLiteral("normalize"), false);
             g->setStackOffsets(1, yGap, xGap, norm01);
+            if (Legend *leg = g->legend()) {
+                QStringList lines = leg->text().split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                if (lines.size() > 1) {
+                    std::reverse(lines.begin(), lines.end());
+                    leg->setText(lines.join(QLatin1Char('\n')));
+                }
+            }
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
@@ -9447,13 +15118,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Table *t = resolveTable(d_app, params);
         QVector<int> statColIdxs;
         QStringList cols;
-        if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &it : params.value(QStringLiteral("cols")).toArray()) {
+        const QJsonValue colsArrVal = params.contains(QStringLiteral("cols"))
+                ? params.value(QStringLiteral("cols"))
+                : params.value(QStringLiteral("y_cols"));
+        if (colsArrVal.isArray()) {
+            for (const QJsonValue &it : colsArrVal.toArray()) {
                 const int ci = resolveColumnIndex(t, it, true);
                 statColIdxs.append(ci);
                 cols << fullColumnName(t, ci);
             }
-        } else if (params.contains(QStringLiteral("col"))) {
+        } else if (params.contains(QStringLiteral("col"))
+                   && !params.value(QStringLiteral("col")).isNull()) {
             const int ci = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
             statColIdxs.append(ci);
             cols << fullColumnName(t, ci);
@@ -9470,16 +15145,62 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         }
         int totalStatFinite = 0;
-        for (int ci : statColIdxs)
+        double globalMin = std::numeric_limits<double>::infinity();
+        double globalMax = -std::numeric_limits<double>::infinity();
+        for (int ci : statColIdxs) {
             totalStatFinite += countFiniteUnmaskedInTableColumn(t, ci);
-        if (totalStatFinite <= 0) {
+            if (Column *cc = t->column(ci)) {
+                if (cc->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (cc->isInvalid(r) || cc->isMasked(r))
+                            continue;
+                        const double v = cc->valueAt(r);
+                        if (!std::isfinite(v))
+                            continue;
+                        if (std::abs(v) > 1e300) {
+                            throwInvalidParams(
+                                    QStringLiteral("%1 column '%2' exceeds numeric domain (|val| <= 1e300).")
+                                            .arg(method, t->colLabel(ci)));
+                        }
+                        globalMin = std::min(globalMin, v);
+                        globalMax = std::max(globalMax, v);
+                    }
+                }
+            }
+        }
+        if (totalStatFinite <= 0 || !std::isfinite(globalMax - globalMin)) {
             throwInvalidParams(
-                    QStringLiteral("%1 requires at least 1 finite unmasked numeric value in '%2'.")
+                    QStringLiteral("%1 requires at least 1 finite unmasked numeric value with bounded span in '%2'.")
                             .arg(method, t->name()));
         }
         const int plotType = (method == QStringLiteral("plot.histogram")) ? Graph::Histogram
                                                                           : Graph::Box;
-        MultiLayer *ml = d_app->multilayerPlot(t, cols, plotType, 0, t->numRows() - 1);
+        const bool wantStackedHist = (method == QStringLiteral("plot.histogram"))
+                && optionalJsonBool(params, QStringLiteral("stacked"), false)
+                && cols.size() > 1;
+
+        MultiLayer *ml = nullptr;
+        if (wantStackedHist) {
+            ml = d_app->multilayerPlot(t, QStringList() << cols.first(), Graph::Histogram, 0,
+                                       t->numRows() - 1);
+            if (ml) {
+                for (int k = 1; k < cols.size(); ++k) {
+                    Graph *lg = ml->addLayer();
+                    if (lg) {
+                        lg->insertCurvesList(t, QStringList() << cols[k], Graph::Histogram, 1,
+                                             Graph::Area, 0, t->numRows() - 1);
+                        lg->setAutoScale();
+                        enforceArialGraphFonts(lg);
+                    }
+                }
+                ml->resize(560, std::min(1200, std::max(440, 260 * cols.size())));
+                ml->setCols(1);
+                ml->setRows(cols.size());
+                ml->arrangeLayers(false, false);
+            }
+        } else {
+            ml = d_app->multilayerPlot(t, cols, plotType, 0, t->numRows() - 1);
+        }
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create statistical plot."));
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
@@ -9488,14 +15209,319 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     QStringLiteral("%1 created 0 curves from '%2' (check for all-NaN or non-numeric columns).")
                             .arg(method, t->name()));
         }
-        Graph *g = ml->activeGraph();
-        if (g) {
-            if (method == QStringLiteral("plot.violin")) {
-                for (int i = 0; i < g->curves(); ++i) {
-                    if (auto *bc = dynamic_cast<BoxCurve *>(g->curve(i))) {
+
+        if (method == QStringLiteral("plot.histogram")) {
+            const bool hasBins = params.contains(QStringLiteral("bins"))
+                    && !params.value(QStringLiteral("bins")).isNull();
+            const bool hasBinSize = params.contains(QStringLiteral("bin_size"))
+                    && !params.value(QStringLiteral("bin_size")).isNull();
+            const bool hasBinMin = (params.contains(QStringLiteral("bin_min"))
+                                    && !params.value(QStringLiteral("bin_min")).isNull())
+                    || (params.contains(QStringLiteral("min"))
+                        && !params.value(QStringLiteral("min")).isNull());
+            const bool hasBinMax = (params.contains(QStringLiteral("bin_max"))
+                                    && !params.value(QStringLiteral("bin_max")).isNull())
+                    || (params.contains(QStringLiteral("max"))
+                        && !params.value(QStringLiteral("max")).isNull());
+            const int reqBins = hasBins ? parseBoundedInt(params, QStringLiteral("bins"), 10, 1, 2000)
+                                        : 0;
+            const double reqBinSize = hasBinSize
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("bin_size"), 0.0)
+                    : 0.0;
+            if (hasBinSize && reqBinSize <= 0.0)
+                throwInvalidParams(QStringLiteral("plot.histogram 'bin_size' must be > 0."));
+
+            QString pdfMode;
+            if (params.contains(QStringLiteral("overlay_pdf"))
+                && !params.value(QStringLiteral("overlay_pdf")).isNull()) {
+                const QJsonValue pv = params.value(QStringLiteral("overlay_pdf"));
+                if (pv.isBool()) {
+                    pdfMode = pv.toBool() ? QStringLiteral("normal") : QString();
+                } else if (pv.isString()) {
+                    pdfMode = pv.toString().trimmed().toLower();
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Parameter 'overlay_pdf' must be a boolean or string ('normal'|'lognormal'|'none')."));
+                }
+            }
+
+            static const char *const kHistColors[6] = {
+                "#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9"
+            };
+            int histCounter = 0;
+            for (Graph *lg : ml->layersList()) {
+                if (!lg)
+                    continue;
+                const int origCurves = lg->curves();
+                for (int ci = 0; ci < origCurves; ++ci) {
+                    auto *hc = dynamic_cast<QwtHistogram *>(lg->curve(ci));
+                    if (!hc)
+                        continue;
+                    if (hasBins || hasBinSize || hasBinMin || hasBinMax) {
+                        const double bLo = params.contains(QStringLiteral("bin_min"))
+                                ? optionalJsonFiniteDouble(params, QStringLiteral("bin_min"),
+                                                           globalMin)
+                                : (params.contains(QStringLiteral("min"))
+                                           ? optionalJsonFiniteDouble(params, QStringLiteral("min"),
+                                                                      globalMin)
+                                           : globalMin);
+                        double bHi = params.contains(QStringLiteral("bin_max"))
+                                ? optionalJsonFiniteDouble(params, QStringLiteral("bin_max"),
+                                                           globalMax)
+                                : (params.contains(QStringLiteral("max"))
+                                           ? optionalJsonFiniteDouble(params, QStringLiteral("max"),
+                                                                      globalMax)
+                                           : globalMax);
+                        if (bHi <= bLo)
+                            bHi = bLo + 1.0;
+                        double bSz = reqBinSize;
+                        if (bSz <= 0.0) {
+                            const int effBins = (reqBins > 0) ? reqBins : 10;
+                            bSz = (bHi - bLo) / double(effBins);
+                        }
+                        validateFiniteCoordRange(bLo, bHi, QStringLiteral("Histogram bin range"),
+                                                 bSz, 4000);
+                        hc->setBinning(false, bSz, bLo, bHi);
+                        hc->loadData();
+                    }
+                    QColor fillC(QString::fromLatin1(kHistColors[histCounter % 6]));
+                    fillC.setAlpha((origCurves > 1) ? 140 : 195);
+                    lg->setCurvePen(ci, QPen(fillC.darker(130), 1.0));
+                    lg->setCurveBrush(ci, QBrush(fillC, Qt::SolidPattern));
+
+                    if (!pdfMode.isEmpty() && pdfMode != QStringLiteral("none")
+                        && pdfMode != QStringLiteral("false")) {
+                        const int srcColIdx =
+                                (histCounter < statColIdxs.size()) ? statColIdxs[histCounter] : 0;
+                        std::vector<double> sampleVals;
+                        if (Column *sc = t->column(srcColIdx)) {
+                            for (int r = 0; r < t->numRows(); ++r) {
+                                if (!sc->isInvalid(r) && !sc->isMasked(r)
+                                    && std::isfinite(sc->valueAt(r))) {
+                                    sampleVals.push_back(sc->valueAt(r));
+                                }
+                            }
+                        }
+                        if (sampleVals.size() >= 2 && hc->binSize() > 0.0) {
+                            const double nSamp = double(sampleVals.size());
+                            const double bw = hc->binSize();
+                            const double x0 = hc->begin() - 0.5 * bw;
+                            const double x1 = hc->end() + 0.5 * bw;
+                            const int nPdf = 200;
+                            auto *pxCol = new Column(QStringLiteral("X"), SciDAVis::ColumnMode::Numeric);
+                            pxCol->setPlotDesignation(SciDAVis::X);
+                            if (Column *scMeta = t->column(srcColIdx)) {
+                                pxCol->setLongName(scMeta->longName());
+                                pxCol->setUnits(scMeta->units());
+                            }
+                            auto *pyCol =
+                                    new Column(QStringLiteral("PDF"), SciDAVis::ColumnMode::Numeric);
+                            pyCol->setPlotDesignation(SciDAVis::Y);
+
+                            bool okPdf = false;
+                            if (pdfMode == QStringLiteral("lognormal")
+                                || pdfMode == QStringLiteral("log_normal")) {
+                                std::vector<double> lnVals;
+                                for (double v : sampleVals) {
+                                    if (v > 0.0)
+                                        lnVals.push_back(std::log(v));
+                                }
+                                if (lnVals.size() >= 2) {
+                                    const double muLn =
+                                            std::accumulate(lnVals.begin(), lnVals.end(), 0.0)
+                                            / double(lnVals.size());
+                                    double varLn = 0.0;
+                                    for (double lv : lnVals)
+                                        varLn += (lv - muLn) * (lv - muLn);
+                                    const double sigLn =
+                                            std::sqrt(varLn / double(lnVals.size() - 1));
+                                    if (sigLn > 1e-15) {
+                                        pyCol->setComment(QStringLiteral("Lognormal PDF"));
+                                        const double invDen =
+                                                1.0 / (sigLn * std::sqrt(2.0 * 3.14159265358979323846));
+                                        for (int i = 0; i < nPdf; ++i) {
+                                            const double xv =
+                                                    x0 + (x1 - x0) * double(i) / double(nPdf - 1);
+                                            double yv = 0.0;
+                                            if (xv > 1e-300) {
+                                                const double z = (std::log(xv) - muLn) / sigLn;
+                                                yv = nSamp * bw * (invDen / xv)
+                                                        * std::exp(-0.5 * z * z);
+                                            }
+                                            pxCol->setValueAt(i, xv);
+                                            pyCol->setValueAt(i, yv);
+                                        }
+                                        okPdf = true;
+                                    }
+                                }
+                            } else if (pdfMode == QStringLiteral("normal")
+                                       || pdfMode == QStringLiteral("gaussian")
+                                       || pdfMode == QStringLiteral("gauss")) {
+                                const double mu =
+                                        std::accumulate(sampleVals.begin(), sampleVals.end(), 0.0)
+                                        / nSamp;
+                                double varS = 0.0;
+                                for (double sv : sampleVals)
+                                    varS += (sv - mu) * (sv - mu);
+                                const double sig = std::sqrt(varS / (nSamp - 1.0));
+                                if (sig > 1e-15) {
+                                    pyCol->setComment(QStringLiteral("Normal PDF"));
+                                    const double invDen =
+                                            1.0 / (sig * std::sqrt(2.0 * 3.14159265358979323846));
+                                    for (int i = 0; i < nPdf; ++i) {
+                                        const double xv =
+                                                x0 + (x1 - x0) * double(i) / double(nPdf - 1);
+                                        const double z = (xv - mu) / sig;
+                                        pxCol->setValueAt(i, xv);
+                                        pyCol->setValueAt(i,
+                                                          nSamp * bw * invDen
+                                                                  * std::exp(-0.5 * z * z));
+                                    }
+                                    okPdf = true;
+                                }
+                            } else {
+                                delete pxCol;
+                                delete pyCol;
+                                throwInvalidParams(
+                                        QStringLiteral("Unknown overlay_pdf '%1' (expected 'normal'|'lognormal'|'none').")
+                                                .arg(pdfMode));
+                            }
+
+                            if (okPdf) {
+                                const QString pdfTblName =
+                                        d_app->generateUniqueName(QStringLiteral("HistPdf"));
+                                Table *pdfTbl = d_app->newHiddenTable(
+                                        pdfTblName, QStringLiteral("HistogramPDF"),
+                                        QList<Column *>() << pxCol << pyCol);
+                                if (pdfTbl) {
+                                    lg->insertCurve(pdfTbl, pdfTbl->colName(0), pdfTbl->colName(1),
+                                                    Graph::Line, 0, nPdf - 1);
+                                    const int pdfIdx = lg->curves() - 1;
+                                    if (pdfIdx >= 0) {
+                                        lg->setCurvePen(
+                                                pdfIdx,
+                                                QPen(QColor(213, 94, 0), 2.0, Qt::SolidLine));
+                                    }
+                                } else {
+                                    delete pxCol;
+                                    delete pyCol;
+                                }
+                            } else {
+                                delete pxCol;
+                                delete pyCol;
+                            }
+                        }
+                    }
+                    ++histCounter;
+                }
+                lg->setAutoScale();
+                if (wantStackedHist) {
+                    const int panelIdx = std::clamp(histCounter - 1, 0,
+                                                    std::max(0, statColIdxs.size() - 1));
+                    const int srcColIdx = statColIdxs[panelIdx];
+                    lg->setAxisTitleAuto(QwtPlot::xBottom, true);
+                    lg->refreshAutoAxisTitlesFromColumns();
+                    lg->setAxisTitleAuto(QwtPlot::yLeft, false);
+                    lg->setYAxisTitle(QStringLiteral("Count"));
+                    const bool hasPdfCurve = (lg->curves() >= 2);
+                    if (Plot *lplt = lg->plotWidget()) {
+                        if (const QwtScaleDiv *ysd = lplt->axisScaleDiv(QwtPlot::yLeft)) {
+                            const double yHi = std::max(ysd->lowerBound(), ysd->upperBound());
+                            if (std::isfinite(yHi) && yHi > 0.0) {
+                                lg->setScale(QwtPlot::yLeft, 0.0,
+                                             yHi * (hasPdfCurve ? 1.24 : 1.10));
+                            }
+                        }
+                    }
+                    if (hasPdfCurve) {
+                        Legend *leg = lg->legend();
+                        if (!leg)
+                            leg = lg->newLegend();
+                        if (leg) {
+                            const QString lnTrim = t->colLongName(srcColIdx).trimmed();
+                            const QString colTrim = t->colLabel(srcColIdx).trimmed();
+                            QString shortLbl = (!lnTrim.isEmpty() && lnTrim.size() <= 18)
+                                    ? lnTrim
+                                    : colTrim;
+                            if (shortLbl.size() > 18) {
+                                const QStringList toks = shortLbl.split(
+                                        QRegularExpression(QStringLiteral("\\s+")),
+                                        Qt::SkipEmptyParts);
+                                if (toks.size() >= 2) {
+                                    const QString tail2 = toks[toks.size() - 2] + QLatin1Char(' ')
+                                            + toks[toks.size() - 1];
+                                    const QString tail1 = toks.last();
+                                    if (tail2.size() <= 18)
+                                        shortLbl = tail2;
+                                    else if (tail1.size() <= 14)
+                                        shortLbl = QStringLiteral("Hist ") + tail1;
+                                    else
+                                        shortLbl = QStringLiteral("Histogram");
+                                } else {
+                                    shortLbl = shortLbl.left(15) + QStringLiteral("...");
+                                }
+                            }
+                            const QString pdfLbl = (pdfMode == QStringLiteral("lognormal")
+                                                    || pdfMode == QStringLiteral("log_normal"))
+                                    ? QStringLiteral("Lognormal PDF")
+                                    : QStringLiteral("Normal PDF");
+                            leg->setText(
+                                    QStringLiteral("\\c{1}%1\n\\c{2}%2").arg(shortLbl, pdfLbl));
+                        }
+                        lg->autoPlaceLegend();
+                    } else if (!params.contains(QStringLiteral("legend"))) {
+                        lg->setLegendVisible(false);
+                    } else {
+                        lg->autoPlaceLegend();
+                    }
+                } else {
+                    lg->autoPlaceLegend();
+                }
+                applyPlotLevelConvenienceParams(lg, params);
+            }
+        } else if (Graph *g = ml->activeGraph()) {
+            const bool notched = optionalJsonBool(params, QStringLiteral("notched"), false);
+            const QString whiskerStr =
+                    optionalJsonString(params, QStringLiteral("whisker_mode")).trimmed().toLower();
+            if (!whiskerStr.isEmpty() && whiskerStr != QStringLiteral("1.5iqr")
+                && whiskerStr != QStringLiteral("iqr") && whiskerStr != QStringLiteral("tukey")
+                && whiskerStr != QStringLiteral("minmax")
+                && whiskerStr != QStringLiteral("min_max") && whiskerStr != QStringLiteral("sd")
+                && whiskerStr != QStringLiteral("se") && whiskerStr != QStringLiteral("5_95")
+                && whiskerStr != QStringLiteral("p5_95") && whiskerStr != QStringLiteral("10_90")
+                && whiskerStr != QStringLiteral("p10_90") && whiskerStr != QStringLiteral("1_99")
+                && whiskerStr != QStringLiteral("p1_99")) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Unknown box plot whisker_mode '%1'.").arg(whiskerStr),
+                        { QStringLiteral("1.5iqr"), QStringLiteral("minmax"), QStringLiteral("sd"),
+                          QStringLiteral("se"), QStringLiteral("5_95"), QStringLiteral("10_90") });
+            }
+            for (int i = 0; i < g->curves(); ++i) {
+                if (auto *bc = dynamic_cast<BoxCurve *>(g->curve(i))) {
+                    if (method == QStringLiteral("plot.violin")) {
                         bc->setViolinMode(true);
                         bc->setShowDataPoints(
-                                params.value(QStringLiteral("show_points")).toBool(true));
+                                optionalJsonBool(params, QStringLiteral("show_points"), true));
+                    } else {
+                        if (notched)
+                            bc->setBoxStyle(BoxCurve::Notch);
+                        if (params.contains(QStringLiteral("show_points")))
+                            bc->setShowDataPoints(
+                                    optionalJsonBool(params, QStringLiteral("show_points"), false));
+                        if (whiskerStr == QStringLiteral("minmax")
+                            || whiskerStr == QStringLiteral("min_max"))
+                            bc->setWhiskersRange(BoxCurve::MinMax, 0.0);
+                        else if (whiskerStr == QStringLiteral("sd"))
+                            bc->setWhiskersRange(BoxCurve::SD, 1.0);
+                        else if (whiskerStr == QStringLiteral("se"))
+                            bc->setWhiskersRange(BoxCurve::SE, 1.0);
+                        else if (whiskerStr == QStringLiteral("5_95")
+                                 || whiskerStr == QStringLiteral("p5_95"))
+                            bc->setWhiskersRange(BoxCurve::r5_95, 0.0);
+                        else if (whiskerStr == QStringLiteral("10_90")
+                                 || whiskerStr == QStringLiteral("p10_90"))
+                            bc->setWhiskersRange(BoxCurve::r10_90, 0.0);
+                        bc->loadData();
                     }
                 }
             }
@@ -9509,57 +15535,165 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("plot.pareto")) {
         Table *srcTable = resolveTable(d_app, params);
-        const int yCol = params.contains(QStringLiteral("col"))
-                ? resolveColumnIndex(srcTable, params.value(QStringLiteral("col")), true)
-                : ((srcTable->numCols() >= 2) ? 1 : 0);
-        QVector<double> vals;
+        int catCol = -1;
+        if (params.contains(QStringLiteral("category_col"))
+            && !params.value(QStringLiteral("category_col")).isNull()) {
+            catCol = resolveColumnIndex(srcTable, params.value(QStringLiteral("category_col")),
+                                        true);
+        } else if (params.contains(QStringLiteral("label_col"))
+                   && !params.value(QStringLiteral("label_col")).isNull()) {
+            catCol = resolveColumnIndex(srcTable, params.value(QStringLiteral("label_col")), true);
+        } else if (params.contains(QStringLiteral("x_col"))
+                   && !params.value(QStringLiteral("x_col")).isNull()) {
+            catCol = resolveColumnIndex(srcTable, params.value(QStringLiteral("x_col")), true);
+        } else {
+            for (int c = 0; c < srcTable->numCols(); ++c) {
+                if (srcTable->column(c)
+                    && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Text) {
+                    catCol = c;
+                    break;
+                }
+            }
+        }
+
+        int yCol = -1;
+        if (params.contains(QStringLiteral("value_col"))
+            && !params.value(QStringLiteral("value_col")).isNull()) {
+            yCol = resolveColumnIndex(srcTable, params.value(QStringLiteral("value_col")), true);
+        } else if (params.contains(QStringLiteral("col"))
+                   && !params.value(QStringLiteral("col")).isNull()) {
+            yCol = resolveColumnIndex(srcTable, params.value(QStringLiteral("col")), true);
+        } else {
+            for (int c = 0; c < srcTable->numCols(); ++c) {
+                if (c != catCol && srcTable->column(c)
+                    && srcTable->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    yCol = c;
+                    break;
+                }
+            }
+            if (yCol < 0)
+                yCol = (srcTable->numCols() >= 2) ? 1 : 0;
+        }
+
+        struct ParetoItem
+        {
+            double val;
+            QString label;
+        };
+        QVector<ParetoItem> items;
         double totalSum = 0.0;
         for (int r = 0; r < srcTable->numRows(); ++r) {
             if (srcTable->column(yCol) && !srcTable->column(yCol)->isInvalid(r)
                 && !srcTable->column(yCol)->isMasked(r)) {
                 const double v = srcTable->cell(r, yCol);
-                if (std::isfinite(v) && v >= 0.0) {
-                    vals.append(v);
+                if (std::isfinite(v) && v >= 0.0 && v <= 1e300) {
+                    QString lbl;
+                    if (catCol >= 0 && srcTable->column(catCol))
+                        lbl = srcTable->text(r, catCol).trimmed();
+                    if (lbl.isEmpty())
+                        lbl = QString::number(r + 1);
+                    items.append({ v, lbl });
                     totalSum += v;
                 }
             }
         }
-        if (vals.size() < 2 || totalSum <= 0.0)
+        if (items.size() < 2 || totalSum <= 0.0 || !std::isfinite(totalSum))
             throwInvalidParams(QStringLiteral(
-                    "Pareto plot requires >= 2 non-negative numeric values with positive sum."));
-        std::sort(vals.begin(), vals.end(), std::greater<double>());
+                    "Pareto plot requires >= 2 non-negative numeric values with positive finite sum."));
+        std::stable_sort(items.begin(), items.end(),
+                         [](const ParetoItem &a, const ParetoItem &b) { return a.val > b.val; });
 
-        Table *pt = createUniqueTableHeadless(d_app, vals.size(), 3,
+        Table *pt = createUniqueTableHeadless(d_app, items.size(), 4,
                                               srcTable->name() + QStringLiteral("Pareto"));
         pt->setColName(0, QStringLiteral("Rank"));
         pt->setColPlotDesignation(0, SciDAVis::X);
-        pt->setColName(1, srcTable->colLabel(yCol) + QStringLiteral("_Sorted"));
+        pt->setColName(1, srcTable->colLabel(yCol));
         pt->setColPlotDesignation(1, SciDAVis::Y);
         pt->setColName(2, QStringLiteral("Cumulative_Pct"));
         pt->setColPlotDesignation(2, SciDAVis::Y);
+        pt->setColName(3, QStringLiteral("Category"));
+        if (pt->column(3))
+            pt->column(3)->setColumnMode(SciDAVis::ColumnMode::Text);
+        pt->setColPlotDesignation(3, SciDAVis::noDesignation);
+
+        QStringList sortedLabels;
+        sortedLabels.reserve(items.size());
         double runSum = 0.0;
-        for (int i = 0; i < vals.size(); ++i) {
-            runSum += vals[i];
+        for (int i = 0; i < items.size(); ++i) {
+            runSum += items[i].val;
             pt->setCell(i, 0, i + 1);
-            pt->setCell(i, 1, vals[i]);
+            pt->setCell(i, 1, items[i].val);
             pt->setCell(i, 2, (runSum / totalSum) * 100.0);
+            if (pt->column(3))
+                pt->column(3)->setTextAt(i, items[i].label);
+            sortedLabels.append(items[i].label);
         }
         MultiLayer *ml = d_app->multilayerPlot(pt, QStringList() << pt->colName(1),
-                                               Graph::VerticalBars, 0, vals.size() - 1);
+                                               Graph::VerticalBars, 0, items.size() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Pareto plot."));
         if (Graph *g = ml->activeGraph()) {
+            if (g->curves() >= 1) {
+                g->setCurvePen(0, QPen(QColor(0, 77, 128), 1.0));
+                g->setCurveBrush(0, QBrush(QColor(0, 114, 178, 210), Qt::SolidPattern));
+                g->setBarsGap(0, 22, 0);
+            }
             g->insertCurve(pt, pt->colName(0), pt->colName(2), Graph::LineSymbols, 0,
-                           vals.size() - 1);
+                           items.size() - 1);
             if (g->curves() >= 2 && g->curve(g->curves() - 1)) {
-                g->curve(g->curves() - 1)->setYAxis(QwtPlot::yRight);
-                g->curve(g->curves() - 1)->setPen(QPen(QColor(213, 94, 0), 2.0));
+                QwtPlotCurve *cumC = g->curve(g->curves() - 1);
+                cumC->setYAxis(QwtPlot::yRight);
+                cumC->setPen(QPen(QColor(213, 94, 0), 2.0));
+                QwtSymbol sym(QwtSymbol::Ellipse, QBrush(QColor(213, 94, 0)),
+                              QPen(QColor(213, 94, 0), 1.2), QSize(6, 6));
+                g->setCurveSymbol(g->curves() - 1, sym);
             }
             g->enableAxis(QwtPlot::yRight, true);
-            g->setScale(QwtPlot::yLeft, 0.0, totalSum * 1.05);
-            g->setScale(QwtPlot::yRight, 0.0, 105.0, 20.0);
-            enforceArialGraphFonts(g);
-            g->replot();
+            if (!sortedLabels.isEmpty()) {
+                invokeGraphSetCategoryLabels(d_app, g, QwtPlot::xBottom, sortedLabels);
+                g->setAxisLabelRotation(QwtPlot::xBottom, -35);
+            }
+            if (catCol >= 0) {
+                const QString xTitle = srcTable->column(catCol)
+                        ? srcTable->column(catCol)->formattedAxisTitle().trimmed()
+                        : srcTable->colLabel(catCol);
+                g->setAxisTitleAuto(QwtPlot::xBottom, false);
+                g->setXAxisTitle(xTitle.isEmpty() ? QStringLiteral("Category") : xTitle);
+            } else {
+                g->setAxisTitleAuto(QwtPlot::xBottom, false);
+                g->setXAxisTitle(QStringLiteral("Category"));
+            }
+            const QString yTitle = srcTable->column(yCol)
+                    ? srcTable->column(yCol)->formattedAxisTitle().trimmed()
+                    : srcTable->colLabel(yCol);
+            g->setAxisTitleAuto(QwtPlot::yLeft, false);
+            g->setYAxisTitle(yTitle.isEmpty() ? QStringLiteral("Count") : yTitle);
+            g->setAxisTitleAuto(QwtPlot::yRight, false);
+            g->setRightAxisTitle(QStringLiteral("Cumulative (%)"));
+
+            const double maxBar = items.first().val;
+            const double yLeftTop = std::max(totalSum * 1.12, maxBar * 1.24);
+            const double yRightTop = 100.0 * (yLeftTop / totalSum);
+            g->setScale(QwtPlot::yLeft, 0.0, yLeftTop);
+            g->setScale(QwtPlot::yRight, 0.0, yRightTop, 20.0);
+            if (optionalJsonBool(params, QStringLiteral("show_80_line"), true)) {
+                Graph::ReferenceLineSpec r80;
+                r80.orientation = 0;
+                r80.value = 0.80 * totalSum;
+                r80.color = QColor(120, 120, 120);
+                r80.style = Qt::DashLine;
+                r80.width = 1.0;
+                r80.label = QStringLiteral("80%");
+                g->addReferenceLine(r80);
+            }
+            if (Legend *leg = g->legend()) {
+                const QString barLbl = srcTable->colLongName(yCol).trimmed().isEmpty()
+                        ? srcTable->colLabel(yCol)
+                        : srcTable->colLongName(yCol).trimmed();
+                leg->setText(QStringLiteral("\\c{1}%1\n\\c{2}Cumulative (%)").arg(barLbl));
+            }
+            g->autoPlaceLegend();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -9578,7 +15712,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (srcTable->column(yCol) && !srcTable->column(yCol)->isInvalid(r)
                 && !srcTable->column(yCol)->isMasked(r)) {
                 const double v = srcTable->cell(r, yCol);
-                if (std::isfinite(v))
+                if (std::isfinite(v) && std::abs(v) <= 1e300)
                     vals.append(v);
             }
         }
@@ -9617,9 +15751,23 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             g->insertCurve(qt, qt->colName(0), qt->colName(2), Graph::Line, 0, n - 1);
             if (g->curves() >= 2 && g->curve(g->curves() - 1))
                 g->curve(g->curves() - 1)->setPen(QPen(QColor(213, 94, 0), 2.0, Qt::DashLine));
+            const QString colDesc = srcTable->column(yCol)
+                    ? srcTable->column(yCol)->formattedAxisTitle().trimmed()
+                    : srcTable->colLabel(yCol);
+            g->setAxisTitleAuto(QwtPlot::xBottom, false);
+            g->setXAxisTitle(QStringLiteral("Theoretical Normal Quantiles"));
+            g->setAxisTitleAuto(QwtPlot::yLeft, false);
+            g->setYAxisTitle(
+                    colDesc.isEmpty()
+                            ? QStringLiteral("Sample Quantiles")
+                            : ((colDesc.size() > 20)
+                                       ? colDesc
+                                       : QStringLiteral("Sample Quantiles (%1)").arg(colDesc)));
+            if (Legend *leg = g->legend())
+                leg->setText(QStringLiteral("\\c{1}Sample Quantiles\n\\c{2}Normal Reference"));
+            g->placeLegendAnchor(Graph::LegendTopLeft);
             g->setAutoScale();
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -9632,23 +15780,70 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         Table *t = resolveTable(d_app, params);
         const int colIdx = params.contains(QStringLiteral("col"))
                 ? resolveColumnIndex(t, params.value(QStringLiteral("col")), true)
-                : ((t->numCols() >= 2) ? 1 : 0);
+                : (params.contains(QStringLiteral("value_col"))
+                           ? resolveColumnIndex(t, params.value(QStringLiteral("value_col")), true)
+                           : ((t->numCols() >= 2) ? 1 : 0));
+        int lblColIdx = -1;
+        if (params.contains(QStringLiteral("label_col"))
+            && !params.value(QStringLiteral("label_col")).isNull()) {
+            lblColIdx = resolveColumnIndex(t, params.value(QStringLiteral("label_col")), true);
+        } else if (params.contains(QStringLiteral("category_col"))
+                   && !params.value(QStringLiteral("category_col")).isNull()) {
+            lblColIdx = resolveColumnIndex(t, params.value(QStringLiteral("category_col")), true);
+        } else {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (c != colIdx && t->column(c)
+                    && t->column(c)->columnMode() == SciDAVis::ColumnMode::Text) {
+                    lblColIdx = c;
+                    break;
+                }
+            }
+        }
         int posFinite = 0;
         double pieSum = 0.0;
+        QStringList sliceLegendLines;
         if (Column *pc = t->column(colIdx)) {
             if (pc->columnMode() == SciDAVis::ColumnMode::Numeric) {
                 for (int r = 0; r < t->numRows(); ++r) {
                     if (!pc->isInvalid(r) && !pc->isMasked(r)) {
                         const double v = pc->valueAt(r);
-                        if (std::isfinite(v) && v >= 0.0) {
+                        if (std::isfinite(v) && v >= 0.0 && v <= 1e300) {
                             ++posFinite;
                             pieSum += v;
                         }
                     }
                 }
+                if (pieSum > 0.0) {
+                    int pIdx = 1;
+                    int fbLblCol = lblColIdx;
+                    if (fbLblCol < 0) {
+                        for (int c = 0; c < t->numCols(); ++c) {
+                            if (c != colIdx && t->column(c)) {
+                                fbLblCol = c;
+                                break;
+                            }
+                        }
+                    }
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (!pc->isInvalid(r) && !pc->isMasked(r)) {
+                            const double v = pc->valueAt(r);
+                            if (std::isfinite(v) && v >= 0.0) {
+                                QString sl = (fbLblCol >= 0) ? t->text(r, fbLblCol).trimmed()
+                                                             : QString();
+                                if (sl.isEmpty())
+                                    sl = QStringLiteral("Slice %1").arg(pIdx);
+                                const double pct = (v / pieSum) * 100.0;
+                                sliceLegendLines.append(
+                                        QStringLiteral("\\p{%1}%2 (%3%)")
+                                                .arg(pIdx++)
+                                                .arg(sl, QString::number(pct, 'f', 1)));
+                            }
+                        }
+                    }
+                }
             }
         }
-        if (posFinite <= 0 || pieSum <= 0.0) {
+        if (posFinite <= 0 || pieSum <= 0.0 || !std::isfinite(pieSum)) {
             throwInvalidParams(
                     QStringLiteral("plot.pie requires non-negative numeric values with positive sum in column '%1'.")
                             .arg(t->colLabel(colIdx)));
@@ -9661,8 +15856,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(QStringLiteral("plot.pie created 0 pie slices."));
         }
-        if (Graph *g = ml->activeGraph())
+        if (Graph *g = ml->activeGraph()) {
+            const bool explicitHideLeg = params.contains(QStringLiteral("legend"))
+                    && params.value(QStringLiteral("legend")).isBool()
+                    && !params.value(QStringLiteral("legend")).toBool();
+            if (!sliceLegendLines.isEmpty() && g->legend())
+                g->legend()->setText(sliceLegendLines.join(QLatin1Char('\n')));
+            if (!explicitHideLeg && g->legend() && g->isLegendVisible()) {
+                Legend *mainLeg = g->legend();
+                const QVector<int> tKeys = g->textMarkerKeys();
+                for (int tid : tKeys) {
+                    Legend *tm = g->textMarker(tid);
+                    if (tm && tm != mainLeg) {
+                        g->setSelectedMarker(tid, false);
+                        g->removeMarker();
+                    }
+                }
+                g->deselectMarker();
+                g->placeLegendAnchor(Graph::LegendTopCenter);
+                g->replot();
+            }
             applyPlotLevelConvenienceParams(g, params);
+        }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -9675,6 +15890,30 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (params.value(QStringLiteral("cols")).isArray()) {
             for (const QJsonValue &it : params.value(QStringLiteral("cols")).toArray())
                 colIdxs.append(resolveColumnIndex(t, it, true));
+        } else if (params.contains(QStringLiteral("x_col"))
+                   || params.contains(QStringLiteral("y_col"))
+                   || params.contains(QStringLiteral("u_col"))
+                   || params.contains(QStringLiteral("v_col"))
+                   || params.contains(QStringLiteral("dx_col"))
+                   || params.contains(QStringLiteral("dy_col"))) {
+            const QJsonValue xv = params.contains(QStringLiteral("x_col"))
+                    ? params.value(QStringLiteral("x_col"))
+                    : QJsonValue(0);
+            const QJsonValue yv = params.contains(QStringLiteral("y_col"))
+                    ? params.value(QStringLiteral("y_col"))
+                    : QJsonValue(1);
+            const QJsonValue uv = params.contains(QStringLiteral("u_col"))
+                    ? params.value(QStringLiteral("u_col"))
+                    : (params.contains(QStringLiteral("dx_col"))
+                               ? params.value(QStringLiteral("dx_col"))
+                               : QJsonValue(2));
+            const QJsonValue vv = params.contains(QStringLiteral("v_col"))
+                    ? params.value(QStringLiteral("v_col"))
+                    : (params.contains(QStringLiteral("dy_col"))
+                               ? params.value(QStringLiteral("dy_col"))
+                               : QJsonValue(3));
+            colIdxs << resolveColumnIndex(t, xv, true) << resolveColumnIndex(t, yv, true)
+                    << resolveColumnIndex(t, uv, true) << resolveColumnIndex(t, vv, true);
         } else {
             for (int c = 0; c < std::min(4, t->numCols()); ++c)
                 colIdxs.append(c);
@@ -9688,7 +15927,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (!col0 || !col1 || !col2 || !col3)
             throwInvalidParams(QStringLiteral("Vector plot requires 4 valid table columns."));
 
-        const QString mode = params.value(QStringLiteral("mode")).toString().trimmed().toLower();
+        const QString mode = optionalJsonString(params, QStringLiteral("mode")).trimmed().toLower();
         if (!mode.isEmpty() && mode != QStringLiteral("xyxy") && mode != QStringLiteral("cartesian")
             && mode != QStringLiteral("xyam") && mode != QStringLiteral("polar")) {
             throwInvalidParams(
@@ -9709,7 +15948,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             const double v1 = t->cell(r, colIdxs[1]);
             const double v2 = t->cell(r, colIdxs[2]);
             const double v3 = t->cell(r, colIdxs[3]);
-            if (std::isfinite(v0) && std::isfinite(v1) && std::isfinite(v2) && std::isfinite(v3))
+            if (std::isfinite(v0) && std::isfinite(v1) && std::isfinite(v2) && std::isfinite(v3)
+                && std::abs(v0) <= 1e300 && std::abs(v1) <= 1e300 && std::abs(v2) <= 1e300
+                && std::abs(v3) <= 1e300)
                 ++validVectorRows;
         }
         if (validVectorRows < 1) {
@@ -9737,8 +15978,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(
                     QStringLiteral("Vector plot failed: no valid vector curve could be created from the specified columns."));
         }
-        enforceArialGraphFonts(g);
-        g->replot();
+        if (auto *vc = dynamic_cast<VectorCurve *>(g->curve(g->curves() - 1))) {
+            if (params.contains(QStringLiteral("color"))
+                && !params.value(QStringLiteral("color")).isNull()) {
+                vc->setColor(parseColorValue(params.value(QStringLiteral("color")), vc->color()));
+            }
+            const QJsonValue lwV = params.contains(QStringLiteral("line_width"))
+                    ? params.value(QStringLiteral("line_width"))
+                    : (params.contains(QStringLiteral("lw"))
+                               ? params.value(QStringLiteral("lw"))
+                               : params.value(QStringLiteral("width")));
+            if (!lwV.isUndefined() && !lwV.isNull())
+                vc->setWidth(std::clamp(qRound(lwV.toDouble(1.0)), 1, 20));
+            if (params.contains(QStringLiteral("head_length")))
+                vc->setHeadLength(parseBoundedInt(params, QStringLiteral("head_length"), 8, 1, 64));
+            if (params.contains(QStringLiteral("head_angle")))
+                vc->setHeadAngle(parseBoundedInt(params, QStringLiteral("head_angle"), 45, 5, 89));
+        }
+        applyPlotLevelConvenienceParams(g, params);
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -9808,62 +16065,428 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("plot.polar")) {
+        Table *t = nullptr;
+        if ((!params.contains(QStringLiteral("table"))
+             || params.value(QStringLiteral("table")).isNull()
+             || params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+            && params.value(QStringLiteral("theta")).isArray()
+            && params.value(QStringLiteral("r")).isArray()) {
+            const QJsonArray thArr = params.value(QStringLiteral("theta")).toArray();
+            const QJsonArray rArr = params.value(QStringLiteral("r")).toArray();
+            const int nPts = std::min(thArr.size(), rArr.size());
+            if (nPts < 1 || nPts > 1000000)
+                throwInvalidParams(QStringLiteral("plot.polar inline 'theta'/'r' arrays must have 1..1,000,000 points."));
+            t = createUniqueTableHeadless(d_app, nPts, 2, QStringLiteral("PolarData"));
+            t->setColName(0, QStringLiteral("Theta"));
+            t->setColPlotDesignation(0, SciDAVis::X);
+            t->setColName(1, QStringLiteral("R"));
+            t->setColPlotDesignation(1, SciDAVis::Y);
+            for (int i = 0; i < nPts; ++i) {
+                t->setCell(i, 0, parseFiniteCoordDouble(thArr[i], QStringLiteral("theta")));
+                t->setCell(i, 1, parseFiniteCoordDouble(rArr[i], QStringLiteral("r")));
+            }
+        } else {
+            t = resolveTable(d_app, params);
+        }
+        int thetaIdx = -1;
+        if (params.contains(QStringLiteral("theta_col"))
+            && !params.value(QStringLiteral("theta_col")).isNull()) {
+            thetaIdx = resolveColumnIndex(t, params.value(QStringLiteral("theta_col")), true);
+        } else if (params.contains(QStringLiteral("x_col"))
+                   && !params.value(QStringLiteral("x_col")).isNull()) {
+            thetaIdx = resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true);
+        } else {
+            thetaIdx = t->firstXCol();
+            if (thetaIdx < 0)
+                thetaIdx = 0;
+        }
+
+        QVector<int> rIdxs;
+        const QJsonValue rSpec = params.contains(QStringLiteral("r_cols"))
+                ? params.value(QStringLiteral("r_cols"))
+                : (params.contains(QStringLiteral("r_col"))
+                           ? params.value(QStringLiteral("r_col"))
+                           : (params.contains(QStringLiteral("y_cols"))
+                                      ? params.value(QStringLiteral("y_cols"))
+                                      : params.value(QStringLiteral("y_col"))));
+        if (rSpec.isArray()) {
+            for (const QJsonValue &it : rSpec.toArray())
+                rIdxs.append(resolveColumnIndex(t, it, true));
+        } else if (!rSpec.isUndefined() && !rSpec.isNull()) {
+            rIdxs.append(resolveColumnIndex(t, rSpec, true));
+        } else {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (c != thetaIdx && t->column(c)
+                    && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    rIdxs.append(c);
+                }
+            }
+        }
+        if (rIdxs.isEmpty())
+            throwInvalidParams(QStringLiteral("plot.polar requires at least one radial column."));
+
+        bool thetaInRad = false;
+        if (params.contains(QStringLiteral("theta_in_radians"))
+            && !params.value(QStringLiteral("theta_in_radians")).isNull()) {
+            thetaInRad = optionalJsonBool(params, QStringLiteral("theta_in_radians"), false);
+        } else if (params.contains(QStringLiteral("radians"))
+                   && !params.value(QStringLiteral("radians")).isNull()) {
+            thetaInRad = optionalJsonBool(params, QStringLiteral("radians"), false);
+        } else if (params.contains(QStringLiteral("degrees"))
+                   && !params.value(QStringLiteral("degrees")).isNull()) {
+            thetaInRad = !optionalJsonBool(params, QStringLiteral("degrees"), true);
+        } else if (params.contains(QStringLiteral("units"))
+                   && !params.value(QStringLiteral("units")).isNull()) {
+            const QString uStr = optionalJsonString(params, QStringLiteral("units")).trimmed().toLower();
+            thetaInRad = uStr.startsWith(QStringLiteral("rad"));
+        }
+
+        MultiLayer *ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("PolarGraph")));
+        if (!ml)
+            throwRpcRuntime(QStringLiteral("Failed to create Polar graph."));
+        Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
+        g->setProperty("_toriIsPolarPlot", true);
+
+        auto plotPolarSeries = [&](auto *graphPtr) {
+            using GType = std::remove_pointer_t<decltype(graphPtr)>;
+            double rMaxAll = 0.0;
+            int validSeries = 0;
+            static const char *const kPolarPalette[6] = {
+                "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9"
+            };
+            for (int si = 0; si < rIdxs.size(); ++si) {
+                const int rColIdx = rIdxs[si];
+                Column *thCol = t->column(thetaIdx);
+                Column *raCol = t->column(rColIdx);
+                if (!thCol || !raCol || thCol->columnMode() != SciDAVis::ColumnMode::Numeric
+                    || raCol->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                    continue;
+                }
+                QVector<double> thVec;
+                QVector<double> rVec;
+                for (int r = 0; r < t->numRows(); ++r) {
+                    if (thCol->isInvalid(r) || thCol->isMasked(r) || raCol->isInvalid(r)
+                        || raCol->isMasked(r))
+                        continue;
+                    const double tv = thCol->valueAt(r);
+                    const double rv = raCol->valueAt(r);
+                    if (std::isfinite(tv) && std::isfinite(rv) && std::abs(tv) <= 1e300
+                        && std::abs(rv) <= 1e300) {
+                        thVec.append(tv);
+                        rVec.append(rv);
+                        rMaxAll = std::max(rMaxAll, std::abs(rv));
+                    }
+                }
+                if (thVec.isEmpty())
+                    continue;
+                const QString sLabel = t->colLongName(rColIdx).trimmed().isEmpty()
+                        ? t->colLabel(rColIdx)
+                        : t->colLongName(rColIdx).trimmed();
+
+                if constexpr (HasGraphSetupPolarPlot<GType>::value) {
+                    graphPtr->setupPolarPlot(thVec, rVec, sLabel, thetaInRad);
+                    if (graphPtr->curves() > 0)
+                        applyInlineCurveStyleParams(graphPtr, graphPtr->curves() - 1, params,
+                                                    rIdxs.size() == 1);
+                    ++validSeries;
+                } else {
+                    auto *cx = new Column(QStringLiteral("Polar_X"), SciDAVis::ColumnMode::Numeric);
+                    cx->setPlotDesignation(SciDAVis::X);
+                    auto *cy = new Column(t->colLabel(rColIdx), SciDAVis::ColumnMode::Numeric);
+                    cy->setPlotDesignation(SciDAVis::Y);
+                    cy->setComment(sLabel);
+                    const double degToRad = 3.14159265358979323846 / 180.0;
+                    for (int k = 0; k < thVec.size(); ++k) {
+                        const double ang = thetaInRad ? thVec[k] : (thVec[k] * degToRad);
+                        cx->setValueAt(k, rVec[k] * std::cos(ang));
+                        cy->setValueAt(k, rVec[k] * std::sin(ang));
+                    }
+                    const QString pTblName =
+                            d_app->generateUniqueName(QStringLiteral("PolarCartesian"));
+                    Table *pTbl = d_app->newHiddenTable(pTblName, sLabel,
+                                                        QList<Column *>() << cx << cy);
+                    if (!pTbl) {
+                        delete cx;
+                        delete cy;
+                        continue;
+                    }
+                    const int cStyle = parsePlotStyle(
+                            optionalJsonString(params, QStringLiteral("style")), Graph::Line);
+                    graphPtr->insertCurve(pTbl, pTbl->colName(0), pTbl->colName(1), cStyle, 0,
+                                          thVec.size() - 1);
+                    const int ci = graphPtr->curves() - 1;
+                    if (ci >= 0) {
+                        const QColor sc(QString::fromLatin1(kPolarPalette[si % 6]));
+                        graphPtr->setCurvePen(ci, QPen(sc, 2.0));
+                        applyInlineCurveStyleParams(graphPtr, ci, params, rIdxs.size() == 1);
+                    }
+                    ++validSeries;
+                }
+            }
+            if (validSeries <= 0) {
+                closeAndDeleteEmptyPlot(d_app, ml);
+                throwInvalidParams(
+                        QStringLiteral("plot.polar found 0 valid finite (theta, r) points."));
+            }
+            if constexpr (!HasGraphSetupPolarPlot<GType>::value) {
+                const double spanR = (rMaxAll > 0.0) ? (rMaxAll * 1.18) : 1.0;
+                const int nRings = 4;
+                const int ringPts = 97;
+                for (int ri = 1; ri <= nRings; ++ri) {
+                    const double rr = (rMaxAll > 0.0 ? rMaxAll : 1.0) * double(ri) / double(nRings);
+                    auto *rxC = new Column(QStringLiteral("RX"), SciDAVis::ColumnMode::Numeric);
+                    rxC->setPlotDesignation(SciDAVis::X);
+                    auto *ryC = new Column(QStringLiteral("RY"), SciDAVis::ColumnMode::Numeric);
+                    ryC->setPlotDesignation(SciDAVis::Y);
+                    for (int p = 0; p < ringPts; ++p) {
+                        const double a = 2.0 * 3.14159265358979323846 * double(p)
+                                / double(ringPts - 1);
+                        rxC->setValueAt(p, rr * std::cos(a));
+                        ryC->setValueAt(p, rr * std::sin(a));
+                    }
+                    Table *rt = d_app->newHiddenTable(
+                            d_app->generateUniqueName(QStringLiteral("PolarRing")),
+                            QStringLiteral("PolarRing"), QList<Column *>() << rxC << ryC);
+                    if (rt) {
+                        graphPtr->insertCurve(rt, rt->colName(0), rt->colName(1), Graph::Line, 0,
+                                              ringPts - 1);
+                        const int rci = graphPtr->curves() - 1;
+                        graphPtr->setCurvePen(
+                                rci, QPen(QColor(180, 185, 195), 0.75, Qt::DotLine));
+                    } else {
+                        delete rxC;
+                        delete ryC;
+                    }
+                }
+                for (int deg = 0; deg < 360; deg += 30) {
+                    const double a = double(deg) * 3.14159265358979323846 / 180.0;
+                    const double rEdge = (rMaxAll > 0.0 ? rMaxAll : 1.0);
+                    auto *am = new ArrowMarker();
+                    am->attach(graphPtr->plotWidget());
+                    am->setStartPoint(0.0, 0.0);
+                    am->setEndPoint(rEdge * std::cos(a), rEdge * std::sin(a));
+                    am->setColor(QColor(190, 195, 205));
+                    am->setWidth(1);
+                    am->setStyle(Qt::DotLine);
+                    am->drawStartArrow(false);
+                    am->drawEndArrow(false);
+                    graphPtr->addArrow(am);
+
+                    Legend *lbl = graphPtr->newLegend(QStringLiteral("%1\u00B0").arg(deg));
+                    if (lbl) {
+                        lbl->setFrameStyle(0);
+                        lbl->setBackgroundColor(QColor(255, 255, 255, 0));
+                        lbl->setOriginCoord(1.09 * rEdge * std::cos(a),
+                                            1.09 * rEdge * std::sin(a));
+                    }
+                }
+                graphPtr->setScale(QwtPlot::xBottom, -spanR, spanR);
+                graphPtr->setScale(QwtPlot::yLeft, -spanR, spanR);
+                graphPtr->setAxisUserLocked(QwtPlot::xBottom, true);
+                graphPtr->setAxisUserLocked(QwtPlot::yLeft, true);
+                if (Legend *leg = graphPtr->legend()) {
+                    QStringList keepLines;
+                    for (int s = 0; s < validSeries; ++s) {
+                        const QString sLbl = t->colLongName(rIdxs[s]).trimmed().isEmpty()
+                                ? t->colLabel(rIdxs[s])
+                                : t->colLongName(rIdxs[s]).trimmed();
+                        keepLines.append(QStringLiteral("\\c{%1}%2").arg(s + 1).arg(sLbl));
+                    }
+                    leg->setText(keepLines.join(QLatin1Char('\n')));
+                }
+            }
+        };
+        plotPolarSeries(g);
+        ml->setKeepAspectRatio(true);
+        ml->setTargetAspectRatio(1.0);
+        applyPlotLevelConvenienceParams(g, params);
+        applyRequestedWindowName(d_app, ml, params);
+        outResult = serializeGraphInfo(ml);
+        outResult[QStringLiteral("is_polar")] = true;
+        outResult[QStringLiteral("theta_in_radians")] = thetaInRad;
+        outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
     if (method == QStringLiteral("plot.function")) {
-        const QString formula = params.value(QStringLiteral("formula")).toString().trimmed();
-        if (formula.isEmpty())
-            throwInvalidParams(QStringLiteral("'formula' is required for plot.function."));
-        const QString var = params.contains(QStringLiteral("variable"))
-                ? params.value(QStringLiteral("variable")).toString()
-                : QStringLiteral("x");
-        const double xMin = params.value(QStringLiteral("x_min")).toDouble(0.0);
-        const double xMax = params.value(QStringLiteral("x_max")).toDouble(10.0);
-        const int points = std::max(10, params.value(QStringLiteral("points")).toInt(200));
+        const QString typeStr =
+                optionalJsonString(params, QStringLiteral("type"), QStringLiteral("normal"))
+                        .trimmed()
+                        .toLower();
+        FunctionCurve::FunctionType fnType = FunctionCurve::Normal;
+        if (typeStr.isEmpty() || typeStr == QStringLiteral("normal")
+            || typeStr == QStringLiteral("cartesian") || typeStr == QStringLiteral("explicit")) {
+            fnType = FunctionCurve::Normal;
+        } else if (typeStr == QStringLiteral("parametric")) {
+            fnType = FunctionCurve::Parametric;
+        } else if (typeStr == QStringLiteral("polar")) {
+            fnType = FunctionCurve::Polar;
+        } else {
+            throwInvalidParams(
+                    QStringLiteral("Unknown function type '%1' (expected 'normal'|'parametric'|'polar').")
+                            .arg(typeStr));
+        }
+
+        const bool explicitVar = params.contains(QStringLiteral("variable"))
+                && !params.value(QStringLiteral("variable")).isNull()
+                && !optionalJsonString(params, QStringLiteral("variable")).trimmed().isEmpty();
+        const QString defaultVar =
+                (fnType == FunctionCurve::Normal) ? QStringLiteral("x") : QStringLiteral("t");
+        QString var =
+                optionalJsonString(params, QStringLiteral("variable"), defaultVar).trimmed();
+        if (var.isEmpty())
+            throwInvalidParams(QStringLiteral("Parameter 'variable' must be a non-empty identifier."));
+
+        QStringList formulas;
+        const QJsonValue fVal = params.contains(QStringLiteral("formula"))
+                ? params.value(QStringLiteral("formula"))
+                : params.value(QStringLiteral("formulas"));
+        if (fVal.isArray()) {
+            for (const QJsonValue &fv : fVal.toArray()) {
+                if (!fv.isString())
+                    throwInvalidParams(QStringLiteral("Each entry in 'formula' list must be a string."));
+                formulas << sanitizeUtf16Surrogates(fv.toString()).trimmed();
+            }
+        } else if (fVal.isString()) {
+            const QString single = sanitizeUtf16Surrogates(fVal.toString()).trimmed();
+            if (!single.isEmpty())
+                formulas << single;
+        }
+
+        if (!explicitVar && fnType != FunctionCurve::Normal && !formulas.isEmpty()
+            && !formulas[0].isEmpty()) {
+            if (!checkMuParserExprValid(formulas[0], { var })) {
+                if (checkMuParserExprValid(formulas[0], { QStringLiteral("theta") }))
+                    var = QStringLiteral("theta");
+                else if (checkMuParserExprValid(formulas[0], { QStringLiteral("x") }))
+                    var = QStringLiteral("x");
+            }
+        }
+
+        if (fnType == FunctionCurve::Normal) {
+            if (formulas.isEmpty() || formulas[0].isEmpty())
+                throwInvalidParams(QStringLiteral("'formula' is required for plot.function."));
+            validateMuParserExprOrThrow(formulas[0], { var }, QStringLiteral("plot.function"));
+        } else if (fnType == FunctionCurve::Parametric) {
+            if (formulas.size() < 2 && params.contains(QStringLiteral("y_formula"))) {
+                formulas << optionalJsonString(params, QStringLiteral("y_formula")).trimmed();
+            }
+            if (formulas.size() < 2 || formulas[0].isEmpty() || formulas[1].isEmpty()) {
+                throwInvalidParams(
+                        QStringLiteral("Parametric plot.function requires 2-element 'formula': [x_expr, y_expr]."));
+            }
+            validateMuParserExprOrThrow(formulas[0], { var }, QStringLiteral("plot.function"));
+            validateMuParserExprOrThrow(formulas[1], { var }, QStringLiteral("plot.function"));
+        } else {
+            // FunctionCurve::Polar expects [r(var), theta(var)] in radians
+            if (formulas.size() == 1 && !formulas[0].isEmpty())
+                formulas << var;
+            if (formulas.size() < 2 || formulas[0].isEmpty() || formulas[1].isEmpty()) {
+                throwInvalidParams(
+                        QStringLiteral("Polar plot.function requires 'formula': r_expr or [r_expr, theta_expr]."));
+            }
+            validateMuParserExprOrThrow(formulas[0], { var }, QStringLiteral("plot.function"));
+            validateMuParserExprOrThrow(formulas[1], { var }, QStringLiteral("plot.function"));
+        }
+
+        const double defaultEnd =
+                (fnType == FunctionCurve::Normal) ? 10.0 : (2.0 * 3.14159265358979323846);
+        const double xMin = params.contains(QStringLiteral("x_min"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("x_min"), 0.0)
+                : optionalJsonFiniteDouble(params, QStringLiteral("from"), 0.0);
+        const double xMax = params.contains(QStringLiteral("x_max"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("x_max"), defaultEnd)
+                : optionalJsonFiniteDouble(params, QStringLiteral("to"), defaultEnd);
+        validateFiniteCoordRange(xMin, xMax, QStringLiteral("plot.function range"));
+        const int points = parseBoundedInt(params, QStringLiteral("points"), 200, 2, 1000000);
         QList<double> ranges;
         ranges << xMin << xMax;
 
         MultiLayer *ml = nullptr;
-        const bool createdNewGraph = !params.contains(QStringLiteral("graph"));
+        const bool createdNewGraph = !params.contains(QStringLiteral("graph"))
+                || params.value(QStringLiteral("graph")).isNull()
+                || optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
         if (!createdNewGraph)
             ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
         else
             ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("Graph")));
-        Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
-        if (!g->addFunctionCurve(d_app, FunctionCurve::Normal, QStringList() << formula, var, ranges,
-                                 points, params.value(QStringLiteral("title")).toString())) {
-            throwRpcRuntime(QStringLiteral("Failed to plot function '%1'.").arg(formula));
+        Graph *g = createdNewGraph
+                ? (ml->activeGraph() ? ml->activeGraph() : ml->addLayer())
+                : resolveGraphLayer(ml, params);
+        ScopedGraphUndoGuard undoGuard(createdNewGraph ? nullptr : ml,
+                                       QObject::tr("Plot Function"));
+        if (!g->addFunctionCurve(d_app, fnType, formulas, var, ranges, points,
+                                 optionalJsonString(params, QStringLiteral("title")))) {
+            if (createdNewGraph)
+                closeAndDeleteEmptyPlot(d_app, ml);
+            throwRpcRuntime(
+                    QStringLiteral("Failed to plot function '%1'.").arg(formulas.join(QStringLiteral(", "))));
         }
-        enforceArialGraphFonts(g);
-        g->replot();
+        if (g->curves() > 0)
+            applyInlineCurveStyleParams(g, g->curves() - 1, params, true);
+        if (fnType == FunctionCurve::Polar) {
+            g->setProperty("_toriIsPolarPlot", true);
+            ml->setKeepAspectRatio(true);
+            ml->setTargetAspectRatio(1.0);
+        }
+        applyPlotLevelConvenienceParams(g, params);
+        if (!createdNewGraph)
+            undoGuard.commit();
         if (createdNewGraph)
             applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
+        outResult[QStringLiteral("function_type")] = typeStr;
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
 
     if (method == QStringLiteral("plot.matrix")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const QString style = params.value(QStringLiteral("style")).toString().trimmed().toLower();
+        const QString style = optionalJsonString(params, QStringLiteral("style")).trimmed().toLower();
         Graph::CurveType cType = Graph::ColorMap;
-        if (style == QStringLiteral("contour") || style == QStringLiteral("contour_map"))
+        if (style.isEmpty() || style == QStringLiteral("colormap")
+            || style == QStringLiteral("color_map") || style == QStringLiteral("heatmap")
+            || style == QStringLiteral("image")) {
+            cType = Graph::ColorMap;
+        } else if (style == QStringLiteral("contour") || style == QStringLiteral("contour_map")) {
             cType = Graph::ContourMap;
-        else if (style == QStringLiteral("grayscale") || style == QStringLiteral("gray"))
+        } else if (style == QStringLiteral("grayscale") || style == QStringLiteral("gray")
+                   || style == QStringLiteral("grey") || style == QStringLiteral("gray_map")) {
             cType = Graph::GrayMap;
+        } else {
+            throwInvalidParams(
+                    QStringLiteral("Unknown plot.matrix style '%1' (expected 'colormap'|'contour'|'grayscale').")
+                            .arg(style));
+        }
         MultiLayer *ml = d_app->plotSpectrogram(m, cType);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create matrix spectrogram plot."));
         if (Graph *g = ml->activeGraph()) {
-            const bool hasPalette = params.contains(QStringLiteral("palette"))
-                    && !params.value(QStringLiteral("palette")).isNull();
+            const QString cmapParam = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
+                    ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
+                    : (!optionalJsonString(params, QStringLiteral("colormap")).trimmed().isEmpty()
+                               ? optionalJsonString(params, QStringLiteral("colormap")).trimmed()
+                               : optionalJsonString(params, QStringLiteral("cmap")).trimmed());
+            const bool hasPalette = !cmapParam.isEmpty();
             const bool hasReverse = params.contains(QStringLiteral("reverse"))
                     && !params.value(QStringLiteral("reverse")).isNull();
-            if (hasPalette || hasReverse) {
+            const bool hasLevels = params.contains(QStringLiteral("levels"))
+                    && !params.value(QStringLiteral("levels")).isNull();
+            const int reqLevels =
+                    hasLevels ? parseBoundedInt(params, QStringLiteral("levels"), 12, 2, 256) : 12;
+            const bool hasShowCb = params.contains(QStringLiteral("show_colorbar"))
+                    && !params.value(QStringLiteral("show_colorbar")).isNull();
+            const bool hasUseCmPen = params.contains(QStringLiteral("use_colormap_pen"))
+                    && !params.value(QStringLiteral("use_colormap_pen")).isNull();
+            const QString cbTitle = optionalJsonString(params, QStringLiteral("colorbar_title"));
+            if (hasPalette || hasReverse || hasLevels || hasShowCb || hasUseCmPen
+                || params.contains(QStringLiteral("colorbar_title"))) {
                 bool isGray = false;
                 const auto preset = hasPalette
-                        ? parseColorMapPreset(params.value(QStringLiteral("palette")).toString(),
-                                              &isGray, true)
+                        ? parseColorMapPreset(cmapParam, &isGray, true)
                         : Spectrogram::PresetViridis;
-                const bool rev = params.value(QStringLiteral("reverse")).toBool(false);
+                const bool rev = optionalJsonBool(params, QStringLiteral("reverse"), false);
                 for (QwtPlotItem *it : g->plotWidget()->itemList()) {
                     if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
                         if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
@@ -9873,14 +16496,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             } else if (hasReverse) {
                                 sp->setReversePalette(rev);
                             }
+                            if (hasLevels)
+                                sp->setLevelsNumber(reqLevels);
+                            if (hasUseCmPen) {
+                                const bool useCmPen = optionalJsonBool(
+                                        params, QStringLiteral("use_colormap_pen"), true);
+                                sp->setDefaultContourPen(useCmPen ? QPen(Qt::NoPen)
+                                                                  : QPen(Qt::black, 1.2));
+                            }
+                            if (hasShowCb)
+                                sp->showColorScale(sp->colorScaleAxis(),
+                                                   optionalJsonBool(params,
+                                                                    QStringLiteral("show_colorbar"),
+                                                                    true));
+                            if (params.contains(QStringLiteral("colorbar_title")))
+                                sp->setColorBarTitle(cbTitle);
                             sp->enforceColorBarArialFont();
                             sp->syncColorScale();
                         }
                     }
                 }
             }
-            enforceArialGraphFonts(g);
-            g->replot();
+            applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
@@ -9890,13 +16527,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("plot.3d_matrix")) {
         Matrix *m = resolveMatrix(d_app, params);
-        const QString style = params.value(QStringLiteral("style")).toString().trimmed().toLower();
+        const QString style = optionalJsonString(params, QStringLiteral("style")).trimmed().toLower();
+        if (!style.isEmpty() && style != QStringLiteral("surface")
+            && style != QStringLiteral("filled") && style != QStringLiteral("filled_mesh")
+            && style != QStringLiteral("wireframe") && style != QStringLiteral("mesh")
+            && style != QStringLiteral("line_grid") && style != QStringLiteral("hidden_line")
+            && style != QStringLiteral("bars") && style != QStringLiteral("scatter")
+            && style != QStringLiteral("dots") && style != QStringLiteral("points")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown plot.3d_matrix style '%1' (expected 'surface'|'wireframe'|'hidden_line'|'bars'|'scatter').")
+                            .arg(style));
+        }
         const QString caption = d_app->generateUniqueName(QStringLiteral("Graph3D"), true);
 
         auto *plot = new Graph3D(QString(), &d_app->d_workspace, nullptr);
         plot->setAttribute(Qt::WA_DeleteOnClose);
         plot->addMatrixData(m);
-        if (style == QStringLiteral("wireframe") || style == QStringLiteral("mesh"))
+        if (style == QStringLiteral("wireframe") || style == QStringLiteral("mesh")
+            || style == QStringLiteral("line_grid"))
             plot->setLineGrid();
         else if (style == QStringLiteral("hidden_line"))
             plot->setHiddenLineGrid();
@@ -9923,6 +16571,37 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("plot.3d_xyz")) {
         Table *t = resolveTable(d_app, params);
+        const QString style = optionalJsonString(params, QStringLiteral("style")).trimmed().toLower();
+        if (!style.isEmpty() && style != QStringLiteral("scatter")
+            && style != QStringLiteral("dots") && style != QStringLiteral("points")
+            && style != QStringLiteral("trajectory") && style != QStringLiteral("line")
+            && style != QStringLiteral("bars") && style != QStringLiteral("ribbon")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown plot.3d_xyz style '%1' (expected 'scatter'|'trajectory'|'bars'|'ribbon').")
+                            .arg(style));
+        }
+        if (style == QStringLiteral("ribbon")) {
+            const int xIdx = params.contains(QStringLiteral("x_col"))
+                    ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
+                    : 0;
+            const int yIdx = params.contains(QStringLiteral("z_col"))
+                    ? resolveColumnIndex(t, params.value(QStringLiteral("z_col")), true)
+                    : (params.contains(QStringLiteral("y_col"))
+                               ? resolveColumnIndex(t, params.value(QStringLiteral("y_col")), true)
+                               : std::min(1, t->numCols() - 1));
+            t->setColPlotDesignation(xIdx, SciDAVis::X);
+            t->setColPlotDesignation(yIdx, SciDAVis::Y);
+            Graph3D *plot = d_app->dataPlot3D(t, fullColumnName(t, yIdx));
+            if (!plot)
+                throwRpcRuntime(QStringLiteral("Failed to create 3D Ribbon plot."));
+            enforceArialGraph3DFonts(plot);
+            applyRequestedWindowName(d_app, plot, params);
+            outResult = serializeGraph3DInfo(plot);
+            outResult[QStringLiteral("style")] = QStringLiteral("ribbon");
+            outResult[QStringLiteral("ok")] = true;
+            return true;
+        }
+
         const int xIdx = params.contains(QStringLiteral("x_col"))
                 ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
                 : 0;
@@ -9936,7 +16615,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         t->setColPlotDesignation(yIdx, SciDAVis::Y);
         t->setColPlotDesignation(zIdx, SciDAVis::Z);
 
-        const QString style = params.value(QStringLiteral("style")).toString().trimmed().toLower();
         int plotType = Graph3D::Scatter;
         if (style == QStringLiteral("trajectory") || style == QStringLiteral("line"))
             plotType = Graph3D::Trajectory;
@@ -9954,19 +16632,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("plot.3d_function")) {
-        const QString formula = params.value(QStringLiteral("formula")).toString().trimmed();
+        const QString formula = optionalJsonString(params, QStringLiteral("formula")).trimmed();
         if (formula.isEmpty())
             throwInvalidParams(QStringLiteral("'formula' is required for plot.3d_function."));
-        const double xl = params.value(QStringLiteral("x_min")).toDouble(-5.0);
-        const double xr = params.value(QStringLiteral("x_max")).toDouble(5.0);
-        const double yl = params.value(QStringLiteral("y_min")).toDouble(-5.0);
-        const double yr = params.value(QStringLiteral("y_max")).toDouble(5.0);
-        const double zl = params.value(QStringLiteral("z_min")).toDouble(-5.0);
-        const double zr = params.value(QStringLiteral("z_max")).toDouble(5.0);
-        if (!std::isfinite(xl) || !std::isfinite(xr) || xl >= xr
-            || !std::isfinite(yl) || !std::isfinite(yr) || yl >= yr
-            || !std::isfinite(zl) || !std::isfinite(zr) || zl >= zr) {
-            throwInvalidParams(QStringLiteral("plot.3d_function requires finite min < max on X, Y, and Z."));
+        const double xl = optionalJsonFiniteDouble(params, QStringLiteral("x_min"), -5.0);
+        const double xr = optionalJsonFiniteDouble(params, QStringLiteral("x_max"), 5.0);
+        const double yl = optionalJsonFiniteDouble(params, QStringLiteral("y_min"), -5.0);
+        const double yr = optionalJsonFiniteDouble(params, QStringLiteral("y_max"), 5.0);
+        const double zl = optionalJsonFiniteDouble(params, QStringLiteral("z_min"), -5.0);
+        const double zr = optionalJsonFiniteDouble(params, QStringLiteral("z_max"), 5.0);
+        validateFiniteCoordRange(xl, xr, QStringLiteral("plot.3d_function X range"));
+        validateFiniteCoordRange(yl, yr, QStringLiteral("plot.3d_function Y range"));
+        validateFiniteCoordRange(zl, zr, QStringLiteral("plot.3d_function Z range"));
+        if (xl >= xr || yl >= yr || zl >= zr) {
+            throwInvalidParams(QStringLiteral("plot.3d_function requires min < max on X, Y, and Z."));
         }
         validateMuParserExprOrThrow(formula, { QStringLiteral("x"), QStringLiteral("y") },
                                     QStringLiteral("plot.3d_function"));
@@ -10035,14 +16714,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.add_layer")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const int x = params.value(QStringLiteral("x")).toInt(0);
-        const int y = params.value(QStringLiteral("y")).toInt(0);
-        const int w = params.value(QStringLiteral("width")).toInt(0);
-        const int h = params.value(QStringLiteral("height")).toInt(0);
+        if (ml->layers() >= 128)
+            throwInvalidParams(QStringLiteral("Maximum layer count (128) reached on graph '%1'.")
+                                       .arg(ml->name()));
+        const int x = parseBoundedInt(params, QStringLiteral("x"), 0, 0, 16384);
+        const int y = parseBoundedInt(params, QStringLiteral("y"), 0, 0, 16384);
+        const int w = parseBoundedInt(params, QStringLiteral("width"), 0, 0, 16384);
+        const int h = parseBoundedInt(params, QStringLiteral("height"), 0, 0, 16384);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Layer"));
         Graph *g = ml->addLayer(x, y, w, h);
         enforceArialGraphFonts(g);
-        if (params.value(QStringLiteral("arrange")).toBool(true) && w == 0 && h == 0)
+        if (optionalJsonBool(params, QStringLiteral("arrange"), true) && w == 0 && h == 0)
             ml->arrangeLayers(true, false);
         if (g)
             undoGuard.commit();
@@ -10056,19 +16738,31 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.add_linked_layer")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        Graph *parentG = resolveGraphLayer(ml, params, true);
-        const bool linkX = params.contains(QStringLiteral("link_x"))
-                ? params.value(QStringLiteral("link_x")).toBool(true)
-                : true;
+        if (ml->layers() >= 128)
+            throwInvalidParams(QStringLiteral("Maximum layer count (128) reached on graph '%1'.")
+                                       .arg(ml->name()));
+        QJsonObject parentParams = params;
+        if (params.contains(QStringLiteral("parent_layer"))
+            && !params.value(QStringLiteral("parent_layer")).isNull()) {
+            parentParams[QStringLiteral("layer")] = params.value(QStringLiteral("parent_layer"));
+        }
+        Graph *parentG = resolveGraphLayer(ml, parentParams, true);
+        const bool linkX = optionalJsonBool(params, QStringLiteral("link_x"), true);
         const bool linkY = params.contains(QStringLiteral("link_y"))
-                ? params.value(QStringLiteral("link_y")).toBool(false)
-                : params.value(QStringLiteral("right_y")).toBool(false);
+                ? optionalJsonBool(params, QStringLiteral("link_y"), false)
+                : optionalJsonBool(params, QStringLiteral("right_y"), false);
         const QString xExpr = params.contains(QStringLiteral("x_formula"))
-                ? params.value(QStringLiteral("x_formula")).toString()
-                : QStringLiteral("x");
+                ? optionalJsonString(params, QStringLiteral("x_formula"), QStringLiteral("x")).trimmed()
+                : optionalJsonString(params, QStringLiteral("x_expr"), QStringLiteral("x")).trimmed();
         const QString yExpr = params.contains(QStringLiteral("y_formula"))
-                ? params.value(QStringLiteral("y_formula")).toString()
-                : QStringLiteral("y");
+                ? optionalJsonString(params, QStringLiteral("y_formula"), QStringLiteral("y")).trimmed()
+                : optionalJsonString(params, QStringLiteral("y_expr"), QStringLiteral("y")).trimmed();
+        if (linkX)
+            validateMuParserExprOrThrow(xExpr, { QStringLiteral("x") },
+                                        QStringLiteral("graph.add_linked_layer"));
+        if (linkY)
+            validateMuParserExprOrThrow(yExpr, { QStringLiteral("y") },
+                                        QStringLiteral("graph.add_linked_layer"));
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Linked Layer"));
         Graph *childG = ml->addLinkedLayer(parentG, linkX, linkY, xExpr, yExpr);
         enforceArialGraphFonts(childG);
@@ -10087,30 +16781,79 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.add_inset_layer")
         || method == QStringLiteral("graph.add_inset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        if (ml->layers() >= 128)
+            throwInvalidParams(QStringLiteral("Maximum layer count (128) reached on graph '%1'.")
+                                       .arg(ml->name()));
         QJsonObject srcParams = params;
         if (params.contains(QStringLiteral("source_layer"))
             && !params.value(QStringLiteral("source_layer")).isNull()) {
             srcParams[QStringLiteral("layer")] = params.value(QStringLiteral("source_layer"));
         }
         Graph *srcG = resolveGraphLayer(ml, srcParams, true);
+        if (ml->isInsetLayer(srcG)) {
+            throwInvalidParams(
+                    QStringLiteral("Cannot create a nested inset inside an existing inset layer."));
+        }
         QRectF roi;
-        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))
-            && params.contains(QStringLiteral("y_min"))
-            && params.contains(QStringLiteral("y_max"))
-            && !params.value(QStringLiteral("x_min")).isNull()
-            && !params.value(QStringLiteral("x_max")).isNull()
-            && !params.value(QStringLiteral("y_min")).isNull()
-            && !params.value(QStringLiteral("y_max")).isNull()) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
-            const double yMin = params.value(QStringLiteral("y_min")).toDouble();
-            const double yMax = params.value(QStringLiteral("y_max")).toDouble();
+        const bool hasXBounds = params.contains(QStringLiteral("x_min"))
+                && params.contains(QStringLiteral("x_max"))
+                && !params.value(QStringLiteral("x_min")).isNull()
+                && !params.value(QStringLiteral("x_max")).isNull();
+        const bool hasYBounds = params.contains(QStringLiteral("y_min"))
+                && params.contains(QStringLiteral("y_max"))
+                && !params.value(QStringLiteral("y_min")).isNull()
+                && !params.value(QStringLiteral("y_max")).isNull();
+        if (hasXBounds && hasYBounds) {
+            const double xMin = parseFiniteCoordDouble(params.value(QStringLiteral("x_min")),
+                                                       QStringLiteral("x_min"));
+            const double xMax = parseFiniteCoordDouble(params.value(QStringLiteral("x_max")),
+                                                       QStringLiteral("x_max"));
+            const double yMin = parseFiniteCoordDouble(params.value(QStringLiteral("y_min")),
+                                                       QStringLiteral("y_min"));
+            const double yMax = parseFiniteCoordDouble(params.value(QStringLiteral("y_max")),
+                                                       QStringLiteral("y_max"));
+            validateFiniteCoordRange(xMin, xMax, QStringLiteral("Inset ROI X"));
+            validateFiniteCoordRange(yMin, yMax, QStringLiteral("Inset ROI Y"));
             roi = QRectF(QPointF(std::min(xMin, xMax), std::min(yMin, yMax)),
                          QPointF(std::max(xMin, xMax), std::max(yMin, yMax)));
+        } else if (hasXBounds && srcG) {
+            const double xMin = parseFiniteCoordDouble(params.value(QStringLiteral("x_min")),
+                                                       QStringLiteral("x_min"));
+            const double xMax = parseFiniteCoordDouble(params.value(QStringLiteral("x_max")),
+                                                       QStringLiteral("x_max"));
+            validateFiniteCoordRange(xMin, xMax, QStringLiteral("Inset ROI X"));
+            const double xLo = std::min(xMin, xMax);
+            const double xHi = std::max(xMin, xMax);
+            double yLo = std::numeric_limits<double>::infinity();
+            double yHi = -std::numeric_limits<double>::infinity();
+            for (int ci = 0; ci < srcG->curves(); ++ci) {
+                QwtPlotCurve *c = srcG->curve(ci);
+                if (!c || !srcG->isCurveVisible(ci) || srcG->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                for (int k = 0; k < int(c->dataSize()); ++k) {
+                    const double xv = c->x(k);
+                    const double yv = c->y(k);
+                    if (std::isfinite(xv) && std::isfinite(yv) && xv >= xLo && xv <= xHi) {
+                        yLo = std::min(yLo, yv);
+                        yHi = std::max(yHi, yv);
+                    }
+                }
+            }
+            if (yLo <= yHi && std::isfinite(yHi - yLo)) {
+                const double pad = (yHi > yLo) ? (0.08 * (yHi - yLo)) : 0.5;
+                roi = QRectF(QPointF(xLo, yLo - pad), QPointF(xHi, yHi + pad));
+            }
+        } else if (params.value(QStringLiteral("zoom_rect")).isArray()
+                   && params.value(QStringLiteral("zoom_rect")).toArray().size() == 4) {
+            const QJsonArray za = params.value(QStringLiteral("zoom_rect")).toArray();
+            const double zx = parseFiniteCoordDouble(za[0], QStringLiteral("zoom_rect[0]"));
+            const double zy = parseFiniteCoordDouble(za[1], QStringLiteral("zoom_rect[1]"));
+            const double zw = parseFiniteCoordDouble(za[2], QStringLiteral("zoom_rect[2]"));
+            const double zh = parseFiniteCoordDouble(za[3], QStringLiteral("zoom_rect[3]"));
+            if (zw != 0.0 && zh != 0.0)
+                roi = QRectF(zx, zy, zw, zh).normalized();
         }
-        const bool showConnectors = params.contains(QStringLiteral("show_connectors"))
-                ? params.value(QStringLiteral("show_connectors")).toBool(true)
-                : true;
+        const bool showConnectors = optionalJsonBool(params, QStringLiteral("show_connectors"), true);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Inset Layer"));
         Graph *insetG = ml->addInsetLayer(srcG, roi, showConnectors);
         if (insetG)
@@ -10118,6 +16861,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QJsonArray rectArr;
         if (params.value(QStringLiteral("rect")).isArray()) {
             rectArr = params.value(QStringLiteral("rect")).toArray();
+        } else if (params.value(QStringLiteral("norm_rect")).isArray()) {
+            rectArr = params.value(QStringLiteral("norm_rect")).toArray();
         } else if (params.contains(QStringLiteral("rel_x"))
                    || params.contains(QStringLiteral("rel_y"))
                    || params.contains(QStringLiteral("rel_w"))
@@ -10250,6 +16995,34 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const int ax = parseAxisId(params.contains(QStringLiteral("axis"))
                                            ? params.value(QStringLiteral("axis")).toString()
                                            : QStringLiteral("right"));
+        if (optionalJsonBool(params, QStringLiteral("reset"), false)) {
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Reset Axis Color"));
+            const QColor blk(Qt::black);
+            if (ax == QwtPlot::yRight)
+                g->setRightAxisTitleColor(blk);
+            else if (ax == QwtPlot::yLeft)
+                g->setYAxisTitleColor(blk);
+            else if (ax == QwtPlot::xTop)
+                g->setTopAxisTitleColor(blk);
+            else
+                g->setXAxisTitleColor(blk);
+            QStringList axCols = g->axesColors();
+            while (axCols.size() < 4)
+                axCols.append(QStringLiteral("#000000"));
+            axCols[ax] = QStringLiteral("#000000");
+            g->setAxesColors(axCols);
+            QStringList numCols = g->axesNumColors();
+            while (numCols.size() < 4)
+                numCols.append(QStringLiteral("#000000"));
+            numCols[ax] = QStringLiteral("#000000");
+            g->setAxesNumColors(numCols);
+            replotGraphOrDefer(g);
+            undoGuard.commit();
+            outResult = serializeAxisInfo(g, ax);
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("color")] = QStringLiteral("#000000");
+            return true;
+        }
         int cIdx = -1;
         if (params.contains(QStringLiteral("curve")) && !params.value(QStringLiteral("curve")).isNull()) {
             const QJsonValue cv = params.value(QStringLiteral("curve"));
@@ -10318,7 +17091,30 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.step_zoom_history")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params, true);
-        const int delta = params.value(QStringLiteral("delta")).toInt(-1);
+        int delta = -1;
+        if (params.contains(QStringLiteral("delta")) && !params.value(QStringLiteral("delta")).isNull()) {
+            delta = parseBoundedInt(params, QStringLiteral("delta"), -1, -100, 100);
+        } else if (params.contains(QStringLiteral("direction"))
+                   && !params.value(QStringLiteral("direction")).isNull()) {
+            const QJsonValue dv = params.value(QStringLiteral("direction"));
+            if (dv.isDouble()) {
+                delta = parseBoundedInt(params, QStringLiteral("direction"), -1, -100, 100);
+            } else {
+                const QString ds = dv.toString().trimmed().toLower();
+                if (ds == QStringLiteral("forward") || ds == QStringLiteral("redo")
+                    || ds == QStringLiteral("next") || ds == QStringLiteral("+1")) {
+                    delta = 1;
+                } else if (ds == QStringLiteral("back") || ds == QStringLiteral("backward")
+                           || ds == QStringLiteral("undo") || ds == QStringLiteral("prev")
+                           || ds == QStringLiteral("-1")) {
+                    delta = -1;
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Unknown zoom history direction '%1' (expected 'back'|'forward' or integer delta).")
+                                    .arg(ds));
+                }
+            }
+        }
         const bool stepped = g->stepZoomHistory(delta);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = stepped;
@@ -10332,16 +17128,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QList<MultiLayer *> chosenGraphs;
         for (const QJsonValue &gv : params.value(QStringLiteral("graphs")).toArray()) {
             QJsonObject subP;
-            subP[QStringLiteral("graph")] = gv.toString();
+            subP[QStringLiteral("graph")] = gv;
             MultiLayer *srcMl = resolveMultiLayer(d_app, subP, QStringLiteral("graph"), true);
             if (srcMl && !srcMl->isEmpty())
                 chosenGraphs.append(srcMl);
         }
         if (chosenGraphs.size() < 2)
             throwInvalidParams(QStringLiteral("At least two non-empty graph windows are required."));
+        if (chosenGraphs.size() > 64)
+            throwInvalidParams(QStringLiteral("graph.merge_graphs supports at most 64 source graphs."));
 
-        int cols = params.value(QStringLiteral("cols")).toInt(0);
-        int rows = params.value(QStringLiteral("rows")).toInt(0);
+        int cols = parseBoundedInt(params, QStringLiteral("cols"), 0, 0, 32);
+        int rows = parseBoundedInt(params, QStringLiteral("rows"), 0, 0, 32);
         if (cols <= 0 || rows <= 0) {
             const int n = chosenGraphs.size();
             if (n == 2) {
@@ -10446,9 +17244,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             merged->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
         }
 
-        const double wMm = params.value(QStringLiteral("width_mm")).toDouble(0.0);
-        const double hMm = params.value(QStringLiteral("height_mm")).toDouble(0.0);
-        const int dpi = std::max(72, params.value(QStringLiteral("dpi")).toInt(300));
+        const double wMm = optionalJsonFiniteDouble(params, QStringLiteral("width_mm"), 0.0, 5000.0);
+        const double hMm = optionalJsonFiniteDouble(params, QStringLiteral("height_mm"), 0.0, 5000.0);
+        const int dpi = parseBoundedInt(params, QStringLiteral("dpi"), 300, 36, 2400);
         if (wMm > 0.0 || hMm > 0.0) {
             const double effW = (wMm > 0.0) ? wMm : 175.0;
             const double effH = (hMm > 0.0)
@@ -10514,6 +17312,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             merged->arrangeLayers(false, false);
 
         applyRequestedWindowName(d_app, merged, params);
+        if (optionalJsonBool(params, QStringLiteral("close_sources"), false)) {
+            for (MultiLayer *srcMl : chosenGraphs) {
+                if (srcMl && srcMl != merged) {
+                    srcMl->askOnCloseEvent(false);
+                    srcMl->hide();
+                    srcMl->close();
+                    if (srcMl->folder())
+                        d_app->closeWindow(srcMl);
+                }
+            }
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
         outResult = serializeGraphInfo(merged);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("primary_panels")] = primaryPanelCount;
@@ -10523,22 +17333,87 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.arrange_layers")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Arrange Layers"));
-        if (params.contains(QStringLiteral("rows")) && !params.value(QStringLiteral("rows")).isNull()) {
-            const int r = params.value(QStringLiteral("rows")).toInt(0);
-            if (r > 0)
-                ml->setRows(r);
+        const bool hasExplicitRows = params.contains(QStringLiteral("rows"))
+                && !params.value(QStringLiteral("rows")).isNull();
+        const bool hasExplicitCols = params.contains(QStringLiteral("cols"))
+                && !params.value(QStringLiteral("cols")).isNull();
+        if (hasExplicitRows) {
+            const int r = parseBoundedInt(params, QStringLiteral("rows"), ml->getRows(), 1, 32);
+            ml->setRows(r);
         }
-        if (params.contains(QStringLiteral("cols")) && !params.value(QStringLiteral("cols")).isNull()) {
-            const int c = params.value(QStringLiteral("cols")).toInt(0);
-            if (c > 0)
-                ml->setCols(c);
+        if (hasExplicitCols) {
+            const int c = parseBoundedInt(params, QStringLiteral("cols"), ml->getCols(), 1, 32);
+            ml->setCols(c);
         }
-        if (params.contains(QStringLiteral("row_gap"))
-            || params.contains(QStringLiteral("col_gap"))) {
-            ml->setSpacing(params.value(QStringLiteral("row_gap")).toInt(ml->rowsSpacing()),
-                           params.value(QStringLiteral("col_gap")).toInt(ml->colsSpacing()));
+        const bool hasRowSpace = params.contains(QStringLiteral("row_spacing"))
+                || params.contains(QStringLiteral("row_gap"));
+        const bool hasColSpace = params.contains(QStringLiteral("col_spacing"))
+                || params.contains(QStringLiteral("col_gap"));
+        if (hasRowSpace || hasColSpace) {
+            const int rSp = params.contains(QStringLiteral("row_spacing"))
+                    ? parseBoundedInt(params, QStringLiteral("row_spacing"), ml->rowsSpacing(), 0, 500)
+                    : parseBoundedInt(params, QStringLiteral("row_gap"), ml->rowsSpacing(), 0, 500);
+            const int cSp = params.contains(QStringLiteral("col_spacing"))
+                    ? parseBoundedInt(params, QStringLiteral("col_spacing"), ml->colsSpacing(), 0, 500)
+                    : parseBoundedInt(params, QStringLiteral("col_gap"), ml->colsSpacing(), 0, 500);
+            ml->setSpacing(rSp, cSp);
         }
-        ml->arrangeLayers(params.value(QStringLiteral("fit")).toBool(false), false);
+        if (params.contains(QStringLiteral("margin"))
+            || params.contains(QStringLiteral("left_margin"))
+            || params.contains(QStringLiteral("right_margin"))
+            || params.contains(QStringLiteral("top_margin"))
+            || params.contains(QStringLiteral("bottom_margin"))) {
+            const int uniM = params.contains(QStringLiteral("margin"))
+                    ? parseBoundedInt(params, QStringLiteral("margin"), 5, 0, 500)
+                    : -1;
+            const int lm = params.contains(QStringLiteral("left_margin"))
+                    ? parseBoundedInt(params, QStringLiteral("left_margin"), ml->leftMargin(), 0, 500)
+                    : (uniM >= 0 ? uniM : ml->leftMargin());
+            const int rm = params.contains(QStringLiteral("right_margin"))
+                    ? parseBoundedInt(params, QStringLiteral("right_margin"), ml->rightMargin(), 0, 500)
+                    : (uniM >= 0 ? uniM : ml->rightMargin());
+            const int tm = params.contains(QStringLiteral("top_margin"))
+                    ? parseBoundedInt(params, QStringLiteral("top_margin"), ml->topMargin(), 0, 500)
+                    : (uniM >= 0 ? uniM : ml->topMargin());
+            const int bm = params.contains(QStringLiteral("bottom_margin"))
+                    ? parseBoundedInt(params, QStringLiteral("bottom_margin"), ml->bottomMargin(), 0, 500)
+                    : (uniM >= 0 ? uniM : ml->bottomMargin());
+            ml->setMargins(lm, rm, tm, bm);
+        }
+        const bool shareX = optionalJsonBool(params, QStringLiteral("share_x"), false)
+                || optionalJsonBool(params, QStringLiteral("hide_inner_axes"), false);
+        const bool shareY = optionalJsonBool(params, QStringLiteral("share_y"), false)
+                || optionalJsonBool(params, QStringLiteral("hide_inner_axes"), false);
+        if (shareX || shareY) {
+            const int cols = std::max(1, ml->getCols());
+            QList<Graph *> primaryPanels;
+            for (Graph *lg : ml->layersList()) {
+                if (lg && !lg->linkedParentLayer() && !ml->isInsetLayer(lg))
+                    primaryPanels.append(lg);
+            }
+            for (int idx = 0; idx < primaryPanels.size(); ++idx) {
+                Graph *lg = primaryPanels[idx];
+                const int c = idx % cols;
+                if (shareY && c > 0 && !lg->hasColorScaleOnAxis(QwtPlot::yLeft)) {
+                    lg->setTickLabelsOnAxis(QwtPlot::yLeft, false);
+                    lg->setAxisTitleAuto(QwtPlot::yLeft, false);
+                    lg->setAxisTitle(QwtPlot::yLeft, QString());
+                }
+                if (shareX && (idx + cols) < primaryPanels.size()) {
+                    lg->setTickLabelsOnAxis(QwtPlot::xBottom, false);
+                    lg->setAxisTitleAuto(QwtPlot::xBottom, false);
+                    lg->setAxisTitle(QwtPlot::xBottom, QString());
+                }
+            }
+        }
+        // Default fit=false when explicit rows/cols are passed so MultiLayer::arrangeLayers preserves them
+        const bool defaultFit = !(hasExplicitRows || hasExplicitCols);
+        const bool fitGrid = params.contains(QStringLiteral("fit"))
+                ? optionalJsonBool(params, QStringLiteral("fit"), false)
+                : (defaultFit ? false : false);
+        ml->arrangeLayers(fitGrid && !(hasExplicitRows || hasExplicitCols), false);
+        if (ml->pageViewMode() && !fitGrid)
+            ml->fitLayersToPage();
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -10547,19 +17422,42 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.set_page_size")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const double w = params.value(QStringLiteral("width")).toDouble(ml->pageWidthPhysical());
-        const double h = params.value(QStringLiteral("height")).toDouble(ml->pageHeightPhysical());
+        const double w = optionalJsonFiniteDouble(params, QStringLiteral("width"),
+                                                  ml->pageWidthPhysical(), 10000.0);
+        const double h = optionalJsonFiniteDouble(params, QStringLiteral("height"),
+                                                  ml->pageHeightPhysical(), 10000.0);
+        if (w <= 0.0 || h <= 0.0)
+            throwInvalidParams(QStringLiteral("Page 'width' and 'height' must be > 0."));
         const MultiLayer::PageUnit unit = params.contains(QStringLiteral("unit"))
-                ? parsePageUnit(params.value(QStringLiteral("unit")).toString())
+                ? parsePageUnit(optionalJsonString(params, QStringLiteral("unit")))
                 : ml->pageUnit();
-        const int dpi = std::max(72, params.value(QStringLiteral("dpi")).toInt(ml->pageDpi()));
+        const int dpi = parseBoundedInt(params, QStringLiteral("dpi"),
+                                        std::clamp(ml->pageDpi(), 36, 2400), 36, 2400);
+        const double pxPerUnit = (unit == MultiLayer::UnitInch)
+                ? double(dpi)
+                : ((unit == MultiLayer::UnitMm)
+                           ? (double(dpi) / 25.4)
+                           : ((unit == MultiLayer::UnitCm) ? (double(dpi) / 2.54) : 1.0));
+        if (w * pxPerUnit > 16384.0 || h * pxPerUnit > 16384.0) {
+            throwInvalidParams(
+                    QStringLiteral("Page pixel dimensions exceed maximum 16,384 x 16,384 px at %1 DPI.")
+                            .arg(dpi));
+        }
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Page Setup"));
         ml->setPageSizePhysical(w, h, unit, dpi);
+        if (params.contains(QStringLiteral("background_color"))
+            || params.contains(QStringLiteral("bg_color"))) {
+            const QJsonValue bgV = params.contains(QStringLiteral("background_color"))
+                    ? params.value(QStringLiteral("background_color"))
+                    : params.value(QStringLiteral("bg_color"));
+            ml->setPageBackgroundColor(parseColorValue(bgV, ml->pageBackgroundColor()));
+        }
         if (params.contains(QStringLiteral("page_view")))
-            ml->setPageViewMode(params.value(QStringLiteral("page_view")).toBool(true));
+            ml->setPageViewMode(optionalJsonBool(params, QStringLiteral("page_view"), true));
         if (params.contains(QStringLiteral("zoom")))
-            ml->setPageZoom(params.value(QStringLiteral("zoom")).toDouble(1.0));
-        if (params.value(QStringLiteral("fit_layers")).toBool(true))
+            ml->setPageZoom(std::clamp(optionalJsonFiniteDouble(params, QStringLiteral("zoom"), 1.0, 20.0),
+                                       0.05, 10.0));
+        if (optionalJsonBool(params, QStringLiteral("fit_layers"), true))
             ml->fitLayersToPage();
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
@@ -10618,19 +17516,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.apply_frame_preset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const QString p = params.value(QStringLiteral("preset")).toString().trimmed().toLower();
+        const QString p = optionalJsonString(params, QStringLiteral("preset")).trimmed().toLower();
         Graph::FramePreset framePreset = Graph::FrameBoxInwardTicks;
-        if (p == QStringLiteral("box_inward") || p == QStringLiteral("inward"))
+        if (p == QStringLiteral("box_inward") || p == QStringLiteral("inward")
+            || p == QStringLiteral("box"))
             framePreset = Graph::FrameBoxInwardTicks;
         else if (p == QStringLiteral("box_plain") || p == QStringLiteral("plain"))
             framePreset = Graph::FrameBoxPlainOpposite;
-        else if (p == QStringLiteral("open_l") || p == QStringLiteral("l"))
+        else if (p == QStringLiteral("open_l") || p == QStringLiteral("l")
+                 || p == QStringLiteral("top_right_off"))
             framePreset = Graph::FrameOpenL;
         else if (p == QStringLiteral("zero_crossed") || p == QStringLiteral("origin"))
             framePreset = Graph::FrameZeroCrossed;
         else
             throwInvalidParams(
-                    QStringLiteral("Unknown frame preset '%1' (expected 'box_inward'|'box_plain'|'open_l'|'zero_crossed').")
+                    QStringLiteral("Unknown frame preset '%1' (expected 'box_inward'|'box'|'box_plain'|'open_l'|'top_right_off'|'zero_crossed').")
                             .arg(p));
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Frame Preset"));
         g->applyFramePreset(framePreset);
@@ -10816,7 +17716,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             } else if (doFrame) {
                 ml->setPageBackgroundColor(clip.pageBg);
             }
-            for (Graph *lg : ml->layersList()) {
+            QList<Graph *> pasteLayers = ml->layersList();
+            if (params.contains(QStringLiteral("layer"))
+                && !params.value(QStringLiteral("layer")).isNull()) {
+                pasteLayers.clear();
+                pasteLayers.append(resolveGraphLayer(ml, params, true));
+            }
+            for (Graph *lg : pasteLayers) {
                 if (doFrame)
                     lg->drawCanvasFrame(clip.framed, clip.frameWidth, clip.frameColor);
                 if (doFonts && clip.hasPlotTitleFont && lg->plotWidget()) {
@@ -10928,12 +17834,29 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.batch_clone")) {
         MultiLayer *srcMl = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
-        if (params.value(QStringLiteral("tables")).isArray()) {
+        const bool hasXCol = params.contains(QStringLiteral("x_col"))
+                && !params.value(QStringLiteral("x_col")).isNull();
+        const QJsonValue xColVal = params.value(QStringLiteral("x_col"));
+        const QJsonArray yColsArr = params.value(QStringLiteral("y_cols")).isArray()
+                ? params.value(QStringLiteral("y_cols")).toArray()
+                : QJsonArray();
+        if (params.contains(QStringLiteral("tables"))) {
+            if (!params.value(QStringLiteral("tables")).isArray())
+                throwInvalidParams(QStringLiteral("Parameter 'tables' must be a list of table names."));
+            const QJsonArray tArr = params.value(QStringLiteral("tables")).toArray();
+            if (tArr.isEmpty())
+                throwInvalidParams(QStringLiteral("Parameter 'tables' must be a non-empty list."));
+            if (tArr.size() > 128)
+                throwInvalidParams(QStringLiteral("Parameter 'tables' supports at most 128 tables per call."));
             QJsonArray clonedArr;
-            for (const QJsonValue &tv : params.value(QStringLiteral("tables")).toArray()) {
+            for (const QJsonValue &tv : tArr) {
                 QJsonObject subP;
-                subP[QStringLiteral("table")] = tv.toString();
+                subP[QStringLiteral("table")] = tv;
                 Table *dstT = resolveTable(d_app, subP, QStringLiteral("table"), true);
+                if (hasXCol)
+                    dstT->setColPlotDesignation(resolveColumnIndex(dstT, xColVal, true), SciDAVis::X);
+                for (const QJsonValue &yv : yColsArr)
+                    dstT->setColPlotDesignation(resolveColumnIndex(dstT, yv, true), SciDAVis::Y);
                 if (MultiLayer *cl = d_app->batchCloneGraphToTable(srcMl, dstT))
                     clonedArr.append(cl->name());
             }
@@ -10942,6 +17865,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return true;
         }
         Table *dstT = resolveTable(d_app, params, QStringLiteral("table"), true);
+        if (hasXCol)
+            dstT->setColPlotDesignation(resolveColumnIndex(dstT, xColVal, true), SciDAVis::X);
+        for (const QJsonValue &yv : yColsArr)
+            dstT->setColPlotDesignation(resolveColumnIndex(dstT, yv, true), SciDAVis::Y);
         MultiLayer *cloned = d_app->batchCloneGraphToTable(srcMl, dstT);
         if (!cloned)
             throwRpcRuntime(QStringLiteral("Failed to batch-clone graph '%1' to table '%2'.")
@@ -11050,12 +17977,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         QStringLiteral("Parameter 'lim' must be a 2-element numeric [min, max] list."));
             }
             const QJsonArray la = params.value(QStringLiteral("lim")).toArray();
-            if (!la[0].isDouble() || !la[1].isDouble())
-                throwInvalidParams(QStringLiteral("Parameter 'lim' elements must be numeric."));
-            const double raw0 = la[0].toDouble();
-            const double raw1 = la[1].toDouble();
-            if (!std::isfinite(raw0) || !std::isfinite(raw1) || raw0 == raw1)
-                throwInvalidParams(QStringLiteral("Parameter 'lim' requires finite distinct [min, max]."));
+            const double raw0 = parseFiniteCoordDouble(la[0], QStringLiteral("lim[0]"));
+            const double raw1 = parseFiniteCoordDouble(la[1], QStringLiteral("lim[1]"));
+            validateFiniteCoordRange(raw0, raw1, QStringLiteral("Parameter 'lim'"));
             limLo = std::min(raw0, raw1);
             limHi = std::max(raw0, raw1);
             limInv = (raw0 > raw1);
@@ -11076,15 +18000,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 && !params.value(QStringLiteral("minor_ticks")).isNull();
 
         if (hasLim || hasMin || hasMax || hasStep || hasScale || hasInverted || hasMinor) {
-            const double lo = hasMin ? params.value(QStringLiteral("min")).toDouble(curMin)
+            const double lo = hasMin ? parseFiniteCoordDouble(params.value(QStringLiteral("min")),
+                                                              QStringLiteral("min"))
                                      : (hasLim ? limLo : curMin);
-            const double hi = hasMax ? params.value(QStringLiteral("max")).toDouble(curMax)
+            const double hi = hasMax ? parseFiniteCoordDouble(params.value(QStringLiteral("max")),
+                                                              QStringLiteral("max"))
                                      : (hasLim ? limHi : curMax);
-            const double step = hasStep ? params.value(QStringLiteral("step")).toDouble(g->axisStep(ax))
-                                        : g->axisStep(ax);
+            const double step = hasStep
+                    ? parseFiniteCoordDouble(params.value(QStringLiteral("step")),
+                                             QStringLiteral("step"))
+                    : g->axisStep(ax);
+            validateFiniteCoordRange(lo, hi, QStringLiteral("Axis scale"), step, 2000, 1e300);
             int scaleType = curScaleType;
             if (hasScale) {
-                const QString sc = params.value(QStringLiteral("scale")).toString().trimmed().toLower();
+                const QString sc = optionalJsonString(params, QStringLiteral("scale")).trimmed().toLower();
                 if (sc == QStringLiteral("linear") || sc == QStringLiteral("lin")) {
                     scaleType = 0;
                 } else if (sc == QStringLiteral("log10") || sc == QStringLiteral("log")) {
@@ -11101,12 +18030,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                 .arg(lo)
                                 .arg(hi));
             }
-            const bool inv = hasInverted ? params.value(QStringLiteral("inverted")).toBool(curInv)
+            const bool inv = hasInverted ? optionalJsonBool(params, QStringLiteral("inverted"), curInv)
                                          : (hasLim ? limInv : curInv);
             const int majorTicks = plt ? std::max(4, plt->axisMaxMajor(ax)) : 8;
             int minorTicks = (scaleType == 1) ? 8 : 1;
             if (hasMinor) {
-                minorTicks = std::max(0, params.value(QStringLiteral("minor_ticks")).toInt(minorTicks));
+                minorTicks = parseBoundedInt(params, QStringLiteral("minor_ticks"), minorTicks, 0, 32);
             } else if (plt && scaleType == curScaleType) {
                 const int existingMinor = plt->axisMaxMinor(ax);
                 if (scaleType == 0 && existingMinor >= 0 && existingMinor <= 4)
@@ -11114,7 +18043,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 else if (scaleType == 1 && existingMinor >= 1)
                     minorTicks = existingMinor;
             }
-            g->setScale(ax, lo, hi, step, majorTicks, minorTicks, scaleType, inv);
+            g->setScale(ax, std::min(lo, hi), std::max(lo, hi), step, majorTicks, minorTicks,
+                        scaleType, inv || (lo > hi));
             if (hasLim || hasMin || hasMax)
                 g->setAxisUserLocked(ax, true);
         }
@@ -11187,17 +18117,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (params.contains(QStringLiteral("font_size"))
             && !params.value(QStringLiteral("font_size")).isNull()) {
-            const int pt = std::max(4, params.value(QStringLiteral("font_size")).toInt(12));
+            const int pt = parseBoundedInt(params, QStringLiteral("font_size"), 12, 4, 96);
             tf.setPointSize(pt);
             nf.setPointSize(pt);
         }
         if (params.contains(QStringLiteral("title_font_size"))
             && !params.value(QStringLiteral("title_font_size")).isNull()) {
-            tf.setPointSize(std::max(4, params.value(QStringLiteral("title_font_size")).toInt()));
+            tf.setPointSize(parseBoundedInt(params, QStringLiteral("title_font_size"), 12, 4, 96));
         }
-        if (params.contains(QStringLiteral("numbers_font_size"))
-            && !params.value(QStringLiteral("numbers_font_size")).isNull()) {
-            nf.setPointSize(std::max(4, params.value(QStringLiteral("numbers_font_size")).toInt()));
+        if (params.contains(QStringLiteral("tick_font_size"))
+            && !params.value(QStringLiteral("tick_font_size")).isNull()) {
+            nf.setPointSize(parseBoundedInt(params, QStringLiteral("tick_font_size"), 10, 4, 96));
+        } else if (params.contains(QStringLiteral("numbers_font_size"))
+                   && !params.value(QStringLiteral("numbers_font_size")).isNull()) {
+            nf.setPointSize(parseBoundedInt(params, QStringLiteral("numbers_font_size"), 10, 4, 96));
         }
         tf.setHintingPreference(QFont::PreferNoHinting);
         nf.setHintingPreference(QFont::PreferNoHinting);
@@ -11296,29 +18229,138 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 sd->setMinorTicksStyle(ts);
             }
         }
-        if (params.contains(QStringLiteral("show_backbone"))
-            && !params.value(QStringLiteral("show_backbone")).isNull()) {
-            g->setAxisBackboneVisible(ax, params.value(QStringLiteral("show_backbone")).toBool());
+        if ((params.contains(QStringLiteral("show_backbone"))
+             && !params.value(QStringLiteral("show_backbone")).isNull())
+            || (params.contains(QStringLiteral("backbone_visible"))
+                && !params.value(QStringLiteral("backbone_visible")).isNull())) {
+            const bool bb = params.contains(QStringLiteral("show_backbone"))
+                    ? optionalJsonBool(params, QStringLiteral("show_backbone"), true)
+                    : optionalJsonBool(params, QStringLiteral("backbone_visible"), true);
+            g->setAxisBackboneVisible(ax, bb);
+        }
+        if (params.contains(QStringLiteral("color"))
+            || params.contains(QStringLiteral("axis_color"))
+            || params.contains(QStringLiteral("title_color"))
+            || params.contains(QStringLiteral("numbers_color"))) {
+            const QJsonValue baseColV = params.contains(QStringLiteral("color"))
+                    ? params.value(QStringLiteral("color"))
+                    : params.value(QStringLiteral("axis_color"));
+            if (!baseColV.isUndefined() && !baseColV.isNull()) {
+                const QColor ac = parseColorValue(baseColV, g->axisColor(ax));
+                QStringList axCols = g->axesColors();
+                while (axCols.size() < 4)
+                    axCols.append(QStringLiteral("#000000"));
+                axCols[ax] = ac.name();
+                g->setAxesColors(axCols);
+                if (!params.contains(QStringLiteral("title_color")))
+                    g->setAxisTitleColor(ax, ac);
+                if (!params.contains(QStringLiteral("numbers_color"))) {
+                    QStringList numCols = g->axesNumColors();
+                    while (numCols.size() < 4)
+                        numCols.append(QStringLiteral("#000000"));
+                    numCols[ax] = ac.name();
+                    g->setAxesNumColors(numCols);
+                }
+            }
+            if (params.contains(QStringLiteral("title_color"))
+                && !params.value(QStringLiteral("title_color")).isNull()) {
+                g->setAxisTitleColor(
+                        ax, parseColorValue(params.value(QStringLiteral("title_color")),
+                                            g->axisTitleColor(ax)));
+            }
+            if (params.contains(QStringLiteral("numbers_color"))
+                && !params.value(QStringLiteral("numbers_color")).isNull()) {
+                const QColor nc = parseColorValue(params.value(QStringLiteral("numbers_color")),
+                                                  g->axisNumbersColor(ax));
+                QStringList numCols = g->axesNumColors();
+                while (numCols.size() < 4)
+                    numCols.append(QStringLiteral("#000000"));
+                numCols[ax] = nc.name();
+                g->setAxesNumColors(numCols);
+            }
+        }
+        if (params.contains(QStringLiteral("categories"))
+            && !params.value(QStringLiteral("categories")).isNull()) {
+            if (!params.value(QStringLiteral("categories")).isArray())
+                throwInvalidParams(QStringLiteral("Parameter 'categories' must be a list of strings."));
+            QStringList catList;
+            for (const QJsonValue &cv : params.value(QStringLiteral("categories")).toArray())
+                catList << sanitizeUtf16Surrogates(cv.toString());
+            if (!catList.isEmpty())
+                invokeGraphSetCategoryLabels(d_app, g, ax, catList);
         }
         if (params.contains(QStringLiteral("divide_by"))
             || params.contains(QStringLiteral("prefix"))
             || params.contains(QStringLiteral("suffix"))) {
+            const double divBy = optionalJsonFiniteDouble(
+                    params, QStringLiteral("divide_by"), g->tickDivideFactor(ax));
+            if (divBy == 0.0)
+                throwInvalidParams(QStringLiteral("Parameter 'divide_by' must be non-zero."));
             g->setTickLabelTransform(
-                    ax,
-                    params.value(QStringLiteral("divide_by")).toDouble(g->tickDivideFactor(ax)),
+                    ax, divBy,
                     params.contains(QStringLiteral("prefix"))
-                            ? params.value(QStringLiteral("prefix")).toString()
+                            ? optionalJsonString(params, QStringLiteral("prefix"))
                             : g->tickPrefix(ax),
                     params.contains(QStringLiteral("suffix"))
-                            ? params.value(QStringLiteral("suffix")).toString()
+                            ? optionalJsonString(params, QStringLiteral("suffix"))
                             : g->tickSuffix(ax));
         }
         if (plt)
             plt->updateLayout();
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
+        const QStringList curCats = invokeGraphCategoryLabels(g, ax);
+        if (!curCats.isEmpty())
+            outResult[QStringLiteral("categories")] = toJsonArray(curCats);
         outResult[QStringLiteral("layer")] = ml->layersList().indexOf(g);
+        outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.set_category_labels")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        const int ax = parseAxisId(params.contains(QStringLiteral("axis"))
+                                           ? optionalJsonString(params, QStringLiteral("axis"))
+                                           : QStringLiteral("x"));
+        const QJsonValue lblVal = params.contains(QStringLiteral("labels"))
+                ? params.value(QStringLiteral("labels"))
+                : params.value(QStringLiteral("categories"));
+        if (!lblVal.isArray())
+            throwInvalidParams(
+                    QStringLiteral("graph.set_category_labels requires a 'labels' (or 'categories') string list."));
+        QStringList labels;
+        for (const QJsonValue &it : lblVal.toArray()) {
+            if (it.isString())
+                labels << sanitizeUtf16Surrogates(it.toString());
+            else if (it.isDouble())
+                labels << QString::number(it.toDouble(), 'g', 15);
+            else
+                labels << QString();
+        }
+        if (labels.isEmpty())
+            throwInvalidParams(QStringLiteral("'labels' list must be non-empty."));
+        if (labels.size() > 10000)
+            throwInvalidParams(QStringLiteral("'labels' list exceeds maximum size (10,000)."));
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Set Category Labels"));
+        invokeGraphSetCategoryLabels(d_app, g, ax, labels);
+        if (params.contains(QStringLiteral("rotation"))
+            || params.contains(QStringLiteral("label_rotation"))) {
+            const int rot = params.contains(QStringLiteral("rotation"))
+                    ? parseBoundedInt(params, QStringLiteral("rotation"), 0, -90, 90)
+                    : parseBoundedInt(params, QStringLiteral("label_rotation"), 0, -90, 90);
+            g->setAxisLabelRotation(ax, rot);
+        }
+        enforceArialGraphFonts(g);
+        replotGraphOrDefer(g);
+        undoGuard.commit();
+        outResult = serializeAxisInfo(g, ax);
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("layer")] = ml->layersList().indexOf(g);
+        outResult[QStringLiteral("categories")] = toJsonArray(labels);
+        outResult[QStringLiteral("labels")] = toJsonArray(labels);
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
@@ -11327,31 +18369,39 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const int ax = parseAxisId(params.contains(QStringLiteral("axis"))
-                                           ? params.value(QStringLiteral("axis")).toString()
+                                           ? optionalJsonString(params, QStringLiteral("axis"))
                                            : QStringLiteral("x"));
-        const bool enabled = params.contains(QStringLiteral("enabled"))
-                ? params.value(QStringLiteral("enabled")).toBool(true)
-                : true;
+        const bool enabled = optionalJsonBool(params, QStringLiteral("enabled"), true);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Axis Break"));
         if (!enabled) {
             g->clearAxisBreak(ax);
         } else {
             Graph::AxisBreakSpec spec = g->axisBreak(ax);
             spec.enabled = true;
-            spec.breakFrom = params.value(QStringLiteral("start")).toDouble(spec.breakFrom);
-            spec.breakTo = params.value(QStringLiteral("end")).toDouble(spec.breakTo);
-            double pct = params.value(QStringLiteral("position_pct")).toDouble(0.50);
+            const double bStart = params.contains(QStringLiteral("start"))
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("start"), spec.breakFrom)
+                    : optionalJsonFiniteDouble(params, QStringLiteral("from"), spec.breakFrom);
+            const double bEnd = params.contains(QStringLiteral("end"))
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("end"), spec.breakTo)
+                    : optionalJsonFiniteDouble(params, QStringLiteral("to"), spec.breakTo);
+            validateFiniteCoordRange(bStart, bEnd, QStringLiteral("Axis break [start, end]"));
+            spec.breakFrom = std::min(bStart, bEnd);
+            spec.breakTo = std::max(bStart, bEnd);
+            double pct = optionalJsonFiniteDouble(params, QStringLiteral("position_pct"), 0.50, 100.0);
             if (pct > 1.0)
                 pct /= 100.0;
             spec.positionPct = std::clamp(pct, 0.10, 0.90);
-            spec.stepBefore = params.value(QStringLiteral("step_before")).toDouble(spec.stepBefore);
-            spec.stepAfter = params.value(QStringLiteral("step_after")).toDouble(spec.stepAfter);
-            spec.log10Before =
-                    params.value(QStringLiteral("log_before")).toBool(spec.log10Before);
-            spec.log10After = params.value(QStringLiteral("log_after")).toBool(spec.log10After);
+            spec.stepBefore = optionalJsonFiniteDouble(params, QStringLiteral("step_before"),
+                                                       spec.stepBefore);
+            spec.stepAfter = optionalJsonFiniteDouble(params, QStringLiteral("step_after"),
+                                                      spec.stepAfter);
+            if (spec.stepBefore < 0.0 || spec.stepAfter < 0.0)
+                throwInvalidParams(QStringLiteral("step_before and step_after must be >= 0."));
+            spec.log10Before = optionalJsonBool(params, QStringLiteral("log_before"), spec.log10Before);
+            spec.log10After = optionalJsonBool(params, QStringLiteral("log_after"), spec.log10After);
             g->setAxisBreak(ax, spec);
         }
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult = serializeAxisInfo(g, ax);
         outResult[QStringLiteral("ok")] = true;
@@ -11364,26 +18414,48 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         Graph::ReferenceLineSpec spec;
-        const QString ori =
-                params.value(QStringLiteral("orientation")).toString().trimmed().toLower();
-        const QString ax = params.value(QStringLiteral("axis")).toString().trimmed().toLower();
+        const QString ori = optionalJsonString(params, QStringLiteral("orientation")).trimmed().toLower();
+        const QString ax = optionalJsonString(params, QStringLiteral("axis")).trimmed().toLower();
+        if (!ori.isEmpty() && ori != QStringLiteral("horizontal") && ori != QStringLiteral("h")
+            && ori != QStringLiteral("y") && ori != QStringLiteral("vertical")
+            && ori != QStringLiteral("v") && ori != QStringLiteral("x")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown reference line orientation '%1' (expected 'horizontal'|'vertical').")
+                            .arg(ori));
+        }
+        if (!ax.isEmpty() && ax != QStringLiteral("x") && ax != QStringLiteral("y")
+            && ax != QStringLiteral("bottom") && ax != QStringLiteral("left")
+            && ax != QStringLiteral("top") && ax != QStringLiteral("right")
+            && ax != QStringLiteral("xbottom") && ax != QStringLiteral("yleft")
+            && ax != QStringLiteral("xtop") && ax != QStringLiteral("yright")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown reference line axis '%1' (expected 'x'|'y'|'bottom'|'left'|'top'|'right').")
+                            .arg(ax));
+        }
         spec.orientation = (ori == QStringLiteral("vertical") || ori == QStringLiteral("v")
-                            || ax == QStringLiteral("x"))
+                            || ori == QStringLiteral("x") || ax == QStringLiteral("x")
+                            || ax == QStringLiteral("bottom") || ax == QStringLiteral("top")
+                            || ax == QStringLiteral("xbottom") || ax == QStringLiteral("xtop"))
                 ? 1
                 : 0;
-        spec.value = params.value(QStringLiteral("value")).toDouble(0.0);
-        spec.statMode = params.value(QStringLiteral("stat_mode")).toString();
+        spec.value = optionalJsonFiniteDouble(params, QStringLiteral("value"), 0.0);
+        spec.statMode = optionalJsonString(params, QStringLiteral("stat_mode"));
         spec.color =
                 parseColorValue(params.value(QStringLiteral("color")), QColor(30, 102, 184));
-        spec.style = parsePenStyleValue(params.value(QStringLiteral("style")), Qt::DashLine);
-        spec.width = params.value(QStringLiteral("width")).toDouble(1.5);
-        spec.label = params.value(QStringLiteral("label")).toString();
-        spec.fillToAxis = params.value(QStringLiteral("fill_to_axis")).toBool(false);
+        const QJsonValue stV = params.contains(QStringLiteral("style"))
+                ? params.value(QStringLiteral("style"))
+                : params.value(QStringLiteral("line_style"));
+        spec.style = parsePenStyleValue(stV, Qt::DashLine);
+        spec.width = params.contains(QStringLiteral("width"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("width"), 1.5, 50.0)
+                : optionalJsonFiniteDouble(params, QStringLiteral("line_width"), 1.5, 50.0);
+        spec.label = optionalJsonString(params, QStringLiteral("label"));
+        spec.fillToAxis = optionalJsonBool(params, QStringLiteral("fill_to_axis"), false);
         spec.fillColor = parseColorValue(params.value(QStringLiteral("fill_color")),
                                          QColor(30, 102, 184, 32));
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Reference Line"));
         g->addReferenceLine(spec);
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("index")] = std::max(0, g->referenceLines().size() - 1);
@@ -11447,10 +18519,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             const QJsonArray la = params.value(QStringLiteral("y_low")).toArray();
             const QJsonArray ha = params.value(QStringLiteral("y_high")).toArray();
             const int n = std::min({ xa.size(), la.size(), ha.size() });
+            if (n < 2 || n > 1000000) {
+                throwInvalidParams(
+                        QStringLiteral("Shaded band arrays require between 2 and 1,000,000 points."));
+            }
             for (int i = 0; i < n; ++i) {
-                xv.append(xa[i].toDouble());
-                yLo.append(la[i].toDouble());
-                yHi.append(ha[i].toDouble());
+                xv.append(parseFiniteCoordDouble(xa[i], QStringLiteral("x")));
+                yLo.append(parseFiniteCoordDouble(la[i], QStringLiteral("y_low")));
+                yHi.append(parseFiniteCoordDouble(ha[i], QStringLiteral("y_high")));
             }
         } else if (params.contains(QStringLiteral("y_min"))
                    && params.contains(QStringLiteral("y_max"))) {
@@ -11460,10 +18536,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 x0 = std::min(d->lowerBound(), d->upperBound());
                 x1 = std::max(d->lowerBound(), d->upperBound());
             }
-            x0 = params.value(QStringLiteral("x_min")).toDouble(x0);
-            x1 = params.value(QStringLiteral("x_max")).toDouble(x1);
-            const double yl = params.value(QStringLiteral("y_min")).toDouble();
-            const double yh = params.value(QStringLiteral("y_max")).toDouble();
+            x0 = optionalJsonFiniteDouble(params, QStringLiteral("x_min"), x0);
+            x1 = optionalJsonFiniteDouble(params, QStringLiteral("x_max"), x1);
+            const double yl = parseFiniteCoordDouble(params.value(QStringLiteral("y_min")),
+                                                     QStringLiteral("y_min"));
+            const double yh = parseFiniteCoordDouble(params.value(QStringLiteral("y_max")),
+                                                     QStringLiteral("y_max"));
             xv << x0 << x1;
             yLo << yl << yl;
             yHi << yh << yh;
@@ -11473,11 +18551,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         QColor fillCol = parseColorValue(params.value(QStringLiteral("color")),
                                          QColor(30, 102, 184, 55));
-        if (params.contains(QStringLiteral("alpha")))
-            fillCol.setAlpha(std::clamp(params.value(QStringLiteral("alpha")).toInt(55), 0, 255));
+        if (params.contains(QStringLiteral("alpha"))) {
+            const double rawA = params.value(QStringLiteral("alpha")).toDouble(55.0);
+            const int a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
+                                                          : std::clamp(int(rawA), 0, 255);
+            fillCol.setAlpha(a255);
+        }
+        const QString bandTitle = params.contains(QStringLiteral("title"))
+                ? optionalJsonString(params, QStringLiteral("title"))
+                : optionalJsonString(params, QStringLiteral("label"));
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Shaded Band"));
-        g->addShadedBand(xv, yLo, yHi, fillCol, params.value(QStringLiteral("title")).toString());
-        g->replot();
+        g->addShadedBand(xv, yLo, yHi, fillCol, bandTitle);
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -11489,38 +18574,86 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Grid"));
         Grid *grd = g->grid();
         if (grd) {
-            if (params.contains(QStringLiteral("major_x")))
-                grd->enableX(params.value(QStringLiteral("major_x")).toBool());
-            if (params.contains(QStringLiteral("major_y")))
-                grd->enableY(params.value(QStringLiteral("major_y")).toBool());
-            if (params.contains(QStringLiteral("minor_x")))
-                grd->enableXMin(params.value(QStringLiteral("minor_x")).toBool());
-            if (params.contains(QStringLiteral("minor_y")))
-                grd->enableYMin(params.value(QStringLiteral("minor_y")).toBool());
             if (params.contains(QStringLiteral("enabled"))) {
-                const bool on = params.value(QStringLiteral("enabled")).toBool();
+                const bool on = optionalJsonBool(params, QStringLiteral("enabled"), true);
                 grd->enableX(on);
                 grd->enableY(on);
             }
+            if (params.contains(QStringLiteral("major_x"))
+                || params.contains(QStringLiteral("x_major"))) {
+                const bool on = params.contains(QStringLiteral("major_x"))
+                        ? optionalJsonBool(params, QStringLiteral("major_x"), true)
+                        : optionalJsonBool(params, QStringLiteral("x_major"), true);
+                grd->enableX(on);
+            }
+            if (params.contains(QStringLiteral("major_y"))
+                || params.contains(QStringLiteral("y_major"))) {
+                const bool on = params.contains(QStringLiteral("major_y"))
+                        ? optionalJsonBool(params, QStringLiteral("major_y"), true)
+                        : optionalJsonBool(params, QStringLiteral("y_major"), true);
+                grd->enableY(on);
+            }
+            if (params.contains(QStringLiteral("minor_x"))
+                || params.contains(QStringLiteral("x_minor"))) {
+                const bool on = params.contains(QStringLiteral("minor_x"))
+                        ? optionalJsonBool(params, QStringLiteral("minor_x"), false)
+                        : optionalJsonBool(params, QStringLiteral("x_minor"), false);
+                grd->enableXMin(on);
+            }
+            if (params.contains(QStringLiteral("minor_y"))
+                || params.contains(QStringLiteral("y_minor"))) {
+                const bool on = params.contains(QStringLiteral("minor_y"))
+                        ? optionalJsonBool(params, QStringLiteral("minor_y"), false)
+                        : optionalJsonBool(params, QStringLiteral("y_minor"), false);
+                grd->enableYMin(on);
+            }
             if (params.contains(QStringLiteral("zero_x")))
-                grd->enableZeroLineX(params.value(QStringLiteral("zero_x")).toBool());
+                grd->enableZeroLineX(optionalJsonBool(params, QStringLiteral("zero_x"), false));
             if (params.contains(QStringLiteral("zero_y")))
-                grd->enableZeroLineY(params.value(QStringLiteral("zero_y")).toBool());
+                grd->enableZeroLineY(optionalJsonBool(params, QStringLiteral("zero_y"), false));
             if (params.contains(QStringLiteral("color"))
                 || params.contains(QStringLiteral("style"))
-                || params.contains(QStringLiteral("width"))) {
+                || params.contains(QStringLiteral("line_style"))
+                || params.contains(QStringLiteral("width"))
+                || params.contains(QStringLiteral("line_width"))) {
                 QPen p = grd->majPenX();
                 if (params.contains(QStringLiteral("color")))
                     p.setColor(parseColorValue(params.value(QStringLiteral("color")), p.color()));
-                if (params.contains(QStringLiteral("style")))
-                    p.setStyle(parsePenStyleValue(params.value(QStringLiteral("style")), p.style()));
-                if (params.contains(QStringLiteral("width")))
-                    p.setWidthF(std::max(0.2, params.value(QStringLiteral("width")).toDouble(0.8)));
+                const QJsonValue stV = params.contains(QStringLiteral("style"))
+                        ? params.value(QStringLiteral("style"))
+                        : params.value(QStringLiteral("line_style"));
+                if (!stV.isUndefined() && !stV.isNull())
+                    p.setStyle(parsePenStyleValue(stV, p.style()));
+                const double wd = params.contains(QStringLiteral("width"))
+                        ? optionalJsonFiniteDouble(params, QStringLiteral("width"), 0.8, 20.0)
+                        : (params.contains(QStringLiteral("line_width"))
+                                   ? optionalJsonFiniteDouble(params, QStringLiteral("line_width"),
+                                                              0.8, 20.0)
+                                   : p.widthF());
+                p.setWidthF(std::max(0.2, wd));
                 grd->setMajPenX(p);
                 grd->setMajPenY(p);
             }
+            if (params.contains(QStringLiteral("minor_color"))
+                || params.contains(QStringLiteral("minor_style"))
+                || params.contains(QStringLiteral("minor_width"))) {
+                QPen mp = grd->minPenX();
+                if (params.contains(QStringLiteral("minor_color")))
+                    mp.setColor(parseColorValue(params.value(QStringLiteral("minor_color")),
+                                                mp.color()));
+                if (params.contains(QStringLiteral("minor_style")))
+                    mp.setStyle(parsePenStyleValue(params.value(QStringLiteral("minor_style")),
+                                                   mp.style()));
+                if (params.contains(QStringLiteral("minor_width")))
+                    mp.setWidthF(std::max(0.2,
+                                          optionalJsonFiniteDouble(params,
+                                                                   QStringLiteral("minor_width"),
+                                                                   0.5, 20.0)));
+                grd->setMinPenX(mp);
+                grd->setMinPenY(mp);
+            }
         }
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -11564,6 +18697,23 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Change Curve Style"));
         applyInlineCurveStyleParams(g, cIdx, params, true);
+        if (auto *vc = dynamic_cast<VectorCurve *>(c)) {
+            if (params.contains(QStringLiteral("color"))
+                && !params.value(QStringLiteral("color")).isNull()) {
+                vc->setColor(parseColorValue(params.value(QStringLiteral("color")), vc->color()));
+            }
+            const QJsonValue lwV = params.contains(QStringLiteral("line_width"))
+                    ? params.value(QStringLiteral("line_width"))
+                    : (params.contains(QStringLiteral("lw"))
+                               ? params.value(QStringLiteral("lw"))
+                               : params.value(QStringLiteral("linewidth")));
+            if (!lwV.isUndefined() && !lwV.isNull())
+                vc->setWidth(std::clamp(qRound(lwV.toDouble(1.0)), 1, 20));
+            if (params.contains(QStringLiteral("head_length")))
+                vc->setHeadLength(parseBoundedInt(params, QStringLiteral("head_length"), 8, 1, 64));
+            if (params.contains(QStringLiteral("head_angle")))
+                vc->setHeadAngle(parseBoundedInt(params, QStringLiteral("head_angle"), 45, 5, 89));
+        }
 
         QColor col = c->pen().color();
         if (params.contains(QStringLiteral("fill_area"))) {
@@ -11700,18 +18850,58 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.move_curve")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        if (!params.contains(QStringLiteral("from_index"))
-            || params.value(QStringLiteral("from_index")).isNull()) {
-            throwInvalidParams(QStringLiteral("from_index is required."));
+        int fromIdx = -1;
+        if (params.contains(QStringLiteral("from_index"))
+            && !params.value(QStringLiteral("from_index")).isNull()) {
+            fromIdx = parseStrictJsonInt(params.value(QStringLiteral("from_index")),
+                                         QStringLiteral("from_index"));
+        } else if (params.contains(QStringLiteral("curve"))
+                   && !params.value(QStringLiteral("curve")).isNull()) {
+            const QJsonValue cv = params.value(QStringLiteral("curve"));
+            if (cv.isDouble()) {
+                fromIdx = parseStrictJsonInt(cv, QStringLiteral("curve"));
+            } else {
+                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+                fromIdx = g->curveIndex(ct);
+            }
+        } else {
+            throwInvalidParams(QStringLiteral("from_index (or curve) is required."));
         }
-        if (!params.contains(QStringLiteral("to_index"))
-            || params.value(QStringLiteral("to_index")).isNull()) {
-            throwInvalidParams(QStringLiteral("to_index is required."));
+
+        int toIdx = -1;
+        if (params.contains(QStringLiteral("to_index"))
+            && !params.value(QStringLiteral("to_index")).isNull()) {
+            toIdx = parseStrictJsonInt(params.value(QStringLiteral("to_index")),
+                                       QStringLiteral("to_index"));
+        } else if (params.contains(QStringLiteral("delta"))
+                   && !params.value(QStringLiteral("delta")).isNull()) {
+            const int d = parseBoundedInt(params, QStringLiteral("delta"), 0, -1000, 1000);
+            toIdx = std::clamp(fromIdx + d, 0, std::max(0, g->curves() - 1));
+        } else if (params.contains(QStringLiteral("direction"))
+                   && !params.value(QStringLiteral("direction")).isNull()) {
+            const QString dir = optionalJsonString(params, QStringLiteral("direction"))
+                                        .trimmed()
+                                        .toLower();
+            const int maxIdx = std::max(0, g->curves() - 1);
+            if (dir == QStringLiteral("up") || dir == QStringLiteral("forward")
+                || dir == QStringLiteral("front")) {
+                toIdx = std::min(maxIdx, fromIdx + 1);
+            } else if (dir == QStringLiteral("down") || dir == QStringLiteral("backward")
+                       || dir == QStringLiteral("back")) {
+                toIdx = std::max(0, fromIdx - 1);
+            } else if (dir == QStringLiteral("top") || dir == QStringLiteral("last")) {
+                toIdx = maxIdx;
+            } else if (dir == QStringLiteral("bottom") || dir == QStringLiteral("first")) {
+                toIdx = 0;
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("Unknown move_curve direction '%1' (expected 'up'|'down'|'top'|'bottom').")
+                                .arg(dir));
+            }
+        } else {
+            throwInvalidParams(QStringLiteral("to_index, direction, or delta is required."));
         }
-        const int fromIdx = parseStrictJsonInt(params.value(QStringLiteral("from_index")),
-                                               QStringLiteral("from_index"));
-        const int toIdx = parseStrictJsonInt(params.value(QStringLiteral("to_index")),
-                                             QStringLiteral("to_index"));
+
         if (fromIdx < 0 || fromIdx >= g->curves() || toIdx < 0 || toIdx >= g->curves()) {
             throwInvalidParams(
                     QStringLiteral("Curve index out of range [0, %1) (from=%2, to=%3).")
@@ -11720,11 +18910,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             .arg(toIdx));
         }
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Move Curve"));
-        const bool moved = g->moveCurve(fromIdx, toIdx);
-        g->replot();
-        if (moved)
+        const bool moved = (fromIdx == toIdx) ? true : g->moveCurve(fromIdx, toIdx);
+        replotGraphOrDefer(g);
+        if (moved && fromIdx != toIdx)
             undoGuard.commit();
         outResult[QStringLiteral("ok")] = moved;
+        outResult[QStringLiteral("from_index")] = fromIdx;
+        outResult[QStringLiteral("to_index")] = toIdx;
         outResult[QStringLiteral("curves")] = toJsonArray(g->plotItemsList());
         return true;
     }
@@ -11745,14 +18937,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 mode = modeVal.toInt(1);
             } else if (modeStr == QStringLiteral("uniform") || modeStr == QStringLiteral("0")) {
                 mode = 0;
+            } else if (params.contains(QStringLiteral("auto_waterfall"))
+                       && !params.value(QStringLiteral("auto_waterfall")).isNull()) {
+                mode = optionalJsonBool(params, QStringLiteral("auto_waterfall"), true) ? 1 : 0;
             }
             const double yGap = params.contains(QStringLiteral("y_gap_pct"))
-                    ? params.value(QStringLiteral("y_gap_pct")).toDouble(15.0)
-                    : params.value(QStringLiteral("y_offset_pct")).toDouble(15.0);
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("y_gap_pct"), 15.0, 10000.0)
+                    : (params.contains(QStringLiteral("y_offset_pct"))
+                               ? optionalJsonFiniteDouble(params, QStringLiteral("y_offset_pct"), 15.0, 10000.0)
+                               : optionalJsonFiniteDouble(params, QStringLiteral("y_offset"), 15.0, 10000.0));
             const double xGap = params.contains(QStringLiteral("x_gap_pct"))
-                    ? params.value(QStringLiteral("x_gap_pct")).toDouble(0.0)
-                    : params.value(QStringLiteral("x_offset_pct")).toDouble(0.0);
-            const bool norm01 = params.value(QStringLiteral("normalize")).toBool(false);
+                    ? optionalJsonFiniteDouble(params, QStringLiteral("x_gap_pct"), 0.0, 10000.0)
+                    : (params.contains(QStringLiteral("x_offset_pct"))
+                               ? optionalJsonFiniteDouble(params, QStringLiteral("x_offset_pct"), 0.0, 10000.0)
+                               : optionalJsonFiniteDouble(params, QStringLiteral("x_offset"), 0.0, 10000.0));
+            const bool norm01 = optionalJsonBool(params, QStringLiteral("normalize"), false);
             g->setStackOffsets(mode, yGap, xGap, norm01);
         }
         g->replot();
@@ -11765,8 +18964,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.apply_series_scheme")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
+        const int groupSize = parseBoundedInt(params, QStringLiteral("group_size"), 2, 1, 64);
         const QString schemeStr = params.contains(QStringLiteral("scheme"))
-                ? params.value(QStringLiteral("scheme")).toString()
+                ? optionalJsonString(params, QStringLiteral("scheme"),
+                                     QStringLiteral("bw_hollow_filled"))
                 : QStringLiteral("bw_hollow_filled");
         QString normScheme = schemeStr.trimmed().toLower();
         normScheme.replace(QLatin1Char('-'), QLatin1Char('_'));
@@ -11779,35 +18980,51 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     applyInlineCurveStyleParams(g, ci, params, false);
             }
             enforceArialGraphFonts(g);
-            g->replot();
+            replotGraphOrDefer(g);
             undoGuard.commit();
             outResult = serializeGraphInfo(ml);
             outResult[QStringLiteral("ok")] = true;
             outResult[QStringLiteral("scheme")] = QStringLiteral("okabe_ito");
+            outResult[QStringLiteral("group_size")] = groupSize;
             return true;
         }
         QString canonical;
         const Graph::SeriesStyleScheme scheme = parseSeriesStyleScheme(schemeStr, &canonical);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Series Style Scheme"));
         g->applySeriesStyleScheme(scheme);
+        if (params.contains(QStringLiteral("group_size")) && groupSize >= 1
+            && (canonical == QStringLiteral("bw_hollow_filled")
+                || canonical == QStringLiteral("blue_red_hollow"))) {
+            int visIdx = 0;
+            for (int ci = 0; ci < g->curves(); ++ci) {
+                if (g->curveType(ci) == Graph::ErrorBars)
+                    continue;
+                g->setCurveSymbolHollow(ci, ((visIdx / groupSize) % 2) == 1);
+                ++visIdx;
+            }
+        }
         for (int ci = 0; ci < g->curves(); ++ci) {
             if (g->curveType(ci) != Graph::ErrorBars)
                 applyInlineCurveStyleParams(g, ci, params, false);
         }
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("scheme")] = canonical;
+        outResult[QStringLiteral("group_size")] = groupSize;
         return true;
     }
 
     if (method == QStringLiteral("graph.apply_palette")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const bool grad = params.value(QStringLiteral("gradient")).toBool(
-                params.value(QStringLiteral("sequential")).toBool(false));
+        const bool grad = optionalJsonBool(
+                params, QStringLiteral("gradient"),
+                optionalJsonBool(params, QStringLiteral("sequential"), false));
+        const bool applyToSymbols =
+                optionalJsonBool(params, QStringLiteral("apply_to_symbols"), true);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Color Palette"));
         if (params.value(QStringLiteral("colors")).isArray()) {
             QList<QColor> cols;
@@ -11822,11 +19039,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
             if (cols.isEmpty())
                 throwInvalidParams(QStringLiteral("'colors' array must not be empty."));
-            g->applyColorPalette(cols, grad, true);
+            g->applyColorPalette(cols, grad, applyToSymbols);
         } else {
-            const QString rawPal = params.contains(QStringLiteral("palette"))
-                    ? params.value(QStringLiteral("palette")).toString().trimmed()
-                    : QStringLiteral("Okabe-Ito");
+            QString rawPal = params.contains(QStringLiteral("palette"))
+                    ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
+                    : optionalJsonString(params, QStringLiteral("name")).trimmed();
+            if (rawPal.isEmpty())
+                rawPal = QStringLiteral("okabe_ito");
             const QStringList allPals = Graph::allPaletteNames();
             auto normKey = [](QString s) -> QString {
                 s = s.trimmed().toLower();
@@ -11835,21 +19054,84 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 s.remove(QLatin1Char(' '));
                 return s;
             };
+            QString wantNorm = normKey(rawPal);
+            if (wantNorm == QStringLiteral("okabeito") || wantNorm == QStringLiteral("okabe"))
+                wantNorm = QStringLiteral("okabeito");
+            else if (wantNorm == QStringLiteral("npg") || wantNorm == QStringLiteral("naturenpg"))
+                wantNorm = QStringLiteral("nature");
+            else if (wantNorm == QStringLiteral("aaas") || wantNorm == QStringLiteral("scienceaaas"))
+                wantNorm = QStringLiteral("science");
+            else if (wantNorm == QStringLiteral("isij") || wantNorm == QStringLiteral("isijsteel")
+                     || wantNorm == QStringLiteral("default") || wantNorm == QStringLiteral("origin"))
+                wantNorm = QStringLiteral("isij");
+            else if (wantNorm == QStringLiteral("tolbright") || wantNorm == QStringLiteral("paultolbright"))
+                wantNorm = QStringLiteral("tolbright");
+            else if (wantNorm == QStringLiteral("tolmuted") || wantNorm == QStringLiteral("paultolmuted"))
+                wantNorm = QStringLiteral("tolmuted");
+            else if (wantNorm == QStringLiteral("grayscale") || wantNorm == QStringLiteral("grey")
+                     || wantNorm == QStringLiteral("gray") || wantNorm == QStringLiteral("monochrome"))
+                wantNorm = QStringLiteral("monochrome");
+
             QString matchedPal;
-            const QString wantNorm = normKey(rawPal);
             for (const QString &cand : allPals) {
-                if (cand.compare(rawPal, Qt::CaseInsensitive) == 0 || normKey(cand) == wantNorm) {
+                const QString candNorm = normKey(cand);
+                if (cand.compare(rawPal, Qt::CaseInsensitive) == 0 || candNorm == wantNorm
+                    || (!wantNorm.isEmpty() && candNorm.startsWith(wantNorm))
+                    || (!wantNorm.isEmpty() && wantNorm.size() >= 4 && candNorm.contains(wantNorm))) {
                     matchedPal = cand;
                     break;
                 }
             }
+            QList<QColor> builtinFallbackCols;
             if (matchedPal.isEmpty()) {
-                throwInvalidParamsWithAvailable(
-                        QStringLiteral("Unknown color palette '%1'.").arg(rawPal), allPals);
+                if (wantNorm == QStringLiteral("tolbright")
+                    || wantNorm == QStringLiteral("paultolbright")) {
+                    builtinFallbackCols = { QColor(0x44, 0x77, 0xAA), QColor(0xEE, 0x66, 0x77),
+                                            QColor(0x22, 0x88, 0x33), QColor(0xCC, 0xBB, 0x44),
+                                            QColor(0x66, 0xCC, 0xEE), QColor(0xAA, 0x33, 0x77),
+                                            QColor(0xBB, 0xBB, 0xBB) };
+                } else if (wantNorm == QStringLiteral("tolmuted")
+                           || wantNorm == QStringLiteral("paultolmuted")) {
+                    builtinFallbackCols = { QColor(0x33, 0x22, 0x88), QColor(0x88, 0xCC, 0xEE),
+                                            QColor(0x44, 0xAA, 0x99), QColor(0x11, 0x77, 0x33),
+                                            QColor(0x99, 0x99, 0x33), QColor(0xDD, 0xCC, 0x77),
+                                            QColor(0xCC, 0x66, 0x77), QColor(0x88, 0x22, 0x55),
+                                            QColor(0xAA, 0x44, 0x99) };
+                } else if (wantNorm == QStringLiteral("isijmonochrome")
+                           || wantNorm == QStringLiteral("monochrome")) {
+                    builtinFallbackCols = { QColor(0x11, 0x11, 0x11), QColor(0x44, 0x44, 0x44),
+                                            QColor(0x77, 0x77, 0x77), QColor(0x2B, 0x2B, 0x2B),
+                                            QColor(0x5E, 0x5E, 0x5E), QColor(0x99, 0x99, 0x99) };
+                } else if (wantNorm == QStringLiteral("cividis")) {
+                    builtinFallbackCols = { QColor(0x00, 0x20, 0x4C), QColor(0x00, 0x33, 0x6F),
+                                            QColor(0x31, 0x44, 0x6B), QColor(0x57, 0x5C, 0x6E),
+                                            QColor(0x7C, 0x7B, 0x78), QColor(0xA6, 0x9D, 0x75),
+                                            QColor(0xD3, 0xC1, 0x64), QColor(0xFF, 0xEA, 0x46) };
+                }
             }
-            g->applyColorPaletteByName(matchedPal, grad);
+            if (!builtinFallbackCols.isEmpty()) {
+                g->applyColorPalette(builtinFallbackCols, grad, applyToSymbols);
+            } else if (matchedPal.isEmpty()) {
+                QStringList availPals = allPals;
+                for (const QString &extra :
+                     { QStringLiteral("Paul Tol Bright"), QStringLiteral("Paul Tol Muted"),
+                       QStringLiteral("ISIJ Monochrome"), QStringLiteral("Cividis") }) {
+                    if (!availPals.contains(extra, Qt::CaseInsensitive))
+                        availPals.append(extra);
+                }
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Unknown color palette '%1'.").arg(rawPal), availPals);
+            } else if (!applyToSymbols) {
+                const QList<QColor> palCols = Graph::paletteColors(matchedPal);
+                if (!palCols.isEmpty())
+                    g->applyColorPalette(palCols, grad, false);
+                else
+                    g->applyColorPaletteByName(matchedPal, grad);
+            } else {
+                g->applyColorPaletteByName(matchedPal, grad);
+            }
         }
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -11875,42 +19157,65 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     QStringLiteral("No matrix spectrogram found on graph '%1'.").arg(ml->name()));
 
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Modify Color Bar"));
-        const bool hasPalette = params.contains(QStringLiteral("palette"))
-                && !params.value(QStringLiteral("palette")).isNull();
+        const QString palStr = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
+                : (!optionalJsonString(params, QStringLiteral("colormap")).trimmed().isEmpty()
+                           ? optionalJsonString(params, QStringLiteral("colormap")).trimmed()
+                           : optionalJsonString(params, QStringLiteral("cmap")).trimmed());
+        const bool hasPalette = !palStr.isEmpty();
         const bool hasReverse = params.contains(QStringLiteral("reverse"))
                 && !params.value(QStringLiteral("reverse")).isNull();
         if (hasPalette) {
             bool isGray = false;
-            const auto preset = parseColorMapPreset(
-                    params.value(QStringLiteral("palette")).toString(), &isGray, true);
-            const bool rev = params.value(QStringLiteral("reverse")).toBool(false);
+            const auto preset = parseColorMapPreset(palStr, &isGray, true);
+            const bool rev = optionalJsonBool(params, QStringLiteral("reverse"), false);
             targetSpec->setColorMapPreset(isGray ? Spectrogram::PresetGrayScale : preset, rev);
         } else if (hasReverse) {
-            targetSpec->setReversePalette(params.value(QStringLiteral("reverse")).toBool(false));
+            targetSpec->setReversePalette(optionalJsonBool(params, QStringLiteral("reverse"), false));
         }
-        if (params.contains(QStringLiteral("z_min")) && params.contains(QStringLiteral("z_max"))) {
-            targetSpec->setCustomValueRange(true,
-                                            params.value(QStringLiteral("z_min")).toDouble(),
-                                            params.value(QStringLiteral("z_max")).toDouble());
+        if (params.contains(QStringLiteral("z_min")) && params.contains(QStringLiteral("z_max"))
+            && !params.value(QStringLiteral("z_min")).isNull()
+            && !params.value(QStringLiteral("z_max")).isNull()) {
+            const double zLo = parseFiniteCoordDouble(params.value(QStringLiteral("z_min")),
+                                                      QStringLiteral("z_min"));
+            const double zHi = parseFiniteCoordDouble(params.value(QStringLiteral("z_max")),
+                                                      QStringLiteral("z_max"));
+            validateFiniteCoordRange(zLo, zHi, QStringLiteral("Colorbar [z_min, z_max]"));
+            targetSpec->setCustomValueRange(true, std::min(zLo, zHi), std::max(zLo, zHi));
         }
         if (params.contains(QStringLiteral("visible"))) {
             targetSpec->showColorScale(QwtPlot::yRight,
-                                       params.value(QStringLiteral("visible")).toBool(true));
+                                       optionalJsonBool(params, QStringLiteral("visible"), true));
         } else if (!targetSpec->hasColorScale()) {
             targetSpec->showColorScale(QwtPlot::yRight, true);
         }
         if (params.contains(QStringLiteral("title")))
-            targetSpec->setColorBarTitle(params.value(QStringLiteral("title")).toString());
-        if (params.contains(QStringLiteral("levels")))
-            targetSpec->setLevelsNumber(std::max(2, params.value(QStringLiteral("levels")).toInt(8)));
-        if (params.contains(QStringLiteral("show_contour_lines"))) {
-            targetSpec->setDisplayMode(QwtPlotSpectrogram::ContourMode,
-                                       params.value(QStringLiteral("show_contour_lines")).toBool());
+            targetSpec->setColorBarTitle(optionalJsonString(params, QStringLiteral("title")));
+        if (params.contains(QStringLiteral("levels"))
+            && !params.value(QStringLiteral("levels")).isNull()) {
+            targetSpec->setLevelsNumber(parseBoundedInt(params, QStringLiteral("levels"), 8, 2, 256));
+        }
+        if (params.contains(QStringLiteral("show_contour_lines"))
+            && !params.value(QStringLiteral("show_contour_lines")).isNull()) {
+            targetSpec->setDisplayMode(
+                    QwtPlotSpectrogram::ContourMode,
+                    optionalJsonBool(params, QStringLiteral("show_contour_lines"), true));
+        }
+        if (params.contains(QStringLiteral("use_colormap_pen"))
+            && !params.value(QStringLiteral("use_colormap_pen")).isNull()) {
+            const bool useCmPen =
+                    optionalJsonBool(params, QStringLiteral("use_colormap_pen"), true);
+            targetSpec->setDefaultContourPen(useCmPen ? QPen(Qt::NoPen) : QPen(Qt::black, 1.2));
+            if (useCmPen
+                && (!params.contains(QStringLiteral("show_contour_lines"))
+                    || params.value(QStringLiteral("show_contour_lines")).isNull())) {
+                targetSpec->setDisplayMode(QwtPlotSpectrogram::ContourMode, true);
+            }
         }
         targetSpec->enforceColorBarArialFont();
         targetSpec->syncColorScale();
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -11924,14 +19229,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         const bool hasVisible = params.contains(QStringLiteral("visible"))
                 && !params.value(QStringLiteral("visible")).isNull();
-        const bool vis = hasVisible ? params.value(QStringLiteral("visible")).toBool(true) : true;
+        const bool vis = hasVisible ? optionalJsonBool(params, QStringLiteral("visible"), true)
+                                    : true;
 
-        const bool hasPosition = params.contains(QStringLiteral("position"))
-                && !params.value(QStringLiteral("position")).isNull()
-                && !params.value(QStringLiteral("position")).toString().trimmed().isEmpty();
+        const QString posStr = optionalJsonString(params, QStringLiteral("position")).trimmed();
+        const bool hasPosition = !posStr.isEmpty();
         Graph::LegendAnchor anchor = Graph::LegendAutoAvoidData;
         if (hasPosition)
-            anchor = parseLegendAnchor(params.value(QStringLiteral("position")).toString());
+            anchor = parseLegendAnchor(posStr);
 
         if (vis || hasPosition) {
             g->setLegendVisible(true);
@@ -11941,8 +19246,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (leg) {
                 if (params.contains(QStringLiteral("text"))
                     && !params.value(QStringLiteral("text")).isNull()) {
-                    leg->setText(params.value(QStringLiteral("text")).toString());
-                } else if (params.value(QStringLiteral("reconstruct")).toBool(false)) {
+                    leg->setText(optionalJsonString(params, QStringLiteral("text")));
+                } else if (optionalJsonBool(params, QStringLiteral("reconstruct"), false)) {
                     g->reconstructLegend();
                     leg = g->legend();
                 }
@@ -11950,24 +19255,49 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     if (params.contains(QStringLiteral("columns"))
                         && !params.value(QStringLiteral("columns")).isNull()) {
                         leg->setNumColumns(
-                                std::max(1, params.value(QStringLiteral("columns")).toInt(1)));
+                                parseBoundedInt(params, QStringLiteral("columns"), 1, 1, 16));
                     }
-                    if (params.contains(QStringLiteral("frame"))
-                        && !params.value(QStringLiteral("frame")).isNull()) {
-                        leg->setFrameStyle(params.value(QStringLiteral("frame")).toInt(0));
+                    const bool hasFrameKey = params.contains(QStringLiteral("frame"))
+                            && !params.value(QStringLiteral("frame")).isNull();
+                    const bool hasFramedKey = params.contains(QStringLiteral("framed"))
+                            && !params.value(QStringLiteral("framed")).isNull();
+                    if (hasFrameKey || hasFramedKey) {
+                        const QString fk = hasFrameKey ? QStringLiteral("frame")
+                                                       : QStringLiteral("framed");
+                        const QJsonValue fv = params.value(fk);
+                        int fStyle = 0;
+                        if (fv.isBool()) {
+                            fStyle = fv.toBool() ? int(Legend::Line) : 0;
+                        } else if (fv.isDouble() && !fv.isBool()) {
+                            fStyle = parseBoundedInt(params, fk, 0, 0, 2);
+                        } else {
+                            throwInvalidParams(
+                                    QStringLiteral("Parameter '%1' must be a boolean or integer in [0, 2].")
+                                            .arg(fk));
+                        }
+                        leg->setFrameStyle(fStyle);
+                        if (fStyle == 0 && !params.contains(QStringLiteral("bg_color"))
+                            && !params.contains(QStringLiteral("background_color"))
+                            && !params.contains(QStringLiteral("background_alpha"))
+                            && !params.contains(QStringLiteral("bg_alpha"))) {
+                            leg->setBackgroundColor(QColor(255, 255, 255, 0));
+                        }
                     }
                     if (params.contains(QStringLiteral("x"))
                         && params.contains(QStringLiteral("y"))
                         && !params.value(QStringLiteral("x")).isNull()
                         && !params.value(QStringLiteral("y")).isNull()) {
-                        leg->setOriginCoord(params.value(QStringLiteral("x")).toDouble(),
-                                            params.value(QStringLiteral("y")).toDouble());
+                        leg->setOriginCoord(
+                                parseFiniteCoordDouble(params.value(QStringLiteral("x")),
+                                                       QStringLiteral("x")),
+                                parseFiniteCoordDouble(params.value(QStringLiteral("y")),
+                                                       QStringLiteral("y")));
                     }
                     QFont lf = leg->font();
                     if (params.contains(QStringLiteral("font_family"))
                         && !params.value(QStringLiteral("font_family")).isNull()) {
                         const QString fam =
-                                params.value(QStringLiteral("font_family")).toString().trimmed();
+                                optionalJsonString(params, QStringLiteral("font_family")).trimmed();
                         if (!fam.isEmpty())
                             lf.setFamily(fam);
                     } else if (lf.family().trimmed().isEmpty()) {
@@ -11976,7 +19306,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     if (params.contains(QStringLiteral("font_size"))
                         && !params.value(QStringLiteral("font_size")).isNull()) {
                         lf.setPointSize(
-                                std::max(4, params.value(QStringLiteral("font_size")).toInt(10)));
+                                parseBoundedInt(params, QStringLiteral("font_size"), 10, 4, 96));
                     }
                     leg->setFont(lf);
                 }
@@ -11986,9 +19316,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QString chosenAnchor;
         double overlapScore = 0.0;
         if (hasPosition) {
-            const int marginPx = params.contains(QStringLiteral("margin_px"))
-                    ? std::max(0, params.value(QStringLiteral("margin_px")).toInt(12))
-                    : 12;
+            const int marginPx = parseBoundedInt(params, QStringLiteral("margin_px"), 12, 0, 256);
             chosenAnchor = g->placeLegendAnchor(anchor, &overlapScore, marginPx);
         }
 
@@ -12131,14 +19459,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.drop_columns")) {
         Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
         QJsonArray colsParam;
-        if (params.value(QStringLiteral("columns")).isArray()) {
-            colsParam = params.value(QStringLiteral("columns")).toArray();
-        } else if (params.contains(QStringLiteral("columns"))
-                   && !params.value(QStringLiteral("columns")).isNull()) {
-            colsParam.append(params.value(QStringLiteral("columns")));
+        const QJsonValue rawCols = params.contains(QStringLiteral("columns"))
+                ? params.value(QStringLiteral("columns"))
+                : params.value(QStringLiteral("cols"));
+        if (rawCols.isArray()) {
+            colsParam = rawCols.toArray();
+        } else if (!rawCols.isUndefined() && !rawCols.isNull()) {
+            colsParam.append(rawCols);
         }
         if (colsParam.isEmpty())
-            throwInvalidParams(QStringLiteral("columns must be a non-empty list of column names."));
+            throwInvalidParams(
+                    QStringLiteral("cols / columns must be a non-empty list of column names."));
 
         QJsonArray shortCols;
         QJsonArray fullCols;
@@ -12157,7 +19488,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         payload[QStringLiteral("column_names")] = fullCols;
         payload[QStringLiteral("column_indices")] = colIndices;
 
-        const QJsonValue xVal = params.value(QStringLiteral("x_column"));
+        const QJsonValue xVal = params.contains(QStringLiteral("x_column"))
+                ? params.value(QStringLiteral("x_column"))
+                : params.value(QStringLiteral("x_col"));
         if (!xVal.isUndefined() && !xVal.isNull()
             && (xVal.isDouble() || !xVal.toString().trimmed().isEmpty())) {
             const int xIdx = resolveColumnIndex(t, xVal, true);
@@ -12169,14 +19502,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             payload[QStringLiteral("x_column")] = QString();
         }
 
-        const bool rightY = params.value(QStringLiteral("right_y")).toBool(false);
-        const bool replace = params.value(QStringLiteral("replace")).toBool(false);
+        const bool rightY = optionalJsonBool(params, QStringLiteral("right_y"), false);
+        const bool replace = optionalJsonBool(params, QStringLiteral("replace"), false);
         payload[QStringLiteral("right_y")] = rightY;
         payload[QStringLiteral("replace")] = replace;
 
         MultiLayer *targetMl = nullptr;
         Graph *targetGraph = nullptr;
-        const QString graphName = params.value(QStringLiteral("graph")).toString().trimmed();
+        const QString graphName = optionalJsonString(params, QStringLiteral("graph")).trimmed();
         if (!graphName.isEmpty()) {
             targetMl = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
             targetGraph = resolveGraphLayer(targetMl, params, true);
@@ -12218,24 +19551,55 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.add_text")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const QString txt = params.value(QStringLiteral("text")).toString();
+        const QString txt = optionalJsonString(params, QStringLiteral("text"));
+        if (txt.trimmed().isEmpty())
+            throwInvalidParams(QStringLiteral("Parameter 'text' must be a non-empty string."));
+        const bool hasCoords = params.contains(QStringLiteral("x"))
+                && params.contains(QStringLiteral("y"))
+                && !params.value(QStringLiteral("x")).isNull()
+                && !params.value(QStringLiteral("y")).isNull();
+        const double xCoord = hasCoords
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("x")), QStringLiteral("x"))
+                : 0.0;
+        const double yCoord = hasCoords
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("y")), QStringLiteral("y"))
+                : 0.0;
+        const int fontPt = parseBoundedInt(params, QStringLiteral("font_size"), 11, 4, 144);
+        int frameSt = int(Legend::None);
+        if (params.contains(QStringLiteral("frame"))
+            && !params.value(QStringLiteral("frame")).isNull()) {
+            const QJsonValue fv = params.value(QStringLiteral("frame"));
+            if (fv.isBool())
+                frameSt = fv.toBool() ? int(Legend::Line) : int(Legend::None);
+            else
+                frameSt = parseBoundedInt(params, QStringLiteral("frame"), int(Legend::None), 0, 4);
+        }
+        const int angleDeg = params.contains(QStringLiteral("angle"))
+                ? qRound(optionalJsonFiniteDouble(params, QStringLiteral("angle"), 0.0, 360.0))
+                : qRound(optionalJsonFiniteDouble(params, QStringLiteral("rotation"), 0.0, 360.0));
+
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Text"));
         auto *mrk = new Legend(g->plotWidget());
         mrk->setText(txt);
-        QFont f(params.contains(QStringLiteral("font_family"))
-                        ? params.value(QStringLiteral("font_family")).toString()
-                        : QStringLiteral("Arial"),
-                std::max(4, params.value(QStringLiteral("font_size")).toInt(11)));
+        QFont f(optionalJsonString(params, QStringLiteral("font_family"), QStringLiteral("Arial")),
+                fontPt);
+        f.setBold(optionalJsonBool(params, QStringLiteral("bold"), false));
         mrk->setFont(f);
         mrk->setTextColor(
                 parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black)));
-        mrk->setFrameStyle(params.value(QStringLiteral("frame")).toInt(int(Legend::None)));
-        if (params.contains(QStringLiteral("x")) && params.contains(QStringLiteral("y"))) {
-            mrk->setOriginCoord(params.value(QStringLiteral("x")).toDouble(),
-                                params.value(QStringLiteral("y")).toDouble());
+        if (params.contains(QStringLiteral("background_color"))
+            || params.contains(QStringLiteral("bg_color"))) {
+            const QJsonValue bgV = params.contains(QStringLiteral("background_color"))
+                    ? params.value(QStringLiteral("background_color"))
+                    : params.value(QStringLiteral("bg_color"));
+            mrk->setBackgroundColor(parseColorValue(bgV, QColor(Qt::white)));
         }
+        mrk->setFrameStyle(frameSt);
+        mrk->setAngle(angleDeg);
+        if (hasCoords)
+            mrk->setOriginCoord(xCoord, yCoord);
         const long id = g->insertTextMarker(mrk);
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("id")] = static_cast<qint64>(id);
@@ -12246,26 +19610,49 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.add_arrow")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
+        if (!params.contains(QStringLiteral("x1")) || !params.contains(QStringLiteral("y1"))
+            || !params.contains(QStringLiteral("x2")) || !params.contains(QStringLiteral("y2"))) {
+            throwInvalidParams(
+                    QStringLiteral("graph.add_arrow requires finite numeric 'x1', 'y1', 'x2', and 'y2'."));
+        }
+        const double x1 = parseFiniteCoordDouble(params.value(QStringLiteral("x1")),
+                                                 QStringLiteral("x1"));
+        const double y1 = parseFiniteCoordDouble(params.value(QStringLiteral("y1")),
+                                                 QStringLiteral("y1"));
+        const double x2 = parseFiniteCoordDouble(params.value(QStringLiteral("x2")),
+                                                 QStringLiteral("x2"));
+        const double y2 = parseFiniteCoordDouble(params.value(QStringLiteral("y2")),
+                                                 QStringLiteral("y2"));
+        const double rawLineW = params.contains(QStringLiteral("width"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("width"), 1.0, 32.0)
+                : optionalJsonFiniteDouble(params, QStringLiteral("line_width"), 1.0, 32.0);
+        if (rawLineW <= 0.0 || rawLineW > 32.0)
+            throwInvalidParams(QStringLiteral("graph.add_arrow width must be in (0, 32]."));
+        const int lineW = std::clamp(qRound(rawLineW), 1, 32);
+        const QJsonValue stV = params.contains(QStringLiteral("style"))
+                ? params.value(QStringLiteral("style"))
+                : params.value(QStringLiteral("line_style"));
+        const int headLen = parseBoundedInt(params, QStringLiteral("head_length"), 9, 1, 64);
+        const int headAng = parseBoundedInt(params, QStringLiteral("head_angle"), 28, 5, 89);
+
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Arrow"));
         ArrowMarker arr;
-        arr.setStartPoint(params.value(QStringLiteral("x1")).toDouble(0.0),
-                          params.value(QStringLiteral("y1")).toDouble(0.0));
-        arr.setEndPoint(params.value(QStringLiteral("x2")).toDouble(1.0),
-                        params.value(QStringLiteral("y2")).toDouble(1.0));
+        arr.setStartPoint(x1, y1);
+        arr.setEndPoint(x2, y2);
         arr.setColor(parseColorValue(params.value(QStringLiteral("color")), QColor(Qt::black)));
-        arr.setWidth(std::max(1, params.value(QStringLiteral("width")).toInt(1)));
-        arr.setStyle(parsePenStyleValue(params.value(QStringLiteral("style")), Qt::SolidLine));
-        arr.drawStartArrow(params.value(QStringLiteral("start_arrow")).toBool(false));
-        arr.drawEndArrow(params.contains(QStringLiteral("end_arrow"))
-                                 ? params.value(QStringLiteral("end_arrow")).toBool(true)
-                                 : true);
-        arr.fillArrowHead(params.contains(QStringLiteral("filled"))
-                                  ? params.value(QStringLiteral("filled")).toBool(true)
-                                  : true);
+        arr.setWidth(lineW);
+        arr.setStyle(parsePenStyleValue(stV, Qt::SolidLine));
+        arr.setHeadLength(headLen);
+        arr.setHeadAngle(headAng);
+        arr.drawStartArrow(optionalJsonBool(params, QStringLiteral("start_arrow"), false));
+        arr.drawEndArrow(optionalJsonBool(params, QStringLiteral("end_arrow"), true));
+        arr.fillArrowHead(optionalJsonBool(
+                params, QStringLiteral("filled"),
+                optionalJsonBool(params, QStringLiteral("fill_head"), true)));
         g->addArrow(&arr);
         const QVector<int> lKeys = g->lineMarkerKeys();
         const int newId = lKeys.isEmpty() ? -1 : lKeys.last();
-        g->replot();
+        replotGraphOrDefer(g);
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("id")] = newId;
@@ -12276,6 +19663,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.remove_marker")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
+        const QString kindParam = optionalJsonString(params, QStringLiteral("kind")).trimmed().toLower();
+        if (!kindParam.isEmpty() && kindParam != QStringLiteral("text")
+            && kindParam != QStringLiteral("arrow") && kindParam != QStringLiteral("line")
+            && kindParam != QStringLiteral("all")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown marker kind '%1' (expected 'text'|'arrow'|'line'|'all').")
+                            .arg(kindParam));
+        }
         Legend *leg = g->legend();
 
         QVector<int> nonLegendTexts;
@@ -12286,8 +19681,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         const QVector<int> arrowIds = g->lineMarkerKeys();
 
-        const bool clearAll = params.value(QStringLiteral("all")).toBool(false)
-                || params.value(QStringLiteral("clear_all")).toBool(false);
+        const bool clearAll = optionalJsonBool(params, QStringLiteral("all"), false)
+                || optionalJsonBool(params, QStringLiteral("clear_all"), false);
         if (clearAll) {
             QVector<int> allToRemove = nonLegendTexts;
             for (int aid : arrowIds)
@@ -12356,15 +19751,31 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.mask_region")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-        const double xMax = params.value(QStringLiteral("x_max")).toDouble();
-        const double yMin = params.value(QStringLiteral("y_min")).toDouble();
-        const double yMax = params.value(QStringLiteral("y_max")).toDouble();
+        if (!params.contains(QStringLiteral("x_min")) || params.value(QStringLiteral("x_min")).isNull()
+            || !params.contains(QStringLiteral("x_max"))
+            || params.value(QStringLiteral("x_max")).isNull()) {
+            throwInvalidParams(
+                    QStringLiteral("graph.mask_region requires finite numeric 'x_min' and 'x_max'."));
+        }
+        const double xMin = parseFiniteCoordDouble(params.value(QStringLiteral("x_min")),
+                                                   QStringLiteral("x_min"));
+        const double xMax = parseFiniteCoordDouble(params.value(QStringLiteral("x_max")),
+                                                   QStringLiteral("x_max"));
+        const double yMin = (params.contains(QStringLiteral("y_min"))
+                             && !params.value(QStringLiteral("y_min")).isNull())
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("y_min")),
+                                         QStringLiteral("y_min"))
+                : -1e300;
+        const double yMax = (params.contains(QStringLiteral("y_max"))
+                             && !params.value(QStringLiteral("y_max")).isNull())
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("y_max")),
+                                         QStringLiteral("y_max"))
+                : 1e300;
         const QRectF rect(QPointF(std::min(xMin, xMax), std::min(yMin, yMax)),
                           QPointF(std::max(xMin, xMax), std::max(yMin, yMax)));
         const bool doMask = params.contains(QStringLiteral("mask"))
-                ? params.value(QStringLiteral("mask")).toBool(true)
-                : !params.value(QStringLiteral("unmask")).toBool(false);
+                ? optionalJsonBool(params, QStringLiteral("mask"), true)
+                : !optionalJsonBool(params, QStringLiteral("unmask"), false);
 
         QList<Graph *> targetLayers;
         targetLayers << g;
@@ -12407,19 +19818,38 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.clear_masks")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         QList<Graph *> targetLayers;
-        if (params.contains(QStringLiteral("layer")))
+        if (params.contains(QStringLiteral("layer"))
+            && !params.value(QStringLiteral("layer")).isNull())
             targetLayers << resolveGraphLayer(ml, params);
         else
             targetLayers = ml->layersList();
+        const bool hasExplicitCurve = params.contains(QStringLiteral("curve"))
+                && !params.value(QStringLiteral("curve")).isNull();
+        bool foundCurve = !hasExplicitCurve;
         for (Graph *lg : targetLayers) {
             if (!lg)
                 continue;
+            int onlyIdx = -1;
+            if (hasExplicitCurve) {
+                const QString ct = resolveCurveTitle(lg, params, QStringLiteral("curve"),
+                                                     targetLayers.size() == 1);
+                if (!ct.isEmpty()) {
+                    onlyIdx = lg->curveIndex(ct);
+                    if (onlyIdx >= 0)
+                        foundCurve = true;
+                }
+            }
             for (int i = 0; i < lg->curves(); ++i) {
+                if (hasExplicitCurve && (onlyIdx < 0 || i != onlyIdx))
+                    continue;
                 if (auto *dc = dynamic_cast<DataCurve *>(lg->curve(i)))
                     dc->clearMasks();
             }
-            lg->replot();
+            replotGraphOrDefer(lg);
         }
+        if (!foundCurve)
+            throwInvalidParams(
+                    QStringLiteral("Curve not found on graph '%1'.").arg(ml->name()));
         outResult[QStringLiteral("ok")] = true;
         return true;
     }
@@ -12510,16 +19940,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         for (Graph *lg : ml->layersList())
             lg->replot();
 
-        const int dpi = params.value(QStringLiteral("dpi")).toInt(ml->pageDpi() > 0 ? ml->pageDpi() : 300);
-        const bool transparent = params.value(QStringLiteral("transparent")).toBool(false);
-        const int quality = params.value(QStringLiteral("quality")).toInt(100);
+        const int defaultDpi = std::clamp(ml->pageDpi() > 0 ? ml->pageDpi() : 300, 36, 2400);
+        const int dpi = parseBoundedInt(params, QStringLiteral("dpi"), defaultDpi, 36, 2400);
+        const bool transparent = optionalJsonBool(params, QStringLiteral("transparent"), false);
+        const int quality = parseBoundedInt(params, QStringLiteral("quality"), 100, 1, 100);
+        const QString fmtParam = optionalJsonString(params, QStringLiteral("format")).trimmed().toLower();
+        const QString effExt = !fmtParam.isEmpty() ? fmtParam : ext;
 
-        if (ext == QStringLiteral("svg")) {
+        if (effExt == QStringLiteral("svg")) {
             ml->exportSVG(absPath);
-        } else if (ext == QStringLiteral("pdf") || ext == QStringLiteral("eps")
-                   || ext == QStringLiteral("ps")) {
+        } else if (effExt == QStringLiteral("pdf") || effExt == QStringLiteral("eps")
+                   || effExt == QStringLiteral("ps")) {
             ml->exportVector(absPath, dpi, true);
-        } else if (ext == QStringLiteral("emf")) {
+        } else if (effExt == QStringLiteral("emf")) {
             ml->exportToFile(absPath);
         } else {
             ml->exportImage(absPath, quality, transparent, dpi);
@@ -12531,9 +19964,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("path")] = absPath;
         outResult[QStringLiteral("bytes")] = QFileInfo(absPath).size();
-        if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg")
-            || ext == QStringLiteral("jpeg") || ext == QStringLiteral("bmp")
-            || ext == QStringLiteral("tif") || ext == QStringLiteral("tiff")) {
+        if (effExt == QStringLiteral("png") || effExt == QStringLiteral("jpg")
+            || effExt == QStringLiteral("jpeg") || effExt == QStringLiteral("bmp")
+            || effExt == QStringLiteral("tif") || effExt == QStringLiteral("tiff")) {
             QImage img(absPath);
             if (!img.isNull()) {
                 outResult[QStringLiteral("width_px")] = img.width();
@@ -12545,7 +19978,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.copy_image")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const int dpi = std::max(72, params.value(QStringLiteral("dpi")).toInt(300));
+        const int dpi = parseBoundedInt(params, QStringLiteral("dpi"), 300, 36, 2400);
         const QImage img = ml->copyPageAsImage(dpi);
         if (!img.isNull() && QApplication::clipboard())
             QApplication::clipboard()->setImage(img);
@@ -12567,6 +20000,286 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 #else
         Q_UNUSED(ml)
         throwRpcRuntime(QStringLiteral("OLE clipboard export is only supported on Windows."));
+#endif
+    }
+
+    if (method == QStringLiteral("graph.auto_layout")
+        || method == QStringLiteral("graph.fix_layout")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        outResult = runAutoLayoutSolver(d_app, ml, params);
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.to_python")) {
+        const QString reqWin = !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("graph")).trimmed()
+                : optionalJsonString(params, QStringLiteral("window")).trimmed();
+        MyWidget *targetWin = nullptr;
+        if (!reqWin.isEmpty()) {
+            targetWin = findWindowByName(d_app, reqWin);
+            if (!targetWin) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("Window not found: '%1'.").arg(reqWin),
+                        collectWindowNames(d_app));
+            }
+        } else {
+            if (QWidget *actW = d_app->d_workspace.activeSubWindow())
+                targetWin = qobject_cast<MyWidget *>(actW);
+            if (!targetWin) {
+                for (MyWidget *w : d_app->windowsList()) {
+                    if (w && (w->inherits("MultiLayer") || w->inherits("Graph3D")))
+                        targetWin = w;
+                }
+            }
+            if (!targetWin && !d_app->windowsList().isEmpty())
+                targetWin = d_app->windowsList().last();
+            if (!targetWin)
+                throwInvalidParams(QStringLiteral("No open graph or data window in workspace."));
+        }
+
+        const bool standalone = optionalJsonBool(params, QStringLiteral("standalone"), true);
+        const QString embedData =
+                optionalJsonString(params, QStringLiteral("embed_data"), QStringLiteral("inline"))
+                        .trimmed()
+                        .toLower();
+        if (embedData != QStringLiteral("inline") && embedData != QStringLiteral("csv")
+            && embedData != QStringLiteral("reference")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown embed_data '%1' (expected 'inline'|'csv'|'reference').")
+                            .arg(embedData));
+        }
+
+        const QString outPathRaw = !optionalJsonString(params, QStringLiteral("path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("output_path")).trimmed();
+        QString absOutPath;
+        QString sidecarDir;
+        if (!outPathRaw.isEmpty()) {
+            const QFileInfo fi(outPathRaw);
+            if (!fi.dir().exists())
+                QDir().mkpath(fi.dir().absolutePath());
+            absOutPath = fi.absoluteFilePath();
+            sidecarDir = fi.dir().absolutePath();
+        }
+
+        QStringList refTables, refMatrices;
+        const QString codeStr = generatePythonScriptInternal(
+                d_app, targetWin, standalone, embedData, sidecarDir, &refTables, &refMatrices);
+
+        if (!absOutPath.isEmpty()) {
+            QSaveFile sf(absOutPath);
+            const QByteArray utf8Bytes = codeStr.toUtf8();
+            if (!sf.open(QIODevice::WriteOnly) || sf.write(utf8Bytes) != utf8Bytes.size()
+                || !sf.commit()) {
+                throwRpcRuntime(
+                        QStringLiteral("Failed to write Python script file '%1'.").arg(absOutPath));
+            }
+        }
+
+        const int lineCount = codeStr.trimmed().isEmpty()
+                ? 0
+                : codeStr.trimmed().split(QLatin1Char('\n')).size();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = targetWin->name();
+        outResult[QStringLiteral("window")] = targetWin->name();
+        outResult[QStringLiteral("kind")] = windowTypeString(targetWin);
+        outResult[QStringLiteral("script")] = codeStr;
+        outResult[QStringLiteral("code")] = codeStr;
+        outResult[QStringLiteral("lines")] = lineCount;
+        outResult[QStringLiteral("tables")] = toJsonArray(refTables);
+        outResult[QStringLiteral("matrices")] = toJsonArray(refMatrices);
+        if (!absOutPath.isEmpty()) {
+            outResult[QStringLiteral("path")] = absOutPath;
+            outResult[QStringLiteral("output_path")] = absOutPath;
+        }
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.export_ole")) {
+#ifdef Q_OS_WIN
+        const int dpi = parseBoundedInt(params, QStringLiteral("dpi"), 300, 72, 2400);
+        const bool activeLayerOnly =
+                optionalJsonBool(params, QStringLiteral("active_layer_only"), false);
+        const bool includeBase64 =
+                optionalJsonBool(params, QStringLiteral("include_base64"), true);
+        const bool skipProjectStream =
+                optionalJsonBool(params, QStringLiteral("skip_project_stream"), false);
+        const QString olePathRaw = !optionalJsonString(params, QStringLiteral("ole_path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("ole_path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("path")).trimmed();
+        const bool needOleCompound = !skipProjectStream || !olePathRaw.isEmpty();
+
+        const QString reqGraph = optionalJsonString(params, QStringLiteral("graph")).trimmed();
+        Graph3D *targetG3D = nullptr;
+        MultiLayer *ml = nullptr;
+        if (!reqGraph.isEmpty()) {
+            if (MyWidget *mw = findWindowByName(d_app, reqGraph)) {
+                if (mw->inherits("Graph3D"))
+                    targetG3D = static_cast<Graph3D *>(mw);
+            }
+        } else if (QWidget *actW = d_app->d_workspace.activeSubWindow()) {
+            if (actW->inherits("Graph3D"))
+                targetG3D = static_cast<Graph3D *>(actW);
+        }
+        if (!targetG3D)
+            ml = resolveMultiLayer(d_app, params);
+
+        QByteArray projBytes;
+        if (needOleCompound) {
+            sanitizeAllProjectFunctionCurves(d_app);
+            projBytes = d_app->saveProjectToByteArray();
+            if (projBytes.isEmpty()) {
+                throwRpcRuntime(
+                        QStringLiteral("Failed to serialize .sciprj payload for OLE export."));
+            }
+        }
+
+        SciDAVisOle::OleGraphPayload payload;
+        payload.projectBytes = projBytes;
+
+        OleRenderedGraph rg;
+        QString targetName;
+        if (targetG3D) {
+            targetName = targetG3D->name();
+            payload.targetWindow = targetName;
+            payload.targetLayer = 0;
+            QImage fb;
+            if (targetG3D->sp) {
+                targetG3D->sp->makeCurrent();
+                fb = targetG3D->sp->grabFramebuffer();
+            }
+            rg = SciDAVisEmf::renderFromImage(fb);
+        } else {
+            targetName = ml->name();
+            payload.targetWindow = targetName;
+            payload.targetLayer = 0;
+            for (Graph *lg : ml->layersList()) {
+                if (lg) {
+                    enforceArialGraphFonts(lg);
+                    lg->replot();
+                }
+            }
+            Graph *singleG = activeLayerOnly ? ml->activeGraph() : nullptr;
+            if (singleG) {
+                for (int i = 1; i <= ml->layers(); ++i) {
+                    if (ml->layer(i) == singleG) {
+                        payload.targetLayer = i;
+                        break;
+                    }
+                }
+            }
+            rg = SciDAVisEmf::renderMultiLayer(ml, singleG, needOleCompound);
+        }
+        if (rg.emfBytes.isEmpty())
+            throwRpcRuntime(QStringLiteral("Failed to render vector EMF preview for OLE export."));
+
+        payload.emfBytes = rg.emfBytes;
+        payload.dibBytes = rg.dibBytes;
+        payload.extentHm = rg.extentHm;
+        payload.pixelSize = rg.pixelSize;
+
+        // Build self-contained CFBF OLE Compound Storage (.bin) in memory when needed (zero COM out-of-proc launch!)
+        QByteArray oleCompoundBytes;
+        if (needOleCompound) {
+            ILockBytes *lockBytes = nullptr;
+            HRESULT hr = CreateILockBytesOnHGlobal(nullptr, TRUE, &lockBytes);
+            if (SUCCEEDED(hr) && lockBytes) {
+                IStorage *stg = nullptr;
+                hr = StgCreateDocfileOnILockBytes(
+                        lockBytes, STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, &stg);
+                if (SUCCEEDED(hr) && stg) {
+                    WriteClassStg(stg, SciDAVisOle::graph_clsid);
+                    hr = SciDAVisOle::savePayloadToStorage(stg, payload);
+                    stg->Commit(STGC_DEFAULT);
+                    stg->Release();
+                    if (SUCCEEDED(hr)) {
+                        STATSTG stat{};
+                        if (SUCCEEDED(lockBytes->Stat(&stat, STATFLAG_NONAME))
+                            && stat.cbSize.QuadPart > 0
+                            && stat.cbSize.QuadPart < 256000000ULL) {
+                            HGLOBAL hg = nullptr;
+                            if (SUCCEEDED(GetHGlobalFromILockBytes(lockBytes, &hg)) && hg) {
+                                const void *rawPtr = GlobalLock(hg);
+                                if (rawPtr) {
+                                    oleCompoundBytes = QByteArray(
+                                            static_cast<const char *>(rawPtr),
+                                            static_cast<int>(stat.cbSize.QuadPart));
+                                    GlobalUnlock(hg);
+                                }
+                            }
+                        }
+                    }
+                }
+                lockBytes->Release();
+            }
+            if (oleCompoundBytes.isEmpty())
+                throwRpcRuntime(QStringLiteral("Failed to build OLE Compound Storage binary."));
+        }
+
+        const QString emfPathRaw = optionalJsonString(params, QStringLiteral("emf_path")).trimmed();
+        QString absEmfPath;
+        if (!emfPathRaw.isEmpty()) {
+            const QFileInfo efi(emfPathRaw);
+            if (!efi.dir().exists())
+                QDir().mkpath(efi.dir().absolutePath());
+            absEmfPath = efi.absoluteFilePath();
+            QSaveFile ef(absEmfPath);
+            if (!ef.open(QIODevice::WriteOnly) || ef.write(rg.emfBytes) != rg.emfBytes.size()
+                || !ef.commit()) {
+                throwRpcRuntime(
+                        QStringLiteral("Failed to write EMF preview '%1'.").arg(absEmfPath));
+            }
+        }
+
+        QString absOlePath;
+        if (!olePathRaw.isEmpty()) {
+            const QFileInfo ofi(olePathRaw);
+            if (!ofi.dir().exists())
+                QDir().mkpath(ofi.dir().absolutePath());
+            absOlePath = ofi.absoluteFilePath();
+            QSaveFile of(absOlePath);
+            if (!of.open(QIODevice::WriteOnly)
+                || of.write(oleCompoundBytes) != oleCompoundBytes.size() || !of.commit()) {
+                throwRpcRuntime(
+                        QStringLiteral("Failed to write OLE storage file '%1'.").arg(absOlePath));
+            }
+        }
+
+        const double widthMm = (rg.extentHm.cx > 0) ? (double(rg.extentHm.cx) / 100.0) : 85.0;
+        const double heightMm = (rg.extentHm.cy > 0) ? (double(rg.extentHm.cy) / 100.0) : 65.0;
+
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = targetName;
+        outResult[QStringLiteral("clsid")] =
+                QStringLiteral("{8E6B9541-3C74-4D28-A915-7D84E5A12001}");
+        outResult[QStringLiteral("prog_id")] = QStringLiteral("ToriGraph.Graph.1");
+        outResult[QStringLiteral("dpi")] = dpi;
+        outResult[QStringLiteral("width_mm")] = safeJsonDouble(widthMm);
+        outResult[QStringLiteral("height_mm")] = safeJsonDouble(heightMm);
+        outResult[QStringLiteral("width_hm")] = static_cast<int>(rg.extentHm.cx);
+        outResult[QStringLiteral("height_hm")] = static_cast<int>(rg.extentHm.cy);
+        outResult[QStringLiteral("width_px")] = rg.pixelSize.width();
+        outResult[QStringLiteral("height_px")] = rg.pixelSize.height();
+        if (!skipProjectStream)
+            outResult[QStringLiteral("sciprj_xml")] = QString::fromUtf8(projBytes);
+        outResult[QStringLiteral("emf_bytes")] = rg.emfBytes.size();
+        outResult[QStringLiteral("ole_bytes")] = oleCompoundBytes.size();
+        if (includeBase64) {
+            outResult[QStringLiteral("emf_base64")] = QString::fromLatin1(rg.emfBytes.toBase64());
+            if (!oleCompoundBytes.isEmpty()) {
+                outResult[QStringLiteral("ole_base64")] =
+                        QString::fromLatin1(oleCompoundBytes.toBase64());
+            }
+        }
+        if (!absEmfPath.isEmpty())
+            outResult[QStringLiteral("emf_path")] = absEmfPath;
+        if (!absOlePath.isEmpty()) {
+            outResult[QStringLiteral("ole_path")] = absOlePath;
+            outResult[QStringLiteral("path")] = absOlePath;
+        }
+        return true;
+#else
+        throwRpcRuntime(QStringLiteral("OLE export is only supported on Windows."));
 #endif
     }
 
@@ -12601,14 +20314,32 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (params.contains(QStringLiteral("x_rotation"))
             || params.contains(QStringLiteral("y_rotation"))
             || params.contains(QStringLiteral("z_rotation"))) {
-            g3d->setRotation(params.value(QStringLiteral("x_rotation")).toDouble(g3d->xRotation()),
-                             params.value(QStringLiteral("y_rotation")).toDouble(g3d->yRotation()),
-                             params.value(QStringLiteral("z_rotation")).toDouble(g3d->zRotation()));
+            const double rx = optionalJsonFiniteDouble(params, QStringLiteral("x_rotation"),
+                                                       g3d->xRotation(), 36000.0);
+            const double ry = optionalJsonFiniteDouble(params, QStringLiteral("y_rotation"),
+                                                       g3d->yRotation(), 36000.0);
+            const double rz = optionalJsonFiniteDouble(params, QStringLiteral("z_rotation"),
+                                                       g3d->zRotation(), 36000.0);
+            g3d->setRotation(rx, ry, rz);
         }
-        if (params.contains(QStringLiteral("zoom")))
-            g3d->setZoom(params.value(QStringLiteral("zoom")).toDouble(g3d->zoom()));
+        if (params.contains(QStringLiteral("zoom")) && !params.value(QStringLiteral("zoom")).isNull()) {
+            const double reqZ = parseFiniteCoordDouble(params.value(QStringLiteral("zoom")),
+                                                       QStringLiteral("zoom"), 100000.0);
+            if (reqZ <= 0.0)
+                throwInvalidParams(QStringLiteral("3D 'zoom' must be > 0."));
+            double baseHullZoom = 1.0;
+            if (g3d->sp) {
+                const Qwt3D::ParallelEpiped hull = g3d->sp->hull();
+                const double d = (hull.maxVertex - hull.minVertex).length();
+                if (std::isfinite(d) && d > 1e-12)
+                    baseHullZoom = d / std::sqrt(3.0);
+            }
+            const double effZoom =
+                    (reqZ <= 10.0 && baseHullZoom > 10.0) ? (reqZ * baseHullZoom) : reqZ;
+            g3d->setZoom(effZoom);
+        }
         if (params.contains(QStringLiteral("orthogonal")))
-            g3d->setOrtho(params.value(QStringLiteral("orthogonal")).toBool(true));
+            g3d->setOrtho(optionalJsonBool(params, QStringLiteral("orthogonal"), true));
 
         if (params.contains(QStringLiteral("scale"))
             || params.contains(QStringLiteral("x_scale"))
@@ -12865,7 +20596,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         if (params.contains(QStringLiteral("resolution"))
             && !params.value(QStringLiteral("resolution")).isNull()) {
-            g3d->setResolution(parseStrictPositiveInt(params, QStringLiteral("resolution"), 1));
+            g3d->setResolution(parseBoundedInt(params, QStringLiteral("resolution"), 1, 1, 32));
         }
         if (params.contains(QStringLiteral("legend"))
             || params.contains(QStringLiteral("colorbar"))) {
@@ -12906,18 +20637,25 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     // 6. All Curve Fitting & Peak Analysis (analysis.*)
     // ------------------------------------------------------------------------
     if (method == QStringLiteral("analysis.list_fit_models")) {
+        const QString reqCat = optionalJsonString(params, QStringLiteral("category")).trimmed();
         const QStringList names = NonLinearFit::builtInModelNames();
         QJsonArray arr;
         for (const QString &nm : names) {
+            const QString cat = NonLinearFit::builtInModelCategory(nm);
+            if (!reqCat.isEmpty() && cat.compare(reqCat, Qt::CaseInsensitive) != 0
+                && !cat.contains(reqCat, Qt::CaseInsensitive)) {
+                continue;
+            }
             QJsonObject mObj;
             mObj[QStringLiteral("name")] = nm;
-            mObj[QStringLiteral("category")] = NonLinearFit::builtInModelCategory(nm);
+            mObj[QStringLiteral("category")] = cat;
             mObj[QStringLiteral("formula")] = NonLinearFit::builtInModelFormula(nm);
             mObj[QStringLiteral("parameters")] =
                     toJsonArray(NonLinearFit::builtInModelParameters(nm));
             mObj[QStringLiteral("description")] = NonLinearFit::builtInModelDescription(nm);
             arr.append(mObj);
         }
+        outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("count")] = arr.size();
         outResult[QStringLiteral("models")] = arr;
         return true;
@@ -13142,21 +20880,33 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         RpcNonLinearFit nlf(d_app, g);
         const bool plotCurve = params.contains(QStringLiteral("plot_curve"))
-                ? params.value(QStringLiteral("plot_curve")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("plot_curve"), true)
                 : true;
         nlf.setSuppressCurveOutput(!plotCurve);
         nlf.setMaximumIterations(
-                std::max(20, params.value(QStringLiteral("max_iter")).toInt(1000)));
-        nlf.setTolerance(params.value(QStringLiteral("tolerance")).toDouble(1e-7));
-        if (params.contains(QStringLiteral("points")))
-            nlf.generateFunction(true, std::max(20, params.value(QStringLiteral("points")).toInt(200)));
+                parseBoundedInt(params, QStringLiteral("max_iter"), 1000, 1, 50000));
+        nlf.setTolerance(std::max(
+                1e-15, optionalJsonFiniteDouble(params, QStringLiteral("tolerance"), 1e-7, 1.0)));
+        if (params.contains(QStringLiteral("points"))
+            && !params.value(QStringLiteral("points")).isNull()) {
+            nlf.generateFunction(
+                    true, parseBoundedInt(params, QStringLiteral("points"), 200, 10, 1000000));
+        }
 
-        const QString modelName = params.value(QStringLiteral("model")).toString().trimmed();
-        const QString customFormula = params.value(QStringLiteral("formula")).toString().trimmed();
+        const QString modelName = optionalJsonString(params, QStringLiteral("model")).trimmed();
+        const QString customFormula =
+                optionalJsonString(params, QStringLiteral("formula")).trimmed();
+        if (!modelName.isEmpty() && !customFormula.isEmpty()) {
+            throwInvalidParams(
+                    QStringLiteral("Provide either 'model' or 'formula' in analysis.fit_nonlinear, not both."));
+        }
         QString resolvedBuiltInModel = modelName;
+        bool isLinearBuiltIn = false;
         if (!modelName.isEmpty()) {
             const QString mLow = modelName.toLower();
-            if (mLow == QStringLiteral("gaussian") || mLow == QStringLiteral("normal"))
+            if (mLow == QStringLiteral("linear") || mLow == QStringLiteral("line"))
+                isLinearBuiltIn = true;
+            else if (mLow == QStringLiteral("gaussian") || mLow == QStringLiteral("normal"))
                 resolvedBuiltInModel = QStringLiteral("Gauss");
             else if (mLow == QStringLiteral("gaussianamp") || mLow == QStringLiteral("gaussian_amp")
                      || mLow == QStringLiteral("gauss_amp"))
@@ -13172,11 +20922,17 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 resolvedBuiltInModel = QStringLiteral("ExpGrow1");
         }
         bool customFormulaSyntaxOk = true;
-        if (!resolvedBuiltInModel.isEmpty()) {
+        if (isLinearBuiltIn) {
+            nlf.setParametersList(QStringList{ QStringLiteral("A"), QStringLiteral("B") });
+            nlf.setFormula(QStringLiteral("A + B*x"));
+        } else if (!resolvedBuiltInModel.isEmpty()) {
             if (!nlf.setBuiltInModel(resolvedBuiltInModel)) {
+                QStringList availModels = NonLinearFit::builtInModelNames();
+                if (!availModels.contains(QStringLiteral("Linear"), Qt::CaseInsensitive))
+                    availModels.prepend(QStringLiteral("Linear"));
                 throwInvalidParamsWithAvailable(
                         QStringLiteral("Unknown built-in nonlinear fit model '%1'.").arg(modelName),
-                        NonLinearFit::builtInModelNames());
+                        availModels);
             }
         } else if (!customFormula.isEmpty()) {
             QStringList pNames;
@@ -13214,7 +20970,24 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             throwInvalidParams(
                     QStringLiteral("Insufficient data on curve '%1' for nonlinear fit.").arg(curveTitle));
 
-        if (!resolvedBuiltInModel.isEmpty())
+        if (isLinearBuiltIn) {
+            const auto &xv = nlf.x();
+            const auto &yv = nlf.y();
+            double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+            const size_t nLin = std::min(xv.size(), yv.size());
+            for (size_t i = 0; i < nLin; ++i) {
+                sx += xv[i];
+                sy += yv[i];
+                sxx += xv[i] * xv[i];
+                sxy += xv[i] * yv[i];
+            }
+            const double denom = double(nLin) * sxx - sx * sx;
+            const double bGuess =
+                    (nLin >= 2 && std::abs(denom) > 1e-15) ? ((double(nLin) * sxy - sx * sy) / denom) : 1.0;
+            const double aGuess = (nLin >= 1) ? ((sy - bGuess * sx) / double(nLin)) : 0.0;
+            nlf.setInitialGuess(0, aGuess);
+            nlf.setInitialGuess(1, bGuess);
+        } else if (!resolvedBuiltInModel.isEmpty())
             nlf.guessBuiltInParameters(resolvedBuiltInModel);
         else if (customFormulaSyntaxOk)
             nlf.guessInitialValues();
@@ -13384,8 +21157,9 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("p_value")] =
                 validChi2 ? safeJsonDouble(nlf.anovaPValue()) : QJsonValue::Null;
 
-        const int bootSamples = params.value(QStringLiteral("bootstrap")).toInt(
-                params.value(QStringLiteral("bootstrap_samples")).toInt(0));
+        const int bootSamples = params.contains(QStringLiteral("bootstrap"))
+                ? parseBoundedInt(params, QStringLiteral("bootstrap"), 0, 0, 10000)
+                : parseBoundedInt(params, QStringLiteral("bootstrap_samples"), 0, 0, 10000);
         if (bootSamples > 0 && converged) {
             const auto boot = nlf.runBootstrapCI(bootSamples, confLevel, 0);
             QJsonObject bootObj;
@@ -13427,11 +21201,49 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                     QStringLiteral("Global fit requires at least 2 curves on the graph."));
 
         RpcNonLinearFit nlf(d_app, g);
-        const QString modelName = params.value(QStringLiteral("model")).toString().trimmed();
-        const QString customFormula = params.value(QStringLiteral("formula")).toString().trimmed();
+        nlf.setMaximumIterations(
+                parseBoundedInt(params, QStringLiteral("max_iter"), 200, 1, 50000));
+        nlf.setTolerance(std::max(
+                1e-14, optionalJsonFiniteDouble(params, QStringLiteral("tolerance"), 1e-4, 1.0)));
+        const QString modelName = optionalJsonString(params, QStringLiteral("model")).trimmed();
+        const QString customFormula =
+                optionalJsonString(params, QStringLiteral("formula")).trimmed();
+        if (!modelName.isEmpty() && !customFormula.isEmpty()) {
+            throwInvalidParams(
+                    QStringLiteral("Provide either 'model' or 'formula' in analysis.fit_global, not both."));
+        }
         if (!modelName.isEmpty()) {
-            if (!nlf.setBuiltInModel(modelName))
-                throwInvalidParams(QStringLiteral("Unknown built-in model '%1'.").arg(modelName));
+            QString resolvedGlobalModel = modelName;
+            const QString mLow = modelName.toLower();
+            if (mLow == QStringLiteral("linear") || mLow == QStringLiteral("line")) {
+                nlf.setParametersList(QStringList{ QStringLiteral("A"), QStringLiteral("B") });
+                nlf.setFormula(QStringLiteral("A + B*x"));
+            } else {
+                if (mLow == QStringLiteral("gaussian") || mLow == QStringLiteral("normal"))
+                    resolvedGlobalModel = QStringLiteral("Gauss");
+                else if (mLow == QStringLiteral("gaussianamp")
+                         || mLow == QStringLiteral("gaussian_amp")
+                         || mLow == QStringLiteral("gauss_amp"))
+                    resolvedGlobalModel = QStringLiteral("GaussAmp");
+                else if (mLow == QStringLiteral("lorentzian") || mLow == QStringLiteral("cauchy"))
+                    resolvedGlobalModel = QStringLiteral("Lorentz");
+                else if (mLow == QStringLiteral("sigmoidal") || mLow == QStringLiteral("sigmoid"))
+                    resolvedGlobalModel = QStringLiteral("Boltzmann");
+                else if (mLow == QStringLiteral("exponential")
+                         || mLow == QStringLiteral("expdecay")
+                         || mLow == QStringLiteral("exponential_decay"))
+                    resolvedGlobalModel = QStringLiteral("ExpDec1");
+                else if (mLow == QStringLiteral("exponential_growth"))
+                    resolvedGlobalModel = QStringLiteral("ExpGrow1");
+                if (!nlf.setBuiltInModel(resolvedGlobalModel)) {
+                    QStringList availModels = NonLinearFit::builtInModelNames();
+                    if (!availModels.contains(QStringLiteral("Linear"), Qt::CaseInsensitive))
+                        availModels.prepend(QStringLiteral("Linear"));
+                    throwInvalidParamsWithAvailable(
+                            QStringLiteral("Unknown built-in model '%1'.").arg(modelName),
+                            availModels);
+                }
+            }
         } else if (!customFormula.isEmpty()) {
             QStringList pNames;
             for (const QJsonValue &pv : params.value(QStringLiteral("param_names")).toArray()) {
@@ -13455,7 +21267,9 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const QStringList pNames = nlf.parameterNames();
         QVector<bool> sharedFlags(pNames.size(), false);
-        const QJsonValue sv = params.value(QStringLiteral("shared"));
+        const QJsonValue sv = params.contains(QStringLiteral("shared"))
+                ? params.value(QStringLiteral("shared"))
+                : params.value(QStringLiteral("shared_params"));
         if (sv.isArray()) {
             const QJsonArray sa = sv.toArray();
             for (int i = 0; i < sa.size(); ++i) {
@@ -13921,6 +21735,14 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
 
         RpcNonLinearFit nlf(d_app, g);
+        nlf.setMaximumIterations(
+                parseBoundedInt(params, QStringLiteral("max_iter"), 150, 1, 10000));
+        if (params.contains(QStringLiteral("tolerance"))
+            && !params.value(QStringLiteral("tolerance")).isNull()) {
+            nlf.setTolerance(std::clamp(
+                    optionalJsonFiniteDouble(params, QStringLiteral("tolerance"), 1e-6, 1.0),
+                    1e-14, 1.0));
+        }
         if (!nlf.setDataFromCurve(curveTitle, g) || nlf.error())
             throwRpcRuntime(QStringLiteral("Failed to load curve '%1' for implicit ODR fit.")
                                     .arg(curveTitle));
@@ -13939,10 +21761,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         double rGuess = 0.5 * (rxGuess + ryGuess);
 
         const QString rawModelStr = params.contains(QStringLiteral("model"))
-                ? params.value(QStringLiteral("model")).toString()
-                : params.value(QStringLiteral("shape")).toString();
+                ? optionalJsonString(params, QStringLiteral("model"))
+                : optionalJsonString(params, QStringLiteral("shape"));
         const QString model = rawModelStr.trimmed().toLower();
-        const QString customFormula = params.value(QStringLiteral("formula")).toString().trimmed();
+        const QString customFormula =
+                optionalJsonString(params, QStringLiteral("formula")).trimmed();
+        if (!model.isEmpty() && model != QStringLiteral("custom") && !customFormula.isEmpty()) {
+            throwInvalidParams(QStringLiteral(
+                    "Provide either built-in 'model' or custom 'formula' in analysis.fit_implicit_odr, not both."));
+        }
         QString resolvedModel = model;
         QString expr;
         QStringList pNames;
@@ -14006,43 +21833,56 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             }
         }
 
-        const int beforeCurves = g->curves();
+        const bool plotCurve = optionalJsonBool(params, QStringLiteral("plot_curve"), true);
+        const bool isAnalyticalConic = (resolvedModel == QStringLiteral("circle")
+                                        || resolvedModel == QStringLiteral("ellipse"));
+        if (!plotCurve || isAnalyticalConic)
+            nlf.setSuppressCurveOutput(true);
+
         const bool ok = nlf.fitImplicitODR(expr, pNames, initVals);
         const auto &resVec = nlf.results();
         const auto &errVec = nlf.errors();
-        if (ok && g->curves() > beforeCurves) {
-            if (auto *fc = dynamic_cast<FunctionCurve *>(g->plotItem(g->curves() - 1))) {
-                constexpr double kTwoPi = 6.283185307179586476925286766559;
-                if (resolvedModel == QStringLiteral("circle") && resVec.size() >= 3) {
-                    const double xc = resVec[0];
-                    const double yc = resVec[1];
-                    const double rAbs = std::abs(resVec[2]);
-                    fc->setFunctionType(FunctionCurve::Parametric);
-                    fc->setVariable(QStringLiteral("t"));
-                    fc->setRange(0.0, kTwoPi);
-                    fc->setFormulas(QStringList{
-                            QStringLiteral("(%1)+(%2)*cos(t)").arg(xc, 0, 'g', 15).arg(rAbs, 0, 'g', 15),
-                            QStringLiteral("(%1)+(%2)*sin(t)").arg(yc, 0, 'g', 15).arg(rAbs, 0, 'g', 15) });
-                } else if (resolvedModel == QStringLiteral("ellipse") && resVec.size() >= 5) {
-                    const double xc = resVec[0];
-                    const double yc = resVec[1];
-                    const double aAbs = std::abs(resVec[2]);
-                    const double bAbs = std::abs(resVec[3]);
-                    const double th = resVec[4];
-                    const double ct = std::cos(th);
-                    const double st = std::sin(th);
-                    fc->setFunctionType(FunctionCurve::Parametric);
-                    fc->setVariable(QStringLiteral("t"));
-                    fc->setRange(0.0, kTwoPi);
-                    fc->setFormulas(QStringList{
-                            QStringLiteral("(%1)+(%2)*cos(t)-(%3)*sin(t)")
-                                    .arg(xc, 0, 'g', 15)
-                                    .arg(aAbs * ct, 0, 'g', 15)
-                                    .arg(bAbs * st, 0, 'g', 15),
-                            QStringLiteral("(%1)+(%2)*cos(t)+(%3)*sin(t)")
-                                    .arg(yc, 0, 'g', 15)
-                                    .arg(aAbs * st, 0, 'g', 15)
-                                    .arg(bAbs * ct, 0, 'g', 15) });
+        if (ok && plotCurve && isAnalyticalConic) {
+            constexpr double kTwoPi = 6.283185307179586476925286766559;
+            QStringList paramFormulas;
+            QString fitTitle;
+            if (resolvedModel == QStringLiteral("circle") && resVec.size() >= 3) {
+                const double xc = resVec[0];
+                const double yc = resVec[1];
+                const double rAbs = std::max(1e-12, std::abs(resVec[2]));
+                paramFormulas << QStringLiteral("(%1)+(%2)*cos(t)")
+                                         .arg(xc, 0, 'g', 15)
+                                         .arg(rAbs, 0, 'g', 15)
+                              << QStringLiteral("(%1)+(%2)*sin(t)")
+                                         .arg(yc, 0, 'g', 15)
+                                         .arg(rAbs, 0, 'g', 15);
+                fitTitle = QStringLiteral("ODR Circle Fit");
+            } else if (resolvedModel == QStringLiteral("ellipse") && resVec.size() >= 5) {
+                const double xc = resVec[0];
+                const double yc = resVec[1];
+                const double aAbs = std::max(1e-12, std::abs(resVec[2]));
+                const double bAbs = std::max(1e-12, std::abs(resVec[3]));
+                const double th = resVec[4];
+                const double ct = std::cos(th);
+                const double st = std::sin(th);
+                paramFormulas << QStringLiteral("(%1)+(%2)*cos(t)-(%3)*sin(t)")
+                                         .arg(xc, 0, 'g', 15)
+                                         .arg(aAbs * ct, 0, 'g', 15)
+                                         .arg(bAbs * st, 0, 'g', 15)
+                              << QStringLiteral("(%1)+(%2)*cos(t)+(%3)*sin(t)")
+                                         .arg(yc, 0, 'g', 15)
+                                         .arg(aAbs * st, 0, 'g', 15)
+                                         .arg(bAbs * ct, 0, 'g', 15);
+                fitTitle = QStringLiteral("ODR Ellipse Fit");
+            }
+            if (paramFormulas.size() == 2) {
+                QList<double> tRange;
+                tRange << 0.0 << kTwoPi;
+                if (g->addFunctionCurve(d_app, FunctionCurve::Parametric, paramFormulas,
+                                        QStringLiteral("t"), tRange, 256, fitTitle)) {
+                    const int fci = g->curves() - 1;
+                    if (fci >= 0)
+                        g->setCurvePen(fci, QPen(QColor(213, 94, 0), 2.0, Qt::SolidLine));
                 }
             }
         }
@@ -14088,9 +21928,12 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                    || mStr == QStringLiteral("linear")) {
             sm = GraphStatsAndSurfaceFit::Plane2D;
         } else if (mStr == QStringLiteral("poly2d") || mStr == QStringLiteral("quadratic")
-                   || mStr == QStringLiteral("polynomial")) {
+                   || mStr == QStringLiteral("polynomial")
+                   || mStr == QStringLiteral("paraboloid")) {
             sm = GraphStatsAndSurfaceFit::Poly2DQuadratic;
-        } else if (mStr == QStringLiteral("lorentz2d") || mStr == QStringLiteral("lorentz")) {
+        } else if (mStr == QStringLiteral("lorentz2d") || mStr == QStringLiteral("lorentz")
+                   || mStr == QStringLiteral("lorentzian2d")
+                   || mStr == QStringLiteral("lorentzian")) {
             sm = GraphStatsAndSurfaceFit::Lorentz2D;
         } else if (mStr == QStringLiteral("pseudovoigt2d") || mStr == QStringLiteral("pseudovoigt")
                    || mStr == QStringLiteral("pseudo_voigt2d")) {
@@ -14102,12 +21945,18 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             sm = GraphStatsAndSurfaceFit::Chebyshev2D;
         } else {
             throwInvalidParams(
-                    QStringLiteral("Unknown 3D surface fit model '%1' (expected plane|poly2d|gauss2d|lorentz2d|pseudovoigt2d|exp2d|chebyshev2d|custom).")
+                    QStringLiteral("Unknown 3D surface fit model '%1' (expected plane|paraboloid|poly2d|gaussian2d|gauss2d|lorentzian2d|lorentz2d|pseudovoigt2d|exp2d|chebyshev2d|custom).")
                             .arg(rawModel));
         }
 
         GraphStatsAndSurfaceFit::SurfaceFitResult sr;
-        if (params.contains(QStringLiteral("matrix"))) {
+        if (params.contains(QStringLiteral("matrix"))
+            && !params.value(QStringLiteral("matrix")).isNull()
+            && !optionalJsonString(params, QStringLiteral("matrix")).trimmed().isEmpty()) {
+            Matrix *m = resolveMatrix(d_app, params, QStringLiteral("matrix"), true);
+            sr = GraphStatsAndSurfaceFit::fitSurfaceMatrix(d_app, m, sm, customExpr);
+        } else if (!params.contains(QStringLiteral("table"))
+                   && resolveMatrix(d_app, params, QStringLiteral("matrix"), false) != nullptr) {
             Matrix *m = resolveMatrix(d_app, params, QStringLiteral("matrix"), true);
             sr = GraphStatsAndSurfaceFit::fitSurfaceMatrix(d_app, m, sm, customExpr);
         } else {
@@ -14118,7 +21967,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                     resolveColumnIndex(t, params.value(QStringLiteral("y_col")), true));
             const QString zCol = t->colLabel(
                     resolveColumnIndex(t, params.value(QStringLiteral("z_col")), true));
-            const int gridSide = std::max(10, params.value(QStringLiteral("grid_side")).toInt(40));
+            const int gridSide =
+                    parseBoundedInt(params, QStringLiteral("grid_side"), 40, 4, 512);
             sr = GraphStatsAndSurfaceFit::fitSurfaceXYZ(d_app, t, xCol, yCol, zCol, sm, customExpr,
                                                         gridSide);
         }
@@ -14210,9 +22060,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 ? params.value(QStringLiteral("baseline_mode")).toString()
                 : params.value(QStringLiteral("baseline")).toString();
         const auto baseMode = parseBaselineMode(baseStr);
-        const int reqPeaks = params.value(QStringLiteral("num_peaks")).toInt(
-                params.value(QStringLiteral("peak_count")).toInt(
-                        params.value(QStringLiteral("peaks")).toInt(0)));
+        const int reqPeaks = params.contains(QStringLiteral("num_peaks"))
+                ? parseBoundedInt(params, QStringLiteral("num_peaks"), 0, 0, 500)
+                : (params.contains(QStringLiteral("peak_count"))
+                           ? parseBoundedInt(params, QStringLiteral("peak_count"), 0, 0, 500)
+                           : parseBoundedInt(params, QStringLiteral("peaks"), 0, 0, 500));
         const double prominence =
                 std::clamp(params.value(QStringLiteral("prominence")).toDouble(0.08), 0.005, 0.95);
         const bool plotPeaks = params.contains(QStringLiteral("plot_peaks"))
@@ -14249,7 +22101,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
         mpf.setNegativePeaksAllowed(
                 params.value(QStringLiteral("allow_negative")).toBool(false));
-        mpf.generateFunction(true, std::max(100, params.value(QStringLiteral("points")).toInt(300)));
+        mpf.generateFunction(
+                true, parseBoundedInt(params, QStringLiteral("points"), 300, 10, 1000000));
 
         if (!mpf.setDataFromCurve(curveTitle, g) || mpf.error())
             throwRpcRuntime(
@@ -14302,7 +22155,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             mpf.setNumPeaks(reqPeaks);
             mpf.autoDetectPeaks(reqPeaks, prominence);
         } else {
-            const int maxPeaks = std::max(1, params.value(QStringLiteral("max_peaks")).toInt(10));
+            const int maxPeaks =
+                    parseBoundedInt(params, QStringLiteral("max_peaks"), 10, 1, 500);
             mpf.autoDetectAndUpdateNumPeaks(maxPeaks, prominence);
         }
 
@@ -14422,8 +22276,10 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("analysis.batch_peaks")) {
         const auto profile = parsePeakProfile(params.value(QStringLiteral("profile")).toString());
-        const auto baseMode =
-                parseBaselineMode(params.value(QStringLiteral("baseline_mode")).toString());
+        const QString baseStr = params.contains(QStringLiteral("baseline_mode"))
+                ? optionalJsonString(params, QStringLiteral("baseline_mode"))
+                : optionalJsonString(params, QStringLiteral("baseline"));
+        const auto baseMode = parseBaselineMode(baseStr);
         const bool allowNeg = params.value(QStringLiteral("allow_negative")).toBool(false);
 
         MultiLayer *ml = nullptr;
@@ -14692,7 +22548,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         const int nPts = requireCurveMinPoints(g, curveTitle, 3, QStringLiteral("signal.smooth"));
 
-        const QString mStr = params.value(QStringLiteral("method")).toString().trimmed().toLower();
+        const QString mStr =
+                optionalJsonString(params, QStringLiteral("method"), QStringLiteral("savgol"))
+                        .trimmed()
+                        .toLower();
+        bool isGaussianKernel = false;
         int sm = SmoothFilter::SavitzkyGolay;
         if (mStr.isEmpty() || mStr == QStringLiteral("savgol")
             || mStr == QStringLiteral("savitzky_golay") || mStr == QStringLiteral("savitzky-golay"))
@@ -14708,9 +22568,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         else if (mStr == QStringLiteral("moving_avg") || mStr == QStringLiteral("average")
                  || mStr == QStringLiteral("moving_average"))
             sm = SmoothFilter::Average;
+        else if (mStr == QStringLiteral("gaussian") || mStr == QStringLiteral("gauss"))
+            isGaussianKernel = true;
         else
             throwInvalidParams(
-                    QStringLiteral("Unsupported smooth method '%1' (expected 'savgol', 'whittaker', 'lowess', 'median', 'fft', or 'moving_avg').")
+                    QStringLiteral("Unsupported smooth method '%1' (expected 'savgol', 'whittaker', 'lowess', 'median', 'fft', 'average', or 'gaussian').")
                             .arg(mStr));
 
         int win = std::min(7, nPts);
@@ -14755,11 +22617,65 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                             .arg(nPts));
         }
 
+        if (isGaussianKernel) {
+            std::vector<double> xs, ys;
+            extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xs, ys);
+            const int nValid = static_cast<int>(xs.size());
+            if (nValid < 2)
+                throwInvalidParams(
+                        QStringLiteral("signal.smooth ('gaussian') requires >= 2 valid points."));
+            const double sigma = params.contains(QStringLiteral("sigma"))
+                    ? std::max(0.25,
+                               optionalJsonFiniteDouble(params, QStringLiteral("sigma"),
+                                                        std::max(0.75, double(totalWin) / 4.0),
+                                                        1e6))
+                    : std::max(0.75, double(totalWin) / 4.0);
+            std::vector<double> ySmooth(size_t(nValid), 0.0);
+            for (int i = 0; i < nValid; ++i) {
+                double wSum = 0.0;
+                double acc = 0.0;
+                const int jLo = std::max(0, i - halfLeft);
+                const int jHi = std::min(nValid - 1, i + halfRight);
+                for (int j = jLo; j <= jHi; ++j) {
+                    const double z = double(j - i) / sigma;
+                    const double w = std::exp(-0.5 * z * z);
+                    wSum += w;
+                    acc += w * ys[size_t(j)];
+                }
+                ySmooth[size_t(i)] = (wSum > 0.0) ? (acc / wSum) : ys[size_t(i)];
+            }
+            Table *smTbl = createUniqueTableHeadless(d_app, nValid, 2, QStringLiteral("GaussSmooth"));
+            smTbl->setColName(0, QStringLiteral("X"));
+            smTbl->setColName(1, QStringLiteral("Smoothed"));
+            smTbl->setColPlotDesignation(0, SciDAVis::X);
+            smTbl->setColPlotDesignation(1, SciDAVis::Y);
+            smTbl->column(0)->replaceValues(0, QVector<double>::fromStdVector(xs));
+            smTbl->column(1)->replaceValues(0, QVector<double>::fromStdVector(ySmooth));
+            smTbl->hide();
+            const int curvesBefore = g->curves();
+            const QString fullY = fullColumnName(smTbl, 1);
+            g->insertCurve(smTbl, fullColumnName(smTbl, 0), fullY, Graph::Line);
+            if (g->curves() > curvesBefore) {
+                QPen p(QColor("#D55E00"), 1.8);
+                g->setCurvePen(g->curves() - 1, p);
+            }
+            enforceArialGraphFonts(g);
+            replotGraphOrDefer(g);
+            outResult[QStringLiteral("ok")] = (g->curves() > curvesBefore);
+            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("table")] = smTbl->name();
+            outResult[QStringLiteral("curve_count")] = g->curves();
+            if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
+                outResult[QStringLiteral("output_curve")] = g->curve(g->curves() - 1)->title().text();
+            return true;
+        }
+
         int polyOrder = std::min(2, totalWin - 1);
-        if (sm == SmoothFilter::SavitzkyGolay && params.contains(QStringLiteral("poly_order"))
-            && !params.value(QStringLiteral("poly_order")).isNull()) {
-            polyOrder = parseStrictJsonInt(params.value(QStringLiteral("poly_order")),
-                                           QStringLiteral("poly_order"));
+        const QJsonValue polyVal = params.contains(QStringLiteral("poly_order"))
+                ? params.value(QStringLiteral("poly_order"))
+                : params.value(QStringLiteral("order"));
+        if (sm == SmoothFilter::SavitzkyGolay && !polyVal.isUndefined() && !polyVal.isNull()) {
+            polyOrder = parseStrictJsonInt(polyVal, QStringLiteral("poly_order"));
             if (polyOrder < 1 || polyOrder >= totalWin) {
                 throwInvalidParams(
                         QStringLiteral("Savitzky-Golay 'poly_order' (%1) must satisfy 1 <= poly_order < window (%2).")
@@ -14826,12 +22742,13 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 requireCurveMinPoints(g, curveTitle, 5, QStringLiteral("signal.savgol_derivative"));
 
         int derivOrder = 1;
-        if (params.contains(QStringLiteral("deriv_order"))
-            && !params.value(QStringLiteral("deriv_order")).isNull()) {
-            derivOrder = parseStrictJsonInt(params.value(QStringLiteral("deriv_order")),
-                                            QStringLiteral("deriv_order"));
-            if (derivOrder < 1 || derivOrder > 2)
-                throwInvalidParams(QStringLiteral("'deriv_order' must be 1 or 2."));
+        const QJsonValue dOrdVal = params.contains(QStringLiteral("deriv_order"))
+                ? params.value(QStringLiteral("deriv_order"))
+                : params.value(QStringLiteral("order"));
+        if (!dOrdVal.isUndefined() && !dOrdVal.isNull()) {
+            derivOrder = parseStrictJsonInt(dOrdVal, QStringLiteral("order"));
+            if (derivOrder < 1 || derivOrder > 3)
+                throwInvalidParams(QStringLiteral("'order' / 'deriv_order' must be 1, 2, or 3."));
         }
         int win = std::min(9, (nPts % 2 == 1) ? nPts : (nPts - 1));
         if (params.contains(QStringLiteral("window")) && !params.value(QStringLiteral("window")).isNull()) {
@@ -15011,10 +22928,14 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const double lowFreq = params.contains(QStringLiteral("cutoff_low"))
                 ? params.value(QStringLiteral("cutoff_low")).toDouble(-1.0)
-                : params.value(QStringLiteral("low_freq")).toDouble(0.1);
+                : (params.contains(QStringLiteral("low_freq"))
+                           ? params.value(QStringLiteral("low_freq")).toDouble(-1.0)
+                           : params.value(QStringLiteral("cutoff")).toDouble(0.1));
         const double highFreq = params.contains(QStringLiteral("cutoff_high"))
                 ? params.value(QStringLiteral("cutoff_high")).toDouble(-1.0)
-                : params.value(QStringLiteral("high_freq")).toDouble(1.0);
+                : (params.contains(QStringLiteral("high_cutoff"))
+                           ? params.value(QStringLiteral("high_cutoff")).toDouble(-1.0)
+                           : params.value(QStringLiteral("high_freq")).toDouble(1.0));
         if (ft == FFTFilter::BandPass || ft == FFTFilter::BandBlock) {
             if (!std::isfinite(lowFreq) || !std::isfinite(highFreq) || lowFreq <= 0.0
                 || highFreq <= lowFreq) {
@@ -15076,10 +22997,16 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                             .arg(dStr));
 
         const QString pStr = (params.contains(QStringLiteral("filter_type"))
-                                      ? params.value(QStringLiteral("filter_type")).toString()
-                                      : (params.contains(QStringLiteral("pass_type"))
-                                                 ? params.value(QStringLiteral("pass_type")).toString()
-                                                 : params.value(QStringLiteral("type")).toString()))
+                                      ? optionalJsonString(params, QStringLiteral("filter_type"))
+                                      : (params.contains(QStringLiteral("mode"))
+                                                 ? optionalJsonString(params, QStringLiteral("mode"))
+                                                 : (params.contains(QStringLiteral("pass_type"))
+                                                            ? optionalJsonString(
+                                                                      params,
+                                                                      QStringLiteral("pass_type"))
+                                                            : optionalJsonString(
+                                                                      params,
+                                                                      QStringLiteral("type")))))
                                      .trimmed()
                                      .toLower();
         auto pass = AdvancedSignalProc::LowPass;
@@ -15137,9 +23064,19 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         requireCurveMinPoints(g, curveTitle, 8, QStringLiteral("signal.stft"));
-        const int winSz = std::max(8, params.value(QStringLiteral("window_size")).toInt(64));
-        const int hopSz = std::max(1, params.value(QStringLiteral("hop_size")).toInt(16));
-        const bool plotSpec = params.value(QStringLiteral("plot")).toBool(true);
+        const int winSz = parseBoundedInt(params, QStringLiteral("window_size"), 64, 8, 65536);
+        int hopSz = 16;
+        if (params.contains(QStringLiteral("hop_size"))
+            && !params.value(QStringLiteral("hop_size")).isNull()) {
+            hopSz = parseBoundedInt(params, QStringLiteral("hop_size"), 16, 1, winSz);
+        } else if (params.contains(QStringLiteral("overlap"))
+                   && !params.value(QStringLiteral("overlap")).isNull()) {
+            const int ov = parseBoundedInt(params, QStringLiteral("overlap"), winSz / 2, 0, winSz - 1);
+            hopSz = std::max(1, winSz - ov);
+        } else {
+            hopSz = std::max(1, winSz / 4);
+        }
+        const bool plotSpec = optionalJsonBool(params, QStringLiteral("plot"), true);
         Matrix *stftM = AdvancedSignalProc::computeSTFT(d_app, g, curveTitle, winSz, hopSz, plotSpec);
         if (!stftM)
             throwRpcRuntime(QStringLiteral("STFT computation failed."));
@@ -15189,14 +23126,23 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("signal.wavelet_cwt"));
-        const int nScales = std::max(4, params.value(QStringLiteral("scales")).toInt(32));
-        const QString wt = params.value(QStringLiteral("wavelet")).toString().toLower();
+        const int nScales = parseBoundedInt(params, QStringLiteral("scales"), 32, 2, 1024);
+        const QString wt =
+                optionalJsonString(params, QStringLiteral("wavelet"), QStringLiteral("morlet"))
+                        .trimmed()
+                        .toLower();
+        if (!wt.isEmpty() && wt != QStringLiteral("morlet") && wt != QStringLiteral("ricker")
+            && wt != QStringLiteral("mexican_hat")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown wavelet '%1' (expected 'morlet' or 'ricker').")
+                            .arg(wt));
+        }
         auto wtype = (wt == QStringLiteral("ricker") || wt == QStringLiteral("mexican_hat"))
                 ? AdvancedSignalProc::RickerMexicanHat
                 : AdvancedSignalProc::Morlet;
         Matrix *cwtM = AdvancedSignalProc::waveletCWT(
                 d_app, g, curveTitle, nScales, wtype,
-                params.value(QStringLiteral("plot")).toBool(true));
+                optionalJsonBool(params, QStringLiteral("plot"), true));
         if (!cwtM)
             throwRpcRuntime(QStringLiteral("CWT scalogram computation failed."));
         outResult = serializeMatrixInfo(cwtM);
@@ -15210,18 +23156,19 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("signal.wavelet_denoise"));
-        const QString wt = params.value(QStringLiteral("wavelet")).toString().toLower();
+        const QString wt = optionalJsonString(params, QStringLiteral("wavelet")).toLower();
         auto wtype = (wt == QStringLiteral("haar")) ? AdvancedSignalProc::Haar
                                                     : AdvancedSignalProc::Daubechies4;
-        const int levels = std::clamp(params.value(QStringLiteral("levels")).toInt(4), 1, 10);
+        const int levels = parseBoundedInt(params, QStringLiteral("levels"), 4, 1, 16);
         const bool soft = params.contains(QStringLiteral("soft"))
-                ? params.value(QStringLiteral("soft")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("soft"), true)
                 : true;
-        const double scale = params.value(QStringLiteral("threshold_scale")).toDouble(1.0);
+        const double scale =
+                optionalJsonFiniteDouble(params, QStringLiteral("threshold_scale"), 1.0, 1e6);
         QwtPlotCurve *outC = AdvancedSignalProc::waveletDenoiseDWT(d_app, g, curveTitle, wtype,
                                                                    levels, soft, scale);
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -15234,9 +23181,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         requireCurveMinPoints(g, curveTitle, 8, QStringLiteral("signal.welch_psd"));
-        const int segLen = std::max(16, params.value(QStringLiteral("segment_len")).toInt(128));
+        const int segLen = params.contains(QStringLiteral("segment_len"))
+                ? parseBoundedInt(params, QStringLiteral("segment_len"), 128, 8, 65536)
+                : parseBoundedInt(params, QStringLiteral("nperseg"), 128, 8, 65536);
         Table *psdTbl = AdvancedSignalProc::welchPSD(
-                d_app, g, curveTitle, segLen, params.value(QStringLiteral("plot")).toBool(true));
+                d_app, g, curveTitle, segLen, optionalJsonBool(params, QStringLiteral("plot"), true));
         if (!psdTbl)
             throwRpcRuntime(QStringLiteral("Welch PSD computation failed."));
         outResult[QStringLiteral("ok")] = true;
@@ -15245,20 +23194,78 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     }
 
     if (method == QStringLiteral("signal.coherence")) {
-        MultiLayer *ml = resolveMultiLayer(d_app, params);
-        Graph *g = resolveGraphLayer(ml, params);
-        QJsonObject pA = params, pB = params;
-        const QString cA = resolveCurveTitle(g, pA, QStringLiteral("curve_a"), true);
-        const QString cB = resolveCurveTitle(g, pB, QStringLiteral("curve_b"), true);
+        MultiLayer *ml = nullptr;
+        Graph *g = nullptr;
+        QString cA, cB;
+        const bool hasTableParams = params.contains(QStringLiteral("table"))
+                && !params.contains(QStringLiteral("graph"));
+        if (hasTableParams) {
+            Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
+            int xIdx = params.contains(QStringLiteral("x_col"))
+                    ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
+                    : t->firstXCol();
+            if (xIdx < 0 && t->numCols() >= 3) {
+                xIdx = 0;
+                t->setColPlotDesignation(0, SciDAVis::X);
+            } else if (xIdx >= 0) {
+                t->setColPlotDesignation(xIdx, SciDAVis::X);
+            }
+            const QJsonValue y1V = params.contains(QStringLiteral("y1_col"))
+                    ? params.value(QStringLiteral("y1_col"))
+                    : (params.contains(QStringLiteral("col_a"))
+                               ? params.value(QStringLiteral("col_a"))
+                               : QJsonValue(xIdx == 0 ? 1 : 0));
+            const QJsonValue y2V = params.contains(QStringLiteral("y2_col"))
+                    ? params.value(QStringLiteral("y2_col"))
+                    : (params.contains(QStringLiteral("col_b"))
+                               ? params.value(QStringLiteral("col_b"))
+                               : QJsonValue(xIdx <= 1 ? 2 : 1));
+            const int y1Idx = resolveColumnIndex(t, y1V, true);
+            const int y2Idx = resolveColumnIndex(t, y2V, true);
+            t->setColPlotDesignation(y1Idx, SciDAVis::Y);
+            t->setColPlotDesignation(y2Idx, SciDAVis::Y);
+            QStringList yCols;
+            yCols << fullColumnName(t, y1Idx) << fullColumnName(t, y2Idx);
+            ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
+            if (!ml || !ml->activeGraph() || ml->activeGraph()->curves() < 2) {
+                closeAndDeleteEmptyPlot(d_app, ml);
+                throwInvalidParams(
+                        QStringLiteral("signal.coherence requires two valid numeric signal columns."));
+            }
+            g = ml->activeGraph();
+            enforceArialGraphFonts(g);
+            cA = g->curve(0)->title().text();
+            cB = g->curve(1)->title().text();
+        } else {
+            ml = resolveMultiLayer(d_app, params);
+            g = resolveGraphLayer(ml, params);
+            const QString keyA = params.contains(QStringLiteral("curve_a"))
+                    ? QStringLiteral("curve_a")
+                    : QStringLiteral("curve1");
+            const QString keyB = params.contains(QStringLiteral("curve_b"))
+                    ? QStringLiteral("curve_b")
+                    : QStringLiteral("curve2");
+            if (!params.contains(keyA) && !params.contains(keyB) && g->curves() >= 2) {
+                cA = g->curve(0)->title().text();
+                cB = g->curve(1)->title().text();
+            } else {
+                cA = resolveCurveTitle(g, params, keyA, true);
+                cB = resolveCurveTitle(g, params, keyB, true);
+            }
+        }
         requireCurveMinPoints(g, cA, 8, QStringLiteral("signal.coherence"));
         requireCurveMinPoints(g, cB, 8, QStringLiteral("signal.coherence"));
-        const int segLen = std::max(16, params.value(QStringLiteral("segment_len")).toInt(128));
+        const int segLen = params.contains(QStringLiteral("segment_len"))
+                ? parseBoundedInt(params, QStringLiteral("segment_len"), 128, 8, 65536)
+                : parseBoundedInt(params, QStringLiteral("nperseg"), 128, 8, 65536);
         Table *cohTbl = AdvancedSignalProc::crossCoherence(
-                d_app, g, cA, cB, segLen, params.value(QStringLiteral("plot")).toBool(true));
+                d_app, g, cA, cB, segLen, optionalJsonBool(params, QStringLiteral("plot"), true));
         if (!cohTbl)
             throwRpcRuntime(QStringLiteral("Cross-coherence computation failed."));
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("table")] = cohTbl->name();
+        if (ml)
+            outResult[QStringLiteral("graph")] = ml->name();
         return true;
     }
 
@@ -15295,16 +23302,28 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("signal.fsd"));
-        const double gamma = std::max(1e-6, params.value(QStringLiteral("fwhm")).toDouble(5.0));
-        const double kSharp = std::max(1.01, params.value(QStringLiteral("k")).toDouble(1.8));
-        const int apod = (params.value(QStringLiteral("apodization")).toString().toLower()
-                          == QStringLiteral("gaussian"))
-                ? 1
-                : 0;
+        const double gamma = params.contains(QStringLiteral("fwhm"))
+                ? std::max(1e-6, optionalJsonFiniteDouble(params, QStringLiteral("fwhm"), 5.0, 1e6))
+                : std::max(1e-6, optionalJsonFiniteDouble(params, QStringLiteral("gamma"), 5.0, 1e6));
+        double kSharp = 1.8;
+        if (params.contains(QStringLiteral("k")) && !params.value(QStringLiteral("k")).isNull()) {
+            kSharp = std::max(1.01, optionalJsonFiniteDouble(params, QStringLiteral("k"), 1.8, 100.0));
+        } else if (params.contains(QStringLiteral("smoothing"))
+                   && !params.value(QStringLiteral("smoothing")).isNull()) {
+            const double smVal =
+                    optionalJsonFiniteDouble(params, QStringLiteral("smoothing"), 0.2, 100.0);
+            kSharp = (smVal > 0.0 && smVal < 1.0) ? std::clamp(1.0 / smVal, 1.05, 8.0)
+                                                  : std::max(1.01, smVal);
+        }
+        const QString apodStr =
+                optionalJsonString(params, QStringLiteral("apodization"), QStringLiteral("bessel"))
+                        .trimmed()
+                        .toLower();
+        const int apod = (apodStr == QStringLiteral("gaussian")) ? 1 : 0;
         QwtPlotCurve *outC = AdvancedSignalProc::fourierSelfDeconvolve(d_app, g, curveTitle, gamma,
                                                                        kSharp, apod);
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -15317,32 +23336,51 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     if (method == QStringLiteral("curvemath.eval")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const QString cA = resolveCurveTitle(g, params, QStringLiteral("curve_a"), true);
-        const QString cB = resolveCurveTitle(g, params, QStringLiteral("curve_b"), true);
+        const QString keyA = params.contains(QStringLiteral("curve_a"))
+                ? QStringLiteral("curve_a")
+                : QStringLiteral("curve1");
+        const QString keyB = params.contains(QStringLiteral("curve_b"))
+                ? QStringLiteral("curve_b")
+                : QStringLiteral("curve2");
+        QString cA, cB;
+        if (!params.contains(keyA) && !params.contains(keyB) && g->curves() >= 2) {
+            cA = g->curve(0)->title().text();
+            cB = g->curve(1)->title().text();
+        } else {
+            cA = resolveCurveTitle(g, params, keyA, true);
+            cB = resolveCurveTitle(g, params, keyB, true);
+        }
         requireCurveMinPoints(g, cA, 2, QStringLiteral("curvemath.eval"));
         requireCurveMinPoints(g, cB, 2, QStringLiteral("curvemath.eval"));
-        const QString opStr = params.value(QStringLiteral("op")).toString().trimmed();
+        const QString opStr =
+                optionalJsonString(params, QStringLiteral("op"), QStringLiteral("sub")).trimmed();
         CurveMathTools::MathOp op = CurveMathTools::Subtract;
-        if (opStr == QStringLiteral("+") || opStr.compare(QStringLiteral("add"), Qt::CaseInsensitive) == 0)
+        if (opStr == QStringLiteral("+")
+            || opStr.compare(QStringLiteral("add"), Qt::CaseInsensitive) == 0
+            || opStr.compare(QStringLiteral("plus"), Qt::CaseInsensitive) == 0)
             op = CurveMathTools::Add;
         else if (opStr == QStringLiteral("-")
-                 || opStr.compare(QStringLiteral("subtract"), Qt::CaseInsensitive) == 0)
+                 || opStr.compare(QStringLiteral("sub"), Qt::CaseInsensitive) == 0
+                 || opStr.compare(QStringLiteral("subtract"), Qt::CaseInsensitive) == 0
+                 || opStr.compare(QStringLiteral("minus"), Qt::CaseInsensitive) == 0)
             op = CurveMathTools::Subtract;
         else if (opStr == QStringLiteral("*")
+                 || opStr.compare(QStringLiteral("mul"), Qt::CaseInsensitive) == 0
                  || opStr.compare(QStringLiteral("multiply"), Qt::CaseInsensitive) == 0)
             op = CurveMathTools::Multiply;
         else if (opStr == QStringLiteral("/")
+                 || opStr.compare(QStringLiteral("div"), Qt::CaseInsensitive) == 0
                  || opStr.compare(QStringLiteral("divide"), Qt::CaseInsensitive) == 0)
             op = CurveMathTools::Divide;
         else
             throwInvalidParams(
-                    QStringLiteral("Unsupported curve math op '%1' (expected '+'|'-'|'*'|'/').")
+                    QStringLiteral("Unsupported curve math op '%1' (expected 'add'|'sub'|'mul'|'div' or '+'|'-'|'*'|'/').")
                             .arg(opStr));
 
         QwtPlotCurve *outC = CurveMathTools::simpleCurveMath(
-                d_app, g, cA, cB, op, params.value(QStringLiteral("union_grid")).toBool(false));
+                d_app, g, cA, cB, op, optionalJsonBool(params, QStringLiteral("union_grid"), false));
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -15366,12 +23404,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             throwInvalidParams(QStringLiteral("curvemath.average_curves requires >= 1 curve."));
         for (const QString &ct : titles)
             requireCurveMinPoints(g, ct, 2, QStringLiteral("curvemath.average_curves"));
+        const int numPts = parseBoundedInt(params, QStringLiteral("points"), 200, 2, 1000000);
+        const bool sdBand = params.contains(QStringLiteral("sd_band"))
+                ? optionalJsonBool(params, QStringLiteral("sd_band"), true)
+                : optionalJsonBool(params, QStringLiteral("add_sd_band"), true);
         Table *outTbl = nullptr;
         QwtPlotCurve *avgC = CurveMathTools::averageMultipleCurves(
-                d_app, g, titles, std::max(10, params.value(QStringLiteral("points")).toInt(200)),
-                params.value(QStringLiteral("sd_band")).toBool(true), &outTbl);
+                d_app, g, titles, numPts, sdBand, &outTbl);
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (avgC != nullptr);
         if (avgC)
             outResult[QStringLiteral("output_curve")] = avgC->title().text();
@@ -15651,18 +23692,33 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                         "curvemath.interpolate requires strictly monotonic X values without duplicates."));
             }
         }
-        int outPts = 200;
-        if (params.contains(QStringLiteral("points")) && !params.value(QStringLiteral("points")).isNull()) {
-            outPts = parseStrictJsonInt(params.value(QStringLiteral("points")), QStringLiteral("points"));
-            if (outPts < 2)
-                throwInvalidParams(QStringLiteral("curvemath.interpolate 'points' must be >= 2."));
+        const int outPts = parseBoundedInt(params, QStringLiteral("points"), 200, 2, 1000000);
+        const bool hasXRange = params.contains(QStringLiteral("x_min"))
+                && params.contains(QStringLiteral("x_max"))
+                && !params.value(QStringLiteral("x_min")).isNull()
+                && !params.value(QStringLiteral("x_max")).isNull();
+        double interpXMin = 0.0;
+        double interpXMax = 0.0;
+        if (hasXRange) {
+            interpXMin = parseFiniteCoordDouble(params.value(QStringLiteral("x_min")),
+                                                QStringLiteral("x_min"));
+            interpXMax = parseFiniteCoordDouble(params.value(QStringLiteral("x_max")),
+                                                QStringLiteral("x_max"));
+            validateFiniteCoordRange(interpXMin, interpXMax,
+                                     QStringLiteral("curvemath.interpolate [x_min, x_max]"));
+            if (interpXMin >= interpXMax)
+                throwInvalidParams(
+                        QStringLiteral("curvemath.interpolate requires x_min < x_max."));
         }
         const int curvesBefore = g->curves();
-        RpcInterpolation interp(d_app, g, curveTitle, im);
-        interp.setOutputPoints(outPts);
-        const bool ok = interp.run() && (g->curves() > curvesBefore);
+        std::unique_ptr<RpcInterpolation> interp = hasXRange
+                ? std::make_unique<RpcInterpolation>(d_app, g, curveTitle, interpXMin, interpXMax,
+                                                     im)
+                : std::make_unique<RpcInterpolation>(d_app, g, curveTitle, im);
+        interp->setOutputPoints(outPts);
+        const bool ok = interp->run() && (g->curves() > curvesBefore);
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = ok;
         outResult[QStringLiteral("graph")] = ml->name();
         if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
@@ -15675,15 +23731,29 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         Graph *g = nullptr;
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
-        const QPointF p1(params.value(QStringLiteral("x1")).toDouble(),
-                         params.value(QStringLiteral("y1")).toDouble());
-        const QPointF p2(params.value(QStringLiteral("x2")).toDouble(),
-                         params.value(QStringLiteral("y2")).toDouble());
+        if (!params.contains(QStringLiteral("x1")) || !params.contains(QStringLiteral("y1"))
+            || !params.contains(QStringLiteral("x2")) || !params.contains(QStringLiteral("y2"))) {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.subtract_line requires finite numeric 'x1', 'y1', 'x2', and 'y2'."));
+        }
+        const double x1 = parseFiniteCoordDouble(params.value(QStringLiteral("x1")),
+                                                 QStringLiteral("x1"));
+        const double y1 = parseFiniteCoordDouble(params.value(QStringLiteral("y1")),
+                                                 QStringLiteral("y1"));
+        const double x2 = parseFiniteCoordDouble(params.value(QStringLiteral("x2")),
+                                                 QStringLiteral("x2"));
+        const double y2 = parseFiniteCoordDouble(params.value(QStringLiteral("y2")),
+                                                 QStringLiteral("y2"));
+        validateFiniteCoordRange(x1, x2, QStringLiteral("curvemath.subtract_line [x1, x2]"));
+        if (!std::isfinite(y2 - y1))
+            throwInvalidParams(QStringLiteral("curvemath.subtract_line y2 - y1 overflows."));
+        const QPointF p1(x1, y1);
+        const QPointF p2(x2, y2);
         QwtPlotCurve *outC = CurveMathTools::subtractStraightLine(
                 d_app, g, curveTitle, p1, p2,
-                params.value(QStringLiteral("in_place")).toBool(false));
+                optionalJsonBool(params, QStringLiteral("in_place"), false));
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -15753,12 +23823,25 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     if (method == QStringLiteral("curvemath.fill_between")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const QString cA = resolveCurveTitle(g, params, QStringLiteral("curve_a"), true);
-        const QString cB = resolveCurveTitle(g, params, QStringLiteral("curve_b"), true);
-        const QColor fillCol = parseColorValue(params.value(QStringLiteral("color")),
-                                               QColor(30, 102, 184, 55));
+        QString cA, cB;
+        if (!params.contains(QStringLiteral("curve_a"))
+            && !params.contains(QStringLiteral("curve_b")) && g->curves() >= 2) {
+            cA = g->curve(0)->title().text();
+            cB = g->curve(1)->title().text();
+        } else {
+            cA = resolveCurveTitle(g, params, QStringLiteral("curve_a"), true);
+            cB = resolveCurveTitle(g, params, QStringLiteral("curve_b"), true);
+        }
+        QColor fillCol = parseColorValue(params.value(QStringLiteral("color")),
+                                         QColor(30, 102, 184, 55));
+        if (params.contains(QStringLiteral("alpha")) && !params.value(QStringLiteral("alpha")).isNull()) {
+            const double rawA = optionalJsonFiniteDouble(params, QStringLiteral("alpha"), 55.0, 255.0);
+            const int a255 = (rawA >= 0.0 && rawA <= 1.0) ? int(std::round(rawA * 255.0))
+                                                          : std::clamp(int(std::round(rawA)), 0, 255);
+            fillCol.setAlpha(a255);
+        }
         QwtPlotCurve *fc = CurveMathTools::fillBetweenCurves(d_app, g, cA, cB, fillCol);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (fc != nullptr);
         return true;
     }
@@ -15915,11 +23998,13 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                                            ? params.value(QStringLiteral("rate_col"))
                                            : QJsonValue(1),
                                    true));
-        const bool celsius = params.value(QStringLiteral("celsius")).toBool(false);
+        const bool celsius = params.contains(QStringLiteral("temp_in_celsius"))
+                ? optionalJsonBool(params, QStringLiteral("temp_in_celsius"), false)
+                : optionalJsonBool(params, QStringLiteral("celsius"), false);
         const bool use1000 = params.contains(QStringLiteral("use_1000_over_t"))
-                ? params.value(QStringLiteral("use_1000_over_t")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("use_1000_over_t"), true)
                 : true;
-        const bool sigmaT = params.value(QStringLiteral("sigma_times_t")).toBool(false);
+        const bool sigmaT = optionalJsonBool(params, QStringLiteral("sigma_times_t"), false);
         const auto ar =
                 CurveMathTools::createArrheniusPlot(d_app, t, tempCol, rateCol, celsius, use1000, sigmaT);
         if (ar.plot) {
@@ -15948,16 +24033,19 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                                            ? params.value(QStringLiteral("x_col"))
                                            : QJsonValue(0),
                                    true));
-        const QString alphaCol = t->colLabel(
-                resolveColumnIndex(t, params.contains(QStringLiteral("alpha_col"))
-                                           ? params.value(QStringLiteral("alpha_col"))
-                                           : QJsonValue(1),
-                                   true));
-        const bool isWavelength = params.contains(QStringLiteral("wavelength_nm"))
-                ? params.value(QStringLiteral("wavelength_nm")).toBool(true)
-                : !params.value(QStringLiteral("energy_ev")).toBool(false);
+        const QJsonValue alphaKey = params.contains(QStringLiteral("alpha_col"))
+                ? params.value(QStringLiteral("alpha_col"))
+                : (params.contains(QStringLiteral("y_col"))
+                           ? params.value(QStringLiteral("y_col"))
+                           : QJsonValue(1));
+        const QString alphaCol = t->colLabel(resolveColumnIndex(t, alphaKey, true));
+        const bool isWavelength = params.contains(QStringLiteral("x_is_wavelength_nm"))
+                ? optionalJsonBool(params, QStringLiteral("x_is_wavelength_nm"), true)
+                : (params.contains(QStringLiteral("wavelength_nm"))
+                           ? optionalJsonBool(params, QStringLiteral("wavelength_nm"), true)
+                           : !optionalJsonBool(params, QStringLiteral("energy_ev"), false));
         const bool direct = params.contains(QStringLiteral("direct"))
-                ? params.value(QStringLiteral("direct")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("direct"), true)
                 : true;
         const auto trRes = CurveMathTools::createTaucPlot(d_app, t, xCol, alphaCol, isWavelength, direct);
         if (trRes.plot) {
@@ -15995,10 +24083,32 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                            : QJsonValue(2));
         const QString zrCol = t->colLabel(resolveColumnIndex(t, zrKey, true));
         const QString ziCol = t->colLabel(resolveColumnIndex(t, ziKey, true));
-        const bool negImag = params.value(QStringLiteral("z_imag_negated")).toBool(false);
-        const bool fitCpe = params.contains(QStringLiteral("fit_cpe"))
-                ? params.value(QStringLiteral("fit_cpe")).toBool(true)
+        const bool negImag = optionalJsonBool(params, QStringLiteral("z_imag_negated"), false);
+        bool fitCpe = params.contains(QStringLiteral("fit_cpe"))
+                ? optionalJsonBool(params, QStringLiteral("fit_cpe"), true)
                 : true;
+        const QString rawModel = params.contains(QStringLiteral("model"))
+                ? optionalJsonString(params, QStringLiteral("model")).trimmed()
+                : optionalJsonString(params, QStringLiteral("circuit")).trimmed();
+        if (!rawModel.isEmpty()) {
+            QString mNorm = rawModel.toLower();
+            mNorm.remove(QLatin1Char('_'));
+            mNorm.remove(QLatin1Char('-'));
+            mNorm.remove(QLatin1Char(' '));
+            if (mNorm == QStringLiteral("randles") || mNorm == QStringLiteral("rc")) {
+                if (!params.contains(QStringLiteral("fit_cpe")))
+                    fitCpe = false;
+            } else if (mNorm == QStringLiteral("randlescpe")
+                       || mNorm == QStringLiteral("randleswarburg")
+                       || mNorm == QStringLiteral("cpe")) {
+                if (!params.contains(QStringLiteral("fit_cpe")))
+                    fitCpe = true;
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("Unknown EIS circuit model '%1' (expected 'Randles' or 'Randles_CPE' / 'RandlesWarburg').")
+                                .arg(rawModel));
+            }
+        }
         const auto eis = CurveMathTools::analyzeEIS(d_app, t, fCol, zrCol, ziCol, negImag, fitCpe);
         if (eis.nyquistPlot) {
             for (Graph *lg : eis.nyquistPlot->layersList())
@@ -16022,6 +24132,811 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             outResult[QStringLiteral("nyquist_graph")] = eis.nyquistPlot->name();
         if (eis.bodePlot)
             outResult[QStringLiteral("bode_graph")] = eis.bodePlot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("curvemath.kissinger")) {
+        const bool hasTempMin = params.contains(QStringLiteral("temp_min"))
+                && !params.value(QStringLiteral("temp_min")).isNull();
+        const bool hasTempMax = params.contains(QStringLiteral("temp_max"))
+                && !params.value(QStringLiteral("temp_max")).isNull();
+        const double tempMinFilter = hasTempMin
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("temp_min")),
+                                         QStringLiteral("temp_min"), 1e6)
+                : -std::numeric_limits<double>::infinity();
+        const double tempMaxFilter = hasTempMax
+                ? parseFiniteCoordDouble(params.value(QStringLiteral("temp_max")),
+                                         QStringLiteral("temp_max"), 1e6)
+                : std::numeric_limits<double>::infinity();
+        if (hasTempMin && hasTempMax && tempMinFilter >= tempMaxFilter) {
+            throwInvalidParams(
+                    QStringLiteral("curvemath.kissinger requires temp_min < temp_max."));
+        }
+
+        QVector<double> rates;
+        QVector<double> temps;
+        const QJsonValue rArrVal = params.contains(QStringLiteral("heating_rates"))
+                ? params.value(QStringLiteral("heating_rates"))
+                : params.value(QStringLiteral("rates"));
+        const QJsonValue tArrVal = params.contains(QStringLiteral("peak_temps"))
+                ? params.value(QStringLiteral("peak_temps"))
+                : params.value(QStringLiteral("temps"));
+        if (rArrVal.isArray() && tArrVal.isArray()) {
+            const QJsonArray ra = rArrVal.toArray();
+            const QJsonArray ta = tArrVal.toArray();
+            if (ra.size() != ta.size()) {
+                throwInvalidParams(QStringLiteral(
+                        "curvemath.kissinger requires equal-length 'heating_rates' and 'peak_temps' arrays."));
+            }
+            for (int i = 0; i < ra.size(); ++i) {
+                const double rv =
+                        parseFiniteCoordDouble(ra[i], QStringLiteral("heating_rates"), 1e12);
+                const double tv =
+                        parseFiniteCoordDouble(ta[i], QStringLiteral("peak_temps"), 1e6);
+                if (tv >= tempMinFilter && tv <= tempMaxFilter) {
+                    rates.append(rv);
+                    temps.append(tv);
+                }
+            }
+        } else if (rArrVal.isArray() && !rArrVal.toArray().isEmpty()
+                   && (rArrVal.toArray().first().isArray()
+                       || rArrVal.toArray().first().isObject())) {
+            const QJsonArray pairArr = rArrVal.toArray();
+            for (int i = 0; i < pairArr.size(); ++i) {
+                double rv = std::numeric_limits<double>::quiet_NaN();
+                double tv = std::numeric_limits<double>::quiet_NaN();
+                if (pairArr[i].isArray() && pairArr[i].toArray().size() >= 2) {
+                    const QJsonArray pr = pairArr[i].toArray();
+                    rv = parseFiniteCoordDouble(pr[0], QStringLiteral("heating_rates"), 1e12);
+                    tv = parseFiniteCoordDouble(pr[1], QStringLiteral("peak_temps"), 1e6);
+                } else if (pairArr[i].isObject()) {
+                    const QJsonObject po = pairArr[i].toObject();
+                    const QJsonValue rvJ = po.contains(QStringLiteral("rate"))
+                            ? po.value(QStringLiteral("rate"))
+                            : po.value(QStringLiteral("heating_rate"));
+                    const QJsonValue tvJ = po.contains(QStringLiteral("temp"))
+                            ? po.value(QStringLiteral("temp"))
+                            : po.value(QStringLiteral("peak_temp"));
+                    rv = parseFiniteCoordDouble(rvJ, QStringLiteral("rate"), 1e12);
+                    tv = parseFiniteCoordDouble(tvJ, QStringLiteral("temp"), 1e6);
+                }
+                if (std::isfinite(rv) && std::isfinite(tv) && tv >= tempMinFilter
+                    && tv <= tempMaxFilter) {
+                    rates.append(rv);
+                    temps.append(tv);
+                }
+            }
+        } else {
+            Table *t = resolveTable(d_app, params);
+            const QJsonValue specColsVal = params.value(QStringLiteral("y_cols")).isArray()
+                    ? params.value(QStringLiteral("y_cols"))
+                    : (params.value(QStringLiteral("spectrum_cols")).isArray()
+                               ? params.value(QStringLiteral("spectrum_cols"))
+                               : (params.value(QStringLiteral("temp_col")).isArray()
+                                          ? params.value(QStringLiteral("temp_col"))
+                                          : QJsonValue()));
+            if (rArrVal.isArray() && specColsVal.isArray()) {
+                const QJsonArray ra = rArrVal.toArray();
+                const QJsonArray ya = specColsVal.toArray();
+                if (ra.size() != ya.size()) {
+                    throwInvalidParams(QStringLiteral(
+                            "curvemath.kissinger requires equal-length 'heating_rates' and spectrum 'y_cols'."));
+                }
+                const QJsonValue tAxisSpec =
+                        (params.contains(QStringLiteral("temp_col"))
+                         && !params.value(QStringLiteral("temp_col")).isNull()
+                         && !params.value(QStringLiteral("temp_col")).isArray())
+                        ? params.value(QStringLiteral("temp_col"))
+                        : (params.contains(QStringLiteral("x_col"))
+                                           && !params.value(QStringLiteral("x_col")).isNull()
+                                   ? params.value(QStringLiteral("x_col"))
+                                   : QJsonValue(0));
+                const int tCol = resolveColumnIndex(t, tAxisSpec, true);
+                Column *tc = t->column(tCol);
+                for (int i = 0; i < ra.size(); ++i) {
+                    const int yIdx = resolveColumnIndex(t, ya[i], true);
+                    Column *yc = t->column(yIdx);
+                    double bestY = -std::numeric_limits<double>::infinity();
+                    double bestT = std::numeric_limits<double>::quiet_NaN();
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (!tc || !yc || tc->isInvalid(r) || tc->isMasked(r) || yc->isInvalid(r)
+                            || yc->isMasked(r))
+                            continue;
+                        const double tv = t->cell(r, tCol);
+                        const double yv = t->cell(r, yIdx);
+                        if (std::isfinite(tv) && std::isfinite(yv) && tv >= tempMinFilter
+                            && tv <= tempMaxFilter && yv > bestY) {
+                            bestY = yv;
+                            bestT = tv;
+                        }
+                    }
+                    if (std::isfinite(bestT)) {
+                        rates.append(parseFiniteCoordDouble(ra[i], QStringLiteral("heating_rates"),
+                                                            1e12));
+                        temps.append(bestT);
+                    }
+                }
+            } else {
+                const int rCol = resolveColumnIndex(
+                        t, params.contains(QStringLiteral("rate_col"))
+                                   && !params.value(QStringLiteral("rate_col")).isNull()
+                                ? params.value(QStringLiteral("rate_col"))
+                                : QJsonValue(0),
+                        true);
+                const int tCol = resolveColumnIndex(
+                        t, params.contains(QStringLiteral("temp_col"))
+                                   && !params.value(QStringLiteral("temp_col")).isNull()
+                                ? params.value(QStringLiteral("temp_col"))
+                                : QJsonValue(rCol == 0 ? 1 : 0),
+                        true);
+                Column *rc = t->column(rCol);
+                Column *tc = t->column(tCol);
+                for (int r = 0; r < t->numRows(); ++r) {
+                    if (!rc || !tc || rc->isInvalid(r) || rc->isMasked(r) || tc->isInvalid(r)
+                        || tc->isMasked(r))
+                        continue;
+                    const double rv = t->cell(r, rCol);
+                    const double tv = t->cell(r, tCol);
+                    if (std::isfinite(rv) && std::isfinite(tv) && tv >= tempMinFilter
+                        && tv <= tempMaxFilter) {
+                        rates.append(rv);
+                        temps.append(tv);
+                    }
+                }
+            }
+        }
+        if (rates.size() < 3) {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.kissinger requires at least 3 valid (heating_rate, peak_temp) pairs."));
+        }
+        const bool rateKPerHour = params.contains(QStringLiteral("rate_in_k_per_hour"))
+                ? optionalJsonBool(params, QStringLiteral("rate_in_k_per_hour"), false)
+                : optionalJsonBool(params, QStringLiteral("k_per_hour"), false);
+        const bool tempInCelsius = params.contains(QStringLiteral("temp_in_celsius"))
+                ? optionalJsonBool(params, QStringLiteral("temp_in_celsius"), true)
+                : optionalJsonBool(params, QStringLiteral("celsius"), true);
+        const bool topAxisC = params.contains(QStringLiteral("top_axis_in_celsius"))
+                ? optionalJsonBool(params, QStringLiteral("top_axis_in_celsius"), true)
+                : optionalJsonBool(params, QStringLiteral("top_axis_celsius"), true);
+        const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
+
+        double minRate = std::numeric_limits<double>::infinity();
+        double maxRate = -std::numeric_limits<double>::infinity();
+        double minTempK = std::numeric_limits<double>::infinity();
+        double maxTempK = -std::numeric_limits<double>::infinity();
+        for (int i = 0; i < rates.size(); ++i) {
+            const double rv = rates[i];
+            const double tk = tempInCelsius ? (temps[i] + 273.15) : temps[i];
+            if (!std::isfinite(rv) || rv <= 0.0) {
+                throwInvalidParams(QStringLiteral(
+                        "curvemath.kissinger requires strictly positive heating_rates (> 0)."));
+            }
+            if (!std::isfinite(tk) || tk <= 0.0) {
+                throwInvalidParams(QStringLiteral(
+                        "curvemath.kissinger requires strictly positive absolute peak temperatures (> 0 K)."));
+            }
+            minRate = std::min(minRate, rv);
+            maxRate = std::max(maxRate, rv);
+            minTempK = std::min(minTempK, tk);
+            maxTempK = std::max(maxTempK, tk);
+        }
+        if (!(maxRate > minRate * (1.0 + 1e-9))) {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.kissinger requires at least 2 distinct positive heating rates."));
+        }
+        if (!(maxTempK > minTempK + 1e-9)) {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.kissinger requires distinct peak temperatures across heating rates."));
+        }
+
+        const CurveMathTools::KissingerResult kr = CurveMathTools::analyzeKissinger(
+                d_app, rates, temps, rateKPerHour, tempInCelsius, topAxisC);
+        if (!kr.valid) {
+            throwInvalidParams(kr.error.isEmpty()
+                                       ? QStringLiteral("Kissinger thermal activation analysis failed.")
+                                       : kr.error);
+        }
+        MultiLayer *kPlot = kr.plot;
+        if (kPlot && !wantPlot) {
+            closeAndDeleteEmptyPlot(d_app, kPlot);
+            kPlot = nullptr;
+        } else if (kPlot) {
+            for (Graph *lg : kPlot->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("ea_kj_mol")] = safeJsonDouble(kr.activationEnergyKJmol);
+        outResult[QStringLiteral("ea_kj_mol_se")] = safeJsonDouble(kr.activationEnergyKJmolSE);
+        outResult[QStringLiteral("ea_ev")] = safeJsonDouble(kr.activationEnergyEV);
+        outResult[QStringLiteral("ea_ev_se")] = safeJsonDouble(kr.activationEnergyEVSE);
+        outResult[QStringLiteral("pre_exponential_s_inv")] =
+                safeJsonDouble(kr.preExponentialSInv);
+        outResult[QStringLiteral("slope")] = safeJsonDouble(kr.slope);
+        outResult[QStringLiteral("intercept")] = safeJsonDouble(kr.intercept);
+        outResult[QStringLiteral("r2")] = safeJsonDouble(kr.rSquare);
+        outResult[QStringLiteral("heating_rates_k_min")] = toJsonArray(kr.heatingRatesKmin);
+        outResult[QStringLiteral("peak_temps_k")] = toJsonArray(kr.peakTempsK);
+        if (kr.resultTable)
+            outResult[QStringLiteral("table")] = kr.resultTable->name();
+        if (kPlot)
+            outResult[QStringLiteral("graph")] = kPlot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("curvemath.kocks_mecking")) {
+        MultiLayer *ml = nullptr;
+        Graph *g = nullptr;
+        QString curveTitle;
+        resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
+        requireCurveMinPoints(g, curveTitle, 6, QStringLiteral("curvemath.kocks_mecking"));
+        const int smoothWin =
+                parseBoundedInt(params, QStringLiteral("smooth_window"), 11, 3, 201);
+        const bool createPlot = params.contains(QStringLiteral("create_plot"))
+                ? optionalJsonBool(params, QStringLiteral("create_plot"), true)
+                : optionalJsonBool(params, QStringLiteral("plot"), true);
+        QString rawMode = optionalJsonString(params, QStringLiteral("plot_mode")).trimmed().toLower();
+        rawMode.replace(QLatin1Char('-'), QLatin1Char('_'));
+        bool kmPlot = false;
+        QString canonicalMode = QStringLiteral("considere");
+        if (rawMode.isEmpty()) {
+            if (params.contains(QStringLiteral("kocks_mecking_plot"))
+                && !params.value(QStringLiteral("kocks_mecking_plot")).isNull()) {
+                kmPlot = optionalJsonBool(params, QStringLiteral("kocks_mecking_plot"), false);
+                canonicalMode = kmPlot ? QStringLiteral("kocks_mecking")
+                                       : QStringLiteral("considere");
+            }
+        } else if (rawMode == QStringLiteral("considere") || rawMode == QStringLiteral("strain")
+                   || rawMode == QStringLiteral("theta_vs_strain")) {
+            kmPlot = false;
+            canonicalMode = QStringLiteral("considere");
+        } else if (rawMode == QStringLiteral("kocks_mecking") || rawMode == QStringLiteral("km")
+                   || rawMode == QStringLiteral("theta_vs_sigma")
+                   || rawMode == QStringLiteral("stress")
+                   || rawMode == QStringLiteral("stage_iii")) {
+            kmPlot = true;
+            canonicalMode = QStringLiteral("kocks_mecking");
+        } else {
+            throwInvalidParams(
+                    QStringLiteral("Unknown curvemath.kocks_mecking plot_mode '%1' (expected 'considere' or 'kocks_mecking').")
+                            .arg(rawMode));
+        }
+        const CurveMathTools::WorkHardeningResult wh =
+                invokeAnalyzeWorkHardening(d_app, g, curveTitle, smoothWin, createPlot, kmPlot);
+        if (!wh.valid) {
+            throwInvalidParams(wh.error.isEmpty()
+                                       ? QStringLiteral("Kocks-Mecking work-hardening analysis failed.")
+                                       : wh.error);
+        }
+        if (wh.plot) {
+            for (Graph *lg : wh.plot->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("plot_mode")] = canonicalMode;
+        outResult[QStringLiteral("considere_true_strain")] =
+                safeJsonDouble(wh.considereTrueStrain);
+        outResult[QStringLiteral("considere_true_stress")] =
+                safeJsonDouble(wh.considereTrueStress);
+        outResult[QStringLiteral("considere_eng_strain_pct")] =
+                safeJsonDouble(wh.considereEngStrainPct);
+        outResult[QStringLiteral("uniform_elongation_pct")] =
+                safeJsonDouble(wh.considereEngStrainPct);
+        outResult[QStringLiteral("hollomon_k")] = safeJsonDouble(wh.hollomonK);
+        outResult[QStringLiteral("hollomon_n")] = safeJsonDouble(wh.hollomonN);
+        outResult[QStringLiteral("voce_sigma_s")] = safeJsonDouble(wh.voceSigmaS);
+        if (wh.resultTable)
+            outResult[QStringLiteral("table")] = wh.resultTable->name();
+        if (wh.plot)
+            outResult[QStringLiteral("graph")] = wh.plot->name();
+        return true;
+    }
+
+    auto resolveXrdWavelengthAngstrom = [](const QJsonObject &p) -> double {
+        if (p.contains(QStringLiteral("xray_energy_kev"))
+            && !p.value(QStringLiteral("xray_energy_kev")).isNull()) {
+            const double eKev = optionalJsonFiniteDouble(p, QStringLiteral("xray_energy_kev"),
+                                                         0.0, 1e6);
+            if (eKev <= 0.0)
+                throwInvalidParams(QStringLiteral("'xray_energy_kev' must be > 0."));
+            return 12.398419843320026 / eKev;
+        }
+        const QString rad = optionalJsonString(p, QStringLiteral("radiation")).trimmed().toLower();
+        if (!rad.isEmpty()) {
+            if (rad == QStringLiteral("cuka1") || rad == QStringLiteral("cu_ka1"))
+                return 1.540598;
+            if (rad == QStringLiteral("cuka") || rad == QStringLiteral("cu_ka")
+                || rad == QStringLiteral("cu"))
+                return 1.541838;
+            if (rad == QStringLiteral("moka1") || rad == QStringLiteral("mo_ka1")
+                || rad == QStringLiteral("mo"))
+                return 0.709319;
+            if (rad == QStringLiteral("coka1") || rad == QStringLiteral("co_ka1")
+                || rad == QStringLiteral("co"))
+                return 1.788965;
+            if (rad == QStringLiteral("crka1") || rad == QStringLiteral("cr_ka1")
+                || rad == QStringLiteral("cr"))
+                return 2.289700;
+            if (rad == QStringLiteral("feka1") || rad == QStringLiteral("fe_ka1")
+                || rad == QStringLiteral("fe"))
+                return 1.936042;
+            throwInvalidParams(
+                    QStringLiteral("Unknown X-ray radiation '%1' (expected CuKa1|CuKa|MoKa1|CoKa1|CrKa1|FeKa1).")
+                            .arg(rad));
+        }
+        const double wl = p.contains(QStringLiteral("wavelength"))
+                ? optionalJsonFiniteDouble(p, QStringLiteral("wavelength"), 1.540598, 1000.0)
+                : optionalJsonFiniteDouble(p, QStringLiteral("wavelength_angstrom"), 1.540598,
+                                           1000.0);
+        if (wl <= 0.0)
+            throwInvalidParams(QStringLiteral("X-ray 'wavelength' (Angstrom) must be > 0."));
+        return wl;
+    };
+
+    if (method == QStringLiteral("curvemath.xrd_analyze")) {
+        MultiLayer *ml = nullptr;
+        Graph *g = nullptr;
+        QString curveTitle;
+        resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
+        requireCurveMinPoints(g, curveTitle, 8, QStringLiteral("curvemath.xrd_analyze"));
+        const double wavelength = resolveXrdWavelengthAngstrom(params);
+        const double instrFwhm = std::clamp(
+                optionalJsonFiniteDouble(params, QStringLiteral("instr_fwhm"), 0.05, 10.0), 0.0,
+                5.0);
+        const double scherrerK = std::clamp(
+                optionalJsonFiniteDouble(params, QStringLiteral("scherrer_k"), 0.90, 5.0), 0.1,
+                2.5);
+        const QString crystalSys =
+                optionalJsonString(params, QStringLiteral("crystal_system"), QStringLiteral("fcc"))
+                        .trimmed()
+                        .toLower();
+        if (!crystalSys.isEmpty() && crystalSys != QStringLiteral("fcc")
+            && crystalSys != QStringLiteral("bcc") && crystalSys != QStringLiteral("sc")
+            && crystalSys != QStringLiteral("hcp") && crystalSys != QStringLiteral("none")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown crystal_system '%1' (expected 'fcc'|'bcc'|'sc'|'hcp'|'none').")
+                            .arg(crystalSys));
+        }
+        const bool stripKa2 = optionalJsonBool(params, QStringLiteral("strip_kalpha2"), false);
+        const bool addTopD = optionalJsonBool(params, QStringLiteral("add_top_d_axis"), true);
+        const bool createWh = params.contains(QStringLiteral("create_wh_plot"))
+                ? optionalJsonBool(params, QStringLiteral("create_wh_plot"), true)
+                : optionalJsonBool(params, QStringLiteral("wh_plot"), true);
+        double cOverA = 1.633;
+        if (params.contains(QStringLiteral("c_over_a"))
+            && !params.value(QStringLiteral("c_over_a")).isNull()) {
+            cOverA = optionalJsonFiniteDouble(params, QStringLiteral("c_over_a"), 1.633, 100.0);
+            if (cOverA <= 0.2 || cOverA > 10.0) {
+                throwInvalidParams(
+                        QStringLiteral("curvemath.xrd_analyze 'c_over_a' must be in (0.2, 10.0]."));
+            }
+        }
+
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("XRD Peak & Williamson-Hall Analysis"));
+        const CurveMathTools::XRDAnalysisResult xr = invokeAnalyzeXrd(
+                d_app, g, curveTitle, wavelength, instrFwhm, scherrerK, crystalSys, stripKa2,
+                addTopD, createWh, cOverA);
+        if (!xr.valid) {
+            throwInvalidParams(xr.error.isEmpty() ? QStringLiteral("XRD pattern analysis failed.")
+                                                  : xr.error);
+        }
+        if (ml) {
+            for (Graph *lg : ml->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        if (xr.whPlot) {
+            for (Graph *lg : xr.whPlot->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        undoGuard.commit();
+
+        QJsonArray pksArr;
+        for (const auto &pk : xr.peaks) {
+            QJsonObject po;
+            po[QStringLiteral("two_theta_deg")] = safeJsonDouble(pk.twoThetaDeg);
+            po[QStringLiteral("d_spacing_angstrom")] = safeJsonDouble(pk.dSpacingAngstrom);
+            po[QStringLiteral("fwhm_deg")] = safeJsonDouble(pk.fwhmDeg);
+            po[QStringLiteral("intensity")] = safeJsonDouble(pk.intensity);
+            po[QStringLiteral("scherrer_size_nm")] = safeJsonDouble(pk.scherrerSizeNm);
+            po[QStringLiteral("hkl")] = pk.hklLabel;
+            pksArr.append(po);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml ? ml->name() : QString();
+        outResult[QStringLiteral("wavelength_angstrom")] = safeJsonDouble(xr.wavelengthAngstrom);
+        outResult[QStringLiteral("c_over_a")] = safeJsonDouble(cOverA);
+        outResult[QStringLiteral("mean_scherrer_size_nm")] = safeJsonDouble(xr.meanScherrerSizeNm);
+        outResult[QStringLiteral("scherrer_size_nm")] = safeJsonDouble(xr.meanScherrerSizeNm);
+        outResult[QStringLiteral("wh_size_nm")] = safeJsonDouble(xr.whSizeNm);
+        outResult[QStringLiteral("wh_microstrain")] = safeJsonDouble(xr.whMicrostrain);
+        outResult[QStringLiteral("wh_r2")] = safeJsonDouble(xr.whRSquare);
+        outResult[QStringLiteral("lattice_param_angstrom")] =
+                safeJsonDouble(xr.latticeParamAngstrom);
+        if (crystalSys == QStringLiteral("hcp") && std::isfinite(xr.latticeParamAngstrom)
+            && xr.latticeParamAngstrom > 0.0) {
+            outResult[QStringLiteral("lattice_c_angstrom")] =
+                    safeJsonDouble(xr.latticeParamAngstrom * cOverA);
+        }
+        outResult[QStringLiteral("peak_count")] = pksArr.size();
+        outResult[QStringLiteral("peaks")] = pksArr;
+        if (xr.peakTable)
+            outResult[QStringLiteral("table")] = xr.peakTable->name();
+        if (xr.whPlot)
+            outResult[QStringLiteral("wh_graph")] = xr.whPlot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("curvemath.bragg_convert")) {
+        const double wavelength = resolveXrdWavelengthAngstrom(params);
+        QString mode = optionalJsonString(params, QStringLiteral("mode"),
+                                          QStringLiteral("2theta_to_d"))
+                               .trimmed()
+                               .toLower();
+        mode.replace(QLatin1Char('-'), QLatin1Char('_'));
+        if (mode == QStringLiteral("d_spacing") || mode == QStringLiteral("d"))
+            mode = QStringLiteral("2theta_to_d");
+        else if (mode == QStringLiteral("q"))
+            mode = QStringLiteral("2theta_to_q");
+        if (mode != QStringLiteral("2theta_to_d") && mode != QStringLiteral("d_to_2theta")
+            && mode != QStringLiteral("2theta_to_q") && mode != QStringLiteral("q_to_2theta")
+            && mode != QStringLiteral("d_to_q") && mode != QStringLiteral("q_to_d")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown Bragg conversion mode '%1' (expected '2theta_to_d'|'d_to_2theta'|'2theta_to_q'|'q_to_2theta'|'d_to_q'|'q_to_d').")
+                            .arg(mode));
+        }
+
+        constexpr double kPi = 3.14159265358979323846;
+        auto convertOne = [&](double v) -> double {
+            if (!std::isfinite(v))
+                return std::numeric_limits<double>::quiet_NaN();
+            if (mode == QStringLiteral("2theta_to_d")) {
+                if (v <= 0.0 || v >= 180.0)
+                    return std::numeric_limits<double>::quiet_NaN();
+                const double s = std::sin(0.5 * v * kPi / 180.0);
+                return (s > 1e-12) ? (wavelength / (2.0 * s))
+                                   : std::numeric_limits<double>::quiet_NaN();
+            }
+            if (mode == QStringLiteral("d_to_2theta")) {
+                if (v <= 0.0)
+                    return std::numeric_limits<double>::quiet_NaN();
+                const double arg = wavelength / (2.0 * v);
+                return (arg > 0.0 && arg <= 1.0) ? (2.0 * std::asin(arg) * 180.0 / kPi)
+                                                 : std::numeric_limits<double>::quiet_NaN();
+            }
+            if (mode == QStringLiteral("2theta_to_q")) {
+                if (v < 0.0 || v >= 180.0)
+                    return std::numeric_limits<double>::quiet_NaN();
+                return 4.0 * kPi * std::sin(0.5 * v * kPi / 180.0) / wavelength;
+            }
+            if (mode == QStringLiteral("q_to_2theta")) {
+                if (v < 0.0)
+                    return std::numeric_limits<double>::quiet_NaN();
+                const double arg = v * wavelength / (4.0 * kPi);
+                return (arg >= 0.0 && arg <= 1.0) ? (2.0 * std::asin(arg) * 180.0 / kPi)
+                                                  : std::numeric_limits<double>::quiet_NaN();
+            }
+            if (mode == QStringLiteral("d_to_q")) {
+                return (v > 1e-12) ? (2.0 * kPi / v)
+                                   : std::numeric_limits<double>::quiet_NaN();
+            }
+            // q_to_d
+            return (v > 1e-12) ? (2.0 * kPi / v) : std::numeric_limits<double>::quiet_NaN();
+        };
+
+        QString outUnit = QStringLiteral("Å");
+        QString outColBase = QStringLiteral("d_spacing");
+        QString outLongName = QStringLiteral("d-spacing");
+        if (mode.endsWith(QStringLiteral("to_2theta"))) {
+            outUnit = QStringLiteral("deg");
+            outColBase = QStringLiteral("TwoTheta");
+            outLongName = QStringLiteral("2θ");
+        } else if (mode.endsWith(QStringLiteral("to_q"))) {
+            outUnit = QStringLiteral("Å^-1");
+            outColBase = QStringLiteral("Q");
+            outLongName = QStringLiteral("Scattering Vector q");
+        }
+
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("mode")] = mode;
+        outResult[QStringLiteral("unit")] = outUnit;
+        outResult[QStringLiteral("wavelength_angstrom")] = safeJsonDouble(wavelength);
+
+        if (params.value(QStringLiteral("values")).isArray()) {
+            const QJsonArray inArr = params.value(QStringLiteral("values")).toArray();
+            if (inArr.size() > 1000000)
+                throwInvalidParams(
+                        QStringLiteral("'values' exceeds maximum 1,000,000 elements."));
+            QJsonArray convArr;
+            for (const QJsonValue &iv : inArr)
+                convArr.append(safeJsonDouble(convertOne(jsonToDoubleOrNaN(iv))));
+            outResult[QStringLiteral("converted")] = convArr;
+            outResult[QStringLiteral("count")] = convArr.size();
+            return true;
+        }
+
+        const bool wantGraphTopAxis = optionalJsonBool(params, QStringLiteral("add_top_axis"), false)
+                || (params.contains(QStringLiteral("graph"))
+                    && !params.contains(QStringLiteral("table"))
+                    && !params.contains(QStringLiteral("col")));
+        if (wantGraphTopAxis) {
+            MultiLayer *ml = resolveMultiLayer(d_app, params);
+            Graph *parentG = resolveGraphLayer(ml, params);
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Bragg Linked Axis"));
+            const QString xExpr = (mode == QStringLiteral("2theta_to_q"))
+                    ? QStringLiteral("4*3.141592653589793*sin(x*3.141592653589793/360)/(%1)")
+                              .arg(wavelength, 0, 'g', 12)
+                    : QStringLiteral("(%1)/(2*sin(x*3.141592653589793/360))")
+                              .arg(wavelength, 0, 'g', 12);
+            Graph *linkedG =
+                    ml->addLinkedLayer(parentG, true, false, xExpr, QStringLiteral("y"));
+            if (linkedG) {
+                linkedG->setAxisTitleAuto(QwtPlot::xTop, false);
+                linkedG->setTopAxisTitle(QStringLiteral("%1 (%2)").arg(outLongName, outUnit));
+                enforceArialGraphFonts(linkedG);
+                replotGraphOrDefer(linkedG);
+            }
+            undoGuard.commit();
+            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("linked_layer")] =
+                    linkedG ? ml->layersList().indexOf(linkedG) : -1;
+            return true;
+        }
+
+        Table *t = resolveTable(d_app, params);
+        const int srcCol = resolveColumnIndex(
+                t, params.contains(QStringLiteral("col")) ? params.value(QStringLiteral("col"))
+                                                          : QJsonValue(0),
+                true);
+        QString dstName = optionalJsonString(params, QStringLiteral("out_col")).trimmed();
+        if (dstName.isEmpty())
+            dstName = outColBase;
+        int dstIdx = t->colIndex(t->name() + QStringLiteral("_") + dstName);
+        if (dstIdx < 0) {
+            QString uniqueCol = dstName;
+            int suffix = 2;
+            while (t->colNames().contains(uniqueCol))
+                uniqueCol = QStringLiteral("%1_%2").arg(dstName).arg(suffix++);
+            t->addCol(SciDAVis::Y);
+            dstIdx = t->numCols() - 1;
+            t->setColName(dstIdx, uniqueCol);
+        }
+        t->setColLongName(dstIdx, outLongName);
+        t->setColUnits(dstIdx, outUnit);
+        applyDefaultNumericFormat6g(t, dstIdx);
+        Column *srcC = t->column(srcCol);
+        Column *dstC = t->column(dstIdx);
+        QVector<double> outVec(t->numRows(), std::numeric_limits<double>::quiet_NaN());
+        QJsonArray previewArr;
+        for (int r = 0; r < t->numRows(); ++r) {
+            if (!srcC || srcC->isInvalid(r)) {
+                if (dstC)
+                    dstC->setInvalid(r, true);
+                if (r < 2000)
+                    previewArr.append(QJsonValue::Null);
+                continue;
+            }
+            const double cv = convertOne(t->cell(r, srcCol));
+            outVec[r] = cv;
+            if (r < 2000)
+                previewArr.append(safeJsonDouble(cv));
+        }
+        if (dstC) {
+            dstC->replaceValues(0, outVec);
+            for (int r = 0; r < t->numRows(); ++r) {
+                if (!std::isfinite(outVec[r]))
+                    dstC->setInvalid(r, true);
+            }
+        }
+        outResult[QStringLiteral("table")] = t->name();
+        outResult[QStringLiteral("column")] = t->colLabel(dstIdx);
+        outResult[QStringLiteral("converted")] = previewArr;
+        return true;
+    }
+
+    auto importVaspFileToTable = [](ApplicationWindow *app, const QString &filePath,
+                                    double *outEf) -> Table * {
+        if (outEf)
+            *outEf = 0.0;
+        const QFileInfo fi(filePath);
+        if (filePath.trimmed().isEmpty() || !fi.exists() || !fi.isFile())
+            throwInvalidParams(QStringLiteral("VASP input file does not exist: '%1'.").arg(filePath));
+        QFile vf(fi.absoluteFilePath());
+        if (!vf.open(QIODevice::ReadOnly))
+            throwRpcRuntime(QStringLiteral("Failed to open VASP input file '%1'.").arg(filePath));
+        const QByteArray raw = vf.readAll();
+        vf.close();
+
+        const QString baseStem = fi.baseName().trimmed().isEmpty()
+                ? QStringLiteral("VASPData")
+                : fi.baseName().trimmed();
+        const QString uniqueName = app->generateUniqueName(baseStem);
+        double ef = 0.0;
+        future::Table *ft =
+                AsciiTableImportFilter::importVaspTextData(raw, uniqueName, fi.absoluteFilePath(), &ef);
+        if (!ft)
+            ft = AsciiTableImportFilter::importLabTextData(raw, uniqueName, fi.absoluteFilePath());
+        if (!ft)
+            throwInvalidParams(QStringLiteral("Failed to parse VASP data file '%1'.").arg(filePath));
+
+        QList<Column *> clonedCols;
+        for (int i = 0; i < ft->columnCount(); ++i) {
+            if (Column *src = ft->column(i)) {
+                auto *dst = new Column(src->name(), src->columnMode());
+                dst->copy(src);
+                dst->setPlotDesignation(src->plotDesignation());
+                dst->setLongName(src->longName());
+                dst->setUnits(src->units());
+                dst->setComment(src->comment());
+                clonedCols.append(dst);
+            }
+        }
+        const QString commentLabel = ft->comment().isEmpty() ? fi.fileName() : ft->comment();
+        delete ft;
+        if (clonedCols.isEmpty())
+            throwInvalidParams(QStringLiteral("VASP file '%1' contained zero columns.").arg(filePath));
+        if (outEf)
+            *outEf = ef;
+        return app->newTable(uniqueName, commentLabel, clonedCols);
+    };
+
+    if (method == QStringLiteral("curvemath.vasp_dos")) {
+        Table *t = nullptr;
+        double importedFermi = 0.0;
+        bool hasImportedFermi = false;
+        const QString doscarPath = !optionalJsonString(params, QStringLiteral("doscar_path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("doscar_path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("path")).trimmed();
+        if ((!params.contains(QStringLiteral("table"))
+             || params.value(QStringLiteral("table")).isNull()
+             || params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+            && !doscarPath.isEmpty()) {
+            t = importVaspFileToTable(d_app, doscarPath, &importedFermi);
+            hasImportedFermi = true;
+        } else {
+            t = resolveTable(d_app, params);
+        }
+        const int eIdx = resolveColumnIndex(
+                t, params.contains(QStringLiteral("energy_col"))
+                           && !params.value(QStringLiteral("energy_col")).isNull()
+                        ? params.value(QStringLiteral("energy_col"))
+                        : QJsonValue(0),
+                true);
+        const QString energyCol = t->colLabel(eIdx);
+        QStringList dosCols;
+        const QJsonValue upVal = params.contains(QStringLiteral("dos_cols"))
+                ? params.value(QStringLiteral("dos_cols"))
+                : params.value(QStringLiteral("up_cols"));
+        if (upVal.isArray()) {
+            for (const QJsonValue &cv : upVal.toArray())
+                dosCols << t->colLabel(resolveColumnIndex(t, cv, true));
+        } else if (upVal.isString() && !upVal.toString().trimmed().isEmpty()) {
+            dosCols << t->colLabel(resolveColumnIndex(t, upVal, true));
+        } else if (upVal.isDouble()) {
+            dosCols << t->colLabel(resolveColumnIndex(t, upVal, true));
+        }
+        QStringList downCols;
+        const QJsonValue dnVal = params.contains(QStringLiteral("down_dos_cols"))
+                ? params.value(QStringLiteral("down_dos_cols"))
+                : params.value(QStringLiteral("down_cols"));
+        if (dnVal.isArray()) {
+            for (const QJsonValue &cv : dnVal.toArray())
+                downCols << t->colLabel(resolveColumnIndex(t, cv, true));
+        } else if (dnVal.isString() && !dnVal.toString().trimmed().isEmpty()) {
+            downCols << t->colLabel(resolveColumnIndex(t, dnVal, true));
+        } else if (dnVal.isDouble()) {
+            downCols << t->colLabel(resolveColumnIndex(t, dnVal, true));
+        }
+        double eFermi = params.contains(QStringLiteral("fermi_energy"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
+                : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
+        if (hasImportedFermi && qFuzzyIsNull(eFermi) && !qFuzzyIsNull(importedFermi))
+            eFermi = importedFermi;
+        const bool vertE = optionalJsonBool(params, QStringLiteral("vertical_energy"), false);
+
+        const CurveMathTools::VaspPlotResult vr =
+                CurveMathTools::plotVaspDos(d_app, t, energyCol, dosCols, downCols, eFermi, vertE);
+        if (!vr.valid) {
+            throwInvalidParams(vr.error.isEmpty() ? QStringLiteral("VASP DOS plot failed.")
+                                                  : vr.error);
+        }
+        if (vr.plot) {
+            for (Graph *lg : vr.plot->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("fermi_energy_ev")] = safeJsonDouble(vr.fermiEnergyEV);
+        outResult[QStringLiteral("bandgap_ev")] = safeJsonDouble(vr.bandgapEV);
+        outResult[QStringLiteral("d_band_center_ev")] = safeJsonDouble(vr.dBandCenterEV);
+        if (vr.dataTable)
+            outResult[QStringLiteral("table")] = vr.dataTable->name();
+        if (vr.plot)
+            outResult[QStringLiteral("graph")] = vr.plot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("curvemath.vasp_bands")) {
+        Table *t = nullptr;
+        double importedFermi = 0.0;
+        bool hasImportedFermi = false;
+        const QString eigenPath = !optionalJsonString(params, QStringLiteral("eigenval_path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("eigenval_path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("path")).trimmed();
+        if ((!params.contains(QStringLiteral("table"))
+             || params.value(QStringLiteral("table")).isNull()
+             || params.value(QStringLiteral("table")).toString().trimmed().isEmpty())
+            && !eigenPath.isEmpty()) {
+            t = importVaspFileToTable(d_app, eigenPath, &importedFermi);
+            hasImportedFermi = true;
+        } else {
+            t = resolveTable(d_app, params);
+        }
+        const QJsonValue kKey = (params.contains(QStringLiteral("k_col"))
+                                 && !params.value(QStringLiteral("k_col")).isNull())
+                ? params.value(QStringLiteral("k_col"))
+                : ((params.contains(QStringLiteral("x_col"))
+                    && !params.value(QStringLiteral("x_col")).isNull())
+                           ? params.value(QStringLiteral("x_col"))
+                           : QJsonValue(0));
+        const int kIdx = resolveColumnIndex(t, kKey, true);
+        const QString kCol = t->colLabel(kIdx);
+        QStringList bandCols;
+        const QJsonValue bVal = params.contains(QStringLiteral("band_cols"))
+                ? params.value(QStringLiteral("band_cols"))
+                : params.value(QStringLiteral("y_cols"));
+        if (bVal.isArray()) {
+            for (const QJsonValue &cv : bVal.toArray())
+                bandCols << t->colLabel(resolveColumnIndex(t, cv, true));
+        } else {
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (c != kIdx && t->column(c)
+                    && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    bandCols << t->colLabel(c);
+                }
+            }
+        }
+        QVector<double> kTicks;
+        if (params.value(QStringLiteral("k_ticks")).isArray()) {
+            for (const QJsonValue &kv : params.value(QStringLiteral("k_ticks")).toArray())
+                kTicks.append(parseFiniteCoordDouble(kv, QStringLiteral("k_ticks")));
+        }
+        QStringList kLabels;
+        if (params.value(QStringLiteral("k_labels")).isArray()) {
+            for (const QJsonValue &lv : params.value(QStringLiteral("k_labels")).toArray()) {
+                QString lbl = lv.toString().trimmed();
+                if (lbl == QStringLiteral("G")
+                    || lbl.compare(QStringLiteral("\\Gamma"), Qt::CaseInsensitive) == 0
+                    || lbl.compare(QStringLiteral("Gamma"), Qt::CaseInsensitive) == 0) {
+                    lbl = QStringLiteral("\u0393");
+                }
+                kLabels << lbl;
+            }
+        }
+        double eFermi = params.contains(QStringLiteral("fermi_energy"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
+                : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
+        if (hasImportedFermi && qFuzzyIsNull(eFermi) && !qFuzzyIsNull(importedFermi))
+            eFermi = importedFermi;
+        const double eMin = optionalJsonFiniteDouble(params, QStringLiteral("e_min"), -6.0, 1e6);
+        const double eMax = optionalJsonFiniteDouble(params, QStringLiteral("e_max"), 6.0, 1e6);
+        validateFiniteCoordRange(eMin, eMax, QStringLiteral("curvemath.vasp_bands [e_min, e_max]"));
+
+        const CurveMathTools::VaspPlotResult vr = CurveMathTools::plotVaspBands(
+                d_app, t, kCol, bandCols, kTicks, kLabels, eFermi, std::min(eMin, eMax),
+                std::max(eMin, eMax));
+        if (!vr.valid) {
+            throwInvalidParams(vr.error.isEmpty() ? QStringLiteral("VASP band structure plot failed.")
+                                                  : vr.error);
+        }
+        if (vr.plot) {
+            for (Graph *lg : vr.plot->layersList())
+                enforceArialGraphFonts(lg);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("fermi_energy_ev")] = safeJsonDouble(vr.fermiEnergyEV);
+        outResult[QStringLiteral("bandgap_ev")] = safeJsonDouble(vr.bandgapEV);
+        if (vr.dataTable)
+            outResult[QStringLiteral("table")] = vr.dataTable->name();
+        if (vr.plot)
+            outResult[QStringLiteral("graph")] = vr.plot->name();
         return true;
     }
 
@@ -16063,15 +24978,26 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                                            ? params.value(QStringLiteral("col"))
                                            : QJsonValue(0),
                                    true));
-        const QString mStr = params.value(QStringLiteral("method")).toString().toLower();
+        const QString mStr = optionalJsonString(params, QStringLiteral("method"),
+                                                QStringLiteral("grubbs"))
+                                     .trimmed()
+                                     .toLower();
         int om = 0; // Grubbs
-        if (mStr == QStringLiteral("gesd") || mStr == QStringLiteral("esd"))
+        if (mStr.isEmpty() || mStr == QStringLiteral("grubbs"))
+            om = 0;
+        else if (mStr == QStringLiteral("gesd") || mStr == QStringLiteral("esd"))
             om = 1;
         else if (mStr == QStringLiteral("dixon") || mStr == QStringLiteral("dixon_q"))
             om = 2;
-        const double alpha = params.value(QStringLiteral("alpha")).toDouble(0.05);
-        const int maxOut = std::max(1, params.value(QStringLiteral("max_outliers")).toInt(5));
-        const bool maskDet = params.value(QStringLiteral("mask_outliers")).toBool(false);
+        else
+            throwInvalidParams(
+                    QStringLiteral("Unknown outlier method '%1' (expected 'grubbs'|'gesd'|'dixon').")
+                            .arg(mStr));
+        const double alpha =
+                std::clamp(optionalJsonFiniteDouble(params, QStringLiteral("alpha"), 0.05, 1.0),
+                           1e-6, 0.5);
+        const int maxOut = parseBoundedInt(params, QStringLiteral("max_outliers"), 5, 1, 1000);
+        const bool maskDet = optionalJsonBool(params, QStringLiteral("mask_outliers"), false);
         const auto ot = GraphStatsAndSurfaceFit::runOutlierTest(d_app, t, colName, om, alpha,
                                                                 maxOut, maskDet);
         QJsonArray rowsArr;
@@ -16196,10 +25122,20 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         const QString controlLabel = groups[static_cast<size_t>(controlIdx)].label;
 
         Graph *annG = nullptr;
-        if (params.contains(QStringLiteral("graph"))
-            && !params.value(QStringLiteral("graph")).isNull()) {
-            if (MultiLayer *ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), false))
-                annG = resolveGraphLayer(ml, params, false);
+        MultiLayer *annMl = nullptr;
+        const bool hasGraphSpec = params.contains(QStringLiteral("graph"))
+                && !params.value(QStringLiteral("graph")).isNull()
+                && !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
+        const bool wantAnovaBrackets = params.contains(QStringLiteral("add_brackets"))
+                && !params.value(QStringLiteral("add_brackets")).isNull()
+                ? optionalJsonBool(params, QStringLiteral("add_brackets"), hasGraphSpec)
+                : hasGraphSpec;
+        if (wantAnovaBrackets) {
+            annMl = hasGraphSpec
+                    ? resolveMultiLayer(d_app, params, QStringLiteral("graph"), true)
+                    : resolveMultiLayer(d_app, params, QStringLiteral("graph"), false);
+            if (annMl)
+                annG = resolveGraphLayer(annMl, params, false);
         }
 
         struct ScopedTableAnovaProps
@@ -16486,14 +25422,26 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("stats.anova_twoway")) {
         Table *t = resolveTable(d_app, params);
-        const QString fA = t->colLabel(
-                resolveColumnIndex(t, params.value(QStringLiteral("factor_a")), true));
-        const QString fB = t->colLabel(
-                resolveColumnIndex(t, params.value(QStringLiteral("factor_b")), true));
-        const QString resp = t->colLabel(
-                resolveColumnIndex(t, params.value(QStringLiteral("response")), true));
+        const QJsonValue fAVal = params.contains(QStringLiteral("factor_a"))
+                ? params.value(QStringLiteral("factor_a"))
+                : (params.contains(QStringLiteral("factor_a_col"))
+                           ? params.value(QStringLiteral("factor_a_col"))
+                           : QJsonValue(0));
+        const QJsonValue fBVal = params.contains(QStringLiteral("factor_b"))
+                ? params.value(QStringLiteral("factor_b"))
+                : (params.contains(QStringLiteral("factor_b_col"))
+                           ? params.value(QStringLiteral("factor_b_col"))
+                           : QJsonValue(1));
+        const QJsonValue respVal = params.contains(QStringLiteral("response"))
+                ? params.value(QStringLiteral("response"))
+                : (params.contains(QStringLiteral("response_col"))
+                           ? params.value(QStringLiteral("response_col"))
+                           : QJsonValue(2));
+        const QString fA = t->colLabel(resolveColumnIndex(t, fAVal, true));
+        const QString fB = t->colLabel(resolveColumnIndex(t, fBVal, true));
+        const QString resp = t->colLabel(resolveColumnIndex(t, respVal, true));
         const bool plotInt = params.contains(QStringLiteral("plot"))
-                ? params.value(QStringLiteral("plot")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("plot"), true)
                 : true;
         const auto tw = GraphStatsAndSurfaceFit::runTwoWayANOVA(d_app, t, fA, fB, resp, plotInt);
         if (tw.interactionGraph) {
@@ -16530,7 +25478,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 colNames << t->colLabel(c);
             }
         }
-        const QString mStr = params.value(QStringLiteral("method")).toString().trimmed().toLower();
+        const QString mStr = (params.contains(QStringLiteral("method"))
+                                      ? optionalJsonString(params, QStringLiteral("method"))
+                                      : optionalJsonString(params, QStringLiteral("test")))
+                                     .trimmed()
+                                     .toLower();
         if (mStr == QStringLiteral("friedman")) {
             // Exact Friedman repeated-measures rank test across k >= 3 columns (with tie correction)
             const int k = colIdxs.size();
@@ -16589,18 +25541,55 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
 
         auto nm = GraphStatsAndSurfaceFit::TestAutoSmartSwitch;
-        if (mStr == QStringLiteral("mann_whitney") || mStr == QStringLiteral("mann_whitney_u"))
+        if (mStr.isEmpty() || mStr == QStringLiteral("auto"))
+            nm = GraphStatsAndSurfaceFit::TestAutoSmartSwitch;
+        else if (mStr == QStringLiteral("mann_whitney") || mStr == QStringLiteral("mann_whitney_u"))
             nm = GraphStatsAndSurfaceFit::TestMannWhitneyU;
-        else if (mStr == QStringLiteral("wilcoxon"))
+        else if (mStr == QStringLiteral("wilcoxon")
+                 || mStr == QStringLiteral("wilcoxon_signed_rank"))
             nm = GraphStatsAndSurfaceFit::TestWilcoxonSignedRank;
         else if (mStr == QStringLiteral("kruskal_wallis") || mStr == QStringLiteral("kruskal"))
             nm = GraphStatsAndSurfaceFit::TestKruskalWallisDunn;
+        else
+            throwInvalidParams(
+                    QStringLiteral("Unknown nonparametric test '%1' (expected 'mann_whitney'|'wilcoxon'|'kruskal_wallis'|'friedman').")
+                            .arg(mStr));
 
-        const auto np = GraphStatsAndSurfaceFit::runNonparametricComparison(d_app, t, colNames, nm);
+        MultiLayer *annMl = nullptr;
+        Graph *annG = nullptr;
+        const bool hasGraphParam = params.contains(QStringLiteral("graph"))
+                && !params.value(QStringLiteral("graph")).isNull()
+                && !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
+        const bool wantBrackets = params.contains(QStringLiteral("add_brackets"))
+                && !params.value(QStringLiteral("add_brackets")).isNull()
+                ? optionalJsonBool(params, QStringLiteral("add_brackets"), hasGraphParam)
+                : hasGraphParam;
+        if (wantBrackets) {
+            annMl = hasGraphParam
+                    ? resolveMultiLayer(d_app, params, QStringLiteral("graph"), true)
+                    : resolveMultiLayer(d_app, params, QStringLiteral("graph"), false);
+            if (annMl)
+                annG = resolveGraphLayer(annMl, params, false);
+        }
+        std::unique_ptr<ScopedGraphUndoGuard> npUndoGuard;
+        if (annMl && annG) {
+            npUndoGuard = std::make_unique<ScopedGraphUndoGuard>(
+                    annMl, QStringLiteral("Nonparametric Brackets"));
+        }
+        const auto np = GraphStatsAndSurfaceFit::runNonparametricComparison(d_app, t, colNames, nm,
+                                                                            annG);
+        if (annG) {
+            enforceArialGraphFonts(annG);
+            replotGraphOrDefer(annG);
+            if (npUndoGuard)
+                npUndoGuard->commit();
+        }
         outResult[QStringLiteral("ok")] = np.valid;
         outResult[QStringLiteral("test")] = np.chosenTestName;
         outResult[QStringLiteral("statistic")] = safeJsonDouble(np.statistic);
         outResult[QStringLiteral("p_value")] = safeJsonDouble(np.pValue);
+        if (annMl && annG)
+            outResult[QStringLiteral("annotated_graph")] = annMl->name();
         if (np.reportTable) {
             outResult[QStringLiteral("table")] = np.reportTable->name();
             outResult[QStringLiteral("report")] = extractTableAsJson(np.reportTable);
@@ -16610,19 +25599,21 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("stats.paired_plot")) {
         Table *t = resolveTable(d_app, params);
-        const QString bCol = t->colLabel(
-                resolveColumnIndex(t, params.contains(QStringLiteral("before_col"))
-                                           ? params.value(QStringLiteral("before_col"))
-                                           : QJsonValue(0),
-                                   true));
-        const QString aCol = t->colLabel(
-                resolveColumnIndex(t, params.contains(QStringLiteral("after_col"))
-                                           ? params.value(QStringLiteral("after_col"))
-                                           : QJsonValue(1),
-                                   true));
+        const QJsonValue bKey = params.contains(QStringLiteral("before_col"))
+                ? params.value(QStringLiteral("before_col"))
+                : (params.contains(QStringLiteral("col_a"))
+                           ? params.value(QStringLiteral("col_a"))
+                           : QJsonValue(0));
+        const QJsonValue aKey = params.contains(QStringLiteral("after_col"))
+                ? params.value(QStringLiteral("after_col"))
+                : (params.contains(QStringLiteral("col_b"))
+                           ? params.value(QStringLiteral("col_b"))
+                           : QJsonValue(1));
+        const QString bCol = t->colLabel(resolveColumnIndex(t, bKey, true));
+        const QString aCol = t->colLabel(resolveColumnIndex(t, aKey, true));
         double pVal = 1.0;
         MultiLayer *ml = GraphStatsAndSurfaceFit::plotPairedComparison(
-                d_app, t, bCol, aCol, params.value(QStringLiteral("wilcoxon")).toBool(false),
+                d_app, t, bCol, aCol, optionalJsonBool(params, QStringLiteral("wilcoxon"), false),
                 &pVal);
         if (ml) {
             for (Graph *lg : ml->layersList())
@@ -16721,12 +25712,21 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             cCol = t->colLabel(
                     resolveColumnIndex(t, params.value(QStringLiteral("censor_col")), true));
         }
-        const int censorCoding = params.value(QStringLiteral("censor_coding")).toInt(0);
-        const bool threeP = params.value(QStringLiteral("three_param")).toBool(false);
-        const auto wb = GraphStatsAndSurfaceFit::plotWeibullProbability(d_app, t, dCol, cCol,
-                                                                        censorCoding, threeP);
-        if (wb.weibullPlot) {
-            for (Graph *lg : wb.weibullPlot->layersList())
+        const int censorCoding =
+                parseBoundedInt(params, QStringLiteral("censor_coding"), 0, 0, 10);
+        const bool threeP = optionalJsonBool(params, QStringLiteral("three_param"), false);
+        const bool useMle = optionalJsonBool(
+                params, QStringLiteral("mle"),
+                optionalJsonBool(params, QStringLiteral("use_mle"), false));
+        const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
+        const auto wb = GraphStatsAndSurfaceFit::plotWeibullProbability(
+                d_app, t, dCol, cCol, censorCoding, threeP, useMle, wantPlot);
+        MultiLayer *wbMl = wb.weibullPlot;
+        if (wbMl && !wantPlot) {
+            closeAndDeleteEmptyPlot(d_app, wbMl);
+            wbMl = nullptr;
+        } else if (wbMl) {
+            for (Graph *lg : wbMl->layersList())
                 enforceArialGraphFonts(lg);
         }
         outResult[QStringLiteral("ok")] = wb.valid;
@@ -16736,6 +25736,13 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("eta")] = safeJsonDouble(wb.scaleSigma0);
         outResult[QStringLiteral("scale_sigma0")] = safeJsonDouble(wb.scaleSigma0);
         outResult[QStringLiteral("eta_se")] = safeJsonDouble(wb.scaleSigma0SE);
+        outResult[QStringLiteral("used_mle")] = wb.usedMle;
+        outResult[QStringLiteral("mle_beta")] = safeJsonDouble(wb.mleModulusM);
+        outResult[QStringLiteral("mle_modulus_m")] = safeJsonDouble(wb.mleModulusM);
+        outResult[QStringLiteral("mle_beta_se")] = safeJsonDouble(wb.mleModulusMSE);
+        outResult[QStringLiteral("mle_eta")] = safeJsonDouble(wb.mleScaleSigma0);
+        outResult[QStringLiteral("mle_scale_sigma0")] = safeJsonDouble(wb.mleScaleSigma0);
+        outResult[QStringLiteral("mle_eta_se")] = safeJsonDouble(wb.mleScaleSigma0SE);
         outResult[QStringLiteral("gamma")] = safeJsonDouble(wb.thresholdGamma);
         outResult[QStringLiteral("three_param")] = wb.threeParameter;
         outResult[QStringLiteral("censored_count")] = wb.censoredCount;
@@ -16744,8 +25751,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("r2")] = safeJsonDouble(wb.rSquare);
         if (wb.reportTable)
             outResult[QStringLiteral("table")] = wb.reportTable->name();
-        if (wb.weibullPlot)
-            outResult[QStringLiteral("graph")] = wb.weibullPlot->name();
+        if (wbMl)
+            outResult[QStringLiteral("graph")] = wbMl->name();
         return true;
     }
 
@@ -16787,16 +25794,30 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                                                      ? params.value(QStringLiteral("state_col"))
                                                      : QJsonValue(0),
                                              true);
-        const int scIdx = resolveColumnIndex(t, params.contains(QStringLiteral("score_col"))
-                                                     ? params.value(QStringLiteral("score_col"))
-                                                     : QJsonValue(1),
-                                             true);
+        QVector<int> scIdxs;
+        if (params.value(QStringLiteral("score_cols")).isArray()
+            && !params.value(QStringLiteral("score_cols")).toArray().isEmpty()) {
+            for (const QJsonValue &sv : params.value(QStringLiteral("score_cols")).toArray())
+                scIdxs.append(resolveColumnIndex(t, sv, true));
+        } else {
+            const int scIdx0 = resolveColumnIndex(
+                    t, params.contains(QStringLiteral("score_col"))
+                            ? params.value(QStringLiteral("score_col"))
+                            : QJsonValue(stIdx == 0 ? 1 : 0),
+                    true);
+            scIdxs.append(scIdx0);
+        }
+        const int scIdx = scIdxs.first();
+        const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
         double aucPlot = 0.5;
-        MultiLayer *ml = GraphStatsAndSurfaceFit::plotROCCurve(d_app, t, t->colLabel(stIdx),
-                                                               t->colLabel(scIdx), &aucPlot);
-        if (ml) {
-            for (Graph *lg : ml->layersList())
-                enforceArialGraphFonts(lg);
+        MultiLayer *ml = nullptr;
+        if (wantPlot) {
+            ml = GraphStatsAndSurfaceFit::plotROCCurve(d_app, t, t->colLabel(stIdx),
+                                                       t->colLabel(scIdx), &aucPlot);
+            if (ml) {
+                for (Graph *lg : ml->layersList())
+                    enforceArialGraphFonts(lg);
+            }
         }
         std::vector<int> yTrue;
         std::vector<int> validRows;
@@ -16807,7 +25828,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             scVec.push_back(t->cell(r, scIdx));
         const auto rm = computeRocMetricsDirect(yTrue, scVec);
         const double finalAuc = (rm.nPos > 0 && rm.nNeg > 0) ? rm.auc : aucPlot;
-        outResult[QStringLiteral("ok")] = (ml != nullptr && rm.nPos > 0 && rm.nNeg > 0);
+        outResult[QStringLiteral("ok")] = ((!wantPlot || ml != nullptr) && rm.nPos > 0 && rm.nNeg > 0);
         outResult[QStringLiteral("auc")] = safeJsonDouble(finalAuc);
         outResult[QStringLiteral("se")] = safeJsonDouble(rm.se);
         outResult[QStringLiteral("optimal_threshold")] = safeJsonDouble(rm.optimalThreshold);
@@ -16815,6 +25836,25 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("specificity")] = safeJsonDouble(rm.specificity);
         outResult[QStringLiteral("n_pos")] = rm.nPos;
         outResult[QStringLiteral("n_neg")] = rm.nNeg;
+        if (scIdxs.size() > 1) {
+            QJsonArray curvesMetrics;
+            for (int sci : scIdxs) {
+                std::vector<int> yt;
+                std::vector<int> vr;
+                extractBinaryStateRows(t, stIdx, QVector<int>{ sci }, yt, vr);
+                std::vector<double> sv;
+                sv.reserve(vr.size());
+                for (int r : vr)
+                    sv.push_back(t->cell(r, sci));
+                const auto rmi = computeRocMetricsDirect(yt, sv);
+                QJsonObject co;
+                co[QStringLiteral("col")] = t->colLabel(sci);
+                co[QStringLiteral("auc")] = safeJsonDouble(rmi.auc);
+                co[QStringLiteral("se")] = safeJsonDouble(rmi.se);
+                curvesMetrics.append(co);
+            }
+            outResult[QStringLiteral("curves")] = curvesMetrics;
+        }
         if (ml)
             outResult[QStringLiteral("graph")] = ml->name();
         return true;
@@ -16822,6 +25862,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("stats.pca")) {
         Table *t = resolveTable(d_app, params);
+        const bool standardize = optionalJsonBool(params, QStringLiteral("standardize"), true);
+        const bool wantBiplot = optionalJsonBool(params, QStringLiteral("biplot"), true);
         QStringList colNames;
         if (params.value(QStringLiteral("cols")).isArray()) {
             for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray())
@@ -16834,11 +25876,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
         Table *scoresTbl = nullptr;
         MultiLayer *ml = GraphStatsAndSurfaceFit::runPCAAndBiplot(d_app, t, colNames, &scoresTbl);
-        if (ml) {
+        if (ml && !wantBiplot) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            ml = nullptr;
+        } else if (ml) {
             for (Graph *lg : ml->layersList())
                 enforceArialGraphFonts(lg);
         }
-        outResult[QStringLiteral("ok")] = (ml != nullptr);
+        outResult[QStringLiteral("ok")] = (ml != nullptr || scoresTbl != nullptr);
+        outResult[QStringLiteral("standardized")] = standardize;
         if (ml)
             outResult[QStringLiteral("graph")] = ml->name();
         if (scoresTbl) {
@@ -16866,13 +25912,26 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 }
             }
         }
-        const bool spearman = (params.value(QStringLiteral("method")).toString().toLower()
-                               == QStringLiteral("spearman"))
-                || params.value(QStringLiteral("spearman")).toBool(false);
+        const QString corrMethod =
+                optionalJsonString(params, QStringLiteral("method"), QStringLiteral("pearson"))
+                        .trimmed()
+                        .toLower();
+        if (!corrMethod.isEmpty() && corrMethod != QStringLiteral("pearson")
+            && corrMethod != QStringLiteral("spearman")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown correlation method '%1' (expected 'pearson' or 'spearman').")
+                            .arg(corrMethod));
+        }
+        const bool spearman = (corrMethod == QStringLiteral("spearman"))
+                || optionalJsonBool(params, QStringLiteral("spearman"), false);
+        const bool wantHeatmap = optionalJsonBool(params, QStringLiteral("plot_heatmap"), true);
         Matrix *corrM = nullptr;
         MultiLayer *ml = GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
                 d_app, t, colNames, spearman, &corrM);
-        if (ml) {
+        if (ml && !wantHeatmap) {
+            closeAndDeleteEmptyPlot(d_app, ml);
+            ml = nullptr;
+        } else if (ml) {
             for (Graph *lg : ml->layersList())
                 enforceArialGraphFonts(lg);
         }
@@ -16943,14 +26002,26 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                     colNames << t->colLabel(c);
             }
         }
-        const QString alg = params.value(QStringLiteral("method")).toString().toLower();
+        const QString alg = optionalJsonString(params, QStringLiteral("method"),
+                                               QStringLiteral("kmeans"))
+                                    .trimmed()
+                                    .toLower();
+        const QString lnkStr = optionalJsonString(params, QStringLiteral("linkage"),
+                                                  QStringLiteral("ward"))
+                                       .trimmed()
+                                       .toLower();
+        int lnk = 0; // Ward
+        if (lnkStr.isEmpty() || lnkStr == QStringLiteral("ward"))
+            lnk = 0;
+        else if (lnkStr == QStringLiteral("complete"))
+            lnk = 1;
+        else if (lnkStr == QStringLiteral("average"))
+            lnk = 2;
+        else
+            throwInvalidParams(
+                    QStringLiteral("Unknown hierarchical linkage '%1' (expected 'ward'|'complete'|'average').")
+                            .arg(lnkStr));
         if (alg == QStringLiteral("hierarchical") || alg == QStringLiteral("dendrogram")) {
-            const QString lnkStr = params.value(QStringLiteral("linkage")).toString().toLower();
-            int lnk = 0; // Ward
-            if (lnkStr == QStringLiteral("complete"))
-                lnk = 1;
-            else if (lnkStr == QStringLiteral("average"))
-                lnk = 2;
             MultiLayer *ml = GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(d_app, t, colNames,
                                                                                  lnk);
             if (ml) {
@@ -16962,9 +26033,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 outResult[QStringLiteral("graph")] = ml->name();
             return true;
         }
-        const int k = std::max(2, params.value(QStringLiteral("k")).toInt(3));
+        if (!alg.isEmpty() && alg != QStringLiteral("kmeans") && alg != QStringLiteral("k_means")
+            && alg != QStringLiteral("k-means")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown clustering method '%1' (expected 'kmeans' or 'hierarchical').")
+                            .arg(alg));
+        }
+        const int k = parseBoundedInt(params, QStringLiteral("k"), 3, 2, 256);
         const bool plotC = params.contains(QStringLiteral("plot"))
-                ? params.value(QStringLiteral("plot")).toBool(true)
+                ? optionalJsonBool(params, QStringLiteral("plot"), true)
                 : true;
         const auto km =
                 GraphStatsAndSurfaceFit::runKMeansClustering(d_app, t, colNames, k, plotC);
@@ -16990,12 +26067,16 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         const QString curveTitle = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-        const double conf = params.value(QStringLiteral("conf_level")).toDouble(0.95);
-        const bool pred = params.value(QStringLiteral("prediction")).toBool(false);
+        const double conf = params.contains(QStringLiteral("conf_level"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("conf_level"), 0.95, 1.0)
+                : optionalJsonFiniteDouble(params, QStringLiteral("level"), 0.95, 1.0);
+        if (conf <= 0.0 || conf >= 1.0)
+            throwInvalidParams(QStringLiteral("Confidence level must satisfy 0 < level < 1."));
+        const bool pred = optionalJsonBool(params, QStringLiteral("prediction"), false);
         QwtPlotCurve *ec =
                 GraphStatsAndSurfaceFit::addConfidenceEllipse(d_app, g, curveTitle, conf, pred);
         enforceArialGraphFonts(g);
-        g->replot();
+        replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (ec != nullptr);
         if (ec)
             outResult[QStringLiteral("ellipse_curve")] = ec->title().text();
@@ -17006,35 +26087,224 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     // 7E. Graph Image Digitizer (digitizer.extract)
     // ------------------------------------------------------------------------
     if (method == QStringLiteral("digitizer.extract")) {
-        const QString path = params.value(QStringLiteral("path")).toString().trimmed();
-        if (path.isEmpty() || !QFileInfo::exists(path))
+        const QString path = params.contains(QStringLiteral("path"))
+                ? optionalJsonString(params, QStringLiteral("path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("image_path")).trimmed();
+        if (path.isEmpty() || !QFileInfo::exists(path) || !QFileInfo(path).isFile())
             throwInvalidParams(QStringLiteral("Image file not found: %1").arg(path));
+        const QString modeStr =
+                optionalJsonString(params, QStringLiteral("mode"), QStringLiteral("auto_curve"))
+                        .trimmed()
+                        .toLower();
+        if (!modeStr.isEmpty() && modeStr != QStringLiteral("auto_curve")
+            && modeStr != QStringLiteral("color_trace") && modeStr != QStringLiteral("auto")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown digitizer mode '%1' (expected 'auto_curve').")
+                            .arg(modeStr));
+        }
         QImage img(path);
         if (img.isNull())
             throwRpcRuntime(QStringLiteral("Failed to decode image '%1'.").arg(path));
 
         GraphDigitizer::AxisCalibration cal;
-        cal.pixelX1 = QPointF(params.value(QStringLiteral("px_x1")).toDouble(0.0),
-                              params.value(QStringLiteral("py_x1")).toDouble(img.height() - 1));
-        cal.pixelX2 = QPointF(params.value(QStringLiteral("px_x2")).toDouble(img.width() - 1),
-                              params.value(QStringLiteral("py_x2")).toDouble(img.height() - 1));
-        cal.valueX1 = params.value(QStringLiteral("val_x1")).toDouble(0.0);
-        cal.valueX2 = params.value(QStringLiteral("val_x2")).toDouble(1.0);
-        cal.logX = params.value(QStringLiteral("log_x")).toBool(false);
+        cal.pixelX1 = QPointF(optionalJsonFiniteDouble(params, QStringLiteral("px_x1"), 0.0),
+                              optionalJsonFiniteDouble(params, QStringLiteral("py_x1"),
+                                                       double(img.height() - 1)));
+        cal.pixelX2 = QPointF(optionalJsonFiniteDouble(params, QStringLiteral("px_x2"),
+                                                       double(img.width() - 1)),
+                              optionalJsonFiniteDouble(params, QStringLiteral("py_x2"),
+                                                       double(img.height() - 1)));
+        cal.valueX1 = optionalJsonFiniteDouble(params, QStringLiteral("val_x1"), 0.0);
+        cal.valueX2 = optionalJsonFiniteDouble(params, QStringLiteral("val_x2"), 1.0);
+        cal.logX = optionalJsonBool(params, QStringLiteral("log_x"), false);
 
-        cal.pixelY1 = QPointF(params.value(QStringLiteral("px_y1")).toDouble(0.0),
-                              params.value(QStringLiteral("py_y1")).toDouble(img.height() - 1));
-        cal.pixelY2 = QPointF(params.value(QStringLiteral("px_y2")).toDouble(0.0),
-                              params.value(QStringLiteral("py_y2")).toDouble(0.0));
-        cal.valueY1 = params.value(QStringLiteral("val_y1")).toDouble(0.0);
-        cal.valueY2 = params.value(QStringLiteral("val_y2")).toDouble(1.0);
-        cal.logY = params.value(QStringLiteral("log_y")).toBool(false);
+        cal.pixelY1 = QPointF(optionalJsonFiniteDouble(params, QStringLiteral("px_y1"), 0.0),
+                              optionalJsonFiniteDouble(params, QStringLiteral("py_y1"),
+                                                       double(img.height() - 1)));
+        cal.pixelY2 = QPointF(optionalJsonFiniteDouble(params, QStringLiteral("px_y2"), 0.0),
+                              optionalJsonFiniteDouble(params, QStringLiteral("py_y2"), 0.0));
+        cal.valueY1 = optionalJsonFiniteDouble(params, QStringLiteral("val_y1"), 0.0);
+        cal.valueY2 = optionalJsonFiniteDouble(params, QStringLiteral("val_y2"), 1.0);
+        cal.logY = optionalJsonBool(params, QStringLiteral("log_y"), false);
 
-        const QColor targetColor = parseColorValue(params.value(QStringLiteral("color")),
-                                                   QColor(220, 30, 30));
-        const int tol = std::clamp(params.value(QStringLiteral("tolerance")).toInt(50), 1, 255);
-        const int nSamples =
-                std::clamp(params.value(QStringLiteral("samples")).toInt(100), 5, 4000);
+        if (params.contains(QStringLiteral("cal_points"))
+            && !params.value(QStringLiteral("cal_points")).isNull()) {
+            if (!params.value(QStringLiteral("cal_points")).isArray())
+                throwInvalidParams(
+                        QStringLiteral("'cal_points' must be a list of 2 or 4 calibration points."));
+            const QJsonArray cp = params.value(QStringLiteral("cal_points")).toArray();
+            auto readPtTriplet = [](const QJsonValue &v, double &px, double &py, double &val1,
+                                    double *val2 = nullptr) {
+                if (v.isArray()) {
+                    const QJsonArray a = v.toArray();
+                    if (a.size() < (val2 ? 4 : 3))
+                        throwInvalidParams(
+                                QStringLiteral("Each calibration point array must have >= %1 numbers.")
+                                        .arg(val2 ? 4 : 3));
+                    px = parseFiniteCoordDouble(a[0], QStringLiteral("cal_points.px"));
+                    py = parseFiniteCoordDouble(a[1], QStringLiteral("cal_points.py"));
+                    val1 = parseFiniteCoordDouble(a[2], QStringLiteral("cal_points.val"));
+                    if (val2)
+                        *val2 = parseFiniteCoordDouble(a[3], QStringLiteral("cal_points.val_y"));
+                } else if (v.isObject()) {
+                    const QJsonObject o = v.toObject();
+                    px = optionalJsonFiniteDouble(
+                            o, o.contains(QStringLiteral("px")) ? QStringLiteral("px")
+                                                                : QStringLiteral("x"),
+                            0.0);
+                    py = optionalJsonFiniteDouble(
+                            o, o.contains(QStringLiteral("py")) ? QStringLiteral("py")
+                                                                : QStringLiteral("y"),
+                            0.0);
+                    val1 = optionalJsonFiniteDouble(
+                            o, o.contains(QStringLiteral("val")) ? QStringLiteral("val")
+                                                                 : QStringLiteral("val_x"),
+                            0.0);
+                    if (val2) {
+                        *val2 = optionalJsonFiniteDouble(
+                                o, o.contains(QStringLiteral("val_y")) ? QStringLiteral("val_y")
+                                                                       : QStringLiteral("val"),
+                                0.0);
+                    }
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Each calibration point must be a list or dict."));
+                }
+            };
+            if (cp.size() == 4) {
+                double px1 = 0, py1 = 0, vx1 = 0;
+                double px2 = 0, py2 = 0, vx2 = 1;
+                double pyx1 = 0, pyy1 = 0, vy1 = 0;
+                double pyx2 = 0, pyy2 = 0, vy2 = 1;
+                readPtTriplet(cp[0], px1, py1, vx1);
+                readPtTriplet(cp[1], px2, py2, vx2);
+                readPtTriplet(cp[2], pyx1, pyy1, vy1);
+                readPtTriplet(cp[3], pyx2, pyy2, vy2);
+                cal.pixelX1 = QPointF(px1, py1);
+                cal.pixelX2 = QPointF(px2, py2);
+                cal.valueX1 = vx1;
+                cal.valueX2 = vx2;
+                cal.pixelY1 = QPointF(pyx1, pyy1);
+                cal.pixelY2 = QPointF(pyx2, pyy2);
+                cal.valueY1 = vy1;
+                cal.valueY2 = vy2;
+            } else if (cp.size() == 3) {
+                // 3-point L-shaped calibration: [Origin(px0, py0, x1[, y1]), X_end(px_x2, py_x2, x2), Y_end(px_y2, py_y2, y2)]
+                double px0 = 0.0, py0 = 0.0, vx1 = 0.0, vy1 = 0.0;
+                if (cp[0].isArray()) {
+                    const QJsonArray a0 = cp[0].toArray();
+                    if (a0.size() < 3) {
+                        throwInvalidParams(QStringLiteral(
+                                "3-point cal_points[0] origin must have >= 3 numbers [px, py, val_x(, val_y)]."));
+                    }
+                    px0 = parseFiniteCoordDouble(a0[0], QStringLiteral("cal_points[0].px"));
+                    py0 = parseFiniteCoordDouble(a0[1], QStringLiteral("cal_points[0].py"));
+                    vx1 = parseFiniteCoordDouble(a0[2], QStringLiteral("cal_points[0].val_x"));
+                    vy1 = (a0.size() >= 4)
+                            ? parseFiniteCoordDouble(a0[3], QStringLiteral("cal_points[0].val_y"))
+                            : vx1;
+                } else if (cp[0].isObject()) {
+                    const QJsonObject o0 = cp[0].toObject();
+                    px0 = optionalJsonFiniteDouble(
+                            o0, o0.contains(QStringLiteral("px")) ? QStringLiteral("px")
+                                                                  : QStringLiteral("x"),
+                            0.0);
+                    py0 = optionalJsonFiniteDouble(
+                            o0, o0.contains(QStringLiteral("py")) ? QStringLiteral("py")
+                                                                  : QStringLiteral("y"),
+                            0.0);
+                    vx1 = optionalJsonFiniteDouble(
+                            o0, o0.contains(QStringLiteral("val_x"))
+                                    ? QStringLiteral("val_x")
+                                    : (o0.contains(QStringLiteral("vx")) ? QStringLiteral("vx")
+                                                                         : QStringLiteral("val")),
+                            0.0);
+                    vy1 = optionalJsonFiniteDouble(
+                            o0, o0.contains(QStringLiteral("val_y"))
+                                    ? QStringLiteral("val_y")
+                                    : (o0.contains(QStringLiteral("vy")) ? QStringLiteral("vy")
+                                                                         : QStringLiteral("val")),
+                            vx1);
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Each calibration point must be a list or dict."));
+                }
+
+                double pxX2 = 0.0, pyX2 = 0.0, vx2 = 1.0;
+                readPtTriplet(cp[1], pxX2, pyX2, vx2);
+
+                double pxY2 = 0.0, pyY2 = 0.0, vy2 = 1.0;
+                if (cp[2].isArray()) {
+                    const QJsonArray a2 = cp[2].toArray();
+                    if (a2.size() < 3) {
+                        throwInvalidParams(QStringLiteral(
+                                "3-point cal_points[2] Y-axis point must have >= 3 numbers [px, py, val_y]."));
+                    }
+                    pxY2 = parseFiniteCoordDouble(a2[0], QStringLiteral("cal_points[2].px"));
+                    pyY2 = parseFiniteCoordDouble(a2[1], QStringLiteral("cal_points[2].py"));
+                    vy2 = (a2.size() >= 4)
+                            ? parseFiniteCoordDouble(a2[3], QStringLiteral("cal_points[2].val_y"))
+                            : parseFiniteCoordDouble(a2[2], QStringLiteral("cal_points[2].val_y"));
+                } else if (cp[2].isObject()) {
+                    const QJsonObject o2 = cp[2].toObject();
+                    pxY2 = optionalJsonFiniteDouble(
+                            o2, o2.contains(QStringLiteral("px")) ? QStringLiteral("px")
+                                                                  : QStringLiteral("x"),
+                            0.0);
+                    pyY2 = optionalJsonFiniteDouble(
+                            o2, o2.contains(QStringLiteral("py")) ? QStringLiteral("py")
+                                                                  : QStringLiteral("y"),
+                            0.0);
+                    vy2 = optionalJsonFiniteDouble(
+                            o2, o2.contains(QStringLiteral("val_y"))
+                                    ? QStringLiteral("val_y")
+                                    : (o2.contains(QStringLiteral("vy")) ? QStringLiteral("vy")
+                                                                         : QStringLiteral("val")),
+                            1.0);
+                } else {
+                    throwInvalidParams(
+                            QStringLiteral("Each calibration point must be a list or dict."));
+                }
+
+                cal.pixelX1 = QPointF(px0, py0);
+                cal.pixelX2 = QPointF(pxX2, pyX2);
+                cal.valueX1 = vx1;
+                cal.valueX2 = vx2;
+                cal.pixelY1 = QPointF(px0, py0);
+                cal.pixelY2 = QPointF(pxY2, pyY2);
+                cal.valueY1 = vy1;
+                cal.valueY2 = vy2;
+            } else if (cp.size() == 2) {
+                double px1 = 0, py1 = 0, vx1 = 0, vy1 = 0;
+                double px2 = 0, py2 = 0, vx2 = 1, vy2 = 1;
+                readPtTriplet(cp[0], px1, py1, vx1, &vy1);
+                readPtTriplet(cp[1], px2, py2, vx2, &vy2);
+                cal.pixelX1 = QPointF(px1, py1);
+                cal.pixelX2 = QPointF(px2, py1);
+                cal.valueX1 = vx1;
+                cal.valueX2 = vx2;
+                cal.pixelY1 = QPointF(px1, py1);
+                cal.pixelY2 = QPointF(px1, py2);
+                cal.valueY1 = vy1;
+                cal.valueY2 = vy2;
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("'cal_points' must contain 4 axis points [X1, X2, Y1, Y2], 3 L-axis points [Origin, X2, Y2], or 2 corner points."));
+            }
+        }
+
+        const QJsonValue colVal = params.contains(QStringLiteral("color"))
+                ? params.value(QStringLiteral("color"))
+                : params.value(QStringLiteral("target_color"));
+        const QColor targetColor = parseColorValue(colVal, QColor(220, 30, 30));
+        const int tol = params.contains(QStringLiteral("tolerance"))
+                ? parseBoundedInt(params, QStringLiteral("tolerance"), 50, 1, 255)
+                : parseBoundedInt(params, QStringLiteral("color_tol"), 50, 1, 255);
+        const int nSamples = params.contains(QStringLiteral("samples"))
+                ? parseBoundedInt(params, QStringLiteral("samples"), 100, 5, 4000)
+                : (params.contains(QStringLiteral("n_points"))
+                           ? parseBoundedInt(params, QStringLiteral("n_points"), 100, 5, 4000)
+                           : parseBoundedInt(params, QStringLiteral("points"), 100, 5, 4000));
         QRect roi;
         if (params.contains(QStringLiteral("roi")) && params.value(QStringLiteral("roi")).isArray()) {
             const QJsonArray ra = params.value(QStringLiteral("roi")).toArray();
@@ -17045,9 +26315,10 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         const QVector<QPointF> pts = GraphDigitizer::autoTraceCurveByColor(img, cal, targetColor,
                                                                            tol, nSamples, roi);
         MultiLayer *outPlot = nullptr;
-        MultiLayer **plotPtr = params.value(QStringLiteral("plot")).toBool(false) ? &outPlot : nullptr;
+        MultiLayer **plotPtr =
+                optionalJsonBool(params, QStringLiteral("plot"), false) ? &outPlot : nullptr;
         Table *outTbl = GraphDigitizer::exportPointsToTable(
-                d_app, pts, params.value(QStringLiteral("table_name")).toString(), plotPtr);
+                d_app, pts, optionalJsonString(params, QStringLiteral("table_name")), plotPtr);
         if (outPlot) {
             for (Graph *lg : outPlot->layersList())
                 enforceArialGraphFonts(lg);
@@ -17095,6 +26366,8 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
         }
     } nonInteractiveGuard(QCoreApplication::instance());
 
+    validateParamsAgainstCatalogSchema(method, params);
+
     if (d_custom_hook) {
         bool handled = false;
         const QJsonObject hookedRes = d_custom_hook(method, params, &handled);
@@ -17137,6 +26410,11 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                                       || method == QStringLiteral("graph.export")
                                       || method == QStringLiteral("graph.copy_image")
                                       || method == QStringLiteral("graph.copy_ole")
+                                      || method == QStringLiteral("graph.export_ole")
+                                      || method == QStringLiteral("graph.to_python")
+                                      || ((method == QStringLiteral("graph.auto_layout")
+                                           || method == QStringLiteral("graph.fix_layout"))
+                                          && params.value(QStringLiteral("dry_run")).toBool(false))
                                       || method == QStringLiteral("gadget.query"));
         if (!isReadOnlyGraph
             && (method.startsWith(QStringLiteral("plot."))
@@ -17156,6 +26434,7 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                    || method == QStringLiteral("table.resize")
                    || method == QStringLiteral("table.paste_tsv")
                    || method == QStringLiteral("matrix.set_data")
+                   || method == QStringLiteral("matrix.set_formula")
                    || method == QStringLiteral("matrix.transpose")
                    || method == QStringLiteral("matrix.invert")
                    || method == QStringLiteral("matrix.flip")) {
@@ -17167,10 +26446,14 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     if (dispatchCoreAndGraphMethod(this, d_app, d_focus_hud_fallback, d_workspace_mode_fallback,
                                    d_last_undo_domain, d_last_undo_graph, method, params,
                                    result)) {
+        if (!result.contains(QStringLiteral("ok")))
+            result[QStringLiteral("ok")] = true;
         updateLastUndoTracking(result);
         return result;
     }
     if (dispatchAnalysisAndScienceMethod(d_app, method, params, result)) {
+        if (!result.contains(QStringLiteral("ok")))
+            result[QStringLiteral("ok")] = true;
         updateLastUndoTracking(result);
         return result;
     }
@@ -17178,6 +26461,29 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     QJsonObject errData;
     errData[QStringLiteral("available")] = toJsonArray(supportedMethods());
     throw RpcDispatchException(-32601, QStringLiteral("Method not found: %1").arg(method), errData);
+}
+
+QString PythonAutomationServer::generatePythonScriptForWindow(ApplicationWindow *app,
+                                                              MyWidget *window, bool standalone,
+                                                              const QString &embedData)
+{
+    if (!app)
+        return QString();
+    MyWidget *target = window;
+    if (!target) {
+        if (QWidget *actW = app->d_workspace.activeSubWindow())
+            target = qobject_cast<MyWidget *>(actW);
+        if (!target) {
+            for (MyWidget *w : app->windowsList()) {
+                if (w && (w->inherits("MultiLayer") || w->inherits("Graph3D")))
+                    target = w;
+            }
+        }
+    }
+    if (!target)
+        return QString();
+    return generatePythonScriptInternal(app, target, standalone, embedData, QString(), nullptr,
+                                        nullptr);
 }
 
 

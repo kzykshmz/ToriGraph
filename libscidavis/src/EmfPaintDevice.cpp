@@ -906,6 +906,10 @@ public:
         const double dy = px.y() * m_scaleY;
         const double angleDeg = std::atan2(dy, dx) * (180.0 / 3.14159265358979323846);
 
+        double hScale = std::hypot(dx, dy);
+        if (hScale <= 0.0)
+            hScale = m_scaleX;
+
         double vScale = std::hypot(py.x() * m_scaleX, py.y() * m_scaleY);
         if (vScale <= 0.0)
             vScale = m_scaleY;
@@ -916,6 +920,40 @@ public:
             logicalPxHeight = double(f.pixelSize());
         } else if (f.pointSizeF() > 0.0) {
             logicalPxHeight = f.pointSizeF() * double(m_dpiY) / 72.0;
+        }
+        // QTextDocument (used by QwtRichTextEngine for <i>, <sub>, <sup> spans) lays out glyphs
+        // in screen logical coordinates and shrinks <sub>/<sup> inside QFontEngine (~2/3 size)
+        // while keeping textItem.font().pointSizeF() at the parent font size (and leaving
+        // textItem.ascent()/descent() at whole-line bounds). Detect true DPI & sub/superscript
+        // scale from textItem.width() vs unshrunk QFontMetricsF::horizontalAdvance(text).
+        {
+            const QFontMetricsF fmScreen(f);
+            const QFontMetricsF fmDev =
+                    paintDevice() ? QFontMetricsF(f, paintDevice()) : fmScreen;
+            const double devAsc = fmDev.ascent();
+            const double scrAsc = fmScreen.ascent();
+            double dpiFactor = 1.0;
+            const QFontMetricsF *refFm = &fmDev;
+            if (devAsc > 1.0 && scrAsc > 1.0 && std::fabs(scrAsc / devAsc - 1.0) > 0.02) {
+                const double tiLineH = textItem.ascent() + textItem.descent();
+                const double devLineH = devAsc + fmDev.descent();
+                const double scrLineH = scrAsc + fmScreen.descent();
+                if (tiLineH > 1.0
+                    && std::fabs(tiLineH - scrLineH) < std::fabs(tiLineH - devLineH)) {
+                    dpiFactor = scrAsc / devAsc;
+                    refFm = &fmScreen;
+                }
+            }
+            logicalPxHeight *= dpiFactor;
+
+            if (!text.trimmed().isEmpty() && textItem.width() > 0.25) {
+                const double refAdv = refFm->horizontalAdvance(text);
+                if (refAdv > 0.4) {
+                    const double advRatio = textItem.width() / refAdv;
+                    if (advRatio > 0.45 && advRatio < 0.84)
+                        logicalPxHeight *= advRatio;
+                }
+            }
         }
         const Gdiplus::REAL emSizePx =
                 static_cast<Gdiplus::REAL>(std::max(1.0, logicalPxHeight * vScale));
@@ -974,15 +1012,104 @@ public:
                 Gdiplus::Color(static_cast<BYTE>(textAlpha), tc.red(), tc.green(), tc.blue()));
 
         const Gdiplus::PointF gp = mapPointF(p);
-        const std::wstring ws = text.toStdWString();
+        const bool isSpacedSlashSpan =
+                (text.trimmed() == QLatin1String("/")
+                 && (text.startsWith(QLatin1Char(' ')) || text.endsWith(QLatin1Char(' ')))
+                 && textItem.width() > 1.0);
+        const bool hasTrailingSpacedSlash = !isSpacedSlashSpan
+                && text.endsWith(QLatin1String(" / ")) && text.size() > 3
+                && textItem.width() > 4.0;
+        int trailingSpaces = 0;
+        if (!isSpacedSlashSpan && !hasTrailingSpacedSlash) {
+            while (trailingSpaces < text.size()
+                   && text.at(text.size() - 1 - trailingSpaces) == QLatin1Char(' '))
+                ++trailingSpaces;
+        }
+        const QString coreStr = isSpacedSlashSpan ? QStringLiteral("/")
+                : hasTrailingSpacedSlash          ? text.chopped(3)
+                : (trailingSpaces > 0 && trailingSpaces < text.size())
+                ? text.chopped(trailingSpaces)
+                : text;
+        const std::wstring ws = coreStr.toStdWString();
 
         const Gdiplus::GraphicsState saved = m_gfx->Save();
         m_gfx->SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
         m_gfx->TranslateTransform(gp.X, gp.Y);
         if (std::fabs(angleDeg) > 1e-3)
             m_gfx->RotateTransform(static_cast<Gdiplus::REAL>(angleDeg));
-        m_gfx->DrawString(ws.c_str(), static_cast<INT>(ws.size()), &gdipFont,
-                          Gdiplus::PointF(0.0f, -ascentPx), &fmt, &textBrush);
+        const Gdiplus::REAL spanW = static_cast<Gdiplus::REAL>(textItem.width() * hScale);
+        auto measureTrueAdvanceW = [&](const std::wstring &wstr) -> Gdiplus::REAL {
+            if (wstr.empty())
+                return 0.0f;
+            const std::wstring withSentStr = wstr + L"|";
+            Gdiplus::RectF withSentBounds;
+            Gdiplus::RectF sentBounds;
+            m_gfx->MeasureString(withSentStr.c_str(), static_cast<INT>(withSentStr.size()),
+                                 &gdipFont, Gdiplus::PointF(0.0f, 0.0f), &fmt, &withSentBounds);
+            m_gfx->MeasureString(L"|", 1, &gdipFont, Gdiplus::PointF(0.0f, 0.0f), &fmt,
+                                 &sentBounds);
+            const Gdiplus::REAL adv = withSentBounds.Width - sentBounds.Width;
+            if (adv > 0.5f)
+                return adv;
+            Gdiplus::RectF fallbackBounds;
+            m_gfx->MeasureString(wstr.c_str(), static_cast<INT>(wstr.size()), &gdipFont,
+                                 Gdiplus::PointF(0.0f, 0.0f), &fmt, &fallbackBounds);
+            return fallbackBounds.Width;
+        };
+
+        if (isSpacedSlashSpan) {
+            Gdiplus::RectF slashBounds;
+            m_gfx->MeasureString(L"/", 1, &gdipFont, Gdiplus::PointF(0.0f, 0.0f), &fmt,
+                                 &slashBounds);
+            const Gdiplus::REAL drawX = std::max(0.0f, 0.5f * (spanW - slashBounds.Width));
+            m_gfx->DrawString(L"/", 1, &gdipFont, Gdiplus::PointF(drawX, -ascentPx), &fmt,
+                              &textBrush);
+        } else if (hasTrailingSpacedSlash) {
+            const QFontMetricsF qfm(f);
+            const double fullQtAdv = std::max(1.0, double(qfm.horizontalAdvance(text)));
+            const double coreQtAdv = std::clamp(double(qfm.horizontalAdvance(coreStr)), 0.0,
+                                                fullQtAdv);
+            const Gdiplus::REAL coreSpanW =
+                    static_cast<Gdiplus::REAL>(double(spanW) * (coreQtAdv / fullQtAdv));
+            const Gdiplus::REAL prefixAdvW = measureTrueAdvanceW(ws);
+            Gdiplus::RectF slashBounds;
+            m_gfx->MeasureString(L"/", 1, &gdipFont, Gdiplus::PointF(0.0f, 0.0f), &fmt,
+                                 &slashBounds);
+            const Gdiplus::GraphicsState coreSaved = m_gfx->Save();
+            if (ws.size() >= 2 && coreSpanW > 3.0f && prefixAdvW > 1.0f) {
+                const Gdiplus::REAL ratio = coreSpanW / prefixAdvW;
+                if (ratio > 0.88f && ratio < 1.12f && std::fabs(ratio - 1.0f) > 0.002f)
+                    m_gfx->ScaleTransform(ratio, 1.0f);
+            }
+            m_gfx->DrawString(ws.c_str(), static_cast<INT>(ws.size()), &gdipFont,
+                              Gdiplus::PointF(0.0f, -ascentPx), &fmt, &textBrush);
+            m_gfx->Restore(coreSaved);
+
+            const Gdiplus::REAL slashBlockW = std::max(0.0f, spanW - coreSpanW);
+            const Gdiplus::REAL slashX =
+                    coreSpanW + std::max(0.0f, 0.5f * (slashBlockW - slashBounds.Width));
+            m_gfx->DrawString(L"/", 1, &gdipFont, Gdiplus::PointF(slashX, -ascentPx), &fmt,
+                              &textBrush);
+        } else {
+            Gdiplus::REAL targetCoreW = spanW;
+            if (trailingSpaces > 0 && trailingSpaces < text.size()) {
+                const QFontMetricsF qfm(f);
+                const double fullQtAdv = std::max(1.0, double(qfm.horizontalAdvance(text)));
+                const double coreQtAdv =
+                        std::clamp(double(qfm.horizontalAdvance(coreStr)), 0.0, fullQtAdv);
+                targetCoreW = static_cast<Gdiplus::REAL>(double(spanW) * (coreQtAdv / fullQtAdv));
+            }
+            if (ws.size() >= 2 && targetCoreW > 3.0f) {
+                const Gdiplus::REAL gdipAdvW = measureTrueAdvanceW(ws);
+                if (gdipAdvW > 1.0f) {
+                    const Gdiplus::REAL ratio = targetCoreW / gdipAdvW;
+                    if (ratio > 0.88f && ratio < 1.12f && std::fabs(ratio - 1.0f) > 0.002f)
+                        m_gfx->ScaleTransform(ratio, 1.0f);
+                }
+            }
+            m_gfx->DrawString(ws.c_str(), static_cast<INT>(ws.size()), &gdipFont,
+                              Gdiplus::PointF(0.0f, -ascentPx), &fmt, &textBrush);
+        }
         m_gfx->Restore(saved);
     }
 
@@ -1342,7 +1469,7 @@ OleRenderedGraph renderFromImage(const QImage &img)
     return out;
 }
 
-OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
+OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool includeDibClipboard)
 {
     if (!ml && !singleLayer)
         return renderFromImage(QImage());
@@ -1428,42 +1555,50 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
     const int dpiY = (dpiWidget && dpiWidget->logicalDpiY() > 0) ? dpiWidget->logicalDpiY() : 96;
     const double zoom = ml ? std::max(0.1, ml->pageZoom()) : 1.0;
 
-    // 1. Render high-resolution (300 DPI) anti-aliased raster QImage for CF_DIB fallback
-    constexpr int kDibFallbackDpi = 300;
-    double dibScale = double(kDibFallbackDpi) / std::max(36.0, dpiX * zoom);
-    const double maxLogicalSide = double(std::max(pxSize.width(), pxSize.height()));
-    if (maxLogicalSide * dibScale > 3600.0)
-        dibScale = std::max(1.0, 3600.0 / maxLogicalSide);
-    const QSize dibSize(std::max(50, static_cast<int>(std::lround(pxSize.width() * dibScale))),
-                        std::max(50, static_cast<int>(std::lround(pxSize.height() * dibScale))));
-
-    QImage raster(dibSize, QImage::Format_ARGB32);
-    raster.fill(Qt::white);
-    const int paintDpmX = static_cast<int>(std::lround(std::max(36.0, dpiX * zoom) / 0.0254));
-    const int paintDpmY = static_cast<int>(std::lround(std::max(36.0, dpiY * zoom) / 0.0254));
-    raster.setDotsPerMeterX(paintDpmX);
-    raster.setDotsPerMeterY(paintDpmY);
-    {
-        QPainter rp(&raster);
-        rp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
-                                  | QPainter::SmoothPixmapTransform,
-                          true);
-        if (singleLayer) {
-            rp.scale(double(dibSize.width()) / double(pxSize.width()),
-                     double(dibSize.height()) / double(pxSize.height()));
-            singleLayer->exportPainter(rp, false, QRect(QPoint(0, 0), pxSize), pxSize);
-        } else if (ml) {
-            ml->exportPainter(rp, false, mlLayersRect, dibSize);
-        }
-        rp.end();
-    }
-    const int dpm = static_cast<int>(std::lround(double(kDibFallbackDpi) / 0.0254));
-    raster.setDotsPerMeterX(dpm);
-    raster.setDotsPerMeterY(dpm);
-
     OleRenderedGraph out;
     out.pixelSize = pxSize;
-    out.dibBytes = imageToDibBytes(raster);
+    QImage raster;
+    auto renderFallbackRaster = [&]() -> const QImage & {
+        if (!raster.isNull())
+            return raster;
+        constexpr int kDibFallbackDpi = 300;
+        double dibScale = double(kDibFallbackDpi) / std::max(36.0, dpiX * zoom);
+        const double maxLogicalSide = double(std::max(pxSize.width(), pxSize.height()));
+        if (maxLogicalSide * dibScale > 3600.0)
+            dibScale = std::max(1.0, 3600.0 / maxLogicalSide);
+        const QSize dibSize(
+                std::max(50, static_cast<int>(std::lround(pxSize.width() * dibScale))),
+                std::max(50, static_cast<int>(std::lround(pxSize.height() * dibScale))));
+
+        raster = QImage(dibSize, QImage::Format_ARGB32);
+        raster.fill(Qt::white);
+        const int paintDpmX = static_cast<int>(std::lround(std::max(36.0, dpiX * zoom) / 0.0254));
+        const int paintDpmY = static_cast<int>(std::lround(std::max(36.0, dpiY * zoom) / 0.0254));
+        raster.setDotsPerMeterX(paintDpmX);
+        raster.setDotsPerMeterY(paintDpmY);
+        {
+            QPainter rp(&raster);
+            rp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                                      | QPainter::SmoothPixmapTransform,
+                              true);
+            if (singleLayer) {
+                rp.scale(double(dibSize.width()) / double(pxSize.width()),
+                         double(dibSize.height()) / double(pxSize.height()));
+                singleLayer->exportPainter(rp, false, QRect(QPoint(0, 0), pxSize), pxSize);
+            } else if (ml) {
+                ml->exportPainter(rp, false, mlLayersRect, dibSize);
+            }
+            rp.end();
+        }
+        const int dpm = static_cast<int>(std::lround(double(kDibFallbackDpi) / 0.0254));
+        raster.setDotsPerMeterX(dpm);
+        raster.setDotsPerMeterY(dpm);
+        return raster;
+    };
+
+    if (includeDibClipboard) {
+        out.dibBytes = imageToDibBytes(renderFallbackRaster());
+    }
 
     LONG widthHm = 15000L;
     LONG heightHm = 11250L;
@@ -1498,7 +1633,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
     out.extentHm = SIZEL{ widthHm, heightHm };
 
     if (!ensureGdiplusStarted())
-        return renderFromImage(raster);
+        return renderFromImage(renderFallbackRaster());
 
     HDC ref = GetDC(nullptr);
     if (!ref)
@@ -1517,7 +1652,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
                                Gdiplus::EmfTypeEmfPlusDual, L"ToriGraph");
     ReleaseDC(nullptr, ref);
     if (metafile.GetLastStatus() != Gdiplus::Ok)
-        return renderFromImage(raster);
+        return renderFromImage(renderFallbackRaster());
 
     {
         Gdiplus::Graphics gfx(&metafile);
@@ -1546,7 +1681,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer)
         DeleteEnhMetaFile(hemf);
     }
     if (out.emfBytes.isEmpty())
-        return renderFromImage(raster);
+        return renderFromImage(renderFallbackRaster());
     return out;
 }
 

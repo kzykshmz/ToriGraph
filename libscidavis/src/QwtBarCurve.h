@@ -52,6 +52,9 @@ public:
     void setOffset(int offset);
     int offset() const { return bar_offset; };
 
+    void setStacked(bool on) { d_stacked = on; if (on) bar_offset = 0; }
+    bool isStacked() const { return d_stacked; }
+
     double dataOffset();
 
 private:
@@ -60,6 +63,7 @@ private:
 
     int bar_gap, bar_offset;
     BarStyle bar_style;
+    bool d_stacked = false;
 };
 
 #endif

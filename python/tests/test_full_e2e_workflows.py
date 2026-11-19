@@ -3223,6 +3223,751 @@ def run_workflow_12_phase_b_api_sdk_gate(
     )
 
 
+def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
+    runner: E2ERunner, app: tg.Session, tmp_dir: Path
+) -> None:
+    """Mega-Wave 1 Gate: Atomic Batch, Auto-Layout, Reproducible Python Script, NumPy/DataFrame Adapter, Zero-COM PowerPoint Native OLE Deck (`to_pptx`), Sample Gallery, Category/100% Bars/Polar, Kissinger TDS, Kocks-Mecking, XRD Williamson-Hall & VASP DOS/Bands."""
+
+    def _w13_1_batch_autolayout_and_to_python() -> None:
+        app.new_project()
+
+        # 1. Direct list `app.batch` with `$prev` and `$steps[k]` variable piping
+        direct_res = app.batch(
+            [
+                {"method": "table.create", "params": {"rows": 6, "cols": 2, "name": "W13_BatchDirectTbl"}},
+                {
+                    "method": "table.set_data_dict",
+                    "params": {
+                        "table": "$prev.name",
+                        "data": {"X": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "Y": [0.0, 12.0, 24.0, 36.0, 48.0, 60.0]},
+                    },
+                },
+                {
+                    "method": "plot.xy",
+                    "params": {
+                        "table": "$steps[0].name",
+                        "x_col": "X",
+                        "y_cols": ["Y"],
+                        "graph_name": "W13-BatchDirectGraph",
+                    },
+                },
+            ],
+            stop_on_error=True,
+            atomic=True,
+            defer_replot=True,
+        )
+        assert direct_res.get("ok") is True and int(direct_res.get("completed", 0)) == 3, direct_res
+        assert app.graph("W13-BatchDirectGraph").info()["layers"][0]["curve_count"] == 1
+
+        # 2. Recording context manager `with app.batch() as b:` resolving unnamed proxy tokens
+        with app.batch(atomic=True, defer_replot=True) as b:
+            t_ctx = app.create_table(rows=8, cols=2)
+            t_ctx.set_data_dict(
+                {
+                    "Strain": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                    "Stress": [0.0, 120.0, 240.0, 340.0, 405.0, 445.0, 470.0, 485.0],
+                },
+                units={"Strain": "%", "Stress": "MPa"},
+                long_names={"Strain": "Engineering strain", "Stress": "Engineering stress"},
+            )
+            g_ctx = app.plot_xy(t_ctx, "Strain", "Stress", style="line_symbol")
+            g_ctx.isij_style()
+            g_ctx.set_axis("x", lim=[0.0, 7.5])
+
+        assert b.ok is True and len(b.commands) == 5, b.result
+        assert not t_ctx.name.startswith("$steps[") and not g_ctx.name.startswith("$steps["), (
+            f"Proxy names not resolved after batch flush: t={t_ctx.name}, g={g_ctx.name}"
+        )
+        assert g_ctx.info()["layers"][0]["curve_count"] == 1
+
+        # 3. Atomic rollback on batch step failure
+        wins_before_fail = {w["name"] for w in app.list_windows()}
+        failed_properly = False
+        try:
+            with app.batch(atomic=True, stop_on_error=True) as b_fail:
+                app.create_table(rows=3, cols=2, name="W13_ShouldRollbackTbl")
+                app.call("nonexistent.invalid_rpc_method")
+        except tg.RpcError:
+            failed_properly = True
+        assert failed_properly, "Failing atomic batch context did not raise RpcError!"
+        wins_after_fail = {w["name"] for w in app.list_windows()}
+        assert "W13_ShouldRollbackTbl" not in wins_after_fail and wins_after_fail == wins_before_fail, (
+            f"Atomic batch failed to roll back workspace! before={wins_before_fail}, after={wins_after_fail}"
+        )
+
+        # 4. Self-Healing Layout Engine (`g.auto_layout` / `g.fix_layout`)
+        g_ctx.set_axis("y", lim=[600.0, 800.0])  # clips curve completely
+        g_ctx.set_axis("right", title="OrphanRightTitle", enabled=False)
+        pre_codes = {w["code"] for w in g_ctx.diagnose_layout()}
+        assert "CURVE_CLIPPED_BY_AXIS" in pre_codes and "DISABLED_AXIS_HAS_TITLE_OR_CURVE" in pre_codes, pre_codes
+
+        heal = g_ctx.auto_layout(pad_fraction=0.05, allow_outside_legend=True)
+        assert heal.get("ok") is True, f"auto_layout failed: {heal}"
+        post_codes = {w["code"] for w in g_ctx.diagnose_layout()}
+        assert "CURVE_CLIPPED_BY_AXIS" not in post_codes, f"Clipping persisted after auto_layout: {post_codes}"
+        assert "DISABLED_AXIS_HAS_TITLE_OR_CURVE" not in post_codes, (
+            f"Disabled axis warning persisted after auto_layout: {post_codes}"
+        )
+
+        # 5. Reproducible Code Generation (`g.to_python_script`) live `exec` round-trip
+        g_ctx.add_reference_line(value=405.0, orientation="horizontal", label="Proof")
+        g_ctx.add_text("UTS Region", x=5.0, y=460.0)
+        py_out = tmp_dir / "w13_repro_standalone.py"
+        standalone_src = g_ctx.to_python_script(output_path=py_out, standalone=True, embed_data="inline")
+        assert py_out.is_file() and len(standalone_src.strip()) > 20
+        compile(standalone_src, str(py_out), "exec")
+
+        console_src = g_ctx.to_python_script(standalone=False, embed_data="inline")
+        compile(console_src, "<to_python_inline>", "exec")
+        app.new_project()
+        assert len(app.list_windows()) == 0
+        exec_globals: Dict[str, Any] = {"__builtins__": __builtins__, "app": app, "tg": tg}
+        exec(console_src, exec_globals)
+        rebuilt_mls = [w["name"] for w in app.list_windows() if w.get("type") == "MultiLayer"]
+        assert len(rebuilt_mls) >= 1, f"Executed to_python_script produced no MultiLayer window:\n{console_src}"
+        g_reb = app.graph(rebuilt_mls[0])
+        assert g_reb.info()["layers"][0]["curve_count"] >= 1
+        assert_graph_arial(app, g_reb.name, "W13 to_python_script Rebuilt")
+
+    runner.check(
+        "13.1 Atomic `app.batch` (`with app.batch()` + Rollback), `auto_layout` & `to_python_script` Exec Round-Trip",
+        _w13_1_batch_autolayout_and_to_python,
+    )
+
+    def _w13_2_numpy_dataframe_adapter_and_zero_com_pptx() -> None:
+        import zipfile
+        import numpy as np  # type: ignore[import-not-found]
+        import olefile  # type: ignore[import-not-found]
+        import pandas as pd  # type: ignore[import-not-found]
+        import pptx  # type: ignore[import-not-found]
+        from pptx.util import Cm, Inches  # type: ignore[import-not-found]
+
+        app.new_project()
+
+        # 1. Pandas DataFrame + attrs['units'] / attrs['long_names'] + NaN round-trip
+        df_src = pd.DataFrame(
+            {
+                "Strain": [0.0, 0.5, 1.0, 2.0, 3.0],
+                "Stress": [0.0, 350.0, np.nan, 495.0, 535.0],
+            }
+        )
+        df_src.attrs["units"] = {"Strain": "%", "Stress": "MPa"}
+        df_src.attrs["long_names"] = {"Strain": "Nominal strain", "Stress": "Nominal stress"}
+
+        t_pd = app.create_table(df_src, name="W13_PandasTbl")
+        stress_meta = t_pd.get_meta("Stress")
+        assert stress_meta.get("units") == "MPa" and stress_meta.get("long_name") == "Nominal stress", stress_meta
+        assert t_pd.get_cell(2, "Stress") is None, "NaN in DataFrame was not stored as invalid cell!"
+
+        df_rt = t_pd.to_dataframe(backend="pandas")
+        assert list(df_rt.columns) == ["Strain", "Stress"]
+        assert df_rt.attrs.get("units", {}).get("Stress") == "MPa", df_rt.attrs
+        assert df_rt.attrs.get("long_names", {}).get("Strain") == "Nominal strain", df_rt.attrs
+        np_tbl = t_pd.to_numpy()
+        assert np_tbl.shape == (5, 2) and np.isnan(np_tbl[2, 1]) and abs(np_tbl[4, 1] - 535.0) < 1e-9
+
+        # Direct DataFrame & 1D NumPy ndarray `plot_xy` + 2D NumPy Matrix round-trip
+        g_df = app.plot_xy(df_src.dropna(), "Strain", "Stress", style="line_symbol", graph_name="W13-DfGraph")
+        g_df.slide_style()
+        x_np = np.linspace(0.0, 2.0 * math.pi, 25)
+        y_np = np.cos(x_np) * 100.0
+        g_np = app.plot_xy(x_np, y_np, style="line", graph_name="W13-NpGraph")
+        g_np.isij_style()
+
+        mat_arr = np.array([[1.5, 2.5, np.nan], [4.5, 5.5, 6.5]], dtype=np.float64)
+        m_np = app.create_matrix(mat_arr, name="W13_NpMat", x_min=0.0, x_max=2.0, y_min=0.0, y_max=1.0)
+        mat_rt = m_np.to_numpy()
+        assert mat_rt.shape == (2, 3) and np.isnan(mat_rt[0, 2]) and abs(mat_rt[1, 2] - 6.5) < 1e-9
+
+        # Optional Polars verification if installed
+        try:
+            import polars as pl  # type: ignore[import-not-found]
+
+            pl_df = pl.DataFrame({"Q": [1.0, 2.0, 3.0], "I": [100.0, 250.0, 90.0]})
+            t_pl = app.create_table(pl_df, name="W13_PolarsTbl")
+            pl_back = t_pl.to_dataframe(backend="polars")
+            assert pl_back.shape == (3, 2)
+        except ImportError:
+            pass
+
+        # 2. Zero-COM PowerPoint Native OLE Deck (`app.to_pptx` & `g.to_pptx`)
+        deck_path = tmp_dir / "w13_native_ole_deck.pptx"
+        pptx_res = app.to_pptx(
+            deck_path,
+            [g_df, g_np],
+            per_slide=2,
+            titles=["Al-Zn-Mg Mechanical & Harmonic Summary"],
+            dpi=300,
+        )
+        assert pptx_res.get("ok") is True and deck_path.is_file() and deck_path.stat().st_size > 4000, pptx_res
+        assert pptx_res.get("slide_count") == 1 and pptx_res.get("embedded_count") == 2
+
+        with zipfile.ZipFile(deck_path, "r") as zf:
+            z_entries = set(zf.namelist())
+            ole_entries = sorted(e for e in z_entries if e.startswith("ppt/embeddings/oleObject"))
+            emf_entries = sorted(e for e in z_entries if e.startswith("ppt/media/image") and e.endswith(".emf"))
+            assert len(ole_entries) == 2 and len(emf_entries) == 2, z_entries
+
+            s1_xml = zf.read("ppt/slides/slide1.xml").decode("utf-8")
+            assert 'progId="ToriGraph.Graph.1"' in s1_xml
+            assert 'descr="torigraph:W13-DfGraph"' in s1_xml
+            assert 'descr="torigraph:W13-NpGraph"' in s1_xml
+
+            for emf_e in emf_entries:
+                emf_raw = zf.read(emf_e)
+                assert len(emf_raw) >= 88 and emf_raw[:4] == b"\x01\x00\x00\x00" and emf_raw[40:44] == b" EMF"
+
+            for ole_e in ole_entries:
+                ole_raw = zf.read(ole_e)
+                with olefile.OleFileIO(ole_raw) as ole:
+                    assert ole.root.clsid.upper() == "8E6B9541-3C74-4D28-A915-7D84E5A12001", ole.root.clsid
+                    assert ole.exists("\x01CompObj") and ole.exists("\x01Ole"), ole.listdir()
+                    assert ole.exists("ToriGraphProject") and ole.exists("SciDAVisProject"), ole.listdir()
+                    proj_xml = ole.openstream("ToriGraphProject").read().decode("utf-8", errors="replace")
+                    assert "W13_PandasTbl" in proj_xml and "W13-DfGraph" in proj_xml
+
+        # `path == deck` safety check (must refuse overwrite unless overwrite=True)
+        blocked_overwrite = False
+        try:
+            app.to_pptx(deck_path, [g_df], deck=deck_path)
+        except ValueError:
+            blocked_overwrite = True
+        assert blocked_overwrite, "to_pptx failed to block path == deck when overwrite=False!"
+
+        # Idempotent `replace=True, overwrite=True` preserving slide count and zero orphan OLE bloat
+        upd_res = app.to_pptx(deck_path, [g_df], deck=deck_path, replace=True, overwrite=True)
+        assert upd_res.get("replaced_count") == 1 and upd_res.get("slide_count") == 1
+        with zipfile.ZipFile(deck_path, "r") as zf_upd:
+            ole_after = [e for e in zf_upd.namelist() if e.startswith("ppt/embeddings/oleObject")]
+            assert len(ole_after) == 2, f"Orphan OLE objects leaked after replace=True: {ole_after}"
+
+        # Named shape replacement `replace=[(2, "Picture 3")]` + explicit `box=(left_cm, top_cm, width_cm)`
+        tmpl_pptx = tmp_dir / "w13_template.pptx"
+        prs_t = pptx.Presentation()
+        prs_t.slide_width = Inches(13.333)
+        prs_t.slide_height = Inches(7.5)
+        prs_t.slides.add_slide(prs_t.slide_layouts[6])
+        sl2 = prs_t.slides.add_slide(prs_t.slide_layouts[6])
+        ph = sl2.shapes.add_shape(1, Cm(2.5), Cm(2.0), Cm(11.0), Cm(11.0))
+        ph.name = "Picture 3"
+        prs_t.save(str(tmpl_pptx))
+
+        filled_pptx = tmp_dir / "w13_filled_named.pptx"
+        rep_res = app.to_pptx(filled_pptx, [g_np], deck=tmpl_pptx, replace=[(2, "Picture 3")])
+        assert rep_res.get("replaced_count") == 1 and rep_res.get("slides_modified") == [2]
+
+        box_pptx = tmp_dir / "w13_box_single.pptx"
+        box_res = g_np.to_pptx(box_pptx, box=(2.0, 2.5, 12.0))
+        assert abs(box_res["placements"][0]["width_cm"] - 12.0) < 0.05
+
+    runner.check(
+        "13.2 NumPy/Pandas/Polars Zero-Friction Adapter & Zero-COM PowerPoint Native OLE Deck (`to_pptx` + `olefile`)",
+        _w13_2_numpy_dataframe_adapter_and_zero_com_pptx,
+    )
+
+    def _w13_3_sample_gallery_category_stacked100_and_polar() -> None:
+        app.new_project()
+
+        # 1. Sample Datasets Gallery
+        samples = app.list_sample_datasets()
+        assert len(samples) >= 5, f"Expected >= 5 built-in sample datasets, got {samples}"
+        first_id = str(samples[0].get("id") or samples[0].get("name"))
+        loaded = app.load_sample_dataset(first_id, auto_plot=True)
+        assert loaded.get("ok") is True and len(app.list_windows()) >= 2, f"load_sample_dataset failed: {loaded}"
+
+        # 2. Category Bar Chart under `isij_style()` + `set_category_labels`
+        app.new_project()
+        t_cat = app.create_table(
+            {"Condition": ["As-Q", "120C", "160C", "RRA"], "HV": [95.0, 182.0, 168.0, 195.0]},
+            units={"HV": "HV0.1"},
+            name="W13_CatBarTbl",
+        )
+        g_cat = app.plot_bars(t_cat, x_col="Condition", y_cols="HV", graph_name="W13-CatBars")
+        g_cat.isij_style()
+        cat_snap = g_cat.inspect(include_ticks=True)
+        x_lbls = [str(s) for s in cat_snap["layers"][0]["axes"]["x"].get("tick_labels", []) if str(s).strip()]
+        for expected_cat in ("As-Q", "120C", "160C", "RRA"):
+            assert expected_cat in x_lbls, f"Category {expected_cat!r} dropped under isij_style()! Got {x_lbls}"
+        assert len(x_lbls) == len(set(x_lbls)), f"Duplicate fractional category ticks detected: {x_lbls}"
+
+        g_cat.set_category_labels("x", ["WQ", "T4", "T6", "T73"])
+        upd_lbls = [str(s) for s in g_cat.inspect(include_ticks=True)["layers"][0]["axes"]["x"].get("tick_labels", []) if str(s).strip()]
+        assert "T6" in upd_lbls and "T73" in upd_lbls, f"set_category_labels did not update ticks: {upd_lbls}"
+
+        # 3. 100% Normalized Stacked Bars on Text X Column
+        t_stk = app.create_table(
+            {
+                "Specimen": ["Al-T4", "Al-T6", "Al-T73"],
+                "Transgranular": [25.0, 60.0, 40.0],
+                "Intergranular": [75.0, 40.0, 60.0],
+            },
+            name="W13_Stack100Tbl",
+        )
+        g_stk100 = app.plot_stacked_bars(
+            t_stk,
+            x_col="Specimen",
+            y_cols=["Transgranular", "Intergranular"],
+            percent_100=True,
+            graph_name="W13-Stack100",
+        )
+        g_stk100.isij_style()
+        stk_snap = g_stk100.inspect(include_ticks=True)
+        stk_curves = stk_snap["layers"][0]["curves"]
+        assert len(stk_curves) >= 2
+        assert stk_curves[0]["x_max"] > stk_curves[0]["x_min"], f"Text-X stacked bars collapsed at x=0: {stk_curves}"
+        top_ymax = max(float(c.get("y_max", 0.0)) for c in stk_curves)
+        assert abs(top_ymax - 100.0) < 1.0, f"percent_100=True stacked bars top y_max={top_ymax} != 100.0"
+
+        # 4. Polar / Radar Plot (`plot.polar`)
+        thetas = [float(k * 30) for k in range(13)]
+        r_vals = [450.0 + 40.0 * math.cos(2.0 * math.radians(th)) for th in thetas]
+        t_pol = app.create_table({"Theta": thetas, "R_MPa": r_vals}, name="W13_PolarTbl")
+        g_pol = app.plot_polar(t_pol, theta_col="Theta", r_cols=["R_MPa"], theta_in_radians=False, graph_name="W13-Polar")
+        pol_png = tmp_dir / "w13_polar.png"
+        g_pol.export(pol_png, dpi=300)
+        assert parse_png_metadata_and_pixels(pol_png)["non_white_interior"] >= 25
+        assert_graph_arial(app, g_pol.name, "W13 Polar Plot")
+
+    runner.check(
+        "13.3 Sample Gallery, Category Bars (`isij_style` + `set_category_labels`), `100%` Stacked Bars & Polar Plot",
+        _w13_3_sample_gallery_category_stacked100_and_polar,
+    )
+
+    def _w13_4_kissinger_kocks_mecking_xrd_and_vasp() -> None:
+        app.new_project()
+
+        # 1. Kissinger TDS Activation Energy (`analyze_kissinger`): exact Ed = 28.5 kJ/mol
+        r_gas = 8.314462618  # J/(mol*K)
+        ed_true_kj = 28.5
+        tp_kelvin = [410.0, 430.0, 450.0, 470.0]
+        betas_k_min = [
+            (tp * tp) * math.exp(16.0 - (ed_true_kj * 1000.0) / (r_gas * tp))
+            for tp in tp_kelvin
+        ]
+        tp_celsius = [tp - 273.15 for tp in tp_kelvin]
+        t_kis = app.create_table(
+            {"HeatingRate": betas_k_min, "Tp_C": tp_celsius},
+            name="W13_KissingerTbl",
+        )
+        kis_res = app.analyze_kissinger(
+            t_kis,
+            rate_col="HeatingRate",
+            temp_col="Tp_C",
+            rate_in_k_per_hour=False,
+            temp_in_celsius=True,
+            top_axis_in_celsius=True,
+        )
+        assert kis_res.get("ok") is True, f"analyze_kissinger failed: {kis_res}"
+        ea_kj = (
+            kis_res.get("ea_kj_mol")
+            or kis_res.get("activation_energy_kj_mol")
+            or kis_res.get("ed_kj_mol")
+            or kis_res.get("ea_kjmol")
+        )
+        assert ea_kj is not None and abs(float(ea_kj) - ed_true_kj) < 0.6, (
+            f"Kissinger Ea={ea_kj} deviated from {ed_true_kj} kJ/mol: {kis_res}"
+        )
+
+        # 2. Kocks-Mecking Work-Hardening Rate & Considere Necking (`kocks_mecking`)
+        e_mod = 70000.0
+        eps_true_grid = [0.0005 * i for i in range(321)]  # 0 .. 0.16 true strain
+        eng_e: List[float] = []
+        eng_s: List[float] = []
+        for et in eps_true_grid:
+            if et <= 250.0 / e_mod:
+                st = e_mod * et
+            else:
+                ep = et - 250.0 / e_mod
+                st = 250.0 + 320.0 * (1.0 - math.exp(-16.0 * ep))
+            ee = math.exp(et) - 1.0
+            eng_e.append(ee)
+            eng_s.append(st / (1.0 + ee))
+        t_km = app.create_table({"Strain": eng_e, "Stress": eng_s}, units={"Strain": "-", "Stress": "MPa"}, name="W13_VoceTbl")
+        g_km = app.plot_xy(t_km, "Strain", "Stress", style="line", graph_name="W13-VoceGraph")
+        km_res = g_km.kocks_mecking(smooth_window=11, create_plot=True)
+        assert km_res.get("ok") is True, f"kocks_mecking failed: {km_res}"
+
+        # 3. XRD Bragg, Scherrer & Williamson-Hall (`analyze_xrd` & `bragg_convert`)
+        lam = 1.540598  # Cu Ka1 (Angstrom)
+        a0 = 4.0495     # fcc-Al lattice parameter (Angstrom)
+        d_cryst_nm = 42.0
+        eps_wh = 0.0018
+        hkl_sq = [3, 4, 8, 11]  # (111), (200), (220), (311)
+        amps_xrd = [1000.0, 480.0, 290.0, 310.0]
+        peaks_spec: List[Tuple[float, float, float]] = []
+        for h2, amp in zip(hkl_sq, amps_xrd):
+            d_hkl = a0 / math.sqrt(float(h2))
+            sin_th = lam / (2.0 * d_hkl)
+            th_rad = math.asin(sin_th)
+            two_th = 2.0 * math.degrees(th_rad)
+            beta_phys_rad = (0.90 * lam) / (d_cryst_nm * 10.0 * math.cos(th_rad)) + 4.0 * eps_wh * math.tan(th_rad)
+            fwhm_deg = math.sqrt((math.degrees(beta_phys_rad)) ** 2 + 0.05**2)
+            peaks_spec.append((two_th, amp, fwhm_deg))
+
+        tt_grid = [30.0 + 0.05 * i for i in range(1101)]  # 30 .. 85 deg
+        inten_grid = [
+            20.0 + sum(pseudo_voigt(tt, amp, c_tt, fw, mu=0.35) for c_tt, amp, fw in peaks_spec)
+            for tt in tt_grid
+        ]
+        t_xrd = app.create_table(
+            {"TwoTheta": tt_grid, "Intensity": inten_grid},
+            units={"TwoTheta": "deg", "Intensity": "counts"},
+            name="W13_XrdTbl",
+        )
+        g_xrd = app.plot_xy(t_xrd, "TwoTheta", "Intensity", style="line", graph_name="W13-XrdGraph")
+        xrd_res = g_xrd.analyze_xrd(
+            wavelength=lam,
+            instr_fwhm=0.05,
+            scherrer_k=0.90,
+            crystal_system="fcc",
+            add_top_d_axis=True,
+            create_wh_plot=True,
+        )
+        assert xrd_res.get("ok") is True and len(xrd_res.get("peaks", [])) >= 3, f"analyze_xrd failed: {xrd_res}"
+
+        g_bragg = app.plot_xy(t_xrd, "TwoTheta", "Intensity", style="line", graph_name="W13-BraggGraph")
+        bragg_res = g_bragg.bragg_convert(wavelength=lam, mode="d_spacing")
+        assert bragg_res.get("ok") is True, f"bragg_convert failed: {bragg_res}"
+
+        # 4. VASP / DFT Spin-Polarized DOS & Electronic Band Structure
+        e_grid = [-4.0 + 0.1 * i for i in range(121)]  # -4 .. +8 eV (raw, E_F = 2.0 eV)
+        dos_up = [math.exp(-((e - 0.5) / 1.1) ** 2) * 3.5 + math.exp(-((e - 4.2) / 0.8) ** 2) * 2.2 for e in e_grid]
+        dos_dn = [math.exp(-((e - 0.9) / 1.1) ** 2) * 3.1 + math.exp(-((e - 4.5) / 0.8) ** 2) * 2.0 for e in e_grid]
+        t_dos = app.create_table(
+            {"Energy": e_grid, "DOS_Up": dos_up, "DOS_Down": dos_dn},
+            name="W13_VaspDosTbl",
+        )
+        dos_res = app.plot_vasp_dos(
+            t_dos,
+            energy_col="Energy",
+            dos_cols=["DOS_Up"],
+            down_dos_cols=["DOS_Down"],
+            fermi_energy=2.0,
+            vertical_energy=False,
+        )
+        assert dos_res.get("ok") is True and dos_res.get("graph"), f"plot_vasp_dos failed: {dos_res}"
+        assert_graph_arial(app, str(dos_res["graph"]), "W13 VASP DOS")
+
+        k_pts = [0.05 * i for i in range(61)]  # 0.0 .. 3.0
+        vb1 = [-2.2 - 0.8 * math.cos(math.pi * k / 1.0) for k in k_pts]
+        vb2 = [-1.1 + 0.5 * math.cos(math.pi * k / 1.0) for k in k_pts]  # VBM = -0.6 eV
+        cb1 = [1.4 - 0.6 * math.cos(math.pi * k / 1.0) for k in k_pts]   # CBM = +0.8 eV
+        cb2 = [2.8 + 0.5 * math.sin(math.pi * k / 1.0) for k in k_pts]
+        t_bnd = app.create_table(
+            {"k_dist": k_pts, "B1": vb1, "B2": vb2, "B3": cb1, "B4": cb2},
+            name="W13_VaspBandsTbl",
+        )
+        bnd_res = app.plot_vasp_bands(
+            t_bnd,
+            k_col="k_dist",
+            band_cols=["B1", "B2", "B3", "B4"],
+            k_ticks=[0.0, 1.0, 2.0, 3.0],
+            k_labels=["Γ", "X", "M", "Γ"],
+            fermi_energy=0.0,
+            e_min=-4.0,
+            e_max=4.0,
+        )
+        assert bnd_res.get("ok") is True and bnd_res.get("graph"), f"plot_vasp_bands failed: {bnd_res}"
+        assert_graph_arial(app, str(bnd_res["graph"]), "W13 VASP Bands")
+
+    runner.check(
+        "13.4 Kissinger TDS `Ea`, Kocks-Mecking `dσ/dε`, XRD Williamson-Hall & VASP DOS/Bands",
+        _w13_4_kissinger_kocks_mecking_xrd_and_vasp,
+    )
+
+    def _w13_5_round2_sdk_autonomy_plot_and_matsci_regressions() -> None:
+        app.new_project()
+
+        # 1. Grouped multi-series `plot_bars` (default `bar_gap=None` + `y_err_cols`) & Horizontal Category Bars
+        t_grp = app.create_table(
+            {
+                "Temper": ["T4", "T6", "T73"],
+                "YS": [260.0, 485.0, 430.0],
+                "UTS": [410.0, 560.0, 495.0],
+                "YS_Err": [8.0, 10.0, 9.0],
+                "UTS_Err": [12.0, 11.0, 10.0],
+            },
+            units={"YS": "MPa", "UTS": "MPa"},
+            name="W13R2_GrpBarsTbl",
+        )
+        g_grp = app.plot_bars(
+            t_grp,
+            x_col="Temper",
+            y_cols=["YS", "UTS"],
+            y_err_cols=["YS_Err", "UTS_Err"],
+            graph_name="W13R2-GrpBars",
+        )
+        g_grp.slide_style()
+        grp_curves = g_grp.info()["layers"][0]["curves"]
+        assert len(grp_curves) >= 4, f"Expected 2 bar + 2 error curves from y_err_cols, got {grp_curves}"
+
+        g_hbar = app.plot_bars(
+            t_grp,
+            x_col="Temper",
+            y_cols=["YS", "UTS"],
+            horizontal=True,
+            graph_name="W13R2-HorizBars",
+        )
+        g_hbar.isij_style()
+        hbar_axes = g_hbar.inspect(include_ticks=True)["layers"][0]["axes"]
+        assert float(hbar_axes["x"]["max"]) > 100.0, (
+            f"HorizontalBars on Text X locked xBottom to category range instead of numeric values: {hbar_axes['x']}"
+        )
+        y_hbar_lbls = [str(s) for s in hbar_axes["y"].get("tick_labels", []) if str(s).strip()]
+        assert "T6" in y_hbar_lbls, f"HorizontalBars missing category labels on yLeft: {y_hbar_lbls}"
+
+        # 2. Stacked Histogram (`stacked=True`) & Pareto Category Ticks Under `isij_style()`
+        t_shist = app.create_table(
+            {
+                "H1": [10.0 + 1.5 * (i % 7) for i in range(28)],
+                "H2": [14.0 + 1.8 * (i % 6) for i in range(28)],
+            },
+            name="W13R2_StackHistTbl",
+        )
+        g_shist = app.plot_histogram(t_shist, cols=["H1", "H2"], stacked=True, graph_name="W13R2-StackedHist")
+        sh_info = g_shist.info()
+        assert sh_info["layer_count"] == 2 and all(ly["curve_count"] >= 1 for ly in sh_info["layers"]), sh_info
+
+        t_par = app.create_table(
+            {
+                "Defect": ["Porosity", "Inclusion", "Hot crack", "Lack of fusion", "Undercut"],
+                "Count": [48.0, 31.0, 15.0, 9.0, 4.0],
+            },
+            name="W13R2_ParetoTbl",
+        )
+        g_par = app.plot_pareto(t_par, value_col="Count", category_col="Defect", graph_name="W13R2-Pareto")
+        g_par.isij_style()
+        par_x_lbls = [
+            str(s)
+            for s in g_par.inspect(include_ticks=True)["layers"][0]["axes"]["x"].get("tick_labels", [])
+            if str(s).strip()
+        ]
+        for defect_name in ("Porosity", "Inclusion", "Hot crack"):
+            assert defect_name in par_x_lbls, f"Pareto dropped '{defect_name}' under isij_style(): {par_x_lbls}"
+
+        # 3. Polar Crash-Safety (`plot_polar` -> `create_table` / rename / `close_window`), `plot_function(type='polar')`,
+        #    Specialty `inspect`/`auto_layout` & `to_python_script` Fidelity (Polar, Shaded Band, Category Bars)
+        thetas_r2 = [float(k * 30) for k in range(13)]
+        t_pol_r2 = app.create_table(
+            {"Theta": thetas_r2, "R": [70.0 + 8.0 * math.cos(math.radians(2.0 * th)) for th in thetas_r2]},
+            name="W13R2_PolarTbl",
+        )
+        g_pol_r2 = app.plot_polar(t_pol_r2, theta_col="Theta", r_cols=["R"], graph_name="W13R2-PolarSafe")
+        t_after_pol = app.create_table({"X": [1.0, 2.0, 3.0], "Y": [2.0, 4.0, 6.0]}, name="W13R2_AfterPolarTbl")
+        t_after_pol.set_meta("Y", name="Y_Renamed")
+        assert app.ping().get("pong") is True
+
+        pol_insp = g_pol_r2.inspect()
+        assert "DISABLED_AXIS_HAS_TITLE_OR_CURVE" not in set(pol_insp.get("warning_codes", [])), pol_insp.get("warnings")
+        g_pol_r2.auto_layout()
+        pol_src = g_pol_r2.to_python_script(standalone=False)
+        assert "plot_polar" in pol_src, f"to_python_script on polar plot omitted plot_polar:\n{pol_src}"
+
+        g_pfunc = app.plot_function(
+            "70 + 8*cos(4*x)",
+            x_min=0.0,
+            x_max=2.0 * math.pi,
+            type="polar",
+            graph_name="W13R2-PolarFunc",
+        )
+        assert g_pfunc.info()["layers"][0]["curve_count"] >= 1
+        app.close_window(g_pol_r2)
+        assert app.ping().get("pong") is True
+
+        g_band = app.plot_xy(t_after_pol, "X", "Y_Renamed", graph_name="W13R2-ShadedBand")
+        g_band.add_shaded_band([1.0, 2.0, 3.0], [1.5, 3.5, 5.5], [2.5, 4.5, 6.5], label="CI95")
+        band_src = g_band.to_python_script(standalone=False)
+        assert "add_shaded_band" in band_src, f"to_python_script dropped shaded band:\n{band_src}"
+        compile(g_grp.to_python_script(standalone=False), "<cat_bars_to_py>", "exec")
+
+        # 4. Atomic `app.batch` Multi-Step Graph Undo/Redo & `[P2-R2-1]` SDK Keyword Parity
+        g_bu = app.plot_xy(t_after_pol, "X", "Y_Renamed", graph_name="W13R2-BatchUndo")
+        g_bu.set_title("BeforeBatchTitle")
+        with app.batch(atomic=True):
+            g_bu.set_title("MidBatchTitle")
+            g_bu.set_title("AfterBatchTitle")
+        assert g_bu.info()["layers"][0].get("title") == "AfterBatchTitle"
+        g_bu.undo()
+        assert g_bu.info()["layers"][0].get("title") == "BeforeBatchTitle", g_bu.info()["layers"][0]
+        g_bu.redo()
+        assert g_bu.info()["layers"][0].get("title") == "AfterBatchTitle", g_bu.info()["layers"][0]
+
+        assert len(app.list_sample_datasets(category="")) >= 5
+        assert app.set_language(lang="ja").get("ok") is not False
+        assert len(t_grp.get_col("YS", compact=True, include_masked=False)) == 3
+        assert t_grp.row_stats(start_row=0, end_row=1).get("ok") is not False
+        m_kw = app.create_matrix(rows=2, cols=2, name="W13R2_MatKw")
+        m_kw.set_data(rows_2d=[[1.0, 2.0], [3.0, 4.0]])
+        g_hm = app.plot_heatmap(m_kw, palette="Cividis", graph_name="W13R2-Heatmap")
+        assert g_hm.name
+        g_bu.add_curve(t_after_pol, "Y_Renamed", x_col="X")
+        assert g_bu.move_curve(curve=0, direction="down").get("ok") is True
+
+        # 5. Round-2 Domain Solvers (`weibull_fit(mle=True)`, `nonparametric_test(add_brackets=True)`,
+        #    `kocks_mecking(plot_mode='kocks_mecking')`, `analyze_xrd(crystal_system='hcp', c_over_a=1.587)`)
+        t_wb = app.create_table(
+            {
+                "MPa": [410.0, 435.0, 452.0, 468.0, 480.0, 495.0, 512.0, 530.0, 550.0, 550.0],
+                "Cens": [1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+            },
+            name="W13R2_WeibullTbl",
+        )
+        wb_mle = app.weibull_fit(t_wb, "MPa", censor_col="Cens", mle=True, plot=True)
+        assert wb_mle.get("ok") is True and wb_mle.get("censored_count") == 2 and wb_mle.get("used_mle") is True, wb_mle
+
+        t_np3 = app.create_table(
+            {
+                "G1": [10.0, 11.0, 12.0, 10.5, 11.5],
+                "G2": [22.0, 24.0, 23.0, 25.0, 21.5],
+                "G3": [35.0, 38.0, 36.0, 37.0, 39.0],
+            },
+            name="W13R2_NpBoxTbl",
+        )
+        g_np_box = app.plot_box(t_np3, cols=["G1", "G2", "G3"], graph_name="W13R2-NpBox")
+        np_res = app.nonparametric_test(
+            t_np3,
+            ["G1", "G2", "G3"],
+            test="kruskal_wallis",
+            graph=g_np_box,
+            add_brackets=True,
+        )
+        assert np_res.get("ok") is True, np_res
+
+        e_mod2 = 70000.0
+        ee_v: List[float] = []
+        es_v: List[float] = []
+        for i in range(161):
+            et = 0.001 * i
+            st = e_mod2 * et if et <= 250.0 / e_mod2 else 250.0 + 320.0 * (1.0 - math.exp(-16.0 * (et - 250.0 / e_mod2)))
+            ee = math.exp(et) - 1.0
+            ee_v.append(ee)
+            es_v.append(st / (1.0 + ee))
+        t_voce2 = app.create_table({"Strain": ee_v, "Stress": es_v}, units={"Strain": "-", "Stress": "MPa"}, name="W13R2_VoceTbl")
+        g_voce2 = app.plot_xy(t_voce2, "Strain", "Stress", style="line", graph_name="W13R2-Voce")
+        km_classic = g_voce2.kocks_mecking(smooth_window=9, create_plot=True, plot_mode="kocks_mecking")
+        assert km_classic.get("ok") is True and km_classic.get("graph"), km_classic
+
+        lam_cu = 1.540598
+        a_ti = 2.950
+        ca_ti = 1.587
+        c_ti = a_ti * ca_ti
+        hcp_hkls = [(1, 0, 0, 520.0), (0, 0, 2, 580.0), (1, 0, 1, 1000.0), (1, 0, 2, 340.0)]
+        hcp_peaks: List[Tuple[float, float, float]] = []
+        for h_i, k_i, l_i, amp_i in hcp_hkls:
+            inv_d2 = (4.0 / 3.0) * float(h_i * h_i + h_i * k_i + k_i * k_i) / (a_ti * a_ti) + float(l_i * l_i) / (c_ti * c_ti)
+            d_val = 1.0 / math.sqrt(inv_d2)
+            two_th_i = 2.0 * math.degrees(math.asin(lam_cu / (2.0 * d_val)))
+            hcp_peaks.append((two_th_i, amp_i, 0.22))
+        tt_hcp = [30.0 + 0.05 * i for i in range(601)]
+        inten_hcp = [15.0 + sum(pseudo_voigt(tt, a_p, c_p, w_p, mu=0.35) for c_p, a_p, w_p in hcp_peaks) for tt in tt_hcp]
+        t_hcp = app.create_table({"TwoTheta": tt_hcp, "Intensity": inten_hcp}, name="W13R2_HcpXrdTbl")
+        g_hcp = app.plot_xy(t_hcp, "TwoTheta", "Intensity", style="line", graph_name="W13R2-HcpXrd")
+        hcp_res = g_hcp.analyze_xrd(
+            wavelength=lam_cu,
+            instr_fwhm=0.05,
+            crystal_system="hcp",
+            c_over_a=ca_ti,
+            create_wh_plot=False,
+        )
+        assert hcp_res.get("ok") is True and len(hcp_res.get("peaks", [])) >= 3, hcp_res
+        assert any(str(pk.get("hkl", "")).strip() for pk in hcp_res["peaks"]), f"HCP XRD peaks missing hkl labels: {hcp_res}"
+
+        # 6. Round-3 Regression (#304 [P1-R3-01]): in-memory worksheet names "DOSCAR1" / "EIGENVAL1"
+        #    must resolve as `table=...` rather than missing disk paths `doscar_path` / `eigenval_path`!
+        t_dos_named = app.create_table(
+            {
+                "E": [-2.0 + 0.5 * i for i in range(9)],
+                "TotalDOS": [0.8, 1.4, 2.2, 1.9, 0.5, 1.1, 2.0, 1.5, 0.7],
+            },
+            name="DOSCAR1",
+        )
+        dos_by_str = app.plot_vasp_dos(t_dos_named.name, energy_col="E", dos_cols=["TotalDOS"], fermi_energy=0.0)
+        assert dos_by_str.get("ok") is True and dos_by_str.get("graph"), f"plot_vasp_dos('DOSCAR1') failed: {dos_by_str}"
+
+        t_eig_named = app.create_table(
+            {
+                "k": [0.0, 0.5, 1.0, 1.5, 2.0],
+                "VB": [-1.4, -0.9, -0.5, -1.0, -1.3],
+                "CB": [1.2, 0.9, 0.7, 1.1, 1.5],
+            },
+            name="EIGENVAL1",
+        )
+        eig_by_str = app.plot_vasp_bands(
+            t_eig_named.name,
+            k_col="k",
+            band_cols=["VB", "CB"],
+            k_ticks=[0.0, 1.0, 2.0],
+            k_labels=["Γ", "X", "M"],
+            fermi_energy=0.0,
+        )
+        assert eig_by_str.get("ok") is True and eig_by_str.get("graph"), f"plot_vasp_bands('EIGENVAL1') failed: {eig_by_str}"
+
+        # 7. Round-5 Regression (#329 [P0-R5-1], #330 [P0-R5-01]): live `to_python_script()` + `exec()`
+        #    round-trip on Pie, Box, Violin, Single Histogram & Stacked Histogram!
+        def _assert_specialty_to_python_exec(src_graph: Any, expected_call: str, min_layers: int = 1) -> None:
+            py_code = src_graph.to_python_script(standalone=False, embed_data="inline")
+            assert expected_call in py_code, f"Expected '{expected_call}' in generated script:\n{py_code}"
+            compile(py_code, f"<{expected_call}_to_py>", "exec")
+            app.new_project()
+            exec_ns: Dict[str, Any] = {"__builtins__": __builtins__, "app": app, "tg": tg}
+            exec(py_code, exec_ns)
+            mls_after = [w["name"] for w in app.list_windows() if w.get("type") == "MultiLayer"]
+            assert len(mls_after) >= 1, f"Executed {expected_call} script created no MultiLayer:\n{py_code}"
+            g_re = app.graph(mls_after[0])
+            info_re = g_re.info()
+            assert info_re.get("layer_count", 0) >= min_layers and info_re["layers"][0]["curve_count"] >= 1, info_re
+
+        app.new_project()
+        t_pie_py = app.create_table(
+            {"Phase": ["Alpha", "Eta", "Al3Zr", "S"], "Frac": [58.0, 24.0, 11.0, 7.0]},
+            name="W13R5_PieTbl",
+        )
+        g_pie_py = app.plot_pie(t_pie_py, col="Frac", label_col="Phase", graph_name="W13R5-Pie")
+        _assert_specialty_to_python_exec(g_pie_py, "plot_pie")
+
+        app.new_project()
+        t_bv_py = app.create_table(
+            {
+                "T6": [480.0, 495.0, 502.0, 510.0, 518.0, 525.0, 534.0],
+                "RRA": [520.0, 535.0, 542.0, 550.0, 558.0, 566.0, 575.0],
+            },
+            name="W13R5_BoxViolTbl",
+        )
+        g_box_py = app.plot_box(
+            t_bv_py, cols=["T6", "RRA"], notched=True, show_points=True, whisker_mode="minmax", graph_name="W13R5-Box"
+        )
+        _assert_specialty_to_python_exec(g_box_py, "plot_box")
+
+        app.new_project()
+        t_viol_py = app.create_table(
+            {
+                "T6": [480.0, 495.0, 502.0, 510.0, 518.0, 525.0, 534.0],
+                "RRA": [520.0, 535.0, 542.0, 550.0, 558.0, 566.0, 575.0],
+            },
+            name="W13R5_ViolTbl",
+        )
+        g_viol_py = app.plot_violin(t_viol_py, cols=["T6", "RRA"], show_points=True, graph_name="W13R5-Violin")
+        _assert_specialty_to_python_exec(g_viol_py, "plot_violin")
+
+        app.new_project()
+        t_hist_py = app.create_table(
+            {
+                "GrainT6": [12.0 + 1.5 * (i % 9) + 0.3 * i for i in range(30)],
+                "GrainRRA": [18.0 + 1.8 * (i % 8) + 0.25 * i for i in range(30)],
+            },
+            name="W13R5_HistTbl",
+        )
+        g_hist_py = app.plot_histogram(
+            t_hist_py, cols=["GrainT6", "GrainRRA"], stacked=True, overlay_pdf=True, graph_name="W13R5-StackedHist"
+        )
+        _assert_specialty_to_python_exec(g_hist_py, "plot_histogram", min_layers=2)
+
+    runner.check(
+        "13.5 Round-2 Regressions: Grouped/Horiz Bars, Stacked Hist, Pareto, Polar Safety, Batch Undo & HCP/KM/Weibull MLE",
+        _w13_5_round2_sdk_autonomy_plot_and_matsci_regressions,
+    )
+
+
 def main() -> int:
     runner = E2ERunner()
     with tempfile.TemporaryDirectory(prefix="torigraph_e2e_") as tmp:
@@ -3244,6 +3989,7 @@ def main() -> int:
             run_workflow_10_round4_unified_regressions(runner, app, tmp_dir)
             run_workflow_11_round5_zero_defect_gate(runner, app, tmp_dir)
             run_workflow_12_phase_b_api_sdk_gate(runner, app, tmp_dir)
+            run_workflow_13_megawave1_sdk_pptx_matsci_gate(runner, app, tmp_dir)
         run_workflow_7_cli_run_python(runner, tmp_dir)
         run_workflow_8b_named_pipe_cli(runner, tmp_dir)
 

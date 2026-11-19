@@ -28,11 +28,13 @@
 
 #include "Spectrogram.h"
 #include "ColorButton.h"
+#include "Plot.h"
 #include "ScaleDraw.h"
 #include <math.h>
 #include <qpen.h>
 #include <qmessagebox.h>
 #include <QFont>
+#include <QPainter>
 #include <QRegularExpression>
 
 #include <qwt_plot_layout.h>
@@ -193,7 +195,7 @@ void Spectrogram::enforceColorBarArialFont()
 
     if (colorAxis->isColorBarEnabled()) {
         colorAxis->setMargin(4);
-        colorAxis->setSpacing(2);
+        colorAxis->setSpacing(0);
         colorAxis->setMinBorderDist(0, 0);
         int sDist = 0, eDist = 0;
         colorAxis->getBorderDistHint(sDist, eDist);
@@ -210,6 +212,16 @@ void Spectrogram::enforceColorBarArialFont()
             sd->setMinorTicksStyle(ScaleDraw::None);
             sd->setColorBarBorder(true, colorAxis->colorBarWidth(),
                                   qMax(1, colorAxis->penWidth()));
+            QGradientStops stops;
+            const QwtDoubleInterval unitIv(0.0, 1.0);
+            const QwtColorMap &cm = colorMap();
+            constexpr int kGradSamples = 32;
+            stops.reserve(kGradSamples + 1);
+            for (int k = 0; k <= kGradSamples; ++k) {
+                const double t = double(k) / double(kGradSamples);
+                stops.append(qMakePair(qreal(t), QColor(cm.rgb(unitIv, t))));
+            }
+            sd->setColorBarGradient(stops);
         }
     } else if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(plot->axisScaleDraw(color_axis))) {
         sd->setColorBarBorder(false, 0, 1);
@@ -389,7 +401,7 @@ void Spectrogram::showColorScale(int axis, bool on)
     colorAxis->setColorMap(zRange, colorMap());
     colorAxis->setMargin(on ? 4 : 0);
     if (on) {
-        colorAxis->setSpacing(2);
+        colorAxis->setSpacing(0);
         colorAxis->setMinBorderDist(0, 0);
         if (plot->plotLayout()) {
             plot->plotLayout()->setAlignCanvasToScales(true);
@@ -710,13 +722,95 @@ QString Spectrogram::saveToString()
     return s + "</spectrogram>\n";
 }
 
+QPen Spectrogram::contourPen(double level) const
+{
+    const double sc = Plot::printDeviceScale();
+    QPen defPen = defaultContourPen();
+    if (defPen.style() != Qt::NoPen) {
+        defPen.setCosmetic(false);
+        const double baseW = (defPen.widthF() > 0.0) ? defPen.widthF() : 1.2;
+        defPen.setWidthF(qMax(1.0, baseW) * sc);
+        return defPen;
+    }
+
+    const QwtDoubleInterval zRange = effectiveValueRange();
+    QColor isoColor(colorMap().rgb(zRange, level));
+    if (!isoColor.isValid())
+        isoColor = Qt::black;
+    const bool overImage = testDisplayMode(QwtPlotSpectrogram::ImageMode);
+    if (overImage)
+        isoColor = isoColor.darker(145);
+    QPen levelPen(isoColor, (overImage ? 1.15 : 1.55) * sc, Qt::SolidLine, Qt::RoundCap,
+                  Qt::RoundJoin);
+    levelPen.setCosmetic(false);
+    return levelPen;
+}
+
+void Spectrogram::drawContourLines(QPainter *painter, const QwtScaleMap &xMap,
+                                   const QwtScaleMap &yMap,
+                                   const QwtRasterData::ContourLines &contourLines) const
+{
+    if (!painter)
+        return;
+
+    const QwtValueList levelsList = contourLevels();
+    if (levelsList.isEmpty())
+        return;
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    for (int l = 0; l < levelsList.size(); ++l) {
+        const double level = levelsList[l];
+        QPen pen = contourPen(level);
+        if (pen.style() == Qt::NoPen)
+            continue;
+        pen.setCosmetic(false);
+        painter->setPen(pen);
+
+        const QPolygonF lines = contourLines.value(level);
+        for (int i = 0; i + 1 < lines.size(); i += 2) {
+            const QPointF p1(xMap.xTransform(lines[i].x()), yMap.xTransform(lines[i].y()));
+            const QPointF p2(xMap.xTransform(lines[i + 1].x()), yMap.xTransform(lines[i + 1].y()));
+            if (std::isfinite(p1.x()) && std::isfinite(p1.y())
+                && std::isfinite(p2.x()) && std::isfinite(p2.y())) {
+                painter->drawLine(p1, p2);
+            }
+        }
+    }
+
+    painter->restore();
+}
+
 double MatrixData::value(double x, double y) const
 {
-    int i = abs((int)floor((y - y_start) / dy - 1));
-    int j = abs((int)floor((x - x_start) / dx));
-
-    if (d_m && i < n_rows && j < n_cols)
-        return d_m[i][j];
-    else
+    if (d_data.isEmpty() || n_rows <= 0 || n_cols <= 0 || !std::isfinite(x) || !std::isfinite(y))
         return 0.0;
+
+    double u = 0.0;
+    if (n_cols > 1 && std::fabs(x_end - x_start) > 1e-300)
+        u = ((x - x_start) / (x_end - x_start)) * double(n_cols - 1);
+    u = qBound(0.0, u, double(n_cols - 1));
+
+    double v = 0.0;
+    if (n_rows > 1 && std::fabs(y_end - y_start) > 1e-300)
+        v = ((y - y_start) / (y_end - y_start)) * double(n_rows - 1);
+    v = qBound(0.0, v, double(n_rows - 1));
+
+    const int c0 = qBound(0, int(std::floor(u)), n_cols - 1);
+    const int c1 = qMin(c0 + 1, n_cols - 1);
+    const double tx = u - double(c0);
+
+    const int r0 = qBound(0, int(std::floor(v)), n_rows - 1);
+    const int r1 = qMin(r0 + 1, n_rows - 1);
+    const double ty = v - double(r0);
+
+    const double z00 = d_data[r0 * n_cols + c0];
+    const double z01 = d_data[r0 * n_cols + c1];
+    const double z10 = d_data[r1 * n_cols + c0];
+    const double z11 = d_data[r1 * n_cols + c1];
+
+    const double top = z00 + tx * (z01 - z00);
+    const double bot = z10 + tx * (z11 - z10);
+    return top + ty * (bot - top);
 }

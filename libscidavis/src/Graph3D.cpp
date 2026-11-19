@@ -41,6 +41,7 @@
 #include "core/column/Column.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QMessageBox>
 #include <QFile>
 #include <QFileDialog>
@@ -52,6 +53,9 @@
 #include <QDateTime>
 #include <QCursor>
 #include <QImageWriter>
+#include <QPainter>
+#include <QPdfWriter>
+#include <QResizeEvent>
 #include <QTextStream>
 
 #include <qwt3d_io_gl2ps.h>
@@ -77,6 +81,8 @@ QFont normalizePlot3DFont(const QFont &font, int fallbackPt = 12)
     QFont fnt = font;
     if (fnt.family().trimmed().isEmpty())
         fnt.setFamily(QStringLiteral("Arial"));
+    fnt.setBold(false);
+    fnt.setWeight(QFont::Normal);
     if (fnt.pointSize() <= 0 && fnt.pointSizeF() <= 0.0 && fnt.pixelSize() <= 0)
         fnt.setPointSize(fallbackPt);
     return fnt;
@@ -257,7 +263,8 @@ void Graph3D::initPlot()
     sp->legend()->setNumberFont(QFont("Arial", 10, QFont::Normal, false));
     sp->legend()->setTitleFont("Arial", 10, QFont::Normal);
 
-    labelsDist = 0;
+    labelsDist = 18;
+    d_base_zoom = 1.0;
 
     scaleType = QVector<int>(3);
     for (int j = 0; j < 3; j++)
@@ -317,9 +324,11 @@ void Graph3D::initCoord()
     labels << s;
 
     sp->setCoordinateStyle(BOX);
-    sp->coordinates()->setNumberFont(QFont("Arial", 12, QFont::Normal, false));
+    sp->coordinates()->setNumberFont(QFont("Arial", 11, QFont::Normal, false));
     sp->coordinates()->setLabelFont(QFont("Arial", 12, QFont::Normal, false));
-    sp->coordinates()->setAutoScale(false);
+    sp->coordinates()->setAutoScale(true);
+    sp->coordinates()->adjustNumbers(6);
+    sp->coordinates()->adjustLabels(labelsDist);
 }
 
 void Graph3D::addFunction(const QString &s, double xl, double xr, double yl, double yr, double zl,
@@ -368,12 +377,15 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
     int r = table->numRows();
     int i, xmesh = 0, ymesh = 2;
     for (i = 0; i < r; i++) {
-        if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i))
+        if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !xColPtr->isMasked(i)
+            && !yColPtr->isMasked(i) && std::isfinite(table->cell(i, xcol))
+            && std::isfinite(table->cell(i, ycol))) {
             xmesh++;
+        }
     }
 
     if (xmesh == 0)
-        xmesh++;
+        xmesh = 1;
 
     double **data = Matrix::allocateMatrixData(xmesh, ymesh);
     gsl_vector *x = gsl_vector_calloc(xmesh);
@@ -381,11 +393,14 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
 
     for (int j = 0; j < ymesh; j++) {
         int k = 0;
-        for (i = 0; i < r; i++) {
-            if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i)) {
-                gsl_vector_set(x, k, table->cell(i, xcol));
-
-                double yv = table->cell(i, ycol);
+        for (i = 0; i < r && k < xmesh; i++) {
+            if (!xColPtr->isInvalid(i) && !yColPtr->isInvalid(i) && !xColPtr->isMasked(i)
+                && !yColPtr->isMasked(i)) {
+                const double xv = table->cell(i, xcol);
+                const double yv = table->cell(i, ycol);
+                if (!std::isfinite(xv) || !std::isfinite(yv))
+                    continue;
+                gsl_vector_set(x, k, xv);
                 gsl_vector_set(y, k, yv);
                 data[k][j] = yv;
                 k++;
@@ -393,11 +408,18 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
         }
     }
 
-    double maxy = gsl_vector_max(y);
-    double maxz = 0.6 * maxy;
+    const double minx = gsl_vector_min(x);
+    const double maxx = qMax(minx + 1e-6, gsl_vector_max(x));
+    const double miny = gsl_vector_min(y);
+    const double maxy = gsl_vector_max(y);
+    const double maxz = qMax(1e-6, 0.6 * std::fabs(maxy - miny));
     sp->makeCurrent();
-    sp->legend()->setLimits(gsl_vector_min(y), maxy);
-    sp->loadFromData(data, xmesh, ymesh, gsl_vector_min(x), gsl_vector_max(x), 0, maxz);
+    sp->legend()->setLimits(miny, qMax(miny + 1e-9, maxy));
+    sp->loadFromData(data, xmesh, ymesh, minx, maxx, 0.0, maxz);
+    if (sp->plotStyle() == NOPLOT) {
+        sp->setPlotStyle(FILLEDMESH);
+        style_ = FILLEDMESH;
+    }
 
     if (d_autoscale)
         findBestLayout();
@@ -2239,47 +2261,88 @@ void Graph3D::exportImage(const QString &fileName, int quality, bool transparent
     if (!sp || fileName.isEmpty())
         return;
     if (sp->width() <= 0 || sp->height() <= 0)
-        sp->resize(500, 400);
+        sp->resize(600, 480);
+
+    const QSize origSize = sp->size();
+    const int propDpi = property("export_dpi").toInt();
+    const int effDpi = (propDpi >= 72) ? qMin(propDpi, 600) : 300;
+    double renderScale = double(effDpi) / 96.0;
+    const int maxDim = qMax(origSize.width(), origSize.height());
+    if (maxDim * renderScale > 3200.0)
+        renderScale = qMax(1.0, 3200.0 / double(maxDim));
+    const QSize targetSize(qMax(100, qRound(origSize.width() * renderScale)),
+                           qMax(100, qRound(origSize.height() * renderScale)));
+
+    const bool prevIgnoreFonts = ignoreFonts;
+    const double origMeshLw = sp->meshLineWidth();
+    const bool scaleScatterDots =
+            (sp->plotStyle() == Qwt3D::USER && pointStyle == Dots && pointSize > 0.0);
+    ignoreFonts = true;
     if (!sp->context())
         (void)sp->grabFramebuffer();
+    if (targetSize != origSize) {
+        sp->resize(targetSize);
+        QResizeEvent rev(sp->size(), origSize);
+        QCoreApplication::sendEvent(sp, &rev);
+        (void)sp->grabFramebuffer();
+        scaleFonts(renderScale);
+        if (origMeshLw > 0.0)
+            sp->setMeshLineWidth(origMeshLw * renderScale);
+        if (scaleScatterDots)
+            sp->setPlotStyle(Dot(pointSize * renderScale, smooth));
+    }
+
     sp->makeCurrent();
+    glViewport(0, 0, sp->width(), sp->height());
     resetAxesLabels();
     sp->updateData();
+    glViewport(0, 0, sp->width(), sp->height());
+    QImage im = sp->grabFramebuffer();
+
+    if (targetSize != origSize) {
+        if (origMeshLw > 0.0)
+            sp->setMeshLineWidth(origMeshLw);
+        if (scaleScatterDots)
+            sp->setPlotStyle(Dot(pointSize, smooth));
+        scaleFonts(1.0 / renderScale);
+        sp->resize(origSize);
+        QResizeEvent revBack(origSize, targetSize);
+        QCoreApplication::sendEvent(sp, &revBack);
+        sp->makeCurrent();
+        glViewport(0, 0, origSize.width(), origSize.height());
+        sp->updateData();
+    }
+    ignoreFonts = prevIgnoreFonts;
+
+    const int dpm = qRound(double(effDpi) / 0.0254);
+    im.setDotsPerMeterX(dpm);
+    im.setDotsPerMeterY(dpm);
 
     if (transparent) {
-        QPixmap pic = QPixmap::fromImage(sp->grabFramebuffer());
-        sp->updateData();
-
-        QBitmap mask(pic.size());
-        mask.fill(Qt::color1);
-        QPainter p;
-        p.begin(&mask);
-        p.setPen(Qt::color0);
-
-        QColor background = QColor(Qt::white);
-        QRgb backgroundPixel = background.rgb();
-        QImage image = pic.toImage();
-        for (int y = 0; y < image.height(); y++) {
-            for (int x = 0; x < image.width(); x++) {
-                QRgb rgb = image.pixel(x, y);
-                if (rgb == backgroundPixel) // we want the frame transparent
-                    p.drawPoint(x, y);
+        QImage rgba = im.convertToFormat(QImage::Format_ARGB32);
+        const QRgb bgRgb = bgCol.isValid() ? bgCol.rgb() : QColor(Qt::white).rgb();
+        for (int y = 0; y < rgba.height(); ++y) {
+            QRgb *scan = reinterpret_cast<QRgb *>(rgba.scanLine(y));
+            for (int x = 0; x < rgba.width(); ++x) {
+                if ((scan[x] & 0x00FFFFFF) == (bgRgb & 0x00FFFFFF))
+                    scan[x] = 0x00000000;
             }
         }
-        p.end();
-        pic.setMask(mask);
-        pic.save(fileName, 0, quality);
-    } else {
-        QImage im = sp->grabFramebuffer();
         QImageWriter iw(fileName);
-        iw.setQuality(quality);
+        if (!fileName.endsWith(".png", Qt::CaseInsensitive) && quality >= 0)
+            iw.setQuality(quality);
+        iw.write(rgba);
+    } else {
+        QImageWriter iw(fileName);
+        if (!fileName.endsWith(".png", Qt::CaseInsensitive) && quality >= 0)
+            iw.setQuality(quality);
         iw.write(im);
     }
 }
 
 void Graph3D::exportPDF(const QString &fileName)
 {
-    exportVector(fileName);
+    exportVector(fileName, "PDF");
 }
 
 void Graph3D::exportVector(const QString &fileName, const QString &fileType)
@@ -2293,15 +2356,97 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
         return;
 
     if (sp->width() <= 0 || sp->height() <= 0)
-        sp->resize(500, 400);
+        sp->resize(600, 480);
+
+    QString format = fileType.trimmed().toUpper();
+    if (format.isEmpty() && fileName.endsWith(".pdf", Qt::CaseInsensitive))
+        format = QStringLiteral("PDF");
+
+    // Use upright high-DPI OpenGL + vector Arial PDF page composition instead of legacy gl2ps PDF
+    // (which rotated 90 deg, dropped OpenGL Gouraud surface shading & colorbars, and corrupted UTF-8 Greek symbols).
+    if (format == QLatin1String("PDF") || fileName.endsWith(".pdf", Qt::CaseInsensitive)) {
+        const QSize origSize = sp->size();
+        constexpr int kPdfRenderDpi = 300;
+        const double renderScale = double(kPdfRenderDpi) / 96.0;
+        const QSize hiSize(qMax(200, qRound(origSize.width() * renderScale)),
+                           qMax(200, qRound(origSize.height() * renderScale)));
+
+        const QString savedTitle = title;
+        const bool prevIgnoreFonts = ignoreFonts;
+        const double origMeshLw = sp->meshLineWidth();
+        const bool scaleScatterDots =
+                (sp->plotStyle() == Qwt3D::USER && pointStyle == Dots && pointSize > 0.0);
+        ignoreFonts = true;
+        if (!sp->context())
+            (void)sp->grabFramebuffer();
+        if (!savedTitle.isEmpty())
+            sp->setTitle(QString());
+        sp->resize(hiSize);
+        QResizeEvent rev(sp->size(), origSize);
+        QCoreApplication::sendEvent(sp, &rev);
+        (void)sp->grabFramebuffer();
+        scaleFonts(renderScale);
+        if (origMeshLw > 0.0)
+            sp->setMeshLineWidth(origMeshLw * renderScale);
+        if (scaleScatterDots)
+            sp->setPlotStyle(Dot(pointSize * renderScale, smooth));
+
+        sp->makeCurrent();
+        glViewport(0, 0, sp->width(), sp->height());
+        resetAxesLabels();
+        sp->updateData();
+        glViewport(0, 0, sp->width(), sp->height());
+        const QImage hiImg = sp->grabFramebuffer();
+
+        if (origMeshLw > 0.0)
+            sp->setMeshLineWidth(origMeshLw);
+        if (scaleScatterDots)
+            sp->setPlotStyle(Dot(pointSize, smooth));
+        scaleFonts(1.0 / renderScale);
+        sp->resize(origSize);
+        QResizeEvent revBack(origSize, hiSize);
+        QCoreApplication::sendEvent(sp, &revBack);
+        if (!savedTitle.isEmpty())
+            sp->setTitle(savedTitle);
+        sp->makeCurrent();
+        glViewport(0, 0, origSize.width(), origSize.height());
+        sp->updateData();
+        ignoreFonts = prevIgnoreFonts;
+
+        const double pageW_pt = double(origSize.width()) * 72.0 / 96.0;
+        const double pageH_pt = double(origSize.height()) * 72.0 / 96.0;
+        QPdfWriter pdf(fileName);
+        pdf.setCreator(QStringLiteral("ToriGraph"));
+        pdf.setTitle(name());
+        pdf.setResolution(kPdfRenderDpi);
+        pdf.setPageSize(QPageSize(QSizeF(pageW_pt, pageH_pt), QPageSize::Point));
+        pdf.setPageMargins(QMarginsF(0, 0, 0, 0));
+
+        QPainter pdfPainter(&pdf);
+        pdfPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                                  | QPainter::SmoothPixmapTransform);
+        const QRect pagePxRect(0, 0, pdf.width(), pdf.height());
+        pdfPainter.fillRect(pagePxRect, bgCol.isValid() ? bgCol : QColor(Qt::white));
+        if (!hiImg.isNull())
+            pdfPainter.drawImage(pagePxRect, hiImg);
+        if (!savedTitle.trimmed().isEmpty()) {
+            QFont vecTitleFont = normalizePlot3DFont(titleFnt, 14);
+            pdfPainter.setFont(vecTitleFont);
+            pdfPainter.setPen(titleCol.isValid() ? titleCol : QColor(Qt::black));
+            const QRect titleRect(0, qRound(0.02 * pagePxRect.height()), pagePxRect.width(),
+                                  qRound(0.12 * pagePxRect.height()));
+            pdfPainter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextSingleLine,
+                                savedTitle);
+        }
+        pdfPainter.end();
+        return;
+    }
+
     if (!sp->context())
         (void)sp->grabFramebuffer();
     sp->makeCurrent();
     resetAxesLabels();
     sp->updateData();
-
-    QString format = fileType;
-    format = format.toUpper();
 
     VectorWriter *gl2ps = (VectorWriter *)IO::outputHandler(format);
     if (gl2ps) {
@@ -2583,12 +2728,30 @@ void Graph3D::setShift(double xVal, double yVal, double zVal)
 
 void Graph3D::setZoom(double val)
 {
-    sp->setZoom(val);
+    if (!sp || !std::isfinite(val) || val <= 0.0)
+        return;
+    double base = d_base_zoom;
+    if (!(base > 1e-12) || !std::isfinite(base)) {
+        const double d = (sp->hull().maxVertex - sp->hull().minVertex).length();
+        base = (d > 0.0 && std::isfinite(d)) ? (d / sqrt(3.0)) : 1.0;
+        d_base_zoom = base;
+    }
+    const double rawZoom = (base > 10.0 && val > 0.35 * base) ? val : (val * base);
+    sp->setZoom(rawZoom);
 }
 
 void Graph3D::updateZoom(double val)
 {
-    if (sp->zoom() == val)
+    if (!sp || !std::isfinite(val) || val <= 0.0)
+        return;
+    double base = d_base_zoom;
+    if (!(base > 1e-12) || !std::isfinite(base)) {
+        const double d = (sp->hull().maxVertex - sp->hull().minVertex).length();
+        base = (d > 0.0 && std::isfinite(d)) ? (d / sqrt(3.0)) : 1.0;
+        d_base_zoom = base;
+    }
+    const double rawZoom = (base > 10.0 && val > 0.35 * base) ? val : (val * base);
+    if (std::fabs(sp->zoom() - rawZoom) <= 1e-9 * qMax(1.0, rawZoom))
         return;
 
     const bool nonInteractive = isGraph3DNonInteractive(this);
@@ -2596,7 +2759,7 @@ void Graph3D::updateZoom(double val)
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     sp->makeCurrent();
-    sp->setZoom(val);
+    sp->setZoom(rawZoom);
     sp->updateData();
     sp->update();
 
@@ -2805,7 +2968,7 @@ QString Graph3D::saveToString(const QString &geometry)
     s += QString::number(sp->zRotation()) + "\n";
 
     s += "zoom\t";
-    s += QString::number(sp->zoom()) + "\n";
+    s += QString::number(zoom()) + "\n";
 
     s += "scaling\t";
     s += QString::number(sp->xScale()) + "\t";
@@ -3159,8 +3322,9 @@ void Graph3D::findBestLayout()
     double d = (sp->hull().maxVertex - sp->hull().minVertex).length();
     if (!(d > 0.0) || !std::isfinite(d))
         d = sqrt(3.0);
+    d_base_zoom = d / sqrt(3.0);
     sp->setScale(xScale, yScale, zScale);
-    sp->setZoom(d / sqrt(3));
+    sp->setZoom(d_base_zoom);
 
     double majl = 0.1 / yScale;
     updateTickLength(0, majl, 0.6 * majl);

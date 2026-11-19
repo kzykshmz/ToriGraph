@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "VectorCurve.h"
+#include "Plot.h"
 #include "core/column/Column.h"
 
 #include <qwt_painter.h>
@@ -138,10 +139,13 @@ VectorCurve::VectorCurve(VectorStyle style, Table *t, const QString &xColName, Q
         d_type = Graph::VectXYAM;
         break;
     }
-    pen = QPen(Qt::black, 1, Qt::SolidLine);
+    QPen vPen(QColor(0, 114, 178), 2, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+    vPen.setCosmetic(false);
+    setPen(vPen);
+    setStyle(QwtPlotCurve::NoCurve);
     filledArrow = true;
-    d_headLength = 4;
-    d_headAngle = 45;
+    d_headLength = 8;
+    d_headAngle = 28;
     d_position = Tail;
 
     d_end_x_a = endCol1;
@@ -158,7 +162,7 @@ void VectorCurve::copy(const VectorCurve *vc)
     d_headLength = vc->d_headLength;
     d_headAngle = vc->d_headAngle;
     d_position = vc->d_position;
-    pen = vc->pen;
+    setPen(vc->pen());
     delete vectorEnd;
     vectorEnd = vc->vectorEnd ? static_cast<QwtArrayData *>(vc->vectorEnd->copy()) : nullptr;
 }
@@ -178,9 +182,12 @@ void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         return;
 
     painter->save();
-    if (testRenderHint(QwtPlotItem::RenderAntialiased))
-        painter->setRenderHint(QPainter::Antialiasing, true);
-    painter->setPen(pen);
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const double sc = Plot::printDeviceScale();
+    QPen vPen = QwtPlotCurve::pen();
+    vPen.setCosmetic(false);
+    vPen.setWidthF(qMax(1.2, vPen.widthF()) * sc);
+    painter->setPen(vPen);
     drawVector(painter, xMap, yMap, from, to);
     painter->restore();
 }
@@ -198,26 +205,42 @@ void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const Q
         return;
 
     constexpr double kPi = 3.14159265358979323846;
-    const double headHalfW = double(d_headLength) * std::tan(kPi * double(d_headAngle) / 180.0);
+    const double sc = Plot::printDeviceScale();
+    const QPen curPen = painter->pen();
+    const double pw = qMax(1.2 * sc, curPen.widthF());
+    const double effHeadLen = qMax(double(qMax(6, d_headLength)) * sc, 2.8 * pw);
+    const double effAngle = qBound(14.0, double(d_headAngle), 55.0);
+    const double headHalfW = effHeadLen * std::tan(kPi * effAngle / 180.0);
 
     auto drawFloatingVector = [&](double xs, double ys, double xe, double ye) {
         if (!std::isfinite(xs) || !std::isfinite(ys) || !std::isfinite(xe) || !std::isfinite(ye))
             return;
-        painter->drawLine(QPointF(xs, ys), QPointF(xe, ye));
         const double dx = xe - xs;
         const double dy = ye - ys;
-        if (dx * dx + dy * dy <= 1e-12)
+        const double segLen = std::hypot(dx, dy);
+        if (segLen <= 1e-6)
             return;
+        const double headLen = qMin(effHeadLen, 0.55 * segLen);
+        const double halfW = headHalfW * (headLen / effHeadLen);
+        const double retract = filledArrow ? (0.65 * headLen) : 0.0;
+        const double ux = dx / segLen;
+        const double uy = dy / segLen;
+        painter->drawLine(QPointF(xs, ys), QPointF(xe - retract * ux, ye - retract * uy));
+
         const double angleDeg = std::atan2(dy, dx) * (180.0 / kPi);
         painter->save();
         painter->translate(QPointF(xe, ye));
         painter->rotate(angleDeg);
         QPolygonF headPoly(3);
         headPoly[0] = QPointF(0.0, 0.0);
-        headPoly[1] = QPointF(-double(d_headLength), headHalfW);
-        headPoly[2] = QPointF(-double(d_headLength), -headHalfW);
+        headPoly[1] = QPointF(-headLen, halfW);
+        headPoly[2] = QPointF(-headLen, -halfW);
+        QPen headPen(curPen.color(), filledArrow ? qMax(0.6 * sc, 0.5 * pw) : pw, Qt::SolidLine,
+                     Qt::RoundCap, Qt::MiterJoin);
+        headPen.setCosmetic(false);
+        painter->setPen(headPen);
         if (filledArrow)
-            painter->setBrush(QBrush(pen.color(), Qt::SolidPattern));
+            painter->setBrush(QBrush(curPen.color(), Qt::SolidPattern));
         else
             painter->setBrush(Qt::NoBrush);
         painter->drawPolygon(headPoly);
@@ -285,7 +308,7 @@ void VectorCurve::drawArrowHead(QPainter *p, int xs, int ys, int xe, int ye) con
     endArray[2] = QPoint(-d_headLength, -d);
 
     if (filledArrow)
-        p->setBrush(QBrush(pen.color(), Qt::SolidPattern));
+        p->setBrush(QBrush(QwtPlotCurve::pen().color(), Qt::SolidPattern));
 
     QwtPainter::drawPolygon(p, endArray);
     p->restore();
@@ -326,23 +349,30 @@ void VectorCurve::setVectorEnd(const QwtArray<double> &x, const QwtArray<double>
 
 int VectorCurve::width()
 {
-    return pen.width();
+    return qMax(1, QwtPlotCurve::pen().width());
 }
 
 void VectorCurve::setWidth(int w)
 {
-    pen.setWidth(w);
+    QPen p = QwtPlotCurve::pen();
+    p.setCosmetic(false);
+    p.setWidth(qMax(1, w));
+    setPen(p);
 }
 
 QColor VectorCurve::color()
 {
-    return pen.color();
+    return QwtPlotCurve::pen().color();
 }
 
 void VectorCurve::setColor(const QColor &c)
 {
-    if (pen.color() != c)
-        pen.setColor(c);
+    QPen p = QwtPlotCurve::pen();
+    if (p.color() != c) {
+        p.setCosmetic(false);
+        p.setColor(c);
+        setPen(p);
+    }
 }
 
 void VectorCurve::setHeadLength(int l)

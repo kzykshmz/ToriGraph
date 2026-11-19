@@ -34,7 +34,9 @@
 #include "Graph.h"
 #include "Matrix.h"
 #include "ColorButton.h"
+#include "future/core/Project.h"
 
+#include <QUndoStack>
 #include <QLocale>
 #include <QPushButton>
 #include <QLabel>
@@ -560,7 +562,7 @@ void ConfigDialog::initAppPage()
     topBoxLayout->addWidget(lblUndoLimit, 5, 0);
     boxUndoLimit = new QSpinBox();
     boxUndoLimit->setRange(1, 10000);
-    boxUndoLimit->setValue(app->undoLimit);
+    boxUndoLimit->setValue(app->undoLimit > 0 ? app->undoLimit : 50);
     topBoxLayout->addWidget(boxUndoLimit, 5, 1);
 
     topBoxLayout->setRowStretch(6, 1);
@@ -1193,7 +1195,9 @@ void ConfigDialog::apply()
     app->setSaveSettings(boxSave->isChecked(), boxMinutes->value());
     app->defaultScriptingLang = boxScriptingLanguage->currentText();
 
-    app->undoLimit = boxUndoLimit->value(); // FIXME: can apply only after restart
+    app->undoLimit = boxUndoLimit->value();
+    if (app->project() && app->project()->undoStack())
+        app->project()->undoStack()->setUndoLimit(app->undoLimit);
 
     // general page: numeric format tab
     app->d_decimal_digits = boxAppPrecision->value();

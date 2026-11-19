@@ -51,12 +51,16 @@
 #include <QPrintDialog>
 #include <QPainter>
 #include <QLocale>
+#include <QUndoStack>
 #include <QXmlStreamWriter>
 #include <QtDebug>
 
 #include <stdlib.h>
 #include <math.h>
 #include <stdio.h>
+#include <cmath>
+#include <limits>
+#include <vector>
 
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_math.h>
@@ -123,7 +127,19 @@ void Matrix::init(int, int)
             SLOT(handleAspectDescriptionChange(const AbstractAspect *)));
 }
 
-Matrix::~Matrix() { }
+Matrix::~Matrix()
+{
+    if (dMatrix) {
+        freeMatrixData(dMatrix, d_future_matrix ? d_future_matrix->rowCount() : 0);
+        dMatrix = 0;
+    }
+    if (d_future_matrix && !d_future_matrix->parentAspect() && d_future_matrix->view() == this) {
+        future::Matrix *fm = d_future_matrix.data();
+        d_future_matrix.clear();
+        fm->setView(nullptr);
+        delete fm;
+    }
+}
 
 void Matrix::handleChange()
 {
@@ -301,75 +317,227 @@ void Matrix::setNumCols(int cols)
     d_future_matrix->setDimensions(d_future_matrix->rowCount(), cols);
 }
 
+namespace {
+
+struct DenseLuDecomposition
+{
+    int n = 0;
+    double norm1 = 0.0;
+    int sign = 1;
+    bool singular = false;
+    bool nonFinite = false;
+    std::vector<double> lu;
+    std::vector<int> piv;
+};
+
+static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n)
+{
+    DenseLuDecomposition res;
+    res.n = n;
+    res.lu.resize(size_t(n) * size_t(n), 0.0);
+    res.piv.resize(size_t(n), 0);
+    for (int i = 0; i < n; ++i)
+        res.piv[size_t(i)] = i;
+
+    for (int j = 0; j < n; ++j) {
+        double colAbsSum = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double v = m->cell(i, j);
+            if (!std::isfinite(v)) {
+                res.nonFinite = true;
+                res.singular = true;
+                return res;
+            }
+            res.lu[size_t(i) * size_t(n) + size_t(j)] = v;
+            colAbsSum += std::abs(v);
+        }
+        if (colAbsSum > res.norm1)
+            res.norm1 = colAbsSum;
+    }
+
+    if (!(res.norm1 > 0.0) || !std::isfinite(res.norm1)) {
+        res.singular = true;
+        return res;
+    }
+
+    const double pivTol = 1e-14 * res.norm1;
+    for (int k = 0; k < n; ++k) {
+        int pivRow = k;
+        double maxAbs = std::abs(res.lu[size_t(k) * size_t(n) + size_t(k)]);
+        for (int i = k + 1; i < n; ++i) {
+            const double cand = std::abs(res.lu[size_t(i) * size_t(n) + size_t(k)]);
+            if (cand > maxAbs) {
+                maxAbs = cand;
+                pivRow = i;
+            }
+        }
+        if (!(maxAbs > pivTol) || !std::isfinite(maxAbs)) {
+            res.singular = true;
+            return res;
+        }
+        if (pivRow != k) {
+            for (int j = 0; j < n; ++j) {
+                std::swap(res.lu[size_t(k) * size_t(n) + size_t(j)],
+                          res.lu[size_t(pivRow) * size_t(n) + size_t(j)]);
+            }
+            std::swap(res.piv[size_t(k)], res.piv[size_t(pivRow)]);
+            res.sign = -res.sign;
+        }
+
+        const double invDiag = 1.0 / res.lu[size_t(k) * size_t(n) + size_t(k)];
+        for (int i = k + 1; i < n; ++i) {
+            double *rowI = &res.lu[size_t(i) * size_t(n)];
+            const double *rowK = &res.lu[size_t(k) * size_t(n)];
+            const double lik = rowI[k] * invDiag;
+            rowI[k] = lik;
+            if (lik != 0.0) {
+                for (int j = k + 1; j < n; ++j)
+                    rowI[j] -= lik * rowK[j];
+            }
+        }
+    }
+
+    return res;
+}
+
+} // namespace
+
 double Matrix::determinant()
 {
-    int rows = numRows();
-    int cols = numCols();
+    if (!d_future_matrix)
+        return std::numeric_limits<double>::quiet_NaN();
+
+    const int rows = numRows();
+    const int cols = numCols();
+    const bool nonInteractive = ApplicationWindow::isNonInteractiveContext(this);
 
     if (rows != cols) {
-        if (!ApplicationWindow::isNonInteractiveContext(this))
+        if (!nonInteractive)
             QMessageBox::critical(0, tr("Error"), tr("Calculation failed, the matrix is not square!"));
         return GSL_POSINF;
     }
+    if (rows <= 0 || rows > 4096) {
+        if (!nonInteractive)
+            QMessageBox::critical(0, tr("Error"),
+                                  tr("Matrix size (%1x%1) exceeds dense LU limit (4096).").arg(rows));
+        return std::numeric_limits<double>::quiet_NaN();
+    }
 
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
-    gsl_matrix *A = gsl_matrix_alloc(rows, cols);
-    int i;
-    for (i = 0; i < rows; i++)
-        for (int j = 0; j < cols; j++)
-            gsl_matrix_set(A, i, j, cell(i, j));
+    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, rows);
+    double det = 0.0;
+    if (lu.nonFinite) {
+        det = std::numeric_limits<double>::quiet_NaN();
+    } else if (!lu.singular) {
+        det = double(lu.sign);
+        for (int k = 0; k < rows; ++k)
+            det *= lu.lu[size_t(k) * size_t(rows) + size_t(k)];
+    }
 
-    gsl_permutation *p = gsl_permutation_alloc(rows);
-    gsl_linalg_LU_decomp(A, p, &i);
-
-    double det = gsl_linalg_LU_det(A, i);
-
-    gsl_matrix_free(A);
-    gsl_permutation_free(p);
-
-    QApplication::restoreOverrideCursor();
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
     return det;
 }
 
 void Matrix::invert()
 {
-    int rows = numRows();
-    int cols = numCols();
+    if (!d_future_matrix)
+        return;
+
+    const int rows = numRows();
+    const int cols = numCols();
+    const bool nonInteractive = ApplicationWindow::isNonInteractiveContext(this);
 
     if (rows != cols) {
-        if (!ApplicationWindow::isNonInteractiveContext(this))
+        if (!nonInteractive)
             QMessageBox::critical(0, tr("Error"), tr("Inversion failed, the matrix is not square!"));
         return;
     }
-
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-
-    gsl_matrix *A = gsl_matrix_alloc(rows, cols);
-    int i;
-    for (i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++)
-            gsl_matrix_set(A, i, j, cell(i, j));
+    if (rows <= 0 || rows > 4096) {
+        if (!nonInteractive)
+            QMessageBox::critical(0, tr("Error"),
+                                  tr("Matrix size (%1x%1) exceeds dense LU limit (4096).").arg(rows));
+        return;
     }
 
-    gsl_permutation *p = gsl_permutation_alloc(cols);
-    gsl_linalg_LU_decomp(A, p, &i);
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
-    gsl_matrix *inverse = gsl_matrix_alloc(rows, cols);
-    gsl_linalg_LU_invert(A, p, inverse);
+    const int n = rows;
+    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, n);
+    if (lu.singular || lu.nonFinite) {
+        if (!nonInteractive) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::critical(0, tr("Error"),
+                                  tr("Inversion failed, the matrix is singular or ill-conditioned!"));
+        }
+        return;
+    }
 
-    gsl_matrix_free(A);
-    gsl_permutation_free(p);
+    std::vector<double> inv(size_t(n) * size_t(n), 0.0);
+    std::vector<double> colVec(size_t(n), 0.0);
+    double invNorm1 = 0.0;
+    bool badEntry = false;
 
+    for (int col = 0; col < n && !badEntry; ++col) {
+        for (int i = 0; i < n; ++i)
+            colVec[size_t(i)] = (lu.piv[size_t(i)] == col) ? 1.0 : 0.0;
+
+        // Forward substitution: L * y = P * e_col
+        for (int i = 0; i < n; ++i) {
+            double sum = colVec[size_t(i)];
+            const double *rowI = &lu.lu[size_t(i) * size_t(n)];
+            for (int j = 0; j < i; ++j)
+                sum -= rowI[j] * colVec[size_t(j)];
+            colVec[size_t(i)] = sum;
+        }
+
+        // Back substitution: U * x = y
+        double colAbsSum = 0.0;
+        for (int i = n - 1; i >= 0; --i) {
+            double sum = colVec[size_t(i)];
+            const double *rowI = &lu.lu[size_t(i) * size_t(n)];
+            for (int j = i + 1; j < n; ++j)
+                sum -= rowI[j] * colVec[size_t(j)];
+            const double xVal = sum / rowI[i];
+            if (!std::isfinite(xVal)) {
+                badEntry = true;
+                break;
+            }
+            colVec[size_t(i)] = xVal;
+            inv[size_t(i) * size_t(n) + size_t(col)] = xVal;
+            colAbsSum += std::abs(xVal);
+        }
+        if (colAbsSum > invNorm1)
+            invNorm1 = colAbsSum;
+    }
+
+    const double rcond = (!badEntry && lu.norm1 > 0.0 && invNorm1 > 0.0 && std::isfinite(invNorm1))
+            ? (1.0 / (lu.norm1 * invNorm1))
+            : 0.0;
+    if (badEntry || !std::isfinite(rcond) || rcond < 1e-13 * double(n)) {
+        if (!nonInteractive) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::critical(0, tr("Error"),
+                                  tr("Inversion failed, the matrix is singular or ill-conditioned!"));
+        }
+        return;
+    }
+
+    // future::Matrix::setCells expects column-major flat layout (col * rows + row) or let's verify!
     this->blockSignals(true);
-    for (i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++)
-            setCell(i, j, gsl_matrix_get(inverse, i, j));
+    d_future_matrix->beginMacro(tr("%1: invert").arg(name()));
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j)
+            setCell(i, j, inv[size_t(i) * size_t(n) + size_t(j)]);
     }
+    d_future_matrix->endMacro();
     this->blockSignals(false);
 
-    gsl_matrix_free(inverse);
-    QApplication::restoreOverrideCursor();
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
     emit modifiedWindow(this);
 }
 
@@ -540,10 +708,18 @@ void Matrix::closeEvent(QCloseEvent *e)
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
                                          tr("Delete"), tr("Hide"), tr("Cancel"), 0, 2)) {
-        case 0:
+        case 0: {
             e->accept();
-            d_future_matrix->remove();
+            QPointer<Matrix> self(this);
+            QUndoStack *us = d_future_matrix ? d_future_matrix->undoStack() : nullptr;
+            if (d_future_matrix)
+                d_future_matrix->remove();
+            if (us && !(us->count() > 0 && !us->canUndo() && !us->canRedo()))
+                us->clear();
+            if (self)
+                self->deleteLater();
             return;
+        }
 
         case 1:
             e->ignore();
@@ -556,7 +732,14 @@ void Matrix::closeEvent(QCloseEvent *e)
         }
     } else {
         e->accept();
-        d_future_matrix->remove();
+        QPointer<Matrix> self(this);
+        QUndoStack *us = d_future_matrix ? d_future_matrix->undoStack() : nullptr;
+        if (d_future_matrix)
+            d_future_matrix->remove();
+        if (us && !(us->count() > 0 && !us->canUndo() && !us->canRedo()))
+            us->clear();
+        if (self)
+            self->deleteLater();
         return;
     }
 }

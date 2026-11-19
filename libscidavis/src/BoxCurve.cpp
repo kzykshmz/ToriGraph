@@ -27,9 +27,12 @@
  *                                                                         *
  ***************************************************************************/
 #include "BoxCurve.h"
+#include "Plot.h"
 #include "core/column/Column.h"
 #include <QPainter>
 #include <QLocale>
+#include <qwt_scale_map.h>
+#include <qwt_symbol.h>
 
 #include <gsl/gsl_sort.h>
 #include <gsl/gsl_statistics.h>
@@ -80,33 +83,50 @@ void BoxCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMa
     if (!painter || dataSize() <= 0)
         return;
 
-    int size = dataSize();
-    if (to < 0)
-        to = size - 1;
+    const int n = dataSize();
+    if (from < 0)
+        from = 0;
+    if (to < 0 || to >= n)
+        to = n - 1;
+    const int size = to - from + 1;
+    if (size <= 0)
+        return;
 
     painter->save();
-    painter->setPen(QwtPlotCurve::pen());
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const double sc = Plot::printDeviceScale();
+    QPen cPen = QwtPlotCurve::pen();
+    cPen.setCosmetic(false);
+    cPen.setWidthF(qMax(1.2, cPen.widthF()) * sc);
+    painter->setPen(cPen);
 
-    double *dat = new double[size];
-    for (int i = from; i <= to; i++)
-        dat[i] = y(i);
+    QVector<double> datVec(size);
+    for (int i = 0; i < size; ++i)
+        datVec[i] = y(from + i);
+    if (from > 0 || to < n - 1)
+        gsl_sort(datVec.data(), 1, size);
 
-    drawBox(painter, xMap, yMap, dat, size);
-    drawSymbols(painter, xMap, yMap, dat, size);
+    drawBox(painter, xMap, yMap, datVec.data(), size);
+    drawSymbols(painter, xMap, yMap, datVec.data(), size);
 
     painter->restore();
-    delete[] dat;
 }
 
 void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                        double *dat, int size) const
 {
-    const int px = xMap.transform(x(0));
-    const int px_min = xMap.transform(x(0) - 0.5);
-    const int px_max = xMap.transform(x(0) + 0.5);
-    const int box_width = 1 + (px_max - px_min) * b_width / 100;
-    const int hbw = d_violin_mode ? qMax(3, box_width / 8) : (box_width / 2);
-    const int violin_hbw = qMax(8, box_width / 2);
+    const double sc = Plot::printDeviceScale();
+    QPen cPen = QwtPlotCurve::pen();
+    cPen.setCosmetic(false);
+    cPen.setWidthF(qMax(1.2, cPen.widthF()) * sc);
+    painter->setPen(cPen);
+
+    const double pxF = xMap.xTransform(x(0));
+    const int px = qRound(pxF);
+    const double pxSpan = std::fabs(xMap.xTransform(x(0) + 0.5) - xMap.xTransform(x(0) - 0.5));
+    const int box_width = qMax(4, qRound(pxSpan * double(b_width) / 100.0));
+    const int hbw = d_violin_mode ? qMax(qRound(3.5 * sc), box_width / 8) : qMax(2, box_width / 2);
+    const int violin_hbw = qMax(qRound(8.0 * sc), box_width / 2);
     const int median = yMap.transform(gsl_stats_median_from_sorted_data(dat, 1, size));
     int b_lowerq, b_upperq;
     double sd = 0;
@@ -118,7 +138,7 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         mean = gsl_stats_mean(dat, 1, size);
     }
 
-    // Draw OriginPro-style Violin KDE contour when violinMode() is enabled
+    // 1. Draw Violin KDE contour first (background layer) when violinMode() is enabled
     double kdeBandwidth = 1.0;
     double kdeMaxDensity = 0.0;
     if (d_violin_mode && size >= 2) {
@@ -154,29 +174,61 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         }
 
         if (kdeMaxDensity > 0.0) {
-            const double pxCenter = xMap.xTransform(x(0));
             QPolygonF violinPoly(2 * (nSteps + 1));
             for (int k = 0; k <= nSteps; ++k) {
                 const double py = yMap.xTransform(yGrid[k]);
                 const double dx = (densities[k] / kdeMaxDensity) * double(violin_hbw);
-                violinPoly[k] = QPointF(pxCenter - dx, py);
-                violinPoly[2 * nSteps + 1 - k] = QPointF(pxCenter + dx, py);
+                violinPoly[k] = QPointF(pxF - dx, py);
+                violinPoly[2 * nSteps + 1 - k] = QPointF(pxF + dx, py);
             }
 
             painter->save();
-            if (testRenderHint(QwtPlotItem::RenderAntialiased))
-                painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setRenderHint(QPainter::Antialiasing, true);
             QBrush vBrush = QwtPlotCurve::brush();
             if (vBrush.style() == Qt::NoBrush) {
-                QColor fillCol = QwtPlotCurve::pen().color();
-                fillCol.setAlpha(95);
+                QColor fillCol = cPen.color();
+                fillCol.setAlpha(85);
                 vBrush = QBrush(fillCol, Qt::SolidPattern);
             }
             painter->setBrush(vBrush);
-            painter->setPen(QwtPlotCurve::pen());
+            painter->setPen(cPen);
             painter->drawPolygon(violinPoly);
             painter->restore();
         }
+    }
+
+    // 2. Draw deterministic jittered data points BEFORE inner box/median so quartiles & median stay legible
+    if (d_show_data_points && size > 0) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QColor ptColor = cPen.color();
+        QColor fillCol = ptColor;
+        fillCol.setAlpha(d_violin_mode ? 138 : 180);
+        QPen dotPen(ptColor.darker(135), 0.9 * sc);
+        dotPen.setCosmetic(false);
+        painter->setPen(dotPen);
+        painter->setBrush(QBrush(fillCol, Qt::SolidPattern));
+        const double dotRadius = qMax(2.2, 2.7 * sc);
+
+        for (int i = 0; i < size; ++i) {
+            const double frac = (size == 1)
+                    ? 0.0
+                    : (2.0 * std::fmod((i + 1) * 0.6180339887498949, 1.0) - 1.0);
+            double maxHalfJitter = 0.50 * violin_hbw;
+            if (d_violin_mode && kdeMaxDensity > 0.0) {
+                double localDens = 0.0;
+                for (int m = 0; m < size; ++m) {
+                    const double u = (dat[i] - dat[m]) / kdeBandwidth;
+                    localDens += std::exp(-0.5 * u * u);
+                }
+                maxHalfJitter = 0.68 * (localDens / kdeMaxDensity) * violin_hbw;
+            }
+            const double jx = pxF + frac * maxHalfJitter;
+            const double jy = yMap.xTransform(dat[i]);
+            if (std::isfinite(jx) && std::isfinite(jy))
+                painter->drawEllipse(QPointF(jx, jy), dotRadius, dotRadius);
+        }
+        painter->restore();
     }
 
     if (b_range == SD) {
@@ -192,62 +244,10 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
                 yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.01 * b_coeff));
     }
 
-    // draw box
+    // 3. Draw whiskers, inner box, and median ON TOP of violin KDE & jittered points
     const int eff_box_width = 2 * hbw;
-    if (b_style == Rect) {
-        const QRect r = QRect(px - hbw, b_upperq, eff_box_width, b_lowerq - b_upperq + 1);
-        painter->fillRect(r, QwtPlotCurve::brush());
-        painter->drawRect(r);
-    } else if (b_style == Diamond) {
-        QPolygon pa(4);
-        pa[0] = QPoint(px, b_upperq);
-        pa[1] = QPoint(px + hbw, median);
-        pa[2] = QPoint(px, b_lowerq);
-        pa[3] = QPoint(px - hbw, median);
-
-        painter->setBrush(QwtPlotCurve::brush());
-        painter->drawPolygon(pa);
-    } else if (b_style == WindBox) {
-        const int lowerq = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.25));
-        const int upperq = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.75));
-        QPolygon pa(8);
-        pa[0] = QPoint(px + hbw, b_upperq);
-        pa[1] = QPoint(int(px + 0.4 * eff_box_width), upperq);
-        pa[2] = QPoint(int(px + 0.4 * eff_box_width), lowerq);
-        pa[3] = QPoint(px + hbw, b_lowerq);
-        pa[4] = QPoint(px - hbw, b_lowerq);
-        pa[5] = QPoint(int(px - 0.4 * eff_box_width), lowerq);
-        pa[6] = QPoint(int(px - 0.4 * eff_box_width), upperq);
-        pa[7] = QPoint(px - hbw, b_upperq);
-
-        painter->setBrush(QwtPlotCurve::brush());
-        painter->drawPolygon(pa);
-    } else if (b_style == Notch) {
-        int j = (int)ceil(0.5 * (size - 1.96 * sqrt((double)size)));
-        int k = (int)ceil(0.5 * (size + 1.96 * sqrt((double)size)));
-        j = qBound(0, j, size - 1);
-        k = qBound(0, k, size - 1);
-        const int lowerCI = yMap.transform(dat[j]);
-        const int upperCI = yMap.transform(dat[k]);
-
-        QPolygon pa(10);
-        pa[0] = QPoint(px + hbw, b_upperq);
-        pa[1] = QPoint(px + hbw, upperCI);
-        pa[2] = QPoint(int(px + 0.25 * hbw), median);
-        pa[3] = QPoint(px + hbw, lowerCI);
-        pa[4] = QPoint(px + hbw, b_lowerq);
-        pa[5] = QPoint(px - hbw, b_lowerq);
-        pa[6] = QPoint(px - hbw, lowerCI);
-        pa[7] = QPoint(int(px - 0.25 * hbw), median);
-        pa[8] = QPoint(px - hbw, upperCI);
-        pa[9] = QPoint(px - hbw, b_upperq);
-
-        painter->setBrush(QwtPlotCurve::brush());
-        painter->drawPolygon(pa);
-    }
-
-    if (w_range) { // draw whiskers
-        const int l = int(0.1 * eff_box_width);
+    if (w_range) {
+        const int l = qMax(qRound(2.0 * sc), int(0.16 * eff_box_width));
         int w_upperq, w_lowerq;
         if (w_range == SD) {
             w_lowerq = yMap.transform(mean - sd * w_coeff);
@@ -274,42 +274,81 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
             painter->drawLine(px, w_upperq, px, w_lowerq);
     }
 
-    // draw median line
+    QBrush boxBrush = QwtPlotCurve::brush();
+    if (d_violin_mode && b_style != NoBox) {
+        boxBrush = QBrush(QColor(255, 255, 255, 232), Qt::SolidPattern);
+    } else if (boxBrush.style() == Qt::NoBrush && d_show_data_points && b_style != NoBox) {
+        QColor tint = cPen.color().lighter(175);
+        tint.setAlpha(150);
+        boxBrush = QBrush(tint, Qt::SolidPattern);
+    }
+
+    if (b_style == Rect) {
+        const int topY = qMin(b_upperq, b_lowerq);
+        const int botY = qMax(b_upperq, b_lowerq);
+        const QRect r(px - hbw, topY, eff_box_width, qMax(1, botY - topY));
+        if (boxBrush.style() != Qt::NoBrush)
+            painter->fillRect(r, boxBrush);
+        painter->drawRect(r);
+    } else if (b_style == Diamond) {
+        QPolygon pa(4);
+        pa[0] = QPoint(px, b_upperq);
+        pa[1] = QPoint(px + hbw, median);
+        pa[2] = QPoint(px, b_lowerq);
+        pa[3] = QPoint(px - hbw, median);
+
+        painter->setBrush(boxBrush);
+        painter->drawPolygon(pa);
+    } else if (b_style == WindBox) {
+        const int lowerq = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.25));
+        const int upperq = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.75));
+        QPolygon pa(8);
+        pa[0] = QPoint(px + hbw, b_upperq);
+        pa[1] = QPoint(int(px + 0.4 * eff_box_width), upperq);
+        pa[2] = QPoint(int(px + 0.4 * eff_box_width), lowerq);
+        pa[3] = QPoint(px + hbw, b_lowerq);
+        pa[4] = QPoint(px - hbw, b_lowerq);
+        pa[5] = QPoint(int(px - 0.4 * eff_box_width), lowerq);
+        pa[6] = QPoint(int(px - 0.4 * eff_box_width), upperq);
+        pa[7] = QPoint(px - hbw, b_upperq);
+
+        painter->setBrush(boxBrush);
+        painter->drawPolygon(pa);
+    } else if (b_style == Notch) {
+        int j = (int)ceil(0.5 * (size - 1.96 * sqrt((double)size)));
+        int k = (int)ceil(0.5 * (size + 1.96 * sqrt((double)size)));
+        j = qBound(0, j, size - 1);
+        k = qBound(0, k, size - 1);
+        const int lowerCI = yMap.transform(dat[j]);
+        const int upperCI = yMap.transform(dat[k]);
+
+        QPolygon pa(10);
+        pa[0] = QPoint(px + hbw, b_upperq);
+        pa[1] = QPoint(px + hbw, upperCI);
+        pa[2] = QPoint(int(px + 0.25 * hbw), median);
+        pa[3] = QPoint(px + hbw, lowerCI);
+        pa[4] = QPoint(px + hbw, b_lowerq);
+        pa[5] = QPoint(px - hbw, b_lowerq);
+        pa[6] = QPoint(px - hbw, lowerCI);
+        pa[7] = QPoint(int(px - 0.25 * hbw), median);
+        pa[8] = QPoint(px - hbw, upperCI);
+        pa[9] = QPoint(px - hbw, b_upperq);
+
+        painter->setBrush(boxBrush);
+        painter->drawPolygon(pa);
+    }
+
+    // Draw crisp median line above box fill
     if (b_style != Notch && b_style != NoBox) {
+        painter->save();
+        QPen medPen = cPen;
+        medPen.setWidthF(qMax(1.8 * sc, cPen.widthF() * 1.35));
+        painter->setPen(medPen);
         if (b_style == WindBox)
             painter->drawLine(int(px - 0.4 * eff_box_width), median, int(px + 0.4 * eff_box_width),
                               median);
         else
             painter->drawLine(px - hbw, median, px + hbw, median);
-    }
-
-    // Draw deterministic jittered data points when showDataPoints() is enabled
-    if (d_show_data_points && size > 0) {
-        painter->save();
-        QColor ptColor = QwtPlotCurve::pen().color();
-        QColor fillCol = ptColor;
-        fillCol.setAlpha(185);
-        painter->setPen(QPen(ptColor.darker(130), 1));
-        painter->setBrush(QBrush(fillCol, Qt::SolidPattern));
-
-        for (int i = 0; i < size; ++i) {
-            // Golden-ratio quasi-random sequence in [-1, +1]
-            const double frac = (size == 1)
-                    ? 0.0
-                    : (2.0 * std::fmod((i + 1) * 0.6180339887498949, 1.0) - 1.0);
-            double maxHalfJitter = 0.55 * violin_hbw;
-            if (d_violin_mode && kdeMaxDensity > 0.0) {
-                double localDens = 0.0;
-                for (int m = 0; m < size; ++m) {
-                    const double u = (dat[i] - dat[m]) / kdeBandwidth;
-                    localDens += std::exp(-0.5 * u * u);
-                }
-                maxHalfJitter = 0.72 * (localDens / kdeMaxDensity) * violin_hbw;
-            }
-            const int jx = px + qRound(frac * maxHalfJitter);
-            const int jy = yMap.transform(dat[i]);
-            painter->drawEllipse(QPoint(jx, jy), 3, 3);
-        }
         painter->restore();
     }
 }
@@ -317,34 +356,51 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
 void BoxCurve::drawSymbols(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                            double *dat, int size) const
 {
+    if (!painter || size <= 0)
+        return;
+
     const int px = xMap.transform(x(0));
+    const double sc = Plot::printDeviceScale();
 
     QwtSymbol s = this->symbol();
-    if (min_style != QwtSymbol::NoSymbol) {
-        const int py_min = yMap.transform(y(0));
-        s.setStyle(min_style);
-        s.draw(painter, px, py_min);
-    }
-    if (max_style != QwtSymbol::NoSymbol) {
-        const int py_max = yMap.transform(y(size - 1));
-        s.setStyle(max_style);
-        s.draw(painter, px, py_max);
-    }
-    if (p1_style != QwtSymbol::NoSymbol) {
-        const int p1 = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.01));
-        s.setStyle(p1_style);
-        s.draw(painter, px, p1);
-    }
-    if (p99_style != QwtSymbol::NoSymbol) {
-        const int p99 = yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.99));
-        s.setStyle(p99_style);
-        s.draw(painter, px, p99);
-    }
-    if (mean_style != QwtSymbol::NoSymbol) {
-        const int mean = yMap.transform(gsl_stats_mean(dat, 1, size));
-        s.setStyle(mean_style);
-        s.draw(painter, px, mean);
-    }
+    QPen symPen = s.pen();
+    symPen.setCosmetic(false);
+    const double baseW =
+            (symPen.widthF() > 0.0) ? symPen.widthF() : qMax(1.2, QwtPlotCurve::pen().widthF());
+    symPen.setWidthF(qMax(1.2, baseW) * sc);
+    if (!symPen.color().isValid() || symPen.color() == Qt::black)
+        symPen.setColor(QwtPlotCurve::pen().color().darker(125));
+    s.setPen(symPen);
+    if (s.brush().style() == Qt::NoBrush)
+        s.setBrush(QBrush(Qt::white, Qt::SolidPattern));
+    const int baseSz = qMax(7, s.size().width());
+    const int symSz = qMax(4, qRound(baseSz * sc));
+    s.setSize(symSz, symSz);
+
+    // Draw via QwtSymbol::draw(QPainter *, const QRect &) with non-cosmetic symPen already bound,
+    // bypassing QwtSymbol::draw(QPainter *, int, int) -> QwtPainter::scaledPen() (which forces
+    // cosmetic 1px hairlines under 600-DPI QPainter scaling).
+    painter->save();
+    painter->setPen(symPen);
+    painter->setBrush(s.brush());
+
+    auto drawBoxSymAt = [&](QwtSymbol::Style st, int py) {
+        s.setStyle(st);
+        s.draw(painter, QRect(px - symSz / 2, py - symSz / 2, symSz, symSz));
+    };
+
+    if (min_style != QwtSymbol::NoSymbol)
+        drawBoxSymAt(min_style, yMap.transform(dat[0]));
+    if (max_style != QwtSymbol::NoSymbol)
+        drawBoxSymAt(max_style, yMap.transform(dat[size - 1]));
+    if (p1_style != QwtSymbol::NoSymbol)
+        drawBoxSymAt(p1_style, yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.01)));
+    if (p99_style != QwtSymbol::NoSymbol)
+        drawBoxSymAt(p99_style, yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.99)));
+    if (mean_style != QwtSymbol::NoSymbol)
+        drawBoxSymAt(mean_style, yMap.transform(gsl_stats_mean(dat, 1, size)));
+
+    painter->restore();
 }
 
 void BoxCurve::setBoxStyle(int style)
@@ -411,24 +467,57 @@ QwtDoubleRect BoxCurve::boundingRect() const
 
 bool BoxCurve::loadData()
 {
-    QVector<double> Y(abs(d_end_row - d_start_row) + 1);
-    int ycol = d_table->colIndex(title().text());
-    Column *y_col_ptr = d_table->column(ycol);
-    auto yColType = d_table->columnType(ycol);
-    int size = 0;
-    for (int row = d_start_row; row <= d_end_row && row < y_col_ptr->rowCount(); row++) {
-        if (!y_col_ptr->isInvalid(row)) {
-            if (yColType == SciDAVis::ColumnMode::Text) {
-                QString yval = y_col_ptr->textAt(row);
-                bool valid_data = true;
-                Y[size] = QLocale().toDouble(yval, &valid_data);
-                if (!valid_data)
-                    continue;
-            } else
-                Y[size] = y_col_ptr->valueAt(row);
+    if (!d_table)
+        return false;
 
-            size++;
+    Column *x_dummy = nullptr;
+    Column *y_col_ptr = nullptr;
+    resolveColumns(x_dummy, y_col_ptr);
+    int ycol = d_table->colIndex(title().text());
+    if (!y_col_ptr && ycol >= 0 && ycol < d_table->numCols())
+        y_col_ptr = d_table->column(ycol);
+    if (!y_col_ptr) {
+        remove();
+        return false;
+    }
+    if (ycol < 0 || ycol >= d_table->numCols()) {
+        for (int c = 0; c < d_table->numCols(); ++c) {
+            if (d_table->column(c) == y_col_ptr) {
+                ycol = c;
+                break;
+            }
         }
+    }
+
+    const int startR = qMax(0, d_start_row);
+    const int endR = (d_end_row < 0) ? (y_col_ptr->rowCount() - 1)
+                                     : qMin(d_end_row, y_col_ptr->rowCount() - 1);
+    if (startR > endR) {
+        remove();
+        return false;
+    }
+
+    QVector<double> Y(endR - startR + 1);
+    const auto yColType = (ycol >= 0) ? d_table->columnType(ycol) : y_col_ptr->columnMode();
+    int size = 0;
+    for (int row = startR; row <= endR; row++) {
+        if (y_col_ptr->isInvalid(row) || y_col_ptr->isMasked(row))
+            continue;
+        double val = 0.0;
+        if (yColType == SciDAVis::ColumnMode::Text) {
+            const QString yval = y_col_ptr->textAt(row);
+            bool valid_data = false;
+            val = QLocale().toDouble(yval, &valid_data);
+            if (!valid_data)
+                val = QLocale::c().toDouble(yval, &valid_data);
+            if (!valid_data)
+                continue;
+        } else {
+            val = y_col_ptr->valueAt(row);
+        }
+        if (!std::isfinite(val))
+            continue;
+        Y[size++] = val;
     }
 
     if (size > 0) {

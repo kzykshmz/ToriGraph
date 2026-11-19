@@ -616,26 +616,29 @@ void Legend::drawVector(QPainter *p, int x, int y, int l, int curveIndex) const
         return;
 
     p->save();
+    p->setRenderHint(QPainter::Antialiasing, true);
 
-    QPen pen(v->color(), v->width(), Qt::SolidLine);
+    const double sc = Plot::printDeviceScale();
+    QPen pen(v->color(), qMax(1.2, double(v->width())) * sc, Qt::SolidLine, Qt::RoundCap,
+             Qt::MiterJoin);
+    pen.setCosmetic(false);
     p->setPen(pen);
-    QwtPainter::drawLine(p, x, y, x + l, y);
 
-    p->translate(x + l, y);
+    const double headLen = qMin(double(qMax(5, v->headLength())) * sc, 0.45 * double(qMax(8, l)));
+    const double effAngle = qBound(14.0, double(v->headAngle()), 55.0);
+    const double d = headLen * std::tan(3.14159265358979323846 * effAngle / 180.0);
+    const double retract = v->filledArrowHead() ? (0.65 * headLen) : 0.0;
+    p->drawLine(QPointF(double(x), double(y)), QPointF(double(x + l) - retract, double(y)));
 
-    double pi = 4 * atan(-1.0);
-    int headLength = v->headLength();
-    int d = qRound(headLength * tan(pi * (double)v->headAngle() / 180.0));
+    p->translate(QPointF(double(x + l), double(y)));
 
-    QPolygon endArray(3);
-    endArray[0] = QPoint(0, 0);
-    endArray[1] = QPoint(-headLength, d);
-    endArray[2] = QPoint(-headLength, -d);
+    QPolygonF endArray(3);
+    endArray[0] = QPointF(0.0, 0.0);
+    endArray[1] = QPointF(-headLen, d);
+    endArray[2] = QPointF(-headLen, -d);
 
-    if (v->filledArrowHead())
-        p->setBrush(QBrush(pen.color(), Qt::SolidPattern));
-
-    QwtPainter::drawPolygon(p, endArray);
+    p->setBrush(v->filledArrowHead() ? QBrush(pen.color(), Qt::SolidPattern) : QBrush(Qt::NoBrush));
+    p->drawPolygon(endArray);
     p->restore();
 }
 
@@ -703,7 +706,13 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
                             QRect lr = QRect(w, cy - 4, l, 10);
-                            p->setBrush(br);
+                            QBrush effBr = br;
+                            if (effBr.style() == Qt::NoBrush && g->curveType(cv) == Graph::Box) {
+                                QColor tint = pen.color();
+                                tint.setAlpha(95);
+                                effBr = QBrush(tint, Qt::SolidPattern);
+                            }
+                            p->setBrush(effBr);
                             QwtPainter::drawRect(p, lr);
                         } else {
                             const QPoint p1 = map.layoutToDevice(QPoint(w, cy), p);
@@ -742,14 +751,18 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
             int id = aux.toInt();
 
             Graph *g = (Graph *)d_plot->parent();
-            if (g->isPiePlot()) {
-                QwtPieCurve *curve = (QwtPieCurve *)d_plot->curve(1);
+            if (g && g->isPiePlot()) {
+                QwtPieCurve *curve = dynamic_cast<QwtPieCurve *>(g->curve(0));
+                if (!curve)
+                    curve = dynamic_cast<QwtPieCurve *>(d_plot->curve(1));
                 if (curve) {
                     const QBrush br = QBrush(curve->color(id - 1), curve->pattern());
-                    QPen pen = curve->pen();
+                    QPen swPen(QColor(80, 80, 80), qMax(1.0, Plot::printDeviceScale()),
+                               Qt::SolidLine);
+                    swPen.setCosmetic(false);
 
                     p->save();
-                    p->setPen(QPen(pen.color(), 1, Qt::SolidLine));
+                    p->setPen(swPen);
                     QRect lr = QRect(w, cy - 4, l, 10);
                     p->setBrush(br);
                     QwtPainter::drawRect(p, lr);

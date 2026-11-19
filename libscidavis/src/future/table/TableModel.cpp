@@ -33,7 +33,9 @@
 #include <QString>
 #include <QBrush>
 #include <QIcon>
+#include <QLocale>
 #include <QPixmap>
+#include <cmath>
 
 TableModel::TableModel(future::Table *table)
     : QAbstractItemModel(0),
@@ -165,19 +167,60 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
 
     switch (role) {
     case Qt::EditRole: {
-        // remark: the validity of the cell is determined by the input filter
-        if (d_formula_mode)
-            col_ptr->setFormula(row, value.toString());
-        else
-            col_ptr->asStringColumn()->setTextAt(row, value.toString());
+        const QString rawStr = value.toString();
+        d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
+        if (d_formula_mode) {
+            col_ptr->setFormula(row, rawStr);
+        } else {
+            bool promotedToText = false;
+            if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric
+                && col_ptr->formulaIntervals().isEmpty()) {
+                const QString trimmed = rawStr.trimmed();
+                const bool isMissingSentinel = trimmed.isEmpty() || trimmed == QLatin1String("-")
+                        || trimmed == QLatin1String("--") || trimmed == QLatin1String("---")
+                        || trimmed.compare(QLatin1String("nan"), Qt::CaseInsensitive) == 0
+                        || trimmed.compare(QLatin1String("na"), Qt::CaseInsensitive) == 0
+                        || trimmed.compare(QLatin1String("n/a"), Qt::CaseInsensitive) == 0
+                        || trimmed.compare(QLatin1String("null"), Qt::CaseInsensitive) == 0;
+                if (!isMissingSentinel) {
+                    bool numOk = false;
+                    double parsed = QLocale().toDouble(trimmed, &numOk);
+                    if (!numOk)
+                        parsed = QLocale::c().toDouble(trimmed, &numOk);
+                    if (!numOk || !std::isfinite(parsed)) {
+                        bool hasAnyFinite = false;
+                        const int nRows = col_ptr->rowCount();
+                        for (int r = 0; r < nRows; ++r) {
+                            if (r != row && !col_ptr->isInvalid(r)
+                                && std::isfinite(col_ptr->valueAt(r))) {
+                                hasAnyFinite = true;
+                                break;
+                            }
+                        }
+                        if (!hasAnyFinite) {
+                            col_ptr->setColumnMode(SciDAVis::ColumnMode::Text);
+                            col_ptr->setTextAt(row, rawStr);
+                            promotedToText = true;
+                        }
+                    }
+                }
+            }
+            if (!promotedToText)
+                col_ptr->asStringColumn()->setTextAt(row, rawStr);
+        }
+        d_table->endMacro();
         return true;
     }
     case MaskingRole: {
+        d_table->beginMacro(tr("%1: mask cells").arg(d_table->name()));
         col_ptr->setMasked(row, value.toBool());
+        d_table->endMacro();
         return true;
     }
     case FormulaRole: {
+        d_table->beginMacro(tr("%1: apply formula to selection").arg(d_table->name()));
         col_ptr->setFormula(row, value.toString());
+        d_table->endMacro();
         return true;
     }
     }

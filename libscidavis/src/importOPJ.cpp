@@ -43,13 +43,18 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QRegularExpression>
 #include <QTemporaryFile>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include "Matrix.h"
 #include "ColorButton.h"
 #include "MultiLayer.h"
 #include "Note.h"
 #include "Folder.h"
+#include "QwtBarCurve.h"
 #include "QwtHistogram.h"
 #include "Grid.h"
 
@@ -57,7 +62,9 @@
 
 bool ImportOPJ::setCodec(const QString &codecName)
 {
-    auto codec = QTextCodec::codecForName(codecName.toUtf8());
+    if (codecName.trimmed().isEmpty())
+        return false;
+    auto codec = QTextCodec::codecForName(codecName.trimmed().toUtf8());
     if (nullptr != codec) {
         d_codec = codec;
         return true;
@@ -67,9 +74,35 @@ bool ImportOPJ::setCodec(const QString &codecName)
 
 QString ImportOPJ::decodeMbcs(char const *const input) const
 {
+    if (!input || !*input)
+        return QString();
     if (nullptr != d_codec)
         return d_codec->toUnicode(input);
-    return QString(input);
+
+    const int len = static_cast<int>(std::strlen(input));
+    bool pureAscii = true;
+    for (int i = 0; i < len; ++i) {
+        if (static_cast<unsigned char>(input[i]) >= 0x80) {
+            pureAscii = false;
+            break;
+        }
+    }
+    if (pureAscii)
+        return QString::fromLatin1(input, len);
+
+    if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8")) {
+        QTextCodec::ConverterState state;
+        const QString s = utf8->toUnicode(input, len, &state);
+        if (state.invalidChars == 0)
+            return s;
+    }
+    if (QTextCodec *sjis = QTextCodec::codecForName("Shift-JIS")) {
+        QTextCodec::ConverterState sjisState;
+        const QString s = sjis->toUnicode(input, len, &sjisState);
+        if (sjisState.invalidChars == 0)
+            return s;
+    }
+    return QString::fromLocal8Bit(input, len);
 }
 
 QString strreverse(const QString &str) // QString reversing
@@ -173,27 +206,38 @@ inline uint qHash(const tree<Origin::ProjectNode>::iterator &key)
 
 bool ImportOPJ::createProjectTree(const OriginFile &opj)
 {
+    if (!mw)
+        return false;
     const tree<Origin::ProjectNode> *projectTree = opj.project();
+    if (!projectTree || projectTree->empty() || !projectTree->begin().node)
+        return false;
     tree<Origin::ProjectNode>::iterator root = projectTree->begin(projectTree->begin());
     if (!root.node)
         return false;
-    FolderListItem *item = (FolderListItem *)mw->folders.topLevelItem(0);
-    item->setText(0, decodeMbcs(root->name.c_str()));
-    item->folder()->setName(decodeMbcs(root->name.c_str()));
     Folder *projectFolder = mw->projectFolder();
+    if (!projectFolder)
+        return false;
+    if (auto *item = dynamic_cast<FolderListItem *>(mw->folders.topLevelItem(0))) {
+        const QString rootName = decodeMbcs(root->name.c_str());
+        item->setText(0, rootName);
+        if (item->folder())
+            item->folder()->setName(rootName);
+    }
     QHash<tree<Origin::ProjectNode>::iterator, Folder *> parent;
     parent[root] = projectFolder;
     for (tree<Origin::ProjectNode>::iterator sib = projectTree->begin(root);
          sib != projectTree->end(root); ++sib) {
+        if (!sib.node)
+            continue;
         if (sib->type == Origin::ProjectNode::Folder) {
-
-            Folder &f = parent.value(projectTree->parent(sib))
-                                ->addChild<Folder>(decodeMbcs(sib->name.c_str()));
+            Folder *pFolder = parent.value(projectTree->parent(sib));
+            if (!pFolder)
+                pFolder = projectFolder;
+            Folder &f = pFolder->addChild<Folder>(decodeMbcs(sib->name.c_str()));
             parent[sib] = &f;
             f.setBirthDate(posixTimeToString(sib->creationDate));
             f.setModificationDate(posixTimeToString(sib->modificationDate));
             mw->addFolderListViewItem(&f);
-            f.setFolderListItem(new FolderListItem(mw->current_folder->folderListItem(), &f));
         } else {
             QString name = decodeMbcs(sib->name.c_str());
             if (sib->type == Origin::ProjectNode::Note) {
@@ -231,15 +275,12 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
             while (w) { // Origin window names are unique, but we need to loop on all sheets of
                         // Excel windows
                 Folder *f = parent.value(projectTree->parent(sib));
-                if (f) {
-                    if (f == parent[root])
-                        break; // skip windows that go to root folder
-                    // removeWindow  uses QList.removeAll, so remove w before adding it to its
-                    // folder
-                    projectFolder->removeWindow(w);
-                    f->addWindow(w);
-                    f->setActiveWindow(w);
-                }
+                if (!f || f == projectFolder)
+                    break; // skip windows that go to root folder or unmapped parent
+                // removeWindow uses QList.removeAll, so remove w before adding it to its folder
+                projectFolder->removeWindow(w);
+                f->addWindow(w);
+                f->setActiveWindow(w);
                 w = projectFolder->window(name, nodetype);
             }
         }
@@ -277,7 +318,6 @@ int ImportOPJ::translateOrigin2ScidavisLineStyle(int linestyle)
 // spreadsheets can be either in its own window or as a sheet in excels windows
 bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadSheet &spread)
 {
-    static int visible_count = 0;
     QLocale locale = mw->locale();
     int SciDAVis_scaling_factor = 10; // in Origin width is measured in characters while in SciDAVis
                                       // - pixels --- need to be accurate
@@ -357,7 +397,7 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
                             table->column(j)->setColumnMode(SciDAVis::ColumnMode::Text);
                             setAsText = true;
                         }
-                        scidavis_column->setTextAt(i, column.data[i].as_string());
+                        scidavis_column->setTextAt(i, decodeMbcs(column.data[i].as_string()));
                     }
                 }
                 int f = 0;
@@ -386,7 +426,7 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
         case Origin::Text:
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::Text);
             for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
-                scidavis_column->setTextAt(i, column.data[i].as_string());
+                scidavis_column->setTextAt(i, decodeMbcs(column.data[i].as_string()));
             }
             break;
         case Origin::Date: {
@@ -549,15 +589,16 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
         } else {
             int dx = table->verticalHeaderWidth();
             int dy = table->frameGeometry().height() - table->height();
-            table->move(QPoint(visible_count * dx + xoffset * OBJECTXOFFSET, visible_count * dy));
-            visible_count++;
+            table->move(QPoint(d_table_visible_count * dx + xoffset * OBJECTXOFFSET,
+                               d_table_visible_count * dy));
+            d_table_visible_count++;
         }
     }
     return true;
 }
 bool ImportOPJ::importTables(const OriginFile &opj)
 {
-    static int visible_count = 0;
+    int matrix_visible_count = 0;
     int SciDAVis_scaling_factor = 10; // in Origin width is measured in characters while in SciDAVis
                                       // - pixels --- need to be accurate
     for (unsigned int s = 0; s < opj.spreadCount(); ++s) {
@@ -604,7 +645,10 @@ bool ImportOPJ::importTables(const OriginFile &opj)
                                          .arg(opj.matrixCount())
                                          .arg(l + 1)
                                          .arg(layers));
-            Matrix *Matrix = mw->newMatrix(decodeMbcs(matrix.name.c_str()), rowCount, columnCount);
+            QString matName = decodeMbcs(matrix.name.c_str());
+            if (l > 0)
+                matName += QStringLiteral("@%1").arg(l + 1);
+            Matrix *Matrix = mw->newMatrix(matName, rowCount, columnCount);
             if (!Matrix)
                 return false;
             Matrix->setWindowLabel(decodeMbcs(matrix.label.c_str()));
@@ -656,11 +700,12 @@ bool ImportOPJ::importTables(const OriginFile &opj)
             // TODO
             int dx = 100;
             int dy = 100;
-            Matrix->move(QPoint(visible_count * dx + xoffset * OBJECTXOFFSET, visible_count * dy));
-            visible_count++;
+            Matrix->move(QPoint(matrix_visible_count * dx + xoffset * OBJECTXOFFSET,
+                                matrix_visible_count * dy));
+            matrix_visible_count++;
         }
 
-        if (visible_count > 0)
+        if (matrix_visible_count > 0)
             xoffset++;
     }
     return true;
@@ -693,6 +738,31 @@ bool ImportOPJ::importNotes(const OriginFile &opj)
     return true;
 }
 
+namespace {
+
+Table *resolveImportedOriginTable(ApplicationWindow *mw, const QString &rawName)
+{
+    if (!mw || rawName.trimmed().isEmpty())
+        return nullptr;
+    if (Table *t = mw->table(rawName))
+        return t;
+    const QString hyphenName = QString(rawName).replace(QLatin1Char('_'), QLatin1Char('-'));
+    if (Table *t = mw->table(hyphenName))
+        return t;
+    for (MyWidget *w : mw->windowsList()) {
+        if (w && w->inherits("Table")) {
+            auto *t = static_cast<Table *>(w);
+            if (t->name().compare(rawName, Qt::CaseInsensitive) == 0
+                || t->name().compare(hyphenName, Qt::CaseInsensitive) == 0) {
+                return t;
+            }
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
 bool ImportOPJ::importGraphs(const OriginFile &opj)
 {
     double pi = 3.141592653589793;
@@ -717,79 +787,103 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
             Graph *graph = ml->addLayer();
             if (!graph)
                 return false;
-            if (!layer.legend.text.empty()) {
-                graph->newLegend(parseOriginText(decodeMbcs(layer.legend.text.c_str())));
-            }
-            // add texts
-            for (unsigned int i = 0; i < layer.texts.size(); ++i) {
-                graph->newLegend(parseOriginText(decodeMbcs(layer.texts[i].text.c_str())));
-            }
             int auto_color = 0;
             int style = 0;
+            QVector<int> originToScidavisCurveIdx(static_cast<int>(layer.curves.size()), -1);
             for (unsigned int c = 0; c < layer.curves.size(); ++c) {
                 Origin::GraphCurve &_curve = layer.curves[c];
                 QString data(decodeMbcs(_curve.dataName.c_str()));
+                if (data.size() < 2)
+                    continue;
                 int color = 0;
                 switch (_curve.type) {
                 case Origin::GraphCurve::Line:
+                case Origin::GraphCurve::LineSeries:
                     style = Graph::Line;
                     break;
                 case Origin::GraphCurve::Scatter:
+                case Origin::GraphCurve::PlotDot:
                     style = Graph::Scatter;
                     break;
                 case Origin::GraphCurve::LineSymbol:
                     style = Graph::LineSymbols;
                     break;
+                case Origin::GraphCurve::Area:
+                case Origin::GraphCurve::AreaStack:
+                    style = Graph::Area;
+                    break;
                 case Origin::GraphCurve::ErrorBar:
                 case Origin::GraphCurve::XErrorBar:
+                case Origin::GraphCurve::YErrorBar:
+                case Origin::GraphCurve::XYErrorBar:
                     style = Graph::ErrorBars;
                     break;
                 case Origin::GraphCurve::Column:
+                case Origin::GraphCurve::ColumnStack:
+                case Origin::GraphCurve::ColumnFloat:
                     style = Graph::VerticalBars;
                     break;
                 case Origin::GraphCurve::Bar:
+                case Origin::GraphCurve::BarStack:
                     style = Graph::HorizontalBars;
                     break;
                 case Origin::GraphCurve::Histogram:
                     style = Graph::Histogram;
                     break;
+                case Origin::GraphCurve::Box:
+                    style = Graph::Box;
+                    break;
+                case Origin::GraphCurve::Pie:
+                    style = Graph::Pie;
+                    break;
                 default:
                     continue;
                 }
+                const int prevCurves = graph->curves();
                 QString tableName;
                 switch (data[0].toLatin1()) {
                 case 'T':
                 case 'E': {
-                    tableName = data.right(data.length() - 2);
-                    Table *table = mw->table(tableName);
+                    tableName = data.mid(2);
+                    Table *table = resolveImportedOriginTable(mw, tableName);
                     if (!table)
-                        break;
+                        continue;
+                    const QString actualTblName = table->name();
+                    QString xShort = decodeMbcs(_curve.xColumnName.c_str());
+                    xShort.replace(QRegExp(".*_"), "");
+                    QString yShort = decodeMbcs(_curve.yColumnName.c_str());
+                    yShort.replace(QRegExp(".*_"), "");
                     if (style == Graph::ErrorBars) {
                         int flags = _curve.symbolShape;
                         graph->addErrorBars(
-                                QString("%1_%2").arg(tableName,
-                                                     decodeMbcs(_curve.xColumnName.c_str())),
-                                table,
-                                QString("%1_%2").arg(tableName,
-                                                     decodeMbcs(_curve.yColumnName.c_str())),
+                                QString("%1_%2").arg(actualTblName, xShort), table,
+                                QString("%1_%2").arg(actualTblName, yShort),
                                 ((flags & 0x10) == 0x10 ? 0 : 1), ceil(_curve.lineWidth),
                                 ceil(_curve.symbolSize), QColor(Qt::black), (flags & 0x40) == 0x40,
                                 (flags & 2) == 2, (flags & 1) == 1);
-                    } else if (style == Graph::Histogram) {
-
-                        graph->insertCurve(
+                    } else if (style == Graph::Histogram || style == Graph::Box
+                               || style == Graph::Pie) {
+                        graph->insertCurvesList(
                                 table,
-                                QString("%1_%2").arg(tableName,
-                                                     decodeMbcs(_curve.yColumnName.c_str())),
-                                style);
+                                QStringList() << QString("%1_%2").arg(actualTblName, yShort),
+                                style,
+                                std::max(1, static_cast<int>(std::ceil(_curve.lineWidth))),
+                                std::max(3, static_cast<int>(std::ceil(_curve.symbolSize))));
+                        if (style == Graph::Histogram && graph->curves() > prevCurves
+                            && std::isfinite(layer.histogramBin) && layer.histogramBin > 0.0
+                            && std::isfinite(layer.histogramBegin)
+                            && std::isfinite(layer.histogramEnd)
+                            && layer.histogramEnd > layer.histogramBegin) {
+                            if (auto *hist = dynamic_cast<QwtHistogram *>(
+                                        graph->curve(graph->curves() - 1))) {
+                                hist->setBinning(false, layer.histogramBin, layer.histogramBegin,
+                                                 layer.histogramEnd);
+                                hist->loadData();
+                            }
+                        }
                     } else {
-                        graph->insertCurve(
-                                table,
-                                QString("%1_%2").arg(tableName,
-                                                     decodeMbcs(_curve.xColumnName.c_str())),
-                                QString("%1_%2").arg(tableName,
-                                                     decodeMbcs(_curve.yColumnName.c_str())),
-                                style);
+                        graph->insertCurve(table, QString("%1_%2").arg(actualTblName, xShort),
+                                           QString("%1_%2").arg(actualTblName, yShort), style);
                     }
                     break;
                 }
@@ -797,7 +891,9 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
                     Origin::Function function;
                     QStringList formulas;
                     QList<double> ranges;
-                    int s = opj.functionIndex(data.right(data.length() - 2).toStdString().c_str());
+                    int s = opj.functionIndex(data.mid(2).toStdString().c_str());
+                    if (s < 0 || static_cast<unsigned int>(s) >= opj.functionCount())
+                        continue;
                     function = opj.function(s);
 
                     int type;
@@ -819,6 +915,13 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
                 default:
                     continue;
                 }
+
+                if (graph->curves() <= prevCurves)
+                    continue;
+                const int curveIdx = graph->curves() - 1;
+                originToScidavisCurveIdx[static_cast<int>(c)] = curveIdx;
+                if (style == Graph::ErrorBars)
+                    continue;
 
                 CurveLayout cl = graph->initCurveLayout(style, layer.curves.size());
                 cl.sSize = ceil(_curve.symbolSize * 0.5);
@@ -988,14 +1091,12 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
                     break;
                 }
 
-                graph->updateCurveLayout(c, &cl);
+                graph->updateCurveLayout(curveIdx, &cl);
                 if (style == Graph::VerticalBars || style == Graph::HorizontalBars) {
-                    QwtBarCurve *b = (QwtBarCurve *)graph->curve(c);
-                    if (b)
+                    if (auto *b = dynamic_cast<QwtBarCurve *>(graph->curve(curveIdx)))
                         b->setGap(qRound(100 - _curve.symbolSize * 10));
                 } else if (style == Graph::Histogram) {
-                    QwtHistogram *h = (QwtHistogram *)graph->curve(c);
-                    if (h) {
+                    if (auto *h = dynamic_cast<QwtHistogram *>(graph->curve(curveIdx))) {
                         h->setBinning(false, layer.histogramBin, layer.histogramBegin,
                                       layer.histogramEnd);
                         h->loadData();
@@ -1003,25 +1104,40 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
                 }
                 switch (_curve.lineConnect) {
                 case Origin::GraphCurve::NoLine:
-                    graph->setCurveStyle(c, QwtPlotCurve::NoCurve);
+                    graph->setCurveStyle(curveIdx, QwtPlotCurve::NoCurve);
                     break;
                 case Origin::GraphCurve::Straight:
-                    graph->setCurveStyle(c, QwtPlotCurve::Lines);
+                    graph->setCurveStyle(curveIdx, QwtPlotCurve::Lines);
                     break;
                 case Origin::GraphCurve::BSpline:
                 case Origin::GraphCurve::Bezier:
                 case Origin::GraphCurve::Spline:
-                    graph->setCurveStyle(c, 5);
+                    graph->setCurveStyle(curveIdx, 5);
                     break;
                 case Origin::GraphCurve::StepHorizontal:
                 case Origin::GraphCurve::StepHCenter:
-                    graph->setCurveStyle(c, QwtPlotCurve::Steps);
+                    graph->setCurveStyle(curveIdx, QwtPlotCurve::Steps);
                     break;
                 case Origin::GraphCurve::StepVertical:
                 case Origin::GraphCurve::StepVCenter:
-                    graph->setCurveStyle(c, 6);
+                    graph->setCurveStyle(curveIdx, 6);
                     break;
                 }
+            }
+            if (!layer.legend.text.empty()) {
+                const QString resolvedLeg = resolveOriginLegendPlaceholders(
+                        parseOriginText(decodeMbcs(layer.legend.text.c_str())), layer,
+                        originToScidavisCurveIdx);
+                if (!resolvedLeg.trimmed().isEmpty())
+                    graph->newLegend(resolvedLeg);
+            }
+            // add texts
+            for (unsigned int i = 0; i < layer.texts.size(); ++i) {
+                const QString resolvedTxt = resolveOriginLegendPlaceholders(
+                        parseOriginText(decodeMbcs(layer.texts[i].text.c_str())), layer,
+                        originToScidavisCurveIdx);
+                if (!resolvedTxt.trimmed().isEmpty())
+                    graph->newLegend(resolvedTxt);
             }
             if (style == Graph::HorizontalBars) {
                 graph->setScale(0, layer.xAxis.min, layer.xAxis.max, layer.xAxis.step,
@@ -1073,8 +1189,12 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
             formats.push_back(layer.yAxis.formatAxis[1]); // right
             formats.push_back(layer.xAxis.formatAxis[0]); // bottom
             formats.push_back(layer.xAxis.formatAxis[1]); // top
-            graph->setXAxisTitle(parseOriginText(decodeMbcs(formats[2].label.text.c_str())));
-            graph->setYAxisTitle(parseOriginText(decodeMbcs(formats[0].label.text.c_str())));
+            graph->setXAxisTitle(resolveOriginLegendPlaceholders(
+                    parseOriginText(decodeMbcs(formats[2].label.text.c_str())), layer,
+                    originToScidavisCurveIdx));
+            graph->setYAxisTitle(resolveOriginLegendPlaceholders(
+                    parseOriginText(decodeMbcs(formats[0].label.text.c_str())), layer,
+                    originToScidavisCurveIdx));
 
             std::vector<Origin::GraphAxisTick> ticks;
             ticks.push_back(layer.yAxis.tickAxis[0]); // left
@@ -1082,31 +1202,38 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
             ticks.push_back(layer.xAxis.tickAxis[0]); // bottom
             ticks.push_back(layer.xAxis.tickAxis[1]); // top
             for (int i = 0; i < 4; ++i) {
-                QString data(decodeMbcs(ticks[i].dataName.c_str()));
-                QString tableName = data.right(data.length() - 2) + "_"
-                        + decodeMbcs(ticks[i].columnName.c_str());
+                const QString data(decodeMbcs(ticks[i].dataName.c_str()));
+                const QString rawTblName = (data.size() > 2) ? data.mid(2) : QString();
+                Table *axisTable = resolveImportedOriginTable(mw, rawTblName);
+                QString colNameDecoded = decodeMbcs(ticks[i].columnName.c_str());
+                colNameDecoded.replace(QRegExp(".*_"), "");
+                const QString colSpec = axisTable
+                        ? (axisTable->name() + QStringLiteral("_") + colNameDecoded)
+                        : colNameDecoded;
 
-                QString formatInfo;
                 int format = 0;
                 Graph::AxisType type;
                 int prec = ticks[i].decimalPlaces;
                 switch (ticks[i].valueType) {
                 case Origin::Numeric:
                     type = Graph::AxisType::Numeric;
-                    switch (ticks[i].valueTypeSpecification) {
-                    case 0: // Decimal 1000
-                        format = 1;
-                        break;
-                    case 1: // Scientific
-                        format = 2;
-                        break;
-                    case 2: // Engeneering
-                    case 3: // Decimal 1,000
-                        format = 0;
-                        break;
+                    if (prec < 0) {
+                        format = 0; // Automatic ('g') when decimalPlaces == -1
+                        prec = 6;
+                    } else {
+                        switch (ticks[i].valueTypeSpecification) {
+                        case 0: // Decimal 1000
+                            format = 1;
+                            break;
+                        case 1: // Scientific
+                            format = 2;
+                            break;
+                        case 2: // Engeneering
+                        case 3: // Decimal 1,000
+                            format = 0;
+                            break;
+                        }
                     }
-                    if (prec == -1)
-                        prec = 2;
                     break;
                 case Origin::Text: // Text
                     type = Graph::AxisType::Txt;
@@ -1127,33 +1254,68 @@ bool ImportOPJ::importGraphs(const OriginFile &opj)
                     break;
                 case Origin::ColumnHeading:
                     type = Graph::AxisType::ColHeader;
-                    switch (ticks[i].valueTypeSpecification) {
-                    case 0: // Decimal 1000
-                        format = 1;
-                        break;
-                    case 1: // Scientific
-                        format = 2;
-                        break;
-                    case 2: // Engeneering
-                    case 3: // Decimal 1,000
+                    if (prec < 0) {
                         format = 0;
-                        break;
+                        prec = 6;
+                    } else {
+                        switch (ticks[i].valueTypeSpecification) {
+                        case 0: // Decimal 1000
+                            format = 1;
+                            break;
+                        case 1: // Scientific
+                            format = 2;
+                            break;
+                        case 2: // Engeneering
+                        case 3: // Decimal 1,000
+                            format = 0;
+                            break;
+                        }
                     }
-                    prec = 2;
                     break;
                 default:
                     type = Graph::AxisType::Numeric;
                     format = 0;
-                    prec = 2;
+                    prec = 6;
                 }
 
-                graph->showAxis(i, type, tableName, mw->table(tableName), !(formats[i].hidden),
-                                tickTypeMap[formats[i].majorTicksType],
-                                tickTypeMap[formats[i].minorTicksType], !(ticks[i].showMajorLabels),
+                const int majTickIdx = std::clamp(static_cast<int>(formats[i].majorTicksType), 0, 3);
+                const int minTickIdx = std::clamp(static_cast<int>(formats[i].minorTicksType), 0, 3);
+                graph->showAxis(i, type, colSpec, axisTable, !(formats[i].hidden),
+                                tickTypeMap[majTickIdx], tickTypeMap[minTickIdx],
+                                ticks[i].showMajorLabels,
                                 ColorButton::color(formats[i].color), format, prec,
                                 ticks[i].rotation, 0, "",
                                 (ticks[i].color == 0xF7 ? ColorButton::color(formats[i].color)
                                                         : ColorButton::color(ticks[i].color)));
+
+                if (type == Graph::AxisType::Txt && axisTable && !(formats[i].hidden)) {
+                    Column *txtCol = axisTable->column(colNameDecoded);
+                    if (txtCol) {
+                        QStringList catLabels;
+                        const int nRows = txtCol->rowCount();
+                        for (int r = 0; r < nRows; ++r) {
+                            if (txtCol->isInvalid(r))
+                                catLabels << QString();
+                            else if (txtCol->columnMode() == SciDAVis::ColumnMode::Text)
+                                catLabels << txtCol->textAt(r).trimmed();
+                            else if (txtCol->asStringColumn())
+                                catLabels << txtCol->asStringColumn()->textAt(r).trimmed();
+                            else
+                                catLabels << QString::number(txtCol->valueAt(r), 'g', 6);
+                        }
+                        while (!catLabels.isEmpty() && catLabels.last().isEmpty())
+                            catLabels.removeLast();
+                        if (!catLabels.isEmpty()) {
+                            const int qwtAxis = (i == 0) ? QwtPlot::yLeft
+                                    : (i == 1)           ? QwtPlot::yRight
+                                    : (i == 2)           ? QwtPlot::xBottom
+                                                         : QwtPlot::xTop;
+                            graph->setCategoryLabels(qwtAxis, catLabels);
+                            if (ticks[i].rotation != 0)
+                                graph->setAxisLabelRotation(qwtAxis, ticks[i].rotation);
+                        }
+                    }
+                }
             }
 
             graph->setAutoscaleFonts(mw->autoScaleFonts); // restore user defined fonts behaviour
@@ -1193,9 +1355,8 @@ QString ImportOPJ::parseOriginText(const QString &str)
 QString ImportOPJ::parseOriginTags(const QString &str)
 {
     QString line = str;
-    // replace \l(...) and %(...) tags
+    // replace \l(...) tags
     QRegExp rxline("\\\\\\s*l\\s*\\(\\s*\\d+\\s*\\)");
-    QRegExp rxcol("\\%\\(\\d+\\)");
     int pos = rxline.indexIn(line);
     while (pos > -1) {
         QString value = rxline.cap(0);
@@ -1301,6 +1462,125 @@ QString ImportOPJ::parseOriginTags(const QString &str)
     line.replace("&rbracket;", ")");
 
     return line;
+}
+
+QString ImportOPJ::resolveOriginLegendPlaceholders(const QString &str,
+                                                   const Origin::GraphLayer &layer,
+                                                   const QVector<int> &curveIdxMap) const
+{
+    if (str.isEmpty())
+        return str;
+
+    QString out = str;
+
+    // Remap \c{k} (1-based Origin curve index) if earlier curves in layer.curves were skipped
+    static const QRegularExpression kCurveSymRe(QStringLiteral("\\\\c\\{(\\d+)\\}"));
+    QRegularExpressionMatchIterator symIt = kCurveSymRe.globalMatch(out);
+    QVector<QPair<QPair<int, int>, QString>> symEdits;
+    while (symIt.hasNext()) {
+        const QRegularExpressionMatch m = symIt.next();
+        bool ok = false;
+        const int origIdx = m.captured(1).toInt(&ok) - 1;
+        if (ok && origIdx >= 0 && origIdx < curveIdxMap.size() && curveIdxMap[origIdx] >= 0) {
+            const int mappedOneBased = curveIdxMap[origIdx] + 1;
+            if (mappedOneBased != origIdx + 1) {
+                symEdits.append({ qMakePair(m.capturedStart(0), m.capturedLength(0)),
+                                  QStringLiteral("\\c{%1}").arg(mappedOneBased) });
+            }
+        }
+    }
+    for (int i = symEdits.size() - 1; i >= 0; --i)
+        out.replace(symEdits[i].first.first, symEdits[i].first.second, symEdits[i].second);
+
+    // Resolve %(k) and %(k, @...) Origin curve metadata placeholders
+    static const QRegularExpression kPctCurveRe(
+            QStringLiteral("%\\(\\s*(\\d+)(?:\\s*,\\s*([^\\)]*))?\\)"));
+    QRegularExpressionMatchIterator it = kPctCurveRe.globalMatch(out);
+    QVector<QPair<QPair<int, int>, QString>> edits;
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        bool ok = false;
+        const int idx = m.captured(1).toInt(&ok) - 1;
+        if (!ok || idx < 0 || static_cast<size_t>(idx) >= layer.curves.size()
+            || (idx < curveIdxMap.size() && curveIdxMap[idx] < 0)) {
+            edits.append({ qMakePair(m.capturedStart(0), m.capturedLength(0)), QString() });
+            continue;
+        }
+        const QString modifier = m.captured(2).trimmed().toUpper();
+        const Origin::GraphCurve &cv = layer.curves[static_cast<size_t>(idx)];
+        const bool isErrCurve = (cv.type == Origin::GraphCurve::ErrorBar
+                                 || cv.type == Origin::GraphCurve::XErrorBar
+                                 || cv.type == Origin::GraphCurve::YErrorBar
+                                 || cv.type == Origin::GraphCurve::XYErrorBar);
+        const QString dataStr = decodeMbcs(cv.dataName.c_str());
+        const QString rawTbl = (dataStr.size() > 2) ? dataStr.mid(2) : QString();
+        QString yColName = decodeMbcs(cv.yColumnName.c_str());
+        yColName.replace(QRegExp(".*_"), "");
+        QString xColName = decodeMbcs(cv.xColumnName.c_str());
+        xColName.replace(QRegExp(".*_"), "");
+
+        Table *tbl = resolveImportedOriginTable(mw, rawTbl);
+        Column *yCol = (tbl && !yColName.isEmpty()) ? tbl->column(yColName) : nullptr;
+        Column *xCol = (tbl && !xColName.isEmpty()) ? tbl->column(xColName) : nullptr;
+
+        QString replacement;
+        if (isErrCurve) {
+            if (yCol && !yCol->comment().trimmed().isEmpty())
+                replacement = yCol->comment().trimmed();
+            else if (yCol && !yCol->longName().trimmed().isEmpty())
+                replacement = yCol->longName().trimmed();
+        } else if (modifier.startsWith(QLatin1String("@X"))) {
+            if (xCol && !xCol->comment().trimmed().isEmpty())
+                replacement = xCol->comment().trimmed();
+            else if (xCol && !xCol->longName().trimmed().isEmpty())
+                replacement = xCol->longName().trimmed();
+            else
+                replacement = xColName;
+        } else if (modifier == QLatin1String("@WS") || modifier == QLatin1String("@WL")) {
+            replacement = (tbl && !tbl->windowLabel().trimmed().isEmpty()
+                           && modifier == QLatin1String("@WL"))
+                    ? tbl->windowLabel().trimmed()
+                    : rawTbl;
+        } else if (modifier == QLatin1String("@U") && yCol) {
+            replacement = yCol->units().trimmed();
+        } else if (modifier == QLatin1String("@C") && yCol) {
+            replacement = yCol->comment().trimmed();
+        } else if (modifier == QLatin1String("@SN")) {
+            replacement = yColName;
+        } else {
+            if (yCol && !yCol->comment().trimmed().isEmpty())
+                replacement = yCol->comment().trimmed();
+            else if (yCol && !yCol->longName().trimmed().isEmpty())
+                replacement = yCol->longName().trimmed();
+            else if (!yColName.isEmpty())
+                replacement = yColName;
+            else
+                replacement = rawTbl;
+        }
+
+        edits.append({ qMakePair(m.capturedStart(0), m.capturedLength(0)), replacement });
+    }
+    for (int i = edits.size() - 1; i >= 0; --i)
+        out.replace(edits[i].first.first, edits[i].first.second, edits[i].second);
+
+    // Strip lines left with a bare \c{k} curve symbol and empty label text (e.g. unnamed ErrorBars or unplotted curves)
+    if (out.contains(QLatin1String("\\c{")) || out.contains(QLatin1Char('\n'))) {
+        static const QRegularExpression kBareCurveSymOnlyRe(
+                QStringLiteral("^\\s*(?:\\\\c\\{\\d+\\}\\s*)+$"));
+        const QStringList lines = out.split(QLatin1Char('\n'));
+        QStringList kept;
+        kept.reserve(lines.size());
+        for (const QString &ln : lines) {
+            if (kBareCurveSymOnlyRe.match(ln).hasMatch())
+                continue;
+            if (lines.size() > 1 && ln.trimmed().isEmpty())
+                continue;
+            kept.append(ln);
+        }
+        out = kept.join(QLatin1Char('\n'));
+    }
+
+    return out;
 }
 
 // TODO: bug in grid dialog

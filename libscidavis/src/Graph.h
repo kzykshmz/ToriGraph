@@ -948,6 +948,46 @@ public:
     int pendingLinkedParentIndex() const { return d_pending_linked_parent_idx; }
     void clearPendingLinkedParentIndex() { d_pending_linked_parent_idx = -1; }
 
+    void setCategoryLabels(int axis, const QStringList &labels);
+    QStringList categoryLabels(int axis) const;
+    void setCustomTickLabels(int axis, const QVector<double> &positions,
+                             const QStringList &labels, double rotationDeg = 0.0);
+    void setWeibullProbabilityAxis(int axis, bool enabled = true);
+    bool hasWeibullProbabilityAxis(int axis) const;
+    bool hasCustomTickLabels(int axis) const
+    {
+        return (axis >= 0 && axis < 4) && !d_custom_tick_positions[axis].isEmpty();
+    }
+    void setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double> &radius,
+                        const QString &seriesLabel = QString(), bool thetaInRadians = false);
+    bool isPolarPlot() const { return d_is_polar; }
+    double polarRadiusMax() const { return d_polar_rmax; }
+    QString ternaryLabel(int idx) const
+    {
+        return (idx >= 0 && idx < 3) ? d_ternary_labels[idx] : QString();
+    }
+    int shadedBandCount() const { return d_shaded_bands.size(); }
+    QString autoPlaceLegend() { return placeLegendAnchor(LegendAutoAvoidData); }
+    void setAxisTitleColor(int axis, const QColor &c)
+    {
+        switch (axis) {
+        case QwtPlot::xBottom:
+            setXAxisTitleColor(c);
+            break;
+        case QwtPlot::yLeft:
+            setYAxisTitleColor(c);
+            break;
+        case QwtPlot::yRight:
+            setRightAxisTitleColor(c);
+            break;
+        case QwtPlot::xTop:
+            setTopAxisTitleColor(c);
+            break;
+        default:
+            break;
+        }
+    }
+
 signals:
     void selectedGraph(Graph *);
     void selectionChanged(Graph *layer, const Graph::GraphSelection &sel);
@@ -1060,6 +1100,24 @@ private:
     QString d_tick_prefix[4];
     QString d_tick_suffix[4];
     QString d_ternary_labels[3] = { QString("A"), QString("B"), QString("C") };
+    bool d_is_polar = false;
+    double d_polar_rmax = 1.0;
+    QwtPlotItem *d_ternary_item = nullptr;
+    QwtPlotItem *d_polar_item = nullptr;
+    QStringList d_custom_category_labels[4];
+    QVector<double> d_custom_tick_positions[4];
+    QStringList d_custom_tick_labels[4];
+    double d_custom_tick_rotation[4] = { 0.0, 0.0, 0.0, 0.0 };
+    bool d_weibull_prob_axis[4] = { false, false, false, false };
+    void syncCustomAndWeibullAxes();
+    struct PolarSeriesSpec {
+        QVector<double> x;
+        QVector<double> y;
+        QString label;
+        QColor color;
+        double width = 2.0;
+    };
+    QVector<PolarSeriesSpec> d_polar_series;
     struct ShadedBandSpec {
         QVector<double> x;
         QVector<double> yLow;

@@ -738,6 +738,16 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
         item->setToolTip(tip);
     };
 
+    auto isHiddenOrBackingTable = [app](Table *t) -> bool {
+        if (!t)
+            return true;
+        if (t->status() == MyWidget::Hidden || app->hiddenWindows.contains(t))
+            return true;
+        if (t->name().startsWith(QLatin1String("RpcFitCurve")))
+            return true;
+        return false;
+    };
+
     if (currentFolder) {
         Folder *f = app->currentFolder();
         if (f) {
@@ -746,6 +756,8 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
                     continue;
 
                 Table *t = (Table *)w;
+                if (isHiddenOrBackingTable(t))
+                    continue;
                 for (int i = 0; i < t->numCols(); i++) {
                     if (showAll || t->colPlotDesignation(i) == SciDAVis::Y) {
                         const QString rawColName =
@@ -760,6 +772,8 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
                 showAll ? app->columnsList() : app->columnsList(SciDAVis::Y);
         for (const QString &rawColName : rawColumns) {
             Table *t = app->table(rawColName);
+            if (isHiddenOrBackingTable(t))
+                continue;
             int colIdx = -1;
             if (t) {
                 const QString prefix = QString(t->name()) + QStringLiteral("_");

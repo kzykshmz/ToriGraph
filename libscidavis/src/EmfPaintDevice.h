@@ -26,8 +26,9 @@ struct OleRenderedGraph
 
 namespace SciDAVisEmf {
 
-// Render a MultiLayer (or a single Graph layer if singleLayer != nullptr) to vector EMF + DIB
-OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer = nullptr);
+// Render a MultiLayer (or a single Graph layer if singleLayer != nullptr) to vector EMF (+ optional DIB for OLE clipboard)
+OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer = nullptr,
+                                  bool includeDibClipboard = true);
 
 // Render from an arbitrary QImage fallback (e.g. 3D plot or empty state)
 OleRenderedGraph renderFromImage(const QImage &img);

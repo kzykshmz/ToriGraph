@@ -35,6 +35,7 @@
 #include <QVector>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <qwt_layout_metrics.h>
 #include <qwt_painter.h>
@@ -55,6 +56,63 @@ void stripNegativeZeroString(QString &s)
             return;
     }
     s.remove(0, 1);
+}
+
+QwtText formatSuperscriptScientificLabel(double transformed, char fmt, int prec,
+                                         const QString &prefix, const QString &suffix)
+{
+    if (!std::isfinite(transformed))
+        return QwtText();
+    if (transformed == 0.0)
+        return QwtText(prefix + QStringLiteral("0") + suffix);
+
+    const bool autoTrimMantissa = (prec <= 0) || (fmt == 'g');
+    const int effPrec = (prec <= 0) ? 6 : (fmt == 'g' ? qBound(2, prec, 6) : prec);
+    QString txt = QLocale::c().toString(transformed, 'e', effPrec);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList list = txt.split(QLatin1Char('e'), Qt::SkipEmptyParts, Qt::CaseInsensitive);
+#else
+    QStringList list = txt.split(QLatin1Char('e'), QString::SkipEmptyParts, Qt::CaseInsensitive);
+#endif
+    if (list.size() < 2)
+        return QwtText(prefix + txt + suffix);
+
+    QString mantStr = list[0];
+    if (autoTrimMantissa && mantStr.contains(QLatin1Char('.'))) {
+        while (mantStr.endsWith(QLatin1Char('0')))
+            mantStr.chop(1);
+        if (mantStr.endsWith(QLatin1Char('.')))
+            mantStr.chop(1);
+    }
+
+    bool okMant = false;
+    double mant = QLocale::c().toDouble(mantStr, &okMant);
+    if (!okMant)
+        mant = mantStr.toDouble(&okMant);
+    if (okMant && mant == 0.0)
+        return QwtText(prefix + QStringLiteral("0") + suffix);
+
+    QString s = list[1];
+    QChar sign;
+    if (!s.isEmpty() && (s[0] == QLatin1Char('+') || s[0] == QLatin1Char('-'))) {
+        sign = s[0];
+        s.remove(0, 1);
+    }
+    while (s.length() > 1 && s.startsWith(QLatin1Char('0')))
+        s.remove(0, 1);
+    if (sign == QLatin1Char('-'))
+        s.prepend(sign);
+
+    QString core;
+    if (okMant && qAbs(mant - 1.0) < 1e-9)
+        core = QStringLiteral("10<sup>") + s + QStringLiteral("</sup>");
+    else if (okMant && qAbs(mant + 1.0) < 1e-9)
+        core = QStringLiteral("-10<sup>") + s + QStringLiteral("</sup>");
+    else
+        core = mantStr + QString::fromUtf8("\xC3\x97") + QStringLiteral("10<sup>") + s
+                + QStringLiteral("</sup>");
+
+    return QwtText(prefix + core + suffix);
 }
 
 } // namespace
@@ -79,9 +137,13 @@ ScaleDraw::ScaleDraw(const ScaleDraw &other, const QString &s)
       d_suffix(other.d_suffix),
       d_break_enabled(other.d_break_enabled),
       d_break_value(other.d_break_value),
+      d_break_to(other.d_break_to),
+      d_break_log_before(other.d_break_log_before),
+      d_break_log_after(other.d_break_log_after),
       d_colorbar_border(other.d_colorbar_border),
       d_colorbar_width(other.d_colorbar_width),
-      d_colorbar_pen_width(other.d_colorbar_pen_width)
+      d_colorbar_pen_width(other.d_colorbar_pen_width),
+      d_colorbar_stops(other.d_colorbar_stops)
 {
     other.labelFormat(d_fmt, d_prec);
     invalidateCache();
@@ -164,6 +226,19 @@ QwtText ScaleDraw::label(double value) const
     double v = transformValue(value);
     if (!std::isfinite(v))
         return QwtText();
+
+    if (d_break_enabled && (d_break_log_after || d_break_log_before)) {
+        const double bf = qMin(d_break_value, d_break_to);
+        const double bt = qMax(d_break_value, d_break_to);
+        if (std::fabs(v) <= 1e-13 * qMax(1.0, std::fabs(bt)))
+            return QwtText(d_prefix + QStringLiteral("0") + d_suffix);
+        const bool inLogAfter = d_break_log_after && bt > 0.0 && value >= bt * (1.0 - 1e-11);
+        const bool inLogBefore = d_break_log_before && bf > 0.0 && value > 0.0
+                && value <= bf * (1.0 + 1e-11);
+        if ((inLogAfter || inLogBefore) && d_fmt != 'f') {
+            return formatSuperscriptScientificLabel(v, d_fmt, d_prec, d_prefix, d_suffix);
+        }
+    }
 
     const QwtScaleDiv scDiv = scaleDiv();
     const bool isLog10 = map().transformation()
@@ -345,6 +420,23 @@ void ScaleDraw::drawBackbone(QPainter *painter) const
         const QRectF cbOutline = cbBase.adjusted(-0.5 * pwF, -0.5 * pwF, 0.5 * pwF, 0.5 * pwF);
 
         painter->save();
+        if (!d_colorbar_stops.isEmpty()) {
+            const QwtScaleDiv scDiv = scaleDiv();
+            const double loVal = qMin(scDiv.lowerBound(), scDiv.upperBound());
+            const double hiVal = qMax(scDiv.lowerBound(), scDiv.upperBound());
+            const double pLo = this->map().xTransform(loVal);
+            const double pHi = this->map().xTransform(hiVal);
+            QLinearGradient grad;
+            if (alignment() == LeftScale || alignment() == RightScale) {
+                grad.setStart(cbBase.left(), pLo);
+                grad.setFinalStop(cbBase.left(), pHi);
+            } else {
+                grad.setStart(pLo, cbBase.top());
+                grad.setFinalStop(pHi, cbBase.top());
+            }
+            grad.setStops(d_colorbar_stops);
+            painter->fillRect(cbBase, grad);
+        }
         QPen cbPen(painter->pen().color(), pwF, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
         cbPen.setCosmetic(false);
         painter->setPen(cbPen);
@@ -412,15 +504,20 @@ QwtTextScaleDraw::QwtTextScaleDraw(const QMap<int, QString> &list) : labels(list
 
 QwtText QwtTextScaleDraw::label(double value) const
 {
+    if (!std::isfinite(value))
+        return QwtText();
     const QwtScaleDiv scDiv = scaleDiv();
     if (!scDiv.contains(value))
         return QwtText();
 
-    int int_value = (int)(value + value / 1e6);
-    if (labels.contains(int_value))
-        return QwtText(labels[int_value]);
-    else
+    const double nearest = std::round(value);
+    if (std::fabs(value - nearest) > 1e-4
+        || nearest < double(std::numeric_limits<int>::min() + 1)
+        || nearest > double(std::numeric_limits<int>::max() - 1)) {
         return QwtText();
+    }
+    const int int_value = static_cast<int>(nearest);
+    return labels.contains(int_value) ? QwtText(labels.value(int_value)) : QwtText();
 }
 
 /*****************************************************************************
@@ -577,45 +674,50 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
     labelFormat(f, prec);
 
     const double transformed = transformValue(value);
-    if (transformed == 0.0)
-        return QwtText(prefix() + QString("0") + suffix());
+    if (!std::isfinite(transformed))
+        return QwtText();
 
-    QString txt = QLocale::c().toString(transformed, 'e', prec);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList list = txt.split('e', Qt::SkipEmptyParts, Qt::CaseInsensitive);
-#else
-    QStringList list = txt.split('e', QString::SkipEmptyParts, Qt::CaseInsensitive);
-#endif
-    if (list.size() < 2)
-        return QwtText(prefix() + txt + suffix());
-
-    bool okMant = false;
-    double mant = QLocale::c().toDouble(list[0], &okMant);
-    if (!okMant)
-        mant = list[0].toDouble(&okMant);
-    if (okMant && mant == 0.0)
-        return QwtText(prefix() + QString("0") + suffix());
-
-    QString s = list[1];
-    QChar sign;
-    if (!s.isEmpty() && (s[0] == '+' || s[0] == '-')) {
-        sign = s[0];
-        s.remove(0, 1);
+    // Prevent horizontal rich-text superscript collisions on narrow sub-decade Log10 X axes
+    // (e.g. 1.5x10^1 .. 3.5x10^1 on 85 mm single-column panels).
+    if ((alignment() == BottomScale || alignment() == TopScale) && transformed > 0.0
+        && this->map().transformation()
+        && this->map().transformation()->type() == QwtScaleTransformation::Log10) {
+        const QwtScaleDiv scDiv = scaleDiv();
+        const double lo = qMin(scDiv.lowerBound(), scDiv.upperBound());
+        const double hi = qMax(scDiv.lowerBound(), scDiv.upperBound());
+        const QwtValueList maj = scDiv.ticks(QwtScaleDiv::MajorTick);
+        if (lo > 0.0 && hi > lo && std::log10(hi / lo) < 1.65 && maj.size() >= 5) {
+            auto mantissaOf = [](double v) -> double {
+                const double e10 = std::floor(std::log10(v) + 1e-12);
+                return v / std::pow(10.0, e10);
+            };
+            int intMantCount = 0;
+            int matchIdx = -1;
+            for (int i = 0; i < maj.size(); ++i) {
+                const double tv = transformValue(maj[i]);
+                if (tv > 0.0 && std::isfinite(tv)) {
+                    const double m = mantissaOf(tv);
+                    if (std::fabs(m - std::round(m)) <= 1e-4)
+                        ++intMantCount;
+                    if (std::fabs(tv - transformed) <= 1e-7 * qMax(1.0, std::fabs(transformed)))
+                        matchIdx = i;
+                }
+            }
+            const double curMant = mantissaOf(transformed);
+            if (intMantCount >= 5) {
+                const bool is125 = (std::fabs(curMant - 1.0) <= 1e-4
+                                    || std::fabs(curMant - 2.0) <= 1e-4
+                                    || std::fabs(curMant - 5.0) <= 1e-4);
+                if (!is125)
+                    return QwtText();
+            } else if (intMantCount >= 2) {
+                if (std::fabs(curMant - std::round(curMant)) > 1e-4)
+                    return QwtText();
+            } else if (matchIdx >= 0 && (matchIdx % 2) != 0) {
+                return QwtText();
+            }
+        }
     }
 
-    while (s.length() > 1 && s.startsWith('0'))
-        s.remove(0, 1);
-
-    if (sign == '-')
-        s.prepend(sign);
-
-    QString core;
-    if (okMant && qAbs(mant - 1.0) < 1e-9)
-        core = "10<sup>" + s + "</sup>";
-    else if (okMant && qAbs(mant + 1.0) < 1e-9)
-        core = "-10<sup>" + s + "</sup>";
-    else
-        core = list[0] + QString::fromUtf8("\xC3\x97") + "10<sup>" + s + "</sup>";
-
-    return QwtText(prefix() + core + suffix());
+    return formatSuperscriptScientificLabel(transformed, f, prec, prefix(), suffix());
 }

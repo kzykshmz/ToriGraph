@@ -837,6 +837,12 @@ public slots:
     void showFourierSelfDeconvolveDialog();
     void showEISAnalyzerDialog();
     void showPassingBablokDemingDialog();
+    void showSampleGalleryDialog();
+    void showKissingerDialog();
+    void showWorkHardeningDialog();
+    void showXRDAnalyzerDialog();
+    void showVaspPlotterDialog();
+    void exportActiveGraphToPython();
     //@}
 
     //! \name Event Handlers
@@ -1254,7 +1260,7 @@ public:
     Qt::PenStyle defaultArrowLineStyle;
     int majTicksLength, minTicksLength, defaultPlotMargin;
     int defaultCurveStyle, defaultCurveLineWidth, defaultSymbolSize;
-    int undoLimit;
+    int undoLimit = 50;
     QFont appFont, plot3DTitleFont, plot3DNumbersFont, plot3DAxesFont;
     QFont tableTextFont, tableHeaderFont, plotAxesFont, plotLegendFont, plotNumbersFont,
             plotTitleFont;
@@ -1503,6 +1509,10 @@ private:
     QAction *actionWorkspaceLayoutTabbed = nullptr, *actionWorkspaceLayoutSplit = nullptr,
             *actionWorkspaceLayoutMdi = nullptr;
     QAction *actionOpenPythonConsole = nullptr, *actionRunPythonScript = nullptr;
+    QAction *actionSampleGallery = nullptr, *actionKissingerDialog = nullptr,
+            *actionWorkHardeningDialog = nullptr, *actionXRDAnalyzerDialog = nullptr,
+            *actionVaspPlotterDialog = nullptr, *actionExportPythonScript = nullptr;
+    bool d_in_aspect_about_to_be_removed = false;
     QPointer<QDialog> d_active_peak_analyzer_dlg;
     QToolButton *d_btn_style_presets_popup = nullptr;
     QWidget *d_explorer_container = nullptr;

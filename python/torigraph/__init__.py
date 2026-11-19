@@ -1,6 +1,8 @@
 """ToriGraph Python Automation SDK (JSON-RPC 2.0 over loopback TCP / Named Pipe)."""
 
 from .client import (
+    BatchContext,
+    BatchStepRef,
     GraphProxy,
     MatrixProxy,
     RpcError,
@@ -10,10 +12,13 @@ from .client import (
     ToriGraphRpcError,
     TransportError,
     connect,
+    connect_or_launch,
     launch,
 )
 
-__version__ = "2.5.0"
+Graph3DProxy = GraphProxy
+
+__version__ = "2.6.0"
 
 __all__ = [
     "__version__",
@@ -21,10 +26,14 @@ __all__ = [
     "ToriGraphRpcError",
     "TransportError",
     "RpcError",
+    "BatchStepRef",
+    "BatchContext",
     "Session",
     "TableProxy",
     "MatrixProxy",
     "GraphProxy",
+    "Graph3DProxy",
     "connect",
+    "connect_or_launch",
     "launch",
 ]

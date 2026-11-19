@@ -67,12 +67,15 @@ QPoint snapArrowEndpointAngle45(const QPoint &anchor, const QPoint &target)
 ArrowMarker::ArrowMarker()
     : d_end_arrow(true),
       d_fill_head(true),
-      d_head_angle(45),
-      d_head_length(4),
+      d_head_angle(28),
+      d_head_length(9),
       d_rect(0, 0, 1, 1),
       d_editable(false),
       d_op(None)
 {
+    QPen defPen(Qt::black, 1, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+    defPen.setCosmetic(false);
+    setLinePen(defPen);
 }
 
 void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -86,54 +89,80 @@ void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &
         return;
 
     constexpr double kPi = 3.141592653589793238462643;
-    const double angleDeg = std::atan2(y1 - y0, x1 - x0) * (180.0 / kPi);
-    const double headHalfW = double(d_head_length) * std::tan(kPi * double(d_head_angle) / 180.0);
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    const double segLen = std::hypot(dx, dy);
+    const double angleDeg = std::atan2(dy, dx) * (180.0 / kPi);
+
+    const double sc = Plot::printDeviceScale();
+    QPen pen = linePen();
+    pen.setCosmetic(false);
+    const double baseW = (pen.widthF() > 0.0) ? pen.widthF() : 1.2;
+    const double pw = qMax(1.0, baseW) * sc;
+    pen.setWidthF(pw);
+
+    const double rawHeadLen = double(qMax(5, d_head_length)) * sc;
+    const double effHeadLen = (segLen > 1e-6)
+            ? qMin(qMax(rawHeadLen, 2.8 * pw), 0.55 * segLen)
+            : qMax(rawHeadLen, 2.8 * pw);
+    const double effAngle = qBound(14.0, double(d_head_angle), 55.0);
+    const double headHalfW = effHeadLen * std::tan(kPi * effAngle / 180.0);
+
+    double sx0 = x0, sy0 = y0, sx1 = x1, sy1 = y1;
+    if (segLen > 1e-6) {
+        const double ux = dx / segLen;
+        const double uy = dy / segLen;
+        if (d_start_arrow && d_fill_head) {
+            sx0 += 0.65 * effHeadLen * ux;
+            sy0 += 0.65 * effHeadLen * uy;
+        }
+        if (d_end_arrow && d_fill_head) {
+            sx1 -= 0.65 * effHeadLen * ux;
+            sy1 -= 0.65 * effHeadLen * uy;
+        }
+    }
 
     p->save();
-    if (testRenderHint(QwtPlotItem::RenderAntialiased))
-        p->setRenderHint(QPainter::Antialiasing, true);
-    QPen pen = linePen();
+    p->setRenderHint(QPainter::Antialiasing, true);
     p->setPen(pen);
-
-    QBrush brush = QBrush(pen.color(), Qt::SolidPattern);
-    p->drawLine(QPointF(x0, y0), QPointF(x1, y1));
+    const QBrush brush(pen.color(), Qt::SolidPattern);
+    p->drawLine(QPointF(sx0, sy0), QPointF(sx1, sy1));
     p->restore();
 
-    if (d_end_arrow) {
+    QPen headPen(pen.color(), d_fill_head ? qMax(0.6 * sc, 0.5 * pw) : pw, Qt::SolidLine,
+                 Qt::RoundCap, Qt::MiterJoin);
+    headPen.setCosmetic(false);
+
+    if (d_end_arrow && segLen > 1e-6) {
         p->save();
-        if (testRenderHint(QwtPlotItem::RenderAntialiased))
-            p->setRenderHint(QPainter::Antialiasing, true);
+        p->setRenderHint(QPainter::Antialiasing, true);
         p->translate(QPointF(x1, y1));
         p->rotate(angleDeg);
 
         QPolygonF endArray(3);
         endArray[0] = QPointF(0.0, 0.0);
-        endArray[1] = QPointF(-double(d_head_length), headHalfW);
-        endArray[2] = QPointF(-double(d_head_length), -headHalfW);
+        endArray[1] = QPointF(-effHeadLen, headHalfW);
+        endArray[2] = QPointF(-effHeadLen, -headHalfW);
 
-        p->setPen(QPen(pen.color(), pen.widthF(), Qt::SolidLine));
-        if (d_fill_head)
-            p->setBrush(brush);
-
+        p->setPen(headPen);
+        p->setBrush(d_fill_head ? brush : QBrush(Qt::NoBrush));
         p->drawPolygon(endArray);
         p->restore();
     }
 
-    if (d_start_arrow) {
+    if (d_start_arrow && segLen > 1e-6) {
         p->save();
-        if (testRenderHint(QwtPlotItem::RenderAntialiased))
-            p->setRenderHint(QPainter::Antialiasing, true);
+        p->setRenderHint(QPainter::Antialiasing, true);
         p->translate(QPointF(x0, y0));
         p->rotate(angleDeg);
 
         QPolygonF startArray(3);
         startArray[0] = QPointF(0.0, 0.0);
-        startArray[1] = QPointF(double(d_head_length), headHalfW);
-        startArray[2] = QPointF(double(d_head_length), -headHalfW);
+        startArray[1] = QPointF(effHeadLen, headHalfW);
+        startArray[2] = QPointF(effHeadLen, -headHalfW);
 
-        p->setPen(QPen(pen.color(), pen.widthF(), Qt::SolidLine));
-        if (d_fill_head)
-            p->setBrush(brush);
+        p->setPen(headPen);
+        p->setBrush(d_fill_head ? brush : QBrush(Qt::NoBrush));
         p->drawPolygon(startArray);
         p->restore();
     }
@@ -322,9 +351,6 @@ QwtDoublePoint ArrowMarker::startPointCoord()
 
 void ArrowMarker::setStartPoint(double x, double y)
 {
-    if (d_rect.left() == x && d_rect.top() == y)
-        return;
-
     d_rect.setLeft(x);
     d_rect.setTop(y);
 
@@ -346,9 +372,6 @@ QPoint ArrowMarker::endPoint() const
 
 void ArrowMarker::setEndPoint(double x, double y)
 {
-    if (d_rect.right() == x && d_rect.bottom() == y)
-        return;
-
     d_rect.setRight(x);
     d_rect.setBottom(y);
 
@@ -366,9 +389,6 @@ QwtDoublePoint ArrowMarker::endPointCoord()
 
 void ArrowMarker::setBoundingRect(double xs, double ys, double xe, double ye)
 {
-    if (d_rect.left() == xs && d_rect.top() == ys && d_rect.right() == xe && d_rect.bottom() == ye)
-        return;
-
     d_rect.setLeft(xs);
     d_rect.setTop(ys);
     d_rect.setRight(xe);
@@ -399,13 +419,13 @@ QwtDoubleRect ArrowMarker::boundingRect() const
 
 void ArrowMarker::updateBoundingRect()
 {
+    if (!plot())
+        return;
     const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
     const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
 
-    d_rect.setLeft(xMap.invTransform(d_start.x()));
-    d_rect.setTop(yMap.invTransform(d_start.y()));
-    d_rect.setRight(xMap.invTransform(d_end.x()));
-    d_rect.setBottom(yMap.invTransform(d_end.y()));
+    d_start = QPoint(xMap.transform(d_rect.left()), yMap.transform(d_rect.top()));
+    d_end = QPoint(xMap.transform(d_rect.right()), yMap.transform(d_rect.bottom()));
 }
 
 ArrowMarker::~ArrowMarker()

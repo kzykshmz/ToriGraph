@@ -35,10 +35,14 @@
 #include <QDateTime>
 #include <QLineF>
 #include <QMessageBox>
+#include <QPaintDevice>
+#include <QPaintEngine>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <algorithm>
 #include <cmath>
+#include <vector>
 #include <qwt_curve_fitter.h>
 #include <qwt_painter.h>
 #include <qwt_scale_map.h>
@@ -193,17 +197,32 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
         if (end_row >= col->rowCount())
             end_row = col->rowCount() - 1;
 
-    // determine rows for which all columns have valid content
+    // determine rows for which all columns have valid, finite content and track gap boundaries
     QList<int> valid_rows;
+    QVector<int> gap_before;
+    bool saw_invalid_after_valid = false;
     for (int row = d_start_row; row <= end_row; row++) {
         bool all_valid = true;
-        foreach (Column *col, cols)
+        foreach (Column *col, cols) {
             if (col->isInvalid(row)) {
                 all_valid = false;
                 break;
             }
-        if (all_valid)
+            if (col->columnMode() == SciDAVis::ColumnMode::Numeric
+                && !std::isfinite(col->valueAt(row))) {
+                all_valid = false;
+                break;
+            }
+        }
+        if (all_valid) {
+            if (saw_invalid_after_valid && !valid_rows.isEmpty()) {
+                gap_before.push_back(valid_rows.size());
+                saw_invalid_after_valid = false;
+            }
             valid_rows.push_back(row);
+        } else if (!valid_rows.isEmpty()) {
+            saw_invalid_after_valid = true;
+        }
     }
 
     // initialize result list
@@ -256,6 +275,10 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
             reference_times.push_back(QTime());
             break;
         default:
+            if (g && d_type == Graph::HorizontalBars && i == 0
+                && g->axesType()[axes[i]] == Graph::AxisType::Txt) {
+                g->setLabelsNumericFormat(axes[i], 0, 6);
+            }
             reference_dates.push_back(QDate());
             reference_times.push_back(QTime());
             break;
@@ -280,6 +303,7 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
             };
 
     d_index_to_row = QVector<int>::fromList(valid_rows);
+    d_gap_before_indices = gap_before;
     return result;
 }
 
@@ -344,7 +368,13 @@ void DataCurve::remove()
     if (!g)
         return;
 
-    g->removeCurve(title().text());
+    const int idx = g->plotItemIndex(this);
+    if (idx >= 0) {
+        g->removeCurve(idx);
+        return;
+    }
+    const QString curveTitle = title().text();
+    g->removeCurve(curveTitle);
 }
 
 void DataCurve::setVisible(bool on)
@@ -366,20 +396,60 @@ int DataCurve::tableRow(int point) const
     return -1;
 }
 
-bool DataCurve::isPointMasked(int point) const
+void DataCurve::resolveColumns(Column *&xColOut, Column *&yColOut) const
+{
+    xColOut = nullptr;
+    yColOut = nullptr;
+    if (!d_table)
+        return;
+    yColOut = resolveDataCurveColumn(d_table, title().text());
+    xColOut = resolveDataCurveColumn(d_table, d_x_column);
+}
+
+bool DataCurve::hasAnyMaskedPoints() const
+{
+    if (!d_table || dataSize() <= 0)
+        return false;
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+    if (yCol && !yCol->maskedIntervals().isEmpty())
+        return true;
+    if (xCol && !xCol->maskedIntervals().isEmpty())
+        return true;
+    return false;
+}
+
+bool DataCurve::isPointMaskedFast(int point, const Column *xCol, const Column *yCol) const
 {
     if (!d_table || point < 0 || point >= dataSize())
         return false;
     const int row = tableRow(point);
     if (row < 0)
         return false;
-    Column *yCol = resolveDataCurveColumn(d_table, title().text());
     if (yCol && yCol->isMasked(row))
         return true;
-    Column *xCol = resolveDataCurveColumn(d_table, d_x_column);
     if (xCol && xCol->isMasked(row))
         return true;
     return false;
+}
+
+bool DataCurve::hasGapBefore(int point) const
+{
+    if (d_gap_before_indices.isEmpty() || point <= 0)
+        return false;
+    return std::binary_search(d_gap_before_indices.constBegin(), d_gap_before_indices.constEnd(),
+                              point);
+}
+
+bool DataCurve::isPointMasked(int point) const
+{
+    if (!d_table || point < 0 || point >= dataSize())
+        return false;
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+    return isPointMaskedFast(point, xCol, yCol);
 }
 
 void DataCurve::maskPoint(int point, bool mask)
@@ -427,10 +497,10 @@ int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
         const double py = y(i);
         if (px >= normRect.left() && px <= normRect.right() && py >= normRect.top()
             && py <= normRect.bottom()) {
-            const int row = tableRow(i);
-            if (row < 0)
-                continue;
-            const bool wasMasked = isPointMasked(i);
+    const int row = tableRow(i);
+    if (row < 0)
+        continue;
+    const bool wasMasked = isPointMaskedFast(i, xCol, yCol);
             yCol->setMasked(row, mask);
             if (!mask && xCol && xCol->isMasked(row))
                 xCol->setMasked(row, false);
@@ -475,10 +545,17 @@ int DataCurve::maskedPointCount() const
 {
     if (!d_table || dataSize() <= 0)
         return 0;
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+    if ((!yCol || yCol->maskedIntervals().isEmpty())
+        && (!xCol || xCol->maskedIntervals().isEmpty())) {
+        return 0;
+    }
     int count = 0;
     const int n = dataSize();
     for (int i = 0; i < n; ++i) {
-        if (isPointMasked(i))
+        if (isPointMaskedFast(i, xCol, yCol))
             ++count;
     }
     return count;
@@ -496,24 +573,52 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
     if (startIdx > endIdx)
         return;
 
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+    const bool possiblyMasked = (yCol && !yCol->maskedIntervals().isEmpty())
+            || (xCol && !xCol->maskedIntervals().isEmpty());
+
     bool anyMasked = false;
-    if (d_table) {
+    if (possiblyMasked) {
         for (int i = startIdx; i <= endIdx; ++i) {
-            if (isPointMasked(i)) {
+            if (isPointMaskedFast(i, xCol, yCol)) {
                 anyMasked = true;
                 break;
             }
         }
     }
 
-    if (!anyMasked) {
+    const bool anyGaps = !d_gap_before_indices.isEmpty();
+    if (!anyMasked && !anyGaps) {
         PlotCurve::draw(painter, xMap, yMap, from, to);
+        return;
+    }
+
+    if (!anyMasked && anyGaps) {
+        int curStart = startIdx;
+        auto it = std::upper_bound(d_gap_before_indices.constBegin(),
+                                   d_gap_before_indices.constEnd(), startIdx);
+        while (it != d_gap_before_indices.constEnd() && *it <= endIdx) {
+            const int gapIdx = *it;
+            if (gapIdx - 1 >= curStart)
+                PlotCurve::draw(painter, xMap, yMap, curStart, gapIdx - 1);
+            curStart = gapIdx;
+            ++it;
+        }
+        if (curStart <= endIdx)
+            PlotCurve::draw(painter, xMap, yMap, curStart, endIdx);
         return;
     }
 
     int segStart = -1;
     for (int i = startIdx; i <= endIdx + 1; ++i) {
-        const bool masked = (i > endIdx) || isPointMasked(i);
+        const bool gapHere = anyGaps && i <= endIdx && i > startIdx && hasGapBefore(i);
+        if (gapHere && segStart >= 0) {
+            PlotCurve::draw(painter, xMap, yMap, segStart, i - 1);
+            segStart = -1;
+        }
+        const bool masked = (i > endIdx) || isPointMaskedFast(i, xCol, yCol);
         if (!masked && segStart < 0) {
             segStart = i;
         } else if (masked && segStart >= 0) {
@@ -530,7 +635,7 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
     const double r = qMax(5.0, 0.5 * symbol().size().width() + 2.0);
 
     for (int i = startIdx; i <= endIdx; ++i) {
-        if (!isPointMasked(i))
+        if (!isPointMaskedFast(i, xCol, yCol))
             continue;
         const double px = xMap.xTransform(x(i));
         const double py = yMap.xTransform(y(i));
@@ -1006,6 +1111,220 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
         }
         const double halfGap = 4.5;
 
+        // 4-point (first, min, max, last) per-device-pixel-column envelope decimation for dense
+        // monotonic X waveforms (e.g. 200k points -> <= 4 * devPixelWidth vertices, preserving
+        // 100% of visual peak-to-peak amplitude and exact entry/exit transitions).
+        const QTransform &xf = painter->transform();
+        double txScale = std::max(1.0, std::hypot(xf.m11(), xf.m12()));
+        const double dpr = painter->device()
+                ? std::max(1.0, double(painter->device()->devicePixelRatioF()))
+                : 1.0;
+        const bool isRasterEngine =
+                painter->paintEngine() && (painter->paintEngine()->type() == QPaintEngine::Raster);
+        if (!isRasterEngine)
+            txScale = std::max(txScale, 600.0 / 96.0);
+        const double colScale = txScale * dpr;
+        const double devPixelWidth = std::max(250.0, std::fabs(xMap.pDist()) * colScale);
+        const int spanCount = to - from + 1;
+
+        if (!isFitted && !hasXBreak && !hasYBreak
+            && spanCount > qMax(2000, int(4.0 * devPixelWidth))) {
+            bool monoAsc = true;
+            bool monoDesc = true;
+            bool haveFiniteX = false;
+            double prevFiniteX = 0.0;
+            for (int i = from; i <= to; ++i) {
+                const double vx = x(i);
+                if (!std::isfinite(vx))
+                    continue;
+                if (haveFiniteX) {
+                    if (vx < prevFiniteX)
+                        monoAsc = false;
+                    if (vx > prevFiniteX)
+                        monoDesc = false;
+                    if (!monoAsc && !monoDesc)
+                        break;
+                }
+                prevFiniteX = vx;
+                haveFiniteX = true;
+            }
+
+            if (haveFiniteX && (monoAsc || monoDesc)) {
+                const bool canChunkUnfilledPolyline = (brush().style() == Qt::NoBrush && !isFitted);
+                const bool useDisjointSolidEnvLines =
+                        (canChunkUnfilledPolyline && isRasterEngine
+                         && painter->pen().style() == Qt::SolidLine);
+
+                if (useDisjointSolidEnvLines) {
+                    QPen segPen = painter->pen();
+                    if (segPen.capStyle() == Qt::FlatCap) {
+                        segPen.setCapStyle(Qt::RoundCap);
+                        painter->setPen(segPen);
+                    }
+                    QVector<QLineF> envSegs;
+                    envSegs.reserve(64);
+                    const double devPenW = std::max(1.0, segPen.widthF() * colScale);
+                    const double bucketScale = colScale / std::max(1.0, 0.45 * devPenW);
+                    const double minVertSpan = 0.35 / colScale;
+
+                    bool hasBucket = false;
+                    bool hasPrevLast = false;
+                    bool prevHadVertBar = false;
+                    double prevMinY = 0.0, prevMaxY = 0.0;
+                    qint64 curCol = 0;
+                    int firstIdx = -1, lastIdx = -1;
+                    QPointF firstPt, minPt, maxPt, lastPt, prevLastPt;
+
+                    auto flushSolidBucket = [&]() {
+                        if (!hasBucket)
+                            return;
+                        const bool curHasVertBar = (maxPt.y() - minPt.y() > minVertSpan);
+                        const bool overlapAdjacentBars = hasPrevLast && prevHadVertBar
+                                && curHasVertBar
+                                && (std::max(prevMinY, minPt.y()) <= std::min(prevMaxY, maxPt.y()));
+                        if (hasPrevLast && !overlapAdjacentBars
+                            && (std::fabs(firstPt.x() - prevLastPt.x()) > 1e-6
+                                || std::fabs(firstPt.y() - prevLastPt.y()) > 1e-6)) {
+                            envSegs.append(QLineF(prevLastPt, firstPt));
+                        }
+                        if (curHasVertBar) {
+                            const double midX = 0.5 * (firstPt.x() + lastPt.x());
+                            envSegs.append(
+                                    QLineF(QPointF(midX, minPt.y()), QPointF(midX, maxPt.y())));
+                        } else if (lastIdx != firstIdx
+                                   && (std::fabs(lastPt.x() - firstPt.x()) > 1e-6
+                                       || std::fabs(lastPt.y() - firstPt.y()) > 1e-6)) {
+                            envSegs.append(QLineF(firstPt, lastPt));
+                        }
+                        prevLastPt = lastPt;
+                        prevHadVertBar = curHasVertBar;
+                        prevMinY = minPt.y();
+                        prevMaxY = maxPt.y();
+                        hasPrevLast = true;
+                        hasBucket = false;
+                        if (envSegs.size() >= 64) {
+                            painter->drawLines(envSegs);
+                            envSegs.clear();
+                        }
+                    };
+
+                    for (int i = from; i <= to; ++i) {
+                        const double px = xMap.xTransform(x(i));
+                        const double py = yMap.xTransform(y(i));
+                        if (!std::isfinite(px) || !std::isfinite(py)) {
+                            flushSolidBucket();
+                            if (!envSegs.isEmpty()) {
+                                painter->drawLines(envSegs);
+                                envSegs.clear();
+                            }
+                            hasPrevLast = false;
+                            prevHadVertBar = false;
+                            continue;
+                        }
+                        const QPointF pt = clampExtremePoint(QPointF(px, py));
+                        const qint64 col = static_cast<qint64>(std::floor(pt.x() * bucketScale));
+                        if (!hasBucket || col != curCol) {
+                            flushSolidBucket();
+                            hasBucket = true;
+                            curCol = col;
+                            firstIdx = lastIdx = i;
+                            firstPt = minPt = maxPt = lastPt = pt;
+                        } else {
+                            if (pt.y() < minPt.y())
+                                minPt = pt;
+                            if (pt.y() > maxPt.y())
+                                maxPt = pt;
+                            lastIdx = i;
+                            lastPt = pt;
+                        }
+                    }
+                    flushSolidBucket();
+                    if (!envSegs.isEmpty())
+                        painter->drawLines(envSegs);
+                    break;
+                }
+
+                QPolygonF envRun;
+                const int maxEnvChunkPts = (painter->pen().style() == Qt::SolidLine) ? 16 : 64;
+                envRun.reserve(canChunkUnfilledPolyline
+                                       ? (maxEnvChunkPts + 4)
+                                       : qMin(spanCount, qMax(2048, int(4.0 * devPixelWidth) + 16)));
+                auto appendEnvPt = [&](const QPointF &p) {
+                    if (!envRun.isEmpty()) {
+                        const QPointF &last = envRun.last();
+                        if (std::fabs(p.x() - last.x()) < 1e-6
+                            && std::fabs(p.y() - last.y()) < 1e-6)
+                            return;
+                    }
+                    envRun.append(p);
+                    if (canChunkUnfilledPolyline && envRun.size() >= maxEnvChunkPts) {
+                        const QPointF carry = envRun.last();
+                        painter->drawPolyline(envRun);
+                        envRun.clear();
+                        envRun.append(carry);
+                    }
+                };
+
+                bool hasBucket = false;
+                qint64 curCol = 0;
+                int firstIdx = -1, minIdx = -1, maxIdx = -1, lastIdx = -1;
+                QPointF firstPt, minPt, maxPt, lastPt;
+
+                auto flushBucket = [&]() {
+                    if (!hasBucket)
+                        return;
+                    appendEnvPt(firstPt);
+                    if (minIdx < maxIdx) {
+                        if (minIdx != firstIdx && minIdx != lastIdx)
+                            appendEnvPt(minPt);
+                        if (maxIdx != firstIdx && maxIdx != lastIdx)
+                            appendEnvPt(maxPt);
+                    } else {
+                        if (maxIdx != firstIdx && maxIdx != lastIdx)
+                            appendEnvPt(maxPt);
+                        if (minIdx != firstIdx && minIdx != lastIdx)
+                            appendEnvPt(minPt);
+                    }
+                    if (lastIdx != firstIdx)
+                        appendEnvPt(lastPt);
+                    hasBucket = false;
+                };
+
+                for (int i = from; i <= to; ++i) {
+                    const double px = xMap.xTransform(x(i));
+                    const double py = yMap.xTransform(y(i));
+                    if (!std::isfinite(px) || !std::isfinite(py)) {
+                        flushBucket();
+                        flushRun(envRun);
+                        continue;
+                    }
+                    const QPointF pt = clampExtremePoint(QPointF(px, py));
+                    const qint64 col = static_cast<qint64>(std::floor(pt.x() * colScale));
+                    if (!hasBucket || col != curCol) {
+                        flushBucket();
+                        hasBucket = true;
+                        curCol = col;
+                        firstIdx = minIdx = maxIdx = lastIdx = i;
+                        firstPt = minPt = maxPt = lastPt = pt;
+                    } else {
+                        if (pt.y() < minPt.y()) {
+                            minIdx = i;
+                            minPt = pt;
+                        }
+                        if (pt.y() > maxPt.y()) {
+                            maxIdx = i;
+                            maxPt = pt;
+                        }
+                        lastIdx = i;
+                        lastPt = pt;
+                    }
+                }
+                flushBucket();
+                flushRun(envRun);
+                break;
+            }
+        }
+
         QPolygonF run;
         run.reserve(qMin(4096, to - from + 1));
         bool hasPrev = false;
@@ -1358,6 +1677,23 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
 
     const bool decimateSubPixel = testPaintAttribute(PaintFiltered) && ((to - from) > 4000);
     QPointF lastDrawn(1e30, 1e30);
+    std::vector<uint8_t> occGrid;
+    int occGridW = 0, occGridH = 0;
+    double occOriginX = 0.0, occOriginY = 0.0, occScale = 2.0;
+    if (decimateSubPixel && hasCanvasBounds && validCenterBox.width() > 1.0
+        && validCenterBox.height() > 1.0) {
+        const QTransform &xf = painter->transform();
+        occScale = qBound(1.0, 2.0 * std::max(1.0, std::hypot(xf.m11(), xf.m12())), 8.0);
+        const qint64 gw = static_cast<qint64>(std::ceil(validCenterBox.width() * occScale)) + 2;
+        const qint64 gh = static_cast<qint64>(std::ceil(validCenterBox.height() * occScale)) + 2;
+        if (gw > 0 && gh > 0 && gw <= 4096 && gh <= 4096) {
+            occGridW = static_cast<int>(gw);
+            occGridH = static_cast<int>(gh);
+            occOriginX = validCenterBox.left();
+            occOriginY = validCenterBox.top();
+            occGrid.assign(static_cast<size_t>(occGridW) * static_cast<size_t>(occGridH), 0);
+        }
+    }
 
     for (int i = from; i <= to; ++i) {
         const double vx = x(i);
@@ -1374,10 +1710,20 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         if (hasCanvasBounds && !validCenterBox.contains(QPointF(cx, cy)))
             continue;
         if (decimateSubPixel && i > from && i < to) {
-            const double dx = cx - lastDrawn.x();
-            const double dy = cy - lastDrawn.y();
-            if (dx * dx + dy * dy < 0.04)
-                continue;
+            if (!occGrid.empty()) {
+                const int gx = qBound(0, int((cx - occOriginX) * occScale), occGridW - 1);
+                const int gy = qBound(0, int((cy - occOriginY) * occScale), occGridH - 1);
+                const size_t cellIdx =
+                        static_cast<size_t>(gy) * static_cast<size_t>(occGridW) + size_t(gx);
+                if (occGrid[cellIdx])
+                    continue;
+                occGrid[cellIdx] = 1;
+            } else {
+                const double dx = cx - lastDrawn.x();
+                const double dy = cy - lastDrawn.y();
+                if (dx * dx + dy * dy < 0.04)
+                    continue;
+            }
         }
         drawSymbolShapeF(painter, sym.style(), cx, cy, w, h);
         lastDrawn = QPointF(cx, cy);

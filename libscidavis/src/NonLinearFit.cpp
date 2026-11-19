@@ -40,6 +40,7 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -1333,6 +1334,20 @@ struct GlobalFitContext
     MyParser *parser = nullptr;
     double *var_x = nullptr;
     std::vector<double> *var_p = nullptr;
+    const QElapsedTimer *wallTimer = nullptr;
+    qint64 maxWallMs = 0;
+    bool timedOut = false;
+
+    bool checkTimedOut()
+    {
+        if (timedOut)
+            return true;
+        if (wallTimer && maxWallMs > 0 && wallTimer->isValid() && wallTimer->elapsed() > maxWallMs) {
+            timedOut = true;
+            return true;
+        }
+        return false;
+    }
 
     void unpack(const gsl_vector *u, std::vector<std::vector<double>> &outParams) const
     {
@@ -1372,10 +1387,14 @@ struct GlobalFitContext
     static int gsl_f(const gsl_vector *u, void *data, gsl_vector *f)
     {
         GlobalFitContext *ctx = static_cast<GlobalFitContext *>(data);
+        if (ctx->checkTimedOut())
+            return GSL_EBADFUNC;
         std::vector<std::vector<double>> params;
         ctx->unpack(u, params);
         std::vector<double> yhat;
         for (int m = 0; m < ctx->M; ++m) {
+            if (ctx->checkTimedOut())
+                return GSL_EBADFUNC;
             if (!ctx->evalCurveY(params[size_t(m)], ctx->curvesX[size_t(m)], yhat))
                 return GSL_EINVAL;
             size_t off = ctx->rowOffsets[size_t(m)];
@@ -1390,12 +1409,16 @@ struct GlobalFitContext
     static int gsl_df(const gsl_vector *u, void *data, gsl_matrix *J)
     {
         GlobalFitContext *ctx = static_cast<GlobalFitContext *>(data);
+        if (ctx->checkTimedOut())
+            return GSL_EBADFUNC;
         gsl_matrix_set_zero(J);
         std::vector<std::vector<double>> params;
         ctx->unpack(u, params);
         std::vector<double> yPlus, yMinus;
 
         for (size_t k = 0; k < ctx->freeSlots.size(); ++k) {
+            if (ctx->checkTimedOut())
+                return GSL_EBADFUNC;
             const auto &sl = ctx->freeSlots[k];
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
@@ -1444,6 +1467,26 @@ struct ImplicitODRContext
     double *var_x = nullptr;
     double *var_y = nullptr;
     std::vector<double> *var_p = nullptr;
+    const QElapsedTimer *wallTimer = nullptr;
+    qint64 maxWallMs = 0;
+    bool timedOut = false;
+    std::vector<double> workP;
+    std::vector<double> workPPlus;
+    std::vector<double> workPMinus;
+    std::vector<double> workR;
+    std::vector<double> workRPlus;
+    std::vector<double> workRMinus;
+
+    bool checkTimedOut()
+    {
+        if (timedOut)
+            return true;
+        if (wallTimer && maxWallMs > 0 && wallTimer->isValid() && wallTimer->elapsed() > maxWallMs) {
+            timedOut = true;
+            return true;
+        }
+        return false;
+    }
 
     void unpack(const gsl_vector *u, std::vector<double> &pOut) const
     {
@@ -1481,23 +1524,31 @@ struct ImplicitODRContext
                 *var_x = xi;
                 *var_y = yi;
                 double F0 = parser->Eval();
+                if (!std::isfinite(F0)) {
+                    resOut[i] = 1e25;
+                    continue;
+                }
 
                 *var_x = xi + hx;
                 double Fxp = parser->Eval();
                 *var_x = xi - hx;
                 double Fxm = parser->Eval();
-                double Fx = (Fxp - Fxm) / (2.0 * hx);
+                double Fx = (std::isfinite(Fxp) && std::isfinite(Fxm))
+                        ? ((Fxp - Fxm) / (2.0 * hx))
+                        : 0.0;
 
                 *var_x = xi;
                 *var_y = yi + hy;
                 double Fyp = parser->Eval();
                 *var_y = yi - hy;
                 double Fym = parser->Eval();
-                double Fy = (Fyp - Fym) / (2.0 * hy);
+                double Fy = (std::isfinite(Fyp) && std::isfinite(Fym))
+                        ? ((Fyp - Fym) / (2.0 * hy))
+                        : 0.0;
 
                 double gradNorm = std::sqrt(Fx * Fx + Fy * Fy + 1e-16);
                 double r = F0 / gradNorm;
-                resOut[i] = std::isfinite(r) ? r : 1e50;
+                resOut[i] = std::isfinite(r) ? r : 1e25;
             }
         } catch (...) {
             return false;
@@ -1508,36 +1559,44 @@ struct ImplicitODRContext
     static int gsl_f(const gsl_vector *u, void *data, gsl_vector *f)
     {
         ImplicitODRContext *ctx = static_cast<ImplicitODRContext *>(data);
-        std::vector<double> pVec;
-        ctx->unpack(u, pVec);
-        std::vector<double> r;
-        if (!ctx->evalResiduals(pVec, r))
+        if (ctx->checkTimedOut())
+            return GSL_EBADFUNC;
+        ctx->unpack(u, ctx->workP);
+        if (!ctx->evalResiduals(ctx->workP, ctx->workR))
             return GSL_EINVAL;
         for (size_t i = 0; i < ctx->n; ++i)
-            gsl_vector_set(f, i, r[i]);
+            gsl_vector_set(f, i, ctx->workR[i]);
         return GSL_SUCCESS;
     }
 
     static int gsl_df(const gsl_vector *u, void *data, gsl_matrix *J)
     {
         ImplicitODRContext *ctx = static_cast<ImplicitODRContext *>(data);
-        std::vector<double> pVec;
-        ctx->unpack(u, pVec);
-        std::vector<double> rPlus, rMinus;
+        if (ctx->checkTimedOut())
+            return GSL_EBADFUNC;
+        ctx->unpack(u, ctx->workP);
+        ctx->workPPlus = ctx->workP;
+        ctx->workPMinus = ctx->workP;
         for (size_t k = 0; k < ctx->freeSlots.size(); ++k) {
+            if (ctx->checkTimedOut())
+                return GSL_EBADFUNC;
             const auto &sl = ctx->freeSlots[k];
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
             double dpdu = sl.dPdU(uk);
             double h = std::max(1e-7, 1e-5 * std::abs(pk));
-            std::vector<double> pPlus = pVec;
-            std::vector<double> pMinus = pVec;
-            pPlus[size_t(sl.paramIdx)] = pk + h;
-            pMinus[size_t(sl.paramIdx)] = pk - h;
-            if (!ctx->evalResiduals(pPlus, rPlus) || !ctx->evalResiduals(pMinus, rMinus))
+            const size_t pIdx = size_t(sl.paramIdx);
+            ctx->workPPlus[pIdx] = pk + h;
+            ctx->workPMinus[pIdx] = pk - h;
+            const bool okEval = ctx->evalResiduals(ctx->workPPlus, ctx->workRPlus)
+                    && ctx->evalResiduals(ctx->workPMinus, ctx->workRMinus);
+            ctx->workPPlus[pIdx] = ctx->workP[pIdx];
+            ctx->workPMinus[pIdx] = ctx->workP[pIdx];
+            if (!okEval)
                 return GSL_EINVAL;
+            const double inv2h = dpdu / (2.0 * h);
             for (size_t i = 0; i < ctx->n; ++i)
-                gsl_matrix_set(J, i, k, ((rPlus[i] - rMinus[i]) / (2.0 * h)) * dpdu);
+                gsl_matrix_set(J, i, k, (ctx->workRPlus[i] - ctx->workRMinus[i]) * inv2h);
         }
         return GSL_SUCCESS;
     }
@@ -1731,6 +1790,13 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
         fdf.p = n_free;
         fdf.params = &ctx;
 
+        QElapsedTimer solverTimer;
+        if (isNonInteractiveFit(parent(), d_silent)) {
+            solverTimer.start();
+            ctx.wallTimer = &solverTimer;
+            ctx.maxWallMs = 2500;
+        }
+
         gsl_multifit_fdfsolver *s =
                 gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n_total, n_free);
         int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
@@ -1741,12 +1807,22 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
         }
 
         for (int iter = 0; iter < d_max_iterations; ++iter) {
+            if (ctx.checkTimedOut())
+                break;
             status = gsl_multifit_fdfsolver_iterate(s);
+            if (ctx.timedOut)
+                break;
             int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
             if (dstat == GSL_SUCCESS)
                 break;
             if (status && status != GSL_CONTINUE)
                 break;
+        }
+
+        if (ctx.timedOut) {
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
         }
 
         ctx.unpack(s->x, fittedParams);
@@ -1922,8 +1998,37 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
     ctx.X = &d_x;
     ctx.Y = &d_y;
     ctx.baseP.resize(size_t(P), 1.0);
+    ctx.workP.reserve(size_t(P));
+    ctx.workPPlus.reserve(size_t(P));
+    ctx.workPMinus.reserve(size_t(P));
+    ctx.workR.reserve(n);
+    ctx.workRPlus.reserve(n);
+    ctx.workRMinus.reserve(n);
+
+    const auto xMM = std::minmax_element(d_x.begin(), d_x.end());
+    const auto yMM = std::minmax_element(d_y.begin(), d_y.end());
+    const double midX = 0.5 * (*xMM.first + *xMM.second);
+    const double midY = 0.5 * (*yMM.first + *yMM.second);
+    const double halfSpanX = std::max(1e-3, 0.5 * (*xMM.second - *xMM.first));
+    const double halfSpanY = std::max(1e-3, 0.5 * (*yMM.second - *yMM.first));
+
     for (int j = 0; j < P; ++j) {
-        double v = (j < initVals.size()) ? initVals[j] : 1.0;
+        double v = 1.0;
+        if (j < initVals.size()) {
+            v = initVals[j];
+        } else {
+            const QString pn = paramNames[j].trimmed().toLower();
+            if (pn == QLatin1String("x0") || pn == QLatin1String("xc") || pn == QLatin1String("cx"))
+                v = midX;
+            else if (pn == QLatin1String("y0") || pn == QLatin1String("yc") || pn == QLatin1String("cy"))
+                v = midY;
+            else if (pn == QLatin1String("a") || pn == QLatin1String("rx"))
+                v = halfSpanX;
+            else if (pn == QLatin1String("b") || pn == QLatin1String("ry"))
+                v = halfSpanY;
+            else if (pn == QLatin1String("r") || pn == QLatin1String("r0"))
+                v = 0.5 * (halfSpanX + halfSpanY);
+        }
         ctx.baseP[size_t(j)] = v;
         gsl_vector_set(d_param_init, j, v);
     }
@@ -2005,6 +2110,13 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
         fdf.p = n_free;
         fdf.params = &ctx;
 
+        QElapsedTimer solverTimer;
+        if (isNonInteractiveFit(parent(), d_silent)) {
+            solverTimer.start();
+            ctx.wallTimer = &solverTimer;
+            ctx.maxWallMs = 2500;
+        }
+
         gsl_multifit_fdfsolver *s =
                 gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n, n_free);
         int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
@@ -2014,13 +2126,24 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
             return false;
         }
 
-        for (int iter = 0; iter < d_max_iterations; ++iter) {
+        const int effMaxIter = std::clamp(d_max_iterations, 1, 150);
+        for (int iter = 0; iter < effMaxIter; ++iter) {
+            if (ctx.checkTimedOut())
+                break;
             status = gsl_multifit_fdfsolver_iterate(s);
+            if (ctx.timedOut)
+                break;
             int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
             if (dstat == GSL_SUCCESS)
                 break;
             if (status && status != GSL_CONTINUE)
                 break;
+        }
+
+        if (ctx.timedOut) {
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
         }
 
         ctx.unpack(s->x, pOpt);
@@ -2248,6 +2371,36 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                     }
                 }
                 chains.push_back(chain);
+            }
+
+            if (chains.size() > 4) {
+                std::vector<QVector<QPointF>> nonDegenerate;
+                nonDegenerate.reserve(chains.size());
+                for (const auto &ch : chains) {
+                    if (ch.size() > 2)
+                        nonDegenerate.push_back(ch);
+                }
+                if (!nonDegenerate.empty()) {
+                    chains.swap(nonDegenerate);
+                } else {
+                    // All chains are degenerate 2-point cell slivers on collapsed/collinear data; keep at most 1
+                    chains.resize(1);
+                }
+            }
+            if (chains.size() > 4) {
+                auto chainLength = [](const QVector<QPointF> &ch) -> double {
+                    double len = 0.0;
+                    for (int k = 1; k < ch.size(); ++k)
+                        len += std::hypot(ch[k].x() - ch[k - 1].x(), ch[k].y() - ch[k - 1].y());
+                    return len;
+                };
+                std::sort(chains.begin(), chains.end(),
+                          [&](const QVector<QPointF> &a, const QVector<QPointF> &b) {
+                              if (a.size() != b.size())
+                                  return a.size() > b.size();
+                              return chainLength(a) > chainLength(b);
+                          });
+                chains.resize(4);
             }
 
             for (const auto &ch : chains) {

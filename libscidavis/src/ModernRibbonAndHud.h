@@ -49,9 +49,11 @@ class QMdiSubWindow;
 class QMenu;
 class QStackedWidget;
 class QTabBar;
+class QTableView;
 class QTableWidget;
 class QToolButton;
 class QWidget;
+class QIdentityProxyModel;
 
 class ApplicationWindow;
 class ModernRibbonBar;
@@ -140,13 +142,16 @@ public:
     bool setCellValueFromDrawer(int row, int col, const QString &text);
 
     QComboBox *tableSelector() const { return d_table_combo; }
-    QTableWidget *tableWidget() const { return d_grid; }
+    QTableView *tableView() const { return d_table_view; }
+    QTableWidget *tableWidget() const;
 
 signals:
     void closeDrawerRequested();
 
 protected:
     void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     Table *detectPreferredTable(const QSet<QObject *> &ignoredObjects = QSet<QObject *>()) const;
@@ -154,6 +159,7 @@ private:
                                   const QSet<QObject *> &ignoredObjects);
     void bindTableSignals(Table *table);
     void syncGridFromTable();
+    void syncCompatGrid() const;
     void onGridCellChanged(int row, int col);
     void onCurrentTableDestroyed(QObject *destroyedObj);
 
@@ -166,7 +172,11 @@ private:
     QToolButton *d_btn_add_col = nullptr;
     QToolButton *d_btn_close = nullptr;
     QLabel *d_empty_label = nullptr;
-    QTableWidget *d_grid = nullptr;
+    QTableView *d_table_view = nullptr;
+    QIdentityProxyModel *d_proxy_model = nullptr;
+    mutable QTableWidget *d_compat_grid = nullptr;
+    mutable bool d_compat_grid_dirty = true;
+    bool d_dirty = true;
     bool d_syncing = false;
     bool d_shutting_down = false;
 };
@@ -198,6 +208,7 @@ public:
 
     void repositionOverlayWidgets();
     void refreshActiveContext();
+    void setHostViewport(QWidget *host);
 
     FocusTableDrawer *tableDrawer() const;
     QToolButton *worksheetToggleButton() const;

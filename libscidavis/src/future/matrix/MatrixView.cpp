@@ -101,6 +101,67 @@ void MatrixView::init()
     connect(d_hide_button, SIGNAL(pressed()), this, SLOT(toggleControlTabBar()));
     d_control_tabs = new QWidget();
     ui.setupUi(d_control_tabs);
+    {
+        class CompactCoordSpinBox : public QDoubleSpinBox
+        {
+        public:
+            explicit CompactCoordSpinBox(QWidget *parent = nullptr) : QDoubleSpinBox(parent)
+            {
+                setDecimals(10);
+                setRange(-1e12, 1e12);
+                setSingleStep(0.1);
+                setMinimumWidth(110);
+                setMaximumWidth(16777215);
+            }
+            QString textFromValue(double val) const override
+            {
+                return locale().toString(val, 'g', 6);
+            }
+            double valueFromText(const QString &text) const override
+            {
+                bool ok = false;
+                double v = locale().toDouble(text.trimmed(), &ok);
+                if (ok)
+                    return v;
+                return QLocale::c().toDouble(text.trimmed(), &ok);
+            }
+            QValidator::State validate(QString &input, int &) const override
+            {
+                const QString t = input.trimmed();
+                if (t.isEmpty() || t == QLatin1String("-") || t == QLatin1String("+")
+                    || t == QLatin1String(".") || t == QLatin1String("-.")
+                    || t == QLatin1String("+."))
+                    return QValidator::Intermediate;
+                if (t.endsWith(QLatin1Char('e'), Qt::CaseInsensitive)
+                    || t.endsWith(QLatin1String("e-"), Qt::CaseInsensitive)
+                    || t.endsWith(QLatin1String("e+"), Qt::CaseInsensitive))
+                    return QValidator::Intermediate;
+                bool ok = false;
+                locale().toDouble(t, &ok);
+                if (!ok)
+                    QLocale::c().toDouble(t, &ok);
+                return ok ? QValidator::Acceptable : QValidator::Invalid;
+            }
+        };
+
+        auto upgradeCoordSpin = [](QDoubleSpinBox *&sb) {
+            if (!sb || !sb->parentWidget() || !sb->parentWidget()->layout())
+                return;
+            QWidget *pw = sb->parentWidget();
+            const QString objName = sb->objectName();
+            const double initVal = sb->value();
+            auto *modernSb = new CompactCoordSpinBox(pw);
+            modernSb->setObjectName(objName);
+            modernSb->setValue(initVal);
+            pw->layout()->replaceWidget(sb, modernSb);
+            delete sb;
+            sb = modernSb;
+        };
+        upgradeCoordSpin(ui.first_col_spinbox);
+        upgradeCoordSpin(ui.last_col_spinbox);
+        upgradeCoordSpin(ui.first_row_spinbox);
+        upgradeCoordSpin(ui.last_row_spinbox);
+    }
     updateLocale();
 #if 0 // this seems not to work
 	ui.first_row_spinbox->setMaximum(std::numeric_limits<double>::max());

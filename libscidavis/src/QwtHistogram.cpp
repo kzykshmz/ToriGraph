@@ -27,17 +27,96 @@
  *                                                                         *
  ***************************************************************************/
 #include "QwtHistogram.h"
+#include "Plot.h"
 #include "core/column/Column.h"
 #include <QPainter>
 #include <QLocale>
+#include <cmath>
+#include <qwt_scale_map.h>
 
 #include <gsl/gsl_vector.h>
 #include <gsl/gsl_histogram.h>
+
+namespace {
+
+void computeNiceHistogramBins(double minVal, double maxVal, int sampleCount, double &outBegin,
+                              double &outEnd, double &outBinSize, int &outNumBins)
+{
+    if (!std::isfinite(minVal) || !std::isfinite(maxVal)) {
+        outBegin = 0.0;
+        outEnd = 1.0;
+        outBinSize = 0.1;
+        outNumBins = 10;
+        return;
+    }
+    if (minVal > maxVal)
+        qSwap(minVal, maxVal);
+
+    const double span = maxVal - minVal;
+    if (span <= 0.0 || !std::isfinite(span)) {
+        const double pad = qMax(1e-6, 0.05 * std::fabs(minVal));
+        outBegin = minVal - pad;
+        outEnd = maxVal + pad;
+        outNumBins = 5;
+        outBinSize = (outEnd - outBegin) / double(outNumBins);
+        return;
+    }
+
+    const int targetBins =
+            qBound(8, int(std::ceil(std::log2(double(qMax(2, sampleCount))) + 1.0)), 20);
+    const double rawStep = span / double(targetBins);
+    const double mag = std::pow(10.0, std::floor(std::log10(rawStep)));
+    const double norm = rawStep / mag;
+    double niceMult = 1.0;
+    if (norm <= 1.4)
+        niceMult = 1.0;
+    else if (norm <= 2.2)
+        niceMult = 2.0;
+    else if (norm <= 3.5)
+        niceMult = 2.5;
+    else if (norm <= 7.0)
+        niceMult = 5.0;
+    else
+        niceMult = 10.0;
+
+    double step = niceMult * mag;
+    if (step <= 0.0 || !std::isfinite(step))
+        step = span / 10.0;
+
+    double begin = std::floor(minVal / step) * step;
+    double end = std::ceil(maxVal / step) * step;
+    if (std::fabs(begin) < 1e-12 * step)
+        begin = 0.0;
+    if (end <= begin)
+        end = begin + step;
+
+    int nBins = qBound(1, qRound((end - begin) / step), 200);
+    end = begin + double(nBins) * step;
+    if (maxVal >= end) {
+        end += step;
+        ++nBins;
+    }
+
+    outBegin = begin;
+    outEnd = end;
+    outBinSize = step;
+    outNumBins = nBins;
+}
+
+} // namespace
 
 QwtHistogram::QwtHistogram(Table *t, const QString &name, int startRow, int endRow)
     : QwtBarCurve(QwtBarCurve::Vertical, t, "dummy", name, startRow, endRow)
 {
     d_autoBin = true;
+    d_bin_size = 1.0;
+    d_begin = 0.0;
+    d_end = 10.0;
+    d_mean = 0.0;
+    d_standard_deviation = 0.0;
+    d_min = 0.0;
+    d_max = 0.0;
+    setGap(0);
 }
 
 void QwtHistogram::copy(const QwtHistogram *h)
@@ -48,6 +127,10 @@ void QwtHistogram::copy(const QwtHistogram *h)
     d_bin_size = h->d_bin_size;
     d_begin = h->d_begin;
     d_end = h->d_end;
+    d_mean = h->d_mean;
+    d_standard_deviation = h->d_standard_deviation;
+    d_min = h->d_min;
+    d_max = h->d_max;
 }
 
 void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -56,23 +139,47 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
     if (!painter || dataSize() <= 0)
         return;
 
-    if (to < 0)
+    if (from < 0)
+        from = 0;
+    if (to < 0 || to >= dataSize())
         to = dataSize() - 1;
+    if (from > to)
+        return;
 
     painter->save();
-    painter->setPen(QwtPlotCurve::pen());
+    const double sc = Plot::printDeviceScale();
+    QPen hPen = QwtPlotCurve::pen();
+    if (hPen.style() != Qt::NoPen) {
+        hPen.setCosmetic(false);
+        hPen.setWidthF(qMax(1.0, hPen.widthF()) * sc);
+    }
+    painter->setPen(hPen);
     painter->setBrush(QwtPlotCurve::brush());
 
-    const int ref = yMap.transform(baseline());
-    const int dx = abs(xMap.transform(x(from + 1)) - xMap.transform(x(from)));
-    const int bar_width = int(dx * (1 - gap() * 0.01));
-    const int half_width = int(0.5 * (dx - bar_width));
-    const int xOffset = int(0.01 * offset() * bar_width);
+    const double ref = yMap.xTransform(baseline());
+    double dx = 0.0;
+    if (d_bin_size > 0.0 && std::isfinite(d_bin_size)) {
+        dx = std::fabs(xMap.xTransform(x(from) + d_bin_size) - xMap.xTransform(x(from)));
+    } else if (from + 1 < dataSize()) {
+        dx = std::fabs(xMap.xTransform(x(from + 1)) - xMap.xTransform(x(from)));
+    } else if (dataSize() >= 2) {
+        dx = std::fabs(xMap.xTransform(x(1)) - xMap.xTransform(x(0)));
+    }
+    if (dx <= 1e-6)
+        dx = qMax(6.0 * sc, std::fabs(xMap.pDist()) / 10.0);
+
+    const double bar_width = qMax(1.0, dx * (1.0 - gap() * 0.01));
+    const double half_width = 0.5 * (dx - bar_width);
+    const double xOffset = 0.01 * offset() * bar_width;
 
     for (int i = from; i <= to; i++) {
-        const int px1 = xMap.transform(x(i));
-        const int py1 = yMap.transform(y(i));
-        painter->drawRect(px1 + half_width + xOffset, py1, bar_width + 1, (ref - py1 + 1));
+        const double px1 = xMap.xTransform(x(i));
+        const double py1 = yMap.xTransform(y(i));
+        if (!std::isfinite(px1) || !std::isfinite(py1) || !std::isfinite(ref))
+            continue;
+        const double top = qMin(py1, ref);
+        const double h = std::fabs(ref - py1);
+        painter->drawRect(QRectF(px1 + half_width + xOffset, top, bar_width, qMax(0.0, h)));
     }
 
     painter->restore();
@@ -81,10 +188,18 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
 QwtDoubleRect QwtHistogram::boundingRect() const
 {
     QwtDoubleRect rect = QwtPlotCurve::boundingRect();
-    rect.setLeft(rect.left() - x(1));
-    rect.setRight(rect.right() + x(dataSize() - 1));
-    rect.setTop(0);
-    rect.setBottom(1.2 * rect.bottom());
+    if (dataSize() <= 0)
+        return rect;
+    double bw = (d_bin_size > 0.0 && std::isfinite(d_bin_size)) ? d_bin_size : 0.0;
+    if (bw <= 0.0 && dataSize() >= 2)
+        bw = std::fabs(x(1) - x(0));
+    if (bw <= 0.0 || !std::isfinite(bw))
+        bw = 1.0;
+
+    rect.setLeft(rect.left() - 0.15 * bw);
+    rect.setRight(rect.right() + 1.15 * bw);
+    rect.setTop(0.0);
+    rect.setBottom(qMax(1.0, 1.15 * rect.bottom()));
     return rect;
 }
 
@@ -98,90 +213,107 @@ void QwtHistogram::setBinning(bool autoBin, double size, double begin, double en
 
 bool QwtHistogram::loadData()
 {
-    int r = abs(d_end_row - d_start_row) + 1;
-    QVarLengthArray<double> Y(r);
+    if (!d_table)
+        return false;
 
+    Column *x_dummy = nullptr;
+    Column *y_col_ptr = nullptr;
+    resolveColumns(x_dummy, y_col_ptr);
     int ycol = d_table->colIndex(title().text());
-    Column *y_col_ptr = d_table->column(ycol);
-    auto yColType = d_table->columnType(ycol);
+    if (!y_col_ptr && ycol >= 0 && ycol < d_table->numCols())
+        y_col_ptr = d_table->column(ycol);
+    if (!y_col_ptr)
+        return false;
+
+    const int startR = qMax(0, d_start_row);
+    const int endR = (d_end_row < 0) ? (y_col_ptr->rowCount() - 1)
+                                     : qMin(d_end_row, y_col_ptr->rowCount() - 1);
+    if (startR > endR)
+        return false;
+
+    QVarLengthArray<double> Y(endR - startR + 1);
+    const auto yColType = (ycol >= 0 && ycol < d_table->numCols())
+            ? d_table->columnType(ycol)
+            : y_col_ptr->columnMode();
     int size = 0;
-    for (int row = d_start_row; row <= d_end_row && row < y_col_ptr->rowCount(); row++) {
-        if (!y_col_ptr->isInvalid(row)) {
-            if (yColType == SciDAVis::ColumnMode::Text) {
-                QString yval = y_col_ptr->textAt(row);
-                bool valid_data = true;
-                Y[size] = QLocale().toDouble(yval, &valid_data);
-                if (!valid_data)
-                    continue;
-            } else
-                Y[size] = y_col_ptr->valueAt(row);
-            size++;
+    double minVal = 0.0, maxVal = 0.0;
+    for (int row = startR; row <= endR; row++) {
+        if (y_col_ptr->isInvalid(row) || y_col_ptr->isMasked(row))
+            continue;
+        double val = 0.0;
+        if (yColType == SciDAVis::ColumnMode::Text) {
+            const QString yval = y_col_ptr->textAt(row);
+            bool valid_data = false;
+            val = QLocale().toDouble(yval, &valid_data);
+            if (!valid_data)
+                val = QLocale::c().toDouble(yval, &valid_data);
+            if (!valid_data)
+                continue;
+        } else {
+            val = y_col_ptr->valueAt(row);
         }
+        if (!std::isfinite(val))
+            continue;
+        if (size == 0) {
+            minVal = maxVal = val;
+        } else {
+            if (val < minVal)
+                minVal = val;
+            if (val > maxVal)
+                maxVal = val;
+        }
+        Y[size++] = val;
     }
 
-    if (size < 2 || (size == 2 && Y[0] == Y[1])) { // non valid histogram
-        double X[2];
-        Y.resize(2);
-        for (int i = 0; i < 2; i++) {
-            Y[i] = 0;
-            X[i] = 0;
-        }
-        setData(X, Y.data(), 2);
+    if (size < 1) {
+        double X[2] = { 0.0, 1.0 };
+        double Z[2] = { 0.0, 0.0 };
+        setData(X, Z, 2);
         return false;
     }
 
-    int n;
-    gsl_histogram *h;
-    if (d_autoBin) {
-        n = 10;
+    int n = 10;
+    gsl_histogram *h = nullptr;
+    if (d_autoBin || !std::isfinite(d_bin_size) || d_bin_size <= 0.0 || !std::isfinite(d_begin)
+        || !std::isfinite(d_end) || d_end <= d_begin) {
+        computeNiceHistogramBins(minVal, maxVal, size, d_begin, d_end, d_bin_size, n);
         h = gsl_histogram_alloc(n);
         if (!h)
             return false;
-
-        gsl_vector *v = gsl_vector_alloc(size);
-        for (int i = 0; i < size; i++)
-            gsl_vector_set(v, i, Y[i]);
-
-        double min, max;
-        gsl_vector_minmax(v, &min, &max);
-        gsl_vector_free(v);
-
-        d_begin = floor(min);
-        d_end = ceil(max);
-        d_bin_size = (d_end - d_begin) / (double)n;
-
-        gsl_histogram_set_ranges_uniform(h, floor(min), ceil(max));
+        const double gslUpper = (maxVal >= d_end - 1e-12 * d_bin_size)
+                ? (d_end + 1e-9 * d_bin_size)
+                : d_end;
+        gsl_histogram_set_ranges_uniform(h, d_begin, gslUpper);
     } else {
-        n = int((d_end - d_begin) / d_bin_size + 1);
+        n = qBound(1, int(std::ceil((d_end - d_begin) / d_bin_size - 1e-9)), 10000);
         h = gsl_histogram_alloc(n);
         if (!h)
             return false;
 
-        double *range = new double[n + 2];
-        for (int i = 0; i <= n + 1; i++)
-            range[i] = d_begin + i * d_bin_size;
+        std::vector<double> range(static_cast<size_t>(n) + 1);
+        for (int i = 0; i <= n; i++)
+            range[static_cast<size_t>(i)] = d_begin + double(i) * d_bin_size;
+        if (maxVal >= range.back() - 1e-12 * d_bin_size && maxVal <= range.back() + 1e-9 * d_bin_size)
+            range.back() += 1e-9 * d_bin_size;
 
-        gsl_histogram_set_ranges(h, range, n + 1);
-        delete[] range;
+        gsl_histogram_set_ranges(h, range.data(), n + 1);
     }
 
     for (int i = 0; i < size; i++)
         gsl_histogram_increment(h, Y[i]);
 
-    std::vector<double> X(n); // stores ranges (x) and bins (y)
+    std::vector<double> X(n);
     Y.resize(n);
     for (int i = 0; i < n; i++) {
         Y[i] = gsl_histogram_get(h, i);
-        double lower, upper;
-        gsl_histogram_get_range(h, i, &lower, &upper);
-        X[i] = lower;
+        X[i] = d_begin + double(i) * d_bin_size;
     }
     setData(X.data(), Y.data(), n);
 
     d_mean = gsl_histogram_mean(h);
     d_standard_deviation = gsl_histogram_sigma(h);
-    d_min = gsl_histogram_min_val(h);
-    d_max = gsl_histogram_max_val(h);
+    d_min = minVal;
+    d_max = maxVal;
 
     gsl_histogram_free(h);
 
@@ -190,54 +322,58 @@ bool QwtHistogram::loadData()
 
 void QwtHistogram::initData(const QVector<double> &Y, int size)
 {
-    if (size < 2 || (size == 2 && Y[0] == Y[1])) { // non valid histogram data
-        double x[2], y[2];
-        for (int i = 0; i < 2; i++) {
-            y[i] = 0;
-            x[i] = 0;
+    QVector<double> finiteY;
+    finiteY.reserve(qMax(0, size));
+    double minVal = 0.0, maxVal = 0.0;
+    for (int i = 0; i < size && i < Y.size(); ++i) {
+        const double v = Y[i];
+        if (!std::isfinite(v))
+            continue;
+        if (finiteY.isEmpty()) {
+            minVal = maxVal = v;
+        } else {
+            if (v < minVal)
+                minVal = v;
+            if (v > maxVal)
+                maxVal = v;
         }
+        finiteY.push_back(v);
+    }
+
+    if (finiteY.isEmpty()) {
+        double x[2] = { 0.0, 1.0 };
+        double y[2] = { 0.0, 0.0 };
         setData(x, y, 2);
         return;
     }
 
-    const int n = 10; // default value
-    double x[n], y[n]; // store ranges (x) and bins (y)
+    int n = 10;
+    computeNiceHistogramBins(minVal, maxVal, finiteY.size(), d_begin, d_end, d_bin_size, n);
     gsl_histogram *h = gsl_histogram_alloc(n);
     if (!h)
         return;
 
-    gsl_vector *v;
-    v = gsl_vector_alloc(size);
-    for (int i = 0; i < size; i++)
-        gsl_vector_set(v, i, Y[i]);
+    const double gslUpper = (maxVal >= d_end - 1e-12 * d_bin_size)
+            ? (d_end + 1e-9 * d_bin_size)
+            : d_end;
+    gsl_histogram_set_ranges_uniform(h, d_begin, gslUpper);
 
-    double min, max;
-    gsl_vector_minmax(v, &min, &max);
-    gsl_vector_free(v);
+    for (double v : finiteY)
+        gsl_histogram_increment(h, v);
 
-    d_begin = floor(min);
-    d_end = ceil(max);
-
-    gsl_histogram_set_ranges_uniform(h, floor(min), ceil(max));
-
-    for (int i = 0; i < size; i++)
-        gsl_histogram_increment(h, Y[i]);
-
+    std::vector<double> x(n), y(n);
     for (int i = 0; i < n; i++) {
         y[i] = gsl_histogram_get(h, i);
-        double lower, upper;
-        gsl_histogram_get_range(h, i, &lower, &upper);
-        x[i] = lower;
+        x[i] = d_begin + double(i) * d_bin_size;
     }
 
-    setData(x, y, n);
+    setData(x.data(), y.data(), n);
 
-    d_bin_size = (d_end - d_begin) / (double)n;
     d_autoBin = true;
     d_mean = gsl_histogram_mean(h);
     d_standard_deviation = gsl_histogram_sigma(h);
-    d_min = gsl_histogram_min_val(h);
-    d_max = gsl_histogram_max_val(h);
+    d_min = minVal;
+    d_max = maxVal;
 
     gsl_histogram_free(h);
 }

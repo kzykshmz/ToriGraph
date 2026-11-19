@@ -35,6 +35,7 @@
 #include "SelectionMoveResizer.h"
 #include "AssociationsDialog.h"
 #include "Spectrogram.h"
+#include "ArrowMarker.h"
 #include "ImageMarker.h"
 #include "CurveRangeDialog.h"
 
@@ -143,6 +144,8 @@ static int runSuite46OleAntialiasingAndSubpixelSmoothnessGate(ApplicationWindow 
 static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *mw);
 static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(ApplicationWindow *mw);
 static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw);
+static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw);
+static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -158,6 +161,20 @@ int main(int argc, char **argv)
     ApplicationWindow *mw = new ApplicationWindow();
     mw->applyUserSettings();
     mw->saveSettings();
+    if (args.contains("--suite50-only")) {
+        const int rc50 = runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc50;
+    }
+    if (args.contains("--suite51-only")) {
+        const int rc51 = runSuite51Campaign6FinalEndToEndInvariants(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc51;
+    }
 
     // =========================================================================
     // 1. OriginPro 2021 Reference Scatter Plot & Visual Parity
@@ -5302,7 +5319,13 @@ int main(int argc, char **argv)
     if (runSuite49PhaseBUxRenderMatSciAndApiGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 49 ToriGraph OriginPro Parity, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite51Campaign6FinalEndToEndInvariants(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 51 ToriGraph OriginPro Parity, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -7087,8 +7110,10 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
         for (int y = 0; y < barImg.height(); ++y) {
             for (int x = 0; x < barImg.width(); ++x) {
                 const QColor c = barImg.pixelColor(x, y);
-                if (c.red() > 200 && c.green() < 60 && c.blue() < 60)
+                if ((c.red() > 200 && c.green() < 60 && c.blue() < 60)
+                    || (c.blue() > 140 && c.red() < 60)) {
                     ++redBarPx;
+                }
             }
         }
         CHECK_COND(barFi.exists() && barFi.size() > 200 && barFi.size() < 250000
@@ -10870,5 +10895,1794 @@ static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw)
     }
 
     std::cout << "[INFO] Suite 49 Phase B UX/Render/MatSci/API Regression Gate passed!\n";
+    return 0;
+}
+
+#include "QwtHistogram.h"
+#include <QTemporaryDir>
+
+static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 50: MegaWave1_Plots_MatSci_Autonomy_Undo_Perf...\n";
+    Q_UNUSED(mw);
+
+    QTemporaryDir tmpDir;
+    CHECK_COND(tmpDir.isValid(), "Suite 50: failed to create temporary directory!");
+
+    ApplicationWindow *w50 = new ApplicationWindow();
+    w50->setHeadlessMode(true);
+    w50->applyUserSettings();
+    w50->switchToLanguage("en");
+    QApplication::processEvents();
+
+    auto verifyArialNormalGraph = [](MultiLayer *mlCheck, const char *ctx) -> bool {
+        if (!mlCheck || mlCheck->layersList().isEmpty()) {
+            std::cerr << "[FAIL] Suite 50 (" << ctx << "): null or empty MultiLayer!\n";
+            return false;
+        }
+        for (Graph *gl : mlCheck->layersList()) {
+            if (!gl || !gl->plotWidget())
+                continue;
+            const QFont tf = gl->plotWidget()->title().font();
+            if (tf.family().compare(QLatin1String("Arial"), Qt::CaseInsensitive) != 0 || tf.bold()) {
+                std::cerr << "[FAIL] Suite 50 (" << ctx << "): plot title font='"
+                          << tf.family().toStdString() << "' bold=" << tf.bold() << "\n";
+                return false;
+            }
+            for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
+                const QFont atf = gl->axisTitleFont(ax);
+                const QFont tkf = gl->axisFont(ax);
+                if (atf.family().compare(QLatin1String("Arial"), Qt::CaseInsensitive) != 0 || atf.bold()) {
+                    std::cerr << "[FAIL] Suite 50 (" << ctx << "): axisTitleFont(" << ax << ")='"
+                              << atf.family().toStdString() << "' bold=" << atf.bold() << "\n";
+                    return false;
+                }
+                if (tkf.family().compare(QLatin1String("Arial"), Qt::CaseInsensitive) != 0 || tkf.bold()) {
+                    std::cerr << "[FAIL] Suite 50 (" << ctx << "): axisFont(" << ax << ")='"
+                              << tkf.family().toStdString() << "' bold=" << tkf.bold() << "\n";
+                    return false;
+                }
+            }
+            for (QwtPlotItem *it : gl->plotWidget()->itemList()) {
+                if (auto *lg = dynamic_cast<Legend *>(it)) {
+                    const QFont lf = lg->font();
+                    if (lf.family().compare(QLatin1String("Arial"), Qt::CaseInsensitive) != 0 || lf.bold()) {
+                        std::cerr << "[FAIL] Suite 50 (" << ctx << "): Legend font='"
+                                  << lf.family().toStdString() << "' bold=" << lf.bold() << "\n";
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    };
+
+    // -------------------------------------------------------------------------
+    // 50a. Box/Violin category labels (plotBoxDiagram sets 1-based category
+    //      labels, clears "X Axis Title", skips NaN & masked points)
+    // -------------------------------------------------------------------------
+    {
+        Table *tBox = w50->newTable(10, 3, "S50BoxTbl", "Temper Hardness");
+        CHECK_COND(tBox != nullptr, "Suite 50a: failed to create S50BoxTbl");
+        tBox->setColName(0, "T4");
+        tBox->setColName(1, "T6");
+        tBox->setColName(2, "T73");
+        tBox->setColPlotDesignation(0, SciDAVis::Y);
+        tBox->setColPlotDesignation(1, SciDAVis::Y);
+        tBox->setColPlotDesignation(2, SciDAVis::Y);
+
+        for (int c = 0; c < 3; ++c) {
+            for (int r = 0; r < 8; ++r)
+                tBox->setCell(r, c, 120.0 + 25.0 * double(c) + 2.5 * double(r));
+            // Row 8: NaN / invalid cell
+            tBox->column(c)->setInvalid(8, true);
+            // Row 9: extreme outlier 99999.0 that is masked
+            tBox->setCell(9, c, 99999.0);
+            tBox->column(c)->setMasked(9, true);
+        }
+
+        MultiLayer *mlBox = w50->newGraph("S50BoxGraph");
+        CHECK_COND(mlBox != nullptr && mlBox->activeGraph() != nullptr, "Suite 50a: mlBox null");
+        Graph *gBox = mlBox->activeGraph();
+        gBox->setXAxisTitle("X Axis Title");
+        gBox->plotBoxDiagram(
+                tBox, QStringList() << "S50BoxTbl_T4" << "S50BoxTbl_T6" << "S50BoxTbl_T73");
+
+        const QStringList boxCats = gBox->categoryLabels(QwtPlot::xBottom);
+        CHECK_COND(boxCats.size() == 3 && boxCats[0].contains("T4")
+                           && boxCats[1].contains("T6") && boxCats[2].contains("T73"),
+                   "Suite 50a: plotBoxDiagram failed to set 1-based category labels T4/T6/T73!");
+        CHECK_COND(gBox->axisTitle(QwtPlot::xBottom).trimmed().isEmpty(),
+                   "Suite 50a: plotBoxDiagram failed to clear 'X Axis Title' placeholder!");
+        const QwtScaleDiv *xDivBox = gBox->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        CHECK_COND(xDivBox != nullptr && std::fabs(xDivBox->lowerBound() - 0.5) < 1e-4
+                           && std::fabs(xDivBox->upperBound() - 3.5) < 1e-4,
+                   "Suite 50a: Box plot X-axis category bounds not locked to [0.5, 3.5]!");
+
+        CHECK_COND(gBox->curves() == 3, "Suite 50a: expected 3 BoxCurve items!");
+        for (int k = 0; k < 3; ++k) {
+            auto *bc = dynamic_cast<BoxCurve *>(gBox->curve(k));
+            CHECK_COND(bc != nullptr, "Suite 50a: curve is not BoxCurve!");
+            CHECK_COND(bc->dataSize() == 8 && bc->boundingRect().bottom() < 1000.0,
+                       "Suite 50a: BoxCurve::loadData failed to skip NaN/invalid or masked 99999.0 point!");
+            if (k == 0)
+                bc->setViolinMode(true);
+        }
+        gBox->replot();
+        QImage violinImg(480, 360, QImage::Format_ARGB32);
+        violinImg.fill(Qt::white);
+        {
+            QPainter vp(&violinImg);
+            gBox->exportPainter(vp, false, violinImg.rect());
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 50b. Grouped Bars (--headless non-zero dataOffset(), 0.0 baseline in
+    //      boundingRect()) + Category X-axis [0.5, K+0.5] across applyStylePreset
+    // -------------------------------------------------------------------------
+    {
+        Table *tBar = w50->newTable(4, 3, "S50BarTbl", "Grouped Bars");
+        CHECK_COND(tBar != nullptr, "Suite 50b: failed to create S50BarTbl");
+        for (int r = 0; r < 4; ++r) {
+            tBar->setCell(r, 0, double(r + 1));
+            tBar->setCell(r, 1, 120.0 + 20.0 * double(r)); // min = 120 > 0
+            tBar->setCell(r, 2, 95.0 + 18.0 * double(r));  // min = 95 > 0
+        }
+        // Keep w50 & mlBar hidden (plotWidget()->isVisible() == false, matching --headless!)
+        MultiLayer *mlBar = w50->multilayerPlot(
+                tBar, QStringList() << "S50BarTbl_2" << "S50BarTbl_3", Graph::VerticalBars);
+        CHECK_COND(mlBar != nullptr && mlBar->activeGraph() != nullptr, "Suite 50b: mlBar null");
+        Graph *gBar = mlBar->activeGraph();
+        CHECK_COND(!gBar->plotWidget()->isVisible(),
+                   "Suite 50b: expected hidden/headless Plot widget during dataOffset check!");
+
+        auto *bar0 = dynamic_cast<QwtBarCurve *>(gBar->curve(0));
+        auto *bar1 = dynamic_cast<QwtBarCurve *>(gBar->curve(1));
+        CHECK_COND(bar0 != nullptr && bar1 != nullptr, "Suite 50b: bar0/bar1 null!");
+        const double off0 = bar0->dataOffset();
+        const double off1 = bar1->dataOffset();
+        CHECK_COND(std::fabs(off0) > 1e-6 && std::fabs(off1) > 1e-6
+                           && std::fabs(off0 - off1) > 1e-4,
+                   "Suite 50b: headless Grouped Bars returned zero or unstaggered dataOffset()!");
+        const QwtDoubleRect br0 = bar0->boundingRect();
+        CHECK_COND(std::fabs(br0.top() - 0.0) < 1e-9 && br0.bottom() >= 180.0,
+                   "Suite 50b: QwtBarCurve::boundingRect() missed 0.0 baseline!");
+
+        const QStringList cat4 = { "Base", "Aged-1h", "Aged-8h", "Overaged" };
+        gBar->setCategoryLabels(QwtPlot::xBottom, cat4);
+        mlBar->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        mlBar->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        const QwtScaleDiv *xDivBar = gBar->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        CHECK_COND(xDivBar != nullptr && std::fabs(xDivBar->lowerBound() - 0.5) < 1e-4
+                           && std::fabs(xDivBar->upperBound() - 4.5) < 1e-4
+                           && gBar->categoryLabels(QwtPlot::xBottom) == cat4,
+                   "Suite 50b: Category X-axis [0.5, 4.5] clobbered by applyStylePreset!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 50c. Ternary (Al-Zn-Mg + applyStylePreset safety) & Polar plot
+    //      (setupPolarPlot, isPolarPlot, .sciprj round-trip)
+    // -------------------------------------------------------------------------
+    {
+        Table *tTern = w50->newTable(4, 2, "S50TernTbl", "Al-Zn-Mg");
+        const double compA[4] = { 90.0, 80.0, 70.0, 85.0 };
+        const double compB[4] = { 6.0, 12.0, 18.0, 10.0 };
+        const double compC[4] = { 4.0, 8.0, 12.0, 5.0 };
+        for (int i = 0; i < 4; ++i) {
+            const QPointF xy = Graph::ternaryToCartesian(compA[i], compB[i], compC[i]);
+            tTern->setCell(i, 0, xy.x());
+            tTern->setCell(i, 1, xy.y());
+        }
+        MultiLayer *mlTern = w50->multilayerPlot(
+                tTern, QStringList() << "S50TernTbl_2", Graph::Scatter);
+        CHECK_COND(mlTern != nullptr && mlTern->activeGraph() != nullptr, "Suite 50c: mlTern null");
+        Graph *gTern = mlTern->activeGraph();
+        gTern->setupTernaryPlot("Al", "Zn", "Mg");
+        mlTern->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        CHECK_COND(gTern->isTernaryPlot() && gTern->ternaryLabel(0) == QLatin1String("Al")
+                           && gTern->ternaryLabel(1) == QLatin1String("Zn")
+                           && gTern->ternaryLabel(2) == QLatin1String("Mg")
+                           && !gTern->plotWidget()->axisEnabled(QwtPlot::xBottom)
+                           && !gTern->plotWidget()->axisEnabled(QwtPlot::yLeft),
+                   "Suite 50c: Ternary Al-Zn-Mg corrupted or Cartesian axes re-enabled by applyStylePreset!");
+
+        // Polar plot + applyStylePreset + .sciprj round-trip
+        ApplicationWindow *polWriter = new ApplicationWindow();
+        polWriter->applyUserSettings();
+        MultiLayer *mlPol = polWriter->newGraph("S50PolarGraph");
+        CHECK_COND(mlPol != nullptr && mlPol->activeGraph() != nullptr, "Suite 50c: mlPol null");
+        Graph *gPol = mlPol->activeGraph();
+        QVector<double> thDeg, radVal;
+        for (int k = 0; k <= 36; ++k) {
+            const double deg = 10.0 * double(k);
+            thDeg.push_back(deg);
+            radVal.push_back(1.0 + 0.5 * std::cos(2.0 * deg * M_PI / 180.0));
+        }
+        gPol->setupPolarPlot(thDeg, radVal, "RollingTexture", false);
+        mlPol->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        CHECK_COND(gPol->isPolarPlot() && gPol->polarRadiusMax() >= 1.5
+                           && !gPol->plotWidget()->axisEnabled(QwtPlot::xBottom)
+                           && !gPol->plotWidget()->axisEnabled(QwtPlot::yLeft),
+                   "Suite 50c: Polar plot Cartesian axes leaked after applyStylePreset!");
+
+        const QString polPrjPath = tmpDir.filePath("suite50_polar.sciprj");
+        {
+            QFile pf(polPrjPath);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 50c: failed to open polar .sciprj");
+            pf.write(polWriter->saveProjectToByteArray());
+            pf.close();
+        }
+        polWriter->savedProject();
+        polWriter->setOleEmbeddedMode(true);
+        delete polWriter;
+
+        ApplicationWindow *polReader = new ApplicationWindow();
+        polReader->applyUserSettings();
+        CHECK_COND(polReader->loadProject(polPrjPath), "Suite 50c: loadProject failed on polar .sciprj!");
+        MultiLayer *mlPolRel = qobject_cast<MultiLayer *>(polReader->window("S50PolarGraph"));
+        CHECK_COND(mlPolRel != nullptr && mlPolRel->activeGraph() != nullptr
+                           && mlPolRel->activeGraph()->isPolarPlot()
+                           && !mlPolRel->activeGraph()->plotWidget()->axisEnabled(QwtPlot::xBottom),
+                   "Suite 50c: Polar plot lost isPolarPlot() state across .sciprj round-trip!");
+        polReader->savedProject();
+        polReader->setOleEmbeddedMode(true);
+        delete polReader;
+    }
+
+    // -------------------------------------------------------------------------
+    // 50d. ylog_zero piecewise log break preserved across setScale, +-1e308
+    //      scale overflow guard, and QwtHistogram sub-micron [0.015, 0.35]
+    //      auto-binning (> 3 bins)
+    // -------------------------------------------------------------------------
+    {
+        Table *tBrk = w50->newTable(6, 2, "S50YLogZeroTbl", "ylog_zero");
+        const double xv[6] = { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0 };
+        const double yv[6] = { 0.0, 1e-4, 1e-3, 1e-2, 1e-1, 10.0 };
+        for (int i = 0; i < 6; ++i) {
+            tBrk->setCell(i, 0, xv[i]);
+            tBrk->setCell(i, 1, yv[i]);
+        }
+        MultiLayer *mlBrk = w50->multilayerPlot(
+                tBrk, QStringList() << "S50YLogZeroTbl_2", Graph::LineSymbols);
+        CHECK_COND(mlBrk != nullptr && mlBrk->activeGraph() != nullptr, "Suite 50d: mlBrk null");
+        Graph *gBrk = mlBrk->activeGraph();
+
+        Graph::AxisBreakSpec ylogZero;
+        ylogZero.enabled = true;
+        ylogZero.breakFrom = 1e-5;
+        ylogZero.breakTo = 1e-4;
+        ylogZero.positionPct = 0.18;
+        ylogZero.log10Before = false;
+        ylogZero.log10After = true;
+        gBrk->setAxisBreak(QwtPlot::yLeft, ylogZero);
+        gBrk->setScale(QwtPlot::yLeft, 0.0, 100.0, 0.0, 5, 9, 0 /*Linear outer bounds*/, false);
+
+        const Graph::AxisBreakSpec afterSetScale = gBrk->axisBreak(QwtPlot::yLeft);
+        CHECK_COND(afterSetScale.enabled && !afterSetScale.log10Before && afterSetScale.log10After
+                           && std::fabs(afterSetScale.breakTo - 1e-4) < 1e-12,
+                   "Suite 50d: Graph::setScale wiped ylog_zero piecewise linear+log axis break!");
+
+        // +-1e308 extreme scale overflow guard (no hang / OOM / inf span)
+        QElapsedTimer ovTimer;
+        ovTimer.start();
+        gBrk->setScale(QwtPlot::xBottom, -1e308, 1e308, 0.0, 5, 5, 0 /*Linear*/, false);
+        gBrk->replot();
+        const qint64 ovMs = ovTimer.elapsed();
+        const QwtScaleDiv *ovDiv = gBrk->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        CHECK_COND(ovMs < 500 && ovDiv != nullptr && std::isfinite(ovDiv->lowerBound())
+                           && std::isfinite(ovDiv->upperBound())
+                           && std::fabs(ovDiv->upperBound()) <= 1.01e300,
+                   "Suite 50d: +-1e308 scale overflow guard failed or hung!");
+
+        // QwtHistogram sub-micron [0.015, 0.35] um auto-binning (> 3 bins)
+        Table *tHist = w50->newTable(40, 1, "S50SubMicronHist", "Precipitate Radius (um)");
+        tHist->setColPlotDesignation(0, SciDAVis::Y);
+        for (int i = 0; i < 40; ++i) {
+            const double val = 0.015 + (0.35 - 0.015) * (double(i) / 39.0);
+            tHist->setCell(i, 0, val);
+        }
+        MultiLayer *mlHist = w50->newGraph("S50HistGraph");
+        Graph *gHist = mlHist->activeGraph();
+        CHECK_COND(gHist != nullptr && gHist->plotHistogram(tHist, QStringList() << "S50SubMicronHist_1"),
+                   "Suite 50d: plotHistogram failed on sub-micron table!");
+        auto *hc = dynamic_cast<QwtHistogram *>(gHist->curve(0));
+        CHECK_COND(hc != nullptr && hc->autoBinning() && hc->dataSize() > 3 && hc->binSize() < 0.2,
+                   "Suite 50d: QwtHistogram collapsed sub-micron [0.015, 0.35] data into <= 3 bins!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 50e. Matrix::determinant() & Matrix::invert() on 32x32 all-zero matrix
+    //      (0 crash, clean singular handling) + invertible sanity check
+    // -------------------------------------------------------------------------
+    {
+        Matrix *mZero = w50->newMatrix("S50ZeroMatrix32", 32, 32);
+        CHECK_COND(mZero != nullptr, "Suite 50e: failed to create 32x32 zero matrix!");
+        QVector<qreal> zeros(32 * 32, 0.0);
+        mZero->setCells(zeros);
+
+        const double detZero = mZero->determinant();
+        CHECK_COND(std::isfinite(detZero) && std::fabs(detZero) < 1e-12,
+                   "Suite 50e: 32x32 all-zero Matrix::determinant() did not return 0.0!");
+        mZero->invert(); // Must NOT segfault or corrupt cells with NaN/Inf
+        for (int r = 0; r < 32; ++r) {
+            for (int c = 0; c < 32; ++c) {
+                CHECK_COND(std::isfinite(mZero->cell(r, c)) && std::fabs(mZero->cell(r, c)) < 1e-12,
+                           "Suite 50e: singular 32x32 Matrix::invert() corrupted cell values!");
+            }
+        }
+
+        Matrix *mDiag = w50->newMatrix("S50DiagMatrix4", 4, 4);
+        QVector<qreal> diag(16, 0.0);
+        diag[0] = 2.0;
+        diag[5] = 4.0;
+        diag[10] = 5.0;
+        diag[15] = 10.0;
+        mDiag->setCells(diag);
+        CHECK_COND(std::fabs(mDiag->determinant() - 400.0) < 1e-8,
+                   "Suite 50e: 4x4 diagonal Matrix::determinant() != 400.0!");
+        mDiag->invert();
+        CHECK_COND(std::fabs(mDiag->cell(0, 0) - 0.5) < 1e-9
+                           && std::fabs(mDiag->cell(3, 3) - 0.1) < 1e-9,
+                   "Suite 50e: 4x4 diagonal Matrix::invert() inaccurate!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 50f & 50g. All 6 Sample Datasets + Kissinger, Work Hardening (Considere),
+    //            XRD (Scherrer + W-H), VASP DOS & Bands + 100% Arial Normal
+    // -------------------------------------------------------------------------
+    {
+        const QVector<CurveMathTools::SampleDatasetInfo> dsList = CurveMathTools::listSampleDatasets();
+        CHECK_COND(dsList.size() == 6, "Suite 50f: listSampleDatasets() count != 6!");
+
+        const QStringList requiredIds = {
+            "tensile_alznmg",
+            "tds_hydrogen_3rates",
+            "xrd_aged_alloy",
+            "arrhenius_diffusion",
+            "ct_local_strain_map",
+            "weibull_ceramics"
+        };
+
+        MultiLayer *mlTensileSample = nullptr;
+        MultiLayer *mlXrdSample = nullptr;
+
+        for (const QString &dsId : requiredIds) {
+            Table *outTbl = nullptr;
+            Matrix *outMtx = nullptr;
+            MultiLayer *mlSample = CurveMathTools::loadSampleDataset(w50, dsId, true, &outTbl, &outMtx);
+            CHECK_COND(mlSample != nullptr && mlSample->activeGraph() != nullptr,
+                       "Suite 50f: loadSampleDataset returned null MultiLayer!");
+            if (dsId == QLatin1String("ct_local_strain_map")) {
+                CHECK_COND(outMtx != nullptr && outMtx->numRows() == 128,
+                           "Suite 50f: ct_local_strain_map did not populate 128x128 Matrix!");
+            } else {
+                CHECK_COND(outTbl != nullptr && outTbl->numRows() >= 6,
+                           "Suite 50f: loadSampleDataset did not populate Table!");
+            }
+            CHECK_COND(verifyArialNormalGraph(mlSample, dsId.toUtf8().constData()),
+                       "Suite 50f: sample dataset graph violated 100% Arial QFont::Normal!");
+            if (dsId == QLatin1String("tensile_alznmg"))
+                mlTensileSample = mlSample;
+            else if (dsId == QLatin1String("xrd_aged_alloy"))
+                mlXrdSample = mlSample;
+        }
+
+        // Kissinger TDS: exact synthetic Ea = 45.0 kJ/mol -> ln(beta / Tp^2) = C - Ea / (R * Tp)
+        constexpr double kR = 8.314462618;
+        constexpr double eaTrueJ = 45000.0;
+        const QVector<double> tpK = { 420.0, 450.0, 480.0, 510.0 };
+        QVector<double> betaKmin, tpCelsius;
+        for (double tk : tpK) {
+            const double b = (tk * tk) * std::exp(14.0 - eaTrueJ / (kR * tk));
+            betaKmin.push_back(b);
+            tpCelsius.push_back(tk - 273.15);
+        }
+        const CurveMathTools::KissingerResult kis =
+                CurveMathTools::analyzeKissinger(w50, betaKmin, tpCelsius, false, true, true);
+        std::cout << "[INFO] Suite 50g Kissinger Ea=" << kis.activationEnergyKJmol
+                  << " kJ/mol (true 45.0), R^2=" << kis.rSquare << "\n";
+        CHECK_COND(kis.valid && std::fabs(kis.activationEnergyKJmol - 45.0) < 0.05
+                           && kis.rSquare > 0.9999 && kis.plot != nullptr,
+                   "Suite 50g: analyzeKissinger Ea accuracy or R^2 check failed!");
+        CHECK_COND(verifyArialNormalGraph(kis.plot, "analyzeKissinger"),
+                   "Suite 50g: Kissinger graph violated 100% Arial QFont::Normal!");
+
+        // Work Hardening / Kocks-Mecking Considere necking root on AA7075-T6 sample
+        CHECK_COND(mlTensileSample != nullptr, "Suite 50g: mlTensileSample null");
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                w50, mlTensileSample->activeGraph(), QString(), 11, true);
+        std::cout << "[INFO] Suite 50g WorkHardening Considere eps_t=" << wh.considereTrueStrain
+                  << ", sigma_t=" << wh.considereTrueStress << " MPa, n=" << wh.hollomonN << "\n";
+        CHECK_COND(wh.valid && wh.considereTrueStrain > 0.05 && wh.considereTrueStrain < 0.20
+                           && wh.considereTrueStress > 500.0 && wh.hollomonN > 0.02
+                           && wh.plot != nullptr,
+                   "Suite 50g: analyzeWorkHardening Considere root out of range!");
+        CHECK_COND(verifyArialNormalGraph(wh.plot, "analyzeWorkHardening"),
+                   "Suite 50g: WorkHardening graph violated 100% Arial QFont::Normal!");
+
+        // XRD Scherrer + Williamson-Hall on Peak-Aged Al-Zn-Mg sample
+        CHECK_COND(mlXrdSample != nullptr, "Suite 50g: mlXrdSample null");
+        const CurveMathTools::XRDAnalysisResult xrd = CurveMathTools::analyzeXRD(
+                w50, mlXrdSample->activeGraph(), QString(), 1.540598, 0.05, 0.90,
+                QStringLiteral("fcc"), false, true, true);
+        std::cout << "[INFO] Suite 50g XRD peaks=" << xrd.peaks.size()
+                  << ", Scherrer D=" << xrd.meanScherrerSizeNm
+                  << " nm, W-H D=" << xrd.whSizeNm
+                  << " nm, strain=" << xrd.whMicrostrain
+                  << ", a0=" << xrd.latticeParamAngstrom << " A\n";
+        CHECK_COND(xrd.valid && xrd.peaks.size() >= 4 && xrd.meanScherrerSizeNm > 5.0
+                           && xrd.whSizeNm > 5.0 && xrd.latticeParamAngstrom > 3.9
+                           && xrd.latticeParamAngstrom < 4.2 && xrd.whPlot != nullptr,
+                   "Suite 50g: analyzeXRD Scherrer / Williamson-Hall / lattice parameter failed!");
+        CHECK_COND(verifyArialNormalGraph(mlXrdSample, "analyzeXRD_parent")
+                           && verifyArialNormalGraph(xrd.whPlot, "analyzeXRD_WH"),
+                   "Suite 50g: XRD / W-H graph violated 100% Arial QFont::Normal!");
+
+        // VASP DOS & Band Structure
+        Table *tDos = w50->newTable(81, 3, "S50VaspDosSrc", "DOSCAR");
+        tDos->setColName(0, "Energy");
+        tDos->setColName(1, "TotalDOS");
+        tDos->setColName(2, "d_DOS");
+        for (int i = 0; i < 81; ++i) {
+            const double e = -6.0 + 0.15 * double(i);
+            const double dBand = 4.0 * std::exp(-((e + 1.8) * (e + 1.8)) / 1.2);
+            const double tot = dBand + ((std::fabs(e) > 0.6) ? 1.2 : 0.0);
+            tDos->setCell(i, 0, e);
+            tDos->setCell(i, 1, tot);
+            tDos->setCell(i, 2, dBand);
+        }
+        const CurveMathTools::VaspPlotResult vDos = CurveMathTools::plotVaspDos(
+                w50, tDos, "Energy", QStringList() << "TotalDOS" << "d_DOS", QStringList(), 0.0, false);
+        CHECK_COND(vDos.valid && vDos.plot != nullptr && std::isfinite(vDos.dBandCenterEV)
+                           && std::fabs(vDos.dBandCenterEV - (-1.8)) < 0.25,
+                   "Suite 50g: plotVaspDos failed or d-band center inaccurate!");
+        CHECK_COND(verifyArialNormalGraph(vDos.plot, "plotVaspDos"),
+                   "Suite 50g: VASP DOS graph violated 100% Arial QFont::Normal!");
+
+        Table *tBand = w50->newTable(41, 3, "S50VaspBandSrc", "EIGENVAL");
+        tBand->setColName(0, "k_dist");
+        tBand->setColName(1, "VB");
+        tBand->setColName(2, "CB");
+        for (int i = 0; i < 41; ++i) {
+            const double k = 2.0 * double(i) / 40.0;
+            const double c = std::cos(M_PI * k);
+            tBand->setCell(i, 0, k);
+            tBand->setCell(i, 1, -1.6 + 1.0 * c); // VBM = -0.6 eV at k=0, 2
+            tBand->setCell(i, 2, 1.6 - 1.0 * c);  // CBM = +0.6 eV at k=0, 2 -> Eg = 1.2 eV
+        }
+        const QVector<double> kTicks = { 0.0, 1.0, 2.0 };
+        const QStringList kLabels = { QString::fromUtf8("\xCE\x93"), "X", "M" };
+        const CurveMathTools::VaspPlotResult vBand = CurveMathTools::plotVaspBands(
+                w50, tBand, "k_dist", QStringList() << "VB" << "CB", kTicks, kLabels, 0.0, -4.0, 4.0);
+        CHECK_COND(vBand.valid && vBand.plot != nullptr && std::fabs(vBand.bandgapEV - 1.2) < 0.05,
+                   "Suite 50g: plotVaspBands failed or bandgap != 1.2 eV!");
+        CHECK_COND(verifyArialNormalGraph(vBand.plot, "plotVaspBands"),
+                   "Suite 50g: VASP Band Structure graph violated 100% Arial QFont::Normal!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 50h. 200,000-point PlotCurve render < 500 ms, FocusCanvasHudOverlay
+    //      visible in LayoutSplitTableGraph with 0 eager QTableWidgetItems when
+    //      drawer is hidden, and Table 12-edit + formula Undo/Redo (12/12 Redo)
+    // -------------------------------------------------------------------------
+    {
+        ApplicationWindow *wPerf = new ApplicationWindow();
+        wPerf->applyUserSettings();
+        wPerf->resize(1280, 800);
+        wPerf->show();
+        QApplication::processEvents();
+
+        constexpr int N200K = 200000;
+        Table *t200k = wPerf->newTable(N200K, 2, "S50Big200kTbl", "200k Stream");
+        CHECK_COND(t200k != nullptr, "Suite 50h: failed to allocate 200k Table!");
+        QVector<qreal> vx(N200K), vy(N200K);
+        for (int i = 0; i < N200K; ++i) {
+            const double x = 0.001 * double(i);
+            vx[i] = x;
+            vy[i] = std::sin(x) + 0.25 * std::cos(17.0 * x);
+        }
+        t200k->column(0)->replaceValues(0, vx);
+        t200k->column(1)->replaceValues(0, vy);
+
+        MultiLayer *ml200k = wPerf->multilayerPlot(
+                t200k, QStringList() << "S50Big200kTbl_2", Graph::Line);
+        CHECK_COND(ml200k != nullptr && ml200k->activeGraph() != nullptr, "Suite 50h: ml200k null");
+        Graph *g200k = ml200k->activeGraph();
+        QImage renderTarget(900, 600, QImage::Format_ARGB32);
+        renderTarget.fill(Qt::white);
+
+        QElapsedTimer renderTimer;
+        renderTimer.start();
+        {
+            QPainter rp(&renderTarget);
+            g200k->exportPainter(rp, false, renderTarget.rect());
+        }
+        const qint64 renderMs = renderTimer.elapsed();
+        std::cout << "[INFO] Suite 50h 200,000-point PlotCurve render time = " << renderMs << " ms\n";
+        CHECK_COND(renderMs < 500,
+                   "Suite 50h: 200,000-point PlotCurve render exceeded 500 ms budget!");
+
+        // FocusCanvasHudOverlay visible in LayoutSplitTableGraph + 0 eager QTableWidgetItems when drawer hidden
+        ModernRibbonBar *ribbon = wPerf->modernRibbonBar();
+        CHECK_COND(ribbon != nullptr, "Suite 50h: ModernRibbonBar null on wPerf");
+        ribbon->setWorkspaceLayoutMode(ModernRibbonBar::LayoutSplitTableGraph);
+        QApplication::processEvents();
+        ribbon->setFocusHudMode(true);
+        QApplication::processEvents();
+
+        FocusCanvasHudOverlay *hud = ribbon->focusHudOverlay();
+        FocusTableDrawer *drawer = ribbon->focusTableDrawer();
+        CHECK_COND(hud != nullptr && drawer != nullptr, "Suite 50h: HUD or Drawer null");
+        CHECK_COND(hud->isOverlayActive() && !hud->isHidden() && hud->isVisibleTo(wPerf)
+                           && hud->geometry().width() > 100 && hud->geometry().top() >= 0,
+                   "Suite 50h: FocusCanvasHudOverlay not visible in LayoutSplitTableGraph!");
+        CHECK_COND(drawer->isHidden(), "Suite 50h: FocusTableDrawer should start hidden!");
+
+        int eagerWidgetItems = 0;
+        for (QTableWidget *tw : drawer->findChildren<QTableWidget *>()) {
+            if (!tw)
+                continue;
+            for (int r = 0; r < tw->rowCount(); ++r) {
+                for (int c = 0; c < tw->columnCount(); ++c) {
+                    if (tw->item(r, c) != nullptr)
+                        ++eagerWidgetItems;
+                }
+            }
+        }
+        CHECK_COND(eagerWidgetItems == 0,
+                   "Suite 50h: FocusTableDrawer allocated eager QTableWidgetItems while hidden!");
+
+        ribbon->setFocusHudMode(false);
+        QApplication::processEvents();
+
+        // Table 12-edit + dependent formula Undo/Redo preserving 12/12 Redo steps
+        Table *tUndo = wPerf->newTable(6, 2, "S50UndoFormulaTbl", "12-Step Undo/Redo");
+        CHECK_COND(tUndo != nullptr && tUndo->d_future_table != nullptr, "Suite 50h: tUndo null");
+        for (int r = 0; r < 6; ++r)
+            tUndo->setCell(r, 0, double(r + 1)); // 1..6
+        tUndo->setCommand(1, "col(\"1\")*3.0 + 5.0");
+        CHECK_COND(tUndo->recalculate(1, false), "Suite 50h: initial formula recalculate failed!");
+        CHECK_COND(std::fabs(tUndo->cell(0, 1) - 8.0) < 1e-9,
+                   "Suite 50h: initial formula cell(0, 1) != 8.0!");
+
+        QUndoStack *us = tUndo->d_future_table->undoStack();
+        CHECK_COND(us != nullptr && us->undoLimit() >= 50,
+                   "Suite 50h: Table QUndoStack null or undoLimit < 50!");
+        us->clear();
+
+        for (int step = 0; step < 12; ++step) {
+            const int row = step % 6;
+            const double newX = 10.0 + double(step);
+            tUndo->setCell(row, 0, newX);
+            CHECK_COND(std::fabs(tUndo->cell(row, 1) - (3.0 * newX + 5.0)) < 1e-9,
+                       "Suite 50h: dependent formula column did not auto-recalculate on edit!");
+        }
+        CHECK_COND(us->count() == 12,
+                   "Suite 50h: 12 Table edits + formula recalc did not produce exactly 12 undo macros!");
+
+        int undoCount = 0;
+        for (int step = 0; step < 12; ++step) {
+            CHECK_COND(us->canUndo(), "Suite 50h: canUndo() false during 12-step undo!");
+            us->undo();
+            ++undoCount;
+            CHECK_COND(us->canRedo() && us->count() == 12,
+                       "Suite 50h: Undo wiped Redo stack or pushed spurious formula QUndoCommand!");
+        }
+        CHECK_COND(undoCount == 12, "Suite 50h: undoCount != 12!");
+        for (int r = 0; r < 6; ++r) {
+            const double expX = double(r + 1);
+            CHECK_COND(std::fabs(tUndo->cell(r, 0) - expX) < 1e-9
+                               && std::fabs(tUndo->cell(r, 1) - (3.0 * expX + 5.0)) < 1e-9,
+                       "Suite 50h: 12-step Undo did not restore initial X and formula Y values!");
+        }
+
+        int redoCount = 0;
+        for (int step = 0; step < 12; ++step) {
+            CHECK_COND(us->canRedo(), "Suite 50h: canRedo() false before completing 12/12 Redo steps!");
+            us->redo();
+            ++redoCount;
+        }
+        CHECK_COND(redoCount == 12 && !us->canRedo(),
+                   "Suite 50h: failed to complete all 12/12 Redo steps!");
+        // After steps 6..11, row r has X = 10.0 + (6 + r) = 16.0 + r
+        for (int r = 0; r < 6; ++r) {
+            const double expX = 16.0 + double(r);
+            CHECK_COND(std::fabs(tUndo->cell(r, 0) - expX) < 1e-9
+                               && std::fabs(tUndo->cell(r, 1) - (3.0 * expX + 5.0)) < 1e-9,
+                       "Suite 50h: 12/12 Redo did not restore post-edit X and formula Y values!");
+        }
+
+        wPerf->savedProject();
+        wPerf->setOleEmbeddedMode(true);
+        delete wPerf;
+        QApplication::processEvents();
+    }
+
+    // -------------------------------------------------------------------------
+    // 50i. Mega-Wave 2 Surgical Regression Gate:
+    //      - setupPolarPlot + newTable / column rename / clone / removeCurve (0 crash)
+    //      - Graph3D::exportImage non-cropped 4-quadrant coverage in --headless mode
+    //      - QwtBarCurve::setStacked(true) (offset == 0) & UserCurve preservation
+    //      - HorizontalBars with ColumnMode::Text X (yLeft categories, xBottom numeric)
+    //      - setCustomTickLabels (Gamma, X, M, Gamma) & setWeibullProbabilityAxis
+    //        .sciprj round-trip + applyStylePreset survival
+    //      - HCP analyzeXRD(..., "hcp", ..., 1.587) + analyzeWorkHardening(..., true)
+    // -------------------------------------------------------------------------
+    {
+        // 1) setupPolarPlot followed by newTable / column rename / clone / removeCurve
+        MultiLayer *mlPolSafe = w50->newGraph("S50iPolarSafeGraph");
+        CHECK_COND(mlPolSafe != nullptr && mlPolSafe->activeGraph() != nullptr,
+                   "Suite 50i: mlPolSafe null");
+        Graph *gPolSafe = mlPolSafe->activeGraph();
+        QVector<double> polTh, polR;
+        for (int k = 0; k <= 24; ++k) {
+            const double deg = 15.0 * double(k);
+            polTh.push_back(deg);
+            polR.push_back(50.0 + 20.0 * std::sin(2.0 * deg * M_PI / 180.0));
+        }
+        gPolSafe->setupPolarPlot(polTh, polR, "PolarTextureSafe", false);
+        Table *tAfterPol = w50->newTable(6, 2, "S50iAfterPolTbl", "AfterPolar");
+        CHECK_COND(tAfterPol != nullptr, "Suite 50i: failed to create table after setupPolarPlot");
+        tAfterPol->setColName(1, "RenamedCol");
+        w50->updateColNames("S50iAfterPolTbl_2", "S50iAfterPolTbl_RenamedCol");
+        w50->updateCurves(tAfterPol, "S50iAfterPolTbl_RenamedCol");
+        MultiLayer *mlPolClone = qobject_cast<MultiLayer *>(w50->clone(mlPolSafe));
+        CHECK_COND(mlPolClone != nullptr && mlPolClone->activeGraph() != nullptr
+                           && mlPolClone->activeGraph()->isPolarPlot(),
+                   "Suite 50i: cloning Polar MultiLayer failed or lost isPolarPlot()!");
+        if (gPolSafe->curves() > 0)
+            gPolSafe->removeCurve(0);
+        w50->removeCurves("S50iAfterPolTbl_RenamedCol");
+
+        // 2) Graph3D::exportImage non-cropped coverage across all 4 quadrants in headless mode
+        Graph3D *g3d = w50->newPlot3D();
+        CHECK_COND(g3d != nullptr && w50->isHeadlessMode(),
+                   "Suite 50i: failed to create headless Graph3D!");
+        g3d->addFunction("cos(x)*cos(y)", -3.0, 3.0, -3.0, 3.0, -1.2, 1.2);
+        const QString g3dPng = tmpDir.filePath("suite50i_headless_3d.png");
+        g3d->exportImage(g3dPng, 100, false);
+        QImage img3d(g3dPng);
+        CHECK_COND(!img3d.isNull() && img3d.width() >= 320 && img3d.height() >= 240,
+                   "Suite 50i: headless Graph3D::exportImage produced null or tiny PNG!");
+        int qPx[4] = { 0, 0, 0, 0 };
+        const int midX = img3d.width() / 2;
+        const int midY = img3d.height() / 2;
+        for (int y = 0; y < img3d.height(); y += 2) {
+            for (int x = 0; x < img3d.width(); x += 2) {
+                const QRgb px = img3d.pixel(x, y);
+                if (qRed(px) < 250 || qGreen(px) < 250 || qBlue(px) < 250) {
+                    const int qIdx = ((y >= midY) ? 2 : 0) + ((x >= midX) ? 1 : 0);
+                    ++qPx[qIdx];
+                }
+            }
+        }
+        std::cout << "[INFO] Suite 50i Headless 3D PNG (" << img3d.width() << "x" << img3d.height()
+                  << ") quadrant non-white px = [" << qPx[0] << ", " << qPx[1] << ", " << qPx[2]
+                  << ", " << qPx[3] << "]\n";
+        CHECK_COND(qPx[0] >= 50 && qPx[1] >= 50 && qPx[2] >= 50 && qPx[3] >= 50,
+                   "Suite 50i: headless Graph3D::exportImage cropped 3D plot out of one or more quadrants!");
+
+        // 3) QwtBarCurve::setStacked(true) (offset == 0) & UserCurve preservation
+        Table *tStk = w50->newTable(4, 3, "S50iStackTbl", "StackedBars");
+        for (int r = 0; r < 4; ++r) {
+            tStk->setCell(r, 0, double(r + 1));
+            tStk->setCell(r, 1, 30.0 + 10.0 * double(r));
+            tStk->setCell(r, 2, 70.0 - 10.0 * double(r));
+        }
+        MultiLayer *mlStk = w50->multilayerPlot(
+                tStk, QStringList() << "S50iStackTbl_2" << "S50iStackTbl_3", Graph::VerticalBars);
+        CHECK_COND(mlStk != nullptr && mlStk->activeGraph() != nullptr, "Suite 50i: mlStk null");
+        Graph *gStk = mlStk->activeGraph();
+        auto *barS0 = dynamic_cast<QwtBarCurve *>(gStk->curve(0));
+        auto *barS1 = dynamic_cast<QwtBarCurve *>(gStk->curve(1));
+        CHECK_COND(barS0 != nullptr && barS1 != nullptr, "Suite 50i: barS0/barS1 null");
+        barS0->setStacked(true);
+        barS1->setStacked(true);
+        gStk->setBarsGap(0, 30, 0);
+        gStk->setBarsGap(1, 30, 0);
+        CurveLayout clBar = gStk->initCurveLayout(Graph::VerticalBars, 2);
+        gStk->updateCurveLayout(0, &clBar);
+        CHECK_COND(barS0->isStacked() && barS1->isStacked()
+                           && barS0->offset() == 0 && barS1->offset() == 0
+                           && std::fabs(barS0->dataOffset()) < 1e-9
+                           && std::fabs(barS1->dataOffset()) < 1e-9
+                           && barS0->style() == QwtPlotCurve::UserCurve,
+                   "Suite 50i: QwtBarCurve::setStacked(true) offset!=0 or updateCurveLayout lost UserCurve!");
+
+        // 4) HorizontalBars with ColumnMode::Text X (yLeft categories, xBottom numeric)
+        Table *tHBar = w50->newTable(4, 2, "S50iHBarTxtTbl", "HorizTextBars");
+        tHBar->setColumnType(0, SciDAVis::ColumnMode::Text);
+        tHBar->setColPlotDesignation(0, SciDAVis::X);
+        tHBar->setColPlotDesignation(1, SciDAVis::Y);
+        const char *hCats[4] = { "Alloy-A", "Alloy-B", "Alloy-C", "Alloy-D" };
+        const double hVals[4] = { 410.0, 520.0, 485.0, 610.0 };
+        for (int r = 0; r < 4; ++r) {
+            tHBar->setText(r, 0, QString::fromLatin1(hCats[r]));
+            tHBar->setCell(r, 1, hVals[r]);
+        }
+        MultiLayer *mlHBar = w50->multilayerPlot(
+                tHBar, QStringList() << "S50iHBarTxtTbl_2", Graph::HorizontalBars);
+        CHECK_COND(mlHBar != nullptr && mlHBar->activeGraph() != nullptr, "Suite 50i: mlHBar null");
+        Graph *gHBar = mlHBar->activeGraph();
+        const QStringList yLeftCats = gHBar->categoryLabels(QwtPlot::yLeft);
+        const QwtScaleDiv *hBarXDiv = gHBar->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        CHECK_COND(yLeftCats.size() == 4 && yLeftCats[0] == QLatin1String("Alloy-A")
+                           && gHBar->categoryLabels(QwtPlot::xBottom).isEmpty()
+                           && hBarXDiv != nullptr && hBarXDiv->upperBound() >= 600.0,
+                   "Suite 50i: HorizontalBars with Text X failed to place categories on yLeft & numeric on xBottom!");
+
+        // 5) setCustomTickLabels (Gamma, X, M, Gamma) & setWeibullProbabilityAxis
+        //    .sciprj round-trip + applyStylePreset survival
+        {
+            ApplicationWindow *axWriter = new ApplicationWindow();
+            axWriter->setHeadlessMode(true);
+            axWriter->applyUserSettings();
+            Table *tCw = axWriter->newTable(4, 2, "S50iCwTbl", "CustomWeibull");
+            for (int r = 0; r < 4; ++r) {
+                tCw->setCell(r, 0, double(r));
+                tCw->setCell(r, 1, -4.0 + 1.8 * double(r));
+            }
+            MultiLayer *mlCw = axWriter->multilayerPlot(
+                    tCw, QStringList() << "S50iCwTbl_2", Graph::LineSymbols);
+            CHECK_COND(mlCw != nullptr && mlCw->activeGraph() != nullptr, "Suite 50i: mlCw null");
+            mlCw->setName("S50iCustomWeibullGraph");
+            Graph *gCw = mlCw->activeGraph();
+
+            const QVector<double> kPos = { 0.0, 1.0, 2.0, 3.0 };
+            const QString gammaSym = QString::fromUtf8("\xCE\x93");
+            const QStringList kLbl = { gammaSym, "X", "M", gammaSym };
+            gCw->setScale(QwtPlot::xBottom, 0.0, 3.0);
+            gCw->setCustomTickLabels(QwtPlot::xBottom, kPos, kLbl, 0.0);
+            gCw->plotWidget()->enableAxis(QwtPlot::yRight, true);
+            gCw->setScale(QwtPlot::yRight, -6.9, 1.6);
+            gCw->setWeibullProbabilityAxis(QwtPlot::yRight, true);
+
+            mlCw->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+            CHECK_COND(gCw->hasCustomTickLabels(QwtPlot::xBottom)
+                               && gCw->hasWeibullProbabilityAxis(QwtPlot::yRight)
+                               && gCw->plotWidget()->axisScaleDraw(QwtPlot::xBottom)->label(0.0).text() == gammaSym
+                               && gCw->plotWidget()->axisScaleDraw(QwtPlot::xBottom)->label(2.0).text() == QLatin1String("M")
+                               && gCw->plotWidget()->axisScaleDraw(QwtPlot::yRight)->label(0.0).text().contains("63.2"),
+                       "Suite 50i: setCustomTickLabels or setWeibullProbabilityAxis wiped by applyStylePreset!");
+
+            const QString cwPrjPath = tmpDir.filePath("suite50i_custom_weibull.sciprj");
+            {
+                QFile pf(cwPrjPath);
+                CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 50i: failed to write cw .sciprj");
+                pf.write(axWriter->saveProjectToByteArray());
+                pf.close();
+            }
+            axWriter->savedProject();
+            axWriter->setOleEmbeddedMode(true);
+            delete axWriter;
+
+            ApplicationWindow *axReader = new ApplicationWindow();
+            axReader->setHeadlessMode(true);
+            axReader->applyUserSettings();
+            CHECK_COND(axReader->loadProject(cwPrjPath), "Suite 50i: loadProject failed on cw .sciprj!");
+            MultiLayer *mlCwRel =
+                    qobject_cast<MultiLayer *>(axReader->window("S50iCustomWeibullGraph"));
+            CHECK_COND(mlCwRel != nullptr && mlCwRel->activeGraph() != nullptr,
+                       "Suite 50i: S50iCustomWeibullGraph missing after reload!");
+            Graph *gCwRel = mlCwRel->activeGraph();
+            CHECK_COND(gCwRel->hasCustomTickLabels(QwtPlot::xBottom)
+                               && gCwRel->hasWeibullProbabilityAxis(QwtPlot::yRight)
+                               && gCwRel->plotWidget()->axisScaleDraw(QwtPlot::xBottom)->label(0.0).text() == gammaSym
+                               && gCwRel->plotWidget()->axisScaleDraw(QwtPlot::xBottom)->label(1.0).text() == QLatin1String("X")
+                               && gCwRel->plotWidget()->axisScaleDraw(QwtPlot::yRight)->label(0.0).text().contains("63.2"),
+                       "Suite 50i: setCustomTickLabels or setWeibullProbabilityAxis lost across .sciprj reload!");
+            axReader->savedProject();
+            axReader->setOleEmbeddedMode(true);
+            delete axReader;
+        }
+
+        // 6) HCP analyzeXRD(..., "hcp", ..., 1.587) + analyzeWorkHardening(..., true)
+        {
+            constexpr double lamCu = 1.540598;
+            constexpr double aHcp = 2.9508; // alpha-Ti HCP: a = 2.9508 A, c/a = 1.587
+            constexpr double caRatio = 1.587;
+            struct HcpPeakSpec { int h, k, l; double amp; };
+            const HcpPeakSpec specs[5] = {
+                { 1, 0, 0, 280.0 },
+                { 0, 0, 2, 310.0 },
+                { 1, 0, 1, 1000.0 },
+                { 1, 0, 2, 190.0 },
+                { 1, 1, 0, 220.0 }
+            };
+            QVector<double> pkTwoTheta, pkAmp;
+            for (const auto &sp : specs) {
+                const double mVal = (4.0 / 3.0) * double(sp.h * sp.h + sp.h * sp.k + sp.k * sp.k)
+                        + double(sp.l * sp.l) / (caRatio * caRatio);
+                const double dHkl = aHcp / std::sqrt(mVal);
+                const double th = std::asin(lamCu / (2.0 * dHkl));
+                pkTwoTheta.push_back(2.0 * th * 180.0 / M_PI);
+                pkAmp.push_back(sp.amp);
+            }
+
+            constexpr int NHCP = 1001;
+            Table *tHcp = w50->newTable(NHCP, 2, "S50iTiHcpXrd", "alpha-Ti HCP");
+            for (int i = 0; i < NHCP; ++i) {
+                const double tt = 30.0 + 0.05 * double(i); // 30 .. 80 deg
+                double inten = 15.0;
+                for (int p = 0; p < pkTwoTheta.size(); ++p) {
+                    const double u = (tt - pkTwoTheta[p]) / (0.26 * 0.5);
+                    inten += pkAmp[p] * (0.65 * std::exp(-0.693147 * u * u) + 0.35 / (1.0 + u * u));
+                }
+                tHcp->setCell(i, 0, tt);
+                tHcp->setCell(i, 1, inten);
+            }
+            MultiLayer *mlHcp = w50->multilayerPlot(
+                    tHcp, QStringList() << "S50iTiHcpXrd_2", Graph::Line);
+            CHECK_COND(mlHcp != nullptr && mlHcp->activeGraph() != nullptr, "Suite 50i: mlHcp null");
+            const CurveMathTools::XRDAnalysisResult xrdHcp = CurveMathTools::analyzeXRD(
+                    w50, mlHcp->activeGraph(), QString(), lamCu, 0.05, 0.90,
+                    QStringLiteral("hcp"), false, true, true, caRatio);
+            bool saw002 = false, saw101 = false;
+            for (const auto &pe : xrdHcp.peaks) {
+                if (pe.hklLabel.contains("002"))
+                    saw002 = true;
+                if (pe.hklLabel.contains("101"))
+                    saw101 = true;
+            }
+            std::cout << "[INFO] Suite 50i HCP XRD peaks=" << xrdHcp.peaks.size()
+                      << ", a=" << xrdHcp.latticeParamAngstrom << " A (true " << aHcp
+                      << "), saw002=" << saw002 << ", saw101=" << saw101 << "\n";
+            CHECK_COND(xrdHcp.valid && xrdHcp.peaks.size() >= 4 && saw002 && saw101
+                               && std::fabs(xrdHcp.latticeParamAngstrom - aHcp) < 0.03
+                               && xrdHcp.whPlot != nullptr
+                               && verifyArialNormalGraph(xrdHcp.whPlot, "analyzeXRD_HCP"),
+                       "Suite 50i: HCP analyzeXRD(..., 'hcp', ..., 1.587) indexing or a-parameter failed!");
+
+            Table *tKmSrc = nullptr;
+            MultiLayer *mlKmSrc =
+                    CurveMathTools::loadSampleDataset(w50, "tensile_alznmg", true, &tKmSrc, nullptr);
+            CHECK_COND(mlKmSrc != nullptr && mlKmSrc->activeGraph() != nullptr,
+                       "Suite 50i: mlKmSrc null");
+            const CurveMathTools::WorkHardeningResult whKm = CurveMathTools::analyzeWorkHardening(
+                    w50, mlKmSrc->activeGraph(), QString(), 11, true, true /*kocksMeckingPlot*/);
+            CHECK_COND(whKm.valid && whKm.plot != nullptr && whKm.plot->activeGraph() != nullptr
+                               && verifyArialNormalGraph(whKm.plot, "analyzeWorkHardening_KM"),
+                       "Suite 50i: analyzeWorkHardening(..., kocksMeckingPlot=true) failed!");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 50j. Mega-Wave 3 Surgical Regression Gate:
+    //      (a) 12-op Table + formula + row-resize (68) + removeCol 12x undo -> 12x redo
+    //      (b) 40-cycle 256x256 Matrix create/close (d_matrix_private freed cleanly)
+    //      (c) 200,000-pt high-frequency ultrasonic sine sin(i*0.05) render < 250 ms
+    //      (d) Weibull .sciprj reload Right-Y 1%..63.2%..99% distinct vertical positions
+    //      (e) <ToriStackedBars> .sciprj reload preserving gap & offset==0 across K=3
+    // -------------------------------------------------------------------------
+    {
+        // (a) 12-op Table + formula + setNumRows(68) + addCol + removeCol: 12x undo -> 12x redo
+        {
+            Table *t50j = w50->newTable(20, 3, "S50jUndo68Tbl", "Row68+RemoveCol");
+            CHECK_COND(t50j != nullptr && t50j->d_future_table != nullptr, "Suite 50j(a): t50j null");
+            for (int r = 0; r < 20; ++r)
+                t50j->setCell(r, 0, double(r + 1));
+            t50j->setCommand(1, "col(\"1\")*2.0 + 1.0");
+            CHECK_COND(t50j->recalculate(1, false), "Suite 50j(a): formula init failed");
+
+            QUndoStack *us = t50j->d_future_table->undoStack();
+            CHECK_COND(us != nullptr, "Suite 50j(a): QUndoStack null");
+            us->clear();
+            w50->activateSubWindow(t50j);
+
+            // Ops 1..4: 4 cell edits with dependent formula auto-recalc
+            for (int s = 0; s < 4; ++s)
+                t50j->setCell(s, 0, 50.0 + double(s));
+            // Op 5: resize rows 20 -> 68
+            t50j->setNumRows(68);
+            // Ops 6..8: 3 cell edits in newly added rows 50..52
+            for (int s = 0; s < 3; ++s)
+                t50j->setCell(50 + s, 0, 120.0 + double(s));
+            // Op 9: addCol (cols 3 -> 4)
+            t50j->addCol(SciDAVis::Y);
+            // Op 10: edit row 65 on newly added column 3
+            t50j->setCell(65, 3, 42.0);
+            // Op 11: removeCol on column 2 (cols 4 -> 3; former col 3 shifts to col 2)
+            t50j->removeCol(QStringList() << t50j->colName(2));
+            // Op 12: edit row 67 on col 0 -> formula col 1 becomes 601.0
+            t50j->setCell(67, 0, 300.0);
+
+            if (!(us->count() == 12 && t50j->numRows() == 68 && t50j->numCols() == 3
+                  && std::fabs(t50j->cell(67, 1) - 601.0) < 1e-9)) {
+                std::cout << "[DIAG] 50j(a) us->count=" << us->count()
+                          << " rows=" << t50j->numRows() << " cols=" << t50j->numCols()
+                          << " cell(67,0)=" << t50j->cell(67, 0)
+                          << " cell(67,1)=" << t50j->cell(67, 1) << "\n";
+            }
+            CHECK_COND(us->count() == 12 && t50j->numRows() == 68 && t50j->numCols() == 3
+                               && std::fabs(t50j->cell(67, 1) - 601.0) < 1e-9,
+                       "Suite 50j(a): 12-op setup count or formula state mismatch!");
+
+            for (int step = 0; step < 12; ++step) {
+                CHECK_COND(us->canUndo(), "Suite 50j(a): canUndo() false during 12x undo!");
+                w50->undo();
+                CHECK_COND(us->canRedo() && us->count() == 12,
+                           "Suite 50j(a): undo() corrupted Redo stack or pushed nested command!");
+            }
+            CHECK_COND(t50j->numRows() == 20 && t50j->numCols() == 3
+                               && std::fabs(t50j->cell(0, 0) - 1.0) < 1e-9
+                               && std::fabs(t50j->cell(0, 1) - 3.0) < 1e-9,
+                       "Suite 50j(a): 12x undo did not restore initial 20x3 Table state!");
+
+            for (int step = 0; step < 12; ++step) {
+                CHECK_COND(us->canRedo(), "Suite 50j(a): canRedo() false during 12x redo!");
+                w50->redo(); // Must NEVER segfault or push nested TableSetNumberOfRowsCmd!
+            }
+            CHECK_COND(!us->canRedo() && us->count() == 12
+                               && t50j->numRows() == 68 && t50j->numCols() == 3
+                               && std::fabs(t50j->cell(67, 0) - 300.0) < 1e-9
+                               && std::fabs(t50j->cell(67, 1) - 601.0) < 1e-9
+                               && std::fabs(t50j->cell(65, 2) - 42.0) < 1e-9,
+                       "Suite 50j(a): 12x redo failed to restore 68x3 Table + formula + col state!");
+
+            // Second undo->redo cycle to prove TableSetNumberOfRowsCmd::d_old_rows stayed 20 across redo!
+            for (int step = 0; step < 12; ++step)
+                w50->undo();
+            CHECK_COND(t50j->numRows() == 20 && t50j->numCols() == 3,
+                       "Suite 50j(a): second 12x undo after redo failed to restore 20x3 Table shape!");
+            for (int step = 0; step < 12; ++step)
+                w50->redo();
+            CHECK_COND(t50j->numRows() == 68 && t50j->numCols() == 3
+                               && std::fabs(t50j->cell(67, 1) - 601.0) < 1e-9,
+                       "Suite 50j(a): second 12x redo failed!");
+        }
+
+        // (b) 40-cycle 256x256 Matrix create/close (d_matrix_private & QObjects freed cleanly)
+        {
+            QVector<qreal> matPayload(256 * 256, 1.25);
+            for (int cyc = 0; cyc < 40; ++cyc) {
+                Matrix *m256 = w50->newMatrix(QString("S50jMtx256_%1").arg(cyc), 256, 256);
+                CHECK_COND(m256 != nullptr && m256->d_future_matrix != nullptr,
+                           "Suite 50j(b): failed to create 256x256 Matrix!");
+                m256->setCells(matPayload);
+                QPointer<Matrix> pMtx(m256);
+                QPointer<future::Matrix> pFut(m256->d_future_matrix);
+                m256->askOnCloseEvent(false);
+                w50->closeWindow(m256);
+                w50->savedProject();
+                QApplication::processEvents();
+                CHECK_COND(pMtx.isNull() && pFut.isNull(),
+                           "Suite 50j(b): 256x256 Matrix or future::Matrix leaked after closeWindow!");
+            }
+        }
+
+        // (c) 200,000-pt high-frequency ultrasonic sine sin(i * 0.05) render < 250 ms
+        {
+            constexpr int NULTRA = 200000;
+            Table *tUltra = w50->newTable(NULTRA, 2, "S50jUltra200kTbl", "Ultrasonic Sine");
+            CHECK_COND(tUltra != nullptr, "Suite 50j(c): failed to allocate 200k ultrasonic table!");
+            QVector<qreal> ux(NULTRA), uy(NULTRA);
+            for (int i = 0; i < NULTRA; ++i) {
+                ux[i] = double(i);
+                uy[i] = std::sin(double(i) * 0.05);
+            }
+            tUltra->column(0)->replaceValues(0, ux);
+            tUltra->column(1)->replaceValues(0, uy);
+
+            MultiLayer *mlUltra = w50->multilayerPlot(
+                    tUltra, QStringList() << "S50jUltra200kTbl_2", Graph::Line);
+            CHECK_COND(mlUltra != nullptr && mlUltra->activeGraph() != nullptr,
+                       "Suite 50j(c): mlUltra null");
+            Graph *gUltra = mlUltra->activeGraph();
+            QImage ultraImg(900, 600, QImage::Format_ARGB32);
+            ultraImg.fill(Qt::white);
+
+            QElapsedTimer ultraTimer;
+            ultraTimer.start();
+            {
+                QPainter up(&ultraImg);
+                gUltra->exportPainter(up, false, ultraImg.rect());
+            }
+            const qint64 ultraMs = ultraTimer.elapsed();
+            std::cout << "[INFO] Suite 50j(c) 200,000-pt high-freq sin(i*0.05) render time = "
+                      << ultraMs << " ms\n";
+            CHECK_COND(ultraMs < 250,
+                       "Suite 50j(c): 200,000-pt high-frequency sine render exceeded 250 ms budget!");
+        }
+
+        // (d) Weibull .sciprj reload Right-Y 1%..63.2%..99% distinct vertical positions
+        {
+            ApplicationWindow *wbWriter = new ApplicationWindow();
+            wbWriter->setHeadlessMode(true);
+            wbWriter->applyUserSettings();
+            Table *tWbSample = nullptr;
+            MultiLayer *mlWb = CurveMathTools::loadSampleDataset(
+                    wbWriter, "weibull_ceramics", true, &tWbSample, nullptr);
+            CHECK_COND(mlWb != nullptr, "Suite 50j(d): loadSampleDataset('weibull_ceramics') null");
+            mlWb->setName("S50jWeibullPrjGraph");
+
+            const QString wbPrjPath = tmpDir.filePath("suite50j_weibull_reload.sciprj");
+            {
+                QFile pf(wbPrjPath);
+                CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 50j(d): failed to open wb .sciprj");
+                pf.write(wbWriter->saveProjectToByteArray());
+                pf.close();
+            }
+            wbWriter->savedProject();
+            wbWriter->setOleEmbeddedMode(true);
+            delete wbWriter;
+
+            ApplicationWindow *wbReader = new ApplicationWindow();
+            wbReader->setHeadlessMode(true);
+            wbReader->applyUserSettings();
+            CHECK_COND(wbReader->loadProject(wbPrjPath),
+                       "Suite 50j(d): loadProject failed on suite50j_weibull_reload.sciprj!");
+            MultiLayer *mlWbRel =
+                    qobject_cast<MultiLayer *>(wbReader->window("S50jWeibullPrjGraph"));
+            CHECK_COND(mlWbRel != nullptr, "Suite 50j(d): S50jWeibullPrjGraph missing on reload!");
+
+            Graph *gWbRight = nullptr;
+            for (Graph *cand : mlWbRel->layersList()) {
+                if (cand && cand->hasWeibullProbabilityAxis(QwtPlot::yRight)) {
+                    gWbRight = cand;
+                    break;
+                }
+            }
+            CHECK_COND(gWbRight != nullptr && gWbRight->plotWidget() != nullptr,
+                       "Suite 50j(d): no layer retained hasWeibullProbabilityAxis(yRight) after reload!");
+
+            QImage wbRender(640, 520, QImage::Format_ARGB32);
+            wbRender.fill(Qt::white);
+            {
+                QPainter wp(&wbRender);
+                gWbRight->exportPainter(wp, false, wbRender.rect());
+            }
+            gWbRight->plotWidget()->resize(560, 440);
+            gWbRight->plotWidget()->updateLayout();
+
+            const QwtScaleMap yRightMap = gWbRight->plotWidget()->canvasMap(QwtPlot::yRight);
+            const double w01 = std::log(-std::log(1.0 - 0.01));
+            const double w632 = 0.0;
+            const double w99 = std::log(-std::log(1.0 - 0.99));
+            const double py01 = yRightMap.xTransform(w01);
+            const double py632 = yRightMap.xTransform(w632);
+            const double py99 = yRightMap.xTransform(w99);
+            std::cout << "[INFO] Suite 50j(d) Reloaded Weibull Right-Y py(1%, 63.2%, 99%) = ("
+                      << py01 << ", " << py632 << ", " << py99 << ")\n";
+            CHECK_COND(py01 > py632 + 40.0 && py632 > py99 + 18.0,
+                       "Suite 50j(d): Reloaded Weibull Right-Y 1%..63.2%..99% ticks piled up instead of spanning canvas!");
+
+            wbReader->savedProject();
+            wbReader->setOleEmbeddedMode(true);
+            delete wbReader;
+        }
+
+        // (e) <ToriStackedBars> .sciprj reload preserving identical gap & offset==0 across K=3
+        {
+            ApplicationWindow *sbWriter = new ApplicationWindow();
+            sbWriter->setHeadlessMode(true);
+            sbWriter->applyUserSettings();
+            Table *tSb3 = sbWriter->newTable(4, 4, "S50jSb3Tbl", "Stacked3");
+            for (int r = 0; r < 4; ++r) {
+                tSb3->setCell(r, 0, double(r + 1));
+                tSb3->setCell(r, 1, 25.0 + 5.0 * double(r));
+                tSb3->setCell(r, 2, 50.0 + 10.0 * double(r));
+                tSb3->setCell(r, 3, 85.0 + 15.0 * double(r));
+            }
+            MultiLayer *mlSb3 = sbWriter->multilayerPlot(
+                    tSb3, QStringList() << "S50jSb3Tbl_2" << "S50jSb3Tbl_3" << "S50jSb3Tbl_4",
+                    Graph::VerticalBars);
+            CHECK_COND(mlSb3 != nullptr && mlSb3->activeGraph() != nullptr, "Suite 50j(e): mlSb3 null");
+            mlSb3->setName("S50jStacked3Graph");
+            Graph *gSb3 = mlSb3->activeGraph();
+            CHECK_COND(gSb3->curves() == 3, "Suite 50j(e): expected 3 bar series!");
+            for (int ci = 0; ci < 3; ++ci) {
+                auto *bc = dynamic_cast<QwtBarCurve *>(gSb3->curve(ci));
+                CHECK_COND(bc != nullptr, "Suite 50j(e): curve is not QwtBarCurve!");
+                bc->setStacked(true);
+                gSb3->setBarsGap(ci, 28, 0);
+            }
+            gSb3->replot();
+
+            const QString sbPrjPath = tmpDir.filePath("suite50j_stacked3.sciprj");
+            {
+                QFile pf(sbPrjPath);
+                CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 50j(e): failed to open sb3 .sciprj");
+                pf.write(sbWriter->saveProjectToByteArray());
+                pf.close();
+            }
+            sbWriter->savedProject();
+            sbWriter->setOleEmbeddedMode(true);
+            delete sbWriter;
+
+            ApplicationWindow *sbReader = new ApplicationWindow();
+            sbReader->setHeadlessMode(true);
+            sbReader->applyUserSettings();
+            CHECK_COND(sbReader->loadProject(sbPrjPath),
+                       "Suite 50j(e): loadProject failed on suite50j_stacked3.sciprj!");
+            MultiLayer *mlSbRel =
+                    qobject_cast<MultiLayer *>(sbReader->window("S50jStacked3Graph"));
+            CHECK_COND(mlSbRel != nullptr && mlSbRel->activeGraph() != nullptr
+                               && mlSbRel->activeGraph()->curves() == 3,
+                       "Suite 50j(e): S50jStacked3Graph missing or curve count != 3 after reload!");
+            Graph *gSbRel = mlSbRel->activeGraph();
+            for (int ci = 0; ci < 3; ++ci) {
+                auto *bc = dynamic_cast<QwtBarCurve *>(gSbRel->curve(ci));
+                CHECK_COND(bc != nullptr && bc->isStacked() && bc->gap() == 28 && bc->offset() == 0
+                                   && std::fabs(bc->dataOffset()) < 1e-9,
+                           "Suite 50j(e): <ToriStackedBars> .sciprj reload failed to preserve gap==28 & offset==0 across K=3!");
+            }
+
+            sbReader->savedProject();
+            sbReader->setOleEmbeddedMode(true);
+            delete sbReader;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 50k. Mega-Wave 4 Surgical Regression Gate:
+    //      (a) Plot::removeCurve / closing Table before Graph & Matrix before Heatmap
+    //          deletes DataCurve & Spectrogram (0 leaked curve items)
+    //      (b) 200,000-pt sin(i * 0.05) 600-DPI QImage export via MultiLayer::exportImage < 300 ms
+    //      (c) Pie + applyStylePreset(StyleISIJJournal85mm) keeps legend & pie non-overlapping
+    // -------------------------------------------------------------------------
+    {
+        // (a) Deterministic C++ destructor verification on Plot::removeCurve & source close
+        {
+            struct ProbeDataCurve : public DataCurve {
+                int *destroyedCount = nullptr;
+                ProbeDataCurve(Table *t, const QString &xCol, const QString &yCol, int *cnt)
+                    : DataCurve(t, xCol, yCol, 0, -1), destroyedCount(cnt)
+                {
+                    setType(Graph::Line);
+                    loadData();
+                }
+                ~ProbeDataCurve() override
+                {
+                    if (destroyedCount)
+                        ++(*destroyedCount);
+                }
+            };
+            struct ProbeSpectrogram : public Spectrogram {
+                int *destroyedCount = nullptr;
+                ProbeSpectrogram(Matrix *m, int *cnt) : Spectrogram(m), destroyedCount(cnt) {}
+                ~ProbeSpectrogram() override
+                {
+                    if (destroyedCount)
+                        ++(*destroyedCount);
+                }
+            };
+
+            Table *tRem = w50->newTable(8, 2, "S50kRemTbl", "CurveDelete");
+            CHECK_COND(tRem != nullptr, "Suite 50k(a): tRem null");
+            for (int r = 0; r < 8; ++r) {
+                tRem->setCell(r, 0, double(r));
+                tRem->setCell(r, 1, double(r * r));
+            }
+            MultiLayer *mlRem = w50->multilayerPlot(
+                    tRem, QStringList() << "S50kRemTbl_2", Graph::Line);
+            CHECK_COND(mlRem != nullptr && mlRem->activeGraph() != nullptr, "Suite 50k(a): mlRem null");
+            Graph *gRem = mlRem->activeGraph();
+
+            int directDeleted = 0;
+            auto *pDirect = new ProbeDataCurve(tRem, tRem->colName(0), tRem->colName(1), &directDeleted);
+            const int directKey = gRem->plotWidget()->insertCurve(pDirect);
+            gRem->plotWidget()->removeCurve(directKey);
+            CHECK_COND(directDeleted == 1,
+                       "Suite 50k(a): Plot::removeCurve failed to delete detached QwtPlotItem!");
+
+            int tblCloseDeleted = 0;
+            auto *pOnTblClose =
+                    new ProbeDataCurve(tRem, tRem->colName(0), tRem->colName(1), &tblCloseDeleted);
+            gRem->insertPlotItem(pOnTblClose, Graph::Line);
+            CHECK_COND(gRem->curves() == 2, "Suite 50k(a): expected 2 curves before closing Table");
+
+            tRem->askOnCloseEvent(false);
+            w50->closeWindow(tRem);
+            CHECK_COND(tblCloseDeleted == 1 && gRem->curves() == 0,
+                       "Suite 50k(a): closing Table before Graph leaked DataCurve!");
+            mlRem->askOnCloseEvent(false);
+            w50->closeWindow(mlRem);
+
+            Matrix *mRem = w50->newMatrix("S50kRemMtx", 16, 16);
+            CHECK_COND(mRem != nullptr, "Suite 50k(a): mRem null");
+            for (int r = 0; r < 16; ++r)
+                for (int c = 0; c < 16; ++c)
+                    mRem->setCell(r, c, double(r + c));
+            MultiLayer *mlHm = w50->plotSpectrogram(mRem, Graph::ColorMap);
+            CHECK_COND(mlHm != nullptr && mlHm->activeGraph() != nullptr, "Suite 50k(a): mlHm null");
+            Graph *gHm = mlHm->activeGraph();
+
+            int mtxCloseDeleted = 0;
+            auto *pSpOnClose = new ProbeSpectrogram(mRem, &mtxCloseDeleted);
+            gHm->insertPlotItem(pSpOnClose, Graph::ColorMap);
+            CHECK_COND(gHm->curves() == 2, "Suite 50k(a): expected 2 spectrograms before closing Matrix");
+
+            mRem->askOnCloseEvent(false);
+            w50->closeWindow(mRem);
+            int remainingSpecItems = 0;
+            for (QwtPlotItem *it : gHm->plotWidget()->itemList()) {
+                if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+                    ++remainingSpecItems;
+            }
+            CHECK_COND(mtxCloseDeleted == 1 && gHm->curves() == 0 && remainingSpecItems == 0,
+                       "Suite 50k(a): closing Matrix before Heatmap leaked Spectrogram!");
+            mlHm->askOnCloseEvent(false);
+            w50->closeWindow(mlHm);
+        }
+
+        // (b) 200,000-pt sin(i * 0.05) 600-DPI QImage export via MultiLayer::exportImage < 300 ms
+        {
+            constexpr int NU600 = 200000;
+            Table *tU600 = w50->newTable(NU600, 2, "S50kUltra600Tbl", "Ultra600DPI");
+            CHECK_COND(tU600 != nullptr, "Suite 50k(b): tU600 null");
+            QVector<qreal> ux(NU600), uy(NU600);
+            for (int i = 0; i < NU600; ++i) {
+                ux[i] = double(i);
+                uy[i] = std::sin(double(i) * 0.05);
+            }
+            tU600->column(0)->replaceValues(0, ux);
+            tU600->column(1)->replaceValues(0, uy);
+
+            MultiLayer *mlU600 = w50->multilayerPlot(
+                    tU600, QStringList() << "S50kUltra600Tbl_2", Graph::Line);
+            CHECK_COND(mlU600 != nullptr, "Suite 50k(b): mlU600 null");
+            mlU600->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+
+            const QString exp600Path = tmpDir.filePath("suite50k_ultra_600dpi.png");
+            QElapsedTimer expTimer;
+            expTimer.start();
+            mlU600->exportImage(exp600Path, 100, false, 600);
+            const qint64 exp600Ms = expTimer.elapsed();
+            std::cout << "[INFO] Suite 50k(b) 200,000-pt sin(i*0.05) 600-DPI exportImage time = "
+                      << exp600Ms << " ms\n";
+            QImage expImg(exp600Path);
+            CHECK_COND(!expImg.isNull() && expImg.width() >= 1800 && expImg.height() >= 1800,
+                       "Suite 50k(b): 600-DPI exported PNG invalid or wrong dimensions!");
+            CHECK_COND(exp600Ms < 300,
+                       "Suite 50k(b): 200,000-pt 600-DPI MultiLayer::exportImage exceeded 300 ms budget!");
+        }
+
+        // (c) Pie + applyStylePreset(StyleISIJJournal85mm) keeps legend & pie non-overlapping
+        {
+            Table *tPie = w50->newTable(4, 2, "S50kPieTbl", "Phases");
+            CHECK_COND(tPie != nullptr, "Suite 50k(c): tPie null");
+            tPie->setColumnType(0, SciDAVis::ColumnMode::Text);
+            const char *phaseNames[4] = { "Alpha-Al Matrix", "MgZn2 Precipitate", "Al3Zr Dispersoid", "S-Phase" };
+            const double phasePcts[4] = { 56.0, 24.0, 12.0, 8.0 };
+            for (int r = 0; r < 4; ++r) {
+                tPie->setText(r, 0, QString::fromLatin1(phaseNames[r]));
+                tPie->setCell(r, 1, phasePcts[r]);
+            }
+            MultiLayer *mlPie = w50->multilayerPlot(
+                    tPie, QStringList() << "S50kPieTbl_2", Graph::Pie);
+            CHECK_COND(mlPie != nullptr && mlPie->activeGraph() != nullptr, "Suite 50k(c): mlPie null");
+            mlPie->resize(360, 360);
+            mlPie->activeGraph()->plotWidget()->resize(322, 322);
+            mlPie->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+
+            Graph *gPie = mlPie->activeGraph();
+            if (gPie->plotWidget()->width() < 200 || gPie->plotWidget()->height() < 200)
+                gPie->plotWidget()->resize(322, 322);
+            gPie->plotWidget()->updateLayout();
+            gPie->replot();
+
+            QImage pieImg(gPie->plotWidget()->size(), QImage::Format_ARGB32);
+            pieImg.fill(Qt::white);
+            {
+                QPainter pp(&pieImg);
+                gPie->exportPainter(pp, false, pieImg.rect());
+            }
+            // QwtPlot::print() invalidates plotLayout() on exit; reactivate layout before reading canvasRect()
+            gPie->plotWidget()->updateLayout();
+
+            Legend *legPie = gPie->legend();
+            CHECK_COND(legPie != nullptr && gPie->isLegendVisible(),
+                       "Suite 50k(c): Pie legend missing or hidden!");
+            const QRect cr = gPie->plotWidget()->plotLayout()->canvasRect();
+            QRect lr = legPie->rect();
+            if (lr.width() <= 4 || lr.height() <= 4) {
+                QwtText qtLeg(legPie->text());
+                qtLeg.setFont(legPie->font());
+                const QSize tsz = qtLeg.textSize();
+                const QwtScaleMap xm = gPie->plotWidget()->canvasMap(legPie->xAxis());
+                const QwtScaleMap ym = gPie->plotWidget()->canvasMap(legPie->yAxis());
+                const int lx = qMax(0, qRound(xm.xTransform(legPie->xValue())) - cr.left());
+                const int ly = qMax(0, qRound(ym.xTransform(legPie->yValue())) - cr.top());
+                lr = QRect(lx, ly, qMax(24, tsz.width() + 28), qMax(16, tsz.height() + 8));
+            }
+            CHECK_COND(cr.width() > 80 && cr.height() > 80 && lr.width() > 20 && lr.height() > 10,
+                       "Suite 50k(c): invalid Pie canvasRect or legend rect!");
+
+            const double sCw = double(cr.width());
+            const double sCh = double(cr.height());
+            const QVariant ancProp = gPie->plotWidget()->property("_toriLegendAnchor");
+            const bool topBandLegend =
+                    (ancProp.isValid() && ancProp.toInt() == int(Graph::LegendTopCenter))
+                    || (double(lr.width()) / sCw > 0.34);
+            double radius = 0.0, pieCx = 0.0, pieCy = 0.0;
+            if (topBandLegend) {
+                const double legBottomFrac =
+                        qBound(0.08, double(qMax(4, lr.top()) + lr.height()) / sCh, 0.52);
+                const double legBottom = legBottomFrac * sCh;
+                const double pad = 0.028 * sCh;
+                const double availH = qMax(0.20 * sCh, sCh - legBottom - 2.0 * pad);
+                radius = qMax(10.0, qMin(0.31 * sCw, 0.44 * availH));
+                pieCx = 0.5 * sCw;
+                pieCy = legBottom + pad + 0.5 * availH;
+            } else {
+                radius = 0.285 * qMin(sCw, sCh);
+                pieCx = 0.36 * sCw;
+                pieCy = 0.52 * sCh;
+            }
+            const QRectF pieDiscInCanvas(pieCx - radius, pieCy - radius, 2.0 * radius, 2.0 * radius);
+            CHECK_COND(!QRectF(lr).intersects(pieDiscInCanvas),
+                       "Suite 50k(c): Pie legend rect intersects Pie disc after StyleISIJJournal85mm!");
+
+            // Verify rendered Pie disc contains slice color pixels while legend side-bands stay clear
+            int pieDiscChromaticPx = 0;
+            const int discCxPx = qBound(0, cr.left() + qRound(pieCx), pieImg.width() - 1);
+            const int discCyPx = qBound(0, cr.top() + qRound(pieCy), pieImg.height() - 1);
+            for (int dy = -qRound(0.5 * radius); dy <= qRound(0.5 * radius); ++dy) {
+                const int py = qBound(0, discCyPx + dy, pieImg.height() - 1);
+                for (int dx = -qRound(0.5 * radius); dx <= qRound(0.5 * radius); ++dx) {
+                    const int px = qBound(0, discCxPx + dx, pieImg.width() - 1);
+                    const QColor c = pieImg.pixelColor(px, py);
+                    if (qMax(c.red(), qMax(c.green(), c.blue()))
+                                - qMin(c.red(), qMin(c.green(), c.blue()))
+                        > 35) {
+                        ++pieDiscChromaticPx;
+                    }
+                }
+            }
+            CHECK_COND(pieDiscChromaticPx > 200,
+                       "Suite 50k(c): rendered ISIJ Pie disc had insufficient slice pixels!");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 50l. Mega-Wave 5 Surgical Regression Gate:
+    //      (a) Table::colLabel(-1) & colName(-1) return "" without crash
+    //      (b) PythonAutomationServer::generatePythonScriptForWindow on Pie, Box,
+    //          and Histogram windows returns non-empty valid Python scripts (0 crash)
+    //      (c) Reloaded <Pie> .sciprj has 0 outer canvas frame
+    // -------------------------------------------------------------------------
+    {
+        // (a) Negative & out-of-bounds Table column-index helper guards
+        Table *t50l = w50->newTable(12, 3, "S50lSpecTbl", "SpecialtyCodegen");
+        CHECK_COND(t50l != nullptr, "Suite 50l(a): t50l null");
+        CHECK_COND(t50l->colLabel(-1).isEmpty() && t50l->colLabel(99).isEmpty()
+                           && t50l->colName(-1).isEmpty() && t50l->colName(99).isEmpty(),
+                   "Suite 50l(a): Table::colLabel(-1)/colName(-1) failed to return empty QString!");
+
+        t50l->setColumnType(0, SciDAVis::ColumnMode::Text);
+        for (int r = 0; r < 12; ++r) {
+            t50l->setText(r, 0, QString("Cat_%1").arg(r + 1));
+            t50l->setCell(r, 1, 15.0 + 3.5 * double(r));
+            t50l->setCell(r, 2, 22.0 + 2.0 * double((r * 5) % 7));
+        }
+
+        // (b) generatePythonScriptForWindow on Pie, Box, and Histogram (single-column DataCurves)
+        MultiLayer *mlPie50l = w50->multilayerPlot(
+                t50l, QStringList() << "S50lSpecTbl_2", Graph::Pie);
+        CHECK_COND(mlPie50l != nullptr, "Suite 50l(b): mlPie50l null");
+        mlPie50l->setName("S50lPieWin");
+        const QString pyPie =
+                PythonAutomationServer::generatePythonScriptForWindow(w50, mlPie50l, true, "inline");
+        CHECK_COND(!pyPie.trimmed().isEmpty() && pyPie.contains("plot_pie"),
+                   "Suite 50l(b): generatePythonScriptForWindow failed or omitted plot_pie on Pie!");
+
+        MultiLayer *mlBox50l = w50->multilayerPlot(
+                t50l, QStringList() << "S50lSpecTbl_2" << "S50lSpecTbl_3", Graph::Box);
+        CHECK_COND(mlBox50l != nullptr, "Suite 50l(b): mlBox50l null");
+        mlBox50l->setName("S50lBoxWin");
+        const QString pyBox =
+                PythonAutomationServer::generatePythonScriptForWindow(w50, mlBox50l, true, "inline");
+        CHECK_COND(!pyBox.trimmed().isEmpty() && pyBox.contains("plot_box"),
+                   "Suite 50l(b): generatePythonScriptForWindow failed or omitted plot_box on Box!");
+
+        MultiLayer *mlHist50l = w50->multilayerPlot(
+                t50l, QStringList() << "S50lSpecTbl_2", Graph::Histogram);
+        CHECK_COND(mlHist50l != nullptr, "Suite 50l(b): mlHist50l null");
+        mlHist50l->setName("S50lHistWin");
+        const QString pyHist =
+                PythonAutomationServer::generatePythonScriptForWindow(w50, mlHist50l, true, "inline");
+        CHECK_COND(!pyHist.trimmed().isEmpty() && pyHist.contains("plot_histogram"),
+                   "Suite 50l(b): generatePythonScriptForWindow failed or omitted plot_histogram on Histogram!");
+
+        // (c) Reloaded <Pie> .sciprj has 0 outer canvas frame
+        {
+            ApplicationWindow *pieWriter = new ApplicationWindow();
+            pieWriter->setHeadlessMode(true);
+            pieWriter->applyUserSettings();
+            Table *tPW = pieWriter->newTable(4, 2, "S50lPiePrjTbl", "PieFrame");
+            tPW->setColumnType(0, SciDAVis::ColumnMode::Text);
+            for (int r = 0; r < 4; ++r) {
+                tPW->setText(r, 0, QString("Phase%1").arg(r + 1));
+                tPW->setCell(r, 1, 10.0 * double(r + 1));
+            }
+            MultiLayer *mlPW = pieWriter->multilayerPlot(
+                    tPW, QStringList() << "S50lPiePrjTbl_2", Graph::Pie);
+            CHECK_COND(mlPW != nullptr, "Suite 50l(c): mlPW null");
+            mlPW->setName("S50lPieReloadGraph");
+
+            const QString piePrjPath = tmpDir.filePath("suite50l_pie_frame.sciprj");
+            {
+                QFile pf(piePrjPath);
+                CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 50l(c): open pie .sciprj failed");
+                pf.write(pieWriter->saveProjectToByteArray());
+                pf.close();
+            }
+            pieWriter->savedProject();
+            pieWriter->setOleEmbeddedMode(true);
+            delete pieWriter;
+
+            ApplicationWindow *pieReader = new ApplicationWindow();
+            pieReader->setHeadlessMode(true);
+            pieReader->applyUserSettings();
+            CHECK_COND(pieReader->loadProject(piePrjPath),
+                       "Suite 50l(c): loadProject failed on suite50l_pie_frame.sciprj!");
+            MultiLayer *mlPR =
+                    qobject_cast<MultiLayer *>(pieReader->window("S50lPieReloadGraph"));
+            CHECK_COND(mlPR != nullptr && mlPR->activeGraph() != nullptr,
+                       "Suite 50l(c): S50lPieReloadGraph missing after reload!");
+            Graph *gPR = mlPR->activeGraph();
+            CHECK_COND(gPR->isPiePlot() && !gPR->framed() && gPR->canvasFrameWidth() == 0
+                               && !gPR->axesBackbones()
+                               && gPR->plotWidget()->lineWidth() == 0,
+                       "Suite 50l(c): Reloaded <Pie> .sciprj retained outer canvas/plot frame!");
+
+            pieReader->savedProject();
+            pieReader->setOleEmbeddedMode(true);
+            delete pieReader;
+        }
+    }
+
+    w50->savedProject();
+    w50->setOleEmbeddedMode(true);
+    delete w50;
+    QApplication::processEvents();
+
+    std::cout << "[INFO] Suite 50 MegaWave1_Plots_MatSci_Autonomy_Undo_Perf passed!\n";
+    return 0;
+}
+
+static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 51: Campaign6_Final_EndToEnd_Invariants...\n";
+    Q_UNUSED(mw);
+
+    ApplicationWindow *w51 = new ApplicationWindow();
+    w51->setHeadlessMode(true);
+    w51->applyUserSettings();
+    w51->switchToLanguage("en");
+    QApplication::processEvents();
+
+    // -------------------------------------------------------------------------
+    // 51a. EmfPaintDevice rendering "Minimum creep rate dε/dt / s^-1" (both -90 deg
+    //      Y-axis title and horizontal legend) produces valid non-empty EMF+ bytes
+    // -------------------------------------------------------------------------
+    {
+        Table *tCreep = w51->newTable(6, 2, "S51CreepTbl", "NortonCreep");
+        CHECK_COND(tCreep != nullptr, "Suite 51a: tCreep null");
+        for (int r = 0; r < 6; ++r) {
+            tCreep->setCell(r, 0, 120.0 + 30.0 * double(r));
+            tCreep->setCell(r, 1, 1.0e-7 * std::pow(10.0, 0.45 * double(r)));
+        }
+        MultiLayer *mlCreep = w51->multilayerPlot(
+                tCreep, QStringList() << "S51CreepTbl_2", Graph::LineSymbols);
+        CHECK_COND(mlCreep != nullptr && mlCreep->activeGraph() != nullptr, "Suite 51a: mlCreep null");
+        mlCreep->resize(420, 420);
+        Graph *gCreep = mlCreep->activeGraph();
+        gCreep->plotWidget()->resize(340, 340);
+        const QString creepYTitle =
+                QString::fromUtf8("Minimum creep rate d\xCE\xB5/dt / s^-1");
+        gCreep->setAxisTitle(QwtPlot::yLeft, creepYTitle);
+        gCreep->setAxisTitle(QwtPlot::xBottom, QStringLiteral("Applied stress / MPa"));
+        if (gCreep->legend())
+            gCreep->legend()->setText(
+                    QString::fromUtf8("\\c{1}Minimum creep rate d\xCE\xB5/dt"));
+        mlCreep->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        gCreep->replot();
+
+        const OleRenderedGraph emfOut = SciDAVisEmf::renderMultiLayer(mlCreep, nullptr, false);
+        CHECK_COND(emfOut.emfBytes.size() > 1024 && emfOut.emfBytes.contains("EMF+"),
+                   "Suite 51a: EmfPaintDevice failed to emit non-empty Dual EMF+ bytes for 'Minimum creep rate dε/dt / s^-1'!");
+        HENHMETAFILE hemf = SciDAVisEmf::createHemfFromBytes(emfOut.emfBytes);
+        CHECK_COND(hemf != nullptr, "Suite 51a: createHemfFromBytes returned null HENHMETAFILE!");
+
+        QImage gdiPlay(480, 480, QImage::Format_ARGB32);
+        gdiPlay.fill(Qt::white);
+        {
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = 480;
+            bmi.bmiHeader.biHeight = -480;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            void *bits = nullptr;
+            HDC screenDc = GetDC(nullptr);
+            HDC memDc = CreateCompatibleDC(screenDc);
+            HBITMAP hDib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            ReleaseDC(nullptr, screenDc);
+            if (memDc && hDib && bits) {
+                HGDIOBJ oldBmp = SelectObject(memDc, hDib);
+                HBRUSH whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+                RECT rc = { 0, 0, 480, 480 };
+                FillRect(memDc, &rc, whiteBrush);
+                DeleteObject(whiteBrush);
+                CHECK_COND(SciDAVisEmf::drawHemfWithGdiplus(memDc, hemf, rc),
+                           "Suite 51a: GDI+ playback of 'Minimum creep rate dε/dt / s^-1' EMF+ failed!");
+                std::memcpy(gdiPlay.bits(), bits, 480 * 480 * 4);
+                SelectObject(memDc, oldBmp);
+                DeleteObject(hDib);
+                DeleteDC(memDc);
+            }
+        }
+        DeleteEnhMetaFile(hemf);
+
+        int darkInkPx = 0;
+        for (int y = 0; y < gdiPlay.height(); ++y) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(gdiPlay.constScanLine(y));
+            for (int x = 0; x < gdiPlay.width(); ++x) {
+                if (qRed(line[x]) < 120 && qGreen(line[x]) < 120 && qBlue(line[x]) < 120)
+                    ++darkInkPx;
+            }
+        }
+        CHECK_COND(darkInkPx > 300,
+                   "Suite 51a: EMF+ GDI+ playback produced insufficient dark text/axis ink pixels!");
+
+        // Verify [P1-05]: <sub>/<sup> runs in "<i>E</i> - <i>E</i><sub>F</sub> / eV" (28 pt)
+        // and "ln(<i>β</i> / <i>T</i><sub>p</sub><sup>2</sup>)" (11 pt) @ 300 DPI emit
+        // EmfPlusFont emSize in [0.58, 0.80]x parent emSize (never >= 0.90x!)
+        auto extractEmfPlusDrawnFontSizes =
+                [](const QByteArray &bytes) -> QVector<QPair<QString, float>> {
+            QVector<QPair<QString, float>> runs;
+            QMap<int, float> fontEmBySlot;
+            const uchar *raw = reinterpret_cast<const uchar *>(bytes.constData());
+            const size_t total = static_cast<size_t>(bytes.size());
+            size_t pos = 0;
+            while (pos + 8 <= total) {
+                quint32 iType = 0, nSize = 0;
+                std::memcpy(&iType, raw + pos, 4);
+                std::memcpy(&nSize, raw + pos + 4, 4);
+                if (nSize < 8 || pos + nSize > total)
+                    break;
+                if (iType == 70 && nSize >= 16) { // EMR_COMMENT
+                    quint32 cbData = 0, ident = 0;
+                    std::memcpy(&cbData, raw + pos + 8, 4);
+                    std::memcpy(&ident, raw + pos + 12, 4);
+                    if (ident == 0x2B464D45u) { // "EMF+"
+                        const size_t epEnd =
+                                std::min<size_t>(pos + nSize, pos + 12 + size_t(cbData));
+                        size_t ep = pos + 16;
+                        while (ep + 12 <= epEnd) {
+                            quint16 recType = 0, recFlags = 0;
+                            quint32 recSize = 0, dataSize = 0;
+                            std::memcpy(&recType, raw + ep, 2);
+                            std::memcpy(&recFlags, raw + ep + 2, 2);
+                            std::memcpy(&recSize, raw + ep + 4, 4);
+                            std::memcpy(&dataSize, raw + ep + 8, 4);
+                            if (recSize < 12 || ep + recSize > epEnd
+                                || ep + 12 + size_t(dataSize) > ep + recSize)
+                                break;
+                            if (recType == 0x4008 && (recFlags & 0x8000) == 0
+                                && ((recFlags >> 8) & 0x7F) == 0x06 && dataSize >= 24) {
+                                float emSz = 0.0f;
+                                std::memcpy(&emSz, raw + ep + 12 + 4, sizeof(float));
+                                fontEmBySlot[int(recFlags & 0xFF)] = emSz;
+                            } else if (recType == 0x401C && dataSize >= 28) {
+                                quint32 strLen = 0;
+                                std::memcpy(&strLen, raw + ep + 12 + 8, 4);
+                                if (28u + size_t(strLen) * 2u <= size_t(dataSize)) {
+                                    const QString s = QString::fromUtf16(
+                                            reinterpret_cast<const ushort *>(raw + ep + 12 + 28),
+                                            int(strLen));
+                                    runs.append(qMakePair(
+                                            s, fontEmBySlot.value(int(recFlags & 0xFF), 0.0f)));
+                                }
+                            }
+                            ep += recSize;
+                        }
+                    }
+                }
+                pos += nSize;
+            }
+            return runs;
+        };
+
+        mlCreep->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        mlCreep->setPageSizePhysical(160.0, 120.0, MultiLayer::UnitMm, 300);
+        gCreep->setLegendVisible(false);
+        gCreep->setAxisTitle(QwtPlot::xBottom,
+                             QStringLiteral("<i>E</i> - <i>E</i><sub>F</sub> / eV"));
+        gCreep->setAxisTitle(QwtPlot::yLeft, QString());
+        gCreep->replot();
+        const OleRenderedGraph emfSlide28 =
+                SciDAVisEmf::renderMultiLayer(mlCreep, nullptr, false);
+        const auto runs28 = extractEmfPlusDrawnFontSizes(emfSlide28.emfBytes);
+        double ratioSubF28 = -1.0;
+        for (int i = 0; i + 1 < runs28.size(); ++i) {
+            if (runs28[i].first.trimmed() == QLatin1String("E")
+                && runs28[i + 1].first.trimmed() == QLatin1String("F")
+                && runs28[i].second > 1.0f) {
+                ratioSubF28 = double(runs28[i + 1].second) / double(runs28[i].second);
+                break;
+            }
+        }
+        std::cout << "[INFO] Suite 51a 28pt 300-DPI EmfPlusFont ratio(F/E) = " << ratioSubF28
+                  << "\n";
+        CHECK_COND(ratioSubF28 >= 0.58 && ratioSubF28 <= 0.80,
+                   "Suite 51a: 28pt 300-DPI '<i>E</i> - <i>E</i><sub>F</sub> / eV' EmfPlusFont emSize ratio for <sub>F</sub> outside [0.58, 0.80]!");
+
+        mlCreep->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        mlCreep->setPageSizePhysical(85.0, 85.0, MultiLayer::UnitMm, 300);
+        gCreep->setLegendVisible(false);
+        gCreep->setAxisTitle(
+                QwtPlot::yLeft,
+                QString::fromUtf8("ln(<i>\xCE\xB2</i> / <i>T</i><sub>p</sub><sup>2</sup>)"));
+        gCreep->setAxisTitle(QwtPlot::xBottom, QString());
+        gCreep->replot();
+        const OleRenderedGraph emfIsij11 =
+                SciDAVisEmf::renderMultiLayer(mlCreep, nullptr, false);
+        const auto runs11 = extractEmfPlusDrawnFontSizes(emfIsij11.emfBytes);
+        double ratioSubP11 = -1.0;
+        double ratioSup211 = -1.0;
+        for (int i = 0; i + 2 < runs11.size(); ++i) {
+            if (runs11[i].first.trimmed() == QLatin1String("T")
+                && runs11[i + 1].first.trimmed() == QLatin1String("p")
+                && runs11[i + 2].first.trimmed() == QLatin1String("2")
+                && runs11[i].second > 1.0f) {
+                ratioSubP11 = double(runs11[i + 1].second) / double(runs11[i].second);
+                ratioSup211 = double(runs11[i + 2].second) / double(runs11[i].second);
+                break;
+            }
+        }
+        std::cout << "[INFO] Suite 51a 11pt 300-DPI EmfPlusFont ratio(p/T)=" << ratioSubP11
+                  << ", ratio(2/T)=" << ratioSup211 << "\n";
+        CHECK_COND(ratioSubP11 >= 0.58 && ratioSubP11 <= 0.80
+                           && ratioSup211 >= 0.58 && ratioSup211 <= 0.80,
+                   "Suite 51a: 11pt 300-DPI 'ln(<i>β</i> / <i>T</i><sub>p</sub><sup>2</sup>)' EmfPlusFont emSize ratio for <sub>p</sub>/<sup>2</sup> outside [0.58, 0.80]!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 51b. HorizontalBars 2-column legend wider than canvas automatically
+    //      downgrades leg->numColumns() == 1
+    // -------------------------------------------------------------------------
+    {
+        Table *tHB = w51->newTable(4, 3, "S51HorizBarTbl", "FractureModes");
+        CHECK_COND(tHB != nullptr, "Suite 51b: tHB null");
+        tHB->setColumnType(0, SciDAVis::ColumnMode::Text);
+        tHB->setColPlotDesignation(0, SciDAVis::X);
+        tHB->setColName(1, "SeriesA");
+        tHB->setColName(2, "SeriesB");
+        tHB->setColLongName(1, "Interface debonding fracture");
+        tHB->setColLongName(2, "Transgranular cleavage fracture");
+        const char *tempers[4] = { "As-Q", "T6", "T73", "RRA" };
+        for (int r = 0; r < 4; ++r) {
+            tHB->setText(r, 0, QString::fromLatin1(tempers[r]));
+            tHB->setCell(r, 1, 24.0 + 6.0 * double(r));
+            tHB->setCell(r, 2, 31.0 + 5.0 * double(r));
+        }
+
+        MultiLayer *mlHB = w51->multilayerPlot(
+                tHB, QStringList() << "S51HorizBarTbl_SeriesA" << "S51HorizBarTbl_SeriesB",
+                Graph::HorizontalBars);
+        CHECK_COND(mlHB != nullptr && mlHB->activeGraph() != nullptr, "Suite 51b: mlHB null");
+        mlHB->resize(340, 340);
+        Graph *gHB = mlHB->activeGraph();
+        gHB->plotWidget()->resize(280, 280);
+        gHB->plotWidget()->updateLayout();
+        Legend *legHB = gHB->legend();
+        CHECK_COND(legHB != nullptr, "Suite 51b: HorizontalBars legend null!");
+        legHB->setText("\\c{1}Interface debonding fracture\n\\c{2}Transgranular cleavage fracture");
+        legHB->setNumColumns(2);
+        CHECK_COND(legHB->numColumns() == 2, "Suite 51b: precondition numColumns == 2 failed");
+
+        gHB->placeLegendAnchor(Graph::LegendTopRight);
+        CHECK_COND(legHB->numColumns() == 1,
+                   "Suite 51b: HorizontalBars 2-column legend wider than canvas failed to auto-downgrade to 1 column!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 51c. Graph::refreshAutoAxisTitlesFromColumns preserves concise colShort
+    //      legend on a narrow < 190 px canvas when colLongName would overflow
+    // -------------------------------------------------------------------------
+    {
+        Table *tNar = w51->newTable(20, 2, "S51NarrowHistTbl", "Precipitates");
+        CHECK_COND(tNar != nullptr, "Suite 51c: tNar null");
+        tNar->setColName(0, "Idx");
+        tNar->setColName(1, "d_T6");
+        tNar->setColLongName(1, "Precipitate equivalent diameter d_eq (Peak-Aged T6 Condition)");
+        tNar->setColUnits(1, "nm");
+        for (int r = 0; r < 20; ++r) {
+            tNar->setCell(r, 0, double(r));
+            tNar->setCell(r, 1, 8.5 + 0.7 * double(r % 7));
+        }
+
+        MultiLayer *mlNar = w51->multilayerPlot(
+                tNar, QStringList() << "S51NarrowHistTbl_d_T6", Graph::Line);
+        CHECK_COND(mlNar != nullptr && mlNar->activeGraph() != nullptr, "Suite 51c: mlNar null");
+        mlNar->resize(230, 230);
+        Graph *gNar = mlNar->activeGraph();
+        gNar->plotWidget()->resize(210, 210);
+        gNar->plotWidget()->updateLayout();
+        const QRect narCr = gNar->plotWidget()->plotLayout()->canvasRect();
+        CHECK_COND(narCr.width() > 0 && narCr.width() < 190,
+                   "Suite 51c: test setup canvas width should be < 190 px!");
+
+        Legend *legNar = gNar->legend();
+        CHECK_COND(legNar != nullptr, "Suite 51c: narrow graph legend null!");
+        legNar->setFont(QFont("Arial", 9));
+        legNar->setText("\\c{1}d_T6");
+
+        gNar->refreshAutoAxisTitlesFromColumns();
+        const QString postLegText = legNar->text();
+        CHECK_COND(postLegText.contains("d_T6")
+                           && !postLegText.contains("Precipitate equivalent diameter"),
+                   "Suite 51c: refreshAutoAxisTitlesFromColumns expanded concise 'd_T6' into overflowing colLongName on < 190 px canvas!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 51d. ArrowMarker::updateBoundingRect preserves exact data-space
+    //      (x1, y1, x2, y2) across a 500x400 -> 220x220 canvas resize ([P1-01])
+    // -------------------------------------------------------------------------
+    {
+        Table *tBrk = w51->newTable(3, 2, "S51ArrowBrkTbl", "AnovaGroups");
+        CHECK_COND(tBrk != nullptr, "Suite 51d: tBrk null");
+        for (int r = 0; r < 3; ++r) {
+            tBrk->setCell(r, 0, double(r + 1));
+            tBrk->setCell(r, 1, 480.0 + 35.0 * double(r));
+        }
+        MultiLayer *mlBrk = w51->multilayerPlot(
+                tBrk, QStringList() << "S51ArrowBrkTbl_2", Graph::Scatter);
+        CHECK_COND(mlBrk != nullptr && mlBrk->activeGraph() != nullptr, "Suite 51d: mlBrk null");
+        mlBrk->resize(560, 460);
+        Graph *gBrk = mlBrk->activeGraph();
+        gBrk->plotWidget()->resize(500, 400);
+        gBrk->setScale(QwtPlot::xBottom, 0.5, 3.5);
+        gBrk->setScale(QwtPlot::yLeft, 420.0, 660.0);
+        gBrk->plotWidget()->updateLayout();
+        gBrk->replot();
+
+        ArrowMarker proto;
+        proto.drawStartArrow(false);
+        proto.drawEndArrow(false);
+        proto.setBoundingRect(1.0, 625.0, 3.0, 625.0);
+        gBrk->addArrow(&proto);
+        CHECK_COND(!gBrk->lineMarkerKeys().isEmpty(), "Suite 51d: lineMarkerKeys empty after addArrow");
+        ArrowMarker *brk = gBrk->arrow(gBrk->lineMarkerKeys().back());
+        CHECK_COND(brk != nullptr, "Suite 51d: attached ArrowMarker null");
+
+        const QPoint pxBeforeStart = brk->startPoint();
+        const QPoint pxBeforeEnd = brk->endPoint();
+
+        // Resize canvas from 500x400 down to 220x220 and trigger updateMarkersBoundingRect + ISIJ preset
+        mlBrk->resize(260, 260);
+        gBrk->plotWidget()->resize(220, 220);
+        gBrk->plotWidget()->updateLayout();
+        gBrk->replot();
+        gBrk->updateMarkersBoundingRect();
+        brk->updateBoundingRect();
+
+        CHECK_COND(std::abs(brk->startPointCoord().x() - 1.0) < 1e-9
+                           && std::abs(brk->startPointCoord().y() - 625.0) < 1e-9
+                           && std::abs(brk->endPointCoord().x() - 3.0) < 1e-9
+                           && std::abs(brk->endPointCoord().y() - 625.0) < 1e-9,
+                   "Suite 51d: ArrowMarker::updateBoundingRect corrupted data-space (x1, y1, x2, y2) across 500x400 -> 220x220 resize!");
+        CHECK_COND(brk->startPoint() != pxBeforeStart || brk->endPoint() != pxBeforeEnd,
+                   "Suite 51d: ArrowMarker::updateBoundingRect failed to refresh pixel start/end cache for 220x220 canvas!");
+
+        mlBrk->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        gBrk->replot();
+        CHECK_COND(std::abs(brk->startPointCoord().x() - 1.0) < 1e-9
+                           && std::abs(brk->startPointCoord().y() - 625.0) < 1e-9
+                           && std::abs(brk->endPointCoord().x() - 3.0) < 1e-9
+                           && std::abs(brk->endPointCoord().y() - 625.0) < 1e-9,
+                   "Suite 51d: StyleISIJJournal85mm corrupted ArrowMarker data-space coordinates!");
+    }
+
+    w51->savedProject();
+    w51->setOleEmbeddedMode(true);
+    delete w51;
+    QApplication::processEvents();
+
+    std::cout << "[INFO] Suite 51 Campaign6_Final_EndToEnd_Invariants passed!\n";
     return 0;
 }

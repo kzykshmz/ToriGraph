@@ -118,6 +118,7 @@ Matrix::Matrix() : AbstractPart("temp"), scripted(0)
 Matrix::Matrix() : AbstractPart("temp")
 #endif
 {
+    d_matrix_private = nullptr;
     d_view = NULL;
     createActions();
 }
@@ -130,6 +131,8 @@ Matrix::~Matrix()
         detachedView->hide();
         delete detachedView;
     }
+    delete d_matrix_private;
+    d_matrix_private = nullptr;
 }
 
 void Matrix::setView(MatrixView *view)

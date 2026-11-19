@@ -70,6 +70,11 @@ public:
           Qt::WindowFlags f = Qt::Widget);
     Table(ScriptingEnv *env, int r, int c, const QString &label, QWidget *parent = 0,
           const char *name = 0, Qt::WindowFlags f = Qt::Widget);
+    ~Table() override;
+
+    static void beginUndoRedoReplay();
+    static void endUndoRedoReplay();
+    static bool isUndoRedoReplaying();
 
     //! Sets the number of significant digits
     void setNumericPrecision(int prec);
@@ -118,6 +123,8 @@ public:
         if (d_future_table)
             d_future_table->importV0x0001XXCreationTime(s);
     }
+
+    TableModel *tableModel() const { return d_model; }
 
     void closeEvent(QCloseEvent *);
 public slots:
@@ -320,12 +327,16 @@ protected slots:
     void syncAutoRecalcFromFuture(bool on);
 
 private:
+    void scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount);
     void autoRecalculateDependentColumns(int changedFirstCol, int changedCount);
     bool recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors);
 
     QHash<const AbstractAspect *, QString> d_stored_column_labels;
     bool d_auto_recalc_formulas = true;
     bool d_in_auto_recalc = false;
+    bool d_pending_unwrapped_recalc = false;
+    int d_pending_recalc_first_col = -1;
+    int d_pending_recalc_col_count = 0;
 };
 
 #endif

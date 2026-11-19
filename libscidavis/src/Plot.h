@@ -117,6 +117,7 @@ public:
     void flushPendingWheelUndo();
     static int scaleAlignmentToAxis(int alignment);
     static bool isLog10ScaleEngine(const QwtScaleEngine *se);
+    static double printDeviceScale();
 
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],

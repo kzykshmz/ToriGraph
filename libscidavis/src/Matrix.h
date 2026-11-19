@@ -36,6 +36,7 @@
 #include <QEvent>
 #include <QHeaderView>
 #include <QDateTime>
+#include <QPointer>
 #include "MyWidget.h"
 #include "ScriptingEnv.h"
 #include "Script.h"
@@ -53,18 +54,23 @@ class Matrix : public MatrixView, public scripted
     Q_OBJECT
 
 public:
-    future::Matrix *d_future_matrix;
+    QPointer<future::Matrix> d_future_matrix;
 
     //! Return the window name
-    virtual QString name() { return d_future_matrix->name(); }
+    virtual QString name() { return d_future_matrix ? d_future_matrix->name() : QString(); }
     //! Set the window name
-    virtual void setName(const QString &s) { d_future_matrix->setName(s); }
+    virtual void setName(const QString &s)
+    {
+        if (d_future_matrix)
+            d_future_matrix->setName(s);
+    }
     //! Return the window label
-    virtual QString windowLabel() { return d_future_matrix->comment(); }
+    virtual QString windowLabel() { return d_future_matrix ? d_future_matrix->comment() : QString(); }
     //! Set the window label
     virtual void setWindowLabel(const QString &s)
     {
-        d_future_matrix->setComment(s);
+        if (d_future_matrix)
+            d_future_matrix->setComment(s);
         updateCaption();
     }
     //! Set the caption policy
@@ -72,6 +78,8 @@ public:
     {
         caption_policy = policy;
         updateCaption();
+        if (!d_future_matrix)
+            return;
         switch (policy) {
         case Name:
             d_future_matrix->setCaptionSpec("%n");
@@ -88,7 +96,8 @@ public:
     virtual void setBirthDate(const QString &s)
     {
         birthdate = s;
-        d_future_matrix->importV0x0001XXCreationTime(s);
+        if (d_future_matrix)
+            d_future_matrix->importV0x0001XXCreationTime(s);
     }
 
     /*!
@@ -123,7 +132,7 @@ public:
     void customEvent(QEvent *e);
     void closeEvent(QCloseEvent *);
 
-    virtual QWidget *view() { return d_future_matrix->view(); }
+    virtual QWidget *view() { return d_future_matrix ? d_future_matrix->view() : nullptr; }
 
 public slots:
     void exportPDF(const QString &fileName);

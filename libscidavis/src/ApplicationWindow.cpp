@@ -132,6 +132,7 @@
 #include <stdlib.h>
 #include <cmath>
 #include <algorithm>
+#include <gsl/gsl_errno.h>
 
 #include <QFileDialog>
 #include <QScopedPointer>
@@ -1627,6 +1628,174 @@ void registerApplicationWindowJapaneseStrings()
         add("Comments", "コメント");
         add("Units (e.g. MPa, %)", "単位 (例: MPa, %)");
         add("Symbols:", "記号・単位:");
+        add("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\nAre you sure you want to delete these layers and their curves?", "削除対象の %2 レイヤーのうち %1 レイヤーに %3 個のプロット要素が含まれています。\nこれらのレイヤーと曲線を削除してもよろしいですか？");
+        add("%1: invert", "%1: 逆行列");
+        add("Inversion failed, the matrix is singular or ill-conditioned!", "逆行列の計算に失敗しました（特異行列または悪条件行列です）。");
+        add("Matrix size (%1x%1) exceeds dense LU limit (4096).", "行列サイズ (%1x%1) が密行列LU分解の上限 (4096) を超えています。");
+        add("Samples", "サンプル");
+        add("Sample Project &Gallery...", "サンプルプロジェクトギャラリー(&G)...");
+        add("Sample Project Gallery...", "サンプルプロジェクトギャラリー...");
+        add("Sample Project Gallery", "サンプルプロジェクトギャラリー");
+        add("Open Built-In Scientific Sample Project Gallery", "組み込みの材料科学・統計サンプルプロジェクト集を開く");
+        add("&Work Hardening && Considere Analysis...", "加工硬化・Considèreくびれ解析(&W)...");
+        add("Work Hardening & Considere Analysis...", "加工硬化・Considèreくびれ解析...");
+        add("Work Hardening / Considere Analysis...", "加工硬化・Considèreくびれ解析...");
+        add("Work Hardening", "加工硬化");
+        add("True Stress-Strain, Hollomon n, Crussard-Jaoul & Considere Necking", "真応力-真ひずみ変換・Hollomon加工硬化指数 n・Kocks-Mecking・Considèreくびれ解析");
+        add("&Kissinger / Thermal Desorption (TDS)...", "Kissinger昇温脱離 (TDS/DSC) 解析(&K)...");
+        add("Kissinger / Thermal Desorption (TDS)...", "Kissinger昇温脱離 (TDS/DSC) 解析...");
+        add("Kissinger TDS", "昇温脱離(TDS)");
+        add("Kissinger Thermal Desorption (TDS / DSC) Activation Energy Analysis", "Kissinger法による昇温脱離 (TDS / DSC) 活性化エネルギー解析");
+        add("&XRD Peak && Williamson-Hall Analyzer...", "XRDピーク・Williamson-Hall解析(&X)...");
+        add("XRD Peak & Williamson-Hall Analyzer...", "XRDピーク・Williamson-Hall解析...");
+        add("XRD / W-H", "XRD・W-H");
+        add("Powder XRD K-alpha2 Stripping, Scherrer & Williamson-Hall Analysis", "粉末X線回折 Kα2除去・Scherrer結晶子径・Williamson-Hall格子ひずみ解析");
+        add("&VASP Electronic Band && DOS Plotter...", "VASPバンド構造・状態密度 (DOS) 作図(&V)...");
+        add("VASP Electronic Band & DOS Plotter...", "VASPバンド構造・状態密度 (DOS) 作図...");
+        add("VASP Bands/DOS", "VASP電子状態");
+        add("VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter", "VASP (EIGENVAL / DOSCAR) 電子バンド構造・状態密度プロッタ");
+        add("Export Python", "Python出力");
+        add("Export Python Script", "Pythonスクリプト出力");
+        add("Export Active Graph to Python Script...", "現在のグラフをPythonスクリプトとして出力...");
+        add("Export Reproducible &Python Script...", "再現用Pythonスクリプトを出力(&P)...");
+        add("Export Reproducible Python Script...", "再現用Pythonスクリプトを出力...");
+        add("Export Reproducible Python Script — %1", "再現用Pythonスクリプト出力 — %1");
+        add("Generate Reproducible Python Script from Active Graph", "アクティブなグラフを再現するPythonスクリプトを生成");
+        add("Please open or select a Graph, Worksheet, or Matrix window first.", "先にグラフ、ワークシート、または行列ウィンドウを開くか選択してください。");
+        add("Could not generate a Python script for the active window.", "アクティブなウィンドウからPythonスクリプトを生成できませんでした。");
+        add("Generated Python script (%1 lines) and copied to clipboard.", "Pythonスクリプト（%1 行）を生成し、クリップボードにコピーしました。");
+        add("Standalone reproducible ToriGraph SDK Python script for '%1' (copied to clipboard):", "'%1' を再現するスタンドアロン ToriGraph SDK Pythonスクリプト（クリップボードへコピー済み）:");
+        add("Copy to Clipboard", "クリップボードにコピー");
+        add("Copied Python script to clipboard.", "Pythonスクリプトをクリップボードにコピーしました。");
+        add("Save .py File...", ".py ファイルを保存...");
+        add("Save Reproducible Python Script", "再現用Pythonスクリプトを保存");
+        add("Python Scripts (*.py);;All Files (*)", "Pythonスクリプト (*.py);;すべてのファイル (*)");
+        add("Saved Python script to %1", "Pythonスクリプトを保存しました: %1");
+        add("Failed to write file:\n%1", "ファイルの書き込みに失敗しました:\n%1");
+        add("Import %1", "%1 をインポート");
+        add("Origin OPJU Format", "Origin OPJU 形式");
+        add("This Origin 2018+ Unicode project (.opju, CPYU container) uses a proprietary format not directly readable by liborigin.\n\nPlease save as legacy '.opj' in Origin or export worksheets as CSV/ASCII.", "この Origin 2018+ Unicode プロジェクト (.opju, CPYU形式) は独自コンテナ形式のため直接読み込めません。\n\nOrigin側で従来形式の '.opj' として保存するか、CSV/ASCIIとしてエクスポートしてください。");
+        add("Categories:", "カテゴリ軸:");
+        add("Categories", "カテゴリ軸");
+        add("(Numeric Ticks)", "(数値目盛)");
+        add("Custom (%1 labels)", "カスタム (%1 ラベル)");
+        add("Change Category Labels", "カテゴリ軸ラベルを変更");
+        add("Set Category Labels", "カテゴリ軸ラベルを設定");
+        add("Edit Curve Style...", "曲線スタイルを編集...");
+        add("Layer / Plot Properties...", "レイヤー・プロット設定...");
+        add("Show Object", "オブジェクトを表示");
+        add("Hide Object", "オブジェクトを非表示");
+        add("Remove Object", "オブジェクトを削除");
+        add("Plot Function", "関数プロット");
+        add("Reset Axis Color", "軸の色をリセット");
+        add("Polar %1", "極座標 %1");
+        add("Materials Science Sample Gallery", "材料科学サンプルギャラリー");
+        add("Select a built-in materials science dataset to generate a ready-to-analyze worksheet and publication plot:", "組み込みの材料科学データセットを選択し、解析用ワークシートと論文品質グラフを生成します:");
+        add("Generate & Run Recommended Analysis", "データ生成＋推奨解析を実行");
+        add("Generate Worksheet & Plot", "ワークシートとグラフを生成");
+        add("Metallurgy / Mechanical", "金属材料・力学特性");
+        add("Hydrogen Embrittlement / TDS", "水素脆化・昇温脱離 (TDS)");
+        add("X-Ray Diffraction (XRD)", "X線回折 (XRD)");
+        add("Diffusion / Kinetics", "拡散・速度論");
+        add("Synchrotron CT / Local Strain", "放射光CT・局所ひずみ");
+        add("Ceramics / Fracture Statistics", "セラミックス・破壊統計");
+        add("AA7075-T6 Tensile Stress-Strain Curve", "AA7075-T6 引張応力-ひずみ曲線");
+        add("Hydrogen TDS Spectra at 3 Heating Rates (100, 200, 400 °C/h)", "水素昇温脱離 (TDS) スペクトル（昇温速度 100, 200, 400 °C/h）");
+        add("Peak-Aged Al-Zn-Mg Alloy XRD Pattern (Cu Kα1)", "ピーク時効 Al-Zn-Mg 合金 XRD パターン (Cu Kα1)");
+        add("Hydrogen Interstitial Diffusivity in α-Fe", "α-Fe 中の格子間水素拡散係数");
+        add("3D-XRD / Synchrotron CT Crack-Tip Local Strain Map", "3D-XRD / 放射光CT き裂先端局所ひずみマップ");
+        add("Sintered Si3N4 4-Point Flexural Strength (JIS R 1625)", "焼結 Si3N4 4点曲げ強度ワイブル統計 (JIS R 1625)");
+        add("Kissinger TDS / DSC Activation Energy Analyzer", "Kissinger 昇温脱離 (TDS / DSC) 活性化エネルギー解析");
+        add("From Worksheet (β, Tp Columns)", "ワークシート列から指定 (β, Tp 列)");
+        add("Auto-Extract Peaks from TDS Curves", "複数TDS曲線からピーク温度を自動抽出");
+        add("Manual Input (β, Tp Lists)", "手動リスト入力 (β, Tp)");
+        add("Heating Rate Column (β):", "昇温速度列 (β):");
+        add("Peak Temperature Column (Tp):", "ピーク温度列 (Tp):");
+        add("Heating Rate Unit:", "昇温速度の単位:");
+        add("K/min (°C/min)", "K/min (°C/min)");
+        add("K/h (°C/h)", "K/h (°C/h)");
+        add("Peak Temperatures in Celsius (°C)", "ピーク温度を摂氏 (°C) として入力");
+        add("Top Temperature Axis in Celsius (°C)", "上X軸の参照温度を摂氏 (°C) で表示");
+        add("TDS Flux Columns (Select 2+ Rates):", "TDS放出速度列（2水準以上を選択）:");
+        add("Heating Rates (comma-separated):", "昇温速度リスト（カンマ区切り）:");
+        add("Peak Temperatures (comma-separated):", "ピーク温度リスト（カンマ区切り）:");
+        add("Peak Search Window Min T:", "ピーク探索 最小温度 T:");
+        add("Peak Search Window Max T:", "ピーク探索 最大温度 T:");
+        add("Kissinger analysis requires at least 2 distinct peak temperatures.", "Kissinger解析には少なくとも2つの異なるピーク温度が必要です。");
+        add("Kissinger analysis requires at least 2 valid (heating rate, peak temperature) pairs.", "Kissinger解析には少なくとも2組の有効な（昇温速度, ピーク温度）データ対が必要です。");
+        add("Kocks-Mecking Work-Hardening & Considere Necking Analyzer", "Kocks-Mecking 加工硬化・Considère くびれ解析");
+        add("Savitzky-Golay Smoothing Window (odd points):", "Savitzky-Golay 平滑化窓幅（奇数点数）:");
+        add("Create Considere (θ & σt vs εt) Plot", "Considère 線図 (θ・σt vs εt) を作成");
+        add("XRD Peak, Scherrer & Williamson-Hall Analyzer", "XRD ピーク・Scherrer結晶子径・Williamson-Hall 解析");
+        add("Diffractogram Curve:", "回折プロファイル曲線:");
+        add("2θ Column (deg):", "2θ 列 (deg):");
+        add("Intensity Column:", "回折強度列:");
+        add("Radiation Source:", "X線管球・線源:");
+        add("X-Ray Wavelength λ (Å):", "X線波長 λ (Å):");
+        add("Instrumental FWHM (deg):", "装置関数半値幅 FWHM (deg):");
+        add("Scherrer Shape Factor K:", "Scherrer 形状因子 K:");
+        add("Crystal System for (hkl) Indexing:", "(hkl) 指数付け結晶系:");
+        add("None (Peak Table & W-H Only)", "なし（ピーク表・W-H図のみ）");
+        add("Strip Cu Kα2 Doublet (Rachinger)", "Rachinger法による Kα2 二重線除去");
+        add("Add Linked Top Bragg d-Spacing Axis (Å)", "上X軸にブラッグ面間隔 d (Å) リンク軸を追加");
+        add("Create Williamson-Hall Plot (β cos θ vs 4 sin θ)", "Williamson-Hall プロット (β cos θ vs 4 sin θ) を作成");
+        add("Please open a graph or numeric worksheet with XRD data first.", "先にXRDデータを含むグラフまたは数値ワークシートを開いてください。");
+        add("No prominent Bragg diffraction peaks were detected on the curve.", "指定された曲線上に明瞭なブラッグ回折ピークが検出されませんでした。");
+        add("VASP Electronic Structure Plotter (DOS & Band Structure)", "VASP 電子状態プロッタ（状態密度 DOS・バンド構造）");
+        add("Load VASP DOSCAR / EIGENVAL File...", "VASP DOSCAR / EIGENVAL ファイルを読み込む...");
+        add("DOS / PDOS", "状態密度 (DOS / PDOS)");
+        add("Band Structure", "バンド構造");
+        add("Energy Column (eV):", "エネルギー列 (eV):");
+        add("Spin-Up / Total DOS Columns:", "全DOS / Spin-Up DOS 列:");
+        add("Spin-Down DOS Columns (Optional):", "Spin-Down DOS 列（任意）:");
+        add("Fermi Energy E_F (eV):", "フェルミ準位 E_F (eV):");
+        add("Vertical Energy Axis (for side-by-side Band + DOS)", "縦軸をエネルギーにする（バンド図横並び用）");
+        add("Wavevector Distance Column (k):", "波数空間距離列 (k):");
+        add("Band Eigenvalue Columns:", "バンド固有値列:");
+        add("Energy Window Min (E - E_F, eV):", "表示エネルギー最小値 (E - E_F, eV):");
+        add("Energy Window Max (E - E_F, eV):", "表示エネルギー最大値 (E - E_F, eV):");
+        add("High-Symmetry k-Tick Positions:", "高対称k点 目盛位置:");
+        add("High-Symmetry k-Tick Labels:", "高対称k点 ラベル (Γ, X, M...):");
+        add("Source worksheet is null.", "入力元ワークシートが選択されていません。");
+        add("Energy column could not be resolved.", "エネルギー列を特定できませんでした。");
+        add("At least one numeric DOS column is required.", "数値のDOS列を少なくとも1列選択してください。");
+        add("Insufficient numeric rows for VASP DOS plot.", "VASP状態密度プロットに必要な有効データ行数が不足しています。");
+        add("Wavevector k-distance column could not be resolved.", "波数距離 k 列を特定できませんでした。");
+        add("At least one band eigenvalue column is required.", "バンド固有値列を少なくとも1列選択してください。");
+        add("Insufficient k-points for VASP band structure plot.", "VASPバンド構造プロットに必要な k 点数が不足しています。");
+        add("Failure probability, <i>P</i><sub>f</sub> (%)", "破壊確率, <i>P</i><sub>f</sub> (%)");
+        add("Maximum Likelihood (MLE — JIS R 1625 / ISO 20501)", "最尤法 (MLE — JIS R 1625 / ISO 20501 準拠)");
+        add("Median Rank Regression (MRR — Benard)", "メジアンランク回帰法 (MRR — Benard近似)");
+        add("Parameter Estimator:", "母数推定法:");
+        add("Plotted Columns", "プロット列");
+        add("Plotted Columns ▾", "プロット列 ▾");
+        add("Plotted Columns...", "プロット列...");
+        add("Peak-aged Al-5.6Zn-2.5Mg-1.6Cu (T6) engineering stress-strain curve (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa) for 0.2% offset yield & Kocks-Mecking Considère analysis.", "ピーク時効 Al-5.6Zn-2.5Mg-1.6Cu (T6) 公称応力-ひずみ曲線（E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa）— 0.2%耐力および Kocks-Mecking・Considère くびれ解析用。");
+        add("First-order Polanyi-Wigner thermal desorption spectra of H-charged martensitic steel with dislocation (26.8 kJ/mol) and TiC precipitate (58.4 kJ/mol) traps.", "水素チャージしたマルテンサイト鋼の1次 Polanyi-Wigner 昇温脱離 (TDS) スペクトル（転位トラップ 26.8 kJ/mol・TiC析出物トラップ 58.4 kJ/mol）。");
+        add("Cu Kα1 (λ = 1.540598 Å) diffractogram (2θ = 20–85°) of fcc-Al broadened by D = 42 nm crystallites and ε = 1.85×10^-3 microstrain for Bragg / Williamson-Hall analysis.", "結晶子径 D = 42 nm および不均一格子ひずみ ε = 1.85×10^-3 により広がった fcc-Al の Cu Kα1 (λ = 1.540598 Å) X線回折プロファイル (2θ = 20–85°) — Bragg / Williamson-Hall 解析用。");
+        add("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.", "α-Fe 中の格子間水素拡散係数 D(T) の温度依存性データ（320–880 K、標準偏差付き）— アレニウス活性化エネルギー回帰解析用。");
+        add("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.", "き裂先端および塑性域前方の微小ボイド周囲 200×200 μm 視野における局所軸ひずみ ε_yy(x, y) (%) の 128×128 2次元マトリクス。");
+        add("30-specimen ceramic 4-point bending dataset (28 fractures + 2 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断28本＋820 MPa 右側打ち切り2本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断25本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("30-specimen ceramic 4-point bending dataset (28 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断28本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("HCP (Hexagonal Close-Packed)", "HCP (六方最密充填)");
+        add("Hexagonal Close-Packed (HCP)", "六方最密充填 (HCP)");
+        add("HCP", "HCP (六方晶)");
+        add("Axial Ratio c/a (HCP):", "軸比 c/a (HCP):");
+        add("HCP Axial Ratio c/a:", "HCP 軸比 c/a:");
+        add("c/a Ratio (HCP):", "c/a 軸比 (HCP):");
+        add("c/a Ratio:", "軸比 c/a:");
+        add("Plot Mode:", "作図モード:");
+        add("Considere (θ & σt vs εt)", "Considère 線図 (θ・σt vs εt)");
+        add("Considère (θ & σt vs εt)", "Considère 線図 (θ・σt vs εt)");
+        add("Kocks-Mecking (θ vs σt)", "Kocks-Mecking プロット (θ vs σt)");
+        add("Create Kocks-Mecking (θ vs σt) Plot", "Kocks-Mecking プロット (θ vs σt) を作成");
+        add("Set Custom Tick Labels", "カスタム目盛ラベルを設定");
+        add("Set Weibull Probability Axis", "ワイブル確率軸を設定");
+        add("Axial Ratio c/a (for HCP):", "軸比 c/a (HCP用):");
+        add("HCP / Hexagonal (100, 002, 101...)", "HCP / 六方晶 (100, 002, 101...)");
+        add("Kocks-Mecking Stage-III (\xCE\xB8 vs \xCF\x83t)",
+            "Kocks-Mecking ステージIII (\xCE\xB8 vs \xCF\x83t)");
     }
 }
 
@@ -1881,6 +2050,7 @@ ApplicationWindow::ApplicationWindow()
               new QAction(IconLoader::load(":/prev.xpm"), tr("&Previous", "previous window"), this))
 
 {
+    gsl_set_error_handler_off();
     setAttribute(Qt::WA_DeleteOnClose);
     QCoreApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
     if (QApplication *qa = qobject_cast<QApplication *>(qApp)) {
@@ -1920,6 +2090,8 @@ ApplicationWindow::ApplicationWindow()
     QPixmapCache::setCacheLimit(20 * QPixmapCache::cacheLimit());
 
     d_project = new Project();
+    if (d_project->undoStack())
+        d_project->undoStack()->setUndoLimit(undoLimit);
     connect(d_project, SIGNAL(aspectAdded(const AbstractAspect *, int)), this,
             SLOT(handleAspectAdded(const AbstractAspect *, int)));
     connect(d_project, SIGNAL(aspectAboutToBeRemoved(const AbstractAspect *, int)), this,
@@ -3050,6 +3222,10 @@ void ApplicationWindow::initMainMenu()
     exportPlot = file->addMenu(tr("&Export Graph"));
     exportPlot->addAction(actionExportGraph);
     exportPlot->addAction(actionExportAllGraphs);
+    if (actionExportPythonScript) {
+        exportPlot->addSeparator();
+        exportPlot->addAction(actionExportPythonScript);
+    }
 
     file->addAction(actionPrint);
     file->addAction(actionPrintAllPlots);
@@ -3364,6 +3540,14 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addAction(actionResetStackOffsets);
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionTensileYield);
+    if (actionWorkHardeningDialog)
+        curveMathMenu->addAction(actionWorkHardeningDialog);
+    if (actionKissingerDialog)
+        curveMathMenu->addAction(actionKissingerDialog);
+    if (actionXRDAnalyzerDialog)
+        curveMathMenu->addAction(actionXRDAnalyzerDialog);
+    if (actionVaspPlotterDialog)
+        curveMathMenu->addAction(actionVaspPlotterDialog);
     curveMathMenu->addAction(actionArrheniusPlot);
     curveMathMenu->addAction(actionTaucPlot);
     curveMathMenu->addAction(actionEISAnalyzer);
@@ -3573,6 +3757,8 @@ void ApplicationWindow::initMainMenu()
     help->setTitle(tr("&Help"));
 
     help->addAction(actionShowHelp);
+    if (actionSampleGallery)
+        help->addAction(actionSampleGallery);
 #ifdef DYNAMIC_MANUAL_PATH
     help->addAction(actionChooseHelpFolder);
 #endif
@@ -3729,6 +3915,14 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionArrheniusPlot);
     dataMenu->addAction(actionTaucPlot);
     dataMenu->addAction(actionEISAnalyzer);
+    if (actionWorkHardeningDialog)
+        dataMenu->addAction(actionWorkHardeningDialog);
+    if (actionKissingerDialog)
+        dataMenu->addAction(actionKissingerDialog);
+    if (actionXRDAnalyzerDialog)
+        dataMenu->addAction(actionXRDAnalyzerDialog);
+    if (actionVaspPlotterDialog)
+        dataMenu->addAction(actionVaspPlotterDialog);
     dataMenu->addAction(actionSurfaceFit3D);
     dataMenu->addAction(action2DPeakAnalysis);
     dataMenu->addSeparator();
@@ -5353,29 +5547,65 @@ void ApplicationWindow::remove3DMatrixPlots(Matrix *m)
     if (!m)
         return;
 
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    const bool nonInteractive = isNonInteractiveContext(this);
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     QList<MyWidget *> windows = windowsList();
-    foreach (MyWidget *w, windows) {
+    for (MyWidget *hw : hiddenWindows) {
+        if (hw && !windows.contains(hw))
+            windows.append(hw);
+    }
+    for (MyWidget *ow : outWindows) {
+        if (ow && !windows.contains(ow))
+            windows.append(ow);
+    }
+    for (QMdiSubWindow *sw : d_workspace.subWindowList()) {
+        if (MyWidget *mw = qobject_cast<MyWidget *>(sw)) {
+            if (!windows.contains(mw))
+                windows.append(mw);
+        }
+    }
+
+    for (MyWidget *w : windows) {
         if (!w)
             continue;
-        if (w->inherits("Graph3D") && ((Graph3D *)w)->matrix() == m)
-            ((Graph3D *)w)->clearData();
-        else if (w->inherits("MultiLayer")) {
-            QWidgetList graphsList = ((MultiLayer *)w)->graphPtrs();
-            for (int j = 0; j < (int)graphsList.count(); j++) {
-                Graph *g = (Graph *)graphsList.at(j);
+        if (w->inherits("Graph3D") && static_cast<Graph3D *>(w)->matrix() == m) {
+            static_cast<Graph3D *>(w)->clearData();
+        } else if (w->inherits("MultiLayer")) {
+            QWidgetList graphsList = static_cast<MultiLayer *>(w)->graphPtrs();
+            for (int j = 0; j < graphsList.count(); j++) {
+                Graph *g = static_cast<Graph *>(graphsList.at(j));
                 if (!g)
                     continue;
+                bool removedAny = false;
                 for (int i = g->curves() - 1; i >= 0; --i) {
-                    Spectrogram *sp = (Spectrogram *)g->plotItem(i);
-                    if (sp && sp->rtti() == QwtPlotItem::Rtti_PlotSpectrogram && sp->matrix() == m)
+                    QwtPlotItem *pi = g->plotItem(i);
+                    Spectrogram *sp = dynamic_cast<Spectrogram *>(pi);
+                    if (sp && sp->matrix() == m) {
                         g->removeCurve(i);
+                        removedAny = true;
+                    }
                 }
+                if (Plot *pw = g->plotWidget()) {
+                    const QwtPlotItemList directItems = pw->itemList();
+                    for (QwtPlotItem *it : directItems) {
+                        if (Spectrogram *sp = dynamic_cast<Spectrogram *>(it)) {
+                            if (sp->matrix() == m) {
+                                sp->detach();
+                                delete sp;
+                                removedAny = true;
+                            }
+                        }
+                    }
+                }
+                if (removedAny)
+                    g->replot();
             }
         }
     }
-    QApplication::restoreOverrideCursor();
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
 }
 
 void ApplicationWindow::updateMatrixPlots(MyWidget *window)
@@ -5807,7 +6037,10 @@ void ApplicationWindow::initPlot3D(Graph3D *plot)
     connectSurfacePlot(plot);
 
     plot->setWindowIcon(IconLoader::load(":/trajectory.xpm"));
-    plot->show();
+    if (isTabbedWorkspaceView())
+        plot->showMaximized();
+    else
+        plot->show();
     plot->setFocus();
 
     addListViewItem(plot);
@@ -5866,14 +6099,19 @@ void ApplicationWindow::loadImage()
 
 void ApplicationWindow::loadImage(const QString &fn)
 {
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    const bool nonInteractive = isNonInteractiveContext(this);
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     MultiLayer *plot = multilayerPlot(generateUniqueName(tr("Graph")));
     plot->setWindowLabel(fn);
     plot->setCaptionPolicy(MyWidget::Both);
     setListViewLabel(plot->name(), fn);
 
-    plot->showNormal();
+    if (isTabbedWorkspaceView())
+        plot->showMaximized();
+    else
+        plot->showNormal();
     const QSize cvSize = plot->canvasWidget() ? plot->canvasWidget()->size() : plot->size();
     Graph *g = plot->addLayer(0, 0, cvSize.width(), cvSize.height());
 
@@ -5885,7 +6123,8 @@ void ApplicationWindow::loadImage(const QString &fn)
     g->removeLegend();
     g->setIgnoreResizeEvents(false);
     g->addImage(fn);
-    QApplication::restoreOverrideCursor();
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
 }
 
 void ApplicationWindow::polishGraph(Graph *g, int style)
@@ -5953,6 +6192,138 @@ static void applyWorksheetMetadataToGraph(Graph *ag, Table *fallbackTable = null
     if (ag->legend())
         ag->reconstructLegend();
     ag->updatePlot();
+
+    // Auto-apply categorical X tick labels when the plotted X column is ColumnMode::Text
+    if (style != Graph::Box && style != Graph::Histogram) {
+        Column *textXCol = nullptr;
+        Table *textXTbl = nullptr;
+        for (int i = 0; i < ag->curves(); ++i) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(ag->curve(i))) {
+                Table *ct = dc->table();
+                if (!ct)
+                    continue;
+                const int xIdx = ct->colIndex(dc->xColumnName());
+                if (xIdx >= 0) {
+                    Column *xc = ct->column(xIdx);
+                    if (xc && xc->columnMode() == SciDAVis::ColumnMode::Text) {
+                        textXCol = xc;
+                        textXTbl = ct;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!textXCol && fallbackTable) {
+            const int fxIdx = fallbackTable->firstXCol();
+            if (fxIdx >= 0) {
+                Column *xc = fallbackTable->column(fxIdx);
+                if (xc && xc->columnMode() == SciDAVis::ColumnMode::Text) {
+                    textXCol = xc;
+                    textXTbl = fallbackTable;
+                }
+            }
+        }
+        if (textXCol && textXTbl) {
+            int lastValid = -1;
+            const int nRows = textXCol->rowCount();
+            for (int r = 0; r < nRows; ++r) {
+                if (!textXCol->isInvalid(r) && !textXCol->textAt(r).trimmed().isEmpty())
+                    lastValid = r;
+            }
+            if (lastValid >= 0) {
+                QStringList catLabels;
+                catLabels.reserve(lastValid + 1);
+                for (int r = 0; r <= lastValid; ++r)
+                    catLabels.append(textXCol->textAt(r).trimmed());
+                const int catAxis =
+                        (style == Graph::HorizontalBars) ? QwtPlot::yLeft : QwtPlot::xBottom;
+                ag->setLabelsTextFormat(catAxis, textXCol, 0, lastValid);
+                ag->setCategoryLabels(catAxis, catLabels);
+                ag->replot();
+            }
+        }
+    }
+
+    if ((style == Graph::VerticalBars || style == Graph::HorizontalBars
+         || style == Graph::Histogram)
+        && ag->legend()) {
+        ag->placeLegendAnchor(Graph::LegendAutoAvoidData);
+    }
+}
+
+static void finalizePieGraphLegendAndLayout(Graph *ag, Table *w, const QStringList &colList,
+                                            int startRow = 0, int endRow = -1)
+{
+    if (!ag || !ag->isPiePlot() || !ag->legend())
+        return;
+
+    const QString existingLeg = ag->legend()->text();
+    if (!existingLeg.contains(QLatin1Char('%')) && w && !colList.isEmpty()) {
+        const int ycol = w->colIndex(colList.first());
+        Column *yColPtr = (ycol >= 0) ? w->column(ycol) : nullptr;
+        if (yColPtr) {
+            const int rStart = qMax(0, startRow);
+            const int rEnd = (endRow < 0 || endRow >= yColPtr->rowCount())
+                    ? (yColPtr->rowCount() - 1)
+                    : endRow;
+            int labelCol = -1;
+            for (int c = 0; c < w->numCols(); ++c) {
+                if (c == ycol || !w->column(c))
+                    continue;
+                if (w->column(c)->columnMode() == SciDAVis::ColumnMode::Text
+                    || w->colPlotDesignation(c) == SciDAVis::X) {
+                    labelCol = c;
+                    break;
+                }
+            }
+            Column *lblColPtr = (labelCol >= 0) ? w->column(labelCol) : nullptr;
+            const auto yColType = yColPtr->columnMode();
+
+            QVector<double> vals;
+            QStringList names;
+            double sum = 0.0;
+            for (int r = rStart; r <= rEnd && r < yColPtr->rowCount(); ++r) {
+                if (yColPtr->isInvalid(r) || yColPtr->isMasked(r))
+                    continue;
+                double val = 0.0;
+                if (yColType == SciDAVis::ColumnMode::Text) {
+                    bool ok = false;
+                    val = QLocale().toDouble(yColPtr->textAt(r), &ok);
+                    if (!ok)
+                        continue;
+                } else {
+                    val = yColPtr->valueAt(r);
+                }
+                if (!std::isfinite(val) || val <= 0.0)
+                    continue;
+                vals.append(val);
+                sum += val;
+                QString sLbl;
+                if (lblColPtr && r < lblColPtr->rowCount() && !lblColPtr->isInvalid(r)) {
+                    sLbl = (lblColPtr->columnMode() == SciDAVis::ColumnMode::Text)
+                            ? lblColPtr->textAt(r).trimmed()
+                            : QLocale::c().toString(lblColPtr->valueAt(r), 'g', 6);
+                }
+                if (sLbl.isEmpty())
+                    sLbl = QString::number(vals.size());
+                names.append(sLbl);
+            }
+            if (!vals.isEmpty() && sum > 0.0 && std::isfinite(sum)) {
+                QStringList lines;
+                lines.reserve(vals.size());
+                for (int i = 0; i < vals.size(); ++i) {
+                    const double pct = (vals[i] / sum) * 100.0;
+                    lines.append(QStringLiteral("\\p{%1} %2 (%3%)")
+                                         .arg(i + 1)
+                                         .arg(names[i], QLocale::c().toString(pct, 'f', 1)));
+                }
+                ag->legend()->setText(lines.join(QLatin1Char('\n')));
+            }
+        }
+    }
+
+    ag->placeLegendAnchor(Graph::LegendTopCenter, nullptr, 6);
+    ag->replot();
 }
 
 MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colList, int style,
@@ -5977,6 +6348,8 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
     ag->newLegend();
     applyWorksheetMetadataToGraph(ag, w, colList, style);
     g->arrangeLayers(false, false);
+    if (style == Graph::Pie || ag->isPiePlot())
+        finalizePieGraphLegendAndLayout(ag, w, colList, startRow, endRow);
     customMenu(g);
 
     emit modified();
@@ -6055,10 +6428,15 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
     g->setCols(c);
     g->arrangeLayers(false, false);
     QWidgetList lst = g->graphPtrs();
-    foreach (QWidget *widget, lst) {
-        Graph *ag = (Graph *)widget;
+    for (int li = 0; li < lst.size(); ++li) {
+        Graph *ag = static_cast<Graph *>(lst.at(li));
         ag->setAutoscaleFonts(autoScaleFonts); // restore user defined fonts behaviour
         ag->setIgnoreResizeEvents(!autoResizeLayers);
+        if (style == Graph::Pie || ag->isPiePlot()) {
+            const QStringList pieCol =
+                    (li < list.size()) ? (QStringList() << list.at(li)) : QStringList();
+            finalizePieGraphLegendAndLayout(ag, w, pieCol, 0, -1);
+        }
     }
     customMenu(g);
     emit modified();
@@ -6151,7 +6529,10 @@ void ApplicationWindow::initBareMultilayerPlot(MultiLayer *g, const QString &nam
 void ApplicationWindow::initMultilayerPlot(MultiLayer *g, const QString &name)
 {
     initBareMultilayerPlot(g, name);
-    g->show(); // FIXME: bad idea do it here
+    if (isTabbedWorkspaceView())
+        g->showMaximized();
+    else
+        g->show(); // FIXME: bad idea do it here
     g->setFocus();
 }
 
@@ -6346,6 +6727,8 @@ void ApplicationWindow::initTable(Table *w)
     addListViewItem(w);
     if (s_creating_hidden_table)
         w->setHidden();
+    else if (isTabbedWorkspaceView())
+        w->showMaximized();
     else
         w->showNormal();
 
@@ -6408,7 +6791,10 @@ Note *ApplicationWindow::newNote(const QString &caption)
         initNote(m, generateUniqueName(tr("Notes")));
     else
         initNote(m, caption);
-    m->showNormal();
+    if (isTabbedWorkspaceView())
+        m->showMaximized();
+    else
+        m->showNormal();
     return m;
 }
 
@@ -6512,7 +6898,10 @@ Table *ApplicationWindow::convertMatrixToTable()
     w->setWindowLabel(m->windowLabel());
     w->setCaptionPolicy(m->captionPolicy());
     w->resize(m->size());
-    w->showNormal();
+    if (isTabbedWorkspaceView())
+        w->showMaximized();
+    else
+        w->showNormal();
 
     QApplication::restoreOverrideCursor();
 
@@ -6530,9 +6919,13 @@ void ApplicationWindow::initMatrix(Matrix *m)
     current_folder->addWindow(m);
     m->setFolder(current_folder);
     addListViewItem(m);
-    m->showNormal();
+    if (isTabbedWorkspaceView())
+        m->showMaximized();
+    else
+        m->showNormal();
 
     connect(m, SIGNAL(showTitleBarMenu()), this, SLOT(showWindowTitleBarMenu()));
+    connect(m, SIGNAL(closedWindow(MyWidget *)), this, SLOT(closeWindow(MyWidget *)));
     connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(modifiedProject(MyWidget *)));
     connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(updateMatrixPlots(MyWidget *)));
     connect(m, SIGNAL(hiddenWindow(MyWidget *)), this, SLOT(hideWindow(MyWidget *)));
@@ -6564,7 +6957,10 @@ Matrix *ApplicationWindow::convertTableToMatrix()
 
     w->setCaptionPolicy(m->captionPolicy());
     w->resize(m->size());
-    w->showNormal();
+    if (isTabbedWorkspaceView())
+        w->showMaximized();
+    else
+        w->showNormal();
 
     QApplication::restoreOverrideCursor();
     return w;
@@ -8318,7 +8714,15 @@ void ApplicationWindow::readSettings()
     updateRecentProjectsList();
 
     changeAppStyle(settings.value("/Style", appStyle).toString());
-    undoLimit = settings.value("/UndoLimit", 10).toInt();
+    undoLimit = settings.value("/UndoLimit", 50).toInt();
+    if (!settings.value("/UndoLimitMigrated50", false).toBool()) {
+        if (undoLimit <= 10)
+            undoLimit = 50;
+        settings.setValue("/UndoLimit", undoLimit);
+        settings.setValue("/UndoLimitMigrated50", true);
+    }
+    if (undoLimit < 1)
+        undoLimit = 50;
     d_project->undoStack()->setUndoLimit(undoLimit);
     autoSave = settings.value("/AutoSave", true).toBool();
     autoSaveTime = settings.value("/AutoSaveTime", 15).toInt();
@@ -9559,6 +9963,8 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
     w->setName(newName);
     w->setCaptionPolicy(w->captionPolicy());
     renameListViewItem(name, newName);
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == w)
+        d_graph_inspector_dock->refreshAll();
     return true;
 }
 
@@ -12074,6 +12480,10 @@ void ApplicationWindow::undo()
 
     MyWidget *aw = activeWindow();
     const bool nonInteractive = isNonInteractiveContext(this);
+    struct ScopedUndoReplayGuard {
+        ScopedUndoReplayGuard() { Table::beginUndoRedoReplay(); }
+        ~ScopedUndoReplayGuard() { Table::endUndoRedoReplay(); }
+    } replayGuard;
     if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canUndo()) {
             if (!nonInteractive)
@@ -12123,6 +12533,10 @@ void ApplicationWindow::redo()
 
     MyWidget *aw = activeWindow();
     const bool nonInteractive = isNonInteractiveContext(this);
+    struct ScopedUndoReplayGuard {
+        ScopedUndoReplayGuard() { Table::beginUndoRedoReplay(); }
+        ~ScopedUndoReplayGuard() { Table::endUndoRedoReplay(); }
+    } replayGuard;
     if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canRedo()) {
             if (!nonInteractive)
@@ -12284,7 +12698,10 @@ void ApplicationWindow::activateSubWindow(MyWidget *w)
     if (!w)
         return;
 
-    w->setNormal();
+    if (isTabbedWorkspaceView())
+        w->setMaximized();
+    else
+        w->setNormal();
     d_workspace.setActiveSubWindow(w);
 
     updateWindowLists(w);
@@ -12387,6 +12804,22 @@ void ApplicationWindow::closeWindow(MyWidget *window)
     if (!window)
         return;
 
+    static QSet<MyWidget *> s_closing_windows;
+    if (s_closing_windows.contains(window))
+        return;
+
+    struct ScopedClosingGuard {
+        QSet<MyWidget *> &setRef;
+        MyWidget *key;
+        ScopedClosingGuard(QSet<MyWidget *> &s, MyWidget *k) : setRef(s), key(k)
+        {
+            setRef.insert(key);
+        }
+        ~ScopedClosingGuard() { setRef.remove(key); }
+    } closingGuard(s_closing_windows, window);
+
+    QPointer<MyWidget> guardedWin(window);
+
     removeWindowFromLists(window);
     if (window->folder())
         window->folder()->removeWindow(window);
@@ -12398,12 +12831,42 @@ void ApplicationWindow::closeWindow(MyWidget *window)
         delete items.at(0);
 
     window->hide();
-    if (window->inherits("Matrix"))
-        window->setParent(0);
-    else if (window->inherits("Table"))
-        window->setParent(0);
-    else
+    d_workspace.removeSubWindow(window);
+
+    const bool undoReplayActive = Table::isUndoRedoReplaying();
+    const bool calledFromAspectRemoval = d_in_aspect_about_to_be_removed;
+
+    if (Table *tbl = qobject_cast<Table *>(window)) {
+        window->setParent(nullptr);
+        if (!undoReplayActive && !calledFromAspectRemoval) {
+            if (tbl->d_future_table && tbl->d_future_table->parentAspect() != nullptr)
+                tbl->d_future_table->remove();
+            if (d_project && d_project->undoStack()) {
+                QUndoStack *us = d_project->undoStack();
+                const bool inMacro = (us->count() > 0 && !us->canUndo() && !us->canRedo());
+                if (!inMacro)
+                    us->clear();
+            }
+            if (guardedWin)
+                guardedWin->deleteLater();
+        }
+    } else if (Matrix *mat = qobject_cast<Matrix *>(window)) {
+        window->setParent(nullptr);
+        if (!undoReplayActive && !calledFromAspectRemoval) {
+            if (mat->d_future_matrix && mat->d_future_matrix->parentAspect() != nullptr)
+                mat->d_future_matrix->remove();
+            if (d_project && d_project->undoStack()) {
+                QUndoStack *us = d_project->undoStack();
+                const bool inMacro = (us->count() > 0 && !us->canUndo() && !us->canRedo());
+                if (!inMacro)
+                    us->clear();
+            }
+            if (guardedWin)
+                guardedWin->deleteLater();
+        }
+    } else {
         window->deleteLater();
+    }
     emit modified();
 }
 
@@ -12638,51 +13101,422 @@ void ApplicationWindow::timerEvent(QTimerEvent *e)
 
 void ApplicationWindow::dropEvent(QDropEvent *e)
 {
-    if (e && e->mimeData()
-        && e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
+    if (!e || !e->mimeData())
+        return;
+
+    if (e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
         if (handleColumnMimeDrop(e->mimeData(), nullptr, nullptr, -1, false))
             e->acceptProposedAction();
         return;
     }
-    if (e->mimeData()->hasUrls()) {
-        QStringList asciiFiles;
-        QList<QUrl> urls = e->mimeData()->urls();
+    if (!e->mimeData()->hasUrls())
+        return;
 
-        foreach (QUrl url, urls) {
-            QString fileName = url.toLocalFile();
-            QFileInfo fileInfo(fileName);
-            QString ext = fileInfo.completeSuffix().toLower();
+    auto importRigakuRasOrSpectrum = [this](const QString &path, bool isRigakuRas,
+                                            bool autoPlotLine) -> bool {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
 
-            if (ext == "sciprj" || ext == "sciprj~" || ext == "sciprj.gz" || ext == "sciprj.gz~"
-                || ext == "opj" || ext == "qti" || ext == "qti.gz" || ext == "ogm" || ext == "ogw"
-                || ext == "ogg" || ext == "org") {
-                open(fileName);
-            } else if (ext == "csv" || ext == "dat" || ext == "txt" || ext == "tsv") {
-                asciiFiles << fileName;
-            } else if (ext == "bmp" || ext == "bw" || ext == "eps" || ext == "epsf" || ext == "epsi"
-                       || ext == "exr" || ext == "kra" || ext == "ora" || ext == "pcx"
-                       || ext == "psd" || ext == "ras" || ext == "rgb" || ext == "rgba"
-                       || ext == "sgi" || ext == "tga" || ext == "xcf" || ext == "dds"
-                       || ext == "gif" || ext == "ico" || ext == "jp2" || ext == "jpeg"
-                       || ext == "jpg" || ext == "mng" || ext == "pbm" || ext == "pgm"
-                       || ext == "pic" || ext == "png" || ext == "ppm" || ext == "svg"
-                       || ext == "svgz" || ext == "tif" || ext == "tiff" || ext == "webp"
-                       || ext == "xbm" || ext == "xpm" || ext == "xv") {
-                loadImage(fileName);
+        QVector<QVector<double>> numericRows;
+        QStringList headerTokens;
+        bool inRasInt = !isRigakuRas;
+        int maxCols = 0;
+
+        QTextStream ts(&f);
+        while (!ts.atEnd()) {
+            const QString rawLine = ts.readLine().trimmed();
+            if (rawLine.isEmpty())
+                continue;
+            if (isRigakuRas) {
+                if (rawLine.startsWith(QLatin1String("*RAS_INT_START"), Qt::CaseInsensitive)) {
+                    inRasInt = true;
+                    continue;
+                }
+                if (rawLine.startsWith(QLatin1String("*RAS_INT_END"), Qt::CaseInsensitive)) {
+                    if (!numericRows.isEmpty())
+                        break;
+                    inRasInt = false;
+                    continue;
+                }
+                if (!inRasInt || rawLine.startsWith(QLatin1Char('*')))
+                    continue;
+            } else {
+                const QChar c0 = rawLine.at(0);
+                if (c0 == QLatin1Char('#') || c0 == QLatin1Char('*') || c0 == QLatin1Char(';')
+                    || c0 == QLatin1Char('!') || c0 == QLatin1Char('_') || c0 == QLatin1Char('&'))
+                    continue;
+            }
+
+            QString sepNormalized = rawLine;
+            sepNormalized.replace(QLatin1Char(','), QLatin1Char(' '));
+            sepNormalized.replace(QLatin1Char('\t'), QLatin1Char(' '));
+            const QStringList parts = sepNormalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.size() < 2)
+                continue;
+
+            QVector<double> vals;
+            vals.reserve(parts.size());
+            bool allNumeric = true;
+            for (const QString &tok : parts) {
+                bool ok = false;
+                const double v = tok.toDouble(&ok);
+                if (!ok || !std::isfinite(v)) {
+                    allNumeric = false;
+                    break;
+                }
+                vals.append(v);
+            }
+            if (!allNumeric) {
+                if (numericRows.isEmpty() && headerTokens.isEmpty())
+                    headerTokens = parts;
+                continue;
+            }
+            maxCols = qMax(maxCols, vals.size());
+            numericRows.append(std::move(vals));
+        }
+        f.close();
+
+        if (numericRows.isEmpty() || maxCols < 2)
+            return false;
+
+        const QString baseTitle = QFileInfo(path).completeBaseName();
+        Table *t = newTable(numericRows.size(), maxCols, generateUniqueName(baseTitle), path);
+        if (!t)
+            return false;
+
+        if (isRigakuRas) {
+            t->setColName(0, QStringLiteral("TwoTheta"));
+            t->setColLongName(0, QStringLiteral("2Theta"));
+            t->setColUnits(0, QStringLiteral("deg"));
+            t->setColName(1, QStringLiteral("Intensity"));
+            t->setColLongName(1, QStringLiteral("Intensity"));
+            t->setColUnits(1, QStringLiteral("counts"));
+        } else if (headerTokens.size() == maxCols) {
+            for (int c = 0; c < maxCols; ++c)
+                t->setColLongName(c, headerTokens.at(c));
+        }
+        if (maxCols >= 3 && (isRigakuRas || QFileInfo(path).suffix().compare(QLatin1String("xye"), Qt::CaseInsensitive) == 0))
+            t->setColPlotDesignation(2, SciDAVis::yErr);
+
+        if (t->d_future_table)
+            t->d_future_table->beginMacro(tr("Import %1").arg(QFileInfo(path).fileName()));
+        for (int c = 0; c < maxCols; ++c) {
+            Column *colPtr = t->column(c);
+            if (!colPtr)
+                continue;
+            QVector<double> colVec(numericRows.size(), 0.0);
+            for (int r = 0; r < numericRows.size(); ++r) {
+                if (c < numericRows.at(r).size())
+                    colVec[r] = numericRows.at(r).at(c);
+            }
+            colPtr->replaceValues(0, colVec);
+        }
+        if (t->d_future_table)
+            t->d_future_table->endMacro();
+
+        if (autoPlotLine && t->numCols() >= 2)
+            multilayerPlot(t, QStringList() << t->colName(1), Graph::Line);
+        return true;
+    };
+
+    auto importVaspDoscarDrop = [this](const QString &path) -> bool {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+        QTextStream ts(&f);
+        QString header6;
+        for (int i = 0; i < 6 && !ts.atEnd(); ++i)
+            header6 = ts.readLine().trimmed();
+        const QStringList hParts = header6.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (hParts.size() < 4)
+            return false;
+        bool okN = false, okEf = false;
+        const int nedos = hParts.at(2).toInt(&okN);
+        const double eFermi = hParts.at(3).toDouble(&okEf);
+        if (!okN || !okEf || nedos < 2 || nedos > 200000)
+            return false;
+
+        QVector<QVector<double>> rows;
+        rows.reserve(nedos);
+        int nCols = 0;
+        for (int i = 0; i < nedos && !ts.atEnd(); ++i) {
+            const QStringList parts = ts.readLine().trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.size() < 2)
+                break;
+            QVector<double> vals;
+            vals.reserve(parts.size());
+            bool allOk = true;
+            for (const QString &p : parts) {
+                bool ok = false;
+                const double v = p.toDouble(&ok);
+                if (!ok) {
+                    allOk = false;
+                    break;
+                }
+                vals.append(v);
+            }
+            if (!allOk)
+                break;
+            nCols = qMax(nCols, vals.size());
+            rows.append(std::move(vals));
+        }
+        f.close();
+        if (rows.size() < 2 || nCols < 2)
+            return false;
+
+        Table *t = newTable(rows.size(), nCols, generateUniqueName(QStringLiteral("DOSCAR")), path);
+        if (!t)
+            return false;
+        t->setColName(0, QStringLiteral("Energy"));
+        t->setColUnits(0, QStringLiteral("eV"));
+        t->setColName(1, QStringLiteral("TDOS"));
+        for (int c = 2; c < nCols; ++c)
+            t->setColName(c, QStringLiteral("DOS_%1").arg(c));
+        for (int c = 0; c < nCols; ++c) {
+            if (Column *colPtr = t->column(c)) {
+                QVector<double> v(rows.size(), 0.0);
+                for (int r = 0; r < rows.size(); ++r)
+                    v[r] = (c < rows.at(r).size()) ? rows.at(r).at(c) : 0.0;
+                colPtr->replaceValues(0, v);
             }
         }
-        if (!asciiFiles.isEmpty()) {
-            importASCII(asciiFiles, ImportASCIIDialog::NewTables, columnSeparator, ignoredLines,
-                        renameColumns, strip_spaces, simplify_spaces, d_convert_to_numeric,
-                        d_ASCII_import_locale);
+        CurveMathTools::plotVaspDos(this, t, t->colName(0), QStringList() << t->colName(1),
+                                    QStringList(), eFermi, false);
+        return true;
+    };
+
+    auto importVaspEigenvalDrop = [this](const QString &path) -> bool {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+        QTextStream ts(&f);
+        QString line6;
+        for (int i = 0; i < 6 && !ts.atEnd(); ++i)
+            line6 = ts.readLine().trimmed();
+        const QStringList hParts = line6.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (hParts.size() < 3)
+            return false;
+        bool okK = false, okB = false;
+        const int nkpts = hParts.at(1).toInt(&okK);
+        const int nbands = hParts.at(2).toInt(&okB);
+        if (!okK || !okB || nkpts < 2 || nbands < 1 || nkpts > 50000 || nbands > 4096)
+            return false;
+
+        QVector<double> kDist;
+        QVector<QVector<double>> bandEnergies(nbands);
+        double prevKx = 0.0, prevKy = 0.0, prevKz = 0.0, cumDist = 0.0;
+        for (int ik = 0; ik < nkpts && !ts.atEnd(); ++ik) {
+            QString kLine;
+            while (!ts.atEnd()) {
+                kLine = ts.readLine().trimmed();
+                if (!kLine.isEmpty())
+                    break;
+            }
+            const QStringList kp = kLine.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (kp.size() < 4)
+                break;
+            const double kx = kp.at(0).toDouble();
+            const double ky = kp.at(1).toDouble();
+            const double kz = kp.at(2).toDouble();
+            if (ik > 0) {
+                const double dx = kx - prevKx, dy = ky - prevKy, dz = kz - prevKz;
+                cumDist += std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            prevKx = kx;
+            prevKy = ky;
+            prevKz = kz;
+            kDist.append(cumDist);
+
+            for (int ib = 0; ib < nbands && !ts.atEnd(); ++ib) {
+                const QStringList bp = ts.readLine().trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                bandEnergies[ib].append(bp.size() >= 2 ? bp.at(1).toDouble() : 0.0);
+            }
+        }
+        f.close();
+        if (kDist.size() < 2)
+            return false;
+
+        Table *t = newTable(kDist.size(), 1 + nbands,
+                            generateUniqueName(QStringLiteral("EIGENVAL")), path);
+        if (!t)
+            return false;
+        t->setColName(0, QStringLiteral("k_dist"));
+        if (Column *kc = t->column(0))
+            kc->replaceValues(0, kDist);
+        QStringList bandColNames;
+        for (int ib = 0; ib < nbands; ++ib) {
+            const QString bn = QStringLiteral("Band_%1").arg(ib + 1);
+            t->setColName(ib + 1, bn);
+            if (Column *bc = t->column(ib + 1))
+                bc->replaceValues(0, bandEnergies[ib]);
+            bandColNames.append(t->colName(ib + 1));
+        }
+        CurveMathTools::plotVaspBands(this, t, t->colName(0), bandColNames);
+        return true;
+    };
+
+    const QList<QUrl> urls = e->mimeData()->urls();
+    bool handledAny = false;
+
+    for (const QUrl &url : urls) {
+        const QString fileName = url.toLocalFile();
+        if (fileName.isEmpty())
+            continue;
+        const QFileInfo fileInfo(fileName);
+        if (!fileInfo.exists() || !fileInfo.isFile())
+            continue;
+
+        const QString lowerFileName = fileInfo.fileName().toLower();
+        const QString ext = fileInfo.suffix().toLower();
+
+        if (lowerFileName == QLatin1String("doscar")
+            || lowerFileName.startsWith(QLatin1String("doscar."))
+            || lowerFileName.endsWith(QLatin1String("_doscar"))) {
+            if (importVaspDoscarDrop(fileName)) {
+                handledAny = true;
+                continue;
+            }
+        }
+        if (lowerFileName == QLatin1String("eigenval")
+            || lowerFileName.startsWith(QLatin1String("eigenval."))
+            || lowerFileName.endsWith(QLatin1String("_eigenval"))) {
+            if (importVaspEigenvalDrop(fileName)) {
+                handledAny = true;
+                continue;
+            }
+        }
+
+        const bool isCompoundProject =
+                lowerFileName.endsWith(QLatin1String(".sciprj.gz"))
+                || lowerFileName.endsWith(QLatin1String(".sciprj.gz~"))
+                || lowerFileName.endsWith(QLatin1String(".qti.gz"))
+                || lowerFileName.endsWith(QLatin1String(".tgprj.gz"));
+
+        if (isCompoundProject || ext == QLatin1String("sciprj") || ext == QLatin1String("sciprj~")
+            || ext == QLatin1String("tgprj") || ext == QLatin1String("opj")
+            || ext == QLatin1String("opju") || ext == QLatin1String("qti")
+            || ext == QLatin1String("ogm") || ext == QLatin1String("ogw")
+            || ext == QLatin1String("ogg") || ext == QLatin1String("org")) {
+            open(fileName);
+            handledAny = true;
+        } else if (ext == QLatin1String("ras")) {
+            bool isSunRaster = false;
+            QFile magicFile(fileName);
+            if (magicFile.open(QIODevice::ReadOnly)) {
+                const QByteArray hdr = magicFile.read(4);
+                magicFile.close();
+                if (hdr.size() == 4
+                    && static_cast<unsigned char>(hdr.at(0)) == 0x59
+                    && static_cast<unsigned char>(hdr.at(1)) == 0xA6
+                    && static_cast<unsigned char>(hdr.at(2)) == 0x6A
+                    && static_cast<unsigned char>(hdr.at(3)) == 0x95) {
+                    isSunRaster = true;
+                }
+            }
+            if (isSunRaster) {
+                loadImage(fileName);
+                handledAny = true;
+            } else if (importRigakuRasOrSpectrum(fileName, true, true)) {
+                handledAny = true;
+            } else {
+                importASCII(QStringList() << fileName, ImportASCIIDialog::NewTables,
+                            QStringLiteral(" "), ignoredLines, renameColumns, true, true,
+                            d_convert_to_numeric, d_ASCII_import_locale);
+                handledAny = true;
+            }
+        } else if (ext == QLatin1String("xy") || ext == QLatin1String("xye")
+                   || ext == QLatin1String("chi") || ext == QLatin1String("uxd")) {
+            if (importRigakuRasOrSpectrum(fileName, false, true))
+                handledAny = true;
+        } else if (ext == QLatin1String("asc") || ext == QLatin1String("mpt")
+                   || ext == QLatin1String("dta")) {
+            if (importRigakuRasOrSpectrum(fileName, false, false))
+                handledAny = true;
+        } else if (ext == QLatin1String("csv") || ext == QLatin1String("tsv")
+                   || ext == QLatin1String("tab") || ext == QLatin1String("dat")
+                   || ext == QLatin1String("txt")) {
+            QString detectedSep = columnSeparator;
+            bool detectedSimplify = simplify_spaces;
+            if (ext == QLatin1String("csv")) {
+                detectedSep = QStringLiteral(",");
+                detectedSimplify = false;
+                QFile probe(fileName);
+                if (probe.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    QTextStream pts(&probe);
+                    for (int li = 0; li < 10 && !pts.atEnd(); ++li) {
+                        const QString ln = pts.readLine().trimmed();
+                        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#')))
+                            continue;
+                        if (!ln.contains(QLatin1Char(',')) && ln.contains(QLatin1Char(';')))
+                            detectedSep = QStringLiteral(";");
+                        break;
+                    }
+                    probe.close();
+                }
+            } else if (ext == QLatin1String("tsv") || ext == QLatin1String("tab")) {
+                detectedSep = QStringLiteral("\t");
+                detectedSimplify = false;
+            } else {
+                QFile probe(fileName);
+                if (probe.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    QTextStream pts(&probe);
+                    for (int li = 0; li < 15 && !pts.atEnd(); ++li) {
+                        const QString ln = pts.readLine().trimmed();
+                        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#'))
+                            || ln.startsWith(QLatin1Char('*')) || ln.startsWith(QLatin1Char(';')))
+                            continue;
+                        if (ln.contains(QLatin1Char('\t'))) {
+                            detectedSep = QStringLiteral("\t");
+                            detectedSimplify = false;
+                        } else if (ln.contains(QLatin1Char(','))) {
+                            detectedSep = QStringLiteral(",");
+                            detectedSimplify = false;
+                        } else {
+                            detectedSep = QStringLiteral(" ");
+                            detectedSimplify = true;
+                        }
+                        break;
+                    }
+                    probe.close();
+                }
+            }
+            importASCII(QStringList() << fileName, ImportASCIIDialog::NewTables, detectedSep,
+                        ignoredLines, renameColumns, strip_spaces, detectedSimplify,
+                        d_convert_to_numeric, d_ASCII_import_locale);
+            handledAny = true;
+        } else if (ext == QLatin1String("bmp") || ext == QLatin1String("bw")
+                   || ext == QLatin1String("eps") || ext == QLatin1String("epsf")
+                   || ext == QLatin1String("epsi") || ext == QLatin1String("exr")
+                   || ext == QLatin1String("kra") || ext == QLatin1String("ora")
+                   || ext == QLatin1String("pcx") || ext == QLatin1String("psd")
+                   || ext == QLatin1String("rgb") || ext == QLatin1String("rgba")
+                   || ext == QLatin1String("sgi") || ext == QLatin1String("tga")
+                   || ext == QLatin1String("xcf") || ext == QLatin1String("dds")
+                   || ext == QLatin1String("gif") || ext == QLatin1String("ico")
+                   || ext == QLatin1String("jp2") || ext == QLatin1String("jpeg")
+                   || ext == QLatin1String("jpg") || ext == QLatin1String("mng")
+                   || ext == QLatin1String("pbm") || ext == QLatin1String("pgm")
+                   || ext == QLatin1String("pic") || ext == QLatin1String("png")
+                   || ext == QLatin1String("ppm") || ext == QLatin1String("svg")
+                   || ext == QLatin1String("svgz") || ext == QLatin1String("tif")
+                   || ext == QLatin1String("tiff") || ext == QLatin1String("webp")
+                   || ext == QLatin1String("xbm") || ext == QLatin1String("xpm")
+                   || ext == QLatin1String("xv")) {
+            loadImage(fileName);
+            handledAny = true;
         }
     }
+
+    if (handledAny)
+        e->acceptProposedAction();
 }
 
 void ApplicationWindow::dragEnterEvent(QDragEnterEvent *e)
 {
-    if (e && e->mimeData()
-        && e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
+    if (!e || !e->mimeData())
+        return;
+    if (e->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType))) {
         e->acceptProposedAction();
         return;
     }
@@ -13100,6 +13934,8 @@ void ApplicationWindow::showGraphContextMenu()
             cm.addSeparator();
             cm.addAction(actionCopyPageImage);
             cm.addAction(actionCopyGraphOle);
+            if (actionExportPythonScript)
+                cm.addAction(actionExportPythonScript);
         }
 
         if (copiedLayer) {
@@ -17199,6 +18035,47 @@ void ApplicationWindow::createActions()
             tr("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)"));
     connect(actionEISAnalyzer, SIGNAL(triggered()), this, SLOT(showEISAnalyzerDialog()));
 
+    actionSampleGallery = new QAction(IconLoader::duotoneIcon(QStringLiteral("sample-gallery")),
+                                      tr("Sample Project &Gallery..."), this);
+    actionSampleGallery->setToolTip(
+            tr("Open Built-In Scientific Sample Project Gallery"));
+    connect(actionSampleGallery, SIGNAL(triggered()), this, SLOT(showSampleGalleryDialog()));
+
+    actionWorkHardeningDialog =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("work-hardening")),
+                        tr("&Work Hardening && Considere Analysis..."), this);
+    actionWorkHardeningDialog->setToolTip(
+            tr("True Stress-Strain, Hollomon n, Crussard-Jaoul & Considere Necking"));
+    connect(actionWorkHardeningDialog, SIGNAL(triggered()), this, SLOT(showWorkHardeningDialog()));
+
+    actionKissingerDialog =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("kissinger-tds")),
+                        tr("&Kissinger / Thermal Desorption (TDS)..."), this);
+    actionKissingerDialog->setToolTip(
+            tr("Kissinger Thermal Desorption (TDS / DSC) Activation Energy Analysis"));
+    connect(actionKissingerDialog, SIGNAL(triggered()), this, SLOT(showKissingerDialog()));
+
+    actionXRDAnalyzerDialog =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("xrd-peaks")),
+                        tr("&XRD Peak && Williamson-Hall Analyzer..."), this);
+    actionXRDAnalyzerDialog->setToolTip(
+            tr("Powder XRD K-alpha2 Stripping, Scherrer & Williamson-Hall Analysis"));
+    connect(actionXRDAnalyzerDialog, SIGNAL(triggered()), this, SLOT(showXRDAnalyzerDialog()));
+
+    actionVaspPlotterDialog =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("vasp-bands")),
+                        tr("&VASP Electronic Band && DOS Plotter..."), this);
+    actionVaspPlotterDialog->setToolTip(
+            tr("VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter"));
+    connect(actionVaspPlotterDialog, SIGNAL(triggered()), this, SLOT(showVaspPlotterDialog()));
+
+    actionExportPythonScript =
+            new QAction(IconLoader::duotoneIcon(QStringLiteral("code-export")),
+                        tr("Export Reproducible &Python Script..."), this);
+    actionExportPythonScript->setToolTip(
+            tr("Generate Reproducible Python Script from Active Graph"));
+    connect(actionExportPythonScript, SIGNAL(triggered()), this, SLOT(exportActiveGraphToPython()));
+
     actionPassingBablokDeming =
             new QAction(tr("Passing-&Bablok && Deming Regression..."), this);
     actionPassingBablokDeming->setToolTip(
@@ -17545,6 +18422,12 @@ void ApplicationWindow::createActions()
     ASSIGN_ACT_OBJNAME(actionMatrixFilter2D);
     ASSIGN_ACT_OBJNAME(actionFourierSelfDeconvolve);
     ASSIGN_ACT_OBJNAME(actionEISAnalyzer);
+    ASSIGN_ACT_OBJNAME(actionSampleGallery);
+    ASSIGN_ACT_OBJNAME(actionWorkHardeningDialog);
+    ASSIGN_ACT_OBJNAME(actionKissingerDialog);
+    ASSIGN_ACT_OBJNAME(actionXRDAnalyzerDialog);
+    ASSIGN_ACT_OBJNAME(actionVaspPlotterDialog);
+    ASSIGN_ACT_OBJNAME(actionExportPythonScript);
     ASSIGN_ACT_OBJNAME(actionPassingBablokDeming);
     ASSIGN_ACT_OBJNAME(actionHomePage);
 #ifdef DOWNLOAD_LINKS
@@ -18347,6 +19230,35 @@ void ApplicationWindow::translateActionsStrings()
         actionEISAnalyzer->setToolTip(
                 tr("Electrochemical Impedance Spectroscopy (Nyquist, Bode & Randles circuit fit)"));
     }
+    if (actionSampleGallery) {
+        actionSampleGallery->setText(tr("Sample Project &Gallery..."));
+        actionSampleGallery->setToolTip(tr("Open Built-In Scientific Sample Project Gallery"));
+    }
+    if (actionWorkHardeningDialog) {
+        actionWorkHardeningDialog->setText(tr("&Work Hardening && Considere Analysis..."));
+        actionWorkHardeningDialog->setToolTip(
+                tr("True Stress-Strain, Hollomon n, Crussard-Jaoul & Considere Necking"));
+    }
+    if (actionKissingerDialog) {
+        actionKissingerDialog->setText(tr("&Kissinger / Thermal Desorption (TDS)..."));
+        actionKissingerDialog->setToolTip(
+                tr("Kissinger Thermal Desorption (TDS / DSC) Activation Energy Analysis"));
+    }
+    if (actionXRDAnalyzerDialog) {
+        actionXRDAnalyzerDialog->setText(tr("&XRD Peak && Williamson-Hall Analyzer..."));
+        actionXRDAnalyzerDialog->setToolTip(
+                tr("Powder XRD K-alpha2 Stripping, Scherrer & Williamson-Hall Analysis"));
+    }
+    if (actionVaspPlotterDialog) {
+        actionVaspPlotterDialog->setText(tr("&VASP Electronic Band && DOS Plotter..."));
+        actionVaspPlotterDialog->setToolTip(
+                tr("VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter"));
+    }
+    if (actionExportPythonScript) {
+        actionExportPythonScript->setText(tr("Export Reproducible &Python Script..."));
+        actionExportPythonScript->setToolTip(
+                tr("Generate Reproducible Python Script from Active Graph"));
+    }
     if (actionPassingBablokDeming) {
         actionPassingBablokDeming->setText(tr("Passing-&Bablok && Deming Regression..."));
         actionPassingBablokDeming->setToolTip(
@@ -18593,17 +19505,23 @@ MultiLayer *ApplicationWindow::plotColorMap(Matrix *m)
 
 MultiLayer *ApplicationWindow::plotSpectrogram(Matrix *m, Graph::CurveType type)
 {
-    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    const bool nonInteractive = isNonInteractiveContext(this);
+    if (!nonInteractive)
+        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     MultiLayer *g = multilayerPlot(generateUniqueName(tr("Graph")));
     Graph *plot = g->addLayer();
     setPreferences(plot);
 
     plot->plotSpectrogram(m, type);
-    g->showNormal();
+    if (isTabbedWorkspaceView())
+        g->showMaximized();
+    else
+        g->showNormal();
 
     emit modified();
-    QApplication::restoreOverrideCursor();
+    if (!nonInteractive)
+        QApplication::restoreOverrideCursor();
     return g;
 }
 
@@ -18636,6 +19554,21 @@ ApplicationWindow *ApplicationWindow::importOPJ(const QString &filename [[maybe_
         if (importer.error() != 0) {
             app->blockSignals(true);
             delete app;
+            if (!nonInteractive && filename.endsWith(".opju", Qt::CaseInsensitive)) {
+                bool isCpyu = false;
+                QFile mf(filename);
+                if (mf.open(QIODevice::ReadOnly)) {
+                    isCpyu = (mf.read(4) == QByteArray("CPYU", 4));
+                    mf.close();
+                }
+                if (isCpyu) {
+                    QMessageBox::warning(
+                            this, tr("Origin OPJU Format"),
+                            tr("This Origin 2018+ Unicode project (.opju, CPYU container) uses a "
+                               "proprietary format not directly readable by liborigin.\n\n"
+                               "Please save as legacy '.opj' in Origin or export worksheets as CSV/ASCII."));
+                }
+            }
             return nullptr;
         }
         return app;
@@ -23215,7 +24148,8 @@ MultiLayer *ApplicationWindow::addTableSelectionToActiveOrRecentGraph(Table *src
         }
     }
 
-    if (!targetMl || !targetMl->activeGraph() || targetMl->activeGraph()->isPiePlot())
+    if (!targetMl || !targetMl->activeGraph() || targetMl->activeGraph()->isPiePlot()
+        || plotStyle == Graph::Pie)
         return multilayerPlot(table, cols, plotStyle, startRow, endRow);
 
     Graph *ag = targetMl->activeGraph();
@@ -23263,6 +24197,12 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
 
 void ApplicationWindow::handleAspectAboutToBeRemoved(const AbstractAspect *parent, int index)
 {
+    struct ScopedAspectRemovalFlag {
+        bool &flag;
+        explicit ScopedAspectRemovalFlag(bool &f) : flag(f) { flag = true; }
+        ~ScopedAspectRemovalFlag() { flag = false; }
+    } removalFlag(d_in_aspect_about_to_be_removed);
+
     AbstractAspect *aspect = parent->child(index);
     ::future::Matrix *matrix = qobject_cast<::future::Matrix *>(aspect);
     if (matrix) {
@@ -23331,7 +24271,9 @@ void ApplicationWindow::showHistory()
     if (dialog.exec() == QDialog::Accepted)
         return;
 
+    Table::beginUndoRedoReplay();
     targetStack->setIndex(index);
+    Table::endUndoRedoReplay();
 }
 
 QStringList ApplicationWindow::tableWindows()
@@ -26506,6 +27448,146 @@ void ApplicationWindow::showEISAnalyzerDialog()
     if (isNonInteractiveContext(this))
         return;
     CurveMathTools::showEISAnalyzerDialog(this);
+}
+
+void ApplicationWindow::showSampleGalleryDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showSampleGalleryDialog(this);
+}
+
+void ApplicationWindow::showKissingerDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showKissingerDialog(this);
+}
+
+void ApplicationWindow::showWorkHardeningDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showWorkHardeningDialog(this);
+}
+
+void ApplicationWindow::showXRDAnalyzerDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showXRDAnalyzerDialog(this);
+}
+
+void ApplicationWindow::showVaspPlotterDialog()
+{
+    if (isNonInteractiveContext(this))
+        return;
+    CurveMathTools::showVaspPlotterDialog(this);
+}
+
+void ApplicationWindow::exportActiveGraphToPython()
+{
+    MyWidget *targetWin = activeWindow();
+    if (!targetWin)
+        targetWin = qobject_cast<MyWidget *>(d_workspace.activeSubWindow());
+    if (!targetWin) {
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::information(
+                    this, tr("Export Python Script"),
+                    tr("Please open or select a Graph, Worksheet, or Matrix window first."));
+        }
+        return;
+    }
+
+    const QString scriptCode = PythonAutomationServer::generatePythonScriptForWindow(
+            this, targetWin, true, QStringLiteral("inline"));
+    if (scriptCode.trimmed().isEmpty()) {
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Export Python Script"),
+                                 tr("Could not generate a Python script for the active window."));
+        }
+        return;
+    }
+
+    if (QClipboard *cb = QApplication::clipboard())
+        cb->setText(scriptCode);
+
+    const int nLines = scriptCode.count(QLatin1Char('\n')) + 1;
+    if (statusBar()) {
+        statusBar()->showMessage(
+                tr("Generated Python script (%1 lines) and copied to clipboard.").arg(nLines),
+                4000);
+    }
+
+    if (isNonInteractiveContext(this))
+        return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Export Reproducible Python Script — %1").arg(targetWin->name()));
+    dlg.resize(740, 540);
+
+    QVBoxLayout *vbox = new QVBoxLayout(&dlg);
+    vbox->setContentsMargins(14, 14, 14, 12);
+    vbox->setSpacing(10);
+
+    QLabel *infoLbl = new QLabel(
+            tr("Standalone reproducible ToriGraph SDK Python script for '%1' (copied to clipboard):")
+                    .arg(targetWin->name()),
+            &dlg);
+    infoLbl->setWordWrap(true);
+    vbox->addWidget(infoLbl);
+
+    QPlainTextEdit *editor = new QPlainTextEdit(&dlg);
+    editor->setReadOnly(true);
+    editor->setPlainText(scriptCode);
+    QFont codeFont(QStringLiteral("Consolas"), 9);
+    codeFont.setStyleHint(QFont::Monospace);
+    editor->setFont(codeFont);
+    vbox->addWidget(editor, 1);
+
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->setSpacing(8);
+
+    QPushButton *btnCopy = new QPushButton(tr("Copy to Clipboard"), &dlg);
+    QPushButton *btnSave = new QPushButton(tr("Save .py File..."), &dlg);
+    QPushButton *btnClose = new QPushButton(tr("Close"), &dlg);
+    btnSave->setDefault(true);
+
+    btnRow->addWidget(btnCopy);
+    btnRow->addWidget(btnSave);
+    btnRow->addStretch(1);
+    btnRow->addWidget(btnClose);
+    vbox->addLayout(btnRow);
+
+    connect(btnCopy, &QPushButton::clicked, &dlg, [scriptCode, this]() {
+        if (QClipboard *cb = QApplication::clipboard())
+            cb->setText(scriptCode);
+        if (statusBar())
+            statusBar()->showMessage(tr("Copied Python script to clipboard."), 3000);
+    });
+
+    connect(btnSave, &QPushButton::clicked, &dlg, [&dlg, scriptCode, targetWin, this]() {
+        const QString defaultPath =
+                workingDir + QLatin1Char('/') + targetWin->name() + QStringLiteral("_reproduce.py");
+        const QString savePath = QFileDialog::getSaveFileName(
+                &dlg, tr("Save Reproducible Python Script"), defaultPath,
+                tr("Python Scripts (*.py);;All Files (*)"));
+        if (savePath.isEmpty())
+            return;
+        QFile outFile(savePath);
+        if (outFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            outFile.write(scriptCode.toUtf8());
+            outFile.close();
+            if (statusBar())
+                statusBar()->showMessage(tr("Saved Python script to %1").arg(savePath), 4000);
+        } else {
+            QMessageBox::warning(&dlg, tr("Export Python Script"),
+                                 tr("Failed to write file:\n%1").arg(savePath));
+        }
+    });
+
+    connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+    dlg.exec();
 }
 
 void ApplicationWindow::showPassingBablokDemingDialog()
