@@ -937,8 +937,8 @@ def _fetch_graph_ole_payload(
     tmp_dir: Path,
     seq_idx: int,
     cached_project_bytes: Optional[bytes],
-) -> Tuple[bytes, bytes, int, int, int, int, str, Optional[bytes]]:
-    """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, updated_cache)`` via RPC."""
+) -> Tuple[bytes, bytes, int, int, int, int, str, str, Optional[bytes]]:
+    """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, canonical_window, updated_cache)`` via RPC."""
     from .client import RpcError
 
     emf_tmp = tmp_dir / f"preview_{seq_idx}_{graph_name}.emf"
@@ -947,6 +947,7 @@ def _fetch_graph_ole_payload(
     w_mm = 85.0
     h_mm = 85.0
     prog_id = TORIGRAPH_OLE_PROG_ID
+    canonical_window = graph_name
 
     skip_proj = cached_project_bytes is not None
     try:
@@ -960,6 +961,8 @@ def _fetch_graph_ole_payload(
         )
         if isinstance(ole_res, Mapping):
             prog_id = str(ole_res.get("prog_id") or TORIGRAPH_OLE_PROG_ID)
+            if ole_res.get("graph"):
+                canonical_window = str(ole_res["graph"])
             if ole_res.get("width_mm"):
                 w_mm = float(ole_res["width_mm"])
             if ole_res.get("height_mm"):
@@ -1001,7 +1004,17 @@ def _fetch_graph_ole_payload(
     w_hm, h_hm, w_px, h_px = parse_emf_dimensions(
         emf_bytes, fallback_width_mm=w_mm, fallback_height_mm=h_mm
     )
-    return proj_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, cached_project_bytes
+    return (
+        proj_bytes,
+        emf_bytes,
+        w_hm,
+        h_hm,
+        w_px,
+        h_px,
+        prog_id,
+        canonical_window,
+        cached_project_bytes,
+    )
 
 
 def export_graphs_to_pptx(
@@ -1097,8 +1110,14 @@ def export_graphs_to_pptx(
         raise ValueError("No graphs specified (and no open graph windows found in session).")
 
     if preset:
+        from .client import RpcError
+
         for g_nm in graph_names:
-            session.call("graph.apply_style_preset", graph=g_nm, preset=str(preset))
+            try:
+                session.call("graph.apply_style_preset", graph=g_nm, preset=str(preset))
+            except RpcError as exc:
+                if "Unknown style preset" in str(exc):
+                    raise
 
     # Normalize explicit per-graph boxes if provided
     per_graph_boxes: Optional[List[Sequence[float]]] = None
@@ -1190,7 +1209,17 @@ def export_graphs_to_pptx(
         # Pre-build OLE payloads for all requested graphs
         built_items: List[Dict[str, Any]] = []
         for idx, g_nm in enumerate(graph_names):
-            proj_b, emf_b, w_hm, h_hm, w_px, h_px, prog_id, cached_proj = _fetch_graph_ole_payload(
+            (
+                proj_b,
+                emf_b,
+                w_hm,
+                h_hm,
+                w_px,
+                h_px,
+                prog_id,
+                canonical_win,
+                cached_proj,
+            ) = _fetch_graph_ole_payload(
                 session,
                 g_nm,
                 dpi=dpi,
@@ -1198,12 +1227,12 @@ def export_graphs_to_pptx(
                 seq_idx=idx,
                 cached_project_bytes=cached_proj,
             )
-            ole_bin_path = tmp_dir / f"ole_{idx}_{g_nm}.bin"
+            ole_bin_path = tmp_dir / f"ole_{idx}_{canonical_win}.bin"
             build_ole_compound_file(
                 ole_bin_path,
                 project_bytes=proj_b,
                 emf_bytes=emf_b,
-                target_window=g_nm,
+                target_window=canonical_win,
                 width_hm=w_hm,
                 height_hm=h_hm,
                 width_px=w_px,
@@ -1212,6 +1241,7 @@ def export_graphs_to_pptx(
             built_items.append(
                 {
                     "graph_name": g_nm,
+                    "canonical_window": canonical_win,
                     "ole_bytes": ole_bin_path.read_bytes(),
                     "emf_bytes": emf_b,
                     "w_hm": w_hm,

@@ -12174,6 +12174,18 @@ void ApplicationWindow::copySelection()
             copyMarker();
         else
             copyActiveLayer();
+    } else if (m->inherits("Graph3D")) {
+        Graph3D *g3d = static_cast<Graph3D *>(m);
+#ifdef Q_OS_WIN
+        QImage fb;
+        if (g3d->sp) {
+            g3d->sp->makeCurrent();
+            fb = g3d->sp->grabFramebuffer();
+        }
+        if (!fb.isNull() && SciDAVisOle::copyImageAsOle(this, fb, g3d->name()))
+            return;
+#endif
+        g3d->copyImage();
     } else if (m->inherits("Note"))
         ((Note *)m)->textWidget()->copy();
 }
@@ -13529,18 +13541,19 @@ void ApplicationWindow::dragEnterEvent(QDragEnterEvent *e)
 
 void ApplicationWindow::closeEvent(QCloseEvent *ce)
 {
-    if (d_headless_mode || m_batch || (!d_ole_embedded && isNonInteractiveContext(this))) {
-        ce->accept();
-        return;
-    }
-
     if (d_ole_embedded) {
         if (d_ole_on_close) {
             auto cb = std::move(d_ole_on_close);
             d_ole_on_close = nullptr;
             cb();
         }
-        saveSettings();
+        if (!d_headless_mode && !m_batch && !isNonInteractiveContext(this))
+            saveSettings();
+        ce->accept();
+        return;
+    }
+
+    if (d_headless_mode || m_batch || isNonInteractiveContext(this)) {
         ce->accept();
         return;
     }
@@ -16637,7 +16650,7 @@ void ApplicationWindow::copyActiveLayer()
     lastCopiedLayer->setGeometry(0, 0, g->width(), g->height());
     lastCopiedLayer->copy(this, g);
 #ifdef Q_OS_WIN
-    if (SciDAVisOle::copyGraphAsOle(this, ml, g))
+    if (SciDAVisOle::copyGraphAsOle(this, ml, nullptr))
         return;
 #endif
     g->copyImage();
@@ -19785,10 +19798,29 @@ void ApplicationWindow::fitAutoPeakPseudoVoigt()
 
 void ApplicationWindow::copyGraphAsOleObject()
 {
-    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+    QWidget *actW = d_workspace.activeSubWindow();
+    if (!actW)
         return;
 
-    MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (actW->inherits("Graph3D")) {
+        Graph3D *g3d = static_cast<Graph3D *>(actW);
+#ifdef Q_OS_WIN
+        QImage fb;
+        if (g3d->sp) {
+            g3d->sp->makeCurrent();
+            fb = g3d->sp->grabFramebuffer();
+        }
+        if (!fb.isNull() && SciDAVisOle::copyImageAsOle(this, fb, g3d->name()))
+            return;
+#endif
+        g3d->copyImage();
+        return;
+    }
+
+    if (!actW->inherits("MultiLayer"))
+        return;
+
+    MultiLayer *ml = static_cast<MultiLayer *>(actW);
 #ifdef Q_OS_WIN
     if (SciDAVisOle::copyGraphAsOle(this, ml, nullptr))
         return;

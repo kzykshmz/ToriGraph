@@ -1222,7 +1222,23 @@ def run_persona_3_expert(
         with olefile.OleFileIO(ole_blob) as ole:
             assert ole.root.clsid.upper() == "8E6B9541-3C74-4D28-A915-7D84E5A12001"
             assert ole.exists("\x01CompObj") and ole.exists("\x01Ole") and ole.exists("ToriGraphProject")
+            assert not ole.exists("SciDAVisDib"), "oleObject.bin must not contain bloated uncompressed SciDAVisDib!"
+            meta_json = json.loads(ole.openstream("SciDAVisMeta").read().decode("utf-8"))
+            assert meta_json.get("targetWindow") == g24.name, f"Expected canonical targetWindow {g24.name!r}, got {meta_json!r}"
             extracted_sciprj.write_bytes(ole.openstream("ToriGraphProject").read())
+
+    # Also verify copy_ole(preset="slide_28pt") and mixed 2D+Graph3D to_pptx(preset="slide_28pt")
+    copy_ole_res = g24.copy_ole(preset="slide_28pt")
+    assert copy_ole_res.get("ok") is True and copy_ole_res.get("graph") == g24.name
+    pptx_mixed_3d = out_dir / "Fig26b_Mixed_2D_and_3D_OLE.pptx"
+    mixed_res = app.to_pptx(
+        pptx_mixed_3d,
+        [g24, g25c_3d.name],
+        per_slide=2,
+        preset="slide_28pt",
+        dpi=300,
+    )
+    assert mixed_res.get("ok") is True and mixed_res.get("embedded_count") == 2
 
     with launcher.session(language="en") as (fresh_app, _, _):
         fresh_app.open_project(extracted_sciprj)

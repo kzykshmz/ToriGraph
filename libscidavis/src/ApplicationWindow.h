@@ -1116,7 +1116,7 @@ public slots:
     QByteArray saveProjectToByteArray();
     void setOleEmbeddedMode(bool embedded);
     bool isOleEmbeddedMode() const { return d_ole_embedded; }
-    bool isNonInteractive() const { return d_headless_mode || d_ole_embedded || m_batch; }
+    bool isNonInteractive() const { return d_headless_mode || m_batch; }
     static bool isNonInteractiveContext(const QObject *context = nullptr);
     void setOleEmbeddedCallbacks(std::function<void()> onUpdate, std::function<void()> onClose)
     {

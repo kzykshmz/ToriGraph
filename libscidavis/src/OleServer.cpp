@@ -4,8 +4,11 @@
 
 #include "EmfPaintDevice.h"
 #include "ApplicationWindow.h"
+#include "GraphInspectorDock.h"
 #include "MultiLayer.h"
 #include "Graph.h"
+#include "Graph3D.h"
+#include "Plot3DDialog.h"
 #include "Table.h"
 
 
@@ -121,27 +124,150 @@ HRESULT readStreamBytes(IStorage *stg, const wchar_t *name, QByteArray *outBytes
     return S_OK;
 }
 
-MultiLayer *findTargetMultiLayer(ApplicationWindow *app, const QString &targetName)
+QString normalizeOleWindowKey(QString s)
+{
+    s = s.trimmed().toLower();
+    s.replace(QLatin1Char('_'), QLatin1Char('-'));
+    return s;
+}
+
+MultiLayer *findTargetMultiLayer(ApplicationWindow *app, const QString &targetName,
+                                 bool allowFallback = true)
 {
     if (!app)
         return nullptr;
-    QList<MyWidget *> windows = app->windowsList();
+    const QList<MyWidget *> windows = app->windowsList();
+    const QString wantNorm = normalizeOleWindowKey(targetName);
     MultiLayer *firstMl = nullptr;
+    MultiLayer *normMatch = nullptr;
+    MultiLayer *labelMatch = nullptr;
     for (MyWidget *w : windows) {
         if (w && w->inherits("MultiLayer")) {
             MultiLayer *ml = static_cast<MultiLayer *>(w);
             if (!firstMl)
                 firstMl = ml;
-            if (!targetName.isEmpty() && ml->name() == targetName)
-                return ml;
+            if (!targetName.isEmpty()) {
+                if (ml->name() == targetName)
+                    return ml;
+                if (!normMatch && normalizeOleWindowKey(ml->name()) == wantNorm)
+                    normMatch = ml;
+                if (!labelMatch
+                    && (!ml->windowLabel().isEmpty()
+                        && (ml->windowLabel() == targetName
+                            || normalizeOleWindowKey(ml->windowLabel()) == wantNorm))) {
+                    labelMatch = ml;
+                }
+            }
         }
     }
-    return firstMl;
+    if (normMatch)
+        return normMatch;
+    if (labelMatch)
+        return labelMatch;
+    return allowFallback ? firstMl : nullptr;
+}
+
+Graph3D *findTargetGraph3D(ApplicationWindow *app, const QString &targetName,
+                           bool allowFallback = false)
+{
+    if (!app)
+        return nullptr;
+    const QList<MyWidget *> windows = app->windowsList();
+    const QString wantNorm = normalizeOleWindowKey(targetName);
+    Graph3D *firstG3d = nullptr;
+    Graph3D *normMatch = nullptr;
+    for (MyWidget *w : windows) {
+        if (w && w->inherits("Graph3D")) {
+            Graph3D *g3d = static_cast<Graph3D *>(w);
+            if (!firstG3d)
+                firstG3d = g3d;
+            if (!targetName.isEmpty()) {
+                if (g3d->name() == targetName)
+                    return g3d;
+                if (!normMatch && normalizeOleWindowKey(g3d->name()) == wantNorm)
+                    normMatch = g3d;
+            }
+        }
+    }
+    if (normMatch)
+        return normMatch;
+    return allowFallback ? firstG3d : nullptr;
+}
+
+QImage captureGraph3DOleImage(Graph3D *g3d)
+{
+    QImage fb;
+    if (!g3d)
+        return fb;
+    g3d->update();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    if (g3d->sp) {
+        g3d->sp->makeCurrent();
+        fb = g3d->sp->grabFramebuffer();
+    }
+    if (fb.isNull()) {
+        QTemporaryFile tmpPng(
+                QDir::temp().filePath(QStringLiteral("torigraph_ole3d_XXXXXX.png")));
+        if (tmpPng.open()) {
+            const QString tmpPath = tmpPng.fileName();
+            tmpPng.close();
+            g3d->exportImage(tmpPath, 100, false);
+            fb.load(tmpPath);
+            QFile::remove(tmpPath);
+        }
+    }
+    return fb;
+}
+
+QByteArray synthesizeDibFromEmf(const QByteArray &emfBytes, QSize fallbackPx)
+{
+    HENHMETAFILE hemf = SciDAVisEmf::createHemfFromBytes(emfBytes);
+    if (!hemf)
+        return {};
+    const int w = std::clamp(fallbackPx.width() > 0 ? fallbackPx.width() * 2 : 1000, 100, 2400);
+    const int h = std::clamp(fallbackPx.height() > 0 ? fallbackPx.height() * 2 : 1000, 100, 2400);
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = h; // bottom-up for standard CF_DIB compatibility
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    bmi.bmiHeader.biSizeImage = static_cast<DWORD>(w * h * 4);
+    bmi.bmiHeader.biXPelsPerMeter = 11811; // 300 DPI
+    bmi.bmiHeader.biYPelsPerMeter = 11811;
+    void *bits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (screenDc)
+        ReleaseDC(nullptr, screenDc);
+    QByteArray out;
+    if (memDc && hBmp && bits) {
+        std::memset(bits, 0xFF, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+        HGDIOBJ oldObj = SelectObject(memDc, hBmp);
+        RECT rc{ 0, 0, w, h };
+        PlayEnhMetaFile(memDc, hemf, &rc);
+        GdiFlush();
+        SelectObject(memDc, oldObj);
+        out.resize(static_cast<int>(sizeof(BITMAPINFOHEADER)) + w * h * 4);
+        std::memcpy(out.data(), &bmi.bmiHeader, sizeof(BITMAPINFOHEADER));
+        std::memcpy(out.data() + sizeof(BITMAPINFOHEADER), bits,
+                    static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    }
+    if (hBmp)
+        DeleteObject(hBmp);
+    if (memDc)
+        DeleteDC(memDc);
+    DeleteEnhMetaFile(hemf);
+    return out;
 }
 
 ApplicationWindow *createSampleAppWindow()
 {
     ApplicationWindow *mw = new ApplicationWindow();
+    mw->setHeadlessMode(true);
+    mw->setOleEmbeddedMode(true);
     mw->applyUserSettings();
     Table *t = mw->newTable("Table1", 6, 2);
     if (t) {
@@ -181,6 +307,8 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
     }
 
     std::unique_ptr<ApplicationWindow> mw(new ApplicationWindow());
+    mw->setHeadlessMode(true);
+    mw->setOleEmbeddedMode(true);
     mw->applyUserSettings();
     const QStringList prevRecent = mw->recentProjects;
     bool ok = mw->loadProject(tempPath);
@@ -211,14 +339,35 @@ void ensureRenderedPayload(OleGraphPayload *payload)
         if (payload->projectBytes.isEmpty())
             payload->projectBytes = mw->saveProjectToByteArray();
 
-        MultiLayer *ml = findTargetMultiLayer(mw, payload->targetWindow);
+        MultiLayer *ml = findTargetMultiLayer(mw, payload->targetWindow, false);
+        Graph3D *g3d = !ml ? findTargetGraph3D(mw, payload->targetWindow, false) : nullptr;
+        if (!ml && !g3d) {
+            ml = findTargetMultiLayer(mw, payload->targetWindow, true);
+            if (!ml)
+                g3d = findTargetGraph3D(mw, payload->targetWindow, true);
+        }
         if (ml) {
             if (payload->targetWindow.isEmpty())
                 payload->targetWindow = ml->name();
+            for (Graph *lg : ml->layersList()) {
+                if (lg) {
+                    lg->updatePlot();
+                    lg->replot();
+                }
+            }
             Graph *single = (payload->targetLayer >= 1 && payload->targetLayer <= ml->layers())
                     ? ml->layer(payload->targetLayer)
                     : nullptr;
-            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, single);
+            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, single, false);
+            payload->emfBytes = rg.emfBytes;
+            payload->dibBytes = rg.dibBytes;
+            payload->pixelSize = rg.pixelSize;
+            if (payload->extentHm.cx <= 0 || payload->extentHm.cy <= 0)
+                payload->extentHm = rg.extentHm;
+        } else if (g3d) {
+            if (payload->targetWindow.isEmpty())
+                payload->targetWindow = g3d->name();
+            OleRenderedGraph rg = SciDAVisEmf::renderFromImage(captureGraph3DOleImage(g3d));
             payload->emfBytes = rg.emfBytes;
             payload->dibBytes = rg.dibBytes;
             payload->pixelSize = rg.pixelSize;
@@ -282,6 +431,8 @@ class SciDAVisGraphObject final : public IOleObject,
     SIZEL m_extent{ 15000, 11250 };
     SIZEL m_initialRenderExtentHm{ 0, 0 };
     QPointer<ApplicationWindow> m_editor;
+    QPointer<MultiLayer> m_targetMl;
+    QPointer<Graph3D> m_targetG3d;
     std::wstring m_filename;
 
     ComPtr<IOleClientSite> m_site;
@@ -342,51 +493,84 @@ class SciDAVisGraphObject final : public IOleObject,
         if (!m_editor)
             return false;
 
+        MultiLayer *ml = m_targetMl
+                ? m_targetMl.data()
+                : findTargetMultiLayer(m_editor, m_payload.targetWindow, false);
+        Graph3D *g3d = m_targetG3d
+                ? m_targetG3d.data()
+                : (!ml ? findTargetGraph3D(m_editor, m_payload.targetWindow, false) : nullptr);
+        if (!ml && !g3d) {
+            ml = findTargetMultiLayer(m_editor, m_payload.targetWindow, true);
+            if (!ml)
+                g3d = findTargetGraph3D(m_editor, m_payload.targetWindow, true);
+        }
+
+        if (ml) {
+            for (Graph *lg : ml->layersList()) {
+                if (lg) {
+                    lg->updatePlot();
+                    lg->replot();
+                }
+            }
+        }
+
         QByteArray newProj = m_editor->saveProjectToByteArray();
-        MultiLayer *ml = findTargetMultiLayer(m_editor, m_payload.targetWindow);
         QByteArray newEmf = m_payload.emfBytes;
         QByteArray newDib = m_payload.dibBytes;
         QSize newPx = m_payload.pixelSize;
+
+        auto updateExtentPreservingSlideBox = [&](SIZEL renderedHm, QSize pxSz) {
+            if ((renderedHm.cx <= 0 || renderedHm.cy <= 0) && pxSz.width() > 0 && pxSz.height() > 0) {
+                renderedHm.cx = std::max<LONG>(
+                        100, static_cast<LONG>(std::lround(pxSz.width() * 2540.0 / 96.0)));
+                renderedHm.cy = std::max<LONG>(
+                        100, static_cast<LONG>(std::lround(pxSz.height() * 2540.0 / 96.0)));
+            }
+            if (renderedHm.cx > 0 && renderedHm.cy > 0) {
+                if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0) {
+                    m_initialRenderExtentHm = renderedHm;
+                    if (m_extent.cx <= 0 || m_extent.cy <= 0)
+                        m_extent = renderedHm;
+                } else if (renderedHm.cx != m_initialRenderExtentHm.cx
+                           || renderedHm.cy != m_initialRenderExtentHm.cy) {
+                    const double oldAr = double(m_initialRenderExtentHm.cx)
+                            / std::max(1.0, double(m_initialRenderExtentHm.cy));
+                    const double newAr =
+                            double(renderedHm.cx) / std::max(1.0, double(renderedHm.cy));
+                    if (m_extent.cx > 0 && m_extent.cy > 0) {
+                        if (std::fabs(newAr - oldAr) / std::max(1e-6, oldAr) > 0.02) {
+                            m_extent.cx = std::clamp<LONG>(
+                                    static_cast<LONG>(std::lround(double(m_extent.cy) * newAr)),
+                                    100, 1000000);
+                        }
+                    } else {
+                        m_extent = renderedHm;
+                    }
+                    m_initialRenderExtentHm = renderedHm;
+                }
+            }
+        };
 
         if (ml) {
             m_payload.targetWindow = ml->name();
             Graph *single = (m_payload.targetLayer >= 1 && m_payload.targetLayer <= ml->layers())
                     ? ml->layer(m_payload.targetLayer)
                     : nullptr;
-            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, single);
+            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, single, false);
             if (!rg.emfBytes.isEmpty()) {
                 newEmf = rg.emfBytes;
                 newDib = rg.dibBytes;
                 newPx = rg.pixelSize;
-                SIZEL renderedHm = rg.extentHm;
-                if ((renderedHm.cx <= 0 || renderedHm.cy <= 0)
-                    && rg.pixelSize.width() > 0 && rg.pixelSize.height() > 0) {
-                    renderedHm.cx = std::max<LONG>(
-                            100, static_cast<LONG>(std::lround(rg.pixelSize.width() * 2540.0 / 96.0)));
-                    renderedHm.cy = std::max<LONG>(
-                            100, static_cast<LONG>(std::lround(rg.pixelSize.height() * 2540.0 / 96.0)));
-                }
-                if (renderedHm.cx > 0 && renderedHm.cy > 0) {
-                    if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0) {
-                        m_initialRenderExtentHm = renderedHm;
-                        m_extent = renderedHm;
-                    } else if (renderedHm.cx != m_initialRenderExtentHm.cx
-                               || renderedHm.cy != m_initialRenderExtentHm.cy) {
-                        if (m_extent.cx > 0 && m_extent.cy > 0
-                            && (m_extent.cx != m_initialRenderExtentHm.cx
-                                || m_extent.cy != m_initialRenderExtentHm.cy)) {
-                            const double sx = double(renderedHm.cx) / double(m_initialRenderExtentHm.cx);
-                            const double sy = double(renderedHm.cy) / double(m_initialRenderExtentHm.cy);
-                            m_extent.cx = std::max<LONG>(
-                                    100, std::min<LONG>(1000000, static_cast<LONG>(std::lround(m_extent.cx * sx))));
-                            m_extent.cy = std::max<LONG>(
-                                    100, std::min<LONG>(1000000, static_cast<LONG>(std::lround(m_extent.cy * sy))));
-                        } else {
-                            m_extent = renderedHm;
-                        }
-                        m_initialRenderExtentHm = renderedHm;
-                    }
-                }
+                updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
+            }
+        } else if (g3d) {
+            m_payload.targetWindow = g3d->name();
+            OleRenderedGraph rg = SciDAVisEmf::renderFromImage(captureGraph3DOleImage(g3d));
+            if (!rg.emfBytes.isEmpty()) {
+                newEmf = rg.emfBytes;
+                newDib = rg.dibBytes;
+                newPx = rg.pixelSize;
+                updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
             }
         }
 
@@ -511,7 +695,10 @@ public:
         if (m_editor) {
             QPointer<ApplicationWindow> ed = m_editor;
             m_editor = nullptr;
+            m_targetMl = nullptr;
+            m_targetG3d = nullptr;
             ed->setOleEmbeddedCallbacks({}, {});
+            ed->setHeadlessMode(true);
             ed->setOleEmbeddedMode(true);
             ed->close();
         }
@@ -579,17 +766,33 @@ public:
             if (!mw)
                 mw = createSampleAppWindow();
 
-            MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow);
+            MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow, false);
+            Graph3D *g3d = !ml ? findTargetGraph3D(mw, m_payload.targetWindow, false) : nullptr;
+            if (!ml && !g3d) {
+                ml = findTargetMultiLayer(mw, m_payload.targetWindow, true);
+                if (!ml)
+                    g3d = findTargetGraph3D(mw, m_payload.targetWindow, true);
+            }
+            m_targetMl = ml;
+            m_targetG3d = g3d;
             m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
             if (ml) {
                 m_payload.targetWindow = ml->name();
+                if (ml->pageUnit() == MultiLayer::UnitPx && !ml->pageViewMode())
+                    ml->setPageViewMode(true);
                 mw->activateSubWindow(ml);
                 Graph *single = nullptr;
                 if (m_payload.targetLayer >= 1 && m_payload.targetLayer <= ml->layers()) {
                     single = ml->layer(m_payload.targetLayer);
                     ml->setActiveGraph(single);
                 }
-                OleRenderedGraph initRg = SciDAVisEmf::renderMultiLayer(ml, single);
+                for (Graph *lg : ml->layersList()) {
+                    if (lg) {
+                        lg->updatePlot();
+                        lg->replot();
+                    }
+                }
+                OleRenderedGraph initRg = SciDAVisEmf::renderMultiLayer(ml, single, false);
                 if (initRg.extentHm.cx > 0 && initRg.extentHm.cy > 0)
                     m_initialRenderExtentHm = initRg.extentHm;
                 else if (initRg.pixelSize.width() > 0 && initRg.pixelSize.height() > 0) {
@@ -598,12 +801,18 @@ public:
                     m_initialRenderExtentHm.cy = std::max<LONG>(
                             100, static_cast<LONG>(std::lround(initRg.pixelSize.height() * 2540.0 / 96.0)));
                 }
+            } else if (g3d) {
+                m_payload.targetWindow = g3d->name();
+                mw->activateSubWindow(g3d);
             }
 
             QString titleSuffix = m_payload.targetWindow.isEmpty()
                     ? QObject::tr("Embedded Graph")
                     : m_payload.targetWindow;
             mw->setWindowTitle(QObject::tr("ToriGraph - %1 [PowerPoint OLE]").arg(titleSuffix));
+            const bool appNonInteractive =
+                    qApp && qApp->property("torigraph_noninteractive").toBool();
+            mw->setHeadlessMode(appNonInteractive);
             mw->setOleEmbeddedMode(true);
 
             mw->setOleEmbeddedCallbacks(
@@ -628,6 +837,8 @@ public:
                                 m_site->SaveObject();
                         }
                         m_editor = nullptr;
+                        m_targetMl = nullptr;
+                        m_targetG3d = nullptr;
                         finishClose();
                     }
                     Release();
@@ -635,6 +846,15 @@ public:
 
             m_editor = mw;
             mw->show();
+            if (ml) {
+                mw->activateSubWindow(ml);
+                if (GraphInspectorDock *dock = mw->graphInspectorDock())
+                    dock->setTargetMultiLayer(ml, true);
+            } else if (g3d) {
+                mw->activateSubWindow(g3d);
+            }
+            mw->updateGraphInspectorResponsiveness();
+            mw->savedProject();
             mw->raise();
             mw->activateWindow();
             SetForegroundWindow(reinterpret_cast<HWND>(mw->winId()));
@@ -912,6 +1132,10 @@ public:
                 return S_OK;
             }
             if (f->cfFormat == CF_DIB) {
+                if (m_payload.dibBytes.isEmpty() && !m_payload.emfBytes.isEmpty()) {
+                    m_payload.dibBytes =
+                            synthesizeDibFromEmf(m_payload.emfBytes, m_payload.pixelSize);
+                }
                 if (m_payload.dibBytes.isEmpty())
                     return E_FAIL;
                 HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(m_payload.dibBytes.size()));
@@ -1210,11 +1434,6 @@ HRESULT savePayloadToStorage(IStorage *stg, const OleGraphPayload &payload)
         if (FAILED(hr))
             return hr;
     }
-    if (!payload.dibBytes.isEmpty()) {
-        hr = writeStreamBytes(stg, L"SciDAVisDib", payload.dibBytes);
-        if (FAILED(hr))
-            return hr;
-    }
     return S_OK;
 }
 
@@ -1433,6 +1652,13 @@ bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
     if (!app)
         return false;
 
+    for (Graph *lg : ml->layersList()) {
+        if (lg) {
+            lg->updatePlot();
+            lg->replot();
+        }
+    }
+
     OleGraphPayload payload;
     payload.projectBytes = app->saveProjectToByteArray();
     payload.targetWindow = ml->name();
@@ -1446,7 +1672,7 @@ bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
         }
     }
 
-    OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, singleLayer);
+    OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, singleLayer, false);
     payload.emfBytes = rg.emfBytes;
     payload.dibBytes = rg.dibBytes;
     payload.extentHm = rg.extentHm;

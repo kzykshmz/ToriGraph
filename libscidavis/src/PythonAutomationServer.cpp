@@ -19989,16 +19989,59 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("graph.copy_ole")) {
-        MultiLayer *ml = resolveMultiLayer(d_app, params);
 #ifdef Q_OS_WIN
+        const QString reqGraph = optionalJsonString(params, QStringLiteral("graph")).trimmed();
+        Graph3D *targetG3D = nullptr;
+        if (!reqGraph.isEmpty()) {
+            if (MyWidget *mw = findWindowByName(d_app, reqGraph)) {
+                if (mw->inherits("Graph3D"))
+                    targetG3D = static_cast<Graph3D *>(mw);
+            }
+        } else if (QWidget *actW = d_app->d_workspace.activeSubWindow()) {
+            if (actW->inherits("Graph3D"))
+                targetG3D = static_cast<Graph3D *>(actW);
+        }
+        if (targetG3D) {
+            QImage fb;
+            targetG3D->update();
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            if (targetG3D->sp) {
+                targetG3D->sp->makeCurrent();
+                fb = targetG3D->sp->grabFramebuffer();
+            }
+            const bool ok = SciDAVisOle::copyImageAsOle(d_app, fb, targetG3D->name());
+            outResult[QStringLiteral("ok")] = ok;
+            outResult[QStringLiteral("graph")] = targetG3D->name();
+            return true;
+        }
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        const QString presetStr = optionalJsonString(params, QStringLiteral("preset")).trimmed().toLower();
+        if (!presetStr.isEmpty()) {
+            MultiLayer::StylePreset sp = MultiLayer::StyleISIJJournal85mm;
+            if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
+                || presetStr == QStringLiteral("presentation"))
+                sp = MultiLayer::StylePresentationSlide28pt;
+            else if (presetStr == QStringLiteral("nature_89mm") || presetStr == QStringLiteral("nature"))
+                sp = MultiLayer::StyleNatureCompact89mm;
+            else if (presetStr != QStringLiteral("isij_85mm") && presetStr != QStringLiteral("isij")) {
+                throwInvalidParams(
+                        QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
+                                .arg(presetStr));
+            }
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
+            ml->applyStylePreset(sp);
+            for (Graph *lg : ml->layersList())
+                enforceArialGraphFonts(lg);
+            undoGuard.commit();
+        }
         Graph *singleG = params.value(QStringLiteral("active_layer_only")).toBool(false)
                 ? ml->activeGraph()
                 : nullptr;
         const bool ok = SciDAVisOle::copyGraphAsOle(d_app, ml, singleG);
         outResult[QStringLiteral("ok")] = ok;
+        outResult[QStringLiteral("graph")] = ml->name();
         return true;
 #else
-        Q_UNUSED(ml)
         throwRpcRuntime(QStringLiteral("OLE clipboard export is only supported on Windows."));
 #endif
     }
@@ -20121,11 +20164,49 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (actW->inherits("Graph3D"))
                 targetG3D = static_cast<Graph3D *>(actW);
         }
-        if (!targetG3D)
+        if (!targetG3D) {
             ml = resolveMultiLayer(d_app, params);
+            const QString presetStr =
+                    optionalJsonString(params, QStringLiteral("preset")).trimmed().toLower();
+            if (!presetStr.isEmpty()) {
+                MultiLayer::StylePreset sp = MultiLayer::StyleISIJJournal85mm;
+                if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
+                    || presetStr == QStringLiteral("presentation"))
+                    sp = MultiLayer::StylePresentationSlide28pt;
+                else if (presetStr == QStringLiteral("nature_89mm")
+                         || presetStr == QStringLiteral("nature"))
+                    sp = MultiLayer::StyleNatureCompact89mm;
+                else if (presetStr != QStringLiteral("isij_85mm")
+                         && presetStr != QStringLiteral("isij")) {
+                    throwInvalidParams(
+                            QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
+                                    .arg(presetStr));
+                }
+                ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
+                ml->applyStylePreset(sp);
+                for (Graph *lg : ml->layersList())
+                    enforceArialGraphFonts(lg);
+                undoGuard.commit();
+            }
+            for (Graph *lg : ml->layersList()) {
+                if (lg) {
+                    enforceArialGraphFonts(lg);
+                    lg->updatePlot();
+                    lg->replot();
+                }
+            }
+        }
 
         QByteArray projBytes;
         if (needOleCompound) {
+            for (MyWidget *w : d_app->windowsList()) {
+                if (w && w->inherits("MultiLayer")) {
+                    for (Graph *lg : static_cast<MultiLayer *>(w)->layersList()) {
+                        if (lg)
+                            enforceArialGraphFonts(lg);
+                    }
+                }
+            }
             sanitizeAllProjectFunctionCurves(d_app);
             projBytes = d_app->saveProjectToByteArray();
             if (projBytes.isEmpty()) {
@@ -20144,6 +20225,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             payload.targetWindow = targetName;
             payload.targetLayer = 0;
             QImage fb;
+            targetG3D->update();
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
             if (targetG3D->sp) {
                 targetG3D->sp->makeCurrent();
                 fb = targetG3D->sp->grabFramebuffer();
@@ -20153,12 +20236,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             targetName = ml->name();
             payload.targetWindow = targetName;
             payload.targetLayer = 0;
-            for (Graph *lg : ml->layersList()) {
-                if (lg) {
-                    enforceArialGraphFonts(lg);
-                    lg->replot();
-                }
-            }
             Graph *singleG = activeLayerOnly ? ml->activeGraph() : nullptr;
             if (singleG) {
                 for (int i = 1; i <= ml->layers(); ++i) {
@@ -20168,7 +20245,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                 }
             }
-            rg = SciDAVisEmf::renderMultiLayer(ml, singleG, needOleCompound);
+            rg = SciDAVisEmf::renderMultiLayer(ml, singleG, false);
         }
         if (rg.emfBytes.isEmpty())
             throwRpcRuntime(QStringLiteral("Failed to render vector EMF preview for OLE export."));

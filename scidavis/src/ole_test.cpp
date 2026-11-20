@@ -12678,6 +12678,248 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
                    "Suite 51d: StyleISIJJournal85mm corrupted ArrowMarker data-space coordinates!");
     }
 
+    // -------------------------------------------------------------------------
+    // 51e. PowerPoint OLE Container Simulation: Multi-Graph DoVerb Target
+    //      Activation ("Fig_2" -> "Fig-2"), Slide-Box SetExtent Preservation
+    //      Across Slide 28pt Preset, Compact Storage & On-Demand CF_DIB, and
+    //      Full-Page Ctrl+C (copyActiveLayer) OLE Clipboard Verification
+    // -------------------------------------------------------------------------
+    {
+        struct MockPptClientSite final : public IOleClientSite, public IAdviseSink {
+            ULONG refs = 1;
+            int saveObjectCount = 0;
+            int showWindowCount = 0;
+            int viewChangeCount = 0;
+
+            HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
+            {
+                if (!out)
+                    return E_POINTER;
+                *out = nullptr;
+                if (id == IID_IUnknown || id == IID_IOleClientSite)
+                    *out = static_cast<IOleClientSite *>(this);
+                else if (id == IID_IAdviseSink)
+                    *out = static_cast<IAdviseSink *>(this);
+                else
+                    return E_NOINTERFACE;
+                AddRef();
+                return S_OK;
+            }
+            ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+            ULONG STDMETHODCALLTYPE Release() override { return --refs; }
+
+            // IOleClientSite
+            HRESULT STDMETHODCALLTYPE SaveObject() override
+            {
+                ++saveObjectCount;
+                return S_OK;
+            }
+            HRESULT STDMETHODCALLTYPE GetMoniker(DWORD, DWORD, IMoniker **m) override
+            {
+                if (m)
+                    *m = nullptr;
+                return E_NOTIMPL;
+            }
+            HRESULT STDMETHODCALLTYPE GetContainer(IOleContainer **c) override
+            {
+                if (c)
+                    *c = nullptr;
+                return E_NOINTERFACE;
+            }
+            HRESULT STDMETHODCALLTYPE ShowObject() override { return S_OK; }
+            HRESULT STDMETHODCALLTYPE OnShowWindow(BOOL) override
+            {
+                ++showWindowCount;
+                return S_OK;
+            }
+            HRESULT STDMETHODCALLTYPE RequestNewObjectLayout() override { return S_OK; }
+
+            // IAdviseSink
+            void STDMETHODCALLTYPE OnDataChange(FORMATETC *, STGMEDIUM *) override {}
+            void STDMETHODCALLTYPE OnViewChange(DWORD, LONG) override { ++viewChangeCount; }
+            void STDMETHODCALLTYPE OnRename(IMoniker *) override {}
+            void STDMETHODCALLTYPE OnSave() override {}
+            void STDMETHODCALLTYPE OnClose() override {}
+        };
+
+        ApplicationWindow *oleSrcApp = new ApplicationWindow();
+        oleSrcApp->setHeadlessMode(true);
+        oleSrcApp->setOleEmbeddedMode(true);
+        oleSrcApp->applyUserSettings();
+
+        Table *tOle = oleSrcApp->newTable(5, 3, "OleMultiTbl", "OleMultiData");
+        CHECK_COND(tOle != nullptr, "Suite 51e: tOle null");
+        for (int r = 0; r < 5; ++r) {
+            tOle->setCell(r, 0, double(r + 1));
+            tOle->setCell(r, 1, double(r + 1) * 10.0);
+            tOle->setCell(r, 2, double(r + 1) * 25.0);
+        }
+
+        MultiLayer *mlFig1 = oleSrcApp->multilayerPlot(
+                tOle, QStringList() << "OleMultiTbl_2", Graph::LineSymbols);
+        MultiLayer *mlFig2 = oleSrcApp->multilayerPlot(
+                tOle, QStringList() << "OleMultiTbl_3", Graph::LineSymbols);
+        MultiLayer *mlFig3 = oleSrcApp->multilayerPlot(
+                tOle, QStringList() << "OleMultiTbl_2", Graph::Line);
+        CHECK_COND(mlFig1 && mlFig2 && mlFig3, "Suite 51e: failed to create 3 graphs");
+        oleSrcApp->renameWindow(mlFig1, "Fig_1");
+        oleSrcApp->renameWindow(mlFig2, "Fig_2");
+        oleSrcApp->renameWindow(mlFig3, "Fig_3");
+        // Verify MyWidget::setName normalized "_" to "-"
+        CHECK_COND(mlFig2->name() == QStringLiteral("Fig-2"),
+                   "Suite 51e: expected Fig_2 canonical name to be Fig-2");
+        mlFig2->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        mlFig2->activeGraph()->setXAxisTitle("Strain, <i>e</i> (%)");
+        mlFig2->activeGraph()->setYAxisTitle("Stress, <i>&sigma;</i> / MPa");
+
+        const OleRenderedGraph rg2 = SciDAVisEmf::renderMultiLayer(mlFig2, nullptr, false);
+        CHECK_COND(!rg2.emfBytes.isEmpty(), "Suite 51e: renderMultiLayer(mlFig2) empty");
+
+        SciDAVisOle::OleGraphPayload pay2;
+        pay2.projectBytes = oleSrcApp->saveProjectToByteArray();
+        // Intentionally pass un-normalized "Fig_2" to verify underscore/hyphen normalization in DoVerb & syncFromEditor!
+        pay2.targetWindow = QStringLiteral("Fig_2");
+        pay2.targetLayer = 0;
+        pay2.emfBytes = rg2.emfBytes;
+        pay2.extentHm = rg2.extentHm;
+        pay2.pixelSize = rg2.pixelSize;
+
+        ComPtr<IOleObject> oleObj2;
+        CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay2, IID_PPV_ARGS(&oleObj2))) && oleObj2,
+                   "Suite 51e: createGraphObject failed");
+
+        MockPptClientSite mockSite;
+        CHECK_COND(SUCCEEDED(oleObj2->SetClientSite(&mockSite)), "Suite 51e: SetClientSite failed");
+        ComPtr<IViewObject2> viewObj2;
+        CHECK_COND(SUCCEEDED(oleObj2.As(&viewObj2)) && viewObj2, "Suite 51e: QI(IViewObject2) failed");
+        CHECK_COND(SUCCEEDED(viewObj2->SetAdvise(DVASPECT_CONTENT, 0, &mockSite)),
+                   "Suite 51e: IViewObject2::SetAdvise failed");
+
+        // Simulate PowerPoint resizing the OLE box on the slide to 12.0 x 12.0 cm (12000 x 12000 HIMETRIC)
+        SIZEL slideBoxHm{ 12000, 12000 };
+        CHECK_COND(SUCCEEDED(oleObj2->SetExtent(DVASPECT_CONTENT, &slideBoxHm)),
+                   "Suite 51e: IOleObject::SetExtent(12000x12000) failed");
+
+        // Simulate PowerPoint double-click (DoVerb OLEIVERB_PRIMARY)
+        CHECK_COND(SUCCEEDED(oleObj2->DoVerb(OLEIVERB_PRIMARY, nullptr, &mockSite, 0, nullptr, nullptr)),
+                   "Suite 51e: IOleObject::DoVerb(OLEIVERB_PRIMARY) failed");
+        QApplication::processEvents();
+
+        // Find the opened OLE editor ApplicationWindow and verify:
+        // (1) Fig-2 (NOT Fig-3, which was the last window in the project!) is the active subwindow after show()
+        // (2) Apply Slide 28pt preset + edit worksheet Table while Table is active, then close editor!
+        ApplicationWindow *openedOleEditor = nullptr;
+        for (QWidget *tlw : QApplication::topLevelWidgets()) {
+            if (auto *cand = qobject_cast<ApplicationWindow *>(tlw)) {
+                if (cand != mw && cand != w51 && cand != oleSrcApp
+                    && cand->windowTitle().contains(QStringLiteral("PowerPoint OLE"))) {
+                    openedOleEditor = cand;
+                    break;
+                }
+            }
+        }
+        CHECK_COND(openedOleEditor != nullptr,
+                   "Suite 51e: DoVerb did not open ToriGraph [PowerPoint OLE] editor window!");
+        MyWidget *activeInEditor = qobject_cast<MyWidget *>(openedOleEditor->d_workspace.activeSubWindow());
+        CHECK_COND(activeInEditor != nullptr && activeInEditor->name() == QStringLiteral("Fig-2"),
+                   "Suite 51e: DoVerb in multi-graph project failed to activate target 'Fig-2' after show()!");
+
+        MultiLayer *editorFig2 = qobject_cast<MultiLayer *>(activeInEditor);
+        CHECK_COND(editorFig2 != nullptr && editorFig2->activeGraph() != nullptr,
+                   "Suite 51e: active subwindow in OLE editor is not MultiLayer Fig-2!");
+        editorFig2->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        editorFig2->activeGraph()->setXAxisTitle("Updated Strain, <i>e</i> (%)");
+
+        // Switch active tab in editor to Table ("OleMultiTbl") and modify a cell before closing,
+        // verifying that syncFromEditor still renders Fig-2 (with updated plot data) rather than failing!
+        for (MyWidget *ew : openedOleEditor->windowsList()) {
+            if (Table *et = qobject_cast<Table *>(ew)) {
+                openedOleEditor->activateSubWindow(et);
+                et->setCell(4, 2, 180.0);
+                break;
+            }
+        }
+        QApplication::processEvents();
+
+        // Close via IOleObject::Close(OLECLOSE_SAVEIFDIRTY) (simulating PowerPoint closing/saving OLE session)
+        CHECK_COND(SUCCEEDED(oleObj2->Close(OLECLOSE_SAVEIFDIRTY)),
+                   "Suite 51e: IOleObject::Close(OLECLOSE_SAVEIFDIRTY) failed");
+        QApplication::processEvents();
+
+        CHECK_COND(mockSite.saveObjectCount >= 1,
+                   "Suite 51e: IOleClientSite::SaveObject was not invoked on OLE editor update/close!");
+
+        // Verify slide box extent (12000 x 12000) was preserved without jumping to 18500 x 18500!
+        SIZEL postEditExtent{};
+        CHECK_COND(SUCCEEDED(viewObj2->GetExtent(DVASPECT_CONTENT, -1, nullptr, &postEditExtent)),
+                   "Suite 51e: GetExtent after DoVerb close failed");
+        CHECK_COND(postEditExtent.cx == 12000 && postEditExtent.cy == 12000,
+                   "Suite 51e: Slide box extent (12000x12000) jumped after applying Slide 28pt preset in OLE editor!");
+
+        // Save to IStorage and verify:
+        // (a) No bloated SciDAVisDib stream is written to persistent storage
+        // (b) On-demand GetData(CF_DIB) still succeeds via synthesizeDibFromEmf
+        // (c) Reloaded project contains "Updated Strain, <i>e</i> (%)" at 28 pt Arial
+        ComPtr<ILockBytes> lb51;
+        CHECK_COND(SUCCEEDED(CreateILockBytesOnHGlobal(nullptr, TRUE, &lb51)) && lb51,
+                   "Suite 51e: CreateILockBytesOnHGlobal failed");
+        ComPtr<IStorage> stg51;
+        CHECK_COND(SUCCEEDED(StgCreateDocfileOnILockBytes(
+                           lb51.Get(), STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, &stg51))
+                           && stg51,
+                   "Suite 51e: StgCreateDocfileOnILockBytes failed");
+        ComPtr<IPersistStorage> persist51;
+        CHECK_COND(SUCCEEDED(oleObj2.As(&persist51)) && persist51, "Suite 51e: QI(IPersistStorage) failed");
+        CHECK_COND(SUCCEEDED(persist51->Save(stg51.Get(), FALSE)), "Suite 51e: IPersistStorage::Save failed");
+        CHECK_COND(SUCCEEDED(persist51->SaveCompleted(stg51.Get())), "Suite 51e: SaveCompleted failed");
+
+        ComPtr<IStream> dibStreamCheck;
+        const HRESULT hrDibStm = stg51->OpenStream(
+                L"SciDAVisDib", nullptr, STGM_READ | STGM_SHARE_EXCLUSIVE, 0, &dibStreamCheck);
+        CHECK_COND(FAILED(hrDibStm),
+                   "Suite 51e: Persistent OLE storage must not contain bloated uncompressed SciDAVisDib stream!");
+
+        SciDAVisOle::OleGraphPayload reloadedPay;
+        CHECK_COND(SUCCEEDED(SciDAVisOle::loadPayloadFromStorage(stg51.Get(), &reloadedPay)),
+                   "Suite 51e: loadPayloadFromStorage failed");
+        CHECK_COND(reloadedPay.targetWindow == QStringLiteral("Fig-2"),
+                   "Suite 51e: reloaded targetWindow was not updated to canonical 'Fig-2'!");
+        CHECK_COND(QString::fromUtf8(reloadedPay.projectBytes).contains(QStringLiteral("Updated Strain")),
+                   "Suite 51e: reloaded OLE projectBytes missing updated axis title from DoVerb edit!");
+
+        ComPtr<IDataObject> reloadedDataObj;
+        CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(reloadedPay, IID_PPV_ARGS(&reloadedDataObj)))
+                           && reloadedDataObj,
+                   "Suite 51e: createGraphObject(reloadedPay) failed");
+        FORMATETC fmtDib51{ CF_DIB, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        STGMEDIUM medDib51{};
+        CHECK_COND(SUCCEEDED(reloadedDataObj->GetData(&fmtDib51, &medDib51))
+                           && medDib51.tymed == TYMED_HGLOBAL && medDib51.hGlobal != nullptr,
+                   "Suite 51e: On-demand GetData(CF_DIB) failed when SciDAVisDib stream was omitted from storage!");
+        ReleaseStgMedium(&medDib51);
+
+        // Also verify full-page Ctrl+C (copyActiveLayer) on a 2-layer graph preserves targetLayer == 0 (full page)
+        Graph *gOverlay = mlFig2->addLayer(0, 0, 200, 200);
+        CHECK_COND(gOverlay != nullptr, "Suite 51e: failed to add second layer to mlFig2");
+        oleSrcApp->activateSubWindow(mlFig2);
+        oleSrcApp->copyActiveLayer();
+        ComPtr<IDataObject> clip51;
+        HRESULT hrClip = E_FAIL;
+        for (int k = 0; k < 30; ++k) {
+            QCoreApplication::processEvents();
+            hrClip = OleGetClipboard(&clip51);
+            if (SUCCEEDED(hrClip) && clip51)
+                break;
+            Sleep(20);
+        }
+        CHECK_COND(SUCCEEDED(hrClip) && clip51, "Suite 51e: OleGetClipboard after copyActiveLayer failed");
+
+        oleSrcApp->savedProject();
+        oleSrcApp->setOleEmbeddedMode(true);
+        delete oleSrcApp;
+        QApplication::processEvents();
+    }
+
     w51->savedProject();
     w51->setOleEmbeddedMode(true);
     delete w51;

@@ -2577,8 +2577,19 @@ class GraphProxy:
     def copy_image(self, dpi: int = 300) -> Dict[str, Any]:
         return self.session.call("graph.copy_image", graph=self.name, dpi=dpi)
 
-    def copy_ole(self) -> Dict[str, Any]:
-        return self.session.call("graph.copy_ole", graph=self.name)
+    def copy_ole(
+        self,
+        *,
+        preset: Optional[str] = None,
+        active_layer_only: bool = False,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "graph": self.name,
+            "active_layer_only": bool(active_layer_only),
+        }
+        if preset is not None:
+            params["preset"] = str(preset)
+        return self.session.call("graph.copy_ole", **params)
 
     def set_3d_options(
         self,
