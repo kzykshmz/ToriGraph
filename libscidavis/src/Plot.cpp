@@ -188,6 +188,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     plCanvas->setFocusPolicy(Qt::StrongFocus);
     plCanvas->setFocusIndicator(QwtPlotCanvas::ItemFocusIndicator);
     plCanvas->setFocus();
+    plCanvas->setFrameStyle(QFrame::NoFrame);
     plCanvas->setFrameShadow(QwtPlot::Plain);
     plCanvas->setCursor(Qt::ArrowCursor);
     plCanvas->setLineWidth(0);
@@ -458,7 +459,10 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                              lw, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
         painter->setBrush(Qt::NoBrush);
         painter->setClipping(false);
-        const QRectF br = QRectF(rect).adjusted(-0.5 * lw, -0.5 * lw, 0.5 * lw, 0.5 * lw);
+        const QRectF br = isScreenWidgetPaint
+                ? QRectF(0.5 * lw, 0.5 * lw, qMax(1.0, double(rect.width()) - lw),
+                         qMax(1.0, double(rect.height()) - lw))
+                : QRectF(rect).adjusted(-0.5 * lw, -0.5 * lw, 0.5 * lw, 0.5 * lw);
         const bool forceFrame = (pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales);
         const bool showLeft = g->isAxisBackboneVisible(QwtPlot::yLeft) || forceFrame;
         const bool showRight = g->isAxisBackboneVisible(QwtPlot::yRight) || forceFrame;

@@ -118,7 +118,7 @@ void TableCommentsHeaderView::setModel(QAbstractItemModel *model)
 int TableCommentsHeaderView::subRowLineHeight() const
 {
     const QFontMetrics fm(font());
-    return qMax(17, fm.height() + 2);
+    return qMax(19, fm.height() + 2);
 }
 
 bool TableCommentsHeaderView::anyColumnHasFormula() const

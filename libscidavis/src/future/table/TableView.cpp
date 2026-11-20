@@ -413,7 +413,7 @@ void TableView::init()
     d_view_widget = new TableViewWidget(this);
     auto &settings = ApplicationWindow::getSettings();
     settings.beginGroup("[Table]");
-    int defaultRowHeight = settings.value("DefaultRowHeight", 20).toInt();
+    int defaultRowHeight = qMax(24, settings.value("DefaultRowHeight", 24).toInt());
     settings.endGroup();
     d_view_widget->verticalHeader()->setDefaultSectionSize(defaultRowHeight);
     auto syncVerticalHeaderPerfMode = [this]() {
@@ -517,10 +517,10 @@ void TableView::init()
             tb->setText(QString::fromUtf8(sp.label));
             tb->setAutoRaise(true);
             tb->setFocusPolicy(Qt::NoFocus);
-            tb->setFixedHeight(20);
+            tb->setFixedHeight(23);
             tb->setStyleSheet(QStringLiteral(
                     "QToolButton { border: 1px solid #CBD5E1; border-radius: 3px;"
-                    " background: #F8FAFC; color: #1E293B; padding: 0px 3px; font-size: 8.2pt; }"
+                    " background: #F8FAFC; color: #1E293B; padding: 0px 4px; font-size: 9.2pt; }"
                     "QToolButton:hover { background: #DBEAFE; border-color: #60A5FA; }"));
             if (sp.subSupMode == 1)
                 tb->setToolTip(tr("Unicode Subscript (select digits or insert \xE2\x82\x82)"));
@@ -2053,11 +2053,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #334155;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 4px;"
-            "  padding: 1px 5px;"
-            "  min-height: 20px;"
-            "  max-height: 22px;"
+            "  padding: 1px 6px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8.3pt;"
+            "  font-size: 9.5pt;"
             "  font-weight: 600;"
             "}"
             "#WorksheetQuickBar QToolButton#WorksheetMoreRoleBtn::menu-indicator {"
@@ -2079,11 +2079,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1E293B;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 4px;"
-            "  padding: 1px 4px;"
-            "  min-height: 20px;"
-            "  max-height: 22px;"
+            "  padding: 1px 5px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8.3pt;"
+            "  font-size: 9.5pt;"
             "  font-weight: 600;"
             "}"
             "#WorksheetQuickBar QToolButton[wsPlotBtn=\"true\"]:hover {"
@@ -2101,11 +2101,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1D4ED8;"
             "  border: 1px solid #93C5FD;"
             "  border-radius: 4px;"
-            "  padding: 1px 4px;"
-            "  min-height: 20px;"
-            "  max-height: 22px;"
+            "  padding: 1px 5px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8.3pt;"
+            "  font-size: 9.5pt;"
             "  font-weight: 700;"
             "}"
             "#WorksheetQuickBar QToolButton[wsAddBtn=\"true\"]:hover {"
@@ -2118,10 +2118,10 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 4px;"
             "  padding: 1px 6px;"
-            "  min-height: 20px;"
-            "  max-height: 22px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Consolas', 'Segoe UI', 'Yu Gothic UI', sans-serif;"
-            "  font-size: 8.5pt;"
+            "  font-size: 9.8pt;"
             "}"
             "#WorksheetQuickBar QLineEdit#WorksheetQuickFormulaEdit:focus {"
             "  border-color: #2563EB;"
@@ -2247,7 +2247,7 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
 
     d_lbl_quick_fx = new QLabel(QStringLiteral("F(x) ="), d_quick_bar);
     d_lbl_quick_fx->setStyleSheet(QStringLiteral(
-            "color: #1D4ED8; font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; font-size: 8.5pt; "
+            "color: #1D4ED8; font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; font-size: 9.5pt; "
             "font-weight: 700; padding-left: 2px; background: transparent;"));
     d_lbl_quick_fx->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     qh2->addWidget(d_lbl_quick_fx);

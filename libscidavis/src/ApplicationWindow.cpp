@@ -1817,8 +1817,8 @@ static void sanitizeUiTableFont(QFont &f)
         else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
             f.setFamily(QStringLiteral("Segoe UI"));
     }
-    if (f.pointSize() <= 0 || f.pointSize() < 9)
-        f.setPointSize(9);
+    if (f.pointSize() <= 0 || f.pointSize() < 10)
+        f.setPointSize(10);
     f.setStyleStrategy(QFont::PreferAntialias);
 }
 
@@ -7405,8 +7405,19 @@ void ApplicationWindow::changeAppFont(const QFont &f)
 
 void ApplicationWindow::updateAppFonts()
 {
+    sanitizeUiTableFont(appFont);
     qApp->setFont(appFont);
     this->setFont(appFont);
+    if (menuBar())
+        menuBar()->setFont(appFont);
+    if (statusBar())
+        statusBar()->setFont(appFont);
+    explorerWindow.setFont(appFont);
+    folders.setFont(appFont);
+    lv.setFont(appFont);
+    logWindow.setFont(appFont);
+    if (results)
+        results->setFont(appFont);
     scriptingMenu->setFont(appFont);
     windowsMenu->setFont(appFont);
     view->setFont(appFont);

@@ -1057,8 +1057,8 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
             else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
                 uiFont.setFamily(QStringLiteral("Segoe UI"));
         }
-        if (uiFont.pointSize() <= 0 || uiFont.pointSize() < 9)
-            uiFont.setPointSize(9);
+        if (uiFont.pointSize() <= 0 || uiFont.pointSize() < 10)
+            uiFont.setPointSize(10);
         uiFont.setStyleStrategy(QFont::PreferAntialias);
         app->setFont(uiFont);
     }
@@ -1118,6 +1118,8 @@ QString ModernUiTheme::modernStyleSheet()
             "QMenuBar {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  border-bottom: 1px solid #E2E8F0;"
             "  padding: 2px 4px;"
             "}"
@@ -1135,6 +1137,8 @@ QString ModernUiTheme::modernStyleSheet()
             "QMenu {"
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-radius: 7px;"
             "  padding: 4px;"
@@ -1194,6 +1198,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QToolButton {"
             "  background-color: transparent;"
             "  color: #1E293B;"
+            "  font-size: 9.8pt;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
             "  padding: 3px 5px;"
@@ -1220,6 +1225,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QPushButton {"
             "  background-color: #FFFFFF;"
             "  color: #1E293B;"
+            "  font-size: 9.8pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
             "  padding: 4px 10px;"
@@ -1262,6 +1268,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {"
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
+            "  font-size: 10pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 5px;"
             "  padding: 3px 7px;"
@@ -1300,6 +1307,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QTabBar::tab {"
             "  background-color: #F8FAFC;"
             "  color: #475569;"
+            "  font-size: 9.8pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-bottom: none;"
             "  border-top-left-radius: 6px;"
@@ -1320,12 +1328,15 @@ QString ModernUiTheme::modernStyleSheet()
             "QDockWidget {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
+            "  font-size: 10pt;"
             "  border: 1px solid #E2E8F0;"
             "  titlebar-close-icon: none;"
             "}"
             "QDockWidget::title {"
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
+            "  font-size: 10pt;"
+            "  font-weight: 600;"
             "  border-bottom: 1px solid #E2E8F0;"
             "  padding: 5px 8px;"
             "  text-align: left;"
@@ -1334,6 +1345,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  alternate-background-color: #F8FAFC;"
             "  color: #0F172A;"
+            "  font-size: 10pt;"
             "  gridline-color: #E2E8F0;"
             "  border: 1px solid #E2E8F0;"
             "  selection-background-color: #DBEAFE;"
@@ -1355,7 +1367,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9pt;"
+            "  font-size: 9.8pt;"
             "  font-weight: 600;"
             "  border-top: none;"
             "  border-left: none;"
@@ -1429,6 +1441,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QStatusBar {"
             "  background-color: #F8FAFC;"
             "  color: #334155;"
+            "  font-size: 9.8pt;"
             "  border-top: 1px solid #E2E8F0;"
             "}"
             "QStatusBar::item {"
@@ -1449,6 +1462,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QToolTip {"
             "  background-color: #0F172A;"
             "  color: #F8FAFC;"
+            "  font-size: 9.8pt;"
             "  border: 1px solid #334155;"
             "  border-radius: 5px;"
             "  padding: 4px 8px;"

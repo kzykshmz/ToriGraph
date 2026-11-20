@@ -6010,28 +6010,28 @@ void GraphInspectorDock::applyTheme()
     const QString qss = QStringLiteral(
                                 "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"
                                 "#InspectorHeaderBar, #InspectorRailPanel, #InspectorScopeStrip { background: %2; border-bottom: 1px solid %4; }"
-                                "#InspectorHeaderTitle { font-weight: 600; font-size: 12px; color: %5; }"
-                                "#InspectorHeaderTarget { font-size: 11px; color: %6; }"
-                                "#InspectorSubTitle { font-weight: 600; font-size: 11px; color: %5; }"
-                                "#InspectorSectionHeader { font-weight: 600; font-size: 11px; color: %7; padding-top: 4px; border-bottom: 1px solid %4; }"
+                                "#InspectorHeaderTitle { font-weight: 600; font-size: 13.5px; color: %5; }"
+                                "#InspectorHeaderTarget { font-size: 12.5px; color: %6; }"
+                                "#InspectorSubTitle { font-weight: 600; font-size: 12.5px; color: %5; }"
+                                "#InspectorSectionHeader { font-weight: 600; font-size: 12.5px; color: %7; padding-top: 4px; border-bottom: 1px solid %4; }"
                                 "#InspectorTabStrip { background: %2; border-top: 1px solid %4; border-bottom: 1px solid %4; }"
                                 "QToolButton#InspectorContextTabBtn {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 8.8pt; min-height: 26px; padding: 1px 3px;"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9.5pt; min-height: 28px; padding: 1px 3px;"
                                 "}"
                                 "QToolButton#InspectorAxisPillBtn, QToolButton#InspectorScopePillBtn {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 10.5px; padding: 2px 4px;"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 12.5px; padding: 2px 4px;"
                                 "}"
                                 "QToolButton#InspectorContextTabBtn:checked, QToolButton#InspectorAxisPillBtn:checked, QToolButton#InspectorScopePillBtn:checked {"
                                 "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
                                 "}"
                                 "QToolButton#InspectorRailTabBtn {"
-                                "  color: %9; font-size: 7.2pt; border-radius: 4px; padding: 1px 0px;"
+                                "  color: %9; font-size: 8pt; border-radius: 4px; padding: 1px 0px;"
                                 "}"
                                 "QTreeWidget#GraphObjectManagerTree {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 11px;"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 12.5px;"
                                 "}"
-                                "QPushButton { font-size: 11px; padding: 4px 6px; }"
-                                "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 11px; }")
+                                "QPushButton { font-size: 12.5px; padding: 4px 6px; }"
+                                "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 12.5px; }")
                                 .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
 
     if (d_root_container && d_root_container->styleSheet() != qss)

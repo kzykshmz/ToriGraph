@@ -401,7 +401,7 @@ public:
     LayerButton(const QString &text = {}, QWidget *parent = 0);
     ~LayerButton() {};
 
-    static int btnSize() { return 22; };
+    static int btnSize() { return 24; };
 
 protected:
     void mousePressEvent(QMouseEvent *);

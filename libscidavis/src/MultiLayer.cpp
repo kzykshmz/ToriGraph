@@ -145,8 +145,8 @@ LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(tex
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     setFont(QFont("Arial", 9, QFont::Bold, false));
     setStyleSheet(
-            "QPushButton { background-color: transparent; color: #334155; "
-            "border: 1px solid transparent; border-radius: 5px; padding: 0px 5px; margin: 0px; }"
+            "QPushButton { background-color: transparent; color: #334155; font-size: 9.5pt; "
+            "border: 1px solid transparent; border-radius: 5px; padding: 0px 6px; margin: 0px; }"
             "QPushButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
             "border: 1px solid #BFDBFE; }"
             "QPushButton:checked { background-color: #2563EB; color: #FFFFFF; "
@@ -561,8 +561,8 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     d_quick_columns_btn->setStyleSheet(QStringLiteral(
             "QToolButton { background-color: #FFFFFF; color: #334155; "
             "font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif; "
-            "font-size: 8pt; font-weight: 600; "
-            "border: 1px solid #CBD5E1; border-radius: 5px; padding: 0px 6px; margin: 0px; }"
+            "font-size: 9.5pt; font-weight: 600; "
+            "border: 1px solid #CBD5E1; border-radius: 5px; padding: 0px 7px; margin: 0px; }"
             "QToolButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
             "border: 1px solid #2563EB; }"));
     connect(d_quick_columns_btn, &QToolButton::clicked, this,
@@ -700,12 +700,12 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             "  background-color: rgba(255, 255, 255, 235);"
             "  color: #334155;"
             "  border: 1px solid #CBD5E1;"
-            "  border-radius: 11px;"
-            "  padding: 2px 10px;"
+            "  border-radius: 12px;"
+            "  padding: 2px 11px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 8pt;"
+            "  font-size: 9.5pt;"
             "  font-weight: 600;"
-            "  min-height: 20px;"
+            "  min-height: 22px;"
             "}"
             "QToolButton#MultiLayerStatusPill:hover {"
             "  background-color: #EFF6FF;"

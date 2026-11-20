@@ -12920,6 +12920,54 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
         QApplication::processEvents();
     }
 
+    // -------------------------------------------------------------------------
+    // 51f. UI Font Size (>= 10 pt Antigravity parity) & On-Screen Plot Frame
+    //      4-Corner Continuity Gate (Zero Disconnected Corner Pixels)
+    // -------------------------------------------------------------------------
+    {
+        CHECK_COND(w51->appFont.pointSize() >= 10 && w51->tableTextFont.pointSize() >= 10
+                           && w51->tableHeaderFont.pointSize() >= 10
+                           && qApp->font().pointSize() >= 10,
+                   "Suite 51f: UI default font pointSize must be >= 10 pt (Antigravity readability parity)!");
+
+        Table *tCorner = w51->newTable(5, 2, "CornerFrameTbl", "");
+        CHECK_COND(tCorner != nullptr, "Suite 51f: failed to create CornerFrameTbl");
+        for (int r = 0; r < 5; ++r) {
+            tCorner->setCell(r, 0, double(r));
+            tCorner->setCell(r, 1, double(r * 2));
+        }
+        MultiLayer *mlCorner = w51->multilayerPlot(
+                tCorner, QStringList() << QStringLiteral("CornerFrameTbl_2"), Graph::Line);
+        CHECK_COND(mlCorner != nullptr && mlCorner->activeGraph() != nullptr,
+                   "Suite 51f: failed to create mlCorner");
+        mlCorner->show();
+        Graph *gCorner = mlCorner->activeGraph();
+        gCorner->setAxesLinewidth(2);
+        gCorner->replot();
+        QApplication::processEvents();
+
+        QWidget *cv = gCorner->plotWidget() ? gCorner->plotWidget()->canvas() : nullptr;
+        CHECK_COND(cv != nullptr && cv->width() > 20 && cv->height() > 20,
+                   "Suite 51f: plotWidget()->canvas() invalid");
+        const QImage cvImg = cv->grab().toImage();
+        CHECK_COND(!cvImg.isNull() && cvImg.width() >= 20 && cvImg.height() >= 20,
+                   "Suite 51f: canvas()->grab() returned null image");
+        const int cw = cvImg.width();
+        const int ch = cvImg.height();
+        const int gTL = qGray(cvImg.pixel(0, 0));
+        const int gTR = qGray(cvImg.pixel(cw - 1, 0));
+        const int gBL = qGray(cvImg.pixel(0, ch - 1));
+        const int gBR = qGray(cvImg.pixel(cw - 1, ch - 1));
+        CHECK_COND(gTL < 60 && gTR < 60 && gBL < 60 && gBR < 60,
+                   QString("Suite 51f: Plot frame corners disconnected on screen! Corner grays=(%1,%2,%3,%4)")
+                           .arg(gTL)
+                           .arg(gTR)
+                           .arg(gBL)
+                           .arg(gBR)
+                           .toStdString()
+                           .c_str());
+    }
+
     w51->savedProject();
     w51->setOleEmbeddedMode(true);
     delete w51;

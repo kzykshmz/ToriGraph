@@ -364,7 +364,32 @@ void ScaleDraw::drawTick(QPainter *p, double value, int len) const
     if (minTicks.contains(value) && (d_minTicks == In || d_minTicks == None))
         return;
 
-    QwtScaleDraw::drawTick(p, value, len);
+    if (!p || len <= 0)
+        return;
+
+    if (d_colorbar_border) {
+        QwtScaleDraw::drawTick(p, value, len);
+        return;
+    }
+
+    // Draw outward ticks starting flush at the canvas boundary (without QwtScaleDraw's pw2 offset),
+    // connecting seamlessly to the unified frame drawn inside Plot::drawItems.
+    const int tval = map().transform(value);
+    const QPoint p0 = pos();
+    switch (alignment()) {
+    case LeftScale:
+        QwtPainter::drawLine(p, p0.x() + 1, tval, p0.x() - len, tval);
+        break;
+    case RightScale:
+        QwtPainter::drawLine(p, p0.x() - 1, tval, p0.x() + len, tval);
+        break;
+    case BottomScale:
+        QwtPainter::drawLine(p, tval, p0.y() - 1, tval, p0.y() + len);
+        break;
+    case TopScale:
+        QwtPainter::drawLine(p, tval, p0.y() + 1, tval, p0.y() - len);
+        break;
+    }
 }
 
 int ScaleDraw::extent(const QPen &pen, const QFont &font) const
@@ -446,52 +471,9 @@ void ScaleDraw::drawBackbone(QPainter *painter) const
         return;
     }
 
-    if (s_suppressScaleBackboneDepth > 0)
-        return;
-
-    if (!d_break_enabled || !painter) {
-        QwtScaleDraw::drawBackbone(painter);
-        return;
-    }
-
-    const int bw2 = painter->pen().width() / 2;
-    const QPoint p0 = pos();
-    const int len = length() - 1;
-    const int brkPx = map().transform(d_break_value);
-    const int gap = 4;
-
-    switch (alignment()) {
-    case LeftScale:
-    case RightScale: {
-        const int x = (alignment() == LeftScale) ? (p0.x() - bw2) : (p0.x() + bw2);
-        const int y0 = p0.y();
-        const int y1 = p0.y() + len;
-        if (brkPx > y0 + gap + 4 && brkPx < y1 - gap - 4) {
-            QwtPainter::drawLine(painter, x, y0, x, brkPx - gap);
-            QwtPainter::drawLine(painter, x, brkPx + gap, x, y1);
-            QwtPainter::drawLine(painter, x - 5, brkPx - gap + 3, x + 5, brkPx - gap - 3);
-            QwtPainter::drawLine(painter, x - 5, brkPx + gap + 3, x + 5, brkPx + gap - 3);
-        } else {
-            QwtScaleDraw::drawBackbone(painter);
-        }
-        break;
-    }
-    case TopScale:
-    case BottomScale: {
-        const int y = (alignment() == TopScale) ? (p0.y() - bw2) : (p0.y() + bw2);
-        const int x0 = p0.x();
-        const int x1 = p0.x() + len;
-        if (brkPx > x0 + gap + 4 && brkPx < x1 - gap - 4) {
-            QwtPainter::drawLine(painter, x0, y, brkPx - gap, y);
-            QwtPainter::drawLine(painter, brkPx + gap, y, x1, y);
-            QwtPainter::drawLine(painter, brkPx - gap - 3, y + 5, brkPx - gap + 3, y - 5);
-            QwtPainter::drawLine(painter, brkPx + gap - 3, y + 5, brkPx + gap + 3, y - 5);
-        } else {
-            QwtScaleDraw::drawBackbone(painter);
-        }
-        break;
-    }
-    }
+    // Non-colorbar 2D axis backbones and frame corners are drawn as a unified mitered rectangle
+    // inside Plot::drawItems so the 4 corners never have disconnected 2x2-pixel gaps on screen.
+    return;
 }
 
 /*****************************************************************************
