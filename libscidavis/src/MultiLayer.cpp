@@ -143,9 +143,9 @@ LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(tex
     setMinimumWidth(btn_size);
     setFixedHeight(btn_size);
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-    setFont(QFont("Arial", 9, QFont::Bold, false));
+    setFont(QFont("Arial", 10, QFont::Bold, false));
     setStyleSheet(
-            "QPushButton { background-color: transparent; color: #334155; font-size: 9.5pt; "
+            "QPushButton { background-color: transparent; color: #334155; font-size: 10.8pt; "
             "border: 1px solid transparent; border-radius: 5px; padding: 0px 6px; margin: 0px; }"
             "QPushButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
             "border: 1px solid #BFDBFE; }"
@@ -561,8 +561,8 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     d_quick_columns_btn->setStyleSheet(QStringLiteral(
             "QToolButton { background-color: #FFFFFF; color: #334155; "
             "font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif; "
-            "font-size: 9.5pt; font-weight: 600; "
-            "border: 1px solid #CBD5E1; border-radius: 5px; padding: 0px 7px; margin: 0px; }"
+            "font-size: 10.8pt; font-weight: 600; "
+            "border: 1px solid #CBD5E1; border-radius: 5px; padding: 0px 8px; margin: 0px; }"
             "QToolButton:hover { background-color: #EFF6FF; color: #1D4ED8; "
             "border: 1px solid #2563EB; }"));
     connect(d_quick_columns_btn, &QToolButton::clicked, this,
@@ -703,9 +703,9 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             "  border-radius: 12px;"
             "  padding: 2px 11px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.5pt;"
+            "  font-size: 10.8pt;"
             "  font-weight: 600;"
-            "  min-height: 22px;"
+            "  min-height: 24px;"
             "}"
             "QToolButton#MultiLayerStatusPill:hover {"
             "  background-color: #EFF6FF;"
@@ -7873,9 +7873,9 @@ void MultiLayer::openQuickLayerColumnsPopup()
     const QColor textSecondary(0x64, 0x74, 0x8B);
     popup->setStyleSheet(QStringLiteral(
             "QFrame { background-color: %1; border: 1px solid %2; border-radius: 8px; }"
-            "QLabel { color: %3; border: none; font-weight: 600; font-size: 8.5pt; }"
+            "QLabel { color: %3; border: none; font-weight: 600; font-size: 10.8pt; }"
             "QTreeWidget { background-color: %1; color: %3; border: 1px solid %4; "
-            "border-radius: 5px; font-size: 8.5pt; }")
+            "border-radius: 5px; font-size: 10.8pt; }")
                                  .arg(surfaceBg.name(), borderStrong.name(),
                                       textPrimary.name(), borderSubtle.name()));
 

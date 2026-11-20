@@ -214,12 +214,12 @@ public:
 
         int rightEdge = rowRect.right() - 10;
         if (!shortcut.isEmpty()) {
-            QFont badgeFont(QStringLiteral("Segoe UI"), 9);
+            QFont badgeFont(QStringLiteral("Segoe UI"), 10);
             badgeFont.setWeight(QFont::DemiBold);
             painter->setFont(badgeFont);
             const QFontMetrics bfm(badgeFont);
             const int bw = bfm.horizontalAdvance(shortcut) + 14;
-            const int bh = 22;
+            const int bh = 24;
             const QRect badgeRect(rightEdge - bw,
                                   rowRect.top() + (rowRect.height() - bh) / 2, bw, bh);
             painter->setPen(QPen(QColor(203, 213, 225), 1.0));
@@ -231,10 +231,10 @@ public:
         }
 
         if (!category.isEmpty()) {
-            QFont catFont(QStringLiteral("Segoe UI"), 9);
+            QFont catFont(QStringLiteral("Segoe UI"), 10);
             painter->setFont(catFont);
             const QFontMetrics cfm(catFont);
-            const int cw = qMin(138, cfm.horizontalAdvance(category) + 6);
+            const int cw = qMin(148, cfm.horizontalAdvance(category) + 6);
             const QRect catRect(rightEdge - cw, rowRect.top(), cw, rowRect.height());
             painter->setPen(selected ? QColor(37, 99, 235) : QColor(100, 116, 139));
             painter->drawText(catRect, Qt::AlignRight | Qt::AlignVCenter,
@@ -242,7 +242,7 @@ public:
             rightEdge = catRect.left() - 8;
         }
 
-        QFont titleFont(QStringLiteral("Segoe UI"), 10);
+        QFont titleFont(QStringLiteral("Segoe UI"), 11);
         titleFont.setWeight(selected ? QFont::DemiBold : QFont::Normal);
         painter->setFont(titleFont);
         painter->setPen(selected ? QColor(29, 78, 216) : QColor(15, 23, 42));
@@ -447,7 +447,7 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
             "  border-radius: 8px;"
             "  padding: 6px 10px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-size: 12pt;"
             "}"
             "QLineEdit#CommandPaletteSearchEdit:focus {"
             "  background-color: #FFFFFF;"
@@ -461,7 +461,7 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
             "QLabel#CommandPaletteHintLabel {"
             "  color: #64748B;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.2pt;"
+            "  font-size: 10.5pt;"
             "  padding: 2px 4px;"
             "}"));
 
@@ -1203,13 +1203,13 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "QLabel#FocusDrawerTitle {"
             "  color: #0F172A;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-size: 11.5pt;"
             "  font-weight: 700;"
             "}"
             "QLabel#FocusDrawerEmpty {"
             "  color: #64748B;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11pt;"
             "  padding: 12px;"
             "}"
             "QToolButton.FocusDrawerBtn {"
@@ -1218,7 +1218,7 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
             "  padding: 3px 6px;"
-            "  font-size: 9.5pt;"
+            "  font-size: 10.8pt;"
             "}"
             "QToolButton.FocusDrawerBtn:hover {"
             "  background-color: #EFF6FF;"
@@ -1233,7 +1233,7 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "  selection-background-color: #DBEAFE;"
             "  selection-color: #0F172A;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11pt;"
             "}"));
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -1855,7 +1855,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  border-radius: 9px;"
             "  padding: 4px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
             "QFrame#FocusCanvasDarkPill QToolButton:hover {"
@@ -1942,7 +1942,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  border-radius: 12px;"
             "  padding: 5px 11px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
             "QToolButton:hover {"
@@ -2461,7 +2461,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  margin-right: 1px;"
             "  margin-top: 3px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11.2pt;"
             "  font-weight: 600;"
             "}"
             "QTabBar#ModernRibbonTabBar::tab:hover {"
@@ -2505,11 +2505,11 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  color: #1E293B;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
-            "  padding: 2px 4px;"
+            "  padding: 2px 5px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.5pt;"
+            "  font-size: 11pt;"
             "  font-weight: 500;"
-            "  min-height: 27px;"
+            "  min-height: 30px;"
             "}"
             "QToolButton.RibbonActionBtn:hover {"
             "  background-color: #EFF6FF;"
@@ -2529,9 +2529,9 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 7px;"
             "  padding: 3px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.8pt;"
+            "  font-size: 11.2pt;"
             "  font-weight: 700;"
-            "  min-height: 28px;"
+            "  min-height: 30px;"
             "}"
             "QToolButton.RibbonPresetBtn:hover {"
             "  background-color: #FFEDD5;"
@@ -2545,7 +2545,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 6px;"
             "  padding: 2px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.2pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 700;"
             "}"
             "QToolButton.RibbonQuickPresetPill:hover {"
@@ -2560,7 +2560,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 11px;"
             "  padding: 2px 10px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.5pt;"
+            "  font-size: 10.8pt;"
             "  font-weight: 600;"
             "}"
             "QToolButton#RibbonCommandSearchPill:hover {"
@@ -2575,7 +2575,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 6px;"
             "  padding: 2px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.2pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 600;"
             "}"
             "QToolButton.RibbonHeaderPill:hover {"
@@ -2595,13 +2595,13 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 10px;"
             "  padding: 2px 10px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.2pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 700;"
             "}"
             "QLabel.RibbonGroupCaption {"
             "  color: #1E293B;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 9.2pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 600;"
             "  padding: 1px 4px 2px 4px;"
             "}"));
@@ -2787,8 +2787,8 @@ void ModernRibbonBar::updateTabStackHeight()
         return;
 
     const int fmH = fontMetrics().height();
-    const int btnH = qMax(32, fmH + 15);
-    const int capH = qMax(22, fmH + 6);
+    const int btnH = qMax(36, fmH + 16);
+    const int capH = qMax(26, fmH + 8);
 
     int maxContentH = 0;
     for (int i = 0; i < d_tab_stack->count(); ++i) {
@@ -2803,14 +2803,14 @@ void ModernRibbonBar::updateTabStackHeight()
         }
     }
 
-    const int baseH = qMax(84, qMax(btnH + capH + 18, maxContentH + 8));
+    const int baseH = qMax(92, qMax(btnH + capH + 18, maxContentH + 8));
 
     bool hScrollActive = false;
     if (QScrollArea *sa = qobject_cast<QScrollArea *>(d_tab_stack->currentWidget())) {
         if (QScrollBar *hb = sa->horizontalScrollBar())
             hScrollActive = hb->isVisible() || (hb->maximum() > hb->minimum());
     }
-    const int targetH = hScrollActive ? qMax(92, baseH + 8) : baseH;
+    const int targetH = hScrollActive ? qMax(100, baseH + 8) : baseH;
     if (d_tab_stack->height() != targetH || d_tab_stack->minimumHeight() != targetH
         || d_tab_stack->maximumHeight() != targetH) {
         d_tab_stack->setFixedHeight(targetH);
@@ -3042,7 +3042,7 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<
     QLabel *cap = new QLabel(grpWidget);
     cap->setProperty("class", QStringLiteral("RibbonGroupCaption"));
     cap->setAlignment(Qt::AlignCenter);
-    const int capMinH = qMax(22, cap->fontMetrics().height() + 6);
+    const int capMinH = qMax(26, cap->fontMetrics().height() + 8);
     cap->setMinimumHeight(capMinH);
     cap->setFixedHeight(capMinH);
     vbox->addWidget(cap);
@@ -4291,7 +4291,7 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
         d_context_pill->setStyleSheet(
                 QStringLiteral("QLabel#RibbonContextBadge { %1 border-radius: 10px; "
                                "padding: 2px 10px; font-family: 'Segoe UI', 'Yu Gothic UI', "
-                               "'Meiryo UI', sans-serif; font-size: 9.2pt; font-weight: 700; }")
+                               "'Meiryo UI', sans-serif; font-size: 10.5pt; font-weight: 700; }")
                         .arg(pillStyle));
         updateHeaderResponsiveness();
     }

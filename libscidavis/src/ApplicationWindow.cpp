@@ -1817,8 +1817,8 @@ static void sanitizeUiTableFont(QFont &f)
         else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
             f.setFamily(QStringLiteral("Segoe UI"));
     }
-    if (f.pointSize() <= 0 || f.pointSize() < 10)
-        f.setPointSize(10);
+    if (f.pointSize() <= 0 || f.pointSize() < 12)
+        f.setPointSize(12);
     f.setStyleStrategy(QFont::PreferAntialias);
 }
 
@@ -1826,8 +1826,8 @@ class ExplorerContainerWidget : public QWidget
 {
 public:
     explicit ExplorerContainerWidget(QWidget *parent = nullptr) : QWidget(parent) { }
-    QSize sizeHint() const override { return QSize(255, 420); }
-    QSize minimumSizeHint() const override { return QSize(210, 140); }
+    QSize sizeHint() const override { return QSize(280, 440); }
+    QSize minimumSizeHint() const override { return QSize(230, 140); }
 };
 
 } // namespace

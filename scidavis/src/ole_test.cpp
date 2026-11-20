@@ -12925,10 +12925,10 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
     //      4-Corner Continuity Gate (Zero Disconnected Corner Pixels)
     // -------------------------------------------------------------------------
     {
-        CHECK_COND(w51->appFont.pointSize() >= 10 && w51->tableTextFont.pointSize() >= 10
-                           && w51->tableHeaderFont.pointSize() >= 10
-                           && qApp->font().pointSize() >= 10,
-                   "Suite 51f: UI default font pointSize must be >= 10 pt (Antigravity readability parity)!");
+        CHECK_COND(w51->appFont.pointSize() >= 12 && w51->tableTextFont.pointSize() >= 12
+                           && w51->tableHeaderFont.pointSize() >= 12
+                           && qApp->font().pointSize() >= 12,
+                   "Suite 51f: UI default font pointSize must be >= 12 pt (Antigravity readability parity)!");
 
         Table *tCorner = w51->newTable(5, 2, "CornerFrameTbl", "");
         CHECK_COND(tCorner != nullptr, "Suite 51f: failed to create CornerFrameTbl");
