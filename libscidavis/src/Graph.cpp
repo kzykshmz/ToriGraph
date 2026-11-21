@@ -12498,6 +12498,128 @@ bool Graph::handleEscapeKey()
     return false;
 }
 
+bool Graph::nudgeSelectedElement(int dx, int dy)
+{
+    if ((dx == 0 && dy == 0) || !d_plot)
+        return false;
+
+    MultiLayer *ml = multiLayerParent();
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+    bool changed = false;
+
+    if (d_selection.kind == GraphSelection::Axis && d_selection.primaryId >= 0
+        && d_selection.primaryId < QwtPlot::axisCnt) {
+        const int axis = d_selection.primaryId;
+        if (QwtScaleWidget *sw = d_plot->axisWidget(axis)) {
+            int deltaNormal = 0;
+            int deltaParallel = 0;
+            if (axis == QwtPlot::yLeft) {
+                deltaNormal = -dx;
+                deltaParallel = dy;
+            } else if (axis == QwtPlot::yRight) {
+                deltaNormal = dx;
+                deltaParallel = dy;
+            } else if (axis == QwtPlot::xBottom) {
+                deltaNormal = dy;
+                deltaParallel = dx;
+            } else if (axis == QwtPlot::xTop) {
+                deltaNormal = -dy;
+                deltaParallel = dx;
+            }
+            if (deltaNormal != 0) {
+                QList<int> bl = axesBaseline();
+                if (axis < bl.size()) {
+                    bl[axis] = qBound(-500, bl[axis] + deltaNormal, 1000);
+                    setAxesBaseline(bl);
+                    changed = true;
+                }
+            }
+            if (deltaParallel != 0) {
+                const int curPar = sw->property("_toriAxisParallelShift").toInt();
+                sw->setProperty("_toriAxisParallelShift", qBound(-500, curPar + deltaParallel, 500));
+                d_plot->updateLayout();
+                changed = true;
+            }
+        }
+    } else if (d_selection.kind == GraphSelection::AxisTitle && d_selection.primaryId >= 0
+               && d_selection.primaryId < QwtPlot::axisCnt) {
+        const int axis = d_selection.primaryId;
+        if (QwtScaleWidget *sw = d_plot->axisWidget(axis)) {
+            int deltaNormal = 0;
+            int deltaParallel = 0;
+            if (axis == QwtPlot::yLeft) {
+                deltaNormal = -dx;
+                deltaParallel = dy;
+            } else if (axis == QwtPlot::yRight) {
+                deltaNormal = dx;
+                deltaParallel = dy;
+            } else if (axis == QwtPlot::xBottom) {
+                deltaNormal = dy;
+                deltaParallel = dx;
+            } else if (axis == QwtPlot::xTop) {
+                deltaNormal = -dy;
+                deltaParallel = dx;
+            }
+            if (deltaNormal != 0) {
+                sw->setSpacing(qBound(0, sw->spacing() + deltaNormal, 200));
+                d_plot->updateLayout();
+                changed = true;
+            }
+            if (deltaParallel != 0) {
+                QwtText t = sw->title();
+                const int curFlags = t.renderFlags();
+                int hAlign = curFlags & (Qt::AlignLeft | Qt::AlignHCenter | Qt::AlignRight);
+                if (hAlign == 0)
+                    hAlign = Qt::AlignHCenter;
+                const bool goPrev = (axis == QwtPlot::yLeft) ? (deltaParallel > 0)
+                                                             : (deltaParallel < 0);
+                int nextAlign = hAlign;
+                if (goPrev) {
+                    if (hAlign == Qt::AlignRight)
+                        nextAlign = Qt::AlignHCenter;
+                    else if (hAlign == Qt::AlignHCenter)
+                        nextAlign = Qt::AlignLeft;
+                } else {
+                    if (hAlign == Qt::AlignLeft)
+                        nextAlign = Qt::AlignHCenter;
+                    else if (hAlign == Qt::AlignHCenter)
+                        nextAlign = Qt::AlignRight;
+                }
+                if (nextAlign != hAlign) {
+                    t.setRenderFlags((curFlags & ~(Qt::AlignLeft | Qt::AlignHCenter | Qt::AlignRight))
+                                     | nextAlign);
+                    sw->setTitle(t);
+                    changed = true;
+                }
+            }
+        }
+    } else if (d_selection.kind == GraphSelection::PlotTitle || titleSelected()) {
+        const QPoint cur = d_plot->property("_toriPlotTitleShift").toPoint();
+        const QPoint next(qBound(-500, cur.x() + dx, 500), qBound(-500, cur.y() + dy, 500));
+        d_plot->setProperty("_toriPlotTitleShift", next);
+        d_plot->updateLayout();
+        changed = true;
+    } else if ((d_selection.kind == GraphSelection::LegendBox
+                || d_selection.kind == GraphSelection::TextAnnotation)
+               && d_selection.primaryId >= 0) {
+        if (Legend *mrk = dynamic_cast<Legend *>(d_plot->marker(d_selection.primaryId))) {
+            mrk->setOrigin(mrk->rect().topLeft() + QPoint(dx, dy));
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        d_plot->replot();
+        updateSelectionOverlayGeometry();
+        if (ml) {
+            if (!beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(tr("Move Label / Scale"), beforeSnap, 703);
+            ml->modifiedPlot();
+        }
+    }
+    return changed;
+}
+
 bool Graph::cycleSelectableCurve(int step)
 {
     if (step == 0 || n_curves <= 0)

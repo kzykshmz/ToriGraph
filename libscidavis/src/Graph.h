@@ -882,6 +882,7 @@ public:
     void recordZoomHistorySnapshot();
     bool stepZoomHistory(int delta);
     bool handleEscapeKey();
+    bool nudgeSelectedElement(int dx, int dy);
     bool cycleSelectableCurve(int step);
 
     void setLinkedParentLayer(Graph *parentLayer, int xLinkMode, const QString &xExpr,

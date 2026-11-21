@@ -97,6 +97,7 @@ public:
     void print(QPainter *, const QRect &rect,
                const QwtPlotPrintFilter & = QwtPlotPrintFilter()) const override;
     void updateLayout() override;
+    void printTitle(QPainter *painter, const QRect &rect) const override;
     void printScale(QPainter *painter, int axisId, int startDist, int endDist, int baseDist,
                     const QRect &rect) const override;
     void replot() override;

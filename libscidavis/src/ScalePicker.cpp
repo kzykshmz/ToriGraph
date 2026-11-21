@@ -158,6 +158,29 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
                 }
             }
         }
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up
+            || ke->key() == Qt::Key_Down) {
+            int step = 2;
+            if (mods & Qt::ShiftModifier)
+                step = 10;
+            else if (mods & (Qt::ControlModifier | Qt::AltModifier))
+                step = 1;
+            int dx = 0, dy = 0;
+            if (ke->key() == Qt::Key_Left)
+                dx = -step;
+            else if (ke->key() == Qt::Key_Right)
+                dx = step;
+            else if (ke->key() == Qt::Key_Up)
+                dy = -step;
+            else if (ke->key() == Qt::Key_Down)
+                dy = step;
+            if (Graph *g = graph()) {
+                if (g->nudgeSelectedElement(dx, dy)) {
+                    ke->accept();
+                    return true;
+                }
+            }
+        }
         if (ke->key() == Qt::Key_Escape) {
             if (d_axis_panning) {
                 d_axis_panning = false;
@@ -905,6 +928,10 @@ void ScalePicker::selectTitle(QwtScaleWidget *scale, bool select)
     d_title_selected = select;
     d_selected_axis = select ? scale : nullptr;
     d_labels_selected = false;
+    if (select) {
+        scale->setFocusPolicy(Qt::ClickFocus);
+        scale->setFocus(Qt::MouseFocusReason);
+    }
 
     if (Graph *g = graph()) {
         const int axisId = Plot::scaleAlignmentToAxis(scale->alignment());
@@ -927,6 +954,10 @@ void ScalePicker::selectLabels(QwtScaleWidget *scale, bool select)
     d_labels_selected = select;
     d_selected_axis = select ? scale : nullptr;
     d_title_selected = false;
+    if (select) {
+        scale->setFocusPolicy(Qt::ClickFocus);
+        scale->setFocus(Qt::MouseFocusReason);
+    }
 
     scale->repaint();
 

@@ -2869,6 +2869,28 @@ void MultiLayer::keyPressEvent(QKeyEvent *e)
         return;
     }
 
+    if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Right || e->key() == Qt::Key_Up
+        || e->key() == Qt::Key_Down) {
+        int step = 2;
+        if (e->modifiers() & Qt::ShiftModifier)
+            step = 10;
+        else if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
+            step = 1;
+        int dx = 0, dy = 0;
+        if (e->key() == Qt::Key_Left)
+            dx = -step;
+        else if (e->key() == Qt::Key_Right)
+            dx = step;
+        else if (e->key() == Qt::Key_Up)
+            dy = -step;
+        else if (e->key() == Qt::Key_Down)
+            dy = step;
+        if (active_graph && active_graph->nudgeSelectedElement(dx, dy)) {
+            e->accept();
+            return;
+        }
+    }
+
     if (e->key() == Qt::Key_F11) {
         e->ignore();
         MyWidget::keyPressEvent(e);
