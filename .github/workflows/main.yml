@@ -33,7 +33,7 @@ jobs:
 
   windows-build-test:
     name: Windows MSVC Build & Test
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         shell: pwsh
@@ -51,7 +51,6 @@ jobs:
       - name: Set up conda-forge C++ & Python dependencies (micromamba)
         uses: mamba-org/setup-micromamba@v2
         with:
-          init-shell: powershell
           environment-name: torigraph-ci
           cache-downloads: true
           create-args: >-
