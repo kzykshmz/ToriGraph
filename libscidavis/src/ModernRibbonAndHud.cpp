@@ -4112,15 +4112,6 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->applyStylePresentationSlide();
                 },
                 false, true);
-        addRibbonButton(
-                gPresets, QStringLiteral("preset-nature"),
-                [this]() { return tr("Nature 89mm Fig"); },
-                [this]() { return tr("Apply Nature Compact 89mm Open-L Journal Preset"); },
-                [this]() {
-                    if (d_app)
-                        d_app->applyStyleNatureCompact();
-                },
-                false, true);
         QMenu *customPresetMenu = nullptr;
         addRibbonMenuButton(
                 gPresets, QStringLiteral("page-setup"),
@@ -4134,12 +4125,15 @@ void ModernRibbonBar::buildAllTabs()
                         MultiLayer::listStylePresets();
                 for (const auto &sp : presets) {
                     const QString pid = sp.id;
+                    const QString dispName = sp.builtIn
+                            ? QCoreApplication::translate("GraphInspectorDock", sp.name.toUtf8().constData())
+                            : sp.name;
                     QAction *act = customPresetMenu->addAction(
                             IconLoader::duotoneIcon(
                                     sp.builtIn ? QStringLiteral("preset-isij")
                                                : QStringLiteral("preset-nature"),
                                     16),
-                            sp.name);
+                            dispName);
                     connect(act, &QAction::triggered, this, [this, pid]() {
                         if (!d_app)
                             return;

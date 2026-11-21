@@ -6466,7 +6466,10 @@ void GraphInspectorDock::retranslateUi()
         const QVector<MultiLayer::GraphStylePresetSpec> presets = MultiLayer::listStylePresets();
         int selIdx = 0;
         for (int i = 0; i < presets.size(); ++i) {
-            d_cb_user_presets->addItem(presets[i].name, presets[i].id);
+            const QString dispName = presets[i].builtIn
+                    ? QCoreApplication::translate("GraphInspectorDock", presets[i].name.toUtf8().constData())
+                    : presets[i].name;
+            d_cb_user_presets->addItem(dispName, presets[i].id);
             if (!prevId.isEmpty() && presets[i].id == prevId)
                 selIdx = i;
         }

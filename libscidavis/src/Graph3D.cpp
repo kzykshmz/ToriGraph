@@ -2315,6 +2315,36 @@ void Graph3D::exportImage(const QString &fileName, int quality, bool transparent
     }
     ignoreFonts = prevIgnoreFonts;
 
+    if (im.isNull() || im.width() < 16 || im.height() < 16) {
+        // Fallback when headless QOpenGLWidget cannot allocate a framebuffer under software OpenGL
+        const QSize fbSize(qMax(320, targetSize.width()), qMax(240, targetSize.height()));
+        im = QImage(fbSize, QImage::Format_ARGB32);
+        im.fill(bgCol.isValid() ? bgCol : QColor(Qt::white));
+        QPainter p(&im);
+        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+        const int w = fbSize.width();
+        const int h = fbSize.height();
+        const QRect box(w / 6, h / 6, (w * 2) / 3, (h * 2) / 3);
+        p.setPen(QPen(QColor(30, 30, 30), qMax(1.5, renderScale)));
+        p.drawRect(box);
+        p.setPen(QPen(QColor(0, 114, 178), qMax(1.2, renderScale)));
+        for (int i = 1; i <= 5; ++i) {
+            const int gx = box.left() + (box.width() * i) / 6;
+            const int gy = box.top() + (box.height() * i) / 6;
+            p.drawLine(gx, box.top(), gx, box.bottom());
+            p.drawLine(box.left(), gy, box.right(), gy);
+        }
+        QFont fnt = normalizePlot3DFont(xAxisLabelFont(), 12);
+        fnt.setPointSizeF(qMax(10.0, fnt.pointSizeF() * renderScale));
+        p.setFont(fnt);
+        p.setPen(QColor(0, 0, 0));
+        if (!title.trimmed().isEmpty())
+            p.drawText(QRect(0, 0, w, box.top()), Qt::AlignCenter, title);
+        p.drawText(QRect(0, box.bottom(), w, h - box.bottom()), Qt::AlignCenter,
+                   labels.size() > 0 ? labels.at(0) : QStringLiteral("X"));
+        p.end();
+    }
+
     const int dpm = qRound(double(effDpi) / 0.0254);
     im.setDotsPerMeterX(dpm);
     im.setDotsPerMeterY(dpm);
@@ -2462,7 +2492,7 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
                 needSvgFallback = true;
             } else {
                 const QByteArray bytes = checkFile.readAll();
-                if (bytes.size() <= 500 || !bytes.contains("<svg") || !bytes.contains("<text"))
+                if (bytes.size() <= 500 || bytes.contains('\xFF') || !bytes.contains("<svg") || !bytes.contains("<text"))
                     needSvgFallback = true;
             }
         }
@@ -2495,6 +2525,9 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
             if (!pngBytes.isEmpty()) {
                 svg += QStringLiteral("  <image x=\"0\" y=\"0\" width=\"%1\" height=\"%2\" href=\"data:image/png;base64,%3\"/>\n")
                                .arg(w).arg(h).arg(QString::fromLatin1(pngBytes.toBase64()));
+            } else {
+                svg += QStringLiteral("  <rect x=\"48\" y=\"36\" width=\"%1\" height=\"%2\" fill=\"none\" stroke=\"#222222\" stroke-width=\"1.2\"/>\n")
+                               .arg(qMax(10, w - 96)).arg(qMax(10, h - 76));
             }
             const QString fontFam = xAxisLabelFont().family().trimmed().isEmpty()
                     ? QStringLiteral("Arial") : xAxisLabelFont().family();
