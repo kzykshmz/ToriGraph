@@ -1,218 +1,127 @@
-name: CI Tests
+name: CI
 
-on: [workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  Ubuntu:
-
-    runs-on: ubuntu-${{ matrix.ubuntu_ver }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        ubuntu_ver: [18.04, 20.04]
-
-    name: ubuntu-${{ matrix.ubuntu_ver }}
-
+  python-sdk-lint:
+    name: Python SDK Check
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          submodules: true
+          python-version: "3.11"
 
-      - name: Install prerequisties
+      - name: Install and verify torigraph Python SDK
         run: |
-          wget http://download.opensuse.org/repositories/home:hpcoder1/xUbuntu_${{ matrix.ubuntu_ver }}/Release.key
-          sudo apt-key add - < Release.key
-          sudo add-apt-repository -y \
-            'deb http://download.opensuse.org/repositories/home:/hpcoder1/xUbuntu_${{ matrix.ubuntu_ver }}/ /'
-          sudo apt install -y --no-install-recommends \
-            qtbase5-dev \
-            qttools5-dev \
-            libqt5svg5-dev \
-            libqt5opengl5-dev \
-            libmuparser-dev \
-            libgsl-dev \
-            libqwt5-qt5-dev \
-            pyqt5-dev \
-            python3-pyqt5 \
-            libgtest-dev \
-            python3-numpy \
-            xvfb
+          python -m pip install --upgrade pip
+          python -m pip install -e ./python
+          python -m compileall -q python/torigraph
+          python -c "import torigraph as tg; print('torigraph SDK OK:', tg.__file__)"
 
-      - name: Build and Install GTest
-        if: matrix.ubuntu_ver == 18.04
-        run: |
-          mkdir gtest && cd gtest
-          cmake /usr/src/googletest
-          make -j$(nproc)
-          sudo make install
-
-      - name: Configuring
-        run: |
-          mkdir build && cd build
-          cmake .. -DSEARCH_FOR_UPDATES=OFF -DDOWNLOAD_LINKS=OFF -DORIGIN_IMPORT=ON -DSCRIPTING_PYTHON=ON \
-            -DBUILD_TESTS=ON
-
-      - name: Building
-        run: |
-          xvfb-run make -j$(nproc) -C build
-
-      - name: Testing
-        run: |
-          cd build
-          xvfb-run ctest --output-on-failure
-
-  MSVC:
-
+  windows-build-test:
+    name: Windows MSVC Build & Test
     runs-on: windows-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - qt_ver: 5.12.10
-            python: OFF
-          - qt_ver: 5.15.2
-            python: ON
-
-    name: MSVC_Qt_${{ matrix.qt_ver }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          submodules: true
-
-      - name: Cache Qt
-        id: cache-qt
-        uses: actions/cache@v1
-        with:
-          path: ../Qt
-          key: ${{ runner.os }}-${{ matrix.qt_ver }}-QtCache
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v2
-        with:
-          version: ${{ matrix.qt_ver }}
-          cached: ${{ steps.cache-qt.outputs.cache-hit }}
-
-      - uses: lukka/run-vcpkg@v6
-        with:
-          vcpkgGitCommitId: 50ea8c0ab7aca3bb9245bba7fc877ad2f2a4464c
-          setupOnly: true
-      - name: Install VCPKG packages
-        run: |
-          Add-Content ${{ env.VCPKG_ROOT }}\triplets\x64-windows.cmake "set(VCPKG_BUILD_TYPE release)" 
-          ${{ env.VCPKG_ROOT }}\vcpkg install zlib gsl muparser opengl gl2ps gtest --triplet x64-windows
-
-      - name: Install Python packages
-        if: ${{ matrix.qt_ver == '5.15.2' }}
-        run: |
-         pip install sip==5.5.0 pyqt5==5.15.2  PyQt5-sip==12.8.1 numpy
-
-      - name: Configuring
-        run: |
-          mkdir build; cd build
-          cmake .. -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}\scripts\buildsystems\vcpkg.cmake `
-            -DORIGIN_IMPORT=ON -DSCRIPTING_PYTHON=${{ matrix.python }} -DBUILD_TESTS=ON
-
-      - name: Building
-        run: |
-          cmake --build build --config Release -- -maxCpuCount
-
-      - name: Testing
-        run: |
-          cd build
-          ctest -C Release --output-on-failure
-
-  MinGW-w64:
-
-    runs-on: windows-latest
-
-    name: MinGW-w64
-
     defaults:
       run:
-        shell: msys2 {0}
-
+        shell: pwsh
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
-      - name: Install MinGW-w64 packages
-        uses: msys2/setup-msys2@v2
+      - name: Enable MSVC x64 Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          update: true
-          install: >-
-            make
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-qt5
-            mingw-w64-x86_64-muparser
-            mingw-w64-x86_64-gsl
-            mingw-w64-x86_64-gl2ps
-            mingw-w64-x86_64-gtest
-            mingw-w64-x86_64-sip4
-            mingw-w64-x86_64-python-pyqt5
-            mingw-w64-x86_64-python-numpy
+          arch: x64
 
-      - name: Configuring
-        run: |
-          mkdir build && cd build
-          cmake .. -G"MSYS Makefiles" -DORIGIN_IMPORT=ON -DSCRIPTING_PYTHON=ON -DBUILD_TESTS=ON
-
-      - name: Building
-        run: |
-          make -C build -j$(nproc)
-
-      - name: Testing
-        run: |
-          cd build
-          ctest --output-on-failure
-
-  macos:
-
-    runs-on: macos-latest
-
-    name: macos
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+      - name: Set up conda-forge C++ & Python dependencies (micromamba)
+        uses: mamba-org/setup-micromamba@v2
         with:
-          submodules: true
+          init-shell: powershell
+          environment-name: torigraph-ci
+          cache-downloads: true
+          create-args: >-
+            qt-main=5.15
+            gsl
+            muparser
+            zlib
+            ninja
+            cmake
+            python=3.11
+            numpy
+            pandas
+            python-pptx
 
-      - name: Cache Qt
-        id: cache-qt
-        uses: actions/cache@v1
-        with:
-          path: ../Qt
-          key: ${{ runner.os }}-QtCache
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v2
-        with:
-          cached: ${{ steps.cache-qt.outputs.cache-hit }}
-
-      - name: Install prerequisties
+      - name: Link .deps junction to micromamba environment
         run: |
-         brew install muparser gsl gl2ps googletest
-         pip install pyqt5 numpy sip PyQt-builder
+          $envDir = (micromamba run -n torigraph-ci python -c "import os; print(os.environ['CONDA_PREFIX'])").Trim()
+          Write-Host "CONDA_PREFIX=$envDir"
+          "TORIGRAPH_CONDA_PREFIX=$envDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (Test-Path .deps) { Remove-Item -Recurse -Force .deps }
+          New-Item -ItemType Junction -Path .deps -Target $envDir | Out-Null
 
-      - name: Configuring
+      - name: Configure with CMake (Ninja + MSVC)
         run: |
-          mkdir build && cd build
-          cmake .. -DORIGIN_IMPORT=ON -DSCRIPTING_PYTHON=ON -DPython3_ROOT_DIR=$pythonLocation \
-            -DBUILD_TESTS=ON
+          $prefix = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library"
+          micromamba run -n torigraph-ci cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$prefix" `
+            -DORIGIN_IMPORT=ON `
+            -DBUILD_QWT=ON `
+            -DBUILD_QWTPLOT3D=ON `
+            -DSCRIPTING_PYTHON=OFF `
+            -DBUILD_TESTS=OFF
 
-      - name: Building
+      - name: Build ToriGraph & OLE/Regression Test Suite
         run: |
-          make -j$(sysctl -n hw.logicalcpu) -C build
+          micromamba run -n torigraph-ci cmake --build build --target scidavis scidavis_ole_test --parallel
 
-      - name: Testing
+      - name: Run C++ Automated Test Suite (scidavis_ole_test)
         run: |
-          cd build
-          ctest --output-on-failure
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
+          $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
+          & .\build\scidavis\scidavis_ole_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Python SDK Headless Smoke Test
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
+          $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
+          $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path
+          micromamba run -n torigraph-ci python -m pip install --no-build-isolation --no-deps -e ./python
+          @'
+          from pathlib import Path
+          import torigraph as tg
+
+          with tg.launch(headless=True, language="en") as app:
+              info = app.info()
+              print("App info:", info)
+              sample = app.load_sample_dataset("tensile_alznmg", auto_plot=True)
+              g = app.graph(sample["graph"])
+              res = g.analyze_tensile(offset=0.002, plot_construction=True)
+              print("Tensile analysis:", res)
+              out_png = Path("ci_smoke.png")
+              out_pptx = Path("ci_smoke.pptx")
+              g.export(out_png, dpi=300)
+              g.to_pptx(out_pptx, preset="slide_28pt")
+              assert out_png.is_file() and out_png.stat().st_size > 1000
+              assert out_pptx.is_file() and out_pptx.stat().st_size > 1000
+              print("Python SDK smoke test PASSED")
+          '@ | micromamba run -n torigraph-ci python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

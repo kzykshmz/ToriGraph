@@ -2,6 +2,7 @@
 
 [English](README.md) | **日本語**
 
+[![CI](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml/badge.svg)](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#ソースからのビルド)
 [![Python SDK](https://img.shields.io/badge/Python%20SDK-3.8%2B-3776AB.svg)](python/README.md)
