@@ -6178,9 +6178,9 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
         Table *tMain = nullptr;
         MultiLayer *mlMain =
                 loadSampleDataset(app, QStringLiteral("tensile_temper_compare"), autoPlot, &tMain, nullptr);
-        if (autoPlot && mlMain && mlMain->activeGraph() && tMain) {
-            // Run 0.2% offset yield & Considère work-hardening analysis on T6 curve (Stress_T6)
-            const QString t6Curve = tMain->name() + QStringLiteral("_Stress_T6");
+        if (autoPlot && mlMain && mlMain->activeGraph() && tMain && tMain->numCols() > 3) {
+            // Run 0.2% offset yield & Considère work-hardening analysis on T6 curve (column 3)
+            const QString t6Curve = tMain->colName(3);
             analyzeTensile(app, mlMain->activeGraph(), t6Curve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
@@ -6386,15 +6386,16 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
             analyzeWorkHardening(app, ml->activeGraph(), QString(), 11, true);
-        } else if (id == QLatin1String("tensile_temper_compare") && ml && ml->activeGraph() && tbl) {
-            const QString t6Curve = tbl->name() + QStringLiteral("_Stress_T6");
+        } else if (id == QLatin1String("tensile_temper_compare") && ml && ml->activeGraph() && tbl
+                   && tbl->numCols() > 3) {
+            const QString t6Curve = tbl->colName(3);
             analyzeTensile(app, ml->activeGraph(), t6Curve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
             analyzeWorkHardening(app, ml->activeGraph(), t6Curve, 11, true);
         } else if (id == QLatin1String("tensile_hydrogen_embrittlement") && ml && ml->activeGraph()
-                   && tbl) {
-            const QString unchCurve = tbl->name() + QStringLiteral("_Stress_Uncharged");
+                   && tbl && tbl->numCols() > 1) {
+            const QString unchCurve = tbl->colName(1);
             analyzeTensile(app, ml->activeGraph(), unchCurve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);

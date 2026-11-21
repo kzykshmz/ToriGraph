@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ; ToriGraph Windows All-in-One Installer (App + OLE Server + Python SDK)
 ; Built with Inno Setup 6 (Unicode)
 ; ============================================================================
@@ -19,7 +19,7 @@
 #define MyAppPublisher "ToriGraph Project"
 #define MyAppURL "https://github.com/kzykshmz/ToriGraph"
 #define MyAppExeName "ToriGraph.exe"
-#define MyOleClsid "{8E6B9541-3C74-4D28-A915-7D84E5A12001}"
+#define MyOleClsid "{{8E6B9541-3C74-4D28-A915-7D84E5A12001}"
 #define MyOleProgId "ToriGraph.Graph.1"
 #define MyLegacyProgId "SciDAVis.Graph.1"
 
@@ -63,8 +63,8 @@ japanese.TaskInstallPython=Python 自動化 SDK (torigraph) を検出された P
 english.TaskInstallPython=Install torigraph Python automation SDK into detected Python environment
 japanese.TaskEnvPath=環境変数 TORIGRAPH_EXE およびユーザー PATH に ToriGraph を追加する
 english.TaskEnvPath=Set TORIGRAPH_EXE environment variable and add ToriGraph to user PATH
-japanese.TaskAssocProject=プロジェクトファイル (.sciprj, .sciprj.gz) を ToriGraph に関連付ける
-english.TaskAssocProject=Associate project files (.sciprj, .sciprj.gz) with ToriGraph
+japanese.TaskAssocProject=プロジェクトファイル (.sciprj) を ToriGraph に関連付ける
+english.TaskAssocProject=Associate project files (.sciprj) with ToriGraph
 japanese.MenuRepairOle=OLE サーバーを再登録 (PowerPoint 連携修復)
 english.MenuRepairOle=Re-register OLE Server (Repair PowerPoint Integration)
 japanese.MenuInstallPySdk=Python SDK (torigraph) を再インストール
