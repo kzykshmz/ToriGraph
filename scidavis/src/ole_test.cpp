@@ -166,6 +166,13 @@ int main(int argc, char **argv)
     ApplicationWindow *mw = new ApplicationWindow();
     mw->applyUserSettings();
     mw->saveSettings();
+    if (args.contains("--suite44-only")) {
+        const int rc44 = runSuite44Round4UnifiedRegressionGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc44;
+    }
     if (args.contains("--suite50-only")) {
         const int rc50 = runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(mw);
         mw->savedProject();
@@ -7808,8 +7815,18 @@ static int runSuite44Round4UnifiedRegressionGate(ApplicationWindow *mw)
         const QString uniBase = QString::fromUtf8("suite44_3d_\xC4\x8D_\xE2\x82\xAC_\xE5\xAE\x9F\xE9\xA8\x93");
         const QString svg3dPath = tmpDir.filePath(uniBase + ".svg");
         const QString pdf3dPath = tmpDir.filePath(uniBase + ".pdf");
-        g3d->exportVector(svg3dPath, "svg");
-        g3d->exportPDF(pdf3dPath);
+        try {
+            g3d->exportVector(svg3dPath, "svg");
+        } catch (const std::exception &ex) {
+            std::cerr << "[FAIL] Suite 44 exportVector threw: " << ex.what() << std::endl;
+            return 1;
+        }
+        try {
+            g3d->exportPDF(pdf3dPath);
+        } catch (const std::exception &ex) {
+            std::cerr << "[FAIL] Suite 44 exportPDF threw: " << ex.what() << std::endl;
+            return 1;
+        }
 
         QFile fSvg(svg3dPath);
         CHECK_COND(fSvg.open(QIODevice::ReadOnly),

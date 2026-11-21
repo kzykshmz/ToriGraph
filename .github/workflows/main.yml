@@ -137,11 +137,7 @@ jobs:
 
       - name: Run C++ Automated Test Suite (scidavis_ole_test)
         run: |
-          $mesaDll = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin\opengl32sw.dll"
-          if (Test-Path $mesaDll) {
-            Copy-Item -Force $mesaDll .\build\scidavis\opengl32.dll
-            Write-Host "Installed Mesa software OpenGL as build\scidavis\opengl32.dll"
-          }
+          $env:QT_OPENGL = "software"
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           cmd /c ".\build\scidavis\scidavis_ole_test.exe 2>&1"
@@ -151,6 +147,7 @@ jobs:
 
       - name: Run Python SDK Headless Smoke Test
         run: |
+          $env:QT_OPENGL = "software"
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path

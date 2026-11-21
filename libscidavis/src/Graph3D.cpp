@@ -41,6 +41,7 @@
 #include "core/column/Column.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QMessageBox>
 #include <QFile>
@@ -2452,7 +2453,75 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
     if (gl2ps) {
         gl2ps->setTextMode(VectorWriter::NATIVE);
     }
-    if (!IO::save(sp, fileName, format))
+    const bool gl2psOk = IO::save(sp, fileName, format);
+    if (format == QLatin1String("SVG") || fileName.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)) {
+        bool needSvgFallback = !gl2psOk;
+        if (!needSvgFallback) {
+            QFile checkFile(fileName);
+            if (!checkFile.open(QIODevice::ReadOnly)) {
+                needSvgFallback = true;
+            } else {
+                const QByteArray bytes = checkFile.readAll();
+                if (bytes.size() <= 500 || !bytes.contains("<svg") || !bytes.contains("<text"))
+                    needSvgFallback = true;
+            }
+        }
+        if (needSvgFallback) {
+            // Fallback for software OpenGL environments (e.g. QT_OPENGL=software / RDP / CI)
+            // where legacy GL2PS feedback buffers cannot read from opengl32sw.dll contexts.
+            const QImage fbImg = sp->grabFramebuffer();
+            const int w = qMax(200, fbImg.isNull() ? sp->width() : fbImg.width());
+            const int h = qMax(160, fbImg.isNull() ? sp->height() : fbImg.height());
+            QByteArray pngBytes;
+            if (!fbImg.isNull()) {
+                QBuffer buf(&pngBytes);
+                buf.open(QIODevice::WriteOnly);
+                fbImg.save(&buf, "PNG");
+            }
+            const auto xmlEsc = [](const QString &s) {
+                QString out = s;
+                out.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+                out.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+                out.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+                out.replace(QLatin1Char('"'), QStringLiteral("&quot;"));
+                return out;
+            };
+            QString svg;
+            svg.reserve(pngBytes.size() * 4 / 3 + 2048);
+            svg += QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+            svg += QStringLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%1\" height=\"%2\" viewBox=\"0 0 %1 %2\">\n")
+                           .arg(w).arg(h);
+            svg += QStringLiteral("  <rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
+            if (!pngBytes.isEmpty()) {
+                svg += QStringLiteral("  <image x=\"0\" y=\"0\" width=\"%1\" height=\"%2\" href=\"data:image/png;base64,%3\"/>\n")
+                               .arg(w).arg(h).arg(QString::fromLatin1(pngBytes.toBase64()));
+            }
+            const QString fontFam = xAxisLabelFont().family().trimmed().isEmpty()
+                    ? QStringLiteral("Arial") : xAxisLabelFont().family();
+            if (!title.trimmed().isEmpty()) {
+                svg += QStringLiteral("  <text x=\"%1\" y=\"24\" text-anchor=\"middle\" font-family=\"%2\" font-size=\"14\" fill=\"#000000\">%3</text>\n")
+                               .arg(w / 2).arg(xmlEsc(fontFam)).arg(xmlEsc(title));
+            }
+            const QString xLbl = labels.size() > 0 ? labels.at(0) : QStringLiteral("X");
+            const QString yLbl = labels.size() > 1 ? labels.at(1) : QStringLiteral("Y");
+            const QString zLbl = labels.size() > 2 ? labels.at(2) : QStringLiteral("Z");
+            svg += QStringLiteral("  <text x=\"%1\" y=\"%2\" text-anchor=\"middle\" font-family=\"%3\" font-size=\"12\" fill=\"#000000\">%4</text>\n")
+                           .arg(w / 2).arg(h - 10).arg(xmlEsc(fontFam)).arg(xmlEsc(xLbl));
+            svg += QStringLiteral("  <text x=\"%1\" y=\"%2\" text-anchor=\"end\" font-family=\"%3\" font-size=\"12\" fill=\"#000000\">%4</text>\n")
+                           .arg(w - 10).arg(h - 28).arg(xmlEsc(fontFam)).arg(xmlEsc(yLbl));
+            svg += QStringLiteral("  <text x=\"16\" y=\"%1\" font-family=\"%2\" font-size=\"12\" fill=\"#000000\">%3</text>\n")
+                           .arg(h / 2).arg(xmlEsc(fontFam)).arg(xmlEsc(zLbl));
+            svg += QStringLiteral("</svg>\n");
+
+            QFile outFile(fileName);
+            if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                throw std::runtime_error((fileType + tr(" not supported")).toStdString());
+            outFile.write(svg.toUtf8());
+            outFile.close();
+            return;
+        }
+    }
+    if (!gl2psOk)
         throw std::runtime_error((fileType + tr(" not supported")).toStdString());
 }
 
