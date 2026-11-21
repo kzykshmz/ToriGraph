@@ -8,6 +8,8 @@
 
 **ToriGraph** は、[SciDAVis](https://github.com/SciDAVis/scidavis) をベースに改変・拡張したオープンソースの科学グラフ作成・データ解析ソフトウェアです。論文投稿品質の作図、材料科学・分光解析ワークベンチ、Windows PowerPoint へのネイティブ OLE 埋め込み・再編集（`ToriGraph.Graph.1`）、およびヘッドレス Python / AI エージェント自動化に対応しています。
 
+![ToriGraph ワークスペース画面（日本語 UI）](screenshots/torigraph_ja.png)
+
 ---
 
 ## 主な特徴

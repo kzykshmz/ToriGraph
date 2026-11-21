@@ -8,6 +8,8 @@
 
 **ToriGraph** is an open-source scientific plotting and data analysis application derived from [SciDAVis](https://github.com/SciDAVis/scidavis), extended for publication-grade figures, materials science workflows, native Windows PowerPoint OLE embedding (`ToriGraph.Graph.1`), and headless Python / AI-agent automation.
 
+![ToriGraph Workspace (English UI)](screenshots/torigraph_en.png)
+
 ---
 
 ## Key Features
