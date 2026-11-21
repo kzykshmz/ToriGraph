@@ -811,7 +811,6 @@ public slots:
     void showBatchPlotDialog();
     void applyStyleISIJJournal();
     void applyStylePresentationSlide();
-    void applyStyleNatureCompact();
     void showStylePresetManagerDialog();
 
     void attachDeltaCursorGadget();
@@ -1493,8 +1492,7 @@ private:
             *actionPasteFormatFonts = nullptr, *actionPasteFormatColors = nullptr,
             *actionPasteFormatScales = nullptr, *actionPasteFormatFolder = nullptr,
             *actionMergeGraphs = nullptr, *actionBatchPlot = nullptr;
-    QAction *actionStyleISIJ = nullptr, *actionStyleSlide = nullptr,
-            *actionStyleNature = nullptr;
+    QAction *actionStyleISIJ = nullptr, *actionStyleSlide = nullptr;
     QAction *actionGadgetDeltaCursor = nullptr, *actionLogisticRegression = nullptr,
             *actionTensileYield = nullptr, *actionArrheniusPlot = nullptr, *actionTaucPlot = nullptr,
             *actionFillBetweenCurves = nullptr, *actionWaterfallStackOffset = nullptr,

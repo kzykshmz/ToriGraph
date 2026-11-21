@@ -147,8 +147,8 @@ Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0), d_num_columns
     d_text->setPaintAttribute(QwtText::PaintBackground);
 
     hspace = 10;
-    left_margin = 6;
-    top_margin = 4;
+    left_margin = 9;
+    top_margin = 6;
     d_shadow_size_x = 5;
     d_shadow_size_y = 5;
 }

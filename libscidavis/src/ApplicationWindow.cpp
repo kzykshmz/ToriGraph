@@ -1032,10 +1032,6 @@ void registerApplicationWindowJapaneseStrings()
             "185 mm, 28 pt Arial)",
             "発表スライド用の高視認様式を適用 (185\xC3\x97"
             "185 mm, 28 pt Arial)");
-        add("&Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)(&N)");
-        add("Nature / Science Compact (89 mm)", "Nature / Science コンパクト (89 mm)");
-        add("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)",
-            "Nature / Science 1段組コンパクトスタイルを適用 (89 mm, L字枠, 8 pt Arial)");
 
         add("Copy &Format", "書式をコピー(&F)");
         add("Copy Format", "書式コピー");
@@ -1559,7 +1555,6 @@ void registerApplicationWindowJapaneseStrings()
         add("Copy High-DPI Image", "画像コピー");
         add("Export PDF", "PDF出力");
         add("ISIJ 85mm Fig", "ISIJ 85mm図");
-        add("Nature 89mm Fig", "Nature 89mm図");
         add("Size & DPI", "寸法・DPI");
 
         // Phase B: Pure Japanese Materials Science, Inspector, Worksheet & MDI System Menu
@@ -3447,7 +3442,6 @@ void ApplicationWindow::initMainMenu()
     stylePresetsMenu->setTitle(tr("&Style Presets"));
     stylePresetsMenu->addAction(actionStyleISIJ);
     stylePresetsMenu->addAction(actionStyleSlide);
-    stylePresetsMenu->addAction(actionStyleNature);
 
     graph = new QMenu(this);
     graph->setFont(appFont);
@@ -18116,10 +18110,6 @@ void ApplicationWindow::createActions()
     actionStyleSlide->setToolTip(tr("Apply high-visibility presentation slide style (185\xC3\x97" "185 mm, 28 pt Arial)"));
     connect(actionStyleSlide, SIGNAL(triggered()), this, SLOT(applyStylePresentationSlide()));
 
-    actionStyleNature = new QAction(tr("&Nature / Science Compact (89 mm)"), this);
-    actionStyleNature->setToolTip(tr("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)"));
-    connect(actionStyleNature, SIGNAL(triggered()), this, SLOT(applyStyleNatureCompact()));
-
     actionGadgetDeltaCursor = new QAction(QIcon(QPixmap(":/cursors.xpm")), tr("&Delta Cursor (C1-C2)..."), this);
     actionGadgetDeltaCursor->setToolTip(tr("Dual-crosshair Delta Cursor (dx, dy, slope, ratio, area, RMS)"));
     connect(actionGadgetDeltaCursor, SIGNAL(triggered()), this, SLOT(attachDeltaCursorGadget()));
@@ -18566,7 +18556,6 @@ void ApplicationWindow::createActions()
     ASSIGN_ACT_OBJNAME(actionBatchPlot);
     ASSIGN_ACT_OBJNAME(actionStyleISIJ);
     ASSIGN_ACT_OBJNAME(actionStyleSlide);
-    ASSIGN_ACT_OBJNAME(actionStyleNature);
     ASSIGN_ACT_OBJNAME(actionGadgetDeltaCursor);
     ASSIGN_ACT_OBJNAME(actionLogisticRegression);
     ASSIGN_ACT_OBJNAME(actionArrheniusPlot);
@@ -19324,11 +19313,6 @@ void ApplicationWindow::translateActionsStrings()
         actionStyleSlide->setText(tr("&Presentation Slide (28 pt Arial)"));
         actionStyleSlide->setToolTip(
                 tr("Apply high-visibility presentation slide style (185\xC3\x97" "185 mm, 28 pt Arial)"));
-    }
-    if (actionStyleNature) {
-        actionStyleNature->setText(tr("&Nature / Science Compact (89 mm)"));
-        actionStyleNature->setToolTip(
-                tr("Apply Nature / Science single-column compact style (89 mm, Open-L frame, 8 pt Arial)"));
     }
     if (actionGadgetDeltaCursor) {
         actionGadgetDeltaCursor->setText(tr("&Delta Cursor (C1-C2)..."));
@@ -27141,18 +27125,6 @@ void ApplicationWindow::applyStylePresentationSlide()
     if (!ml)
         return;
     ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
-    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
-        d_graph_inspector_dock->setTargetMultiLayer(ml, true);
-    emit modified();
-}
-
-void ApplicationWindow::applyStyleNatureCompact()
-{
-    QWidget *w = d_workspace.activeSubWindow();
-    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
-    if (!ml)
-        return;
-    ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
     if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
         d_graph_inspector_dock->setTargetMultiLayer(ml, true);
     emit modified();

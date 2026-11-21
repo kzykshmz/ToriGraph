@@ -573,16 +573,6 @@ void CommandPalettePopup::refreshCommands()
             98);
 
     addQuickEntry(
-            QStringLiteral("quick.nature89"), tr("Nature Compact 89mm Preset"), catQuick,
-            QString(), QStringLiteral("nature 89mm compact journal style preset"),
-            QStringLiteral("preset-nature"),
-            [this]() {
-                if (d_app)
-                    d_app->applyStyleNatureCompact();
-            },
-            96);
-
-    addQuickEntry(
             QStringLiteral("quick.sample_gallery"),
             tr("Sample Project Gallery..."), catQuick, QString(),
             QString::fromUtf8("sample gallery demo template example dataset project "
@@ -4131,7 +4121,7 @@ void ModernRibbonBar::buildAllTabs()
                     QAction *act = customPresetMenu->addAction(
                             IconLoader::duotoneIcon(
                                     sp.builtIn ? QStringLiteral("preset-isij")
-                                               : QStringLiteral("preset-nature"),
+                                               : QStringLiteral("page-setup"),
                                     16),
                             dispName);
                     connect(act, &QAction::triggered, this, [this, pid]() {

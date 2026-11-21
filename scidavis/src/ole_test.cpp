@@ -3329,7 +3329,6 @@ int main(int argc, char **argv)
             "Weibull Probability Plot...",
             "Presentation Slide (28 pt Arial)",
             "ISIJ Journal (85 mm, 600 DPI)",
-            "Nature / Science Compact (89 mm)",
             "Duplicate (Batch Plotting)...",
             "Copy Format",
             "Paste Format",

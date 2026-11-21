@@ -93,8 +93,7 @@ public:
     enum PageUnit { UnitPx = 0, UnitMm = 1, UnitCm = 2, UnitInch = 3 };
     enum StylePreset {
         StyleISIJJournal85mm = 0,
-        StylePresentationSlide28pt = 1,
-        StyleNatureCompact89mm = 2
+        StylePresentationSlide28pt = 1
     };
 
     struct GraphStylePresetSpec {

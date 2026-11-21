@@ -1965,7 +1965,6 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         d_target_ml->pushUndoSnapshot(tr("Toggle Axis Visibility"), before);
         syncAxisControls();
     });
-    lay->addWidget(d_chk_axis_visible);
 
     d_chk_tick_labels = new QCheckBox(page);
     connect(d_chk_tick_labels, &QCheckBox::toggled, this, [this](bool on) {
@@ -1983,7 +1982,120 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         d_target_ml->pushUndoSnapshot(tr("Toggle Tick Numbers"), before);
         syncAxisControls();
     });
-    lay->addWidget(d_chk_tick_labels);
+
+    QHBoxLayout *visRow = new QHBoxLayout();
+    visRow->setContentsMargins(0, 0, 0, 0);
+    visRow->setSpacing(8);
+    visRow->addWidget(d_chk_axis_visible);
+    visRow->addWidget(d_chk_tick_labels);
+    visRow->addStretch(1);
+    lay->addLayout(visRow);
+
+    // Axis Title & Scientific Rich-Text Toolbar + Quick Materials Symbol Chips (kept at top)
+    d_sec_axis_title_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_axis_title_lbl);
+
+    d_edit_axis_title = new QLineEdit(page);
+    connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g)
+            return;
+        const QString nextText = d_edit_axis_title->text();
+        if (g->axisTitle(d_active_axis) == nextText)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        for (Graph *lg : targetLayersForScope()) {
+            if (!lg)
+                continue;
+            lg->setAxisTitleAuto(d_active_axis, false);
+            QFont f = lg->axisTitleFont(d_active_axis);
+            if (f.family().trimmed().isEmpty())
+                f.setFamily(QStringLiteral("Arial"));
+            lg->setAxisTitleFont(d_active_axis, f);
+            lg->setAxisTitle(d_active_axis, nextText);
+            lg->replot();
+        }
+        d_target_ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
+    });
+    lay->addWidget(d_edit_axis_title);
+
+    QHBoxLayout *fmtRow = new QHBoxLayout();
+    fmtRow->setSpacing(3);
+    auto makeFmtBtn = [&](const QString &label) -> QToolButton * {
+        QToolButton *b = new QToolButton(page);
+        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
+        b->setText(label);
+        b->setFixedHeight(24);
+        b->setMinimumWidth(26);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        fmtRow->addWidget(b);
+        return b;
+    };
+
+    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"));
+    QFont itFont = d_btn_fmt_italic->font();
+    itFont.setItalic(true);
+    itFont.setBold(true);
+    d_btn_fmt_italic->setFont(itFont);
+    connect(d_btn_fmt_italic, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<i>"), QStringLiteral("</i>"));
+    });
+
+    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82")); // X₂
+    connect(d_btn_fmt_sub, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>"));
+    });
+
+    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2")); // X²
+    connect(d_btn_fmt_sup, &QToolButton::clicked, this, [this]() {
+        applyAxisTitleMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>"));
+    });
+
+    d_btn_fmt_greek = makeFmtBtn(QString());
+    d_btn_fmt_greek->setPopupMode(QToolButton::InstantPopup);
+    d_menu_greek = new QMenu(d_btn_fmt_greek);
+    rebuildGreekSymbolMenu();
+    d_btn_fmt_greek->setMenu(d_menu_greek);
+
+    d_btn_fmt_unit = makeFmtBtn(QString());
+    d_btn_fmt_unit->setPopupMode(QToolButton::InstantPopup);
+    d_menu_units = new QMenu(d_btn_fmt_unit);
+    rebuildUnitsSymbolMenu();
+    d_btn_fmt_unit->setMenu(d_menu_units);
+    lay->addLayout(fmtRow);
+
+    QHBoxLayout *matSymRow = new QHBoxLayout();
+    matSymRow->setContentsMargins(0, 0, 0, 0);
+    matSymRow->setSpacing(3);
+    const QList<QString> quickSyms = {
+        QString::fromUtf8("\xCF\x83"),     // σ
+        QString::fromUtf8("\xCE\xB5"),     // ε
+        QString::fromUtf8("2\xCE\xB8"),    // 2θ
+        QString::fromUtf8("\xCE\xBC" "m"), // μm
+        QString::fromUtf8("\xC2\xB0" "C"), // °C
+        QString::fromUtf8("\xC3\x85"),     // Å
+    };
+    for (const QString &sym : quickSyms) {
+        QToolButton *b = new QToolButton(page);
+        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
+        b->setText(sym);
+        b->setToolTip(QCoreApplication::translate("QObject", "Insert %1").arg(sym));
+        b->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        b->setProperty("_tg_tip_arg", sym);
+        b->setFixedHeight(22);
+        b->setMinimumWidth(24);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(b, &QToolButton::clicked, this, [this, sym]() {
+            if (!d_edit_axis_title)
+                return;
+            d_edit_axis_title->insert(sym);
+            emit d_edit_axis_title->editingFinished();
+        });
+        matSymRow->addWidget(b);
+    }
+    lay->addLayout(matSymRow);
 
     // Range & Scale
     d_sec_axis_range_lbl = makeSectionHeaderLabel(page);
@@ -2035,9 +2147,6 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     rngGrid->addWidget(d_btn_axis_autoscale, 3, 0, 1, 2);
 
     d_lbl_axis_scale_type = new QLabel(page);
-    QHBoxLayout *scaleTypeRow = new QHBoxLayout();
-    scaleTypeRow->setContentsMargins(0, 0, 0, 0);
-    scaleTypeRow->setSpacing(4);
     d_combo_axis_scale = new QComboBox(page);
     d_combo_axis_scale->addItem(QString(), 0); // Linear
     d_combo_axis_scale->addItem(QString(), 1); // Log10
@@ -2046,15 +2155,8 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                 if (!d_syncing_props)
                     applyAxisScaleFromUi(-1);
             });
-    d_chk_axis_reverse = new QCheckBox(page);
-    connect(d_chk_axis_reverse, &QCheckBox::toggled, this, [this](bool) {
-        if (!d_syncing_props)
-            applyAxisScaleFromUi(-1);
-    });
-    scaleTypeRow->addWidget(d_combo_axis_scale, 1);
-    scaleTypeRow->addWidget(d_chk_axis_reverse);
     rngGrid->addWidget(d_lbl_axis_scale_type, 4, 0);
-    rngGrid->addLayout(scaleTypeRow, 4, 1);
+    rngGrid->addWidget(d_combo_axis_scale, 4, 1);
 
     d_lbl_minor_subdiv = new QLabel(page);
     d_combo_minor_subdiv = new QComboBox(page);
@@ -2069,9 +2171,16 @@ QWidget *GraphInspectorDock::buildAxisInspector()
             });
     rngGrid->addWidget(d_lbl_minor_subdiv, 5, 0);
     rngGrid->addWidget(d_combo_minor_subdiv, 5, 1);
+
+    d_chk_axis_reverse = new QCheckBox(page);
+    connect(d_chk_axis_reverse, &QCheckBox::toggled, this, [this](bool) {
+        if (!d_syncing_props)
+            applyAxisScaleFromUi(-1);
+    });
+    rngGrid->addWidget(d_chk_axis_reverse, 6, 0, 1, 2);
     lay->addLayout(rngGrid);
 
-    // Axis Break
+    // Axis Break (Start/End fields collapsed when unchecked)
     d_chk_axis_break = new QCheckBox(page);
     lay->addWidget(d_chk_axis_break);
 
@@ -2083,6 +2192,10 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     d_edit_break_from = new QLineEdit(page);
     d_lbl_break_to = new QLabel(page);
     d_edit_break_to = new QLineEdit(page);
+    d_lbl_break_from->setVisible(false);
+    d_edit_break_from->setVisible(false);
+    d_lbl_break_to->setVisible(false);
+    d_edit_break_to->setVisible(false);
     brkGrid->addWidget(d_lbl_break_from, 0, 0);
     brkGrid->addWidget(d_edit_break_from, 0, 1);
     brkGrid->addWidget(d_lbl_break_to, 1, 0);
@@ -2090,6 +2203,10 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     lay->addLayout(brkGrid);
 
     connect(d_chk_axis_break, &QCheckBox::toggled, this, [this](bool on) {
+        d_lbl_break_from->setVisible(on);
+        d_edit_break_from->setVisible(on);
+        d_lbl_break_to->setVisible(on);
+        d_edit_break_to->setVisible(on);
         d_edit_break_from->setEnabled(on);
         d_edit_break_to->setEnabled(on);
         if (!d_syncing_props)
@@ -2221,10 +2338,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     tickGrid->addWidget(d_chk_minor_grid, 5, 1);
     lay->addLayout(tickGrid);
 
-    // Axis Title & Scientific Rich-Text Toolbar + Arial Font Sizes
-    d_sec_axis_title_lbl = makeSectionHeaderLabel(page);
-    lay->addWidget(d_sec_axis_title_lbl);
-
+    // Unit Format & Arial Font Sizes (Axis title & symbol chips are placed at the top)
     {
         QHBoxLayout *ufRow = new QHBoxLayout();
         ufRow->setContentsMargins(0, 0, 0, 0);
@@ -2264,7 +2378,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                         }
                         const QString uTrim = unit.trimmed();
                         if (dstMode == 1) {
-                            if (uTrim == QLatin1String("%") || uTrim == QLatin1String("-")
+                            if (uTrim == QLatin1String("-")
                                 || uTrim == QString::fromUtf8("\xE2\x80\x94")
                                 || uTrim.compare(QLatin1String("a.u."), Qt::CaseInsensitive) == 0
                                 || uTrim.compare(QLatin1String("arb. units"), Qt::CaseInsensitive)
@@ -2323,76 +2437,6 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         ufRow->addWidget(d_combo_unit_format, 1);
         lay->addLayout(ufRow);
     }
-
-    d_edit_axis_title = new QLineEdit(page);
-    connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
-        Graph *g = activeLayer();
-        if (d_syncing_props || !d_target_ml || !g)
-            return;
-        const QString nextText = d_edit_axis_title->text();
-        if (g->axisTitle(d_active_axis) == nextText)
-            return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        for (Graph *lg : targetLayersForScope()) {
-            if (!lg)
-                continue;
-            lg->setAxisTitleAuto(d_active_axis, false);
-            QFont f = lg->axisTitleFont(d_active_axis);
-            if (f.family().trimmed().isEmpty())
-                f.setFamily(QStringLiteral("Arial"));
-            lg->setAxisTitleFont(d_active_axis, f);
-            lg->setAxisTitle(d_active_axis, nextText);
-            lg->replot();
-        }
-        d_target_ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
-    });
-    lay->addWidget(d_edit_axis_title);
-
-    QHBoxLayout *fmtRow = new QHBoxLayout();
-    fmtRow->setSpacing(3);
-    auto makeFmtBtn = [&](const QString &label) -> QToolButton * {
-        QToolButton *b = new QToolButton(page);
-        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
-        b->setText(label);
-        b->setFixedHeight(24);
-        b->setMinimumWidth(26);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        fmtRow->addWidget(b);
-        return b;
-    };
-
-    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"));
-    QFont itFont = d_btn_fmt_italic->font();
-    itFont.setItalic(true);
-    itFont.setBold(true);
-    d_btn_fmt_italic->setFont(itFont);
-    connect(d_btn_fmt_italic, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<i>"), QStringLiteral("</i>"));
-    });
-
-    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82")); // X₂
-    connect(d_btn_fmt_sub, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>"));
-    });
-
-    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2")); // X²
-    connect(d_btn_fmt_sup, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>"));
-    });
-
-    d_btn_fmt_greek = makeFmtBtn(QString());
-    d_btn_fmt_greek->setPopupMode(QToolButton::InstantPopup);
-    d_menu_greek = new QMenu(d_btn_fmt_greek);
-    rebuildGreekSymbolMenu();
-    d_btn_fmt_greek->setMenu(d_menu_greek);
-
-    d_btn_fmt_unit = makeFmtBtn(QString());
-    d_btn_fmt_unit->setPopupMode(QToolButton::InstantPopup);
-    d_menu_units = new QMenu(d_btn_fmt_unit);
-    rebuildUnitsSymbolMenu();
-    d_btn_fmt_unit->setMenu(d_menu_units);
-    lay->addLayout(fmtRow);
 
     d_chk_lock_all_axes_font = new QCheckBox(page);
     d_chk_lock_all_axes_font->setChecked(true); // Default checked per OriginPro ergonomics!
@@ -5048,6 +5092,10 @@ void GraphInspectorDock::syncAxisControls()
 
         const Graph::AxisBreakSpec brk = g->axisBreak(ax);
         d_chk_axis_break->setChecked(brk.enabled);
+        d_lbl_break_from->setVisible(brk.enabled);
+        d_edit_break_from->setVisible(brk.enabled);
+        d_lbl_break_to->setVisible(brk.enabled);
+        d_edit_break_to->setVisible(brk.enabled);
         d_edit_break_from->setEnabled(brk.enabled);
         d_edit_break_to->setEnabled(brk.enabled);
         const double span = hi - lo;

@@ -6765,8 +6765,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Refit all primary layers into the current physical page dimensions.", "graph:str=''",
       "g.fit_layers_to_page()" },
     { "graph.apply_style_preset", "graph", "GraphProxy.apply_style_preset(preset='isij_85mm')",
-      "Apply one-click journal/slide typography & sizing preset ('isij_85mm', 'nature_89mm', 'slide_28pt').",
-      "graph:str=''; preset:str='isij_85mm'[isij_85mm|nature_89mm|slide_28pt]",
+      "Apply one-click journal/slide typography & sizing preset ('isij_85mm', 'slide_28pt', or custom user preset).",
+      "graph:str=''; preset:str='isij_85mm'[isij_85mm|slide_28pt]",
       "g.apply_style_preset('isij_85mm')" },
     { "graph.apply_frame_preset", "graph", "GraphProxy.apply_frame_preset(preset='box_inward', *, layer=None)",
       "Apply 4-wall box + inward ticks ('box_inward'/'box'), plain box ('box_plain'), open L-axes ('open_l'/'top_right_off'), or origin-crossed ('zero_crossed').",
@@ -12009,8 +12009,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (ml) {
             if (preset == QStringLiteral("isij_85mm") || preset == QStringLiteral("isij"))
                 ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
-            else if (preset == QStringLiteral("nature_89mm") || preset == QStringLiteral("nature"))
-                ml->applyStylePreset(MultiLayer::StyleNatureCompact89mm);
             else if (preset == QStringLiteral("slide_28pt") || preset == QStringLiteral("slide"))
                 ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
             for (Graph *lg : ml->layersList()) {
@@ -20326,11 +20324,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
                 || presetStr == QStringLiteral("presentation"))
                 sp = MultiLayer::StylePresentationSlide28pt;
-            else if (presetStr == QStringLiteral("nature_89mm") || presetStr == QStringLiteral("nature"))
-                sp = MultiLayer::StyleNatureCompact89mm;
             else if (presetStr != QStringLiteral("isij_85mm") && presetStr != QStringLiteral("isij")) {
                 throwInvalidParams(
-                        QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
+                        QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt').")
                                 .arg(presetStr));
             }
             ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
@@ -20478,13 +20474,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
                     || presetStr == QStringLiteral("presentation"))
                     sp = MultiLayer::StylePresentationSlide28pt;
-                else if (presetStr == QStringLiteral("nature_89mm")
-                         || presetStr == QStringLiteral("nature"))
-                    sp = MultiLayer::StyleNatureCompact89mm;
                 else if (presetStr != QStringLiteral("isij_85mm")
                          && presetStr != QStringLiteral("isij")) {
                     throwInvalidParams(
-                            QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
+                            QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt').")
                                     .arg(presetStr));
                 }
                 ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));

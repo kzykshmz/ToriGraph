@@ -756,14 +756,20 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
         connect(actLockAspect, &QAction::toggled, this, [this](bool checked) {
             const QString snap = captureUndoSnapshot();
             if (checked) {
+                double ratio = 1.0;
                 Graph *ag = active_graph ? active_graph : layer(1);
                 if (ag && ag->plotWidget() && ag->plotWidget()->plotLayout()) {
                     const QRect cr = ag->plotWidget()->plotLayout()->canvasRect();
                     if (cr.width() > 20 && cr.height() > 20)
-                        d_target_aspect_ratio = double(cr.width()) / double(cr.height());
+                        ratio = double(cr.width()) / double(cr.height());
                 } else if (l_canvas_width > 0 && l_canvas_height > 0) {
-                    d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
+                    ratio = double(l_canvas_width) / double(l_canvas_height);
                 }
+                const bool squarePage = (d_base_page_px.width() > 0 && d_base_page_px.height() > 0
+                                         && qAbs(d_base_page_px.width() - d_base_page_px.height()) <= 4);
+                if (squarePage && ratio >= 0.82 && ratio <= 1.18)
+                    ratio = 1.0;
+                d_target_aspect_ratio = ratio;
             }
             setKeepAspectRatio(checked);
             pushUndoSnapshot(tr("Toggle Aspect Ratio Lock"), snap);
@@ -827,9 +833,6 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
         statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
                               tr("Slide 28pt"), this,
                               [this]() { applyStylePreset(StylePresentationSlide28pt); });
-        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-nature"), 18, false),
-                              tr("Nature 89mm"), this,
-                              [this]() { applyStylePreset(StyleNatureCompact89mm); });
         const QVector<GraphStylePresetSpec> allPresets = MultiLayer::listStylePresets();
         for (const GraphStylePresetSpec &sp : allPresets) {
             if (sp.builtIn)
@@ -3155,8 +3158,6 @@ void MultiLayer::setKeepAspectRatio(bool keep)
     }
     if (graphs > 0)
         arrangeLayers(false, false);
-    if (!d_keep_aspect_ratio && l_canvas_width > 0 && l_canvas_height > 0)
-        d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
     updateCanvasStatusPill();
     if (ApplicationWindow *app = findMultiLayerApp(this)) {
         if (ModernRibbonBar *rb = app->modernRibbonBar())
@@ -3862,6 +3863,8 @@ void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit
     graph_height = d_base_page_px.height();
     if (!d_keep_aspect_ratio)
         d_target_aspect_ratio = pxW / qMax(1.0, pxH);
+    else if (qAbs(pxW - pxH) <= 2.0)
+        d_target_aspect_ratio = 1.0;
 
     const QSize targetCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
                                  qMax(80, qRound(d_base_page_px.height() * d_page_zoom)));
@@ -4777,8 +4780,6 @@ void MultiLayer::applyStylePreset(StylePreset preset)
     QString id = QStringLiteral("isij_85mm");
     if (preset == StylePresentationSlide28pt)
         id = QStringLiteral("slide_28pt");
-    else if (preset == StyleNatureCompact89mm)
-        id = QStringLiteral("nature_89mm");
 
     GraphStylePresetSpec spec;
     if (!findStylePreset(id, &spec)) {
@@ -4867,7 +4868,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     }
 
     setMargins(marginPx, marginPx, marginPx, marginPx);
-    setPageZoom(1.0);
+    const double initialViewZoom = (pageW <= 110.0 && pageH <= 110.0) ? 1.6 : 1.0;
+    setPageZoom(initialViewZoom);
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
     d_keep_aspect_ratio = spec.keepAspectRatio;
     d_target_aspect_ratio = (pageH > 1.0) ? (pageW / pageH) : 1.0;
@@ -5050,7 +5052,6 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                         static const QRegularExpression kTemperCodeRx(
                                 QStringLiteral("^(?:T\\d+|O|F|H\\d+|RRA)$"));
                         const bool keepParen = base.isEmpty() || unit.isEmpty()
-                                || plainUnit == QLatin1String("%")
                                 || plainUnit == QLatin1String("-")
                                 || plainUnit == QStringLiteral("\u2013")
                                 || plainUnit == QStringLiteral("\u2014")
@@ -5081,6 +5082,10 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             useTitle.setHintingPreference(QFont::PreferNoHinting);
             gr->setAxisFont(a, useTick);
             gr->setAxisTitleFont(a, useTitle);
+            if (QwtScaleWidget *sw = plot->axisWidget(a)) {
+                const double pt = (useTick.pointSizeF() > 0.0) ? useTick.pointSizeF() : 12.0;
+                sw->setSpacing(qMax(8, qRound(pt * 0.45)));
+            }
             QString rawTitle = gr->axisTitle(a);
             QString nextAxisTitle = rawTitle;
             nextAxisTitle.remove(kBoldTagRx);
@@ -5912,7 +5917,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                 gr->placeLegendAnchor(static_cast<Graph::LegendAnchor>(ancProp.toInt()));
             } else if (gr->isTernaryPlot() || gr->isPolarPlot()) {
                 gr->placeLegendAnchor(Graph::LegendTopRight);
-            } else if (legendWasDefaultTopLeft[i] || !gr->lineMarkerKeys().isEmpty()) {
+            } else if (legendWasDefaultTopLeft[i] || isSlidePreset || !gr->lineMarkerKeys().isEmpty()) {
                 gr->placeLegendAnchor(Graph::LegendAutoAvoidData);
             }
             if (legPtr && !gr->isTernaryPlot()
@@ -6411,15 +6416,9 @@ void MultiLayer::repositionCanvasStatusPill()
     int x = qMax(8, refSz.width() - pw - 10 - sbRight);
     int y = qMax(LayerButton::btnSize() + 8, refSz.height() - ph - 8 - sbBottom);
 
-    bool overlapsCanvas = false;
-    if (canvas && canvas->isVisible()) {
-        const QPoint canvasTopLeft = canvas->mapTo(widget(), QPoint(0, 0));
-        const QRect canvasInHost(canvasTopLeft, canvas->size());
-        if (canvasInHost.intersects(QRect(x - 4, y - 4, pw + 8, ph + 8)))
-            overlapsCanvas = true;
-    }
-
-    if (overlapsCanvas) {
+    // Always keep the status pill anchored consistently in the top-right header strip
+    // aligned with the layer switcher pill (prevents jumping to bottom-right on compact presets).
+    {
         const int leftReserved = (d_layer_pill_frame && d_layer_pill_frame->isVisible())
                 ? (d_layer_pill_frame->geometry().right() + 10)
                 : 8;
@@ -8716,9 +8715,6 @@ QString canonicalBuiltInAlias(const QString &raw)
     if (k == QLatin1String("slide") || k == QLatin1String("slide_28pt")
         || k == QLatin1String("presentation") || k == QLatin1String("presentation_slide"))
         return QStringLiteral("slide_28pt");
-    if (k == QLatin1String("nature") || k == QLatin1String("nature_89mm")
-        || k == QLatin1String("nature_compact"))
-        return QStringLiteral("nature_89mm");
     return raw.trimmed();
 }
 
@@ -8735,7 +8731,7 @@ QString MultiLayer::userStylePresetsFilePath()
 QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets()
 {
     QVector<GraphStylePresetSpec> defs;
-    defs.reserve(3);
+    defs.reserve(2);
 
     GraphStylePresetSpec isij;
     isij.id = QStringLiteral("isij_85mm");
@@ -8786,31 +8782,6 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
     slide.formatIsijUnitSlash = false;
     slide.largeSlideLayout = true;
     defs.append(slide);
-
-    GraphStylePresetSpec nature;
-    nature.id = QStringLiteral("nature_89mm");
-    nature.name = QStringLiteral("Nature Compact (89x89 mm, Open-L)");
-    nature.builtIn = true;
-    nature.pageWidthMm = 89.0;
-    nature.pageHeightMm = 89.0;
-    nature.keepAspectRatio = true;
-    nature.targetDpi = 600;
-    nature.marginPx = 6;
-    nature.framePreset = static_cast<int>(Graph::FrameOpenL);
-    nature.axisLineWidth = 1;
-    nature.minorTickLen = 3;
-    nature.majorTickLen = 6;
-    nature.fontFamily = QStringLiteral("Arial");
-    nature.axisTitlePt = 8.0;
-    nature.tickLabelPt = 7.0;
-    nature.legendPt = 6.5;
-    nature.minCurveWidth = 1;
-    nature.minSymbolSize = 5;
-    nature.legendFrame = Legend::None;
-    nature.pageBackground = Qt::white;
-    nature.formatIsijUnitSlash = false;
-    nature.largeSlideLayout = false;
-    defs.append(nature);
 
     return defs;
 }

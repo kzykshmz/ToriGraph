@@ -4748,7 +4748,7 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
         if (!autoPlot)
             return nullptr;
 
-        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("AA7075TensilePlot")));
+        MultiLayer *ml = app->newGraph(QStringLiteral("AA7075TensilePlot"));
         if (ml && ml->activeGraph()) {
             Graph *g = ml->activeGraph();
             insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(0, 114, 178), 2.1, Qt::SolidLine));
@@ -4910,24 +4910,25 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
             c0->setUnits(QStringLiteral("deg"));
         }
         if (Column *c1 = tbl->column(1)) {
-            c1->setLongName(QStringLiteral("Intensity, <i>I</i>"));
+            c1->setLongName(QStringLiteral("Intensity"));
             c1->setUnits(QStringLiteral("counts"));
             c1->setComment(QStringLiteral("Al-5.5Zn-2.5Mg (T6)"));
         }
         if (!autoPlot)
             return nullptr;
 
-        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("AlZnMgXRDPlot")));
+        MultiLayer *ml = app->newGraph(QStringLiteral("AlZnMgXRDPlot"));
         if (ml && ml->activeGraph()) {
             Graph *g = ml->activeGraph();
             insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(25, 45, 85), 1.6, Qt::SolidLine));
             g->setXAxisTitle(QStringLiteral("Diffraction angle, 2<i>\u03B8</i> / deg"));
-            g->setYAxisTitle(QStringLiteral("Intensity, <i>I</i> / counts"));
+            g->setYAxisTitle(QStringLiteral("Intensity / counts"));
             g->setTitle(QString());
             if (g->legend())
                 g->legend()->setText(g->legendText());
             g->applyFramePreset(Graph::FrameBoxInwardTicks);
             g->setScale(QwtPlot::xBottom, 20.0, 85.0);
+            ml->applyAspectRatioPreset(4.0 / 3.0, true);
             g->setAutoScaleAxis(QwtPlot::yLeft);
             applyArialToMatSciGraph(g);
             g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);

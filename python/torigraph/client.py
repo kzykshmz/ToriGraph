@@ -1798,9 +1798,6 @@ class GraphProxy:
     def slide_style(self) -> Dict[str, Any]:
         return self.apply_style_preset("slide_28pt")
 
-    def nature_style(self) -> Dict[str, Any]:
-        return self.apply_style_preset("nature_89mm")
-
     def apply_frame_preset(
         self, preset: str = "box_inward", layer: Optional[int] = None
     ) -> Dict[str, Any]:

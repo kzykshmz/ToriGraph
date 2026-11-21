@@ -15785,15 +15785,35 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             LegendTopRight,   LegendTopLeft,   LegendBottomRight,
             LegendBottomLeft, LegendTopCenter, LegendBottomCenter
         };
+        const QRectF canvasBoundsF(0.0, 0.0, static_cast<double>(cw), static_cast<double>(ch));
+        auto evaluateProximityScore = [&](int ox, int oy) -> double {
+            const QRectF baseBox(static_cast<double>(ox), static_cast<double>(oy),
+                                 static_cast<double>(effLegW), static_cast<double>(legH));
+            const double nearPadX = qMax(14.0, 0.07 * static_cast<double>(cw));
+            const double nearPadY = qMax(14.0, 0.08 * static_cast<double>(ch));
+            const double farPadX = qMax(28.0, 0.14 * static_cast<double>(cw));
+            const double farPadY = qMax(28.0, 0.16 * static_cast<double>(ch));
+            const QRectF nearBox =
+                    baseBox.adjusted(-nearPadX, -nearPadY, nearPadX, nearPadY).intersected(canvasBoundsF);
+            const QRectF farBox =
+                    baseBox.adjusted(-farPadX, -farPadY, farPadX, farPadY).intersected(canvasBoundsF);
+            return evaluateCollisionScore(nearBox) + 0.15 * evaluateCollisionScore(farBox);
+        };
         auto scoreAllCandidates = [&]() {
             chosenAnchor = kCandidates[0];
             chosenScore = 1e300;
+            double chosenProx = 1e300;
             useGridOrigin = false;
             for (LegendAnchor cand : kCandidates) {
                 const QPoint pt = originForInsideAnchor(cand);
                 const double score = evaluateOriginScore(pt.x(), pt.y());
-                if (score < chosenScore - 1e-9) {
+                const double prox = evaluateProximityScore(pt.x(), pt.y());
+                const bool strictlyLowerHard = (score < chosenScore - 1e-6);
+                const bool tiedHardBetterClearance =
+                        (qAbs(score - chosenScore) <= 1e-6 && prox < chosenProx - 1e-6);
+                if (strictlyLowerHard || tiedHardBetterClearance) {
                     chosenScore = score;
+                    chosenProx = prox;
                     chosenAnchor = cand;
                 }
             }
