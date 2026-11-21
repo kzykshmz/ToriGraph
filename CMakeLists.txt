@@ -76,6 +76,29 @@ else()
   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic" )
 endif()
 
+# Guard against a garbled MSVC /showIncludes prefix with the Ninja generator.
+# On Japanese Windows, CMake can record the localized prefix
+# ("Note: including file:" in Japanese) as UTF-8 text that was mis-decoded as
+# CP932. Ninja then never matches cl's output, records zero header dependencies
+# and stops recompiling .cpp files when a header changes. The resulting mix of
+# old and new class layouts crashes at run time (seen as a segfault in
+# scidavis_ole_test Suite 51). The garbled form always contains U+7E5D or
+# U+7E3A (UTF-8 e7b99d / e7b8ba), which never occur in a correct prefix.
+if( MSVC AND CMAKE_GENERATOR MATCHES "Ninja" AND CMAKE_CL_SHOWINCLUDES_PREFIX )
+  set( _tg_prefix_file "${CMAKE_BINARY_DIR}/CMakeFiles/torigraph_showincludes_prefix.txt" )
+  file( WRITE "${_tg_prefix_file}" "${CMAKE_CL_SHOWINCLUDES_PREFIX}" )
+  file( READ "${_tg_prefix_file}" _tg_prefix_hex HEX )
+  if( _tg_prefix_hex MATCHES "e7b99d|e7b8ba" )
+    message( FATAL_ERROR
+      "The MSVC /showIncludes prefix detected by CMake is garbled "
+      "(CMAKE_CL_SHOWINCLUDES_PREFIX). Ninja would record no header "
+      "dependencies, so header edits would not trigger rebuilds and the "
+      "binaries would crash. Delete ${CMAKE_BINARY_DIR}/CMakeFiles/${CMAKE_VERSION}* "
+      "(or the whole build directory) and configure again from cmd.exe "
+      "after vcvars64.bat, then rebuild everything." )
+  endif()
+endif()
+
 if( APPLE )
   add_compile_definitions( GL_SILENCE_DEPRECATION )
 endif()
