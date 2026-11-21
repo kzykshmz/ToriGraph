@@ -89,11 +89,57 @@ jobs:
         run: |
           micromamba run -n torigraph-ci cmake --build build --target scidavis scidavis_ole_test --parallel
 
+      - name: Set display resolution to 1920x1080 for GUI layout tests
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class DisplayHelper {
+              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+              public struct DEVMODE {
+                  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+                  public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+                  public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+                  public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+                  public short dmTTOption; public short dmCollate;
+                  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+                  public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+                  public int dmDisplayFlags; public int dmDisplayFrequency;
+                  public int dmICMMethod; public int dmICMIntent; public int dmMediaType; public int dmDitherType;
+                  public int dmReserved1; public int dmReserved2; public int dmPanningWidth; public int dmPanningHeight;
+              }
+              [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+              public static extern bool EnumDisplaySettings(string lpszDeviceName, int iModeNum, ref DEVMODE lpDevMode);
+              [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+              public static extern int ChangeDisplaySettings(ref DEVMODE lpDevMode, int dwFlags);
+              public static string SetBestResolution() {
+                  DEVMODE cur = new DEVMODE(); cur.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+                  EnumDisplaySettings(null, -1, ref cur);
+                  string before = cur.dmPelsWidth + "x" + cur.dmPelsHeight;
+                  DEVMODE best = cur;
+                  int bestScore = cur.dmPelsWidth * cur.dmPelsHeight;
+                  DEVMODE dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+                  for (int i = 0; EnumDisplaySettings(null, i, ref dm); i++) {
+                      if (dm.dmPelsWidth == 1920 && dm.dmPelsHeight == 1080) { best = dm; break; }
+                      int score = dm.dmPelsWidth * dm.dmPelsHeight;
+                      if (dm.dmPelsWidth >= 1600 && dm.dmPelsHeight >= 900 && score > bestScore) {
+                          best = dm; bestScore = score;
+                      }
+                  }
+                  int rc = ChangeDisplaySettings(ref best, 0);
+                  DEVMODE after = new DEVMODE(); after.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+                  EnumDisplaySettings(null, -1, ref after);
+                  return "before=" + before + " -> after=" + after.dmPelsWidth + "x" + after.dmPelsHeight + " (rc=" + rc + ")";
+              }
+          }
+          "@
+          Write-Host ([DisplayHelper]::SetBestResolution())
+
       - name: Run C++ Automated Test Suite (scidavis_ole_test)
         run: |
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
-          & .\build\scidavis\scidavis_ole_test.exe
+          cmd /c ".\build\scidavis\scidavis_ole_test.exe 2>&1"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Python SDK Headless Smoke Test
