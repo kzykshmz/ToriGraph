@@ -318,6 +318,7 @@ static void registerInspectorExtraTranslations()
         reg("Change Tick Divide Factor", "目盛り除算係数の変更");
         reg("Apply Font Size to All 4 Axes", "全4軸のフォントサイズを連動変更");
         reg("Units / Symbols", "単位・記号");
+        reg("Units", "単位");
         reg("Insert Symbol, Unit, or Journal Axis Template",
             "記号・単位・論文用軸ラベル定型を入力");
         reg("Symbols", "科学記号");
@@ -388,6 +389,8 @@ static void registerInspectorExtraTranslations()
         reg("Cool-Warm", "クール-ウォーム");
         reg("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (アレニウス等)");
         reg("Show Tick Numbers", "目盛り数値を表示");
+        reg("Show Axis", "この軸を表示");
+        reg("Tick Labels", "目盛り数値を表示");
         reg("Toggle Tick Numbers", "目盛り数値の表示切替");
         reg("Unit Format:", "単位表記:");
         reg("Unit Format", "単位表記");
@@ -2021,19 +2024,25 @@ QWidget *GraphInspectorDock::buildAxisInspector()
 
     QHBoxLayout *fmtRow = new QHBoxLayout();
     fmtRow->setSpacing(3);
-    auto makeFmtBtn = [&](const QString &label) -> QToolButton * {
+    auto makeFmtBtn = [&](const QString &label, bool compact) -> QToolButton * {
         QToolButton *b = new QToolButton(page);
         b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
         b->setText(label);
         b->setFixedHeight(24);
-        b->setMinimumWidth(26);
+        if (compact) {
+            b->setFixedWidth(28);
+            b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+            fmtRow->addWidget(b, 0);
+        } else {
+            b->setMinimumWidth(52);
+            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            fmtRow->addWidget(b, 1);
+        }
         b->setCursor(Qt::PointingHandCursor);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        fmtRow->addWidget(b);
         return b;
     };
 
-    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"));
+    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"), true);
     QFont itFont = d_btn_fmt_italic->font();
     itFont.setItalic(true);
     itFont.setBold(true);
@@ -2042,23 +2051,23 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         applyAxisTitleMarkup(QStringLiteral("<i>"), QStringLiteral("</i>"));
     });
 
-    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82")); // X₂
+    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82"), true); // X₂
     connect(d_btn_fmt_sub, &QToolButton::clicked, this, [this]() {
         applyAxisTitleMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>"));
     });
 
-    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2")); // X²
+    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2"), true); // X²
     connect(d_btn_fmt_sup, &QToolButton::clicked, this, [this]() {
         applyAxisTitleMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>"));
     });
 
-    d_btn_fmt_greek = makeFmtBtn(QString());
+    d_btn_fmt_greek = makeFmtBtn(QString(), false);
     d_btn_fmt_greek->setPopupMode(QToolButton::InstantPopup);
     d_menu_greek = new QMenu(d_btn_fmt_greek);
     rebuildGreekSymbolMenu();
     d_btn_fmt_greek->setMenu(d_menu_greek);
 
-    d_btn_fmt_unit = makeFmtBtn(QString());
+    d_btn_fmt_unit = makeFmtBtn(QString(), false);
     d_btn_fmt_unit->setPopupMode(QToolButton::InstantPopup);
     d_menu_units = new QMenu(d_btn_fmt_unit);
     rebuildUnitsSymbolMenu();
@@ -6599,9 +6608,9 @@ void GraphInspectorDock::retranslateUi()
     if (d_btn_axis_right)
         d_btn_axis_right->setText(tr("Right Y"));
     if (d_chk_axis_visible)
-        d_chk_axis_visible->setText(tr("Show Selected Axis"));
+        d_chk_axis_visible->setText(tr("Show Axis"));
     if (d_chk_tick_labels)
-        d_chk_tick_labels->setText(tr("Show Tick Numbers"));
+        d_chk_tick_labels->setText(tr("Tick Labels"));
 
     if (d_sec_axis_range_lbl)
         d_sec_axis_range_lbl->setText(tr("Scale & Axis Break"));
@@ -6692,7 +6701,7 @@ void GraphInspectorDock::retranslateUi()
     }
     rebuildGreekSymbolMenu();
     if (d_btn_fmt_unit) {
-        d_btn_fmt_unit->setText(tr("Units / Symbols"));
+        d_btn_fmt_unit->setText(tr("Units"));
         d_btn_fmt_unit->setToolTip(tr("Insert Symbol, Unit, or Journal Axis Template"));
     }
     rebuildUnitsSymbolMenu();

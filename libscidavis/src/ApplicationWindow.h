@@ -1328,7 +1328,7 @@ protected:
     void showWindowMenu(MyWidget *widget) { showWindowMenuImpl(widget)->exec(QCursor::pos()); }
 
 private:
-    bool m_batch;
+    bool m_batch = false;
 
     //! Create a menu for toggeling the toolbars
     QMenu *createToolbarsMenu();
