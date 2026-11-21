@@ -1484,9 +1484,14 @@ void registerMatSciTranslationsOnce()
     reg("Materials Science Sample Gallery", "材料科学サンプルデータギャラリー");
     reg("Try Sample Datasets...", "サンプルデータで試す...");
     reg("Select a built-in materials science dataset to generate a ready-to-analyze worksheet and publication plot:",
-        "内蔵された材料科学サンプルデータを選択し、ワークシートと論文品質グラフを自動生成します:");
+        "内蔵された材料科学サンプルデータまたは複合サンプルプロジェクトを選択し、ワークシートと論文品質グラフを自動生成します:");
+    reg("Category:", "カテゴリ:");
+    reg("All Categories", "すべてのカテゴリ");
+    reg("Filter:", "検索:");
+    reg("Search by alloy, test type, or keyword...", "合金名・試験法・キーワードで絞り込み...");
     reg("Generate Worksheet & Plot", "ワークシートとグラフを生成");
     reg("Generate & Run Recommended Analysis", "生成して推奨解析まで実行");
+    reg("Sample Project Pack", "サンプルプロジェクト集");
     reg("Metallurgy / Mechanical", "金属・力学特性");
     reg("Hydrogen Embrittlement / TDS", "水素脆化・昇温脱離 (TDS)");
     reg("X-Ray Diffraction (XRD)", "X線回折 (XRD)");
@@ -1494,6 +1499,34 @@ void registerMatSciTranslationsOnce()
     reg("Synchrotron CT / Local Strain", "放射光CT・局所ひずみ場");
     reg("Ceramics / Fracture Statistics", "セラミックス・破壊統計");
     reg("AA7075-T6 Tensile Stress-Strain Curve", "AA7075-T6 引張応力-ひずみ曲線");
+    reg("Al-Zn-Mg Alloy Tensile Comparison by Temper (T4 / T6 / T73)",
+        "Al-Zn-Mg 合金の時効処理別 引張応力-ひずみ曲線比較 (T4 / T6 / T73)");
+    reg("Hydrogen Embrittlement Tensile Curves (Uncharged vs. H-Charged)",
+        "高強度 Al-Zn-Mg 合金の水素脆化引張試験 (未チャージ vs. 水素チャージ)");
+    reg("Fatigue S-N Curves: SCM435 Steel vs. AA7075-T6 (Wöhler Diagram)",
+        "疲労 S-N 曲線比較: SCM435 鋼 vs. AA7075-T6 合金 (Wöhler 線図)");
+    reg("Fatigue Crack Growth Rate da/dN vs. ΔK (Paris Law: Air vs. H-Charged)",
+        "疲労き裂進展速度曲線 da/dN–ΔK (Paris 則: 大気中 vs. 水素環境)");
+    reg("Hall-Petch Grain Size Strengthening (Ferritic Steel & Al-Mg Alloy)",
+        "結晶粒径と降伏応力の Hall-Petch 関係 (フェライト鋼・Al-Mg 合金)");
+    reg("High-Temperature Creep Curves of 9Cr-1Mo Steel (600 °C, 3 Stress Levels)",
+        "9Cr-1Mo 耐熱鋼の高温クリープ曲線 (600 °C, 120 / 140 / 160 MPa)");
+    reg("Charpy Impact Toughness Transition Curve (DBTT of Ferritic Steel)",
+        "フェライト鋼のシャルピー衝撃吸収エネルギー遷移曲線 (DBTT)");
+    reg("Isothermal Age-Hardening Curves of Al-Zn-Mg Alloy (Vickers HV, 120 vs. 160 °C)",
+        "Al-Zn-Mg 合金の等温時効硬化曲線 (ビッカース硬さ HV, 120 vs. 160 °C)");
+    reg("Nanoindentation Load-Depth Curves (Oliver-Pharr: Pure Al vs. AA7075-T6)",
+        "ナノインデンテーション荷重-押込み深さ曲線 (Oliver-Pharr: 純 Al vs. AA7075-T6)");
+    reg("Low-Cycle Fatigue Hysteresis Loops of SUS316L (Cycle 1 vs. Stabilized N=50)",
+        "SUS316L 低サイクル疲労 応力-ひずみヒステリシスループ (N=1 vs. N=50)");
+    reg("Fracture Toughness J-R Resistance Curve (ASTM E1820 with Blunting Lines)",
+        "構造用鋼の破壊靭性 J-R 抵抗曲線 (ASTM E1820 鈍化線・0.2 mm オフセット線付)");
+    reg("Strain-Rate Dependent Flow Stress of Ti-6Al-4V (10^-3 to 10^3 s^-1)",
+        "Ti-6Al-4V 合金のひずみ速度依存性 流動応力曲線 (準静的〜高速衝撃 SHPB)");
+    reg("Project Pack: Metal Mechanical Properties Evaluation Suite (5 Datasets + Analyses)",
+        "【複合プロジェクト】金属の力学特性 総合評価パッケージ (引張・加工硬化・疲労S-N・き裂進展・Hall-Petch・DBTT)");
+    reg("Project Pack: Al-Zn-Mg Age-Hardening & Hydrogen Embrittlement Study (5 Datasets + Kissinger)",
+        "【複合プロジェクト】Al-Zn-Mg 合金の時効硬化・水素脆化 総合研究パッケージ (時効HV・水素引張・TDS/Kissinger・XRD・CTひずみ)");
     reg("Hydrogen TDS Spectra at 3 Heating Rates (100, 200, 400 °C/h)",
         "鋼中水素の昇温脱離スペクトル (昇温速度 100, 200, 400 °C/h)");
     reg("Peak-Aged Al-Zn-Mg Alloy XRD Pattern (Cu Kα1)",
@@ -1503,6 +1536,48 @@ void registerMatSciTranslationsOnce()
         "放射光CT / 3D-XRD き裂先端局所弾性ひずみマップ");
     reg("Sintered Si3N4 4-Point Flexural Strength (JIS R 1625)",
         "窒化ケイ素 (Si3N4) 4点曲げ強度ワイブル統計 (JIS R 1625)");
+
+    // Sample dataset descriptions (JA)
+    reg("Peak-aged Al-5.6Zn-2.5Mg-1.6Cu (T6) engineering stress-strain curve (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa) for 0.2% offset yield & Kocks-Mecking Considère analysis.",
+        "ピーク時効 Al-5.6Zn-2.5Mg-1.6Cu (T6) 合金の公称応力-公称ひずみ曲線 (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa)。0.2%耐力解析および Kocks-Mecking / Considère 加工硬化解析に最適。");
+    reg("Multi-curve tensile comparison of solution-treated/naturally aged (T4), peak-aged (T6), and over-aged (T73) Al-Zn-Mg alloy showing strength-ductility trade-off.",
+        "自然時効 (T4)・ピーク時効 (T6)・過時効 (T73) の Al-Zn-Mg 合金3条件の公称応力-ひずみ曲線比較。時効に伴う耐力・加工硬化率・伸びのトレードオフを可視化。");
+    reg("Uncharged vs. H-charged (0.8 and 2.2 wt.ppm H) high-strength Al-Zn-Mg tensile curves demonstrating identical elastic/yield behavior with severe hydrogen-induced ductility loss.",
+        "未チャージ材と水素チャージ材 (0.8 / 2.2 wt.ppm H) の引張応力-ひずみ曲線比較。弾性率・0.2%耐力は一致しつつ、水素量増加に伴い早期破断する典型的な水素脆化挙動を再現。");
+    reg("High-cycle fatigue S-N (Wöhler) curves comparing quenched-and-tempered SCM435 steel (distinct endurance limit ~420 MPa at 10^7 cycles) and AA7075-T6 aluminum alloy (no knee).",
+        "調質 SCM435 鋼（10^7 回付近に約 420 MPa の明瞭な疲労限度あり）と AA7075-T6 アルミニウム合金（疲労限度なしで連続低下）の疲労 S-N 曲線比較（横軸対数）。");
+    reg("Log-log fatigue crack propagation da/dN vs. ΔK showing threshold (Region I), Paris law power-law regime (Region II, m ≈ 3.1), and rapid fracture (Region III) in air and H-charged environments.",
+        "両対数グラフによる疲労き裂進展速度 da/dN–ΔK 曲線。下限界 ΔKth (Region I)、Paris 則直線域 (Region II, m ≈ 3.1)、破壊靭性加速域 (Region III) を大気中と水素環境で対比。");
+    reg("Yield stress σy vs. inverse square-root grain size d^(-1/2) with error bars and linear Hall-Petch regression for low-carbon ferritic steel (ky ≈ 0.62 MPa·m^1/2) and Al-Mg alloy.",
+        "結晶粒径の逆平方根 d^(-1/2) に対する降伏応力 σy の Hall-Petch プロット（標準偏差エラーバー・線形回帰直線付き）。低炭素フェライト鋼と Al-Mg 合金の結晶粒微細化強化係数を比較。");
+    reg("Three-stage creep strain vs. time curves (primary, steady-state secondary, tertiary to rupture) of 9Cr-1Mo heat-resistant steel at 600 °C under 120, 140, and 160 MPa.",
+        "9Cr-1Mo 耐熱鋼の 600 °C における 120 / 140 / 160 MPa の3応力水準クリープ曲線。遷移クリープ（第1期）・定常クリープ（第2期）・加速クリープ（第3期）および破断寿命の応力依存性を再現。");
+    reg("Charpy V-notch impact absorbed energy vE (J) vs. temperature (-120 to +80 °C) with error bars and ductile-to-brittle transition temperature (DBTT ≈ -25 °C) tanh-sigmoid curve.",
+        "フェライト鋼の -120 °C ～ +80 °C におけるシャルピー衝撃吸収エネルギー vE (J) と標準偏差・延性破面率データ。下棚から上棚へ遷移する DBTT ≈ -25 °C のシグモイド遷移曲線を描画。");
+    reg("Isothermal Vickers hardness (HV) vs. logarithmic aging time (0.1–1000 h) at 120 °C and 160 °C for Al-Zn-Mg alloy showing under-aged, peak-aged (T6), and over-aged (T7) stages.",
+        "Al-Zn-Mg 合金の 120 °C および 160 °C 等温時効におけるビッカース硬さ HV（平均±SD）vs. 対数時効時間曲線。亜時効→ピーク時効 (T6)→過時効 (T7) の典型的な析出硬化挙動を再現。");
+    reg("Berkovich nanoindentation loading (Kick's law P ∝ h^2), peak-load creep hold, and Oliver-Pharr unloading curves comparing soft pure Al and precipitation-hardened AA7075-T6.",
+        "純 Al と時効強化 AA7075-T6 のナノインデンテーション荷重-押込み深さ曲線。負荷域 (Kick 則)・最大荷重保持クリープ・Oliver-Pharr 除荷曲線の弾性回復の違いを比較。");
+    reg("Symmetric strain-controlled (±1.0%) cyclic stress-strain hysteresis loops of austenitic SUS316L stainless steel comparing Cycle 1 and stabilized Cycle 50 (cyclic hardening & Bauschinger effect).",
+        "オーステナイト系ステンレス鋼 SUS316L の ±1.0% 対称ひずみ制御 低サイクル疲労ヒステリシスループ。第1サイクルと安定化サイクル (N=50) の繰返し加工硬化とバウシンガー効果を可視化。");
+    reg("ASTM E1820 elastic-plastic fracture toughness J-R curve with experimental J-Δa data, power-law fit, construction blunting line (J = 2σY·Δa), and 0.2 mm offset line yielding JQ.",
+        "ASTM E1820 準拠の弾塑性破壊靭性 J-R 抵抗曲線。実験点・べき乗則フィット・鈍化線 (J = 2σY·Δa)・0.2 mm オフセット鈍化線を同一グラフに描画し、交点 JQ を視覚化。");
+    reg("Johnson-Cook true stress-strain flow curves of Ti-6Al-4V across 6 decades of strain rate (10^-3 s^-1 quasi-static, 1 s^-1 intermediate, 10^3 s^-1 SHPB dynamic with adiabatic softening).",
+        "Ti-6Al-4V 合金の準静的 (10^-3 s^-1)・中速度 (1 s^-1)・高速衝撃 SHPB (10^3 s^-1) の真応力-真ひずみ曲線。ひずみ速度強化と高ひずみ速度域での断熱軟化を Johnson-Cook モデルで再現。");
+    reg("Multi-window sample project generating 5 core metal mechanics datasets (T4/T6/T73 tensile + 0.2% yield & Considère analysis, S-N fatigue, da/dN-ΔK crack growth, Hall-Petch, and Charpy DBTT).",
+        "金属の力学特性を体系的に学べる複合サンプルプロジェクト。時効別引張比較（＋0.2%耐力・加工硬化解析）・疲労S-N曲線・疲労き裂進展 da/dN-ΔK・Hall-Petch・シャルピーDBTT の一式を一括生成します。");
+    reg("Complete research workflow project for Al-Zn-Mg alloys: isothermal age-hardening HV, H-charged tensile embrittlement, 3-rate TDS + Kissinger Ea analysis, XRD pattern, and CT crack-tip strain map.",
+        "Al-Zn-Mg 合金の時効組織と水素脆化を統合評価する研究サンプルプロジェクト。時効硬化 HV・水素チャージ引張・3昇温速度 TDS（＋Kissinger 活性化エネルギー解析）・XRD・き裂先端局所ひずみマップを一括生成します。");
+    reg("First-order Polanyi-Wigner thermal desorption spectra of H-charged martensitic steel with dislocation (26.8 kJ/mol) and TiC precipitate (58.4 kJ/mol) traps.",
+        "マルテンサイト鋼中水素の1次 Polanyi-Wigner 昇温脱離スペクトル（昇温速度 100, 200, 400 °C/h）。転位トラップ (26.8 kJ/mol) と TiC 析出物トラップ (58.4 kJ/mol) の2ピークを再現。");
+    reg("Cu Kα1 (λ = 1.540598 Å) diffractogram (2θ = 20–85°) of fcc-Al broadened by D = 42 nm crystallites and ε = 1.85×10^-3 microstrain for Bragg / Williamson-Hall analysis.",
+        "Cu Kα1 (λ = 1.540598 Å) による fcc-Al の X 線回折パターン (2θ = 20–85°)。結晶子サイズ D = 42 nm・格子ひずみ ε = 1.85×10^-3 を含み、Bragg / Williamson-Hall 解析に最適。");
+    reg("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.",
+        "α-Fe 中の格子間水素拡散係数 D(T) の温度依存性データ (320–860 K, 標準偏差付き)。アレニウスプロットによる拡散活性化エネルギー解析用。");
+    reg("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.",
+        "200×200 μm 領域のき裂先端および前方マイクロボイド周囲の局所軸ひずみ ε_yy(x, y) (%) を再現した 128×128 2次元マトリクスデータ。");
+    reg("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.",
+        "窒化ケイ素セラミックスの4点曲げ強度データ 30 本分（右打ち切りランアウト含む; m ≈ 12.4, σ0 ≈ 785 MPa）。MRR / MLE ワイブル確率解析用。");
 
     reg("Kissinger TDS / DSC Activation Energy Analyzer",
         "Kissinger 昇温脱離 (TDS / DSC) 活性化エネルギー解析");
@@ -4506,11 +4581,62 @@ QVector<CurveMathTools::SampleDatasetInfo> CurveMathTools::listSampleDatasets()
 {
     registerMatSciTranslationsOnce();
     QVector<SampleDatasetInfo> list;
-    list.reserve(6);
+    list.reserve(20);
+    // --- Metallurgy / Mechanical (13 datasets) ---
     list.append({ QStringLiteral("tensile_alznmg"),
                   QObject::tr("AA7075-T6 Tensile Stress-Strain Curve"),
                   QObject::tr("Metallurgy / Mechanical"),
                   QObject::tr("Peak-aged Al-5.6Zn-2.5Mg-1.6Cu (T6) engineering stress-strain curve (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa) for 0.2% offset yield & Kocks-Mecking Considère analysis.") });
+    list.append({ QStringLiteral("tensile_temper_compare"),
+                  QObject::tr("Al-Zn-Mg Alloy Tensile Comparison by Temper (T4 / T6 / T73)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Multi-curve tensile comparison of solution-treated/naturally aged (T4), peak-aged (T6), and over-aged (T73) Al-Zn-Mg alloy showing strength-ductility trade-off.") });
+    list.append({ QStringLiteral("tensile_hydrogen_embrittlement"),
+                  QObject::tr("Hydrogen Embrittlement Tensile Curves (Uncharged vs. H-Charged)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Uncharged vs. H-charged (0.8 and 2.2 wt.ppm H) high-strength Al-Zn-Mg tensile curves demonstrating identical elastic/yield behavior with severe hydrogen-induced ductility loss.") });
+    list.append({ QStringLiteral("fatigue_sn_curve"),
+                  QObject::tr("Fatigue S-N Curves: SCM435 Steel vs. AA7075-T6 (Wöhler Diagram)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("High-cycle fatigue S-N (Wöhler) curves comparing quenched-and-tempered SCM435 steel (distinct endurance limit ~420 MPa at 10^7 cycles) and AA7075-T6 aluminum alloy (no knee).") });
+    list.append({ QStringLiteral("fatigue_crack_growth_paris"),
+                  QObject::tr("Fatigue Crack Growth Rate da/dN vs. ΔK (Paris Law: Air vs. H-Charged)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Log-log fatigue crack propagation da/dN vs. ΔK showing threshold (Region I), Paris law power-law regime (Region II, m ≈ 3.1), and rapid fracture (Region III) in air and H-charged environments.") });
+    list.append({ QStringLiteral("hall_petch_grain_size"),
+                  QObject::tr("Hall-Petch Grain Size Strengthening (Ferritic Steel & Al-Mg Alloy)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Yield stress σy vs. inverse square-root grain size d^(-1/2) with error bars and linear Hall-Petch regression for low-carbon ferritic steel (ky ≈ 0.62 MPa·m^1/2) and Al-Mg alloy.") });
+    list.append({ QStringLiteral("creep_curve_9cr1mo"),
+                  QObject::tr("High-Temperature Creep Curves of 9Cr-1Mo Steel (600 °C, 3 Stress Levels)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Three-stage creep strain vs. time curves (primary, steady-state secondary, tertiary to rupture) of 9Cr-1Mo heat-resistant steel at 600 °C under 120, 140, and 160 MPa.") });
+    list.append({ QStringLiteral("charpy_dbtt_curve"),
+                  QObject::tr("Charpy Impact Toughness Transition Curve (DBTT of Ferritic Steel)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Charpy V-notch impact absorbed energy vE (J) vs. temperature (-120 to +80 °C) with error bars and ductile-to-brittle transition temperature (DBTT ≈ -25 °C) tanh-sigmoid curve.") });
+    list.append({ QStringLiteral("vickers_age_hardening"),
+                  QObject::tr("Isothermal Age-Hardening Curves of Al-Zn-Mg Alloy (Vickers HV, 120 vs. 160 °C)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Isothermal Vickers hardness (HV) vs. logarithmic aging time (0.1–1000 h) at 120 °C and 160 °C for Al-Zn-Mg alloy showing under-aged, peak-aged (T6), and over-aged (T7) stages.") });
+    list.append({ QStringLiteral("nanoindentation_load_depth"),
+                  QObject::tr("Nanoindentation Load-Depth Curves (Oliver-Pharr: Pure Al vs. AA7075-T6)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Berkovich nanoindentation loading (Kick's law P ∝ h^2), peak-load creep hold, and Oliver-Pharr unloading curves comparing soft pure Al and precipitation-hardened AA7075-T6.") });
+    list.append({ QStringLiteral("cyclic_hysteresis_bauschinger"),
+                  QObject::tr("Low-Cycle Fatigue Hysteresis Loops of SUS316L (Cycle 1 vs. Stabilized N=50)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Symmetric strain-controlled (±1.0%) cyclic stress-strain hysteresis loops of austenitic SUS316L stainless steel comparing Cycle 1 and stabilized Cycle 50 (cyclic hardening & Bauschinger effect).") });
+    list.append({ QStringLiteral("fracture_toughness_jr_curve"),
+                  QObject::tr("Fracture Toughness J-R Resistance Curve (ASTM E1820 with Blunting Lines)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("ASTM E1820 elastic-plastic fracture toughness J-R curve with experimental J-Δa data, power-law fit, construction blunting line (J = 2σY·Δa), and 0.2 mm offset line yielding JQ.") });
+    list.append({ QStringLiteral("strain_rate_flow_stress"),
+                  QObject::tr("Strain-Rate Dependent Flow Stress of Ti-6Al-4V (10^-3 to 10^3 s^-1)"),
+                  QObject::tr("Metallurgy / Mechanical"),
+                  QObject::tr("Johnson-Cook true stress-strain flow curves of Ti-6Al-4V across 6 decades of strain rate (10^-3 s^-1 quasi-static, 1 s^-1 intermediate, 10^3 s^-1 SHPB dynamic with adiabatic softening).") });
+
+    // --- Other Materials Science Datasets (5 datasets) ---
     list.append({ QStringLiteral("tds_hydrogen_3rates"),
                   QObject::tr("Hydrogen TDS Spectra at 3 Heating Rates (100, 200, 400 °C/h)"),
                   QObject::tr("Hydrogen Embrittlement / TDS"),
@@ -4531,6 +4657,17 @@ QVector<CurveMathTools::SampleDatasetInfo> CurveMathTools::listSampleDatasets()
                   QObject::tr("Sintered Si3N4 4-Point Flexural Strength (JIS R 1625)"),
                   QObject::tr("Ceramics / Fracture Statistics"),
                   QObject::tr("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.") });
+
+    // --- Multi-Window Sample Project Packs (2 packs) ---
+    list.append({ QStringLiteral("project_metal_mechanics_suite"),
+                  QObject::tr("Project Pack: Metal Mechanical Properties Evaluation Suite (5 Datasets + Analyses)"),
+                  QObject::tr("Sample Project Pack"),
+                  QObject::tr("Multi-window sample project generating 5 core metal mechanics datasets (T4/T6/T73 tensile + 0.2% yield & Considère analysis, S-N fatigue, da/dN-ΔK crack growth, Hall-Petch, and Charpy DBTT).") });
+    list.append({ QStringLiteral("project_alznmg_he_research"),
+                  QObject::tr("Project Pack: Al-Zn-Mg Age-Hardening & Hydrogen Embrittlement Study (5 Datasets + Kissinger)"),
+                  QObject::tr("Sample Project Pack"),
+                  QObject::tr("Complete research workflow project for Al-Zn-Mg alloys: isothermal age-hardening HV, H-charged tensile embrittlement, 3-rate TDS + Kissinger Ea analysis, XRD pattern, and CT crack-tip strain map.") });
+
     return list;
 }
 
@@ -4984,6 +5121,1116 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
         return wb.weibullPlot;
     }
 
+    // 7. Al-Zn-Mg Alloy Tensile Comparison by Temper (T4 / T6 / T73)
+    if (key == QLatin1String("tensile_temper_compare") || key == QLatin1String("temper")) {
+        constexpr int N = 201;
+        auto synthTensile = [&](double eMaxPct, double E_MPa, double sigY0, double Q, double b,
+                                double th4, double neckDrop, std::vector<double> &outE,
+                                std::vector<double> &outS) {
+            outE.resize(N);
+            outS.resize(N);
+            double utsTrueEps = 0.01 * eMaxPct * 0.72;
+            double prevSigEng = 0.0;
+            for (int i = 0; i < N; ++i) {
+                const double ePct = eMaxPct * double(i) / double(N - 1);
+                const double eFrac = 0.01 * ePct;
+                const double epsT = std::log(1.0 + eFrac);
+                const double sigEl = E_MPa * epsT;
+                const double epsP = std::max(0.0, epsT - sigY0 / E_MPa);
+                const double sigPl = sigY0 + Q * (1.0 - std::exp(-b * epsP)) + th4 * epsP;
+                double sigT = 0.0;
+                if (sigEl <= sigY0 * 0.92) {
+                    sigT = sigEl;
+                } else {
+                    const double w = 1.0 - std::exp(-E_MPa * std::max(0.0, epsT - 0.92 * sigY0 / E_MPa)
+                                                    / (0.08 * sigY0 + 18.0));
+                    sigT = std::min(sigEl, 0.92 * sigY0 + (sigPl - 0.92 * sigY0) * w);
+                }
+                double sigEng = sigT / (1.0 + eFrac);
+                if (i > 0 && sigEng >= prevSigEng)
+                    utsTrueEps = epsT;
+                if (epsT > utsTrueEps) {
+                    const double dEps = epsT - utsTrueEps;
+                    sigEng -= neckDrop * dEps * dEps;
+                }
+                prevSigEng = std::max(prevSigEng, sigEng);
+                outE[size_t(i)] = ePct;
+                outS[size_t(i)] = std::max(0.0, sigEng);
+            }
+        };
+
+        std::vector<double> eT4, sT4, eT6, sT6, eT73, sT73;
+        synthTensile(19.2, 70500.0, 295.0, 245.0, 14.5, 290.0, 1450.0, eT4, sT4);
+        synthTensile(14.2, 71200.0, 492.0, 132.0, 26.5, 235.0, 2650.0, eT6, sT6);
+        synthTensile(15.8, 71000.0, 422.0, 128.0, 22.0, 210.0, 2150.0, eT73, sT73);
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("AlZnMgTemperTensile"),
+                QStringList() << QStringLiteral("Strain_T4") << QStringLiteral("Stress_T4")
+                              << QStringLiteral("Strain_T6") << QStringLiteral("Stress_T6")
+                              << QStringLiteral("Strain_T73") << QStringLiteral("Stress_T73"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y
+                        << SciDAVis::X << SciDAVis::Y,
+                { eT4, sT4, eT6, sT6, eT73, sT73 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        const char *conds[3] = { "T4 (Naturally aged)", "T6 (Peak aged)", "T73 (Over aged)" };
+        for (int k = 0; k < 3; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Nominal strain, <i>e</i>"));
+                cx->setUnits(QStringLiteral("%"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Nominal stress, <i>\u03C3</i>"));
+                cy->setUnits(QStringLiteral("MPa"));
+                cy->setComment(QString::fromUtf8(conds[k]));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml =
+                app->newGraph(makeUniqueTableName(app, QStringLiteral("AlZnMgTemperPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const QColor cols[3] = { QColor(0, 158, 115), QColor(0, 114, 178), QColor(213, 94, 0) };
+            for (int k = 0; k < 3; ++k)
+                insertStyledCurve(g, tbl, 2 * k, 2 * k + 1, N, QPen(cols[k], 2.1, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("Nominal strain, <i>e</i> / %"));
+            g->setYAxisTitle(QStringLiteral("Nominal stress, <i>\u03C3</i> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 20.0);
+            g->setScale(QwtPlot::yLeft, 0.0, 650.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 8. Hydrogen Embrittlement Tensile Curves (Uncharged vs. H-Charged)
+    if (key == QLatin1String("tensile_hydrogen_embrittlement") || key == QLatin1String("he_tensile")) {
+        constexpr int N = 201;
+        auto synthHE = [&](double eFracMaxPct, bool suddenFracture, std::vector<double> &outE,
+                           std::vector<double> &outS) {
+            outE.resize(N);
+            outS.resize(N);
+            constexpr double E_MPa = 71200.0;
+            constexpr double sigY0 = 492.0;
+            constexpr double Q = 132.0;
+            constexpr double b = 26.5;
+            constexpr double th4 = 235.0;
+            double utsTrueEps = 0.105;
+            double prevSigEng = 0.0;
+            for (int i = 0; i < N; ++i) {
+                const double ePct = eFracMaxPct * double(i) / double(N - 1);
+                const double eFrac = 0.01 * ePct;
+                const double epsT = std::log(1.0 + eFrac);
+                const double sigEl = E_MPa * epsT;
+                const double epsP = std::max(0.0, epsT - sigY0 / E_MPa);
+                const double sigPl = sigY0 + Q * (1.0 - std::exp(-b * epsP)) + th4 * epsP;
+                double sigT = 0.0;
+                if (sigEl <= sigY0 * 0.92) {
+                    sigT = sigEl;
+                } else {
+                    const double w = 1.0 - std::exp(-E_MPa * std::max(0.0, epsT - 0.92 * sigY0 / E_MPa)
+                                                    / (0.08 * sigY0 + 18.0));
+                    sigT = std::min(sigEl, 0.92 * sigY0 + (sigPl - 0.92 * sigY0) * w);
+                }
+                double sigEng = sigT / (1.0 + eFrac);
+                if (i > 0 && sigEng >= prevSigEng)
+                    utsTrueEps = epsT;
+                if (!suddenFracture && epsT > utsTrueEps) {
+                    const double dEps = epsT - utsTrueEps;
+                    sigEng -= 2650.0 * dEps * dEps;
+                }
+                prevSigEng = std::max(prevSigEng, sigEng);
+                outE[size_t(i)] = ePct;
+                outS[size_t(i)] = std::max(0.0, sigEng);
+            }
+        };
+
+        std::vector<double> e0, s0, e1, s1, e2, s2;
+        synthHE(14.5, false, e0, s0); // Uncharged (ductile necking)
+        synthHE(7.8, true, e1, s1);   // 0.8 wt.ppm H (quasi-brittle fracture)
+        synthHE(3.4, true, e2, s2);   // 2.2 wt.ppm H (severe HE fracture)
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("AlZnMgHETensile"),
+                QStringList() << QStringLiteral("Strain_Uncharged")
+                              << QStringLiteral("Stress_Uncharged")
+                              << QStringLiteral("Strain_0p8ppmH")
+                              << QStringLiteral("Stress_0p8ppmH")
+                              << QStringLiteral("Strain_2p2ppmH")
+                              << QStringLiteral("Stress_2p2ppmH"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y
+                        << SciDAVis::X << SciDAVis::Y,
+                { e0, s0, e1, s1, e2, s2 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        const char *conds[3] = { "Uncharged (0.05 wt.ppm H)", "H-charged (0.8 wt.ppm H)",
+                                 "H-charged (2.2 wt.ppm H)" };
+        for (int k = 0; k < 3; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Nominal strain, <i>e</i>"));
+                cx->setUnits(QStringLiteral("%"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Nominal stress, <i>\u03C3</i>"));
+                cy->setUnits(QStringLiteral("MPa"));
+                cy->setComment(QString::fromUtf8(conds[k]));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("AlZnMgHETensilePlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const QColor cols[3] = { QColor(0, 114, 178), QColor(230, 159, 0), QColor(213, 94, 0) };
+            for (int k = 0; k < 3; ++k)
+                insertStyledCurve(g, tbl, 2 * k, 2 * k + 1, N, QPen(cols[k], 2.1, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("Nominal strain, <i>e</i> / %"));
+            g->setYAxisTitle(QStringLiteral("Nominal stress, <i>\u03C3</i> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 16.0);
+            g->setScale(QwtPlot::yLeft, 0.0, 650.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 9. Fatigue S-N Curves: SCM435 Steel vs. AA7075-T6 (Wöhler Diagram)
+    if (key == QLatin1String("fatigue_sn_curve") || key == QLatin1String("sn_curve")) {
+        const std::vector<double> nSteel = { 1.2e4, 2.8e4, 6.5e4, 1.5e5, 3.8e5, 9.0e5,
+                                             2.2e6, 5.0e6, 1.0e7, 1.0e7 };
+        const std::vector<double> sSteel = { 660.0, 610.0, 560.0, 515.0, 470.0, 435.0,
+                                             422.0, 420.0, 420.0, 405.0 };
+        const std::vector<double> nAl = { 1.0e4, 2.5e4, 6.0e4, 1.6e5, 4.2e5, 1.1e6,
+                                          2.8e6, 6.5e6, 1.5e7, 3.0e7 };
+        const std::vector<double> sAl = { 385.0, 345.0, 310.0, 275.0, 245.0, 218.0,
+                                          196.0, 178.0, 162.0, 150.0 };
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("FatigueSNData"),
+                QStringList() << QStringLiteral("Cycles_SCM435") << QStringLiteral("StressAmp_SCM435")
+                              << QStringLiteral("Cycles_AA7075") << QStringLiteral("StressAmp_AA7075"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y,
+                { nSteel, sSteel, nAl, sAl });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Number of cycles to failure, <i>N</i><sub>f</sub>"));
+            c0->setUnits(QStringLiteral("cycles"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("Stress amplitude, <i>\u03C3</i><sub>a</sub>"));
+            c1->setUnits(QStringLiteral("MPa"));
+            c1->setComment(QStringLiteral("SCM435 Steel (R = -1)"));
+        }
+        if (Column *c2 = tbl->column(2)) {
+            c2->setLongName(QStringLiteral("Number of cycles to failure, <i>N</i><sub>f</sub>"));
+            c2->setUnits(QStringLiteral("cycles"));
+        }
+        if (Column *c3 = tbl->column(3)) {
+            c3->setLongName(QStringLiteral("Stress amplitude, <i>\u03C3</i><sub>a</sub>"));
+            c3->setUnits(QStringLiteral("MPa"));
+            c3->setComment(QStringLiteral("AA7075-T6 (R = -1)"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("FatigueSNPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const int nPts = static_cast<int>(nSteel.size());
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::LineSymbols, 0, nPts - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 1.9));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.2), QSize(8, 8)));
+            }
+            if (g->insertCurve(tbl, tbl->colName(2), tbl->colName(3), Graph::LineSymbols, 0, nPts - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(213, 94, 0), 1.9, Qt::DashLine));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Rect, QBrush(QColor(213, 94, 0)),
+                                            QPen(QColor(140, 55, 0), 1.2), QSize(8, 8)));
+            }
+            g->setXAxisTitle(QStringLiteral("Number of cycles to failure, <i>N</i><sub>f</sub>"));
+            g->setYAxisTitle(QStringLiteral("Stress amplitude, <i>\u03C3</i><sub>a</sub> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 1.0e4, 5.0e7, 0.0, 5, 8, 1 /*Log10*/);
+            g->setScale(QwtPlot::yLeft, 100.0, 750.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 10. Fatigue Crack Growth Rate da/dN vs. ΔK (Paris Law: Air vs. H-Charged)
+    if (key == QLatin1String("fatigue_crack_growth_paris") || key == QLatin1String("paris")) {
+        constexpr int N = 28;
+        std::vector<double> dkAir(N), dadnAir(N), dkH(N), dadnH(N);
+        // Forman-like 3-regime model: da/dN = C * (ΔK^m - ΔKth^m) / (1 - ΔK/Kc)
+        constexpr double C_air = 1.8e-11, m_air = 3.15, dkTh_air = 5.2, kc_air = 58.0;
+        constexpr double C_h = 8.5e-11, m_h = 3.25, dkTh_h = 3.6, kc_h = 42.0;
+        for (int i = 0; i < N; ++i) {
+            const double t = double(i) / double(N - 1);
+            const double kAir = 5.45 * std::pow(50.0 / 5.45, t);
+            const double rAir =
+                    C_air * std::max(1e-4, std::pow(kAir, m_air) - std::pow(dkTh_air, m_air))
+                    / std::max(0.08, 1.0 - kAir / kc_air);
+            const double rippleA = 1.0 + 0.06 * std::sin(1.9 * double(i + 1));
+            dkAir[size_t(i)] = kAir;
+            dadnAir[size_t(i)] = rAir * rippleA;
+
+            const double kH = 3.80 * std::pow(36.0 / 3.80, t);
+            const double rH = C_h * std::max(1e-4, std::pow(kH, m_h) - std::pow(dkTh_h, m_h))
+                    / std::max(0.08, 1.0 - kH / kc_h);
+            const double rippleH = 1.0 + 0.06 * std::cos(2.3 * double(i + 1));
+            dkH[size_t(i)] = kH;
+            dadnH[size_t(i)] = rH * rippleH;
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("FatigueCrackGrowth"),
+                QStringList() << QStringLiteral("DeltaK_Air") << QStringLiteral("dadN_Air")
+                              << QStringLiteral("DeltaK_H") << QStringLiteral("dadN_H"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y,
+                { dkAir, dadnAir, dkH, dadnH });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        for (int k = 0; k < 2; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Stress intensity factor range, \u0394<i>K</i>"));
+                cx->setUnits(QStringLiteral("MPa m<sup>1/2</sup>"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Crack growth rate, d<i>a</i>/d<i>N</i>"));
+                cy->setUnits(QStringLiteral("m cycle<sup>-1</sup>"));
+                cy->setComment(k == 0 ? QStringLiteral("Air (R = 0.1)")
+                                      : QStringLiteral("H-charged (R = 0.1)"));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("ParisLawPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::LineSymbols, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 1.8));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.1), QSize(7, 7)));
+            }
+            if (g->insertCurve(tbl, tbl->colName(2), tbl->colName(3), Graph::LineSymbols, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(213, 94, 0), 1.8));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Triangle, QBrush(QColor(213, 94, 0)),
+                                            QPen(QColor(140, 55, 0), 1.1), QSize(8, 8)));
+            }
+            g->setXAxisTitle(QStringLiteral(
+                    "Stress intensity factor range, \u0394<i>K</i> / MPa m<sup>1/2</sup>"));
+            g->setYAxisTitle(QStringLiteral(
+                    "Crack growth rate, d<i>a</i>/d<i>N</i> / m cycle<sup>-1</sup>"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 2.0, 100.0, 0.0, 5, 8, 1 /*Log10*/);
+            g->setScale(QwtPlot::yLeft, 1.0e-10, 1.0e-4, 0.0, 6, 8, 1 /*Log10*/);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 11. Hall-Petch Grain Size Strengthening (Ferritic Steel & Al-Mg Alloy)
+    if (key == QLatin1String("hall_petch_grain_size") || key == QLatin1String("hall_petch")) {
+        const std::vector<double> dUm = { 120.0, 64.0, 36.0, 20.0, 11.0, 6.2, 3.2, 1.6 };
+        const int N = static_cast<int>(dUm.size());
+        std::vector<double> invSqrtD(N), sySteel(N), sdSteel(N), fitSteel(N);
+        std::vector<double> syAl(N), sdAl(N), fitAl(N);
+        // σy = σ0 + ky * d^(-1/2) (with d in μm -> d_m^(-1/2) = 1000 * d_um^(-1/2))
+        constexpr double s0Steel = 76.0, kySteel = 620.0; // MPa * μm^(1/2) == 0.62 MPa * m^(1/2)
+        constexpr double s0Al = 38.0, kyAl = 165.0;       // MPa * μm^(1/2) == 0.165 MPa * m^(1/2)
+        const double jitter[8] = { -6.0, 5.0, -4.0, 8.0, -7.0, 6.0, -9.0, 7.0 };
+        for (int i = 0; i < N; ++i) {
+            const double x = 1.0 / std::sqrt(dUm[size_t(i)]); // μm^(-1/2)
+            invSqrtD[size_t(i)] = x;
+            fitSteel[size_t(i)] = s0Steel + kySteel * x;
+            sySteel[size_t(i)] = fitSteel[size_t(i)] + jitter[i];
+            sdSteel[size_t(i)] = 10.0 + 14.0 * x;
+
+            fitAl[size_t(i)] = s0Al + kyAl * x;
+            syAl[size_t(i)] = fitAl[size_t(i)] - 0.45 * jitter[i];
+            sdAl[size_t(i)] = 5.0 + 6.0 * x;
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("HallPetchData"),
+                QStringList() << QStringLiteral("GrainSize_um") << QStringLiteral("InvSqrtD")
+                              << QStringLiteral("YieldSteel") << QStringLiteral("YieldSteelSD")
+                              << QStringLiteral("FitSteel") << QStringLiteral("YieldAlMg")
+                              << QStringLiteral("YieldAlMgSD") << QStringLiteral("FitAlMg"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::noDesignation << SciDAVis::X << SciDAVis::Y << SciDAVis::yErr
+                        << SciDAVis::Y << SciDAVis::Y << SciDAVis::yErr << SciDAVis::Y,
+                { dUm, invSqrtD, sySteel, sdSteel, fitSteel, syAl, sdAl, fitAl });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Mean grain diameter, <i>d</i>"));
+            c0->setUnits(QStringLiteral("\u03BCm"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("<i>d</i><sup>-1/2</sup>"));
+            c1->setUnits(QStringLiteral("\u03BCm<sup>-1/2</sup>"));
+        }
+        if (Column *c2 = tbl->column(2)) {
+            c2->setLongName(QStringLiteral("Yield stress, <i>\u03C3</i><sub>y</sub>"));
+            c2->setUnits(QStringLiteral("MPa"));
+            c2->setComment(QStringLiteral("Ferritic steel (measured)"));
+        }
+        if (Column *c4 = tbl->column(4)) {
+            c4->setLongName(QStringLiteral("Hall-Petch fit"));
+            c4->setUnits(QStringLiteral("MPa"));
+            c4->setComment(QStringLiteral("Steel fit (k_y = 0.62 MPa m^1/2)"));
+        }
+        if (Column *c5 = tbl->column(5)) {
+            c5->setLongName(QStringLiteral("Yield stress, <i>\u03C3</i><sub>y</sub>"));
+            c5->setUnits(QStringLiteral("MPa"));
+            c5->setComment(QStringLiteral("Al-Mg alloy (measured)"));
+        }
+        if (Column *c7 = tbl->column(7)) {
+            c7->setLongName(QStringLiteral("Hall-Petch fit"));
+            c7->setUnits(QStringLiteral("MPa"));
+            c7->setComment(QStringLiteral("Al-Mg fit (k_y = 0.165 MPa m^1/2)"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("HallPetchPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            if (g->insertCurve(tbl, tbl->colName(1), tbl->colName(2), Graph::Scatter, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 1.5));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.2), QSize(8, 8)));
+                g->addErrorBars(tbl->colName(2), tbl, tbl->colName(3), 1, 1, 6,
+                                QColor(0, 114, 178), true, true, true);
+            }
+            insertStyledCurve(g, tbl, 1, 4, N, QPen(QColor(0, 114, 178), 1.9, Qt::DashLine));
+            if (g->insertCurve(tbl, tbl->colName(1), tbl->colName(5), Graph::Scatter, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 158, 115), 1.5));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Rect, QBrush(QColor(0, 158, 115)),
+                                            QPen(QColor(0, 100, 70), 1.2), QSize(8, 8)));
+                g->addErrorBars(tbl->colName(5), tbl, tbl->colName(6), 1, 1, 6,
+                                QColor(0, 158, 115), true, true, true);
+            }
+            insertStyledCurve(g, tbl, 1, 7, N, QPen(QColor(0, 158, 115), 1.9, Qt::DashLine));
+            g->setXAxisTitle(QStringLiteral(
+                    "Inverse square-root grain size, <i>d</i><sup>-1/2</sup> / \u03BCm<sup>-1/2</sup>"));
+            g->setYAxisTitle(QStringLiteral("Yield stress, <i>\u03C3</i><sub>y</sub> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 0.90);
+            g->setScale(QwtPlot::yLeft, 0.0, 650.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 12. High-Temperature Creep Curves of 9Cr-1Mo Steel (600 °C, 120/140/160 MPa)
+    if (key == QLatin1String("creep_curve_9cr1mo") || key == QLatin1String("creep")) {
+        constexpr int N = 161;
+        auto synthCreep = [&](double tRuptureH, double eps0, double aPrim, double tauPrim,
+                              double rateMin, double cTert, double pTert,
+                              std::vector<double> &outT, std::vector<double> &outEps) {
+            outT.resize(N);
+            outEps.resize(N);
+            for (int i = 0; i < N; ++i) {
+                const double t = tRuptureH * double(i) / double(N - 1);
+                const double u = t / tRuptureH;
+                const double e = eps0 + aPrim * (1.0 - std::exp(-t / tauPrim)) + rateMin * t
+                        + cTert * std::pow(u, pTert);
+                outT[size_t(i)] = t;
+                outEps[size_t(i)] = e;
+            }
+        };
+
+        std::vector<double> t120, e120, t140, e140, t160, e160;
+        synthCreep(980.0, 0.08, 0.65, 45.0, 0.0042, 7.8, 7.5, t120, e120);
+        synthCreep(460.0, 0.11, 0.80, 26.0, 0.0115, 8.6, 6.8, t140, e140);
+        synthCreep(195.0, 0.15, 0.95, 14.0, 0.0320, 9.5, 6.2, t160, e160);
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("Creep9Cr1Mo"),
+                QStringList() << QStringLiteral("Time_120MPa") << QStringLiteral("Strain_120MPa")
+                              << QStringLiteral("Time_140MPa") << QStringLiteral("Strain_140MPa")
+                              << QStringLiteral("Time_160MPa") << QStringLiteral("Strain_160MPa"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y
+                        << SciDAVis::X << SciDAVis::Y,
+                { t120, e120, t140, e140, t160, e160 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        const char *conds[3] = { "120 MPa (600 \u00B0C)", "140 MPa (600 \u00B0C)",
+                                 "160 MPa (600 \u00B0C)" };
+        for (int k = 0; k < 3; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Time, <i>t</i>"));
+                cx->setUnits(QStringLiteral("h"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Creep strain, <i>\u03B5</i>"));
+                cy->setUnits(QStringLiteral("%"));
+                cy->setComment(QString::fromUtf8(conds[k]));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("Creep9Cr1MoPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const QColor cols[3] = { QColor(0, 114, 178), QColor(0, 158, 115), QColor(213, 94, 0) };
+            for (int k = 0; k < 3; ++k)
+                insertStyledCurve(g, tbl, 2 * k, 2 * k + 1, N, QPen(cols[k], 2.1, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("Time, <i>t</i> / h"));
+            g->setYAxisTitle(QStringLiteral("Creep strain, <i>\u03B5</i> / %"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 1050.0);
+            g->setScale(QwtPlot::yLeft, 0.0, 18.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 13. Charpy Impact Toughness Transition Curve (DBTT of Ferritic Steel)
+    if (key == QLatin1String("charpy_dbtt_curve") || key == QLatin1String("charpy")
+        || key == QLatin1String("dbtt")) {
+        const std::vector<double> tempC = { -120.0, -100.0, -80.0, -60.0, -40.0, -30.0, -20.0,
+                                            -10.0,  0.0,    20.0,  40.0,  60.0,  80.0 };
+        const int N = static_cast<int>(tempC.size());
+        std::vector<double> vE(N), vESD(N), shearPct(N);
+        constexpr double eLo = 9.5, eHi = 172.0, t0 = -24.0, width = 26.0;
+        for (int i = 0; i < N; ++i) {
+            const double th = std::tanh((tempC[size_t(i)] - t0) / width);
+            const double baseE = 0.5 * (eHi + eLo) + 0.5 * (eHi - eLo) * th;
+            const double ripple = 3.2 * std::sin(1.7 * double(i + 1));
+            vE[size_t(i)] = std::max(4.0, baseE + ripple);
+            // Larger scatter in transition zone
+            const double sech2 = 1.0 - th * th;
+            vESD[size_t(i)] = 3.5 + 11.0 * sech2;
+            shearPct[size_t(i)] = std::clamp(50.0 * (1.0 + th), 0.0, 100.0);
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("CharpyDBTT"),
+                QStringList() << QStringLiteral("TempC") << QStringLiteral("AbsorbedEnergy")
+                              << QStringLiteral("EnergySD") << QStringLiteral("DuctileFracturePct"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::yErr << SciDAVis::noDesignation,
+                { tempC, vE, vESD, shearPct });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Test temperature, <i>T</i>"));
+            c0->setUnits(QStringLiteral("\u00B0C"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("Charpy absorbed energy, <i>vE</i>"));
+            c1->setUnits(QStringLiteral("J"));
+            c1->setComment(QStringLiteral("Low-C Ferritic Steel (DBTT \u2248 -24 \u00B0C)"));
+        }
+        if (Column *c2 = tbl->column(2)) {
+            c2->setLongName(QStringLiteral("SD"));
+            c2->setUnits(QStringLiteral("J"));
+        }
+        if (Column *c3 = tbl->column(3)) {
+            c3->setLongName(QStringLiteral("Ductile fracture surface ratio"));
+            c3->setUnits(QStringLiteral("%"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("CharpyDBTTPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::LineSymbols, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 2.0));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.2), QSize(8, 8)));
+                g->addErrorBars(tbl->colName(1), tbl, tbl->colName(2), 1, 1, 6,
+                                QColor(0, 114, 178), true, true, true);
+            }
+            g->setXAxisTitle(QStringLiteral("Test temperature, <i>T</i> / \u00B0C"));
+            g->setYAxisTitle(QStringLiteral("Charpy absorbed energy, <i>vE</i> / J"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, -130.0, 90.0);
+            g->setScale(QwtPlot::yLeft, 0.0, 200.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 14. Isothermal Age-Hardening Curves of Al-Zn-Mg Alloy (Vickers HV, 120 vs. 160 °C)
+    if (key == QLatin1String("vickers_age_hardening") || key == QLatin1String("age_hardening")) {
+        const std::vector<double> timeH = { 0.1, 0.3, 1.0,  2.5,  6.0,  12.0,
+                                            24.0, 48.0, 100.0, 240.0, 500.0, 1000.0 };
+        const int N = static_cast<int>(timeH.size());
+        std::vector<double> hv120(N), sd120(N), hv160(N), sd160(N);
+        for (int i = 0; i < N; ++i) {
+            const double lt = std::log10(timeH[size_t(i)]);
+            // 120 °C: peak around 24 h (~186 HV)
+            const double d120 = (lt - std::log10(26.0)) / 1.35;
+            hv120[size_t(i)] = 92.0 + 95.0 * std::exp(-0.5 * d120 * d120)
+                    + 1.8 * std::sin(2.1 * double(i + 1));
+            sd120[size_t(i)] = 3.2;
+            // 160 °C: faster kinetics, peak around 3 h (~168 HV), stronger over-aging drop
+            const double d160 = (lt - std::log10(3.2)) / 1.12;
+            hv160[size_t(i)] = 88.0 + 80.0 * std::exp(-0.5 * d160 * d160)
+                    - (lt > 0.5 ? 6.5 * (lt - 0.5) : 0.0)
+                    + 1.5 * std::cos(1.8 * double(i + 1));
+            sd160[size_t(i)] = 3.4;
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("AgeHardeningHV"),
+                QStringList() << QStringLiteral("AgingTime_h") << QStringLiteral("HV_120C")
+                              << QStringLiteral("SD_120C") << QStringLiteral("HV_160C")
+                              << QStringLiteral("SD_160C"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::yErr << SciDAVis::Y
+                        << SciDAVis::yErr,
+                { timeH, hv120, sd120, hv160, sd160 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Aging time, <i>t</i>"));
+            c0->setUnits(QStringLiteral("h"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("Vickers hardness, HV"));
+            c1->setUnits(QStringLiteral("HV"));
+            c1->setComment(QStringLiteral("120 \u00B0C aging"));
+        }
+        if (Column *c3 = tbl->column(3)) {
+            c3->setLongName(QStringLiteral("Vickers hardness, HV"));
+            c3->setUnits(QStringLiteral("HV"));
+            c3->setComment(QStringLiteral("160 \u00B0C aging"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("AgeHardeningPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::LineSymbols, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 2.0));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.2), QSize(8, 8)));
+                g->addErrorBars(tbl->colName(1), tbl, tbl->colName(2), 1, 1, 6,
+                                QColor(0, 114, 178), true, true, true);
+            }
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(3), Graph::LineSymbols, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(213, 94, 0), 2.0, Qt::DashLine));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Rect, QBrush(QColor(213, 94, 0)),
+                                            QPen(QColor(140, 55, 0), 1.2), QSize(8, 8)));
+                g->addErrorBars(tbl->colName(3), tbl, tbl->colName(4), 1, 1, 6,
+                                QColor(213, 94, 0), true, true, true);
+            }
+            g->setXAxisTitle(QStringLiteral("Aging time, <i>t</i> / h"));
+            g->setYAxisTitle(QStringLiteral("Vickers hardness / HV"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.08, 1500.0, 0.0, 5, 8, 1 /*Log10*/);
+            g->setScale(QwtPlot::yLeft, 60.0, 210.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 15. Nanoindentation Load-Depth Curves (Oliver-Pharr: Pure Al vs. AA7075-T6)
+    if (key == QLatin1String("nanoindentation_load_depth") || key == QLatin1String("nanoindentation")) {
+        constexpr int nLoad = 80, nHold = 15, nUnload = 65;
+        constexpr int N = nLoad + nHold + nUnload;
+        auto synthNano = [&](double hMaxLoad, double hCreep, double hFinal, double pMax,
+                             double mUnl, std::vector<double> &outH, std::vector<double> &outP) {
+            outH.resize(N);
+            outP.resize(N);
+            const double hPeak = hMaxLoad + hCreep;
+            for (int i = 0; i < nLoad; ++i) {
+                const double u = double(i) / double(nLoad - 1);
+                const double h = hMaxLoad * u;
+                outH[size_t(i)] = h;
+                outP[size_t(i)] = pMax * u * u; // Kick's law P = C h^2
+            }
+            for (int i = 0; i < nHold; ++i) {
+                const double u = double(i + 1) / double(nHold);
+                outH[size_t(nLoad + i)] = hMaxLoad + hCreep * (1.0 - std::exp(-3.2 * u));
+                outP[size_t(nLoad + i)] = pMax;
+            }
+            for (int i = 0; i < nUnload; ++i) {
+                const double u = double(i + 1) / double(nUnload);
+                const double h = hPeak - (hPeak - hFinal) * u;
+                const double frac = std::max(0.0, (h - hFinal) / std::max(1e-9, hPeak - hFinal));
+                outH[size_t(nLoad + nHold + i)] = h;
+                outP[size_t(nLoad + nHold + i)] = pMax * std::pow(frac, mUnl);
+            }
+        };
+
+        std::vector<double> hAl, pAl, h7075, p7075;
+        synthNano(420.0, 14.0, 398.0, 10.0, 1.38, hAl, pAl);       // Pure Al (soft, low elastic recovery)
+        synthNano(225.0, 5.0, 182.0, 10.0, 1.42, h7075, p7075);    // AA7075-T6 (hard, higher elastic recovery)
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("NanoindentationPH"),
+                QStringList() << QStringLiteral("Depth_PureAl") << QStringLiteral("Load_PureAl")
+                              << QStringLiteral("Depth_AA7075") << QStringLiteral("Load_AA7075"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y,
+                { hAl, pAl, h7075, p7075 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        for (int k = 0; k < 2; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Indentation depth, <i>h</i>"));
+                cx->setUnits(QStringLiteral("nm"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Load, <i>P</i>"));
+                cy->setUnits(QStringLiteral("mN"));
+                cy->setComment(k == 0 ? QStringLiteral("Pure Al (annealed)")
+                                      : QStringLiteral("AA7075-T6 (peak aged)"));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml =
+                app->newGraph(makeUniqueTableName(app, QStringLiteral("NanoindentationPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(0, 158, 115), 2.1, Qt::SolidLine));
+            insertStyledCurve(g, tbl, 2, 3, N, QPen(QColor(0, 114, 178), 2.1, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("Indentation depth, <i>h</i> / nm"));
+            g->setYAxisTitle(QStringLiteral("Load, <i>P</i> / mN"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 460.0);
+            g->setScale(QwtPlot::yLeft, 0.0, 11.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 16. Low-Cycle Fatigue Hysteresis Loops of SUS316L (Cycle 1 vs. Stabilized N=50)
+    if (key == QLatin1String("cyclic_hysteresis_bauschinger") || key == QLatin1String("hysteresis")) {
+        constexpr int nHalf = 100;
+        constexpr int N = 2 * nHalf + 1;
+        auto synthLoop = [&](double E_MPa, double kPrime, double nPrime, double epsAmpPct,
+                             std::vector<double> &outEpsPct, std::vector<double> &outSig) {
+            // Masing behavior: Δε/2 = Δσ/(2E) + (Δσ/(2K'))^(1/n')
+            // Solve peak stress σ_a for given ε_a = epsAmpPct / 100
+            const double epsA = 0.01 * epsAmpPct;
+            auto halfStrain = [&](double sigA) {
+                return sigA / E_MPa + std::pow(std::max(0.0, sigA) / kPrime, 1.0 / nPrime);
+            };
+            double lo = 1.0, hi = 1200.0;
+            for (int it = 0; it < 60; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                if (halfStrain(mid) < epsA)
+                    lo = mid;
+                else
+                    hi = mid;
+            }
+            const double sigA = 0.5 * (lo + hi);
+            outEpsPct.resize(N);
+            outSig.resize(N);
+            // Ascending branch: from (-epsA, -sigA) to (+epsA, +sigA)
+            for (int i = 0; i <= nHalf; ++i) {
+                const double dSig = 2.0 * sigA * double(i) / double(nHalf);
+                const double dEps =
+                        dSig / E_MPa + 2.0 * std::pow(std::max(0.0, dSig) / (2.0 * kPrime), 1.0 / nPrime);
+                outEpsPct[size_t(i)] = 100.0 * (-epsA + dEps);
+                outSig[size_t(i)] = -sigA + dSig;
+            }
+            // Descending branch: from (+epsA, +sigA) back to (-epsA, -sigA)
+            for (int i = 1; i <= nHalf; ++i) {
+                const double dSig = 2.0 * sigA * double(i) / double(nHalf);
+                const double dEps =
+                        dSig / E_MPa + 2.0 * std::pow(std::max(0.0, dSig) / (2.0 * kPrime), 1.0 / nPrime);
+                outEpsPct[size_t(nHalf + i)] = 100.0 * (epsA - dEps);
+                outSig[size_t(nHalf + i)] = sigA - dSig;
+            }
+        };
+
+        std::vector<double> e1, s1, e50, s50;
+        synthLoop(193000.0, 620.0, 0.16, 1.0, e1, s1);   // Cycle 1
+        synthLoop(193000.0, 890.0, 0.145, 1.0, e50, s50); // Stabilized N=50 (cyclic hardening)
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("SUS316LHysteresis"),
+                QStringList() << QStringLiteral("Strain_N1") << QStringLiteral("Stress_N1")
+                              << QStringLiteral("Strain_N50") << QStringLiteral("Stress_N50"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::X << SciDAVis::Y,
+                { e1, s1, e50, s50 });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        for (int k = 0; k < 2; ++k) {
+            if (Column *cx = tbl->column(2 * k)) {
+                cx->setLongName(QStringLiteral("Total strain, <i>\u03B5</i>"));
+                cx->setUnits(QStringLiteral("%"));
+            }
+            if (Column *cy = tbl->column(2 * k + 1)) {
+                cy->setLongName(QStringLiteral("Stress, <i>\u03C3</i>"));
+                cy->setUnits(QStringLiteral("MPa"));
+                cy->setComment(k == 0 ? QStringLiteral("Cycle 1 (SUS316L)")
+                                      : QStringLiteral("Stabilized N = 50 (SUS316L)"));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml =
+                app->newGraph(makeUniqueTableName(app, QStringLiteral("SUS316LHysteresisPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(0, 114, 178), 2.0, Qt::DashLine));
+            insertStyledCurve(g, tbl, 2, 3, N, QPen(QColor(213, 94, 0), 2.2, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("Total strain, <i>\u03B5</i> / %"));
+            g->setYAxisTitle(QStringLiteral("Stress, <i>\u03C3</i> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, -1.2, 1.2);
+            g->setScale(QwtPlot::yLeft, -520.0, 520.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 17. Fracture Toughness J-R Resistance Curve (ASTM E1820)
+    if (key == QLatin1String("fracture_toughness_jr_curve") || key == QLatin1String("jr_curve")) {
+        const std::vector<double> daExp = { 0.08, 0.16, 0.24, 0.35, 0.48, 0.62, 0.80,
+                                            1.02, 1.28, 1.55, 1.85, 2.20, 2.55 };
+        const int N = static_cast<int>(daExp.size());
+        constexpr double C1 = 265.0, C2 = 0.44; // J = C1 * (Δa)^C2 (kJ/m^2, Δa in mm)
+        constexpr double sigFlow = 560.0;       // MPa -> 2*σY = 1120 MPa = 1120 kJ/m^2 per mm
+        std::vector<double> jExp(N), jFit(N), daBlunt(N), jBlunt(N), daOff(N), jOff(N);
+        for (int i = 0; i < N; ++i) {
+            const double a = daExp[size_t(i)];
+            jFit[size_t(i)] = C1 * std::pow(a, C2);
+            jExp[size_t(i)] = jFit[size_t(i)] * (1.0 + 0.032 * std::sin(2.4 * double(i + 1)));
+            // Construction lines sampled smoothly across [0, 0.42] and [0.2, 0.62] mm
+            const double u = double(i) / double(N - 1);
+            daBlunt[size_t(i)] = 0.42 * u;
+            jBlunt[size_t(i)] = 2.0 * sigFlow * daBlunt[size_t(i)];
+            daOff[size_t(i)] = 0.20 + 0.42 * u;
+            jOff[size_t(i)] = 2.0 * sigFlow * (daOff[size_t(i)] - 0.20);
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("FractureJRCurve"),
+                QStringList() << QStringLiteral("DeltaA_mm") << QStringLiteral("J_Measured")
+                              << QStringLiteral("J_PowerFit") << QStringLiteral("DeltaA_Blunt")
+                              << QStringLiteral("J_Blunting") << QStringLiteral("DeltaA_Offset02")
+                              << QStringLiteral("J_Offset02"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::Y << SciDAVis::X
+                        << SciDAVis::Y << SciDAVis::X << SciDAVis::Y,
+                { daExp, jExp, jFit, daBlunt, jBlunt, daOff, jOff });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Crack extension, \u0394<i>a</i>"));
+            c0->setUnits(QStringLiteral("mm"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("<i>J</i>-integral"));
+            c1->setUnits(QStringLiteral("kJ m<sup>-2</sup>"));
+            c1->setComment(QStringLiteral("Measured (ASTM E1820)"));
+        }
+        if (Column *c2 = tbl->column(2)) {
+            c2->setLongName(QStringLiteral("Power-law fit"));
+            c2->setUnits(QStringLiteral("kJ m<sup>-2</sup>"));
+            c2->setComment(QStringLiteral("Power-law fit"));
+        }
+        if (Column *c4 = tbl->column(4)) {
+            c4->setLongName(QStringLiteral("Blunting line"));
+            c4->setUnits(QStringLiteral("kJ m<sup>-2</sup>"));
+            c4->setComment(QStringLiteral("Blunting line (2\u03C3_Y \u0394a)"));
+        }
+        if (Column *c6 = tbl->column(6)) {
+            c6->setLongName(QStringLiteral("0.2 mm offset line"));
+            c6->setUnits(QStringLiteral("kJ m<sup>-2</sup>"));
+            c6->setComment(QStringLiteral("0.2 mm offset line"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("FractureJRPlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(1), Graph::Scatter, 0, N - 1)) {
+                const int idx = g->curves() - 1;
+                g->setCurvePen(idx, QPen(QColor(0, 114, 178), 1.5));
+                g->setCurveSymbol(idx,
+                                  QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(0, 114, 178)),
+                                            QPen(QColor(0, 70, 120), 1.2), QSize(8, 8)));
+            }
+            insertStyledCurve(g, tbl, 0, 2, N, QPen(QColor(0, 114, 178), 2.1, Qt::SolidLine));
+            insertStyledCurve(g, tbl, 3, 4, N, QPen(QColor(90, 90, 90), 1.5, Qt::DotLine));
+            insertStyledCurve(g, tbl, 5, 6, N, QPen(QColor(213, 94, 0), 1.8, Qt::DashLine));
+            g->setXAxisTitle(QStringLiteral("Crack extension, \u0394<i>a</i> / mm"));
+            g->setYAxisTitle(QStringLiteral("<i>J</i>-integral / kJ m<sup>-2</sup>"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 2.8);
+            g->setScale(QwtPlot::yLeft, 0.0, 480.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 18. Strain-Rate Dependent Flow Stress of Ti-6Al-4V (10^-3, 1, 10^3 s^-1)
+    if (key == QLatin1String("strain_rate_flow_stress") || key == QLatin1String("strain_rate")) {
+        constexpr int N = 161;
+        std::vector<double> epsT(N), sigLow(N), sigMid(N), sigHigh(N);
+        // Johnson-Cook parameters for Ti-6Al-4V: A=860 MPa, B=680 MPa, n=0.47, C=0.015
+        constexpr double A = 860.0, B = 680.0, nJC = 0.47, C_jc = 0.015, epsDot0 = 1.0e-3;
+        constexpr double rhoCp = 2.34e6; // J / (m^3 K)
+        constexpr double betaTQ = 0.90;  // Taylor-Quinney factor
+        constexpr double T0 = 298.0, Tm = 1933.0, mTherm = 1.0;
+
+        auto evalJC = [&](double epsP, double epsDot, bool adiabatic) -> double {
+            const double rateFac = 1.0 + C_jc * std::log(std::max(1.0, epsDot / epsDot0));
+            const double baseSig = (A + B * std::pow(std::max(0.0, epsP), nJC)) * rateFac;
+            if (!adiabatic)
+                return baseSig;
+            // Approximate adiabatic temperature rise ΔT ≈ β/(ρCp) * ∫ σ dε_p
+            const double workJ = (A * epsP + B * std::pow(std::max(0.0, epsP), nJC + 1.0) / (nJC + 1.0))
+                    * rateFac * 1.0e6;
+            const double dT = (betaTQ * workJ) / rhoCp;
+            const double tStar = std::clamp(dT / (Tm - T0), 0.0, 0.95);
+            return baseSig * (1.0 - std::pow(tStar, mTherm));
+        };
+
+        for (int i = 0; i < N; ++i) {
+            const double ep = 0.25 * double(i) / double(N - 1);
+            epsT[size_t(i)] = ep;
+            sigLow[size_t(i)] = evalJC(ep, 1.0e-3, false);
+            sigMid[size_t(i)] = evalJC(ep, 1.0, false);
+            sigHigh[size_t(i)] = evalJC(ep, 1.0e3, true);
+        }
+
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("Ti64StrainRateFlow"),
+                QStringList() << QStringLiteral("TruePlasticStrain")
+                              << QStringLiteral("Stress_1e_3") << QStringLiteral("Stress_1e0")
+                              << QStringLiteral("Stress_1e3"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y,
+                { epsT, sigLow, sigMid, sigHigh });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("True plastic strain, <i>\u03B5</i><sub>p</sub>"));
+            c0->setUnits(QStringLiteral("-"));
+        }
+        const char *rateLabels[3] = { "10^-3 s^-1 (Quasi-static)", "10^0 s^-1 (Intermediate)",
+                                      "10^3 s^-1 (SHPB, adiabatic)" };
+        for (int k = 0; k < 3; ++k) {
+            if (Column *ck = tbl->column(k + 1)) {
+                ck->setLongName(QStringLiteral("True flow stress, <i>\u03C3</i>"));
+                ck->setUnits(QStringLiteral("MPa"));
+                ck->setComment(QString::fromUtf8(rateLabels[k]));
+            }
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml =
+                app->newGraph(makeUniqueTableName(app, QStringLiteral("Ti64StrainRatePlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const QColor cols[3] = { QColor(0, 114, 178), QColor(0, 158, 115), QColor(213, 94, 0) };
+            for (int k = 0; k < 3; ++k)
+                insertStyledCurve(g, tbl, 0, k + 1, N, QPen(cols[k], 2.1, Qt::SolidLine));
+            g->setXAxisTitle(QStringLiteral("True plastic strain, <i>\u03B5</i><sub>p</sub>"));
+            g->setYAxisTitle(QStringLiteral("True flow stress, <i>\u03C3</i> / MPa"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setScale(QwtPlot::xBottom, 0.0, 0.26);
+            g->setScale(QwtPlot::yLeft, 800.0, 1450.0);
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
+
+    // 19. Project Pack: Metal Mechanical Properties Evaluation Suite
+    if (key == QLatin1String("project_metal_mechanics_suite")
+        || key == QLatin1String("metal_mechanics_project")) {
+        Table *tMain = nullptr;
+        MultiLayer *mlMain =
+                loadSampleDataset(app, QStringLiteral("tensile_temper_compare"), autoPlot, &tMain, nullptr);
+        if (autoPlot && mlMain && mlMain->activeGraph() && tMain) {
+            // Run 0.2% offset yield & Considère work-hardening analysis on T6 curve (Stress_T6)
+            const QString t6Curve = tMain->name() + QStringLiteral("_Stress_T6");
+            analyzeTensile(app, mlMain->activeGraph(), t6Curve, 0.002, 1,
+                           std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::quiet_NaN(), true, true, false);
+            analyzeWorkHardening(app, mlMain->activeGraph(), t6Curve, 11, true);
+        }
+        loadSampleDataset(app, QStringLiteral("fatigue_sn_curve"), autoPlot, nullptr, nullptr);
+        loadSampleDataset(app, QStringLiteral("fatigue_crack_growth_paris"), autoPlot, nullptr, nullptr);
+        loadSampleDataset(app, QStringLiteral("hall_petch_grain_size"), autoPlot, nullptr, nullptr);
+        loadSampleDataset(app, QStringLiteral("charpy_dbtt_curve"), autoPlot, nullptr, nullptr);
+        if (outTable)
+            *outTable = tMain;
+        return mlMain;
+    }
+
+    // 20. Project Pack: Al-Zn-Mg Age-Hardening & Hydrogen Embrittlement Study
+    if (key == QLatin1String("project_alznmg_he_research")
+        || key == QLatin1String("alznmg_he_project")) {
+        Table *tMain = nullptr;
+        MultiLayer *mlMain = loadSampleDataset(
+                app, QStringLiteral("tensile_hydrogen_embrittlement"), autoPlot, &tMain, nullptr);
+        loadSampleDataset(app, QStringLiteral("vickers_age_hardening"), autoPlot, nullptr, nullptr);
+        Table *tTds = nullptr;
+        loadSampleDataset(app, QStringLiteral("tds_hydrogen_3rates"), autoPlot, &tTds, nullptr);
+        if (autoPlot && tTds) {
+            QVector<double> rates = { 100.0, 200.0, 400.0 };
+            QVector<double> tPeaks;
+            for (int c = 1; c <= 3 && c < tTds->numCols(); ++c) {
+                double bestY = -1e300, bestT = 100.0;
+                for (int r = 0; r < tTds->numRows(); ++r) {
+                    double tv = 0.0, fv = 0.0;
+                    if (readMatSciCell(tTds->column(0), r, tv)
+                        && readMatSciCell(tTds->column(c), r, fv) && tv <= 260.0 && fv > bestY) {
+                        bestY = fv;
+                        bestT = tv;
+                    }
+                }
+                tPeaks.append(bestT);
+            }
+            analyzeKissinger(app, rates, tPeaks, true /*K/h*/, true /*°C*/, true);
+        }
+        loadSampleDataset(app, QStringLiteral("xrd_aged_alloy"), autoPlot, nullptr, nullptr);
+        Matrix *matCt = nullptr;
+        loadSampleDataset(app, QStringLiteral("ct_local_strain_map"), autoPlot, nullptr, &matCt);
+        if (outTable)
+            *outTable = tMain;
+        if (outMatrix)
+            *outMatrix = matCt;
+        return mlMain;
+    }
+
     return nullptr;
 }
 
@@ -4999,7 +6246,7 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
 
     QDialog dlg(app);
     dlg.setWindowTitle(QObject::tr("Materials Science Sample Gallery"));
-    dlg.setMinimumSize(640, 430);
+    dlg.setMinimumSize(740, 520);
     QVBoxLayout *vbox = new QVBoxLayout(&dlg);
 
     QLabel *intro = new QLabel(
@@ -5008,27 +6255,89 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
     intro->setWordWrap(true);
     vbox->addWidget(intro);
 
-    QListWidget *lw = new QListWidget(&dlg);
+    // Category filter & keyword search row
+    QHBoxLayout *filterRow = new QHBoxLayout();
+    filterRow->addWidget(new QLabel(QObject::tr("Category:"), &dlg));
+    QComboBox *cbCat = new QComboBox(&dlg);
+    cbCat->addItem(QObject::tr("All Categories"), QString());
+    QStringList seenCats;
     for (const SampleDatasetInfo &ds : datasets) {
-        QListWidgetItem *it = new QListWidgetItem(
-                QStringLiteral("[%1]  %2").arg(ds.category, ds.title), lw);
-        it->setData(Qt::UserRole, ds.id);
+        if (!seenCats.contains(ds.category)) {
+            seenCats.append(ds.category);
+            cbCat->addItem(ds.category, ds.category);
+        }
     }
-    lw->setCurrentRow(0);
+    filterRow->addWidget(cbCat, 1);
+
+    filterRow->addWidget(new QLabel(QObject::tr("Filter:"), &dlg));
+    QLineEdit *leSearch = new QLineEdit(&dlg);
+    leSearch->setClearButtonEnabled(true);
+    leSearch->setPlaceholderText(QObject::tr("Search by alloy, test type, or keyword..."));
+    filterRow->addWidget(leSearch, 1);
+    vbox->addLayout(filterRow);
+
+    QListWidget *lw = new QListWidget(&dlg);
     vbox->addWidget(lw, 1);
 
     QLabel *descLbl = new QLabel(&dlg);
     descLbl->setWordWrap(true);
     descLbl->setFrameStyle(QFrame::StyledPanel | QFrame::Plain);
     descLbl->setMargin(8);
+    descLbl->setMinimumHeight(54);
     vbox->addWidget(descLbl);
 
-    auto updateDesc = [&](int row) {
-        if (row >= 0 && row < datasets.size())
-            descLbl->setText(datasets[row].description);
+    auto findDatasetById = [&](const QString &dsId) -> const SampleDatasetInfo * {
+        for (const SampleDatasetInfo &ds : datasets) {
+            if (ds.id == dsId)
+                return &ds;
+        }
+        return nullptr;
     };
-    updateDesc(0);
-    QObject::connect(lw, &QListWidget::currentRowChanged, &dlg, updateDesc);
+
+    auto updateDesc = [&]() {
+        QListWidgetItem *cur = lw->currentItem();
+        if (!cur) {
+            descLbl->clear();
+            return;
+        }
+        if (const SampleDatasetInfo *ds = findDatasetById(cur->data(Qt::UserRole).toString()))
+            descLbl->setText(ds->description);
+    };
+
+    auto repopulate = [&]() {
+        const QString wantCat = cbCat->currentData().toString();
+        const QString query = leSearch->text().trimmed();
+        const QString prevId =
+                lw->currentItem() ? lw->currentItem()->data(Qt::UserRole).toString() : QString();
+        lw->clear();
+        int restoreRow = -1;
+        for (const SampleDatasetInfo &ds : datasets) {
+            if (!wantCat.isEmpty() && ds.category != wantCat)
+                continue;
+            if (!query.isEmpty()) {
+                const bool hit = ds.title.contains(query, Qt::CaseInsensitive)
+                        || ds.category.contains(query, Qt::CaseInsensitive)
+                        || ds.description.contains(query, Qt::CaseInsensitive)
+                        || ds.id.contains(query, Qt::CaseInsensitive);
+                if (!hit)
+                    continue;
+            }
+            QListWidgetItem *it = new QListWidgetItem(
+                    QStringLiteral("[%1]  %2").arg(ds.category, ds.title), lw);
+            it->setData(Qt::UserRole, ds.id);
+            if (!prevId.isEmpty() && ds.id == prevId)
+                restoreRow = lw->count() - 1;
+        }
+        if (lw->count() > 0)
+            lw->setCurrentRow(restoreRow >= 0 ? restoreRow : 0);
+        updateDesc();
+    };
+    repopulate();
+
+    QObject::connect(lw, &QListWidget::currentRowChanged, &dlg, [&](int) { updateDesc(); });
+    QObject::connect(cbCat, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { repopulate(); });
+    QObject::connect(leSearch, &QLineEdit::textChanged, &dlg, [&](const QString &) { repopulate(); });
 
     int chosenAction = 0; // 1 = Load & Plot, 2 = Load, Plot & Analyze
     QHBoxLayout *btnRow = new QHBoxLayout();
@@ -5044,12 +6353,16 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
     vbox->addLayout(btnRow);
 
     QObject::connect(btnLoadPlot, &QPushButton::clicked, &dlg, [&]() {
-        chosenAction = 1;
-        dlg.accept();
+        if (lw->currentItem()) {
+            chosenAction = 1;
+            dlg.accept();
+        }
     });
     QObject::connect(btnAnalyze, &QPushButton::clicked, &dlg, [&]() {
-        chosenAction = 2;
-        dlg.accept();
+        if (lw->currentItem()) {
+            chosenAction = 2;
+            dlg.accept();
+        }
     });
     QObject::connect(lw, &QListWidget::itemDoubleClicked, &dlg, [&](QListWidgetItem *) {
         chosenAction = 1;
@@ -5057,10 +6370,10 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
     });
     QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
-    if (dlg.exec() != QDialog::Accepted || chosenAction == 0 || lw->currentRow() < 0)
+    if (dlg.exec() != QDialog::Accepted || chosenAction == 0 || !lw->currentItem())
         return;
 
-    const QString id = datasets[lw->currentRow()].id;
+    const QString id = lw->currentItem()->data(Qt::UserRole).toString();
     Table *tbl = nullptr;
     Matrix *mat = nullptr;
     const bool skipAutoForArrhenius =
@@ -5073,6 +6386,19 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
             analyzeWorkHardening(app, ml->activeGraph(), QString(), 11, true);
+        } else if (id == QLatin1String("tensile_temper_compare") && ml && ml->activeGraph() && tbl) {
+            const QString t6Curve = tbl->name() + QStringLiteral("_Stress_T6");
+            analyzeTensile(app, ml->activeGraph(), t6Curve, 0.002, 1,
+                           std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::quiet_NaN(), true, true, false);
+            analyzeWorkHardening(app, ml->activeGraph(), t6Curve, 11, true);
+        } else if (id == QLatin1String("tensile_hydrogen_embrittlement") && ml && ml->activeGraph()
+                   && tbl) {
+            const QString unchCurve = tbl->name() + QStringLiteral("_Stress_Uncharged");
+            analyzeTensile(app, ml->activeGraph(), unchCurve, 0.002, 1,
+                           std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::quiet_NaN(), true, true, false);
+            analyzeWorkHardening(app, ml->activeGraph(), unchCurve, 11, true);
         } else if (id == QLatin1String("tds_hydrogen_3rates") && tbl) {
             QVector<double> rates = { 100.0, 200.0, 400.0 };
             QVector<double> tPeaks;

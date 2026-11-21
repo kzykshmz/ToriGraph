@@ -5217,6 +5217,45 @@ def _discover_torigraph_executable(
         if which:
             return Path(which).resolve()
 
+    if sys.platform == "win32":
+        # Check Windows OLE ServerExecutable registry entry (written by installer & ToriGraph)
+        try:
+            import winreg
+
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                subkey = (
+                    r"Software\Classes\CLSID"
+                    r"\{8E6B9541-3C74-4D28-A915-7D84E5A12001}\LocalServer32"
+                )
+                try:
+                    with winreg.OpenKey(root, subkey) as k:
+                        val, _ = winreg.QueryValueEx(k, "ServerExecutable")
+                        if val:
+                            p = Path(str(val).strip('"')).resolve()
+                            if p.is_file():
+                                return p
+                except OSError:
+                    continue
+        except Exception:
+            pass
+
+        # Check standard Windows installer locations (per-user and per-machine)
+        win_dirs = [
+            os.environ.get("LOCALAPPDATA", ""),
+            os.environ.get("ProgramFiles", ""),
+            os.environ.get("ProgramFiles(x86)", ""),
+        ]
+        for base in win_dirs:
+            if not base:
+                continue
+            for rel in (
+                "Programs/ToriGraph/ToriGraph.exe",
+                "ToriGraph/ToriGraph.exe",
+            ):
+                cand = (Path(base) / rel).resolve()
+                if cand.is_file():
+                    return cand
+
     raise ToriGraphError(
         "Could not find ToriGraph executable. Pass exe_path=... or set TORIGRAPH_EXE."
     )
