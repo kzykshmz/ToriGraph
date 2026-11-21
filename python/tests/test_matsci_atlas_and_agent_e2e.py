@@ -802,8 +802,8 @@ def run_persona_2_intermediate(app: tg.Session, reg: AtlasRegistry, tmp_dir: Pat
     t_fcc = app.create_table(
         {"TwoTheta": tt_fcc, "Intensity": y_fcc},
         name="Inter_Al_FCC_XRD",
-        units={"TwoTheta": "deg.", "Intensity": "cps"},
-        long_names={"TwoTheta": "Diffraction angle, 2<i>θ</i>", "Intensity": "Intensity"},
+        units={"TwoTheta": "deg", "Intensity": "cps"},
+        long_names={"TwoTheta": "Diffraction angle, 2<i>θ</i>", "Intensity": "Intensity, <i>I</i>"},
     )
     g15 = app.plot_xy(t_fcc, "TwoTheta", "Intensity", style="line", graph_name="Atlas_Fig15_FCC_XRD")
     xrd_fcc = g15.analyze_xrd(
@@ -851,8 +851,8 @@ def run_persona_2_intermediate(app: tg.Session, reg: AtlasRegistry, tmp_dir: Pat
     t_hcp = app.create_table(
         {"TwoTheta": tt_hcp, "Intensity": y_hcp},
         name="Inter_Ti_HCP_XRD",
-        units={"TwoTheta": "deg.", "Intensity": "cps"},
-        long_names={"TwoTheta": "Diffraction angle, 2<i>θ</i>", "Intensity": "Intensity"},
+        units={"TwoTheta": "deg", "Intensity": "cps"},
+        long_names={"TwoTheta": "Diffraction angle, 2<i>θ</i>", "Intensity": "Intensity, <i>I</i>"},
     )
     g15b = app.plot_xy(t_hcp, "TwoTheta", "Intensity", style="line", graph_name="Atlas_Fig15b_HCP_XRD")
     xrd_hcp = g15b.analyze_xrd(wavelength=wl_cu, instr_fwhm=0.05, crystal_system="hcp", c_over_a=ca_ti, create_wh_plot=False)
@@ -1053,7 +1053,7 @@ def run_persona_3_expert(
             "Recryst_O": [210.0 + 12.0 * math.cos(math.radians(4.0 * th)) for th in thetas],
         },
         name="Expert_AnisotropyPolar",
-        units={"Azimuth": "deg.", "AsRolled": "MPa", "T6_Sheet": "MPa", "Recryst_O": "MPa"},
+        units={"Azimuth": "deg", "AsRolled": "MPa", "T6_Sheet": "MPa", "Recryst_O": "MPa"},
         long_names={
             "Azimuth": "Rolling azimuth, <i>θ</i>",
             "AsRolled": "As-rolled",
@@ -1131,23 +1131,23 @@ def run_persona_3_expert(
         m128,
         palette="viridis",
         show_colorbar=True,
-        colorbar_title="Local strain, <i>ε</i><sub>xx</sub> (%)",
+        colorbar_title="Local strain, <i>ε</i><sub>xx</sub> / %",
         graph_name="Atlas_Fig25_Heatmap128",
     )
     g25.set_colorbar(palette="viridis", show_contour_lines=True, levels=8)
-    g25.set_axis("x", title="<i>x</i> / μm")
-    g25.set_axis("y", title="<i>y</i> / μm")
+    g25.set_axis("x", title="Position, <i>x</i> / μm")
+    g25.set_axis("y", title="Position, <i>y</i> / μm")
     g25.isij_style()
     reg.verify_figure(app, g25, "Fig25_Heatmap_Contour_128x128", persona="Expert", description="128x128 DIC Local Strain Heatmap + Iso-Strain Contours")
 
     g25b = app.plot_matrix(m128, style="contour", levels=10, graph_name="Atlas_Fig25b_Contour128")
-    g25b.set_axis("x", title="<i>x</i> / μm")
-    g25b.set_axis("y", title="<i>y</i> / μm")
+    g25b.set_axis("x", title="Position, <i>x</i> / μm")
+    g25b.set_axis("y", title="Position, <i>y</i> / μm")
     g25b.isij_style()
     reg.verify_figure(app, g25b, "Fig25b_Contour_128x128", persona="Expert", description="128x128 Pure Contour Map", is_primary=False)
 
     g25c_3d = app.plot_3d_matrix(m128, style="surface", graph_name="Atlas_Fig25c_3DSurface")
-    g25c_3d.set_3d_options(palette="viridis", title="", axes_labels=["x / μm", "y / μm", "ε_xx (%)"])
+    g25c_3d.set_3d_options(palette="viridis", title="", axes_labels=["x / μm", "y / μm", "ε_xx / %"])
     png_3d = out_dir / "Fig25c_3DSurface_128x128.png"
     pdf_3d = out_dir / "Fig25c_3DSurface_128x128.pdf"
     emf_3d = out_dir / "Fig25c_3DSurface_128x128.emf"
@@ -1376,8 +1376,8 @@ def run_persona_4_ai_agent_autonomy(
     t_gf = app.create_table(
         {"Delta2Theta": xs_g, "Counts": ys_g},
         name="Src_GaussFit",
-        units={"Delta2Theta": "deg.", "Counts": "cps"},
-        long_names={"Delta2Theta": "Peak offset, Δ2<i>θ</i>", "Counts": "Diffracted intensity"},
+        units={"Delta2Theta": "deg", "Counts": "cps"},
+        long_names={"Delta2Theta": "Peak offset, Δ2<i>θ</i>", "Counts": "Diffracted intensity, <i>I</i>"},
     )
     g_src_gf = app.plot_xy(t_gf, "Delta2Theta", "Counts", style="scatter", graph_name="Src_Fig29_Gauss")
     app.fit_nonlinear(graph=g_src_gf, curve=0, model="Gauss")
@@ -1445,7 +1445,7 @@ def run_persona_4_ai_agent_autonomy(
     t_spol = app.create_table(
         {"Angle": th_p, "r_val": [80.0 + 15.0 * math.cos(math.radians(2.0 * a)) for a in th_p]},
         name="Src_Polar",
-        units={"Angle": "deg.", "r_val": "-"},
+        units={"Angle": "deg", "r_val": "-"},
         long_names={"Angle": "Azimuth, <i>θ</i>", "r_val": "Lankford <i>r</i>-value"},
     )
     g_src_pol = app.plot_polar(t_spol, theta_col="Angle", r_cols=["r_val"], graph_name="Src_Fig30b_Polar")

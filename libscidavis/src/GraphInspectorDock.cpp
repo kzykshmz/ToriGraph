@@ -37,6 +37,7 @@
 #include "IconLoader.h"
 #include "ImageMarker.h"
 #include "Legend.h"
+#include "ModernRibbonAndHud.h"
 #include "ModernUiTheme.h"
 #include "MultiLayer.h"
 #include "Plot.h"
@@ -389,6 +390,27 @@ static void registerInspectorExtraTranslations()
         reg("Colorbar Title", "カラーバータイトル");
         reg("Enter colorbar title...", "カラーバータイトルを入力...");
         reg("Edit Colorbar Title", "カラーバータイトルの編集");
+        reg("Quick Start Guide", "クイックスタートガイド");
+        reg("Create publication-ready graphs in 3 easy steps",
+            "3ステップで論文品質のグラフを作成できます");
+        reg("Enter data in Table or import CSV",
+            "テーブルにデータを入力、またはCSVを読込");
+        reg("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar",
+            "上部の「折れ線」「線+記号」「散布図」をクリック");
+        reg("Drag graph frame to resize; click axes or legend to edit",
+            "グラフの枠ドラッグでサイズ変更・クリックで軸や凡例を編集");
+        reg("Import CSV / Data...", "CSV / データ読込...");
+        reg("New 2D Graph", "新規2Dグラフ");
+        reg("Sample Gallery / Plot", "サンプル作図ギャラリー");
+        reg("Aspect Ratio & Resizing", "縦横比とリサイズ");
+        reg("Lock Aspect Ratio", "縦横比を固定 (Lock Aspect Ratio)");
+        reg("1:1 Square", "1:1 正方形");
+        reg("4:3 Landscape", "4:3 横長");
+        reg("16:9 Wide", "16:9 ワイド");
+        reg("3:4 Portrait", "3:4 縦長");
+        reg("Free Resize (Unlock Aspect Ratio)", "自由リサイズ (縦横比ロック解除)");
+        reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
+        reg("Apply Aspect Ratio Preset", "縦横比プリセット適用");
     });
 }
 
@@ -795,6 +817,12 @@ GraphInspectorDock::InspectorPageIndex GraphInspectorDock::currentInspectorPage(
     return static_cast<InspectorPageIndex>(qBound(0, d_prop_stack->currentIndex(), 3));
 }
 
+bool GraphInspectorDock::isShowingQuickStart() const
+{
+    return d_content_stack && d_empty_quickstart_panel
+            && d_content_stack->currentWidget() == d_empty_quickstart_panel;
+}
+
 void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
 {
     if (d_target_ml == ml && !forceRefresh) {
@@ -949,8 +977,18 @@ void GraphInspectorDock::buildUi()
 
     expLayout->addWidget(d_header_bar);
 
+    // Content stack: Index 0 = Quick Start Empty State, Index 1 = Active Graph Inspector
+    d_content_stack = new QStackedWidget(d_expanded_panel);
+    d_empty_quickstart_panel = buildQuickStartEmptyState();
+    d_content_stack->addWidget(d_empty_quickstart_panel);
+
+    d_inspector_active_panel = new QWidget(d_content_stack);
+    QVBoxLayout *activeLayout = new QVBoxLayout(d_inspector_active_panel);
+    activeLayout->setContentsMargins(0, 0, 0, 0);
+    activeLayout->setSpacing(0);
+
     // Multi-Panel Scope Switch ([Active Layer | All Panels]), shown when layers() > 1
-    d_scope_strip = new QFrame(d_expanded_panel);
+    d_scope_strip = new QFrame(d_inspector_active_panel);
     d_scope_strip->setObjectName(QStringLiteral("InspectorScopeStrip"));
     QHBoxLayout *scopeRow = new QHBoxLayout(d_scope_strip);
     scopeRow->setContentsMargins(8, 3, 8, 3);
@@ -980,10 +1018,10 @@ void GraphInspectorDock::buildUi()
     connect(d_scope_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
             [this](int id) { d_scope_all_panels = (id == 1); });
     d_scope_strip->hide();
-    expLayout->addWidget(d_scope_strip);
+    activeLayout->addWidget(d_scope_strip);
 
     // Vertical Splitter: Top Object Manager + Bottom Property Inspector
-    d_splitter = new QSplitter(Qt::Vertical, d_expanded_panel);
+    d_splitter = new QSplitter(Qt::Vertical, d_inspector_active_panel);
     d_splitter->setChildrenCollapsible(false);
     d_splitter->setHandleWidth(4);
 
@@ -1132,7 +1170,10 @@ void GraphInspectorDock::buildUi()
     d_splitter->setStretchFactor(0, 38);
     d_splitter->setStretchFactor(1, 62);
 
-    expLayout->addWidget(d_splitter, 1);
+    activeLayout->addWidget(d_splitter, 1);
+    d_content_stack->addWidget(d_inspector_active_panel);
+    d_content_stack->setCurrentIndex(0);
+    expLayout->addWidget(d_content_stack, 1);
     d_mode_stack->addWidget(d_expanded_panel);
 
     // =========================================================================
@@ -1201,6 +1242,108 @@ void GraphInspectorDock::buildUi()
     setWidget(d_root_container);
 }
 
+QWidget *GraphInspectorDock::buildQuickStartEmptyState()
+{
+    QWidget *outer = new QWidget(d_content_stack);
+    outer->setObjectName(QStringLiteral("InspectorQuickStartPanel"));
+    QVBoxLayout *outerLay = new QVBoxLayout(outer);
+    outerLay->setContentsMargins(0, 0, 0, 0);
+    outerLay->setSpacing(0);
+
+    QScrollArea *scroll = new QScrollArea(outer);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    QWidget *content = new QWidget(scroll);
+    QVBoxLayout *lay = new QVBoxLayout(content);
+    lay->setContentsMargins(12, 14, 12, 14);
+    lay->setSpacing(10);
+
+    // Welcome card header
+    QFrame *heroCard = new QFrame(content);
+    heroCard->setObjectName(QStringLiteral("QuickStartHeroCard"));
+    QVBoxLayout *heroLay = new QVBoxLayout(heroCard);
+    heroLay->setContentsMargins(12, 12, 12, 12);
+    heroLay->setSpacing(4);
+
+    d_qs_title_lbl = new QLabel(heroCard);
+    d_qs_title_lbl->setObjectName(QStringLiteral("QuickStartTitle"));
+    d_qs_title_lbl->setWordWrap(true);
+    heroLay->addWidget(d_qs_title_lbl);
+
+    d_qs_subtitle_lbl = new QLabel(heroCard);
+    d_qs_subtitle_lbl->setObjectName(QStringLiteral("QuickStartSubtitle"));
+    d_qs_subtitle_lbl->setWordWrap(true);
+    heroLay->addWidget(d_qs_subtitle_lbl);
+    lay->addWidget(heroCard);
+
+    // 3 Clear Step Cards
+    auto addStepCard = [&](const QString &num, QLabel *&textLbl) {
+        QFrame *card = new QFrame(content);
+        card->setObjectName(QStringLiteral("QuickStartCard"));
+        QHBoxLayout *row = new QHBoxLayout(card);
+        row->setContentsMargins(10, 9, 10, 9);
+        row->setSpacing(9);
+
+        QLabel *badge = new QLabel(num, card);
+        badge->setObjectName(QStringLiteral("QuickStartStepBadge"));
+        badge->setAlignment(Qt::AlignCenter);
+        badge->setFixedSize(22, 22);
+        row->addWidget(badge, 0, Qt::AlignTop);
+
+        textLbl = new QLabel(card);
+        textLbl->setObjectName(QStringLiteral("QuickStartStepText"));
+        textLbl->setWordWrap(true);
+        row->addWidget(textLbl, 1);
+
+        lay->addWidget(card);
+    };
+
+    addStepCard(QStringLiteral("1"), d_qs_step1_lbl);
+    addStepCard(QStringLiteral("2"), d_qs_step2_lbl);
+    addStepCard(QStringLiteral("3"), d_qs_step3_lbl);
+
+    // 1-Click Quick Action Buttons
+    d_btn_qs_import_csv = new QPushButton(content);
+    d_btn_qs_import_csv->setObjectName(QStringLiteral("QuickStartPrimaryBtn"));
+    d_btn_qs_import_csv->setIcon(IconLoader::duotoneIcon(QStringLiteral("import-csv"), 16));
+    d_btn_qs_import_csv->setMinimumHeight(32);
+    d_btn_qs_import_csv->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_qs_import_csv, &QPushButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->importASCII();
+    });
+    lay->addWidget(d_btn_qs_import_csv);
+
+    d_btn_qs_new_graph = new QPushButton(content);
+    d_btn_qs_new_graph->setObjectName(QStringLiteral("QuickStartSecondaryBtn"));
+    d_btn_qs_new_graph->setIcon(IconLoader::duotoneIcon(QStringLiteral("new-graph"), 16));
+    d_btn_qs_new_graph->setMinimumHeight(30);
+    d_btn_qs_new_graph->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_qs_new_graph, &QPushButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->newGraph();
+    });
+    lay->addWidget(d_btn_qs_new_graph);
+
+    d_btn_qs_sample_gallery = new QPushButton(content);
+    d_btn_qs_sample_gallery->setObjectName(QStringLiteral("QuickStartSecondaryBtn"));
+    d_btn_qs_sample_gallery->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 16));
+    d_btn_qs_sample_gallery->setMinimumHeight(30);
+    d_btn_qs_sample_gallery->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_qs_sample_gallery, &QPushButton::clicked, this, [this]() {
+        if (d_app)
+            d_app->showSampleGalleryDialog();
+    });
+    lay->addWidget(d_btn_qs_sample_gallery);
+
+    lay->addStretch(1);
+    scroll->setWidget(content);
+    outerLay->addWidget(scroll);
+    return outer;
+}
+
 QWidget *GraphInspectorDock::buildPageLayerInspector()
 {
     QWidget *page = new QWidget();
@@ -1243,6 +1386,63 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
         syncPageLayerControls();
     });
     lay->addWidget(d_btn_square_frame70);
+
+    // 1b) Aspect Ratio Lock & Quick Ratio Presets
+    d_sec_aspect_lbl = makeSectionHeaderLabel(page);
+    lay->addWidget(d_sec_aspect_lbl);
+
+    d_chk_keep_aspect = new QCheckBox(page);
+    d_chk_keep_aspect->setObjectName(QStringLiteral("InspectorKeepAspectCheck"));
+    connect(d_chk_keep_aspect, &QCheckBox::toggled, this, [this](bool checked) {
+        if (d_syncing_props || !d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->setKeepAspectRatio(checked);
+        d_target_ml->pushUndoSnapshot(tr("Toggle Aspect Ratio Lock"), before);
+        if (d_app && d_app->modernRibbonBar())
+            d_app->modernRibbonBar()->syncCheckableStates();
+        syncPageLayerControls();
+    });
+    lay->addWidget(d_chk_keep_aspect);
+
+    QGridLayout *ratioGrid = new QGridLayout();
+    ratioGrid->setContentsMargins(0, 0, 0, 0);
+    ratioGrid->setHorizontalSpacing(4);
+    ratioGrid->setVerticalSpacing(4);
+
+    auto makeRatioBtn = [&](double ratio, bool lock) -> QPushButton * {
+        QPushButton *b = new QPushButton(page);
+        b->setCursor(Qt::PointingHandCursor);
+        connect(b, &QPushButton::clicked, this, [this, ratio, lock]() {
+            if (!d_target_ml)
+                return;
+            const QString before = d_target_ml->captureUndoSnapshot();
+            if (lock)
+                d_target_ml->applyAspectRatioPreset(ratio, true);
+            else
+                d_target_ml->setKeepAspectRatio(false);
+            d_target_ml->pushUndoSnapshot(
+                    lock ? tr("Apply Aspect Ratio Preset") : tr("Toggle Aspect Ratio Lock"),
+                    before);
+            if (d_app && d_app->modernRibbonBar())
+                d_app->modernRibbonBar()->syncCheckableStates();
+            syncPageLayerControls();
+        });
+        return b;
+    };
+
+    d_btn_ratio_1_1 = makeRatioBtn(1.0, true);
+    d_btn_ratio_4_3 = makeRatioBtn(4.0 / 3.0, true);
+    d_btn_ratio_16_9 = makeRatioBtn(16.0 / 9.0, true);
+    d_btn_ratio_3_4 = makeRatioBtn(3.0 / 4.0, true);
+    d_btn_ratio_free = makeRatioBtn(0.0, false);
+
+    ratioGrid->addWidget(d_btn_ratio_1_1, 0, 0);
+    ratioGrid->addWidget(d_btn_ratio_4_3, 0, 1);
+    ratioGrid->addWidget(d_btn_ratio_16_9, 1, 0);
+    ratioGrid->addWidget(d_btn_ratio_3_4, 1, 1);
+    ratioGrid->addWidget(d_btn_ratio_free, 2, 0, 1, 2);
+    lay->addLayout(ratioGrid);
 
     // 2) Physical Page Size & Zoom
     d_sec_page_size_lbl = makeSectionHeaderLabel(page);
@@ -3719,6 +3919,8 @@ void GraphInspectorDock::refreshAll()
             d_btn_scope_all->setChecked(d_scope_all_panels);
         }
     }
+    if (d_content_stack)
+        d_content_stack->setCurrentIndex(hasGraph ? 1 : 0);
     if (d_prop_stack)
         d_prop_stack->setEnabled(hasGraph);
     if (d_tree_header_strip)
@@ -4639,6 +4841,10 @@ void GraphInspectorDock::syncPageLayerControls()
         QSignalBlocker b5(d_combo_page_zoom);
         QSignalBlocker b6(d_chk_panel_labels);
         QSignalBlocker b7(d_combo_panel_pos);
+        QSignalBlocker b8(d_chk_keep_aspect);
+
+        if (d_chk_keep_aspect)
+            d_chk_keep_aspect->setChecked(d_target_ml->keepAspectRatio());
 
         d_spin_page_w_mm->setValue(wMm);
         d_spin_page_h_mm->setValue(hMm);
@@ -6030,6 +6236,20 @@ void GraphInspectorDock::applyTheme()
                                 "QTreeWidget#GraphObjectManagerTree {"
                                 "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 14px;"
                                 "}"
+                                "#InspectorQuickStartPanel { background: %1; }"
+                                "#QuickStartHeroCard { background: %8; border: 1px solid %4; border-radius: 8px; }"
+                                "#QuickStartTitle { font-weight: 700; font-size: 15px; color: %7; }"
+                                "#QuickStartSubtitle { font-size: 13px; color: %5; }"
+                                "#QuickStartCard { background: %3; border: 1px solid %4; border-radius: 7px; }"
+                                "#QuickStartStepBadge { background: %7; color: #FFFFFF; font-weight: 700; font-size: 12px; border-radius: 11px; }"
+                                "#QuickStartStepText { font-size: 13px; color: %5; }"
+                                "QPushButton#QuickStartPrimaryBtn {"
+                                "  background: %7; color: #FFFFFF; border: 1px solid %7; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                                "}"
+                                "QPushButton#QuickStartSecondaryBtn {"
+                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                                "}"
+                                "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
                                 "QPushButton { font-size: 14px; padding: 4px 6px; }"
                                 "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 14px; }")
                                 .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
@@ -6095,6 +6315,24 @@ void GraphInspectorDock::retranslateUi()
     if (d_empty_hint_lbl)
         d_empty_hint_lbl->setText(tr("Activate or create a 2D graph to inspect its layers, axes, curves, and legend."));
 
+    // Quick Start Empty State
+    if (d_qs_title_lbl)
+        d_qs_title_lbl->setText(tr("Quick Start Guide"));
+    if (d_qs_subtitle_lbl)
+        d_qs_subtitle_lbl->setText(tr("Create publication-ready graphs in 3 easy steps"));
+    if (d_qs_step1_lbl)
+        d_qs_step1_lbl->setText(tr("Enter data in Table or import CSV"));
+    if (d_qs_step2_lbl)
+        d_qs_step2_lbl->setText(tr("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar"));
+    if (d_qs_step3_lbl)
+        d_qs_step3_lbl->setText(tr("Drag graph frame to resize; click axes or legend to edit"));
+    if (d_btn_qs_import_csv)
+        d_btn_qs_import_csv->setText(tr("Import CSV / Data..."));
+    if (d_btn_qs_new_graph)
+        d_btn_qs_new_graph->setText(tr("New 2D Graph"));
+    if (d_btn_qs_sample_gallery)
+        d_btn_qs_sample_gallery->setText(tr("Sample Gallery / Plot"));
+
     if (d_tab_btn_page)
         d_tab_btn_page->setText(tr("Overall"));
     if (d_tab_btn_axis)
@@ -6113,6 +6351,21 @@ void GraphInspectorDock::retranslateUi()
         d_btn_preset_slide28->setText(tr("Presentation Slide (28pt)"));
     if (d_btn_square_frame70)
         d_btn_square_frame70->setText(tr("Square Frame (70%)"));
+
+    if (d_sec_aspect_lbl)
+        d_sec_aspect_lbl->setText(tr("Aspect Ratio & Resizing"));
+    if (d_chk_keep_aspect)
+        d_chk_keep_aspect->setText(tr("Lock Aspect Ratio"));
+    if (d_btn_ratio_1_1)
+        d_btn_ratio_1_1->setText(tr("1:1 Square"));
+    if (d_btn_ratio_4_3)
+        d_btn_ratio_4_3->setText(tr("4:3 Landscape"));
+    if (d_btn_ratio_16_9)
+        d_btn_ratio_16_9->setText(tr("16:9 Wide"));
+    if (d_btn_ratio_3_4)
+        d_btn_ratio_3_4->setText(tr("3:4 Portrait"));
+    if (d_btn_ratio_free)
+        d_btn_ratio_free->setText(tr("Free Resize (Unlock Aspect Ratio)"));
 
     if (d_sec_page_size_lbl)
         d_sec_page_size_lbl->setText(tr("Page Size & View"));

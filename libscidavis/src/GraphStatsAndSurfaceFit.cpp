@@ -6062,20 +6062,16 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                     : QStringLiteral("exp(x)");
             Graph *linked = ml->addLinkedLayer(g, true, false, topFormula, QString());
             if (linked && linked->plotWidget()) {
-                const bool parenUnit =
-                        (uStr == QLatin1String("%") || uStr == QLatin1String("-")
-                         || uStr.compare(QLatin1String("a.u."), Qt::CaseInsensitive) == 0);
                 linked->setAxisTitle(
                         QwtPlot::xTop,
-                        uStr.isEmpty()
+                        (uStr.isEmpty() || uStr == QLatin1String("-"))
                                 ? QStringLiteral("<i>\u03C3</i>")
-                                : (parenUnit ? QStringLiteral("<i>\u03C3</i> (%1)").arg(uStr)
-                                             : QStringLiteral("<i>\u03C3</i> / %1").arg(uStr)));
+                                : QStringLiteral("<i>\u03C3</i> / %1").arg(uStr));
                 linked->enableAxis(QwtPlot::yRight, true);
                 linked->setAxisBackboneVisible(QwtPlot::yRight, true);
                 linked->setAxisTitle(
                         QwtPlot::yRight,
-                        QObject::tr("Failure probability, <i>P</i><sub>f</sub> (%)"));
+                        QObject::tr("Failure probability, <i>P</i><sub>f</sub> / %"));
                 linked->setWeibullProbabilityAxis(QwtPlot::yRight, true);
                 Plot *cPlot = linked->plotWidget();
                 if (!linked->hasWeibullProbabilityAxis(QwtPlot::yRight)) {

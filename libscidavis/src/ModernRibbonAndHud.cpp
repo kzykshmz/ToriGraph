@@ -2505,11 +2505,15 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  color: #1E293B;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
-            "  padding: 2px 5px;"
+            "  padding: 3px 6px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 500;"
             "  min-height: 30px;"
+            "}"
+            "QToolButton.RibbonActionBtn::menu-indicator {"
+            "  image: none;"
+            "  width: 0px;"
             "}"
             "QToolButton.RibbonActionBtn:hover {"
             "  background-color: #EFF6FF;"
@@ -2522,6 +2526,9 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #2563EB;"
             "  font-weight: 600;"
             "}"
+            "QToolButton.RibbonActionBtn:disabled {"
+            "  color: #94A3B8;"
+            "}"
             "QToolButton.RibbonPresetBtn {"
             "  background-color: #FFF7ED;"
             "  color: #9A3412;"
@@ -2529,14 +2536,40 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 7px;"
             "  padding: 3px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11.2pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 700;"
             "  min-height: 30px;"
+            "}"
+            "QToolButton.RibbonPresetBtn::menu-indicator {"
+            "  image: none;"
+            "  width: 0px;"
             "}"
             "QToolButton.RibbonPresetBtn:hover {"
             "  background-color: #FFEDD5;"
             "  color: #7C2D12;"
             "  border: 1px solid #EA580C;"
+            "}"
+            "QMenu.RibbonDropdownMenu {"
+            "  background-color: #FFFFFF;"
+            "  color: #0F172A;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 8px;"
+            "  padding: 4px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10.2pt;"
+            "}"
+            "QMenu.RibbonDropdownMenu::item {"
+            "  padding: 6px 22px 6px 10px;"
+            "  border-radius: 5px;"
+            "}"
+            "QMenu.RibbonDropdownMenu::item:selected {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "}"
+            "QMenu.RibbonDropdownMenu::separator {"
+            "  height: 1px;"
+            "  background: #E2E8F0;"
+            "  margin: 4px 8px;"
             "}"
             "QToolButton.RibbonQuickPresetPill {"
             "  background-color: #FFF7ED;"
@@ -2597,13 +2630,6 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10.5pt;"
             "  font-weight: 700;"
-            "}"
-            "QLabel.RibbonGroupCaption {"
-            "  color: #1E293B;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
-            "  font-weight: 600;"
-            "  padding: 1px 4px 2px 4px;"
             "}"));
 
     QVBoxLayout *rootLayout = new QVBoxLayout(this);
@@ -2787,8 +2813,7 @@ void ModernRibbonBar::updateTabStackHeight()
         return;
 
     const int fmH = fontMetrics().height();
-    const int btnH = qMax(36, fmH + 16);
-    const int capH = qMax(26, fmH + 8);
+    const int btnH = qMax(34, fmH + 14);
 
     int maxContentH = 0;
     for (int i = 0; i < d_tab_stack->count(); ++i) {
@@ -2803,14 +2828,15 @@ void ModernRibbonBar::updateTabStackHeight()
         }
     }
 
-    const int baseH = qMax(92, qMax(btnH + capH + 18, maxContentH + 8));
+    // Sleek single-row action strip (~46-54px tall, zero vertical clipping)
+    const int baseH = qMax(46, qMax(btnH + 10, maxContentH + 4));
 
     bool hScrollActive = false;
     if (QScrollArea *sa = qobject_cast<QScrollArea *>(d_tab_stack->currentWidget())) {
         if (QScrollBar *hb = sa->horizontalScrollBar())
             hScrollActive = hb->isVisible() || (hb->maximum() > hb->minimum());
     }
-    const int targetH = hScrollActive ? qMax(100, baseH + 8) : baseH;
+    const int targetH = hScrollActive ? (baseH + 8) : baseH;
     if (d_tab_stack->height() != targetH || d_tab_stack->minimumHeight() != targetH
         || d_tab_stack->maximumHeight() != targetH) {
         d_tab_stack->setFixedHeight(targetH);
@@ -3014,7 +3040,7 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
     QWidget *container = new QWidget(scroll);
     container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
     QHBoxLayout *row = new QHBoxLayout(container);
-    row->setContentsMargins(3, 2, 3, 2);
+    row->setContentsMargins(4, 4, 4, 4);
     row->setSpacing(2);
     scroll->setWidget(container);
     if (QScrollBar *hbar = scroll->horizontalScrollBar()) {
@@ -3026,36 +3052,21 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
     return scroll;
 }
 
-QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, std::function<QString()> titleFn,
-                                            QHBoxLayout **outBtnLayout, bool addDividerAfter)
+QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **outBtnLayout,
+                                            bool addDividerAfter)
 {
     QWidget *grpWidget = new QWidget();
-    QVBoxLayout *vbox = new QVBoxLayout(grpWidget);
-    vbox->setContentsMargins(2, 2, 2, 2);
-    vbox->setSpacing(2);
+    QHBoxLayout *btnRow = new QHBoxLayout(grpWidget);
+    btnRow->setContentsMargins(2, 0, 2, 0);
+    btnRow->setSpacing(2);
 
-    QHBoxLayout *btnRow = new QHBoxLayout();
-    btnRow->setContentsMargins(0, 0, 0, 0);
-    btnRow->setSpacing(1);
-    vbox->addLayout(btnRow);
-
-    QLabel *cap = new QLabel(grpWidget);
-    cap->setProperty("class", QStringLiteral("RibbonGroupCaption"));
-    cap->setAlignment(Qt::AlignCenter);
-    const int capMinH = qMax(26, cap->fontMetrics().height() + 8);
-    cap->setMinimumHeight(capMinH);
-    cap->setFixedHeight(capMinH);
-    vbox->addWidget(cap);
-    vbox->addStretch(1);
-
-    d_group_bindings.append({ cap, std::move(titleFn) });
-    pageRow->addWidget(grpWidget);
+    pageRow->addWidget(grpWidget, 0, Qt::AlignVCenter);
 
     if (addDividerAfter) {
         QFrame *div = new QFrame();
-        div->setFixedSize(1, 50);
-        div->setStyleSheet(QStringLiteral("background-color: #E2E8F0;"));
-        pageRow->addWidget(div);
+        div->setFixedSize(1, 28);
+        div->setStyleSheet(QStringLiteral("background-color: #CBD5E1; margin: 0px 3px;"));
+        pageRow->addWidget(div, 0, Qt::AlignVCenter);
     }
 
     if (outBtnLayout)
@@ -3089,6 +3100,53 @@ QToolButton *ModernRibbonBar::addRibbonButton(QHBoxLayout *groupLayout, const QS
     return btn;
 }
 
+QToolButton *ModernRibbonBar::addRibbonMenuButton(QHBoxLayout *groupLayout, const QString &iconId,
+                                                  std::function<QString()> textFn,
+                                                  std::function<QString()> tooltipFn,
+                                                  QMenu **outMenu, bool accentPreset)
+{
+    QToolButton *btn = new QToolButton();
+    btn->setProperty("class",
+                     accentPreset ? QStringLiteral("RibbonPresetBtn")
+                                  : QStringLiteral("RibbonActionBtn"));
+    btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btn->setIcon(IconLoader::duotoneIcon(iconId, 20, false));
+    btn->setIconSize(QSize(16, 16));
+    btn->setPopupMode(QToolButton::InstantPopup);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setFocusPolicy(Qt::NoFocus);
+
+    QMenu *menu = new QMenu(btn);
+    menu->setProperty("class", QStringLiteral("RibbonDropdownMenu"));
+    menu->setToolTipsVisible(true);
+    btn->setMenu(menu);
+
+    groupLayout->addWidget(btn);
+    d_button_bindings.append(
+            { btn, iconId, std::move(textFn), std::move(tooltipFn), accentPreset });
+    if (outMenu)
+        *outMenu = menu;
+    return btn;
+}
+
+QAction *ModernRibbonBar::addRibbonMenuAction(QMenu *menu, const QString &iconId,
+                                              std::function<QString()> textFn,
+                                              std::function<QString()> tooltipFn,
+                                              std::function<void()> onTriggered, bool checkable)
+{
+    if (!menu)
+        return nullptr;
+    QAction *act = new QAction(menu);
+    act->setCheckable(checkable);
+    if (!iconId.isEmpty())
+        act->setIcon(IconLoader::duotoneIcon(iconId, 18, false));
+    if (onTriggered)
+        connect(act, &QAction::triggered, this, std::move(onTriggered));
+    menu->addAction(act);
+    d_menu_action_bindings.append({ act, iconId, std::move(textFn), std::move(tooltipFn) });
+    return act;
+}
+
 void ModernRibbonBar::buildAllTabs()
 {
     auto addTabPage = [this](std::function<QString()> titleFn, QWidget *page) {
@@ -3097,6 +3155,8 @@ void ModernRibbonBar::buildAllTabs()
         d_tab_stack->addWidget(page);
         d_tab_title_fns.append(std::move(titleFn));
     };
+
+    const QString kCaret = QString::fromUtf8(" \xE2\x96\xBE");
 
     // ------------------------------------------------------------------------
     // Tab 1: Home & Data
@@ -3109,7 +3169,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gRecalc = nullptr;
         QHBoxLayout *gPanels = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Project"); }, &gFile, true);
+        createRibbonGroup(row, &gFile, true);
         addRibbonButton(
                 gFile, QStringLiteral("file-new"), [this]() { return tr("New Project"); },
                 [this]() { return tr("Create a New Project"); },
@@ -3131,15 +3191,22 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->saveProject();
                 });
-        addRibbonButton(
-                gFile, QStringLiteral("import-csv"), [this]() { return tr("Import CSV"); },
+        QMenu *importMenu = nullptr;
+        addRibbonMenuButton(
+                gFile, QStringLiteral("import-csv"),
+                [this, kCaret]() { return tr("Import") + kCaret; },
+                [this]() { return tr("Import Data or Origin Project"); }, &importMenu);
+        addRibbonMenuAction(
+                importMenu, QStringLiteral("import-csv"),
+                [this]() { return tr("Import CSV / ASCII..."); },
                 [this]() { return tr("Import ASCII / CSV Data into Worksheet"); },
                 [this]() {
                     if (d_app)
                         d_app->importASCII();
                 });
-        addRibbonButton(
-                gFile, QStringLiteral("import-opj"), [this]() { return tr("Import OPJ"); },
+        addRibbonMenuAction(
+                importMenu, QStringLiteral("import-opj"),
+                [this]() { return tr("Import Origin OPJ..."); },
                 [this]() { return tr("Import Origin OPJ Project"); },
                 [this]() { importOpjInteractive(); });
         addRibbonButton(
@@ -3151,7 +3218,7 @@ void ModernRibbonBar::buildAllTabs()
                 },
                 false, true);
 
-        createRibbonGroup(row, [this]() { return tr("Create"); }, &gCreate, true);
+        createRibbonGroup(row, &gCreate, true);
         addRibbonButton(
                 gCreate, QStringLiteral("new-table"), [this]() { return tr("New Table"); },
                 [this]() { return tr("Create New Worksheet Table"); },
@@ -3160,35 +3227,41 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->newTable();
                 });
         addRibbonButton(
-                gCreate, QStringLiteral("new-matrix"), [this]() { return tr("New Matrix"); },
-                [this]() { return tr("Create New 2D Data Matrix"); },
-                [this]() {
-                    if (d_app)
-                        d_app->newMatrix();
-                });
-        addRibbonButton(
                 gCreate, QStringLiteral("new-graph"), [this]() { return tr("New Graph"); },
                 [this]() { return tr("Create New 2D Graph Window"); },
                 [this]() {
                     if (d_app)
                         d_app->newGraph();
                 });
-        addRibbonButton(
-                gCreate, QStringLiteral("split-view"), [this]() { return tr("Merge Graphs"); },
-                [this]() { return tr("Merge Multiple Open Graph Windows into Multi-Panel Figure"); },
+        QMenu *moreNewMenu = nullptr;
+        addRibbonMenuButton(
+                gCreate, QStringLiteral("new-matrix"),
+                [this, kCaret]() { return tr("More New") + kCaret; },
+                [this]() { return tr("Create Matrix, Add Column, or Merge Graphs"); }, &moreNewMenu);
+        addRibbonMenuAction(
+                moreNewMenu, QStringLiteral("new-matrix"), [this]() { return tr("New Matrix"); },
+                [this]() { return tr("Create New 2D Data Matrix"); },
                 [this]() {
                     if (d_app)
-                        d_app->mergeOpenGraphsDialog();
+                        d_app->newMatrix();
                 });
-        addRibbonButton(
-                gCreate, QStringLiteral("add-column"), [this]() { return tr("Add Column"); },
+        addRibbonMenuAction(
+                moreNewMenu, QStringLiteral("add-column"), [this]() { return tr("Add Column"); },
                 [this]() { return tr("Append Y Column to Active Worksheet"); },
                 [this]() {
                     if (d_app)
                         d_app->addColToTable();
                 });
+        moreNewMenu->addSeparator();
+        addRibbonMenuAction(
+                moreNewMenu, QStringLiteral("split-view"), [this]() { return tr("Merge Graphs"); },
+                [this]() { return tr("Merge Multiple Open Graph Windows into Multi-Panel Figure"); },
+                [this]() {
+                    if (d_app)
+                        d_app->mergeOpenGraphsDialog();
+                });
 
-        createRibbonGroup(row, [this]() { return tr("Recalculate"); }, &gRecalc, true);
+        createRibbonGroup(row, &gRecalc, true);
         d_btn_auto_recalc = addRibbonButton(
                 gRecalc, QStringLiteral("recalc-auto"), [this]() { return tr("Auto Recalc"); },
                 [this]() { return tr("Toggle Automatic Analysis Recalculation"); },
@@ -3210,9 +3283,15 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->recalculatePendingLinksNow();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Panel View"); }, &gPanels, false);
-        d_btn_explorer = addRibbonButton(
-                gPanels, QStringLiteral("explorer"), [this]() { return tr("Explorer"); },
+        createRibbonGroup(row, &gPanels, false);
+        QMenu *panelsMenu = nullptr;
+        addRibbonMenuButton(
+                gPanels, QStringLiteral("table-drawer"),
+                [this, kCaret]() { return tr("Panels") + kCaret; },
+                [this]() { return tr("Show or Hide Explorer, Inspector & Results Log Panels"); },
+                &panelsMenu);
+        d_act_explorer = addRibbonMenuAction(
+                panelsMenu, QStringLiteral("explorer"), [this]() { return tr("Explorer"); },
                 [this]() { return tr("Show or Hide Project Explorer Panel"); },
                 [this]() {
                     if (!d_app)
@@ -3221,18 +3300,9 @@ void ModernRibbonBar::buildAllTabs()
                     syncCheckableStates();
                 },
                 true);
-        d_btn_results_log = addRibbonButton(
-                gPanels, QStringLiteral("log-window"), [this]() { return tr("Results Log"); },
-                [this]() { return tr("Show or Hide Results Log Panel"); },
-                [this]() {
-                    if (!d_app)
-                        return;
-                    d_app->logWindow.setVisible(d_app->logWindow.isHidden());
-                    syncCheckableStates();
-                },
-                true);
-        QToolButton *btnHomeInspector = addRibbonButton(
-                gPanels, QStringLiteral("table-drawer"), [this]() { return tr("Inspector"); },
+        d_act_inspector = addRibbonMenuAction(
+                panelsMenu, QStringLiteral("table-drawer"),
+                [this]() { return tr("Inspector"); },
                 [this]() { return tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"); },
                 [this]() {
                     if (!d_app)
@@ -3241,58 +3311,49 @@ void ModernRibbonBar::buildAllTabs()
                     syncCheckableStates();
                 },
                 true);
-        btnHomeInspector->setObjectName(QStringLiteral("RibbonInspectorBtn"));
+        d_act_results_log = addRibbonMenuAction(
+                panelsMenu, QStringLiteral("log-window"),
+                [this]() { return tr("Results Log"); },
+                [this]() { return tr("Show or Hide Results Log Panel"); },
+                [this]() {
+                    if (!d_app)
+                        return;
+                    d_app->logWindow.setVisible(d_app->logWindow.isHidden());
+                    syncCheckableStates();
+                },
+                true);
 
         row->addStretch(1);
         addTabPage([this]() { return tr("Home & Data"); }, page);
     }
 
     // ------------------------------------------------------------------------
-    // Tab 2: Plot 2D/3D
+    // Tab 2: Plot 2D/3D (Decluttered: 1-click primary 2D + Specialty + 3D + Layers)
     // ------------------------------------------------------------------------
     {
         QHBoxLayout *row = nullptr;
         QWidget *page = createRibbonScrollPage(&row);
         QHBoxLayout *g2d = nullptr;
-        QHBoxLayout *g3d = nullptr;
+        QHBoxLayout *gMore = nullptr;
         QHBoxLayout *gLayer = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("2D Plots"); }, &g2d, true);
+        createRibbonGroup(row, &g2d, true);
         addRibbonButton(
                 g2d, QStringLiteral("plot-line"), [this]() { return tr("Line"); },
                 [this]() { return tr("Plot Line Graph"); },
                 [this]() { triggerPlot2D(Graph::Line); });
         addRibbonButton(
-                g2d, QStringLiteral("plot-scatter"), [this]() { return tr("Scatter"); },
-                [this]() { return tr("Plot Scatter Graph"); },
-                [this]() { triggerPlot2D(Graph::Scatter); });
-        addRibbonButton(
                 g2d, QStringLiteral("plot-line-symbol"), [this]() { return tr("Line + Symbol"); },
                 [this]() { return tr("Plot Line and Symbol Graph"); },
                 [this]() { triggerPlot2D(Graph::LineSymbols); });
         addRibbonButton(
-                g2d, QStringLiteral("plot-spline"), [this]() { return tr("Spline"); },
-                [this]() { return tr("Plot Cubic Spline Curve"); },
-                [this]() { triggerPlot2D(Graph::Spline); });
+                g2d, QStringLiteral("plot-scatter"), [this]() { return tr("Scatter"); },
+                [this]() { return tr("Plot Scatter Graph"); },
+                [this]() { triggerPlot2D(Graph::Scatter); });
         addRibbonButton(
                 g2d, QStringLiteral("plot-bars"), [this]() { return tr("Bar Chart"); },
                 [this]() { return tr("Plot Vertical Bar Chart"); },
                 [this]() { triggerPlot2D(Graph::VerticalBars); });
-        addRibbonButton(
-                g2d, QStringLiteral("plot-box"), [this]() { return tr("Box Plot"); },
-                [this]() { return tr("Plot Statistical Box-and-Whisker Chart"); },
-                [this]() { triggerPlot2D(Graph::Box); });
-        addRibbonButton(
-                g2d, QStringLiteral("plot-violin"), [this]() { return tr("Violin Plot"); },
-                [this]() { return tr("Plot Kernel Density Violin Chart"); },
-                [this]() {
-                    if (d_app)
-                        d_app->plotViolin();
-                });
-        addRibbonButton(
-                g2d, QStringLiteral("plot-histogram"), [this]() { return tr("Histogram"); },
-                [this]() { return tr("Plot Frequency Histogram"); },
-                [this]() { triggerPlot2D(Graph::Histogram); });
         addRibbonButton(
                 g2d, QStringLiteral("plot-double-y"), [this]() { return tr("Double-Y"); },
                 [this]() { return tr("Plot Dual Left/Right Y-Axis Graph"); },
@@ -3300,59 +3361,114 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->plotDoubleY();
                 });
-        addRibbonButton(
-                g2d, QStringLiteral("plot-waterfall"), [this]() { return tr("Waterfall"); },
+
+        createRibbonGroup(row, &gMore, true);
+        QMenu *specialtyMenu = nullptr;
+        addRibbonMenuButton(
+                gMore, QStringLiteral("plot-box"),
+                [this, kCaret]() { return tr("Specialty") + kCaret; },
+                [this]() { return tr("Specialized 2D, Statistical & Matrix Plots"); },
+                &specialtyMenu);
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-spline"), [this]() { return tr("Spline"); },
+                [this]() { return tr("Plot Cubic Spline Curve"); },
+                [this]() { triggerPlot2D(Graph::Spline); });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-box"), [this]() { return tr("Box Plot"); },
+                [this]() { return tr("Plot Statistical Box-and-Whisker Chart"); },
+                [this]() { triggerPlot2D(Graph::Box); });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-violin"),
+                [this]() { return tr("Violin Plot"); },
+                [this]() { return tr("Plot Kernel Density Violin Chart"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotViolin();
+                });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-histogram"),
+                [this]() { return tr("Histogram"); },
+                [this]() { return tr("Plot Frequency Histogram"); },
+                [this]() { triggerPlot2D(Graph::Histogram); });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-waterfall"),
+                [this]() { return tr("Waterfall / Y-Stack"); },
                 [this]() { return tr("Plot Y-Offset Stacked Waterfall Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->plotYOffsetStack();
                 });
-        addRibbonButton(
-                g2d, QStringLiteral("plot-vectors"), [this]() { return tr("Vectors"); },
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-ternary"),
+                [this]() { return tr("Ternary Plot (A-B-C)"); },
+                [this]() { return tr("Plot Ternary Composition Diagram (A-B-C)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plotTernary();
+                });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-spline"),
+                [this]() { return tr("Polar / Function Plot..."); },
+                [this]() { return tr("Plot Polar, Parametric, or Explicit Mathematical Function"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showFunctionDialog();
+                });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-vectors"),
+                [this]() { return tr("Vector Field (XYXY)"); },
                 [this]() { return tr("Plot 2D Vector Field (XYXY)"); },
                 [this]() {
                     if (d_app)
                         d_app->plotVectXYXY();
                 });
-
-        createRibbonGroup(row, [this]() { return tr("Matrix & 3D"); }, &g3d, true);
-        addRibbonButton(
-                g3d, QStringLiteral("plot-heatmap"), [this]() { return tr("Heatmap"); },
+        specialtyMenu->addSeparator();
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-heatmap"),
+                [this]() { return tr("Heatmap (Color Map)"); },
                 [this]() { return tr("Plot Matrix Color Map / Heatmap"); },
                 [this]() {
                     if (d_app)
                         d_app->plotColorMap();
                 });
-        addRibbonButton(
-                g3d, QStringLiteral("plot-contour"), [this]() { return tr("Contour"); },
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-contour"),
+                [this]() { return tr("Contour Lines"); },
                 [this]() { return tr("Plot Matrix Contour Lines"); },
                 [this]() {
                     if (d_app)
                         d_app->plotContour();
                 });
-        addRibbonButton(
-                g3d, QStringLiteral("plot-3d-surface"), [this]() { return tr("3D Surface"); },
-                [this]() { return tr("Plot 3D Surface Mesh"); },
+
+        QMenu *plot3dMenu = nullptr;
+        addRibbonMenuButton(
+                gMore, QStringLiteral("plot-3d-surface"),
+                [this, kCaret]() { return tr("3D Plots") + kCaret; },
+                [this]() { return tr("3D Surface, Scatter & Bar Plots"); }, &plot3dMenu);
+        addRibbonMenuAction(
+                plot3dMenu, QStringLiteral("plot-3d-surface"),
+                [this]() { return tr("3D Surface"); }, [this]() { return tr("Plot 3D Surface Mesh"); },
                 [this]() {
                     if (d_app)
                         d_app->plot3DWireSurface();
                 });
-        addRibbonButton(
-                g3d, QStringLiteral("plot-3d-bars"), [this]() { return tr("3D Bars"); },
-                [this]() { return tr("Plot 3D Bars"); },
-                [this]() {
-                    if (d_app)
-                        d_app->plot3DBars();
-                });
-        addRibbonButton(
-                g3d, QStringLiteral("plot-3d-scatter"), [this]() { return tr("3D Scatter"); },
+        addRibbonMenuAction(
+                plot3dMenu, QStringLiteral("plot-3d-scatter"),
+                [this]() { return tr("3D Scatter"); },
                 [this]() { return tr("Plot 3D Scatter Points"); },
                 [this]() {
                     if (d_app)
                         d_app->plot3DScatter();
                 });
+        addRibbonMenuAction(
+                plot3dMenu, QStringLiteral("plot-3d-bars"), [this]() { return tr("3D Bars"); },
+                [this]() { return tr("Plot 3D Bars"); },
+                [this]() {
+                    if (d_app)
+                        d_app->plot3DBars();
+                });
 
-        createRibbonGroup(row, [this]() { return tr("Layers"); }, &gLayer, false);
+        createRibbonGroup(row, &gLayer, false);
         addRibbonButton(
                 gLayer, QStringLiteral("layer-linked"), [this]() { return tr("Linked Layer"); },
                 [this]() { return tr("Add Linked Top-X / Right-Y Layer"); },
@@ -3381,7 +3497,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gPeaks = nullptr;
         QHBoxLayout *gFit = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Peak Analysis"); }, &gPeaks, true);
+        createRibbonGroup(row, &gPeaks, true);
         addRibbonButton(
                 gPeaks, QStringLiteral("peak-analyzer"), [this]() { return tr("Peak Analyzer"); },
                 [this]() { return tr("Interactive Baseline & Multi-Peak Deconvolution"); },
@@ -3389,42 +3505,43 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->showPeakAnalyzerDialog(0);
                 });
-        addRibbonButton(
-                gPeaks, QStringLiteral("peak-voigt"), [this]() { return tr("Auto Voigt Peaks"); },
+        QMenu *morePeaksMenu = nullptr;
+        addRibbonMenuButton(
+                gPeaks, QStringLiteral("peak-voigt"),
+                [this, kCaret]() { return tr("More Peaks") + kCaret; },
+                [this]() { return tr("Auto Voigt, Batch & 2D Matrix Peak Analysis"); },
+                &morePeaksMenu);
+        addRibbonMenuAction(
+                morePeaksMenu, QStringLiteral("peak-voigt"),
+                [this]() { return tr("Auto Voigt Peaks"); },
                 [this]() { return tr("Automatic Pseudo-Voigt Peak Detection & Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->fitAutoPeakPseudoVoigt();
                 });
-        addRibbonButton(
-                gPeaks, QStringLiteral("peak-batch"), [this]() { return tr("Batch Peaks"); },
+        addRibbonMenuAction(
+                morePeaksMenu, QStringLiteral("peak-batch"),
+                [this]() { return tr("Batch Peaks"); },
                 [this]() { return tr("Batch Multi-Spectrum Peak Analysis"); },
                 [this]() {
                     if (d_app)
                         d_app->showBatchPeakAnalysisDialog();
                 });
-        addRibbonButton(
-                gPeaks, QStringLiteral("peak-2d"), [this]() { return tr("2D Peaks"); },
+        addRibbonMenuAction(
+                morePeaksMenu, QStringLiteral("peak-2d"), [this]() { return tr("2D Peaks"); },
                 [this]() { return tr("Matrix 2D Peak Detection & Fitting"); },
                 [this]() {
                     if (d_app)
                         d_app->show2DPeakAnalysisDialog();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Curve Fitting"); }, &gFit, false);
+        createRibbonGroup(row, &gFit, false);
         addRibbonButton(
                 gFit, QStringLiteral("fit-linear"), [this]() { return tr("Linear Fit"); },
                 [this]() { return tr("Linear Regression Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->fitLinear();
-                });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-york"), [this]() { return tr("York XY Fit"); },
-                [this]() { return tr("York Linear Regression with Both X and Y Errors"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showYorkLinearFitDialog();
                 });
         addRibbonButton(
                 gFit, QStringLiteral("fit-poly"), [this]() { return tr("Polynomial"); },
@@ -3440,43 +3557,63 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->showFitDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-global"), [this]() { return tr("Global Fit"); },
+        QMenu *advFitMenu = nullptr;
+        addRibbonMenuButton(
+                gFit, QStringLiteral("fit-global"),
+                [this, kCaret]() { return tr("Advanced Fit") + kCaret; },
+                [this]() {
+                    return tr("York, Global, Piecewise, Robust, Logistic, 3D Surface & Model Compare");
+                },
+                &advFitMenu);
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-york"), [this]() { return tr("York XY Fit"); },
+                [this]() { return tr("York Linear Regression with Both X and Y Errors"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showYorkLinearFitDialog();
+                });
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-global"), [this]() { return tr("Global Fit"); },
                 [this]() { return tr("Multi-Curve Global Fit with Shared Parameters"); },
                 [this]() {
                     if (d_app)
                         d_app->showGlobalCurveFitDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-piecewise"), [this]() { return tr("Piecewise Fit"); },
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-piecewise"),
+                [this]() { return tr("Piecewise Fit"); },
                 [this]() { return tr("Piecewise Segmented Linear Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->showPiecewiseLinearFitDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-robust"), [this]() { return tr("Robust Fit"); },
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-robust"), [this]() { return tr("Robust Fit"); },
                 [this]() { return tr("Huber / Bisquare Outlier-Resistant Robust Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->showRobustLinearFitDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-logistic"), [this]() { return tr("Logistic Fit"); },
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-logistic"),
+                [this]() { return tr("Logistic Fit"); },
                 [this]() { return tr("Binary Logistic Regression"); },
                 [this]() {
                     if (d_app)
                         d_app->showLogisticRegressionDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-surface-3d"), [this]() { return tr("3D Surface Fit"); },
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-surface-3d"),
+                [this]() { return tr("3D Surface Fit"); },
                 [this]() { return tr("2D / 3D Surface Regression Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->showSurfaceFit3DDialog();
                 });
-        addRibbonButton(
-                gFit, QStringLiteral("fit-compare"), [this]() { return tr("Model Compare"); },
+        advFitMenu->addSeparator();
+        addRibbonMenuAction(
+                advFitMenu, QStringLiteral("fit-compare"),
+                [this]() { return tr("Model Compare"); },
                 [this]() { return tr("Compare Candidate Fit Models (AIC / BIC / F-Test)"); },
                 [this]() {
                     if (d_app)
@@ -3497,7 +3634,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gMasks = nullptr;
         QHBoxLayout *gSignal = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Interactive Gadgets"); }, &gGadgets, true);
+        createRibbonGroup(row, &gGadgets, true);
         addRibbonButton(
                 gGadgets, QStringLiteral("gadget-roi"), [this]() { return tr("ROI Stats"); },
                 [this]() { return tr("Interactive Region-of-Interest Statistics Gadget"); },
@@ -3519,76 +3656,95 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->attachQuickFitGadget();
                 });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-quick-peaks"),
-                [this]() { return tr("Quick Peaks"); },
-                [this]() { return tr("Interactive ROI Quick Peak Finder Gadget"); },
+        QMenu *moreGadgetsMenu = nullptr;
+        addRibbonMenuButton(
+                gGadgets, QStringLiteral("gadget-delta"),
+                [this, kCaret]() { return tr("More Gadgets") + kCaret; },
                 [this]() {
-                    if (d_app)
-                        d_app->attachQuickPeaksGadget();
-                });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-cursor"),
+                    return tr("Vertical Cursor, Quick Peaks, Delta Cursor, 2D Profile, Differentiate & Clear");
+                },
+                &moreGadgetsMenu);
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-cursor"),
                 [this]() { return tr("Vertical Cursor"); },
                 [this]() { return tr("Vertical Crosshair Curve Readout Gadget"); },
                 [this]() {
                     if (d_app)
                         d_app->attachVerticalCursorGadget();
                 });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-delta"), [this]() { return tr("Delta Cursor"); },
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-quick-peaks"),
+                [this]() { return tr("Quick Peaks"); },
+                [this]() { return tr("Interactive ROI Quick Peak Finder Gadget"); },
+                [this]() {
+                    if (d_app)
+                        d_app->attachQuickPeaksGadget();
+                });
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-delta"),
+                [this]() { return tr("Delta Cursor"); },
                 [this]() { return tr("Dual-Cursor Delta X / Delta Y / Slope Gadget"); },
                 [this]() {
                     if (d_app)
                         d_app->attachDeltaCursorGadget();
                 });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-profile-2d"),
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-profile-2d"),
                 [this]() { return tr("2D Profile"); },
                 [this]() { return tr("Interactive Heatmap Horizontal/Vertical Profile Gadget"); },
                 [this]() {
                     if (d_app)
                         d_app->attachImageProfileGadget();
                 });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-diff"), [this]() { return tr("Differentiate"); },
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-diff"),
+                [this]() { return tr("Differentiate"); },
                 [this]() { return tr("Interactive Derivative Gadget"); },
                 [this]() {
                     if (d_app)
                         d_app->attachDifferentiateGadget();
                 });
-        addRibbonButton(
-                gGadgets, QStringLiteral("gadget-clear"), [this]() { return tr("Clear Gadget"); },
+        moreGadgetsMenu->addSeparator();
+        addRibbonMenuAction(
+                moreGadgetsMenu, QStringLiteral("gadget-clear"),
+                [this]() { return tr("Clear Gadget"); },
                 [this]() { return tr("Remove Active Gadget from Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->clearActiveGadget();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Data Masks"); }, &gMasks, true);
-        addRibbonButton(
-                gMasks, QStringLiteral("mask-points"), [this]() { return tr("Mask Points"); },
+        createRibbonGroup(row, &gMasks, true);
+        QMenu *masksMenu = nullptr;
+        addRibbonMenuButton(
+                gMasks, QStringLiteral("mask-points"),
+                [this, kCaret]() { return tr("Data Masks") + kCaret; },
+                [this]() { return tr("Mask Outlier Points, Mask Region, or Clear Masks"); },
+                &masksMenu);
+        addRibbonMenuAction(
+                masksMenu, QStringLiteral("mask-points"), [this]() { return tr("Mask Points"); },
                 [this]() { return tr("Mask Individual Outlier Data Points"); },
                 [this]() {
                     if (d_app)
                         d_app->maskDataPointsTool();
                 });
-        addRibbonButton(
-                gMasks, QStringLiteral("range-selector"), [this]() { return tr("Mask ROI"); },
+        addRibbonMenuAction(
+                masksMenu, QStringLiteral("range-selector"), [this]() { return tr("Mask ROI"); },
                 [this]() { return tr("Mask Rectangular Data Region"); },
                 [this]() {
                     if (d_app)
                         d_app->maskRegionGadget();
                 });
-        addRibbonButton(
-                gMasks, QStringLiteral("clear-masks"), [this]() { return tr("Clear Masks"); },
+        masksMenu->addSeparator();
+        addRibbonMenuAction(
+                masksMenu, QStringLiteral("clear-masks"), [this]() { return tr("Clear Masks"); },
                 [this]() { return tr("Clear All Data Masks on Active Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->clearAllMasksOnGraph();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Signal Processing"); }, &gSignal, false);
+        createRibbonGroup(row, &gSignal, false);
         addRibbonButton(
                 gSignal, QStringLiteral("signal-savgol"),
                 [this]() { return tr("Savitzky-Golay Smooth"); },
@@ -3598,71 +3754,88 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->showSavGolSmoothDerivativeDialog();
                 });
         addRibbonButton(
-                gSignal, QStringLiteral("signal-smooth"), [this]() { return tr("LOWESS Smooth"); },
-                [this]() { return tr("Locally Weighted Scatterplot Smoothing (LOWESS)"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showSmoothLOWESSDialog();
-                });
-        addRibbonButton(
-                gSignal, QStringLiteral("signal-smooth"),
-                [this]() { return tr("Whittaker Smooth"); },
-                [this]() { return tr("Penalized Least-Squares Whittaker Smoothing"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showSmoothWhittakerDialog();
-                });
-        addRibbonButton(
                 gSignal, QStringLiteral("signal-fft"), [this]() { return tr("FFT Spectrum"); },
                 [this]() { return tr("Fast Fourier Transform (FFT)"); },
                 [this]() {
                     if (d_app)
                         d_app->showFFTDialog();
                 });
-        addRibbonButton(
-                gSignal, QStringLiteral("signal-iir"), [this]() { return tr("IIR Filter"); },
+        QMenu *filterMenu = nullptr;
+        addRibbonMenuButton(
+                gSignal, QStringLiteral("signal-smooth"),
+                [this, kCaret]() { return tr("Smoothing & Filter") + kCaret; },
+                [this]() { return tr("LOWESS, Whittaker, IIR & Matrix 2D Filters"); },
+                &filterMenu);
+        addRibbonMenuAction(
+                filterMenu, QStringLiteral("signal-smooth"),
+                [this]() { return tr("LOWESS Smooth"); },
+                [this]() { return tr("Locally Weighted Scatterplot Smoothing (LOWESS)"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSmoothLOWESSDialog();
+                });
+        addRibbonMenuAction(
+                filterMenu, QStringLiteral("signal-smooth"),
+                [this]() { return tr("Whittaker Smooth"); },
+                [this]() { return tr("Penalized Least-Squares Whittaker Smoothing"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showSmoothWhittakerDialog();
+                });
+        addRibbonMenuAction(
+                filterMenu, QStringLiteral("signal-iir"), [this]() { return tr("IIR Filter"); },
                 [this]() { return tr("Zero-Phase Butterworth / Chebyshev / Bessel IIR Filter"); },
                 [this]() {
                     if (d_app)
                         d_app->showIirDigitalFilterDialog();
                 });
-        addRibbonButton(
+        addRibbonMenuAction(
+                filterMenu, QStringLiteral("matrix-filter2d"),
+                [this]() { return tr("Matrix 2D Filter"); },
+                [this]() { return tr("2D Matrix Gaussian / Median / Detrend Filter"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showMatrixFilter2DDialog();
+                });
+
+        QMenu *spectralMenu = nullptr;
+        addRibbonMenuButton(
                 gSignal, QStringLiteral("signal-stft"),
+                [this, kCaret]() { return tr("Spectral & Wavelet") + kCaret; },
+                [this]() {
+                    return tr("STFT Spectrogram, Wavelet, Welch PSD & FSD Deconvolution");
+                },
+                &spectralMenu);
+        addRibbonMenuAction(
+                spectralMenu, QStringLiteral("signal-stft"),
                 [this]() { return tr("STFT Spectrogram"); },
                 [this]() { return tr("Short-Time Fourier Transform Spectrogram"); },
                 [this]() {
                     if (d_app)
                         d_app->showStftSpectrogramDialog();
                 });
-        addRibbonButton(
-                gSignal, QStringLiteral("signal-wavelet"),
+        addRibbonMenuAction(
+                spectralMenu, QStringLiteral("signal-wavelet"),
                 [this]() { return tr("Wavelet Transform"); },
                 [this]() { return tr("Continuous & Discrete Wavelet Denoising / CWT"); },
                 [this]() {
                     if (d_app)
                         d_app->showWaveletTransformDialog();
                 });
-        addRibbonButton(
-                gSignal, QStringLiteral("signal-psd"), [this]() { return tr("Welch PSD"); },
+        addRibbonMenuAction(
+                spectralMenu, QStringLiteral("signal-psd"), [this]() { return tr("Welch PSD"); },
                 [this]() { return tr("Welch Power Spectral Density & Coherence"); },
                 [this]() {
                     if (d_app)
                         d_app->showWelchPsdCoherenceDialog();
                 });
-        addRibbonButton(
-                gSignal, QStringLiteral("signal-fsd"), [this]() { return tr("Deconvolve FSD"); },
+        addRibbonMenuAction(
+                spectralMenu, QStringLiteral("signal-fsd"),
+                [this]() { return tr("Deconvolve FSD"); },
                 [this]() { return tr("Fourier Self-Deconvolution (Resolution Enhancement)"); },
                 [this]() {
                     if (d_app)
                         d_app->showFourierSelfDeconvolveDialog();
-                });
-        addRibbonButton(
-                gSignal, QStringLiteral("matrix-filter2d"),
-                [this]() { return tr("Matrix 2D Filter"); },
-                [this]() { return tr("2D Matrix Gaussian / Median / Detrend Filter"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showMatrixFilter2DDialog();
                 });
 
         row->addStretch(1);
@@ -3678,7 +3851,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gDomain = nullptr;
         QHBoxLayout *gStats = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Materials & Domain"); }, &gDomain, true);
+        createRibbonGroup(row, &gDomain, true);
         addRibbonButton(
                 gDomain, QStringLiteral("curvemath"),
                 [this]() { return tr("Tensile / 0.2% Yield"); },
@@ -3710,8 +3883,7 @@ void ModernRibbonBar::buildAllTabs()
                         CurveMathTools::showKissingerDialog(d_app);
                 });
         addRibbonButton(
-                gDomain, QStringLiteral("xrd-peaks"),
-                [this]() { return tr("XRD / W-H"); },
+                gDomain, QStringLiteral("xrd-peaks"), [this]() { return tr("XRD / W-H"); },
                 [this]() {
                     return tr("Powder XRD K-alpha2 Stripping, Scherrer & Williamson-Hall Analysis");
                 },
@@ -3719,8 +3891,14 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         CurveMathTools::showXRDAnalyzerDialog(d_app);
                 });
-        addRibbonButton(
+        QMenu *matToolsMenu = nullptr;
+        addRibbonMenuButton(
                 gDomain, QStringLiteral("vasp-bands"),
+                [this, kCaret]() { return tr("Materials & Tools") + kCaret; },
+                [this]() { return tr("VASP, Arrhenius, Tauc, EIS, Curve Math, Fill & Digitizer"); },
+                &matToolsMenu);
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("vasp-bands"),
                 [this]() { return tr("VASP Bands/DOS"); },
                 [this]() {
                     return tr("VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter");
@@ -3729,65 +3907,54 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         CurveMathTools::showVaspPlotterDialog(d_app);
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius Plot"); },
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("arrhenius"),
+                [this]() { return tr("Arrhenius Plot"); },
                 [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
                 [this]() {
                     if (d_app)
                         d_app->showArrheniusPlotDialog();
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("tauc"), [this]() { return tr("Tauc Bandgap"); },
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("tauc"), [this]() { return tr("Tauc Bandgap"); },
                 [this]() { return tr("Tauc Optical Bandgap Extrapolation"); },
                 [this]() {
                     if (d_app)
                         d_app->showTaucPlotDialog();
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("eis-nyquist"), [this]() { return tr("EIS Analyzer"); },
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("eis-nyquist"),
+                [this]() { return tr("EIS Analyzer"); },
                 [this]() { return tr("Electrochemical Impedance Spectroscopy Nyquist/Bode Fit"); },
                 [this]() {
                     if (d_app)
                         d_app->showEISAnalyzerDialog();
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("curvemath"), [this]() { return tr("Curve Math"); },
+        matToolsMenu->addSeparator();
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("curvemath"), [this]() { return tr("Curve Math"); },
                 [this]() { return tr("Arithmetic Operations Between Curves"); },
                 [this]() {
                     if (d_app)
                         d_app->showSimpleCurveMathDialog();
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("curve-fill"), [this]() { return tr("Fill Between"); },
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("curve-fill"),
+                [this]() { return tr("Fill Between"); },
                 [this]() { return tr("Shade Area Between Two Curves"); },
                 [this]() {
                     if (d_app)
                         d_app->showFillBetweenCurvesDialog();
                 });
-        addRibbonButton(
-                gDomain, QStringLiteral("digitizer"), [this]() { return tr("Digitizer"); },
+        addRibbonMenuAction(
+                matToolsMenu, QStringLiteral("digitizer"), [this]() { return tr("Digitizer"); },
                 [this]() { return tr("Extract Numerical Data from Graph Image"); },
                 [this]() {
                     if (d_app)
                         d_app->showGraphDigitizerDialog();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Statistical Tests"); }, &gStats, false);
-        addRibbonButton(
-                gStats, QStringLiteral("stats-normality"),
-                [this]() { return tr("Normality Test"); },
-                [this]() { return tr("Shapiro-Wilk / Anderson-Darling Normality Test"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showNormalityTestDialog();
-                });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-outlier"), [this]() { return tr("Outlier Test"); },
-                [this]() { return tr("Grubbs / Generalized ESD Outlier Detection"); },
-                [this]() {
-                    if (d_app)
-                        d_app->showOutlierTestDialog();
-                });
+        createRibbonGroup(row, &gStats, false);
         addRibbonButton(
                 gStats, QStringLiteral("stats-anova"), [this]() { return tr("Group ANOVA"); },
                 [this]() { return tr("One-Way ANOVA & Tukey / Dunnett Post-Hoc Comparison"); },
@@ -3795,81 +3962,118 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->showGroupComparisonDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-twoway"), [this]() { return tr("Two-Way ANOVA"); },
+        QMenu *hypMenu = nullptr;
+        addRibbonMenuButton(
+                gStats, QStringLiteral("stats-normality"),
+                [this, kCaret]() { return tr("Hypothesis Tests") + kCaret; },
+                [this]() {
+                    return tr("Normality, Outlier, Two-Way ANOVA, Nonparametric & Method Agreement");
+                },
+                &hypMenu);
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-normality"),
+                [this]() { return tr("Normality Test"); },
+                [this]() { return tr("Shapiro-Wilk / Anderson-Darling Normality Test"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showNormalityTestDialog();
+                });
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-outlier"), [this]() { return tr("Outlier Test"); },
+                [this]() { return tr("Grubbs / Generalized ESD Outlier Detection"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showOutlierTestDialog();
+                });
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-twoway"), [this]() { return tr("Two-Way ANOVA"); },
                 [this]() { return tr("Two-Way Factorial ANOVA & Interaction Plot"); },
                 [this]() {
                     if (d_app)
                         d_app->showTwoWayANOVAPlotDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-nonparam"), [this]() { return tr("Nonparametric"); },
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-nonparam"),
+                [this]() { return tr("Nonparametric"); },
                 [this]() { return tr("Mann-Whitney / Wilcoxon / Kruskal-Wallis Tests"); },
                 [this]() {
                     if (d_app)
                         d_app->showNonparametricTestsDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-paired"), [this]() { return tr("Paired Plot"); },
+        hypMenu->addSeparator();
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-paired"), [this]() { return tr("Paired Plot"); },
                 [this]() { return tr("Paired Before-After Comparison Plot"); },
                 [this]() {
                     if (d_app)
                         d_app->showPairedComparisonPlotDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-bland-altman"),
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-bland-altman"),
                 [this]() { return tr("Bland-Altman Plot"); },
                 [this]() { return tr("Bland-Altman Method Agreement Plot"); },
                 [this]() {
                     if (d_app)
                         d_app->showBlandAltmanPlotDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-bablok"),
+        addRibbonMenuAction(
+                hypMenu, QStringLiteral("stats-bablok"),
                 [this]() { return tr("Passing-Bablok Fit"); },
                 [this]() { return tr("Passing-Bablok & Deming Method Comparison Regression"); },
                 [this]() {
                     if (d_app)
                         d_app->showPassingBablokDemingDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-weibull"), [this]() { return tr("Weibull Plot"); },
+
+        QMenu *relMultiMenu = nullptr;
+        addRibbonMenuButton(
+                gStats, QStringLiteral("stats-weibull"),
+                [this, kCaret]() { return tr("Reliability & Multivariate") + kCaret; },
+                [this]() {
+                    return tr("Weibull, Kaplan-Meier, ROC, PCA, Correlation & Clustering");
+                },
+                &relMultiMenu);
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-weibull"),
+                [this]() { return tr("Weibull Plot"); },
                 [this]() { return tr("2- and 3-Parameter Weibull Reliability Probability Plot"); },
                 [this]() {
                     if (d_app)
                         d_app->showWeibullPlotDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-survival"),
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-survival"),
                 [this]() { return tr("Kaplan-Meier Survival"); },
                 [this]() { return tr("Kaplan-Meier Survival Curve & Log-Rank Test"); },
                 [this]() {
                     if (d_app)
                         d_app->showKaplanMeierDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-roc"), [this]() { return tr("ROC Curve"); },
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-roc"), [this]() { return tr("ROC Curve"); },
                 [this]() { return tr("Receiver Operating Characteristic (ROC) Curve & AUC"); },
                 [this]() {
                     if (d_app)
                         d_app->showROCCurveDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-pca"), [this]() { return tr("PCA Biplot"); },
+        relMultiMenu->addSeparator();
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-pca"), [this]() { return tr("PCA Biplot"); },
                 [this]() { return tr("Principal Component Analysis (PCA) & Biplot"); },
                 [this]() {
                     if (d_app)
                         d_app->showPCABiplotDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-corr"), [this]() { return tr("Correlation"); },
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-corr"), [this]() { return tr("Correlation"); },
                 [this]() { return tr("Pearson / Spearman Correlation Matrix Heatmap"); },
                 [this]() {
                     if (d_app)
                         d_app->showCorrelationMatrixDialog();
                 });
-        addRibbonButton(
-                gStats, QStringLiteral("stats-cluster"), [this]() { return tr("Clustering"); },
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-cluster"),
+                [this]() { return tr("Clustering"); },
                 [this]() { return tr("K-Means & Hierarchical Cluster Analysis"); },
                 [this]() {
                     if (d_app)
@@ -3887,11 +4091,10 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *row = nullptr;
         QWidget *page = createRibbonScrollPage(&row);
         QHBoxLayout *gPresets = nullptr;
-        QHBoxLayout *gFrame = nullptr;
-        QHBoxLayout *gFormat = nullptr;
         QHBoxLayout *gExport = nullptr;
+        QHBoxLayout *gStyle = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Journal & Slide Presets"); }, &gPresets, true);
+        createRibbonGroup(row, &gPresets, true);
         addRibbonButton(
                 gPresets, QStringLiteral("preset-isij"),
                 [this]() { return tr("ISIJ 85mm Fig"); },
@@ -3919,8 +4122,30 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->applyStyleNatureCompact();
                 },
                 false, true);
+        d_btn_lock_aspect = addRibbonButton(
+                gPresets, QStringLiteral("lock"),
+                [this]() { return tr("Lock Aspect"); },
+                [this]() {
+                    return tr("Lock or Unlock Active Graph Aspect Ratio on Window Resize");
+                },
+                [this]() {
+                    if (!d_app || !d_btn_lock_aspect)
+                        return;
+                    if (MultiLayer *ml = qobject_cast<MultiLayer *>(
+                                d_app->d_workspace.activeSubWindow())) {
+                        const QString before = ml->captureUndoSnapshot();
+                        ml->setKeepAspectRatio(d_btn_lock_aspect->isChecked());
+                        ml->pushUndoSnapshot(tr("Toggle Lock Aspect Ratio"), before);
+                        d_app->modifiedProject();
+                        if (GraphInspectorDock *insp = d_app->graphInspectorDock())
+                            insp->refreshAll();
+                    }
+                    syncCheckableStates();
+                },
+                true);
+        d_btn_lock_aspect->setObjectName(QStringLiteral("RibbonLockAspectRatioBtn"));
 
-        createRibbonGroup(row, [this]() { return tr("Export & PowerPoint"); }, &gExport, true);
+        createRibbonGroup(row, &gExport, true);
         addRibbonButton(
                 gExport, QStringLiteral("copy-ole"), [this]() { return tr("Copy OLE"); },
                 [this]() { return tr("Copy Editable OLE Graph Object for PowerPoint / Word"); },
@@ -3929,66 +4154,87 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->copyGraphAsOleObject();
                 });
         addRibbonButton(
-                gExport, QStringLiteral("copy-page-image"),
-                [this]() { return tr("Copy High-DPI Image"); },
-                [this]() { return tr("Copy High-Resolution Bitmap of Graph Page to Clipboard"); },
-                [this]() {
-                    if (d_app)
-                        d_app->copyPageAsHighDpiImage();
-                });
-        addRibbonButton(
                 gExport, QStringLiteral("export-image"), [this]() { return tr("Export Graph"); },
                 [this]() { return tr("Export Graph to PNG / TIFF / SVG / EMF"); },
                 [this]() {
                     if (d_app)
                         d_app->exportGraph();
                 });
-        addRibbonButton(
-                gExport, QStringLiteral("export-pdf"), [this]() { return tr("Export PDF"); },
+        QMenu *moreExportMenu = nullptr;
+        addRibbonMenuButton(
+                gExport, QStringLiteral("export-pdf"),
+                [this, kCaret]() { return tr("More Export") + kCaret; },
+                [this]() { return tr("Copy High-DPI Image, Export PDF, or Export Python Script"); },
+                &moreExportMenu);
+        addRibbonMenuAction(
+                moreExportMenu, QStringLiteral("copy-page-image"),
+                [this]() { return tr("Copy High-DPI Image"); },
+                [this]() { return tr("Copy High-Resolution Bitmap of Graph Page to Clipboard"); },
+                [this]() {
+                    if (d_app)
+                        d_app->copyPageAsHighDpiImage();
+                });
+        addRibbonMenuAction(
+                moreExportMenu, QStringLiteral("export-pdf"),
+                [this]() { return tr("Export PDF"); },
                 [this]() { return tr("Export Vector PDF Document"); },
                 [this]() {
                     if (d_app)
                         d_app->exportPDF();
                 });
-        addRibbonButton(
-                gExport, QStringLiteral("code-export"), [this]() { return tr("Export Python"); },
+        addRibbonMenuAction(
+                moreExportMenu, QStringLiteral("code-export"),
+                [this]() { return tr("Export Python"); },
                 [this]() { return tr("Generate Reproducible Python Script from Active Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->exportActiveGraphToPython();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Frame & Page"); }, &gFrame, true);
-        addRibbonButton(
-                gFrame, QStringLiteral("frame-box-inward"), [this]() { return tr("Box Inward"); },
+        createRibbonGroup(row, &gStyle, false);
+        QMenu *framePageMenu = nullptr;
+        addRibbonMenuButton(
+                gStyle, QStringLiteral("frame-box-inward"),
+                [this, kCaret]() { return tr("Frame & Page") + kCaret; },
+                [this]() {
+                    return tr("Frame Style, Page Size & DPI, Trim Page, Square 70% & Color Palette");
+                },
+                &framePageMenu);
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("frame-box-inward"),
+                [this]() { return tr("Box Inward"); },
                 [this]() { return tr("Apply Full Box Frame with Inward Ticks"); },
                 [this]() {
                     if (d_app)
                         d_app->applyFrameBoxInward();
                 });
-        addRibbonButton(
-                gFrame, QStringLiteral("frame-open-l"), [this]() { return tr("Open-L Frame"); },
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("frame-open-l"),
+                [this]() { return tr("Open-L Frame"); },
                 [this]() { return tr("Apply Open Bottom-Left L-Frame"); },
                 [this]() {
                     if (d_app)
                         d_app->applyFrameOpenL();
                 });
-        addRibbonButton(
-                gFrame, QStringLiteral("page-setup"), [this]() { return tr("Size & DPI"); },
+        framePageMenu->addSeparator();
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("page-setup"),
+                [this]() { return tr("Size & DPI"); },
                 [this]() { return tr("Configure Physical Page Dimensions, Units & DPI"); },
                 [this]() {
                     if (d_app)
                         d_app->showPageSetupDialog();
                 });
-        addRibbonButton(
-                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Trim Page"); },
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("fit-page"), [this]() { return tr("Trim Page"); },
                 [this]() { return tr("Crop Page Tightly Around Plot Layers"); },
                 [this]() {
                     if (d_app)
                         d_app->fitPageToLayers();
                 });
-        addRibbonButton(
-                gFrame, QStringLiteral("fit-page"), [this]() { return tr("Square 70%"); },
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("aspect-square"),
+                [this]() { return tr("Square 70%"); },
                 [this]() { return tr("Apply 70% Square Inner Canvas Frame"); },
                 [this]() {
                     if (!d_app)
@@ -4001,31 +4247,41 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->modifiedProject();
                     }
                 });
-        addRibbonButton(
-                gFrame, QStringLiteral("color-palette"), [this]() { return tr("Palette"); },
+        framePageMenu->addSeparator();
+        addRibbonMenuAction(
+                framePageMenu, QStringLiteral("color-palette"),
+                [this]() { return tr("Palette"); },
                 [this]() { return tr("Apply Publication Color Palette to Curves"); },
                 [this]() {
                     if (d_app)
                         d_app->showColorPaletteEditorDialog();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Format & Batch"); }, &gFormat, false);
-        addRibbonButton(
-                gFormat, QStringLiteral("format-copy"), [this]() { return tr("Copy Format"); },
+        QMenu *formatBatchMenu = nullptr;
+        addRibbonMenuButton(
+                gStyle, QStringLiteral("format-copy"),
+                [this, kCaret]() { return tr("Format & Batch") + kCaret; },
+                [this]() { return tr("Copy/Paste Graph Format & Batch Plot"); }, &formatBatchMenu);
+        addRibbonMenuAction(
+                formatBatchMenu, QStringLiteral("format-copy"),
+                [this]() { return tr("Copy Format"); },
                 [this]() { return tr("Copy Visual Style & Axes Format of Active Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->copyGraphFormat();
                 });
-        addRibbonButton(
-                gFormat, QStringLiteral("format-paste"), [this]() { return tr("Paste Format"); },
+        addRibbonMenuAction(
+                formatBatchMenu, QStringLiteral("format-paste"),
+                [this]() { return tr("Paste Format"); },
                 [this]() { return tr("Paste Copied Visual Style onto Active Graph"); },
                 [this]() {
                     if (d_app)
                         d_app->pasteGraphFormat();
                 });
-        addRibbonButton(
-                gFormat, QStringLiteral("batch-plot"), [this]() { return tr("Batch Plot"); },
+        formatBatchMenu->addSeparator();
+        addRibbonMenuAction(
+                formatBatchMenu, QStringLiteral("batch-plot"),
+                [this]() { return tr("Batch Plot"); },
                 [this]() { return tr("Clone Active Graph Template Across Multiple Worksheets"); },
                 [this]() {
                     if (d_app)
@@ -4045,7 +4301,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gPython = nullptr;
         QHBoxLayout *gSettings = nullptr;
 
-        createRibbonGroup(row, [this]() { return tr("Python Automation"); }, &gPython, true);
+        createRibbonGroup(row, &gPython, true);
         addRibbonButton(
                 gPython, QStringLiteral("python-console"),
                 [this]() { return tr("Python Console"); },
@@ -4065,7 +4321,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->exportActiveGraphToPython();
                 });
 
-        createRibbonGroup(row, [this]() { return tr("Settings & Updates"); }, &gSettings, false);
+        createRibbonGroup(row, &gSettings, false);
         addRibbonButton(
                 gSettings, QStringLiteral("settings"), [this]() { return tr("Preferences"); },
                 [this]() { return tr("Open Application Preferences Dialog"); },
@@ -4094,6 +4350,10 @@ void ModernRibbonBar::refreshButtonIcons()
     for (const RibbonButtonBinding &b : d_button_bindings) {
         if (b.button && !b.iconId.isEmpty())
             b.button->setIcon(IconLoader::duotoneIcon(b.iconId, 20, false));
+    }
+    for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
+        if (ab.action && !ab.iconId.isEmpty())
+            ab.action->setIcon(IconLoader::duotoneIcon(ab.iconId, 18, false));
     }
     if (d_btn_quick_isij)
         d_btn_quick_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 16, false));
@@ -4140,23 +4400,13 @@ void ModernRibbonBar::retranslateUi()
             bb.button->setToolTip(bb.tooltipFn());
     }
 
-    for (const RibbonGroupBinding &gb : d_group_bindings) {
-        if (gb.captionLabel && gb.titleFn) {
-            gb.captionLabel->ensurePolished();
-            gb.captionLabel->setText(gb.titleFn());
-            const int capMinH = qMax(22, gb.captionLabel->fontMetrics().height() + 6);
-            gb.captionLabel->setMinimumHeight(capMinH);
-            gb.captionLabel->setFixedHeight(capMinH);
-            if (QWidget *grpWidget = gb.captionLabel->parentWidget()) {
-                grpWidget->setMinimumWidth(0);
-                if (grpWidget->layout())
-                    grpWidget->layout()->activate();
-                const int capW =
-                        gb.captionLabel->fontMetrics().horizontalAdvance(gb.captionLabel->text())
-                        + 16;
-                grpWidget->setMinimumWidth(qMax(grpWidget->minimumSizeHint().width(), capW));
-            }
-        }
+    for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
+        if (!ab.action)
+            continue;
+        if (ab.textFn)
+            ab.action->setText(ab.textFn());
+        if (ab.tooltipFn)
+            ab.action->setToolTip(ab.tooltipFn());
     }
 
     if (d_btn_quick_isij) {
@@ -4217,13 +4467,20 @@ void ModernRibbonBar::syncCheckableStates()
         const bool isAuto = (RecalcManager::instance(d_app)->recalcMode() == RecalcManager::Auto);
         d_btn_auto_recalc->setChecked(isAuto);
     }
-    if (d_btn_explorer) {
-        QSignalBlocker blocker(d_btn_explorer);
-        d_btn_explorer->setChecked(!d_app->explorerWindow.isHidden());
+    if (d_act_explorer) {
+        QSignalBlocker blocker(d_act_explorer);
+        d_act_explorer->setChecked(!d_app->explorerWindow.isHidden());
     }
-    if (d_btn_results_log) {
-        QSignalBlocker blocker(d_btn_results_log);
-        d_btn_results_log->setChecked(!d_app->logWindow.isHidden());
+    if (d_act_results_log) {
+        QSignalBlocker blocker(d_act_results_log);
+        d_act_results_log->setChecked(!d_app->logWindow.isHidden());
+    }
+    if (d_btn_lock_aspect) {
+        QSignalBlocker blocker(d_btn_lock_aspect);
+        MultiLayer *activeMl =
+                qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow());
+        d_btn_lock_aspect->setEnabled(activeMl != nullptr);
+        d_btn_lock_aspect->setChecked(activeMl && activeMl->keepAspectRatio());
     }
     if (d_btn_classic_toolbars) {
         QSignalBlocker blocker(d_btn_classic_toolbars);
@@ -4241,13 +4498,9 @@ void ModernRibbonBar::syncCheckableStates()
 
     const GraphInspectorDock *inspDock = d_app->graphInspectorDock();
     const bool inspectorChecked = inspDock && !inspDock->isHidden() && !inspDock->isCollapsedRail();
-    const QList<QToolButton *> inspBtns =
-            findChildren<QToolButton *>(QStringLiteral("RibbonInspectorBtn"));
-    for (QToolButton *ib : inspBtns) {
-        if (!ib)
-            continue;
-        QSignalBlocker blocker(ib);
-        ib->setChecked(inspectorChecked);
+    if (d_act_inspector) {
+        QSignalBlocker blocker(d_act_inspector);
+        d_act_inspector->setChecked(inspectorChecked);
     }
 }
 

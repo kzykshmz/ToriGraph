@@ -312,7 +312,11 @@ QRect SelectionMoveResizer::operateOn(const QRect in)
             if ((ml = qobject_cast<MultiLayer *>(p)) != nullptr)
                 break;
         }
-        const bool lockAspect = ml ? ml->keepAspectRatio() : true;
+        const bool isSideHandle = (d_op == Resize_N || d_op == Resize_S
+                                   || d_op == Resize_E || d_op == Resize_W);
+        const bool shiftHeld = (QApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+        const bool lockAspect =
+                !isSideHandle && !shiftHeld && (ml ? ml->keepAspectRatio() : true);
         int marginW = 0;
         int marginH = 0;
         double canvasAspect =
@@ -449,6 +453,11 @@ void SelectionMoveResizer::operateOnTargets()
         if (i->plot())
             plotsToReplot.insert(i->plot());
     }
+    const bool isSideHandle = (d_op == Resize_N || d_op == Resize_S
+                               || d_op == Resize_E || d_op == Resize_W);
+    const bool shiftHeld = (QApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+    const bool isWidgetResize = (!d_widgets.isEmpty() && d_op != Move && d_op != None);
+    Graph *resizedGraph = nullptr;
     foreach (QWidget *i, d_widgets) {
         if (!i)
             continue;
@@ -459,6 +468,29 @@ void SelectionMoveResizer::operateOnTargets()
         if (g) {
             g->plotWidget()->resize(i->size());
             g->plotWidget()->updateLayout();
+            if (!resizedGraph)
+                resizedGraph = g;
+        }
+    }
+    if (isWidgetResize && resizedGraph) {
+        if (MultiLayer *ml = owningMultiLayer()) {
+            if (!ml->isInsetLayer(resizedGraph) && !resizedGraph->linkedParentLayer()) {
+                const QRect cRect =
+                        (resizedGraph->plotWidget() && resizedGraph->plotWidget()->plotLayout())
+                        ? resizedGraph->plotWidget()->plotLayout()->canvasRect()
+                        : QRect();
+                const int cw = (cRect.width() > 20) ? cRect.width() : resizedGraph->width();
+                const int ch = (cRect.height() > 20) ? cRect.height() : resizedGraph->height();
+                if (cw > 0 && ch > 0) {
+                    const double newRatio = double(cw) / double(ch);
+                    if (isSideHandle || shiftHeld)
+                        ml->syncAspectRatioAfterManualResize(newRatio, cw, ch, true);
+                    else if (!ml->keepAspectRatio())
+                        ml->syncAspectRatioAfterManualResize(newRatio, cw, ch, false);
+                    else
+                        resizedGraph->syncChildLinkedLayers();
+                }
+            }
         }
     }
     for (QwtPlot *plt : plotsToReplot) {

@@ -188,6 +188,8 @@ public slots:
     void setKeepAspectRatio(bool keep);
     void setTargetAspectRatio(double ratio);
     void applyAspectRatioPreset(double ratio, bool keepLocked = true);
+    void syncAspectRatioAfterManualResize(double newRatio, int canvasW = 0, int canvasH = 0,
+                                          bool unlockAspect = true);
     Graph *addLayer(int x = 0, int y = 0, int width = 0, int height = 0);
     void setLayersNumber(int n);
 

@@ -2210,8 +2210,9 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
             }
             insertStyledCurve(g, tbl, 0, 3, n, QPen(QColor(205, 35, 45), 2.2, Qt::SolidLine));
 
-            g->setXAxisTitle(use1000OverT ? QStringLiteral("1000 / <i>T</i> / K<sup>-1</sup>")
-                                          : QStringLiteral("1 / <i>T</i> / K<sup>-1</sup>"));
+            g->setXAxisTitle(use1000OverT
+                                     ? QStringLiteral("Inverse temperature, 1000/<i>T</i> / K<sup>-1</sup>")
+                                     : QStringLiteral("Inverse temperature, 1/<i>T</i> / K<sup>-1</sup>"));
             g->setYAxisTitle(sigmaTimesT ? QStringLiteral("ln(<i>kT</i>)")
                                          : QStringLiteral("ln <i>k</i>"));
             g->setTitle(QString());
@@ -2230,9 +2231,10 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
             Graph *topLayer =
                     ml->addLinkedLayer(g, true, false, topFormula, QStringLiteral("y"));
             if (topLayer) {
-                topLayer->setAxisTitle(QwtPlot::xTop,
-                                       tempInCelsius ? QStringLiteral("<i>T</i> / \u00B0C")
-                                                     : QStringLiteral("<i>T</i> / K"));
+                topLayer->setAxisTitle(
+                        QwtPlot::xTop,
+                        tempInCelsius ? QStringLiteral("Temperature, <i>T</i> / \u00B0C")
+                                      : QStringLiteral("Temperature, <i>T</i> / K"));
                 applyArialToMatSciGraph(topLayer);
             }
             ml->arrangeLayers(false, false);
@@ -3340,7 +3342,7 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
 
             gBode->setXAxisTitle(QStringLiteral("log<sub>10</sub>(<i>f</i> / Hz)"));
             gBode->setYAxisTitle(QStringLiteral("log<sub>10</sub>(|<i>Z</i>| / \u03A9)"));
-            gBode->setRightAxisTitle(QObject::tr("Phase (°)"));
+            gBode->setRightAxisTitle(QStringLiteral("Phase angle, <i>\u03C6</i> / deg"));
             gBode->setTitle(QString());
             gBode->setYAxisTitleColor(QColor(25, 75, 155));
             gBode->setRightAxisTitleColor(QColor(195, 55, 30));
@@ -4613,7 +4615,7 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
         if (ml && ml->activeGraph()) {
             Graph *g = ml->activeGraph();
             insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(0, 114, 178), 2.1, Qt::SolidLine));
-            g->setXAxisTitle(QStringLiteral("Nominal strain, <i>e</i> (%)"));
+            g->setXAxisTitle(QStringLiteral("Nominal strain, <i>e</i> / %"));
             g->setYAxisTitle(QStringLiteral("Nominal stress, <i>\u03C3</i> / MPa"));
             g->setTitle(QString());
             if (g->legend())
@@ -4771,7 +4773,7 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
             c0->setUnits(QStringLiteral("deg"));
         }
         if (Column *c1 = tbl->column(1)) {
-            c1->setLongName(QStringLiteral("Intensity"));
+            c1->setLongName(QStringLiteral("Intensity, <i>I</i>"));
             c1->setUnits(QStringLiteral("counts"));
             c1->setComment(QStringLiteral("Al-5.5Zn-2.5Mg (T6)"));
         }
@@ -4783,7 +4785,7 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
             Graph *g = ml->activeGraph();
             insertStyledCurve(g, tbl, 0, 1, N, QPen(QColor(25, 45, 85), 1.6, Qt::SolidLine));
             g->setXAxisTitle(QStringLiteral("Diffraction angle, 2<i>\u03B8</i> / deg"));
-            g->setYAxisTitle(QStringLiteral("Intensity / counts"));
+            g->setYAxisTitle(QStringLiteral("Intensity, <i>I</i> / counts"));
             g->setTitle(QString());
             if (g->legend())
                 g->legend()->setText(g->legendText());
@@ -4917,13 +4919,14 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
                         auto *sp = static_cast<Spectrogram *>(it);
                         sp->setColorMapPreset(Spectrogram::PresetViridis, false);
                         sp->showColorScale(QwtPlot::yRight, true);
-                        sp->setColorBarTitle(QStringLiteral("<i>\u03B5</i><sub>yy</sub> (%)"));
+                        sp->setColorBarTitle(
+                                QStringLiteral("Local strain, <i>\u03B5</i><sub>yy</sub> / %"));
                         sp->enforceColorBarArialFont();
                     }
                 }
             }
-            g->setXAxisTitle(QStringLiteral("<i>x</i> / \u03BCm"));
-            g->setYAxisTitle(QStringLiteral("<i>y</i> / \u03BCm"));
+            g->setXAxisTitle(QStringLiteral("Position, <i>x</i> / \u03BCm"));
+            g->setYAxisTitle(QStringLiteral("Position, <i>y</i> / \u03BCm"));
             g->setTitle(QString());
             g->removeLegend();
             applyArialToMatSciGraph(g);
@@ -5284,7 +5287,8 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         g->applyFramePreset(Graph::FrameBoxInwardTicks);
         if (Plot *pw = g->plotWidget())
             pw->setAxisMaxMajor(QwtPlot::xBottom, 5);
-        g->setXAxisTitle(QStringLiteral("1000 / <i>T</i><sub>p</sub> / K<sup>-1</sup>"));
+        g->setXAxisTitle(
+                QStringLiteral("Inverse peak temperature, 1000/<i>T</i><sub>p</sub> / K<sup>-1</sup>"));
         g->setYAxisTitle(QStringLiteral(
                 "ln(<i>\u03B2</i> / <i>T</i><sub>p</sub><sup>2</sup>) / K<sup>-1</sup> min<sup>-1</sup>"));
         g->setTitle(QString());
@@ -5297,10 +5301,11 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
                                                     : QStringLiteral("1000.0/x");
         Graph *topLayer = ml->addLinkedLayer(g, true, false, topFormula, QStringLiteral("y"));
         if (topLayer) {
-            topLayer->setAxisTitle(QwtPlot::xTop,
-                                   topAxisInCelsius
-                                           ? QStringLiteral("<i>T</i><sub>p</sub> / \u00B0C")
-                                           : QStringLiteral("<i>T</i><sub>p</sub> / K"));
+            topLayer->setAxisTitle(
+                    QwtPlot::xTop,
+                    topAxisInCelsius
+                            ? QStringLiteral("Peak temperature, <i>T</i><sub>p</sub> / \u00B0C")
+                            : QStringLiteral("Peak temperature, <i>T</i><sub>p</sub> / K"));
             applyArialToMatSciGraph(topLayer);
         }
         ml->arrangeLayers(false, false);
@@ -5929,12 +5934,9 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
     if (ml && ml->activeGraph()) {
         Graph *gp = ml->activeGraph();
         const QString suTrim = tr.stressUnit.trimmed();
-        const bool suParen = (suTrim == QLatin1String("-") || suTrim == QLatin1String("%")
-                              || suTrim.compare(QLatin1String("a.u."), Qt::CaseInsensitive) == 0);
-        const QString suSuffix = suTrim.isEmpty()
+        const QString suSuffix = (suTrim.isEmpty() || suTrim == QLatin1String("-"))
                 ? QString()
-                : (suParen ? QStringLiteral(" (%1)").arg(suTrim)
-                           : QStringLiteral(" / %1").arg(suTrim));
+                : QStringLiteral(" / %1").arg(suTrim);
 
         if (!kocksMeckingPlot) {
             insertStyledCurve(gp, tbl, 0, 1, N, QPen(QColor(0, 114, 178), 2.2, Qt::SolidLine));
@@ -5953,7 +5955,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
             gp->addReferenceLine(neckLine);
 
             gp->applyFramePreset(Graph::FrameBoxInwardTicks);
-            gp->setXAxisTitle(QStringLiteral("True strain, <i>\u03B5</i><sub>t</sub> (-)"));
+            gp->setXAxisTitle(QStringLiteral("True strain, <i>\u03B5</i><sub>t</sub>"));
             gp->setYAxisTitle(QStringLiteral(
                     "<i>\u03C3</i><sub>t</sub>, <i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>%1")
                                       .arg(suSuffix));
@@ -5990,7 +5992,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
             gp->setXAxisTitle(QStringLiteral("True stress, <i>\u03C3</i><sub>t</sub>%1")
                                       .arg(suSuffix));
             gp->setYAxisTitle(QStringLiteral(
-                    "<i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>%1")
+                    "Work hardening rate, d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>%1")
                                       .arg(suSuffix));
             gp->setTitle(QString());
             if (gp->legend()) {
@@ -7245,7 +7247,7 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
         }
         chosenG->applyFramePreset(Graph::FrameBoxInwardTicks);
         chosenG->setXAxisTitle(QStringLiteral("Diffraction angle, 2<i>\u03B8</i> / deg"));
-        chosenG->setYAxisTitle(QStringLiteral("Intensity / counts"));
+        chosenG->setYAxisTitle(QStringLiteral("Intensity, <i>I</i> / counts"));
         chosenG->setTitle(QString());
         chosenG->setAutoScale();
         applyArialToMatSciGraph(chosenG);
@@ -7752,11 +7754,11 @@ CurveMathTools::VaspPlotResult CurveMathTools::plotVaspDos(
 
         g->applyFramePreset(Graph::FrameBoxInwardTicks);
         if (!verticalEnergyAxis) {
-            g->setXAxisTitle(QStringLiteral("<i>E</i> - <i>E</i><sub>F</sub> / eV"));
+            g->setXAxisTitle(QStringLiteral("Energy, <i>E</i> - <i>E</i><sub>F</sub> / eV"));
             g->setYAxisTitle(QStringLiteral("DOS / states eV<sup>-1</sup>"));
         } else {
             g->setXAxisTitle(QStringLiteral("DOS / states eV<sup>-1</sup>"));
-            g->setYAxisTitle(QStringLiteral("<i>E</i> - <i>E</i><sub>F</sub> / eV"));
+            g->setYAxisTitle(QStringLiteral("Energy, <i>E</i> - <i>E</i><sub>F</sub> / eV"));
         }
         g->setTitle(QString());
         if (g->legend()) {
@@ -7957,8 +7959,8 @@ CurveMathTools::VaspPlotResult CurveMathTools::plotVaspBands(
         g->addReferenceLine(efLine);
 
         g->applyFramePreset(Graph::FrameBoxInwardTicks);
-        g->setXAxisTitle(QStringLiteral("Wavevector"));
-        g->setYAxisTitle(QStringLiteral("<i>E</i> - <i>E</i><sub>F</sub> / eV"));
+        g->setXAxisTitle(QStringLiteral("Wavevector, <i>k</i>"));
+        g->setYAxisTitle(QStringLiteral("Energy, <i>E</i> - <i>E</i><sub>F</sub> / eV"));
         g->setTitle(QString());
         g->setScale(QwtPlot::xBottom, kMin, kMax);
         g->setScale(QwtPlot::yLeft, yLo, yHi);

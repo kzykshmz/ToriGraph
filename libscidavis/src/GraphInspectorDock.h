@@ -108,6 +108,8 @@ public:
 
     QTreeWidget *objectTree() const { return d_object_tree; }
     QStackedWidget *propertyStack() const { return d_prop_stack; }
+    QWidget *quickStartPanel() const { return d_empty_quickstart_panel; }
+    bool isShowingQuickStart() const;
 
 signals:
     void collapsedStateChanged(bool collapsed);
@@ -120,6 +122,7 @@ protected:
 
 private:
     void buildUi();
+    QWidget *buildQuickStartEmptyState();
     QWidget *buildPageLayerInspector();
     QWidget *buildAxisInspector();
     QWidget *buildCurveInspector();
@@ -194,6 +197,21 @@ private:
     QToolButton *d_btn_pin = nullptr;
     QToolButton *d_btn_collapse = nullptr;
 
+    // Content stack: 0 = Beginner Quick Start (no active graph), 1 = Active Graph Inspector
+    QStackedWidget *d_content_stack = nullptr;
+    QWidget *d_empty_quickstart_panel = nullptr;
+    QWidget *d_inspector_active_panel = nullptr;
+
+    // Quick Start Empty State Widgets
+    QLabel *d_qs_title_lbl = nullptr;
+    QLabel *d_qs_subtitle_lbl = nullptr;
+    QLabel *d_qs_step1_lbl = nullptr;
+    QLabel *d_qs_step2_lbl = nullptr;
+    QLabel *d_qs_step3_lbl = nullptr;
+    QPushButton *d_btn_qs_import_csv = nullptr;
+    QPushButton *d_btn_qs_new_graph = nullptr;
+    QPushButton *d_btn_qs_sample_gallery = nullptr;
+
     QFrame *d_scope_strip = nullptr;
     QLabel *d_lbl_scope = nullptr;
     QButtonGroup *d_scope_group = nullptr;
@@ -228,6 +246,14 @@ private:
     QPushButton *d_btn_preset_isij = nullptr;
     QPushButton *d_btn_preset_slide28 = nullptr;
     QPushButton *d_btn_square_frame70 = nullptr;
+
+    QLabel *d_sec_aspect_lbl = nullptr;
+    QCheckBox *d_chk_keep_aspect = nullptr;
+    QPushButton *d_btn_ratio_1_1 = nullptr;
+    QPushButton *d_btn_ratio_4_3 = nullptr;
+    QPushButton *d_btn_ratio_16_9 = nullptr;
+    QPushButton *d_btn_ratio_3_4 = nullptr;
+    QPushButton *d_btn_ratio_free = nullptr;
 
     QLabel *d_sec_page_size_lbl = nullptr;
     QLabel *d_lbl_page_w = nullptr;

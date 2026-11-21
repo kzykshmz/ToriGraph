@@ -160,7 +160,7 @@ public:
     void setLongName(const QString &s);
     QString units() const;
     void setUnits(const QString &s);
-    QString formattedAxisTitle(UnitFormat fmt = UnitFormat::Paren) const;
+    QString formattedAxisTitle(UnitFormat fmt = UnitFormat::ISIJSlash) const;
 
     //! Clear the whole column
     void clear() override;

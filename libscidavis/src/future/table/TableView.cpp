@@ -270,12 +270,14 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             return b->iconSize().width() + 8;
         QFont bf = b->font();
         bf.setBold(true);
+        if (bf.pointSizeF() > 0.0 && bf.pointSizeF() < 11.0)
+            bf.setPointSizeF(11.0);
         const QFontMetrics fm(bf);
         const int textW = fm.horizontalAdvance(b->text());
         const int iconW = (st == Qt::ToolButtonTextBesideIcon && !b->icon().isNull())
                 ? (b->iconSize().width() + 5)
                 : 0;
-        const int pad = (b->menu() != nullptr) ? 26 : 12;
+        const int pad = (b->menu() != nullptr) ? 28 : 18;
         return textW + iconW + pad;
     };
 
@@ -306,7 +308,7 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             + (ultraCompact ? 0 : calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly))
             + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnColProps, colPropsStyle)
-            + (ultraCompact ? 27 : 31);
+            + (ultraCompact ? 48 : 54);
     const int totalBeside = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
@@ -818,7 +820,7 @@ void TableView::retranslateStrings()
         d_btn_role_y->setToolTip(tr("Set selected column(s) as Y (Ordinate)"));
     }
     if (d_btn_role_yerr) {
-        d_btn_role_yerr->setText(tr("\xC2\xB1yErr"));
+        d_btn_role_yerr->setText(QString::fromUtf8("\xC2\xB1Y"));
         d_btn_role_yerr->setToolTip(tr("Set selected column(s) as Y Error"));
     }
     if (d_btn_role_xerr) {
@@ -2046,16 +2048,21 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     d_quick_bar->setStyleSheet(QStringLiteral(
             "#WorksheetQuickBar {"
             "  background: #F8FAFC;"
-            "  border-bottom: 1px solid #E2E8F0;"
+            "  border-bottom: 1px solid #CBD5E1;"
+            "}"
+            "#WorksheetQuickBar QFrame[wsPillGroup=\"true\"] {"
+            "  background: #EEF2F7;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 6px;"
             "}"
             "#WorksheetQuickBar QToolButton[wsRoleBtn=\"true\"] {"
             "  background: #FFFFFF;"
             "  color: #334155;"
-            "  border: 1px solid #CBD5E1;"
+            "  border: 1px solid #D5DEE8;"
             "  border-radius: 4px;"
             "  padding: 1px 6px;"
-            "  min-height: 26px;"
-            "  max-height: 28px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10.8pt;"
             "  font-weight: 600;"
@@ -2077,11 +2084,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "#WorksheetQuickBar QToolButton[wsPlotBtn=\"true\"] {"
             "  background: #FFFFFF;"
             "  color: #1E293B;"
-            "  border: 1px solid #CBD5E1;"
+            "  border: 1px solid #D5DEE8;"
             "  border-radius: 4px;"
-            "  padding: 1px 5px;"
-            "  min-height: 26px;"
-            "  max-height: 28px;"
+            "  padding: 1px 6px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10.8pt;"
             "  font-weight: 600;"
@@ -2101,9 +2108,9 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1D4ED8;"
             "  border: 1px solid #93C5FD;"
             "  border-radius: 4px;"
-            "  padding: 1px 5px;"
-            "  min-height: 26px;"
-            "  max-height: 28px;"
+            "  padding: 1px 6px;"
+            "  min-height: 24px;"
+            "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10.8pt;"
             "  font-weight: 700;"
@@ -2116,10 +2123,10 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  background: #FFFFFF;"
             "  color: #0F172A;"
             "  border: 1px solid #CBD5E1;"
-            "  border-radius: 4px;"
-            "  padding: 1px 6px;"
-            "  min-height: 26px;"
-            "  max-height: 28px;"
+            "  border-radius: 5px;"
+            "  padding: 1px 7px;"
+            "  min-height: 25px;"
+            "  max-height: 27px;"
             "  font-family: 'Consolas', 'Segoe UI', 'Yu Gothic UI', sans-serif;"
             "  font-size: 11pt;"
             "}"
@@ -2128,15 +2135,28 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "}"));
 
     QVBoxLayout *qv = new QVBoxLayout(d_quick_bar);
-    qv->setContentsMargins(4, 4, 4, 4);
-    qv->setSpacing(3);
+    qv->setContentsMargins(6, 4, 6, 4);
+    qv->setSpacing(4);
 
     QHBoxLayout *qh1 = new QHBoxLayout();
     qh1->setContentsMargins(0, 0, 0, 0);
-    qh1->setSpacing(2);
+    qh1->setSpacing(6);
 
-    auto makeRolePill = [this](int roleCode) -> QToolButton * {
-        QToolButton *b = new QToolButton(d_quick_bar);
+    auto makePillGroup = [this](const QString &objName, QHBoxLayout *&outLay) -> QFrame * {
+        QFrame *grp = new QFrame(d_quick_bar);
+        grp->setObjectName(objName);
+        grp->setProperty("wsPillGroup", true);
+        outLay = new QHBoxLayout(grp);
+        outLay->setContentsMargins(3, 2, 3, 2);
+        outLay->setSpacing(2);
+        return grp;
+    };
+
+    QHBoxLayout *roleLay = nullptr;
+    QFrame *roleGroup = makePillGroup(QStringLiteral("WorksheetRoleGroup"), roleLay);
+
+    auto makeRolePill = [this, roleGroup](int roleCode) -> QToolButton * {
+        QToolButton *b = new QToolButton(roleGroup);
         b->setCheckable(true);
         b->setAutoRaise(false);
         b->setCursor(Qt::PointingHandCursor);
@@ -2161,11 +2181,11 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     d_btn_role_label->hide();
     d_btn_role_none->hide();
 
-    qh1->addWidget(d_btn_role_x);
-    qh1->addWidget(d_btn_role_y);
-    qh1->addWidget(d_btn_role_yerr);
+    roleLay->addWidget(d_btn_role_x);
+    roleLay->addWidget(d_btn_role_y);
+    roleLay->addWidget(d_btn_role_yerr);
 
-    QToolButton *moreRoleBtn = new QToolButton(d_quick_bar);
+    QToolButton *moreRoleBtn = new QToolButton(roleGroup);
     moreRoleBtn->setObjectName(QStringLiteral("WorksheetMoreRoleBtn"));
     moreRoleBtn->setPopupMode(QToolButton::InstantPopup);
     moreRoleBtn->setCheckable(true);
@@ -2184,21 +2204,14 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
         connect(act, &QAction::triggered, this, [this, rc]() { applyQuickColumnRole(rc); });
     }
     moreRoleBtn->setMenu(moreMenu);
-    qh1->addWidget(moreRoleBtn);
+    roleLay->addWidget(moreRoleBtn);
+    qh1->addWidget(roleGroup);
 
-    auto makeSep = [this]() -> QFrame * {
-        QFrame *sep = new QFrame(d_quick_bar);
-        sep->setFrameShape(QFrame::VLine);
-        sep->setFixedWidth(1);
-        sep->setFixedHeight(18);
-        sep->setStyleSheet(QStringLiteral("background: #CBD5E1; border: none; margin: 0px 2px;"));
-        return sep;
-    };
+    QHBoxLayout *plotLay = nullptr;
+    QFrame *plotGroup = makePillGroup(QStringLiteral("WorksheetPlotGroup"), plotLay);
 
-    qh1->addWidget(makeSep());
-
-    auto makePlotBtn = [this](const char *propName) -> QToolButton * {
-        QToolButton *b = new QToolButton(d_quick_bar);
+    auto makePlotBtn = [plotGroup](const char *propName) -> QToolButton * {
+        QToolButton *b = new QToolButton(plotGroup);
         b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         b->setIconSize(QSize(14, 14));
         b->setAutoRaise(false);
@@ -2210,33 +2223,37 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     d_btn_quick_plot_line = makePlotBtn("wsPlotBtn");
     connect(d_btn_quick_plot_line, &QToolButton::clicked, this,
             [this]() { triggerQuickPlot(Graph::Line); });
-    qh1->addWidget(d_btn_quick_plot_line);
+    plotLay->addWidget(d_btn_quick_plot_line);
 
     d_btn_quick_plot_lp = makePlotBtn("wsPlotBtn");
     connect(d_btn_quick_plot_lp, &QToolButton::clicked, this,
             [this]() { triggerQuickPlot(Graph::LineSymbols); });
-    qh1->addWidget(d_btn_quick_plot_lp);
+    plotLay->addWidget(d_btn_quick_plot_lp);
 
     d_btn_quick_plot_scatter = makePlotBtn("wsPlotBtn");
     connect(d_btn_quick_plot_scatter, &QToolButton::clicked, this,
             [this]() { triggerQuickPlot(Graph::Scatter); });
-    qh1->addWidget(d_btn_quick_plot_scatter);
+    plotLay->addWidget(d_btn_quick_plot_scatter);
 
     d_btn_quick_add_graph = makePlotBtn("wsAddBtn");
     connect(d_btn_quick_add_graph, &QToolButton::clicked, this,
             [this]() { triggerQuickAddToGraph(); });
-    qh1->addWidget(d_btn_quick_add_graph);
+    plotLay->addWidget(d_btn_quick_add_graph);
+    qh1->addWidget(plotGroup);
 
     qh1->addStretch(1);
 
-    d_btn_quick_col_props = new QToolButton(d_quick_bar);
+    QHBoxLayout *settingsLay = nullptr;
+    QFrame *settingsGroup = makePillGroup(QStringLiteral("WorksheetSettingsGroup"), settingsLay);
+    d_btn_quick_col_props = new QToolButton(settingsGroup);
     d_btn_quick_col_props->setCheckable(true);
     d_btn_quick_col_props->setAutoRaise(false);
     d_btn_quick_col_props->setCursor(Qt::PointingHandCursor);
     d_btn_quick_col_props->setProperty("wsPlotBtn", true);
     connect(d_btn_quick_col_props, &QToolButton::clicked, this,
             [this]() { toggleControlTabBar(); });
-    qh1->addWidget(d_btn_quick_col_props);
+    settingsLay->addWidget(d_btn_quick_col_props);
+    qh1->addWidget(settingsGroup);
 
     qv->addLayout(qh1);
 

@@ -11,6 +11,7 @@
 #include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "Legend.h"
+#include "ModernRibbonAndHud.h"
 #include "ModernUiTheme.h"
 #include "MultiLayer.h"
 #include "Plot.h"
@@ -334,6 +335,9 @@ void registerMiniToolbarTranslations()
     reg("Toggle Superscript", "上付き文字を切替");
     reg("Decrease Text Font Size", "文字サイズを小さくする");
     reg("Increase Text Font Size", "文字サイズを大きくする");
+    reg("Lock Aspect", "縦横比固定");
+    reg("Lock / Unlock Aspect Ratio (Free Resize)", "縦横比固定 / 自由リサイズを切替");
+    reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
 }
 
 struct MiniBarPalette {
@@ -935,7 +939,43 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         addActionBtn(QString(), tr("Toggle Major Grid"), SLOT(onCanvasToggleMajorGrid()),
                      true, gridOn, QStringLiteral("grid-major"));
         addSeparatorLine();
-        // 5-6. Square Frame & Fit Page
+        // 5-7. Lock Aspect Ratio toggle, Square Frame & Fit Page
+        MultiLayer *ml = d_graph->multiLayerParent();
+        const bool aspectLocked = ml ? ml->keepAspectRatio() : true;
+        QToolButton *lockAspectBtn = new QToolButton(this);
+        lockAspectBtn->setObjectName(QStringLiteral("MiniToolbarLockAspectBtn"));
+        lockAspectBtn->setText(tr("Lock Aspect"));
+        lockAspectBtn->setToolTip(tr("Lock / Unlock Aspect Ratio (Free Resize)"));
+        lockAspectBtn->setFocusPolicy(Qt::NoFocus);
+        lockAspectBtn->setCheckable(true);
+        lockAspectBtn->setChecked(aspectLocked);
+        const QIcon lockIco = miniToolbarDuotoneIcon(QStringLiteral("lock"), true);
+        if (!lockIco.isNull()) {
+            lockAspectBtn->setIcon(lockIco);
+            lockAspectBtn->setIconSize(QSize(16, 16));
+            lockAspectBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        }
+        connect(lockAspectBtn, &QToolButton::clicked, this, [this]() {
+            if (!d_graph)
+                return;
+            MultiLayer *targetMl = d_graph->multiLayerParent();
+            if (!targetMl)
+                return;
+            const QString beforeSnap = targetMl->captureUndoSnapshot();
+            targetMl->setKeepAspectRatio(!targetMl->keepAspectRatio());
+            targetMl->pushUndoSnapshot(tr("Toggle Aspect Ratio Lock"), beforeSnap);
+            if (ApplicationWindow *app = findAppWindow(d_graph)) {
+                if (GraphInspectorDock *dock = app->graphInspectorDock())
+                    dock->syncInspectorFromSelection();
+                if (ModernRibbonBar *rib = app->modernRibbonBar())
+                    rib->syncCheckableStates();
+            }
+            rebuildCurrentButtons();
+            adjustSize();
+            reclampToAvailableBounds();
+        });
+        d_layout->addWidget(lockAspectBtn);
+
         addActionBtn(QStringLiteral("1:1"), tr("Square Frame (70%)"),
                      SLOT(onCanvasAspectSquare()));
         addActionBtn(QString(), tr("Fit Page to Layers"), SLOT(onCanvasFitPageToLayers()),

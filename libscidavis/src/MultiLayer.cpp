@@ -73,6 +73,7 @@
 #include "GraphInspectorDock.h"
 #include "GraphMiniToolbar.h"
 #include "CanvasInlineTextEditor.h"
+#include "ModernRibbonAndHud.h"
 #include "ModernUiTheme.h"
 #include <cmath>
 #include "OriginGadgets.h"
@@ -719,6 +720,50 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     QMenu *statusMenu = new QMenu(d_canvas_status_pill);
     auto populateStatusMenu = [this, statusMenu]() {
         statusMenu->clear();
+        QAction *actLockAspect = statusMenu->addAction(tr("Lock Aspect Ratio"));
+        actLockAspect->setCheckable(true);
+        actLockAspect->setChecked(d_keep_aspect_ratio);
+        connect(actLockAspect, &QAction::toggled, this, [this](bool checked) {
+            const QString snap = captureUndoSnapshot();
+            if (checked) {
+                Graph *ag = active_graph ? active_graph : layer(1);
+                if (ag && ag->plotWidget() && ag->plotWidget()->plotLayout()) {
+                    const QRect cr = ag->plotWidget()->plotLayout()->canvasRect();
+                    if (cr.width() > 20 && cr.height() > 20)
+                        d_target_aspect_ratio = double(cr.width()) / double(cr.height());
+                } else if (l_canvas_width > 0 && l_canvas_height > 0) {
+                    d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
+                }
+            }
+            setKeepAspectRatio(checked);
+            pushUndoSnapshot(tr("Toggle Aspect Ratio Lock"), snap);
+        });
+
+        auto applyAspectWithUndo = [this](double ratio, bool lock, const QString &label) {
+            const QString snap = captureUndoSnapshot();
+            if (lock)
+                applyAspectRatioPreset(ratio, true);
+            else
+                setKeepAspectRatio(false);
+            pushUndoSnapshot(label, snap);
+        };
+        statusMenu->addAction(tr("1:1 Square"), this, [applyAspectWithUndo]() {
+            applyAspectWithUndo(1.0, true, tr("Aspect Ratio 1:1"));
+        });
+        statusMenu->addAction(tr("4:3 Landscape"), this, [applyAspectWithUndo]() {
+            applyAspectWithUndo(4.0 / 3.0, true, tr("Aspect Ratio 4:3"));
+        });
+        statusMenu->addAction(tr("16:9 Wide"), this, [applyAspectWithUndo]() {
+            applyAspectWithUndo(16.0 / 9.0, true, tr("Aspect Ratio 16:9"));
+        });
+        statusMenu->addAction(tr("3:4 Portrait"), this, [applyAspectWithUndo]() {
+            applyAspectWithUndo(3.0 / 4.0, true, tr("Aspect Ratio 3:4"));
+        });
+        statusMenu->addAction(tr("Free Resize"), this, [applyAspectWithUndo]() {
+            applyAspectWithUndo(1.0, false, tr("Free Resize"));
+        });
+        statusMenu->addSeparator();
+
         auto zoomWithUndo = [this](double z) {
             const QString snap = captureUndoSnapshot();
             setPageZoom(z);
@@ -1084,6 +1129,12 @@ void MultiLayer::contextMenuEvent(QContextMenuEvent *e)
 
 void MultiLayer::resizeLayers(const QResizeEvent *re)
 {
+    bool unlockedByShift = false;
+    if (d_keep_aspect_ratio && (QApplication::keyboardModifiers() & Qt::ShiftModifier)) {
+        d_keep_aspect_ratio = false;
+        unlockedByShift = true;
+    }
+
     QSize oldSize = re->oldSize();
     QSize size = re->size();
 
@@ -1100,6 +1151,16 @@ void MultiLayer::resizeLayers(const QResizeEvent *re)
     }
 
     resizeLayers(size, oldSize, false);
+    if (unlockedByShift) {
+        if (ApplicationWindow *app = findMultiLayerApp(this)) {
+            if (ModernRibbonBar *rb = app->modernRibbonBar())
+                rb->syncCheckableStates();
+            if (GraphInspectorDock *dock = app->graphInspectorDock()) {
+                if (dock->targetMultiLayer() == this)
+                    dock->setTargetMultiLayer(this, true);
+            }
+        }
+    }
 }
 
 void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scaleFonts)
@@ -1132,6 +1193,9 @@ void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scal
                     gr->scaleFonts(ratio);
             }
             arrangeLayers(false, false);
+        }
+        if (!d_keep_aspect_ratio && l_canvas_width > 0 && l_canvas_height > 0) {
+            d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
         }
     }
 
@@ -3008,6 +3072,17 @@ void MultiLayer::setKeepAspectRatio(bool keep)
     }
     if (graphs > 0)
         arrangeLayers(false, false);
+    if (!d_keep_aspect_ratio && l_canvas_width > 0 && l_canvas_height > 0)
+        d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
+    updateCanvasStatusPill();
+    if (ApplicationWindow *app = findMultiLayerApp(this)) {
+        if (ModernRibbonBar *rb = app->modernRibbonBar())
+            rb->syncCheckableStates();
+        if (GraphInspectorDock *dock = app->graphInspectorDock()) {
+            if (dock->targetMultiLayer() == this)
+                dock->setTargetMultiLayer(this, true);
+        }
+    }
     emit modifiedPlot();
 }
 
@@ -3122,6 +3197,15 @@ void MultiLayer::setTargetAspectRatio(double ratio)
                 clampGraphCalloutMarkersInCanvas(gr);
         }
     }
+    updateCanvasStatusPill();
+    if (ApplicationWindow *app = findMultiLayerApp(this)) {
+        if (ModernRibbonBar *rb = app->modernRibbonBar())
+            rb->syncCheckableStates();
+        if (GraphInspectorDock *dock = app->graphInspectorDock()) {
+            if (dock->targetMultiLayer() == this)
+                dock->setTargetMultiLayer(this, true);
+        }
+    }
     emit modifiedPlot();
 }
 
@@ -3131,6 +3215,30 @@ void MultiLayer::applyAspectRatioPreset(double ratio, bool keepLocked)
         return;
     d_keep_aspect_ratio = keepLocked;
     setTargetAspectRatio(ratio);
+}
+
+void MultiLayer::syncAspectRatioAfterManualResize(double newRatio, int canvasW, int canvasH,
+                                                  bool unlockAspect)
+{
+    if (unlockAspect)
+        d_keep_aspect_ratio = false;
+    if (newRatio > 0.05 && newRatio <= 20.0)
+        d_target_aspect_ratio = newRatio;
+    if (canvasW >= 50 && canvasH >= 50) {
+        l_canvas_width = canvasW;
+        l_canvas_height = canvasH;
+    }
+    syncChildOverlayAndInsetGeometries();
+    updateCanvasStatusPill();
+    if (ApplicationWindow *app = findMultiLayerApp(this)) {
+        if (ModernRibbonBar *rb = app->modernRibbonBar())
+            rb->syncCheckableStates();
+        if (GraphInspectorDock *dock = app->graphInspectorDock()) {
+            if (dock->targetMultiLayer() == this)
+                dock->setTargetMultiLayer(this, true);
+        }
+    }
+    emit modifiedPlot();
 }
 
 void MultiLayer::setAlignement(int ha, int va)
@@ -6064,25 +6172,54 @@ void MultiLayer::updateCanvasStatusPill()
             fontFam = af;
     }
 
+    double liveAspect = (d_target_aspect_ratio > 0.05) ? d_target_aspect_ratio : 1.0;
+    if (!d_keep_aspect_ratio) {
+        if (g && g->plotWidget() && g->plotWidget()->plotLayout()) {
+            const QRect cr = g->plotWidget()->plotLayout()->canvasRect();
+            if (cr.width() > 20 && cr.height() > 20)
+                liveAspect = double(cr.width()) / double(cr.height());
+            else if (l_canvas_width > 0 && l_canvas_height > 0)
+                liveAspect = double(l_canvas_width) / double(l_canvas_height);
+        } else if (l_canvas_width > 0 && l_canvas_height > 0) {
+            liveAspect = double(l_canvas_width) / double(l_canvas_height);
+        }
+    }
+
+    auto formatRatioStr = [](double r) -> QString {
+        if (qAbs(r - 1.0) < 0.02)
+            return QStringLiteral("1:1");
+        if (qAbs(r - (4.0 / 3.0)) < 0.02)
+            return QStringLiteral("4:3");
+        if (qAbs(r - (16.0 / 9.0)) < 0.02)
+            return QStringLiteral("16:9");
+        if (qAbs(r - (3.0 / 4.0)) < 0.02)
+            return QStringLiteral("3:4");
+        return QStringLiteral("%1:1").arg(QString::number(r, 'f', 2));
+    };
+    const QString ratioStr = formatRatioStr(liveAspect);
+    const QString aspectBadge = d_keep_aspect_ratio
+            ? QStringLiteral("%1 %2").arg(ratioStr, tr("Lock"))
+            : QStringLiteral("%1 (%2)").arg(tr("Free"), ratioStr);
+
     const int zoomPct = qRound(d_page_zoom * 100.0);
     const QString sep = QString(QChar(0x00B7));
     const QString times = QString(QChar(0x00D7));
     const QString fullStatusText =
-            QStringLiteral("%1 %2 %3 %4 %5 %6 DPI %5 %7 %5 %8%")
+            QStringLiteral("%1 %2 %3 %4 %5 %6 %5 %7 DPI %5 %8 %5 %9%")
                     .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep,
+                         QString::number(hDisp, 'f', decimals), unitStr, sep, aspectBadge,
                          QString::number(d_page_dpi), fontFam, QString::number(zoomPct));
     const QString compactStatusText =
-            QStringLiteral("%1%2%3 %4 %5 %6 DPI %5 %7")
+            QStringLiteral("%1%2%3 %4 %5 %6 %5 %7 DPI %5 %8")
                     .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep,
+                         QString::number(hDisp, 'f', decimals), unitStr, sep, aspectBadge,
                          QString::number(d_page_dpi), fontFam);
 
     d_canvas_status_pill->setProperty("_fullStatusText", fullStatusText);
     d_canvas_status_pill->setProperty("_compactStatusText", compactStatusText);
     d_canvas_status_pill->setText(fullStatusText);
     d_canvas_status_pill->setToolTip(
-            tr("Page Size, DPI, Font & Zoom — Click for Quick Presets"));
+            tr("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets"));
     repositionCanvasStatusPill();
 }
 

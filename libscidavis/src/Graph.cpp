@@ -223,6 +223,7 @@ Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent,
     defaultTextMarkerBackground = QColor(255, 255, 255, 255);
     for (int i = 0; i < 4; ++i)
         d_axis_backbone[i] = true;
+    d_axis_unit_format = Column::UnitFormat::ISIJSlash;
 
     d_user_step = QVector<double>(QwtPlot::axisCnt);
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
@@ -2155,10 +2156,25 @@ QString firstNonEmptyCommentLine(const QString &comment)
 
 QString formatAxisBaseAndUnits(const QString &base, const QString &units, Column::UnitFormat fmt)
 {
+    auto stripOuterBrackets = [](QString s) -> QString {
+        s = s.trimmed();
+        while (s.size() >= 3) {
+            const QChar f = s.front();
+            const QChar l = s.back();
+            const bool matched =
+                    (f == QLatin1Char('(') && l == QLatin1Char(')'))
+                    || (f == QLatin1Char('[') && l == QLatin1Char(']'))
+                    || (f == QChar(0xFF08) && l == QChar(0xFF09))
+                    || (f == QChar(0xFF3B) && l == QChar(0xFF3D));
+            if (!matched)
+                break;
+            s = s.mid(1, s.size() - 2).trimmed();
+        }
+        return s;
+    };
+
     const QString b = base.trimmed();
-    QString u = units.trimmed();
-    if (u.startsWith(QLatin1Char('(')) && u.endsWith(QLatin1Char(')')) && u.size() >= 3)
-        u = u.mid(1, u.size() - 2).trimmed();
+    QString u = stripOuterBrackets(units);
     if (b.isEmpty())
         return QString();
     if (u.isEmpty())
@@ -2170,7 +2186,7 @@ QString formatAxisBaseAndUnits(const QString &base, const QString &units, Column
                                   || uLower == QLatin1String("none")
                                   || uLower == QLatin1String("dimensionless"));
     if (isDimensionless)
-        return QStringLiteral("%1 (-)").arg(b);
+        return (fmt == Column::UnitFormat::ISIJSlash) ? b : QStringLiteral("%1 (-)").arg(b);
 
     const bool isArbUnits = (uLower == QLatin1String("a.u.") || uLower == QLatin1String("a.u")
                              || uLower == QLatin1String("au")
@@ -2178,14 +2194,19 @@ QString formatAxisBaseAndUnits(const QString &base, const QString &units, Column
                              || uLower == QLatin1String("arb. unit")
                              || uLower == QLatin1String("arb.units")
                              || uLower == QLatin1String("arbitrary units"));
+    if (isArbUnits)
+        u = QStringLiteral("a.u.");
 
-    if (fmt == Column::UnitFormat::ISIJSlash) {
-        if (u == QStringLiteral("%"))
-            return QStringLiteral("%1 (%)").arg(b);
-        if (isArbUnits)
-            return QStringLiteral("%1 (a.u.)").arg(b);
-        return QStringLiteral("%1 / %2").arg(b, u);
+    // If Long Name already ends with "/ <Units>", do not duplicate.
+    const int slashIdx = b.lastIndexOf(QLatin1Char('/'));
+    if (slashIdx >= 0) {
+        const QString tail = stripOuterBrackets(b.mid(slashIdx + 1));
+        if (!tail.isEmpty() && tail.compare(u, Qt::CaseInsensitive) == 0)
+            return b;
     }
+
+    if (fmt == Column::UnitFormat::ISIJSlash)
+        return QStringLiteral("%1 / %2").arg(b, u);
     return QStringLiteral("%1 (%2)").arg(b, u);
 }
 
@@ -2281,10 +2302,18 @@ bool isSingleColumnHijackCandidate(const QList<Column *> &cols, const QString &p
     for (Column *col : cols) {
         if (!col)
             continue;
+        const QString colBase =
+                col->longName().trimmed().isEmpty() ? col->name().trimmed() : col->longName().trimmed();
         if (p.compare(col->formattedAxisTitle(Column::UnitFormat::Paren).trimmed(),
                       Qt::CaseInsensitive)
                     == 0
             || p.compare(col->formattedAxisTitle(Column::UnitFormat::ISIJSlash).trimmed(),
+                         Qt::CaseInsensitive)
+                    == 0
+            || p.compare(formatAxisBaseAndUnits(colBase, col->units(), Column::UnitFormat::Paren),
+                         Qt::CaseInsensitive)
+                    == 0
+            || p.compare(formatAxisBaseAndUnits(colBase, col->units(), Column::UnitFormat::ISIJSlash),
                          Qt::CaseInsensitive)
                     == 0
             || (!col->longName().trimmed().isEmpty()
@@ -2462,10 +2491,9 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
     auto cleanColAxisTitle = [fmt](Column *col) -> QString {
         if (!col)
             return QString();
-        QString t = col->formattedAxisTitle(fmt).trimmed();
-        if (t.isEmpty())
-            t = col->name().trimmed();
-        return t;
+        const QString ln = col->longName().trimmed();
+        const QString base = ln.isEmpty() ? col->name().trimmed() : ln;
+        return formatAxisBaseAndUnits(base, col->units(), fmt);
     };
 
     auto resolveMultiCol = [&](const QList<Column *> &cols) -> QString {
@@ -2636,9 +2664,14 @@ bool Graph::matchesAutoAxisTitleCandidate(int axis, const QString &text) const
         const QString colName = (isHorizAxis != isHorizBar) ? dc->xColumnName() : dc->yColumnName();
         const int idx = t->colIndex(colName);
         if (Column *col = (idx >= 0 ? t->column(idx) : nullptr)) {
+            const QString colBase = col->longName().trimmed().isEmpty() ? col->name().trimmed()
+                                                                        : col->longName().trimmed();
             if (plain == col->name().trimmed() || plain == col->longName().trimmed()
                 || plain == col->formattedAxisTitle(Column::UnitFormat::Paren).trimmed()
-                || plain == col->formattedAxisTitle(Column::UnitFormat::ISIJSlash).trimmed()) {
+                || plain == col->formattedAxisTitle(Column::UnitFormat::ISIJSlash).trimmed()
+                || plain == formatAxisBaseAndUnits(colBase, col->units(), Column::UnitFormat::Paren)
+                || plain == formatAxisBaseAndUnits(colBase, col->units(),
+                                                   Column::UnitFormat::ISIJSlash)) {
                 return true;
             }
             const QString u = col->units().trimmed();
@@ -13579,8 +13612,8 @@ bool Graph::restorePhase5Tag(const QString &line)
 
     if (s.startsWith("<ToriAutoAxisTitles")) {
         const QString uf = attrs.value("unitFormat");
-        d_axis_unit_format = (uf == QStringLiteral("ISIJSlash")) ? Column::UnitFormat::ISIJSlash
-                                                                 : Column::UnitFormat::Paren;
+        d_axis_unit_format = (uf == QStringLiteral("Paren")) ? Column::UnitFormat::Paren
+                                                             : Column::UnitFormat::ISIJSlash;
         for (int a = 0; a < 4; ++a) {
             const QString key = QString("a%1").arg(a);
             if (attrs.contains(key))

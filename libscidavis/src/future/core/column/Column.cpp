@@ -168,11 +168,26 @@ void Column::setUnits(const QString &s)
 
 QString Column::formattedAxisTitle(UnitFormat fmt) const
 {
+    auto stripOuterBrackets = [](QString s) -> QString {
+        s = s.trimmed();
+        while (s.size() >= 3) {
+            const QChar f = s.front();
+            const QChar l = s.back();
+            const bool matched =
+                    (f == QLatin1Char('(') && l == QLatin1Char(')'))
+                    || (f == QLatin1Char('[') && l == QLatin1Char(']'))
+                    || (f == QChar(0xFF08) && l == QChar(0xFF09))
+                    || (f == QChar(0xFF3B) && l == QChar(0xFF3D));
+            if (!matched)
+                break;
+            s = s.mid(1, s.size() - 2).trimmed();
+        }
+        return s;
+    };
+
     const QString ln = longName().trimmed();
     const QString base = ln.isEmpty() ? name() : ln;
-    QString u = units().trimmed();
-    if (u.startsWith(QLatin1Char('(')) && u.endsWith(QLatin1Char(')')) && u.size() >= 3)
-        u = u.mid(1, u.size() - 2).trimmed();
+    QString u = stripOuterBrackets(units());
     if (u.isEmpty())
         return base;
 
@@ -182,7 +197,7 @@ QString Column::formattedAxisTitle(UnitFormat fmt) const
                                   || uLower == QLatin1String("none")
                                   || uLower == QLatin1String("dimensionless"));
     if (isDimensionless)
-        return QString("%1 (-)").arg(base);
+        return (fmt == UnitFormat::ISIJSlash) ? base : QString("%1 (-)").arg(base);
 
     const bool isArbUnits = (uLower == QLatin1String("a.u.") || uLower == QLatin1String("a.u")
                              || uLower == QLatin1String("au")
@@ -190,14 +205,19 @@ QString Column::formattedAxisTitle(UnitFormat fmt) const
                              || uLower == QLatin1String("arb. unit")
                              || uLower == QLatin1String("arb.units")
                              || uLower == QLatin1String("arbitrary units"));
+    if (isArbUnits)
+        u = QStringLiteral("a.u.");
 
-    if (fmt == UnitFormat::ISIJSlash) {
-        if (u == QLatin1String("%"))
-            return QString("%1 (%)").arg(base);
-        if (isArbUnits)
-            return QString("%1 (a.u.)").arg(base);
-        return QString("%1 / %2").arg(base, u);
+    // Avoid duplicating "/ <Units>" if base already ends with it
+    const int slashIdx = base.lastIndexOf(QLatin1Char('/'));
+    if (slashIdx >= 0) {
+        const QString tail = stripOuterBrackets(base.mid(slashIdx + 1));
+        if (!tail.isEmpty() && tail.compare(u, Qt::CaseInsensitive) == 0)
+            return base;
     }
+
+    if (fmt == UnitFormat::ISIJSlash)
+        return QString("%1 / %2").arg(base, u);
     return QString("%1 (%2)").arg(base, u);
 }
 

@@ -1764,6 +1764,7 @@ void registerApplicationWindowJapaneseStrings()
         add("At least one band eigenvalue column is required.", "バンド固有値列を少なくとも1列選択してください。");
         add("Insufficient k-points for VASP band structure plot.", "VASPバンド構造プロットに必要な k 点数が不足しています。");
         add("Failure probability, <i>P</i><sub>f</sub> (%)", "破壊確率, <i>P</i><sub>f</sub> (%)");
+        add("Failure probability, <i>P</i><sub>f</sub> / %", "破壊確率, <i>P</i><sub>f</sub> / %");
         add("Maximum Likelihood (MLE — JIS R 1625 / ISO 20501)", "最尤法 (MLE — JIS R 1625 / ISO 20501 準拠)");
         add("Median Rank Regression (MRR — Benard)", "メジアンランク回帰法 (MRR — Benard近似)");
         add("Parameter Estimator:", "母数推定法:");
@@ -1796,6 +1797,20 @@ void registerApplicationWindowJapaneseStrings()
         add("HCP / Hexagonal (100, 002, 101...)", "HCP / 六方晶 (100, 002, 101...)");
         add("Kocks-Mecking Stage-III (\xCE\xB8 vs \xCF\x83t)",
             "Kocks-Mecking ステージIII (\xCE\xB8 vs \xCF\x83t)");
+        add("Lock", "固定");
+        add("Free", "自由変形");
+        add("Lock Aspect Ratio", "縦横比を固定 (Lock Aspect Ratio)");
+        add("1:1 Square", "1:1 正方形");
+        add("4:3 Landscape", "4:3 横長");
+        add("16:9 Wide", "16:9 ワイド");
+        add("3:4 Portrait", "3:4 縦長");
+        add("Free Resize", "自由リサイズ");
+        add("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets",
+            "ページサイズ・縦横比・DPI・フォント・ズーム — クリックでクイック設定");
+        add("Please activate a 2D Graph window first before adding a linked layer.",
+            "リンク軸レイヤーを追加するには、まず 2D グラフウィンドウをアクティブにしてください。");
+        add("Please activate a 2D Graph window first before adding a zoom inset layer.",
+            "拡大インセットレイヤーを追加するには、まず 2D グラフウィンドウをアクティブにしてください。");
     }
 }
 
@@ -2173,13 +2188,15 @@ ApplicationWindow::ApplicationWindow()
     explorerMainLayout->setSpacing(3);
 
     d_explorer_bar_grid = new QGridLayout();
-    d_explorer_bar_grid->setContentsMargins(0, 0, 0, 0);
+    d_explorer_bar_grid->setContentsMargins(2, 2, 2, 2);
     d_explorer_bar_grid->setHorizontalSpacing(4);
-    d_explorer_bar_grid->setVerticalSpacing(3);
+    d_explorer_bar_grid->setVerticalSpacing(4);
 
     d_explorer_search = new QLineEdit(d_explorer_container);
     d_explorer_search->setObjectName("explorerSearchEdit");
     d_explorer_search->setMinimumWidth(120);
+    d_explorer_search->setFixedHeight(26);
+    d_explorer_search->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     d_explorer_search->setClearButtonEnabled(true);
     d_explorer_search->setPlaceholderText(tr("Search windows (name / label)..."));
     connect(d_explorer_search, SIGNAL(textChanged(const QString &)), this,
@@ -2187,7 +2204,9 @@ ApplicationWindow::ApplicationWindow()
 
     d_explorer_type_filter = new QComboBox(d_explorer_container);
     d_explorer_type_filter->setObjectName("explorerTypeFilterCombo");
-    d_explorer_type_filter->setMinimumWidth(72);
+    d_explorer_type_filter->setMinimumWidth(88);
+    d_explorer_type_filter->setFixedHeight(26);
+    d_explorer_type_filter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     d_explorer_type_filter->addItem(tr("All Windows"), QString("all"));
     d_explorer_type_filter->addItem(tr("Tables (Workbooks)"), QString("Table"));
     d_explorer_type_filter->addItem(tr("Graphs (2D/3D)"), QString("MultiLayer"));
@@ -2199,27 +2218,34 @@ ApplicationWindow::ApplicationWindow()
 
     d_explorer_subfolder_check = new QCheckBox(tr("Subfolders"), d_explorer_container);
     d_explorer_subfolder_check->setObjectName("explorerSubfolderCheck");
+    d_explorer_subfolder_check->setFixedHeight(26);
+    d_explorer_subfolder_check->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     d_explorer_subfolder_check->setToolTip(tr("Include windows from subfolders in list"));
     connect(d_explorer_subfolder_check, SIGNAL(toggled(bool)), this,
             SLOT(filterExplorerWindows()));
 
     d_btn_explorer_new_folder = new QToolButton(d_explorer_container);
+    d_btn_explorer_new_folder->setAutoRaise(true);
     d_btn_explorer_new_folder->setIcon(IconLoader::load(":/newfolder.xpm"));
     d_btn_explorer_new_folder->setToolTip(tr("New Folder"));
     connect(d_btn_explorer_new_folder, SIGNAL(clicked()), this, SLOT(addFolder()));
 
     d_btn_explorer_new_table = new QToolButton(d_explorer_container);
+    d_btn_explorer_new_table->setAutoRaise(true);
     d_btn_explorer_new_table->setIcon(IconLoader::load(":/table.xpm"));
     d_btn_explorer_new_table->setToolTip(tr("New Table"));
     connect(d_btn_explorer_new_table, SIGNAL(clicked()), this, SLOT(newTable()));
 
     d_btn_explorer_new_graph = new QToolButton(d_explorer_container);
+    d_btn_explorer_new_graph->setAutoRaise(true);
     d_btn_explorer_new_graph->setIcon(IconLoader::load(":/new_graph.xpm"));
     d_btn_explorer_new_graph->setToolTip(tr("New Graph"));
     connect(d_btn_explorer_new_graph, SIGNAL(clicked()), this, SLOT(newGraph()));
 
     d_btn_tabbed_view = new QToolButton(d_explorer_container);
     d_btn_tabbed_view->setObjectName("explorerTabbedViewButton");
+    d_btn_tabbed_view->setAutoRaise(true);
+    d_btn_tabbed_view->setFixedHeight(26);
     d_btn_tabbed_view->setText(tr("Tabbed View"));
     d_btn_tabbed_view->setCheckable(true);
     d_btn_tabbed_view->setToolTip(tr("Toggle OriginPro-style Tabbed Workspace View"));
@@ -4828,7 +4854,7 @@ void ApplicationWindow::plotPareto()
         }
         g->setXAxisTitle(tr("Category Rank"));
         g->setYAxisTitle(srcTable->colLabel(yCol));
-        g->setRightAxisTitle(tr("Cumulative Percentage (%)"));
+        g->setRightAxisTitle(tr("Cumulative percentage / %"));
         g->setScale(QwtPlot::yLeft, 0.0, totalSum * 1.05);
         g->setScale(QwtPlot::yRight, 0.0, 105.0, 20.0);
         g->newLegend();
@@ -4941,8 +4967,8 @@ void ApplicationWindow::plotQQ()
                 refCurve->setPen(QPen(QColor(213, 94, 0), 2.0, Qt::DashLine));
         }
         g->setTitle(tr("Normal Q-Q Plot (%1)").arg(srcTable->colLabel(yCol)));
-        g->setXAxisTitle(tr("Theoretical Normal Quantiles (z)"));
-        g->setYAxisTitle(tr("Sample Quantiles (%1)").arg(srcTable->colLabel(yCol)));
+        g->setXAxisTitle(tr("Theoretical normal quantiles, z"));
+        g->setYAxisTitle(tr("Sample quantiles, %1").arg(srcTable->colLabel(yCol)));
         g->setAutoScale();
         g->newLegend();
         g->replot();
@@ -6617,8 +6643,8 @@ void ApplicationWindow::newWrksheetPlot(const QString &name, const QString &labe
     Graph *g = (Graph *)plot->activeGraph();
     if (g) {
         g->setTitle("");
-        g->setXAxisTitle(tr("pixels"));
-        g->setYAxisTitle(tr("pixel intensity (a.u.)"));
+        g->setXAxisTitle(tr("Position, x / px"));
+        g->setYAxisTitle(tr("Intensity, I / a.u."));
     }
 }
 
@@ -8810,12 +8836,17 @@ void ApplicationWindow::readSettings()
     settings.endGroup(); // Dialogs
 
     settings.beginGroup("/Colors");
-    const QString rawWsColor = settings.value("/Workspace", "#f1f5f9").toString();
+    const QString rawWsColor = settings.value("/Workspace", "#E8EDF4").toString();
     if (rawWsColor.compare(QStringLiteral("darkGray"), Qt::CaseInsensitive) == 0
         || rawWsColor.compare(QStringLiteral("#808080"), Qt::CaseInsensitive) == 0
         || rawWsColor.compare(QStringLiteral("#ff808080"), Qt::CaseInsensitive) == 0
-        || rawWsColor.compare(QStringLiteral("#ffa0a0a4"), Qt::CaseInsensitive) == 0) {
-        workspaceColor = QColor(0xF1, 0xF5, 0xF9);
+        || rawWsColor.compare(QStringLiteral("#a0a0a4"), Qt::CaseInsensitive) == 0
+        || rawWsColor.compare(QStringLiteral("#ffa0a0a4"), Qt::CaseInsensitive) == 0
+        || rawWsColor.compare(QStringLiteral("#a9a9a9"), Qt::CaseInsensitive) == 0
+        || rawWsColor.compare(QStringLiteral("#ffa9a9a9"), Qt::CaseInsensitive) == 0
+        || rawWsColor.compare(QStringLiteral("#f1f5f9"), Qt::CaseInsensitive) == 0
+        || rawWsColor.compare(QStringLiteral("#fff1f5f9"), Qt::CaseInsensitive) == 0) {
+        workspaceColor = QColor(0xE8, 0xED, 0xF4);
     } else {
         workspaceColor = QColor(COLORVALUE(rawWsColor));
     }
@@ -23774,28 +23805,29 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
         if (verticalMode) {
             if (d_explorer_search) {
                 d_explorer_search->setMinimumWidth(90);
-                d_explorer_bar_grid->addWidget(d_explorer_search, 0, 0);
+                d_explorer_bar_grid->addWidget(d_explorer_search, 0, 0, 1, 2);
             }
             if (d_btn_explorer_new_folder) {
-                d_btn_explorer_new_folder->setFixedSize(24, 24);
-                d_explorer_bar_grid->addWidget(d_btn_explorer_new_folder, 0, 1);
+                d_btn_explorer_new_folder->setFixedSize(26, 26);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_folder, 0, 2);
             }
             if (d_btn_explorer_new_table) {
-                d_btn_explorer_new_table->setFixedSize(24, 24);
-                d_explorer_bar_grid->addWidget(d_btn_explorer_new_table, 0, 2);
+                d_btn_explorer_new_table->setFixedSize(26, 26);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_table, 0, 3);
             }
             if (d_btn_explorer_new_graph) {
-                d_btn_explorer_new_graph->setFixedSize(24, 24);
-                d_explorer_bar_grid->addWidget(d_btn_explorer_new_graph, 0, 3);
+                d_btn_explorer_new_graph->setFixedSize(26, 26);
+                d_explorer_bar_grid->addWidget(d_btn_explorer_new_graph, 0, 4);
             }
             if (d_explorer_type_filter) {
-                d_explorer_type_filter->setMinimumWidth(64);
+                d_explorer_type_filter->setMinimumWidth(84);
                 d_explorer_type_filter->setSizeAdjustPolicy(
                         QComboBox::AdjustToMinimumContentsLengthWithIcon);
                 d_explorer_bar_grid->addWidget(d_explorer_type_filter, 1, 0);
             }
             if (d_explorer_subfolder_check)
-                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 1, 1, 1, 3);
+                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 1, 1, 1, 4,
+                                               Qt::AlignLeft | Qt::AlignVCenter);
             if (d_btn_tabbed_view)
                 d_btn_tabbed_view->hide();
             d_explorer_bar_grid->setColumnStretch(0, 1);
@@ -23808,29 +23840,28 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
             }
         } else {
             if (d_explorer_search) {
-                d_explorer_search->setMinimumWidth(120);
+                d_explorer_search->setMinimumWidth(140);
                 d_explorer_bar_grid->addWidget(d_explorer_search, 0, 0);
             }
             if (d_explorer_type_filter) {
-                d_explorer_type_filter->setMinimumWidth(72);
-                d_explorer_type_filter->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+                d_explorer_type_filter->setMinimumWidth(110);
+                d_explorer_type_filter->setSizeAdjustPolicy(
+                        QComboBox::AdjustToMinimumContentsLengthWithIcon);
                 d_explorer_bar_grid->addWidget(d_explorer_type_filter, 0, 1);
             }
             if (d_explorer_subfolder_check)
-                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 0, 2);
+                d_explorer_bar_grid->addWidget(d_explorer_subfolder_check, 0, 2,
+                                               Qt::AlignLeft | Qt::AlignVCenter);
             if (d_btn_explorer_new_folder) {
-                d_btn_explorer_new_folder->setMinimumSize(0, 0);
-                d_btn_explorer_new_folder->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_btn_explorer_new_folder->setFixedSize(26, 26);
                 d_explorer_bar_grid->addWidget(d_btn_explorer_new_folder, 0, 3);
             }
             if (d_btn_explorer_new_table) {
-                d_btn_explorer_new_table->setMinimumSize(0, 0);
-                d_btn_explorer_new_table->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_btn_explorer_new_table->setFixedSize(26, 26);
                 d_explorer_bar_grid->addWidget(d_btn_explorer_new_table, 0, 4);
             }
             if (d_btn_explorer_new_graph) {
-                d_btn_explorer_new_graph->setMinimumSize(0, 0);
-                d_btn_explorer_new_graph->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                d_btn_explorer_new_graph->setFixedSize(26, 26);
                 d_explorer_bar_grid->addWidget(d_btn_explorer_new_graph, 0, 5);
             }
             if (d_btn_tabbed_view) {
@@ -25209,14 +25240,26 @@ void ApplicationWindow::togglePageViewMode()
 void ApplicationWindow::addLinkedTopRightLayer()
 {
     QWidget *w = d_workspace.activeSubWindow();
-    if (!w || !w->inherits("MultiLayer"))
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!ml) {
+        const QString msg =
+                tr("Please activate a 2D Graph window first before adding a linked layer.");
+        if (statusBar())
+            statusBar()->showMessage(msg, 4500);
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, tr("Add Linked Layer"), msg);
         return;
-    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    }
+    if (ml->isEmpty())
+        ml->addLayer();
     const QString before = ml->captureUndoSnapshot();
     if (ml->addLinkedLayer()) {
         ml->pushUndoSnapshot(tr("Add Linked Layer"), before);
         if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
             d_graph_inspector_dock->setTargetMultiLayer(ml, true);
+        if (statusBar())
+            statusBar()->showMessage(tr("Added linked top/right axis layer to %1.").arg(ml->name()),
+                                     3500);
         emit modified();
     }
 }
@@ -25224,14 +25267,25 @@ void ApplicationWindow::addLinkedTopRightLayer()
 void ApplicationWindow::addZoomInsetLayer()
 {
     QWidget *w = d_workspace.activeSubWindow();
-    if (!w || !w->inherits("MultiLayer"))
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    if (!ml) {
+        const QString msg =
+                tr("Please activate a 2D Graph window first before adding a zoom inset layer.");
+        if (statusBar())
+            statusBar()->showMessage(msg, 4500);
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, tr("Add Inset Layer"), msg);
         return;
-    MultiLayer *ml = static_cast<MultiLayer *>(w);
+    }
+    if (ml->isEmpty())
+        ml->addLayer();
     const QString before = ml->captureUndoSnapshot();
     if (ml->addInsetLayer()) {
         ml->pushUndoSnapshot(tr("Add Inset Layer"), before);
         if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
             d_graph_inspector_dock->setTargetMultiLayer(ml, true);
+        if (statusBar())
+            statusBar()->showMessage(tr("Added zoom inset layer to %1.").arg(ml->name()), 3500);
         emit modified();
     }
 }
@@ -27766,8 +27820,9 @@ void ApplicationWindow::updateGraphInspectorResponsiveness()
     if (width() < 1080) {
         shouldCollapse = true;
     } else if (!activeIsGraph && !hasSplitGraphTarget) {
-        // Active window is Table / Matrix / Note / Graph3D / empty workspace without Split Graph
-        shouldCollapse = true;
+        // Keep Quick Start expanded on wide desktop windows (>= 1150px);
+        // auto-collapse to the 32px icon rail on narrower windows.
+        shouldCollapse = (width() < 1150);
     } else if (isSplitLayout && totalAvailW < 1680) {
         shouldCollapse = true;
     }

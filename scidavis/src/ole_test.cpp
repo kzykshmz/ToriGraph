@@ -3510,8 +3510,8 @@ int main(int argc, char **argv)
         QString yTitleAuto = gTensile->plotWidget()->axisTitle(QwtPlot::yLeft).text();
         std::cout << "[INFO] Auto Axis Titles: X='" << xTitleAuto.toStdString()
                   << "', Y='" << yTitleAuto.toStdString() << "'\n";
-        CHECK_COND(xTitleAuto == "Nominal Strain (%)" && yTitleAuto == "Nominal Stress (MPa)",
-                   "multilayerPlot did not auto-populate Long Name (Units) on X/Y axes");
+        CHECK_COND(xTitleAuto == "Nominal Strain / %" && yTitleAuto == "Nominal Stress / MPa",
+                   "multilayerPlot did not auto-populate ISIJ Long Name / Units on X/Y axes");
         CHECK_COND(gTensile->axisTitleFont(QwtPlot::xBottom).family() == "Arial"
                            && gTensile->axisTitleFont(QwtPlot::yLeft).family() == "Arial",
                    "Auto-populated axis titles did not preserve Arial font");
@@ -3615,9 +3615,9 @@ int main(int argc, char **argv)
                    "batchCloneGraphToTable did not rebind curve to tTensileB");
         CHECK_COND(gCloned->axisFont(QwtPlot::xBottom).pointSize() == 28
                            && gCloned->referenceLines().size() == 1
-                           && gCloned->plotWidget()->axisTitle(QwtPlot::xBottom).text() == "True Strain (%)"
-                           && gCloned->plotWidget()->axisTitle(QwtPlot::yLeft).text() == "True Stress (MPa)",
-                   "batchCloneGraphToTable did not preserve styling or update target Long Name (Units) titles");
+                           && gCloned->plotWidget()->axisTitle(QwtPlot::xBottom).text() == "True Strain / %"
+                           && gCloned->plotWidget()->axisTitle(QwtPlot::yLeft).text() == "True Stress / MPa",
+                   "batchCloneGraphToTable did not preserve styling or update target ISIJ Long Name / Units titles");
     }
 
     // =========================================================================
@@ -8989,7 +8989,9 @@ static bool isUntranslatedAsciiUiLabel(const QString &raw)
         "Viridis", "Magma", "Inferno", "Plasma", "Cividis", "Jet",
         "α / μ / σ", "x₂", "x²", "°C", "μm", "MPa", "GPa", "mass%", "at.%", "wt.ppm", "kJ/mol",
         "[fx]", "s⁻¹", "10⁻⁴ s⁻¹", "mass ppm·s⁻¹", "σ (MPa)", "σ₀.₂ (MPa)", "2θ (deg.)",
-        "ε (%)", "dσ/dε (GPa)", "1000/T (K⁻¹)"
+        "ε (%)", "dσ/dε (GPa)", "1000/T (K⁻¹)",
+        "σ / MPa", "σ₀.₂ / MPa", "2θ / deg", "2θ / deg.", "ε / %", "dσ/dε / GPa", "dσ/dε / MPa",
+        "1000/T / K⁻¹", "1:1", "4:3", "16:9", "3:4"
     };
     if (kAllowedTokens.contains(s))
         return false;
@@ -9885,6 +9887,8 @@ static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *m
 }
 
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QTabBar>
 #include <QToolBar>
 
 static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(ApplicationWindow *mw)
@@ -9924,8 +9928,13 @@ static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(Application
                    "GraphInspectorDock intruded vertically into ModernRibbonBar row!");
     }
 
-    // Verify all 7 Ribbon tabs at both 1380px and narrow 1040px have 0 clipped RibbonGroupCaptions
-    for (int testW : { 1380, 1040 }) {
+    // Verify across all 7 Ribbon tabs at 1380px, 1280px, and narrow 1040px:
+    // (a) ZERO visible RibbonGroupCaption labels exist in ModernRibbonBar,
+    // (b) ALL visible QToolButtons have zero vertical clipping (height >= fontMetrics.height & inside viewport),
+    // (c) Tab 2 ("Plot 2D/3D" / "2D/3Dプロット") has accessible "Linked Layer" and "Zoom Inset" buttons
+    //     with zero horizontal overflow clipping at 1380px,
+    // (d) At 1280px width, Tabs 1, 2, 4, and 6 (indices 0, 1, 3, 5) have ZERO horizontal scroll overflow.
+    for (int testW : { 1380, 1280, 1040 }) {
         w48->resize(testW, 820);
         for (int ti = 0; ti < rib48->tabCount(); ++ti) {
             rib48->setCurrentTabIndex(ti);
@@ -9933,24 +9942,95 @@ static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(Application
                 QCoreApplication::sendPostedEvents();
                 QApplication::processEvents();
             }
+            if (testW == 1280 && (ti == 0 || ti == 1 || ti == 3 || ti == 5)) {
+                for (QScrollArea *sa : rib48->findChildren<QScrollArea *>()) {
+                    if (!sa || !sa->isVisible())
+                        continue;
+                    if (QScrollBar *hb = sa->horizontalScrollBar()) {
+                        CHECK_COND(hb->maximum() <= hb->minimum(),
+                                   QString("Suite 48(d): Ribbon Tab %1 overflows horizontally at 1280px (hb max=%2 > min=%3)!")
+                                           .arg(ti + 1)
+                                           .arg(hb->maximum())
+                                           .arg(hb->minimum())
+                                           .toStdString()
+                                           .c_str());
+                    }
+                }
+            }
             for (QLabel *lbl : rib48->findChildren<QLabel *>()) {
-                if (!lbl || !lbl->isVisible()
-                    || lbl->property("class").toString() != QStringLiteral("RibbonGroupCaption"))
+                if (!lbl || !lbl->isVisible())
                     continue;
-                CHECK_COND(!lbl->text().trimmed().isEmpty(),
-                           "Empty RibbonGroupCaption text in Suite 48!");
-                CHECK_COND(lbl->height() + 1 >= lbl->fontMetrics().height(),
-                           "RibbonGroupCaption vertically clipped inside its QLabel height!");
-                for (QWidget *anc = lbl->parentWidget(); anc; anc = anc->parentWidget()) {
+                CHECK_COND(lbl->property("class").toString() != QStringLiteral("RibbonGroupCaption"),
+                           "Suite 48(a): Visible RibbonGroupCaption found in ModernRibbonBar (must be removed)!");
+            }
+
+            bool foundLinkedLayer = false;
+            bool foundZoomInset = false;
+            for (QToolButton *btn : rib48->findChildren<QToolButton *>()) {
+                if (!btn || !btn->isVisible())
+                    continue;
+                if (qobject_cast<QTabBar *>(btn->parentWidget())
+                    || qobject_cast<QScrollArea *>(btn->parentWidget()))
+                    continue; // ignore Qt internal QTabBar & RibbonHorizontalScrollArea scroll chevrons
+                CHECK_COND(btn->height() + 1 >= btn->fontMetrics().height(),
+                           QString("Suite 48(b): Ribbon QToolButton '%1' vertically clipped (h=%2 < fm=%3) at W=%4 tab=%5!")
+                                   .arg(btn->text())
+                                   .arg(btn->height())
+                                   .arg(btn->fontMetrics().height())
+                                   .arg(testW)
+                                   .arg(ti)
+                                   .toStdString()
+                                   .c_str());
+
+                QScrollArea *saAnc = nullptr;
+                for (QWidget *anc = btn->parentWidget(); anc; anc = anc->parentWidget()) {
                     if (auto *sa = qobject_cast<QScrollArea *>(anc)) {
-                        if (sa->viewport()) {
-                            const int botVp = lbl->mapTo(sa->viewport(), QPoint(0, lbl->height())).y();
-                            CHECK_COND(botVp <= sa->viewport()->height() + 1,
-                                       "RibbonGroupCaption clipped by QScrollArea viewport / scrollbar!");
-                        }
+                        saAnc = sa;
                         break;
                     }
                 }
+                if (saAnc && saAnc->viewport() && saAnc->viewport()->isAncestorOf(btn)) {
+                    const int botVp = btn->mapTo(saAnc->viewport(), QPoint(0, btn->height())).y();
+                    CHECK_COND(botVp <= saAnc->viewport()->height() + 1,
+                               QString("Suite 48(b): Ribbon QToolButton '%1' clipped vertically by QScrollArea viewport (%2 > %3) at W=%4 tab=%5!")
+                                       .arg(btn->text())
+                                       .arg(botVp)
+                                       .arg(saAnc->viewport()->height())
+                                       .arg(testW)
+                                       .arg(ti)
+                                       .toStdString()
+                                       .c_str());
+                }
+
+                if (testW == 1380 && ti == 1) {
+                    const QString txt = btn->text();
+                    const bool isLinked = txt.contains(QStringLiteral("Linked Layer"), Qt::CaseInsensitive)
+                            || txt.contains(QString::fromUtf8("\xE9\x80\xA3\xE5\x8B\x95\xE3\x83\xAC\xE3\x82\xA4\xE3\x83\xA4\xE3\x83\xBC"));
+                    const bool isInset = txt.contains(QStringLiteral("Zoom Inset"), Qt::CaseInsensitive)
+                            || txt.contains(QString::fromUtf8("\xE6\x8B\xA1\xE5\xA4\xA7\xE3\x82\xA4\xE3\x83\xB3\xE3\x82\xBB\xE3\x83\x83\xE3\x83\x88"));
+                    if (isLinked || isInset) {
+                        if (saAnc && saAnc->viewport() && saAnc->viewport()->isAncestorOf(btn)) {
+                            const int leftVp = btn->mapTo(saAnc->viewport(), QPoint(0, 0)).x();
+                            const int rightVp = btn->mapTo(saAnc->viewport(), QPoint(btn->width(), 0)).x();
+                            CHECK_COND(leftVp >= -1 && rightVp <= saAnc->viewport()->width() + 1,
+                                       QString("Suite 48(c): Tab 2 button '%1' clipped horizontally at 1380px (left=%2, right=%3, vpW=%4)!")
+                                               .arg(txt)
+                                               .arg(leftVp)
+                                               .arg(rightVp)
+                                               .arg(saAnc->viewport()->width())
+                                               .toStdString()
+                                               .c_str());
+                        }
+                        if (isLinked)
+                            foundLinkedLayer = true;
+                        if (isInset)
+                            foundZoomInset = true;
+                    }
+                }
+            }
+            if (testW == 1380 && ti == 1) {
+                CHECK_COND(foundLinkedLayer && foundZoomInset,
+                           "Suite 48(c): Tab 2 ('Plot 2D/3D') missing visible 'Linked Layer' and/or 'Zoom Inset' QToolButton at 1380px!");
             }
         }
     }
@@ -12966,6 +13046,121 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
                            .arg(gBR)
                            .toStdString()
                            .c_str());
+    }
+
+    // -------------------------------------------------------------------------
+    // 51g. Phase 11 ISIJ Auto Axis Titles, Default 1:1 Lock + Free Wide/Tall
+    //      Stretching, and GraphInspectorDock Empty-State Quick Start Panel
+    // -------------------------------------------------------------------------
+    {
+        w51->resize(1280, 880);
+        w51->show();
+        QApplication::processEvents();
+
+        Table *t51g = w51->newTable(6, 2, "Phase11IsijTbl", "Phase 11 ISIJ");
+        CHECK_COND(t51g != nullptr, "Suite 51g: failed to create Phase11IsijTbl");
+        t51g->setColName(0, "Strain");
+        t51g->setColPlotDesignation(0, SciDAVis::X);
+        t51g->column(0)->setLongName(QString::fromUtf8("Nominal strain, \xCE\xB5"));
+        t51g->column(0)->setUnits(QStringLiteral("%"));
+        t51g->setColName(1, "Stress");
+        t51g->setColPlotDesignation(1, SciDAVis::Y);
+        t51g->column(1)->setLongName(QString::fromUtf8("Nominal stress, \xCF\x83"));
+        t51g->column(1)->setUnits(QStringLiteral("MPa"));
+        for (int r = 0; r < 6; ++r) {
+            t51g->setCell(r, 0, double(r) * 1.5);
+            t51g->setCell(r, 1, double(r) * 95.0);
+        }
+
+        // (a) Auto axis title uses ISIJ format: "Nominal stress, σ / MPa"
+        MultiLayer *ml51g = w51->multilayerPlot(
+                t51g, QStringList() << (t51g->name() + "_Stress"), Graph::LineSymbols);
+        CHECK_COND(ml51g != nullptr && ml51g->activeGraph() != nullptr,
+                   "Suite 51g: failed to create ml51g");
+        Graph *g51g = ml51g->activeGraph();
+        const QString xTitle51g = g51g->plotWidget()->axisTitle(QwtPlot::xBottom).text();
+        const QString yTitle51g = g51g->plotWidget()->axisTitle(QwtPlot::yLeft).text();
+        CHECK_COND(xTitle51g == QString::fromUtf8("Nominal strain, \xCE\xB5 / %"),
+                   QString("Suite 51g(a): expected ISIJ X title 'Nominal strain, ε / %', got '%1'")
+                           .arg(xTitle51g)
+                           .toStdString()
+                           .c_str());
+        CHECK_COND(yTitle51g == QString::fromUtf8("Nominal stress, \xCF\x83 / MPa"),
+                   QString("Suite 51g(a): expected ISIJ Y title 'Nominal stress, σ / MPa', got '%1'")
+                           .arg(yTitle51g)
+                           .toStdString()
+                           .c_str());
+
+        // (b) Default keepAspectRatio() == true; unlocking allows free wide (700x360) and tall (360x700) stretching
+        CHECK_COND(ml51g->keepAspectRatio(),
+                   "Suite 51g(b): new MultiLayer graph must default to keepAspectRatio() == true!");
+        ml51g->show();
+        QApplication::processEvents();
+
+        ml51g->setKeepAspectRatio(false);
+        CHECK_COND(!ml51g->keepAspectRatio(),
+                   "Suite 51g(b): setKeepAspectRatio(false) did not unlock aspect ratio!");
+
+        ml51g->resize(700, 360);
+        if (ml51g->canvasWidget())
+            ml51g->canvasWidget()->resize(680, 310);
+        ml51g->arrangeLayers(false, false);
+        for (int pass = 0; pass < 3; ++pass) {
+            QCoreApplication::sendPostedEvents();
+            QApplication::processEvents();
+        }
+        const QRect wideRect = g51g->plotWidget()->plotLayout()->canvasRect();
+        const double wideRatio = double(wideRect.width()) / double(qMax(1, wideRect.height()));
+        CHECK_COND(wideRatio > 1.4,
+                   QString("Suite 51g(b): unlocked wide resize (700x360) canvas W/H=%1 (expected > 1.4, rect=%2x%3)")
+                           .arg(wideRatio, 0, 'f', 3)
+                           .arg(wideRect.width())
+                           .arg(wideRect.height())
+                           .toStdString()
+                           .c_str());
+
+        ml51g->resize(360, 700);
+        if (ml51g->canvasWidget())
+            ml51g->canvasWidget()->resize(340, 650);
+        ml51g->arrangeLayers(false, false);
+        for (int pass = 0; pass < 3; ++pass) {
+            QCoreApplication::sendPostedEvents();
+            QApplication::processEvents();
+        }
+        const QRect tallRect = g51g->plotWidget()->plotLayout()->canvasRect();
+        const double tallRatio = double(tallRect.width()) / double(qMax(1, tallRect.height()));
+        CHECK_COND(tallRatio < 0.75,
+                   QString("Suite 51g(b): unlocked tall resize (360x700) canvas W/H=%1 (expected < 0.75, rect=%2x%3)")
+                           .arg(tallRatio, 0, 'f', 3)
+                           .arg(tallRect.width())
+                           .arg(tallRect.height())
+                           .toStdString()
+                           .c_str());
+
+        // (c) GraphInspectorDock shows Quick Start empty-state panel when no graph is active
+        w51->setHeadlessMode(false);
+        w51->resize(1280, 820);
+        w51->show();
+        QApplication::processEvents();
+        GraphInspectorDock *insp51g = w51->graphInspectorDock();
+        CHECK_COND(insp51g != nullptr, "Suite 51g(c): w51->graphInspectorDock() is null!");
+        insp51g->setCollapsedRail(false);
+        insp51g->show();
+        insp51g->setTargetMultiLayer(ml51g, true);
+        QApplication::processEvents();
+        CHECK_COND(!insp51g->isShowingQuickStart(),
+                   "Suite 51g(c): GraphInspectorDock must NOT show Quick Start when a graph is active!");
+
+        w51->activateSubWindow(t51g);
+        insp51g->setTargetMultiLayer(nullptr, true);
+        for (int pass = 0; pass < 3; ++pass) {
+            QCoreApplication::sendPostedEvents();
+            QApplication::processEvents();
+        }
+        QWidget *qsPanel = insp51g->findChild<QWidget *>(QStringLiteral("InspectorQuickStartPanel"));
+        CHECK_COND(insp51g->isShowingQuickStart() && qsPanel != nullptr && qsPanel->isVisible(),
+                   "Suite 51g(c): GraphInspectorDock did not display visible InspectorQuickStartPanel when no graph is active!");
+        w51->setHeadlessMode(true);
     }
 
     w51->savedProject();

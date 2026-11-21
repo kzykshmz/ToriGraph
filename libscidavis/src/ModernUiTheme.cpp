@@ -52,6 +52,7 @@
 #include <QSet>
 #include <QStyleFactory>
 #include <QStyleOption>
+#include <QStyleOptionTitleBar>
 #include <QTabBar>
 #include <QToolBar>
 #include <QToolButton>
@@ -125,7 +126,147 @@ public:
         // Suppress legacy Windows 95 dotted focus rectangles everywhere
         if (element == QStyle::PE_FrameFocusRect)
             return;
+        if (element == QStyle::PE_FrameWindow && qobject_cast<const QMdiSubWindow *>(widget)
+            && option && painter) {
+            const bool isActive = (option->state & QStyle::State_Active) != 0;
+            painter->save();
+            painter->setPen(QPen(isActive ? QColor(0x3B, 0x82, 0xF6) : QColor(0xCB, 0xD5, 0xE1), 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
+            painter->restore();
+            return;
+        }
         QProxyStyle::drawPrimitive(element, option, painter, widget);
+    }
+
+    void drawComplexControl(ComplexControl control, const QStyleOptionComplex *option,
+                            QPainter *painter, const QWidget *widget = nullptr) const override
+    {
+        if (control == QStyle::CC_TitleBar && option && painter) {
+            if (const auto *tb = qstyleoption_cast<const QStyleOptionTitleBar *>(option)) {
+                const bool isActive = (tb->titleBarState & QStyle::State_Active) != 0;
+                const QColor bg = isActive ? QColor(0xEF, 0xF6, 0xFF) : QColor(0xF1, 0xF5, 0xF9);
+                const QColor fg = isActive ? QColor(0x0F, 0x17, 0x2A) : QColor(0x47, 0x55, 0x69);
+                const QColor glyphCol = isActive ? QColor(0x1E, 0x29, 0x3B) : QColor(0x47, 0x55, 0x69);
+                const QColor hoverBg = isActive ? QColor(0xDB, 0xEA, 0xFE) : QColor(0xE2, 0xE8, 0xF0);
+                const QColor pressBg = isActive ? QColor(0xBF, 0xDB, 0xFE) : QColor(0xCB, 0xD5, 0xE1);
+
+                painter->save();
+                // 1. Clean modern light header background + top active accent + bottom hairline
+                painter->fillRect(tb->rect, bg);
+                if (isActive) {
+                    painter->fillRect(QRect(tb->rect.left(), tb->rect.top(), tb->rect.width(), 2),
+                                      QColor(0x3B, 0x82, 0xF6));
+                }
+                painter->setPen(QPen(isActive ? QColor(0xBF, 0xDB, 0xFE) : QColor(0xE2, 0xE8, 0xF0), 1));
+                painter->drawLine(tb->rect.bottomLeft(), tb->rect.bottomRight());
+
+                // 2. Window icon
+                if ((tb->subControls & QStyle::SC_TitleBarSysMenu) && !tb->icon.isNull()) {
+                    const QRect iconRect =
+                            subControlRect(QStyle::CC_TitleBar, tb, QStyle::SC_TitleBarSysMenu, widget);
+                    if (iconRect.isValid()) {
+                        const int sz = qMin(16, qMin(iconRect.width(), iconRect.height()));
+                        const QRect dst(iconRect.center().x() - sz / 2,
+                                        iconRect.center().y() - sz / 2, sz, sz);
+                        tb->icon.paint(painter, dst, Qt::AlignCenter,
+                                       isActive ? QIcon::Normal : QIcon::Disabled);
+                    }
+                }
+
+                // 3. Elided title text
+                if (tb->subControls & QStyle::SC_TitleBarLabel) {
+                    const QRect lblRect =
+                            subControlRect(QStyle::CC_TitleBar, tb, QStyle::SC_TitleBarLabel, widget);
+                    if (lblRect.isValid()) {
+                        QFont tf = painter->font();
+                        tf.setWeight(isActive ? QFont::DemiBold : QFont::Normal);
+                        painter->setFont(tf);
+                        painter->setPen(fg);
+                        const QString elided =
+                                painter->fontMetrics().elidedText(tb->text, Qt::ElideRight,
+                                                                  qMax(0, lblRect.width() - 4));
+                        painter->drawText(lblRect.adjusted(2, 0, -2, 0),
+                                          Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine,
+                                          elided);
+                    }
+                }
+
+                // 4. Crisp Fluent titlebar buttons (-, □, ❐, ×)
+                auto drawTitleBtn = [&](QStyle::SubControl sc) {
+                    if (!(tb->subControls & sc))
+                        return;
+                    const QRect r = subControlRect(QStyle::CC_TitleBar, tb, sc, widget);
+                    if (!r.isValid() || r.isEmpty())
+                        return;
+
+                    const bool isClose = (sc == QStyle::SC_TitleBarCloseButton);
+                    const bool isHover = (tb->activeSubControls & sc)
+                            && (tb->state & QStyle::State_MouseOver);
+                    const bool isSunk = (tb->activeSubControls & sc)
+                            && (tb->state & QStyle::State_Sunken);
+
+                    const QRect bgRect = r.adjusted(1, 2, -1, -2);
+                    if (isClose && (isSunk || isHover)) {
+                        painter->setPen(Qt::NoPen);
+                        painter->setBrush(isSunk ? QColor(0xDC, 0x26, 0x26)
+                                                 : QColor(0xEF, 0x44, 0x44));
+                        painter->drawRoundedRect(bgRect, 4, 4);
+                    } else if (isSunk || isHover) {
+                        painter->setPen(Qt::NoPen);
+                        painter->setBrush(isSunk ? pressBg : hoverBg);
+                        painter->drawRoundedRect(bgRect, 4, 4);
+                    }
+
+                    const QColor stroke = (isClose && (isSunk || isHover)) ? QColor(Qt::white)
+                                                                           : glyphCol;
+                    painter->setRenderHint(QPainter::Antialiasing, true);
+                    painter->setPen(QPen(stroke, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                    painter->setBrush(Qt::NoBrush);
+
+                    const QPointF c = QRectF(r).center();
+                    if (sc == QStyle::SC_TitleBarMinButton) {
+                        painter->drawLine(QPointF(c.x() - 4.0, c.y() + 1.0),
+                                          QPointF(c.x() + 4.0, c.y() + 1.0));
+                    } else if (sc == QStyle::SC_TitleBarMaxButton) {
+                        painter->drawRect(QRectF(c.x() - 4.0, c.y() - 4.0, 8.0, 8.0));
+                    } else if (sc == QStyle::SC_TitleBarNormalButton) {
+                        painter->drawRect(QRectF(c.x() - 4.5, c.y() - 2.0, 6.5, 6.5));
+                        painter->drawLine(QPointF(c.x() - 2.0, c.y() - 4.5),
+                                          QPointF(c.x() + 4.5, c.y() - 4.5));
+                        painter->drawLine(QPointF(c.x() + 4.5, c.y() - 4.5),
+                                          QPointF(c.x() + 4.5, c.y() + 2.0));
+                    } else if (sc == QStyle::SC_TitleBarCloseButton) {
+                        painter->drawLine(QPointF(c.x() - 3.8, c.y() - 3.8),
+                                          QPointF(c.x() + 3.8, c.y() + 3.8));
+                        painter->drawLine(QPointF(c.x() + 3.8, c.y() - 3.8),
+                                          QPointF(c.x() - 3.8, c.y() + 3.8));
+                    } else if (sc == QStyle::SC_TitleBarShadeButton) {
+                        painter->drawLine(QPointF(c.x() - 3.5, c.y() + 1.5),
+                                          QPointF(c.x(), c.y() - 2.0));
+                        painter->drawLine(QPointF(c.x(), c.y() - 2.0),
+                                          QPointF(c.x() + 3.5, c.y() + 1.5));
+                    } else if (sc == QStyle::SC_TitleBarUnshadeButton) {
+                        painter->drawLine(QPointF(c.x() - 3.5, c.y() - 1.5),
+                                          QPointF(c.x(), c.y() + 2.0));
+                        painter->drawLine(QPointF(c.x(), c.y() + 2.0),
+                                          QPointF(c.x() + 3.5, c.y() - 1.5));
+                    }
+                    painter->setRenderHint(QPainter::Antialiasing, false);
+                };
+
+                drawTitleBtn(QStyle::SC_TitleBarMinButton);
+                drawTitleBtn(QStyle::SC_TitleBarMaxButton);
+                drawTitleBtn(QStyle::SC_TitleBarNormalButton);
+                drawTitleBtn(QStyle::SC_TitleBarShadeButton);
+                drawTitleBtn(QStyle::SC_TitleBarUnshadeButton);
+                drawTitleBtn(QStyle::SC_TitleBarCloseButton);
+
+                painter->restore();
+                return;
+            }
+        }
+        QProxyStyle::drawComplexControl(control, option, painter, widget);
     }
 
     void polish(QWidget *widget) override
@@ -1111,22 +1252,39 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F8FAFC;"
             "}"
             "QMainWindow::separator {"
-            "  background-color: #E2E8F0;"
+            "  background-color: #CBD5E1;"
             "  width: 1px;"
             "  height: 1px;"
             "}"
+            "QSplitter::handle {"
+            "  background-color: #E2E8F0;"
+            "}"
+            "QSplitter::handle:hover {"
+            "  background-color: #93C5FD;"
+            "}"
+            "QMdiArea {"
+            "  background-color: #E8EDF4;"
+            "  border: none;"
+            "}"
+            "QMdiSubWindow {"
+            "  background-color: #FFFFFF;"
+            "  border: 1px solid #CBD5E1;"
+            "}"
+            "QMdiSubWindow:focus {"
+            "  border: 1px solid #3B82F6;"
+            "}"
             "QMenuBar {"
-            "  background-color: #F8FAFC;"
+            "  background-color: #FFFFFF;"
             "  color: #0F172A;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11.5pt;"
             "  border-bottom: 1px solid #E2E8F0;"
-            "  padding: 2px 4px;"
+            "  padding: 2px 6px;"
             "}"
             "QMenuBar::item {"
             "  background-color: transparent;"
             "  color: #1E293B;"
-            "  padding: 4px 9px;"
+            "  padding: 4px 10px;"
             "  margin: 1px 1px;"
             "  border-radius: 5px;"
             "}"
@@ -1139,8 +1297,8 @@ QString ModernUiTheme::modernStyleSheet()
             "  color: #0F172A;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11.5pt;"
-            "  border: 1px solid #E2E8F0;"
-            "  border-radius: 7px;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 8px;"
             "  padding: 4px;"
             "}"
             "QMenu::item {"
@@ -1329,7 +1487,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
             "  font-size: 11.5pt;"
-            "  border: 1px solid #E2E8F0;"
+            "  border: 1px solid #CBD5E1;"
             "  titlebar-close-icon: none;"
             "}"
             "QDockWidget::title {"
@@ -1337,8 +1495,8 @@ QString ModernUiTheme::modernStyleSheet()
             "  color: #1E293B;"
             "  font-size: 11.5pt;"
             "  font-weight: 600;"
-            "  border-bottom: 1px solid #E2E8F0;"
-            "  padding: 5px 8px;"
+            "  border-bottom: 1px solid #CBD5E1;"
+            "  padding: 6px 10px;"
             "  text-align: left;"
             "}"
             "QTableView, QTreeView, QTreeWidget {"
@@ -1347,7 +1505,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  color: #0F172A;"
             "  font-size: 11.5pt;"
             "  gridline-color: #E2E8F0;"
-            "  border: 1px solid #E2E8F0;"
+            "  border: 1px solid #CBD5E1;"
             "  selection-background-color: #DBEAFE;"
             "  selection-color: #0F172A;"
             "  outline: 0;"

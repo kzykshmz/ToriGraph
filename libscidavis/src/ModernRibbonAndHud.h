@@ -322,20 +322,30 @@ private:
         bool isAccentPreset = false;
     };
 
-    struct RibbonGroupBinding
+    struct RibbonMenuActionBinding
     {
-        QLabel *captionLabel = nullptr;
-        std::function<QString()> titleFn;
+        QAction *action = nullptr;
+        QString iconId;
+        std::function<QString()> textFn;
+        std::function<QString()> tooltipFn;
     };
 
     QWidget *createRibbonScrollPage(QHBoxLayout **outRowLayout);
-    QWidget *createRibbonGroup(QHBoxLayout *pageRow, std::function<QString()> titleFn,
-                               QHBoxLayout **outBtnLayout, bool addDividerAfter = true);
+    QWidget *createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **outBtnLayout,
+                               bool addDividerAfter = true);
     QToolButton *addRibbonButton(QHBoxLayout *groupLayout, const QString &iconId,
                                  std::function<QString()> textFn,
                                  std::function<QString()> tooltipFn,
                                  std::function<void()> onClicked, bool checkable = false,
                                  bool accentPreset = false);
+    QToolButton *addRibbonMenuButton(QHBoxLayout *groupLayout, const QString &iconId,
+                                     std::function<QString()> textFn,
+                                     std::function<QString()> tooltipFn, QMenu **outMenu,
+                                     bool accentPreset = false);
+    QAction *addRibbonMenuAction(QMenu *menu, const QString &iconId,
+                                 std::function<QString()> textFn,
+                                 std::function<QString()> tooltipFn,
+                                 std::function<void()> onTriggered, bool checkable = false);
     void buildAllTabs();
     void refreshButtonIcons();
     void updateTabStackHeight();
@@ -360,13 +370,15 @@ private:
     QLabel *d_context_pill = nullptr;
 
     QToolButton *d_btn_auto_recalc = nullptr;
-    QToolButton *d_btn_explorer = nullptr;
-    QToolButton *d_btn_results_log = nullptr;
+    QAction *d_act_explorer = nullptr;
+    QAction *d_act_results_log = nullptr;
+    QAction *d_act_inspector = nullptr;
+    QToolButton *d_btn_lock_aspect = nullptr;
     QToolButton *d_btn_classic_toolbars = nullptr;
 
     QVector<std::function<QString()>> d_tab_title_fns;
     QVector<RibbonButtonBinding> d_button_bindings;
-    QVector<RibbonGroupBinding> d_group_bindings;
+    QVector<RibbonMenuActionBinding> d_menu_action_bindings;
 
     WorkspaceLayoutMode d_layout_mode = LayoutTabbed;
     bool d_focus_hud_mode = false;
