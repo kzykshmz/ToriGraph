@@ -1645,7 +1645,7 @@ void Graph::setLabelsTextFormat(int axis, Table *table, const QString &columnNam
                     break;
             }
         }
-        if (aw && (aw->isHeadlessMode() || aw->isOleEmbeddedMode() || aw->batchMode()))
+        if (aw && aw->isNonInteractive())
             return;
 
         QMessageBox::critical(

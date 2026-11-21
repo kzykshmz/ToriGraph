@@ -2327,9 +2327,8 @@ ApplicationWindow::ApplicationWindow()
                 syncGraphPageAndToolbarMenuState();
                 if (d_modern_ribbon) {
                     d_modern_ribbon->syncCheckableStates();
-                    if (!d_ole_embedded
-                        && d_modern_ribbon->workspaceLayoutMode()
-                                == ModernRibbonBar::LayoutSplitTableGraph) {
+                    if (d_modern_ribbon->workspaceLayoutMode()
+                        == ModernRibbonBar::LayoutSplitTableGraph) {
                         d_modern_ribbon->applySplitWorkspaceGeometry();
                     }
                 }
@@ -2388,7 +2387,7 @@ ApplicationWindow::ApplicationWindow()
         addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
         addToolBarBreak(Qt::TopToolBarArea);
     }
-    d_ribbon_toolbar->setVisible(!d_ole_embedded);
+    d_ribbon_toolbar->setVisible(true);
     updateExplorerAdaptiveLayout();
     createLanguagesList();
 
@@ -2536,11 +2535,6 @@ ApplicationWindow::ApplicationWindow()
                                                     ? ModernRibbonBar::LayoutTabbed
                                                     : ModernRibbonBar::LayoutFreeMdi);
     d_modern_ribbon->setClassicToolbarsVisible(false);
-    if (d_ole_embedded) {
-        d_modern_ribbon->hide();
-        if (d_ribbon_toolbar)
-            d_ribbon_toolbar->hide();
-    }
 
     insertTranslatedStrings();
 
@@ -8925,7 +8919,7 @@ void ApplicationWindow::readSettings()
             addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
             addToolBarBreak(Qt::TopToolBarArea);
         }
-        d_ribbon_toolbar->setVisible(!d_ole_embedded);
+        d_ribbon_toolbar->setVisible(true);
     }
     explorerSplitter->restoreState(settings.value("/ExplorerSplitter").toByteArray());
 
@@ -12784,7 +12778,6 @@ void ApplicationWindow::hideWindow(MyWidget *w)
         if (f && f == current_folder && fallback && show_windows_policy != HideAll) {
             d_workspace.setActiveSubWindow(fallback);
             if (d_modern_ribbon
-                && !d_ole_embedded
                 && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
                 d_modern_ribbon->applySplitWorkspaceGeometry();
             }
@@ -12794,8 +12787,7 @@ void ApplicationWindow::hideWindow(MyWidget *w)
             customToolBars(nullptr);
             if (d_modern_ribbon) {
                 d_modern_ribbon->updateActiveContext(nullptr);
-                if (!d_ole_embedded
-                    && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+                if (d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
                     d_modern_ribbon->applySplitWorkspaceGeometry();
                 }
             }
@@ -23057,7 +23049,7 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
     if (current_folder == newFolder && !force)
         return false;
 
-    const bool isSplitView = d_modern_ribbon && !d_ole_embedded
+    const bool isSplitView = d_modern_ribbon
             && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph;
 
     deactivateFolders();
@@ -23525,35 +23517,19 @@ void ApplicationWindow::setOleEmbeddedMode(bool embedded)
     d_ole_embedded = embedded;
     if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
         mt->cancelScheduledAndHide();
-    if (embedded) {
-        if (d_python_server)
-            d_python_server->stop();
-        if (d_modern_ribbon) {
-            d_modern_ribbon->setFocusHudMode(false);
-            d_modern_ribbon->setClassicToolbarsVisible(false);
-            d_modern_ribbon->hide();
-        }
-        if (d_ribbon_toolbar)
-            d_ribbon_toolbar->hide();
-        if (actionToggleFocusHudMode)
-            actionToggleFocusHudMode->setEnabled(false);
-        if (actionCommandPalette)
-            actionCommandPalette->setEnabled(false);
-        if (actionToggleGraphInspector)
-            actionToggleGraphInspector->setEnabled(false);
-    } else {
-        if (actionToggleFocusHudMode)
-            actionToggleFocusHudMode->setEnabled(true);
-        if (actionCommandPalette)
-            actionCommandPalette->setEnabled(true);
-        if (actionToggleGraphInspector)
-            actionToggleGraphInspector->setEnabled(true);
-        const bool showRibbon = !d_modern_ribbon || !d_modern_ribbon->isFocusHudMode();
-        if (d_ribbon_toolbar)
-            d_ribbon_toolbar->setVisible(showRibbon);
-        if (d_modern_ribbon && showRibbon)
-            d_modern_ribbon->show();
-    }
+    if (embedded && d_python_server)
+        d_python_server->stop();
+    if (actionToggleFocusHudMode)
+        actionToggleFocusHudMode->setEnabled(true);
+    if (actionCommandPalette)
+        actionCommandPalette->setEnabled(true);
+    if (actionToggleGraphInspector)
+        actionToggleGraphInspector->setEnabled(true);
+    const bool showRibbon = !d_modern_ribbon || !d_modern_ribbon->isFocusHudMode();
+    if (d_ribbon_toolbar)
+        d_ribbon_toolbar->setVisible(showRibbon);
+    if (d_modern_ribbon && showRibbon)
+        d_modern_ribbon->show();
     updateGraphInspectorResponsiveness();
 }
 
@@ -27938,7 +27914,7 @@ void ApplicationWindow::showClusteringDialog()
 
 void ApplicationWindow::toggleGraphInspectorDock()
 {
-    if (!d_graph_inspector_dock || d_ole_embedded)
+    if (!d_graph_inspector_dock)
         return;
     if (d_modern_ribbon && d_modern_ribbon->isFocusHudMode())
         return;
@@ -27955,7 +27931,7 @@ void ApplicationWindow::toggleGraphInspectorDock()
         d_graph_inspector_dock->setCollapsedRail(true);
     }
 
-    if (d_modern_ribbon && !d_ole_embedded
+    if (d_modern_ribbon
         && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
         d_modern_ribbon->applySplitWorkspaceGeometry();
     }
@@ -27968,7 +27944,7 @@ void ApplicationWindow::updateGraphInspectorResponsiveness()
         return;
 
     const bool focusMode = (d_modern_ribbon && d_modern_ribbon->isFocusHudMode());
-    if (d_ole_embedded || focusMode || d_headless_mode) {
+    if (focusMode || d_headless_mode) {
         if (!d_graph_inspector_dock->isHidden())
             d_graph_inspector_dock->hide();
         syncGraphPageAndToolbarMenuState();
@@ -28536,7 +28512,7 @@ bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLay
 
     targetMl->setActiveGraph(targetGraph);
     d_workspace.setActiveSubWindow(targetMl);
-    if (d_modern_ribbon && !d_ole_embedded
+    if (d_modern_ribbon
         && d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
         d_modern_ribbon->applySplitWorkspaceGeometry();
     }

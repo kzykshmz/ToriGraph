@@ -84,7 +84,7 @@ bool Filter::isSilentOrNonInteractive() const
     if (ApplicationWindow::isNonInteractiveContext(parent()))
         return true;
     if (const ApplicationWindow *app = qobject_cast<const ApplicationWindow *>(parent()))
-        return app->isHeadlessMode() || app->isOleEmbeddedMode() || app->batchMode();
+        return app->isNonInteractive();
     return false;
 }
 

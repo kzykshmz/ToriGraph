@@ -250,7 +250,7 @@ int main(int argc, char **argv)
     }
 
     app.headless = headlessMode;
-    app.setProperty("torigraph_noninteractive", headlessMode || oleEmbedded);
+    app.setProperty("torigraph_noninteractive", headlessMode);
 
     if ((filteredArgs.count() == 1) && (filteredArgs[0] == "-a" || filteredArgs[0] == "--about")
         && !headlessMode) {

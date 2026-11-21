@@ -4878,18 +4878,8 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
     if (d_shutting_down)
         return;
 
-    const bool oleEmbedded = (d_app && d_app->isOleEmbeddedMode());
-    if (enabled && oleEmbedded)
+    if (d_focus_hud_mode == enabled)
         return;
-
-    if (d_focus_hud_mode == enabled) {
-        if (oleEmbedded) {
-            if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
-                rtb->hide();
-            this->hide();
-        }
-        return;
-    }
 
     d_focus_hud_mode = enabled;
 
@@ -4922,8 +4912,8 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         }
 
         if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
-            rtb->setVisible(!enabled && !oleEmbedded);
-        this->setVisible(!enabled && !oleEmbedded);
+            rtb->setVisible(!enabled);
+        this->setVisible(!enabled);
 
         if (d_app) {
             if (QWidget *cw = d_app->centralWidget()) {
@@ -4941,18 +4931,14 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
             d_focus_hud_overlay->setOverlayActive(false);
 
         if (QToolBar *rtb = d_app ? d_app->modernRibbonToolBar() : nullptr)
-            rtb->setVisible(!enabled && !oleEmbedded);
-        this->setVisible(!enabled && !oleEmbedded);
+            rtb->setVisible(!enabled);
+        this->setVisible(!enabled);
 
-        if (oleEmbedded) {
-            d_saved_focus_visibility.clear();
-        } else {
-            for (const auto &saved : d_saved_focus_visibility) {
-                if (saved.first)
-                    saved.first->setVisible(saved.second);
-            }
-            d_saved_focus_visibility.clear();
+        for (const auto &saved : d_saved_focus_visibility) {
+            if (saved.first)
+                saved.first->setVisible(saved.second);
         }
+        d_saved_focus_visibility.clear();
 
         if (d_app) {
             if (QWidget *cw = d_app->centralWidget()) {
@@ -4963,13 +4949,12 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
                 d_app->layout()->activate();
         }
 
-        if (!oleEmbedded)
-            syncCheckableStates();
+        syncCheckableStates();
     }
 
-    if (!oleEmbedded && d_layout_mode == LayoutSplitTableGraph) {
+    if (d_layout_mode == LayoutSplitTableGraph) {
         applySplitWorkspaceGeometry();
-    } else if (!oleEmbedded && enabled && d_layout_mode == LayoutFreeMdi && d_app) {
+    } else if (enabled && d_layout_mode == LayoutFreeMdi && d_app) {
         if (Folder *curFolder = d_app->currentFolder()) {
             for (MyWidget *mw : curFolder->windowsList()) {
                 if (!mw || mw->status() == MyWidget::Hidden || mw->isHidden())
@@ -4989,7 +4974,7 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
 
 void ModernRibbonBar::setClassicToolbarsVisible(bool visible)
 {
-    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode()))
+    if (d_shutting_down)
         return;
 
     d_classic_toolbars_visible = visible;
@@ -5142,7 +5127,7 @@ QString ModernRibbonBar::activeContextText() const
 
 CommandPalettePopup *ModernRibbonBar::commandPalette()
 {
-    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode()))
+    if (d_shutting_down)
         return nullptr;
     if (!d_command_palette)
         d_command_palette = new CommandPalettePopup(d_app, this, d_app);
@@ -5161,7 +5146,7 @@ FocusTableDrawer *ModernRibbonBar::focusTableDrawer() const
 
 void ModernRibbonBar::openCommandPalette()
 {
-    if (d_shutting_down || (d_app && d_app->isOleEmbeddedMode())) {
+    if (d_shutting_down) {
         if (d_command_palette)
             d_command_palette->hide();
         return;

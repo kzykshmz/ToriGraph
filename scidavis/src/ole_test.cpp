@@ -6984,20 +6984,19 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
         QApplication::processEvents();
 
         CHECK_COND(oleMw->isOleEmbeddedMode(), "oleMw->isOleEmbeddedMode() must be true");
+        CHECK_COND(!oleMw->isNonInteractive() && !ApplicationWindow::isNonInteractiveContext(oleMw),
+                   "Interactive OLE embedded window must NOT be treated as non-interactive (double-click dialogs must work)!");
         CHECK_COND(!olePy->isTcpListening() && !olePy->isLocalPipeListening(),
                    "setOleEmbeddedMode(true) failed to stop PythonAutomationServer!");
 
         ModernRibbonBar *oleRibbon = oleMw->modernRibbonBar();
         if (oleRibbon) {
+            CHECK_COND(oleRibbon->commandPalette() != nullptr,
+                       "Command Palette must remain available in interactive OLE embedded mode!");
             oleRibbon->setFocusHudMode(true);
-            CHECK_COND(!oleRibbon->isFocusHudMode(),
-                       "setFocusHudMode(true) must be blocked in OLE embedded mode!");
+            CHECK_COND(oleRibbon->isFocusHudMode(),
+                       "Focus HUD must remain available in interactive OLE embedded mode!");
             oleRibbon->setFocusHudMode(false);
-            CHECK_COND(!oleRibbon->isVisible(),
-                       "setFocusHudMode(false) must NEVER show() Ribbon in OLE embedded mode!");
-            oleRibbon->openCommandPalette();
-            CHECK_COND(oleRibbon->commandPalette() == nullptr,
-                       "openCommandPalette() must be blocked in OLE embedded mode!");
         }
 
         for (QAction *act : oleMw->findChildren<QAction *>()) {
@@ -7005,8 +7004,8 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
                 continue;
             if (act->objectName() == "actionToggleFocusHudMode"
                 || act->objectName() == "actionCommandPalette") {
-                CHECK_COND(!act->isEnabled(),
-                           "F11 Focus HUD / Ctrl+K Command Palette QAction must be disabled in OLE mode!");
+                CHECK_COND(act->isEnabled(),
+                           "F11 Focus HUD / Ctrl+K Command Palette QAction must remain enabled in interactive OLE mode!");
             }
         }
 
@@ -9169,10 +9168,11 @@ static int runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(ApplicationWindow *m
 
         ApplicationWindow *oleCheck = new ApplicationWindow();
         oleCheck->setOleEmbeddedMode(true);
+        oleCheck->show();
         QApplication::processEvents();
-        CHECK_COND(oleCheck->graphInspectorDock() == nullptr
-                           || !oleCheck->graphInspectorDock()->isVisible(),
-                   "GraphInspectorDock MUST stay hidden in OLE embedded mode!");
+        CHECK_COND(oleCheck->graphInspectorDock() != nullptr
+                           && oleCheck->graphInspectorDock()->isVisible(),
+                   "GraphInspectorDock MUST stay available in interactive OLE embedded mode (parity with standalone exe)!");
         oleCheck->savedProject();
         delete oleCheck;
     }
@@ -11319,20 +11319,34 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
     }
 
     // -------------------------------------------------------------------------
-    // 50f & 50g. All 6 Sample Datasets + Kissinger, Work Hardening (Considere),
-    //            XRD (Scherrer + W-H), VASP DOS & Bands + 100% Arial Normal
+    // 50f & 50g. All 20 Sample Datasets & Project Packs + Kissinger, Work Hardening
+    //            (Considere), XRD (Scherrer + W-H), VASP DOS & Bands + 100% Arial Normal
     // -------------------------------------------------------------------------
     {
         const QVector<CurveMathTools::SampleDatasetInfo> dsList = CurveMathTools::listSampleDatasets();
-        CHECK_COND(dsList.size() == 6, "Suite 50f: listSampleDatasets() count != 6!");
+        CHECK_COND(dsList.size() == 20, "Suite 50f: listSampleDatasets() count != 20!");
 
         const QStringList requiredIds = {
             "tensile_alznmg",
+            "tensile_temper_compare",
+            "tensile_hydrogen_embrittlement",
+            "fatigue_sn_curve",
+            "fatigue_crack_growth_paris",
+            "hall_petch_grain_size",
+            "creep_curve_9cr1mo",
+            "charpy_dbtt_curve",
+            "vickers_age_hardening",
+            "nanoindentation_load_depth",
+            "cyclic_hysteresis_bauschinger",
+            "fracture_toughness_jr_curve",
+            "strain_rate_flow_stress",
             "tds_hydrogen_3rates",
             "xrd_aged_alloy",
             "arrhenius_diffusion",
             "ct_local_strain_map",
-            "weibull_ceramics"
+            "weibull_ceramics",
+            "project_metal_mechanics_suite",
+            "project_alznmg_he_research"
         };
 
         MultiLayer *mlTensileSample = nullptr;

@@ -189,7 +189,7 @@ void FunctionCurve::scriptError(const QString &message, const QString &scriptNam
         return;
     for (QWidget *tlw : QApplication::topLevelWidgets()) {
         if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw)) {
-            if (aw->isHeadlessMode() || aw->isOleEmbeddedMode() || aw->batchMode())
+            if (aw->isNonInteractive())
                 return;
         }
     }
