@@ -50,6 +50,12 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <QStandardPaths>
+#include <QUndoStack>
+#include "core/Project.h"
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenuBar>
@@ -147,6 +153,7 @@ static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw);
 static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw);
 static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
 static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
+static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -200,6 +207,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc52;
+    }
+    if (args.contains("--suite53-only")) {
+        const int rc53 = runSuite53SaveSafetyUndoAndRecovery(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc53;
     }
 
     // =========================================================================
@@ -5353,7 +5367,10 @@ int main(int argc, char **argv)
     if (runSuite52Phase12OpjuApiGraphMathAndGuiGate(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 52 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -13899,5 +13916,192 @@ static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw)
     }
 
     std::cout << "[INFO] Suite 52 Phase 12 .opju Importer, Graph/Math Bug Fixes & Modern UI/Ribbon Polish Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 53: Project save safety (failed saves are reported, the existing file is never
+//           truncated, compressed saves keep a backup), undo history survives saving,
+//           and auto-save writes a separate recovery copy.
+// =============================================================================
+static QByteArray suite53ReadAll(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
+}
+
+static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 53: Save Safety, Undo-after-Save & Auto-save Recovery Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 53");
+
+    QTemporaryDir tmpDir53;
+    CHECK_COND(tmpDir53.isValid(), "Suite 53: Failed to create QTemporaryDir");
+
+    // No message boxes while saving is made to fail on purpose
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    Table *t = mw->newTable("Save53", 5, 2);
+    CHECK_COND(t != nullptr, "Suite 53: Failed to create table");
+    for (int r = 0; r < 5; ++r) {
+        t->setCell(r, 0, r);
+        t->setCell(r, 1, r * 10.0);
+    }
+
+    const QString prj = tmpDir53.filePath(QString::fromUtf8("save53_\xE4\xBF\x9D\xE5\xAD\x98 test.sciprj"));
+
+    // ---- 53a: first save
+    CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "53a: saveFolder reported failure");
+    CHECK_COND(QFileInfo::exists(prj), "53a: project file missing");
+    CHECK_COND(!QFileInfo::exists(prj + ".new"), "53a: .new left behind");
+    CHECK_COND(!QFileInfo::exists(prj + "~"), "53a: unexpected backup on first save");
+    const QByteArray v1 = suite53ReadAll(prj);
+    CHECK_COND(v1.size() > 100, "53a: project file too small");
+
+    // ---- 53b: second save keeps the previous version as backup
+    t->setCell(0, 1, 111.0);
+    CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "53b: second saveFolder failed");
+    const QByteArray v2 = suite53ReadAll(prj);
+    CHECK_COND(v2 != v1, "53b: project file did not change");
+    CHECK_COND(suite53ReadAll(prj + "~") == v1, "53b: backup is not the previous version");
+    CHECK_COND(!QFileInfo::exists(prj + ".new"), "53b: .new left behind");
+
+    // ---- 53c: unwritable location is reported as failure
+    CHECK_COND(!mw->saveFolder(mw->projectFolder(), tmpDir53.filePath("no_such_dir/x.sciprj")),
+               "53c: saveFolder claimed success for a missing directory");
+
+#ifdef Q_OS_WIN
+    // ---- 53d: target locked by another handle: failure, old file and backup untouched
+    {
+        const std::wstring wPrj = QDir::toNativeSeparators(prj).toStdWString();
+        HANDLE lock = CreateFileW(wPrj.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        CHECK_COND(lock != INVALID_HANDLE_VALUE, "53d: could not lock project file");
+        t->setCell(0, 1, 222.0);
+        const bool lockedSaveOk = mw->saveFolder(mw->projectFolder(), prj);
+        CloseHandle(lock);
+        CHECK_COND(!lockedSaveOk, "53d: saveFolder claimed success although the file was locked");
+        CHECK_COND(suite53ReadAll(prj) == v2, "53d: locked project file was modified");
+        CHECK_COND(suite53ReadAll(prj + "~") == v1, "53d: backup was lost by a failed save");
+        const QByteArray pending = suite53ReadAll(prj + ".new");
+        CHECK_COND(pending.size() > 100 && pending != v2,
+                   "53d: new data was not kept in .new after the failed save");
+
+        // once the lock is gone, saving works again
+        CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "53d: save after unlock failed");
+        CHECK_COND(suite53ReadAll(prj) == pending, "53d: saved content differs from pending data");
+        CHECK_COND(suite53ReadAll(prj + "~") == v2, "53d: backup not rotated after unlock");
+        CHECK_COND(!QFileInfo::exists(prj + ".new"), "53d: .new left behind after unlock");
+    }
+#endif
+
+    // ---- 53e: compressed save does not touch a sibling .sciprj and keeps a .gz~ backup
+    {
+        const QString sibling = tmpDir53.filePath("gz53.sciprj");
+        const QString gzPrj = sibling + ".gz";
+        {
+            QFile sf(sibling);
+            CHECK_COND(sf.open(QIODevice::WriteOnly), "53e: cannot create sibling file");
+            sf.write("SIBLING-MARKER");
+        }
+        CHECK_COND(mw->writeProjectFile(mw->projectFolder(), gzPrj), "53e: compressed save failed");
+        const QByteArray gz1 = suite53ReadAll(gzPrj);
+        CHECK_COND(gz1.size() > 20 && static_cast<unsigned char>(gz1[0]) == 0x1f
+                           && static_cast<unsigned char>(gz1[1]) == 0x8b,
+                   "53e: output is not gzip data");
+        CHECK_COND(suite53ReadAll(sibling) == QByteArray("SIBLING-MARKER"),
+                   "53e: sibling .sciprj was overwritten by the compressed save");
+        CHECK_COND(!QFileInfo::exists(sibling + "~"), "53e: sibling backup was created");
+        CHECK_COND(QDir(tmpDir53.path()).entryList(QStringList() << "*.tmp" << "*.new").isEmpty(),
+                   "53e: scratch files left behind");
+
+        t->setCell(1, 1, 333.0);
+        CHECK_COND(mw->writeProjectFile(mw->projectFolder(), gzPrj), "53e: second compressed save failed");
+        CHECK_COND(suite53ReadAll(gzPrj + "~") == gz1, "53e: .gz~ backup is not the previous version");
+
+        // the compressed project can be opened again
+        ApplicationWindow *reopened = mw->openProject(gzPrj);
+        CHECK_COND(reopened != nullptr, "53e: compressed project could not be reopened");
+        CHECK_COND(reopened->table("Save53") != nullptr, "53e: table missing after reopening");
+        reopened->savedProject();
+        reopened->setOleEmbeddedMode(true);
+        delete reopened;
+    }
+
+    // ---- 53f: a failed saveProject() leaves the project marked as modified
+    {
+        mw->projectname = tmpDir53.filePath("no_such_dir/fail53.sciprj");
+        mw->modifiedProject();
+        CHECK_COND(!mw->saveProject(), "53f: saveProject claimed success");
+        CHECK_COND(!mw->saved, "53f: project marked as saved although saving failed");
+    }
+
+    // ---- 53g: saving keeps the table undo history
+    {
+        mw->projectname = prj;
+        QUndoStack *stack = mw->project()->undoStack();
+        CHECK_COND(stack != nullptr, "53g: no project undo stack");
+        t->column(1)->setValueAt(2, 444.0);
+        const int countBefore = stack->count();
+        CHECK_COND(countBefore > 0 && stack->canUndo(), "53g: edit was not recorded for undo");
+        CHECK_COND(mw->saveProject(), "53g: saveProject failed");
+        CHECK_COND(mw->saved, "53g: project not marked as saved");
+        CHECK_COND(stack->count() == countBefore && stack->canUndo(),
+                   "53g: undo history was cleared by saving");
+        CHECK_COND(stack->isClean(), "53g: undo stack not clean after saving");
+        stack->undo();
+        CHECK_COND(std::fabs(t->cell(2, 1) - 444.0) > 1e-9, "53g: undo after save did not revert the edit");
+    }
+
+    // ---- 53h: auto-save writes a recovery copy and leaves the project file alone
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        qApp->setProperty("torigraph_noninteractive", QVariant());
+        const QString recDir = ApplicationWindow::recoveryDirPath();
+        QDir(recDir).removeRecursively();
+        const QByteArray onDisk = suite53ReadAll(prj);
+
+        mw->modifiedProject();
+        mw->writeRecoveryFile(); // disabled: nothing may be written
+        CHECK_COND(QDir(recDir).entryList(QDir::Files).isEmpty(),
+                   "53h: recovery copy written although recovery is disabled");
+
+        ApplicationWindow::setCrashRecoveryEnabled(true);
+        const bool wasVisible = mw->isVisible();
+        mw->writeRecoveryFile();
+        const QStringList copies = QDir(recDir).entryList(QStringList() << "*.sciprj", QDir::Files);
+        const QStringList metas = QDir(recDir).entryList(QStringList() << "*.json", QDir::Files);
+        const bool skippedAsNonInteractive = ApplicationWindow::isNonInteractiveContext(mw);
+        if (!skippedAsNonInteractive) {
+            CHECK_COND(copies.size() == 1 && metas.size() == 1, "53h: recovery copy not written");
+            CHECK_COND(suite53ReadAll(QDir(recDir).filePath(copies.first())).size() > 100,
+                       "53h: recovery copy is empty");
+            CHECK_COND(suite53ReadAll(QDir(recDir).filePath(metas.first()))
+                               .contains(QFileInfo(prj).fileName().toUtf8()),
+                       "53h: recovery metadata does not name the project");
+            CHECK_COND(suite53ReadAll(prj) == onDisk, "53h: auto-save modified the project file");
+            CHECK_COND(!mw->saved, "53h: auto-save marked the project as saved");
+
+            mw->writeRecoveryFile(); // second tick overwrites the same copy
+            CHECK_COND(QDir(recDir).entryList(QStringList() << "*.sciprj", QDir::Files).size() == 1,
+                       "53h: second auto-save created another copy");
+
+            CHECK_COND(mw->saveProject(), "53h: saveProject failed");
+            CHECK_COND(QDir(recDir).entryList(QDir::Files).isEmpty(),
+                       "53h: recovery copy not removed after saving");
+        } else {
+            std::cout << "[INFO] Suite 53h: window is non-interactive, recovery write skipped as designed\n";
+            CHECK_COND(copies.isEmpty(), "53h: recovery copy written in non-interactive context");
+        }
+        Q_UNUSED(wasVisible)
+        ApplicationWindow::setCrashRecoveryEnabled(false);
+        QDir(recDir).removeRecursively();
+        QStandardPaths::setTestModeEnabled(false);
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 53 Save Safety, Undo-after-Save & Auto-save Recovery Gate passed!\n";
     return 0;
 }

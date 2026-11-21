@@ -223,10 +223,17 @@
 #include <memory>
 using namespace std;
 
+#include <QDir>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QUuid>
+
 #ifdef Q_OS_WIN
 #include <io.h> // for _commit()
+#include <qt_windows.h> // ReplaceFileW / MoveFileExW
 #else
 #include <unistd.h> // for fsync()
+#include <signal.h> // for kill()
 #endif
 
 using namespace Qwt3D;
@@ -300,17 +307,118 @@ static void scheduleSyncWorkspaceHiddenTabs(ApplicationWindow *app)
     });
 }
 
-bool compressFileGzipUnicode(const QString &fn)
+//! Flush a QFile's buffers and ask the OS to commit them to the storage device.
+static bool flushAndCommitFile(QFile &f)
 {
-    QFile src(fn);
-    if (!src.open(QIODevice::ReadOnly))
+    if (!f.flush())
         return false;
+#ifdef Q_OS_WIN
+    return _commit(f.handle()) == 0;
+#else
+    return fsync(f.handle()) == 0;
+#endif
+}
 
-    const QString gzPath = fn + QLatin1String(".gz");
+/*!
+ * Move the completely written file \a newPath over \a dstPath, keeping the previous
+ * version of \a dstPath as "<dstPath>~".
+ *
+ * The existing file is never opened for writing or truncated: if the replacement cannot be
+ * performed (e.g. because a sync client or a virus scanner keeps the file locked), the old
+ * file stays as it is, \a newPath is left on disk and false is returned.
+ */
+static bool replaceFileWithBackup(const QString &newPath, const QString &dstPath, QString *errOut)
+{
+    const QString backupPath = dstPath + QLatin1Char('~');
+#ifdef Q_OS_WIN
+    const std::wstring wNew = QDir::toNativeSeparators(newPath).toStdWString();
+    const std::wstring wDst = QDir::toNativeSeparators(dstPath).toStdWString();
+    const std::wstring wBak = QDir::toNativeSeparators(backupPath).toStdWString();
+
+    DWORD lastErr = 0;
+    // Sync clients (Dropbox, OneDrive) and virus scanners hold files for a short moment only,
+    // so retry for about two seconds before giving up.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        BOOL ok = FALSE;
+        if (QFile::exists(dstPath)) {
+            ok = ReplaceFileW(wDst.c_str(), wNew.c_str(), wBak.c_str(),
+                              REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr);
+        } else {
+            // First save, or ReplaceFileW already moved the old file to the backup name
+            // (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) before failing.
+            ok = MoveFileExW(wNew.c_str(), wDst.c_str(), MOVEFILE_WRITE_THROUGH);
+        }
+        if (ok)
+            return true;
+        lastErr = GetLastError();
+        const bool transient = lastErr == ERROR_SHARING_VIOLATION || lastErr == ERROR_LOCK_VIOLATION
+                || lastErr == ERROR_ACCESS_DENIED || lastErr == ERROR_UNABLE_TO_REMOVE_REPLACED
+                || lastErr == ERROR_UNABLE_TO_MOVE_REPLACEMENT
+                || lastErr == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2;
+        if (!transient)
+            break;
+        Sleep(100);
+    }
+
+    // ReplaceFileW is not available on every file system (some FAT/exFAT and network volumes).
+    // Fall back to two plain renames. This is not atomic, but it still never truncates the
+    // existing file.
+    if (QFile::exists(newPath)) {
+        if (!QFile::exists(dstPath)) {
+            if (QFile::rename(newPath, dstPath))
+                return true;
+        } else {
+            // Park the current version under a scratch name first, so that the existing "~"
+            // backup is only given up once the new file is in place.
+            const QString parkedPath = dstPath + QLatin1String(".old~");
+            QFile::remove(parkedPath);
+            if (QFile::rename(dstPath, parkedPath)) {
+                if (QFile::rename(newPath, dstPath)) {
+                    QFile::remove(backupPath);
+                    QFile::rename(parkedPath, backupPath);
+                    return true;
+                }
+                QFile::rename(parkedPath, dstPath); // put the previous version back
+            }
+        }
+    }
+
+    if (errOut)
+        *errOut = qt_error_string(static_cast<int>(lastErr ? lastErr : GetLastError()));
+    return false;
+#else
+    // rename(2) atomically replaces an existing destination
+    if ((QFile::exists(dstPath)
+         && rename(QFile::encodeName(dstPath), QFile::encodeName(backupPath)) != 0)
+        || rename(QFile::encodeName(newPath), QFile::encodeName(dstPath)) != 0) {
+        if (errOut)
+            *errOut = qt_error_string(errno);
+        return false;
+    }
+    return true;
+#endif
+}
+
+/*!
+ * gzip-compress \a srcPath into \a gzPath. \a gzPath is replaced only after the compressed
+ * data has been completely written (the previous version is kept as "<gzPath>~").
+ * \a srcPath is removed on success.
+ */
+bool compressFileGzipUnicode(const QString &srcPath, const QString &gzPath, QString *errOut = nullptr)
+{
+    QFile src(srcPath);
+    if (!src.open(QIODevice::ReadOnly)) {
+        if (errOut)
+            *errOut = src.errorString();
+        return false;
+    }
+
     const QString tmpGzPath = gzPath + QLatin1String(".new");
     QFile::remove(tmpGzPath);
     QFile dst(tmpGzPath);
     if (!dst.open(QIODevice::WriteOnly)) {
+        if (errOut)
+            *errOut = dst.errorString();
         src.close();
         return false;
     }
@@ -356,7 +464,9 @@ bool compressFileGzipUnicode(const QString &fn)
     } while (ok && flushMode != Z_FINISH);
 
     deflateEnd(&zs);
-    ok = ok && dst.flush();
+    ok = ok && flushAndCommitFile(dst);
+    if (!ok && errOut)
+        *errOut = dst.error() != QFile::NoError ? dst.errorString() : src.errorString();
     dst.close();
     src.close();
 
@@ -364,15 +474,10 @@ bool compressFileGzipUnicode(const QString &fn)
         QFile::remove(tmpGzPath);
         return false;
     }
-    if (QFile::exists(gzPath) && !QFile::remove(gzPath)) {
-        QFile::remove(tmpGzPath);
+    // On failure the compressed data stays in "<gzPath>.new" so that nothing is lost.
+    if (!replaceFileWithBackup(tmpGzPath, gzPath, errOut))
         return false;
-    }
-    if (!QFile::rename(tmpGzPath, gzPath)) {
-        QFile::remove(tmpGzPath);
-        return false;
-    }
-    QFile::remove(fn);
+    QFile::remove(srcPath);
     return true;
 }
 
@@ -387,6 +492,50 @@ void registerApplicationWindowJapaneseStrings()
         ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(src),
                                                                   QString::fromUtf8(ja));
     };
+    {
+        // Saving / auto-save recovery
+        add("Project not saved", "プロジェクトを保存できませんでした");
+        add("The project was NOT saved.", "プロジェクトは保存されていません。");
+        add("<html>The project could not be written to disk:<br>%1<br><br>The incomplete file is "
+            "<em>%2</em>. If there already was a version of this project on disk, it has not been "
+            "touched.</html>",
+            "<html>プロジェクトをディスクに書き込めませんでした:<br>%1<br><br>書きかけのファイルは "
+            "<em>%2</em> です。ディスク上に以前のプロジェクトファイルがある場合、そのファイルは"
+            "変更されていません。</html>");
+        add("<html>The project file could not be replaced:<br>%1<br><br>The file <em>%2</em> has "
+            "not been changed. It may be in use by another program (for example a file "
+            "synchronization service). Your current data was written to <em>%3</em>.<br><br>Please "
+            "try saving again, or use \"Save Project As\" with a different name.</html>",
+            "<html>プロジェクトファイルを置き換えられませんでした:<br>%1<br><br><em>%2</em> は"
+            "変更されていません。ほかのプログラム(Dropbox などの同期ソフト)が使用中の可能性が"
+            "あります。現在のデータは <em>%3</em> に書き出してあります。<br><br>もう一度保存するか、"
+            "「名前を付けて保存」で別の名前を指定してください。</html>");
+        add("<html>The compressed project file <em>%1</em> could not be written:<br>%2<br><br>If "
+            "there already was a version of this project on disk, it has not been changed.</html>",
+            "<html>圧縮プロジェクトファイル <em>%1</em> を書き込めませんでした:<br>%2<br><br>"
+            "ディスク上に以前のプロジェクトファイルがある場合、そのファイルは変更されていません。"
+            "</html>");
+        add("Recovery copy saved at %1 (the project file itself was not changed).",
+            "回復用のコピーを保存しました(%1)。プロジェクトファイル自体は変更していません。");
+        add("Restore unsaved work?", "保存されていない作業を復元しますか?");
+        add("ToriGraph was not closed properly last time. An automatically saved copy of your work "
+            "was found:<br><br><b>%1</b><br>Saved: %2",
+            "前回、ToriGraph が正常に終了しませんでした。自動保存された作業のコピーが"
+            "見つかりました:<br><br><b>%1</b><br>保存日時: %2");
+        add("a project that had not been saved yet", "まだ一度も保存していなかったプロジェクト");
+        add("Restoring opens the copy as a modified project. The project file on disk is only "
+            "changed when you save.",
+            "復元すると、コピーを「変更あり」のプロジェクトとして開きます。ディスク上の"
+            "プロジェクトファイルは、保存するまで変更されません。");
+        add("Restoring opens the copy as a new, unsaved project.",
+            "復元すると、コピーを未保存の新しいプロジェクトとして開きます。");
+        add("Restore", "復元する");
+        add("Discard Copy", "コピーを破棄");
+        add("Decide Later", "あとで決める");
+        add("The recovery copy could not be opened. It is kept in:<br>%1",
+            "回復用のコピーを開けませんでした。次の場所に残してあります:<br>%1");
+        add("[restored]", "[復元]");
+    }
     {
         // Main menus
         add("&File", "ファイル(&F)");
@@ -2375,6 +2524,8 @@ ApplicationWindow::ApplicationWindow()
     d_ribbon_toolbar->addWidget(d_modern_ribbon);
 
     readSettings();
+    if (autoSave && autoSaveTime > 0)
+        savingTimerId = startTimer(autoSaveTime * 60000);
     if (file_tools) {
         insertToolBar(file_tools, d_ribbon_toolbar);
         insertToolBarBreak(file_tools);
@@ -10106,7 +10257,7 @@ bool ApplicationWindow::saveProject()
     if (d_ole_embedded) {
         if (d_ole_on_update)
             d_ole_on_update();
-        savedProject();
+        markProjectSaved();
         return true;
     }
 
@@ -10120,20 +10271,16 @@ bool ApplicationWindow::saveProject()
         return false;
     }
 
-    bool compress = false;
-    QString fn = projectname;
-    if (fn.endsWith(".gz")) {
-        fn = fn.left(fn.length() - 3);
-        compress = true;
+    if (!writeProjectFile(projectFolder(), projectname)) {
+        // Nothing was saved: keep the project marked as modified, so that closing still asks
+        // and the save action stays available.
+        modifiedProject();
+        statusBar()->showMessage(tr("The project was NOT saved."), 10000);
+        return false;
     }
 
-    saveFolder(projectFolder(), fn);
-
-    if (compress)
-        compressFileGzipUnicode(fn);
-
     setWindowTitle("ToriGraph - " + projectname);
-    savedProject();
+    markProjectSaved();
     updateUndoRedoActionsForActiveWindow();
 
     if (autoSave) {
@@ -10166,9 +10313,13 @@ void ApplicationWindow::saveProjectAs()
             if (selectedFilter.contains(".gz"))
                 fn.append(".gz");
         }
+        const QString previousProjectName = projectname;
         projectname = fn;
 
-        if (saveProject()) {
+        if (!saveProject()) {
+            // keep pointing at the file that really holds the last saved state
+            projectname = previousProjectName;
+        } else {
             recentProjects.removeAll(fn);
             recentProjects.push_front(fn);
             updateRecentProjectsList();
@@ -13435,6 +13586,20 @@ void ApplicationWindow::savedProject()
     actionSaveProject->setEnabled(false);
     saved = true;
     d_project->undoStack()->clear();
+    removeRecoveryFile();
+}
+
+/*!
+ * Like savedProject(), but for the case that the user just saved the project being worked
+ * on: the undo history is kept (only its clean state is updated), so that edits made before
+ * saving can still be undone afterwards.
+ */
+void ApplicationWindow::markProjectSaved()
+{
+    actionSaveProject->setEnabled(false);
+    saved = true;
+    d_project->undoStack()->setClean();
+    removeRecoveryFile();
 }
 
 void ApplicationWindow::modifiedProject()
@@ -13462,9 +13627,213 @@ void ApplicationWindow::modifiedProject(MyWidget *w)
 void ApplicationWindow::timerEvent(QTimerEvent *e)
 {
     if (e->timerId() == savingTimerId)
-        saveProject();
+        writeRecoveryFile();
     else
         QWidget::timerEvent(e);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Auto-save / crash recovery
+//
+// Auto-saving never touches the project file the user is working on (and therefore neither its
+// "~" backup, the modified flag nor the undo history). Instead, a recovery copy is written to
+// the per-user application data folder. It is removed whenever the project gets saved, loaded
+// or closed regularly; if it is still there at the next start, the previous session ended
+// unexpectedly and the user is asked whether the copy should be restored.
+// ---------------------------------------------------------------------------------------------
+
+static bool s_crash_recovery_enabled = false;
+
+void ApplicationWindow::setCrashRecoveryEnabled(bool on)
+{
+    s_crash_recovery_enabled = on;
+}
+
+QString ApplicationWindow::recoveryDirPath()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath() + QStringLiteral("/ToriGraph");
+    return base + QStringLiteral("/recovery");
+}
+
+void ApplicationWindow::writeRecoveryFile()
+{
+    if (!s_crash_recovery_enabled || saved || d_ole_embedded || d_headless_mode || m_batch
+        || isNonInteractiveContext(this))
+        return;
+    // A modal dialog may be in the middle of changing the project; try again at the next tick.
+    if (QApplication::activeModalWidget())
+        return;
+
+    const QString dirPath = recoveryDirPath();
+    if (!QDir().mkpath(dirPath))
+        return;
+    if (d_recovery_id.isEmpty())
+        d_recovery_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    const QByteArray bytes = saveProjectToByteArray();
+    if (bytes.isEmpty())
+        return;
+
+    const QString base = dirPath + QLatin1Char('/') + d_recovery_id;
+    QSaveFile data(base + QStringLiteral(".sciprj"));
+    if (!data.open(QIODevice::WriteOnly) || data.write(bytes) != bytes.size() || !data.commit())
+        return;
+
+    const QDateTime now = QDateTime::currentDateTime();
+    QJsonObject meta;
+    meta[QStringLiteral("project")] = projectname;
+    meta[QStringLiteral("pid")] = static_cast<double>(QCoreApplication::applicationPid());
+    meta[QStringLiteral("saved_at")] = now.toString(Qt::ISODate);
+    QSaveFile metaFile(base + QStringLiteral(".json"));
+    if (metaFile.open(QIODevice::WriteOnly)) {
+        metaFile.write(QJsonDocument(meta).toJson(QJsonDocument::Compact));
+        metaFile.commit();
+    }
+
+    statusBar()->showMessage(
+            tr("Recovery copy saved at %1 (the project file itself was not changed).")
+                    .arg(QLocale().toString(now.time(), QLocale::ShortFormat)),
+            6000);
+}
+
+void ApplicationWindow::removeRecoveryFile()
+{
+    if (d_recovery_id.isEmpty())
+        return;
+    const QString base = recoveryDirPath() + QLatin1Char('/') + d_recovery_id;
+    QFile::remove(base + QStringLiteral(".json"));
+    QFile::remove(base + QStringLiteral(".sciprj"));
+}
+
+//! Is the process that wrote a recovery copy at \a savedAt still running?
+static bool recoveryOwnerIsRunning(qint64 pid, const QDateTime &savedAt)
+{
+    if (pid <= 0)
+        return false;
+    if (pid == QCoreApplication::applicationPid())
+        return true;
+#ifdef Q_OS_WIN
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!h)
+        return false;
+    bool running = false;
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(h, &exitCode) && exitCode == STILL_ACTIVE) {
+        running = true;
+        // Process ids get reused: a process started after the copy was written is not its owner.
+        FILETIME ftCreate, ftExit, ftKernel, ftUser;
+        if (savedAt.isValid() && GetProcessTimes(h, &ftCreate, &ftExit, &ftKernel, &ftUser)) {
+            ULARGE_INTEGER u;
+            u.LowPart = ftCreate.dwLowDateTime;
+            u.HighPart = ftCreate.dwHighDateTime;
+            // FILETIME: 100 ns ticks since 1601-01-01 UTC
+            const qint64 createdMs = static_cast<qint64>(u.QuadPart / 10000ULL) - 11644473600000LL;
+            if (createdMs > savedAt.toMSecsSinceEpoch() + 2000)
+                running = false;
+        }
+    }
+    CloseHandle(h);
+    return running;
+#else
+    Q_UNUSED(savedAt)
+    return ::kill(static_cast<pid_t>(pid), 0) == 0;
+#endif
+}
+
+void ApplicationWindow::checkCrashRecovery()
+{
+    if (!s_crash_recovery_enabled || d_ole_embedded || d_headless_mode || m_batch
+        || isNonInteractiveContext(this))
+        return;
+
+    QDir dir(recoveryDirPath());
+    if (!dir.exists())
+        return;
+
+    const QStringList metaFiles = dir.entryList(QStringList() << QStringLiteral("*.json"),
+                                                QDir::Files, QDir::Time);
+    for (const QString &metaName : metaFiles) {
+        const QString metaPath = dir.filePath(metaName);
+        const QString dataPath =
+                dir.filePath(QFileInfo(metaName).completeBaseName() + QStringLiteral(".sciprj"));
+
+        QFile mf(metaPath);
+        if (!mf.open(QIODevice::ReadOnly))
+            continue;
+        const QJsonObject meta = QJsonDocument::fromJson(mf.readAll()).object();
+        mf.close();
+
+        const QDateTime savedAt =
+                QDateTime::fromString(meta.value(QStringLiteral("saved_at")).toString(), Qt::ISODate);
+        if (recoveryOwnerIsRunning(static_cast<qint64>(meta.value(QStringLiteral("pid")).toDouble()),
+                                   savedAt))
+            continue; // belongs to another ToriGraph window that is still open
+
+        if (!QFile::exists(dataPath) || QFileInfo(dataPath).size() <= 0) {
+            QFile::remove(metaPath);
+            QFile::remove(dataPath);
+            continue;
+        }
+
+        const QString origProject = meta.value(QStringLiteral("project")).toString();
+        const bool hadFile = !origProject.isEmpty() && origProject != QLatin1String("untitled");
+        const QString what = hadFile ? QDir::toNativeSeparators(origProject)
+                                     : tr("a project that had not been saved yet");
+
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(tr("Restore unsaved work?"));
+        box.setText(tr("ToriGraph was not closed properly last time. An automatically saved "
+                       "copy of your work was found:<br><br><b>%1</b><br>Saved: %2")
+                            .arg(what.toHtmlEscaped(),
+                                 QLocale().toString(savedAt, QLocale::ShortFormat)));
+        box.setInformativeText(
+                hadFile ? tr("Restoring opens the copy as a modified project. The project file "
+                             "on disk is only changed when you save.")
+                        : tr("Restoring opens the copy as a new, unsaved project."));
+        QPushButton *restoreBtn = box.addButton(tr("Restore"), QMessageBox::AcceptRole);
+        QPushButton *discardBtn = box.addButton(tr("Discard Copy"), QMessageBox::DestructiveRole);
+        box.addButton(tr("Decide Later"), QMessageBox::RejectRole);
+        box.setDefaultButton(restoreBtn);
+        box.exec();
+
+        if (box.clickedButton() == discardBtn) {
+            QFile::remove(metaPath);
+            QFile::remove(dataPath);
+            continue;
+        }
+        if (box.clickedButton() != restoreBtn)
+            continue; // keep the copy and ask again at the next start
+
+        ApplicationWindow *restored = openProject(dataPath);
+        if (!restored) {
+            QMessageBox::warning(this, tr("Restore unsaved work?"),
+                                 tr("The recovery copy could not be opened. It is kept in:<br>%1")
+                                         .arg(QDir::toNativeSeparators(dataPath).toHtmlEscaped()));
+            continue;
+        }
+
+        // The window shows the restored state, but nothing of it is on disk under the
+        // project's own name yet.
+        restored->recentProjects.removeAll(dataPath);
+        restored->updateRecentProjectsList();
+        restored->projectname = hadFile ? origProject : QStringLiteral("untitled");
+        restored->setWindowTitle(QStringLiteral("ToriGraph - ") + restored->projectname
+                                 + QStringLiteral(" ") + tr("[restored]"));
+        restored->modifiedProject();
+        // Take over the copy: it is removed as soon as the restored project is saved or closed.
+        restored->d_recovery_id = QFileInfo(metaName).completeBaseName();
+
+        // Replace the empty start-up window; a project opened from the command line stays open.
+        if (restored != this) {
+            recentProjects.removeAll(dataPath);
+            if (saved && projectname == QLatin1String("untitled"))
+                close();
+        }
+        return; // one restored project per start; remaining copies are offered next time
+    }
 }
 
 void ApplicationWindow::dropEvent(QDropEvent *e)
@@ -13941,6 +14310,10 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
         saveSettings(); // the recent projects must be saved
         ce->accept();
     }
+
+    // Regular close (saved, or the user chose not to save): the recovery copy is obsolete.
+    if (ce->isAccepted())
+        removeRecoveryFile();
 }
 
 void ApplicationWindow::customEvent(QEvent *e)
@@ -22596,17 +22969,20 @@ void ApplicationWindow::rawSaveFolder(Folder *folder, QIODevice *device)
     }
 }
 
-void ApplicationWindow::saveFolder(Folder *folder, const QString &fn)
+bool ApplicationWindow::saveFolder(Folder *folder, const QString &fn)
 {
     const bool nonInteractive = isNonInteractiveContext(this);
     // file saving procedure follows
     // https://bugs.launchpad.net/ubuntu/+source/linux/+bug/317781/comments/54
+    // 1. write everything to "<fn>.new" and commit it to disk
+    // 2. swap it with "<fn>", keeping the previous version as "<fn>~"
+    // The existing project file is never opened for writing.
     QFile f(fn + ".new");
     while (!f.open(QIODevice::WriteOnly)) {
         if (f.isOpen())
             f.close();
         if (nonInteractive)
-            return;
+            return false;
         // The following message is slightly misleading, since it may be that fn.new can't be opened
         // _at_all_. However, changing this would break translations, in a bugfix release.
         // TODO: rephrase message for next minor release
@@ -22616,7 +22992,7 @@ void ApplicationWindow::saveFolder(Folder *folder, const QString &fn)
                 QMessageBox::Retry | QMessageBox::Default,
                 QMessageBox::Abort | QMessageBox::Escape)) {
         case QMessageBox::Abort:
-            return;
+            return false;
         }
     }
 
@@ -22631,88 +23007,84 @@ void ApplicationWindow::saveFolder(Folder *folder, const QString &fn)
     t.flush();
     rawSaveFolder(folder, &f);
     t << "<log>\n" + logInfo + "</log>";
+    t.flush();
 
     // second part of secure file saving (see comment at the start of this method)
-#ifdef Q_OS_WIN
-    // this one was taken from
     // http://support.microsoft.com/kb/148505/en-us
     // http://msdn.microsoft.com/en-us/library/17618685(VS.80).aspx
-    if (!f.flush() || _commit(f.handle()) != 0) {
-#else
-    if (!f.flush() || fsync(f.handle()) != 0) {
-#endif
+    if (t.status() != QTextStream::Ok || f.error() != QFile::NoError || !flushAndCommitFile(f)) {
+        const QString reason =
+                f.error() != QFile::NoError ? f.errorString() : qt_error_string(errno);
+        f.close();
         if (!nonInteractive) {
             QApplication::restoreOverrideCursor();
             QMessageBox::critical(
                     this, tr("Error writing data to disk"),
-                    tr("<html>%1<br><br>Your data may or may not have ended up in <em>%2</em> (%3). \
-					If there already was a version of this project on disk, it has not been touched.</html>")
-                            .arg(QString::fromLocal8Bit(strerror(errno)))
-                            .arg(fn + ".new")
-                            .arg(f.handle()));
+                    tr("<html>The project could not be written to disk:<br>%1<br><br>The "
+                       "incomplete file is <em>%2</em>. If there already was a version of this "
+                       "project on disk, it has not been touched.</html>")
+                            .arg(reason.toHtmlEscaped(),
+                                 QDir::toNativeSeparators(fn + ".new").toHtmlEscaped()));
         }
-        f.close();
-        return;
+        return false;
     }
     f.close();
-#ifdef Q_OS_WIN
-    // unfortunately, Windows doesn't support atomic renames; so Windows users will have to live
-    // with the risk of losing the file in case of a crash between remove and rename
-    bool renameOk = !((QFile::exists(fn)
-                       && ((QFile::exists(fn + "~") && !QFile::remove(fn + "~"))
-                           || !QFile::rename(fn, fn + "~")))
-                      || !QFile::rename(fn + ".new", fn));
-    if (!renameOk) {
-        // Fallback when 'fn' has an open handle with FILE_SHARE_WRITE (e.g. QTemporaryFile or sync service)
-        QFile newSrc(fn + ".new");
-        QFile inPlaceDst(fn);
-        if (newSrc.open(QIODevice::ReadOnly)
-            && inPlaceDst.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            char copyBuf[16384];
-            bool copyOk = true;
-            qint64 nRead = 0;
-            while ((nRead = newSrc.read(copyBuf, sizeof(copyBuf))) > 0) {
-                if (inPlaceDst.write(copyBuf, nRead) != nRead) {
-                    copyOk = false;
-                    break;
-                }
-            }
-            if (nRead < 0)
-                copyOk = false;
-            copyOk = copyOk && inPlaceDst.flush();
-            inPlaceDst.close();
-            newSrc.close();
-            if (copyOk) {
-                QFile::remove(fn + ".new");
-                renameOk = true;
-            }
-        }
-    }
-    if (!renameOk) {
-#else
-    // we want to atomically replace existing files, so we can't use QFile::rename()
-    if ((QFile::exists(fn) && rename(QFile::encodeName(fn), QFile::encodeName(fn + "~")) != 0)
-        || rename(QFile::encodeName(fn + ".new"), QFile::encodeName(fn)) != 0) {
-#endif
+
+    QString replaceErr;
+    if (!replaceFileWithBackup(fn + ".new", fn, &replaceErr)) {
         if (!nonInteractive) {
             QApplication::restoreOverrideCursor();
             QMessageBox::critical(
-                    this, tr("Error renaming backup files"),
-                    tr("<html>%1<br><br>Data was written to <em>%2</em>, but saving the original file as <em>%3</em>\
-					and moving the new file to <em>%4</em> failed. In case you wonder why the original file hasn't\
-					been simply replaced, see here:\
-					<a href=\"http://bugs.launchpad.net/ubuntu/+source/linux/+bug/317781/comments/54\">\
-					http://bugs.launchpad.net/ubuntu/+source/linux/+bug/317781/comments/54</a>.</html>")
-                            .arg(QString::fromLocal8Bit(strerror(errno)))
-                            .arg(fn + ".new")
-                            .arg(fn + "~")
-                            .arg(fn));
+                    this, tr("Project not saved"),
+                    tr("<html>The project file could not be replaced:<br>%1<br><br>The file "
+                       "<em>%2</em> has not been changed. It may be in use by another program "
+                       "(for example a file synchronization service). Your current data was "
+                       "written to <em>%3</em>.<br><br>Please try saving again, or use "
+                       "\"Save Project As\" with a different name.</html>")
+                            .arg(replaceErr.toHtmlEscaped(),
+                                 QDir::toNativeSeparators(fn).toHtmlEscaped(),
+                                 QDir::toNativeSeparators(fn + ".new").toHtmlEscaped()));
         }
-        return;
+        return false;
     }
 
     if (!nonInteractive)
         QApplication::restoreOverrideCursor();
+    return true;
+}
+
+/*!
+ * Write \a folder as a project to \a projectPath. A path ending in ".gz" is written
+ * compressed. Returns false (after telling the user why, unless running non-interactively)
+ * if the file on disk could not be brought up to date.
+ */
+bool ApplicationWindow::writeProjectFile(Folder *folder, const QString &projectPath)
+{
+    if (!projectPath.endsWith(QLatin1String(".gz"), Qt::CaseInsensitive))
+        return saveFolder(folder, projectPath);
+
+    // Write the uncompressed data to a scratch file next to the target, so that neither an
+    // existing "<name>.sciprj" nor its backup is touched by saving "<name>.sciprj.gz".
+    const QString rawTmp = projectPath.left(projectPath.length() - 3) + ".uncompressed.tmp";
+    QFile::remove(rawTmp);
+    if (!saveFolder(folder, rawTmp))
+        return false;
+
+    QString gzErr;
+    if (!compressFileGzipUnicode(rawTmp, projectPath, &gzErr)) {
+        QFile::remove(rawTmp);
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::critical(
+                    this, tr("Project not saved"),
+                    tr("<html>The compressed project file <em>%1</em> could not be "
+                       "written:<br>%2<br><br>If there already was a version of this project on "
+                       "disk, it has not been changed.</html>")
+                            .arg(QDir::toNativeSeparators(projectPath).toHtmlEscaped(),
+                                 gzErr.toHtmlEscaped()));
+        }
+        return false;
+    }
+    return true;
 }
 
 void ApplicationWindow::saveAsProject()
@@ -22738,15 +23110,10 @@ void ApplicationWindow::saveFolderAsProject(Folder *f)
         if (!baseName.endsWith(".sciprj") && !baseName.endsWith(".sciprj.gz")) {
             fn.append(".sciprj");
         }
-        bool compress = false;
-        if (fn.endsWith(".gz")) {
-            fn = fn.left(fn.length() - 3);
-            compress = true;
-        }
+        if (selectedFilter.contains(".gz") && !fn.endsWith(".gz"))
+            fn.append(".gz");
 
-        saveFolder(f, fn);
-        if (selectedFilter.contains(".gz") || compress)
-            compressFileGzipUnicode(fn);
+        writeProjectFile(f, fn);
     }
 }
 

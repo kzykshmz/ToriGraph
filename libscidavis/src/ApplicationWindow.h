@@ -283,8 +283,12 @@ public slots:
 
     //! Set the project status to modifed
     void modifiedProject();
-    //! Set the project status to saved (not modified)
+    //! Set the project status to saved (not modified) and drop the undo history
     void savedProject();
+    //! Set the project status to saved after the user saved it; keeps the undo history
+    void markProjectSaved();
+    //! Offer to restore auto-saved copies left behind by a session that ended unexpectedly
+    void checkCrashRecovery();
     //! Set the project status to modified and save 'w' as the last modified widget
     void modifiedProject(MyWidget *w);
     //@}
@@ -1111,7 +1115,19 @@ public slots:
     void appendProject(const QString &file_name);
     void saveAsProject();
     void saveFolderAsProject(Folder *f);
-    void saveFolder(Folder *folder, const QString &fn);
+    //! Write a folder to the uncompressed project file fn; false if nothing was saved
+    bool saveFolder(Folder *folder, const QString &fn);
+    //! Write a folder to projectPath (compressed if it ends in ".gz"); false on failure
+    bool writeProjectFile(Folder *folder, const QString &projectPath);
+    //! Turn auto-save recovery copies on (regular interactive sessions only; off by default so
+    //! that automation, OLE servers and tests never write or offer recovery copies)
+    static void setCrashRecoveryEnabled(bool on);
+    //! Folder holding the auto-save recovery copies
+    static QString recoveryDirPath();
+    //! Write an auto-save recovery copy of a modified project (never touches the project file)
+    void writeRecoveryFile();
+    //! Remove this window's recovery copy (project saved, loaded or closed regularly)
+    void removeRecoveryFile();
     void rawSaveFolder(Folder *folder, QIODevice *device);
     QByteArray saveProjectToByteArray();
     void setOleEmbeddedMode(bool embedded);
@@ -1267,6 +1283,8 @@ public:
     QColor tableBkgdColor, tableTextColor, tableHeaderColor;
     QString projectname, columnSeparator, appLanguage;
     QString configFilePath, logInfo, fitPluginsPath, asciiDirPath, imagesDirPath;
+    //! Base name of this window's auto-save recovery copy (empty: none written yet)
+    QString d_recovery_id;
     int logID, asciiID, closeID, exportID, printAllID, ignoredLines, savingTimerId,
             plot3DResolution;
     bool renameColumns, copiedLayer, strip_spaces, simplify_spaces;

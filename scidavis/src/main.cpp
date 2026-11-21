@@ -288,6 +288,18 @@ int main(int argc, char **argv)
             if (headlessMode && activeMw->isVisible())
                 activeMw->hide();
 
+            // Auto-save recovery copies are for people working in the GUI only: automation
+            // sessions must neither write them nor be blocked by the "restore?" question.
+            if (!headlessMode && !hasRpcPort && rpcPortFile.isEmpty() && rpcPipeName.isEmpty()
+                && runPythonScript.isEmpty()) {
+                ApplicationWindow::setCrashRecoveryEnabled(true);
+                QPointer<ApplicationWindow> recoverMw = activeMw;
+                QTimer::singleShot(1200, activeMw, [recoverMw]() {
+                    if (recoverMw)
+                        recoverMw->checkCrashRecovery();
+                });
+            }
+
             PythonAutomationServer *rpcServer = activeMw->pythonAutomationServer();
             if (rpcServer) {
                 if (!rpcPipeName.isEmpty() && !hasRpcPort) {
