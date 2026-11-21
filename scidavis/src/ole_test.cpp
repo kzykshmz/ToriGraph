@@ -119,7 +119,7 @@ static int CALLBACK enumEmfProc(HDC, HANDLETABLE *, const ENHMETARECORD *rec, in
 #define CHECK_COND(cond, msg) \
     do { \
         if (!(cond)) { \
-            std::cerr << "[FAIL] " << msg << " (line " << __LINE__ << ")\n"; \
+            std::cerr << "[FAIL] " << msg << " (line " << __LINE__ << ")" << std::endl; \
             return 1; \
         } \
     } while (0)
@@ -151,7 +151,11 @@ static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
-    QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL, true);
+    std::cerr << std::unitbuf;
+    if (qEnvironmentVariable("QT_OPENGL").compare(QStringLiteral("software"), Qt::CaseInsensitive) == 0)
+        QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL, true);
+    else
+        QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL, true);
     QApplication app(argc, argv);
     QStringList args = app.arguments();
 

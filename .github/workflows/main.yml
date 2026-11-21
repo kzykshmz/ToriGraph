@@ -137,13 +137,17 @@ jobs:
 
       - name: Run C++ Automated Test Suite (scidavis_ole_test)
         run: |
+          $env:QT_OPENGL = "software"
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           cmd /c ".\build\scidavis\scidavis_ole_test.exe 2>&1"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ec = $LASTEXITCODE
+          Write-Host ("scidavis_ole_test exit code = {0} (0x{1:X8})" -f $ec, ($ec -band 0xFFFFFFFF))
+          if ($ec -ne 0) { exit $ec }
 
       - name: Run Python SDK Headless Smoke Test
         run: |
+          $env:QT_OPENGL = "software"
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path
