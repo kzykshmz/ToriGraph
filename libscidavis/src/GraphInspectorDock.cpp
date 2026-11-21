@@ -1411,6 +1411,33 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     });
     lay->addWidget(d_btn_preset_slide28);
 
+    QHBoxLayout *customPresetRow = new QHBoxLayout();
+    customPresetRow->setSpacing(4);
+    d_cb_user_presets = new QComboBox(page);
+    d_cb_user_presets->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d_btn_apply_user_preset = new QPushButton(page);
+    d_btn_apply_user_preset->setMaximumWidth(64);
+    connect(d_btn_apply_user_preset, &QPushButton::clicked, this, [this]() {
+        if (!d_target_ml || !d_cb_user_presets || d_cb_user_presets->currentIndex() < 0)
+            return;
+        const QString pid = d_cb_user_presets->currentData().toString();
+        if (!pid.isEmpty()) {
+            d_target_ml->applyStylePresetById(pid);
+            refreshAll();
+        }
+    });
+    customPresetRow->addWidget(d_cb_user_presets, 1);
+    customPresetRow->addWidget(d_btn_apply_user_preset, 0);
+    lay->addLayout(customPresetRow);
+
+    d_btn_manage_presets = new QPushButton(page);
+    d_btn_manage_presets->setIcon(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 15));
+    connect(d_btn_manage_presets, &QPushButton::clicked, this, [this]() {
+        MultiLayer::showStylePresetManagerDialog(d_app, d_target_ml);
+        refreshAll();
+    });
+    lay->addWidget(d_btn_manage_presets);
+
     d_btn_square_frame70 = new QPushButton(page);
     d_btn_square_frame70->setIcon(IconLoader::duotoneIcon(QStringLiteral("aspect-ratio"), 15));
     connect(d_btn_square_frame70, &QPushButton::clicked, this, [this]() {
@@ -6428,6 +6455,25 @@ void GraphInspectorDock::retranslateUi()
         d_btn_preset_isij->setText(tr("ISIJ Journal (85mm)"));
     if (d_btn_preset_slide28)
         d_btn_preset_slide28->setText(tr("Presentation Slide (28pt)"));
+    if (d_btn_apply_user_preset)
+        d_btn_apply_user_preset->setText(tr("Apply"));
+    if (d_btn_manage_presets)
+        d_btn_manage_presets->setText(tr("Manage Style Presets..."));
+    if (d_cb_user_presets) {
+        const QString prevId = d_cb_user_presets->currentData().toString();
+        d_cb_user_presets->blockSignals(true);
+        d_cb_user_presets->clear();
+        const QVector<MultiLayer::GraphStylePresetSpec> presets = MultiLayer::listStylePresets();
+        int selIdx = 0;
+        for (int i = 0; i < presets.size(); ++i) {
+            d_cb_user_presets->addItem(presets[i].name, presets[i].id);
+            if (!prevId.isEmpty() && presets[i].id == prevId)
+                selIdx = i;
+        }
+        if (d_cb_user_presets->count() > 0)
+            d_cb_user_presets->setCurrentIndex(selIdx);
+        d_cb_user_presets->blockSignals(false);
+    }
     if (d_btn_square_frame70)
         d_btn_square_frame70->setText(tr("Square Frame (70%)"));
 

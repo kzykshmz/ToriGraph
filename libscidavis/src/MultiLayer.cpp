@@ -40,6 +40,29 @@
 #include <QClipboard>
 #include <QMouseEvent>
 #include <QAbstractEventDispatcher>
+#include <QCheckBox>
+#include <QColorDialog>
+#include <QComboBox>
+#include <QDialog>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QFile>
+#include <QFileDialog>
+#include <QFontComboBox>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QStandardPaths>
+#include <QUuid>
+#include <QVBoxLayout>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -75,6 +98,7 @@
 #include "CanvasInlineTextEditor.h"
 #include "ModernRibbonAndHud.h"
 #include "ModernUiTheme.h"
+#include "I18nJapanese.h"
 #include <cmath>
 #include "OriginGadgets.h"
 
@@ -806,6 +830,20 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
         statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-nature"), 18, false),
                               tr("Nature 89mm"), this,
                               [this]() { applyStylePreset(StyleNatureCompact89mm); });
+        const QVector<GraphStylePresetSpec> allPresets = MultiLayer::listStylePresets();
+        for (const GraphStylePresetSpec &sp : allPresets) {
+            if (sp.builtIn)
+                continue;
+            const QString presetId = sp.id;
+            statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
+                                  sp.name, this,
+                                  [this, presetId]() { applyStylePresetById(presetId); });
+        }
+        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 18, false),
+                              tr("Manage Style Presets..."), this, [this]() {
+            ApplicationWindow *aw = findMultiLayerApp(this);
+            MultiLayer::showStylePresetManagerDialog(aw, this);
+        });
         statusMenu->addSeparator();
         statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 18, false),
                               tr("Page Setup..."), this, [this]() { showPageSetupDialog(); });
@@ -4707,93 +4745,78 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, 
 
 void MultiLayer::applyStylePreset(StylePreset preset)
 {
+    QString id = QStringLiteral("isij_85mm");
+    if (preset == StylePresentationSlide28pt)
+        id = QStringLiteral("slide_28pt");
+    else if (preset == StyleNatureCompact89mm)
+        id = QStringLiteral("nature_89mm");
+
+    GraphStylePresetSpec spec;
+    if (!findStylePreset(id, &spec)) {
+        const QVector<GraphStylePresetSpec> defs = defaultBuiltInStylePresets();
+        const int idx = qBound(0, static_cast<int>(preset), defs.size() - 1);
+        spec = defs.at(idx);
+    }
+    applyStylePresetSpec(spec);
+}
+
+bool MultiLayer::applyStylePresetById(const QString &idOrName)
+{
+    GraphStylePresetSpec spec;
+    if (!findStylePreset(idOrName, &spec))
+        return false;
+    applyStylePresetSpec(spec);
+    return true;
+}
+
+void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
+{
     const QString beforeSnap = captureUndoSnapshot();
 
-    d_keep_aspect_ratio = true;
-    d_target_aspect_ratio = 1.0;
-    setPageBackgroundColor(QColor(Qt::white));
+    const bool isIsijFormat = spec.formatIsijUnitSlash;
+    const bool isSlidePreset = spec.largeSlideLayout;
+    const QString fontFam = spec.fontFamily.trimmed().isEmpty() ? QStringLiteral("Arial")
+                                                                : spec.fontFamily.trimmed();
 
-    double pageW = 85.0;
-    double pageH = 85.0;
-    int targetDpi = 600;
-    int marginPx = 6;
-    Graph::FramePreset framePreset = Graph::FrameBoxInwardTicks;
-    int axisLw = 2;
-    int minTickLen = 4;
-    int majTickLen = 8;
-    QFont titleFnt("Arial", 11, QFont::Normal, false);
-    QFont tickFnt("Arial", 10, QFont::Normal, false);
-    QFont legFnt("Arial", 10, QFont::Normal, false);
-    legFnt.setPointSizeF(9.5);
-    int legFrame = Legend::None;
-    QColor legBg(255, 255, 255, 0);
-    int minCurveWidth = 2;
-    int minSymSize = 0;
-    QString undoLabel = tr("Apply Style Preset");
+    d_keep_aspect_ratio = spec.keepAspectRatio;
+    d_target_aspect_ratio = (spec.pageHeightMm > 1e-6)
+            ? (spec.pageWidthMm / spec.pageHeightMm)
+            : 1.0;
+    setPageBackgroundColor(spec.pageBackground.isValid() ? spec.pageBackground : QColor(Qt::white));
 
-    switch (preset) {
-    case StyleISIJJournal85mm:
-        pageW = 85.0;
-        pageH = 85.0;
-        targetDpi = 600;
-        marginPx = 6;
-        framePreset = Graph::FrameBoxInwardTicks;
-        axisLw = 2;
-        minTickLen = 4;
-        majTickLen = 8;
-        titleFnt = QFont("Arial", 11, QFont::Normal, false);
-        tickFnt = QFont("Arial", 10, QFont::Normal, false);
-        legFnt = QFont("Arial", 9, QFont::Normal, false);
-        legFrame = Legend::None;
-        legBg = QColor(255, 255, 255, 0);
-        minCurveWidth = 2;
-        minSymSize = 7;
-        undoLabel = tr("Apply ISIJ Journal Preset");
-        break;
+    double pageW = qBound(20.0, spec.pageWidthMm, 1000.0);
+    double pageH = qBound(20.0, spec.pageHeightMm, 1000.0);
+    const int targetDpi = qBound(72, spec.targetDpi, 2400);
+    const int marginPx = qBound(0, spec.marginPx, 80);
+    const Graph::FramePreset framePreset = static_cast<Graph::FramePreset>(
+            qBound(0, spec.framePreset, 3));
+    const int axisLw = qBound(1, spec.axisLineWidth, 10);
+    const int minTickLen = qBound(0, spec.minorTickLen, 20);
+    const int majTickLen = qBound(0, spec.majorTickLen, 30);
 
-    case StylePresentationSlide28pt:
-        pageW = 185.0;
-        pageH = 185.0;
-        targetDpi = 300;
-        marginPx = 10;
-        framePreset = Graph::FrameBoxInwardTicks;
-        axisLw = 3;
-        minTickLen = 6;
-        majTickLen = 12;
-        titleFnt = QFont("Arial", 28, QFont::Normal, false);
-        tickFnt = QFont("Arial", 28, QFont::Normal, false);
-        legFnt = QFont("Arial", 24, QFont::Normal, false);
-        legFrame = Legend::None;
-        legBg = QColor(255, 255, 255, 0);
-        minCurveWidth = 3;
-        minSymSize = 12;
-        undoLabel = tr("Apply Presentation Slide (28 pt) Preset");
-        break;
+    QFont titleFnt(fontFam, qMax(5, qRound(spec.axisTitlePt)),
+                   spec.boldTitle ? QFont::Bold : QFont::Normal, false);
+    titleFnt.setPointSizeF(qBound(5.0, spec.axisTitlePt, 72.0));
+    titleFnt.setBold(spec.boldTitle);
 
-    case StyleNatureCompact89mm:
-        pageW = 89.0;
-        pageH = 89.0;
-        targetDpi = 600;
-        marginPx = 6;
-        framePreset = Graph::FrameOpenL;
-        axisLw = 1;
-        minTickLen = 3;
-        majTickLen = 6;
-        titleFnt = QFont("Arial", 8, QFont::Normal, false);
-        tickFnt = QFont("Arial", 7, QFont::Normal, false);
-        legFnt = QFont("Arial", 7, QFont::Normal, false);
-        legFnt.setPointSizeF(6.5);
-        legFrame = Legend::None;
-        legBg = QColor(255, 255, 255, 0);
-        minCurveWidth = 1;
-        minSymSize = 5;
-        undoLabel = tr("Apply Nature Compact Preset");
-        break;
-    }
+    QFont tickFnt(fontFam, qMax(5, qRound(spec.tickLabelPt)),
+                  spec.boldTick ? QFont::Bold : QFont::Normal, false);
+    tickFnt.setPointSizeF(qBound(5.0, spec.tickLabelPt, 72.0));
+    tickFnt.setBold(spec.boldTick);
 
-    titleFnt.setBold(false);
-    tickFnt.setBold(false);
-    legFnt.setBold(false);
+    QFont legFnt(fontFam, qMax(5, qRound(spec.legendPt)),
+                 spec.boldLegend ? QFont::Bold : QFont::Normal, false);
+    legFnt.setPointSizeF(qBound(5.0, spec.legendPt, 72.0));
+    legFnt.setBold(spec.boldLegend);
+
+    const int legFrame = qBound(0, spec.legendFrame, 2);
+    const QColor legBg(255, 255, 255, (legFrame == Legend::None) ? 0 : 235);
+    const int minCurveWidth = qBound(1, spec.minCurveWidth, 12);
+    const int minSymSize = qBound(0, spec.minSymbolSize, 32);
+    const QString undoLabel = spec.name.trimmed().isEmpty()
+            ? tr("Apply Style Preset")
+            : tr("Apply Preset: %1").arg(spec.name.trimmed());
+
     titleFnt.setHintingPreference(QFont::PreferNoHinting);
     tickFnt.setHintingPreference(QFont::PreferNoHinting);
     legFnt.setHintingPreference(QFont::PreferNoHinting);
@@ -4817,7 +4840,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
     setMargins(marginPx, marginPx, marginPx, marginPx);
     setPageZoom(1.0);
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
-    d_keep_aspect_ratio = true;
+    d_keep_aspect_ratio = spec.keepAspectRatio;
     d_target_aspect_ratio = (pageH > 1.0) ? (pageW / pageH) : 1.0;
 
     static const QRegularExpression kBoldTagRx(QStringLiteral("</?b\\s*>"),
@@ -4881,9 +4904,9 @@ void MultiLayer::applyStylePreset(StylePreset preset)
         }
 
         if (isInset) {
-            gr->setAxesLinewidth((preset == StylePresentationSlide28pt) ? 2 : 1);
-            gr->setTicksLength((preset == StylePresentationSlide28pt) ? 3 : 2,
-                               (preset == StylePresentationSlide28pt) ? 6 : 4);
+            gr->setAxesLinewidth(isSlidePreset ? 2 : 1);
+            gr->setTicksLength(isSlidePreset ? 3 : 2,
+                               isSlidePreset ? 6 : 4);
         } else {
             gr->setAxesLinewidth(axisLw);
             gr->changeTicksLength(minTickLen, majTickLen);
@@ -4897,7 +4920,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
         pTitle.setFont(titleFnt);
         plot->setTitle(pTitle);
 
-        if (preset == StyleISIJJournal85mm && !isInset) {
+        if (isIsijFormat && !isInset) {
             gr->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
             gr->refreshAutoAxisTitlesFromColumns();
         }
@@ -5020,13 +5043,12 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             return s;
         };
 
-        const int insetPt = (preset == StylePresentationSlide28pt) ? 14 : 8;
-        const bool applyPresetTitleFmt = !isInset
-                && (preset == StyleISIJJournal85mm || preset == StylePresentationSlide28pt);
+        const int insetPt = isSlidePreset ? 14 : 8;
+        const bool applyPresetTitleFmt = !isInset && (isIsijFormat || isSlidePreset);
         for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-            QFont useTick = isInset ? QFont("Arial", insetPt, QFont::Normal, false) : tickFnt;
+            QFont useTick = isInset ? QFont(fontFam, insetPt, QFont::Normal, false) : tickFnt;
             useTick.setHintingPreference(QFont::PreferNoHinting);
-            QFont useTitle = isInset ? QFont("Arial", insetPt, QFont::Normal, false) : titleFnt;
+            QFont useTitle = isInset ? QFont(fontFam, insetPt, QFont::Normal, false) : titleFnt;
             useTitle.setHintingPreference(QFont::PreferNoHinting);
             gr->setAxisFont(a, useTick);
             gr->setAxisTitleFont(a, useTitle);
@@ -5034,8 +5056,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             QString nextAxisTitle = rawTitle;
             nextAxisTitle.remove(kBoldTagRx);
             if (applyPresetTitleFmt) {
-                nextAxisTitle =
-                        formatPresetAxisTitle(nextAxisTitle, preset == StyleISIJJournal85mm);
+                nextAxisTitle = formatPresetAxisTitle(nextAxisTitle, isIsijFormat);
             }
             if (nextAxisTitle != rawTitle) {
                 const bool wasAuto = gr->isAxisTitleAuto(a);
@@ -5055,8 +5076,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                         cbT = gr->axisTitle(sp->colorScaleAxis());
                     if (!cbT.trimmed().isEmpty()) {
                         cbT.remove(kBoldTagRx);
-                        const QString fmtCbT =
-                                formatPresetAxisTitle(cbT, preset == StyleISIJJournal85mm);
+                        const QString fmtCbT = formatPresetAxisTitle(cbT, isIsijFormat);
                         if (fmtCbT != sp->colorBarTitle())
                             sp->setColorBarTitle(fmtCbT);
                     }
@@ -5101,14 +5121,14 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                         || trimmedMrkText.startsWith(QLatin1String("<i>p</i>"),
                                                      Qt::CaseInsensitive));
             const int curPt = mrk->font().pointSize();
-            const int maxAutoScalePt = (preset == StylePresentationSlide28pt) ? 14 : 12;
+            const int maxAutoScalePt = isSlidePreset ? 14 : 12;
             const bool shouldApplyLegFnt = !isSigLabel
                     && (isCurveLegend || isPanelLabel || isFitCallout
                         || (curPt > 0 && curPt <= maxAutoScalePt));
             if (isSigLabel) {
                 QFont sigFnt = legFnt;
                 sigFnt.setPointSize(
-                        qBound(8, legFnt.pointSize() - (preset == StylePresentationSlide28pt ? 4 : 0),
+                        qBound(8, legFnt.pointSize() - (isSlidePreset ? 4 : 0),
                                16));
                 sigFnt.setBold(false);
                 sigFnt.setHintingPreference(QFont::PreferNoHinting);
@@ -5117,7 +5137,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 mrk->setFont(legFnt);
             } else {
                 QFont customFnt = mrk->font();
-                customFnt.setFamily(QStringLiteral("Arial"));
+                customFnt.setFamily(fontFam);
                 customFnt.setBold(false);
                 customFnt.setHintingPreference(QFont::PreferNoHinting);
                 mrk->setFont(customFnt);
@@ -5146,7 +5166,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                     sym.setSize(QSize(qMax(minSymSize, sym.size().width()),
                                       qMax(minSymSize, sym.size().height())));
                 }
-                if (preset == StylePresentationSlide28pt) {
+                if (isSlidePreset) {
                     QPen sp = sym.pen();
                     if (sp.width() < 2)
                         sp.setWidth(2);
@@ -5155,7 +5175,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 c->setSymbol(sym);
             }
         }
-        if ((preset == StyleISIJJournal85mm || preset == StylePresentationSlide28pt || isInset)
+        if ((isIsijFormat || isSlidePreset || isInset)
             && !isLinkedOverlay && !gr->isTernaryPlot() && !gr->isPolarPlot()
             && !gr->isPiePlot()) {
             plot->updateAxes();
@@ -5290,11 +5310,11 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 int maj = plot->axisMaxMajor(a);
                 if (isInset)
                     maj = insetMaj;
-                else if (preset == StylePresentationSlide28pt || crowdedHorizTicks)
+                else if (isSlidePreset || crowdedHorizTicks)
                     maj = qMin(maj, crowdedHorizTicks ? 4 : 5);
                 double step = isInset ? 0.0 : gr->axisStep(a);
                 if (!isInset && step <= 0.0 && !isLog && majTicks.size() >= 2) {
-                    if (!((preset == StylePresentationSlide28pt && majTicks.size() > 6)
+                    if (!((isSlidePreset && majTicks.size() > 6)
                           || crowdedHorizTicks))
                         step = std::fabs(majTicks[1] - majTicks[0]);
                 }
@@ -5400,8 +5420,8 @@ void MultiLayer::applyStylePreset(StylePreset preset)
             Plot *pl = gr->plotWidget();
             pl->updateLayout();
             const QRect cr = pl->plotLayout()->canvasRect();
-            const int minPt = (preset == StylePresentationSlide28pt) ? 16 : 8;
-            const int wrapPt = (preset == StylePresentationSlide28pt) ? 18 : 9;
+            const int minPt = isSlidePreset ? 16 : 8;
+            const int wrapPt = isSlidePreset ? 18 : 9;
 
             for (int a = 0; a < QwtPlot::axisCnt; ++a) {
                 if (!pl->axisEnabled(a))
@@ -5850,7 +5870,7 @@ void MultiLayer::applyStylePreset(StylePreset preset)
                 if (curPt <= 0.0 && lf.pointSize() > 0)
                     curPt = double(lf.pointSize());
                 const double floorPt =
-                        (preset == StylePresentationSlide28pt || curPt > 14.0) ? 16.0 : 7.0;
+                        (isSlidePreset || curPt > 14.0) ? 16.0 : 7.0;
                 while (legPtr->rect().width() > maxAllowedW && curPt > floorPt + 0.1) {
                     curPt = qMax(floorPt, curPt - ((curPt > 14.0) ? 1.0 : 0.5));
                     lf.setPointSizeF(curPt);
@@ -8445,5 +8465,958 @@ void MultiLayer::dropEvent(QDropEvent *e)
         }
     }
 }
+
+// ============================================================================
+// User-Customizable Graph Style Presets (JSON Persistence + Manager Dialog)
+// ============================================================================
+
+namespace {
+
+void registerStylePresetTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+                QString::fromUtf8(en), QString::fromUtf8(ja));
+    };
+    reg("Manage Style Presets...", "グラフプリセットの編集・追加...");
+    reg("Manage Presets...", "プリセット管理...");
+    reg("Presets...", "プリセット...");
+    reg("Graph Style Preset Manager", "グラフスタイルプリセット管理");
+    reg("Apply Preset: %1", "プリセットを適用: %1");
+    reg("Built-in", "組み込み");
+    reg("Custom", "ユーザー");
+    reg("New", "新規追加");
+    reg("From Current Graph", "現在のグラフから作成");
+    reg("Duplicate", "複製");
+    reg("Delete", "削除");
+    reg("Reset Default", "初期値に戻す");
+    reg("Import JSON...", "JSON 読込...");
+    reg("Export JSON...", "JSON 書出...");
+    reg("Preset Name:", "プリセット名:");
+    reg("Page Width (mm):", "ページ幅 (mm):");
+    reg("Page Height (mm):", "ページ高さ (mm):");
+    reg("Lock Aspect Ratio", "縦横比を固定");
+    reg("Target DPI:", "出力解像度 (DPI):");
+    reg("Margin (px):", "余白 (px):");
+    reg("Frame & Ticks:", "枠と目盛り:");
+    reg("Box + Inward Ticks (ISIJ)", "四辺枠 + 内向き目盛り (ISIJ)");
+    reg("Box + Plain Opposite Axes", "四辺枠 (上・右目盛りなし)");
+    reg("Open L + Outward Ticks (Nature)", "L字枠 + 外向き目盛り (Nature)");
+    reg("Zero-Crossed Axes", "原点交差軸 (0基準)");
+    reg("Axis Line Width (px):", "軸線の太さ (px):");
+    reg("Minor Tick Length (px):", "副目盛りの長さ (px):");
+    reg("Major Tick Length (px):", "主目盛りの長さ (px):");
+    reg("Font Family:", "フォント:");
+    reg("Axis Title Size (pt):", "軸タイトルサイズ (pt):");
+    reg("Tick Label Size (pt):", "目盛り数字サイズ (pt):");
+    reg("Legend Size (pt):", "凡例フォントサイズ (pt):");
+    reg("Bold", "太字");
+    reg("Min Curve Width (px):", "最小曲線幅 (px):");
+    reg("Min Symbol Size (px):", "最小シンボルサイズ (px):");
+    reg("Legend Frame:", "凡例枠:");
+    reg("None (Transparent)", "なし (透過)");
+    reg("Line Box", "実線枠");
+    reg("Shadow Box", "影付き枠");
+    reg("Format axis units as ISIJ slash (Quantity, sym / unit)",
+        "軸単位を ISIJ スラッシュ形式 (量, 記号 / 単位) に整形");
+    reg("Use large presentation-slide layout rules",
+        "スライド向け大フォント・余白レイアウトを使用");
+    reg("Save Changes", "変更を保存");
+    reg("Save && Apply to Graph", "保存してグラフに適用");
+    reg("Close", "閉じる");
+    reg("Saved presets to %1", "プリセットを %1 に保存しました");
+    reg("Imported %1 preset(s).", "%1 件のプリセットを読み込みました。");
+    reg("New Custom Preset", "カスタムプリセット");
+    reg("Copy of %1", "%1 のコピー");
+    reg("Cannot delete a built-in preset. Use 'Reset Default' to restore its original settings.",
+        "組み込みプリセットは削除できません。元に戻すには「初期値に戻す」を使用してください。");
+    reg("Custom Preset:", "プリセット:");
+    reg("Apply Selected Preset", "選択したプリセットを適用");
+}
+
+QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
+{
+    QJsonObject o;
+    o[QStringLiteral("id")] = s.id;
+    o[QStringLiteral("name")] = s.name;
+    o[QStringLiteral("built_in")] = s.builtIn;
+    o[QStringLiteral("page_width_mm")] = s.pageWidthMm;
+    o[QStringLiteral("page_height_mm")] = s.pageHeightMm;
+    o[QStringLiteral("keep_aspect_ratio")] = s.keepAspectRatio;
+    o[QStringLiteral("target_dpi")] = s.targetDpi;
+    o[QStringLiteral("margin_px")] = s.marginPx;
+    o[QStringLiteral("frame_preset")] = s.framePreset;
+    o[QStringLiteral("axis_line_width")] = s.axisLineWidth;
+    o[QStringLiteral("minor_tick_len")] = s.minorTickLen;
+    o[QStringLiteral("major_tick_len")] = s.majorTickLen;
+    o[QStringLiteral("font_family")] = s.fontFamily;
+    o[QStringLiteral("axis_title_pt")] = s.axisTitlePt;
+    o[QStringLiteral("tick_label_pt")] = s.tickLabelPt;
+    o[QStringLiteral("legend_pt")] = s.legendPt;
+    o[QStringLiteral("bold_title")] = s.boldTitle;
+    o[QStringLiteral("bold_tick")] = s.boldTick;
+    o[QStringLiteral("bold_legend")] = s.boldLegend;
+    o[QStringLiteral("min_curve_width")] = s.minCurveWidth;
+    o[QStringLiteral("min_symbol_size")] = s.minSymbolSize;
+    o[QStringLiteral("legend_frame")] = s.legendFrame;
+    o[QStringLiteral("page_background")] =
+            (s.pageBackground.isValid() ? s.pageBackground : QColor(Qt::white)).name();
+    o[QStringLiteral("format_isij_unit_slash")] = s.formatIsijUnitSlash;
+    o[QStringLiteral("large_slide_layout")] = s.largeSlideLayout;
+    return o;
+}
+
+MultiLayer::GraphStylePresetSpec stylePresetFromJson(const QJsonObject &o,
+                                                     const MultiLayer::GraphStylePresetSpec &fallback)
+{
+    MultiLayer::GraphStylePresetSpec s = fallback;
+    if (o.contains(QStringLiteral("id")))
+        s.id = o.value(QStringLiteral("id")).toString(s.id).trimmed();
+    if (o.contains(QStringLiteral("name")))
+        s.name = o.value(QStringLiteral("name")).toString(s.name).trimmed();
+    if (o.contains(QStringLiteral("page_width_mm")))
+        s.pageWidthMm = qBound(20.0, o.value(QStringLiteral("page_width_mm")).toDouble(s.pageWidthMm), 1000.0);
+    if (o.contains(QStringLiteral("page_height_mm")))
+        s.pageHeightMm = qBound(20.0, o.value(QStringLiteral("page_height_mm")).toDouble(s.pageHeightMm), 1000.0);
+    if (o.contains(QStringLiteral("keep_aspect_ratio")))
+        s.keepAspectRatio = o.value(QStringLiteral("keep_aspect_ratio")).toBool(s.keepAspectRatio);
+    if (o.contains(QStringLiteral("target_dpi")))
+        s.targetDpi = qBound(72, o.value(QStringLiteral("target_dpi")).toInt(s.targetDpi), 2400);
+    if (o.contains(QStringLiteral("margin_px")))
+        s.marginPx = qBound(0, o.value(QStringLiteral("margin_px")).toInt(s.marginPx), 80);
+    if (o.contains(QStringLiteral("frame_preset")))
+        s.framePreset = qBound(0, o.value(QStringLiteral("frame_preset")).toInt(s.framePreset), 3);
+    if (o.contains(QStringLiteral("axis_line_width")))
+        s.axisLineWidth = qBound(1, o.value(QStringLiteral("axis_line_width")).toInt(s.axisLineWidth), 10);
+    if (o.contains(QStringLiteral("minor_tick_len")))
+        s.minorTickLen = qBound(0, o.value(QStringLiteral("minor_tick_len")).toInt(s.minorTickLen), 20);
+    if (o.contains(QStringLiteral("major_tick_len")))
+        s.majorTickLen = qBound(0, o.value(QStringLiteral("major_tick_len")).toInt(s.majorTickLen), 30);
+    if (o.contains(QStringLiteral("font_family"))) {
+        const QString ff = o.value(QStringLiteral("font_family")).toString().trimmed();
+        if (!ff.isEmpty())
+            s.fontFamily = ff;
+    }
+    if (o.contains(QStringLiteral("axis_title_pt")))
+        s.axisTitlePt = qBound(5.0, o.value(QStringLiteral("axis_title_pt")).toDouble(s.axisTitlePt), 72.0);
+    if (o.contains(QStringLiteral("tick_label_pt")))
+        s.tickLabelPt = qBound(5.0, o.value(QStringLiteral("tick_label_pt")).toDouble(s.tickLabelPt), 72.0);
+    if (o.contains(QStringLiteral("legend_pt")))
+        s.legendPt = qBound(5.0, o.value(QStringLiteral("legend_pt")).toDouble(s.legendPt), 72.0);
+    if (o.contains(QStringLiteral("bold_title")))
+        s.boldTitle = o.value(QStringLiteral("bold_title")).toBool(s.boldTitle);
+    if (o.contains(QStringLiteral("bold_tick")))
+        s.boldTick = o.value(QStringLiteral("bold_tick")).toBool(s.boldTick);
+    if (o.contains(QStringLiteral("bold_legend")))
+        s.boldLegend = o.value(QStringLiteral("bold_legend")).toBool(s.boldLegend);
+    if (o.contains(QStringLiteral("min_curve_width")))
+        s.minCurveWidth = qBound(1, o.value(QStringLiteral("min_curve_width")).toInt(s.minCurveWidth), 12);
+    if (o.contains(QStringLiteral("min_symbol_size")))
+        s.minSymbolSize = qBound(0, o.value(QStringLiteral("min_symbol_size")).toInt(s.minSymbolSize), 32);
+    if (o.contains(QStringLiteral("legend_frame")))
+        s.legendFrame = qBound(0, o.value(QStringLiteral("legend_frame")).toInt(s.legendFrame), 2);
+    if (o.contains(QStringLiteral("page_background"))) {
+        QColor c(o.value(QStringLiteral("page_background")).toString());
+        if (c.isValid())
+            s.pageBackground = c;
+    }
+    if (o.contains(QStringLiteral("format_isij_unit_slash")))
+        s.formatIsijUnitSlash = o.value(QStringLiteral("format_isij_unit_slash")).toBool(s.formatIsijUnitSlash);
+    if (o.contains(QStringLiteral("large_slide_layout")))
+        s.largeSlideLayout = o.value(QStringLiteral("large_slide_layout")).toBool(s.largeSlideLayout);
+    return s;
+}
+
+bool writeUserStylePresetsArray(const QVector<MultiLayer::GraphStylePresetSpec> &userEntries,
+                                QString *errOut)
+{
+    const QString path = MultiLayer::userStylePresetsFilePath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonArray arr;
+    for (const auto &s : userEntries)
+        arr.append(stylePresetToJson(s));
+    QJsonObject root;
+    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("presets")] = arr;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errOut)
+            *errOut = QObject::tr("Could not write preset file: %1").arg(path);
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.close();
+    return true;
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> readRawUserPresetEntries()
+{
+    QVector<MultiLayer::GraphStylePresetSpec> out;
+    const QString path = MultiLayer::userStylePresetsFilePath();
+    QFile f(path);
+    if (!f.exists() || !f.open(QIODevice::ReadOnly))
+        return out;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (!doc.isObject())
+        return out;
+    const QJsonArray arr = doc.object().value(QStringLiteral("presets")).toArray();
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        MultiLayer::GraphStylePresetSpec base;
+        base.builtIn = false;
+        MultiLayer::GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
+        if (!parsed.id.isEmpty())
+            out.append(parsed);
+    }
+    return out;
+}
+
+QString canonicalBuiltInAlias(const QString &raw)
+{
+    const QString k = raw.trimmed().toLower();
+    if (k == QLatin1String("isij") || k == QLatin1String("isij_85mm")
+        || k == QLatin1String("isij_journal") || k == QLatin1String("isij85"))
+        return QStringLiteral("isij_85mm");
+    if (k == QLatin1String("slide") || k == QLatin1String("slide_28pt")
+        || k == QLatin1String("presentation") || k == QLatin1String("presentation_slide"))
+        return QStringLiteral("slide_28pt");
+    if (k == QLatin1String("nature") || k == QLatin1String("nature_89mm")
+        || k == QLatin1String("nature_compact"))
+        return QStringLiteral("nature_89mm");
+    return raw.trimmed();
+}
+
+} // namespace
+
+QString MultiLayer::userStylePresetsFilePath()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/.torigraph");
+    return QDir(base).filePath(QStringLiteral("graph_style_presets.json"));
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets()
+{
+    QVector<GraphStylePresetSpec> defs;
+    defs.reserve(3);
+
+    GraphStylePresetSpec isij;
+    isij.id = QStringLiteral("isij_85mm");
+    isij.name = QStringLiteral("ISIJ 1-Column (85x85 mm, 600 DPI)");
+    isij.builtIn = true;
+    isij.pageWidthMm = 85.0;
+    isij.pageHeightMm = 85.0;
+    isij.keepAspectRatio = true;
+    isij.targetDpi = 600;
+    isij.marginPx = 6;
+    isij.framePreset = static_cast<int>(Graph::FrameBoxInwardTicks);
+    isij.axisLineWidth = 2;
+    isij.minorTickLen = 4;
+    isij.majorTickLen = 8;
+    isij.fontFamily = QStringLiteral("Arial");
+    isij.axisTitlePt = 11.0;
+    isij.tickLabelPt = 10.0;
+    isij.legendPt = 9.0;
+    isij.minCurveWidth = 2;
+    isij.minSymbolSize = 7;
+    isij.legendFrame = Legend::None;
+    isij.pageBackground = Qt::white;
+    isij.formatIsijUnitSlash = true;
+    isij.largeSlideLayout = false;
+    defs.append(isij);
+
+    GraphStylePresetSpec slide;
+    slide.id = QStringLiteral("slide_28pt");
+    slide.name = QStringLiteral("Presentation Slide (28 pt Arial)");
+    slide.builtIn = true;
+    slide.pageWidthMm = 185.0;
+    slide.pageHeightMm = 185.0;
+    slide.keepAspectRatio = true;
+    slide.targetDpi = 300;
+    slide.marginPx = 10;
+    slide.framePreset = static_cast<int>(Graph::FrameBoxInwardTicks);
+    slide.axisLineWidth = 3;
+    slide.minorTickLen = 6;
+    slide.majorTickLen = 12;
+    slide.fontFamily = QStringLiteral("Arial");
+    slide.axisTitlePt = 28.0;
+    slide.tickLabelPt = 28.0;
+    slide.legendPt = 24.0;
+    slide.minCurveWidth = 3;
+    slide.minSymbolSize = 12;
+    slide.legendFrame = Legend::None;
+    slide.pageBackground = Qt::white;
+    slide.formatIsijUnitSlash = false;
+    slide.largeSlideLayout = true;
+    defs.append(slide);
+
+    GraphStylePresetSpec nature;
+    nature.id = QStringLiteral("nature_89mm");
+    nature.name = QStringLiteral("Nature Compact (89x89 mm, Open-L)");
+    nature.builtIn = true;
+    nature.pageWidthMm = 89.0;
+    nature.pageHeightMm = 89.0;
+    nature.keepAspectRatio = true;
+    nature.targetDpi = 600;
+    nature.marginPx = 6;
+    nature.framePreset = static_cast<int>(Graph::FrameOpenL);
+    nature.axisLineWidth = 1;
+    nature.minorTickLen = 3;
+    nature.majorTickLen = 6;
+    nature.fontFamily = QStringLiteral("Arial");
+    nature.axisTitlePt = 8.0;
+    nature.tickLabelPt = 7.0;
+    nature.legendPt = 6.5;
+    nature.minCurveWidth = 1;
+    nature.minSymbolSize = 5;
+    nature.legendFrame = Legend::None;
+    nature.pageBackground = Qt::white;
+    nature.formatIsijUnitSlash = false;
+    nature.largeSlideLayout = false;
+    defs.append(nature);
+
+    return defs;
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::listStylePresets()
+{
+    registerStylePresetTranslationsOnce();
+    QVector<GraphStylePresetSpec> result = defaultBuiltInStylePresets();
+    const QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
+
+    for (const GraphStylePresetSpec &ue : userEntries) {
+        bool merged = false;
+        for (int i = 0; i < result.size(); ++i) {
+            if (result[i].id.compare(ue.id, Qt::CaseInsensitive) == 0) {
+                GraphStylePresetSpec ov = ue;
+                ov.id = result[i].id;
+                ov.builtIn = true;
+                if (ov.name.trimmed().isEmpty())
+                    ov.name = result[i].name;
+                result[i] = ov;
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) {
+            GraphStylePresetSpec custom = ue;
+            custom.builtIn = false;
+            if (custom.name.trimmed().isEmpty())
+                custom.name = custom.id;
+            result.append(custom);
+        }
+    }
+    return result;
+}
+
+bool MultiLayer::findStylePreset(const QString &idOrName, GraphStylePresetSpec *outSpec)
+{
+    const QString key = canonicalBuiltInAlias(idOrName);
+    if (key.isEmpty())
+        return false;
+    const QVector<GraphStylePresetSpec> all = listStylePresets();
+    for (const GraphStylePresetSpec &s : all) {
+        if (s.id.compare(key, Qt::CaseInsensitive) == 0) {
+            if (outSpec)
+                *outSpec = s;
+            return true;
+        }
+    }
+    for (const GraphStylePresetSpec &s : all) {
+        if (s.name.compare(idOrName.trimmed(), Qt::CaseInsensitive) == 0) {
+            if (outSpec)
+                *outSpec = s;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MultiLayer::saveStylePreset(const GraphStylePresetSpec &inSpec, QString *errOut)
+{
+    GraphStylePresetSpec spec = inSpec;
+    spec.id = canonicalBuiltInAlias(spec.id);
+    if (spec.id.isEmpty()) {
+        spec.id = QStringLiteral("custom_")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    }
+    if (spec.name.trimmed().isEmpty())
+        spec.name = spec.id;
+
+    // Mark builtIn flag accurately
+    spec.builtIn = false;
+    for (const GraphStylePresetSpec &d : defaultBuiltInStylePresets()) {
+        if (d.id.compare(spec.id, Qt::CaseInsensitive) == 0) {
+            spec.id = d.id;
+            spec.builtIn = true;
+            break;
+        }
+    }
+
+    QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
+    bool replaced = false;
+    for (int i = 0; i < userEntries.size(); ++i) {
+        if (userEntries[i].id.compare(spec.id, Qt::CaseInsensitive) == 0) {
+            userEntries[i] = spec;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced)
+        userEntries.append(spec);
+    return writeUserStylePresetsArray(userEntries, errOut);
+}
+
+bool MultiLayer::deleteStylePreset(const QString &id, QString *errOut)
+{
+    const QString key = canonicalBuiltInAlias(id);
+    for (const GraphStylePresetSpec &d : defaultBuiltInStylePresets()) {
+        if (d.id.compare(key, Qt::CaseInsensitive) == 0) {
+            if (errOut)
+                *errOut = QObject::tr(
+                        "Cannot delete a built-in preset. Use 'Reset Default' to restore its original settings.");
+            return false;
+        }
+    }
+    QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
+    int removed = 0;
+    for (int i = userEntries.size() - 1; i >= 0; --i) {
+        if (userEntries[i].id.compare(key, Qt::CaseInsensitive) == 0) {
+            userEntries.removeAt(i);
+            ++removed;
+        }
+    }
+    if (removed == 0)
+        return false;
+    return writeUserStylePresetsArray(userEntries, errOut);
+}
+
+bool MultiLayer::resetBuiltInStylePreset(const QString &id, QString *errOut)
+{
+    const QString key = canonicalBuiltInAlias(id);
+    QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
+    for (int i = userEntries.size() - 1; i >= 0; --i) {
+        if (userEntries[i].id.compare(key, Qt::CaseInsensitive) == 0)
+            userEntries.removeAt(i);
+    }
+    return writeUserStylePresetsArray(userEntries, errOut);
+}
+
+bool MultiLayer::exportStylePresetsToJson(const QString &filePath, QString *errOut)
+{
+    const QVector<GraphStylePresetSpec> all = listStylePresets();
+    QJsonArray arr;
+    for (const GraphStylePresetSpec &s : all)
+        arr.append(stylePresetToJson(s));
+    QJsonObject root;
+    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("presets")] = arr;
+    QFile f(filePath);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errOut)
+            *errOut = QObject::tr("Could not write file: %1").arg(filePath);
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.close();
+    return true;
+}
+
+int MultiLayer::importStylePresetsFromJson(const QString &filePath, QString *errOut)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (errOut)
+            *errOut = QObject::tr("Could not open file: %1").arg(filePath);
+        return -1;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    QJsonArray arr;
+    if (doc.isObject() && doc.object().contains(QStringLiteral("presets")))
+        arr = doc.object().value(QStringLiteral("presets")).toArray();
+    else if (doc.isArray())
+        arr = doc.array();
+    else if (doc.isObject())
+        arr.append(doc.object());
+    else {
+        if (errOut)
+            *errOut = QObject::tr("Invalid JSON preset file.");
+        return -1;
+    }
+
+    int count = 0;
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        GraphStylePresetSpec base;
+        GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
+        if (saveStylePreset(parsed, errOut))
+            ++count;
+    }
+    return count;
+}
+
+MultiLayer::GraphStylePresetSpec MultiLayer::captureStylePresetSpec(const QString &name) const
+{
+    GraphStylePresetSpec s;
+    s.id = QStringLiteral("custom_")
+            + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    s.name = name.trimmed().isEmpty() ? QObject::tr("New Custom Preset") : name.trimmed();
+    s.builtIn = false;
+
+    const double dpi = double(qMax(72, d_page_dpi));
+    auto toMm = [&](double val) -> double {
+        switch (d_page_unit) {
+        case UnitMm:
+            return val;
+        case UnitCm:
+            return val * 10.0;
+        case UnitInch:
+            return val * 25.4;
+        case UnitPx:
+        default:
+            return val * 25.4 / dpi;
+        }
+    };
+    s.pageWidthMm = qBound(20.0, toMm(d_page_width_val), 1000.0);
+    s.pageHeightMm = qBound(20.0, toMm(d_page_height_val), 1000.0);
+    s.keepAspectRatio = d_keep_aspect_ratio;
+    s.targetDpi = qBound(72, d_page_dpi, 2400);
+    s.marginPx = qBound(0, left_margin, 80);
+    s.pageBackground = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
+
+    if (Graph *g = active_graph) {
+        const QFont tf = g->axisTitleFont(QwtPlot::xBottom);
+        const QFont lf = g->axisFont(QwtPlot::xBottom);
+        if (!tf.family().isEmpty())
+            s.fontFamily = tf.family();
+        s.axisTitlePt = (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(qMax(6, tf.pointSize()));
+        s.tickLabelPt = (lf.pointSizeF() > 0.0) ? lf.pointSizeF() : double(qMax(6, lf.pointSize()));
+        s.boldTitle = tf.bold();
+        s.boldTick = lf.bold();
+        if (Legend *leg = g->legend()) {
+            const QFont legF = leg->font();
+            s.legendPt = (legF.pointSizeF() > 0.0) ? legF.pointSizeF()
+                                                   : double(qMax(6, legF.pointSize()));
+            s.boldLegend = legF.bold();
+            s.legendFrame = qBound(0, leg->frameStyle(), 2);
+        } else {
+            s.legendPt = qMax(6.0, s.tickLabelPt - 1.0);
+        }
+        if (Plot *pl = g->plotWidget())
+            s.axisLineWidth = qBound(1, pl->axesLinewidth(), 10);
+        s.minorTickLen = qBound(0, g->minorTickLength(), 20);
+        s.majorTickLen = qBound(0, g->majorTickLength(), 30);
+        s.largeSlideLayout = (s.axisTitlePt >= 20.0 || s.tickLabelPt >= 20.0);
+        s.formatIsijUnitSlash = (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash);
+        const bool topOn = g->plotWidget() && g->plotWidget()->axisEnabled(QwtPlot::xTop);
+        const bool rightOn = g->plotWidget() && g->plotWidget()->axisEnabled(QwtPlot::yRight);
+        s.framePreset = (topOn && rightOn) ? static_cast<int>(Graph::FrameBoxInwardTicks)
+                                           : static_cast<int>(Graph::FrameOpenL);
+    }
+    return s;
+}
+
+void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer *targetGraph)
+{
+    registerStylePresetTranslationsOnce();
+    if (app && ApplicationWindow::isNonInteractiveContext(app))
+        return;
+
+    if (!targetGraph && app)
+        targetGraph = qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow());
+
+    QDialog dlg(app);
+    dlg.setWindowTitle(QObject::tr("Graph Style Preset Manager"));
+    dlg.setMinimumSize(760, 560);
+
+    QVBoxLayout *rootLay = new QVBoxLayout(&dlg);
+    QHBoxLayout *mainSplit = new QHBoxLayout();
+
+    // Left column: Preset list & CRUD buttons
+    QVBoxLayout *leftCol = new QVBoxLayout();
+    QListWidget *lw = new QListWidget(&dlg);
+    lw->setMinimumWidth(250);
+    leftCol->addWidget(lw, 1);
+
+    QHBoxLayout *addRow = new QHBoxLayout();
+    QPushButton *btnNew = new QPushButton(QObject::tr("New"), &dlg);
+    QPushButton *btnFromGraph = new QPushButton(QObject::tr("From Current Graph"), &dlg);
+    btnFromGraph->setEnabled(targetGraph != nullptr);
+    addRow->addWidget(btnNew);
+    addRow->addWidget(btnFromGraph);
+    leftCol->addLayout(addRow);
+
+    QHBoxLayout *actRow = new QHBoxLayout();
+    QPushButton *btnDup = new QPushButton(QObject::tr("Duplicate"), &dlg);
+    QPushButton *btnDel = new QPushButton(QObject::tr("Delete"), &dlg);
+    QPushButton *btnReset = new QPushButton(QObject::tr("Reset Default"), &dlg);
+    actRow->addWidget(btnDup);
+    actRow->addWidget(btnDel);
+    actRow->addWidget(btnReset);
+    leftCol->addLayout(actRow);
+
+    QHBoxLayout *ioRow = new QHBoxLayout();
+    QPushButton *btnImport = new QPushButton(QObject::tr("Import JSON..."), &dlg);
+    QPushButton *btnExport = new QPushButton(QObject::tr("Export JSON..."), &dlg);
+    ioRow->addWidget(btnImport);
+    ioRow->addWidget(btnExport);
+    leftCol->addLayout(ioRow);
+
+    mainSplit->addLayout(leftCol, 0);
+
+    // Right column: Parameter editor form
+    QWidget *editorPane = new QWidget(&dlg);
+    QFormLayout *form = new QFormLayout(editorPane);
+    form->setContentsMargins(10, 4, 4, 4);
+
+    QLineEdit *leName = new QLineEdit(editorPane);
+    form->addRow(QObject::tr("Preset Name:"), leName);
+
+    QHBoxLayout *sizeRow = new QHBoxLayout();
+    QDoubleSpinBox *sbW = new QDoubleSpinBox(editorPane);
+    sbW->setRange(20.0, 1000.0);
+    sbW->setDecimals(1);
+    QDoubleSpinBox *sbH = new QDoubleSpinBox(editorPane);
+    sbH->setRange(20.0, 1000.0);
+    sbH->setDecimals(1);
+    QCheckBox *chkAspect = new QCheckBox(QObject::tr("Lock Aspect Ratio"), editorPane);
+    sizeRow->addWidget(sbW);
+    sizeRow->addWidget(new QLabel(QStringLiteral("\u00D7"), editorPane));
+    sizeRow->addWidget(sbH);
+    sizeRow->addWidget(chkAspect);
+    form->addRow(QObject::tr("Page Width (mm):"), sizeRow);
+
+    QHBoxLayout *dpiRow = new QHBoxLayout();
+    QSpinBox *sbDpi = new QSpinBox(editorPane);
+    sbDpi->setRange(72, 2400);
+    sbDpi->setSingleStep(50);
+    QSpinBox *sbMargin = new QSpinBox(editorPane);
+    sbMargin->setRange(0, 80);
+    dpiRow->addWidget(sbDpi);
+    dpiRow->addWidget(new QLabel(QObject::tr("Margin (px):"), editorPane));
+    dpiRow->addWidget(sbMargin);
+    form->addRow(QObject::tr("Target DPI:"), dpiRow);
+
+    QComboBox *cbFrame = new QComboBox(editorPane);
+    cbFrame->addItem(QObject::tr("Box + Inward Ticks (ISIJ)"),
+                     static_cast<int>(Graph::FrameBoxInwardTicks));
+    cbFrame->addItem(QObject::tr("Box + Plain Opposite Axes"),
+                     static_cast<int>(Graph::FrameBoxPlainOpposite));
+    cbFrame->addItem(QObject::tr("Open L + Outward Ticks (Nature)"),
+                     static_cast<int>(Graph::FrameOpenL));
+    cbFrame->addItem(QObject::tr("Zero-Crossed Axes"),
+                     static_cast<int>(Graph::FrameZeroCrossed));
+    form->addRow(QObject::tr("Frame & Ticks:"), cbFrame);
+
+    QHBoxLayout *tickRow = new QHBoxLayout();
+    QSpinBox *sbAxisLw = new QSpinBox(editorPane);
+    sbAxisLw->setRange(1, 10);
+    QSpinBox *sbMinTick = new QSpinBox(editorPane);
+    sbMinTick->setRange(0, 20);
+    QSpinBox *sbMajTick = new QSpinBox(editorPane);
+    sbMajTick->setRange(0, 30);
+    tickRow->addWidget(sbAxisLw);
+    tickRow->addWidget(new QLabel(QObject::tr("Minor Tick Length (px):"), editorPane));
+    tickRow->addWidget(sbMinTick);
+    tickRow->addWidget(new QLabel(QObject::tr("Major Tick Length (px):"), editorPane));
+    tickRow->addWidget(sbMajTick);
+    form->addRow(QObject::tr("Axis Line Width (px):"), tickRow);
+
+    QFontComboBox *cbFont = new QFontComboBox(editorPane);
+    form->addRow(QObject::tr("Font Family:"), cbFont);
+
+    QHBoxLayout *fTitleRow = new QHBoxLayout();
+    QDoubleSpinBox *sbTitlePt = new QDoubleSpinBox(editorPane);
+    sbTitlePt->setRange(5.0, 72.0);
+    sbTitlePt->setDecimals(1);
+    QCheckBox *chkBoldTitle = new QCheckBox(QObject::tr("Bold"), editorPane);
+    fTitleRow->addWidget(sbTitlePt);
+    fTitleRow->addWidget(chkBoldTitle);
+    form->addRow(QObject::tr("Axis Title Size (pt):"), fTitleRow);
+
+    QHBoxLayout *fTickRow = new QHBoxLayout();
+    QDoubleSpinBox *sbTickPt = new QDoubleSpinBox(editorPane);
+    sbTickPt->setRange(5.0, 72.0);
+    sbTickPt->setDecimals(1);
+    QCheckBox *chkBoldTick = new QCheckBox(QObject::tr("Bold"), editorPane);
+    fTickRow->addWidget(sbTickPt);
+    fTickRow->addWidget(chkBoldTick);
+    form->addRow(QObject::tr("Tick Label Size (pt):"), fTickRow);
+
+    QHBoxLayout *fLegRow = new QHBoxLayout();
+    QDoubleSpinBox *sbLegPt = new QDoubleSpinBox(editorPane);
+    sbLegPt->setRange(5.0, 72.0);
+    sbLegPt->setDecimals(1);
+    QCheckBox *chkBoldLeg = new QCheckBox(QObject::tr("Bold"), editorPane);
+    fLegRow->addWidget(sbLegPt);
+    fLegRow->addWidget(chkBoldLeg);
+    form->addRow(QObject::tr("Legend Size (pt):"), fLegRow);
+
+    QHBoxLayout *curveRow = new QHBoxLayout();
+    QSpinBox *sbCurveW = new QSpinBox(editorPane);
+    sbCurveW->setRange(1, 12);
+    QSpinBox *sbSymSz = new QSpinBox(editorPane);
+    sbSymSz->setRange(0, 32);
+    curveRow->addWidget(sbCurveW);
+    curveRow->addWidget(new QLabel(QObject::tr("Min Symbol Size (px):"), editorPane));
+    curveRow->addWidget(sbSymSz);
+    form->addRow(QObject::tr("Min Curve Width (px):"), curveRow);
+
+    QComboBox *cbLegFrame = new QComboBox(editorPane);
+    cbLegFrame->addItem(QObject::tr("None (Transparent)"), static_cast<int>(Legend::None));
+    cbLegFrame->addItem(QObject::tr("Line Box"), static_cast<int>(Legend::Line));
+    cbLegFrame->addItem(QObject::tr("Shadow Box"), static_cast<int>(Legend::Shadow));
+    form->addRow(QObject::tr("Legend Frame:"), cbLegFrame);
+
+    QCheckBox *chkIsij = new QCheckBox(
+            QObject::tr("Format axis units as ISIJ slash (Quantity, sym / unit)"), editorPane);
+    QCheckBox *chkSlide = new QCheckBox(
+            QObject::tr("Use large presentation-slide layout rules"), editorPane);
+    form->addRow(QString(), chkIsij);
+    form->addRow(QString(), chkSlide);
+
+    mainSplit->addWidget(editorPane, 1);
+    rootLay->addLayout(mainSplit, 1);
+
+    // Bottom action buttons
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    QPushButton *btnSave = new QPushButton(QObject::tr("Save Changes"), &dlg);
+    QPushButton *btnApply = new QPushButton(QObject::tr("Save && Apply to Graph"), &dlg);
+    btnApply->setEnabled(targetGraph != nullptr);
+    btnApply->setDefault(targetGraph != nullptr);
+    QPushButton *btnClose = new QPushButton(QObject::tr("Close"), &dlg);
+    btnRow->addStretch(1);
+    btnRow->addWidget(btnSave);
+    btnRow->addWidget(btnApply);
+    btnRow->addWidget(btnClose);
+    rootLay->addLayout(btnRow);
+
+    QVector<GraphStylePresetSpec> presets;
+    bool loadingUi = false;
+
+    auto readFormIntoSpec = [&](GraphStylePresetSpec &s) {
+        s.name = leName->text().trimmed().isEmpty() ? s.id : leName->text().trimmed();
+        s.pageWidthMm = sbW->value();
+        s.pageHeightMm = sbH->value();
+        s.keepAspectRatio = chkAspect->isChecked();
+        s.targetDpi = sbDpi->value();
+        s.marginPx = sbMargin->value();
+        s.framePreset = cbFrame->currentData().toInt();
+        s.axisLineWidth = sbAxisLw->value();
+        s.minorTickLen = sbMinTick->value();
+        s.majorTickLen = sbMajTick->value();
+        s.fontFamily = cbFont->currentFont().family();
+        s.axisTitlePt = sbTitlePt->value();
+        s.tickLabelPt = sbTickPt->value();
+        s.legendPt = sbLegPt->value();
+        s.boldTitle = chkBoldTitle->isChecked();
+        s.boldTick = chkBoldTick->isChecked();
+        s.boldLegend = chkBoldLeg->isChecked();
+        s.minCurveWidth = sbCurveW->value();
+        s.minSymbolSize = sbSymSz->value();
+        s.legendFrame = cbLegFrame->currentData().toInt();
+        s.formatIsijUnitSlash = chkIsij->isChecked();
+        s.largeSlideLayout = chkSlide->isChecked();
+    };
+
+    auto populateForm = [&](int row) {
+        if (row < 0 || row >= presets.size())
+            return;
+        loadingUi = true;
+        const GraphStylePresetSpec &s = presets[row];
+        leName->setText(s.name);
+        sbW->setValue(s.pageWidthMm);
+        sbH->setValue(s.pageHeightMm);
+        chkAspect->setChecked(s.keepAspectRatio);
+        sbDpi->setValue(s.targetDpi);
+        sbMargin->setValue(s.marginPx);
+        const int fIdx = cbFrame->findData(s.framePreset);
+        cbFrame->setCurrentIndex(fIdx >= 0 ? fIdx : 0);
+        sbAxisLw->setValue(s.axisLineWidth);
+        sbMinTick->setValue(s.minorTickLen);
+        sbMajTick->setValue(s.majorTickLen);
+        cbFont->setCurrentFont(QFont(s.fontFamily));
+        sbTitlePt->setValue(s.axisTitlePt);
+        sbTickPt->setValue(s.tickLabelPt);
+        sbLegPt->setValue(s.legendPt);
+        chkBoldTitle->setChecked(s.boldTitle);
+        chkBoldTick->setChecked(s.boldTick);
+        chkBoldLeg->setChecked(s.boldLegend);
+        sbCurveW->setValue(s.minCurveWidth);
+        sbSymSz->setValue(s.minSymbolSize);
+        const int lIdx = cbLegFrame->findData(s.legendFrame);
+        cbLegFrame->setCurrentIndex(lIdx >= 0 ? lIdx : 0);
+        chkIsij->setChecked(s.formatIsijUnitSlash);
+        chkSlide->setChecked(s.largeSlideLayout);
+        btnDel->setEnabled(!s.builtIn);
+        btnReset->setEnabled(s.builtIn);
+        loadingUi = false;
+    };
+
+    auto reloadList = [&](const QString &selectId) {
+        presets = listStylePresets();
+        lw->clear();
+        int targetRow = 0;
+        for (int i = 0; i < presets.size(); ++i) {
+            const GraphStylePresetSpec &s = presets[i];
+            const QString tag = s.builtIn ? QObject::tr("Built-in") : QObject::tr("Custom");
+            QListWidgetItem *it = new QListWidgetItem(
+                    QStringLiteral("[%1]  %2").arg(tag, s.name), lw);
+            it->setData(Qt::UserRole, s.id);
+            if (!selectId.isEmpty() && s.id.compare(selectId, Qt::CaseInsensitive) == 0)
+                targetRow = i;
+        }
+        if (lw->count() > 0) {
+            lw->setCurrentRow(targetRow);
+            populateForm(targetRow);
+        }
+    };
+    reloadList(QString());
+
+    QObject::connect(lw, &QListWidget::currentRowChanged, &dlg, [&](int row) {
+        if (!loadingUi)
+            populateForm(row);
+    });
+
+    auto saveCurrent = [&]() -> bool {
+        const int row = lw->currentRow();
+        if (row < 0 || row >= presets.size())
+            return false;
+        GraphStylePresetSpec s = presets[row];
+        readFormIntoSpec(s);
+        QString err;
+        if (!saveStylePreset(s, &err)) {
+            QMessageBox::warning(&dlg, dlg.windowTitle(), err);
+            return false;
+        }
+        reloadList(s.id);
+        return true;
+    };
+
+    QObject::connect(btnNew, &QPushButton::clicked, &dlg, [&]() {
+        GraphStylePresetSpec s;
+        s.id = QStringLiteral("custom_")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        s.name = QObject::tr("New Custom Preset");
+        s.builtIn = false;
+        saveStylePreset(s);
+        reloadList(s.id);
+        leName->setFocus();
+        leName->selectAll();
+    });
+
+    QObject::connect(btnFromGraph, &QPushButton::clicked, &dlg, [&]() {
+        if (!targetGraph)
+            return;
+        GraphStylePresetSpec s = targetGraph->captureStylePresetSpec(
+                QObject::tr("New Custom Preset"));
+        saveStylePreset(s);
+        reloadList(s.id);
+        leName->setFocus();
+        leName->selectAll();
+    });
+
+    QObject::connect(btnDup, &QPushButton::clicked, &dlg, [&]() {
+        const int row = lw->currentRow();
+        if (row < 0 || row >= presets.size())
+            return;
+        GraphStylePresetSpec s = presets[row];
+        readFormIntoSpec(s);
+        s.id = QStringLiteral("custom_")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+        s.builtIn = false;
+        s.name = QObject::tr("Copy of %1").arg(s.name);
+        saveStylePreset(s);
+        reloadList(s.id);
+    });
+
+    QObject::connect(btnDel, &QPushButton::clicked, &dlg, [&]() {
+        const int row = lw->currentRow();
+        if (row < 0 || row >= presets.size())
+            return;
+        QString err;
+        if (!deleteStylePreset(presets[row].id, &err)) {
+            if (!err.isEmpty())
+                QMessageBox::information(&dlg, dlg.windowTitle(), err);
+            return;
+        }
+        reloadList(QString());
+    });
+
+    QObject::connect(btnReset, &QPushButton::clicked, &dlg, [&]() {
+        const int row = lw->currentRow();
+        if (row < 0 || row >= presets.size() || !presets[row].builtIn)
+            return;
+        const QString id = presets[row].id;
+        resetBuiltInStylePreset(id);
+        reloadList(id);
+    });
+
+    QObject::connect(btnExport, &QPushButton::clicked, &dlg, [&]() {
+        const QString path = QFileDialog::getSaveFileName(
+                &dlg, QObject::tr("Export JSON..."),
+                QDir::homePath() + QStringLiteral("/torigraph_presets.json"),
+                QStringLiteral("JSON (*.json)"));
+        if (path.isEmpty())
+            return;
+        QString err;
+        if (!exportStylePresetsToJson(path, &err))
+            QMessageBox::warning(&dlg, dlg.windowTitle(), err);
+        else
+            QMessageBox::information(&dlg, dlg.windowTitle(),
+                                     QObject::tr("Saved presets to %1").arg(path));
+    });
+
+    QObject::connect(btnImport, &QPushButton::clicked, &dlg, [&]() {
+        const QString path = QFileDialog::getOpenFileName(
+                &dlg, QObject::tr("Import JSON..."), QDir::homePath(),
+                QStringLiteral("JSON (*.json)"));
+        if (path.isEmpty())
+            return;
+        QString err;
+        const int n = importStylePresetsFromJson(path, &err);
+        if (n < 0)
+            QMessageBox::warning(&dlg, dlg.windowTitle(), err);
+        else {
+            reloadList(QString());
+            QMessageBox::information(&dlg, dlg.windowTitle(),
+                                     QObject::tr("Imported %1 preset(s).").arg(n));
+        }
+    });
+
+    QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() { saveCurrent(); });
+    QObject::connect(btnApply, &QPushButton::clicked, &dlg, [&]() {
+        if (!saveCurrent() || !targetGraph)
+            return;
+        const int row = lw->currentRow();
+        if (row >= 0 && row < presets.size()) {
+            targetGraph->applyStylePresetSpec(presets[row]);
+            if (app) {
+                app->modifiedProject();
+                if (GraphInspectorDock *insp = app->graphInspectorDock())
+                    insp->refreshAll();
+            }
+        }
+        dlg.accept();
+    });
+    QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    dlg.exec();
+    if (app) {
+        if (GraphInspectorDock *insp = app->graphInspectorDock())
+            insp->refreshAll();
+    }
+}
+
 
 

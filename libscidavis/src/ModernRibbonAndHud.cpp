@@ -4121,6 +4121,47 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->applyStyleNatureCompact();
                 },
                 false, true);
+        QMenu *customPresetMenu = nullptr;
+        addRibbonMenuButton(
+                gPresets, QStringLiteral("page-setup"),
+                [this]() { return tr("Presets..."); },
+                [this]() { return tr("Apply User Presets or Edit / Add Custom Graph Style Presets"); },
+                &customPresetMenu, true);
+        if (customPresetMenu) {
+            connect(customPresetMenu, &QMenu::aboutToShow, this, [this, customPresetMenu]() {
+                customPresetMenu->clear();
+                const QVector<MultiLayer::GraphStylePresetSpec> presets =
+                        MultiLayer::listStylePresets();
+                for (const auto &sp : presets) {
+                    const QString pid = sp.id;
+                    QAction *act = customPresetMenu->addAction(
+                            IconLoader::duotoneIcon(
+                                    sp.builtIn ? QStringLiteral("preset-isij")
+                                               : QStringLiteral("preset-nature"),
+                                    16),
+                            sp.name);
+                    connect(act, &QAction::triggered, this, [this, pid]() {
+                        if (!d_app)
+                            return;
+                        if (MultiLayer *ml = qobject_cast<MultiLayer *>(
+                                    d_app->d_workspace.activeSubWindow())) {
+                            ml->applyStylePresetById(pid);
+                            d_app->modifiedProject();
+                            if (GraphInspectorDock *insp = d_app->graphInspectorDock())
+                                insp->refreshAll();
+                        }
+                    });
+                }
+                customPresetMenu->addSeparator();
+                QAction *mgrAct = customPresetMenu->addAction(
+                        IconLoader::duotoneIcon(QStringLiteral("page-setup"), 16),
+                        tr("Manage Style Presets..."));
+                connect(mgrAct, &QAction::triggered, this, [this]() {
+                    if (d_app)
+                        d_app->showStylePresetManagerDialog();
+                });
+            });
+        }
         d_btn_lock_aspect = addRibbonButton(
                 gPresets, QStringLiteral("lock"),
                 [this]() { return tr("Lock Aspect"); },

@@ -245,6 +245,9 @@ private:
     QLabel *d_sec_presets_lbl = nullptr;
     QPushButton *d_btn_preset_isij = nullptr;
     QPushButton *d_btn_preset_slide28 = nullptr;
+    QComboBox *d_cb_user_presets = nullptr;
+    QPushButton *d_btn_apply_user_preset = nullptr;
+    QPushButton *d_btn_manage_presets = nullptr;
     QPushButton *d_btn_square_frame70 = nullptr;
 
     QLabel *d_sec_aspect_lbl = nullptr;

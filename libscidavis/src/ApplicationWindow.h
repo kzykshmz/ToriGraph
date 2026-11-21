@@ -812,6 +812,7 @@ public slots:
     void applyStyleISIJJournal();
     void applyStylePresentationSlide();
     void applyStyleNatureCompact();
+    void showStylePresetManagerDialog();
 
     void attachDeltaCursorGadget();
     void showLogisticRegressionDialog();

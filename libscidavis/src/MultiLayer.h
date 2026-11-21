@@ -97,7 +97,50 @@ public:
         StyleNatureCompact89mm = 2
     };
 
+    struct GraphStylePresetSpec {
+        QString id;
+        QString name;
+        bool builtIn = false;
+        double pageWidthMm = 85.0;
+        double pageHeightMm = 85.0;
+        bool keepAspectRatio = true;
+        int targetDpi = 600;
+        int marginPx = 6;
+        int framePreset = 0; // Graph::FramePreset
+        int axisLineWidth = 2;
+        int minorTickLen = 4;
+        int majorTickLen = 8;
+        QString fontFamily = QStringLiteral("Arial");
+        double axisTitlePt = 11.0;
+        double tickLabelPt = 10.0;
+        double legendPt = 9.0;
+        bool boldTitle = false;
+        bool boldTick = false;
+        bool boldLegend = false;
+        int minCurveWidth = 2;
+        int minSymbolSize = 7;
+        int legendFrame = 0; // Legend::FrameStyle
+        QColor pageBackground = Qt::white;
+        bool formatIsijUnitSlash = true;
+        bool largeSlideLayout = false;
+    };
+
     void applyStylePreset(StylePreset preset);
+    void applyStylePresetSpec(const GraphStylePresetSpec &spec);
+    bool applyStylePresetById(const QString &idOrName);
+    GraphStylePresetSpec captureStylePresetSpec(const QString &name = QString()) const;
+
+    static QString userStylePresetsFilePath();
+    static QVector<GraphStylePresetSpec> defaultBuiltInStylePresets();
+    static QVector<GraphStylePresetSpec> listStylePresets();
+    static bool findStylePreset(const QString &idOrName, GraphStylePresetSpec *outSpec);
+    static bool saveStylePreset(const GraphStylePresetSpec &spec, QString *errOut = nullptr);
+    static bool deleteStylePreset(const QString &id, QString *errOut = nullptr);
+    static bool resetBuiltInStylePreset(const QString &id, QString *errOut = nullptr);
+    static bool exportStylePresetsToJson(const QString &filePath, QString *errOut = nullptr);
+    static int importStylePresetsFromJson(const QString &filePath, QString *errOut = nullptr);
+    static void showStylePresetManagerDialog(ApplicationWindow *app,
+                                             MultiLayer *targetGraph = nullptr);
     bool restorePhase5Tag(const QString &line);
     void finalizePhase5Restore();
 

@@ -27158,6 +27158,13 @@ void ApplicationWindow::applyStyleNatureCompact()
     emit modified();
 }
 
+void ApplicationWindow::showStylePresetManagerDialog()
+{
+    QWidget *w = d_workspace.activeSubWindow();
+    MultiLayer *ml = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    MultiLayer::showStylePresetManagerDialog(this, ml);
+}
+
 void ApplicationWindow::attachDeltaCursorGadget()
 {
     Graph *g = activeGraphForAnalysis(this, d_workspace, btnPointer, true);

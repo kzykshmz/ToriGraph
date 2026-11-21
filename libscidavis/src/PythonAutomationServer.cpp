@@ -17583,30 +17583,149 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("app.list_style_presets")) {
+        const QVector<MultiLayer::GraphStylePresetSpec> presets = MultiLayer::listStylePresets();
+        QJsonArray arr;
+        for (const auto &s : presets) {
+            QJsonObject o;
+            o[QStringLiteral("id")] = s.id;
+            o[QStringLiteral("name")] = s.name;
+            o[QStringLiteral("built_in")] = s.builtIn;
+            o[QStringLiteral("page_width_mm")] = s.pageWidthMm;
+            o[QStringLiteral("page_height_mm")] = s.pageHeightMm;
+            o[QStringLiteral("keep_aspect_ratio")] = s.keepAspectRatio;
+            o[QStringLiteral("target_dpi")] = s.targetDpi;
+            o[QStringLiteral("margin_px")] = s.marginPx;
+            o[QStringLiteral("frame_preset")] = s.framePreset;
+            o[QStringLiteral("axis_line_width")] = s.axisLineWidth;
+            o[QStringLiteral("minor_tick_len")] = s.minorTickLen;
+            o[QStringLiteral("major_tick_len")] = s.majorTickLen;
+            o[QStringLiteral("font_family")] = s.fontFamily;
+            o[QStringLiteral("axis_title_pt")] = s.axisTitlePt;
+            o[QStringLiteral("tick_label_pt")] = s.tickLabelPt;
+            o[QStringLiteral("legend_pt")] = s.legendPt;
+            o[QStringLiteral("bold_title")] = s.boldTitle;
+            o[QStringLiteral("bold_tick")] = s.boldTick;
+            o[QStringLiteral("bold_legend")] = s.boldLegend;
+            o[QStringLiteral("min_curve_width")] = s.minCurveWidth;
+            o[QStringLiteral("min_symbol_size")] = s.minSymbolSize;
+            o[QStringLiteral("legend_frame")] = s.legendFrame;
+            o[QStringLiteral("format_isij_unit_slash")] = s.formatIsijUnitSlash;
+            o[QStringLiteral("large_slide_layout")] = s.largeSlideLayout;
+            arr.append(o);
+        }
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("count")] = arr.size();
+        outResult[QStringLiteral("file")] = MultiLayer::userStylePresetsFilePath();
+        outResult[QStringLiteral("presets")] = arr;
+        return true;
+    }
+
+    if (method == QStringLiteral("app.save_style_preset")) {
+        MultiLayer::GraphStylePresetSpec spec;
+        const QString reqId = optionalJsonString(params, QStringLiteral("id")).trimmed();
+        if (!reqId.isEmpty())
+            MultiLayer::findStylePreset(reqId, &spec);
+        if (!reqId.isEmpty())
+            spec.id = reqId;
+        const QString reqName = optionalJsonString(params, QStringLiteral("name")).trimmed();
+        if (!reqName.isEmpty())
+            spec.name = reqName;
+        if (params.contains(QStringLiteral("page_width_mm")))
+            spec.pageWidthMm = params.value(QStringLiteral("page_width_mm")).toDouble(spec.pageWidthMm);
+        if (params.contains(QStringLiteral("page_height_mm")))
+            spec.pageHeightMm = params.value(QStringLiteral("page_height_mm")).toDouble(spec.pageHeightMm);
+        if (params.contains(QStringLiteral("keep_aspect_ratio")))
+            spec.keepAspectRatio = params.value(QStringLiteral("keep_aspect_ratio")).toBool(spec.keepAspectRatio);
+        if (params.contains(QStringLiteral("target_dpi")))
+            spec.targetDpi = params.value(QStringLiteral("target_dpi")).toInt(spec.targetDpi);
+        if (params.contains(QStringLiteral("margin_px")))
+            spec.marginPx = params.value(QStringLiteral("margin_px")).toInt(spec.marginPx);
+        if (params.contains(QStringLiteral("frame_preset")))
+            spec.framePreset = params.value(QStringLiteral("frame_preset")).toInt(spec.framePreset);
+        if (params.contains(QStringLiteral("axis_line_width")))
+            spec.axisLineWidth = params.value(QStringLiteral("axis_line_width")).toInt(spec.axisLineWidth);
+        if (params.contains(QStringLiteral("minor_tick_len")))
+            spec.minorTickLen = params.value(QStringLiteral("minor_tick_len")).toInt(spec.minorTickLen);
+        if (params.contains(QStringLiteral("major_tick_len")))
+            spec.majorTickLen = params.value(QStringLiteral("major_tick_len")).toInt(spec.majorTickLen);
+        if (params.contains(QStringLiteral("font_family")))
+            spec.fontFamily = params.value(QStringLiteral("font_family")).toString(spec.fontFamily);
+        if (params.contains(QStringLiteral("axis_title_pt")))
+            spec.axisTitlePt = params.value(QStringLiteral("axis_title_pt")).toDouble(spec.axisTitlePt);
+        if (params.contains(QStringLiteral("tick_label_pt")))
+            spec.tickLabelPt = params.value(QStringLiteral("tick_label_pt")).toDouble(spec.tickLabelPt);
+        if (params.contains(QStringLiteral("legend_pt")))
+            spec.legendPt = params.value(QStringLiteral("legend_pt")).toDouble(spec.legendPt);
+        if (params.contains(QStringLiteral("bold_title")))
+            spec.boldTitle = params.value(QStringLiteral("bold_title")).toBool(spec.boldTitle);
+        if (params.contains(QStringLiteral("bold_tick")))
+            spec.boldTick = params.value(QStringLiteral("bold_tick")).toBool(spec.boldTick);
+        if (params.contains(QStringLiteral("bold_legend")))
+            spec.boldLegend = params.value(QStringLiteral("bold_legend")).toBool(spec.boldLegend);
+        if (params.contains(QStringLiteral("min_curve_width")))
+            spec.minCurveWidth = params.value(QStringLiteral("min_curve_width")).toInt(spec.minCurveWidth);
+        if (params.contains(QStringLiteral("min_symbol_size")))
+            spec.minSymbolSize = params.value(QStringLiteral("min_symbol_size")).toInt(spec.minSymbolSize);
+        if (params.contains(QStringLiteral("legend_frame")))
+            spec.legendFrame = params.value(QStringLiteral("legend_frame")).toInt(spec.legendFrame);
+        if (params.contains(QStringLiteral("format_isij_unit_slash")))
+            spec.formatIsijUnitSlash = params.value(QStringLiteral("format_isij_unit_slash")).toBool(spec.formatIsijUnitSlash);
+        if (params.contains(QStringLiteral("large_slide_layout")))
+            spec.largeSlideLayout = params.value(QStringLiteral("large_slide_layout")).toBool(spec.largeSlideLayout);
+
+        QString err;
+        if (!MultiLayer::saveStylePreset(spec, &err))
+            throwInvalidParams(err.isEmpty() ? QStringLiteral("Failed to save style preset.") : err);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("id")] = spec.id;
+        outResult[QStringLiteral("name")] = spec.name;
+        return true;
+    }
+
+    if (method == QStringLiteral("app.delete_style_preset")) {
+        const QString reqId = optionalJsonString(params, QStringLiteral("id")).trimmed();
+        if (reqId.isEmpty())
+            throwInvalidParams(QStringLiteral("Missing 'id' parameter."));
+        const bool resetOnly = optionalJsonBool(params, QStringLiteral("reset"), false);
+        QString err;
+        const bool ok = resetOnly ? MultiLayer::resetBuiltInStylePreset(reqId, &err)
+                                  : MultiLayer::deleteStylePreset(reqId, &err);
+        if (!ok)
+            throwInvalidParams(err.isEmpty() ? QStringLiteral("Style preset '%1' not found.").arg(reqId) : err);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("id")] = reqId;
+        return true;
+    }
+
     if (method == QStringLiteral("graph.apply_style_preset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const QString p = params.value(QStringLiteral("preset")).toString().trimmed().toLower();
-        MultiLayer::StylePreset stylePreset = MultiLayer::StyleISIJJournal85mm;
-        if (p == QStringLiteral("isij_85mm") || p == QStringLiteral("isij")
-            || p == QStringLiteral("journal")) {
-            stylePreset = MultiLayer::StyleISIJJournal85mm;
-        } else if (p == QStringLiteral("slide_28pt") || p == QStringLiteral("slide")
-                   || p == QStringLiteral("presentation")) {
-            stylePreset = MultiLayer::StylePresentationSlide28pt;
-        } else if (p == QStringLiteral("nature_89mm") || p == QStringLiteral("nature")) {
-            stylePreset = MultiLayer::StyleNatureCompact89mm;
-        } else {
-            throwInvalidParams(
-                    QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt'|'nature_89mm').")
-                            .arg(p));
+        const QString rawP = params.value(QStringLiteral("preset")).toString().trimmed();
+        const QString p = rawP.toLower();
+        MultiLayer::GraphStylePresetSpec spec;
+        bool resolved = false;
+        if (p == QStringLiteral("journal"))
+            resolved = MultiLayer::findStylePreset(QStringLiteral("isij_85mm"), &spec);
+        else
+            resolved = MultiLayer::findStylePreset(rawP, &spec);
+        if (!resolved) {
+            QStringList avail;
+            for (const auto &s : MultiLayer::listStylePresets())
+                avail << s.id;
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown style preset '%1'.").arg(rawP), avail);
         }
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
-        ml->applyStylePreset(stylePreset);
-        for (Graph *lg : ml->layersList())
-            enforceArialGraphFonts(lg);
+        ml->applyStylePresetSpec(spec);
+        if (spec.fontFamily.compare(QStringLiteral("Arial"), Qt::CaseInsensitive) == 0
+            && !spec.boldTitle && !spec.boldTick && !spec.boldLegend) {
+            for (Graph *lg : ml->layersList())
+                enforceArialGraphFonts(lg);
+        }
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("preset")] = spec.id;
         return true;
     }
 
