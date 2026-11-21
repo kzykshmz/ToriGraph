@@ -1063,6 +1063,28 @@ void Plot::updateLayout()
 
     QwtPlot::updateLayout();
 
+    // Support negative Stand-off (baseline distance < 0) by shifting axis scale widget inward
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QwtScaleWidget *sw = axisWidget(a);
+        if (!sw || !axisEnabled(a))
+            continue;
+        const int neg = sw->property("_toriNegBaseline").toInt();
+        if (neg < 0) {
+            const int shift = -neg;
+            QRect gRect = sw->geometry();
+            if (a == QwtPlot::yLeft)
+                gRect.translate(shift, 0);
+            else if (a == QwtPlot::yRight)
+                gRect.translate(-shift, 0);
+            else if (a == QwtPlot::xBottom)
+                gRect.translate(0, -shift);
+            else if (a == QwtPlot::xTop)
+                gRect.translate(0, shift);
+            sw->setGeometry(gRect);
+            sw->raise();
+        }
+    }
+
     if (axisWidget(QwtPlot::xBottom))
         axisWidget(QwtPlot::xBottom)->clearMask();
     if (axisWidget(QwtPlot::xTop))
@@ -1070,6 +1092,28 @@ void Plot::updateLayout()
 
     if (g)
         g->updateSelectionOverlayGeometry();
+}
+
+void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist, int baseDist,
+                      const QRect &rect) const
+{
+    QRect adjRect = rect;
+    const QwtScaleWidget *sw = axisWidget(axisId);
+    if (sw) {
+        const int neg = sw->property("_toriNegBaseline").toInt();
+        if (neg < 0) {
+            const int shift = qRound(double(-neg) * s_toriPrintDeviceScale);
+            if (axisId == QwtPlot::yLeft)
+                adjRect.translate(shift, 0);
+            else if (axisId == QwtPlot::yRight)
+                adjRect.translate(-shift, 0);
+            else if (axisId == QwtPlot::xBottom)
+                adjRect.translate(0, -shift);
+            else if (axisId == QwtPlot::xTop)
+                adjRect.translate(0, shift);
+        }
+    }
+    QwtPlot::printScale(painter, axisId, startDist, endDist, baseDist, adjRect);
 }
 
 void Plot::replot()

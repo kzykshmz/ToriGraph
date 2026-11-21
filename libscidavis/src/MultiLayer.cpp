@@ -1194,14 +1194,21 @@ void MultiLayer::resizeLayers(const QResizeEvent *re)
         }
     }
 
-    resizeLayers(size, oldSize, false);
-    if (unlockedByShift) {
+    const bool scaleFontsWithCtrl = (QApplication::keyboardModifiers() & Qt::ControlModifier) != 0;
+    resizeLayers(size, oldSize, scaleFontsWithCtrl);
+    if (unlockedByShift || scaleFontsWithCtrl) {
         if (ApplicationWindow *app = findMultiLayerApp(this)) {
-            if (ModernRibbonBar *rb = app->modernRibbonBar())
-                rb->syncCheckableStates();
+            if (unlockedByShift) {
+                if (ModernRibbonBar *rb = app->modernRibbonBar())
+                    rb->syncCheckableStates();
+            }
             if (GraphInspectorDock *dock = app->graphInspectorDock()) {
-                if (dock->targetMultiLayer() == this)
-                    dock->setTargetMultiLayer(this, true);
+                if (dock->targetMultiLayer() == this) {
+                    if (unlockedByShift)
+                        dock->setTargetMultiLayer(this, true);
+                    else
+                        dock->refreshAll();
+                }
             }
         }
     }

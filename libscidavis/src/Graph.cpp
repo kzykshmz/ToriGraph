@@ -1173,36 +1173,56 @@ QVector<bool> Graph::enabledAxes()
     return axesOn;
 }
 
+namespace {
+void applyAxisBaselineDist(QwtScaleWidget *scale, int dist)
+{
+    if (!scale)
+        return;
+    if (dist < 0) {
+        scale->setProperty("_toriNegBaseline", dist);
+        scale->setMargin(0);
+    } else {
+        scale->setProperty("_toriNegBaseline", 0);
+        scale->setMargin(dist);
+    }
+}
+
+int readAxisBaselineDist(const QwtScaleWidget *scale)
+{
+    if (!scale)
+        return 0;
+    const int neg = scale->property("_toriNegBaseline").toInt();
+    return (neg < 0) ? neg : scale->margin();
+}
+} // namespace
+
 QList<int> Graph::axesBaseline()
 {
     QList<int> baselineDist;
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
-        if (scale)
-            baselineDist << scale->margin();
-        else
-            baselineDist << 0;
+        baselineDist << readAxisBaselineDist(scale);
     }
     return baselineDist;
 }
 
 void Graph::setAxesBaseline(const QList<int> &lst)
 {
-    for (int i = 0; i < QwtPlot::axisCnt; i++) {
+    for (int i = 0; i < QwtPlot::axisCnt && i < lst.size(); i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
-        if (scale)
-            scale->setMargin(lst[i]);
+        applyAxisBaselineDist(scale, lst[i]);
     }
+    d_plot->updateLayout();
 }
 
 void Graph::setAxesBaseline(QStringList &lst)
 {
     lst.removeAll(lst.first());
-    for (int i = 0; i < QwtPlot::axisCnt; i++) {
+    for (int i = 0; i < QwtPlot::axisCnt && i < lst.size(); i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
-        if (scale)
-            scale->setMargin((lst[i]).toInt());
+        applyAxisBaselineDist(scale, (lst[i]).toInt());
     }
+    d_plot->updateLayout();
 }
 
 QList<Graph::AxisType> Graph::axesType()
@@ -1509,11 +1529,11 @@ void Graph::showAxis(int axis, AxisType type, const QString &formatInfo, Table *
         && prec == d_plot->axisLabelPrecision(axis) && format == d_plot->axisLabelFormat(axis)
         && labelsRotation(axis) == rotation && axisType[axis] == type
         && axesFormatInfo[axis] == formatInfo && axesFormulas[axis] == formula
-        && scale->margin() == baselineDist
+        && readAxisBaselineDist(scale) == baselineDist
         && sclDraw->hasComponent(QwtAbstractScaleDraw::Labels) == labelsOn)
         return;
 
-    scale->setMargin(baselineDist);
+    applyAxisBaselineDist(scale, baselineDist);
     QPalette pal = scale->palette();
     if (pal.color(QPalette::Active, QPalette::WindowText) != c)
         pal.setColor(QPalette::WindowText, c);
@@ -7419,32 +7439,34 @@ void Graph::resizeEvent(QResizeEvent *e)
 
 void Graph::scaleFonts(double factor)
 {
+    if (!std::isfinite(factor) || factor <= 0.0 || std::fabs(factor - 1.0) < 1e-6)
+        return;
+
+    auto scaledFont = [factor](QFont font) -> QFont {
+        double curPt = font.pointSizeF();
+        if (curPt <= 0.0)
+            curPt = (font.pointSize() > 0) ? double(font.pointSize()) : 10.0;
+        const double nextPt = qBound(4.0, factor * curPt, 144.0);
+        font.setPointSizeF(nextPt);
+        font.setHintingPreference(QFont::PreferNoHinting);
+        return font;
+    };
+
     for (int i = 0; i < (int)d_texts.size(); i++) {
         Legend *mrk = (Legend *)d_plot->marker(d_texts[i]);
-        QFont font = mrk->font();
-        font.setPointSizeF(factor * font.pointSizeF());
-        font.setHintingPreference(QFont::PreferNoHinting);
-        mrk->setFont(font);
+        if (mrk)
+            mrk->setFont(scaledFont(mrk->font()));
     }
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
-        QFont font = axisFont(i);
-        font.setPointSizeF(factor * font.pointSizeF());
-        font.setHintingPreference(QFont::PreferNoHinting);
-        d_plot->setAxisFont(i, font);
+        d_plot->setAxisFont(i, scaledFont(axisFont(i)));
 
         QwtText title = d_plot->axisTitle(i);
-        font = title.font();
-        font.setPointSizeF(factor * font.pointSizeF());
-        font.setHintingPreference(QFont::PreferNoHinting);
-        title.setFont(font);
+        title.setFont(scaledFont(title.font()));
         d_plot->setAxisTitle(i, title);
     }
 
     QwtText title = d_plot->title();
-    QFont font = title.font();
-    font.setPointSizeF(factor * font.pointSizeF());
-    font.setHintingPreference(QFont::PreferNoHinting);
-    title.setFont(font);
+    title.setFont(scaledFont(title.font()));
     d_plot->setTitle(title);
 
     d_plot->replot();

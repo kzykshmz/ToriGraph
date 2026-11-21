@@ -456,16 +456,31 @@ void SelectionMoveResizer::operateOnTargets()
     const bool isSideHandle = (d_op == Resize_N || d_op == Resize_S
                                || d_op == Resize_E || d_op == Resize_W);
     const bool shiftHeld = (QApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+    const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier) != 0;
     const bool isWidgetResize = (!d_widgets.isEmpty() && d_op != Move && d_op != None);
     Graph *resizedGraph = nullptr;
     foreach (QWidget *i, d_widgets) {
         if (!i)
             continue;
-        i->setGeometry(operateOn(i->geometry()));
+        const QRect oldGeom = i->geometry();
+        const QRect newGeom = operateOn(oldGeom);
+        i->setGeometry(newGeom);
         // ugly hack
         // see Graph::setIgnoreResizeEvents() and Graph::resizeEvent()
         Graph *g = qobject_cast<Graph *>(i);
         if (g) {
+            if (ctrlHeld && isWidgetResize && oldGeom.width() > 10 && oldGeom.height() > 10
+                && newGeom.width() > 10 && newGeom.height() > 10) {
+                const double rx = double(newGeom.width()) / double(oldGeom.width());
+                const double ry = double(newGeom.height()) / double(oldGeom.height());
+                const double ratio = (isSideHandle && (d_op == Resize_E || d_op == Resize_W))
+                        ? rx
+                        : ((isSideHandle && (d_op == Resize_N || d_op == Resize_S))
+                                   ? ry
+                                   : std::sqrt(rx * ry));
+                if (std::isfinite(ratio) && ratio > 0.0 && std::fabs(ratio - 1.0) > 1e-4)
+                    g->scaleFonts(ratio);
+            }
             g->plotWidget()->resize(i->size());
             g->plotWidget()->updateLayout();
             if (!resizedGraph)

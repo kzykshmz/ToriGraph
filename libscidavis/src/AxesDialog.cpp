@@ -788,7 +788,7 @@ void AxesDialog::initAxesPage()
 
     leftBoxLayout->addWidget(new QLabel(tr("Stand-off")), 5, 0);
     boxBaseline = new QSpinBox();
-    boxBaseline->setRange(0, 1000);
+    boxBaseline->setRange(-500, 1000);
     leftBoxLayout->addWidget(boxBaseline);
 
     boxShowLabels = new QGroupBox(tr("Show Labels"));
