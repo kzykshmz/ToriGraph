@@ -3,8 +3,9 @@
 [English](README.md) | **日本語**
 
 [![CI](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml/badge.svg)](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml)
+[![Release](https://img.shields.io/github/v/release/kzykshmz/ToriGraph?label=%E3%82%A4%E3%83%B3%E3%82%B9%E3%83%88%E3%83%BC%E3%83%A9%E3%83%BC%E3%82%92%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89)](https://github.com/kzykshmz/ToriGraph/releases/latest)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#ソースからのビルド)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#インストールwindows)
 [![Python SDK](https://img.shields.io/badge/Python%20SDK-3.8%2B-3776AB.svg)](python/README.md)
 
 **ToriGraph** は、[SciDAVis](https://github.com/SciDAVis/scidavis) をベースに改変・拡張したオープンソースの科学グラフ作成・データ解析ソフトウェアです。論文投稿品質の作図、材料科学・分光解析ワークベンチ、Windows PowerPoint へのネイティブ OLE 埋め込み・再編集（`ToriGraph.Graph.1`）、およびヘッドレス Python / AI エージェント自動化に対応しています。
@@ -25,17 +26,36 @@
 - **材料科学・分光解析ワークベンチ**
   - ピーク自動検出、マルチピーク非線形フィッティング（58 種以上の組込モデル、制約付き/重み付き/ロバスト回帰）、ベースライン補正、ピーク積分。
   - 引張試験解析（ヤング率・0.2% 耐力・UTS・Kocks–Mecking 加工硬化率）、XRD・分光解析、EIS（ナイキスト/ボード線図）、アレニウス・Tauc プロット、ワイブル解析、Savitzky–Golay / LOWESS / Whittaker 平滑化、FFT、グラフデジタイザを内蔵。
-  - ワークシートの Long Name / Units / `F(x)=` 自動再計算、装置 CSV / RAS および `.opj` / `.opju` ファイルの読込に対応。
-- **日本語・英語のバイリンガル UI**
+  - ワークシートの Long Name / Units / `F(x)=` 自動再計算、金属力学特性を中心とした 20 種の組み込みサンプルデータ・複合サンプルプロジェクト、装置 CSV / RAS および `.opj` / `.opju` ファイルの読込に対応。
+- **日本語・英語のバイリンガル UI ＆ 自動アップデート機能**
   - 組込の日本語翻訳辞書により起動時から完全に日本語化され、英語 UI への切替も即時に行えます。
+  - GitHub Releases と連携した SHA-256 検証付き自動アップデート機能を内蔵し、新バージョンをワンクリックで更新できます。
 - **Python JSON-RPC 2.0 自動化 SDK（`torigraph`）**
   - Python 3.8+ 標準ライブラリのみで動作するクライアント SDK（[python/README.md](python/README.md)）。NumPy / Pandas / Polars 直接入出力、一括実行（`with app.batch():`）、自動レイアウト調整（`auto_layout()`）、再現スクリプト逆生成（`to_python_script()`）に対応。
 
 ---
 
+## インストール（Windows）
+
+### 統合インストーラー版（推奨）
+
+**[GitHub Releases](https://github.com/kzykshmz/ToriGraph/releases/latest)** から最新の **`ToriGraph-<version>-win64-setup.exe`** をダウンロードして実行してください。
+
+1 本のインストーラーで以下がまとめて導入されます（既定はユーザー単位インストールのため **管理者権限不要**）：
+
+- **ToriGraph 本体**（Qt 5 / GSL / muParser ランタイム、フィットプラグイン、日本語・英語 UI をすべて同梱）
+- **PowerPoint / Word 用 OLE サーバー登録（`ToriGraph.Graph.1`）**（スライド上の埋め込みグラフをダブルクリックで再編集）
+- **Python 自動化 SDK（`torigraph`）の自動導入**（同梱のオフライン wheel から検出済み Python 3.8+ 環境へ自動インストール、`TORIGRAPH_EXE`・ユーザー `PATH` 設定込み）
+- **`.sciprj` ファイル関連付け** およびスタートメニュー修復ショートカット
+- **自動アップデート対応**（メニュー「ヘルプ → 更新の確認」から最新インストーラーを自動取得・検証・適用）
+
+解凍するだけで使える **ポータブル ZIP 版**（`ToriGraph-<version>-win64-portable.zip`）も Releases ページで配布しています。
+
+---
+
 ## クイックスタート
 
-### 1. Windows OLE サーバーの登録（PowerPoint でのダブルクリック再編集用）
+### 1. Windows OLE サーバーの手動登録（ポータブル版・ソースビルド時のみ）
 
 `ToriGraph.exe` をビルドまたは配置した後、ユーザー単位（`HKCU`・管理者権限不要）で OLE サーバーを登録します。
 

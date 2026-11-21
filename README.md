@@ -3,8 +3,9 @@
 **English** | [日本語](README.ja.md)
 
 [![CI](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml/badge.svg)](https://github.com/kzykshmz/ToriGraph/actions/workflows/main.yml)
+[![Release](https://img.shields.io/github/v/release/kzykshmz/ToriGraph?label=Download%20Installer)](https://github.com/kzykshmz/ToriGraph/releases/latest)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#building-from-source)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#installation-windows)
 [![Python SDK](https://img.shields.io/badge/Python%20SDK-3.8%2B-3776AB.svg)](python/README.md)
 
 **ToriGraph** is an open-source scientific plotting and data analysis application derived from [SciDAVis](https://github.com/SciDAVis/scidavis), extended for publication-grade figures, materials science workflows, native Windows PowerPoint OLE embedding (`ToriGraph.Graph.1`), and headless Python / AI-agent automation.
@@ -25,17 +26,36 @@
 - **Materials Science & Spectroscopy Workbench**
   - Peak analyzer with automatic peak detection, multi-peak nonlinear fitting (58+ built-in models, constrained/weighted/robust fitting), baseline subtraction, and peak integration.
   - Built-in analyses for tensile testing (Young's modulus, 0.2% offset yield stress, UTS, Kocks–Mecking work-hardening), XRD / spectroscopy, EIS (Nyquist/Bode), Arrhenius & Tauc plots, Weibull reliability analysis, Savitzky–Golay / LOWESS / Whittaker smoothing, FFT, and graph digitization.
-  - Worksheet Long Name / Units / `F(x)=` dynamic recalculation and import support for instrument CSV/RAS and legacy Origin project files (`.opj` / `.opju`).
-- **Full Bilingual UI (Japanese / English)**
+  - Worksheet Long Name / Units / `F(x)=` dynamic recalculation, 20 built-in materials science & metal mechanics sample datasets / multi-window project packs, and import support for instrument CSV/RAS and legacy Origin project files (`.opj` / `.opju`).
+- **Full Bilingual UI (Japanese / English) & Built-In Auto-Updater**
   - Complete built-in Japanese and English interface with instant switching and unified modern ribbon + dock layout.
+  - Built-in GitHub Releases auto-updater with SHA-256 verification and silent in-place update support.
 - **Headless Python Automation SDK (`torigraph`)**
   - Zero-dependency pure-Python 3.8+ JSON-RPC 2.0 client ([python/README.md](python/README.md)) supporting NumPy, Pandas (`attrs["units"]` / `attrs["long_names"]`), Polars, atomic batching (`with app.batch():`), self-healing layout (`auto_layout()`), and reproducible script export (`to_python_script()`).
 
 ---
 
+## Installation (Windows)
+
+### All-in-One Windows Installer (Recommended)
+
+Download the latest **`ToriGraph-<version>-win64-setup.exe`** from **[GitHub Releases](https://github.com/kzykshmz/ToriGraph/releases/latest)** and run it.
+
+The integrated installer sets up everything in one step (per-user installation by default, **no administrator privileges required**):
+
+- **ToriGraph** desktop application (all Qt5 / GSL / muParser runtimes, fit plugins, and Japanese/English translations bundled)
+- **Windows OLE Server (`ToriGraph.Graph.1`)** registration for PowerPoint / Word double-click in-place graph re-editing
+- **Python Automation SDK (`torigraph`)** installed offline into your detected Python 3.8+ environment, plus `TORIGRAPH_EXE` and user `PATH` setup
+- **`.sciprj` project file association** and Start Menu repair shortcuts
+- **Automatic updates** directly from GitHub Releases (Help → Check for Updates)
+
+A standalone **Portable ZIP** (`ToriGraph-<version>-win64-portable.zip`) is also available on the Releases page.
+
+---
+
 ## Quick Start
 
-### 1. Register Windows OLE Server (for PowerPoint Re-Editing)
+### 1. Manual OLE Server Registration (Portable / Source Builds Only)
 
 After building or obtaining `ToriGraph.exe`, register the per-user OLE server (`HKCU`, no administrator privileges required):
 

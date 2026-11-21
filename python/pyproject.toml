@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torigraph"
-version = "2.4.0"
+version = "3.0.0"
 description = "Pure-Python JSON-RPC 2.0 Automation SDK for ToriGraph scientific plotting & data analysis"
 readme = "README.md"
 requires-python = ">=3.8"

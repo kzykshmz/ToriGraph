@@ -1690,7 +1690,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    } elseif ($ext -eq '.exe') {\r\n"
             "        $leaf = [System.IO.Path]::GetFileName($DownloadedFile).ToLowerInvariant()\r\n"
             "        if ($leaf -match 'setup|install') {\r\n"
-            "            $p = Start-Process -FilePath $DownloadedFile -ArgumentList @('/SILENT', '/NORESTART') -Wait -PassThru\r\n"
+            "            $p = Start-Process -FilePath $DownloadedFile -ArgumentList @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', (\"/DIR=$TargetInstallDir\")) -Wait -PassThru\r\n"
             "            if ($p.ExitCode -ne 0) { throw \"Installer exited with code $($p.ExitCode)\" }\r\n"
             "        } else {\r\n"
             "            Copy-Item -LiteralPath $DownloadedFile -Destination $TargetExe -Force\r\n"

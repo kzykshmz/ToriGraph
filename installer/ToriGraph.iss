@@ -4,7 +4,7 @@
 ; ============================================================================
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.4.0"
+  #define MyAppVersion "3.0.0"
 #endif
 
 #ifndef StageDir

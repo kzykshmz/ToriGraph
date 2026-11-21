@@ -9,7 +9,7 @@ endif()
 cmake_policy(SET CMP0091 NEW)
 
 project( scidavis
-  VERSION 2.3.0
+  VERSION 3.0.0
   DESCRIPTION "ToriGraph is a free application for Scientific Data Analysis and Visualization."
   HOMEPAGE_URL "https://github.com/kzykshmz/ToriGraph"
   LANGUAGES CXX C)

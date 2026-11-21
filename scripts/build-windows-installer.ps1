@@ -23,7 +23,7 @@ if (-not $Version) {
         $m = Select-String -Path $pyproject -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
         if ($m) { $Version = $m.Matches[0].Groups[1].Value }
     }
-    if (-not $Version) { $Version = "2.4.0" }
+    if (-not $Version) { $Version = "3.0.0" }
 }
 
 $exeSrc = Join-Path $BuildDir "scidavis\ToriGraph.exe"
