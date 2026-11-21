@@ -206,10 +206,12 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
 
     auto makeBtn = [&](QHBoxLayout *row, const QString &label, const QString &tip) -> QToolButton * {
         QToolButton *b = new QToolButton(wrap);
+        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
         b->setText(label);
         b->setToolTip(tip);
-        b->setFixedHeight(21);
-        b->setMinimumWidth(22);
+        b->setFixedHeight(24);
+        b->setMinimumWidth(26);
+        b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         row->addWidget(b);
         return b;
@@ -217,7 +219,7 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
 
     QHBoxLayout *row1 = new QHBoxLayout();
     row1->setContentsMargins(0, 0, 0, 0);
-    row1->setSpacing(2);
+    row1->setSpacing(3);
     const QList<QPair<QString, QString>> row1Toks = {
         { QString::fromUtf8("\xCF\x83"), QString::fromUtf8("\xCF\x83") },
         { QString::fromUtf8("\xCE\xB5"), QString::fromUtf8("\xCE\xB5") },
@@ -656,16 +658,41 @@ static void updateColorSwatchButton(QPushButton *btn, const QColor &c)
     if (!btn)
         return;
     const QColor safe = c.isValid() ? c : QColor(Qt::black);
-    QPixmap px(32, 14);
-    px.fill(Qt::transparent);
-    QPainter p(&px);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor(120, 130, 145), 1.0));
-    p.setBrush(safe);
-    p.drawRoundedRect(QRectF(1.0, 1.0, 30.0, 12.0), 3.0, 3.0);
-    p.end();
-    btn->setIcon(QIcon(px));
-    btn->setIconSize(QSize(32, 14));
+    const double lum = 0.2126 * safe.redF() + 0.7152 * safe.greenF() + 0.0722 * safe.blueF();
+    const QString fgHex = (lum > 0.58) ? QStringLiteral("#0F172A") : QStringLiteral("#FFFFFF");
+    const QColor borderCol = (lum > 0.88) ? QColor(0xCB, 0xD5, 0xE1) : safe.darker(118);
+    const QString bgHex = safe.name(QColor::HexRgb).toUpper();
+    const QString borderHex = borderCol.name(QColor::HexRgb).toUpper();
+
+    btn->setObjectName(QStringLiteral("InspectorColorSwatchBtn"));
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setMinimumHeight(24);
+    btn->setMaximumHeight(26);
+    btn->setIcon(QIcon());
+    btn->setText(bgHex);
+    btn->setStyleSheet(QStringLiteral(
+                               "QPushButton#InspectorColorSwatchBtn {"
+                               "  background-color: %1;"
+                               "  color: %2;"
+                               "  border: 1px solid %3;"
+                               "  border-radius: 5px;"
+                               "  font-family: 'Consolas', 'Segoe UI', monospace;"
+                               "  font-size: 11.5px;"
+                               "  font-weight: 600;"
+                               "  padding: 0px 8px;"
+                               "  min-height: 24px;"
+                               "  max-height: 24px;"
+                               "}"
+                               "QPushButton#InspectorColorSwatchBtn:hover {"
+                               "  border: 2px solid #2563EB;"
+                               "}"
+                               "QPushButton#InspectorColorSwatchBtn:disabled {"
+                               "  background-color: #F1F5F9;"
+                               "  color: #94A3B8;"
+                               "  border: 1px solid #E2E8F0;"
+                               "}")
+                               .arg(bgHex, fgHex, borderHex));
     btn->setProperty("swatchColor", safe);
 }
 
@@ -1027,7 +1054,7 @@ void GraphInspectorDock::buildUi()
 
     // --- Top Pane: Object Manager ---
     QWidget *topPane = new QWidget(d_splitter);
-    topPane->setMinimumHeight(135);
+    topPane->setMinimumHeight(175);
     QVBoxLayout *topLayout = new QVBoxLayout(topPane);
     topLayout->setContentsMargins(6, 4, 6, 4);
     topLayout->setSpacing(4);
@@ -1114,16 +1141,24 @@ void GraphInspectorDock::buildUi()
 
     d_tab_strip = new QFrame(bottomPane);
     d_tab_strip->setObjectName(QStringLiteral("InspectorTabStrip"));
-    QHBoxLayout *tabRow = new QHBoxLayout(d_tab_strip);
-    tabRow->setContentsMargins(6, 3, 6, 3);
-    tabRow->setSpacing(3);
+    QHBoxLayout *tabStripOuter = new QHBoxLayout(d_tab_strip);
+    tabStripOuter->setContentsMargins(6, 4, 6, 4);
+    tabStripOuter->setSpacing(0);
+
+    QFrame *tabTrack = new QFrame(d_tab_strip);
+    tabTrack->setObjectName(QStringLiteral("InspectorSegmentedTrack"));
+    QHBoxLayout *tabRow = new QHBoxLayout(tabTrack);
+    tabRow->setContentsMargins(2, 2, 2, 2);
+    tabRow->setSpacing(2);
+    tabStripOuter->addWidget(tabTrack);
 
     d_page_tab_group = new QButtonGroup(this);
     d_page_tab_group->setExclusive(true);
 
     auto makePageTabBtn = [&](int idx) -> QToolButton * {
-        QToolButton *b = new QToolButton(d_tab_strip);
+        QToolButton *b = new QToolButton(tabTrack);
         b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         b->setMinimumHeight(26);
         b->setObjectName(QStringLiteral("InspectorContextTabBtn"));
@@ -1167,8 +1202,9 @@ void GraphInspectorDock::buildUi()
 
     botLayout->addWidget(d_prop_scroll, 1);
     d_splitter->addWidget(bottomPane);
-    d_splitter->setStretchFactor(0, 38);
-    d_splitter->setStretchFactor(1, 62);
+    d_splitter->setStretchFactor(0, 42);
+    d_splitter->setStretchFactor(1, 58);
+    d_splitter->setSizes({ 180, 250 });
 
     activeLayout->addWidget(d_splitter, 1);
     d_content_stack->addWidget(d_inspector_active_panel);
@@ -1835,16 +1871,20 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     lay->setSpacing(6);
 
     // Axis Selector [Bottom X] [Left Y] [Top X] [Right Y]
-    QHBoxLayout *axisSelRow = new QHBoxLayout();
-    axisSelRow->setSpacing(3);
+    QFrame *axisTrack = new QFrame(page);
+    axisTrack->setObjectName(QStringLiteral("InspectorSegmentedTrack"));
+    QHBoxLayout *axisSelRow = new QHBoxLayout(axisTrack);
+    axisSelRow->setContentsMargins(2, 2, 2, 2);
+    axisSelRow->setSpacing(2);
     d_axis_sel_group = new QButtonGroup(this);
     d_axis_sel_group->setExclusive(true);
 
     auto makeAxisBtn = [&](int qwtAxis) -> QToolButton * {
-        QToolButton *b = new QToolButton(page);
+        QToolButton *b = new QToolButton(axisTrack);
         b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        b->setFixedHeight(24);
+        b->setFixedHeight(25);
         b->setObjectName(QStringLiteral("InspectorAxisPillBtn"));
         d_axis_sel_group->addButton(b, qwtAxis);
         axisSelRow->addWidget(b);
@@ -1869,7 +1909,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                 }
                 syncAxisControls();
             });
-    lay->addLayout(axisSelRow);
+    lay->addWidget(axisTrack);
 
     d_chk_axis_visible = new QCheckBox(page);
     connect(d_chk_axis_visible, &QCheckBox::toggled, this, [this](bool vis) {
@@ -2274,8 +2314,11 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     fmtRow->setSpacing(3);
     auto makeFmtBtn = [&](const QString &label) -> QToolButton * {
         QToolButton *b = new QToolButton(page);
+        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
         b->setText(label);
-        b->setFixedHeight(23);
+        b->setFixedHeight(24);
+        b->setMinimumWidth(26);
+        b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         fmtRow->addWidget(b);
         return b;
@@ -6203,56 +6246,92 @@ void GraphInspectorDock::applyTheme()
     s_applying = true;
     const bool dark = isPaletteDark();
     const QString bg = dark ? QStringLiteral("#1E222B") : QStringLiteral("#F8FAFC");
-    const QString hdrBg = dark ? QStringLiteral("#171A22") : QStringLiteral("#EEF2F6");
+    const QString hdrBg = dark ? QStringLiteral("#171A22") : QStringLiteral("#F1F5F9");
     const QString cardBg = dark ? QStringLiteral("#252A36") : QStringLiteral("#FFFFFF");
-    const QString border = dark ? QStringLiteral("#333B4D") : QStringLiteral("#D8E0EA");
-    const QString fg = dark ? QStringLiteral("#E6ECF5") : QStringLiteral("#1E293B");
-    const QString subFg = dark ? QStringLiteral("#94A3B8") : QStringLiteral("#64748B");
-    const QString accent = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#0284C7");
-    const QString accentSoft = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#E0F2FE");
-
+    const QString border = dark ? QStringLiteral("#333B4D") : QStringLiteral("#E2E8F0");
+    const QString fg = dark ? QStringLiteral("#E6ECF5") : QStringLiteral("#0F172A");
+    const QString subFg = dark ? QStringLiteral("#94A3B8") : QStringLiteral("#475569");
+    const QString accent = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#2563EB");
+    const QString accentSoft = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#EFF6FF");
     const QString railFg = dark ? QStringLiteral("#CBD5E1") : QStringLiteral("#334155");
+    const QString trackBg = dark ? QStringLiteral("#1A1F2B") : QStringLiteral("#F1F5F9");
+    const QString segActiveBg = dark ? QStringLiteral("#2D3548") : QStringLiteral("#FFFFFF");
+    const QString segActiveBorder = dark ? QStringLiteral("#475569") : QStringLiteral("#CBD5E1");
+    const QString chipBg = dark ? QStringLiteral("#252A36") : QStringLiteral("#F8FAFC");
+    const QString chipHoverBg = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#EFF6FF");
+    const QString chipHoverBorder = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#93C5FD");
 
-    const QString qss = QStringLiteral(
-                                "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"
-                                "#InspectorHeaderBar, #InspectorRailPanel, #InspectorScopeStrip { background: %2; border-bottom: 1px solid %4; }"
-                                "#InspectorHeaderTitle { font-weight: 600; font-size: 15px; color: %5; }"
-                                "#InspectorHeaderTarget { font-size: 14px; color: %6; }"
-                                "#InspectorSubTitle { font-weight: 600; font-size: 14px; color: %5; }"
-                                "#InspectorSectionHeader { font-weight: 600; font-size: 14px; color: %7; padding-top: 4px; border-bottom: 1px solid %4; }"
-                                "#InspectorTabStrip { background: %2; border-top: 1px solid %4; border-bottom: 1px solid %4; }"
-                                "QToolButton#InspectorContextTabBtn {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 10.8pt; min-height: 30px; padding: 1px 4px;"
-                                "}"
-                                "QToolButton#InspectorAxisPillBtn, QToolButton#InspectorScopePillBtn {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 14px; padding: 2px 5px;"
-                                "}"
-                                "QToolButton#InspectorContextTabBtn:checked, QToolButton#InspectorAxisPillBtn:checked, QToolButton#InspectorScopePillBtn:checked {"
-                                "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
-                                "}"
-                                "QToolButton#InspectorRailTabBtn {"
-                                "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
-                                "}"
-                                "QTreeWidget#GraphObjectManagerTree {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 14px;"
-                                "}"
-                                "#InspectorQuickStartPanel { background: %1; }"
-                                "#QuickStartHeroCard { background: %8; border: 1px solid %4; border-radius: 8px; }"
-                                "#QuickStartTitle { font-weight: 700; font-size: 15px; color: %7; }"
-                                "#QuickStartSubtitle { font-size: 13px; color: %5; }"
-                                "#QuickStartCard { background: %3; border: 1px solid %4; border-radius: 7px; }"
-                                "#QuickStartStepBadge { background: %7; color: #FFFFFF; font-weight: 700; font-size: 12px; border-radius: 11px; }"
-                                "#QuickStartStepText { font-size: 13px; color: %5; }"
-                                "QPushButton#QuickStartPrimaryBtn {"
-                                "  background: %7; color: #FFFFFF; border: 1px solid %7; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
-                                "}"
-                                "QPushButton#QuickStartSecondaryBtn {"
-                                "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
-                                "}"
-                                "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
-                                "QPushButton { font-size: 14px; padding: 4px 6px; }"
-                                "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 14px; }")
-                                .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
+    QString qss = QStringLiteral(
+                          "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"
+                          "#InspectorHeaderBar, #InspectorRailPanel, #InspectorScopeStrip { background: %2; border-bottom: 1px solid %4; }"
+                          "#InspectorHeaderTitle { font-weight: 600; font-size: 14.5px; color: %5; }"
+                          "#InspectorHeaderTarget { font-size: 13px; color: %6; }"
+                          "#InspectorSubTitle { font-weight: 600; font-size: 13px; color: %5; }"
+                          "#InspectorSectionHeader { font-weight: 600; font-size: 12.5px; color: %6; padding-top: 6px; padding-bottom: 2px; border-bottom: 1px solid %4; }"
+                          "#InspectorTabStrip { background: %1; border-top: 1px solid %4; border-bottom: 1px solid %4; }"
+                          "QFrame#InspectorSegmentedTrack { background: @TRACK_BG@; border: 1px solid %4; border-radius: 7px; }"
+                          "QToolButton#InspectorContextTabBtn, QToolButton#InspectorAxisPillBtn {"
+                          "  background: transparent; color: %6; border: 1px solid transparent; border-radius: 5px; font-size: 10.5pt; font-weight: 500; padding: 1px 4px;"
+                          "}"
+                          "QToolButton#InspectorContextTabBtn:hover, QToolButton#InspectorAxisPillBtn:hover {"
+                          "  background: %8; color: %5;"
+                          "}"
+                          "QToolButton#InspectorContextTabBtn:checked, QToolButton#InspectorAxisPillBtn:checked {"
+                          "  background: @SEG_ACT_BG@; color: %7; border: 1px solid @SEG_ACT_BD@; font-weight: 600;"
+                          "}"
+                          "QToolButton#InspectorScopePillBtn {"
+                          "  background: %3; color: %6; border: 1px solid %4; border-radius: 5px; font-size: 13px; padding: 2px 5px;"
+                          "}"
+                          "QToolButton#InspectorScopePillBtn:checked {"
+                          "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
+                          "}"
+                          "QToolButton#InspectorSymbolChipBtn {"
+                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 12.5px; padding: 1px 4px; min-height: 22px; min-width: 24px;"
+                          "}"
+                          "QToolButton#InspectorSymbolChipBtn:hover {"
+                          "  background: @CHIP_HOV_BG@; color: %7; border: 1px solid @CHIP_HOV_BD@;"
+                          "}"
+                          "QToolButton#InspectorSymbolChipBtn:pressed {"
+                          "  background: %8; color: %7; border: 1px solid %7;"
+                          "}"
+                          "QToolButton#InspectorRailTabBtn {"
+                          "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
+                          "}"
+                          "QTreeWidget#GraphObjectManagerTree {"
+                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-size: 13px; padding: 2px; outline: 0;"
+                          "}"
+                          "QTreeWidget#GraphObjectManagerTree::item {"
+                          "  height: 22px; padding: 1px 4px; border-radius: 4px;"
+                          "}"
+                          "QTreeWidget#GraphObjectManagerTree::item:hover {"
+                          "  background: @TRACK_BG@;"
+                          "}"
+                          "QTreeWidget#GraphObjectManagerTree::item:selected {"
+                          "  background: %8; color: %7;"
+                          "}"
+                          "#InspectorQuickStartPanel { background: %1; }"
+                          "#QuickStartHeroCard { background: %8; border: 1px solid %4; border-radius: 8px; }"
+                          "#QuickStartTitle { font-weight: 700; font-size: 15px; color: %7; }"
+                          "#QuickStartSubtitle { font-size: 13px; color: %5; }"
+                          "#QuickStartCard { background: %3; border: 1px solid %4; border-radius: 7px; }"
+                          "#QuickStartStepBadge { background: %7; color: #FFFFFF; font-weight: 700; font-size: 12px; border-radius: 11px; }"
+                          "#QuickStartStepText { font-size: 13px; color: %5; }"
+                          "QPushButton#QuickStartPrimaryBtn {"
+                          "  background: %7; color: #FFFFFF; border: 1px solid %7; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                          "}"
+                          "QPushButton#QuickStartSecondaryBtn {"
+                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                          "}"
+                          "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
+                          "QPushButton { font-size: 13.5px; padding: 4px 6px; }"
+                          "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 13.5px; }")
+                          .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
+    qss.replace(QStringLiteral("@TRACK_BG@"), trackBg);
+    qss.replace(QStringLiteral("@SEG_ACT_BG@"), segActiveBg);
+    qss.replace(QStringLiteral("@SEG_ACT_BD@"), segActiveBorder);
+    qss.replace(QStringLiteral("@CHIP_BG@"), chipBg);
+    qss.replace(QStringLiteral("@CHIP_HOV_BG@"), chipHoverBg);
+    qss.replace(QStringLiteral("@CHIP_HOV_BD@"), chipHoverBorder);
 
     if (d_root_container && d_root_container->styleSheet() != qss)
         d_root_container->setStyleSheet(qss);

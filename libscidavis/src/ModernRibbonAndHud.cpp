@@ -2457,11 +2457,11 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid transparent;"
             "  border-top-left-radius: 7px;"
             "  border-top-right-radius: 7px;"
-            "  padding: 5px 9px;"
+            "  padding: 5px 11px;"
             "  margin-right: 1px;"
             "  margin-top: 3px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11.2pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
             "QTabBar#ModernRibbonTabBar::tab:hover {"
@@ -2571,35 +2571,46 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  background: #E2E8F0;"
             "  margin: 4px 8px;"
             "}"
-            "QToolButton.RibbonQuickPresetPill {"
-            "  background-color: #FFF7ED;"
-            "  color: #9A3412;"
-            "  border: 1px solid #FDBA74;"
-            "  border-radius: 6px;"
-            "  padding: 2px 8px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
-            "  font-weight: 700;"
-            "}"
-            "QToolButton.RibbonQuickPresetPill:hover {"
-            "  background-color: #FFEDD5;"
-            "  color: #7C2D12;"
-            "  border: 1px solid #EA580C;"
-            "}"
             "QToolButton#RibbonCommandSearchPill {"
-            "  background-color: #FFFFFF;"
-            "  color: #475569;"
+            "  background-color: #F8FAFC;"
+            "  color: #64748B;"
             "  border: 1px solid #CBD5E1;"
-            "  border-radius: 11px;"
-            "  padding: 2px 10px;"
+            "  border-radius: 13px;"
+            "  padding: 2px 12px;"
+            "  min-height: 24px;"
+            "  text-align: left;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.8pt;"
-            "  font-weight: 600;"
+            "  font-size: 10pt;"
+            "  font-weight: 500;"
             "}"
             "QToolButton#RibbonCommandSearchPill:hover {"
-            "  background-color: #EFF6FF;"
+            "  background-color: #FFFFFF;"
             "  color: #1D4ED8;"
             "  border: 1px solid #2563EB;"
+            "}"
+            "QFrame#RibbonLayoutSegmentTrack {"
+            "  background-color: #F1F5F9;"
+            "  border: 1px solid #E2E8F0;"
+            "  border-radius: 7px;"
+            "}"
+            "QToolButton.RibbonSegmentBtn {"
+            "  background-color: transparent;"
+            "  color: #475569;"
+            "  border: 1px solid transparent;"
+            "  border-radius: 5px;"
+            "  padding: 2px 7px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
+            "  font-weight: 600;"
+            "}"
+            "QToolButton.RibbonSegmentBtn:hover {"
+            "  background-color: rgba(255, 255, 255, 180);"
+            "  color: #0F172A;"
+            "}"
+            "QToolButton.RibbonSegmentBtn:checked {"
+            "  background-color: #FFFFFF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #CBD5E1;"
             "}"
             "QToolButton.RibbonHeaderPill {"
             "  background-color: #FFFFFF;"
@@ -2608,7 +2619,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border-radius: 6px;"
             "  padding: 2px 8px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-size: 10pt;"
             "  font-weight: 600;"
             "}"
             "QToolButton.RibbonHeaderPill:hover {"
@@ -2617,9 +2628,9 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #93C5FD;"
             "}"
             "QToolButton.RibbonHeaderPill:checked {"
-            "  background-color: #2563EB;"
-            "  color: #FFFFFF;"
-            "  border: 1px solid #1D4ED8;"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border: 1px solid #93C5FD;"
             "}"
             "QLabel#RibbonContextBadge {"
             "  background-color: #DBEAFE;"
@@ -2636,15 +2647,16 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    // Top Header Row: 7 Contextual Tabs + Quick Presets + Search Pill + Workspace Mode + Focus + Language + Context Badge
+    // Top Header Row: 7 Contextual Tabs + Command Search Pill + Segmented Workspace Mode + Focus + Language + Context Badge
     QWidget *topStrip = new QWidget(this);
     topStrip->setObjectName(QStringLiteral("ModernRibbonTopStrip"));
     QHBoxLayout *topLayout = new QHBoxLayout(topStrip);
     topLayout->setContentsMargins(6, 2, 6, 0);
-    topLayout->setSpacing(4);
+    topLayout->setSpacing(6);
 
     d_tab_bar = new QTabBar(topStrip);
     d_tab_bar->setObjectName(QStringLiteral("ModernRibbonTabBar"));
+    d_tab_bar->setFont(QFont(QStringLiteral("Yu Gothic UI"), 11, QFont::DemiBold));
     d_tab_bar->setExpanding(false);
     d_tab_bar->setDrawBase(false);
     d_tab_bar->setUsesScrollButtons(true);
@@ -2652,38 +2664,13 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     d_tab_bar->setFocusPolicy(Qt::NoFocus);
     topLayout->addWidget(d_tab_bar, 1);
 
-    auto makeQuickPresetPill = [topStrip](const QString &iconId) -> QToolButton * {
-        QToolButton *b = new QToolButton(topStrip);
-        b->setProperty("class", QStringLiteral("RibbonQuickPresetPill"));
-        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        b->setIcon(IconLoader::duotoneIcon(iconId, 16, false));
-        b->setIconSize(QSize(14, 14));
-        b->setCursor(Qt::PointingHandCursor);
-        b->setFocusPolicy(Qt::NoFocus);
-        return b;
-    };
-
-    d_btn_quick_isij = makeQuickPresetPill(QStringLiteral("preset-isij"));
-    d_btn_quick_isij->setObjectName(QStringLiteral("RibbonQuickIsijBtn"));
-    connect(d_btn_quick_isij, &QToolButton::clicked, this, [this]() {
-        if (d_app)
-            d_app->applyStyleISIJJournal();
-    });
-    topLayout->addWidget(d_btn_quick_isij);
-
-    d_btn_quick_slide = makeQuickPresetPill(QStringLiteral("preset-slide"));
-    d_btn_quick_slide->setObjectName(QStringLiteral("RibbonQuickSlideBtn"));
-    connect(d_btn_quick_slide, &QToolButton::clicked, this, [this]() {
-        if (d_app)
-            d_app->applyStylePresentationSlide();
-    });
-    topLayout->addWidget(d_btn_quick_slide);
-
     d_btn_cmd_palette = new QToolButton(topStrip);
     d_btn_cmd_palette->setObjectName(QStringLiteral("RibbonCommandSearchPill"));
     d_btn_cmd_palette->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     d_btn_cmd_palette->setIcon(IconLoader::duotoneIcon(QStringLiteral("search-command"), 16, false));
-    d_btn_cmd_palette->setIconSize(QSize(15, 15));
+    d_btn_cmd_palette->setIconSize(QSize(14, 14));
+    d_btn_cmd_palette->setMinimumWidth(180);
+    d_btn_cmd_palette->setMaximumWidth(210);
     d_btn_cmd_palette->setCursor(Qt::PointingHandCursor);
     d_btn_cmd_palette->setFocusPolicy(Qt::NoFocus);
     connect(d_btn_cmd_palette, &QToolButton::clicked, this, &ModernRibbonBar::openCommandPalette);
@@ -2691,6 +2678,38 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
 
     d_layout_btn_group = new QButtonGroup(this);
     d_layout_btn_group->setExclusive(true);
+
+    d_layout_segment_frame = new QFrame(topStrip);
+    d_layout_segment_frame->setObjectName(QStringLiteral("RibbonLayoutSegmentTrack"));
+    QHBoxLayout *segLayout = new QHBoxLayout(d_layout_segment_frame);
+    segLayout->setContentsMargins(2, 2, 2, 2);
+    segLayout->setSpacing(2);
+
+    auto makeSegmentBtn = [this](const QString &iconId) -> QToolButton * {
+        QToolButton *b = new QToolButton(d_layout_segment_frame);
+        b->setProperty("class", QStringLiteral("RibbonSegmentBtn"));
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setIcon(IconLoader::duotoneIcon(iconId, 16, false));
+        b->setIconSize(QSize(14, 14));
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        return b;
+    };
+
+    d_btn_layout_tabbed = makeSegmentBtn(QStringLiteral("tab-view"));
+    d_btn_layout_split = makeSegmentBtn(QStringLiteral("split-view"));
+    d_btn_layout_mdi = makeSegmentBtn(QStringLiteral("mdi-view"));
+
+    d_layout_btn_group->addButton(d_btn_layout_tabbed, int(LayoutTabbed));
+    d_layout_btn_group->addButton(d_btn_layout_split, int(LayoutSplitTableGraph));
+    d_layout_btn_group->addButton(d_btn_layout_mdi, int(LayoutFreeMdi));
+    d_btn_layout_tabbed->setChecked(true);
+
+    segLayout->addWidget(d_btn_layout_tabbed);
+    segLayout->addWidget(d_btn_layout_split);
+    segLayout->addWidget(d_btn_layout_mdi);
+    topLayout->addWidget(d_layout_segment_frame);
 
     auto makeHeaderPill = [topStrip](const QString &iconId, bool checkable) -> QToolButton * {
         QToolButton *b = new QToolButton(topStrip);
@@ -2703,19 +2722,6 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
         b->setFocusPolicy(Qt::NoFocus);
         return b;
     };
-
-    d_btn_layout_tabbed = makeHeaderPill(QStringLiteral("tab-view"), true);
-    d_btn_layout_split = makeHeaderPill(QStringLiteral("split-view"), true);
-    d_btn_layout_mdi = makeHeaderPill(QStringLiteral("mdi-view"), true);
-
-    d_layout_btn_group->addButton(d_btn_layout_tabbed, int(LayoutTabbed));
-    d_layout_btn_group->addButton(d_btn_layout_split, int(LayoutSplitTableGraph));
-    d_layout_btn_group->addButton(d_btn_layout_mdi, int(LayoutFreeMdi));
-    d_btn_layout_tabbed->setChecked(true);
-
-    topLayout->addWidget(d_btn_layout_tabbed);
-    topLayout->addWidget(d_btn_layout_split);
-    topLayout->addWidget(d_btn_layout_mdi);
 
     connect(d_layout_btn_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
             [this](int modeId) { setWorkspaceLayoutMode(WorkspaceLayoutMode(modeId)); });
@@ -2878,7 +2884,6 @@ void ModernRibbonBar::updateHeaderResponsiveness()
     struct HeaderTier
     {
         bool showLang;
-        bool showQuick;
         bool shortCmdFocus;
         bool compactLayout;
         bool modeIconOnly;
@@ -2887,22 +2892,17 @@ void ModernRibbonBar::updateHeaderResponsiveness()
     };
 
     const HeaderTier kTiers[] = {
-        { true, true, false, false, false, false, true },   // Ultra-wide: full labels + language
-        { false, true, false, false, false, false, true },  // Wide: quick presets + full labels
-        { false, true, true, true, false, false, true },    // Quick presets + ultra-short text pills
-        { false, true, true, true, true, false, true },     // Quick presets + search pill + icon modes
-        { false, true, true, true, true, true, true },      // Quick presets + icon modes/search + ctx
-        { false, true, true, true, true, true, false },     // Quick presets + icon modes/search
-        { false, false, true, true, false, false, true },   // < tabsNeededW+500: short text pills
-        { false, false, true, true, true, false, true },    // Search pill + icon modes + ctx
-        { false, false, true, true, true, true, true },     // All icon-only + ctx
-        { false, false, true, true, true, true, false }     // Minimal icon-only fallback
+        { true, false, false, false, false, true },   // Ultra-wide: full labels + language
+        { false, false, false, false, false, true },  // Wide: search pill + full mode labels + ctx
+        { false, true, true, false, false, true },    // Medium: search pill + short mode labels + ctx
+        { false, true, true, true, false, true },     // 1280px+: always-visible 180-210px search pill + icon segmented modes + ctx
+        { false, true, true, true, false, false },    // Compact: search pill + icon segmented modes
+        { false, true, true, true, true, false }      // Minimal icon-only fallback
     };
 
     auto applyButtonsForTier = [this](const HeaderTier &t) {
         if (d_btn_cmd_palette) {
-            const QString wantCmd =
-                    t.shortCmdFocus ? tr("Search") : tr("Search Commands (Ctrl+K)");
+            const QString wantCmd = tr("Ctrl+K Search Commands...");
             if (d_btn_cmd_palette->text() != wantCmd)
                 d_btn_cmd_palette->setText(wantCmd);
             const Qt::ToolButtonStyle searchStyle = t.cmdIconOnly
@@ -2910,6 +2910,12 @@ void ModernRibbonBar::updateHeaderResponsiveness()
                     : Qt::ToolButtonTextBesideIcon;
             if (d_btn_cmd_palette->toolButtonStyle() != searchStyle)
                 d_btn_cmd_palette->setToolButtonStyle(searchStyle);
+            const int minW = t.cmdIconOnly ? 0 : 180;
+            const int maxW = t.cmdIconOnly ? 36 : 210;
+            if (d_btn_cmd_palette->minimumWidth() != minW)
+                d_btn_cmd_palette->setMinimumWidth(minW);
+            if (d_btn_cmd_palette->maximumWidth() != maxW)
+                d_btn_cmd_palette->setMaximumWidth(maxW);
         }
         if (d_btn_focus_mode) {
             const QString wantFocus = t.shortCmdFocus ? tr("Focus") : tr("Focus (F11)");
@@ -2948,14 +2954,15 @@ void ModernRibbonBar::updateHeaderResponsiveness()
             if (!wgt || !vis)
                 return;
             wgt->ensurePolished();
-            rw += wgt->sizeHint().width() + 4;
+            rw += qMax(wgt->minimumWidth(), wgt->sizeHint().width()) + 6;
         };
-        addW(d_btn_quick_isij, t.showQuick);
-        addW(d_btn_quick_slide, t.showQuick);
         addW(d_btn_cmd_palette, true);
-        addW(d_btn_layout_tabbed, true);
-        addW(d_btn_layout_split, true);
-        addW(d_btn_layout_mdi, true);
+        if (d_layout_segment_frame) {
+            d_layout_segment_frame->ensurePolished();
+            if (d_layout_segment_frame->layout())
+                d_layout_segment_frame->layout()->invalidate();
+            rw += d_layout_segment_frame->sizeHint().width() + 6;
+        }
         addW(d_btn_focus_mode, true);
         addW(d_btn_lang_switch, t.showLang);
         addW(d_context_pill, t.showCtx);
@@ -2969,16 +2976,12 @@ void ModernRibbonBar::updateHeaderResponsiveness()
 
     for (int idx = 0; idx < nTiers; ++idx) {
         const HeaderTier &cand = kTiers[idx];
-        if (cand.showLang && w < qMax(1620, tabsNeededW + 900))
-            continue;
-        if (cand.showQuick && w < tabsNeededW + 500)
+        if (cand.showLang && w < qMax(1560, tabsNeededW + 820))
             continue;
 
         applyButtonsForTier(cand);
         const int rw = measureTierRightW(cand);
-        // Keep quick presets visible whenever w >= tabsNeededW + 520 (fallback to most compact quick tier idx == 5)
-        if (tabsNeededW + rw + 24 <= w || (idx == 5 && w >= tabsNeededW + 520)
-            || idx == nTiers - 1) {
+        if (tabsNeededW + rw + 24 <= w || idx == nTiers - 1) {
             chosen = cand;
             chosenRightW = rw;
             found = true;
@@ -2992,10 +2995,6 @@ void ModernRibbonBar::updateHeaderResponsiveness()
 
     if (d_btn_lang_switch && d_btn_lang_switch->isVisible() != chosen.showLang)
         d_btn_lang_switch->setVisible(chosen.showLang);
-    if (d_btn_quick_isij && d_btn_quick_isij->isVisible() != chosen.showQuick)
-        d_btn_quick_isij->setVisible(chosen.showQuick);
-    if (d_btn_quick_slide && d_btn_quick_slide->isVisible() != chosen.showQuick)
-        d_btn_quick_slide->setVisible(chosen.showQuick);
     if (d_context_pill && d_context_pill->isVisible() != chosen.showCtx)
         d_context_pill->setVisible(chosen.showCtx);
 
@@ -3263,7 +3262,7 @@ void ModernRibbonBar::buildAllTabs()
 
         createRibbonGroup(row, &gRecalc, true);
         d_btn_auto_recalc = addRibbonButton(
-                gRecalc, QStringLiteral("recalc-auto"), [this]() { return tr("Auto Recalc"); },
+                gRecalc, QStringLiteral("recalc-auto"), [this]() { return tr("Auto"); },
                 [this]() { return tr("Toggle Automatic Analysis Recalculation"); },
                 [this]() {
                     if (!d_app)
@@ -3276,7 +3275,7 @@ void ModernRibbonBar::buildAllTabs()
                 },
                 true);
         addRibbonButton(
-                gRecalc, QStringLiteral("recalc-now"), [this]() { return tr("Recalculate Now"); },
+                gRecalc, QStringLiteral("recalc-now"), [this]() { return tr("Recalc"); },
                 [this]() { return tr("Recalculate Pending Analysis Links Now"); },
                 [this]() {
                     if (d_app)
@@ -3763,7 +3762,7 @@ void ModernRibbonBar::buildAllTabs()
         QMenu *filterMenu = nullptr;
         addRibbonMenuButton(
                 gSignal, QStringLiteral("signal-smooth"),
-                [this, kCaret]() { return tr("Smoothing & Filter") + kCaret; },
+                [this, kCaret]() { return tr("Filter") + kCaret; },
                 [this]() { return tr("LOWESS, Whittaker, IIR & Matrix 2D Filters"); },
                 &filterMenu);
         addRibbonMenuAction(
@@ -3801,7 +3800,7 @@ void ModernRibbonBar::buildAllTabs()
         QMenu *spectralMenu = nullptr;
         addRibbonMenuButton(
                 gSignal, QStringLiteral("signal-stft"),
-                [this, kCaret]() { return tr("Spectral & Wavelet") + kCaret; },
+                [this, kCaret]() { return tr("Spectral") + kCaret; },
                 [this]() {
                     return tr("STFT Spectrogram, Wavelet, Welch PSD & FSD Deconvolution");
                 },
@@ -3894,7 +3893,7 @@ void ModernRibbonBar::buildAllTabs()
         QMenu *matToolsMenu = nullptr;
         addRibbonMenuButton(
                 gDomain, QStringLiteral("vasp-bands"),
-                [this, kCaret]() { return tr("Materials & Tools") + kCaret; },
+                [this, kCaret]() { return tr("Materials") + kCaret; },
                 [this]() { return tr("VASP, Arrhenius, Tauc, EIS, Curve Math, Fill & Digitizer"); },
                 &matToolsMenu);
         addRibbonMenuAction(
@@ -4028,7 +4027,7 @@ void ModernRibbonBar::buildAllTabs()
         QMenu *relMultiMenu = nullptr;
         addRibbonMenuButton(
                 gStats, QStringLiteral("stats-weibull"),
-                [this, kCaret]() { return tr("Reliability & Multivariate") + kCaret; },
+                [this, kCaret]() { return tr("Reliability") + kCaret; },
                 [this]() {
                     return tr("Weibull, Kaplan-Meier, ROC, PCA, Correlation & Clustering");
                 },
@@ -4154,7 +4153,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->copyGraphAsOleObject();
                 });
         addRibbonButton(
-                gExport, QStringLiteral("export-image"), [this]() { return tr("Export Graph"); },
+                gExport, QStringLiteral("export-image"), [this]() { return tr("Export"); },
                 [this]() { return tr("Export Graph to PNG / TIFF / SVG / EMF"); },
                 [this]() {
                     if (d_app)
@@ -4355,11 +4354,6 @@ void ModernRibbonBar::refreshButtonIcons()
         if (ab.action && !ab.iconId.isEmpty())
             ab.action->setIcon(IconLoader::duotoneIcon(ab.iconId, 18, false));
     }
-    if (d_btn_quick_isij)
-        d_btn_quick_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 16, false));
-    if (d_btn_quick_slide)
-        d_btn_quick_slide->setIcon(
-                IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 16, false));
     if (d_btn_cmd_palette)
         d_btn_cmd_palette->setIcon(
                 IconLoader::duotoneIcon(QStringLiteral("search-command"), 16, false));
@@ -4395,7 +4389,7 @@ void ModernRibbonBar::retranslateUi()
         if (!bb.button)
             continue;
         if (bb.textFn)
-            bb.button->setText(bb.textFn());
+            bb.button->setText(escapeTabMnemonicText(bb.textFn()));
         if (bb.tooltipFn)
             bb.button->setToolTip(bb.tooltipFn());
     }
@@ -4404,25 +4398,13 @@ void ModernRibbonBar::retranslateUi()
         if (!ab.action)
             continue;
         if (ab.textFn)
-            ab.action->setText(ab.textFn());
+            ab.action->setText(escapeTabMnemonicText(ab.textFn()));
         if (ab.tooltipFn)
             ab.action->setToolTip(ab.tooltipFn());
     }
 
-    if (d_btn_quick_isij) {
-        d_btn_quick_isij->setText(tr("ISIJ 85mm"));
-        d_btn_quick_isij->setToolTip(
-                tr("Apply ISIJ International 1-column style (85\xC3\x97"
-                   "85 mm, 600 DPI, Arial)"));
-    }
-    if (d_btn_quick_slide) {
-        d_btn_quick_slide->setText(tr("28pt Slide"));
-        d_btn_quick_slide->setToolTip(
-                tr("Apply high-visibility presentation slide style (185\xC3\x97"
-                   "185 mm, 28 pt Arial)"));
-    }
     if (d_btn_cmd_palette) {
-        d_btn_cmd_palette->setText(tr("Search Commands (Ctrl+K)"));
+        d_btn_cmd_palette->setText(tr("Ctrl+K Search Commands..."));
         d_btn_cmd_palette->setToolTip(tr("Open Fuzzy-Search Command Palette (Ctrl+K)"));
     }
     if (d_btn_layout_tabbed) {
@@ -5124,8 +5106,8 @@ void ModernRibbonBar::importOpjInteractive()
     if (d_shutting_down || !d_app)
         return;
     const QString fn = QFileDialog::getOpenFileName(
-            d_app, tr("Import Origin OPJ Project"), d_app->workingDir,
-            tr("Origin Projects (*.opj *.OPJ);;All Files (*)"));
+            d_app, tr("Import Origin OPJ / OPJU Project"), d_app->workingDir,
+            tr("Origin Projects (*.opj *.OPJ *.opju *.OPJU);;All Files (*)"));
     if (!fn.isEmpty())
         d_app->importOPJ(fn);
 }

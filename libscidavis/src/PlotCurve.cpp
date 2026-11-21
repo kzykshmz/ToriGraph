@@ -492,21 +492,33 @@ int DataCurve::maskRegion(const QRectF &dataRect, bool mask)
     const QRectF normRect = dataRect.normalized();
     int modifiedCount = 0;
     const int n = dataSize();
+    QVector<int> rowsToModify;
     for (int i = 0; i < n; ++i) {
         const double px = x(i);
         const double py = y(i);
         if (px >= normRect.left() && px <= normRect.right() && py >= normRect.top()
             && py <= normRect.bottom()) {
-    const int row = tableRow(i);
-    if (row < 0)
-        continue;
-    const bool wasMasked = isPointMaskedFast(i, xCol, yCol);
+            const int row = tableRow(i);
+            if (row < 0)
+                continue;
+            const bool wasMasked = isPointMaskedFast(i, xCol, yCol);
+            if (wasMasked != mask || (!mask && xCol && xCol->isMasked(row)))
+                rowsToModify.append(row);
+        }
+    }
+
+    if (!rowsToModify.isEmpty()) {
+        future::Table *ft = d_table->d_future_table;
+        if (ft)
+            ft->beginMacro(mask ? QObject::tr("Mask Region") : QObject::tr("Unmask Region"));
+        for (int row : rowsToModify) {
             yCol->setMasked(row, mask);
             if (!mask && xCol && xCol->isMasked(row))
                 xCol->setMasked(row, false);
-            if (wasMasked != mask)
-                ++modifiedCount;
         }
+        if (ft)
+            ft->endMacro();
+        modifiedCount = rowsToModify.size();
     }
 
     if (modifiedCount > 0) {

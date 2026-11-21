@@ -4041,7 +4041,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
     bool foundYield = false;
     for (size_t k = 0; k < fracIdx && k + 1 < pts.size(); ++k) {
         // Never intersect the offset line with a discontinuous or post-UTS brittle fracture drop
-        if (pts[k].y > 0.0 && pts[k + 1].y < 0.5 * pts[k].y)
+        if (pts[k].y > 0.25 * res.utsY && pts[k + 1].y < 0.5 * pts[k].y)
             break;
         if (k >= utsIdx && pts[k + 1].y < 0.75 * res.utsY
             && (pts[k + 1].x - pts[k].x) < 0.25 * deltaX)
@@ -5032,9 +5032,9 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
 
     int chosenAction = 0; // 1 = Load & Plot, 2 = Load, Plot & Analyze
     QHBoxLayout *btnRow = new QHBoxLayout();
-    QPushButton *btnLoadPlot = new QPushButton(QObject::tr("Generate Worksheet & Plot"), &dlg);
+    QPushButton *btnLoadPlot = new QPushButton(QObject::tr("Generate Worksheet && Plot"), &dlg);
     QPushButton *btnAnalyze =
-            new QPushButton(QObject::tr("Generate & Run Recommended Analysis"), &dlg);
+            new QPushButton(QObject::tr("Generate && Run Recommended Analysis"), &dlg);
     QPushButton *btnCancel = new QPushButton(QObject::tr("Cancel"), &dlg);
     btnLoadPlot->setDefault(true);
     btnRow->addStretch(1);
@@ -6494,7 +6494,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 : std::sqrt(std::max(0.0, fwhmObs * fwhmObs - effInstFwhm * effInstFwhm));
         const double betaRad = fwhmPhysDeg * (M_PI / 180.0);
         const double dSchNm = resLimited
-                ? 0.0
+                ? std::numeric_limits<double>::quiet_NaN()
                 : ((effK * effLambda) / (10.0 * std::max(1e-9, betaRad * cosTh)));
 
         InternalPeak ipk;
@@ -6634,13 +6634,17 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     // 6. Mean Scherrer size & Williamson-Hall linear regression (β cos θ = Kλ/D + 4ε sin θ)
     double sumSch = 0.0;
     int cntSch = 0;
+    int resLimitedCount = 0;
     for (const InternalPeak &ipk : pks) {
-        if (!ipk.resolutionLimited && ipk.pub.scherrerSizeNm > 0.0) {
+        if (ipk.resolutionLimited) {
+            ++resLimitedCount;
+        } else if (std::isfinite(ipk.pub.scherrerSizeNm) && ipk.pub.scherrerSizeNm > 0.0) {
             sumSch += ipk.pub.scherrerSizeNm;
             ++cntSch;
         }
     }
-    res.meanScherrerSizeNm = (cntSch > 0) ? (sumSch / double(cntSch)) : 0.0;
+    res.meanScherrerSizeNm = (cntSch > 0) ? (sumSch / double(cntSch))
+                                          : std::numeric_limits<double>::quiet_NaN();
 
     std::vector<size_t> whPool;
     for (size_t p = 0; p < pks.size(); ++p) {
@@ -6660,7 +6664,9 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     }
 
     double whSlope = 0.0;
-    double whIntercept = (effK * effLambda) / (10.0 * std::max(0.5, res.meanScherrerSizeNm));
+    double whIntercept = (cntSch > 0 && std::isfinite(res.meanScherrerSizeNm))
+            ? ((effK * effLambda) / (10.0 * std::max(0.5, res.meanScherrerSizeNm)))
+            : 0.0;
     double whR2 = 0.0;
     double whSResid = 0.0;
     double whMeanX = 0.0;
@@ -6698,10 +6704,21 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         }
     }
     res.whMicrostrain = whSlope;
-    res.whSizeNm = (whIntercept > 1e-7) ? ((effK * effLambda) / (10.0 * whIntercept))
-                                        : res.meanScherrerSizeNm;
+    res.whSizeNm = (cntSch > 0 && whIntercept > 1e-7)
+            ? ((effK * effLambda) / (10.0 * whIntercept))
+            : res.meanScherrerSizeNm;
     res.whRSquare = whR2;
     res.valid = true;
+    if (resLimitedCount > 0) {
+        res.error = QObject::tr(
+                "Warning: %1 of %2 peak(s) have observed FWHM <= instrumental FWHM (%3 deg); "
+                "Scherrer crystallite size is resolution-limited (N/A).")
+                            .arg(resLimitedCount)
+                            .arg(static_cast<int>(pks.size()))
+                            .arg(effInstFwhm, 0, 'g', 4);
+        if (app)
+            app->updateLog(res.error + QLatin1Char('\n'));
+    }
 
     res.peaks.reserve(static_cast<int>(pks.size()));
     for (const InternalPeak &ipk : pks)
@@ -7001,11 +7018,16 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             applyArialToMatSciGraph(gw);
             gw->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
 
+            const QString whStr = std::isfinite(res.whSizeNm)
+                    ? QString::number(res.whSizeNm, 'f', 1) + QStringLiteral(" nm")
+                    : QStringLiteral("N/A (res-limited)");
+            const QString schStr = std::isfinite(res.meanScherrerSizeNm)
+                    ? QString::number(res.meanScherrerSizeNm, 'f', 1) + QStringLiteral(" nm")
+                    : QStringLiteral("N/A");
             QString summary = QStringLiteral(
-                    "<i>D</i><sub>W-H</sub> = %1 nm (<i>D</i><sub>Sch</sub> = %2 nm)\n"
+                    "<i>D</i><sub>W-H</sub> = %1 (<i>D</i><sub>Sch</sub> = %2)\n"
                     "<i>\u03B5</i> = %3 \u00D7 10<sup>-3</sup>, <i>R</i><sup>2</sup> = %4")
-                    .arg(res.whSizeNm, 0, 'f', 1)
-                    .arg(res.meanScherrerSizeNm, 0, 'f', 1)
+                    .arg(whStr, schStr)
                     .arg(res.whMicrostrain * 1e3, 0, 'f', 2)
                     .arg(res.whRSquare, 0, 'f', 4);
             if (res.latticeParamAngstrom > 0.0) {

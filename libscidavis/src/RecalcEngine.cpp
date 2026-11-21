@@ -1007,7 +1007,7 @@ void RecalcManager::updateLockBadge(Graph *g)
     }
 
     badge->setText(text);
-    badge->setToolTip(QObject::tr("OriginPro Dynamic Recalculation (%1 active link(s))").arg(nActive));
+    badge->setToolTip(QObject::tr("Dynamic Recalculation (%1 active link(s))").arg(nActive));
     badge->setStyleSheet(style);
     badge->adjustSize();
     badge->move(8, 8);

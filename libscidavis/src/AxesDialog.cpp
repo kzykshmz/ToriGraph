@@ -952,7 +952,7 @@ void AxesDialog::initFramePage()
 
     boxAxesLayout->setRowStretch(4, 1);
 
-    QGroupBox *boxPresets = new QGroupBox(tr("OriginPro Frame Presets"));
+    QGroupBox *boxPresets = new QGroupBox(tr("Frame Presets"));
     QVBoxLayout *presetsLayout = new QVBoxLayout(boxPresets);
     btnPresetBoxInward = new QPushButton(tr("4-Sided Box [Inward Ticks]"));
     btnPresetBoxPlain = new QPushButton(tr("4-Sided Box [Plain Top/Right]"));

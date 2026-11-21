@@ -168,7 +168,7 @@ void Table::init()
         return;
 
     setMinimumSize(400, 300);
-    resize(580, 400);
+    resize(680, 500);
     ui.gridLayout1->removeWidget(ui.formula_box);
     delete ui.formula_box;
     ui.formula_box = new ScriptEdit(scriptEnv, ui.formula_tab);

@@ -47,9 +47,12 @@ OpenProjectDialog::OpenProjectDialog(QWidget *parent, bool extended, Qt::WindowF
             << tr("QtiPlot project") + " (*.qti)"
             << tr("Compressed QtiPlot project") + " (*.qti.gz)"
 #ifdef ORIGIN_IMPORT
-            << tr("Origin project") + " (*.opj *.OPJ)" << tr("Origin matrix") + " (*.ogm *.OGM)"
+            << tr("Origin project") + " (*.opj *.OPJ *.opju *.OPJU)"
+            << tr("Origin matrix") + " (*.ogm *.OGM)"
             << tr("Origin worksheet") + " (*.ogw *.OGW)" << tr("Origin graph") + " (*.ogg *.OGG)"
             << tr("Origin 3.5 project") + " (*.org *.ORG)"
+#else
+            << tr("Origin Unicode project") + " (*.opju *.OPJU)"
 #endif
             << tr("Backup files") + " (*.sciprj~)"
             //<< tr("Python Source") + " (*.py *.PY)"
@@ -102,7 +105,7 @@ void OpenProjectDialog::updateAdvancedOptions(const QString &filter)
         d_open_mode->setEnabled(true);
 
     if (filter.contains("*.ogm") || filter.contains("*.ogw") || filter.contains("*.opj")
-        || filter.contains("*.ogg") || filter.contains("*.org"))
+        || filter.contains("*.opju") || filter.contains("*.ogg") || filter.contains("*.org"))
         d_open_codec->setEnabled(true);
     else
         d_open_codec->setEnabled(false);

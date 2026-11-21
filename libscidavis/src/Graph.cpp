@@ -2928,7 +2928,9 @@ void Graph::setAxisTitle(int axis, const QString &text)
     const QString rawInput = unwrapNoWrapAxisTitle(unesc);
     QString finalText = rawInput;
     if (axis >= 0 && axis < 4 && !d_refreshing_auto_titles) {
-        if (d_axis_title_auto[axis]) {
+        if (rawInput.trimmed().isEmpty()) {
+            d_axis_title_auto[axis] = false;
+        } else if (d_axis_title_auto[axis]) {
             d_axis_title_auto[axis] = matchesAutoAxisTitleCandidate(axis, rawInput);
             if (d_axis_title_auto[axis]) {
                 QString stripped = rawInput.trimmed();
@@ -2939,8 +2941,6 @@ void Graph::setAxisTitle(int axis, const QString &text)
                 const QString autoTitle = resolvedAutoAxisTitle(axis, d_axis_unit_format);
                 finalText = !autoTitle.isEmpty() ? autoTitle : stripped;
             }
-        } else if (rawInput.trimmed().isEmpty()) {
-            d_axis_title_auto[axis] = false;
         }
     }
 
@@ -4704,6 +4704,16 @@ Legend *Graph::newLegend()
     int texts = d_texts.size();
     d_texts.resize(++texts);
     d_texts[texts - 1] = legendMarkerID;
+
+    if (!isPiePlot() && curves() > 0 && d_plot) {
+        d_plot->updateLayout();
+        if (d_plot->canvas() && d_plot->canvas()->width() >= 40
+            && d_plot->canvas()->height() >= 40) {
+            d_plot->replot();
+            placeLegendAnchor(LegendAutoAvoidData, nullptr, 12);
+            return mrk;
+        }
+    }
 
     emit modifiedGraph();
     d_plot->replot();
@@ -9752,7 +9762,7 @@ bool Graph::showColorPaletteEditor(QWidget *parent, Graph *targetGraph)
             : QString();
 
     QDialog dlg(parent);
-    dlg.setWindowTitle(tr("OriginPro Color Palette & Gradient Editor"));
+    dlg.setWindowTitle(tr("Color Palette & Gradient Editor"));
     dlg.setMinimumSize(560, 480);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
@@ -13263,6 +13273,23 @@ QwtPlotItem *Graph::addShadedBand(const QVector<double> &x, const QVector<double
     d_plot->replot();
     emit modifiedGraph();
     return item;
+}
+
+void Graph::clearShadedBands()
+{
+    if (d_shaded_bands.isEmpty())
+        return;
+    for (ShadedBandSpec &spec : d_shaded_bands) {
+        if (spec.item) {
+            spec.item->detach();
+            delete spec.item;
+            spec.item = nullptr;
+        }
+    }
+    d_shaded_bands.clear();
+    if (d_plot)
+        d_plot->replot();
+    emit modifiedGraph();
 }
 
 void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool normalize01)

@@ -34,6 +34,7 @@
 #include "GraphInspectorDock.h"
 #include "GraphStatsAndSurfaceFit.h"
 #include "Grid.h"
+#include "ImportOPJU.h"
 #include "Integration.h"
 #include "Interpolation.h"
 #include "Legend.h"
@@ -6399,8 +6400,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "path:str*; separator:str=''; encoding:str='auto'[auto|utf-8|shift_jis|utf-16]; header:bool=true; units_row:int|bool|null=null; skip_lines:int=0; strip_spaces:bool=true; simplify_spaces:bool=false; numeric:bool=true; with_comments:bool=false; name:str=''",
       "t = app.import_csv('tensile_sjis.csv', encoding='auto')" },
     { "app.import_opj", "app", "Session.import_opj(path, *, codec=None)",
-      "Import an Origin .opj project file into the workspace (detects Origin 2018+ CPYU .opju with clear guidance).",
-      "path:str*; codec:str=''", "app.import_opj('legacy.opj')" },
+      "Import an Origin .opj or Origin 2018+ .opju (ZIP or CPYUA) project file into the workspace.",
+      "path:str*; codec:str=''", "app.import_opj('project.opju')" },
     { "app.list_sample_datasets", "app", "Session.list_sample_datasets(category=None)",
       "List built-in curated Materials Science & physics sample datasets (Arrhenius, DP980 tensile, FCC Cu XRD, TiO2 Tauc, LiFePO4 EIS, DSC Kissinger, Si bands).",
       "category:str=''", "app.list_sample_datasets()" },
@@ -7177,6 +7178,11 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Plot VASP electronic band structure with high-symmetry k-point dividers, Gamma symbol formatting, Fermi level, and bandgap extraction.",
       "table:str=''; eigenval_path:str=''; k_col:int|str=0; band_cols:list=null; k_ticks:list[float]=null; k_labels:list[str]=null; fermi_energy:float=0.0; e_min:float=-6.0; e_max:float=6.0",
       "res = app.plot_vasp_bands(tbl, 'k_dist', k_ticks=[0.0, 1.0, 1.8], k_labels=['L', 'G', 'X'])" },
+    { "curvemath.vasp_band_dos", "curvemath",
+      "Session.plot_vasp_band_dos(band_table=None, dos_table=None, *, eigenval_path=None, doscar_path=None, k_col=0, band_cols=None, energy_col=0, dos_cols=None, down_dos_cols=None, k_ticks=None, k_labels=None, fermi_energy=0.0, e_min=-6.0, e_max=6.0)",
+      "Plot coupled 2-panel VASP Band Structure (left) + vertical-energy Density of States (right) sharing the E - E_F energy axis.",
+      "band_table:str=''; dos_table:str=''; eigenval_path:str=''; doscar_path:str=''; k_col:int|str=0; band_cols:list=null; energy_col:int|str=0; dos_cols:list=null; down_dos_cols:list=null; k_ticks:list[float]=null; k_labels:list[str]=null; fermi_energy:float=0.0; e_min:float=-6.0; e_max:float=6.0",
+      "res = app.plot_vasp_band_dos(band_table=t_band, dos_table=t_dos, fermi_energy=5.42)" },
 
     // 10. Statistical Analysis (stats.*)
     { "stats.normality", "stats", "Session.normality_test(table=None, col=0)",
@@ -11163,19 +11169,43 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (path.isEmpty() || !pfi.exists() || !pfi.isFile())
             throwInvalidParams(QStringLiteral("Project file does not exist: %1").arg(path));
         const QString absPath = pfi.absoluteFilePath();
-        {
-            QFile preCheck(absPath);
-            if (preCheck.open(QIODevice::ReadOnly)) {
-                const QByteArray head16 = preCheck.read(16);
-                preCheck.close();
-                if (head16.startsWith("CPYU")) {
-                    throwRpcRuntime(
-                            QStringLiteral("Origin 2018+ '.opju' format (CPYU header) detected in '%1'; please save as '.opj' or export ASCII/CSV in Origin.")
-                                    .arg(path));
-                }
-            }
-        }
         const bool append = optionalJsonBool(params, QStringLiteral("append"), false);
+        const bool isOpjuExt = absPath.endsWith(QStringLiteral(".opju"), Qt::CaseInsensitive);
+        if (isOpjuExt || ImportOPJU::isSupportedOpjuFile(absPath)) {
+            if (!ImportOPJU::isSupportedOpjuFile(absPath)) {
+                throwRpcRuntime(
+                        QStringLiteral("Invalid or corrupt Origin '.opju' file: %1").arg(path));
+            }
+            if (!append)
+                resetProjectInPlaceHeadless(d_app);
+            const int winBefore = d_app->windowsList().size();
+            QString opjuErr;
+            ImportOPJU::ImportStats stats;
+            if (!ImportOPJU::importFile(d_app, absPath, &opjuErr, &stats)) {
+                throwRpcRuntime(opjuErr.isEmpty()
+                                        ? QStringLiteral("Failed to import OPJU file: %1").arg(path)
+                                        : opjuErr);
+            }
+            if (!append) {
+                d_app->projectname = absPath;
+                d_app->savedProject();
+            } else if (d_app->projectname.isEmpty()
+                       || d_app->projectname == QStringLiteral("untitled")) {
+                d_app->projectname = absPath;
+            }
+            const int winAfter = d_app->windowsList().size();
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("appended")] = append;
+            outResult[QStringLiteral("path")] = absPath;
+            outResult[QStringLiteral("imported_windows")] = std::max(0, winAfter - winBefore);
+            outResult[QStringLiteral("tables")] = stats.tablesImported;
+            outResult[QStringLiteral("matrices")] = stats.matricesImported;
+            outResult[QStringLiteral("graphs")] = stats.graphsImported;
+            outResult[QStringLiteral("notes")] = stats.notesImported;
+            outResult[QStringLiteral("folders")] = stats.foldersImported;
+            outResult[QStringLiteral("window_count")] = winAfter;
+            return true;
+        }
         if (append) {
             QFile hdrFile(absPath);
             if (!hdrFile.open(QIODevice::ReadOnly)) {
@@ -11632,19 +11662,42 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QFileInfo opjFi(path);
         if (path.isEmpty() || !opjFi.exists() || !opjFi.isFile())
             throwInvalidParams(QStringLiteral("OPJ file does not exist: %1").arg(path));
+        const QString absPath = opjFi.absoluteFilePath();
+        const bool isOpjuExt = absPath.endsWith(QStringLiteral(".opju"), Qt::CaseInsensitive);
+        if (isOpjuExt || ImportOPJU::isSupportedOpjuFile(absPath)) {
+            if (!ImportOPJU::isSupportedOpjuFile(absPath)) {
+                throwRpcRuntime(
+                        QStringLiteral("Invalid or corrupt Origin OPJU file '%1'.").arg(path));
+            }
+            const int beforeCount = d_app->windowsList().size();
+            QString opjuErr;
+            ImportOPJU::ImportStats stats;
+            if (!ImportOPJU::importFile(d_app, absPath, &opjuErr, &stats)) {
+                throwRpcRuntime(
+                        opjuErr.isEmpty()
+                                ? QStringLiteral("Failed to import OPJU file '%1'.").arg(path)
+                                : opjuErr);
+            }
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("error_code")] = 0;
+            outResult[QStringLiteral("imported_windows")] =
+                    std::max(0, d_app->windowsList().size() - beforeCount);
+            outResult[QStringLiteral("tables")] = stats.tablesImported;
+            outResult[QStringLiteral("matrices")] = stats.matricesImported;
+            outResult[QStringLiteral("graphs")] = stats.graphsImported;
+            outResult[QStringLiteral("notes")] = stats.notesImported;
+            outResult[QStringLiteral("folders")] = stats.foldersImported;
+            outResult[QStringLiteral("window_count")] = d_app->windowsList().size();
+            return true;
+        }
 #ifdef ORIGIN_IMPORT
-        QFile opjCheck(opjFi.absoluteFilePath());
+        QFile opjCheck(absPath);
         if (!opjCheck.open(QIODevice::ReadOnly)) {
             throwRpcRuntime(QStringLiteral("Failed to open OPJ file '%1': %2")
                                     .arg(path, opjCheck.errorString()));
         }
         const QByteArray opjMagic = opjCheck.read(16);
         opjCheck.close();
-        if (opjMagic.startsWith("CPYU")) {
-            throwRpcRuntime(
-                    QStringLiteral("Origin 2018+ '.opju' format (CPYU header) detected in '%1'; please save as '.opj' or export ASCII/CSV in Origin.")
-                            .arg(path));
-        }
         if (opjMagic.size() < 4 || !opjMagic.startsWith("CPYA")) {
             throwRpcRuntime(
                     QStringLiteral("Invalid or corrupt Origin OPJ file '%1' (missing CPYA header).")
@@ -11652,7 +11705,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         const int beforeCount = d_app->windowsList().size();
         const QString codec = optionalJsonString(params, QStringLiteral("codec")).trimmed();
-        ImportOPJ importer(d_app, opjFi.absoluteFilePath(), codec);
+        ImportOPJ importer(d_app, absPath, codec);
         if (importer.error() != 0) {
             throwRpcRuntime(
                     QStringLiteral("Failed to import OPJ file '%1' (error code %2).")
@@ -14874,6 +14927,32 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (addedRightY && addedCurve) {
             addedCurve->setYAxis(QwtPlot::yRight);
             g->enableAxis(QwtPlot::yRight, true);
+            if (auto *sd = g->plotWidget() ? g->plotWidget()->axisScaleDraw(QwtPlot::yRight)
+                                           : nullptr) {
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            }
+            const QString curRightTitle = g->plotWidget()
+                    ? g->plotWidget()->axisTitle(QwtPlot::yRight).text().trimmed()
+                    : QString();
+            if (curRightTitle.isEmpty() || curRightTitle == QStringLiteral("Y Axis Title")
+                || curRightTitle == QStringLiteral("Y2 Axis Title")) {
+                if (Column *yColObj = t->column(yIdx)) {
+                    const QString base = !yColObj->longName().trimmed().isEmpty()
+                            ? yColObj->longName().trimmed()
+                            : yColObj->name().trimmed();
+                    const QString unit = yColObj->units().trimmed();
+                    QString rightTitle = base;
+                    if (!base.isEmpty() && !unit.isEmpty()) {
+                        rightTitle = (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash)
+                                ? QStringLiteral("%1 / %2").arg(base, unit)
+                                : QStringLiteral("%1 (%2)").arg(base, unit);
+                    }
+                    if (!rightTitle.isEmpty()) {
+                        g->setAxisTitleAuto(QwtPlot::yRight, false);
+                        g->setAxisTitle(QwtPlot::yRight, rightTitle);
+                    }
+                }
+            }
         }
         if (g->plotWidget()) {
             bool anyLocked = false;
@@ -15208,6 +15287,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(
                     QStringLiteral("%1 created 0 curves from '%2' (check for all-NaN or non-numeric columns).")
                             .arg(method, t->name()));
+        }
+
+        if (method == QStringLiteral("plot.histogram")) {
+            int totalHistPoints = 0;
+            for (Graph *lg : ml->layersList()) {
+                if (!lg)
+                    continue;
+                for (int ci = 0; ci < lg->curves(); ++ci) {
+                    if (const QwtPlotCurve *c = lg->curve(ci))
+                        totalHistPoints += c->dataSize();
+                }
+            }
+            if (totalHistPoints <= 0) {
+                closeAndDeleteEmptyPlot(d_app, ml);
+                throwInvalidParams(
+                        QStringLiteral("plot.histogram created 0 valid histogram bins from '%1' (empty or degenerate data).")
+                                .arg(t->name()));
+            }
         }
 
         if (method == QStringLiteral("plot.histogram")) {
@@ -17544,7 +17641,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
     if (method == QStringLiteral("graph.set_aspect_ratio")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const double ratio = params.value(QStringLiteral("ratio")).toDouble(1.0);
+        double ratio = 1.0;
+        if (params.contains(QStringLiteral("ratio"))
+            && !params.value(QStringLiteral("ratio")).isNull()) {
+            const QJsonValue rv = params.value(QStringLiteral("ratio"));
+            if (!rv.isDouble()) {
+                throwInvalidParams(
+                        QStringLiteral("Parameter 'ratio' must be a positive finite number."));
+            }
+            ratio = rv.toDouble();
+            if (!std::isfinite(ratio) || ratio <= 0.0) {
+                throwInvalidParams(
+                        QStringLiteral("Parameter 'ratio' must be finite and > 0, got %1.")
+                                .arg(ratio));
+            }
+        }
         const bool keep = params.contains(QStringLiteral("keep"))
                 ? params.value(QStringLiteral("keep")).toBool(true)
                 : (params.contains(QStringLiteral("enabled"))
@@ -18000,17 +18111,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 && !params.value(QStringLiteral("minor_ticks")).isNull();
 
         if (hasLim || hasMin || hasMax || hasStep || hasScale || hasInverted || hasMinor) {
-            const double lo = hasMin ? parseFiniteCoordDouble(params.value(QStringLiteral("min")),
-                                                              QStringLiteral("min"))
-                                     : (hasLim ? limLo : curMin);
-            const double hi = hasMax ? parseFiniteCoordDouble(params.value(QStringLiteral("max")),
-                                                              QStringLiteral("max"))
-                                     : (hasLim ? limHi : curMax);
+            double lo = hasMin ? parseFiniteCoordDouble(params.value(QStringLiteral("min")),
+                                                        QStringLiteral("min"))
+                               : (hasLim ? limLo : curMin);
+            double hi = hasMax ? parseFiniteCoordDouble(params.value(QStringLiteral("max")),
+                                                        QStringLiteral("max"))
+                               : (hasLim ? limHi : curMax);
             const double step = hasStep
                     ? parseFiniteCoordDouble(params.value(QStringLiteral("step")),
                                              QStringLiteral("step"))
                     : g->axisStep(ax);
-            validateFiniteCoordRange(lo, hi, QStringLiteral("Axis scale"), step, 2000, 1e300);
             int scaleType = curScaleType;
             if (hasScale) {
                 const QString sc = optionalJsonString(params, QStringLiteral("scale")).trimmed().toLower();
@@ -18024,6 +18134,40 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             { QStringLiteral("linear"), QStringLiteral("log10") });
                 }
             }
+            if (scaleType == 1 && (lo <= 0.0 || hi <= 0.0) && !hasLim && !hasMin && !hasMax) {
+                const bool isX = (ax == QwtPlot::xBottom || ax == QwtPlot::xTop);
+                double posMin = std::numeric_limits<double>::infinity();
+                double posMax = -std::numeric_limits<double>::infinity();
+                for (int ci = 0; ci < g->curves(); ++ci) {
+                    const QwtPlotCurve *c = g->curve(ci);
+                    if (!c)
+                        continue;
+                    if (isX ? (c->xAxis() != ax) : (c->yAxis() != ax))
+                        continue;
+                    const int nPts = c->dataSize();
+                    for (int pi = 0; pi < nPts; ++pi) {
+                        const double v = isX ? c->x(pi) : c->y(pi);
+                        if (std::isfinite(v) && v > 0.0) {
+                            posMin = std::min(posMin, v);
+                            posMax = std::max(posMax, v);
+                        }
+                    }
+                }
+                if (std::isfinite(posMin) && std::isfinite(posMax) && posMin > 0.0) {
+                    double autoLo = std::pow(10.0, std::floor(std::log10(posMin)));
+                    double autoHi = std::pow(10.0, std::ceil(std::log10(posMax)));
+                    if (autoHi <= autoLo) {
+                        autoLo = posMin / 10.0;
+                        autoHi = posMax * 10.0;
+                    }
+                    if (autoLo > 0.0 && autoHi > autoLo && std::isfinite(autoLo)
+                        && std::isfinite(autoHi)) {
+                        lo = autoLo;
+                        hi = autoHi;
+                    }
+                }
+            }
+            validateFiniteCoordRange(lo, hi, QStringLiteral("Axis scale"), step, 2000, 1e300);
             if (scaleType == 1 && (lo <= 0.0 || hi <= 0.0)) {
                 throwInvalidParams(
                         QStringLiteral("log10 axis scale requires strictly positive min and max (> 0), got [%1, %2].")
@@ -18043,6 +18187,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 else if (scaleType == 1 && existingMinor >= 1)
                     minorTicks = existingMinor;
             }
+            g->recordZoomHistorySnapshot();
             g->setScale(ax, std::min(lo, hi), std::max(lo, hi), step, majorTicks, minorTicks,
                         scaleType, inv || (lo > hi));
             if (hasLim || hasMin || hasMax)
@@ -18385,8 +18530,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     ? optionalJsonFiniteDouble(params, QStringLiteral("end"), spec.breakTo)
                     : optionalJsonFiniteDouble(params, QStringLiteral("to"), spec.breakTo);
             validateFiniteCoordRange(bStart, bEnd, QStringLiteral("Axis break [start, end]"));
-            spec.breakFrom = std::min(bStart, bEnd);
-            spec.breakTo = std::max(bStart, bEnd);
+            if (bStart >= bEnd) {
+                throwInvalidParams(
+                        QStringLiteral("Axis break requires start < end, got [%1, %2].")
+                                .arg(bStart)
+                                .arg(bEnd));
+            }
+            spec.breakFrom = bStart;
+            spec.breakTo = bEnd;
             double pct = optionalJsonFiniteDouble(params, QStringLiteral("position_pct"), 0.50, 100.0);
             if (pct > 1.0)
                 pct /= 100.0;
@@ -18399,6 +18550,33 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 throwInvalidParams(QStringLiteral("step_before and step_after must be >= 0."));
             spec.log10Before = optionalJsonBool(params, QStringLiteral("log_before"), spec.log10Before);
             spec.log10After = optionalJsonBool(params, QStringLiteral("log_after"), spec.log10After);
+            const Plot *plt = g->plotWidget();
+            const bool axisIsLog = plt
+                    && dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr;
+            if ((axisIsLog || spec.log10Before) && spec.breakFrom <= 0.0) {
+                throwInvalidParams(
+                        QStringLiteral("Axis break on log10 scale requires start > 0, got %1.")
+                                .arg(spec.breakFrom));
+            }
+            if ((axisIsLog || spec.log10After) && spec.breakTo <= 0.0) {
+                throwInvalidParams(
+                        QStringLiteral("Axis break on log10 scale requires end > 0, got %1.")
+                                .arg(spec.breakTo));
+            }
+            if (plt && plt->axisScaleDiv(ax)) {
+                const QwtScaleDiv *div = plt->axisScaleDiv(ax);
+                const double axMin = std::min(div->lowerBound(), div->upperBound());
+                const double axMax = std::max(div->lowerBound(), div->upperBound());
+                if (std::isfinite(axMin) && std::isfinite(axMax) && axMax > axMin
+                    && (spec.breakFrom <= axMin || spec.breakTo >= axMax)) {
+                    throwInvalidParams(
+                            QStringLiteral("Axis break [%1, %2] must lie strictly within current axis range (%3, %4).")
+                                    .arg(spec.breakFrom)
+                                    .arg(spec.breakTo)
+                                    .arg(axMin)
+                                    .arg(axMax));
+                }
+            }
             g->setAxisBreak(ax, spec);
         }
         replotGraphOrDefer(g);
@@ -18497,14 +18675,22 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.clear_reference_lines")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
+        const bool includeBands = optionalJsonBool(params, QStringLiteral("include_bands"), false);
         const int prevCount = g->referenceLines().size();
+        const int prevBands = g->shadedBandCount();
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Clear Reference Lines"));
         g->clearReferenceLines();
+        if (includeBands)
+            g->clearShadedBands();
         g->replot();
         undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("removed")] = prevCount;
         outResult[QStringLiteral("reference_line_count")] = 0;
+        if (includeBands) {
+            outResult[QStringLiteral("removed_bands")] = prevBands;
+            outResult[QStringLiteral("shaded_band_count")] = g->shadedBandCount();
+        }
         return true;
     }
 
@@ -20767,6 +20953,27 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         if (!dataOk || lf.error())
             throwInvalidParams(
                     QStringLiteral("Insufficient data for linear fit on '%1'.").arg(curveTitle));
+        {
+            const auto &xv = lf.x();
+            if (xv.size() < 2) {
+                throwInvalidParams(
+                        QStringLiteral("Insufficient data for linear fit on '%1'.").arg(curveTitle));
+            }
+            double xMean = 0.0;
+            for (double v : xv)
+                xMean += v;
+            xMean /= double(xv.size());
+            double sxx = 0.0;
+            for (double v : xv) {
+                const double dx = v - xMean;
+                sxx += dx * dx;
+            }
+            if (!std::isfinite(sxx) || sxx <= 1e-30) {
+                throwInvalidParams(
+                        QStringLiteral("Linear fit requires at least 2 distinct X values (collinear X = const on '%1').")
+                                .arg(curveTitle));
+            }
+        }
 
         if (params.contains(QStringLiteral("weighting"))
             && !params.value(QStringLiteral("weighting")).isNull()) {
@@ -20808,16 +21015,24 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const int curvesBefore = g->curves();
         const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
+        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Linear Fit"));
         lf.fit();
+        const auto &res = lf.results();
+        if (lf.error() || res.size() < 2 || !std::isfinite(res[0]) || !std::isfinite(res[1])) {
+            while (g->curves() > curvesBefore)
+                g->removeCurve(g->curves() - 1);
+            g->replot();
+            throwInvalidParams(
+                    QStringLiteral("Linear fit failed to produce finite slope/intercept on '%1'.")
+                            .arg(curveTitle));
+        }
         sanitizeGraphFunctionCurves(d_app, g);
         harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
 
-        const auto &res = lf.results();
         const auto &err = lf.errors();
-        if (res.size() < 2)
-            throwRpcRuntime(QStringLiteral("Linear fit failed to produce parameters."));
 
         const double intercept = res[0];
         const double slope = res[1];
@@ -20880,6 +21095,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const int curvesBefore = g->curves();
         const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
+        const bool plotYorkCurve = params.value(QStringLiteral("plot_curve")).toBool(true);
+        ScopedGraphUndoGuard undoGuard(plotYorkCurve ? ml : nullptr, QObject::tr("York Fit"));
         const bool ok = lf.fitWithXYErrors(xErrFull, yErrFull);
         if (!ok)
             throwRpcRuntime(QStringLiteral("York XY-error regression failed to converge."));
@@ -20887,6 +21104,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
 
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("converged")] = ok;
@@ -20928,11 +21146,14 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const int curvesBefore = g->curves();
         const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
+        const bool plotPolyCurve = params.value(QStringLiteral("plot_curve")).toBool(true);
+        ScopedGraphUndoGuard undoGuard(plotPolyCurve ? ml : nullptr, QObject::tr("Polynomial Fit"));
         pf.fit();
         sanitizeGraphFunctionCurves(d_app, g);
         harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
 
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("graph")] = ml->name();
@@ -21023,10 +21244,11 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                         "Custom nonlinear 'formula' requires non-empty 'param_names' array."));
             QStringList checkVars = pNames;
             checkVars << QStringLiteral("x");
-            customFormulaSyntaxOk = checkMuParserExprValid(customFormula, checkVars);
+            validateMuParserExprOrThrow(customFormula, checkVars,
+                                        QStringLiteral("analysis.fit_nonlinear"));
+            customFormulaSyntaxOk = true;
             nlf.setParametersList(pNames);
-            if (customFormulaSyntaxOk)
-                nlf.setFormula(customFormula);
+            nlf.setFormula(customFormula);
         } else {
             throwInvalidParams(
                     QStringLiteral("Provide either built-in 'model' name or custom 'formula'."));
@@ -21181,15 +21403,22 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const int curvesBefore = g->curves();
         const bool hadJpBefore = graphHasJapaneseContext(g, curvesBefore);
-        if (customFormulaSyntaxOk)
+        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Nonlinear Fit"));
+        bool fitExecuted = false;
+        if (customFormulaSyntaxOk) {
             nlf.fit();
+            fitExecuted = true;
+        }
         sanitizeGraphFunctionCurves(d_app, g);
         harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
 
-        const auto &resVec = nlf.results();
-        const auto &errVec = nlf.errors();
+        const std::vector<double> resVec =
+                fitExecuted ? nlf.results() : std::vector<double>{};
+        const std::vector<double> errVec =
+                (fitExecuted && !nlf.error()) ? nlf.errors() : std::vector<double>{};
         QJsonObject paramDict, errDict;
         for (int i = 0; i < pNames.size() && size_t(i) < resVec.size(); ++i) {
             paramDict[pNames[i]] = safeJsonDouble(resVec[size_t(i)]);
@@ -21369,6 +21598,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const int beforeCurves = g->curves();
         Table *sumTbl = nullptr;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Global Fit"));
         const bool ok = nlf.fitGlobal(curveTitles, sharedFlags, &sumTbl);
         if (ok && sumTbl && g->curves() >= beforeCurves + curveTitles.size()) {
             const int P = pNames.size();
@@ -21407,6 +21637,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         sanitizeGraphFunctionCurves(d_app, g);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = ok;
         outResult[QStringLiteral("converged")] = ok;
         outResult[QStringLiteral("graph")] = ml->name();
@@ -21438,6 +21669,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         const bool annotate = params.contains(QStringLiteral("annotate"))
                 ? params.value(QStringLiteral("annotate")).toBool(true)
                 : true;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Piecewise Fit"));
         const auto pw = PiecewiseAndRobustFit::fitPiecewiseLinear(d_app, g, curveTitle, segs,
                                                                   annotate);
         if (auto *fc = dynamic_cast<FunctionCurve *>(pw.fittedCurve)) {
@@ -21462,6 +21694,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         sanitizeGraphFunctionCurves(d_app, g);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = pw.converged;
         outResult[QStringLiteral("converged")] = pw.converged;
         outResult[QStringLiteral("segments")] = pw.segments;
@@ -21500,6 +21733,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 if (!std::isfinite(tau) || tau <= 0.0 || tau >= 1.0)
                     throwInvalidParams(QStringLiteral("Quantile 'tau' must satisfy 0 < tau < 1."));
             }
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Quantile Fit"));
             const auto rq = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
                     d_app, g, curveTitle, PiecewiseAndRobustFit::QuantileReg, tau, annotate);
             if (auto *fc = dynamic_cast<FunctionCurve *>(rq.fittedCurve)) {
@@ -21514,6 +21748,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             sanitizeGraphFunctionCurves(d_app, g);
             enforceArialGraphFonts(g);
             g->replot();
+            undoGuard.commit();
             outResult[QStringLiteral("ok")] = rq.converged;
             outResult[QStringLiteral("converged")] = rq.converged;
             outResult[QStringLiteral("tau")] = tau;
@@ -21613,6 +21848,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 fittedTitle = QStringLiteral("%1_%2")
                                       .arg(curveTitle, isSiegel ? QStringLiteral("SiegelFit")
                                                                 : QStringLiteral("TheilSenFit"));
+                ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Robust Fit"));
                 if (g->addFunctionCurve(d_app, FunctionCurve::Normal, QStringList() << expr,
                                         QStringLiteral("x"), QList<double>() << xMin << xMax, 200,
                                         fittedTitle)) {
@@ -21623,10 +21859,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                         fittedTitle = fc->title().text();
                     }
                 }
+                sanitizeGraphFunctionCurves(d_app, g);
+                enforceArialGraphFonts(g);
+                g->replot();
+                undoGuard.commit();
+            } else {
+                sanitizeGraphFunctionCurves(d_app, g);
+                enforceArialGraphFonts(g);
+                g->replot();
             }
-            sanitizeGraphFunctionCurves(d_app, g);
-            enforceArialGraphFonts(g);
-            g->replot();
 
             outResult[QStringLiteral("ok")] = true;
             outResult[QStringLiteral("converged")] = true;
@@ -21644,6 +21885,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         requireCurveMinPoints(g, curveTitle, 3, QStringLiteral("analysis.fit_robust"));
         const auto rm = (mStr == QStringLiteral("huber")) ? PiecewiseAndRobustFit::HuberM
                                                           : PiecewiseAndRobustFit::TukeyBisquare;
+        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Robust Fit"));
         const auto rf = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(d_app, g, curveTitle, rm,
                                                                          0.5, annotate);
         if (!plotCurve && rf.fittedCurve) {
@@ -21662,6 +21904,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         sanitizeGraphFunctionCurves(d_app, g);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         outResult[QStringLiteral("ok")] = rf.converged;
         outResult[QStringLiteral("converged")] = rf.converged;
         outResult[QStringLiteral("graph")] = ml->name();
@@ -21916,6 +22159,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         if (!plotCurve || isAnalyticalConic)
             nlf.setSuppressCurveOutput(true);
 
+        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Implicit ODR Fit"));
         const bool ok = nlf.fitImplicitODR(expr, pNames, initVals);
         const auto &resVec = nlf.results();
         const auto &errVec = nlf.errors();
@@ -21966,6 +22210,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         sanitizeGraphFunctionCurves(d_app, g);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
         QJsonObject paramDict, errDict;
         for (int i = 0; i < pNames.size() && size_t(i) < resVec.size(); ++i) {
             double pv = resVec[size_t(i)];
@@ -22609,9 +22854,51 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     if (method == QStringLiteral("gadget.clear")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        RoiGadgetTool::clearGadget(g);
-        g->replot();
+        const QString typeStr =
+                optionalJsonString(params, QStringLiteral("type")).trimmed().toLower();
+        bool cleared = false;
+        PlotToolInterface *tool = g->activeTool();
+        if (typeStr.isEmpty() || typeStr == QStringLiteral("all")) {
+            if (tool) {
+                RoiGadgetTool::clearGadget(g);
+                cleared = true;
+            }
+        } else if (typeStr == QStringLiteral("vertical_cursor")
+                   || typeStr == QStringLiteral("vcursor")) {
+            if (dynamic_cast<VerticalCursorTool *>(tool)) {
+                RoiGadgetTool::clearGadget(g);
+                cleared = true;
+            }
+        } else if (typeStr == QStringLiteral("delta_cursor")
+                   || typeStr == QStringLiteral("delta")) {
+            if (dynamic_cast<DeltaCursorTool *>(tool)) {
+                RoiGadgetTool::clearGadget(g);
+                cleared = true;
+            }
+        } else if (typeStr == QStringLiteral("image_profile")
+                   || typeStr == QStringLiteral("profile_2d")) {
+            if (dynamic_cast<ImageProfileGadgetTool *>(tool)) {
+                RoiGadgetTool::clearGadget(g);
+                cleared = true;
+            }
+        } else if (typeStr == QStringLiteral("roi")) {
+            if (dynamic_cast<RoiGadgetTool *>(tool)) {
+                RoiGadgetTool::clearGadget(g);
+                cleared = true;
+            }
+        } else {
+            const auto targetMode = parseRoiGadgetMode(typeStr);
+            if (auto *roi = dynamic_cast<RoiGadgetTool *>(tool)) {
+                if (roi->gadgetMode() == targetMode) {
+                    RoiGadgetTool::clearGadget(g);
+                    cleared = true;
+                }
+            }
+        }
+        if (cleared)
+            g->replot();
         outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("cleared")] = cleared;
         return true;
     }
 
@@ -25017,23 +25304,267 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         return true;
     }
 
+    if (method == QStringLiteral("curvemath.vasp_band_dos")) {
+        Table *bandTbl = nullptr;
+        Table *dosTbl = nullptr;
+        double importedBandFermi = 0.0;
+        double importedDosFermi = 0.0;
+        bool hasImportedBandFermi = false;
+        bool hasImportedDosFermi = false;
+
+        const QString eigenPath = !optionalJsonString(params, QStringLiteral("eigenval_path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("eigenval_path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("band_path")).trimmed();
+        const QString doscarPath = !optionalJsonString(params, QStringLiteral("doscar_path")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("doscar_path")).trimmed()
+                : optionalJsonString(params, QStringLiteral("dos_path")).trimmed();
+
+        const bool hasBandTblParam =
+                (params.contains(QStringLiteral("band_table"))
+                 && !params.value(QStringLiteral("band_table")).isNull()
+                 && !params.value(QStringLiteral("band_table")).toString().trimmed().isEmpty())
+                || (params.contains(QStringLiteral("bands_table"))
+                    && !params.value(QStringLiteral("bands_table")).isNull()
+                    && !params.value(QStringLiteral("bands_table")).toString().trimmed().isEmpty())
+                || (params.contains(QStringLiteral("table"))
+                    && !params.value(QStringLiteral("table")).isNull()
+                    && !params.value(QStringLiteral("table")).toString().trimmed().isEmpty());
+        if (hasBandTblParam) {
+            const QString key = params.contains(QStringLiteral("band_table"))
+                            && !params.value(QStringLiteral("band_table")).isNull()
+                    ? QStringLiteral("band_table")
+                    : (params.contains(QStringLiteral("bands_table"))
+                                       && !params.value(QStringLiteral("bands_table")).isNull()
+                               ? QStringLiteral("bands_table")
+                               : QStringLiteral("table"));
+            bandTbl = resolveTable(d_app, params, key, true);
+        } else if (!eigenPath.isEmpty()) {
+            bandTbl = importVaspFileToTable(d_app, eigenPath, &importedBandFermi);
+            hasImportedBandFermi = true;
+        } else {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.vasp_band_dos requires 'band_table' (or 'table') or 'eigenval_path'."));
+        }
+
+        const bool hasDosTblParam = params.contains(QStringLiteral("dos_table"))
+                && !params.value(QStringLiteral("dos_table")).isNull()
+                && !params.value(QStringLiteral("dos_table")).toString().trimmed().isEmpty();
+        if (hasDosTblParam) {
+            dosTbl = resolveTable(d_app, params, QStringLiteral("dos_table"), true);
+        } else if (!doscarPath.isEmpty()) {
+            dosTbl = importVaspFileToTable(d_app, doscarPath, &importedDosFermi);
+            hasImportedDosFermi = true;
+        } else {
+            throwInvalidParams(QStringLiteral(
+                    "curvemath.vasp_band_dos requires 'dos_table' or 'doscar_path'."));
+        }
+
+        const QJsonValue kKey = (params.contains(QStringLiteral("k_col"))
+                                 && !params.value(QStringLiteral("k_col")).isNull())
+                ? params.value(QStringLiteral("k_col"))
+                : QJsonValue(0);
+        const int kIdx = resolveColumnIndex(bandTbl, kKey, true);
+        const QString kCol = bandTbl->colLabel(kIdx);
+        QStringList bandCols;
+        const QJsonValue bVal = params.contains(QStringLiteral("band_cols"))
+                ? params.value(QStringLiteral("band_cols"))
+                : params.value(QStringLiteral("y_cols"));
+        if (bVal.isArray()) {
+            for (const QJsonValue &cv : bVal.toArray())
+                bandCols << bandTbl->colLabel(resolveColumnIndex(bandTbl, cv, true));
+        } else {
+            for (int c = 0; c < bandTbl->numCols(); ++c) {
+                if (c != kIdx && bandTbl->column(c)
+                    && bandTbl->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    bandCols << bandTbl->colLabel(c);
+                }
+            }
+        }
+        QVector<double> kTicks;
+        if (params.value(QStringLiteral("k_ticks")).isArray()) {
+            for (const QJsonValue &kv : params.value(QStringLiteral("k_ticks")).toArray())
+                kTicks.append(parseFiniteCoordDouble(kv, QStringLiteral("k_ticks")));
+        }
+        QStringList kLabels;
+        if (params.value(QStringLiteral("k_labels")).isArray()) {
+            for (const QJsonValue &lv : params.value(QStringLiteral("k_labels")).toArray()) {
+                QString lbl = lv.toString().trimmed();
+                if (lbl == QStringLiteral("G")
+                    || lbl.compare(QStringLiteral("\\Gamma"), Qt::CaseInsensitive) == 0
+                    || lbl.compare(QStringLiteral("Gamma"), Qt::CaseInsensitive) == 0) {
+                    lbl = QStringLiteral("\u0393");
+                }
+                kLabels << lbl;
+            }
+        }
+
+        const int eIdx = resolveColumnIndex(
+                dosTbl, params.contains(QStringLiteral("energy_col"))
+                                && !params.value(QStringLiteral("energy_col")).isNull()
+                        ? params.value(QStringLiteral("energy_col"))
+                        : QJsonValue(0),
+                true);
+        const QString energyCol = dosTbl->colLabel(eIdx);
+        QStringList dosCols;
+        const QJsonValue upVal = params.contains(QStringLiteral("dos_cols"))
+                ? params.value(QStringLiteral("dos_cols"))
+                : params.value(QStringLiteral("up_cols"));
+        if (upVal.isArray()) {
+            for (const QJsonValue &cv : upVal.toArray())
+                dosCols << dosTbl->colLabel(resolveColumnIndex(dosTbl, cv, true));
+        } else if ((upVal.isString() && !upVal.toString().trimmed().isEmpty()) || upVal.isDouble()) {
+            dosCols << dosTbl->colLabel(resolveColumnIndex(dosTbl, upVal, true));
+        }
+        QStringList downCols;
+        const QJsonValue dnVal = params.contains(QStringLiteral("down_dos_cols"))
+                ? params.value(QStringLiteral("down_dos_cols"))
+                : params.value(QStringLiteral("down_cols"));
+        if (dnVal.isArray()) {
+            for (const QJsonValue &cv : dnVal.toArray())
+                downCols << dosTbl->colLabel(resolveColumnIndex(dosTbl, cv, true));
+        } else if ((dnVal.isString() && !dnVal.toString().trimmed().isEmpty()) || dnVal.isDouble()) {
+            downCols << dosTbl->colLabel(resolveColumnIndex(dosTbl, dnVal, true));
+        }
+
+        const double reqFermi = params.contains(QStringLiteral("fermi_energy"))
+                ? optionalJsonFiniteDouble(params, QStringLiteral("fermi_energy"), 0.0, 1e6)
+                : optionalJsonFiniteDouble(params, QStringLiteral("e_fermi"), 0.0, 1e6);
+        const double eFermiBand = (hasImportedBandFermi && qFuzzyIsNull(reqFermi)
+                                   && !qFuzzyIsNull(importedBandFermi))
+                ? importedBandFermi
+                : reqFermi;
+        const double eFermiDos = (hasImportedDosFermi && qFuzzyIsNull(reqFermi)
+                                  && !qFuzzyIsNull(importedDosFermi))
+                ? importedDosFermi
+                : eFermiBand;
+        const double eMin = optionalJsonFiniteDouble(params, QStringLiteral("e_min"), -6.0, 1e6);
+        const double eMax = optionalJsonFiniteDouble(params, QStringLiteral("e_max"), 6.0, 1e6);
+        validateFiniteCoordRange(eMin, eMax,
+                                 QStringLiteral("curvemath.vasp_band_dos [e_min, e_max]"));
+        const double eLo = std::min(eMin, eMax);
+        const double eHi = std::max(eMin, eMax);
+
+        const CurveMathTools::VaspPlotResult vrBand = CurveMathTools::plotVaspBands(
+                d_app, bandTbl, kCol, bandCols, kTicks, kLabels, eFermiBand, eLo, eHi);
+        if (!vrBand.valid || !vrBand.plot) {
+            if (vrBand.plot)
+                closeAndDeleteEmptyPlot(d_app, vrBand.plot);
+            throwInvalidParams(vrBand.error.isEmpty()
+                                       ? QStringLiteral("VASP band structure plot failed.")
+                                       : vrBand.error);
+        }
+
+        const CurveMathTools::VaspPlotResult vrDos = CurveMathTools::plotVaspDos(
+                d_app, dosTbl, energyCol, dosCols, downCols, eFermiDos, true);
+        if (!vrDos.valid || !vrDos.plot) {
+            if (vrDos.plot)
+                closeAndDeleteEmptyPlot(d_app, vrDos.plot);
+            closeAndDeleteEmptyPlot(d_app, vrBand.plot);
+            throwInvalidParams(vrDos.error.isEmpty() ? QStringLiteral("VASP DOS plot failed.")
+                                                     : vrDos.error);
+        }
+
+        MultiLayer *ml = vrBand.plot;
+        if (Graph *gDos = ml->addLayer()) {
+            if (Table *dt = vrDos.dataTable) {
+                static const QColor kDosPalette[6] = {
+                    QColor(25, 45, 85),    QColor(0, 114, 178),   QColor(0, 158, 115),
+                    QColor(213, 94, 0),    QColor(204, 121, 167), QColor(230, 159, 0)
+                };
+                const int nUp = std::max(1, dosCols.isEmpty() ? (dt->numCols() - 1) : dosCols.size());
+                const int nRows = dt->numRows();
+                for (int c = 1; c < dt->numCols(); ++c) {
+                    if (gDos->insertCurve(dt, dt->colName(c), dt->colName(0), Graph::Line, 0,
+                                          std::max(0, nRows - 1))) {
+                        const int ci = gDos->curves() - 1;
+                        const bool isDown = !downCols.isEmpty() && (c - 1 >= nUp);
+                        const int palIdx = isDown ? ((c - 1 - nUp) % 6) : ((c - 1) % 6);
+                        gDos->setCurvePen(
+                                ci,
+                                QPen(kDosPalette[palIdx], 1.8,
+                                     isDown ? Qt::DashLine : Qt::SolidLine));
+                    }
+                }
+            }
+            Graph::ReferenceLineSpec efSpec;
+            efSpec.orientation = 0; // horizontal y = 0
+            efSpec.value = 0.0;
+            efSpec.color = QColor(100, 116, 139);
+            efSpec.style = Qt::DashLine;
+            efSpec.width = 1.3;
+            gDos->addReferenceLine(efSpec);
+
+            gDos->applyFramePreset(Graph::FrameBoxInwardTicks);
+            gDos->setTitle(QString());
+            gDos->setXAxisTitle(QStringLiteral("DOS / states eV<sup>-1</sup>"));
+            gDos->setAxisTitleAuto(QwtPlot::yLeft, false);
+            gDos->setYAxisTitle(QString());
+            if (auto *sd = gDos->plotWidget() ? gDos->plotWidget()->axisScaleDraw(QwtPlot::yLeft)
+                                              : nullptr) {
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            }
+            gDos->setAutoScale();
+            gDos->setScale(QwtPlot::yLeft, eLo, eHi, 0.0, 6, 1, 0, false);
+            gDos->setAxisUserLocked(QwtPlot::yLeft, true);
+        }
+
+        closeAndDeleteEmptyPlot(d_app, vrDos.plot);
+
+        ml->resize(760, 460);
+        ml->setCols(2);
+        ml->setRows(1);
+        ml->arrangeLayers(false, false);
+        for (Graph *lg : ml->layersList()) {
+            enforceArialGraphFonts(lg);
+            lg->replot();
+        }
+        ml->setActiveGraph(ml->layersList().first());
+
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        outResult[QStringLiteral("layers")] = ml->layersList().size();
+        outResult[QStringLiteral("fermi_energy_ev")] = safeJsonDouble(vrBand.fermiEnergyEV);
+        outResult[QStringLiteral("bandgap_ev")] = safeJsonDouble(vrBand.bandgapEV);
+        outResult[QStringLiteral("dos_bandgap_ev")] = safeJsonDouble(vrDos.bandgapEV);
+        outResult[QStringLiteral("d_band_center_ev")] = safeJsonDouble(vrDos.dBandCenterEV);
+        if (vrBand.dataTable)
+            outResult[QStringLiteral("band_table")] = vrBand.dataTable->name();
+        if (vrDos.dataTable)
+            outResult[QStringLiteral("dos_table")] = vrDos.dataTable->name();
+        return true;
+    }
+
     // ------------------------------------------------------------------------
     // 7D. Parametric, Nonparametric, Survival, Reliability & Multivariate Stats
     // ------------------------------------------------------------------------
     if (method == QStringLiteral("stats.normality")) {
         Table *t = resolveTable(d_app, params);
-        const QString colName = t->colLabel(
-                resolveColumnIndex(t, params.contains(QStringLiteral("col"))
-                                           ? params.value(QStringLiteral("col"))
-                                           : QJsonValue(0),
-                                   true));
+        const int colIdx = resolveColumnIndex(
+                t, params.contains(QStringLiteral("col"))
+                           ? params.value(QStringLiteral("col"))
+                           : QJsonValue(0),
+                true);
+        const QString colName = t->colLabel(colIdx);
+        const int nFinite = countFiniteUnmaskedInTableColumn(t, colIdx);
+        if (nFinite < 3) {
+            throwInvalidParams(
+                    QStringLiteral("stats.normality requires at least 3 finite unmasked values in column '%1' (got %2).")
+                            .arg(colName)
+                            .arg(nFinite));
+        }
         Graph *overlayG = nullptr;
         if (params.contains(QStringLiteral("graph"))) {
             if (MultiLayer *ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), false))
                 overlayG = resolveGraphLayer(ml, params, false);
         }
         const auto nr = GraphStatsAndSurfaceFit::runNormalityTest(d_app, t, colName, overlayG);
-        outResult[QStringLiteral("ok")] = (nr.n >= 3);
+        if (nr.n < 3) {
+            throwInvalidParams(
+                    QStringLiteral("stats.normality requires at least 3 valid numeric observations in '%1' (got %2).")
+                            .arg(colName)
+                            .arg(nr.n));
+        }
+        outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("n")] = nr.n;
         outResult[QStringLiteral("mean")] = safeJsonDouble(nr.mean);
         outResult[QStringLiteral("sd")] = safeJsonDouble(nr.sd);
@@ -25778,11 +26309,33 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("stats.weibull")) {
         Table *t = resolveTable(d_app, params);
-        const QString dCol = t->colLabel(
-                resolveColumnIndex(t, params.contains(QStringLiteral("col"))
-                                           ? params.value(QStringLiteral("col"))
-                                           : QJsonValue(0),
-                                   true));
+        const int dColIdx = resolveColumnIndex(
+                t, params.contains(QStringLiteral("col"))
+                           ? params.value(QStringLiteral("col"))
+                           : QJsonValue(0),
+                true);
+        const QString dCol = t->colLabel(dColIdx);
+        const bool threeP = optionalJsonBool(params, QStringLiteral("three_param"), false);
+        const int minWeibullRows = threeP ? 3 : 2;
+        int posFinite = 0;
+        if (Column *dc = t->column(dColIdx)) {
+            if (dc->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                for (int r = 0; r < t->numRows(); ++r) {
+                    if (dc->isInvalid(r) || dc->isMasked(r))
+                        continue;
+                    const double v = dc->valueAt(r);
+                    if (std::isfinite(v) && v > 0.0)
+                        ++posFinite;
+                }
+            }
+        }
+        if (posFinite < minWeibullRows) {
+            throwInvalidParams(
+                    QStringLiteral("stats.weibull requires at least %1 positive finite observations in column '%2' (got %3).")
+                            .arg(minWeibullRows)
+                            .arg(dCol)
+                            .arg(posFinite));
+        }
         QString cCol;
         if (params.contains(QStringLiteral("censor_col"))
             && !params.value(QStringLiteral("censor_col")).isNull()) {
@@ -25791,7 +26344,6 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
         const int censorCoding =
                 parseBoundedInt(params, QStringLiteral("censor_coding"), 0, 0, 10);
-        const bool threeP = optionalJsonBool(params, QStringLiteral("three_param"), false);
         const bool useMle = optionalJsonBool(
                 params, QStringLiteral("mle"),
                 optionalJsonBool(params, QStringLiteral("use_mle"), false));
@@ -25942,17 +26494,52 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         const bool standardize = optionalJsonBool(params, QStringLiteral("standardize"), true);
         const bool wantBiplot = optionalJsonBool(params, QStringLiteral("biplot"), true);
         QStringList colNames;
+        QVector<int> colIdxs;
         if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray())
-                colNames << t->colLabel(resolveColumnIndex(t, cv, true));
+            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray()) {
+                const int ci = resolveColumnIndex(t, cv, true);
+                colIdxs.append(ci);
+                colNames << t->colLabel(ci);
+            }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
-                if (t->column(c) && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                if (t->column(c) && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    colIdxs.append(c);
                     colNames << t->colLabel(c);
+                }
             }
+        }
+        if (colIdxs.size() < 2) {
+            throwInvalidParams(
+                    QStringLiteral("stats.pca requires at least 2 numeric columns (got %1).")
+                            .arg(colIdxs.size()));
+        }
+        int completeRows = 0;
+        for (int r = 0; r < t->numRows(); ++r) {
+            bool okRow = true;
+            for (int ci : colIdxs) {
+                Column *cc = t->column(ci);
+                if (!cc || cc->columnMode() != SciDAVis::ColumnMode::Numeric || cc->isInvalid(r)
+                    || cc->isMasked(r) || !std::isfinite(cc->valueAt(r))) {
+                    okRow = false;
+                    break;
+                }
+            }
+            if (okRow)
+                ++completeRows;
+        }
+        if (completeRows < 2) {
+            throwInvalidParams(
+                    QStringLiteral("stats.pca requires at least 2 complete finite rows (got %1).")
+                            .arg(completeRows));
         }
         Table *scoresTbl = nullptr;
         MultiLayer *ml = GraphStatsAndSurfaceFit::runPCAAndBiplot(d_app, t, colNames, &scoresTbl);
+        if (!ml && !scoresTbl) {
+            throwInvalidParams(
+                    QStringLiteral("stats.pca failed due to insufficient valid data in '%1'.")
+                            .arg(t->name()));
+        }
         if (ml && !wantBiplot) {
             closeAndDeleteEmptyPlot(d_app, ml);
             ml = nullptr;
@@ -26070,14 +26657,42 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
     if (method == QStringLiteral("stats.clustering")) {
         Table *t = resolveTable(d_app, params);
         QStringList colNames;
+        QVector<int> colIdxs;
         if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray())
-                colNames << t->colLabel(resolveColumnIndex(t, cv, true));
+            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray()) {
+                const int ci = resolveColumnIndex(t, cv, true);
+                colIdxs.append(ci);
+                colNames << t->colLabel(ci);
+            }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
-                if (t->column(c) && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                if (t->column(c) && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                    colIdxs.append(c);
                     colNames << t->colLabel(c);
+                }
             }
+        }
+        if (colIdxs.isEmpty()) {
+            throwInvalidParams(QStringLiteral("stats.clustering requires at least 1 numeric column."));
+        }
+        int completeRows = 0;
+        for (int r = 0; r < t->numRows(); ++r) {
+            bool okRow = true;
+            for (int ci : colIdxs) {
+                Column *cc = t->column(ci);
+                if (!cc || cc->columnMode() != SciDAVis::ColumnMode::Numeric || cc->isInvalid(r)
+                    || cc->isMasked(r) || !std::isfinite(cc->valueAt(r))) {
+                    okRow = false;
+                    break;
+                }
+            }
+            if (okRow)
+                ++completeRows;
+        }
+        if (completeRows < 2) {
+            throwInvalidParams(
+                    QStringLiteral("stats.clustering requires at least 2 complete finite rows (got %1).")
+                            .arg(completeRows));
         }
         const QString alg = optionalJsonString(params, QStringLiteral("method"),
                                                QStringLiteral("kmeans"))
@@ -26101,13 +26716,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         if (alg == QStringLiteral("hierarchical") || alg == QStringLiteral("dendrogram")) {
             MultiLayer *ml = GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(d_app, t, colNames,
                                                                                  lnk);
-            if (ml) {
-                for (Graph *lg : ml->layersList())
-                    enforceArialGraphFonts(lg);
+            if (!ml) {
+                throwInvalidParams(
+                        QStringLiteral("stats.clustering (hierarchical) failed due to insufficient valid data in '%1'.")
+                                .arg(t->name()));
             }
-            outResult[QStringLiteral("ok")] = (ml != nullptr);
-            if (ml)
-                outResult[QStringLiteral("graph")] = ml->name();
+            for (Graph *lg : ml->layersList())
+                enforceArialGraphFonts(lg);
+            outResult[QStringLiteral("ok")] = true;
+            outResult[QStringLiteral("graph")] = ml->name();
             return true;
         }
         if (!alg.isEmpty() && alg != QStringLiteral("kmeans") && alg != QStringLiteral("k_means")
@@ -26117,11 +26734,24 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                             .arg(alg));
         }
         const int k = parseBoundedInt(params, QStringLiteral("k"), 3, 2, 256);
+        if (completeRows < k) {
+            throwInvalidParams(
+                    QStringLiteral("stats.clustering (kmeans) requires at least k=%1 complete finite rows (got %2).")
+                            .arg(k)
+                            .arg(completeRows));
+        }
         const bool plotC = params.contains(QStringLiteral("plot"))
                 ? optionalJsonBool(params, QStringLiteral("plot"), true)
                 : true;
         const auto km =
                 GraphStatsAndSurfaceFit::runKMeansClustering(d_app, t, colNames, k, plotC);
+        if (!km.valid) {
+            if (km.clusterPlot)
+                closeAndDeleteEmptyPlot(d_app, km.clusterPlot);
+            throwInvalidParams(
+                    QStringLiteral("stats.clustering (kmeans) failed due to insufficient valid data in '%1'.")
+                            .arg(t->name()));
+        }
         if (km.clusterPlot) {
             for (Graph *lg : km.clusterPlot->layersList())
                 enforceArialGraphFonts(lg);

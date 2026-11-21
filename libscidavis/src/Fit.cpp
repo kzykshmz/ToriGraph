@@ -1929,17 +1929,58 @@ double Fit::reducedChiSquare() const
     return chi_2 / double(int(d_x.size()) - p_eff);
 }
 
+namespace {
+
+bool isCollinearLinearFit(const Fit *fit, const std::vector<double> &x)
+{
+    if (!dynamic_cast<const LinearFit *>(fit) || x.size() < 2)
+        return false;
+    const double meanX = std::accumulate(x.cbegin(), x.cend(), 0.0) / double(x.size());
+    double sxx = 0.0;
+    for (double xv : x) {
+        if (!std::isfinite(xv))
+            return true;
+        const double dx = xv - meanX;
+        sxx += dx * dx;
+    }
+    return !std::isfinite(sxx) || sxx <= 1e-30;
+}
+
+bool hasValidFitMetrics(const Fit *fit, const std::vector<double> &results, double chi2,
+                        bool initErr, const std::vector<double> &x, const std::vector<double> &y)
+{
+    if (initErr || x.empty() || y.empty() || !std::isfinite(chi2) || chi2 < 0.0)
+        return false;
+    if (results.empty())
+        return false;
+    for (double v : results) {
+        if (!std::isfinite(v))
+            return false;
+    }
+    if (isCollinearLinearFit(fit, x))
+        return false;
+    return true;
+}
+
+} // namespace
+
 double Fit::rss() const
 {
+    if (!hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+        return std::numeric_limits<double>::quiet_NaN();
     if (d_y_fit.size() == d_y.size() && !d_y.empty()) {
         double sum = 0.0;
         for (size_t i = 0; i < d_y.size(); ++i) {
+            if (!std::isfinite(d_y[i]) || !std::isfinite(d_y_fit[i]))
+                return std::numeric_limits<double>::quiet_NaN();
             double r = d_y[i] - d_y_fit[i];
             sum += r * r;
         }
-        return sum;
+        return std::isfinite(sum) ? sum : std::numeric_limits<double>::quiet_NaN();
     }
-    return (std::isfinite(chi_2) && chi_2 >= 0.0) ? chi_2 : 0.0;
+    return (std::isfinite(chi_2) && chi_2 >= 0.0)
+            ? chi_2
+            : std::numeric_limits<double>::quiet_NaN();
 }
 
 double Fit::rSquare() const
@@ -2909,6 +2950,9 @@ void Fit::generateFitCurve(const vector<double> &par)
     if (d_suppress_curve_output)
         return;
 
+    if (!hasValidFitMetrics(this, par, chi_2, d_init_err, d_x, d_y))
+        return;
+
     if (!d_gen_function)
         d_points = d_x.size();
 
@@ -2920,6 +2964,9 @@ void Fit::generateFitCurve(const vector<double> &par)
             QMessageBox::critical(0, tr("Fit failed"), tr("An error occurred during fit!"));
         return;
     }
+
+    MultiLayer *ml = d_graph ? d_graph->multiLayerParent() : nullptr;
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
 
     if (d_gen_function) {
         QString baseName = objectName().trimmed();
@@ -2968,6 +3015,8 @@ void Fit::generateFitCurve(const vector<double> &par)
         if (d_graph)
             d_graph->replot();
     }
+    if (ml && !beforeSnap.isEmpty())
+        ml->pushUndoSnapshot(tr("Fit Curve"), beforeSnap);
 }
 
 void Fit::insertFitFunctionCurve(const QString &name, std::vector<double> &x,
@@ -3602,20 +3651,25 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
 double Fit::aic() const
 {
     int n = int(d_x.size());
-    if (n <= 0)
-        return 0.0;
+    if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+        return std::numeric_limits<double>::quiet_NaN();
+    const double rawRss = rss();
+    if (!std::isfinite(rawRss) || rawRss < 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
-    double rssVal = std::max(1e-300, rss());
+    double rssVal = std::max(1e-300, rawRss);
     return double(n) * std::log(rssVal / double(n)) + 2.0 * double(k);
 }
 
 double Fit::aicc() const
 {
     int n = int(d_x.size());
-    if (n <= 0)
-        return 0.0;
+    if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+        return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
     double baseAic = aic();
+    if (!std::isfinite(baseAic))
+        return std::numeric_limits<double>::quiet_NaN();
     if (n > k + 1)
         return baseAic + (2.0 * double(k) * double(k + 1)) / double(n - k - 1);
     return baseAic + 2.0 * double(k) * double(k + 1);
@@ -3624,20 +3678,24 @@ double Fit::aicc() const
 double Fit::bic() const
 {
     int n = int(d_x.size());
-    if (n <= 0)
-        return 0.0;
+    if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+        return std::numeric_limits<double>::quiet_NaN();
+    const double rawRss = rss();
+    if (!std::isfinite(rawRss) || rawRss < 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
-    double rssVal = std::max(1e-300, rss());
+    double rssVal = std::max(1e-300, rawRss);
     return double(n) * std::log(rssVal / double(n)) + double(k) * std::log(std::max(1.0, double(n)));
 }
 
 double Fit::anovaFValue() const
 {
     int n = int(d_x.size());
-    if (n <= 1 || d_y.empty())
-        return 0.0;
-    if ((!std::isfinite(chi_2) || chi_2 < 0.0) && d_y_fit.size() != d_y.size())
-        return 0.0;
+    if (n <= 1 || d_y.empty() || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+        return std::numeric_limits<double>::quiet_NaN();
+    const double rawRss = rss();
+    if (!std::isfinite(rawRss) || rawRss < 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
 
     double mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(n);
     double tss = 0.0;
@@ -3645,7 +3703,7 @@ double Fit::anovaFValue() const
         double d = yv - mean;
         tss += d * d;
     }
-    double rssVal = std::max(0.0, rss());
+    double rssVal = std::max(0.0, rawRss);
     double mss = std::max(0.0, tss - rssVal);
 
     int p_free = std::max(1, effectiveFreeParameters());

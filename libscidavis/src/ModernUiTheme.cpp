@@ -35,6 +35,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFontDatabase>
 #include <QHash>
 #include <QIcon>
@@ -46,12 +48,16 @@
 #include <QMetaObject>
 #include <QPainter>
 #include <QPalette>
+#include <QPointer>
 #include <QProxyStyle>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSpinBox>
 #include <QStyleFactory>
 #include <QStyleOption>
+#include <QStyleOptionComboBox>
+#include <QStyleOptionSpinBox>
 #include <QStyleOptionTitleBar>
 #include <QTabBar>
 #include <QToolBar>
@@ -63,6 +69,110 @@
 #include <QWidget>
 
 namespace {
+
+class ComboSpinArrowPainter : public QObject
+{
+public:
+    explicit ComboSpinArrowPainter(QObject *parent = nullptr) : QObject(parent) { }
+
+    static ComboSpinArrowPainter *instance()
+    {
+        static QPointer<ComboSpinArrowPainter> s_inst;
+        if (!s_inst)
+            s_inst = new ComboSpinArrowPainter(QCoreApplication::instance());
+        return s_inst.data();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (!event || event->type() != QEvent::Paint)
+            return false;
+        QWidget *w = qobject_cast<QWidget *>(watched);
+        if (!w || !w->isVisible() || d_painting.contains(w))
+            return false;
+
+        const auto *cb = qobject_cast<const QComboBox *>(w);
+        const auto *sb = cb ? nullptr : qobject_cast<const QAbstractSpinBox *>(w);
+        const bool isSpin = sb && (qobject_cast<const QSpinBox *>(w) != nullptr
+                                   || qobject_cast<const QDoubleSpinBox *>(w) != nullptr);
+        if (!cb && !isSpin)
+            return false;
+
+        // 1. Let QStyleSheetStyle paint the styled frame and drop-down/spin buttons first
+        d_painting.insert(w);
+        QCoreApplication::sendEvent(w, event);
+        d_painting.remove(w);
+
+        // 2. Paint crisp antialiased vector chevrons directly over the subcontrol buttons
+        QPainter painter(w);
+        if (!painter.isActive())
+            return true;
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const bool enabled = w->isEnabled();
+        const QColor col = enabled ? QColor(0x47, 0x55, 0x69) : QColor(0x94, 0xA3, 0xB8);
+
+        if (cb) {
+            QStyleOptionComboBox opt;
+            opt.initFrom(cb);
+            opt.editable = cb->isEditable();
+            opt.frame = cb->hasFrame();
+            opt.subControls = QStyle::SC_All;
+            QRect arrowR = w->style()->subControlRect(QStyle::CC_ComboBox, &opt,
+                                                      QStyle::SC_ComboBoxArrow, cb);
+            if (!arrowR.isValid() || arrowR.width() < 6 || arrowR.height() < 6)
+                arrowR = QRect(w->width() - 20, 1, 19, qMax(6, w->height() - 2));
+            const QPointF c = QRectF(arrowR).center();
+            const qreal dx = qMin<qreal>(3.6, qMax<qreal>(2.0, (arrowR.width() - 4.0) * 0.35));
+            const qreal dy = qMin<qreal>(2.1, qMax<qreal>(1.4, (arrowR.height() - 4.0) * 0.25));
+            painter.setPen(QPen(col, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            const QPointF pts[3] = { QPointF(c.x() - dx, c.y() - dy * 0.55),
+                                     QPointF(c.x(), c.y() + dy * 0.75),
+                                     QPointF(c.x() + dx, c.y() - dy * 0.55) };
+            painter.drawPolyline(pts, 3);
+        } else if (sb && sb->buttonSymbols() != QAbstractSpinBox::NoButtons) {
+            QStyleOptionSpinBox opt;
+            opt.initFrom(sb);
+            opt.frame = sb->hasFrame();
+            opt.buttonSymbols = sb->buttonSymbols();
+            opt.subControls = QStyle::SC_All;
+            QRect upR = w->style()->subControlRect(QStyle::CC_SpinBox, &opt,
+                                                   QStyle::SC_SpinBoxUp, sb);
+            QRect dnR = w->style()->subControlRect(QStyle::CC_SpinBox, &opt,
+                                                   QStyle::SC_SpinBoxDown, sb);
+            if (!upR.isValid() || upR.width() < 6 || !dnR.isValid() || dnR.width() < 6) {
+                const int midY = w->height() / 2;
+                upR = QRect(w->width() - 18, 1, 17, qMax(6, midY - 1));
+                dnR = QRect(w->width() - 18, midY, 17, qMax(6, w->height() - midY - 1));
+            }
+            painter.setPen(QPen(col, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            {
+                const QPointF c = QRectF(upR).center();
+                const qreal dx = qMin<qreal>(3.0, qMax<qreal>(2.0, (upR.width() - 4.0) * 0.34));
+                const qreal dy = qMin<qreal>(1.6, qMax<qreal>(1.2, (upR.height() - 3.0) * 0.30));
+                const QPointF pts[3] = { QPointF(c.x() - dx, c.y() + dy * 0.55),
+                                         QPointF(c.x(), c.y() - dy * 0.75),
+                                         QPointF(c.x() + dx, c.y() + dy * 0.55) };
+                painter.drawPolyline(pts, 3);
+            }
+            {
+                const QPointF c = QRectF(dnR).center();
+                const qreal dx = qMin<qreal>(3.0, qMax<qreal>(2.0, (dnR.width() - 4.0) * 0.34));
+                const qreal dy = qMin<qreal>(1.6, qMax<qreal>(1.2, (dnR.height() - 3.0) * 0.30));
+                const QPointF pts[3] = { QPointF(c.x() - dx, c.y() - dy * 0.55),
+                                         QPointF(c.x(), c.y() + dy * 0.75),
+                                         QPointF(c.x() + dx, c.y() - dy * 0.55) };
+                painter.drawPolyline(pts, 3);
+            }
+        }
+        return true;
+    }
+
+private:
+    QSet<const QWidget *> d_painting;
+};
 
 class ModernFluentProxyStyle : public QProxyStyle
 {
@@ -133,6 +243,45 @@ public:
             painter->setPen(QPen(isActive ? QColor(0x3B, 0x82, 0xF6) : QColor(0xCB, 0xD5, 0xE1), 1));
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
+            painter->restore();
+            return;
+        }
+        if ((element == QStyle::PE_IndicatorArrowDown || element == QStyle::PE_IndicatorArrowUp
+             || element == QStyle::PE_IndicatorSpinUp || element == QStyle::PE_IndicatorSpinDown)
+            && option && painter) {
+            const bool enabled = (option->state & QStyle::State_Enabled) != 0;
+            const bool active = ((option->state & QStyle::State_Sunken) != 0)
+                    || ((option->state & QStyle::State_MouseOver) != 0);
+            const QColor col = !enabled ? QColor(0x94, 0xA3, 0xB8)
+                    : active            ? QColor(0x1D, 0x4E, 0xD8)
+                                        : QColor(0x47, 0x55, 0x69);
+            const QRectF r = QRectF(option->rect);
+            const QPointF c = r.center();
+            const bool isSpin = (element == QStyle::PE_IndicatorSpinUp
+                                 || element == QStyle::PE_IndicatorSpinDown);
+            const bool isUp = (element == QStyle::PE_IndicatorArrowUp
+                               || element == QStyle::PE_IndicatorSpinUp);
+            const qreal maxDx = qMax<qreal>(2.0, (r.width() - 2.0) * 0.42);
+            const qreal maxDy = qMax<qreal>(1.2, (r.height() - 2.0) * 0.36);
+            const qreal dx = qMin<qreal>(isSpin ? 3.0 : 3.6, maxDx);
+            const qreal dy = qMin<qreal>(isSpin ? 1.6 : 2.1, maxDy);
+
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setPen(QPen(col, isSpin ? 1.4 : 1.5, Qt::SolidLine, Qt::RoundCap,
+                                 Qt::RoundJoin));
+            painter->setBrush(Qt::NoBrush);
+            if (isUp) {
+                const QPointF pts[3] = { QPointF(c.x() - dx, c.y() + dy * 0.55),
+                                         QPointF(c.x(), c.y() - dy * 0.75),
+                                         QPointF(c.x() + dx, c.y() + dy * 0.55) };
+                painter->drawPolyline(pts, 3);
+            } else {
+                const QPointF pts[3] = { QPointF(c.x() - dx, c.y() - dy * 0.55),
+                                         QPointF(c.x(), c.y() + dy * 0.75),
+                                         QPointF(c.x() + dx, c.y() - dy * 0.55) };
+                painter->drawPolyline(pts, 3);
+            }
             painter->restore();
             return;
         }
@@ -278,6 +427,12 @@ public:
             || qobject_cast<QComboBox *>(widget) || qobject_cast<QLineEdit *>(widget)
             || qobject_cast<QAbstractSpinBox *>(widget) || qobject_cast<QTabBar *>(widget)) {
             widget->setAttribute(Qt::WA_Hover, true);
+        }
+        if ((qobject_cast<QComboBox *>(widget) || qobject_cast<QSpinBox *>(widget)
+             || qobject_cast<QDoubleSpinBox *>(widget))
+            && !widget->property("_tg_arrow_overlay").toBool()) {
+            widget->setProperty("_tg_arrow_overlay", true);
+            widget->installEventFilter(ComboSpinArrowPainter::instance());
         }
     }
 };
@@ -1424,16 +1579,23 @@ QString ModernUiTheme::modernStyleSheet()
             "  padding: 2px 6px;"
             "}"
             "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {"
-            "  background-color: #FFFFFF;"
+            "  background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 11.5pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 5px;"
             "  padding: 3px 7px;"
             "  selection-background-color: #2563EB;"
             "  selection-color: #FFFFFF;"
             "}"
+            "QComboBox {"
+            "  padding-right: 24px;"
+            "}"
+            "QSpinBox, QDoubleSpinBox {"
+            "  padding-right: 22px;"
+            "}"
             "QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {"
+            "  background-color: #FFFFFF;"
             "  border: 1px solid #94A3B8;"
             "}"
             "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {"
@@ -1444,6 +1606,53 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F1F5F9;"
             "  color: #94A3B8;"
             "  border: 1px solid #E2E8F0;"
+            "}"
+            "QComboBox::drop-down {"
+            "  subcontrol-origin: padding;"
+            "  subcontrol-position: top right;"
+            "  width: 20px;"
+            "  border-left: 1px solid #E2E8F0;"
+            "  border-top-right-radius: 5px;"
+            "  border-bottom-right-radius: 5px;"
+            "  background-color: transparent;"
+            "}"
+            "QComboBox::drop-down:hover {"
+            "  background-color: #F1F5F9;"
+            "}"
+            "QComboBox::drop-down:on {"
+            "  background-color: #EFF6FF;"
+            "}"
+            "QComboBox::down-arrow {"
+            "  image: none;"
+            "}"
+            "QSpinBox::up-button, QDoubleSpinBox::up-button {"
+            "  subcontrol-origin: border;"
+            "  subcontrol-position: top right;"
+            "  width: 18px;"
+            "  border-left: 1px solid #E2E8F0;"
+            "  border-bottom: 1px solid #E2E8F0;"
+            "  border-top-right-radius: 5px;"
+            "  background-color: transparent;"
+            "}"
+            "QSpinBox::down-button, QDoubleSpinBox::down-button {"
+            "  subcontrol-origin: border;"
+            "  subcontrol-position: bottom right;"
+            "  width: 18px;"
+            "  border-left: 1px solid #E2E8F0;"
+            "  border-bottom-right-radius: 5px;"
+            "  background-color: transparent;"
+            "}"
+            "QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,"
+            "QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {"
+            "  background-color: #F1F5F9;"
+            "}"
+            "QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,"
+            "QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {"
+            "  background-color: #DBEAFE;"
+            "}"
+            "QSpinBox::up-arrow, QDoubleSpinBox::up-arrow,"
+            "QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {"
+            "  image: none;"
             "}"
             "QComboBox QAbstractItemView {"
             "  background-color: #FFFFFF;"
@@ -1456,7 +1665,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QTabWidget::pane {"
             "  background-color: #FFFFFF;"
             "  border: 1px solid #E2E8F0;"
-            "  border-radius: 6px;"
+            "  border-radius: 8px;"
             "  top: -1px;"
             "}"
             "QTabBar {"
@@ -1516,6 +1725,33 @@ QString ModernUiTheme::modernStyleSheet()
             "}"
             "QTreeView::item:hover, QTreeWidget::item:hover {"
             "  background-color: #EFF6FF;"
+            "}"
+            "QListWidget, QListView {"
+            "  background-color: #FFFFFF;"
+            "  alternate-background-color: #F8FAFC;"
+            "  color: #0F172A;"
+            "  font-size: 10.5pt;"
+            "  border: 1px solid #E2E8F0;"
+            "  border-radius: 8px;"
+            "  padding: 4px;"
+            "  outline: 0;"
+            "}"
+            "QListWidget::item, QListView::item {"
+            "  border-radius: 6px;"
+            "  padding: 4px 8px;"
+            "  margin: 1px 0px;"
+            "  color: #1E293B;"
+            "  border-left: 2px solid transparent;"
+            "}"
+            "QListWidget::item:hover, QListView::item:hover {"
+            "  background-color: #F1F5F9;"
+            "  color: #0F172A;"
+            "}"
+            "QListWidget::item:selected, QListView::item:selected,"
+            "QListWidget::item:selected:active, QListView::item:selected:active {"
+            "  background-color: #EFF6FF;"
+            "  color: #1D4ED8;"
+            "  border-left: 2px solid #2563EB;"
             "}"
             "QHeaderView {"
             "  background-color: #F1F5F9;"
@@ -1584,18 +1820,20 @@ QString ModernUiTheme::modernStyleSheet()
             "}"
             "QGroupBox {"
             "  background-color: #FFFFFF;"
-            "  font-size: 11.5pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #E2E8F0;"
-            "  border-radius: 6px;"
-            "  margin-top: 10px;"
-            "  padding-top: 8px;"
+            "  border-radius: 8px;"
+            "  margin-top: 12px;"
+            "  padding-top: 10px;"
             "}"
             "QGroupBox::title {"
             "  subcontrol-origin: margin;"
             "  subcontrol-position: top left;"
             "  left: 10px;"
-            "  padding: 0px 5px;"
-            "  color: #1E293B;"
+            "  padding: 0px 6px;"
+            "  font-size: 9.5pt;"
+            "  font-weight: 600;"
+            "  color: #475569;"
             "}"
             "QStatusBar {"
             "  background-color: #F8FAFC;"

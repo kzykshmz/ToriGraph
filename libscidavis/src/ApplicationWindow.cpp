@@ -66,6 +66,7 @@
 #include "ConfigDialog.h"
 #ifdef ORIGIN_IMPORT
 #include "importOPJ.h"
+#include "ImportOPJU.h"
 #endif
 #include "AssociationsDialog.h"
 #include "RenameWindowDialog.h"
@@ -525,7 +526,10 @@ void registerApplicationWindowJapaneseStrings()
         add("&Stacked Layers", "スタックレイヤ(&S)");
 
         // Analysis & Peak Analyzer
-        add("Peak &Analyzer (OriginPro)...", "ピークアナライザ (OriginPro)(&A)...");
+        add("Peak &Analyzer...", "ピークアナライザ(&A)...");
+        add("Peak Analyzer", "ピークアナライザ");
+        add("Peak Analyzer (Baseline, Peak Finding, Deconvolution & Integration)",
+            "ピークアナライザ (ベースライン・ピーク検出・分離・積分)");
         add("&Peak / Multi-Peak Fit...", "ピーク / マルチピークフィット(&P)...");
         add("Auto Peak Fit (&Gaussian)", "自動ピークフィット (Gaussian)(&G)");
         add("Auto Peak Fit (&Lorentzian)", "自動ピークフィット (Lorentzian)(&L)");
@@ -560,8 +564,8 @@ void registerApplicationWindowJapaneseStrings()
         add("Keep Aspect Ratio on Resize", "リサイズ時に縦横比を維持");
 
         // Peak Analyzer Dialog strings
-        add("OriginPro Peak Analyzer - Multi-Peak & Baseline Suite",
-            "OriginPro ピークアナライザ - マルチピーク・ベースライン解析");
+        add("Peak Analyzer - Multi-Peak & Baseline Suite",
+            "ピークアナライザ - マルチピーク・ベースライン解析");
         add("1. Goal & Baseline", "1. 目的とベースライン");
         add("2. Find Peaks & Peak List", "2. ピーク検出・一覧編集");
         add("3. Fit & Output", "3. フィット関数・出力設定");
@@ -606,7 +610,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Cluster Selector (Pro)...", "クラスタ選択・統計 (Pro)...");
         add("Clear Active &Gadget / ROI", "アクティブなガジェット/ROIを解除(&G)");
         add("Clear Active Gadget / ROI", "アクティブなガジェット/ROIを解除");
-        add("OriginPro Interactive ROI Gadgets", "OriginPro インタラクティブROIガジェット");
+        add("Interactive ROI Gadgets", "インタラクティブROIガジェット");
 
         // Phase 3: Non-Destructive Data Masking
         add("Data &Masking", "データマスク(&M)");
@@ -1334,8 +1338,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Columns:", "列数:");
         add("Font Size:", "文字サイズ:");
         add("&Graph Inspector Dock", "グラフインスペクタ(&G)");
-        add("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)",
-            "OriginPro風グラフインスペクタの表示/折りたたみ切替 (Ctrl+Shift+I)");
+        add("Toggle Tabbed Workspace View", "タブ表示ワークスペースを切替");
         add("Apply Frame Preset", "枠プリセットを適用");
         add("Apply ISIJ Style Preset", "ISIJ論文プリセットを適用");
         add("Apply Presentation Slide Preset", "発表スライドプリセットを適用");
@@ -1673,8 +1676,26 @@ void registerApplicationWindowJapaneseStrings()
         add("Saved Python script to %1", "Pythonスクリプトを保存しました: %1");
         add("Failed to write file:\n%1", "ファイルの書き込みに失敗しました:\n%1");
         add("Import %1", "%1 をインポート");
+        add("Origin Unicode project", "Origin Unicode プロジェクト");
         add("Origin OPJU Format", "Origin OPJU 形式");
-        add("This Origin 2018+ Unicode project (.opju, CPYU container) uses a proprietary format not directly readable by liborigin.\n\nPlease save as legacy '.opj' in Origin or export worksheets as CSV/ASCII.", "この Origin 2018+ Unicode プロジェクト (.opju, CPYU形式) は独自コンテナ形式のため直接読み込めません。\n\nOrigin側で従来形式の '.opj' として保存するか、CSV/ASCIIとしてエクスポートしてください。");
+        add("Origin OPJU Import Error", "Origin OPJU インポートエラー");
+        add("Failed to import Origin Unicode project (.opju):\n%1",
+            "Origin Unicode プロジェクト (.opju) のインポートに失敗しました:\n%1");
+        add("Import Origin OPJ / OPJU Project", "Origin OPJ / OPJU プロジェクトをインポート");
+        add("Origin Projects (*.opj *.OPJ *.opju *.OPJU);;All Files (*)",
+            "Origin プロジェクト (*.opj *.OPJ *.opju *.OPJU);;すべてのファイル (*)");
+        add("Ctrl+K Search Commands...", "Ctrl+K コマンド検索...");
+        add("Ctrl+K Search Commands", "Ctrl+K コマンド検索");
+        add("Ready — Select columns to plot or press Ctrl+K to search commands",
+            "準備完了 — 列を選択してグラフ作成、または Ctrl+K でコマンド検索");
+        add("Ready — Press Ctrl+K to search commands",
+            "準備完了 — Ctrl+K でコマンド検索");
+        add("Worksheet: %1  (%2 rows × %3 cols)  —  Select columns & click Plot or press Ctrl+K",
+            "ワークシート: %1  (%2行 × %3列)  —  列を選択してグラフ作成、または Ctrl+K でコマンド検索");
+        add("2D Graph: %1  (Layers: %2 · Curves: %3)  —  Click curve/axis to edit in Inspector",
+            "2Dグラフ: %1  (レイヤー: %2 · 曲線: %3)  —  曲線・軸をクリックしてインスペクタで編集");
+        add("Matrix: %1  (%2 × %3)", "マトリクス: %1  (%2 × %3)");
+        add("Active: %1", "アクティブ: %1");
         add("Categories:", "カテゴリ軸:");
         add("Categories", "カテゴリ軸");
         add("(Numeric Ticks)", "(数値目盛)");
@@ -2180,7 +2201,9 @@ ApplicationWindow::ApplicationWindow()
 
     explorerSplitter->addWidget(&folders);
     explorerSplitter->addWidget(&lv);
-    explorerSplitter->setSizes(QList<int>() << 50 << 50);
+    explorerSplitter->setStretchFactor(0, 22);
+    explorerSplitter->setStretchFactor(1, 78);
+    explorerSplitter->setSizes(QList<int>() << 22 << 78);
 
     d_explorer_container = new ExplorerContainerWidget(&explorerWindow);
     QVBoxLayout *explorerMainLayout = new QVBoxLayout(d_explorer_container);
@@ -2248,7 +2271,7 @@ ApplicationWindow::ApplicationWindow()
     d_btn_tabbed_view->setFixedHeight(26);
     d_btn_tabbed_view->setText(tr("Tabbed View"));
     d_btn_tabbed_view->setCheckable(true);
-    d_btn_tabbed_view->setToolTip(tr("Toggle OriginPro-style Tabbed Workspace View"));
+    d_btn_tabbed_view->setToolTip(tr("Toggle Tabbed Workspace View"));
     connect(d_btn_tabbed_view, SIGNAL(toggled(bool)), this, SLOT(setTabbedWorkspaceView(bool)));
 
     explorerMainLayout->addLayout(d_explorer_bar_grid);
@@ -2898,13 +2921,42 @@ void ApplicationWindow::initToolBars()
     plot_tools->setEnabled(false);
 
     d_status_info = new QLabel(this);
-    d_status_info->setFrameStyle(QFrame::Sunken | QFrame::StyledPanel);
+    d_status_info->setObjectName(QStringLiteral("StatusBarContextLabel"));
+    d_status_info->setFrameStyle(QFrame::NoFrame);
     d_status_info->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d_status_info->setStyleSheet(QStringLiteral(
+            "QLabel#StatusBarContextLabel { color: #334155; padding: 0 8px; "
+            "font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif; font-size: 9.5pt; }"));
+    d_status_info->setText(tr("Ready — Select columns to plot or press Ctrl+K to search commands"));
     d_status_info->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(d_status_info, SIGNAL(customContextMenuRequested(const QPoint &)), this,
             SLOT(showStatusBarContextMenu(const QPoint &)));
 
+    statusBar()->setSizeGripEnabled(true);
     statusBar()->addWidget(d_status_info, 1);
+
+    QToolButton *statusCmdHintBtn = new QToolButton(statusBar());
+    statusCmdHintBtn->setObjectName(QStringLiteral("StatusBarCommandHintBtn"));
+    statusCmdHintBtn->setAutoRaise(false);
+    statusCmdHintBtn->setCursor(Qt::PointingHandCursor);
+    statusCmdHintBtn->setFocusPolicy(Qt::NoFocus);
+    statusCmdHintBtn->setText(tr("Ctrl+K Search Commands"));
+    statusCmdHintBtn->setToolTip(tr("Open Fuzzy-Search Command Palette (Ctrl+K)"));
+    statusCmdHintBtn->setStyleSheet(QStringLiteral(
+            "QToolButton#StatusBarCommandHintBtn {"
+            "  background-color: #F1F5F9; color: #475569; border: 1px solid #CBD5E1;"
+            "  border-radius: 9px; padding: 1px 10px; margin-right: 4px;"
+            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 9pt; font-weight: 600;"
+            "}"
+            "QToolButton#StatusBarCommandHintBtn:hover {"
+            "  background-color: #EFF6FF; color: #1D4ED8; border: 1px solid #93C5FD;"
+            "}"));
+    connect(statusCmdHintBtn, &QToolButton::clicked, this, [this]() {
+        if (d_modern_ribbon)
+            d_modern_ribbon->openCommandPalette();
+    });
+    statusBar()->addPermanentWidget(statusCmdHintBtn);
 
     matrix_plot_tools = new QToolBar(tr("Matrix Plot"), this);
     matrix_plot_tools->setObjectName("matrix_plot_tools");
@@ -3532,7 +3584,7 @@ void ApplicationWindow::initMainMenu()
         btnGadgetsPopup->setMenu(gadgetsMenu);
         btnGadgetsPopup->setPopupMode(QToolButton::InstantPopup);
         btnGadgetsPopup->setIcon(QPixmap(":/cursors.xpm"));
-        btnGadgetsPopup->setToolTip(tr("OriginPro Interactive ROI Gadgets"));
+        btnGadgetsPopup->setToolTip(tr("Interactive ROI Gadgets"));
         graph_tools->addWidget(btnGadgetsPopup);
 
         d_btn_style_presets_popup = new QToolButton(this);
@@ -6755,8 +6807,31 @@ void ApplicationWindow::initTable(Table *w)
         w->setHidden();
     else if (isTabbedWorkspaceView())
         w->showMaximized();
-    else
+    else {
+        const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+        if (vp.width() > 240 && vp.height() > 240) {
+            const int targetW = qMax(680, int(vp.width() * 0.75));
+            const int targetH = qMax(500, int(vp.height() * 0.80));
+            w->resize(qMin(targetW, qMax(400, vp.width() - 16)),
+                      qMin(targetH, qMax(300, vp.height() - 16)));
+        }
         w->showNormal();
+        if (vp.width() <= 240 || vp.height() <= 240) {
+            QPointer<Table> safeTbl(w);
+            QTimer::singleShot(0, this, [this, safeTbl]() {
+                if (!safeTbl || isTabbedWorkspaceView() || safeTbl->isMaximized()
+                    || safeTbl->isMinimized())
+                    return;
+                const QSize vp2 = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+                if (vp2.width() > 240 && vp2.height() > 240) {
+                    const int targetW = qMax(680, int(vp2.width() * 0.75));
+                    const int targetH = qMax(500, int(vp2.height() * 0.80));
+                    safeTbl->resize(qMin(targetW, qMax(400, vp2.width() - 16)),
+                                    qMin(targetH, qMax(300, vp2.height() - 16)));
+                }
+            });
+        }
+    }
 
     connectTable(w);
     customTable(w);
@@ -7116,6 +7191,39 @@ Matrix *ApplicationWindow::matrix(const QString &name)
     return 0;
 }
 
+static void updateStatusBarForWindow(QLabel *statusLabel, QMdiSubWindow *w)
+{
+    if (!statusLabel)
+        return;
+    if (Table *tbl = qobject_cast<Table *>(w)) {
+        statusLabel->setText(
+                ApplicationWindow::tr(
+                        "Worksheet: %1  (%2 rows × %3 cols)  —  Select columns & click Plot or press Ctrl+K")
+                        .arg(tbl->name())
+                        .arg(tbl->numRows())
+                        .arg(tbl->numCols()));
+    } else if (MultiLayer *ml = qobject_cast<MultiLayer *>(w)) {
+        Graph *ag = ml->activeGraph();
+        const int nCurves = ag ? ag->curves() : 0;
+        statusLabel->setText(
+                ApplicationWindow::tr(
+                        "2D Graph: %1  (Layers: %2 · Curves: %3)  —  Click curve/axis to edit in Inspector")
+                        .arg(ml->name())
+                        .arg(ml->layers())
+                        .arg(nCurves));
+    } else if (Matrix *mat = qobject_cast<Matrix *>(w)) {
+        statusLabel->setText(ApplicationWindow::tr("Matrix: %1  (%2 × %3)")
+                                     .arg(mat->name())
+                                     .arg(mat->numRows())
+                                     .arg(mat->numCols()));
+    } else if (MyWidget *mw = qobject_cast<MyWidget *>(w)) {
+        statusLabel->setText(ApplicationWindow::tr("Active: %1").arg(mw->name()));
+    } else {
+        statusLabel->setText(
+                ApplicationWindow::tr("Ready — Press Ctrl+K to search commands"));
+    }
+}
+
 void ApplicationWindow::windowActivated(QMdiSubWindow *w)
 {
     if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
@@ -7147,6 +7255,7 @@ void ApplicationWindow::windowActivated(QMdiSubWindow *w)
 
     updateGraphInspectorResponsiveness();
     updateUndoRedoActionsForActiveWindow();
+    updateStatusBarForWindow(d_status_info, w);
 
     if (!w || !w->inherits("MyWidget")) {
         syncGraphPageAndToolbarMenuState();
@@ -7863,7 +7972,8 @@ void ApplicationWindow::open()
             || fn.endsWith(".qti", Qt::CaseInsensitive) || fn.endsWith(".qti~", Qt::CaseInsensitive)
             || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
             || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
-            || fn.endsWith(".opj", Qt::CaseInsensitive) || fn.endsWith(".ogm", Qt::CaseInsensitive)
+            || fn.endsWith(".opj", Qt::CaseInsensitive) || fn.endsWith(".opju", Qt::CaseInsensitive)
+            || fn.endsWith(".ogm", Qt::CaseInsensitive)
             || fn.endsWith(".ogw", Qt::CaseInsensitive) || fn.endsWith(".ogg", Qt::CaseInsensitive)
             || fn.endsWith(".org", Qt::CaseInsensitive)) {
             if (!fi.exists()) {
@@ -7884,6 +7994,7 @@ void ApplicationWindow::open()
                     || fn.endsWith(".qti", Qt::CaseInsensitive)
                     || fn.endsWith(".qti~", Qt::CaseInsensitive)
                     || fn.endsWith(".opj", Qt::CaseInsensitive)
+                    || fn.endsWith(".opju", Qt::CaseInsensitive)
                     || fn.endsWith(".ogg", Qt::CaseInsensitive)
                     || fn.endsWith(".org", Qt::CaseInsensitive))
                     this->close();
@@ -7903,9 +8014,11 @@ void ApplicationWindow::open()
 
 ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList &scriptArgs)
 {
-    if (fn.endsWith(".opj", Qt::CaseInsensitive) || fn.endsWith(".ogm", Qt::CaseInsensitive)
-        || fn.endsWith(".ogw", Qt::CaseInsensitive) || fn.endsWith(".ogg", Qt::CaseInsensitive)
-        || fn.endsWith(".org", Qt::CaseInsensitive))
+    if (fn.endsWith(".opju", Qt::CaseInsensitive))
+        return importOPJ(fn);
+    else if (fn.endsWith(".opj", Qt::CaseInsensitive) || fn.endsWith(".ogm", Qt::CaseInsensitive)
+             || fn.endsWith(".ogw", Qt::CaseInsensitive) || fn.endsWith(".ogg", Qt::CaseInsensitive)
+             || fn.endsWith(".org", Qt::CaseInsensitive))
 #ifdef ORIGIN_IMPORT
         return importOPJ(fn);
 #else
@@ -7982,6 +8095,7 @@ void ApplicationWindow::openRecentProject()
                 || fn.endsWith(".qti", Qt::CaseInsensitive)
                 || fn.endsWith(".qti~", Qt::CaseInsensitive)
                 || fn.endsWith(".opj", Qt::CaseInsensitive)
+                || fn.endsWith(".opju", Qt::CaseInsensitive)
                 || fn.endsWith(".ogg", Qt::CaseInsensitive)
                 || fn.endsWith(".org", Qt::CaseInsensitive)))
             this->close();
@@ -9797,6 +9911,7 @@ bool ApplicationWindow::saveProject()
     }
 
     if (projectname == "untitled" || projectname.endsWith(".opj", Qt::CaseInsensitive)
+        || projectname.endsWith(".opju", Qt::CaseInsensitive)
         || projectname.endsWith(".ogm", Qt::CaseInsensitive)
         || projectname.endsWith(".ogw", Qt::CaseInsensitive)
         || projectname.endsWith(".ogg", Qt::CaseInsensitive)
@@ -13128,6 +13243,7 @@ void ApplicationWindow::modifiedProject()
 {
     actionSaveProject->setEnabled(true);
     saved = false;
+    updateStatusBarForWindow(d_status_info, d_workspace.activeSubWindow());
 }
 
 void ApplicationWindow::modifiedProject(MyWidget *w)
@@ -17530,7 +17646,7 @@ void ApplicationWindow::createActions()
     connect(actionMultiPeakPearsonVII, SIGNAL(triggered()), this, SLOT(fitMultiPeakPearsonVII()));
 
     actionPeakAnalyzerDialog =
-            new QAction(QIcon(QPixmap(":/wizard.xpm")), tr("Peak &Analyzer (OriginPro)..."), this);
+            new QAction(QIcon(QPixmap(":/wizard.xpm")), tr("Peak &Analyzer..."), this);
     actionPeakAnalyzerDialog->setShortcut(tr("Ctrl+Shift+P"));
     connect(actionPeakAnalyzerDialog, SIGNAL(triggered()), this, SLOT(showPeakAnalyzerDialog()));
 
@@ -17907,7 +18023,7 @@ void ApplicationWindow::createActions()
     actionToggleGraphInspector->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I));
     actionToggleGraphInspector->setShortcutContext(Qt::ApplicationShortcut);
     actionToggleGraphInspector->setToolTip(
-            tr("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)"));
+            tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"));
     connect(actionToggleGraphInspector, &QAction::triggered, this,
             [this](bool) { toggleGraphInspectorDock(); });
     addAction(actionToggleGraphInspector);
@@ -18856,10 +18972,10 @@ void ApplicationWindow::translateActionsStrings()
     if (actionMultiPeakPearsonVII)
         actionMultiPeakPearsonVII->setText(tr("Pearson &VII..."));
     if (actionPeakAnalyzerDialog) {
-        actionPeakAnalyzerDialog->setText(tr("Peak &Analyzer (OriginPro)..."));
+        actionPeakAnalyzerDialog->setText(tr("Peak &Analyzer..."));
         actionPeakAnalyzerDialog->setShortcut(tr("Ctrl+Shift+P"));
         actionPeakAnalyzerDialog->setToolTip(
-                tr("OriginPro Peak Analyzer (Baseline, Peak Finding, Deconvolution & Integration)"));
+                tr("Peak Analyzer (Baseline, Peak Finding, Deconvolution & Integration)"));
     }
     if (actionPeakFitDialog) {
         actionPeakFitDialog->setText(tr("&Peak / Multi-Peak Fit..."));
@@ -19440,7 +19556,12 @@ void ApplicationWindow::translateActionsStrings()
         actionToggleGraphInspector->setText(tr("&Graph Inspector Dock"));
         actionToggleGraphInspector->setShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I));
         actionToggleGraphInspector->setToolTip(
-                tr("Toggle OriginPro-Style Graph Inspector Dock (Ctrl+Shift+I)"));
+                tr("Toggle Graph Inspector Dock (Ctrl+Shift+I)"));
+    }
+    if (QToolButton *statusCmdHintBtn =
+                statusBar()->findChild<QToolButton *>(QStringLiteral("StatusBarCommandHintBtn"))) {
+        statusCmdHintBtn->setText(tr("Ctrl+K Search Commands"));
+        statusCmdHintBtn->setToolTip(tr("Open Fuzzy-Search Command Palette (Ctrl+K)"));
     }
     if (actionWorkspaceLayoutTabbed)
         actionWorkspaceLayoutTabbed->setText(tr("&Tabbed Workspace"));
@@ -19582,11 +19703,43 @@ MultiLayer *ApplicationWindow::plotSpectrogram(Matrix *m, Graph::CurveType type)
 
 ApplicationWindow *ApplicationWindow::importOPJ(const QString &filename [[maybe_unused]])
 {
-#ifdef ORIGIN_IMPORT
     const bool nonInteractive = isNonInteractiveContext(this);
+    if (filename.endsWith(".opju", Qt::CaseInsensitive)) {
+        if (!nonInteractive)
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+
+        ApplicationWindow *app = new ApplicationWindow();
+        app->setHeadlessMode(d_headless_mode || nonInteractive);
+        app->applyUserSettings();
+        app->setWindowTitle("ToriGraph - " + filename);
+        if (!nonInteractive)
+            app->showMaximized();
+        app->projectname = filename;
+        app->recentProjects.removeAll(filename);
+        app->recentProjects.push_front(filename);
+        app->updateRecentProjectsList();
+
+        QString opjuErr;
+        const bool ok = ImportOPJU::importFile(app, filename, &opjuErr);
+        if (!nonInteractive)
+            QApplication::restoreOverrideCursor();
+        if (!ok) {
+            app->blockSignals(true);
+            delete app;
+            if (!nonInteractive) {
+                QMessageBox::warning(
+                        this, tr("Origin OPJU Import Error"),
+                        tr("Failed to import Origin Unicode project (.opju):\n%1")
+                                .arg(opjuErr.isEmpty() ? tr("Unsupported or corrupted .opju file.")
+                                                       : opjuErr));
+            }
+            return nullptr;
+        }
+        return app;
+    }
+#ifdef ORIGIN_IMPORT
     auto codec = getSettings().value("/General/Dialogs/LastUsedOriginLocale", "").toString();
     if (filename.endsWith(".opj", Qt::CaseInsensitive)
-        || filename.endsWith(".opju", Qt::CaseInsensitive)
         || filename.endsWith(".ogg", Qt::CaseInsensitive)
         || filename.endsWith(".org", Qt::CaseInsensitive)) {
         if (!nonInteractive)
@@ -19609,21 +19762,6 @@ ApplicationWindow *ApplicationWindow::importOPJ(const QString &filename [[maybe_
         if (importer.error() != 0) {
             app->blockSignals(true);
             delete app;
-            if (!nonInteractive && filename.endsWith(".opju", Qt::CaseInsensitive)) {
-                bool isCpyu = false;
-                QFile mf(filename);
-                if (mf.open(QIODevice::ReadOnly)) {
-                    isCpyu = (mf.read(4) == QByteArray("CPYU", 4));
-                    mf.close();
-                }
-                if (isCpyu) {
-                    QMessageBox::warning(
-                            this, tr("Origin OPJU Format"),
-                            tr("This Origin 2018+ Unicode project (.opju, CPYU container) uses a "
-                               "proprietary format not directly readable by liborigin.\n\n"
-                               "Please save as legacy '.opj' in Origin or export worksheets as CSV/ASCII."));
-                }
-            }
             return nullptr;
         }
         return app;
@@ -20013,7 +20151,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     dlg->setModal(false);
     if (MultiLayer *ml = g->multiLayerParent())
         dlg->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
-    dlg->setWindowTitle(tr("Peak Analyzer (OriginPro)"));
+    dlg->setWindowTitle(tr("Peak Analyzer"));
     dlg->setMinimumSize(620, 540);
     d_active_peak_analyzer_dlg = dlg;
 
@@ -20478,7 +20616,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     goalForm->addRow(tr("Goal:"), goalCombo);
     tab1Layout->addWidget(goalGroup);
 
-    QGroupBox *baseGroup = new QGroupBox(tr("Baseline Mode & Subtraction"), tabGoalBaseline);
+    QGroupBox *baseGroup = new QGroupBox(tr("Baseline Mode && Subtraction"), tabGoalBaseline);
     QVBoxLayout *baseVBox = new QVBoxLayout(baseGroup);
     QFormLayout *baseForm = new QFormLayout();
     QComboBox *baselineCombo = new QComboBox(baseGroup);
@@ -20915,7 +21053,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
     QWidget *tabFitOutput = new QWidget(dlg);
     QVBoxLayout *tab3Layout = new QVBoxLayout(tabFitOutput);
 
-    QGroupBox *profileGroup = new QGroupBox(tr("Peak Profile & Shape Parameters"), tabFitOutput);
+    QGroupBox *profileGroup = new QGroupBox(tr("Peak Profile && Shape Parameters"), tabFitOutput);
     QFormLayout *profileForm = new QFormLayout(profileGroup);
 
     QComboBox *profileCombo = new QComboBox(profileGroup);
@@ -20987,7 +21125,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
     tab3Layout->addWidget(profileGroup);
 
-    QGroupBox *outputGroup = new QGroupBox(tr("Output & Curve Options"), tabFitOutput);
+    QGroupBox *outputGroup = new QGroupBox(tr("Output && Curve Options"), tabFitOutput);
     QVBoxLayout *outputLayout = new QVBoxLayout(outputGroup);
     QCheckBox *plotPeaksCheck =
             new QCheckBox(tr("Plot Individual Deconvoluted Peak Curves"), outputGroup);
@@ -21955,7 +22093,37 @@ void ApplicationWindow::appendProject(const QString &fn)
     FolderListItem *fli = new FolderListItem(item, current_folder);
     current_folder->setFolderListItem(fli);
 
-    if (isOriginProject)
+    if (fn.endsWith(".opju", Qt::CaseInsensitive)) {
+        file->close();
+        delete file;
+        QString opjuErr;
+        if (!ImportOPJU::importFile(this, fn, &opjuErr)) {
+            for (MyWidget *mw : appendedRoot->windowsList()) {
+                if (mw)
+                    mw->askOnCloseEvent(false);
+            }
+            const bool prevConfirm = confirmCloseFolder;
+            confirmCloseFolder = false;
+            deleteFolder(appendedRoot);
+            confirmCloseFolder = prevConfirm;
+            current_folder = cf;
+            if (cf && cf->folderListItem())
+                folders.setCurrentItem(cf->folderListItem());
+            folders.blockSignals(false);
+            changeFolder(cf, true);
+            blockSignals(false);
+            renamedTables.clear();
+            if (!nonInteractive) {
+                QApplication::restoreOverrideCursor();
+                QMessageBox::warning(
+                        this, tr("Origin OPJU Import Error"),
+                        tr("Failed to import Origin Unicode project (.opju):\n%1")
+                                .arg(opjuErr.isEmpty() ? tr("Unsupported or corrupted .opju file.")
+                                                       : opjuErr));
+            }
+            return;
+        }
+    } else if (isOriginProject)
 #ifdef ORIGIN_IMPORT
     {
         auto codec = getSettings().value("/General/Dialogs/LastUsedOriginLocale", "").toString();
@@ -23832,11 +24000,18 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
                 d_btn_tabbed_view->hide();
             d_explorer_bar_grid->setColumnStretch(0, 1);
 
-            if (explorerSplitter && explorerSplitter->orientation() != Qt::Vertical) {
-                explorerSplitter->setOrientation(Qt::Vertical);
-                const int totalH = qMax(300, explorerSplitter->height());
-                explorerSplitter->setSizes(QList<int>() << qRound(totalH * 0.35)
-                                                        << qRound(totalH * 0.65));
+            if (explorerSplitter) {
+                const bool orientChanged = (explorerSplitter->orientation() != Qt::Vertical);
+                if (orientChanged)
+                    explorerSplitter->setOrientation(Qt::Vertical);
+                explorerSplitter->setStretchFactor(0, 22);
+                explorerSplitter->setStretchFactor(1, 78);
+                if (orientChanged || !explorerSplitter->property("_verticalRatioInit").toBool()) {
+                    explorerSplitter->setProperty("_verticalRatioInit", true);
+                    const int totalH = qMax(300, explorerSplitter->height());
+                    explorerSplitter->setSizes(QList<int>() << qRound(totalH * 0.22)
+                                                            << qRound(totalH * 0.78));
+                }
             }
         } else {
             if (d_explorer_search) {
@@ -23881,14 +24056,27 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
     }
 
     if (lv.columnCount() >= 5) {
-        lv.setColumnHidden(2, false);
+        const bool compactDock = verticalMode && (contW <= 0 || contW < 320);
+        lv.setColumnHidden(2, compactDock);
         lv.setColumnHidden(3, verticalMode);
         lv.setColumnHidden(4, verticalMode);
-        if (verticalMode) {
+        if (QHeaderView *hdr = lv.header()) {
+            if (compactDock) {
+                hdr->setStretchLastSection(false);
+                hdr->setSectionResizeMode(0, QHeaderView::Stretch);
+                hdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+            } else {
+                hdr->setSectionResizeMode(0, QHeaderView::Interactive);
+                hdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+                hdr->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+                hdr->setStretchLastSection(true);
+            }
+        }
+        if (verticalMode && !compactDock) {
             lv.resizeColumnToContents(1);
             lv.resizeColumnToContents(2);
-            if (lv.columnWidth(0) < 85 || lv.columnWidth(0) > 145)
-                lv.setColumnWidth(0, 105);
+            if (lv.columnWidth(0) < 110)
+                lv.setColumnWidth(0, 140);
         }
     }
 }
@@ -25350,6 +25538,7 @@ void ApplicationWindow::toggleGraphMiniToolbar(bool enabled)
 
 void ApplicationWindow::syncGraphPageAndToolbarMenuState()
 {
+    updateStatusBarForWindow(d_status_info, d_workspace.activeSubWindow());
     if (actionToggleMiniToolbar) {
         actionToggleMiniToolbar->blockSignals(true);
         actionToggleMiniToolbar->setChecked(GraphMiniToolbar::isMiniToolbarEnabled());

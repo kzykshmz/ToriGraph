@@ -358,9 +358,8 @@ private:
     QTabBar *d_tab_bar = nullptr;
     QStackedWidget *d_tab_stack = nullptr;
 
-    QToolButton *d_btn_quick_isij = nullptr;
-    QToolButton *d_btn_quick_slide = nullptr;
     QToolButton *d_btn_cmd_palette = nullptr;
+    QFrame *d_layout_segment_frame = nullptr;
     QButtonGroup *d_layout_btn_group = nullptr;
     QToolButton *d_btn_layout_tabbed = nullptr;
     QToolButton *d_btn_layout_split = nullptr;

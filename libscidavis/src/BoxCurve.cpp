@@ -315,12 +315,15 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         painter->setBrush(boxBrush);
         painter->drawPolygon(pa);
     } else if (b_style == Notch) {
-        int j = (int)ceil(0.5 * (size - 1.96 * sqrt((double)size)));
-        int k = (int)ceil(0.5 * (size + 1.96 * sqrt((double)size)));
-        j = qBound(0, j, size - 1);
-        k = qBound(0, k, size - 1);
-        const int lowerCI = yMap.transform(dat[j]);
-        const int upperCI = yMap.transform(dat[k]);
+        const double q25 = gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.25);
+        const double q50 = gsl_stats_median_from_sorted_data(dat, 1, size);
+        const double q75 = gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.75);
+        const double iqr = qMax(0.0, q75 - q25);
+        const double halfNotch = (size > 0) ? (1.57 * iqr / sqrt((double)size)) : 0.0;
+        const int yTop = qMin(b_upperq, b_lowerq);
+        const int yBot = qMax(b_upperq, b_lowerq);
+        const int lowerCI = qBound(yTop, yMap.transform(q50 - halfNotch), yBot);
+        const int upperCI = qBound(yTop, yMap.transform(q50 + halfNotch), yBot);
 
         QPolygon pa(10);
         pa[0] = QPoint(px + hbw, b_upperq);

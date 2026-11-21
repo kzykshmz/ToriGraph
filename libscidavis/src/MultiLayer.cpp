@@ -696,17 +696,23 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     d_canvas_status_pill->setFocusPolicy(Qt::NoFocus);
     d_canvas_status_pill->setCursor(Qt::PointingHandCursor);
     d_canvas_status_pill->setPopupMode(QToolButton::InstantPopup);
+    {
+        QFont pillFont(QStringLiteral("Segoe UI"));
+        pillFont.setPointSizeF(9.5);
+        pillFont.setWeight(QFont::DemiBold);
+        d_canvas_status_pill->setFont(pillFont);
+    }
     d_canvas_status_pill->setStyleSheet(QStringLiteral(
             "QToolButton#MultiLayerStatusPill {"
             "  background-color: rgba(255, 255, 255, 235);"
             "  color: #334155;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 12px;"
-            "  padding: 2px 11px;"
+            "  padding: 2px 10px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.8pt;"
+            "  font-size: 9.5pt;"
             "  font-weight: 600;"
-            "  min-height: 24px;"
+            "  min-height: 22px;"
             "}"
             "QToolButton#MultiLayerStatusPill:hover {"
             "  background-color: #EFF6FF;"
@@ -2937,6 +2943,11 @@ QString MultiLayer::saveToString(const QString &geometry)
                          .arg(zr.height(), 0, 'g', 12);
         }
     }
+    if (active_graph) {
+        const int activeIdx = graphsList.indexOf(active_graph);
+        if (activeIdx >= 0)
+            s += QString("<ToriActiveLayer index=\"%1\"/>\n").arg(activeIdx);
+    }
     return s + "</multiLayer>\n";
 }
 
@@ -2978,6 +2989,11 @@ QString MultiLayer::saveAsTemplate(const QString &geometryInfo)
                          .arg(zr.width(), 0, 'g', 12)
                          .arg(zr.height(), 0, 'g', 12);
         }
+    }
+    if (active_graph) {
+        const int activeIdx = graphsList.indexOf(active_graph);
+        if (activeIdx >= 0)
+            s += QString("<ToriActiveLayer index=\"%1\"/>\n").arg(activeIdx);
     }
     return s + "</multiLayer>\n";
 }
@@ -4529,11 +4545,19 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, 
     }
     inset->removeLegend();
     inset->setTitle("");
-    inset->setBackgroundColor(QColor(255, 255, 255, 0));
+    inset->setBackgroundColor(QColor(Qt::white));
     inset->setCanvasBackground(QColor("#FFFFFF"));
-    inset->setAutoFillBackground(false);
+    {
+        QPalette insetPal = inset->palette();
+        insetPal.setColor(QPalette::Window, QColor(Qt::white));
+        inset->setPalette(insetPal);
+        inset->setAutoFillBackground(true);
+    }
     if (inset->plotWidget()) {
-        inset->plotWidget()->setAutoFillBackground(false);
+        QPalette plotPal = inset->plotWidget()->palette();
+        plotPal.setColor(QPalette::Window, QColor(Qt::white));
+        inset->plotWidget()->setPalette(plotPal);
+        inset->plotWidget()->setAutoFillBackground(true);
         inset->plotWidget()->setMargin(4);
     }
 
@@ -6046,6 +6070,15 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         return true;
     }
 
+    if (trimmed.startsWith("<ToriActiveLayer")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        bool okIdx = false;
+        const int idx = a.value("index", "-1").toInt(&okIdx);
+        if (okIdx && idx >= 0)
+            setProperty("_tori_pending_active_layer", idx);
+        return true;
+    }
+
     if (trimmed.startsWith("<ToriPanelLabels")) {
         const QMap<QString, QString> a = parseAttrs(trimmed);
         d_panel_labels_enabled = (a.value("enabled", "0").toInt() != 0);
@@ -6087,6 +6120,19 @@ void MultiLayer::finalizePhase5Restore()
                 }
                 d_inset_specs[cGr] = spec;
                 cGr->setIgnoreResizeEvents(true);
+                cGr->setBackgroundColor(QColor(Qt::white));
+                {
+                    QPalette insetPal = cGr->palette();
+                    insetPal.setColor(QPalette::Window, QColor(Qt::white));
+                    cGr->setPalette(insetPal);
+                    cGr->setAutoFillBackground(true);
+                }
+                if (cGr->plotWidget()) {
+                    QPalette plotPal = cGr->plotWidget()->palette();
+                    plotPal.setColor(QPalette::Window, QColor(Qt::white));
+                    cGr->plotWidget()->setPalette(plotPal);
+                    cGr->plotWidget()->setAutoFillBackground(true);
+                }
                 installLayerEventFilters(cGr);
             }
         }
@@ -6120,6 +6166,15 @@ void MultiLayer::finalizePhase5Restore()
     }
 
     syncChildOverlayAndInsetGeometries();
+    const QVariant pendingActiveVar = property("_tori_pending_active_layer");
+    if (pendingActiveVar.isValid()) {
+        const int activeIdx = pendingActiveVar.toInt();
+        setProperty("_tori_pending_active_layer", QVariant());
+        if (activeIdx >= 0 && activeIdx < graphsList.count()) {
+            if (Graph *ag = static_cast<Graph *>(graphsList.at(activeIdx)))
+                setActiveGraph(ag);
+        }
+    }
     refreshLayerButtonBadges();
     syncCanvasOverlayVisibility();
     updateCanvasStatusPill();
@@ -6214,9 +6269,15 @@ void MultiLayer::updateCanvasStatusPill()
                     .arg(QString::number(wDisp, 'f', decimals), times,
                          QString::number(hDisp, 'f', decimals), unitStr, sep, aspectBadge,
                          QString::number(d_page_dpi), fontFam);
+    const QString shortStatusText =
+            QStringLiteral("%1%2%3%4 %5 %6 %5 %7 DPI %5 %8")
+                    .arg(QString::number(wDisp, 'f', decimals), times,
+                         QString::number(hDisp, 'f', decimals), unitStr, sep, ratioStr,
+                         QString::number(d_page_dpi), fontFam);
 
     d_canvas_status_pill->setProperty("_fullStatusText", fullStatusText);
     d_canvas_status_pill->setProperty("_compactStatusText", compactStatusText);
+    d_canvas_status_pill->setProperty("_shortStatusText", shortStatusText);
     d_canvas_status_pill->setText(fullStatusText);
     d_canvas_status_pill->setToolTip(
             tr("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets"));
@@ -6279,13 +6340,24 @@ void MultiLayer::repositionCanvasStatusPill()
     }
     const QString fullTxt = d_canvas_status_pill->property("_fullStatusText").toString();
     const QString compactTxt = d_canvas_status_pill->property("_compactStatusText").toString();
+    const QString shortTxt = d_canvas_status_pill->property("_shortStatusText").toString();
+    auto measurePillWidth = [&](const QString &txt) -> int {
+        const QFontMetrics fm(d_canvas_status_pill->font());
+        const int textW = fm.horizontalAdvance(txt) + 26;
+        d_canvas_status_pill->setText(txt);
+        d_canvas_status_pill->adjustSize();
+        const QSize sh = d_canvas_status_pill->sizeHint().expandedTo(
+                d_canvas_status_pill->minimumSizeHint());
+        return qMax(textW, sh.width());
+    };
     if (!fullTxt.isEmpty() && d_canvas_status_pill->text() != fullTxt)
         d_canvas_status_pill->setText(fullTxt);
 
     d_canvas_status_pill->adjustSize();
     QSize pillSz =
             d_canvas_status_pill->sizeHint().expandedTo(d_canvas_status_pill->minimumSizeHint());
-    int pw = qMin(pillSz.width(), qMax(80, refSz.width() - 16 - sbRight));
+    const int fullW = !fullTxt.isEmpty() ? measurePillWidth(fullTxt) : pillSz.width();
+    int pw = qMin(fullW, qMax(80, refSz.width() - 16 - sbRight));
     int ph = qMax(22, pillSz.height());
     int x = qMax(8, refSz.width() - pw - 10 - sbRight);
     int y = qMax(LayerButton::btnSize() + 8, refSz.height() - ph - 8 - sbBottom);
@@ -6303,14 +6375,19 @@ void MultiLayer::repositionCanvasStatusPill()
                 ? (d_layer_pill_frame->geometry().right() + 10)
                 : 8;
         const int availTopW = refSz.width() - leftReserved - 8 - sbRight;
-        if (availTopW < pw && !compactTxt.isEmpty()) {
-            d_canvas_status_pill->setText(compactTxt);
-            d_canvas_status_pill->adjustSize();
+        if (availTopW < fullW && !compactTxt.isEmpty()) {
+            const int compactW = measurePillWidth(compactTxt);
+            if (availTopW < compactW && !shortTxt.isEmpty()) {
+                const int shortW = measurePillWidth(shortTxt);
+                pw = qMin(shortW, qMax(60, availTopW));
+            } else {
+                pw = qMin(compactW, qMax(60, availTopW));
+            }
             pillSz = d_canvas_status_pill->sizeHint().expandedTo(
                     d_canvas_status_pill->minimumSizeHint());
-            pw = qMin(pillSz.width(), qMax(60, availTopW));
             ph = qMax(20, qMin(LayerButton::btnSize(), pillSz.height()));
         } else {
+            pw = fullW;
             ph = qMax(20, qMin(LayerButton::btnSize(), ph));
         }
         if (availTopW < 95) {

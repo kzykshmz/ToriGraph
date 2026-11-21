@@ -146,6 +146,7 @@ static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(Application
 static int runSuite49PhaseBUxRenderMatSciAndApiGate(ApplicationWindow *mw);
 static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw);
 static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
+static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -174,6 +175,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc51;
+    }
+    if (args.contains("--suite52-only")) {
+        const int rc52 = runSuite52Phase12OpjuApiGraphMathAndGuiGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc52;
     }
 
     // =========================================================================
@@ -5325,7 +5333,10 @@ int main(int argc, char **argv)
     if (runSuite51Campaign6FinalEndToEndInvariants(mw) != 0)
         return 1;
     mw->savedProject();
-    std::cout << "[PASS] All 51 ToriGraph OriginPro Parity, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
+    if (runSuite52Phase12OpjuApiGraphMathAndGuiGate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    std::cout << "[PASS] All 52 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
     int idx = args.indexOf("--keep-clipboard-ms");
@@ -13169,5 +13180,554 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
     QApplication::processEvents();
 
     std::cout << "[INFO] Suite 51 Campaign6_Final_EndToEnd_Invariants passed!\n";
+    return 0;
+}
+
+#include "ImportOPJU.h"
+
+namespace {
+static quint32 suite52Crc32(const QByteArray &data)
+{
+    quint32 crc = 0xFFFFFFFFu;
+    for (int i = 0; i < data.size(); ++i) {
+        crc ^= static_cast<unsigned char>(data[i]);
+        for (int b = 0; b < 8; ++b)
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static void suite52AppendU16LE(QByteArray &out, quint16 v)
+{
+    out.append(static_cast<char>(v & 0xFFu));
+    out.append(static_cast<char>((v >> 8) & 0xFFu));
+}
+
+static void suite52AppendU32LE(QByteArray &out, quint32 v)
+{
+    out.append(static_cast<char>(v & 0xFFu));
+    out.append(static_cast<char>((v >> 8) & 0xFFu));
+    out.append(static_cast<char>((v >> 16) & 0xFFu));
+    out.append(static_cast<char>((v >> 24) & 0xFFu));
+}
+
+static QByteArray suite52BuildSingleEntryStoreZip(const QByteArray &entryName,
+                                                  const QByteArray &entryData)
+{
+    const quint32 crc = suite52Crc32(entryData);
+    const quint32 sz = static_cast<quint32>(entryData.size());
+    const quint16 nameLen = static_cast<quint16>(entryName.size());
+
+    QByteArray zip;
+    // Local File Header
+    suite52AppendU32LE(zip, 0x04034B50u);
+    suite52AppendU16LE(zip, 20);      // version needed
+    suite52AppendU16LE(zip, 0);       // flags
+    suite52AppendU16LE(zip, 0);       // method = STORE
+    suite52AppendU16LE(zip, 0);       // mod time
+    suite52AppendU16LE(zip, 0);       // mod date
+    suite52AppendU32LE(zip, crc);
+    suite52AppendU32LE(zip, sz);
+    suite52AppendU32LE(zip, sz);
+    suite52AppendU16LE(zip, nameLen);
+    suite52AppendU16LE(zip, 0);       // extra len
+    zip.append(entryName);
+    zip.append(entryData);
+
+    const quint32 cdOffset = static_cast<quint32>(zip.size());
+    // Central Directory Header
+    suite52AppendU32LE(zip, 0x02014B50u);
+    suite52AppendU16LE(zip, 20);      // version made by
+    suite52AppendU16LE(zip, 20);      // version needed
+    suite52AppendU16LE(zip, 0);       // flags
+    suite52AppendU16LE(zip, 0);       // method = STORE
+    suite52AppendU16LE(zip, 0);       // mod time
+    suite52AppendU16LE(zip, 0);       // mod date
+    suite52AppendU32LE(zip, crc);
+    suite52AppendU32LE(zip, sz);
+    suite52AppendU32LE(zip, sz);
+    suite52AppendU16LE(zip, nameLen);
+    suite52AppendU16LE(zip, 0);       // extra len
+    suite52AppendU16LE(zip, 0);       // comment len
+    suite52AppendU16LE(zip, 0);       // disk number start
+    suite52AppendU16LE(zip, 0);       // internal attrs
+    suite52AppendU32LE(zip, 0);       // external attrs
+    suite52AppendU32LE(zip, 0);       // local header offset
+    zip.append(entryName);
+
+    const quint32 cdSize = static_cast<quint32>(zip.size()) - cdOffset;
+    // End of Central Directory Record
+    suite52AppendU32LE(zip, 0x06054B50u);
+    suite52AppendU16LE(zip, 0);       // disk number
+    suite52AppendU16LE(zip, 0);       // cd start disk
+    suite52AppendU16LE(zip, 1);       // entries on disk
+    suite52AppendU16LE(zip, 1);       // total entries
+    suite52AppendU32LE(zip, cdSize);
+    suite52AppendU32LE(zip, cdOffset);
+    suite52AppendU16LE(zip, 0);       // comment len
+    return zip;
+}
+} // namespace
+
+static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 52: Phase 12 .opju Importer, Graph/Math Bug-Fix Regression & Modern UI/Ribbon Polish Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 52");
+
+    QTemporaryDir tmpDir52;
+    CHECK_COND(tmpDir52.isValid(), "Suite 52: Failed to create QTemporaryDir");
+
+    // =========================================================================
+    // 52a. Native .opju Importer (Synthetic ZIP XML + ApplicationWindow::importOPJ
+    //      + Corrupt .opju Rejection + Optional Real OriginPro CPYUA .opju)
+    // =========================================================================
+    {
+        const QByteArray originProjXml =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                "<OriginProject version=\"2024\">\n"
+                "  <Folder name=\"AlloyStudy\">\n"
+                "    <Workbook name=\"TensileBook\" label=\"Al-Mg-Si Tensile\">\n"
+                "      <Worksheet name=\"Sheet1\">\n"
+                "        <Column name=\"A\" designation=\"X\" longName=\"Strain\" units=\"%\" comment=\"Engineering strain\">\n"
+                "          <Data><v>0.0</v><v>1.0</v><v>2.0</v><v>3.0</v><v>4.0</v></Data>\n"
+                "        </Column>\n"
+                "        <Column name=\"B\" designation=\"Y\" longName=\"Stress\" units=\"MPa\" comment=\"Al-Mg-Si\">\n"
+                "          <Data><v>0.0</v><v>210.5</v><v>NANUM</v><v>385.0</v><v>412.25</v></Data>\n"
+                "        </Column>\n"
+                "        <Column name=\"C\" designation=\"YErr\" longName=\"StdDev\" units=\"MPa\" comment=\"Replicate SD\">\n"
+                "          <Data><v>0.0</v><v>4.5</v><v>5.0</v><v>6.2</v><v>7.1</v></Data>\n"
+                "        </Column>\n"
+                "      </Worksheet>\n"
+                "    </Workbook>\n"
+                "    <Graph name=\"StressStrainGraph\" label=\"Stress-Strain Curve\">\n"
+                "      <Layer title=\"Tensile\">\n"
+                "        <Plot table=\"TensileBook\" xCol=\"A\" yCol=\"B\" errCol=\"C\" type=\"lineSymbol\" />\n"
+                "      </Layer>\n"
+                "    </Graph>\n"
+                "  </Folder>\n"
+                "</OriginProject>\n";
+
+        const QString synOpjuPath = tmpDir52.filePath(QStringLiteral("synthetic_tensile.opju"));
+        {
+            QFile f(synOpjuPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "Suite 52a: Failed to write synthetic .opju");
+            f.write(suite52BuildSingleEntryStoreZip(QByteArrayLiteral("OriginProj.xml"), originProjXml));
+            f.close();
+        }
+
+        CHECK_COND(ImportOPJU::isZipOpjuFile(synOpjuPath),
+                   "Suite 52a: ImportOPJU::isZipOpjuFile returned false for synthetic ZIP .opju!");
+        CHECK_COND(ImportOPJU::isSupportedOpjuFile(synOpjuPath),
+                   "Suite 52a: ImportOPJU::isSupportedOpjuFile returned false for synthetic ZIP .opju!");
+        CHECK_COND(!ImportOPJU::isCpyuaOpjuFile(synOpjuPath),
+                   "Suite 52a: ImportOPJU::isCpyuaOpjuFile falsely matched ZIP .opju!");
+
+        ApplicationWindow *wOpju = new ApplicationWindow();
+        wOpju->applyUserSettings();
+        wOpju->setHeadlessMode(true);
+
+        QString opjuErr;
+        ImportOPJU::ImportStats stats;
+        const bool okDirect = ImportOPJU::importFile(wOpju, synOpjuPath, &opjuErr, &stats);
+        CHECK_COND(okDirect,
+                   QString("Suite 52a: ImportOPJU::importFile failed: %1").arg(opjuErr).toStdString().c_str());
+        CHECK_COND(stats.foldersImported >= 1 && stats.tablesImported >= 1 && stats.graphsImported >= 1,
+                   QString("Suite 52a: Unexpected ImportStats (folders=%1, tables=%2, graphs=%3)")
+                           .arg(stats.foldersImported)
+                           .arg(stats.tablesImported)
+                           .arg(stats.graphsImported)
+                           .toStdString()
+                           .c_str());
+
+        auto collectAllFolderWindows = [](Folder *root) {
+            QList<MyWidget *> out;
+            std::function<void(Folder *)> visit = [&](Folder *f) {
+                if (!f)
+                    return;
+                for (MyWidget *w : f->windowsList()) {
+                    if (w && !out.contains(w))
+                        out.append(w);
+                }
+                for (Folder *sub : f->folders())
+                    visit(sub);
+            };
+            visit(root);
+            return out;
+        };
+
+        Table *tblOpju = nullptr;
+        MultiLayer *mlOpju = nullptr;
+        for (MyWidget *w : collectAllFolderWindows(wOpju->projectFolder())) {
+            if (!tblOpju) {
+                if (Table *t = qobject_cast<Table *>(w)) {
+                    if (t->name().contains(QStringLiteral("TensileBook")))
+                        tblOpju = t;
+                }
+            }
+            if (!mlOpju) {
+                if (MultiLayer *ml = qobject_cast<MultiLayer *>(w)) {
+                    if (ml->name().contains(QStringLiteral("StressStrainGraph")))
+                        mlOpju = ml;
+                }
+            }
+        }
+        CHECK_COND(tblOpju != nullptr, "Suite 52a: Imported TensileBook Table not found!");
+        CHECK_COND(tblOpju->numCols() == 3 && tblOpju->numRows() >= 5,
+                   "Suite 52a: Imported TensileBook dimensions mismatch!");
+        CHECK_COND(tblOpju->column(0)->plotDesignation() == SciDAVis::X
+                           && tblOpju->column(1)->plotDesignation() == SciDAVis::Y
+                           && tblOpju->column(2)->plotDesignation() == SciDAVis::yErr,
+                   "Suite 52a: Imported column plot designations (X/Y/YErr) mismatch!");
+        CHECK_COND(tblOpju->column(0)->longName() == QStringLiteral("Strain")
+                           && tblOpju->column(0)->units() == QStringLiteral("%")
+                           && tblOpju->column(0)->comment() == QStringLiteral("Engineering strain")
+                           && tblOpju->column(1)->longName() == QStringLiteral("Stress")
+                           && tblOpju->column(1)->units() == QStringLiteral("MPa")
+                           && tblOpju->column(1)->comment() == QStringLiteral("Al-Mg-Si")
+                           && tblOpju->column(2)->longName() == QStringLiteral("StdDev")
+                           && tblOpju->column(2)->units() == QStringLiteral("MPa"),
+                   "Suite 52a: Imported column Long Name / Units / Comments metadata mismatch!");
+        CHECK_COND(std::fabs(tblOpju->cell(1, 1) - 210.5) < 1e-6
+                           && std::fabs(tblOpju->cell(3, 1) - 385.0) < 1e-6
+                           && std::fabs(tblOpju->cell(4, 1) - 412.25) < 1e-6,
+                   "Suite 52a: Imported numeric cell values mismatch!");
+        CHECK_COND(tblOpju->column(1)->isInvalid(2) || tblOpju->text(2, 1).trimmed().isEmpty(),
+                   "Suite 52a: NANUM missing value at row 2 col 1 was not preserved as invalid/empty!");
+        CHECK_COND(mlOpju != nullptr && mlOpju->activeGraph() != nullptr
+                           && mlOpju->activeGraph()->curves() >= 1,
+                   "Suite 52a: Imported 2D Graph 'StressStrainGraph' missing or has zero curves!");
+
+        // Also test ApplicationWindow::importOPJ routing for .opju
+        ApplicationWindow *wViaImportOpj = wOpju->importOPJ(synOpjuPath);
+        CHECK_COND(wViaImportOpj != nullptr,
+                   "Suite 52a: ApplicationWindow::importOPJ(synOpjuPath) returned null!");
+        bool foundTblViaApp = false;
+        bool foundGraphViaApp = false;
+        for (MyWidget *w : collectAllFolderWindows(wViaImportOpj->projectFolder())) {
+            if (Table *t = qobject_cast<Table *>(w)) {
+                if (t->name().contains(QStringLiteral("TensileBook")))
+                    foundTblViaApp = true;
+            } else if (MultiLayer *ml = qobject_cast<MultiLayer *>(w)) {
+                if (ml->name().contains(QStringLiteral("StressStrainGraph"))
+                    && ml->activeGraph() && ml->activeGraph()->curves() >= 1) {
+                    foundGraphViaApp = true;
+                }
+            }
+        }
+        CHECK_COND(foundTblViaApp && foundGraphViaApp,
+                   "Suite 52a: ApplicationWindow::importOPJ(.opju) did not populate Table & Graph!");
+        if (wViaImportOpj != wOpju) {
+            wViaImportOpj->savedProject();
+            wViaImportOpj->setOleEmbeddedMode(true);
+            delete wViaImportOpj;
+        }
+
+        // Corrupt / non-ZIP .opju must return false with non-empty error and zero crashes
+        const QString corruptPath = tmpDir52.filePath(QStringLiteral("corrupt_invalid.opju"));
+        {
+            QFile cf(corruptPath);
+            CHECK_COND(cf.open(QIODevice::WriteOnly), "Suite 52a: Failed to write corrupt .opju");
+            cf.write("NOT_A_VALID_OPJU_OR_ZIP_HEADER_1234567890");
+            cf.close();
+        }
+        CHECK_COND(!ImportOPJU::isSupportedOpjuFile(corruptPath),
+                   "Suite 52a: isSupportedOpjuFile falsely returned true for corrupt .opju!");
+        QString corruptErr;
+        const bool okCorrupt = ImportOPJU::importFile(wOpju, corruptPath, &corruptErr);
+        CHECK_COND(!okCorrupt && !corruptErr.trimmed().isEmpty(),
+                   "Suite 52a: Corrupt .opju must return false with a non-empty error message!");
+
+        wOpju->savedProject();
+        wOpju->setOleEmbeddedMode(true);
+        delete wOpju;
+
+        // Optional real OriginPro CPYUA .opju verification (skip cleanly if absent)
+        const QStringList cpyuaCandidates = {
+            QStringLiteral("D:/Claude/py4ct/origin_check/ctod/out/ctod_steps_origin.opju"),
+            QStringLiteral("D:/Claude/py4ct/origin_check/ctod/out/step1/ctod_step1_profile_origin.opju")
+        };
+        QString realCpyuaPath;
+        for (const QString &cand : cpyuaCandidates) {
+            if (QFileInfo::exists(cand)) {
+                realCpyuaPath = cand;
+                break;
+            }
+        }
+        if (!realCpyuaPath.isEmpty()) {
+            CHECK_COND(ImportOPJU::isCpyuaOpjuFile(realCpyuaPath)
+                               && ImportOPJU::isSupportedOpjuFile(realCpyuaPath),
+                       "Suite 52a: Real OriginPro CPYUA .opju failed isCpyuaOpjuFile/isSupportedOpjuFile!");
+            ApplicationWindow *wCpyua = new ApplicationWindow();
+            wCpyua->applyUserSettings();
+            wCpyua->setHeadlessMode(true);
+            QString cpyuaErr;
+            ImportOPJU::ImportStats cpyuaStats;
+            const bool okCpyua = ImportOPJU::importFile(wCpyua, realCpyuaPath, &cpyuaErr, &cpyuaStats);
+            CHECK_COND(okCpyua && cpyuaStats.tablesImported >= 1,
+                       QString("Suite 52a: Real CPYUA .opju import failed (ok=%1, tables=%2, err=%3)")
+                               .arg(okCpyua)
+                               .arg(cpyuaStats.tablesImported)
+                               .arg(cpyuaErr)
+                               .toStdString()
+                               .c_str());
+            std::cout << "[INFO] Suite 52a: Verified real CPYUA .opju (" << realCpyuaPath.toStdString()
+                      << "): tables=" << cpyuaStats.tablesImported
+                      << ", graphs=" << cpyuaStats.graphsImported << "\n";
+            wCpyua->savedProject();
+            wCpyua->setOleEmbeddedMode(true);
+            delete wCpyua;
+        } else {
+            std::cout << "[INFO] Suite 52a: No local real CPYUA .opju sample present; skipping optional CPYUA check.\n";
+        }
+    }
+
+    // =========================================================================
+    // 52b. Graph & Math Bug Fixes (Phase 12 P1 Regression Gate)
+    // =========================================================================
+    {
+        ApplicationWindow *w52 = new ApplicationWindow();
+        w52->applyUserSettings();
+        w52->setHeadlessMode(true);
+
+        // 52b-1: Notched Box Plot on small-N outlier group [0.9, 1.0, 1.1, 1.2, 100.0]
+        //        produces valid non-inverted notches (no cat-ear spikes extending toward 100.0)
+        Table *tBox52 = w52->newTable(5, 1, "NotchOutlier52", "Small-N Outlier");
+        const double outlierVals[5] = { 0.9, 1.0, 1.1, 1.2, 100.0 };
+        for (int r = 0; r < 5; ++r)
+            tBox52->setCell(r, 0, outlierVals[r]);
+        MultiLayer *mlBox52 = w52->multilayerPlot(tBox52, QStringList() << "NotchOutlier52_1", Graph::Box);
+        CHECK_COND(mlBox52 != nullptr && mlBox52->activeGraph() != nullptr,
+                   "Suite 52b-1: Failed to create Notched Box Plot!");
+        Graph *gBox52 = mlBox52->activeGraph();
+        BoxCurve *bc52 = dynamic_cast<BoxCurve *>(gBox52->curve(0));
+        CHECK_COND(bc52 != nullptr, "Suite 52b-1: Curve 0 is not a BoxCurve!");
+        bc52->setBoxStyle(BoxCurve::Notch);
+        bc52->setWhiskersRange(BoxCurve::None, 0.0);
+        bc52->setBrush(QBrush(QColor(220, 38, 38)));
+        bc52->setPen(QPen(QColor(220, 38, 38), 1));
+        bc52->setMinStyle(QwtSymbol::NoSymbol);
+        bc52->setMaxStyle(QwtSymbol::NoSymbol);
+        bc52->setMeanStyle(QwtSymbol::NoSymbol);
+        bc52->setP1Style(QwtSymbol::NoSymbol);
+        bc52->setP99Style(QwtSymbol::NoSymbol);
+        gBox52->setScale(QwtPlot::yLeft, 0.0, 110.0);
+        gBox52->setScale(QwtPlot::xBottom, 0.0, 2.0);
+        gBox52->replot();
+
+        QImage boxImg(400, 300, QImage::Format_RGB32);
+        boxImg.fill(Qt::white);
+        {
+            QPainter p(&boxImg);
+            gBox52->plotWidget()->print(&p, QRect(0, 0, 400, 300));
+        }
+        int redSpikePx = 0;
+        for (int py = 105; py <= 195; ++py) { // middle band y_data ~ [35..75], strictly above Q3 & below 100.0
+            for (int px = 80; px <= 360; ++px) {
+                const QRgb c = boxImg.pixel(px, py);
+                if (qRed(c) > 180 && qGreen(c) < 90 && qBlue(c) < 90)
+                    ++redSpikePx;
+            }
+        }
+        CHECK_COND(redSpikePx == 0,
+                   QString("Suite 52b-1: Notched Box Plot drew inverted cat-ear spike into mid-range (redSpikePx=%1)!")
+                           .arg(redSpikePx)
+                           .toStdString()
+                           .c_str());
+
+        // 52b-2: Tensile Rp0.2 on noisy Ramberg-Osgood steel curve (+8 MPa noise at k=0)
+        //        succeeds cleanly instead of falsely aborting at k=0!
+        const int nTen = 81;
+        Table *tTen52 = w52->newTable(nTen, 2, "NoisyTensile52", "Noisy Steel Rp0.2");
+        tTen52->column(0)->setLongName(QStringLiteral("Strain"));
+        tTen52->column(0)->setUnits(QStringLiteral("%"));
+        tTen52->column(1)->setLongName(QStringLiteral("Stress"));
+        tTen52->column(1)->setUnits(QStringLiteral("MPa"));
+        for (int i = 0; i < nTen; ++i) {
+            const double stressClean = 560.0 * double(i) / double(nTen - 1);
+            const double strainPct = 100.0
+                    * (stressClean / 200000.0 + 0.002 * std::pow(stressClean / 400.0, 10.0));
+            double stressNoisy = stressClean;
+            if (i == 0)
+                stressNoisy = 8.0; // triggers >50% drop to i=1 (3.0 MPa) near zero stress
+            else if (i == 1)
+                stressNoisy = 3.0;
+            else
+                stressNoisy = std::max(1.0, stressClean + 8.0 * std::sin(double(i) * 1.7));
+            tTen52->setCell(i, 0, strainPct);
+            tTen52->setCell(i, 1, stressNoisy);
+        }
+        MultiLayer *mlTen52 = w52->multilayerPlot(tTen52, QStringList() << "NoisyTensile52_2", Graph::Line);
+        CHECK_COND(mlTen52 != nullptr && mlTen52->activeGraph() != nullptr,
+                   "Suite 52b-2: Failed to create NoisyTensile52 graph!");
+        const double qnan = std::numeric_limits<double>::quiet_NaN();
+        const CurveMathTools::TensileResult tenRes = CurveMathTools::analyzeTensile(
+                w52, mlTen52->activeGraph(), QString(), 0.002, 1, qnan, qnan, false, false, false);
+        CHECK_COND(tenRes.valid && std::isfinite(tenRes.offsetYieldY)
+                           && tenRes.offsetYieldY > 320.0 && tenRes.offsetYieldY < 480.0,
+                   QString("Suite 52b-2: Noisy Ramberg-Osgood Rp0.2 failed (valid=%1, Rp0.2=%2, err='%3')!")
+                           .arg(tenRes.valid)
+                           .arg(tenRes.offsetYieldY)
+                           .arg(tenRes.error)
+                           .toStdString()
+                           .c_str());
+
+        // 52b-3: LinearFit on collinear X = const (X=[2,2,2,2], Y=[1,2,3,4]) fails cleanly
+        //        (no garbage f_value=1e15 / aic=-2762)
+        Table *tCol52 = w52->newTable(4, 2, "CollinearX52", "Collinear X");
+        for (int r = 0; r < 4; ++r) {
+            tCol52->setCell(r, 0, 2.0);
+            tCol52->setCell(r, 1, double(r + 1));
+        }
+        MultiLayer *mlCol52 = w52->multilayerPlot(tCol52, QStringList() << "CollinearX52_2", Graph::Scatter);
+        CHECK_COND(mlCol52 != nullptr && mlCol52->activeGraph() != nullptr,
+                   "Suite 52b-3: Failed to create CollinearX52 graph!");
+        {
+            LinearFit lfCol52(w52, mlCol52->activeGraph(), QStringLiteral("CollinearX52_2"));
+            lfCol52.generateFunction(false);
+            lfCol52.fit();
+            CHECK_COND(!std::isfinite(lfCol52.rss()) && !std::isfinite(lfCol52.aic())
+                               && !std::isfinite(lfCol52.bic()) && !std::isfinite(lfCol52.anovaFValue()),
+                       QString("Suite 52b-3: Collinear X LinearFit returned finite garbage stats (rss=%1, aic=%2, bic=%3, F=%4)!")
+                               .arg(lfCol52.rss())
+                               .arg(lfCol52.aic())
+                               .arg(lfCol52.bic())
+                               .arg(lfCol52.anovaFValue())
+                               .toStdString()
+                               .c_str());
+        }
+
+        // 52b-4: Inset Layer .sciprj Save/Reload preserves cleared axis titles ("") on inset layer
+        {
+            ApplicationWindow *wInSave = new ApplicationWindow();
+            wInSave->applyUserSettings();
+            wInSave->setHeadlessMode(true);
+            Table *tIn52 = wInSave->newTable(6, 2, "InsetTbl52", "Inset Axis Persistence");
+            tIn52->column(0)->setLongName(QStringLiteral("Time"));
+            tIn52->column(0)->setUnits(QStringLiteral("s"));
+            tIn52->column(1)->setLongName(QStringLiteral("Stress"));
+            tIn52->column(1)->setUnits(QStringLiteral("MPa"));
+            for (int r = 0; r < 6; ++r) {
+                tIn52->setCell(r, 0, double(r));
+                tIn52->setCell(r, 1, 10.0 * double(r));
+            }
+            MultiLayer *mlIn52 = wInSave->multilayerPlot(tIn52, QStringList() << "InsetTbl52_2", Graph::Line);
+            CHECK_COND(mlIn52 != nullptr && mlIn52->activeGraph() != nullptr,
+                       "Suite 52b-4: Failed to create InsetGraph52!");
+            mlIn52->setName(QStringLiteral("InsetGraph52"));
+            Graph *gIn52 = mlIn52->addInsetLayer(mlIn52->activeGraph(), QRectF(1.0, 10.0, 3.0, 30.0));
+            CHECK_COND(gIn52 != nullptr && mlIn52->layersList().size() == 2,
+                       "Suite 52b-4: addInsetLayer failed!");
+            gIn52->setAxisTitle(QwtPlot::xBottom, QString());
+            gIn52->setAxisTitle(QwtPlot::yLeft, QString());
+            CHECK_COND(gIn52->axisTitle(QwtPlot::xBottom).trimmed().isEmpty()
+                               && gIn52->axisTitle(QwtPlot::yLeft).trimmed().isEmpty(),
+                       "Suite 52b-4: Inset axis titles not empty before save!");
+
+            const QString insetProjPath = tmpDir52.filePath(QStringLiteral("inset_axis_roundtrip.sciprj"));
+            const QByteArray projBytes = wInSave->saveProjectToByteArray();
+            CHECK_COND(!projBytes.isEmpty(), "Suite 52b-4: saveProjectToByteArray returned empty!");
+            {
+                QFile pf(insetProjPath);
+                CHECK_COND(pf.open(QIODevice::WriteOnly), "Suite 52b-4: Failed to write .sciprj!");
+                pf.write(projBytes);
+                pf.close();
+            }
+            wInSave->savedProject();
+            wInSave->setOleEmbeddedMode(true);
+            delete wInSave;
+
+            ApplicationWindow *wInLoad = new ApplicationWindow();
+            wInLoad->applyUserSettings();
+            wInLoad->setHeadlessMode(true);
+            CHECK_COND(wInLoad->loadProject(insetProjPath), "Suite 52b-4: loadProject failed!");
+            MultiLayer *mlInReload = qobject_cast<MultiLayer *>(wInLoad->window(QStringLiteral("InsetGraph52")));
+            CHECK_COND(mlInReload != nullptr && mlInReload->layersList().size() == 2,
+                       "Suite 52b-4: Reloaded InsetGraph52 missing or lost inset layer!");
+            Graph *gInReload = mlInReload->layersList().at(1);
+            CHECK_COND(gInReload->axisTitle(QwtPlot::xBottom).trimmed().isEmpty()
+                               && gInReload->axisTitle(QwtPlot::yLeft).trimmed().isEmpty(),
+                       QString("Suite 52b-4: .sciprj reload regenerated cleared inset axis titles (X='%1', Y='%2')!")
+                               .arg(gInReload->axisTitle(QwtPlot::xBottom))
+                               .arg(gInReload->axisTitle(QwtPlot::yLeft))
+                               .toStdString()
+                               .c_str());
+            wInLoad->savedProject();
+            wInLoad->setOleEmbeddedMode(true);
+            delete wInLoad;
+        }
+
+        // 52b-5: Constant-Z Spectrogram (Z=3.0 everywhere) has non-degenerate colorbar scale
+        Matrix *matConst52 = w52->newMatrix(8, 8);
+        CHECK_COND(matConst52 != nullptr, "Suite 52b-5: newMatrix(8, 8) returned null!");
+        for (int r = 0; r < 8; ++r)
+            for (int c = 0; c < 8; ++c)
+                matConst52->setCell(r, c, 3.0);
+        MultiLayer *mlConst52 = w52->plotSpectrogram(matConst52, Graph::ColorMap);
+        CHECK_COND(mlConst52 != nullptr && mlConst52->activeGraph() != nullptr,
+                   "Suite 52b-5: plotSpectrogram failed on constant-Z matrix!");
+        Graph *gConst52 = mlConst52->activeGraph();
+        Spectrogram *spec52 = nullptr;
+        for (QwtPlotItem *it : gConst52->plotWidget()->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                spec52 = static_cast<Spectrogram *>(it);
+                break;
+            }
+        }
+        CHECK_COND(spec52 != nullptr, "Suite 52b-5: Spectrogram item not found on ColorMap graph!");
+        const QwtScaleDiv *cbDiv52 = gConst52->plotWidget()->axisScaleDiv(spec52->colorScaleAxis());
+        CHECK_COND(cbDiv52 != nullptr && std::isfinite(cbDiv52->lowerBound())
+                           && std::isfinite(cbDiv52->upperBound())
+                           && cbDiv52->upperBound() > cbDiv52->lowerBound() + 1e-6,
+                   QString("Suite 52b-5: Constant-Z Spectrogram colorbar scale is degenerate ([%1, %2])!")
+                           .arg(cbDiv52 ? cbDiv52->lowerBound() : 0.0)
+                           .arg(cbDiv52 ? cbDiv52->upperBound() : 0.0)
+                           .toStdString()
+                           .c_str());
+
+        w52->savedProject();
+        w52->setOleEmbeddedMode(true);
+        delete w52;
+    }
+
+    // =========================================================================
+    // 52c. Modern UI Theme & Ribbon Polish (QListWidget + Arial/No-QwtPlotCanvas
+    //      + Always-Visible RibbonCommandSearchPill at 1280px)
+    // =========================================================================
+    {
+        const QString qss52 = ModernUiTheme::modernStyleSheet();
+        CHECK_COND(!qss52.isEmpty() && qss52.contains(QStringLiteral("QListWidget"))
+                           && !qss52.contains(QStringLiteral("QwtPlotCanvas")),
+                   "Suite 52c: ModernUiTheme::modernStyleSheet() must style QListWidget and must not override QwtPlotCanvas!");
+
+        ApplicationWindow *w52Gui = new ApplicationWindow();
+        w52Gui->applyUserSettings();
+        ModernUiTheme::applyModernTheme(qApp);
+        CHECK_COND(w52Gui->plotAxesFont.family() == QStringLiteral("Arial")
+                           && w52Gui->plotNumbersFont.family() == QStringLiteral("Arial")
+                           && w52Gui->plotLegendFont.family() == QStringLiteral("Arial")
+                           && w52Gui->plotTitleFont.family() == QStringLiteral("Arial"),
+                   "Suite 52c: ModernUiTheme clobbered Suite 37 Arial plot font invariants!");
+
+        w52Gui->resize(1280, 820);
+        w52Gui->show();
+        for (int pass = 0; pass < 4; ++pass) {
+            QCoreApplication::sendPostedEvents();
+            QApplication::processEvents();
+        }
+        ModernRibbonBar *rib52 = w52Gui->modernRibbonBar();
+        CHECK_COND(rib52 != nullptr && rib52->isVisible(),
+                   "Suite 52c: ModernRibbonBar null or hidden at 1280px!");
+        QToolButton *searchPill = rib52->findChild<QToolButton *>(QStringLiteral("RibbonCommandSearchPill"));
+        CHECK_COND(searchPill != nullptr && searchPill->isVisible()
+                           && !searchPill->text().trimmed().isEmpty(),
+                   "Suite 52c: ModernRibbonBar missing visible RibbonCommandSearchPill with non-empty text at 1280px!");
+
+        w52Gui->savedProject();
+        w52Gui->setOleEmbeddedMode(true);
+        delete w52Gui;
+        QApplication::processEvents();
+    }
+
+    std::cout << "[INFO] Suite 52 Phase 12 .opju Importer, Graph/Math Bug Fixes & Modern UI/Ribbon Polish Gate passed!\n";
     return 0;
 }

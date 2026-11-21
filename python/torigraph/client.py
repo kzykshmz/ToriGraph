@@ -4779,9 +4779,28 @@ class Session:
     vasp_bands = plot_vasp_bands
     plot_bands = plot_vasp_bands
 
-    def plot_vasp_band_dos(self, **kwargs: Any) -> Dict[str, Any]:
+    def plot_vasp_band_dos(
+        self,
+        band_table: Optional[Union[str, TableProxy, Any]] = None,
+        dos_table: Optional[Union[str, TableProxy, Any]] = None,
+        *,
+        eigenval_path: Optional[Union[str, Path]] = None,
+        doscar_path: Optional[Union[str, Path]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         """Plot coupled 2-panel Band Structure + vertical-energy DOS figure."""
-        return self.call("curvemath.vasp_band_dos", **kwargs)
+        params: Dict[str, Any] = dict(kwargs)
+        if band_table is not None:
+            params["band_table"] = self._ensure_table_ref(band_table)
+        elif "table" in params and params["table"] is not None:
+            params["table"] = self._ensure_table_ref(params["table"])
+        if dos_table is not None:
+            params["dos_table"] = self._ensure_table_ref(dos_table)
+        if eigenval_path is not None:
+            params["eigenval_path"] = str(Path(eigenval_path).resolve())
+        if doscar_path is not None:
+            params["doscar_path"] = str(Path(doscar_path).resolve())
+        return self.call("curvemath.vasp_band_dos", **params)
 
     vasp_band_dos = plot_vasp_band_dos
     plot_band_dos = plot_vasp_band_dos

@@ -41,6 +41,97 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+
+namespace {
+
+void ensureUniformGridAndSampling(std::vector<double> &x, std::vector<double> &yInterleaved,
+                                  double &samplingOut)
+{
+    const size_t n = x.size();
+    if (n < 2 || yInterleaved.size() < 2 * n)
+        return;
+
+    struct Sample {
+        double x;
+        double re;
+        double im;
+    };
+    std::vector<Sample> pts;
+    pts.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (std::isfinite(x[i]) && std::isfinite(yInterleaved[2 * i])
+            && std::isfinite(yInterleaved[2 * i + 1])) {
+            pts.push_back({ x[i], yInterleaved[2 * i], yInterleaved[2 * i + 1] });
+        }
+    }
+    if (pts.size() < 2)
+        return;
+
+    if (pts.back().x < pts.front().x)
+        std::reverse(pts.begin(), pts.end());
+
+    bool sorted = true;
+    for (size_t i = 1; i < pts.size(); ++i) {
+        if (pts[i].x < pts[i - 1].x) {
+            sorted = false;
+            break;
+        }
+    }
+    if (!sorted) {
+        std::stable_sort(pts.begin(), pts.end(),
+                         [](const Sample &a, const Sample &b) { return a.x < b.x; });
+    }
+
+    const double xMin = pts.front().x;
+    const double xMax = pts.back().x;
+    const double span = xMax - xMin;
+    if (!std::isfinite(span) || span <= 0.0)
+        return;
+
+    const double uniformDt = span / static_cast<double>(n - 1);
+    if (!std::isfinite(uniformDt) || uniformDt <= 0.0)
+        return;
+
+    bool isUniform = (pts.size() == n && sorted);
+    if (isUniform) {
+        for (size_t i = 1; i < n; ++i) {
+            const double step = pts[i].x - pts[i - 1].x;
+            if (step <= 0.0 || std::fabs(step - uniformDt) > 1e-2 * uniformDt) {
+                isUniform = false;
+                break;
+            }
+        }
+    }
+
+    samplingOut = uniformDt;
+    if (isUniform)
+        return;
+
+    // Resample onto a uniform grid over [xMin, xMax] via linear interpolation
+    std::vector<double> newX(n);
+    std::vector<double> newY(2 * n, 0.0);
+    size_t j = 0;
+    const size_t m = pts.size();
+    for (size_t i = 0; i < n; ++i) {
+        const double gx = (i + 1 == n) ? xMax : (xMin + static_cast<double>(i) * uniformDt);
+        newX[i] = gx;
+        while (j + 2 < m && pts[j + 1].x < gx)
+            ++j;
+        const double x0 = pts[j].x;
+        const double x1 = pts[j + 1].x;
+        const double dx = x1 - x0;
+        double t = 0.0;
+        if (dx > 0.0)
+            t = std::clamp((gx - x0) / dx, 0.0, 1.0);
+        newY[2 * i] = pts[j].re + t * (pts[j + 1].re - pts[j].re);
+        newY[2 * i + 1] = pts[j].im + t * (pts[j + 1].im - pts[j].im);
+    }
+    x = std::move(newX);
+    yInterleaved = std::move(newY);
+}
+
+} // namespace
 
 FFT::FFT(ApplicationWindow *parent, Table *t, const QString &realColName,
          const QString &imagColName)
@@ -54,16 +145,12 @@ FFT::FFT(ApplicationWindow *parent, Graph *g, const QString &curveTitle) : Filte
 {
     init();
     setDataFromCurve(curveTitle);
-    if (d_x.size() >= 2) {
-        const double dt = std::fabs(d_x[1] - d_x[0]);
-        if (std::isfinite(dt) && dt > 0.0)
-            d_sampling = dt;
-    }
     // intersperse 0 imaginary components
     std::vector<double> tmp(2 * d_x.size(), 0.0);
     for (size_t i = 0; i < d_x.size(); ++i)
         tmp[2 * i] = d_y[i];
     d_y = std::move(tmp);
+    ensureUniformGridAndSampling(d_x, d_y, d_sampling);
 }
 
 void FFT::init()
@@ -230,16 +317,13 @@ void FFT::setDataFromTable(Table *t, const QString &realColName, const QString &
         d_imag_col = d_table->colIndex(imagColName);
 
     size_t rows = d_table->numRows();
+    Column *xc = nullptr;
     if (rows >= 2) {
         const int xcol = d_table->colX(d_real_col);
         if (xcol >= 0 && xcol != d_real_col && xcol != d_imag_col) {
-            if (Column *xc = d_table->column(xcol)) {
-                if (xc->columnMode() == SciDAVis::ColumnMode::Numeric && !xc->isInvalid(0)
-                    && !xc->isInvalid(1)) {
-                    const double dt = std::fabs(xc->valueAt(1) - xc->valueAt(0));
-                    if (std::isfinite(dt) && dt > 0.0)
-                        d_sampling = dt;
-                }
+            if (Column *cand = d_table->column(xcol)) {
+                if (cand->columnMode() == SciDAVis::ColumnMode::Numeric)
+                    xc = cand;
             }
         }
     }
@@ -261,7 +345,16 @@ void FFT::setDataFromTable(Table *t, const QString &realColName, const QString &
 
     for (size_t i = 0; i < d_x.size(); i++) {
         size_t i2 = 2 * i;
+        if (xc) {
+            const int r = static_cast<int>(i);
+            d_x[i] = xc->isInvalid(r) ? std::numeric_limits<double>::quiet_NaN() : xc->valueAt(r);
+        } else {
+            d_x[i] = static_cast<double>(i);
+        }
         d_y[i2] = d_table->cell(static_cast<int>(i), d_real_col);
         d_y[i2 + 1] = (d_imag_col >= 0) ? d_table->cell(static_cast<int>(i), d_imag_col) : 0.0;
     }
+
+    if (xc)
+        ensureUniformGridAndSampling(d_x, d_y, d_sampling);
 }

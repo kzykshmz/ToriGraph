@@ -30,6 +30,8 @@
 #include "ColorButton.h"
 #include "Plot.h"
 #include "ScaleDraw.h"
+#include <algorithm>
+#include <cmath>
 #include <math.h>
 #include <qpen.h>
 #include <qmessagebox.h>
@@ -132,12 +134,28 @@ QwtDoubleInterval Spectrogram::rawDataRange() const
     return data().range();
 }
 
+static QwtDoubleInterval padDegenerateColorRange(const QwtDoubleInterval &raw)
+{
+    double zMin = raw.minValue();
+    double zMax = raw.maxValue();
+    if (!std::isfinite(zMin) || !std::isfinite(zMax))
+        return QwtDoubleInterval(0.0, 1.0);
+    if (zMin > zMax)
+        std::swap(zMin, zMax);
+    if (std::abs(zMax - zMin) <= 1e-12) {
+        const double z = 0.5 * (zMin + zMax);
+        const double pad = std::max(0.5, 0.1 * std::abs(z));
+        return QwtDoubleInterval(z - pad, z + pad);
+    }
+    return QwtDoubleInterval(zMin, zMax);
+}
+
 QwtDoubleInterval Spectrogram::effectiveValueRange() const
 {
     if (d_custom_z_range && std::isfinite(d_custom_z_min) && std::isfinite(d_custom_z_max)
         && d_custom_z_min < d_custom_z_max)
-        return QwtDoubleInterval(d_custom_z_min, d_custom_z_max);
-    return data().range();
+        return padDegenerateColorRange(QwtDoubleInterval(d_custom_z_min, d_custom_z_max));
+    return padDegenerateColorRange(data().range());
 }
 
 QwtDoubleInterval Spectrogram::boundingInterval(Qt::Axis axis) const

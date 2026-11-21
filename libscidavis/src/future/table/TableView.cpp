@@ -267,7 +267,7 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             return 0;
         b->ensurePolished();
         if (st == Qt::ToolButtonIconOnly)
-            return b->iconSize().width() + 8;
+            return b->iconSize().width() + 14;
         QFont bf = b->font();
         bf.setBold(true);
         if (bf.pointSizeF() > 0.0 && bf.pointSizeF() < 11.0)
@@ -282,52 +282,106 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     };
 
     const int barW = quickBar->width();
-    const bool ultraCompact = (barW > 0 && barW < 340);
-    const bool narrowSplitCompact = (barW > 0 && barW < 265);
+    const int availW = qMax(0, barW - 14); // 6px left + 6px right layout margin + 2px safety
 
-    if (btnYErr && btnYErr->isHidden() != ultraCompact)
-        btnYErr->setVisible(!ultraCompact);
-    if (btnLp && btnLp->isHidden() != narrowSplitCompact)
-        btnLp->setVisible(!narrowSplitCompact);
-    if (btnScatter && btnScatter->isHidden() != narrowSplitCompact)
-        btnScatter->setVisible(!narrowSplitCompact);
-    if (moreBtn && moreBtn->menu()) {
-        for (QAction *act : moreBtn->menu()->actions()) {
-            if (act && act->data().toInt() == int(SciDAVis::yErr))
-                act->setVisible(ultraCompact);
+    const int roleFullW = calcBtnWidth(btnX, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnY, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly) + 14;
+    const int settingsTextW = calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly) + 8;
+    const int settingsIconW = calcBtnWidth(btnColProps, Qt::ToolButtonIconOnly) + 8;
+
+    const int plotBesideW = calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
+            + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
+            + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
+            + calcBtnWidth(btnAdd, Qt::ToolButtonTextBesideIcon) + 16;
+    const int plotTextOnlyW = calcBtnWidth(btnLine, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnLp, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnScatter, Qt::ToolButtonTextOnly)
+            + calcBtnWidth(btnAdd, Qt::ToolButtonTextOnly) + 16;
+
+    bool wantWrap = false;
+    bool foldYErr = false;
+    Qt::ToolButtonStyle colPropsStyle = Qt::ToolButtonTextOnly;
+    Qt::ToolButtonStyle plotStyle = Qt::ToolButtonTextBesideIcon;
+
+    if (barW <= 0) {
+        wantWrap = false;
+        foldYErr = false;
+        colPropsStyle = Qt::ToolButtonTextOnly;
+        plotStyle = Qt::ToolButtonTextBesideIcon;
+    } else if (roleFullW + plotBesideW + settingsTextW + 16 <= availW) {
+        wantWrap = false;
+        foldYErr = false;
+        colPropsStyle = Qt::ToolButtonTextOnly;
+        plotStyle = Qt::ToolButtonTextBesideIcon;
+    } else if (roleFullW + plotTextOnlyW + settingsTextW + 16 <= availW) {
+        wantWrap = false;
+        foldYErr = false;
+        colPropsStyle = Qt::ToolButtonTextOnly;
+        plotStyle = Qt::ToolButtonTextOnly;
+    } else {
+        // Narrow table: wrap quick-plot group onto its own row so Line/Scatter never clip or hide
+        wantWrap = true;
+        if (roleFullW + settingsTextW + 8 <= availW) {
+            foldYErr = false;
+            colPropsStyle = Qt::ToolButtonTextOnly;
+        } else if (roleFullW + settingsIconW + 8 <= availW) {
+            foldYErr = false;
+            colPropsStyle = Qt::ToolButtonIconOnly;
+        } else {
+            foldYErr = true;
+            colPropsStyle = Qt::ToolButtonIconOnly;
+        }
+
+        if (plotBesideW <= availW)
+            plotStyle = Qt::ToolButtonTextBesideIcon;
+        else if (plotTextOnlyW <= availW)
+            plotStyle = Qt::ToolButtonTextOnly;
+        else
+            plotStyle = Qt::ToolButtonIconOnly;
+    }
+
+    QWidget *row1Widget = quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1"));
+    QWidget *row1WrapWidget =
+            quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1Wrap"));
+    QFrame *plotGroup = quickBar->findChild<QFrame *>(QStringLiteral("WorksheetPlotGroup"));
+    if (row1Widget && row1WrapWidget && plotGroup) {
+        auto *qh1 = qobject_cast<QHBoxLayout *>(row1Widget->layout());
+        auto *qh1Wrap = qobject_cast<QHBoxLayout *>(row1WrapWidget->layout());
+        if (qh1 && qh1Wrap) {
+            const bool isWrapped = (qh1Wrap->indexOf(plotGroup) >= 0);
+            if (wantWrap && !isWrapped) {
+                qh1->removeWidget(plotGroup);
+                plotGroup->setParent(row1WrapWidget);
+                qh1Wrap->insertWidget(0, plotGroup);
+                plotGroup->show();
+            } else if (!wantWrap && isWrapped) {
+                qh1Wrap->removeWidget(plotGroup);
+                plotGroup->setParent(row1Widget);
+                qh1->insertWidget(1, plotGroup);
+                plotGroup->show();
+            }
+            if (row1WrapWidget->isVisible() != wantWrap)
+                row1WrapWidget->setVisible(wantWrap);
         }
     }
 
-    const Qt::ToolButtonStyle colPropsStyle =
-            ultraCompact ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextOnly;
+    if (btnYErr && btnYErr->isHidden() != foldYErr)
+        btnYErr->setVisible(!foldYErr);
+    if (btnLp && btnLp->isHidden())
+        btnLp->setVisible(true);
+    if (btnScatter && btnScatter->isHidden())
+        btnScatter->setVisible(true);
+    if (moreBtn && moreBtn->menu()) {
+        for (QAction *act : moreBtn->menu()->actions()) {
+            if (act && act->data().toInt() == int(SciDAVis::yErr))
+                act->setVisible(foldYErr);
+        }
+    }
+
     if (btnColProps && btnColProps->toolButtonStyle() != colPropsStyle)
         btnColProps->setToolButtonStyle(colPropsStyle);
-
-    const int fixedRowW = calcBtnWidth(btnX, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnY, Qt::ToolButtonTextOnly)
-            + (ultraCompact ? 0 : calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly))
-            + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnColProps, colPropsStyle)
-            + (ultraCompact ? 48 : 54);
-    const int totalBeside = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnAdd, Qt::ToolButtonTextBesideIcon);
-    const int totalTextOnly = fixedRowW + calcBtnWidth(btnLine, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnLp, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnScatter, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnAdd, Qt::ToolButtonTextOnly);
-
-    Qt::ToolButtonStyle plotStyle = Qt::ToolButtonIconOnly;
-    if (barW <= 0 || ultraCompact) {
-        plotStyle = Qt::ToolButtonIconOnly;
-    } else if (barW >= qMax(510, totalBeside + 6)) {
-        plotStyle = Qt::ToolButtonTextBesideIcon;
-    } else if (barW >= qMax(435, totalTextOnly + 6)) {
-        plotStyle = Qt::ToolButtonTextOnly;
-    } else {
-        plotStyle = Qt::ToolButtonIconOnly;
-    }
 
     QToolButton *plotBtns[] = { btnLine, btnLp, btnScatter, btnAdd };
     for (QToolButton *pb : plotBtns) {
@@ -2138,12 +2192,14 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     qv->setContentsMargins(6, 4, 6, 4);
     qv->setSpacing(4);
 
-    QHBoxLayout *qh1 = new QHBoxLayout();
+    QWidget *row1Widget = new QWidget(d_quick_bar);
+    row1Widget->setObjectName(QStringLiteral("WorksheetQuickRow1"));
+    QHBoxLayout *qh1 = new QHBoxLayout(row1Widget);
     qh1->setContentsMargins(0, 0, 0, 0);
     qh1->setSpacing(6);
 
-    auto makePillGroup = [this](const QString &objName, QHBoxLayout *&outLay) -> QFrame * {
-        QFrame *grp = new QFrame(d_quick_bar);
+    auto makePillGroup = [row1Widget](const QString &objName, QHBoxLayout *&outLay) -> QFrame * {
+        QFrame *grp = new QFrame(row1Widget);
         grp->setObjectName(objName);
         grp->setProperty("wsPillGroup", true);
         outLay = new QHBoxLayout(grp);
@@ -2255,7 +2311,16 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     settingsLay->addWidget(d_btn_quick_col_props);
     qh1->addWidget(settingsGroup);
 
-    qv->addLayout(qh1);
+    qv->addWidget(row1Widget);
+
+    QWidget *row1WrapWidget = new QWidget(d_quick_bar);
+    row1WrapWidget->setObjectName(QStringLiteral("WorksheetQuickRow1Wrap"));
+    QHBoxLayout *qh1Wrap = new QHBoxLayout(row1WrapWidget);
+    qh1Wrap->setContentsMargins(0, 0, 0, 0);
+    qh1Wrap->setSpacing(4);
+    qh1Wrap->addStretch(1);
+    row1WrapWidget->hide();
+    qv->addWidget(row1WrapWidget);
 
     // Row 2: Unclipped F(x) = Formula Bar spanning full worksheet width
     QHBoxLayout *qh2 = new QHBoxLayout();

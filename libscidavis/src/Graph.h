@@ -967,6 +967,7 @@ public:
         return (idx >= 0 && idx < 3) ? d_ternary_labels[idx] : QString();
     }
     int shadedBandCount() const { return d_shaded_bands.size(); }
+    void clearShadedBands();
     QString autoPlaceLegend() { return placeLegendAnchor(LegendAutoAvoidData); }
     void setAxisTitleColor(int axis, const QColor &c)
     {
