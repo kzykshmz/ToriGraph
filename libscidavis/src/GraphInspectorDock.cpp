@@ -230,6 +230,8 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
     };
     for (const auto &pr : row1Toks) {
         QToolButton *b = makeBtn(row1, pr.first, QObject::tr("Insert %1").arg(pr.first));
+        b->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        b->setProperty("_tg_tip_arg", pr.first);
         const QString tok = pr.second;
         QObject::connect(b, &QToolButton::clicked, wrap, [insertToken, tok]() { insertToken(tok); });
     }
@@ -239,27 +241,36 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
     row2->setContentsMargins(0, 0, 0, 0);
     row2->setSpacing(2);
     {
-        QToolButton *bPm = makeBtn(row2, QString::fromUtf8("\xC2\xB1"),
-                                   QObject::tr("Insert %1").arg(QString::fromUtf8("\xC2\xB1")));
+        const QString symPm = QString::fromUtf8("\xC2\xB1");
+        QToolButton *bPm = makeBtn(row2, symPm, QObject::tr("Insert %1").arg(symPm));
+        bPm->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        bPm->setProperty("_tg_tip_arg", symPm);
         QObject::connect(bPm, &QToolButton::clicked, wrap,
-                         [insertToken]() { insertToken(QString::fromUtf8("\xC2\xB1")); });
-        QToolButton *bDeg = makeBtn(row2, QString::fromUtf8("\xC2\xB0"),
-                                    QObject::tr("Insert %1").arg(QString::fromUtf8("\xC2\xB0")));
+                         [insertToken, symPm]() { insertToken(symPm); });
+        const QString symDeg = QString::fromUtf8("\xC2\xB0");
+        QToolButton *bDeg = makeBtn(row2, symDeg, QObject::tr("Insert %1").arg(symDeg));
+        bDeg->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        bDeg->setProperty("_tg_tip_arg", symDeg);
         QObject::connect(bDeg, &QToolButton::clicked, wrap,
-                         [insertToken]() { insertToken(QString::fromUtf8("\xC2\xB0")); });
-        QToolButton *bCm = makeBtn(row2, QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9"),
-                                   QObject::tr("Insert %1").arg(QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9")));
+                         [insertToken, symDeg]() { insertToken(symDeg); });
+        const QString symCm = QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9");
+        QToolButton *bCm = makeBtn(row2, symCm, QObject::tr("Insert %1").arg(symCm));
+        bCm->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        bCm->setProperty("_tg_tip_arg", symCm);
         QObject::connect(bCm, &QToolButton::clicked, wrap,
                          [insertToken]() { insertToken(QStringLiteral("cm<sup>-1</sup>")); });
         QToolButton *bSub = makeBtn(row2, QString::fromUtf8("x\xE2\x82\x82"),
                                     QObject::tr("Subscript (<sub>...</sub>)"));
+        bSub->setProperty("_tg_tip_fmt", QStringLiteral("Subscript (<sub>...</sub>)"));
         QObject::connect(bSub, &QToolButton::clicked, wrap,
                          [wrapMarkup]() { wrapMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>")); });
         QToolButton *bSup = makeBtn(row2, QString::fromUtf8("x\xC2\xB2"),
                                     QObject::tr("Superscript (<sup>...</sup>)"));
+        bSup->setProperty("_tg_tip_fmt", QStringLiteral("Superscript (<sup>...</sup>)"));
         QObject::connect(bSup, &QToolButton::clicked, wrap,
                          [wrapMarkup]() { wrapMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>")); });
         QToolButton *bIt = makeBtn(row2, QStringLiteral("I"), QObject::tr("Italic (<i>...</i>)"));
+        bIt->setProperty("_tg_tip_fmt", QStringLiteral("Italic (<i>...</i>)"));
         QFont itF = bIt->font();
         itF.setItalic(true);
         bIt->setFont(itF);
@@ -6841,4 +6852,16 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_leg_cols->setText(tr("Columns:"));
     if (d_lbl_leg_font_pt)
         d_lbl_leg_font_pt->setText(tr("Font Size:"));
+
+    for (QToolButton *tb : findChildren<QToolButton *>()) {
+        if (!tb)
+            continue;
+        const QString tipFmt = tb->property("_tg_tip_fmt").toString();
+        if (tipFmt.isEmpty())
+            continue;
+        const QString translated =
+                QCoreApplication::translate("QObject", tipFmt.toUtf8().constData());
+        const QString tipArg = tb->property("_tg_tip_arg").toString();
+        tb->setToolTip(tipArg.isEmpty() ? translated : translated.arg(tipArg));
+    }
 }
