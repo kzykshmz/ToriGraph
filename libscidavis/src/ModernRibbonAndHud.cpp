@@ -3006,6 +3006,12 @@ void ModernRibbonBar::prepareForAppShutdown()
     d_shutting_down = true;
     d_saved_focus_visibility.clear();
     d_last_active_window.clear();
+    if (d_split_table)
+        d_split_table->removeEventFilter(this);
+    if (d_split_plot)
+        d_split_plot->removeEventFilter(this);
+    d_split_table.clear();
+    d_split_plot.clear();
 
     if (!wasShuttingDown && d_app) {
         disconnect(&d_app->d_workspace, nullptr, this, nullptr);
@@ -4731,6 +4737,18 @@ QString ModernRibbonBar::workspaceLayoutModeName() const
     return QStringLiteral("tabbed");
 }
 
+void ModernRibbonBar::setSplitLeftRatio(double ratio)
+{
+    if (!std::isfinite(ratio))
+        return;
+    const double clamped = qBound(0.15, ratio, 0.85);
+    if (qFuzzyCompare(d_split_left_ratio, clamped))
+        return;
+    d_split_left_ratio = clamped;
+    if (d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry)
+        applySplitWorkspaceGeometry();
+}
+
 void ModernRibbonBar::applySplitWorkspaceGeometry()
 {
     if (d_shutting_down || !d_app || d_applying_split_geometry)
@@ -4843,9 +4861,25 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
     const bool focusHudActive =
             d_focus_hud_mode || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
     const int tileTopY = focusHudActive ? 44 : 0;
-    const int leftW = qMax(120, qRound(vpRect.width() * 0.40));
+    const double splitRatio = qBound(0.15, d_split_left_ratio, 0.85);
+    const int leftW = qMax(120, qRound(vpRect.width() * splitRatio));
     const int rightW = qMax(120, vpRect.width() - leftW);
     const int fullH = qMax(100, vpRect.height() - tileTopY);
+
+    if (d_split_table && d_split_table != targetTable)
+        d_split_table->removeEventFilter(this);
+    if (d_split_plot && d_split_plot != targetPlot)
+        d_split_plot->removeEventFilter(this);
+    d_split_table = targetTable;
+    d_split_plot = targetPlot;
+    if (d_split_table) {
+        d_split_table->removeEventFilter(this);
+        d_split_table->installEventFilter(this);
+    }
+    if (d_split_plot) {
+        d_split_plot->removeEventFilter(this);
+        d_split_plot->installEventFilter(this);
+    }
 
     if (QScrollBar *hsb = d_app->d_workspace.horizontalScrollBar())
         hsb->setValue(0);
@@ -5214,6 +5248,49 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph
             && !d_applying_split_geometry) {
             applySplitWorkspaceGeometry();
+        }
+    }
+    if (d_app && event && d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry
+        && d_split_table && d_split_plot && !d_split_table->isMaximized()
+        && !d_split_plot->isMaximized()
+        && (watched == d_split_table || watched == d_split_plot)) {
+        const QEvent::Type et = event->type();
+        if (et == QEvent::Resize || et == QEvent::Move) {
+            QWidget *vp = d_app->d_workspace.viewport();
+            const QRect vpRect = vp ? vp->rect() : d_app->d_workspace.rect();
+            if (vpRect.width() >= 280 && vpRect.height() >= 120) {
+                const bool focusHudActive = d_focus_hud_mode
+                        || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
+                const int tileTopY = focusHudActive ? 44 : 0;
+                const int fullH = qMax(100, vpRect.height() - tileTopY);
+                const int minPaneW = 120;
+                const int maxLeftW = qMax(minPaneW, vpRect.width() - minPaneW);
+                int newSplitX = -1;
+                if (watched == d_split_table && et == QEvent::Resize) {
+                    const int cand = d_split_table->geometry().right() + 1;
+                    if (cand >= minPaneW && cand <= maxLeftW
+                        && qAbs(cand - d_split_plot->geometry().left()) >= 2) {
+                        newSplitX = cand;
+                    }
+                } else if (watched == d_split_plot) {
+                    const int cand = d_split_plot->geometry().left();
+                    if (cand >= minPaneW && cand <= maxLeftW
+                        && qAbs(cand - (d_split_table->geometry().right() + 1)) >= 2) {
+                        newSplitX = cand;
+                    }
+                }
+                if (newSplitX >= minPaneW && newSplitX <= maxLeftW) {
+                    d_applying_split_geometry = true;
+                    d_split_left_ratio =
+                            qBound(0.15, double(newSplitX) / double(vpRect.width()), 0.85);
+                    if (d_split_table->minimumWidth() > newSplitX)
+                        d_split_table->setMinimumWidth(newSplitX);
+                    d_split_table->setGeometry(0, tileTopY, newSplitX, fullH);
+                    d_split_plot->setGeometry(newSplitX, tileTopY,
+                                              qMax(minPaneW, vpRect.width() - newSplitX), fullH);
+                    d_applying_split_geometry = false;
+                }
+            }
         }
     }
     return QFrame::eventFilter(watched, event);

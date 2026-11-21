@@ -1592,6 +1592,59 @@ private:
     AxesDialog *openAxesDialogConfigured(const std::function<void(AxesDialog *)> &configure);
     Plot3DDialog *openPlot3dDialogConfigured(const std::function<void(Plot3DDialog *)> &configure);
 
+    struct SavedGraphSettings {
+        bool valid = false;
+        bool pageViewMode = false;
+        int pageUnit = 0;
+        double pageWidth = 520.0;
+        double pageHeight = 520.0;
+        int pageDpi = 300;
+        double pageZoom = 1.0;
+        QColor pageBg = QColor(Qt::white);
+        bool keepAspectRatio = true;
+        double targetAspectRatio = 1.0;
+        bool panelLabelsEnabled = false;
+        int panelLabelPlacement = 0;
+        QString panelLabelPattern;
+        int panelLabelFontPt = 0;
+        int unitFormat = 0;
+        bool gridMajorX = false;
+        bool gridMajorY = false;
+        bool gridMinorX = false;
+        bool gridMinorY = false;
+        bool hasVisualStyle = false;
+        QFont axesFont;
+        QFont numbersFont;
+        QFont legendFont;
+        int legendFrameStyle = 1;
+        QColor legendTextColor = QColor(Qt::black);
+        QColor legendBackground = QColor(Qt::white);
+        int axesLineWidth = 2;
+        int majTicksStyle = 1;
+        int minTicksStyle = 1;
+        int majTicksLength = 9;
+        int minTicksLength = 5;
+    };
+
+    void captureLastGraphGeometry(MultiLayer *ml, bool allowHiddenGeometry = false);
+    void captureLastGraphSettingsForExit(MultiLayer *ml);
+    void captureLastTableGeometry(Table *t, bool allowHiddenGeometry = false);
+    void applyLastGraphWindowGeometry(MultiLayer *g);
+    void applyLastGraphSettings(MultiLayer *g);
+    void finalizeLastGraphSettings(MultiLayer *g);
+    void applyLastTableWindowGeometry(Table *w);
+
+    QString d_saved_workspace_layout_mode;
+    double d_saved_split_left_ratio = 0.40;
+    bool d_restoring_window_geometry = false;
+    bool d_has_last_graph_geometry = false;
+    QRect d_last_graph_geometry;
+    bool d_last_graph_maximized = false;
+    bool d_has_last_table_geometry = false;
+    QRect d_last_table_geometry;
+    SavedGraphSettings d_restored_graph_settings;
+    SavedGraphSettings d_exit_graph_settings;
+
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);
     //! Set the active window selected from the context menu's dependency list

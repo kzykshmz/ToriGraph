@@ -2526,9 +2526,15 @@ ApplicationWindow::ApplicationWindow()
             d_python_server->startTcp(0);
     }
 
-    d_modern_ribbon->setWorkspaceLayoutMode(isTabbedWorkspaceView()
-                                                    ? ModernRibbonBar::LayoutTabbed
-                                                    : ModernRibbonBar::LayoutFreeMdi);
+    d_modern_ribbon->setSplitLeftRatio(d_saved_split_left_ratio);
+    if (!d_saved_workspace_layout_mode.isEmpty()
+        && d_modern_ribbon->setWorkspaceLayoutModeByName(d_saved_workspace_layout_mode)) {
+        // Restored saved workspace layout mode (tabbed / split / mdi)
+    } else {
+        d_modern_ribbon->setWorkspaceLayoutMode(isTabbedWorkspaceView()
+                                                        ? ModernRibbonBar::LayoutTabbed
+                                                        : ModernRibbonBar::LayoutFreeMdi);
+    }
     d_modern_ribbon->setClassicToolbarsVisible(false);
 
     insertTranslatedStrings();
@@ -6230,6 +6236,7 @@ MultiLayer *ApplicationWindow::newGraph(const QString &caption)
         ml->arrangeLayers(false, false);
         g->setAutoscaleFonts(autoScaleFonts); // restore user defined fonts behaviour
         g->setIgnoreResizeEvents(!autoResizeLayers);
+        finalizeLastGraphSettings(ml);
         customMenu(ml);
     }
     return ml;
@@ -6416,6 +6423,8 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
     g->arrangeLayers(false, false);
     if (style == Graph::Pie || ag->isPiePlot())
         finalizePieGraphLegendAndLayout(ag, w, colList, startRow, endRow);
+    else if (!ag->isTernaryPlot() && !ag->isPolarPlot())
+        finalizeLastGraphSettings(g);
     customMenu(g);
 
     emit modified();
@@ -6566,6 +6575,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
     applyWorksheetMetadataToGraph(ag, nullptr, QStringList(), defaultCurveStyle);
     ag->updatePlot();
     g->arrangeLayers(true, false);
+    finalizeLastGraphSettings(g);
     customMenu(g);
     emit modified();
     QApplication::restoreOverrideCursor();
@@ -6595,10 +6605,16 @@ void ApplicationWindow::initBareMultilayerPlot(MultiLayer *g, const QString &nam
 void ApplicationWindow::initMultilayerPlot(MultiLayer *g, const QString &name)
 {
     initBareMultilayerPlot(g, name);
-    if (isTabbedWorkspaceView())
+    applyLastGraphSettings(g);
+    const bool isSplitLayout = d_modern_ribbon
+            && (d_modern_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph);
+    if (isTabbedWorkspaceView()) {
         g->showMaximized();
-    else
-        g->show(); // FIXME: bad idea do it here
+    } else if (isSplitLayout) {
+        g->show();
+    } else {
+        applyLastGraphWindowGeometry(g);
+    }
     g->setFocus();
 }
 
@@ -6673,6 +6689,27 @@ void ApplicationWindow::setPreferences(Graph *g)
     g->setAutoscaleFonts(autoScaleFonts);
     g->setIgnoreResizeEvents(!autoResizeLayers);
     g->setAntialiasing(antialiasing2DPlots);
+
+    if (d_restored_graph_settings.valid && !g->isPiePlot() && !g->isTernaryPlot()
+        && !g->isPolarPlot()) {
+        const SavedGraphSettings &s = d_restored_graph_settings;
+        if (s.unitFormat == 1) {
+            g->setProperty("_toriBracketUnitFmt", false);
+            g->setAxisUnitFormat(Column::UnitFormat::ISIJSlash);
+        } else if (s.unitFormat == 2) {
+            g->setProperty("_toriBracketUnitFmt", true);
+            g->setAxisUnitFormat(Column::UnitFormat::Paren);
+        } else {
+            g->setProperty("_toriBracketUnitFmt", false);
+            g->setAxisUnitFormat(Column::UnitFormat::Paren);
+        }
+        if (Grid *gr = g->grid()) {
+            gr->enableX(s.gridMajorX);
+            gr->enableY(s.gridMajorY);
+            gr->enableXMin(s.gridMinorX);
+            gr->enableYMin(s.gridMinorY);
+        }
+    }
 }
 
 void ApplicationWindow::newWrksheetPlot(const QString &name, const QString &label,
@@ -6795,7 +6832,12 @@ void ApplicationWindow::initTable(Table *w)
         w->setHidden();
     else if (isTabbedWorkspaceView())
         w->showMaximized();
-    else {
+    else if (d_has_last_table_geometry
+             && !(d_modern_ribbon
+                  && d_modern_ribbon->workspaceLayoutMode()
+                          == ModernRibbonBar::LayoutSplitTableGraph)) {
+        applyLastTableWindowGeometry(w);
+    } else {
         const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
         if (vp.width() > 240 && vp.height() > 240) {
             const int targetW = qMax(680, int(vp.width() * 0.75));
@@ -8832,6 +8874,15 @@ void ApplicationWindow::readSettings()
             (ShowWindowsPolicy)settings.value("/ShowWindowsPolicy", ApplicationWindow::ActiveFolder)
                     .toInt();
     setTabbedWorkspaceView(settings.value("/TabbedWorkspaceView", false).toBool());
+    d_saved_workspace_layout_mode =
+            settings.value("/WorkspaceLayoutMode",
+                           isTabbedWorkspaceView() ? QStringLiteral("tabbed")
+                                                   : QStringLiteral("mdi"))
+                    .toString()
+                    .trimmed()
+                    .toLower();
+    d_saved_split_left_ratio =
+            qBound(0.15, settings.value("/SplitWorkspaceLeftRatio", 0.40).toDouble(), 0.85);
 
     recentProjects = settings.value("/RecentProjects").toStringList();
     // Follows an ugly hack added by Ion in order to fix Qt4 porting issues
@@ -9026,6 +9077,20 @@ void ApplicationWindow::readSettings()
     tableTextColor = QColor(COLORVALUE(settings.value("/Text", "#ff000000").toString()));
     tableHeaderColor = QColor(COLORVALUE(settings.value("/Header", "#ff000000").toString()));
     settings.endGroup(); // Colors
+
+    settings.beginGroup("/LastTableWindow");
+    d_has_last_table_geometry = settings.value("/HasGeometry", false).toBool();
+    if (d_has_last_table_geometry) {
+        const int tx = settings.value("/X", 0).toInt();
+        const int ty = settings.value("/Y", 0).toInt();
+        const int tw = settings.value("/Width", 0).toInt();
+        const int th = settings.value("/Height", 0).toInt();
+        if (tw >= 260 && th >= 200)
+            d_last_table_geometry = QRect(qMax(0, tx), qMax(0, ty), tw, th);
+        else
+            d_has_last_table_geometry = false;
+    }
+    settings.endGroup(); // LastTableWindow
     settings.endGroup();
     /* --------------- end group Tables ------------------------ */
 
@@ -9156,6 +9221,51 @@ void ApplicationWindow::readSettings()
     defaultArrowLineStyle =
             Graph::getPenStyle(settings.value("/LineStyle", "SolidLine").toString());
     settings.endGroup(); // Arrows
+
+    settings.beginGroup("/LastGraphWindow");
+    d_has_last_graph_geometry = settings.value("/HasGeometry", false).toBool();
+    d_last_graph_maximized = settings.value("/Maximized", false).toBool();
+    if (d_has_last_graph_geometry) {
+        const int gx = settings.value("/X", 0).toInt();
+        const int gy = settings.value("/Y", 0).toInt();
+        const int gw = settings.value("/Width", 0).toInt();
+        const int gh = settings.value("/Height", 0).toInt();
+        if (gw >= 260 && gh >= 220)
+            d_last_graph_geometry = QRect(qMax(0, gx), qMax(0, gy), gw, gh);
+        else
+            d_has_last_graph_geometry = false;
+    }
+    settings.endGroup(); // LastGraphWindow
+
+    settings.beginGroup("/LastGraphSettings");
+    d_restored_graph_settings = SavedGraphSettings();
+    d_restored_graph_settings.valid = settings.value("/HasSettings", false).toBool();
+    if (d_restored_graph_settings.valid) {
+        SavedGraphSettings &s = d_restored_graph_settings;
+        s.pageViewMode = settings.value("/PageViewMode", false).toBool();
+        s.pageUnit = qBound(0, settings.value("/PageUnit", 0).toInt(), 3);
+        s.pageWidth = settings.value("/PageWidth", 520.0).toDouble();
+        s.pageHeight = settings.value("/PageHeight", 520.0).toDouble();
+        s.pageDpi = qBound(72, settings.value("/PageDpi", 300).toInt(), 2400);
+        s.pageZoom = qBound(0.25, settings.value("/PageZoom", 1.0).toDouble(), 4.0);
+        const QColor parsedBg(settings.value("/PageBgColor", QStringLiteral("#ffffffff")).toString());
+        s.pageBg = parsedBg.isValid() ? parsedBg : QColor(Qt::white);
+        s.keepAspectRatio = settings.value("/KeepAspectRatio", true).toBool();
+        const double savedRatio = settings.value("/TargetAspectRatio", 1.0).toDouble();
+        s.targetAspectRatio = (savedRatio > 0.05 && savedRatio <= 20.0) ? savedRatio : 1.0;
+        s.panelLabelsEnabled = settings.value("/PanelLabelsEnabled", false).toBool();
+        s.panelLabelPlacement = qBound(0, settings.value("/PanelLabelPlacement", 0).toInt(), 1);
+        s.panelLabelPattern =
+                settings.value("/PanelLabelPattern", QStringLiteral("(%a)")).toString();
+        s.panelLabelFontPt = qBound(0, settings.value("/PanelLabelFontPt", 0).toInt(), 72);
+        s.unitFormat = qBound(0, settings.value("/UnitFormat", 0).toInt(), 2);
+        s.gridMajorX = settings.value("/GridMajorX", false).toBool();
+        s.gridMajorY = settings.value("/GridMajorY", false).toBool();
+        s.gridMinorX = settings.value("/GridMinorX", false).toBool();
+        s.gridMinorY = settings.value("/GridMinorY", false).toBool();
+    }
+    d_exit_graph_settings = d_restored_graph_settings;
+    settings.endGroup(); // LastGraphSettings
     settings.endGroup();
     /* ----------------- end group 2D Plots --------------------------- */
 
@@ -9238,6 +9348,30 @@ void ApplicationWindow::readSettings()
 
 void ApplicationWindow::saveSettings()
 {
+    // Capture the latest active/most-recent Graph & Table window geometry and settings
+    if (!d_ole_embedded) {
+        MultiLayer *bestMl = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+        Table *bestTbl = qobject_cast<Table *>(d_workspace.activeSubWindow());
+        const QList<QMdiSubWindow *> hist =
+                d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+        for (int i = hist.size() - 1; i >= 0 && (!bestMl || !bestTbl); --i) {
+            if (!bestMl) {
+                if (MultiLayer *cand = qobject_cast<MultiLayer *>(hist.at(i)))
+                    bestMl = cand;
+            }
+            if (!bestTbl) {
+                if (Table *cand = qobject_cast<Table *>(hist.at(i)))
+                    bestTbl = cand;
+            }
+        }
+        if (bestMl) {
+            captureLastGraphGeometry(bestMl, true);
+            captureLastGraphSettingsForExit(bestMl);
+        }
+        if (bestTbl)
+            captureLastTableGeometry(bestTbl, true);
+    }
+
     auto &settings = getSettings();
     /* ---------------- group General --------------- */
     settings.beginGroup("/General");
@@ -9247,6 +9381,15 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/Language", appLanguage);
     settings.setValue("/ShowWindowsPolicy", show_windows_policy);
     settings.setValue("/TabbedWorkspaceView", isTabbedWorkspaceView());
+    if (d_modern_ribbon) {
+        settings.setValue("/WorkspaceLayoutMode", d_modern_ribbon->workspaceLayoutModeName());
+        settings.setValue("/SplitWorkspaceLeftRatio", d_modern_ribbon->splitLeftRatio());
+    } else {
+        settings.setValue("/WorkspaceLayoutMode",
+                          isTabbedWorkspaceView() ? QStringLiteral("tabbed")
+                                                  : QStringLiteral("mdi"));
+        settings.setValue("/SplitWorkspaceLeftRatio", d_saved_split_left_ratio);
+    }
     settings.setValue("/RecentProjects", recentProjects);
     settings.setValue("/Style", appStyle);
     settings.setValue("/AutoSave", autoSave);
@@ -9341,10 +9484,41 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/Text", COLORNAME(tableTextColor));
     settings.setValue("/Header", COLORNAME(tableHeaderColor));
     settings.endGroup(); // Colors
+
+    settings.beginGroup("/LastTableWindow");
+    settings.setValue("/HasGeometry", d_has_last_table_geometry);
+    if (d_has_last_table_geometry) {
+        settings.setValue("/X", d_last_table_geometry.x());
+        settings.setValue("/Y", d_last_table_geometry.y());
+        settings.setValue("/Width", d_last_table_geometry.width());
+        settings.setValue("/Height", d_last_table_geometry.height());
+    }
+    settings.endGroup(); // LastTableWindow
     settings.endGroup();
     /* ----------------- end group Tables ---------- */
 
     /* ----------------- group 2D Plots ------------ */
+    const bool useExitVisual = d_exit_graph_settings.valid && d_exit_graph_settings.hasVisualStyle;
+    const QFont &saveAxesFont = useExitVisual ? d_exit_graph_settings.axesFont : plotAxesFont;
+    const QFont &saveNumbersFont =
+            useExitVisual ? d_exit_graph_settings.numbersFont : plotNumbersFont;
+    const QFont &saveLegendFont = useExitVisual ? d_exit_graph_settings.legendFont : plotLegendFont;
+    const int saveAxesLw = useExitVisual ? d_exit_graph_settings.axesLineWidth : axesLineWidth;
+    const int saveMajTicksStyle =
+            useExitVisual ? d_exit_graph_settings.majTicksStyle : majTicksStyle;
+    const int saveMinTicksStyle =
+            useExitVisual ? d_exit_graph_settings.minTicksStyle : minTicksStyle;
+    const int saveMajTicksLen =
+            useExitVisual ? d_exit_graph_settings.majTicksLength : majTicksLength;
+    const int saveMinTicksLen =
+            useExitVisual ? d_exit_graph_settings.minTicksLength : minTicksLength;
+    const int saveLegFrame =
+            useExitVisual ? d_exit_graph_settings.legendFrameStyle : legendFrameStyle;
+    const QColor &saveLegTextCol =
+            useExitVisual ? d_exit_graph_settings.legendTextColor : legendTextColor;
+    const QColor &saveLegBg =
+            useExitVisual ? d_exit_graph_settings.legendBackground : legendBackground;
+
     settings.beginGroup("/2DPlots");
     settings.beginGroup("/General");
     settings.setValue("/Title", titleOn);
@@ -9353,7 +9527,7 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/CanvasFrameWidth", canvasFrameWidth);
     settings.setValue("/Margin", defaultPlotMargin);
     settings.setValue("/AxesBackbones", drawBackbones);
-    settings.setValue("/AxesLineWidth", axesLineWidth);
+    settings.setValue("/AxesLineWidth", saveAxesLw);
     settings.setValue("/Autoscale", autoscale2DPlots);
     settings.setValue("/AutoScaleFonts", autoScaleFonts);
     settings.setValue("/AutoResizeLayers", autoResizeLayers);
@@ -9362,18 +9536,18 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/PrintCropmarks", d_print_cropmarks);
 
     QStringList graphFonts;
-    graphFonts << plotAxesFont.family();
-    graphFonts << QString::number(plotAxesFont.pointSize());
-    graphFonts << QString::number(plotAxesFont.weight());
-    graphFonts << QString::number(plotAxesFont.italic());
-    graphFonts << plotNumbersFont.family();
-    graphFonts << QString::number(plotNumbersFont.pointSize());
-    graphFonts << QString::number(plotNumbersFont.weight());
-    graphFonts << QString::number(plotNumbersFont.italic());
-    graphFonts << plotLegendFont.family();
-    graphFonts << QString::number(plotLegendFont.pointSize());
-    graphFonts << QString::number(plotLegendFont.weight());
-    graphFonts << QString::number(plotLegendFont.italic());
+    graphFonts << saveAxesFont.family();
+    graphFonts << QString::number(saveAxesFont.pointSize());
+    graphFonts << QString::number(saveAxesFont.weight());
+    graphFonts << QString::number(saveAxesFont.italic());
+    graphFonts << saveNumbersFont.family();
+    graphFonts << QString::number(saveNumbersFont.pointSize());
+    graphFonts << QString::number(saveNumbersFont.weight());
+    graphFonts << QString::number(saveNumbersFont.italic());
+    graphFonts << saveLegendFont.family();
+    graphFonts << QString::number(saveLegendFont.pointSize());
+    graphFonts << QString::number(saveLegendFont.weight());
+    graphFonts << QString::number(saveLegendFont.italic());
     graphFonts << plotTitleFont.family();
     graphFonts << QString::number(plotTitleFont.pointSize());
     graphFonts << QString::number(plotTitleFont.weight());
@@ -9388,17 +9562,17 @@ void ApplicationWindow::saveSettings()
     settings.endGroup(); // Curves
 
     settings.beginGroup("/Ticks");
-    settings.setValue("/MajTicksStyle", majTicksStyle);
-    settings.setValue("/MinTicksStyle", minTicksStyle);
-    settings.setValue("/MinTicksLength", minTicksLength);
-    settings.setValue("/MajTicksLength", majTicksLength);
+    settings.setValue("/MajTicksStyle", saveMajTicksStyle);
+    settings.setValue("/MinTicksStyle", saveMinTicksStyle);
+    settings.setValue("/MinTicksLength", saveMinTicksLen);
+    settings.setValue("/MajTicksLength", saveMajTicksLen);
     settings.endGroup(); // Ticks
 
     settings.beginGroup("/Legend");
-    settings.setValue("/FrameStyle", legendFrameStyle);
-    settings.setValue("/TextColor", COLORNAME(legendTextColor));
-    settings.setValue("/BackgroundColor", COLORNAME(legendBackground));
-    settings.setValue("/Transparency", legendBackground.alpha());
+    settings.setValue("/FrameStyle", saveLegFrame);
+    settings.setValue("/TextColor", COLORNAME(saveLegTextCol));
+    settings.setValue("/BackgroundColor", COLORNAME(saveLegBg));
+    settings.setValue("/Transparency", saveLegBg.alpha());
     settings.endGroup(); // Legend
 
     settings.beginGroup("/Arrows");
@@ -9409,6 +9583,43 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/HeadFill", defaultArrowHeadFill);
     settings.setValue("/LineStyle", Graph::penStyleName(defaultArrowLineStyle));
     settings.endGroup(); // Arrows
+
+    settings.beginGroup("/LastGraphWindow");
+    settings.setValue("/HasGeometry", d_has_last_graph_geometry);
+    settings.setValue("/Maximized", d_last_graph_maximized);
+    if (d_has_last_graph_geometry) {
+        settings.setValue("/X", d_last_graph_geometry.x());
+        settings.setValue("/Y", d_last_graph_geometry.y());
+        settings.setValue("/Width", d_last_graph_geometry.width());
+        settings.setValue("/Height", d_last_graph_geometry.height());
+    }
+    settings.endGroup(); // LastGraphWindow
+
+    settings.beginGroup("/LastGraphSettings");
+    settings.setValue("/HasSettings", d_exit_graph_settings.valid);
+    if (d_exit_graph_settings.valid) {
+        const SavedGraphSettings &s = d_exit_graph_settings;
+        settings.setValue("/PageViewMode", s.pageViewMode);
+        settings.setValue("/PageUnit", s.pageUnit);
+        settings.setValue("/PageWidth", s.pageWidth);
+        settings.setValue("/PageHeight", s.pageHeight);
+        settings.setValue("/PageDpi", s.pageDpi);
+        settings.setValue("/PageZoom", s.pageZoom);
+        settings.setValue("/PageBgColor", s.pageBg.name(QColor::HexArgb));
+        settings.setValue("/KeepAspectRatio", s.keepAspectRatio);
+        settings.setValue("/TargetAspectRatio", s.targetAspectRatio);
+        settings.setValue("/PanelLabelsEnabled", s.panelLabelsEnabled);
+        settings.setValue("/PanelLabelPlacement", s.panelLabelPlacement);
+        settings.setValue("/PanelLabelPattern", s.panelLabelPattern);
+        settings.setValue("/PanelLabelFontPt", s.panelLabelFontPt);
+        settings.setValue("/UnitFormat", s.unitFormat);
+        settings.setValue("/GridMajorX", s.gridMajorX);
+        settings.setValue("/GridMajorY", s.gridMajorY);
+        settings.setValue("/GridMinorX", s.gridMinorX);
+        settings.setValue("/GridMinorY", s.gridMinorY);
+    }
+    settings.endGroup(); // LastGraphSettings
+
     settings.setValue("/ToriGraphStyleVersion", 6);
     settings.endGroup();
     /* ----------------- end group 2D Plots -------- */
@@ -9484,6 +9695,7 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/KeepAspect", d_keep_plot_aspect);
     settings.setValue("/Orientation", d_export_orientation);
     settings.endGroup(); // ExportImage
+    settings.sync();
 }
 
 void ApplicationWindow::exportGraph()
@@ -17011,6 +17223,8 @@ void ApplicationWindow::connectMultilayerPlot(MultiLayer *g)
     }
 
     g->askOnCloseEvent(confirmClosePlot2D);
+    g->removeEventFilter(this);
+    g->installEventFilter(this);
 }
 
 void ApplicationWindow::connectTable(Table *w)
@@ -17036,6 +17250,8 @@ void ApplicationWindow::connectTable(Table *w)
     connect(w->d_future_table, SIGNAL(requestColumnStatistics()), this, SLOT(showColStatistics()));
 #endif
     w->askOnCloseEvent(confirmCloseTable);
+    w->removeEventFilter(this);
+    w->installEventFilter(this);
 }
 
 void ApplicationWindow::setAppColors(const QColor &wc, const QColor &pc, const QColor &tpc)
@@ -23907,7 +24123,289 @@ bool ApplicationWindow::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
             updateExplorerAdaptiveLayout();
     }
+    if (event && !d_restoring_window_geometry && !d_ole_embedded) {
+        const QEvent::Type et = event->type();
+        if (et == QEvent::Move || et == QEvent::Resize || et == QEvent::WindowStateChange
+            || et == QEvent::Close) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(watched)) {
+                captureLastGraphGeometry(ml, et == QEvent::Close);
+                if (et == QEvent::Close)
+                    captureLastGraphSettingsForExit(ml);
+            } else if (Table *tbl = qobject_cast<Table *>(watched)) {
+                captureLastTableGeometry(tbl, et == QEvent::Close);
+            }
+        }
+    }
     return QMainWindow::eventFilter(watched, event);
+}
+
+void ApplicationWindow::captureLastGraphGeometry(MultiLayer *ml, bool allowHiddenGeometry)
+{
+    if (!ml || d_ole_embedded || d_restoring_window_geometry)
+        return;
+
+    const bool isFreeMdi = (d_workspace.viewMode() == QMdiArea::SubWindowView)
+            && !(d_modern_ribbon
+                 && (d_modern_ribbon->workspaceLayoutMode()
+                             == ModernRibbonBar::LayoutSplitTableGraph
+                     || d_modern_ribbon->isApplyingSplitGeometry()));
+
+    if (isFreeMdi && !ml->isMinimized() && (allowHiddenGeometry || ml->isVisible())) {
+        if (ml->isMaximized()) {
+            d_last_graph_maximized = true;
+            const QRect norm = ml->normalGeometry();
+            if (norm.width() >= 260 && norm.height() >= 220) {
+                d_last_graph_geometry = QRect(qMax(0, norm.x()), qMax(0, norm.y()),
+                                              norm.width(), norm.height());
+                d_has_last_graph_geometry = true;
+            }
+        } else {
+            const QRect geo = ml->geometry();
+            if (geo.width() >= 260 && geo.height() >= 220) {
+                d_last_graph_geometry = QRect(qMax(0, geo.x()), qMax(0, geo.y()),
+                                              geo.width(), geo.height());
+                d_last_graph_maximized = false;
+                d_has_last_graph_geometry = true;
+            }
+        }
+    }
+}
+
+void ApplicationWindow::captureLastGraphSettingsForExit(MultiLayer *ml)
+{
+    if (!ml || d_ole_embedded || d_restoring_window_geometry)
+        return;
+
+    Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->layer(1);
+    if (!g || !g->plotWidget() || g->isPiePlot() || g->isTernaryPlot() || g->isPolarPlot())
+        return;
+
+    SavedGraphSettings s;
+    s.valid = true;
+    s.pageViewMode = ml->pageViewMode();
+    s.pageUnit = int(ml->pageUnit());
+    s.pageWidth = ml->pageWidthPhysical();
+    s.pageHeight = ml->pageHeightPhysical();
+    s.pageDpi = qBound(72, ml->pageDpi(), 2400);
+    s.pageZoom = qBound(0.25, ml->pageZoom(), 4.0);
+    s.pageBg = ml->pageBackgroundColor().isValid() ? ml->pageBackgroundColor() : QColor(Qt::white);
+    s.keepAspectRatio = ml->keepAspectRatio();
+    s.targetAspectRatio = (ml->targetAspectRatio() > 0.05 && ml->targetAspectRatio() <= 20.0)
+            ? ml->targetAspectRatio()
+            : 1.0;
+    s.panelLabelsEnabled = ml->hasPanelLabels();
+    s.panelLabelPlacement = int(ml->panelLabelPlacement());
+    s.panelLabelPattern = ml->panelLabelPattern();
+    s.panelLabelFontPt = ml->panelLabelFontPt();
+
+    s.hasVisualStyle = true;
+    s.axesFont = plotAxesFont;
+    s.numbersFont = plotNumbersFont;
+    s.legendFont = plotLegendFont;
+    s.legendFrameStyle = legendFrameStyle;
+    s.legendTextColor = legendTextColor;
+    s.legendBackground = legendBackground;
+    s.axesLineWidth = axesLineWidth;
+    s.majTicksStyle = majTicksStyle;
+    s.minTicksStyle = minTicksStyle;
+    s.majTicksLength = majTicksLength;
+    s.minTicksLength = minTicksLength;
+
+    auto adoptFontIfValid = [](QFont &dst, const QFont &src) {
+        if (src.pointSize() > 0 && !src.family().trimmed().isEmpty())
+            dst = src;
+    };
+    adoptFontIfValid(s.axesFont, g->axisTitleFont(QwtPlot::xBottom));
+    adoptFontIfValid(s.numbersFont, g->axisFont(QwtPlot::xBottom));
+    if (Legend *leg = g->legend()) {
+        adoptFontIfValid(s.legendFont, leg->font());
+        s.legendFrameStyle = leg->frameStyle();
+        s.legendTextColor = leg->textColor();
+        s.legendBackground = leg->backgroundColor();
+    }
+    if (Plot *pl = g->plotWidget()) {
+        s.axesLineWidth = qMax(1, pl->axesLinewidth());
+        if (const ScaleDraw *sd = dynamic_cast<const ScaleDraw *>(pl->axisScaleDraw(QwtPlot::xBottom))) {
+            s.majTicksStyle = sd->majorTicksStyle();
+            s.minTicksStyle = sd->minorTicksStyle();
+        }
+        s.majTicksLength = qMax(1, g->majorTickLength());
+        s.minTicksLength = qMax(1, g->minorTickLength());
+    }
+    if (g->property("_toriBracketUnitFmt").toBool())
+        s.unitFormat = 2;
+    else if (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash)
+        s.unitFormat = 1;
+    else
+        s.unitFormat = 0;
+
+    if (Grid *gr = g->grid()) {
+        s.gridMajorX = gr->xEnabled();
+        s.gridMajorY = gr->yEnabled();
+        s.gridMinorX = gr->xMinEnabled();
+        s.gridMinorY = gr->yMinEnabled();
+    }
+
+    d_exit_graph_settings = s;
+}
+
+void ApplicationWindow::captureLastTableGeometry(Table *t, bool allowHiddenGeometry)
+{
+    if (!t || d_ole_embedded || d_restoring_window_geometry)
+        return;
+
+    const bool isFreeMdi = (d_workspace.viewMode() == QMdiArea::SubWindowView)
+            && !(d_modern_ribbon
+                 && (d_modern_ribbon->workspaceLayoutMode()
+                             == ModernRibbonBar::LayoutSplitTableGraph
+                     || d_modern_ribbon->isApplyingSplitGeometry()));
+    if (!isFreeMdi || t->isMinimized() || t->isMaximized()
+        || (!allowHiddenGeometry && !t->isVisible()))
+        return;
+
+    const QRect geo = t->geometry();
+    if (geo.width() >= 260 && geo.height() >= 200) {
+        d_last_table_geometry = QRect(qMax(0, geo.x()), qMax(0, geo.y()),
+                                      geo.width(), geo.height());
+        d_has_last_table_geometry = true;
+    }
+}
+
+void ApplicationWindow::applyLastGraphWindowGeometry(MultiLayer *g)
+{
+    if (!g)
+        return;
+    const bool prevRestoring = d_restoring_window_geometry;
+    d_restoring_window_geometry = true;
+    if (d_has_last_graph_geometry && d_last_graph_geometry.width() >= 260
+        && d_last_graph_geometry.height() >= 220) {
+        QRect target = d_last_graph_geometry;
+        const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+        if (vp.width() >= 320 && vp.height() >= 240) {
+            target.setWidth(qBound(260, target.width(), qMax(260, vp.width() - 8)));
+            target.setHeight(qBound(220, target.height(), qMax(220, vp.height() - 8)));
+            target.moveLeft(qBound(0, target.x(), qMax(0, vp.width() - target.width())));
+            target.moveTop(qBound(0, target.y(), qMax(0, vp.height() - target.height())));
+
+            // Gently cascade if another visible MultiLayer occupies the exact same top-left
+            for (int step = 0; step < 8; ++step) {
+                bool overlapsExact = false;
+                for (QMdiSubWindow *sw : d_workspace.subWindowList()) {
+                    MultiLayer *other = qobject_cast<MultiLayer *>(sw);
+                    if (!other || other == g || other->isHidden() || other->isMinimized())
+                        continue;
+                    if (qAbs(other->x() - target.x()) <= 8 && qAbs(other->y() - target.y()) <= 8) {
+                        overlapsExact = true;
+                        break;
+                    }
+                }
+                if (!overlapsExact)
+                    break;
+                int nx = target.x() + 26;
+                int ny = target.y() + 26;
+                if (nx + target.width() > vp.width() || ny + target.height() > vp.height()) {
+                    nx = 12;
+                    ny = 12;
+                }
+                target.moveTo(nx, ny);
+            }
+        }
+        g->resize(target.size());
+        g->move(target.topLeft());
+        if (d_last_graph_maximized)
+            g->showMaximized();
+        else
+            g->show();
+    } else {
+        g->show();
+    }
+    d_restoring_window_geometry = prevRestoring;
+}
+
+void ApplicationWindow::applyLastTableWindowGeometry(Table *w)
+{
+    if (!w)
+        return;
+    const bool prevRestoring = d_restoring_window_geometry;
+    d_restoring_window_geometry = true;
+    QRect target = d_last_table_geometry;
+    const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+    if (vp.width() >= 320 && vp.height() >= 240) {
+        target.setWidth(qBound(260, target.width(), qMax(260, vp.width() - 8)));
+        target.setHeight(qBound(200, target.height(), qMax(200, vp.height() - 8)));
+        target.moveLeft(qBound(0, target.x(), qMax(0, vp.width() - target.width())));
+        target.moveTop(qBound(0, target.y(), qMax(0, vp.height() - target.height())));
+    }
+    w->resize(target.size());
+    w->move(target.topLeft());
+    w->showNormal();
+    d_restoring_window_geometry = prevRestoring;
+}
+
+void ApplicationWindow::applyLastGraphSettings(MultiLayer *g)
+{
+    if (!g || !d_restored_graph_settings.valid)
+        return;
+    const SavedGraphSettings &s = d_restored_graph_settings;
+    const bool prevRestoring = d_restoring_window_geometry;
+    d_restoring_window_geometry = true;
+    g->setKeepAspectRatio(s.keepAspectRatio);
+    if (s.targetAspectRatio > 0.05 && s.targetAspectRatio <= 20.0)
+        g->setTargetAspectRatio(s.targetAspectRatio);
+    if (s.pageBg.isValid())
+        g->setPageBackgroundColor(s.pageBg);
+    if (s.pageWidth > 1.0 && s.pageHeight > 1.0) {
+        g->setPageSizePhysical(s.pageWidth, s.pageHeight,
+                               static_cast<MultiLayer::PageUnit>(s.pageUnit), s.pageDpi);
+    }
+    if (s.panelLabelsEnabled) {
+        g->setPanelLabels(
+                true, static_cast<MultiLayer::PanelLabelPlacement>(s.panelLabelPlacement),
+                s.panelLabelPattern.isEmpty() ? QStringLiteral("(%a)") : s.panelLabelPattern,
+                s.panelLabelFontPt);
+    }
+    d_restoring_window_geometry = prevRestoring;
+}
+
+void ApplicationWindow::finalizeLastGraphSettings(MultiLayer *g)
+{
+    if (!g || !d_restored_graph_settings.valid)
+        return;
+    const SavedGraphSettings &s = d_restored_graph_settings;
+    const bool prevRestoring = d_restoring_window_geometry;
+    d_restoring_window_geometry = true;
+    const bool hasPhysicalPage = s.pageViewMode
+            || (s.pageUnit != int(MultiLayer::UnitPx))
+            || (qAbs(s.pageZoom - 1.0) > 1e-4);
+    if (s.pageViewMode)
+        g->setPageViewMode(true);
+    if (hasPhysicalPage) {
+        g->setPageZoom(qBound(0.25, s.pageZoom, 4.0));
+        if (s.pageWidth > 1.0 && s.pageHeight > 1.0) {
+            g->setPageSizePhysical(s.pageWidth, s.pageHeight,
+                                   static_cast<MultiLayer::PageUnit>(s.pageUnit), s.pageDpi);
+        }
+        g->setKeepAspectRatio(s.keepAspectRatio);
+        if (s.targetAspectRatio > 0.05 && s.targetAspectRatio <= 20.0)
+            g->setTargetAspectRatio(s.targetAspectRatio);
+        if (s.keepAspectRatio && qFuzzyCompare(s.targetAspectRatio, 1.0))
+            g->applySquareCanvasFrame70Percent();
+    } else {
+        g->setKeepAspectRatio(s.keepAspectRatio);
+        if (s.targetAspectRatio > 0.05 && s.targetAspectRatio <= 20.0)
+            g->setTargetAspectRatio(s.targetAspectRatio);
+    }
+    if (Graph *ag = g->activeGraph()) {
+        if (ag->legend() && ag->isLegendVisible())
+            ag->placeLegendAnchor(Graph::LegendAutoAvoidData);
+    }
+    const bool isFreeMdi = (d_workspace.viewMode() == QMdiArea::SubWindowView)
+            && !(d_modern_ribbon
+                 && d_modern_ribbon->workspaceLayoutMode()
+                         == ModernRibbonBar::LayoutSplitTableGraph);
+    if (isFreeMdi && d_has_last_graph_geometry)
+        applyLastGraphWindowGeometry(g);
+    d_restoring_window_geometry = prevRestoring;
 }
 
 void ApplicationWindow::updateExplorerAdaptiveLayout()
@@ -24509,6 +25007,17 @@ QStringList ApplicationWindow::tableWindows()
 
 QSettings &ApplicationWindow::getSettings()
 {
+    const QByteArray overrideIni = qgetenv("TORIGRAPH_SETTINGS_INI");
+    if (!overrideIni.isEmpty()) {
+        static QString s_iniPath;
+        static QScopedPointer<QSettings> s_overrideSettings;
+        const QString wantPath = QString::fromLocal8Bit(overrideIni);
+        if (!s_overrideSettings || s_iniPath != wantPath) {
+            s_iniPath = wantPath;
+            s_overrideSettings.reset(new QSettings(s_iniPath, QSettings::IniFormat));
+        }
+        return *s_overrideSettings;
+    }
 #ifdef Q_OS_MAC // Mac
     static QSettings d_settings(QSettings::IniFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
 #else
@@ -24517,9 +25026,6 @@ QSettings &ApplicationWindow::getSettings()
 #endif
     return d_settings;
 }
-
-// initialize singleton
-static auto &SciDavisSettingsSingleton = ApplicationWindow::getSettings();
 
 void ApplicationWindow::localeChanged()
 {

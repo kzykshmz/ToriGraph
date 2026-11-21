@@ -273,6 +273,9 @@ public:
     bool setWorkspaceLayoutModeByName(const QString &modeName);
     QString workspaceLayoutModeName() const;
     void applySplitWorkspaceGeometry();
+    double splitLeftRatio() const { return d_split_left_ratio; }
+    void setSplitLeftRatio(double ratio);
+    bool isApplyingSplitGeometry() const { return d_applying_split_geometry; }
 
     void setFocusHudMode(bool enabled);
     void toggleFocusHudMode() { setFocusHudMode(!d_focus_hud_mode); }
@@ -380,6 +383,9 @@ private:
     QVector<RibbonMenuActionBinding> d_menu_action_bindings;
 
     WorkspaceLayoutMode d_layout_mode = LayoutTabbed;
+    double d_split_left_ratio = 0.40;
+    QPointer<Table> d_split_table;
+    QPointer<MyWidget> d_split_plot;
     bool d_focus_hud_mode = false;
     bool d_classic_toolbars_visible = false;
     bool d_applying_split_geometry = false;

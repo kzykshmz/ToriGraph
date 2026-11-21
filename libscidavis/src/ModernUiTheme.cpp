@@ -202,7 +202,9 @@ public:
         case QStyle::PM_MenuVMargin:
             return 4;
         case QStyle::PM_SplitterWidth:
-            return 5;
+            return 7;
+        case QStyle::PM_MdiSubWindowFrameWidth:
+            return 7;
         default:
             return QProxyStyle::pixelMetric(metric, option, widget);
         }
@@ -238,11 +240,27 @@ public:
             return;
         if (element == QStyle::PE_FrameWindow && qobject_cast<const QMdiSubWindow *>(widget)
             && option && painter) {
+            const auto *sub = qobject_cast<const QMdiSubWindow *>(widget);
             const bool isActive = (option->state & QStyle::State_Active) != 0;
+            const QRect r = option->rect;
             painter->save();
+            // Clean light frame band over the 7px resize grab border
+            painter->fillRect(r, isActive ? QColor(0xEF, 0xF6, 0xFF) : QColor(0xF1, 0xF5, 0xF9));
             painter->setPen(QPen(isActive ? QColor(0x3B, 0x82, 0xF6) : QColor(0xCB, 0xD5, 0xE1), 1));
             painter->setBrush(Qt::NoBrush);
-            painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
+            painter->drawRect(r.adjusted(0, 0, -1, -1));
+            // Subtle bottom-right diagonal resize grip when resizable (not maximized)
+            if (sub && !sub->isMaximized() && !sub->isMinimized() && r.width() > 40 && r.height() > 40) {
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                painter->setPen(QPen(isActive ? QColor(0x3B, 0x82, 0xF6, 180)
+                                              : QColor(0x94, 0xA3, 0xB8, 170),
+                                     1.2));
+                const int rx = r.right() - 2;
+                const int by = r.bottom() - 2;
+                painter->drawLine(QPointF(rx - 4, by), QPointF(rx, by - 4));
+                painter->drawLine(QPointF(rx - 8, by), QPointF(rx, by - 8));
+                painter->drawLine(QPointF(rx - 12, by), QPointF(rx, by - 12));
+            }
             painter->restore();
             return;
         }
@@ -1407,26 +1425,22 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F8FAFC;"
             "}"
             "QMainWindow::separator {"
-            "  background-color: #CBD5E1;"
-            "  width: 1px;"
-            "  height: 1px;"
+            "  background-color: #E2E8F0;"
+            "  width: 5px;"
+            "  height: 5px;"
+            "}"
+            "QMainWindow::separator:hover {"
+            "  background-color: #60A5FA;"
             "}"
             "QSplitter::handle {"
             "  background-color: #E2E8F0;"
             "}"
             "QSplitter::handle:hover {"
-            "  background-color: #93C5FD;"
+            "  background-color: #60A5FA;"
             "}"
             "QMdiArea {"
             "  background-color: #E8EDF4;"
             "  border: none;"
-            "}"
-            "QMdiSubWindow {"
-            "  background-color: #FFFFFF;"
-            "  border: 1px solid #CBD5E1;"
-            "}"
-            "QMdiSubWindow:focus {"
-            "  border: 1px solid #3B82F6;"
             "}"
             "QMenuBar {"
             "  background-color: #FFFFFF;"

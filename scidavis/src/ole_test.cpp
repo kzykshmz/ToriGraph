@@ -152,6 +152,13 @@ int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
     std::cerr << std::unitbuf;
+    const QString testIniPath =
+            QDir::tempPath()
+            + QStringLiteral("/torigraph_ole_test_settings_%1.ini")
+                      .arg(QCoreApplication::applicationPid() ? QCoreApplication::applicationPid()
+                                                              : qint64(GetCurrentProcessId()));
+    QFile::remove(testIniPath);
+    qputenv("TORIGRAPH_SETTINGS_INI", testIniPath.toLocal8Bit());
     if (qEnvironmentVariable("QT_OPENGL").compare(QStringLiteral("software"), Qt::CaseInsensitive) == 0)
         QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL, true);
     else
@@ -13760,6 +13767,135 @@ static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw)
         w52Gui->setOleEmbeddedMode(true);
         delete w52Gui;
         QApplication::processEvents();
+    }
+
+    // =========================================================================
+    // 52d. Wide MDI SubWindow Resize Grab Margin (>= 7px) & Last Graph Window
+    //      Geometry + Settings Persistence Across Application Restart
+    // =========================================================================
+    {
+        const QString persistIni =
+                QDir::tempPath()
+                + QStringLiteral("/torigraph_suite52d_persist_%1.ini")
+                          .arg(qint64(GetCurrentProcessId()));
+        QFile::remove(persistIni);
+        const QByteArray prevIniEnv = qgetenv("TORIGRAPH_SETTINGS_INI");
+        qputenv("TORIGRAPH_SETTINGS_INI", persistIni.toLocal8Bit());
+
+        // Session 1: verify wide resize grab margin + customize graph geometry & settings, then save
+        ApplicationWindow *wP1 = new ApplicationWindow();
+        wP1->applyUserSettings();
+        ModernUiTheme::applyModernTheme(qApp);
+        wP1->resize(1400, 900);
+        wP1->show();
+        QApplication::processEvents();
+
+        ModernRibbonBar *rib1 = wP1->modernRibbonBar();
+        CHECK_COND(rib1 != nullptr, "Suite 52d: ModernRibbonBar null on wP1");
+        rib1->setWorkspaceLayoutMode(ModernRibbonBar::LayoutFreeMdi);
+        rib1->setSplitLeftRatio(0.34);
+        QApplication::processEvents();
+
+        Table *t1 = wP1->newTable("PersistTbl1", 5, 2);
+        wP1->initTable(t1);
+        for (int r = 0; r < 5; ++r) {
+            t1->setCell(r, 0, double(r));
+            t1->setCell(r, 1, double(r * r + 1));
+        }
+        MultiLayer *ml1 = wP1->multilayerPlot(t1, QStringList() << "PersistTbl1_2", Graph::Line);
+        CHECK_COND(ml1 != nullptr && ml1->activeGraph() != nullptr,
+                   "Suite 52d: Failed to create MultiLayer on wP1");
+        QApplication::processEvents();
+
+        const int subFrameW_tbl = t1->style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, t1);
+        const int subFrameW_ml = ml1->style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, ml1);
+        const int splitW = wP1->style()->pixelMetric(QStyle::PM_SplitterWidth, nullptr, wP1);
+        std::cout << "[INFO] Suite 52d resize grab metrics: Table frame=" << subFrameW_tbl
+                  << "px, Graph frame=" << subFrameW_ml << "px, Splitter=" << splitW << "px\n";
+        CHECK_COND(subFrameW_tbl >= 7 && subFrameW_ml >= 7 && splitW >= 7,
+                   QString("Suite 52d: Resize grab zone too narrow (table=%1, graph=%2, splitter=%3)!")
+                           .arg(subFrameW_tbl)
+                           .arg(subFrameW_ml)
+                           .arg(splitW)
+                           .toStdString()
+                           .c_str());
+
+        ml1->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
+        ml1->resize(680, 560);
+        ml1->move(56, 38);
+        QApplication::processEvents();
+
+        wP1->saveSettings();
+        wP1->savedProject();
+        wP1->setOleEmbeddedMode(true);
+        delete wP1;
+        QApplication::processEvents();
+
+        // Session 2: verify restored graph window geometry, settings, and workspace mode
+        ApplicationWindow *wP2 = new ApplicationWindow();
+        wP2->applyUserSettings();
+        wP2->resize(1400, 900);
+        wP2->show();
+        QApplication::processEvents();
+
+        ModernRibbonBar *rib2 = wP2->modernRibbonBar();
+        CHECK_COND(rib2 != nullptr
+                           && rib2->workspaceLayoutMode() == ModernRibbonBar::LayoutFreeMdi
+                           && std::fabs(rib2->splitLeftRatio() - 0.34) < 0.02,
+                   "Suite 52d: Failed to restore workspaceLayoutMode / splitLeftRatio on Session 2!");
+
+        Table *t2 = wP2->newTable("PersistTbl2", 5, 2);
+        wP2->initTable(t2);
+        for (int r = 0; r < 5; ++r) {
+            t2->setCell(r, 0, double(r));
+            t2->setCell(r, 1, double(r * 2 + 1));
+        }
+        MultiLayer *ml2 = wP2->multilayerPlot(t2, QStringList() << "PersistTbl2_2", Graph::Line);
+        QApplication::processEvents();
+        CHECK_COND(ml2 != nullptr && ml2->activeGraph() != nullptr,
+                   "Suite 52d: Failed to create MultiLayer on wP2");
+        Graph *g2 = ml2->activeGraph();
+        std::cout << "[INFO] Suite 52d restored Graph geom=(" << ml2->x() << "," << ml2->y()
+                  << "," << ml2->width() << "x" << ml2->height() << "), page="
+                  << ml2->pageWidthPhysical() << "x" << ml2->pageHeightPhysical()
+                  << " dpi=" << ml2->pageDpi() << " zoom=" << ml2->pageZoom()
+                  << " titlePt=" << g2->axisTitleFont(QwtPlot::xBottom).pointSize() << "\n";
+        CHECK_COND(qAbs(ml2->width() - 680) <= 4 && qAbs(ml2->height() - 560) <= 4
+                           && qAbs(ml2->x() - 56) <= 4 && qAbs(ml2->y() - 38) <= 4,
+                   "Suite 52d: Restored Graph window size/position mismatch!");
+        CHECK_COND(ml2->pageUnit() == MultiLayer::UnitMm
+                           && std::fabs(ml2->pageWidthPhysical() - 85.0) < 0.5
+                           && std::fabs(ml2->pageHeightPhysical() - 85.0) < 0.5
+                           && ml2->pageDpi() == 600
+                           && std::fabs(ml2->pageZoom() - 1.6) < 0.05
+                           && ml2->keepAspectRatio(),
+                   "Suite 52d: Restored Graph page/DPI/zoom/aspect settings mismatch!");
+        CHECK_COND(g2->axisUnitFormat() == Column::UnitFormat::ISIJSlash
+                           && g2->legend() != nullptr
+                           && g2->legend()->frameStyle() == Legend::None
+                           && g2->axisTitleFont(QwtPlot::xBottom).pointSize() == 11,
+                   "Suite 52d: Restored Graph font/legend/unitFormat settings mismatch!");
+
+        // Also test Split View workspace mode persistence
+        rib2->setWorkspaceLayoutMode(ModernRibbonBar::LayoutSplitTableGraph);
+        wP2->saveSettings();
+        wP2->savedProject();
+        wP2->setOleEmbeddedMode(true);
+        delete wP2;
+        QApplication::processEvents();
+
+        ApplicationWindow *wP3 = new ApplicationWindow();
+        CHECK_COND(wP3->modernRibbonBar() != nullptr
+                           && wP3->modernRibbonBar()->workspaceLayoutMode()
+                                   == ModernRibbonBar::LayoutSplitTableGraph,
+                   "Suite 52d: Failed to restore LayoutSplitTableGraph workspace mode!");
+        wP3->savedProject();
+        wP3->setOleEmbeddedMode(true);
+        delete wP3;
+        QApplication::processEvents();
+
+        qputenv("TORIGRAPH_SETTINGS_INI", prevIniEnv);
+        QFile::remove(persistIni);
     }
 
     std::cout << "[INFO] Suite 52 Phase 12 .opju Importer, Graph/Math Bug Fixes & Modern UI/Ribbon Polish Gate passed!\n";
