@@ -163,8 +163,8 @@ jobs:
               g = app.graph(sample["graph"])
               res = g.analyze_tensile(offset=0.002, plot_construction=True)
               print("Tensile analysis:", res)
-              out_png = Path("ci_smoke.png")
-              out_pptx = Path("ci_smoke.pptx")
+              out_png = Path("ci_smoke.png").resolve()
+              out_pptx = Path("ci_smoke.pptx").resolve()
               g.export(out_png, dpi=300)
               g.to_pptx(out_pptx, preset="slide_28pt")
               assert out_png.is_file() and out_png.stat().st_size > 1000
