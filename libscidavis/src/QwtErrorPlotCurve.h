@@ -73,6 +73,15 @@ public:
     bool minusSide() { return minus; };
     void drawMinusSide(bool yes) { minus = yes; };
 
+    //! E11: draw the errors as a translucent band around the master curve instead of bars.
+    //! The band fill is color() with bandAlpha() (0-255). A plus-only and a minus-only error
+    //! curve on the same master together give an asymmetric band.
+    bool isBand() const { return d_band; }
+    void setBand(bool on) { d_band = on; }
+    int bandAlpha() const { return d_band_alpha; }
+    void setBandAlpha(int a) { d_band_alpha = qBound(0, a, 255); }
+    QColor bandFillColor() const;
+
     //! Returns the master curve to which this error bars curve is attached.
     DataCurve *masterCurve() { return d_master_curve; };
     void setMasterCurve(DataCurve *c);
@@ -91,6 +100,11 @@ private:
 
     void drawErrorBars(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                        int from, int to) const;
+    void drawErrorBand(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                       int from, int to) const;
+
+    bool d_band = false;
+    int d_band_alpha = 64;
 
     //! Stores the error bar values
     QwtArray<double> err;

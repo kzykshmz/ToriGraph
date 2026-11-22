@@ -66,8 +66,92 @@ void QwtErrorPlotCurve::copy(const QwtErrorPlotCurve *e)
     plus = e->plus;
     minus = e->minus;
     through = e->through;
+    d_band = e->d_band;
+    d_band_alpha = e->d_band_alpha;
     setPen(e->pen());
     err = e->err;
+}
+
+QColor QwtErrorPlotCurve::bandFillColor() const
+{
+    QColor c = pen().color();
+    c.setAlpha(d_band_alpha);
+    return c;
+}
+
+void QwtErrorPlotCurve::drawErrorBand(QPainter *painter, const QwtScaleMap &xMap,
+                                      const QwtScaleMap &yMap, int from, int to) const
+{
+    if (!d_master_curve || !painter)
+        return;
+    const bool vertical = (type != Horizontal);
+    const QwtScaleMap &valMap = vertical ? yMap : xMap;
+    const bool logVal = valMap.transformation()
+            && valMap.transformation()->type() == QwtScaleTransformation::Log10;
+    const double logFloor = qMin(valMap.s1(), valMap.s2());
+
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QBrush(bandFillColor()));
+
+    // One closed polygon per run of consecutive valid points: the upper edge forwards,
+    // then the lower edge backwards.
+    QVector<QPointF> upper, lower;
+    auto flush = [&]() {
+        if (upper.size() >= 2) {
+            QPolygonF poly;
+            poly.reserve(upper.size() * 2);
+            for (const QPointF &pt : upper)
+                poly << pt;
+            for (int k = lower.size() - 1; k >= 0; --k)
+                poly << lower[k];
+            painter->drawPolygon(poly);
+        }
+        upper.clear();
+        lower.clear();
+    };
+
+    for (int i = from; i <= to && i < err.size(); i++) {
+        const double v = vertical ? y(i) : x(i);
+        const double e = err[i];
+        if (!std::isfinite(v) || !std::isfinite(e) || !std::isfinite(x(i))
+            || !std::isfinite(y(i))) {
+            flush();
+            continue;
+        }
+        double hi = plus ? v + e : v;
+        double lo = minus ? v - e : v;
+        if (logVal) {
+            if (hi <= 0.0) {
+                flush();
+                continue;
+            }
+            if (lo <= 0.0)
+                lo = logFloor;
+        }
+        if (vertical) {
+            const double px = xMap.xTransform(x(i));
+            const double pHi = yMap.xTransform(hi);
+            const double pLo = yMap.xTransform(lo);
+            if (!std::isfinite(px) || !std::isfinite(pHi) || !std::isfinite(pLo)) {
+                flush();
+                continue;
+            }
+            upper << QPointF(px, pHi);
+            lower << QPointF(px, pLo);
+        } else {
+            const double py = yMap.xTransform(y(i));
+            const double pHi = xMap.xTransform(hi);
+            const double pLo = xMap.xTransform(lo);
+            if (!std::isfinite(py) || !std::isfinite(pHi) || !std::isfinite(pLo)) {
+                flush();
+                continue;
+            }
+            upper << QPointF(pHi, py);
+            lower << QPointF(pLo, py);
+        }
+    }
+    flush();
 }
 
 void QwtErrorPlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -80,8 +164,12 @@ void QwtErrorPlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const Q
         to = dataSize() - 1;
 
     painter->save();
-    painter->setPen(pen());
-    drawErrorBars(painter, xMap, yMap, from, to);
+    if (d_band) {
+        drawErrorBand(painter, xMap, yMap, from, to);
+    } else {
+        painter->setPen(pen());
+        drawErrorBars(painter, xMap, yMap, from, to);
+    }
     painter->restore();
 }
 

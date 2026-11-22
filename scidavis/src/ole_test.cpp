@@ -39,6 +39,10 @@
 #include "ArrowMarker.h"
 #include "ImageMarker.h"
 #include "CurveRangeDialog.h"
+#include "ExtraPlotTypes.h"
+#include "QwtErrorPlotCurve.h"
+#include <gsl/gsl_cdf.h>
+#include <qwt_scale_engine.h>
 
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
@@ -164,6 +168,7 @@ static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
 static int runSuite60PowerPointOleLink(ApplicationWindow *mw);
 static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
+static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -290,6 +295,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite65-only")) {
+        const int rc65 = runSuite65E11ExtraGraphTypes(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc65;
     }
     if (args.contains("--suite58-only")) {
         const int rc58 = runSuite58FigureDefaultsPresetsAndExport(mw);
@@ -5451,6 +5463,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite65E11ExtraGraphTypes(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite58FigureDefaultsPresetsAndExport(mw) != 0)
@@ -17461,5 +17476,396 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
     QStandardPaths::setTestModeEnabled(false);
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 58 Figure Defaults, Style Presets & Export Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 65: E11 graph types for materials labs.
+//   65a error band (symmetric ± column and asymmetric + / − columns): band curves,
+//       z order under the lines, legend shows only the data curves, pixels inside the
+//       band are tinted and outside stay white
+//   65b colour-mapped scatter: Viridis colours of the min / max Z, colour bar range,
+//       optional size column
+//   65c histogram + cumulative %: 1..20 with bin width 5 -> counts 4,5,5,5,1, cumulative
+//       0, 20, 45, 70, 95, 100 % on the right axis
+//   65d probability plots with known parameters:
+//       lognormal mu = 2.0, sigma = 0.5 from exact median-rank quantiles (n = 15)
+//       Gumbel lambda = 10, delta = 2, n = 3, mean rank: y = -0.326634, 0.366513, 1.245899
+//       (hand values), x_T(T = 100) = 10 + 2 * 4.600149 = 19.200298
+//   65e save / reopen: bands, colour map (Z / size columns, colour-bar range) and the
+//       right-axis cumulative curve come back
+//   65f menus, ribbon and Japanese strings
+// =============================================================================
+static MultiLayer *suite65FindGraph(ApplicationWindow *app, const QString &name)
+{
+    if (!app)
+        return nullptr;
+    for (MyWidget *w : app->windowsList()) {
+        if (auto *ml = qobject_cast<MultiLayer *>(w))
+            if (ml->name() == name)
+                return ml;
+    }
+    return nullptr;
+}
+
+static bool suite65Near(double a, double b, double tol)
+{
+    return std::isfinite(a) && std::isfinite(b) && std::fabs(a - b) <= tol;
+}
+
+static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 65: E11 Error Band, Color-Mapped Scatter, Histogram + "
+                 "Cumulative, Lognormal / Gumbel Probability Plots...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 65");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmpDir65;
+    CHECK_COND(tmpDir65.isValid(), "Suite 65: Failed to create QTemporaryDir");
+
+    // ---------------- 65a: error band ----------------
+    Table *t = mw->newTable("T65", 11, 6);
+    CHECK_COND(t != nullptr, "65a: table");
+    t->setHeader(QStringList() << "x" << "y" << "err" << "y2" << "ep" << "em");
+    for (int r = 0; r <= 10; ++r) {
+        t->setCell(r, 0, r);
+        t->setCell(r, 1, r);
+        t->setCell(r, 2, 0.5);
+        t->setCell(r, 3, 20.0 - r);
+        t->setCell(r, 4, 1.0);
+        t->setCell(r, 5, 2.0);
+    }
+    MultiLayer *mlBand = mw->newGraph("Band65");
+    CHECK_COND(mlBand && mlBand->activeGraph(), "65a: graph");
+    Graph *g = mlBand->activeGraph();
+    const QString bandGraphName = mlBand->name();
+    CHECK_COND(g->insertCurve(t, "T65_x", "T65_y", Graph::Line), "65a: insert y");
+    CHECK_COND(g->insertCurve(t, "T65_x", "T65_y2", Graph::Line), "65a: insert y2");
+    CHECK_COND(ExtraPlotTypes::addErrorBand(g, "T65_y", t, "T65_err", QString(), 64) == 1,
+               "65a: symmetric band not added");
+    CHECK_COND(ExtraPlotTypes::addErrorBand(g, "T65_y2", t, "T65_ep", "T65_em", 80) == 2,
+               "65a: asymmetric band must add a plus-only and a minus-only band");
+    CHECK_COND(g->curves() == 5, "65a: expected 2 data curves + 3 band curves");
+    CHECK_COND(g->errorBandCount() == 3, "65a: errorBandCount != 3");
+    CHECK_COND(ExtraPlotTypes::addErrorBand(g, "T65_nope", t, "T65_err") == 0,
+               "65a: unknown curve must fail");
+    {
+        int plusOnly = 0, minusOnly = 0;
+        for (int i = 0; i < g->curves(); ++i) {
+            auto *er = dynamic_cast<QwtErrorPlotCurve *>(g->curve(i));
+            if (!er)
+                continue;
+            CHECK_COND(er->isBand(), "65a: error curve is not a band");
+            CHECK_COND(er->z() < er->masterCurve()->z() - 1.0,
+                       "65a: band is not drawn under the curves");
+            if (er->plusSide() && !er->minusSide())
+                ++plusOnly;
+            if (!er->plusSide() && er->minusSide())
+                ++minusOnly;
+            const QwtDoubleRect br = er->boundingRect();
+            if (er->masterCurve()->title().text() == "T65_y")
+                CHECK_COND(suite65Near(br.top(), -0.5, 1e-9) && suite65Near(br.bottom(), 10.5, 1e-9),
+                           "65a: symmetric band bounding rect is not y ± 0.5");
+        }
+        CHECK_COND(plusOnly == 1 && minusOnly == 1, "65a: asymmetric halves not set");
+        const QStringList lines =
+                g->legendText().split('\n', Qt::SkipEmptyParts);
+        CHECK_COND(lines.size() == 2, "65a: legend must list only the two data curves");
+    }
+    {
+        // pixels: inside the symmetric band tinted, outside white (band 25 % opacity)
+        g->setScale(QwtPlot::xBottom, 0.0, 10.0);
+        g->setScale(QwtPlot::yLeft, 0.0, 22.0);
+        mlBand->resize(700, 600);
+        g->replot();
+        QwtPlotCanvas *cv = g->plotWidget()->canvas();
+        const QImage img = cv->grab().toImage();
+        const Plot *pw = g->plotWidget();
+        const double dpr = cv->width() > 0 ? double(img.width()) / double(cv->width()) : 1.0;
+        auto px = [&](double x, double y) {
+            return img.pixelColor(qRound(pw->transform(QwtPlot::xBottom, x) * dpr),
+                                  qRound(pw->transform(QwtPlot::yLeft, y) * dpr));
+        };
+        const QColor inBand = px(4.5, 4.5 + 0.35);
+        const QColor outside = px(4.5, 4.5 + 2.5);
+        CHECK_COND(outside.red() > 245 && outside.green() > 245 && outside.blue() > 245,
+                   "65a: outside the band must stay white");
+        CHECK_COND(inBand.red() + inBand.green() + inBand.blue() < 3 * 250
+                           && inBand.red() + inBand.green() + inBand.blue() > 3 * 120,
+                   "65a: inside the band must be lightly tinted");
+        // asymmetric band of y2 at x = 3 (y = 17): +1 above, -2 below
+        const QColor up = px(3.5, 16.5 + 0.8);
+        const QColor down = px(3.5, 16.5 - 1.7);
+        const QColor beyondUp = px(3.5, 16.5 + 1.5);
+        CHECK_COND(up.red() + up.green() + up.blue() < 3 * 250, "65a: + half of the band missing");
+        CHECK_COND(down.red() + down.green() + down.blue() < 3 * 250, "65a: − half of the band missing");
+        CHECK_COND(beyondUp.red() > 245 && beyondUp.green() > 245 && beyondUp.blue() > 245,
+                   "65a: + half extends beyond +1");
+    }
+
+    // ---------------- 65b: colour-mapped scatter ----------------
+    Table *tz = mw->newTable("Z65", 10, 4);
+    CHECK_COND(tz != nullptr, "65b: table");
+    tz->setHeader(QStringList() << "X" << "Y" << "Z" << "S");
+    for (int r = 0; r < 10; ++r) {
+        tz->setCell(r, 0, r);
+        tz->setCell(r, 1, r * r);
+        tz->setCell(r, 2, 10.0 * (r + 1)); // 10 ... 100
+        tz->setCell(r, 3, 1.0 + r);
+    }
+    MultiLayer *mlZ = ExtraPlotTypes::plotColorMappedScatter(mw, tz, "X", "Y", "Z", "S");
+    CHECK_COND(mlZ && mlZ->activeGraph(), "65b: colour scatter graph");
+    const QString zGraphName = mlZ->name();
+    Graph *gz = mlZ->activeGraph();
+    CHECK_COND(gz->curves() == 1, "65b: one curve expected");
+    auto *dz = dynamic_cast<DataCurve *>(gz->curve(0));
+    CHECK_COND(dz && dz->hasPointColorMap(), "65b: curve has no colour map");
+    CHECK_COND(dz->pointColorMap().zColumn == "Z65_Z" && dz->pointColorMap().sizeColumn == "Z65_S",
+               "65b: Z / size columns");
+    CHECK_COND(dz->pointColorMap().preset == Spectrogram::PresetViridis, "65b: default must be Viridis");
+    {
+        double lo = 0, hi = 0;
+        dz->pointColorRange(&lo, &hi);
+        CHECK_COND(suite65Near(lo, 10.0, 1e-12) && suite65Near(hi, 100.0, 1e-12),
+                   "65b: colour range must be the Z min/max 10..100");
+        const QwtLinearColorMap vir = Spectrogram::presetColorMap(Spectrogram::PresetViridis);
+        CHECK_COND(dz->pointColor(0) == QColor(vir.rgb(QwtDoubleInterval(0, 1), 0.0)),
+                   "65b: Z min must take the first Viridis colour");
+        CHECK_COND(dz->pointColor(9) == QColor(vir.rgb(QwtDoubleInterval(0, 1), 1.0)),
+                   "65b: Z max must take the last Viridis colour");
+        CHECK_COND(dz->pointColor(0) != dz->pointColor(5), "65b: colours do not vary with Z");
+    }
+    CHECK_COND(gz->hasColorScaleOnAxis(QwtPlot::yRight), "65b: no colour bar on the right axis");
+    {
+        const QwtScaleDiv *d = gz->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->lowerBound(), 10.0, 1e-9) && suite65Near(d->upperBound(), 100.0, 1e-9),
+                   "65b: colour bar scale is not 10..100");
+        CHECK_COND(gz->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(),
+                   "65b: colour bar not enabled");
+        gz->replot(); // the colour bar range must survive a replot / autoscale
+        d = gz->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->upperBound(), 100.0, 1e-9), "65b: colour bar range lost on replot");
+    }
+    CHECK_COND(ExtraPlotTypes::plotColorMappedScatter(mw, tz, "X", "Y", "nope") == nullptr,
+               "65b: missing Z column must fail");
+
+    // ---------------- 65c: histogram + cumulative % ----------------
+    Table *th = mw->newTable("H65", 20, 1);
+    CHECK_COND(th != nullptr, "65c: table");
+    for (int r = 0; r < 20; ++r)
+        th->setCell(r, 0, r + 1);
+    const ExtraPlotTypes::HistogramCumulativeResult hr =
+            ExtraPlotTypes::plotHistogramCumulative(mw, th, th->colName(0), 5.0, 0.0);
+    CHECK_COND(hr.valid && hr.plot && hr.table, "65c: histogram + cumulative failed");
+    const QString hGraphName = hr.plot->name();
+    CHECK_COND(hr.bins == 5 && suite65Near(hr.binWidth, 5.0, 1e-12) && hr.total == 20,
+               "65c: expected 5 bins of width 5 holding 20 values");
+    {
+        const double expPct[6] = { 0, 20, 45, 70, 95, 100 };
+        CHECK_COND(hr.cumulativePct.size() == 6, "65c: cumulative size");
+        for (int i = 0; i < 6; ++i) {
+            CHECK_COND(suite65Near(hr.cumulativePct[i], expPct[i], 1e-9), "65c: cumulative % value");
+            CHECK_COND(suite65Near(hr.upperEdges[i], 5.0 * i, 1e-9), "65c: upper bin edge");
+        }
+        CHECK_COND(hr.cumulativePct.last() == 100.0, "65c: cumulative must end at exactly 100 %");
+        Graph *gh = hr.plot->activeGraph();
+        CHECK_COND(gh && gh->curves() == 2, "65c: histogram + cumulative curve expected");
+        CHECK_COND(gh->curveType(0) == Graph::Histogram, "65c: first curve is not a histogram");
+        CHECK_COND(gh->curve(1)->yAxis() == QwtPlot::yRight, "65c: cumulative curve not on the right axis");
+        const QwtScaleDiv *d = gh->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->lowerBound(), 0.0, 1e-9) && suite65Near(d->upperBound(), 100.0, 1e-9),
+                   "65c: right axis must be 0..100 %");
+        CHECK_COND(suite65Near(hr.table->cell(5, 2), 100.0, 1e-12) && suite65Near(hr.table->cell(5, 1), 20.0, 1e-12),
+                   "65c: cumulative table last row");
+    }
+
+    // ---------------- 65d: probability plots ----------------
+    Table *tp = mw->newTable("P65", 15, 2);
+    CHECK_COND(tp != nullptr, "65d: table");
+    {
+        // exact lognormal quantiles at the median-rank positions, stored unsorted
+        const int n = 15;
+        for (int i = 1; i <= n; ++i) {
+            const double p = (i - 0.3) / (n + 0.4);
+            const double xv = std::exp(2.0 + 0.5 * gsl_cdf_ugaussian_Pinv(p));
+            tp->setCell((i * 7) % n, 0, xv);
+        }
+        const double gx[3] = { 9.346732, 10.733026, 12.491798 };
+        tp->setCell(0, 1, gx[2]);
+        tp->setCell(1, 1, gx[0]);
+        tp->setCell(2, 1, gx[1]);
+    }
+    const ExtraPlotTypes::ProbabilityPlotResult ln = ExtraPlotTypes::plotProbability(
+            mw, tp, tp->colName(0), ExtraPlotTypes::LogNormal, ExtraPlotTypes::MedianRank);
+    CHECK_COND(ln.valid && ln.n == 15, "65d: lognormal plot failed");
+    CHECK_COND(suite65Near(ln.location, 2.0, 1e-9) && suite65Near(ln.scale, 0.5, 1e-9),
+               "65d: lognormal mu / sigma not recovered");
+    CHECK_COND(suite65Near(ln.rSquare, 1.0, 1e-9), "65d: lognormal R^2 != 1");
+    CHECK_COND(ln.plot && ln.plot->activeGraph() && ln.plot->activeGraph()->curves() == 2,
+               "65d: lognormal plot curves");
+    {
+        Graph *gl = ln.plot->activeGraph();
+        CHECK_COND(gl->hasCustomTickLabels(QwtPlot::yLeft), "65d: probability axis labels missing");
+        CHECK_COND(gl->plotWidget()->axisScaleEngine(QwtPlot::xBottom)->transformation()->type()
+                           == QwtScaleTransformation::Log10,
+                   "65d: lognormal X axis must be logarithmic");
+        CHECK_COND(gl->categoryLabels(QwtPlot::yLeft).contains("50"), "65d: 50 % tick missing");
+    }
+    const ExtraPlotTypes::ProbabilityPlotResult gu = ExtraPlotTypes::plotProbability(
+            mw, tp, tp->colName(1), ExtraPlotTypes::Gumbel, ExtraPlotTypes::MeanRank, 100.0);
+    CHECK_COND(gu.valid && gu.n == 3, "65d: Gumbel plot failed");
+    CHECK_COND(suite65Near(gu.variate[0], -0.326634, 1e-6) && suite65Near(gu.variate[1], 0.366513, 1e-6)
+                       && suite65Near(gu.variate[2], 1.245899, 1e-6),
+               "65d: Gumbel reduced variates (mean rank) differ from the hand values");
+    CHECK_COND(suite65Near(gu.location, 10.0, 1e-5) && suite65Near(gu.scale, 2.0, 1e-5),
+               "65d: Gumbel lambda / delta not recovered");
+    CHECK_COND(suite65Near(gu.returnValue, 19.200298, 1e-4), "65d: Gumbel x_T(T=100)");
+    CHECK_COND(suite65Near(ExtraPlotTypes::plottingPosition(1, 10, ExtraPlotTypes::MedianRank), 0.7 / 10.4, 1e-15)
+                       && suite65Near(ExtraPlotTypes::plottingPosition(2, 10, ExtraPlotTypes::Hazen), 0.15, 1e-15)
+                       && suite65Near(ExtraPlotTypes::plottingPosition(1, 4, ExtraPlotTypes::Blom), 0.625 / 4.25, 1e-15),
+               "65d: plotting positions");
+    {
+        Table *tbad = mw->newTable("Pbad65", 3, 1);
+        tbad->setCell(0, 0, 1.0);
+        tbad->setCell(1, 0, -1.0);
+        tbad->setCell(2, 0, 0.0);
+        const ExtraPlotTypes::ProbabilityPlotResult bad = ExtraPlotTypes::plotProbability(
+                mw, tbad, tbad->colName(0), ExtraPlotTypes::LogNormal, ExtraPlotTypes::MedianRank,
+                0.0, false);
+        CHECK_COND(!bad.valid && bad.excluded == 2 && !bad.error.isEmpty(),
+                   "65d: non-positive values must be excluded and too few values reported");
+    }
+
+    // ---------------- 65e: save / reopen ----------------
+    {
+        const QString prj = tmpDir65.filePath("e11_65.sciprj");
+        CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "65e: save failed");
+        QFile f(prj);
+        CHECK_COND(f.open(QIODevice::ReadOnly), "65e: cannot read project");
+        const QByteArray txt = f.readAll();
+        f.close();
+        CHECK_COND(txt.contains("<ToriErrorBand") && txt.contains("<ToriPointColorMap"),
+                   "65e: E11 tags not written");
+        ApplicationWindow *re = mw->openProject(prj);
+        CHECK_COND(re != nullptr, "65e: reopen failed");
+        MultiLayer *rb = suite65FindGraph(re, bandGraphName);
+        CHECK_COND(rb && rb->activeGraph(), "65e: band graph missing");
+        Graph *rg = rb->activeGraph();
+        CHECK_COND(rg->curves() == 5 && rg->errorBandCount() == 3, "65e: bands not restored");
+        int alpha80 = 0;
+        for (int i = 0; i < rg->curves(); ++i)
+            if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(rg->curve(i))) {
+                CHECK_COND(er->z() < er->masterCurve()->z() - 1.0, "65e: band z order not restored");
+                if (er->bandAlpha() == 80 && er->plusSide() != er->minusSide())
+                    ++alpha80;
+            }
+        CHECK_COND(alpha80 == 2, "65e: asymmetric band halves / opacity not restored");
+        CHECK_COND(rg->legendText().split('\n', Qt::SkipEmptyParts).size() == 2,
+                   "65e: legend after reopening");
+
+        MultiLayer *rz = suite65FindGraph(re, zGraphName);
+        CHECK_COND(rz && rz->activeGraph(), "65e: colour scatter graph missing");
+        Graph *rgz = rz->activeGraph();
+        auto *rdz = dynamic_cast<DataCurve *>(rgz->curve(0));
+        CHECK_COND(rdz && rdz->hasPointColorMap() && rdz->pointColorMap().zColumn == "Z65_Z"
+                           && rdz->pointColorMap().sizeColumn == "Z65_S",
+                   "65e: colour map not restored");
+        CHECK_COND(rgz->hasColorScaleOnAxis(QwtPlot::yRight), "65e: colour bar not restored");
+        const QwtScaleDiv *d = rgz->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->lowerBound(), 10.0, 1e-9) && suite65Near(d->upperBound(), 100.0, 1e-9),
+                   "65e: colour bar range not restored");
+
+        MultiLayer *rh = suite65FindGraph(re, hGraphName);
+        CHECK_COND(rh && rh->activeGraph() && rh->activeGraph()->curves() == 2, "65e: histogram graph");
+        CHECK_COND(rh->activeGraph()->curve(1)->yAxis() == QwtPlot::yRight,
+                   "65e: cumulative curve left the right axis");
+        re->savedProject();
+        re->setOleEmbeddedMode(true);
+        delete re;
+    }
+
+    // removing the colour-mapped curve removes its colour bar
+    gz->removeCurve(0);
+    CHECK_COND(!gz->hasColorScaleOnAxis(QwtPlot::yRight)
+                       && !gz->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(),
+               "65e: colour bar left behind after removing the scatter curve");
+
+    // ---------------- 65g: Python RPC ----------------
+    {
+        PythonAutomationServer *srv = mw->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "65g: no automation server");
+        int rid = 6500;
+        auto rpc = [&](const char *method, const QJsonObject &params) {
+            QJsonObject req;
+            req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            req[QStringLiteral("id")] = ++rid;
+            req[QStringLiteral("method")] = QString::fromLatin1(method);
+            req[QStringLiteral("params")] = params;
+            return srv->handleRpcRequest(req);
+        };
+        QJsonObject pp;
+        pp["table"] = "P65";
+        pp["col"] = 1;
+        pp["distribution"] = "gumbel";
+        pp["return_period"] = 100.0;
+        pp["plot"] = false;
+        const QJsonObject rp = rpc("stats.probability_plot", pp).value("result").toObject();
+        CHECK_COND(rp.value("ok").toBool() && suite65Near(rp.value("lambda").toDouble(), 10.0, 1e-5)
+                           && suite65Near(rp.value("delta").toDouble(), 2.0, 1e-5)
+                           && suite65Near(rp.value("return_value").toDouble(), 19.200298, 1e-4),
+                   "65g: stats.probability_plot (gumbel)");
+        QJsonObject hp;
+        hp["table"] = "H65";
+        hp["col"] = 0;
+        hp["bin_width"] = 5.0;
+        const QJsonObject rh = rpc("plot.histogram_cumulative", hp).value("result").toObject();
+        const QJsonArray cum = rh.value("cumulative_pct").toArray();
+        CHECK_COND(rh.value("ok").toBool() && cum.size() == 6 && cum.last().toDouble() == 100.0,
+                   "65g: plot.histogram_cumulative");
+        QJsonObject cp;
+        cp["table"] = "Z65";
+        cp["x"] = "X";
+        cp["y"] = "Y";
+        cp["z"] = "Z";
+        cp["palette"] = "plasma";
+        const QJsonObject rc = rpc("plot.color_scatter", cp).value("result").toObject();
+        CHECK_COND(rc.value("ok").toBool() && suite65Near(rc.value("z_min").toDouble(), 10.0, 1e-9)
+                           && suite65Near(rc.value("z_max").toDouble(), 100.0, 1e-9),
+                   "65g: plot.color_scatter");
+        QJsonObject bp;
+        bp["graph"] = bandGraphName;
+        bp["curve"] = "y";
+        bp["err"] = "err";
+        const QJsonObject rb = rpc("graph.add_error_band", bp).value("result").toObject();
+        CHECK_COND(rb.value("ok").toBool() && rb.value("band_curves").toInt() == 1
+                           && rb.value("error_band_count").toInt() == 4,
+                   "65g: graph.add_error_band");
+    }
+
+    // ---------------- 65f: menus, ribbon, translations ----------------
+    {
+        const char *names[] = { "actionE11ErrorBand", "actionE11ColorScatter",
+                                "actionE11HistogramCumulative", "actionE11LognormalProbability",
+                                "actionE11GumbelProbability" };
+        for (const char *nm : names) {
+            QAction *a = mw->findChild<QAction *>(QString::fromLatin1(nm));
+            CHECK_COND(a != nullptr, "65f: E11 action missing");
+            CHECK_COND(!a->associatedWidgets().isEmpty(), "65f: E11 action is in no menu");
+            CHECK_COND(!a->text().isEmpty(), "65f: E11 action has no text");
+        }
+        if (QMenu *addMenu = mw->findChild<QMenu *>(QStringLiteral("RibbonAddToGraphMenu"))) {
+            CHECK_COND(addMenu->actions().contains(
+                               mw->findChild<QAction *>(QStringLiteral("actionE11ErrorBand"))),
+                       "65f: ribbon Add menu lacks the error band");
+        }
+        ExtraPlotTypes::registerTranslations();
+        const QString ja = ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("Add Error &Band..."));
+        CHECK_COND(ja.contains(QString::fromUtf8("エラーバンド")), "65f: Japanese for error band");
+        const QString jg = ToriGraphFullJapaneseTranslator::lookupJapanese(
+                QStringLiteral("&Gumbel (Extreme Value) Probability Plot..."));
+        CHECK_COND(jg.contains(QString::fromUtf8("極値")), "65f: Japanese for Gumbel plot");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
     return 0;
 }

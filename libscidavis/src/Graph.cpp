@@ -6399,6 +6399,8 @@ void Graph::removeCurve(int index)
     }
     c_type.resize(n_curves);
     c_keys.resize(n_curves);
+    if (d_point_colorbar_active) // E11: drop the colour bar with its scatter curve
+        syncPointColorBar();
 
     {
         QMap<int, QString> shiftedLabels;
@@ -7247,6 +7249,45 @@ QString Graph::saveToString(bool saveAsTemplate)
                              .arg(ylStr.join(","))
                              .arg(yhStr.join(","));
             }
+
+            // E11: error bands and colour-mapped scatter symbols (restored after the curves)
+            // (attributes are concatenated, not chained through arg(), so a '%' in a column
+            // name or title can never be re-substituted)
+            auto attr = [&escAttr](const char *key, const QString &val) -> QString {
+                return QStringLiteral(" ") + QLatin1String(key) + QStringLiteral("=\"")
+                        + escAttr(val) + QStringLiteral("\"");
+            };
+            for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+                QwtPlotItem *pit = d_plot->plotItem(c_keys[i]);
+                if (c_type[i] == ErrorBars) {
+                    auto *er = dynamic_cast<QwtErrorPlotCurve *>(pit);
+                    if (er && er->isBand() && er->masterCurve()) {
+                        s += QStringLiteral("<ToriErrorBand")
+                                + attr("x", er->masterCurve()->xColumnName())
+                                + attr("y", er->masterCurve()->title().text())
+                                + attr("err", er->title().text())
+                                + attr("plus", QString::number(er->plusSide() ? 1 : 0))
+                                + attr("minus", QString::number(er->minusSide() ? 1 : 0))
+                                + attr("alpha", QString::number(er->bandAlpha()))
+                                + QStringLiteral("/>\n");
+                    }
+                    continue;
+                }
+                auto *dc = dynamic_cast<DataCurve *>(pit);
+                if (!dc || !dc->hasPointColorMap())
+                    continue;
+                const DataCurve::PointColorMap &pm = dc->pointColorMap();
+                s += QStringLiteral("<ToriPointColorMap") + attr("x", dc->xColumnName())
+                        + attr("y", dc->title().text()) + attr("z", pm.zColumn)
+                        + attr("size", pm.sizeColumn) + attr("preset", QString::number(pm.preset))
+                        + attr("reverse", QString::number(pm.reverse ? 1 : 0))
+                        + attr("auto", QString::number(pm.autoRange ? 1 : 0))
+                        + attr("zmin", QString::number(pm.zMin, 'g', 15))
+                        + attr("zmax", QString::number(pm.zMax, 'g', 15))
+                        + attr("smin", QString::number(pm.sizeMinPx, 'g', 8))
+                        + attr("smax", QString::number(pm.sizeMaxPx, 'g', 8))
+                        + attr("title", pm.colorBarTitle) + QStringLiteral("/>\n");
+            }
         }
 
         if (d_linked_parent) {
@@ -8090,6 +8131,10 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
 
             c->setAxis(srcPc->xAxis(), srcPc->yAxis());
             c->setVisible(srcPc->isVisible());
+            if (cv && cv->hasPointColorMap()) {
+                if (DataCurve *dcDst = dynamic_cast<DataCurve *>(c))
+                    dcDst->setPointColorMap(cv->pointColorMap());
+            }
 
             QList<QwtPlotCurve *> lst = g->fitCurvesList();
             if (lst.contains((QwtPlotCurve *)it))
@@ -8261,6 +8306,8 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     for (const ShadedBandSpec &bs : g->d_shaded_bands) {
         addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title);
     }
+    if (g->d_point_colorbar_active)
+        syncPointColorBar();
 
     d_is_ternary = g->d_is_ternary;
     for (int k = 0; k < 3; ++k)
@@ -11883,7 +11930,95 @@ bool Graph::hasColorScaleOnAxis(int axis) const
                 return true;
         }
     }
+    // E11: the colour bar of a colour-mapped scatter always sits on the right axis.
+    if (axis == QwtPlot::yRight && d_point_colorbar_active && pointColorMapCurve())
+        return true;
     return false;
+}
+
+DataCurve *Graph::pointColorMapCurve() const
+{
+    if (!d_plot)
+        return nullptr;
+    for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+        if (c_type[i] == ErrorBars)
+            continue;
+        DataCurve *dc = dynamic_cast<DataCurve *>(d_plot->curve(c_keys[i]));
+        if (dc && dc->isVisible() && dc->hasPointColorMap())
+            return dc;
+    }
+    return nullptr;
+}
+
+int Graph::errorBandCount() const
+{
+    int n = 0;
+    for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+        if (c_type[i] != ErrorBars)
+            continue;
+        if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(d_plot->curve(c_keys[i])))
+            if (er->isBand())
+                ++n;
+    }
+    return n;
+}
+
+void Graph::syncPointColorBar()
+{
+    if (!d_plot)
+        return;
+    const int axis = QwtPlot::yRight;
+    // A heatmap that owns the right colour bar wins.
+    for (QwtPlotItem *it : d_plot->itemList()) {
+        if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+            Spectrogram *sp = static_cast<Spectrogram *>(it);
+            if (sp->hasColorScale() && sp->colorScaleAxis() == axis)
+                return;
+        }
+    }
+    QwtScaleWidget *sw = d_plot->axisWidget(axis);
+    if (!sw)
+        return;
+    DataCurve *src = pointColorMapCurve();
+    if (!src) {
+        if (d_point_colorbar_active) {
+            d_point_colorbar_active = false;
+            sw->setColorBarEnabled(false);
+            sw->setMargin(0);
+            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
+                sd->setColorBarBorder(false, 0, 1);
+            d_plot->updateLayout();
+            d_plot->replot();
+        }
+        return;
+    }
+    double lo = 0.0, hi = 1.0;
+    src->pointColorRange(&lo, &hi);
+    const DataCurve::PointColorMap &spec = src->pointColorMap();
+    const QwtLinearColorMap map = Spectrogram::presetColorMap(
+            static_cast<Spectrogram::ColorMapPreset>(spec.preset), spec.reverse);
+    d_point_colorbar_active = true;
+    if (!d_plot->axisEnabled(axis))
+        d_plot->enableAxis(axis, true);
+    sw->setColorBarEnabled(true);
+    sw->setColorMap(QwtDoubleInterval(lo, hi), map);
+    sw->setMargin(4);
+    sw->setSpacing(0);
+    sw->setMinBorderDist(0, 0);
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+        sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
+        sd->setColorBarBorder(true, sw->colorBarWidth(), qMax(1, sw->penWidth()));
+    }
+    d_plot->setAxisScale(axis, lo, hi);
+    if (!spec.colorBarTitle.isEmpty())
+        setAxisTitle(axis, spec.colorBarTitle);
+    QFont tf = d_plot->axisFont(axis);
+    tf.setFamily(QStringLiteral("Arial"));
+    tf.setHintingPreference(QFont::PreferNoHinting);
+    d_plot->setAxisFont(axis, tf);
+    sw->show();
+    d_plot->updateLayout();
+    d_plot->replot();
 }
 
 void Graph::applyFramePreset(FramePreset preset)
@@ -13856,6 +13991,57 @@ bool Graph::restorePhase5Tag(const QString &line)
         return true;
     }
 
+    if (s.startsWith("<ToriErrorBand")) {
+        const QString xName = attrs.value("x");
+        const QString yName = attrs.value("y");
+        const QString errName = attrs.value("err");
+        for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+            if (c_type[i] != ErrorBars)
+                continue;
+            auto *er = dynamic_cast<QwtErrorPlotCurve *>(d_plot->plotItem(c_keys[i]));
+            if (!er || er->isBand() || !er->masterCurve() || er->title().text() != errName
+                || er->masterCurve()->title().text() != yName
+                || er->masterCurve()->xColumnName() != xName)
+                continue;
+            er->setBand(true);
+            er->setBandAlpha(attrs.value("alpha", "64").toInt());
+            er->drawPlusSide(attrs.value("plus", "1").toInt() != 0);
+            er->drawMinusSide(attrs.value("minus", "1").toInt() != 0);
+            break;
+        }
+        syncCurveZOrder();
+        return true;
+    }
+
+    if (s.startsWith("<ToriPointColorMap")) {
+        const QString xName = attrs.value("x");
+        const QString yName = attrs.value("y");
+        for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+            if (c_type[i] == ErrorBars)
+                continue;
+            auto *dc = dynamic_cast<DataCurve *>(d_plot->plotItem(c_keys[i]));
+            if (!dc || dc->hasPointColorMap() || dc->title().text() != yName
+                || dc->xColumnName() != xName)
+                continue;
+            DataCurve::PointColorMap pm;
+            pm.enabled = true;
+            pm.zColumn = attrs.value("z");
+            pm.sizeColumn = attrs.value("size");
+            pm.preset = attrs.value("preset", "2").toInt();
+            pm.reverse = attrs.value("reverse", "0").toInt() != 0;
+            pm.autoRange = attrs.value("auto", "1").toInt() != 0;
+            pm.zMin = attrs.value("zmin", "0").toDouble();
+            pm.zMax = attrs.value("zmax", "1").toDouble();
+            pm.sizeMinPx = attrs.value("smin", "4").toDouble();
+            pm.sizeMaxPx = attrs.value("smax", "16").toDouble();
+            pm.colorBarTitle = attrs.value("title");
+            dc->setPointColorMap(pm);
+            break;
+        }
+        syncPointColorBar();
+        return true;
+    }
+
     if (s.startsWith("<ToriRefLine") || s.startsWith("<ToriShadedBand")) {
         if (s.startsWith("<ToriShadedBand") || attrs.value("kind") == "band") {
             const QStringList xs = attrs.value("x").split(',', Qt::SkipEmptyParts);
@@ -14277,7 +14463,11 @@ void Graph::syncCurveZOrder()
         if (!it)
             continue;
         QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(it);
-        if (er && er->masterCurve()) {
+        if (er && er->masterCurve() && er->isBand()) {
+            // E11: error bands sit under every curve so a band never hides another line.
+            const int ord = errOrdinalPerMaster[er->masterCurve()]++;
+            it->setZ(er->masterCurve()->z() - 5.0 + ord * 0.0005);
+        } else if (er && er->masterCurve()) {
             const int ord = errOrdinalPerMaster[er->masterCurve()]++;
             it->setZ(er->masterCurve()->z() - 0.004 + ord * 0.0005);
         } else {

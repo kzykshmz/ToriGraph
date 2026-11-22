@@ -166,6 +166,35 @@ public:
     bool hasSelectedLabels();
     void setLabelsSelected(bool on = true);
 
+    //! E11: symbol colour (and optionally size) taken from further table columns.
+    struct PointColorMap {
+        bool enabled = false;
+        QString zColumn;     //!< full column name ("Table1_C") giving the colour value
+        QString sizeColumn;  //!< optional full column name giving the symbol size
+        int preset = 2;      //!< Spectrogram::ColorMapPreset (2 = Viridis)
+        bool reverse = false;
+        bool autoRange = true;
+        double zMin = 0.0;
+        double zMax = 1.0;
+        double sizeMinPx = 4.0;
+        double sizeMaxPx = 16.0;
+        QString colorBarTitle;
+    };
+    void setPointColorMap(const PointColorMap &m) { d_point_cmap = m; }
+    const PointColorMap &pointColorMap() const { return d_point_cmap; }
+    bool hasPointColorMap() const { return d_point_cmap.enabled && !d_point_cmap.zColumn.isEmpty(); }
+    //! Colour range actually used: the fixed range, or the min/max of the plotted Z values.
+    bool pointColorRange(double *zMin, double *zMax) const;
+    //! Z value (colour column) of plotted point \a i, NaN when missing.
+    double pointColorValue(int i) const;
+    //! Symbol colour of plotted point \a i (invalid QColor when the Z value is missing).
+    QColor pointColor(int i) const;
+
+protected:
+    void drawSymbols(QPainter *p, const QwtSymbol &symbol, const QwtScaleMap &xMap,
+                     const QwtScaleMap &yMap, int from, int to) const override;
+    PointColorMap d_point_cmap;
+
 protected:
     //! The data source table.
     Table *d_table;

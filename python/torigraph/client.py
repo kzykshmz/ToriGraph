@@ -2169,6 +2169,28 @@ class GraphProxy:
             **kwargs,
         )
 
+    def add_error_band(
+        self,
+        curve: Union[int, str],
+        err: Union[int, str],
+        *,
+        err_minus: Optional[Union[int, str]] = None,
+        table: Optional[str] = None,
+        alpha: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Shade Y - err ... Y + err of a data curve (asymmetric with ``err_minus``)."""
+        return self.session.call(
+            "graph.add_error_band",
+            graph=self.name,
+            curve=curve,
+            err=err,
+            err_minus=err_minus,
+            table=table,
+            alpha=alpha,
+            **kwargs,
+        )
+
     def remove_reference_line(
         self, index: int = 0, *, layer: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -5193,6 +5215,77 @@ class Session:
         )
 
     weibull_fit = weibull
+
+    def probability_plot(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col: Optional[Union[int, str]] = None,
+        *,
+        distribution: str = "lognormal",
+        position: Optional[str] = None,
+        return_period: Optional[float] = None,
+        plot: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Lognormal or Gumbel (extreme value) probability plot with a straight-line fit."""
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "stats.probability_plot",
+            table=tbl_ref,
+            col=col,
+            distribution=distribution,
+            position=position,
+            return_period=return_period,
+            plot=plot,
+            **kwargs,
+        )
+
+    def plot_color_scatter(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        x: Optional[Union[int, str]] = None,
+        y: Optional[Union[int, str]] = None,
+        z: Optional[Union[int, str]] = None,
+        *,
+        size: Optional[Union[int, str]] = None,
+        palette: Optional[str] = None,
+        reverse: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> GraphProxy:
+        """Scatter plot coloured by a Z column (Viridis by default) with a colour bar."""
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        res = self.call(
+            "plot.color_scatter",
+            table=tbl_ref,
+            x=x,
+            y=y,
+            z=z,
+            size=size,
+            palette=palette,
+            reverse=reverse,
+            **kwargs,
+        )
+        return GraphProxy(self, res["graph"])
+
+    def plot_histogram_cumulative(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        col: Optional[Union[int, str]] = None,
+        *,
+        bin_width: Optional[float] = None,
+        begin: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Histogram with the cumulative percentage on the right axis."""
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "plot.histogram_cumulative",
+            table=tbl_ref,
+            col=col,
+            bin_width=bin_width,
+            begin=begin,
+            **kwargs,
+        )
 
     def kaplan_meier(
         self,

@@ -119,6 +119,7 @@
 #include "CurveMathTools.h"
 #include "AdvancedSignalProc.h"
 #include "GraphStatsAndSurfaceFit.h"
+#include "ExtraPlotTypes.h"
 #include "RecalcEngine.h"
 #include "I18nJapanese.h"
 #include "GraphMiniToolbar.h"
@@ -3612,6 +3613,7 @@ void ApplicationWindow::initMainMenu()
     connect(graph, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
     graph->addAction(actionShowCurvesDialog);
     graph->addAction(actionAddErrorBars);
+    graph->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActErrorBand)); // E11
     graph->addAction(actionAddFunctionCurve);
 
     graph->addSeparator();
@@ -3805,6 +3807,8 @@ void ApplicationWindow::initMainMenu()
     graphStatsMenu->addAction(actionBlandAltman);
     graphStatsMenu->addAction(actionPassingBablokDeming);
     graphStatsMenu->addAction(actionWeibullPlot);
+    graphStatsMenu->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActLognormalProbability)); // E11
+    graphStatsMenu->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActGumbelProbability)); // E11
     graphStatsMenu->addAction(actionROCCurve);
     graphStatsMenu->addAction(actionKaplanMeier);
     graphStatsMenu->addAction(actionCorrelationMatrix);
@@ -4073,6 +4077,7 @@ void ApplicationWindow::initPlotMenu()
     plot2D->addAction(actionPlotPie);
     plot2D->addAction(actionPlotVectXYXY);
     plot2D->addAction(actionPlotVectXYAM);
+    plot2D->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActColorScatter)); // E11
 
     plot2D->addSeparator();
 
@@ -4081,6 +4086,7 @@ void ApplicationWindow::initPlotMenu()
     stat->addAction(actionBoxPlot);
     stat->addAction(actionPlotViolin);
     stat->addAction(actionPlotHistogram);
+    stat->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActHistogramCumulative)); // E11
     stat->addAction(actionPlotStackedHistograms);
     stat->addAction(actionPlotPareto);
     stat->addAction(actionPlotQQ);
@@ -4153,6 +4159,8 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionBlandAltman);
     dataMenu->addAction(actionPassingBablokDeming);
     dataMenu->addAction(actionWeibullPlot);
+    dataMenu->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActLognormalProbability)); // E11
+    dataMenu->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActGumbelProbability)); // E11
     dataMenu->addAction(actionROCCurve);
     dataMenu->addAction(actionKaplanMeier);
     dataMenu->addAction(actionCorrelationMatrix);
