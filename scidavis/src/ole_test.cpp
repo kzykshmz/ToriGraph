@@ -14059,6 +14059,24 @@ static QByteArray suite53ReadAll(const QString &path)
     return f.readAll();
 }
 
+#include <QAbstractButton>
+#include <QDateTime>
+#include <QGroupBox>
+#include <QMessageBox>
+#include <QSet>
+#include <QTreeWidgetItemIterator>
+#include "PythonAutomationServer.h"
+
+static bool suite59WriteFileEarly(const QString &path, const QByteArray &bytes)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    const bool ok = f.write(bytes) == bytes.size();
+    f.close();
+    return ok;
+}
+
 static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
 {
     std::cout << "[INFO] Running Suite 53: Save Safety, Undo-after-Save & Auto-save Recovery Gate...\n";
@@ -14223,6 +14241,159 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
             CHECK_COND(copies.isEmpty(), "53h: recovery copy written in non-interactive context");
         }
         Q_UNUSED(wasVisible)
+        ApplicationWindow::setCrashRecoveryEnabled(false);
+        QDir(recDir).removeRecursively();
+        QStandardPaths::setTestModeEnabled(false);
+    }
+
+    // ---- 53i: app.save_project (Python RPC) uses the same safe save as File > Save
+    {
+        qApp->setProperty("torigraph_noninteractive", true);
+        PythonAutomationServer *srv = mw->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "53i: no RPC server");
+        int rpcId = 5300;
+        auto rpcSave = [&](const QString &path) {
+            QJsonObject req;
+            req["jsonrpc"] = "2.0";
+            req["id"] = ++rpcId;
+            req["method"] = "app.save_project";
+            req["params"] = QJsonObject{ { "path", path } };
+            return srv->handleRpcRequest(req);
+        };
+        const QString rpcPrj = tmpDir53.filePath("rpc53.sciprj");
+        QUndoStack *stack = mw->project()->undoStack();
+        t->column(1)->setValueAt(3, 555.0);
+        const int countBefore = stack->count();
+        const QJsonObject r1 = rpcSave(rpcPrj);
+        CHECK_COND(r1.value("result").toObject().value("ok").toBool(), "53i: RPC save failed");
+        CHECK_COND(QFileInfo::exists(rpcPrj) && !QFileInfo::exists(rpcPrj + ".new")
+                           && !QFileInfo::exists(rpcPrj + "~"),
+                   "53i: first RPC save left .new / an unexpected backup");
+        CHECK_COND(stack->count() == countBefore && stack->canUndo() && stack->isClean(),
+                   "53i: RPC save cleared the GUI undo history");
+        CHECK_COND(mw->saved, "53i: RPC save did not mark the project as saved");
+        const QByteArray rv1 = suite53ReadAll(rpcPrj);
+        t->column(1)->setValueAt(3, 556.0);
+        CHECK_COND(rpcSave(rpcPrj).value("result").toObject().value("ok").toBool(),
+                   "53i: second RPC save failed");
+        CHECK_COND(suite53ReadAll(rpcPrj + "~") == rv1,
+                   "53i: RPC save did not keep the previous version as '~'");
+#ifdef Q_OS_WIN
+        {
+            const QByteArray rv2 = suite53ReadAll(rpcPrj);
+            const std::wstring wPath = QDir::toNativeSeparators(rpcPrj).toStdWString();
+            HANDLE lock = CreateFileW(wPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            CHECK_COND(lock != INVALID_HANDLE_VALUE, "53i: could not lock the RPC project file");
+            t->column(1)->setValueAt(3, 557.0);
+            const QJsonObject rLocked = rpcSave(rpcPrj);
+            CloseHandle(lock);
+            CHECK_COND(rLocked.contains("error") && !rLocked.contains("result"),
+                       "53i: RPC save into a locked file did not return an RPC error");
+            CHECK_COND(suite53ReadAll(rpcPrj) == rv2,
+                       "53i: failed RPC save changed the project file (no direct overwrite allowed)");
+            CHECK_COND(!mw->saved, "53i: failed RPC save marked the project as saved");
+            QFile::remove(rpcPrj + ".new");
+        }
+#endif
+        const QJsonObject rGz = rpcSave(tmpDir53.filePath("rpc53gz.sciprj.gz"));
+        const QByteArray gzBytes = suite53ReadAll(tmpDir53.filePath("rpc53gz.sciprj.gz"));
+        CHECK_COND(rGz.value("result").toObject().value("compressed").toBool() && gzBytes.size() > 20
+                           && static_cast<unsigned char>(gzBytes[0]) == 0x1f
+                           && static_cast<unsigned char>(gzBytes[1]) == 0x8b,
+                   "53i: compressed RPC save is not gzip data");
+        mw->projectname = prj;
+    }
+
+    // ---- 53j: a restored recovery copy is claimed by this process; stale orphans are removed
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        qApp->setProperty("torigraph_noninteractive", QVariant());
+        const QString recDir = ApplicationWindow::recoveryDirPath();
+        QDir(recDir).removeRecursively();
+        QDir().mkpath(recDir);
+        ApplicationWindow::setCrashRecoveryEnabled(true);
+        ApplicationWindow *w53 = new ApplicationWindow();
+        w53->applyUserSettings();
+        if (ApplicationWindow::isNonInteractiveContext(w53)) {
+            std::cout << "[INFO] Suite 53j: window is non-interactive, recovery check skipped\n";
+        } else {
+            // A small project of its own (the shared test window holds every earlier suite's
+            // windows, which would make the restore depend on the order the suites run in).
+            const QString smallPrj = tmpDir53.filePath("recover53.sciprj");
+            {
+                Table *ts = w53->newTable("Rec53", 3, 2);
+                CHECK_COND(ts != nullptr, "53j: table");
+                ts->setCell(0, 1, 53.0);
+                CHECK_COND(w53->saveFolder(w53->projectFolder(), smallPrj), "53j: save small project");
+            }
+            const QString id = QStringLiteral("suite53-crashed-copy");
+            CHECK_COND(QFile::copy(smallPrj, QDir(recDir).filePath(id + ".sciprj")), "53j: copy data");
+            QJsonObject meta;
+            meta["project"] = smallPrj;
+            meta["pid"] = 2147483000.0; // a process that does not exist
+            meta["saved_at"] = QDateTime::currentDateTime().addSecs(-3600).toString(Qt::ISODate);
+            CHECK_COND(suite59WriteFileEarly(QDir(recDir).filePath(id + ".json"),
+                                             QJsonDocument(meta).toJson(QJsonDocument::Compact)),
+                       "53j: write meta");
+            const QString oldOrphan = QDir(recDir).filePath("orphan-old.sciprj");
+            const QString newOrphan = QDir(recDir).filePath("orphan-new.sciprj");
+            CHECK_COND(suite59WriteFileEarly(oldOrphan, "OLD") && suite59WriteFileEarly(newOrphan, "NEW"),
+                       "53j: write orphans");
+            {
+                QFile of(oldOrphan);
+                CHECK_COND(of.open(QIODevice::ReadWrite)
+                                   && of.setFileTime(QDateTime::currentDateTime().addDays(-3),
+                                                     QFileDevice::FileModificationTime),
+                           "53j: could not age the orphan");
+            }
+            w53->projectname = QStringLiteral("suite53_start_window.sciprj"); // not closed
+            QSet<QWidget *> before;
+            for (QWidget *tl : QApplication::topLevelWidgets())
+                before.insert(tl);
+            QTimer clicker;
+            clicker.setInterval(50);
+            QObject::connect(&clicker, &QTimer::timeout, [&clicker]() {
+                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    for (QAbstractButton *b : box->buttons()) {
+                        if (box->buttonRole(b) == QMessageBox::AcceptRole) {
+                            clicker.stop();
+                            b->click();
+                            return;
+                        }
+                    }
+                }
+            });
+            clicker.start();
+            w53->checkCrashRecovery();
+            clicker.stop();
+            CHECK_COND(!QFileInfo::exists(oldOrphan), "53j: stale .sciprj without .json not removed");
+            CHECK_COND(QFileInfo::exists(newOrphan), "53j: recent .sciprj without .json removed");
+            const QJsonObject newMeta =
+                    QJsonDocument::fromJson(suite53ReadAll(QDir(recDir).filePath(id + ".json"))).object();
+            const qint64 pidNow = static_cast<qint64>(newMeta.value("pid").toDouble());
+            const QDateTime savedNow =
+                    QDateTime::fromString(newMeta.value("saved_at").toString(), Qt::ISODate);
+            std::cout << "[INFO] 53j: recovery meta pid " << pidNow << " (this process "
+                      << QCoreApplication::applicationPid() << ")\n";
+            CHECK_COND(pidNow == QCoreApplication::applicationPid(),
+                       "53j: restored copy still names the crashed process");
+            CHECK_COND(savedNow.isValid()
+                               && std::llabs(savedNow.secsTo(QDateTime::currentDateTime())) < 120,
+                       "53j: saved_at not refreshed when the copy was restored");
+            for (QWidget *tl : QApplication::topLevelWidgets()) {
+                auto *restored = qobject_cast<ApplicationWindow *>(tl);
+                if (restored && !before.contains(tl) && restored != mw && restored != w53
+                    && restored->projectname == smallPrj) {
+                    restored->savedProject(); // removes the copy it took over
+                    restored->setOleEmbeddedMode(true);
+                    delete restored;
+                }
+            }
+        }
+        w53->savedProject();
+        w53->setOleEmbeddedMode(true);
+        delete w53;
         ApplicationWindow::setCrashRecoveryEnabled(false);
         QDir(recDir).removeRecursively();
         QStandardPaths::setTestModeEnabled(false);
@@ -16016,6 +16187,75 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
         CHECK_COND(t->findNextCell("481", false, false), "59g: find");
     }
 
+    // ---- 59h (review fix): a text-only CSV is still imported as a table, without a graph
+    {
+        const QString txtCsv = tmp.filePath("samples59.csv");
+        CHECK_COND(suite59WriteFile(txtCsv, "Sample,Condition\nA1,T6\nA2,RRA\nA3,O\n"),
+                   "59h: write");
+        const QList<MyWidget *> beforeWins = mw->windowsList();
+        suite59Drop(mw, QStringList() << txtCsv);
+        Table *t = nullptr;
+        int newGraphs = 0;
+        for (MyWidget *w : mw->windowsList()) {
+            if (beforeWins.contains(w))
+                continue;
+            if (qobject_cast<Table *>(w))
+                t = qobject_cast<Table *>(w);
+            else if (w->inherits("MultiLayer"))
+                ++newGraphs;
+        }
+        CHECK_COND(t != nullptr, "59h: text-only CSV drop was refused");
+        CHECK_COND(t && t->numRows() == 3 && t->numCols() == 2
+                           && t->column(1)->columnMode() == SciDAVis::ColumnMode::Text
+                           && t->text(2, 1) == "O",
+                   "59h: text-only CSV imported wrongly");
+        CHECK_COND(newGraphs == 0, "59h: a graph was made from a table without numbers");
+        // other files still need numbers to count as data
+        const QString txtLog = tmp.filePath("notes59.log");
+        CHECK_COND(suite59WriteFile(txtLog, "just,some\nwords,here\n"), "59h: write log");
+        const int nBefore = mw->windowsList().size();
+        suite59Drop(mw, QStringList() << txtLog);
+        CHECK_COND(mw->windowsList().size() == nBefore, "59h: text-only .log was imported");
+    }
+
+    // ---- 59i (review fix): a multi-file append stopped by a type mismatch still marks the
+    // project as modified (what was imported before the mismatch stays and must be saved)
+    {
+        Table *t = mw->newTable("Part59", 2, 2);
+        t->setCell(0, 0, 1.0);
+        t->setCell(0, 1, 2.0);
+        mw->d_workspace.setActiveSubWindow(t);
+        const QString f1 = tmp.filePath("part59_a.csv");
+        const QString f2 = tmp.filePath("part59_b.csv");
+        CHECK_COND(suite59WriteFile(f1, "x,y\n10,20\n30,40\n"), "59i: write 1");
+        CHECK_COND(suite59WriteFile(f2, "x,y\nabc,1\ndef,2\n"), "59i: write 2");
+        mw->markProjectSaved();
+        CHECK_COND(mw->saved, "59i: precondition");
+        mw->setProperty("torigraph_last_import_error", QVariant());
+        mw->importASCII(QStringList() << f1 << f2, ImportASCIIDialog::NewRows, ",", 0, true, true,
+                        false, true, QLocale::c());
+        CHECK_COND(!mw->property("torigraph_last_import_error").toString().isEmpty(),
+                   "59i: the mismatching second file was not reported");
+        CHECK_COND(t->numRows() == 4 && std::fabs(t->cell(3, 1) - 40.0) < 1e-12,
+                   "59i: rows of the first file missing");
+        CHECK_COND(!mw->saved, "59i: partial import did not mark the project as modified");
+    }
+
+    // ---- 59j (review fix): preview and detection result are visible with the options folded
+    {
+        ImportASCIIDialog dlg(true, mw, false);
+        QPlainTextEdit *preview = dlg.findChild<QPlainTextEdit *>("ImportPreview");
+        QLabel *summary = dlg.findChild<QLabel *>("ImportDetectionSummary");
+        CHECK_COND(preview && summary, "59j: preview widgets missing");
+        CHECK_COND(preview->isVisibleTo(&dlg) && summary->isVisibleTo(&dlg),
+                   "59j: preview is hidden while the advanced options are folded");
+        bool insideGroup = false;
+        for (QWidget *p = preview->parentWidget(); p && p != &dlg; p = p->parentWidget())
+            if (qobject_cast<QGroupBox *>(p))
+                insideGroup = true;
+        CHECK_COND(!insideGroup, "59j: preview is still inside the advanced options box");
+    }
+
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 59 Data Import & Worksheet passed!\n";
     return 0;
@@ -16364,6 +16604,93 @@ static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw)
                 hasStyleCombo = true;
         delete cd;
         CHECK_COND(!hasStyleCombo, "63f: Qt style combo still present in ConfigDialog");
+    }
+
+    // ---- 63x (review fix): inspector built in English, then switched to Japanese (Suite 47
+    // found 3 English leftovers), palette menu name, explorer icons for worksheets
+    {
+        ApplicationWindow *wx = new ApplicationWindow();
+        wx->applyUserSettings();
+        wx->switchToLanguage("en");
+        wx->resize(1380, 880);
+        wx->show();
+        QApplication::processEvents();
+        Table *tx = wx->newTable("Ja63x", 4, 2);
+        for (int r = 0; r < 4; ++r) {
+            tx->setCell(r, 0, r);
+            tx->setCell(r, 1, r * r);
+        }
+        MultiLayer *mlx = wx->multilayerPlot(tx, QStringList() << "Ja63x_2", Graph::LineSymbols);
+        CHECK_COND(mlx != nullptr, "63x: graph");
+        wx->activateSubWindow(mlx);
+        QApplication::processEvents();
+        wx->switchToLanguage("ja");
+        QApplication::processEvents();
+        GraphInspectorDock *dock = wx->graphInspectorDock();
+        CHECK_COND(dock != nullptr, "63x: dock");
+        for (int pg = 0; pg < 4; ++pg) {
+            dock->switchToInspectorPage(static_cast<GraphInspectorDock::InspectorPageIndex>(pg));
+            QApplication::processEvents();
+        }
+        QPushButton *details = dock->findChild<QPushButton *>("InspectorDetailsButton");
+        CHECK_COND(details != nullptr, "63x: no Details button");
+        std::cout << "[INFO] 63x Details button: '" << details->text().toUtf8().constData()
+                  << "' / '" << details->toolTip().toUtf8().constData() << "'\n";
+        CHECK_COND(details->text() == QString::fromUtf8("詳細設定…")
+                           && details->toolTip()
+                                   == QString::fromUtf8("この節のすべての設定があるダイアログを開く"),
+                   "63x: Details button not translated after switching to Japanese");
+        int swatches = 0;
+        for (QPushButton *sw : dock->findChildren<QPushButton *>("InspectorColorSwatchBtn")) {
+            ++swatches;
+            if (sw->toolTip().contains("Click to choose")) {
+                std::cerr << "[63x] English swatch tooltip: " << sw->toolTip().toUtf8().constData()
+                          << "\n";
+                CHECK_COND(false, "63x: colour swatch tooltip still English after switching");
+            }
+        }
+        std::cout << "[INFO] 63x colour swatches checked: " << swatches << "\n";
+        // palette menu shows the real name of the tab10 list
+        bool hasTab10 = false, hasLegacy = false;
+        for (QAction *a : wx->findChildren<QAction *>()) {
+            if (a->data().toString() == "Matplotlib (tab10)") {
+                hasTab10 = true;
+                CHECK_COND(a->text().contains("tab10") && !a->text().contains("ISIJ"),
+                           "63x: palette menu text for tab10");
+            }
+            if (a->data().toString() == "ISIJ / Origin Default")
+                hasLegacy = true;
+        }
+        CHECK_COND(hasTab10 && !hasLegacy, "63x: palette menu still uses 'ISIJ / Origin Default'");
+        // project explorer: the worksheet row gets the worksheet icon, the graph row the graph one
+        ModernUiTheme::upgradeAllWindowIcons(wx);
+        QTreeWidget *lv = nullptr;
+        for (QTreeWidget *tw : wx->findChildren<QTreeWidget *>())
+            if (tw->objectName() == "lv")
+                lv = tw;
+        if (lv) {
+            QString tableIcon, graphIcon;
+            for (QTreeWidgetItemIterator it(lv); *it; ++it) {
+                if ((*it)->text(0) == "Ja63x")
+                    tableIcon = (*it)->icon(0).name();
+                else if (mlx && (*it)->text(0) == mlx->name())
+                    graphIcon = (*it)->icon(0).name();
+            }
+            std::cout << "[INFO] 63x explorer icons: table='" << tableIcon.toStdString()
+                      << "' graph='" << graphIcon.toStdString() << "'\n";
+            if (!tableIcon.isEmpty())
+                CHECK_COND(tableIcon == "new-table", "63x: worksheet row shows a non-worksheet icon");
+        } else {
+            std::cout << "[INFO] 63x: project explorer list not found, icon check skipped\n";
+        }
+        mlx->askOnCloseEvent(false);
+        tx->askOnCloseEvent(false);
+        wx->savedProject();
+        wx->setOleEmbeddedMode(true);
+        delete wx;
+        QApplication::processEvents();
+        mw->switchToLanguage("ja");
+        QApplication::processEvents();
     }
 
     ml63->setAttribute(Qt::WA_DeleteOnClose);
@@ -17080,6 +17407,48 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
         }
     }
 
+    // ---- 60j (review fix): "graph only" embedding follows column formulas to other tables
+    {
+        Table *base = w60->newTable("Base60j", 3, 2);
+        Table *mid = w60->newTable("Mid60j", 3, 2);
+        Table *top = w60->newTable("Top60j", 3, 2);
+        Table *other = w60->newTable("Other60j", 3, 2);
+        CHECK_COND(base && mid && top && other, "60j: tables");
+        for (int r = 0; r < 3; ++r) {
+            base->setCell(r, 0, r);
+            base->setCell(r, 1, r * 2.0);
+            mid->setCell(r, 0, r);
+            top->setCell(r, 0, r);
+            top->setCell(r, 1, r + 1.0); // values for the curve (formula not run here)
+        }
+        mid->column(1)->setFormula(Interval<int>(0, 2), "col(\"Base60j/2\")*2");
+        top->column(1)->setFormula(Interval<int>(0, 2), "tablecol(\"Mid60j\", \"2\")+1");
+        MultiLayer *mlj = w60->multilayerPlot(top, QStringList() << "Top60j_2", Graph::LineSymbols);
+        CHECK_COND(mlj != nullptr, "60j: graph");
+        const QStringList deps = SciDAVisOle::dataDependenciesForWindow(w60, mlj);
+        std::cout << "[INFO] 60j dependencies: " << deps.join(", ").toStdString() << "\n";
+        CHECK_COND(deps.contains("Top60j") && deps.contains("Mid60j") && deps.contains("Base60j"),
+                   "60j: tables referenced by column formulas are not embedded");
+        CHECK_COND(!deps.contains("Other60j"), "60j: an unrelated table was embedded");
+        mlj->askOnCloseEvent(false);
+        mlj->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 60k (review fix): a plain bitmap fallback is reported as such, not as "nothing"
+    {
+        SciDAVisOle::OleCopyResult r;
+        r.windowName = "Graph3D60k";
+        r.errorReason = "test";
+        r.staticFallbackOnClipboard = true;
+        r.pngDpi = 0;
+        SciDAVisOle::reportCopyResult(w60, r, false);
+        const QString msg = qApp->property("torigraph_last_ole_copy_message").toString();
+        CHECK_COND(!msg.contains("Nothing was placed") && !msg.contains("EMF")
+                           && !msg.contains(QString::fromUtf8("何も載せていません")),
+                   "60k: bitmap fallback reported as 'nothing placed' / as EMF");
+    }
+
     SciDAVisOle::setEmbedScopeSetting(prevScope);
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
     std::cout << "[INFO] Suite 60 PowerPoint / Word OLE link passed!\n";
@@ -17578,6 +17947,21 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
         CHECK_COND(t != nullptr, "58b: table");
         QStringList cols;
         cols << (t->name() + "_y1") << (t->name() + "_y2");
+        // 58b0: scripts / Python RPC / headless runs (non-interactive) keep the plain page; the
+        // preset is only for graphs made by hand (SDK users call apply_style_preset()).
+        {
+            MultiLayer *scriptMl = mw->multilayerPlot(t, cols, Graph::LineSymbols);
+            CHECK_COND(scriptMl && scriptMl->activeGraph(), "58b0: graph");
+            for (int k = 0; k < 5; ++k)
+                QApplication::processEvents();
+            CHECK_COND(scriptMl->pageUnit() == MultiLayer::UnitPx,
+                       "58b0: new-graph preset was applied to a graph made non-interactively");
+            scriptMl->askOnCloseEvent(false);
+            scriptMl->close();
+            QApplication::processEvents();
+        }
+        // The graphs below stand for graphs made by hand: interactive while they are created.
+        qApp->setProperty("torigraph_noninteractive", QVariant());
         isijMl = mw->multilayerPlot(t, cols, Graph::LineSymbols);
         CHECK_COND(isijMl && isijMl->activeGraph(), "58b: graph");
         for (int k = 0; k < 5; ++k)
@@ -17599,6 +17983,7 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
         CHECK_COND(barMl && barMl->activeGraph(), "58b: bar graph");
         for (int k = 0; k < 5; ++k)
             QApplication::processEvents();
+        qApp->setProperty("torigraph_noninteractive", true);
         const QList<int> majT = barMl->activeGraph()->plotWidget()->getMajorTicksType();
         CHECK_COND(!majT.isEmpty() && majT.at(QwtPlot::xBottom) != ScaleDraw::Out
                            && majT.at(QwtPlot::yLeft) != ScaleDraw::Out,

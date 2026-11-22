@@ -928,7 +928,7 @@ void registerApplicationWindowJapaneseStrings()
         add("New Aspect", "新規オブジェクト作成");
 
         // Color Palette Presets
-        add("ISIJ / Origin Default", "ISIJ / Origin 標準");
+        add("Matplotlib (tab10)", "Matplotlib 既定色 (tab10)");
         add("Origin Classic", "Origin クラシック");
         add("Viridis", "Viridis (知覚均等)");
         add("Plasma", "Plasma (知覚均等)");
@@ -3576,7 +3576,7 @@ void ApplicationWindow::initMainMenu()
     colorPaletteMenu->setFont(appFont);
     colorPaletteMenu->setTitle(tr("Apply Color &Palette"));
     static const char *const presetPalettes[] = {
-        QT_TR_NOOP("ISIJ / Origin Default"),
+        QT_TR_NOOP("Matplotlib (tab10)"), // was "ISIJ / Origin Default" (still resolves)
         QT_TR_NOOP("Origin Classic"),
         QT_TR_NOOP("Viridis"),
         QT_TR_NOOP("Plasma"),
@@ -8040,6 +8040,19 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
     if (!table)
         return;
 
+    // Files already copied into the worksheet. If a later file is refused (type mismatch),
+    // the import stops there, but what was imported so far must still mark the project as
+    // modified (save prompt, auto-save) and refresh the graphs that use the table.
+    QStringList importedFiles;
+    auto stopAfterPartialImport = [this, table, &importedFiles]() {
+        if (importedFiles.isEmpty())
+            return;
+        table->setWindowLabel(importedFiles.join("; "));
+        table->notifyChanges();
+        modifiedProject(table);
+        modifiedProject();
+    };
+
     foreach (QString file, files) {
         // The file is read into a bare future::Table (same filter and options as a new
         // worksheet). A temporary worksheet window was used before; deleting that window
@@ -8074,6 +8087,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                                      "column \"%1\".")
                                                           .arg(table->column(col)->name()));
                         }
+                        stopAfterPartialImport();
                         return;
                     }
             } else {
@@ -8085,6 +8099,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                                      "non-text column \"%1\".")
                                                           .arg(table->column(col)->name()));
                         }
+                        stopAfterPartialImport();
                         return;
                     }
             }
@@ -8109,6 +8124,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                     setProperty("torigraph_last_import_error", msg);
                     if (!isNonInteractiveContext(this))
                         QMessageBox::critical(this, tr("ASCII Import Failed"), msg);
+                    stopAfterPartialImport();
                     return;
                 }
             }
@@ -8189,6 +8205,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             if (!isNonInteractiveContext(this))
                 QMessageBox::warning(this, tr("ASCII Import"), msg);
         }
+        importedFiles << file;
     }
 
     table->setWindowLabel(files.join("; "));
@@ -11925,8 +11942,13 @@ void ApplicationWindow::exportPDF()
 
     // B9: graphs go through the image export dialog (size/dpi summary, PDF preselected).
     if (w->inherits("MultiLayer")) {
+        // PDF is only preselected for this one export: File > Export Graph keeps offering the
+        // format the user normally exports to (unless they switched to another one here).
+        const QString prevFilter = d_image_export_filter;
         d_image_export_filter = QStringLiteral("*.pdf");
         exportGraph();
+        if (d_image_export_filter == QLatin1String("*.pdf"))
+            d_image_export_filter = prevFilter;
         return;
     }
 
@@ -12810,6 +12832,41 @@ void ApplicationWindow::clearSelection()
     emit modified();
 }
 
+/*!
+ * Copy a 3D graph for PowerPoint. When the editable object cannot be made, a plain bitmap copy
+ * is tried first and only then is the outcome reported, so the message says what is really on
+ * the clipboard (it used to say "nothing was placed" right before the bitmap was copied).
+ */
+static void copyGraph3DForPowerPoint(ApplicationWindow *app, Graph3D *g3d, bool showDialog)
+{
+    if (!g3d)
+        return;
+#ifdef Q_OS_WIN
+    QImage fb;
+    if (g3d->sp) {
+        g3d->sp->makeCurrent();
+        fb = g3d->sp->grabFramebuffer();
+    }
+    SciDAVisOle::OleCopyResult res = SciDAVisOle::copyImageForPowerPoint(app, fb, g3d->name());
+    if (!res.ok && !res.staticFallbackOnClipboard) {
+        QClipboard *cb = QApplication::clipboard();
+        if (cb)
+            cb->clear(QClipboard::Clipboard);
+        g3d->copyImage();
+        const QMimeData *md = cb ? cb->mimeData(QClipboard::Clipboard) : nullptr;
+        if (md && (md->hasImage() || !md->formats().isEmpty())) {
+            res.staticFallbackOnClipboard = true;
+            res.pngDpi = 0; // bitmap only (see reportCopyResult)
+        }
+    }
+    SciDAVisOle::reportCopyResult(app, res, showDialog);
+#else
+    Q_UNUSED(app)
+    Q_UNUSED(showDialog)
+    g3d->copyImage();
+#endif
+}
+
 void ApplicationWindow::copySelection()
 {
     if (results->hasFocus()) {
@@ -12838,20 +12895,7 @@ void ApplicationWindow::copySelection()
         else
             copyActiveLayer();
     } else if (m->inherits("Graph3D")) {
-        Graph3D *g3d = static_cast<Graph3D *>(m);
-#ifdef Q_OS_WIN
-        QImage fb;
-        if (g3d->sp) {
-            g3d->sp->makeCurrent();
-            fb = g3d->sp->grabFramebuffer();
-        }
-        const SciDAVisOle::OleCopyResult res =
-                SciDAVisOle::copyImageForPowerPoint(this, fb, g3d->name());
-        SciDAVisOle::reportCopyResult(this, res, false);
-        if (res.ok || res.staticFallbackOnClipboard)
-            return;
-#endif
-        g3d->copyImage();
+        copyGraph3DForPowerPoint(this, static_cast<Graph3D *>(m), false);
     } else if (m->inherits("Note"))
         ((Note *)m)->textWidget()->copy();
 }
@@ -13910,6 +13954,21 @@ void ApplicationWindow::checkCrashRecovery()
     if (!dir.exists())
         return;
 
+    // A copy whose ".json" is missing (the metadata write failed, or the process died between
+    // the two writes) is never offered, so it would stay forever. Remove such leftovers once
+    // they are clearly stale; a running instance rewrites its copy at every auto-save tick.
+    {
+        const QDateTime staleBefore = QDateTime::currentDateTime().addSecs(-24 * 3600);
+        const QFileInfoList dataFiles = dir.entryInfoList(
+                QStringList() << QStringLiteral("*.sciprj"), QDir::Files);
+        for (const QFileInfo &dfi : dataFiles) {
+            if (QFileInfo::exists(dir.filePath(dfi.completeBaseName() + QStringLiteral(".json"))))
+                continue;
+            if (dfi.lastModified() < staleBefore)
+                QFile::remove(dfi.absoluteFilePath());
+        }
+    }
+
     const QStringList metaFiles = dir.entryList(QStringList() << QStringLiteral("*.json"),
                                                 QDir::Files, QDir::Time);
     for (const QString &metaName : metaFiles) {
@@ -13983,6 +14042,23 @@ void ApplicationWindow::checkCrashRecovery()
         restored->modifiedProject();
         // Take over the copy: it is removed as soon as the restored project is saved or closed.
         restored->d_recovery_id = QFileInfo(metaName).completeBaseName();
+        // The metadata still names the crashed process. Claim it for this process right away
+        // (writeRecoveryFile() would only do so at the next auto-save tick, and not at all for a
+        // project that is not modified), so that another ToriGraph started meanwhile does not
+        // offer the same copy again while this window is open.
+        {
+            QJsonObject newMeta = meta;
+            newMeta[QStringLiteral("project")] = restored->projectname;
+            newMeta[QStringLiteral("pid")] =
+                    static_cast<double>(QCoreApplication::applicationPid());
+            newMeta[QStringLiteral("saved_at")] =
+                    QDateTime::currentDateTime().toString(Qt::ISODate);
+            QSaveFile metaOut(metaPath);
+            if (metaOut.open(QIODevice::WriteOnly)) {
+                metaOut.write(QJsonDocument(newMeta).toJson(QJsonDocument::Compact));
+                metaOut.commit();
+            }
+        }
 
         // Replace the empty start-up window; a project opened from the command line stays open.
         if (restored != this) {
@@ -14069,7 +14145,14 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
         for (int c = 0; c < ft->columnCount() && !anyNumeric; ++c)
             anyNumeric = ft->column(c)
                     && ft->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric;
-        if (!anyNumeric)
+        // A plain text table (sample list, labels only ...) is still a table: for the usual
+        // text-table extensions it is imported as text columns, like File > Import does. Other
+        // files (unknown extensions, .ras/.xy ...) must contain numbers to count as data.
+        const QString dropSuffix = fi.suffix().toLower();
+        const bool textTableExt = dropSuffix == QLatin1String("csv")
+                || dropSuffix == QLatin1String("tsv") || dropSuffix == QLatin1String("tab")
+                || dropSuffix == QLatin1String("dat") || dropSuffix == QLatin1String("txt");
+        if (!anyNumeric && !textTableExt)
             return false;
 
         if (blankInitialTable) {
@@ -14102,7 +14185,7 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
         if (!t)
             return false;
 
-        if (autoPlotLine && t->numCols() >= 2) {
+        if (autoPlotLine && anyNumeric && t->numCols() >= 2) {
             QStringList yCols;
             for (int c = 0; c < t->numCols(); ++c) {
                 if (t->colPlotDesignation(c) == SciDAVis::Y
@@ -20399,20 +20482,7 @@ void ApplicationWindow::copyGraphAsOleObject()
     }
 
     if (actW->inherits("Graph3D")) {
-        Graph3D *g3d = static_cast<Graph3D *>(actW);
-#ifdef Q_OS_WIN
-        QImage fb;
-        if (g3d->sp) {
-            g3d->sp->makeCurrent();
-            fb = g3d->sp->grabFramebuffer();
-        }
-        const SciDAVisOle::OleCopyResult res =
-                SciDAVisOle::copyImageForPowerPoint(this, fb, g3d->name());
-        SciDAVisOle::reportCopyResult(this, res, true);
-        if (res.ok || res.staticFallbackOnClipboard)
-            return;
-#endif
-        g3d->copyImage();
+        copyGraph3DForPowerPoint(this, static_cast<Graph3D *>(actW), true);
         return;
     }
 
