@@ -294,6 +294,8 @@ public:
 
     //! G1: show or hide the ribbon entries of other-field features (ROC, EIS, Tauc, ...)
     void setAdvancedDomainFeaturesVisible(bool visible);
+    //! C15: show or hide the "Classic Toolbars" button (hiding also hides the classic toolbars)
+    void setLegacyUiVisible(bool visible);
     //! C4: ribbon button bound to an ApplicationWindow QAction (by object name), or null
     QToolButton *actionBoundButton(const QString &actionObjectName) const;
     //! C4: copy enabled/checked state of bound QActions onto their ribbon buttons

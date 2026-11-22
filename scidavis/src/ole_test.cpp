@@ -179,6 +179,7 @@ static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw);
 static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw);
 static int runSuite66Workbooks(ApplicationWindow *mw);
 static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw);
+static int runSuite74LegacyUiHidden(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -312,6 +313,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite74-only")) {
+        const int rc74 = runSuite74LegacyUiHidden(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc74;
     }
     if (args.contains("--suite70-only")) {
         const int rc70 = runSuite70IconCleanupAndLightTheme(mw);
@@ -5518,6 +5526,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite70IconCleanupAndLightTheme(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite74LegacyUiHidden(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -21148,5 +21159,354 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 69 settings transfer & script coverage passed!\n";
+    return 0;
+}
+
+// ============================================================================================
+// Suite 74 (C15): legacy UI hidden from menus, ribbon, command search and shortcuts
+// ============================================================================================
+static bool suite74ShownInMenuTree(QMenu *m, QAction *target, QSet<QMenu *> &seen)
+{
+    if (!m || seen.contains(m))
+        return false;
+    seen.insert(m);
+    for (QAction *a : m->actions()) {
+        if (!a || !a->isVisible())
+            continue;
+        if (a == target)
+            return true;
+        if (QMenu *sub = a->menu()) {
+            if (suite74ShownInMenuTree(sub, target, seen))
+                return true;
+        }
+    }
+    return false;
+}
+
+// Is the action shown anywhere below the menu bar (all QMenus, recursively)?
+static bool suite74ShownInMenuBar(ApplicationWindow *mw, QAction *target)
+{
+    QSet<QMenu *> seen;
+    for (QAction *top : mw->menuBar()->actions()) {
+        if (!top || !top->isVisible())
+            continue;
+        if (top == target)
+            return true;
+        if (suite74ShownInMenuTree(top->menu(), target, seen))
+            return true;
+    }
+    return false;
+}
+
+// Walk a menu and its sub-menus: is the action, or a visible copy with the same text (the
+// ribbon's folded-group menus copy buttons into new actions), listed as visible?
+static bool suite74MenuListsVisible(QMenu *m, QAction *target, const QString &title,
+                                    QSet<QMenu *> &seen)
+{
+    if (!m || seen.contains(m))
+        return false;
+    seen.insert(m);
+    for (QAction *a : m->actions()) {
+        if (!a || a->isSeparator() || !a->isVisible())
+            continue;
+        if (a == target || cleanMnemonicForSuite62(a->text()) == title)
+            return true;
+        if (suite74MenuListsVisible(a->menu(), target, title, seen))
+            return true;
+    }
+    return false;
+}
+
+// Is the action shown in any menu of the main window (menu bar, ribbon drop-downs, context
+// menus kept as children), walking QMenu::actions() recursively?
+static bool suite74ShownInAnyMenu(ApplicationWindow *mw, QAction *target)
+{
+    const QString title = cleanMnemonicForSuite62(target->text());
+    QSet<QMenu *> seen;
+    for (QMenu *m : mw->findChildren<QMenu *>()) {
+        if (suite74MenuListsVisible(m, target, title, seen))
+            return true;
+    }
+    return false;
+}
+
+// Fill the ribbon's folded-group menus (they are built on aboutToShow) and look for an entry.
+static bool suite74ListedInFoldedRibbonMenus(ModernRibbonBar *ribbon, const QString &text)
+{
+    bool listed = false;
+    for (QToolButton *b : ribbon->findChildren<QToolButton *>("RibbonCollapsedGroupBtn")) {
+        QMenu *m = b->menu();
+        if (!m)
+            continue;
+        emit m->aboutToShow();
+        for (QAction *a : m->actions()) {
+            if (a && a->isVisible() && a->text().trimmed() == text.trimmed())
+                listed = true;
+        }
+    }
+    return listed;
+}
+
+static bool suite74ListedInCommandSearch(CommandPalettePopup *cp, const QString &title)
+{
+    cp->refreshCommands();
+    cp->setFilterText(title);
+    bool listed = false;
+    for (int i = 0; i < cp->resultsList()->count(); ++i) {
+        if (cp->resultsList()->item(i)->text() == title)
+            listed = true;
+    }
+    cp->setFilterText(QString());
+    return listed;
+}
+
+static QStringList suite74ActionsWithKey(ApplicationWindow *mw, const QKeySequence &ks)
+{
+    QStringList names;
+    for (QAction *a : mw->findChildren<QAction *>()) {
+        if (a && a->shortcuts().contains(ks))
+            names << a->objectName();
+    }
+    return names;
+}
+
+static int runSuite74LegacyUiHidden(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 74: Legacy UI hidden (C15)...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 74");
+    ModernRibbonBar *ribbon = mw->modernRibbonBar();
+    CHECK_COND(ribbon != nullptr, "74: ribbon missing");
+    CommandPalettePopup *cp = ribbon->commandPalette();
+    CHECK_COND(cp != nullptr, "74: command palette missing");
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    const bool wasShown = mw->showsLegacyUi();
+    CHECK_COND(!wasShown, "74: legacy UI must be off by default");
+
+    // A graph is active so the Graph menu (time stamp) is in the menu bar.
+    MultiLayer *ml = mw->newGraph("G74");
+    CHECK_COND(ml && ml->activeGraph(), "74: graph");
+    mw->activateSubWindow(ml);
+    mw->customMenu(ml);
+
+    const QStringList names = ApplicationWindow::legacyUiActionNames();
+    CHECK_COND(names.size() == 4, "74: unexpected legacy action list");
+    QList<QAction *> acts;
+    for (const QString &n : names) {
+        QAction *a = mw->findChild<QAction *>(n);
+        CHECK_COND(a != nullptr, "74: QAction must still exist: " << n.toStdString());
+        acts << a;
+    }
+    QAction *timeStamp = mw->findChild<QAction *>("actionTimeStamp");
+    QAction *plotWizard = mw->findChild<QAction *>("actionShowPlotWizard");
+    QAction *lockBars = mw->findChild<QAction *>("locktoolbar");
+    QMenu *toolbarsMenu = mw->findChild<QMenu *>("menuToolbars");
+    CHECK_COND(toolbarsMenu != nullptr, "74: View > Toolbars menu missing");
+    QToolButton *classicBtn = ribbon->findChild<QToolButton *>("RibbonClassicToolbarsButton");
+    CHECK_COND(classicBtn != nullptr, "74: ribbon Classic Toolbars button missing");
+    QToolBar *const legacyBars[] = { mw->file_tools,  mw->edit_tools,  mw->graph_tools,
+                                     mw->plot_tools,  mw->table_tools, mw->matrix_plot_tools,
+                                     mw->graph_3D_tools };
+    const QKeySequence keyTimeStamp(QStringLiteral("Ctrl+Alt+T"));
+    const QKeySequence keyWizard(QStringLiteral("Ctrl+Alt+W"));
+
+    // ---- 74a: hidden by default from menus, ribbon, right-click menu and command search
+    {
+        QAction *toggle = mw->findChild<QAction *>("actionShowLegacyUi");
+        CHECK_COND(toggle && toggle->isCheckable() && !toggle->isChecked(),
+                   "74a: Show Legacy UI switch missing or checked by default");
+        CHECK_COND(suite74ShownInMenuBar(mw, toggle), "74a: Show Legacy UI switch not in the menus");
+        for (QAction *a : acts) {
+            CHECK_COND(!a->isVisible(), "74a: visible by default: " << a->objectName().toStdString());
+            CHECK_COND(!suite74ShownInMenuBar(mw, a),
+                       "74a: still in the menu bar: " << a->objectName().toStdString());
+            CHECK_COND(!suite74ShownInAnyMenu(mw, a),
+                       "74a: still in a menu: " << a->objectName().toStdString());
+            const QString title = cleanMnemonicForSuite62(a->text());
+            CHECK_COND(!suite74ListedInCommandSearch(cp, title),
+                       "74a: still found by command search: " << title.toStdString());
+        }
+        CHECK_COND(!toolbarsMenu->menuAction()->isVisible()
+                           && !suite74ShownInMenuBar(mw, toolbarsMenu->menuAction()),
+                   "74a: View > Toolbars still shown");
+        CHECK_COND(classicBtn->isHidden(), "74a: ribbon Classic Toolbars button still shown");
+        for (QToolBar *tb : legacyBars) {
+            CHECK_COND(tb && tb->isHidden(), "74a: a classic toolbar is shown");
+            CHECK_COND(!tb->toggleViewAction()->isVisible(),
+                       "74a: toolbar switch visible: " << tb->objectName().toStdString());
+        }
+        QMenu *popup = mw->createPopupMenu();
+        if (popup) {
+            for (QAction *pa : popup->actions()) {
+                for (QToolBar *tb : legacyBars)
+                    CHECK_COND(!(pa == tb->toggleViewAction() && pa->isVisible()),
+                               "74a: right-click menu lists toolbar " << tb->objectName().toStdString());
+            }
+            delete popup;
+        }
+        // the ribbon's folded-group menus are rebuilt (on aboutToShow) from visible buttons only
+        CHECK_COND(!suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74a: Classic Toolbars listed in a folded ribbon group menu");
+    }
+
+    // ---- 74b: shortcuts of hidden actions are off (and stay off after retranslation)
+    {
+        CHECK_COND(timeStamp->shortcut().isEmpty() && plotWizard->shortcut().isEmpty(),
+                   "74b: hidden actions keep their shortcuts");
+        CHECK_COND(!timeStamp->isEnabled() && !plotWizard->isEnabled(),
+                   "74b: hidden actions must not react to keys");
+        // nobody else owns these keys, so they are simply free now
+        CHECK_COND(suite74ActionsWithKey(mw, keyTimeStamp).isEmpty(),
+                   "74b: Ctrl+Alt+T still bound: "
+                           << suite74ActionsWithKey(mw, keyTimeStamp).join(",").toStdString());
+        CHECK_COND(suite74ActionsWithKey(mw, keyWizard).isEmpty(),
+                   "74b: Ctrl+Alt+W still bound: "
+                           << suite74ActionsWithKey(mw, keyWizard).join(",").toStdString());
+        mw->translateActionsStrings(); // what a language switch does
+        CHECK_COND(timeStamp->shortcut().isEmpty() && plotWizard->shortcut().isEmpty(),
+                   "74b: retranslation brought the shortcuts of hidden actions back");
+        CHECK_COND(!timeStamp->isVisible(), "74b: retranslation showed a hidden action");
+    }
+
+    // ---- 74c: the actions still work from code (scripts, OLE, Python SDK)
+    {
+        Graph *g = ml->activeGraph();
+        const int before = g->textMarkerKeys().size();
+        timeStamp->trigger();
+        CHECK_COND(g->textMarkerKeys().size() == before + 1,
+                   "74c: hidden Add Time Stamp did not run on trigger()");
+        const bool movable = mw->file_tools->isMovable();
+        lockBars->trigger();
+        CHECK_COND(mw->file_tools->isMovable() != movable, "74c: hidden Lock Toolbars did not run");
+        lockBars->trigger();
+        CHECK_COND(mw->file_tools->isMovable() == movable, "74c: Lock Toolbars not restored");
+    }
+
+    // ---- 74d: the hidden setting brings everything back
+    {
+        mw->setShowLegacyUi(true);
+        CHECK_COND(mw->showsLegacyUi(), "74d: switch did not turn on");
+        if (!mw->isHeadlessMode())
+            CHECK_COND(ApplicationWindow::getSettings().value("/UX/ShowLegacyUi", false).toBool(),
+                       "74d: setting not stored");
+        CHECK_COND(mw->findChild<QAction *>("actionShowLegacyUi")->isChecked(),
+                   "74d: menu switch not checked");
+        mw->customMenu(ml);
+        for (QAction *a : acts) {
+            CHECK_COND(a->isVisible() && a->isEnabled(),
+                       "74d: not shown again: " << a->objectName().toStdString());
+            CHECK_COND(suite74ShownInMenuBar(mw, a),
+                       "74d: not in the menu bar again: " << a->objectName().toStdString());
+        }
+        CHECK_COND(suite74ListedInCommandSearch(cp, cleanMnemonicForSuite62(plotWizard->text())),
+                   "74d: Plot Wizard not found by command search");
+        CHECK_COND(timeStamp->shortcut() == keyTimeStamp, "74d: Ctrl+Alt+T not restored");
+        CHECK_COND(plotWizard->shortcut() == keyWizard, "74d: Ctrl+Alt+W not restored");
+        CHECK_COND(suite74ActionsWithKey(mw, keyTimeStamp) == QStringList { "actionTimeStamp" },
+                   "74d: Ctrl+Alt+T must belong to Add Time Stamp only");
+        CHECK_COND(suite74ActionsWithKey(mw, keyWizard) == QStringList { "actionShowPlotWizard" },
+                   "74d: Ctrl+Alt+W must belong to Plot Wizard only");
+        CHECK_COND(toolbarsMenu->menuAction()->isVisible()
+                           && suite74ShownInMenuBar(mw, toolbarsMenu->menuAction()),
+                   "74d: View > Toolbars not shown again");
+        CHECK_COND(!classicBtn->isHidden(), "74d: ribbon Classic Toolbars button not shown again");
+        CHECK_COND(suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74d: Classic Toolbars missing from its folded ribbon group menu");
+        for (QAction *a : acts)
+            CHECK_COND(suite74ShownInAnyMenu(mw, a),
+                       "74d: menu walk does not find " << a->objectName().toStdString());
+        for (QToolBar *tb : legacyBars)
+            CHECK_COND(tb->toggleViewAction()->isVisible(), "74d: toolbar switch still hidden");
+        // the classic toolbars themselves stay off until asked for
+        CHECK_COND(mw->file_tools->isHidden(), "74d: classic toolbars must not pop up");
+        ribbon->setClassicToolbarsVisible(true);
+        CHECK_COND(!mw->file_tools->isHidden(), "74d: classic toolbars cannot be shown");
+    }
+
+    // ---- 74e: turning it off again hides the toolbars and the switches
+    {
+        mw->setShowLegacyUi(false);
+        CHECK_COND(mw->file_tools->isHidden(), "74e: classic toolbars left on screen");
+        for (QAction *a : acts)
+            CHECK_COND(!a->isVisible() && !suite74ShownInMenuBar(mw, a),
+                       "74e: not hidden again: " << a->objectName().toStdString());
+        CHECK_COND(timeStamp->shortcut().isEmpty() && plotWizard->shortcut().isEmpty(),
+                   "74e: shortcuts not removed again");
+        CHECK_COND(classicBtn->isHidden() && !toolbarsMenu->menuAction()->isVisible(),
+                   "74e: toolbar switches not hidden again");
+        if (!mw->isHeadlessMode())
+            CHECK_COND(!ApplicationWindow::getSettings().value("/UX/ShowLegacyUi", true).toBool(),
+                       "74e: setting not stored");
+        for (QAction *a : acts)
+            CHECK_COND(!suite74ShownInAnyMenu(mw, a),
+                       "74e: still in a menu: " << a->objectName().toStdString());
+        CHECK_COND(!suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74e: Classic Toolbars still in a folded ribbon group menu");
+    }
+
+    // ---- 74g: switching it off during the focus HUD (F11) must not bring the classic
+    //      toolbars back when the HUD closes (their switches are hidden by then)
+    {
+        mw->setShowLegacyUi(true);
+        ribbon->setClassicToolbarsVisible(true);
+        CHECK_COND(!mw->file_tools->isHidden(), "74g: classic toolbars not shown before the HUD");
+        ribbon->setFocusHudMode(true);
+        CHECK_COND(ribbon->isFocusHudMode() && mw->file_tools->isHidden(), "74g: HUD did not start");
+        mw->setShowLegacyUi(false);
+        ribbon->setFocusHudMode(false);
+        CHECK_COND(!ribbon->isFocusHudMode(), "74g: HUD did not end");
+        for (QToolBar *tb : legacyBars)
+            CHECK_COND(tb->isHidden(),
+                       "74g: classic toolbar back after the HUD: " << tb->objectName().toStdString());
+        CHECK_COND(!mw->statusBar()->isHidden(), "74g: HUD exit must still restore the status bar");
+    }
+
+    // ---- 74h: a real language switch keeps the shortcuts off and translates the switches
+    {
+        const QString startLang = mw->appLanguage;
+        const bool startJa = startLang.startsWith("ja");
+        auto checkLang = [&](bool ja) -> int {
+            CHECK_COND(timeStamp->shortcut().isEmpty() && plotWizard->shortcut().isEmpty(),
+                       "74h: language switch brought the shortcuts back (ja=" << ja << ")");
+            CHECK_COND(!timeStamp->isVisible() && !plotWizard->isVisible(),
+                       "74h: language switch showed hidden actions");
+            QAction *legacy = mw->findChild<QAction *>("actionShowLegacyUi");
+            QAction *adv = mw->findChild<QAction *>("actionShowAdvancedDomainFeatures");
+            CHECK_COND(legacy && adv, "74h: switches missing");
+            const QString wantLegacy =
+                    ja ? ToriGraphFullJapaneseTranslator::lookupJapanese("Show Legacy UI")
+                       : QStringLiteral("Show Legacy UI");
+            const QString wantAdv = ja ? ToriGraphFullJapaneseTranslator::lookupJapanese(
+                                                 "Show Other-Field / Advanced Features")
+                                       : QStringLiteral("Show Other-Field / Advanced Features");
+            CHECK_COND(legacy->text() == wantLegacy,
+                       "74h: Show Legacy UI not retranslated: " << legacy->text().toStdString());
+            CHECK_COND(adv->text() == wantAdv,
+                       "74h: G1 switch not retranslated: " << adv->text().toStdString());
+            const QString tipEn = QStringLiteral(
+                    "Show the old toolbar menus, Plot Wizard, Add Time Stamp and Scripting "
+                    "Language in menus, the ribbon and command search");
+            const QString wantTip = ja ? ToriGraphFullJapaneseTranslator::lookupJapanese(tipEn) : tipEn;
+            CHECK_COND(!wantTip.isEmpty() && legacy->toolTip() == wantTip,
+                       "74h: Show Legacy UI tooltip not retranslated: "
+                               << legacy->toolTip().toStdString());
+            return 0;
+        };
+        mw->switchToLanguage(startJa ? QStringLiteral("en") : QStringLiteral("ja"));
+        if (checkLang(!startJa) != 0)
+            return 1;
+        mw->switchToLanguage(startJa ? QStringLiteral("ja") : QStringLiteral("en"));
+        if (checkLang(startJa) != 0)
+            return 1;
+    }
+
+    // ---- 74f: Japanese text of the switch
+    CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("Show Legacy UI")
+                       == QString::fromUtf8("旧 UI を表示"),
+               "74f: Japanese text of Show Legacy UI");
+
+    mw->closeWindow(ml);
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 74 legacy UI hidden passed!\n";
     return 0;
 }

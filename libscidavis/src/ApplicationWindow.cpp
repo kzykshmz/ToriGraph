@@ -20092,6 +20092,7 @@ void ApplicationWindow::translateActionsStrings()
         actionRunPythonScript->setText(tr("Run Python &Script..."));
         actionRunPythonScript->setToolTip(tr("Select and Execute a .py Automation Script"));
     }
+    retranslateUxSwitches(); // G1 / C15 switches (UxNavigation.cpp)
 
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
