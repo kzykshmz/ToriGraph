@@ -40,12 +40,42 @@
 #include <QRegExp>
 #include <QMessageBox>
 #include <QCloseEvent>
+#include <QFile>
+#include <QFileInfo>
+#include <QLabel>
+#include <QPlainTextEdit>
+
+#include "I18nJapanese.h"
+#include "table/AsciiTableImportFilter.h"
+#include "table/future_Table.h"
+
+#include <memory>
+#include <mutex>
+
+namespace {
+void registerImportDialogTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Import Data File(s)", "データファイルを読み込む");
+        reg("Preview (first lines):", "プレビュー（先頭の数行）:");
+        reg("Detected: %1", "自動判定: %1");
+        reg("Select a file to see a preview.",
+            "ファイルを選ぶと先頭の数行と自動判定の結果を表示します。");
+    });
+}
+} // namespace
 
 ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, bool extended,
                                      Qt::WindowFlags flags)
     : ExtensibleFileDialog(parent, extended, flags)
 {
-    setWindowTitle(tr("Import ASCII File(s)"));
+    registerImportDialogTranslations();
+    setWindowTitle(tr("Import Data File(s)"));
 
     QStringList filters;
     filters << tr("All files") + " (*)";
@@ -89,6 +119,30 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
             setColumnSeparator(QStringLiteral("\t"));
         else if (path.endsWith(QLatin1String(".ras"), Qt::CaseInsensitive))
             setColumnSeparator(QStringLiteral(" "));
+    });
+    // Preview of the first lines and what the automatic detection (encoding, separator, unit
+    // row) makes of the selected file. Only the first 64 KB are read.
+    connect(this, &QFileDialog::currentChanged, this, [this](const QString &path) {
+        QLabel *summary = findChild<QLabel *>(QStringLiteral("ImportDetectionSummary"));
+        QPlainTextEdit *preview = findChild<QPlainTextEdit *>(QStringLiteral("ImportPreview"));
+        if (!summary || !preview)
+            return;
+        QFile f(path);
+        if (path.isEmpty() || !QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) {
+            summary->setText(tr("Select a file to see a preview."));
+            preview->clear();
+            return;
+        }
+        const QByteArray head = f.read(64 * 1024);
+        f.close();
+        const QString text = AsciiTableImportFilter::decodeLabTextAuto(head);
+        preview->setPlainText(text.section(QLatin1Char('\n'), 0, 7));
+        AsciiTableImportFilter::ImportReport rep;
+        std::unique_ptr<future::Table> probe(AsciiTableImportFilter::importDroppedTextData(
+                head, QStringLiteral("preview"), path, &rep));
+        summary->setText(probe ? tr("Detected: %1")
+                                         .arg(AsciiTableImportFilter::describeImportReport(rep))
+                               : tr("Select a file to see a preview."));
     });
     connect(this, &QFileDialog::filterSelected, this, [this](const QString &flt) {
         if (flt.contains(QLatin1String(".csv"), Qt::CaseInsensitive))
@@ -203,6 +257,18 @@ void ImportASCIIDialog::initAdvancedOptions()
     connect(d_convert_to_numeric, SIGNAL(toggled(bool)), boxDecimalSeparator,
             SLOT(setEnabled(bool)));
     advanced_layout->addWidget(d_convert_to_numeric, 3, 2, 1, 2);
+
+    main_layout->addWidget(new QLabel(tr("Preview (first lines):")));
+    QPlainTextEdit *preview = new QPlainTextEdit();
+    preview->setObjectName(QStringLiteral("ImportPreview"));
+    preview->setReadOnly(true);
+    preview->setLineWrapMode(QPlainTextEdit::NoWrap);
+    preview->setMaximumHeight(110);
+    main_layout->addWidget(preview);
+    QLabel *summary = new QLabel(tr("Select a file to see a preview."));
+    summary->setObjectName(QStringLiteral("ImportDetectionSummary"));
+    summary->setWordWrap(true);
+    main_layout->addWidget(summary);
 
     QHBoxLayout *meta_options_layout = new QHBoxLayout();
     d_remember_options = new QCheckBox(tr("Re&member the above options"));

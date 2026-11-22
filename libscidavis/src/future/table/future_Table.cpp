@@ -52,6 +52,8 @@
 #include <QtDebug>
 #include <QMimeData>
 #include <QMdiSubWindow>
+#include <QStyle>
+#include <QColor>
 #include <qwt_plot.h>
 #include "ApplicationWindow.h"
 #include "MultiLayer.h"
@@ -523,6 +525,13 @@ void Table::pasteIntoSelection(const bool isTransposed)
 {
     if (!d_view)
         return;
+    // Menu / context-menu paste and Ctrl+V share one implementation (::Table::pasteText):
+    // tab first, leading empty cells kept, header/unit rows promoted, column-wise bulk writes
+    // under one Undo step.
+    if (::Table *legacy = qobject_cast<::Table *>(d_view.data())) {
+        legacy->pasteSelection(isTransposed);
+        return;
+    }
     if (columnCount() < 1 || rowCount() < 1)
         return;
 
@@ -2977,6 +2986,21 @@ QVariant Table::Private::headerData(int section, Qt::Orientation orientation, in
     case Qt::Horizontal:
         if (section >= d_horizontal_header_data.size())
             return QVariant();
+        // A column whose automatic formula recalculation failed (error or circular reference)
+        // gets a warning icon, red text and the reason in its tooltip.
+        if (section < d_columns.size() && !d_columns.at(section)->formulaError().isEmpty()) {
+            switch (role) {
+            case Qt::ToolTipRole:
+                return d_horizontal_header_data.at(section) + QStringLiteral("\n")
+                        + d_columns.at(section)->formulaError();
+            case Qt::DecorationRole:
+                return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+            case Qt::ForegroundRole:
+                return QColor(200, 0, 0);
+            default:
+                break;
+            }
+        }
         switch (role) {
         case Qt::DisplayRole:
         case Qt::ToolTipRole:

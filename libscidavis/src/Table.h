@@ -54,6 +54,13 @@ class Table : public TableView, public scripted
 public:
     QPointer<future::Table> d_future_table;
 
+    //! Extra options of the ASCII/CSV export (File > Export > ASCII).
+    struct AsciiExportOptions
+    {
+        bool utf8Bom = false; //!< write a UTF-8 BOM (Excel then reads Japanese text correctly)
+        bool longNameAndUnits = false; //!< header = Long Name row (+ Units row if any unit)
+    };
+
   /*  enum ColType {
         Numeric = 0,
         Text = 1,
@@ -233,6 +240,22 @@ public slots:
     void copySelection();
     void clearSelection();
     void pasteSelection();
+    void pasteSelection(bool transposed);
+    //! Paste tab/comma/semicolon/space separated text at the current cell (the single paste
+    //! implementation used by Ctrl+V, Edit > Paste and the context menu). Returns false if
+    //! nothing was pasted.
+    bool pasteText(const QString &text, bool transposed = false);
+    //! Fill the rest of the selection with the values of its first row (Ctrl+D).
+    void fillSelectionDown();
+    //! Find (Ctrl+F) / Find and Replace (Ctrl+H) in the cells of this worksheet.
+    void showFindReplaceDialog(bool replace);
+    //! Select the next cell after the current one whose text contains `what` (wraps around).
+    bool findNextCell(const QString &what, bool matchCase, bool wholeCell);
+    //! Replace `what` by `with` in all cells (or only the selected cells); returns the count.
+    int replaceAllCells(const QString &what, const QString &with, bool matchCase,
+                        bool wholeCell, bool selectionOnly);
+    //! Column indices whose formula failed or is circular in the last automatic recalculation.
+    QList<int> formulaErrorColumns() const;
     void selectAllTable();
     void deselect();
     void clear();
@@ -267,6 +290,10 @@ public slots:
                      bool stripSpaces, bool simplifySpaces, bool newTable);
     bool exportASCII(const QString &fname, const QString &separator, bool withLabels = false,
                      bool exportSelection = false);
+    bool exportASCII(const QString &fname, const QString &separator, bool withLabels,
+                     bool exportSelection, const AsciiExportOptions &options);
+    //! Error message of the last failed exportASCII() call (empty after success).
+    QString lastExportError() const { return d_last_export_error; }
 
     //! \name Saving and Restoring
     //@{
@@ -329,7 +356,12 @@ protected slots:
 private:
     void scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount);
     void autoRecalculateDependentColumns(int changedFirstCol, int changedCount);
-    bool recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors);
+    bool recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors,
+                                   QString *errorOut = nullptr);
+    //! Evaluate the formula columns `fCols` in dependency order, marking failed and circular
+    //! columns. Returns true if any value changed.
+    bool recalculateFormulaColumnsOrdered(const QVector<int> &fCols);
+    void setColumnFormulaError(int col, const QString &message);
 
     QHash<const AbstractAspect *, QString> d_stored_column_labels;
     bool d_auto_recalc_formulas = true;
@@ -337,6 +369,7 @@ private:
     bool d_pending_unwrapped_recalc = false;
     int d_pending_recalc_first_col = -1;
     int d_pending_recalc_col_count = 0;
+    QString d_last_export_error;
 };
 
 #endif

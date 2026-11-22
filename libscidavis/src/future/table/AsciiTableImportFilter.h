@@ -73,6 +73,33 @@ public:
     virtual QStringList fileExtensions() const;
     virtual QString name() const { return QObject::tr("ASCII table"); }
 
+    //! What the last import decided and what it left out (shown to the user after a drop import).
+    struct ImportReport
+    {
+        QString encoding; //!< detected text encoding ("UTF-8", "Shift-JIS", ...)
+        QString separator; //!< effective column separator ("\t", ",", ";", " ")
+        int skippedLines = 0; //!< non-blank lines that were neither data nor header/unit rows
+        int headerLines = 0; //!< header (name) and unit rows used for column metadata
+        bool unitsRowDetected = false;
+        int dataRows = 0;
+        int columns = 0;
+        int missingCells = 0; //!< empty / missing cells in numeric columns
+        int textColumns = 0; //!< columns that had to be imported as text
+        int rasBlocks = 0; //!< number of *RAS_INT_START blocks (Rigaku .ras)
+        QString preamble; //!< metadata lines above the data (kept as the table comment)
+    };
+    //! Report of the most recent import done by this filter in this process.
+    static ImportReport lastImportReport();
+    //! Short human-readable summary of an ImportReport (translated).
+    static QString describeImportReport(const ImportReport &report);
+    //! Import for drag & drop: fixed defaults (independent of the last dialog settings),
+    //! automatic separator/encoding detection and detection of a metadata preamble above the
+    //! numeric block (instrument files such as .mpt/.dta/.asc).
+    static future::Table *importDroppedTextData(const QByteArray &rawBytes,
+                                                const QString &tableName,
+                                                const QString &filePathHint,
+                                                ImportReport *outReport = nullptr);
+
     static QString decodeLabTextAuto(const QByteArray &rawBytes,
                                      const QString &encodingHint = QString());
     static void splitHeaderNameAndUnits(const QString &rawHeader, QString &outShortName,
