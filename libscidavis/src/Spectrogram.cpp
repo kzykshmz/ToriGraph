@@ -40,6 +40,7 @@
 #include <QRegularExpression>
 
 #include <qwt_plot_layout.h>
+#include <qwt_scale_engine.h>
 #include <qwt_scale_widget.h>
 #include <qwt_text.h>
 
@@ -79,6 +80,32 @@ QString wrapColorBarTitleNoWrap(const QString &raw)
     }
     return clean;
 }
+
+//! E11b: colour bar map for a logarithmic colour axis. The colour bar axis has a log10 scale
+//! engine, so QwtScaleWidget asks for colours of data values; the colour follows log10(value)
+//! between the interval ends (the data image itself is drawn from log10 values).
+class LogColorBarMap : public QwtColorMap
+{
+public:
+    explicit LogColorBarMap(const QwtColorMap &base) : QwtColorMap(QwtColorMap::RGB), d_base(base.copy()) { }
+    LogColorBarMap(const LogColorBarMap &o) : QwtColorMap(QwtColorMap::RGB), d_base(o.d_base->copy()) { }
+    ~LogColorBarMap() override { delete d_base; }
+    QwtColorMap *copy() const override { return new LogColorBarMap(*this); }
+    QRgb rgb(const QwtDoubleInterval &iv, double v) const override
+    {
+        const double lo = std::log10(qMax(iv.minValue(), 1e-300));
+        const double hi = std::log10(qMax(iv.maxValue(), 1e-300));
+        double t = 0.0;
+        if (v > 0.0 && hi > lo)
+            t = (std::log10(v) - lo) / (hi - lo);
+        return d_base->rgb(QwtDoubleInterval(0.0, 1.0), qBound(0.0, t, 1.0));
+    }
+    unsigned char colorIndex(const QwtDoubleInterval &, double) const override { return 0; }
+
+private:
+    LogColorBarMap &operator=(const LogColorBarMap &) = delete;
+    QwtColorMap *d_base;
+};
 
 } // namespace
 
@@ -123,8 +150,13 @@ Spectrogram::Spectrogram(Matrix *m)
 
 QwtDoubleInterval Spectrogram::rawDataRange() const
 {
-    if (const MatrixData *md = dynamic_cast<const MatrixData *>(&data()))
+    if (const MatrixData *md = dynamic_cast<const MatrixData *>(&data())) {
+        if (md->flags() & MatrixData::FlagLog10) {
+            const QwtDoubleInterval lr = md->rawRange();
+            return QwtDoubleInterval(std::pow(10.0, lr.minValue()), std::pow(10.0, lr.maxValue()));
+        }
         return md->rawRange();
+    }
     if (d_matrix) {
         double lo = 0.0, hi = 1.0;
         d_matrix->range(&lo, &hi);
@@ -152,6 +184,8 @@ static QwtDoubleInterval padDegenerateColorRange(const QwtDoubleInterval &raw)
 
 QwtDoubleInterval Spectrogram::effectiveValueRange() const
 {
+    if (d_log_color) // log10 units; MatrixData converts a custom (data unit) range itself
+        return padDegenerateColorRange(data().range());
     if (d_custom_z_range && std::isfinite(d_custom_z_min) && std::isfinite(d_custom_z_max)
         && d_custom_z_min < d_custom_z_max)
         return padDegenerateColorRange(QwtDoubleInterval(d_custom_z_min, d_custom_z_max));
@@ -254,11 +288,17 @@ void Spectrogram::syncColorScale()
 
     const QwtDoubleInterval zRange = effectiveValueRange();
     QwtScaleWidget *colorAxis = plot->axisWidget(color_axis);
-    if (colorAxis)
-        colorAxis->setColorMap(zRange, colorMap());
+    if (colorAxis) {
+        if (d_log_color)
+            colorAxis->setColorMap(colorAxisRange(), LogColorBarMap(colorMap()));
+        else
+            colorAxis->setColorMap(zRange, colorMap());
+    }
 
     if (colorAxis && colorAxis->isColorBarEnabled()) {
-        plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
+        syncColorAxisEngine();
+        const QwtDoubleInterval axisRange = colorAxisRange();
+        plot->setAxisScale(color_axis, axisRange.minValue(), axisRange.maxValue());
         enforceColorBarArialFont();
     }
 }
@@ -304,7 +344,8 @@ void Spectrogram::setCustomValueRange(bool enabled, double zMin, double zMax)
 
     const int prevLevels = qMax(2, levels());
     if (d_matrix)
-        setData(MatrixData(d_matrix, d_custom_z_range, d_custom_z_min, d_custom_z_max));
+        setData(MatrixData(d_matrix, d_custom_z_range, d_custom_z_min, d_custom_z_max,
+                           dataFlags()));
     setLevelsNumber(prevLevels);
     syncColorScale();
     itemChanged();
@@ -317,7 +358,7 @@ void Spectrogram::updateData(Matrix *m)
 
     d_matrix = m;
     const int prevLevels = qMax(2, levels());
-    setData(MatrixData(m, d_custom_z_range, d_custom_z_min, d_custom_z_max));
+    setData(MatrixData(m, d_custom_z_range, d_custom_z_min, d_custom_z_max, dataFlags()));
     setLevelsNumber(prevLevels);
 
     QwtPlot *plot = this->plot();
@@ -325,7 +366,7 @@ void Spectrogram::updateData(Matrix *m)
         return;
 
     syncColorScale();
-    const QwtDoubleInterval zRange = effectiveValueRange();
+    const QwtDoubleInterval zRange = colorAxisRange();
     plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
     enforceColorBarArialFont();
     plot->replot();
@@ -414,9 +455,13 @@ void Spectrogram::showColorScale(int axis, bool on)
 
     const QwtDoubleInterval zRange = effectiveValueRange();
     colorAxis = plot->axisWidget(color_axis);
-    plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
+    syncColorAxisEngine();
+    plot->setAxisScale(color_axis, colorAxisRange().minValue(), colorAxisRange().maxValue());
     colorAxis->setColorBarEnabled(on);
-    colorAxis->setColorMap(zRange, colorMap());
+    if (d_log_color)
+        colorAxis->setColorMap(colorAxisRange(), LogColorBarMap(colorMap()));
+    else
+        colorAxis->setColorMap(zRange, colorMap());
     colorAxis->setMargin(on ? 4 : 0);
     if (on) {
         colorAxis->setSpacing(0);
@@ -494,6 +539,11 @@ Spectrogram *Spectrogram::copy()
     new_s->d_colorbar_title = d_colorbar_title;
     if (d_custom_z_range)
         new_s->setCustomValueRange(true, d_custom_z_min, d_custom_z_max);
+    new_s->d_mask_invalid = d_mask_invalid;
+    new_s->d_log_color = d_log_color;
+    new_s->d_cell_blocks = d_cell_blocks;
+    if (d_mask_invalid || d_log_color || d_cell_blocks)
+        new_s->rebuildData();
     new_s->setLevelsNumber(levels());
     new_s->color_map_policy = color_map_policy;
     return new_s;
@@ -736,6 +786,13 @@ QString Spectrogram::saveToString()
         esc.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "&#10;");
         s += "\t<ColorBarTitle>" + esc + "</ColorBarTitle>\n";
     }
+    // E11b display options (older versions ignore these tags)
+    if (d_mask_invalid)
+        s += "\t<ToriMaskInvalid>1</ToriMaskInvalid>\n";
+    if (d_log_color)
+        s += "\t<ToriLogColor>1</ToriLogColor>\n";
+    if (d_cell_blocks)
+        s += "\t<ToriCellBlocks>1</ToriCellBlocks>\n";
     s += "\t<Visible>" + QString::number(isVisible()) + "</Visible>\n";
     return s + "</spectrogram>\n";
 }
@@ -800,6 +857,189 @@ void Spectrogram::drawContourLines(QPainter *painter, const QwtScaleMap &xMap,
     painter->restore();
 }
 
+// ============================================================================
+// E11b display options: transparent missing cells, log colour scale, flat cell blocks
+// ============================================================================
+
+namespace {
+
+//! Contour helper: missing (NaN) samples become a value outside the accepted range, so the
+//! CONREC pass skips every cell that touches them (QwtRasterData::IgnoreOutOfRange).
+class MaskedContourData : public QwtRasterData
+{
+public:
+    explicit MaskedContourData(const QwtRasterData &src)
+        : QwtRasterData(src.boundingRect()), d_src(src.copy())
+    {
+    }
+    MaskedContourData(const MaskedContourData &o)
+        : QwtRasterData(o.boundingRect()), d_src(o.d_src->copy())
+    {
+    }
+    ~MaskedContourData() override { delete d_src; }
+    QwtRasterData *copy() const override { return new MaskedContourData(*this); }
+    QwtDoubleInterval range() const override { return QwtDoubleInterval(-1e299, 1e299); }
+    void initRaster(const QwtDoubleRect &r, const QSize &s) override { d_src->initRaster(r, s); }
+    void discardRaster() override { d_src->discardRaster(); }
+    double value(double x, double y) const override
+    {
+        const double v = d_src->value(x, y);
+        return std::isfinite(v) ? v : -1e300;
+    }
+
+private:
+    MaskedContourData &operator=(const MaskedContourData &) = delete;
+    QwtRasterData *d_src;
+};
+
+} // namespace
+
+int Spectrogram::dataFlags() const
+{
+    int f = 0;
+    if (d_mask_invalid)
+        f |= MatrixData::FlagMaskInvalid;
+    if (d_log_color)
+        f |= MatrixData::FlagLog10;
+    if (d_cell_blocks)
+        f |= MatrixData::FlagCellBlocks;
+    return f;
+}
+
+void Spectrogram::rebuildData()
+{
+    if (!d_matrix)
+        return;
+    const int prevLevels = qMax(2, levels());
+    setData(MatrixData(d_matrix, d_custom_z_range, d_custom_z_min, d_custom_z_max, dataFlags()));
+    setLevelsNumber(prevLevels);
+    setConrecAttribute(QwtRasterData::IgnoreOutOfRange, d_mask_invalid || d_log_color);
+    syncColorScale();
+    itemChanged();
+}
+
+void Spectrogram::setMaskInvalidCells(bool on)
+{
+    if (d_mask_invalid == on)
+        return;
+    d_mask_invalid = on;
+    rebuildData();
+}
+
+void Spectrogram::setLogColorScale(bool on)
+{
+    if (d_log_color == on)
+        return;
+    d_log_color = on;
+    rebuildData();
+}
+
+void Spectrogram::setCellBlocks(bool on)
+{
+    if (d_cell_blocks == on)
+        return;
+    d_cell_blocks = on;
+    rebuildData();
+}
+
+QwtDoubleInterval Spectrogram::colorAxisRange() const
+{
+    const QwtDoubleInterval r = effectiveValueRange();
+    if (!d_log_color)
+        return r;
+    return QwtDoubleInterval(std::pow(10.0, r.minValue()), std::pow(10.0, r.maxValue()));
+}
+
+void Spectrogram::syncColorAxisEngine()
+{
+    QwtPlot *plot = this->plot();
+    if (!plot || color_axis < 0 || color_axis >= QwtPlot::axisCnt)
+        return;
+    const bool isLog = Plot::isLog10ScaleEngine(plot->axisScaleEngine(color_axis));
+    if (d_log_color && !isLog) {
+        plot->setAxisScaleEngine(color_axis, new QwtLog10ScaleEngine());
+        d_log_engine_applied = true;
+    } else if (!d_log_color && isLog && d_log_engine_applied) {
+        plot->setAxisScaleEngine(color_axis, new QwtLinearScaleEngine());
+        d_log_engine_applied = false;
+    } else if (d_log_color && isLog) {
+        d_log_engine_applied = true;
+    }
+}
+
+QImage Spectrogram::renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                                const QwtDoubleRect &area) const
+{
+    if (!(d_mask_invalid || d_log_color) || colorMap().format() != QwtColorMap::RGB)
+        return QwtPlotSpectrogram::renderImage(xMap, yMap, area);
+    if (area.isEmpty())
+        return QImage();
+
+    // Same raster set-up as QwtPlotSpectrogram::renderImage, but NaN pixels stay transparent.
+    QRect rect = transform(xMap, yMap, area);
+    QwtScaleMap xxMap = xMap;
+    QwtScaleMap yyMap = yMap;
+    const QSize res = data().rasterHint(area);
+    if (res.isValid()) {
+        rect.setSize(rect.size().boundedTo(res));
+        int px1 = rect.x();
+        int px2 = rect.x() + rect.width();
+        if (xMap.p1() > xMap.p2())
+            qSwap(px1, px2);
+        double sx1 = area.x();
+        double sx2 = area.x() + area.width();
+        if (xMap.s1() > xMap.s2())
+            qSwap(sx1, sx2);
+        int py1 = rect.y();
+        int py2 = rect.y() + rect.height();
+        if (yMap.p1() > yMap.p2())
+            qSwap(py1, py2);
+        double sy1 = area.y();
+        double sy2 = area.y() + area.height();
+        if (yMap.s1() > yMap.s2())
+            qSwap(sy1, sy2);
+        xxMap.setPaintInterval(px1, px2);
+        xxMap.setScaleInterval(sx1, sx2);
+        yyMap.setPaintInterval(py1, py2);
+        yyMap.setScaleInterval(sy1, sy2);
+    }
+    if (rect.width() <= 0 || rect.height() <= 0)
+        return QImage();
+
+    QImage image(rect.size(), QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    const QwtDoubleInterval intensityRange = data().range();
+    if (!intensityRange.isValid())
+        return image;
+
+    QwtRasterData &rd = const_cast<QwtRasterData &>(data());
+    rd.initRaster(area, rect.size());
+    const QwtColorMap &cm = colorMap();
+    for (int y = rect.top(); y <= rect.bottom(); y++) {
+        const double ty = yyMap.invTransform(y);
+        QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y - rect.top()));
+        for (int x = rect.left(); x <= rect.right(); x++) {
+            const double tx = xxMap.invTransform(x);
+            const double v = rd.value(tx, ty);
+            *line++ = std::isfinite(v) ? (cm.rgb(intensityRange, v) | 0xFF000000u) : 0u;
+        }
+    }
+    rd.discardRaster();
+    return image;
+}
+
+QwtRasterData::ContourLines Spectrogram::renderContourLines(const QwtDoubleRect &rect,
+                                                            const QSize &raster) const
+{
+    if (!(d_mask_invalid || d_log_color))
+        return QwtPlotSpectrogram::renderContourLines(rect, raster);
+    int flags = QwtRasterData::IgnoreOutOfRange;
+    if (testConrecAttribute(QwtRasterData::IgnoreAllVerticesOnLevel))
+        flags |= QwtRasterData::IgnoreAllVerticesOnLevel;
+    MaskedContourData masked(data());
+    return masked.contourLines(rect, raster, contourLevels(), flags);
+}
+
 double MatrixData::value(double x, double y) const
 {
     if (d_data.isEmpty() || n_rows <= 0 || n_cols <= 0 || !std::isfinite(x) || !std::isfinite(y))
@@ -815,6 +1055,13 @@ double MatrixData::value(double x, double y) const
         v = ((y - y_start) / (y_end - y_start)) * double(n_rows - 1);
     v = qBound(0.0, v, double(n_rows - 1));
 
+    // E11b: flat blocks (nearest cell) for binned data such as 2D histograms
+    if (d_flags & FlagCellBlocks) {
+        const int cn = qBound(0, int(std::floor(u + 0.5)), n_cols - 1);
+        const int rn = qBound(0, int(std::floor(v + 0.5)), n_rows - 1);
+        return d_data[rn * n_cols + cn];
+    }
+
     const int c0 = qBound(0, int(std::floor(u)), n_cols - 1);
     const int c1 = qMin(c0 + 1, n_cols - 1);
     const double tx = u - double(c0);
@@ -827,6 +1074,15 @@ double MatrixData::value(double x, double y) const
     const double z01 = d_data[r0 * n_cols + c1];
     const double z10 = d_data[r1 * n_cols + c0];
     const double z11 = d_data[r1 * n_cols + c1];
+
+    if ((d_flags & (FlagMaskInvalid | FlagLog10))
+        && !(std::isfinite(z00) && std::isfinite(z01) && std::isfinite(z10)
+             && std::isfinite(z11))) {
+        // next to a missing cell: the nearest cell decides (keeps the measured edge sharp)
+        const int cn = (tx < 0.5) ? c0 : c1;
+        const int rn = (ty < 0.5) ? r0 : r1;
+        return d_data[rn * n_cols + cn];
+    }
 
     const double top = z00 + tx * (z01 - z00);
     const double bot = z10 + tx * (z11 - z10);

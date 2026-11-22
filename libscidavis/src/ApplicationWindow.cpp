@@ -4092,6 +4092,8 @@ void ApplicationWindow::initPlotMenu()
     plot2D->addAction(actionPlotVectXYXY);
     plot2D->addAction(actionPlotVectXYAM);
     plot2D->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActColorScatter)); // E11
+    plot2D->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActDensity2D)); // E11b
+    plot2D->addAction(ExtraPlotTypes::action(this, ExtraPlotTypes::ActPoleFigure)); // E11b
 
     plot2D->addSeparator();
 

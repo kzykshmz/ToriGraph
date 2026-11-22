@@ -2191,6 +2191,10 @@ class GraphProxy:
             **kwargs,
         )
 
+    def rebuild_density2d(self, **kwargs: Any) -> Dict[str, Any]:
+        """Re-count a 2D density graph from its recorded source columns and bin settings."""
+        return self.session.call("graph.rebuild_density2d", graph=self.name, **kwargs)
+
     def remove_reference_line(
         self, index: int = 0, *, layer: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -5292,6 +5296,82 @@ class Session:
             col=col,
             bin_width=bin_width,
             begin=begin,
+            **kwargs,
+        )
+
+    def plot_density2d(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        x: Optional[Union[int, str]] = None,
+        y: Optional[Union[int, str]] = None,
+        *,
+        bins_x: Optional[int] = None,
+        bins_y: Optional[int] = None,
+        width_x: Optional[float] = None,
+        width_y: Optional[float] = None,
+        log: Optional[bool] = None,
+        palette: Optional[str] = None,
+        plot: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """2D density (2D histogram) of two columns as a heat map; the count matrix is kept."""
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "plot.density2d",
+            table=tbl_ref,
+            x=x,
+            y=y,
+            bins_x=bins_x,
+            bins_y=bins_y,
+            width_x=width_x,
+            width_y=width_y,
+            log=log,
+            palette=palette,
+            plot=plot,
+            **kwargs,
+        )
+
+    def plot_pole_figure(
+        self,
+        table: Optional[Union[str, TableProxy, Any]] = None,
+        alpha: Optional[Union[int, str]] = None,
+        beta: Optional[Union[int, str]] = None,
+        intensity: Optional[Union[int, str]] = None,
+        *,
+        matrix: Optional[str] = None,
+        projection: Optional[str] = None,
+        mrd: Optional[bool] = None,
+        alpha_from_rim: Optional[bool] = None,
+        beta_zero_top: Optional[bool] = None,
+        clockwise: Optional[bool] = None,
+        rd: Optional[str] = None,
+        grid: Optional[int] = None,
+        levels: Optional[int] = None,
+        palette: Optional[str] = None,
+        label: Optional[str] = None,
+        plot: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """XRD pole figure (Schmidt equal-area or Wulff equal-angle) with contours and MRD."""
+        tbl_ref = self._ensure_table_ref(table) if table is not None else None
+        return self.call(
+            "plot.pole_figure",
+            table=tbl_ref,
+            alpha=alpha,
+            beta=beta,
+            intensity=intensity,
+            matrix=matrix,
+            projection=projection,
+            mrd=mrd,
+            alpha_from_rim=alpha_from_rim,
+            beta_zero_top=beta_zero_top,
+            clockwise=clockwise,
+            rd=rd,
+            grid=grid,
+            levels=levels,
+            palette=palette,
+            label=label,
+            plot=plot,
             **kwargs,
         )
 

@@ -7247,6 +7247,21 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Shade Y - error ... Y + error of a data curve from error column(s) (asymmetric with err_minus); saved with the project.",
       "graph:str=''; curve:int|str*; err:int|str*; err_minus:int|str=null; table:str=''; alpha:float=64; layer:int=null",
       "g.add_error_band('Mean', 'SD')" },
+    { "plot.density2d", "plot",
+      "Session.plot_density2d(table=None, x=0, y=1, *, bins_x=0, bins_y=0, width_x=0, width_y=0, log=False, palette='viridis', plot=True)",
+      "2D density (2D histogram): count X-Y points on a grid, keep the count matrix and show it as a heat map with a colour bar (fast for 100,000+ points).",
+      "table:str=''; x:int|str=0; y:int|str=1; bins_x:int=0; bins_y:int=0; width_x:float=0; width_y:float=0; log:bool=false; palette:str='viridis'; plot:bool=true",
+      "app.plot_density2d(tbl, 'x_um', 'y_um', width_x=5, width_y=5, log=True)" },
+    { "graph.rebuild_density2d", "graph",
+      "GraphProxy.rebuild_density2d()",
+      "Re-count a 2D density graph from its recorded source columns and bin settings.",
+      "graph:str=''; layer:int=null",
+      "g.rebuild_density2d()" },
+    { "plot.pole_figure", "plot",
+      "Session.plot_pole_figure(table=None, alpha=0, beta=1, intensity=2, *, matrix=None, projection='schmidt', mrd=True, alpha_from_rim=False, beta_zero_top=False, clockwise=False, rd='top', grid=201, levels=8, palette='viridis', label='', plot=True)",
+      "XRD pole figure from alpha (tilt), beta (rotation), intensity columns or an alpha x beta matrix: equal-area (Schmidt) or equal-angle (Wulff) projection, contours, colour bar and MRD normalisation.",
+      "table:str=''; alpha:int|str=0; beta:int|str=1; intensity:int|str=2; matrix:str=''; projection:str='schmidt'[schmidt|wulff|equal-area|equal-angle]; mrd:bool=true; alpha_from_rim:bool=false; beta_zero_top:bool=false; clockwise:bool=false; rd:str='top'[top|right]; grid:int=201; levels:int=8; palette:str='viridis'; label:str=''; plot:bool=true",
+      "app.plot_pole_figure(tbl, 'alpha', 'beta', 'I', projection='schmidt', label='(111)')" },
     { "stats.kaplan_meier", "stats",
       "Session.kaplan_meier(table=None, time_col=0, event_col=1, *, group_col=None)",
       "Compute Kaplan-Meier survival curves and log-rank test.",
@@ -26779,6 +26794,113 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("band_curves")] = added;
         outResult[QStringLiteral("error_band_count")] = g->errorBandCount();
+        return true;
+    }
+
+    if (method == QStringLiteral("plot.density2d")) {
+        Table *t = resolveTable(d_app, params);
+        auto colOf = [&](const char *key, int def) {
+            const QString k = QString::fromLatin1(key);
+            return t->colName(resolveColumnIndex(
+                    t, params.contains(k) ? params.value(k) : QJsonValue(def), true));
+        };
+        const QString xc = colOf("x", 0), yc = colOf("y", 1);
+        const QString pal = optionalJsonString(params, QStringLiteral("palette"), QStringLiteral("viridis"));
+        const Spectrogram::ColorMapPreset preset = parseColorMapPreset(pal, nullptr, true);
+        const auto dr = ExtraPlotTypes::plotDensity2D(
+                d_app, t, xc, yc, params.value(QStringLiteral("bins_x")).toInt(0),
+                params.value(QStringLiteral("bins_y")).toInt(0),
+                optionalJsonFiniteDouble(params, QStringLiteral("width_x"), 0.0),
+                optionalJsonFiniteDouble(params, QStringLiteral("width_y"), 0.0),
+                optionalJsonBool(params, QStringLiteral("log"), false), int(preset),
+                optionalJsonBool(params, QStringLiteral("plot"), true));
+        if (!dr.valid)
+            throwInvalidParams(dr.error.isEmpty() ? QStringLiteral("2D density failed.") : dr.error);
+        if (dr.plot)
+            applyRequestedWindowName(d_app, dr.plot, params);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("n")] = dr.n;
+        outResult[QStringLiteral("excluded")] = dr.excluded;
+        outResult[QStringLiteral("bins_x")] = dr.binsX;
+        outResult[QStringLiteral("bins_y")] = dr.binsY;
+        outResult[QStringLiteral("x0")] = safeJsonDouble(dr.x0);
+        outResult[QStringLiteral("y0")] = safeJsonDouble(dr.y0);
+        outResult[QStringLiteral("width_x")] = safeJsonDouble(dr.widthX);
+        outResult[QStringLiteral("width_y")] = safeJsonDouble(dr.widthY);
+        outResult[QStringLiteral("max_count")] = safeJsonDouble(dr.maxCount);
+        if (dr.matrix)
+            outResult[QStringLiteral("matrix")] = dr.matrix->name();
+        if (dr.plot)
+            outResult[QStringLiteral("graph")] = dr.plot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.rebuild_density2d")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        if (!ExtraPlotTypes::rebuildDensity2D(d_app, g))
+            throwInvalidParams(QStringLiteral("graph.rebuild_density2d: not a 2D density graph, or its source columns are gone."));
+        outResult[QStringLiteral("ok")] = true;
+        return true;
+    }
+
+    if (method == QStringLiteral("plot.pole_figure")) {
+        ExtraPlotTypes::PoleFigureOptions opt;
+        const QString proj =
+                optionalJsonString(params, QStringLiteral("projection"), QStringLiteral("schmidt")).trimmed().toLower();
+        if (proj == QStringLiteral("wulff") || proj == QStringLiteral("equal-angle")
+            || proj == QStringLiteral("equal_angle") || proj == QStringLiteral("stereographic"))
+            opt.projection = ExtraPlotTypes::EqualAngle;
+        else if (proj != QStringLiteral("schmidt") && proj != QStringLiteral("equal-area")
+                 && proj != QStringLiteral("equal_area") && proj != QStringLiteral("lambert"))
+            throwInvalidParams(QStringLiteral("Unknown projection '%1' (expected schmidt|wulff).").arg(proj));
+        opt.normalizeMRD = optionalJsonBool(params, QStringLiteral("mrd"), true);
+        opt.alphaFromRim = optionalJsonBool(params, QStringLiteral("alpha_from_rim"), false);
+        opt.betaZeroAtTop = optionalJsonBool(params, QStringLiteral("beta_zero_top"), false);
+        opt.clockwise = optionalJsonBool(params, QStringLiteral("clockwise"), false);
+        const QString rd = optionalJsonString(params, QStringLiteral("rd"), QStringLiteral("top")).trimmed().toLower();
+        if (rd != QStringLiteral("top") && rd != QStringLiteral("right"))
+            throwInvalidParams(QStringLiteral("Unknown rd '%1' (expected top|right).").arg(rd));
+        opt.rdTop = rd == QStringLiteral("top");
+        opt.gridSize = params.value(QStringLiteral("grid")).toInt(201);
+        opt.levels = params.value(QStringLiteral("levels")).toInt(8);
+        opt.preset = int(parseColorMapPreset(
+                optionalJsonString(params, QStringLiteral("palette"), QStringLiteral("viridis")), nullptr, true));
+        opt.label = optionalJsonString(params, QStringLiteral("label"));
+        const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
+        ExtraPlotTypes::PoleFigureResult pr;
+        if (!optionalJsonString(params, QStringLiteral("matrix")).trimmed().isEmpty()) {
+            Matrix *m = resolveMatrix(d_app, params);
+            pr = ExtraPlotTypes::plotPoleFigureFromMatrix(d_app, m, opt, wantPlot);
+        } else {
+            Table *t = resolveTable(d_app, params);
+            auto colOf = [&](const char *key, int def) {
+                const QString k = QString::fromLatin1(key);
+                return t->colName(resolveColumnIndex(
+                        t, params.contains(k) ? params.value(k) : QJsonValue(def), true));
+            };
+            pr = ExtraPlotTypes::plotPoleFigure(d_app, t, colOf("alpha", 0), colOf("beta", 1),
+                                                colOf("intensity", 2), opt, wantPlot);
+        }
+        if (!pr.valid)
+            throwInvalidParams(pr.error.isEmpty() ? QStringLiteral("Pole figure failed.") : pr.error);
+        if (pr.plot)
+            applyRequestedWindowName(d_app, pr.plot, params);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("max")] = safeJsonDouble(pr.maxValue);
+        outResult[QStringLiteral("max_alpha")] = safeJsonDouble(pr.maxAlpha);
+        outResult[QStringLiteral("max_beta")] = safeJsonDouble(pr.maxBeta);
+        outResult[QStringLiteral("max_x")] = safeJsonDouble(pr.maxX);
+        outResult[QStringLiteral("max_y")] = safeJsonDouble(pr.maxY);
+        outResult[QStringLiteral("mean_intensity")] = safeJsonDouble(pr.meanIntensity);
+        outResult[QStringLiteral("alpha_max")] = safeJsonDouble(pr.alphaMax);
+        outResult[QStringLiteral("n_alpha")] = pr.nAlpha;
+        outResult[QStringLiteral("n_beta")] = pr.nBeta;
+        outResult[QStringLiteral("missing")] = pr.missing;
+        if (pr.matrix)
+            outResult[QStringLiteral("matrix")] = pr.matrix->name();
+        if (pr.plot)
+            outResult[QStringLiteral("graph")] = pr.plot->name();
         return true;
     }
 

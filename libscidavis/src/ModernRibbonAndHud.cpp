@@ -3521,6 +3521,27 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->plotContour();
                 });
+        // E11b: 2D density (2D histogram) of two columns and the XRD pole figure
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-heatmap"),
+                [this]() { return tr("2D Density (2D Histogram)"); },
+                [this]() {
+                    return tr("Count X-Y points on a grid and show the counts as a heat map with a color bar (fast for 100,000+ points)");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showDensity2DDialog(d_app);
+                });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-contour"),
+                [this]() { return tr("Pole Figure (XRD)"); },
+                [this]() {
+                    return tr("XRD pole figure from alpha, beta, intensity columns or an alpha x beta matrix: equal-area (Schmidt) or equal-angle (Wulff) projection with contours");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showPoleFigureDialog(d_app);
+                });
 
         QMenu *plot3dMenu = nullptr;
         addRibbonMenuButton(
@@ -4013,6 +4034,16 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         CurveMathTools::showXRDAnalyzerDialog(d_app);
+                });
+        ExtraPlotTypes::registerTranslations(); // E11b: XRD pole figure
+        addRibbonButton(
+                gDomain, QStringLiteral("plot-contour"), [this]() { return tr("Pole Figure"); },
+                [this]() {
+                    return tr("XRD pole figure from alpha, beta, intensity columns or an alpha x beta matrix: equal-area (Schmidt) or equal-angle (Wulff) projection with contours");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showPoleFigureDialog(d_app);
                 });
         addRibbonButton(
                 gDomain, QStringLiteral("weibull"), [this]() { return tr("Weibull"); },

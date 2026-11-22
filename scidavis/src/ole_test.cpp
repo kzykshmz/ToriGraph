@@ -171,6 +171,7 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
+static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -304,6 +305,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite67-only")) {
+        const int rc67 = runSuite67Density2DAndPoleFigure(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc67;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5472,6 +5480,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite67Density2DAndPoleFigure(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -19106,5 +19117,576 @@ static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
+    return 0;
+}
+
+// ============================================================================
+// Suite 67: E11b 2D density (2D histogram) and XRD pole figure
+// ============================================================================
+
+namespace {
+
+struct Suite67Rng {
+    quint64 s = 0x9E3779B97F4A7C15ull;
+    double uniform() // (0, 1)
+    {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        return (double((s >> 11) & ((1ull << 53) - 1)) + 0.5) / 9007199254740992.0;
+    }
+    void normalPair(double &z1, double &z2)
+    {
+        const double u1 = uniform(), u2 = uniform();
+        const double r = std::sqrt(-2.0 * std::log(u1));
+        z1 = r * std::cos(2.0 * 3.14159265358979323846 * u2);
+        z2 = r * std::sin(2.0 * 3.14159265358979323846 * u2);
+    }
+};
+
+double suite67PoleIntensity(double aDeg, double bDeg)
+{
+    const double d2r = 3.14159265358979323846 / 180.0;
+    const double a = aDeg * d2r, b = bDeg * d2r, a0 = 45.0 * d2r, b0 = 30.0 * d2r;
+    const double c = std::sin(a) * std::cos(b) * std::sin(a0) * std::cos(b0)
+            + std::sin(a) * std::sin(b) * std::sin(a0) * std::sin(b0) + std::cos(a) * std::cos(a0);
+    const double dDeg = std::acos(qBound(-1.0, c, 1.0)) / d2r;
+    return 100.0 + 900.0 * std::exp(-dDeg * dDeg / (2.0 * 10.0 * 10.0));
+}
+
+Spectrogram *suite67Spectrogram(Graph *g)
+{
+    if (!g)
+        return nullptr;
+    for (int i = 0; i < g->curves(); ++i)
+        if (QwtPlotItem *it = g->plotItem(i))
+            if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+                return static_cast<Spectrogram *>(it);
+    return nullptr;
+}
+
+bool suite67HasPoleFrame(Graph *g)
+{
+    if (!g)
+        return false;
+    for (QwtPlotItem *it : g->plotWidget()->itemList())
+        if (it && it->rtti() == QwtPlotItem::Rtti_PlotUserItem + 67)
+            return true;
+    return false;
+}
+
+} // namespace
+
+static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 67: E11b 2D Density (2D Histogram) and XRD Pole Figure...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 67");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmpDir67;
+    CHECK_COND(tmpDir67.isValid(), "Suite 67: Failed to create QTemporaryDir");
+
+    // ---------------- 67a: exact small 2D histogram ----------------
+    {
+        const QVector<double> x = { 0.1, 0.4, 1.2, 1.9, 2.0, std::nan("") };
+        const QVector<double> y = { 0.1, 0.2, 0.3, 1.5, 1.99, 0.5 };
+        const ExtraPlotTypes::Density2DResult r = ExtraPlotTypes::binDensity2D(x, y, 0, 0, 1.0, 1.0);
+        CHECK_COND(r.valid && r.n == 5 && r.excluded == 1, "67a: valid / n / excluded");
+        CHECK_COND(r.binsX == 3 && r.binsY == 2, "67a: x needs 3 bins (2.0 sits on an edge), y 2 bins");
+        CHECK_COND(r.x0 == 0.0 && r.y0 == 0.0 && r.widthX == 1.0 && r.widthY == 1.0, "67a: edges");
+        const double exp[6] = { 2, 1, 0, 0, 1, 1 };
+        for (int k = 0; k < 6; ++k)
+            CHECK_COND(r.counts[k] == exp[k], "67a: count per bin differs from the hand count");
+        CHECK_COND(r.maxCount == 2.0, "67a: max count");
+        // bin-count mode: [min, max] split evenly, the maximum falls in the last bin
+        const ExtraPlotTypes::Density2DResult rb = ExtraPlotTypes::binDensity2D(x, y, 4, 2);
+        CHECK_COND(rb.valid && rb.binsX == 4 && suite65Near(rb.widthX, 1.9 / 4.0, 1e-15)
+                           && suite65Near(rb.x0, 0.1, 1e-15),
+                   "67a: bins mode spans min..max");
+        double tot = 0.0;
+        for (double c : rb.counts)
+            tot += c;
+        CHECK_COND(tot == 5.0 && rb.counts[1 * 4 + 3] == 2.0, "67a: maximum must land in the last bin");
+        // automatic bins (Rice rule 2 n^(1/3), at least 5)
+        const ExtraPlotTypes::Density2DResult ra = ExtraPlotTypes::binDensity2D(x, y);
+        CHECK_COND(ra.valid && ra.binsX == 5 && ra.binsY == 5, "67a: automatic bin count");
+        const ExtraPlotTypes::Density2DResult rbad = ExtraPlotTypes::binDensity2D(x, y, 0, 0, 1e-9, 1.0);
+        CHECK_COND(!rbad.valid && !rbad.error.isEmpty(), "67a: too many bins must be refused");
+    }
+
+    // ---------------- 67b: 2D normal distribution, 200 000 points ----------------
+    const int N = 200000;
+    const double mux = 1.25, muy = -0.75, sx = 1.0, sy = 2.0, w = 0.5;
+    Table *tn = mw->newTable("Dens67", N, 2);
+    CHECK_COND(tn != nullptr, "67b: table");
+    tn->setHeader(QStringList() << "X" << "Y");
+    {
+        QVector<qreal> xs(N), ys(N);
+        Suite67Rng rng;
+        for (int i = 0; i < N; ++i) {
+            double z1 = 0, z2 = 0;
+            rng.normalPair(z1, z2);
+            xs[i] = mux + sx * z1;
+            ys[i] = muy + sy * z2;
+        }
+        tn->column(0)->replaceValues(0, xs);
+        tn->column(1)->replaceValues(0, ys);
+    }
+    QElapsedTimer timer67;
+    timer67.start();
+    const ExtraPlotTypes::Density2DResult dn =
+            ExtraPlotTypes::plotDensity2D(mw, tn, "X", "Y", 0, 0, w, w, false, Spectrogram::PresetViridis);
+    const qint64 msDensity = timer67.elapsed();
+    std::cout << "[INFO] 67b: 2D density of " << N << " points (table read + bin + matrix + graph) took "
+              << msDensity << " ms\n";
+    CHECK_COND(dn.valid && dn.matrix && dn.plot, "67b: plotDensity2D failed");
+    CHECK_COND(dn.n == N && dn.excluded == 0, "67b: all points counted");
+    CHECK_COND(msDensity < 5000, "67b: 200 000 points must be binned quickly");
+    {
+        // compare every well-populated bin with N * Px * Py of the independent normals
+        int checked = 0;
+        double total = 0.0;
+        int argmax = 0;
+        for (int iy = 0; iy < dn.binsY; ++iy)
+            for (int ix = 0; ix < dn.binsX; ++ix) {
+                const double c = dn.counts[iy * dn.binsX + ix];
+                total += c;
+                if (c > dn.counts[argmax])
+                    argmax = iy * dn.binsX + ix;
+                const double xa = dn.x0 + ix * w, ya = dn.y0 + iy * w;
+                const double px = gsl_cdf_ugaussian_P((xa + w - mux) / sx) - gsl_cdf_ugaussian_P((xa - mux) / sx);
+                const double py = gsl_cdf_ugaussian_P((ya + w - muy) / sy) - gsl_cdf_ugaussian_P((ya - muy) / sy);
+                const double e = N * px * py;
+                if (e < 200.0)
+                    continue;
+                ++checked;
+                CHECK_COND(std::fabs(c - e) <= 5.0 * std::sqrt(e) + 2.0,
+                           "67b: bin count differs from the 2D normal probability");
+            }
+        CHECK_COND(total == N, "67b: counts must add up to N");
+        CHECK_COND(checked > 40, "67b: too few bins compared");
+        // the mean (1.25, -0.75) is a bin centre; the fullest bin must be at (or next to) it
+        const double cx = dn.x0 + (argmax % dn.binsX + 0.5) * w;
+        const double cy = dn.y0 + (argmax / dn.binsX + 0.5) * w;
+        CHECK_COND(std::fabs(cx - mux) <= w + 1e-9 && std::fabs(cy - muy) <= w + 1e-9,
+                   "67b: maximum bin is not at the mean");
+        std::cout << "[INFO] 67b: " << dn.binsX << " x " << dn.binsY << " bins, max " << dn.maxCount
+                  << " at (" << cx << ", " << cy << "), " << checked << " bins within 5 sigma\n";
+    }
+    {
+        Matrix *m = dn.matrix;
+        CHECK_COND(m->numRows() == dn.binsY && m->numCols() == dn.binsX, "67b: matrix size");
+        CHECK_COND(suite65Near(m->xStart(), dn.x0 + 0.5 * w, 1e-12)
+                           && suite65Near(m->yEnd(), dn.y0 + (dn.binsY - 0.5) * w, 1e-12),
+                   "67b: matrix coordinates must be the bin centres");
+        double sum = 0.0;
+        bool same = true;
+        for (int r = 0; r < m->numRows(); ++r)
+            for (int c = 0; c < m->numCols(); ++c) {
+                sum += m->cell(r, c);
+                same = same && m->cell(r, c) == dn.counts[r * dn.binsX + c];
+            }
+        CHECK_COND(same && sum == N, "67b: matrix must hold the counts (row = Y bin, column = X bin)");
+        CHECK_COND(m->windowLabel().contains("Dens67"), "67b: matrix label must name the source");
+        Graph *g = dn.plot->activeGraph();
+        Spectrogram *sp = suite67Spectrogram(g);
+        CHECK_COND(sp && sp->cellBlocks() && !sp->logColorScale(), "67b: spectrogram with flat cells");
+        CHECK_COND(g->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(),
+                   "67b: colour bar missing");
+        const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->upperBound(), dn.maxCount, 1e-9), "67b: colour bar max = max count");
+        const QwtScaleDiv *dx = g->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        CHECK_COND(dx && suite65Near(dx->lowerBound(), dn.x0, 1e-9)
+                           && suite65Near(dx->upperBound(), dn.x0 + dn.binsX * w, 1e-9),
+                   "67b: X axis must span the bin edges");
+        const QwtDoubleRect br = sp->boundingRect();
+        CHECK_COND(suite65Near(br.left(), dn.x0, 1e-9) && suite65Near(br.right(), dn.x0 + dn.binsX * w, 1e-9),
+                   "67b: flat cells must cover the full bins");
+        // a point inside one bin takes exactly that bin's count (no smoothing)
+        const double v = sp->data().value(dn.x0 + 0.3 * w, dn.y0 + 0.7 * w);
+        CHECK_COND(v == dn.counts[0], "67b: cell value must be the bin count");
+        CHECK_COND(!ExtraPlotTypes::graphTag(g, "ToriDensity2D").isEmpty(), "67b: source/settings not recorded");
+    }
+    // speed of the binning itself with 10^6 points
+    {
+        QVector<double> bx(1000000), by(1000000);
+        Suite67Rng rng;
+        for (int i = 0; i < bx.size(); ++i)
+            rng.normalPair(bx[i], by[i]);
+        timer67.restart();
+        const ExtraPlotTypes::Density2DResult big = ExtraPlotTypes::binDensity2D(bx, by, 200, 200);
+        const qint64 ms = timer67.elapsed();
+        std::cout << "[INFO] 67b: binning 1 000 000 points into 200 x 200 took " << ms << " ms\n";
+        CHECK_COND(big.valid && big.n == 1000000 && ms < 2000, "67b: 10^6 points binning too slow");
+    }
+    // log colour scale
+    const ExtraPlotTypes::Density2DResult dl =
+            ExtraPlotTypes::plotDensity2D(mw, tn, "X", "Y", 40, 40, 0.0, 0.0, true, Spectrogram::PresetMagma);
+    CHECK_COND(dl.valid && dl.plot && dl.binsX == 40, "67b: log density failed");
+    const QString densLogName = dl.plot->name();
+    const QString densName = dn.plot->name();
+    {
+        Graph *g = dl.plot->activeGraph();
+        Spectrogram *sp = suite67Spectrogram(g);
+        CHECK_COND(sp && sp->logColorScale(), "67b: log flag");
+        CHECK_COND(Plot::isLog10ScaleEngine(g->plotWidget()->axisScaleEngine(QwtPlot::yRight)),
+                   "67b: colour bar axis must be logarithmic");
+        double minPos = 1e300;
+        for (double c : dl.counts)
+            if (c > 0.0)
+                minPos = qMin(minPos, c);
+        const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && suite65Near(d->lowerBound(), minPos, 1e-6 * minPos)
+                           && suite65Near(d->upperBound(), dl.maxCount, 1e-6 * dl.maxCount),
+                   "67b: log colour bar must run from the smallest non-zero count to the maximum");
+        int emptyIdx = -1;
+        for (int k = 0; k < dl.counts.size() && emptyIdx < 0; ++k)
+            if (dl.counts[k] == 0.0)
+                emptyIdx = k;
+        CHECK_COND(emptyIdx >= 0, "67b: expected an empty corner bin");
+        const double vx = dl.x0 + (emptyIdx % dl.binsX + 0.5) * dl.widthX;
+        const double vy = dl.y0 + (emptyIdx / dl.binsX + 0.5) * dl.widthY;
+        CHECK_COND(std::isnan(sp->data().value(vx, vy)), "67b: empty bin must be transparent in log mode");
+    }
+    // rebuild from the recorded source after the data changed
+    {
+        QVector<qreal> nanX(1000, std::nan(""));
+        tn->column(0)->replaceValues(0, nanX);
+        CHECK_COND(ExtraPlotTypes::rebuildDensity2D(mw, dn.plot->activeGraph()), "67b: rebuild failed");
+        double sum = 0.0;
+        for (int r = 0; r < dn.matrix->numRows(); ++r)
+            for (int c = 0; c < dn.matrix->numCols(); ++c)
+                sum += dn.matrix->cell(r, c);
+        CHECK_COND(sum == N - 1000, "67b: rebuilt matrix must count the remaining points");
+        CHECK_COND(!ExtraPlotTypes::rebuildDensity2D(mw, nullptr), "67b: rebuild of nothing must fail");
+    }
+    CHECK_COND(!ExtraPlotTypes::plotDensity2D(mw, tn, "X", "nope").valid, "67b: missing column must fail");
+
+    // ---------------- 67c: pole figure ----------------
+    {
+        double x = 0, y = 0;
+        CHECK_COND(ExtraPlotTypes::poleProjection(45.0, 30.0, ExtraPlotTypes::EqualArea, &x, &y)
+                           && suite65Near(x, 0.468689571, 1e-8) && suite65Near(y, 0.270598050, 1e-8),
+                   "67c: Schmidt projection of (45°, 30°) != sqrt(2) sin 22.5° (cos 30°, sin 30°)");
+        CHECK_COND(ExtraPlotTypes::poleProjection(45.0, 30.0, ExtraPlotTypes::EqualAngle, &x, &y)
+                           && suite65Near(x, 0.358719468, 1e-8) && suite65Near(y, 0.207106781, 1e-8),
+                   "67c: Wulff projection of (45°, 30°) != tan 22.5° (cos 30°, sin 30°)");
+        CHECK_COND(ExtraPlotTypes::poleProjection(90.0, 0.0, ExtraPlotTypes::EqualArea, &x, &y)
+                           && suite65Near(x, 1.0, 1e-12) && suite65Near(y, 0.0, 1e-12),
+                   "67c: alpha = 90° must be on the rim");
+        CHECK_COND(ExtraPlotTypes::poleProjection(45.0, 30.0, ExtraPlotTypes::EqualArea, &x, &y, true, true)
+                           && suite65Near(x, 0.270598050, 1e-8) && suite65Near(y, 0.468689571, 1e-8),
+                   "67c: beta 0° at the top, clockwise");
+        CHECK_COND(!ExtraPlotTypes::poleProjection(95.0, 0.0, ExtraPlotTypes::EqualArea, &x, &y),
+                   "67c: alpha > 90° must be refused");
+        double a = 0, b = 0;
+        CHECK_COND(ExtraPlotTypes::inversePoleProjection(0.468689571, 0.270598050, ExtraPlotTypes::EqualArea, &a, &b)
+                           && suite65Near(a, 45.0, 1e-6) && suite65Near(b, 30.0, 1e-6),
+                   "67c: inverse Schmidt projection");
+        CHECK_COND(ExtraPlotTypes::inversePoleProjection(0.270598050, 0.468689571, ExtraPlotTypes::EqualArea, &a, &b, true, true)
+                           && suite65Near(a, 45.0, 1e-6) && suite65Near(b, 30.0, 1e-6),
+                   "67c: inverse projection (beta 0° at the top, clockwise)");
+    }
+    // synthetic XRD scan: alpha 0..75 (5°), beta 0..360 (5°, 360 duplicates 0), peak at (45°, 30°)
+    const int nA = 16, nB = 73;
+    Table *tp = mw->newTable("Pole67", nA * nB, 4);
+    CHECK_COND(tp != nullptr, "67c: table");
+    tp->setHeader(QStringList() << "alpha" << "beta" << "I" << "flat");
+    {
+        QVector<qreal> ca(nA * nB), cb(nA * nB), ci(nA * nB), cf(nA * nB, 50.0);
+        int k = 0;
+        for (int i = 0; i < nA; ++i)
+            for (int j = 0; j < nB; ++j, ++k) {
+                ca[k] = 5.0 * i;
+                cb[k] = 5.0 * j;
+                ci[k] = suite67PoleIntensity(5.0 * i, 5.0 * j);
+            }
+        tp->column(0)->replaceValues(0, ca);
+        tp->column(1)->replaceValues(0, cb);
+        tp->column(2)->replaceValues(0, ci);
+        tp->column(3)->replaceValues(0, cf);
+    }
+    ExtraPlotTypes::PoleFigureOptions po;
+    po.label = "(111)";
+    const ExtraPlotTypes::PoleFigureResult pf =
+            ExtraPlotTypes::plotPoleFigure(mw, tp, "alpha", "beta", "I", po);
+    CHECK_COND(pf.valid && pf.matrix && pf.plot, "67c: pole figure failed");
+    const QString poleName = pf.plot->name();
+    const QString poleMatrixName = pf.matrix->name();
+    CHECK_COND(pf.nAlpha == 16 && pf.nBeta == 72, "67c: beta 360 must merge into 0 (72 beta steps)");
+    CHECK_COND(suite65Near(pf.alphaMax, 75.0, 1e-9) && pf.missing == 0, "67c: measured alpha range");
+    CHECK_COND(suite65Near(pf.maxAlpha, 45.0, 1e-9) && suite65Near(pf.maxBeta, 30.0, 1e-9),
+               "67c: maximum must be at alpha 45°, beta 30°");
+    CHECK_COND(suite65Near(pf.maxX, 0.468689571, 1e-8) && suite65Near(pf.maxY, 0.270598050, 1e-8),
+               "67c: projected maximum differs from the hand value");
+    CHECK_COND(suite65Near(pf.maxValue * pf.meanIntensity, 1000.0, 1e-6),
+               "67c: MRD = intensity / solid-angle mean");
+    CHECK_COND(pf.meanIntensity > 100.0 && pf.meanIntensity < 300.0, "67c: mean intensity implausible");
+    {
+        Matrix *m = pf.matrix;
+        const int Nm = m->numRows();
+        CHECK_COND(Nm == 201 && m->numCols() == 201, "67c: projected grid 201 x 201");
+        auto cellAt = [&](double x, double y) {
+            const int c = qRound((x + 1.0) / 2.0 * (Nm - 1));
+            const int r = qRound((y + 1.0) / 2.0 * (Nm - 1));
+            return m->cell(r, c);
+        };
+        // matrix maximum close to the hand-computed projected position
+        double best = -1e300;
+        int br = 0, bc = 0;
+        for (int r = 0; r < Nm; ++r)
+            for (int c = 0; c < Nm; ++c)
+                if (std::isfinite(m->cell(r, c)) && m->cell(r, c) > best) {
+                    best = m->cell(r, c);
+                    br = r;
+                    bc = c;
+                }
+        const double bx = -1.0 + 2.0 * bc / (Nm - 1), by = -1.0 + 2.0 * br / (Nm - 1);
+        std::cout << "[INFO] 67c: projected maximum " << best << " MRD at (" << bx << ", " << by
+                  << "), hand value (0.46869, 0.27060)\n";
+        CHECK_COND(std::fabs(bx - 0.468689571) <= 0.015 && std::fabs(by - 0.270598050) <= 0.015,
+                   "67c: projected matrix maximum not at the hand-computed position");
+        CHECK_COND(best <= pf.maxValue + 1e-9 && best > 0.97 * pf.maxValue, "67c: matrix maximum value");
+        CHECK_COND(std::isnan(cellAt(0.99, 0.99)), "67c: outside the circle must be NaN");
+        double x85 = 0, y85 = 0, x60 = 0, y60 = 0;
+        ExtraPlotTypes::poleProjection(85.0, 200.0, ExtraPlotTypes::EqualArea, &x85, &y85);
+        ExtraPlotTypes::poleProjection(60.0, 200.0, ExtraPlotTypes::EqualArea, &x60, &y60);
+        CHECK_COND(std::isnan(cellAt(x85, y85)), "67c: unmeasured alpha 85° must be NaN");
+        CHECK_COND(std::isfinite(cellAt(x60, y60)), "67c: measured alpha 60° must have a value");
+        CHECK_COND(std::isfinite(cellAt(0.0, 0.0)), "67c: centre must have a value");
+
+        Graph *g = pf.plot->activeGraph();
+        Spectrogram *sp = suite67Spectrogram(g);
+        CHECK_COND(sp && sp->maskInvalidCells() && sp->testDisplayMode(QwtPlotSpectrogram::ContourMode)
+                           && sp->testDisplayMode(QwtPlotSpectrogram::ImageMode),
+                   "67c: masked colour fill + contour lines");
+        CHECK_COND(sp->levels() == 8, "67c: contour levels");
+        CHECK_COND(suite67HasPoleFrame(g), "67c: outer circle / ticks / RD-TD frame missing");
+        CHECK_COND(!g->plotWidget()->axisEnabled(QwtPlot::xBottom) && !g->plotWidget()->axisEnabled(QwtPlot::yLeft),
+                   "67c: X/Y axes must be hidden");
+        CHECK_COND(g->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(), "67c: colour bar");
+        const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+        CHECK_COND(d && d->upperBound() <= pf.maxValue + 1e-9 && d->upperBound() > 0.97 * pf.maxValue,
+                   "67c: colour bar must reach the maximum MRD");
+        bool mrdBox = false;
+        for (QwtPlotItem *mk : g->plotWidget()->itemList())
+            if (auto *lg = dynamic_cast<Legend *>(mk))
+                if (lg->text().contains("MRD") && lg->text().contains("(111)"))
+                    mrdBox = true;
+        CHECK_COND(mrdBox, "67c: maximum (MRD) summary box missing");
+        CHECK_COND(!ExtraPlotTypes::graphTag(g, "ToriPoleFigure").isEmpty(), "67c: pole figure tag missing");
+
+        // pixels: unmeasured ring and outside the circle stay white, measured area is coloured
+        pf.plot->resize(760, 640);
+        g->replot();
+        QwtPlotCanvas *cv = g->plotWidget()->canvas();
+        std::cout << "[INFO] 67c: canvas " << cv->width() << " x " << cv->height() << " px\n";
+        const QImage img = cv->grab().toImage();
+        const Plot *pw = g->plotWidget();
+        const double dpr = cv->width() > 0 ? double(img.width()) / double(cv->width()) : 1.0;
+        auto px = [&](double x, double y) {
+            return img.pixelColor(qRound(pw->transform(QwtPlot::xBottom, x) * dpr),
+                                  qRound(pw->transform(QwtPlot::yLeft, y) * dpr));
+        };
+        auto isWhite = [](const QColor &c) { return c.red() > 245 && c.green() > 245 && c.blue() > 245; };
+        CHECK_COND(isWhite(px(1.15, -1.15)), "67c: outside the circle must be blank");
+        CHECK_COND(isWhite(px(x85, y85)), "67c: unmeasured alpha must be blank (not filled)");
+        CHECK_COND(!isWhite(px(x60, y60)) && !isWhite(px(0.1, 0.1)), "67c: measured area must be coloured");
+    }
+    // uniform intensity -> 1 MRD everywhere
+    {
+        const ExtraPlotTypes::PoleFigureResult flat =
+                ExtraPlotTypes::plotPoleFigure(mw, tp, "alpha", "beta", "flat", po, false);
+        CHECK_COND(flat.valid && suite65Near(flat.maxValue, 1.0, 1e-12) && suite65Near(flat.meanIntensity, 50.0, 1e-9),
+                   "67c: uniform intensity must give 1 MRD");
+        double vmin = 1e300, vmax = -1e300;
+        for (int r = 0; r < flat.matrix->numRows(); ++r)
+            for (int c = 0; c < flat.matrix->numCols(); ++c)
+                if (std::isfinite(flat.matrix->cell(r, c))) {
+                    vmin = qMin(vmin, flat.matrix->cell(r, c));
+                    vmax = qMax(vmax, flat.matrix->cell(r, c));
+                }
+        CHECK_COND(suite65Near(vmin, 1.0, 1e-9) && suite65Near(vmax, 1.0, 1e-9), "67c: flat matrix != 1 MRD");
+    }
+    // Wulff projection, Rigaku alpha convention, matrix input
+    {
+        ExtraPlotTypes::PoleFigureOptions pw = po;
+        pw.projection = ExtraPlotTypes::EqualAngle;
+        const ExtraPlotTypes::PoleFigureResult wf =
+                ExtraPlotTypes::plotPoleFigure(nullptr, tp, "alpha", "beta", "I", pw, false);
+        CHECK_COND(wf.valid && suite65Near(wf.maxX, 0.358719468, 1e-8) && suite65Near(wf.maxY, 0.207106781, 1e-8),
+                   "67c: Wulff maximum position");
+        Table *tr = mw->newTable("PoleRim67", nA * nB, 3);
+        QVector<qreal> ca(nA * nB), cb(nA * nB), ci(nA * nB);
+        int k = 0;
+        for (int i = 0; i < nA; ++i)
+            for (int j = 0; j < nB; ++j, ++k) {
+                ca[k] = 90.0 - 5.0 * i;
+                cb[k] = 5.0 * j;
+                ci[k] = suite67PoleIntensity(5.0 * i, 5.0 * j);
+            }
+        tr->column(0)->replaceValues(0, ca);
+        tr->column(1)->replaceValues(0, cb);
+        tr->column(2)->replaceValues(0, ci);
+        ExtraPlotTypes::PoleFigureOptions prim = po;
+        prim.alphaFromRim = true;
+        const ExtraPlotTypes::PoleFigureResult rf =
+                ExtraPlotTypes::plotPoleFigure(nullptr, tr, tr->colName(0), tr->colName(1), tr->colName(2), prim, false);
+        CHECK_COND(rf.valid && suite65Near(rf.maxAlpha, 45.0, 1e-9) && suite65Near(rf.maxX, pf.maxX, 1e-12)
+                           && suite65Near(rf.alphaMax, 75.0, 1e-9),
+                   "67c: Rigaku alpha (90° at the centre) must give the same figure");
+        const ExtraPlotTypes::PoleFigureResult wrongConv =
+                ExtraPlotTypes::plotPoleFigure(nullptr, tr, tr->colName(0), tr->colName(1), tr->colName(2), po, false);
+        CHECK_COND(wrongConv.valid && suite65Near(wrongConv.alphaMin, 15.0, 1e-9), "67c: unconverted alpha range");
+
+        Matrix *mi = mw->newMatrix("PoleIn67", nA, nB);
+        CHECK_COND(mi != nullptr, "67c: input matrix");
+        mi->setCoordinates(0.0, 360.0, 0.0, 75.0);
+        for (int i = 0; i < nA; ++i)
+            for (int j = 0; j < nB; ++j)
+                mi->setCell(i, j, suite67PoleIntensity(5.0 * i, 5.0 * j));
+        const ExtraPlotTypes::PoleFigureResult mf =
+                ExtraPlotTypes::plotPoleFigureFromMatrix(nullptr, mi, po, false);
+        CHECK_COND(mf.valid && mf.nAlpha == 16 && mf.nBeta == 72 && suite65Near(mf.maxBeta, 30.0, 1e-9)
+                           && suite65Near(mf.maxValue, pf.maxValue, 1e-9),
+                   "67c: alpha x beta matrix input must match the column input");
+
+        Table *tbad = mw->newTable("PoleBad67", 6, 3);
+        const double ba[6] = { 3, 17, 29, 41, 63, 77 }, bb[6] = { 11, 97, 151, 203, 287, 331 };
+        for (int r = 0; r < 6; ++r) {
+            tbad->setCell(r, 0, ba[r]);
+            tbad->setCell(r, 1, bb[r]);
+            tbad->setCell(r, 2, 1.0 + r);
+        }
+        const ExtraPlotTypes::PoleFigureResult bad = ExtraPlotTypes::plotPoleFigure(
+                nullptr, tbad, tbad->colName(0), tbad->colName(1), tbad->colName(2), po, false);
+        CHECK_COND(!bad.valid && !bad.error.isEmpty(), "67c: scattered (non-grid) data must be refused");
+        tbad->setCell(0, 0, 120.0);
+        CHECK_COND(!ExtraPlotTypes::plotPoleFigure(nullptr, tbad, tbad->colName(0), tbad->colName(1),
+                                                   tbad->colName(2), po, false).valid,
+                   "67c: alpha > 90° must be refused");
+    }
+
+    // ---------------- 67d: save / reopen ----------------
+    {
+        const QString prj = tmpDir67.filePath("e11b_67.sciprj");
+        CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "67d: save failed");
+        QFile f(prj);
+        CHECK_COND(f.open(QIODevice::ReadOnly), "67d: cannot read project");
+        const QByteArray txt = f.readAll();
+        f.close();
+        CHECK_COND(txt.contains("<ToriDensity2D") && txt.contains("<ToriPoleFigure")
+                           && txt.contains("<ToriMaskInvalid>1") && txt.contains("<ToriLogColor>1")
+                           && txt.contains("<ToriCellBlocks>1"),
+                   "67d: E11b tags not written");
+        ApplicationWindow *re = mw->openProject(prj);
+        CHECK_COND(re != nullptr, "67d: reopen failed");
+        MultiLayer *rd = suite65FindGraph(re, densName);
+        CHECK_COND(rd && rd->activeGraph(), "67d: density graph missing");
+        Spectrogram *rsp = suite67Spectrogram(rd->activeGraph());
+        CHECK_COND(rsp && rsp->cellBlocks() && !rsp->logColorScale(), "67d: density flags not restored");
+        CHECK_COND(ExtraPlotTypes::rebuildDensity2D(re, rd->activeGraph()), "67d: rebuild after reopening");
+        MultiLayer *rl = suite65FindGraph(re, densLogName);
+        CHECK_COND(rl && rl->activeGraph(), "67d: log density graph missing");
+        Spectrogram *rlsp = suite67Spectrogram(rl->activeGraph());
+        CHECK_COND(rlsp && rlsp->logColorScale() && rlsp->cellBlocks(), "67d: log flag not restored");
+        CHECK_COND(Plot::isLog10ScaleEngine(rl->activeGraph()->plotWidget()->axisScaleEngine(QwtPlot::yRight)),
+                   "67d: log colour axis not restored");
+        {
+            const QwtScaleDiv *d = rl->activeGraph()->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+            CHECK_COND(d && suite65Near(d->upperBound(), dl.maxCount, 1e-6 * dl.maxCount),
+                       "67d: log colour range not restored");
+        }
+        MultiLayer *rp = suite65FindGraph(re, poleName);
+        CHECK_COND(rp && rp->activeGraph(), "67d: pole figure graph missing");
+        Graph *rg = rp->activeGraph();
+        Spectrogram *rpsp = suite67Spectrogram(rg);
+        CHECK_COND(rpsp && rpsp->maskInvalidCells() && rpsp->testDisplayMode(QwtPlotSpectrogram::ContourMode)
+                           && rpsp->levels() == 8,
+                   "67d: pole figure spectrogram not restored");
+        CHECK_COND(suite67HasPoleFrame(rg), "67d: pole figure frame not restored");
+        CHECK_COND(!rg->plotWidget()->axisEnabled(QwtPlot::xBottom), "67d: hidden axes not restored");
+        Matrix *rm = re->matrix(poleMatrixName);
+        CHECK_COND(rm && rm->numRows() == 201, "67d: projected matrix missing");
+        CHECK_COND(std::isnan(rm->cell(0, 0)) && std::isfinite(rm->cell(100, 100)),
+                   "67d: NaN (outside / unmeasured) cells must survive saving");
+        re->savedProject();
+        re->setOleEmbeddedMode(true);
+        delete re;
+    }
+
+    // ---------------- 67e: Python RPC ----------------
+    {
+        PythonAutomationServer *srv = mw->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "67e: no automation server");
+        int rid = 6700;
+        auto rpc = [&](const char *method, const QJsonObject &params) {
+            QJsonObject req;
+            req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            req[QStringLiteral("id")] = ++rid;
+            req[QStringLiteral("method")] = QString::fromLatin1(method);
+            req[QStringLiteral("params")] = params;
+            return srv->handleRpcRequest(req);
+        };
+        QJsonObject dp;
+        dp["table"] = "Dens67";
+        dp["x"] = "X";
+        dp["y"] = "Y";
+        dp["width_x"] = 0.5;
+        dp["width_y"] = 0.5;
+        dp["log"] = true;
+        const QJsonObject rdn = rpc("plot.density2d", dp).value("result").toObject();
+        CHECK_COND(rdn.value("ok").toBool() && rdn.value("n").toInt() == N - 1000
+                           && suite65Near(rdn.value("width_x").toDouble(), 0.5, 1e-12)
+                           && !rdn.value("matrix").toString().isEmpty(),
+                   "67e: plot.density2d");
+        QJsonObject rb;
+        rb["graph"] = rdn.value("graph").toString();
+        CHECK_COND(rpc("graph.rebuild_density2d", rb).value("result").toObject().value("ok").toBool(),
+                   "67e: graph.rebuild_density2d");
+        QJsonObject pp;
+        pp["table"] = "Pole67";
+        pp["alpha"] = "alpha";
+        pp["beta"] = "beta";
+        pp["intensity"] = "I";
+        pp["projection"] = "wulff";
+        pp["plot"] = false;
+        const QJsonObject rpf = rpc("plot.pole_figure", pp).value("result").toObject();
+        CHECK_COND(rpf.value("ok").toBool() && suite65Near(rpf.value("max_x").toDouble(), 0.358719468, 1e-8)
+                           && suite65Near(rpf.value("max_alpha").toDouble(), 45.0, 1e-9)
+                           && rpf.value("n_beta").toInt() == 72,
+                   "67e: plot.pole_figure");
+        QJsonObject pm;
+        pm["matrix"] = "PoleIn67";
+        pm["plot"] = false;
+        const QJsonObject rpm = rpc("plot.pole_figure", pm).value("result").toObject();
+        CHECK_COND(rpm.value("ok").toBool() && suite65Near(rpm.value("max_beta").toDouble(), 30.0, 1e-9),
+                   "67e: plot.pole_figure from a matrix");
+        QJsonObject bad;
+        bad["table"] = "Pole67";
+        bad["projection"] = "mercator";
+        CHECK_COND(rpc("plot.pole_figure", bad).contains("error"), "67e: unknown projection must be an error");
+    }
+
+    // ---------------- 67f: menus and translations ----------------
+    {
+        const char *names[] = { "actionE11Density2D", "actionE11PoleFigure" };
+        for (const char *nm : names) {
+            QAction *a = mw->findChild<QAction *>(QString::fromLatin1(nm));
+            CHECK_COND(a != nullptr, "67f: E11b action missing");
+            CHECK_COND(!a->associatedWidgets().isEmpty(), "67f: E11b action is in no menu");
+            CHECK_COND(!a->text().isEmpty(), "67f: E11b action has no text");
+        }
+        ExtraPlotTypes::registerTranslations();
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("&Pole Figure (XRD)..."))
+                           .contains(QString::fromUtf8("極点図")),
+                   "67f: Japanese for pole figure");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("2D &Density (2D Histogram)..."))
+                           .contains(QString::fromUtf8("密度")),
+                   "67f: Japanese for 2D density");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("Equal-area (Schmidt)"))
+                           .contains(QString::fromUtf8("等面積")),
+                   "67f: Japanese for the projection");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 67 E11b 2D density and pole figure passed!\n";
     return 0;
 }

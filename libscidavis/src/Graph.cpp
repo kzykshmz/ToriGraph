@@ -32,6 +32,7 @@
 #include <QVarLengthArray>
 
 #include "Graph.h"
+#include "ExtraPlotTypes.h"
 #include "Grid.h"
 #include "CanvasPicker.h"
 #include "CanvasInlineTextEditor.h"
@@ -7411,6 +7412,13 @@ QString Graph::saveToString(bool saveAsTemplate)
         }
     }
 
+    // E11b: 2D density / pole figure specifications (ExtraPlotTypes keeps them on the plot)
+    if (!saveAsTemplate) {
+        const QStringList extraTags = d_plot->property("_toriExtraPlotTags").toStringList();
+        for (const QString &tag : extraTags)
+            s += tag + "\n";
+    }
+
     s += "</graph>\n";
     return s;
 }
@@ -8775,10 +8783,17 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
     int colorBarAxis = QwtPlot::yRight;
     int colorBarW = 16;
     QString cbTitle;
+    bool maskInvalid = false, logColor = false, cellBlocks = false; // E11b
 
     for (line++; line != lst.end(); line++) {
         QString s = *line;
-        if (s.contains("<ColorPolicy>")) {
+        if (s.contains("<ToriMaskInvalid>")) {
+            maskInvalid = s.remove("<ToriMaskInvalid>").remove("</ToriMaskInvalid>").trimmed().toInt() != 0;
+        } else if (s.contains("<ToriLogColor>")) {
+            logColor = s.remove("<ToriLogColor>").remove("</ToriLogColor>").trimmed().toInt() != 0;
+        } else if (s.contains("<ToriCellBlocks>")) {
+            cellBlocks = s.remove("<ToriCellBlocks>").remove("</ToriCellBlocks>").trimmed().toInt() != 0;
+        } else if (s.contains("<ColorPolicy>")) {
             int color_policy = s.remove("<ColorPolicy>").remove("</ColorPolicy>").trimmed().toInt();
             if (color_policy == Spectrogram::GrayScale)
                 sp->setGrayScale();
@@ -8874,6 +8889,14 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
         }
     }
 
+    if (maskInvalid)
+        sp->setMaskInvalidCells(true);
+    if (cellBlocks)
+        sp->setCellBlocks(true);
+    if (logColor)
+        sp->setLogColorScale(true);
+    if ((maskInvalid || cellBlocks || logColor) && !hasCustomZ && pendingLevels >= 2)
+        sp->setLevelsNumber(pendingLevels);
     if (hasCustomZ) {
         sp->setCustomValueRange(true, zMin, zMax);
         if (pendingLevels >= 2)
@@ -13851,6 +13874,9 @@ bool Graph::restorePhase5Tag(const QString &line)
 
     const QMap<QString, QString> attrs = parsePhase5XmlAttrs(s);
 
+    if (s.startsWith("<ToriDensity2D") || s.startsWith("<ToriPoleFigure")) // E11b
+        return ExtraPlotTypes::restoreGraphTag(this, s);
+
     if (s.startsWith("<ToriBackbones")) {
         const bool anyDraw = attrs.value("draw", "1").toInt() != 0;
         drawAxesBackbone = anyDraw;
@@ -15014,8 +15040,8 @@ void Graph::setAutoScaleAxis(int qwtAxisId)
                 Spectrogram *sp = static_cast<Spectrogram *>(it);
                 if (sp->colorScaleAxis() == qwtAxisId) {
                     setToriAxisUserLocked(d_plot, qwtAxisId, false);
-                    d_plot->setAxisScale(qwtAxisId, sp->effectiveValueRange().minValue(),
-                                         sp->effectiveValueRange().maxValue());
+                    d_plot->setAxisScale(qwtAxisId, sp->colorAxisRange().minValue(),
+                                         sp->colorAxisRange().maxValue());
                     d_user_step[qwtAxisId] = 0.0;
                     d_plot->replot();
                     emit modifiedGraph();
