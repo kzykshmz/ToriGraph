@@ -9604,6 +9604,10 @@ void Graph::registerPaletteTranslations()
         };
         reg("ToriGraph Standard", "ToriGraph 標準 (黒・朱・青…)");
         reg("ToriGraph Standard (black, vermilion, blue, ...)", "ToriGraph 標準 (黒・朱・青…)");
+        reg("\"%1\" is the name of a built-in palette. Choose another name.",
+            "「%1」は組み込みのパレットの名前です。別の名前にしてください。");
+        reg("Enter a palette name and at least one colour.",
+            "パレットの名前と、少なくとも 1 つの色を指定してください。");
     });
 }
 
@@ -9801,11 +9805,43 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
     return toriGraphStandardColors();
 }
 
-void Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors)
+bool Graph::isBuiltInPaletteName(const QString &name)
 {
     const QString key = name.trimmed();
-    if (key.isEmpty() || colors.isEmpty())
-        return;
+    if (key.isEmpty())
+        return false;
+    // Aliases ("ToriGraph", "torigraph_standard", "Okabe-Ito", "ISIJ / Origin Default", ...)
+    // resolve to a built-in palette before custom palettes are looked up.
+    if (canonicalPaletteName(key) != key)
+        return true;
+    for (const QString &builtIn : builtInPaletteNames()) {
+        if (key.compare(builtIn, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    // Short names that paletteColors() also maps to built-in lists.
+    static const char *const kShort[] = { "Nature", "Science", "Monochrome", "Grayscale" };
+    for (const char *s : kShort) {
+        if (key.compare(QLatin1String(s), Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors, QString *error)
+{
+    const QString key = name.trimmed();
+    if (key.isEmpty() || colors.isEmpty()) {
+        if (error)
+            *error = tr("Enter a palette name and at least one colour.");
+        return false;
+    }
+    if (isBuiltInPaletteName(key)) {
+        // A custom palette under this name would never be used (the built-in one wins).
+        registerPaletteTranslations();
+        if (error)
+            *error = tr("\"%1\" is the name of a built-in palette. Choose another name.").arg(key);
+        return false;
+    }
 
     customPaletteMemoryStore().insert(key, colors);
 
@@ -9819,6 +9855,7 @@ void Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors)
     settings.beginGroup("CustomColorPalettes");
     settings.setValue(key, hexList);
     settings.endGroup();
+    return true;
 }
 
 void Graph::removeCustomPalette(const QString &name)
@@ -10195,7 +10232,11 @@ bool Graph::showColorPaletteEditor(QWidget *parent, Graph *targetGraph)
                                .trimmed();
         if (!ok || name.isEmpty())
             return;
-        saveCustomPalette(name, currentColorsFromList());
+        QString saveError;
+        if (!saveCustomPalette(name, currentColorsFromList(), &saveError)) {
+            QMessageBox::warning(&dlg, tr("Save Custom Palette"), saveError);
+            return;
+        }
         comboPalettes->blockSignals(true);
         comboPalettes->clear();
         comboPalettes->addItems(allPaletteNames());

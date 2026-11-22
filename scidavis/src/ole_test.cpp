@@ -7357,8 +7357,8 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
         ml1Bar->exportImage(bar1Png, -1, false, 100);
         QFileInfo barFi(bar1Png);
         QImage barImg(bar1Png);
-        // The bar fill follows the default curve palette (E5: Origin classic, first colour
-        // black; previously Okabe-Ito blue). Count pixels of the actual fill colour and require
+        // The bar fill follows the default curve palette (ToriGraph Standard since 2026-11,
+        // first colour black; Origin Classic and Okabe-Ito blue before). Count pixels of the actual fill colour and require
         // a solid area (>= 5 % of the image) so axis lines and text cannot satisfy the check.
         const QColor barFill = ml1Bar->activeGraph()->curve(0)->brush().color();
         int redBarPx = 0;
@@ -17993,7 +17993,11 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
     CHECK_COND(tmp58.isValid(), "Suite 58: QTemporaryDir failed");
 
     const QString prevNewGraphPreset = MultiLayer::newGraphStylePresetId();
-    const QString prevPalette = Graph::defaultCurvePaletteName();
+    // Restore "not chosen" as not chosen (an empty name removes the setting); reading
+    // defaultCurvePaletteName() would turn it into an explicit choice.
+    const bool hadStoredPalette =
+            ApplicationWindow::getSettings().contains(QStringLiteral("/Curves/DefaultPalette"));
+    const QString prevPalette = hadStoredPalette ? Graph::defaultCurvePaletteName() : QString();
     const MultiLayer::MultiPanelSizing prevSizing = MultiLayer::multiPanelSizing();
 
     // ---- 58a: palettes (E5) -------------------------------------------------------------
@@ -21349,6 +21353,112 @@ static int runSuite72ToriGraphStandardDefaultPalette(ApplicationWindow *mw)
                    "72f: Japanese palette name must show the colour order");
         CHECK_COND(jaLong == jaName, "72f: the dialog entry must use the same Japanese name");
         mw->switchToLanguage(prevLang.isEmpty() ? QStringLiteral("en") : prevLang);
+    }
+
+    // ---- 72g: a lab-default ini palette applies even if the default was read before ----
+    {
+        settings.remove(kKey);
+        Graph::reloadDefaultCurvePaletteName();
+        // Start-up reads the default (graph inspector) before readSettings() applies the lab ini.
+        CHECK_COND(Graph::defaultCurvePaletteName() == Graph::toriGraphStandardPaletteName(),
+                   "72g: precondition");
+        const QString labIni = tmp72.filePath(QStringLiteral("torigraph-lab-defaults.ini"));
+        {
+            QSettings lab(labIni, QSettings::IniFormat);
+            lab.setValue(QStringLiteral("Curves/DefaultPalette"), QStringLiteral("Origin Classic"));
+            lab.sync();
+        }
+        CHECK_COND(SettingsTransfer::applyLabDefaults(settings, labIni) >= 1,
+                   "72g: lab ini must seed the palette for a user who never chose one");
+        Graph::reloadDefaultCurvePaletteName(); // what readSettings() now does after the ini
+        CHECK_COND(Graph::defaultCurvePaletteName() == Graph::originClassicPaletteName(),
+                   "72g: lab ini palette must take effect after reload");
+        Table *tl = makeTable(mw, QStringLiteral("Lab72"), 3);
+        CHECK_COND(tl != nullptr, "72g: table");
+        MultiLayer *mll = mw->multilayerPlot(tl, yCols(tl, 3), Graph::LineSymbols);
+        CHECK_COND(mll && mll->activeGraph() && mll->activeGraph()->curves() == 3, "72g: graph");
+        Graph *gl = mll->activeGraph();
+        CHECK_COND(gl->curve(0)->pen().color() == QColor(Qt::black)
+                           && gl->curve(1)->pen().color() == QColor(Qt::red)
+                           && gl->curve(2)->pen().color() == QColor(Qt::blue),
+                   "72g: lab ini Origin Classic must give black, red, blue");
+        closeMl(mll);
+        mw->closeWindow(tl);
+        settings.remove(QStringLiteral("LabDefaults"));
+        settings.remove(kKey);
+        Graph::reloadDefaultCurvePaletteName();
+    }
+
+    // ---- 72h: the inspector's series scheme follows the default until the user picks one --
+    {
+        GraphInspectorDock *dock = mw->graphInspectorDock();
+        CHECK_COND(dock != nullptr, "72h: graph inspector dock");
+        dock->syncSeriesSchemeToDefaultPalette();
+        CHECK_COND(dock->seriesSchemePaletteName() == Graph::toriGraphStandardPaletteName(),
+                   "72h: inspector scheme must start at the default palette, got "
+                           << dock->seriesSchemePaletteName().toStdString());
+        Graph::setDefaultCurvePaletteName(Graph::originClassicPaletteName());
+        dock->syncSeriesSchemeToDefaultPalette();
+        CHECK_COND(dock->seriesSchemePaletteName() == Graph::originClassicPaletteName(),
+                   "72h: untouched inspector scheme must follow a changed default");
+        // The user picks Viridis in the combo: that choice is kept from now on.
+        QComboBox *schemeCombo = nullptr;
+        for (QComboBox *cb : dock->findChildren<QComboBox *>()) {
+            if (cb->findData(Graph::toriGraphStandardPaletteName()) >= 0
+                && cb->findData(QStringLiteral("Viridis")) >= 0) {
+                schemeCombo = cb;
+                break;
+            }
+        }
+        CHECK_COND(schemeCombo != nullptr, "72h: series scheme combo not found");
+        const int viridisIdx = schemeCombo->findData(QStringLiteral("Viridis"));
+        schemeCombo->setCurrentIndex(viridisIdx);
+        emit schemeCombo->activated(viridisIdx);
+        Graph::setDefaultCurvePaletteName(QStringLiteral("Okabe-Ito"));
+        dock->syncSeriesSchemeToDefaultPalette();
+        CHECK_COND(dock->seriesSchemePaletteName() == QStringLiteral("Viridis"),
+                   "72h: a scheme the user picked must not be replaced by the default");
+        Graph::setDefaultCurvePaletteName(QString());
+    }
+
+    // ---- 72i: custom palettes cannot hide built-in names; Python name matching ----------
+    {
+        for (const char *nm : { "ToriGraph", "torigraph_standard", "ToriGraph Standard",
+                                "origin_classic", "viridis", "Okabe-Ito" }) {
+            QString err;
+            CHECK_COND(!Graph::saveCustomPalette(QString::fromLatin1(nm),
+                                                 QList<QColor>() << QColor(Qt::green), &err)
+                               && !err.isEmpty(),
+                       "72i: saving a custom palette named '" << nm << "' must be refused");
+        }
+        CHECK_COND(Graph::paletteColors(QStringLiteral("ToriGraph")) == Graph::toriGraphStandardColors(),
+                   "72i: built-in palette must still win");
+        CHECK_COND(!Graph::isBuiltInPaletteName(QStringLiteral("My Lab Colours")),
+                   "72i: an ordinary name is not reserved");
+
+        const QStringList pals = Graph::allPaletteNames();
+        struct Want {
+            const char *raw;
+            QString expect;
+        };
+        const Want wants[] = {
+            { "orig", Graph::originClassicPaletteName() },
+            { "origin_classic", Graph::originClassicPaletteName() },
+            { "ToriGraph", Graph::toriGraphStandardPaletteName() },
+            { "torigraph_standard", Graph::toriGraphStandardPaletteName() },
+            { "tab10", Graph::tab10PaletteName() },
+            { "okabe_ito", Graph::okabeItoPaletteName() },
+            { "colorblind", Graph::okabeItoPaletteName() },
+            { "viridis", QStringLiteral("Viridis") },
+            { "npg", QStringLiteral("Nature (NPG)") },
+        };
+        for (const Want &w : wants) {
+            const QString got =
+                    PythonAutomationServer::matchPaletteName(QString::fromLatin1(w.raw), pals);
+            CHECK_COND(got == w.expect, "72i: palette '" << w.raw << "' resolved to '"
+                                                         << got.toStdString() << "', expected '"
+                                                         << w.expect.toStdString() << "'");
+        }
     }
 
     // restore

@@ -9693,6 +9693,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QObject::connect(cbCurvePalette, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {
                          Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
+                         if (app && app->graphInspectorDock())
+                             app->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
                      });
     QObject::connect(cbPanelSizing, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {

@@ -88,6 +88,11 @@ public:
     ~GraphInspectorDock() override;
 
     void setTargetMultiLayer(MultiLayer *ml, bool forceRefresh = false);
+    //! Re-selects the default curve palette in the series scheme combo unless the user has
+    //! picked one there (called after the default palette changes).
+    void syncSeriesSchemeToDefaultPalette();
+    //! Palette currently chosen in the series scheme combo (for tests).
+    QString seriesSchemePaletteName() const;
     MultiLayer *targetMultiLayer() const { return d_target_ml.data(); }
     Graph *activeLayer() const;
 
@@ -400,6 +405,7 @@ private:
 
     QLabel *d_sec_series_scheme_lbl = nullptr;
     QComboBox *d_combo_series_scheme = nullptr;
+    bool d_series_scheme_user_chosen = false; //!< user picked a scheme in the combo
     QCheckBox *d_chk_cycle_sym_shapes = nullptr;
     QCheckBox *d_chk_paired_hollow = nullptr;
     QPushButton *d_btn_apply_scheme_all = nullptr;

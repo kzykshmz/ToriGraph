@@ -9130,6 +9130,11 @@ void ApplicationWindow::readSettings()
     auto &settings = getSettings();
     // Lab-wide defaults next to the exe fill only keys the user has not set (I10).
     SettingsTransfer::applyLabDefaults(settings, SettingsTransfer::labDefaultsPath());
+    // The default curve palette may have been read (and cached) before this point, e.g. by
+    // the graph inspector; re-read it so a lab-default palette applies from the first run.
+    Graph::reloadDefaultCurvePaletteName();
+    if (d_graph_inspector_dock)
+        d_graph_inspector_dock->syncSeriesSchemeToDefaultPalette();
     /* ---------------- group General --------------- */
     settings.beginGroup("/General");
 #ifdef SEARCH_FOR_UPDATES

@@ -846,7 +846,12 @@ public slots:
     static void registerPaletteTranslations();
     //! Origin-style symbol increment (SymbolBox indices): square, circle, up/down triangle, ...
     static int defaultCurveSymbolIndex(int seriesIndex);
-    static void saveCustomPalette(const QString &name, const QList<QColor> &colors);
+    //! True for built-in palette names and their aliases (case-insensitive).
+    static bool isBuiltInPaletteName(const QString &name);
+    //! Saves a user palette. Names of built-in palettes (and aliases) are refused, since the
+    //! built-in palette would always win; \a error then gets a message for the user.
+    static bool saveCustomPalette(const QString &name, const QList<QColor> &colors,
+                                  QString *error = nullptr);
     static void removeCustomPalette(const QString &name);
     static QList<QColor> interpolatePalette(const QList<QColor> &anchors, int count);
     void applyColorPalette(const QList<QColor> &colors, bool gradientMode = false,
