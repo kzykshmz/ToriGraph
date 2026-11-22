@@ -73,6 +73,7 @@
 #include "QwtErrorPlotCurve.h"
 #include "InterpolationDialog.h"
 #include "ImportASCIIDialog.h"
+#include "XlsxImport.h"
 #include "ImageExportDialog.h"
 #include "SmoothCurveDialog.h"
 #include "FilterDialog.h"
@@ -3466,6 +3467,19 @@ void ApplicationWindow::initMainMenu()
 
     file->addAction(actionShowExportASCIIDialog);
     file->addAction(actionLoad);
+    {
+        // D1: Excel .xlsx import (no member action: text is refreshed in translateActionsStrings)
+        XlsxImport::registerTranslations();
+        auto *actionImportExcel =
+                new QAction(QIcon(QPixmap(":/import.xpm")), tr("Import &Excel Workbook (.xlsx)..."),
+                            this);
+        actionImportExcel->setObjectName(QStringLiteral("actionImportExcel"));
+        actionImportExcel->setToolTip(
+                tr("Import every sheet of an Excel workbook (.xlsx) as worksheets"));
+        connect(actionImportExcel, &QAction::triggered, this,
+                [this]() { XlsxImport::importWithDialog(this); });
+        file->addAction(actionImportExcel);
+    }
 
     file->addSeparator();
 
@@ -14340,8 +14354,15 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
                    || ext == QLatin1String("xv")) {
             loadImage(fileName);
             handledAny = true;
-        } else if (ext == QLatin1String("xlsx") || ext == QLatin1String("xlsm")
-                   || ext == QLatin1String("xls") || ext == QLatin1String("ods")) {
+        } else if (ext == QLatin1String("xlsx") || ext == QLatin1String("xlsm")) {
+            // D1: read directly; a damaged / password-protected workbook shows its reason
+            QString xlsxSummary;
+            if (XlsxImport::importDroppedFile(this, fileName, &xlsxSummary)) {
+                importSummaries << xlsxSummary;
+                blankInitialTable = nullptr; // replaced by the first sheet, if it was blank
+                handledAny = true;
+            }
+        } else if (ext == QLatin1String("xls") || ext == QLatin1String("ods")) {
             excelDropped = true;
             unsupportedFiles << fileInfo.fileName();
         } else if (importRigakuRasOrSpectrum(fileName, false, false)) {
@@ -14360,9 +14381,11 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
     if (!unsupportedFiles.isEmpty()) {
         QString msg;
         if (excelDropped) {
-            msg = tr("Excel workbooks cannot be read directly.\n"
-                     "In Excel, select the cells, copy them (Ctrl+C) and paste them into a "
-                     "worksheet here (Ctrl+V), or save the sheet as CSV and drop the CSV file.");
+            XlsxImport::registerTranslations();
+            msg = tr("Old Excel (.xls) and OpenDocument (.ods) files cannot be read directly.\n"
+                     "Save them as an Excel Workbook (.xlsx) or as CSV and drop that file, or "
+                     "copy the cells in Excel (Ctrl+C) and paste them into a worksheet here "
+                     "(Ctrl+V).");
         } else {
             msg = tr("These files could not be read as data, graph or project files.\n"
                      "Text tables (CSV, TXT, DAT), Rigaku .ras, images and project files can be "
@@ -19070,6 +19093,12 @@ void ApplicationWindow::translateActionsStrings()
     actionLoad->setText(tr("&Import ASCII..."));
     actionLoad->setToolTip(tr("Import data file(s)"));
     actionLoad->setShortcut(tr("Ctrl+Alt+I"));
+    if (auto *actionImportExcel = findChild<QAction *>(QStringLiteral("actionImportExcel"))) {
+        XlsxImport::registerTranslations();
+        actionImportExcel->setText(tr("Import &Excel Workbook (.xlsx)..."));
+        actionImportExcel->setToolTip(
+                tr("Import every sheet of an Excel workbook (.xlsx) as worksheets"));
+    }
 
     actionUndo->setText(tr("&Undo"));
     actionUndo->setToolTip(tr("Undo changes"));

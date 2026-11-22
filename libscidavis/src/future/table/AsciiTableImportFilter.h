@@ -104,6 +104,10 @@ public:
                                      const QString &encodingHint = QString());
     static void splitHeaderNameAndUnits(const QString &rawHeader, QString &outShortName,
                                         QString &outLongName, QString &outUnits);
+    //! Unit-row test used by the 2-row [Name, Units] detection: true when `cell` (without
+    //! surrounding "()" / "[]") looks like a physical unit ("MPa", "%", "mm/min", "J/(mol K)").
+    //! `outCleaned` receives the cell without the brackets.
+    static bool looksLikeUnitCell(const QString &cell, QString *outCleaned = nullptr);
     static future::Table *importLabTextData(const QByteArray &rawBytes, const QString &tableName,
                                             const QString &filePathHint = QString(),
                                             const QString &separatorHint = QString(),

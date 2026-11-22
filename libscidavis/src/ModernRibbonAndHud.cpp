@@ -27,6 +27,7 @@
  ***************************************************************************/
 
 #include "ModernRibbonAndHud.h"
+#include "XlsxImport.h"
 
 #include <QToolTip>
 #include <QAction>
@@ -3237,6 +3238,17 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         d_app->importASCII();
+                });
+        addRibbonMenuAction(
+                importMenu, QStringLiteral("import-csv"),
+                [this]() {
+                    XlsxImport::registerTranslations();
+                    return tr("Import Excel Workbook (.xlsx)...");
+                },
+                [this]() { return tr("Import every sheet of an Excel workbook (.xlsx) as worksheets"); },
+                [this]() {
+                    if (d_app)
+                        XlsxImport::importWithDialog(d_app);
                 });
         addRibbonMenuAction(
                 importMenu, QStringLiteral("import-opj"),

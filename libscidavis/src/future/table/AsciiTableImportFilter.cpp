@@ -2401,6 +2401,14 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     return QString::fromLatin1(rawBytes);
 }
 
+bool AsciiTableImportFilter::looksLikeUnitCell(const QString &cell, QString *outCleaned)
+{
+    const QString cleaned = cleanPromotedUnitCell(cell);
+    if (outCleaned)
+        *outCleaned = cleaned;
+    return !cleaned.isEmpty() && isLikelyScientificUnit(cleaned);
+}
+
 void AsciiTableImportFilter::splitHeaderNameAndUnits(const QString &rawHeader,
                                                      QString &outShortName,
                                                      QString &outLongName,
