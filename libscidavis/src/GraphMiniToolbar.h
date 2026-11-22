@@ -96,7 +96,10 @@ private slots:
     void onAxisToggleReverse();
     void onAxisToggleTicksInOut();
     void onAxisToggleOppositeLine();
+    void onAxisToggleZeroYLine();
+    void onAxisToggleZeroXLine();
     void onAxisAddMeanLine();
+    void onAxisAddRefLineDialog();
     void onAxisFontDec();
     void onAxisFontInc();
 
@@ -125,7 +128,7 @@ private:
     struct SavedSymbolState {
         int style = 0;
         int size = 7;
-        int penWidth = 1;
+        double penWidth = 1.0;
         bool hollowWhite = false;
         bool noFill = false;
     };

@@ -333,7 +333,10 @@ void registerMiniToolbarTranslations()
     reg("Clear Masked Points", "マスク点をすべて解除");
     reg("Rescale This Axis", "この軸を自動スケール");
     reg("Reverse Axis", "軸を反転");
-    reg("Add Mean Reference Line", "平均値の参照線を追加");
+    reg("Toggle y = 0 Reference Line", "y = 0 基準線の表示切替");
+    reg("Toggle x = 0 Reference Line", "x = 0 基準線の表示切替");
+    reg("Add Mean Reference Line", "平均値の基準線を追加");
+    reg("Add Reference Line...", "基準線を追加...");
     reg("Rescale All (Ctrl+R)", "全軸を自動スケール (Ctrl+R)");
     reg("Box Inward Frame", "四辺枠 (内向き目盛り)");
     reg("Open-L Frame", "L字枠");
@@ -346,6 +349,15 @@ void registerMiniToolbarTranslations()
     reg("Lock Aspect", "縦横比固定");
     reg("Lock / Unlock Aspect Ratio (Free Resize)", "縦横比固定 / 自由リサイズを切替");
     reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
+}
+
+double effectivePenWidthF(const QPen &pen, double fallback = 1.0)
+{
+    if (pen.widthF() > 0.0)
+        return pen.widthF();
+    if (pen.width() > 0)
+        return double(pen.width());
+    return fallback;
 }
 
 struct MiniBarPalette {
@@ -933,9 +945,18 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         // 5. Opposite Axis Line toggle
         addActionBtn(QString(), tr("Opposite Axis Line"), SLOT(onAxisToggleOppositeLine()),
                      true, oppVisible, QStringLiteral("frame-box-plain"));
-        // 6. Add Mean Reference Line
+        addSeparatorLine();
+        // 6. Zero Reference Lines (y = 0, x = 0), Mean (mu), and + Reference Line...
+        const bool hasZeroY = GraphInspectorDock::hasZeroReferenceLine(d_graph, 0);
+        const bool hasZeroX = GraphInspectorDock::hasZeroReferenceLine(d_graph, 1);
+        addActionBtn(QStringLiteral("y=0"), tr("Toggle y = 0 Reference Line"),
+                     SLOT(onAxisToggleZeroYLine()), true, hasZeroY);
+        addActionBtn(QStringLiteral("x=0"), tr("Toggle x = 0 Reference Line"),
+                     SLOT(onAxisToggleZeroXLine()), true, hasZeroX);
         addActionBtn(QStringLiteral("\u03BC"), tr("Add Mean Reference Line"),
                      SLOT(onAxisAddMeanLine()));
+        addActionBtn(QString(), tr("Add Reference Line..."), SLOT(onAxisAddRefLineDialog()),
+                     false, false, QStringLiteral("curve-add"));
 
         addSeparatorLine();
         // 7-8. Font -/+
@@ -960,7 +981,7 @@ void GraphMiniToolbar::rebuildCurrentButtons()
                      true, !boxOn, QStringLiteral("frame-open-l"));
         // 4. Major Grid
         addActionBtn(QString(), tr("Toggle Major Grid"), SLOT(onCanvasToggleMajorGrid()),
-                     true, gridOn, QStringLiteral("grid-major"));
+                     true, gridOn, QStringLiteral("axis-grid"));
         addSeparatorLine();
         // 5-7. Lock Aspect Ratio toggle, Square Frame & Fit Page
         MultiLayer *ml = d_graph->multiLayerParent();
@@ -1431,7 +1452,7 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
         if (sym.style() != QwtSymbol::NoSymbol) {
             st.style = (int)sym.style();
             st.size = qMax(5, sym.size().width());
-            st.penWidth = qMax(1, sym.pen().width());
+            st.penWidth = qMax(0.5, effectivePenWidthF(sym.pen(), 1.0));
             st.hollowWhite = Graph::isSymbolWhiteHollow(sym);
             st.noFill = (!st.hollowWhite && sym.brush().style() == Qt::NoBrush);
             d_saved_symbol_states.insert(key, st);
@@ -1443,8 +1464,8 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
             QPen lp = c->pen();
             if (lp.style() == Qt::NoPen)
                 lp.setStyle(Qt::SolidLine);
-            if (lp.width() <= 0)
-                lp.setWidth(2);
+            if (lp.widthF() <= 0.0 && lp.width() <= 0)
+                lp.setWidthF(2.0);
             c->setPen(lp);
         }
         d_graph->setCurveType(d_curve_index, Graph::Line, false);
@@ -1457,8 +1478,8 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
         QPen sp = sym.pen();
         if (wasNoSym || !sp.color().isValid())
             sp.setColor(col);
-        if (sp.width() <= 0)
-            sp.setWidth(qMax(1, st.penWidth));
+        if (wasNoSym || (sp.widthF() <= 0.0 && sp.width() <= 0))
+            sp.setWidthF(qMax(0.5, st.penWidth));
         sym.setPen(sp);
         if (wasNoSym) {
             if (st.hollowWhite)
@@ -1477,7 +1498,7 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
 
         st.style = (int)nextStyle;
         st.size = sz;
-        st.penWidth = qMax(1, sym.pen().width());
+        st.penWidth = qMax(0.5, effectivePenWidthF(sym.pen(), 1.0));
         st.hollowWhite = Graph::isSymbolWhiteHollow(sym);
         st.noFill = (!st.hollowWhite && sym.brush().style() == Qt::NoBrush);
         d_saved_symbol_states.insert(key, st);
@@ -1501,8 +1522,9 @@ void GraphMiniToolbar::onCurveLineWidthDec()
         return;
     const QString beforeSnap = beginGraphUndo();
     QPen pen = c->pen();
-    int w = qMax(1, (pen.width() <= 0 ? 1 : pen.width()) - 1);
-    pen.setWidth(w);
+    const double curW = effectivePenWidthF(pen, 1.0);
+    const double nextW = qBound(0.5, std::round((curW - 0.5) * 10.0) / 10.0, 20.0);
+    pen.setWidthF(nextW);
     c->setPen(pen);
     d_graph->reconstructLegend();
     d_graph->replot();
@@ -1521,8 +1543,9 @@ void GraphMiniToolbar::onCurveLineWidthInc()
     if (c->style() == QwtPlotCurve::NoCurve)
         c->setStyle(QwtPlotCurve::Lines);
     QPen pen = c->pen();
-    int w = qMin(20, (pen.width() <= 0 ? 1 : pen.width()) + 1);
-    pen.setWidth(w);
+    const double curW = effectivePenWidthF(pen, 1.0);
+    const double nextW = qBound(0.5, std::round((curW + 0.5) * 10.0) / 10.0, 20.0);
+    pen.setWidthF(nextW);
     c->setPen(pen);
     d_graph->reconstructLegend();
     d_graph->replot();
@@ -1605,14 +1628,14 @@ void GraphMiniToolbar::applyCurveLineSymbolMode(int mode)
     if (origSym.style() != QwtSymbol::NoSymbol) {
         st.style = (int)origSym.style();
         st.size = qMax(5, origSym.size().width());
-        st.penWidth = qMax(1, origSym.pen().width());
+        st.penWidth = qMax(0.5, effectivePenWidthF(origSym.pen(), 1.0));
         st.hollowWhite = Graph::isSymbolWhiteHollow(origSym);
         st.noFill = (!st.hollowWhite && origSym.brush().style() == Qt::NoBrush);
         d_saved_symbol_states.insert(key, st);
     } else if (st.style == (int)QwtSymbol::NoSymbol) {
         st.style = (int)QwtSymbol::Ellipse;
         st.size = 7;
-        st.penWidth = 1;
+        st.penWidth = 1.0;
     }
 
     if (ApplicationWindow *app = findAppWindow(d_graph)) {
@@ -1670,7 +1693,9 @@ void GraphMiniToolbar::applyCurveLineSymbolMode(int mode)
             QwtSymbol sym;
             sym.setStyle(static_cast<QwtSymbol::Style>(st.style));
             sym.setSize(QSize(st.size, st.size));
-            sym.setPen(QPen(col, st.penWidth));
+            QPen sp(col);
+            sp.setWidthF(qMax(0.5, st.penWidth));
+            sym.setPen(sp);
             if (st.hollowWhite)
                 sym.setBrush(QBrush(Qt::white));
             else if (st.noFill)
@@ -1718,10 +1743,12 @@ void GraphMiniToolbar::onCurveToggleHollowSymbol()
         const long key = d_graph->curveKey(d_curve_index);
         SavedSymbolState st = d_saved_symbol_states.value(key);
         const QColor col = c->pen().color().isValid() ? c->pen().color() : QColor(Qt::black);
+        QPen sp(col);
+        sp.setWidthF(qMax(0.5, st.penWidth));
         QwtSymbol sym(st.style != (int)QwtSymbol::NoSymbol
                               ? static_cast<QwtSymbol::Style>(st.style)
                               : QwtSymbol::Ellipse,
-                      QBrush(Qt::white), QPen(col, qMax(1, st.penWidth)),
+                      QBrush(Qt::white), sp,
                       QSize(qMax(7, st.size), qMax(7, st.size)));
         c->setSymbol(sym);
         if (c->style() != QwtPlotCurve::NoCurve)
@@ -1740,7 +1767,7 @@ void GraphMiniToolbar::onCurveToggleHollowSymbol()
         SavedSymbolState st = d_saved_symbol_states.value(key);
         st.style = (int)after->symbol().style();
         st.size = qMax(5, after->symbol().size().width());
-        st.penWidth = qMax(1, after->symbol().pen().width());
+        st.penWidth = qMax(0.5, effectivePenWidthF(after->symbol().pen(), 1.0));
         st.hollowWhite = Graph::isSymbolWhiteHollow(after->symbol());
         st.noFill = false;
         d_saved_symbol_states.insert(key, st);
@@ -2081,6 +2108,26 @@ void GraphMiniToolbar::onAxisToggleOppositeLine()
     reclampToAvailableBounds();
 }
 
+void GraphMiniToolbar::onAxisToggleZeroYLine()
+{
+    if (!d_graph)
+        return;
+    GraphInspectorDock::toggleZeroReferenceLine(d_graph, 0);
+    rebuildCurrentButtons();
+    adjustSize();
+    reclampToAvailableBounds();
+}
+
+void GraphMiniToolbar::onAxisToggleZeroXLine()
+{
+    if (!d_graph)
+        return;
+    GraphInspectorDock::toggleZeroReferenceLine(d_graph, 1);
+    rebuildCurrentButtons();
+    adjustSize();
+    reclampToAvailableBounds();
+}
+
 void GraphMiniToolbar::onAxisAddMeanLine()
 {
     if (!d_graph)
@@ -2097,6 +2144,20 @@ void GraphMiniToolbar::onAxisAddMeanLine()
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Add Mean Reference Line"), beforeSnap);
+    if (ApplicationWindow *app = findAppWindow(d_graph)) {
+        if (GraphInspectorDock *dock = app->graphInspectorDock())
+            dock->refreshAll();
+    }
+}
+
+void GraphMiniToolbar::onAxisAddRefLineDialog()
+{
+    if (!d_graph)
+        return;
+    const int orient =
+            (d_axis_id == QwtPlot::yLeft || d_axis_id == QwtPlot::yRight) ? 0 : 1;
+    hide();
+    GraphInspectorDock::addReferenceLineInteractive(d_graph, orient);
 }
 
 void GraphMiniToolbar::adjustAxisFont(int deltaPt)
@@ -2111,15 +2172,21 @@ void GraphMiniToolbar::adjustAxisFont(int deltaPt)
     QFont tickFont = p->axisFont(d_axis_id);
     if (tickFont.family().isEmpty())
         tickFont.setFamily(QStringLiteral("Arial"));
-    int tickPt = tickFont.pointSize() > 0 ? tickFont.pointSize() : 12;
-    tickFont.setPointSize(qBound(6, tickPt + deltaPt, 48));
+    const double tickPt = (tickFont.pointSizeF() > 0.0)
+            ? tickFont.pointSizeF()
+            : (tickFont.pointSize() > 0 ? double(tickFont.pointSize()) : 12.0);
+    tickFont.setPointSizeF(
+            qBound(6.0, std::round((tickPt + double(deltaPt)) * 10.0) / 10.0, 72.0));
     d_graph->setAxisFont(d_axis_id, tickFont);
 
     QFont titleFont = d_graph->axisTitleFont(d_axis_id);
     if (titleFont.family().isEmpty())
         titleFont.setFamily(QStringLiteral("Arial"));
-    int titlePt = titleFont.pointSize() > 0 ? titleFont.pointSize() : 14;
-    titleFont.setPointSize(qBound(6, titlePt + deltaPt, 54));
+    const double titlePt = (titleFont.pointSizeF() > 0.0)
+            ? titleFont.pointSizeF()
+            : (titleFont.pointSize() > 0 ? double(titleFont.pointSize()) : 14.0);
+    titleFont.setPointSizeF(
+            qBound(6.0, std::round((titlePt + double(deltaPt)) * 10.0) / 10.0, 72.0));
     d_graph->setAxisTitleFont(d_axis_id, titleFont);
 
     d_graph->replot();
@@ -2412,8 +2479,10 @@ void GraphMiniToolbar::adjustLegendFont(int deltaPt)
     QFont f = d_legend->font();
     if (f.family().isEmpty())
         f.setFamily(QStringLiteral("Arial"));
-    int pt = f.pointSize() > 0 ? f.pointSize() : 12;
-    f.setPointSize(qBound(6, pt + deltaPt, 48));
+    const double pt = (f.pointSizeF() > 0.0)
+            ? f.pointSizeF()
+            : (f.pointSize() > 0 ? double(f.pointSize()) : 12.0);
+    f.setPointSizeF(qBound(6.0, std::round((pt + double(deltaPt)) * 10.0) / 10.0, 72.0));
     d_legend->setFont(f);
     d_graph->replot();
     d_graph->notifyChanges();

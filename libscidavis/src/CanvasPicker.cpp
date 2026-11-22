@@ -42,6 +42,7 @@
 #include "ApplicationWindow.h"
 
 #include <QApplication>
+#include <QChildEvent>
 #include <QCoreApplication>
 #include <QFrame>
 #include <QGuiApplication>
@@ -51,6 +52,7 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QRubberBand>
 #include <QScreen>
 #include <QTimer>
@@ -70,6 +72,40 @@ QPoint s_lastHoverPos(-99999, -99999);
 int s_lastHoverKey = -1;
 int s_lastHoverDist = 99999;
 int s_lastHoverPt = -1;
+QPoint s_resizerPressCanvasPos(0, 0);
+QPointer<SelectionMoveResizer> s_smrDragTarget;
+QPoint s_smrPressPos(0, 0);
+bool s_smrIsMoveOp = false;
+bool s_forwardingSmr = false;
+
+double canvasDprScale(const Plot *pl)
+{
+    if (!pl || !pl->canvas())
+        return 1.0;
+    return qBound(1.0, double(pl->canvas()->devicePixelRatioF()), 3.0);
+}
+
+QPoint constrainAxisPoint(const QPoint &origin, const QPoint &target)
+{
+    const int dx = target.x() - origin.x();
+    const int dy = target.y() - origin.y();
+    if (std::abs(dx) >= std::abs(dy))
+        return QPoint(target.x(), origin.y());
+    return QPoint(origin.x(), target.y());
+}
+
+QPoint snapLineEndpoint45(const QPoint &startPt, const QPoint &endPt)
+{
+    const double dx = double(endPt.x() - startPt.x());
+    const double dy = double(endPt.y() - startPt.y());
+    const double r = std::hypot(dx, dy);
+    if (r < 2.0)
+        return endPt;
+    constexpr double kQuarterPi = 0.78539816339744830962;
+    const double snappedAngle = std::round(std::atan2(dy, dx) / kQuarterPi) * kQuarterPi;
+    return QPoint(startPt.x() + qRound(r * std::cos(snappedAngle)),
+                  startPt.y() + qRound(r * std::sin(snappedAngle)));
+}
 } // namespace
 
 namespace {
@@ -301,7 +337,11 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                     ? dynamic_cast<Legend *>(plotWidget->marker(d_outer_legend_key))
                     : nullptr;
             if (leg) {
-                leg->setOrigin(d_outer_legend_orig_origin + (canvasPos - d_outer_legend_press_pos));
+                const QPoint effCanvasPos = (me->modifiers() & Qt::ShiftModifier)
+                        ? constrainAxisPoint(d_outer_legend_press_pos, canvasPos)
+                        : canvasPos;
+                leg->setOrigin(d_outer_legend_orig_origin
+                               + (effCanvasPos - d_outer_legend_press_pos));
                 plotWidget->replot();
                 if (SelectionMoveResizer *sel = cv->findChild<SelectionMoveResizer *>())
                     sel->recalcBoundingRect();
@@ -315,7 +355,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 const bool moved = d_outer_legend_moved;
                 const long legKey = d_outer_legend_key;
                 const QString beforeSnap = d_outer_legend_undo_before;
-                const QPoint canvasPos = me->pos() - cv->pos();
+                const QPoint rawCanvasPos = me->pos() - cv->pos();
+                const QPoint canvasPos = (me->modifiers() & Qt::ShiftModifier)
+                        ? constrainAxisPoint(d_outer_legend_press_pos, rawCanvasPos)
+                        : rawCanvasPos;
                 const QPoint targetOrigin =
                         d_outer_legend_orig_origin + (canvasPos - d_outer_legend_press_pos);
                 d_outer_legend_dragging = false;
@@ -415,12 +458,56 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
     }
 
     if (object != static_cast<QObject *>(plotWidget->canvas())) {
+        if (auto *smr = qobject_cast<SelectionMoveResizer *>(object)) {
+            if (!s_forwardingSmr && smr->parentWidget() == plotWidget->canvas()) {
+                if (e->type() == QEvent::MouseButtonPress) {
+                    const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+                    if (me->button() == Qt::LeftButton) {
+                        s_smrDragTarget = smr;
+                        s_smrPressPos = me->pos();
+                        const Qt::CursorShape cs = smr->cursor().shape();
+                        s_smrIsMoveOp = (cs == Qt::SizeAllCursor || cs == Qt::ArrowCursor);
+                    }
+                } else if ((e->type() == QEvent::MouseMove || e->type() == QEvent::MouseButtonRelease)
+                           && smr == s_smrDragTarget && s_smrIsMoveOp) {
+                    const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+                    const bool activeDrag = (e->type() == QEvent::MouseButtonRelease)
+                            ? (me->button() == Qt::LeftButton)
+                            : ((me->buttons() & Qt::LeftButton) != 0);
+                    if (activeDrag && (me->modifiers() & Qt::ShiftModifier)) {
+                        const QPoint snapped = constrainAxisPoint(s_smrPressPos, me->pos());
+                        if (snapped != me->pos()) {
+                            s_forwardingSmr = true;
+                            QMouseEvent fwd(e->type(), snapped, me->windowPos(), me->screenPos(),
+                                            me->button(), me->buttons(), me->modifiers(),
+                                            me->source());
+                            QCoreApplication::sendEvent(smr, &fwd);
+                            s_forwardingSmr = false;
+                            if (e->type() == QEvent::MouseButtonRelease)
+                                s_smrDragTarget = nullptr;
+                            return true;
+                        }
+                    }
+                    if (e->type() == QEvent::MouseButtonRelease)
+                        s_smrDragTarget = nullptr;
+                }
+            }
+            return false;
+        }
         if (e->type() == QEvent::Hide || e->type() == QEvent::WindowDeactivate
             || e->type() == QEvent::FocusOut) {
             if (d_hover_dwell_timer)
                 d_hover_dwell_timer->stop();
             hidePassiveHoverTooltip();
             plotWidget->clearHoverPoint();
+        }
+        return false;
+    }
+
+    if (e->type() == QEvent::ChildAdded) {
+        if (auto *smr = qobject_cast<SelectionMoveResizer *>(
+                    static_cast<QChildEvent *>(e)->child())) {
+            smr->installEventFilter(this);
         }
         return false;
     }
@@ -519,13 +606,18 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             return !(me->modifiers() & Qt::ShiftModifier);
         }
 
+        const double dpr = canvasDprScale(plotWidget);
+        const int refTolPx = qMax(6, qRound(6.0 * dpr));
+        const int curveTolPx = qMax(10, qRound(10.0 * dpr));
+
         // Check interactive Reference Lines unless cursor is right on top of a data vertex (< 5 px)
         int vDistCheck = 999;
         int vPtCheck = -1;
         const int vKeyCheck =
                 g->isPiePlot() ? -1 : plotWidget->closestDataPoint(me->pos(), vDistCheck, vPtCheck);
-        const int refHitIdx =
-                (vKeyCheck >= 0 && vDistCheck < 5) ? -1 : g->referenceLineAtCanvasPos(me->pos(), 6);
+        const int refHitIdx = (vKeyCheck >= 0 && vDistCheck < qMax(5, qRound(5.0 * dpr)))
+                ? -1
+                : g->referenceLineAtCanvasPos(me->pos(), refTolPx);
         if (refHitIdx >= 0) {
             d_left_click_pending = false;
             if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
@@ -562,7 +654,7 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
         int curveKey = g->isPiePlot()
                 ? -1
                 : plotWidget->closestCurveInteractive(me->pos(), dist, point);
-        if (curveKey >= 0 && dist < 10) {
+        if (curveKey >= 0 && dist < curveTolPx) {
             QwtPlotCurve *hitCurve = plotWidget->curve(curveKey);
             if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(hitCurve)) {
                 if (DataCurve *mc = er->masterCurve()) {
@@ -662,8 +754,12 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             }
         }
 
+        const double dblDpr = canvasDprScale(plotWidget);
+        const int dblRefTolPx = qMax(6, qRound(6.0 * dblDpr));
+        const int dblCurveTolPx = qMax(12, qRound(12.0 * dblDpr));
+
         if (dblMe->button() == Qt::LeftButton && !g->isPiePlot()) {
-            const int refIdx = g->referenceLineAtCanvasPos(dblMe->pos(), 6);
+            const int refIdx = g->referenceLineAtCanvasPos(dblMe->pos(), dblRefTolPx);
             if (refIdx >= 0) {
                 g->setCurrentSelection({ Graph::GraphSelection::ReferenceLine, refIdx, -1 });
                 g->editReferenceLineDialog(refIdx);
@@ -677,7 +773,7 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
         } else {
             int dist = 999, point = -1;
             int curveKey = plotWidget->closestCurveInteractive(dblMe->pos(), dist, point);
-            if (curveKey >= 0 && dist < 10) {
+            if (curveKey >= 0 && dist < dblCurveTolPx) {
                 if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(plotWidget->curve(curveKey))) {
                     if (DataCurve *mc = er->masterCurve()) {
                         const int mcIdx = g->curveIndex(mc);
@@ -760,7 +856,11 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
         }
 
         if (d_forwarded_resizer && (me->buttons() & Qt::LeftButton)) {
-            const QPoint localPos = d_forwarded_resizer->mapFrom(plotWidget->canvas(), me->pos());
+            const QPoint effCanvasPos = (me->modifiers() & Qt::ShiftModifier)
+                    ? constrainAxisPoint(s_resizerPressCanvasPos, me->pos())
+                    : me->pos();
+            const QPoint localPos =
+                    d_forwarded_resizer->mapFrom(plotWidget->canvas(), effCanvasPos);
             QMouseEvent mappedMove(QEvent::MouseMove, localPos, me->windowPos(), me->screenPos(),
                                    me->button(), me->buttons(), me->modifiers(), me->source());
             QCoreApplication::sendEvent(d_forwarded_resizer, &mappedMove);
@@ -785,7 +885,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
 
         if (g->drawLineActive()) {
-            drawLineMarker(pos, g->drawArrow());
+            const QPoint endPt = (me->modifiers() & Qt::ShiftModifier)
+                    ? snapLineEndpoint45(startLinePoint, pos)
+                    : pos;
+            drawLineMarker(endPt, g->drawArrow());
             return true;
         }
 
@@ -904,7 +1007,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
             if (resizer) {
                 const QPoint prevLegPos = g->legend() ? g->legend()->rect().topLeft() : QPoint();
-                const QPoint localPos = resizer->mapFrom(plotWidget->canvas(), me->pos());
+                const QPoint effCanvasPos = (me->modifiers() & Qt::ShiftModifier)
+                        ? constrainAxisPoint(s_resizerPressCanvasPos, me->pos())
+                        : me->pos();
+                const QPoint localPos = resizer->mapFrom(plotWidget->canvas(), effCanvasPos);
                 QMouseEvent mappedRel(QEvent::MouseButtonRelease, localPos, me->windowPos(),
                                       me->screenPos(), me->button(), me->buttons(), me->modifiers(),
                                       me->source());
@@ -919,10 +1025,15 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             MultiLayer *ml = g->multiLayerParent();
             const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
 
+            const QPoint rawEndPt(me->x(), me->y());
+            const QPoint endPt = (me->modifiers() & Qt::ShiftModifier)
+                    ? snapLineEndpoint45(startLinePoint, rawEndPt)
+                    : rawEndPt;
+
             ArrowMarker mrk;
             mrk.attach(g->plotWidget());
             mrk.setStartPoint(startLinePoint);
-            mrk.setEndPoint(QPoint(me->x(), me->y()));
+            mrk.setEndPoint(endPt);
             mrk.setColor(g->arrowDefaultColor());
             mrk.setWidth(g->arrowDefaultWidth());
             mrk.setStyle(g->arrowLineDefaultStyle());
@@ -998,6 +1109,21 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
                 if (ml && !beforeSnap.isEmpty())
                     ml->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
+                return true;
+            }
+            if ((curSel.kind == Graph::GraphSelection::Curve
+                 || curSel.kind == Graph::GraphSelection::ErrorBars)
+                && curSel.primaryId >= 0 && curSel.primaryId < g->curves()) {
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->cancelScheduledAndHide();
+                MultiLayer *ml = g->multiLayerParent();
+                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+                g->removeCurve(curSel.primaryId);
+                g->reconstructLegend();
+                g->updatePlot();
+                g->setCurrentSelection({ Graph::GraphSelection::Layer, -1, -1 });
+                if (ml && !beforeSnap.isEmpty())
+                    ml->pushUndoSnapshot(tr("Remove Curve"), beforeSnap);
                 return true;
             }
         }
@@ -1140,8 +1266,11 @@ void CanvasPicker::updateHoverCursor(const QPoint &canvasPos)
             vKey = plotWidget->closestDataPoint(canvasPos, vDist, vPt);
         }
     }
-    if (!(vKey >= 0 && vDist < 5)) {
-        const int refIdx = g->referenceLineAtCanvasPos(canvasPos, 6);
+    const double dpr = canvasDprScale(plotWidget);
+    const int refTolPx = qMax(6, qRound(6.0 * dpr));
+    const int curveTolPx = qMax(10, qRound(10.0 * dpr));
+    if (!(vKey >= 0 && vDist < qMax(5, qRound(5.0 * dpr)))) {
+        const int refIdx = g->referenceLineAtCanvasPos(canvasPos, refTolPx);
         if (refIdx >= 0 && refIdx < g->referenceLines().size()) {
             const int orient = g->referenceLines()[refIdx].orientation;
             cv->setCursor(orient == 0 ? Qt::SplitVCursor : Qt::SplitHCursor);
@@ -1150,14 +1279,14 @@ void CanvasPicker::updateHoverCursor(const QPoint &canvasPos)
     }
 
     if (!g->isPiePlot()) {
-        if (vKey >= 0 && vDist < 10) {
+        if (vKey >= 0 && vDist < curveTolPx) {
             cv->setCursor(Qt::PointingHandCursor);
             return;
         }
         int cDist = 999;
         int cPt = -1;
         const int cKey = plotWidget->closestCurveInteractive(canvasPos, cDist, cPt);
-        if (cKey >= 0 && cDist < 10) {
+        if (cKey >= 0 && cDist < curveTolPx) {
             cv->setCursor(Qt::PointingHandCursor);
             return;
         }
@@ -1401,6 +1530,7 @@ bool CanvasPicker::selectMarker(const QMouseEvent *e)
         if (!resizer)
             return;
         d_forwarded_resizer = resizer;
+        s_resizerPressCanvasPos = me->pos();
         const QPoint localPos = resizer->mapFrom(plotWidget->canvas(), me->pos());
         QMouseEvent mappedPress(QEvent::MouseButtonPress, localPos, me->windowPos(),
                                 me->screenPos(), me->button(), me->buttons(), me->modifiers(),
