@@ -300,39 +300,58 @@ var
 begin
   PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   if not FileExists(PsExe) then
+  begin
+    Log('CleanupOriginalUserStaleHkcuOle: powershell.exe not found at ' + PsExe);
     exit;
+  end;
   PsCmd :=
     '$ErrorActionPreference = ''SilentlyContinue''; ' +
     '$clsid = ''HKCU:\Software\Classes\CLSID\' + OleClsid + '''; ' +
-    'function Get-CmdExe([string]$s) { ' +
-    '  $t = if ($s) { $s.Trim() } else { '''' }; ' +
+    'function Get-CmdExe($s) { ' +
+    '  $t = if ($null -ne $s) { ('''' + $s) -replace ''^\s+|\s+$'', '''' } else { '''' }; ' +
     '  if (-not $t) { return '''' }; ' +
-    '  if ($t.StartsWith([char]34)) { $r = $t.Substring(1); $i = $r.IndexOf([char]34); return $(if ($i -ge 0) { $r.Substring(0, $i).Trim() } else { $r.Trim() }) }; ' +
-    '  $m = [regex]::Match($t, ''(?i)^(.+?\.exe)\b''); if ($m.Success) { return $m.Groups[1].Value.Trim() }; ' +
-    '  return ($t -split ''\s+'')[0].Trim(); ' +
+    '  if ($t -match ''^\x22([^\x22]*)'') { return ($Matches[1] -replace ''^\s+|\s+$'', '''') }; ' +
+    '  if ($t -match ''^(.+?\.exe)\b'') { return ($Matches[1] -replace ''^\s+|\s+$'', '''') }; ' +
+    '  return (($t -split ''\s+'')[0] -replace ''^\s+|\s+$'', ''''); ' +
     '}; ' +
     '$removed = $false; ' +
     'if (Test-Path -LiteralPath $clsid) { ' +
     '  $ls = Join-Path $clsid ''LocalServer32''; $exe = ''''; ' +
-    '  if (Test-Path -LiteralPath $ls) { $k = Get-Item -LiteralPath $ls; $exe = Get-CmdExe ([string]$k.GetValue(''ServerExecutable'', '''')); if (-not $exe) { $exe = Get-CmdExe ([string]$k.GetValue('''', '''')) } }; ' +
-    '  if ((-not $exe) -or (-not (Test-Path -LiteralPath $exe -PathType Leaf))) { Remove-Item -LiteralPath $clsid -Recurse -Force -ErrorAction SilentlyContinue; $removed = $true } ' +
+    '  if (Test-Path -LiteralPath $ls) { ' +
+    '    $exe = Get-CmdExe (Get-ItemProperty -LiteralPath $ls -Name ''ServerExecutable'' -ErrorAction SilentlyContinue).ServerExecutable; ' +
+    '    if (-not $exe) { $exe = Get-CmdExe (Get-ItemProperty -LiteralPath $ls -Name ''(default)'' -ErrorAction SilentlyContinue).''(default)'' } ' +
+    '  }; ' +
+    '  if ((-not $exe) -or (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue))) { Remove-Item -LiteralPath $clsid -Recurse -Force -ErrorAction SilentlyContinue; $removed = $true } ' +
     '}; ' +
     'foreach ($p in @(''' + OleProgId + ''', ''' + LegacyProgId + ''', ''' + ProjectProgId + ''')) { ' +
     '  $pk = ''HKCU:\Software\Classes\'' + $p; ' +
     '  if (Test-Path -LiteralPath $pk) { ' +
     '    $ck = Join-Path $pk ''shell\open\command''; ' +
-    '    if (Test-Path -LiteralPath $ck) { $ce = Get-CmdExe ([string](Get-Item -LiteralPath $ck).GetValue('''', '''')); if ($ce -and (-not (Test-Path -LiteralPath $ce -PathType Leaf))) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } } ' +
+    '    if (Test-Path -LiteralPath $ck) { ' +
+    '      $ce = Get-CmdExe (Get-ItemProperty -LiteralPath $ck -Name ''(default)'' -ErrorAction SilentlyContinue).''(default)''; ' +
+    '      if ($ce -and (-not (Test-Path -LiteralPath $ce -PathType Leaf -ErrorAction SilentlyContinue))) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } ' +
+    '    } ' +
     '    elseif ($removed -and ($p -ne ''' + ProjectProgId + ''')) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } ' +
     '  } ' +
     '}; ' +
-    'if ((-not (Test-Path -LiteralPath ''HKCU:\Software\Classes\' + ProjectProgId + ''')) -and (-not (Test-Path -LiteralPath ''HKLM:\Software\Classes\' + ProjectProgId + ''')) -and (Test-Path -LiteralPath ''HKCU:\Software\Classes\.sciprj'')) { ' +
-    '  if ([string](Get-Item -LiteralPath ''HKCU:\Software\Classes\.sciprj'').GetValue('''', '''') -eq ''' + ProjectProgId + ''') { Remove-ItemProperty -LiteralPath ''HKCU:\Software\Classes\.sciprj'' -Name ''(default)'' -ErrorAction SilentlyContinue } ' +
+    '$ext = ''HKCU:\Software\Classes\.sciprj''; ' +
+    'if ((-not (Test-Path -LiteralPath ''HKCU:\Software\Classes\' + ProjectProgId + ''')) -and (-not (Test-Path -LiteralPath ''HKLM:\Software\Classes\' + ProjectProgId + ''')) -and (Test-Path -LiteralPath $ext)) { ' +
+    '  if (('''' + (Get-ItemProperty -LiteralPath $ext -Name ''(default)'' -ErrorAction SilentlyContinue).''(default)'') -eq ''' + ProjectProgId + ''') { ' +
+    '    $ek = Get-Item -LiteralPath $ext -ErrorAction SilentlyContinue; ' +
+    '    if ($ek -and (@($ek.Property).Count -le 1) -and (@(Get-ChildItem -LiteralPath $ext -ErrorAction SilentlyContinue).Count -eq 0)) { Remove-Item -LiteralPath $ext -Force -ErrorAction SilentlyContinue } ' +
+    '    else { Clear-ItemProperty -LiteralPath $ext -Name ''(default)'' -ErrorAction SilentlyContinue } ' +
+    '  } ' +
     '}';
   Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "' + PsCmd + '"';
+  ResultCode := -1;
   try
-    ExecAsOriginalUser(PsExe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if ExecAsOriginalUser(PsExe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Log('CleanupOriginalUserStaleHkcuOle succeeded (ResultCode=' + IntToStr(ResultCode) + ').')
+    else
+      Log('CleanupOriginalUserStaleHkcuOle returned False (ResultCode=' + IntToStr(ResultCode) + ').');
   except
     { Non-fatal: e.g. silent install running as SYSTEM or started from an already-elevated shell }
+    Log('CleanupOriginalUserStaleHkcuOle raised exception: ' + GetExceptionMessage());
   end;
 end;
 
