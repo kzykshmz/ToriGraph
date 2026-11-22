@@ -2168,10 +2168,12 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
     QString certThumbprint;
     DWORD winLastErr = 0;
 
-    // GUI-safe verification: always pass WTD_CACHE_ONLY_URL_RETRIEVAL so unreachable CRL/OCSP
-    // servers never block the GUI thread for tens of seconds. Known cached revocations
-    // (CRYPT_E_REVOKED) are still rejected immediately; the elevated/background PowerShell
-    // staging script performs a full online Get-AuthenticodeSignature check before install.
+    // GUI-safe verification: the GUI thread passes WTD_CACHE_ONLY_URL_RETRIEVAL to avoid blocking
+    // the UI when CRL/OCSP servers are unreachable, rejecting cached CRYPT_E_REVOKED immediately
+    // and falling back to WTD_REVOKE_NONE only on CRYPT_E_REVOCATION_OFFLINE /
+    // CERT_E_REVOCATION_FAILURE. The separate PowerShell staging script runs
+    // Get-AuthenticodeSignature plus an explicit X509Chain (RevocationMode::Online, EntireChain,
+    // 15s timeout) check that rejects Revoked certificates before touching $TargetInstallDir.
     LONG status = runVerifyAttempt(WTD_REVOKE_WHOLECHAIN,
                                    WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL,
                                    &simpleSubject, &fullSubjectDnRev, &fullSubjectDnFwd,
@@ -2350,6 +2352,26 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "        throw \"Could not inspect Authenticode signature of $FilePath\"\r\n"
             "    }\r\n"
             "    if ($sig.Status -eq 'Valid') {\r\n"
+            "        if ($null -ne $sig.SignerCertificate) {\r\n"
+            "            $chain = $null\r\n"
+            "            try {\r\n"
+            "                $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain\r\n"
+            "                $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::Online\r\n"
+            "                $chain.ChainPolicy.RevocationFlag = [System.Security.Cryptography.X509Certificates.X509RevocationFlag]::EntireChain\r\n"
+            "                $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(15)\r\n"
+            "                [void]$chain.Build($sig.SignerCertificate)\r\n"
+            "                foreach ($st in $chain.ChainStatus) {\r\n"
+            "                    if (($st.Status -band [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::Revoked) -ne 0) {\r\n"
+            "                        if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "                            Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "                        }\r\n"
+            "                        throw \"Authenticode certificate is revoked ($($st.StatusInformation.Trim())) on $FilePath\"\r\n"
+            "                    }\r\n"
+            "                }\r\n"
+            "            } finally {\r\n"
+            "                if ($null -ne $chain) { $chain.Dispose() }\r\n"
+            "            }\r\n"
+            "        }\r\n"
             "        if ($CheckSubject -and $ExpectedSignerSubject.Length -gt 0) {\r\n"
             "            $cert = $sig.SignerCertificate\r\n"
             "            $simpleName = ''\r\n"
