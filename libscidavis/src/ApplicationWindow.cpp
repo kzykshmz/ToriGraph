@@ -107,6 +107,7 @@
 #include "core/datatypes/Double2StringFilter.h"
 #include "lib/XmlStreamReader.h"
 #include "table/future_Table.h"
+#include "table/AsciiTableImportFilter.h"
 
 // TODO: move tool-specific code to an extension manager
 #include "ScreenPickerTool.h"
@@ -8026,9 +8027,24 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
         return;
 
     foreach (QString file, files) {
-        Table *temp = new Table(scriptEnv, file, local_column_separator, local_ignored_lines,
-                                local_rename_columns, local_strip_spaces, local_simplify_spaces,
-                                local_convert_to_numeric, local_numeric_locale, "temp");
+        // The file is read into a bare future::Table (same filter and options as a new
+        // worksheet). A temporary worksheet window was used before; deleting that window
+        // crashed after the data had been copied.
+        std::unique_ptr<future::Table> tempOwner;
+        {
+            AsciiTableImportFilter filter;
+            filter.set_ignored_lines(local_ignored_lines);
+            filter.set_separator(local_column_separator);
+            filter.set_first_row_names_columns(local_rename_columns);
+            filter.set_trim_whitespace(local_strip_spaces);
+            filter.set_simplify_whitespace(local_simplify_spaces);
+            filter.set_convert_to_numeric(local_convert_to_numeric);
+            filter.set_numeric_locale(local_numeric_locale);
+            QFile in(file);
+            if (in.open(QIODevice::ReadOnly))
+                tempOwner.reset(static_cast<future::Table *>(filter.importAspect(in)));
+        }
+        future::Table *temp = tempOwner.get();
         if (!temp)
             continue;
 
@@ -8044,7 +8060,6 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                                      "column \"%1\".")
                                                           .arg(table->column(col)->name()));
                         }
-                        delete temp;
                         return;
                     }
             } else {
@@ -8056,25 +8071,60 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                                      "non-text column \"%1\".")
                                                           .arg(table->column(col)->name()));
                         }
-                        delete temp;
                         return;
                     }
             }
+            // The checks above look at the target table only. The imported columns may still
+            // have come out as another type (e.g. one text cell turns a column into text), and
+            // Column::copy() refuses to copy between types: check before touching the table.
+            for (int col = 0; col < qMin(temp->columnCount(), table->columnCount()); col++) {
+                Column *src_col = temp->column(col);
+                Column *dst_col = table->column(col);
+                if (src_col && dst_col && src_col->dataType() != dst_col->dataType()) {
+                    const QString msg =
+                            tr("Column \"%1\" of the file has a different data type (%2) than "
+                               "column \"%3\" of the worksheet (%4). Nothing was imported.")
+                                    .arg(src_col->name(),
+                                         src_col->columnMode() == SciDAVis::ColumnMode::Numeric
+                                                 ? tr("numeric")
+                                                 : tr("text/date"),
+                                         dst_col->name(),
+                                         dst_col->columnMode() == SciDAVis::ColumnMode::Numeric
+                                                 ? tr("numeric")
+                                                 : tr("text/date"));
+                    setProperty("torigraph_last_import_error", msg);
+                    if (!isNonInteractiveContext(this))
+                        QMessageBox::critical(this, tr("ASCII Import Failed"), msg);
+                    return;
+                }
+            }
         }
+
+        // Long Name / units travel with the data: overwrite replaces them, append only fills
+        // in what the worksheet column does not have yet.
+        auto copyColumnMetadata = [](Column *src_col, Column *dst_col, bool overwrite) {
+            if (!src_col->longName().isEmpty() && (overwrite || dst_col->longName().isEmpty()))
+                dst_col->setLongName(src_col->longName());
+            if (!src_col->units().isEmpty() && (overwrite || dst_col->units().isEmpty()))
+                dst_col->setUnits(src_col->units());
+        };
+        QStringList failedColumns;
 
         // copy or move data from temp to table
         switch (import_mode) {
         case ImportASCIIDialog::NewColumns:
-            while (temp->d_future_table->childCount() > 0)
-                temp->d_future_table->reparentChild(table->d_future_table,
-                                                    temp->d_future_table->child(0));
+            while (temp->childCount() > 0)
+                temp->reparentChild(table->d_future_table,
+                                                    temp->child(0));
             break;
         case ImportASCIIDialog::NewRows: {
-            int missing_columns = temp->columnCount() - table->columnCount();
+            const int existing_columns = table->columnCount();
+            int missing_columns = temp->columnCount() - existing_columns;
             for (int col = 0; col < missing_columns; col++) {
+                // same type as the imported column, so that the copy below cannot fail
                 Column *new_col =
                         new Column(tr("new_by_import") + QString::number(col + 1),
-                                   local_convert_to_numeric ? SciDAVis::ColumnMode::Numeric : SciDAVis::ColumnMode::Text);
+                                   temp->column(existing_columns + col)->columnMode());
                 new_col->setPlotDesignation(SciDAVis::Y);
                 table->d_future_table->addChild(new_col);
             }
@@ -8084,8 +8134,11 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             for (int col = 0; col < temp->columnCount(); col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
-                Q_ASSERT(src_col->dataType() == dst_col->dataType());
-                dst_col->copy(src_col, 0, start_row, src_col->rowCount());
+                if (!dst_col->copy(src_col, 0, start_row, src_col->rowCount())) {
+                    failedColumns << dst_col->name();
+                    continue;
+                }
+                copyColumnMetadata(src_col, dst_col, false);
                 if (local_rename_columns)
                     dst_col->setName(src_col->name());
             }
@@ -8097,21 +8150,31 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             for (int col = 0; col < table->columnCount() && col < temp->columnCount(); col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
-                Q_ASSERT(src_col->dataType() == dst_col->dataType());
-                dst_col->copy(src_col, 0, 0, temp->rowCount());
+                if (!dst_col->copy(src_col, 0, 0, temp->rowCount())) {
+                    failedColumns << dst_col->name();
+                    continue;
+                }
+                copyColumnMetadata(src_col, dst_col, true);
                 if (local_rename_columns)
                     dst_col->setName(src_col->name());
             }
             if (temp->columnCount() > table->columnCount()) {
-                temp->d_future_table->removeColumns(0, table->columnCount());
-                while (temp->d_future_table->childCount() > 0)
-                    temp->d_future_table->reparentChild(table->d_future_table,
-                                                        temp->d_future_table->child(0));
+                temp->removeColumns(0, table->columnCount());
+                while (temp->childCount() > 0)
+                    temp->reparentChild(table->d_future_table,
+                                                        temp->child(0));
             }
             break;
         }
         }
-        delete temp;
+        if (!failedColumns.isEmpty()) {
+            const QString msg = tr("These columns could not be imported from %1: %2")
+                                        .arg(QFileInfo(file).fileName(),
+                                             failedColumns.join(QStringLiteral(", ")));
+            setProperty("torigraph_last_import_error", msg);
+            if (!isNonInteractiveContext(this))
+                QMessageBox::warning(this, tr("ASCII Import"), msg);
+        }
     }
 
     table->setWindowLabel(files.join("; "));
@@ -9128,7 +9191,7 @@ void ApplicationWindow::readSettings()
     settings.beginGroup("/Dialogs");
     d_extended_open_dialog = settings.value("/ExtendedOpenDialog", true).toBool();
     d_extended_export_dialog = settings.value("/ExtendedExportDialog", true).toBool();
-    d_extended_import_ASCII_dialog = settings.value("/ExtendedImportAsciiDialog", true).toBool();
+    d_extended_import_ASCII_dialog = settings.value("/ExtendedImportAsciiDialog", false).toBool();
     d_extended_plot_dialog =
             settings.value("/ExtendedPlotDialog", true).toBool(); // used by PlotDialog
 
@@ -10799,12 +10862,25 @@ void ApplicationWindow::exportAllTables(const QString &sep, bool colNames, bool 
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
         workingDir = dir;
 
+        auto &settings = getSettings();
+        Table::AsciiExportOptions opts;
+        opts.utf8Bom = settings.value("/General/ExportASCII/UTF8BOM", true).toBool();
+        opts.longNameAndUnits = settings.value("/General/ExportASCII/LongNameUnits", true).toBool();
+        // comma/semicolon separated files get .csv (Excel opens them directly), others .txt
+        const QString trimmedSep = sep.trimmed();
+        const QString ext = (trimmedSep == QLatin1String(",") || trimmedSep == QLatin1String(";"))
+                ? QStringLiteral(".csv")
+                : QStringLiteral(".txt");
+
         bool confirmOverwrite = true;
         bool success = true;
+        Table *failedTable = nullptr;
         foreach (MyWidget *w, windowsList()) {
             if (w->inherits("Table")) {
                 Table *t = (Table *)w;
-                QString fileName = dir + "/" + t->name() + ".txt";
+                QString safeName = t->name();
+                safeName.replace(QRegExp(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+                QString fileName = dir + "/" + safeName + ext;
                 QFile f(fileName);
                 if (f.exists(fileName) && confirmOverwrite && !isNonInteractiveContext(this)) {
                     QApplication::restoreOverrideCursor();
@@ -10815,26 +10891,34 @@ void ApplicationWindow::exportAllTables(const QString &sep, bool colNames, bool 
                                     .arg(fileName),
                             tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
                     case 0:
-                        success = t->exportASCII(fileName, sep, colNames, expSelection);
+                        success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
                         break;
 
                     case 1:
                         confirmOverwrite = false;
-                        success = t->exportASCII(fileName, sep, colNames, expSelection);
+                        success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
                         break;
 
                     case 2:
                         return;
                         break;
                     }
+                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
                 } else
-                    success = t->exportASCII(fileName, sep, colNames, expSelection);
+                    success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
 
-                if (!success)
+                if (!success) {
+                    failedTable = t;
                     break;
+                }
             }
         }
         QApplication::restoreOverrideCursor();
+        if (failedTable && !isNonInteractiveContext(this))
+            statusBar()->showMessage(tr("Export stopped at table %1: %2")
+                                             .arg(failedTable->name(),
+                                                  failedTable->lastExportError()),
+                                     15000);
     }
 }
 
@@ -10859,9 +10943,16 @@ void ApplicationWindow::exportASCII(const QString &tableName, const QString &sep
 
         asciiDirPath = fi.absolutePath();
 
+        auto &settings = getSettings();
+        Table::AsciiExportOptions opts;
+        opts.utf8Bom = settings.value("/General/ExportASCII/UTF8BOM", true).toBool();
+        opts.longNameAndUnits = settings.value("/General/ExportASCII/LongNameUnits", true).toBool();
+
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-        t->exportASCII(fname, sep, colNames, expSelection);
+        const bool ok = t->exportASCII(fname, sep, colNames, expSelection, opts);
         QApplication::restoreOverrideCursor();
+        if (ok)
+            statusBar()->showMessage(tr("Exported %1").arg(QDir::toNativeSeparators(fname)), 8000);
     }
 }
 
@@ -13849,111 +13940,114 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
     if (!e->mimeData()->hasUrls())
         return;
 
-    auto importRigakuRasOrSpectrum = [this](const QString &path, bool isRigakuRas,
-                                            bool autoPlotLine) -> bool {
-        QFile f(path);
-        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-            return false;
+    // Every dropped data file goes through AsciiTableImportFilter with fixed defaults: the
+    // drop never inherits what was last chosen in the import dialog (ignored lines, separator,
+    // ...). The filter keeps rows with missing cells (as empty cells), reads every .ras scan and
+    // reports what it skipped; the report is shown in the status bar.
+    QStringList importSummaries;
+    QStringList unsupportedFiles;
+    bool excelDropped = false;
 
-        QVector<QVector<double>> numericRows;
-        QStringList headerTokens;
-        bool inRasInt = !isRigakuRas;
-        int maxCols = 0;
-
-        QTextStream ts(&f);
-        while (!ts.atEnd()) {
-            const QString rawLine = ts.readLine().trimmed();
-            if (rawLine.isEmpty())
-                continue;
-            if (isRigakuRas) {
-                if (rawLine.startsWith(QLatin1String("*RAS_INT_START"), Qt::CaseInsensitive)) {
-                    inRasInt = true;
-                    continue;
-                }
-                if (rawLine.startsWith(QLatin1String("*RAS_INT_END"), Qt::CaseInsensitive)) {
-                    if (!numericRows.isEmpty())
+    // A fresh project starts with one empty table; the first dropped data file replaces it
+    // (as importASCII() does for File > Import).
+    Table *blankInitialTable = nullptr;
+    if (projectname == QLatin1String("untitled")) {
+        const QList<MyWidget *> allWins = windowsList();
+        if (allWins.size() == 1) {
+            if (Table *cand = qobject_cast<Table *>(allWins.first())) {
+                bool untouched = cand->d_future_table && cand->windowLabel().isEmpty()
+                        && dependingPlots(cand->name()).isEmpty() && cand->columnCount() <= 2;
+                for (int c = 0; untouched && c < cand->columnCount(); ++c) {
+                    Column *col = cand->column(c);
+                    if (!col || !col->longName().isEmpty() || !col->units().isEmpty()
+                        || !col->comment().isEmpty() || !col->formulaIntervals().isEmpty()) {
+                        untouched = false;
                         break;
-                    inRasInt = false;
-                    continue;
+                    }
+                    for (int r = 0; r < col->rowCount(); ++r) {
+                        const bool empty = (col->columnMode() == SciDAVis::ColumnMode::Numeric)
+                                ? col->isInvalid(r)
+                                : col->textAt(r).isEmpty();
+                        if (!empty) {
+                            untouched = false;
+                            break;
+                        }
+                    }
                 }
-                if (!inRasInt || rawLine.startsWith(QLatin1Char('*')))
-                    continue;
-            } else {
-                const QChar c0 = rawLine.at(0);
-                if (c0 == QLatin1Char('#') || c0 == QLatin1Char('*') || c0 == QLatin1Char(';')
-                    || c0 == QLatin1Char('!') || c0 == QLatin1Char('_') || c0 == QLatin1Char('&'))
-                    continue;
+                if (untouched)
+                    blankInitialTable = cand;
             }
-
-            QString sepNormalized = rawLine;
-            sepNormalized.replace(QLatin1Char(','), QLatin1Char(' '));
-            sepNormalized.replace(QLatin1Char('\t'), QLatin1Char(' '));
-            const QStringList parts = sepNormalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-            if (parts.size() < 2)
-                continue;
-
-            QVector<double> vals;
-            vals.reserve(parts.size());
-            bool allNumeric = true;
-            for (const QString &tok : parts) {
-                bool ok = false;
-                const double v = tok.toDouble(&ok);
-                if (!ok || !std::isfinite(v)) {
-                    allNumeric = false;
-                    break;
-                }
-                vals.append(v);
-            }
-            if (!allNumeric) {
-                if (numericRows.isEmpty() && headerTokens.isEmpty())
-                    headerTokens = parts;
-                continue;
-            }
-            maxCols = qMax(maxCols, vals.size());
-            numericRows.append(std::move(vals));
         }
+    }
+
+    auto importRigakuRasOrSpectrum = [this, &importSummaries, &blankInitialTable](
+                                             const QString &path, bool isRigakuRas,
+                                             bool autoPlotLine) -> bool {
+        Q_UNUSED(isRigakuRas)
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return false;
+        const QByteArray raw = f.readAll();
         f.close();
 
-        if (numericRows.isEmpty() || maxCols < 2)
+        const QFileInfo fi(path);
+        const QString baseTitle =
+                fi.completeBaseName().isEmpty() ? tr("Table") : fi.completeBaseName();
+        AsciiTableImportFilter::ImportReport report;
+        std::unique_ptr<future::Table> ft(AsciiTableImportFilter::importDroppedTextData(
+                raw, baseTitle, path, &report));
+        if (!ft || ft->columnCount() < 1 || ft->rowCount() < 1)
+            return false;
+        bool anyNumeric = false;
+        for (int c = 0; c < ft->columnCount() && !anyNumeric; ++c)
+            anyNumeric = ft->column(c)
+                    && ft->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric;
+        if (!anyNumeric)
             return false;
 
-        const QString baseTitle = QFileInfo(path).completeBaseName();
-        Table *t = newTable(numericRows.size(), maxCols, generateUniqueName(baseTitle), path);
+        if (blankInitialTable) {
+            blankInitialTable->askOnCloseEvent(false);
+            if (blankInitialTable->d_future_table)
+                blankInitialTable->d_future_table->remove();
+            blankInitialTable = nullptr;
+        }
+
+        QList<Column *> cols;
+        for (int c = 0; c < ft->columnCount(); ++c) {
+            Column *src = ft->column(c);
+            if (!src)
+                continue;
+            Column *dst = new Column(src->name(), src->columnMode());
+            dst->copy(src);
+            dst->setPlotDesignation(src->plotDesignation());
+            dst->setLongName(src->longName());
+            dst->setUnits(src->units());
+            dst->setComment(src->comment());
+            if (auto *srcOut = dynamic_cast<Double2StringFilter *>(src->outputFilter())) {
+                if (auto *dstOut = dynamic_cast<Double2StringFilter *>(dst->outputFilter())) {
+                    dstOut->setNumericFormat(srcOut->numericFormat());
+                    dstOut->setNumDigits(srcOut->numDigits());
+                }
+            }
+            cols << dst;
+        }
+        Table *t = newTable(generateUniqueName(baseTitle), path, cols);
         if (!t)
             return false;
 
-        if (isRigakuRas) {
-            t->setColName(0, QStringLiteral("TwoTheta"));
-            t->setColLongName(0, QStringLiteral("2Theta"));
-            t->setColUnits(0, QStringLiteral("deg"));
-            t->setColName(1, QStringLiteral("Intensity"));
-            t->setColLongName(1, QStringLiteral("Intensity"));
-            t->setColUnits(1, QStringLiteral("counts"));
-        } else if (headerTokens.size() == maxCols) {
-            for (int c = 0; c < maxCols; ++c)
-                t->setColLongName(c, headerTokens.at(c));
-        }
-        if (maxCols >= 3 && (isRigakuRas || QFileInfo(path).suffix().compare(QLatin1String("xye"), Qt::CaseInsensitive) == 0))
-            t->setColPlotDesignation(2, SciDAVis::yErr);
-
-        if (t->d_future_table)
-            t->d_future_table->beginMacro(tr("Import %1").arg(QFileInfo(path).fileName()));
-        for (int c = 0; c < maxCols; ++c) {
-            Column *colPtr = t->column(c);
-            if (!colPtr)
-                continue;
-            QVector<double> colVec(numericRows.size(), 0.0);
-            for (int r = 0; r < numericRows.size(); ++r) {
-                if (c < numericRows.at(r).size())
-                    colVec[r] = numericRows.at(r).at(c);
+        if (autoPlotLine && t->numCols() >= 2) {
+            QStringList yCols;
+            for (int c = 0; c < t->numCols(); ++c) {
+                if (t->colPlotDesignation(c) == SciDAVis::Y
+                    && t->column(c)->columnMode() == SciDAVis::ColumnMode::Numeric)
+                    yCols << t->colName(c);
             }
-            colPtr->replaceValues(0, colVec);
+            if (yCols.isEmpty())
+                yCols << t->colName(1);
+            multilayerPlot(t, yCols, Graph::Line);
         }
-        if (t->d_future_table)
-            t->d_future_table->endMacro();
-
-        if (autoPlotLine && t->numCols() >= 2)
-            multilayerPlot(t, QStringList() << t->colName(1), Graph::Line);
+        importSummaries << fi.fileName() + QStringLiteral(": ")
+                        + AsciiTableImportFilter::describeImportReport(report);
         return true;
     };
 
@@ -14157,71 +14251,22 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
             } else if (importRigakuRasOrSpectrum(fileName, true, true)) {
                 handledAny = true;
             } else {
-                importASCII(QStringList() << fileName, ImportASCIIDialog::NewTables,
-                            QStringLiteral(" "), ignoredLines, renameColumns, true, true,
-                            d_convert_to_numeric, d_ASCII_import_locale);
-                handledAny = true;
+                unsupportedFiles << fileInfo.fileName();
             }
         } else if (ext == QLatin1String("xy") || ext == QLatin1String("xye")
                    || ext == QLatin1String("chi") || ext == QLatin1String("uxd")) {
             if (importRigakuRasOrSpectrum(fileName, false, true))
                 handledAny = true;
+            else
+                unsupportedFiles << fileInfo.fileName();
         } else if (ext == QLatin1String("asc") || ext == QLatin1String("mpt")
-                   || ext == QLatin1String("dta")) {
+                   || ext == QLatin1String("dta") || ext == QLatin1String("csv")
+                   || ext == QLatin1String("tsv") || ext == QLatin1String("tab")
+                   || ext == QLatin1String("dat") || ext == QLatin1String("txt")) {
             if (importRigakuRasOrSpectrum(fileName, false, false))
                 handledAny = true;
-        } else if (ext == QLatin1String("csv") || ext == QLatin1String("tsv")
-                   || ext == QLatin1String("tab") || ext == QLatin1String("dat")
-                   || ext == QLatin1String("txt")) {
-            QString detectedSep = columnSeparator;
-            bool detectedSimplify = simplify_spaces;
-            if (ext == QLatin1String("csv")) {
-                detectedSep = QStringLiteral(",");
-                detectedSimplify = false;
-                QFile probe(fileName);
-                if (probe.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                    QTextStream pts(&probe);
-                    for (int li = 0; li < 10 && !pts.atEnd(); ++li) {
-                        const QString ln = pts.readLine().trimmed();
-                        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#')))
-                            continue;
-                        if (!ln.contains(QLatin1Char(',')) && ln.contains(QLatin1Char(';')))
-                            detectedSep = QStringLiteral(";");
-                        break;
-                    }
-                    probe.close();
-                }
-            } else if (ext == QLatin1String("tsv") || ext == QLatin1String("tab")) {
-                detectedSep = QStringLiteral("\t");
-                detectedSimplify = false;
-            } else {
-                QFile probe(fileName);
-                if (probe.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                    QTextStream pts(&probe);
-                    for (int li = 0; li < 15 && !pts.atEnd(); ++li) {
-                        const QString ln = pts.readLine().trimmed();
-                        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#'))
-                            || ln.startsWith(QLatin1Char('*')) || ln.startsWith(QLatin1Char(';')))
-                            continue;
-                        if (ln.contains(QLatin1Char('\t'))) {
-                            detectedSep = QStringLiteral("\t");
-                            detectedSimplify = false;
-                        } else if (ln.contains(QLatin1Char(','))) {
-                            detectedSep = QStringLiteral(",");
-                            detectedSimplify = false;
-                        } else {
-                            detectedSep = QStringLiteral(" ");
-                            detectedSimplify = true;
-                        }
-                        break;
-                    }
-                    probe.close();
-                }
-            }
-            importASCII(QStringList() << fileName, ImportASCIIDialog::NewTables, detectedSep,
-                        ignoredLines, renameColumns, strip_spaces, detectedSimplify,
-                        d_convert_to_numeric, d_ASCII_import_locale);
-            handledAny = true;
+            else
+                unsupportedFiles << fileInfo.fileName();
         } else if (ext == QLatin1String("bmp") || ext == QLatin1String("bw")
                    || ext == QLatin1String("eps") || ext == QLatin1String("epsf")
                    || ext == QLatin1String("epsi") || ext == QLatin1String("exr")
@@ -14242,7 +14287,40 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
                    || ext == QLatin1String("xv")) {
             loadImage(fileName);
             handledAny = true;
+        } else if (ext == QLatin1String("xlsx") || ext == QLatin1String("xlsm")
+                   || ext == QLatin1String("xls") || ext == QLatin1String("ods")) {
+            excelDropped = true;
+            unsupportedFiles << fileInfo.fileName();
+        } else if (importRigakuRasOrSpectrum(fileName, false, false)) {
+            // unknown extension (.log, .out, no extension ...) that turned out to be a text table
+            handledAny = true;
+        } else {
+            unsupportedFiles << fileInfo.fileName();
         }
+    }
+
+    if (!importSummaries.isEmpty()) {
+        const QString summary = importSummaries.join(QStringLiteral(" / "));
+        setProperty("torigraph_last_drop_import_summary", summary);
+        statusBar()->showMessage(tr("Imported %1").arg(summary), 15000);
+    }
+    if (!unsupportedFiles.isEmpty()) {
+        QString msg;
+        if (excelDropped) {
+            msg = tr("Excel workbooks cannot be read directly.\n"
+                     "In Excel, select the cells, copy them (Ctrl+C) and paste them into a "
+                     "worksheet here (Ctrl+V), or save the sheet as CSV and drop the CSV file.");
+        } else {
+            msg = tr("These files could not be read as data, graph or project files.\n"
+                     "Text tables (CSV, TXT, DAT), Rigaku .ras, images and project files can be "
+                     "dropped. For other formats, save the data as CSV first.");
+        }
+        msg += QStringLiteral("\n\n") + unsupportedFiles.join(QStringLiteral("\n"));
+        setProperty("torigraph_last_drop_unsupported_message", msg);
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, tr("File Not Imported"), msg);
+        else
+            statusBar()->showMessage(msg.section(QLatin1Char('\n'), 0, 0), 15000);
     }
 
     if (handledAny)

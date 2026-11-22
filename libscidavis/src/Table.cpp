@@ -59,6 +59,7 @@
 #include <QProgressDialog>
 #include <QFile>
 #include <QTemporaryFile>
+#include <QSaveFile>
 #include <QDialog>
 #include <QFormLayout>
 #include <QDialogButtonBox>
@@ -69,11 +70,68 @@
 #include <QTextCursor>
 #include <QUndoStack>
 #include <QRegularExpression>
+#include "Script.h"
+#include "I18nJapanese.h"
+#include <mutex>
+#include <QStatusBar>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QLabel>
+#include <QLineEdit>
 #include <memory>
 #include <vector>
 #include <cmath>
 #include <iostream>
 using namespace std;
+
+namespace {
+void registerTableWorksheetTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        // paste (D2)
+        reg("%n pasted cell(s) were not numbers and were left empty.",
+            "数値でない %n 個のセルは空欄にしました。");
+        // fill down / find & replace (D3)
+        reg("%1: fill down", "%1: 下方向へコピー");
+        reg("%1: replace", "%1: 置換");
+        reg("Find and Replace in Worksheet", "ワークシートの検索と置換");
+        reg("Find in Worksheet", "ワークシートの検索");
+        reg("Find:", "検索する文字列:");
+        reg("Replace with:", "置換後の文字列:");
+        reg("Match case", "大文字と小文字を区別する");
+        reg("Whole cell", "セル全体が一致するものだけ");
+        reg("Selected cells only", "選択したセルだけ");
+        reg("Find Next", "次を検索");
+        reg("Replace All", "すべて置換");
+        reg("Not found.", "見つかりませんでした。");
+        reg("%n cell(s) replaced.", "%n 個のセルを置換しました。");
+        // column formulas (D5)
+        reg("Formula error: %1", "数式のエラー: %1");
+        reg("The formula could not be evaluated.", "数式を計算できませんでした。");
+        reg("Circular reference: the formula depends on its own result. "
+            "The values were not updated.",
+            "循環参照: 数式が自分自身の結果を参照しています。値は更新していません。");
+        reg("Not updated: the formula uses a column with a circular reference.",
+            "未更新: 循環参照のある列を数式が参照しています。");
+        reg("Circular reference between worksheets: the values did not settle and may be "
+            "out of date.",
+            "ワークシート間の循環参照: 値が定まらず、古い値の可能性があります。");
+        // export (D6)
+        reg("Exported %1", "書き出しました: %1");
+        reg("Export stopped at table %1: %2", "表 %1 で書き出しを中止しました: %2");
+        reg("Please verify that you have the right to write to this location!",
+            "この場所に書き込む権限があるか確認してください。");
+        reg("Writing failed (%1). The disk may be full or the file may be in use.",
+            "書き込みに失敗しました（%1）。ディスクの空きが無いか、ファイルが他のアプリで開かれている可能性があります。");
+    });
+}
+} // namespace
+
 
 Table::Table(ScriptingEnv *env, const QString &fname, const QString &sep, int ignoredLines,
              bool renameCols, bool stripSpaces, bool simplifySpaces, bool convertToNumeric,
@@ -568,11 +626,13 @@ bool Table::recalculate(int col, bool only_selected_rows)
     return ok;
 }
 
-bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors)
+bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool silentErrors,
+                                      QString *errorOut)
 {
     Column *col_ptr = column(col);
     if (!col_ptr || !scriptEnv)
         return false;
+    const bool ok = [&]() -> bool {
 
     if (only_selected_rows && selectedRowCount(false) < 2)
         only_selected_rows = false;
@@ -598,6 +658,13 @@ bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool sil
             continue;
 
         Script *colscript = scriptEnv->newScript(formula, this, QString("<%1>").arg(colName(col)));
+        if (errorOut) {
+            connect(colscript, &Script::error,
+                    [errorOut](const QString &message, const QString &, int) {
+                        if (errorOut->isEmpty())
+                            *errorOut = message;
+                    });
+        }
         if (!silentErrors) {
             connect(colscript, SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
                     SIGNAL(error(const QString &, const QString &, int)));
@@ -717,6 +784,13 @@ bool Table::recalculateColumnInternal(int col, bool only_selected_rows, bool sil
         delete colscript;
     }
     return true;
+    }();
+    if (!ok && errorOut && errorOut->isEmpty())
+        *errorOut = tr("The formula could not be evaluated.");
+    // a successful manual or automatic recalculation clears the error mark of the column
+    if (ok && !only_selected_rows && !col_ptr->formulaError().isEmpty())
+        setColumnFormulaError(col, QString());
+    return ok;
 }
 
 namespace {
@@ -784,6 +858,197 @@ struct ScopedCrossTableRecalcGuard
     ~ScopedCrossTableRecalcGuard() { s_inCrossTableAutoRecalc = false; }
 };
 } // namespace
+
+namespace {
+// Same-table column references of a formula: col("B"), col(B), col("B", i), cell("B", i),
+// column("B"), col(2), column_(2), cell_(2, i). `selfRowRef` lists references that carry a row
+// argument (cell(...) / col(name, row)): a column reading other rows of itself is a recursive
+// series, not a circular reference. Returns false if some reference could not be resolved
+// (e.g. col(j-1)); the caller then falls back to repeated passes.
+static bool collectSameTableRefs(Table *tbl, int ownCol, const QString &formula,
+                                 QSet<int> &refs, bool &selfWithoutRow)
+{
+    static const QRegularExpression kRef(QStringLiteral(
+            "(?<![A-Za-z0-9_])(col|column|column_|cell|cell_)\\s*\\(\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|[^,()]*)\\s*(,|\\))"));
+    bool allResolved = true;
+    selfWithoutRow = false;
+    QRegularExpressionMatchIterator it = kRef.globalMatch(formula);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString fn = m.captured(1);
+        const bool hasRowArg = (m.captured(4) == QLatin1String(","));
+        const bool rowForm = fn.startsWith(QLatin1String("cell")) || hasRowArg;
+        int idx = -1;
+        if (m.capturedStart(3) >= 0) {
+            QString name = m.captured(3);
+            name.replace(QLatin1String("\\/"), QLatin1String("/"));
+            name.replace(QLatin1String("\\\\"), QLatin1String("\\"));
+            if (name.contains(QLatin1Char('/'))) {
+                const QString tablePart = name.section(QLatin1Char('/'), 0, 0);
+                if (tablePart != tbl->name())
+                    continue; // another table: handled by the cross-table passes
+                name = name.section(QLatin1Char('/'), 1);
+            }
+            idx = tbl->colIndex(name);
+        } else {
+            const QString arg = m.captured(2).trimmed();
+            bool isNum = false;
+            const int n = arg.toInt(&isNum);
+            if (isNum)
+                idx = n - 1; // 1-based column number
+            else if (tbl->colIndex(arg) >= 0)
+                idx = tbl->colIndex(arg);
+        }
+        if (idx < 0 || idx >= tbl->numCols()) {
+            allResolved = false;
+            continue;
+        }
+        if (idx == ownCol) {
+            if (!rowForm)
+                selfWithoutRow = true;
+            continue;
+        }
+        refs.insert(idx);
+    }
+    return allResolved;
+}
+} // namespace
+
+void Table::setColumnFormulaError(int col, const QString &message)
+{
+    Column *c = column(col);
+    if (!c || c->formulaError() == message)
+        return;
+    c->setFormulaError(message);
+    if (d_future_table)
+        emit d_future_table->headerDataChanged(Qt::Horizontal, col, col);
+}
+
+QList<int> Table::formulaErrorColumns() const
+{
+    QList<int> out;
+    if (!d_future_table)
+        return out;
+    for (int c = 0; c < d_future_table->columnCount(); ++c) {
+        if (Column *cp = d_future_table->column(c)) {
+            if (!cp->formulaError().isEmpty())
+                out << c;
+        }
+    }
+    return out;
+}
+
+bool Table::recalculateFormulaColumnsOrdered(const QVector<int> &fCols)
+{
+    registerTableWorksheetTranslations();
+    // 1) dependency graph between all formula columns of this table (cycles through a column
+    //    that was just edited must be found too); only `fCols` are evaluated
+    const QVector<int> allCols = collectFormulaColumnIndices(this, -1, 0);
+    const QSet<int> fSet(allCols.begin(), allCols.end());
+    const QSet<int> evalSet(fCols.begin(), fCols.end());
+    QHash<int, QSet<int>> deps; // column -> formula columns it reads
+    QSet<int> selfCircular;
+    bool allResolved = true;
+    for (int c : allCols) {
+        Column *cp = column(c);
+        QSet<int> refs;
+        for (const Interval<int> &iv : cp->formulaIntervals()) {
+            bool selfNoRow = false;
+            if (!collectSameTableRefs(this, c, cp->formula(iv.start()), refs, selfNoRow))
+                allResolved = false;
+            if (selfNoRow)
+                selfCircular.insert(c);
+        }
+        deps[c] = refs & fSet;
+    }
+
+    // 2) topological order (Kahn); what is left over sits on or behind a cycle
+    QHash<int, int> indeg;
+    QHash<int, QList<int>> users;
+    for (int c : allCols) {
+        indeg[c] = deps[c].size();
+        for (int d : deps[c])
+            users[d] << c;
+    }
+    QList<int> ready, order;
+    for (int c : allCols) {
+        if (indeg[c] == 0 && !selfCircular.contains(c))
+            ready << c;
+    }
+    while (!ready.isEmpty()) {
+        const int c = ready.takeFirst();
+        order << c;
+        for (int u : users.value(c)) {
+            if (--indeg[u] == 0 && !selfCircular.contains(u))
+                ready << u;
+        }
+    }
+    QSet<int> blocked;
+    for (int c : allCols) {
+        if (!order.contains(c))
+            blocked.insert(c);
+    }
+    // a blocked column is circular if it can reach itself; otherwise it only depends on one
+    auto reachesItself = [&](int start) -> bool {
+        if (selfCircular.contains(start))
+            return true;
+        QSet<int> seen;
+        QList<int> stack = deps.value(start).values();
+        while (!stack.isEmpty()) {
+            const int x = stack.takeLast();
+            if (x == start)
+                return true;
+            if (seen.contains(x))
+                continue;
+            seen.insert(x);
+            stack << deps.value(x).values();
+        }
+        return false;
+    };
+
+    bool anyChanged = false;
+    QMetaObject::Connection conn = QObject::connect(
+            d_future_table, &future::Table::dataChanged,
+            [&anyChanged](int, int, int, int) { anyChanged = true; });
+
+    auto evalOnce = [&]() {
+        for (int c : order) {
+            if (!evalSet.contains(c))
+                continue;
+            QString err;
+            if (recalculateColumnInternal(c, false, true, &err))
+                setColumnFormulaError(c, QString());
+            else
+                setColumnFormulaError(c, tr("Formula error: %1").arg(err));
+        }
+    };
+    evalOnce();
+    if (!allResolved) {
+        // references we could not resolve statically (col(j-1), ...): repeat until stable
+        for (int pass = 1; pass < allCols.size(); ++pass) {
+            bool passChanged = false;
+            QMetaObject::Connection pc = QObject::connect(
+                    d_future_table, &future::Table::dataChanged,
+                    [&passChanged](int, int, int, int) { passChanged = true; });
+            evalOnce();
+            QObject::disconnect(pc);
+            if (!passChanged)
+                break;
+        }
+    }
+    QObject::disconnect(conn);
+
+    for (int c : blocked) {
+        if (reachesItself(c))
+            setColumnFormulaError(
+                    c, tr("Circular reference: the formula depends on its own result. "
+                          "The values were not updated."));
+        else
+            setColumnFormulaError(
+                    c, tr("Not updated: the formula uses a column with a circular reference."));
+    }
+    return anyChanged;
+}
 
 void Table::scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount)
 {
@@ -895,19 +1160,11 @@ void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCoun
 
     const QVector<int> fCols = collectFormulaColumnIndices(this, changedFirstCol, changedCount);
     if (!fCols.isEmpty()) {
+        // Dependency order instead of a fixed number of passes: a chain of any length is
+        // brought up to date in one pass, circular references are detected and marked
+        // (no stale values silently left behind), failures are marked on the column header.
         d_in_auto_recalc = true;
-        const int maxPasses = qMin(fCols.size(), 4);
-        for (int pass = 0; pass < maxPasses; ++pass) {
-            bool passChanged = false;
-            QMetaObject::Connection conn = QObject::connect(
-                    d_future_table, &future::Table::dataChanged,
-                    [&passChanged](int, int, int, int) { passChanged = true; });
-            for (int idx = 0; idx < fCols.size(); ++idx)
-                recalculateColumnInternal(fCols[idx], false, true);
-            QObject::disconnect(conn);
-            if (!passChanged)
-                break;
-        }
+        recalculateFormulaColumnsOrdered(fCols);
         d_in_auto_recalc = false;
     }
 
@@ -937,7 +1194,13 @@ void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCoun
         return;
 
     ScopedCrossTableRecalcGuard crossGuard;
-    const int maxCrossPasses = qMin(crossCandidates.size() + 1, 6);
+    // Enough passes for a chain through every cross-referencing formula column; if values still
+    // change after that, the worksheets reference each other in a circle.
+    int totalCrossCols = 0;
+    for (Table *other : crossCandidates)
+        totalCrossCols += collectFormulaColumnIndices(other, -1, 0).size();
+    const int maxCrossPasses = qBound(2, totalCrossCols + 1, 64);
+    bool settled = false;
     for (int pass = 0; pass < maxCrossPasses; ++pass) {
         bool anyChangedInPass = false;
         for (Table *other : crossCandidates) {
@@ -950,23 +1213,34 @@ void Table::autoRecalculateDependentColumns(int changedFirstCol, int changedCoun
             QMetaObject::Connection conn = QObject::connect(
                     other->d_future_table, &future::Table::dataChanged,
                     [&anyChangedInPass](int, int, int, int) { anyChangedInPass = true; });
-            const int innerPasses = qMin(otherCols.size(), 4);
-            for (int ip = 0; ip < innerPasses; ++ip) {
-                bool innerChanged = false;
-                QMetaObject::Connection innerConn = QObject::connect(
-                        other->d_future_table, &future::Table::dataChanged,
-                        [&innerChanged](int, int, int, int) { innerChanged = true; });
-                for (int idx = 0; idx < otherCols.size(); ++idx)
-                    other->recalculateColumnInternal(otherCols[idx], false, true);
-                QObject::disconnect(innerConn);
-                if (!innerChanged)
-                    break;
-            }
+            other->recalculateFormulaColumnsOrdered(otherCols);
             QObject::disconnect(conn);
             other->d_in_auto_recalc = false;
         }
-        if (!anyChangedInPass)
+        if (!anyChangedInPass) {
+            settled = true;
             break;
+        }
+    }
+    if (!settled) {
+        for (Table *other : crossCandidates) {
+            if (!other)
+                continue;
+            for (int c : collectFormulaColumnIndices(other, -1, 0)) {
+                Column *cp = other->column(c);
+                bool cross = false;
+                for (const Interval<int> &iv : cp->formulaIntervals()) {
+                    const QString f = cp->formula(iv.start());
+                    cross = cross || f.contains(QLatin1Char('/'))
+                            || f.contains(QLatin1String("tablecol"), Qt::CaseInsensitive)
+                            || f.contains(QLatin1String("column__"), Qt::CaseInsensitive);
+                }
+                if (cross)
+                    other->setColumnFormulaError(
+                            c, tr("Circular reference between worksheets: the values did not "
+                                  "settle and may be out of date."));
+            }
+        }
     }
 }
 
@@ -1348,15 +1622,28 @@ void Table::copySelection()
 
 void Table::pasteSelection()
 {
+    pasteSelection(false);
+}
+
+void Table::pasteSelection(bool transposed)
+{
     if (!d_future_table)
         return;
-
     const QClipboard *clipboard = QApplication::clipboard();
     if (!clipboard)
         return;
-    QString rawText = clipboard->text();
+    const QString rawText = clipboard->text();
     if (rawText.isEmpty())
         return;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    pasteText(rawText, transposed);
+    QApplication::restoreOverrideCursor();
+}
+
+bool Table::pasteText(const QString &rawText, bool transposed)
+{
+    if (!d_future_table || rawText.isEmpty())
+        return false;
 
     QString normalized = rawText;
     normalized.replace("\r\n", "\n");
@@ -1365,7 +1652,7 @@ void Table::pasteSelection()
     while (!lines.isEmpty() && lines.last().isEmpty())
         lines.removeLast();
     if (lines.isEmpty())
-        return;
+        return false;
 
     bool hasTab = normalized.contains('\t');
     bool hasComma = !hasTab && normalized.contains(',');
@@ -1419,7 +1706,7 @@ void Table::pasteSelection()
             }
         }
         if (lines.isEmpty())
-            return;
+            return false;
     }
 
     bool keepSingleColumn = false;
@@ -1501,10 +1788,22 @@ void Table::pasteSelection()
         grid.append(rowCells);
     }
 
+    if (transposed) {
+        QList<QStringList> t;
+        for (int c = 0; c < maxCols; ++c) {
+            QStringList row;
+            for (const QStringList &src : grid)
+                row << ((c < src.size()) ? src.at(c) : QString());
+            t << row;
+        }
+        maxCols = grid.size();
+        grid = t;
+    }
+
     int pastedRows = grid.size();
     int pastedCols = maxCols;
     if (pastedRows <= 0 || pastedCols <= 0)
-        return;
+        return false;
 
     int startRow = firstSelectedRow(false);
     int startCol = firstSelectedColumn(false);
@@ -1535,7 +1834,7 @@ void Table::pasteSelection()
     };
 
     int dataStartRow = 0;
-    if (startRow == 0 && !formulaModeActive() && pastedRows >= 2) {
+    if (startRow == 0 && !formulaModeActive() && !transposed && pastedRows >= 2) {
         bool row0HasNonNumericHeaderOnNumCol = false;
         bool row0HasNumericOnNumCol = false;
         auto rowNumericStatsOnNumCols = [&](int rIdx, bool &anyNum, bool &anyNonNumText) {
@@ -1626,41 +1925,95 @@ void Table::pasteSelection()
     if (neededRows > numRows())
         setNumRows(neededRows);
 
-    for (int c = 0; c < pastedCols; ++c) {
+    // Column-wise bulk writes: one replaceValues()/replaceTexts() per column plus one
+    // setInvalid() per run of empty cells, instead of one Undo command per cell (a 10,000-row
+    // paste used to push tens of thousands of commands). Everything stays in this one macro.
+    auto markInvalidRuns = [](Column *colPtr, int firstRow, const QVector<bool> &invalid) {
+        int k = 0;
+        const int n = invalid.size();
+        while (k < n) {
+            if (!invalid[k]) {
+                ++k;
+                continue;
+            }
+            int kEnd = k;
+            while (kEnd + 1 < n && invalid[kEnd + 1])
+                ++kEnd;
+            colPtr->setInvalid(Interval<int>(firstRow + k, firstRow + kEnd), true);
+            k = kEnd + 1;
+        }
+    };
+    int droppedTextCells = 0;
+    for (int c = 0; c < pastedCols && dataRowCount > 0; ++c) {
         int targetCol = startCol + c;
         Column *colPtr = column(targetCol);
         if (!colPtr)
             continue;
+        QStringList cells;
+        cells.reserve(dataRowCount);
+        for (int r = 0; r < dataRowCount; ++r) {
+            const int srcRow = dataStartRow + r;
+            cells << ((c < grid[srcRow].size()) ? grid[srcRow][c] : QString());
+        }
+
+        if (formulaModeActive()) {
+            for (int r = 0; r < dataRowCount; ++r) {
+                colPtr->setFormula(startRow + r, cells.at(r));
+                colPtr->setInvalid(startRow + r, false);
+            }
+            continue;
+        }
+
+        QVector<bool> invalid(dataRowCount, false);
+        if (colPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            QVector<qreal> values(dataRowCount, 0.0);
+            int textCells = 0;
+            for (int r = 0; r < dataRowCount; ++r) {
+                const QString &cellStr = cells.at(r);
+                double val = 0.0;
+                if (isMissingToken(cellStr)) {
+                    invalid[r] = true;
+                } else if (tryParseDouble(cellStr, val) && !std::isnan(val)) {
+                    values[r] = val;
+                } else {
+                    invalid[r] = true;
+                    ++textCells;
+                }
+            }
+            if (textCells > 0) {
+                // A column that holds no numbers outside the pasted range becomes a text
+                // column (sample names, dates as text, ...). A column with other numbers keeps
+                // its type; the text cells are left empty and counted below.
+                bool otherNumbers = false;
+                for (int r = 0; r < colPtr->rowCount() && !otherNumbers; ++r) {
+                    if ((r < startRow || r >= startRow + dataRowCount) && !colPtr->isInvalid(r))
+                        otherNumbers = true;
+                }
+                if (!otherNumbers && colPtr->formulaIntervals().isEmpty()) {
+                    colPtr->setColumnMode(SciDAVis::ColumnMode::Text);
+                } else {
+                    droppedTextCells += textCells;
+                }
+            }
+            if (colPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                colPtr->replaceValues(startRow, values);
+                markInvalidRuns(colPtr, startRow, invalid);
+                continue;
+            }
+            invalid.fill(false);
+        }
 
         for (int r = 0; r < dataRowCount; ++r) {
-            int targetRow = startRow + r;
-            const int srcRow = dataStartRow + r;
-            QString cellStr = (c < grid[srcRow].size()) ? grid[srcRow][c] : QString();
-
-            if (formulaModeActive()) {
-                colPtr->setFormula(targetRow, cellStr);
-                colPtr->setInvalid(targetRow, false);
-                continue;
-            }
-
-            if (isMissingToken(cellStr)) {
-                clearCell(targetRow, targetCol);
-                continue;
-            }
-
-            if (colPtr->columnMode() == SciDAVis::ColumnMode::Numeric) {
-                double val = 0.0;
-                if (tryParseDouble(cellStr, val) && !std::isnan(val)) {
-                    colPtr->setValueAt(targetRow, val);
-                    if (colPtr->isInvalid(targetRow))
-                        colPtr->setInvalid(targetRow, false);
-                } else {
-                    clearCell(targetRow, targetCol);
-                }
-            } else {
-                setText(targetRow, targetCol, cellStr);
+            if (isMissingToken(cells.at(r))) {
+                invalid[r] = true;
+                cells[r].clear();
             }
         }
+        if (colPtr->columnMode() == SciDAVis::ColumnMode::Text)
+            colPtr->replaceTexts(startRow, cells);
+        else
+            colPtr->asStringColumn()->replaceTexts(startRow, cells);
+        markInvalidRuns(colPtr, startRow, invalid);
     }
 
     deselectAll();
@@ -1671,6 +2024,196 @@ void Table::pasteSelection()
     goToCell(startRow, startCol);
 
     d_future_table->endMacro();
+
+    if (droppedTextCells > 0) {
+        registerTableWorksheetTranslations();
+        if (ApplicationWindow *aw = owningApplicationWindowForTable(this))
+            aw->statusBar()->showMessage(
+                    tr("%n pasted cell(s) were not numbers and were left empty.", "",
+                       droppedTextCells),
+                    10000);
+    }
+    return true;
+}
+
+void Table::fillSelectionDown()
+{
+    if (!d_future_table)
+        return;
+    int firstRow = firstSelectedRow(false);
+    int lastRow = lastSelectedRow(false);
+    int firstCol = firstSelectedColumn(false);
+    int lastCol = lastSelectedColumn(false);
+    if (firstRow < 0 || firstCol < 0) {
+        int r = -1, c = -1;
+        getCurrentCell(&r, &c);
+        firstRow = lastRow = r;
+        firstCol = lastCol = c;
+    }
+    if (firstRow < 0 || firstCol < 0)
+        return;
+    // Like Excel: with a single row selected, copy the row above into it.
+    int srcRow = firstRow;
+    int fillFrom = firstRow + 1;
+    if (lastRow == firstRow) {
+        if (firstRow == 0)
+            return;
+        srcRow = firstRow - 1;
+        fillFrom = firstRow;
+    }
+    const int count = lastRow - fillFrom + 1;
+    if (count <= 0)
+        return;
+
+    d_future_table->beginMacro(tr("%1: fill down").arg(name()));
+    for (int c = firstCol; c <= lastCol && c < numCols(); ++c) {
+        Column *col = column(c);
+        if (!col)
+            continue;
+        if (formulaModeActive()) {
+            col->setFormula(Interval<int>(fillFrom, lastRow), col->formula(srcRow));
+            continue;
+        }
+        const bool srcInvalid = col->isInvalid(srcRow);
+        if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            col->replaceValues(fillFrom, QVector<qreal>(count, srcInvalid ? 0.0 : col->valueAt(srcRow)));
+        } else {
+            QStringList texts;
+            const QString t = srcInvalid ? QString() : col->asStringColumn()->textAt(srcRow);
+            for (int k = 0; k < count; ++k)
+                texts << t;
+            if (col->columnMode() == SciDAVis::ColumnMode::Text)
+                col->replaceTexts(fillFrom, texts);
+            else
+                col->asStringColumn()->replaceTexts(fillFrom, texts);
+        }
+        if (srcInvalid)
+            col->setInvalid(Interval<int>(fillFrom, lastRow), true);
+    }
+    d_future_table->endMacro();
+}
+
+namespace {
+bool cellTextMatches(const QString &cell, const QString &what, bool matchCase, bool wholeCell)
+{
+    const Qt::CaseSensitivity cs = matchCase ? Qt::CaseSensitive : Qt::CaseInsensitive;
+    if (wholeCell)
+        return cell.compare(what, cs) == 0;
+    return cell.contains(what, cs);
+}
+} // namespace
+
+bool Table::findNextCell(const QString &what, bool matchCase, bool wholeCell)
+{
+    if (what.isEmpty() || numRows() <= 0 || numCols() <= 0)
+        return false;
+    int curRow = 0, curCol = -1;
+    getCurrentCell(&curRow, &curCol);
+    if (curRow < 0)
+        curRow = 0;
+    const int rows = numRows(), cols = numCols();
+    const long total = static_cast<long>(rows) * cols;
+    long start = static_cast<long>(curRow) * cols + qMax(curCol, -1);
+    for (long k = 1; k <= total; ++k) {
+        const long pos = (start + k) % total;
+        const int r = static_cast<int>(pos / cols);
+        const int c = static_cast<int>(pos % cols);
+        Column *col = column(c);
+        if (!col || col->isInvalid(r))
+            continue;
+        if (cellTextMatches(text(r, c), what, matchCase, wholeCell)) {
+            deselectAll();
+            goToCell(r, c);
+            setCellSelected(r, c, true);
+            return true;
+        }
+    }
+    return false;
+}
+
+int Table::replaceAllCells(const QString &what, const QString &with, bool matchCase,
+                           bool wholeCell, bool selectionOnly)
+{
+    if (what.isEmpty() || !d_future_table)
+        return 0;
+    const Qt::CaseSensitivity cs = matchCase ? Qt::CaseSensitive : Qt::CaseInsensitive;
+    int replaced = 0;
+    d_future_table->beginMacro(tr("%1: replace").arg(name()));
+    for (int c = 0; c < numCols(); ++c) {
+        Column *col = column(c);
+        if (!col)
+            continue;
+        for (int r = 0; r < numRows(); ++r) {
+            if (col->isInvalid(r) || (selectionOnly && !isCellSelected(r, c)))
+                continue;
+            const QString old = text(r, c);
+            if (!cellTextMatches(old, what, matchCase, wholeCell))
+                continue;
+            QString now = old;
+            if (wholeCell)
+                now = with;
+            else
+                now.replace(what, with, cs);
+            if (now == old)
+                continue;
+            if (now.trimmed().isEmpty())
+                clearCell(r, c);
+            else
+                col->asStringColumn()->setTextAt(r, now);
+            ++replaced;
+        }
+    }
+    d_future_table->endMacro();
+    return replaced;
+}
+
+void Table::showFindReplaceDialog(bool replace)
+{
+    registerTableWorksheetTranslations();
+    QDialog dlg(this);
+    dlg.setWindowTitle(replace ? tr("Find and Replace in Worksheet") : tr("Find in Worksheet"));
+    QFormLayout *form = new QFormLayout();
+    QLineEdit *findEdit = new QLineEdit(&dlg);
+    QLineEdit *replaceEdit = new QLineEdit(&dlg);
+    form->addRow(tr("Find:"), findEdit);
+    if (replace)
+        form->addRow(tr("Replace with:"), replaceEdit);
+    else
+        replaceEdit->hide();
+    QCheckBox *caseBox = new QCheckBox(tr("Match case"), &dlg);
+    QCheckBox *wholeBox = new QCheckBox(tr("Whole cell"), &dlg);
+    QCheckBox *selBox = new QCheckBox(tr("Selected cells only"), &dlg);
+    selBox->setVisible(replace);
+    QLabel *status = new QLabel(&dlg);
+    QDialogButtonBox *buttons = new QDialogButtonBox(&dlg);
+    QPushButton *findBtn = buttons->addButton(tr("Find Next"), QDialogButtonBox::ActionRole);
+    QPushButton *replaceBtn = nullptr;
+    if (replace)
+        replaceBtn = buttons->addButton(tr("Replace All"), QDialogButtonBox::ActionRole);
+    buttons->addButton(QDialogButtonBox::Close);
+    findBtn->setDefault(true);
+    QVBoxLayout *vl = new QVBoxLayout(&dlg);
+    vl->addLayout(form);
+    vl->addWidget(caseBox);
+    vl->addWidget(wholeBox);
+    vl->addWidget(selBox);
+    vl->addWidget(status);
+    vl->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(findBtn, &QPushButton::clicked, &dlg, [&]() {
+        status->setText(findNextCell(findEdit->text(), caseBox->isChecked(), wholeBox->isChecked())
+                                ? QString()
+                                : tr("Not found."));
+    });
+    if (replaceBtn) {
+        connect(replaceBtn, &QPushButton::clicked, &dlg, [&]() {
+            const int n = replaceAllCells(findEdit->text(), replaceEdit->text(),
+                                          caseBox->isChecked(), wholeBox->isChecked(),
+                                          selBox->isChecked());
+            status->setText(tr("%n cell(s) replaced.", "", n));
+        });
+    }
+    dlg.exec();
 }
 
 void Table::removeCol()
@@ -1845,20 +2388,34 @@ bool Table::noYColumn()
 bool Table::exportASCII(const QString &fname, const QString &separator, bool withLabels,
                         bool exportSelection)
 {
-    QFile file(fname);
-    if (!file.open(QIODevice::WriteOnly)) {
+    return exportASCII(fname, separator, withLabels, exportSelection, AsciiExportOptions());
+}
+
+bool Table::exportASCII(const QString &fname, const QString &separator, bool withLabels,
+                        bool exportSelection, const AsciiExportOptions &options)
+{
+    registerTableWorksheetTranslations();
+    d_last_export_error.clear();
+    auto fail = [this, &fname](const QString &reason) -> bool {
+        d_last_export_error = reason;
         QApplication::restoreOverrideCursor();
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             QMessageBox::critical(0, tr("ASCII Export Error"),
-                                  tr("Could not write to file: <br><h4>") + fname
-                                          + tr("</h4><p>Please verify that you have the right to write "
-                                               "to this location!"));
+                                  tr("Could not write to file: <br><h4>") + fname.toHtmlEscaped()
+                                          + QStringLiteral("</h4><p>") + reason.toHtmlEscaped());
         }
         return false;
-    }
+    };
+
+    // QSaveFile: the old file is only replaced once everything was written successfully.
+    QSaveFile file(fname);
+    if (!file.open(QIODevice::WriteOnly))
+        return fail(tr("Please verify that you have the right to write to this location!")
+                    + QStringLiteral(" (") + file.errorString() + QStringLiteral(")"));
 
     QTextStream out(&file);
     out.setCodec("UTF-8");
+    out.setGenerateByteOrderMark(options.utf8Bom);
 
     auto quoteField = [&separator](const QString &raw) -> QString {
         const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator))
@@ -1875,71 +2432,48 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
     QLocale cLoc = QLocale::c();
     cLoc.setNumberOptions(QLocale::OmitGroupSeparator);
 
-    int i, j;
-    int rows = numRows();
-    int cols = numCols();
-    int selectedCols = 0;
-    int topRow = 0, bottomRow = 0;
-    vector<int> sCols;
+    const int rows = numRows();
+    const int cols = numCols();
+    QList<int> colIdx;
+    int topRow = 0, bottomRow = rows - 1;
     if (exportSelection) {
-        for (i = 0; i < cols; i++) {
+        for (int i = 0; i < cols; i++) {
             if (isColumnSelected(i))
-                selectedCols++;
+                colIdx << i;
         }
-
-        sCols.resize(selectedCols + 1);
-        int temp = 1;
-        for (i = 0; i < cols; i++) {
-            if (isColumnSelected(i)) {
-                sCols[temp] = i;
-                temp++;
-            }
-        }
-
         topRow = firstSelectedRow();
         bottomRow = lastSelectedRow();
+    } else {
+        for (int i = 0; i < cols; i++)
+            colIdx << i;
     }
 
-    if (withLabels && ((!exportSelection && cols > 0) || (exportSelection && selectedCols > 0))) {
+    if (withLabels && !colIdx.isEmpty()) {
         QStringList header = colNames();
-        QStringList ls = header.filter(QRegExp("\\D"));
-        if (exportSelection) {
-            for (i = 1; i < selectedCols; i++) {
-                if (ls.count() > 0)
-                    out << quoteField(header[sCols[i]]) + separator;
-                else
-                    out << quoteField("C" + header[sCols[i]]) + separator;
-            }
-
-            if (ls.count() > 0)
-                out << quoteField(header[sCols[selectedCols]]) + "\n";
-            else
-                out << quoteField("C" + header[sCols[selectedCols]]) + "\n";
-        } else {
-            if (ls.count() > 0) {
-                for (j = 0; j < cols - 1; j++)
-                    out << quoteField(header[j]) + separator;
-                out << quoteField(header[cols - 1]) + "\n";
-            } else {
-                for (j = 0; j < cols - 1; j++)
-                    out << quoteField("C" + header[j]) + separator;
-                out << quoteField("C" + header[cols - 1]) + "\n";
-            }
+        const bool anyNonDigitName = !header.filter(QRegExp("\\D")).isEmpty();
+        QStringList nameRow, unitRow;
+        bool anyUnit = false;
+        for (int c : colIdx) {
+            Column *col = column(c);
+            QString label = anyNonDigitName ? header[c] : QStringLiteral("C") + header[c];
+            if (options.longNameAndUnits && col && !col->longName().trimmed().isEmpty())
+                label = col->longName().trimmed();
+            nameRow << quoteField(label);
+            const QString unit = col ? col->units().trimmed() : QString();
+            if (!unit.isEmpty())
+                anyUnit = true;
+            unitRow << quoteField(unit);
         }
-    } // finished writting labels
+        out << nameRow.join(separator) << "\n";
+        if (options.longNameAndUnits && anyUnit)
+            out << unitRow.join(separator) << "\n";
+    }
 
     QList<Column *> col_ptrs;
-    if (exportSelection) {
-        for (j = 1; j <= selectedCols; j++)
-            col_ptrs << column(sCols[j]);
-    } else {
-        for (j = 0; j < cols; j++)
-            col_ptrs << column(j);
-        topRow = 0;
-        bottomRow = rows - 1;
-    }
+    for (int c : colIdx)
+        col_ptrs << column(c);
 
-    for (i = topRow; i <= bottomRow; i++) {
+    for (int i = topRow; i <= bottomRow && i >= 0; i++) {
         bool first = true;
         foreach (Column *col, col_ptrs) {
             if (first)
@@ -1951,8 +2485,9 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
             }
             if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
                 const double val = col->valueAt(i);
+                // shortest text that reads back as exactly the same double (up to 17 digits)
                 if (std::isfinite(val))
-                    out << quoteField(cLoc.toString(val, 'g', 15));
+                    out << quoteField(cLoc.toString(val, 'g', QLocale::FloatingPointShortest));
             } else {
                 out << quoteField(col->asStringColumn()->textAt(i));
             }
@@ -1960,7 +2495,13 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
         out << "\n";
     }
 
-    file.close();
+    out.flush();
+    if (out.status() != QTextStream::Ok || file.error() != QFileDevice::NoError)
+        return fail(tr("Writing failed (%1). The disk may be full or the file may be in use.")
+                            .arg(file.errorString()));
+    if (!file.commit())
+        return fail(tr("Writing failed (%1). The disk may be full or the file may be in use.")
+                            .arg(file.errorString()));
     return true;
 }
 
@@ -2259,6 +2800,49 @@ void Table::showColMenu(int col)
 
 bool Table::eventFilter(QObject *watched, QEvent *event)
 {
+    // Worksheet-only keys that collide with application shortcuts (Ctrl+F = new function plot,
+    // Ctrl+H = help): while the worksheet has the focus they go to the worksheet. The menu
+    // shortcuts themselves are unchanged.
+    if (event->type() == QEvent::ShortcutOverride
+        && (watched == this || watched == d_view_widget
+            || (d_view_widget && watched == d_view_widget->viewport()))) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        const Qt::KeyboardModifiers mods =
+                ke->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+        if (mods == Qt::ControlModifier
+            && (ke->key() == Qt::Key_F || ke->key() == Qt::Key_H || ke->key() == Qt::Key_D)) {
+            event->accept();
+            return true;
+        }
+    }
+    if (event->type() == QEvent::KeyPress
+        && (watched == this || watched == d_view_widget
+            || (d_view_widget && watched == d_view_widget->viewport()))) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        const Qt::KeyboardModifiers mods =
+                ke->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+        if (mods == Qt::ControlModifier && ke->key() == Qt::Key_D) {
+            fillSelectionDown();
+            return true;
+        }
+        if (mods == Qt::ControlModifier && (ke->key() == Qt::Key_F || ke->key() == Qt::Key_H)) {
+            showFindReplaceDialog(ke->key() == Qt::Key_H);
+            return true;
+        }
+        if (ke->key() == Qt::Key_Backspace && mods == Qt::NoModifier && !formulaModeActive()) {
+            // Excel/Origin: Backspace starts editing the active cell with its content erased
+            // (Esc restores it); Delete clears the whole selection.
+            if (d_view_widget) {
+                const QModelIndex idx = d_view_widget->currentIndex();
+                if (idx.isValid()) {
+                    d_view_widget->edit(idx);
+                    if (QLineEdit *le = qobject_cast<QLineEdit *>(QApplication::focusWidget()))
+                        le->clear();
+                    return true;
+                }
+            }
+        }
+    }
     if (event->type() == QEvent::KeyPress
         && (watched == this || watched == d_view_widget
             || (d_view_widget && watched == d_view_widget->viewport()))) {

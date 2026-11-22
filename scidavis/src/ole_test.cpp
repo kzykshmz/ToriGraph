@@ -158,6 +158,7 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
 static int runSuite55TensileAndWorkHardeningCorrectness(ApplicationWindow *mw);
 static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *mw);
 static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw);
+static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -239,6 +240,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc56;
+    }
+    if (args.contains("--suite59-only")) {
+        const int rc59 = runSuite59DataImportAndWorksheet(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc59;
     }
 
     // =========================================================================
@@ -5402,6 +5410,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite56FitConvergenceAndStatistics(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite59DataImportAndWorksheet(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -15346,5 +15357,322 @@ static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 56 Fit Convergence, Peak Width Convention & Statistics passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// =========================================================================
+// Suite 59: Data import & worksheet (D2 paste, B8 drop parser, B3, D5, D6, D10, D3)
+// =========================================================================
+#include "table/AsciiTableImportFilter.h"
+#include "table/future_Table.h"
+#include "ImportASCIIDialog.h"
+#include <QDropEvent>
+#include <QMimeData>
+#include <QTemporaryDir>
+#include <QUrl>
+
+static bool suite59WriteFile(const QString &path, const QByteArray &bytes)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    const bool ok = f.write(bytes) == bytes.size();
+    f.close();
+    return ok;
+}
+
+static QByteArray suite59ReadAll(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
+}
+
+static void suite59Drop(ApplicationWindow *mw, const QStringList &paths)
+{
+    QMimeData mime;
+    QList<QUrl> urls;
+    for (const QString &p : paths)
+        urls << QUrl::fromLocalFile(p);
+    mime.setUrls(urls);
+    QDropEvent ev(QPoint(10, 10), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    mw->dropEvent(&ev);
+    QApplication::processEvents();
+}
+
+static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 59: Data Import & Worksheet (paste, drop parser, "
+                 "formulas, CSV export)...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 59");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmp;
+    CHECK_COND(tmp.isValid(), "59: QTemporaryDir failed");
+
+    // ---- 59a (D2): menu paste == Ctrl+V: tab first, no split at spaces, header/unit rows
+    {
+        Table *t = mw->newTable("Paste59a", 4, 2);
+        CHECK_COND(t != nullptr, "59a: table");
+        t->setCellsSelected(0, 0, 0, 0, true);
+        QApplication::clipboard()->setText("Nominal strain\tNominal stress\n"
+                                           "%\tMPa\n"
+                                           "0.0\t0.0\n"
+                                           "2.0\t480.0\n"
+                                           "4.0\t518.0\n");
+        t->d_future_table->pasteIntoSelection(); // the Edit menu / context menu path
+        CHECK_COND(t->numCols() == 2, "59a: menu paste split 'Nominal stress' into two columns");
+        CHECK_COND(t->column(1)->longName() == "Nominal stress" && t->column(1)->units() == "MPa",
+                   "59a: header/unit rows not promoted on the menu paste path");
+        CHECK_COND(std::fabs(t->cell(1, 1) - 480.0) < 1e-12 && std::fabs(t->cell(2, 0) - 4.0) < 1e-12,
+                   "59a: pasted values wrong");
+    }
+    // leading empty cells are kept in place (row starts with a tab)
+    {
+        Table *t = mw->newTable("Paste59b", 3, 3);
+        t->setCellsSelected(1, 0, 1, 0, true);
+        CHECK_COND(t->pasteText("\t2\t3\n1\t\t6\n"), "59a2: pasteText failed");
+        CHECK_COND(t->column(0)->isInvalid(1) && std::fabs(t->cell(1, 1) - 2.0) < 1e-12
+                           && std::fabs(t->cell(1, 2) - 3.0) < 1e-12,
+                   "59a2: leading empty cell was dropped (values shifted left)");
+        CHECK_COND(std::fabs(t->cell(2, 0) - 1.0) < 1e-12 && t->column(1)->isInvalid(2)
+                           && std::fabs(t->cell(2, 2) - 6.0) < 1e-12,
+                   "59a2: inner empty cell not kept");
+    }
+    // a large paste is one Undo step made of a few column-wise commands
+    {
+        Table *t = mw->newTable("Paste59c", 2, 2);
+        QString big;
+        for (int r = 0; r < 5000; ++r)
+            big += QString::number(r) + "\t" + QString::number(r * 0.5, 'g', 17)
+                    + ((r % 1000 == 7) ? QString("\tNaN") : QString("\t1")) + "\n";
+        QUndoStack *us = t->d_future_table->undoStack();
+        CHECK_COND(us != nullptr, "59a3: no undo stack");
+        const int idx0 = us->index();
+        t->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(t->pasteText(big), "59a3: big paste failed");
+        CHECK_COND(t->numRows() == 5000 && t->numCols() == 3, "59a3: table not expanded to 5000x3");
+        CHECK_COND(std::fabs(t->cell(4999, 1) - 2499.5) < 1e-12 && t->column(2)->isInvalid(7),
+                   "59a3: values / NaN cell wrong");
+        CHECK_COND(us->index() == idx0 + 1, "59a3: paste was not exactly one Undo step");
+        const QUndoCommand *cmd = us->command(us->index() - 1);
+        std::cout << "[INFO] 59a3: 5000x3 paste = " << cmd->childCount() << " undo child commands\n";
+        CHECK_COND(cmd->childCount() < 60, "59a3: paste still pushes one command per cell");
+        us->undo();
+        CHECK_COND(t->numRows() == 2 && t->numCols() == 2, "59a3: undo did not restore the table");
+        us->redo();
+        CHECK_COND(t->numRows() == 5000 && std::fabs(t->cell(4999, 1) - 2499.5) < 1e-12,
+                   "59a3: redo failed");
+    }
+    // transposed paste
+    {
+        Table *t = mw->newTable("Paste59d", 2, 2);
+        t->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(t->pasteText("1\t2\t3\n4\t5\t6\n", true), "59a4: transposed paste failed");
+        CHECK_COND(t->numRows() == 3 && std::fabs(t->cell(2, 0) - 3.0) < 1e-12
+                           && std::fabs(t->cell(0, 1) - 4.0) < 1e-12,
+                   "59a4: transposed paste wrong");
+    }
+
+    // ---- 59b (B8): import filter
+    {
+        // unit row outside the unit dictionary
+        const QByteArray csv = "Load,Stress,Speed\nkgf,N/mm2,mm/min\n1,2.5,3\n4,5.5,6\n";
+        AsciiTableImportFilter::ImportReport rep;
+        std::unique_ptr<future::Table> ft(
+                AsciiTableImportFilter::importDroppedTextData(csv, "u", "u.csv", &rep));
+        CHECK_COND(ft && ft->columnCount() == 3 && ft->rowCount() == 2, "59b1: shape");
+        CHECK_COND(ft->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && ft->column(1)->units() == "N/mm2" && rep.unitsRowDetected,
+                   "59b1: unknown unit row turned the columns into text");
+        CHECK_COND(std::fabs(ft->column(1)->valueAt(1) - 5.5) < 1e-12, "59b1: value");
+    }
+    {
+        // metadata preamble above name/unit rows (instrument export)
+        const QByteArray txt = "Instrument: Potentiostat X\nDate: 2026/11/22\nOperator: test\n"
+                               "Time\tVoltage\ns\tV\n0\t1.0\n1\t1.5\n2\t\n3\t2.5\n";
+        AsciiTableImportFilter::ImportReport rep;
+        std::unique_ptr<future::Table> ft(
+                AsciiTableImportFilter::importDroppedTextData(txt, "p", "p.mpt", &rep));
+        CHECK_COND(ft && ft->columnCount() == 2 && ft->rowCount() == 4, "59b2: shape");
+        CHECK_COND(ft->column(0)->name() == "Time" && ft->column(1)->units() == "V",
+                   "59b2: header/unit rows below the preamble not used");
+        CHECK_COND(rep.skippedLines == 3 && rep.missingCells == 1, "59b2: report counts");
+        CHECK_COND(ft->column(1)->isInvalid(2) && std::fabs(ft->column(1)->valueAt(3) - 2.5) < 1e-12,
+                   "59b2: missing cell not kept as an empty cell");
+        std::cout << "[INFO] 59b2 report: "
+                  << AsciiTableImportFilter::describeImportReport(rep).toStdString() << "\n";
+    }
+    {
+        // Rigaku .ras: two scans, a row with a missing value
+        const QByteArray ras = "*RAS_DATA_START\n*RAS_HEADER_START\n*MEAS_SCAN_UNIT_X \"deg.\"\n"
+                               "*RAS_HEADER_END\n*RAS_INT_START\n10.0 100 1\n10.1 \n10.2 120 1\n"
+                               "*RAS_INT_END\n*RAS_HEADER_START\n*RAS_HEADER_END\n*RAS_INT_START\n"
+                               "20.0 7 1\n20.1 8 1\n*RAS_INT_END\n*RAS_DATA_END\n";
+        AsciiTableImportFilter::ImportReport rep;
+        std::unique_ptr<future::Table> ft(
+                AsciiTableImportFilter::importDroppedTextData(ras, "r", "r.ras", &rep));
+        CHECK_COND(ft && rep.rasBlocks == 2, "59b3: second RAS scan was cut off");
+        CHECK_COND(ft->columnCount() == 6 && ft->column(3)->name() == "TwoTheta_2"
+                           && std::fabs(ft->column(4)->valueAt(1) - 8.0) < 1e-12,
+                   "59b3: second scan columns");
+        CHECK_COND(ft->column(0)->rowCount() >= 3 && ft->column(1)->isInvalid(1)
+                           && std::fabs(ft->column(0)->valueAt(1) - 10.1) < 1e-12
+                           && std::fabs(ft->column(1)->valueAt(2) - 120.0) < 1e-12,
+                   "59b3: row with a missing value was dropped or filled with 0");
+    }
+
+    // ---- 59c (B8/B3): drag & drop uses the filter, never the last dialog settings
+    {
+        const int oldIgnored = mw->ignoredLines;
+        mw->ignoredLines = 2; // a leftover from the import dialog must not be applied
+        const QString csvPath = tmp.filePath("drop59.csv");
+        CHECK_COND(suite59WriteFile(csvPath, "Strain,Stress\n%,MPa\n0,0\n1,100\n2,180\n"),
+                   "59c: write csv");
+        const QList<MyWidget *> beforeWins = mw->windowsList();
+        suite59Drop(mw, QStringList() << csvPath);
+        mw->ignoredLines = oldIgnored;
+        Table *t = nullptr;
+        for (MyWidget *w : mw->windowsList()) {
+            if (!beforeWins.contains(w))
+                t = qobject_cast<Table *>(w);
+        }
+        CHECK_COND(t != nullptr, "59c: csv drop created no table");
+        CHECK_COND(t && t->numRows() == 3 && t->column(1)->units() == "MPa"
+                           && std::fabs(t->cell(2, 1) - 180.0) < 1e-12,
+                   "59c: dropped csv imported wrongly (dialog settings leaked?)");
+        CHECK_COND(mw->property("torigraph_last_drop_import_summary").toString().contains("drop59.csv"),
+                   "59c: no import summary for the drop");
+
+        const QString xlsxPath = tmp.filePath("book59.xlsx");
+        CHECK_COND(suite59WriteFile(xlsxPath, QByteArray("PK\x03\x04", 4) + QByteArray(64, 'x')),
+                   "59c: write xlsx");
+        mw->setProperty("torigraph_last_drop_unsupported_message", QVariant());
+        const int before2 = mw->windowsList().size();
+        suite59Drop(mw, QStringList() << xlsxPath);
+        const QString msg = mw->property("torigraph_last_drop_unsupported_message").toString();
+        CHECK_COND(mw->windowsList().size() == before2, "59c: xlsx drop created a window");
+        CHECK_COND(msg.contains("CSV") && msg.contains("book59.xlsx"),
+                   "59c: no copy-paste / CSV hint for an .xlsx drop");
+    }
+
+    // ---- 59d (D5): dependency order, circular references, error marks
+    {
+        Table *t = mw->newTable("Rc59", 3, 9);
+        CHECK_COND(t != nullptr && t->numCols() == 9, "59d: table");
+        const char *names[] = { "A", "B", "C", "D", "E", "F", "G", "H", "I" };
+        for (int c = 0; c < 9; ++c)
+            t->setColName(c, names[c]);
+        t->setAutoRecalcFormulas(true);
+        for (int r = 0; r < 3; ++r)
+            t->setCell(r, 0, r + 1.0);
+        // reverse chain B <- C <- D <- E <- F <- G <- A: six steps, listed backwards
+        const char *chain[] = { "col(\"C\")+1", "col(\"D\")+1", "col(\"E\")+1",
+                                "col(\"F\")+1", "col(\"G\")+1", "col(\"A\")+1" };
+        for (int k = 0; k < 6; ++k)
+            t->column(1 + k)->setFormula(Interval<int>(0, 2), chain[k]);
+        t->column(7)->setFormula(Interval<int>(0, 2), "col(\"I\")+1"); // H <-> I circular
+        t->column(8)->setFormula(Interval<int>(0, 2), "col(\"H\")+1");
+        t->setCell(0, 0, 10.0); // triggers the automatic recalculation
+        QApplication::processEvents();
+        std::cout << "[INFO] 59d: B(0) = " << t->cell(0, 1) << " (expected 16)\n";
+        CHECK_COND(std::fabs(t->cell(0, 1) - 16.0) < 1e-12 && std::fabs(t->cell(2, 1) - 9.0) < 1e-12,
+                   "59d: reverse dependency chain not brought up to date");
+        const QList<int> errs = t->formulaErrorColumns();
+        CHECK_COND(errs.contains(7) && errs.contains(8) && !errs.contains(1),
+                   "59d: circular reference not detected / wrong column marked");
+        const QString tip =
+                t->d_future_table->headerData(7, Qt::Horizontal, Qt::ToolTipRole).toString();
+        CHECK_COND(!t->column(7)->formulaError().isEmpty() && tip.contains(t->column(7)->formulaError()),
+                   "59d: error not shown on the column header");
+        // fixing the cycle clears the mark
+        t->column(8)->setFormula(Interval<int>(0, 2), "col(\"A\")*2");
+        t->setCell(1, 0, 3.0);
+        QApplication::processEvents();
+        CHECK_COND(t->formulaErrorColumns().isEmpty(), "59d: error mark not cleared after fix");
+        CHECK_COND(std::fabs(t->cell(0, 7) - 21.0) < 1e-12, "59d: H after fixing the cycle");
+    }
+
+    // ---- 59e (D6): CSV export
+    {
+        Table *t = mw->newTable("Exp59", 3, 2);
+        t->setColName(0, "Time");
+        t->setColName(1, "Load");
+        t->column(0)->setLongName(QString::fromUtf8("\xE6\x99\x82\xE9\x96\x93")); // 時間
+        t->column(0)->setUnits("s");
+        t->column(1)->setUnits("N");
+        t->setCell(0, 0, 0.1);
+        t->setCell(1, 0, 1.0 / 3.0);
+        t->setCell(2, 0, 123456789.123456789);
+        t->setCell(0, 1, 1e-300);
+        t->setCell(1, 1, -2.5);
+        t->setCell(2, 1, 3.0);
+        Table::AsciiExportOptions opt;
+        opt.utf8Bom = true;
+        opt.longNameAndUnits = true;
+        const QString out = tmp.filePath("exp59.csv");
+        CHECK_COND(t->exportASCII(out, ",", true, false, opt), "59e: export failed");
+        const QByteArray bytes = suite59ReadAll(out);
+        CHECK_COND(bytes.startsWith("\xEF\xBB\xBF"), "59e: BOM missing");
+        const QStringList lines = QString::fromUtf8(bytes.mid(3)).split('\n', Qt::SkipEmptyParts);
+        CHECK_COND(lines.size() == 5, "59e: expected long-name row, unit row and 3 data rows");
+        CHECK_COND(lines[0] == QString::fromUtf8("\xE6\x99\x82\xE9\x96\x93,Load") && lines[1] == "s,N",
+                   "59e: header rows wrong");
+        CHECK_COND(lines[2] == "0.1,1e-300", "59e: shortest round-trip text not used");
+        const double third = lines[3].section(',', 0, 0).toDouble();
+        const double big = lines[4].section(',', 0, 0).toDouble();
+        CHECK_COND(third == 1.0 / 3.0 && big == 123456789.123456789,
+                   "59e: exported numbers do not read back exactly (precision lost)");
+        // default (old API): no BOM, short names
+        CHECK_COND(t->exportASCII(out, "\t", true, false), "59e: plain export failed");
+        CHECK_COND(suite59ReadAll(out).startsWith("Time\tLoad\n"), "59e: plain export header");
+        // write errors are reported
+        CHECK_COND(!t->exportASCII(tmp.filePath("no_dir/x.csv"), ",", true, false)
+                           && !t->lastExportError().isEmpty(),
+                   "59e: export into a missing folder reported success");
+    }
+
+    // ---- 59f (D10): overwrite import copies Long Name/units, type mismatch is refused
+    {
+        Table *t = mw->newTable("Imp59", 2, 2);
+        t->setCell(0, 0, 9.0);
+        t->setCell(0, 1, 9.0);
+        mw->d_workspace.setActiveSubWindow(t);
+        const QString f1 = tmp.filePath("imp59.csv");
+        CHECK_COND(suite59WriteFile(f1, "Time (s),Load (N)\n1,2\n3,4\n5,6\n"), "59f: write");
+        mw->importASCII(QStringList() << f1, ImportASCIIDialog::Overwrite, ",", 0, true, true,
+                        false, true, QLocale::c());
+        CHECK_COND(t->numRows() == 3 && std::fabs(t->cell(2, 1) - 6.0) < 1e-12,
+                   "59f: overwrite import values");
+        CHECK_COND(t->column(1)->units() == "N" && t->column(0)->longName() == "Time",
+                   "59f: Long Name / units not copied by the overwrite import");
+        const QString f2 = tmp.filePath("imp59_text.csv");
+        CHECK_COND(suite59WriteFile(f2, "x,y\nabc,1\ndef,2\n"), "59f: write 2");
+        mw->setProperty("torigraph_last_import_error", QVariant());
+        mw->importASCII(QStringList() << f2, ImportASCIIDialog::Overwrite, ",", 0, true, true,
+                        false, true, QLocale::c());
+        CHECK_COND(!mw->property("torigraph_last_import_error").toString().isEmpty(),
+                   "59f: text column imported into a numeric column without an error");
+        CHECK_COND(std::fabs(t->cell(0, 0) - 1.0) < 1e-12, "59f: refused import changed the table");
+    }
+
+    // ---- 59g (D3): fill down and replace
+    {
+        Table *t = mw->newTable("Keys59", 4, 2);
+        t->setCell(0, 0, 7.5);
+        t->setCellsSelected(0, 0, 3, 0, true);
+        t->fillSelectionDown();
+        CHECK_COND(std::fabs(t->cell(3, 0) - 7.5) < 1e-12, "59g: fill down");
+        t->deselectAll();
+        t->setCell(2, 1, 480.0);
+        const int n = t->replaceAllCells("480", "481", false, true, false);
+        CHECK_COND(n == 1 && std::fabs(t->cell(2, 1) - 481.0) < 1e-12, "59g: replace");
+        t->goToCell(0, 0);
+        CHECK_COND(t->findNextCell("481", false, false), "59g: find");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 59 Data Import & Worksheet passed!\n";
     return 0;
 }

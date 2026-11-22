@@ -319,7 +319,13 @@ public:
     //! Load the column from XML
     bool load(XmlStreamReader *reader) override;
 
+    //! Message of the last failed automatic formula recalculation (error or circular
+    //! reference). Runtime only: not saved, not part of Undo. Empty when the formula is fine.
+    void setFormulaError(const QString &message) { d_formula_error = message; }
+    QString formulaError() const { return d_formula_error; }
+
 private:
+    QString d_formula_error;
     //! Read XML numerical <-> date time filter element
     bool XmlReadNumericDateTimeFilter(XmlStreamReader *reader);
     //! Read XML input filter element

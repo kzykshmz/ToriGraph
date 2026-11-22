@@ -35,6 +35,28 @@
 #include <QCheckBox>
 #include <QComboBox>
 
+#include "ApplicationWindow.h"
+#include "I18nJapanese.h"
+
+#include <mutex>
+
+namespace {
+void registerExportDialogTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Write Long Name and &Units rows (instead of short names)",
+            "Long Name と単位の行を書き出す（短い名前の代わりに）(&U)");
+        reg("Add a UTF-8 &BOM (Excel then shows Japanese text correctly)",
+            "UTF-8 の BOM を付ける（Excel で日本語が化けない）(&B)");
+    });
+}
+} // namespace
+
 ExportDialog::ExportDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
     setWindowTitle(tr("Export ASCII"));
@@ -81,10 +103,24 @@ ExportDialog::ExportDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     boxSelection = new QCheckBox(tr("Export &Selection"));
     boxSelection->setChecked(false);
 
+    registerExportDialogTranslations();
+    auto &settings = ApplicationWindow::getSettings();
+    QCheckBox *boxLongNameUnits =
+            new QCheckBox(tr("Write Long Name and &Units rows (instead of short names)"));
+    boxLongNameUnits->setObjectName(QStringLiteral("ExportLongNameUnits"));
+    boxLongNameUnits->setChecked(
+            settings.value("/General/ExportASCII/LongNameUnits", true).toBool());
+    QCheckBox *boxBom =
+            new QCheckBox(tr("Add a UTF-8 &BOM (Excel then shows Japanese text correctly)"));
+    boxBom->setObjectName(QStringLiteral("ExportUtf8Bom"));
+    boxBom->setChecked(settings.value("/General/ExportASCII/UTF8BOM", true).toBool());
+
     QVBoxLayout *vl1 = new QVBoxLayout();
     vl1->addLayout(gl1);
     vl1->addWidget(boxNames);
     vl1->addWidget(boxSelection);
+    vl1->addWidget(boxLongNameUnits);
+    vl1->addWidget(boxBom);
 
     QHBoxLayout *hbox3 = new QHBoxLayout();
     buttonOk = new QPushButton(tr("&OK"));
@@ -145,6 +181,12 @@ void ExportDialog::accept()
                 tr("The separator must not contain the following characters: 0-9eE.+-"));
         return;
     }
+
+    auto &settings = ApplicationWindow::getSettings();
+    if (QCheckBox *cb = findChild<QCheckBox *>(QStringLiteral("ExportLongNameUnits")))
+        settings.setValue("/General/ExportASCII/LongNameUnits", cb->isChecked());
+    if (QCheckBox *cb = findChild<QCheckBox *>(QStringLiteral("ExportUtf8Bom")))
+        settings.setValue("/General/ExportASCII/UTF8BOM", cb->isChecked());
 
     hide();
     if (boxAllTables->isChecked())

@@ -44,6 +44,10 @@
 #include <QTextStream>
 #include <QVector>
 
+#include "I18nJapanese.h"
+
+#include <mutex>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -69,6 +73,58 @@ QStringList AsciiTableImportFilter::fileExtensions() const
 }
 
 namespace {
+
+// Encoding chosen by the most recent decodeLabTextAuto() call and the report of the most recent
+// import (both only touched from the GUI thread).
+QString g_lastDecodedEncoding;
+AsciiTableImportFilter::ImportReport g_lastImportReport;
+
+// Japanese texts of the import report and of the drop / append-import messages in
+// ApplicationWindow (registered here because every import passes through this filter).
+void registerImportJapaneseStrings()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("%1 scans", "%1 スキャン");
+        reg("%1 rows x %2 columns", "%1 行 × %2 列");
+        reg("encoding: %1", "文字コード: %1");
+        reg("separator: %1", "区切り: %1");
+        reg("tab", "タブ");
+        reg("spaces", "空白");
+        reg("unit row: yes", "単位行: あり");
+        reg("unit row: no", "単位行: なし");
+        reg("%n line(s) skipped", "読み飛ばした行 %n");
+        reg("%n empty cell(s)", "空欄 %n 個");
+        reg("%n column(s) imported as text", "文字列として読んだ列 %n");
+        reg("Scan %1", "スキャン %1");
+        reg("Imported %1", "読み込みました: %1");
+        reg("File Not Imported", "読み込めなかったファイル");
+        reg("Excel workbooks cannot be read directly.\n"
+            "In Excel, select the cells, copy them (Ctrl+C) and paste them into a "
+            "worksheet here (Ctrl+V), or save the sheet as CSV and drop the CSV file.",
+            "Excel のブック（.xlsx など）は直接読み込めません。\n"
+            "Excel で範囲を選んでコピー（Ctrl+C）し、ここのワークシートに貼り付ける（Ctrl+V）か、"
+            "CSV で保存してから CSV ファイルをドロップしてください。");
+        reg("These files could not be read as data, graph or project files.\n"
+            "Text tables (CSV, TXT, DAT), Rigaku .ras, images and project files can be "
+            "dropped. For other formats, save the data as CSV first.",
+            "次のファイルはデータ・図・プロジェクトとして読み込めませんでした。\n"
+            "ドロップできるのは、文字の表（CSV・TXT・DAT）、Rigaku の .ras、画像、プロジェクトファイルです。"
+            "それ以外の形式は、先に CSV で保存してください。");
+        reg("Column \"%1\" of the file has a different data type (%2) than column \"%3\" of "
+            "the worksheet (%4). Nothing was imported.",
+            "ファイルの列「%1」（%2）とワークシートの列「%3」（%4）のデータ型が違うため、"
+            "何も読み込みませんでした。");
+        reg("numeric", "数値");
+        reg("text/date", "文字列・日時");
+        reg("These columns could not be imported from %1: %2",
+            "%1 から次の列を読み込めませんでした: %2");
+    });
+}
 
 struct LabCsvCell
 {
@@ -1290,8 +1346,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                          int ignoredLines, bool firstRowNamesColumns,
                                          bool trimSpaces, bool simplifySpaces,
                                          bool convertToNumeric, const QLocale &numericLocale,
-                                         bool autoFixTabOnCsv)
+                                         bool autoFixTabOnCsv, bool detectPreamble = false)
 {
+    g_lastImportReport = AsciiTableImportFilter::ImportReport();
+    g_lastDecodedEncoding.clear();
     const QString effTableName =
             tableName.trimmed().isEmpty() ? QObject::tr("Table") : tableName.trimmed();
     if (rawBytes.isEmpty())
@@ -1344,6 +1402,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     }
 
     const QString decoded = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
+    g_lastImportReport.encoding = g_lastDecodedEncoding;
     if (decoded.isEmpty())
         return new future::Table(0, 0, effTableName);
 
@@ -1353,73 +1412,120 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // 1. Specialized Rigaku SmartLab .ras XRD / XRR parser
     if ((isRasExt || trimmedStart.startsWith(QLatin1String("*RAS_")))
         && decoded.contains(QLatin1String("*RAS_INT_START"))) {
-        QString unitX = QStringLiteral("deg.");
-        QString unitY = QStringLiteral("cps");
-
         static const QRegularExpression kUnitXRe(
                 QStringLiteral("\\*MEAS_SCAN_UNIT_X\\s+\"([^\"]*)\""));
         static const QRegularExpression kUnitYRe(
                 QStringLiteral("\\*MEAS_SCAN_UNIT_Y\\s+\"([^\"]*)\""));
-        const auto mx = kUnitXRe.match(decoded);
-        if (mx.hasMatch() && !mx.captured(1).trimmed().isEmpty())
-            unitX = mx.captured(1).trimmed();
-        const auto my = kUnitYRe.match(decoded);
-        if (my.hasMatch() && !my.captured(1).trimmed().isEmpty())
-            unitY = my.captured(1).trimmed();
-
-        const int intStart = decoded.indexOf(QLatin1String("*RAS_INT_START"));
-        int bodyStart = decoded.indexOf(QLatin1Char('\n'), intStart);
-        bodyStart = (bodyStart >= 0) ? (bodyStart + 1) : (intStart + 14);
-        int intEnd = decoded.indexOf(QLatin1String("*RAS_INT_END"), bodyStart);
-        if (intEnd < 0)
-            intEnd = decoded.size();
-
-        const QString body = decoded.mid(bodyStart, std::max(0, intEnd - bodyStart));
-        QVector<QVector<LabCsvCell>> rasRows;
-        int rasCols = 0;
-        parseDelimitedRecordsFast(body, 0, QStringLiteral(" "), true, true, true, rasRows, rasCols);
-        rasCols = std::max(2, rasCols);
-        const int nRows = rasRows.size();
+        // Unit of the scan header nearest above `before` (each scan of a multi-scan file has
+        // its own *RAS_HEADER block), falling back to the default.
+        auto unitBefore = [&decoded](const QRegularExpression &re, int before,
+                                     const QString &fallback) -> QString {
+            QString found = fallback;
+            QRegularExpressionMatchIterator it = re.globalMatch(decoded);
+            while (it.hasNext()) {
+                const QRegularExpressionMatch m = it.next();
+                if (m.capturedStart() > before)
+                    break;
+                if (!m.captured(1).trimmed().isEmpty())
+                    found = m.captured(1).trimmed();
+            }
+            return found;
+        };
 
         QLocale cLoc = QLocale::c();
         cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
 
+        // Every *RAS_INT_START ... *RAS_INT_END block is imported (multi-scan files used to be cut
+        // at the first *RAS_INT_END). Cells that are missing or not numbers become empty cells;
+        // rows are never dropped and never padded with 0.
         QList<Column *> cols;
-        for (int c = 0; c < rasCols; ++c) {
-            std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nRows, 0.0));
-            IntervalAttribute<bool> inv;
-            for (int r = 0; r < nRows; ++r) {
-                const QString cellTxt =
-                        (c < rasRows[r].size()) ? rasRows[r][c].value.trimmed() : QString();
-                bool ok = false;
-                const double v = cLoc.toDouble(cellTxt, &ok);
-                if (ok && std::isfinite(v))
-                    (*vec)[r] = v;
-                else
-                    inv.setValue(r, true);
+        int searchFrom = 0;
+        int blockIdx = 0;
+        int missingCells = 0;
+        int totalRows = 0;
+        int maxBlockCols = 0;
+        while (true) {
+            const int intStart = decoded.indexOf(QLatin1String("*RAS_INT_START"), searchFrom);
+            if (intStart < 0)
+                break;
+            int bodyStart = decoded.indexOf(QLatin1Char('\n'), intStart);
+            bodyStart = (bodyStart >= 0) ? (bodyStart + 1) : (intStart + 14);
+            int intEnd = decoded.indexOf(QLatin1String("*RAS_INT_END"), bodyStart);
+            const int nextStart = decoded.indexOf(QLatin1String("*RAS_INT_START"), bodyStart);
+            if (intEnd < 0 || (nextStart >= 0 && nextStart < intEnd))
+                intEnd = (nextStart >= 0) ? nextStart : decoded.size();
+            searchFrom = std::max(intEnd, bodyStart);
+
+            const QString unitX = unitBefore(kUnitXRe, intStart, QStringLiteral("deg."));
+            const QString unitY = unitBefore(kUnitYRe, intStart, QStringLiteral("cps"));
+
+            const QString body = decoded.mid(bodyStart, std::max(0, intEnd - bodyStart));
+            QVector<QVector<LabCsvCell>> rasRows;
+            int rasCols = 0;
+            parseDelimitedRecordsFast(body, 0, QStringLiteral(" "), true, true, true, rasRows,
+                                      rasCols);
+            // Drop '*' metadata lines that may sit inside a block.
+            for (int r = rasRows.size() - 1; r >= 0; --r) {
+                if (!rasRows[r].isEmpty() && rasRows[r][0].value.trimmed().startsWith(QLatin1Char('*')))
+                    rasRows.remove(r);
             }
-            QString colShort = (c == 0) ? QStringLiteral("TwoTheta")
-                    : (c == 1)          ? QStringLiteral("Intensity")
-                    : (c == 2)          ? QStringLiteral("Factor")
-                                        : QStringLiteral("Col%1").arg(c + 1);
-            Column *col = new Column(colShort, std::move(vec), inv);
-            if (c == 0) {
-                col->setLongName(QStringLiteral("2\u03B8"));
-                col->setUnits(unitX);
-                col->setPlotDesignation(SciDAVis::X);
-            } else if (c == 1) {
-                col->setLongName(QStringLiteral("Intensity"));
-                col->setUnits(unitY);
-                col->setPlotDesignation(SciDAVis::Y);
-            } else {
-                col->setPlotDesignation(SciDAVis::noDesignation);
+            const int nRows = rasRows.size();
+            if (nRows == 0 && blockIdx > 0)
+                continue;
+            rasCols = std::max(2, rasCols);
+            maxBlockCols = std::max(maxBlockCols, rasCols);
+            totalRows = std::max(totalRows, nRows);
+            const QString suffix =
+                    (blockIdx == 0) ? QString() : QStringLiteral("_%1").arg(blockIdx + 1);
+
+            for (int c = 0; c < rasCols; ++c) {
+                std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nRows, 0.0));
+                IntervalAttribute<bool> inv;
+                for (int r = 0; r < nRows; ++r) {
+                    const QString cellTxt =
+                            (c < rasRows[r].size()) ? rasRows[r][c].value.trimmed() : QString();
+                    bool ok = false;
+                    const double v = cLoc.toDouble(cellTxt, &ok);
+                    if (ok && std::isfinite(v)) {
+                        (*vec)[r] = v;
+                    } else {
+                        inv.setValue(r, true);
+                        ++missingCells;
+                    }
+                }
+                QString colShort = (c == 0) ? QStringLiteral("TwoTheta")
+                        : (c == 1)          ? QStringLiteral("Intensity")
+                        : (c == 2)          ? QStringLiteral("Factor")
+                                            : QStringLiteral("Col%1").arg(c + 1);
+                Column *col = new Column(colShort + suffix, std::move(vec), inv);
+                if (c == 0) {
+                    col->setLongName(QStringLiteral("2θ"));
+                    col->setUnits(unitX);
+                    col->setPlotDesignation(SciDAVis::X);
+                } else if (c == 1) {
+                    col->setLongName(QStringLiteral("Intensity"));
+                    col->setUnits(unitY);
+                    col->setPlotDesignation(SciDAVis::Y);
+                } else {
+                    col->setPlotDesignation(SciDAVis::noDesignation);
+                }
+                if (blockIdx > 0)
+                    col->setComment(QObject::tr("Scan %1").arg(blockIdx + 1));
+                if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
+                    d2s->setNumericFormat('g');
+                    d2s->setNumDigits(6);
+                }
+                cols << col;
             }
-            if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
-                d2s->setNumericFormat('g');
-                d2s->setNumDigits(6);
-            }
-            cols << col;
+            ++blockIdx;
         }
+
+        g_lastImportReport.separator = QStringLiteral(" ");
+        g_lastImportReport.rasBlocks = blockIdx;
+        g_lastImportReport.dataRows = totalRows;
+        g_lastImportReport.columns = cols.size();
+        g_lastImportReport.missingCells = missingCells;
+        g_lastImportReport.headerLines = 0;
 
         future::Table *result = new future::Table(0, 0, effTableName);
         result->appendColumns(cols);
@@ -1438,7 +1544,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     const QChar *buf = decoded.constData();
     const int len = decoded.size();
     int pos = 0;
+    int skippedNonBlankLines = 0;
     for (int skipped = 0; skipped < ignoredLines && pos < len; ++skipped) {
+        ++skippedNonBlankLines;
         while (pos < len && buf[pos] != QLatin1Char('\r') && buf[pos] != QLatin1Char('\n'))
             ++pos;
         if (pos < len && buf[pos] == QLatin1Char('\r')) {
@@ -1476,10 +1584,147 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
         if (buf[lineStart] == QLatin1Char('#')) {
             lastHashCommentBody = QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
+            ++skippedNonBlankLines;
             pos = nextPos;
             continue;
         }
         break;
+    }
+
+    // 3b. Drag & drop: find the numeric block below an instrument metadata preamble
+    //     (BioLogic .mpt, Gamry .dta, many .asc/.csv exports) and the name/unit rows right
+    //     above it. Everything above is kept as the table comment instead of being guessed at.
+    QString preambleSeparator;
+    int forcedUnitsRow = -1;
+    if (detectPreamble && ignoredLines == 0 && pos < len) {
+        struct LineSpan
+        {
+            int start;
+            int end;
+        };
+        QVector<LineSpan> lines;
+        {
+            int p = pos;
+            while (p < len && lines.size() < 4000) {
+                int e = p;
+                while (e < len && buf[e] != QLatin1Char('\r') && buf[e] != QLatin1Char('\n'))
+                    ++e;
+                if (!QString(buf + p, e - p).trimmed().isEmpty())
+                    lines.append({ p, e });
+                p = e;
+                if (p < len && buf[p] == QLatin1Char('\r')) {
+                    ++p;
+                    if (p < len && buf[p] == QLatin1Char('\n'))
+                        ++p;
+                } else if (p < len && buf[p] == QLatin1Char('\n')) {
+                    ++p;
+                }
+            }
+        }
+        const QLocale cLocP = QLocale::c();
+        auto splitLine = [&](int idx, QChar sep) -> QStringList {
+            const QString ln = QString(buf + lines[idx].start, lines[idx].end - lines[idx].start);
+            QStringList parts;
+            if (sep == QLatin1Char(' '))
+                parts = ln.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            else
+                parts = ln.split(sep, Qt::KeepEmptyParts);
+            for (QString &f : parts) {
+                f = f.trimmed();
+                if (f.size() >= 2 && f.startsWith(QLatin1Char('"')) && f.endsWith(QLatin1Char('"')))
+                    f = f.mid(1, f.size() - 2).trimmed();
+            }
+            // a trailing separator ("1,2,") must not change the field count
+            while (parts.size() > 1 && parts.last().isEmpty())
+                parts.removeLast();
+            return parts;
+        };
+        // 1 = numeric-dominant row, 0 = pure text row, -1 = mixed
+        auto rowKind = [&](const QStringList &parts) -> int {
+            int numeric = 0, text = 0;
+            for (const QString &f : parts) {
+                if (f.isEmpty() || isMissingNumericToken(f, false))
+                    continue;
+                double dv = 0.0;
+                if (tryParseLabDouble(f, cLocP, false, dv))
+                    ++numeric;
+                else
+                    ++text;
+            }
+            if (numeric >= 2 && numeric >= text)
+                return 1;
+            if (numeric == 0 && text > 0)
+                return 0;
+            return -1;
+        };
+        const QChar seps[4] = { QLatin1Char('\t'), QLatin1Char(','), QLatin1Char(';'),
+                                QLatin1Char(' ') };
+        int bestStart = -1, bestFields = 0;
+        QChar bestSep;
+        for (const QChar sep : seps) {
+            for (int i = 0; i < lines.size(); ++i) {
+                if (bestStart >= 0 && i > bestStart)
+                    break; // an earlier block was already found with another separator
+                const QStringList p0 = splitLine(i, sep);
+                if (p0.size() < 2 || rowKind(p0) != 1)
+                    continue;
+                const int need = std::min(3, lines.size() - i);
+                bool ok = true;
+                for (int k = 1; k < need && ok; ++k) {
+                    // following rows may lack trailing values ("2\t" -> one field)
+                    const QStringList pk = splitLine(i + k, sep);
+                    int num = 0, txt = 0;
+                    for (const QString &f : pk) {
+                        double dv = 0.0;
+                        if (f.isEmpty() || isMissingNumericToken(f, false))
+                            continue;
+                        if (tryParseLabDouble(f, cLocP, false, dv))
+                            ++num;
+                        else
+                            ++txt;
+                    }
+                    ok = (pk.size() <= p0.size() && num >= 1 && num >= txt);
+                }
+                if (!ok)
+                    continue;
+                if (bestStart < 0 || i < bestStart || (i == bestStart && p0.size() > bestFields)) {
+                    bestStart = i;
+                    bestFields = p0.size();
+                    bestSep = sep;
+                }
+                break;
+            }
+        }
+        if (bestStart >= 0) {
+            int hdrStart = bestStart;
+            auto isTextRowWithFields = [&](int idx) -> bool {
+                if (idx < 0)
+                    return false;
+                const QStringList p = splitLine(idx, bestSep);
+                return p.size() == bestFields && rowKind(p) == 0;
+            };
+            if (isTextRowWithFields(bestStart - 1)) {
+                hdrStart = bestStart - 1;
+                if (isTextRowWithFields(bestStart - 2)) {
+                    bool shortCells = true;
+                    for (const QString &u : splitLine(bestStart - 1, bestSep))
+                        shortCells = shortCells && u.size() <= 24;
+                    if (shortCells) {
+                        hdrStart = bestStart - 2;
+                        forcedUnitsRow = 1;
+                    }
+                }
+            }
+            if (hdrStart > 0) {
+                QStringList pre;
+                for (int i = 0; i < hdrStart; ++i)
+                    pre << QString(buf + lines[i].start, lines[i].end - lines[i].start).trimmed();
+                skippedNonBlankLines += hdrStart;
+                g_lastImportReport.preamble = pre.mid(0, 200).join(QLatin1Char('\n'));
+                pos = lines[hdrStart].start;
+                preambleSeparator = QString(bestSep);
+            }
+        }
     }
 
     // Gather up to 15 sample lines for separator auto-detection
@@ -1518,7 +1763,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             || filePathHint.endsWith(QLatin1String(".uxd"), Qt::CaseInsensitive);
 
     bool whitespaceDelim = false;
-    if (effSep.isEmpty() || effSep.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0) {
+    if (!preambleSeparator.isEmpty()
+        && (effSep.isEmpty() || effSep.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0)) {
+        effSep = preambleSeparator;
+        if (effSep == QLatin1String(" "))
+            whitespaceDelim = true;
+    } else if (effSep.isEmpty() || effSep.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0) {
         effSep = detectDelimiterFromSampleLines(sampleLines, filePathHint);
         if (effSep == QLatin1String(" "))
             whitespaceDelim = true;
@@ -1664,18 +1914,33 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     QVector<LabCsvCell> unitsRow;
     // 2-Row [Name row + Units row] auto-detection (Instron / Shimadzu / Zwick CSVs)
-    if (effectiveFirstRowNames && unitsRowHint != 0) {
+    const int effUnitsRowHint = (unitsRowHint < 0 && forcedUnitsRow == 1) ? 1 : unitsRowHint;
+    if (effectiveFirstRowNames && effUnitsRowHint != 0) {
         const int candUnitIdx = fileHeaderLinesConsumed;
-        if (unitsRowHint == 1 && previewRecords.size() > candUnitIdx) {
+        if (effUnitsRowHint == 1 && previewRecords.size() > candUnitIdx) {
             unitsRow = previewRecords[candUnitIdx];
             ++fileHeaderLinesConsumed;
-        } else if (unitsRowHint < 0 && previewRecords.size() > candUnitIdx + 1) {
+        } else if (effUnitsRowHint < 0 && previewRecords.size() > candUnitIdx + 1) {
             const QVector<LabCsvCell> &candUnits = previewRecords[candUnitIdx];
             const int checkEnd = std::min(previewRecords.size(), 14);
             int numericDataCols = 0;
             bool row2HasNumberInNumericCol = false;
             bool row2AllValidUnitsInNumericCols = true;
             int recognizedUnitTokens = 0;
+            int nonEmptyUnitCellsInNumericCols = 0;
+            bool row2ShortCells = true;
+            // Is every non-empty cell of the candidate row non-numeric (in all columns)?
+            bool row2AllNonNumeric = true;
+            for (const LabCsvCell &uc : candUnits) {
+                const QString u = uc.value.trimmed();
+                if (u.isEmpty())
+                    continue;
+                double dummy = 0.0;
+                if (tryParseLabDouble(u, primaryLoc, useCustomLoc, dummy)) {
+                    row2AllNonNumeric = false;
+                    break;
+                }
+            }
 
             for (int c = 0; c < maxCols; ++c) {
                 bool colHasFinite = false;
@@ -1707,6 +1972,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                             break;
                         }
                         const QString uClean = cleanPromotedUnitCell(uRaw);
+                        ++nonEmptyUnitCellsInNumericCols;
+                        if (uClean.size() > 32)
+                            row2ShortCells = false;
                         if (isLikelyScientificUnit(uClean))
                             ++recognizedUnitTokens;
                         else
@@ -1717,6 +1985,13 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
             if (numericDataCols >= 1 && !row2HasNumberInNumericCol
                 && row2AllValidUnitsInNumericCols && recognizedUnitTokens >= 1) {
+                unitsRow = candUnits;
+                ++fileHeaderLinesConsumed;
+            } else if (numericDataCols >= 1 && !row2HasNumberInNumericCol && row2AllNonNumeric
+                       && nonEmptyUnitCellsInNumericCols >= 1 && row2ShortCells) {
+                // Units outside the built-in dictionary (N/mm2, kgf/mm^2, 'mm/min', ...): the
+                // rows below are numbers and the second row has no number at all, so it is
+                // the unit row. Otherwise every column would turn into text.
                 unitsRow = candUnits;
                 ++fileHeaderLinesConsumed;
             }
@@ -1772,8 +2047,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow)
+            if (skipRow) {
+                if (!rowSpans.isEmpty()) {
+                    const QChar *p0 = nullptr;
+                    int n0 = 0;
+                    rowSpans[0].trimmedView(p0, n0);
+                    if (n0 > 0) // a '#' comment line inside the data block
+                        ++skippedNonBlankLines;
+                }
                 continue;
+            }
 
             const int recCols = rowSpans.size();
             for (int c = 0; c < maxCols; ++c) {
@@ -1966,8 +2249,26 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             cols[c]->setPlotDesignation((c == 0) ? SciDAVis::X : SciDAVis::Y);
     }
 
+    AsciiTableImportFilter::ImportReport &rep = g_lastImportReport;
+    rep.separator = whitespaceDelim ? QStringLiteral(" ") : normSep;
+    rep.skippedLines = skippedNonBlankLines - (prependedHashHeader ? 1 : 0);
+    rep.headerLines = fileHeaderLinesConsumed + (prependedHashHeader ? 1 : 0);
+    rep.unitsRowDetected = !unitsRow.isEmpty();
+    rep.dataRows = dataRowCount;
+    rep.columns = maxCols;
+    for (int c = 0; c < maxCols; ++c) {
+        if (!colIsNumeric[c]) {
+            ++rep.textColumns;
+            continue;
+        }
+        for (const Interval<int> &iv : invalidAttrs[c].intervals())
+            rep.missingCells += iv.end() - iv.start() + 1;
+    }
+
     future::Table *result = new future::Table(0, 0, effTableName);
     result->appendColumns(cols);
+    if (!rep.preamble.isEmpty())
+        result->setComment(rep.preamble);
     return result;
 }
 
@@ -1983,15 +2284,18 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     if (rawBytes.size() >= 3 && static_cast<unsigned char>(rawBytes[0]) == 0xEF
         && static_cast<unsigned char>(rawBytes[1]) == 0xBB
         && static_cast<unsigned char>(rawBytes[2]) == 0xBF) {
+        g_lastDecodedEncoding = QStringLiteral("UTF-8 (BOM)");
         return QString::fromUtf8(rawBytes.constData() + 3, rawBytes.size() - 3);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFF
         && static_cast<unsigned char>(rawBytes[1]) == 0xFE) {
+        g_lastDecodedEncoding = QStringLiteral("UTF-16LE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
             return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFE
         && static_cast<unsigned char>(rawBytes[1]) == 0xFF) {
+        g_lastDecodedEncoding = QStringLiteral("UTF-16BE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
             return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
     }
@@ -1999,6 +2303,7 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     // 2. Honor explicit encodingHint when specified and not "auto"
     const QString hint = encodingHint.trimmed();
     if (!hint.isEmpty() && hint.compare(QLatin1String("auto"), Qt::CaseInsensitive) != 0) {
+        g_lastDecodedEncoding = hint;
         const QString lo = hint.toLower();
         QByteArray codecName = hint.toLatin1();
         if (lo == QLatin1String("utf8") || lo == QLatin1String("utf-8")
@@ -2038,8 +2343,10 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         if (uptr[i] >= 0x80)
             pureAscii = false;
     }
-    if (pureAscii)
+    if (pureAscii) {
+        g_lastDecodedEncoding = QStringLiteral("ASCII");
         return QString::fromLatin1(rawBytes);
+    }
 
     // 4. BOM-less UTF-16 heuristic
     if (hasNullByte && nBytes >= 4 && (nBytes % 2 == 0)) {
@@ -2052,10 +2359,12 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
                 ++oddZeros;
         }
         if (oddZeros > samplePairs / 2 && evenZeros == 0) {
+            g_lastDecodedEncoding = QStringLiteral("UTF-16LE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
                 return c16->toUnicode(rawBytes);
         }
         if (evenZeros > samplePairs / 2 && oddZeros == 0) {
+            g_lastDecodedEncoding = QStringLiteral("UTF-16BE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
                 return c16->toUnicode(rawBytes);
         }
@@ -2066,6 +2375,7 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         QTextCodec::ConverterState state;
         QString decoded = utf8->toUnicode(rawBytes.constData(), rawBytes.size(), &state);
         if (state.invalidChars == 0) {
+            g_lastDecodedEncoding = QStringLiteral("UTF-8");
             if (!decoded.isEmpty() && decoded.at(0) == QChar(0xFEFF))
                 decoded.remove(0, 1);
             return decoded;
@@ -2079,6 +2389,7 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     if (!sjis)
         sjis = QTextCodec::codecForName("CP932");
     if (sjis) {
+        g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
         QTextCodec::ConverterState sjisState;
         QString decoded = sjis->toUnicode(rawBytes.constData(), rawBytes.size(), &sjisState);
         if (sjisState.invalidChars == 0)
@@ -2086,6 +2397,7 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         return decoded;
     }
 
+    g_lastDecodedEncoding = QStringLiteral("Latin-1");
     return QString::fromLatin1(rawBytes);
 }
 
@@ -2209,8 +2521,61 @@ future::Table *AsciiTableImportFilter::importVaspTextData(const QByteArray &rawB
     return tryParseVaspTextInternal(decoded, effTableName, filePathHint, outFermiEV);
 }
 
+AsciiTableImportFilter::ImportReport AsciiTableImportFilter::lastImportReport()
+{
+    return g_lastImportReport;
+}
+
+QString AsciiTableImportFilter::describeImportReport(const ImportReport &r)
+{
+    registerImportJapaneseStrings();
+    QStringList parts;
+    if (r.rasBlocks > 1)
+        parts << QObject::tr("%1 scans").arg(r.rasBlocks);
+    parts << QObject::tr("%1 rows x %2 columns").arg(r.dataRows).arg(r.columns);
+    if (!r.encoding.isEmpty())
+        parts << QObject::tr("encoding: %1").arg(r.encoding);
+    if (r.rasBlocks == 0) {
+        QString sepName;
+        if (r.separator == QLatin1String("\t"))
+            sepName = QObject::tr("tab");
+        else if (r.separator == QLatin1String(" "))
+            sepName = QObject::tr("spaces");
+        else
+            sepName = r.separator;
+        if (!sepName.isEmpty())
+            parts << QObject::tr("separator: %1").arg(sepName);
+        parts << (r.unitsRowDetected ? QObject::tr("unit row: yes") : QObject::tr("unit row: no"));
+    }
+    if (r.skippedLines > 0)
+        parts << QObject::tr("%n line(s) skipped", "", r.skippedLines);
+    if (r.missingCells > 0)
+        parts << QObject::tr("%n empty cell(s)", "", r.missingCells);
+    if (r.textColumns > 0)
+        parts << QObject::tr("%n column(s) imported as text", "", r.textColumns);
+    return parts.join(QStringLiteral(", "));
+}
+
+future::Table *AsciiTableImportFilter::importDroppedTextData(const QByteArray &rawBytes,
+                                                             const QString &tableName,
+                                                             const QString &filePathHint,
+                                                             ImportReport *outReport)
+{
+    registerImportJapaneseStrings();
+    future::Table *t = importLabTextDataInternal(
+            rawBytes, tableName, filePathHint, QString() /*auto separator*/,
+            QString() /*auto encoding*/, -1 /*auto units row*/, 0 /*ignoredLines*/,
+            true /*firstRowNamesColumns*/, true /*trimSpaces*/, false /*simplifySpaces*/,
+            true /*convertToNumeric*/, QLocale::c(), true /*autoFixTabOnCsv*/,
+            true /*detectPreamble*/);
+    if (outReport)
+        *outReport = g_lastImportReport;
+    return t;
+}
+
 AbstractAspect *AsciiTableImportFilter::importAspect(QIODevice &input)
 {
+    registerImportJapaneseStrings();
     QString filePathHint;
     if (const QFile *qf = qobject_cast<const QFile *>(&input))
         filePathHint = qf->fileName();
