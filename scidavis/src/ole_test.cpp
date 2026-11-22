@@ -57,6 +57,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QPointer>
+#include <QProgressDialog>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QUndoStack>
@@ -196,21 +197,52 @@ static HRESULT oleGetClipboardRetry(ComPtr<IDataObject> &out)
     return FAILED(hr) ? hr : E_FAIL;
 }
 
-//! Run \a attempt (copy + check) until it reports no error; returns the last error or nullptr
+//! Clipboard sequence number right after this process put its data on the clipboard
+static DWORD g_clipboardSeqAfterCopy = 0;
+
+//! Call right after the copy under test: remembers the clipboard's sequence number
+static void markClipboardAfterCopy()
+{
+    g_clipboardSeqAfterCopy = GetClipboardSequenceNumber();
+}
+
+//! Has the clipboard changed since markClipboardAfterCopy() and does it now belong to another
+//! process? (A change made by this process - or no change at all - means the data under test is
+//! this process's own, so a failed check is a real failure.)
+static bool clipboardTakenByOtherProcess(DWORD *ownerPid = nullptr)
+{
+    if (GetClipboardSequenceNumber() == g_clipboardSeqAfterCopy)
+        return false;
+    DWORD pid = 0;
+    if (HWND owner = GetClipboardOwner())
+        GetWindowThreadProcessId(owner, &pid);
+    if (ownerPid)
+        *ownerPid = pid;
+    return pid != GetCurrentProcessId();
+}
+
+//! Run \a attempt (copy, markClipboardAfterCopy(), check) and return its error or nullptr. The
+//! attempt is repeated only when its check failed AND the clipboard changed after the copy and
+//! now belongs to another process; any other failure is reported at once, so that an occasional
+//! failure of the product itself is not hidden by the retries.
 static const char *retryClipboardStep(const std::function<const char *()> &attempt,
                                       const char *what, int attempts = 8)
 {
     const char *err = nullptr;
     for (int i = 0; i < attempts; ++i) {
-        if (i > 0) {
-            std::cout << "[INFO] " << what << ": clipboard was changed by another process ("
-                      << err << "), copying again (attempt " << (i + 1) << ")\n";
-            QCoreApplication::processEvents();
-            Sleep(100 * i);
-        }
         err = attempt();
         if (!err)
             return nullptr;
+        DWORD ownerPid = 0;
+        if (!clipboardTakenByOtherProcess(&ownerPid))
+            return err;
+        if (i + 1 < attempts) {
+            std::cout << "[INFO] " << what << ": " << err
+                      << "; the clipboard changed after the copy and is now owned by process "
+                      << ownerPid << ", copying again (attempt " << (i + 2) << ")\n";
+            QCoreApplication::processEvents();
+            Sleep(100 * (i + 1));
+        }
     }
     return err;
 }
@@ -218,9 +250,20 @@ static const char *retryClipboardStep(const std::function<const char *()> &attem
 // -------------------------------------------------------------------------------------------
 // Modal watchdog: a modal dialog that nobody answers would stop the whole run (and with it every
 // later suite). Dialogs the suites open on purpose are answered within a second or two; anything
-// still open after kModalWatchdogMs is reported and dismissed so the run goes on and the suite's
-// own checks decide.
+// still open after kModalWatchdogMs is reported and dismissed so the run goes on. Such a dialog
+// is unexpected (e.g. an error box a regression brought up), so main() fails the run when the
+// watchdog had to close one, unless its title is on the allow list below.
+// Progress dialogs are left alone: they close themselves, and closing one would cancel the work.
 // -------------------------------------------------------------------------------------------
+static int g_modalWatchdogDismissals = 0;
+
+//! Titles of dialogs the watchdog may close without failing the run. Empty at present: every
+//! dialog a suite opens on purpose is answered by the suite itself.
+static QStringList modalWatchdogAllowedTitles()
+{
+    return QStringList();
+}
+
 class ModalWatchdog : public QObject
 {
 public:
@@ -241,9 +284,12 @@ private:
             m_since.start();
             return;
         }
-        if (!w || m_since.elapsed() < kModalWatchdogMs)
+        if (!w || qobject_cast<QProgressDialog *>(w) || m_since.elapsed() < kModalWatchdogMs)
             return;
-        std::cerr << "[WARN] modal watchdog: dismissing a dialog left open for "
+        const bool allowed = modalWatchdogAllowedTitles().contains(w->windowTitle());
+        if (!allowed)
+            ++g_modalWatchdogDismissals;
+        std::cerr << (allowed ? "[INFO]" : "[WARN]") << " modal watchdog: dismissing a dialog left open for "
                   << m_since.elapsed() / 1000 << " s: \"" << w->windowTitle().toStdString() << "\"";
         if (auto *box = qobject_cast<QMessageBox *>(w))
             std::cerr << " - " << box->text().left(200).toStdString();
@@ -301,6 +347,8 @@ static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWind
 static int runSuite66Workbooks(ApplicationWindow *mw);
 static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw);
 
+static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir);
+
 int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
@@ -308,7 +356,8 @@ int main(int argc, char **argv)
     // Every run gets a scratch folder of its own and uses it as %TEMP% / %TMP%: the suites (and
     // the product code they drive) write files with fixed names to QDir::tempPath(), which
     // collided when two runs - or another ToriGraph - were active at the same time (one run
-    // deleting or overwriting the other's project file). The folder is removed when main() ends.
+    // deleting or overwriting the other's project file). The folder is removed at the end unless
+    // the run failed or TORIGRAPH_TEST_KEEP_TEMP=1 is set.
     QTemporaryDir runTempDir(QDir::tempPath() + QStringLiteral("/torigraph_ole_test_XXXXXX"));
     if (runTempDir.isValid()) {
         const std::wstring wTemp = QDir::toNativeSeparators(runTempDir.path()).toStdWString();
@@ -316,7 +365,30 @@ int main(int argc, char **argv)
         _wputenv_s(L"TEMP", wTemp.c_str());
         SetEnvironmentVariableW(L"TMP", wTemp.c_str());
         SetEnvironmentVariableW(L"TEMP", wTemp.c_str());
+    } else {
+        std::cerr << "[WARN] could not create a scratch folder of this run ("
+                  << runTempDir.errorString().toStdString() << "); the shared %TEMP% is used\n";
     }
+
+    int rc = runAllTests(argc, argv, runTempDir);
+
+    if (g_modalWatchdogDismissals > 0) {
+        std::cerr << "[FAIL] the modal watchdog had to close " << g_modalWatchdogDismissals
+                  << " dialog(s) that nobody answered (see the [WARN] modal watchdog lines)"
+                  << std::endl;
+        rc = rc != 0 ? rc : 1;
+    }
+    if (runTempDir.isValid()
+        && (rc != 0 || qEnvironmentVariableIntValue("TORIGRAPH_TEST_KEEP_TEMP") != 0)) {
+        runTempDir.setAutoRemove(false);
+        std::cout << "[INFO] Scratch folder kept: "
+                  << QDir::toNativeSeparators(runTempDir.path()).toStdString() << "\n";
+    }
+    return rc;
+}
+
+static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
+{
     const QString testIniPath =
             QDir::tempPath()
             + QStringLiteral("/torigraph_ole_test_settings_%1.ini")
@@ -1484,6 +1556,7 @@ int main(int argc, char **argv)
         const char *clipErr = retryClipboardStep(
                 [&]() -> const char * {
                     ml->copyAllLayers();
+                    markClipboardAfterCopy();
                     ComPtr<IDataObject> clipData;
                     const HRESULT hrClip = oleGetClipboardRetry(clipData);
                     if (FAILED(hrClip) || !clipData) {
@@ -14697,6 +14770,83 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
         QStandardPaths::setTestModeEnabled(false);
     }
 
+    // ---- 53k: the real "Restore unsaved work?" box (no prompt hook): the button the user
+    //      clicks decides what happens to the copy. "Decide Later" keeps it, "Discard Copy"
+    //      removes it. ("Restore" is followed through in 53j.) The box is answered by a timer
+    //      that keeps looking for it until it is up (bounded), inside this process only.
+    {
+        qApp->setProperty("torigraph_noninteractive", QVariant());
+        const QString recDir = ApplicationWindow::recoveryDirPath();
+        QDir(recDir).removeRecursively();
+        QDir().mkpath(recDir);
+        ApplicationWindow::setCrashRecoveryEnabled(true);
+        ApplicationWindow *w53k = new ApplicationWindow();
+        w53k->applyUserSettings();
+        if (ApplicationWindow::isNonInteractiveContext(w53k)) {
+            std::cout << "[INFO] Suite 53k: window is non-interactive, recovery box not shown\n";
+        } else {
+            w53k->projectname = QStringLiteral("suite53k_start_window.sciprj"); // not closed
+            const QString id = QStringLiteral("suite53k-copy");
+            const QString dataPath = QDir(recDir).filePath(id + ".sciprj");
+            const QString metaPath = QDir(recDir).filePath(id + ".json");
+            QJsonObject meta;
+            meta["project"] = tmpDir53.filePath("suite53k.sciprj");
+            meta["pid"] = 2147483000.0; // a process that does not exist
+            meta["saved_at"] = QDateTime::currentDateTime().addSecs(-600).toString(Qt::ISODate);
+            CHECK_COND(suite59WriteFileEarly(dataPath, "not opened in this test")
+                               && suite59WriteFileEarly(metaPath,
+                                                        QJsonDocument(meta).toJson(QJsonDocument::Compact)),
+                       "53k: write recovery copy");
+
+            auto answerRealBox = [&](QMessageBox::ButtonRole role, int *boxesSeen) -> bool {
+                bool clicked = false;
+                int tries = 0;
+                QTimer probe;
+                QObject::connect(&probe, &QTimer::timeout, [&]() {
+                    if (++tries > 500) { // 10 s
+                        probe.stop();
+                        return;
+                    }
+                    auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+                    if (!box)
+                        return;
+                    for (QAbstractButton *b : box->buttons()) {
+                        if (box->buttonRole(b) == role) {
+                            probe.stop();
+                            ++*boxesSeen;
+                            clicked = true;
+                            b->click();
+                            return;
+                        }
+                    }
+                });
+                probe.start(20);
+                w53k->checkCrashRecovery();
+                probe.stop();
+                return clicked;
+            };
+
+            int boxes = 0;
+            CHECK_COND(answerRealBox(QMessageBox::RejectRole, &boxes) && boxes == 1,
+                       "53k: the restore box was not shown / 'Decide Later' not found");
+            CHECK_COND(QFileInfo::exists(dataPath) && QFileInfo::exists(metaPath),
+                       "53k: 'Decide Later' removed the recovery copy");
+            boxes = 0;
+            CHECK_COND(answerRealBox(QMessageBox::DestructiveRole, &boxes) && boxes == 1,
+                       "53k: the restore box was not shown again / 'Discard Copy' not found");
+            CHECK_COND(!QFileInfo::exists(dataPath) && !QFileInfo::exists(metaPath),
+                       "53k: 'Discard Copy' kept the recovery copy");
+            boxes = 0;
+            CHECK_COND(!answerRealBox(QMessageBox::RejectRole, &boxes) && boxes == 0,
+                       "53k: the box was shown again although the copy was discarded");
+        }
+        w53k->savedProject();
+        w53k->setOleEmbeddedMode(true);
+        delete w53k;
+        ApplicationWindow::setCrashRecoveryEnabled(false);
+        QDir(recDir).removeRecursively();
+    }
+
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 53 Save Safety, Undo-after-Save & Auto-save Recovery Gate passed!\n";
     return 0;
@@ -16228,7 +16378,8 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
     {
         // This check is about the clipboard path, so it does use the system clipboard. Another
         // program may replace the clipboard text at any time: the text is read back before the
-        // paste, and if it was no longer ours afterwards the paste is repeated on a fresh table.
+        // paste, and only if the clipboard changed meanwhile and now belongs to another process is
+        // the paste repeated on a fresh table.
         const QString text59a = QStringLiteral("Nominal strain\tNominal stress\n"
                                                "%\tMPa\n"
                                                "0.0\t0.0\n"
@@ -16237,17 +16388,25 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
         Table *t = nullptr;
         bool clipOk = false;
         for (int attempt = 0; attempt < 8 && !clipOk; ++attempt) {
-            if (attempt > 0)
-                std::cout << "[INFO] 59a: clipboard was changed by another process, pasting again\n";
             t = mw->newTable(attempt == 0 ? QStringLiteral("Paste59a")
                                           : QStringLiteral("Paste59a_r%1").arg(attempt),
                              4, 2);
             CHECK_COND(t != nullptr, "59a: table");
             t->setCellsSelected(0, 0, 0, 0, true);
-            if (!setClipboardTextVerified(text59a))
+            if (!setClipboardTextVerified(text59a)) {
+                std::cout << "[INFO] 59a: could not place the test text on the clipboard, trying again\n";
                 continue;
+            }
+            markClipboardAfterCopy();
             t->d_future_table->pasteIntoSelection(); // the Edit menu / context menu path
-            clipOk = clipboardStillHolds(text59a);
+            DWORD ownerPid = 0;
+            if (!clipboardTakenByOtherProcess(&ownerPid)) {
+                CHECK_COND(clipboardStillHolds(text59a), "59a: the paste changed the clipboard text");
+                clipOk = true;
+                break;
+            }
+            std::cout << "[INFO] 59a: the clipboard changed during the paste and is now owned by process "
+                      << ownerPid << ", pasting again into a fresh table\n";
         }
         CHECK_COND(clipOk, "59a: could not keep the test text on the clipboard");
         CHECK_COND(t->numCols() == 2, "59a: menu paste split 'Nominal stress' into two columns");
@@ -17528,6 +17687,7 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
     {
         SciDAVisOle::setEmbedScopeSetting(SciDAVisOle::EmbedScope::GraphOnly);
         const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
+        markClipboardAfterCopy();
         CHECK_COND(res.ok, "60c: copy failed: " + res.errorReason.toStdString());
         CHECK_COND(res.widthMm > 10.0 && res.heightMm > 10.0, "60c: size not reported");
         CHECK_COND(res.embeddedWindows == QStringList() << QStringLiteral("Tensile60") << ml->name(),
@@ -17538,7 +17698,7 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                            && msg.contains(QString::number(res.widthMm, 'f', 1)),
                    "60c: status message lacks name or size: " + msg.toStdString());
 
-        // Another program may replace the clipboard after the copy; then copy again.
+        // If another program took over the clipboard after the copy, copy again.
         ComPtr<IDataObject> clip;
         QByteArray png;
         FORMATETC fPng{ SciDAVisOle::pngClipboardFormat(), nullptr, DVASPECT_CONTENT, -1,
@@ -17546,9 +17706,11 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
         bool firstAttempt = true;
         const char *clipErr = retryClipboardStep(
                 [&]() -> const char * {
-                    if (!firstAttempt
-                        && !SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr).ok)
-                        return "60c: repeated copy failed";
+                    if (!firstAttempt) {
+                        if (!SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr).ok)
+                            return "60c: repeated copy failed";
+                        markClipboardAfterCopy();
+                    }
                     firstAttempt = false;
                     clip.Reset();
                     if (FAILED(oleGetClipboardRetry(clip)) || !clip)
@@ -17612,6 +17774,7 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                 [&]() -> const char * {
                     qApp->setProperty("torigraph_test_force_ole_copy_failure", true);
                     res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
+                    markClipboardAfterCopy();
                     qApp->setProperty("torigraph_test_force_ole_copy_failure", QVariant());
                     if (!(!res.ok && res.staticFallbackOnClipboard))
                         return nullptr; // reported by the checks below, not a clipboard race
@@ -17748,6 +17911,7 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                         QApplication::clipboard()->setImage(tinyImg);
                         QApplication::processEvents();
                         w60->copyPageAsHighDpiImage();
+                        markClipboardAfterCopy();
                         QApplication::processEvents();
                         const QImage got = QApplication::clipboard()->image();
                         return got.width() > 100
