@@ -379,6 +379,7 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw);
 static int runSuite73SendToPowerPoint(ApplicationWindow *mw);
 static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw);
 static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw);
+static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw);
 
 static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir);
 
@@ -649,6 +650,13 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc76;
+    }
+    if (args.contains("--suite77-only")) {
+        const int rc77 = runSuite77Nov22NightReviewRegressions(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc77;
     }
 
     // =========================================================================
@@ -2806,8 +2814,8 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         CHECK_COND(jaGadgets == QString::fromUtf8("ガジェット(&G)"),
                    "switchToLanguage(\"ja\") did not translate &Gadgets to ガジェット(&G)");
         if (mw->gadgetsMenu) {
-            CHECK_COND(mw->gadgetsMenu->title() == QString::fromUtf8("ガジェット(&G)"),
-                       "ApplicationWindow::gadgetsMenu title was not updated to ガジェット(&G)");
+            CHECK_COND(mw->gadgetsMenu->title() == QString::fromUtf8("ガジェット(&D)"),
+                       "ApplicationWindow::gadgetsMenu title was not updated to ガジェット(&D)");
         }
         mw->switchToLanguage("en");
         CHECK_COND(QApplication::translate("ApplicationWindow", "&Gadgets") == "&Gadgets",
@@ -5908,6 +5916,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
     if (runSuite76ReviewPolishAndEdgeCases(mw) != 0)
         return 1;
     mw->savedProject();
+    if (runSuite77Nov22NightReviewRegressions(mw) != 0)
+        return 1;
+    mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
@@ -6828,6 +6839,43 @@ static int runSuite40PythonJsonRpcServerDispatch(ApplicationWindow *mw)
         const QByteArray respBytes = client.readLine().trimmed();
         return QJsonDocument::fromJson(respBytes).object();
     };
+
+    // 0. P0-1: Unauthenticated TCP requests must be rejected with -32001 and closed;
+    //          authenticated rpc.auth with srv->tcpAuthToken() must succeed.
+    {
+        QTcpSocket unauth;
+        unauth.connectToHost(QHostAddress::LocalHost, srv->tcpPort());
+        QElapsedTimer ut;
+        ut.start();
+        while (unauth.state() != QAbstractSocket::ConnectedState && ut.elapsed() < 3000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        CHECK_COND(unauth.state() == QAbstractSocket::ConnectedState,
+                   "Suite 40 unauth probe socket failed to connect");
+        unauth.write("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"app.ping\",\"params\":{}}\n");
+        unauth.flush();
+        ut.restart();
+        while (!unauth.canReadLine() && ut.elapsed() < 3000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        CHECK_COND(unauth.canReadLine(), "Suite 40 unauth probe received no response");
+        const QJsonObject unauthResp = QJsonDocument::fromJson(unauth.readLine().trimmed()).object();
+        CHECK_COND(unauthResp.value("error").toObject().value("code").toInt() == -32001,
+                   "Unauthenticated TCP RPC call did not return -32001 Unauthorized");
+    }
+    {
+        CHECK_COND(!srv->tcpAuthToken().isEmpty() && srv->tcpAuthToken().size() >= 64,
+                   "PythonAutomationServer::tcpAuthToken() missing 256-bit random token");
+        QJsonObject authReq;
+        authReq["jsonrpc"] = "2.0";
+        authReq["id"] = 0;
+        authReq["method"] = "rpc.auth";
+        QJsonObject authParams;
+        authParams["token"] = srv->tcpAuthToken();
+        authReq["params"] = authParams;
+        const QJsonObject authResp =
+                sendRawLine(QJsonDocument(authReq).toJson(QJsonDocument::Compact));
+        CHECK_COND(authResp.value("result").toObject().value("authenticated").toBool(),
+                   "Suite 40 rpc.auth handshake failed with valid tcpAuthToken()");
+    }
 
     // 1. Malformed JSON error handling (-32700 Parse error) & connection survival
     const QJsonObject badJsonResp = sendRawLine("{malformed_json_payload");
@@ -17358,7 +17406,7 @@ static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw)
         rel.tagName = "v9.9.0";
         rel.version = "9.9.0";
         rel.assetName = "ToriGraph-9.9.0-win64-portable.zip";
-        rel.assetUrl = QUrl("https://example.invalid/ToriGraph-9.9.0-win64-portable.zip");
+        rel.assetUrl = QUrl("https://github.com/kzykshmz/ToriGraph/releases/download/v9.9.0/ToriGraph-9.9.0-win64-portable.zip");
         rel.htmlUrl = QUrl("https://github.com/kzykshmz/ToriGraph/releases/tag/v9.9.0");
         auto primaryButton = [](UpdateAvailableDialog &dlg) -> QPushButton * {
             for (QPushButton *b : dlg.findChildren<QPushButton *>())
@@ -21567,16 +21615,21 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
         const QString userIni = tmp69.filePath("user.ini");
         const QString exportIni = tmp69.filePath("sub/export.ini");
         QSettings user(userIni, QSettings::IniFormat);
-        const QByteArray geom("\x01\x02\xff\x00\x7f", 5);
+        const QByteArray rawBlob("\x01\x02\xff\x00\x7f", 5);
         user.setValue("General/Language", "en");
-        user.setValue("General/RecentProjects", QStringList() << "C:/a.sciprj" << "D:/b c.sciprj");
+        user.setValue("UserFunctions/FitFunctions", QStringList() << "a*x+b" << "c*exp(-x/d)");
         user.setValue("Graph/Width", 123);
-        user.setValue("Geometry/State", geom);
+        user.setValue("Tables/CustomBlob", rawBlob);
+        user.setValue("General/Paths/LockToolbars", true);
+        // Personal / transient keys must NEVER be exported to shared lab defaults:
+        user.setValue("General/RecentProjects", QStringList() << "C:/a.sciprj" << "D:/b c.sciprj");
+        user.setValue("General/Paths/WorkingDir", "C:/Users/Alice/Documents");
+        user.setValue("Geometry/State", rawBlob);
         user.setValue("LabDefaults/Applied/Graph/Width", 5); // bookkeeping: never exported
         user.sync();
         QString err;
         const int nOut = SettingsTransfer::exportToIni(user, exportIni, &err);
-        CHECK_COND(nOut == 4, "69a: export must write the 4 user keys (got "
+        CHECK_COND(nOut == 5, "69a: export must write only the 5 non-personal user keys (got "
                                       << nOut << ", " << err.toStdString() << ")");
         CHECK_COND(QFileInfo(exportIni).isFile(), "69a: export file missing");
         CHECK_COND(!QFileInfo(exportIni + ".tmp").exists(), "69a: temp file left behind");
@@ -21585,19 +21638,24 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
         CHECK_COND(user.allKeys().isEmpty(), "69a: reset must remove every key");
 
         const int nIn = SettingsTransfer::importFromIni(user, exportIni, &err);
-        CHECK_COND(nIn == 4, "69a: import must read 4 keys (got " << nIn << ")");
+        CHECK_COND(nIn == 5, "69a: import must read 5 keys (got " << nIn << ")");
         CHECK_COND(user.value("General/Language").toString() == "en", "69a: Language not restored");
-        CHECK_COND(user.value("General/RecentProjects").toStringList()
-                           == (QStringList() << "C:/a.sciprj" << "D:/b c.sciprj"),
+        CHECK_COND(user.value("UserFunctions/FitFunctions").toStringList()
+                           == (QStringList() << "a*x+b" << "c*exp(-x/d)"),
                    "69a: string list not restored");
         CHECK_COND(user.value("Graph/Width").toInt() == 123, "69a: int not restored");
-        CHECK_COND(user.value("Geometry/State").toByteArray() == geom, "69a: byte array not restored");
-        CHECK_COND(!user.contains("LabDefaults/Applied/Graph/Width"),
-                   "69a: bookkeeping key must not travel with an export");
+        CHECK_COND(user.value("Tables/CustomBlob").toByteArray() == rawBlob, "69a: byte array not restored");
+        CHECK_COND(user.value("General/Paths/LockToolbars").toBool() == true,
+                   "69a: LockToolbars must be preserved across export/import");
+        CHECK_COND(!user.contains("General/RecentProjects")
+                           && !user.contains("General/Paths/WorkingDir")
+                           && !user.contains("Geometry/State")
+                           && !user.contains("LabDefaults/Applied/Graph/Width"),
+                   "69a: personal paths/history/geometry or bookkeeping leaked into exported settings");
 
         // import keeps keys that the file does not have
         user.setValue("Only/Local", 7);
-        CHECK_COND(SettingsTransfer::importFromIni(user, exportIni) == 4, "69a: second import");
+        CHECK_COND(SettingsTransfer::importFromIni(user, exportIni) == 5, "69a: second import");
         CHECK_COND(user.value("Only/Local").toInt() == 7, "69a: import must not drop other keys");
 
         CHECK_COND(SettingsTransfer::importFromIni(user, tmp69.filePath("missing.ini"), &err) == -1,
@@ -24740,8 +24798,11 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
                            && xlsxRes.tables.size() == 1,
                    "76e: XlsxImport::importIntoProject failed on mid-N/A workbook");
         Table *tXlsx = w76->table(xlsxRes.tables[0]);
-        CHECK_COND(tXlsx != nullptr && tXlsx->numCols() == 2 && tXlsx->numRows() == 6,
-                   "76e: mid-column 'N/A' discarded upper numeric rows!");
+        CHECK_COND(tXlsx != nullptr && tXlsx->numCols() == 2 && tXlsx->numRows() == 6
+                           && tXlsx->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && tXlsx->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && tXlsx->column(1)->isInvalid(3),
+                   "76e: mid-column 'N/A' discarded upper numeric rows or coerced column to Text!");
         CHECK_COND(std::fabs(tXlsx->cell(0, 0) - 0.1) < 1e-9
                            && std::fabs(tXlsx->cell(0, 1) - 120.0) < 1e-9
                            && std::fabs(tXlsx->cell(3, 0) - 0.4) < 1e-9
@@ -24804,13 +24865,13 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
         Table *tPaste2 = w76->newTable(QStringLiteral("Paste2Col76"), 2, 2);
         CHECK_COND(tPaste2 != nullptr, "76e: Paste2Col76 table");
         tPaste2->setCellsSelected(0, 0, 0, 0, true);
-        CHECK_COND(tPaste2->pasteText(QStringLiteral("1,250\n2,375")),
+        CHECK_COND(tPaste2->pasteText(QStringLiteral("X,Y\n1,250\n2,375")),
                    "76e: pasteText 2-col CSV failed");
         CHECK_COND(std::fabs(tPaste2->cell(0, 0) - 1.0) < 1e-9
                            && std::fabs(tPaste2->cell(0, 1) - 250.0) < 1e-9
                            && std::fabs(tPaste2->cell(1, 0) - 2.0) < 1e-9
                            && std::fabs(tPaste2->cell(1, 1) - 375.0) < 1e-9,
-                   "76e: '1,250\\n2,375' was misclassified instead of 2-column CSV");
+                   "76e: 'X,Y\\n1,250\\n2,375' was misclassified instead of 2-column CSV");
     }
 
     // -------------------------------------------------------------------------
@@ -24920,3 +24981,433 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
     std::cout << "[PASS] Suite 76 passed.\n";
     return 0;
 }
+
+// =============================================================================
+// Suite 77: Nov 22 Night Review Regressions (P0-1..7, P1-D/N/G/S/O/R/U, P2)
+// =============================================================================
+static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
+{
+    Q_UNUSED(mw);
+    std::cout << "[INFO] Running Suite 77: Nov 22 night review security, Lorentz SE, CSV/paste/xlsx, "
+                 "dotted export, zoom legend, graph undo remap, 100-sheet workbook & .gz safety...\n";
+
+    qApp->setProperty("torigraph_noninteractive", true);
+    QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir tmp77;
+    CHECK_COND(tmp77.isValid(), "77: temp dir failed");
+
+    ApplicationWindow *w77 = new ApplicationWindow();
+    w77->applyUserSettings();
+
+    // -------------------------------------------------------------------------
+    // 77a: P0-1 (no unsolicited TCP listener on ApplicationWindow ctor) &
+    //      P0-2 / P1-R3 (AutoUpdater URL allowlist, System32 PowerShell, SHA256
+    //      re-verification & full DLL rollback script)
+    // -------------------------------------------------------------------------
+    {
+        PythonAutomationServer *py = w77->pythonAutomationServer();
+        CHECK_COND(py != nullptr, "77a: pythonAutomationServer null");
+        CHECK_COND(!py->isTcpListening() && !py->isLocalPipeListening(),
+                   "77a: ApplicationWindow constructor must NOT open an unrequested RPC listener");
+
+        CHECK_COND(!AutoUpdater::isAllowedUpdateUrl(QUrl::fromLocalFile(tmp77.filePath("evil.exe"))),
+                   "77a: file:// URL must be rejected by AutoUpdater::isAllowedUpdateUrl");
+        CHECK_COND(!AutoUpdater::isAllowedUpdateUrl(QUrl("http://github.com/kzykshmz/ToriGraph/releases")),
+                   "77a: non-HTTPS external URL must be rejected");
+        CHECK_COND(!AutoUpdater::isAllowedUpdateUrl(QUrl("https://evil.example.com/update.exe")),
+                   "77a: untrusted HTTPS host must be rejected");
+        CHECK_COND(AutoUpdater::isAllowedUpdateUrl(
+                           QUrl("https://api.github.com/repos/kzykshmz/ToriGraph/releases/latest"))
+                           && AutoUpdater::isAllowedUpdateUrl(QUrl(
+                                   "https://objects.githubusercontent.com/github-production-release-asset/x.zip"))
+                           && AutoUpdater::isAllowedUpdateUrl(QUrl("http://127.0.0.1:8080/mock")),
+                   "77a: GitHub HTTPS and loopback test URLs must be accepted");
+
+        const QString psExe = QDir::fromNativeSeparators(AutoUpdater::resolvePowerShellExecutable()).toLower();
+        CHECK_COND(psExe.endsWith("/system32/windowspowershell/v1.0/powershell.exe")
+                           && QFileInfo::exists(AutoUpdater::resolvePowerShellExecutable()),
+                   "77a: resolvePowerShellExecutable() must resolve inside System32, not PATH");
+
+        const QString dummyZip = tmp77.filePath("ToriGraph-9.9.0-win64-portable.zip");
+        {
+            QFile f(dummyZip);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "77a: dummy zip");
+            f.write("PK-dummy");
+            f.close();
+        }
+        const QString fakeSha(64, QLatin1Char('b'));
+        QString psErr;
+        const QString psPath = AutoUpdater::writeWindowsStagingUpdaterScript(
+                dummyZip, tmp77.filePath("inst"), "ToriGraph.exe", 999999, false, &psErr, 2, fakeSha);
+        CHECK_COND(!psPath.isEmpty() && QFileInfo::exists(psPath), "77a: staging script generation failed");
+        QFile sf(psPath);
+        CHECK_COND(sf.open(QIODevice::ReadOnly), "77a: open staging script");
+        const QString psBody = QString::fromUtf8(sf.readAll());
+        sf.close();
+        CHECK_COND(psBody.contains(fakeSha) && psBody.contains("Get-FileHash")
+                           && psBody.contains("exit 4") && psBody.contains("$BackupDir"),
+                   "77a: staging script missing elevated SHA-256 re-verification or full directory rollback");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77b: P0-3 (MultiPeakFit Lorentz area SE & 95% CI parity with peak table)
+    //      & P2 (Weighted fit SE consistency between parameters and peak summary)
+    // -------------------------------------------------------------------------
+    {
+        const int nPts = 81;
+        Table *tLor = w77->newTable(QStringLiteral("Lor77"), nPts, 3);
+        CHECK_COND(tLor != nullptr, "77b: Lor77 table");
+        tLor->setColName(0, QStringLiteral("X"));
+        tLor->setColName(1, QStringLiteral("Y"));
+        tLor->setColName(2, QStringLiteral("Err"));
+        tLor->setColPlotDesignation(2, SciDAVis::yErr);
+        for (int i = 0; i < nPts; ++i) {
+            const double x = -10.0 + 0.25 * double(i);
+            const double p1 = (2.0 / M_PI) * 100.0 * 2.0 / (4.0 * (x + 3.0) * (x + 3.0) + 4.0);
+            const double p2 = (2.0 / M_PI) * 60.0 * 1.6 / (4.0 * (x - 3.5) * (x - 3.5) + 2.56);
+            const double noise = 0.35 * std::sin(1.7 * double(i)) + 0.15 * std::cos(2.9 * double(i));
+            tLor->setCell(i, 0, x);
+            tLor->setCell(i, 1, 2.0 + p1 + p2 + noise);
+            tLor->setCell(i, 2, 0.8);
+        }
+        MultiLayer *mlLor = w77->multilayerPlot(
+                tLor, QStringList() << (tLor->name() + QStringLiteral("_Y")), Graph::Scatter);
+        CHECK_COND(mlLor && mlLor->activeGraph(), "77b: Lorentz graph");
+        Graph *gLor = mlLor->activeGraph();
+
+        MultiPeakFit fitLor(w77, gLor, MultiPeakFit::Lorentz, 2);
+        fitLor.setDataFromCurve(tLor->name() + QStringLiteral("_Y"));
+        double initVals[7] = { 95.0, -3.0, 2.0, 58.0, 3.5, 1.6, 2.0 };
+        fitLor.setInitialGuesses(initVals);
+        fitLor.fit();
+
+        const std::vector<double> &res = fitLor.results();
+        const std::vector<double> &errs = fitLor.errors();
+        const auto rows = fitLor.computePeakSummary(res);
+        CHECK_COND(res.size() >= 7 && errs.size() >= 7 && rows.size() == 2,
+                   "77b: Lorentz 2-peak fit did not produce 2 summary rows");
+        // Peak summary rows are sorted by center (-3.0 first, +3.5 second)
+        const double relDiff0 = std::fabs(errs[0] - rows[0].areaSE) / std::max(1e-12, rows[0].areaSE);
+        const double relDiff1 = std::fabs(errs[3] - rows[1].areaSE) / std::max(1e-12, rows[1].areaSE);
+        std::cout << "[INFO] 77b Lorentz Area SE: param0=" << errs[0] << " summary0=" << rows[0].areaSE
+                  << ", param1=" << errs[3] << " summary1=" << rows[1].areaSE << "\n";
+        CHECK_COND(relDiff0 < 1e-4 && relDiff1 < 1e-4
+                           && std::fabs(fitLor.parameterStdError(0) - rows[0].areaSE) < 1e-4,
+                   "77b: Lorentz parameter Area SE diverged from peak summary Area SE (2/pi bug)");
+
+        // Weighted fit with scaleErrors=false: peak summary SE must match parameter SE
+        MultiPeakFit fitWeighted(w77, gLor, MultiPeakFit::Gauss, 2);
+        fitWeighted.setDataFromCurve(tLor->name() + QStringLiteral("_Y"));
+        CHECK_COND(fitWeighted.setWeightingMethod(Fit::WeightDirect, tLor->name() + QStringLiteral("_Err")),
+                   "77b: setWeightingMethod failed");
+        fitWeighted.scaleErrors(false);
+        double gInit[7] = { 95.0, -3.0, 2.0, 58.0, 3.5, 1.6, 2.0 };
+        fitWeighted.setInitialGuesses(gInit);
+        fitWeighted.fit();
+        const auto wErrs = fitWeighted.errors();
+        const auto wRows = fitWeighted.computePeakSummary(fitWeighted.results());
+        CHECK_COND(wErrs.size() >= 7 && wRows.size() == 2, "77b: weighted Gauss fit failed");
+        const double wRelDiff = std::fabs(wErrs[0] - wRows[0].areaSE) / std::max(1e-12, wRows[0].areaSE);
+        CHECK_COND(wRelDiff < 1e-4,
+                   "77b: weighted fit (!scaleErrors) scaled peak summary SE differently from parameter SE");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77c: P0-4 (# specimen rows), P0-5 (12,345\n23,456 paste), P1-D1/D2/D4/D5/D6/D7/D8,
+    //      P2 Rigaku .ras Factor & missing-cell copy
+    // -------------------------------------------------------------------------
+    {
+        // P0-4: '#' comment in preamble skipped, '#1,520' specimen rows in body preserved
+        const QByteArray hashCsv =
+                "# Tensile summary log\n"
+                "Specimen,UTS_MPa\n"
+                "#1,520\n"
+                "#2,515\n"
+                "#3,528\n";
+        AsciiTableImportFilter::ImportReport repHash;
+        std::unique_ptr<future::Table> ftHash(AsciiTableImportFilter::importDroppedTextData(
+                hashCsv, QStringLiteral("HashSpec"), QStringLiteral("spec.csv"), &repHash));
+        CHECK_COND(ftHash && ftHash->columnCount() == 2 && ftHash->rowCount() == 3
+                           && ftHash->column(0)->textAt(0) == QStringLiteral("#1")
+                           && std::fabs(ftHash->column(1)->valueAt(0) - 520.0) < 1e-9
+                           && std::fabs(ftHash->column(1)->valueAt(2) - 528.0) < 1e-9,
+                   "77c: P0-4 mid-file '#1,520' specimen rows were silently dropped as comments!");
+
+        // P1-D4 (a): all-integer CSV must NOT consume row 0 as column headers
+        const QByteArray intCsv = "1,100\n2,200\n3,300\n";
+        std::unique_ptr<future::Table> ftInt(AsciiTableImportFilter::importDroppedTextData(
+                intCsv, QStringLiteral("IntCsv"), QStringLiteral("ints.csv"), nullptr));
+        CHECK_COND(ftInt && ftInt->columnCount() == 2 && ftInt->rowCount() == 3
+                           && std::fabs(ftInt->column(0)->valueAt(0) - 1.0) < 1e-9
+                           && std::fabs(ftInt->column(1)->valueAt(0) - 100.0) < 1e-9,
+                   "77c: P1-D4 all-integer CSV consumed first data row as header!");
+
+        // P1-D4 (b): mixed text + numeric header ("Time (s),300,400")
+        const QByteArray mixCsv = "Time (s),300,400\n0,1.2,2.4\n10,1.5,3.1\n";
+        std::unique_ptr<future::Table> ftMix(AsciiTableImportFilter::importDroppedTextData(
+                mixCsv, QStringLiteral("MixHdr"), QStringLiteral("mix.csv"), nullptr));
+        CHECK_COND(ftMix && ftMix->columnCount() == 3 && ftMix->rowCount() == 2
+                           && ftMix->column(1)->name() == QStringLiteral("300")
+                           && ftMix->column(2)->name() == QStringLiteral("400")
+                           && ftMix->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && std::fabs(ftMix->column(2)->valueAt(1) - 3.1) < 1e-9,
+                   "77c: P1-D4 mixed text+numeric header ('Time (s),300,400') failed!");
+
+        // P2 Rigaku .ras 3rd column Factor multiplies Intensity while keeping 3 columns
+        const QByteArray rasData =
+                "*RAS_DATA_START\n"
+                "*RAS_HEADER_START\n"
+                "*RAS_HEADER_END\n"
+                "*RAS_INT_START\n"
+                "38.50 120.0 10.0000\n"
+                "38.52 250.0 1.0000\n"
+                "*RAS_INT_END\n"
+                "*RAS_DATA_END\n";
+        std::unique_ptr<future::Table> ftRas(AsciiTableImportFilter::importDroppedTextData(
+                rasData, QStringLiteral("RasFactor"), QStringLiteral("al.ras"), nullptr));
+        CHECK_COND(ftRas && ftRas->columnCount() == 3 && ftRas->rowCount() == 2
+                           && std::fabs(ftRas->column(1)->valueAt(0) - 1200.0) < 1e-9
+                           && std::fabs(ftRas->column(1)->valueAt(1) - 250.0) < 1e-9,
+                   "77c: Rigaku .ras attenuator Factor was not applied to Intensity!");
+
+        // P0-5: all-thousands single column ("12,345\n23,456") + headered ("Stress (MPa)\n1,012\n1,030")
+        Table *tAllThou = w77->newTable(QStringLiteral("AllThou77"), 3, 2);
+        tAllThou->clearCell(0, 1);
+        tAllThou->clearCell(1, 1);
+        tAllThou->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(tAllThou->pasteText(QStringLiteral("12,345\n23,456")),
+                   "77c: pasteText '12,345\\n23,456' failed");
+        CHECK_COND(std::fabs(tAllThou->cell(0, 0) - 12345.0) < 1e-9
+                           && std::fabs(tAllThou->cell(1, 0) - 23456.0) < 1e-9
+                           && tAllThou->column(1)->isInvalid(0),
+                   "77c: P0-5 '12,345\\n23,456' split into 2 columns instead of 1 thousands-grouped column!");
+
+        // P1-D8 + P1-D2: Excel Alt+Enter quoted multiline headers + #N/A / #DIV/0! / N.D. missing markers
+        Table *tExcel = w77->newTable(QStringLiteral("ExcelPaste77"), 4, 2);
+        tExcel->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(tExcel->pasteText(QStringLiteral(
+                           "\"Nominal stress\n(MPa)\"\t\"Strain\n(%)\"\n"
+                           "120.5\t0.15\n"
+                           "#N/A\t#DIV/0!\n"
+                           "245.0\tN.D.")),
+                   "77c: pasteText multiline header + Excel errors failed");
+        CHECK_COND(tExcel->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && tExcel->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && std::fabs(tExcel->cell(0, 0) - 120.5) < 1e-9
+                           && tExcel->column(0)->isInvalid(1)
+                           && tExcel->column(1)->isInvalid(1)
+                           && std::fabs(tExcel->cell(2, 0) - 245.0) < 1e-9
+                           && tExcel->column(1)->isInvalid(2),
+                   "77c: P1-D2 / P1-D8 multiline header or #N/A/#DIV/0!/N.D. broke numeric column paste!");
+
+        // P1-D6: opening and closing cell editor must NOT round 12-digit precision to 6 digits
+        tExcel->column(0)->setValueAt(0, 1.234567890123);
+        if (QWidget *vw = tExcel->d_future_table->view()) {
+            QTableView *tv = vw->findChild<QTableView *>();
+            QAbstractItemModel *mdl = tv ? tv->model() : nullptr;
+            CHECK_COND(mdl != nullptr, "77c: TableModel null");
+            const QModelIndex idx00 = mdl->index(0, 0);
+            const QVariant editVal = mdl->data(idx00, Qt::EditRole);
+            mdl->setData(idx00, editVal, Qt::EditRole);
+            CHECK_COND(std::fabs(tExcel->column(0)->valueAt(0) - 1.234567890123) < 1e-12,
+                       "77c: P1-D6 EditRole rounded cell value to 6 significant digits!");
+        }
+
+        // P1-D5: sorting column containing NaNs places finite values in strict order and NaNs at end
+        Table *tSort = w77->newTable(QStringLiteral("NaNSort77"), 5, 1);
+        tSort->column(0)->setValueAt(0, 30.0);
+        tSort->column(0)->setInvalid(1, true);
+        tSort->column(0)->setValueAt(2, 10.0);
+        tSort->column(0)->setInvalid(3, true);
+        tSort->column(0)->setValueAt(4, 20.0);
+        tSort->d_future_table->sortColumns(tSort->column(0), QList<Column *>() << tSort->column(0), true);
+        CHECK_COND(std::fabs(tSort->column(0)->valueAt(0) - 10.0) < 1e-9
+                           && std::fabs(tSort->column(0)->valueAt(1) - 20.0) < 1e-9
+                           && std::fabs(tSort->column(0)->valueAt(2) - 30.0) < 1e-9
+                           && tSort->column(0)->isInvalid(3)
+                           && tSort->column(0)->isInvalid(4),
+                   "77c: P1-D5 ascending sort with NaNs failed strict order or NaN-last placement!");
+
+        // P1-D7: Overwrite import shrinks trailing old rows when new file has fewer rows
+        const QString shortCsvPath = tmp77.filePath(QStringLiteral("short_overwrite.csv"));
+        {
+            QFile cf(shortCsvPath);
+            CHECK_COND(cf.open(QIODevice::WriteOnly), "77c: short_overwrite.csv");
+            cf.write("A,B\n10,100\n20,200\n");
+            cf.close();
+        }
+        Table *tOvr = w77->newTable(QStringLiteral("Ovr77"), 6, 2);
+        for (int r = 0; r < 6; ++r) {
+            tOvr->setCell(r, 0, double(r + 1));
+            tOvr->setCell(r, 1, double((r + 1) * 10));
+        }
+        w77->activateSubWindow(tOvr);
+        w77->importASCII(QStringList() << shortCsvPath, ImportASCIIDialog::Overwrite,
+                         QStringLiteral(","), 0, true, true, false, true, QLocale::c());
+        CHECK_COND(tOvr->numRows() == 2
+                           && std::fabs(tOvr->cell(0, 1) - 100.0) < 1e-9
+                           && std::fabs(tOvr->cell(1, 1) - 200.0) < 1e-9,
+                   "77c: P1-D7 Overwrite import left trailing old rows behind!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77d: P0-6 (Dotted alloy filename image export & non-truncating probe)
+    // -------------------------------------------------------------------------
+    {
+        const QString baseAlloy = tmp77.filePath(QStringLiteral("Al-5.5Zn-2.5Mg"));
+        {
+            QFile existingNoExt(baseAlloy);
+            CHECK_COND(existingNoExt.open(QIODevice::WriteOnly), "77d: seed existing file");
+            existingNoExt.write("PRECIOUS_EXISTING_DATA");
+            existingNoExt.close();
+        }
+        bool appended = false;
+        const QString resolvedPng = ApplicationWindow::resolveImageExportFileName(
+                baseAlloy, QStringLiteral("PNG (*.png)"), &appended);
+        CHECK_COND(appended && resolvedPng.endsWith(QStringLiteral("Al-5.5Zn-2.5Mg.png")),
+                   "77d: P0-6 dotted alloy filename did not append .png suffix!");
+        CHECK_COND(ApplicationWindow::probeExportWritableNoTruncate(baseAlloy),
+                   "77d: probeExportWritableNoTruncate returned false on writable file");
+        QFile checkExisting(baseAlloy);
+        CHECK_COND(checkExisting.open(QIODevice::ReadOnly)
+                           && checkExisting.readAll() == QByteArray("PRECIOUS_EXISTING_DATA"),
+                   "77d: P0-6 writability probe truncated existing file!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77e: P0-7 & P1-G1 (Legend placement & stored font invariant under 160% zoom)
+    // -------------------------------------------------------------------------
+    {
+        Table *tZ = w77->newTable(QStringLiteral("ZoomLeg77"), 10, 2);
+        for (int r = 0; r < 10; ++r) {
+            tZ->setCell(r, 0, double(r));
+            tZ->setCell(r, 1, double(r * r));
+        }
+        MultiLayer *mlZ = w77->multilayerPlot(
+                tZ, QStringList() << (tZ->name() + QStringLiteral("_2")), Graph::LineSymbols);
+        CHECK_COND(mlZ && mlZ->activeGraph(), "77e: ZoomLeg77 graph");
+        CHECK_COND(mlZ->applyStylePresetById(QStringLiteral("lab_slide_83mm")),
+                   "77e: apply lab_slide_83mm failed");
+        Graph *gZ = mlZ->activeGraph();
+        CHECK_COND(std::fabs(mlZ->pageZoom() - 1.6) < 1e-4, "77e: expected 160% view zoom");
+        const double ptBefore = gZ->legend()->font().pointSizeF();
+
+        gZ->placeLegendAnchor(Graph::LegendOutsideRight);
+        const int marginFrom160 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
+        mlZ->setPageZoom(1.0);
+        gZ->placeLegendAnchor(Graph::LegendOutsideRight);
+        const int marginFrom100 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
+        CHECK_COND(std::abs(marginFrom160 - marginFrom100) <= 2,
+                   "77e: P0-7 LegendOutsideRight _outsideRightMargin inflated by 160% view zoom ("
+                           << marginFrom160 << " vs " << marginFrom100 << ")");
+
+        mlZ->setPageZoom(0.75);
+        gZ->placeLegendAnchor(Graph::LegendTopRight);
+        CHECK_COND(std::fabs(gZ->legend()->font().pointSizeF() - ptBefore) < 1e-6,
+                   "77e: P0-7 placeLegendAnchor under 75% zoom permanently shrank stored legend pt!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77f: P1-S2 (Graph Undo/Redo after table & column rename), P1-S4 (100-sheet
+    //      workbook > 4096 chars), P2 (.sciprj.gz truncation & appendProject dirty)
+    // -------------------------------------------------------------------------
+    {
+        Table *tRen = w77->newTable(QStringLiteral("OrigSheet77"), 6, 3);
+        tRen->setColName(0, QStringLiteral("Strain"));
+        tRen->setColName(1, QStringLiteral("Stress"));
+        tRen->setColName(2, QStringLiteral("Err"));
+        tRen->setColPlotDesignation(2, SciDAVis::yErr);
+        for (int r = 0; r < 6; ++r) {
+            tRen->setCell(r, 0, 0.1 * double(r));
+            tRen->setCell(r, 1, 100.0 * double(r));
+            tRen->setCell(r, 2, 5.0);
+        }
+        MultiLayer *mlRen = w77->multilayerPlot(
+                tRen, QStringList() << (tRen->name() + QStringLiteral("_Stress")), Graph::LineSymbols);
+        CHECK_COND(mlRen && mlRen->activeGraph(), "77f: mlRen null");
+        Graph *gRen = mlRen->activeGraph();
+        gRen->addErrorBars(tRen->name() + QStringLiteral("_Stress"), tRen,
+                           tRen->name() + QStringLiteral("_Err"));
+        CHECK_COND(gRen->curves() == 2, "77f: expected data curve + error bar");
+
+        const QString snapBefore = mlRen->saveToString(QString());
+        gRen->setAxisTitle(QwtPlot::xBottom, QStringLiteral("True Strain (-)"));
+        mlRen->pushUndoSnapshot(QStringLiteral("Edit X Title"), snapBefore);
+        CHECK_COND(mlRen->undoStack() && mlRen->undoStack()->canUndo(), "77f: undoStack not populated");
+
+        CHECK_COND(w77->renameWindow(tRen, QStringLiteral("RenamedSheet77")),
+                   "77f: renameWindow failed");
+        tRen->setColName(1, QStringLiteral("FlowStress"));
+        QApplication::processEvents();
+
+        mlRen->undoStack()->undo();
+        CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
+                   "77f: P1-S2 Graph Undo after sheet+column rename deleted the curve!");
+        mlRen->undoStack()->redo();
+        CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
+                   "77f: P1-S2 Graph Redo after sheet+column rename deleted the curve!");
+
+        // P1-S4: 100-sheet workbook (> 4096 chars on <workbook> line) survives save & loadProject
+        WorkbookManager *wm = WorkbookManager::instance(w77);
+        QString wbErr;
+        const QString bigBook = wm->createBook(QStringLiteral("BigBook77"), 100, &wbErr);
+        CHECK_COND(!bigBook.isEmpty() && wm->sheets(bigBook).size() == 100,
+                   "77f: createBook(100) failed: " << wbErr.toStdString());
+        const QString bigPrj = tmp77.filePath(QStringLiteral("big100.sciprj"));
+        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), bigPrj), "77f: save big100.sciprj");
+
+        ApplicationWindow *reBig = w77->openProject(bigPrj);
+        CHECK_COND(reBig != nullptr, "77f: reopen big100.sciprj failed");
+        CHECK_COND(WorkbookManager::instance(reBig)->sheets(bigBook).size() == 100,
+                   "77f: P1-S4 100-sheet workbook truncated by 4096-char readLine limit (got "
+                           << WorkbookManager::instance(reBig)->sheets(bigBook).size() << ")");
+
+        // P2: appendProject marks destination project modified (!saved)
+        reBig->savedProject();
+        CHECK_COND(reBig->saved, "77f: expected clean state before appendProject");
+        const QString smallPrj = tmp77.filePath(QStringLiteral("small_append.sciprj"));
+        {
+            ApplicationWindow *wSmall = new ApplicationWindow();
+            wSmall->applyUserSettings();
+            wSmall->newTable(QStringLiteral("SmallT77"), 2, 2);
+            CHECK_COND(wSmall->writeProjectFile(wSmall->projectFolder(), smallPrj),
+                       "77f: write small_append.sciprj");
+            wSmall->savedProject();
+            wSmall->setOleEmbeddedMode(true);
+            delete wSmall;
+        }
+        reBig->appendProject(smallPrj);
+        CHECK_COND(!reBig->saved,
+                   "77f: P2 appendProject left project marked saved (no close prompt)!");
+
+        reBig->savedProject();
+        reBig->setOleEmbeddedMode(true);
+        delete reBig;
+
+        // P2: Truncated .sciprj.gz must be rejected instead of silently partially loaded
+        const QString gzPath = tmp77.filePath(QStringLiteral("trunc77.sciprj.gz"));
+        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), gzPath), "77f: write trunc77.sciprj.gz");
+        QByteArray fullGz;
+        {
+            QFile gf(gzPath);
+            CHECK_COND(gf.open(QIODevice::ReadOnly), "77f: read gz");
+            fullGz = gf.readAll();
+            gf.close();
+            CHECK_COND(fullGz.size() > 40, "77f: gz too small");
+            CHECK_COND(gf.open(QIODevice::WriteOnly | QIODevice::Truncate), "77f: truncate gz");
+            gf.write(fullGz.left(fullGz.size() / 2));
+            gf.close();
+        }
+        ApplicationWindow *reTrunc = w77->openProject(gzPath);
+        CHECK_COND(reTrunc == nullptr,
+                   "77f: P2 truncated .sciprj.gz was silently partially loaded without Z_STREAM_END!");
+    }
+
+    w77->savedProject();
+    w77->setOleEmbeddedMode(true);
+    delete w77;
+    QApplication::processEvents();
+    std::cout << "[PASS] Suite 77 passed.\n";
+    return 0;
+}
+

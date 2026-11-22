@@ -5714,11 +5714,13 @@ void ApplicationWindow::updateTableNames(const QString &oldName, const QString &
         if (!w)
             continue;
         if (w->inherits("MultiLayer")) {
-            QWidgetList gr_lst = ((MultiLayer *)w)->graphPtrs();
+            MultiLayer *ml = static_cast<MultiLayer *>(w);
+            QWidgetList gr_lst = ml->graphPtrs();
             foreach (QWidget *widget, gr_lst) {
                 if (widget)
                     ((Graph *)widget)->updateCurveNames(oldName, newName);
             }
+            ml->remapUndoSnapshotsForTableRename(oldName, newName);
         } else if (w->inherits("Graph3D")) {
             Graph3D *g3 = static_cast<Graph3D *>(w);
             if (g3->userFunction() || g3->matrix())
@@ -5775,11 +5777,13 @@ void ApplicationWindow::updateColNames(const QString &oldName, const QString &ne
         if (!w)
             continue;
         if (w->inherits("MultiLayer")) {
-            QWidgetList gr_lst = ((MultiLayer *)w)->graphPtrs();
+            MultiLayer *ml = static_cast<MultiLayer *>(w);
+            QWidgetList gr_lst = ml->graphPtrs();
             foreach (QWidget *widget, gr_lst) {
                 if (widget)
                     ((Graph *)widget)->updateCurveNames(oldName, newName, false);
             }
+            ml->remapUndoSnapshotsForColRename(oldName, newName);
         } else if (w->inherits("Graph3D")) {
             Graph3D *g3 = static_cast<Graph3D *>(w);
             if (g3->userFunction() || g3->matrix())
@@ -5866,6 +5870,7 @@ void ApplicationWindow::changeMatrixName(const QString &oldName, const QString &
                         updateSpectrogramTitle(it);
                 }
             }
+            static_cast<MultiLayer *>(w)->remapUndoSnapshotsForMatrixRename(oldName, newName);
         }
     }
 }
@@ -10550,6 +10555,18 @@ bool probeWritableNoTruncate(const QString &filePath)
 }
 
 } // namespace
+
+QString ApplicationWindow::resolveImageExportFileName(const QString &rawFileName,
+                                                      const QString &selectedFilter,
+                                                      bool *outAppended)
+{
+    return ensureExportSuffix(rawFileName, selectedFilter, outAppended);
+}
+
+bool ApplicationWindow::probeExportWritableNoTruncate(const QString &filePath)
+{
+    return probeWritableNoTruncate(filePath);
+}
 
 void ApplicationWindow::exportGraph()
 {

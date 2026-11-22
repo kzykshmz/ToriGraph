@@ -1709,6 +1709,12 @@ public:
     void setShowLegacyUi(bool show);
     //! Object names of the actions hidden (with their shortcuts) unless "Show Legacy UI" is on
     static QStringList legacyUiActionNames();
+    //! Resolve export filename suffix without misclassifying dotted alloy names (e.g. Al-5.5Zn-2.5Mg)
+    static QString resolveImageExportFileName(const QString &rawFileName,
+                                              const QString &selectedFilter,
+                                              bool *outAppended = nullptr);
+    //! Check destination writability without truncating an existing file
+    static bool probeExportWritableNoTruncate(const QString &filePath);
     //! Fill a graph context menu (shared by the canvas and the layer button menus)
     void buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton);
 

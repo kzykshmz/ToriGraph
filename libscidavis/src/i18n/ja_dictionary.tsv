@@ -6081,6 +6081,26 @@ Ctrl+Shift+D	Ctrl+Shift+D
 Ctrl+Shift+G	Ctrl+Shift+G
 Ctrl+Alt+R	Ctrl+Alt+R
 Ctrl+Shift+B	Ctrl+Shift+B
+Pseudo-Voigt Peak (shared FWHM w and Lorentz fraction mu)	擬Voigtピーク(共通半値幅 w・Lorentz混合比 mu)
+Large Slide (28 pt, 185 mm)	大判スライド (28 pt, 185 mm)
+Authenticode signature is invalid or untrusted (0x%1).	Authenticode 署名が不正または信頼されていません (0x%1)。
+Authenticode signature verification failed (0x%1).	Authenticode 署名の検証に失敗しました (0x%1)。
+Authenticode signature verification is only available on Windows.	Authenticode 署名の検証は Windows でのみ利用できます。
+Blocked untrusted download URL: %1	信頼できないダウンロード先 URL をブロックしました: %1
+Blocked untrusted release page URL in feed: %1	フィード内の信頼できないリリースページ URL をブロックしました: %1
+Blocked untrusted update feed URL.	信頼できない更新フィード URL をブロックしました。
+Digital signature verification failed.	電子署名の検証に失敗しました。
+Invalid expected SHA-256 digest supplied for staging script.	更新スクリプトに渡された期待 SHA-256 ハッシュが不正です。
+Manual Update Required (Unsigned Package)	手動での更新が必要です(未署名パッケージ)
+Open Release Page	リリースページを開く
+The downloaded update package (v%1) is not digitally signed with an Authenticode certificate, so automatic installation is disabled for your safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\nClick "Open Release Page" to review and install the update manually from GitHub.	ダウンロードした更新パッケージ (v%1) に Authenticode 電子署名がないため、安全のため自動インストールを停止しました。\n\n検証済み SHA-256:\n%2\n\nリリースノート:\n%3\n\n「リリースページを開く」をクリックし、GitHub の公式ページを確認して手動で更新してください。
+The downloaded update package has an invalid or untrusted digital signature and was deleted for your safety.\n\n%1	ダウンロードした更新パッケージの電子署名が不正または信頼できないため、安全のため削除しました。\n\n%1
+The update package does not carry an Authenticode digital signature.	更新パッケージに Authenticode 電子署名が付けられていません。
+Update package file does not exist: %1	更新パッケージファイルが見つかりません: %1
+PowerPoint Paste Scale (%):	PowerPoint 貼付倍率 (%):
+The PowerPoint link currently points to another ToriGraph installation (%1) instead of this program (%2). Double-clicking the graph in PowerPoint will open that copy.	PowerPoint 連携の登録先が、現在起動中のプログラム (%2) ではなく別の場所の ToriGraph (%1) を指しています。PowerPoint 上でグラフをダブルクリックすると、そちらのプログラムが開きます。
+The embedded project data exceeds the 128 MB PowerPoint limit (%1 MB).	埋め込むプロジェクトデータが PowerPoint の上限 128 MB を超えています (%1 MB)。
+Do&n't Save	保存しない(&N)
 
 # ---- 文脈つきの訳 (H1: 同じ英語でも画面によって意味が違うもの) ----
 Area	面グラフ	CurvesDialog

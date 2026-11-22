@@ -165,8 +165,11 @@ public slots:
         return d_future_table ? d_future_table->column(name) : nullptr;
     }
 
+public:
     using MyWidget::askOnCloseEvent;
     bool askOnCloseEvent() const { return askOnClose; }
+
+public slots:
 
     //! Return the value of the cell as a double
     /**
