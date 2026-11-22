@@ -2198,6 +2198,25 @@ protected:
 
 } // anonymous namespace
 
+namespace {
+//! ApplicationWindow objects whose destructor has started. The project explorer trees (lv,
+//! folders) are members and are destroyed before the MDI area that still holds the windows, and
+//! before QWidget deletes the remaining children; a window lookup made while those windows go
+//! away (signal, event filter, dock or tool that still holds the main window) would walk the
+//! freed folder tree.
+QSet<const ApplicationWindow *> &applicationWindowsBeingDestroyed()
+{
+    static QSet<const ApplicationWindow *> s;
+    return s;
+}
+
+bool isBeingDestroyed(const ApplicationWindow *app)
+{
+    const QSet<const ApplicationWindow *> &s = applicationWindowsBeingDestroyed();
+    return !s.isEmpty() && s.contains(app);
+}
+} // namespace
+
 ApplicationWindow::ApplicationWindow()
     : scripted(ScriptingLangManager::newEnv(this)),
       //      logWindow(new QDockWidget(this)),
@@ -2235,6 +2254,7 @@ ApplicationWindow::ApplicationWindow()
               new QAction(IconLoader::load("go-previous"), tr("&Previous", "previous window"), this))
 
 {
+    applicationWindowsBeingDestroyed().remove(this); // a window destroyed at this address before
     gsl_set_error_handler_off();
     setAttribute(Qt::WA_DeleteOnClose);
     QCoreApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
@@ -7292,6 +7312,8 @@ Matrix *ApplicationWindow::convertTableToMatrix()
 
 MyWidget *ApplicationWindow::window(const QString &name)
 {
+    if (isBeingDestroyed(this))
+        return nullptr; // the folder tree is (being) torn down
     MyWidget *widget = 0;
     QList<MyWidget *> windows = windowsList();
     for (int i = 0; i < windows.count(); i++) {
@@ -20397,6 +20419,8 @@ void ApplicationWindow::deleteFitTables()
 QList<MyWidget *> ApplicationWindow::windowsList()
 {
     QList<MyWidget *> lst = QList<MyWidget *>();
+    if (isBeingDestroyed(this))
+        return lst; // the folder tree is (being) torn down
 
     Folder *project_folder = projectFolder();
     FolderListItem *item = project_folder->folderListItem();
@@ -24359,6 +24383,10 @@ void ApplicationWindow::fitFrameToLayer()
 
 ApplicationWindow::~ApplicationWindow()
 {
+    // Window lookups answer "none" from here on (see applicationWindowsBeingDestroyed()). The
+    // entry stays until a new ApplicationWindow is constructed at the same address: QWidget and
+    // QObject still delete children after the members are gone.
+    applicationWindowsBeingDestroyed().insert(this);
     if (WorkbookManager *wb = WorkbookManager::existing(this))
         wb->shutdown(); // D8: stop reacting while the windows are torn down
     explorerWindow.disconnect(this);

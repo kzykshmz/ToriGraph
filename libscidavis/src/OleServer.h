@@ -96,6 +96,12 @@ bool initializeOleServer(bool embeddedMode);
 // Flush OLE clipboard if owned and revoke class factory before exit
 void shutdownOleServer();
 
+// Clipboard sequence number (GetClipboardSequenceNumber) right after the last successful copy for
+// PowerPoint put its object on the clipboard; 0 when no such object is held.
+DWORD lastCopyClipboardSequence();
+// Is the object of the last successful copy for PowerPoint still the clipboard content?
+bool lastCopyStillOnClipboard();
+
 // Outcome of a "copy for PowerPoint" request.
 struct OleCopyResult
 {

@@ -1225,6 +1225,110 @@ private:
     WinGdiEmfPaintEngine *m_engine;
 };
 
+//! Device metrics of the reference DC a metafile is recorded against
+struct EmfRefMetrics
+{
+    int devW = 1, devH = 1; //!< HORZRES / VERTRES (pixels)
+    int mmW = 1, mmH = 1;   //!< HORZSIZE / VERTSIZE (mm)
+};
+
+EmfRefMetrics emfRefMetrics(HDC ref)
+{
+    EmfRefMetrics m;
+    m.devW = std::max(1, GetDeviceCaps(ref, HORZRES));
+    m.devH = std::max(1, GetDeviceCaps(ref, VERTRES));
+    m.mmW = std::max(1, GetDeviceCaps(ref, HORZSIZE));
+    m.mmH = std::max(1, GetDeviceCaps(ref, VERTSIZE));
+    return m;
+}
+
+enum class EmfFrameCheck { Ok, DeviceChanged };
+
+/*!
+ * The physical size of a copied graph must be the same in every place that states it:
+ * PowerPoint sizes the pasted object from the EMF header (rclFrame), the PNG offered beside it is
+ * rendered at rclFrame x dpi, and the copy reports extentHm. The drawing itself is recorded in
+ * device units of the reference DC (the screen), scaled with that DC's HORZRES/HORZSIZE, so the
+ * header is checked here against the metrics the drawing used:
+ *  - szlDevice / szlMillimeters differ: the display settings changed while recording (monitor
+ *    attached, resolution or scaling changed). The content scale no longer matches the header;
+ *    the caller records again.
+ *  - rclFrame differs from the requested extent: it is set to the requested extent, so that the
+ *    EMF, the PNG and the reported size can never disagree.
+ */
+EmfFrameCheck enforceEmfFrame(QByteArray &emf, LONG widthHm, LONG heightHm,
+                              const EmfRefMetrics &m)
+{
+    if (emf.size() < static_cast<int>(sizeof(ENHMETAHEADER)))
+        return EmfFrameCheck::Ok;
+    ENHMETAHEADER h{};
+    std::memcpy(&h, emf.constData(), sizeof(h));
+    if (h.iType != EMR_HEADER)
+        return EmfFrameCheck::Ok;
+    if (h.szlDevice.cx != m.devW || h.szlDevice.cy != m.devH || h.szlMillimeters.cx != m.mmW
+        || h.szlMillimeters.cy != m.mmH)
+        return EmfFrameCheck::DeviceChanged;
+    if (h.rclFrame.left != 0 || h.rclFrame.top != 0 || h.rclFrame.right != widthHm
+        || h.rclFrame.bottom != heightHm) {
+        h.rclFrame = RECTL{ 0, 0, widthHm, heightHm };
+        std::memcpy(emf.data(), &h, sizeof(h));
+    }
+    return EmfFrameCheck::Ok;
+}
+
+/*!
+ * Records an EMF+ dual metafile of exactly widthHm x heightHm (0.01 mm) against the screen DC.
+ * \a draw(gfx, targetPx) paints the content; targetPx is the frame in reference-device pixels.
+ * Returns empty bytes when GDI+ fails. The header is checked with enforceEmfFrame(); a recording
+ * made while the display settings changed is repeated (at most three attempts).
+ */
+template <typename DrawFn>
+QByteArray recordEmfOfExtent(LONG widthHm, LONG heightHm, DrawFn draw)
+{
+    QByteArray bytes;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        HDC ref = GetDC(nullptr);
+        if (!ref)
+            return {};
+        const EmfRefMetrics m = emfRefMetrics(ref);
+        const double targetWf = std::max(1.0, double(widthHm) * double(m.devW) / (100.0 * double(m.mmW)));
+        const double targetHf = std::max(1.0, double(heightHm) * double(m.devH) / (100.0 * double(m.mmH)));
+
+        const Gdiplus::RectF frameRect(0.0f, 0.0f, static_cast<Gdiplus::REAL>(widthHm),
+                                       static_cast<Gdiplus::REAL>(heightHm));
+        Gdiplus::Metafile metafile(ref, frameRect, Gdiplus::MetafileFrameUnitGdi,
+                                   Gdiplus::EmfTypeEmfPlusDual, L"ToriGraph");
+        ReleaseDC(nullptr, ref);
+        if (metafile.GetLastStatus() != Gdiplus::Ok)
+            return {};
+        {
+            Gdiplus::Graphics gfx(&metafile);
+            if (gfx.GetLastStatus() == Gdiplus::Ok)
+                draw(gfx, QSizeF(targetWf, targetHf));
+        }
+        bytes.clear();
+        if (HENHMETAFILE hemf = metafile.GetHENHMETAFILE()) {
+            bytes = SciDAVisEmf::hemfToBytes(hemf);
+            DeleteEnhMetaFile(hemf);
+        }
+        if (bytes.isEmpty())
+            return {};
+        if (enforceEmfFrame(bytes, widthHm, heightHm, m) == EmfFrameCheck::Ok)
+            return bytes;
+    }
+    // The display kept changing: keep the last recording, but its frame still states the
+    // requested size, like every other place that reports it.
+    ENHMETAHEADER h{};
+    if (bytes.size() >= static_cast<int>(sizeof(h))) {
+        std::memcpy(&h, bytes.constData(), sizeof(h));
+        if (h.iType == EMR_HEADER) {
+            h.rclFrame = RECTL{ 0, 0, widthHm, heightHm };
+            std::memcpy(bytes.data(), &h, sizeof(h));
+        }
+    }
+    return bytes;
+}
+
 } // namespace
 
 namespace SciDAVisEmf {
@@ -1433,43 +1537,16 @@ OleRenderedGraph renderFromImage(const QImage &img)
     if (!ensureGdiplusStarted())
         return out;
 
-    HDC ref = GetDC(nullptr);
-    if (!ref)
-        return out;
-    const int devW = std::max(1, GetDeviceCaps(ref, HORZRES));
-    const int devH = std::max(1, GetDeviceCaps(ref, VERTRES));
-    const int mmW = std::max(1, GetDeviceCaps(ref, HORZSIZE));
-    const int mmH = std::max(1, GetDeviceCaps(ref, VERTSIZE));
-
-    const double targetWf = std::max(1.0, double(widthHm) * double(devW) / (100.0 * double(mmW)));
-    const double targetHf = std::max(1.0, double(heightHm) * double(devH) / (100.0 * double(mmH)));
-
-    const Gdiplus::RectF frameRect(0.0f, 0.0f, static_cast<Gdiplus::REAL>(widthHm),
-                                   static_cast<Gdiplus::REAL>(heightHm));
-    Gdiplus::Metafile metafile(ref, frameRect, Gdiplus::MetafileFrameUnitGdi,
-                               Gdiplus::EmfTypeEmfPlusDual, L"ToriGraph");
-    ReleaseDC(nullptr, ref);
-    if (metafile.GetLastStatus() != Gdiplus::Ok)
-        return out;
-
-    {
-        Gdiplus::Graphics gfx(&metafile);
-        if (gfx.GetLastStatus() == Gdiplus::Ok) {
-            WinGdiEmfPaintDevice emfDev(&gfx, valid.size(), QSizeF(targetWf, targetHf), 96, 96);
-            QPainter painter(&emfDev);
-            painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
-                                           | QPainter::SmoothPixmapTransform,
-                                   true);
-            painter.drawImage(QRect(0, 0, valid.width(), valid.height()), valid);
-            painter.end();
-        }
-    }
-
-    HENHMETAFILE hemf = metafile.GetHENHMETAFILE();
-    if (hemf) {
-        out.emfBytes = hemfToBytes(hemf);
-        DeleteEnhMetaFile(hemf);
-    }
+    out.emfBytes = recordEmfOfExtent(
+            widthHm, heightHm, [&](Gdiplus::Graphics &gfx, const QSizeF &targetPx) {
+                WinGdiEmfPaintDevice emfDev(&gfx, valid.size(), targetPx, 96, 96);
+                QPainter painter(&emfDev);
+                painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                                               | QPainter::SmoothPixmapTransform,
+                                       true);
+                painter.drawImage(QRect(0, 0, valid.width(), valid.height()), valid);
+                painter.end();
+            });
     return out;
 }
 
@@ -1599,51 +1676,23 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
     if (!ensureGdiplusStarted())
         return renderFromImage(renderFallbackRaster());
 
-    HDC ref = GetDC(nullptr);
-    if (!ref)
-        return out;
-    const int devW = std::max(1, GetDeviceCaps(ref, HORZRES));
-    const int devH = std::max(1, GetDeviceCaps(ref, VERTRES));
-    const int mmW = std::max(1, GetDeviceCaps(ref, HORZSIZE));
-    const int mmH = std::max(1, GetDeviceCaps(ref, VERTSIZE));
-
-    const double targetWf = std::max(1.0, double(widthHm) * double(devW) / (100.0 * double(mmW)));
-    const double targetHf = std::max(1.0, double(heightHm) * double(devH) / (100.0 * double(mmH)));
-
-    const Gdiplus::RectF frameRect(0.0f, 0.0f, static_cast<Gdiplus::REAL>(widthHm),
-                                   static_cast<Gdiplus::REAL>(heightHm));
-    Gdiplus::Metafile metafile(ref, frameRect, Gdiplus::MetafileFrameUnitGdi,
-                               Gdiplus::EmfTypeEmfPlusDual, L"ToriGraph");
-    ReleaseDC(nullptr, ref);
-    if (metafile.GetLastStatus() != Gdiplus::Ok)
-        return renderFromImage(renderFallbackRaster());
-
-    {
-        Gdiplus::Graphics gfx(&metafile);
-        if (gfx.GetLastStatus() == Gdiplus::Ok) {
-            const int emfLogicalDpiX = std::max(36, static_cast<int>(std::lround(dpiX * zoom)));
-            const int emfLogicalDpiY = std::max(36, static_cast<int>(std::lround(dpiY * zoom)));
-            WinGdiEmfPaintDevice emfDev(&gfx, pxSize, QSizeF(targetWf, targetHf), emfLogicalDpiX,
-                                        emfLogicalDpiY);
-            QPainter vp(&emfDev);
-            vp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
-                                      | QPainter::SmoothPixmapTransform,
-                              true);
-            if (singleLayer) {
-                vp.fillRect(QRect(QPoint(0, 0), pxSize), Qt::white);
-                singleLayer->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
-            } else if (ml) {
-                ml->exportPainter(vp, false, mlLayersRect, pxSize);
-            }
-            vp.end();
-        }
-    }
-
-    HENHMETAFILE hemf = metafile.GetHENHMETAFILE();
-    if (hemf) {
-        out.emfBytes = hemfToBytes(hemf);
-        DeleteEnhMetaFile(hemf);
-    }
+    out.emfBytes = recordEmfOfExtent(
+            widthHm, heightHm, [&](Gdiplus::Graphics &gfx, const QSizeF &targetPx) {
+                const int emfLogicalDpiX = std::max(36, static_cast<int>(std::lround(dpiX * zoom)));
+                const int emfLogicalDpiY = std::max(36, static_cast<int>(std::lround(dpiY * zoom)));
+                WinGdiEmfPaintDevice emfDev(&gfx, pxSize, targetPx, emfLogicalDpiX, emfLogicalDpiY);
+                QPainter vp(&emfDev);
+                vp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                                          | QPainter::SmoothPixmapTransform,
+                                  true);
+                if (singleLayer) {
+                    vp.fillRect(QRect(QPoint(0, 0), pxSize), Qt::white);
+                    singleLayer->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
+                } else if (ml) {
+                    ml->exportPainter(vp, false, mlLayersRect, pxSize);
+                }
+                vp.end();
+            });
     if (out.emfBytes.isEmpty())
         return renderFromImage(renderFallbackRaster());
     return out;

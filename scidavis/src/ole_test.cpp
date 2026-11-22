@@ -208,26 +208,44 @@ static HRESULT oleGetClipboardRetry(ComPtr<IDataObject> &out)
 
 //! Clipboard sequence number right after this process put its data on the clipboard
 static DWORD g_clipboardSeqAfterCopy = 0;
+//! Process that owned the clipboard when markClipboardAfterCopy() was called
+static DWORD g_clipboardOwnerAtMark = 0;
 
-//! Call right after the copy under test: remembers the clipboard's sequence number
+static DWORD currentClipboardOwnerPid()
+{
+    DWORD pid = 0;
+    if (HWND owner = GetClipboardOwner())
+        GetWindowThreadProcessId(owner, &pid);
+    return pid;
+}
+
+//! Call right after the copy under test: remembers the clipboard's sequence number and owner
 static void markClipboardAfterCopy()
 {
     g_clipboardSeqAfterCopy = GetClipboardSequenceNumber();
+    g_clipboardOwnerAtMark = currentClipboardOwnerPid();
 }
 
 //! Has the clipboard changed since markClipboardAfterCopy() and does it now belong to another
 //! process? (A change made by this process - or no change at all - means the data under test is
 //! this process's own, so a failed check is a real failure.)
+//! Another program may also take the clipboard between the copy and markClipboardAfterCopy():
+//! the copy does some work (registry lookup, result bookkeeping) after OleSetClipboard. The
+//! sequence number then does not change after the mark, but the owner recorded at the mark is
+//! already the other process - that data was never ours either.
 static bool clipboardTakenByOtherProcess(DWORD *ownerPid = nullptr)
 {
-    if (GetClipboardSequenceNumber() == g_clipboardSeqAfterCopy)
-        return false;
-    DWORD pid = 0;
-    if (HWND owner = GetClipboardOwner())
-        GetWindowThreadProcessId(owner, &pid);
+    const DWORD self = GetCurrentProcessId();
+    if (GetClipboardSequenceNumber() == g_clipboardSeqAfterCopy) {
+        if (ownerPid)
+            *ownerPid = g_clipboardOwnerAtMark;
+        // (no owner at all: someone else emptied the clipboard; ours always has an owner window)
+        return g_clipboardOwnerAtMark != self;
+    }
+    const DWORD pid = currentClipboardOwnerPid();
     if (ownerPid)
         *ownerPid = pid;
-    return pid != GetCurrentProcessId();
+    return pid != self;
 }
 
 //! Run \a attempt (copy, markClipboardAfterCopy(), check) and return its error or nullptr. The
@@ -17776,6 +17794,17 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                         markClipboardAfterCopy();
                     }
                     firstAttempt = false;
+                    // Is the object of this copy still the clipboard content? (Something else may
+                    // have been copied meanwhile; then its PNG would be checked against our size.)
+                    if (!SciDAVisOle::lastCopyStillOnClipboard()) {
+                        std::cout << "[INFO] 60c: the copied object is no longer on the clipboard"
+                                  << " (sequence at copy " << SciDAVisOle::lastCopyClipboardSequence()
+                                  << ", at mark " << g_clipboardSeqAfterCopy << ", now "
+                                  << GetClipboardSequenceNumber() << "; owner at mark "
+                                  << g_clipboardOwnerAtMark << ", now " << currentClipboardOwnerPid()
+                                  << ", this process " << GetCurrentProcessId() << ")\n";
+                        return "60c: the copied object was replaced on the clipboard";
+                    }
                     clip.Reset();
                     if (FAILED(oleGetClipboardRetry(clip)) || !clip)
                         return "60c: OleGetClipboard failed";
@@ -17793,6 +17822,18 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                     FORMATETC fEmf{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
                     if (clip->QueryGetData(&fEmf) != S_OK)
                         return "60c: EMF format missing";
+                    // Physical width the EMF on the clipboard claims (rclFrame, 0.01 mm)
+                    long emfFrameW = -1;
+                    {
+                        STGMEDIUM em{};
+                        if (SUCCEEDED(clip->GetData(&fEmf, &em))) {
+                            ENHMETAHEADER eh{};
+                            if (em.tymed == TYMED_ENHMF && em.hEnhMetaFile
+                                && GetEnhMetaFileHeader(em.hEnhMetaFile, sizeof(eh), &eh) > 0)
+                                emfFrameW = eh.rclFrame.right - eh.rclFrame.left;
+                            ReleaseStgMedium(&em);
+                        }
+                    }
                     // The PNG is checked here too: another ToriGraph (a parallel test run) offers
                     // the same formats, so only its size can tell that the data is not ours.
                     QImage img;
@@ -17800,6 +17841,23 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                         return "60c: PNG does not decode";
                     const double dpi = img.dotsPerMeterX() * 0.0254;
                     const double expectW = res.widthMm / 25.4 * res.pngDpi;
+                    std::cout << "[INFO] 60c: reported " << res.widthMm << " x " << res.heightMm
+                              << " mm, EMF frame " << emfFrameW / 100.0 << " mm, PNG "
+                              << img.width() << " x " << img.height() << " px at " << dpi
+                              << " dpi (" << img.width() / std::max(1.0, dpi) * 25.4
+                              << " mm); clipboard owner pid " << currentClipboardOwnerPid()
+                              << " (this process " << GetCurrentProcessId() << ", owner at copy "
+                              << g_clipboardOwnerAtMark << ")\n";
+                    const bool sizeMismatch = dpi <= 299.0 || dpi >= 601.0
+                            || std::abs(dpi - res.pngDpi) >= 1.0
+                            || std::fabs(img.width() - expectW) > 2.0
+                            || emfFrameW < 0 || std::fabs(emfFrameW - res.widthMm * 100.0) > 2.0;
+                    if (sizeMismatch && !SciDAVisOle::lastCopyStillOnClipboard()) {
+                        std::cout << "[INFO] 60c: the clipboard changed while it was read (now "
+                                  << GetClipboardSequenceNumber() << ", owner "
+                                  << currentClipboardOwnerPid() << ")\n";
+                        return "60c: the copied object was replaced on the clipboard";
+                    }
                     if (dpi <= 299.0 || dpi >= 601.0 || std::abs(dpi - res.pngDpi) >= 1.0
                         || std::fabs(img.width() - expectW) > 2.0) {
                         std::cerr << "[INFO] 60c: PNG " << img.width() << " px at " << dpi
@@ -17811,6 +17869,10 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                             return "60c: reported PNG dpi differs from the file";
                         return "60c: PNG width does not match physical size x dpi";
                     }
+                    // The vector picture must claim the same physical size as the PNG and the
+                    // reported size (PowerPoint sizes the pasted object from rclFrame).
+                    if (emfFrameW < 0 || std::fabs(emfFrameW - res.widthMm * 100.0) > 2.0)
+                        return "60c: EMF frame (rclFrame) differs from the reported size";
                     return nullptr;
                 },
                 "60c");
@@ -21001,6 +21063,56 @@ Table *suite66Find(ApplicationWindow *app, const QString &name)
     return nullptr;
 }
 
+//! Watches a reopened project window. The full run once crashed in Suite 66 inside
+//! ApplicationWindow::window() -> windowsList() -> folders.topLevelItem(0) on a window whose
+//! folder tree was already gone: the reopened window had been closed (WA_DeleteOnClose) and
+//! deleted while the suite pumped events, and the suite then used the dangling pointer. The spy
+//! records who closed it, so that such a run fails with an explanation instead of crashing.
+class Suite66CloseSpy : public QObject
+{
+public:
+    explicit Suite66CloseSpy(ApplicationWindow *w) : guard(w)
+    {
+        if (w)
+            w->installEventFilter(this);
+    }
+    bool alive() const { return !guard.isNull(); }
+    std::string describe(const char *step) const
+    {
+        std::string s = std::string(step) + ": the reopened project window was deleted while events were processed";
+        if (closeEvents > 0)
+            s += " (close event " + std::string(lastSpontaneous ? "from the system / window manager"
+                                                               : "sent by this process")
+                 + ", active window then: " + activeWindowAtClose.toStdString() + ")";
+        else
+            s += " (no close event seen)";
+        return s;
+    }
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        if (o == guard.data() && e->type() == QEvent::Close) {
+            ++closeEvents;
+            lastSpontaneous = e->spontaneous();
+            QWidget *aw = QApplication::activeWindow();
+            activeWindowAtClose = aw ? (QString::fromLatin1(aw->metaObject()->className())
+                                        + QStringLiteral(" \"") + aw->windowTitle() + QLatin1Char('"'))
+                                     : QStringLiteral("none");
+            std::cerr << "[WARN] Suite 66: close event on the reopened project window ("
+                      << (lastSpontaneous ? "spontaneous" : "synthetic") << ", active window "
+                      << activeWindowAtClose.toStdString() << ")" << std::endl;
+        }
+        return false;
+    }
+
+private:
+    QPointer<ApplicationWindow> guard;
+    int closeEvents = 0;
+    bool lastSpontaneous = false;
+    QString activeWindowAtClose;
+};
+
 bool suite66Shown(ApplicationWindow *app, Table *t)
 {
     return t && !t->isHidden() && !app->hidden(t);
@@ -21177,7 +21289,9 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
     {
         ApplicationWindow *re = mw->openProject(prj);
         CHECK_COND(re != nullptr, "66e: reopen");
+        Suite66CloseSpy spy66e(re);
         QApplication::processEvents();
+        CHECK_COND(spy66e.alive(), spy66e.describe("66e"));
         WorkbookManager *rw = WorkbookManager::existing(re);
         CHECK_COND(rw && rw->hasBook(bk), "66e: workbook restored");
         const QList<Table *> rs = rw->sheets(bk);
@@ -21220,7 +21334,9 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
         CHECK_COND(suite59WriteFile(oldPrj, old), "66f: write old project");
         ApplicationWindow *re = mw->openProject(oldPrj);
         CHECK_COND(re != nullptr, "66f: open old project");
+        Suite66CloseSpy spy66f(re);
         QApplication::processEvents();
+        CHECK_COND(spy66f.alive(), spy66f.describe("66f"));
         WorkbookManager *rw = WorkbookManager::existing(re);
         CHECK_COND(!rw || rw->bookNames().isEmpty(), "66f: no workbook without the line");
         for (const char *n : { "Spec66_Sheet1", "Spec66_Sheet2", "Spec66-Raw", "Spec66_Sheet3", "F66" }) {
