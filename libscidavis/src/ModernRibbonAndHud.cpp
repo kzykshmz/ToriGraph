@@ -4720,6 +4720,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Classic Toolbars"); },
                 [this]() { return tr("Show or Hide Legacy Classic Icon Toolbars"); },
                 [this]() { setClassicToolbarsVisible(!d_classic_toolbars_visible); }, true);
+        d_btn_classic_toolbars->setObjectName(QStringLiteral("RibbonClassicToolbarsButton"));
 
         row->addStretch(1);
         addTabPage([this]() { return tr("Tools"); }, page);
@@ -5781,6 +5782,20 @@ void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
     for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
         if (ab.action && kAdvancedIcons.contains(ab.iconId))
             ab.action->setVisible(visible);
+    }
+}
+
+void ModernRibbonBar::setLegacyUiVisible(bool visible)
+{
+    if (d_shutting_down)
+        return;
+    // C15: the classic icon toolbars duplicate the ribbon; their switch is legacy UI.
+    if (!visible)
+        setClassicToolbarsVisible(false);
+    if (d_btn_classic_toolbars) {
+        // always explicit: before the ribbon is first shown every child still reports hidden
+        d_btn_classic_toolbars->setVisible(visible);
+        updateGroupCollapse();
     }
 }
 

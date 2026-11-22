@@ -8,6 +8,7 @@
                            - dialogs that fit 1366x768 at 150 % (C5)
                            - shared graph context menu (C7)
                            - "Show other-field / advanced features" switch (G1)
+                           - "Show Legacy UI" switch (C15)
  ***************************************************************************/
 #include "UxNavigation.h"
 
@@ -58,6 +59,7 @@
 #include <QStatusBar>
 #include <QTableView>
 #include <QTimer>
+#include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
 #include <QWizard>
@@ -884,6 +886,124 @@ void ApplicationWindow::applyAdvancedFeatureVisibility()
         d_modern_ribbon->setAdvancedDomainFeaturesVisible(show);
 }
 
+namespace {
+
+// Shortcut of a legacy action while it is hidden (PortableText), restored when shown again.
+const char kLegacyHiddenShortcutProp[] = "_tg_legacy_hidden_shortcut";
+
+void registerLegacyUiTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            const QString src = QString::fromUtf8(en);
+            if (!ToriGraphFullJapaneseTranslator::lookupJapanese(src).isEmpty())
+                return;
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(src, QString::fromUtf8(ja));
+        };
+        reg("Show Legacy UI", "旧 UI を表示");
+        reg("Show the old toolbar menus, Plot Wizard, Add Time Stamp and Scripting Language in "
+            "menus, the ribbon and command search",
+            "旧ツールバーのメニュー、プロットウィザード、タイムスタンプの追加、スクリプト言語の選択を"
+            "メニュー・リボン・コマンド検索に表示します");
+    });
+}
+
+// Hide the shortcut of a hidden legacy action so a stray key press cannot run an invisible
+// command. Re-applied whenever the action changes (translateActionsStrings() sets it again).
+void suppressLegacyShortcut(QAction *a)
+{
+    if (!a || a->shortcut().isEmpty())
+        return;
+    a->setProperty(kLegacyHiddenShortcutProp,
+                   a->shortcut().toString(QKeySequence::PortableText));
+    a->setShortcut(QKeySequence());
+}
+
+} // namespace
+
+QStringList ApplicationWindow::legacyUiActionNames()
+{
+    // C15: roles taken over by the ribbon (classic toolbars), the plot buttons (Plot Wizard),
+    // the text tool (time stamp) and Python (scripting language). Hidden, never deleted.
+    return { QStringLiteral("actionShowPlotWizard"), QStringLiteral("actionTimeStamp"),
+             QStringLiteral("actionScriptingLang"), QStringLiteral("locktoolbar") };
+}
+
+void ApplicationWindow::setShowLegacyUi(bool show)
+{
+    d_show_legacy_ui = show;
+    if (!d_headless_mode && !m_batch) {
+        // getSettings() honours TORIGRAPH_SETTINGS_INI (tests never touch the user registry)
+        getSettings().setValue(QStringLiteral("/UX/ShowLegacyUi"), show);
+    }
+    applyLegacyUiVisibility();
+}
+
+void ApplicationWindow::applyLegacyUiVisibility()
+{
+    const bool show = d_show_legacy_ui;
+    for (const QString &name : legacyUiActionNames()) {
+        QAction *a = findChild<QAction *>(name);
+        if (!a)
+            continue;
+        a->setVisible(show);
+        if (!show) {
+            suppressLegacyShortcut(a);
+        } else {
+            const QString saved = a->property(kLegacyHiddenShortcutProp).toString();
+            a->setProperty(kLegacyHiddenShortcutProp, QVariant());
+            if (!saved.isEmpty() && a->shortcut().isEmpty())
+                a->setShortcut(QKeySequence(saved, QKeySequence::PortableText));
+        }
+    }
+    // View > Toolbars and the show/hide switches of the classic toolbars (they also appear in
+    // the main window's right-click menu and in command search)
+    if (toolbarsMenu)
+        toolbarsMenu->menuAction()->setVisible(show);
+    QToolBar *const legacyBars[] = { file_tools, edit_tools,        graph_tools,   plot_tools,
+                                     table_tools, matrix_plot_tools, graph_3D_tools };
+    for (QToolBar *tb : legacyBars) {
+        if (tb && tb->toggleViewAction())
+            tb->toggleViewAction()->setVisible(show);
+    }
+    if (QAction *toggle = findChild<QAction *>(QStringLiteral("actionShowLegacyUi"))) {
+        if (toggle->isChecked() != show) {
+            QSignalBlocker b(toggle);
+            toggle->setChecked(show);
+        }
+    }
+    if (d_modern_ribbon)
+        d_modern_ribbon->setLegacyUiVisible(show);
+}
+
+void ApplicationWindow::installLegacyUiSwitch()
+{
+    registerLegacyUiTranslations();
+    d_show_legacy_ui = getSettings().value(QStringLiteral("/UX/ShowLegacyUi"), false).toBool();
+    if (toolbarsMenu && toolbarsMenu->objectName().isEmpty())
+        toolbarsMenu->setObjectName(QStringLiteral("menuToolbars"));
+    for (const QString &name : legacyUiActionNames()) {
+        if (QAction *a = findChild<QAction *>(name)) {
+            connect(a, &QAction::changed, this, [this, a]() {
+                if (!d_show_legacy_ui)
+                    suppressLegacyShortcut(a);
+            });
+        }
+    }
+
+    QAction *legacyToggle = new QAction(tr("Show Legacy UI"), this);
+    legacyToggle->setObjectName(QStringLiteral("actionShowLegacyUi"));
+    legacyToggle->setCheckable(true);
+    legacyToggle->setChecked(d_show_legacy_ui);
+    legacyToggle->setToolTip(tr("Show the old toolbar menus, Plot Wizard, Add Time Stamp and "
+                                "Scripting Language in menus, the ribbon and command search"));
+    connect(legacyToggle, &QAction::toggled, this, [this](bool on) { setShowLegacyUi(on); });
+    if (view)
+        view->addAction(legacyToggle); // next to the G1 switch at the end of the View menu
+    applyLegacyUiVisibility();
+}
+
 void ApplicationWindow::attachEmptyTableHint(Table *table)
 {
     if (!table || d_headless_mode || m_batch || tableHasAnyData(table))
@@ -1157,4 +1277,7 @@ void ApplicationWindow::installUxNavigation()
         view->addAction(advToggle);
     }
     applyAdvancedFeatureVisibility();
+
+    // C15: legacy UI (hidden by default)
+    installLegacyUiSwitch();
 }

@@ -1694,6 +1694,12 @@ public:
     void setShowAdvancedDomainFeatures(bool show);
     //! Object names of the actions hidden unless "Show other-field / advanced features" is on
     static QStringList advancedDomainActionNames();
+    //! C15: show the legacy UI (classic toolbar menus, Plot Wizard, time stamp, scripting
+    //! language). Off by default; the actions themselves stay callable from scripts / OLE.
+    bool showsLegacyUi() const { return d_show_legacy_ui; }
+    void setShowLegacyUi(bool show);
+    //! Object names of the actions hidden (with their shortcuts) unless "Show Legacy UI" is on
+    static QStringList legacyUiActionNames();
     //! Fill a graph context menu (shared by the canvas and the layer button menus)
     void buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton);
 
@@ -1706,6 +1712,9 @@ private:
     void installUxNavigation();
     void applyAdvancedFeatureVisibility();
     bool d_show_advanced_domain_features = false;
+    void installLegacyUiSwitch();
+    void applyLegacyUiVisibility();
+    bool d_show_legacy_ui = false;
     QToolButton *d_tool_mode_indicator = nullptr;
     QTimer *d_tool_mode_poll = nullptr;
     QString d_last_tool_mode_text;
