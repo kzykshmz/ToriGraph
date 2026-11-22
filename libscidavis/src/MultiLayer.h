@@ -126,6 +126,10 @@ public:
         QColor pageBackground = Qt::white;
         bool formatIsijUnitSlash = true;
         bool largeSlideLayout = false;
+        //! Size on the slide when the graph is sent to PowerPoint, in percent of the page size
+        //! (E8; the lab slide preset is made to be pasted at 140 %). 0 = not set (100 %; a
+        //! user copy of a built-in preset inherits the built-in value).
+        double slidePastePercent = 0.0;
         //! Presets read from the shared (lab) folder are read-only in this installation.
         bool readOnly = false;
         QString sourcePath;

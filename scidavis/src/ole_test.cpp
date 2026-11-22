@@ -77,6 +77,15 @@
 #include <iostream>
 #include <wrl/client.h>
 #include "SettingsTransfer.h"
+#include "PptxExport.h"
+#include "ZipReader.h"
+#include "ZipWriter.h"
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QRadioButton>
+#include <QXmlStreamReader>
 #include <QAction>
 #include <QSettings>
 
@@ -179,6 +188,7 @@ static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw);
 static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw);
 static int runSuite66Workbooks(ApplicationWindow *mw);
 static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw);
+static int runSuite73SendToPowerPoint(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -319,6 +329,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc70;
+    }
+    if (args.contains("--suite73-only")) {
+        const int rc73 = runSuite73SendToPowerPoint(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc73;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5518,6 +5535,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite70IconCleanupAndLightTheme(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite73SendToPowerPoint(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -21148,5 +21168,505 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 69 settings transfer & script coverage passed!\n";
+    return 0;
+}
+
+// =========================================================================================
+// Suite 73 (E8): "Send to PowerPoint" from the GUI. A self-written ZIP writer (no Qt private
+// API) packages the graphs as ToriGraph.Graph.1 OLE objects with an EMF preview, laid out like
+// the Python SDK's export_graphs_to_pptx. PowerPoint itself is never started.
+// =========================================================================================
+namespace {
+
+struct Pptx73Shape
+{
+    QString name, descr, progId;
+    qint64 x = -1, y = -1, w = -1, h = -1;
+};
+
+QString xmlError73(const QByteArray &xml)
+{
+    QXmlStreamReader r(xml);
+    while (!r.atEnd())
+        r.readNext();
+    return r.hasError() ? r.errorString() : QString();
+}
+
+QVector<Pptx73Shape> slideShapes73(const QByteArray &xml)
+{
+    QVector<Pptx73Shape> out;
+    QXmlStreamReader r(xml);
+    bool inFrame = false;
+    while (!r.atEnd()) {
+        r.readNext();
+        if (r.isStartElement()) {
+            const QStringRef n = r.name();
+            if (n == QLatin1String("graphicFrame")) {
+                out.append(Pptx73Shape());
+                inFrame = true;
+            } else if (inFrame) {
+                Pptx73Shape &s = out.last();
+                if (n == QLatin1String("cNvPr") && s.name.isEmpty()) {
+                    s.name = r.attributes().value(QLatin1String("name")).toString();
+                    s.descr = r.attributes().value(QLatin1String("descr")).toString();
+                } else if (n == QLatin1String("oleObj")) {
+                    s.progId = r.attributes().value(QLatin1String("progId")).toString();
+                } else if (n == QLatin1String("off") && s.x < 0) {
+                    s.x = r.attributes().value(QLatin1String("x")).toLongLong();
+                    s.y = r.attributes().value(QLatin1String("y")).toLongLong();
+                } else if (n == QLatin1String("ext") && s.w < 0) {
+                    s.w = r.attributes().value(QLatin1String("cx")).toLongLong();
+                    s.h = r.attributes().value(QLatin1String("cy")).toLongLong();
+                }
+            }
+        } else if (r.isEndElement() && r.name() == QLatin1String("graphicFrame")) {
+            inFrame = false;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 73: Send to PowerPoint (.pptx writer)...\n";
+    const QVariant prevNonInteractive = qApp->property("torigraph_noninteractive");
+    qApp->setProperty("torigraph_noninteractive", true);
+    const QString tmpDir = QDir::temp().filePath(
+            QStringLiteral("torigraph_suite73_%1").arg(QCoreApplication::applicationPid()));
+    QDir(tmpDir).removeRecursively();
+    QDir().mkpath(tmpDir);
+
+    // ---- 73a. menu entry and Japanese text ------------------------------------------------
+    {
+        QAction *a = mw->findChild<QAction *>(QStringLiteral("actionSendToPowerPoint"));
+        CHECK_COND(a, "73a: actionSendToPowerPoint missing");
+        QAction *aSave = mw->findChild<QAction *>(QStringLiteral("actionSaveProject"));
+        bool inFileMenu = false;
+        for (QMenu *m : mw->findChildren<QMenu *>()) {
+            if (m->actions().contains(a) && m->actions().contains(aSave))
+                inFileMenu = true;
+        }
+        CHECK_COND(inFileMenu, "73a: Send to PowerPoint is not in the File menu");
+        const QString prevLang = mw->appLanguage;
+        mw->switchToLanguage("ja");
+        QApplication::processEvents();
+        CHECK_COND(a->text() == QString::fromUtf8("PowerPoint へ送る(&W)..."),
+                   "73a: Japanese menu text: " << a->text().toStdString());
+        CHECK_COND(a->toolTip().contains(QString::fromUtf8("ダブルクリック")),
+                   "73a: tooltip does not explain re-editing");
+        bool inRibbon = false;
+        for (QAction *ra : mw->findChildren<QAction *>()) {
+            if (ra != a && ra->text() == ToriGraphPptx::sendToPowerPointLabel())
+                inRibbon = true;
+        }
+        CHECK_COND(inRibbon, "73a: ribbon 'More Export' entry missing");
+        CHECK_COND(QCoreApplication::translate("ToriGraphPptx", "Graphs per slide:")
+                           == QString::fromUtf8("1 枚に並べる数:"),
+                   "73a: dialog strings are not translated");
+        mw->switchToLanguage(prevLang.isEmpty() ? QStringLiteral("en") : prevLang);
+        QApplication::processEvents();
+    }
+
+    // ---- 73b. ZipWriter round trip with ZipReader -----------------------------------------
+    {
+        CHECK_COND(torizip::ZipWriter::crc32(QByteArray("123456789")) == 0xCBF43926U,
+                   "73b: CRC-32 check value");
+        torizip::ZipWriter zw;
+        QByteArray big;
+        for (int i = 0; i < 2000; ++i)
+            big += "ToriGraph ZIP line " + QByteArray::number(i % 7) + "\n";
+        const QByteArray tiny("x");
+        QString err;
+        CHECK_COND(zw.addFile("a/big.txt", big, torizip::ZipWriter::Compression::Deflate, &err),
+                   "73b: add big");
+        CHECK_COND(zw.addFile("stored.bin", tiny, torizip::ZipWriter::Compression::Store, &err),
+                   "73b: add stored");
+        CHECK_COND(zw.addFile(QString::fromUtf8("日本語/名前.xml"), QByteArray("<a/>"),
+                              torizip::ZipWriter::Compression::Deflate, &err),
+                   "73b: add UTF-8 name");
+        CHECK_COND(zw.addFile("empty.txt", QByteArray(), torizip::ZipWriter::Compression::Deflate,
+                              &err),
+                   "73b: add empty");
+        err.clear();
+        CHECK_COND(!zw.addFile("A/BIG.TXT", tiny, torizip::ZipWriter::Compression::Store, &err)
+                           && !err.isEmpty(),
+                   "73b: duplicate names must be refused");
+        const QByteArray zip = zw.finish();
+        CHECK_COND(zip.size() < big.size(), "73b: deflate did not compress");
+        torizip::ZipArchive za;
+        CHECK_COND(za.openData(zip, &err), "73b: ZipReader cannot open: " << err.toStdString());
+        CHECK_COND(za.entries().size() == 4, "73b: entry count");
+        const QList<QByteArray> expect{ big, tiny, QByteArray("<a/>"), QByteArray() };
+        for (int i = 0; i < 4; ++i) {
+            QByteArray data;
+            CHECK_COND(za.extract(i, data, &err), "73b: extract " << i << ": " << err.toStdString());
+            CHECK_COND(data == expect.at(i), "73b: content " << i);
+            CHECK_COND(za.entries().at(i).crc32 == torizip::ZipWriter::crc32(data),
+                       "73b: CRC in the directory " << i);
+        }
+        CHECK_COND(za.entries().at(0).method == 8 && za.entries().at(1).method == 0,
+                   "73b: compression methods");
+        CHECK_COND(za.entries().at(2).name == QString::fromUtf8("日本語/名前.xml"),
+                   "73b: UTF-8 name round trip");
+    }
+
+    // ---- set up two graphs on the lab slide preset ------------------------------------------
+    ApplicationWindow *w73 = new ApplicationWindow();
+    w73->applyUserSettings();
+    w73->setHeadlessMode(true);
+    w73->confirmCloseTable = false;
+    w73->confirmClosePlot2D = false;
+    w73->confirmClosePlot3D = false;
+    w73->confirmCloseFolder = false;
+    struct W73Guard {
+        ApplicationWindow *w;
+        ~W73Guard()
+        {
+            if (w) {
+                w->savedProject();
+                w->setOleEmbeddedMode(true);
+                delete w;
+            }
+        }
+    } w73Guard{ w73 };
+
+    Table *tA = w73->newTable(6, 2, "Tensile73", "stress-strain");
+    Table *tB = w73->newTable(6, 2, "Xrd73", "pattern");
+    CHECK_COND(tA && tB, "73: tables");
+    for (int r = 0; r < 6; ++r) {
+        tA->setCell(r, 0, 0.01 * r);
+        tA->setCell(r, 1, 100.0 + 40.0 * r - 3.0 * r * r);
+        tB->setCell(r, 0, 20.0 + 10.0 * r);
+        tB->setCell(r, 1, (r == 3) ? 900.0 : 50.0 + r);
+    }
+    MultiLayer *mlA =
+            w73->multilayerPlot(tA, QStringList() << (tA->name() + "_2"), Graph::LineSymbols);
+    MultiLayer *mlB = w73->multilayerPlot(tB, QStringList() << (tB->name() + "_2"), Graph::Line);
+    CHECK_COND(mlA && mlB, "73: graphs");
+    MultiLayer::GraphStylePresetSpec lab;
+    CHECK_COND(MultiLayer::findStylePreset(ToriGraphPptx::labSlidePresetId(), &lab),
+               "73: lab slide preset");
+    mlA->applyStylePresetSpec(lab);
+    mlB->applyStylePresetSpec(lab);
+    QApplication::processEvents();
+    const double labPct = ToriGraphPptx::presetPastePercent(ToriGraphPptx::labSlidePresetId());
+    CHECK_COND(labPct == lab.slidePastePercent && labPct > 100.0,
+               "73: paste factor not read from the preset: " << labPct);
+    CHECK_COND(ToriGraphPptx::presetPastePercent("isij_85mm") == 100.0,
+               "73: presets without a paste factor paste at 100 %");
+
+    // ---- 73c. two graphs, one per slide --------------------------------------------------
+    const QString deck = QDir(tmpDir).filePath("two_graphs.pptx");
+    ToriGraphPptx::DeckOptions opt;
+    opt.perSlide = 1;
+    opt.scalePercent = labPct;
+    const ToriGraphPptx::DeckResult res =
+            ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlA << mlB, opt, deck);
+    CHECK_COND(res.ok, "73c: export failed: " << res.error.toStdString());
+    CHECK_COND(res.slideCount == 2 && res.newSlides == 2 && !res.appended, "73c: slide count");
+    CHECK_COND(res.placements.size() == 2 && res.placements[0].slide == 1
+                       && res.placements[1].slide == 2,
+               "73c: placements");
+    QByteArray deckBytes;
+    {
+        QFile f(deck);
+        CHECK_COND(f.open(QIODevice::ReadOnly), "73c: pptx not written");
+        deckBytes = f.readAll();
+    }
+    CHECK_COND(deckBytes.startsWith("PK\x03\x04"), "73c: not a ZIP file");
+    torizip::ZipArchive za;
+    QString err;
+    CHECK_COND(za.openData(deckBytes, &err), "73c: ZipReader: " << err.toStdString());
+    CHECK_COND(za.entries().first().name == "[Content_Types].xml",
+               "73c: [Content_Types].xml must be the first entry");
+    QHash<QString, QByteArray> parts;
+    for (int i = 0; i < za.entries().size(); ++i) {
+        const QString n = za.entries().at(i).name;
+        QByteArray data;
+        CHECK_COND(za.extract(i, data, &err),
+                   "73c: extract " << n.toStdString() << ": " << err.toStdString());
+        CHECK_COND(za.entries().at(i).crc32 == torizip::ZipWriter::crc32(data),
+                   "73c: CRC of " << n.toStdString());
+        parts.insert(n, data);
+        if (n.endsWith(".xml") || n.endsWith(".rels")) {
+            const QString xe = xmlError73(data);
+            CHECK_COND(xe.isEmpty(),
+                       "73c: " << n.toStdString() << " is not well-formed: " << xe.toStdString());
+        }
+    }
+    for (const char *req :
+         { "[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml",
+           "ppt/_rels/presentation.xml.rels", "ppt/slides/slide1.xml", "ppt/slides/slide2.xml",
+           "ppt/slides/_rels/slide1.xml.rels", "ppt/slideLayouts/slideLayout1.xml",
+           "ppt/slideMasters/slideMaster1.xml", "ppt/theme/theme1.xml",
+           "ppt/embeddings/oleObject1.bin", "ppt/embeddings/oleObject2.bin",
+           "ppt/media/image1.emf", "ppt/media/image2.emf", "docProps/core.xml" })
+        CHECK_COND(parts.contains(QString::fromLatin1(req)), "73c: missing part " << req);
+    const QString ct = QString::fromUtf8(parts.value("[Content_Types].xml"));
+    CHECK_COND(ct.contains("PartName=\"/ppt/embeddings/oleObject1.bin\" "
+                           "ContentType=\"application/vnd.openxmlformats-officedocument.oleObject\""),
+               "73c: OLE content type");
+    CHECK_COND(ct.contains("PartName=\"/ppt/media/image2.emf\" ContentType=\"image/x-emf\""),
+               "73c: EMF content type");
+    CHECK_COND(ct.contains("PartName=\"/ppt/slides/slide2.xml\""), "73c: slide content type");
+    const QString pres = QString::fromUtf8(parts.value("ppt/presentation.xml"));
+    CHECK_COND(pres.count("<p:sldId ") == 2, "73c: presentation lists 2 slides");
+    CHECK_COND(pres.contains("<p:sldSz cx=\"12192000\" cy=\"6858000\"/>"), "73c: 16:9 slide size");
+    CHECK_COND(pres.indexOf("<p:sldIdLst>") >= 0
+                       && pres.indexOf("<p:sldIdLst>") < pres.indexOf("<p:sldSz"),
+               "73c: sldIdLst must precede sldSz");
+    const QString srels = QString::fromUtf8(parts.value("ppt/slides/_rels/slide1.xml.rels"));
+    CHECK_COND(srels.contains("relationships/oleObject\" Target=\"../embeddings/oleObject1.bin\"")
+                       && srels.contains("relationships/image\" Target=\"../media/image1.emf\"")
+                       && srels.contains("relationships/slideLayout\""),
+               "73c: slide relationships");
+    // the same shape structure as the SDK (python/torigraph/pptx.py embed_ole_shape_on_slide)
+    const QVector<Pptx73Shape> s1 = slideShapes73(parts.value("ppt/slides/slide1.xml"));
+    CHECK_COND(s1.size() == 1 && s1[0].progId == "ToriGraph.Graph.1"
+                       && s1[0].name == "ToriGraphOLE:" + mlA->name()
+                       && s1[0].descr == "torigraph:" + mlA->name(),
+               "73c: OLE frame naming/progId");
+    const QString slide1 = QString::fromUtf8(parts.value("ppt/slides/slide1.xml"));
+    CHECK_COND(slide1.contains("<p:embed/>") && slide1.contains("<a:blip r:embed=\"rId3\"/>")
+                       && slide1.contains("uri=\"http://schemas.openxmlformats.org/presentationml/2006/ole\""),
+               "73c: oleObj / preview picture");
+    // size = page size of the preset x the preset's factor
+    const QByteArray emf1 = parts.value("ppt/media/image1.emf");
+    CHECK_COND(emf1.size() > 88 && emf1.mid(40, 4) == QByteArray(" EMF"), "73c: EMF preview");
+    const qint32 *hdr = reinterpret_cast<const qint32 *>(emf1.constData());
+    const qint64 frameWHm = qint64(hdr[8]) - hdr[6]; // rclFrame.right - rclFrame.left
+    CHECK_COND(std::llabs(frameWHm - qRound(lab.pageWidthMm * 100.0)) <= 30,
+               "73c: EMF frame is not the preset page width: " << frameWHm);
+    const qint64 expectW = std::llround(double(frameWHm) * 360.0 * labPct / 100.0);
+    CHECK_COND(std::llabs(s1[0].w - expectW) <= 2 && !res.placements[0].shrunk,
+               "73c: width on slide " << s1[0].w << " expected " << expectW);
+    CHECK_COND(std::fabs(res.placements[0].effectivePercent - labPct) < 0.1,
+               "73c: effective percent " << res.placements[0].effectivePercent);
+    CHECK_COND(s1[0].x > 0 && s1[0].x + s1[0].w < ToriGraphPptx::kSlideWidth16x9 && s1[0].y > 0
+                       && s1[0].y + s1[0].h < ToriGraphPptx::kSlideHeight,
+               "73c: graph not on the slide");
+    // the embedded OLE object: CLSID, streams, and the graph with its own data
+    {
+        const QByteArray bin = parts.value("ppt/embeddings/oleObject1.bin");
+        CHECK_COND(bin.startsWith(QByteArray::fromHex("D0CF11E0A1B11AE1")), "73c: not an OLE2 file");
+        HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, SIZE_T(bin.size()));
+        CHECK_COND(hg, "73c: GlobalAlloc");
+        memcpy(GlobalLock(hg), bin.constData(), size_t(bin.size()));
+        GlobalUnlock(hg);
+        Microsoft::WRL::ComPtr<ILockBytes> lb;
+        CHECK_COND(SUCCEEDED(CreateILockBytesOnHGlobal(hg, TRUE, &lb)), "73c: ILockBytes");
+        Microsoft::WRL::ComPtr<IStorage> stg;
+        CHECK_COND(SUCCEEDED(StgOpenStorageOnILockBytes(lb.Get(), nullptr,
+                                                        STGM_READ | STGM_SHARE_EXCLUSIVE, nullptr,
+                                                        0, &stg)),
+                   "73c: OLE storage does not open");
+        CLSID clsid{};
+        CHECK_COND(SUCCEEDED(ReadClassStg(stg.Get(), &clsid))
+                           && IsEqualCLSID(clsid, SciDAVisOle::graph_clsid),
+                   "73c: CLSID is not ToriGraph.Graph.1");
+        for (const wchar_t *sn : { L"\001Ole", L"\001CompObj", L"ToriGraphProject",
+                                   L"SciDAVisProject", L"SciDAVisMeta", L"SciDAVisEmf" }) {
+            Microsoft::WRL::ComPtr<IStream> st;
+            CHECK_COND(SUCCEEDED(stg->OpenStream(sn, nullptr, STGM_READ | STGM_SHARE_EXCLUSIVE, 0,
+                                                 &st)),
+                       "73c: OLE stream missing: " << QString::fromWCharArray(sn).toStdString());
+        }
+        SciDAVisOle::OleGraphPayload payload;
+        CHECK_COND(SUCCEEDED(SciDAVisOle::loadPayloadFromStorage(stg.Get(), &payload)),
+                   "73c: payload");
+        const QString prj = QString::fromUtf8(payload.projectBytes);
+        CHECK_COND(payload.targetWindow == mlA->name() && prj.contains("Tensile73")
+                           && !prj.contains("Xrd73"),
+                   "73c: embedded project is not the graph with its own table");
+    }
+
+    // ---- 73d. per slide 2 / 4 and fit mode --------------------------------------------------
+    {
+        const QString deck2 = QDir(tmpDir).filePath("one_slide.pptx");
+        ToriGraphPptx::DeckOptions o2 = opt;
+        o2.perSlide = 2;
+        const ToriGraphPptx::DeckResult r2 =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlA << mlB, o2, deck2);
+        CHECK_COND(r2.ok && r2.slideCount == 1 && r2.newSlides == 1, "73d: one slide expected");
+        torizip::ZipArchive z2;
+        CHECK_COND(z2.open(deck2, &err), "73d: open");
+        QByteArray sx;
+        CHECK_COND(z2.extract(z2.findExactEntry("ppt/slides/slide1.xml"), sx, &err), "73d: slide1");
+        CHECK_COND(z2.findExactEntry("ppt/slides/slide2.xml") < 0, "73d: no second slide");
+        const QVector<Pptx73Shape> sh = slideShapes73(sx);
+        CHECK_COND(sh.size() == 2 && sh[0].descr == "torigraph:" + mlA->name()
+                           && sh[1].descr == "torigraph:" + mlB->name(),
+                   "73d: two graphs on slide 1");
+        CHECK_COND(sh[0].x + sh[0].w <= sh[1].x && std::llabs(sh[0].y - sh[1].y) <= 2,
+                   "73d: graphs are not side by side");
+        CHECK_COND(sh[1].x + sh[1].w <= ToriGraphPptx::kSlideWidth16x9,
+                   "73d: right graph off the slide");
+        CHECK_COND(!r2.placements[0].shrunk, "73d: the preset size fits two per 16:9 slide");
+
+        // four per slide: the preset factor does not fit a 2 x 2 cell, so the graphs shrink
+        ToriGraphPptx::DeckOptions o4 = opt;
+        o4.perSlide = 4;
+        const ToriGraphPptx::DeckResult r4 = ToriGraphPptx::exportGraphs(
+                w73, QList<MyWidget *>() << mlA << mlB, o4, QDir(tmpDir).filePath("four.pptx"));
+        qint64 cl, ctop, cw, ch;
+        ToriGraphPptx::gridCell(ToriGraphPptx::kSlideWidth16x9, ToriGraphPptx::kSlideHeight, 4, 1,
+                                &cl, &ctop, &cw, &ch);
+        CHECK_COND(r4.ok && r4.placements.size() == 2 && r4.placements[1].shrunk
+                           && r4.placements[1].effectivePercent < labPct
+                           && r4.placements[1].height <= ch && r4.placements[1].left >= cl
+                           && r4.placements[1].left + r4.placements[1].width <= cl + cw,
+                   "73d: shrink to the 2 x 2 cell");
+
+        // fit mode (the SDK's default without scale=): one side equals the cell
+        ToriGraphPptx::DeckOptions of = opt;
+        of.scalePercent = 0.0;
+        const ToriGraphPptx::DeckResult rf = ToriGraphPptx::exportGraphs(
+                w73, QList<MyWidget *>() << mlA, of, QDir(tmpDir).filePath("fit.pptx"));
+        ToriGraphPptx::gridCell(ToriGraphPptx::kSlideWidth16x9, ToriGraphPptx::kSlideHeight, 1, 0,
+                                &cl, &ctop, &cw, &ch);
+        CHECK_COND(rf.ok
+                           && (std::llabs(rf.placements[0].height - ch) <= 1
+                               || std::llabs(rf.placements[0].width - cw) <= 1),
+                   "73d: fit mode does not fill the cell");
+    }
+
+    // ---- 73e. add slides to the end of an existing deck ----------------------------------
+    {
+        ToriGraphPptx::DeckOptions oa = opt;
+        oa.appendToExisting = true;
+        const ToriGraphPptx::DeckResult ra =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlB, oa, deck);
+        CHECK_COND(ra.ok && ra.appended && ra.slideCount == 3 && ra.newSlides == 1
+                           && ra.placements.size() == 1 && ra.placements[0].slide == 3,
+                   "73e: append: " << ra.error.toStdString());
+        torizip::ZipArchive z3;
+        CHECK_COND(z3.open(deck, &err), "73e: reopen");
+        QHash<QString, QByteArray> p3;
+        for (int i = 0; i < z3.entries().size(); ++i) {
+            QByteArray d;
+            CHECK_COND(z3.extract(i, d, &err), "73e: extract");
+            const QString n = z3.entries().at(i).name;
+            p3.insert(n, d);
+            if (n.endsWith(".xml") || n.endsWith(".rels"))
+                CHECK_COND(xmlError73(d).isEmpty(), "73e: " << n.toStdString() << " not well-formed");
+        }
+        CHECK_COND(p3.value("ppt/slides/slide1.xml") == parts.value("ppt/slides/slide1.xml")
+                           && p3.value("ppt/embeddings/oleObject1.bin")
+                                      == parts.value("ppt/embeddings/oleObject1.bin"),
+                   "73e: existing slides must be kept unchanged");
+        CHECK_COND(p3.contains("ppt/slides/slide3.xml")
+                           && p3.contains("ppt/embeddings/oleObject3.bin")
+                           && p3.contains("ppt/media/image3.emf"),
+                   "73e: new parts");
+        const QString pres3 = QString::fromUtf8(p3.value("ppt/presentation.xml"));
+        CHECK_COND(pres3.count("<p:sldId ") == 3 && pres3.contains("<p:sldId id=\"258\""),
+                   "73e: slide list: " << pres3.toStdString());
+        const QString rels3 = QString::fromUtf8(p3.value("ppt/_rels/presentation.xml.rels"));
+        QSet<QString> ids;
+        int nIds = 0;
+        QRegularExpressionMatchIterator it =
+                QRegularExpression("Id=\"([^\"]+)\"").globalMatch(rels3);
+        while (it.hasNext()) {
+            ids.insert(it.next().captured(1));
+            ++nIds;
+        }
+        CHECK_COND(ids.size() == nIds && rels3.contains("Target=\"slides/slide3.xml\""),
+                   "73e: presentation relationships");
+        CHECK_COND(QString::fromUtf8(p3.value("[Content_Types].xml"))
+                           .contains("/ppt/slides/slide3.xml"),
+                   "73e: content type of the new slide");
+
+        // a file that is not a .pptx is reported and left alone
+        const QString bogus = QDir(tmpDir).filePath("not_a_deck.pptx");
+        {
+            QFile f(bogus);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "73e: bogus");
+            f.write("this is not a zip file");
+        }
+        const ToriGraphPptx::DeckResult rb =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlA, oa, bogus);
+        QFile fb(bogus);
+        CHECK_COND(!rb.ok && !rb.error.isEmpty() && fb.open(QIODevice::ReadOnly)
+                           && fb.readAll() == QByteArray("this is not a zip file"),
+                   "73e: a broken file must be reported and kept");
+    }
+
+    // ---- 73f. dialog: defaults read from the preset, options read back -----------------
+    {
+        QScopedPointer<QDialog> dlg(ToriGraphPptx::createSendDialog(w73, nullptr));
+        CHECK_COND(dlg, "73f: dialog");
+        auto *per = dlg->findChild<QComboBox *>("pptxPerSlide");
+        CHECK_COND(per && per->count() == 4 && per->itemData(0).toInt() == 1
+                           && per->itemData(1).toInt() == 2 && per->itemData(2).toInt() == 4
+                           && per->itemData(3).toInt() == 6,
+                   "73f: per-slide choices 1/2/4/6");
+        auto *size = dlg->findChild<QComboBox *>("pptxSlideSize");
+        CHECK_COND(size && size->count() == 2, "73f: slide size choices");
+        auto *spin = dlg->findChild<QDoubleSpinBox *>("pptxScalePercent");
+        CHECK_COND(spin && std::fabs(spin->value() - labPct) < 1e-9,
+                   "73f: paste factor not taken from the preset");
+        auto *hint = dlg->findChild<QLabel *>("pptxScaleHint");
+        CHECK_COND(hint && hint->text().contains(QString::number(lab.pageWidthMm, 'g', 6)),
+                   "73f: hint does not show the preset page size");
+        auto *rbSel = dlg->findChild<QRadioButton *>("pptxTargetSelected");
+        auto *list = dlg->findChild<QListWidget *>("pptxGraphList");
+        auto *path = dlg->findChild<QLineEdit *>("pptxPath");
+        auto *rbFit = dlg->findChild<QRadioButton *>("pptxScaleFit");
+        auto *rbFixed = dlg->findChild<QRadioButton *>("pptxScaleFixed");
+        CHECK_COND(rbSel && list && list->count() == 2 && path && rbFit && rbFixed,
+                   "73f: widgets");
+        rbFixed->setChecked(true);
+        rbSel->setChecked(true);
+        for (int i = 0; i < list->count(); ++i)
+            list->item(i)->setCheckState(Qt::Unchecked);
+        QString derr;
+        CHECK_COND(!ToriGraphPptx::readSendDialog(dlg.data(), w73, nullptr, nullptr, nullptr,
+                                                  nullptr, &derr)
+                           && !derr.isEmpty(),
+                   "73f: an empty selection must be refused");
+        list->item(0)->setCheckState(Qt::Checked);
+        per->setCurrentIndex(2);
+        size->setCurrentIndex(1);
+        path->setText(QDir::toNativeSeparators(QDir(tmpDir).filePath("from_dialog")));
+        QList<MyWidget *> wins;
+        ToriGraphPptx::DeckOptions od;
+        QString p;
+        bool preset = false;
+        CHECK_COND(ToriGraphPptx::readSendDialog(dlg.data(), w73, &wins, &od, &p, &preset, &derr),
+                   "73f: read: " << derr.toStdString());
+        CHECK_COND(wins.size() == 1 && wins.first() == mlA && od.perSlide == 4 && !od.widescreen
+                           && std::fabs(od.scalePercent - labPct) < 1e-9
+                           && p.endsWith("from_dialog.pptx"),
+                   "73f: options read back");
+        rbFit->setChecked(true);
+        CHECK_COND(ToriGraphPptx::readSendDialog(dlg.data(), w73, nullptr, &od, nullptr, nullptr,
+                                                 &derr)
+                           && od.scalePercent <= 0.0,
+                   "73f: fit mode");
+    }
+
+    // TORIGRAPH_SUITE73_APPEND_TO=<deck.pptx>: also add a slide to a copy of a deck made by other
+    // software (PowerPoint, python-pptx) for a manual check; the original is not touched.
+    const QString foreignDeck = qEnvironmentVariable("TORIGRAPH_SUITE73_APPEND_TO");
+    if (!foreignDeck.isEmpty() && QFileInfo::exists(foreignDeck)) {
+        const QString copy = QDir(tmpDir).filePath("appended_to_foreign.pptx");
+        QFile::remove(copy);
+        QFile::copy(foreignDeck, copy);
+        ToriGraphPptx::DeckOptions oa = opt;
+        oa.appendToExisting = true;
+        const ToriGraphPptx::DeckResult rx =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlA << mlB, oa, copy);
+        std::cout << "[INFO] 73: appended to a copy of " << foreignDeck.toStdString() << ": ok="
+                  << rx.ok << " slides=" << rx.slideCount << " " << rx.error.toStdString() << "\n";
+    }
+    // TORIGRAPH_SUITE73_KEEP=1 keeps the decks for a manual look (python-pptx, LibreOffice, ...)
+    if (qEnvironmentVariableIsSet("TORIGRAPH_SUITE73_KEEP"))
+        std::cout << "[INFO] Suite 73 decks kept in " << tmpDir.toStdString() << "\n";
+    else
+        QDir(tmpDir).removeRecursively();
+    qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+    std::cout << "[INFO] Suite 73 Send to PowerPoint passed!\n";
     return 0;
 }
