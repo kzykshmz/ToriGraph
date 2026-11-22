@@ -162,6 +162,7 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw);
 static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw);
 static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
 static int runSuite60PowerPointOleLink(ApplicationWindow *mw);
+static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -276,6 +277,13 @@ int main(int argc, char **argv)
         delete mw;
         SciDAVisOle::shutdownOleServer();
         return rc60;
+    }
+    if (args.contains("--suite62-only")) {
+        const int rc62 = runSuite62BeginnerNavigationMenusAndScreenFit(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc62;
     }
 
     // =========================================================================
@@ -5453,6 +5461,9 @@ int main(int argc, char **argv)
     if (runSuite60PowerPointOleLink(mw) != 0)
         return 1;
     mw->savedProject();
+    if (runSuite62BeginnerNavigationMenusAndScreenFit(mw) != 0)
+        return 1;
+    mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
@@ -6632,8 +6643,8 @@ static int runSuite41Phase6JapaneseZeroMissAndArialGate(ApplicationWindow *mw)
     // 6. Switch "ja" -> "en" -> "ja" and verify live retranslation + 100% Arial across 2D, Colorbar, and 3D!
     mw->switchToLanguage("en");
     QApplication::processEvents();
-    CHECK_COND(ribbon->tabTitle(0) == "Home & Data",
-               "Switching ja -> en did not restore English Ribbon tab title 'Home & Data'");
+    CHECK_COND(ribbon->tabTitle(0) == "Home",
+               "Switching ja -> en did not restore English Ribbon tab title 'Home'");
 
     mw->switchToLanguage("ja");
     QApplication::processEvents();
@@ -16657,5 +16668,375 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
     SciDAVisOle::setEmbedScopeSetting(prevScope);
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
     std::cout << "[INFO] Suite 60 PowerPoint / Word OLE link passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 62: Beginner navigation, menus, ribbon state and screen fit
+//   B1 F1 guide, B4 empty-table hint, B6/B7 plotting from the ribbon, C2 inspector details,
+//   C3 tool-mode indicator, C4 ribbon actions, C5 dialogs on 1366x768 @150 %, C6 menu
+//   duplicates, C7 graph context menu, C8 shortcuts, C11 undo target, C12 command search,
+//   A11 save-as result, G1 other-field features.
+// =============================================================================
+#include "UxNavigation.h"
+#include <QScrollArea>
+#include <QStatusBar>
+#include <QToolButton>
+#include <QVBoxLayout>
+#include <QListWidget>
+#include "GraphInspectorDock.h"
+
+static QString cleanMnemonicForSuite62(const QString &t)
+{
+    QString out;
+    for (int i = 0; i < t.size(); ++i) {
+        if (t.at(i) == QLatin1Char('&')) {
+            if (i + 1 < t.size() && t.at(i + 1) == QLatin1Char('&'))
+                out.append(t.at(++i));
+            continue;
+        }
+        out.append(t.at(i));
+    }
+    return out.trimmed();
+}
+
+static int suite62CountMenusWithAction(ApplicationWindow *mw, QAction *a)
+{
+    int n = 0;
+    for (QMenu *m : mw->findChildren<QMenu *>()) {
+        if (m && a && m->actions().contains(a))
+            ++n;
+    }
+    return n;
+}
+
+static bool suite62IsDescendant(QObject *child, QObject *ancestor)
+{
+    for (QObject *p = child; p; p = p->parent()) {
+        if (p == ancestor)
+            return true;
+    }
+    return false;
+}
+
+static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 62: Beginner Navigation, Menus, Ribbon State & Screen Fit...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 62");
+    ModernRibbonBar *ribbon = mw->modernRibbonBar();
+    CHECK_COND(ribbon != nullptr, "62: ribbon missing");
+
+    // ---- 62a (B1, C8): F1 opens the bundled Japanese guide; shortcuts are unique
+    {
+        const QUrl guide = mw->quickGuideUrl();
+        CHECK_COND(guide.isLocalFile() && guide.toLocalFile().endsWith("manual/index.html"),
+                   "62a: F1 guide does not resolve to the bundled manual/index.html");
+        QFile f(guide.toLocalFile());
+        CHECK_COND(f.open(QIODevice::ReadOnly), "62a: guide file cannot be read");
+        const QString html = QString::fromUtf8(f.readAll());
+        for (const char *needle : { "\xE3\x81\x8B\xE3\x82\x93\xE3\x81\x9F\xE3\x82\x93\xE3\x82\xAC\xE3\x82\xA4\xE3\x83\x89", // かんたんガイド
+                                    "PowerPoint", "SmartScreen", "Origin", "register-ole.ps1" }) {
+            CHECK_COND(html.contains(QString::fromUtf8(needle)),
+                       "62a: guide misses a required section: " << needle);
+        }
+        auto actionsWithKey = [mw](const QKeySequence &ks) {
+            QStringList names;
+            for (QAction *a : mw->findChildren<QAction *>()) {
+                if (a && a->shortcuts().contains(ks))
+                    names << a->objectName();
+            }
+            return names;
+        };
+        CHECK_COND(actionsWithKey(QKeySequence(Qt::Key_F1)) == QStringList { "actionShowHelp" },
+                   "62a: F1 must belong to Help only");
+        CHECK_COND(actionsWithKey(QKeySequence("Ctrl+Shift+S")) == QStringList { "actionSaveProjectAs" },
+                   "62a: Ctrl+Shift+S must be Save As");
+        CHECK_COND(actionsWithKey(QKeySequence("Ctrl+Shift+F")) == QStringList { "actionNewFunctionPlot" },
+                   "62a: Ctrl+Shift+F must be the new function plot");
+        CHECK_COND(actionsWithKey(QKeySequence("Ctrl+F")).isEmpty(),
+                   "62a: Ctrl+F must stay free for searching a worksheet");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    // ---- 62b (B4): empty table shows the paste hint; data replaces it with "Plot this data"
+    Table *t = mw->newTable();
+    CHECK_COND(t != nullptr, "62b: newTable failed");
+    QApplication::processEvents();
+    const bool hintSupported = !mw->isNonInteractive();
+    if (hintSupported) {
+        QLabel *hint = t->findChild<QLabel *>("ToriEmptyTableHintLabel");
+        CHECK_COND(hint != nullptr && !hint->isHidden(), "62b: empty-table hint missing");
+    }
+
+    // ---- 62c (B7): an empty worksheet does not produce an empty graph
+    {
+        const int graphsBefore = mw->findChildren<MultiLayer *>().size();
+        CHECK_COND(!mw->plotBlockerForTable(t, Graph::LineSymbols).isEmpty(),
+                   "62c: empty table not reported as blocker");
+        CHECK_COND(mw->plotColumnsFromTable(t, Graph::LineSymbols) == nullptr,
+                   "62c: plotColumnsFromTable created a graph from an empty table");
+        CHECK_COND(mw->findChildren<MultiLayer *>().size() == graphsBefore,
+                   "62c: a graph window appeared for an empty table");
+    }
+
+    for (int r = 0; r < 6; ++r) {
+        t->setCell(r, 0, r + 1.0);
+        t->setCell(r, 1, (r + 1.0) * (r + 1.0));
+    }
+    t->notifyChanges();
+    for (int i = 0; i < 5; ++i)
+        QApplication::processEvents();
+    if (hintSupported) {
+        QLabel *hint = t->findChild<QLabel *>("ToriEmptyTableHintLabel");
+        CHECK_COND(!hint || hint->isHidden(), "62b: hint still shown after data arrived");
+        CHECK_COND(t->findChild<QFrame *>("ToriPlotThisDataBar") != nullptr,
+                   "62b: 'Plot this data' bar not offered after data arrived");
+    }
+    CHECK_COND(mw->plotBlockerForTable(t, Graph::LineSymbols).isEmpty(),
+               "62c: table with data reported as blocked");
+
+    // ---- 62d (B6): a plot button with a graph active plots the graph's worksheet again
+    MultiLayer *ml = mw->plotColumnsFromTable(t, Graph::LineSymbols);
+    CHECK_COND(ml != nullptr && ml->activeGraph() && ml->activeGraph()->curves() == 1,
+               "62d: plotColumnsFromTable did not plot the Y column");
+    mw->activateSubWindow(ml);
+    QApplication::processEvents();
+    {
+        const int before = mw->findChildren<MultiLayer *>().size();
+        const int curveTypeBefore = ml->activeGraph()->curveType(0);
+        ribbon->triggerPlot2D(Graph::Scatter);
+        QApplication::processEvents();
+        CHECK_COND(mw->findChildren<MultiLayer *>().size() == before + 1,
+                   "62d: ribbon plot button did nothing while a graph was active");
+        CHECK_COND(ml->activeGraph()->curveType(0) == curveTypeBefore,
+                   "62d: ribbon plot button re-styled the active graph instead of plotting");
+
+        // A graph without a source worksheet: no new window, but a message.
+        MultiLayer *bare = mw->newGraph("Suite62Bare");
+        mw->activateSubWindow(bare);
+        QApplication::processEvents();
+        mw->statusBar()->clearMessage();
+        const int before2 = mw->findChildren<MultiLayer *>().size();
+        ribbon->triggerPlot2D(Graph::Line);
+        QApplication::processEvents();
+        CHECK_COND(mw->findChildren<MultiLayer *>().size() == before2,
+                   "62d: plotting from a graph without worksheet created a window");
+        CHECK_COND(!mw->statusBar()->currentMessage().isEmpty(),
+                   "62d: no reason shown when the plot button cannot work");
+        bare->askOnCloseEvent(false);
+        bare->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 62e (C3): mode indicator and tool buttons follow the active tool
+    mw->activateSubWindow(ml);
+    QApplication::processEvents();
+    {
+        Graph *g = ml->activeGraph();
+        g->zoom(true);
+        mw->refreshToolModeIndicator();
+        const QString mode = mw->currentToolModeName();
+        CHECK_COND(!mode.isEmpty(), "62e: zoom mode not reported");
+        QToolButton *ind = mw->statusBar()->findChild<QToolButton *>("StatusBarToolModeIndicator");
+        CHECK_COND(ind != nullptr && !ind->isHidden() && ind->text().contains(mode),
+                   "62e: status bar mode indicator not shown");
+        QToolButton *zoomBtn = ribbon->actionBoundButton("btnZoomIn");
+        QToolButton *ptrBtn = ribbon->actionBoundButton("btnPointer");
+        CHECK_COND(zoomBtn && ptrBtn, "62e: ribbon tool buttons missing");
+        CHECK_COND(zoomBtn->isChecked() && !ptrBtn->isChecked(),
+                   "62e: ribbon zoom button not checked while zooming");
+        mw->cancelCurrentToolMode();
+        CHECK_COND(!g->zoomOn() && mw->currentToolModeName().isEmpty(),
+                   "62e: cancelCurrentToolMode left the zoom on");
+        CHECK_COND(ind->isHidden(), "62e: indicator still visible in pointer mode");
+        CHECK_COND(ptrBtn->isChecked() && !zoomBtn->isChecked(),
+                   "62e: pointer button not checked after leaving the mode");
+    }
+
+    // ---- 62f (C4): ribbon buttons for actions follow the action state
+    for (const char *name : { "actionUndo", "actionRedo", "btnPointer", "btnZoomIn", "btnCursor" }) {
+        QToolButton *b = ribbon->actionBoundButton(name);
+        QAction *a = mw->findChild<QAction *>(name);
+        CHECK_COND(b != nullptr && a != nullptr, "62f: ribbon button/action missing: " << name);
+        ribbon->syncActionBoundButtons();
+        CHECK_COND(b->isEnabled() == a->isEnabled(), "62f: enabled state not synced: " << name);
+    }
+    {
+        QMenu *addMenu = ribbon->findChild<QMenu *>("RibbonAddToGraphMenu");
+        CHECK_COND(addMenu != nullptr, "62f: ribbon 'Add' menu missing");
+        for (const char *name : { "actionAddText", "actionNewLegend", "actionAddErrorBars",
+                                  "actionPlot2VerticalLayers", "actionPlot4Layers" }) {
+            QAction *a = mw->findChild<QAction *>(name);
+            CHECK_COND(a && addMenu->actions().contains(a), "62f: ribbon 'Add' menu lacks " << name);
+        }
+    }
+    {
+        QAction *undo = mw->findChild<QAction *>("actionUndo");
+        undo->setEnabled(false);
+        CHECK_COND(!ribbon->actionBoundButton("actionUndo")->isEnabled(),
+                   "62f: Undo button did not follow QAction::changed");
+        mw->updateUndoRedoActionsForActiveWindow();
+    }
+
+    // ---- 62g (C11): Undo names the window it acts on
+    {
+        const QString before = ml->captureUndoSnapshot();
+        ml->activeGraph()->setAxisTitle(QwtPlot::xBottom, "Suite62 X");
+        ml->pushUndoSnapshot("Suite62 Title", before);
+        mw->updateUndoRedoActionsForActiveWindow();
+        QAction *undo = mw->findChild<QAction *>("actionUndo");
+        CHECK_COND(undo->isEnabled() && undo->text().contains(ml->name()),
+                   "62g: Undo text does not name the graph window");
+        CHECK_COND(ribbon->actionBoundButton("actionUndo")->isEnabled(),
+                   "62g: ribbon Undo not enabled after an undoable change");
+    }
+
+    // ---- 62h (C7): graph context menu is short, selection-first, one analysis submenu
+    {
+        QMenu cm;
+        mw->buildGraphContextMenu(cm, ml, false);
+        int topItems = 0, analysisSubmenus = 0;
+        QStringList names;
+        for (QAction *a : cm.actions()) {
+            if (a->isSeparator())
+                continue;
+            ++topItems;
+            names << a->objectName();
+        }
+        for (QAction *a : cm.actions()) {
+            QMenu *sub = a->menu();
+            if (!sub)
+                continue;
+            for (QAction *sa : sub->actions()) {
+                if (sa->menu() && sa->menu()->actions().contains(
+                                          mw->findChild<QAction *>("actionPeakAnalyzerDialog")))
+                    ++analysisSubmenus;
+            }
+        }
+        std::cout << "[INFO] Suite 62h graph context menu top-level items: " << topItems << "\n";
+        CHECK_COND(topItems <= 24, "62h: graph context menu still has too many top-level items");
+        for (const char *must : { "actionShowAxisDialog", "actionNewLegend", "actionAddText",
+                                  "actionCopyGraphOle" }) {
+            CHECK_COND(names.contains(QString::fromLatin1(must)),
+                       "62h: graph context menu lacks " << must);
+        }
+        CHECK_COND(!names.contains("actionPeakAnalyzerDialog"),
+                   "62h: peak analyzer listed flat in the graph context menu");
+        CHECK_COND(analysisSubmenus == 1, "62h: analysis tools not in exactly one submenu");
+    }
+
+    // ---- 62i (C6): duplicate menu registrations removed
+    {
+        QAction *merge = mw->findChild<QAction *>("actionMergeGraphs");
+        QAction *peak = mw->findChild<QAction *>("actionPeakAnalyzerDialog");
+        QAction *langJa = mw->findChild<QAction *>("actionLangJapanese");
+        CHECK_COND(merge && peak && langJa, "62i: menu actions missing");
+        for (QMenu *m : mw->findChildren<QMenu *>()) {
+            CHECK_COND(m->actions().count(merge) <= 1, "62i: Merge Graphs registered twice in a menu");
+        }
+        CHECK_COND(suite62CountMenusWithAction(mw, langJa) == 1,
+                   "62i: language menu is still listed in several menus");
+        const int peakMenus = suite62CountMenusWithAction(mw, peak);
+        std::cout << "[INFO] Suite 62i menus listing Peak Analyzer: " << peakMenus << "\n";
+        CHECK_COND(peakMenus <= 3, "62i: Peak Analyzer still listed in too many menus");
+    }
+
+    // ---- 62j (C12, G1): command search lists disabled commands; other-field features hidden
+    {
+        CommandPalettePopup *cp = ribbon->commandPalette();
+        CHECK_COND(cp != nullptr, "62j: command palette missing");
+        CHECK_COND(!mw->showsAdvancedDomainFeatures(), "62j: other-field features shown by default");
+        QAction *roc = mw->findChild<QAction *>("actionROCCurve");
+        CHECK_COND(roc && !roc->isVisible(), "62j: ROC action visible by default");
+        cp->refreshCommands();
+        cp->setFilterText(cleanMnemonicForSuite62(roc->text()));
+        bool rocListed = false;
+        for (int i = 0; i < cp->resultsList()->count(); ++i) {
+            if (cp->resultsList()->item(i)->text() == cleanMnemonicForSuite62(roc->text()))
+                rocListed = true;
+        }
+        CHECK_COND(!rocListed, "62j: hidden ROC command still found by command search");
+
+        mw->setShowAdvancedDomainFeatures(true);
+        CHECK_COND(roc->isVisible(), "62j: ROC not shown after enabling other-field features");
+        mw->setShowAdvancedDomainFeatures(false);
+        CHECK_COND(!roc->isVisible(), "62j: ROC not hidden again");
+
+        // A command that is disabled in the current context is listed dimmed with a reason.
+        QAction *undo = mw->findChild<QAction *>("actionUndo");
+        undo->setEnabled(false);
+        cp->refreshCommands();
+        cp->setFilterText(cleanMnemonicForSuite62(undo->text()));
+        bool sawDimmed = false;
+        for (int i = 0; i < cp->resultsList()->count(); ++i) {
+            QListWidgetItem *it = cp->resultsList()->item(i);
+            if (it->data(Qt::UserRole + 4).toBool() && !it->toolTip().isEmpty())
+                sawDimmed = true;
+        }
+        cp->setFilterText(QString());
+        mw->updateUndoRedoActionsForActiveWindow();
+        CHECK_COND(sawDimmed, "62j: no disabled command listed with its reason");
+    }
+
+    // ---- 62k (C5): dialogs fit 1366x768 at 150 % (911x512 logical)
+    {
+        const QRect smallScreen(0, 0, 911, 512);
+        QDialog tall;
+        QVBoxLayout *lay = new QVBoxLayout(&tall);
+        QWidget *big = new QWidget(&tall);
+        big->setMinimumSize(700, 900);
+        lay->addWidget(big);
+        QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                                    &tall);
+        lay->addWidget(bb);
+        tall.setMinimumSize(780, 960);
+        CHECK_COND(ToriUx::fitWindowToAvailableScreen(&tall, smallScreen),
+                   "62k: tall dialog content was not wrapped in a scroll area");
+        QScrollArea *sa = tall.findChild<QScrollArea *>("ToriScreenFitScrollArea");
+        CHECK_COND(sa && suite62IsDescendant(big, sa), "62k: content not inside the scroll area");
+        CHECK_COND(!suite62IsDescendant(bb, sa), "62k: OK/Cancel scrolled away with the content");
+        CHECK_COND(tall.minimumWidth() <= 911 && tall.minimumHeight() <= 512,
+                   "62k: minimum size still larger than the screen");
+        CHECK_COND(tall.layout()->totalMinimumSize().height() <= 512,
+                   "62k: wrapped layout still needs more height than the screen");
+
+        PlotDialog pd(false, mw);
+        ToriUx::fitWindowToAvailableScreen(&pd, smallScreen);
+        CHECK_COND(pd.minimumWidth() <= 911 && pd.minimumHeight() <= 512
+                           && pd.width() <= 911 && pd.height() <= 512,
+                   "62k: PlotDialog does not fit 1366x768 at 150 %");
+        CHECK_COND(!pd.layout() || pd.layout()->totalMinimumSize().height() <= 512,
+                   "62k: PlotDialog layout needs more height than the screen");
+    }
+
+    // ---- 62l (C2): inspector sections lead to their full dialog
+    {
+        GraphInspectorDock *dock = mw->graphInspectorDock();
+        CHECK_COND(dock && dock->findChild<QPushButton *>("InspectorDetailsButton"),
+                   "62l: inspector has no 'Details...' button");
+    }
+
+    // ---- 62m (A11): an untitled project reports whether Save As really saved
+    {
+        bool (ApplicationWindow::*saveAs)() = &ApplicationWindow::saveProjectAs;
+        CHECK_COND(saveAs != nullptr, "62m: saveProjectAs does not return its result");
+        const QString prevName = mw->projectname;
+        mw->projectname = "untitled";
+        CHECK_COND(!mw->saveProject(), "62m: untitled save without a file name reported success");
+        mw->projectname = prevName;
+    }
+
+    // ---- 62n (C14): ribbon tabs are short nouns; materials analyses come right after Plot
+    {
+        CHECK_COND(ribbon->tabCount() == 7, "62n: ribbon tab count changed");
+        const QString t2 = ribbon->tabTitle(2);
+        CHECK_COND(t2 == QLatin1String("Materials")
+                           || t2.contains(QString::fromUtf8("\xE6\x9D\x90\xE6\x96\x99")),
+                   "62n: materials tab is not next to Plot");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 62 Beginner Navigation, Menus, Ribbon State & Screen Fit passed!\n";
     return 0;
 }

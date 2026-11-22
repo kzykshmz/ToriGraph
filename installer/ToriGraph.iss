@@ -70,6 +70,8 @@ japanese.TaskAssocProject=プロジェクトファイル (.sciprj) を ToriGraph
 english.TaskAssocProject=Associate project files (.sciprj) with ToriGraph
 japanese.MenuRepairOle=OLE サーバーを再登録 (PowerPoint 連携修復)
 english.MenuRepairOle=Re-register OLE Server (Repair PowerPoint Integration)
+japanese.MenuQuickGuide=ToriGraph かんたんガイド (使い方・FAQ)
+english.MenuQuickGuide=ToriGraph Quick Guide (Japanese)
 japanese.MenuInstallPySdk=Python SDK (torigraph) を再インストール
 english.MenuInstallPySdk=Re-install Python SDK (torigraph)
 japanese.StatusInstallPython=Python 自動化 SDK (torigraph) をインストールしています...
@@ -86,10 +88,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; F1 quick guide (manual\index.html). Already staged by build-windows-installer.ps1; listed explicitly so a
+; stage without the manual fails loudly instead of shipping an installer whose F1 falls back to the web.
+Source: "{#StageDir}\manual\index.html"; DestDir: "{app}\manual"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:MenuRepairOle}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.html"
 Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"""; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

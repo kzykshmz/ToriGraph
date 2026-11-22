@@ -30,6 +30,7 @@
 
 #include <QDialog>
 #include <QFrame>
+#include <QHash>
 #include <QPair>
 #include <QPointer>
 #include <QSet>
@@ -104,6 +105,9 @@ private:
         QPointer<QAction> action;
         std::function<void()> callback;
         int priorityBoost = 0;
+        //! C12: listed but dimmed, with the reason it cannot run now
+        bool disabled = false;
+        QString disabledReason;
     };
 
     void rebuildFilteredList(const QString &query);
@@ -287,6 +291,13 @@ public:
 
     void triggerPlot2D(int curveType);
 
+    //! G1: show or hide the ribbon entries of other-field features (ROC, EIS, Tauc, ...)
+    void setAdvancedDomainFeaturesVisible(bool visible);
+    //! C4: ribbon button bound to an ApplicationWindow QAction (by object name), or null
+    QToolButton *actionBoundButton(const QString &actionObjectName) const;
+    //! C4: copy enabled/checked state of bound QActions onto their ribbon buttons
+    void syncActionBoundButtons();
+
     int tabCount() const;
     int currentTabIndex() const;
     void setCurrentTabIndex(int index);
@@ -323,6 +334,8 @@ private:
         std::function<QString()> textFn;
         std::function<QString()> tooltipFn;
         bool isAccentPreset = false;
+        //! C8: object name of the QAction whose shortcut is appended to the tooltip
+        QString shortcutActionName;
     };
 
     struct RibbonMenuActionBinding
@@ -349,6 +362,12 @@ private:
                                  std::function<QString()> textFn,
                                  std::function<QString()> tooltipFn,
                                  std::function<void()> onTriggered, bool checkable = false);
+    QToolButton *addActionButton(QHBoxLayout *groupLayout, const QString &iconId,
+                                 std::function<QString()> textFn,
+                                 std::function<QString()> tooltipFn,
+                                 const QString &actionObjectName, bool checkable = false);
+    void setShortcutHintAction(QToolButton *button, const QString &actionObjectName);
+    void moveTabPage(int from, int to);
     void buildAllTabs();
     void refreshButtonIcons();
     void updateTabStackHeight();
@@ -381,6 +400,8 @@ private:
     QVector<std::function<QString()>> d_tab_title_fns;
     QVector<RibbonButtonBinding> d_button_bindings;
     QVector<RibbonMenuActionBinding> d_menu_action_bindings;
+    QHash<QString, QPointer<QToolButton>> d_action_buttons;
+    bool d_advanced_domain_visible = true;
 
     WorkspaceLayoutMode d_layout_mode = LayoutTabbed;
     double d_split_left_ratio = 0.40;

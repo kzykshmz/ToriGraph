@@ -39,6 +39,7 @@
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "MultiLayer.h"
+#include "ApplicationWindow.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -1347,9 +1348,19 @@ void CanvasPicker::drawTextMarker(const QPoint &point)
     mrkT.setTextColor(plot()->textMarkerDefaultColor());
     mrkT.setBackgroundColor(plot()->textMarkerDefaultBackground());
     mrkT.setText(tr("enter your text here"));
-    plot()->insertTextMarker(&mrkT);
+    const long newKey = plot()->insertTextMarker(&mrkT);
     plot()->drawText(false);
     emit drawTextOff();
+
+    // C9: type the new text right where it was placed (placeholder is pre-selected).
+    if (newKey >= 0 && !ApplicationWindow::isNonInteractiveContext(plotWidget)) {
+        if (Legend *created = plot()->textMarker(newKey)) {
+            const QRect localRect = created->rect();
+            const QRect anchorGlobalRect(plotWidget->canvas()->mapToGlobal(localRect.topLeft()),
+                                         localRect.size());
+            CanvasInlineTextEditor::openForLegendOrText(plot(), newKey, -1, anchorGlobalRect);
+        }
+    }
 }
 
 void CanvasPicker::drawLineMarker(const QPoint &point, bool endArrow)

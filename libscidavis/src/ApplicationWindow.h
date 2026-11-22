@@ -49,6 +49,7 @@
 #include <QMdiArea>
 #include <QPointer>
 #include <QSettings>
+#include <QUrl>
 
 #ifdef _MSC_VER
 #define NOMINMAX
@@ -64,6 +65,7 @@ class QDialog;
 class QCloseEvent;
 class QDropEvent;
 class QTimerEvent;
+class QTimer;
 class QDragEnterEvent;
 class QTranslator;
 class QAction;
@@ -278,7 +280,8 @@ public slots:
     */
     void cascade();
 
-    void saveProjectAs();
+    //! Ask for a file name and save; returns true only when the project was really written
+    bool saveProjectAs();
     bool saveProject();
 
     //! Set the project status to modifed
@@ -1669,6 +1672,43 @@ private:
     QRect d_last_table_geometry;
     SavedGraphSettings d_restored_graph_settings;
     SavedGraphSettings d_exit_graph_settings;
+
+    // ---- Beginner navigation, menus and UI state (implemented in ApplicationWindowUx.cpp) ----
+public:
+    //! Location of the bundled F1 guide (manual/index.html), or the Japanese README on GitHub
+    QUrl quickGuideUrl() const;
+    //! Human readable name of the active graph tool mode; empty when the pointer is active
+    QString currentToolModeName() const;
+    //! Refresh the "Mode: ... (Esc to cancel)" indicator in the status bar
+    void refreshToolModeIndicator();
+    //! Leave the current graph tool mode (zoom, data reader, gadgets, ...)
+    void cancelCurrentToolMode();
+    //! Plot the selected (or all) columns of a table; shows where to fix problems. Returns the new graph.
+    MultiLayer *plotColumnsFromTable(Table *table, int curveType);
+    //! Why a 2D plot cannot be made from this table (empty when it can)
+    QString plotBlockerForTable(Table *table, int curveType) const;
+    //! Non-modal hint near the mouse pointer plus a status bar message
+    void showUxHint(const QString &text, int timeoutMs = 8000);
+    //! Settings: show domain-specific features outside metallurgy (ROC, Kaplan-Meier, EIS, ...)
+    bool showsAdvancedDomainFeatures() const { return d_show_advanced_domain_features; }
+    void setShowAdvancedDomainFeatures(bool show);
+    //! Object names of the actions hidden unless "Show other-field / advanced features" is on
+    static QStringList advancedDomainActionNames();
+    //! Fill a graph context menu (shared by the canvas and the layer button menus)
+    void buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton);
+
+    //! B4: faint "paste from Excel / drop CSV" hint over an empty worksheet
+    void attachEmptyTableHint(Table *table);
+    //! B4: "Plot this data" bar on a worksheet that just received data
+    void offerPlotAfterImport(Table *table);
+
+private:
+    void installUxNavigation();
+    void applyAdvancedFeatureVisibility();
+    bool d_show_advanced_domain_features = false;
+    QToolButton *d_tool_mode_indicator = nullptr;
+    QTimer *d_tool_mode_poll = nullptr;
+    QString d_last_tool_mode_text;
 
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);

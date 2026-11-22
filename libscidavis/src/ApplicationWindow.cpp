@@ -125,6 +125,7 @@
 #include "GraphInspectorDock.h"
 #include "ModernUiTheme.h"
 #include "ModernRibbonAndHud.h"
+#include "UxNavigation.h"
 #include "AutoUpdater.h"
 #include "PythonAutomationServer.h"
 #include "PiecewiseAndRobustFit.h"
@@ -2240,6 +2241,7 @@ ApplicationWindow::ApplicationWindow()
     // Cold-start i18n fix: register extra dictionary entries and install Japanese translator
     // BEFORE any UI strings, dock titles, Project Explorer headers, actions, toolbars, or menus are built.
     registerApplicationWindowJapaneseStrings();
+    ToriUx::registerUxTranslations();
     {
         auto &earlySettings = getSettings();
         earlySettings.beginGroup("/General");
@@ -2535,6 +2537,7 @@ ApplicationWindow::ApplicationWindow()
     d_ribbon_toolbar->setVisible(true);
     updateExplorerAdaptiveLayout();
     createLanguagesList();
+    installUxNavigation();
 
     d_auto_updater = new AutoUpdater(this, this);
     d_python_server = new PythonAutomationServer(this, this);
@@ -2856,6 +2859,7 @@ void ApplicationWindow::initToolBars()
     dataTools->setExclusive(true);
 
     btnPointer = new QAction(tr("Disable &Tools"), this);
+    btnPointer->setObjectName(QStringLiteral("btnPointer")); // ribbon / command search binding
     btnPointer->setActionGroup(dataTools);
     btnPointer->setCheckable(true);
     btnPointer->setIcon(QIcon(QPixmap(":/pointer.xpm")));
@@ -2905,6 +2909,7 @@ void ApplicationWindow::initToolBars()
     graph_tools->addWidget(btn_plot_enrichments);
 
     actionAddText = new QAction(tr("Add &Text"), this);
+    actionAddText->setObjectName(QStringLiteral("actionAddText")); // ribbon / command search binding
     actionAddText->setShortcut(tr("ALT+T"));
     actionAddText->setIcon(QIcon(QPixmap(":/text.xpm")));
     actionAddText->setCheckable(true);
@@ -2932,6 +2937,7 @@ void ApplicationWindow::initToolBars()
     graph_tools->addSeparator();
 
     btnZoomIn = new QAction(tr("&Zoom In"), this);
+    btnZoomIn->setObjectName(QStringLiteral("btnZoomIn")); // ribbon / command search binding
     btnZoomIn->setShortcut(tr("Ctrl++"));
     btnZoomIn->setActionGroup(dataTools);
     btnZoomIn->setCheckable(true);
@@ -2939,6 +2945,7 @@ void ApplicationWindow::initToolBars()
     graph_tools->addAction(btnZoomIn);
 
     btnZoomOut = new QAction(tr("&Zoom Out"), this);
+    btnZoomOut->setObjectName(QStringLiteral("btnZoomOut")); // ribbon / command search binding
     btnZoomOut->setShortcut(tr("Ctrl+-"));
     btnZoomOut->setActionGroup(dataTools);
     btnZoomOut->setCheckable(true);
@@ -2950,12 +2957,14 @@ void ApplicationWindow::initToolBars()
     graph_tools->addSeparator();
 
     btnPicker = new QAction(tr("S&creen Reader"), this);
+    btnPicker->setObjectName(QStringLiteral("btnPicker")); // ribbon / command search binding
     btnPicker->setActionGroup(dataTools);
     btnPicker->setCheckable(true);
     btnPicker->setIcon(QIcon(QPixmap(":/cursor_16.xpm")));
     graph_tools->addAction(btnPicker);
 
     btnCursor = new QAction(tr("&Data Reader"), this);
+    btnCursor->setObjectName(QStringLiteral("btnCursor")); // ribbon / command search binding
     btnCursor->setShortcut(tr("CTRL+D"));
     btnCursor->setActionGroup(dataTools);
     btnCursor->setCheckable(true);
@@ -3274,7 +3283,7 @@ void ApplicationWindow::insertTranslatedStrings()
     matrixMenu->setTitle(tr("&Matrix"));
     tableMenu->setTitle(tr("&Table"));
     plot2D->setTitle(tr("&Plot"));
-    dataMenu->setTitle(tr("&Analysis"));
+    dataMenu->setTitle(tr("Worksheet &Analysis"));
     plotDataMenu->setTitle(tr("&Tools"));
     calcul->setTitle(tr("&Analysis"));
     d_quick_fit_menu->setTitle(tr("&Quick Fit"));
@@ -3496,8 +3505,6 @@ void ApplicationWindow::initMainMenu()
     if (actionOleEmbedWholeProject)
         edit->addAction(actionOleEmbedWholeProject);
     edit->addAction(actionCopyWindow);
-    if (actionMergeGraphs)
-        edit->addAction(actionMergeGraphs);
     edit->addAction(actionBatchPlot);
 
     edit->addSeparator();
@@ -3550,8 +3557,6 @@ void ApplicationWindow::initMainMenu()
     languageMenu->setTitle(tr("&Language (言語)"));
     languageMenu->addAction(actionLangJapanese);
     languageMenu->addAction(actionLangEnglish);
-    view->addSeparator();
-    view->addMenu(languageMenu);
 
     colorPaletteMenu = new QMenu(this);
     colorPaletteMenu->setFont(appFont);
@@ -3642,8 +3647,6 @@ void ApplicationWindow::initMainMenu()
     graph->addAction(actionPasteGraphFormat);
     if (pasteFormatSpecialMenu)
         graph->addMenu(pasteFormatSpecialMenu);
-    if (actionMergeGraphs)
-        graph->addAction(actionMergeGraphs);
     graph->addAction(actionBatchPlot);
     graph->addAction(actionWaterfallStackOffset);
     graph->addAction(actionResetStackOffsets);
@@ -3909,12 +3912,6 @@ void ApplicationWindow::initMainMenu()
     d_quick_fit_menu->addAction(actionMultipleLinearRegression);
     d_quick_fit_menu->addAction(actionLogisticRegression);
     d_quick_fit_menu->addAction(actionSurfaceFit3D);
-    d_quick_fit_menu->addSeparator();
-    d_quick_fit_menu->addAction(actionPeakAnalyzerDialog);
-    d_quick_fit_menu->addAction(actionPeakFitDialog);
-    d_quick_fit_menu->addAction(actionAutoPeakGauss);
-    d_quick_fit_menu->addAction(actionAutoPeakLorentz);
-    d_quick_fit_menu->addAction(actionAutoPeakPseudoVoigt);
 
     // Populate structured Fitting & Peaks submenus
     advFitMenu->addAction(actionFitLinear);
@@ -3957,9 +3954,9 @@ void ApplicationWindow::initMainMenu()
     peaksBaselineMenu->addAction(actionMultiPeakPseudoVoigt);
     peaksBaselineMenu->addAction(actionMultiPeakPearsonVII);
 
-    calcul->addMenu(d_quick_fit_menu);
-    calcul->addAction(actionPeakAnalyzerDialog);
-    calcul->addAction(actionPeakFitDialog);
+    // C6: "Quick Fit" repeated almost every item of "Fitting", and Peak Analyzer was listed
+    // five times. Fitting and Peaks and Baseline are the single homes now; d_quick_fit_menu is
+    // still built (its submenus are shared) but no longer shown.
     calcul->addAction(actionShowFitDialog);
 
     format = new QMenu(this);
@@ -4000,8 +3997,6 @@ void ApplicationWindow::initMainMenu()
     if (actionRepairOleRegistration)
         help->addAction(actionRepairOleRegistration);
     help->addSeparator();
-    help->addMenu(languageMenu);
-    help->addSeparator();
     help->addAction(actionAbout);
 
     disableActions();
@@ -4039,11 +4034,6 @@ void ApplicationWindow::initPlotDataMenu()
     dataMaskMenu->addSeparator();
     dataMaskMenu->addAction(actionClearAllMasks);
 
-    plotDataMenu->addAction(btnMaskPoints);
-    plotDataMenu->addAction(btnUnmaskPoints);
-    plotDataMenu->addAction(actionMaskRegionROI);
-    plotDataMenu->addAction(actionUnmaskRegionROI);
-    plotDataMenu->addAction(actionClearAllMasks);
     plotDataMenu->addSeparator();
     plotDataMenu->addAction(actionGraphDigitizer);
     plotDataMenu->addAction(actionToggleMiniToolbar);
@@ -4119,7 +4109,7 @@ void ApplicationWindow::initTableAnalysisMenu()
 {
     dataMenu = new QMenu(this);
     dataMenu->setFont(appFont);
-    dataMenu->setTitle(tr("&Analysis"));
+    dataMenu->setTitle(tr("Worksheet &Analysis"));
 
     dataMenu->addAction(actionShowColStatistics);
     dataMenu->addAction(actionShowRowStatistics);
@@ -4138,6 +4128,8 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionShowFitDialog);
     dataMenu->addAction(actionMultipleLinearRegression);
     dataMenu->addAction(actionLogisticRegression);
+    if (actionTensileYield)
+        dataMenu->addAction(actionTensileYield);
     dataMenu->addAction(actionArrheniusPlot);
     dataMenu->addAction(actionTaucPlot);
     dataMenu->addAction(actionEISAnalyzer);
@@ -6906,6 +6898,7 @@ Table *ApplicationWindow::newTable()
     w->setName(generateUniqueName(tr("Table")));
     w->setAutoRecalcFormulas(RecalcManager::instance(this)->recalcMode() == RecalcManager::Auto);
     d_project->addChild(w->d_future_table);
+    attachEmptyTableHint(w);
     return w;
 }
 
@@ -8020,6 +8013,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 dx = w->verticalHeaderWidth();
                 dy = w->frameGeometry().height() - w->height();
                 w->move(QPoint(0, 0));
+                offerPlotAfterImport(w);
             } else
                 w->move(QPoint(i * dx, i * dy));
         }
@@ -8186,6 +8180,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
     table->notifyChanges();
     modifiedProject(table);
     modifiedProject();
+    offerPlotAfterImport(table);
 }
 
 void ApplicationWindow::open()
@@ -9922,8 +9917,11 @@ void ApplicationWindow::exportGraph()
     if (isNonInteractiveContext(this))
         return;
     QWidget *w = d_workspace.activeSubWindow();
-    if (!w)
+    if (!w || !(w->inherits("MultiLayer") || w->inherits("Graph3D"))) {
+        showUxHint(tr("Graph export works on a graph window. Click the graph you want to "
+                      "export first."));
         return;
+    }
 
     MultiLayer *plot2D = 0;
     Graph3D *plot3D = 0;
@@ -10014,8 +10012,11 @@ void ApplicationWindow::exportLayer()
     if (isNonInteractiveContext(this))
         return;
     QWidget *w = d_workspace.activeSubWindow();
-    if (!w || !w->inherits("MultiLayer"))
+    if (!w || !w->inherits("MultiLayer")) {
+        showUxHint(tr("Graph export works on a graph window. Click the graph you want to "
+                      "export first."));
         return;
+    }
 
     Graph *g = ((MultiLayer *)w)->activeGraph();
     if (!g)
@@ -10363,8 +10364,9 @@ bool ApplicationWindow::saveProject()
         || projectname.endsWith(".ogw", Qt::CaseInsensitive)
         || projectname.endsWith(".ogg", Qt::CaseInsensitive)
         || projectname.endsWith(".org", Qt::CaseInsensitive)) {
-        saveProjectAs();
-        return false;
+        // An untitled (or foreign-format) project is only saved when the user picks a file name;
+        // report that result so that closing the window can proceed after a successful save.
+        return saveProjectAs();
     }
 
     if (!writeProjectFile(projectFolder(), projectname)) {
@@ -10390,10 +10392,10 @@ bool ApplicationWindow::saveProject()
     return true;
 }
 
-void ApplicationWindow::saveProjectAs()
+bool ApplicationWindow::saveProjectAs()
 {
     if (isNonInteractiveContext(this))
-        return;
+        return false;
     QString filter = tr("ToriGraph project") + " (*.sciprj);;";
     filter += tr("Compressed ToriGraph project") + " (*.sciprj.gz)";
 
@@ -10415,18 +10417,20 @@ void ApplicationWindow::saveProjectAs()
         if (!saveProject()) {
             // keep pointing at the file that really holds the last saved state
             projectname = previousProjectName;
-        } else {
-            recentProjects.removeAll(fn);
-            recentProjects.push_front(fn);
-            updateRecentProjectsList();
-
-            QFileInfo fi(fn);
-            QString baseName = fi.baseName();
-            FolderListItem *item = (FolderListItem *)folders.topLevelItem(0);
-            item->setText(0, baseName);
-            item->folder()->setName(baseName);
+            return false;
         }
+        recentProjects.removeAll(fn);
+        recentProjects.push_front(fn);
+        updateRecentProjectsList();
+
+        QFileInfo savedInfo(fn);
+        QString savedBaseName = savedInfo.baseName();
+        FolderListItem *item = (FolderListItem *)folders.topLevelItem(0);
+        item->setText(0, savedBaseName);
+        item->folder()->setName(savedBaseName);
+        return true;
     }
+    return false;
 }
 
 void ApplicationWindow::saveNoteAs()
@@ -12451,34 +12455,25 @@ void ApplicationWindow::addText()
 
     MultiLayer *plot = (MultiLayer *)d_workspace.activeSubWindow();
 
-    switch (QMessageBox::information(
-            this, tr("Add new layer?"),
-            tr("Do you want to add the text on a new layer or on the active layer?"),
-            tr("On &New Layer"), tr("On &Active Layer"), tr("&Cancel"), 0, 2)) {
-    case 0:
+    // C9: no "new layer or active layer?" question. Text goes on the active layer at the
+    // clicked position and is typed in place (CanvasPicker::drawTextMarker opens the inline
+    // editor). A page without layers gets a text layer, which was the only sensible answer there.
+    if (plot->isEmpty()) {
         plot->addTextLayer(legendFrameStyle, plotLegendFont, legendTextColor, legendBackground);
-        break;
-
-    case 1: {
-        if (plot->isEmpty()) {
-            QMessageBox::warning(this, tr("Warning"),
-                                 tr("<h4>There are no plot layers available in this window.</h4>"
-                                    "<p><h4>Please add a layer and try again!</h4>"));
-
-            actionAddText->setChecked(false);
-            return;
-        }
-
-        Graph *g = (Graph *)plot->activeGraph();
-        if (g)
-            g->drawText(true);
-    } break;
-
-    case 2:
         actionAddText->setChecked(false);
         return;
-        break;
     }
+
+    Graph *g = (Graph *)plot->activeGraph();
+    if (!g) {
+        actionAddText->setChecked(false);
+        return;
+    }
+    g->drawText(true);
+    statusBar()->showMessage(
+            tr("Click on the graph where the text should go, then type it (Esc to cancel)."),
+            8000);
+    refreshToolModeIndicator();
 }
 
 void ApplicationWindow::addImage()
@@ -14399,8 +14394,9 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
 
     if (!saved) {
         QString s = tr("Save changes to project: <p><b> %1 </b> ?").arg(projectname);
-        switch (QMessageBox::information(this, tr("ToriGraph"), s, tr("Yes"), tr("No"), tr("Cancel"),
-                                         0, 2)) {
+        // Verb buttons instead of Yes/No: the answer must be readable without the question.
+        switch (QMessageBox::information(this, tr("ToriGraph"), s, tr("&Save"), tr("Do&n't Save"),
+                                         tr("Cancel"), 0, 2)) {
         case 0:
             if (!saveProject()) {
                 ce->ignore();
@@ -14661,361 +14657,26 @@ void ApplicationWindow::showGraphContextMenu()
 {
     if (isNonInteractiveContext(this))
         return;
-    QWidget *w = (QWidget *)d_workspace.activeSubWindow();
-    if (!w)
+    MultiLayer *plot = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (!plot)
         return;
-
-    if (w->inherits("MultiLayer")) {
-        MultiLayer *plot = (MultiLayer *)w;
-        QMenu cm(this);
-
-        Graph *ag = (Graph *)plot->activeGraph();
-        if (ag && !ag->isPiePlot()) {
-            cm.addAction(actionUnzoom);
-            cm.addSeparator();
-        }
-
-        if (ag && ag->isPiePlot()) {
-            cm.addAction(tr("Re&move Pie Curve"), ag, SLOT(removePie()));
-        } else if (ag) {
-            if (ag->visibleCurves() != ag->curves()) {
-                cm.addAction(actionShowAllCurves);
-                cm.addSeparator();
-            }
-            cm.addAction(actionShowCurvesDialog);
-            cm.addAction(actionAddFunctionCurve);
-            cm.addSeparator();
-
-            QMenu *calcul = cm.addMenu(tr("Anal&yze"));
-
-            QMenu *translate = calcul->addMenu(tr("&Translate"));
-            translate->addAction(actionTranslateVert);
-            translate->addAction(actionTranslateHor);
-            calcul->addSeparator();
-
-            calcul->addAction(actionDifferentiate);
-            calcul->addAction(actionShowIntDialog);
-            calcul->addSeparator();
-
-            QMenu *smooth = calcul->addMenu(tr("&Smooth"));
-            smooth->addAction(actionSmoothSavGol);
-            smooth->addAction(actionSmoothFFT);
-            smooth->addAction(actionSmoothAverage);
-            smooth->addAction(actionSmoothLOWESS);
-            smooth->addAction(actionSmoothWhittaker);
-            smooth->addAction(actionSmoothMedian);
-
-            QMenu *filter = calcul->addMenu(tr("&FFT Filter"));
-            filter->addAction(actionLowPassFilter);
-            filter->addAction(actionHighPassFilter);
-            filter->addAction(actionBandPassFilter);
-            filter->addAction(actionBandBlockFilter);
-
-            calcul->addSeparator();
-            calcul->addAction(actionInterpolate);
-            calcul->addAction(actionFFT);
-            calcul->addSeparator();
-            calcul->addAction(actionFitLinear);
-            calcul->addAction(actionShowFitPolynomDialog);
-            calcul->addSeparator();
-
-            QMenu *decay = calcul->addMenu(tr("Fit E&xponential Decay"));
-            decay->addAction(actionShowExpDecayDialog);
-            decay->addAction(actionShowTwoExpDecayDialog);
-            decay->addAction(actionShowExpDecay3Dialog);
-
-            calcul->addAction(actionFitExpGrowth);
-            calcul->addAction(actionFitSigmoidal);
-            calcul->addAction(actionFitGauss);
-            calcul->addAction(actionFitLorentz);
-
-            QMenu *multiPeakMenu = calcul->addMenu(tr("Fit &Multi-Peak"));
-            multiPeakMenu->addAction(actionPeakAnalyzerDialog);
-            multiPeakMenu->addAction(actionPeakFitDialog);
-            multiPeakMenu->addSeparator();
-            multiPeakMenu->addAction(actionAutoPeakGauss);
-            multiPeakMenu->addAction(actionAutoPeakLorentz);
-            multiPeakMenu->addAction(actionAutoPeakPseudoVoigt);
-            multiPeakMenu->addSeparator();
-            multiPeakMenu->addAction(actionMultiPeakGauss);
-            multiPeakMenu->addAction(actionMultiPeakGaussAmp);
-            multiPeakMenu->addAction(actionMultiPeakLorentz);
-            multiPeakMenu->addAction(actionMultiPeakPseudoVoigt);
-            multiPeakMenu->addAction(actionMultiPeakPearsonVII);
-
-            calcul->addSeparator();
-            calcul->addAction(actionShowFitDialog);
-            calcul->addSeparator();
-            if (curveMathMenu)
-                calcul->addMenu(curveMathMenu);
-            if (advFitMenu)
-                calcul->addMenu(advFitMenu);
-            if (peaksBaselineMenu)
-                calcul->addMenu(peaksBaselineMenu);
-            if (advSignalMenu)
-                calcul->addMenu(advSignalMenu);
-            if (graphStatsMenu)
-                calcul->addMenu(graphStatsMenu);
-            if (recalcMenu)
-                calcul->addMenu(recalcMenu);
-
-            if (gadgetsMenu)
-                cm.addMenu(gadgetsMenu);
-            if (dataMaskMenu)
-                cm.addMenu(dataMaskMenu);
-
-            cm.addSeparator();
-            if (stylePresetsMenu)
-                cm.addMenu(stylePresetsMenu);
-            if (framePresetsMenu)
-                cm.addMenu(framePresetsMenu);
-            if (colorPaletteMenu)
-                cm.addMenu(colorPaletteMenu);
-            if (aspectRatioMenu) {
-                if (actionKeepAspectRatio)
-                    actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
-                cm.addMenu(aspectRatioMenu);
-            }
-
-            cm.addSeparator();
-            cm.addAction(actionCopyGraphFormat);
-            cm.addAction(actionPasteGraphFormat);
-            if (pasteFormatSpecialMenu)
-                cm.addMenu(pasteFormatSpecialMenu);
-            if (actionMergeGraphs)
-                cm.addAction(actionMergeGraphs);
-            cm.addAction(actionBatchPlot);
-            cm.addAction(actionWaterfallStackOffset);
-            cm.addAction(actionResetStackOffsets);
-            cm.addSeparator();
-            cm.addAction(actionCopyPageImage);
-            cm.addAction(actionCopyGraphOle);
-            if (actionExportPythonScript)
-                cm.addAction(actionExportPythonScript);
-        }
-
-        if (copiedLayer) {
-            cm.addSeparator();
-            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Layer"), this,
-                         SLOT(pasteSelection()));
-        } else if (copiedMarkerType >= 0) {
-            cm.addSeparator();
-            if (copiedMarkerType == Graph::Text)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Text"), plot,
-                             SIGNAL(pasteMarker()));
-            else if (copiedMarkerType == Graph::Arrow)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Line/Arrow"), plot,
-                             SIGNAL(pasteMarker()));
-            else if (copiedMarkerType == Graph::Image)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Image"), plot,
-                             SIGNAL(pasteMarker()));
-        }
-        cm.addSeparator();
-        QMenu *copy = cm.addMenu(tr("&Copy"));
-        copy->setIcon(IconLoader::load("edit-copy"));
-        copy->addAction(actionCopyGraphOle);
-        copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
-        copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
-
-        QMenu *exports = cm.addMenu(tr("E&xport"));
-        exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
-        exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
-
-        QMenu *prints = cm.addMenu(tr("&Print"));
-        prints->setIcon(IconLoader::load(":/fileprint.xpm"));
-        prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
-        prints->addAction(tr("&Window"), plot, SLOT(print()));
-
-        cm.addSeparator();
-        cm.addAction(IconLoader::load(":/resize.xpm"), tr("&Geometry..."), plot,
-                     SIGNAL(showGeometryDialog()));
-        cm.addAction(tr("P&roperties..."), this, SLOT(showGeneralPlotDialog()));
-        cm.addSeparator();
-        cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
-                     SLOT(confirmRemoveLayer()));
-        ModernUiTheme::upgradeMenuIcons(&cm);
-        cm.exec(QCursor::pos());
-    }
+    QMenu cm(this);
+    buildGraphContextMenu(cm, plot, false);
+    ModernUiTheme::upgradeMenuIcons(&cm);
+    cm.exec(QCursor::pos());
 }
 
 void ApplicationWindow::showLayerButtonContextMenu()
 {
     if (isNonInteractiveContext(this))
         return;
-    QWidget *w = (QWidget *)d_workspace.activeSubWindow();
-    if (!w)
+    MultiLayer *plot = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    if (!plot || !plot->activeGraph())
         return;
-
-    if (w->inherits("MultiLayer")) {
-        MultiLayer *plot = (MultiLayer *)w;
-        QMenu cm(this);
-
-        Graph *ag = (Graph *)plot->activeGraph();
-
-        cm.addAction(actionAddLayer);
-        cm.addAction(actionDeleteLayer);
-        cm.addSeparator();
-
-        if (ag->isPiePlot())
-            cm.addAction(tr("Re&move Pie Curve"), ag, SLOT(removePie()));
-        else {
-            if (ag->visibleCurves() != ag->curves()) {
-                cm.addAction(actionShowAllCurves);
-                cm.addSeparator();
-            }
-            cm.addAction(actionShowCurvesDialog);
-            cm.addAction(actionAddFunctionCurve);
-
-            QMenu *calcul = cm.addMenu(tr("Anal&yze"));
-
-            QMenu *translate = calcul->addMenu(tr("&Translate"));
-            translate->addAction(actionTranslateVert);
-            translate->addAction(actionTranslateHor);
-            calcul->addSeparator();
-
-            calcul->addAction(actionDifferentiate);
-            calcul->addAction(actionShowIntDialog);
-            calcul->addSeparator();
-
-            QMenu *smooth = calcul->addMenu(tr("&Smooth"));
-            smooth->addAction(actionSmoothSavGol);
-            smooth->addAction(actionSmoothFFT);
-            smooth->addAction(actionSmoothAverage);
-            smooth->addAction(actionSmoothLOWESS);
-            smooth->addAction(actionSmoothWhittaker);
-            smooth->addAction(actionSmoothMedian);
-
-            QMenu *filter = calcul->addMenu(tr("&FFT Filter"));
-            filter->addAction(actionLowPassFilter);
-            filter->addAction(actionHighPassFilter);
-            filter->addAction(actionBandPassFilter);
-            filter->addAction(actionBandBlockFilter);
-
-            calcul->addSeparator();
-            calcul->addAction(actionInterpolate);
-            calcul->addAction(actionFFT);
-            calcul->addSeparator();
-            calcul->addAction(actionFitLinear);
-            calcul->addAction(actionShowFitPolynomDialog);
-            calcul->addSeparator();
-
-            QMenu *decay = calcul->addMenu(tr("Fit E&xponential Decay"));
-            decay->addAction(actionShowExpDecayDialog);
-            decay->addAction(actionShowTwoExpDecayDialog);
-            decay->addAction(actionShowExpDecay3Dialog);
-
-            calcul->addAction(actionFitExpGrowth);
-            calcul->addAction(actionFitSigmoidal);
-            calcul->addAction(actionFitGauss);
-            calcul->addAction(actionFitLorentz);
-
-            QMenu *multiPeakMenu = calcul->addMenu(tr("Fit &Multi-Peak"));
-            multiPeakMenu->addAction(actionPeakAnalyzerDialog);
-            multiPeakMenu->addAction(actionPeakFitDialog);
-            multiPeakMenu->addSeparator();
-            multiPeakMenu->addAction(actionAutoPeakGauss);
-            multiPeakMenu->addAction(actionAutoPeakLorentz);
-            multiPeakMenu->addAction(actionAutoPeakPseudoVoigt);
-            multiPeakMenu->addSeparator();
-            multiPeakMenu->addAction(actionMultiPeakGauss);
-            multiPeakMenu->addAction(actionMultiPeakGaussAmp);
-            multiPeakMenu->addAction(actionMultiPeakLorentz);
-            multiPeakMenu->addAction(actionMultiPeakPseudoVoigt);
-            multiPeakMenu->addAction(actionMultiPeakPearsonVII);
-
-            calcul->addSeparator();
-            calcul->addAction(actionPeakAnalyzerDialog);
-            calcul->addAction(actionPeakFitDialog);
-            calcul->addAction(actionAutoPeakGauss);
-            calcul->addAction(actionAutoPeakLorentz);
-            calcul->addAction(actionAutoPeakPseudoVoigt);
-            calcul->addSeparator();
-            calcul->addAction(actionShowFitDialog);
-
-            cm.addSeparator();
-            if (gadgetsMenu)
-                cm.addMenu(gadgetsMenu);
-            if (dataMaskMenu)
-                cm.addMenu(dataMaskMenu);
-            if (curveMathMenu)
-                calcul->addMenu(curveMathMenu);
-            if (advFitMenu)
-                calcul->addMenu(advFitMenu);
-            if (peaksBaselineMenu)
-                calcul->addMenu(peaksBaselineMenu);
-            if (advSignalMenu)
-                calcul->addMenu(advSignalMenu);
-            if (graphStatsMenu)
-                calcul->addMenu(graphStatsMenu);
-            if (recalcMenu)
-                calcul->addMenu(recalcMenu);
-            cm.addAction(actionPeakAnalyzerDialog);
-            cm.addAction(actionPeakFitDialog);
-            cm.addAction(actionColorPaletteEditor);
-            if (colorPaletteMenu)
-                cm.addMenu(colorPaletteMenu);
-            if (aspectRatioMenu) {
-                if (actionKeepAspectRatio)
-                    actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
-                cm.addMenu(aspectRatioMenu);
-            }
-            if (stylePresetsMenu)
-                cm.addMenu(stylePresetsMenu);
-            if (framePresetsMenu)
-                cm.addMenu(framePresetsMenu);
-            cm.addAction(actionCopyGraphFormat);
-            cm.addAction(actionPasteGraphFormat);
-            cm.addAction(actionBatchPlot);
-            cm.addAction(actionWaterfallStackOffset);
-            cm.addAction(actionResetStackOffsets);
-            cm.addAction(actionUnzoom);
-            cm.addAction(actionCopyPageImage);
-            cm.addAction(actionCopyGraphOle);
-        }
-
-        if (copiedLayer) {
-            cm.addSeparator();
-            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Layer"), this,
-                         SLOT(pasteSelection()));
-        } else if (copiedMarkerType >= 0) {
-            cm.addSeparator();
-            if (copiedMarkerType == Graph::Text)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Text"), plot,
-                             SIGNAL(pasteMarker()));
-            else if (copiedMarkerType == Graph::Arrow)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Line/Arrow"), plot,
-                             SIGNAL(pasteMarker()));
-            else if (copiedMarkerType == Graph::Image)
-                cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Image"), plot,
-                             SIGNAL(pasteMarker()));
-        }
-        cm.addSeparator();
-
-        QMenu *copy = cm.addMenu(tr("&Copy"));
-        copy->setIcon(IconLoader::load("edit-copy"));
-        copy->addAction(actionCopyGraphOle);
-        copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
-        copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
-
-        QMenu *exports = cm.addMenu(tr("E&xport"));
-        exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
-        exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
-
-        QMenu *prints = cm.addMenu(tr("&Print"));
-        prints->setIcon(IconLoader::load(":/fileprint.xpm"));
-        prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
-        prints->addAction(tr("&Window"), plot, SLOT(print()));
-
-        cm.addSeparator();
-        cm.addAction(IconLoader::load(":/resize.xpm"), tr("&Geometry..."), plot,
-                     SIGNAL(showGeometryDialog()));
-        cm.addAction(tr("P&roperties..."), this, SLOT(showGeneralPlotDialog()));
-        cm.addSeparator();
-        cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
-                     SLOT(confirmRemoveLayer()));
-        ModernUiTheme::upgradeMenuIcons(&cm);
-        cm.exec(QCursor::pos());
-    }
+    QMenu cm(this);
+    buildGraphContextMenu(cm, plot, true);
+    ModernUiTheme::upgradeMenuIcons(&cm);
+    cm.exec(QCursor::pos());
 }
 
 void ApplicationWindow::showWindowContextMenu()
@@ -15051,12 +14712,6 @@ void ApplicationWindow::showWindowContextMenu()
         cm.addAction(actionPasteGraphFormat);
         if (stylePresetsMenu)
             cm.addMenu(stylePresetsMenu);
-        cm.addSeparator();
-        cm.addAction(actionPeakAnalyzerDialog);
-        cm.addAction(actionPeakFitDialog);
-        cm.addAction(actionAutoPeakGauss);
-        cm.addAction(actionAutoPeakLorentz);
-        cm.addAction(actionAutoPeakPseudoVoigt);
         cm.addSeparator();
         cm.addAction(actionColorPaletteEditor);
         if (colorPaletteMenu)
@@ -15167,27 +14822,19 @@ void ApplicationWindow::showHelp()
 {
     if (isNonInteractiveContext(this))
         return;
-    QFile helpFile(helpFilePath);
-    if (!helpFile.exists()) {
-        QMessageBox::information(
-                this, tr("Help Files Not Found!"),
-                tr("Please indicate the location of the help file!") + "<br>"
-                        + tr("The manual can be downloaded from the following internet address:")
-                        + "<p><a href = \"" MANUAL_URI "\">" MANUAL_URI "</a></p>");
-        chooseHelpFolder();
-#ifdef Q_OS_MAC
-        QSettings settings(QSettings::IniFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
-#else
-        QSettings settings(QSettings::NativeFormat, QSettings::UserScope, "ToriGraph", "ToriGraph");
-#endif
-        settings.beginGroup("/Paths");
-        settings.setValue("/HelpFile", helpFilePath);
-        settings.endGroup();
+    const QUrl url = quickGuideUrl();
+    if (!url.isLocalFile()) {
+        statusBar()->showMessage(
+                tr("The built-in guide (manual/index.html) was not found; opening the Japanese "
+                   "README on GitHub instead."),
+                10000);
     }
-
-    if (!QDesktopServices::openUrl(QUrl(helpFilePath))) {
-        QMessageBox::information(this, tr("unable to open index.html!"),
-                                 tr("<b>index.html</b> file cannot be opened"));
+    if (!QDesktopServices::openUrl(url)) {
+        QMessageBox::information(this, tr("Help"),
+                                 tr("The guide could not be opened automatically. Open this "
+                                    "address in a web browser:")
+                                         + QStringLiteral("<p><a href=\"%1\">%1</a></p>")
+                                                   .arg(url.toString().toHtmlEscaped()));
     }
 }
 
@@ -17808,7 +17455,7 @@ void ApplicationWindow::createActions()
 
     actionNewFunctionPlot =
             new QAction(QIcon(QPixmap(":/newF.xpm")), tr("New &Function Plot"), this);
-    actionNewFunctionPlot->setShortcut(tr("Ctrl+F"));
+    actionNewFunctionPlot->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
     connect(actionNewFunctionPlot, SIGNAL(triggered()), this, SLOT(functionDialog()));
 
     actionNewSurfacePlot =
@@ -17834,6 +17481,7 @@ void ApplicationWindow::createActions()
     savedProject();
 
     actionSaveProjectAs = new QAction(tr("Save Project &As..."), this);
+    actionSaveProjectAs->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     connect(actionSaveProjectAs, SIGNAL(triggered()), this, SLOT(saveProjectAs()));
 
     actionOpenTemplate =
@@ -18188,11 +17836,10 @@ void ApplicationWindow::createActions()
     connect(actionShowTitleDialog, SIGNAL(triggered()), this, SLOT(showTitleDialog()));
 
     actionAbout = new QAction(tr("&About ToriGraph"), this);
-    actionAbout->setShortcut(tr("F1"));
     connect(actionAbout, SIGNAL(triggered()), this, SLOT(about()));
 
     actionShowHelp = new QAction(tr("&Help"), this);
-    actionShowHelp->setShortcut(tr("Ctrl+H"));
+    actionShowHelp->setShortcuts({ QKeySequence(Qt::Key_F1), QKeySequence(QStringLiteral("Ctrl+H")) });
     connect(actionShowHelp, SIGNAL(triggered()), this, SLOT(showHelp()));
 
 #ifdef DYNAMIC_MANUAL_PATH
@@ -19368,7 +19015,7 @@ void ApplicationWindow::translateActionsStrings()
 
     actionNewFunctionPlot->setText(tr("New &Function Plot"));
     actionNewFunctionPlot->setToolTip(tr("Create a new 2D function plot"));
-    actionNewFunctionPlot->setShortcut(tr("Ctrl+F"));
+    actionNewFunctionPlot->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
 
     actionNewSurfacePlot->setText(tr("New 3D &Surface Plot"));
     actionNewSurfacePlot->setToolTip(tr("Create a new 3D surface plot"));
@@ -19390,6 +19037,7 @@ void ApplicationWindow::translateActionsStrings()
     actionSaveProject->setShortcut(tr("Ctrl+S"));
 
     actionSaveProjectAs->setText(tr("Save Project &As..."));
+    actionSaveProjectAs->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
 
     actionOpenTemplate->setText(tr("Open Te&mplate..."));
     actionOpenTemplate->setToolTip(tr("Open template"));
@@ -19619,10 +19267,9 @@ void ApplicationWindow::translateActionsStrings()
     actionShowTitleDialog->setText(tr("&Title ..."));
 
     actionAbout->setText(tr("&About ToriGraph"));
-    actionAbout->setShortcut(tr("F1"));
 
     actionShowHelp->setText(tr("&Help"));
-    actionShowHelp->setShortcut(tr("Ctrl+H"));
+    actionShowHelp->setShortcuts({ QKeySequence(Qt::Key_F1), QKeySequence(QStringLiteral("Ctrl+H")) });
 
 #ifdef DYNAMIC_MANUAL_PATH
     actionChooseHelpFolder->setText(tr("&Choose Help Folder..."));
@@ -25232,6 +24879,20 @@ bool ApplicationWindow::validFor3DPlot(Table *table)
     return true;
 }
 
+// Where to fix a missing X / Y column (B7: error messages must name the place to act).
+static QString xColumnHowToHint()
+{
+    return ApplicationWindow::tr("Right-click the header of the column to use as X and choose "
+                                 "\"Set Column(s) As\" > \"X\", then plot again.");
+}
+
+static QString yColumnHowToHint()
+{
+    return ApplicationWindow::tr("Click the header of the Y column(s) to plot (Ctrl+click for "
+                                 "several). A column becomes Y via right-click > \"Set Column(s) "
+                                 "As\" > \"Y\".");
+}
+
 bool ApplicationWindow::validFor2DPlot(Table *table, int type)
 {
     if (!table)
@@ -25244,7 +24905,10 @@ bool ApplicationWindow::validFor2DPlot(Table *table, int type)
         if (table->selectedColumnCount() < 1 && table->YColumns().isEmpty()
             && table->numCols() < 1) {
             if (!isNonInteractiveContext(this))
-                QMessageBox::warning(this, tr("Error"), tr("Please select a column to plot!"));
+                QMessageBox::warning(this, tr("Error"),
+                                     tr("Please select a column to plot!") + QStringLiteral("<p>")
+                                             + tr("Click a column header in the worksheet to "
+                                                  "select it, then press the plot button again."));
             return false;
         }
         break;
@@ -25259,13 +24923,15 @@ bool ApplicationWindow::validFor2DPlot(Table *table, int type)
         } else if (table->noXColumn()) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::critical(this, tr("Error"),
-                                      tr("Please set a default X column for this table, first!"));
+                                      tr("Please set a default X column for this table, first!")
+                                              + QStringLiteral("<p>") + xColumnHowToHint());
             }
             return false;
         } else if (table->selectedColumnCount(SciDAVis::Y) < 2 && table->YColumns().size() < 2) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::warning(this, tr("Error"),
-                                     tr("Please select a Y column to plot!"));
+                                     tr("Please select a Y column to plot!") + QStringLiteral("<p>")
+                                             + yColumnHowToHint());
             }
             return false;
         }
@@ -25274,18 +24940,24 @@ bool ApplicationWindow::validFor2DPlot(Table *table, int type)
         if (table->numCols() < 2) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::critical(this, tr("Error"),
-                                      tr("You need at least two columns for this operation!"));
+                                      tr("You need at least two columns for this operation!")
+                                              + QStringLiteral("<p>")
+                                              + tr("Paste X and Y data from Excel (Ctrl+V) or add "
+                                                   "a column (Home > More New > Add Column)."));
             }
             return false;
         } else if (table->noXColumn()) {
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::critical(this, tr("Error"),
-                                      tr("Please set a default X column for this table, first!"));
+                                      tr("Please set a default X column for this table, first!")
+                                              + QStringLiteral("<p>") + xColumnHowToHint());
             }
             return false;
         } else if (table->selectedColumnCount(SciDAVis::Y) < 1 && table->YColumns().isEmpty()) {
             if (!isNonInteractiveContext(this))
-                QMessageBox::warning(this, tr("Error"), tr("Please select a Y column to plot!"));
+                QMessageBox::warning(this, tr("Error"),
+                                     tr("Please select a Y column to plot!") + QStringLiteral("<p>")
+                                             + yColumnHowToHint());
             return false;
         }
         break;
@@ -25315,32 +24987,10 @@ void ApplicationWindow::selectPlotType(int type)
         return;
 
     Table *table = qobject_cast<Table *>(d_workspace.activeSubWindow());
-    if (table && validFor2DPlot(table, type)) {
-        const int startRow =
-                (table->selectedRowCount(false) >= 2) ? table->firstSelectedRow(false) : 0;
-        const int endRow =
-                (table->selectedRowCount(false) >= 2) ? table->lastSelectedRow(false) : -1;
-
-        switch (type) {
-        case Graph::Histogram:
-        case Graph::Pie:
-        case Graph::Box: {
-            QStringList cols = table->selectedColumns();
-            if (cols.isEmpty())
-                cols = table->YColumns();
-            if (cols.isEmpty() && table->numCols() > 0)
-                cols << table->colName(table->numCols() - 1);
-            multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
-            break;
-        }
-        default: {
-            QStringList cols = (table->selectedColumnCount(SciDAVis::Y) >= 1)
-                    ? table->drawableColumnSelection()
-                    : collectAllDrawableColumnsInOrder(table);
-            multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
-            break;
-        }
-        }
+    if (table) {
+        // Validation, empty-table guidance and column collection live in plotColumnsFromTable()
+        // so that the ribbon (which may resolve the source table of a graph) behaves the same.
+        plotColumnsFromTable(table, type);
         return;
     }
 
@@ -29023,6 +28673,20 @@ void ApplicationWindow::updateGraphInspectorResponsiveness()
     syncGraphPageAndToolbarMenuState();
 }
 
+static QString cleanMenuTextForTip(const QString &t)
+{
+    QString out;
+    for (int i = 0; i < t.size(); ++i) {
+        if (t.at(i) == QLatin1Char('&')) {
+            if (i + 1 < t.size() && t.at(i + 1) == QLatin1Char('&'))
+                out.append(t.at(++i));
+            continue;
+        }
+        out.append(t.at(i));
+    }
+    return out.trimmed();
+}
+
 void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
 {
     if (!actionUndo || !actionRedo)
@@ -29052,6 +28716,21 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
         if (canR && !us->redoText().trimmed().isEmpty())
             redoText = tr("&Redo %1").arg(us->redoText().trimmed());
     }
+
+    // C11: name the window whose history Ctrl+Z walks (graphs keep their own history,
+    // worksheets share the project history).
+    if (aw && (canU || canR)) {
+        const QString target = QStringLiteral("  [%1]").arg(aw->name());
+        if (canU)
+            undoText += target;
+        if (canR)
+            redoText += target;
+    }
+    const QString scopeTip = qobject_cast<MultiLayer *>(aw)
+            ? tr("Undo history of this graph window (each graph has its own).")
+            : tr("Undo history of the worksheets (shared by all tables and matrices).");
+    actionUndo->setToolTip(cleanMenuTextForTip(undoText) + QStringLiteral(" (Ctrl+Z)\n") + scopeTip);
+    actionRedo->setToolTip(cleanMenuTextForTip(redoText) + QStringLiteral(" (Ctrl+Y)\n") + scopeTip);
 
     actionUndo->setEnabled(canU);
     actionRedo->setEnabled(canR);

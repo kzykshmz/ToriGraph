@@ -1,1 +1,159 @@
- 
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ToriGraph かんたんガイド</title>
+<style>
+  :root { --fg: #1f2937; --muted: #4b5563; --line: #d1d5db; --accent: #1d4ed8; --bg: #ffffff; --soft: #f3f4f6; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI", sans-serif; font-size: 15px; line-height: 1.75; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 1.6em; margin: 0.2em 0 0.4em; }
+  h2 { font-size: 1.25em; margin: 1.8em 0 0.5em; padding-bottom: 4px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 1.05em; margin: 1.3em 0 0.3em; }
+  p, li { margin: 0.35em 0; }
+  kbd { display: inline-block; padding: 0 6px; border: 1px solid #9ca3af; border-bottom-width: 2px;
+        border-radius: 4px; background: var(--soft); font-family: Consolas, monospace; font-size: 0.9em; }
+  .lead { color: var(--muted); }
+  .step { border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; margin: 12px 0; }
+  .step h3 { margin-top: 0.2em; color: var(--accent); }
+  .note { background: #eff6ff; border-left: 4px solid var(--accent); padding: 8px 12px; margin: 10px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); }
+  nav ol { columns: 2; }
+  @media (max-width: 640px) { nav ol { columns: 1; } }
+</style>
+</head>
+<body>
+<main>
+<h1>ToriGraph かんたんガイド</h1>
+<p class="lead">Excel のデータを貼り付けてから、論文用の体裁に整え、PowerPoint に貼り、あとで直すところまでを 1 ページにまとめました。
+このページは <kbd>F1</kbd> でいつでも開けます。</p>
+
+<nav>
+<ol>
+  <li><a href="#paste">データを貼り付ける</a></li>
+  <li><a href="#plot">グラフを描く</a></li>
+  <li><a href="#style">体裁を整える</a></li>
+  <li><a href="#ppt">PowerPoint に貼る</a></li>
+  <li><a href="#edit">ダブルクリックで直す</a></li>
+  <li><a href="#keys">覚えておくと楽なキー</a></li>
+  <li><a href="#origin">Origin を使っていた人へ(用語の対応)</a></li>
+  <li><a href="#faq">困ったとき(FAQ)</a></li>
+</ol>
+</nav>
+
+<h2 id="paste">1. データを貼り付ける</h2>
+<div class="step">
+<h3>Excel から</h3>
+<ol>
+  <li>Excel で表の範囲を選んで <kbd>Ctrl</kbd>+<kbd>C</kbd> でコピーします。1 行目に列の名前、2 行目に単位(MPa、% など)があると、そのまま列名と単位として取り込まれ、軸タイトルにも使われます。</li>
+  <li>ToriGraph の表(ワークシート)の左上のセルをクリックし、<kbd>Ctrl</kbd>+<kbd>V</kbd> で貼り付けます。起動直後の空の表にも、そのまま貼り付けられます。</li>
+</ol>
+</div>
+<div class="step">
+<h3>CSV・テキストファイルから</h3>
+<p>ファイルを ToriGraph のウィンドウにドラッグ&amp;ドロップするか、リボンの「ホーム」→「インポート」から読み込みます。区切り文字と文字コード(UTF-8、Shift-JIS)は自動で判定します。</p>
+<p>Excel のファイル(.xlsx)は直接は読めません。Excel で範囲をコピーして貼り付けるか、CSV で保存してから読み込んでください。</p>
+</div>
+
+<h2 id="plot">2. グラフを描く</h2>
+<div class="step">
+<ol>
+  <li>横軸(X)にする列が左端にあれば、そのまま X として扱われます。別の列を X にしたいときは、列見出しを右クリックして「列のプロット属性を設定」→「X」を選びます。</li>
+  <li>縦軸(Y)にしたい列の見出しをクリックして選びます(<kbd>Ctrl</kbd> を押しながらで複数選べます)。何も選ばなければ、すべての Y 列を描きます。</li>
+  <li>リボンの作図ボタン(「折れ線 + シンボル」「散布図」など)を押します。</li>
+</ol>
+<p class="note">グラフを選んでいる状態で作図ボタンを押すと、そのグラフの元の表から新しいグラフを作ります。元の表が分からないときは、理由を画面に表示します。</p>
+</div>
+
+<h2 id="style">3. 体裁を整える</h2>
+<div class="step">
+<ul>
+  <li><b>論文用(ISIJ 85 mm)</b>: リボンの「書式・出力」タブ、またはグラフの右クリック →「体裁」→「スタイルプリセット」から ISIJ 85 mm を選ぶと、85 mm 角・Arial・内向き目盛り・600 dpi の体裁に一度で揃います。</li>
+  <li><b>細かい調整</b>: 右側のグラフインスペクタで、軸の範囲、文字の大きさ、線の太さ、シンボル、凡例を変えられます。インスペクタの下の「詳細設定…」を押すと、その項目のすべての設定があるダイアログが開きます。</li>
+  <li><b>他のグラフと揃える</b>: 「書式のコピー」→ 揃えたいグラフで「書式の貼り付け」。</li>
+</ul>
+</div>
+
+<h2 id="ppt">4. PowerPoint に貼る</h2>
+<div class="step">
+<ol>
+  <li>グラフのウィンドウをクリックして選び、<kbd>Ctrl</kbd>+<kbd>C</kbd> を押します(「編集」メニューの OLE オブジェクトとしてコピーと同じです)。</li>
+  <li>PowerPoint のスライドで <kbd>Ctrl</kbd>+<kbd>V</kbd> を押します。グラフは ToriGraph で決めた大きさ(mm)のまま貼られます。</li>
+</ol>
+<p>画像ファイル(PNG、PDF、SVG、EMF)として保存したいときは、「ファイル」→「グラフのエクスポート」を使います。</p>
+</div>
+
+<h2 id="edit">5. ダブルクリックで直す</h2>
+<div class="step">
+<ul>
+  <li><b>PowerPoint 上で</b>: 貼ったグラフをダブルクリックすると ToriGraph が開きます。直してからウィンドウを閉じると、スライド上の図が更新されます。大きさは変わりません。</li>
+  <li><b>ToriGraph 上で</b>: 軸タイトル・凡例・文字はダブルクリックでその場で書き換えられます。曲線と軸はダブルクリックで詳しい設定のダイアログが開きます。右のインスペクタの一覧でダブルクリックしても同じように動きます。</li>
+  <li>文字を足すには「テキストの追加」を押してから、グラフ上の入れたい位置をクリックし、そのまま入力します。</li>
+</ul>
+</div>
+
+<h2 id="keys">6. 覚えておくと楽なキー</h2>
+<table>
+<tr><th>キー</th><th>働き</th></tr>
+<tr><td><kbd>F1</kbd></td><td>このガイドを開く</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>コマンド検索(機能の名前で探して実行。いま使えない機能は理由つきで淡色表示)</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>元に戻す / やり直し(表とグラフで履歴は別々です)</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>ズームやデータ読取などのモードを解除する。いまのモードは画面下のステータスバーに出ます</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>上書き保存 / 名前を付けて保存</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td>新しい関数グラフ</td></tr>
+</table>
+
+<h2 id="origin">7. Origin を使っていた人へ(用語の対応)</h2>
+<table>
+<tr><th>Origin</th><th>ToriGraph</th></tr>
+<tr><td>ワークブック / ワークシート</td><td>表(テーブル)。1 つの表が 1 枚のワークシートです</td></tr>
+<tr><td>Long Name / Units / Comments</td><td>列の長い名前 / 単位 / コメント(軸タイトルに自動で入ります)</td></tr>
+<tr><td>列の属性 X / Y / yEr</td><td>列見出しの右クリック →「列のプロット属性を設定」→「X」「Y」「Y 誤差」など</td></tr>
+<tr><td>Set Column Values</td><td>列の値を設定(列見出しの右クリック)</td></tr>
+<tr><td>グラフウィンドウ / レイヤー</td><td>グラフ / レイヤー</td></tr>
+<tr><td>Plot Details</td><td>プロットの詳細ダイアログ(曲線をダブルクリック)。日常の変更は右のインスペクタで足ります</td></tr>
+<tr><td>Axis ダイアログ</td><td>軸のダイアログ(軸をダブルクリック)</td></tr>
+<tr><td>Merge Graph Windows</td><td>グラフ結合</td></tr>
+<tr><td>Theme / Copy Format</td><td>スタイルプリセット、書式のコピー・貼り付け</td></tr>
+<tr><td>Template (.otpu)</td><td>テンプレート(.qpt)</td></tr>
+<tr><td>Data Reader / Gadgets</td><td>データ読取カーソル / ガジェット</td></tr>
+<tr><td>Quick Fit / Nonlinear Curve Fit</td><td>クイックフィット / フィット(解析メニュー)</td></tr>
+<tr><td>Peak Analyzer</td><td>ピークアナライザ</td></tr>
+<tr><td>Copy Page(PowerPoint へ貼る)</td><td>グラフを選んで <kbd>Ctrl</kbd>+<kbd>C</kbd>(OLE オブジェクトとしてコピー)</td></tr>
+<tr><td>.opju の読み込み</td><td>「インポート」→ Origin OPJ。取り込めるのは数値列と列の情報(名前・単位・コメント)だけで、グラフは取り込みません</td></tr>
+</table>
+
+<h2 id="faq">8. 困ったとき(FAQ)</h2>
+<h3>インストールや起動のときに「Windows によって PC が保護されました」と出る</h3>
+<p>Microsoft SmartScreen の表示です。ToriGraph は署名していないので、初回はこの表示が出ることがあります。研究室で配られたファイルであることを確かめてから、「詳細情報」→「実行」を押してください。出どころの分からないファイルは実行しないでください。</p>
+
+<h3>PowerPoint のグラフをダブルクリックしても ToriGraph が開かない</h3>
+<ol>
+  <li>スタートメニューの「ToriGraph」→「OLE サーバーを再登録 (PowerPoint 連携修復)」を実行します。</li>
+  <li>PowerPoint をいったん閉じてから開き直し、もう一度ダブルクリックします。</li>
+  <li>ポータブル版(zip)を使っている場合は、ToriGraph のフォルダで次を実行します。<br>
+      <code>powershell -ExecutionPolicy Bypass -File scripts\register-ole.ps1 -Mode Install</code></li>
+</ol>
+<p>開発用にビルドした別の ToriGraph を起動すると、PowerPoint の連携先がそちらに変わることがあります。そのときも上の再登録で戻ります。</p>
+
+<h3>貼り付けたら 1 つの列に全部入った / 列が割れた</h3>
+<p>Excel からのコピーはタブ区切りで貼り付けます。テキストエディタからコピーした場合は、区切りがタブになっているか確かめてください。CSV として保存してから読み込むと確実です。</p>
+
+<h3>作図ボタンを押しても何も起きない</h3>
+<p>X にする列が無い、Y の列が無い、表が空、のどれかです。画面に出る案内に従って、列見出しの右クリック(「列のプロット属性を設定」)で X 列・Y 列を決めてから押し直してください。</p>
+
+<h3>ズームやデータ読取から抜けられない</h3>
+<p><kbd>Esc</kbd> を押すか、画面下のステータスバーに出ている「モード: …」をクリックします(リボンの「解析」タブの「ポインタ」でも戻れます)。</p>
+
+<h3>保存しようとしたら失敗した</h3>
+<p>保存に失敗したときは、プロジェクトは「未保存」のままになり、閉じるときに確認が出ます。Dropbox などの同期中のフォルダでは、少し待ってから保存し直すか、別の場所に「名前を付けて保存」してください。</p>
+
+<h3>もっと詳しく知りたい</h3>
+<p>最新の説明は GitHub の日本語 README にあります: <a href="https://github.com/kzykshmz/ToriGraph/blob/main/README.ja.md">https://github.com/kzykshmz/ToriGraph/blob/main/README.ja.md</a></p>
+</main>
+</body>
+</html>

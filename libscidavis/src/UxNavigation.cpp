@@ -1,0 +1,1160 @@
+/***************************************************************************
+    File                 : UxNavigation.cpp
+    Description          : Beginner navigation, menus and UI state:
+                           - F1 quick guide (B1)
+                           - plotting from a table with guidance instead of silence (B6, B7)
+                           - empty-table paste hint and "plot this data" bar (B4)
+                           - tool-mode indicator in the status bar (C3)
+                           - dialogs that fit 1366x768 at 150 % (C5)
+                           - shared graph context menu (C7)
+                           - "Show other-field / advanced features" switch (G1)
+ ***************************************************************************/
+#include "UxNavigation.h"
+
+#include "ApplicationWindow.h"
+#include "Graph.h"
+#include "I18nJapanese.h"
+#include "Legend.h"
+#include "ModernRibbonAndHud.h"
+#include "MultiLayer.h"
+#include "PlotToolInterface.h"
+#include "Table.h"
+#include "IconLoader.h"
+#include "core/column/Column.h"
+#include "future/table/TableModel.h"
+
+#include <QAbstractButton>
+#include <QAbstractItemModel>
+#include <QAction>
+#include <QActionGroup>
+#include <QApplication>
+#include <QBoxLayout>
+#include <QColorDialog>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QErrorMessage>
+#include <QEvent>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFontDialog>
+#include <QFrame>
+#include <QGridLayout>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QLabel>
+#include <QMdiArea>
+#include <QMdiSubWindow>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPointer>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
+#include <QSettings>
+#include <QStatusBar>
+#include <QTableView>
+#include <QTimer>
+#include <QToolButton>
+#include <QToolTip>
+#include <QWizard>
+
+#include <mutex>
+
+#define MANUAL_URI_JA "https://github.com/kzykshmz/ToriGraph/blob/main/README.ja.md"
+
+namespace ToriUx {
+
+void registerUxTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        // Only fills gaps: a word that already has a translation elsewhere (e.g. "Plot",
+        // "Zoom In") keeps it, so these registrations never change existing UI text.
+        auto reg = [](const char *en, const char *ja) {
+            const QString src = QString::fromUtf8(en);
+            if (!ToriGraphFullJapaneseTranslator::lookupJapanese(src).isEmpty())
+                return;
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(src, QString::fromUtf8(ja));
+        };
+        // B1 help
+        reg("The built-in guide (manual/index.html) was not found; opening the Japanese README on GitHub instead.",
+            "同梱のガイド (manual/index.html) が見つからないため、GitHub の日本語 README を開きます。");
+        reg("The guide could not be opened automatically. Open this address in a web browser:",
+            "ガイドを自動で開けませんでした。次のアドレスをブラウザで開いてください:");
+        // A11 close prompt
+        reg("Do&n't Save", "保存しない(&N)");
+        // B7 messages
+        reg("Click a column header in the worksheet to select it, then press the plot button again.",
+            "ワークシートの列見出しをクリックして列を選び、もう一度作図ボタンを押してください。");
+        reg("Right-click the header of the column to use as X and choose \"Set Column(s) As\" > \"X\", then plot again.",
+            "X にしたい列の見出しを右クリックし、「列のプロット属性を設定」→「X」を選んでから、もう一度作図してください。");
+        reg("Click the header of the Y column(s) to plot (Ctrl+click for several). A column becomes Y via right-click > \"Set Column(s) As\" > \"Y\".",
+            "描きたい Y 列の見出しをクリックして選んでください(複数なら Ctrl+クリック)。列を Y にするには、見出しを右クリック →「列のプロット属性を設定」→「Y」です。");
+        reg("Paste X and Y data from Excel (Ctrl+V) or add a column (Home > More New > Add Column).",
+            "Excel から X と Y のデータを貼り付ける(Ctrl+V)か、列を追加してください(ホーム →「その他の新規作成」→「列の追加」)。");
+        reg("Nothing to plot yet", "まだ作図できません");
+        reg("The worksheet \"%1\" is empty, so no graph was created.",
+            "ワークシート「%1」が空のため、グラフは作りませんでした。");
+        reg("Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop a CSV file onto the window. Then press the plot button again.",
+            "Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。");
+        reg("Graph export works on a graph window. Click the graph you want to export first.",
+            "画像の書き出しはグラフのウィンドウが対象です。先に書き出したいグラフをクリックしてください。");
+        reg("Copying for PowerPoint works on a graph window. Click the graph you want to copy first.",
+            "PowerPoint 用のコピーはグラフのウィンドウが対象です。先にコピーしたいグラフをクリックしてください。");
+        // B6 ribbon plot buttons
+        reg("Created a new graph from \"%1\", the worksheet of the active graph.",
+            "選択中のグラフの元の表「%1」から新しいグラフを作りました。");
+        reg("The plot buttons make a new graph from worksheet columns. This graph has no source worksheet (function or image data); click a worksheet first.",
+            "作図ボタンはワークシートの列から新しいグラフを作ります。このグラフには元の表がありません(関数や画像のデータ)。先にワークシートをクリックしてください。");
+        reg("The plot buttons make a graph from worksheet columns. Click a worksheet (or paste data from Excel) first.",
+            "作図ボタンはワークシートの列からグラフを作ります。先にワークシートをクリックしてください(Excel から貼り付けても始められます)。");
+        // B4
+        reg("Paste from Excel here (Ctrl+V)\nor drop a CSV file onto this window",
+            "ここへ Excel から貼り付け(Ctrl+V)\nまたは CSV ファイルをこのウィンドウにドロップ");
+        reg("Plot this data", "このデータをグラフにする");
+        reg("Line + symbol graph of all Y columns (use the Plot tab for other styles)",
+            "すべての Y 列を折れ線+シンボルで描きます(ほかの形はプロットタブから)");
+        reg("Dismiss", "閉じる");
+        // C3 tool mode
+        reg("Mode: %1 (Esc to cancel)", "モード: %1(Esc で解除)");
+        reg("Click (or press Esc) to return to the pointer", "クリック(または Esc)でポインタに戻ります");
+        reg("Zoom In", "拡大");
+        reg("Zoom Out", "縮小");
+        reg("Draw Arrow", "矢印を描く");
+        reg("Draw Line", "線を描く");
+        reg("Add Text (click on the graph)", "テキストの追加(グラフ上をクリック)");
+        reg("Data Reader", "データ読取");
+        reg("Move Data Points", "データ点の移動");
+        reg("Remove Data Points", "データ点の削除");
+        reg("Mask Data Points", "データ点のマスク");
+        reg("Unmask Data Points", "データ点のマスク解除");
+        reg("Screen Reader", "画面座標の読取");
+        reg("Line Profile", "ラインプロファイル");
+        reg("Multi-Peak Fit (click the peaks)", "複数ピークのフィット(ピークをクリック)");
+        reg("Select Data Range", "データ範囲の選択");
+        reg("Translate Curve", "曲線の平行移動");
+        reg("ROI Gadget", "ROI ガジェット");
+        reg("Vertical Cursor", "垂直カーソル");
+        reg("Delta Cursor", "デルタカーソル");
+        reg("Image Profile", "画像プロファイル");
+        reg("Click on the graph where the text should go, then type it (Esc to cancel).",
+            "文字を入れたい位置でグラフをクリックし、そのまま入力してください(Esc で取り消し)。");
+        // C7 context menu
+        reg("Properties of the Selection...", "選択した要素のプロパティ...");
+        reg("Delete Selection", "選択した要素を削除");
+        reg("&Axes...", "軸(&A)...");
+        reg("Add &Text", "テキストの追加(&T)");
+        reg("Anal&yze", "解析(&Y)");
+        reg("St&yle", "体裁(&Y)");
+        reg("Layer P&roperties...", "レイヤーのプロパティ(&R)...");
+        // C6 menus
+        reg("Worksheet &Analysis", "表の解析(&A)");
+        // C11 undo
+        reg("Undo history of this graph window (each graph has its own).",
+            "このグラフのウィンドウの操作履歴です(グラフごとに別の履歴です)。");
+        reg("Undo history of the worksheets (shared by all tables and matrices).",
+            "ワークシートの操作履歴です(すべての表と行列で共通です)。");
+        // C12 command palette
+        reg("Not available now: open or create a worksheet or graph first.",
+            "今は使えません: 先にワークシートかグラフを開くか作ってください。");
+        reg("Not available for a worksheet: click a graph window first.",
+            "ワークシートでは使えません: 先にグラフのウィンドウをクリックしてください。");
+        reg("Not available for this window: click a worksheet (or select a curve) first.",
+            "このウィンドウでは使えません: 先にワークシートをクリックするか、曲線を選んでください。");
+        reg("Not available in the current state.", "今の状態では使えません。");
+        // G1
+        reg("Show Other-Field / Advanced Features", "他分野・詳細機能を表示");
+        reg("Show medical statistics, EIS, Tauc, wavelet/STFT/Hilbert, pie/Pareto and 3D ribbon in menus, the ribbon and command search",
+            "医療統計、EIS、Tauc、ウェーブレット・STFT・Hilbert、円グラフ・パレート図、3D リボンをメニュー・リボン・コマンド検索に表示します");
+        // C4 ribbon
+        reg("Undo", "元に戻す");
+        reg("Redo", "やり直し");
+        reg("Pointer", "ポインタ");
+        reg("Zoom", "ズーム");
+        reg("Reader", "データ読取");
+        reg("Text", "テキスト");
+        reg("Legend", "凡例");
+        reg("Error Bars", "エラーバー");
+        reg("2 Stacked", "上下 2 段");
+        reg("2x2 Panels", "4 分割");
+        reg("Undo the last change in the active window (Ctrl+Z)", "選択中のウィンドウで直前の変更を元に戻す (Ctrl+Z)");
+        reg("Redo the last undone change (Ctrl+Y)", "元に戻した変更をやり直す (Ctrl+Y)");
+        reg("Pointer: leave zoom, reader and gadget modes (Esc)", "ポインタ: ズーム・データ読取・ガジェットのモードを解除 (Esc)");
+        reg("Zoom into a dragged rectangle (Ctrl++)", "ドラッグした四角の範囲を拡大 (Ctrl++)");
+        reg("Read data values by clicking points (Ctrl+D)", "点をクリックしてデータの値を読む (Ctrl+D)");
+        reg("Add text: click on the graph where it should go (Alt+T)", "テキストの追加: 入れたい位置でグラフをクリック (Alt+T)");
+        reg("Add or rebuild the legend", "凡例を追加・作り直す");
+        reg("Add error bars from a column or a percentage", "列または割合からエラーバーを付ける");
+        reg("Two graphs stacked vertically", "上下 2 段のグラフ");
+        reg("Four graphs in a 2x2 grid", "2×2 の 4 分割グラフ");
+        reg("Edit", "編集");
+        reg("Tools", "ツール");
+        reg("Annotate", "注釈");
+        reg("Panels", "パネル");
+        // C2 inspector
+        reg("Details...", "詳細設定…");
+        reg("Add text, legend, error bars or a 2-panel / 4-panel layout",
+            "テキスト・凡例・エラーバーの追加、上下 2 段・4 分割の配置");
+        reg("Paste from Excel into the table (Ctrl+V) or drop a CSV file",
+            "Excel からコピーして表に貼り付け(Ctrl+V)、または CSV ファイルをドロップ");
+        reg("Open the dialog with every setting for this section", "この節のすべての設定があるダイアログを開く");
+        reg("Axes", "軸");
+        reg("X Axis (Bottom)", "X 軸(下)");
+        reg("Y Axis (Left)", "Y 軸(左)");
+        reg("X Axis (Top)", "X 軸(上)");
+        reg("Y Axis (Right)", "Y 軸(右)");
+        // C14 ribbon tabs
+        reg("Home", "ホーム");
+        reg("Plot", "作図");
+        reg("Materials", "材料解析");
+        reg("Analysis", "解析");
+        reg("Format & Export", "書式・出力");
+        reg("Weibull", "ワイブル");
+        reg("Arrhenius", "アレニウス");
+    });
+}
+
+QString quickGuideFilePath()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        appDir + QStringLiteral("/manual/index.html"),
+        // development builds: <repo>/build/scidavis/ToriGraph.exe -> <repo>/manual
+        appDir + QStringLiteral("/../../manual/index.html"),
+        appDir + QStringLiteral("/../manual/index.html"),
+        appDir + QStringLiteral("/../share/doc/torigraph/manual/index.html"),
+    };
+    for (const QString &c : candidates) {
+        const QFileInfo fi(c);
+        // The old placeholder was a 3-byte file; treat anything that small as "not installed".
+        if (fi.isFile() && fi.size() > 256)
+            return QDir::cleanPath(fi.absoluteFilePath());
+    }
+    return QString();
+}
+
+namespace {
+
+constexpr int kFrameAllowanceW = 16; // left + right window border
+constexpr int kFrameAllowanceH = 40; // title bar + bottom border
+
+bool isScreenFitCandidate(const QWidget *w)
+{
+    const QDialog *dlg = qobject_cast<const QDialog *>(w);
+    if (!dlg || !dlg->isWindow())
+        return false;
+    // Qt's own dialogs size themselves (and the file dialog is usually native).
+    if (qobject_cast<const QMessageBox *>(dlg) || qobject_cast<const QFileDialog *>(dlg)
+        || qobject_cast<const QInputDialog *>(dlg) || qobject_cast<const QProgressDialog *>(dlg)
+        || qobject_cast<const QColorDialog *>(dlg) || qobject_cast<const QFontDialog *>(dlg)
+        || qobject_cast<const QErrorMessage *>(dlg) || qobject_cast<const QWizard *>(dlg))
+        return false;
+    if (dlg->property("toriNoScreenFit").toBool())
+        return false;
+    return true;
+}
+
+bool isButtonRow(QLayoutItem *item)
+{
+    if (!item)
+        return false;
+    if (QWidget *w = item->widget())
+        return qobject_cast<QDialogButtonBox *>(w) != nullptr;
+    QLayout *lay = item->layout();
+    if (!lay || lay->count() == 0)
+        return false;
+    bool sawPush = false;
+    for (int i = 0; i < lay->count(); ++i) {
+        QLayoutItem *it = lay->itemAt(i);
+        if (!it || it->spacerItem())
+            continue;
+        QWidget *w = it->widget();
+        if (!w)
+            return false;
+        if (qobject_cast<QDialogButtonBox *>(w)) {
+            sawPush = true;
+            continue;
+        }
+        if (!qobject_cast<QAbstractButton *>(w))
+            return false;
+        if (qobject_cast<QPushButton *>(w))
+            sawPush = true;
+    }
+    return sawPush;
+}
+
+void collectLayoutWidgets(QLayout *lay, QList<QPointer<QWidget>> &out)
+{
+    if (!lay)
+        return;
+    for (int i = 0; i < lay->count(); ++i) {
+        QLayoutItem *it = lay->itemAt(i);
+        if (!it)
+            continue;
+        if (QWidget *w = it->widget())
+            out.append(w);
+        else if (QLayout *sub = it->layout())
+            collectLayoutWidgets(sub, out);
+    }
+}
+
+// Move the content of a dialog's top-level box/grid layout into a QScrollArea. A trailing
+// button row (QDialogButtonBox or a row of push buttons) stays outside so OK/Cancel remain visible.
+bool wrapLayoutInScrollArea(QWidget *window)
+{
+    QLayout *old = window->layout();
+    QBoxLayout *oldBox = qobject_cast<QBoxLayout *>(old);
+    QGridLayout *oldGrid = qobject_cast<QGridLayout *>(old);
+    if (!oldBox && !oldGrid)
+        return false;
+
+    // Remember which widgets were meant to be visible: reparenting hides them.
+    QList<QPointer<QWidget>> widgets;
+    collectLayoutWidgets(old, widgets);
+    QList<QPointer<QWidget>> shownBefore;
+    for (const QPointer<QWidget> &w : widgets) {
+        if (w && !w->isHidden())
+            shownBefore.append(w);
+    }
+
+    const QMargins margins = old->contentsMargins();
+    const int spacing = old->spacing();
+    const QBoxLayout::Direction dir = oldBox ? oldBox->direction() : QBoxLayout::TopToBottom;
+
+    struct Moved
+    {
+        QLayoutItem *item = nullptr;
+        int stretch = 0;
+        int row = 0, col = 0, rowSpan = 1, colSpan = 1;
+    };
+    QList<Moved> moved;
+    for (int i = 0; i < old->count(); ++i) {
+        Moved m;
+        if (oldBox)
+            m.stretch = oldBox->stretch(i);
+        else
+            oldGrid->getItemPosition(i, &m.row, &m.col, &m.rowSpan, &m.colSpan);
+        moved.append(m);
+    }
+    for (int i = 0; i < moved.size(); ++i)
+        moved[i].item = old->takeAt(0);
+
+    QLayoutItem *buttonRow = nullptr;
+    int buttonStretch = 0;
+    if (oldBox && dir == QBoxLayout::TopToBottom && !moved.isEmpty()
+        && isButtonRow(moved.last().item)) {
+        buttonRow = moved.last().item;
+        buttonStretch = moved.last().stretch;
+        moved.removeLast();
+    }
+
+    // Detach sub-layouts from the old layout before deleting it (QObject children die with it).
+    for (const Moved &m : moved) {
+        if (m.item && m.item->layout())
+            m.item->layout()->setParent(nullptr);
+    }
+    if (buttonRow && buttonRow->layout())
+        buttonRow->layout()->setParent(nullptr);
+    delete old;
+
+    QVBoxLayout *outer = new QVBoxLayout(window);
+    outer->setContentsMargins(margins);
+    outer->setSpacing(spacing);
+
+    QScrollArea *scroll = new QScrollArea(window);
+    scroll->setObjectName(QStringLiteral("ToriScreenFitScrollArea"));
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContentsOnFirstShow);
+    QWidget *inner = new QWidget(scroll);
+    inner->setObjectName(QStringLiteral("ToriScreenFitInner"));
+    scroll->setWidget(inner);
+    outer->addWidget(scroll, 1);
+
+    auto addTo = [](QLayout *target, const Moved &m, QBoxLayout *asBox, QGridLayout *asGrid) {
+        QLayoutItem *it = m.item;
+        if (!it)
+            return;
+        if (QWidget *w = it->widget()) {
+            const Qt::Alignment al = it->alignment();
+            delete it;
+            if (asBox)
+                asBox->addWidget(w, m.stretch, al);
+            else
+                asGrid->addWidget(w, m.row, m.col, m.rowSpan, m.colSpan, al);
+        } else if (QLayout *sub = it->layout()) {
+            if (asBox)
+                asBox->addLayout(sub, m.stretch);
+            else
+                asGrid->addLayout(sub, m.row, m.col, m.rowSpan, m.colSpan);
+        } else {
+            if (asBox)
+                asBox->addItem(it);
+            else
+                asGrid->addItem(it, m.row, m.col, m.rowSpan, m.colSpan);
+        }
+        Q_UNUSED(target);
+    };
+
+    if (oldBox) {
+        QBoxLayout *nb = new QBoxLayout(dir, inner);
+        nb->setContentsMargins(0, 0, 0, 0);
+        nb->setSpacing(spacing);
+        for (const Moved &m : moved)
+            addTo(nb, m, nb, nullptr);
+    } else {
+        QGridLayout *ng = new QGridLayout(inner);
+        ng->setContentsMargins(0, 0, 0, 0);
+        ng->setHorizontalSpacing(oldGrid->horizontalSpacing());
+        ng->setVerticalSpacing(oldGrid->verticalSpacing());
+        for (const Moved &m : moved)
+            addTo(ng, m, nullptr, ng);
+    }
+
+    if (buttonRow) {
+        Moved b;
+        b.item = buttonRow;
+        b.stretch = buttonStretch;
+        addTo(outer, b, outer, nullptr);
+    }
+
+    for (const QPointer<QWidget> &w : shownBefore) {
+        if (w && w->isHidden())
+            w->show();
+    }
+    window->setProperty("toriScreenFitWrapped", true);
+    return true;
+}
+
+class DialogScreenFitFilter : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        const QEvent::Type t = event->type();
+        if ((t == QEvent::Polish || t == QEvent::Show) && watched->isWidgetType()) {
+            QWidget *w = static_cast<QWidget *>(watched);
+            if (isScreenFitCandidate(w))
+                fitWindowToAvailableScreen(w);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+} // namespace
+
+bool fitWindowToAvailableScreen(QWidget *window, const QRect &available)
+{
+    if (!window || !window->isWindow())
+        return false;
+
+    QRect avail = available;
+    if (!avail.isValid()) {
+        QScreen *scr = window->screen();
+        if (!scr || window->geometry().isEmpty())
+            scr = QGuiApplication::screenAt(QCursor::pos());
+        if (!scr)
+            scr = QGuiApplication::primaryScreen();
+        if (!scr)
+            return false;
+        avail = scr->availableGeometry();
+    }
+    const QSize maxClient(qMax(200, avail.width() - kFrameAllowanceW),
+                          qMax(150, avail.height() - kFrameAllowanceH));
+
+    bool wrapped = false;
+    if (QLayout *lay = window->layout()) {
+        const QSize need = lay->totalMinimumSize();
+        if ((need.width() > maxClient.width() || need.height() > maxClient.height())
+            && !window->property("toriScreenFitWrapped").toBool()
+            && qobject_cast<QDialog *>(window)) {
+            wrapped = wrapLayoutInScrollArea(window);
+        }
+    }
+
+    const QSize minNow = window->minimumSize();
+    if (minNow.width() > maxClient.width() || minNow.height() > maxClient.height())
+        window->setMinimumSize(minNow.boundedTo(maxClient));
+    if (window->width() > maxClient.width() || window->height() > maxClient.height())
+        window->resize(window->size().boundedTo(maxClient));
+
+    // Keep the title bar on screen (only meaningful once the window has a position).
+    if (window->isVisible() && !available.isValid()) {
+        const QRect g = window->geometry();
+        int x = g.x(), y = g.y();
+        if (g.right() > avail.right())
+            x = avail.right() - g.width() - kFrameAllowanceW / 2;
+        if (g.bottom() > avail.bottom())
+            y = avail.bottom() - g.height() - kFrameAllowanceH / 2;
+        x = qMax(x, avail.left());
+        y = qMax(y, avail.top() + kFrameAllowanceH - 8);
+        if (x != g.x() || y != g.y())
+            window->move(x, y - (window->frameGeometry().height() - g.height() > 0
+                                         ? window->frameGeometry().height() - g.height() - 8
+                                         : 0));
+    }
+    return wrapped;
+}
+
+void installDialogScreenFit()
+{
+    static QPointer<DialogScreenFitFilter> s_filter;
+    if (s_filter || !qApp)
+        return;
+    s_filter = new DialogScreenFitFilter(qApp);
+    qApp->installEventFilter(s_filter);
+}
+
+} // namespace ToriUx
+
+// ===========================================================================
+// Empty-table hint (B4)
+// ===========================================================================
+namespace {
+
+bool tableHasAnyData(Table *t)
+{
+    if (!t)
+        return false;
+    for (int c = 0; c < t->columnCount(); ++c) {
+        Column *col = t->column(c);
+        if (!col)
+            continue;
+        const int rows = col->rowCount();
+        for (int r = 0; r < rows; ++r) {
+            if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                if (!col->isInvalid(r))
+                    return true;
+            } else if (!col->textAt(r).isEmpty()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+QTableView *mainTableView(Table *t)
+{
+    if (!t)
+        return nullptr;
+    for (QTableView *v : t->findChildren<QTableView *>()) {
+        if (v && v->model() == static_cast<QAbstractItemModel *>(t->tableModel()))
+            return v;
+    }
+    const QList<QTableView *> all = t->findChildren<QTableView *>();
+    return all.isEmpty() ? nullptr : all.first();
+}
+
+class EmptyTableHint : public QObject
+{
+public:
+    EmptyTableHint(ApplicationWindow *app, Table *table, QTableView *view)
+        : QObject(view), d_app(app), d_table(table), d_view(view)
+    {
+        setObjectName(QStringLiteral("ToriEmptyTableHint"));
+        d_label = new QLabel(view->viewport());
+        d_label->setObjectName(QStringLiteral("ToriEmptyTableHintLabel"));
+        d_label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        d_label->setAlignment(Qt::AlignCenter);
+        d_label->setWordWrap(true);
+        d_label->setStyleSheet(QStringLiteral(
+                "QLabel#ToriEmptyTableHintLabel { color: rgba(71, 85, 105, 150); font-size: 13pt;"
+                " background: transparent; }"));
+        d_label->setText(ApplicationWindow::tr(
+                "Paste from Excel here (Ctrl+V)\nor drop a CSV file onto this window"));
+        view->viewport()->installEventFilter(this);
+        if (QAbstractItemModel *m = view->model()) {
+            connect(m, &QAbstractItemModel::dataChanged, this, &EmptyTableHint::recheck);
+            connect(m, &QAbstractItemModel::modelReset, this, &EmptyTableHint::recheck);
+            connect(m, &QAbstractItemModel::rowsInserted, this, &EmptyTableHint::recheck);
+            connect(m, &QAbstractItemModel::columnsInserted, this, &EmptyTableHint::recheck);
+        }
+        reposition();
+        d_label->show();
+    }
+
+    QLabel *label() const { return d_label; }
+
+    void recheck()
+    {
+        if (d_done)
+            return;
+        // Coalesce: a paste emits one dataChanged per cell.
+        if (d_pending)
+            return;
+        d_pending = true;
+        QTimer::singleShot(0, this, [this]() {
+            d_pending = false;
+            if (d_done || !d_table)
+                return;
+            if (tableHasAnyData(d_table)) {
+                d_done = true;
+                if (d_label)
+                    d_label->hide();
+                if (d_app && d_table)
+                    d_app->offerPlotAfterImport(d_table);
+                deleteLater();
+            }
+        });
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (d_view && watched == d_view->viewport() && event->type() == QEvent::Resize)
+            reposition();
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void reposition()
+    {
+        if (!d_view || !d_label)
+            return;
+        const QRect r = d_view->viewport()->rect();
+        const int w = qMin(r.width() - 24, 520);
+        const int h = 90;
+        d_label->setGeometry(r.center().x() - w / 2, qMax(8, r.center().y() - h / 2 - 20), w, h);
+    }
+
+    QPointer<ApplicationWindow> d_app;
+    QPointer<Table> d_table;
+    QPointer<QTableView> d_view;
+    QPointer<QLabel> d_label;
+    bool d_done = false;
+    bool d_pending = false;
+};
+
+} // namespace
+
+// ===========================================================================
+// ApplicationWindow members
+// ===========================================================================
+
+QUrl ApplicationWindow::quickGuideUrl() const
+{
+    const QString local = ToriUx::quickGuideFilePath();
+    if (!local.isEmpty())
+        return QUrl::fromLocalFile(local);
+    if (!helpFilePath.isEmpty()) {
+        const QFileInfo fi(helpFilePath);
+        if (fi.isFile() && fi.size() > 256)
+            return QUrl::fromLocalFile(fi.absoluteFilePath());
+    }
+    return QUrl(QStringLiteral(MANUAL_URI_JA));
+}
+
+QString ApplicationWindow::currentToolModeName() const
+{
+    MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml ? ml->activeGraph() : nullptr;
+    if (!g)
+        return QString();
+    if (g->zoomOn())
+        return (btnZoomOut && btnZoomOut->isChecked()) ? tr("Zoom Out") : tr("Zoom In");
+    if (g->drawLineActive())
+        return (btnArrow && btnArrow->isChecked()) ? tr("Draw Arrow") : tr("Draw Line");
+    if (g->drawTextActive())
+        return tr("Add Text (click on the graph)");
+    if (PlotToolInterface *tool = g->activeTool()) {
+        switch (tool->rtti()) {
+        case PlotToolInterface::DataPicker:
+            if (btnMovePoints && btnMovePoints->isChecked())
+                return tr("Move Data Points");
+            if (btnRemovePoints && btnRemovePoints->isChecked())
+                return tr("Remove Data Points");
+            if (btnMaskPoints && btnMaskPoints->isChecked())
+                return tr("Mask Data Points");
+            if (btnUnmaskPoints && btnUnmaskPoints->isChecked())
+                return tr("Unmask Data Points");
+            return tr("Data Reader");
+        case PlotToolInterface::ScreenPicker:
+            return tr("Screen Reader");
+        case PlotToolInterface::LineProfile:
+            return tr("Line Profile");
+        case PlotToolInterface::MultiPeak:
+            return tr("Multi-Peak Fit (click the peaks)");
+        case PlotToolInterface::RangeSelector:
+            return tr("Select Data Range");
+        case PlotToolInterface::TranslateCurve:
+            return tr("Translate Curve");
+        case PlotToolInterface::RoiGadget:
+            return tr("ROI Gadget");
+        case PlotToolInterface::VerticalCursor:
+            return tr("Vertical Cursor");
+        case PlotToolInterface::DeltaCursor:
+            return tr("Delta Cursor");
+        case PlotToolInterface::ImageProfileGadget:
+            return tr("Image Profile");
+        }
+    }
+    if (g->rangeSelectorsEnabled())
+        return tr("Select Data Range");
+    return QString();
+}
+
+void ApplicationWindow::refreshToolModeIndicator()
+{
+    const QString mode = currentToolModeName();
+
+    // Keep the checkable tool actions (classic toolbar, Tools menu, ribbon buttons) truthful.
+    MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml ? ml->activeGraph() : nullptr;
+    QAction *want = nullptr;
+    bool noActionForMode = false;
+    if (!g || mode.isEmpty()) {
+        want = btnPointer;
+    } else if (g->zoomOn()) {
+        want = (btnZoomOut && btnZoomOut->isChecked()) ? btnZoomOut : btnZoomIn;
+    } else if (g->drawLineActive()) {
+        want = (btnArrow && btnArrow->isChecked()) ? btnArrow : btnLine;
+    } else if (PlotToolInterface *tool = g->activeTool()) {
+        if (tool->rtti() == PlotToolInterface::DataPicker) {
+            QAction *checked = dataTools ? dataTools->checkedAction() : nullptr;
+            const bool pickerAction = checked
+                    && (checked == btnCursor || checked == btnMovePoints
+                        || checked == btnRemovePoints || checked == btnMaskPoints
+                        || checked == btnUnmaskPoints);
+            want = pickerAction ? checked : btnCursor;
+        } else if (tool->rtti() == PlotToolInterface::ScreenPicker) {
+            want = btnPicker;
+        } else if (tool->rtti() == PlotToolInterface::RangeSelector) {
+            want = btnSelect;
+        } else {
+            noActionForMode = true; // gadgets, multi-peak, profiles: no toolbar action
+        }
+    } else if (g->rangeSelectorsEnabled()) {
+        want = btnSelect;
+    } else {
+        noActionForMode = true; // text placement
+    }
+    if (want && !want->isChecked())
+        want->setChecked(true);
+    if (noActionForMode && dataTools) {
+        if (QAction *c = dataTools->checkedAction())
+            c->setChecked(false);
+    }
+    if (actionAddText) {
+        const bool textOn = g && g->drawTextActive();
+        if (actionAddText->isChecked() != textOn)
+            actionAddText->setChecked(textOn);
+    }
+
+    if (!d_tool_mode_indicator)
+        return;
+    const QString text = mode.isEmpty() ? QString() : tr("Mode: %1 (Esc to cancel)").arg(mode);
+    if (text == d_last_tool_mode_text)
+        return;
+    d_last_tool_mode_text = text;
+    d_tool_mode_indicator->setText(text);
+    d_tool_mode_indicator->setToolTip(tr("Click (or press Esc) to return to the pointer"));
+    d_tool_mode_indicator->setVisible(!text.isEmpty());
+}
+
+void ApplicationWindow::cancelCurrentToolMode()
+{
+    MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    Graph *g = ml ? ml->activeGraph() : nullptr;
+    if (g) {
+        // Same path as Esc on the canvas.
+        for (int guard = 0; guard < 3 && !currentToolModeName().isEmpty(); ++guard)
+            g->handleEscapeKey();
+    }
+    if (actionAddText && actionAddText->isChecked())
+        actionAddText->setChecked(false);
+    if (btnPointer && !btnPointer->isChecked())
+        btnPointer->setChecked(true);
+    refreshToolModeIndicator();
+}
+
+QString ApplicationWindow::plotBlockerForTable(Table *table, int curveType) const
+{
+    Q_UNUSED(curveType);
+    if (!table)
+        return tr("The plot buttons make a graph from worksheet columns. Click a worksheet (or "
+                  "paste data from Excel) first.");
+    if (!tableHasAnyData(table)) {
+        return tr("The worksheet \"%1\" is empty, so no graph was created.").arg(table->name())
+                + QStringLiteral("<p>")
+                + tr("Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop "
+                     "a CSV file onto the window. Then press the plot button again.");
+    }
+    return QString();
+}
+
+MultiLayer *ApplicationWindow::plotColumnsFromTable(Table *table, int type)
+{
+    if (!table)
+        return nullptr;
+    const QString blocker = plotBlockerForTable(table, type);
+    if (!blocker.isEmpty()) {
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, tr("Nothing to plot yet"), blocker);
+        else
+            statusBar()->showMessage(QString(blocker).replace(QStringLiteral("<p>"),
+                                                              QStringLiteral(" ")),
+                                     8000);
+        return nullptr;
+    }
+    if (!validFor2DPlot(table, type))
+        return nullptr;
+
+    const int startRow = (table->selectedRowCount(false) >= 2) ? table->firstSelectedRow(false) : 0;
+    const int endRow = (table->selectedRowCount(false) >= 2) ? table->lastSelectedRow(false) : -1;
+
+    QStringList cols;
+    switch (type) {
+    case Graph::Histogram:
+    case Graph::Pie:
+    case Graph::Box:
+        cols = table->selectedColumns();
+        if (cols.isEmpty())
+            cols = table->YColumns();
+        if (cols.isEmpty() && table->numCols() > 0)
+            cols << table->colName(table->numCols() - 1);
+        break;
+    default:
+        if (table->selectedColumnCount(SciDAVis::Y) >= 1) {
+            cols = table->drawableColumnSelection();
+        } else {
+            for (int i = 0; i < table->numCols(); ++i) {
+                const SciDAVis::PlotDesignation pd = table->colPlotDesignation(i);
+                if (pd == SciDAVis::Y || pd == SciDAVis::yErr || pd == SciDAVis::xErr)
+                    cols << table->colName(i);
+            }
+        }
+        break;
+    }
+    return multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
+}
+
+void ApplicationWindow::showUxHint(const QString &text, int timeoutMs)
+{
+    QString plain = text;
+    plain.replace(QStringLiteral("<p>"), QStringLiteral(" "));
+    statusBar()->showMessage(plain, timeoutMs);
+    if (!isNonInteractiveContext(this))
+        QToolTip::showText(QCursor::pos(), text, this, QRect(), timeoutMs);
+}
+
+QStringList ApplicationWindow::advancedDomainActionNames()
+{
+    // G1: features of other fields (medicine, electrochemistry, optics, generic signal
+    // processing, business charts). Hidden by default, never deleted.
+    return { QStringLiteral("actionROCCurve"),         QStringLiteral("actionKaplanMeier"),
+             QStringLiteral("actionBlandAltman"),      QStringLiteral("actionPassingBablokDeming"),
+             QStringLiteral("actionLogisticRegression"), QStringLiteral("actionEISAnalyzer"),
+             QStringLiteral("actionTaucPlot"),         QStringLiteral("actionWaveletTransform"),
+             QStringLiteral("actionStftSpectrogram"),  QStringLiteral("actionHilbertEnvelope"),
+             QStringLiteral("actionPlotPie"),          QStringLiteral("actionPlotPareto"),
+             QStringLiteral("actionPlot3DRibbon") };
+}
+
+void ApplicationWindow::setShowAdvancedDomainFeatures(bool show)
+{
+    d_show_advanced_domain_features = show;
+    if (!d_headless_mode && !m_batch) {
+        // getSettings() honours TORIGRAPH_SETTINGS_INI (tests never touch the user registry)
+        getSettings().setValue(QStringLiteral("/UX/ShowAdvancedDomainFeatures"), show);
+    }
+    applyAdvancedFeatureVisibility();
+}
+
+void ApplicationWindow::applyAdvancedFeatureVisibility()
+{
+    const bool show = d_show_advanced_domain_features;
+    for (const QString &name : advancedDomainActionNames()) {
+        if (QAction *a = findChild<QAction *>(name))
+            a->setVisible(show);
+    }
+    if (QAction *toggle = findChild<QAction *>(QStringLiteral("actionShowAdvancedDomainFeatures"))) {
+        if (toggle->isChecked() != show) {
+            QSignalBlocker b(toggle);
+            toggle->setChecked(show);
+        }
+    }
+    if (d_modern_ribbon)
+        d_modern_ribbon->setAdvancedDomainFeaturesVisible(show);
+}
+
+void ApplicationWindow::attachEmptyTableHint(Table *table)
+{
+    if (!table || d_headless_mode || m_batch || tableHasAnyData(table))
+        return;
+    QTableView *view = mainTableView(table);
+    if (!view || view->findChild<QObject *>(QStringLiteral("ToriEmptyTableHint")))
+        return;
+    new EmptyTableHint(this, table, view);
+}
+
+void ApplicationWindow::offerPlotAfterImport(Table *table)
+{
+    if (!table || d_headless_mode || m_batch || !tableHasAnyData(table))
+        return;
+    if (table->findChild<QFrame *>(QStringLiteral("ToriPlotThisDataBar")))
+        return;
+    QTableView *view = mainTableView(table);
+    if (!view)
+        return;
+
+    QFrame *bar = new QFrame(view->viewport());
+    bar->setObjectName(QStringLiteral("ToriPlotThisDataBar"));
+    bar->setStyleSheet(QStringLiteral(
+            "QFrame#ToriPlotThisDataBar { background: #EFF6FF; border: 1px solid #93C5FD;"
+            " border-radius: 6px; }"
+            "QPushButton { padding: 3px 12px; }"));
+    QHBoxLayout *row = new QHBoxLayout(bar);
+    row->setContentsMargins(8, 4, 4, 4);
+    row->setSpacing(6);
+    QPushButton *plotBtn = new QPushButton(tr("Plot this data"), bar);
+    plotBtn->setObjectName(QStringLiteral("ToriPlotThisDataButton"));
+    plotBtn->setToolTip(tr("Line + symbol graph of all Y columns (use the Plot tab for other styles)"));
+    QToolButton *close = new QToolButton(bar);
+    close->setText(QStringLiteral("×"));
+    close->setToolTip(tr("Dismiss"));
+    close->setAutoRaise(true);
+    row->addWidget(plotBtn);
+    row->addWidget(close);
+    bar->adjustSize();
+    const QRect vr = view->viewport()->rect();
+    bar->move(qMax(4, vr.right() - bar->width() - 12), qMax(4, vr.bottom() - bar->height() - 12));
+    bar->show();
+    bar->raise();
+
+    QPointer<Table> safeTable(table);
+    QPointer<QFrame> safeBar(bar);
+    connect(plotBtn, &QPushButton::clicked, this, [this, safeTable, safeBar]() {
+        if (safeBar)
+            safeBar->deleteLater();
+        if (!safeTable)
+            return;
+        plotColumnsFromTable(safeTable, Graph::LineSymbols);
+    });
+    connect(close, &QToolButton::clicked, bar, &QObject::deleteLater);
+    // The bar is a suggestion: it goes away by itself.
+    QTimer::singleShot(30000, bar, &QObject::deleteLater);
+}
+
+void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton)
+{
+    if (!plot)
+        return;
+    Graph *ag = plot->activeGraph();
+
+    if (fromLayerButton) {
+        cm.addAction(actionAddLayer);
+        cm.addAction(actionDeleteLayer);
+        cm.addSeparator();
+    }
+
+    if (ag && ag->isPiePlot()) {
+        cm.addAction(tr("Re&move Pie Curve"), ag, SLOT(removePie()));
+    } else if (ag) {
+        // 1. The selected element first: properties and delete.
+        const Graph::GraphSelection sel = ag->currentSelection();
+        const bool markerSel = ag->markerSelected();
+        const bool curveSel = (sel.kind == Graph::GraphSelection::Curve
+                               || sel.kind == Graph::GraphSelection::ErrorBars)
+                && sel.primaryId >= 0 && sel.primaryId < ag->curves();
+        const bool axisSel = (sel.kind == Graph::GraphSelection::Axis
+                              || sel.kind == Graph::GraphSelection::AxisTitle)
+                && sel.primaryId >= 0;
+        if (curveSel || axisSel || markerSel) {
+            QPointer<Graph> safeG(ag);
+            QPointer<MultiLayer> safeMl(plot);
+            const int primary = sel.primaryId;
+            cm.addAction(tr("Properties of the Selection..."), this,
+                         [this, safeG, curveSel, axisSel, primary]() {
+                             if (!safeG)
+                                 return;
+                             if (curveSel)
+                                 showPlotDialog(safeG->curveKey(primary));
+                             else if (axisSel)
+                                 showAxisPageFromAxisDialog(primary);
+                             else if (safeG->arrow(safeG->selectedMarkerKey()))
+                                 showLineDialog();
+                             else if (safeG->imageMarker(safeG->selectedMarkerKey()))
+                                 showImageDialog();
+                             else
+                                 showTextDialog();
+                         });
+            if (curveSel || markerSel) {
+                cm.addAction(IconLoader::load(":/close.xpm"), tr("Delete Selection"), this,
+                             [this, safeG, safeMl, curveSel, primary]() {
+                                 if (!safeG || !safeMl)
+                                     return;
+                                 if (curveSel) {
+                                     actionRemoveCurve->setData(int(safeG->curveKey(primary)));
+                                     removeCurve();
+                                     return;
+                                 }
+                                 const QString before = safeMl->captureUndoSnapshot();
+                                 safeG->removeMarker();
+                                 safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                                 safeMl->pushUndoSnapshot(tr("Delete Annotation"), before);
+                                 emit modified();
+                             });
+            }
+            cm.addSeparator();
+        }
+
+        // 2. Things to add or change on this graph.
+        cm.addAction(actionShowAxisDialog);
+        cm.addAction(actionNewLegend);
+        cm.addAction(actionAddText);
+        cm.addAction(actionShowCurvesDialog);
+        cm.addAction(actionAddErrorBars);
+        cm.addAction(actionAddFunctionCurve);
+        if (ag->visibleCurves() != ag->curves())
+            cm.addAction(actionShowAllCurves);
+        cm.addAction(actionUnzoom);
+        cm.addSeparator();
+
+        // 3. Copy and formats.
+        cm.addAction(actionCopyGraphOle);
+        cm.addAction(actionCopyGraphFormat);
+        cm.addAction(actionPasteGraphFormat);
+        if (pasteFormatSpecialMenu)
+            cm.addMenu(pasteFormatSpecialMenu);
+        cm.addSeparator();
+
+        // 4. One analysis submenu (no flat duplicates).
+        QMenu *an = cm.addMenu(tr("Anal&yze"));
+        for (QMenu *m : { curveMathMenu, advFitMenu, peaksBaselineMenu, advSignalMenu,
+                          graphStatsMenu, translateMenu }) {
+            if (m)
+                an->addMenu(m);
+        }
+        an->addSeparator();
+        if (gadgetsMenu)
+            an->addMenu(gadgetsMenu);
+        if (dataMaskMenu)
+            an->addMenu(dataMaskMenu);
+        if (recalcMenu)
+            an->addMenu(recalcMenu);
+
+        // 5. Look of the graph.
+        QMenu *st = cm.addMenu(tr("St&yle"));
+        if (stylePresetsMenu)
+            st->addMenu(stylePresetsMenu);
+        if (framePresetsMenu)
+            st->addMenu(framePresetsMenu);
+        if (colorPaletteMenu)
+            st->addMenu(colorPaletteMenu);
+        if (aspectRatioMenu) {
+            if (actionKeepAspectRatio)
+                actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
+            st->addMenu(aspectRatioMenu);
+        }
+        st->addSeparator();
+        st->addAction(actionWaterfallStackOffset);
+        st->addAction(actionResetStackOffsets);
+    }
+
+    if (copiedLayer) {
+        cm.addSeparator();
+        cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Layer"), this,
+                     SLOT(pasteSelection()));
+    } else if (copiedMarkerType >= 0) {
+        cm.addSeparator();
+        if (copiedMarkerType == Graph::Text)
+            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Text"), plot,
+                         SIGNAL(pasteMarker()));
+        else if (copiedMarkerType == Graph::Arrow)
+            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Line/Arrow"), plot,
+                         SIGNAL(pasteMarker()));
+        else if (copiedMarkerType == Graph::Image)
+            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Image"), plot,
+                         SIGNAL(pasteMarker()));
+    }
+    cm.addSeparator();
+    QMenu *copy = cm.addMenu(tr("&Copy"));
+    copy->setIcon(IconLoader::load("edit-copy"));
+    copy->addAction(actionCopyGraphOle);
+    copy->addAction(actionCopyPageImage);
+    copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
+    copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
+    if (actionExportPythonScript)
+        copy->addAction(actionExportPythonScript);
+
+    QMenu *exports = cm.addMenu(tr("E&xport"));
+    exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
+    exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
+
+    QMenu *prints = cm.addMenu(tr("&Print"));
+    prints->setIcon(IconLoader::load(":/fileprint.xpm"));
+    prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
+    prints->addAction(tr("&Window"), plot, SLOT(print()));
+
+    cm.addSeparator();
+    cm.addAction(IconLoader::load(":/resize.xpm"), tr("&Geometry..."), plot,
+                 SIGNAL(showGeometryDialog()));
+    cm.addAction(tr("Layer P&roperties..."), this, SLOT(showGeneralPlotDialog()));
+    if (!fromLayerButton) {
+        cm.addSeparator();
+        cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
+                     SLOT(confirmRemoveLayer()));
+    }
+}
+
+void ApplicationWindow::installUxNavigation()
+{
+    ToriUx::installDialogScreenFit();
+
+    // C3: permanent "Mode: ... (Esc to cancel)" indicator.
+    d_tool_mode_indicator = new QToolButton(statusBar());
+    d_tool_mode_indicator->setObjectName(QStringLiteral("StatusBarToolModeIndicator"));
+    d_tool_mode_indicator->setAutoRaise(false);
+    d_tool_mode_indicator->setCursor(Qt::PointingHandCursor);
+    d_tool_mode_indicator->setFocusPolicy(Qt::NoFocus);
+    d_tool_mode_indicator->setStyleSheet(QStringLiteral(
+            "QToolButton#StatusBarToolModeIndicator {"
+            "  background-color: #FEF3C7; color: #92400E; border: 1px solid #F59E0B;"
+            "  border-radius: 9px; padding: 1px 10px; margin-right: 4px; font-weight: 600;"
+            "}"
+            "QToolButton#StatusBarToolModeIndicator:hover { background-color: #FDE68A; }"));
+    d_tool_mode_indicator->hide();
+    connect(d_tool_mode_indicator, &QToolButton::clicked, this,
+            &ApplicationWindow::cancelCurrentToolMode);
+    statusBar()->insertPermanentWidget(0, d_tool_mode_indicator);
+
+    if (dataTools) {
+        connect(dataTools, &QActionGroup::triggered, this, [this](QAction *) {
+            QTimer::singleShot(0, this, [this]() { refreshToolModeIndicator(); });
+        });
+    }
+    connect(&d_workspace, &QMdiArea::subWindowActivated, this,
+            [this](QMdiSubWindow *) { refreshToolModeIndicator(); });
+    // Tools and gadgets are created and destroyed in many places without a common signal;
+    // a light poll keeps the indicator honest.
+    d_tool_mode_poll = new QTimer(this);
+    d_tool_mode_poll->setInterval(300);
+    connect(d_tool_mode_poll, &QTimer::timeout, this, &ApplicationWindow::refreshToolModeIndicator);
+    d_tool_mode_poll->start();
+
+    // G1: other-field / advanced features (hidden by default).
+    {
+        d_show_advanced_domain_features =
+                getSettings().value(QStringLiteral("/UX/ShowAdvancedDomainFeatures"), false).toBool();
+    }
+    QAction *advToggle = new QAction(tr("Show Other-Field / Advanced Features"), this);
+    advToggle->setObjectName(QStringLiteral("actionShowAdvancedDomainFeatures"));
+    advToggle->setCheckable(true);
+    advToggle->setChecked(d_show_advanced_domain_features);
+    advToggle->setToolTip(tr("Show medical statistics, EIS, Tauc, wavelet/STFT/Hilbert, pie/Pareto "
+                             "and 3D ribbon in menus, the ribbon and command search"));
+    connect(advToggle, &QAction::toggled, this,
+            [this](bool on) { setShowAdvancedDomainFeatures(on); });
+    if (view) {
+        view->addSeparator();
+        view->addAction(advToggle);
+    }
+    applyAdvancedFeatureVisibility();
+}

@@ -234,6 +234,11 @@ foreach ($doc in @("LICENSE", "LICENSE-GPL-3.0.txt", "THIRD_PARTY_LICENSES.md", 
     if (-not (Test-Path $srcDoc)) { throw "Required license/document file missing: $doc" }
     Copy-Item -Force $srcDoc $stageDir
 }
+# Built-in Japanese quick guide opened by F1 (ApplicationWindow::showHelp looks for manual\index.html)
+$manualSrc = Join-Path $repoRoot "manual"
+$manualDst = Join-Path $stageDir "manual"
+New-Item -ItemType Directory -Force -Path $manualDst | Out-Null
+Copy-Item -Recurse -Force (Join-Path $manualSrc "*") $manualDst
 
 # 9. Quick standalone smoke check (verify staged files & no immediate DLL load crash)
 Write-Host "==> Running staged payload verification..."
@@ -246,7 +251,8 @@ $requiredRel = @(
     "python\torigraph\__init__.py",
     "LICENSE",
     "LICENSE-GPL-3.0.txt",
-    "THIRD_PARTY_LICENSES.md"
+    "THIRD_PARTY_LICENSES.md",
+    "manual\index.html"
 )
 foreach ($rel in $requiredRel) {
     $full = Join-Path $stageDir $rel
