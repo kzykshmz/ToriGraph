@@ -1643,6 +1643,8 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
 
     LONG widthHm = 15000L;
     LONG heightHm = 11250L;
+    double logicalBaseDpiX = double(dpiX);
+    double logicalBaseDpiY = double(dpiY);
     if (!singleLayer && ml && ml->pageUnit() != MultiLayer::UnitPx) {
         auto toHm = [](double val, MultiLayer::PageUnit u) -> LONG {
             double hm = val * 100.0;
@@ -1672,6 +1674,8 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
                                   && ownerMl->pageViewMode() && ownerMl->pageDpi() > 0)
                 ? double(ownerMl->pageDpi())
                 : 96.0;
+        logicalBaseDpiX = unitPxDpi;
+        logicalBaseDpiY = unitPxDpi;
         const double unzoomedW = double(pxSize.width()) / zoom;
         const double unzoomedH = double(pxSize.height()) / zoom;
         widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / unitPxDpi)));
@@ -1684,8 +1688,10 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
 
     out.emfBytes = recordEmfOfExtent(
             widthHm, heightHm, [&](Gdiplus::Graphics &gfx, const QSizeF &targetPx) {
-                const int emfLogicalDpiX = std::max(36, static_cast<int>(std::lround(dpiX * zoom)));
-                const int emfLogicalDpiY = std::max(36, static_cast<int>(std::lround(dpiY * zoom)));
+                const int emfLogicalDpiX =
+                        std::max(36, static_cast<int>(std::lround(logicalBaseDpiX * zoom)));
+                const int emfLogicalDpiY =
+                        std::max(36, static_cast<int>(std::lround(logicalBaseDpiY * zoom)));
                 WinGdiEmfPaintDevice emfDev(&gfx, pxSize, targetPx, emfLogicalDpiX, emfLogicalDpiY);
                 QPainter vp(&emfDev);
                 vp.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing

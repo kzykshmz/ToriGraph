@@ -187,6 +187,10 @@ bool SettingsTransfer::isPersonalKey(const QString &key)
         "PptxExport/LastPath",
         "General/DockWindows",
         "General/ExplorerSplitter",
+        "AutoUpdate/RequireCodeSignature",
+        "AutoUpdate/AllowUnverifiedInstall",
+        "AutoUpdate/FeedUrl",
+        "AutoUpdate/ExpectedSignerSubject",
     };
     for (const char *exact : kExactKeys) {
         if (k.compare(QLatin1String(exact), Qt::CaseInsensitive) == 0)
@@ -280,7 +284,7 @@ int SettingsTransfer::importFromIni(QSettings &dst, const QString &path, QString
     const QStringList keys = in.allKeys();
     int n = 0;
     for (const QString &key : keys) {
-        if (isBookkeepingKey(key))
+        if (isBookkeepingKey(key) || isPersonalKey(key))
             continue;
         dst.setValue(key, in.value(key));
         ++n;
@@ -424,10 +428,23 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
         return;
     }
     setSaveSuppressed(false);
-    app->readSettings();
-    app->applyUserSettings();
-    app->saveSettings();
-    QMessageBox::information(app, trST("Import Settings"),
+    QPointer<ApplicationWindow> callerGuard(app);
+    bool appliedToCaller = false;
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (auto *aw = qobject_cast<ApplicationWindow *>(tlw)) {
+            aw->readSettings();
+            aw->applyUserSettings();
+            if (aw == callerGuard.data())
+                appliedToCaller = true;
+        }
+    }
+    if (!appliedToCaller && callerGuard) {
+        callerGuard->readSettings();
+        callerGuard->applyUserSettings();
+    }
+    if (callerGuard)
+        callerGuard->saveSettings();
+    QMessageBox::information(callerGuard.data(), trST("Import Settings"),
                              trST("%1 settings were read and applied.").arg(n));
 }
 

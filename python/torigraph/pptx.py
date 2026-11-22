@@ -1027,7 +1027,10 @@ def _fetch_graph_ole_payload(
                     "contains the whole project instead."
                 )
             sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
-            session.save_project(sciprj_tmp, compress=False, snapshot=True)
+            try:
+                session.save_project(sciprj_tmp, compress=False, snapshot=True)
+            except TypeError:
+                session.save_project(sciprj_tmp, compress=False)
             proj_bytes = sciprj_tmp.read_bytes()
             cached_project_bytes = proj_bytes
     elif not per_graph_project:

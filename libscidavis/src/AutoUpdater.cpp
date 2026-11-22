@@ -77,6 +77,7 @@ constexpr const char *kSettingsKeyIncludePre = "AutoUpdate/IncludePreReleases";
 constexpr const char *kSettingsKeySkippedVer = "AutoUpdate/SkippedVersion";
 constexpr const char *kSettingsKeyAllowUnverified = "AutoUpdate/AllowUnverifiedInstall";
 constexpr const char *kSettingsKeyRequireSig = "AutoUpdate/RequireCodeSignature";
+constexpr const char *kSettingsKeyExpectedSigner = "AutoUpdate/ExpectedSignerSubject";
 constexpr const char *kDefaultReleasesPage = "https://github.com/kzykshmz/ToriGraph/releases";
 constexpr int kLiveCheckTimeoutMs = 10000;
 constexpr int kDownloadStallTimeoutMs = 30000;
@@ -461,11 +462,24 @@ void registerAutoUpdaterExtraTranslations()
             "安全のため自動インストールは行いません。\n\n"
             "検証済み SHA-256:\n%2\n\nリリースノート:\n%3\n\n"
             "「リリースページを開く」を押して GitHub の公式リリースページから手動で更新してください。");
+        reg("The downloaded update package (v%1) is not digitally signed with an Authenticode "
+            "certificate, so automatic installation is disabled for your safety.\n\n"
+            "Computed SHA-256 (unverified):\n%2\n\nRelease Notes:\n%3\n\n"
+            "Click \"Open Release Page\" to review and install the update manually from GitHub.",
+            "ダウンロードした更新パッケージ(v%1)に Authenticode 電子署名がないため、"
+            "安全のため自動インストールは行いません。\n\n"
+            "算出 SHA-256 (未検証):\n%2\n\nリリースノート:\n%3\n\n"
+            "「リリースページを開く」を押して GitHub の公式リリースページから手動で更新してください。");
         reg("The downloaded update package has an invalid or untrusted digital signature and was "
             "deleted for your safety.\n\n%1",
             "ダウンロードした更新パッケージの電子署名が不正または信頼できないため、"
             "安全のため削除しました。\n\n%1");
         reg("Digital signature verification failed.", "電子署名の検証に失敗しました。");
+        reg("Authenticode signer '%1' does not match expected signer '%2'.",
+            "Authenticode 署名者 '%1' が期待される署名者 '%2' と一致しません。");
+        reg("This release does not publish a SHA-256 checksum, so automatic installation is "
+            "blocked.",
+            "このリリースには SHA-256 チェックサムが公開されていないため、自動インストールはブロックされました。");
         reg("Blocked untrusted download URL: %1",
             "信頼できないダウンロード URL をブロックしました: %1");
         reg("Blocked untrusted update feed URL.",
@@ -559,10 +573,29 @@ bool atomicReplaceFile(const QString &partPath, const QString &destFilePath, QSt
     return true;
 }
 
+bool isSignablePackageFile(const QString &filePath)
+{
+    QString lower = filePath.trimmed().toLower();
+    if (lower.endsWith(QStringLiteral(".part")))
+        lower.chop(5);
+    return lower.endsWith(QStringLiteral(".exe")) || lower.endsWith(QStringLiteral(".msi"));
+}
+
 QString psSingleQuote(const QString &value)
 {
-    QString escaped = value;
-    escaped.replace(QLatin1Char('\''), QStringLiteral("''"));
+    QString escaped;
+    escaped.reserve(value.size() + 8);
+    for (int i = 0; i < value.size(); ++i) {
+        const QChar ch = value.at(i);
+        const ushort u = ch.unicode();
+        // PowerShell tokenizes ASCII ' plus Unicode U+2018..U+201B as single-quote delimiters.
+        if (u == 0x0027 || u == 0x2018 || u == 0x2019 || u == 0x201A || u == 0x201B) {
+            escaped.append(ch);
+            escaped.append(ch);
+        } else {
+            escaped.append(ch);
+        }
+    }
     return QLatin1Char('\'') + escaped + QLatin1Char('\'');
 }
 
@@ -1192,7 +1225,7 @@ void UpdateAvailableDialog::onDownloadFinished()
         return;
     }
 
-    // Verify SHA-256 checksum if published
+    // Verify SHA-256 checksum if published (or reject if unverified installs are disallowed)
     const bool verified = !d_info.expectedSha256.trimmed().isEmpty();
     if (verified) {
         if (!AutoUpdater::verifyFileSha256(d_partFilePath, d_info.expectedSha256)) {
@@ -1212,10 +1245,20 @@ void UpdateAvailableDialog::onDownloadFinished()
         }
         d_shaState = ShaBadgeState::Verified;
         updateShaBadgeStyle();
+    } else if (!AutoUpdater::allowUnverifiedInstall()) {
+        QFile::remove(d_partFilePath);
+        restoreButtonsAfterFailure();
+        const QString reason = tr("This release does not publish a SHA-256 checksum, so automatic "
+                                  "installation is blocked.");
+        d_lblProgressDetail->setText(reason);
+        AutoUpdater::showFailureWithReleasePage(this, tr("Security Verification Failed"), reason,
+                                                d_info.htmlUrl);
+        return;
     }
 
-    // Verify Authenticode signature (immediately reject tampered / untrusted signatures)
-    {
+    // Verify Authenticode signature for PE/MSI packages (.zip archives are verified on extracted
+    // executables inside the staged PowerShell script). Always reject tampered/invalid signatures.
+    if (isSignablePackageFile(d_finalPackagePath)) {
         QString sigErr;
         const AutoUpdater::CodeSignatureStatus sigStatus =
                 AutoUpdater::verifyFileCodeSignature(d_partFilePath, nullptr, &sigErr);
@@ -1270,51 +1313,89 @@ void UpdateAvailableDialog::restoreButtonsAfterFailure()
 
 void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
 {
-    QString sigErr;
-    const AutoUpdater::CodeSignatureStatus sigStatus =
-            AutoUpdater::verifyFileCodeSignature(d_finalPackagePath, nullptr, &sigErr);
-    if (sigStatus == AutoUpdater::CodeSignatureStatus::InvalidSignature) {
+    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
+            && !ApplicationWindow::isNonInteractiveContext(d_app);
+    const bool shaVerified = verified && !d_info.expectedSha256.trimmed().isEmpty()
+            && AutoUpdater::verifyFileSha256(d_finalPackagePath, d_info.expectedSha256);
+
+    if (!shaVerified && !AutoUpdater::allowUnverifiedInstall()) {
         QFile::remove(d_finalPackagePath);
         restoreButtonsAfterFailure();
-        QMessageBox::critical(
-                this, tr("Security Verification Failed"),
-                tr("The downloaded update package has an invalid or untrusted digital "
-                   "signature and was deleted for your safety.\n\n%1")
-                        .arg(sigErr));
+        const QString reason = tr("This release does not publish a SHA-256 checksum, so automatic "
+                                  "installation is blocked.");
+        if (interactiveGui) {
+            AutoUpdater::showFailureWithReleasePage(this, tr("Security Verification Failed"),
+                                                    reason, d_info.htmlUrl);
+        } else {
+            qWarning("%s", qPrintable(reason));
+        }
         return;
     }
 
     const QString actualSha = AutoUpdater::computeFileSha256(d_finalPackagePath);
-    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
-            && !ApplicationWindow::isNonInteractiveContext(d_app);
-    if (sigStatus == AutoUpdater::CodeSignatureStatus::Unsigned
-        && AutoUpdater::requireCodeSignature() && interactiveGui) {
-        restoreButtonsAfterFailure();
-        QString notesPreview = d_info.bodyMarkdown.trimmed();
-        if (notesPreview.isEmpty())
-            notesPreview = tr("No release notes provided for this version.");
-        else if (notesPreview.size() > 600)
-            notesPreview = notesPreview.left(600) + QStringLiteral("...");
 
-        const QUrl httpsReleasePage =
-                (d_info.htmlUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0
-                 && AutoUpdater::isAllowedUpdateUrl(d_info.htmlUrl))
-                ? d_info.htmlUrl
-                : QUrl(QString::fromLatin1(kDefaultReleasesPage));
-        const QString msg =
-                tr("The downloaded update package (v%1) is not digitally signed with an "
-                   "Authenticode certificate, so automatic installation is disabled for your "
-                   "safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
-                   "Click \"Open Release Page\" to review and install the update manually from "
-                   "GitHub.")
-                        .arg(d_info.version,
-                             actualSha.isEmpty() ? d_info.expectedSha256 : actualSha,
-                             notesPreview);
-        if (AutoUpdater::showFailureWithReleasePage(
-                    this, tr("Manual Update Required (Unsigned Package)"), msg, httpsReleasePage)) {
-            accept();
+    if (isSignablePackageFile(d_finalPackagePath)) {
+        QString sigErr;
+        const AutoUpdater::CodeSignatureStatus sigStatus =
+                AutoUpdater::verifyFileCodeSignature(d_finalPackagePath, nullptr, &sigErr);
+        if (sigStatus == AutoUpdater::CodeSignatureStatus::InvalidSignature) {
+            QFile::remove(d_finalPackagePath);
+            restoreButtonsAfterFailure();
+            if (interactiveGui) {
+                QMessageBox::critical(
+                        this, tr("Security Verification Failed"),
+                        tr("The downloaded update package has an invalid or untrusted digital "
+                           "signature and was deleted for your safety.\n\n%1")
+                                .arg(sigErr));
+            } else {
+                qWarning("Rejected update package with invalid signature: %s", qPrintable(sigErr));
+            }
+            return;
         }
-        return;
+        if (sigStatus == AutoUpdater::CodeSignatureStatus::Unsigned
+            && AutoUpdater::requireCodeSignature()) {
+            restoreButtonsAfterFailure();
+            if (!interactiveGui) {
+                QFile::remove(d_finalPackagePath);
+                qWarning("Rejected unsigned update package in non-interactive mode: %s",
+                         qPrintable(d_finalPackagePath));
+                return;
+            }
+            QString notesPreview = d_info.bodyMarkdown.trimmed();
+            if (notesPreview.isEmpty())
+                notesPreview = tr("No release notes provided for this version.");
+            else if (notesPreview.size() > 600)
+                notesPreview = notesPreview.left(600) + QStringLiteral("...");
+
+            const QUrl httpsReleasePage =
+                    (d_info.htmlUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive)
+                             == 0
+                     && AutoUpdater::isAllowedUpdateUrl(d_info.htmlUrl))
+                    ? d_info.htmlUrl
+                    : QUrl(QString::fromLatin1(kDefaultReleasesPage));
+            const QString displaySha = shaVerified
+                    ? d_info.expectedSha256.trimmed().toLower()
+                    : (actualSha.isEmpty() ? QStringLiteral("-") : actualSha);
+            const QString msg = shaVerified
+                    ? tr("The downloaded update package (v%1) is not digitally signed with an "
+                         "Authenticode certificate, so automatic installation is disabled for your "
+                         "safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
+                         "Click \"Open Release Page\" to review and install the update manually "
+                         "from GitHub.")
+                              .arg(d_info.version, displaySha, notesPreview)
+                    : tr("The downloaded update package (v%1) is not digitally signed with an "
+                         "Authenticode certificate, so automatic installation is disabled for your "
+                         "safety.\n\nComputed SHA-256 (unverified):\n%2\n\nRelease Notes:\n%3\n\n"
+                         "Click \"Open Release Page\" to review and install the update manually "
+                         "from GitHub.")
+                              .arg(d_info.version, displaySha, notesPreview);
+            if (AutoUpdater::showFailureWithReleasePage(
+                        this, tr("Manual Update Required (Unsigned Package)"), msg,
+                        httpsReleasePage)) {
+                accept();
+            }
+            return;
+        }
     }
 
     QString stageErr;
@@ -1323,12 +1404,13 @@ void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
     if (exeName.isEmpty())
         exeName = QStringLiteral("ToriGraph.exe");
 
-    const QString stageSha = !d_info.expectedSha256.trimmed().isEmpty()
+    const QString stageSha = shaVerified
             ? d_info.expectedSha256.trimmed()
-            : actualSha;
+            : (AutoUpdater::allowUnverifiedInstall() ? actualSha : QString());
     d_stagedScriptPath = AutoUpdater::writeWindowsStagingUpdaterScript(
             d_finalPackagePath, appDir, exeName, QCoreApplication::applicationPid(), true,
-            &stageErr, 60, stageSha);
+            &stageErr, 60, stageSha, AutoUpdater::requireCodeSignature(),
+            AutoUpdater::expectedSignerSubject());
     if (d_stagedScriptPath.isEmpty()) {
         restoreButtonsAfterFailure();
         AutoUpdater::showFailureWithReleasePage(this, tr("Update Staging Error"), stageErr,
@@ -1876,8 +1958,16 @@ bool AutoUpdater::verifyFileSha256(const QString &filePath, const QString &expec
 bool AutoUpdater::requireCodeSignature()
 {
     return ApplicationWindow::getSettings()
-            .value(QString::fromLatin1(kSettingsKeyRequireSig), true)
+            .value(QString::fromLatin1(kSettingsKeyRequireSig), false)
             .toBool();
+}
+
+QString AutoUpdater::expectedSignerSubject()
+{
+    return ApplicationWindow::getSettings()
+            .value(QString::fromLatin1(kSettingsKeyExpectedSigner))
+            .toString()
+            .trimmed();
 }
 
 AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
@@ -1897,55 +1987,109 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
 
 #ifdef Q_OS_WIN
     const std::wstring nativePath = QDir::toNativeSeparators(fi.absoluteFilePath()).toStdWString();
-    WINTRUST_FILE_INFO fileInfo = {};
-    fileInfo.cbStruct = sizeof(fileInfo);
-    fileInfo.pcwszFilePath = nativePath.c_str();
-    fileInfo.hFile = nullptr;
-    fileInfo.pgKnownSubject = nullptr;
+    auto runVerifyAttempt = [&](DWORD revokeChecks, DWORD provFlags, QString *outSimpleSubj,
+                                QString *outFullDn, DWORD *outLastErr) -> LONG {
+        if (outSimpleSubj)
+            outSimpleSubj->clear();
+        if (outFullDn)
+            outFullDn->clear();
+        WINTRUST_FILE_INFO fileInfo = {};
+        fileInfo.cbStruct = sizeof(fileInfo);
+        fileInfo.pcwszFilePath = nativePath.c_str();
+        fileInfo.hFile = nullptr;
+        fileInfo.pgKnownSubject = nullptr;
 
-    WINTRUST_DATA wtd = {};
-    wtd.cbStruct = sizeof(wtd);
-    wtd.pPolicyCallbackData = nullptr;
-    wtd.pSIPClientData = nullptr;
-    wtd.dwUIChoice = WTD_UI_NONE;
-    wtd.fdwRevocationChecks = WTD_REVOKE_NONE;
-    wtd.dwUnionChoice = WTD_CHOICE_FILE;
-    wtd.pFile = &fileInfo;
-    wtd.dwStateAction = WTD_STATEACTION_VERIFY;
-    wtd.hWVTStateData = nullptr;
-    wtd.pwszURLReference = nullptr;
-    wtd.dwProvFlags = WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL;
-    wtd.dwUIContext = 0;
+        WINTRUST_DATA wtd = {};
+        wtd.cbStruct = sizeof(wtd);
+        wtd.pPolicyCallbackData = nullptr;
+        wtd.pSIPClientData = nullptr;
+        wtd.dwUIChoice = WTD_UI_NONE;
+        wtd.fdwRevocationChecks = revokeChecks;
+        wtd.dwUnionChoice = WTD_CHOICE_FILE;
+        wtd.pFile = &fileInfo;
+        wtd.dwStateAction = WTD_STATEACTION_VERIFY;
+        wtd.hWVTStateData = nullptr;
+        wtd.pwszURLReference = nullptr;
+        wtd.dwProvFlags = provFlags;
+        wtd.dwUIContext = 0;
 
-    GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    const LONG status =
-            WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
-    const DWORD winLastErr = GetLastError();
+        GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        const LONG st = WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
+        if (outLastErr)
+            *outLastErr = GetLastError();
 
-    if (status == ERROR_SUCCESS && signerSubjectOut && wtd.hWVTStateData) {
-        if (CRYPT_PROVIDER_DATA *provData = WTHelperProvDataFromStateData(wtd.hWVTStateData)) {
-            if (CRYPT_PROVIDER_SGNR *provSigner =
-                        WTHelperGetProvSignerFromChain(provData, 0, FALSE, 0)) {
-                if (provSigner->pasCertChain && provSigner->csCertChain > 0
-                    && provSigner->pasCertChain[0].pCert) {
-                    wchar_t subjBuf[512] = {};
-                    const DWORD cch = CertGetNameStringW(
-                            provSigner->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0,
-                            nullptr, subjBuf, 512);
-                    if (cch > 1)
-                        *signerSubjectOut = QString::fromWCharArray(subjBuf).trimmed();
+        if (st == ERROR_SUCCESS && wtd.hWVTStateData) {
+            if (CRYPT_PROVIDER_DATA *provData = WTHelperProvDataFromStateData(wtd.hWVTStateData)) {
+                if (CRYPT_PROVIDER_SGNR *provSigner =
+                            WTHelperGetProvSignerFromChain(provData, 0, FALSE, 0)) {
+                    if (provSigner->pasCertChain && provSigner->csCertChain > 0
+                        && provSigner->pasCertChain[0].pCert) {
+                        PCCERT_CONTEXT pCert = provSigner->pasCertChain[0].pCert;
+                        wchar_t subjBuf[512] = {};
+                        const DWORD cch = CertGetNameStringW(pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                                                             0, nullptr, subjBuf, 512);
+                        if (cch > 1 && outSimpleSubj)
+                            *outSimpleSubj = QString::fromWCharArray(subjBuf).trimmed();
+
+                        wchar_t dnBuf[1024] = {};
+                        const DWORD dnCch = CertNameToStrW(X509_ASN_ENCODING, &pCert->pCertInfo->Subject,
+                                                           CERT_X500_NAME_STR, dnBuf, 1024);
+                        if (dnCch > 1 && outFullDn)
+                            *outFullDn = QString::fromWCharArray(dnBuf).trimmed();
+                    }
                 }
             }
         }
+
+        wtd.dwStateAction = WTD_STATEACTION_CLOSE;
+        WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
+        return st;
+    };
+
+    QString simpleSubject;
+    QString fullSubjectDn;
+    DWORD winLastErr = 0;
+
+    // 1) Fast cache-only whole-chain revocation check; 2) online revocation check if cache misses;
+    // 3) offline fallback ONLY when CRL/OCSP servers are unreachable (never on CRYPT_E_REVOKED).
+    LONG status = runVerifyAttempt(WTD_REVOKE_WHOLECHAIN,
+                                   WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL,
+                                   &simpleSubject, &fullSubjectDn, &winLastErr);
+    HRESULT hr = static_cast<HRESULT>(status);
+    if (hr == CRYPT_E_REVOCATION_OFFLINE || hr == CERT_E_REVOCATION_FAILURE) {
+        status = runVerifyAttempt(WTD_REVOKE_WHOLECHAIN,
+                                  WTD_SAFER_FLAG | WTD_REVOCATION_CHECK_CHAIN,
+                                  &simpleSubject, &fullSubjectDn, &winLastErr);
+        hr = static_cast<HRESULT>(status);
+    }
+    if (hr == CRYPT_E_REVOCATION_OFFLINE || hr == CERT_E_REVOCATION_FAILURE) {
+        status = runVerifyAttempt(WTD_REVOKE_NONE,
+                                  WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL,
+                                  &simpleSubject, &fullSubjectDn, &winLastErr);
+        hr = static_cast<HRESULT>(status);
     }
 
-    wtd.dwStateAction = WTD_STATEACTION_CLOSE;
-    WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
-
-    if (status == ERROR_SUCCESS)
+    if (status == ERROR_SUCCESS) {
+        if (signerSubjectOut)
+            *signerSubjectOut = !simpleSubject.isEmpty() ? simpleSubject : fullSubjectDn;
+        const QString expectedSubj = expectedSignerSubject();
+        if (!expectedSubj.isEmpty()) {
+            const bool matchSimple = !simpleSubject.isEmpty()
+                    && simpleSubject.contains(expectedSubj, Qt::CaseInsensitive);
+            const bool matchDn = !fullSubjectDn.isEmpty()
+                    && fullSubjectDn.contains(expectedSubj, Qt::CaseInsensitive);
+            if (!matchSimple && !matchDn) {
+                if (errOut) {
+                    const QString actualDisp = !fullSubjectDn.isEmpty() ? fullSubjectDn : simpleSubject;
+                    *errOut = tr("Authenticode signer '%1' does not match expected signer '%2'.")
+                                      .arg(actualDisp, expectedSubj);
+                }
+                return CodeSignatureStatus::InvalidSignature;
+            }
+        }
         return CodeSignatureStatus::Valid;
+    }
 
-    const HRESULT hr = static_cast<HRESULT>(status);
     if (hr == TRUST_E_NOSIGNATURE || hr == TRUST_E_SUBJECT_FORM_UNKNOWN
         || hr == TRUST_E_PROVIDER_UNKNOWN) {
         if (winLastErr == static_cast<DWORD>(TRUST_E_BAD_DIGEST)
@@ -1981,7 +2125,9 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
                                                       bool relaunch,
                                                       QString *errOut,
                                                       int waitTimeoutSec,
-                                                      const QString &expectedSha256)
+                                                      const QString &expectedSha256,
+                                                      bool requireSignature,
+                                                      const QString &expectedSigner)
 {
     const QString pkgPath = QDir::toNativeSeparators(downloadedFilePath.trimmed());
     const QString installDir = QDir::toNativeSeparators(targetInstallDir.trimmed());
@@ -2028,17 +2174,81 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
                                                                    : QStringLiteral("false"));
     psScript += QStringLiteral("$StagingRoot = %1\r\n").arg(psSingleQuote(nativeStagingDir));
     psScript += QStringLiteral("$ExpectedSha256 = %1\r\n").arg(psSingleQuote(normalizedSha));
+    psScript += QStringLiteral("$RequireSignature = $%1\r\n")
+                        .arg(requireSignature ? QStringLiteral("true") : QStringLiteral("false"));
+    psScript += QStringLiteral("$ExpectedSignerSubject = %1\r\n")
+                        .arg(psSingleQuote(expectedSigner.trimmed()));
     psScript += QStringLiteral("$MsiExecPath = %1\r\n").arg(psSingleQuote(msiExecAbs));
     psScript += QStringLiteral("$ExplorerExePath = %1\r\n").arg(psSingleQuote(explorerExeAbs));
     psScript += QStringLiteral("$WaitTimeoutSec = %1\r\n\r\n").arg(qMax(1, waitTimeoutSec));
 
     psScript += QStringLiteral(
+            "$OrigDownloadedFile = $DownloadedFile\r\n"
             "$TargetExe = [System.IO.Path]::Combine($TargetInstallDir, $ExeName)\r\n"
             "$BackupExe = \"$TargetExe.rollback.bak\"\r\n"
             "$LogFile = [System.IO.Path]::Combine($StagingRoot, 'apply_torigraph_update.log')\r\n"
-            "$ExtractDir = [System.IO.Path]::Combine($StagingRoot, ('extract_' + [Guid]::NewGuid().ToString('N')))\r\n"
-            "$BackupDir = [System.IO.Path]::Combine($StagingRoot, ('rollback_' + [Guid]::NewGuid().ToString('N')))\r\n"
-            "$SecureStageDir = ''\r\n\r\n"
+            "$SecureStageDir = ''\r\n"
+            "$ExtractDir = ''\r\n"
+            "$BackupDir = ''\r\n\r\n"
+            "function Invoke-RelaunchTargetExe {\r\n"
+            "    if ($Relaunch -and (Test-Path -LiteralPath $TargetExe -PathType Leaf)) {\r\n"
+            "        $elevated = $false\r\n"
+            "        try { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }\r\n"
+            "        if ($elevated) {\r\n"
+            "            # Started elevated (install folder needed admin rights): let Explorer start\r\n"
+            "            # ToriGraph so it runs with the user's normal rights again.\r\n"
+            "            Start-Process -FilePath $ExplorerExePath -ArgumentList ('\"' + $TargetExe + '\"')\r\n"
+            "        } else {\r\n"
+            "            Start-Process -FilePath $TargetExe -WorkingDirectory $TargetInstallDir\r\n"
+            "        }\r\n"
+            "    }\r\n"
+            "}\r\n\r\n"
+            "function Test-AuthenticodeFile([string]$FilePath, [bool]$MustBeSigned, [bool]$CheckSubject) {\r\n"
+            "    $isPe = $false\r\n"
+            "    try {\r\n"
+            "        $fs = [System.IO.File]::OpenRead($FilePath)\r\n"
+            "        try {\r\n"
+            "            if ($fs.Length -ge 2) {\r\n"
+            "                $b0 = $fs.ReadByte()\r\n"
+            "                $b1 = $fs.ReadByte()\r\n"
+            "                if ($b0 -eq 0x4D -and $b1 -eq 0x5A) { $isPe = $true }\r\n"
+            "            }\r\n"
+            "        } finally {\r\n"
+            "            $fs.Dispose()\r\n"
+            "        }\r\n"
+            "    } catch { }\r\n"
+            "    $sig = Get-AuthenticodeSignature -LiteralPath $FilePath\r\n"
+            "    if ($null -eq $sig) {\r\n"
+            "        if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "            Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "        throw \"Could not inspect Authenticode signature of $FilePath\"\r\n"
+            "    }\r\n"
+            "    if ($sig.Status -eq 'Valid') {\r\n"
+            "        if ($CheckSubject -and $ExpectedSignerSubject.Length -gt 0) {\r\n"
+            "            $subj = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }\r\n"
+            "            if ($subj.IndexOf($ExpectedSignerSubject, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {\r\n"
+            "                if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "                    Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "                }\r\n"
+            "                throw \"Authenticode signer '$subj' does not match expected '$ExpectedSignerSubject' on $FilePath\"\r\n"
+            "            }\r\n"
+            "        }\r\n"
+            "        return\r\n"
+            "    }\r\n"
+            "    if (($isPe -or ($null -ne $sig.SignerCertificate)) -and ($sig.Status -ne 'NotSigned')) {\r\n"
+            "        if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "            Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "        throw \"Invalid or untrusted Authenticode signature ($($sig.Status)) on $FilePath\"\r\n"
+            "    }\r\n"
+            "    if ($MustBeSigned) {\r\n"
+            "        if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "            Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "        throw \"Required Authenticode signature is missing ($($sig.Status)) on $FilePath\"\r\n"
+            "    }\r\n"
+            "}\r\n\r\n"
             "# (1) Wait for ToriGraph (PID $WaitForPid and any process running $TargetExe) to exit.\r\n"
             "#     If it is still running after $WaitTimeoutSec s, abort WITHOUT touching the install.\r\n"
             "function Get-BlockingProcess {\r\n"
@@ -2078,6 +2288,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "}\r\n"
             "$SecureStageDir = [System.IO.Path]::Combine($TargetInstallDir, ('.update_staging_' + [Guid]::NewGuid().ToString('N')))\r\n"
             "[System.IO.Directory]::CreateDirectory($SecureStageDir) | Out-Null\r\n"
+            "$ExtractDir = [System.IO.Path]::Combine($SecureStageDir, 'extract')\r\n"
+            "$BackupDir = [System.IO.Path]::Combine($SecureStageDir, 'rollback')\r\n"
             "$StagedPkg = [System.IO.Path]::Combine($SecureStageDir, [System.IO.Path]::GetFileName($DownloadedFile))\r\n"
             "Copy-Item -LiteralPath $DownloadedFile -Destination $StagedPkg -Force\r\n"
             "$DownloadedFile = $StagedPkg\r\n"
@@ -2087,6 +2299,9 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    if ((-not $actualHash) -or ($actualHash.ToLowerInvariant() -ne $ExpectedSha256.ToLowerInvariant())) {\r\n"
             "        $shaMsg = \"SHA-256 verification failed before install (expected $ExpectedSha256, got $actualHash). Update aborted.\"\r\n"
             "        if (Test-Path -LiteralPath $SecureStageDir) { Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue }\r\n"
+            "        if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "            Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
             "        try { Set-Content -LiteralPath $LogFile -Value $shaMsg -Encoding UTF8 } catch { }\r\n"
             "        if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
             "            try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($shaMsg, 'ToriGraph Security Error') } catch { }\r\n"
@@ -2130,6 +2345,20 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            throw \"Extracted update archive contains no files: $DownloadedFile\"\r\n"
             "        }\r\n"
             "        $allNodes = @(Get-ChildItem -LiteralPath $copyRoot -Recurse -Force)\r\n"
+            "        $candExe = [System.IO.Path]::Combine($copyRoot, $ExeName)\r\n"
+            "        if (Test-Path -LiteralPath $candExe -PathType Leaf) {\r\n"
+            "            Test-AuthenticodeFile -FilePath $candExe -MustBeSigned $RequireSignature -CheckSubject $true\r\n"
+            "        } elseif ($RequireSignature) {\r\n"
+            "            if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
+            "                Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "            }\r\n"
+            "            throw \"Required signed executable '$ExeName' not found inside update archive.\"\r\n"
+            "        }\r\n"
+            "        foreach ($exeNode in $allNodes) {\r\n"
+            "            if ((-not $exeNode.PSIsContainer) -and ([System.IO.Path]::GetExtension($exeNode.Name).ToLowerInvariant() -eq '.exe') -and ($exeNode.FullName -ine $candExe)) {\r\n"
+            "                Test-AuthenticodeFile -FilePath $exeNode.FullName -MustBeSigned $false -CheckSubject $false\r\n"
+            "            }\r\n"
+            "        }\r\n"
             "        foreach ($node in $allNodes) {\r\n"
             "            $rel = $node.FullName.Substring($copyRoot.Length).TrimStart('\\', '/')\r\n"
             "            if (-not $rel) { continue }\r\n"
@@ -2176,11 +2405,13 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            throw \"Updated executable not found in target directory: $TargetExe\"\r\n"
             "        }\r\n"
             "    } elseif ($ext -eq '.msi') {\r\n"
+            "        Test-AuthenticodeFile -FilePath $DownloadedFile -MustBeSigned $RequireSignature -CheckSubject $true\r\n"
             "        # Windows PowerShell 5.1 joins -ArgumentList with spaces without quoting, so\r\n"
             "        # paths that contain spaces are quoted here.\r\n"
             "        $p = Start-Process -FilePath $MsiExecPath -ArgumentList @('/i', ('\"' + $DownloadedFile + '\"'), '/passive', '/norestart') -Wait -PassThru\r\n"
             "        if ($p.ExitCode -ne 0) { throw \"MSI exited with code $($p.ExitCode)\" }\r\n"
             "    } elseif ($ext -eq '.exe') {\r\n"
+            "        Test-AuthenticodeFile -FilePath $DownloadedFile -MustBeSigned $RequireSignature -CheckSubject $true\r\n"
             "        $leaf = [System.IO.Path]::GetFileName($DownloadedFile).ToLowerInvariant()\r\n"
             "        if ($leaf -match 'setup|install') {\r\n"
             "            # Quote /DIR (5.1 does not); drop a trailing backslash so it cannot escape the quote.\r\n"
@@ -2204,44 +2435,72 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    }\r\n"
             "} catch {\r\n"
             "    $errMsg = $_.Exception.Message\r\n"
+            "    $rollbackOk = $true\r\n"
+            "    $rollbackErrors = New-Object System.Collections.Generic.List[string]\r\n"
             "    foreach ($cf in $CreatedFiles) {\r\n"
             "        if (Test-Path -LiteralPath $cf -PathType Leaf) {\r\n"
-            "            Remove-Item -LiteralPath $cf -Force -ErrorAction SilentlyContinue\r\n"
+            "            try {\r\n"
+            "                Remove-Item -LiteralPath $cf -Force -ErrorAction Stop\r\n"
+            "            } catch {\r\n"
+            "                $rollbackOk = $false\r\n"
+            "                $rollbackErrors.Add(\"remove ${cf}: $($_.Exception.Message)\")\r\n"
+            "            }\r\n"
             "        }\r\n"
             "    }\r\n"
             "    foreach ($rel in $BackedUpRelPaths) {\r\n"
             "        $bakPath = [System.IO.Path]::Combine($BackupDir, $rel)\r\n"
             "        $destPath = [System.IO.Path]::Combine($TargetInstallDir, $rel)\r\n"
             "        if (Test-Path -LiteralPath $bakPath -PathType Leaf) {\r\n"
-            "            $destParent = [System.IO.Path]::GetDirectoryName($destPath)\r\n"
-            "            if ($destParent -and !(Test-Path -LiteralPath $destParent)) {\r\n"
-            "                [System.IO.Directory]::CreateDirectory($destParent) | Out-Null\r\n"
+            "            try {\r\n"
+            "                $destParent = [System.IO.Path]::GetDirectoryName($destPath)\r\n"
+            "                if ($destParent -and !(Test-Path -LiteralPath $destParent)) {\r\n"
+            "                    [System.IO.Directory]::CreateDirectory($destParent) | Out-Null\r\n"
+            "                }\r\n"
+            "                Copy-Item -LiteralPath $bakPath -Destination $destPath -Force -ErrorAction Stop\r\n"
+            "            } catch {\r\n"
+            "                $rollbackOk = $false\r\n"
+            "                $rollbackErrors.Add(\"restore ${destPath}: $($_.Exception.Message)\")\r\n"
             "            }\r\n"
-            "            Copy-Item -LiteralPath $bakPath -Destination $destPath -Force -ErrorAction SilentlyContinue\r\n"
+            "        } else {\r\n"
+            "            $rollbackOk = $false\r\n"
+            "            $rollbackErrors.Add(\"missing backup for ${destPath}\")\r\n"
             "        }\r\n"
             "    }\r\n"
             "    for ($idx = $CreatedDirs.Count - 1; $idx -ge 0; $idx--) {\r\n"
             "        $cd = $CreatedDirs[$idx]\r\n"
             "        if (Test-Path -LiteralPath $cd -PathType Container) {\r\n"
-            "            Remove-Item -LiteralPath $cd -Force -ErrorAction SilentlyContinue\r\n"
+            "            try { Remove-Item -LiteralPath $cd -Force -ErrorAction Stop } catch { }\r\n"
             "        }\r\n"
             "    }\r\n"
             "    if (Test-Path -LiteralPath $BackupExe) {\r\n"
-            "        Copy-Item -LiteralPath $BackupExe -Destination $TargetExe -Force -ErrorAction SilentlyContinue\r\n"
-            "        Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue\r\n"
+            "        try {\r\n"
+            "            Copy-Item -LiteralPath $BackupExe -Destination $TargetExe -Force -ErrorAction Stop\r\n"
+            "            Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue\r\n"
+            "        } catch {\r\n"
+            "            $rollbackOk = $false\r\n"
+            "            $rollbackErrors.Add(\"restore ${TargetExe}: $($_.Exception.Message)\")\r\n"
+            "        }\r\n"
             "    }\r\n"
-            "    $rbReport = \"ToriGraph update failed and previous installation files were rolled back: $errMsg\"\r\n"
+            "    if ($rollbackOk) {\r\n"
+            "        $rbReport = \"ToriGraph update failed and previous installation files were rolled back: $errMsg\"\r\n"
+            "    } else {\r\n"
+            "        $rbDetail = ($rollbackErrors -join '; ')\r\n"
+            "        $rbReport = \"ToriGraph update failed AND rollback encountered errors ($rbDetail). Original error: $errMsg\"\r\n"
+            "    }\r\n"
             "    try { Set-Content -LiteralPath $LogFile -Value $rbReport -Encoding UTF8 } catch { }\r\n"
             "    if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
             "        try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($rbReport, 'ToriGraph Update Failed') } catch { }\r\n"
             "    }\r\n"
             "    [Console]::Error.WriteLine($rbReport)\r\n"
+            "    if ($rollbackOk -and $Relaunch -and (Test-Path -LiteralPath $TargetExe -PathType Leaf)) {\r\n"
+            "        try { Invoke-RelaunchTargetExe } catch { }\r\n"
+            "    }\r\n"
             "    throw\r\n"
             "} finally {\r\n"
-            "    if (Test-Path -LiteralPath $ExtractDir) {\r\n"
+            "    if ($ExtractDir -and (Test-Path -LiteralPath $ExtractDir)) {\r\n"
             "        Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
-            "    if (Test-Path -LiteralPath $BackupDir) {\r\n"
+            "    if ($BackupDir -and (Test-Path -LiteralPath $BackupDir)) {\r\n"
             "        Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
             "    if ($SecureStageDir -and (Test-Path -LiteralPath $SecureStageDir)) {\r\n"
@@ -2249,17 +2508,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    }\r\n"
             "}\r\n\r\n"
             "# (5) Relaunch ToriGraph.exe if requested\r\n"
-            "if ($Relaunch -and (Test-Path -LiteralPath $TargetExe)) {\r\n"
-            "    $elevated = $false\r\n"
-            "    try { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }\r\n"
-            "    if ($elevated) {\r\n"
-            "        # Started elevated (install folder needed admin rights): let Explorer start\r\n"
-            "        # ToriGraph so it runs with the user's normal rights again.\r\n"
-            "        Start-Process -FilePath $ExplorerExePath -ArgumentList ('\"' + $TargetExe + '\"')\r\n"
-            "    } else {\r\n"
-            "        Start-Process -FilePath $TargetExe -WorkingDirectory $TargetInstallDir\r\n"
-            "    }\r\n"
-            "}\r\n");
+            "Invoke-RelaunchTargetExe\r\n");
 
     QFile psFile(ps1Path);
     if (!psFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -2437,6 +2686,63 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
                                   .arg(QDir::toNativeSeparators(scriptPath)),
                 releasePage);
         return false;
+    }
+
+    // Enforce SHA-256 & Authenticode policy before closing ToriGraph or elevating (UAC).
+    {
+        QFile sf(scriptPath);
+        QString scriptText;
+        if (sf.open(QIODevice::ReadOnly)) {
+            QByteArray raw = sf.readAll();
+            if (raw.startsWith("\xEF\xBB\xBF"))
+                raw.remove(0, 3);
+            scriptText = QString::fromUtf8(raw);
+            sf.close();
+        }
+        static const QRegularExpression shaRe(
+                QStringLiteral("^\\$ExpectedSha256\\s*=\\s*'([^']*)'"),
+                QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch shaMatch = shaRe.match(scriptText);
+        const QString scriptSha =
+                shaMatch.hasMatch() ? normalizeSha256Token(shaMatch.captured(1)) : QString();
+        if (!allowUnverifiedInstall() && scriptSha.isEmpty()) {
+            showFailureWithReleasePage(
+                    app, tr("Security Verification Failed"),
+                    tr("This release does not publish a SHA-256 checksum, so automatic "
+                       "installation is blocked."),
+                    releasePage);
+            return false;
+        }
+
+        static const QRegularExpression pkgRe(
+                QStringLiteral("^\\$DownloadedFile\\s*=\\s*'(.*)'\\s*$"),
+                QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch pkgMatch = pkgRe.match(scriptText);
+        if (pkgMatch.hasMatch()) {
+            QString stagedPkg = pkgMatch.captured(1);
+            stagedPkg.replace(QStringLiteral("''"), QStringLiteral("'"));
+            for (ushort u : { ushort(0x2018), ushort(0x2019), ushort(0x201A), ushort(0x201B) }) {
+                const QString one = QString(QChar(u));
+                stagedPkg.replace(one + one, one);
+            }
+            if (!stagedPkg.isEmpty() && QFileInfo::exists(stagedPkg)
+                && isSignablePackageFile(stagedPkg)) {
+                QString sigErr;
+                const CodeSignatureStatus sigStatus =
+                        verifyFileCodeSignature(stagedPkg, nullptr, &sigErr);
+                if (sigStatus == CodeSignatureStatus::InvalidSignature
+                    || (sigStatus == CodeSignatureStatus::Unsigned && requireCodeSignature())) {
+                    if (sigStatus == CodeSignatureStatus::InvalidSignature)
+                        QFile::remove(stagedPkg);
+                    showFailureWithReleasePage(app, tr("Security Verification Failed"),
+                                               sigErr.isEmpty()
+                                                       ? tr("Digital signature verification failed.")
+                                                       : sigErr,
+                                               releasePage);
+                    return false;
+                }
+            }
+        }
     }
     const QString installDir = QCoreApplication::applicationDirPath();
     const bool elevate = !isDirectoryWritable(installDir);
@@ -2893,10 +3199,11 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
         }
     }
 
-    {
+    if (isSignablePackageFile(destFilePath)) {
         QString sigErr;
         const CodeSignatureStatus sigStatus = verifyFileCodeSignature(partPath, nullptr, &sigErr);
-        if (sigStatus == CodeSignatureStatus::InvalidSignature) {
+        if (sigStatus == CodeSignatureStatus::InvalidSignature
+            || (sigStatus == CodeSignatureStatus::Unsigned && requireCodeSignature())) {
             QFile::remove(partPath);
             if (errOut)
                 *errOut = sigErr;

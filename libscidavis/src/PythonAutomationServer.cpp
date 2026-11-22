@@ -11233,50 +11233,13 @@ void confirmUnsavedProjectBeforeReset(PythonAutomationServer *server, Applicatio
     if (nonInteractive)
         return;
 
-    // Interactive GUI session with unsaved changes and no explicit force=True: ask the user.
-    struct ScopedInteractiveRestore
-    {
-        QCoreApplication *qa;
-        QVariant prev;
-        explicit ScopedInteractiveRestore(QCoreApplication *app)
-            : qa(app), prev(app ? app->property("torigraph_noninteractive") : QVariant())
-        {
-            if (qa)
-                qa->setProperty("torigraph_noninteractive", false);
-        }
-        ~ScopedInteractiveRestore()
-        {
-            if (qa)
-                qa->setProperty("torigraph_noninteractive", prev);
-        }
-    } restoreInteractive(QCoreApplication::instance());
-
-    const QString prompt =
-            ApplicationWindow::tr("Save changes to project: <p><b> %1 </b> ?")
-                    .arg(d_app->projectname);
-    QMessageBox box(QMessageBox::Information, ApplicationWindow::tr("ToriGraph"), prompt,
-                    QMessageBox::NoButton, d_app);
-    QPushButton *saveBtn =
-            box.addButton(ApplicationWindow::tr("&Save"), QMessageBox::AcceptRole);
-    QPushButton *discardBtn =
-            box.addButton(ApplicationWindow::tr("Do&n't Save"), QMessageBox::DestructiveRole);
-    QPushButton *cancelBtn =
-            box.addButton(ApplicationWindow::tr("Cancel"), QMessageBox::RejectRole);
-    box.setDefaultButton(saveBtn);
-    box.setEscapeButton(cancelBtn);
-    box.exec();
-    QAbstractButton *clicked = box.clickedButton();
-    if (clicked == saveBtn) {
-        if (!d_app->saveProject()) {
-            throw RpcDispatchException(
-                    -32002,
-                    QStringLiteral("Project reset cancelled because unsaved changes were not saved."));
-        }
-    } else if (clicked != discardBtn) {
-        throw RpcDispatchException(
-                -32002,
-                QStringLiteral("Operation cancelled by user to protect unsaved project changes."));
-    }
+    // Never spin a nested QMessageBox::exec() event loop inside RPC dispatch: immediately
+    // reject unsaved interactive resets unless force=True was explicitly specified.
+    throw RpcDispatchException(
+            -32002,
+            QStringLiteral("Current project '%1' has unsaved changes. Save first or pass "
+                           "force=True.")
+                    .arg(d_app->projectname));
 }
 
 bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindow *d_app,
@@ -11877,7 +11840,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(
                     QStringLiteral("Output project 'path' is an existing directory: %1").arg(finalPath));
 
-        sanitizeAllProjectFunctionCurves(d_app);
+        if (!snapshot)
+            sanitizeAllProjectFunctionCurves(d_app);
 
         // Same safe path as File > Save: write "<name>.new", commit it, then swap it in and
         // keep the previous version as "<name>~" (".gz" goes through a scratch file). The

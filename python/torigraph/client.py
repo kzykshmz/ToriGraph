@@ -699,13 +699,13 @@ def _resolve_tcp_auth_token(
         return str(explicit_token).strip()
     if query_token is not None and str(query_token).strip():
         return str(query_token).strip()
-    env_tok = os.environ.get("TORIGRAPH_RPC_TOKEN", "").strip()
-    if env_tok:
-        return env_tok
     if _is_loopback_host(host):
         file_tok = _read_local_tcp_token_file(port)
         if file_tok:
             return file_tok
+    env_tok = os.environ.get("TORIGRAPH_RPC_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
     return ""
 
 
@@ -751,15 +751,18 @@ class _TcpTransport:
             self.close()
             raise
         if isinstance(auth_resp, Mapping) and auth_resp.get("error") is not None:
-            self.close()
             err = auth_resp["error"]
-            if isinstance(err, Mapping):
-                raise RpcError(
-                    int(err.get("code", -32001)),
-                    str(err.get("message", "Unauthorized: rpc.auth required")),
-                    err.get("data"),
-                )
-            raise RpcError(-32001, str(err))
+            err_code = int(err.get("code", -32001)) if isinstance(err, Mapping) else -32001
+            # Legacy servers predating rpc.auth reply -32601 Method not found and stay open.
+            if err_code != -32601:
+                self.close()
+                if isinstance(err, Mapping):
+                    raise RpcError(
+                        err_code,
+                        str(err.get("message", "Unauthorized: rpc.auth required")),
+                        err.get("data"),
+                    )
+                raise RpcError(-32001, str(err))
 
     @property
     def endpoint(self) -> str:
