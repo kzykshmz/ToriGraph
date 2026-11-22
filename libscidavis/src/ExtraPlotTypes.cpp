@@ -28,11 +28,13 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QElapsedTimer>
 #include <QFontMetricsF>
@@ -47,6 +49,7 @@
 
 #include <qwt_plot_grid.h>
 #include <qwt_plot_item.h>
+#include <qwt_plot_layout.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
@@ -133,7 +136,15 @@ void registerE11Translations()
             "0 以下の値 %1 個を除外しました(対数正規プロットには正の値が必要です)。");
         reg("Cumulative probability, F (%)", "累積確率 F (%)");
         reg("Cumulative (%)", "累積 (%)");
-        reg("Count", "度数");
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("ExtraPlotTypes"), QStringLiteral("Count"),
+                QString::fromUtf8("度数"));
+        reg("Add Error Band", "エラーバンドを追加");
+        reg("Automatic (from data minimum)", "自動 (データ最小値から開始)");
+        reg("Too many bins (at most 10,000); use a larger bin width.",
+            "ビンが多すぎます(最大 10,000)。ビン幅を大きくしてください。");
+        reg("Lognormal fit", "対数正規フィット");
+        reg("Gumbel fit", "Gumbel フィット");
         // E11b: 2D density and pole figure
         reg("2D &Density (2D Histogram)...", "2 次元密度図(2 次元ヒストグラム)(&D)...");
         reg("2D Density (2D Histogram)", "2 次元密度図(2 次元ヒストグラム)");
@@ -159,6 +170,18 @@ void registerE11Translations()
         reg("Alpha (tilt) column:", "α(傾き)の列:");
         reg("Beta (rotation) column:", "β(回転)の列:");
         reg("Intensity column:", "強度の列:");
+        reg("Alpha range (deg):", "α 範囲 (°):");
+        reg("Beta range (deg):", "β 範囲 (°):");
+        reg("Sample reference axes:", "試料基準軸ラベル:");
+        reg("RD / TD (Rolled sheet)", "RD / TD (圧延材)");
+        reg("ED / TD (Extruded)", "ED / TD (押出材)");
+        reg("LD / TD (Longitudinal / Transverse)", "LD / TD (長手 / 横方向)");
+        reg("Custom...", "カスタム...");
+        reg("Custom axis labels:", "カスタム軸ラベル:");
+        reg("Primary axis direction:", "主基準軸の向き:");
+        reg("Top (secondary right)", "上 (副軸は右)");
+        reg("Right (secondary top)", "右 (副軸は上)");
+        reg("Show 30° and 60° tilt circles", "30°・60° 補助同心円を表示");
         reg("Projection:", "投影:");
         reg("Equal-area (Schmidt)", "等面積(Schmidt)");
         reg("Equal-angle (Wulff)", "等角(Wulff)");
@@ -172,7 +195,7 @@ void registerE11Translations()
         reg("Contour levels:", "等強度線の本数:");
         reg("Label (e.g. (111)):", "ラベル(例: (111)):");
         reg("Matrix: rows = alpha (Y coordinates), columns = beta (X coordinates)",
-            "行列: 行 = α(Y 座標)、列 = β(X 座標)");
+            "行列: 行 = α(傾き)、列 = β(回転)");
         reg("Intensity", "強度");
         reg("The pole figure needs numeric alpha, beta and intensity columns.",
             "極点図には数値の α・β・強度の列が必要です。");
@@ -189,6 +212,12 @@ QString trE11(const char *s)
 {
     registerE11Translations();
     return QObject::tr(s);
+}
+
+QString trE11Count()
+{
+    registerE11Translations();
+    return QCoreApplication::translate("ExtraPlotTypes", "Count");
 }
 
 bool isHeadless(const ApplicationWindow *app)
@@ -228,17 +257,25 @@ bool readNumber(const Column *col, int row, double &val)
     return true;
 }
 
-QString columnAxisTitle(Column *c)
+QString columnAxisTitle(Column *c, const Graph *g = nullptr)
 {
     if (!c)
         return QString();
+    const Column::UnitFormat fmt = g ? g->axisUnitFormat() : Column::UnitFormat::ISIJSlash;
+    if (!c->longName().trimmed().isEmpty())
+        return c->formattedAxisTitle(fmt);
     QString t = c->comment().section(QLatin1Char('\n'), 0, 0).trimmed();
-    if (t.isEmpty())
-        t = c->name();
-    const QString u = c->units().trimmed();
-    if (!u.isEmpty() && !t.contains(u))
-        t += QStringLiteral(" (") + u + QStringLiteral(")");
-    return t;
+    if (!t.isEmpty()) {
+        const QString u = c->units().trimmed();
+        if (!u.isEmpty() && !t.contains(u)) {
+            if (fmt == Column::UnitFormat::ISIJSlash)
+                t += QStringLiteral(" / ") + u;
+            else
+                t += QStringLiteral(" (") + u + QStringLiteral(")");
+        }
+        return t;
+    }
+    return c->formattedAxisTitle(fmt);
 }
 
 QList<Table *> projectTables(ApplicationWindow *app)
@@ -253,6 +290,46 @@ QList<Table *> projectTables(ApplicationWindow *app)
     return list;
 }
 
+Table *resolveSourceTableFromGraph(ApplicationWindow *app, Graph *g)
+{
+    if (!g)
+        return nullptr;
+    const QString selTitle = g->selectedCurveTitle();
+    if (!selTitle.isEmpty()) {
+        if (auto *dc = dynamic_cast<DataCurve *>(g->curve(selTitle))) {
+            if (dc->table())
+                return dc->table();
+        }
+    }
+    Table *fallbackTbl = nullptr;
+    for (int i = 0; i < g->curves(); ++i) {
+        auto *dc = dynamic_cast<DataCurve *>(g->curve(i));
+        if (!dc || !dc->table())
+            continue;
+        const QString tName = dc->table()->name();
+        if (!tName.startsWith(QLatin1String("GadgetFit_")))
+            return dc->table();
+        if (!fallbackTbl)
+            fallbackTbl = dc->table();
+    }
+    if (fallbackTbl)
+        return fallbackTbl;
+    if (app) {
+        for (const QString &kind : { QStringLiteral("ToriDensity2D"), QStringLiteral("ToriPoleFigure") }) {
+            const QString tag = ExtraPlotTypes::graphTag(g, kind);
+            if (!tag.isEmpty()) {
+                static const QRegularExpression rxTbl(QStringLiteral("table=\"([^\"]+)\""));
+                const QRegularExpressionMatch m = rxTbl.match(tag);
+                if (m.hasMatch()) {
+                    if (Table *t = app->table(m.captured(1)))
+                        return t;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
 Table *activeTable(ApplicationWindow *app)
 {
     if (!app)
@@ -260,9 +337,23 @@ Table *activeTable(ApplicationWindow *app)
     if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
         if (sub->inherits("Table"))
             return static_cast<Table *>(sub);
-        if (QWidget *w = sub->widget())
+        if (QWidget *w = sub->widget()) {
             if (w->inherits("Table"))
                 return static_cast<Table *>(w);
+        }
+        MultiLayer *ml = nullptr;
+        if (sub->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub);
+        else if (sub->widget() && sub->widget()->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub->widget());
+        if (ml) {
+            if (Table *gt = resolveSourceTableFromGraph(app, ml->activeGraph()))
+                return gt;
+            for (Graph *lg : ml->layersList()) {
+                if (Table *gt = resolveSourceTableFromGraph(app, lg))
+                    return gt;
+            }
+        }
     }
     const QList<Table *> t = projectTables(app);
     return t.isEmpty() ? nullptr : t.first();
@@ -628,13 +719,18 @@ void ExtraPlotTypes::showErrorBandDialog(ApplicationWindow *app)
     const QString minusCol =
             cbMode->currentIndex() == 1 ? cbMinus->currentData().toString() : QString();
     const int alpha = qRound(sbAlpha->value() * 255.0 / 100.0);
+    MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     if (addErrorBand(g, curves[idx]->title().text(), curves[idx]->table(),
                      cbPlus->currentData().toString(), minusCol, alpha)
         == 0) {
         QMessageBox::warning(app, trE11("Error Band"),
                              trE11("The error band could not be added (check the error columns)."));
     } else {
+        if (ml && !beforeSnap.isEmpty())
+            ml->pushUndoSnapshot(trE11("Add Error Band"), beforeSnap);
         app->modifiedProject();
+        app->updateUndoRedoActionsForActiveWindow();
     }
 }
 
@@ -692,11 +788,11 @@ MultiLayer *ExtraPlotTypes::plotColorMappedScatter(ApplicationWindow *app, Table
     pm.preset = preset;
     pm.reverse = reverse;
     pm.autoRange = true;
-    pm.colorBarTitle = columnAxisTitle(cz);
+    pm.colorBarTitle = columnAxisTitle(cz, g);
     dc->setPointColorMap(pm);
 
-    g->setXAxisTitle(columnAxisTitle(cx));
-    g->setYAxisTitle(columnAxisTitle(cy));
+    g->setXAxisTitle(columnAxisTitle(cx, g));
+    g->setYAxisTitle(columnAxisTitle(cy, g));
     g->syncPointColorBar();
     refreshLegend(g);
     g->replot();
@@ -830,39 +926,76 @@ ExtraPlotTypes::plotHistogramCumulative(ApplicationWindow *app, Table *t, const 
         return res;
     }
 
+    constexpr int kMaxBins = 10000;
+    if (binWidth > 0.0 && std::isfinite(binWidth)) {
+        const double effBegin = (!std::isfinite(begin) || begin > vMin)
+                ? std::floor(vMin / binWidth) * binWidth
+                : begin;
+        const double span = (vMax - effBegin) / binWidth;
+        if (!std::isfinite(effBegin) || !std::isfinite(span) || !(span < double(kMaxBins))) {
+            res.error = trE11("Too many bins (at most 10,000); use a larger bin width.");
+            return res;
+        }
+    }
+
     MultiLayer *ml = app->newGraph(
             app->generateUniqueName(QStringLiteral("HistCum_") + t->name(), false));
+    auto closeEmptyGraph = [&]() {
+        if (ml) {
+            ml->askOnCloseEvent(false);
+            ml->close();
+            ml = nullptr;
+        }
+        res.plot = nullptr;
+    };
     Graph *g = ml ? ml->activeGraph() : nullptr;
     res.plot = ml;
-    if (!g)
+    if (!g) {
+        closeEmptyGraph();
         return res;
+    }
     const QString full = fullColumnName(t, c);
-    if (!g->plotHistogram(t, QStringList(full)))
+    if (!g->plotHistogram(t, QStringList(full))) {
+        closeEmptyGraph();
         return res;
+    }
     auto *h = dynamic_cast<QwtHistogram *>(g->curve(g->curves() - 1));
-    if (!h)
+    if (!h) {
+        closeEmptyGraph();
         return res;
+    }
     if (binWidth > 0.0 && std::isfinite(binWidth)) {
         if (!std::isfinite(begin) || begin > vMin)
             begin = std::floor(vMin / binWidth) * binWidth;
         int nb = qMax(1, int(std::ceil((vMax - begin) / binWidth)));
         if (begin + nb * binWidth <= vMax)
             ++nb;
+        if (nb > kMaxBins) {
+            res.error = trE11("Too many bins (at most 10,000); use a larger bin width.");
+            closeEmptyGraph();
+            return res;
+        }
         h->setBinning(false, binWidth, begin, begin + nb * binWidth);
         h->loadData();
     }
 
     const int bins = h->dataSize();
-    if (bins <= 0)
+    if (bins <= 0 || bins > kMaxBins) {
+        if (bins > kMaxBins)
+            res.error = trE11("Too many bins (at most 10,000); use a larger bin width.");
+        closeEmptyGraph();
         return res;
+    }
     double w = h->binSize();
     if (!(w > 0.0) && bins >= 2)
         w = h->x(1) - h->x(0);
     double total = 0.0;
     for (int i = 0; i < bins; ++i)
         total += h->y(i);
-    if (!(total > 0.0))
+    if (!(total > 0.0)) {
+        closeEmptyGraph();
         return res;
+    }
 
     res.bins = bins;
     res.binWidth = w;
@@ -884,8 +1017,10 @@ ExtraPlotTypes::plotHistogramCumulative(ApplicationWindow *app, Table *t, const 
                                                        false),
                                trE11("Histogram + Cumulative %"));
     res.table = tbl;
-    if (!tbl)
+    if (!tbl) {
+        closeEmptyGraph();
         return res;
+    }
     tbl->setHeader(QStringList() << QStringLiteral("UpperEdge") << QStringLiteral("CumCount")
                                  << QStringLiteral("CumulativePct"));
     for (int k = 0; k < 3; ++k)
@@ -893,6 +1028,7 @@ ExtraPlotTypes::plotHistogramCumulative(ApplicationWindow *app, Table *t, const 
     tbl->column(0)->setPlotDesignation(SciDAVis::X);
     tbl->column(1)->setPlotDesignation(SciDAVis::Y);
     tbl->column(2)->setPlotDesignation(SciDAVis::Y);
+    tbl->column(2)->setLongName(trE11("Cumulative (%)"));
     acc = 0.0;
     for (int i = 0; i <= bins; ++i) {
         if (i > 0)
@@ -916,8 +1052,8 @@ ExtraPlotTypes::plotHistogramCumulative(ApplicationWindow *app, Table *t, const 
         sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
     g->setScale(QwtPlot::yRight, 0.0, 100.0, 20.0, 5, 1);
     g->setAxisTitle(QwtPlot::yRight, trE11("Cumulative (%)"));
-    g->setXAxisTitle(columnAxisTitle(c));
-    g->setYAxisTitle(trE11("Count"));
+    g->setXAxisTitle(columnAxisTitle(c, g));
+    g->setYAxisTitle(trE11Count());
     refreshLegend(g);
     g->replot();
     emit g->modifiedGraph();
@@ -945,6 +1081,39 @@ void ExtraPlotTypes::showHistogramCumulativeDialog(ApplicationWindow *app)
             cbTable->setCurrentIndex(cbTable->count() - 1);
     }
     auto *cbCol = new QComboBox(&dlg);
+    auto *sbW = new QDoubleSpinBox(&dlg);
+    sbW->setDecimals(6);
+    sbW->setRange(0.0, 1e12);
+    sbW->setValue(0.0);
+    auto *chkAutoBegin = new QCheckBox(trE11("Automatic (from data minimum)"), &dlg);
+    chkAutoBegin->setChecked(true);
+    auto *sbBegin = new QDoubleSpinBox(&dlg);
+    sbBegin->setDecimals(6);
+    sbBegin->setRange(-1e12, 1e12);
+    sbBegin->setValue(0.0);
+    sbBegin->setEnabled(false);
+    auto *beginRow = new QHBoxLayout();
+    beginRow->setContentsMargins(0, 0, 0, 0);
+    beginRow->addWidget(chkAutoBegin);
+    beginRow->addWidget(sbBegin, 1);
+
+    auto syncMinVal = [&]() {
+        Table *t = tables.value(cbTable->currentIndex());
+        Column *c = t ? resolveColumn(t, cbCol->currentText()) : nullptr;
+        if (!c)
+            return;
+        double vMin = 0.0;
+        bool hasAny = false;
+        for (int r = 0; r < c->rowCount(); ++r) {
+            double v = 0.0;
+            if (readNumber(c, r, v)) {
+                vMin = hasAny ? qMin(vMin, v) : v;
+                hasAny = true;
+            }
+        }
+        if (hasAny && chkAutoBegin->isChecked())
+            sbBegin->setValue(vMin);
+    };
     auto refresh = [&]() {
         cbCol->clear();
         Table *t = tables.value(cbTable->currentIndex());
@@ -958,22 +1127,23 @@ void ExtraPlotTypes::showHistogramCumulativeDialog(ApplicationWindow *app)
         const QStringList sel = t->selectedColumns();
         if (!sel.isEmpty())
             cbCol->setCurrentText(sel.first().mid(t->name().size() + 1));
+        syncMinVal();
     };
     refresh();
     QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { refresh(); });
-    auto *sbW = new QDoubleSpinBox(&dlg);
-    sbW->setDecimals(6);
-    sbW->setRange(0.0, 1e12);
-    sbW->setValue(0.0);
-    auto *sbBegin = new QDoubleSpinBox(&dlg);
-    sbBegin->setDecimals(6);
-    sbBegin->setRange(-1e12, 1e12);
-    sbBegin->setValue(0.0);
+    QObject::connect(cbCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncMinVal(); });
+    QObject::connect(chkAutoBegin, &QCheckBox::toggled, &dlg, [&](bool on) {
+        sbBegin->setEnabled(!on);
+        if (on)
+            syncMinVal();
+    });
+
     form->addRow(trE11("Source Table:"), cbTable);
     form->addRow(trE11("Data column:"), cbCol);
     form->addRow(trE11("Bin width (0 = automatic):"), sbW);
-    form->addRow(trE11("Bin start:"), sbBegin);
+    form->addRow(trE11("Bin start:"), beginRow);
     lay->addLayout(form);
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -981,9 +1151,12 @@ void ExtraPlotTypes::showHistogramCumulativeDialog(ApplicationWindow *app)
     lay->addWidget(btns);
     if (dlg.exec() != QDialog::Accepted)
         return;
+    const double beginParam = chkAutoBegin->isChecked()
+            ? std::numeric_limits<double>::quiet_NaN()
+            : sbBegin->value();
     const HistogramCumulativeResult r = plotHistogramCumulative(
             app, tables.value(cbTable->currentIndex()), cbCol->currentText(), sbW->value(),
-            sbBegin->value());
+            beginParam);
     if (!r.valid)
         QMessageBox::warning(app, trE11("Histogram + Cumulative %"),
                              r.error.isEmpty() ? trE11("No numeric data in the selected column.")
@@ -1090,6 +1263,16 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
     tbl->column(3)->setPlotDesignation(SciDAVis::Y);
     tbl->column(4)->setPlotDesignation(SciDAVis::X);
     tbl->column(5)->setPlotDesignation(SciDAVis::Y);
+    QString seriesDisplayName = c->longName().trimmed();
+    if (seriesDisplayName.isEmpty())
+        seriesDisplayName = c->comment().section(QLatin1Char('\n'), 0, 0).trimmed();
+    if (seriesDisplayName.isEmpty())
+        seriesDisplayName = c->name().trimmed();
+    const QString fitDisplayName =
+            (dist == LogNormal) ? trE11("Lognormal fit") : trE11("Gumbel fit");
+    tbl->column(3)->setLongName(seriesDisplayName);
+    tbl->column(5)->setLongName(fitDisplayName);
+
     for (int i = 0; i < n; ++i) {
         tbl->column(0)->setValueAt(i, vals[i]);
         tbl->column(1)->setValueAt(i, i + 1);
@@ -1099,7 +1282,8 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
     const double fitV[2] = { var[0] - 0.6 * vPad, var[n - 1] + 0.6 * vPad };
     for (int k = 0; k < 2; ++k) {
         const double uu = a + b * fitV[k];
-        tbl->column(4)->setValueAt(k, dist == LogNormal ? std::exp(uu) : uu);
+        const double fitVal = (dist == LogNormal) ? std::exp(qBound(-700.0, uu, 700.0)) : uu;
+        tbl->column(4)->setValueAt(k, fitVal);
         tbl->column(5)->setValueAt(k, fitV[k]);
     }
     if (!createPlot)
@@ -1126,8 +1310,12 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
     if (dist == LogNormal) {
         const double l0 = std::log10(xLo), l1 = std::log10(xHi);
         const double pad = qMax(0.05, 0.08 * (l1 - l0));
-        xLo = std::pow(10.0, l0 - pad);
-        xHi = std::pow(10.0, l1 + pad);
+        xLo = std::pow(10.0, qBound(-300.0, l0 - pad, 300.0));
+        xHi = std::pow(10.0, qBound(-300.0, l1 + pad, 300.0));
+        if (!(xHi > xLo) || !std::isfinite(xHi) || !(xLo > 0.0)) {
+            xLo = qMax(std::numeric_limits<double>::min(), vals[0] * 0.8);
+            xHi = qMax(xLo * 1.25, vals[n - 1] * 1.25);
+        }
         g->setScale(QwtPlot::xBottom, xLo, xHi, 0.0, 5, 8, 1);
     } else {
         const double pad = qMax(1e-12, 0.08 * (xHi - xLo));
@@ -1158,10 +1346,11 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
     tickLbl << QString() << QString();
     g->setCustomTickLabels(QwtPlot::yLeft, tickPos, tickLbl);
 
-    g->setXAxisTitle(columnAxisTitle(c));
+    g->setXAxisTitle(columnAxisTitle(c, g));
     g->setYAxisTitle(trE11("Cumulative probability, F (%)"));
     g->setTitle(QString());
     refreshLegend(g);
+    g->placeLegendAnchor(Graph::LegendTopLeft);
 
     static const char *const kPos[] = { "median rank", "mean rank i/(n+1)", "Hazen", "Blom" };
     QString summary;
@@ -1173,7 +1362,7 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
                           .arg(QString::fromLatin1(kPos[qBound(0, int(pos), 3)]))
                           .arg(a, 0, 'g', 5)
                           .arg(b, 0, 'g', 4)
-                          .arg(std::exp(a), 0, 'g', 5)
+                          .arg(std::exp(qBound(-700.0, a, 700.0)), 0, 'g', 5)
                           .arg(r2, 0, 'f', 4)
                           .arg(n);
     } else {
@@ -1190,9 +1379,22 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
                            .arg(r2, 0, 'f', 4)
                            .arg(n);
     }
-    const double bx = (dist == LogNormal) ? xLo * std::pow(xHi / xLo, 0.04)
-                                          : xLo + 0.04 * (xHi - xLo);
-    addSummaryBox(g, bx, vHi - 0.04 * (vHi - vLo), summary);
+    // Ascending probability line goes bottom-left -> top-right: put legend TopLeft and summary
+    // box in the empty BottomRight pocket so neither overlaps the other or the data.
+    const double bx = (dist == LogNormal)
+            ? std::pow(10.0, std::log10(xLo) + 0.56 * (std::log10(xHi) - std::log10(xLo)))
+            : xLo + 0.56 * (xHi - xLo);
+    const double by = vLo + 0.34 * (vHi - vLo);
+    Legend *box = addSummaryBox(g, bx, by, summary);
+    if (box && g->plotWidget()) {
+        g->plotWidget()->updateLayout();
+        const QRect cr = g->plotWidget()->plotLayout()->canvasRect();
+        const QSize bsz = box->rect().size();
+        if (cr.width() > bsz.width() + 20 && cr.height() > bsz.height() + 20) {
+            box->setOrigin(QPoint(cr.width() - bsz.width() - 10,
+                                  cr.height() - bsz.height() - 10));
+        }
+    }
     g->replot();
     emit g->modifiedGraph();
     return res;
@@ -1372,8 +1574,17 @@ double screenAngleDeg(double betaDeg, bool zeroTop, bool clockwise)
 class PoleFigureFrameItem : public QwtPlotItem
 {
 public:
-    PoleFigureFrameItem(bool zeroTop, bool clockwise, bool rdTop)
-        : d_zero_top(zeroTop), d_clockwise(clockwise), d_rd_top(rdTop)
+    PoleFigureFrameItem(Graph *g, ExtraPlotTypes::PoleProjection proj, bool zeroTop,
+                        bool clockwise, bool rdTop, const QString &ax1, const QString &ax2,
+                        bool showTiltCircles)
+        : d_graph(g),
+          d_proj(proj),
+          d_zero_top(zeroTop),
+          d_clockwise(clockwise),
+          d_rd_top(rdTop),
+          d_ax1(ax1),
+          d_ax2(ax2),
+          d_show_tilt_circles(showTiltCircles)
     {
         setZ(40.0);
         setItemAttribute(QwtPlotItem::AutoScale, false);
@@ -1397,18 +1608,41 @@ public:
         const double sc = Plot::printDeviceScale();
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
+
+        if (d_show_tilt_circles) {
+            QPen ringPen(QColor(45, 45, 45, 155), 0.9 * sc, Qt::DashLine, Qt::FlatCap,
+                         Qt::RoundJoin);
+            ringPen.setCosmetic(false);
+            painter->setPen(ringPen);
+            painter->setBrush(Qt::NoBrush);
+            for (int tiltDeg : { 30, 60 }) {
+                const double half = 0.5 * double(tiltDeg) * kPiE11 / 180.0;
+                const double rf = (d_proj == ExtraPlotTypes::EqualAngle)
+                        ? std::tan(half)
+                        : std::sqrt(2.0) * std::sin(half);
+                painter->drawEllipse(QPointF(cx, cy), rx * rf, ry * rf);
+            }
+        }
+
         QPen pen(QColor(0, 0, 0), 1.6 * sc, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
         pen.setCosmetic(false);
         painter->setPen(pen);
         painter->setBrush(Qt::NoBrush);
         painter->drawEllipse(QPointF(cx, cy), rx, ry);
 
-        QFont f(QStringLiteral("Arial"));
-        f.setPixelSize(qMax(8, qRound(12.0 * sc)));
+        QFont f(QStringLiteral("Arial"), 10);
+        QFont fAxis(QStringLiteral("Arial"), 11);
+        if (d_graph && d_graph->plotWidget()) {
+            Plot *pl = d_graph->plotWidget();
+            f = pl->displayFont(d_graph->axisFont(QwtPlot::xBottom));
+            fAxis = pl->displayFont(d_graph->axisTitleFont(QwtPlot::xBottom));
+        } else {
+            f.setPixelSize(qMax(8, qRound(12.0 * sc)));
+            fAxis.setPixelSize(qMax(9, qRound(14.0 * sc)));
+        }
         f.setHintingPreference(QFont::PreferNoHinting);
-        QFont fAxis = f;
-        fAxis.setPixelSize(qMax(9, qRound(14.0 * sc)));
-        const QFontMetricsF fm(f), fmAxis(fAxis);
+        fAxis.setHintingPreference(QFont::PreferNoHinting);
+        const QFontMetricsF fm(f, painter->device()), fmAxis(fAxis, painter->device());
         const double gap = 3.0 * sc;
 
         auto dirOf = [&](double betaDeg, double &dx, double &dy) {
@@ -1438,10 +1672,12 @@ public:
             const QRectF tr = placeText(dx, dy, len + gap, br.width() + 2.0, br.height());
             painter->drawText(tr, Qt::AlignCenter, lbl);
         }
-        // RD / TD outside the angle labels (screen top and right)
+        // Sample reference axes outside the angle labels (screen top and right)
         painter->setFont(fAxis);
-        const QString topLbl = d_rd_top ? QStringLiteral("RD") : QStringLiteral("TD");
-        const QString rightLbl = d_rd_top ? QStringLiteral("TD") : QStringLiteral("RD");
+        const QString a1 = d_ax1.trimmed().isEmpty() ? QStringLiteral("RD") : d_ax1.trimmed();
+        const QString a2 = d_ax2.trimmed().isEmpty() ? QStringLiteral("TD") : d_ax2.trimmed();
+        const QString topLbl = d_rd_top ? a1 : a2;
+        const QString rightLbl = d_rd_top ? a2 : a1;
         const double angleH = fm.height();
         const double angleW = fm.boundingRect(QStringLiteral("270") + QChar(0x00B0)).width();
         {
@@ -1460,10 +1696,16 @@ public:
     }
 
 private:
+    QPointer<Graph> d_graph;
+    ExtraPlotTypes::PoleProjection d_proj;
     bool d_zero_top, d_clockwise, d_rd_top;
+    QString d_ax1, d_ax2;
+    bool d_show_tilt_circles = false;
 };
 
-void attachPoleFrame(Graph *g, bool zeroTop, bool clockwise, bool rdTop)
+void attachPoleFrame(Graph *g, ExtraPlotTypes::PoleProjection proj, bool zeroTop, bool clockwise,
+                     bool rdTop, const QString &ax1 = QString(), const QString &ax2 = QString(),
+                     bool showTiltCircles = false)
 {
     if (!g || !g->plotWidget())
         return;
@@ -1475,7 +1717,8 @@ void attachPoleFrame(Graph *g, bool zeroTop, bool clockwise, bool rdTop)
             delete it;
         }
     }
-    auto *frame = new PoleFigureFrameItem(zeroTop, clockwise, rdTop);
+    auto *frame = new PoleFigureFrameItem(g, proj, zeroTop, clockwise, rdTop, ax1, ax2,
+                                          showTiltCircles);
     frame->attach(p);
 }
 
@@ -1589,7 +1832,7 @@ bool buildPoleGrid(const QVector<double> &a, const QVector<double> &b, const QVe
             steps << (j + 1 < nB ? g.beta[j + 1] - g.beta[j] : g.beta[0] + 360.0 - g.beta[j]);
         QVector<double> sorted = steps;
         std::sort(sorted.begin(), sorted.end());
-        g.maxBetaGap = 2.5 * sorted[sorted.size() / 2] + 1e-9;
+        g.maxBetaGap = 2.5 * sorted[(sorted.size() - 1) / 2] + 1e-9;
     }
     return true;
 }
@@ -1664,7 +1907,13 @@ double poleMeanIntensity(const PoleGrid &g)
             if (nB > 1) {
                 const double prev = (j == 0) ? g.beta[nB - 1] - 360.0 : g.beta[j - 1];
                 const double next = (j == nB - 1) ? g.beta[0] + 360.0 : g.beta[j + 1];
-                wb = 0.5 * (qMin(next - g.beta[j], g.maxBetaGap) + qMin(g.beta[j] - prev, g.maxBetaGap));
+                const double dPrev = g.beta[j] - prev;
+                const double dNext = next - g.beta[j];
+                const double halfPrev = (dPrev <= g.maxBetaGap) ? 0.5 * dPrev : 0.0;
+                const double halfNext = (dNext <= g.maxBetaGap) ? 0.5 * dNext : 0.0;
+                wb = halfPrev + halfNext;
+                if (!(wb > 0.0))
+                    wb = qMin(dPrev, dNext);
             }
             const double v = g.val[i * nB + j];
             if (!std::isfinite(v) || !(wa * wb > 0.0))
@@ -1725,8 +1974,10 @@ ExtraPlotTypes::Density2DResult ExtraPlotTypes::binDensity2D(const QVector<doubl
         if (width > 0.0 && std::isfinite(width)) {
             w = width;
             start = std::floor(lo / w) * w;
+            if (!std::isfinite(start))
+                return false;
             const double span = (hi - start) / w;
-            if (!(span < double(kMaxBins)))
+            if (!(span < double(kMaxBins)) || !std::isfinite(span))
                 return false;
             nb = qMax(1, int(std::ceil(span)));
             if (start + nb * w <= hi) // [a, b) bins: a value on the last edge needs one more
@@ -1734,11 +1985,17 @@ ExtraPlotTypes::Density2DResult ExtraPlotTypes::binDensity2D(const QVector<doubl
             return nb <= kMaxBins;
         }
         nb = bins > 0 ? qMin(bins, kMaxBins) : nAuto;
-        if (hi > lo) {
+        if (hi > lo && std::isfinite(hi - lo)) {
             start = lo;
             w = (hi - lo) / nb;
         } else {
             w = (lo != 0.0) ? 0.1 * std::fabs(lo) : 1.0;
+            if (!(w > 0.0) || !std::isfinite(w))
+                w = 1.0;
+            start = lo - 0.5 * w * nb;
+        }
+        if (!(w > 0.0) || !std::isfinite(w) || !std::isfinite(1.0 / w)) {
+            w = 1.0;
             start = lo - 0.5 * w * nb;
         }
         return true;
@@ -1756,10 +2013,14 @@ ExtraPlotTypes::Density2DResult ExtraPlotTypes::binDensity2D(const QVector<doubl
         const double xv = x[i], yv = y[i];
         if (!std::isfinite(xv) || !std::isfinite(yv))
             continue;
-        int bx = int(std::floor((xv - x0) * ix));
-        int by = int(std::floor((yv - y0) * iy));
-        bx = bx < 0 ? 0 : (bx >= nbx ? nbx - 1 : bx);
-        by = by < 0 ? 0 : (by >= nby ? nby - 1 : by);
+        const double fx = (xv - x0) * ix;
+        const double fy = (yv - y0) * iy;
+        const int bx = (!std::isfinite(fx) || fx < 0.0)
+                ? 0
+                : (fx >= double(nbx) ? nbx - 1 : int(std::floor(fx)));
+        const int by = (!std::isfinite(fy) || fy < 0.0)
+                ? 0
+                : (fy >= double(nby) ? nby - 1 : int(std::floor(fy)));
         c[by * nbx + bx] += 1.0;
     }
     r.n = nv;
@@ -1869,11 +2130,11 @@ ExtraPlotTypes::plotDensity2D(ApplicationWindow *app, Table *t, const QString &x
         sp->setColorMapPreset(static_cast<Spectrogram::ColorMapPreset>(preset), false);
         if (logColor)
             sp->setLogColorScale(true);
-        sp->setColorBarTitle(trE11("Count"));
+        sp->setColorBarTitle(trE11Count());
         sp->syncColorScale();
     }
-    g->setXAxisTitle(columnAxisTitle(cx));
-    g->setYAxisTitle(columnAxisTitle(cy));
+    g->setXAxisTitle(columnAxisTitle(cx, g));
+    g->setYAxisTitle(columnAxisTitle(cy, g));
     g->setScale(QwtPlot::xBottom, r.x0, r.x0 + r.binsX * r.widthX);
     g->setScale(QwtPlot::yLeft, r.y0, r.y0 + r.binsY * r.widthY);
     if (g->legend())
@@ -2068,7 +2329,8 @@ ExtraPlotTypes::PoleFigureResult buildPoleFigure(ApplicationWindow *app, const P
     if (g->legend())
         g->removeLegend();
     setupPoleFigurePage(g);
-    attachPoleFrame(g, opt.betaZeroAtTop, opt.clockwise, opt.rdTop);
+    attachPoleFrame(g, opt.projection, opt.betaZeroAtTop, opt.clockwise, opt.rdTop,
+                    opt.axis1Label, opt.axis2Label, opt.showTiltCircles);
     if (ml)
         ml->setLayerCanvasSize(420, 420);
 
@@ -2086,6 +2348,13 @@ ExtraPlotTypes::PoleFigureResult buildPoleFigure(ApplicationWindow *app, const P
         summary += QStringLiteral("\n") + trE11("measured alpha <= %1°").arg(res.alphaMax, 0, 'g', 4);
     addSummaryBox(g, -1.36, 1.36, summary);
 
+    QString extraPoleAttrs;
+    if (!opt.axis1Label.trimmed().isEmpty())
+        extraPoleAttrs += tagAttr("ax1", opt.axis1Label.trimmed());
+    if (!opt.axis2Label.trimmed().isEmpty())
+        extraPoleAttrs += tagAttr("ax2", opt.axis2Label.trimmed());
+    if (opt.showTiltCircles)
+        extraPoleAttrs += tagAttr("rings", QStringLiteral("1"));
     storeExtraTag(g, QStringLiteral("ToriPoleFigure"),
                   QStringLiteral("<ToriPoleFigure") + tagAttr("matrix", m->name()) + sourceTagAttrs
                           + tagAttr("proj", QString::number(int(opt.projection)))
@@ -2094,6 +2363,7 @@ ExtraPlotTypes::PoleFigureResult buildPoleFigure(ApplicationWindow *app, const P
                           + tagAttr("zeroTop", QString::number(opt.betaZeroAtTop ? 1 : 0))
                           + tagAttr("cw", QString::number(opt.clockwise ? 1 : 0))
                           + tagAttr("rdTop", QString::number(opt.rdTop ? 1 : 0))
+                          + extraPoleAttrs
                           + tagAttr("label", opt.label) + tagNum("max", res.maxValue)
                           + tagNum("maxa", res.maxAlpha) + tagNum("maxb", res.maxBeta)
                           + tagNum("mean", res.meanIntensity) + QStringLiteral("/>"));
@@ -2148,7 +2418,13 @@ ExtraPlotTypes::plotPoleFigureFromMatrix(ApplicationWindow *app, Matrix *m,
         return res;
     }
     const int rows = m->numRows(), cols = m->numCols();
-    const double xs = m->xStart(), xe = m->xEnd(), ys = m->yStart(), ye = m->yEnd();
+    double xs = m->xStart(), xe = m->xEnd(), ys = m->yStart(), ye = m->yEnd();
+    if (opt.useCustomMatrixAngles) {
+        ys = opt.matrixAlphaMin;
+        ye = opt.matrixAlphaMax;
+        xs = opt.matrixBetaMin;
+        xe = opt.matrixBetaMax;
+    }
     QVector<double> a, b, v;
     for (int r = 0; r < rows; ++r) {
         const double av = rows > 1 ? ys + (ye - ys) * r / double(rows - 1) : ys;
@@ -2190,9 +2466,14 @@ bool ExtraPlotTypes::restoreGraphTag(Graph *g, const QString &line)
         storeExtraTag(g, QStringLiteral("ToriPoleFigure"), s);
         const QMap<QString, QString> a = parseTagAttrs(s);
         setupPoleFigurePage(g);
-        attachPoleFrame(g, a.value(QStringLiteral("zeroTop")).toInt() != 0,
+        const PoleProjection proj = (a.value(QStringLiteral("proj")).toInt() == int(EqualAngle))
+                ? EqualAngle
+                : EqualArea;
+        attachPoleFrame(g, proj, a.value(QStringLiteral("zeroTop")).toInt() != 0,
                         a.value(QStringLiteral("cw")).toInt() != 0,
-                        a.value(QStringLiteral("rdTop"), QStringLiteral("1")).toInt() != 0);
+                        a.value(QStringLiteral("rdTop"), QStringLiteral("1")).toInt() != 0,
+                        a.value(QStringLiteral("ax1")), a.value(QStringLiteral("ax2")),
+                        a.value(QStringLiteral("rings")).toInt() != 0);
         g->replot();
         return true;
     }
@@ -2307,6 +2588,13 @@ void ExtraPlotTypes::showPoleFigureDialog(ApplicationWindow *app)
     if (tables.isEmpty() && matrices.isEmpty())
         return;
     Table *act = activeTable(app);
+    Matrix *actMatrix = nullptr;
+    if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+        if (sub->inherits("Matrix"))
+            actMatrix = static_cast<Matrix *>(sub);
+        else if (sub->widget() && sub->widget()->inherits("Matrix"))
+            actMatrix = static_cast<Matrix *>(sub->widget());
+    }
     QDialog dlg(app);
     dlg.setWindowTitle(trE11("Pole Figure (XRD)"));
     auto *lay = new QVBoxLayout(&dlg);
@@ -2314,27 +2602,100 @@ void ExtraPlotTypes::showPoleFigureDialog(ApplicationWindow *app)
     auto *cbSrc = new QComboBox(&dlg);
     for (Table *t : tables) {
         cbSrc->addItem(t->name(), QStringLiteral("T"));
-        if (t == act)
+        if (!actMatrix && t == act)
             cbSrc->setCurrentIndex(cbSrc->count() - 1);
     }
-    for (Matrix *m : matrices)
+    for (Matrix *m : matrices) {
         cbSrc->addItem(m->name(), QStringLiteral("M"));
+        if (m == actMatrix)
+            cbSrc->setCurrentIndex(cbSrc->count() - 1);
+    }
     auto *cbA = new QComboBox(&dlg);
     auto *cbB = new QComboBox(&dlg);
     auto *cbI = new QComboBox(&dlg);
-    auto *lblMatrix = new QLabel(trE11("Matrix: rows = alpha (Y coordinates), columns = beta (X coordinates)"), &dlg);
+    auto *lblMatrix = new QLabel(
+            trE11("Matrix: rows = alpha (Y coordinates), columns = beta (X coordinates)"), &dlg);
     lblMatrix->setWordWrap(true);
+
+    auto *matAlphaPane = new QWidget(&dlg);
+    auto *matAlphaLay = new QHBoxLayout(matAlphaPane);
+    matAlphaLay->setContentsMargins(0, 0, 0, 0);
+    auto *sbAlphaMin = new QDoubleSpinBox(matAlphaPane);
+    sbAlphaMin->setRange(0.0, 90.0);
+    sbAlphaMin->setDecimals(2);
+    sbAlphaMin->setSuffix(QString::fromUtf8("°"));
+    sbAlphaMin->setValue(0.0);
+    auto *sbAlphaMax = new QDoubleSpinBox(matAlphaPane);
+    sbAlphaMax->setRange(0.0, 90.0);
+    sbAlphaMax->setDecimals(2);
+    sbAlphaMax->setSuffix(QString::fromUtf8("°"));
+    sbAlphaMax->setValue(90.0);
+    matAlphaLay->addWidget(sbAlphaMin, 1);
+    matAlphaLay->addWidget(new QLabel(QStringLiteral("–"), matAlphaPane));
+    matAlphaLay->addWidget(sbAlphaMax, 1);
+
+    auto *matBetaPane = new QWidget(&dlg);
+    auto *matBetaLay = new QHBoxLayout(matBetaPane);
+    matBetaLay->setContentsMargins(0, 0, 0, 0);
+    auto *sbBetaMin = new QDoubleSpinBox(matBetaPane);
+    sbBetaMin->setRange(-360.0, 720.0);
+    sbBetaMin->setDecimals(2);
+    sbBetaMin->setSuffix(QString::fromUtf8("°"));
+    sbBetaMin->setValue(0.0);
+    auto *sbBetaMax = new QDoubleSpinBox(matBetaPane);
+    sbBetaMax->setRange(-360.0, 720.0);
+    sbBetaMax->setDecimals(2);
+    sbBetaMax->setSuffix(QString::fromUtf8("°"));
+    sbBetaMax->setValue(360.0);
+    matBetaLay->addWidget(sbBetaMin, 1);
+    matBetaLay->addWidget(new QLabel(QStringLiteral("–"), matBetaPane));
+    matBetaLay->addWidget(sbBetaMax, 1);
+
+    auto *lblMatAlpha = new QLabel(trE11("Alpha range (deg):"), &dlg);
+    auto *lblMatBeta = new QLabel(trE11("Beta range (deg):"), &dlg);
+    auto *lblColA = new QLabel(trE11("Alpha (tilt) column:"), &dlg);
+    auto *lblColB = new QLabel(trE11("Beta (rotation) column:"), &dlg);
+    auto *lblColI = new QLabel(trE11("Intensity column:"), &dlg);
+
     auto refresh = [&]() {
         cbA->clear();
         cbB->clear();
         cbI->clear();
         const bool isTable = cbSrc->currentData().toString() == QStringLiteral("T");
-        cbA->setEnabled(isTable);
-        cbB->setEnabled(isTable);
-        cbI->setEnabled(isTable);
+        lblColA->setVisible(isTable);
+        lblColB->setVisible(isTable);
+        lblColI->setVisible(isTable);
+        cbA->setVisible(isTable);
+        cbB->setVisible(isTable);
+        cbI->setVisible(isTable);
         lblMatrix->setVisible(!isTable);
-        if (!isTable)
+        lblMatAlpha->setVisible(!isTable);
+        matAlphaPane->setVisible(!isTable);
+        lblMatBeta->setVisible(!isTable);
+        matBetaPane->setVisible(!isTable);
+        if (!isTable) {
+            if (Matrix *m = app->matrix(cbSrc->currentText())) {
+                const bool isDefaultGridCoords = std::fabs(m->xStart() - 1.0) < 1e-6
+                        && std::fabs(m->xEnd() - double(m->numCols())) < 1e-6
+                        && std::fabs(m->yStart() - 1.0) < 1e-6
+                        && std::fabs(m->yEnd() - double(m->numRows())) < 1e-6;
+                const bool validAlpha = m->yStart() >= -1e-6 && m->yEnd() >= -1e-6
+                        && m->yStart() <= 90.0 + 1e-6 && m->yEnd() <= 90.0 + 1e-6
+                        && std::fabs(m->yEnd() - m->yStart()) > 1e-6;
+                if (!isDefaultGridCoords && validAlpha) {
+                    sbAlphaMin->setValue(qBound(0.0, m->yStart(), 90.0));
+                    sbAlphaMax->setValue(qBound(0.0, m->yEnd(), 90.0));
+                    sbBetaMin->setValue(m->xStart());
+                    sbBetaMax->setValue(m->xEnd());
+                } else {
+                    sbAlphaMin->setValue(0.0);
+                    sbAlphaMax->setValue(90.0);
+                    sbBetaMin->setValue(0.0);
+                    sbBetaMax->setValue(360.0);
+                }
+            }
             return;
+        }
         Table *t = app->table(cbSrc->currentText());
         if (!t)
             return;
@@ -2366,9 +2727,36 @@ void ExtraPlotTypes::showPoleFigureDialog(ApplicationWindow *app)
     auto *chkRim = new QCheckBox(trE11("Alpha = 90° at the centre (Rigaku style)"), &dlg);
     auto *chkTop = new QCheckBox(trE11("Beta = 0° at the top"), &dlg);
     auto *chkCw = new QCheckBox(trE11("Beta increases clockwise"), &dlg);
+    auto *chkRings = new QCheckBox(trE11("Show 30° and 60° tilt circles"), &dlg);
+
+    auto *cbRefAxes = new QComboBox(&dlg);
+    cbRefAxes->addItem(trE11("RD / TD (Rolled sheet)"), QStringLiteral("RD|TD"));
+    cbRefAxes->addItem(trE11("ED / TD (Extruded)"), QStringLiteral("ED|TD"));
+    cbRefAxes->addItem(trE11("LD / TD (Longitudinal / Transverse)"), QStringLiteral("LD|TD"));
+    cbRefAxes->addItem(trE11("Custom..."), QStringLiteral("CUSTOM"));
+
+    auto *customAxesPane = new QWidget(&dlg);
+    auto *customAxesLay = new QHBoxLayout(customAxesPane);
+    customAxesLay->setContentsMargins(0, 0, 0, 0);
+    auto *edAx1 = new QLineEdit(QStringLiteral("RD"), customAxesPane);
+    auto *edAx2 = new QLineEdit(QStringLiteral("TD"), customAxesPane);
+    customAxesLay->addWidget(edAx1, 1);
+    customAxesLay->addWidget(new QLabel(QStringLiteral("/"), customAxesPane));
+    customAxesLay->addWidget(edAx2, 1);
+    auto *lblCustomAxes = new QLabel(trE11("Custom axis labels:"), &dlg);
+    lblCustomAxes->setVisible(false);
+    customAxesPane->setVisible(false);
+    QObject::connect(cbRefAxes, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         const bool isCustom =
+                                 cbRefAxes->currentData().toString() == QStringLiteral("CUSTOM");
+                         lblCustomAxes->setVisible(isCustom);
+                         customAxesPane->setVisible(isCustom);
+                     });
+
     auto *cbRd = new QComboBox(&dlg);
-    cbRd->addItem(trE11("Top (TD right)"));
-    cbRd->addItem(trE11("Right (TD top)"));
+    cbRd->addItem(trE11("Top (secondary right)"));
+    cbRd->addItem(trE11("Right (secondary top)"));
     auto *sbLevels = new QSpinBox(&dlg);
     sbLevels->setRange(2, 50);
     sbLevels->setValue(8);
@@ -2377,15 +2765,20 @@ void ExtraPlotTypes::showPoleFigureDialog(ApplicationWindow *app)
     fillPresetCombo(cbMap);
     form->addRow(trE11("Source:"), cbSrc);
     form->addRow(QString(), lblMatrix);
-    form->addRow(trE11("Alpha (tilt) column:"), cbA);
-    form->addRow(trE11("Beta (rotation) column:"), cbB);
-    form->addRow(trE11("Intensity column:"), cbI);
+    form->addRow(lblMatAlpha, matAlphaPane);
+    form->addRow(lblMatBeta, matBetaPane);
+    form->addRow(lblColA, cbA);
+    form->addRow(lblColB, cbB);
+    form->addRow(lblColI, cbI);
     form->addRow(trE11("Projection:"), cbProj);
     form->addRow(QString(), chkMrd);
     form->addRow(QString(), chkRim);
     form->addRow(QString(), chkTop);
     form->addRow(QString(), chkCw);
-    form->addRow(trE11("RD direction:"), cbRd);
+    form->addRow(QString(), chkRings);
+    form->addRow(trE11("Sample reference axes:"), cbRefAxes);
+    form->addRow(lblCustomAxes, customAxesPane);
+    form->addRow(trE11("Primary axis direction:"), cbRd);
     form->addRow(trE11("Contour levels:"), sbLevels);
     form->addRow(trE11("Label (e.g. (111)):"), edLabel);
     form->addRow(trE11("Color map:"), cbMap);
@@ -2402,16 +2795,31 @@ void ExtraPlotTypes::showPoleFigureDialog(ApplicationWindow *app)
     opt.alphaFromRim = chkRim->isChecked();
     opt.betaZeroAtTop = chkTop->isChecked();
     opt.clockwise = chkCw->isChecked();
+    opt.showTiltCircles = chkRings->isChecked();
     opt.rdTop = cbRd->currentIndex() == 0;
+    const QString refSpec = cbRefAxes->currentData().toString();
+    if (refSpec == QStringLiteral("CUSTOM")) {
+        opt.axis1Label = edAx1->text().trimmed();
+        opt.axis2Label = edAx2->text().trimmed();
+    } else {
+        opt.axis1Label = refSpec.section(QLatin1Char('|'), 0, 0);
+        opt.axis2Label = refSpec.section(QLatin1Char('|'), 1, 1);
+    }
     opt.levels = sbLevels->value();
     opt.label = edLabel->text();
     opt.preset = cbMap->currentData().toInt();
     PoleFigureResult r;
-    if (cbSrc->currentData().toString() == QStringLiteral("T"))
+    if (cbSrc->currentData().toString() == QStringLiteral("T")) {
         r = plotPoleFigure(app, app->table(cbSrc->currentText()), cbA->currentText(),
                            cbB->currentText(), cbI->currentText(), opt, true);
-    else
+    } else {
+        opt.useCustomMatrixAngles = true;
+        opt.matrixAlphaMin = sbAlphaMin->value();
+        opt.matrixAlphaMax = sbAlphaMax->value();
+        opt.matrixBetaMin = sbBetaMin->value();
+        opt.matrixBetaMax = sbBetaMax->value();
         r = plotPoleFigureFromMatrix(app, app->matrix(cbSrc->currentText()), opt, true);
+    }
     if (!r.valid)
         QMessageBox::warning(app, trE11("Pole Figure (XRD)"), r.error);
     else

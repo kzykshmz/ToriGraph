@@ -9,6 +9,7 @@
 
 #include "ApplicationWindow.h"
 #include "ArrowMarker.h"
+#include "ExtraPlotTypes.h"
 #include "Graph.h"
 #include "I18nJapanese.h"
 #include "Fit.h"
@@ -217,6 +218,41 @@ Table *resolveActiveTable(ApplicationWindow *app)
 {
     if (!app)
         return nullptr;
+    auto tableFromGraph = [&](Graph *g) -> Table * {
+        if (!g)
+            return nullptr;
+        const QString sel = g->selectedCurveTitle();
+        if (!sel.isEmpty()) {
+            if (auto *dc = dynamic_cast<DataCurve *>(g->curve(sel))) {
+                if (dc->table())
+                    return dc->table();
+            }
+        }
+        Table *fallback = nullptr;
+        for (int i = 0; i < g->curves(); ++i) {
+            auto *dc = dynamic_cast<DataCurve *>(g->curve(i));
+            if (!dc || !dc->table())
+                continue;
+            if (!dc->table()->name().startsWith(QLatin1String("GadgetFit_")))
+                return dc->table();
+            if (!fallback)
+                fallback = dc->table();
+        }
+        if (fallback)
+            return fallback;
+        for (const QString &kind : { QStringLiteral("ToriDensity2D"), QStringLiteral("ToriPoleFigure") }) {
+            const QString tag = ExtraPlotTypes::graphTag(g, kind);
+            if (!tag.isEmpty()) {
+                static const QRegularExpression rxTbl(QStringLiteral("table=\"([^\"]+)\""));
+                const QRegularExpressionMatch m = rxTbl.match(tag);
+                if (m.hasMatch()) {
+                    if (Table *t = app->table(m.captured(1)))
+                        return t;
+                }
+            }
+        }
+        return nullptr;
+    };
     QMdiSubWindow *sub = app->d_workspace.activeSubWindow();
     if (sub) {
         if (sub->inherits("Table"))
@@ -224,6 +260,19 @@ Table *resolveActiveTable(ApplicationWindow *app)
         if (QWidget *w = sub->widget()) {
             if (w->inherits("Table"))
                 return static_cast<Table *>(w);
+        }
+        MultiLayer *ml = nullptr;
+        if (sub->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub);
+        else if (sub->widget() && sub->widget()->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub->widget());
+        if (ml) {
+            if (Table *gt = tableFromGraph(ml->activeGraph()))
+                return gt;
+            for (Graph *lg : ml->layersList()) {
+                if (Table *gt = tableFromGraph(lg))
+                    return gt;
+            }
         }
     }
     QList<Table *> tbls = allProjectTables(app);
@@ -302,9 +351,13 @@ void applyArialGraphFonts(Graph *g)
 {
     if (!g)
         return;
-    auto normArial = [](QFont f, int fallbackPt) -> QFont {
-        const int pt = (f.pointSize() > 0) ? f.pointSize() : fallbackPt;
-        QFont out(QStringLiteral("Arial"), pt, QFont::Normal);
+    auto normArial = [](QFont f, double fallbackPt) -> QFont {
+        const double pt = (f.pointSizeF() > 0.0)
+                ? f.pointSizeF()
+                : ((f.pointSize() > 0) ? double(f.pointSize()) : fallbackPt);
+        QFont out(QStringLiteral("Arial"));
+        out.setPointSizeF(pt);
+        out.setWeight(QFont::Normal);
         out.setBold(false);
         out.setStyleStrategy(f.styleStrategy());
         return out;

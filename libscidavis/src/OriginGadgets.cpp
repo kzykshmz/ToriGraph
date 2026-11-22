@@ -109,6 +109,82 @@ static ApplicationWindow *resolveAppWindowFromGraph(Graph *g)
     return nullptr;
 }
 
+static void syncGadgetDomainActions(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    const bool show = app->showsAdvancedDomainFeatures();
+    if (QAction *sigAct =
+                app->findChild<QAction *>(QStringLiteral("actionGadgetQuickSigmoidal"))) {
+        sigAct->setVisible(show);
+    }
+    if (QAction *riseAct = app->findChild<QAction *>(QStringLiteral("actionGadgetRiseTime")))
+        riseAct->setVisible(show);
+}
+
+static void hookGadgetDomainVisibilityForApp(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    syncGadgetDomainActions(app);
+    if (app->property("_toriGadgetDomainHooked").toBool())
+        return;
+    QAction *sigAct = app->findChild<QAction *>(QStringLiteral("actionGadgetQuickSigmoidal"));
+    QAction *riseAct = app->findChild<QAction *>(QStringLiteral("actionGadgetRiseTime"));
+    if (!sigAct && !riseAct)
+        return;
+    app->setProperty("_toriGadgetDomainHooked", true);
+    QPointer<ApplicationWindow> guard(app);
+    if (app->gadgetsMenu) {
+        QObject::connect(app->gadgetsMenu, &QMenu::aboutToShow, app, [guard]() {
+            syncGadgetDomainActions(guard);
+        });
+    }
+    if (QAction *advToggle =
+                app->findChild<QAction *>(QStringLiteral("actionShowAdvancedDomainFeatures"))) {
+        QObject::connect(advToggle, &QAction::toggled, app, [guard](bool) {
+            syncGadgetDomainActions(guard);
+        });
+    }
+    if (QAction *rocAct = app->findChild<QAction *>(QStringLiteral("actionROCCurve"))) {
+        QObject::connect(rocAct, &QAction::changed, app, [guard]() {
+            syncGadgetDomainActions(guard);
+        });
+    }
+}
+
+class GadgetDomainVisibilityWatcher : public QObject
+{
+public:
+    explicit GadgetDomainVisibilityWatcher(QObject *parent = nullptr) : QObject(parent) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event
+            && (event->type() == QEvent::Polish || event->type() == QEvent::Show
+                || event->type() == QEvent::WindowActivate)) {
+            if (auto *app = qobject_cast<ApplicationWindow *>(watched))
+                hookGadgetDomainVisibilityForApp(app);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+static void installGadgetDomainVisibilityWatcher()
+{
+    if (!qApp)
+        return;
+    auto *watcher = new GadgetDomainVisibilityWatcher(qApp);
+    qApp->installEventFilter(watcher);
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (auto *app = qobject_cast<ApplicationWindow *>(w))
+            hookGadgetDomainVisibilityForApp(app);
+    }
+}
+
+Q_COREAPP_STARTUP_FUNCTION(installGadgetDomainVisibilityWatcher)
+
 static double computeR2(const std::vector<double> &yObs, const std::vector<double> &yHat)
 {
     const size_t n = yObs.size();
@@ -3360,7 +3436,13 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         { MaskRegion, QT_TR_NOOP("Mask Region") },
         { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
     };
+    ApplicationWindow *appWin = d_app ? d_app.data() : resolveAppWindowFromGraph(d_graph_guard);
+    const bool showAdvDomain = appWin ? appWin->showsAdvancedDomainFeatures() : false;
     for (const auto &mi : modes) {
+        if (!showAdvDomain && (mi.mode == QuickSigmoidal || mi.mode == RiseTime)
+            && d_mode != mi.mode) {
+            continue;
+        }
         QAction *act = modeMenu->addAction(tr(mi.label));
         act->setCheckable(true);
         act->setChecked(d_mode == mi.mode);
@@ -3381,6 +3463,8 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         { FitBoltzmann, QT_TR_NOOP("Boltzmann Sigmoidal") }
     };
     for (const auto &fi : fitModels) {
+        if (!showAdvDomain && fi.model == FitBoltzmann && d_fit_model != fi.model)
+            continue;
         QAction *act = fitMenu->addAction(tr(fi.label));
         act->setCheckable(true);
         act->setChecked(d_fit_model == fi.model);
@@ -6052,7 +6136,9 @@ void ImageProfileGadgetTool::showContextMenu(const QPoint &globalPos)
     QPointer<Graph> gPtr = d_graph_guard;
     QPointer<ImageProfileGadgetTool> selfPtr = this;
     connect(actClose, &QAction::triggered, this, [gPtr, selfPtr]() {
-        QTimer::singleShot(0, [gPtr, selfPtr]() {
+        if (!selfPtr)
+            return;
+        QTimer::singleShot(0, selfPtr.data(), [gPtr, selfPtr]() {
             if (gPtr && selfPtr && gPtr->activeTool() == selfPtr.data())
                 RoiGadgetTool::clearGadget(gPtr);
             else if (selfPtr)
@@ -6182,7 +6268,7 @@ bool ImageProfileGadgetTool::eventFilter(QObject *obj, QEvent *event)
         } else if (ke->key() == Qt::Key_Escape) {
             QPointer<Graph> gPtr = d_graph_guard;
             QPointer<ImageProfileGadgetTool> selfPtr = this;
-            QTimer::singleShot(0, [gPtr, selfPtr]() {
+            QTimer::singleShot(0, selfPtr.data(), [gPtr, selfPtr]() {
                 if (gPtr && selfPtr && gPtr->activeTool() == selfPtr.data())
                     RoiGadgetTool::clearGadget(gPtr);
                 else if (selfPtr)

@@ -69,7 +69,7 @@ class MultiLayer;
 typedef struct CurveLayout_struct
 {
     unsigned int lCol; //!< line color
-    int lWidth; //!< line width
+    double lWidth; //!< line width
     int lStyle; //!< line style
     int lCapStyle = 0; //!< line CapStyle
     int lJoinStyle = 0x40; //!< line JoinStyle
@@ -80,7 +80,7 @@ typedef struct CurveLayout_struct
     unsigned int symCol; //!< symbol outline color
     bool symbolFill; //!< flag: toggles symbol filling
     unsigned int fillCol; //!< symbol fill color
-    int penWidth; //!< symbol outline width
+    double penWidth; //!< symbol outline width
     int sSize; //!< symbol size
     int sType; //!< symbol type (shape)
     int connectType; //!< symbol connection type
@@ -981,6 +981,7 @@ public:
                                const QVector<double> &yHigh,
                                const QColor &fillColor = QColor(30, 102, 184, 55),
                                const QString &title = QString());
+    void removeShadedBandByTitle(const QString &title);
     void setStackOffsets(int mode /*0=Uniform,1=AutoGap*/, double yGapPct = 15.0,
                          double xGapPct = 0.0, bool normalize01 = false);
     void resetStackOffsets();
@@ -1021,6 +1022,7 @@ public:
     void setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double> &radius,
                         const QString &seriesLabel = QString(), bool thetaInRadians = false);
     bool isPolarPlot() const { return d_is_polar; }
+    bool isPoleFigurePlot() const;
     double polarRadiusMax() const { return d_polar_rmax; }
     QString ternaryLabel(int idx) const
     {

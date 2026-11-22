@@ -121,6 +121,7 @@ public:
         //! changed by hand (i.e. not equal to the app default or any preset value) are left alone.
         //! The member names are kept for Python/JSON compatibility.
         int minCurveWidth = 2;
+        double curveWidthF = 0.0; //!< Fractional curve width (0.0 = use minCurveWidth)
         int minSymbolSize = 7;
         int legendFrame = 0; // Legend::FrameStyle
         QColor pageBackground = Qt::white;
