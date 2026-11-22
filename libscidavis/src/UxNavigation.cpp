@@ -96,9 +96,9 @@ void registerUxTranslations()
         reg("Click a column header in the worksheet to select it, then press the plot button again.",
             "ワークシートの列見出しをクリックして列を選び、もう一度作図ボタンを押してください。");
         reg("Right-click the header of the column to use as X and choose \"Set Column(s) As\" > \"X\", then plot again.",
-            "X にしたい列の見出しを右クリックし、「列のプロット属性を設定」→「X」を選んでから、もう一度作図してください。");
+            "X にしたい列の見出しを右クリックし、「列の役割を設定」→「X」を選んでから、もう一度作図してください。");
         reg("Click the header of the Y column(s) to plot (Ctrl+click for several). A column becomes Y via right-click > \"Set Column(s) As\" > \"Y\".",
-            "描きたい Y 列の見出しをクリックして選んでください(複数なら Ctrl+クリック)。列を Y にするには、見出しを右クリック →「列のプロット属性を設定」→「Y」です。");
+            "描きたい Y 列の見出しをクリックして選んでください(複数なら Ctrl+クリック)。列を Y にするには、見出しを右クリック →「列の役割を設定」→「Y」です。");
         reg("Paste X and Y data from Excel (Ctrl+V) or add a column (Home > More New > Add Column).",
             "Excel から X と Y のデータを貼り付ける(Ctrl+V)か、列を追加してください(ホーム →「その他の新規作成」→「列の追加」)。");
         reg("Nothing to plot yet", "まだ作図できません");
@@ -195,7 +195,7 @@ void registerUxTranslations()
         reg("Pointer: leave zoom, reader and gadget modes (Esc)", "ポインタ: ズーム・データ読取・ガジェットのモードを解除 (Esc)");
         reg("Zoom into a dragged rectangle (Ctrl++)", "ドラッグした四角の範囲を拡大 (Ctrl++)");
         reg("Read data values by clicking points (Ctrl+D)", "点をクリックしてデータの値を読む (Ctrl+D)");
-        reg("Add text: click on the graph where it should go (Alt+T)", "テキストの追加: 入れたい位置でグラフをクリック (Alt+T)");
+        reg("Add text: click on the graph where it should go (Ctrl+Shift+T)", "テキストの追加: 入れたい位置でグラフをクリック (Ctrl+Shift+T)");
         reg("Add or rebuild the legend", "凡例を追加・作り直す");
         reg("Add error bars from a column or a percentage", "列または割合からエラーバーを付ける");
         reg("Two graphs stacked vertically", "上下 2 段のグラフ");

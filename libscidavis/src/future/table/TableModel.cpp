@@ -28,6 +28,7 @@
  ***************************************************************************/
 
 #include "core/column/Column.h"
+#include "table/AsciiTableImportFilter.h"
 #include "table/future_Table.h"
 #include "table/TableModel.h"
 #include "IconLoader.h"
@@ -109,11 +110,20 @@ QVariant TableModel::data(const QModelIndex &index, int role) const
             return QVariant(tr("invalid cell (ignored in all operations)",
                                "tooltip string for invalid rows")
                             + postfix);
-        [[fallthrough]];
+        if (d_formula_mode)
+            return QVariant(col_ptr->formula(row));
+        return QVariant(col_ptr->asStringColumn()->textAt(row) + postfix);
     case Qt::EditRole:
-        if (!d_formula_mode && col_ptr->isInvalid(row))
+        if (d_formula_mode)
+            return QVariant(col_ptr->formula(row));
+        if (col_ptr->isInvalid(row))
             return QVariant();
-        [[fallthrough]];
+        if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            QLocale noSepLocale = QLocale();
+            noSepLocale.setNumberOptions(noSepLocale.numberOptions() | QLocale::OmitGroupSeparator);
+            return QVariant(noSepLocale.toString(col_ptr->valueAt(row), 'g', 15));
+        }
+        return QVariant(col_ptr->asStringColumn()->textAt(row));
     case Qt::DisplayRole: {
         if (d_formula_mode)
             return QVariant(col_ptr->formula(row));
@@ -169,44 +179,73 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
     switch (role) {
     case Qt::EditRole: {
         const QString rawStr = value.toString();
-        d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
         if (d_formula_mode) {
+            if (row < col_ptr->rowCount() && col_ptr->formula(row) == rawStr)
+                return false;
+            d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
             col_ptr->setFormula(row, rawStr);
-        } else {
-            bool promotedToText = false;
-            if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric
-                && col_ptr->formulaIntervals().isEmpty()) {
-                const QString trimmed = rawStr.trimmed();
-                const bool isMissingSentinel = trimmed.isEmpty() || trimmed == QLatin1String("-")
-                        || trimmed == QLatin1String("--") || trimmed == QLatin1String("---")
-                        || trimmed.compare(QLatin1String("nan"), Qt::CaseInsensitive) == 0
-                        || trimmed.compare(QLatin1String("na"), Qt::CaseInsensitive) == 0
-                        || trimmed.compare(QLatin1String("n/a"), Qt::CaseInsensitive) == 0
-                        || trimmed.compare(QLatin1String("null"), Qt::CaseInsensitive) == 0;
-                if (!isMissingSentinel) {
+            d_table->endMacro();
+            return true;
+        }
+
+        const QString trimmed = rawStr.trimmed();
+        const bool isMissingSentinel = AsciiTableImportFilter::isMissingDataToken(trimmed);
+        const bool hasRowFormula =
+                (row < col_ptr->rowCount() && !col_ptr->formula(row).isEmpty());
+
+        if (!hasRowFormula && row < col_ptr->rowCount()) {
+            if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                if (isMissingSentinel) {
+                    if (col_ptr->isInvalid(row))
+                        return false;
+                } else {
                     bool numOk = false;
                     double parsed = QLocale().toDouble(trimmed, &numOk);
                     if (!numOk)
                         parsed = QLocale::c().toDouble(trimmed, &numOk);
-                    if (!numOk || !std::isfinite(parsed)) {
-                        bool hasAnyFinite = false;
-                        const int nRows = col_ptr->rowCount();
-                        for (int r = 0; r < nRows; ++r) {
-                            if (r != row && !col_ptr->isInvalid(r)
-                                && std::isfinite(col_ptr->valueAt(r))) {
-                                hasAnyFinite = true;
-                                break;
-                            }
+                    if (numOk && std::isfinite(parsed) && !col_ptr->isInvalid(row)) {
+                        const QString curEditStr = data(index, Qt::EditRole).toString();
+                        if (rawStr == curEditStr || parsed == col_ptr->valueAt(row))
+                            return false;
+                    }
+                }
+            } else if (col_ptr->columnMode() == SciDAVis::ColumnMode::Text) {
+                if (!col_ptr->isInvalid(row) && col_ptr->textAt(row) == rawStr)
+                    return false;
+            }
+        }
+
+        d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
+        bool promotedToText = false;
+        if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric
+            && col_ptr->formulaIntervals().isEmpty()) {
+            if (!isMissingSentinel) {
+                bool numOk = false;
+                double parsed = QLocale().toDouble(trimmed, &numOk);
+                if (!numOk)
+                    parsed = QLocale::c().toDouble(trimmed, &numOk);
+                if (!numOk || !std::isfinite(parsed)) {
+                    bool hasAnyFinite = false;
+                    const int nRows = col_ptr->rowCount();
+                    for (int r = 0; r < nRows; ++r) {
+                        if (r != row && !col_ptr->isInvalid(r)
+                            && std::isfinite(col_ptr->valueAt(r))) {
+                            hasAnyFinite = true;
+                            break;
                         }
-                        if (!hasAnyFinite) {
-                            col_ptr->setColumnMode(SciDAVis::ColumnMode::Text);
-                            col_ptr->setTextAt(row, rawStr);
-                            promotedToText = true;
-                        }
+                    }
+                    if (!hasAnyFinite) {
+                        col_ptr->setColumnMode(SciDAVis::ColumnMode::Text);
+                        col_ptr->setTextAt(row, rawStr);
+                        promotedToText = true;
                     }
                 }
             }
-            if (!promotedToText)
+        }
+        if (!promotedToText) {
+            if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric && isMissingSentinel)
+                col_ptr->asStringColumn()->setTextAt(row, QString());
+            else
                 col_ptr->asStringColumn()->setTextAt(row, rawStr);
         }
         d_table->endMacro();

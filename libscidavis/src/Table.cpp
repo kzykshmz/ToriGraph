@@ -1648,25 +1648,145 @@ bool Table::pasteText(const QString &rawText, bool transposed)
     QString normalized = rawText;
     normalized.replace("\r\n", "\n");
     normalized.replace('\r', '\n');
-    QStringList lines = normalized.split('\n');
+
+    auto splitLogicalRecords = [](const QString &src) -> QStringList {
+        if (!src.contains(QLatin1Char('"')))
+            return src.split(QLatin1Char('\n'));
+        QStringList out;
+        int recStart = 0;
+        bool inQuotes = false;
+        bool atFieldStart = true;
+        const int n = src.size();
+        for (int i = 0; i < n; ++i) {
+            const QChar ch = src.at(i);
+            if (inQuotes) {
+                if (ch == QLatin1Char('"')) {
+                    if (i + 1 < n && src.at(i + 1) == QLatin1Char('"'))
+                        ++i;
+                    else
+                        inQuotes = false;
+                }
+            } else if (ch == QLatin1Char('\n')) {
+                out.append(src.mid(recStart, i - recStart));
+                recStart = i + 1;
+                atFieldStart = true;
+            } else if (ch == QLatin1Char('\t') || ch == QLatin1Char(',')
+                       || ch == QLatin1Char(';')) {
+                atFieldStart = true;
+            } else if (atFieldStart && ch == QLatin1Char('"')) {
+                inQuotes = true;
+                atFieldStart = false;
+            } else if (ch != QLatin1Char(' ')) {
+                atFieldStart = false;
+            }
+        }
+        if (recStart <= n)
+            out.append(src.mid(recStart));
+        return out;
+    };
+
+    auto hasUnquotedChar = [](const QString &src, QChar target) -> bool {
+        if (!src.contains(target))
+            return false;
+        if (!src.contains(QLatin1Char('"')))
+            return true;
+        bool inQuotes = false;
+        bool atFieldStart = true;
+        const int n = src.size();
+        for (int i = 0; i < n; ++i) {
+            const QChar ch = src.at(i);
+            if (inQuotes) {
+                if (ch == QLatin1Char('"')) {
+                    if (i + 1 < n && src.at(i + 1) == QLatin1Char('"'))
+                        ++i;
+                    else
+                        inQuotes = false;
+                }
+            } else if (ch == target) {
+                return true;
+            } else if (ch == QLatin1Char('\n') || ch == QLatin1Char('\t')
+                       || ch == QLatin1Char(',') || ch == QLatin1Char(';')) {
+                atFieldStart = true;
+            } else if (atFieldStart && ch == QLatin1Char('"')) {
+                inQuotes = true;
+                atFieldStart = false;
+            } else if (ch != QLatin1Char(' ')) {
+                atFieldStart = false;
+            }
+        }
+        return false;
+    };
+
+    auto splitDelimitedLine = [](const QString &line, QChar sep) -> QStringList {
+        if (!line.contains(QLatin1Char('"'))) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            return line.split(sep, Qt::KeepEmptyParts);
+#else
+            return line.split(sep, QString::KeepEmptyParts);
+#endif
+        }
+        QStringList cells;
+        const int n = line.size();
+        int i = 0;
+        while (true) {
+            int scan = i;
+            if (sep != QLatin1Char('\t')) {
+                while (scan < n && line.at(scan) == QLatin1Char(' '))
+                    ++scan;
+            }
+            if (scan < n && line.at(scan) == QLatin1Char('"')) {
+                QString val;
+                int p = scan + 1;
+                while (p < n) {
+                    if (line.at(p) == QLatin1Char('"')) {
+                        if (p + 1 < n && line.at(p + 1) == QLatin1Char('"')) {
+                            val.append(QLatin1Char('"'));
+                            p += 2;
+                        } else {
+                            ++p;
+                            break;
+                        }
+                    } else {
+                        val.append(line.at(p++));
+                    }
+                }
+                while (p < n && line.at(p) != sep) {
+                    if (line.at(p) != QLatin1Char(' '))
+                        val.append(line.at(p));
+                    ++p;
+                }
+                cells.append(val);
+                if (p < n && line.at(p) == sep) {
+                    i = p + 1;
+                    continue;
+                }
+                break;
+            }
+            int end = i;
+            while (end < n && line.at(end) != sep)
+                ++end;
+            cells.append(line.mid(i, end - i));
+            if (end < n && line.at(end) == sep) {
+                i = end + 1;
+                continue;
+            }
+            break;
+        }
+        return cells;
+    };
+
+    QStringList lines = splitLogicalRecords(normalized);
     while (!lines.isEmpty() && lines.last().isEmpty())
         lines.removeLast();
     if (lines.isEmpty())
         return false;
 
-    bool hasTab = normalized.contains('\t');
-    bool hasComma = !hasTab && normalized.contains(',');
-    bool hasSemicolon = !hasTab && !hasComma && normalized.contains(';');
+    bool hasTab = hasUnquotedChar(normalized, QLatin1Char('\t'));
+    bool hasComma = !hasTab && hasUnquotedChar(normalized, QLatin1Char(','));
+    bool hasSemicolon = !hasTab && !hasComma && hasUnquotedChar(normalized, QLatin1Char(';'));
 
     auto isMissingToken = [](const QString &s) -> bool {
-        if (s.isEmpty() || s == "-" || s == "--" || s == "---")
-            return true;
-        if (s.compare("nan", Qt::CaseInsensitive) == 0
-            || s.compare("na", Qt::CaseInsensitive) == 0
-            || s.compare("n/a", Qt::CaseInsensitive) == 0
-            || s.compare("null", Qt::CaseInsensitive) == 0)
-            return true;
-        return false;
+        return AsciiTableImportFilter::isMissingDataToken(s);
     };
 
     static const QRegularExpression kGroupedNumberRx(
@@ -1752,8 +1872,13 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             if (rawLine.isEmpty())
                 continue;
             ++nonEmptyDataCount;
-            if (hasUnquotedComma(rawLine))
+            if (hasUnquotedComma(rawLine)) {
                 anyUnquotedDataComma = true;
+                if (rawLine.contains(QLatin1Char('"'))) {
+                    allValidSingleCol = false;
+                    break;
+                }
+            }
             const QString uq = unquoteCellTrim(rawLine);
             if (isGroupedNumberToken(uq)) {
                 ++groupedNumCount;
@@ -1776,11 +1901,11 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             Q_UNUSED(dv);
         }
         const int selCols = selectedColumnCount(false);
-        const bool singleDestCol = (selCols == 1) || (selCols == 0 && numCols() <= 1);
-        const bool singleCellPaste =
-                (headerLineCount == 0 && nonEmptyDataCount == 1 && singleDestCol);
-        if (allValidSingleCol && groupedNumCount > 0
-            && (plainNumCount >= 1 || singleCellPaste || !anyUnquotedDataComma)) {
+        const bool explicitMultiColSingleRow =
+                (selCols >= 2 && headerLineCount == 0 && nonEmptyDataCount == 1
+                 && anyUnquotedDataComma);
+        Q_UNUSED(plainNumCount);
+        if (allValidSingleCol && groupedNumCount > 0 && !explicitMultiColSingleRow) {
             hasComma = false;
             hasSemicolon = false;
             keepSingleColumn = true;
@@ -1849,23 +1974,11 @@ bool Table::pasteText(const QString &rawText, bool transposed)
     for (const QString &line : lines) {
         QStringList rowCells;
         if (hasTab) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            rowCells = line.split('\t', Qt::KeepEmptyParts);
-#else
-            rowCells = line.split('\t', QString::KeepEmptyParts);
-#endif
+            rowCells = splitDelimitedLine(line, QLatin1Char('\t'));
         } else if (hasComma) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            rowCells = line.split(',', Qt::KeepEmptyParts);
-#else
-            rowCells = line.split(',', QString::KeepEmptyParts);
-#endif
+            rowCells = splitDelimitedLine(line, QLatin1Char(','));
         } else if (hasSemicolon) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            rowCells = line.split(';', Qt::KeepEmptyParts);
-#else
-            rowCells = line.split(';', QString::KeepEmptyParts);
-#endif
+            rowCells = splitDelimitedLine(line, QLatin1Char(';'));
         } else if (keepSingleColumn) {
             rowCells << line.trimmed();
         } else {
@@ -1959,8 +2072,37 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             }
         };
 
+        auto normalizeHeaderCell = [](QString s) -> QString {
+            s.replace(QLatin1Char('\r'), QLatin1Char(' '));
+            s.replace(QLatin1Char('\n'), QLatin1Char(' '));
+            return s.simplified();
+        };
+
         rowNumericStatsOnNumCols(0, row0HasNumericOnNumCol, row0HasNonNumericHeaderOnNumCol);
-        if (row0HasNonNumericHeaderOnNumCol && !row0HasNumericOnNumCol) {
+        auto allRowsPureNumericFrom = [&](int fromRow) -> bool {
+            if (fromRow >= pastedRows)
+                return false;
+            bool sawAnyNum = false;
+            for (int r = fromRow; r < pastedRows; ++r) {
+                bool rNum = false, rTxt = false;
+                rowNumericStatsOnNumCols(r, rNum, rTxt);
+                if (rTxt)
+                    return false;
+                if (rNum)
+                    sawAnyNum = true;
+            }
+            return sawAnyNum;
+        };
+        bool row0AllColsNonBlank = (pastedCols >= 2 && grid[0].size() >= pastedCols);
+        for (int c = 0; row0AllColsNonBlank && c < pastedCols; ++c) {
+            if (grid[0][c].trimmed().isEmpty())
+                row0AllColsNonBlank = false;
+        }
+        const bool allowMixedHeaderRow0 = row0HasNonNumericHeaderOnNumCol && row0HasNumericOnNumCol
+                && row0AllColsNonBlank
+                && (allRowsPureNumericFrom(1)
+                    || (pastedRows >= 3 && allRowsPureNumericFrom(2)));
+        if (row0HasNonNumericHeaderOnNumCol && (!row0HasNumericOnNumCol || allowMixedHeaderRow0)) {
             bool row1AnyNum = false;
             bool row1AnyNonNum = false;
             rowNumericStatsOnNumCols(1, row1AnyNum, row1AnyNonNum);
@@ -1989,7 +2131,8 @@ bool Table::pasteText(const QString &rawText, bool transposed)
                     Column *colPtr = column(startCol + c);
                     if (!colPtr)
                         continue;
-                    const QString h0 = (c < grid[0].size()) ? grid[0][c].trimmed() : QString();
+                    const QString h0 =
+                            (c < grid[0].size()) ? normalizeHeaderCell(grid[0][c]) : QString();
                     if (headerRows == 1) {
                         if (!h0.isEmpty()) {
                             QString shortName, parsedLongName, parsedUnit;
@@ -2000,7 +2143,8 @@ bool Table::pasteText(const QString &rawText, bool transposed)
                                 colPtr->setUnits(parsedUnit);
                         }
                     } else {
-                        const QString h1 = (c < grid[1].size()) ? grid[1][c].trimmed() : QString();
+                        const QString h1 =
+                                (c < grid[1].size()) ? normalizeHeaderCell(grid[1][c]) : QString();
                         QString short0, long0, unit0;
                         AsciiTableImportFilter::splitHeaderNameAndUnits(h0, short0, long0, unit0);
                         const QString unit1 = stripOuterUnitBrackets(h1);

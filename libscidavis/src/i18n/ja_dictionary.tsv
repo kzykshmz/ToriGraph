@@ -5673,12 +5673,12 @@ Powder XRD K-alpha2 Stripping, Scherrer & Williamson-Hall Analysis	粉末X線回
 VASP Electronic Band & DOS Plotter...	VASPバンド構造・状態密度 (DOS) 作図...
 VASP Bands/DOS	VASP電子状態
 VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter	VASP (EIGENVAL / DOSCAR) 電子バンド構造・状態密度プロッタ
-Export Python	Python出力
-Export Python Script	Pythonスクリプト出力
-Export Active Graph to Python Script...	現在のグラフをPythonスクリプトとして出力...
-Export Reproducible &Python Script...	再現用Pythonスクリプトを出力(&P)...
-Export Reproducible Python Script...	再現用Pythonスクリプトを出力...
-Export Reproducible Python Script — %1	再現用Pythonスクリプト出力 — %1
+Export Python	Pythonエクスポート
+Export Python Script	Pythonスクリプトエクスポート
+Export Active Graph to Python Script...	現在のグラフをPythonスクリプトとしてエクスポート...
+Export Reproducible &Python Script...	再現用Pythonスクリプトをエクスポート(&P)...
+Export Reproducible Python Script...	再現用Pythonスクリプトをエクスポート...
+Export Reproducible Python Script — %1	再現用Pythonスクリプトエクスポート — %1
 Generate Reproducible Python Script from Active Graph	アクティブなグラフを再現するPythonスクリプトを生成
 Please open or select a Graph, Worksheet, or Matrix window first.	先にグラフ、ワークシート、または行列ウィンドウを開くか選択してください。
 Could not generate a Python script for the active window.	アクティブなウィンドウからPythonスクリプトを生成できませんでした。
@@ -5819,7 +5819,7 @@ Set Weibull Probability Axis	ワイブル確率軸を設定
 3D Surface, Scatter & Bar Plots	3D曲面・3D散布図・3D棒グラフ
 Advanced Fit	高度な回帰
 Auto Voigt, Batch & 2D Matrix Peak Analysis	自動Voigt・バッチ解析・2D行列ピーク解析
-Copy High-DPI Image, Export PDF, or Export Python Script	高DPI画像コピー・PDF出力・Pythonスクリプト出力
+Copy High-DPI Image, Export PDF, or Export Python Script	高DPI画像コピー・PDFエクスポート・Pythonスクリプトエクスポート
 Copy/Paste Graph Format & Batch Plot	グラフ書式のコピー/貼り付け・バッチプロット
 Create Matrix, Add Column, or Merge Graphs	行列の新規作成・列の追加・グラフ結合
 Frame Style, Page Size & DPI, Trim Page, Square 70% & Color Palette	枠線様式・ページサイズとDPI・余白トリミング・正方形70%・カラーパレット
@@ -5832,7 +5832,7 @@ LOWESS, Whittaker, IIR & Matrix 2D Filters	LOWESS・Whittaker・IIR・2D行列�
 Lock or Unlock Active Graph Aspect Ratio on Window Resize	ウィンドウサイズ変更時にアクティブなグラフの縦横比を固定/解除
 Mask Outlier Points, Mask Region, or Clear Masks	外れ値点マスク・領域マスク・マスク解除
 Materials & Tools	材料・曲線ツール
-More Export	その他出力
+More Export	その他エクスポート
 More Gadgets	その他ガジェット
 More New	その他新規
 More Peaks	ピーク詳細
@@ -6053,6 +6053,34 @@ Find in Worksheet	ワークシート内を検索
 Find and Replace in Worksheet	ワークシート内の検索と置換
 Graph Style Preset Manager	グラフスタイルプリセット管理
 Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets	ページ寸法・縦横比・DPI・フォント・表示倍率 — クリックでクイック設定
+Ga&dgets	ガジェット(&D)
+ToriGraph projects & data	ToriGraph プロジェクト・データ
+Excel & CSV / Data	Excel・CSV・データ
+The file <b>%1</b> cannot be opened as a project or worksheet.<br>Supported formats: ToriGraph projects (.sciprj, .sciprj.gz), Excel workbooks (.xlsx, .xlsm), and text data (.csv, .tsv, .txt, .dat).	ファイル <b>%1</b> はプロジェクトまたはワークシートとして開けません。<br>対応形式: ToriGraph プロジェクト (.sciprj, .sciprj.gz)、Excel ブック (.xlsx, .xlsm)、テキストデータ (.csv, .tsv, .txt, .dat)。
+Unsupported image or vector format: <b>%1</b>	未対応の画像・ベクター形式です: <b>%1</b>
+Copied annotation (paste in ToriGraph duplicates the annotation; paste in PowerPoint inserts the whole graph).	注釈をコピーしました (ToriGraph 内の貼り付けでは注釈を複製し、PowerPoint への貼り付けではグラフ全体を挿入します)。
+Close Workbook	ブックを閉じる
+Workbook "%1" has %2 sheets (active sheet: "%3").\nWhat would you like to do?	ブック "%1" には %2 枚のシートがあります (表示中のシート: "%3")。\nどの操作を行いますか?
+Hide Workbook	ブックを非表示にする
+Delete This Sheet Only	このシートだけ削除
+Delete Entire Workbook	ブック全体を削除
+Delete Workbook %1	ブック %1 を削除
+York, Global, Piecewise, Robust, 3D Surface & Model Compare	York・グローバル・区分線形・ロバスト・3D曲面・モデル比較
+Welch PSD & FSD Deconvolution	Welch PSD・FSDデコンボリューション
+Curve Math, Fill Between Curves & Graph Digitizer	曲線演算・曲線間塗りつぶし・デジタイザ
+Normality, Outlier, Two-Way ANOVA, Nonparametric & Paired Comparison	正規性・外れ値・二元配置分散分析・ノンパラメトリック・対応のある比較
+PCA Biplot, Correlation Matrix & Clustering	主成分分析 (PCA)・相関行列・クラスタリング
+Add text: click on the graph where it should go (Ctrl+Shift+T)	テキストの追加: 入れたい位置でグラフをクリック (Ctrl+Shift+T)
+Ctrl+Shift+T	Ctrl+Shift+T
+Ctrl+Shift+E	Ctrl+Shift+E
+Ctrl+Shift+A	Ctrl+Shift+A
+Ctrl+Alt+S	Ctrl+Alt+S
+Ctrl+Shift+L	Ctrl+Shift+L
+Ctrl+Shift+X	Ctrl+Shift+X
+Ctrl+Shift+D	Ctrl+Shift+D
+Ctrl+Shift+G	Ctrl+Shift+G
+Ctrl+Alt+R	Ctrl+Alt+R
+Ctrl+Shift+B	Ctrl+Shift+B
 
 # ---- 文脈つきの訳 (H1: 同じ英語でも画面によって意味が違うもの) ----
 Area	面グラフ	CurvesDialog

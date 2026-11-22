@@ -42,8 +42,11 @@ OpenProjectDialog::OpenProjectDialog(QWidget *parent, bool extended, Qt::WindowF
     setWindowTitle(tr("Open Project"));
     setFileMode(ExistingFile);
     QStringList filters;
-    filters << tr("ToriGraph project") + " (*.sciprj)"
+    filters << tr("ToriGraph projects & data")
+                    + " (*.sciprj *.sciprj.gz *.xlsx *.xlsm *.csv *.tsv *.txt *.dat)"
+            << tr("ToriGraph project") + " (*.sciprj)"
             << tr("Compressed ToriGraph project") + " (*.sciprj.gz)"
+            << tr("Excel & CSV / Data") + " (*.xlsx *.xlsm *.csv *.tsv *.txt *.dat)"
             << tr("QtiPlot project") + " (*.qti)"
             << tr("Compressed QtiPlot project") + " (*.qti.gz)"
 #ifdef ORIGIN_IMPORT
@@ -99,10 +102,13 @@ OpenProjectDialog::OpenProjectDialog(QWidget *parent, bool extended, Qt::WindowF
 
 void OpenProjectDialog::updateAdvancedOptions(const QString &filter)
 {
-    if (filter.contains("*.ogm") || filter.contains("*.ogw"))
+    if (filter.contains("*.ogm") || filter.contains("*.ogw")
+        || (filter.contains("*.xlsx") && !filter.contains("*.sciprj"))) {
+        d_open_mode->setCurrentIndex(0);
         d_open_mode->setEnabled(false);
-    else
+    } else {
         d_open_mode->setEnabled(true);
+    }
 
     if (filter.contains("*.ogm") || filter.contains("*.ogw") || filter.contains("*.opj")
         || filter.contains("*.opju") || filter.contains("*.ogg") || filter.contains("*.org"))
