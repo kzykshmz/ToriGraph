@@ -11,6 +11,7 @@
 
 #include "ApplicationWindow.h"
 #include "ArrowMarker.h"
+#include "ExtraPlotTypes.h"
 #include "Graph.h"
 #include "GraphStatsAndSurfaceFit.h"
 #include "I18nJapanese.h"
@@ -1700,6 +1701,10 @@ void registerMatSciTranslationsOnce()
     reg("Kocks-Mecking Stage-III (θ vs σt)", "Kocks-Mecking ステージIII (θ vs σt)");
     reg("HCP / Hexagonal (100, 002, 101...)", "HCP / 六方最密 (100, 002, 101...)");
     reg("Axial Ratio c/a (for HCP):", "軸比 c/a (HCP用):");
+    reg("Append results to TensileSummary worksheet",
+        "結果を TensileSummary ワークシートに追記");
+    reg("Enable energy window (E - E_F)", "エネルギー表示範囲を指定 (E - E_F)");
+    reg("Stage-III fit", "ステージIII 線形外挿");
 }
 
 bool readMatSciCell(const Column *col, int row, double &val)
@@ -1779,12 +1784,60 @@ Table *findActiveOrFirstTable(ApplicationWindow *app)
 {
     if (!app)
         return nullptr;
+    auto tableFromGraph = [&](Graph *g) -> Table * {
+        if (!g)
+            return nullptr;
+        const QString sel = g->selectedCurveTitle();
+        if (!sel.isEmpty()) {
+            if (auto *dc = dynamic_cast<DataCurve *>(g->curve(sel))) {
+                if (dc->table())
+                    return dc->table();
+            }
+        }
+        Table *fallback = nullptr;
+        for (int i = 0; i < g->curves(); ++i) {
+            auto *dc = dynamic_cast<DataCurve *>(g->curve(i));
+            if (!dc || !dc->table())
+                continue;
+            if (!dc->table()->name().startsWith(QLatin1String("GadgetFit_")))
+                return dc->table();
+            if (!fallback)
+                fallback = dc->table();
+        }
+        if (fallback)
+            return fallback;
+        for (const QString &kind : { QStringLiteral("ToriDensity2D"), QStringLiteral("ToriPoleFigure") }) {
+            const QString tag = ExtraPlotTypes::graphTag(g, kind);
+            if (!tag.isEmpty()) {
+                static const QRegularExpression rxTbl(QStringLiteral("table=\"([^\"]+)\""));
+                const QRegularExpressionMatch m = rxTbl.match(tag);
+                if (m.hasMatch()) {
+                    if (Table *t = app->table(m.captured(1)))
+                        return t;
+                }
+            }
+        }
+        return nullptr;
+    };
     if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
         if (sub->inherits("Table"))
             return static_cast<Table *>(sub);
         if (QWidget *w = sub->widget()) {
             if (w->inherits("Table"))
                 return static_cast<Table *>(w);
+        }
+        MultiLayer *ml = nullptr;
+        if (sub->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub);
+        else if (sub->widget() && sub->widget()->inherits("MultiLayer"))
+            ml = static_cast<MultiLayer *>(sub->widget());
+        if (ml) {
+            if (Table *gt = tableFromGraph(ml->activeGraph()))
+                return gt;
+            for (Graph *lg : ml->layersList()) {
+                if (Table *gt = tableFromGraph(lg))
+                    return gt;
+            }
         }
     }
     const QList<Table *> tbls = collectProjectTables(app);
@@ -1818,9 +1871,13 @@ void applyArialToMatSciGraph(Graph *g)
 {
     if (!g)
         return;
-    auto normArial = [](QFont f, int fallbackPt) -> QFont {
-        const int pt = (f.pointSize() > 0) ? f.pointSize() : fallbackPt;
-        QFont out(QStringLiteral("Arial"), pt, QFont::Normal);
+    auto normArial = [](QFont f, double fallbackPt) -> QFont {
+        const double pt = (f.pointSizeF() > 0.0)
+                ? f.pointSizeF()
+                : ((f.pointSize() > 0) ? double(f.pointSize()) : fallbackPt);
+        QFont out(QStringLiteral("Arial"));
+        out.setPointSizeF(pt);
+        out.setWeight(QFont::Normal);
         out.setBold(false);
         out.setStyleStrategy(f.styleStrategy());
         return out;
@@ -2433,6 +2490,26 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
             if (topLayer)
                 topLayer->replot();
         }
+    }
+    if (app) {
+        QString logText = QStringLiteral(
+                "[%1] Arrhenius Analysis (%2): Ea = %3 ± %4 kJ/mol (%5 ± %6 eV), ln A = %7, R² = %8 (n = %9")
+                .arg(QLocale().toString(QDateTime::currentDateTime()),
+                     srcTable ? srcTable->name() : QStringLiteral("Data"))
+                .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
+                .arg(res.activationEnergyEV, 0, 'f', 4)
+                .arg(res.activationEnergyEVSE, 0, 'f', 4)
+                .arg(res.lnPreExponential, 0, 'f', 3)
+                .arg(res.rSquare, 0, 'f', 5)
+                .arg(n);
+        if (res.excludedCount > 0)
+            logText += QStringLiteral(", %1 excluded").arg(res.excludedCount);
+        logText += QStringLiteral(")\n");
+        for (const QString &note : res.notes)
+            logText += QStringLiteral("    ! ") + note + QStringLiteral("\n");
+        app->updateLog(logText);
+        app->modifiedProject();
     }
     return res;
 }
@@ -3576,6 +3653,29 @@ void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
 
     QCheckBox *chkCelsius =
             new QCheckBox(QObject::tr("Temperature in Celsius (°C -> +273.15 K)"), &dlg);
+    auto syncArrheniusTempUnit = [&]() {
+        const int tblIdx = cbTable->currentIndex();
+        if (tblIdx < 0 || tblIdx >= tables.size())
+            return;
+        Column *cT = resolveMatSciColumn(tables[tblIdx], cbTemp->currentText());
+        if (!cT)
+            return;
+        const QString u = cT->units().trimmed();
+        const QString meta = u + QLatin1Char(' ') + cT->longName() + QLatin1Char(' ')
+                + cT->comment().section(QLatin1Char('\n'), 0, 0) + QLatin1Char(' ') + cT->name();
+        if (meta.contains(QString::fromUtf8("°C"), Qt::CaseInsensitive)
+            || meta.contains(QString::fromUtf8("℃"))
+            || meta.contains(QLatin1String("degc"), Qt::CaseInsensitive)
+            || meta.contains(QLatin1String("celsius"), Qt::CaseInsensitive)) {
+            chkCelsius->setChecked(true);
+        } else if (u.compare(QLatin1String("K"), Qt::CaseInsensitive) == 0
+                   || u.compare(QLatin1String("Kelvin"), Qt::CaseInsensitive) == 0) {
+            chkCelsius->setChecked(false);
+        }
+    };
+    syncArrheniusTempUnit();
+    QObject::connect(cbTemp, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncArrheniusTempUnit(); });
     QCheckBox *chk1000 = new QCheckBox(QObject::tr("Plot vs. 1000 / T (K^-1)"), &dlg);
     chk1000->setChecked(true);
     QCheckBox *chkSigmaT =
@@ -4596,19 +4696,59 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         }
     }
 
+    const QByteArray prevPropKey =
+            (QStringLiteral("_toriTensileItems_") + srcCurve->title().text()).toUtf8();
+    QVariantMap prevItems = targetGraph->plotWidget()
+            ? targetGraph->plotWidget()->property(prevPropKey.constData()).toMap()
+            : QVariantMap();
+    QVariantMap nextItems = prevItems;
+
+    if (plotConstruction && app) {
+        const QString oldBand = prevItems.value(QStringLiteral("bandTitle")).toString();
+        if (!oldBand.isEmpty())
+            targetGraph->removeShadedBandByTitle(oldBand);
+        if (targetGraph->curves() <= 2) {
+            targetGraph->removeShadedBandByTitle(QStringLiteral("Elastic fit range"));
+            targetGraph->removeShadedBandByTitle(QStringLiteral("弾性域フィット範囲"));
+        }
+        const QString oldCv = prevItems.value(QStringLiteral("curveTitle")).toString();
+        if (!oldCv.isEmpty() && targetGraph->curveIndex(oldCv) >= 0)
+            targetGraph->removeCurve(oldCv);
+        if (prevItems.contains(QStringLiteral("refValue"))) {
+            const double prevRef = prevItems.value(QStringLiteral("refValue")).toDouble();
+            const QVector<Graph::ReferenceLineSpec> rls = targetGraph->referenceLines();
+            for (int ri = rls.size() - 1; ri >= 0; --ri) {
+                if (rls[ri].orientation == 0 && rls[ri].style == Qt::DotLine
+                    && std::fabs(rls[ri].value - prevRef) < 1e-5) {
+                    targetGraph->removeReferenceLine(ri);
+                    break;
+                }
+            }
+        }
+    }
+    if (addCallout && prevItems.contains(QStringLiteral("calloutTid"))) {
+        const long oldTid = prevItems.value(QStringLiteral("calloutTid")).toLongLong();
+        if (oldTid >= 0 && targetGraph->textMarkerKeys().contains(int(oldTid))
+            && targetGraph->textMarker(oldTid) != targetGraph->legend()) {
+            targetGraph->setSelectedMarker(oldTid, false);
+            targetGraph->removeMarker();
+        }
+    }
+
     if (plotConstruction && app) {
         // Shaded band over the strain range used for the elastic fit (F3)
         if (res.elasticXMax > res.elasticXMin) {
             const QVector<double> bx = { res.elasticXMin, res.elasticXMax };
             const QVector<double> bLo = { 0.0, 0.0 };
             const QVector<double> bHi = { res.utsY, res.utsY };
-            const QString bandTitle = graphHasCjk
-                    ? QStringLiteral("弾性域フィット範囲")
-                    : QStringLiteral("Elastic fit range");
+            const QString bandTitle = QStringLiteral("_TensileElasticBand_")
+                    + srcCurve->title().text();
             if (QwtPlotItem *band = targetGraph->addShadedBand(bx, bLo, bHi,
                                                                 QColor(16, 150, 110, 40), bandTitle)) {
                 band->setAxis(srcCurve->xAxis(), srcCurve->yAxis());
                 band->setZ(0.5);
+                band->setItemAttribute(QwtPlotItem::Legend, false);
+                nextItems[QStringLiteral("bandTitle")] = bandTitle;
             }
         }
 
@@ -4638,6 +4778,9 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             cOff->setAxis(srcCurve->xAxis(), srcCurve->yAxis());
             targetGraph->addFitCurve(cOff);
             res.constructionCurveTitle = cOff->title().text();
+            nextItems[QStringLiteral("curveTitle")] = res.constructionCurveTitle;
+            if (targetGraph->legend())
+                targetGraph->legend()->setText(targetGraph->legendText());
         }
 
         Graph::ReferenceLineSpec refSpec;
@@ -4653,6 +4796,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                           .arg(res.offsetYieldY, 0, 'f', 1)
                           .arg(stressUnit);
         targetGraph->addReferenceLine(refSpec);
+        nextItems[QStringLiteral("refValue")] = res.offsetYieldY;
     }
 
     if (addCallout) {
@@ -4686,7 +4830,11 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                                                   minX + 0.28 * xSpanAll));
         const double calloutY = 0.42 * res.utsY;
         addMatSciCalloutBox(targetGraph, calloutX, calloutY, callout);
+        if (!targetGraph->textMarkerKeys().isEmpty())
+            nextItems[QStringLiteral("calloutTid")] = qlonglong(targetGraph->textMarkerKeys().last());
     }
+    if (targetGraph->plotWidget() && (plotConstruction || addCallout))
+        targetGraph->plotWidget()->setProperty(prevPropKey.constData(), nextItems);
 
     targetGraph->replot();
     if (res.plot && !beforeSnap.isEmpty()) {
@@ -4902,10 +5050,103 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     sbElasticMax->setValue(mem.valid ? mem.elasticMax : 0.30);
     sbElasticMax->setEnabled(!chkAutoElastic->isChecked());
 
+    auto syncElasticPreview = [&](bool overwriteValues) {
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
+        const int uMode = cbStrainUnit->currentData().toInt();
+        bool inPct = (uMode != 0);
+        double detMin = qNaN, detMax = qNaN;
+        if (cbSourceMode->currentData().toInt() == 1) {
+            const int tIdx = cbTable->currentIndex();
+            if (tIdx >= 0 && tIdx < tables.size()) {
+                Table *t = tables[tIdx];
+                Column *cX = resolveMatSciColumn(t, cbStrainCol->currentText());
+                Column *cY = resolveMatSciColumn(t, cbStressCol->currentText());
+                if (cX && cY) {
+                    const int nR = std::min(cX->rowCount(), cY->rowCount());
+                    double maxX = -1e300, maxY = -1e300;
+                    int utsR = -1;
+                    for (int r = 0; r < nR; ++r) {
+                        double xv = 0.0, yv = 0.0;
+                        if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
+                            continue;
+                        maxX = std::max(maxX, xv);
+                        if (yv > maxY) {
+                            maxY = yv;
+                            utsR = r;
+                        }
+                    }
+                    if (uMode == 1 || uMode == 0) {
+                        inPct = (uMode == 1);
+                    } else {
+                        int vote = classifyStrainUnitText(cX->units(), true);
+                        if (vote < 0)
+                            vote = classifyStrainUnitText(cX->longName(), false);
+                        inPct = (vote >= 0) ? (vote == 1) : (maxX > 1.2);
+                    }
+                    if (utsR >= 2 && maxY > 0.0) {
+                        double xLo = qNaN, xHi = qNaN;
+                        for (int r = 0; r <= utsR; ++r) {
+                            double xv = 0.0, yv = 0.0;
+                            if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
+                                continue;
+                            if (yv >= 0.10 * maxY && yv <= 0.55 * maxY) {
+                                if (!std::isfinite(xLo))
+                                    xLo = xv;
+                                xHi = xv;
+                            }
+                        }
+                        if (std::isfinite(xLo) && std::isfinite(xHi) && xHi > xLo) {
+                            detMin = xLo;
+                            detMax = xHi;
+                        }
+                    }
+                }
+            }
+        } else {
+            const int gIdx = cbGraph->currentIndex();
+            if (gIdx >= 0 && gIdx < graphs.size()) {
+                const TensileResult pr = analyzeTensile(
+                        nullptr, graphs[gIdx], cbCurve->currentText(),
+                        sbOffsetPct->value() / 100.0, uMode, qNaN, qNaN, false, false, false);
+                if (pr.valid) {
+                    inPct = pr.strainInPercent;
+                    detMin = pr.elasticXMin;
+                    detMax = pr.elasticXMax;
+                }
+            }
+        }
+        const QString suf = inPct ? QStringLiteral(" %") : QStringLiteral(" (-)");
+        sbElasticMin->setSuffix(suf);
+        sbElasticMax->setSuffix(suf);
+        sbElasticMin->setSingleStep(inPct ? 0.02 : 0.0002);
+        sbElasticMax->setSingleStep(inPct ? 0.05 : 0.0005);
+        if ((overwriteValues || chkAutoElastic->isChecked()) && std::isfinite(detMin)
+            && std::isfinite(detMax) && detMax > detMin) {
+            sbElasticMin->setValue(detMin);
+            sbElasticMax->setValue(detMax);
+        }
+    };
+
     QObject::connect(chkAutoElastic, &QCheckBox::toggled, &dlg, [&](bool autoOn) {
         sbElasticMin->setEnabled(!autoOn);
         sbElasticMax->setEnabled(!autoOn);
+        if (autoOn)
+            syncElasticPreview(true);
     });
+    QObject::connect(cbSourceMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(chkAutoElastic->isChecked()); });
+    QObject::connect(cbGraph, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(chkAutoElastic->isChecked()); });
+    QObject::connect(cbCurve, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(true); });
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(chkAutoElastic->isChecked()); });
+    QObject::connect(cbStrainCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(true); });
+    QObject::connect(cbStressCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(true); });
+    QObject::connect(cbStrainUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncElasticPreview(chkAutoElastic->isChecked()); });
 
     QCheckBox *chkPlotConstruct = new QCheckBox(
             QObject::tr("Plot 0.2% offset construction line & yield marker"), &dlg);
@@ -4918,6 +5159,10 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     QCheckBox *chkTrueTable =
             new QCheckBox(QObject::tr("Generate True Stress - True Strain worksheet"), &dlg);
     chkTrueTable->setChecked(false);
+
+    QCheckBox *chkSummarySheet =
+            new QCheckBox(QObject::tr("Append results to TensileSummary worksheet"), &dlg);
+    chkSummarySheet->setChecked(false);
 
     if (cbSourceMode->count() > 1)
         form->addRow(QObject::tr("Data Source:"), cbSourceMode);
@@ -4934,7 +5179,9 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     form->addRow(QString(), chkPlotConstruct);
     form->addRow(QString(), chkCallout);
     form->addRow(QString(), chkTrueTable);
+    form->addRow(QString(), chkSummarySheet);
     syncSourceVisibility();
+    syncElasticPreview(!mem.valid || chkAutoElastic->isChecked());
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -5006,6 +5253,56 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
             app, chosenGraph, chosenCurve, offFrac, strainMode, eMin, eMax,
             chkPlotConstruct->isChecked(), chkCallout->isChecked(),
             chkTrueTable->isChecked());
+
+    if (trRes.valid && chkSummarySheet->isChecked()) {
+        Table *sumTbl = app->table(QStringLiteral("TensileSummary"));
+        int rowIdx = 0;
+        if (!sumTbl || sumTbl->numCols() < 9) {
+            sumTbl = app->newTable(QStringLiteral("TensileSummary"), 1, 9);
+            if (sumTbl) {
+                sumTbl->setHeader(QStringList()
+                                  << QStringLiteral("Specimen")
+                                  << QStringLiteral("YoungsModulus")
+                                  << QStringLiteral("Elastic_R2")
+                                  << QStringLiteral("ProofStress")
+                                  << QStringLiteral("UTS")
+                                  << QStringLiteral("UniformElong_pct")
+                                  << QStringLiteral("UniformPlasticElong_pct")
+                                  << QStringLiteral("FractureElong_pct")
+                                  << QStringLiteral("FracturePlasticElong_pct"));
+                sumTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                sumTbl->column(0)->setPlotDesignation(SciDAVis::X);
+                for (int c = 1; c < 9; ++c) {
+                    sumTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                    sumTbl->column(c)->setPlotDesignation(SciDAVis::Y);
+                }
+                sumTbl->column(1)->setUnits(trRes.stressUnit);
+                sumTbl->column(3)->setUnits(trRes.stressUnit);
+                sumTbl->column(4)->setUnits(trRes.stressUnit);
+                for (int c = 5; c < 9; ++c)
+                    sumTbl->column(c)->setUnits(QStringLiteral("%"));
+                rowIdx = 0;
+            }
+        } else {
+            rowIdx = sumTbl->numRows();
+            sumTbl->setNumRows(rowIdx + 1);
+        }
+        if (sumTbl) {
+            const QString specName = !chosenCurve.isEmpty()
+                    ? chosenCurve
+                    : (chosenGraph ? chosenGraph->parentPlotName() : QStringLiteral("Specimen"));
+            sumTbl->column(0)->setTextAt(rowIdx, specName);
+            sumTbl->column(1)->setValueAt(rowIdx, trRes.youngsModulus);
+            sumTbl->column(2)->setValueAt(rowIdx, trRes.elasticR2);
+            sumTbl->column(3)->setValueAt(rowIdx, trRes.offsetYieldY);
+            sumTbl->column(4)->setValueAt(rowIdx, trRes.utsY);
+            sumTbl->column(5)->setValueAt(rowIdx, trRes.uniformElongationPct);
+            sumTbl->column(6)->setValueAt(rowIdx, trRes.uniformPlasticElongationPct);
+            sumTbl->column(7)->setValueAt(rowIdx, trRes.fractureElongationPct);
+            sumTbl->column(8)->setValueAt(rowIdx, trRes.fracturePlasticElongationPct);
+            sumTbl->showNormal();
+        }
+    }
 
     TensileDialogMemory &memW = tensileDialogMemory();
     memW.valid = true;
@@ -7175,6 +7472,32 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         if (topLayer)
             topLayer->replot();
     }
+    if (app) {
+        QString logText = (n > 2)
+                ? QStringLiteral("[%1] Kissinger Analysis: Ed = %2 ± %3 kJ/mol (%4 ± %5 eV), "
+                                 "A = %6 s^-1, R² = %7 (n = %8")
+                          .arg(QLocale().toString(QDateTime::currentDateTime()))
+                          .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                          .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
+                          .arg(res.activationEnergyEV, 0, 'f', 4)
+                          .arg(res.activationEnergyEVSE, 0, 'f', 4)
+                          .arg(res.preExponentialSInv, 0, 'e', 3)
+                          .arg(res.rSquare, 0, 'f', 5)
+                          .arg(n)
+                : QStringLiteral("[%1] Kissinger Analysis: Ed = %2 kJ/mol (%3 eV), A = %4 s^-1 (n = %5")
+                          .arg(QLocale().toString(QDateTime::currentDateTime()))
+                          .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                          .arg(res.activationEnergyEV, 0, 'f', 4)
+                          .arg(res.preExponentialSInv, 0, 'e', 3)
+                          .arg(n);
+        if (res.excludedCount > 0)
+            logText += QStringLiteral(", %1 excluded").arg(res.excludedCount);
+        logText += QStringLiteral(")\n");
+        for (const QString &note : res.notes)
+            logText += QStringLiteral("    ! ") + note + QStringLiteral("\n");
+        app->updateLog(logText);
+        app->modifiedProject();
+    }
     return res;
 }
 
@@ -7198,13 +7521,50 @@ int findColumnByHeader(Table *t, const char *header, const char *context)
     return -1;
 }
 
-double lastNumberIn(const QString &s, bool *ok)
+double extractHeatingRateFromName(const QString &s, bool *ok, int *outRateUnit /*-1=unknown,0=min,1=hour*/ = nullptr)
 {
+    if (outRateUnit)
+        *outRateUnit = -1;
+    // 1. Prefer a number explicitly paired with a heating-rate unit (e.g. "Sample1_100Ch_PeakFit1",
+    //    "TDS_100Kh", "200 C/h", "Steel_15Kmin_Peak1") over sample or peak-fit serial indices.
+    static const QRegularExpression kWithUnit(
+            QStringLiteral("([0-9]+(?:\\.[0-9]+)?)[\\s_]*(?:°?[\\s]*(?:deg)?[CKck]\\s*/\\s*(h|hr|min|m)(?![A-Za-z])"
+                           "|(?:deg)?[CKck](h|hr|min)(?![A-Za-z])"
+                           "|/\\s*(h|hr|min)(?![A-Za-z]))"),
+            QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatchIterator uIt = kWithUnit.globalMatch(s);
+    if (uIt.hasNext()) {
+        QRegularExpressionMatch m;
+        while (uIt.hasNext())
+            m = uIt.next();
+        const QString unitTok =
+                (!m.captured(2).isEmpty() ? m.captured(2)
+                                          : (!m.captured(3).isEmpty() ? m.captured(3) : m.captured(4)))
+                        .toLower();
+        if (outRateUnit)
+            *outRateUnit = unitTok.startsWith(QLatin1Char('h')) ? 1 : 0;
+        return m.captured(1).toDouble(ok);
+    }
+
+    // 2. Strip trailing fit/peak/clone suffixes (e.g. "_PeakFit1", "_Peak2", "_Fit1") before
+    //    taking the last remaining number.
+    QString cleaned = s;
+    static const QRegularExpression kTrailingFitSuffix(
+            QStringLiteral("(?:[_\\-\\s]*(?:PeakFit|PeakSummary|PeakIntegration|BatchPeakSummary|Fit|Peak|Copy)\\d*)+$"),
+            QRegularExpression::CaseInsensitiveOption);
+    cleaned.replace(kTrailingFitSuffix, QString());
+
     static const QRegularExpression kNum(QStringLiteral("([0-9]+(?:\\.[0-9]+)?)"));
-    QRegularExpressionMatchIterator it = kNum.globalMatch(s);
+    QRegularExpressionMatchIterator it = kNum.globalMatch(cleaned);
     QString last;
     while (it.hasNext())
         last = it.next().captured(1);
+    if (!last.isEmpty())
+        return last.toDouble(ok);
+
+    QRegularExpressionMatchIterator rawIt = kNum.globalMatch(s);
+    while (rawIt.hasNext())
+        last = rawIt.next().captured(1);
     return last.toDouble(ok);
 }
 
@@ -7436,6 +7796,15 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
     topForm->addRow(lblFitTables, lwFitTables);
     topForm->addRow(lblPeakN, sbPeakN);
     topForm->addRow(lblFitRates, leFitRates);
+    QComboBox *cbRateUnit = new QComboBox(&dlg);
+    cbRateUnit->addItem(QObject::tr("K/min (°C/min)"), false);
+    cbRateUnit->addItem(QObject::tr("K/h (°C/h)"), true);
+
+    QCheckBox *chkTempC = new QCheckBox(QObject::tr("Peak Temperatures in Celsius (°C)"), &dlg);
+    chkTempC->setChecked(true);
+    QCheckBox *chkTopC = new QCheckBox(QObject::tr("Top Temperature Axis in Celsius (°C)"), &dlg);
+    chkTopC->setChecked(true);
+
     auto selectedFitTables = [&]() {
         QList<Table *> sel;
         for (int i = 0; i < lwFitTables->count(); ++i) {
@@ -7445,9 +7814,28 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         return sel;
     };
     auto refreshFitRates = [&]() {
+        const QList<Table *> selTabs = selectedFitTables();
+        // Sync temperature unit from Center column units when available (e.g. from PeakSummary / BatchPeakSummary)
+        for (Table *ft : selTabs) {
+            const int cCenter = findColumnByHeader(ft, "Center", "MultiPeakFit");
+            if (cCenter >= 0 && ft->column(cCenter)) {
+                const QString u = ft->column(cCenter)->units().trimmed();
+                if (u.compare(QLatin1String("K"), Qt::CaseInsensitive) == 0
+                    || u.compare(QLatin1String("Kelvin"), Qt::CaseInsensitive) == 0) {
+                    chkTempC->setChecked(false);
+                    chkTopC->setChecked(false);
+                    break;
+                } else if (u.contains(QString::fromUtf8("°C"), Qt::CaseInsensitive)
+                           || u.contains(QString::fromUtf8("℃"))) {
+                    chkTempC->setChecked(true);
+                    chkTopC->setChecked(true);
+                    break;
+                }
+            }
+        }
         // One heating rate per source, in the order of collectPeakFitSources (sources lacking
         // peak N included), so that a missing peak never shifts the rates of the others.
-        const QVector<PeakFitCenter> src = collectPeakFitSources(selectedFitTables(), sbPeakN->value());
+        const QVector<PeakFitCenter> src = collectPeakFitSources(selTabs, sbPeakN->value());
         QStringList srcNames;
         for (const PeakFitCenter &pc : src)
             srcNames << pc.source;
@@ -7455,19 +7843,25 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         leFitRates->setToolTip(QObject::tr("One heating rate per source, in this order: %1")
                                        .arg(srcNames.join(QStringLiteral(", "))));
         QStringList guessed;
-        // Guess the heating rates from the source names (e.g. "TDS_100Kh"), but not from the
-        // serial number of default table names such as "PeakSummary3".
+        int detectedUnit = -1;
+        // Guess the heating rates from the source names (e.g. "Sample1_100Ch_PeakFit1"), but not
+        // from the serial number of default table names such as "PeakSummary3".
         static const QRegularExpression kDefaultName(
                 QStringLiteral("^(PeakSummary|PeakIntegration|BatchPeakSummary)\\d*$"));
         for (const PeakFitCenter &pc : src) {
             bool ok = false;
-            const double v = lastNumberIn(pc.source, &ok);
+            int u = -1;
+            const double v = extractHeatingRateFromName(pc.source, &ok, &u);
             if (!ok || kDefaultName.match(pc.source).hasMatch()) {
                 guessed.clear();
                 break;
             }
+            if (u >= 0 && detectedUnit < 0)
+                detectedUnit = u;
             guessed << QString::number(v, 'g', 8);
         }
+        if (detectedUnit >= 0)
+            cbRateUnit->setCurrentIndex(detectedUnit);
         if (guessed.size() == src.size() && !guessed.isEmpty())
             leFitRates->setText(guessed.join(QStringLiteral(", ")));
         else
@@ -7478,15 +7872,6 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
                      [&]() { refreshFitRates(); });
     QObject::connect(sbPeakN, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
                      [&](int) { refreshFitRates(); });
-
-    QComboBox *cbRateUnit = new QComboBox(&dlg);
-    cbRateUnit->addItem(QObject::tr("K/min (°C/min)"), false);
-    cbRateUnit->addItem(QObject::tr("K/h (°C/h)"), true);
-
-    QCheckBox *chkTempC = new QCheckBox(QObject::tr("Peak Temperatures in Celsius (°C)"), &dlg);
-    chkTempC->setChecked(true);
-    QCheckBox *chkTopC = new QCheckBox(QObject::tr("Top Temperature Axis in Celsius (°C)"), &dlg);
-    chkTopC->setChecked(true);
 
     topForm->addRow(QObject::tr("Heating Rate Unit:"), cbRateUnit);
     topForm->addRow(QString(), chkTempC);
@@ -7503,7 +7888,7 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
             return;
         Table *t = tables[tIdx];
         QStringList parsedRates;
-        static const QRegularExpression kNumRe(QStringLiteral("([0-9]+(?:\\.[0-9]+)?)"));
+        int detectedUnit = -1;
         for (int c = 0; c < t->numCols(); ++c) {
             Column *col = t->column(c);
             if (!matSciColumnHasNumeric(col))
@@ -7512,19 +7897,39 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
             cbRateCol->addItem(cn);
             cbTpCol->addItem(cn);
             cbSpecTempCol->addItem(cn);
+            if (c == 0) {
+                const QString u0 = col->units().trimmed();
+                if (u0.compare(QLatin1String("K"), Qt::CaseInsensitive) == 0
+                    || u0.compare(QLatin1String("Kelvin"), Qt::CaseInsensitive) == 0) {
+                    chkTempC->setChecked(false);
+                    chkTopC->setChecked(false);
+                } else if (u0.contains(QString::fromUtf8("°C"), Qt::CaseInsensitive)
+                           || u0.contains(QString::fromUtf8("℃"))) {
+                    chkTempC->setChecked(true);
+                    chkTopC->setChecked(true);
+                }
+            }
             if (c >= 1) {
                 auto *it = new QListWidgetItem(cn, lwFluxCols);
                 it->setSelected(true);
-                const QString meta = col->comment() + QLatin1Char(' ') + cn;
-                const auto m = kNumRe.match(meta);
-                if (m.hasMatch())
-                    parsedRates << m.captured(1);
-                if (meta.contains(QLatin1String("/h"), Qt::CaseInsensitive)
-                    || meta.contains(QLatin1String("Ch"), Qt::CaseInsensitive)) {
-                    cbRateUnit->setCurrentIndex(1);
+                const QString meta = col->longName() + QLatin1Char(' ') + col->comment()
+                        + QLatin1Char(' ') + cn;
+                bool ok = false;
+                int u = -1;
+                const double rv = extractHeatingRateFromName(meta, &ok, &u);
+                if (ok)
+                    parsedRates << QString::number(rv, 'g', 8);
+                if (u >= 0 && detectedUnit < 0)
+                    detectedUnit = u;
+                else if (meta.contains(QLatin1String("/h"), Qt::CaseInsensitive)
+                         || meta.contains(QLatin1String("Ch"), Qt::CaseInsensitive)
+                         || meta.contains(QLatin1String("Kh"), Qt::CaseInsensitive)) {
+                    detectedUnit = 1;
                 }
             }
         }
+        if (detectedUnit >= 0)
+            cbRateUnit->setCurrentIndex(detectedUnit);
         if (cbTpCol->count() >= 2)
             cbTpCol->setCurrentIndex(1);
         if (parsedRates.size() >= 2)
@@ -7534,11 +7939,17 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
     };
     if (!tables.isEmpty())
         refreshCols();
+    else
+        cbRateUnit->setCurrentIndex(1); // Manual sample "100, 200, 400" + "119.5, 134.8, 151.6 °C" is in K/h
     QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { refreshCols(); });
 
     auto syncVis = [&]() {
         const int mode = cbMode->currentData().toInt();
+        if (mode == 2 && leManualRates->text().trimmed() == QLatin1String("100, 200, 400"))
+            cbRateUnit->setCurrentIndex(1);
+        if (mode == 3)
+            refreshFitRates();
         lblTable->setVisible(mode != 2);
         cbTable->setVisible(mode != 2);
         lblRateCol->setVisible(mode == 0);
@@ -8077,6 +8488,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
 
     // Stage-III Kocks-Mecking fit: theta = theta0 * (1 - sigT / voceSigmaS).
     // On failure sigma_s stays NaN and the reason is reported (no substitute value).
+    double kmSlope = qNaN, kmTheta0 = qNaN, kmSigStart = 0.0;
     {
         const double sigStart = tr.offsetYieldY + 0.20 * (res.considereTrueStress - tr.offsetYieldY);
         const double sigEnd = 0.98 * res.considereTrueStress;
@@ -8108,8 +8520,12 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 theta0 = mt - slopeKM * ms;
                 if (slopeKM < 0.0 && theta0 > 0.0) {
                     const double s = -theta0 / slopeKM;
-                    if (std::isfinite(s) && s > 0.0)
+                    if (std::isfinite(s) && s > 0.0) {
                         res.voceSigmaS = s;
+                        kmSlope = slopeKM;
+                        kmTheta0 = theta0;
+                        kmSigStart = sVec.front();
+                    }
                 }
             }
             if (!std::isfinite(res.voceSigmaS)) {
@@ -8271,6 +8687,39 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 gp->setCurvePen(gp->curves() - 1, QPen(QColor(185, 28, 28), 1.6, Qt::DashLine));
             }
 
+            bool addedStageIIILine = false;
+            if (std::isfinite(res.voceSigmaS) && std::isfinite(kmSlope) && std::isfinite(kmTheta0)) {
+                const double thStart = std::max(0.0, kmTheta0 + kmSlope * kmSigStart);
+                auto *colSX = new Column(QStringLiteral("StageIIISigma"), SciDAVis::ColumnMode::Numeric);
+                auto *colSY = new Column(QStringLiteral("StageIIITheta"), SciDAVis::ColumnMode::Numeric);
+                colSX->setPlotDesignation(SciDAVis::X);
+                colSY->setPlotDesignation(SciDAVis::Y);
+                colSX->replaceValues(0, QVector<qreal>() << kmSigStart << res.voceSigmaS);
+                colSY->replaceValues(0, QVector<qreal>() << thStart << 0.0);
+                const QString stageLbl = QObject::tr("Stage-III fit") + QStringLiteral(" (<i>σ</i><sub>s</sub>)");
+                colSY->setComment(stageLbl);
+                const QString hidName = app->generateUniqueName(QStringLiteral("GadgetFit_StageIII"));
+                if (Table *hidTbl = app->newHiddenTable(hidName, stageLbl, QList<Column *>() << colSX << colSY)) {
+                    auto *cS3 = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colSX->name(),
+                                              hidName + QStringLiteral("_") + colSY->name(), 0, 1);
+                    cS3->setType(Graph::Line);
+                    cS3->setStyle(QwtPlotCurve::Lines);
+                    cS3->setPen(QPen(QColor(0, 114, 178), 1.7, Qt::DashLine));
+                    cS3->loadData();
+                    gp->insertPlotItem(cS3, Graph::Line);
+                    gp->addFitCurve(cS3);
+                    addedStageIIILine = true;
+                }
+            }
+
+            Graph::ReferenceLineSpec zeroTheta;
+            zeroTheta.orientation = 0; // Horizontal Y = 0
+            zeroTheta.value = 0.0;
+            zeroTheta.color = QColor(148, 163, 184, 210);
+            zeroTheta.style = Qt::SolidLine;
+            zeroTheta.width = 1.0;
+            gp->addReferenceLine(zeroTheta);
+
             Graph::ReferenceLineSpec neckSig;
             neckSig.orientation = 1; // Vertical X at sigma_u
             neckSig.value = res.considereTrueStress;
@@ -8288,16 +8737,21 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                                       .arg(suSuffix));
             gp->setTitle(QString());
             if (gp->legend()) {
-                gp->legend()->setText(
+                QString legTxt =
                         QStringLiteral("\\c{1}<i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>\n"
-                                       "\\c{2}<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>"));
+                                       "\\c{2}<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>");
+                if (addedStageIIILine) {
+                    legTxt += QStringLiteral("\n\\c{3}%1 (<i>\u03C3</i><sub>s</sub>)")
+                                      .arg(QObject::tr("Stage-III fit"));
+                }
+                gp->legend()->setText(legTxt);
             }
             const double xMaxKm = std::isfinite(res.voceSigmaS)
                     ? std::max(maxSig * 1.12, res.voceSigmaS * 1.06)
                     : maxSig * 1.12;
+            const double yTopKm = std::max(res.considereTrueStress * 2.4, tr.utsY * 1.7);
             gp->setScale(QwtPlot::xBottom, 0.0, xMaxKm);
-            gp->setScale(QwtPlot::yLeft, 0.0,
-                         std::max(res.considereTrueStress * 2.4, tr.utsY * 1.7));
+            gp->setScale(QwtPlot::yLeft, -0.05 * yTopKm, yTopKm);
         }
 
         applyArialToMatSciGraph(gp);
@@ -8347,7 +8801,18 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
             }
         }
     }
-    if (graphs.isEmpty()) {
+    const QList<Table *> allTables = collectProjectTables(app);
+    QList<Table *> tables;
+    for (Table *t : allTables) {
+        int numCols = 0;
+        for (int c = 0; c < t->numCols(); ++c) {
+            if (matSciColumnHasNumeric(t->column(c)))
+                ++numCols;
+        }
+        if (numCols >= 2)
+            tables.append(t);
+    }
+    if (graphs.isEmpty() && tables.isEmpty()) {
         QMessageBox::information(
                 app, QObject::tr("Kocks-Mecking Work-Hardening & Considere Necking Analyzer"),
                 QObject::tr("Please open a graph or numeric worksheet with stress-strain data first."));
@@ -8358,6 +8823,18 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     dlg.setWindowTitle(QObject::tr("Kocks-Mecking Work-Hardening & Considere Necking Analyzer"));
     dlg.setMinimumWidth(520);
     QFormLayout *form = new QFormLayout(&dlg);
+
+    QComboBox *cbSourceMode = new QComboBox(&dlg);
+    if (!graphs.isEmpty())
+        cbSourceMode->addItem(QObject::tr("Active Graph Curve"), 0);
+    if (!tables.isEmpty())
+        cbSourceMode->addItem(QObject::tr("Worksheet Columns (Plot & Analyze)"), 1);
+    if (cbSourceMode->count() == 2) {
+        if (QMdiSubWindow *sub = app->d_workspace.activeSubWindow()) {
+            if (sub->inherits("Table") || (sub->widget() && sub->widget()->inherits("Table")))
+                cbSourceMode->setCurrentIndex(1);
+        }
+    }
 
     QComboBox *cbGraph = new QComboBox(&dlg);
     QComboBox *cbCurve = new QComboBox(&dlg);
@@ -8374,7 +8851,8 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         if (gi >= 0)
             initIdx = gi;
     }
-    cbGraph->setCurrentIndex(initIdx);
+    if (!graphs.isEmpty())
+        cbGraph->setCurrentIndex(initIdx);
     auto fillCurves = [&](int idx) {
         cbCurve->clear();
         if (idx >= 0 && idx < graphs.size())
@@ -8388,6 +8866,60 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     }
     QObject::connect(cbGraph, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      fillCurves);
+
+    QComboBox *cbTable = new QComboBox(&dlg);
+    QComboBox *cbStrainCol = new QComboBox(&dlg);
+    QComboBox *cbStressCol = new QComboBox(&dlg);
+    Table *activeTbl = findActiveOrFirstTable(app);
+    int initTblIdx = 0;
+    for (int i = 0; i < tables.size(); ++i) {
+        cbTable->addItem(tables[i]->name());
+        if (tables[i] == activeTbl)
+            initTblIdx = i;
+    }
+    if (!tables.isEmpty())
+        cbTable->setCurrentIndex(initTblIdx);
+    auto fillTableCols = [&](int tIdx) {
+        cbStrainCol->clear();
+        cbStressCol->clear();
+        if (tIdx < 0 || tIdx >= tables.size())
+            return;
+        Table *t = tables[tIdx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!matSciColumnHasNumeric(col))
+                continue;
+            const QString cn = col ? col->name() : t->colLabel(c);
+            cbStrainCol->addItem(cn);
+            cbStressCol->addItem(cn);
+        }
+        if (cbStressCol->count() >= 2)
+            cbStressCol->setCurrentIndex(1);
+    };
+    fillTableCols(initTblIdx);
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     fillTableCols);
+
+    QLabel *lblGraph = new QLabel(QObject::tr("Target Graph:"), &dlg);
+    QLabel *lblCurve = new QLabel(QObject::tr("Stress-Strain Curve:"), &dlg);
+    QLabel *lblTable = new QLabel(QObject::tr("Source Worksheet:"), &dlg);
+    QLabel *lblStrainCol = new QLabel(QObject::tr("Strain Column (X):"), &dlg);
+    QLabel *lblStressCol = new QLabel(QObject::tr("Stress Column (Y):"), &dlg);
+    auto syncWhSourceVis = [&]() {
+        const bool fromTable = (cbSourceMode->currentData().toInt() == 1);
+        lblGraph->setVisible(!fromTable);
+        cbGraph->setVisible(!fromTable);
+        lblCurve->setVisible(!fromTable);
+        cbCurve->setVisible(!fromTable);
+        lblTable->setVisible(fromTable);
+        cbTable->setVisible(fromTable);
+        lblStrainCol->setVisible(fromTable);
+        cbStrainCol->setVisible(fromTable);
+        lblStressCol->setVisible(fromTable);
+        cbStressCol->setVisible(fromTable);
+    };
+    QObject::connect(cbSourceMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhSourceVis(); });
 
     QSpinBox *sbWin = new QSpinBox(&dlg);
     sbWin->setRange(5, 51);
@@ -8438,7 +8970,8 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         sbElasticMax->setEnabled(!autoOn);
     });
     auto syncInherited = [&]() {
-        const bool sameCurve = mem.valid && cbGraph->currentText() == mem.graphName
+        const bool fromTable = (cbSourceMode->currentData().toInt() == 1);
+        const bool sameCurve = !fromTable && mem.valid && cbGraph->currentText() == mem.graphName
                 && cbCurve->currentText() == mem.curveTitle;
         int mode = mem.valid ? mem.dialogStrainMode : -1;
         if (sameCurve && mem.resolvedStrainMode >= 0)
@@ -8457,12 +8990,18 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     tenForm->addRow(QObject::tr("Elastic Strain Min:"), sbElasticMin);
     tenForm->addRow(QObject::tr("Elastic Strain Max:"), sbElasticMax);
 
-    form->addRow(QObject::tr("Target Graph:"), cbGraph);
-    form->addRow(QObject::tr("Stress-Strain Curve:"), cbCurve);
+    if (cbSourceMode->count() > 1)
+        form->addRow(QObject::tr("Data Source:"), cbSourceMode);
+    form->addRow(lblGraph, cbGraph);
+    form->addRow(lblCurve, cbCurve);
+    form->addRow(lblTable, cbTable);
+    form->addRow(lblStrainCol, cbStrainCol);
+    form->addRow(lblStressCol, cbStressCol);
     form->addRow(grpTen);
     form->addRow(QObject::tr("Savitzky-Golay Smoothing Window (odd points):"), sbWin);
     form->addRow(QString(), chkPlot);
     form->addRow(QObject::tr("Plot Mode:"), cbPlotMode);
+    syncWhSourceVis();
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -8472,11 +9011,39 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
 
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const int gIdx = cbGraph->currentIndex();
-    if (gIdx < 0 || gIdx >= graphs.size())
-        return;
-    Graph *chosenGraph = graphs[gIdx];
-    const QString chosenCurve = cbCurve->currentText();
+
+    Graph *chosenGraph = nullptr;
+    QString chosenCurve;
+    if (cbSourceMode->currentData().toInt() == 1) {
+        const int tIdx = cbTable->currentIndex();
+        if (tIdx < 0 || tIdx >= tables.size())
+            return;
+        Table *t = tables[tIdx];
+        const QString xName = cbStrainCol->currentText();
+        const QString yName = cbStressCol->currentText();
+        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
+        if (!ml || !ml->activeGraph())
+            return;
+        chosenGraph = ml->activeGraph();
+        const QString fullX = t->name() + QStringLiteral("_") + xName;
+        const QString fullY = t->name() + QStringLiteral("_") + yName;
+        if (chosenGraph->insertCurve(t, fullX, fullY, Graph::Line)) {
+            chosenGraph->setCurvePen(chosenGraph->curves() - 1,
+                                     QPen(QColor(29, 78, 216), 2.0, Qt::SolidLine));
+            chosenCurve = fullY;
+        }
+        chosenGraph->refreshAutoAxisTitlesFromColumns();
+        chosenGraph->setTitle(QString());
+        chosenGraph->setAutoScale();
+        applyArialToMatSciGraph(chosenGraph);
+        chosenGraph->replot();
+    } else {
+        const int gIdx = cbGraph->currentIndex();
+        if (gIdx < 0 || gIdx >= graphs.size())
+            return;
+        chosenGraph = graphs[gIdx];
+        chosenCurve = cbCurve->currentText();
+    }
     const double qNaN = std::numeric_limits<double>::quiet_NaN();
     const double eMin = chkAutoElastic->isChecked() ? qNaN : sbElasticMin->value();
     const double eMax = chkAutoElastic->isChecked() ? qNaN : sbElasticMax->value();
@@ -10119,13 +10686,13 @@ Table *importVaspFileAsProjectTable(ApplicationWindow *app, const QString &fileP
 
 } // namespace
 
-CurveMathTools::VaspPlotResult CurveMathTools::plotVaspDos(
+static CurveMathTools::VaspPlotResult plotVaspDosImpl(
         ApplicationWindow *app, Table *srcTable, const QString &energyCol,
         const QStringList &dosCols, const QStringList &downDosCols, double fermiEnergyEV,
-        bool verticalEnergyAxis)
+        bool verticalEnergyAxis, double energyMinEV, double energyMaxEV)
 {
     registerMatSciTranslationsOnce();
-    VaspPlotResult res;
+    CurveMathTools::VaspPlotResult res;
     if (!srcTable) {
         res.error = QObject::tr("Source worksheet is null.");
         return res;
@@ -10448,13 +11015,73 @@ CurveMathTools::VaspPlotResult CurveMathTools::plotVaspDos(
                                                           : customLegLines.join(QLatin1Char('\n')));
         }
         g->setAutoScale();
+
+        const bool hasEnergyWin = std::isfinite(energyMinEV) && std::isfinite(energyMaxEV)
+                && (energyMaxEV > energyMinEV);
+        const double eWinLo = hasEnergyWin ? energyMinEV : rows.front().eShift;
+        const double eWinHi = hasEnergyWin ? energyMaxEV : rows.back().eShift;
+        double maxAbsDos = 0.0;
+        bool foundInWin = false;
+        for (int i = 0; i < N; ++i) {
+            if (rows[size_t(i)].eShift < eWinLo || rows[size_t(i)].eShift > eWinHi)
+                continue;
+            foundInWin = true;
+            for (double uv : rows[size_t(i)].up)
+                maxAbsDos = std::max(maxAbsDos, std::fabs(uv));
+            for (double dv : rows[size_t(i)].dn)
+                maxAbsDos = std::max(maxAbsDos, std::fabs(dv));
+        }
+        if (!foundInWin || !(maxAbsDos > 0.0)) {
+            for (int i = 0; i < N; ++i) {
+                for (double uv : rows[size_t(i)].up)
+                    maxAbsDos = std::max(maxAbsDos, std::fabs(uv));
+                for (double dv : rows[size_t(i)].dn)
+                    maxAbsDos = std::max(maxAbsDos, std::fabs(dv));
+            }
+        }
+        const int eAxis = verticalEnergyAxis ? QwtPlot::yLeft : QwtPlot::xBottom;
+        const int dosAxis = verticalEnergyAxis ? QwtPlot::xBottom : QwtPlot::yLeft;
+        if (hasEnergyWin)
+            g->setScale(eAxis, eWinLo, eWinHi);
+        if (!dnCols.isEmpty() && maxAbsDos > 0.0) {
+            const double symMax = 1.08 * maxAbsDos;
+            g->setScale(dosAxis, -symMax, symMax);
+        } else if (hasEnergyWin && maxAbsDos > 0.0) {
+            g->setScale(dosAxis, 0.0, 1.08 * maxAbsDos);
+        }
+
         applyArialToMatSciGraph(g);
         g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
         g->replot();
     }
 
+    {
+        const QString gapStr = (res.bandgapEV > 0.0)
+                ? QStringLiteral("%1 eV").arg(res.bandgapEV, 0, 'f', 3)
+                : QStringLiteral("0 eV (metallic)");
+        QString logText = QStringLiteral("[%1] VASP DOS (%2): E_F = %3 eV, Band gap = %4")
+                                  .arg(QLocale().toString(QDateTime::currentDateTime()),
+                                       srcTable->name())
+                                  .arg(res.fermiEnergyEV, 0, 'f', 4)
+                                  .arg(gapStr);
+        if (dUpIdx >= 0 && std::isfinite(res.dBandCenterEV))
+            logText += QStringLiteral(", d-band center ε_d = %1 eV").arg(res.dBandCenterEV, 0, 'f', 3);
+        logText += QStringLiteral("\n");
+        app->updateLog(logText);
+    }
+
     app->modifiedProject();
     return res;
+}
+
+CurveMathTools::VaspPlotResult CurveMathTools::plotVaspDos(
+        ApplicationWindow *app, Table *srcTable, const QString &energyCol,
+        const QStringList &dosCols, const QStringList &downDosCols, double fermiEnergyEV,
+        bool verticalEnergyAxis)
+{
+    const double qNaN = std::numeric_limits<double>::quiet_NaN();
+    return plotVaspDosImpl(app, srcTable, energyCol, dosCols, downDosCols, fermiEnergyEV,
+                           verticalEnergyAxis, qNaN, qNaN);
 }
 
 CurveMathTools::VaspPlotResult CurveMathTools::plotVaspBands(
@@ -10774,11 +11401,32 @@ void CurveMathTools::showVaspPlotterDialog(ApplicationWindow *app)
     sbDosEf->setDecimals(4);
     QCheckBox *chkVertDos = new QCheckBox(
             QObject::tr("Vertical Energy Axis (for side-by-side Band + DOS)"), tabDos);
+    QCheckBox *chkDosWin =
+            new QCheckBox(QObject::tr("Enable energy window (E - E_F)"), tabDos);
+    chkDosWin->setChecked(true);
+    QWidget *dosWinPane = new QWidget(tabDos);
+    QHBoxLayout *dosWinLay = new QHBoxLayout(dosWinPane);
+    dosWinLay->setContentsMargins(0, 0, 0, 0);
+    QDoubleSpinBox *sbDosEMin = new QDoubleSpinBox(dosWinPane);
+    sbDosEMin->setRange(-200.0, 200.0);
+    sbDosEMin->setDecimals(2);
+    sbDosEMin->setSuffix(QStringLiteral(" eV"));
+    sbDosEMin->setValue(-10.0);
+    QDoubleSpinBox *sbDosEMax = new QDoubleSpinBox(dosWinPane);
+    sbDosEMax->setRange(-200.0, 200.0);
+    sbDosEMax->setDecimals(2);
+    sbDosEMax->setSuffix(QStringLiteral(" eV"));
+    sbDosEMax->setValue(5.0);
+    dosWinLay->addWidget(sbDosEMin, 1);
+    dosWinLay->addWidget(new QLabel(QStringLiteral("–"), dosWinPane));
+    dosWinLay->addWidget(sbDosEMax, 1);
+    QObject::connect(chkDosWin, &QCheckBox::toggled, dosWinPane, &QWidget::setEnabled);
 
     dosForm->addRow(QObject::tr("Energy Column (eV):"), cbEnergy);
     dosForm->addRow(QObject::tr("Spin-Up / Total DOS Columns:"), lwDosUp);
     dosForm->addRow(QObject::tr("Spin-Down DOS Columns (Optional):"), lwDosDn);
     dosForm->addRow(QObject::tr("Fermi Energy E_F (eV):"), sbDosEf);
+    dosForm->addRow(chkDosWin, dosWinPane);
     dosForm->addRow(QString(), chkVertDos);
 
     // Band Structure controls
@@ -10912,8 +11560,11 @@ void CurveMathTools::showVaspPlotterDialog(ApplicationWindow *app)
             upSel << it->text();
         for (QListWidgetItem *it : lwDosDn->selectedItems())
             dnSel << it->text();
-        vr = plotVaspDos(app, srcTbl, cbEnergy->currentText(), upSel, dnSel,
-                         sbDosEf->value(), chkVertDos->isChecked());
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
+        const double dMin = chkDosWin->isChecked() ? sbDosEMin->value() : qNaN;
+        const double dMax = chkDosWin->isChecked() ? sbDosEMax->value() : qNaN;
+        vr = plotVaspDosImpl(app, srcTbl, cbEnergy->currentText(), upSel, dnSel,
+                             sbDosEf->value(), chkVertDos->isChecked(), dMin, dMax);
     } else {
         QStringList bandSel;
         for (QListWidgetItem *it : lwBands->selectedItems())

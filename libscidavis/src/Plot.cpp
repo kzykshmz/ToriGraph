@@ -51,6 +51,8 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVariant>
@@ -2165,6 +2167,29 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             }
             if (g && (g->zoomOn() || g->activeTool()))
                 return QwtPlot::eventFilter(object, e);
+
+            // When the page is zoomed in (> 101%) and scrollbars are active, let plain
+            // unmodified wheel events scroll the page viewport instead of accidentally
+            // rescaling and locking carefully formatted plot axes. Normal 100% view
+            // (Suite 6) and modifier/hotkey wheel gestures keep zooming axes as before.
+            if (mods == Qt::NoModifier && !d_x_pressed && !d_y_pressed && !d_z_pressed && g) {
+                if (MultiLayer *ml = g->multiLayerParent()) {
+                    if (ml->pageZoom() > 1.01) {
+                        QScrollArea *cs = ml->findChild<QScrollArea *>(
+                                QStringLiteral("MultiLayerCanvasScroll"));
+                        const bool vScrollActive = cs && cs->verticalScrollBar()
+                                && cs->verticalScrollBar()->maximum()
+                                        > cs->verticalScrollBar()->minimum();
+                        const bool hScrollActive = cs && cs->horizontalScrollBar()
+                                && cs->horizontalScrollBar()->maximum()
+                                        > cs->horizontalScrollBar()->minimum();
+                        if (!cs || vScrollActive || hScrollActive) {
+                            we->ignore();
+                            return false;
+                        }
+                    }
+                }
+            }
 
             int delta = we->angleDelta().y();
             if (delta == 0)

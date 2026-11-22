@@ -147,7 +147,15 @@ public:
         bool alphaFromRim = false;  //!< input alpha is 90° at the centre (Rigaku style)
         bool betaZeroAtTop = false; //!< beta = 0° at 12 o'clock (default: 3 o'clock)
         bool clockwise = false;     //!< beta increases clockwise (default: counter-clockwise)
-        bool rdTop = true;          //!< RD label at the top and TD at the right (else swapped)
+        bool rdTop = true;          //!< primary axis label at top and secondary at right (else swapped)
+        bool showTiltCircles = false; //!< draw 30° and 60° auxiliary tilt circles
+        QString axis1Label;         //!< primary sample axis label (empty -> "RD")
+        QString axis2Label;         //!< secondary sample axis label (empty -> "TD")
+        bool useCustomMatrixAngles = false; //!< override Matrix X/Y coordinate range
+        double matrixAlphaMin = 0.0;
+        double matrixAlphaMax = 90.0;
+        double matrixBetaMin = 0.0;
+        double matrixBetaMax = 360.0;
         int gridSize = 201;         //!< projected matrix size (odd, 51 ... 801)
         int levels = 8;             //!< contour levels
         int preset = 2;             //!< Spectrogram::PresetViridis

@@ -59,6 +59,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QUuid>
@@ -123,6 +124,15 @@ bool isPresetManagedValue(double v, const QVector<int> &managed)
 {
     for (int m : managed) {
         if (std::fabs(v - double(m)) < 0.05)
+            return true;
+    }
+    return false;
+}
+
+bool isPresetManagedValue(double v, const QVector<double> &managed)
+{
+    for (double m : managed) {
+        if (std::fabs(v - m) < 0.05)
             return true;
     }
     return false;
@@ -358,19 +368,31 @@ void resizeMultiLayerSubWindowForCanvas(MultiLayer *ml, QWidget *mainW, QFrame *
     const int topBarH = (pillFrame && !pillFrame->isHidden())
             ? qMax(LayerButton::btnSize() + 4, pillFrame->sizeHint().height() + 6)
             : (LayerButton::btnSize() + 4);
+    const int styleFrameW = ml->mdiArea()
+            ? qMax(4, ml->style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, ml))
+            : 0;
+    const int styleTitleH = ml->mdiArea()
+            ? qMax(24, ml->style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, ml))
+            : 0;
     const int frameDW = (mainW && ml->width() > mainW->width() && mainW->width() >= 60)
             ? qBound(0, ml->width() - mainW->width(), 32)
-            : 0;
+            : (ml->mdiArea() ? qBound(8, 2 * styleFrameW + 4, 32) : 0);
     const int frameDH = (mainW && ml->height() > mainW->height() && mainW->height() >= 60)
-            ? qBound(0, ml->height() - mainW->height(), 48)
-            : 0;
+            ? qBound(0, ml->height() - mainW->height(), 56)
+            : (ml->mdiArea() ? qBound(28, styleTitleH + 2 * styleFrameW + 4, 56) : 0);
     int wantW = cw + hostPad + frameDW;
     int wantH = ch + hostPad + topBarH + frameDH;
     if (ml->mdiArea() && ml->mdiArea()->viewport() && ml->mdiArea()->viewport()->isVisible()
         && ml->mdiArea()->viewport()->width() >= 160
         && ml->mdiArea()->viewport()->height() >= 160) {
-        wantW = qMin(wantW, ml->mdiArea()->viewport()->width());
-        wantH = qMin(wantH, ml->mdiArea()->viewport()->height());
+        const int vpW = ml->mdiArea()->viewport()->width();
+        const int vpH = ml->mdiArea()->viewport()->height();
+        wantW = qMin(wantW, vpW);
+        wantH = qMin(wantH, vpH);
+        const int nx = qMax(0, qMin(ml->x(), vpW - wantW));
+        const int ny = qMax(0, qMin(ml->y(), vpH - wantH));
+        if (nx != ml->x() || ny != ml->y())
+            ml->move(nx, ny);
     }
     ml->resize(wantW, wantH);
 }
@@ -5004,19 +5026,22 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
 
     const int legFrame = qBound(0, spec.legendFrame, 2);
     const QColor legBg(255, 255, 255, (legFrame == Legend::None) ? 0 : 235);
-    const int minCurveWidth = qBound(1, spec.minCurveWidth, 12);
-    const int minSymSize = qBound(0, spec.minSymbolSize, 32);
+    const double targetCurveWidth = (spec.curveWidthF > 0.0)
+            ? qBound(0.5, spec.curveWidthF, 20.0)
+            : double(qBound(1, spec.minCurveWidth, 20));
+    const int minSymSize = qBound(0, spec.minSymbolSize, 100);
     // Values regarded as "not customised by the user": the application defaults used for new
     // curves plus every known preset's value.
-    QVector<int> managedCurveWidths;
+    QVector<double> managedCurveWidths;
     QVector<int> managedSymbolSizes;
     {
         ApplicationWindow *mApp = findMultiLayerApp(this);
-        managedCurveWidths << (mApp ? mApp->defaultCurveLineWidth : 2) << 2;
+        managedCurveWidths << double(mApp ? mApp->defaultCurveLineWidth : 2) << 2.0;
         managedSymbolSizes << (mApp ? mApp->defaultSymbolSize : 9) << 9;
         for (const GraphStylePresetSpec &ps : listStylePresets()) {
-            if (!managedCurveWidths.contains(ps.minCurveWidth))
-                managedCurveWidths << ps.minCurveWidth;
+            const double pw = (ps.curveWidthF > 0.0) ? ps.curveWidthF : double(ps.minCurveWidth);
+            if (!isPresetManagedValue(pw, managedCurveWidths))
+                managedCurveWidths << pw;
             if (!managedSymbolSizes.contains(ps.minSymbolSize))
                 managedSymbolSizes << ps.minSymbolSize;
         }
@@ -5059,7 +5084,41 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     }
 
     setMargins(marginPx, marginPx, marginPx, marginPx);
-    const double initialViewZoom = (pageW <= 110.0 && pageH <= 110.0) ? 1.6 : 1.0;
+    double initialViewZoom = (pageW <= 110.0 && pageH <= 110.0) ? 1.6 : 1.0;
+    if (pageW <= 110.0 && pageH <= 110.0 && isVisible()) {
+        const double basePxW = std::max(120.0, (pageW / 25.4) * 96.0);
+        const double basePxH = std::max(120.0, (pageH / 25.4) * 96.0);
+        int availW = 0;
+        int availH = 0;
+        QScrollArea *cs = widget()
+                ? widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
+                : nullptr;
+        if (isMaximized() || !mdiArea()) {
+            if (cs && cs->viewport() && cs->viewport()->isVisible()
+                && cs->viewport()->width() >= 100 && cs->viewport()->height() >= 100) {
+                availW = cs->viewport()->width() - 20;
+                availH = cs->viewport()->height() - 20;
+            }
+        } else if (mdiArea() && mdiArea()->viewport() && mdiArea()->viewport()->isVisible()
+                   && mdiArea()->viewport()->width() >= 160
+                   && mdiArea()->viewport()->height() >= 160) {
+            const int vpW = mdiArea()->viewport()->width();
+            const int vpH = mdiArea()->viewport()->height();
+            const int styleFrameW =
+                    qMax(4, style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, this));
+            const int styleTitleH =
+                    qMax(24, style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, this));
+            const int topBarH = (d_layer_pill_frame && !d_layer_pill_frame->isHidden())
+                    ? qMax(LayerButton::btnSize() + 4, d_layer_pill_frame->sizeHint().height() + 6)
+                    : (LayerButton::btnSize() + 4);
+            availW = vpW - (2 * styleFrameW + 20);
+            availH = vpH - (styleTitleH + 2 * styleFrameW + topBarH + 20);
+        }
+        if (availW >= 90 && availH >= 90) {
+            const double fitZoom = std::min(double(availW) / basePxW, double(availH) / basePxH);
+            initialViewZoom = qBound(0.75, std::min(initialViewZoom, fitZoom), 1.6);
+        }
+    }
     setPageZoom(initialViewZoom);
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
     d_keep_aspect_ratio = spec.keepAspectRatio;
@@ -5091,7 +5150,15 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                     legendWasDefaultTopLeft[i] = true;
                 }
             }
-            if (!gr->isTernaryPlot() && !gr->isPolarPlot() && !gr->isPiePlot()) {
+            if (gr->isPoleFigurePlot()) {
+                gr->enableAxis(QwtPlot::xBottom, false);
+                gr->enableAxis(QwtPlot::yLeft, false);
+                gr->enableAxis(QwtPlot::xTop, false);
+                if (!gr->hasColorScaleOnAxis(QwtPlot::yRight))
+                    gr->enableAxis(QwtPlot::yRight, false);
+                gr->drawCanvasFrame(false, 0);
+                gr->drawAxesBackbones(false);
+            } else if (!gr->isTernaryPlot() && !gr->isPolarPlot() && !gr->isPiePlot()) {
                 gr->applyFramePreset(framePreset);
                 for (int k = 0; k < graphsList.count(); ++k) {
                     Graph *ch = qobject_cast<Graph *>(graphsList.at(k));
@@ -5313,7 +5380,29 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                     useCbTitle.setHintingPreference(QFont::PreferNoHinting);
                     gr->setAxisTitleFont(sp->colorScaleAxis(), useCbTitle);
                 }
+                if (gr->isPoleFigurePlot())
+                    sp->syncColorScale();
             }
+        }
+        if (DataCurve *pcm = gr->pointColorMapCurve()) {
+            if (applyPresetTitleFmt) {
+                DataCurve::PointColorMap pm = pcm->pointColorMap();
+                QString cbT = pm.colorBarTitle;
+                if (cbT.trimmed().isEmpty())
+                    cbT = gr->axisTitle(QwtPlot::yRight);
+                if (!cbT.trimmed().isEmpty()) {
+                    cbT.remove(kBoldTagRx);
+                    const QString fmtCbT = formatPresetAxisTitle(cbT, isIsijFormat);
+                    if (fmtCbT != pm.colorBarTitle) {
+                        pm.colorBarTitle = fmtCbT;
+                        pcm->setPointColorMap(pm);
+                    }
+                }
+            }
+            gr->syncPointColorBar();
+            QFont useCbTitle = isInset ? QFont("Arial", insetPt, QFont::Normal, false) : titleFnt;
+            useCbTitle.setHintingPreference(QFont::PreferNoHinting);
+            gr->setAxisTitleFont(QwtPlot::yRight, useCbTitle);
         }
 
         static const QRegularExpression kPanelLabelMarkerRx(
@@ -5345,16 +5434,21 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                         || trimmedMrkText.startsWith(QLatin1String("p "), Qt::CaseInsensitive)
                         || trimmedMrkText.startsWith(QLatin1String("<i>p</i>"),
                                                      Qt::CaseInsensitive));
-            const int curPt = mrk->font().pointSize();
-            const int maxAutoScalePt = isSlidePreset ? 14 : 12;
+            const QFont mf = mrk->font();
+            const double curPt = mf.pointSizeF() > 0.0
+                    ? mf.pointSizeF()
+                    : (mf.pointSize() > 0 ? double(mf.pointSize()) : 0.0);
+            const double maxAutoScalePt = isSlidePreset ? 14.0 : 12.0;
             const bool shouldApplyLegFnt = !isSigLabel
                     && (isCurveLegend || isPanelLabel || isFitCallout
-                        || (curPt > 0 && curPt <= maxAutoScalePt));
+                        || (curPt > 0.0 && curPt <= maxAutoScalePt + 1e-6));
             if (isSigLabel) {
                 QFont sigFnt = legFnt;
-                sigFnt.setPointSize(
-                        qBound(8, legFnt.pointSize() - (isSlidePreset ? 4 : 0),
-                               16));
+                const double baseLegPt = legFnt.pointSizeF() > 0.0
+                        ? legFnt.pointSizeF()
+                        : (legFnt.pointSize() > 0 ? double(legFnt.pointSize()) : 9.0);
+                sigFnt.setPointSizeF(
+                        qBound(8.0, baseLegPt - (isSlidePreset ? 4.0 : 0.0), 16.0));
                 sigFnt.setBold(false);
                 sigFnt.setHintingPreference(QFont::PreferNoHinting);
                 mrk->setFont(sigFnt);
@@ -5398,7 +5492,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                 }
             } else if (pen.style() != Qt::NoPen
                        && isPresetManagedValue(pen.widthF(), managedCurveWidths)) {
-                pen.setWidth(minCurveWidth);
+                pen.setWidthF(targetCurveWidth);
                 c->setPen(pen);
             }
             if (!isFilledType && minSymSize > 0 && c->symbol().style() != QwtSymbol::NoSymbol) {
@@ -5409,8 +5503,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                 }
                 if (isSlidePreset) {
                     QPen sp = sym.pen();
-                    if (sp.width() < 2)
-                        sp.setWidth(2);
+                    if (sp.widthF() < 2.0)
+                        sp.setWidthF(2.0);
                     sym.setPen(sp);
                 }
                 c->setSymbol(sym);
@@ -5418,7 +5512,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         }
         if ((isIsijFormat || isSlidePreset || isInset)
             && !isLinkedOverlay && !gr->isTernaryPlot() && !gr->isPolarPlot()
-            && !gr->isPiePlot()) {
+            && !gr->isPoleFigurePlot() && !gr->isPiePlot()) {
             plot->updateAxes();
             for (int a = 0; a < QwtPlot::axisCnt; ++a) {
                 if (gr->hasColorScaleOnAxis(a) || gr->hasWeibullProbabilityAxis(a)
@@ -5617,7 +5711,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         for (int i = 0; i < graphsList.count(); ++i) {
             Graph *gr = (Graph *)graphsList.at(i);
             if (!gr || !gr->plotWidget() || d_inset_specs.contains(gr) || gr->linkedParentLayer()
-                || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPiePlot())
+                || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPoleFigurePlot()
+                || gr->isPiePlot())
                 continue;
             Plot *pl = gr->plotWidget();
             pl->updateLayout();
@@ -5655,7 +5750,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         for (int i = 0; i < graphsList.count(); ++i) {
             Graph *gr = (Graph *)graphsList.at(i);
             if (!gr || !gr->plotWidget() || d_inset_specs.contains(gr) || gr->linkedParentLayer()
-                || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPiePlot())
+                || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPoleFigurePlot()
+                || gr->isPiePlot())
                 continue;
             Plot *pl = gr->plotWidget();
             pl->updateLayout();
@@ -5698,7 +5794,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         const bool isInset = d_inset_specs.contains(gr);
         const bool isLinkedOverlay = (gr->linkedParentLayer() != nullptr);
         if (!isInset && !isLinkedOverlay && !gr->isTernaryPlot() && !gr->isPolarPlot()
-            && !gr->isPiePlot()) {
+            && !gr->isPoleFigurePlot() && !gr->isPiePlot()) {
             Plot *pl = gr->plotWidget();
             pl->updateLayout();
             const QVector<int> lineKeys = gr->lineMarkerKeys();
@@ -6031,7 +6127,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             const QVariant ancProp = gr->plotWidget()->property("_toriLegendAnchor");
             if (ancProp.isValid()) {
                 gr->placeLegendAnchor(static_cast<Graph::LegendAnchor>(ancProp.toInt()));
-            } else if (gr->isTernaryPlot() || gr->isPolarPlot()) {
+            } else if (gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPoleFigurePlot()) {
                 gr->placeLegendAnchor(Graph::LegendTopRight);
             } else if (legendWasDefaultTopLeft[i] || isSlidePreset || !gr->lineMarkerKeys().isEmpty()) {
                 gr->placeLegendAnchor(Graph::LegendAutoAvoidData);
@@ -7117,13 +7213,19 @@ QRect MultiLayer::panelLabelsBoundingRect() const
             continue;
         }
 
-        int pt = d_panel_label_font_pt;
-        if (pt <= 0) {
-            const int titlePt = gr->axisTitleFont(QwtPlot::yLeft).pointSize();
-            pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40) : 12;
+        double pt = double(d_panel_label_font_pt);
+        if (pt <= 0.0) {
+            const QFont tf = gr->axisTitleFont(QwtPlot::yLeft);
+            const double titlePt =
+                    (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
+            pt = (titlePt > 0.0) ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
+                                 : 12.0;
         }
 
-        QFont fnt(QStringLiteral("Arial"), pt, QFont::Normal, false);
+        QFont fnt(QStringLiteral("Arial"));
+        fnt.setPointSizeF(pt);
+        fnt.setWeight(QFont::Normal);
+        fnt.setItalic(false);
         fnt.setBold(false);
         fnt.setHintingPreference(QFont::PreferNoHinting);
         const QFontMetrics fm(fnt);
@@ -7409,13 +7511,19 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
             continue;
         }
 
-        int pt = d_panel_label_font_pt;
-        if (pt <= 0) {
-            const int titlePt = gr->axisTitleFont(QwtPlot::yLeft).pointSize();
-            pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40) : 12;
+        double pt = double(d_panel_label_font_pt);
+        if (pt <= 0.0) {
+            const QFont tf = gr->axisTitleFont(QwtPlot::yLeft);
+            const double titlePt =
+                    (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
+            pt = (titlePt > 0.0) ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
+                                 : 12.0;
         }
 
-        QFont fnt(QStringLiteral("Arial"), pt, QFont::Normal, false);
+        QFont fnt(QStringLiteral("Arial"));
+        fnt.setPointSizeF(pt);
+        fnt.setWeight(QFont::Normal);
+        fnt.setItalic(false);
         fnt.setBold(false);
         fnt.setHintingPreference(QFont::PreferNoHinting);
         // Exports run at 100 % (ScopedUnzoomForExport), so this only enlarges the screen view.
@@ -7859,16 +7967,22 @@ void MultiLayer::applySquareCanvasFrame70Percent()
     const int gapY = (nRows > 1) ? qMax(6, rowsSpace) : 0;
     int panelTopExtra = 0;
     if (d_panel_labels_enabled && d_panel_label_placement == PanelOutsideTopLeft) {
-        int maxLabelPt = (d_panel_label_font_pt > 0) ? d_panel_label_font_pt : 12;
+        double maxLabelPt = (d_panel_label_font_pt > 0) ? double(d_panel_label_font_pt) : 12.0;
         if (d_panel_label_font_pt <= 0) {
             for (Graph *gr : primaryGraphs) {
-                const int titlePt = gr->axisTitleFont(QwtPlot::yLeft).pointSize();
-                const int pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40)
-                                             : 12;
+                const QFont tf = gr->axisTitleFont(QwtPlot::yLeft);
+                const double titlePt =
+                        (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
+                const double pt = (titlePt > 0.0)
+                        ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
+                        : 12.0;
                 maxLabelPt = qMax(maxLabelPt, pt);
             }
         }
-        const QFont lblFont(QStringLiteral("Arial"), maxLabelPt, QFont::Normal, false);
+        QFont lblFont(QStringLiteral("Arial"));
+        lblFont.setPointSizeF(maxLabelPt);
+        lblFont.setWeight(QFont::Normal);
+        lblFont.setItalic(false);
         const QFontMetrics lfm(lblFont);
         panelTopExtra = qMax(22, lfm.height() + 12);
     }
@@ -7896,7 +8010,8 @@ void MultiLayer::applySquareCanvasFrame70Percent()
         const int capY = isMultiPanel ? qBound(3, side / 28, 6) : 10;
         for (Graph *gr : primaryGraphs) {
             Plot *pl = gr ? gr->plotWidget() : nullptr;
-            if (!pl || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPiePlot())
+            if (!pl || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPoleFigurePlot()
+                || gr->isPiePlot())
                 continue;
             const QwtTextScaleDraw *xCatSd =
                     dynamic_cast<const QwtTextScaleDraw *>(pl->axisScaleDraw(QwtPlot::xBottom));
@@ -8716,6 +8831,11 @@ void registerStylePresetTranslationsOnce()
     reg("Lab Slide (18 pt on slide, 83.3 mm, paste at 140%)",
         "研究室スライド (スライド上で 18 pt、83.3 mm 角、PowerPoint で 140% に拡大)");
     reg("Journal 2-Column (175x85 mm, 600 DPI)", "論文 2 段幅 (175×85 mm, 600 DPI)");
+    reg("ISIJ 1-Column (85x85 mm, 600 DPI)", "ISIJ 1段幅 (85×85 mm, 600 DPI)");
+    reg("Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)");
+    reg("PowerPoint Paste Scale (%):", "PowerPoint 貼付倍率 (%):");
+    reg("OK", "OK");
+    reg("Cancel", "キャンセル");
 }
 
 QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
@@ -8740,10 +8860,11 @@ QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
     o[QStringLiteral("bold_title")] = s.boldTitle;
     o[QStringLiteral("bold_tick")] = s.boldTick;
     o[QStringLiteral("bold_legend")] = s.boldLegend;
-    o[QStringLiteral("curve_width")] = s.minCurveWidth;
+    const double effCw = (s.curveWidthF > 0.0) ? s.curveWidthF : double(s.minCurveWidth);
+    o[QStringLiteral("curve_width")] = effCw;
     o[QStringLiteral("symbol_size")] = s.minSymbolSize;
     // legacy keys (read by older ToriGraph builds)
-    o[QStringLiteral("min_curve_width")] = s.minCurveWidth;
+    o[QStringLiteral("min_curve_width")] = qBound(1, qRound(effCw), 20);
     o[QStringLiteral("min_symbol_size")] = s.minSymbolSize;
     o[QStringLiteral("legend_frame")] = s.legendFrame;
     o[QStringLiteral("page_background")] =
@@ -8798,14 +8919,19 @@ MultiLayer::GraphStylePresetSpec stylePresetFromJson(const QJsonObject &o,
         s.boldTick = o.value(QStringLiteral("bold_tick")).toBool(s.boldTick);
     if (o.contains(QStringLiteral("bold_legend")))
         s.boldLegend = o.value(QStringLiteral("bold_legend")).toBool(s.boldLegend);
-    if (o.contains(QStringLiteral("curve_width")))
-        s.minCurveWidth = qBound(1, o.value(QStringLiteral("curve_width")).toInt(s.minCurveWidth), 12);
-    else if (o.contains(QStringLiteral("min_curve_width")))
-        s.minCurveWidth = qBound(1, o.value(QStringLiteral("min_curve_width")).toInt(s.minCurveWidth), 12);
+    if (o.contains(QStringLiteral("curve_width"))) {
+        const double defCw = (s.curveWidthF > 0.0) ? s.curveWidthF : double(s.minCurveWidth);
+        const double cw = qBound(0.5, o.value(QStringLiteral("curve_width")).toDouble(defCw), 20.0);
+        s.curveWidthF = cw;
+        s.minCurveWidth = qBound(1, qRound(cw), 20);
+    } else if (o.contains(QStringLiteral("min_curve_width"))) {
+        s.minCurveWidth = qBound(1, o.value(QStringLiteral("min_curve_width")).toInt(s.minCurveWidth), 20);
+        s.curveWidthF = double(s.minCurveWidth);
+    }
     if (o.contains(QStringLiteral("symbol_size")))
-        s.minSymbolSize = qBound(0, o.value(QStringLiteral("symbol_size")).toInt(s.minSymbolSize), 32);
+        s.minSymbolSize = qBound(0, o.value(QStringLiteral("symbol_size")).toInt(s.minSymbolSize), 100);
     else if (o.contains(QStringLiteral("min_symbol_size")))
-        s.minSymbolSize = qBound(0, o.value(QStringLiteral("min_symbol_size")).toInt(s.minSymbolSize), 32);
+        s.minSymbolSize = qBound(0, o.value(QStringLiteral("min_symbol_size")).toInt(s.minSymbolSize), 100);
     if (o.contains(QStringLiteral("legend_frame")))
         s.legendFrame = qBound(0, o.value(QStringLiteral("legend_frame")).toInt(s.legendFrame), 2);
     if (o.contains(QStringLiteral("page_background"))) {
@@ -9037,7 +9163,8 @@ bool MultiLayer::applyPendingNewGraphStylePreset()
     bool anyCartesian = false;
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
-        if (gr && !gr->isPiePlot() && !gr->isTernaryPlot() && !gr->isPolarPlot())
+        if (gr && !gr->isPiePlot() && !gr->isTernaryPlot() && !gr->isPolarPlot()
+            && !gr->isPoleFigurePlot())
             anyCartesian = true;
     }
     if (!anyCartesian)
@@ -9254,7 +9381,11 @@ bool MultiLayer::findStylePreset(const QString &idOrName, GraphStylePresetSpec *
         }
     }
     for (const GraphStylePresetSpec &s : all) {
-        if (s.name.compare(idOrName.trimmed(), Qt::CaseInsensitive) == 0) {
+        if (s.name.compare(idOrName.trimmed(), Qt::CaseInsensitive) == 0
+            || (s.builtIn
+                && QObject::tr(s.name.toUtf8().constData())
+                           .compare(idOrName.trimmed(), Qt::CaseInsensitive)
+                        == 0)) {
             if (outSpec)
                 *outSpec = s;
             return true;
@@ -9473,6 +9604,20 @@ MultiLayer::GraphStylePresetSpec MultiLayer::captureStylePresetSpec(const QStrin
         const bool rightOn = g->plotWidget() && g->plotWidget()->axisEnabled(QwtPlot::yRight);
         s.framePreset = (topOn && rightOn) ? static_cast<int>(Graph::FrameBoxInwardTicks)
                                            : static_cast<int>(Graph::FrameOpenL);
+        for (int cIdx = 0; cIdx < g->curves(); ++cIdx) {
+            QwtPlotCurve *c = g->curve(cIdx);
+            if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                continue;
+            const double cw = (c->pen().widthF() > 0.0) ? c->pen().widthF()
+                                                        : double(qMax(1, c->pen().width()));
+            if (c->pen().style() != Qt::NoPen) {
+                s.curveWidthF = qBound(0.5, cw, 20.0);
+                s.minCurveWidth = qBound(1, qRound(s.curveWidthF), 20);
+            }
+            if (c->symbol().style() != QwtSymbol::NoSymbol)
+                s.minSymbolSize = qBound(0, c->symbol().size().width(), 100);
+            break;
+        }
     }
     return s;
 }
@@ -9486,17 +9631,27 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     if (!targetGraph && app)
         targetGraph = qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow());
 
+    const QString origNewGraphPresetId = newGraphStylePresetId();
+    const QString origCurvePalette = Graph::defaultCurvePaletteName();
+    const MultiPanelSizing origPanelSizing = multiPanelSizing();
+    const QString origSharedFolder = sharedStylePresetsFolder();
+    QString pendingNewGraphPresetId = origNewGraphPresetId;
+    bool defaultsCommitted = false;
+
     QDialog dlg(app);
     dlg.setWindowTitle(QObject::tr("Graph Style Preset Manager"));
-    dlg.setMinimumSize(760, 560);
+    dlg.setMinimumSize(680, 410);
+    dlg.resize(750, 480);
 
     QVBoxLayout *rootLay = new QVBoxLayout(&dlg);
+    rootLay->setContentsMargins(8, 8, 8, 8);
+    rootLay->setSpacing(6);
     QHBoxLayout *mainSplit = new QHBoxLayout();
 
     // Left column: Preset list & CRUD buttons
     QVBoxLayout *leftCol = new QVBoxLayout();
     QListWidget *lw = new QListWidget(&dlg);
-    lw->setMinimumWidth(250);
+    lw->setMinimumWidth(235);
     leftCol->addWidget(lw, 1);
 
     QHBoxLayout *addRow = new QHBoxLayout();
@@ -9525,10 +9680,18 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
 
     mainSplit->addLayout(leftCol, 0);
 
-    // Right column: Parameter editor form
-    QWidget *editorPane = new QWidget(&dlg);
+    // Right column: Scrollable parameter editor + global defaults so 911x512 screens fit cleanly
+    QScrollArea *rightScroll = new QScrollArea(&dlg);
+    rightScroll->setWidgetResizable(true);
+    rightScroll->setFrameShape(QFrame::NoFrame);
+    QWidget *rightScrollContent = new QWidget(rightScroll);
+    QVBoxLayout *rightColLay = new QVBoxLayout(rightScrollContent);
+    rightColLay->setContentsMargins(4, 0, 4, 0);
+    rightColLay->setSpacing(8);
+
+    QWidget *editorPane = new QWidget(rightScrollContent);
     QFormLayout *form = new QFormLayout(editorPane);
-    form->setContentsMargins(10, 4, 4, 4);
+    form->setContentsMargins(6, 2, 2, 2);
 
     QLineEdit *leName = new QLineEdit(editorPane);
     form->addRow(QObject::tr("Preset Name:"), leName);
@@ -9614,10 +9777,12 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     form->addRow(QObject::tr("Legend Size (pt):"), fLegRow);
 
     QHBoxLayout *curveRow = new QHBoxLayout();
-    QSpinBox *sbCurveW = new QSpinBox(editorPane);
-    sbCurveW->setRange(1, 12);
+    QDoubleSpinBox *sbCurveW = new QDoubleSpinBox(editorPane);
+    sbCurveW->setRange(0.5, 20.0);
+    sbCurveW->setDecimals(1);
+    sbCurveW->setSingleStep(0.5);
     QSpinBox *sbSymSz = new QSpinBox(editorPane);
-    sbSymSz->setRange(0, 32);
+    sbSymSz->setRange(0, 100);
     curveRow->addWidget(sbCurveW);
     curveRow->addWidget(new QLabel(QObject::tr("Symbol Size (px):"), editorPane));
     curveRow->addWidget(sbSymSz);
@@ -9629,6 +9794,13 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     cbLegFrame->addItem(QObject::tr("Shadow Box"), static_cast<int>(Legend::Shadow));
     form->addRow(QObject::tr("Legend Frame:"), cbLegFrame);
 
+    QDoubleSpinBox *sbPastePct = new QDoubleSpinBox(editorPane);
+    sbPastePct->setRange(10.0, 400.0);
+    sbPastePct->setDecimals(0);
+    sbPastePct->setSingleStep(10.0);
+    sbPastePct->setSuffix(QStringLiteral(" %"));
+    form->addRow(QObject::tr("PowerPoint Paste Scale (%):"), sbPastePct);
+
     QCheckBox *chkIsij = new QCheckBox(
             QObject::tr("Format axis units as ISIJ slash (Quantity, sym / unit)"), editorPane);
     QCheckBox *chkSlide = new QCheckBox(
@@ -9636,11 +9808,10 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     form->addRow(QString(), chkIsij);
     form->addRow(QString(), chkSlide);
 
-    mainSplit->addWidget(editorPane, 1);
-    rootLay->addLayout(mainSplit, 1);
+    rightColLay->addWidget(editorPane);
 
-    // E1/E4/E5/E7: application-wide defaults that belong with the presets.
-    QGroupBox *defaultsBox = new QGroupBox(QObject::tr("Defaults for New Graphs"), &dlg);
+    // E1/E4/E5/E7: application-wide defaults that belong with the presets (saved on confirm only).
+    QGroupBox *defaultsBox = new QGroupBox(QObject::tr("Defaults for New Graphs"), rightScrollContent);
     QFormLayout *defForm = new QFormLayout(defaultsBox);
     QComboBox *cbNewGraphPreset = new QComboBox(defaultsBox);
     QComboBox *cbCurvePalette = new QComboBox(defaultsBox);
@@ -9655,10 +9826,10 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     {
         // A palette chosen elsewhere (lab defaults ini, Python) is shown as it is instead of
         // silently displaying the first entry.
-        const QString curPal = Graph::defaultCurvePaletteName();
-        int pIdx = cbCurvePalette->findData(curPal);
-        if (pIdx < 0 && !curPal.isEmpty()) {
-            cbCurvePalette->addItem(QObject::tr(curPal.toUtf8().constData()), curPal);
+        int pIdx = cbCurvePalette->findData(origCurvePalette);
+        if (pIdx < 0 && !origCurvePalette.isEmpty()) {
+            cbCurvePalette->addItem(QObject::tr(origCurvePalette.toUtf8().constData()),
+                                    origCurvePalette);
             pIdx = cbCurvePalette->count() - 1;
         }
         cbCurvePalette->setCurrentIndex(pIdx >= 0 ? pIdx : 0);
@@ -9668,9 +9839,9 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
                            int(PanelSizingPerPanel));
     cbPanelSizing->addItem(QObject::tr("Journal double column (175 mm wide)"),
                            int(PanelSizingTwoColumn175));
-    cbPanelSizing->setCurrentIndex(multiPanelSizing() == PanelSizingTwoColumn175 ? 1 : 0);
+    cbPanelSizing->setCurrentIndex(origPanelSizing == PanelSizingTwoColumn175 ? 1 : 0);
     QHBoxLayout *sharedRow = new QHBoxLayout();
-    QLineEdit *leShared = new QLineEdit(sharedStylePresetsFolder(), defaultsBox);
+    QLineEdit *leShared = new QLineEdit(origSharedFolder, defaultsBox);
     leShared->setPlaceholderText(QObject::tr("(none)"));
     QPushButton *btnSharedBrowse = new QPushButton(QObject::tr("Browse..."), defaultsBox);
     sharedRow->addWidget(leShared, 1);
@@ -9679,26 +9850,45 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     defForm->addRow(QObject::tr("Colors for new curves:"), cbCurvePalette);
     defForm->addRow(QObject::tr("Multi-panel page size:"), cbPanelSizing);
     defForm->addRow(QObject::tr("Shared preset folder (read-only):"), sharedRow);
-    rootLay->addWidget(defaultsBox);
+    rightColLay->addWidget(defaultsBox);
+    rightColLay->addStretch(1);
 
-    // Bottom action buttons
+    rightScroll->setWidget(rightScrollContent);
+    mainSplit->addWidget(rightScroll, 1);
+    rootLay->addLayout(mainSplit, 1);
+
+    // Bottom action buttons (no default/autoDefault so Enter inPreset Name never applies & closes)
     QHBoxLayout *btnRow = new QHBoxLayout();
     QPushButton *btnSave = new QPushButton(QObject::tr("Save Changes"), &dlg);
     QPushButton *btnApply = new QPushButton(QObject::tr("Save && Apply to Graph"), &dlg);
     btnApply->setEnabled(targetGraph != nullptr);
-    btnApply->setDefault(targetGraph != nullptr);
-    QPushButton *btnClose = new QPushButton(QObject::tr("Close"), &dlg);
+    QPushButton *btnOk = new QPushButton(QObject::tr("OK"), &dlg);
+    QPushButton *btnCancel = new QPushButton(QObject::tr("Cancel"), &dlg);
+    for (QPushButton *b : { btnNew, btnFromGraph, btnDup, btnDel, btnReset, btnImport, btnExport,
+                            btnSharedBrowse, btnSave, btnApply, btnOk, btnCancel }) {
+        b->setAutoDefault(false);
+        b->setDefault(false);
+    }
     btnRow->addStretch(1);
     btnRow->addWidget(btnSave);
     btnRow->addWidget(btnApply);
-    btnRow->addWidget(btnClose);
+    btnRow->addWidget(btnOk);
+    btnRow->addWidget(btnCancel);
     rootLay->addLayout(btnRow);
 
     QVector<GraphStylePresetSpec> presets;
     bool loadingUi = false;
 
+    auto displayPresetName = [](const GraphStylePresetSpec &s) -> QString {
+        return s.builtIn ? QObject::tr(s.name.toUtf8().constData()) : s.name;
+    };
+
     auto readFormIntoSpec = [&](GraphStylePresetSpec &s) {
-        s.name = leName->text().trimmed().isEmpty() ? s.id : leName->text().trimmed();
+        const QString enteredName = leName->text().trimmed();
+        if (enteredName.isEmpty())
+            s.name = s.id;
+        else if (!(s.builtIn && enteredName == displayPresetName(s)))
+            s.name = enteredName;
         s.pageWidthMm = sbW->value();
         s.pageHeightMm = sbH->value();
         s.keepAspectRatio = chkAspect->isChecked();
@@ -9715,9 +9905,13 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         s.boldTitle = chkBoldTitle->isChecked();
         s.boldTick = chkBoldTick->isChecked();
         s.boldLegend = chkBoldLeg->isChecked();
-        s.minCurveWidth = sbCurveW->value();
+        s.curveWidthF = sbCurveW->value();
+        s.minCurveWidth = qBound(1, qRound(s.curveWidthF), 20);
         s.minSymbolSize = sbSymSz->value();
         s.legendFrame = cbLegFrame->currentData().toInt();
+        const double pct = sbPastePct->value();
+        s.slidePastePercent =
+                (std::fabs(pct - 100.0) < 1e-6 && s.slidePastePercent <= 0.0) ? 0.0 : pct;
         s.formatIsijUnitSlash = chkIsij->isChecked();
         s.largeSlideLayout = chkSlide->isChecked();
     };
@@ -9727,7 +9921,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
             return;
         loadingUi = true;
         const GraphStylePresetSpec &s = presets[row];
-        leName->setText(s.name);
+        leName->setText(displayPresetName(s));
         sbW->setValue(s.pageWidthMm);
         sbH->setValue(s.pageHeightMm);
         chkAspect->setChecked(s.keepAspectRatio);
@@ -9745,10 +9939,11 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         chkBoldTitle->setChecked(s.boldTitle);
         chkBoldTick->setChecked(s.boldTick);
         chkBoldLeg->setChecked(s.boldLegend);
-        sbCurveW->setValue(s.minCurveWidth);
+        sbCurveW->setValue((s.curveWidthF > 0.0) ? s.curveWidthF : double(s.minCurveWidth));
         sbSymSz->setValue(s.minSymbolSize);
         const int lIdx = cbLegFrame->findData(s.legendFrame);
         cbLegFrame->setCurrentIndex(lIdx >= 0 ? lIdx : 0);
+        sbPastePct->setValue((s.slidePastePercent > 0.0) ? s.slidePastePercent : 100.0);
         chkIsij->setChecked(s.formatIsijUnitSlash);
         chkSlide->setChecked(s.largeSlideLayout);
         btnDel->setEnabled(!s.builtIn && !s.readOnly);
@@ -9764,8 +9959,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         cbNewGraphPreset->clear();
         cbNewGraphPreset->addItem(QObject::tr("None (keep plain pixel page)"), QString());
         for (const GraphStylePresetSpec &s : presets)
-            cbNewGraphPreset->addItem(s.name, s.id);
-        const int idx = cbNewGraphPreset->findData(newGraphStylePresetId());
+            cbNewGraphPreset->addItem(displayPresetName(s), s.id);
+        const int idx = cbNewGraphPreset->findData(pendingNewGraphPresetId);
         cbNewGraphPreset->setCurrentIndex(idx >= 0 ? idx : 0);
     };
 
@@ -9778,7 +9973,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
             const QString tag = s.builtIn ? QObject::tr("Built-in")
                     : (s.readOnly ? QObject::tr("Shared") : QObject::tr("Custom"));
             QListWidgetItem *it = new QListWidgetItem(
-                    QStringLiteral("[%1]  %2").arg(tag, s.name), lw);
+                    QStringLiteral("[%1]  %2").arg(tag, displayPresetName(s)), lw);
             it->setData(Qt::UserRole, s.id);
             if (!selectId.isEmpty() && s.id.compare(selectId, Qt::CaseInsensitive) == 0)
                 targetRow = i;
@@ -9792,17 +9987,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     reloadList(QString());
 
     QObject::connect(cbNewGraphPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [&](int) { setNewGraphStylePresetId(cbNewGraphPreset->currentData().toString()); });
-    QObject::connect(cbCurvePalette, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {
-                         Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
-                         if (app && app->graphInspectorDock())
-                             app->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
-                     });
-    QObject::connect(cbPanelSizing, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [&](int) {
-                         setMultiPanelSizing(static_cast<MultiPanelSizing>(
-                                 cbPanelSizing->currentData().toInt()));
+                         pendingNewGraphPresetId = cbNewGraphPreset->currentData().toString();
                      });
     QObject::connect(leShared, &QLineEdit::editingFinished, &dlg, [&]() {
         if (leShared->text().trimmed() == sharedStylePresetsFolder())
@@ -9825,6 +10011,16 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         if (!loadingUi)
             populateForm(row);
     });
+
+    auto commitGlobalDefaults = [&]() {
+        setNewGraphStylePresetId(cbNewGraphPreset->currentData().toString());
+        Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
+        if (app && app->graphInspectorDock())
+            app->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
+        setMultiPanelSizing(static_cast<MultiPanelSizing>(cbPanelSizing->currentData().toInt()));
+        setSharedStylePresetsFolder(leShared->text());
+        defaultsCommitted = true;
+    };
 
     auto saveCurrent = [&]() -> bool {
         const int row = lw->currentRow();
@@ -9877,7 +10073,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         s.builtIn = false;
         s.readOnly = false;
         s.sourcePath.clear();
-        s.name = QObject::tr("Copy of %1").arg(s.name);
+        s.name = QObject::tr("Copy of %1").arg(displayPresetName(presets[row]));
         saveStylePreset(s);
         reloadList(s.id);
     });
@@ -9938,10 +10134,14 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         }
     });
 
-    QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() { saveCurrent(); });
+    QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() {
+        if (saveCurrent())
+            commitGlobalDefaults();
+    });
     QObject::connect(btnApply, &QPushButton::clicked, &dlg, [&]() {
         if (!saveCurrent() || !targetGraph)
             return;
+        commitGlobalDefaults();
         const int row = lw->currentRow();
         if (row >= 0 && row < presets.size()) {
             targetGraph->applyStylePresetSpec(presets[row]);
@@ -9953,9 +10153,19 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         }
         dlg.accept();
     });
-    QObject::connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::reject);
+    QObject::connect(btnOk, &QPushButton::clicked, &dlg, [&]() {
+        if (!saveCurrent())
+            return;
+        commitGlobalDefaults();
+        dlg.accept();
+    });
+    QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
-    dlg.exec();
+    const int dlgRes = dlg.exec();
+    if (!defaultsCommitted && dlgRes != QDialog::Accepted) {
+        if (sharedStylePresetsFolder() != origSharedFolder)
+            setSharedStylePresetsFolder(origSharedFolder);
+    }
     if (app) {
         if (GraphInspectorDock *insp = app->graphInspectorDock())
             insp->refreshAll();

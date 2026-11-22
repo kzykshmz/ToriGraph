@@ -3018,6 +3018,15 @@ Table *MultiPeakFit::integratePeaksToTable(const QString &tableName)
         t->column(6)->setValueAt(m, rows[m].centroid);
     }
 
+    QString xU, yU;
+    resolveDataUnits(xU, yU);
+    const QString aU = areaUnit(xU, yU);
+    for (int col : { 1, 3, 6 })
+        t->column(col)->setUnits(xU);
+    t->column(2)->setUnits(yU);
+    t->column(4)->setUnits(aU);
+    t->column(5)->setUnits(QStringLiteral("%"));
+
     t->showNormal();
     return t;
 }
@@ -3048,6 +3057,8 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
 
     std::vector<BatchPeakRow> allRows;
     const QString profStr = profileDisplayName(profile);
+    QString batchXU, batchYU;
+    bool haveUnits = false;
 
     for (const QString &curveTitle : curveTitles) {
         if (curveTitle.isEmpty() || g->curveIndex(curveTitle) < 0)
@@ -3059,6 +3070,10 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
         mpf.setNegativePeaksAllowed(allowNegativePeaks);
         if (!mpf.setDataFromCurve(curveTitle, g) || mpf.error())
             continue;
+        if (!haveUnits) {
+            mpf.resolveDataUnits(batchXU, batchYU);
+            haveUnits = (!batchXU.isEmpty() || !batchYU.isEmpty());
+        }
 
         mpf.setBaselineMode(baseMode);
         if (baseMode != BaselineZero)
@@ -3132,6 +3147,21 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
         tbl->column(11)->setValueAt(i, r.heightSE);
         tbl->column(12)->setValueAt(i, r.areaSE);
     }
+
+    const QString batchAU = areaUnit(batchXU, batchYU);
+    if (!batchXU.isEmpty()) {
+        for (int col : { 3, 4, 9, 10 })
+            tbl->column(col)->setUnits(batchXU);
+    }
+    if (!batchYU.isEmpty()) {
+        for (int col : { 5, 11 })
+            tbl->column(col)->setUnits(batchYU);
+    }
+    if (!batchAU.isEmpty()) {
+        for (int col : { 6, 12 })
+            tbl->column(col)->setUnits(batchAU);
+    }
+    tbl->column(7)->setUnits(QStringLiteral("%"));
 
     tbl->showNormal();
     return tbl;

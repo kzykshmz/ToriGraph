@@ -1026,6 +1026,30 @@ void drawSymbolShapeF(QPainter *painter, QwtSymbol::Style style, double cx, doub
 
 } // namespace
 
+namespace {
+
+QPen scaleFractionalPenForLayout(const QPen &srcPen)
+{
+    if (srcPen.style() == Qt::NoPen)
+        return srcPen;
+    QPen out = srcPen;
+    double wf = srcPen.widthF();
+    if (wf <= 0.0)
+        wf = (srcPen.width() > 0) ? double(srcPen.width()) : 1.0;
+    const QwtMetricsMap &mm = QwtPainter::metricsMap();
+    if (!mm.isIdentity()) {
+        const double refPx = 1000.0;
+        const double scaleX = double(mm.screenToLayoutX(int(refPx))) / refPx;
+        if (scaleX > 0.0 && std::isfinite(scaleX))
+            wf *= scaleX;
+    }
+    out.setCosmetic(false);
+    out.setWidthF(wf);
+    return out;
+}
+
+} // namespace
+
 void PlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                      const QRect &canvasRect) const
 {
@@ -1044,13 +1068,8 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
 
-    QPen p = painter->pen();
-    if (p.style() != Qt::NoPen && p.isCosmetic()) {
-        p.setCosmetic(false);
-        if (p.widthF() <= 0.0)
-            p.setWidthF(qMax(1.0, double(pen().widthF())));
-        painter->setPen(p);
-    }
+    if (pen().style() != Qt::NoPen)
+        painter->setPen(scaleFractionalPenForLayout(pen()));
 
     const int n = dataSize();
     from = qMax(0, from);
@@ -1564,12 +1583,7 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         painter->setRenderHint(QPainter::Antialiasing, true);
 
     painter->setBrush(sym.brush());
-    QPen symPen = QwtPainter::scaledPen(sym.pen());
-    if (symPen.style() != Qt::NoPen && symPen.isCosmetic()) {
-        symPen.setCosmetic(false);
-        if (symPen.widthF() <= 0.0)
-            symPen.setWidthF(qMax(1.0, double(sym.pen().widthF())));
-    }
+    QPen symPen = scaleFractionalPenForLayout(sym.pen());
     painter->setPen(symPen);
 
     const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
@@ -1808,8 +1822,10 @@ bool DataCurve::pointColorRange(double *zMin, double *zMax) const
     }
     if (lo > hi)
         std::swap(lo, hi);
+    if (!(hi > lo) || !std::isfinite(hi - lo))
+        hi = lo + 1.0;
     if (!(hi > lo))
-        hi = lo + (lo == 0.0 ? 1.0 : std::fabs(lo) * 1e-6);
+        hi = lo + std::max(1.0, std::fabs(lo) * 1e-6);
     if (zMin)
         *zMin = lo;
     if (zMax)
@@ -1872,12 +1888,9 @@ void DataCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     painter->save();
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
-    QPen basePen = QwtPainter::scaledPen(sym.pen());
-    if (basePen.isCosmetic()) {
-        basePen.setCosmetic(false);
-        if (basePen.widthF() <= 0.0)
-            basePen.setWidthF(qMax(1.0, double(sym.pen().widthF())));
-    }
+    QPen basePen = scaleFractionalPenForLayout(sym.pen());
+    const bool whiteHollow = Graph::isSymbolWhiteHollow(sym);
+    const bool noFill = (sym.brush().style() == Qt::NoBrush);
     const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
     const double baseW = qMax(1.0, double(layoutSz.width()));
     const double baseH = qMax(1.0, double(layoutSz.height()));
@@ -1908,9 +1921,19 @@ void DataCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
             }
         }
         QPen pen = basePen;
-        pen.setColor(fill.darker(150));
-        painter->setPen(pen);
-        painter->setBrush(QBrush(fill));
+        if (whiteHollow) {
+            pen.setColor(fill);
+            painter->setPen(pen);
+            painter->setBrush(QBrush(Qt::white));
+        } else if (noFill) {
+            pen.setColor(fill);
+            painter->setPen(pen);
+            painter->setBrush(Qt::NoBrush);
+        } else {
+            pen.setColor(fill.darker(150));
+            painter->setPen(pen);
+            painter->setBrush(QBrush(fill));
+        }
         drawSymbolShapeF(painter, sym.style(), cx, cy, w, h);
     }
     painter->restore();

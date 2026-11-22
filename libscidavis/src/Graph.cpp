@@ -2458,7 +2458,8 @@ QString Graph::resolvedAutoCurveLabel(int curveIndex) const
 
 QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
 {
-    if (axis < 0 || axis >= 4 || isPiePlot() || isTernaryPlot() || isPolarPlot())
+    if (axis < 0 || axis >= 4 || isPiePlot() || isTernaryPlot() || isPolarPlot()
+        || isPoleFigurePlot())
         return QString();
 
     bool hasNonHiddenDataCurve = false;
@@ -4566,7 +4567,9 @@ QString Graph::saveCurveLayout(int index)
             s += QString::number(c->style()) + "\t";
         s += COLORNAME(c->pen().color()) + "\t";
         s += QString::number(c->pen().style() - 1) + "\t";
-        s += QString::number(c->pen().width()) + "\t";
+        const int savedLw = (c->pen().widthF() > 0.0) ? qMax(1, qRound(c->pen().widthF()))
+                                                      : c->pen().width();
+        s += QString::number(savedLw) + "\t";
 
         const QwtSymbol symbol = c->symbol();
         s += QString::number(symbol.size().width()) + "\t";
@@ -4582,8 +4585,12 @@ QString Graph::saveCurveLayout(int index)
 
         s += COLORNAME(c->brush().color()) + "\t";
         s += QString::number(PatternBox::patternIndex(c->brush().style())) + "\t";
-        if (style <= LineSymbols || style == Box)
-            s += QString::number(symbol.pen().width()) + "\t";
+        if (style <= LineSymbols || style == Box) {
+            const int savedSw = (symbol.pen().widthF() > 0.0)
+                    ? qMax(1, qRound(symbol.pen().widthF()))
+                    : symbol.pen().width();
+            s += QString::number(savedSw) + "\t";
+        }
         // extension for custom dash pattern
         s += QString::number(static_cast<int>(c->pen().capStyle())) + "\t";
         s += QString::number(static_cast<int>(c->pen().joinStyle())) + "\t";
@@ -5306,7 +5313,7 @@ void Graph::updateCurveLayout(int index, const CurveLayout *cL)
     if (index < 0 || c_type.isEmpty() || (int)c_type.size() <= index)
         return;
 
-    QPen pen = QPen(ColorButton::color(cL->symCol), cL->penWidth, Qt::SolidLine);
+    QPen pen = QPen(QBrush(ColorButton::color(cL->symCol)), cL->penWidth, Qt::SolidLine);
     if (cL->symbolFill)
         c->setSymbol(QwtSymbol(SymbolBox::style(cL->sType), QBrush(ColorButton::color(cL->fillCol)),
                                pen, QSize(cL->sSize, cL->sSize)));
@@ -5315,7 +5322,7 @@ void Graph::updateCurveLayout(int index, const CurveLayout *cL)
                 QwtSymbol(SymbolBox::style(cL->sType), QBrush(), pen, QSize(cL->sSize, cL->sSize)));
 
     // custom dash pattern
-    pen = QPen(ColorButton::color(cL->lCol), cL->lWidth, getPenStyle(cL->lStyle));
+    pen = QPen(QBrush(ColorButton::color(cL->lCol)), cL->lWidth, getPenStyle(cL->lStyle));
     pen.setCapStyle(static_cast<Qt::PenCapStyle>(cL->lCapStyle));
     pen.setJoinStyle(static_cast<Qt::PenJoinStyle>(cL->lJoinStyle));
     QVector<qreal> customDash;
@@ -6108,6 +6115,14 @@ void Graph::updatePlot()
         for (int i = 0; i < QwtPlot::axisCnt; i++)
             d_plot->enableAxis(i, false);
         drawAxesBackbones(false);
+    } else if (isPoleFigurePlot()) {
+        d_plot->setAxisScale(QwtPlot::xBottom, -1.38, 1.38);
+        d_plot->setAxisScale(QwtPlot::yLeft, -1.38, 1.38);
+        d_plot->enableAxis(QwtPlot::xBottom, false);
+        d_plot->enableAxis(QwtPlot::yLeft, false);
+        d_plot->enableAxis(QwtPlot::xTop, false);
+        drawCanvasFrame(false, 0);
+        drawAxesBackbones(false);
     } else if (m_autoscale && !zoomOn() && d_active_tool == NULL) {
         for (int i = 0; i < QwtPlot::axisCnt; i++) {
             if (!isToriAxisUserLocked(d_plot, i) && !d_weibull_prob_axis[i]
@@ -6119,7 +6134,7 @@ void Graph::updatePlot()
 
     // Lock discrete category axes (AxisType::Txt) to [minKey - 0.5, maxKey + 0.5, step = 1.0]
     // (preserving explicit category headroom when user-locked) with 0 minor ticks.
-    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+    if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot() && !isPiePlot()) {
         for (int a = 0; a < QwtPlot::axisCnt; ++a) {
             if (const QwtTextScaleDraw *tsd =
                         dynamic_cast<const QwtTextScaleDraw *>(d_plot->axisScaleDraw(a))) {
@@ -6196,13 +6211,13 @@ void Graph::updatePlot()
         }
     }
 
-    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+    if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot() && !isPiePlot()) {
         syncCustomAndWeibullAxes();
     }
 
     d_plot->replot();
     updateMarkersBoundingRect(axesBefore);
-    if (!d_is_ternary && !d_is_polar) {
+    if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot()) {
         updateSecondaryAxis(QwtPlot::xTop);
         updateSecondaryAxis(QwtPlot::yRight);
     }
@@ -7165,11 +7180,20 @@ QString Graph::saveToString(bool saveAsTemplate)
         }
 
         QStringList alphaParts;
+        QStringList widthParts;
         QStringList stackParts;
         for (int ci = 0; ci < n_curves; ++ci) {
             QwtPlotCurve *cv = curve(ci);
             if (!cv)
                 continue;
+            const double lw = cv->pen().widthF();
+            const double sw = cv->symbol().pen().widthF();
+            if (lw > 0.0 || sw > 0.0) {
+                widthParts << QString("%1:%2,%3")
+                                      .arg(ci)
+                                      .arg(QString::number(lw, 'g', 8))
+                                      .arg(QString::number(sw, 'g', 8));
+            }
             const int la = cv->pen().color().alpha();
             const int ba = cv->brush().color().alpha();
             const int spa = cv->symbol().pen().color().alpha();
@@ -7203,6 +7227,9 @@ QString Graph::saveToString(bool saveAsTemplate)
         // <legend>/<text> lines keep the integer pt for older readers; the exact value rides here.
         if (!textPtParts.isEmpty())
             legAnchorAttr += QString(" textPts=\"%1\"").arg(textPtParts.join(";"));
+        // <curve> lines keep integer line/symbol widths for older readers; exact fractional px ride here.
+        if (!widthParts.isEmpty())
+            legAnchorAttr += QString(" curveWidths=\"%1\"").arg(widthParts.join(";"));
 
         s += QString("<ToriBackbones draw=\"%1\" b0=\"%2\" b1=\"%3\" b2=\"%4\" b3=\"%5\" "
                      "legendCols=\"%6\" legendVisible=\"%7\" outsideRightMargin=\"%8\" "
@@ -8545,7 +8572,12 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     if (g->d_plot && g->d_plot->property("_toriLegendAnchor").isValid())
         d_plot->setProperty("_toriLegendAnchor", g->d_plot->property("_toriLegendAnchor"));
 
-    if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+    if (g->d_plot && g->d_plot->property("_toriExtraPlotTags").isValid()) {
+        for (const QString &tag : g->d_plot->property("_toriExtraPlotTags").toStringList())
+            ExtraPlotTypes::restoreGraphTag(this, tag);
+    }
+
+    if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot() && !isPiePlot()) {
         updateSecondaryAxis(QwtPlot::xTop);
         updateSecondaryAxis(QwtPlot::yRight);
     }
@@ -11387,7 +11419,7 @@ bool Graph::hasWeibullProbabilityAxis(int axis) const
 
 void Graph::syncCustomAndWeibullAxes()
 {
-    if (!d_plot || d_is_ternary || d_is_polar || isPiePlot())
+    if (!d_plot || d_is_ternary || d_is_polar || isPoleFigurePlot() || isPiePlot())
         return;
 
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
@@ -11809,8 +11841,14 @@ public:
         painter->setRenderHint(QPainter::Antialiasing,
                                const_cast<Graph *>(d_graph)->antialiasing());
 
-        const int refPt = qMax(8, d_graph->axisNumbersFont(QwtPlot::yLeft).pointSize() - 1);
-        QFont labelFont(QStringLiteral("Arial"), refPt, QFont::Normal);
+        const QFont axNumFnt = d_graph->axisNumbersFont(QwtPlot::yLeft);
+        const double baseAxPt = axNumFnt.pointSizeF() > 0.0
+                ? axNumFnt.pointSizeF()
+                : (axNumFnt.pointSize() > 0 ? double(axNumFnt.pointSize()) : 10.0);
+        const double refPt = qMax(8.0, baseAxPt - 1.0);
+        QFont labelFont(QStringLiteral("Arial"));
+        labelFont.setPointSizeF(refPt);
+        labelFont.setWeight(QFont::Normal);
         labelFont.setBold(false);
         labelFont.setHintingPreference(QFont::PreferNoHinting);
         const QFontMetricsF fm(labelFont, painter->device());
@@ -12312,8 +12350,35 @@ void Graph::syncPointColorBar()
     d_plot->replot();
 }
 
+bool Graph::isPoleFigurePlot() const
+{
+    return !ExtraPlotTypes::graphTag(const_cast<Graph *>(this), QStringLiteral("ToriPoleFigure"))
+                    .isEmpty();
+}
+
 void Graph::applyFramePreset(FramePreset preset)
 {
+    if (isPoleFigurePlot()) {
+        enableAxis(QwtPlot::xBottom, false);
+        enableAxis(QwtPlot::yLeft, false);
+        enableAxis(QwtPlot::xTop, false);
+        if (!hasColorScaleOnAxis(QwtPlot::yRight))
+            enableAxis(QwtPlot::yRight, false);
+        drawCanvasFrame(false, 0);
+        drawAxesBackbones(false);
+        for (QwtPlotItem *it : d_plot->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                static_cast<Spectrogram *>(it)->syncColorScale();
+                break;
+            }
+        }
+        if (scalePicker)
+            scalePicker->refresh();
+        d_plot->replot();
+        emit modifiedGraph();
+        return;
+    }
+
     if (isTernaryPlot() || isPolarPlot() || isPiePlot()) {
         for (int a = 0; a < QwtPlot::axisCnt; ++a)
             enableAxis(a, false);
@@ -12753,8 +12818,15 @@ QFont Graph::legendFont() const
 {
     if (Legend *leg = const_cast<Graph *>(this)->legend())
         return leg->font();
-    const int basePt = qMax(9, axisNumbersFont(QwtPlot::yLeft).pointSize() - 2);
-    return QFont(QStringLiteral("Arial"), basePt, QFont::Normal);
+    const QFont axF = axisNumbersFont(QwtPlot::yLeft);
+    const double axPt = axF.pointSizeF() > 0.0
+            ? axF.pointSizeF()
+            : (axF.pointSize() > 0 ? double(axF.pointSize()) : 11.0);
+    const double basePt = qMax(9.0, axPt - 2.0);
+    QFont f(QStringLiteral("Arial"));
+    f.setPointSizeF(basePt);
+    f.setWeight(QFont::Normal);
+    return f;
 }
 
 void Graph::syncAxisColorToCurve(int qwtAxis, int curveIndex)
@@ -13924,6 +13996,28 @@ void Graph::clearShadedBands()
     emit modifiedGraph();
 }
 
+void Graph::removeShadedBandByTitle(const QString &title)
+{
+    if (title.isEmpty() || d_shaded_bands.isEmpty())
+        return;
+    bool removed = false;
+    for (int i = d_shaded_bands.size() - 1; i >= 0; --i) {
+        if (d_shaded_bands[i].title == title) {
+            if (d_shaded_bands[i].item) {
+                d_shaded_bands[i].item->detach();
+                delete d_shaded_bands[i].item;
+            }
+            d_shaded_bands.removeAt(i);
+            removed = true;
+        }
+    }
+    if (removed) {
+        if (d_plot)
+            d_plot->replot();
+        emit modifiedGraph();
+    }
+}
+
 void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool normalize01)
 {
     QList<PlotCurve *> targetCurves;
@@ -14250,6 +14344,34 @@ bool Graph::restorePhase5Tag(const QString &line)
                 }
             }
         }
+        const QString curveWidths = attrs.value("curveWidths");
+        if (!curveWidths.isEmpty()) {
+            for (const QString &entry : curveWidths.split(';', Qt::SkipEmptyParts)) {
+                const QStringList kv = entry.split(':');
+                if (kv.size() == 2) {
+                    const int ci = kv[0].toInt();
+                    const QStringList wv = kv[1].split(',');
+                    QwtPlotCurve *cv = curve(ci);
+                    if (cv && wv.size() >= 2) {
+                        bool okL = false, okS = false;
+                        const double lw = wv[0].toDouble(&okL);
+                        const double sw = wv[1].toDouble(&okS);
+                        if (okL && lw > 0.0 && lw <= 200.0) {
+                            QPen p = cv->pen();
+                            p.setWidthF(lw);
+                            cv->setPen(p);
+                        }
+                        if (okS && sw > 0.0 && sw <= 200.0) {
+                            QwtSymbol sym = cv->symbol();
+                            QPen sp = sym.pen();
+                            sp.setWidthF(sw);
+                            sym.setPen(sp);
+                            cv->setSymbol(sym);
+                        }
+                    }
+                }
+            }
+        }
         const QString stackOffsets = attrs.value("stackOffsets");
         if (!stackOffsets.isEmpty()) {
             for (const QString &entry : stackOffsets.split(';', Qt::SkipEmptyParts)) {
@@ -14511,7 +14633,7 @@ bool Graph::restorePhase5Tag(const QString &line)
             } else {
                 setCategoryLabels(axis, lbls);
             }
-            if (!d_is_ternary && !d_is_polar && !isPiePlot()) {
+            if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot() && !isPiePlot()) {
                 updateSecondaryAxis(QwtPlot::xTop);
                 updateSecondaryAxis(QwtPlot::yRight);
             }
@@ -15086,8 +15208,8 @@ void Graph::setCurveSymbolHollow(int curveIndex, bool hollowWhite)
         }
         QPen sp = sym.pen();
         sp.setColor(curveColor);
-        if (sp.width() < 1)
-            sp.setWidth(qMax(1, c->pen().width()));
+        if (sp.widthF() <= 0.0)
+            sp.setWidthF(c->pen().widthF() > 0.0 ? c->pen().widthF() : 1.0);
         sym.setPen(sp);
         sym.setBrush(QBrush(Qt::white, Qt::SolidPattern));
         if (curveIndex >= 0 && curveIndex < c_type.size() && c_type[curveIndex] == Line
@@ -15271,8 +15393,8 @@ void Graph::applySeriesStyleScheme(SeriesStyleScheme scheme)
                     sym.setSize(9);
                 QPen symPen = sym.pen();
                 symPen.setColor(sp.color);
-                if (symPen.width() < 1)
-                    symPen.setWidth(qMax(1, pen.width()));
+                if (symPen.widthF() <= 0.0)
+                    symPen.setWidthF(pen.widthF() > 0.0 ? pen.widthF() : 1.0);
                 sym.setPen(symPen);
                 sym.setBrush(sp.whiteHollow ? QBrush(Qt::white, Qt::SolidPattern)
                                             : QBrush(sp.color, Qt::SolidPattern));
@@ -15454,7 +15576,9 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             norm.chop(1);
         const QStringList rawLines = norm.split(QLatin1Char('\n'));
 
-        const QFont legFnt = leg->font();
+        const QFont storedLegFnt = leg->font();
+        const QFont dispLegFnt = d_plot ? d_plot->displayFont(storedLegFnt) : storedLegFnt;
+        const double zoomScale = d_plot ? qMax(0.25, d_plot->displayFontScale()) : 1.0;
         int maxSymW = 0;
         bool allScatter = true;
         bool anyCurveTok = false;
@@ -15487,23 +15611,24 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             visLines.append(ln);
         }
 
-        const double legPt = legFnt.pointSizeF();
+        const double legPt = storedLegFnt.pointSizeF();
         const bool compactLeg =
-                (legPt > 0.0) ? (legPt <= 9.5) : (QFontMetricsF(legFnt).height() <= 16.0);
-        const int symLineLen = (anyCurveTok && allScatter)
+                (legPt > 0.0) ? (legPt <= 9.5) : (QFontMetricsF(storedLegFnt).height() <= 16.0);
+        const int baseSymLineLen = (anyCurveTok && allScatter)
                 ? qMax(maxSymW + (compactLeg ? 2 : 0), compactLeg ? 11 : 14)
                 : (compactLeg
                            ? qBound(14,
                                     qMax(maxSymW + 6,
-                                         qRound(QFontMetricsF(legFnt).height() * 1.05)),
+                                         qRound(QFontMetricsF(storedLegFnt).height() * 1.05)),
                                     34)
                            : qBound(16,
                                     qMax(maxSymW + 8,
-                                         qRound(QFontMetricsF(legFnt).height() * 1.45)),
+                                         qRound(QFontMetricsF(storedLegFnt).height() * 1.45)),
                                     34));
-        const int sampleOff = symLineLen + (compactLeg ? 5 : 10);
+        const int sampleOff =
+                qMax(8, qRound((baseSymLineLen + (compactLeg ? 5 : 10)) * zoomScale));
 
-        int curTop = 4; // Legend::top_margin
+        int curTop = qMax(2, qRound(4.0 * zoomScale)); // Legend::top_margin
         double maxRight = 16.0;
         for (const QString &ln : visLines) {
             bool hasTok = false;
@@ -15534,11 +15659,11 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                 }
             }
             QwtText qt(parsed);
-            qt.setFont(legFnt);
+            qt.setFont(dispLegFnt);
             const QSize tsz = qt.textSize();
-            const int rw = int(std::ceil(((hasTok ? sampleOff : 0) + qMax(4, tsz.width())) * dpiRatio));
+            const int rw = int(std::ceil((hasTok ? sampleOff : 0) + qMax(4, tsz.width()) * dpiRatio));
             const int rh = qMax(8, int(std::ceil(tsz.height() * dpiRatio)));
-            const double leftOff = 6.0 * dpiRatio;
+            const double leftOff = 6.0 * zoomScale * dpiRatio;
             const QRectF rr(leftOff, double(curTop), double(rw), double(rh));
             rowVisualRects.append(rr);
             maxRight = qMax(maxRight, rr.right());
@@ -15546,7 +15671,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         }
         if (!rowVisualRects.isEmpty()) {
             effLegW = qBound(16, int(std::ceil(maxRight)), legW);
-            legH = qMax(legH, curTop + int(std::ceil(4.0 * dpiRatio)));
+            legH = qMax(legH, curTop + int(std::ceil(4.0 * zoomScale * dpiRatio)));
         }
     };
 
@@ -16210,12 +16335,19 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             if (ml->panelLabelsEnabled()
                 && ml->panelLabelPlacement() == MultiLayer::PanelInsideTopLeft
                 && !ml->isInsetLayer(this) && !linkedParentLayer()) {
-                int pt = ml->panelLabelFontPt();
-                if (pt <= 0) {
-                    const int titlePt = axisTitleFont(QwtPlot::yLeft).pointSize();
-                    pt = (titlePt > 0) ? qBound(9, titlePt >= 24 ? titlePt : titlePt + 1, 40) : 12;
+                double pt = double(ml->panelLabelFontPt());
+                if (pt <= 0.0) {
+                    const QFont tf = axisTitleFont(QwtPlot::yLeft);
+                    const double titlePt = tf.pointSizeF() > 0.0
+                            ? tf.pointSizeF()
+                            : (tf.pointSize() > 0 ? double(tf.pointSize()) : 0.0);
+                    pt = (titlePt > 0.0)
+                            ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
+                            : 12.0;
                 }
-                QFont pf(QStringLiteral("Arial"), pt, QFont::Normal, false);
+                QFont pf(QStringLiteral("Arial"));
+                pf.setPointSizeF(pt);
+                pf.setWeight(QFont::Normal);
                 pf.setBold(false);
                 pf.setHintingPreference(QFont::PreferNoHinting);
                 const QFontMetrics pfm(pf);
@@ -16264,17 +16396,19 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
     };
 
     auto evaluateOriginScore = [&](int ox, int oy) -> double {
+        const double fullBoxScore = evaluateCollisionScore(QRectF(ox, oy, legW, legH));
         if (framelessSingleCol && !rowVisualRects.isEmpty()) {
             double sum = 0.0;
             for (const QRectF &rr : rowVisualRects)
                 sum += evaluateCollisionScore(rr.translated(double(ox), double(oy)));
-            return sum;
+            return sum + 0.35 * fullBoxScore;
         }
-        return evaluateCollisionScore(QRectF(ox, oy, legW, legH));
+        return fullBoxScore;
     };
 
     auto ensureHorizBarCategoryHeadroom = [&]() -> bool {
-        if (d_is_ternary || d_is_polar || isPiePlot() || !d_plot->axisEnabled(QwtPlot::yLeft)
+        if (d_is_ternary || d_is_polar || isPoleFigurePlot() || isPiePlot()
+            || !d_plot->axisEnabled(QwtPlot::yLeft)
             || d_axis_breaks[QwtPlot::yLeft].enabled) {
             return false;
         }
@@ -16380,21 +16514,29 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                 }
             }
 
-            // 25x25 continuous 2D grid search when all 6 standard anchors collide (> 1.0)
-            const int xMaxGrid = cw - effLegW - mR;
-            const int yMaxGrid = ch - legH - mB;
-            if (chosenScore > 1.0 && xMaxGrid > mL && yMaxGrid > mT) {
+            // 25x25 continuous 2D grid search (including middle-left/right/top/bottom margins)
+            // when all 6 standard anchors collide (> 1.0)
+            const int xMinGrid = qMin(mL, qMax(2, cw - effLegW - 2));
+            const int xMaxGrid = qMax(xMinGrid, cw - effLegW - qMin(mR, 4));
+            const int yMinGrid = qMin(mT, qMax(2, ch - legH - 2));
+            const int yMaxGrid = qMax(yMinGrid, ch - legH - qMin(mB, 4));
+            if (chosenScore > 1.0 && (xMaxGrid > xMinGrid || yMaxGrid > yMinGrid)) {
                 double bestGridScore = 1e300;
                 QPoint bestPt;
                 constexpr int kGridN = 25;
                 for (int gy = 0; gy < kGridN; ++gy) {
-                    const int py =
-                            mT + qRound((double(gy) / double(kGridN - 1)) * (yMaxGrid - mT));
+                    const int py = (yMaxGrid > yMinGrid)
+                            ? (yMinGrid
+                               + qRound((double(gy) / double(kGridN - 1)) * (yMaxGrid - yMinGrid)))
+                            : yMinGrid;
                     for (int gx = 0; gx < kGridN; ++gx) {
                         // Prefer right before left on ties by scanning gx from right to left
                         const int rGx = (kGridN - 1) - gx;
-                        const int px =
-                                mL + qRound((double(rGx) / double(kGridN - 1)) * (xMaxGrid - mL));
+                        const int px = (xMaxGrid > xMinGrid)
+                                ? (xMinGrid
+                                   + qRound((double(rGx) / double(kGridN - 1))
+                                            * (xMaxGrid - xMinGrid)))
+                                : xMinGrid;
                         const bool isCorner =
                                 (rGx == 0 || rGx == kGridN - 1) && (gy == 0 || gy == kGridN - 1);
                         const double penalty = isCorner ? 0.0 : 0.05;
@@ -16426,22 +16568,80 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
 
         scoreAllCandidates();
 
+        // Compact 2-column attempt when >= 4 visible series make a tall single-column legend
+        // collide on small canvases (e.g. 6-row spin-polarized DOS on 85 mm ISIJ figures).
+        if (chosenScore > 12.0 && leg->numColumns() == 1 && !isPiePlot() && !d_is_ternary
+            && !d_is_polar && !isPoleFigurePlot() && legH > int(0.32 * double(qMax(60, ch)))) {
+            int visCurves = 0;
+            for (int ci = 0; ci < n_curves; ++ci) {
+                if (isCurveVisible(ci) && (ci >= c_type.size() || c_type[ci] != ErrorBars))
+                    ++visCurves;
+            }
+            if (visCurves >= 4) {
+                const double score1Col = chosenScore;
+                const LegendAnchor anchor1Col = chosenAnchor;
+                const bool grid1Col = useGridOrigin;
+                const QPoint pt1Col = bestGridOrigin;
+                leg->setNumColumns(2);
+                framelessSingleCol = false;
+                d_plot->updateLayout();
+                recomputeLegendMetrics();
+                if (legW <= cw - mL - mR && legW <= cw - 8) {
+                    scoreAllCandidates();
+                    if (chosenScore > score1Col - 2.0 && legH * 13 >= ch * 5) {
+                        leg->setNumColumns(1);
+                        framelessSingleCol = (leg->frameStyle() == Legend::None);
+                        d_plot->updateLayout();
+                        recomputeLegendMetrics();
+                        chosenScore = score1Col;
+                        chosenAnchor = anchor1Col;
+                        useGridOrigin = grid1Col;
+                        bestGridOrigin = pt1Col;
+                    }
+                } else {
+                    leg->setNumColumns(1);
+                    framelessSingleCol = (leg->frameStyle() == Legend::None);
+                    d_plot->updateLayout();
+                    recomputeLegendMetrics();
+                    chosenScore = score1Col;
+                    chosenAnchor = anchor1Col;
+                    useGridOrigin = grid1Col;
+                    bestGridOrigin = pt1Col;
+                }
+            }
+        }
+
         if (chosenScore > 35.0 && ensureHorizBarCategoryHeadroom())
             scoreAllCandidates();
 
-        // Smart Y-Headroom: when every inside candidate AND 17x17 grid pocket collides (> 35.0),
-        // expand a linear non-inverted non-broken yLeft upper bound by ~22% (snapped up
-        // to the current major step) so TopRight / TopLeft gets clean headroom above data.
-        if (chosenScore > 35.0 && !d_is_ternary && !d_is_polar && !isPiePlot()
-            && d_plot->axisEnabled(QwtPlot::yLeft) && !d_axis_breaks[QwtPlot::yLeft].enabled
+        // Smart Y-Headroom: when every inside candidate AND 25x25 grid pocket collides (> 12.0),
+        // expand a linear non-inverted non-broken yLeft upper bound enough to clear the legend
+        // height (at least +22%, snapped up to the current major step) so TopRight / TopLeft /
+        // TopCenter gets completely curve-free headroom above the data.
+        if (chosenScore > 12.0 && !d_is_ternary && !d_is_polar && !isPoleFigurePlot()
+            && !isPiePlot() && d_plot->axisEnabled(QwtPlot::yLeft)
+            && !d_axis_breaks[QwtPlot::yLeft].enabled
             && !isToriAxisUserLocked(d_plot, QwtPlot::yLeft)
             && d_user_step[QwtPlot::yLeft] <= 0.0) {
             bool hasSpectrogram = false;
+            double maxCurveY = -std::numeric_limits<double>::infinity();
             for (int i = 0; i < n_curves && i < c_keys.size(); ++i) {
                 QwtPlotItem *it = plotItem(i);
-                if (it && it->isVisible() && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (!it || !it->isVisible())
+                    continue;
+                if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
                     hasSpectrogram = true;
                     break;
+                }
+                if (const QwtPlotCurve *cv = curve(i)) {
+                    if (cv->yAxis() == QwtPlot::yLeft) {
+                        const int np = cv->dataSize();
+                        for (int k = 0; k < np; ++k) {
+                            const double yv = cv->y(k);
+                            if (std::isfinite(yv))
+                                maxCurveY = std::max(maxCurveY, yv);
+                        }
+                    }
                 }
             }
             const QwtScaleDiv *yDiv = d_plot->axisScaleDiv(QwtPlot::yLeft);
@@ -16456,7 +16656,13 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     const double yStep = (majTicks.size() >= 2)
                             ? std::fabs(majTicks[1] - majTicks[0])
                             : d_user_step[QwtPlot::yLeft];
-                    double newYHi = yHi + 0.22 * span;
+                    const double dataTop = (std::isfinite(maxCurveY) && maxCurveY > yLo)
+                            ? std::min(yHi, maxCurveY)
+                            : yHi;
+                    const double reqFrac =
+                            qBound(0.18, double(legH + mT + 10) / double(qMax(60, ch)), 0.56);
+                    const double neededYHi = (dataTop - reqFrac * yLo) / (1.0 - reqFrac);
+                    double newYHi = std::max(yHi + 0.22 * span, neededYHi);
                     if (yStep > 1e-30 && std::isfinite(yStep))
                         newYHi = std::ceil((newYHi - 1e-9 * yStep) / yStep) * yStep;
 
