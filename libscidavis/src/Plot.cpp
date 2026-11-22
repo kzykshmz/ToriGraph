@@ -1256,6 +1256,32 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
         }
     } frameGuard(suppressScaleBackbone, savedScale, devScale);
 
+    // Work around upstream QwtPlotPrintFilter::reset() calling symbol.setPen(QColor),
+    // which implicitly constructs a width-1 cosmetic QPen and destroys fractional/2.0 symbol outline widths.
+    struct ScopedCurveSymbolPenRestorer {
+        QVector<QPair<QwtPlotCurve *, QPen>> saved;
+        explicit ScopedCurveSymbolPenRestorer(const QwtPlotItemList &items)
+        {
+            for (QwtPlotItem *it : items) {
+                if (it && it->rtti() == QwtPlotItem::Rtti_PlotCurve) {
+                    auto *c = static_cast<QwtPlotCurve *>(it);
+                    saved.append(qMakePair(c, c->symbol().pen()));
+                }
+            }
+        }
+        ~ScopedCurveSymbolPenRestorer()
+        {
+            for (const auto &entry : saved) {
+                QwtPlotCurve *c = entry.first;
+                if (c && c->symbol().pen() != entry.second) {
+                    QwtSymbol sym = c->symbol();
+                    sym.setPen(entry.second);
+                    c->setSymbol(sym);
+                }
+            }
+        }
+    } symbolPenGuard(itemList());
+
     QwtPlot::print(painter, innerRect, pfilter);
 }
 

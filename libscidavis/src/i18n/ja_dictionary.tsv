@@ -2048,7 +2048,7 @@ Export ASCII	ASCII エクスポート
 Export DPI	出力解像度 (DPI)
 Export DPI:	出力解像度 (DPI):
 Export Error	エクスポートエラー
-Export Graph	画像出力
+Export Graph	グラフをエクスポート
 Export Graph to PNG / TIFF / SVG / EMF	グラフを PNG / TIFF / SVG / EMF に出力
 Export Image / PDF	画像 / PDF エクスポート
 Export Image / PDF...	画像 / PDF エクスポート...
@@ -4201,7 +4201,7 @@ Set &Default	既定値に設定(&D)
 Set As &Default	既定値として保存(&D)
 Set As Default	既定値として保存
 Set Axis Break	軸の途中省略を設定
-Set Column(s) As	列のプロット属性を設定
+Set Column(s) As	列の役割を設定
 Set Coordinates	XY 座標範囲の設定
 Set Default	既定値に設定
 Set Display &Format	数値表示書式の設定(&F)
@@ -6132,3 +6132,5 @@ Flat	平端	PenWidget
 Current	現在の設定	PlotDialog
 Average	群平均	GraphStatsAndSurfaceFit
 Complete	完全連結	GraphStatsAndSurfaceFit
+Undid "%1" in %2	「%2」の「%1」を元に戻しました
+Redid "%1" in %2	「%2」の「%1」をやり直しました

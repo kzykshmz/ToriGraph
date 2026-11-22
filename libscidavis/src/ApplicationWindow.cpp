@@ -14333,11 +14333,39 @@ void ApplicationWindow::undo()
                 QApplication::restoreOverrideCursor();
         }
     } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
+        const QString cmdText = d_project->undoStack()->undoText();
+        QPointer<MyWidget> prevLastMod(lastModified);
+        lastModified = nullptr;
         if (!nonInteractive)
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
         d_project->undoStack()->undo();
         if (!nonInteractive)
             QApplication::restoreOverrideCursor();
+        Table *targetTbl = qobject_cast<Table *>(lastModified);
+        if (!lastModified && prevLastMod)
+            lastModified = prevLastMod.data();
+        if (!targetTbl) {
+            const QString ownerPrefix =
+                    cmdText.section(QLatin1Char(':'), 0, 0).section(QLatin1Char('/'), 0, 0).trimmed();
+            if (!ownerPrefix.isEmpty()) {
+                Table *cand = table(ownerPrefix);
+                if (cand && cand->name() == ownerPrefix)
+                    targetTbl = cand;
+            }
+        }
+        if (targetTbl && targetTbl != aw && targetTbl->d_future_table
+            && targetTbl->d_future_table->parentAspect() != nullptr) {
+            if (WorkbookManager *wm = WorkbookManager::existing(this);
+                wm && !wm->bookOf(targetTbl).isEmpty()) {
+                wm->setCurrentSheet(targetTbl, true);
+            } else if (!hidden(targetTbl) && targetTbl->folder() == current_folder) {
+                activateSubWindow(targetTbl);
+            }
+            if (statusBar()) {
+                statusBar()->showMessage(
+                        tr("Undid \"%1\" in %2").arg(cmdText, targetTbl->name()), 8000);
+            }
+        }
     }
     updateUndoRedoActionsForActiveWindow();
 }
@@ -14380,11 +14408,39 @@ void ApplicationWindow::redo()
                 QApplication::restoreOverrideCursor();
         }
     } else if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
+        const QString cmdText = d_project->undoStack()->redoText();
+        QPointer<MyWidget> prevLastMod(lastModified);
+        lastModified = nullptr;
         if (!nonInteractive)
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
         d_project->undoStack()->redo();
         if (!nonInteractive)
             QApplication::restoreOverrideCursor();
+        Table *targetTbl = qobject_cast<Table *>(lastModified);
+        if (!lastModified && prevLastMod)
+            lastModified = prevLastMod.data();
+        if (!targetTbl) {
+            const QString ownerPrefix =
+                    cmdText.section(QLatin1Char(':'), 0, 0).section(QLatin1Char('/'), 0, 0).trimmed();
+            if (!ownerPrefix.isEmpty()) {
+                Table *cand = table(ownerPrefix);
+                if (cand && cand->name() == ownerPrefix)
+                    targetTbl = cand;
+            }
+        }
+        if (targetTbl && targetTbl != aw && targetTbl->d_future_table
+            && targetTbl->d_future_table->parentAspect() != nullptr) {
+            if (WorkbookManager *wm = WorkbookManager::existing(this);
+                wm && !wm->bookOf(targetTbl).isEmpty()) {
+                wm->setCurrentSheet(targetTbl, true);
+            } else if (!hidden(targetTbl) && targetTbl->folder() == current_folder) {
+                activateSubWindow(targetTbl);
+            }
+            if (statusBar()) {
+                statusBar()->showMessage(
+                        tr("Redid \"%1\" in %2").arg(cmdText, targetTbl->name()), 8000);
+            }
+        }
     }
     updateUndoRedoActionsForActiveWindow();
 }

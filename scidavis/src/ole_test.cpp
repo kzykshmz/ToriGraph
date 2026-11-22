@@ -25994,6 +25994,24 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                    "77f: showing hidden sheet 151 after 200-sheet load failed: "
                            << wbErr.toStdString());
 
+        // P1-S5: Editing Sheet 1, switching to Sheet 151, and pressing Ctrl+Z (undo()) automatically
+        // reveals Sheet 1 so a hidden sheet is never modified invisibly in the background!
+        Table *sheet1 = wmReBig->sheets(bigBook).at(0);
+        CHECK_COND(wmReBig->setCurrentSheet(sheet1, true, &wbErr), "77f: switch to sheet 1");
+        sheet1->setCell(0, 0, 777.5);
+        CHECK_COND(wmReBig->setCurrentSheet(sheet151, true, &wbErr)
+                           && wmReBig->currentSheet(bigBook) == sheet151,
+                   "77f: switch back to sheet 151");
+        reBig->undo();
+        CHECK_COND(wmReBig->currentSheet(bigBook) == sheet1 && !reBig->hidden(sheet1)
+                           && std::fabs(sheet1->cell(0, 0) - 777.5) > 1e-9,
+                   "77f: P1-S5 undo() from another sheet did not reveal the modified sheet 1!");
+        CHECK_COND(wmReBig->setCurrentSheet(sheet151, true, &wbErr), "77f: switch to sheet 151 before redo");
+        reBig->redo();
+        CHECK_COND(wmReBig->currentSheet(bigBook) == sheet1
+                           && std::fabs(sheet1->cell(0, 0) - 777.5) < 1e-9,
+                   "77f: P1-S5 redo() from another sheet did not reveal the modified sheet 1!");
+
         // P2: appendProject marks destination project modified (!saved)
         reBig->savedProject();
         CHECK_COND(reBig->saved, "77f: expected clean state before appendProject");
