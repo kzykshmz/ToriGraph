@@ -24262,12 +24262,23 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
 // Suite 76: Review Polish & Edge-Case Regression Gate
 // =============================================================================
 #include "TextDialog.h"
+#include "ColorButton.h"
 
 namespace {
 struct Suite76AxesDialogProbe : public AxesDialog
 {
     double titlePtBoxValue() const { return boxTitleFontSize ? boxTitleFontSize->value() : -1.0; }
     double numbersPtBoxValue() const { return boxAxesFontSize ? boxAxesFontSize->value() : -1.0; }
+    void editSelectedRefLineColor(const QColor &c)
+    {
+        if (refLinesPage)
+            generalDialog.setCurrentWidget(refLinesPage);
+        if (refLinesList && refLinesList->count() > 0 && refLinesList->currentRow() < 0)
+            refLinesList->setCurrentRow(0);
+        if (refColorBtn)
+            refColorBtn->setColor(c);
+        syncSelectedRefLineFromUi();
+    }
     void acceptDialog() { accept(); }
 };
 
@@ -24330,10 +24341,11 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
                            && std::fabs(storedPt76(leg76a->font()) - 11.5) < 1e-6,
                    "76a: preset initial fractional pt mismatch");
 
-        // AxesDialog preserves 12.9 pt without rounding to 13
+        // AxesDialog preserves 12.9 pt without rounding to 13 (and setGraph initializes scale boxes)
         {
             Suite76AxesDialogProbe axDlg;
             axDlg.setGraph(g76a);
+            axDlg.showAxesPage();
             CHECK_COND(std::fabs(axDlg.titlePtBoxValue() - 12.9) < 1e-6
                                && std::fabs(axDlg.numbersPtBoxValue() - 12.9) < 1e-6,
                        "76a: AxesDialog spinboxes rounded 12.9 pt");
@@ -24476,6 +24488,23 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
                    "76a: MultiLayer redo lost fractional 1.5 / 0.5 px widths");
 
         const QString ml76aName = ml76a->name();
+        MultiLayer *ml76Spline = w76->multilayerPlot(
+                t76a, QStringList() << (t76a->name() + QStringLiteral("_Stress")), Graph::Spline);
+        CHECK_COND(ml76Spline && ml76Spline->activeGraph() && ml76Spline->activeGraph()->curve(0),
+                   "76a: spline graph creation failed");
+        {
+            QwtPlotCurve *cvSp = ml76Spline->activeGraph()->curve(0);
+            QPen p = cvSp->pen();
+            p.setWidthF(1.0);
+            cvSp->setPen(p);
+            QwtSymbol sym = cvSp->symbol();
+            sym.setStyle(QwtSymbol::Ellipse);
+            QPen sp = sym.pen();
+            sp.setWidthF(2.5);
+            sym.setPen(sp);
+            cvSp->setSymbol(sym);
+        }
+        const QString ml76SpName = ml76Spline->name();
         const QString prj76a = tmp76.filePath(QStringLiteral("suite76a.sciprj"));
         {
             QFile pf(prj76a);
@@ -24493,6 +24522,13 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
         CHECK_COND(std::fabs(cvRel->pen().widthF() - 1.5) < 1e-6
                            && std::fabs(cvRel->symbol().pen().widthF() - 0.5) < 1e-6,
                    "76a: .sciprj round-trip lost fractional 1.5 / 0.5 px widths");
+        MultiLayer *ml76SpRel = qobject_cast<MultiLayer *>(reader76a->window(ml76SpName));
+        CHECK_COND(ml76SpRel && ml76SpRel->activeGraph() && ml76SpRel->activeGraph()->curve(0),
+                   "76a: reloaded spline graph missing");
+        QwtPlotCurve *cvSpRel = ml76SpRel->activeGraph()->curve(0);
+        CHECK_COND(std::fabs(cvSpRel->pen().widthF() - 1.0) < 1e-6
+                           && std::fabs(cvSpRel->symbol().pen().widthF() - 2.5) < 1e-6,
+                   "76a: Spline curve symbol border 2.5 px lost across .sciprj round-trip");
         reader76a->savedProject();
         reader76a->setOleEmbeddedMode(true);
         delete reader76a;
@@ -24681,8 +24717,49 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
                            && std::fabs(tXlsx->cell(5, 1) - 510.0) < 1e-9,
                    "76e: imported values from mid-N/A .xlsx mismatch");
 
+        // Preamble "Width | 10" + header row + mid "N/A" must keep header and numeric columns
+        {
+            const QByteArray sheetPreamble =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                    "<sheetData>"
+                    "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>Width</t></is></c><c r=\"B1\"><v>10</v></c></row>"
+                    "<row r=\"2\"><c r=\"A2\" t=\"inlineStr\"><is><t>Strain</t></is></c>"
+                    "<c r=\"B2\" t=\"inlineStr\"><is><t>Stress</t></is></c></row>"
+                    "<row r=\"3\"><c r=\"A3\"><v>0.1</v></c><c r=\"B3\"><v>120</v></c></row>"
+                    "<row r=\"4\"><c r=\"A4\"><v>0.2</v></c><c r=\"B4\" t=\"inlineStr\"><is><t>N/A</t></is></c></row>"
+                    "<row r=\"5\"><c r=\"A5\"><v>0.3</v></c><c r=\"B5\"><v>360</v></c></row>"
+                    "</sheetData></worksheet>";
+            const QByteArray preBytes = suite64BuildZip({
+                    { "[Content_Types].xml", contentTypes, true },
+                    { "_rels/.rels", rootRels, true },
+                    { "xl/workbook.xml", workbook, true },
+                    { "xl/_rels/workbook.xml.rels", wbRels, true },
+                    { "xl/worksheets/sheet1.xml", sheetPreamble, true },
+            });
+            const QString prePath = tmp76.filePath(QStringLiteral("preamble_na_76.xlsx"));
+            QFile pf(prePath);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "76e: open preamble_na_76.xlsx");
+            pf.write(preBytes);
+            pf.close();
+            XlsxImport::ImportResult preRes;
+            CHECK_COND(XlsxImport::importIntoProject(w76, prePath, QString(), &xlsxErr, &preRes, false)
+                               && preRes.tables.size() == 1,
+                       "76e: preamble + mid-N/A xlsx import failed");
+            Table *tPre = w76->table(preRes.tables[0]);
+            CHECK_COND(tPre != nullptr && tPre->numCols() == 2 && tPre->numRows() == 3
+                               && tPre->colLabel(0) == QStringLiteral("Strain")
+                               && tPre->colLabel(1) == QStringLiteral("Stress")
+                               && std::fabs(tPre->cell(0, 0) - 0.1) < 1e-9
+                               && std::fabs(tPre->cell(2, 1) - 360.0) < 1e-9,
+                       "76e: 'Width | 10' preamble caused header loss or text-column coercion");
+        }
+
         Table *tPaste1 = w76->newTable(QStringLiteral("Paste1Col76"), 3, 2);
         CHECK_COND(tPaste1 != nullptr, "76e: Paste1Col76 table");
+        tPaste1->clearCell(0, 1);
+        tPaste1->clearCell(1, 1);
+        tPaste1->clearCell(2, 1);
         tPaste1->setCellsSelected(0, 0, 0, 0, true);
         CHECK_COND(tPaste1->pasteText(QStringLiteral("985\n1,012\n1,030")),
                    "76e: pasteText 1-col thousands failed");
@@ -24755,6 +24832,18 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
         rlShown.label = QStringLiteral("ShownMarker");
         rlShown.visible = true;
         g76f->addReferenceLine(rlShown);
+
+        // Editing a hidden reference line in AxesDialog must preserve visible=false
+        {
+            Suite76AxesDialogProbe axRefDlg;
+            axRefDlg.setGraph(g76f);
+            axRefDlg.editSelectedRefLineColor(QColor(200, 40, 40));
+            axRefDlg.acceptDialog();
+            CHECK_COND(g76f->referenceLines().size() == 2
+                               && !g76f->referenceLines()[0].visible
+                               && g76f->referenceLines()[0].color == QColor(200, 40, 40),
+                       "76f: AxesDialog reference-line edit inadvertently re-enabled hidden line");
+        }
 
         const QString ml76fName = ml76f->name();
         const QString prj76f = tmp76.filePath(QStringLiteral("suite76f.sciprj"));

@@ -4242,6 +4242,7 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
             rObj[QStringLiteral("label")] = rs.label;
             rObj[QStringLiteral("stat_mode")] = rs.statMode;
             rObj[QStringLiteral("color")] = rs.color.name(QColor::HexRgb);
+            rObj[QStringLiteral("visible")] = rs.visible;
             refArr.append(rObj);
         }
         lObj[QStringLiteral("reference_lines")] = refArr;
@@ -5762,6 +5763,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             rObj[QStringLiteral("color")] = rs.color.name(QColor::HexRgb);
             rObj[QStringLiteral("width")] = safeJsonDouble(rs.width);
             rObj[QStringLiteral("style")] = int(rs.style);
+            rObj[QStringLiteral("visible")] = rs.visible;
             refArr.append(rObj);
         }
         lObj[QStringLiteral("reference_lines")] = refArr;
@@ -8718,6 +8720,8 @@ QJsonObject runAutoLayoutSolver(ApplicationWindow *app, MultiLayer *ml, const QJ
                     continue;
 
                 for (const auto &rl : g->referenceLines()) {
+                    if (!rl.visible)
+                        continue;
                     const bool rlIsX = (rl.orientation == 1);
                     if (rlIsX == isX && rl.statMode.isEmpty() && std::isfinite(rl.value)
                         && (!isLog || rl.value > 0.0)) {
@@ -10845,6 +10849,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
         // Reference lines
         for (const Graph::ReferenceLineSpec &rs : lg->referenceLines()) {
+            if (!rs.visible)
+                continue;
             const QString orient = (rs.orientation == 1) ? QStringLiteral("vertical")
                                                          : QStringLiteral("horizontal");
             lines << QStringLiteral(

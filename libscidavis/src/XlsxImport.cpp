@@ -987,19 +987,37 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         if (detectedDataStart < 0) {
             detectedDataStart = firstNumericRow;
         } else if (detectedDataStart > firstNumericRow) {
+            auto isMissingMarkerText = [](const QString &raw) {
+                const QString s = raw.trimmed();
+                return s.isEmpty() || s == QLatin1String("-") || s == QLatin1String("--")
+                        || s.compare(QLatin1String("N/A"), Qt::CaseInsensitive) == 0
+                        || s.compare(QLatin1String("NA"), Qt::CaseInsensitive) == 0
+                        || s.compare(QLatin1String("#N/A"), Qt::CaseInsensitive) == 0
+                        || s.compare(QLatin1String("NaN"), Qt::CaseInsensitive) == 0
+                        || s.compare(QLatin1String("null"), Qt::CaseInsensitive) == 0;
+            };
+            QSet<int> numericDataCols;
+            for (int c : targetCols) {
+                if (columnMostlyNumericFrom(c, detectedDataStart))
+                    numericDataCols.insert(c);
+            }
             for (int r = firstNumericRow; r < detectedDataStart; ++r) {
-                int nonBlankCnt = 0;
-                int numericCnt = 0;
+                int numInNumCols = 0;
+                int textInNumCols = 0;
                 for (int c : targetCols) {
-                    const Cell &cell = cellAt(sheet, r, c);
-                    if (isBlank(cell))
+                    if (!numericDataCols.contains(c))
                         continue;
-                    ++nonBlankCnt;
-                    if (isNumericCell(cell))
-                        ++numericCnt;
+                    const Cell &cell = cellAt(sheet, r, c);
+                    if (isBlank(cell) || cell.type == Cell::Error)
+                        continue;
+                    if (isNumericCell(cell)) {
+                        ++numInNumCols;
+                    } else if (!isMissingMarkerText(cellDisplayText(cell, date1904))) {
+                        ++textInNumCols;
+                    }
                 }
-                if (nonBlankCnt > 0 && numericCnt * 2 >= nonBlankCnt) {
-                    detectedDataStart = firstNumericRow;
+                if (numInNumCols > 0 && textInNumCols == 0) {
+                    detectedDataStart = r;
                     break;
                 }
             }

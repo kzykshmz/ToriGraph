@@ -687,7 +687,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
             const QVector<Graph::ReferenceLineSpec> refs = g->referenceLines();
             if (sel.primaryId >= 0 && sel.primaryId < refs.size()) {
                 const Graph::ReferenceLineSpec &rspec = refs[sel.primaryId];
-                if (std::isfinite(rspec.value)) {
+                if (rspec.visible && std::isfinite(rspec.value)) {
                     QColor accent = rspec.color.isValid() ? rspec.color : QColor(30, 102, 184);
                     QColor glow = accent;
                     glow.setAlpha(60);
@@ -1143,6 +1143,19 @@ void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist,
 void Plot::replot()
 {
     updateAxes();
+    if (!property("_toriSyncingSecondaryInReplot").toBool()) {
+        if (Graph *g = qobject_cast<Graph *>(parent())) {
+            if (!g->isTernaryPlot() && !g->isPolarPlot() && !g->isPoleFigurePlot()
+                && !g->isPiePlot()) {
+                setProperty("_toriSyncingSecondaryInReplot", true);
+                if (axisEnabled(QwtPlot::xTop) && !g->isAxisUserLocked(QwtPlot::xTop))
+                    g->updateSecondaryAxis(QwtPlot::xTop);
+                if (axisEnabled(QwtPlot::yRight) && !g->isAxisUserLocked(QwtPlot::yRight))
+                    g->updateSecondaryAxis(QwtPlot::yRight);
+                setProperty("_toriSyncingSecondaryInReplot", QVariant());
+            }
+        }
+    }
     updateLayout();
     QwtPlot::replot();
     if (property("_outsideRightMargin").toInt() > 0)

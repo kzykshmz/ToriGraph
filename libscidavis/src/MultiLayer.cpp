@@ -62,6 +62,7 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QThread>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -1897,8 +1898,15 @@ QImage MultiLayer::copyPageAsImage(int dpi)
     image.setDotsPerMeterX(dpm);
     image.setDotsPerMeterY(dpm);
 
-    if (QClipboard *cb = QApplication::clipboard())
-        cb->setImage(image);
+    if (QClipboard *cb = QApplication::clipboard()) {
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            cb->setImage(image);
+            if (cb->image().size() == image.size())
+                break;
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 15);
+            QThread::msleep(20);
+        }
+    }
 
     return image;
 }

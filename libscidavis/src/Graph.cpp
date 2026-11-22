@@ -7196,10 +7196,13 @@ QString Graph::saveToString(bool saveAsTemplate)
             const double lw = cv->pen().widthF();
             const double sw = cv->symbol().pen().widthF();
             if (lw > 0.0 || sw > 0.0) {
-                widthParts << QString("%1:%2,%3")
+                const QString titleB64 =
+                        QString::fromLatin1(cv->title().text().toUtf8().toBase64());
+                widthParts << QString("%1:%2,%3,%4")
                                       .arg(ci)
                                       .arg(QString::number(lw, 'g', 8))
-                                      .arg(QString::number(sw, 'g', 8));
+                                      .arg(QString::number(sw, 'g', 8))
+                                      .arg(titleB64);
             }
             const int la = cv->pen().color().alpha();
             const int ba = cv->brush().color().alpha();
@@ -14386,19 +14389,50 @@ bool Graph::restorePhase5Tag(const QString &line)
                 if (kv.size() == 2) {
                     const int ci = kv[0].toInt();
                     const QStringList wv = kv[1].split(',');
-                    QwtPlotCurve *cv = curve(ci);
-                    if (cv && wv.size() >= 2) {
+                    if (wv.size() < 2)
+                        continue;
+                    QwtPlotCurve *cv = nullptr;
+                    int resolvedIdx = -1;
+                    const bool hasTitleKey = (wv.size() >= 3 && !wv[2].isEmpty());
+                    if (hasTitleKey) {
+                        const QString wantTitle =
+                                QString::fromUtf8(QByteArray::fromBase64(wv[2].toLatin1()));
+                        if (QwtPlotCurve *cand = curve(ci)) {
+                            if (cand->title().text() == wantTitle) {
+                                cv = cand;
+                                resolvedIdx = ci;
+                            }
+                        }
+                        if (!cv) {
+                            for (int k = 0; k < curves(); ++k) {
+                                if (QwtPlotCurve *cand = curve(k)) {
+                                    if (cand->title().text() == wantTitle) {
+                                        cv = cand;
+                                        resolvedIdx = k;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        cv = curve(ci);
+                        resolvedIdx = ci;
+                    }
+                    if (cv) {
                         bool okL = false, okS = false;
                         const double lw = wv[0].toDouble(&okL);
                         const double sw = wv[1].toDouble(&okS);
+                        const int ct = curveType(resolvedIdx);
+                        const bool symWidthInCurveLine = (ct <= LineSymbols || ct == Box);
                         if (okL && lw > 0.0 && lw <= 200.0
-                            && std::abs(qRound(lw) - cv->pen().width()) <= 1) {
+                            && (hasTitleKey || std::abs(qRound(lw) - cv->pen().width()) <= 1)) {
                             QPen p = cv->pen();
                             p.setWidthF(lw);
                             cv->setPen(p);
                         }
                         if (okS && sw > 0.0 && sw <= 200.0
-                            && std::abs(qRound(sw) - cv->symbol().pen().width()) <= 1) {
+                            && (hasTitleKey || !symWidthInCurveLine
+                                || std::abs(qRound(sw) - cv->symbol().pen().width()) <= 1)) {
                             QwtSymbol sym = cv->symbol();
                             QPen sp = sym.pen();
                             sp.setWidthF(sw);

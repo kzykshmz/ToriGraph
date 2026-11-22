@@ -2049,6 +2049,8 @@ void placeCalloutAutoAvoid(Graph *g, Legend *box, int marginPx = 14, bool allowS
                     cost += 18.0 + len * 2.0;
             }
             for (const Graph::ReferenceLineSpec &rl : g->referenceLines()) {
+                if (!rl.visible)
+                    continue;
                 if (rl.orientation == 0) {
                     const double py = pw->canvasMap(QwtPlot::yLeft).xTransform(rl.value);
                     if (py >= testBox.top() && py <= testBox.bottom())

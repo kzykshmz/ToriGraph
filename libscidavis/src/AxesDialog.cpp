@@ -2019,7 +2019,10 @@ bool AxesDialog::updatePlot()
         } else if (refLinesList && refLinesList->currentRow() >= 0
                    && refLinesList->currentRow() < d_stagedRefLines.size()
                    && d_refControlsEdited) {
-            d_stagedRefLines[refLinesList->currentRow()] = buildRefLineSpecFromUi();
+            const int rIdx = refLinesList->currentRow();
+            const bool keepVis = d_stagedRefLines[rIdx].visible;
+            d_stagedRefLines[rIdx] = buildRefLineSpecFromUi();
+            d_stagedRefLines[rIdx].visible = keepVis;
         }
         d_graph->setReferenceLines(d_stagedRefLines);
         d_graph->updateStatReferenceLines();
@@ -2139,14 +2142,27 @@ void AxesDialog::refreshGraphState()
         boxMajorTicksLength->setValue(p->majorTickLength());
     }
 
+    if (axesTitlesList) {
+        if (curAxisRow < 0 && axesTitlesList->count() > 0) {
+            QSignalBlocker sbTitList(axesTitlesList);
+            axesTitlesList->setCurrentRow(0);
+            curAxisRow = 0;
+        }
+    }
     if (curAxisRow >= 0) {
         onAxesTitlesRowChanged(curAxisRow);
     } else if (boxAxesFontSize) {
         QSignalBlocker sb(boxAxesFontSize);
         boxAxesFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(xBottomFont, 12.0));
     }
-    if (axesList && axesList->currentRow() >= 0)
-        updateScale();
+    if (axesList) {
+        if (axesList->currentRow() < 0 && axesList->count() > 0) {
+            QSignalBlocker sbList(axesList);
+            axesList->setCurrentRow(0);
+        }
+        if (axesList->currentRow() >= 0)
+            updateScale();
+    }
     showGridOptions(axesGridList->currentRow());
     if (axisBreakAxesList)
         updateAxisBreakPage(axisBreakAxesList->currentRow() >= 0 ? axisBreakAxesList->currentRow()
@@ -3018,7 +3034,9 @@ void AxesDialog::syncSelectedRefLineFromUi()
         return;
     const int row = refLinesList->currentRow();
     if (row >= 0 && row < d_stagedRefLines.size()) {
+        const bool keepVis = d_stagedRefLines[row].visible;
         d_stagedRefLines[row] = buildRefLineSpecFromUi();
+        d_stagedRefLines[row].visible = keepVis;
         if (QListWidgetItem *it = refLinesList->item(row))
             it->setText(formatRefLineListLabel(d_stagedRefLines[row]));
     }
@@ -3108,7 +3126,9 @@ void AxesDialog::updateSelectedRefLineFromUi()
         return;
     int row = refLinesList->currentRow();
     if (row >= 0 && row < d_stagedRefLines.size()) {
+        const bool keepVis = d_stagedRefLines[row].visible;
         d_stagedRefLines[row] = buildRefLineSpecFromUi();
+        d_stagedRefLines[row].visible = keepVis;
     } else if (d_stagedRefLines.isEmpty()) {
         d_stagedRefLines.append(buildRefLineSpecFromUi());
         row = 0;
