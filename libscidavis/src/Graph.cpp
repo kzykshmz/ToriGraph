@@ -5085,14 +5085,16 @@ CurveLayout Graph::initCurveLayout()
     cl.lStyle = 0;
     cl.lWidth = 2;
     cl.sSize = 9;
-    cl.sType = 1;
+    cl.sType = defaultCurveSymbolIndex(0);
     cl.filledArea = 0;
     cl.aCol = 0;
     cl.aStyle = 0;
-    cl.lCol = QColor("#1f77b4").rgba();
+    const QList<QColor> defPalette = paletteColors(defaultCurvePaletteName());
+    const QRgb firstCol = defPalette.isEmpty() ? QColor(Qt::black).rgba() : defPalette.first().rgba();
+    cl.lCol = firstCol;
     cl.penWidth = 2;
-    cl.symCol = QColor("#1f77b4").rgba();
-    cl.fillCol = QColor("#1f77b4").rgba();
+    cl.symCol = firstCol;
+    cl.fillCol = firstCol;
     cl.symbolFill = true;
     return cl;
 }
@@ -5109,12 +5111,9 @@ CurveLayout Graph::initCurveLayout(int style, int curves)
     cl.symCol = color;
     cl.fillCol = color;
 
-    static const QColor kOkabeItoLayoutColors[8] = {
-        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
-        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
-        QColor(240, 228, 66),  QColor(110, 118, 129)
-    };
-    const QColor okCol = kOkabeItoLayoutColors[qMax(0, i) % 8];
+    const QList<QColor> defPalette = paletteColors(defaultCurvePaletteName());
+    const QColor okCol = defPalette.isEmpty() ? QColor(Qt::black)
+                                              : defPalette.at(qMax(0, i) % defPalette.size());
 
     if (style == Graph::Line)
         cl.sType = 0;
@@ -5828,11 +5827,7 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
     c_keys[n_curves - 1] = d_plot->insertCurve(c);
     syncCurveZOrder();
 
-    static const QColor kOkabeItoBarColors[8] = {
-        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
-        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
-        QColor(240, 228, 66),  QColor(110, 118, 129)
-    };
+    const QList<QColor> barPalette = paletteColors(defaultCurvePaletteName());
     if (style == VerticalBars || style == HorizontalBars) {
         QVector<QwtBarCurve *> allStyleBars;
         QVector<QwtBarCurve *> groupedBars;
@@ -5848,7 +5843,9 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
             }
         }
         const int barIdx = qMax(0, allStyleBars.size() - 1);
-        const QColor fillCol = kOkabeItoBarColors[barIdx % 8];
+        const QColor fillCol = barPalette.isEmpty()
+                ? QColor(Qt::black)
+                : barPalette.at(barIdx % barPalette.size());
         QPen barPen(fillCol.darker(140), 1, Qt::SolidLine);
         barPen.setCosmetic(false);
         c->setPen(barPen);
@@ -8344,11 +8341,7 @@ void Graph::plotBoxDiagram(Table *w, const QStringList &names, int startRow, int
     if (endRow < 0 || endRow >= w->numRows())
         endRow = w->numRows() - 1;
 
-    static const QColor kOkabeItoBox[8] = {
-        QColor(0, 114, 178),   QColor(230, 159, 0),   QColor(0, 158, 115),
-        QColor(204, 121, 167), QColor(86, 180, 233),  QColor(213, 94, 0),
-        QColor(240, 228, 66),  QColor(110, 118, 129)
-    };
+    const QList<QColor> boxPalette = paletteColors(defaultCurvePaletteName());
 
     const QString tblPrefix = QString(w->name()) + QLatin1Char('_');
     QStringList catLabels;
@@ -8373,7 +8366,8 @@ void Graph::plotBoxDiagram(Table *w, const QStringList &names, int startRow, int
         c_type.resize(n_curves);
         c_type[n_curves - 1] = Box;
 
-        const QColor col = kOkabeItoBox[plottedOrd % 8];
+        const QColor col = boxPalette.isEmpty() ? QColor(Qt::black)
+                                                : boxPalette.at(plottedOrd % boxPalette.size());
         QPen boxPen(col.darker(120), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
         boxPen.setCosmetic(false);
         c->setPen(boxPen);
@@ -8605,31 +8599,10 @@ QString Graph::parentPlotName()
 
 void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
 {
-    static const char *const kPaletteHex[] = {
-        "#1f77b4", // blue
-        "#ff7f0e", // orange
-        "#2ca02c", // green
-        "#d62728", // red
-        "#9467bd", // purple
-        "#8c564b", // brown
-        "#e377c2", // pink
-        "#7f7f7f", // gray
-        "#bcbd22", // olive
-        "#17becf"  // cyan
-    };
-    static const int kSymbolIndices[] = {
-        1,  // Ellipse (circle)
-        2,  // Rect (square)
-        6,  // UTriangle (up-triangle)
-        5,  // DTriangle (down-triangle)
-        3,  // Diamond
-        7,  // LTriangle
-        8,  // RTriangle
-        15, // Hexagon
-        13, // Star1
-        9   // Cross
-    };
-    const int kPaletteCount = int(sizeof(kPaletteHex) / sizeof(kPaletteHex[0]));
+    // New curves follow the configured default palette (Origin Classic unless changed in the
+    // preset manager) together with Origin's symbol-shape increment.
+    const QList<QColor> palette = paletteColors(defaultCurvePaletteName());
+    const int kPaletteCount = qMax(1, palette.size());
 
     int curve_index = n_curves - 1;
     if (curve_index >= 0
@@ -8649,9 +8622,10 @@ void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
         if (c && c->rtti() == QwtPlotItem::Rtti_PlotCurve && c_type[i] != ErrorBars)
             dataCurves++;
     }
-    int idx = qMax(0, dataCurves - 1) % kPaletteCount;
-    colorIndex = int(QColor(kPaletteHex[idx]).rgba());
-    symbolIndex = kSymbolIndices[idx];
+    const int seriesIdx = qMax(0, dataCurves - 1);
+    const QColor col = palette.isEmpty() ? QColor(Qt::black) : palette.at(seriesIdx % kPaletteCount);
+    colorIndex = int(col.rgba());
+    symbolIndex = defaultCurveSymbolIndex(seriesIdx);
 }
 
 void Graph::addFitCurve(QwtPlotCurve *c)
@@ -8681,7 +8655,9 @@ void Graph::plotSpectrogram(Matrix *m, CurveType type)
         d_spectrogram->setDisplayMode(QwtPlotSpectrogram::ImageMode, false);
         d_spectrogram->setDisplayMode(QwtPlotSpectrogram::ContourMode, true);
     } else if (type == ColorMap) {
-        d_spectrogram->setDefaultColorMap();
+        // New heatmaps default to perceptually uniform Viridis (the legacy rainbow map is still
+        // selectable and is restored for projects that saved it).
+        d_spectrogram->setColorMapPreset(Spectrogram::PresetViridis, false);
         d_spectrogram->setDisplayMode(QwtPlotSpectrogram::ContourMode, false);
     }
 
@@ -9503,11 +9479,103 @@ static QList<QColor> hexListToColors(const QStringList &hexList)
 }
 } // namespace
 
+const QList<QColor> &Graph::okabeItoColors()
+{
+    // Okabe & Ito (2008), blue-first order used throughout ToriGraph. The eighth entry is black
+    // (part of the original set); never a non-palette gray.
+    static const QList<QColor> kColors = hexListToColors(
+            { "#0072b2", "#e69f00", "#009e73", "#d55e00", "#cc79a7", "#56b4e9", "#f0e442",
+              "#000000" });
+    return kColors;
+}
+
+const QList<QColor> &Graph::tab10Colors()
+{
+    static const QList<QColor> kColors = hexListToColors(
+            { "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2",
+              "#7f7f7f", "#bcbd22", "#17becf" });
+    return kColors;
+}
+
+const QList<QColor> &Graph::originClassicColors()
+{
+    // OriginPro "Classic" color increment list: Black, Red, Blue, Magenta, Olive, Navy,
+    // Violet, Purple, Wine, Dark Cyan, Royal, Orange.
+    static const QList<QColor> kColors = hexListToColors(
+            { "#000000", "#ff0000", "#0000ff", "#ff00ff", "#808000", "#000080", "#8000ff",
+              "#800080", "#800000", "#008080", "#0000a0", "#ff8000" });
+    return kColors;
+}
+
+QString Graph::canonicalPaletteName(const QString &name)
+{
+    const QString key = name.trimmed();
+    if (key.compare(QLatin1String("ISIJ / Origin Default"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("Origin Default"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("ISIJ"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("tab10"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("Matplotlib"), Qt::CaseInsensitive) == 0
+        || key.compare(tab10PaletteName(), Qt::CaseInsensitive) == 0)
+        return tab10PaletteName();
+    if (key.compare(QLatin1String("Origin Classic"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("Origin"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("origin_classic"), Qt::CaseInsensitive) == 0)
+        return originClassicPaletteName();
+    if (key.compare(QLatin1String("Okabe-Ito"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("okabe_ito"), Qt::CaseInsensitive) == 0
+        || key.compare(okabeItoPaletteName(), Qt::CaseInsensitive) == 0)
+        return okabeItoPaletteName();
+    if (key.compare(QLatin1String("Cool-Warm"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("CoolWarm"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("cool_warm"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("CoolWarm");
+    return key;
+}
+
+namespace {
+QString &defaultCurvePaletteCache()
+{
+    static QString s_name;
+    return s_name;
+}
+} // namespace
+
+QString Graph::defaultCurvePaletteName()
+{
+    QString &cached = defaultCurvePaletteCache();
+    if (cached.isEmpty()) {
+        QSettings &settings = ApplicationWindow::getSettings();
+        const QString stored =
+                settings.value(QStringLiteral("/Curves/DefaultPalette"), QString()).toString();
+        cached = stored.trimmed().isEmpty() ? originClassicPaletteName()
+                                            : canonicalPaletteName(stored);
+    }
+    return cached;
+}
+
+void Graph::setDefaultCurvePaletteName(const QString &name)
+{
+    const QString canon = name.trimmed().isEmpty() ? originClassicPaletteName()
+                                                   : canonicalPaletteName(name);
+    defaultCurvePaletteCache() = canon;
+    QSettings &settings = ApplicationWindow::getSettings();
+    settings.setValue(QStringLiteral("/Curves/DefaultPalette"), canon);
+}
+
+int Graph::defaultCurveSymbolIndex(int seriesIndex)
+{
+    // SymbolBox indices following Origin's symbol increment: square, circle, up triangle,
+    // down triangle, diamond, left triangle, right triangle, hexagon, star, cross.
+    static const int kSymbolIndices[] = { 2, 1, 6, 5, 3, 7, 8, 15, 13, 9 };
+    const int n = int(sizeof(kSymbolIndices) / sizeof(kSymbolIndices[0]));
+    return kSymbolIndices[qMax(0, seriesIndex) % n];
+}
+
 QStringList Graph::builtInPaletteNames()
 {
     return QStringList()
-            << "ISIJ / Origin Default"
             << "Origin Classic"
+            << "Matplotlib (tab10)"
             << "Viridis"
             << "Plasma"
             << "Inferno"
@@ -9544,17 +9612,11 @@ QStringList Graph::allPaletteNames()
 
 QList<QColor> Graph::paletteColors(const QString &paletteName)
 {
-    const QString key = paletteName.trimmed();
-    if (key.compare("ISIJ / Origin Default", Qt::CaseInsensitive) == 0
-        || key.compare("Origin Default", Qt::CaseInsensitive) == 0
-        || key.compare("ISIJ", Qt::CaseInsensitive) == 0) {
-        return hexListToColors({ "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                                 "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf" });
-    }
-    if (key.compare("Origin Classic", Qt::CaseInsensitive) == 0) {
-        return hexListToColors({ "#000000", "#ff0000", "#0000ff", "#008080", "#ff00ff",
-                                 "#808000", "#000080", "#800000", "#ff8000", "#800080" });
-    }
+    const QString key = canonicalPaletteName(paletteName);
+    if (key == tab10PaletteName())
+        return tab10Colors();
+    if (key == originClassicPaletteName())
+        return originClassicColors();
     if (key.compare("Viridis", Qt::CaseInsensitive) == 0) {
         return hexListToColors({ "#440154", "#482878", "#3e4989", "#31688e", "#26828e",
                                  "#1f9e89", "#35b779", "#6ece58", "#b5de2b", "#fde725" });
@@ -9581,11 +9643,8 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
         return hexListToColors({ "#3b4992", "#ee0000", "#008b45", "#631879", "#008280",
                                  "#bb0021", "#5f559b", "#a20056", "#808180", "#1b1919" });
     }
-    if (key.compare("Okabe-Ito (Colorblind Safe)", Qt::CaseInsensitive) == 0
-        || key.compare("Okabe-Ito", Qt::CaseInsensitive) == 0) {
-        return hexListToColors({ "#0072b2", "#e69f00", "#009e73", "#d55e00",
-                                 "#cc79a7", "#56b4e9", "#f0e442", "#000000" });
-    }
+    if (key == okabeItoPaletteName())
+        return okabeItoColors();
     if (key.compare("Monochrome / Grayscale", Qt::CaseInsensitive) == 0
         || key.compare("Monochrome", Qt::CaseInsensitive) == 0
         || key.compare("Grayscale", Qt::CaseInsensitive) == 0) {
@@ -9611,9 +9670,13 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
         settings.endGroup();
     }
 
-    // Fallback to ISIJ / Origin Default
-    return hexListToColors({ "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                             "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf" });
+    // Fallback: the palette used for new curves.
+    const QString defName = defaultCurvePaletteName();
+    if (defName == okabeItoPaletteName())
+        return okabeItoColors();
+    if (defName == tab10PaletteName())
+        return tab10Colors();
+    return originClassicColors();
 }
 
 void Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors)
@@ -11229,13 +11292,11 @@ void Graph::setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double
     }
 
     if (!pxVec.isEmpty()) {
-        static const QColor kOkabeItoPolar[8] = {
-            QColor(0, 114, 178),   QColor(213, 94, 0),    QColor(0, 158, 115),
-            QColor(204, 121, 167), QColor(230, 159, 0),   QColor(86, 180, 233),
-            QColor(240, 228, 66),  QColor(110, 118, 129)
-        };
+        const QList<QColor> polarPalette = paletteColors(defaultCurvePaletteName());
         const int sIdx = d_polar_series.size();
-        const QColor col = kOkabeItoPolar[sIdx % 8];
+        const QColor col = polarPalette.isEmpty()
+                ? QColor(Qt::black)
+                : polarPalette.at(sIdx % polarPalette.size());
         const QString lbl = seriesLabel.trimmed().isEmpty()
                 ? tr("Polar %1").arg(sIdx + 1)
                 : seriesLabel.trimmed();
@@ -14663,13 +14724,11 @@ void Graph::applySeriesStyleScheme(SeriesStyleScheme scheme)
     }
     case SchemeOriginClassic:
     default: {
-        static const char *const kHex[] = {
-            "#000000", "#FF0000", "#0000FF", "#008000", "#FF00FF", "#808000", "#000080"
-        };
+        const QList<QColor> &originCols = originClassicColors();
         for (int k = 0; k < m; ++k) {
             const QwtPlotCurve *c = curve(targetIndices[k]);
             const QwtSymbol sym = c ? c->symbol() : QwtSymbol();
-            specs.push_back({ QColor(QString::fromLatin1(kHex[k % 7])), sym.style(),
+            specs.push_back({ originCols.at(k % originCols.size()), sym.style(),
                               isSymbolWhiteHollow(sym), false });
         }
         break;

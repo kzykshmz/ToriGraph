@@ -1420,10 +1420,14 @@ OleRenderedGraph renderFromImage(const QImage &img)
     out.pixelSize = valid.size();
     out.dibBytes = imageToDibBytes(valid);
 
-    const LONG widthHm =
-            std::max(1000L, static_cast<LONG>(std::lround(valid.width() * 2540.0 / 96.0)));
-    const LONG heightHm =
-            std::max(1000L, static_cast<LONG>(std::lround(valid.height() * 2540.0 / 96.0)));
+    // E6: the physical extent follows the image's own resolution. The fallback raster is
+    // rendered at 300 dpi; assuming 96 dpi here made the pasted object ~3.1x too large.
+    const double dpiX = (valid.dotsPerMeterX() > 0) ? valid.dotsPerMeterX() * 0.0254 : 96.0;
+    const double dpiY = (valid.dotsPerMeterY() > 0) ? valid.dotsPerMeterY() * 0.0254 : 96.0;
+    const LONG widthHm = std::max(
+            1000L, static_cast<LONG>(std::lround(valid.width() * 2540.0 / std::max(36.0, dpiX))));
+    const LONG heightHm = std::max(
+            1000L, static_cast<LONG>(std::lround(valid.height() * 2540.0 / std::max(36.0, dpiY))));
     out.extentHm = SIZEL{ widthHm, heightHm };
 
     if (!ensureGdiplusStarted())

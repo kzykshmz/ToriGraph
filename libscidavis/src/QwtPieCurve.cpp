@@ -29,6 +29,7 @@
 #include "QwtPieCurve.h"
 #include "ColorButton.h"
 #include "Legend.h"
+#include "Graph.h"
 #include "Plot.h"
 #include "Table.h"
 #include "core/column/Column.h"
@@ -46,16 +47,12 @@
 #include <qwt_text.h>
 
 namespace {
-const QColor kOkabeItoPiePalette[8] = {
-    QColor(0, 114, 178),   // Blue
-    QColor(230, 159, 0),   // Orange
-    QColor(0, 158, 115),   // Bluish green
-    QColor(204, 121, 167), // Reddish purple
-    QColor(86, 180, 233),  // Sky blue
-    QColor(213, 94, 0),    // Vermilion
-    QColor(240, 228, 66),  // Yellow
-    QColor(110, 118, 129)  // Slate gray
-};
+// Pie slices use the canonical Okabe-Ito definition (Graph::okabeItoColors()).
+QColor okabeItoPieColor(int i)
+{
+    const QList<QColor> &cols = Graph::okabeItoColors();
+    return cols.at(qMax(0, i) % cols.size());
+}
 } // namespace
 
 QwtPieCurve::QwtPieCurve(Table *t, const QString &name, int startRow, int endRow)
@@ -67,7 +64,7 @@ QwtPieCurve::QwtPieCurve(Table *t, const QString &name, int startRow, int endRow
     slicePen.setCosmetic(false);
     setPen(slicePen);
     setStyle(QwtPlotCurve::NoCurve);
-    setBrush(QBrush(kOkabeItoPiePalette[0], Qt::SolidPattern));
+    setBrush(QBrush(okabeItoPieColor(0), Qt::SolidPattern));
 
     setType(Graph::Pie);
 }
@@ -202,7 +199,7 @@ void QwtPieCurve::drawPie(QPainter *painter, const QwtScaleMap &xMap, const QwtS
 QColor QwtPieCurve::color(int i) const
 {
     if (d_first_color == 0)
-        return kOkabeItoPiePalette[qMax(0, i) % 8];
+        return okabeItoPieColor(i);
     int index = (d_first_color + qMax(0, i)) % ColorButton::colors_count;
     return ColorButton::color(index);
 }

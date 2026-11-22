@@ -14469,10 +14469,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 throwRpcRuntime(QStringLiteral("Failed to create Stacked Bars graph."));
             Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
 
-            static const char *const kOkabeIto[8] = {
-                "#0072B2", "#E69F00", "#009E73", "#D55E00",
-                "#CC79A7", "#56B4E9", "#F0E442", "#333333"
-            };
+            const QList<QColor> &kOkabeIto = Graph::okabeItoColors();
             const int barCurveType = horiz ? Graph::HorizontalBars : Graph::VerticalBars;
             // Insert from top stack (K-1) down to base stack (0) so lower cumulative bars paint in front
             for (int k = K - 1; k >= 0; --k) {
@@ -14480,7 +14477,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                nRows - 1);
                 const int ci = g->curves() - 1;
                 if (ci >= 0) {
-                    const QColor fillCol(QString::fromLatin1(kOkabeIto[k % 8]));
+                    const QColor fillCol = kOkabeIto.at(k % kOkabeIto.size());
                     g->setCurvePen(ci, QPen(QColor(Qt::black), 0.8, Qt::SolidLine));
                     g->setCurveBrush(ci, QBrush(fillCol, Qt::SolidPattern));
                 }
@@ -15340,9 +15337,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 }
             }
 
-            static const char *const kHistColors[6] = {
-                "#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9"
-            };
+            const QList<QColor> &kHistColors = Graph::okabeItoColors();
             int histCounter = 0;
             for (Graph *lg : ml->layersList()) {
                 if (!lg)
@@ -15379,7 +15374,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         hc->setBinning(false, bSz, bLo, bHi);
                         hc->loadData();
                     }
-                    QColor fillC(QString::fromLatin1(kHistColors[histCounter % 6]));
+                    QColor fillC = kHistColors.at(histCounter % kHistColors.size());
                     fillC.setAlpha((origCurves > 1) ? 140 : 195);
                     lg->setCurvePen(ci, QPen(fillC.darker(130), 1.0));
                     lg->setCurveBrush(ci, QBrush(fillC, Qt::SolidPattern));
@@ -16247,9 +16242,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             using GType = std::remove_pointer_t<decltype(graphPtr)>;
             double rMaxAll = 0.0;
             int validSeries = 0;
-            static const char *const kPolarPalette[6] = {
-                "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9"
-            };
+            const QList<QColor> &kPolarPalette = Graph::okabeItoColors();
             for (int si = 0; si < rIdxs.size(); ++si) {
                 const int rColIdx = rIdxs[si];
                 Column *thCol = t->column(thetaIdx);
@@ -16312,7 +16305,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                           thVec.size() - 1);
                     const int ci = graphPtr->curves() - 1;
                     if (ci >= 0) {
-                        const QColor sc(QString::fromLatin1(kPolarPalette[si % 6]));
+                        const QColor sc = kPolarPalette.at(si % kPolarPalette.size());
                         graphPtr->setCurvePen(ci, QPen(sc, 2.0));
                         applyInlineCurveStyleParams(graphPtr, ci, params, rIdxs.size() == 1);
                     }

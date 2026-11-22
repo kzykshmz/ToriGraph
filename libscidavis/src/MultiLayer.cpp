@@ -118,8 +118,21 @@ ApplicationWindow *findMultiLayerApp(QWidget *from)
     }
     return nullptr;
 }
+
+bool isPresetManagedValue(double v, const QVector<int> &managed)
+{
+    for (int m : managed) {
+        if (std::fabs(v - double(m)) < 0.05)
+            return true;
+    }
+    return false;
+}
 } // namespace
 #include "QwtErrorPlotCurve.h"
+#include "QwtBarCurve.h"
+#include "QwtHistogram.h"
+#include "BoxCurve.h"
+#include "QwtPieCurve.h"
 #include "RecalcEngine.h"
 #include "Table.h"
 #include "globals.h"
@@ -138,6 +151,12 @@ ApplicationWindow *findMultiLayerApp(QWidget *from)
 #include <QGroupBox>
 #include <QLabel>
 #include <QUndoStack>
+#include <QTimer>
+#include <QSignalBlocker>
+#include <QPointer>
+#include <QSettings>
+#include <QStatusBar>
+#include <QFileInfo>
 #include <QUndoCommand>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -2036,6 +2055,11 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
 #endif
     }
 
+    // E6 (investigated): the PDF device must stay at 96 dpi. exportPainter() scales the
+    // on-screen layout to the device size *and* Qwt converts point sizes with the device DPI,
+    // so a 600-dpi PDF device draws text and lines about 4x too heavy (measured: inked area
+    // 0.019 at 96 dpi vs 0.078 at 600 dpi). Text and lines are vectors in the PDF anyway; the
+    // page size is set in mm below.
     if (printer.outputFormat() == QPrinter::PdfFormat)
         printer.setResolution(96);
     else if (res > 0)
@@ -2138,16 +2162,56 @@ void MultiLayer::exportSVG(const QString &fname)
     QSize svgPxSize = srcRect.size();
     if (d_page_unit != UnitPx && d_base_page_px.isValid() && !expandedBeyondCanvas)
         svgPxSize = d_base_page_px;
+    // E6: QSvgGenerator writes the document size as integer px / 96 dpi, so 85 mm became
+    // 84.93 mm. Rendering must stay on a 96-dpi device (a higher generator resolution makes
+    // Qwt scale fonts and pens twice, see exportVector), so the exact physical size is written
+    // into the root element afterwards; the viewBox keeps the drawing coordinates.
+    double exactWmm = 0.0, exactHmm = 0.0;
+    if (d_page_unit != UnitPx && !expandedBeyondCanvas) {
+        exactWmm = d_page_width_val;
+        exactHmm = d_page_height_val;
+        if (d_page_unit == UnitCm) {
+            exactWmm *= 10.0;
+            exactHmm *= 10.0;
+        } else if (d_page_unit == UnitInch) {
+            exactWmm *= 25.4;
+            exactHmm *= 25.4;
+        }
+    }
 
-    QSvgGenerator generator;
-    generator.setFileName(fname);
+    {
+        QSvgGenerator generator;
+        generator.setFileName(fname);
 #if QT_VERSION >= 0x040500
-    generator.setSize(svgPxSize);
-    generator.setViewBox(QRect(QPoint(0, 0), svgPxSize));
-    generator.setResolution(96);
-    generator.setTitle(this->name());
+        generator.setSize(svgPxSize);
+        generator.setViewBox(QRect(QPoint(0, 0), svgPxSize));
+        generator.setResolution(96);
+        generator.setTitle(this->name());
 #endif
-    exportPainter(generator, false, srcRect);
+        exportPainter(generator, false, srcRect);
+    }
+
+    if (exactWmm > 1.0 && exactHmm > 1.0) {
+        QFile f(fname);
+        if (f.open(QIODevice::ReadOnly)) {
+            QByteArray svg = f.readAll();
+            f.close();
+            const int rootPos = svg.indexOf("<svg");
+            const int rootEnd = (rootPos >= 0) ? svg.indexOf('>', rootPos) : -1;
+            if (rootPos >= 0 && rootEnd > rootPos) {
+                QString root = QString::fromUtf8(svg.mid(rootPos, rootEnd - rootPos));
+                static const QRegularExpression kWRx(QStringLiteral("\\swidth=\"[^\"]*\""));
+                static const QRegularExpression kHRx(QStringLiteral("\\sheight=\"[^\"]*\""));
+                root.replace(kWRx, QStringLiteral(" width=\"%1mm\"").arg(exactWmm, 0, 'f', 3));
+                root.replace(kHRx, QStringLiteral(" height=\"%1mm\"").arg(exactHmm, 0, 'f', 3));
+                svg.replace(rootPos, rootEnd - rootPos, root.toUtf8());
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    f.write(svg);
+                    f.close();
+                }
+            }
+        }
+    }
 #endif
 }
 
@@ -2952,44 +3016,7 @@ QString MultiLayer::saveToString(const QString &geometry)
     s += "LayerCanvasSize\t" + QString::number(l_canvas_width) + "\t"
             + QString::number(l_canvas_height) + "\n";
     s += "Alignement\t" + QString::number(hor_align) + "\t" + QString::number(vert_align) + "\n";
-    double savedPageW = d_page_width_val;
-    double savedPageH = d_page_height_val;
-    if (d_page_unit == UnitPx && canvas && canvas->width() >= 80 && canvas->height() >= 80) {
-        const double z = qMax(0.25, d_page_zoom);
-        savedPageW = double(canvas->width()) / z;
-        savedPageH = double(canvas->height()) / z;
-    }
-    s += QString("<ToriPageSetup view=\"%1\" zoom=\"%2\" unit=\"%3\" dpi=\"%4\" w=\"%5\" h=\"%6\" bg=\"%7\"/>\n")
-                 .arg(d_page_view_mode ? 1 : 0)
-                 .arg(d_page_zoom, 0, 'g', 12)
-                 .arg(int(d_page_unit))
-                 .arg(d_page_dpi)
-                 .arg(savedPageW, 0, 'g', 12)
-                 .arg(savedPageH, 0, 'g', 12)
-                 .arg((d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white))
-                              .name(QColor::HexArgb));
-    const QSize normSz = isMaximized() ? normalGeometry().size() : size();
-    if (normSz.width() >= 100 && normSz.height() >= 100) {
-        s += QString("<ToriWinSize w=\"%1\" h=\"%2\"/>\n")
-                     .arg(normSz.width())
-                     .arg(normSz.height());
-    }
-    s += QString("<ToriAspectRatio keep=\"%1\" ratio=\"%2\"/>\n")
-                 .arg(d_keep_aspect_ratio ? 1 : 0)
-                 .arg(d_target_aspect_ratio, 0, 'g', 12);
-    if (d_panel_labels_enabled || d_panel_label_font_pt > 0
-        || d_panel_label_pattern != QLatin1String("(%a)")) {
-        QString escPat = d_panel_label_pattern;
-        escPat.replace(QLatin1String("&"), QLatin1String("&amp;"));
-        escPat.replace(QLatin1String("\""), QLatin1String("&quot;"));
-        escPat.replace(QLatin1String("<"), QLatin1String("&lt;"));
-        escPat.replace(QLatin1String(">"), QLatin1String("&gt;"));
-        s += QString("<ToriPanelLabels enabled=\"%1\" placement=\"%2\" pattern=\"%3\" fontPt=\"%4\"/>\n")
-                     .arg(d_panel_labels_enabled ? 1 : 0)
-                     .arg(int(d_panel_label_placement))
-                     .arg(escPat)
-                     .arg(d_panel_label_font_pt);
-    }
+    s += pageSetupTagsString(true);
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *ag = (Graph *)graphsList.at(i);
@@ -3025,6 +3052,52 @@ QString MultiLayer::saveToString(const QString &geometry)
     return s + "</multiLayer>\n";
 }
 
+QString MultiLayer::pageSetupTagsString(bool includeWindowSize) const
+{
+    QString s;
+    double savedPageW = d_page_width_val;
+    double savedPageH = d_page_height_val;
+    if (d_page_unit == UnitPx && canvas && canvas->width() >= 80 && canvas->height() >= 80) {
+        const double z = qMax(0.25, d_page_zoom);
+        savedPageW = double(canvas->width()) / z;
+        savedPageH = double(canvas->height()) / z;
+    }
+    s += QString("<ToriPageSetup view=\"%1\" zoom=\"%2\" unit=\"%3\" dpi=\"%4\" w=\"%5\" h=\"%6\" bg=\"%7\"/>\n")
+                 .arg(d_page_view_mode ? 1 : 0)
+                 .arg(d_page_zoom, 0, 'g', 12)
+                 .arg(int(d_page_unit))
+                 .arg(d_page_dpi)
+                 .arg(savedPageW, 0, 'g', 12)
+                 .arg(savedPageH, 0, 'g', 12)
+                 .arg((d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white))
+                              .name(QColor::HexArgb));
+    if (includeWindowSize) {
+        const QSize normSz = isMaximized() ? normalGeometry().size() : size();
+        if (normSz.width() >= 100 && normSz.height() >= 100) {
+            s += QString("<ToriWinSize w=\"%1\" h=\"%2\"/>\n")
+                         .arg(normSz.width())
+                         .arg(normSz.height());
+        }
+    }
+    s += QString("<ToriAspectRatio keep=\"%1\" ratio=\"%2\"/>\n")
+                 .arg(d_keep_aspect_ratio ? 1 : 0)
+                 .arg(d_target_aspect_ratio, 0, 'g', 12);
+    if (d_panel_labels_enabled || d_panel_label_font_pt > 0
+        || d_panel_label_pattern != QLatin1String("(%a)")) {
+        QString escPat = d_panel_label_pattern;
+        escPat.replace(QLatin1String("&"), QLatin1String("&amp;"));
+        escPat.replace(QLatin1String("\""), QLatin1String("&quot;"));
+        escPat.replace(QLatin1String("<"), QLatin1String("&lt;"));
+        escPat.replace(QLatin1String(">"), QLatin1String("&gt;"));
+        s += QString("<ToriPanelLabels enabled=\"%1\" placement=\"%2\" pattern=\"%3\" fontPt=\"%4\"/>\n")
+                     .arg(d_panel_labels_enabled ? 1 : 0)
+                     .arg(int(d_panel_label_placement))
+                     .arg(escPat)
+                     .arg(d_panel_label_font_pt);
+    }
+    return s;
+}
+
 QString MultiLayer::saveAsTemplate(const QString &geometryInfo)
 {
     QString s = "<multiLayer>\t";
@@ -3037,6 +3110,8 @@ QString MultiLayer::saveAsTemplate(const QString &geometryInfo)
     s += "LayerCanvasSize\t" + QString::number(l_canvas_width) + "\t"
             + QString::number(l_canvas_height) + "\n";
     s += "Alignement\t" + QString::number(hor_align) + "\t" + QString::number(vert_align) + "\n";
+    // E4: templates carry the page setup (unit, DPI, size), aspect lock and panel labels.
+    s += pageSetupTagsString(false);
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *ag = (Graph *)graphsList.at(i);
@@ -4847,6 +4922,21 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     const QColor legBg(255, 255, 255, (legFrame == Legend::None) ? 0 : 235);
     const int minCurveWidth = qBound(1, spec.minCurveWidth, 12);
     const int minSymSize = qBound(0, spec.minSymbolSize, 32);
+    // Values regarded as "not customised by the user": the application defaults used for new
+    // curves plus every known preset's value.
+    QVector<int> managedCurveWidths;
+    QVector<int> managedSymbolSizes;
+    {
+        ApplicationWindow *mApp = findMultiLayerApp(this);
+        managedCurveWidths << (mApp ? mApp->defaultCurveLineWidth : 2) << 2;
+        managedSymbolSizes << (mApp ? mApp->defaultSymbolSize : 9) << 9;
+        for (const GraphStylePresetSpec &ps : listStylePresets()) {
+            if (!managedCurveWidths.contains(ps.minCurveWidth))
+                managedCurveWidths << ps.minCurveWidth;
+            if (!managedSymbolSizes.contains(ps.minSymbolSize))
+                managedSymbolSizes << ps.minSymbolSize;
+        }
+    }
     const QString undoLabel = spec.name.trimmed().isEmpty()
             ? tr("Apply Style Preset")
             : tr("Apply Preset: %1").arg(spec.name.trimmed());
@@ -4855,11 +4945,24 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     tickFnt.setHintingPreference(QFont::PreferNoHinting);
     legFnt.setHintingPreference(QFont::PreferNoHinting);
 
-    if (rows > 1)
-        pageH *= 0.85 * double(rows);
-    if (cols > 1 && pageW < 170.0)
-        pageW = qMin(175.0, pageW * 0.90 * double(cols));
-    if (cols <= 1 && pageW < 110.0) {
+    // E7: multi-panel figures get either "preset size per panel" or an explicit journal
+    // double-column width (175 mm). The old 0.85/0.90 shrink factors produced odd sizes such as
+    // 153 x 85 mm.
+    d_last_preset_warnings.clear();
+    const int panelCols = qMax(1, cols);
+    const int panelRows = qMax(1, rows);
+    if (panelCols > 1 || panelRows > 1) {
+        if (multiPanelSizing() == PanelSizingTwoColumn175) {
+            const double aspectHW = (pageW > 1e-6) ? (pageH / pageW) : 1.0;
+            const double panelW = 175.0 / double(panelCols);
+            pageW = 175.0;
+            pageH = qBound(20.0, panelW * aspectHW * double(panelRows), 1000.0);
+        } else {
+            pageW = qBound(20.0, pageW * double(panelCols), 1000.0);
+            pageH = qBound(20.0, pageH * double(panelRows), 1000.0);
+        }
+    }
+    if (panelCols <= 1 && panelRows <= 1 && pageW < 110.0) {
         for (int k = 0; k < graphsList.count(); ++k) {
             const Graph *gk = qobject_cast<const Graph *>(graphsList.at(k));
             if (gk && !d_inset_specs.contains(const_cast<Graph *>(gk)) && !gk->linkedParentLayer()
@@ -5188,21 +5291,37 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             }
         }
 
+        // E2: the preset's curve width / symbol size are set values (so switching presets can
+        // also make lines thinner again). Curves the user adjusted by hand keep their values: a
+        // value counts as "managed" only if it equals the app default or some preset's value.
         for (int cIdx = 0; cIdx < gr->curves(); ++cIdx) {
             QwtPlotCurve *c = gr->curve(cIdx);
             if (!c)
                 continue;
+            const bool isFilledType = dynamic_cast<QwtBarCurve *>(c) != nullptr
+                    || dynamic_cast<QwtHistogram *>(c) != nullptr
+                    || dynamic_cast<BoxCurve *>(c) != nullptr
+                    || dynamic_cast<QwtPieCurve *>(c) != nullptr
+                    || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr
+                    || c->rtti() != QwtPlotItem::Rtti_PlotCurve;
             QPen pen = c->pen();
-            if (pen.style() != Qt::NoPen && pen.width() < minCurveWidth
-                && pen.widthF() < double(minCurveWidth)) {
+            if (isFilledType) {
+                // Bar/box outlines and error bars keep their own widths, except that very thin
+                // outlines are still raised to 1 px on slides.
+                if (pen.style() != Qt::NoPen && isSlidePreset && pen.widthF() < 1.0) {
+                    pen.setWidth(1);
+                    c->setPen(pen);
+                }
+            } else if (pen.style() != Qt::NoPen
+                       && isPresetManagedValue(pen.widthF(), managedCurveWidths)) {
                 pen.setWidth(minCurveWidth);
                 c->setPen(pen);
             }
-            if (minSymSize > 0 && c->symbol().style() != QwtSymbol::NoSymbol) {
+            if (!isFilledType && minSymSize > 0 && c->symbol().style() != QwtSymbol::NoSymbol) {
                 QwtSymbol sym = c->symbol();
-                if (sym.size().width() < minSymSize || sym.size().height() < minSymSize) {
-                    sym.setSize(QSize(qMax(minSymSize, sym.size().width()),
-                                      qMax(minSymSize, sym.size().height())));
+                if (sym.size().width() == sym.size().height()
+                    && isPresetManagedValue(double(sym.size().width()), managedSymbolSizes)) {
+                    sym.setSize(QSize(minSymSize, minSymSize));
                 }
                 if (isSlidePreset) {
                     QPen sp = sym.pen();
@@ -5446,10 +5565,9 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     }
 
     {
-        bool anyTitleAdjusted = false;
-        static const QRegularExpression kRichHtmlTagRx(
-                QStringLiteral("<\\s*(?:i|sub|sup|b|u|span|font)\\b"),
-                QRegularExpression::CaseInsensitiveOption);
+        // E2: axis titles keep the point size given by the preset. A title wider than its axis
+        // is reported (status bar + lastStylePresetWarnings()) instead of being silently
+        // wrapped onto two lines or shrunk.
         for (int i = 0; i < graphsList.count(); ++i) {
             Graph *gr = (Graph *)graphsList.at(i);
             if (!gr || !gr->plotWidget() || d_inset_specs.contains(gr) || gr->linkedParentLayer()
@@ -5458,9 +5576,6 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             Plot *pl = gr->plotWidget();
             pl->updateLayout();
             const QRect cr = pl->plotLayout()->canvasRect();
-            const int minPt = isSlidePreset ? 16 : 8;
-            const int wrapPt = isSlidePreset ? 18 : 9;
-
             for (int a = 0; a < QwtPlot::axisCnt; ++a) {
                 if (!pl->axisEnabled(a))
                     continue;
@@ -5468,119 +5583,28 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                         (a == QwtPlot::xBottom || a == QwtPlot::xTop) ? cr.width() : cr.height();
                 if (spanPx < 50)
                     continue;
-                const int maxTitlePx = spanPx - 6;
-                QwtText curQt = pl->axisTitle(a);
+                const QwtText curQt = pl->axisTitle(a);
                 if (curQt.text().trimmed().isEmpty())
                     continue;
-                if (curQt.textSize().width() <= maxTitlePx)
+                if (curQt.textSize().width() <= spanPx - 6)
                     continue;
-
-                QFont baseFnt = gr->axisTitleFont(a);
-                baseFnt.setFamily(QStringLiteral("Arial"));
-                baseFnt.setBold(false);
-                baseFnt.setWeight(QFont::Normal);
-                baseFnt.setHintingPreference(QFont::PreferNoHinting);
-                const int startPt = qMax(minPt, baseFnt.pointSize() > 0 ? baseFnt.pointSize() : 11);
-
-                bool fittedSingleLine = false;
-                for (int tryPt = startPt - 1; tryPt >= minPt; --tryPt) {
-                    QFont tryFnt = baseFnt;
-                    tryFnt.setPointSize(tryPt);
-                    QwtText tryQt = curQt;
-                    tryQt.setFont(tryFnt);
-                    if (tryQt.textSize().width() <= maxTitlePx) {
-                        gr->setAxisTitleFont(a, tryFnt);
-                        anyTitleAdjusted = true;
-                        fittedSingleLine = true;
-                        break;
-                    }
-                }
-                if (fittedSingleLine)
-                    continue;
-
-                QString cleanStr = gr->axisTitle(a).trimmed();
-                if (cleanStr.contains(QLatin1Char('\n'))
-                    || cleanStr.contains(QLatin1String("<br"), Qt::CaseInsensitive)) {
-                    QFont minFnt = baseFnt;
-                    minFnt.setPointSize(minPt);
-                    gr->setAxisTitleFont(a, minFnt);
-                    anyTitleAdjusted = true;
-                    continue;
-                }
-
-                QFont wrapFnt = baseFnt;
-                wrapFnt.setPointSize(qBound(minPt, wrapPt, startPt));
-                const bool hasHtml = cleanStr.contains(kRichHtmlTagRx);
-                const QString brkSep = hasHtml ? QStringLiteral("<br/>") : QStringLiteral("\n");
-
-                auto fitsLine = [&](const QString &part, const QFont &fnt) -> bool {
-                    QwtText qtPart(part);
-                    qtPart.setFont(fnt);
-                    return qtPart.textSize().width() <= maxTitlePx;
-                };
-
-                QString wrapped;
-                const int slashPos = cleanStr.lastIndexOf(QLatin1String(" / "));
-                if (slashPos > 4) {
-                    const QString l1 = cleanStr.left(slashPos).trimmed();
-                    const QString l2 = cleanStr.mid(slashPos + 1).trimmed();
-                    if (fitsLine(l1, wrapFnt) && fitsLine(l2, wrapFnt))
-                        wrapped = l1 + brkSep + l2;
-                }
-                if (wrapped.isEmpty()) {
-                    const int parenPos = cleanStr.lastIndexOf(QLatin1String(" ("));
-                    if (parenPos > 4) {
-                        const QString l1 = cleanStr.left(parenPos).trimmed();
-                        const QString l2 = cleanStr.mid(parenPos + 1).trimmed();
-                        if (fitsLine(l1, wrapFnt) && fitsLine(l2, wrapFnt))
-                            wrapped = l1 + brkSep + l2;
-                    }
-                }
-                if (wrapped.isEmpty()) {
-                    const int mid = cleanStr.size() / 2;
-                    int bestSp = -1;
-                    int bestDist = cleanStr.size() + 1;
-                    int tagDepth = 0;
-                    for (int ci = 0; ci < cleanStr.size(); ++ci) {
-                        const QChar ch = cleanStr.at(ci);
-                        if (ch == QLatin1Char('<'))
-                            ++tagDepth;
-                        else if (ch == QLatin1Char('>') && tagDepth > 0)
-                            --tagDepth;
-                        else if (tagDepth == 0 && ch == QLatin1Char(' ') && ci > 2
-                                 && ci + 2 < cleanStr.size()) {
-                            const int d = std::abs(ci - mid);
-                            if (d < bestDist) {
-                                bestDist = d;
-                                bestSp = ci;
-                            }
-                        }
-                    }
-                    if (bestSp > 0) {
-                        const QString l1 = cleanStr.left(bestSp).trimmed();
-                        const QString l2 = cleanStr.mid(bestSp + 1).trimmed();
-                        if (!fitsLine(l1, wrapFnt) || !fitsLine(l2, wrapFnt))
-                            wrapFnt.setPointSize(minPt);
-                        wrapped = l1 + brkSep + l2;
-                    }
-                }
-
-                if (!wrapped.isEmpty()) {
-                    const bool wasAuto = gr->isAxisTitleAuto(a);
-                    QwtText newQt = pl->axisTitle(a);
-                    newQt.setFont(wrapFnt);
-                    newQt.setText(wrapped);
-                    pl->setAxisTitle(a, newQt);
-                    gr->setAxisTitleAuto(a, wasAuto);
-                } else {
-                    wrapFnt.setPointSize(minPt);
-                    gr->setAxisTitleFont(a, wrapFnt);
-                }
-                anyTitleAdjusted = true;
+                QString plain = curQt.text();
+                plain.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+                const QFont tf = gr->axisTitleFont(a);
+                const double pt = (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
+                d_last_preset_warnings << tr("Axis title \"%1\" is wider than the axis at %2 pt "
+                                             "(size kept; shorten the title or enlarge the page).")
+                                                  .arg(plain.trimmed())
+                                                  .arg(pt, 0, 'g', 3);
             }
         }
-        if (anyTitleAdjusted)
-            applySquareCanvasFrame70Percent();
+        if (!d_last_preset_warnings.isEmpty()) {
+            if (ApplicationWindow *wApp = findMultiLayerApp(this)) {
+                if (wApp->statusBar())
+                    wApp->statusBar()->showMessage(
+                            d_last_preset_warnings.join(QStringLiteral("  ")), 12000);
+            }
+        }
     }
 
     for (int i = 0; i < graphsList.count(); ++i) {
@@ -8568,6 +8592,32 @@ void registerStylePresetTranslationsOnce()
         "組み込みプリセットは削除できません。元に戻すには「初期値に戻す」を使用してください。");
     reg("Custom Preset:", "プリセット:");
     reg("Apply Selected Preset", "選択したプリセットを適用");
+    reg("Curve Width (px):", "曲線の太さ (px):");
+    reg("Symbol Size (px):", "シンボルサイズ (px):");
+    reg("Defaults for New Graphs", "新規グラフの既定");
+    reg("Preset applied to new graphs:", "新規グラフに適用するプリセット:");
+    reg("Colors for new curves:", "新しい曲線の色:");
+    reg("Origin Classic (black, red, blue, ...)", "Origin 既定 (黒・赤・青…)");
+    reg("Okabe-Ito (Colorblind Safe)", "岡部・伊藤 (色覚バリアフリー)");
+    reg("Matplotlib (tab10)", "Matplotlib 既定色 (tab10)");
+    reg("Multi-panel page size:", "複数パネルのページ寸法:");
+    reg("Preset size per panel (columns x width)", "パネルごとにプリセット寸法 (列数 × 幅)");
+    reg("Journal double column (175 mm wide)", "論文 2 段幅 (幅 175 mm)");
+    reg("Shared preset folder (read-only):", "共有プリセットフォルダ (読み取り専用):");
+    reg("(none)", "(なし)");
+    reg("Browse...", "参照...");
+    reg("None (keep plain pixel page)", "なし (ピクセル単位のページのまま)");
+    reg("Shared", "共有");
+    reg("Apply to Graph", "グラフに適用");
+    reg("This preset comes from the shared folder and is read-only. Duplicate it to make a personal copy.",
+        "このプリセットは共有フォルダのもので読み取り専用です。複製すると自分用のコピーを作れます。");
+    reg("%1 was written by a newer ToriGraph (preset format %2; this version reads format %3). Unknown settings are ignored.",
+        "%1 は新しい版の ToriGraph で書かれています (プリセット形式 %2、この版が読めるのは形式 %3 まで)。分からない設定は無視しました。");
+    reg("Axis title \"%1\" is wider than the axis at %2 pt (size kept; shorten the title or enlarge the page).",
+        "軸タイトル「%1」は %2 pt では軸より長くなります (文字サイズは変えていません。タイトルを短くするか、ページを大きくしてください)。");
+    reg("Lab Slide (Origin 28 pt equiv., 83.3 mm, paste at 140%)",
+        "研究室スライド (Origin 28 pt 相当、83.3 mm 角、PowerPoint で 140% に拡大)");
+    reg("Journal 2-Column (175x85 mm, 600 DPI)", "論文 2 段幅 (175×85 mm, 600 DPI)");
 }
 
 QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
@@ -8592,6 +8642,9 @@ QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
     o[QStringLiteral("bold_title")] = s.boldTitle;
     o[QStringLiteral("bold_tick")] = s.boldTick;
     o[QStringLiteral("bold_legend")] = s.boldLegend;
+    o[QStringLiteral("curve_width")] = s.minCurveWidth;
+    o[QStringLiteral("symbol_size")] = s.minSymbolSize;
+    // legacy keys (read by older ToriGraph builds)
     o[QStringLiteral("min_curve_width")] = s.minCurveWidth;
     o[QStringLiteral("min_symbol_size")] = s.minSymbolSize;
     o[QStringLiteral("legend_frame")] = s.legendFrame;
@@ -8645,9 +8698,13 @@ MultiLayer::GraphStylePresetSpec stylePresetFromJson(const QJsonObject &o,
         s.boldTick = o.value(QStringLiteral("bold_tick")).toBool(s.boldTick);
     if (o.contains(QStringLiteral("bold_legend")))
         s.boldLegend = o.value(QStringLiteral("bold_legend")).toBool(s.boldLegend);
-    if (o.contains(QStringLiteral("min_curve_width")))
+    if (o.contains(QStringLiteral("curve_width")))
+        s.minCurveWidth = qBound(1, o.value(QStringLiteral("curve_width")).toInt(s.minCurveWidth), 12);
+    else if (o.contains(QStringLiteral("min_curve_width")))
         s.minCurveWidth = qBound(1, o.value(QStringLiteral("min_curve_width")).toInt(s.minCurveWidth), 12);
-    if (o.contains(QStringLiteral("min_symbol_size")))
+    if (o.contains(QStringLiteral("symbol_size")))
+        s.minSymbolSize = qBound(0, o.value(QStringLiteral("symbol_size")).toInt(s.minSymbolSize), 32);
+    else if (o.contains(QStringLiteral("min_symbol_size")))
         s.minSymbolSize = qBound(0, o.value(QStringLiteral("min_symbol_size")).toInt(s.minSymbolSize), 32);
     if (o.contains(QStringLiteral("legend_frame")))
         s.legendFrame = qBound(0, o.value(QStringLiteral("legend_frame")).toInt(s.legendFrame), 2);
@@ -8672,7 +8729,7 @@ bool writeUserStylePresetsArray(const QVector<MultiLayer::GraphStylePresetSpec> 
     for (const auto &s : userEntries)
         arr.append(stylePresetToJson(s));
     QJsonObject root;
-    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("version")] = MultiLayer::stylePresetFormatVersion();
     root[QStringLiteral("presets")] = arr;
 
     QFile f(path);
@@ -8684,6 +8741,71 @@ bool writeUserStylePresetsArray(const QVector<MultiLayer::GraphStylePresetSpec> 
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     f.close();
     return true;
+}
+
+//! Reads the "version" field of a preset document. Files without one are version 1.
+int presetDocumentVersion(const QJsonDocument &doc)
+{
+    if (!doc.isObject())
+        return 1;
+    const QJsonValue v = doc.object().value(QStringLiteral("version"));
+    return v.isDouble() ? qMax(1, v.toInt(1)) : 1;
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> readPresetArrayFromFile(const QString &path,
+                                                                  bool readOnly,
+                                                                  QString *warnOut = nullptr)
+{
+    QVector<MultiLayer::GraphStylePresetSpec> out;
+    QFile f(path);
+    if (!f.exists() || !f.open(QIODevice::ReadOnly))
+        return out;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    QJsonArray arr;
+    if (doc.isObject() && doc.object().contains(QStringLiteral("presets")))
+        arr = doc.object().value(QStringLiteral("presets")).toArray();
+    else if (doc.isArray())
+        arr = doc.array();
+    else if (doc.isObject())
+        arr.append(doc.object());
+    const int ver = presetDocumentVersion(doc);
+    if (ver > MultiLayer::stylePresetFormatVersion() && warnOut) {
+        *warnOut = QObject::tr("%1 was written by a newer ToriGraph (preset format %2; this "
+                               "version reads format %3). Unknown settings are ignored.")
+                           .arg(QFileInfo(path).fileName())
+                           .arg(ver)
+                           .arg(MultiLayer::stylePresetFormatVersion());
+    }
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        MultiLayer::GraphStylePresetSpec base;
+        base.builtIn = false;
+        MultiLayer::GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
+        if (parsed.id.isEmpty())
+            continue;
+        parsed.readOnly = readOnly;
+        parsed.sourcePath = readOnly ? path : QString();
+        out.append(parsed);
+    }
+    return out;
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> readSharedPresetEntries()
+{
+    QVector<MultiLayer::GraphStylePresetSpec> out;
+    const QString folder = MultiLayer::sharedStylePresetsFolder();
+    if (folder.trimmed().isEmpty())
+        return out;
+    QDir dir(folder);
+    if (!dir.exists())
+        return out;
+    const QStringList files =
+            dir.entryList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
+    for (const QString &fn : files)
+        out += readPresetArrayFromFile(dir.filePath(fn), true);
+    return out;
 }
 
 QVector<MultiLayer::GraphStylePresetSpec> readRawUserPresetEntries()
@@ -8719,10 +8841,121 @@ QString canonicalBuiltInAlias(const QString &raw)
     if (k == QLatin1String("slide") || k == QLatin1String("slide_28pt")
         || k == QLatin1String("presentation") || k == QLatin1String("presentation_slide"))
         return QStringLiteral("slide_28pt");
+    if (k == QLatin1String("lab_slide") || k == QLatin1String("lab_slide_83mm")
+        || k == QLatin1String("slide_140"))
+        return QStringLiteral("lab_slide_83mm");
+    if (k == QLatin1String("2col") || k == QLatin1String("two_column")
+        || k == QLatin1String("journal_2col_175mm") || k == QLatin1String("175mm"))
+        return QStringLiteral("journal_2col_175mm");
     return raw.trimmed();
 }
 
 } // namespace
+
+QString MultiLayer::newGraphStylePresetId()
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    const QVariant v = s.value(QStringLiteral("/StylePresets/NewGraphPreset"));
+    if (!v.isValid())
+        return QStringLiteral("isij_85mm");
+    const QString id = v.toString().trimmed();
+    if (id.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0)
+        return QString();
+    return id;
+}
+
+void MultiLayer::setNewGraphStylePresetId(const QString &id)
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    const QString v = id.trimmed().isEmpty() ? QStringLiteral("none") : id.trimmed();
+    s.setValue(QStringLiteral("/StylePresets/NewGraphPreset"), v);
+}
+
+QString MultiLayer::sharedStylePresetsFolder()
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    return s.value(QStringLiteral("/StylePresets/SharedFolder"), QString()).toString().trimmed();
+}
+
+void MultiLayer::setSharedStylePresetsFolder(const QString &folder)
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    s.setValue(QStringLiteral("/StylePresets/SharedFolder"), folder.trimmed());
+}
+
+MultiLayer::MultiPanelSizing MultiLayer::multiPanelSizing()
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    const int v = s.value(QStringLiteral("/StylePresets/MultiPanelSizing"),
+                          int(PanelSizingPerPanel))
+                          .toInt();
+    return (v == int(PanelSizingTwoColumn175)) ? PanelSizingTwoColumn175 : PanelSizingPerPanel;
+}
+
+void MultiLayer::setMultiPanelSizing(MultiPanelSizing mode)
+{
+    QSettings &s = ApplicationWindow::getSettings();
+    s.setValue(QStringLiteral("/StylePresets/MultiPanelSizing"), int(mode));
+}
+
+void MultiLayer::requestNewGraphStylePreset(Graph *g)
+{
+    if (!g)
+        return;
+    MultiLayer *ml = g->multiLayerParent();
+    if (!ml || ml->property("_toriNewGraphPresetDone").toBool()
+        || ml->property("_toriNewGraphPresetPending").toBool())
+        return;
+    if (newGraphStylePresetId().isEmpty())
+        return;
+    ml->setProperty("_toriNewGraphPresetPending", true);
+    // Applied after the creating function has finished (legend, layout and window geometry are
+    // in place by then), exactly as if the user had chosen the preset.
+    QPointer<MultiLayer> guard(ml);
+    QTimer::singleShot(0, ml, [guard]() {
+        if (guard)
+            guard->applyPendingNewGraphStylePreset();
+    });
+}
+
+bool MultiLayer::applyPendingNewGraphStylePreset()
+{
+    if (!property("_toriNewGraphPresetPending").toBool())
+        return false;
+    setProperty("_toriNewGraphPresetPending", false);
+    setProperty("_toriNewGraphPresetDone", true);
+    const QString id = newGraphStylePresetId();
+    if (id.isEmpty())
+        return false;
+    bool anyCartesian = false;
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (gr && !gr->isPiePlot() && !gr->isTernaryPlot() && !gr->isPolarPlot())
+            anyCartesian = true;
+    }
+    if (!anyCartesian)
+        return false;
+    GraphStylePresetSpec spec;
+    if (!findStylePreset(id, &spec))
+        return false;
+    const int undoBefore = d_undo_stack ? d_undo_stack->count() : -1;
+    // A window size/position remembered from the last session (restored just before this
+    // runs) wins over the preset's automatic window fit; the preset only sets the page.
+    const bool keepWindowGeometry =
+            ApplicationWindow::getSettings()
+                    .value(QStringLiteral("/2DPlots/LastGraphWindow/HasGeometry"), false)
+                    .toBool()
+            && !isMaximized();
+    const QRect geoBefore = geometry();
+    applyStylePresetSpec(spec);
+    if (keepWindowGeometry && geoBefore.width() >= 100 && geoBefore.height() >= 100
+        && geometry() != geoBefore)
+        setGeometry(geoBefore);
+    // Part of creating the graph, not an edit the user should undo step by step.
+    if (d_undo_stack && undoBefore == 0)
+        d_undo_stack->clear();
+    return true;
+}
 
 QString MultiLayer::userStylePresetsFilePath()
 {
@@ -8735,7 +8968,7 @@ QString MultiLayer::userStylePresetsFilePath()
 QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets()
 {
     QVector<GraphStylePresetSpec> defs;
-    defs.reserve(2);
+    defs.reserve(4);
 
     GraphStylePresetSpec isij;
     isij.id = QStringLiteral("isij_85mm");
@@ -8787,6 +9020,62 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
     slide.largeSlideLayout = true;
     defs.append(slide);
 
+    // E3: lab slide preset. Origin graphs for slides use 28 pt axis titles/tick labels on an
+    // 8.2 in page that Origin copies at 40 % (8.33 cm); PowerPoint then enlarges it to 140 %
+    // (11.7 cm square). ToriGraph pastes at the physical page size, so the equivalent page is
+    // 83.3 mm square with 28 pt x 0.40 = 11.2 pt text; after the 140 % enlargement it looks
+    // exactly like the Origin figure (15.7 pt on the slide).
+    GraphStylePresetSpec lab;
+    lab.id = QStringLiteral("lab_slide_83mm");
+    lab.name = QStringLiteral("Lab Slide (Origin 28 pt equiv., 83.3 mm, paste at 140%)");
+    lab.builtIn = true;
+    lab.pageWidthMm = 83.3;
+    lab.pageHeightMm = 83.3;
+    lab.keepAspectRatio = true;
+    lab.targetDpi = 600;
+    lab.marginPx = 6;
+    lab.framePreset = static_cast<int>(Graph::FrameBoxInwardTicks);
+    lab.axisLineWidth = 2;
+    lab.minorTickLen = 4;
+    lab.majorTickLen = 8;
+    lab.fontFamily = QStringLiteral("Arial");
+    lab.axisTitlePt = 11.2;
+    lab.tickLabelPt = 11.2;
+    lab.legendPt = 10.0;
+    lab.minCurveWidth = 2;
+    lab.minSymbolSize = 7;
+    lab.legendFrame = Legend::None;
+    lab.pageBackground = Qt::white;
+    lab.formatIsijUnitSlash = false;
+    lab.largeSlideLayout = false;
+    defs.append(lab);
+
+    // E3: journal double-column width (175 mm).
+    GraphStylePresetSpec twoCol;
+    twoCol.id = QStringLiteral("journal_2col_175mm");
+    twoCol.name = QStringLiteral("Journal 2-Column (175x85 mm, 600 DPI)");
+    twoCol.builtIn = true;
+    twoCol.pageWidthMm = 175.0;
+    twoCol.pageHeightMm = 85.0;
+    twoCol.keepAspectRatio = true;
+    twoCol.targetDpi = 600;
+    twoCol.marginPx = 6;
+    twoCol.framePreset = static_cast<int>(Graph::FrameBoxInwardTicks);
+    twoCol.axisLineWidth = 2;
+    twoCol.minorTickLen = 4;
+    twoCol.majorTickLen = 8;
+    twoCol.fontFamily = QStringLiteral("Arial");
+    twoCol.axisTitlePt = 11.0;
+    twoCol.tickLabelPt = 10.0;
+    twoCol.legendPt = 9.0;
+    twoCol.minCurveWidth = 2;
+    twoCol.minSymbolSize = 7;
+    twoCol.legendFrame = Legend::None;
+    twoCol.pageBackground = Qt::white;
+    twoCol.formatIsijUnitSlash = true;
+    twoCol.largeSlideLayout = false;
+    defs.append(twoCol);
+
     return defs;
 }
 
@@ -8817,6 +9106,25 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::listStylePresets()
                 custom.name = custom.id;
             result.append(custom);
         }
+    }
+    // E4: presets from the shared (lab) folder are merged read-only. Built-in and personal
+    // presets win on an id clash so a shared file can never silently change them.
+    for (const GraphStylePresetSpec &se : readSharedPresetEntries()) {
+        bool clash = false;
+        for (const GraphStylePresetSpec &r : result) {
+            if (r.id.compare(se.id, Qt::CaseInsensitive) == 0) {
+                clash = true;
+                break;
+            }
+        }
+        if (clash)
+            continue;
+        GraphStylePresetSpec shared = se;
+        shared.builtIn = false;
+        shared.readOnly = true;
+        if (shared.name.trimmed().isEmpty())
+            shared.name = shared.id;
+        result.append(shared);
     }
     return result;
 }
@@ -8891,6 +9199,21 @@ bool MultiLayer::deleteStylePreset(const QString &id, QString *errOut)
         }
     }
     QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
+    bool inUserFile = false;
+    for (const GraphStylePresetSpec &u : userEntries) {
+        if (u.id.compare(key, Qt::CaseInsensitive) == 0)
+            inUserFile = true;
+    }
+    if (!inUserFile) {
+        for (const GraphStylePresetSpec &se : readSharedPresetEntries()) {
+            if (se.id.compare(key, Qt::CaseInsensitive) == 0) {
+                if (errOut)
+                    *errOut = QObject::tr("This preset comes from the shared folder and is "
+                                          "read-only. Duplicate it to make a personal copy.");
+                return false;
+            }
+        }
+    }
     int removed = 0;
     for (int i = userEntries.size() - 1; i >= 0; --i) {
         if (userEntries[i].id.compare(key, Qt::CaseInsensitive) == 0) {
@@ -8921,7 +9244,7 @@ bool MultiLayer::exportStylePresetsToJson(const QString &filePath, QString *errO
     for (const GraphStylePresetSpec &s : all)
         arr.append(stylePresetToJson(s));
     QJsonObject root;
-    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("version")] = stylePresetFormatVersion();
     root[QStringLiteral("presets")] = arr;
     QFile f(filePath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -8956,6 +9279,16 @@ int MultiLayer::importStylePresetsFromJson(const QString &filePath, QString *err
             *errOut = QObject::tr("Invalid JSON preset file.");
         return -1;
     }
+    // E4: check the format version. Newer files are still imported (unknown keys are ignored)
+    // but the caller gets a warning in errOut.
+    const int docVersion = presetDocumentVersion(doc);
+    if (docVersion > stylePresetFormatVersion() && errOut) {
+        *errOut = QObject::tr("%1 was written by a newer ToriGraph (preset format %2; this "
+                              "version reads format %3). Unknown settings are ignored.")
+                          .arg(QFileInfo(filePath).fileName())
+                          .arg(docVersion)
+                          .arg(stylePresetFormatVersion());
+    }
 
     int count = 0;
     for (const QJsonValue &v : arr) {
@@ -8963,8 +9296,11 @@ int MultiLayer::importStylePresetsFromJson(const QString &filePath, QString *err
             continue;
         GraphStylePresetSpec base;
         GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
-        if (saveStylePreset(parsed, errOut))
+        QString saveErr;
+        if (saveStylePreset(parsed, &saveErr))
             ++count;
+        else if (errOut && !saveErr.isEmpty())
+            *errOut = saveErr;
     }
     return count;
 }
@@ -9172,9 +9508,9 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QSpinBox *sbSymSz = new QSpinBox(editorPane);
     sbSymSz->setRange(0, 32);
     curveRow->addWidget(sbCurveW);
-    curveRow->addWidget(new QLabel(QObject::tr("Min Symbol Size (px):"), editorPane));
+    curveRow->addWidget(new QLabel(QObject::tr("Symbol Size (px):"), editorPane));
     curveRow->addWidget(sbSymSz);
-    form->addRow(QObject::tr("Min Curve Width (px):"), curveRow);
+    form->addRow(QObject::tr("Curve Width (px):"), curveRow);
 
     QComboBox *cbLegFrame = new QComboBox(editorPane);
     cbLegFrame->addItem(QObject::tr("None (Transparent)"), static_cast<int>(Legend::None));
@@ -9191,6 +9527,38 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
 
     mainSplit->addWidget(editorPane, 1);
     rootLay->addLayout(mainSplit, 1);
+
+    // E1/E4/E5/E7: application-wide defaults that belong with the presets.
+    QGroupBox *defaultsBox = new QGroupBox(QObject::tr("Defaults for New Graphs"), &dlg);
+    QFormLayout *defForm = new QFormLayout(defaultsBox);
+    QComboBox *cbNewGraphPreset = new QComboBox(defaultsBox);
+    QComboBox *cbCurvePalette = new QComboBox(defaultsBox);
+    cbCurvePalette->addItem(QObject::tr("Origin Classic (black, red, blue, ...)"),
+                            Graph::originClassicPaletteName());
+    cbCurvePalette->addItem(QObject::tr("Okabe-Ito (Colorblind Safe)"),
+                            Graph::okabeItoPaletteName());
+    cbCurvePalette->addItem(QObject::tr("Matplotlib (tab10)"), Graph::tab10PaletteName());
+    {
+        const int pIdx = cbCurvePalette->findData(Graph::defaultCurvePaletteName());
+        cbCurvePalette->setCurrentIndex(pIdx >= 0 ? pIdx : 0);
+    }
+    QComboBox *cbPanelSizing = new QComboBox(defaultsBox);
+    cbPanelSizing->addItem(QObject::tr("Preset size per panel (columns x width)"),
+                           int(PanelSizingPerPanel));
+    cbPanelSizing->addItem(QObject::tr("Journal double column (175 mm wide)"),
+                           int(PanelSizingTwoColumn175));
+    cbPanelSizing->setCurrentIndex(multiPanelSizing() == PanelSizingTwoColumn175 ? 1 : 0);
+    QHBoxLayout *sharedRow = new QHBoxLayout();
+    QLineEdit *leShared = new QLineEdit(sharedStylePresetsFolder(), defaultsBox);
+    leShared->setPlaceholderText(QObject::tr("(none)"));
+    QPushButton *btnSharedBrowse = new QPushButton(QObject::tr("Browse..."), defaultsBox);
+    sharedRow->addWidget(leShared, 1);
+    sharedRow->addWidget(btnSharedBrowse);
+    defForm->addRow(QObject::tr("Preset applied to new graphs:"), cbNewGraphPreset);
+    defForm->addRow(QObject::tr("Colors for new curves:"), cbCurvePalette);
+    defForm->addRow(QObject::tr("Multi-panel page size:"), cbPanelSizing);
+    defForm->addRow(QObject::tr("Shared preset folder (read-only):"), sharedRow);
+    rootLay->addWidget(defaultsBox);
 
     // Bottom action buttons
     QHBoxLayout *btnRow = new QHBoxLayout();
@@ -9262,9 +9630,22 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         cbLegFrame->setCurrentIndex(lIdx >= 0 ? lIdx : 0);
         chkIsij->setChecked(s.formatIsijUnitSlash);
         chkSlide->setChecked(s.largeSlideLayout);
-        btnDel->setEnabled(!s.builtIn);
+        btnDel->setEnabled(!s.builtIn && !s.readOnly);
         btnReset->setEnabled(s.builtIn);
+        btnSave->setEnabled(!s.readOnly);
+        btnApply->setText(s.readOnly ? QObject::tr("Apply to Graph")
+                                     : QObject::tr("Save && Apply to Graph"));
         loadingUi = false;
+    };
+
+    auto refillNewGraphPresetCombo = [&]() {
+        QSignalBlocker blk(cbNewGraphPreset);
+        cbNewGraphPreset->clear();
+        cbNewGraphPreset->addItem(QObject::tr("None (keep plain pixel page)"), QString());
+        for (const GraphStylePresetSpec &s : presets)
+            cbNewGraphPreset->addItem(s.name, s.id);
+        const int idx = cbNewGraphPreset->findData(newGraphStylePresetId());
+        cbNewGraphPreset->setCurrentIndex(idx >= 0 ? idx : 0);
     };
 
     auto reloadList = [&](const QString &selectId) {
@@ -9273,7 +9654,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         int targetRow = 0;
         for (int i = 0; i < presets.size(); ++i) {
             const GraphStylePresetSpec &s = presets[i];
-            const QString tag = s.builtIn ? QObject::tr("Built-in") : QObject::tr("Custom");
+            const QString tag = s.builtIn ? QObject::tr("Built-in")
+                    : (s.readOnly ? QObject::tr("Shared") : QObject::tr("Custom"));
             QListWidgetItem *it = new QListWidgetItem(
                     QStringLiteral("[%1]  %2").arg(tag, s.name), lw);
             it->setData(Qt::UserRole, s.id);
@@ -9284,8 +9666,37 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
             lw->setCurrentRow(targetRow);
             populateForm(targetRow);
         }
+        refillNewGraphPresetCombo();
     };
     reloadList(QString());
+
+    QObject::connect(cbNewGraphPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { setNewGraphStylePresetId(cbNewGraphPreset->currentData().toString()); });
+    QObject::connect(cbCurvePalette, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
+                     });
+    QObject::connect(cbPanelSizing, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         setMultiPanelSizing(static_cast<MultiPanelSizing>(
+                                 cbPanelSizing->currentData().toInt()));
+                     });
+    QObject::connect(leShared, &QLineEdit::editingFinished, &dlg, [&]() {
+        if (leShared->text().trimmed() == sharedStylePresetsFolder())
+            return;
+        setSharedStylePresetsFolder(leShared->text());
+        reloadList(QString());
+    });
+    QObject::connect(btnSharedBrowse, &QPushButton::clicked, &dlg, [&]() {
+        const QString dir = QFileDialog::getExistingDirectory(
+                &dlg, QObject::tr("Shared preset folder (read-only):"),
+                leShared->text().trimmed().isEmpty() ? QDir::homePath() : leShared->text());
+        if (dir.isEmpty())
+            return;
+        leShared->setText(QDir::toNativeSeparators(dir));
+        setSharedStylePresetsFolder(leShared->text());
+        reloadList(QString());
+    });
 
     QObject::connect(lw, &QListWidget::currentRowChanged, &dlg, [&](int row) {
         if (!loadingUi)
@@ -9297,6 +9708,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         if (row < 0 || row >= presets.size())
             return false;
         GraphStylePresetSpec s = presets[row];
+        if (s.readOnly)
+            return true; // shared presets are applied as they are, never written
         readFormIntoSpec(s);
         QString err;
         if (!saveStylePreset(s, &err)) {
@@ -9339,6 +9752,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         s.id = QStringLiteral("custom_")
                 + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         s.builtIn = false;
+        s.readOnly = false;
+        s.sourcePath.clear();
         s.name = QObject::tr("Copy of %1").arg(s.name);
         saveStylePreset(s);
         reloadList(s.id);
@@ -9393,8 +9808,10 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
             QMessageBox::warning(&dlg, dlg.windowTitle(), err);
         else {
             reloadList(QString());
-            QMessageBox::information(&dlg, dlg.windowTitle(),
-                                     QObject::tr("Imported %1 preset(s).").arg(n));
+            QString msg = QObject::tr("Imported %1 preset(s).").arg(n);
+            if (!err.isEmpty())
+                msg += QStringLiteral("\n\n") + err;
+            QMessageBox::information(&dlg, dlg.windowTitle(), msg);
         }
     });
 

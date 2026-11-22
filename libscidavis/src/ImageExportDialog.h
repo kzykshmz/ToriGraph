@@ -40,6 +40,8 @@
 
 class QStackedWidget;
 class QGroupBox;
+class QLabel;
+class QShowEvent;
 
 //! QFileDialog extended with options for image export
 class ImageExportDialog : public ExtensibleFileDialog
@@ -67,7 +69,10 @@ private:
     QSpinBox *d_quality;
     QSpinBox *d_raster_resolution;
     QCheckBox *d_transparency;
+    //! Format purpose + "w mm x h mm, dpi -> px" summary (B9).
+    QLabel *d_info_label = nullptr;
     void saveOptionsToApp();
+    void updateInfoLabel();
 
 public:
     //! Constructor
@@ -99,9 +104,20 @@ public:
 
     void selectFilter(const QString &filter);
 
+    //! B9: the offered formats ("*.png", "*.tif", "*.pdf", "*.svg", "*.emf").
+    static QStringList supportedFilters();
+    //! Maps any stored filter text (".png", "*.jpg", "*.eps", ...) to a supported filter.
+    static QString normalizedFilter(const QString &filter);
+    //! One-line description of what the format is for.
+    static QString formatDescription(const QString &filter);
+    //! "Size: w mm x h mm, dpi -> W x H px" (raster) or the vector variant.
+    static QString sizeSummary(double wMm, double hMm, int dpi, bool raster);
+    QString infoText() const;
+
 protected slots:
     void done(int r) override;
     void closeEvent(QCloseEvent *) override;
+    void showEvent(QShowEvent *) override;
     //! Update which options are visible and enabled based on the output format.
     void updateAdvancedOptions(const QString &filter);
 };

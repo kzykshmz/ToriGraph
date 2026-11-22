@@ -163,6 +163,7 @@ static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw);
 static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
 static int runSuite60PowerPointOleLink(ApplicationWindow *mw);
 static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
+static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -192,6 +193,11 @@ int main(int argc, char **argv)
 
     ApplicationWindow *mw = new ApplicationWindow();
     mw->applyUserSettings();
+    // Suites 1-53 were written for the legacy pixel page (window resize stretches the canvas,
+    // 520 px pages, free aspect after unlocking, ...). Since E1 new graphs get the ISIJ 85 mm
+    // preset right after creation, which fixes the page in mm. Keep the legacy behaviour for
+    // those suites; Suite 58 sets the real default (isij_85mm) and checks it explicitly.
+    MultiLayer::setNewGraphStylePresetId(QString());
     mw->saveSettings();
     if (args.contains("--suite44-only")) {
         const int rc44 = runSuite44Round4UnifiedRegressionGate(mw);
@@ -284,6 +290,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite58-only")) {
+        const int rc58 = runSuite58FigureDefaultsPresetsAndExport(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc58;
     }
 
     // =========================================================================
@@ -5440,6 +5453,9 @@ int main(int argc, char **argv)
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
         return 1;
     mw->savedProject();
+    if (runSuite58FigureDefaultsPresetsAndExport(mw) != 0)
+        return 1;
+    mw->savedProject();
     if (runSuite55TensileAndWorkHardeningCorrectness(mw) != 0)
         return 1;
     mw->savedProject();
@@ -7245,12 +7261,16 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
         ml1Bar->exportImage(bar1Png, -1, false, 100);
         QFileInfo barFi(bar1Png);
         QImage barImg(bar1Png);
+        // The bar fill follows the default curve palette (E5: Origin classic, first colour
+        // black; previously Okabe-Ito blue). Count pixels of the actual fill colour and require
+        // a solid area (>= 5 % of the image) so axis lines and text cannot satisfy the check.
+        const QColor barFill = ml1Bar->activeGraph()->curve(0)->brush().color();
         int redBarPx = 0;
         for (int y = 0; y < barImg.height(); ++y) {
             for (int x = 0; x < barImg.width(); ++x) {
                 const QColor c = barImg.pixelColor(x, y);
-                if ((c.red() > 200 && c.green() < 60 && c.blue() < 60)
-                    || (c.blue() > 140 && c.red() < 60)) {
+                if (std::abs(c.red() - barFill.red()) < 40 && std::abs(c.green() - barFill.green()) < 40
+                    && std::abs(c.blue() - barFill.blue()) < 40) {
                     ++redBarPx;
                 }
             }
@@ -7258,7 +7278,7 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
         CHECK_COND(barFi.exists() && barFi.size() > 200 && barFi.size() < 250000
                            && !barImg.isNull() && barImg.width() > 100 && barImg.width() < 1800
                            && barImg.height() > 100 && barImg.height() < 1800
-                           && redBarPx > 20,
+                           && redBarPx > (barImg.width() * barImg.height()) / 20,
                    "1-row QwtBarCurve PNG export failed, missed bar fill, or produced corrupted/inflated dimensions!");
     }
 
@@ -17038,5 +17058,408 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 62 Beginner Navigation, Menus, Ribbon State & Screen Fit passed!\n";
+    return 0;
+}
+
+// =============================================================================
+#include <QSpinBox>
+#include <QComboBox>
+#include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include "ScaleDraw.h"
+
+// =========================================================================
+// Suite 58: figure defaults, style presets and image/vector export
+//           (B2, B9, E1-E7 of the 2026-11-21 review)
+// =========================================================================
+static QByteArray suite58ReadAll(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
+}
+
+static Table *suite58MakeTable(ApplicationWindow *mw, const QString &name, int nY)
+{
+    Table *t = mw->newTable(name, 8, nY + 1);
+    if (!t)
+        return nullptr;
+    t->setColName(0, "x");
+    for (int c = 1; c <= nY; ++c)
+        t->setColName(c, QStringLiteral("y%1").arg(c));
+    for (int r = 0; r < 8; ++r) {
+        t->setCell(r, 0, r + 1.0);
+        for (int c = 1; c <= nY; ++c)
+            t->setCell(r, c, (r + 1.0) * c + 0.5 * c);
+    }
+    return t;
+}
+
+static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 58: Figure Defaults, Style Presets & Image/Vector Export Gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 58");
+    qApp->setProperty("torigraph_noninteractive", true);
+    // Keep the user's real preset file untouched.
+    QStandardPaths::setTestModeEnabled(true);
+    QFile::remove(MultiLayer::userStylePresetsFilePath());
+    QTemporaryDir tmp58;
+    CHECK_COND(tmp58.isValid(), "Suite 58: QTemporaryDir failed");
+
+    const QString prevNewGraphPreset = MultiLayer::newGraphStylePresetId();
+    const QString prevPalette = Graph::defaultCurvePaletteName();
+    const MultiLayer::MultiPanelSizing prevSizing = MultiLayer::multiPanelSizing();
+
+    // ---- 58a: palettes (E5) -------------------------------------------------------------
+    {
+        CHECK_COND(Graph::okabeItoColors().size() == 8, "58a: Okabe-Ito must have 8 colours");
+        CHECK_COND(Graph::okabeItoColors().first() == QColor("#0072b2")
+                           && Graph::okabeItoColors().last() == QColor("#000000"),
+                   "58a: Okabe-Ito order/last colour");
+        CHECK_COND(Graph::tab10Colors().size() == 10 && Graph::tab10Colors().first() == QColor("#1f77b4"),
+                   "58a: tab10 definition");
+        CHECK_COND(Graph::paletteColors(QStringLiteral("ISIJ / Origin Default")) == Graph::tab10Colors(),
+                   "58a: legacy name 'ISIJ / Origin Default' must still resolve to tab10");
+        CHECK_COND(Graph::paletteColors(QStringLiteral("Okabe-Ito")) == Graph::okabeItoColors(),
+                   "58a: short name Okabe-Ito must resolve");
+        CHECK_COND(Graph::canonicalPaletteName(QStringLiteral("Cool-Warm")) == QStringLiteral("CoolWarm"),
+                   "58a: Cool-Warm alias");
+        const QStringList builtIns = Graph::builtInPaletteNames();
+        CHECK_COND(builtIns.contains(QStringLiteral("Matplotlib (tab10)"))
+                           && !builtIns.contains(QStringLiteral("ISIJ / Origin Default")),
+                   "58a: tab10 must be listed under its real name");
+        const QList<QColor> oc = Graph::originClassicColors();
+        CHECK_COND(oc.size() >= 5 && oc.at(0) == QColor(Qt::black) && oc.at(1) == QColor(Qt::red)
+                           && oc.at(2) == QColor(Qt::blue),
+                   "58a: Origin classic starts black, red, blue");
+
+        Graph::setDefaultCurvePaletteName(Graph::originClassicPaletteName());
+        MultiLayer::setNewGraphStylePresetId(QString()); // plain graph for this check
+        Table *t = suite58MakeTable(mw, "Pal58", 3);
+        CHECK_COND(t != nullptr, "58a: table");
+        QStringList cols;
+        cols << (t->name() + "_y1") << (t->name() + "_y2") << (t->name() + "_y3");
+        MultiLayer *ml = mw->multilayerPlot(t, cols, Graph::LineSymbols);
+        CHECK_COND(ml && ml->activeGraph() && ml->activeGraph()->curves() == 3, "58a: graph");
+        Graph *g = ml->activeGraph();
+        const QColor c0 = g->curve(0)->pen().color();
+        const QColor c1 = g->curve(1)->pen().color();
+        const QColor c2 = g->curve(2)->pen().color();
+        std::cout << "[INFO] 58a curve colours: " << c0.name().toStdString() << " "
+                  << c1.name().toStdString() << " " << c2.name().toStdString() << "\n";
+        CHECK_COND(c0 == QColor(Qt::black) && c1 == QColor(Qt::red) && c2 == QColor(Qt::blue),
+                   "58a: new curves must follow Origin default colours (black, red, blue)");
+        CHECK_COND(g->curve(0)->symbol().style() == QwtSymbol::Rect
+                           && g->curve(1)->symbol().style() == QwtSymbol::Ellipse
+                           && g->curve(2)->symbol().style() == QwtSymbol::UTriangle,
+                   "58a: symbol shapes must cycle square, circle, up-triangle");
+        QApplication::processEvents();
+        CHECK_COND(ml->pageUnit() == MultiLayer::UnitPx,
+                   "58a: with the new-graph preset off the page must stay a pixel page");
+
+        // Switching the default palette takes effect for new curves.
+        Graph::setDefaultCurvePaletteName(QStringLiteral("Okabe-Ito"));
+        MultiLayer *ml2 = mw->multilayerPlot(t, QStringList() << cols.at(0), Graph::LineSymbols);
+        CHECK_COND(ml2 && ml2->activeGraph(), "58a: second graph");
+        CHECK_COND(ml2->activeGraph()->curve(0)->pen().color() == QColor("#0072b2"),
+                   "58a: Okabe-Ito default palette not applied to new curve");
+        Graph::setDefaultCurvePaletteName(Graph::originClassicPaletteName());
+        ml2->askOnCloseEvent(false);
+        ml2->close();
+        ml->askOnCloseEvent(false);
+        ml->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 58b: preset for new graphs, bars keep inward ticks, frameless legend (E1) --------
+    MultiLayer *isijMl = nullptr;
+    {
+        MultiLayer::setNewGraphStylePresetId(QStringLiteral("isij_85mm"));
+        CHECK_COND(MultiLayer::newGraphStylePresetId() == QStringLiteral("isij_85mm"),
+                   "58b: new-graph preset setting");
+        Table *t = suite58MakeTable(mw, "New58", 2);
+        CHECK_COND(t != nullptr, "58b: table");
+        QStringList cols;
+        cols << (t->name() + "_y1") << (t->name() + "_y2");
+        isijMl = mw->multilayerPlot(t, cols, Graph::LineSymbols);
+        CHECK_COND(isijMl && isijMl->activeGraph(), "58b: graph");
+        for (int k = 0; k < 5; ++k)
+            QApplication::processEvents();
+        CHECK_COND(isijMl->pageUnit() == MultiLayer::UnitMm
+                           && std::fabs(isijMl->pageWidthPhysical() - 85.0) < 0.01
+                           && std::fabs(isijMl->pageHeightPhysical() - 85.0) < 0.01
+                           && isijMl->pageDpi() == 600,
+                   "58b: new graph must get the ISIJ 85 mm / 600 dpi page");
+        CHECK_COND(isijMl->undoStack() && isijMl->undoStack()->count() == 0,
+                   "58b: applying the new-graph preset must not leave an undo step");
+        Graph *g = isijMl->activeGraph();
+        CHECK_COND(g->legend() && g->legend()->frameStyle() == Legend::None,
+                   "58b: default legend must be frameless");
+
+        Table *tb = suite58MakeTable(mw, "Bar58", 1);
+        MultiLayer *barMl = mw->multilayerPlot(tb, QStringList() << (tb->name() + "_y1"),
+                                               Graph::VerticalBars);
+        CHECK_COND(barMl && barMl->activeGraph(), "58b: bar graph");
+        for (int k = 0; k < 5; ++k)
+            QApplication::processEvents();
+        const QList<int> majT = barMl->activeGraph()->plotWidget()->getMajorTicksType();
+        CHECK_COND(!majT.isEmpty() && majT.at(QwtPlot::xBottom) != ScaleDraw::Out
+                           && majT.at(QwtPlot::yLeft) != ScaleDraw::Out,
+                   "58b: bar charts must no longer be forced to outward ticks");
+        barMl->askOnCloseEvent(false);
+        barMl->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 58c: E2 set values instead of minimums; titles keep their pt --------------------
+    {
+        Graph *g = isijMl->activeGraph();
+        QwtPlotCurve *c0 = g->curve(0);
+        QwtPlotCurve *c1 = g->curve(1);
+        CHECK_COND(c0 && c1, "58c: curves");
+        // User customises curve 1
+        QPen p1 = c1->pen();
+        p1.setWidth(5);
+        c1->setPen(p1);
+        CHECK_COND(isijMl->applyStylePresetById(QStringLiteral("slide_28pt")), "58c: slide preset");
+        CHECK_COND(qRound(c0->pen().widthF()) == 3, "58c: slide preset must set curve width 3");
+        CHECK_COND(c0->symbol().size().width() == 12, "58c: slide preset symbol size 12");
+        CHECK_COND(qRound(c1->pen().widthF()) == 5, "58c: user-customised width must be kept");
+        CHECK_COND(isijMl->applyStylePresetById(QStringLiteral("isij_85mm")), "58c: ISIJ preset");
+        std::cout << "[INFO] 58c width after ISIJ: " << c0->pen().widthF()
+                  << " symbol " << c0->symbol().size().width() << "\n";
+        CHECK_COND(qRound(c0->pen().widthF()) == 2, "58c: switching back must make lines thinner again");
+        CHECK_COND(c0->symbol().size().width() == 7, "58c: switching back must restore symbol size 7");
+        CHECK_COND(qRound(c1->pen().widthF()) == 5, "58c: user-customised width must survive");
+
+        // Long axis title: no wrapping, no shrinking, but a warning.
+        const QString longTitle = QStringLiteral(
+                "Hydrogen desorption rate measured by thermal desorption spectroscopy after charging");
+        g->setAxisTitle(QwtPlot::xBottom, longTitle);
+        CHECK_COND(isijMl->applyStylePresetById(QStringLiteral("isij_85mm")), "58c: re-apply");
+        const QString after = g->axisTitle(QwtPlot::xBottom);
+        CHECK_COND(!after.contains(QLatin1String("<br")) && !after.contains(QLatin1Char('\n')),
+                   "58c: preset must not insert line breaks into axis titles");
+        const QFont tf = g->axisTitleFont(QwtPlot::xBottom);
+        const double pt = tf.pointSizeF() > 0 ? tf.pointSizeF() : tf.pointSize();
+        CHECK_COND(std::fabs(pt - 11.0) < 0.05, "58c: axis title must keep the preset 11 pt");
+        CHECK_COND(!isijMl->lastStylePresetWarnings().isEmpty(),
+                   "58c: an over-long axis title must produce a warning");
+        g->setAxisTitle(QwtPlot::xBottom, QStringLiteral("Time, t / s"));
+        CHECK_COND(isijMl->applyStylePresetById(QStringLiteral("isij_85mm")), "58c: re-apply 2");
+        CHECK_COND(isijMl->lastStylePresetWarnings().isEmpty(), "58c: short title must not warn");
+    }
+
+    // ---- 58d: new built-in presets (E3) ----------------------------------------------------
+    {
+        MultiLayer::GraphStylePresetSpec lab, twoCol;
+        CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("lab_slide_83mm"), &lab),
+                   "58d: lab slide preset missing");
+        CHECK_COND(std::fabs(lab.pageWidthMm - 83.3) < 1e-6 && std::fabs(lab.pageHeightMm - 83.3) < 1e-6,
+                   "58d: lab slide page 83.3 mm");
+        // 83.3 mm x 140 % = 116.6 mm (11.7 cm); 28 pt x 0.40 = 11.2 pt (Origin 40 % copy ratio)
+        CHECK_COND(std::fabs(lab.pageWidthMm * 1.40 - 116.62) < 0.01, "58d: 140 % gives 11.7 cm");
+        CHECK_COND(std::fabs(lab.axisTitlePt - 28.0 * 0.40) < 1e-6
+                           && std::fabs(lab.tickLabelPt - 28.0 * 0.40) < 1e-6,
+                   "58d: lab slide text = 28 pt x 0.40");
+        CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("journal_2col_175mm"), &twoCol)
+                           && std::fabs(twoCol.pageWidthMm - 175.0) < 1e-6,
+                   "58d: 175 mm double-column preset missing");
+    }
+
+    // ---- 58e: multi-panel sizing (E7) --------------------------------------------------------
+    {
+        MultiLayer::setNewGraphStylePresetId(QString());
+        MultiLayer *ml = mw->newGraph(QStringLiteral("Panels58"));
+        CHECK_COND(ml != nullptr, "58e: graph");
+        ml->addLayer();
+        ml->setCols(2);
+        ml->setRows(1);
+        ml->arrangeLayers(false, false);
+        MultiLayer::setMultiPanelSizing(MultiLayer::PanelSizingPerPanel);
+        CHECK_COND(ml->applyStylePresetById(QStringLiteral("isij_85mm")), "58e: apply 1");
+        std::cout << "[INFO] 58e per-panel page: " << ml->pageWidthPhysical() << " x "
+                  << ml->pageHeightPhysical() << "\n";
+        CHECK_COND(std::fabs(ml->pageWidthPhysical() - 170.0) < 0.01
+                           && std::fabs(ml->pageHeightPhysical() - 85.0) < 0.01,
+                   "58e: 2 panels x 85 mm must give 170 x 85 mm (not 153 x 85)");
+        MultiLayer::setMultiPanelSizing(MultiLayer::PanelSizingTwoColumn175);
+        CHECK_COND(ml->applyStylePresetById(QStringLiteral("isij_85mm")), "58e: apply 2");
+        CHECK_COND(std::fabs(ml->pageWidthPhysical() - 175.0) < 0.01
+                           && std::fabs(ml->pageHeightPhysical() - 87.5) < 0.01,
+                   "58e: double-column mode must give 175 x 87.5 mm");
+        MultiLayer::setMultiPanelSizing(prevSizing);
+        ml->askOnCloseEvent(false);
+        ml->close();
+        QApplication::processEvents();
+    }
+
+    // ---- 58f: JSON version, shared folder, template page setup (E4) ------------------------
+    {
+        const QString newer = tmp58.filePath("newer.json");
+        {
+            QFile f(newer);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "58f: write json");
+            f.write("{\"version\": 99, \"presets\": [{\"id\": \"custom_v99\", \"name\": \"V99\", "
+                    "\"page_width_mm\": 90, \"page_height_mm\": 60, \"curve_width\": 4, "
+                    "\"future_key\": true}]}");
+        }
+        QString err;
+        const int n = MultiLayer::importStylePresetsFromJson(newer, &err);
+        CHECK_COND(n == 1, "58f: newer preset file must still import its known fields");
+        CHECK_COND(!err.isEmpty(), "58f: newer format version must produce a warning");
+        MultiLayer::GraphStylePresetSpec v99;
+        CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("custom_v99"), &v99)
+                           && v99.minCurveWidth == 4 && std::fabs(v99.pageWidthMm - 90.0) < 1e-6,
+                   "58f: imported values");
+        {
+            QFile uf(MultiLayer::userStylePresetsFilePath());
+            CHECK_COND(uf.open(QIODevice::ReadOnly), "58f: user preset file");
+            const QJsonObject root = QJsonDocument::fromJson(uf.readAll()).object();
+            CHECK_COND(root.value(QStringLiteral("version")).toInt()
+                               == MultiLayer::stylePresetFormatVersion(),
+                       "58f: user preset file must carry the current format version");
+        }
+
+        QDir().mkpath(tmp58.filePath("shared"));
+        {
+            QFile f(tmp58.filePath("shared/lab.json"));
+            CHECK_COND(f.open(QIODevice::WriteOnly), "58f: write shared json");
+            f.write("{\"version\": 2, \"presets\": [{\"id\": \"lab_shared_fig\", \"name\": "
+                    "\"Lab shared\", \"page_width_mm\": 80, \"page_height_mm\": 80}, "
+                    "{\"id\": \"isij_85mm\", \"name\": \"hijack\", \"page_width_mm\": 30}]}");
+        }
+        MultiLayer::setSharedStylePresetsFolder(tmp58.filePath("shared"));
+        MultiLayer::GraphStylePresetSpec shared, isij;
+        CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("lab_shared_fig"), &shared)
+                           && shared.readOnly && std::fabs(shared.pageWidthMm - 80.0) < 1e-6,
+                   "58f: shared preset must be listed read-only");
+        CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("isij_85mm"), &isij)
+                           && std::fabs(isij.pageWidthMm - 85.0) < 1e-6,
+                   "58f: a shared file must not override a built-in preset");
+        QString delErr;
+        CHECK_COND(!MultiLayer::deleteStylePreset(QStringLiteral("lab_shared_fig"), &delErr)
+                           && !delErr.isEmpty(),
+                   "58f: shared presets cannot be deleted");
+        MultiLayer::setSharedStylePresetsFolder(QString());
+        CHECK_COND(!MultiLayer::findStylePreset(QStringLiteral("lab_shared_fig"), nullptr),
+                   "58f: shared preset must disappear when the folder is cleared");
+
+        isijMl->setPanelLabels(true, MultiLayer::PanelOutsideTopLeft, QStringLiteral("(%a)"), 12);
+        const QString tpl = isijMl->saveAsTemplate(QString());
+        CHECK_COND(tpl.contains(QLatin1String("<ToriPageSetup"))
+                           && tpl.contains(QLatin1String("unit=\"1\""))
+                           && tpl.contains(QLatin1String("dpi=\"600\""))
+                           && tpl.contains(QLatin1String("w=\"85\"")),
+                   "58f: template must contain the page setup");
+        CHECK_COND(tpl.contains(QLatin1String("<ToriAspectRatio"))
+                           && tpl.contains(QLatin1String("<ToriPanelLabels")),
+                   "58f: template must contain aspect lock and panel labels");
+        CHECK_COND(!tpl.contains(QLatin1String("<ToriWinSize")),
+                   "58f: template must not carry the window size");
+        isijMl->setPanelLabels(false);
+    }
+
+    // ---- 58g: vector / raster export sizes (E6) --------------------------------------------
+    {
+        const QString svg = tmp58.filePath("isij.svg");
+        isijMl->exportSVG(svg);
+        const QByteArray svgData = suite58ReadAll(svg);
+        QRegularExpression wRx(QStringLiteral("<svg[^>]*\\swidth=\"([0-9.]+)mm\""));
+        QRegularExpression hRx(QStringLiteral("<svg[^>]*\\sheight=\"([0-9.]+)mm\""));
+        const QRegularExpressionMatch wm = wRx.match(QString::fromUtf8(svgData));
+        const QRegularExpressionMatch hm = hRx.match(QString::fromUtf8(svgData));
+        CHECK_COND(wm.hasMatch() && hm.hasMatch(), "58g: SVG root size in mm not found");
+        std::cout << "[INFO] 58g SVG size: " << wm.captured(1).toStdString() << " x "
+                  << hm.captured(1).toStdString() << " mm\n";
+        CHECK_COND(std::fabs(wm.captured(1).toDouble() - 85.0) < 0.011
+                           && std::fabs(hm.captured(1).toDouble() - 85.0) < 0.011,
+                   "58g: SVG must be 85.00 mm (old 96 dpi rounding gave 84.93 mm)");
+        // The drawing itself must stay in 96-dpi page pixels (85 mm = 321 px); a high
+        // generator resolution would double-scale fonts and pens.
+        QRegularExpression vbRx(QStringLiteral("<svg[^>]*\\sviewBox=\"0 0 ([0-9.]+) ([0-9.]+)\""));
+        const QRegularExpressionMatch vb = vbRx.match(QString::fromUtf8(svgData));
+        CHECK_COND(vb.hasMatch() && std::fabs(vb.captured(1).toDouble() - 321.0) <= 2.0,
+                   "58g: SVG viewBox must stay in 96-dpi page pixels");
+
+        const QString pdf = tmp58.filePath("isij.pdf");
+        isijMl->exportVector(pdf);
+        const QByteArray pdfData = suite58ReadAll(pdf);
+        CHECK_COND(pdfData.startsWith("%PDF"), "58g: PDF not written");
+        QRegularExpression mbRx(QStringLiteral("/MediaBox\\s*\\[\\s*0\\s+0\\s+([0-9.]+)\\s+([0-9.]+)"));
+        const QRegularExpressionMatch mb = mbRx.match(QString::fromLatin1(pdfData.constData(), pdfData.size()));
+        CHECK_COND(mb.hasMatch(), "58g: PDF MediaBox missing");
+        // 85 mm = 240.94 pt (Qt rounds the PDF page to whole points: 241)
+        CHECK_COND(std::fabs(mb.captured(1).toDouble() - 240.94) < 0.6
+                           && std::fabs(mb.captured(2).toDouble() - 240.94) < 0.6,
+                   "58g: PDF page must be 85 x 85 mm");
+
+
+#ifdef Q_OS_WIN
+        // EMF fallback raster: physical size follows the raster's own dpi (was 3.1x too large)
+        QImage r300(1000, 500, QImage::Format_ARGB32);
+        r300.fill(Qt::white);
+        r300.setDotsPerMeterX(qRound(300 / 0.0254));
+        r300.setDotsPerMeterY(qRound(300 / 0.0254));
+        const OleRenderedGraph rg = SciDAVisEmf::renderFromImage(r300);
+        std::cout << "[INFO] 58g fallback extent " << rg.extentHm.cx << " x " << rg.extentHm.cy
+                  << " (0.01 mm)\n";
+        // 1000 px / 300 dpi = 3.333 in = 84.67 mm
+        CHECK_COND(std::abs(rg.extentHm.cx - 8467) <= 3 && std::abs(rg.extentHm.cy - 4233) <= 3,
+                   "58g: fallback EMF extent must follow the 300 dpi raster");
+#endif
+    }
+
+    // ---- 58h: export dialog defaults and summary (B2, B9) -----------------------------------
+    {
+        CHECK_COND(mw->d_export_resolution == 600, "58h: default export resolution must be 600 dpi");
+        const QStringList filters = ImageExportDialog::supportedFilters();
+        CHECK_COND(filters.contains("*.png") && filters.contains("*.tif") && filters.contains("*.pdf")
+                           && filters.contains("*.svg") && !filters.contains("*.eps")
+                           && !filters.contains("*.ps") && !filters.contains("*.jpg"),
+                   "58h: export formats must be PNG/TIFF/PDF/SVG/EMF only");
+        CHECK_COND(ImageExportDialog::normalizedFilter(".png") == "*.png"
+                           && ImageExportDialog::normalizedFilter("*.eps") == "*.png"
+                           && ImageExportDialog::normalizedFilter("*.tiff") == "*.tif",
+                   "58h: stored filters must map onto the supported list");
+        const QString sum = ImageExportDialog::sizeSummary(85.0, 85.0, 600, true);
+        CHECK_COND(sum.contains("85.0") && sum.contains("2008") && sum.contains("600"),
+                   "58h: size summary must show 85.0 mm, 600 dpi and 2008 px");
+
+        mw->d_export_resolution = 300; // last used value; page DPI must win for a physical page
+        mw->d_workspace.setActiveSubWindow(isijMl);
+        ImageExportDialog dlg(mw, true, true);
+        CHECK_COND(dlg.resolution() == 600, "58h: dialog must start from the page DPI (600)");
+        CHECK_COND(dlg.nameFilters() == filters, "58h: dialog filters");
+        dlg.selectFilter(QStringLiteral("*.png"));
+        CHECK_COND(dlg.infoText().contains("2008"), "58h: dialog must show the pixel size");
+        mw->d_export_resolution = 600;
+    }
+
+    // ---- 58i: inspector page unit and layer dialog mm (E7) ----------------------------------
+    {
+        LayerDialog ld(mw);
+        QComboBox *unitBox = ld.findChild<QComboBox *>(QStringLiteral("layerSpacingUnitCombo"));
+        CHECK_COND(unitBox && unitBox->count() == 2, "58i: layer dialog unit combo missing");
+        unitBox->setCurrentIndex(1);
+        bool anyMm = false;
+        for (QSpinBox *sb : ld.findChildren<QSpinBox *>())
+            if (sb->suffix() == QLatin1String(" mm"))
+                anyMm = true;
+        CHECK_COND(anyMm, "58i: layer dialog spin boxes must switch to mm");
+    }
+
+    isijMl->askOnCloseEvent(false);
+    isijMl->close();
+    QApplication::processEvents();
+
+    MultiLayer::setNewGraphStylePresetId(prevNewGraphPreset);
+    Graph::setDefaultCurvePaletteName(prevPalette);
+    QFile::remove(MultiLayer::userStylePresetsFilePath());
+    QStandardPaths::setTestModeEnabled(false);
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 58 Figure Defaults, Style Presets & Export Gate passed!\n";
     return 0;
 }
