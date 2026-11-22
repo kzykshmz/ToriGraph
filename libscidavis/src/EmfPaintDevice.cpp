@@ -1478,48 +1478,8 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
     if (!ml && !singleLayer)
         return renderFromImage(QImage());
 
-    struct ScopedUnzoomForExport {
-        QPointer<MultiLayer> target;
-        double prevZoom = 1.0;
-        QSize prevWinSize;
-        bool prevMlUpdates = true;
-        bool prevWidgetUpdates = true;
-        bool active = false;
-
-        explicit ScopedUnzoomForExport(MultiLayer *m) : target(m)
-        {
-            if (target && qAbs(target->pageZoom() - 1.0) > 1e-4) {
-                prevZoom = target->pageZoom();
-                prevWinSize = target->size();
-                prevMlUpdates = target->updatesEnabled();
-                target->setUpdatesEnabled(false);
-                if (QWidget *w = target->widget()) {
-                    prevWidgetUpdates = w->updatesEnabled();
-                    w->setUpdatesEnabled(false);
-                }
-                QSignalBlocker sb(target);
-                target->setPageZoom(1.0);
-                active = true;
-            }
-        }
-
-        ~ScopedUnzoomForExport()
-        {
-            if (active && target) {
-                {
-                    QSignalBlocker sb(target);
-                    target->setPageZoom(prevZoom);
-                    if (!target->isMaximized() && !target->isMinimized() && prevWinSize.isValid()
-                        && target->size() != prevWinSize) {
-                        target->resize(prevWinSize);
-                    }
-                }
-                if (QWidget *w = target->widget())
-                    w->setUpdatesEnabled(prevWidgetUpdates);
-                target->setUpdatesEnabled(prevMlUpdates);
-            }
-        }
-    } unzoomGuard(ml ? ml : (singleLayer ? singleLayer->multiLayerParent() : nullptr));
+    // Shared with every other export path (MultiLayer.h): the metafile is drawn at 100 %.
+    ScopedUnzoomForExport unzoomGuard(ml ? ml : (singleLayer ? singleLayer->multiLayerParent() : nullptr));
 
     QRect mlLayersRect;
     if (!singleLayer && ml) {

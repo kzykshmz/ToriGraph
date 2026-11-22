@@ -375,51 +375,41 @@ void resizeMultiLayerSubWindowForCanvas(MultiLayer *ml, QWidget *mainW, QFrame *
     ml->resize(wantW, wantH);
 }
 
-struct ScopedUnzoomForExport
-{
-    QPointer<MultiLayer> ml;
-    double prevZoom = 1.0;
-    QSize prevWinSize;
-    bool prevMlUpdates = true;
-    bool prevWidgetUpdates = true;
-    bool active = false;
-
-    explicit ScopedUnzoomForExport(MultiLayer *target) : ml(target)
-    {
-        if (ml && qAbs(ml->pageZoom() - 1.0) > 1e-4) {
-            prevZoom = ml->pageZoom();
-            prevWinSize = ml->size();
-            prevMlUpdates = ml->updatesEnabled();
-            ml->setUpdatesEnabled(false);
-            if (QWidget *w = ml->widget()) {
-                prevWidgetUpdates = w->updatesEnabled();
-                w->setUpdatesEnabled(false);
-            }
-            QSignalBlocker sb(ml);
-            ml->setPageZoom(1.0);
-            active = true;
-        }
-    }
-
-    ~ScopedUnzoomForExport()
-    {
-        if (active && ml) {
-            {
-                QSignalBlocker sb(ml);
-                ml->setPageZoom(prevZoom);
-                if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
-                    && ml->size() != prevWinSize) {
-                    ml->resize(prevWinSize);
-                }
-            }
-            if (QWidget *w = ml->widget())
-                w->setUpdatesEnabled(prevWidgetUpdates);
-            ml->setUpdatesEnabled(prevMlUpdates);
-        }
-    }
-};
-
 } // namespace
+
+ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
+{
+    if (ml && qAbs(ml->pageZoom() - 1.0) > 1e-4) {
+        prevZoom = ml->pageZoom();
+        prevWinSize = ml->size();
+        prevMlUpdates = ml->updatesEnabled();
+        ml->setUpdatesEnabled(false);
+        if (QWidget *w = ml->widget()) {
+            prevWidgetUpdates = w->updatesEnabled();
+            w->setUpdatesEnabled(false);
+        }
+        QSignalBlocker sb(ml);
+        ml->setPageZoom(1.0);
+        active = true;
+    }
+}
+
+ScopedUnzoomForExport::~ScopedUnzoomForExport()
+{
+    if (active && ml) {
+        {
+            QSignalBlocker sb(ml);
+            ml->setPageZoom(prevZoom);
+            if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
+                && ml->size() != prevWinSize) {
+                ml->resize(prevWinSize);
+            }
+        }
+        if (QWidget *w = ml->widget())
+            w->setUpdatesEnabled(prevWidgetUpdates);
+        ml->setUpdatesEnabled(prevMlUpdates);
+    }
+}
 
 MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name, Qt::WindowFlags f)
     : MyWidget(label, parent, name, f)
@@ -2309,7 +2299,7 @@ void MultiLayer::copyAllLayers()
 void MultiLayer::printActiveLayer()
 {
     if (active_graph) {
-        ScopedUnzoomForExport unzoomGuard(this);
+        // Graph::print() puts the page at 100 % once its print dialog is accepted.
         active_graph->setScaleOnPrint(d_scale_on_print);
         active_graph->printCropmarks(d_print_cropmarks);
         active_graph->print();
@@ -2341,6 +2331,7 @@ void MultiLayer::printAllLayers(QPainter *painter)
 {
     if (!painter)
         return;
+    ScopedUnzoomForExport unzoomGuard(this); // also reached from "Print All Plots"
 
     QPrinter *printer = (QPrinter *)painter->device();
     QRect canvasRect = canvas->rect();

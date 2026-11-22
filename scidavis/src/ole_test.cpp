@@ -21414,6 +21414,99 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
                            && std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
                    "71c: OLE / copy must leave the view at 200 %");
     }
+    // Layer exports (File > Export Layer), the layer copy and Copy Page at 100 % vs 200 %.
+    {
+        auto pngDiffFrac = [](const QImage &x, const QImage &y) -> double {
+            if (x.isNull() || y.isNull() || x.size() != y.size())
+                return 1.0;
+            const QImage a = x.convertToFormat(QImage::Format_ARGB32);
+            const QImage b = y.convertToFormat(QImage::Format_ARGB32);
+            qint64 diff = 0;
+            for (int yy = 0; yy < a.height(); ++yy)
+                for (int xx = 0; xx < a.width(); ++xx)
+                    if (a.pixel(xx, yy) != b.pixel(xx, yy))
+                        ++diff;
+            return double(diff) / qMax<qint64>(1, qint64(a.width()) * a.height());
+        };
+        // Copy Page (copyAllLayers, the PowerPoint copy) re-places the anchored legend as a side
+        // effect, also at 100 %; start every round from the same legend position so only the zoom
+        // differs.
+        const double legX0 = g->legend()->xValue(), legY0 = g->legend()->yValue();
+        auto layerOutputs = [&](const QString &tag, QImage &png, QStringList &svgSizes, qint64 &pdfSize,
+                                QImage &layerCopy, QImage &pageCopy) {
+            g->legend()->setOriginCoord(legX0, legY0);
+            g->replot();
+            const QString pngPath = tmp71.filePath(QStringLiteral("layer_%1.png").arg(tag));
+            const QString svgPath = tmp71.filePath(QStringLiteral("layer_%1.svg").arg(tag));
+            const QString pdfPath = tmp71.filePath(QStringLiteral("layer_%1.pdf").arg(tag));
+            g->exportImage(pngPath, 100, false, 150);
+            g->exportSVG(svgPath);
+            g->exportVector(pdfPath);
+            png = QImage(pngPath);
+            svgSizes = suite71SvgFontSizes(svgPath);
+            pdfSize = QFileInfo(pdfPath).size();
+            QApplication::clipboard()->clear();
+            g->copyImage();
+            QApplication::processEvents();
+            layerCopy = QApplication::clipboard()->image();
+            QApplication::clipboard()->clear();
+            ml->copyAllLayers();
+            QApplication::processEvents();
+            pageCopy = QApplication::clipboard()->image();
+        };
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        QImage png1L, png2L, copy1L, copy2L, page1C, page2C;
+        QStringList svg1L, svg2L;
+        qint64 pdf1L = 0, pdf2L = 0;
+        layerOutputs(QStringLiteral("100"), png1L, svg1L, pdf1L, copy1L, page1C);
+        ml->setPageZoom(2.0);
+        QApplication::processEvents();
+        layerOutputs(QStringLiteral("200"), png2L, svg2L, pdf2L, copy2L, page2C);
+        if (pngDiffFrac(copy1L, copy2L) > 0.01 || pngDiffFrac(page1C, page2C) > 0.01) {
+            // Another process may have used the clipboard in between: take the copies once more.
+            QImage dummyPng;
+            QStringList dummySvg;
+            qint64 dummyPdf = 0;
+            ml->setPageZoom(1.0);
+            QApplication::processEvents();
+            layerOutputs(QStringLiteral("100b"), dummyPng, dummySvg, dummyPdf, copy1L, page1C);
+            ml->setPageZoom(2.0);
+            QApplication::processEvents();
+            layerOutputs(QStringLiteral("200b"), dummyPng, dummySvg, dummyPdf, copy2L, page2C);
+        }
+        QStringList uniqL = svg1L;
+        uniqL.removeDuplicates();
+        std::cout << "[INFO] 71c layer export 100 % / 200 %: PNG " << png1L.width() << "x" << png1L.height()
+                  << " / " << png2L.width() << "x" << png2L.height() << " (diff "
+                  << pngDiffFrac(png1L, png2L) * 100.0 << " %), SVG font sizes "
+                  << uniqL.join(QLatin1Char(',')).toStdString() << " (" << svg1L.size() << " / "
+                  << svg2L.size() << "), PDF " << pdf1L << " / " << pdf2L << " bytes, layer copy "
+                  << copy1L.width() << "x" << copy1L.height() << " / " << copy2L.width() << "x"
+                  << copy2L.height() << " (diff " << pngDiffFrac(copy1L, copy2L) * 100.0
+                  << " %), page copy " << page1C.width() << "x" << page1C.height() << " / "
+                  << page2C.width() << "x" << page2C.height() << " (diff "
+                  << pngDiffFrac(page1C, page2C) * 100.0 << " %)\n";
+        CHECK_COND(!png1L.isNull() && pngDiffFrac(png1L, png2L) < 0.01,
+                   "71c: layer PNG exported at 200 % differs from 100 %");
+        CHECK_COND(!svg1L.isEmpty() && svg2L == svg1L, "71c: layer SVG font sizes differ at 200 %");
+        CHECK_COND(svg1L.contains(QStringLiteral("17.2")) && !svg1L.contains(QStringLiteral("34.4")),
+                   "71c: layer SVG must carry the 12.9 pt text (17.2 px), never the zoomed size");
+        CHECK_COND(pdf1L > 0 && qAbs(pdf2L - pdf1L) <= qMax<qint64>(64, pdf1L / 100),
+                   "71c: layer PDF exported at 200 % is not the same drawing as at 100 %");
+        CHECK_COND(!copy1L.isNull() && pngDiffFrac(copy1L, copy2L) < 0.01,
+                   "71c: copied layer image at 200 % differs from 100 %");
+        if (!page1C.isNull() || !page2C.isNull()) {
+            CHECK_COND(pngDiffFrac(page1C, page2C) < 0.01,
+                       "71c: Copy Page (copyAllLayers) at 200 % differs from 100 %");
+        } else {
+            std::cout << "[INFO] 71c copyAllLayers left no bitmap on the clipboard (OLE object only)\n";
+        }
+        CHECK_COND(std::fabs(ml->pageZoom() - 2.0) < 1e-9
+                           && std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
+                   "71c: layer exports / copies must leave the view at 200 %");
+    }
+
     // Edits while zoomed: new curve, axis title text, a new font size.
     CHECK_COND(g->insertCurve(t, t->name() + "_x", t->name() + "_y2", Graph::LineSymbols),
                "71: add a curve at 200 %");
@@ -21497,8 +21590,11 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
         const double ptU = storedPt(gU->axisTitleFont(QwtPlot::xBottom));
         std::cout << "[INFO] 71 undo restore: zoom " << ml->pageZoom() << ", stored x title " << ptU
                   << " pt, drawn " << baseU->axisTitle(QwtPlot::xBottom).font().pointSizeF() << " pt\n";
-        CHECK_COND(std::fabs(ptU - 16.0) > 0.5 && std::fabs(ptU - qRound(12.9)) < 1e-9,
-                   "71: undo must bring back the original (unzoomed) pt");
+        CHECK_COND(std::fabs(ptU - 12.9) < 1e-9, "71: undo must bring back exactly 12.9 pt (not 16, not 13)");
+        CHECK_COND(std::fabs(storedPt(gU->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-9
+                           && std::fabs(storedPt(gU->axisTitleFont(QwtPlot::yLeft)) - 12.9) < 1e-9
+                           && gU->legend() && std::fabs(storedPt(gU->legend()->font()) - 11.5) < 1e-9,
+                   "71: undo must keep 12.9 pt ticks / titles and the 11.5 pt legend");
         CHECK_COND(std::fabs(baseU->axisTitle(QwtPlot::xBottom).font().pointSizeF() - ptU * ml->pageZoom()) < 1e-6,
                    "71: after undo the text must be drawn at the page zoom");
         ml->setPageZoom(1.0);
@@ -21537,9 +21633,11 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
         std::cout << "[INFO] 71 reload: zoom " << mlR->pageZoom() << ", stored x title " << ptR
                   << " pt, drawn " << shownR << " pt, y title " << storedPt(gR->axisTitleFont(QwtPlot::yLeft))
                   << " pt\n";
-        // The project format keeps integer pt (12.9 -> 13); what matters is that the zoom did not
-        // get into the file: stored = the rounded original, drawn = stored x zoom.
-        CHECK_COND(std::fabs(ptR - qRound(12.9)) < 1e-9, "71: reloaded stored pt must be the original (not zoomed)");
+        // The exact pt travel in the project file next to the legacy integer field.
+        CHECK_COND(std::fabs(ptR - 12.9) < 1e-9, "71: reloaded x title must be exactly 12.9 pt");
+        CHECK_COND(std::fabs(storedPt(gR->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-9
+                           && gR->legend() && std::fabs(storedPt(gR->legend()->font()) - 11.5) < 1e-9,
+                   "71: reloaded ticks must be 12.9 pt and the legend 11.5 pt");
         CHECK_COND(std::fabs(storedPt(gR->axisTitleFont(QwtPlot::yLeft)) - 14.0) < 1e-9,
                    "71: reloaded y title must be the 14 pt set while zoomed");
         CHECK_COND(gR->curves() == 2, "71: reloaded curves");
@@ -21554,6 +21652,27 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
         reader->setOleEmbeddedMode(true);
         delete reader;
     }
+    // A layer added while the page is zoomed draws its text at the page zoom too.
+    {
+        ml->setPageZoom(2.0);
+        QApplication::processEvents();
+        Graph *gNew = ml->addLayer();
+        QApplication::processEvents();
+        CHECK_COND(gNew && gNew->plotWidget(), "71: add a layer at 200 %");
+        const double storedNew = storedPt(gNew->axisFont(QwtPlot::xBottom));
+        const double drawnNew = static_cast<QwtPlot *>(gNew->plotWidget())->axisFont(QwtPlot::xBottom).pointSizeF();
+        std::cout << "[INFO] 71 new layer at 200 %: stored ticks " << storedNew << " pt, drawn " << drawnNew
+                  << " pt\n";
+        CHECK_COND(std::fabs(gNew->plotWidget()->displayFontScale() - 2.0) < 1e-9
+                           && std::fabs(drawnNew - storedNew * 2.0) < 1e-6,
+                   "71: a layer added at 200 % must draw its text at 200 %");
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(std::fabs(static_cast<QwtPlot *>(gNew->plotWidget())->axisFont(QwtPlot::xBottom).pointSizeF()
+                             - storedNew) < 1e-9,
+                   "71: the new layer must be back to its stored pt at 100 %");
+    }
+
     ml->askOnCloseEvent(false);
     w71->savedProject();
     w71->setOleEmbeddedMode(true);

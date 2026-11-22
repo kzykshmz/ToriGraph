@@ -3423,6 +3423,7 @@ QStringList Graph::plotItemsList() const
 
 void Graph::copyImage()
 {
+    ScopedUnzoomForExport unzoomGuard(multiLayerParent()); // copy as at 100 %
     QImage image(d_plot->size(), QImage::Format_ARGB32);
     image.fill(Qt::white);
     exportPainter(image);
@@ -3476,6 +3477,8 @@ void Graph::exportImage(const QString &fileName, int quality, bool transparent, 
         return;
     }
 
+    // The layer is exported as at 100 % whatever the Ctrl+wheel view zoom is.
+    ScopedUnzoomForExport unzoomGuard(multiLayerParent());
     const int effectiveDpi = (dpi > 0) ? dpi : 96;
     const double scaleFactor = double(effectiveDpi) / 96.0;
     const QSize baseSize = (d_plot && !d_plot->size().isEmpty()) ? d_plot->size() : size();
@@ -3544,6 +3547,7 @@ void Graph::exportVector(const QString &fileName, int res, bool color, bool keep
         return;
     }
 
+    ScopedUnzoomForExport unzoomGuard(multiLayerParent()); // export as at 100 %
     QPrinter printer;
     printer.setCreator("ToriGraph");
     printer.setFullPage(true);
@@ -3600,6 +3604,9 @@ void Graph::print()
 
     QPrintDialog printDialog(&printer);
     if (printDialog.exec() == QDialog::Accepted) {
+        // Print as at 100 % (only once the dialog is accepted, so the view does not shrink
+        // while the dialog is open).
+        ScopedUnzoomForExport unzoomGuard(multiLayerParent());
         QRect plotRect = d_plot->rect();
         QRect paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
         if (d_scale_on_print) {
@@ -3640,6 +3647,7 @@ void Graph::print()
 void Graph::exportSVG(const QString &fname)
 {
 #if QT_VERSION >= 0x040300
+    ScopedUnzoomForExport unzoomGuard(multiLayerParent()); // export as at 100 %
     QSvgGenerator svg;
     svg.setFileName(fname);
 #if QT_VERSION >= 0x040500
@@ -4257,6 +4265,8 @@ QString Graph::saveFonts()
     list << QString::number(f.italic());
     list << QString::number(f.underline());
     list << QString::number(f.strikeOut());
+    // Exact size after the legacy integer field (12.9 pt presets); older readers ignore it.
+    list << QString::number(f.pointSizeF() > 0.0 ? f.pointSizeF() : 0.0, 'g', 6);
     s = list.join("\t") + "\n";
 
     for (i = 0; i < d_plot->axisCnt; i++) {
@@ -4268,6 +4278,7 @@ QString Graph::saveFonts()
         list[4] = QString::number(f.italic());
         list[5] = QString::number(f.underline());
         list[6] = QString::number(f.strikeOut());
+        list[7] = QString::number(f.pointSizeF() > 0.0 ? f.pointSizeF() : 0.0, 'g', 6);
         s += list.join("\t") + "\n";
     }
 
@@ -4280,6 +4291,7 @@ QString Graph::saveFonts()
         list[4] = QString::number(f.italic());
         list[5] = QString::number(f.underline());
         list[6] = QString::number(f.strikeOut());
+        list[7] = QString::number(f.pointSizeF() > 0.0 ? f.pointSizeF() : 0.0, 'g', 6);
         s += list.join("\t") + "\n";
     }
     return s;
@@ -7127,10 +7139,16 @@ QString Graph::saveToString(bool saveAsTemplate)
             legCols = leg->numColumns();
 
         QStringList textColsParts;
+        QStringList textPtParts; // exact pt of legend / text fonts that are not whole numbers
         for (int ti = 0; ti < d_texts.size(); ++ti) {
             Legend *tm = dynamic_cast<Legend *>(d_plot->marker(d_texts[ti]));
             if (tm && tm->numColumns() > 1)
                 textColsParts << QString("%1:%2").arg(ti).arg(tm->numColumns());
+            if (tm) {
+                const double tpt = tm->font().pointSizeF();
+                if (tpt > 0.0 && std::fabs(tpt - std::round(tpt)) > 1e-9)
+                    textPtParts << QString("%1:%2").arg(ti).arg(QString::number(tpt, 'g', 6));
+            }
         }
 
         QStringList alphaParts;
@@ -7165,10 +7183,13 @@ QString Graph::saveToString(bool saveAsTemplate)
             }
         }
 
-        const QString legAnchorAttr =
+        QString legAnchorAttr =
                 (d_plot && d_plot->property("_toriLegendAnchor").isValid())
                 ? QString(" legendAnchor=\"%1\"").arg(d_plot->property("_toriLegendAnchor").toInt())
                 : QString();
+        // <legend>/<text> lines keep the integer pt for older readers; the exact value rides here.
+        if (!textPtParts.isEmpty())
+            legAnchorAttr += QString(" textPts=\"%1\"").arg(textPtParts.join(";"));
 
         s += QString("<ToriBackbones draw=\"%1\" b0=\"%2\" b1=\"%3\" b2=\"%4\" b3=\"%5\" "
                      "legendCols=\"%6\" legendVisible=\"%7\" outsideRightMargin=\"%8\" "
@@ -13925,6 +13946,23 @@ bool Graph::restorePhase5Tag(const QString &line)
                     if (ti >= 0 && ti < d_texts.size()) {
                         if (Legend *tm = dynamic_cast<Legend *>(d_plot->marker(d_texts[ti])))
                             tm->setNumColumns(cols);
+                    }
+                }
+            }
+        }
+        const QString textPts = attrs.value("textPts");
+        if (!textPts.isEmpty()) {
+            for (const QString &pair : textPts.split(';', Qt::SkipEmptyParts)) {
+                const QStringList kv = pair.split(':');
+                if (kv.size() != 2)
+                    continue;
+                const int ti = kv[0].toInt();
+                const double tpt = kv[1].toDouble();
+                if (ti >= 0 && ti < d_texts.size() && tpt > 0.0 && tpt <= 1000.0) {
+                    if (Legend *tm = dynamic_cast<Legend *>(d_plot->marker(d_texts[ti]))) {
+                        QFont tf = tm->font();
+                        tf.setPointSizeF(tpt);
+                        tm->setFont(tf);
                     }
                 }
             }

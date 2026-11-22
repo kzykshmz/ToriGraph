@@ -520,6 +520,49 @@ int parseBoundedInt(const QJsonObject &params, const QString &key, int defaultVa
     return v;
 }
 
+// Font sizes may be fractional (the lab slide preset uses 12.9 pt). Whole sizes are still
+// returned as JSON integers so existing scripts see the same values as before.
+QJsonValue fontPtJson(const QFont &f)
+{
+    const double pt = f.pointSizeF();
+    if (!(pt > 0.0))
+        return f.pointSize();
+    const double r = std::round(pt * 100.0) / 100.0;
+    if (std::fabs(r - std::round(r)) < 1e-9)
+        return int(std::lround(r));
+    return r;
+}
+
+// The same size as Python source text for to_python_script ("13" or "12.9").
+QString fontPtPy(const QFont &f, double minPt)
+{
+    double pt = f.pointSizeF();
+    if (!(pt > 0.0))
+        pt = f.pointSize();
+    pt = std::max(minPt, std::round(pt * 100.0) / 100.0);
+    return QString::number(pt, 'g', 6);
+}
+
+// Accepts an integer or a fractional point size (12 or 12.9) within [minVal, maxVal].
+double parseBoundedFontPt(const QJsonObject &params, const QString &key, double defaultVal,
+                          double minVal, double maxVal)
+{
+    if (!params.contains(key) || params.value(key).isUndefined() || params.value(key).isNull())
+        return defaultVal;
+    const QJsonValue v = params.value(key);
+    if (!v.isDouble() || v.isBool())
+        throwInvalidParams(QStringLiteral("Parameter '%1' must be a number (pt).").arg(key));
+    const double d = v.toDouble();
+    if (!std::isfinite(d) || d < minVal || d > maxVal) {
+        throwInvalidParams(QStringLiteral("Parameter '%1' must be in [%2, %3], got %4.")
+                                   .arg(key)
+                                   .arg(minVal)
+                                   .arg(maxVal)
+                                   .arg(d));
+    }
+    return d;
+}
+
 double parseFiniteCoordDouble(const QJsonValue &val, const QString &paramName,
                               double absCap = 1e300)
 {
@@ -3957,13 +4000,13 @@ QJsonObject serializeAxisInfo(Graph *g, int qwtAxis)
     const QFont tf = g->axisTitleFont(qwtAxis);
     const QFont nf = g->axisFont(qwtAxis);
     ax[QStringLiteral("title_font_family")] = tf.family();
-    ax[QStringLiteral("title_font_size")] = tf.pointSize();
-    ax[QStringLiteral("title_font_pt")] = tf.pointSize();
+    ax[QStringLiteral("title_font_size")] = fontPtJson(tf);
+    ax[QStringLiteral("title_font_pt")] = fontPtJson(tf);
     ax[QStringLiteral("numbers_font_family")] = nf.family();
-    ax[QStringLiteral("numbers_font_size")] = nf.pointSize();
-    ax[QStringLiteral("numbers_font_pt")] = nf.pointSize();
+    ax[QStringLiteral("numbers_font_size")] = fontPtJson(nf);
+    ax[QStringLiteral("numbers_font_pt")] = fontPtJson(nf);
     ax[QStringLiteral("font_family")] = tf.family();
-    ax[QStringLiteral("font_size")] = tf.pointSize();
+    ax[QStringLiteral("font_size")] = fontPtJson(tf);
     ax[QStringLiteral("axis_color")] = g->axisColor(qwtAxis).name(QColor::HexRgb);
     ax[QStringLiteral("title_color")] = g->axisTitleColor(qwtAxis).name(QColor::HexRgb);
     ax[QStringLiteral("numbers_color")] = g->axisNumbersColor(qwtAxis).name(QColor::HexRgb);
@@ -4063,7 +4106,7 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
             const QwtText titleTxt = plt->title();
             lObj[QStringLiteral("title")] = titleTxt.text();
             lObj[QStringLiteral("title_font_family")] = titleTxt.font().family();
-            lObj[QStringLiteral("title_font_size")] = titleTxt.font().pointSize();
+            lObj[QStringLiteral("title_font_size")] = fontPtJson(titleTxt.font());
             if (!titleTxt.text().isEmpty()
                 && titleTxt.font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
                 allFontsArial = false;
@@ -4071,7 +4114,7 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
         if (Legend *leg = g->legend()) {
             lObj[QStringLiteral("legend_text")] = leg->text();
             lObj[QStringLiteral("legend_font_family")] = leg->font().family();
-            lObj[QStringLiteral("legend_font_size")] = leg->font().pointSize();
+            lObj[QStringLiteral("legend_font_size")] = fontPtJson(leg->font());
             lObj[QStringLiteral("legend_columns")] = leg->numColumns();
             if (leg->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
                 allFontsArial = false;
@@ -5261,7 +5304,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             const QwtText titleTxt = plt->title();
             lObj[QStringLiteral("title")] = titleTxt.text();
             lObj[QStringLiteral("title_font_family")] = titleTxt.font().family();
-            lObj[QStringLiteral("title_font_size")] = titleTxt.font().pointSize();
+            lObj[QStringLiteral("title_font_size")] = fontPtJson(titleTxt.font());
             if (!titleTxt.text().isEmpty()
                 && titleTxt.font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive)
                         != 0) {
@@ -5685,7 +5728,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
         legObj[QStringLiteral("bbox_px")] =
                 (leg && legLocalRect.isValid()) ? rectToJsonArray(legInMl) : QJsonArray();
         legObj[QStringLiteral("font_family")] = leg ? leg->font().family() : QStringLiteral("Arial");
-        legObj[QStringLiteral("font_size")] = leg ? leg->font().pointSize() : 0;
+        legObj[QStringLiteral("font_size")] = leg ? fontPtJson(leg->font()) : QJsonValue(0);
         legObj[QStringLiteral("columns")] = leg ? leg->numColumns() : 1;
         legObj[QStringLiteral("curve_overlap_points")] = legendOverlapSamples;
         if (leg && leg->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
@@ -5786,7 +5829,7 @@ QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnos
             tObj[QStringLiteral("y")] = safeJsonDouble(tm->yValue());
             tObj[QStringLiteral("bbox_px")] = rectToJsonArray(tmInMl);
             tObj[QStringLiteral("font_family")] = tm->font().family();
-            tObj[QStringLiteral("font_size")] = tm->font().pointSize();
+            tObj[QStringLiteral("font_size")] = fontPtJson(tm->font());
             tObj[QStringLiteral("color")] = tm->textColor().name(QColor::HexRgb);
             tObj[QStringLiteral("angle")] = tm->angle();
             if (tm->font().family().compare(QStringLiteral("Arial"), Qt::CaseInsensitive) != 0)
@@ -6825,12 +6868,12 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "g.batch_clone(['Tbl2', 'Tbl3'])" },
     { "graph.set_title", "graph", "GraphProxy.set_title(title='', *, font_size=None, color=None, layer=None)",
       "Set or clear the layer plot title (enforcing non-bold Arial).",
-      "graph:str=''; title:str=''; font_size:int=null; color:str=''; layer:int=null",
+      "graph:str=''; title:str=''; font_size:float=null; color:str=''; layer:int=null",
       "g.set_title('SUS304 Room-Temperature Tensile')" },
     { "graph.set_axis", "graph",
       "GraphProxy.set_axis(axis='x', *, title=None, min=None, max=None, lim=None, step=None, scale=None, title_font_size=None, numbers_font_size=None, show_labels=None, show_ticks=None, ticks_inward=None, unit_format=None, tick_format=None, precision=None, label_rotation=None, categories=None, layer=None)",
       "Configure axis title, limits (min/max or lim), linear/log10 scale, title/tick font sizes, tick/label visibility, unit format ('paren'|'slash'|'bracket'), numeric tick format, precision, rotation, and category labels.",
-      "graph:str=''; axis:str='x'[x|y|top|right]; title:str=null; min:float=null; max:float=null; lim:list[float]=null; step:float=null; minor_ticks:int=null; scale:str=null[linear|log10]; inverted:bool=null; enabled:bool=null; backbone_visible:bool=null; show_backbone:bool=null; color:str=null; axis_color:str=null; title_color:str=null; numbers_color:str=null; font_family:str=null; font_size:int=null; title_font_size:int=null; tick_font_size:int=null; numbers_font_size:int=null; show_labels:bool=null; show_ticks:bool=null; ticks_inward:bool=null; unit_format:str=null[paren|slash|bracket]; tick_format:str|int=null[auto|f|e|superscript]; precision:int=null; label_rotation:float=null; rotation:float=null; categories:list[str]=null; layer:int=null",
+      "graph:str=''; axis:str='x'[x|y|top|right]; title:str=null; min:float=null; max:float=null; lim:list[float]=null; step:float=null; minor_ticks:int=null; scale:str=null[linear|log10]; inverted:bool=null; enabled:bool=null; backbone_visible:bool=null; show_backbone:bool=null; color:str=null; axis_color:str=null; title_color:str=null; numbers_color:str=null; font_family:str=null; font_size:float=null; title_font_size:float=null; tick_font_size:float=null; numbers_font_size:float=null; show_labels:bool=null; show_ticks:bool=null; ticks_inward:bool=null; unit_format:str=null[paren|slash|bracket]; tick_format:str|int=null[auto|f|e|superscript]; precision:int=null; label_rotation:float=null; rotation:float=null; categories:list[str]=null; layer:int=null",
       "g.set_axis('x', title='Strain (%)', lim=[0, 25], unit_format='paren')" },
     { "graph.set_category_labels", "graph",
       "GraphProxy.set_category_labels(labels, *, axis='x', layer=None)",
@@ -6904,7 +6947,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "graph.set_legend", "graph",
       "GraphProxy.set_legend(*, visible=None, position=None, columns=None, font_size=None, frame=None, framed=None, text=None, layer=None)",
       "Configure legend visibility, anchor ('auto', 'top_right', 'top_left', 'bottom_right', 'bottom_left', 'outside_right'), columns, font size, and frame.",
-      "graph:str=''; visible:bool=null; position:str=null[auto|avoid_data|top_right|top_left|bottom_right|bottom_left|top_center|bottom_center|outside_right]; columns:int=null; font_size:int=null; frame:bool|int=null; framed:bool|int=null; x:float=null; y:float=null; text:str=null; layer:int=null",
+      "graph:str=''; visible:bool=null; position:str=null[auto|avoid_data|top_right|top_left|bottom_right|bottom_left|top_center|bottom_center|outside_right]; columns:int=null; font_size:float=null; frame:bool|int=null; framed:bool|int=null; x:float=null; y:float=null; text:str=null; layer:int=null",
       "g.set_legend(position='auto', frame=False)" },
     { "graph.auto_place_legend", "graph", "GraphProxy.auto_place_legend(layer=None)",
       "Automatically place the legend at the lowest-density anchor avoiding plotted curves.",
@@ -6924,7 +6967,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "graph.add_text", "graph",
       "GraphProxy.add_text(text, x, y, *, font_size=11, color='#000000', frame=0, angle=0, layer=None)",
       "Add an Arial text callout/annotation at data coordinates (x, y) returning marker id.",
-      "graph:str=''; text:str*; x:float=0.0; y:float=0.0; font_size:int=11; color:str='#000000'; frame:bool|int=0; angle:float=0; layer:int=null",
+      "graph:str=''; text:str*; x:float=0.0; y:float=0.0; font_size:float=11; color:str='#000000'; frame:bool|int=0; angle:float=0; layer:int=null",
       "m = g.add_text('Yield Point', x=0.22, y=415.0)" },
     { "graph.add_arrow", "graph",
       "GraphProxy.add_arrow(x1, y1, x2, y2, *, color='#000000', width=1.0, end_arrow=True, start_arrow=False, head_length=9, head_angle=28, layer=None)",
@@ -10674,7 +10717,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         if (!plt->title().text().trimmed().isEmpty()) {
             lines << QStringLiteral("g.set_title(%1, font_size=%2%3)")
                              .arg(pyEscapeStr(plt->title().text()))
-                             .arg(std::max(8, plt->title().font().pointSize()))
+                             .arg(fontPtPy(plt->title().font(), 8.0))
                              .arg(layerKw);
         }
 
@@ -10734,12 +10777,12 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             const QString tTxt = lg->axisTitle(ax);
             if (!tTxt.isEmpty())
                 axArgs += QStringLiteral(", title=%1").arg(pyEscapeStr(tTxt));
-            const int titlePt = lg->axisTitleFont(ax).pointSize();
-            if (titlePt >= 4)
-                axArgs += QStringLiteral(", title_font_size=%1").arg(titlePt);
-            const int tickPt = plt->axisFont(ax).pointSize();
-            if (tickPt >= 4)
-                axArgs += QStringLiteral(", tick_font_size=%1").arg(tickPt);
+            const QFont titleFnt = lg->axisTitleFont(ax);
+            if (titleFnt.pointSizeF() >= 4.0)
+                axArgs += QStringLiteral(", title_font_size=%1").arg(fontPtPy(titleFnt, 4.0));
+            const QFont tickFnt = plt->axisFont(ax);
+            if (tickFnt.pointSizeF() >= 4.0)
+                axArgs += QStringLiteral(", tick_font_size=%1").arg(fontPtPy(tickFnt, 4.0));
             if (enabled && !lg->hasTickLabelsOnAxis(ax))
                 axArgs += QStringLiteral(", show_labels=False");
             const int majStyle = majTickStyles.value(ax, int(ScaleDraw::Out));
@@ -10856,7 +10899,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         if (!lg->isLegendVisible()) {
             lines << QStringLiteral("g.set_legend(visible=False%1)").arg(layerKw);
         } else if (leg) {
-            const int legPt = std::max(6, leg->font().pointSize());
+            const QString legPt = fontPtPy(leg->font(), 6.0);
             const bool legFramed = (leg->frameStyle() != 0);
             QString legExtra;
             if (leg->numColumns() > 1)
@@ -10892,7 +10935,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                              "g.add_text(%1, %2, %3, font_size=%4, color=%5, frame=%6, angle=%7%8)")
                              .arg(pyEscapeStr(tm->text()), pyFormatNum(tm->xValue()),
                                   pyFormatNum(tm->yValue()))
-                             .arg(std::max(6, tm->font().pointSize()))
+                             .arg(fontPtPy(tm->font(), 6.0))
                              .arg(pyEscapeStr(tm->textColor().name(QColor::HexRgb)))
                              .arg(tm->frameStyle())
                              .arg(tm->angle())
@@ -18330,15 +18373,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 : params.value(QStringLiteral("text")).toString();
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Set Plot Title"));
         g->setTitle(txt);
-        int pt = 12;
-        if (g->plotWidget() && g->plotWidget()->title().font().pointSize() > 0)
-            pt = g->plotWidget()->title().font().pointSize();
+        double pt = 12.0;
+        if (g->plotWidget() && g->plotWidget()->title().font().pointSizeF() > 0.0)
+            pt = g->plotWidget()->title().font().pointSizeF();
         if (params.contains(QStringLiteral("font_size"))
             && !params.value(QStringLiteral("font_size")).isNull()) {
-            pt = std::max(4, parseStrictJsonInt(params.value(QStringLiteral("font_size")),
-                                                QStringLiteral("font_size")));
+            pt = std::max(4.0, parseBoundedFontPt(params, QStringLiteral("font_size"), 12.0, 1.0,
+                                                  1000.0));
         }
-        QFont tf(QStringLiteral("Arial"), pt, QFont::Normal, false);
+        QFont tf(QStringLiteral("Arial"), qMax(1, qRound(pt)), QFont::Normal, false);
+        tf.setPointSizeF(pt);
         tf.setHintingPreference(QFont::PreferNoHinting);
         g->setTitleFont(tf);
         if (params.contains(QStringLiteral("color"))
@@ -18595,20 +18639,22 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (params.contains(QStringLiteral("font_size"))
             && !params.value(QStringLiteral("font_size")).isNull()) {
-            const int pt = parseBoundedInt(params, QStringLiteral("font_size"), 12, 4, 96);
-            tf.setPointSize(pt);
-            nf.setPointSize(pt);
+            const double pt = parseBoundedFontPt(params, QStringLiteral("font_size"), 12, 4, 96);
+            tf.setPointSizeF(pt);
+            nf.setPointSizeF(pt);
         }
         if (params.contains(QStringLiteral("title_font_size"))
             && !params.value(QStringLiteral("title_font_size")).isNull()) {
-            tf.setPointSize(parseBoundedInt(params, QStringLiteral("title_font_size"), 12, 4, 96));
+            tf.setPointSizeF(
+                    parseBoundedFontPt(params, QStringLiteral("title_font_size"), 12, 4, 96));
         }
         if (params.contains(QStringLiteral("tick_font_size"))
             && !params.value(QStringLiteral("tick_font_size")).isNull()) {
-            nf.setPointSize(parseBoundedInt(params, QStringLiteral("tick_font_size"), 10, 4, 96));
+            nf.setPointSizeF(parseBoundedFontPt(params, QStringLiteral("tick_font_size"), 10, 4, 96));
         } else if (params.contains(QStringLiteral("numbers_font_size"))
                    && !params.value(QStringLiteral("numbers_font_size")).isNull()) {
-            nf.setPointSize(parseBoundedInt(params, QStringLiteral("numbers_font_size"), 10, 4, 96));
+            nf.setPointSizeF(
+                    parseBoundedFontPt(params, QStringLiteral("numbers_font_size"), 10, 4, 96));
         }
         tf.setHintingPreference(QFont::PreferNoHinting);
         nf.setHintingPreference(QFont::PreferNoHinting);
@@ -19824,8 +19870,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     }
                     if (params.contains(QStringLiteral("font_size"))
                         && !params.value(QStringLiteral("font_size")).isNull()) {
-                        lf.setPointSize(
-                                parseBoundedInt(params, QStringLiteral("font_size"), 10, 4, 96));
+                        lf.setPointSizeF(
+                                parseBoundedFontPt(params, QStringLiteral("font_size"), 10, 4, 96));
                     }
                     leg->setFont(lf);
                 }
@@ -20083,7 +20129,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const double yCoord = hasCoords
                 ? parseFiniteCoordDouble(params.value(QStringLiteral("y")), QStringLiteral("y"))
                 : 0.0;
-        const int fontPt = parseBoundedInt(params, QStringLiteral("font_size"), 11, 4, 144);
+        const double fontPt = parseBoundedFontPt(params, QStringLiteral("font_size"), 11, 4, 144);
         int frameSt = int(Legend::None);
         if (params.contains(QStringLiteral("frame"))
             && !params.value(QStringLiteral("frame")).isNull()) {
@@ -20101,7 +20147,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         auto *mrk = new Legend(g->plotWidget());
         mrk->setText(txt);
         QFont f(optionalJsonString(params, QStringLiteral("font_family"), QStringLiteral("Arial")),
-                fontPt);
+                qRound(fontPt));
+        f.setPointSizeF(fontPt);
         f.setBold(optionalJsonBool(params, QStringLiteral("bold"), false));
         mrk->setFont(f);
         mrk->setTextColor(

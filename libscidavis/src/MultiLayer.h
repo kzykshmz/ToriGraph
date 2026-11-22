@@ -487,4 +487,26 @@ signals:
     void showContextMenu();
 };
 
+//! Puts a page at 100 % view zoom for its lifetime and restores the zoom (and window size)
+//! afterwards. Every export, copy and print of a page or of one of its layers runs under it, so
+//! the output never depends on the Ctrl+wheel view zoom (layer geometry and the zoomed text).
+//! Nesting is safe: a guard on a page that is already at 100 % does nothing.
+class ScopedUnzoomForExport
+{
+public:
+    explicit ScopedUnzoomForExport(MultiLayer *target);
+    ~ScopedUnzoomForExport();
+    ScopedUnzoomForExport(const ScopedUnzoomForExport &) = delete;
+    ScopedUnzoomForExport &operator=(const ScopedUnzoomForExport &) = delete;
+    bool isActive() const { return active; }
+
+private:
+    QPointer<MultiLayer> ml;
+    double prevZoom = 1.0;
+    QSize prevWinSize;
+    bool prevMlUpdates = true;
+    bool prevWidgetUpdates = true;
+    bool active = false;
+};
+
 #endif

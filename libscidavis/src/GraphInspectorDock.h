@@ -343,9 +343,9 @@ private:
     QMenu *d_menu_units = nullptr;
     QCheckBox *d_chk_lock_all_axes_font = nullptr;
     QLabel *d_lbl_title_pt = nullptr;
-    QSpinBox *d_spin_axis_title_pt = nullptr;
+    QDoubleSpinBox *d_spin_axis_title_pt = nullptr; // pt, 0.1 steps shown (12.9)
     QLabel *d_lbl_tick_pt = nullptr;
-    QSpinBox *d_spin_axis_tick_pt = nullptr;
+    QDoubleSpinBox *d_spin_axis_tick_pt = nullptr;
 
     // --- Page 2: Curve / Series / ErrorBar / Heatmap Controls ---
     QLabel *d_lbl_active_curve_name = nullptr;
@@ -458,7 +458,7 @@ private:
     QLabel *d_lbl_leg_cols = nullptr;
     QSpinBox *d_spin_leg_cols = nullptr;
     QLabel *d_lbl_leg_font_pt = nullptr;
-    QSpinBox *d_spin_leg_font_pt = nullptr;
+    QDoubleSpinBox *d_spin_leg_font_pt = nullptr;
 };
 
 #endif // GRAPH_INSPECTOR_DOCK_H
