@@ -2483,6 +2483,19 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     break;
                 }
             }
+        } else if (!treatRow0AsData && previewRecords.size() >= 2
+                   && previewRecords[0].size() == 1 && previewRecords[1].size() == 1
+                   && !previewRecords[0][0].quoted && !previewRecords[1][0].quoted) {
+            const QString t0 = previewRecords[0][0].value.trimmed();
+            const QString t1 = previewRecords[1][0].value.trimmed();
+            const bool r0HashData = (t0.size() >= 2 && t0.at(0) == QLatin1Char('#')
+                                     && (t0.at(1).isDigit()
+                                         || isMissingDataTokenSpan(t0.constData(), t0.size())));
+            const bool r1HashData = (t1.size() >= 2 && t1.at(0) == QLatin1Char('#')
+                                     && (t1.at(1).isDigit()
+                                         || isMissingDataTokenSpan(t1.constData(), t1.size())));
+            if (r0HashData && r1HashData)
+                treatRow0AsData = true;
         }
         if (treatRow0AsData) {
             effectiveFirstRowNames = false;

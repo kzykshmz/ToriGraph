@@ -25963,9 +25963,18 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
 
         AppWinGuard reBig(w77->openProject(bigPrj));
         CHECK_COND(reBig != nullptr, "77f: reopen big200.sciprj failed");
-        CHECK_COND(WorkbookManager::instance(reBig)->sheets(bigBook).size() == 200,
+        WorkbookManager *wmReBig = WorkbookManager::instance(reBig);
+        CHECK_COND(wmReBig && wmReBig->sheets(bigBook).size() == 200,
                    "77f: P1-S4 200-sheet workbook truncated by 4096-char readLine limit (got "
-                           << WorkbookManager::instance(reBig)->sheets(bigBook).size() << ")");
+                           << (wmReBig ? wmReBig->sheets(bigBook).size() : -1) << ")");
+        Table *sheet151 = wmReBig->sheets(bigBook).at(150);
+        CHECK_COND(sheet151 && reBig->hidden(sheet151),
+                   "77f: sheet 151 expected initially hidden after reopening big200.sciprj");
+        CHECK_COND(wmReBig->setCurrentSheet(sheet151, true, &wbErr)
+                           && wmReBig->currentSheet(bigBook) == sheet151
+                           && !reBig->hidden(sheet151) && !sheet151->isHidden(),
+                   "77f: showing hidden sheet 151 after 200-sheet load failed: "
+                           << wbErr.toStdString());
 
         // P2: appendProject marks destination project modified (!saved)
         reBig->savedProject();
