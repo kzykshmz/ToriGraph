@@ -910,6 +910,7 @@ public:
         QString label;
         bool fillToAxis = false;
         QColor fillColor = QColor(30, 102, 184, 32);
+        bool visible = true;
     };
 
     void applyFramePreset(FramePreset preset);

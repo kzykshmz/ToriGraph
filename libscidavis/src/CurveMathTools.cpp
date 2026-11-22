@@ -4829,9 +4829,14 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                                          std::max(res.offsetYieldX + 0.06 * xSpanAll,
                                                   minX + 0.28 * xSpanAll));
         const double calloutY = 0.42 * res.utsY;
-        addMatSciCalloutBox(targetGraph, calloutX, calloutY, callout);
-        if (!targetGraph->textMarkerKeys().isEmpty())
-            nextItems[QStringLiteral("calloutTid")] = qlonglong(targetGraph->textMarkerKeys().last());
+        if (Legend *box = addMatSciCalloutBox(targetGraph, calloutX, calloutY, callout)) {
+            for (int tid : targetGraph->textMarkerKeys()) {
+                if (targetGraph->textMarker(tid) == box) {
+                    nextItems[QStringLiteral("calloutTid")] = qlonglong(tid);
+                    break;
+                }
+            }
+        }
     }
     if (targetGraph->plotWidget() && (plotConstruction || addCallout))
         targetGraph->plotWidget()->setProperty(prevPropKey.constData(), nextItems);
@@ -5256,9 +5261,22 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
 
     if (trRes.valid && chkSummarySheet->isChecked()) {
         Table *sumTbl = app->table(QStringLiteral("TensileSummary"));
-        int rowIdx = 0;
         if (!sumTbl || sumTbl->numCols() < 9) {
-            sumTbl = app->newTable(QStringLiteral("TensileSummary"), 1, 9);
+            sumTbl = nullptr;
+            for (MyWidget *w : app->windowsList()) {
+                Table *cand = qobject_cast<Table *>(w);
+                if (cand && cand->name().startsWith(QLatin1String("TensileSummary"))
+                    && cand->numCols() >= 9) {
+                    sumTbl = cand;
+                    break;
+                }
+            }
+        }
+        int rowIdx = 0;
+        if (!sumTbl) {
+            const QString sumName =
+                    app->generateUniqueName(QStringLiteral("TensileSummary"), false);
+            sumTbl = app->newTable(sumName, 1, 9);
             if (sumTbl) {
                 sumTbl->setHeader(QStringList()
                                   << QStringLiteral("Specimen")
@@ -7878,6 +7896,38 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
     topForm->addRow(QString(), chkTopC);
     vbox->addLayout(topForm);
 
+    auto applyTempUnitFromColName = [&](const QString &colName) {
+        const int tIdx = cbTable->currentIndex();
+        if (tIdx < 0 || tIdx >= tables.size() || colName.isEmpty())
+            return false;
+        Table *t = tables[tIdx];
+        Column *col = nullptr;
+        for (int i = 0; i < t->numCols(); ++i) {
+            if (t->column(i) && t->column(i)->name() == colName) {
+                col = t->column(i);
+                break;
+            }
+        }
+        if (!col)
+            return false;
+        const QString u0 = col->units().trimmed();
+        if (u0.compare(QLatin1String("K"), Qt::CaseInsensitive) == 0
+            || u0.compare(QLatin1String("Kelvin"), Qt::CaseInsensitive) == 0) {
+            chkTempC->setChecked(false);
+            chkTopC->setChecked(false);
+            return true;
+        }
+        if (u0.contains(QString::fromUtf8("°C"), Qt::CaseInsensitive)
+            || u0.contains(QString::fromUtf8("℃"))
+            || u0.compare(QLatin1String("C"), Qt::CaseInsensitive) == 0
+            || u0.compare(QLatin1String("degC"), Qt::CaseInsensitive) == 0) {
+            chkTempC->setChecked(true);
+            chkTopC->setChecked(true);
+            return true;
+        }
+        return false;
+    };
+
     auto refreshCols = [&]() {
         cbRateCol->clear();
         cbTpCol->clear();
@@ -7889,6 +7939,12 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         Table *t = tables[tIdx];
         QStringList parsedRates;
         int detectedUnit = -1;
+        static const QRegularExpression kHourRateUnitRx(
+                QStringLiteral("(?:^|[\\s(\\[_/])(?:°?[\\s]*(?:deg)?[CKck]\\s*/\\s*hr?|/\\s*hr?)(?![A-Za-z])"),
+                QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression kMinRateUnitRx(
+                QStringLiteral("(?:^|[\\s(\\[_/])(?:°?[\\s]*(?:deg)?[CKck]\\s*/\\s*min|/\\s*min)(?![A-Za-z])"),
+                QRegularExpression::CaseInsensitiveOption);
         for (int c = 0; c < t->numCols(); ++c) {
             Column *col = t->column(c);
             if (!matSciColumnHasNumeric(col))
@@ -7897,17 +7953,12 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
             cbRateCol->addItem(cn);
             cbTpCol->addItem(cn);
             cbSpecTempCol->addItem(cn);
-            if (c == 0) {
-                const QString u0 = col->units().trimmed();
-                if (u0.compare(QLatin1String("K"), Qt::CaseInsensitive) == 0
-                    || u0.compare(QLatin1String("Kelvin"), Qt::CaseInsensitive) == 0) {
-                    chkTempC->setChecked(false);
-                    chkTopC->setChecked(false);
-                } else if (u0.contains(QString::fromUtf8("°C"), Qt::CaseInsensitive)
-                           || u0.contains(QString::fromUtf8("℃"))) {
-                    chkTempC->setChecked(true);
-                    chkTopC->setChecked(true);
-                }
+            const QString uExplicit = col->units().trimmed();
+            if (detectedUnit < 0 && !uExplicit.isEmpty()) {
+                if (kHourRateUnitRx.match(uExplicit).hasMatch())
+                    detectedUnit = 1;
+                else if (kMinRateUnitRx.match(uExplicit).hasMatch())
+                    detectedUnit = 0;
             }
             if (c >= 1) {
                 auto *it = new QListWidgetItem(cn, lwFluxCols);
@@ -7921,11 +7972,10 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
                     parsedRates << QString::number(rv, 'g', 8);
                 if (u >= 0 && detectedUnit < 0)
                     detectedUnit = u;
-                else if (meta.contains(QLatin1String("/h"), Qt::CaseInsensitive)
-                         || meta.contains(QLatin1String("Ch"), Qt::CaseInsensitive)
-                         || meta.contains(QLatin1String("Kh"), Qt::CaseInsensitive)) {
+                else if (detectedUnit < 0 && kHourRateUnitRx.match(meta).hasMatch())
                     detectedUnit = 1;
-                }
+                else if (detectedUnit < 0 && kMinRateUnitRx.match(meta).hasMatch())
+                    detectedUnit = 0;
             }
         }
         if (detectedUnit >= 0)
@@ -7936,6 +7986,13 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
             leSpecRates->setText(parsedRates.join(QStringLiteral(", ")));
         if (t->numCols() >= 4)
             cbMode->setCurrentIndex(1);
+        if (cbMode->currentData().toInt() == 1) {
+            if (!applyTempUnitFromColName(cbSpecTempCol->currentText()))
+                applyTempUnitFromColName(cbTpCol->currentText());
+        } else {
+            if (!applyTempUnitFromColName(cbTpCol->currentText()))
+                applyTempUnitFromColName(cbSpecTempCol->currentText());
+        }
     };
     if (!tables.isEmpty())
         refreshCols();
@@ -7943,6 +8000,16 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         cbRateUnit->setCurrentIndex(1); // Manual sample "100, 200, 400" + "119.5, 134.8, 151.6 °C" is in K/h
     QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { refreshCols(); });
+    QObject::connect(cbTpCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         if (cbMode->currentData().toInt() == 0)
+                             applyTempUnitFromColName(cbTpCol->currentText());
+                     });
+    QObject::connect(cbSpecTempCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         if (cbMode->currentData().toInt() == 1)
+                             applyTempUnitFromColName(cbSpecTempCol->currentText());
+                     });
 
     auto syncVis = [&]() {
         const int mode = cbMode->currentData().toInt();

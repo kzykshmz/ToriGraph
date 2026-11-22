@@ -1439,7 +1439,8 @@ void GraphInspectorDock::buildUi()
         QFrame *detailsRow = new QFrame(bottomPane);
         detailsRow->setObjectName(QStringLiteral("InspectorDetailsRow"));
         detailsRow->setAttribute(Qt::WA_StyledBackground, true);
-        detailsRow->setAutoFillBackground(true);
+        detailsRow->setStyleSheet(QStringLiteral(
+                "QFrame#InspectorDetailsRow { border-top: 1px solid #CBD5E1; background-color: #F8FAFC; }"));
         detailsRow->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         QHBoxLayout *detailsLay = new QHBoxLayout(detailsRow);
         detailsLay->setContentsMargins(8, 4, 8, 4);
@@ -1817,7 +1818,7 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_spin_page_w_mm->setDecimals(1);
     d_spin_page_w_mm->setSingleStep(5.0);
     d_spin_page_w_mm->setSuffix(QStringLiteral(" mm"));
-    d_spin_page_w_mm->setMinimumWidth(96);
+    d_spin_page_w_mm->setMinimumWidth(108);
 
     d_lbl_page_h = new QLabel(page);
     d_spin_page_h_mm = new QDoubleSpinBox(page);
@@ -1825,7 +1826,7 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_spin_page_h_mm->setDecimals(1);
     d_spin_page_h_mm->setSingleStep(5.0);
     d_spin_page_h_mm->setSuffix(QStringLiteral(" mm"));
-    d_spin_page_h_mm->setMinimumWidth(96);
+    d_spin_page_h_mm->setMinimumWidth(108);
 
     d_lbl_page_dpi = new QLabel(page);
     d_spin_page_dpi = new QSpinBox(page);
@@ -3878,6 +3879,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         if (d_combo_pcm_cmap && d_combo_pcm_cmap->currentIndex() >= 0)
             pcm.preset = d_combo_pcm_cmap->currentData().toInt();
         pcm.reverse = d_chk_pcm_reverse && d_chk_pcm_reverse->isChecked();
+        pcm.showColorBar = !d_chk_pcm_colorbar || d_chk_pcm_colorbar->isChecked();
         pcm.colorBarTitle = d_edit_pcm_cb_title ? d_edit_pcm_cb_title->text() : pcm.colorBarTitle;
         const bool customZ = d_chk_pcm_custom_z && d_chk_pcm_custom_z->isChecked();
         pcm.autoRange = !customZ;
@@ -3897,28 +3899,6 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         const QString before = d_target_ml->captureUndoSnapshot();
         dc->setPointColorMap(pcm);
         g->syncPointColorBar();
-        const bool showCb = !d_chk_pcm_colorbar || d_chk_pcm_colorbar->isChecked();
-        if (!showCb && g->plotWidget()) {
-            Plot *pl = g->plotWidget();
-            if (QwtScaleWidget *sw = pl->axisWidget(QwtPlot::yRight)) {
-                sw->setColorBarEnabled(false);
-                sw->setMargin(0);
-            }
-            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(pl->axisScaleDraw(QwtPlot::yRight)))
-                sd->setColorBarBorder(false, 0, 1);
-            bool anyRightCurve = false;
-            for (int k = 0; k < g->curves(); ++k) {
-                if (QwtPlotItem *it = g->plotItem(k)) {
-                    if (it->yAxis() == QwtPlot::yRight) {
-                        anyRightCurve = true;
-                        break;
-                    }
-                }
-            }
-            if (!anyRightCurve)
-                g->enableAxis(QwtPlot::yRight, false);
-            pl->updateLayout();
-        }
         g->replot();
         emit g->modifiedGraph();
         d_target_ml->pushUndoSnapshot(undoLabel, before, mergeId);
@@ -4661,23 +4641,10 @@ QIcon buildReferenceLineSwatchIcon(const Graph::ReferenceLineSpec &spec)
     return QIcon(px);
 }
 
-QString hiddenRefKeyForIndex(int idx)
+QString formatReferenceLineTreeLabel(const Graph::ReferenceLineSpec &spec)
 {
-    return QString::number(idx);
-}
-
-QString formatReferenceLineTreeLabel(const Graph *g, int idx, const Graph::ReferenceLineSpec &spec)
-{
-    QString statMode = spec.statMode.trimmed();
-    QString lbl = spec.label.trimmed();
-    if (spec.style == Qt::NoPen && g) {
-        const QVariantMap allHidden = g->property("_toriHiddenRefLines").toMap();
-        const QVariantMap entry = allHidden.value(hiddenRefKeyForIndex(idx)).toMap();
-        if (lbl.isEmpty())
-            lbl = entry.value(QStringLiteral("label")).toString().trimmed();
-        if (statMode.isEmpty())
-            statMode = entry.value(QStringLiteral("statMode")).toString().trimmed();
-    }
+    const QString statMode = spec.statMode.trimmed();
+    const QString lbl = spec.label.trimmed();
     const QString axisVar = (spec.orientation == 1) ? QStringLiteral("x") : QStringLiteral("y");
     const QString valTxt = QLocale::c().toString(spec.value, 'g', 5);
     QString base = QStringLiteral("%1 = %2").arg(axisVar, valTxt);
@@ -4686,45 +4653,6 @@ QString formatReferenceLineTreeLabel(const Graph *g, int idx, const Graph::Refer
     if (!lbl.isEmpty() && lbl != base)
         base += QStringLiteral(" - %1").arg(lbl);
     return base;
-}
-
-void setReferenceLineVisibleWithBackup(Graph *g, int idx, bool visible)
-{
-    if (!g || idx < 0 || idx >= g->referenceLines().size())
-        return;
-    Graph::ReferenceLineSpec spec = g->referenceLines()[idx];
-    QVariantMap allHidden = g->property("_toriHiddenRefLines").toMap();
-    const QString key = hiddenRefKeyForIndex(idx);
-    if (!visible) {
-        if (spec.style == Qt::NoPen)
-            return;
-        QVariantMap backup;
-        backup.insert(QStringLiteral("style"), int(spec.style));
-        backup.insert(QStringLiteral("label"), spec.label);
-        backup.insert(QStringLiteral("statMode"), spec.statMode);
-        backup.insert(QStringLiteral("fill"), spec.fillToAxis);
-        allHidden.insert(key, backup);
-        g->setProperty("_toriHiddenRefLines", allHidden);
-        spec.style = Qt::NoPen;
-        spec.label.clear();
-        spec.statMode.clear();
-        spec.fillToAxis = false;
-        g->updateReferenceLine(idx, spec);
-    } else {
-        if (spec.style != Qt::NoPen)
-            return;
-        const QVariantMap backup = allHidden.take(key).toMap();
-        g->setProperty("_toriHiddenRefLines", allHidden);
-        const int savedStyle = backup.value(QStringLiteral("style"), int(Qt::DashLine)).toInt();
-        spec.style = (savedStyle == int(Qt::NoPen)) ? Qt::DashLine
-                                                    : static_cast<Qt::PenStyle>(savedStyle);
-        spec.label = backup.value(QStringLiteral("label")).toString();
-        spec.statMode = backup.value(QStringLiteral("statMode")).toString();
-        spec.fillToAxis = backup.value(QStringLiteral("fill"), false).toBool();
-        g->updateReferenceLine(idx, spec);
-        g->updateStatReferenceLines();
-        g->replot();
-    }
 }
 } // namespace
 
@@ -4738,8 +4666,8 @@ bool GraphInspectorDock::hasZeroReferenceLine(const Graph *g, int orientation)
         const QString sm = spec.statMode.trimmed();
         const bool isConst = sm.isEmpty()
                 || sm.compare(QLatin1String("Constant"), Qt::CaseInsensitive) == 0;
-        if (spec.orientation == wantOrient && isConst && std::fabs(spec.value) <= 1e-12
-            && spec.style != Qt::NoPen) {
+        if (spec.visible && spec.orientation == wantOrient && isConst
+            && std::fabs(spec.value) <= 1e-12 && spec.style != Qt::NoPen) {
             return true;
         }
     }
@@ -4766,11 +4694,15 @@ void GraphInspectorDock::toggleZeroReferenceLine(Graph *g, int orientation)
     }
 
     if (foundIdx >= 0) {
-        if (lines[foundIdx].style != Qt::NoPen) {
+        if (lines[foundIdx].visible && lines[foundIdx].style != Qt::NoPen) {
             g->removeReferenceLine(foundIdx);
         } else {
             const QString before = ml ? ml->captureUndoSnapshot() : QString();
-            setReferenceLineVisibleWithBackup(g, foundIdx, true);
+            Graph::ReferenceLineSpec spec = lines[foundIdx];
+            spec.visible = true;
+            if (spec.style == Qt::NoPen)
+                spec.style = Qt::DashLine;
+            g->updateReferenceLine(foundIdx, spec);
             if (ml && !before.isEmpty()) {
                 ml->pushUndoSnapshot(wantOrient == 0 ? tr("Add y = 0 Reference Line")
                                                      : tr("Add x = 0 Reference Line"),
@@ -5178,10 +5110,11 @@ void GraphInspectorDock::refreshObjectTree()
             for (int ri = 0; ri < refLines.size(); ++ri) {
                 const Graph::ReferenceLineSpec &rspec = refLines[ri];
                 QTreeWidgetItem *rItem = new QTreeWidgetItem(refGroup);
-                rItem->setText(0, formatReferenceLineTreeLabel(g, ri, rspec));
+                rItem->setText(0, formatReferenceLineTreeLabel(rspec));
                 rItem->setIcon(0, buildReferenceLineSwatchIcon(rspec));
                 rItem->setFlags(rItem->flags() | Qt::ItemIsUserCheckable);
-                rItem->setCheckState(0, rspec.style != Qt::NoPen ? Qt::Checked : Qt::Unchecked);
+                rItem->setCheckState(0, (rspec.visible && rspec.style != Qt::NoPen) ? Qt::Checked
+                                                                                    : Qt::Unchecked);
                 rItem->setData(0, RoleSelKind, int(Graph::GraphSelection::ReferenceLine));
                 rItem->setData(0, RolePrimaryId, ri);
                 rItem->setData(0, RoleLayerIndex, li + 1);
@@ -5478,8 +5411,10 @@ void GraphInspectorDock::openDetailsDialogForPage()
             }
             d_app->showTextDialog();
         } else if (g) {
+            const QString before = d_target_ml->captureUndoSnapshot();
             g->newLegend();
             if (g->legend()) {
+                d_target_ml->pushUndoSnapshot(tr("Add Legend"), before);
                 for (int k : g->textMarkerKeys()) {
                     if (g->textMarker(k) == g->legend()) {
                         g->setSelectedMarker(k);
@@ -5667,10 +5602,14 @@ void GraphInspectorDock::onTreeItemChanged(QTreeWidgetItem *item, int column)
                && !item->data(0, RoleIsGroupHeader).toBool()) {
         const int ri = item->data(0, RolePrimaryId).toInt();
         if (ri >= 0 && ri < g->referenceLines().size()) {
-            const bool curVis = (g->referenceLines()[ri].style != Qt::NoPen);
+            Graph::ReferenceLineSpec spec = g->referenceLines()[ri];
+            const bool curVis = (spec.visible && spec.style != Qt::NoPen);
             if (curVis != checked) {
                 const QString before = d_target_ml->captureUndoSnapshot();
-                setReferenceLineVisibleWithBackup(g, ri, checked);
+                spec.visible = checked;
+                if (checked && spec.style == Qt::NoPen)
+                    spec.style = Qt::DashLine;
+                g->updateReferenceLine(ri, spec);
                 d_target_ml->pushUndoSnapshot(tr("Toggle Reference Line Visibility"), before);
                 syncAxisControls();
             }
@@ -6596,11 +6535,7 @@ void GraphInspectorDock::syncCurveControls()
                 d_combo_pcm_cmap->setCurrentIndex(pIdx);
             d_chk_pcm_reverse->setChecked(pcm.reverse);
 
-            bool cbVisible = true;
-            if (Plot *pl = g->plotWidget()) {
-                QwtScaleWidget *sw = pl->axisWidget(QwtPlot::yRight);
-                cbVisible = pl->axisEnabled(QwtPlot::yRight) && sw && sw->isColorBarEnabled();
-            }
+            const bool cbVisible = pcm.showColorBar;
             d_chk_pcm_colorbar->setChecked(cbVisible);
             d_edit_pcm_cb_title->setEnabled(cbVisible);
             d_edit_pcm_cb_title->setText(pcm.colorBarTitle.isEmpty()
@@ -7716,7 +7651,7 @@ void GraphInspectorDock::applyTheme()
                           "  background: %8; color: %7; border: 1px solid %7;"
                           "}"
                           "QFrame#InspectorDetailsRow {"
-                          "  background: %1; border-top: 1px solid %4;"
+                          "  background-color: #F8FAFC; border-top: 1px solid #CBD5E1;"
                           "}"
                           "QToolButton#InspectorRailTabBtn {"
                           "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
