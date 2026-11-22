@@ -49,6 +49,7 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -533,9 +534,10 @@ const QString kNsP14 = QStringLiteral("http://schemas.microsoft.com/office/power
 struct PresentationInfo
 {
     bool ok = false;
+    bool strict = false; //!< Strict Open XML (http://purl.oclc.org/ooxml/...)
     int slideCount = 0;
     quint32 maxId = 255;
-    bool hasSections = false;
+    QSet<quint32> usedIds;
 };
 
 PresentationInfo scanPresentation(const QByteArray &presXml)
@@ -547,14 +549,15 @@ PresentationInfo scanPresentation(const QByteArray &presXml)
         r.readNext();
         if (r.isStartElement()) {
             const QString n = r.name().toString();
+            if (path.isEmpty() && r.namespaceUri().startsWith(QLatin1String("http://purl.oclc.org/ooxml/")))
+                info.strict = true;
             if (n == QLatin1String("sldId")) {
                 const quint32 id = r.attributes().value(QLatin1String("id")).toUInt();
                 info.maxId = std::max(info.maxId, id);
+                info.usedIds.insert(id);
                 if (r.namespaceUri() == kNsP && !path.isEmpty()
                     && path.last() == QLatin1String("sldIdLst"))
                     ++info.slideCount;
-            } else if (n == QLatin1String("section") && r.namespaceUri() == kNsP14) {
-                info.hasSections = true;
             }
             path << n;
         } else if (r.isEndElement() && !path.isEmpty()) {
@@ -565,101 +568,185 @@ PresentationInfo scanPresentation(const QByteArray &presXml)
     return info;
 }
 
-QString prefixForNamespace(const QString &xml, const QString &ns)
+// Ids for new slides: after the largest id, or (near the ST_SlideId limit 2147483647) the
+// lowest unused ids from 256. Returns false when there is no room.
+bool allocateSlideIds(const PresentationInfo &info, int count, QVector<quint32> *out)
 {
-    // xmlns:pfx="ns" or xmlns:pfx='ns'
-    const QRegularExpression rx(QStringLiteral("xmlns:([A-Za-z_][\\w.-]*)\\s*=\\s*([\"'])%1\\2")
-                                        .arg(QRegularExpression::escape(ns)));
-    const QRegularExpressionMatch m = rx.match(xml);
-    return m.hasMatch() ? m.captured(1) : QString();
+    constexpr quint64 kMaxSlideId = 2147483647ULL;
+    out->clear();
+    if (quint64(info.maxId) + quint64(count) <= kMaxSlideId) {
+        for (int i = 0; i < count; ++i)
+            out->append(info.maxId + 1 + quint32(i));
+        return true;
+    }
+    for (quint64 id = 256; id <= kMaxSlideId && out->size() < count; ++id) {
+        if (!info.usedIds.contains(quint32(id)))
+            out->append(quint32(id));
+    }
+    return out->size() == count;
 }
 
 // Inserts the new <p:sldId> entries into presentation.xml, and into the last section of a
 // presentation that uses sections (PowerPoint 2010+), so that every slide is in a section.
+// The document is walked with an XML reader; the edits are made at the character offsets of
+// the elements it reports, so the rest of the file is kept byte for byte.
 bool insertSlideIds(QByteArray &presXml, const QVector<QPair<quint32, QString>> &ids,
                     QString *err)
 {
-    QString s = QString::fromUtf8(presXml);
-    static const QRegularExpression rootRx(
-            QStringLiteral("<([A-Za-z_][\\w.-]*:)?presentation(?=[\\s>/])"));
-    const QRegularExpressionMatch rm = rootRx.match(s);
-    if (!rm.hasMatch()) {
+    const QString s = QString::fromUtf8(presXml);
+    struct Tag
+    {
+        int start = -1; //!< '<' of the start tag
+        int startEnd = -1; //!< after the start tag
+        int endStart = -1; //!< '<' of the end tag (== startEnd for an empty element)
+        bool empty = false;
+        QString prefix;
+    };
+    Tag root, mainList, sldSz, notesSz, lastSection, sectionList, sectionExt;
+    QString rootQName;
+    QXmlStreamReader r(s);
+    QVector<QPair<QString, QString>> stack; // (namespace, local name)
+    QVector<Tag *> open; // Tag objects of the open elements (or nullptr)
+    qint64 before = 0;
+    while (!r.atEnd()) {
+        r.readNext();
+        // whitespace before an element is not always reported as its own token (prolog)
+        const int tokStart = s.indexOf(QLatin1Char('<'), int(before));
+        const int tokEnd = int(r.characterOffset());
+        before = r.characterOffset();
+        if (r.isStartElement()) {
+            const QString ns = r.namespaceUri().toString();
+            const QString n = r.name().toString();
+            Tag t;
+            t.start = tokStart;
+            t.startEnd = tokEnd;
+            t.empty = s.midRef(tokStart, tokEnd - tokStart).trimmed().endsWith(QLatin1String("/>"));
+            t.prefix = r.prefix().toString();
+            Tag *target = nullptr;
+            const int depth = stack.size();
+            const QString parentNs = depth ? stack.last().first : QString();
+            const QString parent = depth ? stack.last().second : QString();
+            if (depth == 0) {
+                root = t;
+                rootQName = r.qualifiedName().toString();
+                target = &root;
+            } else if (depth == 1 && ns == kNsP) {
+                if (n == QLatin1String("sldIdLst"))
+                    target = &mainList;
+                else if (n == QLatin1String("sldSz") && sldSz.start < 0)
+                    target = &sldSz;
+                else if (n == QLatin1String("notesSz") && notesSz.start < 0)
+                    target = &notesSz;
+            } else if (ns == kNsP14 && n == QLatin1String("section")) {
+                lastSection = t;
+                sectionList = Tag();
+                sectionExt = Tag();
+                target = &lastSection;
+            } else if (ns == kNsP14 && parentNs == kNsP14 && parent == QLatin1String("section")) {
+                if (n == QLatin1String("sldIdLst"))
+                    target = &sectionList;
+                else if (n == QLatin1String("extLst") && sectionExt.start < 0)
+                    target = &sectionExt;
+            }
+            if (target)
+                *target = t;
+            stack.append(qMakePair(ns, n));
+            open.append(target);
+        } else if (r.isEndElement() && !stack.isEmpty()) {
+            if (Tag *t = open.last())
+                t->endStart = t->empty ? t->startEnd : tokStart;
+            stack.removeLast();
+            open.removeLast();
+        }
+    }
+    if (r.hasError() || root.start < 0) {
         *err = T("The presentation part of the existing file could not be read.");
         return false;
     }
-    const QString p = rm.captured(1);
-    QString rPrefix = prefixForNamespace(s, kNsR);
-    if (rPrefix.isEmpty()) {
-        rPrefix = QStringLiteral("tgr");
-        s.insert(rm.capturedEnd(0), QStringLiteral(" xmlns:tgr=\"%1\"").arg(kNsR));
-    }
-    QString entries, sectionEntries;
-    for (const auto &id : ids) {
-        entries += QStringLiteral("<%1sldId id=\"%2\" %3:id=\"%4\"/>")
-                           .arg(p, QString::number(id.first), rPrefix, id.second);
-        sectionEntries += QStringLiteral("<%1:sldId id=\"%2\"/>")
-                                  .arg(QStringLiteral("%P14%"), QString::number(id.first));
-    }
 
-    const QString closeTag = QStringLiteral("</%1sldIdLst>").arg(p);
-    const int closeAt = s.indexOf(closeTag);
-    if (closeAt >= 0) {
-        s.insert(closeAt, entries);
+    struct Edit
+    {
+        int pos, removeLen;
+        QString text;
+    };
+    QVector<Edit> edits;
+
+    // r: prefix declared on the root element only (a declaration further down does not reach
+    // the slide list)
+    const QString rootTag = s.mid(root.start, root.startEnd - root.start);
+    const QRegularExpression rNsRx(QStringLiteral("xmlns:([A-Za-z_][\\w.-]*)\\s*=\\s*([\"'])%1\\2")
+                                           .arg(QRegularExpression::escape(kNsR)));
+    const QRegularExpressionMatch nm = rNsRx.match(rootTag);
+    QString rPrefix;
+    if (nm.hasMatch()) {
+        rPrefix = nm.captured(1);
     } else {
-        const QRegularExpression emptyRx(
-                QStringLiteral("<%1sldIdLst\\s*/>").arg(QRegularExpression::escape(p)));
-        const QRegularExpressionMatch em = emptyRx.match(s);
-        const QString list = QStringLiteral("<%1sldIdLst>%2</%1sldIdLst>").arg(p, entries);
-        if (em.hasMatch()) {
-            s.replace(em.capturedStart(0), em.capturedLength(0), list);
+        rPrefix = QStringLiteral("tgr");
+        edits.append({ root.start + 1 + rootQName.size(), 0,
+                       QStringLiteral(" xmlns:tgr=\"%1\"").arg(kNsR) });
+    }
+
+    auto qn = [](const QString &prefix, const char *local) {
+        return prefix.isEmpty() ? QString::fromLatin1(local)
+                                : prefix + QLatin1Char(':') + QLatin1String(local);
+    };
+    const QString pp = mainList.start >= 0 ? mainList.prefix : root.prefix;
+    QString entries;
+    for (const auto &id : ids)
+        entries += QStringLiteral("<%1 id=\"%2\" %3:id=\"%4\"/>")
+                           .arg(qn(pp, "sldId"), QString::number(id.first), rPrefix, id.second);
+    if (mainList.start >= 0) {
+        if (mainList.empty)
+            edits.append({ mainList.start, mainList.startEnd - mainList.start,
+                           QStringLiteral("<%1>%2</%1>").arg(qn(pp, "sldIdLst"), entries) });
+        else
+            edits.append({ mainList.endStart, 0, entries });
+    } else {
+        const int at = sldSz.start >= 0 ? sldSz.start : notesSz.start;
+        if (at < 0) {
+            *err = T("The presentation part of the existing file could not be read.");
+            return false;
+        }
+        edits.append({ at, 0, QStringLiteral("<%1>%2</%1>").arg(qn(pp, "sldIdLst"), entries) });
+    }
+
+    if (lastSection.start >= 0) {
+        const QString sp = lastSection.prefix;
+        QString secEntries;
+        for (const auto &id : ids)
+            secEntries += QStringLiteral("<%1 id=\"%2\"/>").arg(qn(sp, "sldId"),
+                                                               QString::number(id.first));
+        const QString newList = QStringLiteral("<%1>%2</%1>").arg(qn(sp, "sldIdLst"), secEntries);
+        if (lastSection.empty) {
+            // <p14:section .../>  ->  <p14:section ...><p14:sldIdLst>...</p14:sldIdLst></p14:section>
+            QString openTag = s.mid(lastSection.start, lastSection.startEnd - lastSection.start);
+            openTag = openTag.trimmed();
+            openTag.chop(2);
+            while (openTag.endsWith(QLatin1Char(' ')) || openTag.endsWith(QLatin1Char('\t'))
+                   || openTag.endsWith(QLatin1Char('\r')) || openTag.endsWith(QLatin1Char('\n')))
+                openTag.chop(1);
+            edits.append({ lastSection.start, lastSection.startEnd - lastSection.start,
+                           openTag + QLatin1Char('>') + newList
+                                   + QStringLiteral("</%1>").arg(qn(sp, "section")) });
+        } else if (sectionList.start >= 0) {
+            if (sectionList.empty)
+                edits.append({ sectionList.start, sectionList.startEnd - sectionList.start,
+                               newList });
+            else
+                edits.append({ sectionList.endStart, 0, secEntries });
         } else {
-            int at = s.indexOf(QStringLiteral("<%1sldSz").arg(p));
-            if (at < 0)
-                at = s.indexOf(QStringLiteral("<%1notesSz").arg(p));
-            if (at < 0) {
-                *err = T("The presentation part of the existing file could not be read.");
-                return false;
-            }
-            s.insert(at, list);
+            // CT_Section: (sldIdLst?, extLst?)
+            edits.append({ sectionExt.start >= 0 ? sectionExt.start : lastSection.endStart, 0,
+                           newList });
         }
     }
 
-    // sections: add the new slides to the last <p14:section>
-    const QString p14 = prefixForNamespace(s, kNsP14);
-    if (!p14.isEmpty()) {
-        sectionEntries.replace(QStringLiteral("%P14%"), p14);
-        const QString secOpen = QStringLiteral("<%1:section").arg(p14);
-        const QString secClose = QStringLiteral("</%1:section>").arg(p14);
-        const int lastClose = s.lastIndexOf(secClose);
-        if (lastClose >= 0) {
-            const int lastOpen = s.lastIndexOf(secOpen, lastClose);
-            const QString listClose = QStringLiteral("</%1:sldIdLst>").arg(p14);
-            const int lc = s.lastIndexOf(listClose, lastClose);
-            if (lastOpen >= 0 && lc > lastOpen) {
-                s.insert(lc, sectionEntries);
-            } else {
-                const QRegularExpression emptyRx(
-                        QStringLiteral("<%1:sldIdLst\\s*/>").arg(QRegularExpression::escape(p14)));
-                QRegularExpressionMatch em;
-                int at = -1;
-                auto it = emptyRx.globalMatch(s);
-                while (it.hasNext()) {
-                    const QRegularExpressionMatch m = it.next();
-                    if (m.capturedStart(0) > lastOpen && m.capturedStart(0) < lastClose) {
-                        em = m;
-                        at = m.capturedStart(0);
-                    }
-                }
-                const QString list =
-                        QStringLiteral("<%1:sldIdLst>%2</%1:sldIdLst>").arg(p14, sectionEntries);
-                if (at >= 0)
-                    s.replace(at, em.capturedLength(0), list);
-                else if (lastOpen >= 0)
-                    s.insert(lastClose, list);
-            }
-        }
-    }
-    presXml = s.toUtf8();
+    std::sort(edits.begin(), edits.end(),
+              [](const Edit &a, const Edit &b) { return a.pos > b.pos; });
+    QString out = s;
+    for (const Edit &e : edits)
+        out.replace(e.pos, e.removeLen, e.text);
+    presXml = out.toUtf8();
     return true;
 }
 
@@ -732,6 +819,52 @@ QString chooseLayout(const Package &pkg, const QString &presPart, const QVector<
     return best;
 }
 
+// Adds <Override> entries to [Content_Types].xml, skipping part names that already have one
+// (an existing deck may carry Overrides for parts that are gone), with the root's prefix.
+bool addContentTypeOverrides(QByteArray &ctXml, const QVector<QPair<QString, QString>> &add)
+{
+    const QString s = QString::fromUtf8(ctXml);
+    QXmlStreamReader r(s);
+    QSet<QString> existing;
+    QString prefix;
+    int rootEndTag = -1, depth = 0;
+    qint64 before = 0;
+    while (!r.atEnd()) {
+        r.readNext();
+        const int tokStart = s.indexOf(QLatin1Char('<'), int(before));
+        before = r.characterOffset();
+        if (r.isStartElement()) {
+            if (depth == 0)
+                prefix = r.prefix().toString();
+            if (r.name() == QLatin1String("Override"))
+                existing.insert(
+                        r.attributes().value(QLatin1String("PartName")).toString().toLower());
+            ++depth;
+        } else if (r.isEndElement()) {
+            --depth;
+            if (depth == 0)
+                rootEndTag = tokStart;
+        }
+    }
+    if (r.hasError() || rootEndTag < 0)
+        return false;
+    const QString el = prefix.isEmpty() ? QStringLiteral("Override")
+                                        : prefix + QStringLiteral(":Override");
+    QString text;
+    for (const auto &a : add) {
+        const QString pn = QLatin1Char('/') + a.first;
+        if (existing.contains(pn.toLower()))
+            continue;
+        existing.insert(pn.toLower());
+        text += QStringLiteral("<%1 PartName=\"%2\" ContentType=\"%3\"/>")
+                        .arg(el, xmlEsc(pn), xmlEsc(a.second));
+    }
+    QString out = s;
+    out.insert(rootEndTag, text);
+    ctXml = out.toUtf8();
+    return true;
+}
+
 bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptions &opt,
                   DeckResult &res)
 {
@@ -753,6 +886,13 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
     const QString presRelsPart = relsPathFor(presPart);
     QVector<Rel> presRels = parseRels(pkg.get(presRelsPart), &relsOk);
     const PresentationInfo info = scanPresentation(presXml);
+    if (info.strict
+        || pkg.get(QStringLiteral("_rels/.rels")).contains("http://purl.oclc.org/ooxml/")) {
+        // mixing Transitional parts into a Strict package would damage it
+        res.error = T("Slides cannot be added to a file saved in the Strict Open XML format. "
+                      "Save it again in PowerPoint as a normal PowerPoint Presentation (.pptx).");
+        return false;
+    }
     if (!relsOk || !info.ok) {
         res.error = T("The presentation part of the existing file could not be read.");
         return false;
@@ -779,17 +919,19 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
                 return true;
         return false;
     };
-    quint32 nextSlideId = info.maxId + 1;
-    if (nextSlideId + quint32(items.size()) >= 2147483648U) {
+    const int perSlideN = normalizedPerSlide(opt.perSlide);
+    QVector<quint32> freeIds;
+    if (!allocateSlideIds(info, (items.size() + perSlideN - 1) / perSlideN, &freeIds)) {
         res.error = T("The presentation part of the existing file could not be read.");
         return false;
     }
+    int nextIdIndex = 0;
 
     const int perSlide = normalizedPerSlide(opt.perSlide);
     int rows = 1, cols = 1;
     gridDims(perSlide, &rows, &cols);
     int slideCounter = 1, oleCounter = 1, mediaCounter = 1;
-    QString ctAdd;
+    QVector<QPair<QString, QString>> ctAdd; // (part name, content type)
     QVector<QPair<quint32, QString>> newIds;
     const QString slideDir = QStringLiteral("ppt/slides");
     for (int start = 0; start < items.size(); start += perSlide) {
@@ -816,16 +958,14 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
             const QString mediaPart = uniquePartName(
                     pkg, QStringLiteral("ppt/media/image%1.") + ext, &mediaCounter);
             pkg.set(mediaPart, it.previewBytes);
-            ctAdd += QStringLiteral("<Override PartName=\"/%1\" ContentType=\"%2\"/>")
-                             .arg(mediaPart,
-                                  ext == QLatin1String("png") ? QStringLiteral("image/png")
-                                                              : QStringLiteral("image/x-emf"));
+            ctAdd.append(qMakePair(mediaPart, ext == QLatin1String("png")
+                                                      ? QStringLiteral("image/png")
+                                                      : QStringLiteral("image/x-emf")));
             if (!it.oleBytes.isEmpty()) {
                 const QString olePart = uniquePartName(
                         pkg, QStringLiteral("ppt/embeddings/oleObject%1.bin"), &oleCounter);
                 pkg.set(olePart, it.oleBytes);
-                ctAdd += QStringLiteral("<Override PartName=\"/%1\" ContentType=\"%2\"/>")
-                                 .arg(olePart, kCtOle);
+                ctAdd.append(qMakePair(olePart, kCtOle));
                 s.oleRid = QStringLiteral("rId%1").arg(slideRels.size() + 1);
                 slideRels.append({ s.oleRid, kRelBase + QStringLiteral("oleObject"),
                                    relativeTarget(slideDir, olePart), QString() });
@@ -850,8 +990,7 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
                        + QStringLiteral("</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/>"
                                         "</p:clrMapOvr></p:sld>")));
         pkg.set(relsPathFor(slidePart), relsXml(slideRels));
-        ctAdd += QStringLiteral("<Override PartName=\"/%1\" ContentType=\"%2\"/>")
-                         .arg(slidePart, kCtSlide);
+        ctAdd.append(qMakePair(slidePart, kCtSlide));
 
         QString rid;
         do {
@@ -859,7 +998,7 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
         } while (ridTaken(rid));
         presRels.append({ rid, kRelBase + QStringLiteral("slide"),
                           relativeTarget(partDir(presPart), slidePart), QString() });
-        newIds.append(qMakePair(nextSlideId++, rid));
+        newIds.append(qMakePair(freeIds.at(nextIdIndex++), rid));
         ++res.newSlides;
     }
 
@@ -868,14 +1007,11 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
         res.error = err;
         return false;
     }
-    QString ct = QString::fromUtf8(ctXml);
-    const int typesEnd = ct.lastIndexOf(QStringLiteral("</Types>"));
-    if (typesEnd < 0) {
+    if (!addContentTypeOverrides(ctXml, ctAdd)) {
         res.error = T("The file is not a PowerPoint presentation (.pptx).");
         return false;
     }
-    ct.insert(typesEnd, ctAdd);
-    pkg.set(QStringLiteral("[Content_Types].xml"), ct.toUtf8());
+    pkg.set(QStringLiteral("[Content_Types].xml"), ctXml);
     pkg.set(presPart, presXml);
     pkg.set(presRelsPart, relsXml(presRels));
     res.slideCount = info.slideCount + res.newSlides;
@@ -930,6 +1066,10 @@ void registerTranslations()
         "編集できるオブジェクトを作れなかったため、画像として貼りました。");
     reg("Sending graphs to PowerPoint needs Windows.",
         "PowerPoint へ送る機能は Windows でだけ使えます。");
+    reg("Slides cannot be added to a file saved in the Strict Open XML format. Save it again in "
+        "PowerPoint as a normal PowerPoint Presentation (.pptx).",
+        "Strict Open XML 形式で保存されたファイルには追記できません。PowerPoint で通常の"
+        "「PowerPoint プレゼンテーション (.pptx)」として保存し直してください。");
     reg("The 3D graph could not be captured. Restore its window (not minimized) and try again.",
         "3D グラフを取り込めませんでした。ウィンドウを最小化から戻して、もう一度試してください。");
     // dialog
@@ -994,6 +1134,7 @@ void registerTranslations()
     regAny("A ZIP entry needs a name.", "ZIP の項目に名前がありません。");
     regAny("Duplicate ZIP entry: %1", "ZIP の項目が重複しています: %1");
     regAny("Too many ZIP entries.", "ZIP の項目が多すぎます。");
+    regAny("A ZIP entry name is too long.", "ZIP の項目名が長すぎます。");
     regAny("The ZIP archive would be too large.", "ZIP が大きくなりすぎます。");
 }
 

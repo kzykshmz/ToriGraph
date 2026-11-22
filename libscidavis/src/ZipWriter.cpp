@@ -38,6 +38,10 @@ bool deflateRaw(const QByteArray &in, QByteArray &out)
         != Z_OK)
         return false;
     const uLong bound = deflateBound(&zs, static_cast<uLong>(in.size()));
+    if (bound > uLong(std::numeric_limits<int>::max() - 64)) {
+        deflateEnd(&zs);
+        return false; // too large for one QByteArray; the caller stores the entry
+    }
     out.resize(static_cast<int>(bound));
     zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(in.constData()));
     zs.avail_in = static_cast<uInt>(in.size());
@@ -109,10 +113,22 @@ bool ZipWriter::addFile(const QString &name, const QByteArray &data, Compression
         return fail(QObject::tr("Duplicate ZIP entry: %1").arg(n));
     if (d_entries.size() >= 65535)
         return fail(QObject::tr("Too many ZIP entries."));
+    const QByteArray nameUtf8 = n.toUtf8();
+    if (nameUtf8.size() > 65535)
+        return fail(QObject::tr("A ZIP entry name is too long."));
+    // The whole archive (local headers, data, central directory and end record) lives in one
+    // QByteArray; refuse entries that cannot fit even before compressing them.
+    constexpr qint64 kLimit = qint64(std::numeric_limits<int>::max()) - 1024 * 1024;
+    auto projected = [&](qint64 payloadSize) {
+        return qint64(d_out.size()) + 30 + nameUtf8.size() + payloadSize + d_centralSize + 46
+                + nameUtf8.size() + 22;
+    };
+    if (projected(0) >= kLimit || data.size() >= kLimit)
+        return fail(QObject::tr("The ZIP archive would be too large."));
     ensureTimestamp();
 
     Entry e;
-    e.nameUtf8 = n.toUtf8();
+    e.nameUtf8 = nameUtf8;
     if (!isAscii(n))
         e.flags |= 0x0800; // language encoding flag: name is UTF-8
     e.crc = crc32(data);
@@ -131,8 +147,7 @@ bool ZipWriter::addFile(const QString &name, const QByteArray &data, Compression
         payload = data;
     e.compSize = static_cast<quint32>(payload.size());
 
-    const qint64 needed = qint64(d_out.size()) + 30 + e.nameUtf8.size() + payload.size();
-    if (needed >= qint64(std::numeric_limits<int>::max()) - 1024 * 1024)
+    if (projected(payload.size()) >= kLimit)
         return fail(QObject::tr("The ZIP archive would be too large."));
 
     e.localHeaderOffset = static_cast<quint32>(d_out.size());
@@ -152,6 +167,7 @@ bool ZipWriter::addFile(const QString &name, const QByteArray &data, Compression
 
     d_entries.append(e);
     d_namesLower.insert(key);
+    d_centralSize += 46 + e.nameUtf8.size();
     return true;
 }
 

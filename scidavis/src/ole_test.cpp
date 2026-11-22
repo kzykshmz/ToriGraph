@@ -22519,6 +22519,11 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
         CHECK_COND(!zw.addFile("A/BIG.TXT", tiny, torizip::ZipWriter::Compression::Store, &err)
                            && !err.isEmpty(),
                    "73b: duplicate names must be refused");
+        err.clear();
+        CHECK_COND(!zw.addFile(QString(70000, QLatin1Char('n')), tiny,
+                               torizip::ZipWriter::Compression::Store, &err)
+                           && !err.isEmpty(),
+                   "73b: names over 65535 bytes must be refused");
         const QByteArray zip = zw.finish();
         CHECK_COND(zip.size() < big.size(), "73b: deflate did not compress");
         torizip::ZipArchive za;
@@ -22886,6 +22891,139 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
         CHECK_COND(bf.open(QIODevice::ReadOnly) && !rbad.ok && !rbad.error.isEmpty()
                            && bf.readAll() == before,
                    "73g: broken relationships must stop the append");
+    }
+
+    // ---- 73g2. more shapes of existing decks -------------------------------------------------
+    {
+        ToriGraphPptx::DeckOptions oa = opt;
+        oa.appendToExisting = true;
+        const QString p14Ns = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+        const QString rNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        // appends mlB to a deck made from `parts` with presentation.xml / [Content_Types].xml
+        // edited by `edit`; returns the result and the new presentation.xml / content types
+        auto appendCase = [&](const QString &file,
+                              const std::function<void(QString &, QString &)> &edit,
+                              QString *presOut, QString *ctOut, QByteArray *fileBefore) {
+            QHash<QString, QByteArray> d = parts;
+            QString px = QString::fromUtf8(d.value("ppt/presentation.xml"));
+            QString cx = QString::fromUtf8(d.value("[Content_Types].xml"));
+            edit(px, cx);
+            d.insert("ppt/presentation.xml", px.toUtf8());
+            d.insert("[Content_Types].xml", cx.toUtf8());
+            const QString path = QDir(tmpDir).filePath(file);
+            repack73(d, path);
+            QFile f(path);
+            if (fileBefore && f.open(QIODevice::ReadOnly)) {
+                *fileBefore = f.readAll();
+                f.close();
+            }
+            const ToriGraphPptx::DeckResult rr =
+                    ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlB, oa, path);
+            torizip::ZipArchive z;
+            QString e;
+            QByteArray pb, cb;
+            if (z.open(path, &e)) {
+                z.extract(z.findExactEntry("ppt/presentation.xml"), pb, &e);
+                z.extract(z.findExactEntry("[Content_Types].xml"), cb, &e);
+            }
+            *presOut = QString::fromUtf8(pb);
+            if (ctOut)
+                *ctOut = QString::fromUtf8(cb);
+            return rr;
+        };
+        const QString secHead = "<p:extLst><p:ext uri=\"{521415D9-36F7-43E2-AB2F-B90AF26B5E84}\">"
+                                "<p14:sectionLst xmlns:p14=\"" + p14Ns + "\">"
+                                "<p14:section name=\"A\" id=\"{11111111-1111-1111-1111-111111111111}\">"
+                                "<p14:sldIdLst><p14:sldId id=\"256\"/><p14:sldId id=\"257\"/>"
+                                "</p14:sldIdLst></p14:section>";
+        const QString secTail = "</p14:sectionLst></p:ext></p:extLst></p:presentation>";
+        QString po, co;
+
+        // the last section is an empty element: it is expanded, the first one is untouched
+        ToriGraphPptx::DeckResult rr = appendCase(
+                "empty_section.pptx",
+                [&](QString &px, QString &) {
+                    px.replace("</p:presentation>",
+                               secHead + "<p14:section name=\"Empty\" "
+                                         "id=\"{33333333-3333-3333-3333-333333333333}\" />" + secTail);
+                },
+                &po, nullptr, nullptr);
+        CHECK_COND(rr.ok && rr.slideCount == 3 && xmlError73(po.toUtf8()).isEmpty(),
+                   "73g2: empty section: " << rr.error.toStdString());
+        CHECK_COND(po.contains("<p14:section name=\"Empty\" id=\"{33333333-3333-3333-3333-333333333333}\">"
+                               "<p14:sldIdLst><p14:sldId id=\"258\"/></p14:sldIdLst></p14:section>")
+                           && po.contains("<p14:sldId id=\"257\"/></p14:sldIdLst></p14:section>"
+                                          "<p14:section name=\"Empty\""),
+                   "73g2: empty last section not expanded: " << po.toStdString());
+
+        // the last section has only <p14:extLst>: sldIdLst goes in front of it (CT_Section order)
+        rr = appendCase(
+                "ext_section.pptx",
+                [&](QString &px, QString &) {
+                    px.replace("</p:presentation>",
+                               secHead + "<p14:section name=\"B\" id=\"{22222222-2222-2222-2222-222222222222}\">"
+                                         "<p14:extLst><p14:ext uri=\"{X}\"/></p14:extLst></p14:section>" + secTail);
+                },
+                &po, nullptr, nullptr);
+        CHECK_COND(rr.ok && xmlError73(po.toUtf8()).isEmpty()
+                           && po.contains("{22222222-2222-2222-2222-222222222222}\"><p14:sldIdLst>"
+                                          "<p14:sldId id=\"258\"/></p14:sldIdLst><p14:extLst>"),
+                   "73g2: sldIdLst must precede extLst: " << po.toStdString());
+
+        // r: declared only on a child element -> declared on the root as tgr
+        rr = appendCase(
+                "r_on_child.pptx",
+                [&](QString &px, QString &) {
+                    px.replace(" xmlns:r=\"" + rNs + "\"", QString());
+                    px.replace("<p:sldIdLst>", "<p:sldIdLst xmlns:r=\"" + rNs + "\">");
+                    px.replace("<p:sldMasterIdLst>", "<p:sldMasterIdLst xmlns:r=\"" + rNs + "\">");
+                },
+                &po, nullptr, nullptr);
+        const QString rootTag = po.mid(po.indexOf("<p:presentation"),
+                                       po.indexOf('>', po.indexOf("<p:presentation"))
+                                               - po.indexOf("<p:presentation"));
+        CHECK_COND(rr.ok && xmlError73(po.toUtf8()).isEmpty()
+                           && rootTag.contains("xmlns:tgr=\"" + rNs + "\"")
+                           && po.contains("<p:sldId id=\"258\" tgr:id=\"rId"),
+                   "73g2: r prefix must be declared on the root: " << po.toStdString());
+
+        // Strict Open XML: refused, file unchanged
+        QByteArray strictBefore;
+        rr = appendCase(
+                "strict.pptx",
+                [&](QString &px, QString &) {
+                    px.replace("http://schemas.openxmlformats.org/presentationml/2006/main",
+                               "http://purl.oclc.org/ooxml/presentationml/main");
+                },
+                &po, nullptr, &strictBefore);
+        QFile sf(QDir(tmpDir).filePath("strict.pptx"));
+        CHECK_COND(!rr.ok && rr.error.contains("Strict") && sf.open(QIODevice::ReadOnly)
+                           && sf.readAll() == strictBefore,
+                   "73g2: Strict files must be refused and kept");
+
+        // prefixed [Content_Types].xml with an orphan Override; an id at the ST_SlideId limit
+        const QString ctNs = "http://schemas.openxmlformats.org/package/2006/content-types";
+        rr = appendCase(
+                "ct_prefix_maxid.pptx",
+                [&](QString &px, QString &cx) {
+                    px.replace("<p:sldId id=\"257\"", "<p:sldId id=\"2147483647\"");
+                    cx.replace("<Types xmlns=\"" + ctNs + "\">", "<ct:Types xmlns:ct=\"" + ctNs + "\">");
+                    cx.replace("<Default ", "<ct:Default ");
+                    cx.replace("<Override ", "<ct:Override ");
+                    cx.replace("</Types>",
+                               "<ct:Override PartName=\"/ppt/slides/slide3.xml\" ContentType=\""
+                               "application/vnd.openxmlformats-officedocument.presentationml.slide+xml\"/>"
+                               "</ct:Types>");
+                },
+                &po, &co, nullptr);
+        CHECK_COND(rr.ok && xmlError73(po.toUtf8()).isEmpty() && xmlError73(co.toUtf8()).isEmpty(),
+                   "73g2: prefixed content types: " << rr.error.toStdString());
+        CHECK_COND(po.contains("<p:sldId id=\"257\" r:id=\"") && !po.contains("<p:sldId id=\"2147483648\""),
+                   "73g2: id near the limit must reuse a free id: " << po.toStdString());
+        CHECK_COND(co.count("PartName=\"/ppt/slides/slide3.xml\"") == 1
+                           && co.contains("<ct:Override PartName=\"/ppt/embeddings/oleObject3.bin\"")
+                           && !co.contains("<Override "),
+                   "73g2: content types: " << co.toStdString());
     }
 
     // ---- 73h. XML escaping, "%n" in names, and the picture-only fallback ----------------------
