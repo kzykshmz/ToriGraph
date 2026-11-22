@@ -5083,6 +5083,33 @@ void registerPhase5StatsTranslationsOnce()
     reg("Maximum Likelihood (MLE — JIS R 1625 / ISO 20501)",
         "最尤推定法 (MLE — JIS R 1625 / ISO 20501)");
     reg("Failure probability, <i>P</i><sub>f</sub> (%)", "破壊確率 <i>P</i><sub>f</sub> (%)");
+    // F8 / F9: exclusion counts, failure reasons and the estimation method actually used
+    reg("Weibull: %1 of %2 row(s) excluded (%3).", "ワイブル: %2 行中 %1 行を除外しました (%3)。");
+    reg("%1 non-numeric", "数値でない %1 行");
+    reg("%1 with value <= 0 (ln undefined)", "値が 0 以下で対数を取れない %1 行");
+    reg("Weibull analysis: the source table or the data column was not found.",
+        "ワイブル解析: 元のワークシートまたはデータ列が見つかりません。");
+    reg("Weibull analysis needs at least 2 failures (uncensored values > 0); only %1 remained.",
+        "ワイブル解析には破壊データ (打切りでない 0 より大きい値) が 2 件以上必要です。残ったのは %1 件です。");
+    reg("Weibull analysis failed: all failure values are identical, so the slope cannot be determined.",
+        "ワイブル解析に失敗しました: 破壊データがすべて同じ値のため、傾きを決められません。");
+    reg("Median rank regression (Benard), 2-parameter", "メジアンランク回帰 (Benard 近似)、2 母数");
+    reg("Median rank regression (Benard), 3-parameter: \u03B3 chosen to minimise the regression residual",
+        "メジアンランク回帰 (Benard 近似)、3 母数: \u03B3 は回帰の残差が最小になる値");
+    reg("Maximum likelihood, 2-parameter", "最尤推定、2 母数");
+    reg("3-parameter: \u03B3 estimated by MRR; m and \u03C3\u2080 by MLE conditional on that \u03B3 (their SE does not include the uncertainty of \u03B3)",
+        "3 母数: \u03B3 は MRR で推定、m と \u03C3\u2080 はその \u03B3 を固定した条件付き MLE (標準誤差に \u03B3 の不確かさは含まない)");
+    reg("MLE did not converge; median rank regression values are reported instead.",
+        "最尤推定が収束しなかったため、メジアンランク回帰の値を出しています。");
+    reg("m bias-corrected by JIS R 1625 (B_n = %1, n = %2): m = %3 \u2192 %4; \u03C3\u2080 is the uncorrected MLE.",
+        "m を JIS R 1625 で不偏化しました (B_n = %1、n = %2): m = %3 \u2192 %4。\u03C3\u2080 は補正前の MLE の値です。");
+    reg("JIS R 1625 bias correction not applied: it is defined only for the 2-parameter MLE of complete (uncensored) data.",
+        "JIS R 1625 の不偏化は行いませんでした: 打切りのない 2 母数の最尤推定にだけ定められています。");
+    reg("Goodness of fit: ln L = %1 (MLE). R\u00B2 = %2 refers to the median-rank regression line, not to the MLE.",
+        "当てはまり: ln L = %1 (MLE)。R\u00B2 = %2 はメジアンランク回帰直線の値で、MLE の指標ではありません。");
+    reg("Weibull (%1): method = %2", "ワイブル (%1): 推定法 = %2");
+    reg("Unbias m by JIS R 1625 (MLE, complete data, 2-parameter)",
+        "m を JIS R 1625 で不偏化 (MLE・打切りなし・2 母数)");
 }
 
 void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double> &ranksOut,
@@ -5528,18 +5555,33 @@ void syncWeibullProbRightAxis(Graph *parentG, Graph *linkedG)
 
 } // namespace
 
+double GraphStatsAndSurfaceFit::jisR1625UnbiasingFactor(int n)
+{
+    // JIS R 1625:2010, 6.2 c) and Annex A: m = B_n * m_t, B_n = (1 + 2.04 n^-1.1)^-1 (n <= 120);
+    // the worked example gives B_30 = 0.9538.
+    if (n < 2)
+        return 1.0;
+    if (n > 120)
+        return 1.0;
+    return 1.0 / (1.0 + 2.04 * std::pow(static_cast<double>(n), -1.1));
+}
+
 GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullProbability(
         ApplicationWindow *app, Table *srcTable, const QString &dataCol, const QString &censorCol,
-        int censorCoding, bool fitThreeParam, bool useMle, bool createPlot)
+        int censorCoding, bool fitThreeParam, bool useMle, bool createPlot, bool jisUnbiasMle)
 {
     registerPhase5StatsTranslationsOnce();
     WeibullPlotResult res;
-    if (!srcTable)
+    if (!srcTable) {
+        res.error = QObject::tr("Weibull analysis: the source table or the data column was not found.");
         return res;
+    }
 
     Column *cData = resolveTableColumn(srcTable, dataCol);
-    if (!cData)
+    if (!cData) {
+        res.error = QObject::tr("Weibull analysis: the source table or the data column was not found.");
         return res;
+    }
     Column *cCensor = censorCol.trimmed().isEmpty() ? nullptr
                                                     : resolveTableColumn(srcTable, censorCol);
 
@@ -5551,10 +5593,20 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     const int nRows = cData->rowCount();
     items.reserve(static_cast<size_t>(std::max(0, nRows)));
 
+    int nConsidered = 0, nNonNumeric = 0, nNonPositive = 0;
     for (int r = 0; r < nRows; ++r) {
+        if (cData->isInvalid(r) || cData->isMasked(r))
+            continue; // empty or deliberately masked row
+        ++nConsidered;
         double xv = 0.0;
-        if (!readNumericColumnCell(cData, r, xv) || xv <= 0.0)
+        if (!readNumericColumnCell(cData, r, xv)) {
+            ++nNonNumeric;
             continue;
+        }
+        if (xv <= 0.0) {
+            ++nNonPositive;
+            continue;
+        }
         bool isCens = false;
         if (cCensor && r < cCensor->rowCount() && !cCensor->isInvalid(r) && !cCensor->isMasked(r)) {
             double cv = 0.0;
@@ -5594,8 +5646,45 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     }
     res.censoredCount = nCens;
 
-    if (items.size() < 2)
+    res.excludedCount = nNonNumeric + nNonPositive;
+    if (res.excludedCount > 0) {
+        QStringList why;
+        if (nNonNumeric > 0)
+            why << QObject::tr("%1 non-numeric").arg(nNonNumeric);
+        if (nNonPositive > 0)
+            why << QObject::tr("%1 with value <= 0 (ln undefined)").arg(nNonPositive);
+        res.notes << QObject::tr("Weibull: %1 of %2 row(s) excluded (%3).")
+                             .arg(res.excludedCount)
+                             .arg(nConsidered)
+                             .arg(why.join(QStringLiteral(", ")));
+    }
+    auto flushWeibullLog = [&]() {
+        if (!app)
+            return;
+        QString txt = QStringLiteral("[%1] ").arg(QLocale().toString(QDateTime::currentDateTime()));
+        txt += QObject::tr("Weibull (%1): method = %2")
+                       .arg(srcTable->name() + QLatin1Char('_') + cData->name())
+                       .arg(res.methodDescription.isEmpty() ? QStringLiteral("-")
+                                                            : res.methodDescription)
+                + QLatin1Char('\n');
+        for (const QString &nt : res.notes)
+            txt += QStringLiteral("  ") + nt + QLatin1Char('\n');
+        if (!res.error.isEmpty())
+            txt += QStringLiteral("  ") + res.error + QLatin1Char('\n');
+        app->updateLog(txt);
+    };
+    auto failWith = [&](const QString &why) {
+        res.valid = false;
+        res.error = why;
+        flushWeibullLog();
         return res;
+    };
+
+    if (items.size() < 2) {
+        return failWith(QObject::tr(
+                "Weibull analysis needs at least 2 failures (uncensored values > 0); only %1 remained.")
+                                .arg(static_cast<int>(items.size()) - nCens));
+    }
 
     std::sort(items.begin(), items.end(), [](const WeibItem &a, const WeibItem &b) {
         if (a.x != b.x)
@@ -5633,8 +5722,11 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     }
 
     const int mFail = static_cast<int>(failX.size());
-    if (mFail < 2)
-        return res;
+    if (mFail < 2) {
+        return failWith(QObject::tr(
+                "Weibull analysis needs at least 2 failures (uncensored values > 0); only %1 remained.")
+                                .arg(mFail));
+    }
 
     const double meanW =
             std::accumulate(wWeibit.begin(), wWeibit.end(), 0.0) / static_cast<double>(mFail);
@@ -5782,8 +5874,10 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     }
 
     double betaM = 0.0, interceptA = 0.0, meanU = 0.0, suu = 0.0, rss = 0.0;
-    if (!evalGammaStats(bestGamma, betaM, interceptA, meanU, suu, rss))
-        return res;
+    if (!evalGammaStats(bestGamma, betaM, interceptA, meanU, suu, rss)) {
+        return failWith(QObject::tr(
+                "Weibull analysis failed: all failure values are identical, so the slope cannot be determined."));
+    }
     for (int i = 0; i < mFail; ++i)
         uLnX[static_cast<size_t>(i)] = std::log(failX[static_cast<size_t>(i)] - bestGamma);
 
@@ -5903,10 +5997,70 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     res.mleScaleSigma0SE = mleSigma0SE;
     res.usedMle = (useMle && mleConverged);
 
+    // Log-likelihood of the (right-censored) Weibull model at the ML estimate. With the MLE this,
+    // not the R^2 of the median-rank regression line, describes the fit.
+    if (mleConverged && mleM > 0.0 && mleSigma0 > 0.0) {
+        double lnL = 0.0;
+        const double lnS0 = std::log(mleSigma0);
+        bool ok = true;
+        for (const WeibItem &it : items) {
+            const double z = it.x - bestGamma;
+            if (!(z > 0.0)) {
+                ok = false;
+                break;
+            }
+            const double lz = std::log(z);
+            const double zr = std::exp(std::clamp(mleM * (lz - lnS0), -700.0, 700.0));
+            if (!it.censored)
+                lnL += std::log(mleM) - lnS0 + (mleM - 1.0) * (lz - lnS0);
+            lnL -= zr;
+        }
+        if (ok && std::isfinite(lnL))
+            res.logLikelihood = lnL;
+    }
+
+    if (useMle && !mleConverged)
+        res.notes << QObject::tr("MLE did not converge; median rank regression values are reported instead.");
+
     if (res.usedMle) {
         betaM = mleM;
         betaSE = mleMSE;
         interceptA = -mleM * std::log(std::max(1e-300, mleSigma0));
+    }
+    res.modulusMUncorrected = betaM;
+
+    // Estimation method actually used (F9)
+    if (res.usedMle) {
+        res.methodDescription = usedThreeParam
+                ? QObject::tr("3-parameter: \u03B3 estimated by MRR; m and \u03C3\u2080 by MLE conditional on that \u03B3 (their SE does not include the uncertainty of \u03B3)")
+                : QObject::tr("Maximum likelihood, 2-parameter");
+    } else {
+        res.methodDescription = usedThreeParam
+                ? QObject::tr("Median rank regression (Benard), 3-parameter: \u03B3 chosen to minimise the regression residual")
+                : QObject::tr("Median rank regression (Benard), 2-parameter");
+    }
+
+    // JIS R 1625:2010 bias correction of the ML modulus (complete data, 2-parameter only)
+    if (jisUnbiasMle) {
+        if (res.usedMle && !usedThreeParam && nCens == 0) {
+            const double bn = jisR1625UnbiasingFactor(mFail);
+            res.unbiased = true;
+            res.unbiasingFactor = bn;
+            const double mRaw = betaM;
+            betaM *= bn;
+            betaSE *= bn;
+            // sigma0 stays the ML estimate; keep the plotted line through it
+            interceptA = -betaM * std::log(std::max(1e-300, mleSigma0));
+            res.notes << QObject::tr(
+                    "m bias-corrected by JIS R 1625 (B_n = %1, n = %2): m = %3 \u2192 %4; \u03C3\u2080 is the uncorrected MLE.")
+                                 .arg(bn, 0, 'f', 4)
+                                 .arg(mFail)
+                                 .arg(mRaw, 0, 'f', 3)
+                                 .arg(betaM, 0, 'f', 3);
+        } else {
+            res.notes << QObject::tr(
+                    "JIS R 1625 bias correction not applied: it is defined only for the 2-parameter MLE of complete (uncensored) data.");
+        }
     }
 
     const double effSigma0 = res.usedMle ? mleSigma0 : sigma0;
@@ -5922,6 +6076,13 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     res.b10Life = bestGamma + effSigma0 * std::pow(-std::log(0.90), 1.0 / betaM);
     res.b50Life = bestGamma + effSigma0 * std::pow(std::log(2.0), 1.0 / betaM);
     res.rSquare = r2;
+    if (res.usedMle && std::isfinite(res.logLikelihood)) {
+        res.notes << QObject::tr(
+                "Goodness of fit: ln L = %1 (MLE). R\u00B2 = %2 refers to the median-rank regression line, not to the MLE.")
+                             .arg(res.logLikelihood, 0, 'f', 3)
+                             .arg(r2, 0, 'f', 4);
+    }
+    flushWeibullLog();
 
     if (!app)
         return res;
@@ -6109,14 +6270,21 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
 
             g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
 
-            const QString estTag = res.usedMle ? QStringLiteral("MLE") : QStringLiteral("MRR");
+            QString estTag = res.usedMle
+                    ? (usedThreeParam ? QStringLiteral("cond. MLE, \u03B3: MRR") : QStringLiteral("MLE"))
+                    : QStringLiteral("MRR");
+            if (res.unbiased)
+                estTag += QStringLiteral(", JIS R 1625");
+            const QString fitQual = (res.usedMle && std::isfinite(res.logLikelihood))
+                    ? QStringLiteral("ln <i>L</i> = %1").arg(res.logLikelihood, 0, 'f', 2)
+                    : QStringLiteral("<i>R</i><sup>2</sup> = %1").arg(res.rSquare, 0, 'f', 4);
             QString summary;
             if (usedThreeParam) {
                 summary = QStringLiteral(
                         "<i>m</i> (%1) = %2 \u00B1 %3\n"
                         "<i>\u03C3</i><sub>0</sub> = %4 \u00B1 %5%11\n"
                         "<i>\u03B3</i> = %6, <i>B</i><sub>10</sub> = %7\n"
-                        "<i>R</i><sup>2</sup> = %8 (<i>n</i> = %9, cens = %10)")
+                        "%8 (<i>n</i> = %9, cens = %10)")
                         .arg(estTag)
                         .arg(res.modulusM, 0, 'f', 2)
                         .arg(res.modulusMSE, 0, 'f', 2)
@@ -6124,7 +6292,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                         .arg(res.scaleSigma0SE, 0, 'g', 3)
                         .arg(res.thresholdGamma, 0, 'g', 4)
                         .arg(res.b10Life, 0, 'g', 4)
-                        .arg(res.rSquare, 0, 'f', 4)
+                        .arg(fitQual)
                         .arg(mFail)
                         .arg(res.censoredCount)
                         .arg(uStr.isEmpty() ? QString() : (QStringLiteral(" ") + uStr));
@@ -6133,7 +6301,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                         "<i>m</i> (%1) = %2 \u00B1 %3\n"
                         "<i>\u03C3</i><sub>0</sub> = %4 \u00B1 %5%10\n"
                         "<i>B</i><sub>10</sub> = %6, <i>B</i><sub>50</sub> = %7\n"
-                        "<i>R</i><sup>2</sup> = %8 (<i>n</i> = %9%11)")
+                        "%8 (<i>n</i> = %9%11)")
                         .arg(estTag)
                         .arg(res.modulusM, 0, 'f', 2)
                         .arg(res.modulusMSE, 0, 'f', 2)
@@ -6141,7 +6309,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                         .arg(res.scaleSigma0SE, 0, 'g', 3)
                         .arg(res.b10Life, 0, 'g', 4)
                         .arg(res.b50Life, 0, 'g', 4)
-                        .arg(res.rSquare, 0, 'f', 4)
+                        .arg(fitQual)
                         .arg(mFail)
                         .arg(uStr.isEmpty() ? QString() : (QStringLiteral(" ") + uStr))
                         .arg(res.censoredCount > 0
@@ -8449,6 +8617,16 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
 
     QCheckBox *chkThreeParam =
             new QCheckBox(QObject::tr("3-Parameter Weibull (Estimate Threshold γ)"), &dlg);
+    QCheckBox *chkJisUnbias = new QCheckBox(
+            QObject::tr("Unbias m by JIS R 1625 (MLE, complete data, 2-parameter)"), &dlg);
+    auto syncJis = [&]() {
+        const bool ok = cbEstimator->currentData().toBool() && !chkThreeParam->isChecked();
+        chkJisUnbias->setEnabled(ok);
+    };
+    QObject::connect(cbEstimator, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncJis(); });
+    QObject::connect(chkThreeParam, &QCheckBox::toggled, &dlg, [&](bool) { syncJis(); });
+    syncJis();
 
     auto refreshCols = [&]() {
         cbData->clear();
@@ -8488,6 +8666,7 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     form->addRow(QObject::tr("Censoring Coding:"), cbCensorCoding);
     form->addRow(QObject::tr("Parameter Estimator:"), cbEstimator);
     form->addRow(QString(), chkThreeParam);
+    form->addRow(QString(), chkJisUnbias);
     lay->addLayout(form);
 
     QDialogButtonBox *btns =
@@ -8497,10 +8676,17 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     lay->addWidget(btns);
 
     if (dlg.exec() == QDialog::Accepted) {
-        plotWeibullProbability(app, tables[cbTable->currentIndex()], cbData->currentText(),
-                               cbCensor->currentData().toString(),
-                               cbCensorCoding->currentData().toInt(), chkThreeParam->isChecked(),
-                               cbEstimator->currentData().toBool(), true);
+        const WeibullPlotResult wr = plotWeibullProbability(
+                app, tables[cbTable->currentIndex()], cbData->currentText(),
+                cbCensor->currentData().toString(), cbCensorCoding->currentData().toInt(),
+                chkThreeParam->isChecked(), cbEstimator->currentData().toBool(), true,
+                chkJisUnbias->isEnabled() && chkJisUnbias->isChecked());
+        if (!wr.valid) {
+            QString msg = wr.error;
+            if (!wr.notes.isEmpty())
+                msg += QStringLiteral("\n\n") + wr.notes.join(QLatin1Char('\n'));
+            QMessageBox::warning(app, QObject::tr("Weibull Probability Plot"), msg);
+        }
     }
 }
 

@@ -288,6 +288,38 @@ QwtPlotCurve *resolveSignalCurve(Graph *g, const QString &curveTitle)
     return g->curve(0);
 }
 
+// What extractUniformSignal() did to the input (sorting, duplicate merging, resampling).
+// Single GUI thread: read it right after the extraction call.
+QString s_lastSignalPrepNote;
+
+void registerSignalPrepNoticeTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("points re-ordered by X", "点を X の順に並べ替え");
+    reg("%1 duplicate X merged (Y averaged)", "重複した X を %1 点まとめた (Y は平均)");
+    reg("linearly resampled to %1 equally spaced points (dt = %2)",
+        "線形補間で等間隔の %1 点に再サンプリング (dt = %2)");
+    reg("%1: input prepared (%2): %3", "%1: 入力を前処理しました (%2): %3");
+}
+
+void reportSignalPrep(ApplicationWindow *app, const QString &opName, const QString &curveTitle,
+                      const QString &note)
+{
+    if (!app || note.isEmpty())
+        return;
+    registerSignalPrepNoticeTranslationsOnce();
+    app->updateLog(QStringLiteral("[%1] ").arg(QLocale().toString(QDateTime::currentDateTime()))
+                   + QObject::tr("%1: input prepared (%2): %3").arg(opName, curveTitle, note)
+                   + QLatin1Char('\n'));
+}
+
 bool extractSortedSignalXY(Graph *g, const QString &curveTitle,
                            std::vector<double> &xOut, std::vector<double> &yOut)
 {
@@ -364,6 +396,9 @@ bool extractUniformSignal(Graph *g, const QString &curveTitle,
     tOut.clear();
     yOut.clear();
     fsOut = 1.0;
+    s_lastSignalPrepNote.clear();
+    registerSignalPrepNoticeTranslationsOnce();
+    QStringList prepParts;
 
     QwtPlotCurve *c = resolveSignalCurve(g, curveTitle);
     if (!c || c->dataSize() < 2)
@@ -397,6 +432,13 @@ bool extractUniformSignal(Graph *g, const QString &curveTitle,
     if (pts.size() < 2)
         return false;
 
+    const bool wasSorted = std::is_sorted(
+            pts.begin(), pts.end(),
+            [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
+                return a.first < b.first;
+            });
+    if (!wasSorted)
+        prepParts << QObject::tr("points re-ordered by X");
     std::stable_sort(pts.begin(), pts.end(),
                      [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
                          return a.first < b.first;
@@ -431,6 +473,8 @@ bool extractUniformSignal(Graph *g, const QString &curveTitle,
     const size_t n = xs.size();
     if (n < 2)
         return false;
+    if (n < pts.size())
+        prepParts << QObject::tr("%1 duplicate X merged (Y averaged)").arg(int(pts.size() - n));
 
     const double dt = (xs.back() - xs.front()) / static_cast<double>(n - 1);
     if (dt <= 0.0 || !std::isfinite(dt))
@@ -447,10 +491,15 @@ bool extractUniformSignal(Graph *g, const QString &curveTitle,
     }
 
     if (isUniform) {
+        s_lastSignalPrepNote = prepParts.join(QStringLiteral("; "));
         tOut = std::move(xs);
         yOut = std::move(ys);
         return true;
     }
+    prepParts << QObject::tr("linearly resampled to %1 equally spaced points (dt = %2)")
+                         .arg(int(n))
+                         .arg(dt, 0, 'g', 6);
+    s_lastSignalPrepNote = prepParts.join(QStringLiteral("; "));
 
     // Linearly resample onto uniform grid
     tOut.resize(n);
@@ -1272,6 +1321,7 @@ QwtPlotCurve *AdvancedSignalProc::iirFilter(ApplicationWindow *app, Graph *g,
     if (!computeIirFilteredVector(g, curveTitle, design, pass, order, cutoffLowHz, cutoffHighHz,
                                   zeroPhase, rippleDb, t, filtered, fs))
         return nullptr;
+    reportSignalPrep(app, trSig("IIR Digital Filter"), curveTitle, s_lastSignalPrepNote);
     const int n = static_cast<int>(filtered.size());
 
     Table *tbl = buildSignalTable(app, "IIRFilter",
@@ -1326,6 +1376,7 @@ Matrix *AdvancedSignalProc::computeSTFT(ApplicationWindow *app, Graph *g,
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("STFT"), curveTitle, s_lastSignalPrepNote);
 
     const int n = static_cast<int>(y.size());
     const int W = std::max(8, windowSize);
@@ -1423,6 +1474,7 @@ QwtPlotCurve *AdvancedSignalProc::hilbertEnvelope(ApplicationWindow *app, Graph 
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 2)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("Hilbert"), curveTitle, s_lastSignalPrepNote);
 
     const size_t n = y.size();
     std::vector<double> z(2 * n, 0.0);
@@ -1523,6 +1575,7 @@ Matrix *AdvancedSignalProc::waveletCWT(ApplicationWindow *app, Graph *g,
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("CWT"), curveTitle, s_lastSignalPrepNote);
 
     const size_t n = y.size();
     const int nScales = std::clamp(numScales, 2, 512);
@@ -1645,6 +1698,7 @@ QwtPlotCurve *AdvancedSignalProc::waveletDenoiseDWT(ApplicationWindow *app, Grap
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("DWT"), curveTitle, s_lastSignalPrepNote);
 
     const int n = static_cast<int>(y.size());
     const std::vector<double> &h = waveletLowpassFilter(wtype);
@@ -1923,6 +1977,7 @@ Table *AdvancedSignalProc::welchPSD(ApplicationWindow *app, Graph *g,
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("Welch PSD"), curveTitle, s_lastSignalPrepNote);
 
     const int n = static_cast<int>(y.size());
     const int L = std::clamp(segmentLen, 4, n);
@@ -2028,9 +2083,13 @@ Table *AdvancedSignalProc::crossCoherence(ApplicationWindow *app, Graph *g,
 
     std::vector<double> tA, yA, tB, yB;
     double fsA = 1.0, fsB = 1.0;
-    if (!extractUniformSignal(g, curveA, tA, yA, fsA)
-        || !extractUniformSignal(g, curveB, tB, yB, fsB))
+    if (!extractUniformSignal(g, curveA, tA, yA, fsA))
         return nullptr;
+    const QString prepNoteA = s_lastSignalPrepNote;
+    if (!extractUniformSignal(g, curveB, tB, yB, fsB))
+        return nullptr;
+    reportSignalPrep(app, QStringLiteral("Coherence"), curveA, prepNoteA);
+    reportSignalPrep(app, QStringLiteral("Coherence"), curveB, s_lastSignalPrepNote);
 
     const double tLo = std::max(tA.front(), tB.front());
     const double tHi = std::min(tA.back(), tB.back());
@@ -3548,6 +3607,7 @@ QwtPlotCurve *AdvancedSignalProc::fourierSelfDeconvolve(
     double fs = 1.0;
     if (!extractUniformSignal(g, curveTitle, xs, ys, fs) || xs.size() < 4)
         return nullptr;
+    reportSignalPrep(app, QStringLiteral("FSD"), curveTitle, s_lastSignalPrepNote);
 
     std::vector<double> fsdY;
     if (!computeFsdSpectrum(xs, ys, lorentzFwhmGamma, sharpeningFactorK, apodization, fsdY))

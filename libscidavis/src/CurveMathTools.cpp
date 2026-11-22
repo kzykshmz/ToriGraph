@@ -54,6 +54,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -76,6 +77,10 @@
 #include <memory>
 #include <numeric>
 #include <vector>
+
+namespace {
+void registerAnalysisNoticeTranslationsOnce(); // defined before the XRD analyzer
+} // namespace
 
 namespace {
 
@@ -661,7 +666,35 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
         return nullptr;
 
     const size_t n = ys.size();
+    double refValue = 0.0;
+    if (mode == DivideByRefX) {
+        std::vector<double> xm, ym;
+        extractUnmaskedCurvePoints(g, curveTitle, xm, ym, true, true);
+        refValue = interpLinearSorted(xm, ym, refX);
+    }
+    const std::vector<double> outY = normalizeValues(xs, ys, mode, refValue);
+
+    Table *t = createNumericTable(app, "NormCurve",
+                                  QStringList() << "X" << "NormalizedY",
+                                  QList<SciDAVis::PlotDesignation>() << SciDAVis::X << SciDAVis::Y,
+                                  { xs, outY });
+    if (!t)
+        return nullptr;
+
+    QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(n),
+                                               QPen(QColor(204, 121, 167), 2.0, Qt::SolidLine));
+    g->updatePlot();
+    return resCurve;
+}
+
+std::vector<double> CurveMathTools::normalizeValues(const std::vector<double> &xs,
+                                                    const std::vector<double> &ys, NormMode mode,
+                                                    double refValue)
+{
+    const size_t n = std::min(xs.size(), ys.size());
     std::vector<double> outY(n, 0.0);
+    if (n == 0)
+        return outY;
 
     const auto minMaxIt = std::minmax_element(ys.begin(), ys.end());
     const double yMin = *minMaxIt.first;
@@ -741,9 +774,7 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
         break;
     }
     case DivideByRefX: {
-        std::vector<double> xm, ym;
-        extractUnmaskedCurvePoints(g, curveTitle, xm, ym, true, true);
-        const double refVal = interpLinearSorted(xm, ym, refX);
+        const double refVal = refValue;
         if (std::isfinite(refVal) && std::fabs(refVal) > 1e-300) {
             for (size_t i = 0; i < n; ++i)
                 outY[i] = ys[i] / refVal;
@@ -751,18 +782,7 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
         break;
     }
     }
-
-    Table *t = createNumericTable(app, "NormCurve",
-                                  QStringList() << "X" << "NormalizedY",
-                                  QList<SciDAVis::PlotDesignation>() << SciDAVis::X << SciDAVis::Y,
-                                  { xs, outY });
-    if (!t)
-        return nullptr;
-
-    QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(n),
-                                               QPen(QColor(204, 121, 167), 2.0, Qt::SolidLine));
-    g->updatePlot();
-    return resCurve;
+    return outY;
 }
 
 QVector<QPointF> CurveMathTools::findCurveIntersections(Graph *g, const QString &curveA,
@@ -2127,14 +2147,19 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         bool tempInCelsius, bool use1000OverT, bool sigmaTimesT)
 {
     registerMatSciTranslationsOnce();
+    registerAnalysisNoticeTranslationsOnce();
     ArrheniusResult res;
-    if (!srcTable)
+    if (!srcTable) {
+        res.error = QObject::tr("No numeric worksheets are open.");
         return res;
+    }
 
     Column *cTemp = resolveMatSciColumn(srcTable, tempCol);
     Column *cRate = resolveMatSciColumn(srcTable, rateCol);
-    if (!cTemp || !cRate)
+    if (!cTemp || !cRate) {
+        res.error = QObject::tr("The temperature or rate column was not found in the worksheet.");
         return res;
+    }
 
     constexpr double kGasR = 8.314462618;       // J / (mol * K)
     constexpr double kBoltzEV = 8.617333262e-5; // eV / K
@@ -2146,22 +2171,73 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         double tempK = 0.0;
     };
     std::vector<ArrPt> pts;
-    const int nRows = std::min(cTemp->rowCount(), cRate->rowCount());
+    const int nRows = std::max(cTemp->rowCount(), cRate->rowCount());
     pts.reserve(static_cast<size_t>(std::max(0, nRows)));
 
+    // Count every row that holds data in either column; rows left out are reported (F8).
+    auto cellBlank = [](const Column *c, int r) {
+        return r >= c->rowCount() || c->isInvalid(r);
+    };
+    auto cellMasked = [](const Column *c, int r) { return r < c->rowCount() && c->isMasked(r); };
+    int nConsidered = 0, nNonNumeric = 0, nBadTemp = 0, nBadRate = 0;
     for (int r = 0; r < nRows; ++r) {
+        if (cellBlank(cTemp, r) && cellBlank(cRate, r))
+            continue; // empty row
+        if (cellMasked(cTemp, r) || cellMasked(cRate, r))
+            continue; // deliberately masked by the user
+        ++nConsidered;
         double rawT = 0.0, rawK = 0.0;
-        if (!readMatSciCell(cTemp, r, rawT) || !readMatSciCell(cRate, r, rawK))
+        if (!readMatSciCell(cTemp, r, rawT) || !readMatSciCell(cRate, r, rawK)) {
+            ++nNonNumeric;
             continue;
+        }
         const double tK = tempInCelsius ? (rawT + 273.15) : rawT;
-        const double prod = sigmaTimesT ? (rawK * tK) : rawK;
-        if (tK <= 0.0 || prod <= 0.0)
+        if (!(tK > 0.0)) {
+            ++nBadTemp;
             continue;
+        }
+        const double prod = sigmaTimesT ? (rawK * tK) : rawK;
+        if (!(prod > 0.0)) {
+            ++nBadRate;
+            continue;
+        }
         pts.push_back({ scaleX / tK, std::log(prod), tK });
     }
 
-    if (pts.size() < 2)
+    res.excludedCount = nNonNumeric + nBadTemp + nBadRate;
+    if (res.excludedCount > 0) {
+        QStringList why;
+        if (nNonNumeric > 0)
+            why << QObject::tr("%1 non-numeric or empty").arg(nNonNumeric);
+        if (nBadTemp > 0)
+            why << QObject::tr("%1 with T <= 0 K").arg(nBadTemp);
+        if (nBadRate > 0)
+            why << QObject::tr("%1 with non-positive rate (ln undefined)").arg(nBadRate);
+        res.notes << QObject::tr("Arrhenius: %1 of %2 row(s) excluded (%3).")
+                             .arg(res.excludedCount)
+                             .arg(nConsidered)
+                             .arg(why.join(QStringLiteral(", ")));
+    }
+    auto flushArrheniusNotes = [&]() {
+        if (!app || (res.notes.isEmpty() && res.error.isEmpty()))
+            return;
+        QString txt = QStringLiteral("[%1] Arrhenius (%2)\n")
+                              .arg(QLocale().toString(QDateTime::currentDateTime()))
+                              .arg(srcTable->name());
+        for (const QString &nt : res.notes)
+            txt += QStringLiteral("  ") + nt + QLatin1Char('\n');
+        if (!res.error.isEmpty())
+            txt += QStringLiteral("  ") + res.error + QLatin1Char('\n');
+        app->updateLog(txt);
+    };
+
+    if (pts.size() < 2) {
+        res.error = QObject::tr(
+                "Arrhenius analysis needs at least 2 valid (T, k) rows; only %1 remained after exclusion.")
+                            .arg(static_cast<int>(pts.size()));
+        flushArrheniusNotes();
         return res;
+    }
 
     std::sort(pts.begin(), pts.end(),
               [](const ArrPt &a, const ArrPt &b) { return a.x < b.x; });
@@ -2183,8 +2259,11 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         sxy += dx * dy;
         syy += dy * dy;
     }
-    if (sxx <= 1e-30)
+    if (sxx <= 1e-30) {
+        res.error = QObject::tr("Arrhenius analysis needs at least 2 distinct temperatures.");
+        flushArrheniusNotes();
         return res;
+    }
 
     const double slope = sxy / sxx;
     const double intercept = meanY - slope * meanX;
@@ -2204,6 +2283,7 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
     res.activationEnergyEVSE = slopeSE * kBoltzEV * scaleX;
     res.lnPreExponential = intercept;
     res.rSquare = r2;
+    flushArrheniusNotes();
 
     if (!app)
         return res;
@@ -2324,7 +2404,7 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
             const double xSpan = std::max(1e-9, colInvT.back() - colInvT.front());
             const auto yMM = std::minmax_element(colLnK.begin(), colLnK.end());
             const double ySpan = std::max(1e-9, *yMM.second - *yMM.first);
-            const QString summary = QStringLiteral(
+            QString summary = QStringLiteral(
                     "<i>E</i><sub>a</sub> = %1 \u00B1 %2 kJ mol<sup>-1</sup>\n"
                     "(%3 eV), ln <i>A</i> = %4\n"
                     "<i>R</i><sup>2</sup> = %5")
@@ -2333,6 +2413,11 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
                     .arg(res.activationEnergyEV, 0, 'f', 3)
                     .arg(res.lnPreExponential, 0, 'f', 2)
                     .arg(res.rSquare, 0, 'f', 4);
+            if (res.excludedCount > 0) {
+                summary += QStringLiteral(" (<i>n</i> = %1, %2)")
+                                   .arg(n)
+                                   .arg(QObject::tr("%1 excluded").arg(res.excludedCount));
+            }
             addMatSciCalloutBox(g, colInvT.front() + 0.05 * xSpan,
                                 *yMM.first + 0.28 * ySpan, summary);
             g->replot();
@@ -3505,9 +3590,15 @@ void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
     if (dlg.exec() == QDialog::Accepted) {
         const int idx = cbTable->currentIndex();
         if (idx >= 0 && idx < tables.size()) {
-            createArrheniusPlot(app, tables[idx], cbTemp->currentText(), cbRate->currentText(),
-                                chkCelsius->isChecked(), chk1000->isChecked(),
-                                chkSigmaT->isChecked());
+            const ArrheniusResult ar = createArrheniusPlot(
+                    app, tables[idx], cbTemp->currentText(), cbRate->currentText(),
+                    chkCelsius->isChecked(), chk1000->isChecked(), chkSigmaT->isChecked());
+            if (!ar.valid) {
+                QString msg = ar.error;
+                if (!ar.notes.isEmpty())
+                    msg += QStringLiteral("\n\n") + ar.notes.join(QLatin1Char('\n'));
+                QMessageBox::warning(app, QObject::tr("Arrhenius Plot (Activation Energy)"), msg);
+            }
         }
     }
 }
@@ -6801,6 +6892,7 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         bool topAxisInCelsius)
 {
     registerMatSciTranslationsOnce();
+    registerAnalysisNoticeTranslationsOnce();
     KissingerResult res;
 
     const int nIn = std::min(heatingRates.size(), peakTemps.size());
@@ -6813,24 +6905,62 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
     std::vector<KissPt> pts;
     pts.reserve(static_cast<size_t>(std::max(0, nIn)));
 
+    int nNonFinite = 0, nBadRate = 0, nBadTemp = 0;
     for (int i = 0; i < nIn; ++i) {
         const double rawRate = heatingRates[i];
         const double rawTemp = peakTemps[i];
-        if (!std::isfinite(rawRate) || !std::isfinite(rawTemp) || rawRate <= 0.0)
+        if (!std::isfinite(rawRate) || !std::isfinite(rawTemp)) {
+            ++nNonFinite;
             continue;
+        }
         const double rateKmin = rateInKPerHour ? (rawRate / 60.0) : rawRate;
         const double tK = tempInCelsius ? (rawTemp + 273.15) : rawTemp;
-        if (!(rateKmin > 0.0) || !(tK > 0.0))
+        if (!(rateKmin > 0.0)) {
+            ++nBadRate;
             continue;
+        }
+        if (!(tK > 0.0)) {
+            ++nBadTemp;
+            continue;
+        }
         const double ratio = rateKmin / (tK * tK);
-        if (!(ratio > 0.0) || !std::isfinite(ratio))
+        if (!(ratio > 0.0) || !std::isfinite(ratio)) {
+            ++nNonFinite;
             continue;
+        }
         pts.push_back({ 1000.0 / tK, std::log(ratio), rateKmin, tK });
     }
+
+    res.excludedCount = nNonFinite + nBadRate + nBadTemp;
+    if (res.excludedCount > 0) {
+        QStringList why;
+        if (nNonFinite > 0)
+            why << QObject::tr("%1 non-finite").arg(nNonFinite);
+        if (nBadRate > 0)
+            why << QObject::tr("%1 with heating rate <= 0").arg(nBadRate);
+        if (nBadTemp > 0)
+            why << QObject::tr("%1 with Tp <= 0 K").arg(nBadTemp);
+        res.notes << QObject::tr("Kissinger: %1 of %2 pair(s) excluded (%3).")
+                             .arg(res.excludedCount)
+                             .arg(nIn)
+                             .arg(why.join(QStringLiteral(", ")));
+    }
+    auto flushKissingerNotes = [&]() {
+        if (!app || (res.notes.isEmpty() && res.error.isEmpty()))
+            return;
+        QString txt = QStringLiteral("[%1] Kissinger\n")
+                              .arg(QLocale().toString(QDateTime::currentDateTime()));
+        for (const QString &nt : res.notes)
+            txt += QStringLiteral("  ") + nt + QLatin1Char('\n');
+        if (!res.error.isEmpty())
+            txt += QStringLiteral("  ") + res.error + QLatin1Char('\n');
+        app->updateLog(txt);
+    };
 
     if (pts.size() < 2) {
         res.error = QObject::tr(
                 "Kissinger analysis requires at least 2 valid (heating rate, peak temperature) pairs.");
+        flushKissingerNotes();
         return res;
     }
 
@@ -6857,6 +6987,7 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
     if (sxx <= 1e-30) {
         res.error = QObject::tr(
                 "Kissinger analysis requires at least 2 distinct peak temperatures.");
+        flushKissingerNotes();
         return res;
     }
 
@@ -6894,6 +7025,7 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         res.heatingRatesKmin.append(p.rateKmin);
         res.peakTempsK.append(p.tempK);
     }
+    flushKissingerNotes();
 
     if (!app)
         return res;
@@ -7010,7 +7142,7 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         const double xSpan = std::max(1e-9, colInvT.back() - colInvT.front());
         const auto yMM = std::minmax_element(colKissY.begin(), colKissY.end());
         const double ySpan = std::max(1e-9, *yMM.second - *yMM.first);
-        const QString summary = (n > 2)
+        QString summary = (n > 2)
                 ? QStringLiteral("<i>E</i><sub>d</sub> = %1 \u00B1 %2 kJ mol<sup>-1</sup>\n"
                                  "(%3 eV), <i>A</i> = %4 s<sup>-1</sup>\n"
                                  "<i>R</i><sup>2</sup> = %5")
@@ -7024,12 +7156,104 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
                           .arg(res.activationEnergyKJmol, 0, 'f', 2)
                           .arg(res.activationEnergyEV, 0, 'f', 3)
                           .arg(res.preExponentialSInv, 0, 'e', 2);
+        if (res.excludedCount > 0) {
+            summary += QStringLiteral(" (<i>n</i> = %1, %2)")
+                               .arg(n)
+                               .arg(QObject::tr("%1 excluded").arg(res.excludedCount));
+        }
         addMatSciCalloutBox(g, colInvT.front() + 0.05 * xSpan, *yMM.first + 0.25 * ySpan, summary);
         g->replot();
         if (topLayer)
             topLayer->replot();
     }
     return res;
+}
+
+namespace {
+
+int findColumnByHeader(Table *t, const char *header, const char *context)
+{
+    if (!t)
+        return -1;
+    const QString en = QString::fromLatin1(header);
+    const QString tr1 = QCoreApplication::translate(context, header);
+    const QString tr2 = QObject::tr(header);
+    for (int c = 0; c < t->numCols(); ++c) {
+        const Column *col = t->column(c);
+        if (!col)
+            continue;
+        const QString nm = col->name().trimmed();
+        if (nm.compare(en, Qt::CaseInsensitive) == 0 || nm == tr1 || nm == tr2)
+            return c;
+    }
+    return -1;
+}
+
+double lastNumberIn(const QString &s, bool *ok)
+{
+    static const QRegularExpression kNum(QStringLiteral("([0-9]+(?:\\.[0-9]+)?)"));
+    QRegularExpressionMatchIterator it = kNum.globalMatch(s);
+    QString last;
+    while (it.hasNext())
+        last = it.next().captured(1);
+    return last.toDouble(ok);
+}
+
+} // namespace
+
+bool CurveMathTools::isPeakFitResultTable(Table *t)
+{
+    return findColumnByHeader(t, "Center", "MultiPeakFit") >= 0
+            && findColumnByHeader(t, "Peak", "MultiPeakFit") >= 0;
+}
+
+QVector<CurveMathTools::PeakFitCenter>
+CurveMathTools::collectPeakFitCenters(const QList<Table *> &tables, int peakNumber,
+                                      QStringList *missingSources)
+{
+    QVector<PeakFitCenter> out;
+    if (missingSources)
+        missingSources->clear();
+    if (peakNumber < 1)
+        return out;
+    for (Table *t : tables) {
+        if (!isPeakFitResultTable(t))
+            continue;
+        const int cCenter = findColumnByHeader(t, "Center", "MultiPeakFit");
+        const int cCurve = findColumnByHeader(t, "Curve", "MultiPeakFit");
+        Column *colC = t->column(cCenter);
+        Column *colCurve = (cCurve >= 0) ? t->column(cCurve) : nullptr;
+        // Group rows by source (one group per curve for batch tables), keep first-seen order.
+        QStringList order;
+        QHash<QString, std::vector<double>> centers;
+        for (int r = 0; r < t->numRows(); ++r) {
+            double xc = 0.0;
+            if (!readMatSciCell(colC, r, xc))
+                continue;
+            QString key = t->name();
+            if (colCurve) {
+                const QString cn = (colCurve->columnMode() == SciDAVis::ColumnMode::Text)
+                        ? colCurve->textAt(r).trimmed()
+                        : QString();
+                if (!cn.isEmpty())
+                    key = cn;
+            }
+            if (!centers.contains(key))
+                order << key;
+            centers[key].push_back(xc);
+        }
+        if (order.isEmpty() && missingSources)
+            missingSources->append(t->name());
+        for (const QString &key : order) {
+            std::vector<double> v = centers.value(key);
+            std::sort(v.begin(), v.end());
+            if (int(v.size()) >= peakNumber)
+                out.append({ key, v[size_t(peakNumber - 1)] });
+            else if (missingSources)
+                missingSources->append(key);
+        }
+    }
+    return out;
 }
 
 void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
@@ -7050,6 +7274,13 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
             tables.append(t);
     }
 
+    registerAnalysisNoticeTranslationsOnce();
+    QList<Table *> fitTables;
+    for (Table *t : allTables) {
+        if (isPeakFitResultTable(t))
+            fitTables.append(t);
+    }
+
     QDialog dlg(app);
     dlg.setWindowTitle(QObject::tr("Kissinger TDS / DSC Activation Energy Analyzer"));
     dlg.setMinimumWidth(540);
@@ -7061,6 +7292,8 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         cbMode->addItem(QObject::tr("From Worksheet (β, Tp Columns)"), 0);
         cbMode->addItem(QObject::tr("Auto-Extract Peaks from TDS Curves"), 1);
     }
+    if (!fitTables.isEmpty())
+        cbMode->addItem(QObject::tr("From Peak-Fit Results (Center of Peak N)"), 3);
     cbMode->addItem(QObject::tr("Manual Input (β, Tp Lists)"), 2);
     topForm->addRow(QObject::tr("Data Source:"), cbMode);
 
@@ -7112,6 +7345,55 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
     QLabel *lblManTemps = new QLabel(QObject::tr("Peak Temperatures (comma-separated):"), &dlg);
     topForm->addRow(lblManRates, leManualRates);
     topForm->addRow(lblManTemps, leManualTemps);
+
+    // Mode 3 widgets (centres of peak N from peak-fit result tables, e.g. overlapping TDS peaks)
+    QListWidget *lwFitTables = new QListWidget(&dlg);
+    lwFitTables->setSelectionMode(QAbstractItemView::MultiSelection);
+    lwFitTables->setMaximumHeight(110);
+    for (Table *t : fitTables) {
+        auto *it = new QListWidgetItem(t->name(), lwFitTables);
+        it->setSelected(true);
+    }
+    QSpinBox *sbPeakN = new QSpinBox(&dlg);
+    sbPeakN->setRange(1, 50);
+    sbPeakN->setValue(1);
+    QLineEdit *leFitRates = new QLineEdit(&dlg);
+    QLabel *lblFitTables = new QLabel(QObject::tr("Peak-Fit Result Tables:"), &dlg);
+    QLabel *lblPeakN = new QLabel(QObject::tr("Peak Number N:"), &dlg);
+    QLabel *lblFitRates = new QLabel(QObject::tr("Heating Rates (comma-separated):"), &dlg);
+    topForm->addRow(lblFitTables, lwFitTables);
+    topForm->addRow(lblPeakN, sbPeakN);
+    topForm->addRow(lblFitRates, leFitRates);
+    auto selectedFitTables = [&]() {
+        QList<Table *> sel;
+        for (int i = 0; i < lwFitTables->count(); ++i) {
+            if (lwFitTables->item(i)->isSelected() && i < fitTables.size())
+                sel.append(fitTables[i]);
+        }
+        return sel;
+    };
+    auto refreshFitRates = [&]() {
+        const QVector<PeakFitCenter> src = collectPeakFitCenters(selectedFitTables(), sbPeakN->value());
+        QStringList guessed;
+        // Guess the heating rates from the source names (e.g. "TDS_100Kh"), but not from the
+        // serial number of default table names such as "PeakSummary3".
+        static const QRegularExpression kDefaultName(
+                QStringLiteral("^(PeakSummary|PeakIntegration|BatchPeakSummary)\\d*$"));
+        for (const PeakFitCenter &pc : src) {
+            bool ok = false;
+            const double v = lastNumberIn(pc.source, &ok);
+            if (!ok || kDefaultName.match(pc.source).hasMatch()) {
+                guessed.clear();
+                break;
+            }
+            guessed << QString::number(v, 'g', 8);
+        }
+        if (guessed.size() == src.size() && !guessed.isEmpty())
+            leFitRates->setText(guessed.join(QStringLiteral(", ")));
+    };
+    refreshFitRates();
+    QObject::connect(lwFitTables, &QListWidget::itemSelectionChanged, &dlg,
+                     [&]() { refreshFitRates(); });
 
     QComboBox *cbRateUnit = new QComboBox(&dlg);
     cbRateUnit->addItem(QObject::tr("K/min (°C/min)"), false);
@@ -7193,6 +7475,14 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         leManualRates->setVisible(mode == 2);
         lblManTemps->setVisible(mode == 2);
         leManualTemps->setVisible(mode == 2);
+        lblFitTables->setVisible(mode == 3);
+        lwFitTables->setVisible(mode == 3);
+        lblPeakN->setVisible(mode == 3);
+        sbPeakN->setVisible(mode == 3);
+        lblFitRates->setVisible(mode == 3);
+        leFitRates->setVisible(mode == 3);
+        lblTable->setVisible(mode == 0 || mode == 1);
+        cbTable->setVisible(mode == 0 || mode == 1);
     };
     syncVis();
     QObject::connect(cbMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
@@ -7220,20 +7510,60 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
     };
 
     QVector<double> rates, peakTemps;
+    QStringList inputNotes;
     const int mode = cbMode->currentData().toInt();
     if (mode == 0 && cbTable->currentIndex() >= 0) {
         Table *t = tables[cbTable->currentIndex()];
         Column *cR = resolveMatSciColumn(t, cbRateCol->currentText());
         Column *cT = resolveMatSciColumn(t, cbTpCol->currentText());
         if (cR && cT) {
-            const int nR = std::min(cR->rowCount(), cT->rowCount());
+            const int nR = std::max(cR->rowCount(), cT->rowCount());
+            constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
             for (int r = 0; r < nR; ++r) {
-                double rv = 0.0, tv = 0.0;
-                if (readMatSciCell(cR, r, rv) && readMatSciCell(cT, r, tv)) {
-                    rates.append(rv);
-                    peakTemps.append(tv);
-                }
+                const bool blankR = (r >= cR->rowCount() || cR->isInvalid(r));
+                const bool blankT = (r >= cT->rowCount() || cT->isInvalid(r));
+                if (blankR && blankT)
+                    continue; // empty row
+                if ((r < cR->rowCount() && cR->isMasked(r)) || (r < cT->rowCount() && cT->isMasked(r)))
+                    continue; // masked by the user
+                double rv = kNaN, tv = kNaN;
+                if (!readMatSciCell(cR, r, rv))
+                    rv = kNaN;
+                if (!readMatSciCell(cT, r, tv))
+                    tv = kNaN;
+                // Unreadable cells are passed as NaN so analyzeKissinger counts and reports them.
+                rates.append(rv);
+                peakTemps.append(tv);
             }
+        }
+    } else if (mode == 3) {
+        const QVector<double> inRates = parseCsvDoubles(leFitRates->text());
+        QStringList missing;
+        const QVector<PeakFitCenter> centers =
+                collectPeakFitCenters(selectedFitTables(), sbPeakN->value(), &missing);
+        if (!missing.isEmpty()) {
+            inputNotes << QObject::tr(
+                    "Kissinger: no peak centre found in the selected peak-fit table(s) for peak %1: %2.")
+                                  .arg(sbPeakN->value())
+                                  .arg(missing.join(QStringLiteral(", ")));
+        }
+        if (inRates.size() != centers.size()) {
+            inputNotes << QObject::tr(
+                    "Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.")
+                                  .arg(inRates.size())
+                                  .arg(centers.size());
+        }
+        const int kCnt = std::min(inRates.size(), centers.size());
+        QStringList used;
+        for (int k = 0; k < kCnt; ++k) {
+            rates.append(inRates[k]);
+            peakTemps.append(centers[k].center);
+            used << QStringLiteral("%1 = %2").arg(centers[k].source).arg(centers[k].center, 0, 'g', 6);
+        }
+        if (!used.isEmpty()) {
+            inputNotes << QObject::tr("Kissinger input taken from peak-fit centres (peak %1): %2.")
+                                  .arg(sbPeakN->value())
+                                  .arg(used.join(QStringLiteral(", ")));
         }
     } else if (mode == 1 && cbTable->currentIndex() >= 0) {
         Table *t = tables[cbTable->currentIndex()];
@@ -7243,10 +7573,19 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         const double wLo = std::min(sbWinMin->value(), sbWinMax->value());
         const double wHi = std::max(sbWinMin->value(), sbWinMax->value());
         const int kCnt = std::min(inRates.size(), selItems.size());
+        if (inRates.size() != selItems.size()) {
+            inputNotes << QObject::tr(
+                    "Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.")
+                                  .arg(inRates.size())
+                                  .arg(selItems.size());
+        }
+        QStringList noPeakCols;
         for (int k = 0; k < kCnt; ++k) {
             Column *cF = resolveMatSciColumn(t, selItems[k]->text());
-            if (!cTemp || !cF)
+            if (!cTemp || !cF) {
+                noPeakCols << selItems[k]->text();
                 continue;
+            }
             int bestIdx = -1;
             double bestVal = -std::numeric_limits<double>::infinity();
             const int nR = std::min(cTemp->rowCount(), cF->rowCount());
@@ -7277,20 +7616,38 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
                 }
                 rates.append(inRates[k]);
                 peakTemps.append(tp);
+            } else {
+                noPeakCols << selItems[k]->text();
             }
+        }
+        if (!noPeakCols.isEmpty()) {
+            inputNotes << QObject::tr(
+                    "Kissinger: no peak was found inside the temperature window for column(s): %1.")
+                                  .arg(noPeakCols.join(QStringLiteral(", ")));
         }
     } else {
         rates = parseCsvDoubles(leManualRates->text());
         peakTemps = parseCsvDoubles(leManualTemps->text());
     }
 
+    if (!inputNotes.isEmpty()) {
+        QString txt = QStringLiteral("[%1] Kissinger\n")
+                              .arg(QLocale().toString(QDateTime::currentDateTime()));
+        for (const QString &nt : inputNotes)
+            txt += QStringLiteral("  ") + nt + QLatin1Char('\n');
+        app->updateLog(txt);
+    }
     const KissingerResult kr = analyzeKissinger(app, rates, peakTemps,
                                                 cbRateUnit->currentData().toBool(),
                                                 chkTempC->isChecked(), chkTopC->isChecked());
     if (!kr.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
+        QStringList all = inputNotes + kr.notes;
+        QString msg = kr.error;
+        if (!all.isEmpty())
+            msg += QStringLiteral("\n\n") + all.join(QLatin1Char('\n'));
         QMessageBox::warning(app,
                              QObject::tr("Kissinger TDS / DSC Activation Energy Analyzer"),
-                             kr.error);
+                             msg);
     }
 }
 
@@ -8068,17 +8425,159 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
 // 4. XRD Peak, Bragg d-Spacing, Scherrer & Williamson-Hall Analyzer
 // ============================================================================
 
+namespace {
+
+// Japanese strings for the analysis notices added for XRD / Arrhenius / Kissinger (F6, F8, F12).
+void registerAnalysisNoticeTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    // XRD (F6)
+    reg("Strip K\u03B12 Doublet (Rachinger, per-anode wavelengths)",
+        "K\u03B12 線を除去 (Rachinger 法、管球ごとの波長)");
+    reg("K\u03B12 stripping skipped: \u03BB = %1 \u00C5 does not match the K\u03B11 or K\u03B1-average line of a known anode (Cr, Fe, Co, Cu, Mo).",
+        "K\u03B12 除去を行いませんでした: \u03BB = %1 \u00C5 が既知の管球 (Cr, Fe, Co, Cu, Mo) の K\u03B11 線・K\u03B1 平均線のどれとも一致しません。");
+    reg("K\u03B12 stripped (Rachinger, %1 anode: \u03BB(K\u03B11) = %2 \u00C5, \u03BB(K\u03B12) = %3 \u00C5, I(K\u03B12)/I(K\u03B11) = 0.5).",
+        "K\u03B12 を除去しました (Rachinger 法、%1 管球: \u03BB(K\u03B11) = %2 \u00C5、\u03BB(K\u03B12) = %3 \u00C5、強度比 I(K\u03B12)/I(K\u03B11) = 0.5)。");
+    reg("After K\u03B12 stripping the pattern is pure %1 K\u03B11, so d-spacings use \u03BB(K\u03B11) = %2 \u00C5 instead of the K\u03B1 average.",
+        "K\u03B12 除去後は %1 K\u03B11 だけのパターンになるため、面間隔 d は K\u03B1 平均ではなく \u03BB(K\u03B11) = %2 \u00C5 で計算しました。");
+    reg("Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).",
+        "Williamson-Hall: 分離できたピークが 2 本未満のため、結晶子サイズと微視ひずみは出していません (N/A)。");
+    reg("Williamson-Hall: no physical solution. The intercept K\u03BB/D = %1 rad is <= 0, so the crystallite size is undefined (N/A). It is NOT replaced by the Scherrer mean.",
+        "Williamson-Hall: 物理的な解がありません。切片 K\u03BB/D = %1 rad が 0 以下のため、結晶子サイズは求まりません (N/A)。Scherrer 平均への置き換えはしていません。");
+    reg("Williamson-Hall: no physical solution. The slope \u03B5 = %1 is negative, so the microstrain is undefined (N/A).",
+        "Williamson-Hall: 物理的な解がありません。傾き \u03B5 = %1 が負のため、微視ひずみは求まりません (N/A)。");
+    reg("Warning: %1 of %2 peak(s) have observed FWHM <= instrumental FWHM (%3 deg); Scherrer crystallite size is resolution-limited (N/A).",
+        "警告: %2 本中 %1 本のピークは観測半値幅が装置半値幅 (%3°) 以下です。これらの Scherrer 結晶子サイズは分解能の限界で求まりません (N/A)。");
+    reg("No physical solution", "物理的な解なし");
+    // Arrhenius (F8)
+    reg("Arrhenius: %1 of %2 row(s) excluded (%3).", "アレニウス: %2 行中 %1 行を除外しました (%3)。");
+    reg("%1 non-numeric or empty", "数値でない・空欄 %1 行");
+    reg("%1 with T <= 0 K", "T <= 0 K が %1 行");
+    reg("%1 with non-positive rate (ln undefined)", "速度が 0 以下で対数を取れない %1 行");
+    reg("Arrhenius analysis needs at least 2 valid (T, k) rows; only %1 remained after exclusion.",
+        "アレニウス解析には有効な (T, k) が 2 行以上必要です。除外後に残ったのは %1 行です。");
+    reg("Arrhenius analysis needs at least 2 distinct temperatures.",
+        "アレニウス解析には異なる温度が 2 つ以上必要です。");
+    reg("The temperature or rate column was not found in the worksheet.",
+        "ワークシートに温度列または速度列が見つかりません。");
+    // Kissinger (F8, F12)
+    reg("Kissinger: %1 of %2 pair(s) excluded (%3).", "Kissinger: %2 組中 %1 組を除外しました (%3)。");
+    reg("%1 non-finite", "数値でない %1 組");
+    reg("%1 with heating rate <= 0", "昇温速度が 0 以下の %1 組");
+    reg("%1 with Tp <= 0 K", "Tp <= 0 K の %1 組");
+    reg("Kissinger analysis requires at least 2 valid (heating rate, peak temperature) pairs.",
+        "Kissinger 解析には有効な (昇温速度, ピーク温度) の組が 2 つ以上必要です。");
+    reg("Kissinger analysis requires at least 2 distinct peak temperatures.",
+        "Kissinger 解析には異なるピーク温度が 2 つ以上必要です。");
+    reg("From Peak-Fit Results (Center of Peak N)", "ピーク分離の結果から (ピーク N の中心)");
+    reg("Peak-Fit Result Tables:", "ピーク分離の結果表:");
+    reg("Peak Number N:", "ピーク番号 N (中心の低い順):");
+    reg("Kissinger: no peak centre found in the selected peak-fit table(s) for peak %1: %2.",
+        "Kissinger: 選んだピーク分離の結果表に、ピーク %1 の中心が見つかりません: %2。");
+    reg("Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.",
+        "Kissinger: ピーク分離の結果 %2 件に対して昇温速度が %1 個指定されました。余った分は使っていません。");
+    reg("Kissinger: no peak was found inside the temperature window for column(s): %1.",
+        "Kissinger: 温度範囲内にピークが見つからなかった列があります: %1。");
+    reg("Kissinger input taken from peak-fit centres (peak %1): %2.",
+        "Kissinger の入力にピーク分離の中心温度 (ピーク %1) を使いました: %2。");
+    reg("%1 excluded", "%1 件除外");
+}
+
+} // namespace
+
+QVector<CurveMathTools::XRayAnodeLines> CurveMathTools::xrayAnodeTable()
+{
+    // Ka1 / Ka2 wavelengths in Angstrom. Cr, Fe, Co: Bearden (1967) as tabulated in
+    // International Tables for Crystallography Vol. C, Table 4.2.2.1; Cu, Mo: the values used
+    // by common diffractometer software (Cu Ka1 1.540598 / Ka2 1.544426, Mo Ka1 0.709319 /
+    // Ka2 0.713609). Only the ratio Ka2/Ka1 enters the Rachinger correction.
+    static const struct {
+        const char *name;
+        double k1, k2;
+    } kLines[] = {
+        { "Cr", 2.289700, 2.293606 },
+        { "Fe", 1.936042, 1.939980 },
+        { "Co", 1.788965, 1.792850 },
+        { "Cu", 1.540598, 1.544426 },
+        { "Mo", 0.709319, 0.713609 },
+    };
+    QVector<XRayAnodeLines> out;
+    for (const auto &l : kLines) {
+        XRayAnodeLines a;
+        a.anode = QString::fromLatin1(l.name);
+        a.kAlpha1 = l.k1;
+        a.kAlpha2 = l.k2;
+        a.kAlphaAvg = (2.0 * l.k1 + l.k2) / 3.0;
+        out.append(a);
+    }
+    return out;
+}
+
+bool CurveMathTools::matchXRayAnode(double wavelengthAngstrom, XRayAnodeLines *out,
+                                    bool *matchedAverage)
+{
+    if (matchedAverage)
+        *matchedAverage = false;
+    if (!std::isfinite(wavelengthAngstrom) || wavelengthAngstrom <= 0.0)
+        return false;
+    constexpr double kRelTol = 2e-4; // Ka1 and Ka-average of Cu differ by 8e-4
+    for (const XRayAnodeLines &a : xrayAnodeTable()) {
+        const bool hit1 = std::fabs(wavelengthAngstrom - a.kAlpha1) <= kRelTol * a.kAlpha1;
+        const bool hitAvg = std::fabs(wavelengthAngstrom - a.kAlphaAvg) <= kRelTol * a.kAlphaAvg;
+        if (hit1 || hitAvg) {
+            if (out)
+                *out = a;
+            if (matchedAverage)
+                *matchedAverage = (!hit1 && hitAvg);
+            return true;
+        }
+    }
+    return false;
+}
+
 CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         ApplicationWindow *app, Graph *g, const QString &curveTitle, double wavelengthAngstrom,
         double instrFwhmDeg, double scherrerK, const QString &crystalSystem, bool stripKAlpha2,
         bool addTopDSpacingAxis, bool createWilliamsonHallPlot, double cOverA)
 {
     registerMatSciTranslationsOnce();
+    registerAnalysisNoticeTranslationsOnce();
     XRDAnalysisResult res;
     res.wavelengthAngstrom = (std::isfinite(wavelengthAngstrom) && wavelengthAngstrom > 0.05)
             ? wavelengthAngstrom
             : 1.540598;
-    const double effLambda = res.wavelengthAngstrom;
+    double effLambda = res.wavelengthAngstrom;
+
+    // Per-anode Ka1/Ka2 lines: the Rachinger correction needs lambda(Ka2)/lambda(Ka1) of the
+    // tube actually used (Co, Cr, Fe and Mo differ from Cu).
+    XRayAnodeLines anodeLines;
+    bool anodeMatchedAvg = false;
+    const bool anodeKnown = matchXRayAnode(effLambda, &anodeLines, &anodeMatchedAvg);
+    if (anodeKnown)
+        res.anodeName = anodeLines.anode;
+    bool doStripKAlpha2 = stripKAlpha2;
+    if (stripKAlpha2) {
+        if (!anodeKnown) {
+            doStripKAlpha2 = false;
+            res.notes << QObject::tr(
+                    "K\u03B12 stripping skipped: \u03BB = %1 \u00C5 does not match the K\u03B11 or K\u03B1-average line of a known anode (Cr, Fe, Co, Cu, Mo).")
+                                 .arg(effLambda, 0, 'f', 6);
+        } else if (anodeMatchedAvg) {
+            effLambda = anodeLines.kAlpha1;
+            res.wavelengthAngstrom = anodeLines.kAlpha1;
+            res.notes << QObject::tr(
+                    "After K\u03B12 stripping the pattern is pure %1 K\u03B11, so d-spacings use \u03BB(K\u03B11) = %2 \u00C5 instead of the K\u03B1 average.")
+                                 .arg(anodeLines.anode)
+                                 .arg(anodeLines.kAlpha1, 0, 'f', 6);
+        }
+    }
     const double effInstFwhm = (std::isfinite(instrFwhmDeg) && instrFwhmDeg > 0.0) ? instrFwhmDeg : 0.0;
     const double effK = (std::isfinite(scherrerK) && scherrerK > 0.05) ? scherrerK : 0.90;
 
@@ -8193,8 +8692,15 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     }
 
     // 2. Optional Rachinger Kα2 doublet stripping on net intensity
-    if (stripKAlpha2) {
-        constexpr double kAlphaRatio = 1.544426 / 1.540598; // λ(Kα2) / λ(Kα1)
+    if (doStripKAlpha2) {
+        const double kAlphaRatio = anodeLines.kAlpha2 / anodeLines.kAlpha1; // λ(Kα2) / λ(Kα1)
+        res.kAlpha2Angstrom = anodeLines.kAlpha2;
+        res.kAlpha2Stripped = true;
+        res.notes << QObject::tr(
+                "K\u03B12 stripped (Rachinger, %1 anode: \u03BB(K\u03B11) = %2 \u00C5, \u03BB(K\u03B12) = %3 \u00C5, I(K\u03B12)/I(K\u03B11) = 0.5).")
+                             .arg(anodeLines.anode)
+                             .arg(anodeLines.kAlpha1, 0, 'f', 6)
+                             .arg(anodeLines.kAlpha2, 0, 'f', 6);
         std::vector<double> alpha1(size_t(N), 0.0);
         for (int i = 0; i < N; ++i) {
             const double thRad = 0.5 * ttGrid[size_t(i)] * (M_PI / 180.0);
@@ -8610,9 +9116,8 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     }
 
     double whSlope = 0.0;
-    double whIntercept = (cntSch > 0 && std::isfinite(res.meanScherrerSizeNm))
-            ? ((effK * effLambda) / (10.0 * std::max(0.5, res.meanScherrerSizeNm)))
-            : 0.0;
+    double whIntercept = 0.0;
+    bool whFitted = false;
     double whR2 = 0.0;
     double whSResid = 0.0;
     double whMeanX = 0.0;
@@ -8635,6 +9140,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             syy += dy * dy;
         }
         if (whSxx > 1e-24) {
+            whFitted = true;
             whSlope = sxy / whSxx;
             whIntercept = meanY - whSlope * whMeanX;
             double rss = 0.0;
@@ -8649,11 +9155,36 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 whSResid = std::sqrt(std::max(0.0, rss / double(whPool.size() - 2)));
         }
     }
-    res.whMicrostrain = whSlope;
-    res.whSizeNm = (cntSch > 0 && whIntercept > 1e-7)
-            ? ((effK * effLambda) / (10.0 * whIntercept))
-            : res.meanScherrerSizeNm;
+    // Williamson-Hall: beta cos(theta) = K lambda / D + eps * 4 sin(theta). A negative slope or a
+    // non-positive intercept has no physical meaning; report N/A instead of silently substituting
+    // the Scherrer mean.
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    res.whSlopeRaw = whFitted ? whSlope : kNaN;
+    res.whInterceptRaw = whFitted ? whIntercept : kNaN;
     res.whRSquare = whR2;
+    if (!whFitted) {
+        res.whMicrostrain = kNaN;
+        res.whSizeNm = kNaN;
+        res.whPhysical = false;
+        res.notes << QObject::tr(
+                "Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).");
+    } else {
+        const bool interceptOk = (whIntercept > 0.0);
+        const bool slopeOk = (whSlope >= 0.0);
+        res.whSizeNm = interceptOk ? ((effK * effLambda) / (10.0 * whIntercept)) : kNaN;
+        res.whMicrostrain = slopeOk ? whSlope : kNaN;
+        res.whPhysical = interceptOk && slopeOk;
+        if (!interceptOk) {
+            res.notes << QObject::tr(
+                    "Williamson-Hall: no physical solution. The intercept K\u03BB/D = %1 rad is <= 0, so the crystallite size is undefined (N/A). It is NOT replaced by the Scherrer mean.")
+                                 .arg(whIntercept, 0, 'g', 4);
+        }
+        if (!slopeOk) {
+            res.notes << QObject::tr(
+                    "Williamson-Hall: no physical solution. The slope \u03B5 = %1 is negative, so the microstrain is undefined (N/A).")
+                                 .arg(whSlope, 0, 'g', 4);
+        }
+    }
     res.valid = true;
     if (resLimitedCount > 0) {
         res.error = QObject::tr(
@@ -8662,8 +9193,18 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                             .arg(resLimitedCount)
                             .arg(static_cast<int>(pks.size()))
                             .arg(effInstFwhm, 0, 'g', 4);
-        if (app)
-            app->updateLog(res.error + QLatin1Char('\n'));
+        res.notes << res.error;
+    }
+    if (app && !res.notes.isEmpty()) {
+        QString logText = QStringLiteral("[%1] XRD (\u03BB = %2 \u00C5%3)\n")
+                                  .arg(QLocale().toString(QDateTime::currentDateTime()))
+                                  .arg(effLambda, 0, 'f', 6)
+                                  .arg(res.anodeName.isEmpty()
+                                               ? QString()
+                                               : (QStringLiteral(", ") + res.anodeName));
+        for (const QString &nt : res.notes)
+            logText += QStringLiteral("  ") + nt + QLatin1Char('\n');
+        app->updateLog(logText);
     }
 
     res.peaks.reserve(static_cast<int>(pks.size()));
@@ -8964,17 +9505,20 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             applyArialToMatSciGraph(gw);
             gw->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
 
+            const QString noPhys = QObject::tr("No physical solution");
             const QString whStr = std::isfinite(res.whSizeNm)
                     ? QString::number(res.whSizeNm, 'f', 1) + QStringLiteral(" nm")
-                    : QStringLiteral("N/A (res-limited)");
+                    : QStringLiteral("N/A (%1)").arg(noPhys);
             const QString schStr = std::isfinite(res.meanScherrerSizeNm)
                     ? QString::number(res.meanScherrerSizeNm, 'f', 1) + QStringLiteral(" nm")
                     : QStringLiteral("N/A");
+            const QString epsStr = std::isfinite(res.whMicrostrain)
+                    ? QStringLiteral("%1 \u00D7 10<sup>-3</sup>").arg(res.whMicrostrain * 1e3, 0, 'f', 2)
+                    : QStringLiteral("N/A (%1)").arg(noPhys);
             QString summary = QStringLiteral(
                     "<i>D</i><sub>W-H</sub> = %1 (<i>D</i><sub>Sch</sub> = %2)\n"
-                    "<i>\u03B5</i> = %3 \u00D7 10<sup>-3</sup>, <i>R</i><sup>2</sup> = %4")
-                    .arg(whStr, schStr)
-                    .arg(res.whMicrostrain * 1e3, 0, 'f', 2)
+                    "<i>\u03B5</i> = %3, <i>R</i><sup>2</sup> = %4")
+                    .arg(whStr, schStr, epsStr)
                     .arg(res.whRSquare, 0, 'f', 4);
             if (res.latticeParamAngstrom > 0.0) {
                 summary += QStringLiteral("\n<i>a</i><sub>0</sub> = %1 \u00C5")
@@ -9157,8 +9701,9 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
                                               == QLatin1String("hcp"));
                      });
 
-    QCheckBox *chkStripKa2 =
-            new QCheckBox(QObject::tr("Strip Cu Kα2 Doublet (Rachinger)"), &dlg);
+    registerAnalysisNoticeTranslationsOnce();
+    QCheckBox *chkStripKa2 = new QCheckBox(
+            QObject::tr("Strip K\u03B12 Doublet (Rachinger, per-anode wavelengths)"), &dlg);
     chkStripKa2->setChecked(false);
 
     QCheckBox *chkTopD =
