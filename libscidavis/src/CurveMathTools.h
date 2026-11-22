@@ -106,6 +106,26 @@ public:
         double fractureX = 0.0;
         double fractureY = 0.0;
         bool strainInPercent = true;
+        // How the strain unit was decided: "user", "column", "axis title",
+        // "E range" (5-1000 GPa plausibility) or "max strain" (fallback heuristic).
+        QString strainUnitSource;
+        // true when the unit could not be decided reliably (neither or both
+        // interpretations give E in 5-1000 GPa, or the label contradicts E).
+        bool strainUnitAmbiguous = false;
+        double youngsModulusIfPercentGPa = std::numeric_limits<double>::quiet_NaN();
+        double youngsModulusIfFractionGPa = std::numeric_limits<double>::quiet_NaN();
+        // Toe-compensated strain origin x0 (x-axis units). All elongations and
+        // true strains are measured from x0.
+        double toeStrainX0 = 0.0;
+        // Elongations in percent, measured from x0. "Plastic" = total - sigma/E.
+        double uniformElongationPct = std::numeric_limits<double>::quiet_NaN();
+        double uniformPlasticElongationPct = std::numeric_limits<double>::quiet_NaN();
+        double fractureElongationPct = std::numeric_limits<double>::quiet_NaN();
+        double fracturePlasticElongationPct = std::numeric_limits<double>::quiet_NaN();
+        bool elasticAutoRelaxed = false; // auto window found only with relaxed criteria
+        int excludedMaskedPoints = 0;
+        int excludedNonFinitePoints = 0;
+        QStringList warnings;
         QString stressUnit;
         QString constructionCurveTitle;
         Table *trueStressTable = nullptr;
@@ -193,7 +213,19 @@ public:
         double considereEngStrainPct = 0.0;
         double hollomonK = 0.0;
         double hollomonN = 0.0;
-        double voceSigmaS = 0.0;
+        // NaN when the Stage-III fit fails; the reason is in voceNote.
+        double voceSigmaS = std::numeric_limits<double>::quiet_NaN();
+        QString voceNote;
+        // true when no persistent theta = sigma_t crossing was found and the
+        // maximum-load (UTS) point was used instead; reason in considereNote.
+        bool considereFromUts = false;
+        QString considereNote;
+        int postNeckRowsMasked = 0;   // rows after the Considere point, masked in the table
+        int mergedDuplicatePoints = 0; // equal-strain points averaged after sorting
+        bool strainInPercent = true;  // unit used (inherited from the tensile analysis)
+        double youngsModulus = 0.0;
+        double toeStrainX0 = 0.0;
+        QStringList warnings;
         Table *resultTable = nullptr;
         MultiLayer *plot = nullptr;
     };
@@ -201,7 +233,11 @@ public:
                                                     const QString &curveTitle = QString(),
                                                     int smoothWindow = 11,
                                                     bool createPlot = true,
-                                                    bool kocksMeckingPlot = false);
+                                                    bool kocksMeckingPlot = false,
+                                                    int strainInPercentMode = -1,
+                                                    double offsetFraction = 0.002,
+                                                    double elasticXMin = std::numeric_limits<double>::quiet_NaN(),
+                                                    double elasticXMax = std::numeric_limits<double>::quiet_NaN());
     static void showWorkHardeningDialog(ApplicationWindow *app);
 
     struct XRDPeakEntry {

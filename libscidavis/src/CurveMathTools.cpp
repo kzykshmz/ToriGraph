@@ -3773,6 +3773,200 @@ void CurveMathTools::showEISAnalyzerDialog(ApplicationWindow *app)
     }
 }
 
+namespace {
+
+// Japanese UI strings for the tensile / work-hardening analyzers (F2-F4, F8, F10).
+void registerTensileExtraTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Could not find a linear-elastic window automatically (no straight window between 10% and 60% of UTS spanning at least 15% of UTS). Please clear 'Auto-detect' and enter the elastic strain range.",
+        "線形弾性域を自動で決められませんでした (UTS の 10〜60% の応力範囲に、UTS の 15% 以上の幅を持つ直線区間がありません)。「線形弾性域を自動検出」を外して、弾性域のひずみ範囲を入力してください。");
+    reg("The elastic window was found only with relaxed criteria (2-85% of UTS, span of at least 10% of UTS). Check the shaded elastic range on the graph.",
+        "弾性域は条件を緩めた探索 (UTS の 2〜85%、幅 10% 以上) でのみ見つかりました。グラフの帯で示した弾性域を確認してください。");
+    reg("The strain label says %1, but E would then be %2 GPa (outside 5-1000 GPa). Read as %3, E would be %4 GPa. Please check the strain unit.",
+        "ひずみの単位表示は %1 ですが、その場合 E = %2 GPa となり 5〜1000 GPa の範囲外です。%3 と読むと E = %4 GPa です。ひずみの単位を確認してください。");
+    reg("The strain unit could not be decided from the labels or from E (5-1000 GPa): read as percent, E = %1 GPa; read as mm/mm, E = %2 GPa. %3 was assumed.",
+        "ひずみの単位を表示からも E の妥当範囲 (5〜1000 GPa) からも決められませんでした: % と読むと E = %1 GPa、mm/mm と読むと E = %2 GPa です。%3 と仮定しました。");
+    reg("percent (%)", "パーセント (%)");
+    reg("mm/mm (dimensionless)", "mm/mm (無次元)");
+    reg("selected by user", "利用者の指定");
+    reg("column unit", "列の単位");
+    reg("axis title", "軸タイトル");
+    reg("E plausibility (5-1000 GPa)", "E の妥当範囲 (5〜1000 GPa)");
+    reg("maximum strain (fallback)", "最大ひずみによる推定 (代替)");
+    reg("Excluded points: %1 masked, %2 non-numeric (NaN/empty).",
+        "除外した点: マスク %1 点、非数値 (NaN・空欄) %2 点。");
+    reg("Strain unit: %1 (decided by %2).", "ひずみ単位: %1 (判定: %2)。");
+    reg("Uniform elongation e_u = %1% (plastic %2%), elongation at fracture e_f = %3% (plastic %4%), measured from the toe-corrected origin %5.",
+        "一様伸び e_u = %1% (塑性分 %2%)、破断伸び e_f = %3% (塑性分 %4%)。トウ補正後の原点 %5 から測っています。");
+    reg("Elastic fit range: %1 to %2 (shaded on the graph).", "弾性域フィット範囲: %1 〜 %2 (グラフに帯で表示)。");
+    reg("Strain Unit Check", "ひずみ単位の確認");
+    reg("The strain unit of the selected curve is ambiguous.\n\n%1\n\nWhich unit does the strain data use?",
+        "選んだ曲線のひずみ単位を判定できません。\n\n%1\n\nひずみデータの単位はどちらですか?");
+    reg("Percent (%)", "パーセント (%)");
+    reg("Fraction (mm/mm)", "無次元 (mm/mm)");
+    reg("Tensile Analysis Notes", "引張解析の注記");
+    reg("Work-Hardening Analysis Notes", "加工硬化解析の注記");
+    reg("Elastic fit range", "弾性域フィット範囲");
+    reg("Settings below are inherited from the last tensile analysis of this curve.",
+        "以下の設定は、この曲線の直前の引張解析から引き継いでいます。");
+    reg("Tensile settings (shared with the tensile analyzer)", "引張解析の設定 (引張解析と共通)");
+    reg("No persistent crossing of θ and σt was found (%1 early or transient crossing(s) rejected); the maximum-load (UTS) point is used as the Considère point.",
+        "θ と σt の持続する交点が見つかりませんでした (早すぎる・一時的な交点 %1 個を除外)。最大荷重点 (UTS) を Considère 点として使っています。");
+    reg("%1 early or transient θ = σt crossing(s) (e.g. serrations) were rejected before the Considère point.",
+        "Considère 点より前の早すぎる・一時的な θ = σt の交点 %1 個 (セレーションなど) を除外しました。");
+    reg("σs (Stage-III saturation stress) is not available: only %1 point(s) between σ0.2 + 20% and 98% of σu (at least 3 are needed).",
+        "σs (Stage III の飽和応力) は求められません: σ0.2 + 20% から σu の 98% までの点が %1 点しかありません (3 点以上必要)。");
+    reg("σs (Stage-III saturation stress) is not available: θ does not decrease linearly with σt in Stage III (slope %1, intercept %2).",
+        "σs (Stage III の飽和応力) は求められません: Stage III で θ が σt とともに直線的に減少していません (傾き %1、切片 %2)。");
+    reg("%1 row(s) after the Considère point (post-necking) are masked in the table and excluded from the fits.",
+        "Considère 点より後 (くびれ後) の %1 行は表でマスクし、フィットから除いています。");
+    reg("%1 point(s) with equal strain were averaged.", "ひずみが同じ %1 点を平均しました。");
+    reg("%1 point(s) before the toe-corrected strain origin were skipped.",
+        "トウ補正後のひずみ原点より前の %1 点を除きました。");
+    reg("Tensile settings", "引張解析の設定");
+}
+
+// Stress unit -> factor that converts a modulus in that unit to GPa.
+double tensileStressUnitToGPa(const QString &unitIn)
+{
+    const QString u = unitIn.trimmed();
+    if (u.contains(QLatin1String("GPa"), Qt::CaseInsensitive))
+        return 1.0;
+    if (u.contains(QLatin1String("MPa"), Qt::CaseInsensitive)
+        || u.contains(QLatin1String("N/mm"), Qt::CaseInsensitive))
+        return 1.0e-3;
+    if (u.contains(QLatin1String("kPa"), Qt::CaseInsensitive))
+        return 1.0e-6;
+    if (u.contains(QLatin1String("TPa"), Qt::CaseInsensitive))
+        return 1.0e3;
+    if (u.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
+        return 6.894757e-3;
+    if (u.contains(QLatin1String("psi"), Qt::CaseInsensitive))
+        return 6.894757e-6;
+    if (u.compare(QLatin1String("Pa"), Qt::CaseInsensitive) == 0
+        || u.compare(QLatin1String("N/m^2"), Qt::CaseInsensitive) == 0
+        || u.compare(QLatin1String("N/m2"), Qt::CaseInsensitive) == 0)
+        return 1.0e-9;
+    return 1.0e-3; // unlabelled stress is assumed to be MPa
+}
+
+// Classify a strain unit or label text: 1 = percent, 0 = dimensionless fraction, -1 = unknown.
+// Composition percents (wt%, at%, mass%, vol%, mol%) are ignored.
+int classifyStrainUnitText(const QString &raw, bool isUnitField)
+{
+    QString s = raw;
+    static const QRegularExpression reTags(QStringLiteral("<[^>]*>"));
+    s.remove(reTags);
+    static const QRegularExpression reComp(QStringLiteral("(wt|at|mass|vol|mol)\\s*\\.?\\s*%"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    s.remove(reComp);
+    s = s.trimmed().toLower();
+    if (s.isEmpty())
+        return -1;
+    if (isUnitField) {
+        if (s == QLatin1String("%") || s == QLatin1String("(%)") || s == QLatin1String("[%]")
+            || s == QLatin1String("percent") || s == QLatin1String("pct"))
+            return 1;
+        if (s == QLatin1String("-") || s == QStringLiteral("—") || s == QStringLiteral("–")
+            || s == QLatin1String("(-)") || s == QLatin1String("[-]") || s == QLatin1String("1")
+            || s == QLatin1String("mm/mm") || s == QLatin1String("m/m") || s == QLatin1String("in/in")
+            || s == QLatin1String("dimensionless"))
+            return 0;
+        return -1;
+    }
+    if (s.contains(QLatin1Char('%')) || s.contains(QLatin1String("percent")))
+        return 1;
+    if (s.contains(QLatin1String("mm/mm")) || s.contains(QLatin1String("in/in"))
+        || s.contains(QLatin1String("(-)")) || s.contains(QLatin1String("[-]"))
+        || s.endsWith(QLatin1String("/ -")) || s.endsWith(QLatin1String("/-"))
+        || s.contains(QLatin1String("dimensionless")))
+        return 0;
+    return -1;
+}
+
+QString tensileStrainUnitName(bool percent)
+{
+    return percent ? QObject::tr("percent (%)") : QObject::tr("mm/mm (dimensionless)");
+}
+
+QString tensileUnitSourceName(const QString &src)
+{
+    if (src == QLatin1String("user"))
+        return QObject::tr("selected by user");
+    if (src == QLatin1String("column"))
+        return QObject::tr("column unit");
+    if (src == QLatin1String("axis title"))
+        return QObject::tr("axis title");
+    if (src == QLatin1String("E range"))
+        return QObject::tr("E plausibility (5-1000 GPa)");
+    return QObject::tr("maximum strain (fallback)");
+}
+
+QString fmtElongPct(double v)
+{
+    if (!std::isfinite(v))
+        return QStringLiteral("—");
+    return QString::number(v, 'f', std::fabs(v) < 10.0 ? 2 : 1);
+}
+
+// Last settings used in the tensile analyzer dialog; the work-hardening dialog
+// starts from them so both analyses use the same unit, offset and elastic range.
+struct TensileDialogMemory
+{
+    bool valid = false;
+    int dialogStrainMode = -1;   // what the user selected (-1 auto)
+    int resolvedStrainMode = -1; // what was actually used (0/1), -1 if unknown
+    double offsetFraction = 0.002;
+    bool autoElastic = true;
+    double elasticMin = 0.02;
+    double elasticMax = 0.30;
+    QString graphName;
+    QString curveTitle;
+};
+
+TensileDialogMemory &tensileDialogMemory()
+{
+    static TensileDialogMemory s_mem;
+    return s_mem;
+}
+
+// Ask the user which strain unit to use when the automatic decision is ambiguous.
+// Returns 1 (percent), 0 (fraction) or -2 (cancelled).
+int askTensileStrainUnit(QWidget *parent, const CurveMathTools::TensileResult &probe)
+{
+    QString detail = probe.warnings.isEmpty() ? QString() : probe.warnings.last();
+    if (detail.isEmpty()) {
+        detail = QStringLiteral("E (%) = %1 GPa, E (mm/mm) = %2 GPa")
+                         .arg(probe.youngsModulusIfPercentGPa, 0, 'g', 4)
+                         .arg(probe.youngsModulusIfFractionGPa, 0, 'g', 4);
+    }
+    QMessageBox box(parent);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(QObject::tr("Strain Unit Check"));
+    box.setText(QObject::tr("The strain unit of the selected curve is ambiguous.\n\n%1\n\nWhich unit does the strain data use?")
+                        .arg(detail));
+    QPushButton *bPct = box.addButton(QObject::tr("Percent (%)"), QMessageBox::AcceptRole);
+    QPushButton *bFrac = box.addButton(QObject::tr("Fraction (mm/mm)"), QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(probe.strainInPercent ? bPct : bFrac);
+    box.exec();
+    if (box.clickedButton() == bPct)
+        return 1;
+    if (box.clickedButton() == bFrac)
+        return 0;
+    return -2;
+}
+
+} // namespace
+
 CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         ApplicationWindow *app, Graph *g, const QString &curveTitle,
         double offsetFraction, int strainInPercentMode,
@@ -3780,6 +3974,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         bool plotConstruction, bool addCallout, bool createTrueStressTable)
 {
     registerMatSciTranslationsOnce();
+    registerTensileExtraTranslations();
     TensileResult res;
     res.offsetFraction =
             (std::isfinite(offsetFraction) && offsetFraction > 0.0) ? offsetFraction : 0.002;
@@ -3841,13 +4036,43 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             int row = srcDc->tableRow(i);
             if (row < 0 && yCol && rawN == yCol->rowCount())
                 row = i;
-            if (row >= 0 && ((xCol && xCol->isMasked(row)) || (yCol && yCol->isMasked(row))))
+            if (row >= 0 && ((xCol && xCol->isMasked(row)) || (yCol && yCol->isMasked(row)))) {
+                ++res.excludedMaskedPoints;
                 continue;
+            }
         }
         const double xv = srcCurve->x(i);
         const double yv = srcCurve->y(i);
         if (std::isfinite(xv) && std::isfinite(yv))
             pts.push_back({ xv, yv });
+        else
+            ++res.excludedNonFinitePoints;
+    }
+    // Rows that never reached the curve (empty or non-numeric cells in the source columns)
+    if (srcDc && xCol && yCol) {
+        const int rowEnd = std::min(xCol->rowCount(), yCol->rowCount());
+        const int startRow = std::max(0, srcDc->startRow());
+        const int endRow = (srcDc->endRow() >= 0) ? std::min(rowEnd - 1, srcDc->endRow()) : rowEnd - 1;
+        int unusable = 0;
+        int maskedRows = 0;
+        for (int r = startRow; r <= endRow; ++r) {
+            if (xCol->isMasked(r) || yCol->isMasked(r)) {
+                ++maskedRows;
+                continue;
+            }
+            const bool xOk = !xCol->isInvalid(r) && std::isfinite(xCol->valueAt(r));
+            const bool yOk = !yCol->isInvalid(r) && std::isfinite(yCol->valueAt(r));
+            // Fully blank rows (e.g. unused rows at the end of a worksheet) are not data.
+            if (xOk != yOk)
+                ++unusable;
+        }
+        res.excludedNonFinitePoints = std::max(res.excludedNonFinitePoints, unusable);
+        res.excludedMaskedPoints = std::max(res.excludedMaskedPoints, maskedRows);
+    }
+    if (res.excludedMaskedPoints > 0 || res.excludedNonFinitePoints > 0) {
+        res.warnings << QObject::tr("Excluded points: %1 masked, %2 non-numeric (NaN/empty).")
+                                .arg(res.excludedMaskedPoints)
+                                .arg(res.excludedNonFinitePoints);
     }
 
     if (pts.size() < 4) {
@@ -3882,32 +4107,6 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
     res.fractureX = pts[fracIdx].x;
     res.fractureY = pts[fracIdx].y;
 
-    // Auto-detect strain in % vs dimensionless fraction
-    bool strainInPercent = (maxX > 1.2);
-    if (strainInPercentMode == 1) {
-        strainInPercent = true;
-    } else if (strainInPercentMode == 0) {
-        strainInPercent = false;
-    } else {
-        const QString xUnit = xCol ? xCol->units().trimmed() : QString();
-        const QString xTitle = targetGraph->plotWidget()
-                ? targetGraph->plotWidget()->axisTitle(srcCurve->xAxis()).text()
-                : QString();
-        if (xUnit == QLatin1String("%")
-            || (xTitle.contains(QLatin1Char('%')) && !xTitle.contains(QLatin1String("wt%"), Qt::CaseInsensitive)
-                && !xTitle.contains(QLatin1String("at%"), Qt::CaseInsensitive))) {
-            strainInPercent = true;
-        } else if ((xUnit == QLatin1String("-") || xUnit == QStringLiteral("\u2014")
-                    || xUnit.compare(QLatin1String("mm/mm"), Qt::CaseInsensitive) == 0
-                    || xUnit.compare(QLatin1String("m/m"), Qt::CaseInsensitive) == 0
-                    || xTitle.contains(QLatin1String("(mm/mm)"), Qt::CaseInsensitive)
-                    || xTitle.contains(QLatin1String("(-)")))
-                   && maxX <= 1.2) {
-            strainInPercent = false;
-        }
-    }
-    res.strainInPercent = strainInPercent;
-
     // Detect stress unit (default MPa)
     QString stressUnit = yCol ? yCol->units().trimmed() : QString();
     if (stressUnit.isEmpty() && targetGraph->plotWidget()) {
@@ -3926,7 +4125,9 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         stressUnit = QStringLiteral("MPa");
     res.stressUnit = stressUnit;
 
-    // Fit linear-elastic slope on rising branch [0 .. utsIdx]
+    // Fit the linear-elastic slope on the rising branch [0 .. utsIdx].
+    // The slope (stress per x-unit) does not depend on the strain unit, so the unit
+    // is decided afterwards from labels and from the plausibility of E.
     const size_t nRise = std::max<size_t>(2, std::min(pts.size(), utsIdx + 1));
 
     auto olsRange = [&](const std::vector<TensilePt> &sub, double &outSlope, double &outIntercept,
@@ -3980,12 +4181,23 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             hasElasticFit = true;
         }
     } else {
-        // Prefix sums on [0 .. nRise - 1] for fast sliding-window elastic discovery
+        // Automatic elastic window (F3): windows [i..j] on the rising branch whose end
+        // points lie between 10% and 60% of UTS and whose stress span is at least 15% of
+        // UTS. Among the windows whose slope is at least 95% of the steepest window, the
+        // one with the highest R^2 wins. No limit on the number of points per window.
+        // Prefix sums are taken on centred data to avoid cancellation.
+        double xRef = 0.0, yRef = 0.0;
+        for (size_t k = 0; k < nRise; ++k) {
+            xRef += pts[k].x;
+            yRef += pts[k].y;
+        }
+        xRef /= double(nRise);
+        yRef /= double(nRise);
         std::vector<double> pX(nRise + 1, 0.0), pY(nRise + 1, 0.0);
         std::vector<double> pXX(nRise + 1, 0.0), pYY(nRise + 1, 0.0), pXY(nRise + 1, 0.0);
         for (size_t k = 0; k < nRise; ++k) {
-            const double xk = pts[k].x;
-            const double yk = pts[k].y;
+            const double xk = pts[k].x - xRef;
+            const double yk = pts[k].y - yRef;
             pX[k + 1] = pX[k] + xk;
             pY[k + 1] = pY[k] + yk;
             pXX[k + 1] = pXX[k] + xk * xk;
@@ -4000,27 +4212,32 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             double b = 0.0;
             double a = 0.0;
             double r2 = 0.0;
-            double riseFrac = 0.0;
-            double yiFrac = 0.0;
+            double span = 0.0;
         };
 
-        const size_t minWin = (nRise >= 30) ? 5 : ((nRise >= 6) ? 3 : 2);
-        const size_t maxWin = std::max(minWin, std::min<size_t>(nRise, 250));
-        std::vector<ElasticCand> cands;
-
-        auto collectElasticWindows = [&](double maxStartFrac, double maxEndFrac,
-                                         double minRiseFrac) {
-            for (size_t i = 0; i + minWin - 1 < nRise; ++i) {
-                const double yiFrac = pts[i].y / res.utsY;
-                if (yiFrac < -0.05 || yiFrac > maxStartFrac)
-                    continue;
-                const size_t jEnd = std::min(nRise - 1, i + maxWin - 1);
-                for (size_t j = i + minWin - 1; j <= jEnd; ++j) {
-                    const double yjFrac = pts[j].y / res.utsY;
-                    if (yjFrac > maxEndFrac)
+        auto collectElasticWindows = [&](double loFrac, double hiFrac, double minSpanFrac,
+                                         std::vector<ElasticCand> &out) {
+            const double lo = loFrac * res.utsY;
+            const double hi = hiFrac * res.utsY;
+            const double minSpan = minSpanFrac * res.utsY;
+            std::vector<size_t> starts;
+            for (size_t k = 0; k < nRise; ++k) {
+                if (pts[k].y >= lo && pts[k].y <= hi)
+                    starts.push_back(k);
+            }
+            if (starts.size() < 3)
+                return;
+            // Keep the search O(1e6) windows even for very dense records.
+            const size_t stride = std::max<size_t>(1, (starts.size() + 1199) / 1200);
+            for (size_t si = 0; si < starts.size(); si += stride) {
+                const size_t i = starts[si];
+                for (size_t j = i + 2; j < nRise; j += stride) {
+                    if (pts[j].y > hi)
                         break;
-                    const double riseFrac = (pts[j].y - pts[i].y) / res.utsY;
-                    if (riseFrac < minRiseFrac)
+                    if (pts[j].y < lo)
+                        continue;
+                    const double span = pts[j].y - pts[i].y;
+                    if (span < minSpan)
                         continue;
                     const double m = double(j - i + 1);
                     const double mx = (pX[j + 1] - pX[i]) / m;
@@ -4028,63 +4245,46 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                     const double sxx = (pXX[j + 1] - pXX[i]) - m * mx * mx;
                     const double syy = (pYY[j + 1] - pYY[i]) - m * my * my;
                     const double sxy = (pXY[j + 1] - pXY[i]) - m * mx * my;
-                    if (sxx <= 1e-30 || syy <= 1e-30 || sxy <= 0.0)
+                    if (sxx <= 1e-300 || syy <= 1e-300 || sxy <= 0.0)
                         continue;
                     const double b = sxy / sxx;
-                    const double a = my - b * mx;
+                    const double a = (my + yRef) - b * (mx + xRef);
                     const double rss = std::max(0.0, syy - b * sxy);
                     const double r2 = std::clamp(1.0 - rss / syy, 0.0, 1.0);
-                    cands.push_back({ i, j, b, a, r2, riseFrac, std::max(0.0, yiFrac) });
+                    if (std::isfinite(b) && b > 0.0)
+                        out.push_back({ i, j, b, a, r2, span });
                 }
             }
         };
 
-        collectElasticWindows(0.28, 0.72, 0.18);
-        if (cands.empty())
-            collectElasticWindows(0.40, 0.90, 0.10);
+        std::vector<ElasticCand> cands;
+        collectElasticWindows(0.10, 0.60, 0.15, cands);
         if (cands.empty()) {
-            // Ultra-coarse fallback: first 2..3 points on rising branch
-            const size_t jFb = std::min<size_t>(nRise - 1, 2);
-            std::vector<TensilePt> sub(pts.begin(), pts.begin() + jFb + 1);
-            double b = 0.0, a = 0.0, r2 = 0.0;
-            if (olsRange(sub, b, a, r2)) {
-                res.elasticSlopeRaw = b;
-                res.elasticIntercept = a;
-                res.elasticR2 = r2;
-                res.elasticXMin = sub.front().x;
-                res.elasticXMax = sub.back().x;
-                hasElasticFit = true;
+            collectElasticWindows(0.02, 0.85, 0.10, cands);
+            if (!cands.empty()) {
+                res.elasticAutoRelaxed = true;
+                res.warnings << QObject::tr(
+                        "The elastic window was found only with relaxed criteria (2-85% of UTS, span of at least 10% of UTS). Check the shaded elastic range on the graph.");
             }
-        } else {
-            double bestR2 = 0.0;
-            for (const auto &c : cands)
-                bestR2 = std::max(bestR2, c.r2);
-            const double r2Gate = (bestR2 >= 0.998) ? (bestR2 - 0.0025)
-                    : (bestR2 >= 0.98)              ? (bestR2 - 0.008)
-                                                    : (bestR2 * 0.92);
-            double maxSlopeHighR2 = 0.0;
-            for (const auto &c : cands) {
-                if (c.r2 >= r2Gate)
-                    maxSlopeHighR2 = std::max(maxSlopeHighR2, c.b);
+        }
+        if (cands.empty()) {
+            res.error = QObject::tr(
+                    "Could not find a linear-elastic window automatically (no straight window between 10% and 60% of UTS spanning at least 15% of UTS). Please clear 'Auto-detect' and enter the elastic strain range.");
+            return res;
+        }
+        double bMax = 0.0;
+        for (const auto &c : cands)
+            bMax = std::max(bMax, c.b);
+        const ElasticCand *winner = nullptr;
+        for (const auto &c : cands) {
+            if (c.b < 0.95 * bMax)
+                continue;
+            if (!winner || c.r2 > winner->r2 + 1e-12
+                || (std::fabs(c.r2 - winner->r2) <= 1e-12 && c.span > winner->span)) {
+                winner = &c;
             }
-
-            const ElasticCand *winner = &cands.front();
-            double bestScore = -1.0;
-            for (const auto &c : cands) {
-                if (c.r2 < r2Gate)
-                    continue;
-                if (maxSlopeHighR2 > 0.0 && c.b < 0.75 * maxSlopeHighR2)
-                    continue;
-                const double slopeTerm =
-                        (maxSlopeHighR2 > 0.0) ? std::pow(c.b / maxSlopeHighR2, 1.5) : 1.0;
-                const double spanTerm = std::pow(std::min(0.65, c.riseFrac), 0.35);
-                const double originTerm = 1.0 / (1.0 + 1.5 * c.yiFrac);
-                const double score = std::pow(c.r2, 12.0) * slopeTerm * spanTerm * originTerm;
-                if (score > bestScore) {
-                    bestScore = score;
-                    winner = &c;
-                }
-            }
+        }
+        if (winner) {
             res.elasticSlopeRaw = winner->b;
             res.elasticIntercept = winner->a;
             res.elasticR2 = winner->r2;
@@ -4100,6 +4300,68 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         return res;
     }
 
+    // Strain unit (F2): explicit choice > column unit/long name > axis title >
+    // plausibility of E (5-1000 GPa) > maximum strain heuristic (flagged ambiguous).
+    const double toGPa = tensileStressUnitToGPa(stressUnit);
+    res.youngsModulusIfPercentGPa = res.elasticSlopeRaw * 100.0 * toGPa;
+    res.youngsModulusIfFractionGPa = res.elasticSlopeRaw * toGPa;
+    auto plausibleE = [](double eGPa) { return std::isfinite(eGPa) && eGPa >= 5.0 && eGPa <= 1000.0; };
+    const bool pctOk = plausibleE(res.youngsModulusIfPercentGPa);
+    const bool fracOk = plausibleE(res.youngsModulusIfFractionGPa);
+    bool strainInPercent = (maxX > 1.2);
+    if (strainInPercentMode == 1 || strainInPercentMode == 0) {
+        strainInPercent = (strainInPercentMode == 1);
+        res.strainUnitSource = QStringLiteral("user");
+    } else {
+        int vote = -1;
+        QString voteSrc;
+        if (xCol) {
+            vote = classifyStrainUnitText(xCol->units(), true);
+            if (vote < 0)
+                vote = classifyStrainUnitText(xCol->longName(), false);
+            if (vote >= 0)
+                voteSrc = QStringLiteral("column");
+        }
+        if (vote < 0 && targetGraph->plotWidget()) {
+            vote = classifyStrainUnitText(
+                    targetGraph->plotWidget()->axisTitle(srcCurve->xAxis()).text(), false);
+            if (vote >= 0)
+                voteSrc = QStringLiteral("axis title");
+        }
+        if (vote >= 0) {
+            strainInPercent = (vote == 1);
+            res.strainUnitSource = voteSrc;
+            const bool labelOk = strainInPercent ? pctOk : fracOk;
+            const bool otherOk = strainInPercent ? fracOk : pctOk;
+            if (!labelOk && otherOk) {
+                res.strainUnitAmbiguous = true;
+                res.warnings << QObject::tr(
+                        "The strain label says %1, but E would then be %2 GPa (outside 5-1000 GPa). Read as %3, E would be %4 GPa. Please check the strain unit.")
+                                        .arg(tensileStrainUnitName(strainInPercent))
+                                        .arg(strainInPercent ? res.youngsModulusIfPercentGPa
+                                                             : res.youngsModulusIfFractionGPa,
+                                             0, 'g', 4)
+                                        .arg(tensileStrainUnitName(!strainInPercent))
+                                        .arg(strainInPercent ? res.youngsModulusIfFractionGPa
+                                                             : res.youngsModulusIfPercentGPa,
+                                             0, 'g', 4);
+            }
+        } else if (pctOk != fracOk) {
+            strainInPercent = pctOk;
+            res.strainUnitSource = QStringLiteral("E range");
+        } else {
+            strainInPercent = (maxX > 1.2);
+            res.strainUnitSource = QStringLiteral("max strain");
+            res.strainUnitAmbiguous = true;
+            res.warnings << QObject::tr(
+                    "The strain unit could not be decided from the labels or from E (5-1000 GPa): read as percent, E = %1 GPa; read as mm/mm, E = %2 GPa. %3 was assumed.")
+                                    .arg(res.youngsModulusIfPercentGPa, 0, 'g', 4)
+                                    .arg(res.youngsModulusIfFractionGPa, 0, 'g', 4)
+                                    .arg(tensileStrainUnitName(strainInPercent));
+        }
+    }
+    res.strainInPercent = strainInPercent;
+
     res.youngsModulus = strainInPercent ? (res.elasticSlopeRaw * 100.0) : res.elasticSlopeRaw;
 
     // Intersect shifted offset line L(x) = elasticSlopeRaw * (x - (x0 + deltaX)) with curve segments
@@ -4108,6 +4370,22 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
     x0 = std::clamp(x0, minX - 0.05 * xSpanRise, minX + 0.25 * xSpanRise);
     if (std::fabs(x0) < 1e-6 * xSpanRise)
         x0 = 0.0;
+    res.toeStrainX0 = x0;
+
+    // Elongations (F10), measured from the toe-corrected origin x0, in percent.
+    // Plastic part = total - sigma / E (elastic recovery at that stress).
+    {
+        const double toPct = strainInPercent ? 1.0 : 100.0;
+        const double eModPerFrac = res.youngsModulus; // stress per unit (fraction) strain
+        res.uniformElongationPct = (res.utsX - x0) * toPct;
+        res.fractureElongationPct = (res.fractureX - x0) * toPct;
+        if (eModPerFrac > 0.0) {
+            res.uniformPlasticElongationPct =
+                    std::max(0.0, res.uniformElongationPct - 100.0 * res.utsY / eModPerFrac);
+            res.fracturePlasticElongationPct =
+                    std::max(0.0, res.fractureElongationPct - 100.0 * res.fractureY / eModPerFrac);
+        }
+    }
 
     const double deltaX = strainInPercent ? (res.offsetFraction * 100.0) : res.offsetFraction;
     const double xFoot = x0 + deltaX;
@@ -4150,7 +4428,8 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
 
     res.valid = true;
 
-    // Optional True Stress - True Strain worksheet (strictly up to uniform elongation utsIdx, prior to necking)
+    // Optional True Stress - True Strain worksheet (strictly up to uniform elongation utsIdx,
+    // prior to necking). Strains are measured from the toe-corrected origin x0.
     if (createTrueStressTable && app) {
         std::vector<double> trueEps;
         std::vector<double> trueSig;
@@ -4161,10 +4440,10 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         plasticEps.reserve(nUniform);
         for (size_t i = 0; i <= utsIdx && i < pts.size(); ++i) {
             const auto &p = pts[i];
-            const double eFrac = strainInPercent ? (p.x / 100.0) : p.x;
-            if (1.0 + eFrac <= 1e-9)
+            const double eFrac = strainInPercent ? ((p.x - x0) / 100.0) : (p.x - x0);
+            if (eFrac < 0.0 || 1.0 + eFrac <= 1e-9)
                 continue;
-            const double epsT = std::log(1.0 + eFrac);
+            const double epsT = std::log1p(eFrac);
             const double sigT = p.y * (1.0 + eFrac);
             const double epsP = std::max(0.0, epsT - (sigT / std::max(1e-12, res.youngsModulus)));
             trueEps.push_back(epsT);
@@ -4181,15 +4460,15 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                     { trueEps, trueSig, plasticEps });
             if (tTrue) {
                 if (Column *c0 = tTrue->column(0)) {
-                    c0->setLongName(QStringLiteral("True strain, \u03B5"));
+                    c0->setLongName(QStringLiteral("True strain, ε"));
                     c0->setUnits(QStringLiteral("-"));
                 }
                 if (Column *c1 = tTrue->column(1)) {
-                    c1->setLongName(QStringLiteral("True stress, \u03C3"));
+                    c1->setLongName(QStringLiteral("True stress, σ"));
                     c1->setUnits(stressUnit);
                 }
                 if (Column *c2 = tTrue->column(2)) {
-                    c2->setLongName(QStringLiteral("True plastic strain, \u03B5<sub>p</sub>"));
+                    c2->setLongName(QStringLiteral("True plastic strain, ε<sub>p</sub>"));
                     c2->setUnits(QStringLiteral("-"));
                 }
                 res.trueStressTable = tTrue;
@@ -4218,6 +4497,21 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
     }
 
     if (plotConstruction && app) {
+        // Shaded band over the strain range used for the elastic fit (F3)
+        if (res.elasticXMax > res.elasticXMin) {
+            const QVector<double> bx = { res.elasticXMin, res.elasticXMax };
+            const QVector<double> bLo = { 0.0, 0.0 };
+            const QVector<double> bHi = { res.utsY, res.utsY };
+            const QString bandTitle = graphHasCjk
+                    ? QStringLiteral("弾性域フィット範囲")
+                    : QStringLiteral("Elastic fit range");
+            if (QwtPlotItem *band = targetGraph->addShadedBand(bx, bLo, bHi,
+                                                                QColor(16, 150, 110, 40), bandTitle)) {
+                band->setAxis(srcCurve->xAxis(), srcCurve->yAxis());
+                band->setZ(0.5);
+            }
+        }
+
         auto *colOX = new Column(QStringLiteral("OffsetStrain"), SciDAVis::ColumnMode::Numeric);
         auto *colOY = new Column(QStringLiteral("OffsetStress"), SciDAVis::ColumnMode::Numeric);
         colOX->setPlotDesignation(SciDAVis::X);
@@ -4227,7 +4521,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         colOX->replaceValues(0, vx);
         colOY->replaceValues(0, vy);
         const QString legComment = graphHasCjk
-                ? QStringLiteral("%1% \u30AA\u30D5\u30BB\u30C3\u30C8\u7DDA").arg(offsetPctStr)
+                ? QStringLiteral("%1% オフセット線").arg(offsetPctStr)
                 : QStringLiteral("%1% offset").arg(offsetPctStr);
         colOY->setComment(legComment);
 
@@ -4254,7 +4548,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         refSpec.width = 1.3;
         refSpec.label = addCallout
                 ? QString()
-                : QStringLiteral("<i>\u03C3</i><sub>%1</sub> = %2 %3")
+                : QStringLiteral("<i>σ</i><sub>%1</sub> = %2 %3")
                           .arg(offsetPctStr)
                           .arg(res.offsetYieldY, 0, 'f', 1)
                           .arg(stressUnit);
@@ -4268,15 +4562,23 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         } else {
             eDisplay = QStringLiteral("%1 %2").arg(res.youngsModulus, 0, 'g', 4).arg(stressUnit);
         }
+        const QString plasticWord =
+                graphHasCjk ? QStringLiteral("塑性") : QStringLiteral("plastic");
         const QString callout = QStringLiteral(
-                "<i>\u03C3</i><sub>%1</sub> = %2 %3\n"
+                "<i>σ</i><sub>%1</sub> = %2 %3\n"
                 "<i>E</i> = %4 (<i>R</i><sup>2</sup> = %5)\n"
-                "UTS = %6 %3")
+                "UTS = %6 %3\n"
+                "<i>e</i><sub>u</sub> = %7% (%8 %9%)\n"
+                "<i>e</i><sub>f</sub> = %10% (%8 %11%)")
                 .arg(offsetPctStr)
                 .arg(res.offsetYieldY, 0, 'f', 1)
                 .arg(stressUnit, eDisplay)
                 .arg(res.elasticR2, 0, 'f', 4)
-                .arg(res.utsY, 0, 'f', 1);
+                .arg(res.utsY, 0, 'f', 1)
+                .arg(fmtElongPct(res.uniformElongationPct), plasticWord,
+                     fmtElongPct(res.uniformPlasticElongationPct),
+                     fmtElongPct(res.fractureElongationPct),
+                     fmtElongPct(res.fracturePlasticElongationPct));
 
         const double xSpanAll = std::max(1e-9, maxX - minX);
         const double calloutX = std::min(minX + 0.52 * xSpanAll,
@@ -4292,7 +4594,8 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                                    beforeSnap);
     }
     if (app) {
-        app->updateLog(QStringLiteral(
+        const QString strainSuffix = strainInPercent ? QStringLiteral("%") : QString();
+        QString logText = QStringLiteral(
                 "[%1] Tensile Analysis (%2): E = %3 %4 (R² = %5), σ_%6 = %7 %4 at %8%9, UTS = %10 %4\n")
                 .arg(QLocale().toString(QDateTime::currentDateTime()),
                      srcCurve->title().text())
@@ -4302,8 +4605,27 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
                 .arg(offsetPctStr)
                 .arg(res.offsetYieldY, 0, 'f', 2)
                 .arg(res.offsetYieldX, 0, 'g', 4)
-                .arg(strainInPercent ? QStringLiteral("%") : QString())
-                .arg(res.utsY, 0, 'f', 2));
+                .arg(strainSuffix)
+                .arg(res.utsY, 0, 'f', 2);
+        logText += QStringLiteral("    ")
+                + QObject::tr("Uniform elongation e_u = %1% (plastic %2%), elongation at fracture e_f = %3% (plastic %4%), measured from the toe-corrected origin %5.")
+                          .arg(fmtElongPct(res.uniformElongationPct),
+                               fmtElongPct(res.uniformPlasticElongationPct),
+                               fmtElongPct(res.fractureElongationPct),
+                               fmtElongPct(res.fracturePlasticElongationPct),
+                               QString::number(x0, 'g', 4) + strainSuffix)
+                + QStringLiteral("\n    ")
+                + QObject::tr("Strain unit: %1 (decided by %2).")
+                          .arg(tensileStrainUnitName(strainInPercent),
+                               tensileUnitSourceName(res.strainUnitSource))
+                + QStringLiteral(" ")
+                + QObject::tr("Elastic fit range: %1 to %2 (shaded on the graph).")
+                          .arg(QString::number(res.elasticXMin, 'g', 4) + strainSuffix,
+                               QString::number(res.elasticXMax, 'g', 4) + strainSuffix)
+                + QStringLiteral("\n");
+        for (const QString &w : res.warnings)
+            logText += QStringLiteral("    ! ") + w + QStringLiteral("\n");
+        app->updateLog(logText);
         app->modifiedProject();
     }
 
@@ -4315,6 +4637,7 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
+    registerTensileExtraTranslations();
 
     QList<Graph *> graphs;
     Graph *activeG = findActiveOrFirstGraph(app, nullptr);
@@ -4444,33 +4767,40 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     QObject::connect(cbSourceMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { syncSourceVisibility(); });
 
+    const TensileDialogMemory &mem = tensileDialogMemory();
+
     QDoubleSpinBox *sbOffsetPct = new QDoubleSpinBox(&dlg);
     sbOffsetPct->setRange(0.01, 20.0);
     sbOffsetPct->setDecimals(3);
     sbOffsetPct->setSingleStep(0.05);
-    sbOffsetPct->setValue(0.200);
+    sbOffsetPct->setValue(mem.valid ? mem.offsetFraction * 100.0 : 0.200);
     sbOffsetPct->setSuffix(QStringLiteral(" %"));
 
     QComboBox *cbStrainUnit = new QComboBox(&dlg);
     cbStrainUnit->addItem(QObject::tr("Auto-detect (% or mm/mm)"), -1);
     cbStrainUnit->addItem(QObject::tr("Percent (%)"), 1);
     cbStrainUnit->addItem(QObject::tr("Engineering Fraction (mm/mm)"), 0);
+    if (mem.valid) {
+        const int ui = cbStrainUnit->findData(mem.dialogStrainMode);
+        if (ui >= 0)
+            cbStrainUnit->setCurrentIndex(ui);
+    }
 
     QCheckBox *chkAutoElastic =
             new QCheckBox(QObject::tr("Auto-detect linear-elastic region (max R²)"), &dlg);
-    chkAutoElastic->setChecked(true);
+    chkAutoElastic->setChecked(mem.valid ? mem.autoElastic : true);
 
     QDoubleSpinBox *sbElasticMin = new QDoubleSpinBox(&dlg);
     sbElasticMin->setRange(-1000.0, 10000.0);
     sbElasticMin->setDecimals(5);
-    sbElasticMin->setValue(0.02);
-    sbElasticMin->setEnabled(false);
+    sbElasticMin->setValue(mem.valid ? mem.elasticMin : 0.02);
+    sbElasticMin->setEnabled(!chkAutoElastic->isChecked());
 
     QDoubleSpinBox *sbElasticMax = new QDoubleSpinBox(&dlg);
     sbElasticMax->setRange(-1000.0, 10000.0);
     sbElasticMax->setDecimals(5);
-    sbElasticMax->setValue(0.30);
-    sbElasticMax->setEnabled(false);
+    sbElasticMax->setValue(mem.valid ? mem.elasticMax : 0.30);
+    sbElasticMax->setEnabled(!chkAutoElastic->isChecked());
 
     QObject::connect(chkAutoElastic, &QCheckBox::toggled, &dlg, [&](bool autoOn) {
         sbElasticMin->setEnabled(!autoOn);
@@ -4556,17 +4886,51 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     const double eMax = chkAutoElastic->isChecked()
             ? std::numeric_limits<double>::quiet_NaN()
             : sbElasticMax->value();
+    const double offFrac = sbOffsetPct->value() / 100.0;
+
+    // F2: when the unit is auto-detected, run a side-effect-free probe first and ask the
+    // user if the decision is ambiguous.
+    int strainMode = cbStrainUnit->currentData().toInt();
+    if (strainMode < 0) {
+        const TensileResult probe = analyzeTensile(nullptr, chosenGraph, chosenCurve, offFrac, -1,
+                                                   eMin, eMax, false, false, false);
+        if (probe.strainUnitAmbiguous) {
+            const int ans = askTensileStrainUnit(app, probe);
+            if (ans == -2)
+                return;
+            strainMode = ans;
+        }
+    }
 
     const TensileResult trRes = analyzeTensile(
-            app, chosenGraph, chosenCurve, sbOffsetPct->value() / 100.0,
-            cbStrainUnit->currentData().toInt(), eMin, eMax,
+            app, chosenGraph, chosenCurve, offFrac, strainMode, eMin, eMax,
             chkPlotConstruct->isChecked(), chkCallout->isChecked(),
             chkTrueTable->isChecked());
+
+    TensileDialogMemory &memW = tensileDialogMemory();
+    memW.valid = true;
+    memW.dialogStrainMode = cbStrainUnit->currentData().toInt();
+    memW.resolvedStrainMode = (trRes.elasticSlopeRaw > 0.0) ? (trRes.strainInPercent ? 1 : 0)
+                                                            : strainMode;
+    memW.offsetFraction = offFrac;
+    memW.autoElastic = chkAutoElastic->isChecked();
+    memW.elasticMin = sbElasticMin->value();
+    memW.elasticMax = sbElasticMax->value();
+    memW.graphName = chosenGraph->multiLayerParent() ? chosenGraph->multiLayerParent()->name()
+                                                     : QString();
+    memW.curveTitle = chosenCurve;
+
     if (!trRes.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
-        QMessageBox::warning(app, QObject::tr("Tensile / 0.2% Proof Stress Analyzer"),
-                             trRes.error.isEmpty()
-                                     ? QObject::tr("Could not determine a positive linear-elastic slope in the specified range.")
-                                     : trRes.error);
+        QString msg = trRes.error.isEmpty()
+                ? QObject::tr("Could not determine a positive linear-elastic slope in the specified range.")
+                : trRes.error;
+        if (!trRes.warnings.isEmpty())
+            msg += QStringLiteral("\n\n") + trRes.warnings.join(QStringLiteral("\n"));
+        QMessageBox::warning(app, QObject::tr("Tensile / 0.2% Proof Stress Analyzer"), msg);
+    } else if (trRes.valid && !trRes.warnings.isEmpty()
+               && !ApplicationWindow::isNonInteractiveContext(app)) {
+        QMessageBox::information(app, QObject::tr("Tensile Analysis Notes"),
+                                 trRes.warnings.join(QStringLiteral("\n\n")));
     }
 }
 
@@ -6185,7 +6549,7 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
             analyzeTensile(app, mlMain->activeGraph(), t6Curve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
-            analyzeWorkHardening(app, mlMain->activeGraph(), t6Curve, 11, true);
+            analyzeWorkHardening(app, mlMain->activeGraph(), t6Curve, 11, true, false, 1);
         }
         loadSampleDataset(app, QStringLiteral("fatigue_sn_curve"), autoPlot, nullptr, nullptr);
         loadSampleDataset(app, QStringLiteral("fatigue_crack_growth_paris"), autoPlot, nullptr, nullptr);
@@ -6386,21 +6750,21 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
             analyzeTensile(app, ml->activeGraph(), QString(), 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
-            analyzeWorkHardening(app, ml->activeGraph(), QString(), 11, true);
+            analyzeWorkHardening(app, ml->activeGraph(), QString(), 11, true, false, 1);
         } else if (id == QLatin1String("tensile_temper_compare") && ml && ml->activeGraph() && tbl
                    && tbl->numCols() > 3) {
             const QString t6Curve = tbl->colName(3);
             analyzeTensile(app, ml->activeGraph(), t6Curve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
-            analyzeWorkHardening(app, ml->activeGraph(), t6Curve, 11, true);
+            analyzeWorkHardening(app, ml->activeGraph(), t6Curve, 11, true, false, 1);
         } else if (id == QLatin1String("tensile_hydrogen_embrittlement") && ml && ml->activeGraph()
                    && tbl && tbl->numCols() > 1) {
             const QString unchCurve = tbl->colName(1);
             analyzeTensile(app, ml->activeGraph(), unchCurve, 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
-            analyzeWorkHardening(app, ml->activeGraph(), unchCurve, 11, true);
+            analyzeWorkHardening(app, ml->activeGraph(), unchCurve, 11, true, false, 1);
         } else if (id == QLatin1String("tds_hydrogen_3rates") && tbl) {
             QVector<double> rates = { 100.0, 200.0, 400.0 };
             QVector<double> tPeaks;
@@ -6936,10 +7300,13 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
 
 CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         ApplicationWindow *app, Graph *g, const QString &curveTitle, int smoothWindow,
-        bool createPlot, bool kocksMeckingPlot)
+        bool createPlot, bool kocksMeckingPlot, int strainInPercentMode, double offsetFraction,
+        double elasticXMin, double elasticXMax)
 {
     registerMatSciTranslationsOnce();
+    registerTensileExtraTranslations();
     WorkHardeningResult res;
+    const double qNaN = std::numeric_limits<double>::quiet_NaN();
 
     Graph *targetGraph = findActiveOrFirstGraph(app, g);
     if (!targetGraph) {
@@ -6947,16 +7314,22 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         return res;
     }
 
+    // F4: the tensile settings (strain unit, offset, elastic range) are passed through so
+    // that E, sigma_0.2 and the toe origin are identical to the tensile analysis.
     const TensileResult tr = analyzeTensile(
-            app, targetGraph, curveTitle, 0.002, -1,
-            std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
-            false /*plotConstruction*/, false /*addCallout*/, false /*createTrueStressTable*/);
+            app, targetGraph, curveTitle, offsetFraction, strainInPercentMode, elasticXMin,
+            elasticXMax, false /*plotConstruction*/, false /*addCallout*/,
+            false /*createTrueStressTable*/);
+    res.warnings = tr.warnings;
     if (!tr.valid || !(tr.youngsModulus > 0.0)) {
         res.error = tr.error.isEmpty()
                 ? QObject::tr("Could not determine a positive linear-elastic slope in the specified range.")
                 : tr.error;
         return res;
     }
+    res.strainInPercent = tr.strainInPercent;
+    res.youngsModulus = tr.youngsModulus;
+    res.toeStrainX0 = tr.toeStrainX0;
 
     QwtPlotCurve *srcCurve = curveTitle.trimmed().isEmpty()
             ? nullptr
@@ -6971,7 +7344,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         return res;
     }
 
-    // Collect engineering (eFrac, stress) along curve order up to post-UTS diffuse necking
+    // Collect engineering (strain, stress) along curve order up to post-UTS diffuse necking
     const auto *dc = dynamic_cast<const DataCurve *>(srcCurve);
     Table *srcTbl = dc ? dc->table() : nullptr;
     Column *xCol = (srcTbl && dc) ? srcTbl->column(dc->xColumnName()) : nullptr;
@@ -6981,10 +7354,9 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         double epsT = 0.0;
         double sigT = 0.0;
         double epsP = 0.0;
+        double sigEng = 0.0;
     };
-    std::vector<TrueSample> samples;
     const int nRaw = srcCurve->dataSize();
-    samples.reserve(static_cast<size_t>(nRaw));
 
     double maxEngY = -1e300;
     size_t utsRawIdx = 0;
@@ -7009,24 +7381,66 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         engPts.emplace_back(xv, yv);
     }
 
+    // Strains are measured from the toe-corrected origin x0 (same as the tensile analysis).
+    const double x0 = tr.toeStrainX0;
+    const double toFrac = tr.strainInPercent ? 0.01 : 1.0;
     const size_t postAllowance = std::max<size_t>(8, engPts.size() / 6);
     const size_t stopIdx = std::min(engPts.size(), utsRawIdx + postAllowance);
-    double lastEpsT = -1e300;
+    std::vector<TrueSample> rawSamples;
+    rawSamples.reserve(stopIdx);
+    int skippedBeforeOrigin = 0;
     for (size_t i = 0; i < stopIdx; ++i) {
-        const double eFrac = tr.strainInPercent ? (0.01 * engPts[i].first) : engPts[i].first;
+        const double eFrac = (engPts[i].first - x0) * toFrac;
         const double sigEng = engPts[i].second;
-        if (1.0 + eFrac <= 1e-6 || sigEng < -0.05 * maxEngY)
-            continue;
         if (i > utsRawIdx && sigEng < 0.55 * maxEngY)
             break;
-        const double epsT = std::log(1.0 + eFrac);
-        const double sigT = sigEng * (1.0 + eFrac);
-        if (epsT <= lastEpsT + 1e-7)
+        if (eFrac < 0.0) {
+            ++skippedBeforeOrigin;
             continue;
+        }
+        if (1.0 + eFrac <= 1e-6 || sigEng < -0.05 * maxEngY)
+            continue;
+        const double epsT = std::log1p(eFrac);
+        const double sigT = sigEng * (1.0 + eFrac);
         const double epsP = std::max(0.0, epsT - sigT / tr.youngsModulus);
-        samples.push_back({ epsT, sigT, epsP });
-        lastEpsT = epsT;
+        rawSamples.push_back({ epsT, sigT, epsP, sigEng });
     }
+
+    // Order by strain without discarding points. (Keeping only points beyond the running
+    // maximum strain would select the positive side of the strain noise and bias theta.)
+    // Points with equal strain are averaged.
+    std::stable_sort(rawSamples.begin(), rawSamples.end(),
+                     [](const TrueSample &a, const TrueSample &b) { return a.epsT < b.epsT; });
+    std::vector<TrueSample> samples;
+    samples.reserve(rawSamples.size());
+    for (size_t i = 0; i < rawSamples.size();) {
+        size_t j = i + 1;
+        TrueSample acc = rawSamples[i];
+        const double tol = 1e-12 + 1e-9 * std::fabs(rawSamples[i].epsT);
+        while (j < rawSamples.size() && rawSamples[j].epsT - rawSamples[i].epsT <= tol) {
+            acc.epsT += rawSamples[j].epsT;
+            acc.sigT += rawSamples[j].sigT;
+            acc.epsP += rawSamples[j].epsP;
+            acc.sigEng += rawSamples[j].sigEng;
+            ++j;
+        }
+        const double cnt = double(j - i);
+        if (j - i > 1) {
+            acc.epsT /= cnt;
+            acc.sigT /= cnt;
+            acc.epsP /= cnt;
+            acc.sigEng /= cnt;
+            res.mergedDuplicatePoints += int(j - i - 1);
+        }
+        samples.push_back(acc);
+        i = j;
+    }
+    if (skippedBeforeOrigin > 0)
+        res.warnings << QObject::tr("%1 point(s) before the toe-corrected strain origin were skipped.")
+                                .arg(skippedBeforeOrigin);
+    if (res.mergedDuplicatePoints > 0)
+        res.warnings << QObject::tr("%1 point(s) with equal strain were averaged.")
+                                .arg(res.mergedDuplicatePoints);
 
     const int N = static_cast<int>(samples.size());
     if (N < 5) {
@@ -7034,7 +7448,10 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         return res;
     }
 
-    // Local quadratic Savitzky-Golay derivative on actual non-uniform Δε_t grid
+    // Local quadratic (Savitzky-Golay type) derivative on the actual non-uniform eps_t grid.
+    // The abscissa is scaled to t = (eps - eps_i) / h with h = max |eps - eps_i| in the window
+    // and the ordinate is taken relative to sigma_i, so the normal equations stay O(1)
+    // instead of mixing 1 and (1e-3)^4.
     int win = (smoothWindow <= 0) ? 11 : smoothWindow;
     if (win % 2 == 0)
         ++win;
@@ -7045,57 +7462,65 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
     for (int i = 0; i < N; ++i) {
         const int iLo = std::max(0, i - halfW);
         const int iHi = std::min(N - 1, i + halfW);
-        const double x0 = samples[size_t(i)].epsT;
-        // Normal equations for y(u) = c0 + c1*u + c2*u^2 where u = epsT - x0
-        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0, s4 = 0.0;
-        double sy0 = 0.0, sy1 = 0.0, sy2 = 0.0;
-        for (int k = iLo; k <= iHi; ++k) {
-            const double u = samples[size_t(k)].epsT - x0;
-            const double y = samples[size_t(k)].sigT;
-            const double u2 = u * u;
-            s0 += 1.0;
-            s1 += u;
-            s2 += u2;
-            s3 += u2 * u;
-            s4 += u2 * u2;
-            sy0 += y;
-            sy1 += u * y;
-            sy2 += u2 * y;
-        }
-        // Solve 3x3 linear system via Gaussian elimination with partial pivoting
-        double aug[3][4] = {
-            { s0, s1, s2, sy0 },
-            { s1, s2, s3, sy1 },
-            { s2, s3, s4, sy2 }
-        };
-        bool ok3 = true;
-        for (int p = 0; p < 3; ++p) {
-            int bestR = p;
-            for (int r = p + 1; r < 3; ++r) {
-                if (std::fabs(aug[r][p]) > std::fabs(aug[bestR][p]))
-                    bestR = r;
+        const double xc = samples[size_t(i)].epsT;
+        const double yc = samples[size_t(i)].sigT;
+        double h = 0.0;
+        for (int k = iLo; k <= iHi; ++k)
+            h = std::max(h, std::fabs(samples[size_t(k)].epsT - xc));
+        bool ok3 = (h > 0.0 && std::isfinite(h));
+        double aug[3][4] = { { 0.0 } };
+        if (ok3) {
+            double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0, s4 = 0.0;
+            double sy0 = 0.0, sy1 = 0.0, sy2 = 0.0;
+            for (int k = iLo; k <= iHi; ++k) {
+                const double t = (samples[size_t(k)].epsT - xc) / h;
+                const double y = samples[size_t(k)].sigT - yc;
+                const double t2 = t * t;
+                s0 += 1.0;
+                s1 += t;
+                s2 += t2;
+                s3 += t2 * t;
+                s4 += t2 * t2;
+                sy0 += y;
+                sy1 += t * y;
+                sy2 += t2 * y;
             }
-            if (std::fabs(aug[bestR][p]) <= 1e-30) {
-                ok3 = false;
-                break;
-            }
-            if (bestR != p) {
+            const double sysInit[3][4] = { { s0, s1, s2, sy0 },
+                                           { s1, s2, s3, sy1 },
+                                           { s2, s3, s4, sy2 } };
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 4; ++c)
+                    aug[r][c] = sysInit[r][c];
+            const double pivTol = 1e-10 * s0;
+            // Gaussian elimination with partial pivoting
+            for (int p = 0; p < 3 && ok3; ++p) {
+                int bestR = p;
+                for (int r = p + 1; r < 3; ++r) {
+                    if (std::fabs(aug[r][p]) > std::fabs(aug[bestR][p]))
+                        bestR = r;
+                }
+                if (std::fabs(aug[bestR][p]) <= pivTol) {
+                    ok3 = false;
+                    break;
+                }
+                if (bestR != p) {
+                    for (int c = p; c < 4; ++c)
+                        std::swap(aug[p][c], aug[bestR][c]);
+                }
+                const double piv = aug[p][p];
                 for (int c = p; c < 4; ++c)
-                    std::swap(aug[p][c], aug[bestR][c]);
-            }
-            const double piv = aug[p][p];
-            for (int c = p; c < 4; ++c)
-                aug[p][c] /= piv;
-            for (int r = 0; r < 3; ++r) {
-                if (r == p)
-                    continue;
-                const double f = aug[r][p];
-                for (int c = p; c < 4; ++c)
-                    aug[r][c] -= f * aug[p][c];
+                    aug[p][c] /= piv;
+                for (int r = 0; r < 3; ++r) {
+                    if (r == p)
+                        continue;
+                    const double f = aug[r][p];
+                    for (int c = p; c < 4; ++c)
+                        aug[r][c] -= f * aug[p][c];
+                }
             }
         }
-        if (ok3 && std::isfinite(aug[1][3])) {
-            theta[size_t(i)] = aug[1][3];
+        if (ok3 && std::isfinite(aug[1][3] / h)) {
+            theta[size_t(i)] = aug[1][3] / h;
         } else {
             const int l = std::max(0, i - 1);
             const int r = std::min(N - 1, i + 1);
@@ -7106,34 +7531,75 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         }
     }
 
-    const double eYieldFrac = tr.strainInPercent ? (0.01 * tr.offsetYieldX) : tr.offsetYieldX;
+    const double eYieldFrac = (tr.offsetYieldX - x0) * toFrac;
     const double epsYield = std::log(std::max(1e-6, 1.0 + eYieldFrac));
     int yieldIdx = 0;
     while (yieldIdx + 1 < N && samples[size_t(yieldIdx)].epsT < epsYield)
         ++yieldIdx;
 
-    // Solve Considere criterion: g(epsT) = theta(epsT) - sigT(epsT) = 0 for i >= yieldIdx
+    // Engineering maximum load among the (sorted) samples
+    int utsSampleIdx = 0;
+    for (int i = 1; i < N; ++i) {
+        if (samples[size_t(i)].sigEng > samples[size_t(utsSampleIdx)].sigEng)
+            utsSampleIdx = i;
+    }
+    const double sigEngMax = samples[size_t(utsSampleIdx)].sigEng;
+
+    // Considere criterion theta = sigma_t (F4). A crossing from theta > sigma_t to
+    // theta < sigma_t is accepted only if it persists (the median of theta - sigma_t over the
+    // following max(15, 3 * window) samples stays <= 0) and the engineering stress there is
+    // within 3% of the maximum load (Considere <=> d(sigma_eng)/de = 0). Serrations (PLC)
+    // or noise produce transient early crossings that are rejected.
     bool foundConsidere = false;
-    int neckIdx = N - 1;
+    int neckIdx = utsSampleIdx;
+    int rejectedCrossings = 0;
+    const int lookAhead = std::max(15, 3 * win);
     for (int i = yieldIdx; i + 1 < N; ++i) {
         const double g0 = theta[size_t(i)] - samples[size_t(i)].sigT;
         const double g1 = theta[size_t(i + 1)] - samples[size_t(i + 1)].sigT;
-        if (g0 >= 0.0 && g1 <= 0.0) {
-            const double denom = g0 - g1;
-            const double t = (std::fabs(denom) > 1e-30) ? std::clamp(g0 / denom, 0.0, 1.0) : 0.0;
-            res.considereTrueStrain = samples[size_t(i)].epsT
-                    + t * (samples[size_t(i + 1)].epsT - samples[size_t(i)].epsT);
-            res.considereTrueStress = samples[size_t(i)].sigT
-                    + t * (samples[size_t(i + 1)].sigT - samples[size_t(i)].sigT);
-            neckIdx = i + 1;
-            foundConsidere = true;
-            break;
+        if (!(g0 >= 0.0 && g1 <= 0.0) || (g0 == 0.0 && g1 == 0.0))
+            continue;
+        std::vector<double> gAhead;
+        for (int k = i + 1; k <= std::min(N - 1, i + lookAhead); ++k)
+            gAhead.push_back(theta[size_t(k)] - samples[size_t(k)].sigT);
+        double gMedian = 0.0;
+        if (!gAhead.empty()) {
+            const size_t mid = gAhead.size() / 2;
+            std::nth_element(gAhead.begin(), gAhead.begin() + mid, gAhead.end());
+            gMedian = gAhead[mid];
         }
+        const double denom = g0 - g1;
+        const double t = (std::fabs(denom) > 1e-30) ? std::clamp(g0 / denom, 0.0, 1.0) : 0.0;
+        const double sigEngCross = samples[size_t(i)].sigEng
+                + t * (samples[size_t(i + 1)].sigEng - samples[size_t(i)].sigEng);
+        const bool persistent = !gAhead.empty() && gMedian <= 0.0;
+        const bool nearMaxLoad = sigEngCross >= 0.97 * sigEngMax;
+        if (!persistent || !nearMaxLoad) {
+            ++rejectedCrossings;
+            continue;
+        }
+        res.considereTrueStrain = samples[size_t(i)].epsT
+                + t * (samples[size_t(i + 1)].epsT - samples[size_t(i)].epsT);
+        res.considereTrueStress = samples[size_t(i)].sigT
+                + t * (samples[size_t(i + 1)].sigT - samples[size_t(i)].sigT);
+        neckIdx = i + 1;
+        foundConsidere = true;
+        break;
     }
     if (!foundConsidere) {
-        const double eUtsFrac = tr.strainInPercent ? (0.01 * tr.utsX) : tr.utsX;
-        res.considereTrueStrain = std::log(std::max(1e-6, 1.0 + eUtsFrac));
-        res.considereTrueStress = tr.utsY * (1.0 + eUtsFrac);
+        res.considereFromUts = true;
+        res.considereTrueStrain = samples[size_t(utsSampleIdx)].epsT;
+        res.considereTrueStress = samples[size_t(utsSampleIdx)].sigT;
+        neckIdx = utsSampleIdx;
+        res.considereNote = QObject::tr(
+                "No persistent crossing of θ and σt was found (%1 early or transient crossing(s) rejected); the maximum-load (UTS) point is used as the Considère point.")
+                                    .arg(rejectedCrossings);
+        res.warnings << res.considereNote;
+    } else if (rejectedCrossings > 0) {
+        res.considereNote = QObject::tr(
+                "%1 early or transient θ = σt crossing(s) (e.g. serrations) were rejected before the Considère point.")
+                                    .arg(rejectedCrossings);
+        res.warnings << res.considereNote;
     }
     res.considereEngStrainPct = (std::exp(res.considereTrueStrain) - 1.0) * 100.0;
 
@@ -7163,7 +7629,8 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         }
     }
 
-    // Stage-III Kocks-Mecking fit: theta = theta0 * (1 - sigT / voceSigmaS)
+    // Stage-III Kocks-Mecking fit: theta = theta0 * (1 - sigT / voceSigmaS).
+    // On failure sigma_s stays NaN and the reason is reported (no substitute value).
     {
         const double sigStart = tr.offsetYieldY + 0.20 * (res.considereTrueStress - tr.offsetYieldY);
         const double sigEnd = 0.98 * res.considereTrueStress;
@@ -7176,7 +7643,12 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 thVec.push_back(th);
             }
         }
-        if (sVec.size() >= 2) {
+        res.voceSigmaS = qNaN;
+        if (sVec.size() < 3) {
+            res.voceNote = QObject::tr(
+                    "σs (Stage-III saturation stress) is not available: only %1 point(s) between σ0.2 + 20% and 98% of σu (at least 3 are needed).")
+                                   .arg(int(sVec.size()));
+        } else {
             const double ms = std::accumulate(sVec.begin(), sVec.end(), 0.0) / double(sVec.size());
             const double mt = std::accumulate(thVec.begin(), thVec.end(), 0.0) / double(thVec.size());
             double sss = 0.0, sst = 0.0;
@@ -7184,18 +7656,29 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 sss += (sVec[k] - ms) * (sVec[k] - ms);
                 sst += (sVec[k] - ms) * (thVec[k] - mt);
             }
+            double slopeKM = qNaN, theta0 = qNaN;
             if (sss > 1e-18) {
-                const double slopeKM = sst / sss;
-                const double theta0 = mt - slopeKM * ms;
-                if (slopeKM < -1e-6 && theta0 > 0.0)
-                    res.voceSigmaS = -theta0 / slopeKM;
+                slopeKM = sst / sss;
+                theta0 = mt - slopeKM * ms;
+                if (slopeKM < 0.0 && theta0 > 0.0) {
+                    const double s = -theta0 / slopeKM;
+                    if (std::isfinite(s) && s > 0.0)
+                        res.voceSigmaS = s;
+                }
+            }
+            if (!std::isfinite(res.voceSigmaS)) {
+                res.voceNote = QObject::tr(
+                        "σs (Stage-III saturation stress) is not available: θ does not decrease linearly with σt in Stage III (slope %1, intercept %2).")
+                                       .arg(slopeKM, 0, 'g', 4)
+                                       .arg(theta0, 0, 'g', 4);
             }
         }
-        if (!(res.voceSigmaS > 0.0) || !std::isfinite(res.voceSigmaS))
-            res.voceSigmaS = 1.08 * res.considereTrueStress;
+        if (!res.voceNote.isEmpty())
+            res.warnings << res.voceNote;
     }
 
     res.valid = true;
+    res.postNeckRowsMasked = std::max(0, N - 1 - neckIdx);
     if (!app)
         return res;
 
@@ -7244,6 +7727,41 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
             c4->setUnits(tr.stressUnit);
             c4->setComment(QStringLiteral("<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>"));
         }
+        // Post-necking rows: sigma_t = sigma_eng (1 + e) no longer holds after the Considere
+        // point, so the rows are masked (kept visible in the table, excluded from plots/fits).
+        if (res.postNeckRowsMasked > 0) {
+            for (int c = 0; c < tbl->numCols(); ++c) {
+                if (Column *col = tbl->column(c)) {
+                    for (int r = neckIdx + 1; r < N; ++r)
+                        col->setMasked(r, true);
+                }
+            }
+            res.warnings << QObject::tr(
+                    "%1 row(s) after the Considère point (post-necking) are masked in the table and excluded from the fits.")
+                                    .arg(res.postNeckRowsMasked);
+        }
+    }
+
+    {
+        const QString logText = QStringLiteral(
+                "[%1] Work Hardening (%2): Considere eps_t = %3 (e = %4%), sigma_t = %5 %6, "
+                "n = %7, K = %8, sigma_s = %9\n")
+                .arg(QLocale().toString(QDateTime::currentDateTime()),
+                     srcCurve->title().text())
+                .arg(res.considereTrueStrain, 0, 'f', 4)
+                .arg(res.considereEngStrainPct, 0, 'f', 2)
+                .arg(res.considereTrueStress, 0, 'f', 1)
+                .arg(tr.stressUnit)
+                .arg(res.hollomonN, 0, 'f', 4)
+                .arg(res.hollomonK, 0, 'f', 1)
+                .arg(std::isfinite(res.voceSigmaS)
+                             ? QString::number(res.voceSigmaS, 'f', 1) + QLatin1Char(' ')
+                                     + tr.stressUnit
+                             : QStringLiteral("n/a"));
+        QString full = logText;
+        for (const QString &w : res.warnings)
+            full += QStringLiteral("    ! ") + w + QStringLiteral("\n");
+        app->updateLog(full);
     }
 
     if (!createPlot || !tbl)
@@ -7328,8 +7846,10 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                         QStringLiteral("\\c{1}<i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>\n"
                                        "\\c{2}<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>"));
             }
-            gp->setScale(QwtPlot::xBottom, 0.0,
-                         std::max(maxSig * 1.12, res.voceSigmaS * 1.06));
+            const double xMaxKm = std::isfinite(res.voceSigmaS)
+                    ? std::max(maxSig * 1.12, res.voceSigmaS * 1.06)
+                    : maxSig * 1.12;
+            gp->setScale(QwtPlot::xBottom, 0.0, xMaxKm);
             gp->setScale(QwtPlot::yLeft, 0.0,
                          std::max(res.considereTrueStress * 2.4, tr.utsY * 1.7));
         }
@@ -7337,18 +7857,22 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         applyArialToMatSciGraph(gp);
         gp->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
 
+        const QString sigmaSText = std::isfinite(res.voceSigmaS)
+                ? QStringLiteral("%1 %2").arg(res.voceSigmaS, 0, 'f', 1).arg(tr.stressUnit)
+                : QStringLiteral("n/a");
         const QString summary = QStringLiteral(
-                "<i>\u03B5</i><sub>u</sub> = %1 (%2%)\n"
+                "<i>\u03B5</i><sub>u</sub> = %1 (%2%)%8\n"
                 "<i>\u03C3</i><sub>u</sub> = %3 %4\n"
                 "<i>n</i> = %5, <i>K</i> = %6\n"
-                "<i>\u03C3</i><sub>s</sub> = %7 %4")
+                "<i>\u03C3</i><sub>s</sub> = %7")
                 .arg(res.considereTrueStrain, 0, 'f', 3)
                 .arg(res.considereEngStrainPct, 0, 'f', 1)
                 .arg(res.considereTrueStress, 0, 'f', 1)
                 .arg(tr.stressUnit)
                 .arg(res.hollomonN, 0, 'f', 3)
                 .arg(res.hollomonK, 0, 'f', 0)
-                .arg(res.voceSigmaS, 0, 'f', 1);
+                .arg(sigmaSText)
+                .arg(res.considereFromUts ? QStringLiteral(" [max load]") : QString());
         const double hintX = kocksMeckingPlot
                 ? (0.06 * res.considereTrueStress)
                 : std::max(res.considereTrueStrain * 1.15, 0.72 * colEpsT.back());
@@ -7365,6 +7889,7 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
     registerMatSciTranslationsOnce();
+    registerTensileExtraTranslations();
 
     QList<Graph *> graphs;
     Graph *activeG = findActiveOrFirstGraph(app, nullptr);
@@ -7397,6 +7922,12 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         if (graphs[i] == activeG)
             initIdx = i;
     }
+    const TensileDialogMemory &mem = tensileDialogMemory();
+    if (mem.valid && !mem.graphName.isEmpty()) {
+        const int gi = cbGraph->findText(mem.graphName);
+        if (gi >= 0)
+            initIdx = gi;
+    }
     cbGraph->setCurrentIndex(initIdx);
     auto fillCurves = [&](int idx) {
         cbCurve->clear();
@@ -7404,6 +7935,11 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
             cbCurve->addItems(graphs[idx]->analysableCurvesList());
     };
     fillCurves(initIdx);
+    if (mem.valid && !mem.curveTitle.isEmpty() && cbGraph->currentText() == mem.graphName) {
+        const int ci = cbCurve->findText(mem.curveTitle);
+        if (ci >= 0)
+            cbCurve->setCurrentIndex(ci);
+    }
     QObject::connect(cbGraph, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      fillCurves);
 
@@ -7421,8 +7957,63 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     cbPlotMode->addItem(QObject::tr("Kocks-Mecking Stage-III (θ vs σt)"), true);
     QObject::connect(chkPlot, &QCheckBox::toggled, cbPlotMode, &QWidget::setEnabled);
 
+    // Tensile settings shared with the tensile analyzer (F2/F4). They start from the last
+    // tensile analysis; for the same curve the unit actually used there is preselected.
+    QGroupBox *grpTen = new QGroupBox(QObject::tr("Tensile settings (shared with the tensile analyzer)"), &dlg);
+    QFormLayout *tenForm = new QFormLayout(grpTen);
+    QLabel *lblInherited = new QLabel(
+            QObject::tr("Settings below are inherited from the last tensile analysis of this curve."), grpTen);
+    lblInherited->setWordWrap(true);
+    QComboBox *cbStrainUnit = new QComboBox(grpTen);
+    cbStrainUnit->addItem(QObject::tr("Auto-detect (% or mm/mm)"), -1);
+    cbStrainUnit->addItem(QObject::tr("Percent (%)"), 1);
+    cbStrainUnit->addItem(QObject::tr("Engineering Fraction (mm/mm)"), 0);
+    QDoubleSpinBox *sbOffsetPct = new QDoubleSpinBox(grpTen);
+    sbOffsetPct->setRange(0.01, 20.0);
+    sbOffsetPct->setDecimals(3);
+    sbOffsetPct->setSingleStep(0.05);
+    sbOffsetPct->setSuffix(QStringLiteral(" %"));
+    sbOffsetPct->setValue(mem.valid ? mem.offsetFraction * 100.0 : 0.200);
+    QCheckBox *chkAutoElastic =
+            new QCheckBox(QObject::tr("Auto-detect linear-elastic region (max R²)"), grpTen);
+    chkAutoElastic->setChecked(mem.valid ? mem.autoElastic : true);
+    QDoubleSpinBox *sbElasticMin = new QDoubleSpinBox(grpTen);
+    sbElasticMin->setRange(-1000.0, 10000.0);
+    sbElasticMin->setDecimals(5);
+    sbElasticMin->setValue(mem.valid ? mem.elasticMin : 0.02);
+    QDoubleSpinBox *sbElasticMax = new QDoubleSpinBox(grpTen);
+    sbElasticMax->setRange(-1000.0, 10000.0);
+    sbElasticMax->setDecimals(5);
+    sbElasticMax->setValue(mem.valid ? mem.elasticMax : 0.30);
+    sbElasticMin->setEnabled(!chkAutoElastic->isChecked());
+    sbElasticMax->setEnabled(!chkAutoElastic->isChecked());
+    QObject::connect(chkAutoElastic, &QCheckBox::toggled, &dlg, [&](bool autoOn) {
+        sbElasticMin->setEnabled(!autoOn);
+        sbElasticMax->setEnabled(!autoOn);
+    });
+    auto syncInherited = [&]() {
+        const bool sameCurve = mem.valid && cbGraph->currentText() == mem.graphName
+                && cbCurve->currentText() == mem.curveTitle;
+        int mode = mem.valid ? mem.dialogStrainMode : -1;
+        if (sameCurve && mem.resolvedStrainMode >= 0)
+            mode = mem.resolvedStrainMode;
+        const int ui = cbStrainUnit->findData(mode);
+        cbStrainUnit->setCurrentIndex(ui >= 0 ? ui : 0);
+        lblInherited->setVisible(sameCurve);
+    };
+    syncInherited();
+    QObject::connect(cbCurve, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncInherited(); });
+    tenForm->addRow(lblInherited);
+    tenForm->addRow(QObject::tr("Strain Unit:"), cbStrainUnit);
+    tenForm->addRow(QObject::tr("Offset Proof Strain (%):"), sbOffsetPct);
+    tenForm->addRow(QString(), chkAutoElastic);
+    tenForm->addRow(QObject::tr("Elastic Strain Min:"), sbElasticMin);
+    tenForm->addRow(QObject::tr("Elastic Strain Max:"), sbElasticMax);
+
     form->addRow(QObject::tr("Target Graph:"), cbGraph);
     form->addRow(QObject::tr("Stress-Strain Curve:"), cbCurve);
+    form->addRow(grpTen);
     form->addRow(QObject::tr("Savitzky-Golay Smoothing Window (odd points):"), sbWin);
     form->addRow(QString(), chkPlot);
     form->addRow(QObject::tr("Plot Mode:"), cbPlotMode);
@@ -7435,14 +8026,41 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
 
     if (dlg.exec() != QDialog::Accepted)
         return;
+    const int gIdx = cbGraph->currentIndex();
+    if (gIdx < 0 || gIdx >= graphs.size())
+        return;
+    Graph *chosenGraph = graphs[gIdx];
+    const QString chosenCurve = cbCurve->currentText();
+    const double qNaN = std::numeric_limits<double>::quiet_NaN();
+    const double eMin = chkAutoElastic->isChecked() ? qNaN : sbElasticMin->value();
+    const double eMax = chkAutoElastic->isChecked() ? qNaN : sbElasticMax->value();
+    const double offFrac = sbOffsetPct->value() / 100.0;
+
+    int strainMode = cbStrainUnit->currentData().toInt();
+    if (strainMode < 0) {
+        const TensileResult probe = analyzeTensile(nullptr, chosenGraph, chosenCurve, offFrac, -1,
+                                                   eMin, eMax, false, false, false);
+        if (probe.strainUnitAmbiguous) {
+            const int ans = askTensileStrainUnit(app, probe);
+            if (ans == -2)
+                return;
+            strainMode = ans;
+        }
+    }
 
     const WorkHardeningResult wr = analyzeWorkHardening(
-            app, graphs[cbGraph->currentIndex()], cbCurve->currentText(), sbWin->value(),
-            chkPlot->isChecked(), cbPlotMode->currentData().toBool());
+            app, chosenGraph, chosenCurve, sbWin->value(), chkPlot->isChecked(),
+            cbPlotMode->currentData().toBool(), strainMode, offFrac, eMin, eMax);
     if (!wr.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
+        QString msg = wr.error;
+        if (!wr.warnings.isEmpty())
+            msg += QStringLiteral("\n\n") + wr.warnings.join(QStringLiteral("\n"));
         QMessageBox::warning(
-                app, QObject::tr("Kocks-Mecking Work-Hardening & Considere Necking Analyzer"),
-                wr.error);
+                app, QObject::tr("Kocks-Mecking Work-Hardening & Considere Necking Analyzer"), msg);
+    } else if (wr.valid && !wr.warnings.isEmpty()
+               && !ApplicationWindow::isNonInteractiveContext(app)) {
+        QMessageBox::information(app, QObject::tr("Work-Hardening Analysis Notes"),
+                                 wr.warnings.join(QStringLiteral("\n\n")));
     }
 }
 
