@@ -157,6 +157,7 @@ static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
 static int runSuite55TensileAndWorkHardeningCorrectness(ApplicationWindow *mw);
 static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *mw);
+static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -231,6 +232,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc57;
+    }
+    if (args.contains("--suite56-only")) {
+        const int rc56 = runSuite56FitConvergenceAndStatistics(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc56;
     }
 
     // =========================================================================
@@ -5393,6 +5401,9 @@ int main(int argc, char **argv)
     if (runSuite57NumericalRobustnessXrdWeibullKissinger(mw) != 0)
         return 1;
     mw->savedProject();
+    if (runSuite56FitConvergenceAndStatistics(mw) != 0)
+        return 1;
+    mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
 
     // If --keep-clipboard-ms <ms> is passed, run the event loop for <ms> so external COM clients (e.g. PowerPoint) can paste
@@ -5653,6 +5664,7 @@ static int runSuite36Round3SurgicalZero(ApplicationWindow *mw)
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QCompleter>
 #include <QMdiArea>
 #include <QMdiSubWindow>
 #include <QPlainTextEdit>
@@ -15002,5 +15014,337 @@ static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *m
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 57 numerical robustness / XRD / Weibull / Kissinger gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 56: Nonlinear / peak fit honesty (F1 convergence, F5 GaussAmp width & shape constants,
+// F9 t-based confidence intervals / signed Pearson r / NaN R^2, F8 apparent-fit exclusions,
+// F11 model search). Reference values were computed by hand (closed-form OLS) and with the
+// textbook Student-t quantiles t(0.975, 3) = 3.182446305284263, t(0.975, 8) = 2.306004135033371.
+// =============================================================================
+static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 56: fit convergence, peak width convention & statistics...\n";
+    qApp->setProperty("torigraph_noninteractive", true);
+    auto approxEq = [](double a, double b, double tol) { return std::fabs(a - b) <= tol; };
+
+    // ---- 56a. Student-t quantiles --------------------------------------------------------
+    CHECK_COND(approxEq(Fit::studentTQuantile(0.975, 3), 3.182446305284263, 1e-9),
+               "56a: t(0.975, 3) wrong");
+    CHECK_COND(approxEq(Fit::studentTQuantile(0.975, 8), 2.306004135033371, 1e-9),
+               "56a: t(0.975, 8) wrong");
+    CHECK_COND(std::isnan(Fit::studentTQuantile(0.975, 0)), "56a: t with dof 0 must be NaN");
+
+    // ---- 56b. Negative-slope straight line: CI, DOF, signed Pearson r ---------------------
+    {
+        const double xs[5] = { 1, 2, 3, 4, 5 };
+        const double ys[5] = { 9.9, 8.1, 5.8, 4.2, 1.9 };
+        Table *t = mw->newTable(5, 2, "S56Line", "Suite 56 line");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        for (int r = 0; r < 5; ++r) {
+            t->setCell(r, 0, xs[r]);
+            t->setCell(r, 1, ys[r]);
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(ml && ml->activeGraph(), "56b: graph not created");
+        Graph *g = ml->activeGraph();
+        LinearFit lf(mw, g);
+        lf.setDataCurve(0, 1.0, 5.0);
+        lf.fit();
+        const auto &res = lf.results();
+        std::cout << "[INFO] 56b: B=" << res[0] << " A=" << res[1] << " r=" << lf.pearsonR()
+                  << " SE(A)=" << lf.parameterStdError(1) << "\n";
+        CHECK_COND(approxEq(res[1], -1.99, 1e-10) && approxEq(res[0], 11.95, 1e-10), "56b: OLS mismatch");
+        CHECK_COND(lf.degreesOfFreedom() == 3, "56b: dof must be 3");
+        CHECK_COND(approxEq(lf.parameterStdError(1), 0.05972157622389641, 1e-12)
+                           && approxEq(lf.parameterStdError(0), 0.19807406022327445, 1e-12),
+                   "56b: standard errors mismatch");
+        CHECK_COND(approxEq(lf.pearsonR(), -0.9986517555689657, 1e-12),
+                   "56b: Pearson r must be the signed x-y correlation");
+        double lo = 0, hi = 0;
+        CHECK_COND(lf.parameterConfidenceInterval(1, 0.95, &lo, &hi)
+                           && approxEq(lo, -2.1800607095994913, 1e-10)
+                           && approxEq(hi, -1.7999392904005083, 1e-10),
+                   "56b: 95% CI of slope mismatch");
+        Table *pt = lf.parametersTable("S56LinePar");
+        CHECK_COND(pt && pt->numCols() == 6, "56b: parameter table must have 6 columns");
+        CHECK_COND(approxEq(pt->column(3)->valueAt(0), 11.319639938869788, 1e-9)
+                           && approxEq(pt->column(4)->valueAt(0), 12.58036006113021, 1e-9)
+                           && approxEq(pt->column(3)->valueAt(1), -2.1800607095994913, 1e-9)
+                           && approxEq(pt->column(4)->valueAt(1), -1.7999392904005083, 1e-9)
+                           && approxEq(pt->column(5)->valueAt(0), 3.0, 0.0),
+                   "56b: parameter table CI / DOF columns wrong");
+
+        // Pearson r is not reported for a nonlinear model
+        NonLinearFit nlf(mw, g);
+        nlf.setDataCurve(0, 1.0, 5.0);
+        nlf.setParametersList(QStringList() << "a" << "b");
+        nlf.setFormula("a*exp(b*x)");
+        nlf.setInitialGuess(0, 12.0);
+        nlf.setInitialGuess(1, -0.2);
+        nlf.fit();
+        CHECK_COND(std::isnan(nlf.pearsonR()), "56b: nonlinear fit must not report Pearson r");
+    }
+
+    // ---- 56c. DOF = 0 -> standard error undefined ("—"), table cell empty ------------------
+    {
+        Table *t = mw->newTable(2, 2, "S56Two", "Suite 56 two points");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        t->setCell(0, 0, 1.0);
+        t->setCell(0, 1, 3.0);
+        t->setCell(1, 0, 2.0);
+        t->setCell(1, 1, 5.0);
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(ml && ml->activeGraph(), "56c: graph not created");
+        LinearFit lf(mw, ml->activeGraph());
+        lf.setDataCurve(0, 1.0, 2.0);
+        lf.fit();
+        CHECK_COND(lf.degreesOfFreedom() == 0 && std::isnan(lf.parameterStdError(1)),
+                   "56c: SE with zero dof must be NaN");
+        Table *pt = lf.parametersTable("S56TwoPar");
+        CHECK_COND(pt && pt->column(2)->isInvalid(1) && pt->column(3)->isInvalid(1),
+                   "56c: SE / CI cells must stay empty when dof = 0");
+        CHECK_COND(lf.legendInfo().contains(QString::fromUtf8("—")),
+                   "56c: legend must show a dash for the undefined SE");
+    }
+
+    // ---- 56d. Two Gaussians with known sigma: GaussAmp width = sigma everywhere ------------
+    const double A1 = 100.0, xc1 = 30.0, s1 = 1.5, A2 = 60.0, xc2 = 40.0, s2 = 2.0, base = 5.0;
+    {
+        const int n = 301;
+        Table *t = mw->newTable(n, 2, "S56Peaks", "Suite 56 two gaussians");
+        t->setColName(0, "TwoTheta");
+        t->setColName(1, "Intensity");
+        t->column(0)->setUnits(QStringLiteral("deg"));
+        t->column(1)->setUnits(QStringLiteral("cps"));
+        for (int r = 0; r < n; ++r) {
+            const double x = 20.0 + 0.1 * r;
+            const double y = base + A1 * std::exp(-0.5 * std::pow((x - xc1) / s1, 2))
+                    + A2 * std::exp(-0.5 * std::pow((x - xc2) / s2, 2));
+            t->setCell(r, 0, x);
+            t->setCell(r, 1, y);
+        }
+        MultiLayer *ml =
+                mw->multilayerPlot(t, QStringList() << (t->name() + "_Intensity"), Graph::Line);
+        CHECK_COND(ml && ml->activeGraph(), "56d: graph not created");
+        Graph *g = ml->activeGraph();
+
+        MultiPeakFit mpf(mw, g, MultiPeakFit::GaussAmp, 2);
+        mpf.setDataCurve(0, 20.0, 50.0);
+        mpf.fit();
+        const auto &r = mpf.results();
+        CHECK_COND(r.size() == 7, "56d: unexpected parameter count");
+        const int i1 = (std::fabs(r[1] - xc1) < std::fabs(r[4] - xc1)) ? 0 : 1;
+        const int i2 = 1 - i1;
+        std::cout << "[INFO] 56d: w1=" << r[3 * i1 + 2] << " w2=" << r[3 * i2 + 2]
+                  << " converged=" << mpf.converged() << " R2=" << mpf.rSquare() << "\n";
+        CHECK_COND(mpf.converged(), "56d: clean two-peak fit must converge");
+        CHECK_COND(approxEq(std::fabs(r[3 * i1 + 2]), s1, 1e-5) && approxEq(std::fabs(r[3 * i2 + 2]), s2, 1e-5)
+                           && approxEq(r[3 * i1], A1, 1e-4) && approxEq(r[3 * i2], A2, 1e-4)
+                           && approxEq(r[6], base, 1e-4),
+                   "56d: multi-peak GaussAmp w must be sigma (OriginPro GaussAmp convention)");
+        CHECK_COND(mpf.formula().contains("/(2*w1^2)") && !mpf.formula().contains("exp(-2*"),
+                   "56d: GaussAmp formula string must use exp(-(x-xc)^2/(2 w^2))");
+
+        auto rows = mpf.computePeakSummary(r);
+        CHECK_COND(rows.size() == 2, "56d: peak summary size");
+        const auto &p1 = (std::fabs(rows[0].center - xc1) < 1.0) ? rows[0] : rows[1];
+        const double fwhm1 = 2.0 * std::sqrt(2.0 * std::log(2.0)) * s1; // 3.5322...
+        const double area1 = A1 * s1 * std::sqrt(2.0 * M_PI);            // 375.99...
+        CHECK_COND(approxEq(p1.fwhm, fwhm1, 1e-4) && approxEq(p1.height, A1, 1e-4)
+                           && approxEq(p1.area, area1, 1e-3),
+                   "56d: FWHM / height / area of GaussAmp peak wrong");
+
+        Table *sum = mpf.createPeakSummaryTable("S56PeakSum");
+        CHECK_COND(sum && sum->column(1)->units() == "deg" && sum->column(2)->units() == "deg"
+                           && sum->column(3)->units() == "cps"
+                           && sum->column(4)->units() == QString::fromUtf8("cps·deg"),
+                   "56d: peak summary must carry the data units");
+
+        // Single-peak GaussAmp (GaussAmpFit) and the NonLinearFit built-in agree on w = sigma
+        GaussAmpFit gaf(mw, g);
+        gaf.setDataCurve(0, 24.0, 35.0);
+        gaf.fit();
+        NonLinearFit nl(mw, g);
+        nl.setDataCurve(0, 24.0, 35.0);
+        CHECK_COND(nl.setBuiltInModel("GaussAmp"), "56d: GaussAmp built-in missing");
+        nl.fit();
+        MultiPeakFit one(mw, g, MultiPeakFit::GaussAmp, 1);
+        one.setDataCurve(0, 24.0, 35.0);
+        one.fit();
+        std::cout << "[INFO] 56d single-peak w: GaussAmpFit=" << gaf.results()[3]
+                  << " NonLinearFit=" << nl.results()[3] << " MultiPeak=" << one.results()[2]
+                  << "\n";
+        CHECK_COND(approxEq(std::fabs(gaf.results()[3]), std::fabs(one.results()[2]), 5e-3)
+                           && approxEq(std::fabs(nl.results()[3]), std::fabs(one.results()[2]), 5e-3),
+                   "56d: GaussAmp width differs between GaussAmpFit, NonLinearFit and MultiPeakFit");
+
+        // Area-parameterised profiles are described as area, height-parameterised as height
+        CHECK_COND(MultiPeakFit::generateExplanationList(2, MultiPeakFit::Gauss).value(0)
+                                   == MultiPeakFit::tr("(area %1)").arg(1)
+                           && MultiPeakFit::generateExplanationList(1, MultiPeakFit::GaussAmp).value(0)
+                                   == MultiPeakFit::tr("(height)"),
+                   "56d: parameter descriptions must say area / height");
+
+        // Pseudo-Voigt: the Lorentz fraction actually used is written into the formula
+        MultiPeakFit pv(mw, g, MultiPeakFit::PseudoVoigt, 1);
+        pv.setLorentzFraction(0.3);
+        CHECK_COND(pv.formula().contains("0.3*2/PI") && pv.formula().contains("0.7*sqrt(4*ln(2)/PI)"),
+                   "56d: Pseudo-Voigt formula must embed mu = 0.3");
+        MultiPeakFit p7(mw, g, MultiPeakFit::PearsonVII, 1);
+        p7.setPearsonShape(1.5);
+        CHECK_COND(p7.formula().contains("^(-1.5)"), "56d: Pearson VII formula must embed m");
+    }
+
+    // ---- 56e. Non-convergence is reported, last iterate kept ------------------------------
+    {
+        const int n = 201;
+        Table *t = mw->newTable(n, 2, "S56Single", "Suite 56 single peak");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        for (int r = 0; r < n; ++r) {
+            const double x = 20.0 + 0.1 * r;
+            t->setCell(r, 0, x);
+            t->setCell(r, 1, base + A1 * std::exp(-0.5 * std::pow((x - xc1) / s1, 2)));
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Line);
+        CHECK_COND(ml && ml->activeGraph(), "56e: graph not created");
+        Graph *g = ml->activeGraph();
+
+        auto makeFit = [&](NonLinearFit &f) {
+            f.setDataCurve(0, 20.0, 40.0);
+            f.setParametersList(QStringList() << "y0" << "A" << "xc" << "w");
+            f.setFormula("y0+A*exp(-(x-xc)^2/(2*w^2))");
+            f.setInitialGuess(0, 0.0);
+            f.setInitialGuess(1, 40.0);
+            f.setInitialGuess(2, 33.0);
+            f.setInitialGuess(3, 4.0);
+        };
+
+        mw->writeFitResultsToLog = true;
+        mw->clearLogInfo();
+        NonLinearFit capped(mw, g);
+        makeFit(capped);
+        capped.setMaximumIterations(2);
+        capped.fit();
+        const auto &rc = capped.results();
+        std::cout << "[INFO] 56e capped: state=" << int(capped.convergenceState())
+                  << " xc=" << rc[2] << "\n";
+        CHECK_COND(!capped.converged()
+                           && capped.convergenceState() == Fit::MaxIterationsReached,
+                   "56e: hitting the iteration limit must not be reported as converged");
+        CHECK_COND(std::isfinite(rc[2]) && std::isfinite(capped.chiSquare())
+                           && capped.chiSquare() >= 0.0,
+                   "56e: last iterate and chi^2 must be kept for a non-converged fit");
+        CHECK_COND(mw->logInfo.contains(capped.convergenceMessage()),
+                   "56e: log must state the non-convergence");
+        CHECK_COND(capped.legendInfo().startsWith(capped.convergenceMessage()),
+                   "56e: legend must state the non-convergence");
+        CHECK_COND(g->curves() >= 2, "56e: provisional fit curve must still be drawn");
+
+        NonLinearFit full(mw, g);
+        makeFit(full);
+        full.fit();
+        CHECK_COND(full.converged() && approxEq(full.results()[2], xc1, 1e-6)
+                           && approxEq(std::fabs(full.results()[3]), s1, 1e-6),
+                   "56e: the same model must converge with enough iterations");
+
+        NonLinearFit simplex(mw, g);
+        makeFit(simplex);
+        simplex.setAlgorithm(Fit::NelderMeadSimplex);
+        simplex.setMaximumIterations(5);
+        simplex.fit();
+        CHECK_COND(!simplex.converged() && std::isfinite(simplex.results()[2]),
+                   "56e: Simplex hitting the iteration limit must be flagged");
+        mw->writeFitResultsToLog = false;
+    }
+
+    // ---- 56f. Apparent (log) linear fit: excluded points counted, shortage explained ------
+    {
+        Table *t = mw->newTable(6, 3, "S56App", "Suite 56 apparent");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        t->setColName(2, "Z");
+        const double ys[6] = { 10.0, -1.0, 100.0, 0.0, 1000.0, -5.0 };
+        const double zs[6] = { 10.0, -1.0, -2.0, 0.0, -3.0, -5.0 };
+        for (int r = 0; r < 6; ++r) {
+            t->setCell(r, 0, double(r) + 1.0);
+            t->setCell(r, 1, ys[r]);
+            t->setCell(r, 2, zs[r]);
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(ml && ml->activeGraph(), "56f: graph not created");
+        Graph *g = ml->activeGraph();
+        g->setScale(QwtPlot::yLeft, 0.1, 10000.0, 0.0, 8, 8, 1, false);
+        LinearFit app(mw, g);
+        app.setApparentFit(true);
+        app.setDataCurve(0, 1.0, 6.0);
+        app.fit();
+        std::cout << "[INFO] 56f: notes=" << app.fitNotes().join(" | ").toStdString() << "\n";
+        CHECK_COND(approxEq(app.results()[1], 0.5, 1e-10) && approxEq(app.results()[0], 0.5, 1e-10),
+                   "56f: log-space line through the positive points expected");
+        CHECK_COND(app.fitNotes().size() == 1 && app.fitNotes().first().contains("3")
+                           && app.fitNotes().first().contains("6"),
+                   "56f: the 3 excluded points must be reported");
+
+        MultiLayer *ml2 = mw->multilayerPlot(t, QStringList() << (t->name() + "_Z"), Graph::Scatter);
+        Graph *g2 = ml2 ? ml2->activeGraph() : nullptr;
+        CHECK_COND(g2, "56f: second graph not created");
+        g2->setScale(QwtPlot::yLeft, 0.1, 10000.0, 0.0, 8, 8, 1, false);
+        LinearFit shortFit(mw, g2);
+        shortFit.setApparentFit(true);
+        shortFit.setDataCurve(0, 1.0, 6.0);
+        shortFit.fit();
+        CHECK_COND(std::isnan(shortFit.results()[1]) && std::isnan(shortFit.rSquare()),
+                   "56f: too few positive points must give NaN results and NaN R^2 (not 0)");
+    }
+
+    // ---- 56g. Fit dialog model search -----------------------------------------------------
+    {
+        FitDialog *fd = new FitDialog(mw);
+        QLineEdit *search = fd->findChild<QLineEdit *>(QStringLiteral("fitModelSearchBox"));
+        CHECK_COND(search && search->completer(), "56g: model search box missing");
+        search->completer()->setCompletionPrefix(QStringLiteral("arrhen"));
+        CHECK_COND(search->completer()->completionCount() >= 1,
+                   "56g: search must find the Arrhenius model by part of its name");
+        CHECK_COND(fd->jumpToModel(QStringLiteral("pseudovoigt1")),
+                   "56g: jumping to a model by (case-insensitive) name failed");
+        CHECK_COND(!fd->jumpToModel(QStringLiteral("NoSuchModel")),
+                   "56g: unknown model name must not be accepted");
+        delete fd;
+    }
+
+    // ---- 56h. Surface fit: converged flag no longer forced by R^2 > 0.99 ------------------
+    {
+        const int side = 15;
+        Table *xyz = mw->newTable("S56Surf", side * side, 3);
+        xyz->setColName(0, "X");
+        xyz->setColPlotDesignation(0, SciDAVis::X);
+        xyz->setColName(1, "Y");
+        xyz->setColPlotDesignation(1, SciDAVis::Y);
+        xyz->setColName(2, "Z");
+        xyz->setColPlotDesignation(2, SciDAVis::Z);
+        int row = 0;
+        for (int r = 0; r < side; ++r) {
+            for (int c = 0; c < side; ++c) {
+                const double x = -3.0 + 6.0 * c / (side - 1.0);
+                const double y = -3.0 + 6.0 * r / (side - 1.0);
+                xyz->setCell(row, 0, x);
+                xyz->setCell(row, 1, y);
+                xyz->setCell(row, 2, 1.0 + 2.0 * x - 0.5 * y);
+                ++row;
+            }
+        }
+        auto res = GraphStatsAndSurfaceFit::fitSurfaceXYZ(
+                mw, xyz, "X", "Y", "Z", GraphStatsAndSurfaceFit::Plane2D, QString(), 10);
+        CHECK_COND(res.converged && res.convergenceNote.isEmpty(),
+                   "56h: exact plane fit must converge without a note");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 56 Fit Convergence, Peak Width Convention & Statistics passed!\n";
     return 0;
 }

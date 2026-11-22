@@ -11,6 +11,7 @@
 #include "ArrowMarker.h"
 #include "Graph.h"
 #include "I18nJapanese.h"
+#include "Fit.h"
 #include "Legend.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
@@ -1111,6 +1112,7 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     GraphStatsAndSurfaceFit::SurfaceFitResult out;
     if (!app || ctx.z.size() < 4)
         return out;
+    Fit::registerJapaneseStrings();
     app->setProperty("torigraph_last_surface_fit_error", QVariant());
 
     std::vector<double> initParams;
@@ -1145,8 +1147,11 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
             gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n, p);
     int status = gsl_multifit_fdfsolver_set(solver, &fdf, xInit);
     int iter = 0;
+    bool hitMaxIterations = false;
+    const int kMaxSurfaceIterations = 400;
     if (status == GSL_SUCCESS) {
-        for (iter = 0; iter < 400; ++iter) {
+        bool deltaConverged = false;
+        for (iter = 0; iter < kMaxSurfaceIterations; ++iter) {
             status = gsl_multifit_fdfsolver_iterate(solver);
             if (ctx.evalFailed) {
                 status = GSL_EDOM;
@@ -1157,12 +1162,18 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
                 break;
             if (deltaStatus == GSL_SUCCESS) {
                 status = GSL_SUCCESS;
+                deltaConverged = true;
                 break;
             }
         }
-        if (status == GSL_CONTINUE)
+        // Running out of iterations is not convergence, however good R^2 looks.
+        if (!deltaConverged && iter >= kMaxSurfaceIterations
+            && (status == GSL_SUCCESS || status == GSL_CONTINUE)) {
+            hitMaxIterations = true;
             status = GSL_SUCCESS;
+        }
     }
+    out.iterations = iter;
 
     std::vector<double> bestP(p, 0.0);
     for (size_t j = 0; j < p; ++j)
@@ -1227,9 +1238,13 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     }
 
     const bool nonTrivialJacobian = (jacMaxAbs > 1e-30) || (rss <= 1e-24);
-    if ((status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-         || status == GSL_ETOLG)
-        && nonTrivialJacobian) {
+    bool noProgress = false;
+    if ((status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) && nonTrivialJacobian) {
+        status = GSL_SUCCESS;
+    } else if (status == GSL_ENOPROG && nonTrivialJacobian) {
+        // ENOPROG only counts as converged at a stationary point of the residual norm.
+        if (!Fit::lmGradientIsStationary(solver))
+            noProgress = true;
         status = GSL_SUCCESS;
     } else if (status == GSL_SUCCESS && !nonTrivialJacobian) {
         status = GSL_ETOLG;
@@ -1241,7 +1256,15 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     out.adjRSquare = (n > p && tss > 1e-30)
             ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
             : out.rSquare;
-    out.converged = nonTrivialJacobian && ((status == GSL_SUCCESS) || (out.rSquare > 0.99));
+    out.converged = nonTrivialJacobian && status == GSL_SUCCESS && !hitMaxIterations && !noProgress;
+    if (hitMaxIterations)
+        out.convergenceNote = QObject::tr(
+                "Not converged (maximum iterations reached; check the initial values)");
+    else if (noProgress)
+        out.convergenceNote =
+                QObject::tr("Not converged (no further improvement; check the initial values)");
+    else if (!out.converged)
+        out.convergenceNote = QObject::tr("Fit failed (%1)").arg(QString::fromLatin1(gsl_strerror(status)));
     out.paramNames = ctx.paramNames;
     out.params.resize(static_cast<int>(p));
     out.errors.resize(static_cast<int>(p));
@@ -1328,6 +1351,8 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
             pt->column(2)->setValueAt(j, out.errors[j]);
         }
         int baseRow = static_cast<int>(p);
+        if (!out.convergenceNote.isEmpty())
+            pt->setWindowLabel(out.convergenceNote);
         pt->column(0)->setTextAt(baseRow, QStringLiteral("R^2"));
         pt->column(1)->setValueAt(baseRow, out.rSquare);
         pt->column(2)->setValueAt(baseRow, 0.0);
@@ -1343,8 +1368,11 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     }
 
     if (app->writeFitResultsToLog) {
-        QString log = QStringLiteral("[3D Surface Fit: ") + baseName
-                + QStringLiteral("] R^2 = ") + QString::number(out.rSquare, 'f', 6)
+        QString log = QStringLiteral("[3D Surface Fit: ") + baseName + QStringLiteral("] ")
+                + (out.convergenceNote.isEmpty() ? QString()
+                                                 : (QStringLiteral("*** ") + out.convergenceNote
+                                                    + QStringLiteral(" *** ")))
+                + QStringLiteral("R^2 = ") + QString::number(out.rSquare, 'f', 6)
                 + QStringLiteral(", Adj. R^2 = ") + QString::number(out.adjRSquare, 'f', 6)
                 + QStringLiteral(", Red. Chi^2 = ") + QString::number(out.reducedChi2, 'g', 6)
                 + QStringLiteral("\n");

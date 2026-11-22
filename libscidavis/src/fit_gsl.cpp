@@ -643,7 +643,7 @@ int gauss_amp_multi_peak_f(const gsl_vector *x, void *params, gsl_vector *f)
         double res = 0.0;
         for (size_t j = 0; j < peaks; j++) {
             double diff = X[i] - xc[j];
-            res += a[j] * exp(-2.0 * diff * diff / w2[j]);
+            res += a[j] * exp(-0.5 * diff * diff / w2[j]);
         }
         gsl_vector_set(f, i, (res + offset - Y[i]) / sigma[i]);
     }
@@ -680,7 +680,7 @@ double gauss_amp_multi_peak_d(const gsl_vector *x, void *params)
         double res = 0.0;
         for (size_t j = 0; j < peaks; j++) {
             double diff = X[i] - xc[j];
-            res += a[j] * exp(-2.0 * diff * diff / w2[j]);
+            res += a[j] * exp(-0.5 * diff * diff / w2[j]);
         }
         double t = (res + offset - Y[i]) / sigma[i];
         val += t * t;
@@ -715,11 +715,11 @@ int gauss_amp_multi_peak_df(const gsl_vector *x, void *params, gsl_matrix *J)
         for (size_t j = 0; j < peaks; j++) {
             double diff = X[i] - xc[j];
             double w2 = w[j] * w[j];
-            double e = exp(-2.0 * diff * diff / w2) / s;
+            double e = exp(-0.5 * diff * diff / w2) / s;
 
             gsl_matrix_set(J, i, 3 * j, e);
-            gsl_matrix_set(J, i, 3 * j + 1, 4.0 * diff * a[j] * e / w2);
-            gsl_matrix_set(J, i, 3 * j + 2, 4.0 * diff * diff * a[j] * e / (w2 * w[j]));
+            gsl_matrix_set(J, i, 3 * j + 1, diff * a[j] * e / w2);
+            gsl_matrix_set(J, i, 3 * j + 2, diff * diff * a[j] * e / (w2 * w[j]));
         }
         gsl_matrix_set(J, i, p - 1, 1.0 / s);
     }

@@ -44,6 +44,7 @@
 #include "ExponentialFit.h"
 #include "SigmoidalFit.h"
 #include "future/core/column/Column.h"
+#include "I18nJapanese.h"
 
 #include <gsl/gsl_statistics.h>
 #include <gsl/gsl_blas.h>
@@ -63,6 +64,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
 
@@ -987,15 +989,190 @@ static void registerDependentPenaltySlots(unsigned d_p, const CompiledLinearCons
     }
 }
 
+void registerFitJapaneseStrings()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Not converged (maximum iterations reached; check the initial values)",
+            "未収束(最大反復到達/初期値を確認)");
+        reg("Not converged (no further improvement; check the initial values)",
+            "未収束(改善が止まった/初期値を確認)");
+        reg("The parameters and the curve shown are the last iterate, not a converged result.",
+            "表示中のパラメータと曲線は最後の反復値で、収束した結果ではありません。");
+        reg("Convergence", "収束");
+        reg("converged", "収束");
+        reg("Degrees of freedom", "自由度");
+        reg("DOF", "自由度");
+        reg("LowerCI95", "95%下限");
+        reg("UpperCI95", "95%上限");
+        reg("95% CI", "95%信頼区間");
+        reg("Pearson's r (x, y)", "ピアソンの r (x, y)");
+        reg("%1 of %2 points with non-positive values were excluded from the log-space fit.",
+            "%2 点のうち、非正値の %1 点を対数空間のフィットから除外しました。");
+        reg("Apparent linear fit: no axis is logarithmic, so an ordinary linear fit was performed.",
+            "見かけ線形フィット: 対数軸が無いため、通常の線形フィットを行いました。");
+        reg("Apparent linear fit needs at least %1 points with positive values on the logarithmic "
+            "axis, but only %2 remain after excluding non-positive values.",
+            "見かけ線形フィットには対数軸で正の値をもつ点が %1 点以上必要ですが、非正値を除くと %2 "
+            "点しか残りません。");
+        reg("Fit Warning", "フィットの警告");
+        reg("Fit failed (%1)", "フィット失敗(%1)");
+        reg("(area %1)", "(面積 %1)");
+        reg("(height %1)", "(ピーク高さ %1)");
+    });
+}
+
 } // namespace
+
+void Fit::registerJapaneseStrings()
+{
+    registerFitJapaneseStrings();
+}
+
+void Fit::setStraightLinePearson(const std::vector<double> &x, const std::vector<double> &y)
+{
+    d_straight_line_fit = true;
+    d_line_pearson_r = std::numeric_limits<double>::quiet_NaN();
+    const size_t n = std::min(x.size(), y.size());
+    if (n < 2)
+        return;
+    double mx = 0.0, my = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        mx += x[i];
+        my += y[i];
+    }
+    mx /= double(n);
+    my /= double(n);
+    double sxy = 0.0, sxx = 0.0, syy = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double dx = x[i] - mx;
+        const double dy = y[i] - my;
+        sxy += dx * dy;
+        sxx += dx * dx;
+        syy += dy * dy;
+    }
+    if (!(sxx > 0.0) || !(syy > 0.0) || !std::isfinite(sxy))
+        return;
+    d_line_pearson_r = qBound(-1.0, sxy / std::sqrt(sxx * syy), 1.0);
+}
+
+bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol)
+{
+    // MINPACK-style scale-invariant gradient test: the cosine of the angle between the residual
+    // vector f and every column of the Jacobian must be small at a stationary point.
+    if (!s || !s->f || !s->x)
+        return false;
+    const size_t n = s->f->size;
+    const size_t p = s->x->size;
+    const double fnorm = gsl_blas_dnrm2(s->f);
+    if (!std::isfinite(fnorm))
+        return false;
+    if (fnorm == 0.0)
+        return true;
+    gsl_matrix *J = gsl_matrix_alloc(n, p);
+#if GSL_MAJOR_VERSION < 2
+    gsl_matrix_memcpy(J, s->J);
+#else
+    if (gsl_multifit_fdfsolver_jac(s, J) != GSL_SUCCESS) {
+        gsl_matrix_free(J);
+        return false;
+    }
+#endif
+    bool stationary = true;
+    for (size_t j = 0; j < p && stationary; ++j) {
+        gsl_vector_view col = gsl_matrix_column(J, j);
+        const double cnorm = gsl_blas_dnrm2(&col.vector);
+        if (!(cnorm > 0.0))
+            continue; // a parameter without influence cannot move the fit any further
+        double dot = 0.0;
+        gsl_blas_ddot(&col.vector, s->f, &dot);
+        const double cosAngle = std::abs(dot) / (cnorm * fnorm);
+        if (!std::isfinite(cosAngle) || cosAngle > gtol)
+            stationary = false;
+    }
+    gsl_matrix_free(J);
+    return stationary;
+}
+
+QString Fit::convergenceMessage() const
+{
+    switch (d_convergence) {
+    case MaxIterationsReached:
+        return tr("Not converged (maximum iterations reached; check the initial values)");
+    case NoProgress:
+        return tr("Not converged (no further improvement; check the initial values)");
+    case Converged:
+        break;
+    }
+    return QString();
+}
+
+int Fit::degreesOfFreedom() const
+{
+    return int(d_x.size()) - effectiveFreeParameters();
+}
+
+double Fit::parameterStdError(int i) const
+{
+    if (i < 0 || unsigned(i) >= d_p || !covar)
+        return std::numeric_limits<double>::quiet_NaN();
+    if (!std::isfinite(chi_2) || chi_2 < 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    if (isParameterFixed(i))
+        return 0.0;
+    const bool scaled = (d_y_error_source == UnknownErrors || d_scale_errors);
+    if (scaled && degreesOfFreedom() <= 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    const double v = effectiveCovarScale() * gsl_matrix_get(covar, size_t(i), size_t(i));
+    if (!std::isfinite(v))
+        return std::numeric_limits<double>::quiet_NaN();
+    return std::sqrt(std::max(0.0, v));
+}
+
+double Fit::studentTQuantile(double p, int dof)
+{
+    if (dof <= 0 || !(p > 0.0) || !(p < 1.0))
+        return std::numeric_limits<double>::quiet_NaN();
+    return gsl_cdf_tdist_Pinv(p, double(dof));
+}
+
+bool Fit::parameterConfidenceInterval(int i, double level, double *lo, double *hi) const
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (lo)
+        *lo = nan;
+    if (hi)
+        *hi = nan;
+    if (i < 0 || size_t(i) >= d_results.size() || !std::isfinite(d_results[size_t(i)]))
+        return false;
+    const int dof = degreesOfFreedom();
+    const double se = parameterStdError(i);
+    if (dof <= 0 || !std::isfinite(se))
+        return false;
+    const double t = studentTQuantile(0.5 + 0.5 * std::clamp(level, 0.0, 0.999999), dof);
+    if (!std::isfinite(t))
+        return false;
+    if (lo)
+        *lo = d_results[size_t(i)] - t * se;
+    if (hi)
+        *hi = d_results[size_t(i)] + t * se;
+    return true;
+}
 
 Fit::Fit(ApplicationWindow *parent, Graph *g, QString name)
     : Filter(parent, g, name), scripted(ScriptingLangManager::newEnv("muParser", parent))
 {
+    registerFitJapaneseStrings();
     d_p = 0;
     d_curveColor = ColorButton::color(1);
     d_solver = ScaledLevenbergMarquardt;
-    d_tolerance = 1e-4;
+    // 1e-4 (the old SciDAVis default) stopped LM while parameters still moved in the 4th digit;
+    // 1e-6 costs a few extra iterations near the minimum, where LM converges quadratically.
+    d_tolerance = 1e-6;
     d_gen_function = true;
     d_points = 100;
     d_max_iterations = 1000;
@@ -1015,6 +1192,8 @@ Fit::Fit(ApplicationWindow *parent, Graph *g, QString name)
 vector<double> Fit::fitGslMultifit(int &iterations, int &status)
 {
     vector<double> result(d_p);
+    d_convergence = Converged;
+    d_last_iterations = 0;
 
     const std::vector<double> weightsVec = computeWeightsVector();
     d_y_errors.resize(d_x.size(), 1.0);
@@ -1222,9 +1401,15 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         for (iterations = 0; iterations < d_max_iterations; iterations++) {
             status = gsl_multifit_fdfsolver_iterate(s);
             if (status) {
-                if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-                    || status == GSL_ETOLG)
+                // ETOL*: the requested tolerance is below machine precision, i.e. the solver
+                // sits at the minimum. ENOPROG is only accepted when the gradient vanishes.
+                if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
                     status = GSL_SUCCESS;
+                } else if (status == GSL_ENOPROG) {
+                    if (!lmGradientIsStationary(s))
+                        d_convergence = NoProgress;
+                    status = GSL_SUCCESS;
+                }
                 break;
             }
             int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
@@ -1248,8 +1433,12 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             if (status != GSL_CONTINUE)
                 break;
         }
-        if (status == GSL_CONTINUE)
+        if (status == GSL_CONTINUE) {
+            // Iteration budget exhausted: keep the last iterate but flag it as not converged.
+            d_convergence = MaxIterationsReached;
             status = GSL_SUCCESS;
+        }
+        d_last_iterations = iterations;
 
         if (status != GSL_SUCCESS) {
             gsl_multifit_fdfsolver_free(s);
@@ -1314,8 +1503,13 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     for (iterations = 0; iterations < d_max_iterations; iterations++) {
         status = gsl_multifit_fdfsolver_iterate(s);
         if (status) {
-            if (status == GSL_ENOPROG || status == GSL_ETOLF || status == GSL_ETOLX
-                || status == GSL_ETOLG) {
+            if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
+                status = GSL_SUCCESS;
+                break;
+            }
+            if (status == GSL_ENOPROG) {
+                if (!lmGradientIsStationary(s))
+                    d_convergence = NoProgress;
                 status = GSL_SUCCESS;
                 break;
             }
@@ -1451,8 +1645,11 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         if (status != GSL_CONTINUE)
             break;
     }
-    if (status == GSL_CONTINUE)
+    if (status == GSL_CONTINUE) {
+        d_convergence = MaxIterationsReached;
         status = GSL_SUCCESS;
+    }
+    d_last_iterations = iterations;
 
     if (status != GSL_SUCCESS) {
         gsl_multifit_fdfsolver_free(s);
@@ -1501,6 +1698,8 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
 vector<double> Fit::fitGslMultimin(int &iterations, int &status)
 {
     vector<double> result(d_p);
+    d_convergence = Converged;
+    d_last_iterations = 0;
 
     const std::vector<double> weightsVec = computeWeightsVector();
     d_y_errors.resize(d_x.size(), 1.0);
@@ -1693,8 +1892,11 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             if (status != GSL_CONTINUE)
                 break;
         }
-        if (status == GSL_CONTINUE)
+        if (status == GSL_CONTINUE) {
+            d_convergence = MaxIterationsReached;
             status = GSL_SUCCESS;
+        }
+        d_last_iterations = iterations;
 
         result = ctx.base_p;
         for (size_t k = 0; k < p_free; ++k)
@@ -1766,8 +1968,11 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
         if (status != GSL_CONTINUE)
             break;
     }
-    if (status == GSL_CONTINUE)
+    if (status == GSL_CONTINUE) {
+        d_convergence = MaxIterationsReached;
         status = GSL_SUCCESS;
+    }
+    d_last_iterations = iterations;
 
     // grab results
     for (unsigned i = 0; i < d_p; i++)
@@ -1880,30 +2085,48 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
         info += tr("From x") + " = " + QLocale().toString(d_x[0], 'g', 15) + " " + tr("to x")
                 + " = " + QLocale().toString(d_x.back(), 'g', 15) + "\n";
     }
+    if (!converged() && status == GSL_SUCCESS) {
+        info += "*** " + convergenceMessage() + " ***\n";
+        info += tr("The parameters and the curve shown are the last iterate, not a converged "
+                   "result.")
+                + "\n";
+    }
+    for (const QString &note : d_fit_notes)
+        info += note + "\n";
+
+    auto fmtNum = [this](double v) -> QString {
+        return std::isfinite(v) ? QLocale().toString(v, 'g', d_prec) : QString::fromUtf8("—");
+    };
     double chi_2_dof = reducedChiSquare();
-    const double covScale = effectiveCovarScale();
+    const int dof = degreesOfFreedom();
     for (unsigned i = 0; i < d_p; i++) {
-        const double se = covar
-                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
-                                  : 0.0;
+        const double se = parameterStdError(int(i));
         info += d_param_names[i] + " " + d_param_explain[i] + " = "
-                + QLocale().toString(par[i], 'g', d_prec) + " +/- "
-                + QLocale().toString(se, 'g', d_prec) + "\n";
+                + QLocale().toString(par[i], 'g', d_prec) + " +/- " + fmtNum(se);
+        double lo = 0.0, hi = 0.0;
+        if (!isParameterFixed(int(i)) && parameterConfidenceInterval(int(i), 0.95, &lo, &hi))
+            info += "   " + tr("95% CI") + " [" + fmtNum(lo) + ", " + fmtNum(hi) + "]";
+        info += "\n";
     }
     info += "--------------------------------------------------------------------------------------"
             "\n";
     info += "Chi^2 = " + QLocale().toString(chi_2, 'g', d_prec) + "\n";
     info += tr("Reduced Chi^2") + " (Chi^2/doF) = "
             + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
+    info += tr("Degrees of freedom") + " = " + QString::number(std::max(0, dof)) + "\n";
     info += tr("RSS") + " = " + QLocale().toString(rss(), 'g', d_prec) + "\n";
     info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
     info += tr("Adjusted R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
-    info += tr("Pearson's r") + " = " + QLocale().toString(pearsonR(), 'g', d_prec) + "\n";
+    if (d_straight_line_fit)
+        info += tr("Pearson's r (x, y)") + " = " + fmtNum(pearsonR()) + "\n";
     info += "--------------------------------------------------------------------------------------"
             "-\n";
     if (is_non_linear) {
         info += tr("Iterations") + " = " + QString::number(iterations) + "\n";
-        info += tr("Status") + " = " + gsl_strerror(status) + "\n";
+        if (status == GSL_SUCCESS && !converged())
+            info += tr("Status") + " = " + convergenceMessage() + "\n";
+        else
+            info += tr("Status") + " = " + gsl_strerror(status) + "\n";
         info += "----------------------------------------------------------------------------------"
                 "-----\n";
     }
@@ -1988,8 +2211,9 @@ double Fit::rSquare() const
     if (d_has_custom_r2)
         return d_custom_r2;
 
+    // A failed fit has no coefficient of determination: report NaN, not a misleading 0.
     if (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0)
-        return 0.0;
+        return std::numeric_limits<double>::quiet_NaN();
 
     double mean = 0.0, tss = 0.0, weights_sum = 0.0;
 
@@ -2017,7 +2241,7 @@ double Fit::rSquare() const
 double Fit::adjustedRSquare() const
 {
     if (!d_has_custom_r2 && (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0))
-        return 0.0;
+        return std::numeric_limits<double>::quiet_NaN();
     double r2 = rSquare();
     int p_eff = effectiveFreeParameters();
     if (int(d_x.size()) <= p_eff || d_x.size() <= 1)
@@ -2027,34 +2251,12 @@ double Fit::adjustedRSquare() const
 
 double Fit::pearsonR() const
 {
-    if (d_y_fit.size() == d_y.size() && d_y.size() > 1) {
-        double mean_y = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
-        double mean_f = std::accumulate(d_y_fit.cbegin(), d_y_fit.cend(), 0.0) / double(d_y_fit.size());
-        double s_yf = 0.0, s_yy = 0.0, s_ff = 0.0;
-        for (size_t i = 0; i < d_y.size(); ++i) {
-            double dy = d_y[i] - mean_y;
-            double df = d_y_fit[i] - mean_f;
-            s_yf += dy * df;
-            s_yy += dy * dy;
-            s_ff += df * df;
-        }
-        if (s_yy <= 0.0 || s_ff <= 0.0)
-            return std::numeric_limits<double>::quiet_NaN();
-        const double r = s_yf / std::sqrt(s_yy * s_ff);
-        return qBound(-1.0, r, 1.0);
-    }
-    if (d_y.size() <= 1)
+    // Pearson's r is the signed x-y correlation of a straight-line regression. For any other
+    // model "r" is ambiguous (the old corr(y, y_fit) was always >= 0 even for falling data),
+    // so it is not reported.
+    if (!d_straight_line_fit || !std::isfinite(chi_2) || chi_2 < 0.0)
         return std::numeric_limits<double>::quiet_NaN();
-    double mean_y = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
-    double s_yy = 0.0;
-    for (double yv : d_y) {
-        double dy = yv - mean_y;
-        s_yy += dy * dy;
-    }
-    if (s_yy <= 0.0)
-        return std::numeric_limits<double>::quiet_NaN();
-    double r2 = rSquare();
-    return r2 > 0.0 ? qBound(-1.0, std::sqrt(r2), 1.0) : 0.0;
+    return d_line_pearson_r;
 }
 
 QString Fit::legendInfo()
@@ -2062,21 +2264,23 @@ QString Fit::legendInfo()
     const QString curveTitle =
             (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text()
                                                                       : objectName();
-    QString info = tr("Dataset") + ": " + curveTitle + "\n";
+    QString info;
+    if (!converged())
+        info += convergenceMessage() + "\n";
+    info += tr("Dataset") + ": " + curveTitle + "\n";
     info += tr("Function") + ": " + d_formula + "\n\n";
 
     double chi_2_dof = reducedChiSquare();
-    const double covScale = effectiveCovarScale();
     info += "Chi^2/doF = " + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
     info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
     info += tr("Adj. R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
 
     for (unsigned i = 0; i < d_p; i++) {
-        const double se = covar
-                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
-                                  : 0.0;
+        const double se = parameterStdError(int(i));
         info += d_param_names[i] + " = " + QLocale().toString(d_results[i], 'g', d_prec) + " +/- "
-                + QLocale().toString(se, 'g', d_prec) + "\n";
+                + (std::isfinite(se) ? QLocale().toString(se, 'g', d_prec)
+                                     : QString::fromUtf8("—"))
+                + "\n";
     }
     return info;
 }
@@ -2489,19 +2693,33 @@ std::vector<double> Fit::computeWeightsVector() const
 Table *Fit::parametersTable(const QString &tableName)
 {
     ApplicationWindow *app = (ApplicationWindow *)parent();
-    Table *t = app->newTable(tableName, d_p, 3);
-    t->setHeader(QStringList() << tr("Parameter") << tr("Value") << tr("Error"));
+    // Parameter | Value | Error | LowerCI95 | UpperCI95 | DOF. The interval uses Student's t with
+    // the residual degrees of freedom (same as OriginPro's "LCL/UCL"). Undefined cells (e.g. a
+    // standard error with zero degrees of freedom) are left empty rather than filled with 0.
+    Table *t = app->newTable(tableName, d_p, 6);
+    t->setHeader(QStringList() << tr("Parameter") << tr("Value") << tr("Error") << tr("LowerCI95")
+                               << tr("UpperCI95") << tr("DOF"));
     t->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
-    t->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
-    t->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
-    const double covScale = effectiveCovarScale();
+    for (int c = 1; c < 6; ++c)
+        t->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    const int dof = degreesOfFreedom();
     for (unsigned i = 0; i < d_p; i++) {
         t->column(0)->setTextAt(i, d_param_names[i]);
         t->column(1)->setValueAt(i, d_results[i]);
-        const double se = covar
-                                  ? std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)))
-                                  : 0.0;
-        t->column(2)->setValueAt(i, se);
+        const double se = parameterStdError(int(i));
+        if (std::isfinite(se))
+            t->column(2)->setValueAt(i, se);
+        else
+            t->column(2)->setInvalid(int(i), true);
+        double lo = 0.0, hi = 0.0;
+        if (!isParameterFixed(int(i)) && parameterConfidenceInterval(int(i), 0.95, &lo, &hi)) {
+            t->column(3)->setValueAt(i, lo);
+            t->column(4)->setValueAt(i, hi);
+        } else {
+            t->column(3)->setInvalid(int(i), true);
+            t->column(4)->setInvalid(int(i), true);
+        }
+        t->column(5)->setValueAt(i, std::max(0, dof));
     }
 
     t->column(2)->setPlotDesignation(SciDAVis::yErr);
@@ -2717,9 +2935,13 @@ const vector<double> &Fit::errors()
         d_result_errors.resize(d_p, 0.0);
         if (covar) {
             const double covScale = effectiveCovarScale();
+            // Residual-scaled errors are undefined without residual degrees of freedom
+            const bool undefined = (d_y_error_source == UnknownErrors || d_scale_errors)
+                    && degreesOfFreedom() <= 0;
             for (unsigned i = 0; i < d_p; i++)
-                d_result_errors[i] =
-                        std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
+                d_result_errors[i] = undefined
+                        ? std::numeric_limits<double>::quiet_NaN()
+                        : std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
         }
     }
     return d_result_errors;
@@ -2767,6 +2989,10 @@ void Fit::fit()
     }
 
     d_has_custom_r2 = false;
+    d_straight_line_fit = false;
+    d_convergence = Converged;
+    d_last_iterations = 0;
+    d_fit_notes.clear();
     chi_2 = -1.0;
     d_y_fit.clear();
     if (!d_all_guesses_set && unsigned(d_explicit_init_vals.size()) < d_p) {
@@ -3347,6 +3573,11 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     const std::vector<double> savedResultErrors = d_result_errors;
     const double savedChi2 = chi_2;
     const int savedMaxIter = d_max_iterations;
+    const ConvergenceState savedConvergence = d_convergence;
+    const int savedIterations = d_last_iterations;
+    const QStringList savedNotes = d_fit_notes;
+    const bool savedStraightLine = d_straight_line_fit;
+    const double savedLineR = d_line_pearson_r;
 
     std::vector<double> savedParamInit(d_p, 0.0);
     if (d_param_init) {
@@ -3459,6 +3690,11 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_result_errors = savedResultErrors;
     chi_2 = savedChi2;
     d_max_iterations = savedMaxIter;
+    d_convergence = savedConvergence;
+    d_last_iterations = savedIterations;
+    d_fit_notes = savedNotes;
+    d_straight_line_fit = savedStraightLine;
+    d_line_pearson_r = savedLineR;
     d_in_bootstrap = false;
     d_silent = origSilent;
     d_suppress_curve_output = origSuppress;
@@ -3770,13 +4006,14 @@ void Fit::insertFitSummaryBoxOnGraph()
         lines << QStringLiteral("%1 (%2)").arg(objectName(), curveLabel);
     else
         lines << objectName();
+    if (!converged())
+        lines << convergenceMessage();
 
     lines << QStringLiteral("%1 = %2")
                      .arg(tr("R\u00B2"), QLocale().toString(rSquare(), 'f', 4));
 
     const int valPrec = qBound(3, d_prec, 5);
     const int errPrec = qBound(2, d_prec - 1, 3);
-    const double covScale = effectiveCovarScale();
     for (unsigned i = 0; i < d_p && i < d_results.size(); ++i) {
         const QString pName = (int(i) < d_param_names.size())
                 ? d_param_names[int(i)]
@@ -3786,9 +4023,11 @@ void Fit::insertFitSummaryBoxOnGraph()
         if (isParameterFixed(int(i))) {
             pLine += QStringLiteral(" (") + tr("fixed") + QStringLiteral(")");
         } else if (covar) {
-            const double err = std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
+            const double err = parameterStdError(int(i));
             if (std::isfinite(err))
                 pLine += QStringLiteral(" \u00B1 ") + QLocale().toString(err, 'g', errPrec);
+            else
+                pLine += QStringLiteral(" \u00B1 \u2014");
         }
         lines << pLine;
     }

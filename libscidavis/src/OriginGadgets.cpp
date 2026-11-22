@@ -8,6 +8,7 @@
 #include "OriginGadgets.h"
 
 #include "ApplicationWindow.h"
+#include "Fit.h"
 #include "FunctionCurve.h"
 #include "Graph.h"
 #include "Legend.h"
@@ -354,14 +355,17 @@ static int nlFitFdf(const gsl_vector *params, void *userData, gsl_vector *f, gsl
     return GSL_SUCCESS;
 }
 
+// convOut: 0 = converged, 1 = iteration budget exhausted, 2 = stalled away from a minimum
 static bool runLmSolver(int modelType, const std::vector<double> &x, const std::vector<double> &y,
                         double xRef, std::vector<double> &pInOut,
-                        std::vector<double> *seOut = nullptr)
+                        std::vector<double> *seOut = nullptr, int *convOut = nullptr)
 {
     const size_t n = x.size();
     const size_t p = pInOut.size();
     if (seOut)
         seOut->assign(p, 0.0);
+    if (convOut)
+        *convOut = 0;
     if (n < p || p == 0)
         return false;
 
@@ -387,13 +391,24 @@ static bool runLmSolver(int modelType, const std::vector<double> &x, const std::
 
     int status = gsl_multifit_fdfsolver_set(solver, &func, initVec);
     if (status == GSL_SUCCESS) {
+        bool deltaConverged = false;
+        bool hitLimit = true;
         for (int iter = 0; iter < 250; ++iter) {
             status = gsl_multifit_fdfsolver_iterate(solver);
-            if (status != GSL_SUCCESS && status != GSL_CONTINUE && status != GSL_ENOPROG)
+            if (status != GSL_SUCCESS && status != GSL_CONTINUE && status != GSL_ENOPROG) {
+                hitLimit = false;
                 break;
-            if (gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8) == GSL_SUCCESS)
+            }
+            if (gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8) == GSL_SUCCESS) {
+                deltaConverged = true;
+                hitLimit = false;
                 break;
+            }
         }
+        // Do not report the last iterate as a converged result unless it is a stationary point.
+        if (convOut && !deltaConverged && status != GSL_ETOLF && status != GSL_ETOLX
+            && status != GSL_ETOLG && !Fit::lmGradientIsStationary(solver))
+            *convOut = hitLimit ? 1 : 2;
         for (size_t j = 0; j < p; ++j) {
             const double v = gsl_vector_get(solver->x, j);
             if (std::isfinite(v))
@@ -425,6 +440,14 @@ static bool runLmSolver(int modelType, const std::vector<double> &x, const std::
     gsl_multifit_fdfsolver_free(solver);
     gsl_vector_free(initVec);
     return true;
+}
+
+static QString quickFitConvergenceMessage(int convState)
+{
+    Fit::registerJapaneseStrings();
+    return (convState == 1)
+            ? QObject::tr("Not converged (maximum iterations reached; check the initial values)")
+            : QObject::tr("Not converged (no further improvement; check the initial values)");
 }
 
 static void drawReadoutBox(QPainter *painter, const QRect &canvasRect, const QPoint &anchorPos,
@@ -1968,6 +1991,7 @@ void RoiGadgetTool::recalculate()
         };
 
         std::vector<double> yHat(n, meanY);
+        int convState = 0;
         QString modelLabel;
         QString paramLine;
 
@@ -2060,7 +2084,7 @@ void RoiGadgetTool::recalculate()
             const double wGuess = std::max(1e-9, fwhmGuess / kFwhm);
             std::vector<double> p = { minY, std::max(1e-9, maxY - minY), xAtMax, wGuess };
             std::vector<double> se;
-            runLmSolver(2, xv, yv, xv.front(), p, &se);
+            runLmSolver(2, xv, yv, xv.front(), p, &se, &convState);
             p[3] = std::fabs(p[3]);
             for (size_t i = 0; i < n; ++i) {
                 const double u = (xv[i] - p[2]) / std::max(1e-12, p[3]);
@@ -2098,7 +2122,7 @@ void RoiGadgetTool::recalculate()
             const double fwhmGuess = estimateFwhm(xv, yv, minY, maxIdx);
             std::vector<double> p = { minY, std::max(1e-9, maxY - minY), xAtMax, fwhmGuess };
             std::vector<double> se;
-            runLmSolver(3, xv, yv, xv.front(), p, &se);
+            runLmSolver(3, xv, yv, xv.front(), p, &se, &convState);
             p[3] = std::fabs(p[3]);
             for (size_t i = 0; i < n; ++i) {
                 const double dx = xv[i] - p[2];
@@ -2138,7 +2162,7 @@ void RoiGadgetTool::recalculate()
             const double span = std::max(1e-9, xv.back() - xv.front());
             std::vector<double> p = { yv.back(), yv.front() - yv.back(), span / 3.0 };
             std::vector<double> se;
-            runLmSolver(4, xv, yv, xRef, p, &se);
+            runLmSolver(4, xv, yv, xRef, p, &se, &convState);
             for (size_t i = 0; i < n; ++i) {
                 const double u = std::clamp((xv[i] - xRef) / p[2], -500.0, 500.0);
                 yHat[i] = p[0] + p[1] * std::exp(-u);
@@ -2185,7 +2209,7 @@ void RoiGadgetTool::recalculate()
             const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
             std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
             std::vector<double> se;
-            runLmSolver(5, xv, yv, xv.front(), p, &se);
+            runLmSolver(5, xv, yv, xv.front(), p, &se, &convState);
             for (size_t i = 0; i < n; ++i) {
                 const double u = std::clamp((xv[i] - p[2]) / p[3], -500.0, 500.0);
                 yHat[i] = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
@@ -2232,6 +2256,9 @@ void RoiGadgetTool::recalculate()
                                  .arg(tr("R\u00B2"))
                                  .arg(QLocale().toString(d_primary_metric, 'f', 4))
                                  .arg(paramLine);
+        d_output_metrics << qMakePair(QString("Converged"), convState == 0 ? 1.0 : 0.0);
+        if (convState != 0)
+            d_summary_text += QStringLiteral("\n") + quickFitConvergenceMessage(convState);
         break;
     }
 
@@ -2352,7 +2379,8 @@ void RoiGadgetTool::recalculate()
             const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
             std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
             std::vector<double> se;
-            runLmSolver(5, xv, yv, xv.front(), p, &se);
+            int sigConv = 0;
+            runLmSolver(5, xv, yv, xv.front(), p, &se, &sigConv);
 
             std::vector<double> yHat(n);
             for (size_t i = 0; i < n; ++i) {
@@ -2400,6 +2428,9 @@ void RoiGadgetTool::recalculate()
                                      .arg(r2, 0, 'f', 5)
                                      .arg(p[0], 0, 'g', 5)
                                      .arg(p[1], 0, 'g', 5);
+            d_output_metrics << qMakePair(QString("Converged"), sigConv == 0 ? 1.0 : 0.0);
+            if (sigConv != 0)
+                d_summary_text += QStringLiteral("\n") + quickFitConvergenceMessage(sigConv);
         } else {
             d_summary_text = QString("%1 [%2]\n%3")
                                      .arg(tr("Quick Sigmoidal"))

@@ -65,12 +65,35 @@
 #include <QApplication>
 #include <QRegularExpression>
 #include <QSet>
+#include <QCompleter>
+#include <QStringListModel>
+#include <mutex>
+#include "I18nJapanese.h"
 #include <qwt_plot_curve.h>
 #include <stdio.h>
 #include <cmath>
 #include <limits>
 
 namespace {
+
+void registerFitDialogJapaneseStrings()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Search models:", "モデルを検索:");
+        reg("Type part of a name or description (e.g. gauss, voigt, arrhenius)",
+            "名前や説明の一部を入力(例: gauss, voigt, arrhenius)");
+        reg("The fit did not converge.", "フィットが収束していません。");
+        reg("The curve and parameters shown are the last iterate. Check the initial values, "
+            "increase the number of iterations, or fix some parameters, and fit again.",
+            "表示中の曲線とパラメータは最後の反復値です。初期値を見直す、反復回数を増やす、"
+            "一部のパラメータを固定する、などをしてからフィットし直してください。");
+    });
+}
 
 class FitPreviewCurveItem : public QwtPlotCurve
 {
@@ -220,7 +243,7 @@ void FitDialog::initFitPage()
     boxPoints->setValue(1000);
     gl3->addWidget(boxPoints, 0, 1);
     gl3->addWidget(new QLabel(tr("Tolerance")), 1, 0);
-    boxTolerance = new QLineEdit("1e-4");
+    boxTolerance = new QLineEdit("1e-6");
     gl3->addWidget(boxTolerance, 1, 1);
     QGroupBox *gb3 = new QGroupBox();
     gb3->setLayout(gl3);
@@ -319,6 +342,46 @@ void FitDialog::initEditPage()
     gl1->addWidget(new QLabel(tr("Function")), 0, 1);
     gl1->addWidget(new QLabel(tr("Expression")), 0, 2);
 
+    registerFitDialogJapaneseStrings();
+    // Model search: type part of a model name or description and jump to it in its category.
+    QHBoxLayout *searchRow = new QHBoxLayout();
+    searchRow->addWidget(new QLabel(tr("Search models:")));
+    modelSearchBox = new QLineEdit();
+    modelSearchBox->setObjectName(QStringLiteral("fitModelSearchBox"));
+    modelSearchBox->setPlaceholderText(
+            tr("Type part of a name or description (e.g. gauss, voigt, arrhenius)"));
+    modelSearchBox->setClearButtonEnabled(true);
+    {
+        QStringList entries;
+        for (const QString &mName : NonLinearFit::builtInModelNames()) {
+            const QString desc = NonLinearFit::builtInModelDescription(mName);
+            const QString cat = NonLinearFit::builtInModelCategory(mName);
+            QString entry = mName;
+            if (!desc.isEmpty())
+                entry += QStringLiteral(" \u2014 ") + tr(desc.toUtf8().constData());
+            if (!cat.isEmpty())
+                entry += QStringLiteral(" [") + tr(cat.toUtf8().constData()) + QStringLiteral("]");
+            entries << entry;
+        }
+        QCompleter *completer = new QCompleter(entries, modelSearchBox);
+        completer->setCaseSensitivity(Qt::CaseInsensitive);
+        completer->setFilterMode(Qt::MatchContains);
+        completer->setMaxVisibleItems(15);
+        modelSearchBox->setCompleter(completer);
+        connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this,
+                &FitDialog::jumpToModel);
+    }
+    connect(modelSearchBox, &QLineEdit::returnPressed, this, [this]() {
+        QCompleter *c = modelSearchBox->completer();
+        if (c && c->completionCount() > 0) {
+            c->setCurrentRow(0);
+            jumpToModel(c->currentCompletion());
+        } else {
+            jumpToModel(modelSearchBox->text());
+        }
+    });
+    searchRow->addWidget(modelSearchBox, 1);
+
     categoryBox = new QListWidget();
     categoryBox->addItem(tr("User defined"));
     categoryBox->addItem(tr("Built-in"));
@@ -402,6 +465,7 @@ void FitDialog::initEditPage()
     hbox2->addLayout(vbox1);
 
     QVBoxLayout *vbox2 = new QVBoxLayout();
+    vbox2->addLayout(searchRow);
     vbox2->addLayout(gl1);
     vbox2->addLayout(hbox1);
     vbox2->addWidget(gb);
@@ -1066,7 +1130,9 @@ void FitDialog::setFunction(bool ok)
     btnAddTxt->setEnabled(!ok);
     buttonClear->setEnabled(!ok);
 
-    if (ok) {
+    // funcBox has no current item while a category list is being rebuilt (the built-in
+    // categories check boxUseBuiltIn before selecting a row), so guard the dereference.
+    if (ok && funcBox->currentItem()) {
         boxName->setText(funcBox->currentItem()->text());
         editBox->setText(explainBox->toPlainText());
 
@@ -1211,6 +1277,54 @@ void FitDialog::showFunctionsList(int category)
     }
     funcBox->blockSignals(false);
     funcBox->setCurrentRow(0);
+}
+
+bool FitDialog::jumpToModel(const QString &entry)
+{
+    QString name = entry.section(QStringLiteral(" \u2014 "), 0, 0).trimmed();
+    name = name.section(QStringLiteral(" ["), 0, 0).trimmed();
+    if (name.isEmpty())
+        return false;
+    // Case-insensitive match against the built-in Origin model names
+    QString canonical;
+    for (const QString &mName : NonLinearFit::builtInModelNames()) {
+        if (mName.compare(name, Qt::CaseInsensitive) == 0) {
+            canonical = mName;
+            break;
+        }
+    }
+    if (canonical.isEmpty())
+        return false;
+
+    static const char *const kCats[] = { "Peak Functions",
+                                         "Exponential",
+                                         "Sigmoidal / Growth",
+                                         "Materials / Metallurgy / Physics",
+                                         "Waveform / Periodic",
+                                         "Power / Logarithmic / Rational / Polynomial" };
+    const QString cat = NonLinearFit::builtInModelCategory(canonical);
+    int row = -1;
+    for (int k = 0; k < 6; ++k) {
+        if (cat == QString::fromLatin1(kCats[k])) {
+            row = 4 + k;
+            break;
+        }
+    }
+    if (row < 0)
+        return false;
+    if (categoryBox->currentRow() != row)
+        categoryBox->setCurrentRow(row);
+    const QList<QListWidgetItem *> hits = funcBox->findItems(canonical, Qt::MatchExactly);
+    if (hits.isEmpty())
+        return false;
+    funcBox->setCurrentItem(hits.first());
+    if (modelSearchBox) {
+        modelSearchBox->blockSignals(true);
+        modelSearchBox->clear();
+        modelSearchBox->blockSignals(false);
+    }
+    funcBox->setFocus();
+    return true;
 }
 
 void FitDialog::choosePluginsFolder()
@@ -1629,6 +1743,16 @@ void FitDialog::accept()
     d_fitter->fit();
     if (summaryOnGraphBox && summaryOnGraphBox->isChecked())
         d_fitter->insertFitSummaryBoxOnGraph();
+    if (!d_fitter->converged() && !app->isHeadlessMode()
+        && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
+        registerFitDialogJapaneseStrings();
+        QMessageBox::warning(this, tr("Fit Warning"),
+                             tr("The fit did not converge.") + "\n" + d_fitter->convergenceMessage()
+                                     + "\n\n"
+                                     + tr("The curve and parameters shown are the last iterate. "
+                                          "Check the initial values, increase the number of "
+                                          "iterations, or fix some parameters, and fit again."));
+    }
 
     auto res = d_fitter->results();
     boxParams->blockSignals(true);
