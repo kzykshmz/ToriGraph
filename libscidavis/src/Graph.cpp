@@ -3227,6 +3227,7 @@ void Graph::applyZeroSnapOnAutoAxes()
 
 void Graph::setAutoScale()
 {
+    const MarkerAxisState axesBefore = markerAxisState();
     if (!d_applying_zoom_history)
         recordZoomHistorySnapshot();
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
@@ -3238,7 +3239,7 @@ void Graph::setAutoScale()
     d_plot->replot();
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
-    updateScale();
+    updateScale(axesBefore);
     if (d_linked_parent)
         syncLinkedAxesFromParent();
     syncChildLinkedLayers();
@@ -3270,7 +3271,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     majorTicks = qBound(1, majorTicks, 100);
     minorTicks = qBound(0, minorTicks, 50);
 
-    const QVector<double> axesBefore = markerAxisState();
+    const MarkerAxisState axesBefore = markerAxisState();
     setToriAxisUserLocked(d_plot, axis, true);
     d_plot->setAxisScale(axis, inverted ? qMax(start, end) : qMin(start, end),
                          inverted ? qMin(start, end) : qMax(start, end), step);
@@ -5445,6 +5446,7 @@ void Graph::plotPie(Table *w, const QString &name, const QPen &pen, int brush, i
 
 void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
 {
+    const MarkerAxisState axesBefore = markerAxisState();
     int ycol = w->colIndex(name);
     int size = 0;
     double sum = 0.0;
@@ -5665,7 +5667,7 @@ void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
     }
 
     d_plot->replot();
-    updateScale();
+    updateScale(axesBefore);
 }
 
 bool Graph::plotHistogram(Table *w, QStringList names, int startRow, int endRow)
@@ -6087,7 +6089,7 @@ void Graph::updateVectorsLayout(int curve, const QColor &color, int width, int a
 
 void Graph::updatePlot()
 {
-    const QVector<double> axesBefore = markerAxisState();
+    const MarkerAxisState axesBefore = markerAxisState();
     if (d_is_ternary) {
         d_plot->setAxisScale(QwtPlot::xBottom, -0.24, 1.24, 0.2);
         d_plot->setAxisScale(QwtPlot::yLeft, -0.25, 1.23, 0.2);
@@ -6224,7 +6226,11 @@ void Graph::updatePlot()
 
 void Graph::updateScale()
 {
-    const QVector<double> axesBefore = markerAxisState();
+    updateScale(markerAxisState());
+}
+
+void Graph::updateScale(const MarkerAxisState &axesBefore)
+{
     const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(QwtPlot::xBottom);
     QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
 
@@ -7460,74 +7466,140 @@ void Graph::showIntensityTable()
     emit createIntensityTable(mrk->fileName());
 }
 
-QVector<double> Graph::markerAxisState() const
+Graph::MarkerAxisState Graph::markerAxisState() const
 {
-    QVector<double> st;
-    st.reserve(3 * QwtPlot::axisCnt);
+    MarkerAxisState st;
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         const QwtScaleDiv *d = d_plot->axisScaleDiv(a);
-        const QwtScaleMap m = d_plot->canvasMap(a);
-        st << (d ? d->lowerBound() : 0.0) << (d ? d->upperBound() : 0.0)
-           << (m.transformation() ? double(m.transformation()->type()) : -1.0);
+        st.valid[a] = d && d->isValid();
+        st.map[a] = d_plot->canvasMap(a);
+        if (!st.valid[a]) {
+            // Qwt's setAxisScale() leaves the scale division invalid until the next replot. The
+            // scale widget still draws the previous scale: take range and transformation from
+            // its scale draw (the pixel interval of canvasMap() is right either way).
+            const QwtScaleWidget *sw = d_plot->axisWidget(a);
+            const QwtScaleDraw *sd = sw ? sw->scaleDraw() : nullptr;
+            if (sd && sd->map().transformation() && sd->scaleDiv().isValid()
+                && sd->map().s1() != sd->map().s2()) {
+                st.map[a].setTransformation(sd->map().transformation()->copy());
+                st.map[a].setScaleInterval(sd->map().s1(), sd->map().s2());
+                st.valid[a] = true;
+            }
+        }
     }
     return st;
 }
 
-void Graph::updateMarkersBoundingRect(const QVector<double> &before)
+namespace {
+// True when both maps put every value at the same fraction of their paint interval: same range
+// and the same transformation, including axis breaks and formula axes (sampled along the axis).
+bool sameAxisMapping(const QwtScaleMap &a, const QwtScaleMap &b)
 {
-    const QVector<double> now = markerAxisState();
-    if (d_is_ternary || before.size() != now.size()) {
+    if (a.s1() != b.s1() || a.s2() != b.s2())
+        return false;
+    const QwtScaleTransformation *ta = a.transformation();
+    const QwtScaleTransformation *tb = b.transformation();
+    if (!ta || !tb || ta->type() != tb->type())
+        return false;
+    const double da = a.p2() - a.p1();
+    const double db = b.p2() - b.p1();
+    if (da == 0.0 || db == 0.0)
+        return da == db;
+    constexpr int kSamples = 64;
+    for (int k = 0; k <= kSamples; ++k) {
+        const double v = a.s1() + (a.s2() - a.s1()) * double(k) / double(kSamples);
+        const double fa = (a.xTransform(v) - a.p1()) / da;
+        const double fb = (b.xTransform(v) - b.p1()) / db;
+        if (std::isnan(fa) && std::isnan(fb))
+            continue;
+        if (!(std::fabs(fa - fb) <= 1e-9))
+            return false;
+    }
+    return true;
+}
+} // namespace
+
+void Graph::refreshMarkerPixelCaches()
+{
+    for (int i = 0; i < (int)d_lines.size(); i++) {
+        if (ArrowMarker *mrkL = (ArrowMarker *)d_plot->marker(d_lines[i]))
+            mrkL->updateBoundingRect();
+    }
+    for (int i = 0; i < (int)d_texts.size(); i++) {
+        if (Legend *mrkT = (Legend *)d_plot->marker(d_texts[i]))
+            mrkT->refreshPixelOrigin();
+    }
+    for (int i = 0; i < (int)d_images.size(); i++) {
+        if (ImageMarker *mrk = (ImageMarker *)d_plot->marker(d_images[i]))
+            mrk->refreshPixelCache();
+    }
+}
+
+void Graph::updateMarkersBoundingRect(const MarkerAxisState &before)
+{
+    if (d_is_ternary) {
         updateMarkersBoundingRect();
         return;
     }
-    if (before == now) {
-        // No axis changed: the markers keep their axis coordinates. Only the pixel caches are
-        // brought up to date (arrows and text markers), so that a later rescale pins them where
-        // they are drawn now and not where they were when placed at another canvas size.
-        for (int i = 0; i < (int)d_lines.size(); i++) {
-            if (ArrowMarker *mrkL = (ArrowMarker *)d_plot->marker(d_lines[i]))
-                mrkL->updateBoundingRect();
-        }
-        for (int i = 0; i < (int)d_texts.size(); i++) {
-            if (Legend *mrkT = (Legend *)d_plot->marker(d_texts[i]))
-                mrkT->refreshPixelOrigin();
-        }
-        d_plot->replot();
-        return;
-    }
-    // An axis changed: text markers and pictures stay where they are drawn on the canvas. Their
-    // pixel position is taken from the previous axis ranges on the current canvas, not from the
-    // pixel cache of their placement (stale after a view zoom or a window resize).
+    // Settle the new scales and the layout (tick labels of another width move the canvas edges)
+    // before taking the new canvas maps; Plot::updateLayout() also settles a setAxisScale() that
+    // was not replotted yet.
+    d_plot->updateLayout();
+    const MarkerAxisState now = markerAxisState();
+    bool same[QwtPlot::axisCnt];
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        same[a] = before.valid[a] && now.valid[a] && sameAxisMapping(before.map[a], now.map[a]);
+    auto unchanged = [&](int xAxis, int yAxis) {
+        return xAxis >= 0 && xAxis < QwtPlot::axisCnt && yAxis >= 0 && yAxis < QwtPlot::axisCnt
+                && same[xAxis] && same[yAxis];
+    };
+    // The previous scale of an axis (range and transformation) on the current canvas. Not
+    // available while the previous scale division was invalid (Qwt's setAxisScale() leaves it
+    // so until the next replot): the marker then keeps its cached pixel position.
     auto previousMap = [&](int axis, QwtScaleMap &m) -> bool {
-        if (axis < 0 || axis >= QwtPlot::axisCnt || before[3 * axis + 2] != now[3 * axis + 2])
-            return false; // linear <-> log switched: keep the cached pixel position
-        m = d_plot->canvasMap(axis);
-        m.setScaleInterval(before[3 * axis], before[3 * axis + 1]);
+        if (axis < 0 || axis >= QwtPlot::axisCnt || !before.valid[axis] || !now.valid[axis])
+            return false;
+        m = before.map[axis];
+        m.setPaintXInterval(now.map[axis].p1(), now.map[axis].p2());
         return true;
     };
+
+    // Arrows are drawn between data points: they follow the data.
+    for (int i = 0; i < (int)d_lines.size(); i++) {
+        if (ArrowMarker *mrkL = (ArrowMarker *)d_plot->marker(d_lines[i]))
+            mrkL->updateBoundingRect();
+    }
     for (int i = 0; i < (int)d_texts.size(); i++) {
         Legend *mrkT = (Legend *)d_plot->marker(d_texts[i]);
         if (!mrkT)
             continue;
-        QwtScaleMap xm, ym;
-        if (previousMap(mrkT->xAxis(), xm) && previousMap(mrkT->yAxis(), ym))
-            mrkT->refreshPixelOrigin(&xm, &ym);
+        if (!unchanged(mrkT->xAxis(), mrkT->yAxis())) {
+            QwtScaleMap xm, ym;
+            if (previousMap(mrkT->xAxis(), xm) && previousMap(mrkT->yAxis(), ym))
+                mrkT->refreshPixelOrigin(&xm, &ym);
+            mrkT->updateOrigin();
+        }
+        mrkT->refreshPixelOrigin();
     }
     for (int i = 0; i < (int)d_images.size(); i++) {
         ImageMarker *mrk = (ImageMarker *)d_plot->marker(d_images[i]);
         if (!mrk)
             continue;
-        QwtScaleMap xm, ym;
-        if (previousMap(mrk->xAxis(), xm) && previousMap(mrk->yAxis(), ym)) {
-            // As ImageMarker::rect(), with the previous ranges.
-            const int x0 = xm.transform(mrk->xValue());
-            const int y0 = ym.transform(mrk->yValue());
-            const int x1 = xm.transform(mrk->right());
-            const int y1 = ym.transform(mrk->bottom());
-            mrk->setRect(x0, y0, qAbs(x1 - x0), qAbs(y1 - y0));
+        if (!unchanged(mrk->xAxis(), mrk->yAxis())) {
+            QwtScaleMap xm, ym;
+            if (previousMap(mrk->xAxis(), xm) && previousMap(mrk->yAxis(), ym)) {
+                // As ImageMarker::rect(), with the previous scales.
+                const int x0 = xm.transform(mrk->xValue());
+                const int y0 = ym.transform(mrk->yValue());
+                const int x1 = xm.transform(mrk->right());
+                const int y1 = ym.transform(mrk->bottom());
+                mrk->setRect(x0, y0, qAbs(x1 - x0), qAbs(y1 - y0));
+            }
+            mrk->updateBoundingRect();
         }
+        mrk->refreshPixelCache();
     }
-    updateMarkersBoundingRect();
+    d_plot->replot();
 }
 
 void Graph::updateMarkersBoundingRect()
@@ -7579,6 +7651,9 @@ void Graph::resizeEvent(QResizeEvent *e)
 
     d_plot->resize(e->size());
     updateSelectionOverlayGeometry();
+    // The canvas has its new size: the markers' pixel caches follow (no data change).
+    d_plot->updateLayout();
+    refreshMarkerPixelCaches();
 }
 
 void Graph::scaleFonts(double factor)
@@ -12763,6 +12838,7 @@ void Graph::applyAxisViewportState(const AxisViewportState &st)
 {
     if (!d_plot)
         return;
+    const MarkerAxisState axesBefore = markerAxisState();
     const bool prevApplying = d_applying_zoom_history;
     d_applying_zoom_history = true;
     m_autoscale = st.autoscale;
@@ -12817,7 +12893,7 @@ void Graph::applyAxisViewportState(const AxisViewportState &st)
 
     d_plot->syncMirrorAxisIfNeeded(QwtPlot::xBottom);
     d_plot->syncMirrorAxisIfNeeded(QwtPlot::yLeft);
-    updateMarkersBoundingRect();
+    updateMarkersBoundingRect(axesBefore);
     updateStatReferenceLines();
     if (d_linked_parent)
         syncLinkedAxesFromParent();
@@ -15236,6 +15312,7 @@ void Graph::setAutoScaleAxis(int qwtAxisId)
         || isTernaryPlot()) {
         return;
     }
+    const MarkerAxisState axesBefore = markerAxisState();
     if (!d_applying_zoom_history)
         recordZoomHistorySnapshot();
 
@@ -15276,7 +15353,7 @@ void Graph::setAutoScaleAxis(int qwtAxisId)
 
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);
-    updateMarkersBoundingRect();
+    updateMarkersBoundingRect(axesBefore);
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
     updateStatReferenceLines();

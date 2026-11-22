@@ -3926,9 +3926,16 @@ void MultiLayer::setPageZoom(double factor)
         const QRect gRect = gr->geometry();
         const QVariant appliedV = gr->property(kZoomAppliedGeomProp);
         const QVariant baseV = gr->property(kZoomBaseGeomProp);
-        const QRectF base = (appliedV.isValid() && baseV.isValid() && appliedV.toRect() == gRect)
-                ? baseV.toRectF()
-                : baseRect(gRect);
+        QRectF base = baseRect(gRect);
+        if (appliedV.isValid() && baseV.isValid()) {
+            const QRect applied = appliedV.toRect();
+            if (applied == gRect) {
+                base = baseV.toRectF();
+            } else if (applied.size() == gRect.size()) {
+                // Only moved: keep the 100 % size (the view may show it at the 60 px minimum).
+                base.setSize(baseV.toRectF().size());
+            }
+        }
         gr->setProperty(kZoomBaseGeomProp, base);
         // The 60 px minimum is for the view only; the 100 % rectangle keeps its own size.
         const QRect scaledRect(qRound(base.x() * d_page_zoom), qRound(base.y() * d_page_zoom),
@@ -3955,9 +3962,19 @@ void MultiLayer::setPageZoom(double factor)
     syncChildOverlayAndInsetGeometries();
     // What this zoom left each layer at (after the overlay / inset sync), to recognise later
     // whether the layer was moved since.
+    // The markers' pixel caches follow the new canvas (their axis coordinates stay).
     for (int i = 0; i < graphsList.count(); ++i) {
-        if (Graph *gr = (Graph *)graphsList.at(i))
+        if (Graph *gr = (Graph *)graphsList.at(i)) {
             gr->setProperty(kZoomAppliedGeomProp, gr->geometry());
+            if (Plot *pl = gr->plotWidget()) {
+                // A hidden window gets no resize events: the plot of an inset moved by the sync
+                // above may still have its old size.
+                if (pl->size() != gr->size())
+                    pl->resize(gr->size());
+                pl->updateLayout();
+                gr->refreshMarkerPixelCaches();
+            }
+        }
     }
     lastSize = canvas ? canvas->size() : newCanvasSize;
     repositionCanvasStatusPill();
@@ -5746,8 +5763,12 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                                     gr->setScale(QwtPlot::yLeft, yLo, newYHi, step,
                                                  pl->axisMaxMajor(QwtPlot::yLeft),
                                                  pl->axisMaxMinor(QwtPlot::yLeft), 0, false);
+                                    // setScale() already kept the markers in place; only the
+                                    // secondary axis changes from here.
+                                    const Graph::MarkerAxisState axesBefore =
+                                            gr->markerAxisState();
                                     gr->updateSecondaryAxis(QwtPlot::yRight);
-                                    gr->updateMarkersBoundingRect();
+                                    gr->updateMarkersBoundingRect(axesBefore);
                                     pl->updateLayout();
                                 }
                             }

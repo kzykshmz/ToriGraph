@@ -39,6 +39,7 @@
 #include <qwt_plot.h>
 #include <qwt_plot_marker.h>
 #include <qwt_plot_curve.h>
+#include <qwt_scale_map.h>
 
 #include "Plot.h"
 #include "Table.h"
@@ -507,14 +508,31 @@ public slots:
     void pasteMarker();
     //! Keep the markers on screen each time the scales are modified by adding/removing curves
     void updateMarkersBoundingRect();
-    /*! Same, but leave the markers' data positions alone when no axis (range or linear/log
-     * type) changed since \a before (from markerAxisState()). Refreshes such as updatePlot()
-     * before a copy or export then cannot move them: text markers and pictures are pinned by
-     * a pixel position cached when they were placed, which is out of date once the canvas size
-     * changed (view zoom, window size). */
-    void updateMarkersBoundingRect(const QVector<double> &before);
-    //! Lower / upper bound and transformation type of every axis, for updateMarkersBoundingRect().
-    QVector<double> markerAxisState() const;
+
+public:
+    //! The axis scales as the markers see them, taken before a scale change.
+    struct MarkerAxisState {
+        //! False while the scale division is invalid (Qwt's setAxisScale() until the replot).
+        bool valid[QwtPlot::axisCnt] = { false, false, false, false };
+        //! Canvas map (range, transformation incl. axis breaks / formula, pixel interval).
+        QwtScaleMap map[QwtPlot::axisCnt];
+    };
+    MarkerAxisState markerAxisState() const;
+    /*! Same as updateMarkersBoundingRect(), but against the scales in \a before (taken with
+     * markerAxisState() before the change):
+     * - a marker whose axes map every value as before keeps its axis coordinates, so refreshes
+     *   such as updatePlot() before a copy or export cannot move it;
+     * - otherwise text markers and pictures keep their place on the canvas, computed with the
+     *   previous scales on the current canvas (not with the pixel cache of their placement,
+     *   which is out of date after a view zoom or a window resize); arrows follow the data.
+     * Afterwards every marker's pixel cache matches where it is drawn. */
+    void updateMarkersBoundingRect(const MarkerAxisState &before);
+    //! updateScale() against scales taken before the change (see above).
+    void updateScale(const MarkerAxisState &before);
+    //! Bring the pixel caches of all markers up to date with the current canvas (no data change).
+    void refreshMarkerPixelCaches();
+
+public slots:
 
     long selectedMarkerKey();
     /*!\brief Set the selected marker.

@@ -117,6 +117,15 @@ void ImageMarker::updateBoundingRect()
     d_y_bottom = plot()->invTransform(yAxis(), d_pos.y() + d_size.height());
 }
 
+void ImageMarker::refreshPixelCache()
+{
+    if (!plot())
+        return;
+    const QRect r = rect();
+    d_pos = r.topLeft();
+    d_size = r.size();
+}
+
 QwtDoubleRect ImageMarker::boundingRect() const
 {
     return QwtDoubleRect(xValue(), yValue(), qAbs(d_x_right - xValue()),
