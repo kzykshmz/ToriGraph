@@ -17,13 +17,19 @@ if (-not $BuildDir) { $BuildDir = Join-Path $repoRoot "build" }
 if (-not $DepsDir) { $DepsDir = Join-Path $repoRoot ".deps" }
 if (-not $OutDir) { $OutDir = Join-Path $repoRoot "dist" }
 
+# The version comes from the top-level CMakeLists.txt project() VERSION, the
+# single source of truth (also used for version.cpp and checked against the
+# Python SDK by CMake / scripts/check_version.py).
+$cmakeText = Get-Content -Raw -Path (Join-Path $repoRoot "CMakeLists.txt")
+$cmakeMatch = [regex]::Match($cmakeText, 'project\s*\(\s*scidavis\b[^)]*?\bVERSION\s+([0-9]+\.[0-9]+\.[0-9]+)', 'Singleline')
+if (-not $cmakeMatch.Success) {
+    throw "Could not read project(... VERSION x.y.z) from CMakeLists.txt"
+}
+$cmakeVersion = $cmakeMatch.Groups[1].Value
 if (-not $Version) {
-    $pyproject = Join-Path $repoRoot "python\pyproject.toml"
-    if (Test-Path $pyproject) {
-        $m = Select-String -Path $pyproject -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
-        if ($m) { $Version = $m.Matches[0].Groups[1].Value }
-    }
-    if (-not $Version) { $Version = "3.0.0" }
+    $Version = $cmakeVersion
+} elseif ($Version -ne $cmakeVersion) {
+    throw "Requested installer version '$Version' differs from CMakeLists.txt VERSION '$cmakeVersion'. Bump the CMake VERSION instead of overriding it."
 }
 
 $exeSrc = Join-Path $BuildDir "scidavis\ToriGraph.exe"
@@ -94,11 +100,11 @@ if ($cblasCheck) {
     $ascii = [System.Text.Encoding]::ASCII.GetString($rawBytes)
     if ($ascii -match "mkl_rt") {
         $usesMkl = $true
-        Write-Host "    Detected MKL-backed libcblas.dll -> bundling minimal MKL runtime core."
-        $dllPatterns += @(
-            "mkl_rt*.dll", "mkl_core*.dll", "mkl_sequential*.dll",
-            "mkl_def*.dll", "mkl_avx2*.dll", "mkl_intel_thread*.dll", "libiomp5md.dll"
-        )
+        # Intel MKL must not be redistributed inside this GPL-3.0 package (license and ~100 MB);
+        # stop instead of silently bundling it.
+        throw ("libcblas.dll ($cblasCheck) delegates to Intel MKL (mkl_rt). ToriGraph packages must not " +
+               "redistribute MKL. Build against netlib or OpenBLAS (e.g. micromamba install " +
+               "'libblas=*=*netlib' 'libcblas=*=*netlib') and run this script again.")
     }
 }
 
@@ -221,10 +227,12 @@ print(f"    Created wheel: {whl_path.name}")
     }
 }
 
-# 8. Docs & License
-foreach ($doc in @("LICENSE", "README.md")) {
+# 8. Docs & License (GPL-2.0 text for the sources, GPL-3.0 text for the binaries,
+#    and the third-party notices; all are required)
+foreach ($doc in @("LICENSE", "LICENSE-GPL-3.0.txt", "THIRD_PARTY_LICENSES.md", "README.md")) {
     $srcDoc = Join-Path $repoRoot $doc
-    if (Test-Path $srcDoc) { Copy-Item -Force $srcDoc $stageDir }
+    if (-not (Test-Path $srcDoc)) { throw "Required license/document file missing: $doc" }
+    Copy-Item -Force $srcDoc $stageDir
 }
 
 # 9. Quick standalone smoke check (verify staged files & no immediate DLL load crash)
@@ -235,7 +243,10 @@ $requiredRel = @(
     "plugins\platforms\qwindows.dll",
     "scripts\register-ole.ps1",
     "scripts\install-python-sdk.ps1",
-    "python\torigraph\__init__.py"
+    "python\torigraph\__init__.py",
+    "LICENSE",
+    "LICENSE-GPL-3.0.txt",
+    "THIRD_PARTY_LICENSES.md"
 )
 foreach ($rel in $requiredRel) {
     $full = Join-Path $stageDir $rel

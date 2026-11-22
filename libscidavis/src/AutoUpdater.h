@@ -11,7 +11,9 @@
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QJsonObject>
+#include <QList>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -80,6 +82,12 @@ private slots:
 private:
     void initUi();
     void updateShaBadgeStyle();
+    //! After the package is at d_finalPackagePath: stage the script, ask, then close & apply.
+    void offerInstallAfterDownload(bool verified);
+    void restoreButtonsAfterFailure();
+    //! True when the package can be installed from this dialog (published SHA-256, or the
+    //! user explicitly allowed unverified installs in the settings).
+    bool canInstallFromDialog() const;
     void cleanupActiveDownload(bool removePartFile);
     static QString formatByteSize(qint64 bytes);
     static QString formatPublishedDate(const QString &isoText);
@@ -166,12 +174,34 @@ public:
                                        bool allowPreRelease = false);
     static QString computeFileSha256(const QString &filePath);
     static bool verifyFileSha256(const QString &filePath, const QString &expectedHex);
+    //! The generated script waits up to waitTimeoutSec for PID waitForPid (and any process
+    //! running the target exe) to exit and aborts without touching the installation if one
+    //! is still alive.
     static QString writeWindowsStagingUpdaterScript(const QString &downloadedFilePath,
                                                     const QString &targetInstallDir,
                                                     const QString &exeName,
                                                     qint64 waitForPid,
                                                     bool relaunch = true,
-                                                    QString *errOut = nullptr);
+                                                    QString *errOut = nullptr,
+                                                    int waitTimeoutSec = 60);
+
+    // Network / failure handling helpers (public for the regression tests)
+    //! Use the system (WinINET/PAC) proxy for remote hosts, no proxy for loopback.
+    static void applyNetworkProxyPolicy(QNetworkAccessManager &nam, const QUrl &url);
+    static QList<QNetworkProxy> proxiesForUrl(const QUrl &url);
+    //! Human-facing releases page (https://github.com/<owner>/<repo>/releases).
+    static QUrl releasesPageUrl(const QUrl &preferred = QUrl());
+    //! Warning box with an extra "Open Release Page" button; returns true if it was used.
+    static bool showFailureWithReleasePage(QWidget *parent, const QString &title,
+                                           const QString &text,
+                                           const QUrl &releasePage = QUrl());
+    //! Settings switch AutoUpdate/AllowUnverifiedInstall (default false).
+    static bool allowUnverifiedInstall();
+    //! Close the main window (this runs the usual save confirmation) and only if it really
+    //! closed start the staged PowerShell script and quit. Returns false if the user kept
+    //! ToriGraph open or the script could not be started (the window is shown again).
+    static bool closeAppAndLaunchUpdater(ApplicationWindow *app, const QString &scriptPath,
+                                         const QUrl &releasePage = QUrl());
 
     // Live Check, Download & UI Methods
     void checkForUpdates(bool silentIfUpToDate = false);

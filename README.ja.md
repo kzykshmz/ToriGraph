@@ -117,7 +117,7 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkgのパス>/scripts/buildsystems/vcpk
 cmake --build build --config Release --parallel
 ```
 
-Linux / macOS 向けの従来のビルド手順については [INSTALL.md](INSTALL.md) を参照してください。
+他のプラットフォームやビルドオプションについては [INSTALL.md](INSTALL.md) を参照してください。
 
 ---
 
@@ -130,7 +130,7 @@ ToriGraph は **SciDAVis** をベースにした派生ソフトウェアです�
 
 本ソフトウェアは **GNU General Public License v2.0 以降（`GPL-2.0-or-later`）** の条件のもとで公開されているフリーソフトウェアです。無保証（WITHOUT ANY WARRANTY）で提供されます。
 
-- ライセンス全文：[LICENSE](LICENSE) / [gpl.txt](gpl.txt)
+- ライセンス全文：[LICENSE](LICENSE)（GNU GPL 第 2 版。ソースコードのライセンス）/ [LICENSE-GPL-3.0.txt](LICENSE-GPL-3.0.txt)（GNU GPL 第 3 版。配布バイナリに適用。下記参照）
 - **ビルド済みバイナリの配布について**：コンパイル済みバイナリは GSL・Qt 5・liborigin などの GPL-3.0 以降 / LGPL-3.0 ライブラリとリンクされるため、バイナリ全体としては **GNU General Public License v3.0 以降（`GPL-3.0-or-later`）** の条件が適用されます。
 - サードパーティライブラリのライセンス一覧：[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
 

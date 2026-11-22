@@ -8,9 +8,10 @@ This document summarizes the licenses of upstream code and third-party libraries
 ## Project License Summary
 
 - **Source code (`ToriGraph`, `libscidavis`, `scidavis`, `python/torigraph`)**:
-  Licensed under the **GNU General Public License v2.0 or later (`GPL-2.0-or-later`)**. See [LICENSE](LICENSE) and [gpl.txt](gpl.txt).
+  Licensed under the **GNU General Public License v2.0 or later (`GPL-2.0-or-later`)**. The GPL version 2 text is in [LICENSE](LICENSE).
 - **Compiled binary distributions**:
-  When distributed as compiled binaries linked with GPL-3.0-or-later / LGPL-3.0 libraries (such as GNU Scientific Library (GSL), Qt 5, or liborigin), the combined work is distributed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** in accordance with the "or any later version" clause of GPL-2.0-or-later.
+  When distributed as compiled binaries linked with GPL-3.0-or-later / LGPL-3.0 libraries (such as GNU Scientific Library (GSL), Qt 5, or liborigin), the combined work is distributed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** in accordance with the "or any later version" clause of GPL-2.0-or-later. The GPL version 3 text is in [LICENSE-GPL-3.0.txt](LICENSE-GPL-3.0.txt) (verbatim copy of https://www.gnu.org/licenses/gpl-3.0.txt).
+- **Files shipped with the Windows installer / portable ZIP**: `LICENSE`, `LICENSE-GPL-3.0.txt`, `THIRD_PARTY_LICENSES.md` and `README.md` are placed next to `ToriGraph.exe`.
 
 ---
 
@@ -43,6 +44,7 @@ This document summarizes the licenses of upstream code and third-party libraries
 | **GNU Scientific Library (GSL)** | GPL-3.0-or-later | https://www.gnu.org/software/gsl/ |
 | **muParser** | BSD-2-Clause | https://beltoforion.de/en/muparser/ |
 | **zlib** | zlib License | https://zlib.net/ |
+| **BLAS / CBLAS used by GSL** (netlib reference BLAS or OpenBLAS) | BSD-3-Clause | https://www.netlib.org/blas/ , https://www.openblas.net/ — Intel MKL is intentionally **not** redistributed (the installer build stops if the BLAS in use depends on MKL). |
 | **python-pptx** *(optional, for `torigraph` SDK `to_pptx`)* | MIT | https://python-pptx.readthedocs.io/ |
 
 ---

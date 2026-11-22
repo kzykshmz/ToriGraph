@@ -1,15 +1,15 @@
 name: Release Windows Installer
 
+# Triggered by pushing a tag vX.Y.Z. The tag must equal the CMake project()
+# VERSION (single source of truth, see scripts/check_version.py); otherwise the
+# workflow stops before building. workflow_dispatch builds and tests the current
+# branch and uploads the artifacts, but never publishes a GitHub Release.
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version string (e.g. 2.4.0; defaults to pyproject.toml version)'
-        required: false
-        default: ''
 
 permissions:
   contents: write
@@ -17,7 +17,9 @@ permissions:
 jobs:
   build-windows-installer:
     name: Build Windows All-in-One Installer (App + OLE + Python SDK)
-    runs-on: windows-latest
+    # windows-latest (Windows Server 2025 / newer MSVC STL) breaks the Qt 5.15 headers
+    # with "stdext" errors; pin the image that main.yml is known to build on.
+    runs-on: windows-2022
     defaults:
       run:
         shell: pwsh
@@ -27,6 +29,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Set up Python (version check)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve release version and check it against the tag
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $ver = (python scripts/check_version.py --print --tag "$env:GITHUB_REF_NAME")
+          } else {
+            $ver = (python scripts/check_version.py --print)
+          }
+          if ($LASTEXITCODE -ne 0 -or -not $ver) {
+            throw "Version check failed: the tag and CMakeLists.txt project() VERSION / python/torigraph/__init__.py must agree."
+          }
+          $ver = $ver.Trim()
+          Write-Host "Release version: $ver"
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Enable MSVC x64 Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
@@ -52,6 +73,10 @@ jobs:
             setuptools
             wheel
             pip
+            numpy
+            pandas
+            python-pptx
+            pytest
 
       - name: Link .deps junction to micromamba environment
         run: |
@@ -59,19 +84,6 @@ jobs:
           "TORIGRAPH_CONDA_PREFIX=$envDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           if (Test-Path .deps) { Remove-Item -Recurse -Force .deps }
           New-Item -ItemType Junction -Path .deps -Target $envDir | Out-Null
-
-      - name: Resolve Release Version
-        run: |
-          $ver = "${{ github.event.inputs.version }}"
-          if (-not $ver -and $env:GITHUB_REF_TYPE -eq "tag") {
-            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
-          }
-          if (-not $ver) {
-            $m = Select-String -Path python/pyproject.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
-            $ver = if ($m) { $m.Matches[0].Groups[1].Value } else { "2.4.0" }
-          }
-          Write-Host "Release version: $ver"
-          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure with CMake (Ninja + MSVC)
         run: |
@@ -82,12 +94,34 @@ jobs:
             -DORIGIN_IMPORT=ON `
             -DBUILD_QWT=ON `
             -DBUILD_QWTPLOT3D=ON `
-            -DSCRIPTING_PYTHON=OFF `
             -DBUILD_TESTS=OFF
 
-      - name: Build ToriGraph & Fit Plugins
+      - name: Build ToriGraph, Fit Plugins & Regression Test Suite
         run: |
-          micromamba run -n torigraph-release cmake --build build --target scidavis explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel
+          micromamba run -n torigraph-release cmake --build build --target scidavis scidavis_ole_test explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel
+
+      - name: Set display resolution to 1920x1080 for GUI layout tests
+        run: ./scripts/ci-set-display-resolution.ps1
+
+      - name: Run C++ Automated Test Suite (scidavis_ole_test) before packaging
+        run: |
+          $env:QT_OPENGL = "software"
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
+          $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
+          cmd /c ".\build\scidavis\scidavis_ole_test.exe 2>&1"
+          $ec = $LASTEXITCODE
+          Write-Host ("scidavis_ole_test exit code = {0} (0x{1:X8})" -f $ec, ($ec -band 0xFFFFFFFF))
+          if ($ec -ne 0) { exit $ec }
+
+      - name: Run Python SDK smoke & regression tests before packaging
+        run: |
+          $env:QT_OPENGL = "software"
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
+          $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
+          $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path
+          micromamba run -n torigraph-release python -m pip install --no-build-isolation --no-deps -e ./python
+          micromamba run -n torigraph-release python -m pytest python/tests -m "not slow" --durations=10
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build All-in-One Windows Installer (.exe) & Portable Archive (.zip)
         run: |
@@ -95,6 +129,9 @@ jobs:
           $env:PATH = "$pyDir;$pyDir\Scripts;$env:PATH"
           & .\scripts\build-windows-installer.ps1 -Version "$env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\ToriGraph-$env:RELEASE_VERSION-win64-setup.exe")) {
+            throw "Inno Setup did not produce dist\ToriGraph-$env:RELEASE_VERSION-win64-setup.exe"
+          }
 
       - name: Verify Silent Install, OLE Registry & Python SDK Integration
         run: |
@@ -104,9 +141,12 @@ jobs:
           Write-Host "Testing silent install of $setupExe into $installDir"
           Start-Process -FilePath $setupExe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir" -Wait -NoNewWindow
 
-          # Verify main binary & OLE registry keys
-          if (-not (Test-Path (Join-Path $installDir "ToriGraph.exe"))) {
-            throw "ToriGraph.exe missing after silent install!"
+          # Verify main binary, license files & OLE registry keys
+          foreach ($rel in @("ToriGraph.exe", "LICENSE", "LICENSE-GPL-3.0.txt", "THIRD_PARTY_LICENSES.md")) {
+            if (-not (Test-Path (Join-Path $installDir $rel))) { throw "$rel missing after silent install!" }
+          }
+          if (Get-ChildItem $installDir -Filter "mkl_*.dll" -ErrorAction SilentlyContinue) {
+            throw "Intel MKL DLLs must not be shipped in the installer!"
           }
           $oleKey = "HKCU:\Software\Classes\CLSID\{8E6B9541-3C74-4D28-A915-7D84E5A12001}\LocalServer32"
           if (-not (Test-Path $oleKey)) {
@@ -119,7 +159,7 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:TORIGRAPH_EXE = ""
           micromamba run -n torigraph-release python -m pip install --no-deps --force-reinstall (Get-ChildItem "$installDir\python\wheels\torigraph-*.whl" | Select-Object -First 1).FullName
-          micromamba run -n torigraph-release python -c "import torigraph as tg; from torigraph.client import _discover_torigraph_executable; p = _discover_torigraph_executable(); print('Auto-discovered:', p); assert p.is_file()"
+          micromamba run -n torigraph-release python -c "import torigraph as tg; from torigraph.client import _discover_torigraph_executable; p = _discover_torigraph_executable(); print('Auto-discovered:', p, 'SDK', tg.__version__); assert p.is_file(); assert tg.__version__ == '$env:RELEASE_VERSION'"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

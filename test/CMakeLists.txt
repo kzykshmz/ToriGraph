@@ -65,20 +65,3 @@ if( NOT (SEARCH_FOR_UPDATES OR DOWNLOAD_LINKS) )
   endforeach()
 
 endif()
-
-if( SCRIPTING_PYTHON )
-  
-  file( COPY pythonTests/ DESTINATION ./tmp )
-  file( COPY ../scidavis-logo.png DESTINATION ./tmp )
-
-  file( GLOB pythonTests pythonTests/*.py )
-
-  foreach( pythonTest ${pythonTests} )
-    get_filename_component( test_name ${pythonTest} NAME_WLE )
-    add_test( NAME python_${test_name}
-      COMMAND scidavis -l=en -x ${pythonTest}
-      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tmp
-    )
-  endforeach()
-
-endif()

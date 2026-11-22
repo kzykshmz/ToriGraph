@@ -8,8 +8,10 @@
 #include "AutoUpdater.h"
 #include "ApplicationWindow.h"
 #include "IconLoader.h"
+#include "I18nJapanese.h"
 #include "globals.h"
 
+#include <QApplication>
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -41,6 +43,8 @@
 #include <QVBoxLayout>
 #include <QVector>
 
+#include <mutex>
+
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -60,6 +64,8 @@ constexpr const char *kDefaultReleasesUrl =
 constexpr const char *kSettingsKeyFeedUrl = "AutoUpdate/FeedUrl";
 constexpr const char *kSettingsKeyIncludePre = "AutoUpdate/IncludePreReleases";
 constexpr const char *kSettingsKeySkippedVer = "AutoUpdate/SkippedVersion";
+constexpr const char *kSettingsKeyAllowUnverified = "AutoUpdate/AllowUnverifiedInstall";
+constexpr const char *kDefaultReleasesPage = "https://github.com/kzykshmz/ToriGraph/releases";
 constexpr int kLiveCheckTimeoutMs = 10000;
 constexpr int kDownloadStallTimeoutMs = 30000;
 constexpr qint64 kStreamChunkBytes = 65536;
@@ -327,13 +333,79 @@ QString extractSha256FromRelease(const QJsonObject &chosenAsset,
     return QString();
 }
 
+bool isLoopbackHost(const QString &rawHost)
+{
+    const QString host = rawHost.trimmed().toLower();
+    return host == QStringLiteral("127.0.0.1") || host == QStringLiteral("localhost")
+            || host == QStringLiteral("::1") || host == QStringLiteral("[::1]");
+}
+
+// Campus / corporate networks often only reach GitHub through the proxy configured
+// in Windows (WinINET settings, WPAD/PAC). Qt does not use it unless asked to.
+class UpdaterProxyFactory : public QNetworkProxyFactory
+{
+public:
+    QList<QNetworkProxy> queryProxy(const QNetworkProxyQuery &query) override
+    {
+        QUrl url = query.url();
+        if (url.isEmpty() || url.host().isEmpty()) {
+            url = QUrl();
+            url.setScheme(query.protocolTag().isEmpty() ? QStringLiteral("https")
+                                                        : query.protocolTag());
+            url.setHost(query.peerHostName());
+            if (query.peerPort() > 0)
+                url.setPort(query.peerPort());
+        }
+        return AutoUpdater::proxiesForUrl(url);
+    }
+};
+
 void configureNetworkManagerForUrl(QNetworkAccessManager &nam, const QUrl &url)
 {
-    const QString host = url.host().toLower();
-    if (host == QStringLiteral("127.0.0.1") || host == QStringLiteral("localhost")
-        || host == QStringLiteral("::1")) {
-        nam.setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-    }
+    AutoUpdater::applyNetworkProxyPolicy(nam, url);
+}
+
+void registerAutoUpdaterExtraTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Open Release Page", "リリースページを開く");
+        reg("Update Not Installed", "更新はインストールされていません");
+        reg("ToriGraph is still open, so the update was not installed. The downloaded package "
+            "is kept; run \"Check for Updates\" again when you are ready to install it.",
+            "ToriGraph が閉じられなかったため、更新はインストールしていません。"
+            "ダウンロードしたパッケージは残してあります。インストールするときは"
+            "「更新を確認」をもう一度実行してください。");
+        reg("The update package (v%1) has been downloaded and its SHA-256 checksum verified.\n\n"
+            "ToriGraph will now ask you to save unsaved changes and close. The update is applied "
+            "only after ToriGraph has closed; ToriGraph then restarts automatically.\n\n"
+            "Install update and restart now?",
+            "更新パッケージ (v%1) をダウンロードし、SHA-256 チェックサムを検証しました。\n\n"
+            "このあと未保存の変更を保存するか確認してから ToriGraph を閉じます。更新は "
+            "ToriGraph が閉じてから適用され、その後自動で再起動します。\n\n"
+            "今すぐ更新をインストールして再起動しますか？");
+        reg("Install Unverified Update?", "検証できない更新をインストールしますか？");
+        reg("The update package (v%1) has been downloaded, but it could NOT be verified because "
+            "this release does not publish a SHA-256 checksum.\n\nInstall it anyway? ToriGraph "
+            "will ask you to save unsaved changes, close, and then apply the update.",
+            "更新パッケージ (v%1) をダウンロードしましたが、このリリースには SHA-256 "
+            "チェックサムが公開されていないため、内容を検証できません。\n\n"
+            "それでもインストールしますか？未保存の変更を保存するか確認してから ToriGraph "
+            "を閉じ、更新を適用します。");
+        reg("Download complete (not verified: no SHA-256 checksum published).",
+            "ダウンロード完了 (SHA-256 チェックサムが公開されていないため未検証)");
+        reg("This release does not publish a SHA-256 checksum, so ToriGraph cannot verify the "
+            "download. Open the release page to download and install it manually.",
+            "このリリースには SHA-256 チェックサムが公開されていないため、ダウンロードした"
+            "内容を検証できません。リリースページを開いて手動でダウンロード・インストール"
+            "してください。");
+        reg("Could not launch Windows PowerShell to apply the staged update.",
+            "更新を適用する Windows PowerShell を起動できませんでした。");
+    });
 }
 
 QNetworkRequest buildGitHubRequest(const QUrl &url, bool isJsonFeed)
@@ -447,6 +519,7 @@ UpdateAvailableDialog::UpdateAvailableDialog(const ReleaseInfo &releaseInfo,
                                                           : stripVersionPrefixes(currentVersion)),
       d_app(app)
 {
+    registerAutoUpdaterExtraTranslations();
     d_shaState = d_info.expectedSha256.isEmpty() ? ShaBadgeState::NoChecksum
                                                  : ShaBadgeState::ReadyChecksum;
     initUi();
@@ -731,10 +804,18 @@ void UpdateAvailableDialog::retranslateUi()
     d_btnSkipVersion->setText(tr("Skip This Version"));
     d_btnLater->setText(tr("Later"));
 
-    if (d_info.assetUrl.isValid() && !d_info.assetUrl.isEmpty())
+    if (d_info.assetUrl.isValid() && !d_info.assetUrl.isEmpty() && canInstallFromDialog())
         d_btnDownloadInstall->setText(tr("Download && Install Update"));
     else
         d_btnDownloadInstall->setText(tr("Open Release Page..."));
+    // Without a published SHA-256 the package cannot be verified: by default the dialog only
+    // offers the release page (AutoUpdate/AllowUnverifiedInstall=true re-enables installing).
+    d_btnDownloadInstall->setToolTip(
+            d_info.expectedSha256.trimmed().isEmpty()
+                    ? tr("This release does not publish a SHA-256 checksum, so ToriGraph cannot "
+                         "verify the download. Open the release page to download and install it "
+                         "manually.")
+                    : QString());
 }
 
 void UpdateAvailableDialog::changeEvent(QEvent *event)
@@ -813,9 +894,8 @@ void UpdateAvailableDialog::onDownloadStallTimeout()
 
 void UpdateAvailableDialog::onStartDownloadAndInstall()
 {
-    if (!d_info.assetUrl.isValid() || d_info.assetUrl.isEmpty()) {
-        if (d_info.htmlUrl.isValid())
-            QDesktopServices::openUrl(d_info.htmlUrl);
+    if (!d_info.assetUrl.isValid() || d_info.assetUrl.isEmpty() || !canInstallFromDialog()) {
+        QDesktopServices::openUrl(AutoUpdater::releasesPageUrl(d_info.htmlUrl));
         accept();
         return;
     }
@@ -853,13 +933,14 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
                 d_shaState = ShaBadgeState::Failed;
                 updateShaBadgeStyle();
             }
-            d_btnDownloadInstall->setEnabled(true);
-            d_btnSkipVersion->setEnabled(true);
-            d_btnLater->setEnabled(true);
-            QMessageBox::critical(this, tr("Update Download Failed"), errMsg);
+            restoreButtonsAfterFailure();
+            AutoUpdater::showFailureWithReleasePage(this, tr("Update Download Failed"), errMsg,
+                                                    d_info.htmlUrl);
             return;
         }
-        if (!d_info.expectedSha256.isEmpty()) {
+        // downloadAndVerifyBlocking() checked the SHA-256 when one is published.
+        const bool verified = !d_info.expectedSha256.trimmed().isEmpty();
+        if (verified) {
             d_shaState = ShaBadgeState::Verified;
             updateShaBadgeStyle();
         }
@@ -867,58 +948,7 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
         d_progressBar->setRange(0, 100);
         d_progressBar->setValue(100);
         d_btnCancelDownload->setEnabled(false);
-
-        QString stageErr;
-        const QString appDir = QCoreApplication::applicationDirPath();
-        QString exeName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
-        if (exeName.isEmpty())
-            exeName = QStringLiteral("ToriGraph.exe");
-        d_stagedScriptPath = AutoUpdater::writeWindowsStagingUpdaterScript(
-                d_finalPackagePath, appDir, exeName, QCoreApplication::applicationPid(), true,
-                &stageErr);
-        if (d_stagedScriptPath.isEmpty()) {
-            d_btnDownloadInstall->setEnabled(true);
-            d_btnSkipVersion->setEnabled(true);
-            d_btnLater->setEnabled(true);
-            QMessageBox::warning(this, tr("Update Staging Error"), stageErr);
-            return;
-        }
-
-        const QMessageBox::StandardButton ans = QMessageBox::question(
-                this, tr("Install Update & Restart"),
-                tr("The update package (v%1) has been downloaded and verified.\n\n"
-                   "ToriGraph will now close to install the update and restart automatically. "
-                   "Any unsaved project changes will prompt to save first.\n\n"
-                   "Install update and restart now?")
-                        .arg(d_info.version),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-        if (ans == QMessageBox::Yes) {
-            const bool started = QProcess::startDetached(
-                    QStringLiteral("powershell.exe"),
-                    QStringList() << QStringLiteral("-NoProfile")
-                                  << QStringLiteral("-ExecutionPolicy")
-                                  << QStringLiteral("Bypass")
-                                  << QStringLiteral("-File")
-                                  << QDir::toNativeSeparators(d_stagedScriptPath));
-            if (!started) {
-                d_btnDownloadInstall->setEnabled(true);
-                d_btnSkipVersion->setEnabled(true);
-                d_btnLater->setEnabled(true);
-                QMessageBox::warning(
-                        this, tr("Installer Launch Failed"),
-                        tr("Could not launch Windows PowerShell to apply the staged update."));
-                return;
-            }
-            accept();
-            if (d_app)
-                QTimer::singleShot(0, d_app.data(), &QWidget::close);
-            else
-                QCoreApplication::quit();
-        } else {
-            d_btnDownloadInstall->setEnabled(true);
-            d_btnSkipVersion->setEnabled(true);
-            d_btnLater->setEnabled(true);
-        }
+        offerInstallAfterDownload(verified);
         return;
     }
 
@@ -928,9 +958,10 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
     if (!d_partFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         delete d_partFile;
         d_partFile = nullptr;
-        QMessageBox::warning(
+        AutoUpdater::showFailureWithReleasePage(
                 this, tr("Update Download Failed"),
-                tr("Cannot open temporary file for writing:\n%1").arg(d_partFilePath));
+                tr("Cannot open temporary file for writing:\n%1").arg(d_partFilePath),
+                d_info.htmlUrl);
         return;
     }
 
@@ -1054,12 +1085,14 @@ void UpdateAvailableDialog::onDownloadFinished()
                                      .arg(apiMsg)
                            : tr("Download failed (HTTP %1): %2").arg(httpStatus).arg(netErrStr));
         d_lblProgressDetail->setText(reason);
-        QMessageBox::warning(this, tr("Update Download Failed"), reason);
+        AutoUpdater::showFailureWithReleasePage(this, tr("Update Download Failed"), reason,
+                                                d_info.htmlUrl);
         return;
     }
 
     // Verify SHA-256 checksum if published
-    if (!d_info.expectedSha256.trimmed().isEmpty()) {
+    const bool verified = !d_info.expectedSha256.trimmed().isEmpty();
+    if (verified) {
         if (!AutoUpdater::verifyFileSha256(d_partFilePath, d_info.expectedSha256)) {
             QFile::remove(d_partFilePath);
             d_shaState = ShaBadgeState::Failed;
@@ -1086,15 +1119,35 @@ void UpdateAvailableDialog::onDownloadFinished()
         d_btnSkipVersion->setEnabled(true);
         d_btnLater->setEnabled(true);
         d_btnCancelDownload->setEnabled(false);
-        QMessageBox::warning(this, tr("Update Download Failed"), replaceErr);
+        AutoUpdater::showFailureWithReleasePage(this, tr("Update Download Failed"), replaceErr,
+                                                d_info.htmlUrl);
         return;
     }
 
     d_progressBar->setRange(0, 100);
     d_progressBar->setValue(100);
     d_btnCancelDownload->setEnabled(false);
-    d_lblProgressDetail->setText(tr("Download complete and verified."));
+    d_lblProgressDetail->setText(
+            verified ? tr("Download complete and verified.")
+                     : tr("Download complete (not verified: no SHA-256 checksum published)."));
+    offerInstallAfterDownload(verified);
+}
 
+bool UpdateAvailableDialog::canInstallFromDialog() const
+{
+    return !d_info.expectedSha256.trimmed().isEmpty() || AutoUpdater::allowUnverifiedInstall();
+}
+
+void UpdateAvailableDialog::restoreButtonsAfterFailure()
+{
+    d_btnDownloadInstall->setEnabled(true);
+    d_btnSkipVersion->setEnabled(true);
+    d_btnLater->setEnabled(true);
+    d_btnCancelDownload->setEnabled(false);
+}
+
+void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
+{
     QString stageErr;
     const QString appDir = QCoreApplication::applicationDirPath();
     QString exeName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
@@ -1105,49 +1158,49 @@ void UpdateAvailableDialog::onDownloadFinished()
             d_finalPackagePath, appDir, exeName, QCoreApplication::applicationPid(), true,
             &stageErr);
     if (d_stagedScriptPath.isEmpty()) {
-        d_btnDownloadInstall->setEnabled(true);
-        d_btnSkipVersion->setEnabled(true);
-        d_btnLater->setEnabled(true);
-        QMessageBox::warning(this, tr("Update Staging Error"), stageErr);
+        restoreButtonsAfterFailure();
+        AutoUpdater::showFailureWithReleasePage(this, tr("Update Staging Error"), stageErr,
+                                                d_info.htmlUrl);
         return;
     }
 
-    const QMessageBox::StandardButton ans = QMessageBox::question(
-            this, tr("Install Update & Restart"),
-            tr("The update package (v%1) has been downloaded and verified.\n\n"
-               "ToriGraph will now close to install the update and restart automatically. "
-               "Any unsaved project changes will prompt to save first.\n\n"
-               "Install update and restart now?")
-                    .arg(d_info.version),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-
-    if (ans == QMessageBox::Yes) {
-        const bool started = QProcess::startDetached(
-                QStringLiteral("powershell.exe"),
-                QStringList() << QStringLiteral("-NoProfile")
-                              << QStringLiteral("-ExecutionPolicy")
-                              << QStringLiteral("Bypass")
-                              << QStringLiteral("-File")
-                              << QDir::toNativeSeparators(d_stagedScriptPath));
-        if (!started) {
-            d_btnDownloadInstall->setEnabled(true);
-            d_btnSkipVersion->setEnabled(true);
-            d_btnLater->setEnabled(true);
-            QMessageBox::warning(
-                    this, tr("Installer Launch Failed"),
-                    tr("Could not launch Windows PowerShell to apply the staged update."));
-            return;
-        }
-        accept();
-        if (d_app)
-            QTimer::singleShot(0, d_app.data(), &QWidget::close);
-        else
-            QCoreApplication::quit();
+    QMessageBox::StandardButton ans = QMessageBox::No;
+    if (verified) {
+        ans = QMessageBox::question(
+                this, tr("Install Update & Restart"),
+                tr("The update package (v%1) has been downloaded and its SHA-256 checksum "
+                   "verified.\n\nToriGraph will now ask you to save unsaved changes and close. "
+                   "The update is applied only after ToriGraph has closed; ToriGraph then "
+                   "restarts automatically.\n\nInstall update and restart now?")
+                        .arg(d_info.version),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
     } else {
-        d_btnDownloadInstall->setEnabled(true);
-        d_btnSkipVersion->setEnabled(true);
-        d_btnLater->setEnabled(true);
+        // Unverified packages are never applied by default: "No" is the default button.
+        ans = QMessageBox::warning(
+                this, tr("Install Unverified Update?"),
+                tr("The update package (v%1) has been downloaded, but it could NOT be verified "
+                   "because this release does not publish a SHA-256 checksum.\n\nInstall it "
+                   "anyway? ToriGraph will ask you to save unsaved changes, close, and then "
+                   "apply the update.")
+                        .arg(d_info.version),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     }
+    if (ans != QMessageBox::Yes) {
+        restoreButtonsAfterFailure();
+        return;
+    }
+
+    // The script must not start before ToriGraph has actually closed (save confirmation
+    // first); closeAppAndLaunchUpdater() does that once this dialog has returned.
+    const QPointer<ApplicationWindow> app = d_app;
+    const QString script = d_stagedScriptPath;
+    const QUrl page = AutoUpdater::releasesPageUrl(d_info.htmlUrl);
+    accept();
+    QObject *ctx = app ? static_cast<QObject *>(app.data())
+                       : static_cast<QObject *>(QCoreApplication::instance());
+    QTimer::singleShot(0, ctx, [app, script, page]() {
+        AutoUpdater::closeAppAndLaunchUpdater(app.data(), script, page);
+    });
 }
 
 QString UpdateAvailableDialog::formatByteSize(qint64 bytes)
@@ -1176,6 +1229,7 @@ QString UpdateAvailableDialog::formatPublishedDate(const QString &isoText)
 AutoUpdater::AutoUpdater(ApplicationWindow *app, QObject *parent)
     : QObject(parent), d_app(app)
 {
+    registerAutoUpdaterExtraTranslations();
     d_checkTimeoutTimer = new QTimer(this);
     d_checkTimeoutTimer->setSingleShot(true);
     connect(d_checkTimeoutTimer, &QTimer::timeout, this, [this]() {
@@ -1586,7 +1640,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
                                                       const QString &exeName,
                                                       qint64 waitForPid,
                                                       bool relaunch,
-                                                      QString *errOut)
+                                                      QString *errOut,
+                                                      int waitTimeoutSec)
 {
     const QString pkgPath = QDir::toNativeSeparators(downloadedFilePath.trimmed());
     const QString installDir = QDir::toNativeSeparators(targetInstallDir.trimmed());
@@ -1624,20 +1679,45 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     psScript += QStringLiteral("$WaitForPid = %1\r\n").arg(waitForPid);
     psScript += QStringLiteral("$Relaunch = $%1\r\n").arg(relaunch ? QStringLiteral("true")
                                                                    : QStringLiteral("false"));
-    psScript += QStringLiteral("$StagingRoot = %1\r\n\r\n").arg(psSingleQuote(nativeStagingDir));
+    psScript += QStringLiteral("$StagingRoot = %1\r\n").arg(psSingleQuote(nativeStagingDir));
+    psScript += QStringLiteral("$WaitTimeoutSec = %1\r\n\r\n").arg(qMax(1, waitTimeoutSec));
 
     psScript += QStringLiteral(
             "$TargetExe = [System.IO.Path]::Combine($TargetInstallDir, $ExeName)\r\n"
             "$BackupExe = \"$TargetExe.rollback.bak\"\r\n"
             "$ExtractDir = [System.IO.Path]::Combine($StagingRoot, ('extract_' + [Guid]::NewGuid().ToString('N')))\r\n\r\n"
-            "# (1) Wait up to 30s for PID $WaitForPid to exit\r\n"
-            "if ($WaitForPid -gt 0) {\r\n"
-            "    $deadline = (Get-Date).AddSeconds(30)\r\n"
-            "    while ((Get-Date) -lt $deadline) {\r\n"
-            "        $proc = Get-Process -Id $WaitForPid -ErrorAction SilentlyContinue\r\n"
-            "        if ($null -eq $proc) { break }\r\n"
-            "        Start-Sleep -Milliseconds 250\r\n"
+            "# (1) Wait for ToriGraph (PID $WaitForPid and any process running $TargetExe) to exit.\r\n"
+            "#     If it is still running after $WaitTimeoutSec s, abort WITHOUT touching the install.\r\n"
+            "function Get-BlockingProcess {\r\n"
+            "    $found = @()\r\n"
+            "    if ($WaitForPid -gt 0) {\r\n"
+            "        $p = Get-Process -Id $WaitForPid -ErrorAction SilentlyContinue\r\n"
+            "        if ($null -ne $p) { $found += $p }\r\n"
             "    }\r\n"
+            "    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExeName)\r\n"
+            "    $targetFull = [System.IO.Path]::GetFullPath($TargetExe)\r\n"
+            "    foreach ($q in @(Get-Process -Name $baseName -ErrorAction SilentlyContinue)) {\r\n"
+            "        $qPath = $null\r\n"
+            "        try { $qPath = $q.Path } catch { $qPath = $null }\r\n"
+            "        if ($qPath -and ([System.IO.Path]::GetFullPath($qPath) -ieq $targetFull)) { $found += $q }\r\n"
+            "    }\r\n"
+            "    return @($found | Sort-Object -Property Id -Unique)\r\n"
+            "}\r\n"
+            "$deadline = (Get-Date).AddSeconds($WaitTimeoutSec)\r\n"
+            "$blocking = @(Get-BlockingProcess)\r\n"
+            "while ($blocking.Count -gt 0 -and (Get-Date) -lt $deadline) {\r\n"
+            "    Start-Sleep -Milliseconds 250\r\n"
+            "    $blocking = @(Get-BlockingProcess)\r\n"
+            "}\r\n"
+            "if ($blocking.Count -gt 0) {\r\n"
+            "    $ids = ($blocking | ForEach-Object { $_.Id }) -join ', '\r\n"
+            "    $msg = \"ToriGraph is still running (PID $ids). The update was NOT applied and $TargetInstallDir was not changed. Close ToriGraph and update again, or install $DownloadedFile manually.\"\r\n"
+            "    try { Set-Content -LiteralPath ([System.IO.Path]::Combine($StagingRoot, 'apply_torigraph_update.log')) -Value $msg -Encoding UTF8 } catch { }\r\n"
+            "    if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
+            "        try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($msg, 'ToriGraph Update') } catch { }\r\n"
+            "    }\r\n"
+            "    [Console]::Error.WriteLine($msg)\r\n"
+            "    exit 3\r\n"
             "}\r\n\r\n"
             "# (2) Create rollback backup of ToriGraph.exe\r\n"
             "if (!(Test-Path -LiteralPath $TargetInstallDir)) {\r\n"
@@ -1746,6 +1826,105 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     }
 
     return ps1Path;
+}
+
+QList<QNetworkProxy> AutoUpdater::proxiesForUrl(const QUrl &url)
+{
+    QList<QNetworkProxy> proxies;
+    if (url.isLocalFile() || isLoopbackHost(url.host())) {
+        proxies << QNetworkProxy(QNetworkProxy::NoProxy);
+        return proxies;
+    }
+    proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(url));
+    if (proxies.isEmpty())
+        proxies << QNetworkProxy(QNetworkProxy::NoProxy);
+    return proxies;
+}
+
+void AutoUpdater::applyNetworkProxyPolicy(QNetworkAccessManager &nam, const QUrl &url)
+{
+    Q_UNUSED(url);
+    // The factory decides per request (loopback -> direct, otherwise the system proxy).
+    nam.setProxyFactory(new UpdaterProxyFactory());
+}
+
+QUrl AutoUpdater::releasesPageUrl(const QUrl &preferred)
+{
+    if (preferred.isValid() && !preferred.isEmpty()
+        && (preferred.scheme() == QStringLiteral("https")
+            || preferred.scheme() == QStringLiteral("http")))
+        return preferred;
+    return QUrl(QString::fromLatin1(kDefaultReleasesPage));
+}
+
+bool AutoUpdater::allowUnverifiedInstall()
+{
+    return ApplicationWindow::getSettings()
+            .value(QString::fromLatin1(kSettingsKeyAllowUnverified), false)
+            .toBool();
+}
+
+bool AutoUpdater::showFailureWithReleasePage(QWidget *parent, const QString &title,
+                                             const QString &text, const QUrl &releasePage)
+{
+    registerAutoUpdaterExtraTranslations();
+    if (isHeadlessOrEmbeddedProcess(qobject_cast<ApplicationWindow *>(parent))) {
+        qWarning("%s: %s", qPrintable(title), qPrintable(text));
+        return false;
+    }
+    QMessageBox box(QMessageBox::Warning, title, text, QMessageBox::Ok, parent);
+    QPushButton *openBtn = box.addButton(tr("Open Release Page"), QMessageBox::ActionRole);
+    box.setDefaultButton(QMessageBox::Ok);
+    box.exec();
+    if (box.clickedButton() == openBtn) {
+        QDesktopServices::openUrl(releasesPageUrl(releasePage));
+        return true;
+    }
+    return false;
+}
+
+bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString &scriptPath,
+                                           const QUrl &releasePage)
+{
+    registerAutoUpdaterExtraTranslations();
+    QApplication *guiApp = qobject_cast<QApplication *>(QCoreApplication::instance());
+    const bool quitOnLast = guiApp ? guiApp->quitOnLastWindowClosed() : false;
+    if (guiApp)
+        guiApp->setQuitOnLastWindowClosed(false);
+
+    // 1) Close first: this runs the normal "save changes?" confirmation. Cancel keeps
+    //    ToriGraph open and nothing is installed.
+    if (app && !app->close()) {
+        if (guiApp)
+            guiApp->setQuitOnLastWindowClosed(quitOnLast);
+        QMessageBox::information(
+                app, tr("Update Not Installed"),
+                tr("ToriGraph is still open, so the update was not installed. The downloaded "
+                   "package is kept; run \"Check for Updates\" again when you are ready to "
+                   "install it."));
+        return false;
+    }
+
+    // 2) Only now start the script; it waits for this process to exit and aborts if it
+    //    does not.
+    const bool started = QProcess::startDetached(
+            QStringLiteral("powershell.exe"),
+            QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy")
+                          << QStringLiteral("Bypass") << QStringLiteral("-File")
+                          << QDir::toNativeSeparators(scriptPath));
+    if (!started) {
+        if (guiApp)
+            guiApp->setQuitOnLastWindowClosed(quitOnLast);
+        if (app)
+            app->show();
+        showFailureWithReleasePage(
+                app, tr("Installer Launch Failed"),
+                tr("Could not launch Windows PowerShell to apply the staged update."),
+                releasePage);
+        return false;
+    }
+    QCoreApplication::quit();
+    return true;
 }
 
 void AutoUpdater::cancelActiveCheck()
@@ -1860,7 +2039,7 @@ void AutoUpdater::handleCheckResult(bool ok,
 
     if (!ok) {
         if (!silentIfUpToDate && !isHeadlessOrEmbeddedProcess(d_app)) {
-            QMessageBox::warning(
+            showFailureWithReleasePage(
                     d_app, tr("Update Check Failed"),
                     tr("Could not check for ToriGraph updates:\n%1").arg(errorMsg));
         }

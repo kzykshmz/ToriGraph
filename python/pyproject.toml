@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torigraph"
-version = "3.0.0"
+# The version is read from torigraph/__init__.py (__version__), which must match
+# the top-level CMakeLists.txt project() VERSION (checked by CMake and
+# scripts/check_version.py).
+dynamic = ["version"]
 description = "Pure-Python JSON-RPC 2.0 Automation SDK for ToriGraph scientific plotting & data analysis"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -24,6 +27,21 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.dynamic]
+version = { attr = "torigraph.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "app: drives a real ToriGraph process (skipped when the executable is not found)",
+    "slow: long end-to-end gate; deselect with -m \"not slow\"",
+    "gui: opens a visible (non-headless) ToriGraph window",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

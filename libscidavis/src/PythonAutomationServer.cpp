@@ -2765,7 +2765,7 @@ QString extractCurrentVersionClean()
     QRegularExpressionMatch m = rx.match(raw);
     if (m.hasMatch())
         return m.captured(1);
-    return QStringLiteral("2.4.0");
+    return raw.section(QLatin1Char(' '), -1);
 }
 
 QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)

@@ -27,9 +27,6 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifdef SCRIPTING_PYTHON
-#include <Python.h>
-#endif
 #include "globals.h"
 #include "qwt_global.h"
 #include <QMessageBox>
@@ -159,12 +156,6 @@ void SciDAVis::about()
     ui.version_label->setText(versionString() + extraVersion());
     ui.release_date_label->setText(QString("Qt: ") + QT_VERSION_STR + ". Qwt: "
                                    + QWT_VERSION_STR
-#ifdef SCRIPTING_PYTHON
-                                   ". Python: "
-                                   + PY_VERSION
-#else
-                                   + ". No python"
-#endif
                                    + QObject::tr("\nReleased") + ": "
                                    + QString(SciDAVis::release_date));
     ui.credits_box->setHtml(text);

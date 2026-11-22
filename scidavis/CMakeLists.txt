@@ -11,7 +11,8 @@ endif()
 # Copying these into the build directory is intended to prevent these
 # files from being overwritten by lupdate
 file( REMOVE_RECURSE ./translations-copy)
-set(languages de es fr ru ja pt-br cs cs-alt pl zh-cn zh-tw)
+# ToriGraph ships English (source strings) and Japanese only.
+set(languages ja)
 foreach(i ${languages})
    file( COPY translations/scidavis_${i}.ts DESTINATION ./translations-copy )
    list(APPEND TS_FILES "${CMAKE_CURRENT_BINARY_DIR}/translations-copy/scidavis_${i}.ts")
@@ -65,6 +66,10 @@ if( WIN32 )
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/gsl-28.dll"
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libcblas.dll"
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libblas.dll"
+    # Local developer environments may use an MKL-backed libblas/libcblas, which loads
+    # mkl_rt at run time. Copy it so build/scidavis runs; release packages refuse MKL
+    # (scripts/build-windows-installer.ps1) and CI uses netlib BLAS.
+    "${CMAKE_SOURCE_DIR}/.deps/Library/bin/mkl_*.dll"
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/muparser.dll"
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libcrypto-3-x64.dll"
     "${CMAKE_SOURCE_DIR}/.deps/Library/bin/libssl-3-x64.dll"
@@ -113,33 +118,6 @@ else()
   target_include_directories( scidavis PRIVATE
     "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include"
     )
-endif()
-
-if( SCRIPTING_PYTHON )
-
-  if( MULTI_CONFIG )
-    file( GENERATE OUTPUT $<CONFIG>/scidavisrc.py INPUT scidavisrc.py )
-    add_custom_command( OUTPUT scidavisrc.pyc
-      COMMAND ${Python3_EXECUTABLE} -m compileall -b scidavisrc.py
-      WORKING_DIRECTORY $<CONFIG>
-      COMMENT "Compiling python files"
-      )
-    add_custom_target( generate_pyc_files
-      DEPENDS $<CONFIG>/scidavisrc.pyc
-      )
-  else()
-    file( COPY scidavisrc.py DESTINATION ${CMAKE_CURRENT_BINARY_DIR} )
-    add_custom_command( OUTPUT scidavisrc.pyc
-      COMMAND ${Python3_EXECUTABLE} -m compileall -b scidavisrc.py
-      COMMENT "Compiling python files"
-      )
-    add_custom_target( generate_pyc_files
-      DEPENDS scidavisrc.pyc
-      )
-  endif()
-
-  add_dependencies( scidavis generate_pyc_files )
-
 endif()
 
 if (NOT CMAKE_CROSS_COMPILING)
@@ -200,21 +178,11 @@ endif()
       install( FILES scidavis.desktop DESTINATION share/applications )
       install( FILES scidavis.xml DESTINATION share/mime/packages )
       install( FILES scidavis.1 DESTINATION share/man/man1 )
-      install( FILES scidavis.appdata.xml DESTINATION share/metainfo )
+      configure_file( scidavis.appdata.xml.in "${CMAKE_CURRENT_BINARY_DIR}/scidavis.appdata.xml" @ONLY )
+      install( FILES "${CMAKE_CURRENT_BINARY_DIR}/scidavis.appdata.xml" DESTINATION share/metainfo )
       install( FILES x-sciprj.desktop DESTINATION share/mimelnk/application )
     endif()
     
-    if( SCRIPTING_PYTHON )
-      if(NOT PYTHON_SCRIPTDIR)
-        set(PYTHON_SCRIPTDIR etc)
-      endif()
-      if( MULTI_CONFIG )
-        install( FILES scidavisrc.py ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/scidavisrc.pyc DESTINATION ${PYTHON_SCRIPTDIR} )
-      else()
-        install( FILES scidavisrc.py ${CMAKE_CURRENT_BINARY_DIR}/scidavisrc.pyc DESTINATION ${PYTHON_SCRIPTDIR} )
-      endif()
-      install( FILES scidavisUtil.py DESTINATION share/scidavis )
-    endif()
 endif()
 
 if( WIN32 )

@@ -15,6 +15,31 @@ project( scidavis
   LANGUAGES CXX C)
 include(GNUInstallDirs)
 
+# ---------------------------------------------------------------------------
+# Version: the project() VERSION above is the single source of truth.
+# libscidavis/src/version.cpp, the Linux appdata file and the installer are
+# generated from it; the Python SDK's __version__ is checked against it below
+# (and by scripts/check_version.py in CI / release builds).
+# Update TORIGRAPH_RELEASE_DATE (ISO 8601) together with VERSION when tagging.
+# ---------------------------------------------------------------------------
+set( TORIGRAPH_VERSION "${PROJECT_VERSION}" )
+set( TORIGRAPH_RELEASE_DATE "2026-11-22" )
+set( TORIGRAPH_EXTRA_VERSION "" )
+math( EXPR TORIGRAPH_VERSION_NO
+  "(${PROJECT_VERSION_MAJOR} << 16) | (${PROJECT_VERSION_MINOR} << 8) | ${PROJECT_VERSION_PATCH}" )
+if( NOT TORIGRAPH_RELEASE_DATE MATCHES "^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" )
+  message( FATAL_ERROR "TORIGRAPH_RELEASE_DATE must be YYYY-MM-DD, got '${TORIGRAPH_RELEASE_DATE}'" )
+endif()
+file( STRINGS "${CMAKE_SOURCE_DIR}/python/torigraph/__init__.py" _tg_py_version_line
+  REGEX "^__version__[ ]*=" )
+if( NOT _tg_py_version_line MATCHES "\"${TORIGRAPH_VERSION}\"" )
+  message( FATAL_ERROR
+    "Version mismatch: CMake project VERSION is ${TORIGRAPH_VERSION} but "
+    "python/torigraph/__init__.py has '${_tg_py_version_line}'. "
+    "Update both together (see scripts/check_version.py)." )
+endif()
+message( STATUS "ToriGraph version ${TORIGRAPH_VERSION} (${TORIGRAPH_RELEASE_DATE})" )
+
 set( CMAKE_CXX_STANDARD 17)
 set( CMAKE_CXX_STANDARD_REQUIRED TRUE )
 set( CMAKE_CXX_EXTENSIONS OFF )
@@ -115,18 +140,7 @@ endif()
 
 option( SCRIPTING_MUPARSER "Enable muParser Scripting" ON )
 
-option( SCRIPTING_PYTHON "Enable Python Scripting" OFF )
-
 option( BUILD_TESTS "Build tests" OFF )
-
-if( SCRIPTING_PYTHON )
-  if( MINGW )
-    set( Python3_FIND_REGISTRY LAST )
-  endif()
-  find_package( Python3 COMPONENTS Interpreter Development REQUIRED )
-  find_package( SIP REQUIRED )
-  find_package( PyQt REQUIRED )
-endif()
 
 option( ORIGIN_IMPORT "Enable importing OriginLab project files" OFF )
 
@@ -169,8 +183,9 @@ endif()
 set( DOC_FILES
   ChangeLog.md
   README.md
-  gpl.txt
-  license.rtf
+  LICENSE
+  LICENSE-GPL-3.0.txt
+  THIRD_PARTY_LICENSES.md
   )
 
 if( WIN32 )
@@ -186,7 +201,8 @@ endif()
 set( CPACK_PACKAGE_NAME "ToriGraph" )
 set( CPACK_PACKAGE_VENDOR "ToriGraph" )
 set( CPACK_PACKAGE_DESCRIPTION "ToriGraph Installer" )
-set( CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/gpl.txt" )
+# Binary packages are GPL-3.0-or-later (see THIRD_PARTY_LICENSES.md).
+set( CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE-GPL-3.0.txt" )
 set( CPACK_PACKAGE_EXECUTABLES "ToriGraph;ToriGraph" )
 set( CPACK_CREATE_DESKTOP_LINKS "ToriGraph" )
 set( CPACK_STRIP_FILES ON )
@@ -196,7 +212,6 @@ set( CPACK_SOURCE_IGNORE_FILES "/build/;CMakeLists\.txt\.user*;/\.git/" )
 
 # WIX
 set( CPACK_WIX_UPGRADE_GUID "d6f4ef98-3744-47a2-b581-d789db8a4d63" )
-set( CPACK_WIX_LICENSE_RTF "${CMAKE_SOURCE_DIR}/license.rtf" )
 set( CPACK_WIX_PRODUCT_ICON "${CMAKE_SOURCE_DIR}/scidavis/icons/scidavis.ico" )
 
 # NSIS

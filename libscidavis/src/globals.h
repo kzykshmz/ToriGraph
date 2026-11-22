@@ -97,7 +97,8 @@ public:
     static void about();
 
 private:
-    //  Don't forget to change the Doxyfile when changing these!
+    //  Defined in the CMake-generated version.cpp (from version.cpp.in); the values come
+    //  from project(... VERSION ...) and TORIGRAPH_RELEASE_DATE in the top-level CMakeLists.txt.
     //! SciDAVis version number
     /**
      * 0xMMmmbb means MM.mm.bb with<br>

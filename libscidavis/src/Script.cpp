@@ -35,18 +35,11 @@
 #include "MuParserScript.h"
 #include "MuParserScripting.h"
 #endif
-#ifdef SCRIPTING_PYTHON
-#include "PythonScript.h"
-#include "PythonScripting.h"
-#endif
 
 namespace {
 const char *langs[] = {
 #ifdef SCRIPTING_MUPARSER
     MuParserScripting::langName,
-#endif
-#ifdef SCRIPTING_PYTHON
-    PythonScripting::langName,
 #endif
     nullptr
 };
@@ -61,19 +54,11 @@ ScriptingEnv *ScriptingLangManager::newEnv(ApplicationWindow *parent)
 }
 
 ScriptingEnv *ScriptingLangManager::newEnv(const std::string &name, ApplicationWindow *parent,
-                                           bool
-#ifdef SCRIPTING_PYTHON // avoids unused warning
-                                                   batch
-#endif
-)
+                                           bool /*batch*/)
 {
 #ifdef SCRIPTING_MUPARSER
     if (name == MuParserScripting::langName)
         return new MuParserScripting(parent);
-#endif
-#ifdef SCRIPTING_PYTHON
-    if (name == PythonScripting::langName)
-        return new PythonScripting(parent, batch);
 #endif
     return nullptr;
 }
