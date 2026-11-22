@@ -76,10 +76,11 @@ class FractionalPtSpinBox : public QDoubleSpinBox
 public:
     explicit FractionalPtSpinBox(QWidget *parent = nullptr) : QDoubleSpinBox(parent)
     {
-        setRange(4.0, 72.0);
+        setRange(4.0, 144.0);
         setDecimals(1);
         setSingleStep(0.5);
         setSuffix(QStringLiteral(" pt"));
+        setMinimumWidth(92);
     }
 
 protected:

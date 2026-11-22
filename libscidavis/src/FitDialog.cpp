@@ -67,7 +67,9 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSet>
+#include <QAbstractItemView>
 #include <QCompleter>
+#include <QKeyEvent>
 #include <QStringListModel>
 #include <mutex>
 #include "I18nJapanese.h"
@@ -119,6 +121,30 @@ public:
 
 private:
     QwtPlotCurve **d_slot_ref = nullptr;
+};
+
+class ModelSearchReturnFilter : public QObject
+{
+public:
+    explicit ModelSearchReturnFilter(QLineEdit *edit) : QObject(edit), d_edit(edit) { }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == d_edit && event && event->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(event);
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                if (d_edit)
+                    QMetaObject::invokeMethod(d_edit, "returnPressed", Qt::DirectConnection);
+                ke->accept();
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QLineEdit *d_edit = nullptr;
 };
 
 } // namespace
@@ -400,8 +426,13 @@ void FitDialog::initEditPage()
         connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this,
                 &FitDialog::jumpToModel);
     }
+    modelSearchBox->installEventFilter(new ModelSearchReturnFilter(modelSearchBox));
     connect(modelSearchBox, &QLineEdit::returnPressed, this, [this]() {
+        if (!modelSearchBox || modelSearchBox->text().trimmed().isEmpty())
+            return;
         QCompleter *c = modelSearchBox->completer();
+        if (c && c->popup() && c->popup()->isVisible())
+            c->popup()->hide();
         if (c && c->completionCount() > 0) {
             c->setCurrentRow(0);
             jumpToModel(c->currentCompletion());
@@ -533,6 +564,7 @@ void FitDialog::initEditPage()
     editBottomBar->setSpacing(8);
     editBottomBar->addStretch();
     btnContinue = new QPushButton(tr("&Fit >>"));
+    btnContinue->setAutoDefault(false);
     btnContinue->setDefault(true);
     editBottomBar->addWidget(btnContinue);
     buttonCancel2 = new QPushButton(tr("&Close"));

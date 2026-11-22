@@ -632,7 +632,7 @@ void AxesDialog::initAxesPage()
     labelBoxLayout->addWidget(boxTitle);
 
     QHBoxLayout *hl = new QHBoxLayout();
-    hl->setMargin(0);
+    hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(4);
     buttonLabelFont = new QPushButton(tr("&Font"));
     hl->addWidget(buttonLabelFont);
@@ -641,13 +641,13 @@ void AxesDialog::initAxesPage()
     boxTitleFontSize->setValue(12.0);
     boxTitleFontSize->setToolTip(tr("Axis Title Font Size"));
     hl->addWidget(boxTitleFontSize);
-
-    boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
-    boxAutoAxisTitle->setChecked(true);
-    hl->addWidget(boxAutoAxisTitle);
     hl->addStretch();
 
     labelBoxLayout->addLayout(hl);
+
+    boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
+    boxAutoAxisTitle->setChecked(true);
+    labelBoxLayout->addWidget(boxAutoAxisTitle);
 
     formatButtons = new TextFormatButtons(boxTitle);
     formatButtons->toggleCurveButton(false);
