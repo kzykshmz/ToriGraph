@@ -115,8 +115,8 @@ QVariant TableModel::data(const QModelIndex &index, int role) const
         return QVariant(col_ptr->asStringColumn()->textAt(row) + postfix);
     case Qt::EditRole:
         if (d_formula_mode)
-            return QVariant(col_ptr->formula(row));
-        if (col_ptr->isInvalid(row))
+            return (row < col_ptr->rowCount()) ? QVariant(col_ptr->formula(row)) : QVariant();
+        if (row >= col_ptr->rowCount() || col_ptr->isInvalid(row))
             return QVariant();
         if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric) {
             QLocale noSepLocale = QLocale();
@@ -180,7 +180,8 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
     case Qt::EditRole: {
         const QString rawStr = value.toString();
         if (d_formula_mode) {
-            if (row < col_ptr->rowCount() && col_ptr->formula(row) == rawStr)
+            if ((row < col_ptr->rowCount() && col_ptr->formula(row) == rawStr)
+                || (row >= col_ptr->rowCount() && rawStr.isEmpty()))
                 return false;
             d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
             col_ptr->setFormula(row, rawStr);
@@ -189,6 +190,8 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
         }
 
         const QString trimmed = rawStr.trimmed();
+        if (row >= col_ptr->rowCount() && trimmed.isEmpty())
+            return false;
         const bool isMissingSentinel = AsciiTableImportFilter::isMissingDataToken(trimmed);
         const bool hasRowFormula =
                 (row < col_ptr->rowCount() && !col_ptr->formula(row).isEmpty());

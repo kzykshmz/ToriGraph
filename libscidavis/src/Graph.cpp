@@ -3568,7 +3568,8 @@ void Graph::exportVector(const QString &fileName, int res, bool color, bool keep
     printer.setFullPage(true);
 
     printer.setOutputFileName(fileName);
-    if (fileName.contains(".eps", Qt::CaseInsensitive)) {
+    if (fileName.endsWith(".eps", Qt::CaseInsensitive)
+        || fileName.endsWith(".ps", Qt::CaseInsensitive)) {
 #if QT_VERSION >= 0x050000
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Warning"),
@@ -15576,63 +15577,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
     if (!leg)
         return QString();
 
-    static QSet<MultiLayer *> s_unzoomingForLegend;
-    struct ScopedUnzoomForLegendPlacement
-    {
-        MultiLayer *rawMl = nullptr;
-        QPointer<MultiLayer> ml;
-        QPointer<QWidget> mlWidget;
-        double prevZoom = 1.0;
-        bool prevMlUpdates = true;
-        bool prevWidgetUpdates = true;
-        bool active = false;
-
-        explicit ScopedUnzoomForLegendPlacement(MultiLayer *parentMl)
-        {
-            if (parentMl && !s_unzoomingForLegend.contains(parentMl)
-                && std::abs(parentMl->pageZoom() - 1.0) > 1e-4) {
-                rawMl = parentMl;
-                ml = parentMl;
-                prevZoom = parentMl->pageZoom();
-                prevMlUpdates = parentMl->updatesEnabled();
-                parentMl->setUpdatesEnabled(false);
-                if (QWidget *w = parentMl->widget()) {
-                    mlWidget = w;
-                    prevWidgetUpdates = w->updatesEnabled();
-                    w->setUpdatesEnabled(false);
-                }
-                s_unzoomingForLegend.insert(rawMl);
-                QSignalBlocker sb(parentMl);
-                parentMl->setPageZoom(1.0);
-                active = true;
-            }
-        }
-
-        void restoreNow()
-        {
-            if (!active)
-                return;
-            active = false;
-            if (ml) {
-                QSignalBlocker sb(ml);
-                ml->setPageZoom(prevZoom);
-            }
-            if (rawMl)
-                s_unzoomingForLegend.remove(rawMl);
-            if (mlWidget) {
-                mlWidget->setUpdatesEnabled(prevWidgetUpdates);
-                if (prevWidgetUpdates)
-                    mlWidget->update();
-            }
-            if (ml) {
-                ml->setUpdatesEnabled(prevMlUpdates);
-                if (prevMlUpdates)
-                    ml->update();
-            }
-        }
-
-        ~ScopedUnzoomForLegendPlacement() { restoreNow(); }
-    } unzoomGuard(multiLayerParent());
+    ScopedUnzoomForExport unzoomGuard(multiLayerParent());
 
     if (!isLegendVisible()) {
         d_legend_visible = true;

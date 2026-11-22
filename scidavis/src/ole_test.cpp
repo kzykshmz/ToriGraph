@@ -6,6 +6,7 @@
 #include "Table.h"
 #include "MultiPeakFit.h"
 #include "NonLinearFit.h"
+#include "ExponentialFit.h"
 #include "fit_gsl.h"
 #include "BoxCurve.h"
 #include "PlotCurve.h"
@@ -6601,13 +6602,13 @@ static int runSuite39GitHubAutoUpdaterEngine(ApplicationWindow *mw)
             {
                 "name": "ToriGraph-9.4.2-macos.dmg",
                 "size": 12000,
-                "browser_download_url": "https://example.invalid/ToriGraph-macos.dmg"
+                "browser_download_url": "https://github.com/kzykshmz/ToriGraph/releases/download/v9.4.2/ToriGraph-macos.dmg"
             },
             {
                 "name": "ToriGraph-9.4.2-win64.zip",
                 "size": 4567890,
                 "digest": "sha256:%1",
-                "browser_download_url": "https://example.invalid/ToriGraph-9.4.2-win64.zip"
+                "browser_download_url": "https://github.com/kzykshmz/ToriGraph/releases/download/v9.4.2/ToriGraph-9.4.2-win64.zip"
             }
         ]
     })").arg(mockDigest).toUtf8();
@@ -6622,6 +6623,16 @@ static int runSuite39GitHubAutoUpdaterEngine(ApplicationWindow *mw)
                        && !parsedSingle.isPreRelease,
                "parseGitHubReleaseJson picked wrong Windows asset or digest");
 
+    const QByteArray evilHostJson = QStringLiteral(R"({
+        "tag_name": "v9.4.2",
+        "draft": false,
+        "prerelease": false,
+        "assets": [{"name": "ToriGraph-9.4.2-win64.zip", "size": 100, "digest": "sha256:%1", "browser_download_url": "https://example.invalid/ToriGraph-9.4.2-win64.zip"}]
+    })").arg(mockDigest).toUtf8();
+    ReleaseInfo rejectedEvil;
+    CHECK_COND(!AutoUpdater::parseGitHubReleaseJson(evilHostJson, &rejectedEvil, &parseErr, false),
+               "parseGitHubReleaseJson accepted untrusted asset download host example.invalid");
+
     const QString bodySha = QString(64, QLatin1Char('e'));
     const QByteArray arrayJson = QStringLiteral(R"([
         {
@@ -6629,14 +6640,14 @@ static int runSuite39GitHubAutoUpdaterEngine(ApplicationWindow *mw)
             "name": "Draft Release",
             "draft": true,
             "prerelease": false,
-            "assets": [{"name": "ToriGraph-9.6.0-win64.zip", "size": 100, "browser_download_url": "https://example.invalid/draft.zip"}]
+            "assets": [{"name": "ToriGraph-9.6.0-win64.zip", "size": 100, "browser_download_url": "https://github.com/kzykshmz/ToriGraph/releases/download/v9.6.0/draft.zip"}]
         },
         {
             "tag_name": "v9.5.0-rc.1",
             "name": "Release Candidate 1",
             "draft": false,
             "prerelease": true,
-            "assets": [{"name": "ToriGraph-9.5.0-rc.1-win64.zip", "size": 200, "browser_download_url": "https://example.invalid/rc1.zip"}]
+            "assets": [{"name": "ToriGraph-9.5.0-rc.1-win64.zip", "size": 200, "browser_download_url": "https://github.com/kzykshmz/ToriGraph/releases/download/v9.5.0-rc.1/rc1.zip"}]
         },
         {
             "tag_name": "v9.4.0",
@@ -6644,7 +6655,7 @@ static int runSuite39GitHubAutoUpdaterEngine(ApplicationWindow *mw)
             "draft": false,
             "prerelease": false,
             "body": "SHA256 (ToriGraph-9.4.0-win64.zip) = %1",
-            "assets": [{"name": "ToriGraph-9.4.0-win64.zip", "size": 300, "browser_download_url": "https://example.invalid/stable.zip"}]
+            "assets": [{"name": "ToriGraph-9.4.0-win64.zip", "size": 300, "browser_download_url": "https://github.com/kzykshmz/ToriGraph/releases/download/v9.4.0/stable.zip"}]
         }
     ])").arg(bodySha).toUtf8();
 
@@ -24988,15 +24999,56 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
 static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
 {
     Q_UNUSED(mw);
-    std::cout << "[INFO] Running Suite 77: Nov 22 night review security, Lorentz SE, CSV/paste/xlsx, "
-                 "dotted export, zoom legend, graph undo remap, 100-sheet workbook & .gz safety...\n";
+    std::cout << "[INFO] Running Suite 77: Nov 22 night review security, Lorentz/ExpGrowth CI, "
+                 "CSV/paste/xlsx, dotted export, zoom legend, graph undo remap, 200-sheet workbook & .gz safety...\n";
 
-    qApp->setProperty("torigraph_noninteractive", true);
-    QStandardPaths::setTestModeEnabled(true);
+    struct Suite77EnvGuard
+    {
+        QVariant prevNonInteractive;
+        bool prevTestMode = false;
+        Suite77EnvGuard()
+            : prevNonInteractive(qApp->property("torigraph_noninteractive")),
+              prevTestMode(QStandardPaths::isTestModeEnabled())
+        {
+            qApp->setProperty("torigraph_noninteractive", true);
+            QStandardPaths::setTestModeEnabled(true);
+        }
+        ~Suite77EnvGuard()
+        {
+            QStandardPaths::setTestModeEnabled(prevTestMode);
+            qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+        }
+    } envGuard77;
+
+    struct AppWinGuard
+    {
+        ApplicationWindow *win = nullptr;
+        explicit AppWinGuard(ApplicationWindow *w = nullptr) : win(w) {}
+        ~AppWinGuard()
+        {
+            reset();
+            QApplication::processEvents();
+        }
+        AppWinGuard(const AppWinGuard &) = delete;
+        AppWinGuard &operator=(const AppWinGuard &) = delete;
+        void reset(ApplicationWindow *next = nullptr)
+        {
+            if (win) {
+                win->savedProject();
+                win->setOleEmbeddedMode(true);
+                delete win;
+            }
+            win = next;
+        }
+        ApplicationWindow *get() const { return win; }
+        ApplicationWindow *operator->() const { return win; }
+        operator ApplicationWindow *() const { return win; }
+    };
+
     QTemporaryDir tmp77;
     CHECK_COND(tmp77.isValid(), "77: temp dir failed");
 
-    ApplicationWindow *w77 = new ApplicationWindow();
+    AppWinGuard w77(new ApplicationWindow());
     w77->applyUserSettings();
 
     // -------------------------------------------------------------------------
@@ -25050,7 +25102,8 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
     }
 
     // -------------------------------------------------------------------------
-    // 77b: P0-3 (MultiPeakFit Lorentz area SE & 95% CI parity with peak table)
+    // 77b: P0-3 (MultiPeakFit Lorentz area SE & 95% CI parity with peak table),
+    //      M1 (ExpGrowthFit confidence band parity with NonLinearFit),
     //      & P2 (Weighted fit SE consistency between parameters and peak summary)
     // -------------------------------------------------------------------------
     {
@@ -25077,6 +25130,7 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
 
         MultiPeakFit fitLor(w77, gLor, MultiPeakFit::Lorentz, 2);
         fitLor.setDataFromCurve(tLor->name() + QStringLiteral("_Y"));
+        fitLor.enableConfidenceBand(true, 0.95);
         double initVals[7] = { 95.0, -3.0, 2.0, 58.0, 3.5, 1.6, 2.0 };
         fitLor.setInitialGuesses(initVals);
         fitLor.fit();
@@ -25086,7 +25140,6 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         const auto rows = fitLor.computePeakSummary(res);
         CHECK_COND(res.size() >= 7 && errs.size() >= 7 && rows.size() == 2,
                    "77b: Lorentz 2-peak fit did not produce 2 summary rows");
-        // Peak summary rows are sorted by center (-3.0 first, +3.5 second)
         const double relDiff0 = std::fabs(errs[0] - rows[0].areaSE) / std::max(1e-12, rows[0].areaSE);
         const double relDiff1 = std::fabs(errs[3] - rows[1].areaSE) / std::max(1e-12, rows[1].areaSE);
         std::cout << "[INFO] 77b Lorentz Area SE: param0=" << errs[0] << " summary0=" << rows[0].areaSE
@@ -25095,7 +25148,7 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(fitLor.parameterStdError(0) - rows[0].areaSE) < 1e-4,
                    "77b: Lorentz parameter Area SE diverged from peak summary Area SE (2/pi bug)");
 
-        // Weighted fit with scaleErrors=false: peak summary SE must match parameter SE
+        //Weighted fit with scaleErrors=false: peak summary SE must match parameter SE
         MultiPeakFit fitWeighted(w77, gLor, MultiPeakFit::Gauss, 2);
         fitWeighted.setDataFromCurve(tLor->name() + QStringLiteral("_Y"));
         CHECK_COND(fitWeighted.setWeightingMethod(Fit::WeightDirect, tLor->name() + QStringLiteral("_Err")),
@@ -25110,11 +25163,79 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         const double wRelDiff = std::fabs(wErrs[0] - wRows[0].areaSE) / std::max(1e-12, wRows[0].areaSE);
         CHECK_COND(wRelDiff < 1e-4,
                    "77b: weighted fit (!scaleErrors) scaled peak summary SE differently from parameter SE");
+
+        // M1 regression gate: ExponentialFit (expGrowth=true: internal lambda < 0, stored t = -1/lambda > 0)
+        // confidence band must match NonLinearFit("y0+A*exp(x/t)") without off-diagonal covariance sign corruption
+        const int nExp = 31;
+        Table *tExp = w77->newTable(QStringLiteral("ExpGr77"), nExp, 2);
+        CHECK_COND(tExp != nullptr, "77b: ExpGr77 table");
+        tExp->setColName(0, QStringLiteral("X"));
+        tExp->setColName(1, QStringLiteral("Y"));
+        for (int i = 0; i < nExp; ++i) {
+            const double x = 0.2 * double(i);
+            const double noise = 0.45 * std::sin(1.9 * double(i)) - 0.25 * std::cos(2.7 * double(i));
+            tExp->setCell(i, 0, x);
+            tExp->setCell(i, 1, 5.0 + 2.5 * std::exp(x / 2.2) + noise);
+        }
+        const QString expCurveTitle = tExp->name() + QStringLiteral("_Y");
+        MultiLayer *mlExp1 = w77->multilayerPlot(tExp, QStringList() << expCurveTitle, Graph::Scatter);
+        MultiLayer *mlExp2 = w77->multilayerPlot(tExp, QStringList() << expCurveTitle, Graph::Scatter);
+        CHECK_COND(mlExp1 && mlExp1->activeGraph() && mlExp2 && mlExp2->activeGraph(),
+                   "77b: ExpGr77 graphs");
+        Graph *gExp1 = mlExp1->activeGraph();
+        Graph *gExp2 = mlExp2->activeGraph();
+
+        ExponentialFit expGrFit(w77, gExp1, expCurveTitle, true /*expGrowth*/);
+        expGrFit.generateFunction(false);
+        expGrFit.enableConfidenceBand(true, 0.95);
+        double expInitInternal[3] = { 2.4, -1.0 / 2.1, 4.8 };
+        expGrFit.setInitialGuesses(expInitInternal);
+        expGrFit.fit();
+        CHECK_COND(expGrFit.results().size() >= 3 && expGrFit.results()[1] > 1.5,
+                   "77b: ExpGrowth fit failed");
+
+        NonLinearFit nlfExp(w77, gExp2, expCurveTitle);
+        nlfExp.setParametersList(QStringList() << "A" << "t" << "y0");
+        nlfExp.setFormula("y0+A*exp(x/t)");
+        nlfExp.generateFunction(false);
+        nlfExp.enableConfidenceBand(true, 0.95);
+        double nlfInit[3] = { 2.4, 2.1, 4.8 };
+        nlfExp.setInitialGuesses(nlfInit);
+        nlfExp.fit();
+
+        const int idxUp1 = gExp1->curveIndex(expCurveTitle + QStringLiteral("_ConfUpper"));
+        const int idxLo1 = gExp1->curveIndex(expCurveTitle + QStringLiteral("_ConfLower"));
+        const int idxUp2 = gExp2->curveIndex(expCurveTitle + QStringLiteral("_ConfUpper"));
+        const int idxLo2 = gExp2->curveIndex(expCurveTitle + QStringLiteral("_ConfLower"));
+        CHECK_COND(idxUp1 >= 0 && idxLo1 >= 0 && idxUp2 >= 0 && idxLo2 >= 0,
+                   "77b: ExpGrowth or NonLinearFit did not insert _ConfUpper/_ConfLower band curves");
+        const QwtPlotCurve *cUp1 = gExp1->curve(idxUp1);
+        const QwtPlotCurve *cLo1 = gExp1->curve(idxLo1);
+        const QwtPlotCurve *cUp2 = gExp2->curve(idxUp2);
+        const QwtPlotCurve *cLo2 = gExp2->curve(idxLo2);
+        CHECK_COND(cUp1 && cLo1 && cUp2 && cLo2 && int(cUp1->dataSize()) == nExp
+                           && int(cUp2->dataSize()) == nExp,
+                   "77b: ExpGrowth confidence band point count mismatch");
+        double maxBandRelDiff = 0.0;
+        for (int k = 0; k < nExp; ++k) {
+            const double w1 = cUp1->y(k) - cLo1->y(k);
+            const double w2 = cUp2->y(k) - cLo2->y(k);
+            CHECK_COND(w1 > 0.0 && w2 > 0.0 && std::isfinite(w1) && std::isfinite(w2),
+                       "77b: non-positive or NaN confidence band width on ExpGrowth");
+            const double rel = std::fabs(w1 - w2) / std::max(1e-9, w2);
+            maxBandRelDiff = std::max(maxBandRelDiff, rel);
+        }
+        std::cout << "[INFO] 77b ExpGrowth vs NonLinearFit 95% CI band max rel diff = "
+                  << maxBandRelDiff << "\n";
+        CHECK_COND(maxBandRelDiff < 5e-3,
+                   "77b: M1 ExpGrowth confidence band diverged from NonLinearFit (flipped Jacobian sign bug): "
+                           << maxBandRelDiff);
     }
 
     // -------------------------------------------------------------------------
-    // 77c: P0-4 (# specimen rows), P0-5 (12,345\n23,456 paste), P1-D1/D2/D4/D5/D6/D7/D8,
-    //      P2 Rigaku .ras Factor & missing-cell copy
+    // 77c: P0-4 (# specimen rows), M3 (mid-file single-cell '# sensor note'),
+    //      P0-5 & M2 (thousands single-col vs explicit 2-col CSV paste),
+    //      M4 (short column empty-cell EditRole), P1-D1..D8, P2 Rigaku .ras
     // -------------------------------------------------------------------------
     {
         // P0-4: '#' comment in preamble skipped, '#1,520' specimen rows in body preserved
@@ -25132,6 +25253,25 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(ftHash->column(1)->valueAt(0) - 520.0) < 1e-9
                            && std::fabs(ftHash->column(1)->valueAt(2) - 528.0) < 1e-9,
                    "77c: P0-4 mid-file '#1,520' specimen rows were silently dropped as comments!");
+
+        // M3: single-cell '# sensor note' (and header-to-data '# comment') in multi-column CSV
+        // must be skipped as comments without turning numeric columns into Text!
+        const QByteArray midNoteCsv =
+                "x,y\n"
+                "# header-to-data comment\n"
+                "1.5,10.25\n"
+                "# sensor note: recalibrated\n"
+                "2.5,20.50\n";
+        std::unique_ptr<future::Table> ftMidNote(AsciiTableImportFilter::importDroppedTextData(
+                midNoteCsv, QStringLiteral("MidNote77"), QStringLiteral("midnote.csv"), nullptr));
+        CHECK_COND(ftMidNote && ftMidNote->columnCount() == 2 && ftMidNote->rowCount() == 2
+                           && ftMidNote->column(0)->name() == QStringLiteral("x")
+                           && ftMidNote->column(1)->name() == QStringLiteral("y")
+                           && ftMidNote->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && ftMidNote->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && std::fabs(ftMidNote->column(0)->valueAt(0) - 1.5) < 1e-9
+                           && std::fabs(ftMidNote->column(1)->valueAt(1) - 20.5) < 1e-9,
+                   "77c: M3 mid-file single-cell '# sensor note' corrupted numeric CSV columns!");
 
         // P1-D4 (a): all-integer CSV must NOT consume row 0 as column headers
         const QByteArray intCsv = "1,100\n2,200\n3,300\n";
@@ -25170,7 +25310,7 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(ftRas->column(1)->valueAt(1) - 250.0) < 1e-9,
                    "77c: Rigaku .ras attenuator Factor was not applied to Intensity!");
 
-        // P0-5: all-thousands single column ("12,345\n23,456") + headered ("Stress (MPa)\n1,012\n1,030")
+        // P0-5: all-thousands single column ("12,345\n23,456") when 1 cell/column selected
         Table *tAllThou = w77->newTable(QStringLiteral("AllThou77"), 3, 2);
         tAllThou->clearCell(0, 1);
         tAllThou->clearCell(1, 1);
@@ -25181,6 +25321,17 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(tAllThou->cell(1, 0) - 23456.0) < 1e-9
                            && tAllThou->column(1)->isInvalid(0),
                    "77c: P0-5 '12,345\\n23,456' split into 2 columns instead of 1 thousands-grouped column!");
+
+        // M2: explicit 2-column selection must split multi-row "10,200\n20,400" into 2 CSV columns
+        Table *tTwoColCsv = w77->newTable(QStringLiteral("TwoColCsv77"), 3, 2);
+        tTwoColCsv->setCellsSelected(0, 0, 1, 1, true);
+        CHECK_COND(tTwoColCsv->pasteText(QStringLiteral("10,200\n20,400")),
+                   "77c: pasteText '10,200\\n20,400' with 2 selected columns failed");
+        CHECK_COND(std::fabs(tTwoColCsv->cell(0, 0) - 10.0) < 1e-9
+                           && std::fabs(tTwoColCsv->cell(0, 1) - 200.0) < 1e-9
+                           && std::fabs(tTwoColCsv->cell(1, 0) - 20.0) < 1e-9
+                           && std::fabs(tTwoColCsv->cell(1, 1) - 400.0) < 1e-9,
+                   "77c: M2 multi-row '10,200\\n20,400' with >=2 selected columns failed to split into 2 columns!");
 
         // P1-D8 + P1-D2: Excel Alt+Enter quoted multiline headers + #N/A / #DIV/0! / N.D. missing markers
         Table *tExcel = w77->newTable(QStringLiteral("ExcelPaste77"), 4, 2);
@@ -25200,8 +25351,11 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && tExcel->column(1)->isInvalid(2),
                    "77c: P1-D2 / P1-D8 multiline header or #N/A/#DIV/0!/N.D. broke numeric column paste!");
 
-        // P1-D6: opening and closing cell editor must NOT round 12-digit precision to 6 digits
+        // P1-D6 + M4: EditRole preserves 12-digit precision AND returns empty QVariant beyond short column rowCount()
         tExcel->column(0)->setValueAt(0, 1.234567890123);
+        tExcel->column(1)->removeRows(2, tExcel->column(1)->rowCount() - 2);
+        CHECK_COND(tExcel->column(1)->rowCount() == 2 && tExcel->numRows() >= 4,
+                   "77c: setup short column rowCount() == 2 failed");
         if (QWidget *vw = tExcel->d_future_table->view()) {
             QTableView *tv = vw->findChild<QTableView *>();
             QAbstractItemModel *mdl = tv ? tv->model() : nullptr;
@@ -25211,6 +25365,15 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
             mdl->setData(idx00, editVal, Qt::EditRole);
             CHECK_COND(std::fabs(tExcel->column(0)->valueAt(0) - 1.234567890123) < 1e-12,
                        "77c: P1-D6 EditRole rounded cell value to 6 significant digits!");
+
+            const QModelIndex idxBelowShortCol = mdl->index(3, 1);
+            const QVariant emptyBelow = mdl->data(idxBelowShortCol, Qt::EditRole);
+            CHECK_COND(!emptyBelow.isValid(),
+                       "77c: M4 EditRole below short column rowCount() returned '"
+                               << emptyBelow.toString().toStdString() << "' instead of empty QVariant!");
+            CHECK_COND(!mdl->setData(idxBelowShortCol, QString(), Qt::EditRole)
+                               && tExcel->column(1)->rowCount() == 2,
+                       "77c: M4 empty setData below short column rowCount() mutated column!");
         }
 
         // P1-D5: sorting column containing NaNs places finite values in strict order and NaNs at end
@@ -25251,7 +25414,7 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
     }
 
     // -------------------------------------------------------------------------
-    // 77d: P0-6 (Dotted alloy filename image export & non-truncating probe)
+    // 77d: P0-6 (Dotted alloy filename actual PNG export & non-truncating probe)
     // -------------------------------------------------------------------------
     {
         const QString baseAlloy = tmp77.filePath(QStringLiteral("Al-5.5Zn-2.5Mg"));
@@ -25272,10 +25435,25 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(checkExisting.open(QIODevice::ReadOnly)
                            && checkExisting.readAll() == QByteArray("PRECIOUS_EXISTING_DATA"),
                    "77d: P0-6 writability probe truncated existing file!");
+        checkExisting.close();
+
+        Table *tAlloy = w77->newTable(QStringLiteral("Alloy77"), 5, 2);
+        for (int r = 0; r < 5; ++r) {
+            tAlloy->setCell(r, 0, double(r));
+            tAlloy->setCell(r, 1, double(100 + 25 * r));
+        }
+        MultiLayer *mlAlloy = w77->multilayerPlot(
+                tAlloy, QStringList() << (tAlloy->name() + QStringLiteral("_2")), Graph::LineSymbols);
+        CHECK_COND(mlAlloy != nullptr, "77d: mlAlloy null");
+        mlAlloy->exportImage(resolvedPng, 100, false, 150);
+        const QImage exportedAlloyImg(resolvedPng);
+        CHECK_COND(!exportedAlloyImg.isNull() && exportedAlloyImg.width() > 50
+                           && exportedAlloyImg.height() > 50,
+                   "77d: ml->exportImage failed to write valid PNG for dotted filename Al-5.5Zn-2.5Mg.png!");
     }
 
     // -------------------------------------------------------------------------
-    // 77e: P0-7 & P1-G1 (Legend placement & stored font invariant under 160% zoom)
+    // 77e: P0-7 & P1-G1 (Legend placement, window size & stored font invariant under zoom)
     // -------------------------------------------------------------------------
     {
         Table *tZ = w77->newTable(QStringLiteral("ZoomLeg77"), 10, 2);
@@ -25291,8 +25469,12 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         Graph *gZ = mlZ->activeGraph();
         CHECK_COND(std::fabs(mlZ->pageZoom() - 1.6) < 1e-4, "77e: expected 160% view zoom");
         const double ptBefore = gZ->legend()->font().pointSizeF();
+        mlZ->resize(mlZ->width() + 42, mlZ->height() + 28);
+        const QSize customWinSz = mlZ->size();
 
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
+        CHECK_COND(mlZ->size() == customWinSz,
+                   "77e: placeLegendAnchor under zoom reset manually resized MultiLayer window size!");
         const int marginFrom160 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
         mlZ->setPageZoom(1.0);
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
@@ -25308,8 +25490,9 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
     }
 
     // -------------------------------------------------------------------------
-    // 77f: P1-S2 (Graph Undo/Redo after table & column rename), P1-S4 (100-sheet
-    //      workbook > 4096 chars), P2 (.sciprj.gz truncation & appendProject dirty)
+    // 77f: P1-S2 (Graph Undo/Redo + Legend remap after table & column rename),
+    //      P1-S4 (200-sheet workbook > 4500 chars),
+    //      P2 (multi-member .gz, zero-padded .gz, truncated .gz & appendProject dirty)
     // -------------------------------------------------------------------------
     {
         Table *tRen = w77->newTable(QStringLiteral("OrigSheet77"), 6, 3);
@@ -25343,23 +25526,41 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         mlRen->undoStack()->undo();
         CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
                    "77f: P1-S2 Graph Undo after sheet+column rename deleted the curve!");
+        CHECK_COND(mlRen->activeGraph()->legend()
+                           && mlRen->activeGraph()->legend()->text().contains(
+                                      QStringLiteral("FlowStress")),
+                   "77f: Graph Undo reverted legend text to stale column name instead of FlowStress!");
         mlRen->undoStack()->redo();
         CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
                    "77f: P1-S2 Graph Redo after sheet+column rename deleted the curve!");
 
-        // P1-S4: 100-sheet workbook (> 4096 chars on <workbook> line) survives save & loadProject
+        // P1-S4: 200-sheet workbook (> 4500 chars on <workbook> line, strictly > 4096) survives save & loadProject
         WorkbookManager *wm = WorkbookManager::instance(w77);
         QString wbErr;
-        const QString bigBook = wm->createBook(QStringLiteral("BigBook77"), 100, &wbErr);
-        CHECK_COND(!bigBook.isEmpty() && wm->sheets(bigBook).size() == 100,
-                   "77f: createBook(100) failed: " << wbErr.toStdString());
-        const QString bigPrj = tmp77.filePath(QStringLiteral("big100.sciprj"));
-        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), bigPrj), "77f: save big100.sciprj");
+        const QString bigBook = wm->createBook(QStringLiteral("BigBook77"), 200, &wbErr);
+        CHECK_COND(!bigBook.isEmpty() && wm->sheets(bigBook).size() == 200,
+                   "77f: createBook(200) failed: " << wbErr.toStdString());
+        const QString bigPrj = tmp77.filePath(QStringLiteral("big200.sciprj"));
+        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), bigPrj), "77f: save big200.sciprj");
+        {
+            QFile chkWb(bigPrj);
+            CHECK_COND(chkWb.open(QIODevice::ReadOnly), "77f: read big200.sciprj");
+            int maxWorkbookLineLen = 0;
+            for (const QByteArray &ln : chkWb.readAll().split('\n')) {
+                if (ln.startsWith("<workbook>\t"))
+                    maxWorkbookLineLen = std::max(maxWorkbookLineLen, ln.size());
+            }
+            chkWb.close();
+            std::cout << "[INFO] 77f 200-sheet <workbook> line length = " << maxWorkbookLineLen
+                      << " bytes\n";
+            CHECK_COND(maxWorkbookLineLen > 4500,
+                       "77f: expected <workbook> line > 4500 bytes, got " << maxWorkbookLineLen);
+        }
 
-        ApplicationWindow *reBig = w77->openProject(bigPrj);
-        CHECK_COND(reBig != nullptr, "77f: reopen big100.sciprj failed");
-        CHECK_COND(WorkbookManager::instance(reBig)->sheets(bigBook).size() == 100,
-                   "77f: P1-S4 100-sheet workbook truncated by 4096-char readLine limit (got "
+        AppWinGuard reBig(w77->openProject(bigPrj));
+        CHECK_COND(reBig != nullptr, "77f: reopen big200.sciprj failed");
+        CHECK_COND(WorkbookManager::instance(reBig)->sheets(bigBook).size() == 200,
+                   "77f: P1-S4 200-sheet workbook truncated by 4096-char readLine limit (got "
                            << WorkbookManager::instance(reBig)->sheets(bigBook).size() << ")");
 
         // P2: appendProject marks destination project modified (!saved)
@@ -25367,24 +25568,100 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(reBig->saved, "77f: expected clean state before appendProject");
         const QString smallPrj = tmp77.filePath(QStringLiteral("small_append.sciprj"));
         {
-            ApplicationWindow *wSmall = new ApplicationWindow();
+            AppWinGuard wSmall(new ApplicationWindow());
             wSmall->applyUserSettings();
-            wSmall->newTable(QStringLiteral("SmallT77"), 2, 2);
+            Table *ts = wSmall->newTable(QStringLiteral("SmallT77"), 2, 2);
+            ts->setCell(0, 0, 42.0);
+            ts->setCell(1, 1, 84.0);
             CHECK_COND(wSmall->writeProjectFile(wSmall->projectFolder(), smallPrj),
                        "77f: write small_append.sciprj");
-            wSmall->savedProject();
-            wSmall->setOleEmbeddedMode(true);
-            delete wSmall;
         }
         reBig->appendProject(smallPrj);
         CHECK_COND(!reBig->saved,
                    "77f: P2 appendProject left project marked saved (no close prompt)!");
+        reBig.reset();
 
-        reBig->savedProject();
-        reBig->setOleEmbeddedMode(true);
-        delete reBig;
+        // Helper to build an RFC-1952 valid gzip member using stored DEFLATE blocks
+        auto makeStoredGzipMember = [](const QByteArray &raw) -> QByteArray {
+            quint32 crc = 0xFFFFFFFFu;
+            for (unsigned char b : raw) {
+                crc ^= b;
+                for (int bit = 0; bit < 8; ++bit)
+                    crc = (crc >> 1) ^ ((crc & 1u) ? 0xEDB88320u : 0u);
+            }
+            crc ^= 0xFFFFFFFFu;
 
-        // P2: Truncated .sciprj.gz must be rejected instead of silently partially loaded
+            QByteArray out;
+            out.reserve(raw.size() + 32);
+            const char hdr[10] = { '\x1f', '\x8b', '\x08', '\x00', '\x00',
+                                   '\x00', '\x00', '\x00', '\x00', '\x03' };
+            out.append(hdr, 10);
+
+            int offset = 0;
+            do {
+                const int blkLen = std::min(32768, raw.size() - offset);
+                const bool isFinal = (offset + blkLen >= raw.size());
+                out.append(char(isFinal ? 0x01 : 0x00));
+                const quint16 len16 = quint16(blkLen);
+                const quint16 nlen16 = quint16(~len16);
+                out.append(char(len16 & 0xFF));
+                out.append(char((len16 >> 8) & 0xFF));
+                out.append(char(nlen16 & 0xFF));
+                out.append(char((nlen16 >> 8) & 0xFF));
+                if (blkLen > 0)
+                    out.append(raw.constData() + offset, blkLen);
+                offset += blkLen;
+            } while (offset < raw.size());
+
+            const quint32 isize = quint32(raw.size());
+            for (int s = 0; s < 32; s += 8)
+                out.append(char((crc >> s) & 0xFF));
+            for (int s = 0; s < 32; s += 8)
+                out.append(char((isize >> s) & 0xFF));
+            return out;
+        };
+
+        // Multi-member .sciprj.gz (2 concatenated gzip streams) must load both halves cleanly
+        QByteArray rawSmallBytes;
+        {
+            QFile sf(smallPrj);
+            CHECK_COND(sf.open(QIODevice::ReadOnly), "77f: read small_append.sciprj");
+            rawSmallBytes = sf.readAll();
+            sf.close();
+            CHECK_COND(rawSmallBytes.size() > 60, "77f: small_append.sciprj unexpectedly tiny");
+        }
+        const int halfIdx = rawSmallBytes.size() / 2;
+        const QByteArray gzMember1 = makeStoredGzipMember(rawSmallBytes.left(halfIdx));
+        const QByteArray gzMember2 = makeStoredGzipMember(rawSmallBytes.mid(halfIdx));
+
+        const QString multiGzPath = tmp77.filePath(QStringLiteral("multi77.sciprj.gz"));
+        {
+            QFile mf(multiGzPath);
+            CHECK_COND(mf.open(QIODevice::WriteOnly), "77f: write multi77.sciprj.gz");
+            mf.write(gzMember1);
+            mf.write(gzMember2);
+            mf.close();
+        }
+        AppWinGuard reMultiGz(w77->openProject(multiGzPath));
+        CHECK_COND(reMultiGz != nullptr && reMultiGz->table(QStringLiteral("SmallT77")) != nullptr
+                           && std::fabs(reMultiGz->table(QStringLiteral("SmallT77"))->cell(1, 1) - 84.0) < 1e-9,
+                   "77f: multi-member .sciprj.gz failed to decompress both concatenated gzip streams!");
+        reMultiGz.reset();
+
+        // Multi-member .sciprj.gz with truncated 2nd member must be rejected
+        const QString truncMultiGzPath = tmp77.filePath(QStringLiteral("trunc_multi77.sciprj.gz"));
+        {
+            QFile tmf(truncMultiGzPath);
+            CHECK_COND(tmf.open(QIODevice::WriteOnly), "77f: write trunc_multi77.sciprj.gz");
+            tmf.write(gzMember1);
+            tmf.write(gzMember2.left(gzMember2.size() / 2));
+            tmf.close();
+        }
+        AppWinGuard reTruncMulti(w77->openProject(truncMultiGzPath));
+        CHECK_COND(reTruncMulti == nullptr,
+                   "77f: multi-member .sciprj.gz with truncated 2nd member was not rejected!");
+
+        // Zero-padded .sciprj.gz (trailing NUL block padding) must open cleanly, while truncated .gz is rejected
         const QString gzPath = tmp77.filePath(QStringLiteral("trunc77.sciprj.gz"));
         CHECK_COND(w77->writeProjectFile(w77->projectFolder(), gzPath), "77f: write trunc77.sciprj.gz");
         QByteArray fullGz;
@@ -25394,19 +25671,32 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
             fullGz = gf.readAll();
             gf.close();
             CHECK_COND(fullGz.size() > 40, "77f: gz too small");
+        }
+        const QString paddedGzPath = tmp77.filePath(QStringLiteral("padded77.sciprj.gz"));
+        {
+            QFile pf(paddedGzPath);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "77f: write padded77.sciprj.gz");
+            pf.write(fullGz);
+            pf.write(QByteArray(512, '\0'));
+            pf.close();
+        }
+        AppWinGuard rePadGz(w77->openProject(paddedGzPath));
+        CHECK_COND(rePadGz != nullptr,
+                   "77f: trailing zero-padded .sciprj.gz was falsely rejected!");
+        rePadGz.reset();
+
+        {
+            QFile gf(gzPath);
             CHECK_COND(gf.open(QIODevice::WriteOnly | QIODevice::Truncate), "77f: truncate gz");
             gf.write(fullGz.left(fullGz.size() / 2));
             gf.close();
         }
-        ApplicationWindow *reTrunc = w77->openProject(gzPath);
+        AppWinGuard reTrunc(w77->openProject(gzPath));
         CHECK_COND(reTrunc == nullptr,
                    "77f: P2 truncated .sciprj.gz was silently partially loaded without Z_STREAM_END!");
     }
 
-    w77->savedProject();
-    w77->setOleEmbeddedMode(true);
-    delete w77;
-    QApplication::processEvents();
+    w77.reset();
     std::cout << "[PASS] Suite 77 passed.\n";
     return 0;
 }

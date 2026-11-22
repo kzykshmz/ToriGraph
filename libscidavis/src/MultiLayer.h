@@ -511,6 +511,7 @@ public:
     ScopedUnzoomForExport(const ScopedUnzoomForExport &) = delete;
     ScopedUnzoomForExport &operator=(const ScopedUnzoomForExport &) = delete;
     bool isActive() const { return active; }
+    void restoreNow();
 
 private:
     QPointer<MultiLayer> ml;
