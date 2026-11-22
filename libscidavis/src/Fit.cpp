@@ -1005,6 +1005,7 @@ void registerFitJapaneseStrings()
             "表示中のパラメータと曲線は最後の反復値で、収束した結果ではありません。");
         reg("Convergence", "収束");
         reg("converged", "収束");
+        reg("Not converged", "未収束");
         reg("Degrees of freedom", "自由度");
         reg("DOF", "自由度");
         reg("LowerCI95", "95%下限");
@@ -4105,7 +4106,7 @@ MultiLayer *Fit::createResidualPlotWindow()
 }
 
 Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curveTitle,
-                          const QStringList &modelNames)
+                          const QStringList &modelNames, int maxIterations)
 {
     if (!app || !g || curveTitle.isEmpty() || modelNames.isEmpty())
         return nullptr;
@@ -4124,6 +4125,8 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
         double bicVal = 0.0;
         double deltaAic = 0.0;
         double akaikeWeight = 0.0;
+        bool converged = true;
+        QString convergenceNote;
     };
 
     std::vector<ModelEvalRow> evalRows;
@@ -4200,6 +4203,8 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
         fitter->d_suppress_curve_output = true;
         if (!fitter->setDataFromCurve(curveTitle, g) || fitter->error())
             continue;
+        if (maxIterations > 0)
+            fitter->setMaximumIterations(maxIterations);
 
         fitter->fit();
         if (fitter->results().empty() || !std::isfinite(fitter->rss()))
@@ -4214,39 +4219,59 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
         row.aicVal = fitter->aic();
         row.aiccVal = fitter->aicc();
         row.bicVal = fitter->bic();
+        row.converged = fitter->converged();
+        row.convergenceNote = fitter->convergenceMessage();
         evalRows.push_back(row);
     }
 
     if (evalRows.empty())
         return nullptr;
 
-    std::sort(evalRows.begin(), evalRows.end(),
-              [](const ModelEvalRow &a, const ModelEvalRow &b) { return a.aicVal < b.aicVal; });
+    // A non-converged fit is the last iterate, not a minimum: its AIC says nothing about the
+    // model. Rank only the converged fits; list the others after them with no ΔAIC, weight or
+    // rank and a note in the Convergence column.
+    std::stable_sort(evalRows.begin(), evalRows.end(),
+                     [](const ModelEvalRow &a, const ModelEvalRow &b) {
+                         if (a.converged != b.converged)
+                             return a.converged;
+                         return a.aicVal < b.aicVal;
+                     });
 
-    double minAic = evalRows.front().aicVal;
+    double minAic = std::numeric_limits<double>::infinity();
+    for (const auto &r : evalRows) {
+        if (r.converged)
+            minAic = std::min(minAic, r.aicVal);
+    }
     double weightSum = 0.0;
     for (auto &r : evalRows) {
+        if (!r.converged)
+            continue;
         r.deltaAic = r.aicVal - minAic;
         r.akaikeWeight = std::exp(-0.5 * std::min(700.0, r.deltaAic));
         weightSum += r.akaikeWeight;
     }
     if (weightSum > 0.0) {
-        for (auto &r : evalRows)
-            r.akaikeWeight /= weightSum;
+        for (auto &r : evalRows) {
+            if (r.converged)
+                r.akaikeWeight /= weightSum;
+        }
     }
 
+    registerFitJapaneseStrings();
     QString tblName = app->generateUniqueName(tr("ModelComparison"));
     int nRows = int(evalRows.size());
-    Table *tbl = app->newTable(tblName, nRows, 11);
+    Table *tbl = app->newTable(tblName, nRows, 12);
     if (!tbl)
         return nullptr;
 
     tbl->setHeader(QStringList() << tr("Model") << tr("NumParams") << tr("RSS") << tr("R2")
                                  << tr("AdjR2") << tr("AIC") << tr("AICc") << tr("BIC")
-                                 << tr("DeltaAIC") << tr("AkaikeWeight") << tr("Rank"));
+                                 << tr("DeltaAIC") << tr("AkaikeWeight") << tr("Rank")
+                                 << tr("Convergence"));
     tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     for (int c = 1; c < 11; ++c)
         tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    tbl->column(11)->setColumnMode(SciDAVis::ColumnMode::Text);
 
     for (int i = 0; i < nRows; ++i) {
         const auto &r = evalRows[size_t(i)];
@@ -4258,9 +4283,18 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
         tbl->column(5)->setValueAt(i, r.aicVal);
         tbl->column(6)->setValueAt(i, r.aiccVal);
         tbl->column(7)->setValueAt(i, r.bicVal);
-        tbl->column(8)->setValueAt(i, r.deltaAic);
-        tbl->column(9)->setValueAt(i, r.akaikeWeight);
-        tbl->column(10)->setValueAt(i, i + 1);
+        if (r.converged) {
+            tbl->column(8)->setValueAt(i, r.deltaAic);
+            tbl->column(9)->setValueAt(i, r.akaikeWeight);
+            tbl->column(10)->setValueAt(i, i + 1); // converged rows come first
+            tbl->column(11)->setTextAt(i, tr("converged"));
+        } else {
+            tbl->column(8)->setInvalid(i);
+            tbl->column(9)->setInvalid(i);
+            tbl->column(10)->setInvalid(i);
+            tbl->column(11)->setTextAt(i, r.convergenceNote.isEmpty() ? tr("Not converged")
+                                                                     : r.convergenceNote);
+        }
     }
 
     tbl->showNormal();

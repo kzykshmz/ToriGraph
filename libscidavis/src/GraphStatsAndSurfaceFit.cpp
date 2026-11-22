@@ -5133,6 +5133,8 @@ void registerPhase5StatsTranslationsOnce()
         "m を JIS R 1625 で不偏化しました (B_n = %1、n = %2): m = %3 \u2192 %4。\u03C3\u2080 は補正前の MLE の値です。");
     reg("JIS R 1625 bias correction not applied: it is defined only for the 2-parameter MLE of complete (uncensored) data.",
         "JIS R 1625 の不偏化は行いませんでした: 打切りのない 2 母数の最尤推定にだけ定められています。");
+    reg("JIS R 1625 6.2 c) sets B_n = 1 for n > 120, so m is not reduced (n = %1).",
+        "JIS R 1625 の 6.2 c) では n > 120 のとき B_n = 1 と定めているため、m は補正していません (n = %1)。");
     reg("Goodness of fit: ln L = %1 (MLE). R\u00B2 = %2 refers to the median-rank regression line, not to the MLE.",
         "当てはまり: ln L = %1 (MLE)。R\u00B2 = %2 はメジアンランク回帰直線の値で、MLE の指標ではありません。");
     reg("Weibull (%1): method = %2", "ワイブル (%1): 推定法 = %2");
@@ -5585,8 +5587,14 @@ void syncWeibullProbRightAxis(Graph *parentG, Graph *linkedG)
 
 double GraphStatsAndSurfaceFit::jisR1625UnbiasingFactor(int n)
 {
-    // JIS R 1625:2010, 6.2 c) and Annex A: m = B_n * m_t, B_n = (1 + 2.04 n^-1.1)^-1 (n <= 120);
-    // the worked example gives B_30 = 0.9538.
+    // JIS R 1625:2010, 6.2 c) formula (3) and Annex A: m = B_n * m_t with
+    //   B_n = (1 + 2.04 n^-1.1)^-1  for n <= 120,
+    //   B_n = 1                     for n > 120,
+    // as stated in the text of 6.2 c) (checked against the kikakurui.com transcription, where
+    // the second condition is printed as "n < 120", an evident misprint for n > 120). The Annex A
+    // worked example gives B_30 = 0.9538. The standard itself switches to 1 above 120, so m
+    // steps by about 1 % between n = 120 (B = 0.9896) and n = 121; this is kept on purpose to
+    // reproduce JIS-conforming values.
     if (n < 2)
         return 1.0;
     if (n > 120)
@@ -6085,6 +6093,11 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                                  .arg(mFail)
                                  .arg(mRaw, 0, 'f', 3)
                                  .arg(betaM, 0, 'f', 3);
+            if (mFail > 120) {
+                res.notes << QObject::tr(
+                        "JIS R 1625 6.2 c) sets B_n = 1 for n > 120, so m is not reduced (n = %1).")
+                                     .arg(mFail);
+            }
         } else {
             res.notes << QObject::tr(
                     "JIS R 1625 bias correction not applied: it is defined only for the 2-parameter MLE of complete (uncensored) data.");

@@ -661,8 +661,10 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
     if (!app || !g)
         return nullptr;
 
+    // Keep the original point order (round-trip data); normalizeValues takes the unit area
+    // from an X-sorted copy.
     std::vector<double> xs, ys;
-    if (!extractUnmaskedCurvePoints(g, curveTitle, xs, ys, true, false) || xs.empty())
+    if (!extractUnmaskedCurvePoints(g, curveTitle, xs, ys, false, false) || xs.empty())
         return nullptr;
 
     const size_t n = ys.size();
@@ -747,12 +749,19 @@ std::vector<double> CurveMathTools::normalizeValues(const std::vector<double> &x
         break;
     }
     case UnitArea: {
+        // The area is the trapezoidal area of an X-sorted copy, so it does not depend on the
+        // point order; the output keeps the caller's order (round trips such as hysteresis
+        // loops or CV scans must not be redrawn as a zigzag).
+        std::vector<size_t> ord(n);
+        std::iota(ord.begin(), ord.end(), size_t(0));
+        std::stable_sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return xs[a] < xs[b]; });
         double area = 0.0;
         double absArea = 0.0;
-        for (size_t i = 0; i + 1 < n; ++i) {
-            const double dx = xs[i + 1] - xs[i];
-            area += 0.5 * (ys[i] + ys[i + 1]) * dx;
-            absArea += 0.5 * (std::fabs(ys[i]) + std::fabs(ys[i + 1])) * std::fabs(dx);
+        for (size_t k = 0; k + 1 < n; ++k) {
+            const size_t i = ord[k], j = ord[k + 1];
+            const double dx = xs[j] - xs[i];
+            area += 0.5 * (ys[i] + ys[j]) * dx;
+            absArea += 0.5 * (std::fabs(ys[i]) + std::fabs(ys[j])) * std::fabs(dx);
         }
         const double denom = (std::fabs(area) > 1e-300) ? std::fabs(area) : absArea;
         if (denom > 1e-300) {
@@ -7216,6 +7225,60 @@ CurveMathTools::collectPeakFitCenters(const QList<Table *> &tables, int peakNumb
         missingSources->clear();
     if (peakNumber < 1)
         return out;
+    for (const PeakFitCenter &pc : collectPeakFitSources(tables, peakNumber)) {
+        if (pc.found)
+            out.append(pc);
+        else if (missingSources)
+            missingSources->append(pc.source);
+    }
+    return out;
+}
+
+bool CurveMathTools::pairKissingerFitRates(const QVector<double> &rates,
+                                           const QVector<PeakFitCenter> &sources,
+                                           QVector<double> *outRates, QVector<double> *outTemps,
+                                           QString *error, QStringList *skipped)
+{
+    registerAnalysisNoticeTranslationsOnce();
+    if (outRates)
+        outRates->clear();
+    if (outTemps)
+        outTemps->clear();
+    if (error)
+        error->clear();
+    if (skipped)
+        skipped->clear();
+    if (rates.size() != sources.size()) {
+        if (error) {
+            QStringList names;
+            for (const PeakFitCenter &pc : sources)
+                names << pc.source;
+            *error = QObject::tr(
+                    "Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s). Enter exactly one heating rate per source, in this order: %3.")
+                             .arg(rates.size())
+                             .arg(sources.size())
+                             .arg(names.join(QStringLiteral(", ")));
+        }
+        return false;
+    }
+    for (int k = 0; k < sources.size(); ++k) {
+        if (!sources[k].found) {
+            if (skipped)
+                skipped->append(sources[k].source);
+            continue;
+        }
+        if (outRates)
+            outRates->append(rates[k]);
+        if (outTemps)
+            outTemps->append(sources[k].center);
+    }
+    return true;
+}
+
+QVector<CurveMathTools::PeakFitCenter>
+CurveMathTools::collectPeakFitSources(const QList<Table *> &tables, int peakNumber)
+{
+    QVector<PeakFitCenter> out;
     for (Table *t : tables) {
         if (!isPeakFitResultTable(t))
             continue;
@@ -7242,15 +7305,24 @@ CurveMathTools::collectPeakFitCenters(const QList<Table *> &tables, int peakNumb
                 order << key;
             centers[key].push_back(xc);
         }
-        if (order.isEmpty() && missingSources)
-            missingSources->append(t->name());
+        if (order.isEmpty()) {
+            // A peak-fit table without any peak row is still one source with its own rate.
+            PeakFitCenter pc;
+            pc.source = t->name();
+            pc.found = false;
+            out.append(pc);
+            continue;
+        }
         for (const QString &key : order) {
             std::vector<double> v = centers.value(key);
             std::sort(v.begin(), v.end());
-            if (int(v.size()) >= peakNumber)
-                out.append({ key, v[size_t(peakNumber - 1)] });
-            else if (missingSources)
-                missingSources->append(key);
+            PeakFitCenter pc;
+            pc.source = key;
+            if (peakNumber >= 1 && int(v.size()) >= peakNumber)
+                pc.center = v[size_t(peakNumber - 1)];
+            else
+                pc.found = false;
+            out.append(pc);
         }
     }
     return out;
@@ -7373,7 +7445,15 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         return sel;
     };
     auto refreshFitRates = [&]() {
-        const QVector<PeakFitCenter> src = collectPeakFitCenters(selectedFitTables(), sbPeakN->value());
+        // One heating rate per source, in the order of collectPeakFitSources (sources lacking
+        // peak N included), so that a missing peak never shifts the rates of the others.
+        const QVector<PeakFitCenter> src = collectPeakFitSources(selectedFitTables(), sbPeakN->value());
+        QStringList srcNames;
+        for (const PeakFitCenter &pc : src)
+            srcNames << pc.source;
+        leFitRates->setPlaceholderText(srcNames.join(QStringLiteral(", ")));
+        leFitRates->setToolTip(QObject::tr("One heating rate per source, in this order: %1")
+                                       .arg(srcNames.join(QStringLiteral(", "))));
         QStringList guessed;
         // Guess the heating rates from the source names (e.g. "TDS_100Kh"), but not from the
         // serial number of default table names such as "PeakSummary3".
@@ -7390,10 +7470,14 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         }
         if (guessed.size() == src.size() && !guessed.isEmpty())
             leFitRates->setText(guessed.join(QStringLiteral(", ")));
+        else
+            leFitRates->clear(); // never leave rates that belong to another selection
     };
     refreshFitRates();
     QObject::connect(lwFitTables, &QListWidget::itemSelectionChanged, &dlg,
                      [&]() { refreshFitRates(); });
+    QObject::connect(sbPeakN, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshFitRates(); });
 
     QComboBox *cbRateUnit = new QComboBox(&dlg);
     cbRateUnit->addItem(QObject::tr("K/min (°C/min)"), false);
@@ -7538,27 +7622,32 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         }
     } else if (mode == 3) {
         const QVector<double> inRates = parseCsvDoubles(leFitRates->text());
+        const QVector<PeakFitCenter> sources =
+                collectPeakFitSources(selectedFitTables(), sbPeakN->value());
+        QString pairError;
         QStringList missing;
-        const QVector<PeakFitCenter> centers =
-                collectPeakFitCenters(selectedFitTables(), sbPeakN->value(), &missing);
+        if (!pairKissingerFitRates(inRates, sources, &rates, &peakTemps, &pairError, &missing)) {
+            // Pairing by position alone would attach rates to the wrong peaks: stop here.
+            app->updateLog(QStringLiteral("[%1] Kissinger\n  %2\n")
+                                   .arg(QLocale().toString(QDateTime::currentDateTime()))
+                                   .arg(pairError));
+            if (!ApplicationWindow::isNonInteractiveContext(app)) {
+                QMessageBox::warning(
+                        app, QObject::tr("Kissinger TDS / DSC Activation Energy Analyzer"),
+                        pairError);
+            }
+            return;
+        }
         if (!missing.isEmpty()) {
             inputNotes << QObject::tr(
                     "Kissinger: no peak centre found in the selected peak-fit table(s) for peak %1: %2.")
                                   .arg(sbPeakN->value())
                                   .arg(missing.join(QStringLiteral(", ")));
         }
-        if (inRates.size() != centers.size()) {
-            inputNotes << QObject::tr(
-                    "Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.")
-                                  .arg(inRates.size())
-                                  .arg(centers.size());
-        }
-        const int kCnt = std::min(inRates.size(), centers.size());
         QStringList used;
-        for (int k = 0; k < kCnt; ++k) {
-            rates.append(inRates[k]);
-            peakTemps.append(centers[k].center);
-            used << QStringLiteral("%1 = %2").arg(centers[k].source).arg(centers[k].center, 0, 'g', 6);
+        for (const PeakFitCenter &pc : sources) {
+            if (pc.found)
+                used << QStringLiteral("%1 = %2").arg(pc.source).arg(pc.center, 0, 'g', 6);
         }
         if (!used.isEmpty()) {
             inputNotes << QObject::tr("Kissinger input taken from peak-fit centres (peak %1): %2.")
@@ -7575,7 +7664,7 @@ void CurveMathTools::showKissingerDialog(ApplicationWindow *app)
         const int kCnt = std::min(inRates.size(), selItems.size());
         if (inRates.size() != selItems.size()) {
             inputNotes << QObject::tr(
-                    "Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.")
+                    "Kissinger: %1 heating rate(s) were given for %2 selected TDS column(s); the extra entries were ignored.")
                                   .arg(inRates.size())
                                   .arg(selItems.size());
         }
@@ -8449,6 +8538,11 @@ void registerAnalysisNoticeTranslationsOnce()
         "K\u03B12 除去後は %1 K\u03B11 だけのパターンになるため、面間隔 d は K\u03B1 平均ではなく \u03BB(K\u03B11) = %2 \u00C5 で計算しました。");
     reg("Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).",
         "Williamson-Hall: 分離できたピークが 2 本未満のため、結晶子サイズと微視ひずみは出していません (N/A)。");
+    reg("Williamson-Hall: the resolved peaks have almost the same 4 sin\u03B8, so the slope (microstrain) and the intercept (crystallite size) cannot be separated (N/A). Use peaks spread over a wider 2\u03B8 range.",
+        "Williamson-Hall: 分離できたピークの 4 sin\u03B8 がほぼ同じため、傾き (微視ひずみ) と切片 (結晶子サイズ) を分けて求められません (N/A)。2\u03B8 の広い範囲にわたるピークを使ってください。");
+    reg("\u03BB = %1 \u00C5 is close to (within 0.1 %) but not exactly the %2 %3 line (%4 \u00C5), so K\u03B12 was stripped assuming a %2 tube. Enter the exact wavelength if this is not a %2 tube.",
+        "\u03BB = %1 \u00C5 は %2 の %3 線 (%4 \u00C5) と完全には一致しませんが 0.1 % 以内なので、%2 管球とみなして K\u03B12 を除去しました。%2 管球でない場合は正確な波長を入力してください。");
+    reg("K\u03B1-average", "K\u03B1 平均");
     reg("Williamson-Hall: no physical solution. The intercept K\u03BB/D = %1 rad is <= 0, so the crystallite size is undefined (N/A). It is NOT replaced by the Scherrer mean.",
         "Williamson-Hall: 物理的な解がありません。切片 K\u03BB/D = %1 rad が 0 以下のため、結晶子サイズは求まりません (N/A)。Scherrer 平均への置き換えはしていません。");
     reg("Williamson-Hall: no physical solution. The slope \u03B5 = %1 is negative, so the microstrain is undefined (N/A).",
@@ -8483,6 +8577,12 @@ void registerAnalysisNoticeTranslationsOnce()
         "Kissinger: 選んだピーク分離の結果表に、ピーク %1 の中心が見つかりません: %2。");
     reg("Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.",
         "Kissinger: ピーク分離の結果 %2 件に対して昇温速度が %1 個指定されました。余った分は使っていません。");
+    reg("Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s). Enter exactly one heating rate per source, in this order: %3.",
+        "Kissinger: ピーク分離の結果 %2 件に対して昇温速度が %1 個指定されました。結果 1 件につき昇温速度を 1 個ずつ、次の順に入力してください: %3。解析は行っていません。");
+    reg("One heating rate per source, in this order: %1",
+        "結果 1 件につき昇温速度を 1 個ずつ、次の順に入力: %1");
+    reg("Kissinger: %1 heating rate(s) were given for %2 selected TDS column(s); the extra entries were ignored.",
+        "Kissinger: 選んだ TDS 曲線の列 %2 本に対して昇温速度が %1 個指定されました。余った分は使っていません。");
     reg("Kissinger: no peak was found inside the temperature window for column(s): %1.",
         "Kissinger: 温度範囲内にピークが見つからなかった列があります: %1。");
     reg("Kissinger input taken from peak-fit centres (peak %1): %2.",
@@ -8520,11 +8620,26 @@ QVector<CurveMathTools::XRayAnodeLines> CurveMathTools::xrayAnodeTable()
     return out;
 }
 
+QString CurveMathTools::williamsonHallUnavailableNote(int resolvedPeakCount)
+{
+    registerAnalysisNoticeTranslationsOnce();
+    if (resolvedPeakCount < 2) {
+        return QObject::tr(
+                "Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).");
+    }
+    // Two or more peaks, but their 4 sin(theta) values coincide (zero spread): the line through
+    // them has no defined slope.
+    return QObject::tr(
+            "Williamson-Hall: the resolved peaks have almost the same 4 sinθ, so the slope (microstrain) and the intercept (crystallite size) cannot be separated (N/A). Use peaks spread over a wider 2θ range.");
+}
+
 bool CurveMathTools::matchXRayAnode(double wavelengthAngstrom, XRayAnodeLines *out,
-                                    bool *matchedAverage)
+                                    bool *matchedAverage, bool *approximate)
 {
     if (matchedAverage)
         *matchedAverage = false;
+    if (approximate)
+        *approximate = false;
     if (!std::isfinite(wavelengthAngstrom) || wavelengthAngstrom <= 0.0)
         return false;
     constexpr double kRelTol = 2e-4; // Ka1 and Ka-average of Cu differ by 8e-4
@@ -8539,7 +8654,37 @@ bool CurveMathTools::matchXRayAnode(double wavelengthAngstrom, XRayAnodeLines *o
             return true;
         }
     }
-    return false;
+    // Loose pass: a rounded wavelength (e.g. 1.54 A or 1.79 A) still identifies the tube.
+    // The anodes are > 7 % apart, so a relative 1e-3 cannot pick the wrong tube; take the
+    // nearest of the Ka1 / Ka-average lines.
+    constexpr double kLooseRelTol = 1e-3;
+    double bestRel = kLooseRelTol;
+    const XRayAnodeLines *best = nullptr;
+    bool bestAvg = false;
+    const QVector<XRayAnodeLines> table = xrayAnodeTable();
+    for (const XRayAnodeLines &a : table) {
+        const double r1 = std::fabs(wavelengthAngstrom - a.kAlpha1) / a.kAlpha1;
+        const double rAvg = std::fabs(wavelengthAngstrom - a.kAlphaAvg) / a.kAlphaAvg;
+        if (r1 <= bestRel) {
+            bestRel = r1;
+            best = &a;
+            bestAvg = false;
+        }
+        if (rAvg < bestRel) {
+            bestRel = rAvg;
+            best = &a;
+            bestAvg = true;
+        }
+    }
+    if (!best)
+        return false;
+    if (out)
+        *out = *best;
+    if (matchedAverage)
+        *matchedAverage = bestAvg;
+    if (approximate)
+        *approximate = true;
+    return true;
 }
 
 CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
@@ -8559,17 +8704,35 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     // tube actually used (Co, Cr, Fe and Mo differ from Cu).
     XRayAnodeLines anodeLines;
     bool anodeMatchedAvg = false;
-    const bool anodeKnown = matchXRayAnode(effLambda, &anodeLines, &anodeMatchedAvg);
-    if (anodeKnown)
+    bool anodeApprox = false;
+    const bool anodeKnown = matchXRayAnode(effLambda, &anodeLines, &anodeMatchedAvg, &anodeApprox);
+    if (anodeKnown) {
         res.anodeName = anodeLines.anode;
+        res.anodeApproximate = anodeApprox;
+    }
     bool doStripKAlpha2 = stripKAlpha2;
     if (stripKAlpha2) {
         if (!anodeKnown) {
             doStripKAlpha2 = false;
-            res.notes << QObject::tr(
+            res.kAlpha2Notice = QObject::tr(
                     "K\u03B12 stripping skipped: \u03BB = %1 \u00C5 does not match the K\u03B11 or K\u03B1-average line of a known anode (Cr, Fe, Co, Cu, Mo).")
                                  .arg(effLambda, 0, 'f', 6);
-        } else if (anodeMatchedAvg) {
+            res.notes << res.kAlpha2Notice;
+        } else {
+            if (anodeApprox) {
+                res.kAlpha2Notice = QObject::tr(
+                        "\u03BB = %1 \u00C5 is close to (within 0.1 %) but not exactly the %2 %3 line (%4 \u00C5), so K\u03B12 was stripped assuming a %2 tube. Enter the exact wavelength if this is not a %2 tube.")
+                                            .arg(effLambda, 0, 'f', 6)
+                                            .arg(anodeLines.anode)
+                                            .arg(anodeMatchedAvg ? QObject::tr("K\u03B1-average")
+                                                                 : QStringLiteral("K\u03B11"))
+                                            .arg(anodeMatchedAvg ? anodeLines.kAlphaAvg
+                                                                 : anodeLines.kAlpha1,
+                                                 0, 'f', 6);
+                res.notes << res.kAlpha2Notice;
+            }
+        }
+        if (anodeKnown && anodeMatchedAvg) {
             effLambda = anodeLines.kAlpha1;
             res.wavelengthAngstrom = anodeLines.kAlpha1;
             res.notes << QObject::tr(
@@ -9166,8 +9329,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         res.whMicrostrain = kNaN;
         res.whSizeNm = kNaN;
         res.whPhysical = false;
-        res.notes << QObject::tr(
-                "Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).");
+        res.notes << williamsonHallUnavailableNote(int(whPool.size()));
     } else {
         const bool interceptOk = (whIntercept > 0.0);
         const bool slopeOk = (whSlope >= 0.0);
@@ -9777,6 +9939,13 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     if (!xr.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
         QMessageBox::warning(app, QObject::tr("XRD Peak, Scherrer & Williamson-Hall Analyzer"),
                              xr.error);
+    } else if (xr.valid && chkStripKa2->isChecked() && !xr.kAlpha2Notice.isEmpty()
+               && !ApplicationWindow::isNonInteractiveContext(app)) {
+        // K-alpha2 stripping was requested: say whether it was skipped or done on an assumed
+        // tube, instead of leaving it to the log only.
+        QMessageBox::information(app,
+                                 QObject::tr("XRD Peak, Scherrer & Williamson-Hall Analyzer"),
+                                 xr.kAlpha2Notice);
     }
 }
 

@@ -60,6 +60,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
@@ -14937,15 +14938,23 @@ static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *m
         QwtPlotCurve *cr = g->curve(g->curves() - 1);
         QwtPlotCurve *cm = CurveMathTools::normalizeCurve(mw, g, t->name() + "_Y", CurveMathTools::UnitArea);
         CHECK_COND(cr && cm && cr->dataSize() == 5 && cm->dataSize() == 5, "57h: normalized curves");
+        // The output keeps the original point order (2026-11-22); the area is taken X-sorted.
         double area = 0.0, maxDiff = 0.0;
+        const double origX[5] = { 3, 0, 4, 1, 2 };
+        std::vector<std::pair<double, double>> sorted;
+        bool orderKept = true;
         for (int i = 0; i < 5; ++i) {
             maxDiff = std::max(maxDiff, std::fabs(cr->x(i) - cm->x(i)) + std::fabs(cr->y(i) - cm->y(i)));
-            if (i > 0)
-                area += 0.5 * (cr->y(i) + cr->y(i - 1)) * (cr->x(i) - cr->x(i - 1));
+            orderKept = orderKept && cr->x(i) == origX[i];
+            sorted.emplace_back(cr->x(i), cr->y(i));
         }
+        std::sort(sorted.begin(), sorted.end());
+        for (size_t i = 1; i < sorted.size(); ++i)
+            area += 0.5 * (sorted[i].second + sorted[i - 1].second) * (sorted[i].first - sorted[i - 1].first);
         std::cout << "[INFO] 57h recalc unit-area: area=" << area << " diff vs dialog=" << maxDiff << "\n";
-        CHECK_COND(std::fabs(area - 1.0) < 1e-12 && maxDiff < 1e-12 && std::fabs(cr->y(0) - 1.0 / 12.0) < 1e-12,
-                   "57h: recalc unit-area normalisation must sort X and match the dialog");
+        CHECK_COND(std::fabs(area - 1.0) < 1e-12 && maxDiff < 1e-12 && orderKept
+                           && std::fabs(cr->y(0) - 4.0 / 12.0) < 1e-12,
+                   "57h: recalc unit-area normalisation must keep the point order, use the X-sorted area and match the dialog");
     }
 
     // ---------------------------------------------------------------- 57i: Weibull
@@ -15090,6 +15099,173 @@ static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *m
                    "57k: Kissinger must count and report excluded pairs");
         CHECK_COND(!CurveMathTools::isPeakFitResultTable(mw->newTable("S57Plain", 3, 2)),
                    "57k: plain table wrongly detected as a peak-fit table");
+    }
+
+    // ---------------------------------------------------------------- 57l: review fixes (2026-11-22)
+    {
+        // (1) Kissinger from peak-fit results: rates are paired with their own source. The
+        // 15 K/min table has no peak 1 (empty table) and the 30 K/min table has only peak 1
+        // when peak 2 is asked for; neither may shift the other rates.
+        const double R = 8.314462618, Ed = 100.0e3, A = 1.0e10;
+        auto tpOf = [&](double bmin) {
+            const double bs = bmin / 60.0;
+            auto f = [&](double Tk) { return std::log(bs / (Tk * Tk)) - std::log(A * R / Ed) + Ed / (R * Tk); };
+            double lo = 250.0, hi = 1500.0;
+            for (int it = 0; it < 200; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                (f(mid) > 0.0 ? lo : hi) = mid;
+            }
+            return 0.5 * (lo + hi);
+        };
+        const double rl[] = { 5.0, 10.0, 15.0, 20.0, 40.0 };
+        QList<Table *> tabs;
+        for (int i = 0; i < 5; ++i) {
+            Table *pt = nullptr;
+            if (rl[i] == 15.0) {
+                pt = mw->newTable(QString("S57lPeaks_%1Kmin").arg(rl[i]), 2, 3);
+                pt->setHeader(QStringList() << "Peak" << "Center" << "FWHM"); // no peak rows
+            } else {
+                const double tp = tpOf(rl[i]);
+                pt = suite57Table(mw, QString("S57lPeaks_%1Kmin").arg(rl[i]),
+                                  QStringList() << "Peak" << "Center" << "FWHM",
+                                  { { 1, 2 }, { tp + 60.0, tp }, { 20, 15 } });
+            }
+            CHECK_COND(pt && CurveMathTools::isPeakFitResultTable(pt), "57l: peak table detection");
+            tabs << pt;
+        }
+        const auto src = CurveMathTools::collectPeakFitSources(tabs, 1);
+        CHECK_COND(src.size() == 5 && !src[2].found && src[3].found
+                           && src[3].source == tabs[3]->name(),
+                   "57l: every table (also one without peaks) must be one source, in order");
+        QVector<double> pr, pt;
+        QString perr;
+        QStringList skipped;
+        const QVector<double> rates5 = { 5, 10, 15, 20, 40 };
+        CHECK_COND(CurveMathTools::pairKissingerFitRates(rates5, src, &pr, &pt, &perr, &skipped)
+                           && pr == (QVector<double>() << 5 << 10 << 20 << 40) && skipped.size() == 1
+                           && skipped[0] == tabs[2]->name(),
+                   "57l: a source without peak N must drop its own rate only");
+        const auto kr = CurveMathTools::analyzeKissinger(nullptr, pr, pt, false, false, false);
+        std::cout << "[INFO] 57l Kissinger with a peak-less table: Ed=" << kr.activationEnergyKJmol
+                  << " kJ/mol (true 100)\n";
+        CHECK_COND(kr.valid && std::fabs(kr.activationEnergyKJmol - 100.0) < 1e-6,
+                   "57l: Ed must stay 100 kJ/mol when one table has no peak");
+        const QVector<double> rates4 = { 5, 10, 20, 40 };
+        CHECK_COND(!CurveMathTools::pairKissingerFitRates(rates4, src, &pr, &pt, &perr)
+                           && pr.isEmpty() && perr.contains(tabs[2]->name()),
+                   "57l: a rate count that differs from the source count must stop with the source list");
+        CHECK_COND(CurveMathTools::collectPeakFitCenters(tabs, 1).size() == 4,
+                   "57l: collectPeakFitCenters must still return only the found centres");
+
+        // (3) K-alpha2: a rounded wavelength within 1e-3 identifies the tube.
+        CurveMathTools::XRayAnodeLines al;
+        bool avg = true, approx = false;
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.54, &al, &avg, &approx) && al.anode == "Cu"
+                           && !avg && approx,
+                   "57l: 1.54 A must match Cu K-alpha1 approximately");
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.788, &al, &avg, &approx) && al.anode == "Co"
+                           && !avg && approx,
+                   "57l: 1.788 A must match Co K-alpha1 approximately");
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.540598, &al, &avg, &approx) && !approx,
+                   "57l: the exact Cu K-alpha1 must not be flagged approximate");
+        CHECK_COND(!CurveMathTools::matchXRayAnode(1.55, &al, &avg, &approx),
+                   "57l: 1.55 A (0.6 % off Cu) must not match");
+        {
+            const double lam1 = 1.788965, lam2 = 1.792850, a0 = 4.0495;
+            std::vector<double> tt;
+            for (double v = 35.0; v <= 130.0 + 1e-9; v += 0.01)
+                tt.push_back(v);
+            auto betaCos = [&](double x4s) { return 0.9 * lam1 / 400.0 + 1.5e-3 * x4s; };
+            const std::vector<double> y =
+                    suite57XrdPattern(tt, a0, { { lam1, 1.0 }, { lam2, 0.5 } }, betaCos);
+            Table *t = suite57Table(mw, "S57lCoXrd", QStringList() << "TwoTheta" << "I", { tt, y });
+            Graph *g = suite57Plot(mw, t, "I");
+            CHECK_COND(g != nullptr, "57l: XRD plot");
+            const auto xa = CurveMathTools::analyzeXRD(mw, g, QString(), 1.788, 0.0, 0.9,
+                                                       QStringLiteral("fcc"), true, false, false);
+            CHECK_COND(xa.valid && xa.kAlpha2Stripped && xa.anodeApproximate && xa.anodeName == "Co"
+                               && std::fabs(xa.kAlpha2Angstrom - lam2) < 1e-9
+                               && !xa.kAlpha2Notice.isEmpty(),
+                       "57l: K-alpha2 must be stripped as Co for 1.788 A, with a notice");
+            const auto xe = CurveMathTools::analyzeXRD(mw, g, QString(), lam1, 0.0, 0.9,
+                                                       QStringLiteral("fcc"), true, false, false);
+            CHECK_COND(xe.valid && xe.kAlpha2Stripped && !xe.anodeApproximate
+                               && xe.kAlpha2Notice.isEmpty(),
+                       "57l: the exact wavelength needs no notice");
+            const auto xu = CurveMathTools::analyzeXRD(mw, g, QString(), 1.6, 0.0, 0.9,
+                                                       QStringLiteral("none"), true, false, false);
+            CHECK_COND(xu.valid && !xu.kAlpha2Stripped && !xu.kAlpha2Notice.isEmpty(),
+                       "57l: skipped K-alpha2 stripping must carry a notice for the dialog");
+        }
+
+        // (6) W-H: the reason for "no W-H line" depends on the number of peaks.
+        const QString wh1 = CurveMathTools::williamsonHallUnavailableNote(1);
+        const QString wh3 = CurveMathTools::williamsonHallUnavailableNote(3);
+        CHECK_COND(!wh1.isEmpty() && !wh3.isEmpty() && wh1 != wh3,
+                   "57l: W-H reasons for <2 peaks and for coinciding 4 sin(theta) must differ");
+
+        // (2) normalisation keeps the point order of round-trip data (hysteresis loop).
+        {
+            const std::vector<double> lx = { 0, 1, 2, 3, 2, 1, 0 };
+            const std::vector<double> ly = { 0, 2, 4, 6, 5, 3, 1 };
+            Table *t = suite57Table(mw, "S57lLoop", QStringList() << "X" << "Y", { lx, ly });
+            Graph *g = suite57Plot(mw, t, "Y");
+            CHECK_COND(g != nullptr, "57l: loop plot");
+            const int before = g->curves();
+            QVariantMap params;
+            params.insert(QStringLiteral("mode"), 0);
+            RecalcManager::repeatForAllCurves(mw, g, RecalcManager::OpNormalize, params);
+            CHECK_COND(g->curves() == before + 1, "57l: recalc normalize did not add a curve");
+            QwtPlotCurve *cr = g->curve(g->curves() - 1);
+            QwtPlotCurve *cm = CurveMathTools::normalizeCurve(mw, g, t->name() + "_Y",
+                                                              CurveMathTools::Range0To1);
+            bool sameOrder = cr && cm && cr->dataSize() == 7 && cm->dataSize() == 7;
+            for (int i = 0; sameOrder && i < 7; ++i) {
+                sameOrder = cr->x(i) == lx[size_t(i)] && cm->x(i) == lx[size_t(i)]
+                        && std::fabs(cr->y(i) - ly[size_t(i)] / 6.0) < 1e-12
+                        && std::fabs(cm->y(i) - ly[size_t(i)] / 6.0) < 1e-12;
+            }
+            CHECK_COND(sameOrder, "57l: normalisation must keep the original point order of a loop");
+        }
+
+        // (9) JIS R 1625 6.2 c): B_n formula up to n = 120, B_n = 1 above (as the standard states).
+        CHECK_COND(std::fabs(GraphStatsAndSurfaceFit::jisR1625UnbiasingFactor(120)
+                             - 1.0 / (1.0 + 2.04 * std::pow(120.0, -1.1)))
+                           < 1e-15,
+                   "57l: B_120 must follow the formula");
+
+        // (8) duplicate-X differentiation: no wait cursor while the error box is shown.
+        {
+            Table *t = suite57Table(mw, "S57lDupX", QStringList() << "X" << "Y",
+                                    { { 0, 1, 1, 2, 3, 4 }, { 0, 1, 2, 3, 4, 5 } });
+            Graph *g = suite57Plot(mw, t, "Y");
+            CHECK_COND(g != nullptr, "57l: dup-X plot");
+            qApp->setProperty("torigraph_noninteractive", QVariant());
+            bool boxSeen = false, cursorDuringBox = true;
+            QTimer poll;
+            int tries = 0;
+            QObject::connect(&poll, &QTimer::timeout, [&]() {
+                ++tries;
+                if (QMessageBox *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    boxSeen = true;
+                    cursorDuringBox = (QApplication::overrideCursor() != nullptr);
+                    mb->reject();
+                    poll.stop();
+                } else if (tries > 200) {
+                    poll.stop();
+                }
+            });
+            poll.start(20);
+            Differentiation diff(mw, g, t->name() + "_Y");
+            const bool ok = diff.run();
+            poll.stop();
+            qApp->setProperty("torigraph_noninteractive", true);
+            std::cout << "[INFO] 57l dup-X derivative: ok=" << ok << " box=" << boxSeen
+                      << " cursorDuringBox=" << cursorDuringBox
+                      << " cursorAfter=" << (QApplication::overrideCursor() != nullptr) << "\n";
+            CHECK_COND(!ok && boxSeen && !cursorDuringBox && QApplication::overrideCursor() == nullptr,
+                       "57l: the duplicate-X error box must be shown with the normal cursor, and the cursor stack must stay balanced");
+        }
     }
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
@@ -15422,6 +15598,94 @@ static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw)
                 mw, xyz, "X", "Y", "Z", GraphStatsAndSurfaceFit::Plane2D, QString(), 10);
         CHECK_COND(res.converged && res.convergenceNote.isEmpty(),
                    "56h: exact plane fit must converge without a note");
+    }
+
+    // ---- 56i. Model comparison ranks converged fits only (review fix 2026-11-22) -----------
+    {
+        const int n = 121;
+        Table *t = mw->newTable(n, 2, "S56Cmp", "Suite 56 model comparison");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        for (int r = 0; r < n; ++r) {
+            const double x = 20.0 + 0.1 * r;
+            t->setCell(r, 0, x);
+            t->setCell(r, 1, 2.0 + 40.0 * std::exp(-0.5 * std::pow((x - 26.0) / 1.5, 2)));
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(ml && ml->activeGraph(), "56i: graph not created");
+        Graph *g = ml->activeGraph();
+        // One iteration: the non-linear models cannot converge, the linear ones always do.
+        Table *cmp = Fit::compareModels(mw, g, t->name() + "_Y",
+                                        QStringList() << "GaussAmp" << "Linear" << "Lorentz"
+                                                      << "Quadratic",
+                                        1);
+        CHECK_COND(cmp != nullptr && cmp->numRows() == 4 && cmp->numCols() == 12,
+                   "56i: comparison table must list all 4 models with a Convergence column");
+        int nConv = 0;
+        bool orderOk = true, unconvBlank = true, rankOk = true;
+        for (int r = 0; r < cmp->numRows(); ++r) {
+            const bool rowConv = !cmp->column(10)->isInvalid(r);
+            std::cout << "[INFO] 56i row " << r << ": " << cmp->column(0)->textAt(r).toStdString()
+                      << " AIC=" << cmp->cell(r, 5) << " conv="
+                      << cmp->column(11)->textAt(r).toStdString() << "\n";
+            if (rowConv) {
+                orderOk = orderOk && (nConv == r); // converged rows first
+                rankOk = rankOk && cmp->cell(r, 10) == double(r + 1);
+                ++nConv;
+            } else {
+                unconvBlank = unconvBlank && cmp->column(8)->isInvalid(r)
+                        && cmp->column(9)->isInvalid(r) && !cmp->column(11)->textAt(r).isEmpty();
+            }
+        }
+        double wSum = 0.0;
+        for (int r = 0; r < nConv; ++r)
+            wSum += cmp->cell(r, 9);
+        CHECK_COND(nConv == 2 && orderOk && rankOk && unconvBlank,
+                   "56i: only the converged fits may be ranked; the others need blank ΔAIC/weight/rank and a note");
+        CHECK_COND(std::fabs(cmp->cell(0, 8)) < 1e-12 && std::fabs(wSum - 1.0) < 1e-12,
+                   "56i: ΔAIC and Akaike weights must be computed among the converged fits");
+    }
+
+    // ---- 56j. ROI quick fit: a stalled LM is "no further improvement", not "max iterations"
+    {
+        const int n = 41;
+        Table *t = mw->newTable(n, 2, "S56RoiStall", "Suite 56 ROI stall");
+        t->setColName(0, "X");
+        t->setColName(1, "Y");
+        for (int r = 0; r < n; ++r) {
+            t->setCell(r, 0, double(r));
+            t->setCell(r, 1, 2.0 * r + 10.0); // a straight line: a Gaussian has no finite optimum
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_Y"), Graph::Scatter);
+        CHECK_COND(ml && ml->activeGraph(), "56j: graph not created");
+        Graph *g = ml->activeGraph();
+        RoiGadgetTool *roi = RoiGadgetTool::attachGadget(mw, g, RoiGadgetTool::QuickFit);
+        CHECK_COND(roi != nullptr, "56j: attach gadget");
+        roi->setTargetCurve(t->name() + "_Y");
+        Fit::registerJapaneseStrings();
+        const QString maxIterMsg =
+                QObject::tr("Not converged (maximum iterations reached; check the initial values)");
+        const QString stalledMsg =
+                QObject::tr("Not converged (no further improvement; check the initial values)");
+        const RoiGadgetTool::QuickFitModel models[] = { RoiGadgetTool::FitGauss,
+                                                        RoiGadgetTool::FitLorentz,
+                                                        RoiGadgetTool::FitBoltzmann };
+        bool anyMaxIter = false, gaussStalled = false;
+        for (RoiGadgetTool::QuickFitModel m : models) {
+            roi->setQuickFitModel(m);
+            roi->setRoiRect(QRectF(0.0, 0.0, 40.0, 100.0));
+            const QString s = roi->summaryText();
+            std::cout << "[INFO] 56j model " << int(m) << ": "
+                      << s.simplified().toStdString() << "\n";
+            anyMaxIter = anyMaxIter || s.contains(maxIterMsg);
+            if (m == RoiGadgetTool::FitGauss)
+                gaussStalled = s.contains(stalledMsg);
+        }
+        RoiGadgetTool::clearGadget(g);
+        // Before the fix the loop ignored GSL_ENOPROG, ran on to the 250-iteration limit and the
+        // Gaussian (centre ~2e6, no finite optimum) was shown as converged.
+        CHECK_COND(!anyMaxIter && gaussStalled,
+                   "56j: a stalled LM fit (GSL_ENOPROG) must stop and be reported as 'no further improvement'");
     }
 
     qApp->setProperty("torigraph_noninteractive", QVariant());

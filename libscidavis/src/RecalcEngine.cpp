@@ -125,20 +125,10 @@ QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
     if (n < 2)
         return nullptr;
 
-    // Sort by X (stable) so that the area of the unit-area mode is the true trapezoidal area,
-    // and share the normalisation kernel with the Normalize dialog so both give the same values.
-    {
-        std::vector<size_t> ord(xs.size());
-        std::iota(ord.begin(), ord.end(), size_t(0));
-        std::stable_sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return xs[a] < xs[b]; });
-        std::vector<double> xsS(xs.size()), ysS(ys.size());
-        for (size_t i = 0; i < ord.size(); ++i) {
-            xsS[i] = xs[ord[i]];
-            ysS[i] = ys[ord[i]];
-        }
-        xs.swap(xsS);
-        ys.swap(ysS);
-    }
+    // Keep the original point order: round-trip data (hysteresis loops, CV scans) must not be
+    // redrawn as a zigzag. The normalisation kernel is shared with the Normalize dialog, and
+    // its unit-area mode takes the trapezoidal area from an X-sorted copy, so both give the
+    // same values for every mode.
 
     // Modes: 0 = Range [0, 1], 1 = Max = 1, 2 = Z-Score, 3 = Unit Area, 4 = Range [-1, 1]
     int mode = params.value(QStringLiteral("mode"), 0).toInt();

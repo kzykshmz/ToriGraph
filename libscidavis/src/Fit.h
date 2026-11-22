@@ -144,8 +144,11 @@ public:
 
     void insertFitSummaryBoxOnGraph();
     MultiLayer *createResidualPlotWindow();
+    //! Fits every model and ranks the converged fits by AIC. Non-converged fits are listed after
+    //! them with no ΔAIC / weight / rank and a note in the "Convergence" column.
+    //! maxIterations > 0 caps the iterations of each fit (default: each fitter's own limit).
     static Table *compareModels(ApplicationWindow *app, Graph *g, const QString &curveTitle,
-                                const QStringList &modelNames);
+                                const QStringList &modelNames, int maxIterations = 0);
 
     virtual void guessInitialValues() {};
 
