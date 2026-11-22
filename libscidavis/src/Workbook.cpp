@@ -104,6 +104,9 @@ void WorkbookManager::shutdown()
         d_app->removeEventFilter(this);
     d_books.clear();
     d_pending_refresh_books.clear();
+    d_batch_used_names_lower.clear();
+    d_create_book_cache_active = false;
+    d_refresh_timer_armed = false;
     d_archived_sheets.clear();
     d_user_hidden.clear();
     d_last_geometry.clear();
@@ -263,6 +266,18 @@ bool WorkbookManager::isShown(Table *t) const
 
 QString WorkbookManager::nextSheetLabel(const Book &b) const
 {
+    if (d_create_book_cache_active) {
+        while (true) {
+            const QString lbl = QStringLiteral("Sheet%1").arg(d_batch_next_sheet_num++);
+            const QString fullU = b.prefix + QLatin1Char('_') + lbl;
+            const QString fullH = b.prefix + QLatin1Char('-') + lbl;
+            if (!d_batch_used_names_lower.contains(fullU.toLower())
+                && !d_batch_used_names_lower.contains(fullH.toLower())
+                && (!d_app || (!d_app->alreadyUsedName(fullU) && !d_app->alreadyUsedName(fullH)))) {
+                return lbl;
+            }
+        }
+    }
     QSet<QString> used;
     for (Table *t : b.sheets)
         if (t)
@@ -436,27 +451,91 @@ QString WorkbookManager::createBook(const QString &name, int sheetCount, QString
     nb.name = bookName;
     nb.prefix = bookName;
     d_books.append(nb);
-    struct ScopedBatchFlag
+
+    bool failedMidway = false;
     {
-        bool &flag;
-        bool prev;
-        explicit ScopedBatchFlag(bool &f) : flag(f), prev(f) { flag = true; }
-        ~ScopedBatchFlag() { flag = prev; }
-    };
-    {
-        ScopedBatchFlag batchGuard(d_batch_updating);
+        ApplicationWindow::BatchWindowUpdates appBatch(d_app);
+        struct ScopedCreateBookCache
+        {
+            WorkbookManager *self;
+            bool prevActive;
+            QSet<QString> prevNames;
+            int prevNextNum;
+            explicit ScopedCreateBookCache(WorkbookManager *m)
+                : self(m),
+                  prevActive(m->d_create_book_cache_active),
+                  prevNames(m->d_batch_used_names_lower),
+                  prevNextNum(m->d_batch_next_sheet_num)
+            {
+                self->d_batch_used_names_lower.clear();
+                for (MyWidget *w : self->d_app->windowsList()) {
+                    if (w && !w->name().isEmpty())
+                        self->d_batch_used_names_lower.insert(w->name().toLower());
+                }
+                for (MyWidget *hw : self->d_app->hiddenWindows) {
+                    if (hw && !hw->name().isEmpty())
+                        self->d_batch_used_names_lower.insert(hw->name().toLower());
+                }
+                self->d_batch_next_sheet_num = 1;
+                self->d_create_book_cache_active = true;
+            }
+            ~ScopedCreateBookCache()
+            {
+                self->d_create_book_cache_active = prevActive;
+                self->d_batch_used_names_lower = std::move(prevNames);
+                self->d_batch_next_sheet_num = prevNextNum;
+            }
+        } cacheGuard(this);
+
+        struct ScopedBatchFlag
+        {
+            WorkbookManager *self;
+            bool prev;
+            explicit ScopedBatchFlag(WorkbookManager *m) : self(m), prev(m->d_batch_updating)
+            {
+                self->d_batch_updating = true;
+            }
+            ~ScopedBatchFlag()
+            {
+                self->d_batch_updating = prev;
+                if (!self->d_batch_updating && !self->d_pending_refresh_books.isEmpty())
+                    self->armPendingRefreshTimer();
+            }
+        } batchGuard(this);
+
         for (int i = 0; i < sheetCount; ++i) {
             if (!addSheet(bookName, QString(), -1, i == 0, err)) {
-                if (Book *b = find(bookName))
-                    if (b->sheets.isEmpty())
-                        eraseBook(bookName);
-                return QString();
+                failedMidway = true;
+                break;
             }
         }
     }
+
+    if (failedMidway) {
+        Book *b = find(bookName);
+        if (!b || b->sheets.isEmpty()) {
+            if (b)
+                eraseBook(bookName);
+            return QString();
+        }
+        if (!d_batch_updating) {
+            d_pending_refresh_books.remove(bookName);
+            refreshBars(bookName);
+            refreshExplorer();
+        } else {
+            scheduleRefresh(bookName);
+        }
+        d_app->modifiedProject();
+        return QString();
+    }
+
     if (!d_batch_updating) {
+        d_pending_refresh_books.remove(bookName);
         refreshBars(bookName);
         refreshExplorer();
+        d_app->modifiedProject();
+    } else {
+        scheduleRefresh(bookName);
         d_app->modifiedProject();
     }
     return bookName;
@@ -534,12 +613,20 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
     if (lbl.isEmpty())
         lbl = nextSheetLabel(*b);
     auto sheetNameConflicts = [this, b](const QString &candLbl) {
+        const QString fullU = b->prefix + QLatin1Char('_') + candLbl;
+        const QString fullH = b->prefix + QLatin1Char('-') + candLbl;
+        if (d_create_book_cache_active) {
+            if (d_batch_used_names_lower.contains(fullU.toLower())
+                || d_batch_used_names_lower.contains(fullH.toLower())) {
+                return true;
+            }
+            return d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH);
+        }
         for (Table *s : b->sheets) {
             if (s && sheetLabel(b->prefix, s->name()).compare(candLbl, Qt::CaseInsensitive) == 0)
                 return true;
         }
-        return d_app->alreadyUsedName(b->prefix + QLatin1Char('_') + candLbl)
-                || d_app->alreadyUsedName(b->prefix + QLatin1Char('-') + candLbl);
+        return d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH);
     };
     QString actualLbl = lbl;
     for (int n = 2; sheetNameConflicts(actualLbl); ++n)
@@ -547,10 +634,16 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
     const QString tname = b->prefix + QLatin1Char('_') + actualLbl;
 
     Folder *target = bookFolder(*b);
-    Table *t = d_app->newTable(30, 2, tname, QString());
+    const bool createInitiallyHidden = (b->current != nullptr && !activate);
+    Table *t = createInitiallyHidden ? d_app->newHiddenTable(30, 2, tname, QString())
+                                     : d_app->newTable(30, 2, tname, QString());
     if (!t) {
         setErr(err, wbTr("The worksheet could not be created."));
         return nullptr;
+    }
+    if (d_create_book_cache_active) {
+        d_batch_used_names_lower.insert(tname.toLower());
+        d_batch_used_names_lower.insert(t->name().toLower());
     }
     // newTable() puts the window into the current folder; keep the book in one folder
     if (target && t->folder() && t->folder() != target) {
@@ -579,10 +672,12 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
     } else if (activate) {
         setCurrentSheet(t, true);
     } else {
+        const bool prev = d_switching;
         d_switching = true;
-        d_app->hideWindow(t);
+        if (!d_app->hidden(t))
+            d_app->hideWindow(t);
         d_user_hidden[t] = true;
-        d_switching = false;
+        d_switching = prev;
     }
     if (!d_batch_updating) {
         refreshBars(book);
@@ -1160,12 +1255,19 @@ void WorkbookManager::scheduleRefresh(const QString &book)
 {
     if (d_shutdown || book.isEmpty())
         return;
-    const bool wasEmpty = d_pending_refresh_books.isEmpty();
     d_pending_refresh_books.insert(book);
-    if (!wasEmpty)
+    if (!d_batch_updating)
+        armPendingRefreshTimer();
+}
+
+void WorkbookManager::armPendingRefreshTimer()
+{
+    if (d_shutdown || d_refresh_timer_armed || d_pending_refresh_books.isEmpty())
         return;
+    d_refresh_timer_armed = true;
     QTimer::singleShot(0, this, [this]() {
-        if (d_shutdown)
+        d_refresh_timer_armed = false;
+        if (d_shutdown || d_batch_updating || d_pending_refresh_books.isEmpty())
             return;
         const QSet<QString> pending = std::move(d_pending_refresh_books);
         d_pending_refresh_books.clear();
@@ -1694,31 +1796,46 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
     nb.current = findTable(mapped(current));
     if (!nb.current || !seenInBook.contains(nb.current))
         nb.current = nb.sheets.first();
+
+    ApplicationWindow::BatchWindowUpdates appBatch(d_app);
+    QSet<MyWidget *> hiddenSet(d_app->hiddenWindows.begin(), d_app->hiddenWindows.end());
+    const QSet<MyWidget *> outSet(d_app->outWindows.begin(), d_app->outWindows.end());
+    auto isSheetHiddenFast = [&](Table *t) -> bool {
+        return hiddenSet.contains(t) || outSet.contains(t);
+    };
+
     // only one sheet is visible: the current one, unless the whole book was hidden and
     // another sheet was saved visible
-    if (d_app->hidden(nb.current)) {
+    if (isSheetHiddenFast(nb.current)) {
         for (Table *t : nb.sheets)
-            if (!d_app->hidden(t)) {
+            if (!isSheetHiddenFast(t)) {
                 nb.current = t;
                 break;
             }
     }
     d_books.append(nb);
     const bool prevBatch = d_batch_updating;
+    const bool prevSwitching = d_switching;
     d_batch_updating = true;
     d_switching = true;
     for (Table *t : nb.sheets) {
         watch(t);
-        if (t != nb.current && !d_app->hidden(t)) {
+        if (t != nb.current && !isSheetHiddenFast(t)) {
             d_app->hideWindow(t);
+            hiddenSet.insert(t);
             d_user_hidden[t] = true;
         }
     }
-    d_switching = false;
+    d_switching = prevSwitching;
     d_batch_updating = prevBatch;
     if (!d_batch_updating) {
+        d_pending_refresh_books.remove(nb.name);
         refreshBars(nb.name);
         refreshExplorer();
+        if (!d_pending_refresh_books.isEmpty())
+            armPendingRefreshTimer();
+    } else {
+        scheduleRefresh(nb.name);
     }
     return true;
 }

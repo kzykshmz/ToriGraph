@@ -46,8 +46,10 @@
 #include <QLocale>
 #include <QMenu>
 #include <QDockWidget>
+#include <QHash>
 #include <QMdiArea>
 #include <QPointer>
+#include <QSet>
 #include <QSettings>
 #include <QUrl>
 
@@ -447,6 +449,7 @@ public slots:
      * \param text tab/newline - seperated initial content; may be empty
      */
     Table *newHiddenTable(const QString &name, const QString &label, QList<Column *> columns);
+    Table *newHiddenTable(int r, int c, const QString &name, const QString &legend = QString());
     Table *table(const QString &name);
     Table *convertMatrixToTable();
     QList<MyWidget *> *tableList();
@@ -1731,6 +1734,32 @@ public:
     //! B4: "Plot this data" bar on a worksheet that just received data
     void offerPlotAfterImport(Table *table);
 
+    //! Batch window creation/loading guard for O(N) multi-sheet / project load operations
+    void beginBatchWindowUpdates();
+    void endBatchWindowUpdates();
+    bool isBatchWindowUpdatesActive() const { return d_batch_window_updates_depth > 0; }
+    void syncBatchWindowName(MyWidget *w);
+    void removeBatchWindow(MyWidget *w);
+    bool isBatchNameUsedByOther(const QString &candName, MyWidget *exclude = nullptr) const;
+    QString nextBatchUniqueName(const QString &base, MyWidget *exclude = nullptr);
+
+    struct BatchWindowUpdates
+    {
+        ApplicationWindow *d_app = nullptr;
+        explicit BatchWindowUpdates(ApplicationWindow *app) : d_app(app)
+        {
+            if (d_app)
+                d_app->beginBatchWindowUpdates();
+        }
+        ~BatchWindowUpdates()
+        {
+            if (d_app)
+                d_app->endBatchWindowUpdates();
+        }
+        BatchWindowUpdates(const BatchWindowUpdates &) = delete;
+        BatchWindowUpdates &operator=(const BatchWindowUpdates &) = delete;
+    };
+
 private:
     void installUxNavigation();
     void applyAdvancedFeatureVisibility();
@@ -1743,6 +1772,14 @@ private:
     QToolButton *d_tool_mode_indicator = nullptr;
     QTimer *d_tool_mode_poll = nullptr;
     QString d_last_tool_mode_text;
+    int d_batch_window_updates_depth = 0;
+    bool d_batch_pending_explorer_filter = false;
+    bool d_batch_pending_lv_resize = false;
+    bool d_batch_pending_auto_axis_refresh = false;
+    QSet<MyWidget *> d_batch_hidden_set;
+    QHash<MyWidget *, QString> d_batch_widget_name;
+    QHash<QString, int> d_batch_name_counts;
+    QHash<QString, int> d_batch_unique_seq;
 
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);

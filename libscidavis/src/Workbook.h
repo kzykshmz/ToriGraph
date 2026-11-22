@@ -145,6 +145,7 @@ private:
     void checkShown(Table *t);
     void refreshBars(const QString &book);
     void scheduleRefresh(const QString &book);
+    void armPendingRefreshTimer();
     void refreshBar(Table *t, const Book &b);
     static void removeBar(Table *t);
     void buildSheetMenu(QMenu *menu, Table *t, bool fromTab);
@@ -170,6 +171,10 @@ private:
     QHash<QObject *, bool> d_last_maximized;
     QPointer<QAction> d_new_action;
     QSet<QString> d_pending_refresh_books;
+    QSet<QString> d_batch_used_names_lower;
+    mutable int d_batch_next_sheet_num = 1;
+    bool d_create_book_cache_active = false;
+    bool d_refresh_timer_armed = false;
     bool d_batch_updating = false;
     bool d_switching = false;
     bool d_shutdown = false;

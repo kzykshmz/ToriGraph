@@ -7025,7 +7025,7 @@ QString remapFullColRef(const QString &ref, SnapshotRenameKind kind, const QStri
 }
 
 QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, const QString &oldName,
-                          const QString &newName)
+                          const QString &newName, const QString &ownerTableHint = QString())
 {
     if (snapshot.isEmpty() || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
         return snapshot;
@@ -7034,13 +7034,35 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
     QString oldShortCol;
     QString newShortCol;
     if (kind == SnapshotRenameKind::ColRename) {
-        const int uOld = oldName.indexOf(QLatin1Char('_'));
-        if (uOld > 0) {
-            colOwnerTable = oldName.left(uOld);
-            oldShortCol = oldName.mid(uOld + 1);
-            const QString pfx = colOwnerTable + QLatin1Char('_');
-            if (newName.startsWith(pfx))
+        if (!ownerTableHint.isEmpty()) {
+            const QString pfx = ownerTableHint + QLatin1Char('_');
+            if (oldName.startsWith(pfx) && newName.startsWith(pfx)) {
+                colOwnerTable = ownerTableHint;
+                oldShortCol = oldName.mid(pfx.size());
                 newShortCol = newName.mid(pfx.size());
+            }
+        }
+        if (colOwnerTable.isEmpty()) {
+            // Find longest shared '<tablePrefix>_' (supports workbook sheets like Book1_Sheet1_Col)
+            int bestSplit = -1;
+            const int maxShared = std::min(oldName.size(), newName.size());
+            for (int i = 0; i < maxShared; ++i) {
+                if (oldName.at(i) != newName.at(i))
+                    break;
+                if (oldName.at(i) == QLatin1Char('_') && i > 0 && i + 1 < oldName.size()
+                    && i + 1 < newName.size()) {
+                    bestSplit = i;
+                }
+            }
+            if (bestSplit < 0)
+                bestSplit = oldName.indexOf(QLatin1Char('_'));
+            if (bestSplit > 0) {
+                colOwnerTable = oldName.left(bestSplit);
+                oldShortCol = oldName.mid(bestSplit + 1);
+                const QString pfx = colOwnerTable + QLatin1Char('_');
+                if (newName.startsWith(pfx))
+                    newShortCol = newName.mid(pfx.size());
+            }
         }
     }
 
@@ -7057,14 +7079,35 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
     int layerCurveIndex = 0;
     QHash<int, QPair<QString, QString>> changedLayerCurves;
 
-    auto isSingleColRefToken = [](const QString &tok) -> bool {
-        if (tok.isEmpty())
-            return false;
-        for (const QChar ch : tok) {
-            if (ch.isSpace())
-                return false;
+    auto isIdentChar = [](QChar ch) -> bool {
+        return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+    };
+    auto replaceExactToken = [&](const QString &src, const QString &fromTok,
+                                 const QString &toTok) -> QString {
+        if (fromTok.isEmpty() || fromTok == toTok)
+            return src;
+        QString out;
+        out.reserve(src.size());
+        int pos = 0;
+        while (pos < src.size()) {
+            const int hit = src.indexOf(fromTok, pos);
+            if (hit < 0) {
+                out.append(src.mid(pos));
+                break;
+            }
+            const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
+            const int after = hit + fromTok.size();
+            const bool rightBoundary = (after >= src.size()) || !isIdentChar(src.at(after));
+            if (leftBoundary && rightBoundary) {
+                out.append(src.mid(pos, hit - pos));
+                out.append(toTok);
+                pos = after;
+            } else {
+                out.append(src.mid(pos, (hit - pos) + 1));
+                pos = hit + 1;
+            }
         }
-        return true;
+        return out;
     };
 
     for (int li = 0; li < lines.size(); ++li) {
@@ -7218,6 +7261,9 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                 }
 
                 if (oneBased >= 1 && prefixEnd > 0) {
+                    if (!changedLayerCurves.contains(oneBased))
+                        continue;
+                    const QPair<QString, QString> pair = changedLayerCurves.value(oneBased);
                     const QString cmdPrefix = legLine.left(prefixEnd);
                     const QString rest = legLine.mid(prefixEnd);
                     int leadSpaces = 0;
@@ -7225,23 +7271,30 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         ++leadSpaces;
                     const QString coreRest = rest.mid(leadSpaces);
                     QString newRest = rest;
-                    if (changedLayerCurves.contains(oneBased)
-                        && coreRest == changedLayerCurves.value(oneBased).first) {
-                        newRest = rest.left(leadSpaces)
-                                + changedLayerCurves.value(oneBased).second;
-                    } else if (kind == SnapshotRenameKind::ColRename
-                               && changedLayerCurves.contains(oneBased)
-                               && !oldShortCol.isEmpty() && !newShortCol.isEmpty()
-                               && coreRest == oldShortCol) {
+                    if (coreRest == pair.first) {
+                        newRest = rest.left(leadSpaces) + pair.second;
+                    } else if (kind == SnapshotRenameKind::ColRename && !oldShortCol.isEmpty()
+                               && !newShortCol.isEmpty() && coreRest == oldShortCol) {
                         newRest = rest.left(leadSpaces) + newShortCol;
-                    } else if (isSingleColRefToken(coreRest)) {
-                        const QString fullMapped =
-                                remapFullColRef(coreRest, kind, oldName, newName);
-                        if (fullMapped != coreRest)
-                            newRest = rest.left(leadSpaces) + fullMapped;
+                    } else if (kind == SnapshotRenameKind::ColRename && !oldShortCol.isEmpty()
+                               && !newShortCol.isEmpty() && coreRest.trimmed() == oldShortCol) {
+                        const int idx = rest.indexOf(oldShortCol);
+                        newRest = rest.left(idx) + newShortCol + rest.mid(idx + oldShortCol.size());
+                    } else {
+                        newRest = replaceExactToken(rest, pair.first, pair.second);
                     }
                     if (newRest != rest) {
                         parts[ti] = cmdPrefix + newRest;
+                        lineChanged = true;
+                    }
+                } else if (!changedLayerCurves.isEmpty()) {
+                    QString updated = legLine;
+                    for (auto it = changedLayerCurves.constBegin();
+                         it != changedLayerCurves.constEnd(); ++it) {
+                        updated = replaceExactToken(updated, it.value().first, it.value().second);
+                    }
+                    if (updated != legLine) {
+                        parts[ti] = updated;
                         lineChanged = true;
                     }
                 }
@@ -7439,18 +7492,20 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
 }
 
 void remapUndoCommandTree(QUndoCommand *cmd, SnapshotRenameKind kind, const QString &oldName,
-                          const QString &newName)
+                          const QString &newName, const QString &ownerTableHint = QString())
 {
     if (!cmd)
         return;
     if (auto *snapCmd = dynamic_cast<MultiLayerSnapshotUndoCommand *>(cmd)) {
         snapCmd->remapSnapshots([&](const QString &s) {
-            return remapSnapshotText(s, kind, oldName, newName);
+            return remapSnapshotText(s, kind, oldName, newName, ownerTableHint);
         });
     }
     const int nChildren = cmd->childCount();
-    for (int i = 0; i < nChildren; ++i)
-        remapUndoCommandTree(const_cast<QUndoCommand *>(cmd->child(i)), kind, oldName, newName);
+    for (int i = 0; i < nChildren; ++i) {
+        remapUndoCommandTree(const_cast<QUndoCommand *>(cmd->child(i)), kind, oldName, newName,
+                             ownerTableHint);
+    }
 }
 
 } // namespace
@@ -7472,10 +7527,23 @@ void MultiLayer::remapUndoSnapshotsForColRename(const QString &oldColName,
     if (!d_undo_stack || oldColName.isEmpty() || newColName.isEmpty()
         || oldColName == newColName)
         return;
+    QString ownerHint;
+    if (ApplicationWindow *app = applicationWindow()) {
+        for (MyWidget *w : app->windowsList()) {
+            if (!w || !w->inherits("Table"))
+                continue;
+            const QString tn = w->name();
+            const QString pfx = tn + QLatin1Char('_');
+            if (oldColName.startsWith(pfx) && newColName.startsWith(pfx)
+                && tn.size() > ownerHint.size()) {
+                ownerHint = tn;
+            }
+        }
+    }
     const int cnt = d_undo_stack->count();
     for (int i = 0; i < cnt; ++i) {
         remapUndoCommandTree(const_cast<QUndoCommand *>(d_undo_stack->command(i)),
-                             SnapshotRenameKind::ColRename, oldColName, newColName);
+                             SnapshotRenameKind::ColRename, oldColName, newColName, ownerHint);
     }
 }
 

@@ -21322,6 +21322,21 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
                "66c: other bars follow the drag when shown");
     CHECK_COND(wm->setCurrentSheet(ex, true, &err) && suite66Shown(mw, ex),
                "66c: restore Extra as shown sheet");
+    // tabMoved must also directly refresh current sheet's bar without calling setCurrentSheet in between
+    CHECK_COND(wm->setCurrentSheet(s1, false, &err) && wm->currentSheet(book) == s1
+                       && suite66Shown(mw, ex) && !suite66Shown(mw, s1),
+               "66c: mark s1 current while ex stays shown");
+    suite66Tabs(ex)->moveTab(3, 0);
+    QApplication::processEvents();
+    CHECK_COND(suite66Tabs(s1) && suite66Tabs(s1)->tabText(0) == "Extra"
+                       && suite66Tabs(s1)->tabText(1) == "Sheet1",
+               "66c: tabMoved did not directly refresh current sheet bar without setCurrentSheet!");
+    suite66Tabs(ex)->moveTab(0, 3);
+    QApplication::processEvents();
+    CHECK_COND(suite66Tabs(s1) && suite66Tabs(s1)->tabText(3) == "Extra",
+               "66c: tabMoved reverse drag did not directly refresh current sheet bar!");
+    CHECK_COND(wm->setCurrentSheet(ex, true, &err) && suite66Shown(mw, ex),
+               "66c: restore Extra as current shown sheet after direct tabMoved check");
     // take sheet 2 out, then put it back at position 1
     CHECK_COND(wm->detachSheet(s2, true, &err), "66c: detach");
     QApplication::processEvents();
@@ -25348,6 +25363,124 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            << (ftExcelHash ? ftExcelHash->rowCount() : -1)
                            << ", skipped=" << repExcelHash.skippedLines << ")!");
 
+        // Unified '#'-leading row rules across Step 3, detectPreamble, peek & body streaming:
+        // (1) All-missing '#N/A,#N/A' row preserved as missing data row (never comment / preamble break)
+        {
+            AsciiTableImportFilter::ImportReport repNa;
+            std::unique_ptr<future::Table> ftNa(AsciiTableImportFilter::importDroppedTextData(
+                    QByteArray("x,y\n1,2\n#N/A,#N/A\n3,4\n"), QStringLiteral("NaRow77"),
+                    QStringLiteral("na_row.csv"), &repNa));
+            CHECK_COND(ftNa && ftNa->columnCount() == 2 && ftNa->rowCount() == 3
+                               && ftNa->column(0)->name() == QStringLiteral("x")
+                               && ftNa->column(1)->name() == QStringLiteral("y")
+                               && ftNa->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && ftNa->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftNa->column(0)->valueAt(0) - 1.0) < 1e-9
+                               && ftNa->column(0)->isInvalid(1) && ftNa->column(1)->isInvalid(1)
+                               && std::fabs(ftNa->column(1)->valueAt(2) - 4.0) < 1e-9
+                               && repNa.skippedLines == 0,
+                       "77c: 'x,y\\n1,2\\n#N/A,#N/A\\n3,4' dropped or misclassified #N/A,#N/A row!");
+        }
+        // (2) '#DIV/0!,' trailing-empty error row preserved as missing data row
+        {
+            AsciiTableImportFilter::ImportReport repDiv;
+            std::unique_ptr<future::Table> ftDiv(AsciiTableImportFilter::importDroppedTextData(
+                    QByteArray("x,y\n1,2\n#DIV/0!,\n3,4\n"), QStringLiteral("DivRow77"),
+                    QStringLiteral("div_row.csv"), &repDiv));
+            CHECK_COND(ftDiv && ftDiv->columnCount() == 2 && ftDiv->rowCount() == 3
+                               && ftDiv->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && ftDiv->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftDiv->column(0)->valueAt(0) - 1.0) < 1e-9
+                               && ftDiv->column(0)->isInvalid(1) && ftDiv->column(1)->isInvalid(1)
+                               && std::fabs(ftDiv->column(1)->valueAt(2) - 4.0) < 1e-9
+                               && repDiv.skippedLines == 0,
+                       "77c: 'x,y\\n1,2\\n#DIV/0!,\\n3,4' dropped or misclassified #DIV/0!, row!");
+        }
+        // (3) 'ID,Load\n#1,520\n#2,\n#3,540' preserves '#2,' specimen row with missing Load
+        {
+            AsciiTableImportFilter::ImportReport repId;
+            std::unique_ptr<future::Table> ftId(AsciiTableImportFilter::importDroppedTextData(
+                    QByteArray("ID,Load\n#1,520\n#2,\n#3,540\n"), QStringLiteral("IdLoad77"),
+                    QStringLiteral("id_load.csv"), &repId));
+            CHECK_COND(ftId && ftId->columnCount() == 2 && ftId->rowCount() == 3
+                               && ftId->column(0)->name() == QStringLiteral("ID")
+                               && ftId->column(1)->name() == QStringLiteral("Load")
+                               && ftId->column(0)->textAt(0) == QStringLiteral("#1")
+                               && ftId->column(0)->textAt(1) == QStringLiteral("#2")
+                               && ftId->column(0)->textAt(2) == QStringLiteral("#3")
+                               && ftId->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftId->column(1)->valueAt(0) - 520.0) < 1e-9
+                               && ftId->column(1)->isInvalid(1)
+                               && std::fabs(ftId->column(1)->valueAt(2) - 540.0) < 1e-9
+                               && repId.skippedLines == 0,
+                       "77c: 'ID,Load\\n#1,520\\n#2,\\n#3,540' dropped '#2,' specimen row!");
+        }
+        // (4) 'x,y\n1,510\n#2,520\n3,530' via w77->open(csvPath) (detectPreamble = true)
+        {
+            const QString openMidHashPath = tmp77.filePath(QStringLiteral("OpenMidHash77.csv"));
+            QFile omf(openMidHashPath);
+            CHECK_COND(omf.open(QIODevice::WriteOnly), "77c: write OpenMidHash77.csv");
+            omf.write("x,y\n1,510\n#2,520\n3,530\n");
+            omf.close();
+            CHECK_COND(w77->open(openMidHashPath) == w77, "77c: w77->open(OpenMidHash77.csv) failed");
+            Table *tOpenMid = w77->table(QStringLiteral("OpenMidHash77"));
+            CHECK_COND(tOpenMid && tOpenMid->numCols() == 2 && tOpenMid->numRows() == 3
+                               && tOpenMid->column(0)->textAt(0) == QStringLiteral("1")
+                               && tOpenMid->column(0)->textAt(1) == QStringLiteral("#2")
+                               && tOpenMid->column(0)->textAt(2) == QStringLiteral("3")
+                               && tOpenMid->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(tOpenMid->cell(0, 1) - 510.0) < 1e-9
+                               && std::fabs(tOpenMid->cell(1, 1) - 520.0) < 1e-9
+                               && std::fabs(tOpenMid->cell(2, 1) - 530.0) < 1e-9,
+                       "77c: w77->open('x,y\\n1,510\\n#2,520\\n3,530') ate rows in detectPreamble!");
+        }
+        // (5) Headerless '#1,520\n#2,530' keeps both rows as data (neither skipped nor consumed as header)
+        {
+            std::unique_ptr<future::Table> ftHdrlessHash(
+                    AsciiTableImportFilter::importDroppedTextData(
+                            QByteArray("#1,520\n#2,530\n"), QStringLiteral("HdrlessHash77"),
+                            QStringLiteral("hdrless_hash.csv"), nullptr));
+            CHECK_COND(ftHdrlessHash && ftHdrlessHash->columnCount() == 2
+                               && ftHdrlessHash->rowCount() == 2
+                               && ftHdrlessHash->column(0)->textAt(0) == QStringLiteral("#1")
+                               && ftHdrlessHash->column(0)->textAt(1) == QStringLiteral("#2")
+                               && ftHdrlessHash->column(1)->columnMode()
+                                       == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftHdrlessHash->column(1)->valueAt(0) - 520.0) < 1e-9
+                               && std::fabs(ftHdrlessHash->column(1)->valueAt(1) - 530.0) < 1e-9,
+                       "77c: headerless '#1,520\\n#2,530' dropped row 0 as comment or column header!");
+        }
+        // (6) TSV '# 1\t2\n3\t4\n5\t6' skips '# 1\t2' as comment and keeps 2 numeric rows
+        {
+            AsciiTableImportFilter::ImportReport repTsv;
+            std::unique_ptr<future::Table> ftTsv(AsciiTableImportFilter::importDroppedTextData(
+                    QByteArray("# 1\t2\n3\t4\n5\t6\n"), QStringLiteral("HashSpaceTsv77"),
+                    QStringLiteral("hash_space.tsv"), &repTsv));
+            CHECK_COND(ftTsv && ftTsv->columnCount() == 2 && ftTsv->rowCount() == 2
+                               && ftTsv->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && ftTsv->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftTsv->column(0)->valueAt(0) - 3.0) < 1e-9
+                               && std::fabs(ftTsv->column(1)->valueAt(1) - 6.0) < 1e-9
+                               && repTsv.skippedLines == 1,
+                       "77c: TSV '# 1\\t2\\n3\\t4\\n5\\t6' failed to skip '# 1\\t2' as comment!");
+        }
+        // (7) Whitespace SPEC '#S 2 ascan th 10 20\n#N 2\n10 100\n20 200' skips #S & #N directives
+        {
+            AsciiTableImportFilter::ImportReport repSpec;
+            std::unique_ptr<future::Table> ftSpec(AsciiTableImportFilter::importDroppedTextData(
+                    QByteArray("#S 2 ascan th 10 20\n#N 2\n10 100\n20 200\n"),
+                    QStringLiteral("SpecScan77"), QStringLiteral("spec_scan.dat"), &repSpec));
+            CHECK_COND(ftSpec && ftSpec->columnCount() == 2 && ftSpec->rowCount() == 2
+                               && ftSpec->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && ftSpec->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftSpec->column(0)->valueAt(0) - 10.0) < 1e-9
+                               && std::fabs(ftSpec->column(1)->valueAt(0) - 100.0) < 1e-9
+                               && std::fabs(ftSpec->column(0)->valueAt(1) - 20.0) < 1e-9
+                               && std::fabs(ftSpec->column(1)->valueAt(1) - 200.0) < 1e-9
+                               && repSpec.skippedLines == 2,
+                       "77c: SPEC '#S 2 ascan...\\n#N 2\\n10 100\\n20 200' misparsed directives!");
+        }
+
         // Track 2 M3: 2-column '1,2\n1.5,2.8\n2,3.1' must keep all 3 rows as numeric data
         const QByteArray twoColSeqCsv = "1,2\n1.5,2.8\n2,3.1\n";
         std::unique_ptr<future::Table> ftTwoColSeq(AsciiTableImportFilter::importDroppedTextData(
@@ -25623,6 +25756,53 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                                       QDir::Files | QDir::Hidden)
                            .isEmpty(),
                    "77d: M1 left temporary .tgexp_* or .tg_bak* files behind!");
+
+        // RPC graph.export stale-file guard: pre-existing stale destination must NOT yield false ok:true
+        if (PythonAutomationServer *pySrv = w77->pythonAutomationServer()) {
+            const QString staleRpcPng = tmp77.filePath(QStringLiteral("stale_rpc77.png"));
+            {
+                QFile sf(staleRpcPng);
+                CHECK_COND(sf.open(QIODevice::WriteOnly), "77d: seed stale_rpc77.png");
+                sf.write("STALE_PREEXISTING_PNG_BYTES");
+                sf.close();
+            }
+            QJsonObject badParams;
+            badParams[QStringLiteral("graph")] = mlAlloy->name();
+            badParams[QStringLiteral("path")] = staleRpcPng;
+            badParams[QStringLiteral("format")] = QStringLiteral("unsupported_bogus_fmt");
+            QJsonObject badReq;
+            badReq[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            badReq[QStringLiteral("id")] = 7701;
+            badReq[QStringLiteral("method")] = QStringLiteral("graph.export");
+            badReq[QStringLiteral("params")] = badParams;
+            const QJsonObject badResp = pySrv->handleRpcRequest(badReq);
+            QFile chkStale(staleRpcPng);
+            CHECK_COND(badResp.contains(QStringLiteral("error"))
+                               && chkStale.open(QIODevice::ReadOnly)
+                               && chkStale.readAll() == QByteArray("STALE_PREEXISTING_PNG_BYTES"),
+                       "77d: RPC graph.export returned false ok:true on stale file or clobbered it!");
+            chkStale.close();
+
+            const QString psOut = tmp77.filePath(QStringLiteral("rpc_vec77.ps"));
+            QJsonObject psParams;
+            psParams[QStringLiteral("graph")] = mlAlloy->name();
+            psParams[QStringLiteral("path")] = psOut;
+            QJsonObject psReq;
+            psReq[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            psReq[QStringLiteral("id")] = 7702;
+            psReq[QStringLiteral("method")] = QStringLiteral("graph.export");
+            psReq[QStringLiteral("params")] = psParams;
+            const QJsonObject psResp = pySrv->handleRpcRequest(psReq);
+            const QJsonObject psRes = psResp.value(QStringLiteral("result")).toObject();
+            CHECK_COND(psRes.value(QStringLiteral("ok")).toBool()
+                               && QFileInfo(psOut + QStringLiteral(".pdf")).size() > 0,
+                       "77d: RPC graph.export .ps -> .ps.pdf fallback via temp file failed!");
+            CHECK_COND(QDir(tmp77.path())
+                               .entryList(QStringList() << QStringLiteral(".tgrpc_*"),
+                                          QDir::Files | QDir::Hidden)
+                               .isEmpty(),
+                       "77d: RPC graph.export left temporary .tgrpc_* files behind!");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -25692,8 +25872,12 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            tRen->name() + QStringLiteral("_Err"));
         CHECK_COND(gRen->curves() == 2, "77f: expected data curve + error bar");
 
-        if (gRen->legend())
-            gRen->legend()->setText(gRen->legend()->text() + QStringLiteral("\nModel vs Stress"));
+        if (gRen->legend()) {
+            gRen->legend()->setText(gRen->legend()->text()
+                                    + QStringLiteral("\n\\l(1) OrigSheet77_Stress (fit)"
+                                                     "\nModel vs OrigSheet77_Other"
+                                                     "\nModel vs Stress"));
+        }
         const QString snapBefore = mlRen->saveToString(QString());
         gRen->setAxisTitle(QwtPlot::xBottom, QStringLiteral("True Strain (-)"));
         mlRen->pushUndoSnapshot(QStringLiteral("Edit X Title"), snapBefore);
@@ -25707,12 +25891,13 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         mlRen->undoStack()->undo();
         CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
                    "77f: P1-S2 Graph Undo after sheet+column rename deleted the curve!");
-        CHECK_COND(mlRen->activeGraph()->legend()
-                           && mlRen->activeGraph()->legend()->text().contains(
-                                      QStringLiteral("FlowStress"))
-                           && mlRen->activeGraph()->legend()->text().contains(
-                                      QStringLiteral("Model vs Stress")),
-                   "77f: Graph Undo failed to remap auto curve legend to FlowStress or corrupted free-form 'Model vs Stress'!");
+        const QString legAfterUndo =
+                mlRen->activeGraph()->legend() ? mlRen->activeGraph()->legend()->text() : QString();
+        CHECK_COND(legAfterUndo.contains(QStringLiteral("\\l(1) RenamedSheet77_FlowStress (fit)"))
+                           && legAfterUndo.contains(QStringLiteral("Model vs OrigSheet77_Other"))
+                           && legAfterUndo.contains(QStringLiteral("Model vs Stress")),
+                   "77f: Graph Undo legend remap mismatch: got '"
+                           << legAfterUndo.toStdString() << "'");
         mlRen->undoStack()->redo();
         CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
                    "77f: P1-S2 Graph Redo after sheet+column rename deleted the curve!");
