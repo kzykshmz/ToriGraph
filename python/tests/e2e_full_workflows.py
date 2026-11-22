@@ -3372,11 +3372,21 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
         assert np_tbl.shape == (5, 2) and np.isnan(np_tbl[2, 1]) and abs(np_tbl[4, 1] - 535.0) < 1e-9
 
         # Direct DataFrame & 1D NumPy ndarray `plot_xy` + 2D NumPy Matrix round-trip
-        g_df = app.plot_xy(df_src.dropna(), "Strain", "Stress", style="line_symbol", graph_name="W13-DfGraph")
-        g_df.slide_style()
+        g_df_auto = app.plot_xy(
+            df_src.dropna(), "Strain", "Stress", style="line_symbol", graph_name="W13-DfAutoGraph"
+        )
+        assert g_df_auto.info().get("layers")
         x_np = np.linspace(0.0, 2.0 * math.pi, 25)
         y_np = np.cos(x_np) * 100.0
-        g_np = app.plot_xy(x_np, y_np, style="line", graph_name="W13-NpGraph")
+        g_np_auto = app.plot_xy(x_np, y_np, style="line", graph_name="W13-NpAutoGraph")
+        assert g_np_auto.info().get("layers")
+
+        t_np = app.create_table({"X": x_np, "Y": y_np}, name="W13_NumpyTbl")
+        g_df = app.plot_xy(
+            t_pd, "Strain", "Stress", style="line_symbol", graph_name="W13-DfGraph"
+        )
+        g_df.slide_style()
+        g_np = app.plot_xy(t_np, "X", "Y", style="line", graph_name="W13-NpGraph")
         g_np.isij_style()
 
         mat_arr = np.array([[1.5, 2.5, np.nan], [4.5, 5.5, 6.5]], dtype=np.float64)
@@ -3422,14 +3432,25 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
                 emf_raw = zf.read(emf_e)
                 assert len(emf_raw) >= 88 and emf_raw[:4] == b"\x01\x00\x00\x00" and emf_raw[40:44] == b" EMF"
 
-            for ole_e in ole_entries:
+            for ole_idx, ole_e in enumerate(ole_entries):
                 ole_raw = zf.read(ole_e)
                 with olefile.OleFileIO(ole_raw) as ole:
                     assert ole.root.clsid.upper() == "8E6B9541-3C74-4D28-A915-7D84E5A12001", ole.root.clsid
                     assert ole.exists("\x01CompObj") and ole.exists("\x01Ole"), ole.listdir()
                     assert ole.exists("ToriGraphProject") and ole.exists("SciDAVisProject"), ole.listdir()
                     proj_xml = ole.openstream("ToriGraphProject").read().decode("utf-8", errors="replace")
-                    assert "W13_PandasTbl" in proj_xml and "W13-DfGraph" in proj_xml
+                    if ole_idx == 0:
+                        assert (
+                            "W13_PandasTbl" in proj_xml
+                            and "W13-DfGraph" in proj_xml
+                            and "W13_NumpyTbl" not in proj_xml
+                        ), proj_xml[:400]
+                    else:
+                        assert (
+                            "W13_NumpyTbl" in proj_xml
+                            and "W13-NpGraph" in proj_xml
+                            and "W13_PandasTbl" not in proj_xml
+                        ), proj_xml[:400]
 
         # `path == deck` safety check (must refuse overwrite unless overwrite=True)
         blocked_overwrite = False

@@ -12,6 +12,7 @@
 #include "I18nJapanese.h"
 #include "MyWidget.h"
 #include "Table.h"
+#include "table/future_Table.h"
 
 #include <QAction>
 #include <QCoreApplication>
@@ -99,6 +100,7 @@ void WorkbookManager::shutdown()
     if (d_app)
         d_app->removeEventFilter(this);
     d_books.clear();
+    d_archived_sheets.clear();
     d_user_hidden.clear();
     d_last_geometry.clear();
     d_last_maximized.clear();
@@ -200,6 +202,12 @@ QString WorkbookManager::bookOf(const MyWidget *w) const
     return b ? b->name : QString();
 }
 
+QString WorkbookManager::sheetDisplayLabel(const Table *t) const
+{
+    const Book *b = bookFor(t);
+    return (b && t) ? sheetLabel(b->prefix, const_cast<Table *>(t)->name()) : QString();
+}
+
 QList<Table *> WorkbookManager::sheets(const QString &book) const
 {
     const Book *b = find(book);
@@ -217,11 +225,19 @@ QString WorkbookManager::uniqueBookName(const QString &base) const
     QString b = sanitizeName(base);
     if (b.isEmpty())
         b = QStringLiteral("Book");
-    if (!find(b))
+    auto nameOrPrefixUsed = [this](const QString &cand) {
+        for (const Book &bk : d_books) {
+            if (bk.name.compare(cand, Qt::CaseInsensitive) == 0
+                || bk.prefix.compare(cand, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+    if (!nameOrPrefixUsed(b))
         return b;
     for (int i = 2;; ++i) {
         const QString cand = b + QString::number(i);
-        if (!find(cand))
+        if (!nameOrPrefixUsed(cand))
             return cand;
     }
 }
@@ -249,7 +265,9 @@ QString WorkbookManager::nextSheetLabel(const Book &b) const
             used.insert(sheetLabel(b.prefix, t->name()).toLower());
     for (int n = 1;; ++n) {
         const QString lbl = QStringLiteral("Sheet%1").arg(n);
-        if (!used.contains(lbl.toLower()) && !d_app->alreadyUsedName(b.prefix + QLatin1Char('_') + lbl))
+        if (!used.contains(lbl.toLower())
+            && !d_app->alreadyUsedName(b.prefix + QLatin1Char('_') + lbl)
+            && !d_app->alreadyUsedName(b.prefix + QLatin1Char('-') + lbl))
             return lbl;
     }
 }
@@ -497,9 +515,18 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
     QString lbl = sanitizeName(label);
     if (lbl.isEmpty())
         lbl = nextSheetLabel(*b);
-    QString tname = b->prefix + QLatin1Char('_') + lbl;
-    for (int n = 2; d_app->alreadyUsedName(tname); ++n)
-        tname = b->prefix + QLatin1Char('_') + lbl + QString::number(n);
+    auto sheetNameConflicts = [this, b](const QString &candLbl) {
+        for (Table *s : b->sheets) {
+            if (s && sheetLabel(b->prefix, s->name()).compare(candLbl, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return d_app->alreadyUsedName(b->prefix + QLatin1Char('_') + candLbl)
+                || d_app->alreadyUsedName(b->prefix + QLatin1Char('-') + candLbl);
+    };
+    QString actualLbl = lbl;
+    for (int n = 2; sheetNameConflicts(actualLbl); ++n)
+        actualLbl = lbl + QString::number(n);
+    const QString tname = b->prefix + QLatin1Char('_') + actualLbl;
 
     Folder *target = bookFolder(*b);
     Table *t = d_app->newTable(30, 2, tname, QString());
@@ -565,17 +592,20 @@ bool WorkbookManager::attachTable(const QString &book, Table *t, int index, QStr
         setErr(err, wbTr("All sheets of a workbook must be in the same folder."));
         return false;
     }
+    const QString bookName = b->name;
     if (index < 0 || index > b->sheets.size())
         index = b->sheets.size();
     b->sheets.insert(index, t);
-    watch(t);
-    if (!b->current) {
+    const bool hadNoCurrent = (b->current == nullptr);
+    const bool shouldActivate = !hadNoCurrent && (isShown(t) || isShown(b->current));
+    if (hadNoCurrent)
         b->current = t;
-    } else {
+    watch(t);
+    if (!hadNoCurrent) {
         // the attached sheet becomes the visible one (it is what the user is looking at)
-        setCurrentSheet(t, isShown(t) || isShown(b->current));
+        setCurrentSheet(t, shouldActivate);
     }
-    refreshBars(book);
+    refreshBars(bookName);
     refreshExplorer();
     d_app->modifiedProject();
     return true;
@@ -657,16 +687,22 @@ bool WorkbookManager::deleteSheet(Table *t, bool confirm, QString *err)
         setErr(err, wbTr("No worksheet was given."));
         return false;
     }
+    QPointer<Table> safe(t);
     if (confirm && !nonInteractive(d_app)) {
         const auto ans = QMessageBox::question(
                 d_app, wbTr("Delete Sheet"),
                 wbTr("Delete the sheet %1 and its data?\nThis cannot be undone.").arg(t->name()),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (ans != QMessageBox::Yes)
+        if (ans != QMessageBox::Yes || !safe)
             return false;
     }
-    t->askOnCloseEvent(false);
-    t->close();
+    safe->askOnCloseEvent(false);
+    // Remove via the aspect tree so the shared project QUndoStack is not wiped (preserving other
+    // sheets' Undo history and allowing Ctrl+Z to restore the deleted sheet).
+    if (safe->d_future_table && safe->d_future_table->parentAspect() != nullptr)
+        safe->d_future_table->remove();
+    else
+        safe->close();
     return true;
 }
 
@@ -682,8 +718,30 @@ bool WorkbookManager::renameSheet(Table *t, const QString &label, QString *err)
         setErr(err, wbTr("Please enter a sheet name (letters, digits, _ or -)."));
         return false;
     }
-    const bool prefixed = sheetLabel(b->prefix, t->name()) != t->name();
-    const QString newName = prefixed ? b->prefix + QLatin1Char('_') + lbl : lbl;
+    const QString bookName = b->name;
+    const QString prefix = b->prefix;
+    const QString curLabel = sheetLabel(prefix, t->name());
+    if (lbl == curLabel)
+        return true;
+    const bool prefixed = curLabel != t->name();
+    for (Table *s : b->sheets) {
+        if (s && s != t && sheetLabel(prefix, s->name()).compare(lbl, Qt::CaseInsensitive) == 0) {
+            setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
+                                .arg(lbl));
+            return false;
+        }
+    }
+    if (prefixed && d_app) {
+        const QString altU = prefix + QLatin1Char('_') + lbl;
+        const QString altH = prefix + QLatin1Char('-') + lbl;
+        if ((altU != t->name() && d_app->alreadyUsedName(altU))
+            || (altH != t->name() && d_app->alreadyUsedName(altH))) {
+            setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
+                                .arg(altH));
+            return false;
+        }
+    }
+    const QString newName = prefixed ? prefix + QLatin1Char('_') + lbl : lbl;
     if (newName == t->name())
         return true;
     if (!d_app->renameWindow(t, newName)) {
@@ -691,7 +749,7 @@ bool WorkbookManager::renameSheet(Table *t, const QString &label, QString *err)
                             .arg(newName));
         return false;
     }
-    refreshBars(b->name);
+    refreshBars(bookName);
     return true;
 }
 
@@ -749,51 +807,70 @@ bool WorkbookManager::setCurrentSheet(Table *t, bool activate, QString *err)
         setErr(err, wbTr("The worksheet is not in a workbook."));
         return false;
     }
-    Table *old = b->current;
+    QPointer<Table> safeTarget(t);
+    QPointer<Table> old(b->current);
     b->current = t;
     const QString name = b->name;
     if (activate && d_app) {
         const bool prev = d_switching;
         d_switching = true;
-        if (t->folder() == d_app->current_folder) {
+        if (safeTarget && safeTarget->folder() == d_app->current_folder) {
             QRect g;
             bool max = false;
-            if (old && old != t && isShown(old)) {
+            if (old && old != safeTarget && isShown(old)) {
                 g = old->geometry();
                 max = old->isMaximized();
-            } else if (old && old != t) {
+            } else if (old && old != safeTarget) {
                 g = d_last_geometry.value(old);
                 max = d_last_maximized.value(old, false);
             }
-            if (!isShown(t) || g.isValid() || max)
-                showInPlaceOf(t, g, max);
+            if (!isShown(safeTarget) || g.isValid() || max)
+                showInPlaceOf(safeTarget, g, max);
             else
-                d_app->activateSubWindow(t);
-            for (Table *s : b->sheets)
-                if (s != t && !d_app->hidden(s)) {
-                    d_app->hideWindow(s);
-                    d_user_hidden[s] = true;
+                d_app->activateSubWindow(safeTarget);
+            if (Book *bkAfter = find(name)) {
+                QList<QPointer<Table>> others;
+                for (Table *s : bkAfter->sheets)
+                    if (s && s != safeTarget)
+                        others << QPointer<Table>(s);
+                for (const QPointer<Table> &sp : others) {
+                    if (sp && !d_app->hidden(sp)) {
+                        d_app->hideWindow(sp);
+                        d_user_hidden[sp] = true;
+                    }
                 }
-            if (Folder *f = t->folder())
-                f->setActiveWindow(t);
-            d_app->d_workspace.setActiveSubWindow(t);
-        } else {
+            }
+            if (safeTarget) {
+                if (Folder *f = safeTarget->folder())
+                    f->setActiveWindow(safeTarget);
+                d_app->d_workspace.setActiveSubWindow(safeTarget);
+            }
+        } else if (safeTarget) {
             // book in another folder: swap the hidden flags, it shows when the folder opens
-            for (Table *s : b->sheets)
-                if (s != t && !d_app->hidden(s)) {
-                    d_app->hideWindow(s);
-                    d_user_hidden[s] = true;
+            if (Book *bkAfter = find(name)) {
+                QList<QPointer<Table>> others;
+                for (Table *s : bkAfter->sheets)
+                    if (s && s != safeTarget)
+                        others << QPointer<Table>(s);
+                for (const QPointer<Table> &sp : others) {
+                    if (sp && !d_app->hidden(sp)) {
+                        d_app->hideWindow(sp);
+                        d_user_hidden[sp] = true;
+                    }
                 }
-            d_app->updateWindowLists(t);
-            t->setStatus(MyWidget::Normal);
-            d_user_hidden[t] = false;
-            if (Folder *f = t->folder())
-                f->setActiveWindow(t);
+            }
+            if (safeTarget) {
+                d_app->updateWindowLists(safeTarget);
+                safeTarget->setStatus(MyWidget::Normal);
+                d_user_hidden[safeTarget] = false;
+                if (Folder *f = safeTarget->folder())
+                    f->setActiveWindow(safeTarget);
+            }
         }
         d_switching = prev;
     }
     refreshBars(name);
-    if (old != t)
+    if (old != safeTarget && d_app)
         d_app->modifiedProject();
     return true;
 }
@@ -855,6 +932,7 @@ void WorkbookManager::checkShown(Table *t)
     Book *b = bookFor(t);
     if (!b || !isShown(t))
         return;
+    const QString name = b->name;
     if (b->current != t) {
         // shown from outside (project explorer, Window menu, Find ...): it takes the book's place
         setCurrentSheet(t, true);
@@ -862,15 +940,88 @@ void WorkbookManager::checkShown(Table *t)
     }
     bool hidOne = false;
     d_switching = true;
+    QList<QPointer<Table>> others;
     for (Table *s : b->sheets)
-        if (s != t && isShown(s)) {
-            d_app->hideWindow(s);
-            d_user_hidden[s] = true;
+        if (s && s != t)
+            others << QPointer<Table>(s);
+    for (const QPointer<Table> &sp : others) {
+        if (sp && isShown(sp)) {
+            d_app->hideWindow(sp);
+            d_user_hidden[sp] = true;
             hidOne = true;
         }
+    }
     d_switching = false;
     if (hidOne)
-        refreshBars(b->name);
+        refreshBars(name);
+}
+
+void WorkbookManager::onTableClosed(Table *t, bool preserveForRedo)
+{
+    if (!t || d_shutdown)
+        return;
+    Book *b = bookFor(t);
+    if (!b) {
+        if (!preserveForRedo)
+            d_archived_sheets.remove(t);
+        return;
+    }
+    if (preserveForRedo) {
+        ArchivedSheet arch;
+        arch.bookName = b->name;
+        arch.bookPrefix = b->prefix;
+        arch.index = b->sheets.indexOf(t);
+        arch.wasCurrent = (b->current == t);
+        d_archived_sheets.insert(t, arch);
+        removeSheetInternal(t, false);
+        connect(t, &QObject::destroyed, this, [this](QObject *o) {
+            d_archived_sheets.remove(o);
+        });
+    } else {
+        d_archived_sheets.remove(t);
+        removeSheetInternal(t, false);
+    }
+}
+
+void WorkbookManager::onTableReadded(Table *t)
+{
+    if (!t || d_shutdown || !d_archived_sheets.contains(t))
+        return;
+    const ArchivedSheet arch = d_archived_sheets.take(t);
+    if (bookFor(t))
+        return;
+    Book *b = find(arch.bookName);
+    if (b && (!bookFolder(*b) || bookFolder(*b) == t->folder())) {
+        const QString bname = b->name;
+        const int ins = std::max(0, std::min(arch.index, int(b->sheets.size())));
+        b->sheets.insert(ins, t);
+        const bool makeCurrent = (!b->current || arch.wasCurrent);
+        if (!b->current)
+            b->current = t;
+        watch(t);
+        if (makeCurrent) {
+            setCurrentSheet(t, true);
+        } else if (d_app) {
+            const bool prev = d_switching;
+            d_switching = true;
+            if (!d_app->hidden(t))
+                d_app->hideWindow(t);
+            d_user_hidden[t] = true;
+            d_switching = prev;
+        }
+        refreshBars(bname);
+        refreshExplorer();
+    } else {
+        Book nb;
+        nb.name = uniqueBookName(arch.bookName.isEmpty() ? QStringLiteral("Book") : arch.bookName);
+        nb.prefix = arch.bookPrefix.isEmpty() ? nb.name : arch.bookPrefix;
+        nb.sheets << t;
+        nb.current = t;
+        d_books.append(nb);
+        watch(t);
+        refreshBars(nb.name);
+        refreshExplorer();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,18 +1220,21 @@ void WorkbookManager::showRenameSheetDialog(Table *t)
     Book *b = bookFor(t);
     if (!b || nonInteractive(d_app))
         return;
+    QPointer<Table> safe(t);
     bool ok = false;
     const QString cur = sheetLabel(b->prefix, t->name());
     const QString text = QInputDialog::getText(
             d_app, wbTr("Rename Sheet"),
             wbTr("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new "
-                 "name; column formulas that name it (col(\"%1/...\")) are not changed.")
+                 "name; column formulas that name it (tablecol(\"%1\", \"...\")) are not changed.")
                     .arg(t->name()),
             QLineEdit::Normal, cur, &ok);
-    if (!ok || text.trimmed().isEmpty() || text.trimmed() == cur)
+    if (!ok || !safe || d_shutdown || !bookFor(safe))
+        return;
+    if (text.trimmed().isEmpty() || text.trimmed() == cur)
         return;
     QString err;
-    if (!renameSheet(t, text, &err) && !err.isEmpty())
+    if (!renameSheet(safe, text, &err) && !err.isEmpty())
         QMessageBox::warning(d_app, wbTr("Rename Sheet"), err);
 }
 
@@ -1286,6 +1440,34 @@ QString WorkbookManager::saveFolderBooks(Folder *folder)
         line += QStringLiteral("\tprefix=") + b.prefix;
         line += QStringLiteral("\tcurrent=") + (b.current ? b.current->name() : QString());
         for (Table *t : b.sheets)
+            line += QStringLiteral("\tsheet=") + t->name();
+        out += line + QLatin1Char('\n');
+    }
+    return out;
+}
+
+QString WorkbookManager::saveBooksForWindows(const QList<MyWidget *> &windows)
+{
+    QString out;
+    if (windows.isEmpty())
+        return out;
+    QSet<MyWidget *> winSet;
+    for (MyWidget *w : windows)
+        if (w)
+            winSet.insert(w);
+    for (const Book &b : d_books) {
+        QList<Table *> included;
+        for (Table *t : b.sheets) {
+            if (t && winSet.contains(t))
+                included << t;
+        }
+        if (included.size() < 2)
+            continue;
+        Table *cur = (b.current && included.contains(b.current)) ? b.current : included.first();
+        QString line = QStringLiteral("<workbook>\tname=") + b.name;
+        line += QStringLiteral("\tprefix=") + b.prefix;
+        line += QStringLiteral("\tcurrent=") + cur->name();
+        for (Table *t : included)
             line += QStringLiteral("\tsheet=") + t->name();
         out += line + QLatin1Char('\n');
     }
@@ -1499,6 +1681,21 @@ bool WorkbookManager::handleRpc(const QString &method, const QJsonObject &params
             return false;
         return finish(newName);
     }
+    if (method == QLatin1String("workbook.delete_sheet")) {
+        Table *t = nullptr;
+        if (!needTable("table", &t))
+            return false;
+        const QString book = bookOf(t);
+        const QString deletedName = t->name();
+        if (!deleteSheet(t, false, err))
+            return false;
+        if (!book.isEmpty() && hasBook(book))
+            finish(book);
+        else
+            out[QStringLiteral("ok")] = true;
+        out[QStringLiteral("deleted")] = deletedName;
+        return true;
+    }
     if (method == QLatin1String("workbook.ungroup")) {
         if (!dissolveBook(str("book"), err))
             return false;
@@ -1551,6 +1748,10 @@ void WorkbookManager::registerTranslations()
         "column formulas that name it (col(\"%1/...\")) are not changed.",
         "シート名 (文字・数字・_・-)。\nこのシートを使うグラフは新しい名前に追従します。"
         "このシートを名前で参照する列の数式 (col(\"%1/...\")) は変わりません。");
+    reg("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new name; "
+        "column formulas that name it (tablecol(\"%1\", \"...\")) are not changed.",
+        "シート名 (文字・数字・_・-)。\nこのシートを使うグラフは新しい名前に追従します。"
+        "このシートを名前で参照する列の数式 (tablecol(\"%1\", \"...\")) は変わりません。");
     reg("Rename Workbook", "ブック名の変更");
     reg("Workbook name (letters, digits, _ or -).\nThe sheets keep their names, so graphs and "
         "formulas are not affected.",

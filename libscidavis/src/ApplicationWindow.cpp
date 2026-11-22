@@ -548,6 +548,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&View", "表示(&V)");
         add("Scripting", "スクリプト(&S)");
         add("&Graph", "グラフ(&G)");
+        add("Gra&ph", "グラフ(&P)");
         add("3D &Plot", "3Dプロット(&P)");
         add("3&D Plot", "3Dプロット(&D)");
         add("&Matrix", "行列(&M)");
@@ -570,6 +571,18 @@ void registerApplicationWindowJapaneseStrings()
         add("Special Line/Symb&ol", "特殊折れ線・シンボル(&O)");
         add("Statistical &Graphs", "統計グラフ(&G)");
         add("Pa&nel", "パネル・マルチレイヤー(&N)");
+        add("Mat&erials Analysis", "材料解析(&E)");
+        add("Materials Analysis", "材料解析");
+        add("Convert to Double-Y Plot", "2軸Yグラフへ変更");
+        add("Double-Y plot needs at least two curves on the graph. Add another Y column to this "
+            "graph first, or select two Y columns in a worksheet.",
+            "2軸Yグラフにするにはグラフ上に2本以上の曲線が必要です。先に別のY列をこのグラフへ"
+            "追加するか、ワークシートで2列以上のY列を選択してください。");
+        add("Double-Y plot requires at least two Y columns or a graph with two or more curves.",
+            "2軸Yグラフには2列以上のY列、または2本以上の曲線があるグラフが必要です。");
+        add("Add to Graph", "グラフへ追加");
+        add("+ Add Column", "+列追加");
+        add("Append a new Y column to this worksheet", "このワークシートの末尾に新しいY列を追加します");
         add("&Translate", "曲線移動(&T)");
         add("&Smooth", "平滑化(&S)");
         add("&FFT Filter", "FFTフィルタ(&F)");
@@ -2002,8 +2015,9 @@ static void sanitizeUiTableFont(QFont &f)
         else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
             f.setFamily(QStringLiteral("Segoe UI"));
     }
-    if (f.pointSize() <= 0 || f.pointSize() < 12)
-        f.setPointSize(12);
+    const double curPt = (f.pointSizeF() > 0.0) ? f.pointSizeF() : double(f.pointSize());
+    if (curPt < 12.0)
+        f.setPointSizeF(12.0);
     f.setStyleStrategy(QFont::PreferAntialias);
 }
 
@@ -2287,6 +2301,19 @@ ApplicationWindow::ApplicationWindow()
         actionPrevWindow->setText(tr("&Previous", "previous window"));
 
     setWindowTitle(tr("ToriGraph - untitled"));
+
+    {
+        QString docsDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        if (docsDir.isEmpty() || !QDir(docsDir).exists())
+            docsDir = QDir::homePath();
+        workingDir = docsDir;
+        asciiDirPath = docsDir;
+        imagesDirPath = docsDir;
+
+        QLocale initLocale = QLocale();
+        initLocale.setNumberOptions(initLocale.numberOptions() | QLocale::OmitGroupSeparator);
+        QLocale::setDefault(initLocale);
+    }
 
     // Icons
     IconLoader::init();
@@ -3303,7 +3330,7 @@ void ApplicationWindow::insertTranslatedStrings()
     edit->setTitle(tr("&Edit"));
     view->setTitle(tr("&View"));
     scriptingMenu->setTitle(tr("Scripting"));
-    graph->setTitle(tr("&Graph"));
+    graph->setTitle(tr("Gra&ph"));
     plot3DMenu->setTitle(tr("3D &Plot"));
     matrixMenu->setTitle(tr("&Matrix"));
     tableMenu->setTitle(tr("&Table"));
@@ -3356,6 +3383,8 @@ void ApplicationWindow::insertTranslatedStrings()
         gadgetsMenu->setTitle(tr("&Gadgets"));
     if (dataMaskMenu)
         dataMaskMenu->setTitle(tr("Data &Masking"));
+    if (materialsAnalysisMenu)
+        materialsAnalysisMenu->setTitle(tr("Mat&erials Analysis"));
     if (curveMathMenu)
         curveMathMenu->setTitle(tr("&Mathematics"));
     if (advFitMenu)
@@ -3664,7 +3693,7 @@ void ApplicationWindow::initMainMenu()
 
     graph = new QMenu(this);
     graph->setFont(appFont);
-    graph->setTitle(tr("&Graph"));
+    graph->setTitle(tr("Gra&ph"));
     connect(graph, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
     graph->addAction(actionShowCurvesDialog);
     graph->addAction(actionAddErrorBars);
@@ -3811,6 +3840,30 @@ void ApplicationWindow::initMainMenu()
     calcul->setTitle(tr("&Analysis"));
 
     // Structured OriginPro Analysis Domain Submenus
+    materialsAnalysisMenu = calcul->addMenu(tr("Mat&erials Analysis"));
+    materialsAnalysisMenu->setFont(appFont);
+    if (actionTensileYield)
+        materialsAnalysisMenu->addAction(actionTensileYield);
+    if (actionWorkHardeningDialog)
+        materialsAnalysisMenu->addAction(actionWorkHardeningDialog);
+    if (actionKissingerDialog)
+        materialsAnalysisMenu->addAction(actionKissingerDialog);
+    if (actionArrheniusPlot)
+        materialsAnalysisMenu->addAction(actionArrheniusPlot);
+    if (actionXRDAnalyzerDialog)
+        materialsAnalysisMenu->addAction(actionXRDAnalyzerDialog);
+    if (actionVaspPlotterDialog)
+        materialsAnalysisMenu->addAction(actionVaspPlotterDialog);
+    if (actionWeibullPlot)
+        materialsAnalysisMenu->addAction(actionWeibullPlot);
+    if (actionTaucPlot || actionEISAnalyzer) {
+        materialsAnalysisMenu->addSeparator();
+        if (actionTaucPlot)
+            materialsAnalysisMenu->addAction(actionTaucPlot);
+        if (actionEISAnalyzer)
+            materialsAnalysisMenu->addAction(actionEISAnalyzer);
+    }
+
     curveMathMenu = calcul->addMenu(tr("&Mathematics"));
     curveMathMenu->setFont(appFont);
     curveMathMenu->addAction(actionSimpleCurveMath);
@@ -3822,19 +3875,6 @@ void ApplicationWindow::initMainMenu()
     curveMathMenu->addAction(actionFillBetweenCurves);
     curveMathMenu->addAction(actionWaterfallStackOffset);
     curveMathMenu->addAction(actionResetStackOffsets);
-    curveMathMenu->addSeparator();
-    curveMathMenu->addAction(actionTensileYield);
-    if (actionWorkHardeningDialog)
-        curveMathMenu->addAction(actionWorkHardeningDialog);
-    if (actionKissingerDialog)
-        curveMathMenu->addAction(actionKissingerDialog);
-    if (actionXRDAnalyzerDialog)
-        curveMathMenu->addAction(actionXRDAnalyzerDialog);
-    if (actionVaspPlotterDialog)
-        curveMathMenu->addAction(actionVaspPlotterDialog);
-    curveMathMenu->addAction(actionArrheniusPlot);
-    curveMathMenu->addAction(actionTaucPlot);
-    curveMathMenu->addAction(actionEISAnalyzer);
     curveMathMenu->addSeparator();
     curveMathMenu->addAction(actionDifferentiate);
     curveMathMenu->addAction(actionSavGolSmoothDerivative);
@@ -4026,6 +4066,15 @@ void ApplicationWindow::initMainMenu()
     scriptingMenu = new QMenu(this);
     scriptingMenu->setFont(appFont);
     scriptingMenu->setTitle(tr("Scripting"));
+    if (actionScriptingLang) {
+        connect(actionScriptingLang, &QAction::changed, this, [this]() {
+            if (scriptingMenu && scriptingMenu->menuAction()) {
+                MyWidget *aw = activeWindow();
+                scriptingMenu->menuAction()->setVisible(showsLegacyUi()
+                                                        || (aw && aw->inherits("Note")));
+            }
+        });
+    }
 
     windowsMenu = new QMenu(this);
     windowsMenu->setFont(appFont);
@@ -4187,17 +4236,14 @@ void ApplicationWindow::initTableAnalysisMenu()
     dataMenu->addAction(actionDeconvolute);
 
     dataMenu->addSeparator();
+    if (materialsAnalysisMenu) {
+        dataMenu->addMenu(materialsAnalysisMenu);
+        dataMenu->addSeparator();
+    }
     dataMenu->addAction(actionPeakAnalyzerDialog);
     dataMenu->addAction(actionShowFitDialog);
     dataMenu->addAction(actionMultipleLinearRegression);
     dataMenu->addAction(actionLogisticRegression);
-    if (actionTensileYield)
-        dataMenu->addAction(actionTensileYield);
-    dataMenu->addAction(actionArrheniusPlot);
-    dataMenu->addAction(actionTaucPlot);
-    dataMenu->addAction(actionEISAnalyzer);
-    if (actionWorkHardeningDialog)
-        dataMenu->addAction(actionWorkHardeningDialog);
     if (actionKissingerDialog)
         dataMenu->addAction(actionKissingerDialog);
     if (actionXRDAnalyzerDialog)
@@ -4238,6 +4284,8 @@ void ApplicationWindow::customMenu(MyWidget *w)
     menuBar()->addMenu(edit);
     menuBar()->addMenu(view);
     menuBar()->addMenu(scriptingMenu);
+    if (scriptingMenu && scriptingMenu->menuAction())
+        scriptingMenu->menuAction()->setVisible(showsLegacyUi() || (w && w->inherits("Note")));
 
     scriptingMenu->clear();
     if (actionOpenPythonConsole)
@@ -4743,10 +4791,13 @@ void ApplicationWindow::plotVectXYAM()
 void ApplicationWindow::plotDoubleY()
 {
     MyWidget *w = qobject_cast<MyWidget *>(d_workspace.activeSubWindow());
-    if (!w)
+    if (!w) {
+        showUxHint(tr("Double-Y plot requires at least two Y columns or a graph with two or more curves."));
         return;
+    }
 
     MultiLayer *ml = nullptr;
+    bool createdNewMl = false;
     QString rightTitle;
     if (w->inherits("Table")) {
         Table *t = static_cast<Table *>(w);
@@ -4770,6 +4821,8 @@ void ApplicationWindow::plotDoubleY()
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::warning(this, tr("Plot error"),
                                      tr("Please select at least two Y columns for a Double-Y plot!"));
+            } else {
+                showUxHint(tr("Please select at least two Y columns for a Double-Y plot!"));
             }
             return;
         }
@@ -4787,6 +4840,7 @@ void ApplicationWindow::plotDoubleY()
         if (rightTitle.isEmpty())
             rightTitle = t->colLabel(rightColIdx);
         ml = multilayerPlot(t, cols, Graph::LineSymbols, startRow, endRow);
+        createdNewMl = (ml != nullptr);
     } else if (w->inherits("MultiLayer")) {
         ml = static_cast<MultiLayer *>(w);
     }
@@ -4794,13 +4848,18 @@ void ApplicationWindow::plotDoubleY()
     if (!ml)
         return;
     Graph *g = ml->activeGraph();
-    if (!g || g->curves() < 2)
+    if (!g || g->curves() < 2) {
+        showUxHint(tr("Double-Y plot needs at least two curves on the graph. Add another Y "
+                      "column to this graph first, or select two Y columns in a worksheet."));
         return;
+    }
 
     // Bind curve 1 (and any subsequent even curves if >2) to Right Y axis
     QwtPlotCurve *rightCurve = g->curve(1);
     if (!rightCurve)
         return;
+
+    const QString beforeSnap = createdNewMl ? QString() : ml->captureUndoSnapshot();
 
     rightCurve->setYAxis(QwtPlot::yRight);
     g->enableAxis(QwtPlot::yRight, true);
@@ -4891,6 +4950,13 @@ void ApplicationWindow::plotDoubleY()
     }
     g->syncAxisColorToCurve(QwtPlot::yRight, 1);
     g->replot();
+    if (!createdNewMl && !beforeSnap.isEmpty())
+        ml->pushUndoSnapshot(tr("Convert to Double-Y Plot"), beforeSnap);
+    else if (createdNewMl && ml->undoStack())
+        ml->undoStack()->clear();
+    if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == ml)
+        d_graph_inspector_dock->refreshAll();
+    updateUndoRedoActionsForActiveWindow();
     emit modified();
 }
 
@@ -6451,6 +6517,138 @@ MultiLayer *ApplicationWindow::newGraph(const QString &caption)
     return ml;
 }
 
+static void disambiguateMultiTableLegendLabels(Graph *ag)
+{
+    if (!ag || ag->isPiePlot() || ag->isTernaryPlot() || !ag->legend())
+        return;
+
+    ApplicationWindow *ownerApp = nullptr;
+    for (QWidget *p = ag; p != nullptr; p = p->parentWidget()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(p)) {
+            ownerApp = aw;
+            break;
+        }
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(p->window())) {
+            ownerApp = aw;
+            break;
+        }
+    }
+    WorkbookManager *wm = ownerApp ? WorkbookManager::existing(ownerApp) : nullptr;
+
+    auto tableDisplayLabel = [wm](Table *t) -> QString {
+        if (!t)
+            return QString();
+        if (wm) {
+            const QString shLbl = wm->sheetDisplayLabel(t).trimmed();
+            if (!shLbl.isEmpty())
+                return shLbl;
+        }
+        const QString wl = t->windowLabel().trimmed();
+        if (!wl.isEmpty() && wl.length() <= 28 && !wl.contains(QLatin1Char('/'))
+            && !wl.contains(QLatin1Char('\\')) && !wl.contains(QLatin1Char(';'))
+            && !wl.contains(QLatin1Char('['))) {
+            return wl;
+        }
+        return t->name();
+    };
+
+    QSet<Table *> distinctTables;
+    for (int ci = 0; ci < ag->curves(); ++ci) {
+        if (ag->curveType(ci) == Graph::ErrorBars)
+            continue;
+        DataCurve *dc = dynamic_cast<DataCurve *>(ag->curve(ci));
+        if (dc && dc->table() && dc->testItemAttribute(QwtPlotItem::Legend))
+            distinctTables.insert(dc->table());
+    }
+    if (distinctTables.size() < 2)
+        return;
+
+    Legend *leg = ag->legend();
+    QStringList lines = leg->text().split(QLatin1Char('\n'));
+    struct EntryRef {
+        int lineIdx = -1;
+        int curveIdx = -1;
+        Table *table = nullptr;
+        QString label;
+    };
+    QVector<EntryRef> entries;
+    for (int li = 0; li < lines.size(); ++li) {
+        const QString &ln = lines.at(li);
+        if (!ln.startsWith(QLatin1String("\\c{")))
+            continue;
+        const int closeBrace = ln.indexOf(QLatin1Char('}'), 3);
+        if (closeBrace < 4)
+            continue;
+        bool ok = false;
+        const int oneBased = ln.mid(3, closeBrace - 3).toInt(&ok);
+        const int ci = oneBased - 1;
+        if (!ok || ci < 0 || ci >= ag->curves() || ag->curveType(ci) == Graph::ErrorBars)
+            continue;
+        DataCurve *dc = dynamic_cast<DataCurve *>(ag->curve(ci));
+        if (!dc || !dc->table())
+            continue;
+        const QString curLbl = ln.mid(closeBrace + 1).trimmed();
+        if (curLbl.isEmpty())
+            continue;
+        // Only disambiguate automatic column-based labels (leave user-typed custom text intact)
+        const QString autoLbl = ag->resolvedAutoCurveLabel(ci).trimmed();
+        Column *yc = dc->table()->column(dc->table()->colIndex(dc->yColumnName()));
+        const QString shortLbl = yc ? yc->name().trimmed() : QString();
+        const QString longLbl = yc ? yc->longName().trimmed() : QString();
+        if (curLbl != autoLbl && curLbl != shortLbl && curLbl != longLbl
+            && curLbl != dc->yColumnName().trimmed()) {
+            continue;
+        }
+        entries.append(EntryRef{ li, ci, dc->table(), curLbl });
+    }
+    if (entries.size() < 2)
+        return;
+
+    QHash<QString, QVector<int>> groups;
+    for (int idx = 0; idx < entries.size(); ++idx)
+        groups[entries.at(idx).label.toLower()].append(idx);
+
+    bool changed = false;
+    for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
+        const QVector<int> &idxs = it.value();
+        if (idxs.size() < 2)
+            continue;
+        QSet<Table *> grpTables;
+        for (int idx : idxs)
+            grpTables.insert(entries.at(idx).table);
+        if (grpTables.size() < 2)
+            continue;
+
+        // Check if display labels themselves collide (e.g. Sheet1 in Book1 vs Sheet1 in Book2)
+        QSet<QString> dispSet;
+        bool dispCollision = false;
+        for (int idx : idxs) {
+            const QString d = tableDisplayLabel(entries.at(idx).table).toLower();
+            if (dispSet.contains(d))
+                dispCollision = true;
+            dispSet.insert(d);
+        }
+
+        for (int idx : idxs) {
+            const EntryRef &er = entries.at(idx);
+            const QString tblDisp =
+                    dispCollision ? er.table->name() : tableDisplayLabel(er.table);
+            if (tblDisp.isEmpty() || er.label.contains(tblDisp, Qt::CaseInsensitive))
+                continue;
+            const QString updated =
+                    QStringLiteral("\\c{%1}%2 (%3)").arg(er.curveIdx + 1).arg(tblDisp, er.label);
+            if (lines[er.lineIdx] != updated) {
+                lines[er.lineIdx] = updated;
+                changed = true;
+            }
+        }
+    }
+    if (changed) {
+        leg->setText(lines.join(QLatin1Char('\n')));
+        ag->replot();
+    }
+}
+
 static void applyWorksheetMetadataToGraph(Graph *ag, Table *fallbackTable = nullptr,
                                           const QStringList &fallbackCols = QStringList(),
                                           int style = -1)
@@ -6473,6 +6671,7 @@ static void applyWorksheetMetadataToGraph(Graph *ag, Table *fallbackTable = null
     ag->refreshAutoAxisTitlesFromColumns();
     if (ag->legend())
         ag->reconstructLegend();
+    disambiguateMultiTableLegendLabels(ag);
     ag->updatePlot();
 
     // Auto-apply categorical X tick labels when the plotted X column is ColumnMode::Text
@@ -6816,6 +7015,11 @@ void ApplicationWindow::initBareMultilayerPlot(MultiLayer *g, const QString &nam
 
 void ApplicationWindow::initMultilayerPlot(MultiLayer *g, const QString &name)
 {
+    Table *srcTbl = qobject_cast<Table *>(d_workspace.activeSubWindow());
+    if (g && srcTbl) {
+        g->setProperty("_tg_initial_source_table",
+                       QVariant::fromValue(static_cast<QObject *>(srcTbl)));
+    }
     initBareMultilayerPlot(g, name);
     applyLastGraphSettings(g);
     const bool isSplitLayout = d_modern_ribbon
@@ -7314,14 +7518,13 @@ MyWidget *ApplicationWindow::window(const QString &name)
 {
     if (isBeingDestroyed(this))
         return nullptr; // the folder tree is (being) torn down
-    MyWidget *widget = 0;
     QList<MyWidget *> windows = windowsList();
     for (int i = 0; i < windows.count(); i++) {
-        widget = windows.at(i);
+        MyWidget *widget = windows.at(i);
         if (widget && widget->name() == name)
             return widget;
     }
-    return widget;
+    return nullptr;
 }
 
 namespace {
@@ -7802,6 +8005,8 @@ void ApplicationWindow::updateAppFonts()
     if (results)
         results->setFont(appFont);
     scriptingMenu->setFont(appFont);
+    if (materialsAnalysisMenu)
+        materialsAnalysisMenu->setFont(appFont);
     windowsMenu->setFont(appFont);
     view->setFont(appFont);
     graph->setFont(appFont);
@@ -7973,10 +8178,16 @@ ApplicationWindow *ApplicationWindow::plotFile(const QString &fn)
     Table *t = app->newTable(fn, app->columnSeparator, 0, true, app->strip_spaces,
                              app->simplify_spaces, app->d_convert_to_numeric,
                              app->d_ASCII_import_locale);
+    if (!t) {
+        QApplication::restoreOverrideCursor();
+        app->savedProject();
+        delete app;
+        return nullptr;
+    }
     t->setCaptionPolicy(MyWidget::Both);
     app->multilayerPlot(t, t->YColumns(), Graph::LineSymbols);
     QApplication::restoreOverrideCursor();
-    return 0;
+    return app;
 }
 
 void ApplicationWindow::importASCII()
@@ -8296,25 +8507,39 @@ void ApplicationWindow::open()
             }
         }
 
-        if (fn.endsWith(".sciprj", Qt::CaseInsensitive)
-            || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
-            || fn.endsWith(".qti", Qt::CaseInsensitive) || fn.endsWith(".qti~", Qt::CaseInsensitive)
-            || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
-            || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
-            || fn.endsWith(".opj", Qt::CaseInsensitive) || fn.endsWith(".opju", Qt::CaseInsensitive)
-            || fn.endsWith(".ogm", Qt::CaseInsensitive)
-            || fn.endsWith(".ogw", Qt::CaseInsensitive) || fn.endsWith(".ogg", Qt::CaseInsensitive)
-            || fn.endsWith(".org", Qt::CaseInsensitive)) {
+        const bool isProjectFile = fn.endsWith(".sciprj", Qt::CaseInsensitive)
+                || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
+                || fn.endsWith(".qti", Qt::CaseInsensitive)
+                || fn.endsWith(".qti~", Qt::CaseInsensitive)
+                || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
+                || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
+                || fn.endsWith(".opj", Qt::CaseInsensitive)
+                || fn.endsWith(".opju", Qt::CaseInsensitive)
+                || fn.endsWith(".ogm", Qt::CaseInsensitive)
+                || fn.endsWith(".ogw", Qt::CaseInsensitive)
+                || fn.endsWith(".ogg", Qt::CaseInsensitive)
+                || fn.endsWith(".org", Qt::CaseInsensitive);
+        const bool isDataFile = fn.endsWith(".xlsx", Qt::CaseInsensitive)
+                || fn.endsWith(".xlsm", Qt::CaseInsensitive)
+                || fn.endsWith(".csv", Qt::CaseInsensitive)
+                || fn.endsWith(".tsv", Qt::CaseInsensitive)
+                || fn.endsWith(".tab", Qt::CaseInsensitive)
+                || fn.endsWith(".txt", Qt::CaseInsensitive)
+                || fn.endsWith(".dat", Qt::CaseInsensitive);
+
+        if (isProjectFile || isDataFile) {
             if (!fi.exists()) {
                 QMessageBox::critical(this, tr("File opening error"),
                                       tr("The file: <b>%1</b> doesn't exist!").arg(fn));
                 return;
             }
 
+            if (isDataFile)
+                asciiDirPath = workingDir;
             saveSettings(); // the recent projects must be saved
 
             ApplicationWindow *a = open(fn);
-            if (a) {
+            if (a && a != this) {
                 a->workingDir = workingDir;
                 if (fn.endsWith(".sciprj", Qt::CaseInsensitive)
                     || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
@@ -8371,7 +8596,108 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
              || fn.endsWith(".qti~", Qt::CaseInsensitive)
              || fn.endsWith(".qti.gz~", Qt::CaseInsensitive))
         return openProject(fn);
-    else
+    else if (fn.endsWith(".xlsx", Qt::CaseInsensitive)
+             || fn.endsWith(".xlsm", Qt::CaseInsensitive)) {
+        QString summary;
+        if (!XlsxImport::importDroppedFile(this, fn, &summary))
+            return nullptr;
+        if (statusBar() && !summary.isEmpty())
+            statusBar()->showMessage(tr("Imported %1").arg(summary), 15000);
+        return this;
+    } else if (fn.endsWith(".csv", Qt::CaseInsensitive)
+               || fn.endsWith(".tsv", Qt::CaseInsensitive)
+               || fn.endsWith(".tab", Qt::CaseInsensitive)
+               || fn.endsWith(".txt", Qt::CaseInsensitive)
+               || fn.endsWith(".dat", Qt::CaseInsensitive)) {
+        QFile f(fn);
+        if (!f.open(QIODevice::ReadOnly)) {
+            if (!isNonInteractiveContext(this)) {
+                QMessageBox::critical(this, tr("File opening error"),
+                                      tr("The file: <b>%1</b> doesn't exist!").arg(fn));
+            }
+            return nullptr;
+        }
+        const QByteArray raw = f.readAll();
+        f.close();
+
+        const QFileInfo fi(fn);
+        const QString baseTitle =
+                fi.completeBaseName().isEmpty() ? tr("Table") : fi.completeBaseName();
+        AsciiTableImportFilter::ImportReport report;
+        std::unique_ptr<future::Table> ft(
+                AsciiTableImportFilter::importDroppedTextData(raw, baseTitle, fn, &report));
+        if (!ft || ft->columnCount() < 1 || ft->rowCount() < 1)
+            return nullptr;
+
+        if (projectname == QLatin1String("untitled")) {
+            const QList<MyWidget *> allWins = windowsList();
+            if (allWins.size() == 1) {
+                if (Table *cand = qobject_cast<Table *>(allWins.first())) {
+                    if (cand->d_future_table && cand->windowLabel().isEmpty()
+                        && dependingPlots(cand->name()).isEmpty() && cand->columnCount() <= 2) {
+                        bool untouched = true;
+                        for (int c = 0; c < cand->columnCount() && untouched; ++c) {
+                            Column *col = cand->column(c);
+                            if (!col || !col->longName().isEmpty() || !col->units().isEmpty()
+                                || !col->comment().isEmpty() || !col->formulaIntervals().isEmpty()) {
+                                untouched = false;
+                                break;
+                            }
+                            for (int r = 0; r < col->rowCount(); ++r) {
+                                const bool empty = (col->columnMode()
+                                                    == SciDAVis::ColumnMode::Numeric)
+                                        ? col->isInvalid(r)
+                                        : col->textAt(r).isEmpty();
+                                if (!empty) {
+                                    untouched = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (untouched) {
+                            cand->askOnCloseEvent(false);
+                            cand->d_future_table->remove();
+                        }
+                    }
+                }
+            }
+        }
+
+        QList<Column *> cols;
+        for (int c = 0; c < ft->columnCount(); ++c) {
+            Column *src = ft->column(c);
+            if (!src)
+                continue;
+            Column *dst = new Column(src->name(), src->columnMode());
+            dst->copy(src);
+            dst->setPlotDesignation(src->plotDesignation());
+            dst->setLongName(src->longName());
+            dst->setUnits(src->units());
+            dst->setComment(src->comment());
+            if (auto *srcOut = dynamic_cast<Double2StringFilter *>(src->outputFilter())) {
+                if (auto *dstOut = dynamic_cast<Double2StringFilter *>(dst->outputFilter())) {
+                    dstOut->setNumericFormat(srcOut->numericFormat());
+                    dstOut->setNumDigits(srcOut->numDigits());
+                }
+            }
+            cols << dst;
+        }
+        Table *t = newTable(generateUniqueName(baseTitle), fn, cols);
+        if (!t) {
+            qDeleteAll(cols);
+            return nullptr;
+        }
+        offerPlotAfterImport(t);
+        modifiedProject();
+        if (statusBar()) {
+            statusBar()->showMessage(
+                    tr("Imported %1")
+                            .arg(fi.fileName() + QStringLiteral(": ")
+                                 + AsciiTableImportFilter::describeImportReport(report)),
+                    15000);
+        }
+        return this;
+    } else
         return plotFile(fn);
 }
 
@@ -8892,7 +9218,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
     blockSignals(false);
     renamedTables.clear();
 
-    if (!d_headless_mode && !d_ole_embedded && !m_batch)
+    if (!d_headless_mode && !d_ole_embedded && !m_batch && !isNonInteractiveContext(this))
         show();
     executeNotes();
     savedProject();
@@ -9227,7 +9553,7 @@ void ApplicationWindow::readSettings()
     defaultScriptingLang = settings.value("/ScriptingLang", "muParser").toString();
 
     QLocale temp_locale = QLocale(settings.value("/Locale", QLocale::system().name()).toString());
-    bool usegl = settings.value("/LocaleUseGroupSeparator", true).toBool();
+    bool usegl = settings.value("/LocaleUseGroupSeparator", false).toBool();
     if (usegl)
         temp_locale.setNumberOptions(temp_locale.numberOptions() & ~QLocale::OmitGroupSeparator);
     else
@@ -9276,10 +9602,22 @@ void ApplicationWindow::readSettings()
     }
     explorerSplitter->restoreState(settings.value("/ExplorerSplitter").toByteArray());
 
+    auto parseSavedFont = [](const QString &family, const QString &ptStr, const QString &weightStr,
+                             const QString &italicStr) -> QFont {
+        QFont f(family, -1, weightStr.toInt(), italicStr.toInt() != 0);
+        bool okPt = false;
+        const double ptF = QLocale::c().toDouble(ptStr.trimmed(), &okPt);
+        if (okPt && ptF > 0.0)
+            f.setPointSizeF(ptF);
+        else if (ptStr.toInt() > 0)
+            f.setPointSize(ptStr.toInt());
+        return f;
+    };
+
     QStringList applicationFont = settings.value("/Font").toStringList();
     if (applicationFont.size() == 4)
-        appFont = QFont(applicationFont[0], applicationFont[1].toInt(), applicationFont[2].toInt(),
-                        applicationFont[3].toInt());
+        appFont = parseSavedFont(applicationFont[0], applicationFont[1], applicationFont[2],
+                                 applicationFont[3]);
     sanitizeUiTableFont(appFont);
 
     settings.beginGroup("/Dialogs");
@@ -9318,7 +9656,10 @@ void ApplicationWindow::readSettings()
     settings.endGroup(); // Colors
 
     settings.beginGroup("/Paths");
-    workingDir = settings.value("/WorkingDir", qApp->applicationDirPath()).toString();
+    const QString docsLoc = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString defaultUserDir =
+            (!docsLoc.isEmpty() && QDir(docsLoc).exists()) ? docsLoc : QDir::homePath();
+    workingDir = settings.value("/WorkingDir", defaultUserDir).toString();
     helpFilePath = settings.value("/HelpFile", "").toString();
 #ifdef PLUGIN_PATH
     QString defaultFitPluginsPath = PLUGIN_PATH;
@@ -9337,12 +9678,12 @@ void ApplicationWindow::readSettings()
 
 #ifdef Q_OS_WIN
     templatesDir = settings.value("/TemplatesDir", qApp->applicationDirPath()).toString();
-    asciiDirPath = settings.value("/ASCII", qApp->applicationDirPath()).toString();
-    imagesDirPath = settings.value("/Images", qApp->applicationDirPath()).toString();
+    asciiDirPath = settings.value("/ASCII", defaultUserDir).toString();
+    imagesDirPath = settings.value("/Images", defaultUserDir).toString();
 #else
-    templatesDir = settings.value("/TemplatesDir", QDir::homePath()).toString();
-    asciiDirPath = settings.value("/ASCII", QDir::homePath()).toString();
-    imagesDirPath = settings.value("/Images", QDir::homePath()).toString();
+    templatesDir = settings.value("/TemplatesDir", defaultUserDir).toString();
+    asciiDirPath = settings.value("/ASCII", defaultUserDir).toString();
+    imagesDirPath = settings.value("/Images", defaultUserDir).toString();
 #endif
     locktoolbar->setChecked(settings.value("LockToolbars", false).toBool());
     settings.endGroup(); // Paths
@@ -9372,10 +9713,10 @@ void ApplicationWindow::readSettings()
     d_show_table_comments = settings.value("/DisplayComments", true).toBool();
     QStringList tableFonts = settings.value("/Fonts").toStringList();
     if (tableFonts.size() == 8) {
-        tableTextFont = QFont(tableFonts[0], tableFonts[1].toInt(), tableFonts[2].toInt(),
-                              tableFonts[3].toInt());
-        tableHeaderFont = QFont(tableFonts[4], tableFonts[5].toInt(), tableFonts[6].toInt(),
-                                tableFonts[7].toInt());
+        tableTextFont =
+                parseSavedFont(tableFonts[0], tableFonts[1], tableFonts[2], tableFonts[3]);
+        tableHeaderFont =
+                parseSavedFont(tableFonts[4], tableFonts[5], tableFonts[6], tableFonts[7]);
     }
     sanitizeUiTableFont(tableTextFont);
     sanitizeUiTableFont(tableHeaderFont);
@@ -9470,14 +9811,13 @@ void ApplicationWindow::readSettings()
 
     QStringList graphFonts = settings.value("/Fonts").toStringList();
     if (!migrateToriGraphStyle && graphFonts.size() == 16) {
-        plotAxesFont = QFont(graphFonts[0], graphFonts[1].toInt(), graphFonts[2].toInt(),
-                             graphFonts[3].toInt());
-        plotNumbersFont = QFont(graphFonts[4], graphFonts[5].toInt(), graphFonts[6].toInt(),
-                                graphFonts[7].toInt());
-        plotLegendFont = QFont(graphFonts[8], graphFonts[9].toInt(), graphFonts[10].toInt(),
-                               graphFonts[11].toInt());
-        plotTitleFont = QFont(graphFonts[12], graphFonts[13].toInt(), graphFonts[14].toInt(),
-                              graphFonts[15].toInt());
+        plotAxesFont = parseSavedFont(graphFonts[0], graphFonts[1], graphFonts[2], graphFonts[3]);
+        plotNumbersFont =
+                parseSavedFont(graphFonts[4], graphFonts[5], graphFonts[6], graphFonts[7]);
+        plotLegendFont =
+                parseSavedFont(graphFonts[8], graphFonts[9], graphFonts[10], graphFonts[11]);
+        plotTitleFont =
+                parseSavedFont(graphFonts[12], graphFonts[13], graphFonts[14], graphFonts[15]);
     }
     sanitizePlotFontToArial(plotAxesFont);
     sanitizePlotFontToArial(plotNumbersFont);
@@ -9595,12 +9935,12 @@ void ApplicationWindow::readSettings()
 
     QStringList plot3DFonts = settings.value("/Fonts").toStringList();
     if (plot3DFonts.size() == 12) {
-        plot3DTitleFont = QFont(plot3DFonts[0], plot3DFonts[1].toInt(), plot3DFonts[2].toInt(),
-                                plot3DFonts[3].toInt());
-        plot3DNumbersFont = QFont(plot3DFonts[4], plot3DFonts[5].toInt(), plot3DFonts[6].toInt(),
-                                  plot3DFonts[7].toInt());
-        plot3DAxesFont = QFont(plot3DFonts[8], plot3DFonts[9].toInt(), plot3DFonts[10].toInt(),
-                               plot3DFonts[11].toInt());
+        plot3DTitleFont =
+                parseSavedFont(plot3DFonts[0], plot3DFonts[1], plot3DFonts[2], plot3DFonts[3]);
+        plot3DNumbersFont =
+                parseSavedFont(plot3DFonts[4], plot3DFonts[5], plot3DFonts[6], plot3DFonts[7]);
+        plot3DAxesFont =
+                parseSavedFont(plot3DFonts[8], plot3DFonts[9], plot3DFonts[10], plot3DFonts[11]);
     }
     sanitizePlotFontToArial(plot3DTitleFont);
     sanitizePlotFontToArial(plot3DNumbersFont);
@@ -9733,9 +10073,14 @@ void ApplicationWindow::saveSettings()
         settings.setValue("/ExplorerSplitter", explorerSplitter->saveState());
     }
 
+    auto formatFontPt = [](const QFont &f) -> QString {
+        const double ptF = (f.pointSizeF() > 0.0) ? f.pointSizeF() : double(f.pointSize());
+        return (ptF > 0.0) ? QString::number(ptF, 'g', 6) : QString::number(f.pointSize());
+    };
+
     QStringList applicationFont;
     applicationFont << appFont.family();
-    applicationFont << QString::number(appFont.pointSize());
+    applicationFont << formatFontPt(appFont);
     applicationFont << QString::number(appFont.weight());
     applicationFont << QString::number(appFont.italic());
     settings.setValue("/Font", applicationFont);
@@ -9795,11 +10140,11 @@ void ApplicationWindow::saveSettings()
     settings.setValue("/DisplayComments", d_show_table_comments);
     QStringList tableFonts;
     tableFonts << tableTextFont.family();
-    tableFonts << QString::number(tableTextFont.pointSize());
+    tableFonts << formatFontPt(tableTextFont);
     tableFonts << QString::number(tableTextFont.weight());
     tableFonts << QString::number(tableTextFont.italic());
     tableFonts << tableHeaderFont.family();
-    tableFonts << QString::number(tableHeaderFont.pointSize());
+    tableFonts << formatFontPt(tableHeaderFont);
     tableFonts << QString::number(tableHeaderFont.weight());
     tableFonts << QString::number(tableHeaderFont.italic());
     settings.setValue("/Fonts", tableFonts);
@@ -9862,19 +10207,19 @@ void ApplicationWindow::saveSettings()
 
     QStringList graphFonts;
     graphFonts << saveAxesFont.family();
-    graphFonts << QString::number(saveAxesFont.pointSize());
+    graphFonts << formatFontPt(saveAxesFont);
     graphFonts << QString::number(saveAxesFont.weight());
     graphFonts << QString::number(saveAxesFont.italic());
     graphFonts << saveNumbersFont.family();
-    graphFonts << QString::number(saveNumbersFont.pointSize());
+    graphFonts << formatFontPt(saveNumbersFont);
     graphFonts << QString::number(saveNumbersFont.weight());
     graphFonts << QString::number(saveNumbersFont.italic());
     graphFonts << saveLegendFont.family();
-    graphFonts << QString::number(saveLegendFont.pointSize());
+    graphFonts << formatFontPt(saveLegendFont);
     graphFonts << QString::number(saveLegendFont.weight());
     graphFonts << QString::number(saveLegendFont.italic());
     graphFonts << plotTitleFont.family();
-    graphFonts << QString::number(plotTitleFont.pointSize());
+    graphFonts << formatFontPt(plotTitleFont);
     graphFonts << QString::number(plotTitleFont.weight());
     graphFonts << QString::number(plotTitleFont.italic());
     settings.setValue("/Fonts", graphFonts);
@@ -9960,15 +10305,15 @@ void ApplicationWindow::saveSettings()
 
     QStringList plot3DFonts;
     plot3DFonts << plot3DTitleFont.family();
-    plot3DFonts << QString::number(plot3DTitleFont.pointSize());
+    plot3DFonts << formatFontPt(plot3DTitleFont);
     plot3DFonts << QString::number(plot3DTitleFont.weight());
     plot3DFonts << QString::number(plot3DTitleFont.italic());
     plot3DFonts << plot3DNumbersFont.family();
-    plot3DFonts << QString::number(plot3DNumbersFont.pointSize());
+    plot3DFonts << formatFontPt(plot3DNumbersFont);
     plot3DFonts << QString::number(plot3DNumbersFont.weight());
     plot3DFonts << QString::number(plot3DNumbersFont.italic());
     plot3DFonts << plot3DAxesFont.family();
-    plot3DFonts << QString::number(plot3DAxesFont.pointSize());
+    plot3DFonts << formatFontPt(plot3DAxesFont);
     plot3DFonts << QString::number(plot3DAxesFont.weight());
     plot3DFonts << QString::number(plot3DAxesFont.italic());
     settings.setValue("/Fonts", plot3DFonts);
@@ -10444,15 +10789,41 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
     t << "<scripting-lang>\t" + QString(scriptEnv->objectName()) + "\n";
     t << "<windows>\t" + QString::number(windows.count()) + "\n";
     t.flush();
+    WorkbookManager *wm = WorkbookManager::existing(this);
     for (MyWidget *w : windows) {
         if (!w)
             continue;
         if (Table *tb = qobject_cast<Table *>(w)) {
-            tb->saveToDevice(&buf, windowGeometryInfo(w));
+            QString geom = windowGeometryInfo(tb);
+            if (hidden(tb) || tb->status() == MyWidget::Hidden) {
+                QRect refRect = tb->frameGeometry();
+                if (wm) {
+                    const QString bk = wm->bookOf(tb);
+                    if (!bk.isEmpty()) {
+                        if (Table *cur = wm->currentSheet(bk)) {
+                            if (cur != tb && cur->frameGeometry().width() >= 260
+                                && cur->frameGeometry().height() >= 200) {
+                                refRect = cur->frameGeometry();
+                            }
+                        }
+                    }
+                }
+                const int gx = qMax(0, refRect.x());
+                const int gy = qMax(0, refRect.y());
+                const int gw = (refRect.width() >= 260) ? refRect.width() : 640;
+                const int gh = (refRect.height() >= 200) ? refRect.height() : 400;
+                geom = QStringLiteral("geometry\t%1\t%2\t%3\t%4\t\n").arg(gx).arg(gy).arg(gw).arg(gh);
+            }
+            tb->saveToDevice(&buf, geom);
         } else {
             t << w->saveToString(windowGeometryInfo(w));
             t.flush();
         }
+    }
+    if (wm) {
+        const QString wbLines = wm->saveBooksForWindows(windows);
+        if (!wbLines.isEmpty())
+            t << wbLines;
     }
     t << "<log>\n</log>";
     t.flush();
@@ -13213,6 +13584,8 @@ MyWidget *ApplicationWindow::clone(MyWidget *w)
 
 MyWidget *ApplicationWindow::activeWindow() const
 {
+    if (isBeingDestroyed(this))
+        return nullptr;
     if (QMdiSubWindow *sw = d_workspace.activeSubWindow()) {
         if (MyWidget *mw = qobject_cast<MyWidget *>(sw))
             return mw;
@@ -13622,19 +13995,21 @@ void ApplicationWindow::closeWindow(MyWidget *window)
     const bool calledFromAspectRemoval = d_in_aspect_about_to_be_removed;
 
     if (Table *tbl = qobject_cast<Table *>(window)) {
+        const bool canUndoViaAspect = tbl->d_future_table
+                && (undoReplayActive || calledFromAspectRemoval
+                    || tbl->d_future_table->parentAspect() != nullptr);
+        if (WorkbookManager *wm = WorkbookManager::existing(this))
+            wm->onTableClosed(tbl, canUndoViaAspect);
+        window->setAttribute(Qt::WA_DeleteOnClose, false);
         window->setParent(nullptr);
         if (!undoReplayActive && !calledFromAspectRemoval) {
-            if (tbl->d_future_table && tbl->d_future_table->parentAspect() != nullptr)
+            if (tbl->d_future_table && tbl->d_future_table->parentAspect() != nullptr) {
                 tbl->d_future_table->remove();
-            if (d_project && d_project->undoStack()) {
-                QUndoStack *us = d_project->undoStack();
-                const bool inMacro = (us->count() > 0 && !us->canUndo() && !us->canRedo());
-                if (!inMacro)
-                    us->clear();
-            }
-            if (guardedWin)
+            } else if (guardedWin) {
                 guardedWin->deleteLater();
+            }
         }
+        updateUndoRedoActionsForActiveWindow();
     } else if (Matrix *mat = qobject_cast<Matrix *>(window)) {
         window->setParent(nullptr);
         if (!undoReplayActive && !calledFromAspectRemoval) {
@@ -21285,7 +21660,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
             baseGroup);
     st->anchorHintLabel = anchorHintLabel;
     anchorHintLabel->setWordWrap(true);
-    anchorHintLabel->setStyleSheet("color: #555555; font-size: 11px;");
+    anchorHintLabel->setStyleSheet("color: #555555; font-size: 9.5pt;");
     anchorHintLabel->setVisible(false);
     baseVBox->addWidget(anchorHintLabel);
 
@@ -24387,6 +24762,31 @@ ApplicationWindow::~ApplicationWindow()
     // entry stays until a new ApplicationWindow is constructed at the same address: QWidget and
     // QObject still delete children after the members are gone.
     applicationWindowsBeingDestroyed().insert(this);
+    if (d_project && d_project->undoStack())
+        disconnect(d_project->undoStack(), nullptr, this, nullptr);
+    {
+        QSet<MultiLayer *> allMls;
+        for (MultiLayer *ml : findChildren<MultiLayer *>()) {
+            if (ml)
+                allMls.insert(ml);
+        }
+        for (QMdiSubWindow *sw : d_workspace.subWindowList()) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(sw))
+                allMls.insert(ml);
+        }
+        for (MyWidget *hw : hiddenWindows) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(hw))
+                allMls.insert(ml);
+        }
+        for (MyWidget *ow : outWindows) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(ow))
+                allMls.insert(ml);
+        }
+        for (MultiLayer *ml : allMls) {
+            if (ml && ml->undoStack())
+                disconnect(ml->undoStack(), nullptr, this, nullptr);
+        }
+    }
     if (WorkbookManager *wb = WorkbookManager::existing(this))
         wb->shutdown(); // D8: stop reacting while the windows are torn down
     explorerWindow.disconnect(this);
@@ -24654,7 +25054,7 @@ void ApplicationWindow::captureLastGraphSettingsForExit(MultiLayer *ml)
     s.minTicksLength = minTicksLength;
 
     auto adoptFontIfValid = [](QFont &dst, const QFont &src) {
-        if (src.pointSize() > 0 && !src.family().trimmed().isEmpty())
+        if ((src.pointSizeF() > 0.0 || src.pointSize() > 0) && !src.family().trimmed().isEmpty())
             dst = src;
     };
     adoptFontIfValid(s.axesFont, g->axisTitleFont(QwtPlot::xBottom));
@@ -24719,15 +25119,42 @@ void ApplicationWindow::applyLastGraphWindowGeometry(MultiLayer *g)
         return;
     const bool prevRestoring = d_restoring_window_geometry;
     d_restoring_window_geometry = true;
-    if (d_has_last_graph_geometry && d_last_graph_geometry.width() >= 260
-        && d_last_graph_geometry.height() >= 220) {
-        QRect target = d_last_graph_geometry;
-        const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+    const QSize vp = d_workspace.viewport() ? d_workspace.viewport()->size() : QSize();
+    Table *srcTbl =
+            qobject_cast<Table *>(g->property("_tg_initial_source_table").value<QObject *>());
+    const bool hasValidSavedGeo = d_has_last_graph_geometry && d_last_graph_geometry.width() >= 260
+            && d_last_graph_geometry.height() >= 220;
+    const bool canPlaceBesideTable = !d_last_graph_maximized && srcTbl && !srcTbl->isHidden()
+            && !srcTbl->isMinimized() && !srcTbl->isMaximized() && vp.width() >= 680
+            && vp.height() >= 240;
+
+    if (hasValidSavedGeo || canPlaceBesideTable) {
+        QSize fallbackSz = g->size();
+        if (fallbackSz.width() < 360 || fallbackSz.height() < 300)
+            fallbackSz = QSize(560, 480);
+        QRect target = hasValidSavedGeo ? d_last_graph_geometry : QRect(g->pos(), fallbackSz);
         if (vp.width() >= 320 && vp.height() >= 240) {
             target.setWidth(qBound(260, target.width(), qMax(260, vp.width() - 8)));
             target.setHeight(qBound(220, target.height(), qMax(220, vp.height() - 8)));
             target.moveLeft(qBound(0, target.x(), qMax(0, vp.width() - target.width())));
             target.moveTop(qBound(0, target.y(), qMax(0, vp.height() - target.height())));
+
+            if (canPlaceBesideTable) {
+                const QRect srcGeo = srcTbl->geometry();
+                const QRect innerSrc = srcGeo.adjusted(24, 24, -24, -24);
+                if (!hasValidSavedGeo || target.intersects(innerSrc.isValid() ? innerSrc : srcGeo)) {
+                    const int rightX = srcGeo.right() + 8;
+                    const int remRight = vp.width() - rightX - 4;
+                    const int alignedTop =
+                            qBound(0, srcGeo.top(), qMax(0, vp.height() - target.height()));
+                    if (remRight >= target.width()) {
+                        target.moveTo(rightX, alignedTop);
+                    } else if (remRight >= 360
+                               || (vp.width() - target.width() >= 180 && srcGeo.left() < 120)) {
+                        target.moveTo(qMax(0, vp.width() - target.width() - 4), alignedTop);
+                    }
+                }
+            }
 
             // Gently cascade if another visible MultiLayer occupies the exact same top-left
             for (int step = 0; step < 8; ++step) {
@@ -24811,8 +25238,18 @@ void ApplicationWindow::applyLastGraphSettings(MultiLayer *g)
 
 void ApplicationWindow::finalizeLastGraphSettings(MultiLayer *g)
 {
-    if (!g || !d_restored_graph_settings.valid)
+    if (!g)
         return;
+    const bool isFreeMdi = (d_workspace.viewMode() == QMdiArea::SubWindowView)
+            && !(d_modern_ribbon
+                 && d_modern_ribbon->workspaceLayoutMode()
+                         == ModernRibbonBar::LayoutSplitTableGraph);
+    if (!d_restored_graph_settings.valid) {
+        if (isFreeMdi && g->property("_tg_initial_source_table").isValid())
+            applyLastGraphWindowGeometry(g);
+        g->setProperty("_tg_initial_source_table", QVariant());
+        return;
+    }
     const SavedGraphSettings &s = d_restored_graph_settings;
     const bool prevRestoring = d_restoring_window_geometry;
     d_restoring_window_geometry = true;
@@ -24841,12 +25278,9 @@ void ApplicationWindow::finalizeLastGraphSettings(MultiLayer *g)
         if (ag->legend() && ag->isLegendVisible())
             ag->placeLegendAnchor(Graph::LegendAutoAvoidData);
     }
-    const bool isFreeMdi = (d_workspace.viewMode() == QMdiArea::SubWindowView)
-            && !(d_modern_ribbon
-                 && d_modern_ribbon->workspaceLayoutMode()
-                         == ModernRibbonBar::LayoutSplitTableGraph);
-    if (isFreeMdi && d_has_last_graph_geometry)
+    if (isFreeMdi && (d_has_last_graph_geometry || g->property("_tg_initial_source_table").isValid()))
         applyLastGraphWindowGeometry(g);
+    g->setProperty("_tg_initial_source_table", QVariant());
     d_restoring_window_geometry = prevRestoring;
 }
 
@@ -25270,6 +25704,15 @@ MultiLayer *ApplicationWindow::addTableSelectionToActiveOrRecentGraph(Table *src
         return nullptr;
 
     const int plotStyle = (style >= 0) ? style : defaultCurveStyle;
+    const QString blocker = plotBlockerForTable(table, plotStyle);
+    if (!blocker.isEmpty()) {
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, tr("Nothing to plot yet"), blocker);
+        else if (statusBar())
+            statusBar()->showMessage(
+                    QString(blocker).replace(QStringLiteral("<p>"), QStringLiteral(" ")), 8000);
+        return nullptr;
+    }
     if (!validFor2DPlot(table, plotStyle))
         return nullptr;
 
@@ -25357,7 +25800,10 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
     }
     ::future::Table *table = qobject_cast<::future::Table *>(aspect);
     if (table) {
-        initTable(static_cast<Table *>(table->view()));
+        Table *tblView = static_cast<Table *>(table->view());
+        initTable(tblView);
+        if (WorkbookManager *wm = WorkbookManager::existing(this))
+            wm->onTableReadded(tblView);
         return;
     }
 }
@@ -28947,7 +29393,7 @@ static QString cleanMenuTextForTip(const QString &t)
 
 void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
 {
-    if (!actionUndo || !actionRedo)
+    if (isBeingDestroyed(this) || !actionUndo || !actionRedo)
         return;
 
     bool canU = false;
@@ -29449,6 +29895,7 @@ bool ApplicationWindow::handleColumnMimeDrop(const QMimeData *mimeData, MultiLay
             targetGraph->reconstructLegend();
         else
             targetGraph->newLegend();
+        disambiguateMultiTableLegendLabels(targetGraph);
 
         if (replaceExisting) {
             targetGraph->setAutoScale();

@@ -54,6 +54,8 @@ public:
     bool hasBook(const QString &book) const;
     //! Workbook holding \a w, or an empty string for a stand-alone window.
     QString bookOf(const MyWidget *w) const;
+    //! Tab label of \a t within its workbook, or an empty string if stand-alone.
+    QString sheetDisplayLabel(const Table *t) const;
     QList<Table *> sheets(const QString &book) const;
     Table *currentSheet(const QString &book) const;
     QString uniqueBookName(const QString &base) const;
@@ -89,8 +91,14 @@ public:
     // ---- project file
     //! "<workbook>..." lines for the workbooks living in \a folder (may be empty).
     QString saveFolderBooks(Folder *folder);
+    //! "<workbook>..." lines for workbooks with 2+ sheets included in \a windows (OLE mini-projects).
+    QString saveBooksForWindows(const QList<MyWidget *> &windows);
     //! Restores one "<workbook>" line read while loading / appending \a folder.
     bool restoreFromLine(const QString &line, Folder *folder, const QStringList &renamedTables);
+
+    // ---- Undo / Redo synchronization hooks used by ApplicationWindow
+    void onTableClosed(Table *t, bool preserveForRedo);
+    void onTableReadded(Table *t);
 
     // ---- UI hooks used by ApplicationWindow
     void decorateListItem(QTreeWidgetItem *it, MyWidget *w) const;
@@ -145,8 +153,17 @@ private:
     bool isShown(Table *t) const;
     void showInPlaceOf(Table *t, const QRect &geometry, bool maximized);
 
+    struct ArchivedSheet
+    {
+        QString bookName;
+        QString bookPrefix;
+        int index = -1;
+        bool wasCurrent = false;
+    };
+
     ApplicationWindow *d_app = nullptr;
     QList<Book> d_books;
+    QHash<QObject *, ArchivedSheet> d_archived_sheets;
     QHash<QObject *, bool> d_user_hidden;
     QHash<QObject *, QRect> d_last_geometry;
     QHash<QObject *, bool> d_last_maximized;

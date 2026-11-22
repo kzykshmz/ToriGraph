@@ -1347,6 +1347,7 @@ public:
 
     QMenu *gadgetsMenu = nullptr;
     QMenu *dataMaskMenu = nullptr;
+    QMenu *materialsAnalysisMenu = nullptr;
     QMenu *curveMathMenu = nullptr;
     QMenu *advFitMenu = nullptr;
     QMenu *peaksBaselineMenu = nullptr;
