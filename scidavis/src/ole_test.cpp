@@ -175,6 +175,7 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
 static int runSuite70IconCleanupAndLightTheme(ApplicationWindow *mw);
+static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw);
 static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw);
 static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw);
 static int runSuite66Workbooks(ApplicationWindow *mw);
@@ -319,6 +320,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc70;
+    }
+    if (args.contains("--suite71-only")) {
+        const int rc71 = runSuite71LabSlideTextAndZoomFollowsText(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc71;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5518,6 +5526,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite70IconCleanupAndLightTheme(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite71LabSlideTextAndZoomFollowsText(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -18148,11 +18159,12 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
                    "58d: lab slide preset missing");
         CHECK_COND(std::fabs(lab.pageWidthMm - 83.3) < 1e-6 && std::fabs(lab.pageHeightMm - 83.3) < 1e-6,
                    "58d: lab slide page 83.3 mm");
-        // 83.3 mm x 140 % = 116.6 mm (11.7 cm); 28 pt x 0.40 = 11.2 pt (Origin 40 % copy ratio)
+        // 83.3 mm x 140 % = 116.6 mm (11.7 cm); text sized to read 18 pt on the slide after the
+        // 140 % enlargement: 18 / 1.40 = 12.86 -> 12.9 pt (was 11.2 pt = 15.7 pt on the slide).
         CHECK_COND(std::fabs(lab.pageWidthMm * 1.40 - 116.62) < 0.01, "58d: 140 % gives 11.7 cm");
-        CHECK_COND(std::fabs(lab.axisTitlePt - 28.0 * 0.40) < 1e-6
-                           && std::fabs(lab.tickLabelPt - 28.0 * 0.40) < 1e-6,
-                   "58d: lab slide text = 28 pt x 0.40");
+        CHECK_COND(std::fabs(lab.axisTitlePt * 1.40 - 18.0) < 0.1
+                           && std::fabs(lab.tickLabelPt * 1.40 - 18.0) < 0.1,
+                   "58d: lab slide text reads 18 pt at 140 %");
         CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("journal_2col_175mm"), &twoCol)
                            && std::fabs(twoCol.pageWidthMm - 175.0) < 1e-6,
                    "58d: 175 mm double-column preset missing");
@@ -21148,5 +21160,405 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 69 settings transfer & script coverage passed!\n";
+    return 0;
+}
+
+// Suite 71: lab-slide preset text size (18 pt on the slide) and Ctrl+wheel page zoom that makes
+// the text follow the zoom on screen while the stored pt, project files and exports stay as at
+// 100 %.
+static QStringList suite71FontLines(Graph *g)
+{
+    // Font records of Graph::saveToString(): TitleFont / ScaleFontN / AxisFontN keep
+    // family..strikeOut; <legend>/<text> keep the font fields only (family..strikeOut).
+    QStringList out;
+    const QStringList lines = g->saveToString().split(QLatin1Char('\n'));
+    for (const QString &ln : lines) {
+        if (ln.startsWith(QLatin1String("TitleFont")) || ln.startsWith(QLatin1String("ScaleFont"))
+            || ln.startsWith(QLatin1String("AxisFont"))) {
+            out << ln;
+        } else if (ln.startsWith(QLatin1String("<legend>")) || ln.startsWith(QLatin1String("<text>"))) {
+            const QStringList f = ln.split(QLatin1Char('\t'));
+            out << (f.value(0) + QLatin1Char('|') + f.mid(3, 6).join(QLatin1Char('|')));
+        }
+    }
+    return out;
+}
+
+static QStringList suite71SvgFontSizes(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QStringList();
+    const QString svg = QString::fromUtf8(f.readAll());
+    QStringList sizes;
+    QRegularExpression rx(QStringLiteral("font-size=\"([^\"]+)\""));
+    auto it = rx.globalMatch(svg);
+    while (it.hasNext())
+        sizes << it.next().captured(1);
+    sizes.sort();
+    return sizes;
+}
+
+// lfHeight of every font the EMF creates (EMR_EXTCREATEFONTINDIRECTW = 82), sorted.
+static QList<int> suite71EmfFontHeights(const QByteArray &emf)
+{
+    QList<int> h;
+    int off = 0;
+    while (off + 8 <= emf.size()) {
+        quint32 type = 0, size = 0;
+        memcpy(&type, emf.constData() + off, 4);
+        memcpy(&size, emf.constData() + off + 4, 4);
+        if (size < 8 || off + int(size) > emf.size())
+            break;
+        if (type == 82 && size >= 16) {
+            qint32 lfHeight = 0;
+            memcpy(&lfHeight, emf.constData() + off + 12, 4);
+            h << int(lfHeight);
+        }
+        off += int(size);
+    }
+    std::sort(h.begin(), h.end());
+    return h;
+}
+
+static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 71: lab slide 18 pt text and page zoom with following text...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 71");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir tmp71;
+    CHECK_COND(tmp71.isValid(), "71: QTemporaryDir failed");
+
+    // ---- 71a: the lab slide preset reads 18 pt on the slide after the 140 % enlargement ----
+    MultiLayer::GraphStylePresetSpec lab;
+    CHECK_COND(MultiLayer::findStylePreset(QStringLiteral("lab_slide_83mm"), &lab), "71a: preset");
+    std::cout << "[INFO] 71a lab slide: title " << lab.axisTitlePt << " pt, ticks " << lab.tickLabelPt
+              << " pt, legend " << lab.legendPt << " pt\n";
+    CHECK_COND(std::fabs(lab.axisTitlePt - 12.9) < 1e-9 && std::fabs(lab.tickLabelPt - 12.9) < 1e-9,
+               "71a: axis titles / tick labels must be 12.9 pt (18 pt / 1.40)");
+    CHECK_COND(std::fabs(lab.axisTitlePt * 1.40 - 18.0) < 0.1, "71a: 12.9 pt x 140 % must read 18 pt");
+    // Legend follows the same ratio as the axis text over the former 10 pt (10 x 12.9 / 11.2).
+    CHECK_COND(std::fabs(lab.legendPt - 11.5) < 1e-9 && std::fabs(lab.legendPt - 10.0 * 12.9 / 11.2) < 0.05,
+               "71a: legend must be 11.5 pt");
+    CHECK_COND(std::fabs(lab.pageWidthMm - 83.3) < 1e-9 && std::fabs(lab.pageHeightMm - 83.3) < 1e-9,
+               "71a: page must stay 83.3 mm square");
+    CHECK_COND(lab.name.contains(QStringLiteral("18 pt")), "71a: preset name must say 18 pt on the slide");
+
+    ApplicationWindow *w71 = new ApplicationWindow();
+    w71->applyUserSettings();
+    MultiLayer::setNewGraphStylePresetId(QString());
+    Table *t = w71->newTable(QStringLiteral("Zoom71"), 8, 3);
+    CHECK_COND(t != nullptr, "71: table");
+    t->setColName(0, "x");
+    t->setColName(1, "y1");
+    t->setColName(2, "y2");
+    for (int r = 0; r < 8; ++r) {
+        t->setCell(r, 0, r + 1.0);
+        t->setCell(r, 1, (r + 1.0) * 2.0);
+        t->setCell(r, 2, (r + 1.0) * 3.0 + 1.0);
+    }
+    MultiLayer *ml = w71->multilayerPlot(t, QStringList() << (t->name() + "_y1"), Graph::LineSymbols);
+    CHECK_COND(ml && ml->activeGraph(), "71: graph");
+    const QString mlName = ml->name();
+    w71->show();
+    ml->show();
+    for (int k = 0; k < 5; ++k)
+        QApplication::processEvents();
+    CHECK_COND(ml->applyStylePresetById(QStringLiteral("lab_slide_83mm")), "71a: apply lab preset");
+    QApplication::processEvents();
+    Graph *g = ml->activeGraph();
+    Plot *pl = g->plotWidget();
+    CHECK_COND(g->legend() != nullptr, "71a: legend");
+    auto storedPt = [](const QFont &f) { return f.pointSizeF(); };
+    CHECK_COND(std::fabs(storedPt(g->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                       && std::fabs(storedPt(g->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                       && std::fabs(storedPt(g->axisTitleFont(QwtPlot::yLeft)) - 12.9) < 1e-6,
+               "71a: applied axis title / tick label pt must be 12.9");
+    CHECK_COND(std::fabs(storedPt(g->legend()->font()) - 11.5) < 1e-6, "71a: applied legend pt must be 11.5");
+
+    QwtPlot *base = pl; // QwtPlot members give the fonts the widgets actually draw with
+    // Small pages open at a 160 % view: the text must already be drawn at that view zoom.
+    std::cout << "[INFO] 71a view zoom after the preset: " << ml->pageZoom() << ", drawn title "
+              << base->axisTitle(QwtPlot::xBottom).font().pointSizeF() << " pt\n";
+    CHECK_COND(std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 12.9 * ml->pageZoom()) < 1e-6
+                       && std::fabs(base->axisWidget(QwtPlot::xBottom)->font().pointSizeF()
+                                    - 12.9 * ml->pageZoom()) < 1e-6,
+               "71a: the preset's initial view zoom must also enlarge the drawn text");
+
+    // Snapshot at 100 %.
+    ml->setPageZoom(1.0);
+    for (int k = 0; k < 3; ++k)
+        QApplication::processEvents();
+    CHECK_COND(std::fabs(ml->pageZoom() - 1.0) < 1e-9, "71: page must be at 100 %");
+    const QFont titleStored = g->axisTitleFont(QwtPlot::xBottom);
+    const QFont tickStored = g->axisFont(QwtPlot::xBottom);
+    const QFont yTitleStored = g->axisTitleFont(QwtPlot::yLeft);
+    const QFont legStored = g->legend()->font();
+    const QFont plotTitleStored = pl->title().font();
+    const double titleH1 = QFontMetricsF(base->axisTitle(QwtPlot::xBottom).font()).height();
+    const double tickH1 = QFontMetricsF(base->axisWidget(QwtPlot::xBottom)->font()).height();
+    const QRect legRect1 = g->legend()->rect();
+    const int axisWidgetH1 = base->axisWidget(QwtPlot::xBottom)->height();
+    const int layerH1 = g->height();
+    const QStringList fontLines1 = suite71FontLines(g);
+    CHECK_COND(fontLines1.size() >= 9, "71c: font records missing from saveToString");
+    const QString svg1 = tmp71.filePath(QStringLiteral("zoom100.svg"));
+    const QString png1 = tmp71.filePath(QStringLiteral("zoom100.png"));
+    ml->exportSVG(svg1);
+    ml->exportImage(png1, 100, false, 150);
+    const QStringList svgSizes1 = suite71SvgFontSizes(svg1);
+    const QImage img1(png1);
+    CHECK_COND(!svgSizes1.isEmpty(), "71c: SVG at 100 % has no font sizes");
+    CHECK_COND(!img1.isNull(), "71c: PNG at 100 % missing");
+    // PowerPoint / clipboard paths: the OLE metafile and the page image.
+    const OleRenderedGraph emf1 = SciDAVisEmf::renderMultiLayer(ml);
+    const QImage page1 = ml->copyPageAsImage(300);
+    CHECK_COND(!emf1.emfBytes.isEmpty() && !page1.isNull(), "71c: EMF / page image at 100 % missing");
+
+    // ---- 71b: 200 % doubles the drawn text, the stored pt stay ----
+    ml->setPageZoom(2.0);
+    for (int k = 0; k < 3; ++k)
+        QApplication::processEvents();
+    CHECK_COND(std::fabs(ml->pageZoom() - 2.0) < 1e-9, "71b: zoom 2.0");
+    const double titleH2 = QFontMetricsF(base->axisTitle(QwtPlot::xBottom).font()).height();
+    const double tickH2 = QFontMetricsF(base->axisWidget(QwtPlot::xBottom)->font()).height();
+    const QRect legRect2 = g->legend()->rect();
+    const int axisWidgetH2 = base->axisWidget(QwtPlot::xBottom)->height();
+    const int layerH2 = g->height();
+    std::cout << "[INFO] 71b text height px at 100 % / 200 %: title " << titleH1 << " / " << titleH2
+              << ", ticks " << tickH1 << " / " << tickH2 << ", legend box " << legRect1.height()
+              << " / " << legRect2.height() << ", x-axis band " << axisWidgetH1 << " / "
+              << axisWidgetH2 << " (layer " << layerH1 << " / " << layerH2 << ")\n";
+    CHECK_COND(titleH2 / titleH1 > 1.85 && titleH2 / titleH1 < 2.15,
+               "71b: axis title must be drawn about twice as tall at 200 %");
+    CHECK_COND(tickH2 / tickH1 > 1.85 && tickH2 / tickH1 < 2.15,
+               "71b: tick labels must be drawn about twice as tall at 200 %");
+    CHECK_COND(double(legRect2.height()) / qMax(1, legRect1.height()) > 1.4,
+               "71b: legend text must grow with the zoom");
+    CHECK_COND(double(axisWidgetH2) / qMax(1, axisWidgetH1) > 1.5,
+               "71b: the axis band (ticks + labels + title) must grow with the zoom");
+    CHECK_COND(std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
+               "71b: drawn axis title font must be 12.9 x 2 = 25.8 pt");
+    CHECK_COND(std::fabs(storedPt(g->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-9
+                       && std::fabs(storedPt(g->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-9
+                       && std::fabs(storedPt(g->axisTitleFont(QwtPlot::yLeft)) - 12.9) < 1e-9
+                       && std::fabs(storedPt(pl->axisTitle(QwtPlot::xBottom).font()) - 12.9) < 1e-9,
+               "71b: stored (dialog / inspector) pt must stay 12.9 at 200 %");
+    CHECK_COND(std::fabs(storedPt(g->legend()->font()) - 11.5) < 1e-9, "71b: stored legend pt must stay 11.5");
+    CHECK_COND(g->axisTitleFont(QwtPlot::xBottom) == titleStored && g->axisFont(QwtPlot::xBottom) == tickStored
+                       && pl->title().font() == plotTitleStored,
+               "71b: stored fonts must be unchanged at 200 %");
+
+    // ---- 71c: save / export at 200 % equal 100 % ----
+    CHECK_COND(suite71FontLines(g) == fontLines1, "71c: saveToString font records differ at 200 %");
+    const QString svg2 = tmp71.filePath(QStringLiteral("zoom200.svg"));
+    const QString png2 = tmp71.filePath(QStringLiteral("zoom200.png"));
+    ml->exportSVG(svg2);
+    ml->exportImage(png2, 100, false, 150);
+    QApplication::processEvents();
+    CHECK_COND(std::fabs(ml->pageZoom() - 2.0) < 1e-9, "71c: export must leave the view at 200 %");
+    CHECK_COND(std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
+               "71c: export must leave the drawn text at 200 %");
+    const QStringList svgSizes2 = suite71SvgFontSizes(svg2);
+    {
+        QStringList uniq = svgSizes1;
+        uniq.removeDuplicates();
+        std::cout << "[INFO] 71c SVG: " << svgSizes1.size() << " / " << svgSizes2.size()
+                  << " font-size attributes at 100 % / 200 %, values " << uniq.join(QLatin1Char(',')).toStdString()
+                  << "\n";
+    }
+    CHECK_COND(svgSizes2 == svgSizes1, "71c: SVG exported at 200 % has different font sizes");
+    const QImage img2(png2);
+    CHECK_COND(!img2.isNull() && img2.size() == img1.size(), "71c: PNG exported at 200 % has a different size");
+    {
+        const QImage a = img1.convertToFormat(QImage::Format_ARGB32);
+        const QImage b = img2.convertToFormat(QImage::Format_ARGB32);
+        qint64 diff = 0;
+        for (int y = 0; y < a.height(); ++y)
+            for (int x = 0; x < a.width(); ++x)
+                if (a.pixel(x, y) != b.pixel(x, y))
+                    ++diff;
+        const double frac = double(diff) / qMax<qint64>(1, qint64(a.width()) * a.height());
+        std::cout << "[INFO] 71c PNG 100 % vs 200 %: " << a.width() << "x" << a.height()
+                  << ", differing pixels " << frac * 100.0 << " %\n";
+        CHECK_COND(frac < 0.01, "71c: PNG exported at 200 % differs from the 100 % export");
+    }
+
+    {
+        const OleRenderedGraph emf2 = SciDAVisEmf::renderMultiLayer(ml);
+        const QImage page2 = ml->copyPageAsImage(300);
+        std::cout << "[INFO] 71c EMF bytes 100 % / 200 %: " << emf1.emfBytes.size() << " / "
+                  << emf2.emfBytes.size() << ", extent " << emf1.extentHm.cx << "x" << emf1.extentHm.cy
+                  << " / " << emf2.extentHm.cx << "x" << emf2.extentHm.cy << ", page image "
+                  << page1.width() << "x" << page1.height() << " / " << page2.width() << "x"
+                  << page2.height() << "\n";
+        CHECK_COND(emf2.extentHm.cx == emf1.extentHm.cx && emf2.extentHm.cy == emf1.extentHm.cy,
+                   "71c: OLE metafile size differs at 200 %");
+        // The EMF bytes are not reproducible to the byte between two renders, so compare the fonts
+        // it creates (lfHeight) and its size.
+        const QList<int> fh1 = suite71EmfFontHeights(emf1.emfBytes);
+        const QList<int> fh2 = suite71EmfFontHeights(emf2.emfBytes);
+        QStringList fhs;
+        for (int v : fh1)
+            fhs << QString::number(v);
+        fhs.removeDuplicates();
+        std::cout << "[INFO] 71c EMF fonts: " << fh1.size() << " / " << fh2.size() << ", lfHeight "
+                  << fhs.join(QLatin1Char(',')).toStdString() << "\n";
+        CHECK_COND(!fh1.isEmpty() && fh2 == fh1, "71c: OLE metafile fonts at 200 % differ from 100 %");
+        CHECK_COND(std::abs(emf2.emfBytes.size() - emf1.emfBytes.size()) <= emf1.emfBytes.size() / 100,
+                   "71c: OLE metafile at 200 % is not the same drawing as at 100 %");
+        CHECK_COND(page2.convertToFormat(QImage::Format_ARGB32) == page1.convertToFormat(QImage::Format_ARGB32),
+                   "71c: copied page image at 200 % differs from 100 %");
+        CHECK_COND(std::fabs(ml->pageZoom() - 2.0) < 1e-9
+                           && std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6,
+                   "71c: OLE / copy must leave the view at 200 %");
+    }
+    // Edits while zoomed: new curve, axis title text, a new font size.
+    CHECK_COND(g->insertCurve(t, t->name() + "_x", t->name() + "_y2", Graph::LineSymbols),
+               "71: add a curve at 200 %");
+    g->setAxisTitle(QwtPlot::xBottom, QStringLiteral("Strain, e / %"));
+    QApplication::processEvents();
+    CHECK_COND(g->curves() == 2, "71: two curves after adding at 200 %");
+    CHECK_COND(std::fabs(storedPt(g->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-9
+                       && std::fabs(storedPt(g->legend()->font()) - 11.5) < 1e-9,
+               "71: adding a curve / editing a title at 200 % must keep the stored pt");
+    CHECK_COND(std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 25.8) < 1e-6
+                       && base->axisTitle(QwtPlot::xBottom).text() == QStringLiteral("Strain, e / %"),
+               "71: edited axis title must still be drawn at 200 %");
+    {
+        QFont f14 = titleStored;
+        f14.setPointSizeF(14.0);
+        g->setAxisTitleFont(QwtPlot::yLeft, f14);
+        CHECK_COND(std::fabs(storedPt(g->axisTitleFont(QwtPlot::yLeft)) - 14.0) < 1e-9
+                           && std::fabs(base->axisTitle(QwtPlot::yLeft).font().pointSizeF() - 28.0) < 1e-6,
+                   "71: a 14 pt font set at 200 % must be stored as 14 pt and drawn at 28 pt");
+    }
+
+    {
+        g->setAxisTitleFont(QwtPlot::yLeft, yTitleStored);
+        CHECK_COND(std::fabs(storedPt(g->axisTitleFont(QwtPlot::yLeft)) - 12.9) < 1e-9, "71: restore y title");
+    }
+
+    // ---- 71d: 2.0 -> 0.5 -> 1.0 returns to the exact original fonts ----
+    ml->setPageZoom(0.5);
+    QApplication::processEvents();
+    CHECK_COND(std::fabs(base->axisWidget(QwtPlot::xBottom)->font().pointSizeF() - 6.45) < 1e-6,
+               "71d: tick labels drawn at 6.45 pt at 50 %");
+    ml->setPageZoom(1.0);
+    QApplication::processEvents();
+    CHECK_COND(g->axisTitleFont(QwtPlot::xBottom) == titleStored && g->axisFont(QwtPlot::xBottom) == tickStored
+                       && g->legend()->font() == legStored && pl->title().font() == plotTitleStored,
+               "71d: fonts after 2.0 -> 0.5 -> 1.0 differ from the originals");
+    CHECK_COND(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() == 12.9
+                       && base->axisWidget(QwtPlot::xBottom)->font().pointSizeF() == 12.9,
+               "71d: drawn fonts at 100 % must be exactly the stored 12.9 pt");
+    // Many small Ctrl+wheel steps (1.1x each) there and back must not drift either.
+    for (int i = 0; i < 9; ++i) {
+        QWheelEvent we(QPointF(20, 20), ml->mapToGlobal(QPoint(20, 20)), QPoint(), QPoint(0, 120),
+                       Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(ml, &we);
+    }
+    QApplication::processEvents();
+    std::cout << "[INFO] 71d after 9 Ctrl+wheel steps: zoom " << ml->pageZoom() << ", drawn title "
+              << base->axisTitle(QwtPlot::xBottom).font().pointSizeF() << " pt\n";
+    CHECK_COND(ml->pageZoom() > 2.3 && std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF()
+                                                 - 12.9 * ml->pageZoom()) < 1e-6,
+               "71d: Ctrl+wheel zoom must enlarge the drawn text by the zoom");
+    ml->setPageZoom(4.0);
+    ml->setPageZoom(0.25);
+    QApplication::processEvents();
+    CHECK_COND(std::fabs(base->axisTitle(QwtPlot::xBottom).font().pointSizeF() - 12.9 * 0.25) < 1e-6
+                       && std::fabs(storedPt(g->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-9,
+               "71d: 25 % must draw 3.225 pt and keep 12.9 pt stored");
+    ml->setPageZoom(1.0);
+    QApplication::processEvents();
+    CHECK_COND(g->axisTitleFont(QwtPlot::xBottom) == titleStored
+                       && base->axisTitle(QwtPlot::xBottom).font().pointSizeF() == 12.9
+                       && g->legend()->font() == legStored,
+               "71d: fonts after the wheel / 400 % / 25 % round trip differ from the originals");
+    CHECK_COND(suite71FontLines(g) == fontLines1, "71d: saveToString font records changed after zooming");
+
+    // Undo restored in place while the view zoom differs from the snapshot's zoom.
+    {
+        ml->setPageZoom(2.0);
+        QApplication::processEvents();
+        const QString snap = ml->captureUndoSnapshot();
+        QFont f16 = titleStored;
+        f16.setPointSizeF(16.0);
+        g->setAxisTitleFont(QwtPlot::xBottom, f16);
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(ml->restoreSnapshotInPlace(w71, snap), "71: undo snapshot restore");
+        QApplication::processEvents();
+        Graph *gU = ml->activeGraph();
+        CHECK_COND(gU != nullptr, "71: graph after undo restore");
+        QwtPlot *baseU = gU->plotWidget();
+        const double ptU = storedPt(gU->axisTitleFont(QwtPlot::xBottom));
+        std::cout << "[INFO] 71 undo restore: zoom " << ml->pageZoom() << ", stored x title " << ptU
+                  << " pt, drawn " << baseU->axisTitle(QwtPlot::xBottom).font().pointSizeF() << " pt\n";
+        CHECK_COND(std::fabs(ptU - 16.0) > 0.5 && std::fabs(ptU - qRound(12.9)) < 1e-9,
+                   "71: undo must bring back the original (unzoomed) pt");
+        CHECK_COND(std::fabs(baseU->axisTitle(QwtPlot::xBottom).font().pointSizeF() - ptU * ml->pageZoom()) < 1e-6,
+                   "71: after undo the text must be drawn at the page zoom");
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(std::fabs(baseU->axisTitle(QwtPlot::xBottom).font().pointSizeF() - ptU) < 1e-9,
+                   "71: after undo, 100 % must draw the stored pt");
+        g = gU;
+    }
+
+    // Save and reload the project saved at 200 % (done last: creating another
+    // ApplicationWindow resets the tick-label font of open graphs to 10 pt, also at 100 %).
+    ml->setPageZoom(2.0);
+    {
+        QFont f14 = yTitleStored;
+        f14.setPointSizeF(14.0);
+        g->setAxisTitleFont(QwtPlot::yLeft, f14);
+    }
+    {
+        const QByteArray prj = w71->saveProjectToByteArray();
+        const QString prjPath = tmp71.filePath(QStringLiteral("suite71_zoom200.sciprj"));
+        QFile pf(prjPath);
+        CHECK_COND(pf.open(QIODevice::WriteOnly), "71: write project");
+        pf.write(prj);
+        pf.close();
+        ApplicationWindow *reader = new ApplicationWindow();
+        reader->applyUserSettings();
+        CHECK_COND(reader->loadProject(prjPath), "71: reload project saved at 200 %");
+        MultiLayer *mlR = qobject_cast<MultiLayer *>(reader->window(mlName));
+        CHECK_COND(mlR && mlR->activeGraph(), "71: reloaded graph");
+        for (int k = 0; k < 3; ++k)
+            QApplication::processEvents();
+        Graph *gR = mlR->activeGraph();
+        QwtPlot *baseR = gR->plotWidget();
+        const double ptR = storedPt(gR->axisTitleFont(QwtPlot::xBottom));
+        const double shownR = baseR->axisTitle(QwtPlot::xBottom).font().pointSizeF();
+        std::cout << "[INFO] 71 reload: zoom " << mlR->pageZoom() << ", stored x title " << ptR
+                  << " pt, drawn " << shownR << " pt, y title " << storedPt(gR->axisTitleFont(QwtPlot::yLeft))
+                  << " pt\n";
+        // The project format keeps integer pt (12.9 -> 13); what matters is that the zoom did not
+        // get into the file: stored = the rounded original, drawn = stored x zoom.
+        CHECK_COND(std::fabs(ptR - qRound(12.9)) < 1e-9, "71: reloaded stored pt must be the original (not zoomed)");
+        CHECK_COND(std::fabs(storedPt(gR->axisTitleFont(QwtPlot::yLeft)) - 14.0) < 1e-9,
+                   "71: reloaded y title must be the 14 pt set while zoomed");
+        CHECK_COND(gR->curves() == 2, "71: reloaded curves");
+        CHECK_COND(std::fabs(mlR->pageZoom() - 2.0) < 1e-6
+                           && std::fabs(shownR - ptR * mlR->pageZoom()) < 1e-6,
+                   "71: reloaded page must draw the text at its saved zoom");
+        mlR->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(std::fabs(baseR->axisTitle(QwtPlot::xBottom).font().pointSizeF() - ptR) < 1e-9,
+                   "71: reloaded page back at 100 % must draw the stored pt");
+        reader->savedProject();
+        reader->setOleEmbeddedMode(true);
+        delete reader;
+    }
+    ml->askOnCloseEvent(false);
+    w71->savedProject();
+    w71->setOleEmbeddedMode(true);
+    delete w71;
+    QApplication::processEvents();
+    std::cout << "[PASS] Suite 71 passed.\n";
     return 0;
 }

@@ -2309,6 +2309,7 @@ void MultiLayer::copyAllLayers()
 void MultiLayer::printActiveLayer()
 {
     if (active_graph) {
+        ScopedUnzoomForExport unzoomGuard(this);
         active_graph->setScaleOnPrint(d_scale_on_print);
         active_graph->printCropmarks(d_print_cropmarks);
         active_graph->print();
@@ -2329,6 +2330,7 @@ void MultiLayer::print()
 
     QPrintDialog printDialog(&printer);
     if (printDialog.exec() == QDialog::Accepted) {
+        ScopedUnzoomForExport unzoomGuard(this);
         QPainter paint(&printer);
         printAllLayers(&paint);
         paint.end();
@@ -2430,7 +2432,7 @@ void MultiLayer::setFonts(const QFont &titleFnt, const QFont &scaleFnt, const QF
 
     for (int i = 0; i < (int)graphsList.count(); i++) {
         Graph *gr = (Graph *)graphsList.at(i);
-        QwtPlot *plot = gr->plotWidget();
+        Plot *plot = gr->plotWidget();
 
         QwtText text = plot->title();
         text.setFont(tf);
@@ -2461,6 +2463,9 @@ void MultiLayer::installLayerEventFilters(Graph *g)
     g->removeEventFilter(this);
     g->installEventFilter(this);
     if (Plot *pl = g->plotWidget()) {
+        // Called for every layer that joins this page (new, copied, loaded, inset): its text
+        // must be drawn at the page zoom like the other layers.
+        pl->setDisplayFontScale(d_page_zoom);
         pl->removeEventFilter(this);
         pl->installEventFilter(this);
         if (QWidget *cv = pl->canvas()) {
@@ -3886,7 +3891,10 @@ void MultiLayer::setPageZoom(double factor)
                                qMax(60, qRound(gRect.height() * ratio)));
         gr->setGeometry(scaledRect);
         gr->plotWidget()->resize(scaledRect.size());
+        // The text grows with the page like under a magnifier; the stored pt stay as they are.
+        gr->plotWidget()->setDisplayFontScale(d_page_zoom);
         gr->plotWidget()->updateLayout();
+        gr->plotWidget()->replot();
         gr->setIgnoreResizeEvents(savedIgnore[i]);
     }
     l_canvas_width = qMax(50, qRound(l_canvas_width * ratio));
@@ -5052,7 +5060,7 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             gr->changeTicksLength(minTickLen, majTickLen);
         }
 
-        QwtPlot *plot = gr->plotWidget();
+        Plot *plot = gr->plotWidget();
         QwtText pTitle = plot->title();
         QString cleanPlotTitle = pTitle.text();
         cleanPlotTitle.remove(kBoldTagRx);
@@ -6022,6 +6030,13 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         const QMap<QString, QString> a = parseAttrs(trimmed);
         d_page_view_mode = (a.value("view", "0").toInt() != 0);
         d_page_zoom = qBound(0.25, a.value("zoom", "1").toDouble(), 4.0);
+        // Layers that already exist (undo restored in place) draw their text at the restored
+        // zoom; layers created after this tag pick it up in installLayerEventFilters().
+        for (int i = 0; i < graphsList.count(); ++i) {
+            if (Graph *gr = qobject_cast<Graph *>(graphsList.at(i)))
+                if (gr->plotWidget())
+                    gr->plotWidget()->setDisplayFontScale(d_page_zoom);
+        }
         d_page_unit = static_cast<PageUnit>(qBound(0, a.value("unit", "0").toInt(), 3));
         d_page_dpi = qBound(36, a.value("dpi", "300").toInt(), 2400);
         d_page_width_val = qMax(1.0, a.value("w", "520").toDouble());
@@ -7325,6 +7340,8 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
         QFont fnt(QStringLiteral("Arial"), pt, QFont::Normal, false);
         fnt.setBold(false);
         fnt.setHintingPreference(QFont::PreferNoHinting);
+        // Exports run at 100 % (ScopedUnzoomForExport), so this only enlarges the screen view.
+        fnt = plot->displayFont(fnt);
 
         const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
         const QFontMetrics fm(fnt);
@@ -8617,8 +8634,8 @@ void registerStylePresetTranslationsOnce()
         "%1 は新しい版の ToriGraph で書かれています (プリセット形式 %2、この版が読めるのは形式 %3 まで)。分からない設定は無視しました。");
     reg("Axis title \"%1\" is wider than the axis at %2 pt (size kept; shorten the title or enlarge the page).",
         "軸タイトル「%1」は %2 pt では軸より長くなります (文字サイズは変えていません。タイトルを短くするか、ページを大きくしてください)。");
-    reg("Lab Slide (Origin 28 pt equiv., 83.3 mm, paste at 140%)",
-        "研究室スライド (Origin 28 pt 相当、83.3 mm 角、PowerPoint で 140% に拡大)");
+    reg("Lab Slide (18 pt on slide, 83.3 mm, paste at 140%)",
+        "研究室スライド (スライド上で 18 pt、83.3 mm 角、PowerPoint で 140% に拡大)");
     reg("Journal 2-Column (175x85 mm, 600 DPI)", "論文 2 段幅 (175×85 mm, 600 DPI)");
 }
 
@@ -9027,14 +9044,15 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
     slide.largeSlideLayout = true;
     defs.append(slide);
 
-    // E3: lab slide preset. Origin graphs for slides use 28 pt axis titles/tick labels on an
-    // 8.2 in page that Origin copies at 40 % (8.33 cm); PowerPoint then enlarges it to 140 %
-    // (11.7 cm square). ToriGraph pastes at the physical page size, so the equivalent page is
-    // 83.3 mm square with 28 pt x 0.40 = 11.2 pt text; after the 140 % enlargement it looks
-    // exactly like the Origin figure (15.7 pt on the slide).
+    // E3: lab slide preset. The lab pastes slide graphs as an 83.3 mm square page (the size of
+    // an 8.2 in Origin page copied at 40 %) and enlarges it to 140 % in PowerPoint (11.7 cm
+    // square). ToriGraph pastes at the physical page size, so the text is sized for how it should
+    // read on the slide after that enlargement: axis titles and tick labels 18 pt / 1.40 = 12.9 pt
+    // (18 pt on the slide), legend 11.5 pt (16 pt on the slide; same 12.9 / 11.2 ratio over the
+    // former 10 pt). The former 11.2 pt (= Origin 28 pt x 0.40) only read as 15.7 pt on a slide.
     GraphStylePresetSpec lab;
     lab.id = QStringLiteral("lab_slide_83mm");
-    lab.name = QStringLiteral("Lab Slide (Origin 28 pt equiv., 83.3 mm, paste at 140%)");
+    lab.name = QStringLiteral("Lab Slide (18 pt on slide, 83.3 mm, paste at 140%)");
     lab.builtIn = true;
     lab.pageWidthMm = 83.3;
     lab.pageHeightMm = 83.3;
@@ -9046,9 +9064,9 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
     lab.minorTickLen = 4;
     lab.majorTickLen = 8;
     lab.fontFamily = QStringLiteral("Arial");
-    lab.axisTitlePt = 11.2;
-    lab.tickLabelPt = 11.2;
-    lab.legendPt = 10.0;
+    lab.axisTitlePt = 12.9;
+    lab.tickLabelPt = 12.9;
+    lab.legendPt = 11.5;
     lab.minCurveWidth = 2;
     lab.minSymbolSize = 7;
     lab.legendFrame = Legend::None;

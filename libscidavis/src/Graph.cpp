@@ -10341,13 +10341,15 @@ public:
             return;
 
         const double sc = Plot::printDeviceScale();
-        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        QFont tickFont = d_graph->plotWidget()->displayFont(
+                const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom));
         tickFont.setFamily(QStringLiteral("Arial"));
         tickFont.setBold(false);
         tickFont.setWeight(QFont::Normal);
         tickFont.setHintingPreference(QFont::PreferNoHinting);
 
-        QFont vertFont = const_cast<Graph *>(d_graph)->axisTitleFont(QwtPlot::xBottom);
+        QFont vertFont = d_graph->plotWidget()->displayFont(
+                const_cast<Graph *>(d_graph)->axisTitleFont(QwtPlot::xBottom));
         vertFont.setFamily(QStringLiteral("Arial"));
         vertFont.setBold(false);
         vertFont.setWeight(QFont::Normal);
@@ -10522,7 +10524,8 @@ public:
                 1.3,
                 double(d_graph->plotWidget() ? d_graph->plotWidget()->axesLinewidth() : 2));
 
-        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        QFont tickFont = d_graph->plotWidget()->displayFont(
+                const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom));
         tickFont.setFamily(QStringLiteral("Arial"));
         tickFont.setBold(false);
         tickFont.setWeight(QFont::Normal);
@@ -10636,7 +10639,8 @@ public:
             return;
 
         const double sc = Plot::printDeviceScale();
-        QFont tickFont = const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom);
+        QFont tickFont = d_graph->plotWidget()->displayFont(
+                const_cast<Graph *>(d_graph)->axisFont(QwtPlot::xBottom));
         tickFont.setFamily(QStringLiteral("Arial"));
         tickFont.setBold(false);
         tickFont.setWeight(QFont::Normal);
