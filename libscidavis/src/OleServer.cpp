@@ -169,6 +169,8 @@ bool g_embeddedServerMode = false;
 bool g_normalSessionLockHeld = false;
 DWORD g_factoryCookie = 0;
 ComPtr<IDataObject> g_clipboardDataObject;
+//! GetClipboardSequenceNumber() right after the last successful OleSetClipboard
+DWORD g_lastOleSetClipboardSeq = 0;
 
 CLIPFORMAT embedFormat()
 {
@@ -1956,6 +1958,7 @@ static HRESULT setOleClipboardWithRetry(IDataObject *dataObj)
         pumpClipboardMessages(15);
         hr = OleSetClipboard(dataObj);
         if (SUCCEEDED(hr)) {
+            g_lastOleSetClipboardSeq = GetClipboardSequenceNumber();
             pumpClipboardMessages(150);
             return hr;
         }
@@ -1979,6 +1982,16 @@ static void flushOleClipboardWithRetry(IDataObject *dataObj)
         }
         Sleep(25);
     }
+}
+
+DWORD lastCopyClipboardSequence()
+{
+    return g_clipboardDataObject ? g_lastOleSetClipboardSeq : 0;
+}
+
+bool lastCopyStillOnClipboard()
+{
+    return g_clipboardDataObject && OleIsCurrentClipboard(g_clipboardDataObject.Get()) == S_OK;
 }
 
 void shutdownOleServer()
