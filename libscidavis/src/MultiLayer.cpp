@@ -4881,6 +4881,8 @@ bool MultiLayer::applyStylePresetById(const QString &idOrName)
 void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
 {
     const QString beforeSnap = captureUndoSnapshot();
+    // Remembered for graph.to_python (re-applied by the generated script); session only.
+    setProperty("toriAppliedStylePreset", spec.id);
 
     const bool isIsijFormat = spec.formatIsijUnitSlash;
     const bool isSlidePreset = spec.largeSlideLayout;

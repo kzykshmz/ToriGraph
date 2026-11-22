@@ -121,6 +121,7 @@
 #include "AdvancedSignalProc.h"
 #include "GraphStatsAndSurfaceFit.h"
 #include "ExtraPlotTypes.h"
+#include "SettingsTransfer.h"
 #include "RecalcEngine.h"
 #include "I18nJapanese.h"
 #include "GraphMiniToolbar.h"
@@ -3530,6 +3531,8 @@ void ApplicationWindow::initMainMenu()
     edit->addSeparator();
 
     edit->addAction(actionShowConfigureDialog);
+    for (int i = 0; i < SettingsTransfer::ActCount; ++i) // I10: export / import / reset settings
+        edit->addAction(SettingsTransfer::action(this, SettingsTransfer::ActionId(i)));
 
     view = new QMenu(this);
     view->setFont(appFont);
@@ -9117,6 +9120,8 @@ void ApplicationWindow::openTemplate()
 void ApplicationWindow::readSettings()
 {
     auto &settings = getSettings();
+    // Lab-wide defaults next to the exe fill only keys the user has not set (I10).
+    SettingsTransfer::applyLabDefaults(settings, SettingsTransfer::labDefaultsPath());
     /* ---------------- group General --------------- */
     settings.beginGroup("/General");
 #ifdef SEARCH_FOR_UPDATES
@@ -9616,6 +9621,9 @@ void ApplicationWindow::readSettings()
 
 void ApplicationWindow::saveSettings()
 {
+    // After Settings > Import/Reset the stored settings are newer than this window's state.
+    if (SettingsTransfer::saveSuppressed())
+        return;
     // Capture the latest active/most-recent Graph & Table window geometry and settings
     if (!d_ole_embedded) {
         MultiLayer *bestMl = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());

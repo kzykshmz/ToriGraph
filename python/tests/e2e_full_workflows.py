@@ -514,7 +514,7 @@ def run_workflow_2_tensile_presets_export(
         g = app.plot_xy(tbl, x_col="Strain", y_cols=["Stress"], style="line", graph_name="TensileISIJGraph")
         g.apply_style_preset("isij_85mm")
         g.set_axis_break("x", enabled=True, start=0.04, end=0.12, position_pct=45.0)
-        g.add_inset_layer(x_min=0.0, x_max=0.012, y_min=0.0, y_max=540.0)
+        g.add_inset(x_min=0.0, x_max=0.012, y_min=0.0, y_max=540.0)
         g.add_reference_line(axis="y", value=485.0, label="0.2% Proof Stress", color="#DC2626")
         g.add_shaded_band(y_min=470.0, y_max=500.0, color="#2563EB", alpha=40, title="YieldBand")
 
@@ -1331,7 +1331,7 @@ def run_workflow_8_round2_critic_regressions(
         vis_tbl.set_data_dict({"Time": xs, "SignalA": ya, "SignalB": yb})
 
         dd = vis_tbl.get_data_dict()
-        dd_alias = vis_tbl.to_dict(["Time", "SignalB"])
+        dd_alias = vis_tbl.get_data_dict(["Time", "SignalB"])
         assert list(dd.keys()) == ["Time", "SignalA", "SignalB"]
         assert len(dd["SignalA"]) == 8 and abs(dd["SignalA"][3] - 7.5) < 1e-9
         assert list(dd_alias.keys()) == ["Time", "SignalB"]
@@ -2737,13 +2737,13 @@ def run_workflow_11_round5_zero_defect_gate(
         )
         g_cr = app.plot_xy(t_cr, "X", ["V", "V10"], graph_name="ColRen2D")
         app.plot_3d_xyz(t_cr, "X", "V10", "Z", graph_name="ColRen3D")
-        t_cr.set_column_meta("V", name="V_new")
+        t_cr.set_meta("V", name="V_new")
         cr_layer = g_cr.info()["layers"][0]
         assert [c["title"] for c in cr_layer["curves"]] == ["ColRenTbl_V_new", "ColRenTbl_V10"], cr_layer
         cr_leg = cr_layer.get("legend_text", "")
         assert "\\c{1}V_new" in cr_leg and "\\c{2}V10" in cr_leg and "V_new10" not in cr_leg, cr_leg
         g_cr.set_legend(visible=True, text="\\c{1}ColRenTbl_V_new\n\\c{2}ColRenTbl_V10\n")
-        t_cr.set_column_meta("V_new", name="V_final")
+        t_cr.set_meta("V_new", name="V_final")
         cr_leg2 = g_cr.info()["layers"][0].get("legend_text", "")
         assert (
             "\\c{1}ColRenTbl_V_final" in cr_leg2
@@ -2805,6 +2805,11 @@ def run_workflow_12_phase_b_api_sdk_gate(
                 if cls_name in cls_map and attr_name:
                     assert hasattr(cls_map[cls_name], attr_name), (
                         f"Catalog method {entry['method']} advertises missing {cls_name}.{attr_name}"
+                    )
+                    alias_of = getattr(getattr(cls_map[cls_name], attr_name), "_torigraph_alias_of", None)
+                    assert alias_of is None, (
+                        f"Catalog method {entry['method']} advertises deprecated alias "
+                        f"{cls_name}.{attr_name} (use {alias_of})"
                     )
 
         # Actionable -32602 errors with `available` list
@@ -2964,11 +2969,11 @@ def run_workflow_12_phase_b_api_sdk_gate(
 
         # [P1-R2-3] Sub-block paste_tsv(start_row > 0) preserves first pasted row & paste_tsv handles *RAS_ text
         t_sub = app.create_table(rows=2, cols=2, col_names=["Time", "Temp"], name="SubBlockPasteTbl")
-        t_sub.set_col("Time", [0.0, 1.0])
-        t_sub.set_col("Temp", [300.0, 310.0])
+        t_sub.set_column("Time", [0.0, 1.0])
+        t_sub.set_column("Temp", [300.0, 310.0])
         t_sub.paste_tsv("2.0\t320.0\n3.0\t330.0\n", start_row=2, start_col=0)
-        assert t_sub.get_col("Time") == [0.0, 1.0, 2.0, 3.0], f"Sub-block paste dropped row 0: {t_sub.get_data_dict()}"
-        assert t_sub.get_col("Temp") == [300.0, 310.0, 320.0, 330.0]
+        assert t_sub.get_column("Time") == [0.0, 1.0, 2.0, 3.0], f"Sub-block paste dropped row 0: {t_sub.get_data_dict()}"
+        assert t_sub.get_column("Temp") == [300.0, 310.0, 320.0, 330.0]
 
         t_ras_paste = app.paste_tsv(ras_path.read_text(encoding="utf-8"), name="PastedRigakuRAS")
         assert (
@@ -3584,7 +3589,7 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
             eng_s.append(st / (1.0 + ee))
         t_km = app.create_table({"Strain": eng_e, "Stress": eng_s}, units={"Strain": "-", "Stress": "MPa"}, name="W13_VoceTbl")
         g_km = app.plot_xy(t_km, "Strain", "Stress", style="line", graph_name="W13-VoceGraph")
-        km_res = g_km.kocks_mecking(smooth_window=11, create_plot=True)
+        km_res = g_km.analyze_work_hardening(smooth_window=11, create_plot=True)
         assert km_res.get("ok") is True, f"kocks_mecking failed: {km_res}"
 
         # 3. XRD Bragg, Scherrer & Williamson-Hall (`analyze_xrd` & `bragg_convert`)
@@ -3794,7 +3799,7 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
 
         assert len(app.list_sample_datasets(category="")) >= 5
         assert app.set_language(lang="ja").get("ok") is not False
-        assert len(t_grp.get_col("YS", compact=True, include_masked=False)) == 3
+        assert len(t_grp.get_column("YS", compact=True, include_masked=False)) == 3
         assert t_grp.row_stats(start_row=0, end_row=1).get("ok") is not False
         m_kw = app.create_matrix(rows=2, cols=2, name="W13R2_MatKw")
         m_kw.set_data(rows_2d=[[1.0, 2.0], [3.0, 4.0]])
@@ -3812,7 +3817,7 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
             },
             name="W13R2_WeibullTbl",
         )
-        wb_mle = app.weibull_fit(t_wb, "MPa", censor_col="Cens", mle=True, plot=True)
+        wb_mle = app.weibull(t_wb, "MPa", censor_col="Cens", mle=True, plot=True)
         assert wb_mle.get("ok") is True and wb_mle.get("censored_count") == 2 and wb_mle.get("used_mle") is True, wb_mle
 
         t_np3 = app.create_table(
@@ -3824,7 +3829,7 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
             name="W13R2_NpBoxTbl",
         )
         g_np_box = app.plot_box(t_np3, cols=["G1", "G2", "G3"], graph_name="W13R2-NpBox")
-        np_res = app.nonparametric_test(
+        np_res = app.nonparametric(
             t_np3,
             ["G1", "G2", "G3"],
             test="kruskal_wallis",
@@ -3844,7 +3849,7 @@ def run_workflow_13_megawave1_sdk_pptx_matsci_gate(
             es_v.append(st / (1.0 + ee))
         t_voce2 = app.create_table({"Strain": ee_v, "Stress": es_v}, units={"Strain": "-", "Stress": "MPa"}, name="W13R2_VoceTbl")
         g_voce2 = app.plot_xy(t_voce2, "Strain", "Stress", style="line", graph_name="W13R2-Voce")
-        km_classic = g_voce2.kocks_mecking(smooth_window=9, create_plot=True, plot_mode="kocks_mecking")
+        km_classic = g_voce2.analyze_work_hardening(smooth_window=9, create_plot=True, plot_mode="kocks_mecking")
         assert km_classic.get("ok") is True and km_classic.get("graph"), km_classic
 
         lam_cu = 1.540598

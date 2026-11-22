@@ -91,7 +91,7 @@ with tg.launch(headless=True) as app:
 
     # ヤング率 E・0.2%耐力・引張強さ UTS + Kocks-Mecking (dσ_t/dε_t vs σ_t または Considère) 加工硬化解析
     tensile = g.analyze_tensile(offset=0.002, plot_construction=True)
-    km = g.kocks_mecking(smooth_window=11, create_plot=True, plot_mode="kocks_mecking")
+    km = g.analyze_work_hardening(smooth_window=11, create_plot=True, plot_mode="kocks_mecking")
     print(f"sigma_0.2 = {tensile['offset_yield_stress']:.1f} MPa, KM = {km}")
 
     # ワークシートをメタデータ付き DataFrame / NumPy 配列として取得
@@ -223,18 +223,367 @@ spec = app.describe_api("graph.auto_layout")    # 単一メソッドの詳細ス
 
 ---
 
-## 5. 全 API ドメイン一覧
+## 5. API の名前: RPC 名と SDK 名
 
-| ドメイン | 主な RPC / SDK メソッド |
-|---|---|
-| `app.*` | `ping`, `info`, `supported_methods`, `describe_api`, `batch`, `list_sample_datasets`, `load_sample_dataset`, `new_project`, `open_project`, `save_project`, `import_csv`, `import_opj`, `list_windows`, `window_info`, `activate_window`, `rename_window`, `close_window`, `clone_window`, `set_language`, `get_language`, `set_recalc_mode`, `recalculate`, `undo`, `redo`, `set_focus_hud`, `get_focus_hud`, `set_workspace_mode`, `check_updates`, `list_actions`, `trigger_action`, `grab_gui_diagnostic`, `Session.to_pptx` |
-| `table.*` | `create`, `get_info`, `resize`, `add_column`, `remove_column`, `set_column_data`, `get_column_data`, `set_data_dict`, `paste_tsv`, `set_cell`, `get_cell`, `set_column_meta`, `get_column_meta`, `set_formula`, `recalculate`, `mask_rows`, `unmask_rows`, `clear_masks`, `get_masked_rows`, `sort`, `column_stats`, `row_stats`, `export_csv`, `to_matrix`, `TableProxy.to_dataframe`, `TableProxy.to_numpy` |
-| `matrix.*` | `create`, `get_info`, `set_coordinates`, `set_data`, `get_data`, `set_formula`, `transpose`, `invert`, `determinant`, `flip`, `fft2d`, `filter2d`, `analyze_2d_peaks`, `to_table`, `MatrixProxy.to_numpy` |
-| `plot.*` | `xy`, `plot_bars` (`y_err_cols`), `stacked_bars` (`percent_100`), `polar`, `add_curve`, `remove_curve`, `add_error_bars`, `double_y`, `waterfall`, `histogram`, `box`, `violin`, `pareto`, `qq`, `pie`, `vectors`, `ternary`, `function`, `matrix` (`plot_heatmap`), `3d_matrix`, `3d_xyz`, `3d_function` |
-| `graph.*` | `get_info`, `inspect`, `auto_layout` (`fix_layout`), `to_python` (`to_python_script`), `export_ole`, `GraphProxy.to_pptx`, `set_category_labels`, `add_layer`, `remove_layer`, `add_linked_layer`, `add_inset_layer`, `arrange_layers`, `merge_graphs`, `set_page_size`, `fit_page_to_layers`, `fit_layers_to_page`, `apply_style_preset`, `apply_frame_preset`, `apply_square_frame`, `set_panel_labels`, `sync_axis_color`, `step_zoom_history`, `drop_columns`, `set_aspect_ratio`, `copy_format`, `paste_format`, `batch_clone`, `set_title`, `set_axis`, `set_axis_break`, `add_reference_line`, `remove_reference_line`, `clear_reference_lines`, `add_shaded_band`, `set_grid`, `set_curve_style`, `set_curve_visible`, `move_curve`, `set_stack_offsets`, `apply_series_scheme`, `apply_palette`, `set_colorbar`, `set_legend`, `auto_place_legend`, `add_text`, `add_arrow`, `remove_marker`, `mask_region`, `clear_masks`, `export`, `copy_image`, `copy_ole`, `set_3d_options` |
-| `analysis.*` | `list_fit_models`, `fit_linear`, `fit_york`, `fit_polynomial`, `fit_nonlinear`, `fit_global`, `fit_piecewise`, `fit_robust`, `fit_quantile`, `fit_logistic`, `fit_mlr`, `fit_implicit_odr`, `fit_surface_3d`, `compare_models`, `compare_datasets`, `analyze_peaks`, `batch_peaks` |
-| `gadget.*` | `attach`, `set_roi`, `query`, `clear` |
-| `signal.*` | `smooth`, `savgol_derivative`, `fft`, `fft_filter`, `iir_filter`, `stft`, `envelope`, `wavelet_cwt`, `wavelet_denoise`, `welch_psd`, `coherence`, `decimate`, `fsd` |
-| `curvemath.*` | `eval`, `average_curves`, `normalize`, `integrate`, `differentiate`, `interpolate`, `subtract_line`, `intersections`, `lookup_xy`, `polygon_area`, `fill_between`, `offset_yield` (`analyze_tensile`), `kocks_mecking` (`analyze_work_hardening`), `kissinger` (`analyze_kissinger`), `xrd_analyze` (`analyze_xrd`), `bragg_convert`, `vasp_dos` (`plot_vasp_dos`), `vasp_bands` (`plot_vasp_bands`), `arrhenius`, `tauc`, `eis_fit` |
-| `stats.*` | `normality`, `outlier`, `anova_oneway`, `anova_twoway`, `nonparametric`, `paired_plot`, `bland_altman`, `passing_bablok`, `weibull`, `kaplan_meier`, `roc`, `pca`, `correlation`, `clustering`, `confidence_ellipse` |
-| `digitizer.*` | `extract` (`digitize` / `digitize_image`) |
+ToriGraph 本体が受け付ける命令(RPC)と、この SDK のメソッドは名前が別に付いています。
+
+- **RPC 名**は `domain.name` の形(例: `table.set_column_data`)。どの RPC も `app.call("table.set_column_data", table="Data1", col="A", data=[...])` か `app.table.set_column_data(...)` で直接呼べます。一覧と引数は `app.describe_api()` で取れます。
+- **SDK 名**は Python から使うときの名前です。プロキシ(`TableProxy` など)では対象が決まっているので `get_`・`_data`・`table` などを省いた短い名前にし(`tbl.set_column()`、`tbl.info()`)、解析は `analyze_*`、作図は `plot_*` にそろえています。それ以外は RPC 名の後半と同じです(`app.fit_linear()` = `analysis.fit_linear`)。
+- 同じ働きの名前が複数あったものは 1 つに決め、ほかは**非推奨の別名**として残しました。古いスクリプトはそのまま動きますが、呼ぶと `DeprecationWarning` が出ます(スクリプトを直接実行したときは画面に表示されます)。下の表の右の列が別名です。警告を例外にして洗い出すには `python -W error::DeprecationWarning script.py` とします。
+
+主な対応(全部は下の折りたたみ表):
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `table.get_info` | `tbl.info()` | `get_info` |
+| `table.set_column_data` | `tbl.set_column()` | `set_column_data`, `set_col` |
+| `table.get_column_data` | `tbl.get_column()`(値のリストを返す) | `get_column_data`, `get_col` |
+| `table.set_column_meta` / `table.get_column_meta` | `tbl.set_meta()` / `tbl.get_meta()` | `set_column_meta` / `get_column_meta` |
+| `table.column_stats` | `tbl.stats()` | `column_stats` |
+| (SDK 内で処理) | `tbl.get_data_dict()` | `to_dict` |
+| `graph.auto_layout` | `g.auto_layout()` | `fix_layout` |
+| `graph.add_inset_layer` | `g.add_inset()` | `add_inset_layer` |
+| `graph.to_python` | `g.to_python()`(辞書)/ `g.to_python_script()`(文字列) | `app.export_python_script` |
+| `curvemath.offset_yield` | `analyze_tensile()` | `offset_yield` |
+| `curvemath.kocks_mecking` | `analyze_work_hardening()` | `kocks_mecking` |
+| `curvemath.kissinger` | `app.analyze_kissinger()` | `kissinger`, `kissinger_plot` |
+| `curvemath.xrd_analyze` | `analyze_xrd()` | `xrd_analyze` |
+| `curvemath.vasp_dos` / `vasp_bands` | `app.plot_vasp_dos()` / `app.plot_vasp_bands()` | `vasp_dos`, `plot_dos` / `vasp_bands`, `plot_bands` |
+| `gadget.clear` | `app.clear_gadgets()` | `clear_gadget` |
+| `digitizer.extract` | `app.digitize()` | `extract_digitizer`, `digitize_image` |
+| `stats.weibull` / `stats.roc` | `app.weibull()` / `app.roc()` | `weibull_fit` / `roc_analysis`, `roc_curve` |
+
+### 型情報
+
+パッケージに `py.typed` を置いています(PEP 561)。エディタや mypy で引数の型と説明が出ます。よく使う `fit_linear`・`fit_nonlinear`・`smooth`・`fft`・`plot_xy`・`g.export`・`to_pptx` は引数を明示し、説明(docstring)を付けました。そのほかのメソッドで `**kwargs` だけのものは、RPC の引数をそのまま渡します(`app.describe_api("signal.fft_filter")` で確認)。
+
+### `plot_xy` のデータの渡し方
+
+```python
+g = app.plot_xy(tbl, "Strain", ["Stress"])            # ワークシートの列(DataFrame・dict も可)
+g = app.plot_xy(x=strain, y=stress)                    # 配列をそのまま
+g = app.plot_xy(x=t, y=[y1, y2], y_err=[e1, e2])       # 同じ x に複数の曲線とエラーバー
+g = app.plot_xy(strain, stress)                        # 位置引数でも可(従来どおり)
+```
+
+2 番目の位置引数は本来 X 列の指定ですが、1 番目と 2 番目がどちらも配列のときだけ「X の値・Y の値」と読みます。配列のときに 3 番目の位置引数(`y_cols`)を渡すと、誤差や形式の指定と取り違えないよう `TypeError` にしています(誤差は `y_err=`、形式は `style=`)。
+
+### UI の言語
+
+`tg.launch()` と `tg.connect_or_launch()` の `language` の既定は `None` で、起動した ToriGraph の言語を変えません(利用者の設定のまま。新しく入れた PC では日本語)。以前の既定 `"ja"` は、英語で使っている人の画面をスクリプトが黙って日本語に切り替え、その設定が次の起動にも残ることがありました。グラフの文字列を言語に合わせたいスクリプトは `language="ja"` か `"en"` を明示してください。`tg.connect()` で既存のセッションにつないだときは、言語は変えません。
+
+### 全メソッドの対応表
+
+<details><summary>`Session`(`app`): 138 メソッド</summary>
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `analysis.analyze_peaks` | `app.analyze_peaks()` |  |
+| `analysis.batch_peaks` | `app.batch_peaks()` |  |
+| `analysis.compare_datasets` | `app.compare_datasets()` |  |
+| `analysis.compare_models` | `app.compare_models()` |  |
+| `analysis.fit_global` | `app.fit_global()` |  |
+| `analysis.fit_implicit_odr` | `app.fit_implicit_odr()` |  |
+| `analysis.fit_linear` | `app.fit_linear()` |  |
+| `analysis.fit_logistic` | `app.fit_logistic()` |  |
+| `analysis.fit_mlr` | `app.fit_mlr()` |  |
+| `analysis.fit_nonlinear` | `app.fit_nonlinear()` |  |
+| `analysis.fit_piecewise` | `app.fit_piecewise()` |  |
+| `analysis.fit_polynomial` | `app.fit_polynomial()` |  |
+| `analysis.fit_quantile` | `app.fit_quantile()` |  |
+| `analysis.fit_robust` | `app.fit_robust()` |  |
+| `analysis.fit_surface_3d` | `app.fit_surface_3d()` |  |
+| `analysis.fit_york` | `app.fit_york()` |  |
+| `analysis.list_fit_models` | `app.list_fit_models()` |  |
+| `app.activate_window` | `app.activate_window()` |  |
+| `app.batch` | `app.batch()` |  |
+| `app.check_updates` | `app.check_updates()` |  |
+| `app.clone_window` | `app.clone_window()` |  |
+| `app.close_window` | `app.close_window()` |  |
+| `app.describe_api` | `app.describe_api()` |  |
+| `app.get_focus_hud` | `app.get_focus_hud()` |  |
+| `app.get_language` | `app.get_language()` |  |
+| `app.grab_gui_diagnostic` | `app.grab_gui_diagnostic()` |  |
+| `app.import_csv` | `app.import_csv()` |  |
+| `app.import_opj` | `app.import_opj()` |  |
+| `app.import_xlsx` | `app.import_xlsx()` |  |
+| `app.info` | `app.info()` |  |
+| `app.list_actions` | `app.list_actions()` |  |
+| `app.list_sample_datasets` | `app.list_sample_datasets()` |  |
+| `app.list_windows` | `app.list_windows()` |  |
+| `app.load_sample_dataset` | `app.load_sample_dataset()` |  |
+| `app.new_project` | `app.new_project()` |  |
+| `app.open_project` | `app.open_project()` |  |
+| `app.recalculate` | `app.recalculate()` |  |
+| `app.redo` | `app.redo()` |  |
+| `app.rename_window` | `app.rename_window()` |  |
+| `app.save_project` | `app.save_project()` |  |
+| `app.set_focus_hud` | `app.set_focus_hud()` |  |
+| `app.set_language` | `app.set_language()` |  |
+| `app.set_recalc_mode` | `app.set_recalc_mode()` |  |
+| `app.set_workspace_mode` | `app.set_workspace_mode()` |  |
+| `app.supported_methods` | `app.supported_methods()` |  |
+| `app.trigger_action` | `app.trigger_action()` |  |
+| `app.undo` | `app.undo()` |  |
+| `app.window_info` | `app.window_info()` |  |
+| `curvemath.arrhenius` | `app.arrhenius()` | `arrhenius_plot` |
+| `curvemath.average_curves` | `app.average_curves()` |  |
+| `curvemath.bragg_convert` | `app.bragg_convert()` |  |
+| `curvemath.differentiate` | `app.differentiate_curve()` |  |
+| `curvemath.eis_fit` | `app.eis_fit()` |  |
+| `curvemath.eval` | `app.curve_eval()` | `curve_math`, `eval_curves` |
+| `curvemath.fill_between` | `app.fill_between()` |  |
+| `curvemath.integrate` | `app.integrate_curve()` |  |
+| `curvemath.interpolate` | `app.interpolate_curve()` |  |
+| `curvemath.intersections` | `app.intersections()` | `curve_intersections`, `find_intersections` |
+| `curvemath.kissinger` | `app.analyze_kissinger()` | `kissinger`, `kissinger_plot` |
+| `curvemath.kocks_mecking` | `app.analyze_work_hardening()` | `kocks_mecking` |
+| `curvemath.lookup_xy` | `app.lookup_xy()` |  |
+| `curvemath.normalize` | `app.normalize_curve()` |  |
+| `curvemath.offset_yield` | `app.analyze_tensile()` | `offset_yield` |
+| `curvemath.polygon_area` | `app.polygon_area()` |  |
+| `curvemath.subtract_line` | `app.subtract_line()` | `subtract_straight_line` |
+| `curvemath.tauc` | `app.tauc()` | `tauc_bandgap` |
+| `curvemath.vasp_band_dos` | `app.plot_vasp_band_dos()` | `plot_band_dos`, `vasp_band_dos` |
+| `curvemath.vasp_bands` | `app.plot_vasp_bands()` | `plot_bands`, `vasp_bands` |
+| `curvemath.vasp_dos` | `app.plot_vasp_dos()` | `plot_dos`, `vasp_dos` |
+| `curvemath.xrd_analyze` | `app.analyze_xrd()` | `xrd_analyze` |
+| `digitizer.extract` | `app.digitize()` | `digitize_image`, `extract_digitizer` |
+| `gadget.attach` | `app.attach_gadget()` |  |
+| `gadget.clear` | `app.clear_gadgets()` | `clear_gadget` |
+| `gadget.query` | `app.query_gadget()` |  |
+| `gadget.set_roi` | `app.set_gadget_roi()` |  |
+| `graph.auto_layout` | `app.auto_layout()` | `fix_layout` |
+| `graph.drop_columns` | `app.drop_columns()` |  |
+| `graph.export_ole` | `app.export_ole()` |  |
+| `graph.merge_graphs` | `app.merge_graphs()` |  |
+| `graph.to_python` | `app.to_python()` |  |
+| `matrix.create`<br>`matrix.set_data` | `app.create_matrix()` |  |
+| `ping` | `app.ping()` |  |
+| `plot.3d_function` | `app.plot_3d_function()` |  |
+| `plot.3d_matrix` | `app.plot_3d_matrix()` |  |
+| `plot.3d_xyz` | `app.plot_3d_xyz()` |  |
+| `plot.box` | `app.plot_box()` |  |
+| `plot.color_scatter` | `app.plot_color_scatter()` |  |
+| `plot.double_y` | `app.plot_double_y()` |  |
+| `plot.function` | `app.plot_function()` |  |
+| `plot.histogram` | `app.plot_histogram()` |  |
+| `plot.histogram_cumulative` | `app.plot_histogram_cumulative()` |  |
+| `plot.matrix` | `app.plot_matrix()` |  |
+| `plot.pareto` | `app.plot_pareto()` |  |
+| `plot.pie` | `app.plot_pie()` |  |
+| `plot.polar` | `app.plot_polar()` |  |
+| `plot.qq` | `app.plot_qq()` |  |
+| `plot.stacked_bars` | `app.plot_stacked_bars()` |  |
+| `plot.ternary` | `app.plot_ternary()` |  |
+| `plot.vectors` | `app.plot_vectors()` |  |
+| `plot.violin` | `app.plot_violin()` |  |
+| `plot.waterfall` | `app.plot_waterfall()` |  |
+| `plot.xy` | `app.plot_xy()` |  |
+| `signal.coherence` | `app.coherence()` |  |
+| `signal.decimate` | `app.decimate()` |  |
+| `signal.envelope` | `app.envelope()` | `hilbert_envelope` |
+| `signal.fft` | `app.fft()` |  |
+| `signal.fft_filter` | `app.fft_filter()` |  |
+| `signal.fsd` | `app.fsd()` | `fourier_self_deconvolution` |
+| `signal.iir_filter` | `app.iir_filter()` |  |
+| `signal.savgol_derivative` | `app.savgol_derivative()` |  |
+| `signal.smooth` | `app.smooth()` |  |
+| `signal.stft` | `app.stft()` |  |
+| `signal.wavelet_cwt` | `app.wavelet_cwt()` |  |
+| `signal.wavelet_denoise` | `app.wavelet_denoise()` |  |
+| `signal.welch_psd` | `app.welch_psd()` |  |
+| `stats.anova_oneway` | `app.anova_oneway()` | `anova_one_way` |
+| `stats.anova_twoway` | `app.anova_twoway()` | `anova_two_way` |
+| `stats.bland_altman` | `app.bland_altman()` |  |
+| `stats.clustering` | `app.clustering()` |  |
+| `stats.confidence_ellipse` | `app.confidence_ellipse()` | `add_confidence_ellipse` |
+| `stats.correlation` | `app.correlation()` | `correlation_matrix` |
+| `stats.kaplan_meier` | `app.kaplan_meier()` |  |
+| `stats.nonparametric` | `app.nonparametric()` | `nonparametric_test` |
+| `stats.normality` | `app.normality()` | `normality_test` |
+| `stats.outlier` | `app.outlier()` | `outlier_test` |
+| `stats.paired_plot` | `app.paired_plot()` | `paired_estimation_plot` |
+| `stats.passing_bablok` | `app.passing_bablok()` |  |
+| `stats.pca` | `app.pca()` |  |
+| `stats.probability_plot` | `app.probability_plot()` |  |
+| `stats.roc` | `app.roc()` | `roc_analysis`, `roc_curve` |
+| `stats.weibull` | `app.weibull()` | `weibull_fit` |
+| `table.create`<br>`table.set_data_dict` | `app.create_table()` |  |
+| `table.paste_tsv` | `app.paste_tsv()` |  |
+| (SDK 内で処理) | `app.plot_bars()` |  |
+| (SDK 内で処理) | `app.plot_heatmap()` |  |
+| (SDK 内で処理) | `app.set_category_labels()` |  |
+| (SDK 内で処理) | `app.to_pptx()` |  |
+| (SDK 内で処理) | `app.to_python_script()` | `export_python_script` |
+
+</details>
+
+<details><summary>`TableProxy`(`tbl = app.table("名前")`): 28 メソッド</summary>
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `app.redo` | `tbl.redo()` |  |
+| `app.undo` | `tbl.undo()` |  |
+| `table.add_column` | `tbl.add_column()` |  |
+| `table.clear_masks` | `tbl.clear_masks()` |  |
+| `table.column_stats` | `tbl.stats()` | `column_stats` |
+| `table.export_csv` | `tbl.export_csv()` |  |
+| `table.get_cell` | `tbl.get_cell()` |  |
+| `table.get_column_data` | `tbl.get_column()` | `get_col`, `get_column_data` |
+| `table.get_column_meta` | `tbl.get_meta()` | `get_column_meta` |
+| `table.get_info` | `tbl.info()` | `get_info` |
+| `table.get_masked_rows` | `tbl.get_masked_rows()` |  |
+| `table.mask_rows` | `tbl.mask_rows()` |  |
+| `table.paste_tsv` | `tbl.paste_tsv()` |  |
+| `table.recalculate` | `tbl.recalculate()` |  |
+| `table.remove_column` | `tbl.remove_column()` |  |
+| `table.resize` | `tbl.resize()` |  |
+| `table.row_stats` | `tbl.row_stats()` |  |
+| `table.set_cell` | `tbl.set_cell()` |  |
+| `table.set_column_data` | `tbl.set_column()` | `set_col`, `set_column_data` |
+| `table.set_column_meta` | `tbl.set_meta()` | `set_column_meta` |
+| `table.set_data_dict` | `tbl.set_data_dict()` |  |
+| `table.set_formula` | `tbl.set_formula()` |  |
+| `table.sort` | `tbl.sort()` |  |
+| `table.to_matrix` | `tbl.to_matrix()` |  |
+| `table.unmask_rows` | `tbl.unmask_rows()` |  |
+| (SDK 内で処理) | `tbl.get_data_dict()` | `to_dict` |
+| (SDK 内で処理) | `tbl.to_dataframe()` |  |
+| (SDK 内で処理) | `tbl.to_numpy()` |  |
+
+</details>
+
+<details><summary>`MatrixProxy`(`m = app.matrix("名前")`): 20 メソッド</summary>
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `app.redo` | `m.redo()` |  |
+| `app.undo` | `m.undo()` |  |
+| `matrix.analyze_2d_peaks` | `m.analyze_2d_peaks()` | `find_2d_peaks` |
+| `matrix.determinant` | `m.determinant()` |  |
+| `matrix.fft2d` | `m.fft2d()` |  |
+| `matrix.filter2d` | `m.filter2d()` |  |
+| `matrix.flip` | `m.flip()` |  |
+| `matrix.get_data` | `m.get_data()` |  |
+| `matrix.get_info` | `m.info()` | `get_info` |
+| `matrix.invert` | `m.invert()` |  |
+| `matrix.set_coordinates` | `m.set_coordinates()` |  |
+| `matrix.set_data` | `m.set_data()` |  |
+| `matrix.set_formula` | `m.set_formula()` |  |
+| `matrix.to_table` | `m.to_table()` |  |
+| `matrix.transpose` | `m.transpose()` |  |
+| (SDK 内で処理) | `m.plot_3d()` |  |
+| (SDK 内で処理) | `m.plot_contour()` |  |
+| (SDK 内で処理) | `m.plot_grayscale()` |  |
+| (SDK 内で処理) | `m.plot_heatmap()` |  |
+| (SDK 内で処理) | `m.to_numpy()` |  |
+
+</details>
+
+<details><summary>`GraphProxy`(`g = app.graph("名前")`): 70 メソッド</summary>
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `app.redo` | `g.redo()` |  |
+| `app.undo` | `g.undo()` |  |
+| `curvemath.offset_yield` | `g.analyze_tensile()` | `offset_yield` |
+| `gadget.attach` | `g.attach_gadget()` |  |
+| `gadget.clear` | `g.clear_gadgets()` | `clear_gadget` |
+| `gadget.query` | `g.query_gadget()` |  |
+| `gadget.set_roi` | `g.set_gadget_roi()` |  |
+| `graph.add_arrow` | `g.add_arrow()` |  |
+| `graph.add_error_band` | `g.add_error_band()` |  |
+| `graph.add_inset_layer` | `g.add_inset()` | `add_inset_layer` |
+| `graph.add_layer` | `g.add_layer()` |  |
+| `graph.add_linked_layer` | `g.add_linked_layer()` |  |
+| `graph.add_reference_line` | `g.add_reference_line()` |  |
+| `graph.add_shaded_band` | `g.add_shaded_band()` |  |
+| `graph.add_text` | `g.add_text()` |  |
+| `graph.apply_frame_preset` | `g.apply_frame_preset()` |  |
+| `graph.apply_palette` | `g.apply_palette()` |  |
+| `graph.apply_series_scheme` | `g.apply_series_scheme()` |  |
+| `graph.apply_square_frame` | `g.apply_square_frame()` |  |
+| `graph.apply_style_preset` | `g.apply_style_preset()` |  |
+| `graph.arrange_layers` | `g.arrange_layers()` |  |
+| `graph.auto_layout` | `g.auto_layout()` | `fix_layout` |
+| `graph.auto_place_legend` | `g.auto_place_legend()` |  |
+| `graph.batch_clone` | `g.batch_clone()` |  |
+| `graph.clear_masks` | `g.clear_masks()` |  |
+| `graph.clear_reference_lines` | `g.clear_reference_lines()` |  |
+| `graph.copy_format` | `g.copy_format()` |  |
+| `graph.copy_image` | `g.copy_image()` |  |
+| `graph.copy_ole` | `g.copy_ole()` |  |
+| `graph.drop_columns` | `g.drop_columns()` |  |
+| `graph.export` | `g.export()` |  |
+| `graph.export_ole` | `g.export_ole()` |  |
+| `graph.fit_layers_to_page` | `g.fit_layers_to_page()` |  |
+| `graph.fit_page_to_layers` | `g.fit_page_to_layers()` |  |
+| `graph.get_info` | `g.info()` | `get_info` |
+| `graph.inspect` | `g.inspect()` |  |
+| `graph.mask_region` | `g.mask_region()` |  |
+| `graph.move_curve` | `g.move_curve()` |  |
+| `graph.paste_format` | `g.paste_format()` |  |
+| `graph.remove_layer` | `g.remove_layer()` |  |
+| `graph.remove_marker` | `g.remove_marker()` |  |
+| `graph.remove_reference_line` | `g.remove_reference_line()` |  |
+| `graph.set_3d_options` | `g.set_3d_options()` | `set_options` |
+| `graph.set_aspect_ratio` | `g.set_aspect_ratio()` |  |
+| `graph.set_axis` | `g.set_axis()` |  |
+| `graph.set_axis_break` | `g.set_axis_break()` |  |
+| `graph.set_category_labels` | `g.set_category_labels()` |  |
+| `graph.set_colorbar` | `g.set_colorbar()` |  |
+| `graph.set_curve_style` | `g.set_curve_style()` |  |
+| `graph.set_curve_visible` | `g.set_curve_visible()` |  |
+| `graph.set_grid` | `g.set_grid()` |  |
+| `graph.set_legend` | `g.set_legend()` |  |
+| `graph.set_page_size` | `g.set_page_size()` |  |
+| `graph.set_panel_labels` | `g.set_panel_labels()` |  |
+| `graph.set_stack_offsets` | `g.set_stack_offsets()` |  |
+| `graph.set_title` | `g.set_title()` |  |
+| `graph.step_zoom_history` | `g.step_zoom_history()` |  |
+| `graph.sync_axis_color` | `g.sync_axis_color()` |  |
+| `graph.to_python` | `g.to_python()` |  |
+| `plot.add_curve` | `g.add_curve()` |  |
+| `plot.add_error_bars` | `g.add_error_bars()` |  |
+| `plot.remove_curve` | `g.remove_curve()` |  |
+| (SDK 内で処理) | `g.analyze_work_hardening()` | `kocks_mecking` |
+| (SDK 内で処理) | `g.analyze_xrd()` | `xrd_analyze` |
+| (SDK 内で処理) | `g.bragg_convert()` |  |
+| (SDK 内で処理) | `g.diagnose_layout()` |  |
+| (SDK 内で処理) | `g.isij_style()` |  |
+| (SDK 内で処理) | `g.slide_style()` |  |
+| (SDK 内で処理) | `g.to_pptx()` |  |
+| (SDK 内で処理) | `g.to_python_script()` |  |
+
+</details>
+
+---
+
+## 6. `to_python_script` の再現範囲
+
+`g.to_python_script()`(RPC `graph.to_python`)は、グラフを描き直す Python スクリプトを作ります。描き直すのは見た目(データ・曲線・軸・注釈)で、解析やフィットの計算はやり直しません。描き直せない要素がグラフにあると、スクリプトの冒頭に `# 未再現: ...` のコメントが並びます。実行する前にそこを見て、必要なら手で合わせてください。
+
+| 要素 | 再現 | 補足 |
+|---|---|---|
+| ワークシートのデータ・単位・Long Name・列の役割・数式・マスク | する | `embed_data="inline"`(既定)。`"csv"` は CSV に書き出して読み込み、`"reference"` は既存のワークシートを名前で参照 |
+| 行列(値・座標範囲・数式) | する | |
+| 折れ線・散布図・線+シンボル・スプライン・面・ステップ・ドロップライン | する | 曲線の色・線幅・線種・シンボルと大きさ・中抜き・間引き・表示/非表示 |
+| 関数曲線 | する | |
+| エラーバー | する | 向き(x / y) |
+| エラーバンド | する | `g.add_error_band`(非対称のバンドも) |
+| 2 軸(右 Y 軸) | する | 2 本目以降の曲線を右軸に付ける。1 本目の曲線が右軸のときは `# 未再現` |
+| 棒グラフ(縦・横) | 一部 | 種類とカテゴリ名は再現。棒を横に並べるずらし量は `# 未再現` |
+| 積み上げ棒・100% 積み上げ | しない | 棒が重なって描かれる(`# 未再現`)。`app.plot_stacked_bars` で作り直す |
+| ヒストグラム(パネル積み重ねを含む)・箱ひげ・バイオリン・円・極座標・三角図 | する | |
+| 複数レイヤー・連動レイヤー・挿入図(インセット)・パネルラベル | する | |
+| 軸(範囲・対数・反転・刻み・題・文字の大きさ・目盛りの向き・ラベルの回転)・軸の省略・カテゴリ名・グリッド | する | |
+| 参照線・塗りつぶし帯・凡例・文字・矢印・ページの大きさ | する | |
+| スタイルプリセット | する | そのセッションで最後に当てたプリセットを `g.apply_style_preset` で当て、その後に個々の設定で今の値に合わせる。プロジェクトを開き直した後は記録がないので出ない |
+| カラーマップ(等高線・行列の図) | 一部 | 行列、カラーバーの範囲と水準数 |
+| 3D グラフ | 一部 | データ・題・回転・正射影だけ。色・軸範囲などは `# 未再現` |
+| ウォーターフォール・スタックオフセット | しない | 曲線のずらし(`# 未再現`)。`g.set_stack_offsets` で付け直す |
+| ベクトル図 | しない | 矢印ではなく点を結んだ線になる(`# 未再現`) |
+| 値で色を変える散布図・確率目盛り(対数正規・Gumbel・ワイブル)・独自の目盛りラベル | しない | `# 未再現` |
+| フィット | しない | フィット曲線は数値データとして描き直す。フィットの条件と結果のパラメータは `# 未再現` |
+| 解析結果(0.2% 耐力、XRD、TDS などの数値) | しない | 図に描かれた補助線や注釈は描き直すが、計算はしない |

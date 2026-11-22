@@ -6489,15 +6489,15 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Remove a column by 0-based index or name.", "table:str=''; col:int|str*",
       "tbl.remove_column('TempCol')" },
     { "table.set_column_data", "table",
-      "TableProxy.set_col(col, data, *, mode=None, units=None, long_name=None, plot_designation=None)",
+      "TableProxy.set_column(col, data, *, mode=None, units=None, long_name=None, plot_designation=None)",
       "Write an array of numeric or text values (None/NaN stored as invalid cells) and optional metadata.",
       "table:str=''; col:int|str*; data:list*; mode:str=''; units:str=''; long_name:str=''; plot_designation:str=''",
-      "tbl.set_col('Strain', [0.0, 0.2, 0.5], units='%', plot_designation='X')" },
+      "tbl.set_column('Strain', [0.0, 0.2, 0.5], units='%', plot_designation='X')" },
     { "table.get_column_data", "table",
-      "TableProxy.get_col(col, *, compact=False, include_masked=True)",
+      "TableProxy.get_column(col, *, compact=False, include_masked=True)",
       "Read column values (null for invalid/NaN cells) and sparse/dense row mask metadata.",
       "table:str=''; col:int|str*; compact:bool=false; include_masked:bool=true",
-      "vals = tbl.get_col('Stress')" },
+      "vals = tbl.get_column('Stress')" },
     { "table.set_data_dict", "table",
       "TableProxy.set_data_dict(data, *, units=None, long_names=None, designations=None, comments=None)",
       "Populate multiple named columns in one call with units, long_names, and plot designations.",
@@ -6552,9 +6552,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Sort the entire worksheet (or a single column) by a leading column.",
       "table:str=''; by:int|str=0; ascending:bool=true; only_column:bool=false",
       "tbl.sort('Strain', ascending=True)" },
-    { "table.column_stats", "table", "TableProxy.column_stats(col=None, *, ignore_masked=True)",
+    { "table.column_stats", "table", "TableProxy.stats(col=None, *, ignore_masked=True)",
       "Compute descriptive statistics (n, mean, sd, se, min, q1, median, q3, iqr, max, sum) per column.",
-      "table:str=''; col:int|str=null; ignore_masked:bool=true", "tbl.column_stats('Stress')" },
+      "table:str=''; col:int|str=null; ignore_masked:bool=true", "tbl.stats('Stress')" },
     { "table.row_stats", "table",
       "TableProxy.row_stats(rows=None, *, start_row=None, end_row=None)",
       "Compute descriptive statistics across numeric columns for each row.",
@@ -6932,10 +6932,10 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; pad_fraction:float=0.05; allow_page_resize:bool=true; allow_tick_rotation:bool=true; allow_outside_legend:bool=true; max_passes:int=3; dry_run:bool=false",
       "res = g.auto_layout()" },
     { "graph.fix_layout", "graph",
-      "GraphProxy.fix_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
+      "GraphProxy.auto_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
       "Alias of graph.auto_layout.",
       "graph:str=''; pad_fraction:float=0.05; allow_page_resize:bool=true; allow_tick_rotation:bool=true; allow_outside_legend:bool=true; max_passes:int=3; dry_run:bool=false",
-      "res = g.fix_layout()" },
+      "res = g.auto_layout()" },
     { "graph.to_python", "graph",
       "GraphProxy.to_python_script(path=None, *, embed_data='inline', standalone=True)",
       "Generate a clean, runnable 'import torigraph as tg' Python script reproducing the target graph's data, styles, axes, layers, insets, reference lines, and annotations.",
@@ -7033,8 +7033,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "gadget.query", "gadget", "Session.query_gadget(graph=None, *, create_table=False)",
       "Read live metrics from the active gadget on a graph.",
       "graph:str=''; create_table:bool=false", "app.query_gadget(g)" },
-    { "gadget.clear", "gadget", "Session.clear_gadget(graph=None)",
-      "Detach and remove the active gadget from a graph.", "graph:str=''", "app.clear_gadget(g)" },
+    { "gadget.clear", "gadget", "Session.clear_gadgets(graph=None)",
+      "Detach and remove the active gadget from a graph.", "graph:str=''", "app.clear_gadgets(g)" },
 
     // 8. Signal Processing (signal.*)
     { "signal.smooth", "signal", "Session.smooth(*, method='savgol', window=7, poly_order=2, graph=None, curve=None)",
@@ -7060,9 +7060,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "signal.stft", "signal", "Session.stft(*, window_size=64, overlap=32, graph=None)",
       "Compute Short-Time Fourier Transform spectrogram matrix.",
       "window_size:int=64; overlap:int=32; hop_size:int=null; graph:str=''", "app.stft(graph=g, window_size=128)" },
-    { "signal.envelope", "signal", "Session.hilbert_envelope(*, graph=None, curve=None)",
+    { "signal.envelope", "signal", "Session.envelope(*, graph=None, curve=None)",
       "Compute upper/lower Hilbert analytic signal envelope.", "graph:str=''; curve:int|str=null",
-      "app.hilbert_envelope(graph=g)" },
+      "app.envelope(graph=g)" },
     { "signal.wavelet_cwt", "signal", "Session.wavelet_cwt(*, scales=32, graph=None)",
       "Compute Morlet Continuous Wavelet Transform scalogram.",
       "scales:int=32; wavelet:str='morlet'[morlet|ricker]; graph:str=''",
@@ -7081,16 +7081,16 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "signal.decimate", "signal", "Session.decimate(*, factor=4, graph=None)",
       "Anti-aliased signal downsampling/decimation by an integer factor.",
       "factor:int=4; graph:str=''", "app.decimate(graph=g, factor=5)" },
-    { "signal.fsd", "signal", "Session.fourier_self_deconvolution(*, gamma=5.0, smoothing=0.2, graph=None)",
+    { "signal.fsd", "signal", "Session.fsd(*, gamma=5.0, smoothing=0.2, graph=None)",
       "Resolution-enhancing Fourier Self-Deconvolution for overlapping IR/Raman bands.",
       "gamma:float=5.0; smoothing:float=0.2; graph:str=''",
-      "app.fourier_self_deconvolution(graph=g, gamma=2.5)" },
+      "app.fsd(graph=g, gamma=2.5)" },
 
     // 9. Curve Math & Materials Science (curvemath.*)
-    { "curvemath.eval", "curvemath", "Session.curve_math(graph=None, curve_a=0, curve_b=1, *, op='sub')",
+    { "curvemath.eval", "curvemath", "Session.curve_eval(graph=None, curve_a=0, curve_b=1, *, op='sub')",
       "Binary math (+, -, *, /) between two curves interpolated onto a common X grid.",
       "graph:str=''; curve_a:int|str=0; curve_b:int|str=1; op:str='sub'[add|sub|mul|div]",
-      "app.curve_math(g, 'Sample', 'Blank', op='sub')" },
+      "app.curve_eval(g, 'Sample', 'Blank', op='sub')" },
     { "curvemath.average_curves", "curvemath", "Session.average_curves(graph=None, *, curves=None, points=200)",
       "Compute mean curve and +/- SD shaded band across replicate curves.",
       "graph:str=''; curves:list=null; points:int=200; sd_band:bool=true", "app.average_curves(g)" },
@@ -7113,14 +7113,14 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "method:str='spline'[linear|spline|akima]; points:int=200; x_min:float=null; x_max:float=null; graph:str=''; curve:int|str=null",
       "app.interpolate_curve(graph=g, method='akima', points=300)" },
     { "curvemath.subtract_line", "curvemath",
-      "Session.subtract_straight_line(*, x1=0.0, y1=0.0, x2=1.0, y2=0.0, graph=None)",
+      "Session.subtract_line(*, x1=0.0, y1=0.0, x2=1.0, y2=0.0, graph=None)",
       "Subtract a two-point linear baseline from a curve.",
       "x1:float*; y1:float*; x2:float*; y2:float*; graph:str=''; curve:int|str=null; in_place:bool=false",
-      "app.subtract_straight_line(graph=g, x1=0, y1=10, x2=100, y2=15)" },
-    { "curvemath.intersections", "curvemath", "Session.curve_intersections(graph=None, curve_a=0, curve_b=1)",
+      "app.subtract_line(graph=g, x1=0, y1=10, x2=100, y2=15)" },
+    { "curvemath.intersections", "curvemath", "Session.intersections(graph=None, curve_a=0, curve_b=1)",
       "Find all (x, y) intersection points between two curves.",
       "graph:str=''; curve_a:int|str=0; curve_b:int|str=1; mark:bool=true",
-      "pts = app.curve_intersections(g, 0, 1)" },
+      "pts = app.intersections(g, 0, 1)" },
     { "curvemath.lookup_xy", "curvemath", "Session.lookup_xy(*, x=None, y=None, graph=None, curve=None)",
       "Interpolate Y at given X (or solve all X roots where curve crosses Y).",
       "x:float=null; y:float=null; graph:str=''; curve:int|str=null",
@@ -7139,15 +7139,15 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; offset:float=0.002; strain_in_percent:bool|null=null; elastic_min:float=null; elastic_max:float=null; plot_construction:bool=true; add_callout:bool=true; create_true_stress_table:bool=false",
       "res = g.analyze_tensile(offset=0.002, plot_construction=True)" },
     { "curvemath.arrhenius", "curvemath",
-      "Session.arrhenius_plot(table=None, temp_col=0, rate_col=1, *, temp_in_celsius=False)",
+      "Session.arrhenius(table=None, temp_col=0, rate_col=1, *, temp_in_celsius=False)",
       "Build an Arrhenius plot (ln k vs 1000/T with linked top-T axis) and extract activation energy Ea.",
       "table:str=''; temp_col:int|str=0; rate_col:int|str=1; temp_in_celsius:bool=false; use_1000_over_t:bool=true",
-      "res = app.arrhenius_plot(tbl, 'Temp_K', 'Rate_k')" },
+      "res = app.arrhenius(tbl, 'Temp_K', 'Rate_k')" },
     { "curvemath.tauc", "curvemath",
-      "Session.tauc_bandgap(table=None, x_col=0, y_col=1, *, direct=True, x_is_wavelength_nm=True)",
+      "Session.tauc(table=None, x_col=0, y_col=1, *, direct=True, x_is_wavelength_nm=True)",
       "Construct a Tauc optical bandgap plot and extrapolate Eg in eV.",
       "table:str=''; x_col:int|str=0; y_col:int|str=1; direct:bool=true; x_is_wavelength_nm:bool=true",
-      "res = app.tauc_bandgap(tbl, 'Energy_eV', 'Alpha', direct=True, x_is_wavelength_nm=False)" },
+      "res = app.tauc(tbl, 'Energy_eV', 'Alpha', direct=True, x_is_wavelength_nm=False)" },
     { "curvemath.eis_fit", "curvemath",
       "Session.eis_fit(table=None, freq_col=0, z_re_col=1, z_im_col=2, *, model='Randles_CPE')",
       "Fit electrochemical impedance Nyquist & Bode data to Randles or Randles-CPE equivalent circuits.",
@@ -7159,15 +7159,15 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "heating_rates:list[float]=null; peak_temps:list[float]=null; y_cols:list=null; table:str=''; rate_col:int|str=0; temp_col:int|str|list=1; rate_in_k_per_hour:bool=false; temp_in_celsius:bool=true; top_axis_in_celsius:bool=true; top_axis_celsius:bool=true; temp_min:float=null; temp_max:float=null; plot:bool=true",
       "res = app.analyze_kissinger(heating_rates=[5, 10, 20, 40], peak_temps=[285, 298, 312, 327])" },
     { "curvemath.kocks_mecking", "curvemath",
-      "Session.kocks_mecking(*, graph=None, curve=None, table=None, smooth_window=11, create_plot=True, plot_mode='considere')",
+      "Session.analyze_work_hardening(*, graph=None, curve=None, table=None, smooth_window=11, create_plot=True, plot_mode='considere')",
       "Kocks-Mecking work-hardening rate (theta = d_sigma_t / d_epsilon_t vs true strain or Stage-III true stress), Considere necking instability, Hollomon (K, n), and Voce saturation stress.",
       "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; smooth_window:int=11; create_plot:bool=true; plot_mode:str='considere'[considere|kocks_mecking]",
-      "res = app.kocks_mecking(graph=g, smooth_window=11)" },
+      "res = app.analyze_work_hardening(graph=g, smooth_window=11)" },
     { "curvemath.xrd_analyze", "curvemath",
-      "Session.xrd_analyze(*, graph=None, curve=None, wavelength=1.540598, crystal_system='fcc', c_over_a=1.633, strip_kalpha2=False)",
+      "Session.analyze_xrd(*, graph=None, curve=None, wavelength=1.540598, crystal_system='fcc', c_over_a=1.633, strip_kalpha2=False)",
       "Automated powder XRD analyzer: Rachinger K-alpha2 stripping, Scherrer crystallite size, Williamson-Hall microstrain, FCC/BCC/SC/HCP (hkl) indexing, lattice parameter a (and c), and linked top d-spacing axis.",
       "graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; wavelength:float=1.540598; xray_energy_kev:float=null; radiation:str=''; instr_fwhm:float=0.05; scherrer_k:float=0.90; crystal_system:str='fcc'[fcc|bcc|sc|hcp|none]; c_over_a:float=1.633; strip_kalpha2:bool=false; add_top_d_axis:bool=true; create_wh_plot:bool=true",
-      "res = app.xrd_analyze(graph=g, crystal_system='fcc')" },
+      "res = app.analyze_xrd(graph=g, crystal_system='fcc')" },
     { "curvemath.bragg_convert", "curvemath",
       "Session.bragg_convert(*, mode='2theta_to_d', wavelength=1.540598, values=None, table=None, col=0, graph=None)",
       "Convert diffraction coordinates between 2theta (deg), d-spacing (Angstrom), and scattering vector q (Angstrom^-1) on arrays, worksheet columns, or linked top axes.",
@@ -7190,32 +7190,32 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "res = app.plot_vasp_band_dos(band_table=t_band, dos_table=t_dos, fermi_energy=5.42)" },
 
     // 10. Statistical Analysis (stats.*)
-    { "stats.normality", "stats", "Session.normality_test(table=None, col=0)",
+    { "stats.normality", "stats", "Session.normality(table=None, col=0)",
       "Run Shapiro-Wilk / Anderson-Darling / Kolmogorov-Smirnov normality tests.",
-      "table:str=''; col:int|str=0; graph:str=''", "app.normality_test(tbl, 'Strength')" },
+      "table:str=''; col:int|str=0; graph:str=''", "app.normality(tbl, 'Strength')" },
     { "stats.outlier", "stats",
-      "Session.outlier_test(table=None, col=0, *, method='grubbs', alpha=0.05, mask_outliers=False)",
+      "Session.outlier(table=None, col=0, *, method='grubbs', alpha=0.05, mask_outliers=False)",
       "Run Grubbs / GESD / Dixon Q outlier detection with optional automatic row masking.",
       "table:str=''; col:int|str=0; method:str='grubbs'[grubbs|gesd|dixon]; alpha:float=0.05; max_outliers:int=5; mask_outliers:bool=false",
-      "app.outlier_test(tbl, 'Strength', mask_outliers=True)" },
-    { "stats.anova_oneway", "stats", "Session.anova_one_way(table=None, cols=None, *, posthoc='tukey', graph=None, add_brackets=None)",
+      "app.outlier(tbl, 'Strength', mask_outliers=True)" },
+    { "stats.anova_oneway", "stats", "Session.anova_oneway(table=None, cols=None, *, posthoc='tukey', graph=None, add_brackets=None)",
       "Run one-way ANOVA with Tukey HSD / Holm / Games-Howell / Dunnett pairwise comparisons and optional significance brackets.",
       "table:str=''; cols:list=null; posthoc:str='tukey'[holm|tukey|games_howell|dunnett]; control:int|str=null; graph:str=''; add_brackets:bool=null",
-      "app.anova_one_way(tbl, ['A', 'B', 'C'])" },
+      "app.anova_oneway(tbl, ['A', 'B', 'C'])" },
     { "stats.anova_twoway", "stats",
-      "Session.anova_two_way(table=None, factor_a_col=0, factor_b_col=1, response_col=2, *, plot=True)",
+      "Session.anova_twoway(table=None, factor_a_col=0, factor_b_col=1, response_col=2, *, plot=True)",
       "Run balanced/unbalanced two-way ANOVA with interaction effect.",
       "table:str=''; factor_a_col:int|str=0; factor_b_col:int|str=1; response_col:int|str=2; plot:bool=true",
-      "app.anova_two_way(tbl, 'Alloy', 'Temp', 'Yield')" },
+      "app.anova_twoway(tbl, 'Alloy', 'Temp', 'Yield')" },
     { "stats.nonparametric", "stats",
-      "Session.nonparametric_test(table=None, cols=None, *, test='mann_whitney', graph=None, add_brackets=None)",
+      "Session.nonparametric(table=None, cols=None, *, test='mann_whitney', graph=None, add_brackets=None)",
       "Run Mann-Whitney U, Wilcoxon signed-rank, Kruskal-Wallis (+ Dunn post-hoc brackets), or Friedman test.",
       "table:str=''; cols:list=null; test:str='mann_whitney'[mann_whitney|wilcoxon|kruskal_wallis|friedman]; graph:str=''; add_brackets:bool=null",
-      "app.nonparametric_test(tbl, ['Before', 'After'], test='wilcoxon')" },
-    { "stats.paired_plot", "stats", "Session.paired_estimation_plot(table=None, col_a=0, col_b=1)",
+      "app.nonparametric(tbl, ['Before', 'After'], test='wilcoxon')" },
+    { "stats.paired_plot", "stats", "Session.paired_plot(table=None, col_a=0, col_b=1)",
       "Create a Gardner-Altman paired estimation plot with mean difference CI.",
       "table:str=''; col_a:int|str=0; col_b:int|str=1; wilcoxon:bool=false",
-      "app.paired_estimation_plot(tbl, 'Pre', 'Post')" },
+      "app.paired_plot(tbl, 'Pre', 'Post')" },
     { "stats.bland_altman", "stats", "Session.bland_altman(table=None, col_a=0, col_b=1)",
       "Create a Bland-Altman method-agreement plot with bias and +/-1.96 SD limits of agreement.",
       "table:str=''; col_a:int|str=0; col_b:int|str=1", "app.bland_altman(tbl, 'MethodA', 'MethodB')" },
@@ -7223,10 +7223,10 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Run Passing-Bablok / Deming method-comparison regression.",
       "table:str=''; x_col:int|str=0; y_col:int|str=1; lambda:float=1.0; plot:bool=true",
       "app.passing_bablok(tbl, 'Ref', 'Test')" },
-    { "stats.weibull", "stats", "Session.weibull_fit(table=None, col=0, *, censor_col=None, three_param=False, mle=False, plot=True)",
+    { "stats.weibull", "stats", "Session.weibull(table=None, col=0, *, censor_col=None, three_param=False, mle=False, plot=True)",
       "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution via rank regression or right-censored MLE (ceramics & fatigue).",
       "table:str=''; col:int|str=0; censor_col:int|str=null; censor_coding:int=0; three_param:bool=false; mle:bool=false; plot:bool=true",
-      "app.weibull_fit(tbl, 'FractureMPa', three_param=True)" },
+      "app.weibull(tbl, 'FractureMPa', three_param=True)" },
     { "stats.probability_plot", "stats",
       "Session.probability_plot(table=None, col=0, *, distribution='lognormal', position=None, return_period=0, plot=True)",
       "Lognormal or Gumbel (largest extreme value) probability plot by rank plotting positions with a least-squares line (e.g. CT maximum defect size).",
@@ -7253,36 +7253,36 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "table:str=''; time_col:int|str=0; event_col:int|str=1; group_col:int|str=null",
       "app.kaplan_meier(tbl, 'Cycles', 'Failed')" },
     { "stats.roc", "stats",
-      "Session.roc_curve(table=None, state_col=0, score_cols=None, *, plot=True)",
+      "Session.roc(table=None, state_col=0, score_cols=None, *, plot=True)",
       "Compute ROC curve, AUC, Hanley-McNeil SE, and Youden optimal threshold.",
       "table:str=''; state_col:int|str=0; score_cols:list=null; score_col:int|str=null; plot:bool=true",
-      "app.roc_curve(tbl, 'Class', ['Score'])" },
+      "app.roc(tbl, 'Class', ['Score'])" },
     { "stats.pca", "stats", "Session.pca(table=None, cols=None, *, standardize=True, biplot=True)",
       "Run Principal Component Analysis returning eigenvalues, explained variance, loadings, and scores.",
       "table:str=''; cols:list=null; standardize:bool=true; biplot:bool=true",
       "app.pca(tbl, ['F1', 'F2', 'F3', 'F4'])" },
     { "stats.correlation", "stats",
-      "Session.correlation_matrix(table=None, cols=None, *, method='pearson', plot_heatmap=True)",
+      "Session.correlation(table=None, cols=None, *, method='pearson', plot_heatmap=True)",
       "Compute Pearson or Spearman correlation & p-value matrix.",
       "table:str=''; cols:list=null; method:str='pearson'[pearson|spearman]; plot_heatmap:bool=true",
-      "app.correlation_matrix(tbl, method='pearson')" },
+      "app.correlation(tbl, method='pearson')" },
     { "stats.clustering", "stats",
       "Session.clustering(table=None, cols=None, *, k=3, method='kmeans', linkage='ward')",
       "Perform K-Means or hierarchical clustering across numeric columns.",
       "table:str=''; cols:list=null; k:int=3; method:str='kmeans'[kmeans|hierarchical]; linkage:str='ward'[ward|complete|average]; plot:bool=true",
       "app.clustering(tbl, ['X', 'Y'], k=3)" },
     { "stats.confidence_ellipse", "stats",
-      "Session.add_confidence_ellipse(graph=None, *, curve=None, level=0.95, prediction=False)",
+      "Session.confidence_ellipse(graph=None, *, curve=None, level=0.95, prediction=False)",
       "Add a bivariate covariance confidence/prediction ellipse onto a 2D scatter plot.",
       "graph:str=''; curve:int|str=null; level:float=0.95; prediction:bool=false",
-      "app.add_confidence_ellipse(g, level=0.95)" },
+      "app.confidence_ellipse(g, level=0.95)" },
 
     // 11. Plot Digitizer (digitizer.*)
     { "digitizer.extract", "digitizer",
-      "Session.digitize_image(image_path, *, cal_points=None, color='#DC1E1E', tolerance=50, mode='auto_curve')",
+      "Session.digitize(image_path, *, cal_points=None, color='#DC1E1E', tolerance=50, mode='auto_curve')",
       "Calibrate axes on a bitmap figure image (4 axis points, 3 L-axis points [Origin, X2, Y2], or 2 corners) and extract calibrated (X, Y) curve data.",
       "image_path:str*; cal_points:list=null; color:str='#DC1E1E'; tolerance:int=50; samples:int=100; mode:str='auto_curve'[auto_curve]; plot:bool=false; table_name:str=''",
-      "app.digitize_image('paper_fig.png', cal_points=[[50, 350, 0.0], [450, 350, 10.0], [50, 350, 0.0], [50, 50, 100.0]])" }
+      "app.digitize('paper_fig.png', cal_points=[[50, 350, 0.0], [450, 350, 10.0], [50, 350, 0.0], [50, 50, 100.0]])" }
 };
 
 static constexpr int kApiCatalogCount =
@@ -9608,8 +9608,31 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
     QStringList lines;
     lines << QStringLiteral("# Auto-generated reproducible ToriGraph script");
+    lines << QStringLiteral(
+            "# グラフの見た目(データ・曲線・軸・注釈)を描き直します。解析やフィットの計算そのものは再現しません。");
     lines << QStringLiteral("import torigraph as tg");
     lines << QString();
+    // Elements this generator cannot (yet) rebuild are listed as "# 未再現: ..." comments
+    // right after the import line, so the reader sees them before running the script.
+    QStringList unreproduced;
+    auto noteUnreproduced = [&unreproduced](const QString &what) {
+        const QString ln = QStringLiteral("# 未再現: ") + what;
+        if (!unreproduced.contains(ln))
+            unreproduced << ln;
+    };
+    auto finishScript = [&lines, &unreproduced]() -> QString {
+        QStringList out = lines;
+        if (!unreproduced.isEmpty()) {
+            QStringList block;
+            block << QStringLiteral(
+                    "# 注意: 次の要素はこのスクリプトでは描き直されません(見た目は手で合わせてください)。");
+            block << unreproduced;
+            block << QString();
+            for (int i = 0; i < block.size(); ++i)
+                out.insert(4 + i, block.at(i));
+        }
+        return out.join(QLatin1Char('\n')) + QLatin1Char('\n');
+    };
     if (standalone) {
         lines << QStringLiteral("app = tg.connect()");
         lines << QString();
@@ -9785,16 +9808,18 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                               pyFormatNum(g3d->yRotation()), pyFormatNum(g3d->zRotation()),
                               g3d->isOrthogonal() ? QStringLiteral("True")
                                                   : QStringLiteral("False"));
-        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+        noteUnreproduced(QStringLiteral(
+                "3D グラフの色(カラーマップ)・軸範囲・拡大率・描画スタイル(題・回転・正射影だけ再現)"));
+        return finishScript();
     }
 
     if (!window->inherits("MultiLayer"))
-        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+        return finishScript();
 
     auto *ml = static_cast<MultiLayer *>(window);
     const QList<Graph *> layers = ml->layersList();
     if (layers.isEmpty())
-        return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+        return finishScript();
 
     auto curveStyleStr = [](Graph *lg, int ci) -> QString {
         const int ct = lg->curveType(ci);
@@ -10278,14 +10303,16 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         wantStackedHistSquareFrame = allSquarePanels;
     }
 
+    QString pageSizeLine;
     if (ml->pageViewMode() || ml->pageUnit() != MultiLayer::UnitPx) {
-        lines << QStringLiteral("g.set_page_size(%1, %2, unit=%3, dpi=%4, page_view=%5)")
-                         .arg(pyFormatNum(ml->pageWidthPhysical()),
-                              pyFormatNum(ml->pageHeightPhysical()),
-                              pyEscapeStr(pageUnitToString(ml->pageUnit())))
-                         .arg(ml->pageDpi())
-                         .arg(ml->pageViewMode() ? QStringLiteral("True")
-                                                 : QStringLiteral("False"));
+        pageSizeLine = QStringLiteral("g.set_page_size(%1, %2, unit=%3, dpi=%4, page_view=%5)")
+                               .arg(pyFormatNum(ml->pageWidthPhysical()),
+                                    pyFormatNum(ml->pageHeightPhysical()),
+                                    pyEscapeStr(pageUnitToString(ml->pageUnit())))
+                               .arg(ml->pageDpi())
+                               .arg(ml->pageViewMode() ? QStringLiteral("True")
+                                                       : QStringLiteral("False"));
+        lines << pageSizeLine;
     }
     if (wantStackedHistSquareFrame)
         lines << QStringLiteral("g.apply_square_frame()");
@@ -10356,6 +10383,65 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     }
 
+    // Style preset: applied once all layers exist, as the base look; the explicit page,
+    // axis, curve and legend settings emitted afterwards keep the graph's current values.
+    const QString stylePresetId = ml->property("toriAppliedStylePreset").toString().trimmed();
+    if (!stylePresetId.isEmpty()) {
+        MultiLayer::GraphStylePresetSpec presetSpec;
+        if (MultiLayer::findStylePreset(stylePresetId, &presetSpec)) {
+            lines << QStringLiteral("g.apply_style_preset(%1)").arg(pyEscapeStr(stylePresetId));
+            if (!pageSizeLine.isEmpty())
+                lines << pageSizeLine;
+        } else {
+            noteUnreproduced(QStringLiteral("スタイルプリセット '%1'(このPCに見つからない)")
+                                     .arg(stylePresetId));
+        }
+    }
+
+    // Detect what the per-layer pass below cannot rebuild.
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *lg = layers[li];
+        if (!lg)
+            continue;
+        if (!lg->fitCurvesList().isEmpty())
+            noteUnreproduced(QStringLiteral(
+                    "フィット(フィット曲線は数値データとして描き直すが、フィットの条件と結果のパラメータは再現しない)"));
+        if (lg->pointColorMapCurve())
+            noteUnreproduced(QStringLiteral("値で色を変える散布図の色付けとカラーバー"));
+        for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
+            if (lg->hasWeibullProbabilityAxis(ax) || lg->hasCustomTickLabels(ax)) {
+                noteUnreproduced(QStringLiteral(
+                        "確率目盛りなど目盛りの独自ラベル(確率プロットは軸が通常の目盛りになる)"));
+            }
+        }
+        bool hasStackOffset = false;
+        for (int ci = 0; ci < lg->curves(); ++ci) {
+            QwtPlotCurve *c = lg->curve(ci);
+            if (!c)
+                continue;
+            const int ct = lg->curveType(ci);
+            if (ct == Graph::VectXYXY || ct == Graph::VectXYAM)
+                noteUnreproduced(QStringLiteral("ベクトル図の矢印(点を結んだ線として描かれる)"));
+            if (auto *bar = dynamic_cast<QwtBarCurve *>(c)) {
+                if (bar->isStacked())
+                    noteUnreproduced(QStringLiteral(
+                            "積み上げ棒グラフの積み上げ(棒が重なって描かれる。app.plot_stacked_bars で作り直す)"));
+                else if (bar->offset() != 0)
+                    noteUnreproduced(QStringLiteral("棒グラフの横並び(棒のずらし量 offset)"));
+            }
+            if (auto *pc = dynamic_cast<PlotCurve *>(c)) {
+                if (pc->stackOffsetX() != 0.0 || pc->stackOffsetY() != 0.0 || pc->stackNormalize01())
+                    hasStackOffset = true;
+            }
+            if (li == 0 && ci == firstEmittedCurveOnL0 && c->yAxis() == QwtPlot::yRight)
+                noteUnreproduced(QStringLiteral(
+                        "1 本目の曲線を右の Y 軸に割り当てる設定(左軸で描かれる)"));
+        }
+        if (hasStackOffset)
+            noteUnreproduced(QStringLiteral(
+                    "スタックオフセット・ウォーターフォールの曲線のずらし(g.set_stack_offsets で付け直す)"));
+    }
+
     // Per-layer curves, styles, error bars, axes, reference lines, shaded bands, annotations
     const QJsonObject fullInspect = inspectGraphDetailed(ml, false, false);
     const QJsonArray inspectLayers = fullInspect.value(QStringLiteral("layers")).toArray();
@@ -10373,6 +10459,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
         // Additional curves on this layer (skip inset auto-cloned curves)
         int nonErrIdx = 0;
+        int dataCurveIdx = 0;
         if (!isInset) {
             for (int ci = 0; ci < lg->curves(); ++ci) {
                 QwtPlotCurve *c = lg->curve(ci);
@@ -10389,6 +10476,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 auto *dc = dynamic_cast<DataCurve *>(c);
                 auto *fc = dynamic_cast<FunctionCurve *>(c);
                 auto *pc = dynamic_cast<PlotCurve *>(c);
+                // index among the layer's table-backed data curves (graph.add_error_band's 'curve')
+                const int thisDataCurveIdx = (dc && dc->table()) ? dataCurveIdx++ : -1;
                 bool curvePresent = (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
                         || preHandledLayerCurves.contains(qMakePair(li, ci));
                 if (!curvePresent) {
@@ -10463,8 +10552,55 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                      .arg(layerKw);
                 }
                 if (dc) {
+                    // Error bands (E11): one symmetric band curve, or a plus-only and a
+                    // minus-only band curve together (asymmetric band).
+                    QString bandPlus, bandMinus, bandBoth;
+                    Table *bandTable = nullptr;
+                    int bandAlpha = 64;
+                    for (DataCurve *ebBase : dc->errorBarsList()) {
+                        auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase);
+                        if (!ec || !ec->isBand() || !ec->table()
+                            || !tblVarMap.contains(ec->table()))
+                            continue;
+                        const int eIdx = ec->table()->colIndex(ec->yColumnName());
+                        if (eIdx < 0)
+                            continue;
+                        const QString eLbl = ec->table()->colLabel(eIdx);
+                        bandTable = ec->table();
+                        bandAlpha = ec->bandAlpha();
+                        if (ec->plusSide() && !ec->minusSide())
+                            bandPlus = eLbl;
+                        else if (ec->minusSide() && !ec->plusSide())
+                            bandMinus = eLbl;
+                        else
+                            bandBoth = eLbl;
+                    }
+                    if (bandTable && thisDataCurveIdx >= 0) {
+                        const QString bandTblArg = tblVarMap.value(bandTable);
+                        if (!bandBoth.isEmpty()) {
+                            lines << QStringLiteral(
+                                             "g.add_error_band(%1, %2, table=%3.name, alpha=%4%5)")
+                                             .arg(thisDataCurveIdx)
+                                             .arg(pyEscapeStr(bandBoth), bandTblArg)
+                                             .arg(bandAlpha)
+                                             .arg(layerKw);
+                        }
+                        if (!bandPlus.isEmpty() || !bandMinus.isEmpty()) {
+                            const QString plusLbl = bandPlus.isEmpty() ? bandMinus : bandPlus;
+                            const QString minusLbl = bandMinus.isEmpty() ? bandPlus : bandMinus;
+                            lines << QStringLiteral(
+                                             "g.add_error_band(%1, %2, err_minus=%3, table=%4.name, alpha=%5%6)")
+                                             .arg(thisDataCurveIdx)
+                                             .arg(pyEscapeStr(plusLbl), pyEscapeStr(minusLbl),
+                                                  bandTblArg)
+                                             .arg(bandAlpha)
+                                             .arg(layerKw);
+                        }
+                    }
                     for (DataCurve *ebBase : dc->errorBarsList()) {
                         if (auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase)) {
+                            if (ec->isBand())
+                                continue;
                             if (ec->table() && tblVarMap.contains(ec->table())) {
                                 Table *et = ec->table();
                                 const int eIdx = et->colIndex(ec->yColumnName());
@@ -10737,7 +10873,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
     if (wantStackedHistSquareFrame)
         lines << QStringLiteral("g.apply_square_frame()");
 
-    return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+    return finishScript();
 }
 
 bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &method,

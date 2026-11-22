@@ -79,6 +79,7 @@
 #include "ApplicationWindow.h"
 #include "CurveMathTools.h"
 #include "ExtraPlotTypes.h"
+#include "SettingsTransfer.h"
 #include "Graph.h"
 #include "GraphInspectorDock.h"
 #include "IconLoader.h"
@@ -4563,6 +4564,16 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->showPreferencesDialog();
                 });
+        if (d_app) { // I10: export / import / reset all settings
+            QMenu *settingsFileMenu = nullptr;
+            addRibbonMenuButton(
+                    gSettings, QStringLiteral("settings"), [this]() { return tr("Settings File"); },
+                    [this]() { return tr("Export, import or reset all settings"); },
+                    &settingsFileMenu);
+            for (int i = 0; i < SettingsTransfer::ActCount; ++i)
+                settingsFileMenu->addAction(
+                        SettingsTransfer::action(d_app, SettingsTransfer::ActionId(i)));
+        }
         addRibbonButton(
                 gSettings, QStringLiteral("update-check"),
                 [this]() { return tr("Check for Updates"); },

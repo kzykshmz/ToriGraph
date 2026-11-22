@@ -40,6 +40,7 @@
 #include "ImageMarker.h"
 #include "CurveRangeDialog.h"
 #include "ExtraPlotTypes.h"
+#include "SettingsTransfer.h"
 #include "QwtErrorPlotCurve.h"
 #include <gsl/gsl_cdf.h>
 #include <qwt_scale_engine.h>
@@ -171,6 +172,7 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
+static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -304,6 +306,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite69-only")) {
+        const int rc69 = runSuite69SettingsTransferAndScriptCoverage(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc69;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5472,6 +5481,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite69SettingsTransferAndScriptCoverage(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -19106,5 +19118,228 @@ static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
+    return 0;
+}
+
+#include <QAction>
+#include <QSettings>
+
+// ============================================================================
+// Suite 69 (I10): settings export -> reset -> import round trip, lab defaults
+// priority (user value > lab ini > built-in), save suppression after import/reset,
+// menu actions, and graph.to_python coverage ("# 未再現:" notes, style preset,
+// error band).
+// ============================================================================
+static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 69: Settings Export/Import/Reset, Lab Defaults INI & "
+                 "to_python_script Coverage...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 69");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmp69;
+    CHECK_COND(tmp69.isValid(), "69: QTemporaryDir");
+
+    // ---------------- 69a: export -> reset -> import round trip ----------------
+    {
+        const QString userIni = tmp69.filePath("user.ini");
+        const QString exportIni = tmp69.filePath("sub/export.ini");
+        QSettings user(userIni, QSettings::IniFormat);
+        const QByteArray geom("\x01\x02\xff\x00\x7f", 5);
+        user.setValue("General/Language", "en");
+        user.setValue("General/RecentProjects", QStringList() << "C:/a.sciprj" << "D:/b c.sciprj");
+        user.setValue("Graph/Width", 123);
+        user.setValue("Geometry/State", geom);
+        user.setValue("LabDefaults/Applied/Graph/Width", 5); // bookkeeping: never exported
+        user.sync();
+        QString err;
+        const int nOut = SettingsTransfer::exportToIni(user, exportIni, &err);
+        CHECK_COND(nOut == 4, "69a: export must write the 4 user keys (got "
+                                      << nOut << ", " << err.toStdString() << ")");
+        CHECK_COND(QFileInfo(exportIni).isFile(), "69a: export file missing");
+        CHECK_COND(!QFileInfo(exportIni + ".tmp").exists(), "69a: temp file left behind");
+
+        SettingsTransfer::resetAll(user);
+        CHECK_COND(user.allKeys().isEmpty(), "69a: reset must remove every key");
+
+        const int nIn = SettingsTransfer::importFromIni(user, exportIni, &err);
+        CHECK_COND(nIn == 4, "69a: import must read 4 keys (got " << nIn << ")");
+        CHECK_COND(user.value("General/Language").toString() == "en", "69a: Language not restored");
+        CHECK_COND(user.value("General/RecentProjects").toStringList()
+                           == (QStringList() << "C:/a.sciprj" << "D:/b c.sciprj"),
+                   "69a: string list not restored");
+        CHECK_COND(user.value("Graph/Width").toInt() == 123, "69a: int not restored");
+        CHECK_COND(user.value("Geometry/State").toByteArray() == geom, "69a: byte array not restored");
+        CHECK_COND(!user.contains("LabDefaults/Applied/Graph/Width"),
+                   "69a: bookkeeping key must not travel with an export");
+
+        // import keeps keys that the file does not have
+        user.setValue("Only/Local", 7);
+        CHECK_COND(SettingsTransfer::importFromIni(user, exportIni) == 4, "69a: second import");
+        CHECK_COND(user.value("Only/Local").toInt() == 7, "69a: import must not drop other keys");
+
+        CHECK_COND(SettingsTransfer::importFromIni(user, tmp69.filePath("missing.ini"), &err) == -1,
+                   "69a: missing file must fail");
+        {
+            QFile emptyIni(tmp69.filePath("empty.ini"));
+            CHECK_COND(emptyIni.open(QIODevice::WriteOnly), "69a: empty ini");
+            emptyIni.close();
+        }
+        CHECK_COND(SettingsTransfer::importFromIni(user, tmp69.filePath("empty.ini"), &err) == -1,
+                   "69a: a file without settings must fail");
+        CHECK_COND(SettingsTransfer::exportToIni(user, QString(), &err) == -1,
+                   "69a: empty export path must fail");
+    }
+
+    // ---------------- 69b: lab defaults priority ----------------
+    {
+        CHECK_COND(SettingsTransfer::labDefaultsPath()
+                           == QDir(QCoreApplication::applicationDirPath())
+                                      .filePath("torigraph-lab-defaults.ini"),
+                   "69b: lab defaults must live next to the executable");
+        const QString labIni = tmp69.filePath("torigraph-lab-defaults.ini");
+        QSettings user(tmp69.filePath("user69b.ini"), QSettings::IniFormat);
+        user.setValue("Graph/Width", 123); // the user's own choice
+        {
+            QSettings lab(labIni, QSettings::IniFormat);
+            lab.setValue("General/Language", "ja");
+            lab.setValue("Graph/FontSize", 11);
+            lab.setValue("Graph/Width", 999);
+            lab.sync();
+        }
+        CHECK_COND(SettingsTransfer::applyLabDefaults(user, labIni) == 2,
+                   "69b: only the 2 keys the user lacks must be filled");
+        CHECK_COND(user.value("Graph/Width").toInt() == 123, "69b: user value must win over lab");
+        CHECK_COND(user.value("Graph/FontSize").toInt() == 11, "69b: lab value not applied");
+        CHECK_COND(user.value("General/Language").toString() == "ja", "69b: lab Language");
+        CHECK_COND(SettingsTransfer::applyLabDefaults(user, labIni) == 0,
+                   "69b: applying the same lab file twice must change nothing");
+
+        // the lab revises a value the user never touched -> follows the lab
+        {
+            QSettings lab(labIni, QSettings::IniFormat);
+            lab.setValue("Graph/FontSize", 12);
+            lab.sync();
+        }
+        CHECK_COND(SettingsTransfer::applyLabDefaults(user, labIni) == 1, "69b: revised lab value");
+        CHECK_COND(user.value("Graph/FontSize").toInt() == 12, "69b: revised lab value not followed");
+
+        // the user changes it -> later lab revisions no longer override it
+        user.setValue("Graph/FontSize", 14);
+        {
+            QSettings lab(labIni, QSettings::IniFormat);
+            lab.setValue("Graph/FontSize", 13);
+            lab.sync();
+        }
+        CHECK_COND(SettingsTransfer::applyLabDefaults(user, labIni) == 0,
+                   "69b: the user's own change must win over a revised lab file");
+        CHECK_COND(user.value("Graph/FontSize").toInt() == 14, "69b: user change overwritten");
+        CHECK_COND(SettingsTransfer::applyLabDefaults(user, tmp69.filePath("nope.ini")) == 0,
+                   "69b: missing lab file must be a no-op");
+        // an export never carries the lab bookkeeping
+        const QString ex = tmp69.filePath("export69b.ini");
+        CHECK_COND(SettingsTransfer::exportToIni(user, ex) == 3, "69b: export count");
+        QSettings exS(ex, QSettings::IniFormat);
+        for (const QString &k : exS.allKeys())
+            CHECK_COND(!k.startsWith("LabDefaults"), "69b: bookkeeping exported: " << k.toStdString());
+    }
+
+    // ---------------- 69c: save suppressed after import / reset ----------------
+    {
+        QSettings &live = ApplicationWindow::getSettings();
+        mw->saveSettings();
+        live.sync();
+        CHECK_COND(live.contains("General/Language"), "69c: saveSettings must write General/Language");
+        live.remove("General/Language");
+        SettingsTransfer::setSaveSuppressed(true);
+        mw->saveSettings();
+        live.sync();
+        const bool written = live.contains("General/Language");
+        SettingsTransfer::setSaveSuppressed(false);
+        CHECK_COND(!written, "69c: saveSettings must not run after an import/reset");
+        mw->saveSettings();
+        live.sync();
+        CHECK_COND(live.contains("General/Language"), "69c: saveSettings must work again");
+    }
+
+    // ---------------- 69d: menu actions ----------------
+    {
+        const char *const names[] = { "actionSettingsExport", "actionSettingsImport",
+                                      "actionSettingsReset" };
+        for (const char *n : names) {
+            auto *a = mw->findChild<QAction *>(QString::fromLatin1(n));
+            CHECK_COND(a != nullptr, "69d: missing action " << n);
+            CHECK_COND(!a->text().isEmpty() && !a->toolTip().isEmpty(), "69d: empty text " << n);
+        }
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("E&xport Settings...")
+                           == QString::fromUtf8("設定を書き出す(&X)..."),
+                   "69d: Japanese text of Export Settings");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("&Reset Settings...")
+                           == QString::fromUtf8("設定を初期化(&R)..."),
+                   "69d: Japanese text of Reset Settings");
+    }
+
+    // ---------------- 69e: to_python_script coverage ----------------
+    {
+        Table *t = mw->newTable("T69", 6, 4);
+        CHECK_COND(t != nullptr, "69e: table");
+        t->setHeader(QStringList() << "x" << "y" << "err" << "y2");
+        for (int r = 0; r < 6; ++r) {
+            t->setCell(r, 0, r);
+            t->setCell(r, 1, 2.0 * r);
+            t->setCell(r, 2, 0.5);
+            t->setCell(r, 3, 10.0 - r);
+        }
+        MultiLayer *ml = mw->newGraph("G69");
+        CHECK_COND(ml && ml->activeGraph(), "69e: graph");
+        Graph *g = ml->activeGraph();
+        CHECK_COND(g->insertCurve(t, "T69_x", "T69_y", Graph::LineSymbols), "69e: curve y");
+        CHECK_COND(g->insertCurve(t, "T69_x", "T69_y2", Graph::LineSymbols), "69e: curve y2");
+        CHECK_COND(ExtraPlotTypes::addErrorBand(g, "T69_y", t, "T69_err", QString(), 70) == 1,
+                   "69e: error band");
+        MultiLayer::GraphStylePresetSpec spec;
+        CHECK_COND(MultiLayer::findStylePreset("isij_85mm", &spec), "69e: isij_85mm preset");
+        ml->applyStylePresetSpec(spec);
+
+        QString code = PythonAutomationServer::generatePythonScriptForWindow(mw, ml, true, "inline");
+        CHECK_COND(code.contains("g.apply_style_preset('isij_85mm')"),
+                   "69e: style preset not reproduced:\n" << code.toStdString());
+        CHECK_COND(code.contains("g.add_error_band(0, 'err', table=tbl.name, alpha=70)"),
+                   "69e: error band not reproduced:\n" << code.toStdString());
+        CHECK_COND(!code.contains("g.add_error_bars('err'"),
+                   "69e: an error band must not come back as error bars");
+        CHECK_COND(!code.contains(QString::fromUtf8("# 未再現:")),
+                   "69e: nothing unreproducible yet, but got a note:\n" << code.toStdString());
+        CHECK_COND(code.contains(QString::fromUtf8("解析やフィットの計算そのものは再現しません")),
+                   "69e: scope header missing");
+
+        // fit + stack offsets -> "# 未再現:" notes before the code
+        g->addFitCurve(g->curve(1));
+        g->setStackOffsets(0, 15.0, 0.0, false);
+        code = PythonAutomationServer::generatePythonScriptForWindow(mw, ml, true, "inline");
+        const int fitNote = code.indexOf(QString::fromUtf8("# 未再現: フィット"));
+        const int stackNote = code.indexOf(QString::fromUtf8("# 未再現: スタックオフセット"));
+        const int connectAt = code.indexOf("app = tg.connect()");
+        CHECK_COND(fitNote > 0, "69e: fit note missing:\n" << code.toStdString());
+        CHECK_COND(stackNote > 0, "69e: stack offset note missing:\n" << code.toStdString());
+        CHECK_COND(connectAt > fitNote && connectAt > stackNote,
+                   "69e: notes must come before the code");
+        CHECK_COND(code.count(QString::fromUtf8("# 未再現: フィット")) == 1,
+                   "69e: a note must appear once");
+        g->deleteFitCurves();
+
+        // an unknown preset id is reported instead of emitted
+        ml->setProperty("toriAppliedStylePreset", QStringLiteral("no_such_preset_69"));
+        code = PythonAutomationServer::generatePythonScriptForWindow(mw, ml, true, "inline");
+        CHECK_COND(!code.contains("apply_style_preset('no_such_preset_69')"),
+                   "69e: unknown preset must not be emitted");
+        CHECK_COND(code.contains("no_such_preset_69") && code.contains(QString::fromUtf8("# 未再現: スタイルプリセット")),
+                   "69e: unknown preset must be noted");
+
+        mw->closeWindow(ml);
+        mw->closeWindow(t);
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 69 settings transfer & script coverage passed!\n";
     return 0;
 }
