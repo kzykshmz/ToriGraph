@@ -143,6 +143,7 @@ public:
     void refreshTableList(bool autoSelectActiveCurveTable = true);
     void setCurrentTable(Table *table);
     Table *currentTable() const;
+    void onTableClosed(Table *table);
 
     bool setCellValueFromDrawer(int row, int col, const QString &text);
 

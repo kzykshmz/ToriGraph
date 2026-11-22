@@ -14017,6 +14017,11 @@ void ApplicationWindow::closeWindow(MyWidget *window)
                     || tbl->d_future_table->parentAspect() != nullptr);
         if (WorkbookManager *wm = WorkbookManager::existing(this))
             wm->onTableClosed(tbl, canUndoViaAspect);
+        window->setProperty("_tg_hidden_for_focus_mdi", QVariant());
+        if (ModernRibbonBar *rib = modernRibbonBar()) {
+            if (FocusTableDrawer *dr = rib->focusTableDrawer())
+                dr->onTableClosed(tbl);
+        }
         window->setAttribute(Qt::WA_DeleteOnClose, false);
         window->setParent(nullptr);
         if (!undoReplayActive && !calledFromAspectRemoval) {
@@ -25818,6 +25823,12 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
         initTable(tblView);
         if (WorkbookManager *wm = WorkbookManager::existing(this))
             wm->onTableReadded(tblView);
+        if (ModernRibbonBar *rib = modernRibbonBar()) {
+            if (FocusTableDrawer *dr = rib->focusTableDrawer()) {
+                if (!dr->isHidden())
+                    dr->refreshTableList(false);
+            }
+        }
         return;
     }
 }

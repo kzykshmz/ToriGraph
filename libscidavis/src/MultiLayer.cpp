@@ -1899,11 +1899,11 @@ QImage MultiLayer::copyPageAsImage(int dpi)
     image.setDotsPerMeterY(dpm);
 
     if (QClipboard *cb = QApplication::clipboard()) {
-        for (int attempt = 0; attempt < 20; ++attempt) {
+        for (int attempt = 0; attempt < 10; ++attempt) {
             cb->setImage(image);
             if (cb->image().size() == image.size())
                 break;
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 15);
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 15);
             QThread::msleep(20);
         }
     }

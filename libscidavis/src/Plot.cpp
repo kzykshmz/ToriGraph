@@ -53,6 +53,7 @@
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVariant>
@@ -1143,16 +1144,24 @@ void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist,
 void Plot::replot()
 {
     updateAxes();
-    if (!property("_toriSyncingSecondaryInReplot").toBool()) {
+    static QSet<const Plot *> s_syncingPlots;
+    if (!s_syncingPlots.contains(this)) {
         if (Graph *g = qobject_cast<Graph *>(parent())) {
             if (!g->isTernaryPlot() && !g->isPolarPlot() && !g->isPoleFigurePlot()
                 && !g->isPiePlot()) {
-                setProperty("_toriSyncingSecondaryInReplot", true);
+                struct ScopedSyncPlot {
+                    QSet<const Plot *> &set;
+                    const Plot *self;
+                    ScopedSyncPlot(QSet<const Plot *> &s, const Plot *p) : set(s), self(p)
+                    {
+                        set.insert(self);
+                    }
+                    ~ScopedSyncPlot() { set.remove(self); }
+                } syncGuard(s_syncingPlots, this);
                 if (axisEnabled(QwtPlot::xTop) && !g->isAxisUserLocked(QwtPlot::xTop))
                     g->updateSecondaryAxis(QwtPlot::xTop);
                 if (axisEnabled(QwtPlot::yRight) && !g->isAxisUserLocked(QwtPlot::yRight))
                     g->updateSecondaryAxis(QwtPlot::yRight);
-                setProperty("_toriSyncingSecondaryInReplot", QVariant());
             }
         }
     }

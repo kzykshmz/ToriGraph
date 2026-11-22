@@ -14393,6 +14393,7 @@ bool Graph::restorePhase5Tag(const QString &line)
                         continue;
                     QwtPlotCurve *cv = nullptr;
                     int resolvedIdx = -1;
+                    bool titleMatched = false;
                     const bool hasTitleKey = (wv.size() >= 3 && !wv[2].isEmpty());
                     if (hasTitleKey) {
                         const QString wantTitle =
@@ -14401,6 +14402,7 @@ bool Graph::restorePhase5Tag(const QString &line)
                             if (cand->title().text() == wantTitle) {
                                 cv = cand;
                                 resolvedIdx = ci;
+                                titleMatched = true;
                             }
                         }
                         if (!cv) {
@@ -14409,12 +14411,15 @@ bool Graph::restorePhase5Tag(const QString &line)
                                     if (cand->title().text() == wantTitle) {
                                         cv = cand;
                                         resolvedIdx = k;
+                                        titleMatched = true;
                                         break;
                                     }
                                 }
                             }
                         }
-                    } else {
+                    }
+                    if (!cv) {
+                        // Fallback when no title key is stored or appendProject renamed the source table
                         cv = curve(ci);
                         resolvedIdx = ci;
                     }
@@ -14425,13 +14430,13 @@ bool Graph::restorePhase5Tag(const QString &line)
                         const int ct = curveType(resolvedIdx);
                         const bool symWidthInCurveLine = (ct <= LineSymbols || ct == Box);
                         if (okL && lw > 0.0 && lw <= 200.0
-                            && (hasTitleKey || std::abs(qRound(lw) - cv->pen().width()) <= 1)) {
+                            && (titleMatched || std::abs(qRound(lw) - cv->pen().width()) <= 1)) {
                             QPen p = cv->pen();
                             p.setWidthF(lw);
                             cv->setPen(p);
                         }
                         if (okS && sw > 0.0 && sw <= 200.0
-                            && (hasTitleKey || !symWidthInCurveLine
+                            && (titleMatched || !symWidthInCurveLine
                                 || std::abs(qRound(sw) - cv->symbol().pen().width()) <= 1)) {
                             QwtSymbol sym = cv->symbol();
                             QPen sp = sym.pen();

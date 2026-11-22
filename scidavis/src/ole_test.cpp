@@ -24529,6 +24529,38 @@ static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
         CHECK_COND(std::fabs(cvSpRel->pen().widthF() - 1.0) < 1e-6
                            && std::fabs(cvSpRel->symbol().pen().widthF() - 2.5) < 1e-6,
                    "76a: Spline curve symbol border 2.5 px lost across .sciprj round-trip");
+        // appendProject into a project that already owns Tbl76a (table rename changes curve title)
+        ApplicationWindow *appendHost76a = new ApplicationWindow();
+        appendHost76a->applyUserSettings();
+        Table *clashTbl = appendHost76a->newTable(t76a->name(), 2, 2);
+        CHECK_COND(clashTbl != nullptr, "76a: clash table");
+        clashTbl->setName(t76a->name());
+        appendHost76a->appendProject(prj76a);
+        Folder *appendedFolder = appendHost76a->projectFolder()
+                        && !appendHost76a->projectFolder()->folders().isEmpty()
+                ? appendHost76a->projectFolder()->folders().last()
+                : nullptr;
+        CHECK_COND(appendedFolder != nullptr, "76a: appendProject failed");
+        bool foundAppended15 = false;
+        bool foundAppended25 = false;
+        for (MyWidget *mwItem : appendedFolder->windowsList()) {
+            if (MultiLayer *mlApp = qobject_cast<MultiLayer *>(mwItem)) {
+                if (mlApp->activeGraph() && mlApp->activeGraph()->curve(0)) {
+                    QwtPlotCurve *cApp = mlApp->activeGraph()->curve(0);
+                    if (std::fabs(cApp->pen().widthF() - 1.5) < 1e-6
+                        && std::fabs(cApp->symbol().pen().widthF() - 0.5) < 1e-6)
+                        foundAppended15 = true;
+                    if (std::fabs(cApp->pen().widthF() - 1.0) < 1e-6
+                        && std::fabs(cApp->symbol().pen().widthF() - 2.5) < 1e-6)
+                        foundAppended25 = true;
+                }
+            }
+        }
+        appendHost76a->savedProject();
+        appendHost76a->setOleEmbeddedMode(true);
+        delete appendHost76a;
+        CHECK_COND(foundAppended15 && foundAppended25,
+                   "76a: appendProject with table rename lost fractional curve/symbol widths");
         reader76a->savedProject();
         reader76a->setOleEmbeddedMode(true);
         delete reader76a;

@@ -1896,6 +1896,18 @@ void FocusTableDrawer::setCurrentTable(Table *table)
     syncGridFromTable();
 }
 
+void FocusTableDrawer::onTableClosed(Table *table)
+{
+    if (d_shutting_down || !d_app || !table)
+        return;
+    const bool wasCurrent = (d_current_table == table);
+    d_dying_tables.insert(table);
+    if (wasCurrent)
+        bindTableSignals(nullptr);
+    refreshTableListInternal(wasCurrent, d_dying_tables);
+    d_dying_tables.remove(table);
+}
+
 void FocusTableDrawer::onCurrentTableDestroyed(QObject *destroyedObj)
 {
     if (d_shutting_down || !d_app) {
