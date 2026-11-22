@@ -1460,6 +1460,62 @@ class TableProxy:
         return self.session.call("app.redo", table=self.name)
 
 
+class WorkbookProxy:
+    """A workbook: several worksheets (tables) shown as sheet tabs of one window.
+
+    Every sheet is an ordinary worksheet; ``sheets()`` returns them as TableProxy objects
+    and graphs / formulas keep referring to the table names.
+    """
+
+    def __init__(self, session: "Session", name: str) -> None:
+        self.session = session
+        self.name = str(name)
+
+    def __repr__(self) -> str:
+        return f"WorkbookProxy(name={self.name!r})"
+
+    def info(self) -> Dict[str, Any]:
+        for wb in self.session.list_workbooks():
+            if wb.get("name") == self.name:
+                return wb
+        raise ToriGraphError(f"Workbook {self.name!r} not found")
+
+    def sheets(self) -> List["TableProxy"]:
+        return [TableProxy(self.session, str(s["table"])) for s in self.info().get("sheets", [])]
+
+    def add_sheet(
+        self, name: Optional[str] = None, *, index: int = -1, activate: bool = True
+    ) -> "TableProxy":
+        res = self.session.call(
+            "workbook.add_sheet", book=self.name, name=(name or ""), index=int(index),
+            activate=bool(activate),
+        )
+        return TableProxy(self.session, str(res["table"]))
+
+    def attach(self, table: Union[str, "TableProxy"], *, index: int = -1) -> Dict[str, Any]:
+        return self.session.call(
+            "workbook.attach_sheet", book=self.name, table=_name_of(table), index=int(index)
+        )
+
+    def set_current(self, table: Union[str, "TableProxy"]) -> Dict[str, Any]:
+        return self.session.call("workbook.set_current", table=_name_of(table))
+
+    def move_sheet(self, table: Union[str, "TableProxy"], index: int) -> Dict[str, Any]:
+        return self.session.call("workbook.move_sheet", table=_name_of(table), index=int(index))
+
+    def rename_sheet(self, table: Union[str, "TableProxy"], name: str) -> "TableProxy":
+        res = self.session.call("workbook.rename_sheet", table=_name_of(table), name=str(name))
+        return TableProxy(self.session, str(res["table"]))
+
+    def rename(self, new_name: str) -> "WorkbookProxy":
+        res = self.session.call("workbook.rename", book=self.name, new_name=str(new_name))
+        self.name = str(res.get("name", new_name))
+        return self
+
+    def ungroup(self) -> Dict[str, Any]:
+        return self.session.call("workbook.ungroup", book=self.name)
+
+
 class MatrixProxy:
     """High-level proxy for a ToriGraph 2D Matrix window."""
 
@@ -3269,11 +3325,40 @@ class Session:
         return self.call("app.import_opj", path=os.fspath(path), codec=(codec or ""))
 
     def import_xlsx(
-        self, path: Union[str, os.PathLike[str]], sheet: Optional[str] = None
+        self,
+        path: Union[str, os.PathLike[str]],
+        sheet: Optional[str] = None,
+        *,
+        workbook: bool = True,
     ) -> List[TableProxy]:
-        """Import an Excel workbook (.xlsx/.xlsm); one worksheet per sheet (or only `sheet`)."""
-        res = self.call("app.import_xlsx", path=os.fspath(path), sheet=(sheet or ""))
+        """Import an Excel workbook (.xlsx/.xlsm); one worksheet per sheet (or only `sheet`).
+
+        With ``workbook=True`` (default) two or more sheets become the sheet tabs of one
+        workbook named after the file; ``workbook=False`` keeps separate worksheet windows.
+        """
+        res = self.call(
+            "app.import_xlsx", path=os.fspath(path), sheet=(sheet or ""), workbook=bool(workbook)
+        )
         return [TableProxy(self, str(n)) for n in res.get("tables", [])]
+
+    def new_workbook(
+        self,
+        name: Optional[str] = None,
+        sheets: int = 1,
+        *,
+        tables: Optional[Sequence[Union[str, "TableProxy"]]] = None,
+    ) -> "WorkbookProxy":
+        """Create a workbook with ``sheets`` new empty sheets, or group existing ``tables``."""
+        res = self.call(
+            "workbook.create",
+            name=(name or ""),
+            sheets=int(sheets),
+            tables=[_name_of(t) for t in (tables or [])],
+        )
+        return WorkbookProxy(self, str(res["name"]))
+
+    def list_workbooks(self) -> List[Dict[str, Any]]:
+        return list(self.call("workbook.list").get("workbooks", []))
 
     def list_windows(self, window_type: Optional[str] = None) -> List[Dict[str, Any]]:
         res = self.call("app.list_windows", type=window_type)

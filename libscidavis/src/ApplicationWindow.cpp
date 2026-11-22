@@ -74,6 +74,7 @@
 #include "InterpolationDialog.h"
 #include "ImportASCIIDialog.h"
 #include "XlsxImport.h"
+#include "Workbook.h"
 #include "ImageExportDialog.h"
 #include "SmoothCurveDialog.h"
 #include "FilterDialog.h"
@@ -2810,6 +2811,7 @@ void ApplicationWindow::initToolBars()
 
     QMenu *menu_new_aspect = new QMenu(this);
     menu_new_aspect->addAction(actionNewTable);
+    menu_new_aspect->addAction(WorkbookManager::instance(this)->newWorkbookAction());
     menu_new_aspect->addAction(actionNewMatrix);
     menu_new_aspect->addAction(actionNewNote);
     menu_new_aspect->addAction(actionNewGraph);
@@ -3425,6 +3427,7 @@ void ApplicationWindow::initMainMenu()
     type->setFont(appFont);
     type->addAction(actionNewProject);
     type->addAction(actionNewTable);
+    type->addAction(WorkbookManager::instance(this)->newWorkbookAction());
     type->addAction(actionNewMatrix);
     type->addAction(actionNewNote);
     type->addAction(actionNewGraph);
@@ -8648,6 +8651,8 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
             openTable(this, t);
             progress.setValue(aux);
+        } else if (s.startsWith(QLatin1String("<workbook>\t"))) {
+            WorkbookManager::instance(this)->restoreFromLine(s, current_folder, renamedTables);
         } else if (s.left(17) == "<TableStatistics>") {
             QStringList lst;
             while (s != "</TableStatistics>") {
@@ -14622,6 +14627,7 @@ QMenu *ApplicationWindow::showListViewPopupMenuImpl()
     QMenu *window = cm->addMenu(tr("New &Window"));
 
     window->addAction(actionNewTable);
+    window->addAction(WorkbookManager::instance(this)->newWorkbookAction());
     window->addAction(actionNewMatrix);
     window->addAction(actionNewNote);
     window->addAction(actionNewGraph);
@@ -19191,6 +19197,8 @@ void ApplicationWindow::translateActionsStrings()
         actionImportExcel->setToolTip(
                 tr("Import every sheet of an Excel workbook (.xlsx) as worksheets"));
     }
+    if (WorkbookManager *wb = WorkbookManager::existing(this))
+        wb->retranslateUi(); // D8: New Workbook
 
     actionUndo->setText(tr("&Undo"));
     actionUndo->setToolTip(tr("Undo changes"));
@@ -22732,6 +22740,8 @@ void ApplicationWindow::appendProject(const QString &fn)
                 current_folder = &f;
             } else if (s == "<table>") {
                 openTable(this, t);
+            } else if (s.startsWith(QLatin1String("<workbook>\t"))) {
+                WorkbookManager::instance(this)->restoreFromLine(s, current_folder, renamedTables);
             } else if (s.left(17) == "<TableStatistics>") {
                 QStringList tsLst;
                 while (s != "</TableStatistics>" && !t.atEnd()) {
@@ -22905,6 +22915,9 @@ void ApplicationWindow::rawSaveFolder(Folder *folder, QIODevice *device)
         else
             stream << w->saveToString(windowGeometryInfo(w));
     }
+    // D8: workbook (sheet tabs) membership; older versions ignore the line
+    stream << WorkbookManager::instance(this)->saveFolderBooks(folder);
+    stream.flush();
     foreach (Folder *subfolder, folder->folders()) {
         stream << "<folder>\t" + QString(subfolder->name()) + "\t" + subfolder->birthDate() + "\t"
                         + subfolder->modificationDate();
@@ -23114,6 +23127,7 @@ QMenu *ApplicationWindow::showFolderPopupMenuImpl(QTreeWidgetItem *it, bool from
     if (fromFolders) {
         QMenu *window = cm->addMenu(tr("New &Window"));
         window->addAction(actionNewTable);
+        window->addAction(WorkbookManager::instance(this)->newWorkbookAction());
         window->addAction(actionNewMatrix);
         window->addAction(actionNewNote);
         window->addAction(actionNewGraph);
@@ -23762,6 +23776,8 @@ void ApplicationWindow::addListViewItem(MyWidget *w)
     it->setText(2, w->aspect());
     it->setText(3, w->birthDate());
     it->setText(4, w->windowLabel());
+    if (WorkbookManager *wb = WorkbookManager::existing(this))
+        wb->decorateListItem(it, w); // D8: "Sheet of <book>"
     if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
         lv.resizeColumnToContents(1);
         lv.resizeColumnToContents(2);
@@ -23932,6 +23948,10 @@ void ApplicationWindow::dropFolderItems(QTreeWidgetItem *dest)
 
             MyWidget *w = ((WindowListItem *)it)->window();
             if (w) {
+                if (WorkbookManager *wb = WorkbookManager::existing(this))
+                    if (Table *sheet = qobject_cast<Table *>(w))
+                        if (!wb->bookOf(sheet).isEmpty())
+                            wb->detachSheet(sheet, false); // D8
                 current_folder->removeWindow(w);
                 w->hide();
                 dest_f->addWindow(w);
@@ -24263,6 +24283,8 @@ void ApplicationWindow::fitFrameToLayer()
 
 ApplicationWindow::~ApplicationWindow()
 {
+    if (WorkbookManager *wb = WorkbookManager::existing(this))
+        wb->shutdown(); // D8: stop reacting while the windows are torn down
     explorerWindow.disconnect(this);
     if (d_explorer_container) {
         d_explorer_container->removeEventFilter(this);
@@ -24901,6 +24923,8 @@ QMenu *ApplicationWindow::showWindowMenuImpl(MyWidget *widget)
     cm->addAction(actionResizeWindow);
     cm->addSeparator();
     cm->addAction(tr("&Properties..."), this, SLOT(windowProperties()));
+    if (widget->inherits("Table"))
+        WorkbookManager::instance(this)->populateWindowMenu(cm, widget); // D8
 
     int n;
     if (widget->inherits("Table")) {

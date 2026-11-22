@@ -11,6 +11,7 @@
 #include "I18nJapanese.h"
 #include "MyWidget.h"
 #include "Table.h"
+#include "Workbook.h"
 #include "ZipReader.h"
 #include "future/core/column/Column.h"
 #include "future/core/datatypes/DateTime2StringFilter.h"
@@ -19,7 +20,9 @@
 
 #include <QCoreApplication>
 #include <QFile>
+#include <QCheckBox>
 #include <QFileDialog>
+#include <QGridLayout>
 #include <QFileInfo>
 #include <QHash>
 #include <QLocale>
@@ -1068,8 +1071,20 @@ QString tableBaseName(const QString &bookBaseName, const QString &sheetName)
     return book + QLatin1Char('_') + sheet;
 }
 
+bool importAsWorkbookSetting()
+{
+    return ApplicationWindow::getSettings()
+            .value(QStringLiteral("/Import/XlsxIntoWorkbook"), true)
+            .toBool();
+}
+
+void setImportAsWorkbookSetting(bool on)
+{
+    ApplicationWindow::getSettings().setValue(QStringLiteral("/Import/XlsxIntoWorkbook"), on);
+}
+
 bool importIntoProject(ApplicationWindow *app, const QString &path, const QString &sheet,
-                       QString *outError, ImportResult *outResult)
+                       QString *outError, ImportResult *outResult, bool asWorkbook)
 {
     ImportResult result;
     if (!app) {
@@ -1116,6 +1131,21 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
         parts << part;
     }
 
+    if (asWorkbook && result.tables.size() >= 2) {
+        // D8: one workbook, one sheet tab per worksheet (first sheet shown)
+        QList<Table *> sheets;
+        for (const QString &n : result.tables)
+            for (MyWidget *w : app->windowsList())
+                if (Table *t = qobject_cast<Table *>(w))
+                    if (t->name() == n) {
+                        sheets << t;
+                        break;
+                    }
+        if (sheets.size() == result.tables.size())
+            result.workbook = WorkbookManager::instance(app)->createBookFromTables(
+                    tableBaseName(fi.completeBaseName(), QString()), sheets, sheets.first());
+    }
+
     if (result.tables.isEmpty()) {
         if (outError)
             *outError = trX("The workbook contains no data (all sheets are empty): %1")
@@ -1141,7 +1171,7 @@ bool importDroppedFile(ApplicationWindow *app, const QString &path, QString *out
 {
     QString err;
     ImportResult res;
-    const bool ok = importIntoProject(app, path, QString(), &err, &res);
+    const bool ok = importIntoProject(app, path, QString(), &err, &res, importAsWorkbookSetting());
     if (ok) {
         if (outSummary)
             *outSummary = res.summary;
@@ -1162,12 +1192,26 @@ void importWithDialog(ApplicationWindow *app)
 {
     if (!app || ApplicationWindow::isNonInteractiveContext(app))
         return;
-    const QStringList files = QFileDialog::getOpenFileNames(
-            app, trX("Import Excel Workbook"), app->asciiDirPath,
-            trX("Excel workbook (*.xlsx *.xlsm)") + QStringLiteral(";;")
-                    + trX("All files (*)"));
+    // Qt's own file dialog, so that the workbook choice can sit right in it (D8)
+    QFileDialog dlg(app, trX("Import Excel Workbook"), app->asciiDirPath,
+                    trX("Excel workbook (*.xlsx *.xlsm)") + QStringLiteral(";;")
+                            + trX("All files (*)"));
+    dlg.setFileMode(QFileDialog::ExistingFiles);
+    dlg.setAcceptMode(QFileDialog::AcceptOpen);
+    dlg.setOption(QFileDialog::DontUseNativeDialog, true);
+    auto *asBook = new QCheckBox(trX("Put the sheets of a file into one workbook (sheet tabs)"),
+                                 &dlg);
+    asBook->setObjectName(QStringLiteral("torigraph_xlsx_as_workbook"));
+    asBook->setToolTip(trX("Off: every sheet becomes a separate worksheet window."));
+    asBook->setChecked(importAsWorkbookSetting());
+    if (auto *grid = qobject_cast<QGridLayout *>(dlg.layout()))
+        grid->addWidget(asBook, grid->rowCount(), 0, 1, grid->columnCount());
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const QStringList files = dlg.selectedFiles();
     if (files.isEmpty())
         return;
+    setImportAsWorkbookSetting(asBook->isChecked());
     app->asciiDirPath = QFileInfo(files.first()).absolutePath();
     QStringList summaries;
     for (const QString &f : files) {
@@ -1228,6 +1272,10 @@ void registerTranslations()
     reg("Import Excel Workbook", "Excel ブックを読み込む");
     reg("Excel workbook (*.xlsx *.xlsm)", "Excel ブック (*.xlsx *.xlsm)");
     reg("All files (*)", "すべてのファイル (*)");
+    reg("Put the sheets of a file into one workbook (sheet tabs)",
+        "1 つのファイルのシートを 1 つのブックにまとめる (シートのタブ)");
+    reg("Off: every sheet becomes a separate worksheet window.",
+        "オフ: シートごとに別々のワークシートのウィンドウになります。");
     reg("Import &Excel Workbook (.xlsx)...", "Excel ブックを読み込む (.xlsx)(&E)...");
     reg("Import Excel Workbook (.xlsx)...", "Excel ブックを読み込む (.xlsx)...");
     reg("Import every sheet of an Excel workbook (.xlsx) as worksheets",

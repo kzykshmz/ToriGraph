@@ -37,6 +37,7 @@
 #include "Grid.h"
 #include "ImportOPJU.h"
 #include "XlsxImport.h"
+#include "Workbook.h"
 #include "Integration.h"
 #include "Interpolation.h"
 #include "Legend.h"
@@ -6404,9 +6405,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.import_opj", "app", "Session.import_opj(path, *, codec=None)",
       "Import an Origin .opj or Origin 2018+ .opju (ZIP or CPYUA) project file into the workspace.",
       "path:str*; codec:str=''", "app.import_opj('project.opju')" },
-    { "app.import_xlsx", "app", "Session.import_xlsx(path, *, sheet=None)",
+    { "app.import_xlsx", "app", "Session.import_xlsx(path, *, sheet=None, workbook=True)",
       "Import an Excel workbook (.xlsx/.xlsm) without Excel: every sheet (or only `sheet`) becomes a worksheet named <book>_<sheet>; a text first row becomes Long Name, a unit second row becomes Units, date-formatted cells become date/time columns.",
-      "path:str*; sheet:str=''", "tables = app.import_xlsx('tensile.xlsx')" },
+      "path:str*; sheet:str=''; workbook:bool=true", "tables = app.import_xlsx('tensile.xlsx')" },
     { "app.list_sample_datasets", "app", "Session.list_sample_datasets(category=None)",
       "List built-in curated Materials Science & physics sample datasets (Arrhenius, DP980 tensile, FCC Cu XRD, TiO2 Tauc, LiFePO4 EIS, DSC Kissinger, Si bands).",
       "category:str=''", "app.list_sample_datasets()" },
@@ -6468,6 +6469,38 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Capture main-window screenshot and ribbon/dock geometry diagnostics.",
       "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0",
       "app.call('app.grab_gui_diagnostic', path='ui.png')" },
+
+    // 1b. Workbooks (several worksheets as sheet tabs of one window)
+    { "workbook.create", "workbook", "Session.new_workbook(name=None, sheets=1, *, tables=None)",
+      "Create a workbook with new empty sheets, or group existing worksheets (tables) into one.",
+      "name:str=''; sheets:int=1; tables:list=[]", "wb = app.new_workbook('Specimens', sheets=3)" },
+    { "workbook.list", "workbook", "Session.list_workbooks()",
+      "List workbooks with their sheets (table names, tab labels) and the visible sheet.", "",
+      "app.list_workbooks()" },
+    { "workbook.add_sheet", "workbook", "WorkbookProxy.add_sheet(name=None, *, index=-1)",
+      "Add a new empty sheet (worksheet table '<book>_<name>') to a workbook.",
+      "book:str*; name:str=''; index:int=-1; activate:bool=true", "t = wb.add_sheet('S2')" },
+    { "workbook.attach_sheet", "workbook", "WorkbookProxy.attach(table, *, index=-1)",
+      "Move an existing stand-alone worksheet of the same folder into a workbook.",
+      "book:str*; table:str*; index:int=-1", "wb.attach('Table1')" },
+    { "workbook.detach_sheet", "workbook", "Session.call('workbook.detach_sheet', table=...)",
+      "Take a sheet out of its workbook; it becomes a stand-alone worksheet.",
+      "table:str*", "app.call('workbook.detach_sheet', table='Book1_Sheet2')" },
+    { "workbook.set_current", "workbook", "WorkbookProxy.set_current(table)",
+      "Show the given sheet in the workbook window (the sheet tab is selected).", "table:str*",
+      "wb.set_current('Book1_Sheet2')" },
+    { "workbook.move_sheet", "workbook", "WorkbookProxy.move_sheet(table, index)",
+      "Move a sheet tab to a new position (0 = first).", "table:str*; index:int*",
+      "wb.move_sheet('Book1_Sheet3', 0)" },
+    { "workbook.rename_sheet", "workbook", "WorkbookProxy.rename_sheet(table, name)",
+      "Rename a sheet (graphs and column formulas follow the new table name).",
+      "table:str*; name:str*", "wb.rename_sheet('Book1_Sheet1', 'Raw')" },
+    { "workbook.rename", "workbook", "WorkbookProxy.rename(new_name)",
+      "Rename a workbook (the sheets keep their table names, so references stay valid).", "book:str*; new_name:str*",
+      "wb.rename('Specimens')" },
+    { "workbook.ungroup", "workbook", "WorkbookProxy.ungroup()",
+      "Dissolve a workbook: every sheet becomes a stand-alone worksheet.", "book:str*",
+      "wb.ungroup()" },
 
     // 2. Worksheet (table.*)
     { "table.create", "table", "Session.create_table(rows=30, cols=2, *, name=None, columns=None)",
@@ -11679,9 +11712,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (path.isEmpty() || !xfi.exists() || !xfi.isFile())
             throwInvalidParams(QStringLiteral("Excel file does not exist: %1").arg(path));
         const QString sheet = optionalJsonString(params, QStringLiteral("sheet")).trimmed();
+        const bool asWorkbook = optionalJsonBool(params, QStringLiteral("workbook"), true);
         QString xlsxErr;
         XlsxImport::ImportResult res;
-        if (!XlsxImport::importIntoProject(d_app, xfi.absoluteFilePath(), sheet, &xlsxErr, &res))
+        if (!XlsxImport::importIntoProject(d_app, xfi.absoluteFilePath(), sheet, &xlsxErr, &res,
+                                           asWorkbook))
             throwRpcRuntime(xlsxErr.isEmpty()
                                     ? QStringLiteral("Failed to import Excel file '%1'.").arg(path)
                                     : xlsxErr);
@@ -11696,6 +11731,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("tables")] = tablesArr;
         outResult[QStringLiteral("empty_sheets")] = emptyArr;
         outResult[QStringLiteral("summary")] = res.summary;
+        outResult[QStringLiteral("workbook")] = res.workbook;
         return true;
     }
     if (method == QStringLiteral("app.import_opj")) {
@@ -12910,6 +12946,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         }
         throwInvalidParams(QStringLiteral("No QAction or 0-arg slot named '%1' found.").arg(name));
+    }
+
+    // ------------------------------------------------------------------------
+    // 1b. Workbooks (workbook.*)
+    // ------------------------------------------------------------------------
+    if (method.startsWith(QLatin1String("workbook."))) {
+        QString wbErr;
+        if (!WorkbookManager::instance(d_app)->handleRpc(method, params, outResult, &wbErr))
+            throwInvalidParams(wbErr.isEmpty() ? QStringLiteral("%1 failed.").arg(method) : wbErr);
+        return true;
     }
 
     // ------------------------------------------------------------------------
