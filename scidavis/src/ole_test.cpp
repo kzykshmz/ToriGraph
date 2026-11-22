@@ -25454,7 +25454,7 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                                        == SciDAVis::ColumnMode::Numeric
                                && std::fabs(ftNoSpcHdr->column(0)->valueAt(0) - 1.0) < 1e-9
                                && std::fabs(ftNoSpcHdr->column(1)->valueAt(1) - 4.0) < 1e-9
-                               && repNoSpcHdr.skippedLines == 2,
+                               && repNoSpcHdr.headerLines == 1 && repNoSpcHdr.skippedLines == 1,
                        "77c: '#x,y\\n1,2\\n#comment,abc\\n3,4' failed header promotion or mid-file comment skip!");
         }
         // (4c) 1-column whitespace '#1\n#2\n#3' keeps all 3 specimen rows
